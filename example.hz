@@ -1,0 +1,16 @@
+
+import "test.hz"
+
+class Test {
+  test: i32;
+  
+  constructor(s: String) {
+    return {
+      test: s.toNumber();
+    }
+  }
+}
+
+main(): i32 {
+  return 5;
+}
