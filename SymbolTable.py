@@ -22,7 +22,7 @@ class SymbolTable:
         return self.symbolMap
 
     def print(self):
-        for _, symbol in self.symbolMap:
+        for symbol in self.symbolMap.values():
             print(
-                f" * {symbol.getName()}: {symbol.getType().getDisplayName()} [{'mutable' if symbol.isMutable() else 'const'}] ({symbol.getMangledIdentifier()})"
+                f" * {symbol.getName()}: {symbol.getType().getDisplayName()} [{'mutable' if symbol.isMutable() else 'const'}]"
             )

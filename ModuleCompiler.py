@@ -5,6 +5,8 @@ from CompilationDatabase import CompilationDatabase
 from Error import InternalError, CompilerError, UnreachableCode
 import traceback
 
+from SymbolCollector import SymbolCollector
+
 CXX_COMPILER = "clang++"
 C_COMPILER = "clang"
 
@@ -22,20 +24,20 @@ class ModuleCompiler:
             if not ast:
                 return False
 
-            collector = SymbolCollector(m_filename, *db)
-            collector.visit(*ast)
+            collector = SymbolCollector(self.filename, self.db)
+            collector.visit(ast)
 
-            analyzer = SemanticAnalyzer(m_filename, *db)
-            analyzer.visit(*ast)
+            # analyzer = SemanticAnalyzer(self.filename, self.db)
+            # analyzer.visit(*ast)
 
-            resolver = SymbolTypeResolver(m_filename, *db)
-            resolver.visit(*ast)
+            # resolver = SymbolTypeResolver(self.filename, self.db)
+            # resolver.visit(*ast)
 
-            verifier = ReturnVerifier(m_filename, *db)
-            verifier.visit(*ast)
+            # verifier = ReturnVerifier(self.filename, self.db)
+            # verifier.visit(*ast)
 
-            generator = CodeGenerator(m_filename, *db, llvmModule)
-            generator.visit(*ast)
+            # generator = CodeGenerator(m_filename, self.db, llvmModule)
+            # generator.visit(*ast)
 
             # extraObjectFiles = [];
             # fs::makeDirectory(fs::cwd() / "build");
@@ -95,6 +97,9 @@ class ModuleCompiler:
         except Exception as e:
             print(traceback.format_exc(), file=sys.stderr)
         return False
+
+    def execute(self):
+        pass
 
 
 #     def verifyAllFunctionsExist()

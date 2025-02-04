@@ -9,4 +9,4 @@ if __name__ == "__main__":
     if not mainCompiler.build(False):
         exit(1)
 
-    exit(mainCompiler.executeJIT())
+    exit(mainCompiler.execute())

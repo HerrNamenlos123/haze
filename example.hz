@@ -1,13 +1,15 @@
 
 //import "test.hz"
 
-class Test {
+struct String {}
+
+struct Test {
   test: i32;
   
   constructor(s: String) {
     return {
-      test: s.toNumber();
-    }
+      .test: s.toNumber()
+    };
   }
 }
 

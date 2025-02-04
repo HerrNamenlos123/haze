@@ -58,31 +58,32 @@ class CompilationDatabase:
     def __init__(self):
         self.topLevelLocation = Location("global", 0, 0)
         self.globalScope = Scope(self.topLevelLocation, None)
-        self.scopeStack = []
+        self.scopeStack: List[Scope] = []
         self.extraCompilationUnits = []
         self.externFunctionRefs = []
         self.externalLinkerFlags = []
         self.__defineBuiltinTypes()
+        self.globalScope.symbolTable.print()
 
     def pushScope(self, scope: Scope):
-        self.scopeStack.push(scope)
+        self.scopeStack.append(scope)
         return scope
 
     def popScope(self):
-        if self.scopeStack.empty():
+        if len(self.scopeStack) == 0:
             raise InternalError("Cannot pop global scope", getCallerLocation())
         self.scopeStack.pop()
 
     def getCurrentScope(self):
-        if self.scopeStack.empty():
+        if len(self.scopeStack) == 0:
             return self.globalScope
-        return self.scopeStack.top()
+        return self.scopeStack[-1]
 
     def getGlobalScope(self):
         return self.globalScope
 
     def getBuiltinDatatype(self, name: str, loc: Location = Location("global", 0, 0)):
-        return self.getGlobalScope().lookupDatatypeSymbol(name, loc).getType()
+        return self.getGlobalScope().lookupSymbol(name, loc).getType()
 
     def defineExternalCompilationUnit(self, filename: str, lang: str, flags: List[str]):
         self.extraCompilationUnits.push_back({filename, lang, flags})
