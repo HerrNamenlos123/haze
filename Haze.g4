@@ -1,0 +1,103 @@
+grammar Haze;
+
+prog: (namedfunc | externblock | compilationhint | linkerhint | structdecl)*;
+
+namedfunc: ID '(' params ')' (':' returntype)? funcbody;
+func: '(' params ')' (':' returntype)? funcbody;
+
+funcbody: ('=>')? '{' body '}' | '=>' expr;
+body: (statement)*;
+
+param: ID ':' datatype;
+params: (param (',' param)*)?;
+
+externfuncdef: (ID '.')* ID '(' params ')' (':' returntype)? ';';
+externblock: 'extern' externlang '{' (externfuncdef)* '}';
+externlang: '"C"' | '"C++"';
+
+ifexpr: expr;
+elseifexpr: expr;
+thenblock: body;
+elseifblock: body;
+elseblock: body;
+
+statement
+    : expr ';'                                    #ExprStatement
+    | 'return' expr? ';'                          #ReturnStatement
+    | expr '=' expr ';'                           #ExprAssignmentStatement
+    | 'let' ID (':' datatype)? '=' expr ';'       #MutableVariableDefinition
+    | 'const' ID (':' datatype)? '=' expr ';'     #ImmutableVariableDefinition
+    | 'if' ifexpr '{' thenblock '}' ('else' 'if' elseifexpr '{' elseifblock '}')* ('else' '{' elseblock '}')?  #IfStatement
+    ;
+
+objectattribute
+    : '.' ID ':' expr   #ObjectAttr
+    ;
+
+expr
+    : '(' expr ')'                                              #BracketExpr
+    | expr '(' args ')'                                         #ExprCallExpr
+    | expr '.' ID                                               #ExprMemberAccess
+    | expr ('*'|'/'|'%') expr                                   #BinaryExpr
+    | expr ('+'|'-') expr                                       #BinaryExpr
+    | expr ('<'|'>'|'<='|'>=') expr                             #BinaryExpr
+    | expr ('=='|'!='|'is'|('is' 'not')) expr                   #BinaryExpr
+    | expr ('and'|'or') expr                                    #BinaryExpr
+    | func                                                      #FuncRefExpr
+    | ID                                                        #SymbolValueExpr
+    | constant                                                  #ConstantExpr
+    | '{' objectattribute? (',' objectattribute)* ','? '}'      #ObjectExpr
+    | ID '{' objectattribute? (',' objectattribute)* ','? '}'   #NamedObjectExpr
+    ;
+
+args: (expr (',' expr)*)?;
+
+functype: '(' params ')' '=>' returntype;
+
+returntype: datatype;
+
+constant
+    : INT                   #IntegerConstant
+    | STRING_LITERAL        #StringConstant
+    | ('true' | 'false')    #BooleanConstant
+    ;
+
+compilationhint: '#compile' compilationlang compilationhintfilename compilationhintflags?;
+compilationhintfilename: STRING_LITERAL;
+compilationhintflags: STRING_LITERAL;
+compilationlang: '"C"' | '"C++"';
+linkerhint: '#link' STRING_LITERAL;
+
+structcontent
+    : ID ':' datatype ';'                                   #StructFieldDecl
+    | ID '(' params ')' (':' returntype)? funcbody           #StructFuncDecl
+    ;
+
+structdecl
+    : 'struct' ID '{' (structcontent)* '}'      #StructDecl
+    ;
+
+// Types
+datatype
+    : ID                    #PrimitiveDatatype
+    | functype              #FunctionDatatype
+    ;
+
+STRING_LITERAL
+    :   '"' (ESC | ~["\\])* '"'
+    ;
+
+fragment ESC
+    :   '\\' [btnfr"'\\]
+    |   '\\' ('u' HEX HEX HEX HEX | 'U' HEX HEX HEX HEX HEX HEX HEX HEX)
+    ;
+
+fragment HEX
+    :   [0-9a-fA-F]
+    ;
+
+// Tokens
+ID: [a-zA-Z_][a-zA-Z_0-9]*;
+INT: [0-9]+;
+WS: [ \t\n\r]+ -> skip;
+COMMENT: '//' ~[\r\n]* -> skip; // Single-line comments
