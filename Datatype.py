@@ -184,7 +184,7 @@ class StructDatatype(Datatype):
         return self.name
 
     def getDisplayName(self):
-        if self.name.starts_with("__anonym_"):
+        if self.name.startswith("__anonym_"):
             val = "struct {"
             for name, symbol in self.memberSymbols.getAllSymbols():
                 val += f"{name}: {symbol.getType().getDisplayName()}, "
@@ -205,10 +205,22 @@ class StructDatatype(Datatype):
         return self.memberSymbols.get(name)
 
     def getMemberFuncsOnly(self) -> List[any]:
-        return self.memberSymbols.getMemberFuncsOnly()
+        from Symbol import FunctionSymbol
+
+        funcs = []
+        for symbol in self.memberSymbols.getAllSymbols().values():
+            if isinstance(symbol, FunctionSymbol):
+                funcs.append(symbol)
+        return funcs
 
     def getFieldsOnly(self) -> List[any]:
-        return self.memberSymbols.getFieldsOnly()
+        from Symbol import VariableSymbol
+
+        funcs = []
+        for symbol in self.memberSymbols.getAllSymbols().values():
+            if isinstance(symbol, VariableSymbol):
+                funcs.append(symbol)
+        return funcs
 
 
 def isSame(a: Datatype, b: Datatype):
@@ -222,10 +234,10 @@ def isSame(a: Datatype, b: Datatype):
         if not Datatype.isSame(a.getReturnType(), b.getReturnType()):
             return False
 
-        if a.numParameters() != b.numParameters():
+        if len(a.getParameters()) != len(b.getParameters()):
             return False
 
-        for i in range(a.numParameters()):
+        for i in range(len(a.getParameters())):
             if not Datatype.isSame(a.getParameters()[i][1], b.getParameters()[i][1]):
                 return False
 

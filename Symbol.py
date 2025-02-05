@@ -2,6 +2,7 @@ from Datatype import Datatype
 from Location import Location
 from enum import Enum
 from Error import InternalError
+from typing import List, Tuple
 
 
 class Symbol:
@@ -76,11 +77,11 @@ class FunctionSymbol(Symbol):
         self.isConstructor = False
 
     def getVisibleParameters(self):
-        params = self.type.getParameters()
+        params: List[Tuple[str, Datatype]] = self.type.getParameters()
         if self.hasThisPointer:
-            params.erase(params.begin())
+            params.remove(params[0])
         if self.hasStructReturn:
-            params.erase(params.begin())
+            params.remove(params[0])
         return params
 
     def getNativeStructReturnIndex(self):
@@ -103,20 +104,8 @@ class FunctionSymbol(Symbol):
     def setHasThisPointer(self):
         self.hasThisPointer = True
 
-    def setHasStructReturn(self):
-        self.hasStructReturn = True
-
     def setIsConstructor(self):
         self.isConstructor = True
-
-    def isConstructor(self):
-        return self.isConstructor
-
-    def hasStructReturn(self):
-        return self.hasStructReturn
-
-    def hasThisPointer(self):
-        return self.hasThisPointer
 
 
 class DatatypeSymbol(Symbol):

@@ -1,0 +1,39 @@
+returnStatement(): none {
+    return;
+}
+
+returnInt(): i8 {
+    return 3;
+}
+
+returnBinaryOperation(): i32 {
+    return 4+9;
+}
+
+bracket(): i32 {
+    return (6+1);
+}
+
+vars(): i32 {
+    const x = 0;
+    let y = x * 2;
+    y = y * 4;
+    const z = (y + x);
+    const u: i8 = x;
+    let w: i16 = u;
+    return w;
+}
+
+functions(): i32 {
+    const foo = () => 5;
+    return foo();
+}
+
+main(): i32 {
+    returnStatement();
+    returnInt();
+    returnBinaryOperation();
+    vars();
+    functions();
+    return 0;
+}

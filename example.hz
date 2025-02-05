@@ -1,7 +1,11 @@
 
 //import "test.hz"
 
-struct String {}
+struct String {
+  toNumber() {
+
+  }
+}
 
 struct Test {
   test: i32;

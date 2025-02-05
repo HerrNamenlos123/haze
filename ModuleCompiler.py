@@ -6,6 +6,7 @@ from Error import InternalError, CompilerError, UnreachableCode
 import traceback
 
 from SymbolCollector import SymbolCollector
+from SemanticAnalyzer import SemanticAnalyzer
 
 CXX_COMPILER = "clang++"
 C_COMPILER = "clang"
@@ -27,8 +28,8 @@ class ModuleCompiler:
             collector = SymbolCollector(self.filename, self.db)
             collector.visit(ast)
 
-            # analyzer = SemanticAnalyzer(self.filename, self.db)
-            # analyzer.visit(*ast)
+            analyzer = SemanticAnalyzer(self.filename, self.db)
+            analyzer.visit(ast)
 
             # resolver = SymbolTypeResolver(self.filename, self.db)
             # resolver.visit(*ast)

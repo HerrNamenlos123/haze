@@ -63,7 +63,6 @@ class CompilationDatabase:
         self.externFunctionRefs = []
         self.externalLinkerFlags = []
         self.__defineBuiltinTypes()
-        self.globalScope.symbolTable.print()
 
     def pushScope(self, scope: Scope):
         self.scopeStack.append(scope)
@@ -114,7 +113,7 @@ class CompilationDatabase:
 
     def makeAnonymousStructName(self):
         self.anonymousStructCounter += 1
-        return f"__anonym_struct_{self.anynonymousStructCounter}"
+        return f"__anonym_struct_{self.anonymousStructCounter}"
 
     def __defineBuiltinTypes(self):
         def define(name: str, type: PrimitiveType):
