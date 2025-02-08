@@ -9,6 +9,7 @@ from Datatype import (
 )
 from Symbol import DatatypeSymbol, FunctionSymbol, VariableSymbol, VariableType
 from Error import CompilerError, InternalError
+from Namespace import Namespace
 
 
 class SemanticAnalyzer(AdvancedBaseVisitor):
@@ -91,10 +92,12 @@ class SemanticAnalyzer(AdvancedBaseVisitor):
 
             newType = FunctionDatatype(functype.getParameters(), self.structStack[-1])
             symbol.replaceType(newType)
+            symbol.parentNamespace = Namespace(self.structStack[-1].getName())
             self.setNodeDatatype(ctx, newType)
 
         if symbol.hasThisPointer:
             symbol.setThisPointer(PointerDatatype(self.structStack[-1]))
+            symbol.parentNamespace = Namespace(self.structStack[-1].getName())
             s = VariableSymbol(
                 "this",
                 PointerDatatype(self.structStack[-1]),

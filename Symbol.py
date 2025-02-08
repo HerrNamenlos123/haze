@@ -2,7 +2,8 @@ from Datatype import Datatype
 from Location import Location
 from enum import Enum
 from Error import InternalError
-from typing import List, Tuple
+from typing import List, Tuple, Optional
+from Namespace import Namespace
 
 
 class Symbol:
@@ -81,6 +82,7 @@ class FunctionSymbol(Symbol):
         self.hasThisPointer = False
         self.thisPointerType = None
         self.isConstructor = False
+        self.parentNamespace: Optional[Namespace] = None
 
     def setThisPointer(self, type: Datatype):
         self.thisPointerType = type
@@ -104,8 +106,17 @@ class FunctionSymbol(Symbol):
         if self.functionType == FunctionType.External_C:
             return self.name
         mangled = "_H"
-        # mangled += str(len(self.name))
+        if self.parentNamespace is not None:
+            mangled += "N"
+            pns = self.parentNamespace
+            while pns is not None:
+                mangled += str(len(pns.name))
+                mangled += pns.name
+                pns = pns.parent
+        mangled += str(len(self.name))
         mangled += self.name
+        if self.parentNamespace is not None:
+            mangled += "E"
         return mangled
 
 
