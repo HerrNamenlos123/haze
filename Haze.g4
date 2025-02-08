@@ -22,7 +22,8 @@ elseifblock: body;
 elseblock: body;
 
 statement
-    : expr ';'                                    #ExprStatement
+    : '__c__' '(' STRING_LITERAL ')' ';'          #InlineCStatement
+    | expr ';'                                    #ExprStatement
     | 'return' expr? ';'                          #ReturnStatement
     | expr '=' expr ';'                           #ExprAssignmentStatement
     | 'let' ID (':' datatype)? '=' expr ';'       #MutableVariableDefinition

@@ -118,6 +118,11 @@ class CodeGenerator(AdvancedBaseVisitor):
         else:
             raise InternalError("Symbol is not a variable")
 
+    def visitInlineCStatement(self, ctx):
+        self.visitChildren(ctx)
+        string = ctx.STRING_LITERAL().getText()[1:-1]
+        ctx.code = string + "\n"
+
     def getCurrentFunction(self):
         return self.currentFunctionStack[-1]
 

@@ -143,6 +143,15 @@ class HazeListener(ParseTreeListener):
         pass
 
 
+    # Enter a parse tree produced by HazeParser#InlineCStatement.
+    def enterInlineCStatement(self, ctx:HazeParser.InlineCStatementContext):
+        pass
+
+    # Exit a parse tree produced by HazeParser#InlineCStatement.
+    def exitInlineCStatement(self, ctx:HazeParser.InlineCStatementContext):
+        pass
+
+
     # Enter a parse tree produced by HazeParser#ExprStatement.
     def enterExprStatement(self, ctx:HazeParser.ExprStatementContext):
         pass

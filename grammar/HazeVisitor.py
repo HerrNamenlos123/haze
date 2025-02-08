@@ -84,6 +84,11 @@ class HazeVisitor(ParseTreeVisitor):
         return self.visitChildren(ctx)
 
 
+    # Visit a parse tree produced by HazeParser#InlineCStatement.
+    def visitInlineCStatement(self, ctx:HazeParser.InlineCStatementContext):
+        return self.visitChildren(ctx)
+
+
     # Visit a parse tree produced by HazeParser#ExprStatement.
     def visitExprStatement(self, ctx:HazeParser.ExprStatementContext):
         return self.visitChildren(ctx)

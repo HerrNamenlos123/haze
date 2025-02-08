@@ -11,18 +11,19 @@ struct MemoryBuffer {
   data: i8;
 
   constructor(size: i64) {
-    const ptr = malloc(size);
-    __c__("const x = 0;")
-    return MemoryBuffer {
+    const buffer = MemoryBuffer {
       .data: size
     };
+    // __c__("buffer.data = 0;");
+    return buffer;
   }
 
-  __copy__() {
-    return MemoryBuffer {
-      const ptr = malloc(size);
-    };
-  }
+  // __copy__(): MemoryBuffer {
+  //     // const ptr = malloc(size);
+  //   return MemoryBuffer {
+  //     .data: 0,
+  //   };
+  // }
 }
 
 struct String {
