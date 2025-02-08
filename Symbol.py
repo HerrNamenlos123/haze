@@ -101,8 +101,6 @@ class FunctionSymbol(Symbol):
         return self.__str__()
 
     def getMangledName(self):
-        if self.name == "main":
-            return "main"
         if self.functionType == FunctionType.External_C:
             return self.name
         mangled = "_H"

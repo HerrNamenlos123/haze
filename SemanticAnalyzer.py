@@ -113,6 +113,10 @@ class SemanticAnalyzer(AdvancedBaseVisitor):
         self.useCurrentNodeScope(ctx)
         self.visitChildren(ctx)
         name = ctx.ID().getText()
+        if name == "context":
+            raise CompilerError(
+                "'context' is not a valid variable name.", self.getLocation(ctx)
+            )
         if name == "this":
             raise CompilerError(
                 "'this' is not a valid variable name.", self.getLocation(ctx)

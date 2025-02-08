@@ -3,6 +3,26 @@
 
 extern "C" {
   printf(str: stringview);
+  // malloc(n: i32);
+  // free(ptr);
+}
+
+struct MemoryBuffer {
+  data: i8;
+
+  constructor(size: i64) {
+    const ptr = malloc(size);
+    __c__("const x = 0;")
+    return MemoryBuffer {
+      .data: size
+    };
+  }
+
+  __copy__() {
+    return MemoryBuffer {
+      const ptr = malloc(size);
+    };
+  }
 }
 
 struct String {

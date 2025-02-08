@@ -10,9 +10,11 @@ from Datatype import (
     implicitConversion,
     PointerDatatype,
 )
-from Symbol import DatatypeSymbol, FunctionSymbol, VariableSymbol
+from Symbol import DatatypeSymbol, FunctionSymbol, VariableSymbol, FunctionType
 from Error import CompilerError, InternalError
 import os
+
+CONTEXT_STRUCT = "N4Haze7ContextE"
 
 
 class CodeGenerator(AdvancedBaseVisitor):
@@ -28,6 +30,12 @@ class CodeGenerator(AdvancedBaseVisitor):
         }
         self.includeHeader("stdio.h")
         self.includeHeader("stdint.h")
+        self.output[
+            "type_declarations"
+        ] += f"typedef struct __{CONTEXT_STRUCT}__ {{}} {CONTEXT_STRUCT};\n"
+        self.output[
+            "function_definitions"
+        ] += f"int32_t main() {{\n    {CONTEXT_STRUCT} context = {{ }};\n    return _H4main(&context);\n}}\n\n"
 
     def includeHeader(self, filename: str):
         self.output["includes"] += f"#include <{filename}>\n"
@@ -59,6 +67,7 @@ class CodeGenerator(AdvancedBaseVisitor):
         )
 
         params = []
+        params.append(f"{CONTEXT_STRUCT}* context")
         if symbol.hasThisPointer:
             params.append(f"{symbol.thisPointerType.getCCode()} this")
         params += [
@@ -506,6 +515,8 @@ class CodeGenerator(AdvancedBaseVisitor):
         ctx.code = f"{ctx.expr().code}("
 
         params = []
+        if symbol.functionType != FunctionType.External_C:
+            params.append("context")
         if symbol.hasThisPointer:
             params.append(f"&{ctx.expr().structSymbol.getName()}")
         for i in range(len(exprtype.getParameters())):
