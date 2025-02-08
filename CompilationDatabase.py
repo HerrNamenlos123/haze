@@ -22,9 +22,16 @@ class ExternFunctionRef:
 
 
 class ObjAttribute:
-    def __init__(self, name: str, type: Datatype, expr: HazeParser.ParserRuleContext):
+    def __init__(
+        self,
+        name: str,
+        declaredType: Datatype,
+        receivedType: Datatype,
+        expr: HazeParser.ParserRuleContext,
+    ):
         self.name = name
-        self.type = type
+        self.declaredType = type
+        self.receivedType = type
         self.expr = expr
 
 
@@ -85,14 +92,14 @@ class CompilationDatabase:
         return self.getGlobalScope().lookupSymbol(name, loc).getType()
 
     def defineExternalCompilationUnit(self, filename: str, lang: str, flags: List[str]):
-        self.extraCompilationUnits.push_back({filename, lang, flags})
+        self.extraCompilationUnits.append({filename, lang, flags})
 
     def defineExternFunctionRef(self, lang: str, location: Location, symbol: Symbol):
-        self.externFunctionRefs.push_back({lang, location, symbol})
+        self.externFunctionRefs.append({lang, location, symbol})
 
     def addExternalLinkerFlags(self, flags: List[str]):
         for flag in flags:
-            self.externalLinkerFlags.push_back(flag)
+            self.externalLinkerFlags.append(flag)
 
     def getExternalLinkerFlags(self):
         return self.externalLinkerFlags

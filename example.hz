@@ -1,22 +1,38 @@
 
 //import "test.hz"
 
-struct String {
-  toNumber() {
+extern "C" {
+  printf(str: stringview);
+}
 
+struct String {
+  test1: u64;
+  other: stringview;
+
+  toNumber(): i64 {
+    return this.test1;
   }
 }
 
-struct Test {
-  test: i32;
+// struct Test {
+//   test: i32;
   
-  constructor(s: String) {
-    return {
-      .test: s.toNumber()
-    };
-  }
+//   constructor(s: String) {
+//     return Test {
+//       .test: s.toNumber()
+//     };
+//   }
+// }
+
+test(s: stringview, num: u64): String {
+  return String {
+    .test1: 2,
+    .other: "Test",
+  };
 }
 
 main(): i32 {
-  return 5;
+  printf("Hello world!\n");
+  const a = test("test", 0);
+  return a.toNumber();
 }

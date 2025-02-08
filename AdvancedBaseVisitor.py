@@ -1,5 +1,5 @@
 from grammar import HazeVisitor
-from CompilationDatabase import CompilationDatabase
+from CompilationDatabase import CompilationDatabase, ObjAttribute
 from Datatype import Datatype
 from Symbol import Symbol
 from Scope import Scope
@@ -125,11 +125,11 @@ class AdvancedBaseVisitor(HazeVisitor.HazeVisitor):
         self.__prepare(ctx)
         return "datatypeAsValue" in ctx.semantics
 
-    def setNodeObjectAttribute(self, ctx, attribute: Datatype):
+    def setNodeObjectAttribute(self, ctx, attribute: ObjAttribute):
         self.__prepare(ctx)
         ctx.semantics["attribute"] = attribute
 
-    def getNodeObjectAttribute(self, ctx) -> Datatype:
+    def getNodeObjectAttribute(self, ctx) -> ObjAttribute:
         self.__prepare(ctx)
         return ctx.semantics["attribute"]
 

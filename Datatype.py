@@ -1,6 +1,7 @@
 from enum import Enum
 from typing import List, Tuple
-from Error import InternalError
+from Error import InternalError, UnreachableCode, CompilerError
+from Location import Location
 
 
 class PrimitiveType(Enum):
@@ -16,8 +17,7 @@ class PrimitiveType(Enum):
     u16 = (10,)
     u32 = (11,)
     u64 = (12,)
-    string = (13,)
-    stringview = (14,)
+    stringview = (13,)
 
 
 class Datatype:
@@ -47,6 +47,15 @@ class Datatype:
 
     def isUnknown(self):
         return False
+
+    def getCCode(self):
+        raise InternalError("Not implemented")
+
+    def __str__(self):
+        return self.getDisplayName()
+
+    def __repr__(self):
+        return self.getDisplayName()
 
 
 class PrimitiveDatatype(Datatype):
@@ -123,6 +132,38 @@ class PrimitiveDatatype(Datatype):
                 return 64
         raise InternalError("Cannot take integer bits of non-integer")
 
+    def getCCode(self):
+        match self.type:
+            case PrimitiveType.none:
+                return "void"
+            case PrimitiveType.unknown:
+                raise InternalError(
+                    "Type 'unknown' is compiler internal and must not appear in generated C-code"
+                )
+            case PrimitiveType.boolean:
+                return "bool"
+            case PrimitiveType.booleanptr:
+                return "bool*"
+            case PrimitiveType.i8:
+                return "int8_t"
+            case PrimitiveType.i16:
+                return "int16_t"
+            case PrimitiveType.i32:
+                return "int32_t"
+            case PrimitiveType.i64:
+                return "int64_t"
+            case PrimitiveType.u8:
+                return "uint8_t"
+            case PrimitiveType.u16:
+                return "uint16_t"
+            case PrimitiveType.u32:
+                return "uint32_t"
+            case PrimitiveType.u64:
+                return "uint64_t"
+            case PrimitiveType.stringview:
+                return "char*"
+        raise UnreachableCode()
+
 
 class FunctionDatatype(Datatype):
     def __init__(self, parameters: List[Tuple[str, Datatype]], returnType: Datatype):
@@ -135,7 +176,7 @@ class FunctionDatatype(Datatype):
             params += type.getDisplayName() + ", "
         if params != "":
             params = params[:-2]
-        return f"({params}) -> {self.returntype.getDisplayName()}"
+        return f"({params}) -> {self.returnType.getDisplayName()}"
 
     def getParameters(self) -> List[Tuple[str, Datatype]]:
         return self.parameters
@@ -161,6 +202,9 @@ class FunctionDatatype(Datatype):
     def insertParameter(self, index: int, name: str, type: Datatype):
         self.parameters.insert(index, (name, type))
 
+    def getCCode(self):
+        raise InternalError("Not implemented")
+
 
 class PointerDatatype(Datatype):
     def __init__(self, pointee: Datatype):
@@ -171,6 +215,9 @@ class PointerDatatype(Datatype):
 
     def getPointee(self):
         return self.pointee
+
+    def getCCode(self):
+        return f"{self.pointee.getCCode()}*"
 
 
 class StructDatatype(Datatype):
@@ -186,9 +233,9 @@ class StructDatatype(Datatype):
     def getDisplayName(self):
         if self.name.startswith("__anonym_"):
             val = "struct {"
-            for name, symbol in self.memberSymbols.getAllSymbols():
+            for name, symbol in self.memberSymbols.getAllSymbols().items():
                 val += f"{name}: {symbol.getType().getDisplayName()}, "
-            if not self.memberSymbols.getAllSymbols().empty():
+            if len(self.memberSymbols.getAllSymbols().keys()) > 0:
                 val = val[:-2]
             val += " }"
             return val
@@ -222,6 +269,9 @@ class StructDatatype(Datatype):
                 funcs.append(symbol)
         return funcs
 
+    def getCCode(self):
+        return f"{self.name}"
+
 
 def isSame(a: Datatype, b: Datatype):
     if isinstance(a, PrimitiveDatatype) and isinstance(b, PrimitiveDatatype):
@@ -246,7 +296,7 @@ def isSame(a: Datatype, b: Datatype):
     if isinstance(a, StructDatatype) and isinstance(b, StructDatatype):
         aMembers = a.getFieldsOnly()
         bMembers = b.getFieldsOnly()
-        if aMembers.size() != bMembers.size():
+        if len(aMembers) != len(bMembers):
             return False
 
         for i in range(len(aMembers)):
@@ -262,60 +312,69 @@ def isSame(a: Datatype, b: Datatype):
 Datatype.isSame = isSame
 
 
-def isImplicitlyConvertibleTo(a: Datatype, b: Datatype):
-    if Datatype.isSame(a, b):
-        return True
+def implicitConversion(_from: Datatype, to: Datatype, expr: str, loc: Location) -> str:
+    if Datatype.isSame(_from, to):
+        return expr
 
-    if isinstance(a, PrimitiveDatatype) and isinstance(b, PrimitiveDatatype):
-        if a.isInteger() and b.isInteger():
-            return True
-        return False
+    if isinstance(_from, PrimitiveDatatype) and isinstance(to, PrimitiveDatatype):
+        if _from.isInteger() and to.isInteger():
+            return f"({to.getCCode()})({expr})"
+        raise InternalError(
+            f"No implicit conversion from {_from.getDisplayName()} to {to.getDisplayName()}"
+        )
 
-    if isinstance(a, PointerDatatype) and isinstance(b, PointerDatatype):
-        return isImplicitlyConvertibleTo(a.getPointee(), b.getPointee())
+    if isinstance(_from, PointerDatatype) and isinstance(to, PointerDatatype):
+        raise CompilerError(
+            "Pointer types are not convertible. Polymorphism is not implemented yet",
+            loc,
+        )
 
-    if isinstance(a, FunctionDatatype) and isinstance(b, FunctionDatatype):
-        if not isImplicitlyConvertibleTo(a.getReturnType(), b.getReturnType()):
-            return False
-        if a.numParameters() != b.numParameters():
-            return False
-        for i in range(a.numParameters()):
-            if not isImplicitlyConvertibleTo(
-                a.getParameters()[i][1], b.getParameters()[i][1]
-            ):
-                return False
-        return True
+    if isinstance(_from, FunctionDatatype) and isinstance(to, FunctionDatatype):
+        if Datatype.isSame(_from.getReturnType(), to.getReturnType()):
+            if len(_from.getParameters()) == len(to.getParameters()):
+                equal = True
+                for i in range(len(_from.getParameters())):
+                    if not Datatype.isSame(
+                        _from.getParameters()[i][1], to.getParameters()[i][1]
+                    ):
+                        equal = False
+                if equal:
+                    return expr
+        raise CompilerError(
+            f"No implicit conversion from '{_from.getDisplayName()}' to '{to.getDisplayName()}'",
+            loc,
+        )
 
-    if isinstance(a, StructDatatype) and isinstance(b, StructDatatype):
-        aMembers = a.getMembers()
-        bMembers = b.getMembers()
-        for name, symbol in aMembers:
-            if not bMembers.contains(name):
-                return False
-            if aMembers.at(name).getName() != bMembers.at(name).getName():
-                return False
+    if isinstance(_from, StructDatatype) and isinstance(to, StructDatatype):
+        equal = True
+        aMembers = _from.getMembers()
+        bMembers = to.getMembers()
+        for name in aMembers.keys():
+            if not name in bMembers:
+                equal = False
+            if aMembers[name].getName() != bMembers[name].getName():
+                equal = False
 
-            if not Datatype.isSame(
-                aMembers.at(name).getType(), bMembers.at(name).getType()
-            ):
-                return False
+            if not Datatype.isSame(aMembers[name].getType(), bMembers[name].getType()):
+                equal = False
 
-        for name, symbol in bMembers:
-            if not aMembers.contains(name):
-                return False
+        for name in bMembers.keys():
+            if not name in aMembers:
+                equal = False
 
-            if aMembers.at(name).getName() != bMembers.at(name).getName():
-                return False
+            if aMembers[name].getName() != bMembers[name].getName():
+                equal = False
 
-            if not Datatype.isSame(
-                aMembers.at(name).getType(), bMembers.at(name).getType()
-            ):
-                return False
-        return True
-    return False
+            if not Datatype.isSame(aMembers[name].getType(), bMembers[name].getType()):
+                equal = False
 
+        if equal:
+            return expr
 
-Datatype.isImplicitlyConvertibleTo = isImplicitlyConvertibleTo
+    raise CompilerError(
+        f"No implicit conversion from '{_from.getDisplayName()}' to '{to.getDisplayName()}'",
+        loc,
+    )
 
 
 def primitiveTypeToString(type: PrimitiveType) -> str:
@@ -344,8 +403,6 @@ def primitiveTypeToString(type: PrimitiveType) -> str:
             return "u32"
         case PrimitiveType.u64:
             return "u64"
-        case PrimitiveType.string:
-            return "string"
         case PrimitiveType.stringview:
             return "stringview"
     raise InternalError("Datatype has no string representation")

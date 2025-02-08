@@ -58,7 +58,7 @@ class SemanticAnalyzer(AdvancedBaseVisitor):
         visibleParams = []
         returnType: Datatype = None
         if isinstance(symbol, FunctionSymbol):
-            visibleParams = symbol.getVisibleParameters()
+            visibleParams = symbol.getType().getParameters()
             returnType = symbol.getType().getReturnType()
 
         elif isinstance(symbol.getType(), FunctionDatatype):
@@ -72,21 +72,11 @@ class SemanticAnalyzer(AdvancedBaseVisitor):
             )
 
         self.assertExpectedNumOfArgs(ctx, len(ctx.args().expr()), len(visibleParams))
-
-        for i in range(len(visibleParams)):
-            got = self.getNodeDatatype(ctx.args().expr(i))
-            expected = visibleParams[i].second
-            if not Datatype.isImplicitlyConvertibleTo(got, expected):
-                raise CompilerError(
-                    f"Argument {i} of type '{got.getDisplayName()}' is not convertible to type '{expected.getDisplayName()}'",
-                    self.getLocation(ctx),
-                )
-
         self.setNodeDatatype(ctx, returnType)
 
     def implFunc(self, ctx):
         scope = self.db.pushScope(self.getNodeScope(ctx))
-        symbol = self.getNodeSymbol(ctx)
+        symbol: FunctionSymbol = self.getNodeSymbol(ctx)
         functype = symbol.getType()
 
         if symbol.isConstructor:
@@ -104,14 +94,14 @@ class SemanticAnalyzer(AdvancedBaseVisitor):
             self.setNodeDatatype(ctx, newType)
 
         if symbol.hasThisPointer:
-            symbol.getType().insertParameter(0, "this", self.structStack[-1])
-            symbol = VariableSymbol(
+            symbol.setThisPointer(PointerDatatype(self.structStack[-1]))
+            s = VariableSymbol(
                 "this",
-                self.structStack[-1],
+                PointerDatatype(self.structStack[-1]),
                 VariableType.Parameter,
                 self.getLocation(ctx),
             )
-            self.db.getCurrentScope().defineSymbol(symbol)
+            self.db.getCurrentScope().defineSymbol(s)
 
         self.visitChildren(ctx)
         self.db.popScope()
@@ -138,12 +128,6 @@ class SemanticAnalyzer(AdvancedBaseVisitor):
         if vartype.isNone():
             raise CompilerError(
                 f"'none' is not a valid variable type.", self.getLocation(ctx)
-            )
-
-        if not Datatype.isImplicitlyConvertibleTo(exprtype, vartype):
-            raise CompilerError(
-                f"No conversion from {exprtype.getDisplayName()} to {vartype.getDisplayName()} available",
-                self.getLocation(ctx),
             )
 
         symbol = VariableSymbol(name, vartype, variableType, self.getLocation(ctx))
@@ -338,7 +322,10 @@ class SemanticAnalyzer(AdvancedBaseVisitor):
         name = ctx.ID().getText()
         expr = ctx.expr()
         self.setNodeObjectAttribute(
-            ctx, ObjAttribute(name, self.getNodeDatatype(expr), expr)
+            ctx,
+            ObjAttribute(
+                name, self.getNodeDatatype(expr), self.getNodeDatatype(expr), expr
+            ),
         )
         self.setNodeDatatype(ctx, self.getNodeDatatype(expr))
 
@@ -353,7 +340,7 @@ class SemanticAnalyzer(AdvancedBaseVisitor):
             attributes.append(att)
             memberSymbol = VariableSymbol(
                 att.name,
-                att.type,
+                att.declaredType,
                 VariableType.MutableStructField,
                 self.getLocation(ctx),
             )
@@ -376,7 +363,7 @@ class SemanticAnalyzer(AdvancedBaseVisitor):
         atts = ctx.objectattribute()
 
         if isinstance(symbol.getType(), StructDatatype):
-            if symbol.getType().getFieldsOnly().size() != atts.size():
+            if len(symbol.getType().getFieldsOnly()) != len(atts):
                 raise CompilerError(
                     f"Type '{symbol.getType().getDisplayName()}' expects {len(symbol.getType().getFieldsOnly())} fields, but {len(atts)} were provided",
                     self.getLocation(ctx),
@@ -384,15 +371,16 @@ class SemanticAnalyzer(AdvancedBaseVisitor):
 
             for i in range(len(atts)):
                 att = self.getNodeObjectAttribute(atts[i])
-                if not symbol.getType().getMembers().contains(att.name):
+                if not att.name in symbol.getType().getMembers():
                     raise CompilerError(
                         f"Type '{symbol.getType().getDisplayName()}' has no member named '{att.name}'",
                         self.getLocation(ctx),
                     )
 
-            field = symbol.getType().getMembers().at(att.name)
-            att.type = field.getType()
-            attributes.push_back(att)
+                field = symbol.getType().getMembers()[att.name]
+                att.declaredType = field.getType()
+                att.receivedType = self.getNodeDatatype(att.expr)
+                attributes.append(att)
 
             self.setNodeObjectAttributes(ctx, attributes)
             self.setNodeDatatype(ctx, symbol.getType())

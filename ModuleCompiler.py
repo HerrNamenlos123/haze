@@ -4,9 +4,13 @@ from colorama import Fore
 from CompilationDatabase import CompilationDatabase
 from Error import InternalError, CompilerError, UnreachableCode
 import traceback
+import os
 
 from SymbolCollector import SymbolCollector
 from SemanticAnalyzer import SemanticAnalyzer
+from SymbolTypeResolver import SymbolTypeResolver
+from ReturnVerifier import ReturnVerifier
+from CodeGenerator import CodeGenerator
 
 CXX_COMPILER = "clang++"
 C_COMPILER = "clang"
@@ -31,14 +35,19 @@ class ModuleCompiler:
             analyzer = SemanticAnalyzer(self.filename, self.db)
             analyzer.visit(ast)
 
-            # resolver = SymbolTypeResolver(self.filename, self.db)
-            # resolver.visit(*ast)
+            resolver = SymbolTypeResolver(self.filename, self.db)
+            resolver.visit(ast)
 
-            # verifier = ReturnVerifier(self.filename, self.db)
-            # verifier.visit(*ast)
+            verifier = ReturnVerifier(self.filename, self.db)
+            verifier.visit(ast)
 
-            # generator = CodeGenerator(m_filename, self.db, llvmModule)
-            # generator.visit(*ast)
+            generator = CodeGenerator(self.filename, self.db)
+            generator.visit(ast)
+
+            generator.writeFile(f"build/{self.filename}.c")
+
+            os.system("clang build/" + self.filename + ".c -o build/out")
+            os.system("build/out")
 
             # extraObjectFiles = [];
             # fs::makeDirectory(fs::cwd() / "build");

@@ -54,6 +54,12 @@ class VariableSymbol(Symbol):
     def getVariableType(self):
         return self.variableType
 
+    def __str__(self):
+        return f"VariableSymbol({self.name}: {self.type})"
+
+    def __repr__(self):
+        return self.__str__()
+
 
 class FunctionType(Enum):
     Toy = (1,)
@@ -73,39 +79,34 @@ class FunctionSymbol(Symbol):
         self.functionType = functionType
         self.declarationLocation = declarationLocation
         self.hasThisPointer = False
-        self.hasStructReturn = False
+        self.thisPointerType = None
         self.isConstructor = False
 
-    def getVisibleParameters(self):
-        params: List[Tuple[str, Datatype]] = self.type.getParameters()
-        if self.hasThisPointer:
-            params.remove(params[0])
-        if self.hasStructReturn:
-            params.remove(params[0])
-        return params
-
-    def getNativeStructReturnIndex(self):
-        if self.hasStructReturn:
-            return 0
-        raise InternalError("No struct return")
-
-    def getNativeThisPointerIndex(self):
-        if self.hasThisPointer:
-            return 1 if self.hasStructReturn else 0
-        raise InternalError("No this pointer")
-
-    def visibleParameterToNativeIndex(self, visibleIndex: int):
-        if self.hasThisPointer:
-            visibleIndex += 1
-        if self.hasStructReturn:
-            visibleIndex += 1
-        return visibleIndex
-
-    def setHasThisPointer(self):
-        self.hasThisPointer = True
+    def setThisPointer(self, type: Datatype):
+        self.thisPointerType = type
 
     def setIsConstructor(self):
         self.isConstructor = True
+
+    def __str__(self):
+        s = f"FunctionSymbol({self.name}: {self.type}"
+        if self.hasThisPointer:
+            s += f" <this: {self.thisPointerType}>"
+        s += ")"
+        return s
+
+    def __repr__(self):
+        return self.__str__()
+
+    def getMangledName(self):
+        if self.name == "main":
+            return "main"
+        if self.functionType == FunctionType.External_C:
+            return self.name
+        mangled = "_H"
+        # mangled += str(len(self.name))
+        mangled += self.name
+        return mangled
 
 
 class DatatypeSymbol(Symbol):

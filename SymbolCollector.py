@@ -107,7 +107,7 @@ class SymbolCollector(AdvancedBaseVisitor):
             self.getParamTypes(ctx.params()), returntype
         )
 
-        if signature.size() > 1:
+        if len(signature) > 1:
             raise InternalError("External Namespaces are not implemented yet!")
 
         functionType = FunctionType.Toy
@@ -118,7 +118,7 @@ class SymbolCollector(AdvancedBaseVisitor):
             functionType = FunctionType.External_C
 
         symbol = FunctionSymbol(
-            signature.back(), functionDatatype, functionType, self.getLocation(ctx)
+            signature[-1], functionDatatype, functionType, self.getLocation(ctx)
         )
         self.db.getGlobalScope().defineSymbol(symbol)
         self.setNodeSymbol(ctx, symbol)
@@ -188,7 +188,7 @@ class SymbolCollector(AdvancedBaseVisitor):
             if name == "constructor":
                 symbol.setIsConstructor()
             else:
-                symbol.setHasThisPointer()
+                symbol.hasThisPointer = True
 
         self.db.popScope()
 
