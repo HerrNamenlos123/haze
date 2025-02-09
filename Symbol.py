@@ -4,14 +4,14 @@ from enum import Enum
 from Error import InternalError
 from typing import List, Tuple, Optional, Dict
 from Namespace import Namespace
+from SymbolName import SymbolName
 
 
 class Symbol:
-    def __init__(self, name: str, type: Datatype, declarationLocation: Location):
+    def __init__(self, name: SymbolName, type: Datatype, declarationLocation: Location):
         self.name = name
         self.type = type
         self.declarationLocation = declarationLocation
-        self.parentNamespace: Optional[Namespace] = None
 
     def isMutable(self):
         pass
@@ -37,7 +37,7 @@ class VariableType(Enum):
 class VariableSymbol(Symbol):
     def __init__(
         self,
-        name: str,
+        name: SymbolName,
         type: Datatype,
         variableType: VariableType,
         declarationLocation: Location,
@@ -64,14 +64,14 @@ class VariableSymbol(Symbol):
 
 
 class FunctionType(Enum):
-    Toy = (1,)
+    Haze = (1,)
     External_C = (2,)
 
 
 class FunctionSymbol(Symbol):
     def __init__(
         self,
-        name: str,
+        name: SymbolName,
         type: Datatype,
         functionType: FunctionType,
         declarationLocation: Location,
@@ -83,7 +83,6 @@ class FunctionSymbol(Symbol):
         self.hasThisPointer = False
         self.thisPointerType = None
         self.isConstructor = False
-        self.parentNamespace: Optional[Namespace] = None
 
     def setThisPointer(self, type: Datatype):
         self.thisPointerType = type
@@ -105,16 +104,14 @@ class FunctionSymbol(Symbol):
         if self.functionType == FunctionType.External_C:
             return self.name
         mangled = "_H"
-        if self.parentNamespace is not None:
+        if len(self.name.namespaces) > 0:
             mangled += "N"
-            pns = self.parentNamespace
-            while pns is not None:
-                mangled += str(len(pns.name))
-                mangled += pns.name
-                pns = pns.parent
-        mangled += str(len(self.name))
-        mangled += self.name
-        if self.parentNamespace is not None:
+            for ns in self.name.namespaces:
+                mangled += str(len(ns))
+                mangled += ns
+        mangled += str(len(self.name.name))
+        mangled += self.name.name
+        if len(self.name.namespaces) > 0:
             mangled += "E"
         return mangled
 

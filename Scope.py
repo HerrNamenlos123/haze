@@ -2,11 +2,12 @@ from typing import Optional
 from Location import Location
 from Symbol import Symbol
 from Error import CompilerError
+from SymbolTable import SymbolTable, SymbolName
+from Error import InternalError, getCallerLocation
 
 
 class Scope:
     def __init__(self, location: Location, parentScope: Optional["Scope"]):
-        from SymbolTable import SymbolTable
 
         self.symbolTable = SymbolTable()
         self.parentScope = parentScope
@@ -14,9 +15,13 @@ class Scope:
         self.location = location
 
     def defineSymbol(self, symbol: Symbol):
+        if not isinstance(symbol.name, SymbolName):
+            raise InternalError("Symbol must have SymbolName", getCallerLocation())
         self.symbolTable.insert(symbol)
 
-    def tryLookupSymbol(self, name: str) -> Optional[Symbol]:
+    def tryLookupSymbol(self, name: str | SymbolName) -> Optional[Symbol]:
+        if isinstance(name, str):
+            name = SymbolName(name)
         symbol = self.symbolTable.tryLookup(name)
         if symbol:
             return symbol
@@ -25,11 +30,15 @@ class Scope:
             return self.parentScope.tryLookupSymbol(name)
         return None
 
-    def lookupSymbol(self, name: str, loc: Location):
-        symbol = self.tryLookupSymbol(name)
-        if not symbol:
-            raise CompilerError(f"Symbol '{name}' was not declared in this scope", loc)
-        return symbol
+    def lookupSymbol(self, name: str | SymbolName, loc: Location):
+        if isinstance(name, str):
+            name = SymbolName(name)
+        symbol = self.symbolTable.tryLookup(name, loc)
+        if symbol:
+            return symbol
+        if self.parentScope:
+            return self.parentScope.lookupSymbol(name, loc)
+        raise CompilerError(f"Symbol '{name}' was not declared in this scope", loc)
 
     def mutabilityString(self, symbol: Symbol):
         return "mutable" if symbol.isMutable() else "const"
@@ -39,3 +48,9 @@ class Scope:
 
     def isTerminated(self):
         return self.terminated
+
+    def __str__(self):
+        return f"Scope({self.location})"
+
+    def __repr__(self):
+        return self.__str__()

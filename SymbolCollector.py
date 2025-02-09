@@ -13,6 +13,9 @@ from Scope import Scope
 from Location import Location
 from CompilationDatabase import CompilationDatabase
 from grammar import HazeParser
+from utils import implGenericDatatype
+from Namespace import Namespace
+from SymbolName import SymbolName
 
 
 class SymbolCollector(AdvancedBaseVisitor):
@@ -27,7 +30,7 @@ class SymbolCollector(AdvancedBaseVisitor):
         if not self.currentExternBlockLanguage:
             self.setNodeDatatype(ctx, self.getNodeDatatype(ctx.datatype()))
             symbol = VariableSymbol(
-                ctx.ID().getText(),
+                SymbolName(ctx.ID().getText()),
                 self.getNodeDatatype(ctx),
                 VariableType.Parameter,
                 self.getLocation(ctx),
@@ -35,33 +38,8 @@ class SymbolCollector(AdvancedBaseVisitor):
             self.db.getCurrentScope().defineSymbol(symbol)
 
     def visitGenericDatatype(self, ctx: HazeParser.HazeParser.GenericDatatypeContext):
-        self.useCurrentNodeScope(ctx)
-        name = ctx.ID().getText()
-        self.visitChildren(ctx)
-
         currentGenerics = self.structStack[-1][1] if len(self.structStack) > 0 else []
-        if name in currentGenerics:  # It is a generic type itself (e.g. 'T')
-            self.setNodeDatatype(ctx, GenericPlaceholder(name))
-        else:  # It's a normal type, that may include other generics (e.g. 'List<T>')
-            datatype = (
-                self.db.getCurrentScope()
-                .lookupSymbol(name, self.getLocation(ctx))
-                .getType()
-            )
-            genericTypes = [self.getNodeDatatype(n) for n in ctx.datatype()]
-
-            if len(datatype.genericsList) != len(genericTypes):
-                raise CompilerError(
-                    f"Generic datatype expected {len(datatype.genericsList)} generic arguments but got {len(genericTypes)}.",
-                    self.getLocation(ctx),
-                )
-
-            generics: Dict[str, Datatype] = {}
-            for i in range(len(datatype.genericsList)):
-                generics[datatype.genericsList[i]] = genericTypes[i]
-            datatype = datatype.instantiate(generics)
-            datatype.genericsDict = generics
-            self.setNodeDatatype(ctx, datatype)
+        implGenericDatatype(self, ctx, currentGenerics)
 
     def visitFunctionDatatype(self, ctx):
         self.useCurrentNodeScope(ctx)
@@ -133,7 +111,7 @@ class SymbolCollector(AdvancedBaseVisitor):
         if len(signature) > 1:
             raise InternalError("External Namespaces are not implemented yet!")
 
-        functionType = FunctionType.Toy
+        functionType = FunctionType.Haze
         if not self.currentExternBlockLanguage:
             raise InternalError("Extern func def must have external language")
 
@@ -141,7 +119,10 @@ class SymbolCollector(AdvancedBaseVisitor):
             functionType = FunctionType.External_C
 
         symbol = FunctionSymbol(
-            signature[-1], functionDatatype, functionType, self.getLocation(ctx)
+            SymbolName(signature[-1]),
+            functionDatatype,
+            functionType,
+            self.getLocation(ctx),
         )
         self.db.getGlobalScope().defineSymbol(symbol)
         self.setNodeSymbol(ctx, symbol)
@@ -152,33 +133,11 @@ class SymbolCollector(AdvancedBaseVisitor):
             self.currentExternBlockLanguage, self.getLocation(ctx), symbol
         )
 
-    def visitIntegerConstant(self, ctx):
-        self.useCurrentNodeScope(ctx)
-        self.visitChildren(ctx)
-        value = int(ctx.getText())
-        if not (-(2**31) <= value <= (2**31 - 1)):
-            self.setNodeDatatype(ctx, self.db.getBuiltinDatatype("i64"))
-        elif not (-(2**15) <= value <= (2**15 - 1)):
-            self.setNodeDatatype(ctx, self.db.getBuiltinDatatype("i32"))
-        elif not (-(2**7) <= value <= (2**7 - 1)):
-            self.setNodeDatatype(ctx, self.db.getBuiltinDatatype("i16"))
-        else:
-            self.setNodeDatatype(ctx, self.db.getBuiltinDatatype("i8"))
-
-    def visitStringConstant(self, ctx):
-        self.useCurrentNodeScope(ctx)
-        self.visitChildren(ctx)
-        self.setNodeDatatype(ctx, self.db.getBuiltinDatatype("stringview"))
-
-    def visitConstantExpr(self, ctx):
-        self.useCurrentNodeScope(ctx)
-        self.visitChildren(ctx)
-        self.visitChildren(ctx.constant())
-        self.setNodeDatatype(ctx, self.getNodeDatatype(ctx.constant()))
-
     def visitFuncbody(self, ctx):
-        self.useCurrentNodeScope(ctx)
-        self.visitChildren(ctx)
+        pass
+        # This intentionally skips all children
+        # self.useCurrentNodeScope(ctx)
+        # self.visitChildren(ctx)
 
     def implFunc(self, ctx, name: str):
         scope = self.db.pushScope(
@@ -192,7 +151,11 @@ class SymbolCollector(AdvancedBaseVisitor):
             rtype = self.getNodeDatatype(ctx.returntype())
 
         functype = FunctionDatatype(self.getParamTypes(ctx.params()), rtype)
-        symbol = FunctionSymbol(name, functype, FunctionType.Toy, self.getLocation(ctx))
+        symbol = FunctionSymbol(
+            SymbolName(name), functype, FunctionType.Haze, self.getLocation(ctx)
+        )
+        if len(self.structStack) != 0:
+            symbol.parentNamespace = Namespace(self.structStack[-1][0])
         self.db.getGlobalScope().defineSymbol(symbol)
 
         if rtype.isUnknown():
@@ -224,79 +187,26 @@ class SymbolCollector(AdvancedBaseVisitor):
     def visitNamedfunc(self, ctx):
         return self.implFunc(ctx, ctx.ID().getText())
 
-    def visitIfexpr(self, ctx):
-        self.useCurrentNodeScope(ctx)
-        self.visitChildren(ctx)
-        self.setNodeDatatype(ctx, self.db.getBuiltinDatatype("unknown"))
-
-    def visitElseifexpr(self, ctx):
-        self.useCurrentNodeScope(ctx)
-        self.visitChildren(ctx)
-        self.setNodeDatatype(ctx, self.db.getBuiltinDatatype("unknown"))
-
-    def visitThenblock(self, ctx):
-        self.visitChildren(ctx)
-
-    def visitElseifblock(self, ctx):
-        self.visitChildren(ctx)
-
-    def visitElseblock(self, ctx):
-        self.visitChildren(ctx)
-
-    def visitIfStatement(self, ctx):
-        self.useParentsScope(ctx)
-        self.visit(ctx.ifexpr())
-        for expr in ctx.elseifexpr():
-            self.visit(expr)
-
-        thenscope = self.db.pushScope(
-            Scope(self.getLocation(ctx), self.db.getCurrentScope().get())
-        )
-        self.setNodeScope(ctx.thenblock(), thenscope)
-        self.visit(ctx.thenblock())
-        self.db.popScope()
-
-        elsescopes = []
-        for elifblock in ctx.elseifblock():
-            elsescopes.push_back(
-                self.db.pushScope(
-                    Scope(self.getLocation(ctx), self.db.getCurrentScope().get())
-                )
-            )
-            self.setNodeScope(elifblock, elsescopes.back())
-            self.visit(elifblock)
-            self.db.popScope()
-
-        if ctx.elseblock():
-            elsescope = self.db.pushScope(
-                Scope(self.getLocation(ctx), self.db.getCurrentScope().get())
-            )
-            self.setNodeScope(ctx.elseblock(), elsescope)
-            self.visit(ctx.elseblock())
-            self.db.popScope()
-
-    def visitBooleanConstant(self, ctx):
-        self.useCurrentNodeScope(ctx)
-        self.visitChildren(ctx)
-        self.setNodeDatatype(ctx, self.db.getBuiltinDatatype("boolean"))
-
-    def visitBody(self, ctx):
-        self.useCurrentNodeScope(ctx)
-        self.visitChildren(ctx)
-
     def visitStructFieldDecl(self, ctx):
         self.visitChildren(ctx)
         name = ctx.ID().getText()
         type = self.getNodeDatatype(ctx.datatype())
 
         memberSymbol = VariableSymbol(
-            name, type, VariableType.MutableStructField, self.getLocation(ctx)
+            SymbolName(name),
+            type,
+            VariableType.MutableStructField,
+            self.getLocation(ctx),
         )
         self.db.getCurrentScope().defineSymbol(memberSymbol)
         self.setNodeSymbol(ctx, memberSymbol)
 
     def visitStructDecl(self, ctx):
         name = ctx.ID().getText()
+        scope = self.db.pushScope(
+            Scope(self.getLocation(ctx), self.db.getCurrentScope())
+        )
+        self.setNodeScope(ctx, scope)
 
         genericsList = []
         if ctx.generictypelist():
@@ -310,8 +220,9 @@ class SymbolCollector(AdvancedBaseVisitor):
         for content in ctx.structcontent():
             structtype.addMember(self.getNodeSymbol(content))
 
-        symbol = DatatypeSymbol(name, structtype, self.getLocation(ctx))
+        symbol = DatatypeSymbol(SymbolName(name), structtype, self.getLocation(ctx))
         self.setNodeSymbol(ctx, symbol)
+        self.db.popScope()
         self.db.getCurrentScope().defineSymbol(symbol)
         self.setNodeDatatype(ctx, symbol.getType())
 

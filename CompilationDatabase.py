@@ -5,6 +5,7 @@ from Datatype import Datatype, PrimitiveType, PrimitiveDatatype
 from Scope import Scope
 from Error import InternalError, getCallerLocation
 from grammar import HazeParser
+from SymbolName import SymbolName
 
 
 class CompilationUnit:
@@ -88,7 +89,11 @@ class CompilationDatabase:
     def getGlobalScope(self):
         return self.globalScope
 
-    def getBuiltinDatatype(self, name: str, loc: Location = Location("global", 0, 0)):
+    def getBuiltinDatatype(
+        self, name: str | SymbolName, loc: Location = Location("global", 0, 0)
+    ):
+        if isinstance(name, str):
+            name = SymbolName(name)
         return self.getGlobalScope().lookupSymbol(name, loc).getType()
 
     def defineExternalCompilationUnit(self, filename: str, lang: str, flags: List[str]):
@@ -125,7 +130,9 @@ class CompilationDatabase:
     def __defineBuiltinTypes(self):
         def define(name: str, type: PrimitiveType):
             self.globalScope.defineSymbol(
-                DatatypeSymbol(name, PrimitiveDatatype(type), self.topLevelLocation)
+                DatatypeSymbol(
+                    SymbolName(name), PrimitiveDatatype(type), self.topLevelLocation
+                )
             )
 
         define("none", PrimitiveType.none)

@@ -34,8 +34,10 @@ def printWarningMessage(loc: Location, msg: str):
     printCompilerMessage(loc, ErrorType.Warning, "Warning", msg)
 
 
-def getCallerLocation():
-    frame = inspect.currentframe().f_back.f_back
+def getCallerLocation(depth=1):
+    frame = inspect.currentframe().f_back
+    for i in range(depth):
+        frame = frame.f_back
     return Location(frame.f_code.co_filename, frame.f_lineno, 0)
 
 

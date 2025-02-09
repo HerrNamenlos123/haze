@@ -7,6 +7,18 @@ extern "C" {
   // free(ptr);
 }
 
+struct Array<T> {
+  data: T;
+  length: u64;
+
+  // constructor() {
+  //   return Array<T> {
+  //     .data: 0,
+  //     .length: 0,
+  //   };
+  // }
+}
+
 struct MemoryBuffer {
   data: i8;
   length: u64;
@@ -16,7 +28,7 @@ struct MemoryBuffer {
       .data: 0,
       .length: size,
     };
-    __c__("buffer.data = malloc(size);");
+    // __c__("buffer.data = malloc(size);");
     return buffer;
   }
 

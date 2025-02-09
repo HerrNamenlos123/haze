@@ -10,6 +10,9 @@ from Datatype import (
 from Symbol import DatatypeSymbol, FunctionSymbol, VariableSymbol, VariableType
 from Error import CompilerError, InternalError
 from Namespace import Namespace
+from utils import implGenericDatatype
+from Scope import Scope
+from SymbolName import SymbolName
 
 
 class SemanticAnalyzer(AdvancedBaseVisitor):
@@ -99,7 +102,7 @@ class SemanticAnalyzer(AdvancedBaseVisitor):
             symbol.setThisPointer(PointerDatatype(self.structStack[-1]))
             symbol.parentNamespace = Namespace(self.structStack[-1].getName())
             s = VariableSymbol(
-                "this",
+                SymbolName("this"),
                 PointerDatatype(self.structStack[-1]),
                 VariableType.Parameter,
                 self.getLocation(ctx),
@@ -137,7 +140,9 @@ class SemanticAnalyzer(AdvancedBaseVisitor):
                 f"'none' is not a valid variable type.", self.getLocation(ctx)
             )
 
-        symbol = VariableSymbol(name, vartype, variableType, self.getLocation(ctx))
+        symbol = VariableSymbol(
+            SymbolName(name), vartype, variableType, self.getLocation(ctx)
+        )
         self.db.getCurrentScope().defineSymbol(symbol)
         self.setNodeSymbol(ctx, symbol)
 
@@ -233,12 +238,127 @@ class SemanticAnalyzer(AdvancedBaseVisitor):
     def visitStructFuncDecl(self, ctx):
         return self.implFunc(ctx)
 
+    def visitFuncbody(self, ctx):
+        self.useCurrentNodeScope(ctx)
+        self.visitChildren(ctx)
+
+    def visitStringConstant(self, ctx):
+        self.useCurrentNodeScope(ctx)
+        self.visitChildren(ctx)
+        self.setNodeDatatype(ctx, self.db.getBuiltinDatatype("stringview"))
+
+    def visitConstantExpr(self, ctx):
+        self.useCurrentNodeScope(ctx)
+        self.visitChildren(ctx)
+        self.visitChildren(ctx.constant())
+        self.setNodeDatatype(ctx, self.getNodeDatatype(ctx.constant()))
+
+    def visitIntegerConstant(self, ctx):
+        self.useCurrentNodeScope(ctx)
+        self.visitChildren(ctx)
+        value = int(ctx.getText())
+        if not (-(2**31) <= value <= (2**31 - 1)):
+            self.setNodeDatatype(ctx, self.db.getBuiltinDatatype("i64"))
+        elif not (-(2**15) <= value <= (2**15 - 1)):
+            self.setNodeDatatype(ctx, self.db.getBuiltinDatatype("i32"))
+        elif not (-(2**7) <= value <= (2**7 - 1)):
+            self.setNodeDatatype(ctx, self.db.getBuiltinDatatype("i16"))
+        else:
+            self.setNodeDatatype(ctx, self.db.getBuiltinDatatype("i8"))
+
+    def visitIntegerConstant(self, ctx):
+        self.useCurrentNodeScope(ctx)
+        self.visitChildren(ctx)
+        value = int(ctx.getText())
+        if not (-(2**31) <= value <= (2**31 - 1)):
+            self.setNodeDatatype(ctx, self.db.getBuiltinDatatype("i64"))
+        elif not (-(2**15) <= value <= (2**15 - 1)):
+            self.setNodeDatatype(ctx, self.db.getBuiltinDatatype("i32"))
+        elif not (-(2**7) <= value <= (2**7 - 1)):
+            self.setNodeDatatype(ctx, self.db.getBuiltinDatatype("i16"))
+        else:
+            self.setNodeDatatype(ctx, self.db.getBuiltinDatatype("i8"))
+
+    def visitStringConstant(self, ctx):
+        self.useCurrentNodeScope(ctx)
+        self.visitChildren(ctx)
+        self.setNodeDatatype(ctx, self.db.getBuiltinDatatype("stringview"))
+
+    def visitConstantExpr(self, ctx):
+        self.useCurrentNodeScope(ctx)
+        self.visitChildren(ctx)
+        self.visitChildren(ctx.constant())
+        self.setNodeDatatype(ctx, self.getNodeDatatype(ctx.constant()))
+
+    def visitIfexpr(self, ctx):
+        self.useCurrentNodeScope(ctx)
+        self.visitChildren(ctx)
+        self.setNodeDatatype(ctx, self.db.getBuiltinDatatype("unknown"))
+
+    def visitElseifexpr(self, ctx):
+        self.useCurrentNodeScope(ctx)
+        self.visitChildren(ctx)
+        self.setNodeDatatype(ctx, self.db.getBuiltinDatatype("unknown"))
+
+    def visitThenblock(self, ctx):
+        self.visitChildren(ctx)
+
+    def visitElseifblock(self, ctx):
+        self.visitChildren(ctx)
+
+    def visitElseblock(self, ctx):
+        self.visitChildren(ctx)
+
+    def visitIfStatement(self, ctx):
+        self.useParentsScope(ctx)
+        self.visit(ctx.ifexpr())
+        for expr in ctx.elseifexpr():
+            self.visit(expr)
+
+        thenscope = self.db.pushScope(
+            Scope(self.getLocation(ctx), self.db.getCurrentScope().get())
+        )
+        self.setNodeScope(ctx.thenblock(), thenscope)
+        self.visit(ctx.thenblock())
+        self.db.popScope()
+
+        elsescopes = []
+        for elifblock in ctx.elseifblock():
+            elsescopes.push_back(
+                self.db.pushScope(
+                    Scope(self.getLocation(ctx), self.db.getCurrentScope().get())
+                )
+            )
+            self.setNodeScope(elifblock, elsescopes.back())
+            self.visit(elifblock)
+            self.db.popScope()
+
+        if ctx.elseblock():
+            elsescope = self.db.pushScope(
+                Scope(self.getLocation(ctx), self.db.getCurrentScope().get())
+            )
+            self.setNodeScope(ctx.elseblock(), elsescope)
+            self.visit(ctx.elseblock())
+            self.db.popScope()
+
+    def visitBooleanConstant(self, ctx):
+        self.useCurrentNodeScope(ctx)
+        self.visitChildren(ctx)
+        self.setNodeDatatype(ctx, self.db.getBuiltinDatatype("boolean"))
+
+    def visitBody(self, ctx):
+        self.useCurrentNodeScope(ctx)
+        self.visitChildren(ctx)
+
     def visitStructDecl(self, ctx):
         if not isinstance(self.getNodeDatatype(ctx), StructDatatype):
             raise InternalError("Struct decl is not a struct datatype")
 
         self.structStack.append(self.getNodeDatatype(ctx))
+        self.useCurrentNodeScope(ctx)
+        self.db.pushScope(self.getNodeScope(ctx))
         self.visitChildren(ctx)
+        self.db.popScope()
         self.structStack.pop()
 
     def visitFuncRefExpr(self, ctx):
@@ -356,6 +476,12 @@ class SemanticAnalyzer(AdvancedBaseVisitor):
         self.setNodeObjectAttributes(ctx, attributes)
         self.setNodeDatatype(ctx, structtype)
 
+    def visitGenericDatatype(self, ctx):
+        currentGenerics = (
+            self.structStack[-1].genericsList if len(self.structStack) > 0 else []
+        )
+        implGenericDatatype(self, ctx, currentGenerics)
+
     def visitNamedObjectExpr(self, ctx):
         self.useCurrentNodeScope(ctx)
         self.visitChildren(ctx)
@@ -374,13 +500,13 @@ class SemanticAnalyzer(AdvancedBaseVisitor):
 
             for i in range(len(atts)):
                 att = self.getNodeObjectAttribute(atts[i])
-                if not att.name in datatype.getMembers():
+                if not att.name in datatype.getFieldNames():
                     raise CompilerError(
                         f"Type '{datatype.getDisplayName()}' has no member named '{att.name}'",
                         self.getLocation(ctx),
                     )
 
-                field = datatype.getMembers()[att.name]
+                field = datatype.getMember(att.name)
                 att.declaredType = field.getType()
                 att.receivedType = self.getNodeDatatype(att.expr)
                 attributes.append(att)
@@ -400,14 +526,14 @@ class SemanticAnalyzer(AdvancedBaseVisitor):
             fieldIndex = -1
             fields = exprtype.getFieldsOnly()
             for i in range(len(fields)):
-                if fields[i].getName() == fieldName:
+                if fields[i].getName().name == fieldName:
                     fieldIndex = i
                     break
 
             memberFuncIndex = -1
             memberFuncs = exprtype.getMemberFuncsOnly()
             for i in range(len(memberFuncs)):
-                if memberFuncs[i].getName() == fieldName:
+                if memberFuncs[i].getName().name == fieldName:
                     memberFuncIndex = i
                     break
 

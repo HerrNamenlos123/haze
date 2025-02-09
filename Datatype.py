@@ -2,6 +2,7 @@ from enum import Enum
 from typing import List, Tuple, Dict
 from Error import InternalError, UnreachableCode, CompilerError, getCallerLocation
 from Location import Location
+from SymbolName import SymbolName
 import copy
 
 
@@ -31,7 +32,7 @@ class Datatype:
         pass
 
     def getMangledName(self):
-        raise InternalError("Not implemented")
+        raise InternalError("Not implemented", getCallerLocation())
 
     def isPrimitive(self):
         return False
@@ -305,7 +306,10 @@ class StructDatatype(Datatype):
             val += " }"
             return val
         else:
-            return self.name
+            s = self.name
+            if self.genericsList:
+                s += f"<{','.join(self.genericsList)}>"
+            return s
 
     def getMangledName(self):
         mangled = "_H"
@@ -314,6 +318,7 @@ class StructDatatype(Datatype):
         if len(self.genericsDict.keys()) > 0:
             mangled += "I"
             for name, type in self.genericsDict.items():
+                print(getCallerLocation(2))
                 mangled += type.getMangledName()
             mangled += "E"
         return mangled
@@ -325,7 +330,13 @@ class StructDatatype(Datatype):
         return self.memberSymbols.getAllSymbols()
 
     def getMember(self, name: str):
-        return self.memberSymbols.get(name)
+        for symbolName, symbol in self.memberSymbols.getAllSymbols().items():
+            if symbolName.name == name:
+                return symbol
+        raise InternalError("Member not found", getCallerLocation())
+
+    def getFieldNames(self):
+        return [name.name for name in self.memberSymbols.getAllSymbols().keys()]
 
     def getMemberFuncsOnly(self) -> List[any]:
         from Symbol import FunctionSymbol
@@ -444,25 +455,33 @@ def implicitConversion(_from: Datatype, to: Datatype, expr: str, loc: Location) 
 
     if isinstance(_from, StructDatatype) and isinstance(to, StructDatatype):
         equal = True
-        aMembers = _from.getMembers()
-        bMembers = to.getMembers()
-        for name in aMembers.keys():
-            if not name in bMembers:
+        for name in _from.getMembers().keys():
+            if not name in to.getMembers():
                 equal = False
-            if aMembers[name].getName() != bMembers[name].getName():
-                equal = False
-
-            if not Datatype.isSame(aMembers[name].getType(), bMembers[name].getType()):
+            if (
+                _from.getMember(name.name).getName()
+                != to.getMember(name.name).getName()
+            ):
                 equal = False
 
-        for name in bMembers.keys():
-            if not name in aMembers:
+            if not Datatype.isSame(
+                _from.getMember(name.name).getType(), to.getMember(name.name).getType()
+            ):
                 equal = False
 
-            if aMembers[name].getName() != bMembers[name].getName():
+        for name in to.getMembers().keys():
+            if not name in _from.getMembers():
                 equal = False
 
-            if not Datatype.isSame(aMembers[name].getType(), bMembers[name].getType()):
+            if (
+                _from.getMember(name.name).getName()
+                != to.getMember(name.name).getName()
+            ):
+                equal = False
+
+            if not Datatype.isSame(
+                _from.getMember(name.name).getType(), to.getMember(name.name).getType()
+            ):
                 equal = False
 
         if equal:
