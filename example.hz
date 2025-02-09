@@ -17,6 +17,26 @@ struct Array<T> {
   //     .length: 0,
   //   };
   // }
+
+  test(myArray: Array<T>) {
+
+  }
+}
+
+a() {
+  const s = Array<i32> {
+    .data: 0,
+    .length: 0,
+  };
+  s.test(s);
+}
+
+b() {
+  const s = Array<i8> {
+    .data: 0,
+    .length: 0,
+  };
+  s.test(s);
 }
 
 struct MemoryBuffer {
@@ -59,7 +79,7 @@ struct String {
 //   }
 // }
 
-test(s: stringview, num: u64): String {
+test5(s: stringview, num: u64): String {
   return String {
     .test1: 2,
     .other: "Test",
@@ -68,6 +88,6 @@ test(s: stringview, num: u64): String {
 
 main(): i32 {
   printf("Hello world!\n");
-  const a = test("test", 0);
+  const a = test5("test", 0);
   return a.toNumber();
 }

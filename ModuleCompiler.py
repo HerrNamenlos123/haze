@@ -99,6 +99,7 @@ class ModuleCompiler:
             # }
             return True
         except InternalError as e:
+            print(traceback.format_exc(), file=sys.stderr)
             print(e, file=sys.stderr)
         except CompilerError as e:
             print(e, file=sys.stderr)

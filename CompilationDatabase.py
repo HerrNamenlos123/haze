@@ -1,7 +1,7 @@
-from typing import List
+from typing import List, Tuple
 from Symbol import Symbol, DatatypeSymbol
 from Location import Location
-from Datatype import Datatype, PrimitiveType, PrimitiveDatatype
+from Datatype import Datatype
 from Scope import Scope
 from Error import InternalError, getCallerLocation
 from grammar import HazeParser
@@ -31,8 +31,8 @@ class ObjAttribute:
         expr: HazeParser.ParserRuleContext,
     ):
         self.name = name
-        self.declaredType = type
-        self.receivedType = type
+        self.declaredType = declaredType
+        self.receivedType = receivedType
         self.expr = expr
 
 
@@ -62,12 +62,13 @@ class CompilationDatabase:
     anonymousFunctionCounter = 0
     anonymousStructCounter = 0
     anonymoussCounter = 0
+    globalVariableCounter = 0
 
     def __init__(self):
         self.topLevelLocation = Location("global", 0, 0)
         self.globalScope = Scope(self.topLevelLocation, None)
         self.scopeStack: List[Scope] = []
-        self.extraCompilationUnits = []
+        self.extraCompilationUnits: List[Tuple[str, str, List[str]]] = []
         self.externFunctionRefs = []
         self.externalLinkerFlags = []
         self.__defineBuiltinTypes()
@@ -94,10 +95,10 @@ class CompilationDatabase:
     ):
         if isinstance(name, str):
             name = SymbolName(name)
-        return self.getGlobalScope().lookupSymbol(name, loc).getType()
+        return self.getGlobalScope().lookupSymbol(name, loc).type
 
     def defineExternalCompilationUnit(self, filename: str, lang: str, flags: List[str]):
-        self.extraCompilationUnits.append({filename, lang, flags})
+        self.extraCompilationUnits.append((filename, lang, flags))
 
     def defineExternFunctionRef(self, lang: str, location: Location, symbol: Symbol):
         self.externFunctionRefs.append({lang, location, symbol})
@@ -128,23 +129,25 @@ class CompilationDatabase:
         return f"__anonym_struct_{self.anonymousStructCounter}"
 
     def __defineBuiltinTypes(self):
-        def define(name: str, type: PrimitiveType):
+        def define(name: str, type: Datatype.PrimitiveVariants):
             self.globalScope.defineSymbol(
                 DatatypeSymbol(
-                    SymbolName(name), PrimitiveDatatype(type), self.topLevelLocation
-                )
+                    SymbolName(name),
+                    Datatype.createPrimitiveType(type),
+                ),
+                self.topLevelLocation,
             )
 
-        define("none", PrimitiveType.none)
-        define("unknown", PrimitiveType.unknown)
-        define("stringview", PrimitiveType.stringview)
-        define("boolean", PrimitiveType.boolean)
-        define("booleanptr", PrimitiveType.booleanptr)
-        define("u8", PrimitiveType.u8)
-        define("u16", PrimitiveType.u16)
-        define("u32", PrimitiveType.u32)
-        define("u64", PrimitiveType.u64)
-        define("i8", PrimitiveType.i8)
-        define("i16", PrimitiveType.i16)
-        define("i32", PrimitiveType.i32)
-        define("i64", PrimitiveType.i64)
+        define("none", Datatype.PrimitiveVariants.none)
+        define("unknown", Datatype.PrimitiveVariants.unknown)
+        define("stringview", Datatype.PrimitiveVariants.stringview)
+        define("boolean", Datatype.PrimitiveVariants.boolean)
+        define("booleanptr", Datatype.PrimitiveVariants.booleanptr)
+        define("u8", Datatype.PrimitiveVariants.u8)
+        define("u16", Datatype.PrimitiveVariants.u16)
+        define("u32", Datatype.PrimitiveVariants.u32)
+        define("u64", Datatype.PrimitiveVariants.u64)
+        define("i8", Datatype.PrimitiveVariants.i8)
+        define("i16", Datatype.PrimitiveVariants.i16)
+        define("i32", Datatype.PrimitiveVariants.i32)
+        define("i64", Datatype.PrimitiveVariants.i64)

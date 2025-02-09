@@ -1,17 +1,13 @@
 from AdvancedBaseVisitor import AdvancedBaseVisitor
 from CompilationDatabase import CompilationDatabase, ObjAttribute
-from typing import Optional, List
+from typing import Optional, List, Dict
 from grammar import HazeParser
-from Datatype import (
-    Datatype,
-    StructDatatype,
-    FunctionDatatype,
-    implicitConversion,
-    PointerDatatype,
-)
-from Symbol import DatatypeSymbol, FunctionSymbol, VariableSymbol, FunctionType
+from Datatype import Datatype, implicitConversion, FunctionLinkage
+from Symbol import DatatypeSymbol, FunctionSymbol, VariableSymbol
 from Error import CompilerError, InternalError
 from Namespace import Namespace
+from SymbolTable import SymbolTable
+from SymbolName import SymbolName
 import os
 
 CONTEXT_STRUCT = "N4Haze7ContextE"
@@ -28,7 +24,8 @@ class CodeGenerator(AdvancedBaseVisitor):
             "function_declarations": "",
             "function_definitions": "",
             "generic_types": {},
-            "generic_functions": {},
+            "generic_function_definitions": {},
+            "generic_function_declarations": {},
         }
         self.includeHeader("stdio.h")
         self.includeHeader("stdint.h")
@@ -47,65 +44,120 @@ class CodeGenerator(AdvancedBaseVisitor):
         with open(filename, "w") as f:
             f.write("// Include section\n")
             f.write(self.output["includes"])
+
             f.write("\n\n// Type declaration section\n")
             f.write(self.output["type_declarations"])
+
             f.write("\n\n// Generic types declaration section\n")
             f.write("\n".join([str(t) for t in self.output["generic_types"].values()]))
+
+            f.write("\n\n// Generic function declaration section\n")
+            f.write(
+                "\n".join(
+                    [t for t in self.output["generic_function_declarations"].values()]
+                )
+            )
+
+            f.write("\n\n// Generic function definition section\n")
+            f.write(
+                "\n".join(
+                    [t for t in self.output["generic_function_definitions"].values()]
+                )
+            )
+
             f.write("\n\n// Function declaration section\n")
             f.write(self.output["function_declarations"])
+
             f.write("\n\n// Function definition section\n")
             f.write(self.output["function_definitions"])
 
-    def implFuncDef(self, ctx):
-        symbol: FunctionSymbol = self.getNodeSymbol(ctx)
-        functype = symbol.getType()
+    def implFuncDef(self, ctx, generics: Optional[Dict[str, Datatype]] = None):
+        symbol = self.getNodeSymbol(ctx)
+        functype = symbol.type
 
-        if not isinstance(functype, FunctionDatatype):
+        if not functype.isFunction():
             raise InternalError("Function type is not a function datatype")
 
-        if not isinstance(symbol, FunctionSymbol):
+        if (
+            not isinstance(symbol, FunctionSymbol)
+            or not functype.functionParameters
+            or not functype.functionReturnType
+        ):
             raise InternalError("Function symbol is not a function symbol")
 
-        declaration = (
-            functype.getReturnType().getCCode() + " " + symbol.getMangledName() + "("
-        )
+        def declaration(ftype: Datatype, returntype: Datatype):
+            decl = returntype.generateUsageCode() + " " + symbol.getMangledName() + "("
+            params = []
+            params.append(f"{CONTEXT_STRUCT}* context")
+            if symbol.hasThisPointer and symbol.thisPointerType:
+                params.append(f"{symbol.thisPointerType.generateUsageCode()} this")
+            params += [
+                paramType.generateUsageCode() + " " + paramName
+                for paramName, paramType in ftype.functionParameters
+            ]
+            decl += ", ".join(params)
+            decl += ")"
+            return decl
 
-        params = []
-        params.append(f"{CONTEXT_STRUCT}* context")
-        if symbol.hasThisPointer:
-            params.append(f"{symbol.thisPointerType.getCCode()} this")
-        params += [
-            paramType.getCCode() + " " + paramName
-            for paramName, paramType in functype.getParameters()
-        ]
-        declaration += ", ".join(params)
-        declaration += ")"
-
-        self.output["function_declarations"] += declaration + ";\n"
-        self.output["function_definitions"] += declaration + " {\n"
+        if not symbol.type.generics:
+            decl = declaration(symbol.type, functype.functionReturnType)
+            self.output["function_declarations"] += decl + ";\n"
+            self.output["function_definitions"] += decl + " {\n"
+        elif generics is not None and len(generics.keys()) > 0:  # Now instantiate it
+            # ft = symbol.type.instantiate(generics)
+            # ft.genericsDict = generics
+            # decl = declaration(ft, functype.functionReturnType)
+            # self.output["generic_function_declarations"][symbol.getMangledName()] = (
+            #     decl + ";\n"
+            # )
+            # self.output["generic_function_definitions"][symbol.getMangledName()] = (
+            #     decl + " {\n"
+            # )
+            pass
 
         scope = self.getNodeScope(ctx)
         self.db.pushScope(scope)
         self.pushCurrentFunction(symbol)
 
-        self.visitChildren(ctx)
+        if (
+            not symbol.type.generics
+            or generics is not None
+            and len(generics.keys()) > 0
+        ):
+            self.visitChildren(ctx)
 
         if ctx.funcbody().body():  # Normal function
             for statement in ctx.funcbody().body().statement():
-                self.output["function_definitions"] += f"    {statement.code}"
+                if not symbol.type.generics:
+                    self.output["function_definitions"] += f"    {statement.code}"
+                elif generics is not None and len(generics.keys()) > 0:
+                    self.output["generic_function_definitions"][
+                        symbol.getMangledName()
+                    ] += f"    {statement.code}"
+
         else:  # Arrow function
             self.output["function_definitions"] += f"    {ctx.funcbody().expr().code}"
 
         if not scope.isTerminated():
             if self.getExpectedReturntype().isNone():
-                self.output["function_definitions"] += "return;\n"
+                if not symbol.type.generics:
+                    self.output["function_definitions"] += "    return;\n"
+                elif generics is not None and len(generics.keys()) > 0:
+                    self.output["generic_function_definitions"][
+                        symbol.getMangledName()
+                    ] += "    return;\n"
             else:
                 raise InternalError(
                     "Body is missing return statement, but should have been caught already"
                 )
         self.popCurrentFunction()
 
-        self.output["function_definitions"] += "}\n\n"
+        if not symbol.type.generics:
+            self.output["function_definitions"] += "}\n\n"
+        elif generics is not None and len(generics.keys()) > 0:
+            self.output["generic_function_definitions"][
+                symbol.getMangledName()
+            ] += "}\n\n"
         self.db.popScope()
 
     def implVariableDefinition(self, ctx, is_mutable: bool):
@@ -114,32 +166,44 @@ class CodeGenerator(AdvancedBaseVisitor):
         if isinstance(symbol, VariableSymbol):
             value = implicitConversion(
                 self.getNodeDatatype(ctx.expr()),
-                symbol.getType(),
+                symbol.type,
                 ctx.expr().code,
                 self.getLocation(ctx),
             )
-            ctx.code = f"{symbol.getType().getCCode()} {symbol.getName()} = {value};\n"
+            ctx.code = f"{symbol.type.generateUsageCode()} {symbol.name} = {value};\n"
         else:
             raise InternalError("Symbol is not a variable")
 
     def visitGenericDatatype(self, ctx: HazeParser.HazeParser.GenericDatatypeContext):
         self.visitChildren(ctx)
         datatype = self.getNodeDatatype(ctx)
-        if len(datatype.genericsList) > 0:
-            self.output["generic_types"][
-                datatype.getMangledName()
-            ] = datatype.generateDefinitionCCode()
+        if len(datatype.generics) > 0:
+
+            # generics = datatype.genericsDict
+            # if len(self.currentFunctionStack) > 0:
+            #     generics = self.currentFunctionStack[-1].type.genericsDict
+
+            # if len(self.structStack) == 0:
+            #     raise InternalError("Cannot have generics outside of struct yet")
+            # dt = datatype.instantiate(generics)
+            # self.output["generic_types"][
+            #     dt.getMangledName()
+            # ] = dt.generateDefinitionCCode()
+            pass
 
     def visitInlineCStatement(self, ctx):
         self.visitChildren(ctx)
         string = ctx.STRING_LITERAL().getText()[1:-1]
-        ctx.code = string + "\n"
+        ctx.code = string + "\n"  # type: ignore
 
     def getCurrentFunction(self):
         return self.currentFunctionStack[-1]
 
     def getExpectedReturntype(self):
-        return self.getCurrentFunction().getType().getReturnType()
+        r = self.getCurrentFunction().type.functionReturnType
+        if not r:
+            raise InternalError("Function is missing return type")
+        return r
 
     def pushCurrentFunction(self, symbol: FunctionSymbol):
         return self.currentFunctionStack.append(symbol)
@@ -166,7 +230,7 @@ class CodeGenerator(AdvancedBaseVisitor):
         self.visitChildren(ctx)
         type = self.getNodeDatatype(ctx)
         if type.isNone():
-            ctx.code = "return;\n"
+            ctx.code = "return;\n"  # type: ignore
 
         else:
             value = implicitConversion(
@@ -175,7 +239,7 @@ class CodeGenerator(AdvancedBaseVisitor):
                 ctx.expr().code,
                 self.getLocation(ctx),
             )
-            ctx.code = f"return {value};\n"
+            ctx.code = f"return {value};\n"  # type: ignore
 
     #     def visitIfexpr(ToylangParser::IfexprContext* ctx):
     #         self.visitChildren(ctx);
@@ -271,23 +335,23 @@ class CodeGenerator(AdvancedBaseVisitor):
 
     def visitConstantExpr(self, ctx):
         self.visitChildren(ctx)
-        ctx.code = ctx.constant().code
+        ctx.code = ctx.constant().code  # type: ignore
 
     def visitIntegerConstant(self, ctx):
         self.visitChildren(ctx)
         value = int(ctx.getText())
         if value < -(2**31) or value >= 2**31:
-            ctx.code = str(value)
+            ctx.code = str(value)  # type: ignore
         elif value < -(2**15) or value >= 2**15:
-            ctx.code = str(value)
+            ctx.code = str(value)  # type: ignore
         elif value < -(2**7) or value >= 2**7:
-            ctx.code = str(value)
+            ctx.code = str(value)  # type: ignore
         else:
-            ctx.code = str(value)
+            ctx.code = str(value)  # type: ignore
 
     def visitStringConstant(self, ctx):
         self.visitChildren(ctx)
-        ctx.code = f'"{ctx.getText()[1:-1]}"'
+        ctx.code = f'"{ctx.getText()[1:-1]}"'  # type: ignore
 
     #     def visitBooleanConstant(ToylangParser::BooleanConstantContext* ctx):
     #         self.visitChildren(ctx);
@@ -454,8 +518,8 @@ class CodeGenerator(AdvancedBaseVisitor):
     #   auto& builder = getBuilder(ctx);
     #   Ptr<Symbol> symbol = self.getNodeSymbol(ctx);
     #         if variableSymbol = std::dynamic_pointer_cast<VariableSymbol>(symbol):
-    #     symtype = symbol.getType();
-    #     store = builder.CreateAlloca(symtype.getLLVMType(), 0, symbol.self.getName());
+    #     symtype = symbol.type;
+    #     store = builder.CreateAlloca(symtype.getLLVMType(), 0, symbol.self.name);
     #     value = self.getNodeLlvmValue(ctx.expr());
     #     variableSymbol.setLlvmStore(store);
     #     builder.CreateStore(convertValueImplicit(getLocation(ctx), self.getNodeDatatype(ctx.expr()), symtype, value, builder),
@@ -478,7 +542,7 @@ class CodeGenerator(AdvancedBaseVisitor):
     #     value = self.getNodeLlvmValue(ctx.expr()[1]);
     #           if store = variableSymbol.getLlvmStore():
     #       builder.CreateStore(
-    #           convertValueImplicit(getLocation(ctx), self.getNodeDatatype(ctx.expr()[1]), symbol.getType(), value, builder),
+    #           convertValueImplicit(getLocation(ctx), self.getNodeDatatype(ctx.expr()[1]), symbol.type, value, builder),
     #           *store);
 
     #           else:
@@ -487,7 +551,7 @@ class CodeGenerator(AdvancedBaseVisitor):
     #         else:
     #           raise CompilerError(
     #         getLocation(ctx),
-    #         std::format("Cannot assign to an expression of type '{}'", symbol.getType().getDisplayName()));
+    #         std::format("Cannot assign to an expression of type '{}'", symbol.type.getDisplayName()));
 
     def visitSymbolValueExpr(self, ctx):
         self.visitChildren(ctx)
@@ -495,50 +559,51 @@ class CodeGenerator(AdvancedBaseVisitor):
 
         if isinstance(symbol, DatatypeSymbol):
             # Call constructor
-            if not isinstance(symbol.getType(), StructDatatype):
+            if not symbol.type.isStruct():
                 raise InternalError("StructType missing")
 
-            if "constructor" in symbol.getType().getMembers():
-                symbol = symbol.getType().getMembers()["constructor"]
-            else:
+            memsym: SymbolTable = symbol.type.structMemberSymbols
+            symbol = memsym.tryLookup(SymbolName("constructor"), self.getLocation(ctx))
+            if not symbol:
                 raise InternalError(
                     "No constructor but should have been caught already"
                 )
 
         if isinstance(symbol, FunctionSymbol):
-            ctx.code = symbol.getMangledName()
+            ctx.code = symbol.getMangledName()  # type: ignore
         else:
-            ctx.code = symbol.getName()
+            ctx.code = symbol.name.name  # type: ignore
+        self.setNodeSymbol(ctx, symbol)
 
     def visitExprStatement(self, ctx):
         self.visitChildren(ctx)
-        ctx.code = f"{ctx.expr().code};\n"
+        ctx.code = f"{ctx.expr().code};\n"  # type: ignore
 
     def visitExprCallExpr(self, ctx):
         self.visitChildren(ctx)
-        exprtype = self.getNodeDatatype(ctx.expr())
         symbol = self.getNodeSymbol(ctx.expr())
+        exprtype = symbol.type
 
         # thisPointer = self.getNodeThisPointer(ctx.expr());
         # args.push_back(thisPointer);
         # thisPointerType = self.getNodeDatatype(expr);
 
-        if not isinstance(exprtype, FunctionDatatype):
+        if not isinstance(symbol, FunctionSymbol) or not exprtype.isFunction():
             raise CompilerError(
                 f"Expression of type '{exprtype.getDisplayName()}' is not callable",
                 self.getLocation(ctx),
             )
 
-        ctx.code = f"{ctx.expr().code}("
+        ctx.code = f"{ctx.expr().code}("  # type: ignore
 
         params = []
-        if symbol.functionType != FunctionType.External_C:
+        if symbol.functionLinkage != FunctionLinkage.External_C:
             params.append("context")
         if symbol.hasThisPointer:
-            params.append(f"&{ctx.expr().structSymbol.getName()}")
-        for i in range(len(exprtype.getParameters())):
+            params.append(f"&{ctx.expr().structSymbol.name}")
+        for i in range(len(exprtype.functionParameters)):
             paramexpr = ctx.args().expr()[i]
-            expectedtype = exprtype.getParameters()[i][1]
+            expectedtype = exprtype.functionParameters[i][1]
             params.append(
                 implicitConversion(
                     self.getNodeDatatype(paramexpr),
@@ -548,15 +613,26 @@ class CodeGenerator(AdvancedBaseVisitor):
                 )
             )
 
-        ctx.code += ", ".join(params) + ")"
+        ctx.code += ", ".join(params) + ")"  # type: ignore
+
+        if len(symbol.type.generics) > 0:
+            if not symbol.ctx:
+                raise InternalError("Function missing context")
+
+            if hasattr(ctx.expr(), "structSymbol"):
+                # symbol.type.genericsDict = ctx.expr().structSymbol.type.genericsDict
+                self.setNodeSymbol(symbol.ctx, symbol)
+                self.implFuncDef(symbol.ctx)
+            else:
+                raise InternalError("Function missing context generics dict")
 
     def visitStructFuncDecl(self, ctx):
         self.implFuncDef(ctx)
 
     def visitStructDecl(self, ctx):
         self.visitChildren(ctx)
-        datatype: StructDatatype = self.getNodeDatatype(ctx)
-        if datatype.genericsList:
+        datatype = self.getNodeDatatype(ctx)
+        if datatype.generics:
             return
         self.output["type_declarations"] += datatype.generateDefinitionCCode()
 
@@ -566,7 +642,7 @@ class CodeGenerator(AdvancedBaseVisitor):
     #     if not isinstance(type, StructDatatype):
     #         raise InternalError("StructDatatype is not of type struct")
 
-    #     ctx.code = f"({type.getCCode()}){{ "
+    #     ctx.code = f"({type.generateUsageCode()}){{ "
     #     for attr in self.getNodeObjectAttributes(ctx):
     #         objattr: ObjAttribute = attr
     #         ctx.code += f".{objattr.name} = {implicitConversion(objattr.receivedType, objattr.declaredType, objattr.expr.code, self.getLocation(ctx))}, "
@@ -575,42 +651,46 @@ class CodeGenerator(AdvancedBaseVisitor):
     def visitNamedObjectExpr(self, ctx):
         self.visitChildren(ctx)
         type = self.getNodeDatatype(ctx)
-        if not isinstance(type, StructDatatype):
+        if not type.isStruct():
             raise InternalError("StructDatatype is not of type struct")
 
-        ctx.code = f"({type.getCCode()}){{ "
+        ctx.code = f"({type.generateUsageCode()}){{ "  # type: ignore
         for attr in self.getNodeObjectAttributes(ctx):
             objattr: ObjAttribute = attr
-            ctx.code += f".{objattr.name} = {implicitConversion(objattr.receivedType, objattr.declaredType, objattr.expr.code, self.getLocation(ctx))}, "
-        ctx.code += " }"
+            ctx.code += f".{objattr.name} = {implicitConversion(objattr.receivedType, objattr.declaredType, objattr.expr.code, self.getLocation(ctx))}, "  # type: ignore
+        ctx.code += " }"  # type: ignore
 
     def visitExprMemberAccess(self, ctx):
         self.visitChildren(ctx)
 
         symbol = self.getNodeSymbol(ctx.expr())
-        if isinstance(symbol.getType(), StructDatatype):
+        if symbol.type.isStruct():
             if self.hasNodeMemberAccessFieldIndex(ctx):
                 fieldIndex = self.getNodeMemberAccessFieldIndex(ctx)
-                ctx.code = f"{symbol.getName()}.{symbol.getType().getFieldsOnly()[fieldIndex].getName()}"
-                ctx.structSymbol = symbol
+                ctx.code = (  # type: ignore
+                    f"{symbol.name}.{symbol.type.structMemberSymbols.getFiltered(VariableSymbol)[fieldIndex].name}"
+                )
+                # symbol.type.genericsDict = symbol.type.genericsDict
+                # ctx.structSymbol = symbol
 
             elif self.hasNodeMemberAccessFunctionSymbol(ctx):
                 memberFuncSymbol = self.getNodeMemberAccessFunctionSymbol(ctx)
-                memberFuncSymbol.parentNamespace = Namespace(
-                    symbol.getType().getDisplayName()
-                )
-                ctx.code = f"{memberFuncSymbol.getMangledName()}"
-                ctx.structSymbol = symbol
+                # memberFuncSymbol.parentNamespace = Namespace(
+                #     symbol.type.getDisplayName()
+                # )
+                # memberFuncSymbol.type.genericsDict = symbol.type.genericsDict
+                ctx.code = f"{memberFuncSymbol.getMangledName()}"  # type: ignore
+                # ctx.structSymbol = symbol
             else:
                 raise InternalError("Neither field nor function")
-        elif isinstance(symbol.getType(), PointerDatatype):
-            if self.hasNodeMemberAccessFieldIndex(ctx):
+        elif symbol.type.isPointer():
+            if self.hasNodeMemberAccessFieldIndex(ctx) and symbol.type.pointee:
                 fieldIndex = self.getNodeMemberAccessFieldIndex(ctx)
-                ctx.code = f"{symbol.getName()}->{symbol.getType().getPointee().getFieldsOnly()[fieldIndex].getName()}"
-                ctx.structSymbol = symbol
+                ctx.code = f"{symbol.name}->{symbol.type.pointee.structMemberSymbols.getFiltered(VariableSymbol)[fieldIndex].name}"  # type: ignore
+                # ctx.structSymbol = symbol
             else:
                 raise InternalError("Cannot call function on pointer")
         else:
             raise InternalError(
-                f"Member access type {type.getDisplayName()} is not structural"
+                f"Member access type {symbol.type.getDisplayName()} is not structural"
             )

@@ -1,7 +1,6 @@
 from Error import CompilerError
 from Datatype import Datatype
 from typing import Dict, List
-from Datatype import GenericPlaceholder
 from SymbolName import SymbolName
 
 
@@ -53,30 +52,44 @@ def unescapeString(input: str) -> str:
     return result
 
 
-def implGenericDatatype(self, ctx, currentGenerics: List[str]):
+def implGenericDatatype(
+    self,
+    ctx,
+    deferDatatypes: bool,
+    instantiateGenerics: bool,
+):
     self.useCurrentNodeScope(ctx)
     name = ctx.ID().getText()
     self.visitChildren(ctx)
 
-    if name in currentGenerics:  # It is a generic type itself (e.g. 'T')
-        self.setNodeDatatype(ctx, GenericPlaceholder(name))
-    else:  # It's a normal type, that may include other generics (e.g. 'List<T>')
-        datatype = (
-            self.db.getCurrentScope()
-            .lookupSymbol(SymbolName(name), self.getLocation(ctx))
-            .getType()
+    dt = self.db.getCurrentScope().tryLookupSymbol(
+        SymbolName(name), self.getLocation(ctx)
+    )
+    if not dt and deferDatatypes:
+        self.setNodeDatatype(ctx, Datatype.createDeferredType())
+        return
+
+    datatype: Datatype = (
+        self.db.getCurrentScope()
+        .lookupSymbol(SymbolName(name), self.getLocation(ctx))
+        .type
+    )
+    g = [self.getNodeDatatype(n) for n in ctx.datatype()]
+
+    if len(datatype.generics) != len(g):
+        raise CompilerError(
+            f"Generic datatype expected {len(datatype.generics)} generic arguments but got {len(g)}.",
+            self.getLocation(ctx),
         )
-        genericTypes = [self.getNodeDatatype(n) for n in ctx.datatype()]
 
-        if len(datatype.genericsList) != len(genericTypes):
-            raise CompilerError(
-                f"Generic datatype expected {len(datatype.genericsList)} generic arguments but got {len(genericTypes)}.",
-                self.getLocation(ctx),
-            )
+    # if not instantiateGenerics:  # This is for declarations such as 'Array<T>'
+    #     generics: Dict[str, Datatype] = {}
+    #     for i in range(len(datatype.genericsList)):
+    #         generics[datatype.genericsList[i]] = g[i]
+    # else:  # This is for instantiations such as 'Array<i32>'
+    #     generics: Dict[str, Datatype] = {}
+    #     for i in range(len(datatype.genericsList)):
+    #         generics[datatype.genericsList[i]] = g[i]
 
-        generics: Dict[str, Datatype] = {}
-        for i in range(len(datatype.genericsList)):
-            generics[datatype.genericsList[i]] = genericTypes[i]
-        datatype = datatype.instantiate(generics)
-        datatype.genericsDict = generics
-        self.setNodeDatatype(ctx, datatype)
+    # datatype = datatype.instantiate(generics)
+    self.setNodeDatatype(ctx, datatype)

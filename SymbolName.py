@@ -7,6 +7,9 @@ class SymbolName:
         self.namespaces = namespaces or []
         self.name = name
 
+    def toArray(self):
+        return self.namespaces + [self.name]
+
     def __str__(self):
         arr = self.namespaces + [self.name]
         return ".".join(arr)

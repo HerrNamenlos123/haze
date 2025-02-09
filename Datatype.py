@@ -1,612 +1,552 @@
 from enum import Enum
-from typing import List, Tuple, Dict
+from typing import List, Tuple, Dict, Optional
 from Error import InternalError, UnreachableCode, CompilerError, getCallerLocation
 from Location import Location
 from SymbolName import SymbolName
 import copy
 
 
-class PrimitiveType(Enum):
-    none = (1,)
-    unknown = (2,)
-    boolean = (3,)
-    booleanptr = (4,)
-    i8 = (5,)
-    i16 = (6,)
-    i32 = (7,)
-    i64 = (8,)
-    u8 = (9,)
-    u16 = (10,)
-    u32 = (11,)
-    u64 = (12,)
-    stringview = (13,)
+class FunctionLinkage(Enum):
+    Haze = (1,)
+    External_C = (2,)
+    External_CXX = (3,)
 
 
 class Datatype:
-    def __init__(self):
-        self.genericsList: List[str] = []
-        self.genericsDict: Dict[str, "Datatype"] = {}
-        pass
+    class Variants(Enum):
+        Primitive = (1,)
+        Function = (2,)
+        Struct = (3,)
+        Pointer = (4,)
+        ResolutionDeferred = (5,)
+        GenericPlaceholder = (6,)
 
-    def getDisplayName(self):
-        pass
+    class PrimitiveVariants(Enum):
+        none = (1,)
+        unknown = (2,)
+        boolean = (3,)
+        booleanptr = (4,)
+        i8 = (5,)
+        i16 = (6,)
+        i32 = (7,)
+        i64 = (8,)
+        u8 = (9,)
+        u16 = (10,)
+        u32 = (11,)
+        u64 = (12,)
+        stringview = (13,)
 
-    def getMangledName(self):
-        raise InternalError("Not implemented", getCallerLocation())
+    @staticmethod
+    def primitiveVariantToString(variant: PrimitiveVariants) -> str:
+        match variant:
+            case Datatype.PrimitiveVariants.none:
+                return "none"
+            case Datatype.PrimitiveVariants.unknown:
+                return "unknown"
+            case Datatype.PrimitiveVariants.boolean:
+                return "boolean"
+            case Datatype.PrimitiveVariants.booleanptr:
+                return "booleanptr"
+            case Datatype.PrimitiveVariants.i8:
+                return "i8"
+            case Datatype.PrimitiveVariants.i16:
+                return "i16"
+            case Datatype.PrimitiveVariants.i32:
+                return "i32"
+            case Datatype.PrimitiveVariants.i64:
+                return "i64"
+            case Datatype.PrimitiveVariants.u8:
+                return "u8"
+            case Datatype.PrimitiveVariants.u16:
+                return "u16"
+            case Datatype.PrimitiveVariants.u32:
+                return "u32"
+            case Datatype.PrimitiveVariants.u64:
+                return "u64"
+            case Datatype.PrimitiveVariants.stringview:
+                return "stringview"
+        raise InternalError("Datatype has no string representation")
 
-    def isPrimitive(self):
-        return False
-
-    def isFunction(self):
-        return False
-
-    def isInteger(self):
-        return False
-
-    def isBoolean(self):
-        return False
-
-    def isCallable(self):
-        return False
-
-    def isNone(self):
-        return False
-
-    def isUnknown(self):
-        return False
-
-    def getCCode(self):
-        raise InternalError("Not implemented")
-
-    def instantiate(self, generics: Dict[str, "Datatype"]):
-        raise InternalError("Not implemented", getCallerLocation())
-
-    def __str__(self):
-        return self.getDisplayName()
-
-    def __repr__(self):
-        return self.getDisplayName()
-
-
-class GenericPlaceholder(Datatype):
-    def __init__(self, name: str):
-        super().__init__()
+    def __init__(
+        self,
+        variant: Variants,
+        name: SymbolName,
+        primitiveVariant: PrimitiveVariants,
+        functionParameters: List[Tuple[str, "Datatype"]],
+        functionReturnType: Optional["Datatype"],
+        generics: List[Tuple[str, Optional["Datatype"]]],
+        pointee: Optional["Datatype"],
+        structMemberSymbols,
+    ):
+        self.variant = variant
         self.name = name
-
-    def getDisplayName(self):
-        return self.name
-
-    def instantiate(self, generics: Dict[str, "Datatype"]):
-        if self.name in generics:
-            return generics[self.name]
-        else:
-            return self
-
-
-class PrimitiveDatatype(Datatype):
-    def __init__(self, type: PrimitiveType):
-        super().__init__()
-        self.type = type
-
-    def getDisplayName(self):
-        return Datatype.primitiveTypeToString(self.type)
-
-    def getMangledName(self):
-        return Datatype.primitiveTypeToString(self.type)
-
-    def getTypeEnum(self) -> PrimitiveType:
-        return self.type
-
-    def isPrimitive(self):
-        return True
-
-    def isInteger(self):
-        match self.type:
-            case PrimitiveType.i8:
-                return True
-            case PrimitiveType.i16:
-                return True
-            case PrimitiveType.i32:
-                return True
-            case PrimitiveType.i64:
-                return True
-            case PrimitiveType.u8:
-                return True
-            case PrimitiveType.u16:
-                return True
-            case PrimitiveType.u32:
-                return True
-            case PrimitiveType.u64:
-                return True
-        return False
-
-    def isNone(self):
-        return self.type == PrimitiveType.none
-
-    def isUnknown(self):
-        return self.type == PrimitiveType.unknown
-
-    def isBoolean(self):
-        return self.type == PrimitiveType.boolean
-
-    def isUnsignedInteger(self):
-        match self.type:
-            case PrimitiveType.u8:
-                return True
-            case PrimitiveType.u16:
-                return True
-            case PrimitiveType.u32:
-                return True
-            case PrimitiveType.u64:
-                return True
-        return False
-
-    def getIntegerBits(self):
-        match self.type:
-            case PrimitiveType.i8:
-                return 8
-            case PrimitiveType.i16:
-                return 16
-            case PrimitiveType.i32:
-                return 32
-            case PrimitiveType.i64:
-                return 64
-            case PrimitiveType.u8:
-                return 8
-            case PrimitiveType.u16:
-                return 16
-            case PrimitiveType.u32:
-                return 32
-            case PrimitiveType.u64:
-                return 64
-        raise InternalError("Cannot take integer bits of non-integer")
-
-    def getCCode(self):
-        match self.type:
-            case PrimitiveType.none:
-                return "void"
-            case PrimitiveType.unknown:
-                raise InternalError(
-                    "Type 'unknown' is compiler internal and must not appear in generated C-code"
-                )
-            case PrimitiveType.boolean:
-                return "bool"
-            case PrimitiveType.booleanptr:
-                return "bool*"
-            case PrimitiveType.i8:
-                return "int8_t"
-            case PrimitiveType.i16:
-                return "int16_t"
-            case PrimitiveType.i32:
-                return "int32_t"
-            case PrimitiveType.i64:
-                return "int64_t"
-            case PrimitiveType.u8:
-                return "uint8_t"
-            case PrimitiveType.u16:
-                return "uint16_t"
-            case PrimitiveType.u32:
-                return "uint32_t"
-            case PrimitiveType.u64:
-                return "uint64_t"
-            case PrimitiveType.stringview:
-                return "char*"
-        raise UnreachableCode()
-
-    def instantiate(self, generics: Dict[str, "Datatype"]):
-        return self
-
-
-class FunctionDatatype(Datatype):
-    def __init__(self, parameters: List[Tuple[str, Datatype]], returnType: Datatype):
-        super().__init__()
-        self.parameters = parameters
-        self.returnType = returnType
-
-    def getDisplayName(self):
-        params = ""
-        for name, type in self.parameters:
-            params += type.getDisplayName() + ", "
-        if params != "":
-            params = params[:-2]
-        return f"({params}) -> {self.returnType.getDisplayName()}"
-
-    def getMangledName(self):
-        from Symbol import FunctionType
-
-        if self.functionType == FunctionType.External_C:
-            return self.name
-        mangled = "_H"
-        if self.parentNamespace is not None:
-            mangled += "N"
-            pns = self.parentNamespace
-            while pns is not None:
-                mangled += str(len(pns.name))
-                mangled += pns.name
-                pns = pns.parent
-        mangled += str(len(self.name))
-        mangled += self.name
-        if self.parentNamespace is not None:
-            mangled += "E"
-        return mangled
-
-    def getParameters(self) -> List[Tuple[str, Datatype]]:
-        return self.parameters
-
-    def isFunction(self):
-        return True
-
-    def isCallable(self):
-        return True
-
-    def containsUnknown(self):
-        if self.returnType.isUnknown():
-            return True
-
-        for name, type in self.parameters:
-            if type.isUnknown():
-                return True
-        return False
-
-    def getReturnType(self):
-        return self.returnType
-
-    def insertParameter(self, index: int, name: str, type: Datatype):
-        self.parameters.insert(index, (name, type))
-
-    def getCCode(self):
-        raise InternalError("Not implemented")
-
-    def instantiate(self, generics: Dict[str, "Datatype"]):
-        n = copy.deepcopy(self)
-        for i in range(len(n.parameters)):
-            n.parameters[i] = (
-                n.parameters[i][0],
-                n.parameters[i][1].instantiate(generics),
-            )
-        return n
-
-
-class PointerDatatype(Datatype):
-    def __init__(self, pointee: Datatype):
-        super().__init__()
+        self.primitiveVariant = primitiveVariant
+        self.functionParameters = functionParameters
+        self.functionReturnType = functionReturnType
+        self.generics = generics
         self.pointee = pointee
+        self.structMemberSymbols = structMemberSymbols
 
-    def getDisplayName(self):
-        return f"Ptr<{self.pointee.getDisplayName()}>"
-
-    def getPointee(self):
-        return self.pointee
-
-    def getCCode(self):
-        return f"{self.pointee.getCCode()}*"
-
-    def instantiate(self, generics: Dict[str, "Datatype"]):
-        return PointerDatatype(self.pointee.instantiate(generics))
-
-
-class StructDatatype(Datatype):
-    def __init__(self, name: str):
-        super().__init__()
-        self.name = name
+    @staticmethod
+    def createPrimitiveType(variant: PrimitiveVariants):
         from SymbolTable import SymbolTable
 
-        self.memberSymbols = SymbolTable()
+        return Datatype(
+            Datatype.Variants.Primitive,
+            SymbolName(Datatype.primitiveVariantToString(variant)),
+            variant,
+            [],
+            None,
+            [],
+            None,
+            SymbolTable(),
+        )
 
-    def getName(self):
-        return self.name
+    @staticmethod
+    def createGenericPlaceholder(name: str):
+        from SymbolTable import SymbolTable
+
+        return Datatype(
+            Datatype.Variants.GenericPlaceholder,
+            SymbolName(name),
+            Datatype.PrimitiveVariants.unknown,
+            [],
+            None,
+            [],
+            None,
+            SymbolTable(),
+        )
+
+    @staticmethod
+    def createFunctionType(
+        params: List[Tuple[str, "Datatype"]], returnType: "Datatype"
+    ):
+        from SymbolTable import SymbolTable
+
+        return Datatype(
+            Datatype.Variants.Function,
+            SymbolName(""),
+            Datatype.PrimitiveVariants.unknown,
+            params,
+            returnType,
+            [],
+            None,
+            SymbolTable(),
+        )
+
+    @staticmethod
+    def createDeferredType():
+        from SymbolTable import SymbolTable
+
+        return Datatype(
+            Datatype.Variants.ResolutionDeferred,
+            SymbolName("__Deferred"),
+            Datatype.PrimitiveVariants.unknown,
+            [],
+            None,
+            [],
+            None,
+            SymbolTable(),
+        )
+
+    @staticmethod
+    def createPointerDatatype(pointee: "Datatype"):
+        from SymbolTable import SymbolTable
+
+        return Datatype(
+            Datatype.Variants.Pointer,
+            SymbolName(""),
+            Datatype.PrimitiveVariants.unknown,
+            [],
+            None,
+            [],
+            pointee,
+            SymbolTable(),
+        )
+
+    @staticmethod
+    def createStructDatatype(
+        name: SymbolName,
+        generics: List[Tuple[str, Optional["Datatype"]]],
+    ):
+        from SymbolTable import SymbolTable
+
+        return Datatype(
+            Datatype.Variants.Struct,
+            name,
+            Datatype.PrimitiveVariants.unknown,
+            [],
+            None,
+            generics,
+            None,
+            SymbolTable(),
+        )
+
+    def isPrimitive(self):
+        return self.variant == Datatype.Variants.Primitive
+
+    def isPointer(self):
+        return self.variant == Datatype.Variants.Pointer
+
+    def isStruct(self):
+        return self.variant == Datatype.Variants.Struct
+
+    def isFunction(self):
+        return self.variant == Datatype.Variants.Function
+
+    def isInteger(self):
+        if self.variant != Datatype.Variants.Primitive:
+            return False
+        match self.primitiveVariant:
+            case Datatype.PrimitiveVariants.i64:
+                return True
+            case Datatype.PrimitiveVariants.i32:
+                return True
+            case Datatype.PrimitiveVariants.i16:
+                return True
+            case Datatype.PrimitiveVariants.i8:
+                return True
+            case Datatype.PrimitiveVariants.u64:
+                return True
+            case Datatype.PrimitiveVariants.u32:
+                return True
+            case Datatype.PrimitiveVariants.u16:
+                return True
+            case Datatype.PrimitiveVariants.u8:
+                return True
+        return False
+
+    def isBoolean(self):
+        return (
+            self.variant == Datatype.Variants.Primitive
+            and self.primitiveVariant == Datatype.PrimitiveVariants.boolean
+        )
+
+    def isCallable(self):
+        return self.variant == Datatype.Variants.Function
+
+    def isNone(self):
+        return (
+            self.variant == Datatype.Variants.Primitive
+            and self.primitiveVariant == Datatype.PrimitiveVariants.none
+        )
+
+    def isDeferred(self):
+        return self.variant == Datatype.Variants.ResolutionDeferred
+
+    def isUnknown(self):
+        return (
+            self.variant == Datatype.Variants.Primitive
+            and self.primitiveVariant == Datatype.PrimitiveVariants.unknown
+        )
 
     def getDisplayName(self):
-        if self.name.startswith("__anonym_"):
-            val = "struct {"
-            for name, symbol in self.memberSymbols.getAllSymbols().items():
-                val += f"{name}: {symbol.getType().getDisplayName()}, "
-            if len(self.memberSymbols.getAllSymbols().keys()) > 0:
-                val = val[:-2]
-            val += " }"
-            return val
-        else:
-            s = self.name
-            if self.genericsList:
-                s += f"<{','.join(self.genericsList)}>"
-            return s
+        match self.variant:
+            case Datatype.Variants.Primitive:
+                return Datatype.primitiveVariantToString(self.primitiveVariant)
+            case Datatype.Variants.Function:
+                if self.functionReturnType is None:
+                    raise InternalError("bullshit happening")
+                g = []
+                for t in self.generics:
+                    # if t in self.genericsDict:
+                    #     t = f"{t} = {self.genericsDict[t].getDisplayName()}"
+                    g.append(t)
+                params = []
+                for name, type in self.functionParameters:
+                    params.append(type.getDisplayName())
+                s = ""
+                if len(g) > 0:
+                    s += f"<{','.join(g)}>"
+                return (
+                    s
+                    + f"({', '.join(params)}) -> {self.functionReturnType.getDisplayName()}"
+                )
+            case Datatype.Variants.Pointer:
+                if self.pointee is None:
+                    raise InternalError("bullshit happening")
+                return f"Ptr<{self.pointee.getDisplayName()}>"
+            case Datatype.Variants.ResolutionDeferred:
+                return "__Deferred"
+            case Datatype.Variants.Struct:
+                if self.name.name.startswith("__anonym_"):
+                    val = "struct {"
+                    for (
+                        name,
+                        symbol,
+                    ) in self.structMemberSymbols.getAllSymbols().items():
+                        val += f"{name}: {symbol.getType().getDisplayName()}, "
+                    if len(self.structMemberSymbols.getAllSymbols().keys()) > 0:
+                        val = val[:-2]
+                    val += " }"
+                    return val
+                else:
+                    s = self.name.name
+                    if self.generics:
+                        g = [
+                            f"{g[0]} = {g[1]}" if len(g) > 1 else g[0]
+                            for g in copy.deepcopy(self.generics)
+                        ]
+                        # for i in range(len(g)):
+                        # if g[i] in self.genericsDict:
+                        # g[i] = self.genericsDict[g[i]].getDisplayName()
+                        s += f"<{','.join(g)}>"
+                    return s
+        raise InternalError("Invalid variant")
+
+    def __str__(self):
+        return str(self.getDisplayName())
+
+    def __repr__(self):
+        return str(self.getDisplayName())
 
     def getMangledName(self):
-        mangled = "_H"
-        mangled += str(len(self.name))
-        mangled += self.name
-        if len(self.genericsDict.keys()) > 0:
-            mangled += "I"
-            for name, type in self.genericsDict.items():
-                print(getCallerLocation(2))
-                mangled += type.getMangledName()
-            mangled += "E"
-        return mangled
+        match self.variant:
+            case Datatype.Variants.Primitive:
+                return Datatype.primitiveVariantToString(self.primitiveVariant)
+            case Datatype.Variants.Function:
+                raise InternalError("Cannot mangle function datatype")
+            case Datatype.Variants.Pointer:
+                raise InternalError("Cannot mangle pointer")
+            case Datatype.Variants.ResolutionDeferred:
+                raise InternalError("Cannot mangle deferred")
+            case Datatype.Variants.Struct:
+                mangled = "_H"
+                mangled += str(len(self.name.name))
+                mangled += self.name.name
+                if len(self.generics) > 0:
+                    mangled += "I"
+                    # for t in self.generics:
+                    #     mangled += self.genericsDict[t].getMangledName()
+                    mangled += "E"
+                return mangled
+        raise InternalError("Invalid variant")
 
-    def addMember(self, symbol):
-        self.memberSymbols.insert(symbol)
-
-    def getMembers(self):
-        return self.memberSymbols.getAllSymbols()
-
-    def getMember(self, name: str):
-        for symbolName, symbol in self.memberSymbols.getAllSymbols().items():
-            if symbolName.name == name:
-                return symbol
-        raise InternalError("Member not found", getCallerLocation())
-
-    def getFieldNames(self):
-        return [name.name for name in self.memberSymbols.getAllSymbols().keys()]
-
-    def getMemberFuncsOnly(self) -> List[any]:
-        from Symbol import FunctionSymbol
-
-        funcs = []
-        for symbol in self.memberSymbols.getAllSymbols().values():
-            if isinstance(symbol, FunctionSymbol):
-                funcs.append(symbol)
-        return funcs
-
-    def getFieldsOnly(self) -> List[any]:
-        from Symbol import VariableSymbol
-
-        funcs = []
-        for symbol in self.memberSymbols.getAllSymbols().values():
-            if isinstance(symbol, VariableSymbol):
-                funcs.append(symbol)
-        return funcs
-
-    def getCCode(self):
-        return self.getMangledName()
-
-    def instantiate(self, generics: Dict[str, "Datatype"]):
-        from Symbol import VariableSymbol, FunctionSymbol
-
-        n = copy.deepcopy(self)
-        for name in n.memberSymbols.getAllSymbols().keys():
-            n.memberSymbols.getAllSymbols()[name].type = (
-                n.memberSymbols.getAllSymbols()[name].getType().instantiate(generics)
-            )
-        return n
+    def containsUnknown(self):
+        match self.variant:
+            case Datatype.Variants.Primitive:
+                return self.isUnknown()
+            case Datatype.Variants.Function:
+                if self.functionReturnType is None:
+                    raise InternalError("bullshit happening")
+                if self.functionReturnType.isUnknown():
+                    return True
+                for name, type in self.functionParameters:
+                    if type.isUnknown():
+                        return True
+                return False
+        raise InternalError("Invalid variant")
 
     def generateDefinitionCCode(self):
-        from Symbol import VariableSymbol
+        match self.variant:
+            case Datatype.Variants.Primitive:
+                from Symbol import VariableSymbol
 
-        out = f"typedef struct __{self.getCCode()}__ {{\n"
-        for memberSymbol in self.getMembers().values():
-            if isinstance(memberSymbol, VariableSymbol):
-                out += f"    {memberSymbol.getType().getCCode()} {memberSymbol.getName()};\n"
+                out = f"typedef struct __{self.generateUsageCode()}__ {{\n"
+                for memberSymbol in self.structMemberSymbols.getAllSymbols().values():
+                    if isinstance(memberSymbol, VariableSymbol):
+                        out += f"    {memberSymbol.type.generateUsageCode()
+                                      } {memberSymbol.type};\n"
+                out += f"}} {self.generateUsageCode()};\n"
+                return out
+        raise InternalError("Invalid variant")
 
-        out += f"}} {self.getCCode()};\n"
-        return out
+    def generateUsageCode(self):
+        match self.variant:
+            case Datatype.Variants.Primitive:
+                match self.primitiveVariant:
+                    case Datatype.PrimitiveVariants.none:
+                        return "void"
+                    case Datatype.PrimitiveVariants.unknown:
+                        raise InternalError(
+                            "Type 'unknown' is compiler internal and must not appear in generated C-code"
+                        )
+                    case Datatype.PrimitiveVariants.boolean:
+                        return "bool"
+                    case Datatype.PrimitiveVariants.booleanptr:
+                        return "bool*"
+                    case Datatype.PrimitiveVariants.i8:
+                        return "int8_t"
+                    case Datatype.PrimitiveVariants.i16:
+                        return "int16_t"
+                    case Datatype.PrimitiveVariants.i32:
+                        return "int32_t"
+                    case Datatype.PrimitiveVariants.i64:
+                        return "int64_t"
+                    case Datatype.PrimitiveVariants.u8:
+                        return "uint8_t"
+                    case Datatype.PrimitiveVariants.u16:
+                        return "uint16_t"
+                    case Datatype.PrimitiveVariants.u32:
+                        return "uint32_t"
+                    case Datatype.PrimitiveVariants.u64:
+                        return "uint64_t"
+                    case Datatype.PrimitiveVariants.stringview:
+                        return "char*"
+                raise UnreachableCode()
+            # case Datatype.Variants.Function:
+            #     return f"void*"
+            case Datatype.Variants.Pointer:
+                if self.pointee is None:
+                    raise InternalError("bullshit happening")
+                return f"{self.pointee.generateUsageCode()}*"
+            case Datatype.Variants.ResolutionDeferred:
+                raise InternalError("Cannot generate usage code for deferred")
+            case Datatype.Variants.Struct:
+                return str(self.name)
+        raise InternalError("Invalid variant")
+
+    # def __str__(self):
+    #     return str(self.getDisplayName())
+    #
+    # def __repr__(self):
+    #     return str(self.getDisplayName())
+
+    # def instantiate(self, generics: Dict[str, "Datatype"]):
+    #     n = copy.deepcopy(self)
+    #     for i in range(len(n.parameters)):
+    #         t = copy.deepcopy(n.parameters[i][1])
+    #         t = t.instantiate(n.genericsDict)
+    #         t = t.instantiate(generics)
+    #         n.parameters[i] = (n.parameters[i][0], t)
+    #     return n
+
+    # def instantiate(self, generics: Dict[str, "Datatype"]):
+    #     from Symbol import VariableSymbol, FunctionSymbol
+    #
+    #     # print(">>>> BEGIN")
+    #     n = copy.deepcopy(self)
+    #     for name in n.memberSymbols.getAllSymbols().keys():
+    #         t = copy.deepcopy(n.memberSymbols.getAllSymbols()[name].type)
+    #         print("t: ", t)
+    #         # print(">> Modifying type ", t)
+    #         t = t.instantiate(n.genericsDict)
+    #         # print(">> Own mods", t)
+    #         t1 = t.instantiate(generics)
+    #         # print(">> Other mods", t, t1, generics)
+    #         # print()
+    #         n.memberSymbols.getAllSymbols()[name].type = t1
+    #     n.genericsDict = generics
+    #     # print("<<<< END")
+    #     return n
 
 
 def isSame(a: Datatype, b: Datatype):
-    if isinstance(a, PrimitiveDatatype) and isinstance(b, PrimitiveDatatype):
-        return a.getTypeEnum() == b.getTypeEnum()
+    if a.isPrimitive() and b.isPrimitive():
+        return a.primitiveVariant == b.primitiveVariant
 
-    if isinstance(a, PointerDatatype) and isinstance(b, PointerDatatype):
-        return Datatype.isSame(a.getPointee(), b.getPointee())
-
-    if isinstance(a, FunctionDatatype) and isinstance(b, FunctionDatatype):
-        if not Datatype.isSame(a.getReturnType(), b.getReturnType()):
+    if a.isPointer() and b.isPointer():
+        if a.pointee is None or b.pointee is None:
             return False
+        return isSame(a.pointee, b.pointee)
 
-        if len(a.getParameters()) != len(b.getParameters()):
+    if a.isFunction() and b.isFunction():
+        if not a.functionReturnType or not b.functionReturnType:
             return False
-
-        for i in range(len(a.getParameters())):
-            if not Datatype.isSame(a.getParameters()[i][1], b.getParameters()[i][1]):
+        if not isSame(a.functionReturnType, b.functionReturnType):
+            return False
+        if len(a.functionParameters) != len(b.functionParameters):
+            return False
+        for i in range(len(a.functionParameters)):
+            if not isSame(a.functionParameters[i][1], b.functionParameters[i][1]):
                 return False
-
         return True
 
-    if isinstance(a, StructDatatype) and isinstance(b, StructDatatype):
-        aMembers = a.getFieldsOnly()
-        bMembers = b.getFieldsOnly()
+    if a.isStruct() and b.isStruct():
+        from Symbol import VariableSymbol
+
+        aMembers = a.structMemberSymbols.getFiltered(VariableSymbol).keys()
+        bMembers = b.structMemberSymbols.getFiltered(VariableSymbol).keys()
         if len(aMembers) != len(bMembers):
             return False
-
         for i in range(len(aMembers)):
-            if aMembers[i].getName() != bMembers[i].getName():
+            if aMembers[i].name != bMembers[i].name:
                 return False
-
-            if not Datatype.isSame(aMembers[i].getType(), bMembers[i].getType()):
+            if not isSame(aMembers[i].type, bMembers[i].type):
                 return False
         return True
     return False
 
 
-Datatype.isSame = isSame
-
-
 def implicitConversion(_from: Datatype, to: Datatype, expr: str, loc: Location) -> str:
-    if Datatype.isSame(_from, to):
+    if isSame(_from, to):
         return expr
 
-    if isinstance(_from, PrimitiveDatatype) and isinstance(to, PrimitiveDatatype):
+    if _from.isPrimitive() and to.isPrimitive():
         if _from.isInteger() and to.isInteger():
-            return f"({to.getCCode()})({expr})"
+            return f"({to.generateUsageCode()})({expr})"
         raise InternalError(
-            f"No implicit conversion from {_from.getDisplayName()} to {to.getDisplayName()}"
+            f"No implicit conversion from {_from.getDisplayName()} to {
+                to.getDisplayName()}"
         )
 
-    if isinstance(_from, PointerDatatype) and isinstance(to, PointerDatatype):
+    if _from.isPointer() and to.isPointer():
         raise CompilerError(
             "Pointer types are not convertible. Polymorphism is not implemented yet",
             loc,
         )
 
-    if isinstance(_from, FunctionDatatype) and isinstance(to, FunctionDatatype):
-        if Datatype.isSame(_from.getReturnType(), to.getReturnType()):
-            if len(_from.getParameters()) == len(to.getParameters()):
+    if _from.isFunction() and to.isFunction():
+        if _from.functionReturnType is None or to.functionReturnType is None:
+            raise InternalError("bullshit happening")
+        if isSame(_from.functionReturnType, to.functionReturnType):
+            if len(_from.functionParameters) == len(to.functionParameters):
                 equal = True
-                for i in range(len(_from.getParameters())):
-                    if not Datatype.isSame(
-                        _from.getParameters()[i][1], to.getParameters()[i][1]
+                for i in range(len(_from.functionParameters)):
+                    if not isSame(
+                        _from.functionParameters[i][1], to.functionParameters[i][1]
                     ):
                         equal = False
                 if equal:
                     return expr
         raise CompilerError(
-            f"No implicit conversion from '{_from.getDisplayName()}' to '{to.getDisplayName()}'",
+            f"No implicit conversion from '{_from.getDisplayName()}' to '{
+                to.getDisplayName()}'",
             loc,
         )
 
-    if isinstance(_from, StructDatatype) and isinstance(to, StructDatatype):
-        equal = True
-        for name in _from.getMembers().keys():
-            if not name in to.getMembers():
-                equal = False
-            if (
-                _from.getMember(name.name).getName()
-                != to.getMember(name.name).getName()
-            ):
-                equal = False
+    if _from.isStruct() and to.isStruct():
+        from SymbolTable import SymbolTable
 
-            if not Datatype.isSame(
-                _from.getMember(name.name).getType(), to.getMember(name.name).getType()
-            ):
-                equal = False
+        atbl: SymbolTable = _from.structMemberSymbols
+        btbl: SymbolTable = to.structMemberSymbols
 
-        for name in to.getMembers().keys():
-            if not name in _from.getMembers():
-                equal = False
+        # equal = True
+        # for name in atbl.keys():
+        #     if not name in to.structMemberSymbols.getAllSymbols():
+        #         equal = False
+        #     if (
+        #         _from.getMember(name.name).getName()
+        #         != to.getMember(name.name).getName()
+        #     ):
+        #         equal = False
 
-            if (
-                _from.getMember(name.name).getName()
-                != to.getMember(name.name).getName()
-            ):
-                equal = False
+        #     if not Datatype.isSame(
+        #         _from.getMember(name.name).getType(), to.getMember(name.name).getType()
+        #     ):
+        #         equal = False
 
-            if not Datatype.isSame(
-                _from.getMember(name.name).getType(), to.getMember(name.name).getType()
-            ):
-                equal = False
+        # for name in to.getMembers().keys():
+        #     if not name in _from.getMembers():
+        #         equal = False
 
-        if equal:
-            return expr
+        #     if (
+        #         _from.getMember(name.name).getName()
+        #         != to.getMember(name.name).getName()
+        #     ):
+        #         equal = False
+
+        #     if not Datatype.isSame(
+        #         _from.getMember(name.name).getType(), to.getMember(name.name).getType()
+        #     ):
+        #         equal = False
+
+        # if equal:
+        #     return expr
+        raise InternalError("Struct comparison not implemented :/")
 
     raise CompilerError(
-        f"No implicit conversion from '{_from.getDisplayName()}' to '{to.getDisplayName()}'",
+        f"No implicit conversion from '{_from.getDisplayName()}' to '{
+            to.getDisplayName()}'",
         loc,
     )
-
-
-def primitiveTypeToString(type: PrimitiveType) -> str:
-    match type:
-        case PrimitiveType.none:
-            return "none"
-        case PrimitiveType.unknown:
-            return "unknown"
-        case PrimitiveType.boolean:
-            return "boolean"
-        case PrimitiveType.booleanptr:
-            return "booleanptr"
-        case PrimitiveType.i8:
-            return "i8"
-        case PrimitiveType.i16:
-            return "i16"
-        case PrimitiveType.i32:
-            return "i32"
-        case PrimitiveType.i64:
-            return "i64"
-        case PrimitiveType.u8:
-            return "u8"
-        case PrimitiveType.u16:
-            return "u16"
-        case PrimitiveType.u32:
-            return "u32"
-        case PrimitiveType.u64:
-            return "u64"
-        case PrimitiveType.stringview:
-            return "stringview"
-    raise InternalError("Datatype has no string representation")
-
-
-Datatype.primitiveTypeToString = primitiveTypeToString
-
-# llvm::Value* convertValueImplicit(Location loc,
-#                                   Ptr<Datatype> from,
-#                                   Ptr<Datatype> to,
-#                                   llvm::Value* value,
-#                                   llvm::IRBuilder<>& builder,
-#                                   Location sourceloc = SourceLoc::current());
-
-
-# llvm::Value* convertValueImplicit(Location loc,
-#                                   Ptr<Datatype> from,
-#                                   Ptr<Datatype> to,
-#                                   llvm::Value* value,
-#                                   llvm::IRBuilder<>& builder,
-#                                   Location sourceloc)
-# {
-#   if (Datatype::isSame(from, to)) {
-#     return value;
-#   }
-#
-#   if (!Datatype::isImplicitlyConvertibleTo(from, to)) {
-#     throw SemanticError(
-#         loc, std::format("Cannot implicitly convert type {} to {}", from->getDisplayName(), to->getDisplayName()));
-#   }
-#
-#   auto fromStruct = std::dynamic_pointer_cast<StructDatatype>(from);
-#   auto toStruct = std::dynamic_pointer_cast<StructDatatype>(to);
-#   if (fromStruct && toStruct) {
-#     throw InternalError("Conversion of structs is not implemented yet!", sourceloc);
-#   }
-#
-#   if (!from->isInteger() || !to->isInteger()) {
-#     throw SemanticError(
-#         loc, std::format("Cannot implicitly convert type {} to {}", from->getDisplayName(), to->getDisplayName()));
-#   }
-#
-#   auto fromInt = dynamic_cast<const PrimitiveDatatype*>(from.get());
-#   auto toInt = dynamic_cast<const PrimitiveDatatype*>(to.get());
-#
-#   bool isFromUnsigned = fromInt->isUnsignedInteger();
-#   bool isToUnsigned = toInt->isUnsignedInteger();
-#   int fromBits = fromInt->getIntegerBits();
-#   int toBits = toInt->getIntegerBits();
-#
-#   if (toBits > fromBits) {
-#     if (!isToUnsigned && !isFromUnsigned) {
-#       return builder.CreateSExt(value, to->getLLVMType());
-#     }
-#     else if (!isToUnsigned || !isFromUnsigned) {
-#       printWarningMessage(
-#           loc,
-#           std::format("Conversion from {} to {} may cause unexpected behavior due to different signedness",
-#                       from->getDisplayName(),
-#                       to->getDisplayName()));
-#       return builder.CreateSExt(value, to->getLLVMType());
-#     }
-#     else {
-#       return builder.CreateZExt(value, to->getLLVMType());
-#     }
-#   }
-#   else if (toBits < fromBits) {
-#     printWarningMessage(loc,
-#                         std::format("Conversion from {} to {} may cause unexpected overflows",
-#                                     from->getDisplayName(),
-#                                     to->getDisplayName()));
-#     if (isFromUnsigned != isToUnsigned) {
-#       printWarningMessage(
-#           loc,
-#           std::format("Conversion from {} to {} may cause unexpected behavior due to different signedness",
-#                       from->getDisplayName(),
-#                       to->getDisplayName()));
-#     }
-#     return builder.CreateTrunc(value, to->getLLVMType());
-#   }
-#   else {
-#     if (isFromUnsigned != isToUnsigned) {
-#       printWarningMessage(
-#           loc,
-#           std::format("Conversion from {} to {} may cause unexpected behavior due to different signedness",
-#                       from->getDisplayName(),
-#                       to->getDisplayName()));
-#     }
-#     return value;
-#   }
-# }

@@ -1,7 +1,7 @@
 from grammar import HazeVisitor
 from CompilationDatabase import CompilationDatabase, ObjAttribute
 from Datatype import Datatype
-from Symbol import Symbol
+from Symbol import Symbol, FunctionSymbol
 from Scope import Scope
 from typing import List, Tuple
 from Error import InternalError, getCallerLocation, CompilerError
@@ -137,11 +137,11 @@ class AdvancedBaseVisitor(HazeVisitor.HazeVisitor):
         self.__prepare(ctx)
         return "attribute" in ctx.semantics
 
-    def setNodeObjectAttributes(self, ctx, attributes: Datatype):
+    def setNodeObjectAttributes(self, ctx, attributes: List[ObjAttribute]):
         self.__prepare(ctx)
         ctx.semantics["attributes"] = attributes
 
-    def getNodeObjectAttributes(self, ctx) -> Datatype:
+    def getNodeObjectAttributes(self, ctx) -> List[ObjAttribute]:
         self.__prepare(ctx)
         return ctx.semantics["attributes"]
 
@@ -161,11 +161,11 @@ class AdvancedBaseVisitor(HazeVisitor.HazeVisitor):
         self.__prepare(ctx)
         return "index" in ctx.semantics
 
-    def setNodeMemberAccessFunctionSymbol(self, ctx, symbol: Symbol):
+    def setNodeMemberAccessFunctionSymbol(self, ctx, symbol: FunctionSymbol):
         self.__prepare(ctx)
         ctx.semantics["memberAccessFunctionSymbol"] = symbol
 
-    def getNodeMemberAccessFunctionSymbol(self, ctx) -> Symbol:
+    def getNodeMemberAccessFunctionSymbol(self, ctx) -> FunctionSymbol:
         self.__prepare(ctx)
         return ctx.semantics["memberAccessFunctionSymbol"]
 
@@ -185,7 +185,7 @@ class AdvancedBaseVisitor(HazeVisitor.HazeVisitor):
         self.setNodeScope(ctx, self.getNodeScope(ctx.parent))
 
     def getParamTypes(self, ctx):
-        params: Tuple[str, Datatype] = []
+        params: List[Tuple[str, Datatype]] = []
         for param in ctx.param():
             params.append(
                 (param.ID().getText(), self.getNodeDatatype(param.datatype()))
@@ -193,9 +193,10 @@ class AdvancedBaseVisitor(HazeVisitor.HazeVisitor):
         return params
 
     def assertExprCallable(self, ctx):
-        if not type.isCallable():
+        t = self.getNodeDatatype(ctx)
+        if not t.isCallable():
             raise CompilerError(
-                f"Expression of type '{type.getDisplayName()}' is not callable",
+                f"Expression of type '{t.getDisplayName()}' is not callable",
                 self.getLocation(ctx),
             )
 

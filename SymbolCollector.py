@@ -5,10 +5,9 @@ from Symbol import (
     VariableType,
     FunctionSymbol,
     DatatypeSymbol,
-    FunctionType,
+    GenericPlaceholderSymbol,
 )
 from Error import CompilerError, InternalError
-from Datatype import FunctionDatatype, StructDatatype, GenericPlaceholder, Datatype
 from Scope import Scope
 from Location import Location
 from CompilationDatabase import CompilationDatabase
@@ -16,6 +15,7 @@ from grammar import HazeParser
 from utils import implGenericDatatype
 from Namespace import Namespace
 from SymbolName import SymbolName
+from Datatype import Datatype, FunctionLinkage
 
 
 class SymbolCollector(AdvancedBaseVisitor):
@@ -33,13 +33,12 @@ class SymbolCollector(AdvancedBaseVisitor):
                 SymbolName(ctx.ID().getText()),
                 self.getNodeDatatype(ctx),
                 VariableType.Parameter,
-                self.getLocation(ctx),
             )
-            self.db.getCurrentScope().defineSymbol(symbol)
+            self.db.getCurrentScope().defineSymbol(symbol, self.getLocation(ctx))
+            self.setNodeSymbol(ctx, symbol)
 
     def visitGenericDatatype(self, ctx: HazeParser.HazeParser.GenericDatatypeContext):
-        currentGenerics = self.structStack[-1][1] if len(self.structStack) > 0 else []
-        implGenericDatatype(self, ctx, currentGenerics)
+        implGenericDatatype(self, ctx, True, False)
 
     def visitFunctionDatatype(self, ctx):
         self.useCurrentNodeScope(ctx)
@@ -51,7 +50,7 @@ class SymbolCollector(AdvancedBaseVisitor):
             )
         self.setNodeDatatype(
             ctx,
-            FunctionDatatype(
+            Datatype.createFunctionType(
                 self.getParamTypes(ctx.functype().params()),
                 self.getNodeDatatype(ctx.functype().returntype()),
             ),
@@ -79,7 +78,7 @@ class SymbolCollector(AdvancedBaseVisitor):
             )
 
         filename = ctx.compilationhintfilename().getText()[1:-1]
-        flags = ""
+        flags: str = ""
         if ctx.compilationhintflags():
             flags = ctx.compilationhintflags().getText()[1:-1]
 
@@ -104,29 +103,28 @@ class SymbolCollector(AdvancedBaseVisitor):
             if ctx.returntype()
             else self.db.getBuiltinDatatype("none")
         )
-        functionDatatype = FunctionDatatype(
+        functionDatatype = Datatype.createFunctionType(
             self.getParamTypes(ctx.params()), returntype
         )
 
         if len(signature) > 1:
             raise InternalError("External Namespaces are not implemented yet!")
 
-        functionType = FunctionType.Haze
+        functionType = FunctionLinkage.Haze
         if not self.currentExternBlockLanguage:
             raise InternalError("Extern func def must have external language")
 
         if self.currentExternBlockLanguage == "C":
-            functionType = FunctionType.External_C
+            functionType = FunctionLinkage.External_C
 
         symbol = FunctionSymbol(
             SymbolName(signature[-1]),
             functionDatatype,
             functionType,
-            self.getLocation(ctx),
         )
-        self.db.getGlobalScope().defineSymbol(symbol)
+        self.db.getGlobalScope().defineSymbol(symbol, self.getLocation(ctx))
         self.setNodeSymbol(ctx, symbol)
-        self.setNodeDatatype(ctx, symbol.getType())
+        self.setNodeDatatype(ctx, symbol.type)
         if self.currentExternBlockLanguage:
             self.setNodeExternlang(ctx, self.currentExternBlockLanguage)
         self.db.defineExternFunctionRef(
@@ -150,36 +148,48 @@ class SymbolCollector(AdvancedBaseVisitor):
         if ctx.returntype():
             rtype = self.getNodeDatatype(ctx.returntype())
 
-        functype = FunctionDatatype(self.getParamTypes(ctx.params()), rtype)
+        functype = Datatype.createFunctionType(self.getParamTypes(ctx.params()), rtype)
+        namespaces = []
+        if len(self.structStack) > 0:
+            # functype.generics = (self.structStack[-1][1], None)
+            namespaces.append(self.structStack[-1][0])
         symbol = FunctionSymbol(
-            SymbolName(name), functype, FunctionType.Haze, self.getLocation(ctx)
+            SymbolName(name, namespaces),
+            functype,
+            FunctionLinkage.Haze,
         )
+        symbol.ctx = ctx
         if len(self.structStack) != 0:
-            symbol.parentNamespace = Namespace(self.structStack[-1][0])
-        self.db.getGlobalScope().defineSymbol(symbol)
+            symbol.name.namespaces.append(self.structStack[-1][0])
+        self.db.getGlobalScope().defineSymbol(symbol, self.getLocation(ctx))
 
         if rtype.isUnknown():
-            if ctx.funcbody().expr():
+            if len(self.structStack) > 0 and name == "constructor":
+                rtype = Datatype.createDeferredType()
+                f = Datatype.createFunctionType(functype.functionParameters, rtype)
+                symbol.type = f
+            elif ctx.funcbody().expr():
                 rtype = self.getNodeDatatype(ctx.funcbody().expr())
-                symbol.replaceType(FunctionDatatype(functype.getParameters(), rtype))
+                f = Datatype.createFunctionType(functype.functionParameters, rtype)
+                symbol.type = f
 
             elif not ctx.returntype():
-                symbol.replaceType(
-                    FunctionDatatype(
-                        functype.getParameters(), self.db.getBuiltinDatatype("none")
-                    )
+                f = Datatype.createFunctionType(
+                    functype.functionParameters,
+                    self.db.getBuiltinDatatype("none"),
                 )
+                symbol.type = f
 
         if len(self.structStack) != 0:
             if name == "constructor":
-                symbol.setIsConstructor()
+                symbol.isConstructor = True
             else:
                 symbol.hasThisPointer = True
 
         self.db.popScope()
 
         self.setNodeSymbol(ctx, symbol)
-        self.setNodeDatatype(ctx, symbol.getType())
+        self.setNodeDatatype(ctx, symbol.type)
 
     def visitFunc(self, ctx):
         return self.implFunc(ctx, self.db.makeAnonymousFunctionName())
@@ -196,9 +206,8 @@ class SymbolCollector(AdvancedBaseVisitor):
             SymbolName(name),
             type,
             VariableType.MutableStructField,
-            self.getLocation(ctx),
         )
-        self.db.getCurrentScope().defineSymbol(memberSymbol)
+        self.db.getCurrentScope().defineSymbol(memberSymbol, self.getLocation(ctx))
         self.setNodeSymbol(ctx, memberSymbol)
 
     def visitStructDecl(self, ctx):
@@ -211,20 +220,27 @@ class SymbolCollector(AdvancedBaseVisitor):
         genericsList = []
         if ctx.generictypelist():
             genericsList = [n.getText() for n in ctx.generictypelist().ID()]
+
+        for generic in genericsList:
+            scope.defineSymbol(
+                GenericPlaceholderSymbol(SymbolName(generic)), self.getLocation(ctx)
+            )
+
         self.structStack.append((name, genericsList))
         self.visitChildren(ctx)
         self.structStack.pop()
 
-        structtype = StructDatatype(name)
-        structtype.genericsList = genericsList
+        structtype = Datatype.createStructDatatype(SymbolName(name), genericsList)
         for content in ctx.structcontent():
-            structtype.addMember(self.getNodeSymbol(content))
+            structtype.structMemberSymbols.insert(
+                self.getNodeSymbol(content), self.getLocation(ctx)
+            )
 
-        symbol = DatatypeSymbol(SymbolName(name), structtype, self.getLocation(ctx))
+        symbol = DatatypeSymbol(SymbolName(name), structtype)
         self.setNodeSymbol(ctx, symbol)
         self.db.popScope()
-        self.db.getCurrentScope().defineSymbol(symbol)
-        self.setNodeDatatype(ctx, symbol.getType())
+        self.db.getCurrentScope().defineSymbol(symbol, self.getLocation(ctx))
+        self.setNodeDatatype(ctx, symbol.type)
 
     def visitStructFuncDecl(self, ctx):
         name = ctx.ID().getText()
