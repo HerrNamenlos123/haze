@@ -1,8 +1,9 @@
 from Error import CompilerError, InternalError, getCallerLocation
 from typing import Optional, Dict, List
-from Symbol import Symbol
+from Symbol import Symbol, VariableSymbol, FunctionSymbol
 from Location import Location
 from SymbolName import SymbolName
+from Datatype import Datatype
 
 
 class SymbolTable:
@@ -47,3 +48,27 @@ class SymbolTable:
             print(
                 f" * {symbol.name}: {symbol.type.getDisplayName()} [{'mutable' if symbol.isMutable() else 'const'}]"
             )
+
+
+def getStructFields(struct: Datatype):
+    if not struct.isStruct():
+        raise InternalError("Not a struct", getCallerLocation())
+
+    members: List[VariableSymbol] = []
+    memsym: SymbolTable = struct.structMemberSymbols
+    for member in memsym.getFiltered(VariableSymbol):
+        sym: VariableSymbol = member
+        members.append(sym)
+    return members
+
+
+def getStructFunctions(struct: Datatype):
+    if not struct.isStruct():
+        raise InternalError("Not a struct", getCallerLocation())
+
+    members: List[FunctionSymbol] = []
+    memsym: SymbolTable = struct.structMemberSymbols
+    for member in memsym.getFiltered(FunctionSymbol):
+        sym: FunctionSymbol = member
+        members.append(sym)
+    return members

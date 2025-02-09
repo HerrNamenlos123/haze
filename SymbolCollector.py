@@ -132,10 +132,8 @@ class SymbolCollector(AdvancedBaseVisitor):
         )
 
     def visitFuncbody(self, ctx):
+        # This intentionally skips all children, to only process function declarations without bodies (yet)
         pass
-        # This intentionally skips all children
-        # self.useCurrentNodeScope(ctx)
-        # self.visitChildren(ctx)
 
     def implFunc(self, ctx, name: str):
         scope = self.db.pushScope(
@@ -159,8 +157,6 @@ class SymbolCollector(AdvancedBaseVisitor):
             FunctionLinkage.Haze,
         )
         symbol.ctx = ctx
-        if len(self.structStack) != 0:
-            symbol.name.namespaces.append(self.structStack[-1][0])
         self.db.getGlobalScope().defineSymbol(symbol, self.getLocation(ctx))
 
         if rtype.isUnknown():
@@ -184,12 +180,13 @@ class SymbolCollector(AdvancedBaseVisitor):
             if name == "constructor":
                 symbol.isConstructor = True
             else:
-                symbol.hasThisPointer = True
+                symbol.thisPointerType = Datatype.createDeferredType()
 
         self.db.popScope()
 
         self.setNodeSymbol(ctx, symbol)
         self.setNodeDatatype(ctx, symbol.type)
+        print("Collected func: ", symbol)
 
     def visitFunc(self, ctx):
         return self.implFunc(ctx, self.db.makeAnonymousFunctionName())

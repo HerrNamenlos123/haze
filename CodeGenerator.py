@@ -6,7 +6,7 @@ from Datatype import Datatype, implicitConversion, FunctionLinkage
 from Symbol import DatatypeSymbol, FunctionSymbol, VariableSymbol
 from Error import CompilerError, InternalError
 from Namespace import Namespace
-from SymbolTable import SymbolTable
+from SymbolTable import SymbolTable, getStructFunctions, getStructFields
 from SymbolName import SymbolName
 import os
 
@@ -80,8 +80,8 @@ class CodeGenerator(AdvancedBaseVisitor):
 
         if (
             not isinstance(symbol, FunctionSymbol)
-            or not functype.functionParameters
-            or not functype.functionReturnType
+            or functype.functionParameters is None
+            or functype.functionReturnType is None
         ):
             raise InternalError("Function symbol is not a function symbol")
 
@@ -89,7 +89,7 @@ class CodeGenerator(AdvancedBaseVisitor):
             decl = returntype.generateUsageCode() + " " + symbol.getMangledName() + "("
             params = []
             params.append(f"{CONTEXT_STRUCT}* context")
-            if symbol.hasThisPointer and symbol.thisPointerType:
+            if symbol.thisPointerType:
                 params.append(f"{symbol.thisPointerType.generateUsageCode()} this")
             params += [
                 paramType.generateUsageCode() + " " + paramName
@@ -599,7 +599,7 @@ class CodeGenerator(AdvancedBaseVisitor):
         params = []
         if symbol.functionLinkage != FunctionLinkage.External_C:
             params.append("context")
-        if symbol.hasThisPointer:
+        if symbol.thisPointerType:
             params.append(f"&{ctx.expr().structSymbol.name}")
         for i in range(len(exprtype.functionParameters)):
             paramexpr = ctx.args().expr()[i]
@@ -668,7 +668,7 @@ class CodeGenerator(AdvancedBaseVisitor):
             if self.hasNodeMemberAccessFieldIndex(ctx):
                 fieldIndex = self.getNodeMemberAccessFieldIndex(ctx)
                 ctx.code = (  # type: ignore
-                    f"{symbol.name}.{symbol.type.structMemberSymbols.getFiltered(VariableSymbol)[fieldIndex].name}"
+                    f"{symbol.name}.{getStructFields(symbol.type)[fieldIndex].name}"
                 )
                 # symbol.type.genericsDict = symbol.type.genericsDict
                 # ctx.structSymbol = symbol
@@ -686,7 +686,7 @@ class CodeGenerator(AdvancedBaseVisitor):
         elif symbol.type.isPointer():
             if self.hasNodeMemberAccessFieldIndex(ctx) and symbol.type.pointee:
                 fieldIndex = self.getNodeMemberAccessFieldIndex(ctx)
-                ctx.code = f"{symbol.name}->{symbol.type.pointee.structMemberSymbols.getFiltered(VariableSymbol)[fieldIndex].name}"  # type: ignore
+                ctx.code = f"{symbol.name}->{getStructFields(symbol.type.pointee)[fieldIndex].name}"  # type: ignore
                 # ctx.structSymbol = symbol
             else:
                 raise InternalError("Cannot call function on pointer")

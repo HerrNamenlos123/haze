@@ -1,7 +1,7 @@
 from AdvancedBaseVisitor import AdvancedBaseVisitor
 from CompilationDatabase import CompilationDatabase
-from Error import CompilerError, getCallerLocation
-from Datatype import Datatype
+from Error import CompilerError, getCallerLocation, UnreachableCode
+from Datatype import Datatype, isSame
 from typing import List
 
 
@@ -27,7 +27,8 @@ class ReturnVerifier(AdvancedBaseVisitor):
     def implFunc(self, ctx):
         functype = self.getNodeDatatype(ctx)
         scope = self.getNodeScope(ctx)
-        self.currentFunctionReturnType.append(functype.getReturnType())
+        if functype.functionReturnType is not None:
+            self.currentFunctionReturnType.append(functype.functionReturnType)
         self.visitChildren(ctx)
         if not scope.isTerminated() and not self.getCurrentReturnType().isNone():
             raise CompilerError("Function must return a value", self.getLocation(ctx))
@@ -56,15 +57,18 @@ class ReturnVerifier(AdvancedBaseVisitor):
         functype = self.getNodeDatatype(ctx)
         symbol = self.getNodeSymbol(ctx)
         scope = self.getNodeScope(ctx)
-        self.currentFunctionReturnType.append(functype.getReturnType())
+        if functype.functionReturnType is not None:
+            self.currentFunctionReturnType.append(functype.functionReturnType)
         scope.setTerminated(False)
         self.visitChildren(ctx)
         if not scope.isTerminated() and not self.getCurrentReturnType().isNone():
             raise CompilerError("Function must return a value", self.getLocation(ctx))
 
-        if symbol.getName() == "main":
-            if not Datatype.isSame(
-                functype.getReturnType(), self.db.getBuiltinDatatype("i32")
+        if symbol.name == "main":
+            if functype.functionReturnType is None:
+                raise UnreachableCode()
+            if not isSame(
+                functype.functionReturnType, self.db.getBuiltinDatatype("i32")
             ):
                 raise CompilerError(
                     "Main function must return i32", self.getLocation(ctx)

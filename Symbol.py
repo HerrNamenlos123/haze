@@ -65,7 +65,6 @@ class FunctionSymbol(Symbol):
         functionLinkage: FunctionLinkage = FunctionLinkage.Haze,
     ):
         super().__init__(name, type)
-        self.hasThisPointer: bool = False
         self.thisPointerType: Optional[Datatype] = None
         self.isConstructor: bool = False
         self.functionLinkage = functionLinkage
@@ -73,7 +72,6 @@ class FunctionSymbol(Symbol):
 
     def duplicateWithOtherType(self, type: Datatype):
         f = FunctionSymbol(self.name, type)
-        f.hasThisPointer = self.hasThisPointer
         f.thisPointerType = self.thisPointerType
         f.isConstructor = self.isConstructor
         f.functionLinkage = self.functionLinkage
@@ -86,7 +84,6 @@ class FunctionSymbol(Symbol):
             copy.deepcopy(self.type, memo),
         )
         memo[id(self)] = new_obj
-        new_obj.hasThisPointer = self.hasThisPointer
         new_obj.thisPointerType = copy.deepcopy(self.thisPointerType, memo)
         new_obj.isConstructor = self.isConstructor
         new_obj.functionLinkage = self.functionLinkage
@@ -104,7 +101,7 @@ class FunctionSymbol(Symbol):
             s += f"<{','.join(g)}>"
         s += "("
         params = []
-        if self.hasThisPointer:
+        if self.thisPointerType:
             params.append(f"this: {self.thisPointerType}")
         for name, type in self.type.functionParameters:
             params.append(f"{name}: {type}")
@@ -149,11 +146,3 @@ class DatatypeSymbol(Symbol):
 
     def duplicateWithOtherType(self, type: Datatype):
         return DatatypeSymbol(self.name, type)
-
-
-class StructMemberSymbol(Symbol):
-    def __init__(self, name: SymbolName, type: Datatype):
-        super().__init__(name, type)
-
-    def duplicateWithOtherType(self, type: Datatype):
-        return StructMemberSymbol(self.name, type)

@@ -12,7 +12,7 @@ from Namespace import Namespace
 from utils import implGenericDatatype
 from Scope import Scope
 from SymbolName import SymbolName
-from SymbolTable import SymbolTable
+from SymbolTable import SymbolTable, getStructFields, getStructFunctions
 
 
 class SemanticAnalyzer(AdvancedBaseVisitor):
@@ -86,39 +86,35 @@ class SemanticAnalyzer(AdvancedBaseVisitor):
     def implFunc(self, ctx):
         self.db.pushScope(self.getNodeScope(ctx))
         symbol = self.getNodeSymbol(ctx)
-        functype = symbol.type
 
         if (
             not isinstance(symbol, FunctionSymbol)
-            or functype.functionParameters is None
-            or functype.functionReturnType is None
+            or symbol.type.functionParameters is None
+            or symbol.type.functionReturnType is None
         ):
             raise InternalError("Symbol is not a function")
 
         if symbol.isConstructor:
             if (
-                not functype.functionReturnType.isUnknown()
-                and not functype.functionReturnType.isNone()
-                and not functype.functionReturnType.isDeferred()
+                not symbol.type.functionReturnType.isUnknown()
+                and not symbol.type.functionReturnType.isNone()
+                and not symbol.type.functionReturnType.isDeferred()
             ):
                 raise CompilerError(
                     f"Constructor of struct '{self.structStack[-1].getDisplayName()}' cannot have an explicit return type: It returns the struct itself",
                     self.getLocation(ctx),
                 )
 
-            ft = Datatype.createFunctionType(
-                functype.functionParameters, self.structStack[-1]
+            symbol.type = Datatype.createFunctionType(
+                symbol.type.functionParameters, self.structStack[-1]
             )
-            symbol.type = ft
-            symbol.name.namespaces += self.structStack[-1].name.toArray()
-            self.setNodeDatatype(ctx, ft)
+            self.setNodeDatatype(ctx, symbol.type)
             self.setNodeSymbol(ctx, symbol)
 
-        if symbol.hasThisPointer:
+        if symbol.thisPointerType:
             symbol.thisPointerType = Datatype.createPointerDatatype(
                 self.structStack[-1]
             )
-            symbol.name.namespaces += self.structStack[-1].name.toArray()
             s = VariableSymbol(
                 SymbolName("this"),
                 Datatype.createPointerDatatype(self.structStack[-1]),
@@ -128,9 +124,26 @@ class SemanticAnalyzer(AdvancedBaseVisitor):
 
         self.visitChildren(ctx)
 
+        if symbol.thisPointerType:
+            if (
+                symbol.type.functionReturnType
+                and symbol.type.functionReturnType.isDeferred()
+            ):
+                symbol.type = Datatype.createFunctionType(
+                    symbol.type.functionParameters,
+                    self.getNodeDatatype(ctx.returntype()),
+                )
+
+        if (
+            not isinstance(symbol, FunctionSymbol)
+            or symbol.type.functionParameters is None
+            or symbol.type.functionReturnType is None
+        ):
+            raise InternalError("Symbol is not a function")
+
         # Fixup deferred parameter types
-        params = copy.deepcopy(functype.functionParameters)
-        returntype = copy.deepcopy(functype.functionReturnType)
+        params = copy.deepcopy(symbol.type.functionParameters)
+        returntype = copy.deepcopy(symbol.type.functionReturnType)
         for i in range(len(params)):
             if params[i][1].isDeferred():
                 params[i] = (params[i][0], self.getParamTypes(ctx.params())[i][1])
@@ -140,6 +153,7 @@ class SemanticAnalyzer(AdvancedBaseVisitor):
         self.setNodeDatatype(ctx, newType)
         self.setNodeSymbol(ctx, symbol)
         self.db.popScope()
+        print("Analyzed func: ", symbol)
 
     def implVariableDefinition(self, ctx, variableType: VariableType):
         self.useCurrentNodeScope(ctx)
@@ -450,6 +464,10 @@ class SemanticAnalyzer(AdvancedBaseVisitor):
             symbol = symbol.duplicateWithOtherType(self.getNodeDatatype(ctx.datatype()))
             self.setNodeSymbol(ctx, symbol)
 
+    def visitReturntype(self, ctx):
+        self.visitChildren(ctx)
+        self.setNodeDatatype(ctx, self.getNodeDatatype(ctx.datatype()))
+
     def visitExternblock(self, ctx):
         self.currentExternBlockLanguage = self.getNodeExternlang(ctx)
         self.visitChildren(ctx)
@@ -465,8 +483,7 @@ class SemanticAnalyzer(AdvancedBaseVisitor):
         atts = ctx.objectattribute()
 
         if datatype.isStruct():
-            memsym: SymbolTable = datatype.structMemberSymbols
-            members = memsym.getFiltered(VariableSymbol)
+            members = getStructFields(datatype)
             if len(members) != len(atts):
                 raise CompilerError(
                     f"Type '{datatype.getDisplayName()}' expects {len(members)} fields, but {len(atts)} were provided",
@@ -477,10 +494,9 @@ class SemanticAnalyzer(AdvancedBaseVisitor):
                 att = self.getNodeObjectAttribute(atts[i])
 
                 field = None
-                for f in memsym.getFiltered(FunctionSymbol):
-                    funcsym: FunctionSymbol = f
-                    if funcsym.name.name == att.name:
-                        field = funcsym
+                for f in getStructFields(datatype):
+                    if f.name.name == att.name:
+                        field = f
                         break
 
                 if not field:
@@ -506,16 +522,16 @@ class SemanticAnalyzer(AdvancedBaseVisitor):
         if exprtype.isStruct():
             fieldName = ctx.ID().getText()
             fieldIndex = -1
-            fields = exprtype.structMemberSymbols.getFiltered(VariableSymbol)
+            fields = getStructFields(exprtype)
             for i in range(len(fields)):
-                if fields[i].getName().name == fieldName:
+                if fields[i].name.name == fieldName:
                     fieldIndex = i
                     break
 
             memberFuncIndex = -1
-            memberFuncs = exprtype.structMemberSymbols.getFiltered(FunctionSymbol)
+            memberFuncs = getStructFunctions(exprtype)
             for i in range(len(memberFuncs)):
-                if memberFuncs[i].getName().name == fieldName:
+                if memberFuncs[i].name.name == fieldName:
                     memberFuncIndex = i
                     break
 

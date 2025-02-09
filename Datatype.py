@@ -292,6 +292,8 @@ class Datatype:
                         # g[i] = self.genericsDict[g[i]].getDisplayName()
                         s += f"<{','.join(g)}>"
                     return s
+            case Datatype.Variants.GenericPlaceholder:
+                return self.name.name
         raise InternalError("Invalid variant")
 
     def __str__(self):
@@ -321,6 +323,31 @@ class Datatype:
                     mangled += "E"
                 return mangled
         raise InternalError("Invalid variant")
+
+    # def isGeneric(self):
+    #     match self.variant:
+    #         case Datatype.Variants.Primitive:
+    #             return False
+    #         case Datatype.Variants.ResolutionDeferred:
+    #             return False
+    #         case Datatype.Variants.Pointer:
+    #             return self.pointee and self.pointee.isGeneric()
+    #         case Datatype.Variants.Function:
+    #             if self.functionReturnType and self.functionReturnType.isGeneric():
+    #                 return True
+    #             for name, type in self.functionParameters:
+    #                 if type.isGeneric():
+    #                     return True
+    #             return len(self.generics) > 0
+    #         case Datatype.Variants.Struct:
+    #             from Symbol import FunctionSymbol
+
+    #             for fsym in self.structMemberSymbols.getFiltered(FunctionSymbol):
+    #                 fsymbol: FunctionSymbol = fsym
+    #                 if fsymbol.type.isGeneric():
+    #                     return True
+    #             return False
+    #         raise InternalError("Invalid variant")
 
     def containsUnknown(self):
         match self.variant:

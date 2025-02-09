@@ -18,8 +18,11 @@ struct Array<T> {
   //   };
   // }
 
-  test(myArray: Array<T>) {
-
+  test(myArray: Array<T>): Array<T> {
+    return Array<T> {
+      .data: 0,
+      .length: 0,
+    };
   }
 }
 
