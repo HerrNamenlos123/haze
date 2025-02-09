@@ -9,12 +9,14 @@ extern "C" {
 
 struct MemoryBuffer {
   data: i8;
+  length: u64;
 
-  constructor(size: i64) {
+  constructor(size: u64) {
     const buffer = MemoryBuffer {
-      .data: size
+      .data: 0,
+      .length: size,
     };
-    // __c__("buffer.data = 0;");
+    __c__("buffer.data = malloc(size);");
     return buffer;
   }
 

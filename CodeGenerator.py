@@ -6,12 +6,12 @@ from Datatype import (
     Datatype,
     StructDatatype,
     FunctionDatatype,
-    PrimitiveDatatype,
     implicitConversion,
     PointerDatatype,
 )
 from Symbol import DatatypeSymbol, FunctionSymbol, VariableSymbol, FunctionType
 from Error import CompilerError, InternalError
+from Namespace import Namespace
 import os
 
 CONTEXT_STRUCT = "N4Haze7ContextE"
@@ -27,6 +27,8 @@ class CodeGenerator(AdvancedBaseVisitor):
             "type_declarations": "",
             "function_declarations": "",
             "function_definitions": "",
+            "generic_types": {},
+            "generic_functions": {},
         }
         self.includeHeader("stdio.h")
         self.includeHeader("stdint.h")
@@ -47,6 +49,8 @@ class CodeGenerator(AdvancedBaseVisitor):
             f.write(self.output["includes"])
             f.write("\n\n// Type declaration section\n")
             f.write(self.output["type_declarations"])
+            f.write("\n\n// Generic types declaration section\n")
+            f.write("\n".join([str(t) for t in self.output["generic_types"].values()]))
             f.write("\n\n// Function declaration section\n")
             f.write(self.output["function_declarations"])
             f.write("\n\n// Function definition section\n")
@@ -117,6 +121,14 @@ class CodeGenerator(AdvancedBaseVisitor):
             ctx.code = f"{symbol.getType().getCCode()} {symbol.getName()} = {value};\n"
         else:
             raise InternalError("Symbol is not a variable")
+
+    def visitGenericDatatype(self, ctx: HazeParser.HazeParser.GenericDatatypeContext):
+        self.visitChildren(ctx)
+        datatype = self.getNodeDatatype(ctx)
+        if len(datatype.genericsList) > 0:
+            self.output["generic_types"][
+                datatype.getMangledName()
+            ] = datatype.generateDefinitionCCode()
 
     def visitInlineCStatement(self, ctx):
         self.visitChildren(ctx)
@@ -542,44 +554,23 @@ class CodeGenerator(AdvancedBaseVisitor):
         self.implFuncDef(ctx)
 
     def visitStructDecl(self, ctx):
-        datatype = self.getNodeDatatype(ctx)
-
-        self.output[
-            "type_declarations"
-        ] += f"typedef struct __{datatype.getCCode()}__ {{\n"
-
-        self.structStack.append(datatype)
         self.visitChildren(ctx)
-        self.structStack.pop()
+        datatype: StructDatatype = self.getNodeDatatype(ctx)
+        if datatype.genericsList:
+            return
+        self.output["type_declarations"] += datatype.generateDefinitionCCode()
 
-        d: StructDatatype = datatype
-        for memberSymbol in d.getMembers().values():
-            if isinstance(memberSymbol, VariableSymbol):
-                self.output[
-                    "type_declarations"
-                ] += f"    {memberSymbol.getType().getCCode()} {memberSymbol.getName()};\n"
+    # def visitObjectExpr(self, ctx):
+    #     self.visitChildren(ctx)
+    #     type = self.getNodeDatatype(ctx)
+    #     if not isinstance(type, StructDatatype):
+    #         raise InternalError("StructDatatype is not of type struct")
 
-        self.output["type_declarations"] += f"}} {datatype.getCCode()};\n"
-
-    #     def visitObjectExpr(ToylangParser::ObjectExprContext* ctx):
-    #         self.visitChildren(ctx);
-    #   auto& builder = getBuilder(ctx);
-    #   type = self.getNodeDatatype(ctx);
-    #         if structtype = std::dynamic_pointer_cast<StructDatatype>(type):
-    #     allocaName = std::format("new_obj_store");
-    #     store = builder.CreateAlloca(structtype.getLLVMStructType(), nullptr, allocaName);
-
-    #     // List<llvm::Value*> fieldPtrs;
-    #     for (size_t i = 0; i < structtype.getFieldsOnly().size(); i++:
-    #       gepName = std::format("new_obj_member_{}_ptr", structtype.getFieldsOnly()[i].self.getName());
-    #       ptr = builder.CreateStructGEP(structtype.getLLVMStructType(), store, i, gepName);
-    #       builder.CreateStore(self.getNodeLlvmValue(self.getNodeObjectAttributes(ctx)[i].expr), ptr);
-    #       // fieldPtrs.push_back(ptr);
-
-    #     setNodeLlvmValue(ctx, store);
-
-    #         else:
-    #           raise InternalError("StructDatatype is not of type struct");
+    #     ctx.code = f"({type.getCCode()}){{ "
+    #     for attr in self.getNodeObjectAttributes(ctx):
+    #         objattr: ObjAttribute = attr
+    #         ctx.code += f".{objattr.name} = {implicitConversion(objattr.receivedType, objattr.declaredType, objattr.expr.code, self.getLocation(ctx))}, "
+    #     ctx.code += " }"
 
     def visitNamedObjectExpr(self, ctx):
         self.visitChildren(ctx)
@@ -605,6 +596,9 @@ class CodeGenerator(AdvancedBaseVisitor):
 
             elif self.hasNodeMemberAccessFunctionSymbol(ctx):
                 memberFuncSymbol = self.getNodeMemberAccessFunctionSymbol(ctx)
+                memberFuncSymbol.parentNamespace = Namespace(
+                    symbol.getType().getDisplayName()
+                )
                 ctx.code = f"{memberFuncSymbol.getMangledName()}"
                 ctx.structSymbol = symbol
             else:

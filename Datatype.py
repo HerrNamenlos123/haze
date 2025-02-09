@@ -1,7 +1,8 @@
 from enum import Enum
-from typing import List, Tuple
-from Error import InternalError, UnreachableCode, CompilerError
+from typing import List, Tuple, Dict
+from Error import InternalError, UnreachableCode, CompilerError, getCallerLocation
 from Location import Location
+import copy
 
 
 class PrimitiveType(Enum):
@@ -22,10 +23,15 @@ class PrimitiveType(Enum):
 
 class Datatype:
     def __init__(self):
+        self.genericsList: List[str] = []
+        self.genericsDict: Dict[str, "Datatype"] = {}
         pass
 
     def getDisplayName(self):
         pass
+
+    def getMangledName(self):
+        raise InternalError("Not implemented")
 
     def isPrimitive(self):
         return False
@@ -51,6 +57,9 @@ class Datatype:
     def getCCode(self):
         raise InternalError("Not implemented")
 
+    def instantiate(self, generics: Dict[str, "Datatype"]):
+        raise InternalError("Not implemented", getCallerLocation())
+
     def __str__(self):
         return self.getDisplayName()
 
@@ -58,11 +67,30 @@ class Datatype:
         return self.getDisplayName()
 
 
+class GenericPlaceholder(Datatype):
+    def __init__(self, name: str):
+        super().__init__()
+        self.name = name
+
+    def getDisplayName(self):
+        return self.name
+
+    def instantiate(self, generics: Dict[str, "Datatype"]):
+        if self.name in generics:
+            return generics[self.name]
+        else:
+            return self
+
+
 class PrimitiveDatatype(Datatype):
     def __init__(self, type: PrimitiveType):
+        super().__init__()
         self.type = type
 
     def getDisplayName(self):
+        return Datatype.primitiveTypeToString(self.type)
+
+    def getMangledName(self):
         return Datatype.primitiveTypeToString(self.type)
 
     def getTypeEnum(self) -> PrimitiveType:
@@ -164,9 +192,13 @@ class PrimitiveDatatype(Datatype):
                 return "char*"
         raise UnreachableCode()
 
+    def instantiate(self, generics: Dict[str, "Datatype"]):
+        return self
+
 
 class FunctionDatatype(Datatype):
     def __init__(self, parameters: List[Tuple[str, Datatype]], returnType: Datatype):
+        super().__init__()
         self.parameters = parameters
         self.returnType = returnType
 
@@ -177,6 +209,25 @@ class FunctionDatatype(Datatype):
         if params != "":
             params = params[:-2]
         return f"({params}) -> {self.returnType.getDisplayName()}"
+
+    def getMangledName(self):
+        from Symbol import FunctionType
+
+        if self.functionType == FunctionType.External_C:
+            return self.name
+        mangled = "_H"
+        if self.parentNamespace is not None:
+            mangled += "N"
+            pns = self.parentNamespace
+            while pns is not None:
+                mangled += str(len(pns.name))
+                mangled += pns.name
+                pns = pns.parent
+        mangled += str(len(self.name))
+        mangled += self.name
+        if self.parentNamespace is not None:
+            mangled += "E"
+        return mangled
 
     def getParameters(self) -> List[Tuple[str, Datatype]]:
         return self.parameters
@@ -205,9 +256,19 @@ class FunctionDatatype(Datatype):
     def getCCode(self):
         raise InternalError("Not implemented")
 
+    def instantiate(self, generics: Dict[str, "Datatype"]):
+        n = copy.deepcopy(self)
+        for i in range(len(n.parameters)):
+            n.parameters[i] = (
+                n.parameters[i][0],
+                n.parameters[i][1].instantiate(generics),
+            )
+        return n
+
 
 class PointerDatatype(Datatype):
     def __init__(self, pointee: Datatype):
+        super().__init__()
         self.pointee = pointee
 
     def getDisplayName(self):
@@ -219,9 +280,13 @@ class PointerDatatype(Datatype):
     def getCCode(self):
         return f"{self.pointee.getCCode()}*"
 
+    def instantiate(self, generics: Dict[str, "Datatype"]):
+        return PointerDatatype(self.pointee.instantiate(generics))
+
 
 class StructDatatype(Datatype):
     def __init__(self, name: str):
+        super().__init__()
         self.name = name
         from SymbolTable import SymbolTable
 
@@ -241,6 +306,17 @@ class StructDatatype(Datatype):
             return val
         else:
             return self.name
+
+    def getMangledName(self):
+        mangled = "_H"
+        mangled += str(len(self.name))
+        mangled += self.name
+        if len(self.genericsDict.keys()) > 0:
+            mangled += "I"
+            for name, type in self.genericsDict.items():
+                mangled += type.getMangledName()
+            mangled += "E"
+        return mangled
 
     def addMember(self, symbol):
         self.memberSymbols.insert(symbol)
@@ -270,7 +346,28 @@ class StructDatatype(Datatype):
         return funcs
 
     def getCCode(self):
-        return f"{self.name}"
+        return self.getMangledName()
+
+    def instantiate(self, generics: Dict[str, "Datatype"]):
+        from Symbol import VariableSymbol, FunctionSymbol
+
+        n = copy.deepcopy(self)
+        for name in n.memberSymbols.getAllSymbols().keys():
+            n.memberSymbols.getAllSymbols()[name].type = (
+                n.memberSymbols.getAllSymbols()[name].getType().instantiate(generics)
+            )
+        return n
+
+    def generateDefinitionCCode(self):
+        from Symbol import VariableSymbol
+
+        out = f"typedef struct __{self.getCCode()}__ {{\n"
+        for memberSymbol in self.getMembers().values():
+            if isinstance(memberSymbol, VariableSymbol):
+                out += f"    {memberSymbol.getType().getCCode()} {memberSymbol.getName()};\n"
+
+        out += f"}} {self.getCCode()};\n"
+        return out
 
 
 def isSame(a: Datatype, b: Datatype):

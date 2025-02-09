@@ -76,7 +76,7 @@ class SemanticAnalyzer(AdvancedBaseVisitor):
         self.setNodeDatatype(ctx, returnType)
 
     def implFunc(self, ctx):
-        scope = self.db.pushScope(self.getNodeScope(ctx))
+        self.db.pushScope(self.getNodeScope(ctx))
         symbol: FunctionSymbol = self.getNodeSymbol(ctx)
         functype = symbol.getType()
 
@@ -360,41 +360,37 @@ class SemanticAnalyzer(AdvancedBaseVisitor):
         self.useCurrentNodeScope(ctx)
         self.visitChildren(ctx)
 
-        structName = ctx.ID().getText()
-        symbol = self.db.getCurrentScope().lookupSymbol(
-            structName, self.getLocation(ctx)
-        )
-
+        datatype = self.getNodeDatatype(ctx.datatype())
         attributes: List[ObjAttribute] = []
 
         atts = ctx.objectattribute()
 
-        if isinstance(symbol.getType(), StructDatatype):
-            if len(symbol.getType().getFieldsOnly()) != len(atts):
+        if isinstance(datatype, StructDatatype):
+            if len(datatype.getFieldsOnly()) != len(atts):
                 raise CompilerError(
-                    f"Type '{symbol.getType().getDisplayName()}' expects {len(symbol.getType().getFieldsOnly())} fields, but {len(atts)} were provided",
+                    f"Type '{datatype.getDisplayName()}' expects {len(datatype.getFieldsOnly())} fields, but {len(atts)} were provided",
                     self.getLocation(ctx),
                 )
 
             for i in range(len(atts)):
                 att = self.getNodeObjectAttribute(atts[i])
-                if not att.name in symbol.getType().getMembers():
+                if not att.name in datatype.getMembers():
                     raise CompilerError(
-                        f"Type '{symbol.getType().getDisplayName()}' has no member named '{att.name}'",
+                        f"Type '{datatype.getDisplayName()}' has no member named '{att.name}'",
                         self.getLocation(ctx),
                     )
 
-                field = symbol.getType().getMembers()[att.name]
+                field = datatype.getMembers()[att.name]
                 att.declaredType = field.getType()
                 att.receivedType = self.getNodeDatatype(att.expr)
                 attributes.append(att)
 
             self.setNodeObjectAttributes(ctx, attributes)
-            self.setNodeDatatype(ctx, symbol.getType())
+            self.setNodeDatatype(ctx, datatype)
 
         else:
             raise CompilerError(
-                f"Trying to instantiate a non-structural datatype '{symbol.getType().getDisplayName()}'",
+                f"Trying to instantiate a non-structural datatype '{datatype.getDisplayName()}'",
                 self.getLocation(ctx),
             )
 

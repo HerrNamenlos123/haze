@@ -413,6 +413,15 @@ class HazeListener(ParseTreeListener):
         pass
 
 
+    # Enter a parse tree produced by HazeParser#GenericTypeList.
+    def enterGenericTypeList(self, ctx:HazeParser.GenericTypeListContext):
+        pass
+
+    # Exit a parse tree produced by HazeParser#GenericTypeList.
+    def exitGenericTypeList(self, ctx:HazeParser.GenericTypeListContext):
+        pass
+
+
     # Enter a parse tree produced by HazeParser#StructDecl.
     def enterStructDecl(self, ctx:HazeParser.StructDeclContext):
         pass
@@ -422,12 +431,12 @@ class HazeListener(ParseTreeListener):
         pass
 
 
-    # Enter a parse tree produced by HazeParser#PrimitiveDatatype.
-    def enterPrimitiveDatatype(self, ctx:HazeParser.PrimitiveDatatypeContext):
+    # Enter a parse tree produced by HazeParser#GenericDatatype.
+    def enterGenericDatatype(self, ctx:HazeParser.GenericDatatypeContext):
         pass
 
-    # Exit a parse tree produced by HazeParser#PrimitiveDatatype.
-    def exitPrimitiveDatatype(self, ctx:HazeParser.PrimitiveDatatypeContext):
+    # Exit a parse tree produced by HazeParser#GenericDatatype.
+    def exitGenericDatatype(self, ctx:HazeParser.GenericDatatypeContext):
         pass
 
 

@@ -2,7 +2,7 @@ from Datatype import Datatype
 from Location import Location
 from enum import Enum
 from Error import InternalError
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict
 from Namespace import Namespace
 
 
@@ -11,6 +11,7 @@ class Symbol:
         self.name = name
         self.type = type
         self.declarationLocation = declarationLocation
+        self.parentNamespace: Optional[Namespace] = None
 
     def isMutable(self):
         pass

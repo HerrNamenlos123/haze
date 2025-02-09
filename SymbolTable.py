@@ -11,7 +11,7 @@ class SymbolTable:
         if symbol.getName() in self.symbolMap:
             raise CompilerError(
                 f"Symbol '{symbol.getName()}' is already declared in this scope",
-                symbol.getDeclarationLocation(),
+                symbol.declarationLocation,
             )
         self.symbolMap[symbol.getName()] = symbol
 

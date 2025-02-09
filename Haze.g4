@@ -36,7 +36,9 @@ objectattribute
     ;
 
 expr
-    : '(' expr ')'                                              #BracketExpr
+    : '(' expr ')'                                                      #BracketExpr
+    | '{' objectattribute? (',' objectattribute)* ','? '}'              #ObjectExpr
+    | datatype '{' objectattribute? (',' objectattribute)* ','? '}'     #NamedObjectExpr
     | expr '(' args ')'                                         #ExprCallExpr
     | expr '.' ID                                               #ExprMemberAccess
     | expr ('*'|'/'|'%') expr                                   #BinaryExpr
@@ -47,8 +49,6 @@ expr
     | func                                                      #FuncRefExpr
     | ID                                                        #SymbolValueExpr
     | constant                                                  #ConstantExpr
-    | '{' objectattribute? (',' objectattribute)* ','? '}'      #ObjectExpr
-    | ID '{' objectattribute? (',' objectattribute)* ','? '}'   #NamedObjectExpr
     ;
 
 args: (expr (',' expr)*)?;
@@ -74,14 +74,18 @@ structcontent
     | ID '(' params ')' (':' returntype)? funcbody           #StructFuncDecl
     ;
 
+generictypelist
+    : '<' ID (',' ID)* '>'              #GenericTypeList
+    ;
+
 structdecl
-    : 'struct' ID '{' (structcontent)* '}'      #StructDecl
+    : 'struct' ID (generictypelist)? '{' (structcontent)* '}'      #StructDecl
     ;
 
 // Types
 datatype
-    : ID                    #PrimitiveDatatype
-    | functype              #FunctionDatatype
+    : ID ('<' datatype (',' datatype)* '>')?        #GenericDatatype
+    | functype                                      #FunctionDatatype
     ;
 
 STRING_LITERAL

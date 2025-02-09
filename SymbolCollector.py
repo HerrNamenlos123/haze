@@ -1,5 +1,5 @@
 from AdvancedBaseVisitor import AdvancedBaseVisitor
-from typing import Optional, List
+from typing import Optional, List, Tuple, Dict
 from Symbol import (
     VariableSymbol,
     VariableType,
@@ -8,17 +8,18 @@ from Symbol import (
     FunctionType,
 )
 from Error import CompilerError, InternalError
-from Datatype import FunctionDatatype, StructDatatype
+from Datatype import FunctionDatatype, StructDatatype, GenericPlaceholder, Datatype
 from Scope import Scope
 from Location import Location
 from CompilationDatabase import CompilationDatabase
+from grammar import HazeParser
 
 
 class SymbolCollector(AdvancedBaseVisitor):
     def __init__(self, filename, db):
         super().__init__(filename, db)
         self.currentExternBlockLanguage: Optional[str] = None
-        self.structStack: List[str] = []
+        self.structStack: List[Tuple[str, List[str]]] = []
 
     def visitParam(self, ctx):
         self.useCurrentNodeScope(ctx)
@@ -33,12 +34,34 @@ class SymbolCollector(AdvancedBaseVisitor):
             )
             self.db.getCurrentScope().defineSymbol(symbol)
 
-    def visitPrimitiveDatatype(self, ctx):
+    def visitGenericDatatype(self, ctx: HazeParser.HazeParser.GenericDatatypeContext):
         self.useCurrentNodeScope(ctx)
+        name = ctx.ID().getText()
         self.visitChildren(ctx)
-        self.setNodeDatatype(
-            ctx, self.db.getBuiltinDatatype(ctx.ID().getText(), self.getLocation(ctx))
-        )
+
+        currentGenerics = self.structStack[-1][1] if len(self.structStack) > 0 else []
+        if name in currentGenerics:  # It is a generic type itself (e.g. 'T')
+            self.setNodeDatatype(ctx, GenericPlaceholder(name))
+        else:  # It's a normal type, that may include other generics (e.g. 'List<T>')
+            datatype = (
+                self.db.getCurrentScope()
+                .lookupSymbol(name, self.getLocation(ctx))
+                .getType()
+            )
+            genericTypes = [self.getNodeDatatype(n) for n in ctx.datatype()]
+
+            if len(datatype.genericsList) != len(genericTypes):
+                raise CompilerError(
+                    f"Generic datatype expected {len(datatype.genericsList)} generic arguments but got {len(genericTypes)}.",
+                    self.getLocation(ctx),
+                )
+
+            generics: Dict[str, Datatype] = {}
+            for i in range(len(datatype.genericsList)):
+                generics[datatype.genericsList[i]] = genericTypes[i]
+            datatype = datatype.instantiate(generics)
+            datatype.genericsDict = generics
+            self.setNodeDatatype(ctx, datatype)
 
     def visitFunctionDatatype(self, ctx):
         self.useCurrentNodeScope(ctx)
@@ -275,11 +298,15 @@ class SymbolCollector(AdvancedBaseVisitor):
     def visitStructDecl(self, ctx):
         name = ctx.ID().getText()
 
-        self.structStack.append(name)
+        genericsList = []
+        if ctx.generictypelist():
+            genericsList = [n.getText() for n in ctx.generictypelist().ID()]
+        self.structStack.append((name, genericsList))
         self.visitChildren(ctx)
         self.structStack.pop()
 
         structtype = StructDatatype(name)
+        structtype.genericsList = genericsList
         for content in ctx.structcontent():
             structtype.addMember(self.getNodeSymbol(content))
 
