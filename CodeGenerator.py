@@ -633,26 +633,18 @@ class CodeGenerator(AdvancedBaseVisitor):
     #         ctx.code += f".{objattr.name} = {implicitConversion(objattr.receivedType, objattr.declaredType, objattr.expr.code, self.getLocation(ctx))}, "
     #     ctx.code += " }"
 
-    def visitNamedObjectExpr(self, ctx):
+    def visitNamedObjectExpr(self, ctx: HazeParser.HazeParser.NamedObjectExprContext):
         self.visitChildren(ctx)
 
-        structtype = Datatype.createStructDatatype(
-            SymbolName(self.db.makeAnonymousStructName()), []
-        )
-        attributes = getNamedObjectAttributes(self, ctx)
-        for attribute in attributes:
-            structtype.structMemberSymbols.insert(attribute, self.getLocation(ctx))
-
+        structtype = self.getNodeDatatype(ctx)
         if not structtype.isStruct():
             raise InternalError("StructDatatype is not of type struct")
 
         ctx.code = f"({structtype.generateUsageCode()}){{ "  # type: ignore
-        for attr in attributes:
-            objattr: ObjAttribute = attr
-            objattr.declaredType = resolveGenerics(
-                objattr.declaredType, self.db.getCurrentScope(), self.getLocation(ctx)
-            )
-            ctx.code += f".{objattr.name} = {implicitConversion(objattr.receivedType, objattr.declaredType, objattr.expr.code, self.getLocation(ctx))}, "  # type: ignore
+        fields = getStructFields(structtype)
+        for i in range(len(fields)):
+            expr = ctx.objectattribute()[i].expr()
+            ctx.code += f".{fields[i].name} = {implicitConversion(self.getNodeDatatype(expr), fields[i].type, expr.code, self.getLocation(ctx))}, "  # type: ignore
         ctx.code += " }"  # type: ignore
 
     def visitExprMemberAccess(self, ctx):
