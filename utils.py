@@ -1,7 +1,13 @@
-from Error import CompilerError
+import copy
+from Error import CompilerError, UnreachableCode
 from Datatype import Datatype
 from typing import Dict, List
 from SymbolName import SymbolName
+from CompilationDatabase import ObjAttribute
+from Symbol import VariableSymbol, VariableType
+from SymbolTable import SymbolTable, getStructFunctions, getStructFields
+from Scope import Scope
+from Location import Location
 
 
 def unescapeString(input: str) -> str:
@@ -82,14 +88,102 @@ def implGenericDatatype(
             self.getLocation(ctx),
         )
 
-    # if not instantiateGenerics:  # This is for declarations such as 'Array<T>'
-    #     generics: Dict[str, Datatype] = {}
-    #     for i in range(len(datatype.genericsList)):
-    #         generics[datatype.genericsList[i]] = g[i]
-    # else:  # This is for instantiations such as 'Array<i32>'
-    #     generics: Dict[str, Datatype] = {}
-    #     for i in range(len(datatype.genericsList)):
-    #         generics[datatype.genericsList[i]] = g[i]
-
-    # datatype = datatype.instantiate(generics)
     self.setNodeDatatype(ctx, datatype)
+
+
+def getObjectAttributes(self, ctx):
+    attributes: List[ObjAttribute] = []
+    for attr in ctx.objectattribute():
+        att = self.getNodeObjectAttribute(attr)
+        attributes.append(att)
+        memberSymbol = VariableSymbol(
+            SymbolName(att.name),
+            att.declaredType,
+            VariableType.MutableStructField,
+        )
+    return attributes
+
+
+def getNamedObjectAttributes(self, ctx):
+    datatype = self.getNodeDatatype(ctx.datatype())
+    if not datatype.isStruct():
+        raise CompilerError(
+            f"Trying to instantiate a non-structural datatype '{datatype.getDisplayName()}'",
+            self.getLocation(ctx),
+        )
+
+    atts = ctx.objectattribute()
+    attributes: List[ObjAttribute] = []
+    members = getStructFields(datatype)
+    if len(members) != len(atts):
+        raise CompilerError(
+            f"Type '{datatype.getDisplayName()}' expects {len(members)} fields, but {len(atts)} were provided",
+            self.getLocation(ctx),
+        )
+
+    for i in range(len(atts)):
+        att = self.getNodeObjectAttribute(atts[i])
+
+        field = None
+        for f in getStructFields(datatype):
+            if f.name.name == att.name:
+                field = f
+                break
+
+        if not field:
+            raise CompilerError(
+                f"Type '{datatype.getDisplayName()}' has no member named '{att.name}'",
+                self.getLocation(ctx),
+            )
+
+        att.declaredType = field.type
+        att.receivedType = self.getNodeDatatype(att.expr)
+        attributes.append(att)
+
+    return attributes
+
+
+def resolveGenerics(datatype: Datatype, scope: Scope, loc: Location):
+    match datatype.variant:
+        case Datatype.Variants.GenericPlaceholder:
+            symbol = scope.lookupSymbol(datatype.name, loc)
+            return symbol.type
+
+        case Datatype.Variants.Struct:
+            d = copy.copy(datatype)
+            for field in getStructFields(datatype):
+                newType = resolveGenerics(field.type, scope, loc)
+                d.structMemberSymbols.symbols[field.name].type = newType
+            for i in range(len(d.generics)):
+                s = scope.lookupSymbol(d.generics[i][0], loc)
+                d.generics[i] = (s.name.name, s.type)
+            return d
+
+        case Datatype.Variants.Function:
+            f = copy.deepcopy(datatype)
+            if (
+                not f.isFunction()
+                or f.functionReturnType is None
+                or f.functionParameters is None
+            ):
+                raise UnreachableCode()
+            f.functionReturnType = resolveGenerics(f.functionReturnType, scope, loc)
+            for i in range(len(datatype.functionParameters)):
+                newType = resolveGenerics(datatype.functionParameters[i][1], scope, loc)
+                f.functionParameters[i] = (f.functionParameters[i][0], newType)
+            return f
+
+        case Datatype.Variants.Pointer:
+            p = copy.deepcopy(datatype)
+            if p.pointee is None:
+                raise UnreachableCode()
+            p.pointee = resolveGenerics(p.pointee, scope, loc)
+            return p
+
+        case Datatype.Variants.ResolutionDeferred:
+            raise UnreachableCode()
+
+        case Datatype.Variants.Primitive:
+            return datatype
+
+    raise InternalError("Invalid variant: " + str(datatype.variant))

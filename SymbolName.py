@@ -6,13 +6,17 @@ class SymbolName:
     def __init__(self, name: str, namespaces: Optional[List[str]] = None):
         self.namespaces = namespaces or []
         self.name = name
+        if isinstance(name, SymbolName):
+            raise InternalError(
+                "SymbolName cannot be initialized with another SymbolName",
+                getCallerLocation(),
+            )
 
     def toArray(self):
         return self.namespaces + [self.name]
 
     def __str__(self):
-        arr = self.namespaces + [self.name]
-        return ".".join(arr)
+        return ".".join(self.toArray())
 
     def __repr__(self):
         return self.__str__()

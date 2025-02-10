@@ -137,18 +137,6 @@ class AdvancedBaseVisitor(HazeVisitor.HazeVisitor):
         self.__prepare(ctx)
         return "attribute" in ctx.semantics
 
-    def setNodeObjectAttributes(self, ctx, attributes: List[ObjAttribute]):
-        self.__prepare(ctx)
-        ctx.semantics["attributes"] = attributes
-
-    def getNodeObjectAttributes(self, ctx) -> List[ObjAttribute]:
-        self.__prepare(ctx)
-        return ctx.semantics["attributes"]
-
-    def hasNodeObjectAttributes(self, ctx):
-        self.__prepare(ctx)
-        return "attributes" in ctx.semantics
-
     def setNodeMemberAccessFieldIndex(self, ctx, index: int):
         self.__prepare(ctx)
         ctx.semantics["index"] = index

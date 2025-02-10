@@ -9,7 +9,12 @@ from Datatype import (
 from Symbol import DatatypeSymbol, FunctionSymbol, VariableSymbol, VariableType
 from Error import CompilerError, InternalError, UnreachableCode
 from Namespace import Namespace
-from utils import implGenericDatatype
+from utils import (
+    implGenericDatatype,
+    getObjectAttributes,
+    getNamedObjectAttributes,
+    resolveGenerics,
+)
 from Scope import Scope
 from SymbolName import SymbolName
 from SymbolTable import SymbolTable, getStructFields, getStructFunctions
@@ -158,6 +163,7 @@ class SemanticAnalyzer(AdvancedBaseVisitor):
     def implVariableDefinition(self, ctx, variableType: VariableType):
         self.useCurrentNodeScope(ctx)
         self.visitChildren(ctx)
+
         name = ctx.ID().getText()
         if name == "context":
             raise CompilerError(
@@ -330,7 +336,6 @@ class SemanticAnalyzer(AdvancedBaseVisitor):
             raise InternalError("Struct decl is not a struct datatype")
 
         self.structStack.append(self.getNodeDatatype(ctx))
-        self.useCurrentNodeScope(ctx)
         self.db.pushScope(self.getNodeScope(ctx))
         self.visitChildren(ctx)
         self.db.popScope()
@@ -431,24 +436,37 @@ class SemanticAnalyzer(AdvancedBaseVisitor):
         structtype = Datatype.createStructDatatype(
             SymbolName(self.db.makeAnonymousStructName()), []
         )
-        attributes: List[ObjAttribute] = []
-        for attr in ctx.objectattribute():
-            att = self.getNodeObjectAttribute(attr)
-            attributes.append(att)
-            memberSymbol = VariableSymbol(
-                SymbolName(att.name),
-                att.declaredType,
-                VariableType.MutableStructField,
-            )
-            structtype.structMemberSymbols.insert(memberSymbol, self.getLocation(ctx))
+        attributes = getObjectAttributes(self, ctx)
+        for attribute in attributes:
+            structtype.structMemberSymbols.insert(attribute, self.getLocation(ctx))
 
-        self.setNodeObjectAttributes(ctx, attributes)
         self.setNodeDatatype(ctx, structtype)
 
     def visitGenericDatatype(self, ctx):
         self.visitChildren(ctx)
         if not self.hasNodeDatatype(ctx) or self.getNodeDatatype(ctx).isDeferred():
             implGenericDatatype(self, ctx, False, True)
+
+        datatype = self.getNodeDatatype(ctx)
+        genTypes = [self.getNodeDatatype(n) for n in ctx.datatype()]
+        if len(datatype.generics) != len(genTypes):
+            raise CompilerError(
+                f"Generic datatype expected {len(datatype.generics)} generic arguments but got {len(genTypes)}.",
+                self.getLocation(ctx),
+            )
+
+        scope = self.getNodeScope(ctx)
+        if len(genTypes) > 0:
+            scope = Scope(self.getLocation(ctx), scope)
+            for i in range(len(datatype.generics)):
+                symbol = DatatypeSymbol(
+                    SymbolName(datatype.generics[i][0]), genTypes[i]
+                )
+                scope.defineSymbol(symbol, self.getLocation(ctx))
+
+        dt = resolveGenerics(datatype, scope, self.getLocation(ctx))
+
+        self.setNodeDatatype(ctx, dt)
 
     def visitParam(self, ctx: HazeParser.HazeParser.ParamContext):
         self.useCurrentNodeScope(ctx)
@@ -477,46 +495,16 @@ class SemanticAnalyzer(AdvancedBaseVisitor):
         self.useCurrentNodeScope(ctx)
         self.visitChildren(ctx)
 
-        datatype = self.getNodeDatatype(ctx.datatype())
-        attributes: List[ObjAttribute] = []
-
-        atts = ctx.objectattribute()
-
-        if datatype.isStruct():
-            members = getStructFields(datatype)
-            if len(members) != len(atts):
-                raise CompilerError(
-                    f"Type '{datatype.getDisplayName()}' expects {len(members)} fields, but {len(atts)} were provided",
-                    self.getLocation(ctx),
+        structtype = self.getNodeDatatype(ctx.datatype())
+        scope = Scope(self.getLocation(ctx), self.db.getCurrentScope())
+        for name, tp in structtype.generics:
+            if tp:
+                scope.defineSymbol(
+                    DatatypeSymbol(SymbolName(name), tp), self.getLocation(ctx)
                 )
 
-            for i in range(len(atts)):
-                att = self.getNodeObjectAttribute(atts[i])
-
-                field = None
-                for f in getStructFields(datatype):
-                    if f.name.name == att.name:
-                        field = f
-                        break
-
-                if not field:
-                    raise CompilerError(
-                        f"Type '{datatype.getDisplayName()}' has no member named '{att.name}'",
-                        self.getLocation(ctx),
-                    )
-
-                att.declaredType = field.type
-                att.receivedType = self.getNodeDatatype(att.expr)
-                attributes.append(att)
-
-            self.setNodeObjectAttributes(ctx, attributes)
-            self.setNodeDatatype(ctx, datatype)
-
-        else:
-            raise CompilerError(
-                f"Trying to instantiate a non-structural datatype '{datatype.getDisplayName()}'",
-                self.getLocation(ctx),
-            )
+        tp = resolveGenerics(structtype, scope, self.getLocation(ctx))
+        self.setNodeDatatype(ctx, tp)
 
     def exprMemberAccessImpl(self, ctx, exprtype: Datatype):
         if exprtype.isStruct():

@@ -51,7 +51,6 @@ class Scope:
         return self.terminated
 
     def print(self):
-        print(self.__str__())
         self.symbolTable.print()
 
     def __str__(self):

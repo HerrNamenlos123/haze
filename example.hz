@@ -18,12 +18,12 @@ struct Array<T> {
   //   };
   // }
 
-  test(myArray: Array<T>): Array<T> {
-    return Array<T> {
-      .data: 0,
-      .length: 0,
-    };
-  }
+  // test(myArray: Array<T>): Array<T> {
+  //   return Array<T> {
+  //     .data: 0,
+  //     .length: 0,
+  //   };
+  // }
 }
 
 a() {
@@ -31,15 +31,15 @@ a() {
     .data: 0,
     .length: 0,
   };
-  s.test(s);
+  // s.test(s);
 }
 
 b() {
-  const s = Array<i8> {
-    .data: 0,
-    .length: 0,
-  };
-  s.test(s);
+  // const s = Array<i8> {
+  //   .data: 0,
+  //   .length: 0,
+  // };
+  // s.test(s);
 }
 
 struct MemoryBuffer {

@@ -274,8 +274,8 @@ class Datatype:
                     for (
                         name,
                         symbol,
-                    ) in self.structMemberSymbols.getAllSymbols().items():
-                        val += f"{name}: {symbol.getType().getDisplayName()}, "
+                    ) in self.structMemberSymbols.symbols.items():
+                        val += f"{name}: {symbol.type.getDisplayName()}, "
                     if len(self.structMemberSymbols.getAllSymbols().keys()) > 0:
                         val = val[:-2]
                     val += " }"
@@ -322,32 +322,40 @@ class Datatype:
                     #     mangled += self.genericsDict[t].getMangledName()
                     mangled += "E"
                 return mangled
-        raise InternalError("Invalid variant")
+        raise InternalError("Invalid variant " + str(self.variant))
 
-    # def isGeneric(self):
-    #     match self.variant:
-    #         case Datatype.Variants.Primitive:
-    #             return False
-    #         case Datatype.Variants.ResolutionDeferred:
-    #             return False
-    #         case Datatype.Variants.Pointer:
-    #             return self.pointee and self.pointee.isGeneric()
-    #         case Datatype.Variants.Function:
-    #             if self.functionReturnType and self.functionReturnType.isGeneric():
-    #                 return True
-    #             for name, type in self.functionParameters:
-    #                 if type.isGeneric():
-    #                     return True
-    #             return len(self.generics) > 0
-    #         case Datatype.Variants.Struct:
-    #             from Symbol import FunctionSymbol
+    def isGeneric(self):
+        match self.variant:
+            case Datatype.Variants.Primitive:
+                return False
 
-    #             for fsym in self.structMemberSymbols.getFiltered(FunctionSymbol):
-    #                 fsymbol: FunctionSymbol = fsym
-    #                 if fsymbol.type.isGeneric():
-    #                     return True
-    #             return False
-    #         raise InternalError("Invalid variant")
+            case Datatype.Variants.GenericPlaceholder:
+                return True
+
+            case Datatype.Variants.ResolutionDeferred:
+                return False
+
+            case Datatype.Variants.Pointer:
+                return self.pointee and self.pointee.isGeneric()
+
+            case Datatype.Variants.Function:
+                if self.functionReturnType and self.functionReturnType.isGeneric():
+                    return True
+                for name, type in self.functionParameters:
+                    if type.isGeneric():
+                        return True
+                return len(self.generics) > 0
+
+            case Datatype.Variants.Struct:
+                from Symbol import VariableSymbol
+
+                for vsym in self.structMemberSymbols.getFiltered(VariableSymbol):
+                    vsymbol: VariableSymbol = vsym
+                    if vsymbol.type.isGeneric():
+                        return True
+                return len(self.generics) > 0
+
+        raise InternalError("Invalid variant " + str(self.variant))
 
     def containsUnknown(self):
         match self.variant:
@@ -362,21 +370,21 @@ class Datatype:
                     if type.isUnknown():
                         return True
                 return False
-        raise InternalError("Invalid variant")
+        raise InternalError("Invalid variant: " + str(self.variant))
 
     def generateDefinitionCCode(self):
         match self.variant:
-            case Datatype.Variants.Primitive:
+            case Datatype.Variants.Struct:
                 from Symbol import VariableSymbol
 
                 out = f"typedef struct __{self.generateUsageCode()}__ {{\n"
-                for memberSymbol in self.structMemberSymbols.getAllSymbols().values():
+                for memberSymbol in self.structMemberSymbols.symbols.values():
                     if isinstance(memberSymbol, VariableSymbol):
                         out += f"    {memberSymbol.type.generateUsageCode()
-                                      } {memberSymbol.type};\n"
+                                      } {memberSymbol.name};\n"
                 out += f"}} {self.generateUsageCode()};\n"
                 return out
-        raise InternalError("Invalid variant")
+        raise InternalError("Invalid variant: " + str(self.variant))
 
     def generateUsageCode(self):
         match self.variant:
@@ -421,7 +429,7 @@ class Datatype:
                 raise InternalError("Cannot generate usage code for deferred")
             case Datatype.Variants.Struct:
                 return str(self.name)
-        raise InternalError("Invalid variant")
+        raise InternalError("Invalid variant: " + str(self.variant))
 
     # def __str__(self):
     #     return str(self.getDisplayName())
@@ -482,8 +490,8 @@ def isSame(a: Datatype, b: Datatype):
     if a.isStruct() and b.isStruct():
         from Symbol import VariableSymbol
 
-        aMembers = a.structMemberSymbols.getFiltered(VariableSymbol).keys()
-        bMembers = b.structMemberSymbols.getFiltered(VariableSymbol).keys()
+        aMembers = a.structMemberSymbols.getFiltered(VariableSymbol)
+        bMembers = b.structMemberSymbols.getFiltered(VariableSymbol)
         if len(aMembers) != len(bMembers):
             return False
         for i in range(len(aMembers)):
@@ -533,44 +541,41 @@ def implicitConversion(_from: Datatype, to: Datatype, expr: str, loc: Location) 
         )
 
     if _from.isStruct() and to.isStruct():
-        from SymbolTable import SymbolTable
+        from SymbolTable import SymbolTable, getStructFields, getStructFunctions
+        from Symbol import VariableSymbol
 
-        atbl: SymbolTable = _from.structMemberSymbols
-        btbl: SymbolTable = to.structMemberSymbols
+        a_list = getStructFields(_from)
+        b_list = getStructFields(to)
 
-        # equal = True
-        # for name in atbl.keys():
-        #     if not name in to.structMemberSymbols.getAllSymbols():
-        #         equal = False
-        #     if (
-        #         _from.getMember(name.name).getName()
-        #         != to.getMember(name.name).getName()
-        #     ):
-        #         equal = False
+        if len(a_list) != len(b_list):
+            raise CompilerError(
+                f"No implicit conversion from '{_from.getDisplayName()}' to '{
+                    to.getDisplayName()}'",
+                loc,
+            )
 
-        #     if not Datatype.isSame(
-        #         _from.getMember(name.name).getType(), to.getMember(name.name).getType()
-        #     ):
-        #         equal = False
+        def exactMatchInTheOther(a: VariableSymbol, b_list: List[VariableSymbol]):
+            for b in b_list:
+                if a.name == b.name and isSame(a.type, b.type):
+                    return True
+            return False
 
-        # for name in to.getMembers().keys():
-        #     if not name in _from.getMembers():
-        #         equal = False
+        equal = True
+        for a in a_list:
+            if not exactMatchInTheOther(a, b_list):
+                equal = False
+        for b in b_list:
+            if not exactMatchInTheOther(b, a_list):
+                equal = False
 
-        #     if (
-        #         _from.getMember(name.name).getName()
-        #         != to.getMember(name.name).getName()
-        #     ):
-        #         equal = False
+        if equal:
+            return expr
 
-        #     if not Datatype.isSame(
-        #         _from.getMember(name.name).getType(), to.getMember(name.name).getType()
-        #     ):
-        #         equal = False
-
-        # if equal:
-        #     return expr
-        raise InternalError("Struct comparison not implemented :/")
+        raise CompilerError(
+            f"No implicit conversion from '{_from.getDisplayName()}' to '{
+                to.getDisplayName()}'",
+            loc,
+        )
 
     raise CompilerError(
         f"No implicit conversion from '{_from.getDisplayName()}' to '{
