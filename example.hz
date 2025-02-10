@@ -35,10 +35,10 @@ a() {
 }
 
 b() {
-  // const s = Array<i8> {
-  //   .data: 0,
-  //   .length: 0,
-  // };
+  const s = Array<i8> {
+    .data: 0,
+    .length: 0,
+  };
   // s.test(s);
 }
 

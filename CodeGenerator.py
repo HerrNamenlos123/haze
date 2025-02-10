@@ -24,11 +24,11 @@ class CodeGenerator(AdvancedBaseVisitor):
         self.output = {
             "includes": {},
             "type_declarations": {},
-            "generic_types": {},
             "function_definitions": {},
             "function_declarations": {},
         }
         self.functionCtx = {}
+        self.structCtx = {}
         self.includeHeader("stdio.h")
         self.includeHeader("stdint.h")
         self.output["type_declarations"][
@@ -62,9 +62,6 @@ class CodeGenerator(AdvancedBaseVisitor):
                 "\n".join([str(t) for t in self.output["type_declarations"].values()])
             )
 
-            f.write("\n\n// Generic types declaration section\n")
-            f.write("\n".join([str(t) for t in self.output["generic_types"].values()]))
-
             f.write("\n\n// Function declaration section\n")
             f.write(
                 "\n\n".join([t for t in self.output["function_declarations"].values()])
@@ -85,7 +82,7 @@ class CodeGenerator(AdvancedBaseVisitor):
         ):
             raise InternalError("Function is not a function")
 
-        self.functionCtx[symbol.getMangledName()] = ctx
+        self.functionCtx[symbol.name] = ctx
         if not symbol.type.isGeneric():
             self.generateFuncUse(ctx)
 
@@ -98,8 +95,6 @@ class CodeGenerator(AdvancedBaseVisitor):
             or symbol.type.functionReturnType is None
         ):
             raise InternalError("Function is not a function")
-
-        print("Generate func: ", symbol)
 
         def declaration(ftype: Datatype, returntype: Datatype):
             decl = returntype.generateUsageCode() + " " + symbol.getMangledName() + "("
@@ -173,6 +168,11 @@ class CodeGenerator(AdvancedBaseVisitor):
 
     def visitGenericDatatype(self, ctx: HazeParser.HazeParser.GenericDatatypeContext):
         self.visitChildren(ctx)
+        datatype = self.getNodeDatatype(ctx)
+        if datatype.isStruct() and datatype.generics:
+            self.output["type_declarations"][
+                datatype.getMangledName()
+            ] = datatype.generateDefinitionCCode()
 
     def visitInlineCStatement(self, ctx):
         self.visitChildren(ctx)
@@ -615,11 +615,11 @@ class CodeGenerator(AdvancedBaseVisitor):
     def visitStructDecl(self, ctx):
         self.visitChildren(ctx)
         datatype = self.getNodeDatatype(ctx)
-        if datatype.generics:
-            return
-        self.output["type_declarations"][
-            datatype.getMangledName()
-        ] = datatype.generateDefinitionCCode()
+        self.structCtx[datatype.name] = ctx
+        if not datatype.generics:
+            self.output["type_declarations"][
+                datatype.getMangledName()
+            ] = datatype.generateDefinitionCCode()
 
     # def visitObjectExpr(self, ctx):
     #     self.visitChildren(ctx)

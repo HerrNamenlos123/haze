@@ -248,10 +248,10 @@ class Datatype:
                 if self.functionReturnType is None:
                     raise InternalError("bullshit happening")
                 g = []
-                for t in self.generics:
-                    # if t in self.genericsDict:
-                    #     t = f"{t} = {self.genericsDict[t].getDisplayName()}"
-                    g.append(t)
+                for name, tp in self.generics:
+                    if tp:
+                        name = f"{name} = {tp.getDisplayName()}"
+                    g.append(name)
                 params = []
                 for name, type in self.functionParameters:
                     params.append(type.getDisplayName())
@@ -287,9 +287,6 @@ class Datatype:
                             f"{g[0]} = {g[1]}" if len(g) > 1 else g[0]
                             for g in copy.deepcopy(self.generics)
                         ]
-                        # for i in range(len(g)):
-                        # if g[i] in self.genericsDict:
-                        # g[i] = self.genericsDict[g[i]].getDisplayName()
                         s += f"<{','.join(g)}>"
                     return s
             case Datatype.Variants.GenericPlaceholder:
@@ -318,8 +315,10 @@ class Datatype:
                 mangled += self.name.name
                 if len(self.generics) > 0:
                     mangled += "I"
-                    # for t in self.generics:
-                    #     mangled += self.genericsDict[t].getMangledName()
+                    for name, tp in self.generics:
+                        if not tp:
+                            raise InternalError("Cannot mangle generic placeholder")
+                        mangled += tp.getMangledName()
                     mangled += "E"
                 return mangled
         raise InternalError("Invalid variant " + str(self.variant))
@@ -428,7 +427,7 @@ class Datatype:
             case Datatype.Variants.ResolutionDeferred:
                 raise InternalError("Cannot generate usage code for deferred")
             case Datatype.Variants.Struct:
-                return str(self.name)
+                return self.getMangledName()
         raise InternalError("Invalid variant: " + str(self.variant))
 
     # def __str__(self):

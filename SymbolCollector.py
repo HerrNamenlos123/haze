@@ -186,7 +186,6 @@ class SymbolCollector(AdvancedBaseVisitor):
 
         self.setNodeSymbol(ctx, symbol)
         self.setNodeDatatype(ctx, symbol.type)
-        print("Collected func: ", symbol)
 
     def visitFunc(self, ctx):
         return self.implFunc(ctx, self.db.makeAnonymousFunctionName())

@@ -150,7 +150,7 @@ def resolveGenerics(datatype: Datatype, scope: Scope, loc: Location):
             return symbol.type
 
         case Datatype.Variants.Struct:
-            d = copy.copy(datatype)
+            d = copy.deepcopy(datatype)
             for field in getStructFields(datatype):
                 newType = resolveGenerics(field.type, scope, loc)
                 d.structMemberSymbols.symbols[field.name].type = newType

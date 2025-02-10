@@ -158,7 +158,6 @@ class SemanticAnalyzer(AdvancedBaseVisitor):
         self.setNodeDatatype(ctx, newType)
         self.setNodeSymbol(ctx, symbol)
         self.db.popScope()
-        print("Analyzed func: ", symbol)
 
     def implVariableDefinition(self, ctx, variableType: VariableType):
         self.useCurrentNodeScope(ctx)
@@ -465,7 +464,6 @@ class SemanticAnalyzer(AdvancedBaseVisitor):
                 scope.defineSymbol(symbol, self.getLocation(ctx))
 
         dt = resolveGenerics(datatype, scope, self.getLocation(ctx))
-
         self.setNodeDatatype(ctx, dt)
 
     def visitParam(self, ctx: HazeParser.HazeParser.ParamContext):
