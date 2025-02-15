@@ -90,11 +90,7 @@ class CompilationDatabase:
     def getGlobalScope(self):
         return self.globalScope
 
-    def getBuiltinDatatype(
-        self, name: str | SymbolName, loc: Location = Location("global", 0, 0)
-    ):
-        if isinstance(name, str):
-            name = SymbolName(name)
+    def getBuiltinDatatype(self, name: str, loc: Location = Location("global", 0, 0)):
         return self.getGlobalScope().lookupSymbol(name, loc).type
 
     def defineExternalCompilationUnit(self, filename: str, lang: str, flags: List[str]):

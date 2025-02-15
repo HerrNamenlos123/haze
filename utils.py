@@ -5,7 +5,7 @@ from typing import Dict, List
 from SymbolName import SymbolName
 from CompilationDatabase import ObjAttribute
 from Symbol import VariableSymbol, VariableType
-from SymbolTable import SymbolTable, getStructFunctions, getStructFields
+from SymbolTable import SymbolTable, getStructMethods, getStructFields
 from Scope import Scope
 from Location import Location
 
@@ -144,7 +144,9 @@ def getNamedObjectAttributes(self, ctx):
     return attributes
 
 
-def resolveGenerics(datatype: Datatype, scope: Scope, loc: Location):
+def resolveGenerics(
+    datatype: Datatype, scope: Scope, loc: Location, forceResolve: bool = False
+):
     match datatype.variant:
         case Datatype.Variants.GenericPlaceholder:
             symbol = scope.lookupSymbol(datatype.name, loc)

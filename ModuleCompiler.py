@@ -7,7 +7,7 @@ import traceback
 import os
 
 from SymbolCollector import SymbolCollector
-from SemanticAnalyzer import SemanticAnalyzer, performSemanticAnalysis
+from SemanticAnalyzer import performSemanticAnalysis
 from SymbolTypeResolver import SymbolTypeResolver
 from ReturnVerifier import ReturnVerifier
 from CodeGenerator import CodeGenerator

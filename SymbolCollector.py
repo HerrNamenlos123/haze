@@ -9,12 +9,7 @@ from Symbol import (
 from FunctionSymbol import FunctionSymbol
 from Error import CompilerError, InternalError, ImpossibleSituation
 from Scope import Scope
-from Location import Location
-from CompilationDatabase import CompilationDatabase
 from grammar.HazeParser import HazeParser
-from utils import implGenericDatatype
-from Namespace import Namespace
-from SymbolName import SymbolName
 from Datatype import Datatype, FunctionLinkage
 from Program import Program, ExternFunctionRef
 from utils import resolveGenerics
@@ -23,7 +18,7 @@ from utils import resolveGenerics
 class SymbolCollector(AdvancedBaseVisitor):
     def __init__(self, filename, db):
         super().__init__(filename, db)
-        self.program = Program()
+        self.program = Program(db)
         self.currentLinkage: Optional[FunctionLinkage] = None
         self.structStack: List[DatatypeSymbol] = []
         self.currentFunctionSymbols: List[FunctionSymbol] = []
@@ -49,9 +44,10 @@ class SymbolCollector(AdvancedBaseVisitor):
                 f"Datatype expected {len(foundSymbol.type.generics)} generic arguments but got {len(genericsProvided)}.",
                 self.getLocation(ctx),
             )
-        return resolveGenerics(
+        dt = resolveGenerics(
             foundSymbol.type, self.db.getCurrentScope(), self.getLocation(ctx)
         )
+        return dt
 
     def visitFunctionDatatype(self, ctx):
         params = []
@@ -144,7 +140,7 @@ class SymbolCollector(AdvancedBaseVisitor):
         if ctx.returntype():
             symbol.type.functionReturnType = self.visit(ctx.returntype())
 
-        self.program.globalSymbols.insert(symbol, self.getLocation(ctx))
+        self.program.globalScope.defineSymbol(symbol, self.getLocation(ctx))
         self.program.externFunctionRefs.append(
             ExternFunctionRef(FunctionLinkage.External_C, self.getLocation(ctx), symbol)
         )
@@ -184,15 +180,16 @@ class SymbolCollector(AdvancedBaseVisitor):
                     self.getLocation(ctx),
                 )
 
-        symbol.type.functionReturnType = (
-            self.visit(ctx.returntype())
-            if ctx.returntype()
-            else Datatype.createDeferredType()
-        )
+        if ctx.returntype():
+            symbol.type.functionReturnType = self.visit(ctx.returntype())
+
+        else:
+            symbol.type.functionReturnType = Datatype.createDeferredType()
 
         if symbol.type.functionReturnType.isDeferred():
             if ctx.funcbody().expr():
-                symbol.type.functionReturnType = self.visit(ctx.funcbody().expr())
+                expr = self.visit(ctx.funcbody().expr())
+                symbol.type.functionReturnType = expr.type
 
         if symbol.parentSymbol and symbol.parentSymbol.type.isStruct():
             if name == "constructor":
@@ -208,7 +205,15 @@ class SymbolCollector(AdvancedBaseVisitor):
                 symbol.thisPointerType = Datatype.createPointerDatatype(
                     symbol.parentSymbol.type
                 )
-        self.program.globalSymbols.insert(symbol, self.getLocation(ctx))
+                if not symbol.scope:
+                    raise ImpossibleSituation()
+                symbol.scope.defineSymbol(
+                    VariableSymbol(
+                        "this", symbol, symbol.thisPointerType, VariableType.Parameter
+                    ),
+                    self.getLocation(ctx),
+                )
+        self.program.globalScope.defineSymbol(symbol, self.getLocation(ctx))
 
         self.db.popScope()
         return symbol

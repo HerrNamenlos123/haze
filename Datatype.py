@@ -122,6 +122,11 @@ class Datatype:
     ):
         from SymbolTable import SymbolTable
 
+        if not isinstance(returnType, Datatype):
+            raise InternalError(
+                "Tried to create function with symbol return", getCallerLocation(1)
+            )
+
         return Datatype(
             Datatype.Variants.Function,
             "",
@@ -551,7 +556,7 @@ def implicitConversion(_from: Datatype, to: Datatype, expr: str, loc: Location) 
         )
 
     if _from.isStruct() and to.isStruct():
-        from SymbolTable import SymbolTable, getStructFields, getStructFunctions
+        from SymbolTable import SymbolTable, getStructFields, getStructMethods
         from Symbol import VariableSymbol
 
         a_list = getStructFields(_from)

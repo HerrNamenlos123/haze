@@ -2,7 +2,7 @@ from Datatype import Datatype, FunctionLinkage
 from Location import Location
 from enum import Enum
 from Error import InternalError
-from typing import List, Tuple, Optional, Dict
+from typing import List, Tuple, Optional, Dict, Any
 from Namespace import Namespace
 from grammar import HazeParser
 from antlr4 import ParserRuleContext
@@ -69,3 +69,24 @@ class GenericPlaceholderSymbol(Symbol):
 class DatatypeSymbol(Symbol):
     def __init__(self, name: str, parentSymbol: Optional[Symbol], type: Datatype):
         super().__init__(name, parentSymbol, type)
+
+    def __str__(self):
+        return f"Type {self.type}"
+
+    def __repr__(self):
+        return self.__str__()
+
+
+class ConstantSymbol(Symbol):
+    def __init__(self, type: Datatype, value: Any):
+        super().__init__("__Constant", None, type)
+        self.value = value
+
+
+class StructMemberSymbol(Symbol):
+    def __init__(
+        self, name: str, struct: Datatype, type: Datatype, expr: ParserRuleContext
+    ):
+        super().__init__(name, None, type)
+        self.struct = struct
+        self.expr = expr

@@ -7,7 +7,7 @@ from Symbol import DatatypeSymbol, VariableSymbol
 from FunctionSymbol import FunctionSymbol
 from Error import CompilerError, InternalError, UnreachableCode
 from Namespace import Namespace
-from SymbolTable import SymbolTable, getStructFunctions, getStructFields
+from SymbolTable import SymbolTable, getStructMethods, getStructFields
 from SymbolName import SymbolName
 from Scope import Scope
 from Location import Location

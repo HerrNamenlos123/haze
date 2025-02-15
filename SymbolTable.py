@@ -75,7 +75,19 @@ def getStructFields(struct: Datatype):
     return members
 
 
-def getStructFunctions(struct: Datatype):
+def getStructField(struct: Datatype, name: str) -> Optional[VariableSymbol]:
+    if not struct.isStruct():
+        raise InternalError("Not a struct", getCallerLocation())
+
+    memsym: SymbolTable = struct.structMemberSymbols
+    for member in memsym.getFiltered(VariableSymbol):
+        sym: VariableSymbol = member
+        if sym.name == name:
+            return sym
+    return None
+
+
+def getStructMethods(struct: Datatype):
     from FunctionSymbol import FunctionSymbol
 
     if not struct.isStruct():
@@ -87,3 +99,17 @@ def getStructFunctions(struct: Datatype):
         sym: FunctionSymbol = member
         members.append(sym)
     return members
+
+
+def getStructMethod(struct: Datatype, name: str):
+    from FunctionSymbol import FunctionSymbol
+
+    if not struct.isStruct():
+        raise InternalError("Not a struct", getCallerLocation())
+
+    memsym: SymbolTable = struct.structMemberSymbols
+    for member in memsym.getFiltered(FunctionSymbol):
+        sym: FunctionSymbol = member
+        if sym.name == name:
+            return sym
+    return None

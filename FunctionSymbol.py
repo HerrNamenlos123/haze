@@ -2,7 +2,7 @@ from Symbol import Symbol
 from Datatype import Datatype, FunctionLinkage
 from SymbolName import SymbolName
 from antlr4 import ParserRuleContext
-from typing import Optional
+from typing import Optional, List
 from Scope import Scope
 from Error import InternalError
 
@@ -22,6 +22,7 @@ class FunctionSymbol(Symbol):
         self.isConstructor: bool = False
         self.scope = scope
         self.functionLinkage = functionLinkage
+        self.returnedTypes: List[Datatype] = []
 
     def __str__(self):
         s = ""

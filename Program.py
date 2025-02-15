@@ -1,9 +1,11 @@
 from SymbolTable import SymbolTable
 from Location import Location
 from Symbol import Symbol
+from Scope import Scope
 from FunctionSymbol import FunctionSymbol
 from typing import List
 from Datatype import FunctionLinkage
+from CompilationDatabase import CompilationDatabase
 
 
 class ExternFunctionRef:
@@ -20,27 +22,14 @@ class ExternFunctionRef:
 
 
 class Program:
-    def __init__(self):
-        self.globalSymbols: SymbolTable = SymbolTable()
+    def __init__(self, db: CompilationDatabase):
+        self.globalScope: Scope = db.getGlobalScope()
         self.externFunctionRefs: List[ExternFunctionRef] = []
 
     def __str__(self):
-        s = f"Global Symbols:\n{self.globalSymbols}\nExtern Function Refs:\n"
+        s = f"Global Symbols:\n{self.globalScope.symbolTable}\nExtern Function Refs:\n"
         for ref in self.externFunctionRefs:
             s += f"{ref}\n"
-
-        s += "\nGlobal Functions:\n"
-        for symbol in self.globalSymbols.symbols:
-            if (
-                isinstance(symbol, FunctionSymbol)
-                and symbol.functionLinkage == FunctionLinkage.Haze
-            ):
-                s += f"Symbol '{symbol}' "
-                if symbol.scope:
-                    s += f"at {symbol.scope}\n"
-                else:
-                    s += "\n"
-            s += "\n"
         return s
 
     def __repr__(self):

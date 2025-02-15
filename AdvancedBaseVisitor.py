@@ -162,17 +162,6 @@ class AdvancedBaseVisitor(HazeVisitor.HazeVisitor):
     #     self.__prepare(ctx)
     #     return "memberAccessFunctionSymbol" in ctx.semantics
 
-    def useCurrentNodeScope(self, ctx):
-        self.setNodeScope(ctx, self.db.getCurrentScope())
-
-    def useParentsScope(self, ctx):
-        if not ctx.parent:
-            raise InternalError(
-                "Cannot inherit parent scope: Parent is not a valid context",
-                getCallerLocation(),
-            )
-        self.setNodeScope(ctx, self.getNodeScope(ctx.parent))
-
     def assertExprCallable(self, ctx):
         t = self.getNodeDatatype(ctx)
         if not t.isCallable():

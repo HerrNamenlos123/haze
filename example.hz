@@ -21,18 +21,19 @@ struct Array<T> {
 }
 
 a() {
-  const s = Array<i32> {
-    .data: 0,
-    .length: 0,
-  };
-  s.test(s);
+  Array.test();
+  // const s = Array<i32> {
+  //   .data: 0,
+  //   .length: 0,
+  // };
+  // s.test(s);
 }
 
 b() {
-  const s = Array<i8> {
-    .data: 0,
-    .length: 0,
-  };
+  // const s = Array<i8> {
+  //   .data: 0,
+  //   .length: 0,
+  // };
   // s.test(s);
 }
 
@@ -62,7 +63,8 @@ struct String {
   other: stringview;
 
   toNumber(): i64 {
-    return this.test1;
+    // return this.test1;
+    return 0;
   }
 }
 
@@ -95,6 +97,7 @@ x(fn: () => none): () => none {
 
 main(): i32 {
   printf("Hello world!\n");
-  const a = test5("test", 0);
-  return a.toNumber();
+  // const a = test5("test", 0);
+  // return a.toNumber();
+  return 0;
 }
