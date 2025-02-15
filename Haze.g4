@@ -2,8 +2,8 @@ grammar Haze;
 
 prog: (namedfunc | externblock | compilationhint | linkerhint | structdecl)*;
 
-namedfunc: ID '(' params ')' (':' returntype)? funcbody;
-func: '(' params ')' (':' returntype)? funcbody;
+namedfunc: ID (generictypelist)? '(' params ')' (':' returntype)? funcbody;
+func: (generictypelist)? '(' params ')' (':' returntype)? funcbody;
 
 funcbody: ('=>')? '{' body '}' | '=>' expr;
 body: (statement)*;

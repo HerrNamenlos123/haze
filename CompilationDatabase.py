@@ -132,7 +132,8 @@ class CompilationDatabase:
         def define(name: str, type: Datatype.PrimitiveVariants):
             self.globalScope.defineSymbol(
                 DatatypeSymbol(
-                    SymbolName(name),
+                    name,
+                    None,
                     Datatype.createPrimitiveType(type),
                 ),
                 self.topLevelLocation,

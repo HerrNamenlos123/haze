@@ -2,7 +2,6 @@ from enum import Enum
 from typing import List, Tuple, Dict, Optional
 from Error import InternalError, UnreachableCode, CompilerError, getCallerLocation
 from Location import Location
-from SymbolName import SymbolName
 import copy
 
 
@@ -70,7 +69,7 @@ class Datatype:
     def __init__(
         self,
         variant: Variants,
-        name: SymbolName,
+        name: str,
         primitiveVariant: PrimitiveVariants,
         functionParameters: List[Tuple[str, "Datatype"]],
         functionReturnType: Optional["Datatype"],
@@ -93,7 +92,7 @@ class Datatype:
 
         return Datatype(
             Datatype.Variants.Primitive,
-            SymbolName(Datatype.primitiveVariantToString(variant)),
+            Datatype.primitiveVariantToString(variant),
             variant,
             [],
             None,
@@ -108,7 +107,7 @@ class Datatype:
 
         return Datatype(
             Datatype.Variants.GenericPlaceholder,
-            SymbolName(name),
+            name,
             Datatype.PrimitiveVariants.unknown,
             [],
             None,
@@ -125,7 +124,7 @@ class Datatype:
 
         return Datatype(
             Datatype.Variants.Function,
-            SymbolName(""),
+            "",
             Datatype.PrimitiveVariants.unknown,
             params,
             returnType,
@@ -140,7 +139,7 @@ class Datatype:
 
         return Datatype(
             Datatype.Variants.ResolutionDeferred,
-            SymbolName("__Deferred"),
+            "__Deferred",
             Datatype.PrimitiveVariants.unknown,
             [],
             None,
@@ -155,7 +154,7 @@ class Datatype:
 
         return Datatype(
             Datatype.Variants.Pointer,
-            SymbolName(""),
+            "",
             Datatype.PrimitiveVariants.unknown,
             [],
             None,
@@ -166,7 +165,7 @@ class Datatype:
 
     @staticmethod
     def createStructDatatype(
-        name: SymbolName,
+        name: str,
         generics: List[Tuple[str, Optional["Datatype"]]],
     ):
         from SymbolTable import SymbolTable
@@ -246,7 +245,7 @@ class Datatype:
                 return Datatype.primitiveVariantToString(self.primitiveVariant)
             case Datatype.Variants.Function:
                 if self.functionReturnType is None:
-                    raise InternalError("bullshit happening")
+                    raise InternalError("Function is missing functionReturnType")
                 g = []
                 for name, tp in self.generics:
                     if tp:
@@ -264,12 +263,12 @@ class Datatype:
                 )
             case Datatype.Variants.Pointer:
                 if self.pointee is None:
-                    raise InternalError("bullshit happening")
+                    raise InternalError("Pointer is missing pointee")
                 return f"Ptr<{self.pointee.getDisplayName()}>"
             case Datatype.Variants.ResolutionDeferred:
                 return "__Deferred"
             case Datatype.Variants.Struct:
-                if self.name.name.startswith("__anonym_"):
+                if self.name.startswith("__anonym_"):
                     val = "struct {"
                     for (
                         name,
@@ -281,7 +280,7 @@ class Datatype:
                     val += " }"
                     return val
                 else:
-                    s = self.name.name
+                    s = self.name
                     if self.generics:
                         g = [
                             f"{g[0]} = {g[1]}" if len(g) > 1 else g[0]
@@ -290,7 +289,7 @@ class Datatype:
                         s += f"<{','.join(g)}>"
                     return s
             case Datatype.Variants.GenericPlaceholder:
-                return self.name.name
+                return self.name
         raise InternalError("Invalid variant")
 
     def __str__(self):
@@ -311,8 +310,8 @@ class Datatype:
                 raise InternalError("Cannot mangle deferred")
             case Datatype.Variants.Struct:
                 mangled = "_H"
-                mangled += str(len(self.name.name))
-                mangled += self.name.name
+                mangled += str(len(self.name))
+                mangled += self.name
                 if len(self.generics) > 0:
                     mangled += "I"
                     for name, tp in self.generics:
@@ -429,6 +428,18 @@ class Datatype:
             case Datatype.Variants.Struct:
                 return self.getMangledName()
         raise InternalError("Invalid variant: " + str(self.variant))
+
+    def deepcopy(self):
+        return Datatype(
+            self.variant,
+            self.name,
+            self.primitiveVariant,
+            [(name, t.deepcopy()) for name, t in self.functionParameters],
+            self.functionReturnType.deepcopy() if self.functionReturnType else None,
+            self.generics,
+            self.pointee.deepcopy() if self.pointee else None,
+            self.structMemberSymbols,
+        )
 
     # def __str__(self):
     #     return str(self.getDisplayName())

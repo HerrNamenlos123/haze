@@ -7,7 +7,7 @@ import traceback
 import os
 
 from SymbolCollector import SymbolCollector
-from SemanticAnalyzer import SemanticAnalyzer
+from SemanticAnalyzer import SemanticAnalyzer, performSemanticAnalysis
 from SymbolTypeResolver import SymbolTypeResolver
 from ReturnVerifier import ReturnVerifier
 from CodeGenerator import CodeGenerator
@@ -31,23 +31,23 @@ class ModuleCompiler:
 
             collector = SymbolCollector(self.filename, self.db)
             collector.visit(ast)
+            print(collector.program)
 
-            analyzer = SemanticAnalyzer(self.filename, self.db)
-            analyzer.visit(ast)
+            performSemanticAnalysis(collector.program, self.filename, self.db)
 
-            resolver = SymbolTypeResolver(self.filename, self.db)
-            resolver.visit(ast)
+            # resolver = SymbolTypeResolver(self.filename, self.db)
+            # resolver.visit(ast)
 
-            verifier = ReturnVerifier(self.filename, self.db)
-            verifier.visit(ast)
+            # verifier = ReturnVerifier(self.filename, self.db)
+            # verifier.visit(ast)
 
-            generator = CodeGenerator(self.filename, self.db)
-            generator.visit(ast)
+            # generator = CodeGenerator(self.filename, self.db)
+            # generator.visit(ast)
 
-            generator.writeFile(f"build/{self.filename}.c")
+            # generator.writeFile(f"build/{self.filename}.c")
 
-            os.system("clang build/" + self.filename + ".c -o build/out")
-            os.system("build/out")
+            # os.system("clang build/" + self.filename + ".c -o build/out")
+            # os.system("build/out")
 
             # extraObjectFiles = [];
             # fs::makeDirectory(fs::cwd() / "build");

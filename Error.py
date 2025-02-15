@@ -35,9 +35,12 @@ def printWarningMessage(loc: Location, msg: str):
 
 
 def getCallerLocation(depth=1):
-    frame = inspect.currentframe().f_back
-    for i in range(depth):
-        frame = frame.f_back
+    frame = inspect.currentframe()
+    if frame is None:
+        return Location("Unknown", 0, 0)
+    for i in range(depth + 1):
+        if frame.f_back:
+            frame = frame.f_back
     return Location(frame.f_code.co_filename, frame.f_lineno, 0)
 
 
@@ -50,6 +53,16 @@ class InternalError(Exception):
     def __init__(self, msg: str, loc: Optional[Location] = None):
         super().__init__(
             formatErrorMessage(getCallerLocation() if not loc else loc, msg)
+        )
+
+
+class ImpossibleSituation(Exception):
+    def __init__(self):
+        super().__init__(
+            formatErrorMessage(
+                getCallerLocation(),
+                "Impossible situation, something fatal has happened",
+            )
         )
 
 

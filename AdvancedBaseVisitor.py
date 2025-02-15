@@ -1,7 +1,8 @@
 from grammar import HazeVisitor
 from CompilationDatabase import CompilationDatabase, ObjAttribute
 from Datatype import Datatype
-from Symbol import Symbol, FunctionSymbol
+from Symbol import Symbol
+from FunctionSymbol import FunctionSymbol
 from Scope import Scope
 from typing import List, Tuple
 from Error import InternalError, getCallerLocation, CompilerError
@@ -17,77 +18,77 @@ class AdvancedBaseVisitor(HazeVisitor.HazeVisitor):
         if not hasattr(ctx, "semantics"):
             ctx.semantics = {}
 
-    def setNodeDatatype(self, ctx, datatype: Datatype):
-        self.__prepare(ctx)
-        ctx.semantics["datatype"] = datatype
+    # def setNodeDatatype(self, ctx, datatype: Datatype):
+    #     self.__prepare(ctx)
+    #     ctx.semantics["datatype"] = datatype
 
-    def getNodeDatatype(self, ctx) -> Datatype:
-        self.__prepare(ctx)
-        return ctx.semantics["datatype"]
+    # def getNodeDatatype(self, ctx) -> Datatype:
+    #     self.__prepare(ctx)
+    #     return ctx.semantics["datatype"]
 
-    def hasNodeDatatype(self, ctx):
-        self.__prepare(ctx)
-        return "datatype" in ctx.semantics
+    # def hasNodeDatatype(self, ctx):
+    #     self.__prepare(ctx)
+    #     return "datatype" in ctx.semantics
 
-    def setNodeExternlang(self, ctx, externlang: str):
-        self.__prepare(ctx)
-        ctx.semantics["externlang"] = externlang
+    # def setNodeExternlang(self, ctx, externlang: str):
+    #     self.__prepare(ctx)
+    #     ctx.semantics["externlang"] = externlang
 
-    def getNodeExternlang(self, ctx) -> str:
-        self.__prepare(ctx)
-        return ctx.semantics["externlang"]
+    # def getNodeExternlang(self, ctx) -> str:
+    #     self.__prepare(ctx)
+    #     return ctx.semantics["externlang"]
 
-    def hasNodeExternlang(self, ctx):
-        self.__prepare(ctx)
-        return "externlang" in ctx.semantics
+    # def hasNodeExternlang(self, ctx):
+    #     self.__prepare(ctx)
+    #     return "externlang" in ctx.semantics
 
-    def setNodeCompilationHintFilename(self, ctx, filename: str):
-        self.__prepare(ctx)
-        ctx.semantics["filename"] = filename
+    # def setNodeCompilationHintFilename(self, ctx, filename: str):
+    #     self.__prepare(ctx)
+    #     ctx.semantics["filename"] = filename
 
-    def getNodeCompilationHintFilename(self, ctx) -> str:
-        self.__prepare(ctx)
-        return ctx.semantics["filename"]
+    # def getNodeCompilationHintFilename(self, ctx) -> str:
+    #     self.__prepare(ctx)
+    #     return ctx.semantics["filename"]
 
-    def hasNodeCompilationHintFilename(self, ctx):
-        self.__prepare(ctx)
-        return "filename" in ctx.semantics
+    # def hasNodeCompilationHintFilename(self, ctx):
+    #     self.__prepare(ctx)
+    #     return "filename" in ctx.semantics
 
-    def setNodeScope(self, ctx, scope: Scope):
-        self.__prepare(ctx)
-        ctx.semantics["scope"] = scope
+    # def setNodeScope(self, ctx, scope: Scope):
+    #     self.__prepare(ctx)
+    #     ctx.semantics["scope"] = scope
 
-    def getNodeScope(self, ctx) -> Scope:
-        self.__prepare(ctx)
-        return ctx.semantics["scope"]
+    # def getNodeScope(self, ctx) -> Scope:
+    #     self.__prepare(ctx)
+    #     return ctx.semantics["scope"]
 
-    def hasNodeScope(self, ctx):
-        self.__prepare(ctx)
-        return "scope" in ctx.semantics
+    # def hasNodeScope(self, ctx):
+    #     self.__prepare(ctx)
+    #     return "scope" in ctx.semantics
 
-    def setNodeBinaryOperator(self, ctx, op: str):
-        self.__prepare(ctx)
-        ctx.semantics["op"] = op
+    # def setNodeBinaryOperator(self, ctx, op: str):
+    #     self.__prepare(ctx)
+    #     ctx.semantics["op"] = op
 
-    def getNodeBinaryOperator(self, ctx) -> str:
-        self.__prepare(ctx)
-        return ctx.semantics["op"]
+    # def getNodeBinaryOperator(self, ctx) -> str:
+    #     self.__prepare(ctx)
+    #     return ctx.semantics["op"]
 
-    def hasNodeBinaryOperator(self, ctx):
-        self.__prepare(ctx)
-        return "op" in ctx.semantics
+    # def hasNodeBinaryOperator(self, ctx):
+    #     self.__prepare(ctx)
+    #     return "op" in ctx.semantics
 
-    def setNodeThisPointer(self, ctx, value: Datatype):
-        self.__prepare(ctx)
-        ctx.semantics["thisPointer"] = value
+    # def setNodeThisPointer(self, ctx, value: Datatype):
+    #     self.__prepare(ctx)
+    #     ctx.semantics["thisPointer"] = value
 
-    def getNodeThisPointer(self, ctx) -> Datatype:
-        self.__prepare(ctx)
-        return ctx.semantics["thisPointer"]
+    # def getNodeThisPointer(self, ctx) -> Datatype:
+    #     self.__prepare(ctx)
+    #     return ctx.semantics["thisPointer"]
 
-    def hasNodeThisPointer(self, ctx):
-        self.__prepare(ctx)
-        return "thisPointer" in ctx.semantics
+    # def hasNodeThisPointer(self, ctx):
+    #     self.__prepare(ctx)
+    #     return "thisPointer" in ctx.semantics
 
     def setNodeSymbol(self, ctx, symbol: Symbol):
         self.__prepare(ctx)
@@ -101,65 +102,65 @@ class AdvancedBaseVisitor(HazeVisitor.HazeVisitor):
         self.__prepare(ctx)
         return "symbol" in ctx.semantics
 
-    def setNodeArgtypes(self, ctx, argtypes: List[Datatype]):
-        self.__prepare(ctx)
-        ctx.semantics["argtypes"] = argtypes
+    # def setNodeArgtypes(self, ctx, argtypes: List[Datatype]):
+    #     self.__prepare(ctx)
+    #     ctx.semantics["argtypes"] = argtypes
 
-    def getNodeArgtypes(self, ctx) -> List[Datatype]:
-        self.__prepare(ctx)
-        return ctx.semantics["argtypes"]
+    # def getNodeArgtypes(self, ctx) -> List[Datatype]:
+    #     self.__prepare(ctx)
+    #     return ctx.semantics["argtypes"]
 
-    def hasNodeArgtypes(self, ctx):
-        self.__prepare(ctx)
-        return "argtypes" in ctx.semantics
+    # def hasNodeArgtypes(self, ctx):
+    #     self.__prepare(ctx)
+    #     return "argtypes" in ctx.semantics
 
-    def setNodeDatatypeAsValue(self, ctx, datatype: Datatype):
-        self.__prepare(ctx)
-        ctx.semantics["datatypeAsValue"] = datatype
+    # def setNodeDatatypeAsValue(self, ctx, datatype: Datatype):
+    #     self.__prepare(ctx)
+    #     ctx.semantics["datatypeAsValue"] = datatype
 
-    def getNodeDatatypeAsValue(self, ctx) -> Datatype:
-        self.__prepare(ctx)
-        return ctx.semantics["datatypeAsValue"]
+    # def getNodeDatatypeAsValue(self, ctx) -> Datatype:
+    #     self.__prepare(ctx)
+    #     return ctx.semantics["datatypeAsValue"]
 
-    def hasNodeDatatypeAsValue(self, ctx):
-        self.__prepare(ctx)
-        return "datatypeAsValue" in ctx.semantics
+    # def hasNodeDatatypeAsValue(self, ctx):
+    #     self.__prepare(ctx)
+    #     return "datatypeAsValue" in ctx.semantics
 
-    def setNodeObjectAttribute(self, ctx, attribute: ObjAttribute):
-        self.__prepare(ctx)
-        ctx.semantics["attribute"] = attribute
+    # def setNodeObjectAttribute(self, ctx, attribute: ObjAttribute):
+    #     self.__prepare(ctx)
+    #     ctx.semantics["attribute"] = attribute
 
-    def getNodeObjectAttribute(self, ctx) -> ObjAttribute:
-        self.__prepare(ctx)
-        return ctx.semantics["attribute"]
+    # def getNodeObjectAttribute(self, ctx) -> ObjAttribute:
+    #     self.__prepare(ctx)
+    #     return ctx.semantics["attribute"]
 
-    def hasNodeObjectAttribute(self, ctx):
-        self.__prepare(ctx)
-        return "attribute" in ctx.semantics
+    # def hasNodeObjectAttribute(self, ctx):
+    #     self.__prepare(ctx)
+    #     return "attribute" in ctx.semantics
 
-    def setNodeMemberAccessFieldIndex(self, ctx, index: int):
-        self.__prepare(ctx)
-        ctx.semantics["index"] = index
+    # def setNodeMemberAccessFieldIndex(self, ctx, index: int):
+    #     self.__prepare(ctx)
+    #     ctx.semantics["index"] = index
 
-    def getNodeMemberAccessFieldIndex(self, ctx) -> int:
-        self.__prepare(ctx)
-        return ctx.semantics["index"]
+    # def getNodeMemberAccessFieldIndex(self, ctx) -> int:
+    #     self.__prepare(ctx)
+    #     return ctx.semantics["index"]
 
-    def hasNodeMemberAccessFieldIndex(self, ctx):
-        self.__prepare(ctx)
-        return "index" in ctx.semantics
+    # def hasNodeMemberAccessFieldIndex(self, ctx):
+    #     self.__prepare(ctx)
+    #     return "index" in ctx.semantics
 
-    def setNodeMemberAccessFunctionSymbol(self, ctx, symbol: FunctionSymbol):
-        self.__prepare(ctx)
-        ctx.semantics["memberAccessFunctionSymbol"] = symbol
+    # def setNodeMemberAccessFunctionSymbol(self, ctx, symbol: FunctionSymbol):
+    #     self.__prepare(ctx)
+    #     ctx.semantics["memberAccessFunctionSymbol"] = symbol
 
-    def getNodeMemberAccessFunctionSymbol(self, ctx) -> FunctionSymbol:
-        self.__prepare(ctx)
-        return ctx.semantics["memberAccessFunctionSymbol"]
+    # def getNodeMemberAccessFunctionSymbol(self, ctx) -> FunctionSymbol:
+    #     self.__prepare(ctx)
+    #     return ctx.semantics["memberAccessFunctionSymbol"]
 
-    def hasNodeMemberAccessFunctionSymbol(self, ctx):
-        self.__prepare(ctx)
-        return "memberAccessFunctionSymbol" in ctx.semantics
+    # def hasNodeMemberAccessFunctionSymbol(self, ctx):
+    #     self.__prepare(ctx)
+    #     return "memberAccessFunctionSymbol" in ctx.semantics
 
     def useCurrentNodeScope(self, ctx):
         self.setNodeScope(ctx, self.db.getCurrentScope())
@@ -171,14 +172,6 @@ class AdvancedBaseVisitor(HazeVisitor.HazeVisitor):
                 getCallerLocation(),
             )
         self.setNodeScope(ctx, self.getNodeScope(ctx.parent))
-
-    def getParamTypes(self, ctx):
-        params: List[Tuple[str, Datatype]] = []
-        for param in ctx.param():
-            params.append(
-                (param.ID().getText(), self.getNodeDatatype(param.datatype()))
-            )
-        return params
 
     def assertExprCallable(self, ctx):
         t = self.getNodeDatatype(ctx)

@@ -1,9 +1,15 @@
-from typing import Optional
+from typing import Optional, List
 from Location import Location
 from Symbol import Symbol
 from Error import CompilerError
-from SymbolTable import SymbolTable, SymbolName
+from SymbolTable import SymbolTable
 from Error import InternalError, getCallerLocation
+from antlr4 import ParserRuleContext
+
+
+class Statement:
+    def __init__(self, ctx: ParserRuleContext):
+        self.ctx = ctx
 
 
 class Scope:
@@ -12,17 +18,12 @@ class Scope:
         self.parentScope = parentScope
         self.terminated = False
         self.location = location
+        self.statements: List[Statement] = []
 
     def defineSymbol(self, symbol: Symbol, loc: Location):
-        if not isinstance(symbol.name, SymbolName):
-            raise InternalError("Symbol must have SymbolName", getCallerLocation())
         self.symbolTable.insert(symbol, loc)
 
-    def tryLookupSymbol(
-        self, name: str | SymbolName, loc: Location
-    ) -> Optional[Symbol]:
-        if isinstance(name, str):
-            name = SymbolName(name)
+    def tryLookupSymbol(self, name: str, loc: Location) -> Optional[Symbol]:
         symbol = self.symbolTable.tryLookup(name, loc)
         if symbol:
             return symbol
@@ -31,9 +32,7 @@ class Scope:
             return self.parentScope.tryLookupSymbol(name, loc)
         return None
 
-    def lookupSymbol(self, name: str | SymbolName, loc: Location):
-        if isinstance(name, str):
-            name = SymbolName(name)
+    def lookupSymbol(self, name: str, loc: Location):
         symbol = self.symbolTable.tryLookup(name, loc)
         if symbol:
             return symbol
@@ -50,11 +49,8 @@ class Scope:
     def isTerminated(self):
         return self.terminated
 
-    def print(self):
-        self.symbolTable.print()
-
     def __str__(self):
-        return f"Scope({self.location})"
+        return f"Scope({self.location}):\n{self.symbolTable}"
 
     def __repr__(self):
         return self.__str__()

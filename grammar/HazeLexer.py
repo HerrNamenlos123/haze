@@ -203,3 +203,7 @@ class HazeLexer(Lexer):
         self._predicates = None
 
 
+    def custom_method(self):
+      print("Custom method called!")
+
+

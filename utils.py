@@ -96,11 +96,12 @@ def getObjectAttributes(self, ctx):
     for attr in ctx.objectattribute():
         att = self.getNodeObjectAttribute(attr)
         attributes.append(att)
-        memberSymbol = VariableSymbol(
-            SymbolName(att.name),
-            att.declaredType,
-            VariableType.MutableStructField,
-        )
+        # memberSymbol = VariableSymbol(
+        #     att.name,
+        #     None,
+        #     att.declaredType,
+        #     VariableType.MutableStructField,
+        # )
     return attributes
 
 
@@ -126,7 +127,7 @@ def getNamedObjectAttributes(self, ctx):
 
         field = None
         for f in getStructFields(datatype):
-            if f.name.name == att.name:
+            if f.name == att.name:
                 field = f
                 break
 
@@ -147,20 +148,28 @@ def resolveGenerics(datatype: Datatype, scope: Scope, loc: Location):
     match datatype.variant:
         case Datatype.Variants.GenericPlaceholder:
             symbol = scope.lookupSymbol(datatype.name, loc)
+            if symbol.type.isGeneric():
+                return datatype
             return symbol.type
 
         case Datatype.Variants.Struct:
-            d = copy.deepcopy(datatype)
+            d = datatype.deepcopy()
             for field in getStructFields(datatype):
                 newType = resolveGenerics(field.type, scope, loc)
-                d.structMemberSymbols.symbols[field.name].type = newType
+                d.structMemberSymbols.setSymbol(
+                    field.name,
+                    VariableSymbol(
+                        field.name, field.parentSymbol, newType, field.variableType
+                    ),
+                )
             for i in range(len(d.generics)):
                 s = scope.lookupSymbol(d.generics[i][0], loc)
-                d.generics[i] = (s.name.name, s.type)
+                if not s.type.isGeneric():
+                    d.generics[i] = (s.name, s.type)
             return d
 
         case Datatype.Variants.Function:
-            f = copy.deepcopy(datatype)
+            f = datatype.deepcopy()
             if (
                 not f.isFunction()
                 or f.functionReturnType is None
@@ -174,7 +183,7 @@ def resolveGenerics(datatype: Datatype, scope: Scope, loc: Location):
             return f
 
         case Datatype.Variants.Pointer:
-            p = copy.deepcopy(datatype)
+            p = datatype.deepcopy()
             if p.pointee is None:
                 raise UnreachableCode()
             p.pointee = resolveGenerics(p.pointee, scope, loc)

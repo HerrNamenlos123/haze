@@ -3,189 +3,215 @@ from typing import Optional, List, Tuple, Dict
 from Symbol import (
     VariableSymbol,
     VariableType,
-    FunctionSymbol,
     DatatypeSymbol,
     GenericPlaceholderSymbol,
 )
-from Error import CompilerError, InternalError
+from FunctionSymbol import FunctionSymbol
+from Error import CompilerError, InternalError, ImpossibleSituation
 from Scope import Scope
 from Location import Location
 from CompilationDatabase import CompilationDatabase
-from grammar import HazeParser
+from grammar.HazeParser import HazeParser
 from utils import implGenericDatatype
 from Namespace import Namespace
 from SymbolName import SymbolName
 from Datatype import Datatype, FunctionLinkage
+from Program import Program, ExternFunctionRef
+from utils import resolveGenerics
 
 
 class SymbolCollector(AdvancedBaseVisitor):
     def __init__(self, filename, db):
         super().__init__(filename, db)
-        self.currentExternBlockLanguage: Optional[str] = None
-        self.structStack: List[Tuple[str, List[str]]] = []
+        self.program = Program()
+        self.currentLinkage: Optional[FunctionLinkage] = None
+        self.structStack: List[DatatypeSymbol] = []
+        self.currentFunctionSymbols: List[FunctionSymbol] = []
 
     def visitParam(self, ctx):
-        self.useCurrentNodeScope(ctx)
-        self.visitChildren(ctx)
-        if not self.currentExternBlockLanguage:
-            self.setNodeDatatype(ctx, self.getNodeDatatype(ctx.datatype()))
-            symbol = VariableSymbol(
-                SymbolName(ctx.ID().getText()),
-                self.getNodeDatatype(ctx),
-                VariableType.Parameter,
-            )
-            self.db.getCurrentScope().defineSymbol(symbol, self.getLocation(ctx))
-            self.setNodeSymbol(ctx, symbol)
+        return ctx.ID().getText(), self.visit(ctx.datatype())
 
-    def visitGenericDatatype(self, ctx: HazeParser.HazeParser.GenericDatatypeContext):
-        implGenericDatatype(self, ctx, True, False)
-
-    def visitFunctionDatatype(self, ctx):
-        self.useCurrentNodeScope(ctx)
-        self.visitChildren(ctx)
-        if not ctx.functype().returntype():
+    def visitGenericDatatype(self, ctx: HazeParser.GenericDatatypeContext):
+        name = ctx.ID().getText()
+        foundSymbol = self.db.getCurrentScope().tryLookupSymbol(
+            name, self.getLocation(ctx)
+        )
+        if not foundSymbol:
             raise CompilerError(
-                "Function datatype must have an explicit return type.",
+                f"Type '{name}' is not defined.",
                 self.getLocation(ctx),
             )
-        self.setNodeDatatype(
-            ctx,
-            Datatype.createFunctionType(
-                self.getParamTypes(ctx.functype().params()),
-                self.getNodeDatatype(ctx.functype().returntype()),
-            ),
+
+        genericsProvided = [self.visit(n) for n in ctx.datatype()]
+
+        if len(foundSymbol.type.generics) != len(genericsProvided):
+            raise CompilerError(
+                f"Datatype expected {len(foundSymbol.type.generics)} generic arguments but got {len(genericsProvided)}.",
+                self.getLocation(ctx),
+            )
+        return resolveGenerics(
+            foundSymbol.type, self.db.getCurrentScope(), self.getLocation(ctx)
+        )
+
+    def visitFunctionDatatype(self, ctx):
+        params = []
+        for param in ctx.functype().params().param():
+            params.append(self.visit(param))
+
+        return Datatype.createFunctionType(
+            params,
+            self.visit(ctx.functype().returntype()),
         )
 
     def visitExternblock(self, ctx):
         lang = ctx.externlang().getText()[1:-1]
-        if lang != "C":
-            raise CompilerError(
-                f"Extern Language '{lang}' is not supported.",
-                self.getLocation(ctx.externlang()),
-            )
-        self.setNodeExternlang(ctx, lang)
-        self.currentExternBlockLanguage = lang
-        self.visitChildren(ctx)
-        self.currentExternBlockLanguage = None
+        match lang:
+            case "C":
+                if self.currentLinkage:
+                    raise CompilerError(
+                        "Extern blocks cannot be nested",
+                        self.getLocation(ctx),
+                    )
+                self.currentLinkage = FunctionLinkage.External_C
+                self.visitChildren(ctx)
+                self.currentLinkage = None
+            case _:
+                raise CompilerError(
+                    f"Extern Language '{lang}' is not supported.",
+                    self.getLocation(ctx.externlang()),
+                )
 
-    def visitCompilationhint(self, ctx):
-        self.visitChildren(ctx)
-        lang = ctx.compilationlang().getText()[1:-1]
-        if lang != "C":
-            raise CompilerError(
-                f"Compilation Language '{lang}' is not supported.",
-                self.getLocation(ctx),
-            )
+    # def visitCompilationhint(self, ctx):
+    #     self.visitChildren(ctx)
+    #     lang = ctx.compilationlang().getText()[1:-1]
+    #     if lang != "C":
+    #         raise CompilerError(
+    #             f"Compilation Language '{lang}' is not supported.",
+    #             self.getLocation(ctx),
+    #         )
 
-        filename = ctx.compilationhintfilename().getText()[1:-1]
-        flags: str = ""
-        if ctx.compilationhintflags():
-            flags = ctx.compilationhintflags().getText()[1:-1]
+    #     filename = ctx.compilationhintfilename().getText()[1:-1]
+    #     flags: str = ""
+    #     if ctx.compilationhintflags():
+    #         flags = ctx.compilationhintflags().getText()[1:-1]
 
-        self.db.defineExternalCompilationUnit(filename, lang, flags.split(" "))
-        self.setNodeCompilationHintFilename(ctx, filename)
+    #     self.db.defineExternalCompilationUnit(filename, lang, flags.split(" "))
+    #     self.setNodeCompilationHintFilename(ctx, filename)
 
-    def visitLinkerhint(self, ctx):
-        self.useCurrentNodeScope(ctx)
-        self.visitChildren(ctx)
-        self.db.addExternalLinkerFlags(ctx.STRING_LITERAL().getText().split(" "))
+    # def visitLinkerhint(self, ctx):
+    #     self.useCurrentNodeScope(ctx)
+    #     self.visitChildren(ctx)
+    #     self.db.addExternalLinkerFlags(ctx.STRING_LITERAL().getText().split(" "))
 
     def visitReturntype(self, ctx):
-        self.useCurrentNodeScope(ctx)
-        self.visitChildren(ctx)
-        self.setNodeDatatype(ctx, self.getNodeDatatype(ctx.datatype()))
+        return self.visit(ctx.datatype())
 
-    def visitExternfuncdef(self, ctx):
-        self.visitChildren(ctx)
+    def visitExternfuncdef(self, ctx: HazeParser.ExternfuncdefContext):
+        if not self.currentLinkage:
+            raise ImpossibleSituation()
+
         signature = [n.getText() for n in ctx.ID()]
-        returntype = (
-            self.getNodeDatatype(ctx.returntype())
-            if ctx.returntype()
-            else self.db.getBuiltinDatatype("none")
-        )
-        functionDatatype = Datatype.createFunctionType(
-            self.getParamTypes(ctx.params()), returntype
-        )
+        if len(signature) > 1 and self.currentLinkage == FunctionLinkage.External_C:
+            raise CompilerError(
+                "Extern C functions cannot be namespaced", self.getLocation(ctx)
+            )
 
         if len(signature) > 1:
-            raise InternalError("External Namespaces are not implemented yet!")
+            raise InternalError(
+                "Namespacing for external function is not implemented yet"
+            )
 
-        functionType = FunctionLinkage.Haze
-        if not self.currentExternBlockLanguage:
-            raise InternalError("Extern func def must have external language")
-
-        if self.currentExternBlockLanguage == "C":
-            functionType = FunctionLinkage.External_C
-
+        name = signature[-1]
         symbol = FunctionSymbol(
-            SymbolName(signature[-1]),
-            functionDatatype,
-            functionType,
-        )
-        self.db.getGlobalScope().defineSymbol(symbol, self.getLocation(ctx))
-        self.setNodeSymbol(ctx, symbol)
-        self.setNodeDatatype(ctx, symbol.type)
-        if self.currentExternBlockLanguage:
-            self.setNodeExternlang(ctx, self.currentExternBlockLanguage)
-        self.db.defineExternFunctionRef(
-            self.currentExternBlockLanguage, self.getLocation(ctx), symbol
+            name,
+            None,
+            Datatype.createFunctionType(
+                [], Datatype.createPrimitiveType(Datatype.PrimitiveVariants.none)
+            ),
+            self.currentLinkage,
+            None,
+            ctx,
         )
 
-    def visitFuncbody(self, ctx):
-        # This intentionally skips all children, to only process function declarations without bodies (yet)
-        pass
+        for i in range(len(ctx.params().param())):
+            name, datatype = self.visit(ctx.params().param()[i])
+            symbol.type.functionParameters.append((name, datatype))
 
-    def implFunc(self, ctx, name: str):
+        self.currentFunctionSymbols.append(symbol)
+        self.visitChildren(ctx)
+        self.currentFunctionSymbols.pop()
+
+        if ctx.returntype():
+            symbol.type.functionReturnType = self.visit(ctx.returntype())
+
+        self.program.globalSymbols.insert(symbol, self.getLocation(ctx))
+        self.program.externFunctionRefs.append(
+            ExternFunctionRef(FunctionLinkage.External_C, self.getLocation(ctx), symbol)
+        )
+
+    def implFunc(
+        self,
+        ctx: (
+            HazeParser.FuncContext
+            | HazeParser.NamedfuncContext
+            | HazeParser.StructFuncDeclContext
+        ),
+        name: str,
+    ):
         scope = self.db.pushScope(
             Scope(self.getLocation(ctx), self.db.getCurrentScope())
         )
-        self.setNodeScope(ctx, scope)
 
-        self.visitChildren(ctx)
-        rtype = self.db.getBuiltinDatatype("unknown")
-        if ctx.returntype():
-            rtype = self.getNodeDatatype(ctx.returntype())
+        if self.currentLinkage:
+            raise ImpossibleSituation()
 
-        functype = Datatype.createFunctionType(self.getParamTypes(ctx.params()), rtype)
-        namespaces = []
-        if len(self.structStack) > 0:
-            # functype.generics = (self.structStack[-1][1], None)
-            namespaces.append(self.structStack[-1][0])
         symbol = FunctionSymbol(
-            SymbolName(name, namespaces),
-            functype,
+            name,
+            self.structStack[-1] if len(self.structStack) > 0 else None,
+            Datatype.createFunctionType([], Datatype.createDeferredType()),
             FunctionLinkage.Haze,
+            scope,
+            ctx,
         )
-        symbol.ctx = ctx
-        self.db.getGlobalScope().defineSymbol(symbol, self.getLocation(ctx))
+        self.setNodeSymbol(ctx, symbol)
 
-        if rtype.isUnknown():
-            if len(self.structStack) > 0 and name == "constructor":
-                rtype = Datatype.createDeferredType()
-                f = Datatype.createFunctionType(functype.functionParameters, rtype)
-                symbol.type = f
-            elif ctx.funcbody().expr():
-                rtype = self.getNodeDatatype(ctx.funcbody().expr())
-                f = Datatype.createFunctionType(functype.functionParameters, rtype)
-                symbol.type = f
-
-            elif not ctx.returntype():
-                f = Datatype.createFunctionType(
-                    functype.functionParameters,
-                    self.db.getBuiltinDatatype("none"),
+        for i in range(len(ctx.params().param())):
+            nm, datatype = self.visit(ctx.params().param()[i])
+            symbol.type.functionParameters.append((nm, datatype))
+            if symbol.scope:
+                symbol.scope.defineSymbol(
+                    VariableSymbol(nm, symbol, datatype, VariableType.Parameter),
+                    self.getLocation(ctx),
                 )
-                symbol.type = f
 
-        if len(self.structStack) != 0:
+        symbol.type.functionReturnType = (
+            self.visit(ctx.returntype())
+            if ctx.returntype()
+            else Datatype.createDeferredType()
+        )
+
+        if symbol.type.functionReturnType.isDeferred():
+            if ctx.funcbody().expr():
+                symbol.type.functionReturnType = self.visit(ctx.funcbody().expr())
+
+        if symbol.parentSymbol and symbol.parentSymbol.type.isStruct():
             if name == "constructor":
                 symbol.isConstructor = True
+                if symbol.type.functionReturnType.isDeferred():
+                    symbol.type.functionReturnType = symbol.parentSymbol.type
+                else:
+                    raise CompilerError(
+                        f"Constructor of struct '{symbol.parentSymbol.name}' returns the struct itself implicitly",
+                        self.getLocation(ctx),
+                    )
             else:
-                symbol.thisPointerType = Datatype.createDeferredType()
+                symbol.thisPointerType = Datatype.createPointerDatatype(
+                    symbol.parentSymbol.type
+                )
+        self.program.globalSymbols.insert(symbol, self.getLocation(ctx))
 
         self.db.popScope()
-
-        self.setNodeSymbol(ctx, symbol)
-        self.setNodeDatatype(ctx, symbol.type)
+        return symbol
 
     def visitFunc(self, ctx):
         return self.implFunc(ctx, self.db.makeAnonymousFunctionName())
@@ -194,50 +220,44 @@ class SymbolCollector(AdvancedBaseVisitor):
         return self.implFunc(ctx, ctx.ID().getText())
 
     def visitStructFieldDecl(self, ctx):
-        self.visitChildren(ctx)
         name = ctx.ID().getText()
-        type = self.getNodeDatatype(ctx.datatype())
-
-        memberSymbol = VariableSymbol(
-            SymbolName(name),
-            type,
+        datatype = self.visit(ctx.datatype())
+        return VariableSymbol(
+            name,
+            self.structStack[-1],
+            datatype,
             VariableType.MutableStructField,
         )
-        self.db.getCurrentScope().defineSymbol(memberSymbol, self.getLocation(ctx))
-        self.setNodeSymbol(ctx, memberSymbol)
 
     def visitStructDecl(self, ctx):
         name = ctx.ID().getText()
-        scope = self.db.pushScope(
-            Scope(self.getLocation(ctx), self.db.getCurrentScope())
-        )
-        self.setNodeScope(ctx, scope)
+        parentScope = self.db.getCurrentScope()
+        scope = self.db.pushScope(Scope(self.getLocation(ctx), parentScope))
 
         genericsList = []
         if ctx.generictypelist():
             genericsList = [n.getText() for n in ctx.generictypelist().ID()]
 
         for generic in genericsList:
-            scope.defineSymbol(
-                GenericPlaceholderSymbol(SymbolName(generic)), self.getLocation(ctx)
-            )
+            scope.defineSymbol(GenericPlaceholderSymbol(generic), self.getLocation(ctx))
 
-        self.structStack.append((name, genericsList))
-        self.visitChildren(ctx)
-        self.structStack.pop()
+        symbol = DatatypeSymbol(
+            name,
+            self.structStack[-1] if len(self.structStack) > 0 else None,
+            Datatype.createStructDatatype(name, genericsList),
+        )
+        parentScope.defineSymbol(symbol, self.getLocation(ctx))
 
-        structtype = Datatype.createStructDatatype(SymbolName(name), genericsList)
+        self.structStack.append(symbol)
+
         for content in ctx.structcontent():
-            structtype.structMemberSymbols.insert(
-                self.getNodeSymbol(content), self.getLocation(ctx)
+            symbol.type.structMemberSymbols.insert(
+                self.visit(content), self.getLocation(ctx)
             )
 
-        symbol = DatatypeSymbol(SymbolName(name), structtype)
-        self.setNodeSymbol(ctx, symbol)
+        self.structStack.pop()
         self.db.popScope()
-        self.db.getCurrentScope().defineSymbol(symbol, self.getLocation(ctx))
-        self.setNodeDatatype(ctx, symbol.type)
 
     def visitStructFuncDecl(self, ctx):
         name = ctx.ID().getText()
-        self.implFunc(ctx, name)
+        return self.implFunc(ctx, name)

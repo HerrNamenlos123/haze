@@ -3,7 +3,8 @@ from CompilationDatabase import CompilationDatabase, ObjAttribute
 from typing import Optional, List, Dict
 from grammar import HazeParser
 from Datatype import Datatype, implicitConversion, FunctionLinkage
-from Symbol import DatatypeSymbol, FunctionSymbol, VariableSymbol
+from Symbol import DatatypeSymbol, VariableSymbol
+from FunctionSymbol import FunctionSymbol
 from Error import CompilerError, InternalError, UnreachableCode
 from Namespace import Namespace
 from SymbolTable import SymbolTable, getStructFunctions, getStructFields
@@ -131,6 +132,7 @@ class CodeGenerator(AdvancedBaseVisitor):
         scope = self.getNodeScope(ctx)
         self.db.pushScope(scope)
         self.pushCurrentFunction(symbol)
+        print("gen ", symbol)
         self.visitChildren(ctx)
 
         if ctx.funcbody().body():  # Normal function

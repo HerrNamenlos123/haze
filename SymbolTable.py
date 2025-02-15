@@ -1,53 +1,66 @@
 from Error import CompilerError, InternalError, getCallerLocation
-from typing import Optional, Dict, List
-from Symbol import Symbol, VariableSymbol, FunctionSymbol
+from typing import Optional, List
+from Symbol import Symbol, VariableSymbol
 from Location import Location
-from SymbolName import SymbolName
 from Datatype import Datatype
 
 
 class SymbolTable:
     def __init__(self):
-        self.symbols: Dict[SymbolName, Symbol] = {}
+        self.symbols: List[Symbol] = []
 
     def insert(self, symbol: Symbol, loc: Location):
         if symbol.name in self.symbols:
             raise CompilerError(
                 f"Symbol '{symbol.name}' is already declared in this scope", loc
             )
-        self.symbols[symbol.name] = symbol
+        self.symbols.append(symbol)
 
-    def tryLookup(self, name: SymbolName, loc: Location) -> Optional[Symbol]:
-        if name in self.symbols:  # Exact match
-            return self.symbols[name]
+    def tryLookup(self, name: str, loc: Location) -> Optional[Symbol]:
+        for s in self.symbols:
+            if s.name == name:
+                return s
 
-        if name.namespaces:  # Cannot proceed if namespaces are mentioned
-            return None
+        # if name.namespaces:  # Cannot proceed if namespaces are mentioned
+        #     return None
 
-        # IF no namespaces (only lone name), try to match and see it it's unambiguous
-        found = None
-        for symbolName, symbol in self.symbols.items():
-            if symbolName.name == name.name:
-                if not found:
-                    found = symbol
-                else:
-                    raise CompilerError(
-                        f"Symbol '{name}' is ambiguous in this context", loc
-                    )
-        return found
+        # # IF no namespaces (only lone name), try to match and see it it's unambiguous
+        # found = None
+        # for symbolName, symbol in self.symbols.items():
+        #     if symbolName.name == name.name:
+        #         if not found:
+        #             found = symbol
+        #         else:
+        #             raise CompilerError(
+        #                 f"Symbol '{name}' is ambiguous in this context", loc
+        #             )
+        # return found
+        return None
 
     def getFiltered(self, type) -> List:
         funcs = []
-        for symbol in self.symbols.values():
+        for symbol in self.symbols:
             if isinstance(symbol, type):
                 funcs.append(symbol)
         return funcs
 
-    def print(self):
-        for symbol in self.symbols.values():
-            print(
-                f" * {symbol.name}: {symbol.type.getDisplayName()} [{'mutable' if symbol.isMutable() else 'const'}]"
-            )
+    def setSymbol(self, name: str, symbol: Symbol):
+        for i in range(len(self.symbols)):
+            if self.symbols[i].name == name:
+                self.symbols[i] = symbol
+                return
+        raise InternalError("Could not find symbol to set: " + name)
+
+    def __str__(self):
+        out = ""
+        for symbol in self.symbols:
+            out += f" * {symbol} [{'mutable' if symbol.isMutable() else 'const'}]\n"
+        if len(out) == 0:
+            out = "[No symbols]"
+        return out
+
+    def __repr__(self):
+        return self.__str__()
 
 
 def getStructFields(struct: Datatype):
@@ -63,6 +76,8 @@ def getStructFields(struct: Datatype):
 
 
 def getStructFunctions(struct: Datatype):
+    from FunctionSymbol import FunctionSymbol
+
     if not struct.isStruct():
         raise InternalError("Not a struct", getCallerLocation())
 

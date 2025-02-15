@@ -281,6 +281,10 @@ class HazeParser ( Parser ):
 
 
 
+    def custom_method(self):
+      print("Custom method called!")
+
+
 
     class ProgContext(ParserRuleContext):
         __slots__ = 'parser'
