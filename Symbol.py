@@ -21,7 +21,6 @@ class Symbol:
         self.parentSymbol = parentSymbol
         self.type = type
         self.ctx = ctx
-        self.fullyAnalyzed = False
 
     def isMutable(self) -> bool:
         return False
@@ -86,7 +85,6 @@ class GenericPlaceholderSymbol(Symbol):
         s = GenericPlaceholderSymbol(
             self.name,
         )
-        s.fullyAnalyzed = self.fullyAnalyzed
         return s
 
 
@@ -99,6 +97,15 @@ class DatatypeSymbol(Symbol):
 
     def __repr__(self):
         return self.__str__()
+
+    def __deepcopy__(self, memo):
+        s = DatatypeSymbol(
+            self.name,
+            self.parentSymbol,
+            self.type,
+        )
+        s.ctx = self.ctx
+        return s
 
 
 class ConstantSymbol(Symbol):

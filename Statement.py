@@ -21,3 +21,9 @@ class ReturnStatement(Statement):
     def __init__(self, expr: Optional[Expression], ctx: ParserRuleContext):
         super().__init__(ctx)
         self.expr = expr
+
+
+class ExprStatement(Statement):
+    def __init__(self, expr: Expression, ctx: ParserRuleContext):
+        super().__init__(ctx)
+        self.expr = expr
