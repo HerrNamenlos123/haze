@@ -4,7 +4,7 @@ from Datatype import Datatype
 from typing import Dict, List, Tuple
 from SymbolName import SymbolName
 from CompilationDatabase import ObjAttribute
-from Symbol import VariableSymbol, VariableType
+from Symbol import VariableSymbol, VariableType, DatatypeSymbol
 from FunctionSymbol import FunctionSymbol
 from SymbolTable import SymbolTable, getStructMethods, getStructFields
 from Scope import Scope
@@ -145,6 +145,19 @@ def getNamedObjectAttributes(self, ctx):
     return attributes
 
 
+def defineGenericsInScope(generics: List[Tuple[str, Datatype]], scope: Scope):
+    for name, tp in generics:
+        if tp is not None:
+            scope.defineSymbol(
+                DatatypeSymbol(
+                    name,
+                    None,
+                    tp,
+                ),
+                scope.location,
+            )
+
+
 def resolveGenerics(
     datatype: Datatype, scope: Scope, loc: Location, forceResolve: bool = False
 ):
@@ -199,11 +212,17 @@ def resolveGenerics(
         case Datatype.Variants.Function:
             if not datatype.isFunction():
                 raise UnreachableCode()
-            returntype = resolveGenerics(datatype.functionReturnType(), scope, loc)
+            retScope = Scope(loc, scope)
+            defineGenericsInScope(datatype.functionReturnType().generics(), retScope)
+            returntype = resolveGenerics(datatype.functionReturnType(), retScope, loc)
             params: List[Tuple[str, Datatype]] = []
             for i in range(len(datatype.functionParameters())):
+                parScope = Scope(loc, scope)
+                defineGenericsInScope(
+                    datatype.functionParameters()[i][1].generics(), parScope
+                )
                 newType = resolveGenerics(
-                    datatype.functionParameters()[i][1], scope, loc
+                    datatype.functionParameters()[i][1], parScope, loc
                 )
                 params.append(
                     (

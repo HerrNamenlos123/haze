@@ -44,6 +44,7 @@ class FunctionBodyAnalyzer(AdvancedBaseVisitor):
     def __init__(self, program: Program, filename: str, db: CompilationDatabase):
         super().__init__(filename, db)
         self.program = program
+        self.functionStack: List[FunctionSymbol] = []
 
     def visitGenericDatatype(self, ctx: HazeParser.GenericDatatypeContext):
         name = ctx.ID().getText()
@@ -169,20 +170,23 @@ class FunctionBodyAnalyzer(AdvancedBaseVisitor):
             if not symbol.scope:
                 raise InternalError("Function missing scope")
             p = symbol.parentSymbol
-            addedSymbols = []
+            addedSymbols: List[str] = []
+            haveAllGenerics = True
             while p is not None:
                 for i in range(len(p.type.generics())):
                     tp = p.type.generics()[i][1]
                     if not tp:
-                        raise InternalError(
-                            "Function in Semantic Analyzer should already have resolved generics"
-                        )
+                        haveAllGenerics = False
+                        break
                     symbol.scope.defineSymbol(
                         DatatypeSymbol(p.type.generics()[i][0], None, tp),
                         self.getLocation(ctx),
                     )
                     addedSymbols.append(p.type.generics()[i][0])
                 p = p.parentSymbol
+
+            if not haveAllGenerics:
+                return
 
             loc = self.getLocation(ctx)
             scope = symbol.scope
@@ -207,6 +211,7 @@ class FunctionBodyAnalyzer(AdvancedBaseVisitor):
                 raise ImpossibleSituation()
 
             self.db.pushScope(symbol.scope)
+            self.functionStack.append(symbol)
 
             returnedTypes: Dict[str, Datatype] = {}
             for statement in self.visit(ctx.funcbody()):  # type: ignore
@@ -220,21 +225,23 @@ class FunctionBodyAnalyzer(AdvancedBaseVisitor):
                 if symbol.scope:
                     symbol.scope.purgeSymbol(sym)
 
-            returntype: Datatype = symbol.type.functionReturnType()
-            if len(returnedTypes.keys()) > 1:
-                raise CompilerError(
-                    f"Cannot deduce return type. Multiple return types: {', '.join(returnedTypes.keys())}",
-                    self.getLocation(ctx),
+            if not ctx.returntype():
+                returntype: Datatype = symbol.type.functionReturnType()
+                if len(returnedTypes.keys()) > 1:
+                    raise CompilerError(
+                        f"Cannot deduce return type. Multiple return types: {', '.join(returnedTypes.keys())}",
+                        self.getLocation(ctx),
+                    )
+                elif len(returnedTypes.keys()) == 1:
+                    returntype = next(iter(returnedTypes.values()))
+                else:
+                    returntype = self.db.getBuiltinDatatype("none")
+
+                symbol.type = Datatype.createFunctionType(
+                    symbol.type.functionParameters(), returntype
                 )
-            elif len(returnedTypes.keys()) == 1:
-                returntype = next(iter(returnedTypes.values()))
-            else:
-                returntype = self.db.getBuiltinDatatype("none")
 
-            symbol.type = Datatype.createFunctionType(
-                symbol.type.functionParameters(), returntype
-            )
-
+            self.functionStack.pop()
             self.db.popScope()
             self.setNodeSymbol(ctx, symbol)
             self.program.resolvedFunctions[symbol.getMangledName()] = symbol
@@ -252,6 +259,13 @@ class FunctionBodyAnalyzer(AdvancedBaseVisitor):
 
     def visitFuncbody(self, ctx):
         if ctx.expr():
+            expr: Expression = self.visit(ctx.expr())
+            implicitConversion(
+                expr.type,
+                self.functionStack[-1].type.functionReturnType(),
+                "",
+                self.getLocation(ctx),
+            )
             return [ReturnStatement(ctx.expr(), ctx)]
         else:
             return [self.visit(s) for s in ctx.body().statement()]
@@ -411,8 +425,21 @@ class FunctionBodyAnalyzer(AdvancedBaseVisitor):
 
     def visitReturnStatement(self, ctx):
         if ctx.expr():
-            return ReturnStatement(self.visit(ctx.expr()), ctx)
+            expr: Expression = self.visit(ctx.expr())
+            implicitConversion(
+                expr.type,
+                self.functionStack[-1].type.functionReturnType(),
+                "",
+                self.getLocation(ctx),
+            )
+            return ReturnStatement(expr, ctx)
         else:
+            implicitConversion(
+                self.db.getBuiltinDatatype("none"),
+                self.functionStack[-1].type.functionReturnType(),
+                "",
+                self.getLocation(ctx),
+            )
             return ReturnStatement(None, ctx)
 
     def visitIfStatement(self, ctx):
@@ -585,5 +612,4 @@ def performSemanticAnalysis(program: Program, filename: str, db: CompilationData
     # Define all global methods
     for symbol in program.globalScope.symbolTable.symbols:
         if isinstance(symbol, FunctionSymbol):
-            if not symbol.type.isGeneric():
-                analyzeFunctionSymbol(program, symbol, filename, db)
+            analyzeFunctionSymbol(program, symbol, filename, db)

@@ -305,10 +305,17 @@ class Datatype:
                     s = self._name
                     if self._generics:
                         g = [
-                            f"{gg[0]} = {gg[1]}" if gg[1] else gg[0]
+                            f"{gg[0]}={gg[1]}" if gg[1] else gg[0]
                             for gg in self._generics
                         ]
                         s += f"<{','.join(g)}>"
+                    if self.isStruct():
+                        s += "{"
+                        s += ", ".join(
+                            f"{m.name}: {m.type}"
+                            for m in self.structSymbolTable().symbols
+                        )
+                        s += "}"
                     return s
             case Datatype.Variants.GenericPlaceholder:
                 return self._name
@@ -595,7 +602,7 @@ def implicitConversion(_from: Datatype, to: Datatype, expr: str, loc: Location) 
         if len(a_list) != len(b_list):
             raise CompilerError(
                 f"No implicit conversion from '{_from.getDisplayName()}' to '{
-                    to.getDisplayName()}'",
+                    to.getDisplayName()}': different number of fields",
                 loc,
             )
 

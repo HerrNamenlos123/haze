@@ -19,9 +19,9 @@ struct Array<T> {
     };
   }
 
-  // toNumber(): i64 {
-  //   return 64;
-  // }
+  toNumber(): i64 {
+    return 64;
+  }
 }
 
 a() {
@@ -107,17 +107,17 @@ x(fn: () => none): () => none {
   return fn;
 }
 
-// test5(s: stringview, num: u64): Array<i32> {
-//   return String {
-//     .test1: 2,
-//     .other: "Test",
-//   };
-// }
+test5(s: stringview, num: Array<u32>): Array<i32> {
+  return String {
+    .test1: 2,
+    .other: "Test",
+  };
+}
 
 main(): i32 {
   printf("Hello world!\n");
-  // const a = test5("test", 0);
+  const a = test5("test", 0);
   // a.test(a);
-  // return a.toNumber();
+  return a.toNumber();
   return 0;
 }

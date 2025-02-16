@@ -94,12 +94,6 @@ class DatatypeSymbol(Symbol):
 
     def __str__(self):
         s = f"Type {self.name} = {self.type}"
-        if self.type.isStruct():
-            s += " { "
-            s += ", ".join(
-                f"{m.name}: {m.type}" for m in self.type.structSymbolTable().symbols
-            )
-            s += " }"
         return s
 
     def __repr__(self):
