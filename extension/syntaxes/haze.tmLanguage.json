@@ -1,0 +1,144 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "haze",
+  "patterns": [
+    {
+      "include": "#keywords"
+    },
+    {
+      "include": "#strings"
+    },
+    {
+      "include": "#hints"
+    },
+    {
+      "include": "#comments"
+    },
+    {
+      "include": "#constants"
+    },
+    {
+      "include": "#datatypes"
+    },
+    {
+      "include": "#variables"
+    },
+    {
+      "include": "#functions"
+    }
+  ],
+  "repository": {
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.haze",
+          "match": "\\b(extern|const|let|if|else|while|do|for|return)\\b"
+        },
+        {
+          "name": "keyword.operator.new",
+          "match": "\\b(new|drop)\\b"
+        },
+        {
+          "name": "keyword.struct.haze",
+          "match": "\\b(struct)\\b"
+        },
+        {
+          "match": "\\b(is|not)\\b",
+          "name": "keyword.operator.expression"
+        }
+      ]
+    },
+    "strings": {
+      "name": "string.quoted.double.haze",
+      "begin": "\"",
+      "end": "\"",
+      "patterns": [
+        {
+          "name": "constant.character.escape.haze",
+          "match": "\\\\."
+        }
+      ]
+    },
+    "hints": {
+      "patterns": [
+        {
+          "name": "keyword.control.export.ts",
+          "match": "#compile(?=\\s*\".*\")"
+        },
+        {
+          "name": "keyword.control.import.ts",
+          "match": "import "
+        },
+        {
+          "name": "keyword.control.import.ts",
+          "match": " from "
+        },
+        {
+          "name": "keyword.control.export.ts",
+          "match": "#link(?=\\s*\".*\")"
+        }
+      ]
+    },
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.double-slash.haze",
+          "match": "//.*"
+        },
+        {
+          "name": "comment.block.haze",
+          "begin": "/\\*",
+          "end": "\\*/"
+        }
+      ]
+    },
+    "functions": {
+      "patterns": [
+        {
+          "name": "meta.function-call.haze",
+          "match": "\\b([a-zA-Z_][a-zA-Z0-9_]*)\\b(?=\\s*\\()"
+        }
+      ]
+    },
+    "variables": {
+      "patterns": [
+        {
+          "name": "variable.other.readwrite.haze",
+          "match": "\\blet\\s+([a-zA-Z_][a-zA-Z0-9_]*)\\b"
+        },
+        {
+          "name": "variable.other.readwrite.haze",
+          "match": "\\bconst\\s+([a-zA-Z_][a-zA-Z0-9_]*)\\b"
+        },
+        {
+          "name": "variable.other.member.haze",
+          "match": "\\.[a-zA-Z_][a-zA-Z_0-9]*\\s*:"
+        }
+      ]
+    },
+    "constants": {
+      "patterns": [
+        {
+          "name": "constant.numeric.haze",
+          "match": "\\b\\d+\\b"
+        },
+        { "match": "\\b(true)\\b", "name": "constant.language.boolean.true.ts" },
+        { "match": "\\b(false)\\b", "name": "constant.language.boolean.false.ts" }
+      ]
+    },
+    "datatypes": {
+      "patterns": [
+        {
+          "name": "support.type.primitive.haze",
+          "match": "\\b(i8|i16|i32|i64|u8|u16|u32|u64|stringview|String|boolean)\\b"
+        },
+        {
+          "name": "support.type.builtin.haze",
+          "match": "\\b(none|unknown)\\b"
+        }
+      ]
+    }
+  },
+  "scopeName": "source.hz",
+  "REMEMBER_FOR_ME": ["keyword.operator.type.haze", "variable.parameter.ts"]
+}
