@@ -234,11 +234,6 @@ class HazeVisitor(ParseTreeVisitor):
         return self.visitChildren(ctx)
 
 
-    # Visit a parse tree produced by HazeParser#GenericTypeList.
-    def visitGenericTypeList(self, ctx:HazeParser.GenericTypeListContext):
-        return self.visitChildren(ctx)
-
-
     # Visit a parse tree produced by HazeParser#StructDecl.
     def visitStructDecl(self, ctx:HazeParser.StructDeclContext):
         return self.visitChildren(ctx)

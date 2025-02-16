@@ -21,11 +21,11 @@ struct Array<T> {
 }
 
 a() {
-  Array.test();
-  // const s = Array<i32> {
-  //   .data: 0,
-  //   .length: 0,
-  // };
+  // Array<i32>.test();
+  const s = Array<i32> {
+    .data: 0,
+    .length: 0,
+  };
   // s.test(s);
 }
 

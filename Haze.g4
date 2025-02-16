@@ -2,8 +2,8 @@ grammar Haze;
 
 prog: (namedfunc | externblock | compilationhint | linkerhint | structdecl)*;
 
-namedfunc: ID (generictypelist)? '(' params ')' (':' returntype)? funcbody;
-func: (generictypelist)? '(' params ')' (':' returntype)? funcbody;
+namedfunc: ID '(' params ')' (':' returntype)? funcbody;
+func: '(' params ')' (':' returntype)? funcbody;
 
 funcbody: ('=>')? '{' body '}' | '=>' expr;
 body: (statement)*;
@@ -47,7 +47,7 @@ expr
     | expr ('=='|'!='|'is'|('is' 'not')) expr                   #BinaryExpr
     | expr ('and'|'or') expr                                    #BinaryExpr
     | func                                                      #FuncRefExpr
-    | ID                                                        #SymbolValueExpr
+    | ID ('<' datatype (',' datatype)* '>')?                    #SymbolValueExpr
     | constant                                                  #ConstantExpr
     ;
 
@@ -74,12 +74,8 @@ structcontent
     | ID '(' params ')' (':' returntype)? funcbody           #StructFuncDecl
     ;
 
-generictypelist
-    : '<' ID (',' ID)* '>'              #GenericTypeList
-    ;
-
 structdecl
-    : 'struct' ID (generictypelist)? '{' (structcontent)* '}'      #StructDecl
+    : 'struct' ID ('<' datatype (',' datatype)* '>')? '{' (structcontent)* '}'      #StructDecl
     ;
 
 // Types

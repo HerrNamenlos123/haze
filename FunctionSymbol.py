@@ -5,6 +5,7 @@ from antlr4 import ParserRuleContext
 from typing import Optional, List
 from Scope import Scope
 from Error import InternalError
+from Statement import Statement
 
 
 class FunctionSymbol(Symbol):
@@ -23,6 +24,7 @@ class FunctionSymbol(Symbol):
         self.scope = scope
         self.functionLinkage = functionLinkage
         self.returnedTypes: List[Datatype] = []
+        self.statements: List[Statement] = []
 
     def __str__(self):
         s = ""

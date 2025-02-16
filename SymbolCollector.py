@@ -239,10 +239,7 @@ class SymbolCollector(AdvancedBaseVisitor):
         parentScope = self.db.getCurrentScope()
         scope = self.db.pushScope(Scope(self.getLocation(ctx), parentScope))
 
-        genericsList = []
-        if ctx.generictypelist():
-            genericsList = [n.getText() for n in ctx.generictypelist().ID()]
-
+        genericsList = [n.getText() for n in ctx.datatype()]
         for generic in genericsList:
             scope.defineSymbol(GenericPlaceholderSymbol(generic), self.getLocation(ctx))
 

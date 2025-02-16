@@ -1,7 +1,7 @@
 from AdvancedBaseVisitor import AdvancedBaseVisitor
 from CompilationDatabase import CompilationDatabase, ObjAttribute
 from grammar.HazeParser import HazeParser
-from typing import Optional, List
+from typing import Optional, List, Tuple, Dict
 from Datatype import Datatype, FunctionLinkage
 from Symbol import DatatypeSymbol, VariableSymbol, VariableType, StructMemberSymbol
 from FunctionSymbol import FunctionSymbol
@@ -27,7 +27,7 @@ from Expression import (
 )
 from Datatype import implicitConversion
 from Statement import VariableDefinitionStatement, ReturnStatement
-from Expression import MemberAccessExpression
+from Expression import MemberAccessExpression, ExprCallExpression
 
 
 RESERVED_VARIABLE_NAMES = ["this", "context"]
@@ -588,6 +588,7 @@ RESERVED_VARIABLE_NAMES = ["this", "context"]
 class FunctionBodyAnalyzer(AdvancedBaseVisitor):
     def __init__(self, filename: str, db: CompilationDatabase):
         super().__init__(filename, db)
+        # self.functionStack: List[FunctionSymbol] = []
 
     def visitGenericDatatype(self, ctx: HazeParser.GenericDatatypeContext):
         name = ctx.ID().getText()
@@ -607,61 +608,86 @@ class FunctionBodyAnalyzer(AdvancedBaseVisitor):
                 f"Datatype expected {len(foundSymbol.type.generics)} generic arguments but got {len(genericsProvided)}.",
                 self.getLocation(ctx),
             )
-        return resolveGenerics(
-            foundSymbol.type, self.db.getCurrentScope(), self.getLocation(ctx)
-        )
+
+        for i in range(len(foundSymbol.type.generics)):
+            if not genericsProvided[i].isGeneric():
+                foundSymbol.type.generics[i] = (
+                    foundSymbol.type.generics[i][0],
+                    genericsProvided[i],
+                )
+
+        scope = Scope(self.getLocation(ctx), self.db.getCurrentScope())
+        for i in range(len(foundSymbol.type.generics)):
+            scope.defineSymbol(
+                DatatypeSymbol(
+                    foundSymbol.type.generics[i][0], None, genericsProvided[i]
+                ),
+                self.getLocation(ctx),
+            )
+
+        return resolveGenerics(foundSymbol.type, scope, self.getLocation(ctx))
 
     def visitSymbolValueExpr(self, ctx):
         symbol = self.db.getCurrentScope().lookupSymbol(
             ctx.ID().getText(), self.getLocation(ctx)
         )
+
+        if len(symbol.type.generics) != len(ctx.datatype()):
+            raise CompilerError(
+                f"Datatype expected {len(symbol.type.generics)} generic arguments but got {len(ctx.datatype())}.",
+                self.getLocation(ctx),
+            )
+
+        for i in range(len(symbol.type.generics)):
+            symbol.type.generics[i] = (
+                symbol.type.generics[i][0],
+                self.visit(ctx.datatype()[i]),
+            )
+
         self.setNodeSymbol(ctx, symbol)
         return SymbolValueExpression(symbol, ctx)
 
     def visitExprCallExpr(self, ctx):
         self.visitChildren(ctx)
-        symbol = self.getNodeSymbol(ctx.expr())
+        expr = self.visit(ctx.expr())
 
-        if isinstance(symbol, DatatypeSymbol):
-            # Now call constructor on this type
-            if not symbol.type.isStruct():
-                raise CompilerError(
-                    f"Type '{symbol.type.getDisplayName()}' is not a structural type - Only structural types can be instantiated using constructors",
-                    self.getLocation(ctx),
-                )
-
-            sym = symbol.type.structMemberSymbols.tryLookup(
-                "constructor", self.getLocation(ctx)
-            )
-            if not sym:
-                raise CompilerError(
-                    f"Type '{symbol.type.getDisplayName()}' does not provide a constructor",
-                    self.getLocation(ctx),
-                )
-            symbol = sym
-
-        visibleParams = []
-        returnType: Optional[Datatype] = None
-        if isinstance(symbol, FunctionSymbol):
-            visibleParams = symbol.type.functionParameters
-            returnType = symbol.type.functionReturnType
-
-        elif symbol.type.isFunction():
-            visibleParams = symbol.type.functionParameters
-            returnType = symbol.type.functionReturnType
-
-        else:
+        if not expr.type.isFunction():
             raise CompilerError(
-                f"Expression of type '{symbol.type.getDisplayName()}' is not callable",
+                f"Expression of type '{expr.type.getDisplayName()}' is not callable",
                 self.getLocation(ctx),
             )
 
-        self.assertExpectedNumOfArgs(ctx, len(ctx.args().expr()), len(visibleParams))
-        if not returnType:
-            raise UnreachableCode()
-        self.setNodeSymbol(ctx, symbol)
+        # if isinstance(expr, SymbolValueExpression) and expr.symbol.type.isStruct() and expr.symbol.has:
+        #     # Now call constructor on this type
+        #     if not symbol.type.isStruct():
+        #         raise CompilerError(
+        #             f"Type '{symbol.type.getDisplayName()}' is not a structural type - Only structural types can be instantiated using constructors",
+        #             self.getLocation(ctx),
+        #         )
 
-    def implFunc(self, ctx):
+        #     sym = symbol.type.structMemberSymbols.tryLookup(
+        #         "constructor", self.getLocation(ctx)
+        #     )
+        #     if not sym:
+        #         raise CompilerError(
+        #             f"Type '{symbol.type.getDisplayName()}' does not provide a constructor",
+        #             self.getLocation(ctx),
+        #         )
+        #     symbol = sym
+
+        visibleParams = expr.type.functionParameters
+        # returnType = expr.type.functionReturnType
+        self.assertExpectedNumOfArgs(ctx, len(ctx.args().expr()), len(visibleParams))
+        return ExprCallExpression(expr, ctx)
+
+    def implFunc(
+        self,
+        ctx: (
+            HazeParser.FuncContext
+            | HazeParser.NamedfuncContext
+            | HazeParser.StructFuncDeclContext
+        ),
+    ):
         symbol = self.getNodeSymbol(ctx)
         if (
             not isinstance(symbol, FunctionSymbol)
@@ -672,10 +698,26 @@ class FunctionBodyAnalyzer(AdvancedBaseVisitor):
             raise ImpossibleSituation()
         self.db.pushScope(symbol.scope)
 
-        self.visitChildren(ctx)
+        returnedTypes: Dict[str, Datatype] = {}
+        for statement in self.visit(ctx.funcbody()):
+            symbol.statements.append(statement)
+            if isinstance(statement, ReturnStatement) and statement.expr:
+                returnedTypes[statement.expr.type.getDisplayName()] = (
+                    statement.expr.type
+                )
 
-        print("here perform return type resolution")
+        if len(returnedTypes.keys()) > 1:
+            raise CompilerError(
+                f"Cannot deduce return type. Multiple return types: {', '.join(returnedTypes.keys())}",
+                self.getLocation(ctx),
+            )
+        elif len(returnedTypes) == 1:
+            symbol.type.functionReturnType = next(iter(returnedTypes.values()))
+        else:
+            symbol.type.functionReturnType = self.db.getBuiltinDatatype("none")
+
         self.db.popScope()
+        print("Defined ", symbol)
 
     def visitFunc(self, ctx):
         return self.implFunc(ctx)
@@ -684,7 +726,10 @@ class FunctionBodyAnalyzer(AdvancedBaseVisitor):
         return self.implFunc(ctx)
 
     def visitFuncbody(self, ctx):
-        self.visitChildren(ctx)
+        if ctx.expr():
+            return [ReturnStatement(ctx.expr(), ctx)]
+        else:
+            return [self.visit(s) for s in ctx.body().statement()]
 
     def implVariableDefinition(self, ctx, variableType: VariableType):
         name = ctx.ID().getText()
@@ -927,6 +972,7 @@ class FunctionBodyAnalyzer(AdvancedBaseVisitor):
 
     def visitNamedObjectExpr(self, ctx):
         structtype: Datatype = self.visit(ctx.datatype())
+
         structMembers: SymbolTable = structtype.structMemberSymbols
         objexpr = ObjectExpression(structtype, ctx)
         for attr in ctx.objectattribute():
@@ -978,7 +1024,7 @@ class FunctionBodyAnalyzer(AdvancedBaseVisitor):
 
     def visitExprMemberAccess(self, ctx):
         expr: Expression = self.visit(ctx.expr())
-        self.exprMemberAccessImpl(ctx, expr)
+        return self.exprMemberAccessImpl(ctx, expr)
 
 
 def analyzeFunctionSymbol(
