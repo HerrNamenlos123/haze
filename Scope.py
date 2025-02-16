@@ -14,7 +14,7 @@ class Statement:
 
 class Scope:
     def __init__(self, location: Location, parentScope: Optional["Scope"]):
-        self.symbolTable = SymbolTable()
+        self.symbols: List[Symbol] = []
         self.parentScope = parentScope
         self.terminated = False
         self.location = location

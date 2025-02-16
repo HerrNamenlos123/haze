@@ -1,0 +1,7 @@
+digraph {
+	MyStruct [label="MyStruct
+struct"]
+	foo [label="foo
+function(MyStruct) -> MyStruct"]
+	foo -> MyStruct
+}
