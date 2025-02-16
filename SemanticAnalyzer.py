@@ -1,5 +1,6 @@
 from AdvancedBaseVisitor import AdvancedBaseVisitor
 import sys
+from Symbol import Symbol
 from CompilationDatabase import CompilationDatabase, ObjAttribute
 from grammar.HazeParser import HazeParser
 from typing import Optional, List, Tuple, Dict
@@ -27,8 +28,12 @@ from Expression import (
     Expression,
 )
 from Datatype import implicitConversion
-from Statement import VariableDefinitionStatement, ReturnStatement
-from Expression import MemberAccessExpression, ExprCallExpression
+from Statement import VariableDefinitionStatement, ReturnStatement, ExprStatement
+from Expression import (
+    MemberAccessExpression,
+    ExprCallExpression,
+    MethodAccessExpression,
+)
 import copy
 
 
@@ -50,34 +55,31 @@ class FunctionBodyAnalyzer(AdvancedBaseVisitor):
                 f"Type '{name}' is not defined.",
                 self.getLocation(ctx),
             )
-        p = foundSymbol.parentSymbol
-        foundSymbol = copy.deepcopy(foundSymbol)
-        foundSymbol.parentSymbol = p
 
-        genericsProvided = [self.visit(n) for n in ctx.datatype()]
-
-        if len(foundSymbol.type.generics) != len(genericsProvided):
+        genericsProvided: List[Datatype] = [self.visit(n) for n in ctx.datatype()]
+        if len(foundSymbol.type.generics()) != len(genericsProvided):
             raise CompilerError(
-                f"Datatype expected {len(foundSymbol.type.generics)} generic arguments but got {len(genericsProvided)}.",
+                f"Datatype expected {len(foundSymbol.type.generics())} generic arguments but got {len(genericsProvided)}.",
                 self.getLocation(ctx),
             )
 
-        for i in range(len(foundSymbol.type.generics)):
-            if not genericsProvided[i].isGeneric():
-                if not foundSymbol.type.generics[i][1]:
-                    foundSymbol.type.generics[i] = (
-                        foundSymbol.type.generics[i][0],
-                        genericsProvided[i],
-                    )
-
+        generics: List[Tuple[str, Datatype | None]] = []
         scope = Scope(self.getLocation(ctx), self.db.getCurrentScope())
-        for i in range(len(foundSymbol.type.generics)):
-            scope.defineSymbol(
-                DatatypeSymbol(
-                    foundSymbol.type.generics[i][0], None, genericsProvided[i]
-                ),
-                self.getLocation(ctx),
-            )
+        for i in range(len(foundSymbol.type.generics())):
+            name, tp = foundSymbol.type.generics()[i]
+            givenType = genericsProvided[i]
+            if givenType and not givenType.isGeneric():
+                generics.append((name, tp))
+            else:
+                generics.append((name, None))
+            if givenType:
+                scope.defineSymbol(
+                    DatatypeSymbol(name, None, givenType),
+                    self.getLocation(ctx),
+                )
+
+        foundSymbol = copy.deepcopy(foundSymbol)
+        foundSymbol.type._generics = generics  # Pretend I know what I'm doing
 
         dt = resolveGenerics(foundSymbol.type, scope, self.getLocation(ctx))
         if dt.areAllGenericsResolved():
@@ -91,14 +93,14 @@ class FunctionBodyAnalyzer(AdvancedBaseVisitor):
         symbol = copy.deepcopy(symbol)
 
         if isinstance(symbol, DatatypeSymbol):
-            if len(symbol.type.generics) != len(ctx.datatype()):
+            if len(symbol.type.generics()) != len(ctx.datatype()):
                 raise CompilerError(
-                    f"Datatype expected {len(symbol.type.generics)} generic arguments but got {len(ctx.datatype())}.",
+                    f"Datatype expected {len(symbol.type.generics())} generic arguments but got {len(ctx.datatype())}.",
                     self.getLocation(ctx),
                 )
-            for i in range(len(symbol.type.generics)):
-                symbol.type.generics[i] = (
-                    symbol.type.generics[i][0],
+            for i in range(len(symbol.type.generics())):
+                symbol.type.generics()[i] = (
+                    symbol.type.generics()[i][0],
                     self.visit(ctx.datatype()[i]),
                 )
 
@@ -106,7 +108,12 @@ class FunctionBodyAnalyzer(AdvancedBaseVisitor):
         return SymbolValueExpression(symbol, ctx)
 
     def visitExprCallExpr(self, ctx):
-        expr = self.visit(ctx.expr())
+        expr: Expression = self.visit(ctx.expr())
+
+        thisPointerExpr: Optional[Expression] = None
+        if isinstance(expr, MethodAccessExpression):
+            thisPointerExpr = copy.deepcopy(expr.expr)
+            expr = copy.deepcopy(SymbolValueExpression(expr.method, ctx))
 
         if not expr.type.isFunction():
             raise CompilerError(
@@ -132,10 +139,14 @@ class FunctionBodyAnalyzer(AdvancedBaseVisitor):
         #         )
         #     symbol = sym
 
-        visibleParams = expr.type.functionParameters
-        # returnType = expr.type.functionReturnType
-        self.assertExpectedNumOfArgs(ctx, len(ctx.args().expr()), len(visibleParams))
-        return ExprCallExpression(expr, ctx)
+        args: List[Expression] = []
+        params = expr.type.functionParameters()
+        _args = self.visit(ctx.args())
+        self.assertExpectedNumOfArgs(ctx, len(_args), len(params))
+        for _argExpr in _args:
+            argExpr: Expression = _argExpr
+            args.append(argExpr)
+        return ExprCallExpression(expr, thisPointerExpr, args, ctx)
 
     def implFunc(
         self,
@@ -143,74 +154,92 @@ class FunctionBodyAnalyzer(AdvancedBaseVisitor):
             HazeParser.FuncContext
             | HazeParser.NamedfuncContext
             | HazeParser.StructFuncDeclContext
+            | HazeParser.ExternfuncdefContext
         ),
     ):
         symbol = self.getNodeSymbol(ctx)
         if (
             not isinstance(symbol, FunctionSymbol)
-            or not symbol.scope
-            or symbol.type.functionParameters is None
-            or symbol.type.functionReturnType is None
+            or symbol.type.functionParameters() is None
+            or symbol.type.functionReturnType() is None
         ):
             raise ImpossibleSituation()
 
-        p = symbol.parentSymbol
-        addedSymbols = []
-        while p is not None:
-            for i in range(len(p.type.generics)):
-                tp = p.type.generics[i][1]
-                if not tp:
-                    raise ImpossibleSituation()
-                symbol.scope.defineSymbol(
-                    DatatypeSymbol(p.type.generics[i][0], None, tp),
-                    self.getLocation(ctx),
+        if symbol.functionLinkage == FunctionLinkage.Haze:
+            if not symbol.scope:
+                raise InternalError("Function missing scope")
+            p = symbol.parentSymbol
+            addedSymbols = []
+            while p is not None:
+                for i in range(len(p.type.generics())):
+                    tp = p.type.generics()[i][1]
+                    if not tp:
+                        raise InternalError(
+                            "Function in Semantic Analyzer should already have resolved generics"
+                        )
+                    symbol.scope.defineSymbol(
+                        DatatypeSymbol(p.type.generics()[i][0], None, tp),
+                        self.getLocation(ctx),
+                    )
+                    addedSymbols.append(p.type.generics()[i][0])
+                p = p.parentSymbol
+
+            loc = self.getLocation(ctx)
+            scope = symbol.scope
+            newType = resolveGenerics(symbol.type, scope, loc)
+            symbol = copy.deepcopy(symbol)
+            if symbol.thisPointerType is not None:
+                symbol.thisPointerType = resolveGenerics(
+                    symbol.thisPointerType, scope, loc
                 )
-                addedSymbols.append(p.type.generics[i][0])
-            p = p.parentSymbol
+            symbol.type = newType
 
-        newType = resolveGenerics(symbol.type, symbol.scope, self.getLocation(ctx))
-        symbol = copy.deepcopy(symbol)
-        symbol.type = newType
+            if (
+                symbol.type.areAllGenericsResolved()
+                and symbol.getMangledName() in self.program.resolvedFunctions
+            ):
+                for sym in addedSymbols:
+                    if symbol.scope:
+                        symbol.scope.purgeSymbol(sym)
+                return
 
-        if (
-            symbol.type.areAllGenericsResolved()
-            and symbol.getMangledName() in self.program.resolvedFunctions
-        ):
+            if not symbol or not symbol.scope:
+                raise ImpossibleSituation()
+
+            self.db.pushScope(symbol.scope)
+
+            returnedTypes: Dict[str, Datatype] = {}
+            for statement in self.visit(ctx.funcbody()):  # type: ignore
+                symbol.statements.append(statement)
+                if isinstance(statement, ReturnStatement) and statement.expr:
+                    returnedTypes[statement.expr.type.getDisplayName()] = (
+                        statement.expr.type
+                    )
+
             for sym in addedSymbols:
                 if symbol.scope:
                     symbol.scope.purgeSymbol(sym)
-            return
 
-        if not symbol or not symbol.scope:
-            raise ImpossibleSituation()
-
-        self.db.pushScope(symbol.scope)
-
-        returnedTypes: Dict[str, Datatype] = {}
-        for statement in self.visit(ctx.funcbody()):
-            symbol.statements.append(statement)
-            if isinstance(statement, ReturnStatement) and statement.expr:
-                returnedTypes[statement.expr.type.getDisplayName()] = (
-                    statement.expr.type
+            returntype: Datatype = symbol.type.functionReturnType()
+            if len(returnedTypes.keys()) > 1:
+                raise CompilerError(
+                    f"Cannot deduce return type. Multiple return types: {', '.join(returnedTypes.keys())}",
+                    self.getLocation(ctx),
                 )
+            elif len(returnedTypes.keys()) == 1:
+                returntype = next(iter(returnedTypes.values()))
+            else:
+                returntype = self.db.getBuiltinDatatype("none")
 
-        for sym in addedSymbols:
-            if symbol.scope:
-                symbol.scope.purgeSymbol(sym)
-
-        if len(returnedTypes.keys()) > 1:
-            raise CompilerError(
-                f"Cannot deduce return type. Multiple return types: {', '.join(returnedTypes.keys())}",
-                self.getLocation(ctx),
+            symbol.type = Datatype.createFunctionType(
+                symbol.type.functionParameters(), returntype
             )
-        elif len(returnedTypes) == 1:
-            symbol.type.functionReturnType = next(iter(returnedTypes.values()))
-        else:
-            symbol.type.functionReturnType = self.db.getBuiltinDatatype("none")
 
-        self.db.popScope()
-        self.setNodeSymbol(ctx, symbol)
-        self.program.resolvedFunctions[symbol.getMangledName()] = copy.deepcopy(symbol)
+            self.db.popScope()
+            self.setNodeSymbol(ctx, symbol)
+            self.program.resolvedFunctions[symbol.getMangledName()] = symbol
+        else:  # Extern functions
+            self.visitChildren(ctx)
 
     def visitFunc(self, ctx):
         return self.implFunc(ctx)
@@ -218,11 +247,17 @@ class FunctionBodyAnalyzer(AdvancedBaseVisitor):
     def visitNamedfunc(self, ctx):
         return self.implFunc(ctx)
 
+    def visitExternfuncdef(self, ctx):
+        return self.implFunc(ctx)
+
     def visitFuncbody(self, ctx):
         if ctx.expr():
             return [ReturnStatement(ctx.expr(), ctx)]
         else:
             return [self.visit(s) for s in ctx.body().statement()]
+
+    def visitExprStatement(self, ctx):
+        return ExprStatement(self.visit(ctx.expr()), ctx)
 
     def implVariableDefinition(self, ctx, variableType: VariableType):
         name = ctx.ID().getText()
@@ -369,16 +404,6 @@ class FunctionBodyAnalyzer(AdvancedBaseVisitor):
     def visitBody(self, ctx):
         self.visitChildren(ctx)
 
-    def visitStructDecl(self, ctx):
-        if not self.getNodeDatatype(ctx).isStruct:
-            raise InternalError("Struct decl is not a struct datatype")
-
-        self.structStack.append(self.getNodeDatatype(ctx))
-        self.db.pushScope(self.getNodeScope(ctx))
-        self.visitChildren(ctx)
-        self.db.popScope()
-        self.structStack.pop()
-
     def visitFuncRefExpr(self, ctx):
         self.visitChildren(ctx)
         self.setNodeSymbol(ctx, self.getNodeSymbol(ctx.func()))
@@ -416,7 +441,6 @@ class FunctionBodyAnalyzer(AdvancedBaseVisitor):
             self.db.popScope()
 
     def visitArgs(self, ctx):
-        self.visitChildren(ctx)
         args: List[Expression] = []
         for e in ctx.expr():
             args.append(self.visit(e))
@@ -429,24 +453,17 @@ class FunctionBodyAnalyzer(AdvancedBaseVisitor):
         return self.implVariableDefinition(ctx, VariableType.ContantVariable)
 
     def visitExprAssignmentStatement(self, ctx):
-        self.visitChildren(ctx)
+        # leftExpr: Expression = self.visit(ctx.expr()[0])
+        # if not leftExpr.type.isMutable():
+        #     raise CompilerError(
+        #         f"Variable '{symbol.name}' is immutable.", self.getLocation(ctx)
+        #     )
 
-        if not self.hasNodeSymbol(ctx.expr()[0]):
-            raise CompilerError(f"Expression cannot be modified", self.getLocation(ctx))
-
-        symbol = self.getNodeSymbol(ctx.expr()[0])
-        if not symbol.isMutable():
-            raise CompilerError(
-                f"Variable '{symbol.name}' is immutable.", self.getLocation(ctx)
-            )
-
-        exprtype = self.getNodeDatatype(ctx.expr()[1])
-        if exprtype.isNone():
+        rightExpr = self.visit(ctx.expr()[1])
+        if rightExpr.type.isNone():
             raise CompilerError(
                 f"Cannot assign 'none' to a variable.", self.getLocation(ctx)
             )
-
-        self.setNodeSymbol(ctx, symbol)
 
     def visitObjectAttr(self, ctx):
         name = ctx.ID().getText()
@@ -455,23 +472,31 @@ class FunctionBodyAnalyzer(AdvancedBaseVisitor):
         return (symbol, expr)
 
     def visitObjectExpr(self, ctx):
-        struct = Datatype.createStructDatatype(self.db.makeAnonymousStructName(), [])
-        objexpr = ObjectExpression(struct, ctx)
+        symbolTable = SymbolTable()
+        members: List[Tuple[VariableSymbol, Expression]] = []
         for attr in ctx.objectattribute():
             symbol, expr = self.visit(attr)
-            objexpr.members.append((symbol, expr))
-            struct.structMemberSymbols.insert(symbol, self.getLocation(ctx))
+            symbolTable.insert(symbol, self.getLocation(ctx))
+            members.append((symbol, expr))
+
+        struct = Datatype.createStructDatatype(
+            self.db.makeAnonymousStructName(),
+            [],
+            symbolTable,
+        )
+        objexpr = ObjectExpression(struct, members, ctx)
         return objexpr
 
     def visitNamedObjectExpr(self, ctx):
         structtype: Datatype = self.visit(ctx.datatype())
 
-        structMembers: SymbolTable = structtype.structMemberSymbols
-        objexpr = ObjectExpression(structtype, ctx)
+        members: List[Tuple[VariableSymbol, Expression]] = []
         for attr in ctx.objectattribute():
             symbol, expr = self.visit(attr)
-            objexpr.members.append((symbol, expr))
-            existingSymbol = structMembers.tryLookup(symbol.name, self.getLocation(ctx))
+            members.append((symbol, expr))
+            existingSymbol = structtype.structSymbolTable().tryLookup(
+                symbol.name, self.getLocation(ctx)
+            )
             if not existingSymbol:
                 raise CompilerError(
                     f"'{symbol.name}' is not a member of '{structtype.getDisplayName()}'",
@@ -480,11 +505,13 @@ class FunctionBodyAnalyzer(AdvancedBaseVisitor):
             implicitConversion(
                 symbol.type, existingSymbol.type, "", self.getLocation(ctx)
             )
+
+        objexpr = ObjectExpression(structtype, members, ctx)
         return objexpr
 
     def exprMemberAccessImpl(self, ctx, expr: Expression):
         if expr.type.isStruct():
-            name = ctx.ID().getText()
+            name: str = ctx.ID().getText()
             field: Optional[VariableSymbol] = getStructField(expr.type, name)
             method: Optional[FunctionSymbol] = getStructMethod(expr.type, name)
 
@@ -510,12 +537,21 @@ class FunctionBodyAnalyzer(AdvancedBaseVisitor):
 
                 if not method.parentSymbol:
                     raise InternalError("Method has no parent symbol")
-                method.parentSymbol = copy.deepcopy(method.parentSymbol)
-                method.parentSymbol.type.generics = expr.type.generics
+                if not method.parentSymbol.type.isStruct():
+                    raise InternalError("Parent symbol is not a struct")
 
-                self.setNodeSymbol(method.ctx, method)
+                method.parentSymbol = copy.deepcopy(method.parentSymbol)
+                method.parentSymbol.type = Datatype.createStructDatatype(
+                    method.parentSymbol.type.name(),
+                    expr.type.generics(),
+                    method.parentSymbol.type.structSymbolTable(),
+                )
+
+                self.setNodeSymbol(method.ctx, copy.deepcopy(method))
                 self.implFunc(method.ctx)  # type: ignore
-                return MemberAccessExpression(expr, name, method, ctx)
+                return MethodAccessExpression(
+                    copy.deepcopy(expr), copy.deepcopy(method), ctx
+                )
 
         # elif expr.type.isPointer() and expr.type.pointee:
         #     self.exprMemberAccessImpl(ctx, expr.type.pointee)
@@ -534,9 +570,6 @@ class FunctionBodyAnalyzer(AdvancedBaseVisitor):
 def analyzeFunctionSymbol(
     program: Program, symbol: FunctionSymbol, filename: str, db: CompilationDatabase
 ):
-    if symbol.fullyAnalyzed:
-        return
-
     f = FunctionBodyAnalyzer(program, filename, db)
     f.visit(symbol.ctx)
 
@@ -551,9 +584,6 @@ def performSemanticAnalysis(program: Program, filename: str, db: CompilationData
 
     # Define all global methods
     for symbol in program.globalScope.symbolTable.symbols:
-        if (
-            isinstance(symbol, FunctionSymbol)
-            and symbol.functionLinkage == FunctionLinkage.Haze
-        ):
+        if isinstance(symbol, FunctionSymbol):
             if not symbol.type.isGeneric():
                 analyzeFunctionSymbol(program, symbol, filename, db)

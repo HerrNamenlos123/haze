@@ -18,10 +18,13 @@ struct Array<T> {
       .length: 0,
     };
   }
+
+  // toNumber(): i64 {
+  //   return 64;
+  // }
 }
 
 a() {
-  // Array<i32>.test();
   const s = Array<i32> {
     .data: 0,
     .length: 0,
@@ -39,6 +42,14 @@ b() {
 
 c() {
   const s = Array<i32> {
+    .data: 0,
+    .length: 0,
+  };
+  s.test(s);
+}
+
+d() {
+  const s = Array<i64> {
     .data: 0,
     .length: 0,
   };
@@ -106,6 +117,7 @@ x(fn: () => none): () => none {
 main(): i32 {
   printf("Hello world!\n");
   // const a = test5("test", 0);
+  // a.test(a);
   // return a.toNumber();
   return 0;
 }

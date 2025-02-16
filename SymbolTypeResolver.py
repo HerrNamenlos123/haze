@@ -27,7 +27,7 @@ class SymbolTypeResolver(AdvancedBaseVisitor):
                 )
         function = self.getNodeSymbol(ctx).type
         if function.isFunction():
-            if function.functionReturnType and function.functionReturnType.isUnknown():
+            if function.functionReturnType().isUnknown():
                 raise CompilerError(
                     f"Function {function.getDisplayName()} has no explicit return type, return type inference is not implemented yet",
                     self.getLocation(ctx),

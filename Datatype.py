@@ -1,8 +1,12 @@
+from __future__ import annotations  # Enables forward references
 from enum import Enum
-from typing import List, Tuple, Dict, Optional
+from typing import List, Tuple, Dict, Optional, TYPE_CHECKING
 from Error import InternalError, UnreachableCode, CompilerError, getCallerLocation
 from Location import Location
 import copy
+
+if TYPE_CHECKING:
+    from SymbolTable import SymbolTable
 
 
 class FunctionLinkage(Enum):
@@ -75,21 +79,50 @@ class Datatype:
         functionReturnType: Optional["Datatype"],
         generics: List[Tuple[str, Optional["Datatype"]]],
         pointee: Optional["Datatype"],
-        structMemberSymbols,
+        structMemberSymbols: Optional[SymbolTable],
     ):
-        self.variant = variant
-        self.name = name
-        self.primitiveVariant = primitiveVariant
-        self.functionParameters = functionParameters
-        self.functionReturnType = functionReturnType
-        self.generics = generics
-        self.pointee = pointee
-        self.structMemberSymbols = structMemberSymbols
+        self._variant = variant
+        self._name = name
+        self._primitiveVariant = primitiveVariant
+        self._functionParameters = functionParameters
+        self._functionReturnType = functionReturnType
+        self._generics = generics
+        self._pointee = pointee
+        self._structMemberSymbols = structMemberSymbols
+
+    def functionReturnType(self):
+        if self._functionReturnType is None:
+            raise InternalError("Function is missing return type", getCallerLocation())
+        return copy.deepcopy(self._functionReturnType)
+
+    def functionParameters(self):
+        if self._functionParameters is None:
+            raise InternalError("Function is missing parameters", getCallerLocation())
+        return copy.deepcopy(self._functionParameters)
+
+    def generics(self):
+        return copy.deepcopy(self._generics)
+
+    def variant(self):
+        return copy.deepcopy(self._variant)
+
+    def name(self):
+        return copy.deepcopy(self._name)
+
+    def structSymbolTable(self):
+        if self._structMemberSymbols is None:
+            raise InternalError(
+                "Struct is missing struct symbol table", getCallerLocation()
+            )
+        return copy.deepcopy(self._structMemberSymbols)
+
+    def pointee(self):
+        if self._pointee is None:
+            raise InternalError("Pointer is missing pointee", getCallerLocation())
+        return copy.deepcopy(self._pointee)
 
     @staticmethod
     def createPrimitiveType(variant: PrimitiveVariants):
-        from SymbolTable import SymbolTable
-
         return Datatype(
             Datatype.Variants.Primitive,
             Datatype.primitiveVariantToString(variant),
@@ -98,13 +131,11 @@ class Datatype:
             None,
             [],
             None,
-            SymbolTable(),
+            None,
         )
 
     @staticmethod
     def createGenericPlaceholder(name: str):
-        from SymbolTable import SymbolTable
-
         return Datatype(
             Datatype.Variants.GenericPlaceholder,
             name,
@@ -113,20 +144,13 @@ class Datatype:
             None,
             [],
             None,
-            SymbolTable(),
+            None,
         )
 
     @staticmethod
     def createFunctionType(
         params: List[Tuple[str, "Datatype"]], returnType: "Datatype"
     ):
-        from SymbolTable import SymbolTable
-
-        if not isinstance(returnType, Datatype):
-            raise InternalError(
-                "Tried to create function with symbol return", getCallerLocation(1)
-            )
-
         return Datatype(
             Datatype.Variants.Function,
             "",
@@ -135,13 +159,11 @@ class Datatype:
             returnType,
             [],
             None,
-            SymbolTable(),
+            None,
         )
 
     @staticmethod
     def createDeferredType():
-        from SymbolTable import SymbolTable
-
         return Datatype(
             Datatype.Variants.ResolutionDeferred,
             "__Deferred",
@@ -150,13 +172,11 @@ class Datatype:
             None,
             [],
             None,
-            SymbolTable(),
+            None,
         )
 
     @staticmethod
     def createPointerDatatype(pointee: "Datatype"):
-        from SymbolTable import SymbolTable
-
         return Datatype(
             Datatype.Variants.Pointer,
             "",
@@ -165,16 +185,15 @@ class Datatype:
             None,
             [],
             pointee,
-            SymbolTable(),
+            None,
         )
 
     @staticmethod
     def createStructDatatype(
         name: str,
         generics: List[Tuple[str, Optional["Datatype"]]],
+        symbolTable: Optional[SymbolTable],
     ):
-        from SymbolTable import SymbolTable
-
         return Datatype(
             Datatype.Variants.Struct,
             name,
@@ -183,25 +202,25 @@ class Datatype:
             None,
             generics,
             None,
-            SymbolTable(),
+            symbolTable,
         )
 
     def isPrimitive(self):
-        return self.variant == Datatype.Variants.Primitive
+        return self._variant == Datatype.Variants.Primitive
 
     def isPointer(self):
-        return self.variant == Datatype.Variants.Pointer
+        return self._variant == Datatype.Variants.Pointer
 
     def isStruct(self):
-        return self.variant == Datatype.Variants.Struct
+        return self._variant == Datatype.Variants.Struct
 
     def isFunction(self):
-        return self.variant == Datatype.Variants.Function
+        return self._variant == Datatype.Variants.Function
 
     def isInteger(self):
-        if self.variant != Datatype.Variants.Primitive:
+        if self._variant != Datatype.Variants.Primitive:
             return False
-        match self.primitiveVariant:
+        match self._primitiveVariant:
             case Datatype.PrimitiveVariants.i64:
                 return True
             case Datatype.PrimitiveVariants.i32:
@@ -222,80 +241,77 @@ class Datatype:
 
     def isBoolean(self):
         return (
-            self.variant == Datatype.Variants.Primitive
-            and self.primitiveVariant == Datatype.PrimitiveVariants.boolean
+            self._variant == Datatype.Variants.Primitive
+            and self._primitiveVariant == Datatype.PrimitiveVariants.boolean
         )
 
     def isCallable(self):
-        return self.variant == Datatype.Variants.Function
+        return self._variant == Datatype.Variants.Function
 
     def isNone(self):
         return (
-            self.variant == Datatype.Variants.Primitive
-            and self.primitiveVariant == Datatype.PrimitiveVariants.none
+            self._variant == Datatype.Variants.Primitive
+            and self._primitiveVariant == Datatype.PrimitiveVariants.none
         )
 
     def isDeferred(self):
-        return self.variant == Datatype.Variants.ResolutionDeferred
+        return self._variant == Datatype.Variants.ResolutionDeferred
 
     def isUnknown(self):
         return (
-            self.variant == Datatype.Variants.Primitive
-            and self.primitiveVariant == Datatype.PrimitiveVariants.unknown
+            self._variant == Datatype.Variants.Primitive
+            and self._primitiveVariant == Datatype.PrimitiveVariants.unknown
         )
 
     def getDisplayName(self):
-        match self.variant:
+        match self._variant:
             case Datatype.Variants.Primitive:
-                return Datatype.primitiveVariantToString(self.primitiveVariant)
+                return Datatype.primitiveVariantToString(self._primitiveVariant)
             case Datatype.Variants.Function:
-                if self.functionReturnType is None:
+                if self._functionReturnType is None:
                     raise InternalError("Function is missing functionReturnType")
                 g = []
-                for gen in self.generics:
+                for gen in self._generics:
                     name = gen[0]
                     if gen[1]:
                         name = f"{gen[0]} = {gen[1].getDisplayName()}"
                     g.append(name)
                 params = []
-                for name, type in self.functionParameters:
+                for name, type in self._functionParameters:
                     params.append(type.getDisplayName())
                 s = ""
                 if len(g) > 0:
                     s += f"<{','.join(g)}>"
                 return (
                     s
-                    + f"({', '.join(params)}) -> {self.functionReturnType.getDisplayName()}"
+                    + f"({', '.join(params)}) -> {self._functionReturnType.getDisplayName()}"
                 )
             case Datatype.Variants.Pointer:
-                if self.pointee is None:
+                if self._pointee is None:
                     raise InternalError("Pointer is missing pointee")
-                return f"Ptr<{self.pointee.getDisplayName()}>"
+                return f"Ptr<{self._pointee.getDisplayName()}>"
             case Datatype.Variants.ResolutionDeferred:
                 return "__Deferred"
             case Datatype.Variants.Struct:
-                if self.name.startswith("__anonym_"):
+                if self._name.startswith("__anonym_"):
                     val = "struct {"
-                    for (
-                        name,
-                        symbol,
-                    ) in self.structMemberSymbols.symbols.items():
-                        val += f"{name}: {symbol.type.getDisplayName()}, "
-                    if len(self.structMemberSymbols.getAllSymbols().keys()) > 0:
+                    for symbol in self.structSymbolTable().symbols:
+                        val += f"{symbol.name}: {symbol.type.getDisplayName()}, "
+                    if len(self.structSymbolTable().symbols) > 0:
                         val = val[:-2]
                     val += " }"
                     return val
                 else:
-                    s = self.name
-                    if self.generics:
+                    s = self._name
+                    if self._generics:
                         g = [
                             f"{gg[0]} = {gg[1]}" if gg[1] else gg[0]
-                            for gg in self.generics
+                            for gg in self._generics
                         ]
                         s += f"<{','.join(g)}>"
                     return s
             case Datatype.Variants.GenericPlaceholder:
-                return self.name
+                return self._name
         raise InternalError("Invalid variant")
 
     def __str__(self):
@@ -305,19 +321,19 @@ class Datatype:
         return str(self.getDisplayName())
 
     def getMangledName(self):
-        match self.variant:
+        match self._variant:
             case Datatype.Variants.Primitive:
-                return Datatype.primitiveVariantToString(self.primitiveVariant)
+                return Datatype.primitiveVariantToString(self._primitiveVariant)
             case Datatype.Variants.Pointer:
                 raise InternalError("Cannot mangle pointer")
             case Datatype.Variants.ResolutionDeferred:
                 raise InternalError("Cannot mangle deferred")
             case Datatype.Variants.Struct:
-                mangled = str(len(self.name))
-                mangled += self.name
-                if len(self.generics) > 0:
+                mangled = str(len(self._name))
+                mangled += self._name
+                if len(self._generics) > 0:
                     mangled += "I"
-                    for name, tp in self.generics:
+                    for name, tp in self._generics:
                         if not tp:
                             raise InternalError(
                                 f"Generic placeholder '{name}' is missing value",
@@ -328,18 +344,18 @@ class Datatype:
                 return mangled
             case Datatype.Variants.Function:
                 mangled = "F"
-                for name, tp in self.functionParameters:
+                for name, tp in self._functionParameters:
                     mangled += tp.getMangledName()
                 mangled += "E"
                 return mangled
-        raise InternalError("Invalid variant " + str(self.variant))
+        raise InternalError("Invalid variant " + str(self._variant))
 
     def areAllGenericsResolved(self):
         from Symbol import VariableSymbol
 
         if not self.isGeneric():
             return True
-        match self.variant:
+        match self._variant:
             case Datatype.Variants.Primitive:
                 return True
             case Datatype.Variants.GenericPlaceholder:
@@ -347,33 +363,33 @@ class Datatype:
             case Datatype.Variants.ResolutionDeferred:
                 raise InternalError("Deferred type should no longer be in this stage")
             case Datatype.Variants.Pointer:
-                return self.pointee and self.pointee.areAllGenericsResolved()
+                return self._pointee and self._pointee.areAllGenericsResolved()
             case Datatype.Variants.Function:
                 if (
-                    self.functionReturnType
-                    and not self.functionReturnType.areAllGenericsResolved()
+                    self._functionReturnType
+                    and not self._functionReturnType.areAllGenericsResolved()
                 ):
                     return False
-                for name, type in self.functionParameters:
+                for name, type in self._functionParameters:
                     if not type.areAllGenericsResolved():
                         return False
-                for name, tp in self.generics:
+                for name, tp in self._generics:
                     if not tp:
                         return False
                 return True
             case Datatype.Variants.Struct:
-                for vsym in self.structMemberSymbols.getFiltered(VariableSymbol):
+                for vsym in self.structSymbolTable().getFiltered(VariableSymbol):
                     vsymbol: VariableSymbol = vsym
                     if not vsymbol.type.areAllGenericsResolved():
                         return False
-                for name, tp in self.generics:
+                for name, tp in self._generics:
                     if not tp:
                         return False
                 return True
         raise InternalError("Invalid variant " + str(self.variant))
 
     def isGeneric(self):
-        match self.variant:
+        match self._variant:
             case Datatype.Variants.Primitive:
                 return False
 
@@ -384,62 +400,73 @@ class Datatype:
                 return False
 
             case Datatype.Variants.Pointer:
-                return self.pointee and self.pointee.isGeneric()
+                return self._pointee and self._pointee.isGeneric()
 
             case Datatype.Variants.Function:
-                if self.functionReturnType and self.functionReturnType.isGeneric():
+                if self._functionReturnType and self._functionReturnType.isGeneric():
                     return True
-                for name, type in self.functionParameters:
+                for name, type in self._functionParameters:
                     if type.isGeneric():
                         return True
-                return len(self.generics) > 0
+                return len(self._generics) > 0
 
             case Datatype.Variants.Struct:
                 from Symbol import VariableSymbol
 
-                for vsym in self.structMemberSymbols.getFiltered(VariableSymbol):
+                for vsym in self.structSymbolTable().getFiltered(VariableSymbol):
                     vsymbol: VariableSymbol = vsym
                     if vsymbol.type.isGeneric():
                         return True
-                return len(self.generics) > 0
+                return len(self._generics) > 0
 
         raise InternalError("Invalid variant " + str(self.variant))
 
     def containsUnknown(self):
-        match self.variant:
+        match self._variant:
             case Datatype.Variants.Primitive:
                 return self.isUnknown()
             case Datatype.Variants.Function:
-                if self.functionReturnType is None:
+                if self._functionReturnType is None:
                     raise InternalError("bullshit happening")
-                if self.functionReturnType.isUnknown():
+                if self._functionReturnType.isUnknown():
                     return True
-                for name, type in self.functionParameters:
+                for name, type in self._functionParameters:
                     if type.isUnknown():
                         return True
                 return False
-        raise InternalError("Invalid variant: " + str(self.variant))
+        raise InternalError("Invalid variant: " + str(self._variant))
 
     def generateDefinitionCCode(self):
-        match self.variant:
+        match self._variant:
             case Datatype.Variants.Primitive:
                 return ""
+
             case Datatype.Variants.Struct:
                 from Symbol import VariableSymbol
 
                 out = f"typedef struct __{self.generateUsageCode()}__ {{\n"
-                for memberSymbol in self.structMemberSymbols.symbols:
+                for memberSymbol in self.structSymbolTable().symbols:
                     if isinstance(memberSymbol, VariableSymbol):
                         out += f"    {memberSymbol.type.generateUsageCode()
                                       } {memberSymbol.name};\n"
                 out += f"}} {self.generateUsageCode()};\n"
                 return out
-        raise InternalError("Invalid variant: " + str(self.variant))
+
+            case Datatype.Variants.Function:
+                if self._functionParameters is None or self._functionReturnType is None:
+                    raise InternalError(
+                        "Function is missing functionReturnType or functionParameters"
+                    )
+                params: List[str] = []
+                for name, tp in self._functionParameters:
+                    params += f"{tp.generateUsageCode()}"
+                return f"typedef {self._functionReturnType.generateUsageCode()} (*{self.generateUsageCode()})({", ".join(params)});\n"
+        raise InternalError("Invalid variant: " + str(self._variant))
 
     def generateUsageCode(self):
-        match self.variant:
+        match self._variant:
             case Datatype.Variants.Primitive:
-                match self.primitiveVariant:
+                match self._primitiveVariant:
                     case Datatype.PrimitiveVariants.none:
                         return "void"
                     case Datatype.PrimitiveVariants.unknown:
@@ -472,44 +499,44 @@ class Datatype:
             # case Datatype.Variants.Function:
             #     return f"void*"
             case Datatype.Variants.Pointer:
-                if self.pointee is None:
+                if self._pointee is None:
                     raise InternalError("bullshit happening")
-                return f"{self.pointee.generateUsageCode()}*"
+                return f"{self._pointee.generateUsageCode()}*"
             case Datatype.Variants.ResolutionDeferred:
                 raise InternalError("Cannot generate usage code for deferred")
             case Datatype.Variants.Struct:
                 return "_H" + self.getMangledName()
             case Datatype.Variants.Function:
-                return self.getMangledName()
-        raise InternalError("Invalid variant: " + str(self.variant))
+                return "_H" + self.getMangledName()
+        raise InternalError("Invalid variant: " + str(self._variant))
 
 
 def isSame(a: Datatype, b: Datatype):
     if a.isPrimitive() and b.isPrimitive():
-        return a.primitiveVariant == b.primitiveVariant
+        return a._primitiveVariant == b._primitiveVariant
 
     if a.isPointer() and b.isPointer():
-        if a.pointee is None or b.pointee is None:
+        if a._pointee is None or b._pointee is None:
             return False
-        return isSame(a.pointee, b.pointee)
+        return isSame(a._pointee, b._pointee)
 
     if a.isFunction() and b.isFunction():
-        if not a.functionReturnType or not b.functionReturnType:
+        if not a._functionReturnType or not b._functionReturnType:
             return False
-        if not isSame(a.functionReturnType, b.functionReturnType):
+        if not isSame(a._functionReturnType, b._functionReturnType):
             return False
-        if len(a.functionParameters) != len(b.functionParameters):
+        if len(a._functionParameters) != len(b._functionParameters):
             return False
-        for i in range(len(a.functionParameters)):
-            if not isSame(a.functionParameters[i][1], b.functionParameters[i][1]):
+        for i in range(len(a._functionParameters)):
+            if not isSame(a._functionParameters[i][1], b._functionParameters[i][1]):
                 return False
         return True
 
     if a.isStruct() and b.isStruct():
         from Symbol import VariableSymbol
 
-        aMembers = a.structMemberSymbols.getFiltered(VariableSymbol)
-        bMembers = b.structMemberSymbols.getFiltered(VariableSymbol)
+        aMembers = a.structSymbolTable().getFiltered(VariableSymbol)
+        bMembers = b.structSymbolTable().getFiltered(VariableSymbol)
         if len(aMembers) != len(bMembers):
             return False
         for i in range(len(aMembers)):
@@ -540,14 +567,14 @@ def implicitConversion(_from: Datatype, to: Datatype, expr: str, loc: Location) 
         )
 
     if _from.isFunction() and to.isFunction():
-        if _from.functionReturnType is None or to.functionReturnType is None:
+        if _from._functionReturnType is None or to._functionReturnType is None:
             raise InternalError("bullshit happening")
-        if isSame(_from.functionReturnType, to.functionReturnType):
-            if len(_from.functionParameters) == len(to.functionParameters):
+        if isSame(_from._functionReturnType, to._functionReturnType):
+            if len(_from._functionParameters) == len(to._functionParameters):
                 equal = True
-                for i in range(len(_from.functionParameters)):
+                for i in range(len(_from._functionParameters)):
                     if not isSame(
-                        _from.functionParameters[i][1], to.functionParameters[i][1]
+                        _from._functionParameters[i][1], to._functionParameters[i][1]
                     ):
                         equal = False
                 if equal:

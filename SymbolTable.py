@@ -74,8 +74,7 @@ def getStructFields(struct: Datatype):
         raise InternalError("Not a struct", getCallerLocation())
 
     members: List[VariableSymbol] = []
-    memsym: SymbolTable = struct.structMemberSymbols
-    for member in memsym.getFiltered(VariableSymbol):
+    for member in struct.structSymbolTable().getFiltered(VariableSymbol):
         sym: VariableSymbol = member
         members.append(sym)
     return members
@@ -85,8 +84,7 @@ def getStructField(struct: Datatype, name: str) -> Optional[VariableSymbol]:
     if not struct.isStruct():
         raise InternalError("Not a struct", getCallerLocation())
 
-    memsym: SymbolTable = struct.structMemberSymbols
-    for member in memsym.getFiltered(VariableSymbol):
+    for member in struct.structSymbolTable().getFiltered(VariableSymbol):
         sym: VariableSymbol = member
         if sym.name == name:
             return sym
@@ -100,8 +98,7 @@ def getStructMethods(struct: Datatype):
         raise InternalError("Not a struct", getCallerLocation())
 
     members: List[FunctionSymbol] = []
-    memsym: SymbolTable = struct.structMemberSymbols
-    for member in memsym.getFiltered(FunctionSymbol):
+    for member in struct.structSymbolTable().getFiltered(FunctionSymbol):
         sym: FunctionSymbol = member
         members.append(sym)
     return members
@@ -113,8 +110,7 @@ def getStructMethod(struct: Datatype, name: str):
     if not struct.isStruct():
         raise InternalError("Not a struct", getCallerLocation())
 
-    memsym: SymbolTable = struct.structMemberSymbols
-    for member in memsym.getFiltered(FunctionSymbol):
+    for member in struct.structSymbolTable().getFiltered(FunctionSymbol):
         sym: FunctionSymbol = member
         if sym.name == name:
             return sym

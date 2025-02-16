@@ -5,7 +5,7 @@ from grammar import HazeParser
 from Datatype import Datatype, implicitConversion, FunctionLinkage
 from Symbol import DatatypeSymbol, VariableSymbol
 from FunctionSymbol import FunctionSymbol
-from Error import CompilerError, InternalError, UnreachableCode
+from Error import CompilerError, InternalError, UnreachableCode, ImpossibleSituation
 from Namespace import Namespace
 from SymbolTable import SymbolTable, getStructMethods, getStructFields
 from SymbolName import SymbolName
@@ -13,6 +13,20 @@ from Scope import Scope
 from Location import Location
 from utils import getObjectAttributes, getNamedObjectAttributes, resolveGenerics
 from Program import Program
+from Statement import (
+    Statement,
+    ReturnStatement,
+    VariableDefinitionStatement,
+    ExprStatement,
+)
+from Expression import (
+    Expression,
+    ExprCallExpression,
+    ConstantExpression,
+    SymbolValueExpression,
+    ObjectExpression,
+    MemberAccessExpression,
+)
 import os
 
 CONTEXT_STRUCT = "_HN4Haze7ContextE"
@@ -80,12 +94,7 @@ class CodeGenerator:
             self.generateDatatypeUse(dt)
 
     def generateFuncUse(self, symbol: FunctionSymbol):
-        if (
-            not symbol.type.isFunction()
-            or not isinstance(symbol, FunctionSymbol)
-            or symbol.type.functionParameters is None
-            or symbol.type.functionReturnType is None
-        ):
+        if not symbol.type.isFunction() or not isinstance(symbol, FunctionSymbol):
             raise InternalError("Function is not a function")
 
         def declaration(ftype: Datatype, returntype: Datatype):
@@ -96,20 +105,83 @@ class CodeGenerator:
                 params.append(f"{symbol.thisPointerType.generateUsageCode()} this")
             params += [
                 paramType.generateUsageCode() + " " + paramName
-                for paramName, paramType in ftype.functionParameters
+                for paramName, paramType in ftype.functionParameters()
             ]
             decl += ", ".join(params)
             decl += ")"
             return decl
 
-        decl = declaration(symbol.type, symbol.type.functionReturnType)
+        decl = declaration(symbol.type, symbol.type.functionReturnType())
         self.outputFunctionDecl(symbol, decl + ";")
         self.outputFunctionDef(symbol, decl + " {\n")
+
+        for statement in symbol.statements:
+            self.outputFunctionDef(symbol, self.cgStatement(statement) + "\n")
+
         self.outputFunctionDef(symbol, "}")
 
-    def implVariableDefinition(self, ctx, is_mutable: bool):
-        self.visitChildren(ctx)
+    def cgStatement(self, statement: Statement):
+        if isinstance(statement, ReturnStatement):
+            if statement.expr is None:
+                return "return;"
+            return "return " + self.cgExpr(statement.expr) + ";"
+        elif isinstance(statement, VariableDefinitionStatement):
+            if statement.expr is None or statement.symbol.type is None:
+                raise ImpossibleSituation()
+            ret = statement.symbol.type.generateUsageCode()
+            return (
+                ret
+                + " "
+                + statement.symbol.name
+                + " = "
+                + self.cgExpr(statement.expr)
+                + ";"
+            )
+        elif isinstance(statement, ExprStatement):
+            return self.cgExpr(statement.expr) + ";"
+        raise InternalError(f"Unknown statement type {type(statement)}")
 
+    def cgExpr(self, expr: Expression):
+        if isinstance(expr, ExprCallExpression):
+            args = []
+            if isinstance(expr.expr, SymbolValueExpression):
+                if isinstance(expr.expr.symbol, FunctionSymbol):
+                    if expr.expr.symbol.functionLinkage == FunctionLinkage.Haze:
+                        args.append("context")
+            if expr.thisPointerExpr is not None:
+                args.append("&" + self.cgExpr(expr.thisPointerExpr))
+            for arg in expr.args:
+                args.append(self.cgExpr(arg))
+            return self.cgExpr(expr.expr) + "(" + ", ".join(args) + ")"
+        elif isinstance(expr, ObjectExpression):
+            s = "((" + expr.type.generateUsageCode() + ") { "
+            for symbol, expr in expr.members:
+                s += "." + symbol.name + " = " + self.cgExpr(expr) + ", "
+            s += " })"
+            return s
+        elif isinstance(expr, MemberAccessExpression):
+            return self.cgExpr(expr.expr) + "." + expr.memberName
+        elif isinstance(expr, SymbolValueExpression):
+            if isinstance(expr.symbol, FunctionSymbol):
+                return expr.symbol.getMangledName()
+            else:
+                return expr.symbol.name
+        elif isinstance(expr, ConstantExpression):
+            match expr.constantSymbol.value:
+                case int():
+                    return str(expr.constantSymbol.value)
+                case float():
+                    return str(expr.constantSymbol.value)
+                case bool():
+                    return str(expr.constantSymbol.value)
+                case str():
+                    return expr.constantSymbol.value
+            raise InternalError(
+                f"Unknown constant type {type(expr.constantSymbol.value)}"
+            )
+        raise InternalError(f"Unknown expression type {type(expr)}")
+
+    def implVariableDefinition(self, ctx, is_mutable: bool):
         symbol = self.getNodeSymbol(ctx)
         if isinstance(symbol, VariableSymbol):
             value = implicitConversion(
@@ -232,18 +304,6 @@ class CodeGenerator:
         self.visitChildren(ctx)
         symbol = self.getNodeSymbol(ctx)
 
-        if isinstance(symbol, DatatypeSymbol):
-            # Call constructor
-            if not symbol.type.isStruct():
-                raise InternalError("StructType missing")
-
-            memsym: SymbolTable = symbol.type.structMemberSymbols
-            symbol = memsym.tryLookup(SymbolName("constructor"), self.getLocation(ctx))
-            if not symbol:
-                raise InternalError(
-                    "No constructor but should have been caught already"
-                )
-
         if isinstance(symbol, FunctionSymbol):
             ctx.code = symbol.getMangledName()  # type: ignore
         else:
@@ -290,7 +350,7 @@ class CodeGenerator:
 
         ctx.code += ", ".join(params) + ")"  # type: ignore
 
-        if len(symbol.type.generics) > 0:
+        if len(symbol.type.generics()) > 0:
             if not symbol.ctx:
                 raise InternalError("Function missing context")
 

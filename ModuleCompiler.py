@@ -37,6 +37,9 @@ class ModuleCompiler:
 
             generateCode(collector.program, f"build/{self.filename}.c")
 
+            os.system("clang build/" + self.filename + ".c -o build/out")
+            os.system("build/out")
+
             # resolver = SymbolTypeResolver(self.filename, self.db)
             # resolver.visit(ast)
 
@@ -44,9 +47,6 @@ class ModuleCompiler:
             # verifier.visit(ast)
 
             # generator.writeFile(f"build/{self.filename}.c")
-
-            # os.system("clang build/" + self.filename + ".c -o build/out")
-            # os.system("build/out")
 
             # extraObjectFiles = [];
             # fs::makeDirectory(fs::cwd() / "build");

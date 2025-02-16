@@ -13,6 +13,8 @@ from grammar.HazeParser import HazeParser
 from Datatype import Datatype, FunctionLinkage
 from Program import Program, ExternFunctionRef
 from utils import resolveGenerics
+from SymbolTable import SymbolTable
+import copy
 
 
 class SymbolCollector(AdvancedBaseVisitor):
@@ -38,14 +40,31 @@ class SymbolCollector(AdvancedBaseVisitor):
             )
 
         genericsProvided = [self.visit(n) for n in ctx.datatype()]
-        if len(foundSymbol.type.generics) != len(genericsProvided):
+        if len(foundSymbol.type.generics()) != len(genericsProvided):
             raise CompilerError(
-                f"Datatype expected {len(foundSymbol.type.generics)} generic arguments but got {len(genericsProvided)}.",
+                f"Datatype expected {len(foundSymbol.type.generics())} generic arguments but got {len(genericsProvided)}.",
                 self.getLocation(ctx),
             )
-        dt = resolveGenerics(
-            foundSymbol.type, self.db.getCurrentScope(), self.getLocation(ctx)
-        )
+
+        generics: List[Tuple[str, Datatype | None]] = []
+        scope = Scope(self.getLocation(ctx), self.db.getCurrentScope())
+        for i in range(len(foundSymbol.type.generics())):
+            name, tp = foundSymbol.type.generics()[i]
+            givenType = genericsProvided[i]
+            if givenType and not givenType.isGeneric():
+                generics.append((name, tp))
+            else:
+                generics.append((name, None))
+            if givenType:
+                scope.defineSymbol(
+                    DatatypeSymbol(name, None, givenType),
+                    self.getLocation(ctx),
+                )
+
+        foundSymbol = copy.deepcopy(foundSymbol)
+        foundSymbol.type._generics = generics  # Pretend I know what I'm doing
+
+        dt = resolveGenerics(foundSymbol.type, scope, self.getLocation(ctx))
         return dt
 
     def visitFunctionDatatype(self, ctx):
@@ -53,10 +72,13 @@ class SymbolCollector(AdvancedBaseVisitor):
         for param in ctx.functype().params().param():
             params.append(self.visit(param))
 
-        return Datatype.createFunctionType(
+        dt = Datatype.createFunctionType(
             params,
             self.visit(ctx.functype().returntype()),
         )
+        if dt.areAllGenericsResolved():
+            self.program.resolvedDatatypes[dt.getMangledName()] = dt
+        return dt
 
     def visitExternblock(self, ctx):
         lang = ctx.externlang().getText()[1:-1]
@@ -125,24 +147,31 @@ class SymbolCollector(AdvancedBaseVisitor):
             ),
             self.currentLinkage,
             None,
+            None,
+            False,
+            [],
             ctx,
         )
 
+        params: List[Tuple[str, Datatype]] = []
         for i in range(len(ctx.params().param())):
             name, datatype = self.visit(ctx.params().param()[i])
-            symbol.type.functionParameters.append((name, datatype))
+            params.append((name, datatype))
 
         self.currentFunctionSymbols.append(symbol)
         self.visitChildren(ctx)
         self.currentFunctionSymbols.pop()
 
+        returntype = symbol.type.functionReturnType()
         if ctx.returntype():
-            symbol.type.functionReturnType = self.visit(ctx.returntype())
+            returntype = self.visit(ctx.returntype())
 
+        symbol.type = Datatype.createFunctionType(params, returntype)
         self.program.globalScope.defineSymbol(symbol, self.getLocation(ctx))
         self.program.externFunctionRefs.append(
             ExternFunctionRef(FunctionLinkage.External_C, self.getLocation(ctx), symbol)
         )
+        self.setNodeSymbol(ctx, symbol)
 
     def implFunc(
         self,
@@ -166,34 +195,36 @@ class SymbolCollector(AdvancedBaseVisitor):
             Datatype.createFunctionType([], Datatype.createDeferredType()),
             FunctionLinkage.Haze,
             scope,
+            None,
+            False,
+            [],
             ctx,
         )
         self.setNodeSymbol(ctx, symbol)
 
+        params: List[Tuple[str, Datatype]] = []
         for i in range(len(ctx.params().param())):
             nm, datatype = self.visit(ctx.params().param()[i])
-            symbol.type.functionParameters.append((nm, datatype))
+            params.append((nm, datatype))
             if symbol.scope:
                 symbol.scope.defineSymbol(
                     VariableSymbol(nm, symbol, datatype, VariableType.Parameter),
                     self.getLocation(ctx),
                 )
 
+        returntype = Datatype.createDeferredType()
         if ctx.returntype():
-            symbol.type.functionReturnType = self.visit(ctx.returntype())
+            returntype = self.visit(ctx.returntype())
         else:
-            symbol.type.functionReturnType = Datatype.createDeferredType()
-
-        if symbol.type.functionReturnType.isDeferred():
             if ctx.funcbody().expr():
                 expr = self.visit(ctx.funcbody().expr())
-                symbol.type.functionReturnType = expr.type
+                returntype = expr.type
 
         if symbol.parentSymbol and symbol.parentSymbol.type.isStruct():
             if name == "constructor":
                 symbol.isConstructor = True
-                if symbol.type.functionReturnType.isDeferred():
-                    symbol.type.functionReturnType = symbol.parentSymbol.type
+                if returntype.isDeferred():
+                    returntype = symbol.parentSymbol.type
                 else:
                     raise CompilerError(
                         f"Constructor of struct '{symbol.parentSymbol.name}' returns the struct itself implicitly",
@@ -211,9 +242,12 @@ class SymbolCollector(AdvancedBaseVisitor):
                     ),
                     self.getLocation(ctx),
                 )
+
+        symbol.type = Datatype.createFunctionType(params, returntype)
         self.program.globalScope.defineSymbol(symbol, self.getLocation(ctx))
 
         self.db.popScope()
+        self.setNodeSymbol(ctx, symbol)
         return symbol
 
     def visitFunc(self, ctx):
@@ -243,22 +277,28 @@ class SymbolCollector(AdvancedBaseVisitor):
                 GenericPlaceholderSymbol(generic[0]), self.getLocation(ctx)
             )
 
+        parentSymbol = self.structStack[-1] if len(self.structStack) > 0 else None
         symbol = DatatypeSymbol(
             name,
-            self.structStack[-1] if len(self.structStack) > 0 else None,
-            Datatype.createStructDatatype(name, genericsList),
+            parentSymbol,
+            Datatype.createStructDatatype(name, genericsList, SymbolTable()),
         )
+        symbol.ctx = ctx
         parentScope.defineSymbol(symbol, self.getLocation(ctx))
 
         self.structStack.append(symbol)
 
+        symbolTable = SymbolTable()
         for content in ctx.structcontent():
-            symbol.type.structMemberSymbols.insert(
-                self.visit(content), self.getLocation(ctx)
-            )
+            symbolTable.insert(self.visit(content), self.getLocation(ctx))
+
+        symbol.type = Datatype.createStructDatatype(name, genericsList, symbolTable)
+        symbol.type._structMemberSymbols = symbolTable
 
         self.structStack.pop()
         self.db.popScope()
+        self.setNodeSymbol(ctx, symbol)
+        return symbol
 
     def visitStructFuncDecl(self, ctx):
         name = ctx.ID().getText()

@@ -6,6 +6,7 @@ from typing import Optional, List
 from Scope import Scope
 from Error import InternalError
 from Statement import Statement
+import copy
 
 
 class FunctionSymbol(Symbol):
@@ -16,26 +17,30 @@ class FunctionSymbol(Symbol):
         type: Datatype,
         functionLinkage: FunctionLinkage,
         scope: Optional[Scope],
+        thisPointerType: Optional[Datatype],
+        isConstructor: bool,
+        statements: List[Statement],
         ctx: ParserRuleContext,
     ):
         super().__init__(name, parentSymbol, type, ctx)
-        self.thisPointerType: Optional[Datatype] = None
-        self.isConstructor: bool = False
+        self.thisPointerType = thisPointerType
+        self.isConstructor = isConstructor
         self.scope = scope
         self.functionLinkage = functionLinkage
-        self.returnedTypes: List[Datatype] = []
-        self.statements: List[Statement] = []
+        self.statements = statements
 
     def __deepcopy__(self, memo):
         s = FunctionSymbol(
             self.name,
-            self.parentSymbol,
+            copy.deepcopy(self.parentSymbol),
             self.type,
             self.functionLinkage,
             self.scope,
+            self.thisPointerType,
+            self.isConstructor,
+            copy.deepcopy(self.statements),
             self.ctx,  # type: ignore
         )
-        s.fullyAnalyzed = self.fullyAnalyzed
         return s
 
     def __str__(self):
@@ -54,7 +59,7 @@ class FunctionSymbol(Symbol):
         s += n
 
         g = []
-        for t in self.type.generics:
+        for t in self.type.generics():
             if t[1]:
                 g.append(f"{t[0]} = {t[1].getDisplayName()}")
             else:
@@ -65,10 +70,10 @@ class FunctionSymbol(Symbol):
         params = []
         if self.thisPointerType:
             params.append(f"this: {self.thisPointerType}")
-        for n, type in self.type.functionParameters:
+        for n, type in self.type.functionParameters():
             params.append(f"{n}: {type}")
         s += ", ".join(params)
-        s += f") -> {self.type.functionReturnType}"
+        s += f") -> {self.type.functionReturnType()}"
         return s
 
     def __repr__(self):
@@ -87,9 +92,9 @@ class FunctionSymbol(Symbol):
         mangled += str(len(self.name))
         mangled += self.name
 
-        if len(self.type.generics) > 0:
+        if len(self.type.generics()) > 0:
             mangled += "I"
-            for t in self.type.generics:
+            for t in self.type.generics():
                 if not t[1]:
                     raise InternalError("Cannot mangle non-instantiated generic type")
                 mangled += t[1].getMangledName()

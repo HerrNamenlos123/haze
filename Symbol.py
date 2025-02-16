@@ -93,7 +93,14 @@ class DatatypeSymbol(Symbol):
         super().__init__(name, parentSymbol, type)
 
     def __str__(self):
-        return f"Type {self.name} = {self.type}"
+        s = f"Type {self.name} = {self.type}"
+        if self.type.isStruct():
+            s += " { "
+            s += ", ".join(
+                f"{m.name}: {m.type}" for m in self.type.structSymbolTable().symbols
+            )
+            s += " }"
+        return s
 
     def __repr__(self):
         return self.__str__()
@@ -101,7 +108,7 @@ class DatatypeSymbol(Symbol):
     def __deepcopy__(self, memo):
         s = DatatypeSymbol(
             self.name,
-            self.parentSymbol,
+            copy.deepcopy(self.parentSymbol),
             self.type,
         )
         s.ctx = self.ctx

@@ -1,10 +1,11 @@
 import copy
-from Error import CompilerError, UnreachableCode
+from Error import CompilerError, UnreachableCode, InternalError
 from Datatype import Datatype
-from typing import Dict, List
+from typing import Dict, List, Tuple
 from SymbolName import SymbolName
 from CompilationDatabase import ObjAttribute
 from Symbol import VariableSymbol, VariableType
+from FunctionSymbol import FunctionSymbol
 from SymbolTable import SymbolTable, getStructMethods, getStructFields
 from Scope import Scope
 from Location import Location
@@ -82,9 +83,9 @@ def implGenericDatatype(
     )
     g = [self.getNodeDatatype(n) for n in ctx.datatype()]
 
-    if len(datatype.generics) != len(g):
+    if len(datatype.generics()) != len(g):
         raise CompilerError(
-            f"Generic datatype expected {len(datatype.generics)} generic arguments but got {len(g)}.",
+            f"Generic datatype expected {len(datatype.generics())} generic arguments but got {len(g)}.",
             self.getLocation(ctx),
         )
 
@@ -147,49 +148,76 @@ def getNamedObjectAttributes(self, ctx):
 def resolveGenerics(
     datatype: Datatype, scope: Scope, loc: Location, forceResolve: bool = False
 ):
-    match datatype.variant:
+    match datatype.variant():
         case Datatype.Variants.GenericPlaceholder:
-            symbol = scope.lookupSymbol(datatype.name, loc)
+            symbol = scope.lookupSymbol(datatype.name(), loc)
             if symbol.type.isGeneric():
                 return datatype
             return symbol.type
 
         case Datatype.Variants.Struct:
-            d = copy.deepcopy(datatype)
+            symbolTable = SymbolTable()
             for field in getStructFields(datatype):
-                newType = resolveGenerics(field.type, scope, loc)
-                d.structMemberSymbols.setSymbol(
-                    field.name,
+                symbolTable.insert(
                     VariableSymbol(
-                        field.name, field.parentSymbol, newType, field.variableType
+                        field.name,
+                        field.parentSymbol,
+                        resolveGenerics(field.type, scope, loc),
+                        field.variableType,
                     ),
+                    loc,
                 )
-            for i in range(len(d.generics)):
-                s = scope.lookupSymbol(d.generics[i][0], loc)
-                if not s.type.isGeneric():
-                    d.generics[i] = (s.name, s.type)
-            return d
+            for method in getStructMethods(datatype):
+                symbolTable.insert(
+                    FunctionSymbol(
+                        method.name,
+                        method.parentSymbol,
+                        resolveGenerics(method.type, scope, loc),
+                        method.functionLinkage,
+                        method.scope,
+                        method.thisPointerType,
+                        method.isConstructor,
+                        method.statements,
+                        method.ctx,  # type: ignore
+                    ),
+                    loc,
+                )
+            generics: List[Tuple[str, Datatype | None]] = []
+            for i in range(len(datatype.generics())):
+                sym = scope.lookupSymbol(datatype.generics()[i][0], loc)
+                if sym.type.isGeneric():
+                    generics.append((sym.name, None))
+                else:
+                    generics.append((sym.name, sym.type))
+            dt = Datatype.createStructDatatype(
+                datatype.name(),
+                generics,
+                symbolTable,
+            )
+            return dt
 
         case Datatype.Variants.Function:
-            f = copy.deepcopy(datatype)
-            if (
-                not f.isFunction()
-                or f.functionReturnType is None
-                or f.functionParameters is None
-            ):
+            if not datatype.isFunction():
                 raise UnreachableCode()
-            f.functionReturnType = resolveGenerics(f.functionReturnType, scope, loc)
-            for i in range(len(datatype.functionParameters)):
-                newType = resolveGenerics(datatype.functionParameters[i][1], scope, loc)
-                f.functionParameters[i] = (f.functionParameters[i][0], newType)
-            return f
+            returntype = resolveGenerics(datatype.functionReturnType(), scope, loc)
+            params: List[Tuple[str, Datatype]] = []
+            for i in range(len(datatype.functionParameters())):
+                newType = resolveGenerics(
+                    datatype.functionParameters()[i][1], scope, loc
+                )
+                params.append(
+                    (
+                        datatype.functionParameters()[i][0],
+                        newType,
+                    )
+                )
+            return Datatype.createFunctionType(params, returntype)
 
         case Datatype.Variants.Pointer:
-            p = copy.deepcopy(datatype)
-            if p.pointee is None:
+            if datatype.pointee() is None:
                 raise UnreachableCode()
-            p.pointee = resolveGenerics(p.pointee, scope, loc)
-            return p
+            pointee = resolveGenerics(datatype.pointee(), scope, loc)
+            return Datatype.createPointerDatatype(pointee)
 
         case Datatype.Variants.ResolutionDeferred:
             return datatype
@@ -197,4 +225,4 @@ def resolveGenerics(
         case Datatype.Variants.Primitive:
             return datatype
 
-    raise InternalError("Invalid variant: " + str(datatype.variant))
+    raise InternalError("Invalid variant: " + str(datatype.variant()))
