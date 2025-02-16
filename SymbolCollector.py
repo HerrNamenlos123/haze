@@ -38,7 +38,6 @@ class SymbolCollector(AdvancedBaseVisitor):
             )
 
         genericsProvided = [self.visit(n) for n in ctx.datatype()]
-
         if len(foundSymbol.type.generics) != len(genericsProvided):
             raise CompilerError(
                 f"Datatype expected {len(foundSymbol.type.generics)} generic arguments but got {len(genericsProvided)}.",
@@ -182,7 +181,6 @@ class SymbolCollector(AdvancedBaseVisitor):
 
         if ctx.returntype():
             symbol.type.functionReturnType = self.visit(ctx.returntype())
-
         else:
             symbol.type.functionReturnType = Datatype.createDeferredType()
 
@@ -239,9 +237,11 @@ class SymbolCollector(AdvancedBaseVisitor):
         parentScope = self.db.getCurrentScope()
         scope = self.db.pushScope(Scope(self.getLocation(ctx), parentScope))
 
-        genericsList = [n.getText() for n in ctx.datatype()]
+        genericsList = [(n.getText(), None) for n in ctx.datatype()]
         for generic in genericsList:
-            scope.defineSymbol(GenericPlaceholderSymbol(generic), self.getLocation(ctx))
+            scope.defineSymbol(
+                GenericPlaceholderSymbol(generic[0]), self.getLocation(ctx)
+            )
 
         symbol = DatatypeSymbol(
             name,

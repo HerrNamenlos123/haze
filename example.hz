@@ -26,15 +26,23 @@ a() {
     .data: 0,
     .length: 0,
   };
-  // s.test(s);
+  s.test(s);
 }
 
 b() {
-  // const s = Array<i8> {
-  //   .data: 0,
-  //   .length: 0,
-  // };
-  // s.test(s);
+  const s = Array<i8> {
+    .data: 0,
+    .length: 0,
+  };
+  s.test(s);
+}
+
+c() {
+  const s = Array<i32> {
+    .data: 0,
+    .length: 0,
+  };
+  s.test(s);
 }
 
 struct MemoryBuffer {

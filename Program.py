@@ -3,8 +3,8 @@ from Location import Location
 from Symbol import Symbol
 from Scope import Scope
 from FunctionSymbol import FunctionSymbol
-from typing import List
-from Datatype import FunctionLinkage
+from typing import List, Dict
+from Datatype import FunctionLinkage, Datatype
 from CompilationDatabase import CompilationDatabase
 
 
@@ -25,6 +25,8 @@ class Program:
     def __init__(self, db: CompilationDatabase):
         self.globalScope: Scope = db.getGlobalScope()
         self.externFunctionRefs: List[ExternFunctionRef] = []
+        self.resolvedFunctions: Dict[str, FunctionSymbol] = {}
+        self.resolvedDatatypes: Dict[str, Datatype] = {}
 
     def __str__(self):
         s = f"Global Symbols:\n{self.globalScope.symbolTable}\nExtern Function Refs:\n"

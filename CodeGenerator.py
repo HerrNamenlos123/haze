@@ -12,26 +12,22 @@ from SymbolName import SymbolName
 from Scope import Scope
 from Location import Location
 from utils import getObjectAttributes, getNamedObjectAttributes, resolveGenerics
+from Program import Program
 import os
 
-CONTEXT_STRUCT = "N4Haze7ContextE"
+CONTEXT_STRUCT = "_HN4Haze7ContextE"
 
 
-class CodeGenerator(AdvancedBaseVisitor):
-    def __init__(self, filename: str, db: CompilationDatabase):
-        super().__init__(filename, db)
-        self.currentFunctionStack: List[FunctionSymbol] = []
-        self.structStack: List[Datatype] = []
+class CodeGenerator:
+    def __init__(self, program: Program):
+        super().__init__()
+        self.program = program
         self.output = {
             "includes": {},
             "type_declarations": {},
             "function_definitions": {},
             "function_declarations": {},
         }
-        self.functionCtx = {}
-        self.structCtx = {}
-        self.includeHeader("stdio.h")
-        self.includeHeader("stdint.h")
         self.output["type_declarations"][
             CONTEXT_STRUCT
         ] = f"typedef struct __{CONTEXT_STRUCT}__ {{}} {CONTEXT_STRUCT};"
@@ -65,7 +61,7 @@ class CodeGenerator(AdvancedBaseVisitor):
 
             f.write("\n\n// Function declaration section\n")
             f.write(
-                "\n\n".join([t for t in self.output["function_declarations"].values()])
+                "\n".join([t for t in self.output["function_declarations"].values()])
             )
 
             f.write("\n\n// Function definition section\n")
@@ -73,22 +69,17 @@ class CodeGenerator(AdvancedBaseVisitor):
                 "\n\n".join([t for t in self.output["function_definitions"].values()])
             )
 
-    def provideFuncDef(self, ctx):
-        symbol = self.getNodeSymbol(ctx)
-        if (
-            not symbol.type.isFunction()
-            or not isinstance(symbol, FunctionSymbol)
-            or symbol.type.functionParameters is None
-            or symbol.type.functionReturnType is None
-        ):
-            raise InternalError("Function is not a function")
+    def generate(self):
+        self.includeHeader("stdio.h")
+        self.includeHeader("stdint.h")
 
-        self.functionCtx[symbol.name] = ctx
-        if not symbol.type.isGeneric():
-            self.generateFuncUse(ctx)
+        for symbol in self.program.resolvedFunctions.values():
+            self.generateFuncUse(symbol)
 
-    def generateFuncUse(self, ctx, generics: Optional[Dict[str, Datatype]] = None):
-        symbol = self.getNodeSymbol(ctx)
+        for dt in self.program.resolvedDatatypes.values():
+            self.generateDatatypeUse(dt)
+
+    def generateFuncUse(self, symbol: FunctionSymbol):
         if (
             not symbol.type.isFunction()
             or not isinstance(symbol, FunctionSymbol)
@@ -111,47 +102,10 @@ class CodeGenerator(AdvancedBaseVisitor):
             decl += ")"
             return decl
 
-        if len(symbol.type.generics) > 0:
-            resolveGenerics(symbol.type, self.getNodeScope(ctx), self.getLocation(ctx))
-
         decl = declaration(symbol.type, symbol.type.functionReturnType)
         self.outputFunctionDecl(symbol, decl + ";")
         self.outputFunctionDef(symbol, decl + " {\n")
-        # elif generics is not None and len(generics.keys()) > 0:  # Now instantiate it
-        # ft = symbol.type.instantiate(generics)
-        # ft.genericsDict = generics
-        # decl = declaration(ft, functype.functionReturnType)
-        # self.output["generic_function_declarations"][symbol.getMangledName()] = (
-        #     decl + ";\n"
-        # )
-        # self.output["generic_function_definitions"][symbol.getMangledName()] = (
-        #     decl + " {\n"
-        # )
-        # pass
-
-        scope = self.getNodeScope(ctx)
-        self.db.pushScope(scope)
-        self.pushCurrentFunction(symbol)
-        print("gen ", symbol)
-        self.visitChildren(ctx)
-
-        if ctx.funcbody().body():  # Normal function
-            for statement in ctx.funcbody().body().statement():
-                self.outputFunctionDef(symbol, f"    {statement.code}")
-        else:  # Arrow function
-            self.outputFunctionDef(symbol, f"    {ctx.funcbody().expr().code}")
-
-        if not scope.isTerminated():
-            if self.getExpectedReturntype().isNone():
-                self.outputFunctionDef(symbol, "    return;\n")
-            else:
-                raise InternalError(
-                    "Body is missing return statement, but should have been caught already"
-                )
-        self.popCurrentFunction()
-
         self.outputFunctionDef(symbol, "}")
-        self.db.popScope()
 
     def implVariableDefinition(self, ctx, is_mutable: bool):
         self.visitChildren(ctx)
@@ -168,13 +122,10 @@ class CodeGenerator(AdvancedBaseVisitor):
         else:
             raise InternalError("Symbol is not a variable")
 
-    def visitGenericDatatype(self, ctx: HazeParser.HazeParser.GenericDatatypeContext):
-        self.visitChildren(ctx)
-        datatype = self.getNodeDatatype(ctx)
-        if datatype.isStruct() and datatype.generics:
-            self.output["type_declarations"][
-                datatype.getMangledName()
-            ] = datatype.generateDefinitionCCode()
+    def generateDatatypeUse(self, datatype: Datatype):
+        self.output["type_declarations"][
+            datatype.getMangledName()
+        ] = datatype.generateDefinitionCCode()
 
     def visitInlineCStatement(self, ctx):
         self.visitChildren(ctx)
@@ -226,98 +177,6 @@ class CodeGenerator(AdvancedBaseVisitor):
             )
             ctx.code = f"return {value};\n"  # type: ignore
 
-    #     def visitIfexpr(ToylangParser::IfexprContext* ctx):
-    #         self.visitChildren(ctx);
-    #   setNodeLlvmValue(ctx, self.getNodeLlvmValue(ctx.expr()));
-
-    #     def visitElseifexpr(ToylangParser::ElseifexprContext* ctx):
-    #         self.visitChildren(ctx);
-    #   setNodeLlvmValue(ctx, self.getNodeLlvmValue(ctx.expr()));
-
-    #     def visitThenblock(ToylangParser::ThenblockContext* ctx):
-    #         self.visitChildren(ctx);
-
-    #     def visitElseifblock(ToylangParser::ElseifblockContext* ctx):
-    #         self.visitChildren(ctx);
-
-    #     def visitElseblock(ToylangParser::ElseblockContext* ctx):
-    #         self.visitChildren(ctx);
-
-    #     def visitIfStatement(ToylangParser::IfStatementContext* ctx):
-    #   outerScope = self.getNodeScope(ctx);
-    #   auto& builder = getBuilder(ctx);
-    #   currentFunction = getCurrentFunction().getLlvmFunction();
-    #         if not currentFunction:
-    #           raise InternalError("Is missing function llvm value");
-
-    #   visit(ctx.ifexpr());
-    #   for (expr : ctx.elseifexpr():
-    #     visit(expr);
-
-    #   // First create and collect all blocks and scopes
-    #   List<llvm::Value*> exprValues;
-    #   List<llvm::BasicBlock*> conditionBlocks = { outerScope.getInsertBlock() };
-    #   List<llvm::BasicBlock*> targetBlocks;
-    #   for (auto& elifBlock : ctx.elseifblock():
-    #     block = llvm::BasicBlock::Create(m_module.getContext(), "condition", *currentFunction);
-    #     conditionBlocks.push_back(block);
-
-    #   mergeBlock = llvm::BasicBlock::Create(m_module.getContext(), "merge", *currentFunction);
-
-    #   thenscope = db.pushScope(self.getNodeScope(ctx.thenblock()));
-    #   thenscope.createInsertBlock(*currentFunction, m_module);
-    #   thenscope.setTerminated(false);
-    #   m_builder.SetInsertPoint(thenscope.getInsertBlock());
-    #   visit(ctx.thenblock());
-    #         if not thenscope.isTerminated():
-    #     m_builder.CreateBr(mergeBlock);
-
-    #   db.popScope();
-    #   targetBlocks.push_back(thenscope.getInsertBlock());
-    #   exprValues.push_back(self.getNodeLlvmValue(ctx.ifexpr()));
-
-    #   List<Ptr<Scope>> elsescopes;
-    #   for (elifBlock : ctx.elseifblock():
-    #           elifScope = db.pushScope(self.getNodeScope(elifBlock));
-    #           elsescopes.push_back(elifScope);
-    #           elifScope.setTerminated(false);
-    #     m_builder.SetInsertPoint(elifScope.createInsertBlock(*currentFunction, m_module));
-    #     targetBlocks.push_back(self.getNodeScope(elifBlock).getInsertBlock());
-    #     visit(elifBlock);
-    #           if not elifScope.isTerminated():
-    #       m_builder.CreateBr(mergeBlock);
-
-    #     db.popScope();
-
-    #   for (elifExpr : ctx.elseifexpr():
-    #     exprValues.push_back(self.getNodeLlvmValue(elifExpr));
-
-    #         if ctx.elseblock():
-    #           elseScope = db.pushScope(self.getNodeScope(ctx.elseblock()));
-    #     m_builder.SetInsertPoint(elseScope.createInsertBlock(*currentFunction, m_module));
-    #           elseScope.setTerminated(false);
-    #     visit(ctx.elseblock());
-    #           if not elseScope.isTerminated():
-    #       m_builder.CreateBr(mergeBlock);
-
-    #     db.popScope();
-    #     conditionBlocks.push_back(elseScope.getInsertBlock());
-
-    #         else:
-    #     conditionBlocks.push_back(mergeBlock);
-
-    #   for (size_t i = 0; i < exprValues.size(); i++:
-    #     m_builder.SetInsertPoint(conditionBlocks[i]);
-    #     m_builder.CreateCondBr(exprValues[i], targetBlocks[i], conditionBlocks[i + 1]);
-
-    #   outerScope.setNewInsertBlock(mergeBlock);
-
-    #     def visitCompilationhint(ToylangParser::CompilationhintContext* ctx):
-    #   filename = fs::cwd() / self.getNodeCompilationHintFilename(ctx);
-    #         if not std::filesystem::exists(filename):
-    #           raise CompilerError(getLocation(ctx.compilationhintfilename()),
-    #                         "File referenced in Compilation hint does not exist.");
-
     def visitConstantExpr(self, ctx):
         self.visitChildren(ctx)
         ctx.code = ctx.constant().code  # type: ignore
@@ -338,180 +197,11 @@ class CodeGenerator(AdvancedBaseVisitor):
         self.visitChildren(ctx)
         ctx.code = f'"{ctx.getText()[1:-1]}"'  # type: ignore
 
-    #     def visitBooleanConstant(ToylangParser::BooleanConstantContext* ctx):
-    #         self.visitChildren(ctx);
-    #   auto& builder = getBuilder(ctx);
-    #   setNodeLlvmValue(ctx, builder.getInt1(ctx.getText() == "true"));
-
-    #     def visitBracketExpr(ToylangParser::BracketExprContext* ctx):
-    #         self.visitChildren(ctx);
-    #   setNodeLlvmValue(ctx, self.getNodeLlvmValue(ctx.expr()));
-    #   setNodeDatatype(ctx, self.getNodeDatatype(ctx.expr()));
-
-    #     def visitBinaryExpr(ToylangParser::BinaryExprContext* ctx):
-    #         self.visitChildren(ctx);
-    #   auto& builder = getBuilder(ctx);
-    #   type = self.getNodeDatatype(ctx);
-    #   operation = self.getNodeBinaryOperator(ctx);
-    #   a = self.getNodeLlvmValue(ctx.expr(0));
-    #   b = self.getNodeLlvmValue(ctx.expr(1));
-    #   Ptr<Datatype> typeA = self.getNodeDatatype(ctx.expr(0));
-    #   Ptr<Datatype> typeB = self.getNodeDatatype(ctx.expr(1));
-
-    #   const unsupportedTypes = [&](:
-    #           raise CompilerError(getLocation(ctx),
-    #                         std::format("Operation '{}' is not implemented for types '{}' and '{}'",
-    #                                     operation,
-    #                                     typeA.getDisplayName(),
-    #                                     typeB.getDisplayName()));
-    # ;
-
-    #   const assertInteger = [&](:
-    #           if not typeA.isInteger() || !typeB.isInteger():
-    #       unsupportedTypes();
-
-    #           if not Datatype.isSame(typeA, typeB):
-    #       unsupportedTypes();
-
-    # ;
-
-    #   const assertBoolean = [&](:
-    #           if not typeA.isBoolean() || !typeB.isBoolean():
-    #       unsupportedTypes();
-
-    #           if not Datatype.isSame(typeA, typeB):
-    #       unsupportedTypes();
-
-    # ;
-
-    #         if operation == "+":
-    #     assertInteger();
-    #     setNodeLlvmValue(ctx, builder.CreateAdd(a, b));
-
-    #         else if operation == "-":
-    #     assertInteger();
-    #     setNodeLlvmValue(ctx, builder.CreateSub(a, b));
-
-    #         else if operation == "*":
-    #     assertInteger();
-    #     setNodeLlvmValue(ctx, builder.CreateMul(a, b));
-
-    #         else if operation == "/":
-    #     assertInteger();
-    #     setNodeLlvmValue(ctx, builder.CreateSDiv(a, b));
-
-    #         else if operation == "%":
-    #     assertInteger();
-    #     setNodeLlvmValue(ctx, builder.CreateSRem(a, b));
-
-    #         else if operation == ">":
-    #     assertInteger();
-    #     setNodeLlvmValue(ctx, builder.CreateICmpSGT(a, b));
-
-    #         else if operation == "<":
-    #     assertInteger();
-    #     setNodeLlvmValue(ctx, builder.CreateICmpSLT(a, b));
-
-    #         else if operation == ">=":
-    #     assertInteger();
-    #     setNodeLlvmValue(ctx, builder.CreateICmpSGE(a, b));
-
-    #         else if operation == "<=":
-    #     assertInteger();
-    #     setNodeLlvmValue(ctx, builder.CreateICmpSLE(a, b));
-
-    #         else if operation == "==" || operation == "is":
-    #     assertBoolean();
-    #     setNodeLlvmValue(ctx, builder.CreateICmpEQ(a, b));
-
-    #         else if operation == "!=" || operation == "is not":
-    #     assertBoolean();
-    #     setNodeLlvmValue(ctx, builder.CreateICmpNE(a, b));
-
-    #         else if operation == "and":
-    #     assertBoolean();
-    #     setNodeLlvmValue(ctx, builder.CreateAnd(a, b));
-
-    #         else if operation == "or":
-    #     assertBoolean();
-    #     setNodeLlvmValue(ctx, builder.CreateOr(a, b));
-
-    #         else:
-    #           raise InternalError("Unsupported binary operator: " + operation);
-
     def visitFunc(self, ctx: HazeParser.HazeParser.FuncContext):
         return self.provideFuncDef(ctx)
 
     def visitNamedfunc(self, ctx: HazeParser.HazeParser.NamedfuncContext):
         return self.provideFuncDef(ctx)
-
-    #     def visitFuncRefExpr(ToylangParser::FuncRefExprContext* ctx):
-    #         self.visitChildren(ctx);
-    #   setNodeLlvmValue(ctx, self.getNodeLlvmValue(ctx.func()));
-    #   setNodeDatatype(ctx, self.getNodeDatatype(ctx.func()));
-
-    #     def visitProg(ToylangParser::ProgContext* ctx):
-    #         self.visitChildren(ctx);
-    #         if not db.getGlobalScope().tryLookupSymbol("main"):
-    #           raise CompilerError(getLocation(ctx), "No main function defined.");
-
-    #     def visitBody(ToylangParser::BodyContext* ctx):
-    #   scope = db.getCurrentScope();
-    #   scope.setTerminated(false);
-    #   for (stmt : ctx.statement():
-    #     auto& builder = getBuilder(ctx);
-    #           if scope.isTerminated():
-    #       printWarningMessage(getLocation(stmt), "Eliminated dead code");
-    #       break;
-
-    #     visit(stmt);
-
-    #     def visitFuncbody(ToylangParser::FuncbodyContext* ctx):
-    #   auto& builder = getBuilder(ctx);
-    #         if ctx.body():
-    #     visit(ctx.body());
-
-    #         else if ctx.expr():
-    #     visit(ctx.expr());
-    #     type = self.getNodeDatatype(ctx.expr());
-    #           if type.isNone():
-    #       builder.CreateRetVoid();
-
-    #           else:
-    #       functionSymbol = getCurrentFunction();
-    #       value = convertValueImplicit(getLocation(ctx),
-    #                                         self.getNodeDatatype(ctx.expr()),
-    #                                         getExpectedReturntype(),
-    #                                         self.getNodeLlvmValue(ctx.expr()),
-    #                                         builder);
-
-    #             if functionSymbol.hasStructReturn():
-    #         f = functionSymbol.getLlvmFunction();
-    #               if not f:
-    #                 raise InternalError("Missing llvm function");
-
-    #         builder.CreateStore(value, f.value().getArg(0));
-    #         builder.CreateRetVoid();
-
-    #             else:
-    #         builder.CreateRet(value);
-
-    #     self.getNodeScope(ctx).setTerminated(true);
-
-    # template <typename T> std::any implVariableDefinition(T* ctx, bool is_mutable):
-    #         self.visitChildren(ctx);
-    #   auto& builder = getBuilder(ctx);
-    #   Ptr<Symbol> symbol = self.getNodeSymbol(ctx);
-    #         if variableSymbol = std::dynamic_pointer_cast<VariableSymbol>(symbol):
-    #     symtype = symbol.type;
-    #     store = builder.CreateAlloca(symtype.getLLVMType(), 0, symbol.self.name);
-    #     value = self.getNodeLlvmValue(ctx.expr());
-    #     variableSymbol.setLlvmStore(store);
-    #     builder.CreateStore(convertValueImplicit(getLocation(ctx), self.getNodeDatatype(ctx.expr()), symtype, value, builder),
-    #                         store);
-
-    #         else:
-    #           raise InternalError("Symbol of wrong type");
 
     def visitMutableVariableDefinition(self, ctx):
         return self.implVariableDefinition(ctx, True)
@@ -683,3 +373,9 @@ class CodeGenerator(AdvancedBaseVisitor):
             raise InternalError(
                 f"Member access type {symbol.type.getDisplayName()} is not structural"
             )
+
+
+def generateCode(program: Program, outfile: str):
+    gen = CodeGenerator(program)
+    gen.generate()
+    gen.writeFile(outfile)

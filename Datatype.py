@@ -252,9 +252,10 @@ class Datatype:
                 if self.functionReturnType is None:
                     raise InternalError("Function is missing functionReturnType")
                 g = []
-                for name, tp in self.generics:
-                    if tp:
-                        name = f"{name} = {tp.getDisplayName()}"
+                for gen in self.generics:
+                    name = gen[0]
+                    if gen[1]:
+                        name = f"{gen[0]} = {gen[1].getDisplayName()}"
                     g.append(name)
                 params = []
                 for name, type in self.functionParameters:
@@ -288,8 +289,8 @@ class Datatype:
                     s = self.name
                     if self.generics:
                         g = [
-                            f"{g[0]} = {g[1]}" if len(g) > 1 else g[0]
-                            for g in copy.deepcopy(self.generics)
+                            f"{gg[0]} = {gg[1]}" if gg[1] else gg[0]
+                            for gg in self.generics
                         ]
                         s += f"<{','.join(g)}>"
                     return s
@@ -307,24 +308,68 @@ class Datatype:
         match self.variant:
             case Datatype.Variants.Primitive:
                 return Datatype.primitiveVariantToString(self.primitiveVariant)
-            case Datatype.Variants.Function:
-                raise InternalError("Cannot mangle function datatype")
             case Datatype.Variants.Pointer:
                 raise InternalError("Cannot mangle pointer")
             case Datatype.Variants.ResolutionDeferred:
                 raise InternalError("Cannot mangle deferred")
             case Datatype.Variants.Struct:
-                mangled = "_H"
-                mangled += str(len(self.name))
+                mangled = str(len(self.name))
                 mangled += self.name
                 if len(self.generics) > 0:
                     mangled += "I"
                     for name, tp in self.generics:
                         if not tp:
-                            raise InternalError("Cannot mangle generic placeholder")
+                            raise InternalError(
+                                f"Generic placeholder '{name}' is missing value",
+                                getCallerLocation(),
+                            )
                         mangled += tp.getMangledName()
                     mangled += "E"
                 return mangled
+            case Datatype.Variants.Function:
+                mangled = "F"
+                for name, tp in self.functionParameters:
+                    mangled += tp.getMangledName()
+                mangled += "E"
+                return mangled
+        raise InternalError("Invalid variant " + str(self.variant))
+
+    def areAllGenericsResolved(self):
+        from Symbol import VariableSymbol
+
+        if not self.isGeneric():
+            return True
+        match self.variant:
+            case Datatype.Variants.Primitive:
+                return True
+            case Datatype.Variants.GenericPlaceholder:
+                return False
+            case Datatype.Variants.ResolutionDeferred:
+                raise InternalError("Deferred type should no longer be in this stage")
+            case Datatype.Variants.Pointer:
+                return self.pointee and self.pointee.areAllGenericsResolved()
+            case Datatype.Variants.Function:
+                if (
+                    self.functionReturnType
+                    and not self.functionReturnType.areAllGenericsResolved()
+                ):
+                    return False
+                for name, type in self.functionParameters:
+                    if not type.areAllGenericsResolved():
+                        return False
+                for name, tp in self.generics:
+                    if not tp:
+                        return False
+                return True
+            case Datatype.Variants.Struct:
+                for vsym in self.structMemberSymbols.getFiltered(VariableSymbol):
+                    vsymbol: VariableSymbol = vsym
+                    if not vsymbol.type.areAllGenericsResolved():
+                        return False
+                for name, tp in self.generics:
+                    if not tp:
+                        return False
+                return True
         raise InternalError("Invalid variant " + str(self.variant))
 
     def isGeneric(self):
@@ -377,11 +422,13 @@ class Datatype:
 
     def generateDefinitionCCode(self):
         match self.variant:
+            case Datatype.Variants.Primitive:
+                return ""
             case Datatype.Variants.Struct:
                 from Symbol import VariableSymbol
 
                 out = f"typedef struct __{self.generateUsageCode()}__ {{\n"
-                for memberSymbol in self.structMemberSymbols.symbols.values():
+                for memberSymbol in self.structMemberSymbols.symbols:
                     if isinstance(memberSymbol, VariableSymbol):
                         out += f"    {memberSymbol.type.generateUsageCode()
                                       } {memberSymbol.name};\n"
@@ -431,54 +478,10 @@ class Datatype:
             case Datatype.Variants.ResolutionDeferred:
                 raise InternalError("Cannot generate usage code for deferred")
             case Datatype.Variants.Struct:
+                return "_H" + self.getMangledName()
+            case Datatype.Variants.Function:
                 return self.getMangledName()
         raise InternalError("Invalid variant: " + str(self.variant))
-
-    def deepcopy(self):
-        return Datatype(
-            self.variant,
-            self.name,
-            self.primitiveVariant,
-            [(name, t.deepcopy()) for name, t in self.functionParameters],
-            self.functionReturnType.deepcopy() if self.functionReturnType else None,
-            self.generics,
-            self.pointee.deepcopy() if self.pointee else None,
-            self.structMemberSymbols,
-        )
-
-    # def __str__(self):
-    #     return str(self.getDisplayName())
-    #
-    # def __repr__(self):
-    #     return str(self.getDisplayName())
-
-    # def instantiate(self, generics: Dict[str, "Datatype"]):
-    #     n = copy.deepcopy(self)
-    #     for i in range(len(n.parameters)):
-    #         t = copy.deepcopy(n.parameters[i][1])
-    #         t = t.instantiate(n.genericsDict)
-    #         t = t.instantiate(generics)
-    #         n.parameters[i] = (n.parameters[i][0], t)
-    #     return n
-
-    # def instantiate(self, generics: Dict[str, "Datatype"]):
-    #     from Symbol import VariableSymbol, FunctionSymbol
-    #
-    #     # print(">>>> BEGIN")
-    #     n = copy.deepcopy(self)
-    #     for name in n.memberSymbols.getAllSymbols().keys():
-    #         t = copy.deepcopy(n.memberSymbols.getAllSymbols()[name].type)
-    #         print("t: ", t)
-    #         # print(">> Modifying type ", t)
-    #         t = t.instantiate(n.genericsDict)
-    #         # print(">> Own mods", t)
-    #         t1 = t.instantiate(generics)
-    #         # print(">> Other mods", t, t1, generics)
-    #         # print()
-    #         n.memberSymbols.getAllSymbols()[name].type = t1
-    #     n.genericsDict = generics
-    #     # print("<<<< END")
-    #     return n
 
 
 def isSame(a: Datatype, b: Datatype):

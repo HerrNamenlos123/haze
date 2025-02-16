@@ -155,7 +155,7 @@ def resolveGenerics(
             return symbol.type
 
         case Datatype.Variants.Struct:
-            d = datatype.deepcopy()
+            d = copy.deepcopy(datatype)
             for field in getStructFields(datatype):
                 newType = resolveGenerics(field.type, scope, loc)
                 d.structMemberSymbols.setSymbol(
@@ -171,7 +171,7 @@ def resolveGenerics(
             return d
 
         case Datatype.Variants.Function:
-            f = datatype.deepcopy()
+            f = copy.deepcopy(datatype)
             if (
                 not f.isFunction()
                 or f.functionReturnType is None
@@ -185,14 +185,14 @@ def resolveGenerics(
             return f
 
         case Datatype.Variants.Pointer:
-            p = datatype.deepcopy()
+            p = copy.deepcopy(datatype)
             if p.pointee is None:
                 raise UnreachableCode()
             p.pointee = resolveGenerics(p.pointee, scope, loc)
             return p
 
         case Datatype.Variants.ResolutionDeferred:
-            raise UnreachableCode()
+            return datatype
 
         case Datatype.Variants.Primitive:
             return datatype

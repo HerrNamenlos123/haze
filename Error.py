@@ -67,4 +67,10 @@ class ImpossibleSituation(Exception):
 
 
 class UnreachableCode(Exception):
-    pass
+    def __init__(self):
+        super().__init__(
+            formatErrorMessage(
+                getCallerLocation(),
+                "Unreachable Code was reached",
+            )
+        )

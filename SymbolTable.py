@@ -37,6 +37,12 @@ class SymbolTable:
         # return found
         return None
 
+    def purge(self, name: str):
+        for i in range(len(self.symbols)):
+            if self.symbols[i].name == name:
+                self.symbols.pop(i)
+                return
+
     def getFiltered(self, type) -> List:
         funcs = []
         for symbol in self.symbols:

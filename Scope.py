@@ -23,6 +23,9 @@ class Scope:
     def defineSymbol(self, symbol: Symbol, loc: Location):
         self.symbolTable.insert(symbol, loc)
 
+    def purgeSymbol(self, name: str):
+        self.symbolTable.purge(name)
+
     def tryLookupSymbol(self, name: str, loc: Location) -> Optional[Symbol]:
         symbol = self.symbolTable.tryLookup(name, loc)
         if symbol:

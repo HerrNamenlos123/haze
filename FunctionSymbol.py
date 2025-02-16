@@ -26,6 +26,18 @@ class FunctionSymbol(Symbol):
         self.returnedTypes: List[Datatype] = []
         self.statements: List[Statement] = []
 
+    def __deepcopy__(self, memo):
+        s = FunctionSymbol(
+            self.name,
+            self.parentSymbol,
+            self.type,
+            self.functionLinkage,
+            self.scope,
+            self.ctx,  # type: ignore
+        )
+        s.fullyAnalyzed = self.fullyAnalyzed
+        return s
+
     def __str__(self):
         s = ""
         match self.functionLinkage:
@@ -70,8 +82,8 @@ class FunctionSymbol(Symbol):
         if p is not None:
             mangled += "N"
             while p is not None:
-                mangled += str(len(p.name))
-                mangled += p.name
+                mangled += p.type.getMangledName()
+                p = p.parentSymbol
         mangled += str(len(self.name))
         mangled += self.name
 

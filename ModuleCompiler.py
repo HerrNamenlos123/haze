@@ -10,7 +10,7 @@ from SymbolCollector import SymbolCollector
 from SemanticAnalyzer import performSemanticAnalysis
 from SymbolTypeResolver import SymbolTypeResolver
 from ReturnVerifier import ReturnVerifier
-from CodeGenerator import CodeGenerator
+from CodeGenerator import CodeGenerator, generateCode
 
 CXX_COMPILER = "clang++"
 C_COMPILER = "clang"
@@ -35,14 +35,13 @@ class ModuleCompiler:
 
             performSemanticAnalysis(collector.program, self.filename, self.db)
 
+            generateCode(collector.program, f"build/{self.filename}.c")
+
             # resolver = SymbolTypeResolver(self.filename, self.db)
             # resolver.visit(ast)
 
             # verifier = ReturnVerifier(self.filename, self.db)
             # verifier.visit(ast)
-
-            # generator = CodeGenerator(self.filename, self.db)
-            # generator.visit(ast)
 
             # generator.writeFile(f"build/{self.filename}.c")
 

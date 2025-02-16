@@ -6,6 +6,7 @@ from typing import List, Tuple, Optional, Dict, Any
 from Namespace import Namespace
 from grammar import HazeParser
 from antlr4 import ParserRuleContext
+import copy
 
 
 class Symbol:
@@ -60,10 +61,33 @@ class VariableSymbol(Symbol):
     def __repr__(self):
         return self.__str__()
 
+    # def __deepcopy__(self, memo):
+    #     s = VariableSymbol(
+    #         self.name,
+    #         self.parentSymbol,
+    #         self.type,
+    #         self.variableType,
+    #     )
+    #     s.fullyAnalyzed = self.fullyAnalyzed
+    #     return s
+
 
 class GenericPlaceholderSymbol(Symbol):
     def __init__(self, name: str):
         super().__init__(name, None, Datatype.createGenericPlaceholder(name))
+
+    def __str__(self):
+        return f"GenericPlaceholder({self.name})"
+
+    def __repr__(self):
+        return self.__str__()
+
+    def __deepcopy__(self, memo):
+        s = GenericPlaceholderSymbol(
+            self.name,
+        )
+        s.fullyAnalyzed = self.fullyAnalyzed
+        return s
 
 
 class DatatypeSymbol(Symbol):
@@ -71,7 +95,7 @@ class DatatypeSymbol(Symbol):
         super().__init__(name, parentSymbol, type)
 
     def __str__(self):
-        return f"Type {self.type}"
+        return f"Type {self.name} = {self.type}"
 
     def __repr__(self):
         return self.__str__()
@@ -82,6 +106,12 @@ class ConstantSymbol(Symbol):
         super().__init__("__Constant", None, type)
         self.value = value
 
+    def __str__(self):
+        return f"ConstantSymbol({self.type} = {self.value})"
+
+    def __repr__(self):
+        return self.__str__()
+
 
 class StructMemberSymbol(Symbol):
     def __init__(
@@ -90,3 +120,9 @@ class StructMemberSymbol(Symbol):
         super().__init__(name, None, type)
         self.struct = struct
         self.expr = expr
+
+    def __str__(self):
+        return f"StructMemberSymbol({self.name}: {self.struct} = {self.type})"
+
+    def __repr__(self):
+        return self.__str__()
