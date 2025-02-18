@@ -15,10 +15,12 @@
     "license": "ISC",
     "dependencies": {
         "antlr4": "^4.13.2",
-        "antlr4-cli": "^4.5.3",
         "bun": "^1.2.2"
     },
     "devDependencies": {
+        "antlr4-cli": "^4.5.3",
+        "@mermaid-js/mermaid-cli": "^11.4.2",
+        "mermaid": "^11.4.1",
         "@types/bun": "latest"
     },
     "peerDependencies": {

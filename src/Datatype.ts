@@ -35,6 +35,7 @@ export type BaseGenerics = string[];
 
 export type BaseFunctionDatatype = {
   variant: "Function";
+  concrete: false;
   functionParameters: [string, BaseDatatype][];
   functionReturnType: BaseDatatype;
   generics: BaseGenerics;
@@ -42,6 +43,7 @@ export type BaseFunctionDatatype = {
 
 export type BaseStructDatatype = {
   variant: "Struct";
+  concrete: false;
   name: string;
   generics: BaseGenerics;
   members: MemberSymbol[];
@@ -50,11 +52,13 @@ export type BaseStructDatatype = {
 
 export type BasePrimitiveDatatype = {
   variant: "Primitive";
+  concrete: false;
   primitive: Primitive;
 };
 
 export type BaseGenericDatatype = {
   variant: "Generic";
+  concrete: false;
   name: string;
 };
 
@@ -68,6 +72,7 @@ export type ConcreteGenerics = Record<string, ConcreteDatatype>;
 
 export type ConcreteFunctionDatatype = {
   variant: "Function";
+  concrete: true;
   functionParameters: [string, ConcreteDatatype][];
   functionReturnType: ConcreteDatatype;
   generics: ConcreteGenerics;
@@ -75,6 +80,7 @@ export type ConcreteFunctionDatatype = {
 
 export type ConcreteStructDatatype = {
   variant: "Struct";
+  concrete: true;
   name: string;
   generics: ConcreteGenerics;
   members: { name: string; type: ConcreteDatatype }[];
@@ -83,6 +89,7 @@ export type ConcreteStructDatatype = {
 
 export type ConcretePrimitiveDatatype = {
   variant: "Primitive";
+  concrete: true;
   primitive: Primitive;
 };
 

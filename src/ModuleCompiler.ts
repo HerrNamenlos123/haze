@@ -12,7 +12,7 @@ import { Program } from "./Program";
 import { SymbolCollector } from "./SymbolCollector";
 import { ParserRuleContext, ParseTree, RuleNode, TerminalNode } from "antlr4";
 import { ProgContext } from "./parser/HazeParser";
-import { generateGraphviz } from "./graphviz";
+import { generateGraphviz as generateGraph } from "./graph";
 
 // import { Parser } from "./Parser";
 // import { CompilationDatabase } from "./CompilationDatabase";
@@ -50,12 +50,17 @@ export class ModuleCompiler {
       // console.log(JSON.stringify(program, null, 2));
 
       Bun.write(
-        path.join("build", this.filename + ".dot"),
-        generateGraphviz(program),
+        path.join("build", this.filename + ".mmd"),
+        generateGraph(program),
       );
-      child_process.execSync(
-        `dot build/${this.filename}.dot -Tpng -o build/${this.filename}.png`,
-      );
+      try {
+        child_process.execSync(
+          `mmdc -i build/${this.filename}.mmd -o build/${this.filename}.png`,
+        );
+      } catch (e) {
+        console.error("Running mermaid failed");
+        return;
+      }
 
       function prettyPrintAST(
         node: ParserRuleContext | TerminalNode,

@@ -13,9 +13,6 @@ import type { Program } from "./Program";
 import {
   FunctionType,
   type DatatypeSymbol,
-  type MemberSymbol,
-  type MethodSymbol,
-  type DatatypeSymbol,
   type FunctionSymbol,
   type MemberSymbol,
   type MethodSymbol,
@@ -56,6 +53,7 @@ export class SymbolCollector extends HazeVisitor<any> {
     if (!baseType) {
       const d: BaseGenericDatatype = {
         variant: "Generic",
+        concrete: false,
         name: name,
       };
       return d;
@@ -91,12 +89,13 @@ export class SymbolCollector extends HazeVisitor<any> {
   visitFunctionDatatype = (ctx: FunctionDatatypeContext): BaseDatatype => {
     const type: BaseFunctionDatatype = {
       variant: "Function",
+      concrete: false,
       functionParameters: ctx
         .functype()
         .params()
         .param_list()
         .map((n) => [n.ID().getText(), this.visit(n.datatype())]),
-      functionReturnType: this.visit(ctx.functype().returntype()),
+      functionReturnType: this.visit(ctx.functype().datatype()),
       generics: [],
     };
     return type;
@@ -316,6 +315,7 @@ export class SymbolCollector extends HazeVisitor<any> {
 
     const type: BaseStructDatatype = {
       variant: "Struct",
+      concrete: false,
       name: name,
       generics: genericsList,
       members: [],

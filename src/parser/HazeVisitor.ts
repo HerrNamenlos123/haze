@@ -37,7 +37,6 @@ import { ConstantExprContext } from "./HazeParser.js";
 import { BracketExprContext } from "./HazeParser.js";
 import { ArgsContext } from "./HazeParser.js";
 import { FunctypeContext } from "./HazeParser.js";
-import { ReturntypeContext } from "./HazeParser.js";
 import { IntegerConstantContext } from "./HazeParser.js";
 import { StringConstantContext } from "./HazeParser.js";
 import { BooleanConstantContext } from "./HazeParser.js";
@@ -46,8 +45,8 @@ import { CompilationhintfilenameContext } from "./HazeParser.js";
 import { CompilationhintflagsContext } from "./HazeParser.js";
 import { CompilationlangContext } from "./HazeParser.js";
 import { LinkerhintContext } from "./HazeParser.js";
-import { StructFieldDeclContext } from "./HazeParser.js";
-import { StructFuncDeclContext } from "./HazeParser.js";
+import { StructMemberContext } from "./HazeParser.js";
+import { StructMethodContext } from "./HazeParser.js";
 import { StructDeclContext } from "./HazeParser.js";
 import { CommonDatatypeContext } from "./HazeParser.js";
 import { FunctionDatatypeContext } from "./HazeParser.js";
@@ -283,12 +282,6 @@ export default class HazeVisitor<Result> extends ParseTreeVisitor<Result> {
 	 */
 	visitFunctype?: (ctx: FunctypeContext) => Result;
 	/**
-	 * Visit a parse tree produced by `HazeParser.returntype`.
-	 * @param ctx the parse tree
-	 * @return the visitor result
-	 */
-	visitReturntype?: (ctx: ReturntypeContext) => Result;
-	/**
 	 * Visit a parse tree produced by the `IntegerConstant`
 	 * labeled alternative in `HazeParser.constant`.
 	 * @param ctx the parse tree
@@ -340,19 +333,19 @@ export default class HazeVisitor<Result> extends ParseTreeVisitor<Result> {
 	 */
 	visitLinkerhint?: (ctx: LinkerhintContext) => Result;
 	/**
-	 * Visit a parse tree produced by the `StructFieldDecl`
+	 * Visit a parse tree produced by the `StructMember`
 	 * labeled alternative in `HazeParser.structcontent`.
 	 * @param ctx the parse tree
 	 * @return the visitor result
 	 */
-	visitStructFieldDecl?: (ctx: StructFieldDeclContext) => Result;
+	visitStructMember?: (ctx: StructMemberContext) => Result;
 	/**
-	 * Visit a parse tree produced by the `StructFuncDecl`
+	 * Visit a parse tree produced by the `StructMethod`
 	 * labeled alternative in `HazeParser.structcontent`.
 	 * @param ctx the parse tree
 	 * @return the visitor result
 	 */
-	visitStructFuncDecl?: (ctx: StructFuncDeclContext) => Result;
+	visitStructMethod?: (ctx: StructMethodContext) => Result;
 	/**
 	 * Visit a parse tree produced by the `StructDecl`
 	 * labeled alternative in `HazeParser.structdecl`.

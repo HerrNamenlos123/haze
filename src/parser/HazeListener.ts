@@ -37,7 +37,6 @@ import { ConstantExprContext } from "./HazeParser.js";
 import { BracketExprContext } from "./HazeParser.js";
 import { ArgsContext } from "./HazeParser.js";
 import { FunctypeContext } from "./HazeParser.js";
-import { ReturntypeContext } from "./HazeParser.js";
 import { IntegerConstantContext } from "./HazeParser.js";
 import { StringConstantContext } from "./HazeParser.js";
 import { BooleanConstantContext } from "./HazeParser.js";
@@ -46,8 +45,8 @@ import { CompilationhintfilenameContext } from "./HazeParser.js";
 import { CompilationhintflagsContext } from "./HazeParser.js";
 import { CompilationlangContext } from "./HazeParser.js";
 import { LinkerhintContext } from "./HazeParser.js";
-import { StructFieldDeclContext } from "./HazeParser.js";
-import { StructFuncDeclContext } from "./HazeParser.js";
+import { StructMemberContext } from "./HazeParser.js";
+import { StructMethodContext } from "./HazeParser.js";
 import { StructDeclContext } from "./HazeParser.js";
 import { CommonDatatypeContext } from "./HazeParser.js";
 import { FunctionDatatypeContext } from "./HazeParser.js";
@@ -433,16 +432,6 @@ export default class HazeListener extends ParseTreeListener {
 	 */
 	exitFunctype?: (ctx: FunctypeContext) => void;
 	/**
-	 * Enter a parse tree produced by `HazeParser.returntype`.
-	 * @param ctx the parse tree
-	 */
-	enterReturntype?: (ctx: ReturntypeContext) => void;
-	/**
-	 * Exit a parse tree produced by `HazeParser.returntype`.
-	 * @param ctx the parse tree
-	 */
-	exitReturntype?: (ctx: ReturntypeContext) => void;
-	/**
 	 * Enter a parse tree produced by the `IntegerConstant`
 	 * labeled alternative in `HazeParser.constant`.
 	 * @param ctx the parse tree
@@ -529,29 +518,29 @@ export default class HazeListener extends ParseTreeListener {
 	 */
 	exitLinkerhint?: (ctx: LinkerhintContext) => void;
 	/**
-	 * Enter a parse tree produced by the `StructFieldDecl`
+	 * Enter a parse tree produced by the `StructMember`
 	 * labeled alternative in `HazeParser.structcontent`.
 	 * @param ctx the parse tree
 	 */
-	enterStructFieldDecl?: (ctx: StructFieldDeclContext) => void;
+	enterStructMember?: (ctx: StructMemberContext) => void;
 	/**
-	 * Exit a parse tree produced by the `StructFieldDecl`
+	 * Exit a parse tree produced by the `StructMember`
 	 * labeled alternative in `HazeParser.structcontent`.
 	 * @param ctx the parse tree
 	 */
-	exitStructFieldDecl?: (ctx: StructFieldDeclContext) => void;
+	exitStructMember?: (ctx: StructMemberContext) => void;
 	/**
-	 * Enter a parse tree produced by the `StructFuncDecl`
+	 * Enter a parse tree produced by the `StructMethod`
 	 * labeled alternative in `HazeParser.structcontent`.
 	 * @param ctx the parse tree
 	 */
-	enterStructFuncDecl?: (ctx: StructFuncDeclContext) => void;
+	enterStructMethod?: (ctx: StructMethodContext) => void;
 	/**
-	 * Exit a parse tree produced by the `StructFuncDecl`
+	 * Exit a parse tree produced by the `StructMethod`
 	 * labeled alternative in `HazeParser.structcontent`.
 	 * @param ctx the parse tree
 	 */
-	exitStructFuncDecl?: (ctx: StructFuncDeclContext) => void;
+	exitStructMethod?: (ctx: StructMethodContext) => void;
 	/**
 	 * Enter a parse tree produced by the `StructDecl`
 	 * labeled alternative in `HazeParser.structdecl`.

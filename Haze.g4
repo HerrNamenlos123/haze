@@ -2,8 +2,8 @@ grammar Haze;
 
 prog: (namedfunc | externblock | compilationhint | linkerhint | structdecl)*;
 
-namedfunc: ID '(' params ')' (':' returntype)? funcbody;
-func: '(' params ')' (':' returntype)? funcbody;
+namedfunc: ID '(' params ')' (':' datatype)? funcbody;
+func: '(' params ')' (':' datatype)? funcbody;
 
 funcbody: ('=>')? '{' body '}' | '=>' expr;
 body: (statement)*;
@@ -11,7 +11,7 @@ body: (statement)*;
 param: ID ':' datatype;
 params: (param (',' param)*)?;
 
-externfuncdef: (ID '.')* ID '(' params ')' (':' returntype)? ';';
+externfuncdef: (ID '.')* ID '(' params ')' (':' datatype)? ';';
 externblock: 'extern' externlang '{' (externfuncdef)* '}';
 externlang: '"C"' | '"C++"';
 
