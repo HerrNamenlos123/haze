@@ -1,4 +1,3 @@
-import type { ParserRuleContext } from "antlr4ng";
 import { CompilerError, type Location } from "./Errors";
 import type { Symbol } from "./Symbol";
 
@@ -30,6 +29,10 @@ export class Scope {
 
   removeSymbol(name: string) {
     this.symbols = this.symbols.filter((s) => s.name !== name);
+  }
+
+  getSymbols() {
+    return this.symbols;
   }
 
   tryLookupSymbol(name: string, loc: Location): Symbol | undefined {

@@ -1,5 +1,5 @@
 import type { Location } from "./Errors";
-import type { MemberSymbol, VariableSymbol } from "./Symbol";
+import type { MethodSymbol, MemberSymbol, VariableSymbol } from "./Symbol";
 
 export enum Primitive {
   none = 1,
@@ -17,48 +17,83 @@ export enum Primitive {
   stringview = 13,
 }
 
-export type DatatypeVariant = "Function" | "Struct" | "Primitive" | "Pointer";
-export type Generics = [string, Datatype | null][];
+/**
+ * Explanation what is a datatype:
+ *
+ *  - Base Datatypes are the most basic form or generic form of datatypes.
+ *    Those are primitives, or generic types (such as "Array<T>"). Other base datatypes can be referenced.
+ *    Once they are built, they are immutable.
+ *
+ *  - Concrete types are base types but instantiated for usage.
+ *    For primitives, this will be a straight copy.
+ *    For generic types, it will be a mix of other concrete types, that all were built out of the base types.
+ *    e.g. "Array<T=Box<T=i32>>" <-- All of those are also concrete
+ *    Only concrete types can be used for anything. Even primitives need to be instantiated from "Base" to "Concrete".
+ */
 
-export type DatatypeRef = {
-  // This defined a reference to a datatype in an all-string format
-  // e.g. "Array<T=i32>"
-  typename: string;
-  generics: Generics;
-};
+export type BaseGenerics = string[];
 
-export type FunctionDatatype = {
+export type BaseFunctionDatatype = {
   variant: "Function";
-  functionParameters: [string, DatatypeRef][];
-  functionReturnType: DatatypeRef;
-  generics: Generics;
+  functionParameters: [string, BaseDatatype][];
+  functionReturnType: BaseDatatype;
+  generics: BaseGenerics;
 };
 
-export type StructDatatype = {
+export type BaseStructDatatype = {
   variant: "Struct";
   name: string;
-  generics: Generics;
+  generics: BaseGenerics;
   members: MemberSymbol[];
-  methods: MemberSymbol[];
+  methods: MethodSymbol[];
 };
 
-export type PrimitiveDatatype = {
+export type BasePrimitiveDatatype = {
   variant: "Primitive";
   primitive: Primitive;
 };
 
-export type PointerDatatype = {
-  variant: "Pointer";
-  pointee: DatatypeRef;
+export type BaseGenericDatatype = {
+  variant: "Generic";
+  name: string;
 };
 
-export type Datatype =
-  | PrimitiveDatatype
-  | FunctionDatatype
-  | StructDatatype
-  | PointerDatatype;
+export type BaseDatatype =
+  | BasePrimitiveDatatype
+  | BaseFunctionDatatype
+  | BaseStructDatatype
+  | BaseGenericDatatype;
 
-export function primitiveVariantToString(dt: PrimitiveDatatype): string {
+export type ConcreteGenerics = Record<string, ConcreteDatatype>;
+
+export type ConcreteFunctionDatatype = {
+  variant: "Function";
+  functionParameters: [string, ConcreteDatatype][];
+  functionReturnType: ConcreteDatatype;
+  generics: ConcreteGenerics;
+};
+
+export type ConcreteStructDatatype = {
+  variant: "Struct";
+  name: string;
+  generics: ConcreteGenerics;
+  members: { name: string; type: ConcreteDatatype }[];
+  methods: { name: string; type: ConcreteDatatype }[];
+};
+
+export type ConcretePrimitiveDatatype = {
+  variant: "Primitive";
+  primitive: Primitive;
+};
+
+export type ConcreteDatatype =
+  | ConcretePrimitiveDatatype
+  | ConcreteFunctionDatatype
+  | ConcreteStructDatatype;
+
+export type Datatype = BaseDatatype | ConcreteDatatype;
+
+export function primitiveVariantToString(dt: BasePrimitiveDatatype): string {
   switch (dt.primitive) {
     case Primitive.none:
       return "none";

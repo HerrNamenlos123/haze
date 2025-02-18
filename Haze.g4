@@ -53,9 +53,7 @@ expr
 
 args: (expr (',' expr)*)?;
 
-functype: '(' params ')' '=>' returntype;
-
-returntype: datatype;
+functype: '(' params ')' '=>' datatype;
 
 constant
     : INT                   #IntegerConstant
@@ -70,17 +68,16 @@ compilationlang: '"C"' | '"C++"';
 linkerhint: '#link' STRING_LITERAL;
 
 structcontent
-    : ID ':' datatype ';'                                   #StructFieldDecl
-    | ID '(' params ')' (':' returntype)? funcbody           #StructFuncDecl
+    : ID ':' datatype ';'                                    #StructMember
+    | ID '(' params ')' (':' datatype)? funcbody             #StructMethod
     ;
 
 structdecl
-    : 'struct' ID ('<' datatype (',' datatype)* '>')? '{' (structcontent)* '}'      #StructDecl
+    : 'struct' ID ('<' ID (',' ID)* '>')? '{' (structcontent)* '}'      #StructDecl
     ;
 
-// Types
 datatype
-    : ID ('<' datatype (',' datatype)* '>')?        #GenericDatatype
+    : ID ('<' datatype (',' datatype)* '>')?        #CommonDatatype
     | functype                                      #FunctionDatatype
     ;
 

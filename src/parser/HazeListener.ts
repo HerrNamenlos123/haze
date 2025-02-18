@@ -49,7 +49,7 @@ import { LinkerhintContext } from "./HazeParser.js";
 import { StructFieldDeclContext } from "./HazeParser.js";
 import { StructFuncDeclContext } from "./HazeParser.js";
 import { StructDeclContext } from "./HazeParser.js";
-import { GenericDatatypeContext } from "./HazeParser.js";
+import { CommonDatatypeContext } from "./HazeParser.js";
 import { FunctionDatatypeContext } from "./HazeParser.js";
 
 
@@ -565,17 +565,17 @@ export default class HazeListener extends ParseTreeListener {
 	 */
 	exitStructDecl?: (ctx: StructDeclContext) => void;
 	/**
-	 * Enter a parse tree produced by the `GenericDatatype`
+	 * Enter a parse tree produced by the `CommonDatatype`
 	 * labeled alternative in `HazeParser.datatype`.
 	 * @param ctx the parse tree
 	 */
-	enterGenericDatatype?: (ctx: GenericDatatypeContext) => void;
+	enterCommonDatatype?: (ctx: CommonDatatypeContext) => void;
 	/**
-	 * Exit a parse tree produced by the `GenericDatatype`
+	 * Exit a parse tree produced by the `CommonDatatype`
 	 * labeled alternative in `HazeParser.datatype`.
 	 * @param ctx the parse tree
 	 */
-	exitGenericDatatype?: (ctx: GenericDatatypeContext) => void;
+	exitCommonDatatype?: (ctx: CommonDatatypeContext) => void;
 	/**
 	 * Enter a parse tree produced by the `FunctionDatatype`
 	 * labeled alternative in `HazeParser.datatype`.

@@ -1,50 +1,41 @@
-import { AbstractParseTreeVisitor, type ParserRuleContext } from "antlr4ng";
-import type { DatatypeRef } from "./Datatype";
-import type { ParamContext } from "./parser/HazeParser";
+import {
+  CommonDatatypeContext,
+  ExternblockContext,
+  ExternfuncdefContext,
+  FunctionDatatypeContext,
+  NamedObjectExprContext,
+  StructDeclContext,
+  StructFieldDeclContext,
+  StructFuncDeclContext,
+  type ParamContext,
+} from "./parser/HazeParser";
 import type { Program } from "./Program";
-import type { FunctionSymbol, FunctionType } from "./Symbol";
+import {
+  FunctionType,
+  type DatatypeSymbol,
+  type MemberSymbol,
+  type MethodSymbol,
+  type DatatypeSymbol,
+  type FunctionSymbol,
+  type MemberSymbol,
+  type MethodSymbol,
+} from "./Symbol";
 import HazeVisitor from "./parser/HazeVisitor";
+import { CompilerError, ImpossibleSituation, InternalError } from "./Errors";
+import type {
+  BaseDatatype,
+  BaseFunctionDatatype,
+  BaseGenericDatatype,
+  BaseStructDatatype,
+  ConcreteDatatype,
+  Datatype,
+} from "./Datatype";
+import { Scope } from "./Scope";
 
-export class Hans<Result> extends AbstractParseTreeVisitor<Result> {
-  // Optional visitParam method
-  visitParam?: (ctx: ParamContext) => Result;
-
-  // Other visit methods...
-}
-
-class Hans2 extends Hans<number> {
-  // Override the optional visitParam method
-  visitParam(ctx: ParamContext): number {
-    // Custom logic for visiting Param
-    console.log("Visiting Param:", ctx);
-    return 0; // Return an appropriate value (e.g., 0 or calculated sum)
-  }
-
-  // Override other methods as needed
-}
-
-class SumVisitor extends HazeVisitor<number> {
-  visitParam(ctx: ParserRuleContext): number {
-    return parseInt(ctx.getText(), 10); // Return the number value
-  }
-
-  visitAddition(ctx: AdditionContext): number {
-    const left = this.visit(ctx.left); // Visit the left child
-    const right = this.visit(ctx.right); // Visit the right child
-    return left + right; // Return the sum
-  }
-}
-
-export class Test extends HazeVisitor<number> {
-  visitParam(ctx: ParserRuleContext): number {
-    return 0;
-  }
-}
-
-export class SymbolCollector extends HazeVisitor<number> {
+export class SymbolCollector extends HazeVisitor<any> {
   private program: Program;
   private currentFunctionType: FunctionType | undefined;
-  private structStack: DatatypeRef[];
+  private structStack: DatatypeSymbol[];
   private currentFunctionSymbols: FunctionSymbol[];
 
   constructor(program: Program) {
@@ -55,112 +46,95 @@ export class SymbolCollector extends HazeVisitor<number> {
     this.currentFunctionSymbols = [];
   }
 
-  visitParam = (ctx): any => {
+  visitParam = (ctx: ParamContext): [string, BaseDatatype] => {
     return [ctx.ID().getText(), this.visit(ctx.datatype())];
   };
 
-  public visitGenericDatatype(
-    ctx: HazeParser.GenericDatatypeContext,
-  ): Datatype {
+  visitCommonDatatype = (ctx: CommonDatatypeContext): BaseDatatype => {
     const name = ctx.ID().getText();
-    const foundSymbol = this.db
-      .getCurrentScope()
-      .tryLookupSymbol(name, this.getLocation(ctx));
-    if (!foundSymbol) {
-      throw new CompilerError(
-        `Type '${name}' is not defined.`,
-        this.getLocation(ctx),
-      );
+    const baseType = this.program.findBaseDatatype(name);
+    if (!baseType) {
+      const d: BaseGenericDatatype = {
+        variant: "Generic",
+        name: name,
+      };
+      return d;
     }
 
-    const genericsProvided = ctx.datatype().map((n) => this.visit(n));
-    if (foundSymbol.type.generics().length !== genericsProvided.length) {
-      throw new CompilerError(
-        `Datatype expected ${foundSymbol.type.generics().length} generic arguments but got ${genericsProvided.length}.`,
-        this.getLocation(ctx),
-      );
-    }
-
-    const generics: [string, Datatype | null][] = [];
-    const scope = new Scope(this.getLocation(ctx), this.db.getCurrentScope());
-    for (let i = 0; i < foundSymbol.type.generics().length; i++) {
-      const name = foundSymbol.type.generics()[i][0];
-      const givenType = genericsProvided[i];
-      if (givenType && !givenType.isGeneric()) {
-        generics.push([name, givenType]);
-      } else {
-        generics.push([name, null]);
-      }
-      if (givenType) {
-        scope.defineSymbol(
-          new DatatypeSymbol(name, null, givenType),
-          this.getLocation(ctx),
-        );
-      }
-    }
-
-    foundSymbol = Object.assign({}, foundSymbol);
-    foundSymbol.type._generics = generics;
-
-    const dt = resolveGenerics(foundSymbol.type, scope, this.getLocation(ctx));
-    return dt;
-  }
-
-  public visitFunctionDatatype(
-    ctx: HazeParser.FunctionDatatypeContext,
-  ): Datatype {
-    const params = ctx
-      .functype()
-      .params()
-      .param()
+    const genericsProvided: BaseDatatype[] = ctx
+      .datatype_list()
       .map((n) => this.visit(n));
-    const dt = Datatype.createFunctionType(
-      params,
-      this.visit(ctx.functype().returntype()),
-    );
-    if (dt.areAllGenericsResolved()) {
-      this.program.resolvedDatatypes[dt.getMangledName()] = dt;
-    }
-    return dt;
-  }
+    switch (baseType.variant) {
+      case "Primitive":
+        if (genericsProvided.length > 0) {
+          throw new CompilerError(
+            `Type '${name}' expected no generic arguments but got ${genericsProvided.length}.`,
+            this.program.getLoc(ctx),
+          );
+        }
+        return baseType;
 
-  public visitExternblock(ctx: HazeParser.ExternblockContext): void {
+      case "Struct":
+        if (genericsProvided.length > 0) {
+          throw new CompilerError(
+            `Type '${name}<>' expected ${baseType.generics.length} generic arguments but got ${genericsProvided.length}.`,
+            this.program.getLoc(ctx),
+          );
+        }
+        return baseType;
+
+      default:
+        throw new ImpossibleSituation();
+    }
+  };
+
+  visitFunctionDatatype = (ctx: FunctionDatatypeContext): BaseDatatype => {
+    const type: BaseFunctionDatatype = {
+      variant: "Function",
+      functionParameters: ctx
+        .functype()
+        .params()
+        .param_list()
+        .map((n) => [n.ID().getText(), this.visit(n.datatype())]),
+      functionReturnType: this.visit(ctx.functype().returntype()),
+      generics: [],
+    };
+    return type;
+  };
+
+  visitExternblock = (ctx: ExternblockContext): void => {
     const lang = ctx.externlang().getText()[1];
     if (lang === "C") {
       if (this.currentFunctionType) {
         throw new CompilerError(
           "Extern blocks cannot be nested",
-          this.getLocation(ctx),
+          this.program.getLoc(ctx),
         );
       }
-      this.currentFunctionType = FunctionLinkage.External_C;
+      this.currentFunctionType = FunctionType.External_C;
       this.visitChildren(ctx);
       this.currentFunctionType = undefined;
     } else {
       throw new CompilerError(
         `Extern Language '${lang}' is not supported.`,
-        this.getLocation(ctx),
+        this.program.getLoc(ctx),
       );
     }
-  }
+  };
 
-  public visitReturntype(ctx: HazeParser.ReturntypeContext): Datatype {
-    return this.visit(ctx.datatype());
-  }
-
-  public visitExternfuncdef(ctx: HazeParser.ExternfuncdefContext): void {
+  visitExternfuncdef = (ctx: ExternfuncdefContext): void => {
     if (!this.currentFunctionType) {
       throw new ImpossibleSituation();
     }
 
-    const signature = ctx.ID().map((n) => n.getText());
+    const signature = ctx.ID_list().map((n) => n.getText());
     if (
       signature.length > 1 &&
-      this.currentFunctionType === FunctionLinkage.External_C
+      this.currentFunctionType === FunctionType.External_C
     ) {
       throw new CompilerError(
         "Extern C functions cannot be namespaced",
-        this.getLocation(ctx),
+        this.program.getLoc(ctx),
       );
     }
 
@@ -170,49 +144,49 @@ export class SymbolCollector extends HazeVisitor<number> {
       );
     }
 
-    const name = signature[signature.length - 1];
-    const symbol = new FunctionSymbol(
-      name,
-      null,
-      Datatype.createFunctionType(
-        [],
-        Datatype.createPrimitiveType(Datatype.PrimitiveVariants.none),
-      ),
-      this.currentFunctionType,
-      null,
-      null,
-      false,
-      [],
-      ctx,
-    );
+    // const name = signature[signature.length - 1];
+    // const symbol = new FunctionSymbol(
+    //   name,
+    //   null,
+    //   Datatype.createFunctionType(
+    //     [],
+    //     Datatype.createPrimitiveType(Datatype.PrimitiveVariants.none),
+    //   ),
+    //   this.currentFunctionType,
+    //   null,
+    //   null,
+    //   false,
+    //   [],
+    //   ctx,
+    // );
 
-    const params: [string, Datatype][] = [];
-    for (let i = 0; i < ctx.params().param().length; i++) {
-      const name = ctx.params().param()[i].ID().getText();
-      const datatype = this.visit(ctx.params().param()[i].datatype());
-      params.push([name, datatype]);
-    }
+    // const params: [string, Datatype][] = [];
+    // for (let i = 0; i < ctx.params().param().length; i++) {
+    //   const name = ctx.params().param()[i].ID().getText();
+    //   const datatype = this.visit(ctx.params().param()[i].datatype());
+    //   params.push([name, datatype]);
+    // }
 
-    this.currentFunctionSymbols.push(symbol);
-    this.visitChildren(ctx);
-    this.currentFunctionSymbols.pop();
+    // this.currentFunctionSymbols.push(symbol);
+    // this.visitChildren(ctx);
+    // this.currentFunctionSymbols.pop();
 
-    const returntype = symbol.type.functionReturnType();
-    if (ctx.returntype()) {
-      returntype = this.visit(ctx.returntype());
-    }
+    // const returntype = symbol.type.functionReturnType();
+    // if (ctx.returntype()) {
+    //   returntype = this.visit(ctx.returntype());
+    // }
 
-    symbol.type = Datatype.createFunctionType(params, returntype);
-    this.program.globalScope.defineSymbol(symbol, this.getLocation(ctx));
-    this.program.externFunctionRefs.push(
-      new ExternFunctionRef(
-        FunctionLinkage.External_C,
-        this.getLocation(ctx),
-        symbol,
-      ),
-    );
-    this.setNodeSymbol(ctx, symbol);
-  }
+    // symbol.type = Datatype.createFunctionType(params, returntype);
+    // this.program.globalScope.defineSymbol(symbol, this.program.getLoc(ctx));
+    // this.program.externFunctionRefs.push(
+    //   new ExternFunctionRef(
+    //     FunctionLinkage.External_C,
+    //     this.program.getLoc(ctx),
+    //     symbol,
+    //   ),
+    // );
+    // this.setNodeSymbol(ctx, symbol);
+  };
 
   private implFunc(
     ctx:
@@ -222,7 +196,7 @@ export class SymbolCollector extends HazeVisitor<number> {
     name: string,
   ): FunctionSymbol {
     const scope = this.db.pushScope(
-      new Scope(this.getLocation(ctx), this.db.getCurrentScope()),
+      new Scope(this.program.getLoc(ctx), this.db.getCurrentScope()),
     );
 
     if (this.currentFunctionType) {
@@ -250,7 +224,7 @@ export class SymbolCollector extends HazeVisitor<number> {
       if (symbol.scope) {
         symbol.scope.defineSymbol(
           new VariableSymbol(nm, symbol, datatype, VariableType.Parameter),
-          this.getLocation(ctx),
+          this.program.getLoc(ctx),
         );
       }
     }
@@ -273,7 +247,7 @@ export class SymbolCollector extends HazeVisitor<number> {
         } else {
           throw new CompilerError(
             `Constructor of struct '${symbol.parentSymbol.name}' returns the struct itself implicitly`,
-            this.getLocation(ctx),
+            this.program.getLoc(ctx),
           );
         }
       } else {
@@ -290,13 +264,13 @@ export class SymbolCollector extends HazeVisitor<number> {
             symbol.thisPointerType,
             VariableType.Parameter,
           ),
-          this.getLocation(ctx),
+          this.program.getLoc(ctx),
         );
       }
     }
 
     symbol.type = Datatype.createFunctionType(params, returntype);
-    this.program.globalScope.defineSymbol(symbol, this.getLocation(ctx));
+    this.program.globalScope.defineSymbol(symbol, this.program.getLoc(ctx));
 
     this.db.popScope();
     this.setNodeSymbol(ctx, symbol);
@@ -311,70 +285,72 @@ export class SymbolCollector extends HazeVisitor<number> {
     return this.implFunc(ctx, ctx.ID().getText());
   }
 
-  public visitStructFieldDecl(
-    ctx: HazeParser.StructFieldDeclContext,
-  ): VariableSymbol {
+  visitStructMember = (ctx: StructFieldDeclContext) => {
     const name = ctx.ID().getText();
     const datatype = this.visit(ctx.datatype());
-    return new VariableSymbol(
-      name,
-      this.structStack[this.structStack.length - 1],
-      datatype,
-      VariableType.MutableStructField,
+    const symbol: MemberSymbol = {
+      variant: "Member",
+      name: name,
+      type: datatype,
+    };
+    return symbol;
+  };
+
+  visitStructDecl = (ctx: StructDeclContext): DatatypeSymbol => {
+    const name = ctx.ID(0).getText();
+    const parentScope = this.program.currentScope;
+    const scope = this.program.pushScope(
+      new Scope(this.program.getLoc(ctx), parentScope),
     );
-  }
 
-  public visitStructDecl(ctx: HazeParser.StructDeclContext): DatatypeSymbol {
-    const name = ctx.ID().getText();
-    const parentScope = this.db.getCurrentScope();
-    const scope = this.db.pushScope(
-      new Scope(this.getLocation(ctx), parentScope),
-    );
+    const genericsList = ctx
+      .ID_list()
+      .slice(1)
+      .map((n) => n.getText());
+    // genericsList.forEach((generic) => {
+    //   scope.defineSymbol(
+    //     new GenericPlaceholderSymbol(generic[0]),
+    //     this.program.getLoc(ctx),
+    //   );
+    // });
 
-    const genericsList = ctx.datatype().map((n) => [n.getText(), null]);
-    genericsList.forEach((generic) => {
-      scope.defineSymbol(
-        new GenericPlaceholderSymbol(generic[0]),
-        this.getLocation(ctx),
-      );
-    });
-
-    const parentSymbol =
-      this.structStack.length > 0
-        ? this.structStack[this.structStack.length - 1]
-        : undefined;
-    const symbol = new DatatypeSymbol(
-      name,
-      parentSymbol,
-      Datatype.createStructDatatype(name, genericsList, new SymbolTable()),
-    );
-    symbol.ctx = ctx;
-    parentScope.defineSymbol(symbol, this.getLocation(ctx));
-
+    const type: BaseStructDatatype = {
+      variant: "Struct",
+      name: name,
+      generics: genericsList,
+      members: [],
+      methods: [],
+    };
+    const symbol: DatatypeSymbol = {
+      variant: "Datatype",
+      name: name,
+      type: type,
+      scope: scope,
+    };
+    parentScope.defineSymbol(symbol, this.program.getLoc(ctx));
     this.structStack.push(symbol);
 
-    const symbolTable = new SymbolTable();
-    ctx.structcontent().forEach((content) => {
-      symbolTable.insert(this.visit(content), this.getLocation(ctx));
+    ctx.structcontent_list().forEach((c) => {
+      const content: MemberSymbol | MethodSymbol = this.visit(c);
+      if (content.variant === "Member") {
+        type.members.push(content);
+      } else {
+        type.methods.push(content);
+      }
     });
 
-    symbol.type = Datatype.createStructDatatype(
-      name,
-      genericsList,
-      symbolTable,
-    );
-    symbol.type._structMemberSymbols = symbolTable;
-
     this.structStack.pop();
-    this.db.popScope();
-    this.setNodeSymbol(ctx, symbol);
+    this.program.popScope();
     return symbol;
-  }
+  };
 
-  public visitStructFuncDecl(
-    ctx: HazeParser.StructFuncDeclContext,
-  ): FunctionSymbol {
-    const name = ctx.ID().getText();
-    return this.implFunc(ctx, name);
-  }
+  // visitStructMethod = (ctx: StructFuncDeclContext): FunctionSymbol => {
+  //   const name = ctx.ID().getText();
+  //   // return this.implFunc(ctx, name);
+  //   const symbol: MethodSymbol = {
+  //     variant: "Method",
+  //     name: name,
+  //   };
+  //   return symbol;
+  // };
 }

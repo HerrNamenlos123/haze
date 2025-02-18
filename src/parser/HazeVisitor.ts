@@ -49,7 +49,7 @@ import { LinkerhintContext } from "./HazeParser.js";
 import { StructFieldDeclContext } from "./HazeParser.js";
 import { StructFuncDeclContext } from "./HazeParser.js";
 import { StructDeclContext } from "./HazeParser.js";
-import { GenericDatatypeContext } from "./HazeParser.js";
+import { CommonDatatypeContext } from "./HazeParser.js";
 import { FunctionDatatypeContext } from "./HazeParser.js";
 
 
@@ -361,12 +361,12 @@ export default class HazeVisitor<Result> extends ParseTreeVisitor<Result> {
 	 */
 	visitStructDecl?: (ctx: StructDeclContext) => Result;
 	/**
-	 * Visit a parse tree produced by the `GenericDatatype`
+	 * Visit a parse tree produced by the `CommonDatatype`
 	 * labeled alternative in `HazeParser.datatype`.
 	 * @param ctx the parse tree
 	 * @return the visitor result
 	 */
-	visitGenericDatatype?: (ctx: GenericDatatypeContext) => Result;
+	visitCommonDatatype?: (ctx: CommonDatatypeContext) => Result;
 	/**
 	 * Visit a parse tree produced by the `FunctionDatatype`
 	 * labeled alternative in `HazeParser.datatype`.

@@ -1,5 +1,4 @@
-import type { ParserRuleContext } from "antlr4ng";
-import type { DatatypeRef } from "./Datatype";
+import type { BaseDatatype, ConcreteDatatype, Datatype } from "./Datatype";
 import type { Scope } from "./Scope";
 
 export enum VariableType {
@@ -16,23 +15,17 @@ export enum FunctionType {
   External_CXX,
 }
 
-// export type SymbolTypes =
-//   | "Variable"
-//   | "GenericPlaceholder"
-//   | "Datatype"
-//   | "Constant";
-
 export type VariableSymbol = {
   variant: "Variable";
   name: string;
-  type: DatatypeRef;
+  type: Datatype;
   variableType: VariableType;
 };
 
 export type FunctionSymbol = {
   variant: "Function";
   name: string;
-  type: DatatypeRef;
+  type: Datatype;
   functionType: FunctionType;
   scope: Scope;
 };
@@ -40,30 +33,25 @@ export type FunctionSymbol = {
 export type MemberSymbol = {
   variant: "Member";
   name: string;
-  type: DatatypeRef;
-  functionType: FunctionType;
-  scope: Scope;
-  thisPointer?: DatatypeRef;
-  isConstructor: boolean;
+  type: Datatype;
 };
 
 export type MethodSymbol = {
   variant: "Method";
   name: string;
-  type: DatatypeRef;
-};
-
-export type GenericPlaceholderSymbol = {
-  variant: "GenericPlaceholder";
-  name: string;
-  type?: DatatypeRef;
+  type: Datatype;
+  functionType: FunctionType;
+  scope: Scope;
+  thisPointer?: Datatype;
+  isConstructor: boolean;
 };
 
 export type DatatypeSymbol = {
   variant: "Datatype";
   parentSymbol?: Symbol;
   name: string;
-  type?: DatatypeRef;
+  type?: Datatype;
+  scope: Scope;
 };
 
 // export type ConstantSymbol = {
@@ -74,7 +62,6 @@ export type DatatypeSymbol = {
 
 export type Symbol =
   | VariableSymbol
-  | GenericPlaceholderSymbol
   | DatatypeSymbol
   | MemberSymbol
   | MethodSymbol;

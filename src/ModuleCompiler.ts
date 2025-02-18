@@ -2,10 +2,17 @@ import * as fs from "fs";
 import * as path from "path";
 import * as child_process from "child_process";
 import { Parser } from "./parser";
-import { CompilerError, InternalError, UnreachableCode } from "./Errors";
+import {
+  CompilerError,
+  ImpossibleSituation,
+  InternalError,
+  UnreachableCode,
+} from "./Errors";
 import { Program } from "./Program";
 import { SymbolCollector } from "./SymbolCollector";
-import { TerminalNode, type ParseTree } from "antlr4";
+import { ParserRuleContext, ParseTree, RuleNode, TerminalNode } from "antlr4";
+import { ProgContext } from "./parser/HazeParser";
+import { generateGraphviz } from "./graphviz";
 
 // import { Parser } from "./Parser";
 // import { CompilationDatabase } from "./CompilationDatabase";
@@ -38,27 +45,36 @@ export class ModuleCompiler {
       }
 
       const program = new Program(this.filename);
-      // const collector = new SymbolCollector(program);
-      // collector.visit(ast);
-      console.log(program);
+      const collector = new SymbolCollector(program);
+      collector.visit(ast);
+      // console.log(JSON.stringify(program, null, 2));
 
-      function prettyPrintAST(node: ParseTree, indent: string = ""): void {
-        // Print the current node's text (i.e., the token or rule name)
+      Bun.write(
+        path.join("build", this.filename + ".dot"),
+        generateGraphviz(program),
+      );
+      child_process.execSync(
+        `dot build/${this.filename}.dot -Tpng -o build/${this.filename}.png`,
+      );
+
+      function prettyPrintAST(
+        node: ParserRuleContext | TerminalNode,
+        indent: string = "",
+      ): void {
         if (node instanceof TerminalNode) {
           console.log(`${indent}TerminalNode: ${node.getText()}`);
         } else {
           console.log(`${indent}RuleNode: ${node.constructor.name}`);
         }
-
-        // Recursively print child nodes (if any)
-        for (let i = 0; i < node.getChildCount(); i++) {
-          const child = node.getChild(i);
-          prettyPrintAST(child, indent + "  "); // Increase indentation
+        if (node instanceof ParserRuleContext) {
+          for (let i = 0; i < node.getChildCount(); i++) {
+            const child = node.getChild(i) as ParserRuleContext | TerminalNode;
+            prettyPrintAST(child, indent + "  ");
+          }
         }
       }
 
-      // console.log(ast);
-      prettyPrintAST(ast);
+      // prettyPrintAST(ast);
 
       //   performSemanticAnalysis(collector.program, this.filename, this.db);
 

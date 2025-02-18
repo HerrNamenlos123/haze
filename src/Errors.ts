@@ -1,3 +1,5 @@
+import type { ParserRuleContext } from "antlr4";
+
 export enum ErrorType {
   Error,
   Warning,
