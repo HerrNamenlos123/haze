@@ -7,6 +7,7 @@ from Datatype import Datatype
 
 class SymbolTable:
     def __init__(self):
+        self.symbols: List[Symbol] = []
 
     def insert(self, symbol: Symbol, loc: Location):
         if symbol.name in self.symbols:
