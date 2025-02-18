@@ -5,6 +5,7 @@ import { Parser } from "./parser";
 import { CompilerError, InternalError, UnreachableCode } from "./Errors";
 import { Program } from "./Program";
 import { SymbolCollector } from "./SymbolCollector";
+import { TerminalNode, type ParseTree } from "antlr4";
 
 // import { Parser } from "./Parser";
 // import { CompilationDatabase } from "./CompilationDatabase";
@@ -37,9 +38,27 @@ export class ModuleCompiler {
       }
 
       const program = new Program(this.filename);
-      const collector = new SymbolCollector(program);
-      collector.visit(ast);
+      // const collector = new SymbolCollector(program);
+      // collector.visit(ast);
       console.log(program);
+
+      function prettyPrintAST(node: ParseTree, indent: string = ""): void {
+        // Print the current node's text (i.e., the token or rule name)
+        if (node instanceof TerminalNode) {
+          console.log(`${indent}TerminalNode: ${node.getText()}`);
+        } else {
+          console.log(`${indent}RuleNode: ${node.constructor.name}`);
+        }
+
+        // Recursively print child nodes (if any)
+        for (let i = 0; i < node.getChildCount(); i++) {
+          const child = node.getChild(i);
+          prettyPrintAST(child, indent + "  "); // Increase indentation
+        }
+      }
+
+      // console.log(ast);
+      prettyPrintAST(ast);
 
       //   performSemanticAnalysis(collector.program, this.filename, this.db);
 
