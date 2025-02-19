@@ -55,7 +55,7 @@ export class ModuleCompiler {
       );
       try {
         child_process.execSync(
-          `mmdc -i build/${this.filename}.mmd -o build/${this.filename}.png`,
+          `mmdc -i build/${this.filename}.mmd -o build/${this.filename}.svg -t default`,
         );
       } catch (e) {
         console.error("Running mermaid failed");

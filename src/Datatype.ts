@@ -1,5 +1,5 @@
 import type { Location } from "./Errors";
-import type { MethodSymbol, MemberSymbol, VariableSymbol } from "./Symbol";
+import type { FunctionSymbol, MemberSymbol, VariableSymbol } from "./Symbol";
 
 export enum Primitive {
   none = 1,
@@ -33,12 +33,14 @@ export enum Primitive {
 
 export type BaseGenerics = string[];
 
-export type BaseFunctionDatatype = {
+export type FunctionDatatype = {
   variant: "Function";
-  concrete: false;
-  functionParameters: [string, BaseDatatype][];
-  functionReturnType: BaseDatatype;
-  generics: BaseGenerics;
+  functionParameters: [string, Datatype][];
+  functionReturnType: Datatype;
+};
+
+export type BaseDeferredDatatype = {
+  variant: "Deferred";
 };
 
 export type BaseStructDatatype = {
@@ -47,7 +49,7 @@ export type BaseStructDatatype = {
   name: string;
   generics: BaseGenerics;
   members: MemberSymbol[];
-  methods: MethodSymbol[];
+  methods: FunctionSymbol[];
 };
 
 export type BasePrimitiveDatatype = {
@@ -64,19 +66,12 @@ export type BaseGenericDatatype = {
 
 export type BaseDatatype =
   | BasePrimitiveDatatype
-  | BaseFunctionDatatype
+  | BaseDeferredDatatype
+  | FunctionDatatype
   | BaseStructDatatype
   | BaseGenericDatatype;
 
 export type ConcreteGenerics = Record<string, ConcreteDatatype>;
-
-export type ConcreteFunctionDatatype = {
-  variant: "Function";
-  concrete: true;
-  functionParameters: [string, ConcreteDatatype][];
-  functionReturnType: ConcreteDatatype;
-  generics: ConcreteGenerics;
-};
 
 export type ConcreteStructDatatype = {
   variant: "Struct";
@@ -95,7 +90,7 @@ export type ConcretePrimitiveDatatype = {
 
 export type ConcreteDatatype =
   | ConcretePrimitiveDatatype
-  | ConcreteFunctionDatatype
+  | FunctionDatatype
   | ConcreteStructDatatype;
 
 export type Datatype = BaseDatatype | ConcreteDatatype;

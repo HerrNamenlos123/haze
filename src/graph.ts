@@ -2,10 +2,12 @@ import type {
   BaseStructDatatype,
   ConcreteStructDatatype,
   Datatype,
+  FunctionDatatype,
 } from "./Datatype";
+import { ImpossibleSituation } from "./Errors";
 import type { Program } from "./Program";
 import type { Scope } from "./Scope";
-import type { DatatypeSymbol } from "./Symbol";
+import type { DatatypeSymbol, FunctionSymbol } from "./Symbol";
 
 export function generateGraphviz(program: Program): string {
   let out = `graph TD\n`;
@@ -13,20 +15,18 @@ export function generateGraphviz(program: Program): string {
   function addStruct(symbol: DatatypeSymbol, type: BaseStructDatatype) {
     const symbolId = `${symbol.name}`;
     let label = symbol.name;
-    if (type?.variant === "Struct") {
-      const genericTokens = [] as string[];
-      if (type.generics instanceof Array) {
-        for (const generic of type.generics) {
-          genericTokens.push(generic);
-        }
-      } else {
-        for (const generic of Object.keys(type.generics)) {
-          label += ` ${generic}=${type.generics[generic]}`;
-        }
+    const genericTokens = [] as string[];
+    if (type.generics instanceof Array) {
+      for (const generic of type.generics) {
+        genericTokens.push(generic);
       }
-      if (genericTokens.length > 0) {
-        label += `<${genericTokens.join(", ")}>`;
+    } else {
+      for (const generic of Object.keys(type.generics)) {
+        label += ` ${generic}=${type.generics[generic]}`;
       }
+    }
+    if (genericTokens.length > 0) {
+      label += `<${genericTokens.join(", ")}>`;
     }
 
     out += `subgraph `;
@@ -62,13 +62,29 @@ export function generateGraphviz(program: Program): string {
     }
   }
 
+  function addFunctionSymbol(scopeId: string, symbol: FunctionSymbol) {
+    if (symbol.type.variant !== "Function") {
+      throw new ImpossibleSituation();
+    }
+    let symbolId = "";
+    let parent = symbol.parentSymbol;
+    while (parent) {
+      symbolId += `${parent.name}.`;
+      parent = parent.parentSymbol;
+    }
+    symbolId += `${symbol.name}`;
+    let label = symbol.name;
+    out += `${symbolId}["${label}"]\n`;
+    addScope(symbol.scope, symbolId);
+  }
+
   // Add Scopes
   function addScope(scope: Scope, parentName?: string) {
     const scopeId = `Scope_${Math.random().toString(36).substr(2, 5)}`;
     out += `  ${scopeId}["Scope ${scope.location}"]\n`;
 
     if (parentName) {
-      out += `  ${parentName} --> ${scopeId};\n`;
+      out += `  ${parentName} --> ${scopeId}\n`;
     }
 
     // Add Symbols
@@ -76,6 +92,10 @@ export function generateGraphviz(program: Program): string {
       switch (symbol.variant) {
         case "Datatype":
           addDatatypeSymbol(scopeId, symbol);
+          break;
+
+        case "Function":
+          addFunctionSymbol(scopeId, symbol);
           break;
 
         default:

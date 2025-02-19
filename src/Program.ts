@@ -20,6 +20,8 @@ export class Program {
   baseDatatypes: BaseDatatype[] = [];
   concreteDatatypes: ConcreteDatatype[] = [];
 
+  private anonymousStuffCounter = 0;
+
   constructor(filename: string) {
     this.filename = filename;
     this.globalScope = new Scope(new Location("global", 0, 0));
@@ -118,5 +120,9 @@ export class Program {
         break;
     }
     this.baseDatatypes.push(type);
+  }
+
+  makeAnonymousName() {
+    return `__anonym_${this.anonymousStuffCounter++}`;
   }
 }

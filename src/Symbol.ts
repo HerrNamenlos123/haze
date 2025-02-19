@@ -20,6 +20,7 @@ export type VariableSymbol = {
   name: string;
   type: Datatype;
   variableType: VariableType;
+  parentSymbol?: Symbol;
 };
 
 export type FunctionSymbol = {
@@ -27,23 +28,10 @@ export type FunctionSymbol = {
   name: string;
   type: Datatype;
   functionType: FunctionType;
-  scope: Scope;
-};
-
-export type MemberSymbol = {
-  variant: "Member";
-  name: string;
-  type: Datatype;
-};
-
-export type MethodSymbol = {
-  variant: "Method";
-  name: string;
-  type: Datatype;
-  functionType: FunctionType;
+  parentSymbol?: Symbol;
   scope: Scope;
   thisPointer?: Datatype;
-  isConstructor: boolean;
+  isConstructor?: boolean;
 };
 
 export type DatatypeSymbol = {
@@ -60,9 +48,5 @@ export type DatatypeSymbol = {
 //   value: string | number | boolean;
 // };
 
-export type Symbol =
-  | VariableSymbol
-  | DatatypeSymbol
-  | MemberSymbol
-  | MethodSymbol;
+export type Symbol = VariableSymbol | DatatypeSymbol | FunctionSymbol;
 //   | ConstantSymbol;
