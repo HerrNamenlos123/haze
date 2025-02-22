@@ -13,6 +13,8 @@ import {
 import type { Program } from "./Program";
 import {
   FunctionType,
+  isSymbolGeneric,
+  mangleSymbol,
   VariableType,
   type DatatypeSymbol,
   type FunctionSymbol,
@@ -20,19 +22,18 @@ import {
 } from "./Symbol";
 import HazeVisitor from "./parser/HazeVisitor";
 import { CompilerError, ImpossibleSituation, InternalError } from "./Errors";
-import type {
-  BaseDatatype,
-  BaseGenericDatatype,
-  BaseStructDatatype,
-  Datatype,
-  FunctionDatatype,
+import {
+  type Datatype,
+  type FunctionDatatype,
+  type GenericPlaceholderDatatype,
+  type StructDatatype,
 } from "./Datatype";
 import { Scope } from "./Scope";
 
 export class SymbolCollector extends HazeVisitor<any> {
   private program: Program;
   private currentFunctionType: FunctionType | undefined;
-  private structStack: DatatypeSymbol[];
+  private structStack: DatatypeSymbol<StructDatatype>[];
 
   constructor(program: Program) {
     super();
@@ -41,23 +42,23 @@ export class SymbolCollector extends HazeVisitor<any> {
     this.structStack = [];
   }
 
-  visitParam = (ctx: ParamContext): [string, BaseDatatype] => {
+  visitParam = (ctx: ParamContext): [string, Datatype] => {
     return [ctx.ID().getText(), this.visit(ctx.datatype())];
   };
 
-  visitCommonDatatype = (ctx: CommonDatatypeContext): BaseDatatype => {
+  visitCommonDatatype = (ctx: CommonDatatypeContext): Datatype => {
     const name = ctx.ID().getText();
     const baseType = this.program.findBaseDatatype(name);
     if (!baseType) {
-      const d: BaseGenericDatatype = {
+      const d: GenericPlaceholderDatatype = {
         variant: "Generic",
-        concrete: false,
         name: name,
       };
+      // throw new Error("Type not found: " + name);
       return d;
     }
 
-    const genericsProvided: BaseDatatype[] = ctx
+    const genericsProvided: Datatype[] = ctx
       .datatype_list()
       .map((n) => this.visit(n));
     switch (baseType.variant) {
@@ -73,7 +74,7 @@ export class SymbolCollector extends HazeVisitor<any> {
       case "Struct":
         if (genericsProvided.length > 0) {
           throw new CompilerError(
-            `Type '${name}<>' expected ${baseType.generics.length} generic arguments but got ${genericsProvided.length}.`,
+            `Type '${name}<>' expected ${Object.keys(baseType.generics).length} generic arguments but got ${genericsProvided.length}.`,
             this.program.getLoc(ctx),
           );
         }
@@ -84,7 +85,7 @@ export class SymbolCollector extends HazeVisitor<any> {
     }
   };
 
-  visitFunctionDatatype = (ctx: FunctionDatatypeContext): BaseDatatype => {
+  visitFunctionDatatype = (ctx: FunctionDatatypeContext): Datatype => {
     const type: FunctionDatatype = {
       variant: "Function",
       functionParameters: ctx
@@ -187,7 +188,7 @@ export class SymbolCollector extends HazeVisitor<any> {
       functionParameters: ctx
         .params()
         .param_list()
-        .map((n) => [n.ID().getText(), this.visit(n)]),
+        .map((n) => this.visitParam(n)),
       functionReturnType: returntype,
     };
     const symbol: FunctionSymbol = {
@@ -199,8 +200,20 @@ export class SymbolCollector extends HazeVisitor<any> {
       thisPointer: thisPointerType,
       scope: scope,
       parentSymbol: parentSymbol,
+      ctx: ctx,
     };
     parentScope.defineSymbol(symbol, this.program.getLoc(ctx));
+
+    if (symbol.functionType !== FunctionType.Internal) {
+      this.program.externFunctions[mangleSymbol(symbol)] = symbol;
+    } else {
+      if (
+        !isSymbolGeneric(symbol) &&
+        (!parentSymbol || Object.keys(parentSymbol.type.generics).length === 0)
+      ) {
+        this.program.concreteFunctions[mangleSymbol(symbol)] = symbol;
+      }
+    }
 
     this.program.popScope();
     return symbol;
@@ -233,26 +246,31 @@ export class SymbolCollector extends HazeVisitor<any> {
       new Scope(this.program.getLoc(ctx), parentScope),
     );
 
-    const genericsList = ctx
+    const genericsList: [string, undefined][] = ctx
       .ID_list()
       .slice(1)
-      .map((n) => n.getText());
+      .map((n) => [n.getText(), undefined]);
 
-    const type: BaseStructDatatype = {
+    const type: StructDatatype = {
       variant: "Struct",
-      concrete: false,
       name: name,
-      generics: genericsList,
+      generics: new Map<string, undefined>(genericsList),
       members: [],
       methods: [],
     };
-    const symbol: DatatypeSymbol = {
+    const symbol: DatatypeSymbol<StructDatatype> = {
       variant: "Datatype",
       name: name,
       type: type,
       scope: scope,
     };
     parentScope.defineSymbol(symbol, this.program.getLoc(ctx));
+    // for (const [name, tp] of type.generics) {
+    //   const sym: GenericPlaceholderDatatype = {
+    //     name: generic,
+    //   };
+    //   scope.defineSymbol(symbol, this.program.getLoc(ctx));
+    // }
     this.structStack.push(symbol);
 
     ctx.structcontent_list().forEach((c) => {

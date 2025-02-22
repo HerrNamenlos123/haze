@@ -1,5 +1,5 @@
 import { CompilerError, type Location } from "./Errors";
-import type { Symbol } from "./Symbol";
+import { mangleSymbol, type Symbol } from "./Symbol";
 
 export type Statement = {};
 

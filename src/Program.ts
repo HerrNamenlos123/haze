@@ -1,33 +1,65 @@
 import type { ParserRuleContext } from "antlr4";
 import { CompilerError, Location } from "./Errors";
 import { Scope } from "./Scope";
-import type { FunctionSymbol } from "./Symbol";
 import {
+  mangleSymbol,
+  serializeSymbol,
+  type DatatypeSymbol,
+  type FunctionSymbol,
+} from "./Symbol";
+import {
+  Primitive,
   primitiveVariantToString,
-  type BaseDatatype,
-  type BaseStructDatatype,
-  type ConcreteDatatype,
+  serializeDatatype,
+  type Datatype,
+  type PrimitiveDatatype,
+  type StructDatatype,
 } from "./Datatype";
 import { isDeeplyEqual } from "./deep-equal";
 
 export class Program {
   globalScope: Scope;
-  resolvedFunctions: { [name: string]: FunctionSymbol };
-  resolvedDatatypes: { [name: string]: ConcreteDatatype };
+  concreteFunctions: { [name: string]: FunctionSymbol } = {};
+  externFunctions: { [name: string]: FunctionSymbol } = {};
   filename: string;
   scopeStack: Scope[];
 
-  baseDatatypes: BaseDatatype[] = [];
-  concreteDatatypes: ConcreteDatatype[] = [];
+  datatypes: Datatype[] = [];
 
   private anonymousStuffCounter = 0;
 
   constructor(filename: string) {
     this.filename = filename;
     this.globalScope = new Scope(new Location("global", 0, 0));
-    this.resolvedFunctions = {};
-    this.resolvedDatatypes = {};
     this.scopeStack = [];
+
+    const define = (name: string, primitive: Primitive) => {
+      const type: PrimitiveDatatype = {
+        variant: "Primitive",
+        primitive,
+      };
+      const symbol: DatatypeSymbol = {
+        variant: "Datatype",
+        name: name,
+        scope: this.globalScope,
+        type,
+      };
+      this.globalScope.defineSymbol(symbol, this.globalScope.location);
+    };
+
+    define("none", Primitive.none);
+    define("unknown", Primitive.unknown);
+    define("stringview", Primitive.stringview);
+    define("boolean", Primitive.boolean);
+    define("booleanptr", Primitive.booleanptr);
+    define("u8", Primitive.u8);
+    define("u16", Primitive.u16);
+    define("u32", Primitive.u32);
+    define("u64", Primitive.u64);
+    define("i8", Primitive.i8);
+    define("i16", Primitive.i16);
+    define("i32", Primitive.i32);
+    define("i64", Primitive.i64);
   }
 
   pushScope(scope: Scope) {
@@ -51,7 +83,7 @@ export class Program {
   }
 
   findBaseDatatype(basename: string) {
-    for (const dt of this.baseDatatypes) {
+    for (const dt of this.datatypes) {
       switch (dt.variant) {
         case "Primitive":
           if (primitiveVariantToString(dt) === basename) {
@@ -69,15 +101,15 @@ export class Program {
     return undefined;
   }
 
-  addBaseDatatypeRef(type: BaseDatatype, loc: Location) {
+  addDatatypeRef(type: Datatype, loc: Location) {
     switch (type.variant) {
       case "Primitive":
         if (
-          !this.baseDatatypes.find(
+          !this.datatypes.find(
             (d) => d.variant === "Primitive" && d.primitive === type.primitive,
           )
         ) {
-          this.baseDatatypes.push(type);
+          this.datatypes.push(type);
         }
         break;
 
@@ -85,9 +117,9 @@ export class Program {
         break;
 
       case "Struct":
-        const found = this.baseDatatypes.find(
+        const found = this.datatypes.find(
           (d) => d.variant === "Struct" && d.name === type.name,
-        ) as BaseStructDatatype | undefined;
+        ) as StructDatatype | undefined;
         if (found) {
           if (found.generics !== type.generics) {
             throw new CompilerError(
@@ -108,21 +140,36 @@ export class Program {
             );
           }
         } else {
-          this.baseDatatypes.push(type);
+          this.datatypes.push(type);
         }
         break;
 
       case "Function":
-        this.addBaseDatatypeRef(type.functionReturnType, loc);
-        type.functionParameters.forEach((p) =>
-          this.addBaseDatatypeRef(p[1], loc),
-        );
+        this.addDatatypeRef(type.functionReturnType, loc);
+        type.functionParameters.forEach((p) => this.addDatatypeRef(p[1], loc));
         break;
     }
-    this.baseDatatypes.push(type);
+    this.datatypes.push(type);
   }
 
   makeAnonymousName() {
     return `__anonym_${this.anonymousStuffCounter++}`;
+  }
+
+  print() {
+    console.log("Program");
+    for (const symbol of this.globalScope.getSymbols()) {
+      console.log(serializeSymbol(symbol));
+    }
+
+    console.log("\nConcrete Functions:");
+    for (const [name, symbol] of Object.entries(this.concreteFunctions)) {
+      console.log(serializeSymbol(symbol));
+    }
+
+    console.log("\nExtern Functions:");
+    for (const [name, symbol] of Object.entries(this.externFunctions)) {
+      console.log(serializeSymbol(symbol));
+    }
   }
 }

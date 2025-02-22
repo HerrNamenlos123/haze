@@ -1,5 +1,5 @@
 import type { Location } from "./Errors";
-import type { FunctionSymbol, MemberSymbol, VariableSymbol } from "./Symbol";
+import type { FunctionSymbol, VariableSymbol } from "./Symbol";
 
 export enum Primitive {
   none = 1,
@@ -21,17 +21,17 @@ export enum Primitive {
  * Explanation what is a datatype:
  *
  *  - Base Datatypes are the most basic form or generic form of datatypes.
- *    Those are primitives, or generic types (such as "Array<T>"). Other base datatypes can be referenced.
- *    Once they are built, they are immutable.
+ *    Those are generic types (such as "Array<T>"). They cannot be used directly.
  *
- *  - Concrete types are base types but instantiated for usage.
- *    For primitives, this will be a straight copy.
+ *  - Concrete types are instantiated for usage (e.g. Primitives or instantiated generic types).
  *    For generic types, it will be a mix of other concrete types, that all were built out of the base types.
  *    e.g. "Array<T=Box<T=i32>>" <-- All of those are also concrete
  *    Only concrete types can be used for anything. Even primitives need to be instantiated from "Base" to "Concrete".
+ *
+ *  - Primitives are directly instantiated as concrete
  */
 
-export type BaseGenerics = string[];
+export type Generics = Map<string, Datatype | undefined>;
 
 export type FunctionDatatype = {
   variant: "Function";
@@ -39,63 +39,37 @@ export type FunctionDatatype = {
   functionReturnType: Datatype;
 };
 
-export type BaseDeferredDatatype = {
+export type DeferredDatatype = {
   variant: "Deferred";
 };
 
-export type BaseStructDatatype = {
-  variant: "Struct";
-  concrete: false;
+export type GenericPlaceholderDatatype = {
+  variant: "Generic";
   name: string;
-  generics: BaseGenerics;
-  members: MemberSymbol[];
+};
+
+export type StructDatatype = {
+  variant: "Struct";
+  name: string;
+  generics: Generics;
+  members: VariableSymbol[];
   methods: FunctionSymbol[];
 };
 
-export type BasePrimitiveDatatype = {
+export type PrimitiveDatatype = {
   variant: "Primitive";
-  concrete: false;
   primitive: Primitive;
 };
 
-export type BaseGenericDatatype = {
-  variant: "Generic";
-  concrete: false;
-  name: string;
-};
-
-export type BaseDatatype =
-  | BasePrimitiveDatatype
-  | BaseDeferredDatatype
+export type Datatype =
+  | DeferredDatatype
   | FunctionDatatype
-  | BaseStructDatatype
-  | BaseGenericDatatype;
+  | StructDatatype
+  | GenericPlaceholderDatatype
+  | PrimitiveDatatype
+  | FunctionDatatype;
 
-export type ConcreteGenerics = Record<string, ConcreteDatatype>;
-
-export type ConcreteStructDatatype = {
-  variant: "Struct";
-  concrete: true;
-  name: string;
-  generics: ConcreteGenerics;
-  members: { name: string; type: ConcreteDatatype }[];
-  methods: { name: string; type: ConcreteDatatype }[];
-};
-
-export type ConcretePrimitiveDatatype = {
-  variant: "Primitive";
-  concrete: true;
-  primitive: Primitive;
-};
-
-export type ConcreteDatatype =
-  | ConcretePrimitiveDatatype
-  | FunctionDatatype
-  | ConcreteStructDatatype;
-
-export type Datatype = BaseDatatype | ConcreteDatatype;
-
-export function primitiveVariantToString(dt: BasePrimitiveDatatype): string {
+export function primitiveVariantToString(dt: PrimitiveDatatype): string {
   switch (dt.primitive) {
     case Primitive.none:
       return "none";
@@ -125,6 +99,40 @@ export function primitiveVariantToString(dt: BasePrimitiveDatatype): string {
       return "stringview";
   }
   throw new Error("Datatype has no string representation");
+}
+
+export function serializeDatatype(datatype: Datatype): string {
+  switch (datatype.variant) {
+    case "Primitive":
+      return primitiveVariantToString(datatype);
+
+    case "Struct":
+      let s = datatype.name;
+      const g = [] as string[];
+      for (const [name, tp] of datatype.generics) {
+        if (tp) {
+          g.push(`${name}=${serializeDatatype(tp)}`);
+        } else {
+          g.push(name);
+        }
+      }
+      s += `<${g.join(", ")}>`;
+      return s;
+
+    case "Function":
+      let ss = "(";
+      ss += datatype.functionParameters
+        .map((p) => `${p[0]}: ${serializeDatatype(p[1])}`)
+        .join(", ");
+      ss += ") -> " + serializeDatatype(datatype.functionReturnType);
+      return ss;
+
+    case "Deferred":
+      return "__Deferred";
+
+    case "Generic":
+      return datatype.name;
+  }
 }
 
 // function getDisplayName(type: Datatype): string {

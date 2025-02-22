@@ -13,6 +13,7 @@ import { SymbolCollector } from "./SymbolCollector";
 import { ParserRuleContext, ParseTree, RuleNode, TerminalNode } from "antlr4";
 import { ProgContext } from "./parser/HazeParser";
 import { generateGraphviz as generateGraph } from "./graph";
+import { performSemanticAnalysis } from "./SemanticAnalyzer";
 
 // import { Parser } from "./Parser";
 // import { CompilationDatabase } from "./CompilationDatabase";
@@ -47,20 +48,22 @@ export class ModuleCompiler {
       const program = new Program(this.filename);
       const collector = new SymbolCollector(program);
       collector.visit(ast);
+      performSemanticAnalysis(program);
+      program.print();
       // console.log(JSON.stringify(program, null, 2));
 
-      Bun.write(
-        path.join("build", this.filename + ".mmd"),
-        generateGraph(program),
-      );
-      try {
-        child_process.execSync(
-          `mmdc -i build/${this.filename}.mmd -o build/${this.filename}.svg -t default`,
-        );
-      } catch (e) {
-        console.error("Running mermaid failed");
-        return;
-      }
+      // Bun.write(
+      //   path.join("build", this.filename + ".mmd"),
+      //   generateGraph(program),
+      // );
+      // try {
+      //   child_process.execSync(
+      //     `mmdc -i build/${this.filename}.mmd -o build/${this.filename}.svg -t default`,
+      //   );
+      // } catch (e) {
+      //   console.error("Running mermaid failed");
+      //   return;
+      // }
 
       function prettyPrintAST(
         node: ParserRuleContext | TerminalNode,
