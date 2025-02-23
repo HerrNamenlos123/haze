@@ -18,23 +18,22 @@ import { ElseifexprContext } from "./HazeParser.js";
 import { ThenblockContext } from "./HazeParser.js";
 import { ElseifblockContext } from "./HazeParser.js";
 import { ElseblockContext } from "./HazeParser.js";
+import { VariableMutabilityContext } from "./HazeParser.js";
 import { InlineCStatementContext } from "./HazeParser.js";
 import { ExprStatementContext } from "./HazeParser.js";
 import { ReturnStatementContext } from "./HazeParser.js";
 import { ExprAssignmentStatementContext } from "./HazeParser.js";
-import { MutableVariableDefinitionContext } from "./HazeParser.js";
-import { ImmutableVariableDefinitionContext } from "./HazeParser.js";
+import { VariableDefinitionContext } from "./HazeParser.js";
 import { IfStatementContext } from "./HazeParser.js";
-import { ObjectAttrContext } from "./HazeParser.js";
+import { StructMemberValueContext } from "./HazeParser.js";
 import { SymbolValueExprContext } from "./HazeParser.js";
 import { ExprCallExprContext } from "./HazeParser.js";
-import { ObjectExprContext } from "./HazeParser.js";
+import { ParenthesisExprContext } from "./HazeParser.js";
 import { ExprMemberAccessContext } from "./HazeParser.js";
-import { NamedObjectExprContext } from "./HazeParser.js";
 import { BinaryExprContext } from "./HazeParser.js";
 import { FuncRefExprContext } from "./HazeParser.js";
 import { ConstantExprContext } from "./HazeParser.js";
-import { BracketExprContext } from "./HazeParser.js";
+import { StructInstantiationExprContext } from "./HazeParser.js";
 import { ArgsContext } from "./HazeParser.js";
 import { FunctypeContext } from "./HazeParser.js";
 import { IntegerConstantContext } from "./HazeParser.js";
@@ -151,6 +150,13 @@ export default class HazeVisitor<Result> extends ParseTreeVisitor<Result> {
 	 */
 	visitElseblock?: (ctx: ElseblockContext) => Result;
 	/**
+	 * Visit a parse tree produced by the `VariableMutability`
+	 * labeled alternative in `HazeParser.variablemutability`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitVariableMutability?: (ctx: VariableMutabilityContext) => Result;
+	/**
 	 * Visit a parse tree produced by the `InlineCStatement`
 	 * labeled alternative in `HazeParser.statement`.
 	 * @param ctx the parse tree
@@ -179,19 +185,12 @@ export default class HazeVisitor<Result> extends ParseTreeVisitor<Result> {
 	 */
 	visitExprAssignmentStatement?: (ctx: ExprAssignmentStatementContext) => Result;
 	/**
-	 * Visit a parse tree produced by the `MutableVariableDefinition`
+	 * Visit a parse tree produced by the `VariableDefinition`
 	 * labeled alternative in `HazeParser.statement`.
 	 * @param ctx the parse tree
 	 * @return the visitor result
 	 */
-	visitMutableVariableDefinition?: (ctx: MutableVariableDefinitionContext) => Result;
-	/**
-	 * Visit a parse tree produced by the `ImmutableVariableDefinition`
-	 * labeled alternative in `HazeParser.statement`.
-	 * @param ctx the parse tree
-	 * @return the visitor result
-	 */
-	visitImmutableVariableDefinition?: (ctx: ImmutableVariableDefinitionContext) => Result;
+	visitVariableDefinition?: (ctx: VariableDefinitionContext) => Result;
 	/**
 	 * Visit a parse tree produced by the `IfStatement`
 	 * labeled alternative in `HazeParser.statement`.
@@ -200,12 +199,12 @@ export default class HazeVisitor<Result> extends ParseTreeVisitor<Result> {
 	 */
 	visitIfStatement?: (ctx: IfStatementContext) => Result;
 	/**
-	 * Visit a parse tree produced by the `ObjectAttr`
-	 * labeled alternative in `HazeParser.objectattribute`.
+	 * Visit a parse tree produced by the `StructMemberValue`
+	 * labeled alternative in `HazeParser.structmembervalue`.
 	 * @param ctx the parse tree
 	 * @return the visitor result
 	 */
-	visitObjectAttr?: (ctx: ObjectAttrContext) => Result;
+	visitStructMemberValue?: (ctx: StructMemberValueContext) => Result;
 	/**
 	 * Visit a parse tree produced by the `SymbolValueExpr`
 	 * labeled alternative in `HazeParser.expr`.
@@ -221,12 +220,12 @@ export default class HazeVisitor<Result> extends ParseTreeVisitor<Result> {
 	 */
 	visitExprCallExpr?: (ctx: ExprCallExprContext) => Result;
 	/**
-	 * Visit a parse tree produced by the `ObjectExpr`
+	 * Visit a parse tree produced by the `ParenthesisExpr`
 	 * labeled alternative in `HazeParser.expr`.
 	 * @param ctx the parse tree
 	 * @return the visitor result
 	 */
-	visitObjectExpr?: (ctx: ObjectExprContext) => Result;
+	visitParenthesisExpr?: (ctx: ParenthesisExprContext) => Result;
 	/**
 	 * Visit a parse tree produced by the `ExprMemberAccess`
 	 * labeled alternative in `HazeParser.expr`.
@@ -234,13 +233,6 @@ export default class HazeVisitor<Result> extends ParseTreeVisitor<Result> {
 	 * @return the visitor result
 	 */
 	visitExprMemberAccess?: (ctx: ExprMemberAccessContext) => Result;
-	/**
-	 * Visit a parse tree produced by the `NamedObjectExpr`
-	 * labeled alternative in `HazeParser.expr`.
-	 * @param ctx the parse tree
-	 * @return the visitor result
-	 */
-	visitNamedObjectExpr?: (ctx: NamedObjectExprContext) => Result;
 	/**
 	 * Visit a parse tree produced by the `BinaryExpr`
 	 * labeled alternative in `HazeParser.expr`.
@@ -263,12 +255,12 @@ export default class HazeVisitor<Result> extends ParseTreeVisitor<Result> {
 	 */
 	visitConstantExpr?: (ctx: ConstantExprContext) => Result;
 	/**
-	 * Visit a parse tree produced by the `BracketExpr`
+	 * Visit a parse tree produced by the `StructInstantiationExpr`
 	 * labeled alternative in `HazeParser.expr`.
 	 * @param ctx the parse tree
 	 * @return the visitor result
 	 */
-	visitBracketExpr?: (ctx: BracketExprContext) => Result;
+	visitStructInstantiationExpr?: (ctx: StructInstantiationExprContext) => Result;
 	/**
 	 * Visit a parse tree produced by `HazeParser.args`.
 	 * @param ctx the parse tree

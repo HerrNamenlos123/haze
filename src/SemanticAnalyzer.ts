@@ -1,11 +1,64 @@
 import HazeVisitor from "./parser/HazeVisitor";
 
-import type { Datatype, GenericPlaceholderDatatype } from "./Datatype";
+import {
+  implicitConversion,
+  Primitive,
+  serializeDatatype,
+  type Datatype,
+  type FunctionDatatype,
+  type GenericPlaceholderDatatype,
+  type StructDatatype,
+} from "./Datatype";
 import { CompilerError, ImpossibleSituation, InternalError } from "./Errors";
 import { Scope } from "./Scope";
 import { Program } from "./Program";
-import { type FunctionSymbol } from "./Symbol";
-import type { CommonDatatypeContext } from "./parser/HazeParser";
+import {
+  FunctionType,
+  mangleSymbol,
+  VariableType,
+  type ConstantSymbol,
+  type FunctionSymbol,
+  type Symbol,
+  type VariableSymbol,
+} from "./Symbol";
+import {
+  ExternfuncdefContext,
+  type ArgsContext,
+  type BinaryExprContext,
+  type BooleanConstantContext,
+  type CommonDatatypeContext,
+  type ConstantExprContext,
+  type ExprAssignmentStatementContext,
+  type ExprMemberAccessContext,
+  type ExprStatementContext,
+  type FuncbodyContext,
+  type FuncContext,
+  type IntegerConstantContext,
+  type NamedfuncContext,
+  type ParenthesisExprContext,
+  type ReturnStatementContext,
+  type StringConstantContext,
+  type StructInstantiationExprContext,
+  type StructMemberValueContext,
+  type StructMethodContext,
+  type VariableDefinitionContext,
+} from "./parser/HazeParser";
+import { resolveGenerics, visitCommonDatatypeImpl } from "./utils";
+import type { ParserRuleContext } from "antlr4";
+import type {
+  ConstantExpression,
+  ExprCallExpression,
+  Expression,
+  MemberAccessExpression,
+  MethodAccessExpression,
+  ObjectExpression,
+} from "./Expression";
+import type {
+  ExprStatement,
+  ReturnStatement,
+  Statement,
+  VariableDefinitionStatement,
+} from "./Statement";
 
 const RESERVED_VARIABLE_NAMES = ["this", "context"];
 
@@ -20,252 +73,238 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
   }
 
   visitCommonDatatype = (ctx: CommonDatatypeContext): Datatype => {
-    const name = ctx.ID().getText();
-    const baseType = this.program.findBaseDatatype(name);
-    if (!baseType) {
-      const d: GenericPlaceholderDatatype = {
-        variant: "Generic",
-        name: name,
-      };
-      return d;
-    }
-
-    const genericsProvided: Datatype[] = ctx
-      .datatype_list()
-      .map((n) => this.visit(n));
-    switch (baseType.variant) {
-      case "Primitive":
-        if (genericsProvided.length > 0) {
-          throw new CompilerError(
-            `Type '${name}' expected no generic arguments but got ${genericsProvided.length}.`,
-            this.program.getLoc(ctx),
-          );
-        }
-        return baseType;
-
-      case "Struct":
-        if (genericsProvided.length > 0) {
-          throw new CompilerError(
-            `Type '${name}<>' expected ${Object.keys(baseType.generics).length} generic arguments but got ${genericsProvided.length}.`,
-            this.program.getLoc(ctx),
-          );
-        }
-        return baseType;
-
-      default:
-        throw new ImpossibleSituation();
-    }
+    return visitCommonDatatypeImpl(this, this.program, ctx);
   };
 
-  visitSymbolValueExpr(ctx: any): Expression {
-    let symbol = this.db
-      .getCurrentScope()
-      .lookupSymbol(ctx.ID().getText(), this.getLocation(ctx));
-    symbol = copy(symbol);
+  visitSymbolValueExpr = (ctx: any): Expression => {
+    let symbol = this.program.currentScope.lookupSymbol(
+      ctx.ID().getText(),
+      this.program.getLoc(ctx),
+    );
+    // symbol = copy(symbol);
 
-    if (symbol instanceof DatatypeSymbol) {
-      if (symbol.type.generics().length !== ctx.datatype().length) {
-        throw new CompilerError(
-          `Datatype expected ${symbol.type.generics().length} generic arguments but got ${ctx.datatype().length}.`,
-          this.getLocation(ctx),
-        );
-      }
-      for (let i = 0; i < symbol.type.generics().length; i++) {
-        symbol.type.generics()[i] = [
-          symbol.type.generics()[i][0],
-          this.visit(ctx.datatype()[i]),
-        ];
+    if (symbol.variant === "Datatype") {
+      if (symbol.type.variant === "Struct") {
+        if (symbol.type.generics.size !== ctx.datatype().length) {
+          throw new CompilerError(
+            `Datatype expected ${symbol.type.generics.size} generic arguments but got ${ctx.datatype().length}.`,
+            this.program.getLoc(ctx),
+          );
+        }
+        // for (let i = 0; i < symbol.type.generics.size; i++) {
+        //   symbol.type.generics()[i] = [
+        //     symbol.type.generics()[i][0],
+        //     this.visit(ctx.datatype()[i]),
+        //   ];
+        // }
       }
     }
 
-    this.setNodeSymbol(ctx, symbol);
-    return new SymbolValueExpression(symbol, ctx);
-  }
+    return {
+      type: symbol.type,
+      ctx: ctx,
+    };
+  };
 
-  visitExprCallExpr(ctx: any): Expression {
+  visitExprCallExpr = (ctx: any): Expression => {
     let expr: Expression = this.visit(ctx.expr());
 
-    let thisPointerExpr: Expression | null = null;
-    if (expr instanceof MethodAccessExpression) {
-      thisPointerExpr = copy(expr.expr);
-      expr = new SymbolValueExpression(expr.method, ctx);
-    }
+    // let thisPointerExpr: Expression | null = null;
+    // thisPointerExpr = copy(expr.expr);
+    // expr = new SymbolValueExpression(expr.method, ctx);
 
-    if (!expr.type.isFunction()) {
+    if (expr.type.variant !== "Function") {
       throw new CompilerError(
-        `Expression of type '${expr.type.getDisplayName()}' is not callable`,
-        this.getLocation(ctx),
+        `Expression of type '${serializeDatatype(expr.type)}' is not callable`,
+        this.program.getLoc(ctx),
       );
     }
 
     const args: Expression[] = [];
-    const params = expr.type.functionParameters();
+    const params = expr.type.functionParameters;
     const _args = this.visit(ctx.args());
-    this.assertExpectedNumOfArgs(ctx, _args.length, params.length);
+    if (_args.length !== params.length) {
+      throw new CompilerError(
+        `Expected ${params.length} arguments but got ${_args.length}`,
+        this.program.getLoc(ctx),
+      );
+    }
     _args.forEach((_argExpr: Expression) => {
       args.push(_argExpr);
     });
 
-    return new ExprCallExpression(expr, thisPointerExpr, args, ctx);
-  }
+    return {
+      type: expr.type.functionReturnType,
+      ctx: ctx,
+    };
+  };
 
-  implFunc(ctx: any): void {
-    let symbol = this.getNodeSymbol(ctx);
-    if (
-      !(symbol instanceof FunctionSymbol) ||
-      symbol.type.functionParameters() === null ||
-      symbol.type.functionReturnType() === null
-    ) {
+  implFunc(ctx: FuncContext | NamedfuncContext | ExternfuncdefContext): void {
+    let symbol = this.program.ctxToSymbolMap.get(ctx);
+    if (symbol?.variant !== "Function") {
       throw new ImpossibleSituation();
     }
 
-    if (symbol.functionLinkage === FunctionLinkage.Haze) {
+    if (symbol.functionType === FunctionType.Internal) {
       if (!symbol.scope) {
         throw new InternalError("Function missing scope");
       }
+
       let p = symbol.parentSymbol;
-      const addedSymbols: string[] = [];
       let haveAllGenerics = true;
-      while (p !== null) {
-        for (let i = 0; i < p.type.generics().length; i++) {
-          const tp = p.type.generics()[i][1];
+      while (p) {
+        if (p.type.variant !== "Struct") {
+          throw new InternalError("Function's parent symbols are not structs");
+        }
+        for (const [name, tp] of p.type.generics) {
           if (!tp) {
             haveAllGenerics = false;
             break;
           }
           symbol.scope.defineSymbol(
-            new DatatypeSymbol(p.type.generics()[i][0], null, tp),
-            this.getLocation(ctx),
+            {
+              variant: "Datatype",
+              name: name,
+              type: tp,
+              scope: symbol.scope,
+            },
+            this.program.getLoc(ctx),
           );
-          addedSymbols.push(p.type.generics()[i][0]);
+          // addedSymbols.push(name);
         }
-        p = p.parentSymbol;
+        if (p.variant !== "Constant") {
+          p = p.parentSymbol;
+        }
       }
 
       if (!haveAllGenerics) {
         return;
       }
 
-      const loc = this.getLocation(ctx);
-      const scope = symbol.scope;
-      const newType = resolveGenerics(symbol.type, scope, loc);
-      symbol = copy(symbol);
-      if (symbol.thisPointerType !== undefined) {
-        symbol.thisPointerType = resolveGenerics(
-          symbol.thisPointerType,
-          scope,
-          loc,
-        );
-      }
-      symbol.type = newType;
+      const loc = this.program.getLoc(ctx);
+      // const scope = symbol.scope;
+      // const newType = resolveGenerics(
+      //   symbol.type,
+      //   scope,
+      //   loc,
+      // ) as FunctionDatatype;
+      // if (symbol.thisPointer !== undefined) {
+      //   symbol.thisPointer = resolveGenerics(symbol.thisPointer, scope, loc);
+      // }
+      // symbol.type = newType;
 
-      if (
-        symbol.type.areAllGenericsResolved() &&
-        this.program.resolvedFunctions[symbol.getMangledName()]
-      ) {
-        addedSymbols.forEach((sym) => {
-          symbol.scope?.purgeSymbol(sym);
-        });
-        return;
-      }
+      // if (
+      //   symbol.type.areAllGenericsResolved() &&
+      //   this.program.resolvedFunctions[symbol.getMangledName()]
+      // ) {
+      //   addedSymbols.forEach((sym) => {
+      //     symbol.scope?.purgeSymbol(sym);
+      //   });
+      //   return;
+      // }
 
       if (!symbol || !symbol.scope) {
         throw new ImpossibleSituation();
       }
 
-      this.db.pushScope(symbol.scope);
+      this.program.pushScope(symbol.scope);
       this.functionStack.push(symbol);
 
       const returnedTypes: Record<string, Datatype> = {};
-      this.visit(ctx.funcbody()).forEach((statement: any) => {
-        symbol.statements.push(statement);
-        if (statement instanceof ReturnStatement && statement.expr) {
-          returnedTypes[statement.expr.type.getDisplayName()] =
-            statement.expr.type;
-        }
-      });
+      // if (!(ctx instanceof ExternfuncdefContext)) {
+      //   this.visit(ctx.funcbody()).forEach((statement: Statement) => {
+      //     symbol.scope.statements.push(statement);
+      //     // if (statement instanceof ReturnStatement && statement.expr) {
+      //     //   returnedTypes[statement.expr.type.getDisplayName()] =
+      //     //     statement.expr.type;
+      //     // }
+      //   });
+      // }
 
-      addedSymbols.forEach((sym) => {
-        symbol.scope?.purgeSymbol(sym);
-      });
+      // addedSymbols.forEach((sym) => {
+      //   symbol.scope?.purgeSymbol(sym);
+      // });
 
-      if (!ctx.returntype()) {
-        let returntype: Datatype = symbol.type.functionReturnType();
+      if (!ctx.datatype()) {
+        let returntype: Datatype = symbol.type.functionReturnType;
         if (Object.keys(returnedTypes).length > 1) {
           throw new CompilerError(
             `Cannot deduce return type. Multiple return types: ${Object.keys(
               returnedTypes,
             ).join(", ")}`,
-            this.getLocation(ctx),
+            this.program.getLoc(ctx),
           );
         } else if (Object.keys(returnedTypes).length === 1) {
           returntype = Object.values(returnedTypes)[0];
         } else {
-          returntype = this.db.getBuiltinDatatype("none");
+          returntype = this.program.currentScope.lookupSymbol("none", loc).type;
         }
 
-        symbol.type = Datatype.createFunctionType(
-          symbol.type.functionParameters(),
-          returntype,
-        );
+        // symbol.type = Datatype.createFunctionType(
+        //   symbol.type.functionParameters(),
+        //   returntype,
+        // );
       }
 
       this.functionStack.pop();
-      this.db.popScope();
-      this.setNodeSymbol(ctx, symbol);
-      this.program.resolvedFunctions[symbol.getMangledName()] = symbol;
+      this.program.popScope();
+      this.program.ctxToSymbolMap.set(ctx, symbol);
+      this.program.concreteFunctions[mangleSymbol(symbol)] = symbol;
     } else {
       this.visitChildren(ctx);
     }
   }
 
-  visitFunc(ctx: FuncContext): void {
+  visitFunc = (ctx: FuncContext): void => {
     this.implFunc(ctx);
-  }
+  };
 
-  visitNamedfunc(ctx: NamedfuncContext): void {
+  visitNamedfunc = (ctx: NamedfuncContext): void => {
     this.implFunc(ctx);
-  }
+  };
 
-  visitExternfuncdef(ctx: ExternfuncdefContext): void {
+  visitExternfuncdef = (ctx: ExternfuncdefContext): void => {
     this.implFunc(ctx);
-  }
+  };
 
-  visitFuncbody(ctx: FuncbodyContext): Statement[] {
+  visitFuncbody = (ctx: FuncbodyContext): Statement[] => {
     if (ctx.expr()) {
       const expr: Expression = this.visit(ctx.expr());
       implicitConversion(
         expr.type,
-        this.functionStack[
-          this.functionStack.length - 1
-        ].type.functionReturnType(),
+        this.functionStack[this.functionStack.length - 1].type
+          .functionReturnType,
         "",
-        this.getLocation(ctx),
+        this.program.getLoc(ctx),
       );
-      return [ReturnStatement(ctx.expr(), ctx)];
+      return [{ variant: "Return", ctx: ctx, expr: expr } as ReturnStatement];
     } else {
       return ctx
         .body()
-        .statement()
+        .statement_list()
         .map((s) => this.visit(s));
     }
-  }
+  };
 
-  visitExprStatement(ctx: ExprStatementContext): ExprStatement {
-    return new ExprStatement(this.visit(ctx.expr()), ctx);
-  }
+  visitExprStatement = (ctx: ExprStatementContext): ExprStatement => {
+    return {
+      variant: "Expr",
+      ctx: ctx,
+      expr: this.visit(ctx.expr()),
+    };
+  };
 
-  implVariableDefinition(
+  visitVariableDefinition = (
     ctx: VariableDefinitionContext,
-    variableType: VariableType,
-  ): VariableDefinitionStatement {
+  ): VariableDefinitionStatement => {
     const name = ctx.ID().getText();
     if (RESERVED_VARIABLE_NAMES.includes(name)) {
       throw new CompilerError(
         `'${name}' is not a valid variable name.`,
-        this.getLocation(ctx),
+        this.program.getLoc(ctx),
       );
     }
+    const mutable = ctx.variablemutability().getText() === "let";
 
     const expr: Expression = this.visit(ctx.expr());
     let datatype = expr.type;
@@ -273,137 +312,183 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
       datatype = this.visit(ctx.datatype());
     }
 
-    if (datatype.isNone()) {
+    if (
+      datatype.variant === "Primitive" &&
+      datatype.primitive === Primitive.none
+    ) {
       throw new CompilerError(
         `'none' is not a valid variable type.`,
-        this.getLocation(ctx),
+        this.program.getLoc(ctx),
       );
     }
 
-    const symbol = new VariableSymbol(name, null, datatype, variableType);
-    this.db.getCurrentScope().defineSymbol(symbol, this.getLocation(ctx));
-    this.setNodeSymbol(ctx, symbol);
-    return new VariableDefinitionStatement(symbol, expr, ctx);
-  }
-
-  visitBracketExpr(ctx: BracketExprContext): Expression {
-    return this.visit(ctx.expr());
-  }
-
-  visitBinaryExpr(ctx: BinaryExprContext): void {
-    this.visitChildren(ctx);
-    let operation = ctx.children[1].getText();
-    if (ctx.children[2].getText() === "not") {
-      operation += " not";
-    }
-
-    this.setNodeBinaryOperator(ctx, operation);
-    const typeA = this.getNodeDatatype(ctx.expr(0));
-    const typeB = this.getNodeDatatype(ctx.expr(1));
-
-    const datatypesUnrelated = () => {
-      throw new CompilerError(
-        `Datatypes '${typeA.getDisplayName()}' and '${typeB.getDisplayName()}' are unrelated and cannot be used for binary operation`,
-        this.getLocation(ctx),
-      );
+    const symbol: VariableSymbol = {
+      variableType: mutable
+        ? VariableType.MutableVariable
+        : VariableType.ConstantVariable,
+      name: name,
+      type: datatype,
+      variant: "Variable",
     };
+    this.program.currentScope.defineSymbol(symbol, this.program.getLoc(ctx));
+    return {
+      variant: "VariableDefinition",
+      ctx: ctx,
+      symbol: symbol,
+      expr: expr,
+    };
+  };
 
-    switch (operation) {
-      case "*":
-      case "/":
-      case "%":
-      case "+":
-      case "-":
-        if (typeA.isInteger() && typeB.isInteger()) {
-          this.setNodeDatatype(ctx, typeA);
-        } else {
-          datatypesUnrelated();
-        }
-        break;
+  visitParenthesisExpr = (ctx: ParenthesisExprContext): Expression => {
+    return this.visit(ctx.expr());
+  };
 
-      case "<":
-      case ">":
-      case "<=":
-      case ">=":
-        if (typeA.isInteger() && typeB.isInteger()) {
-          this.setNodeDatatype(ctx, this.db.getBuiltinDatatype("boolean"));
-        } else {
-          datatypesUnrelated();
-        }
-        break;
+  // visitBinaryExpr = (ctx: BinaryExprContext): void => {
+  //   this.visitChildren(ctx);
+  //   let operation = ctx.children[1].getText();
+  //   if (ctx.children[2].getText() === "not") {
+  //     operation += " not";
+  //   }
 
-      case "==":
-      case "!=":
-      case "is":
-      case "is not":
-        if (typeA.isInteger() && typeB.isInteger()) {
-          this.setNodeDatatype(ctx, this.db.getBuiltinDatatype("boolean"));
-        } else if (typeA.isBoolean() && typeB.isBoolean()) {
-          this.setNodeDatatype(ctx, this.db.getBuiltinDatatype("boolean"));
-        } else {
-          datatypesUnrelated();
-        }
-        break;
+  //   this.setNodeBinaryOperator(ctx, operation);
+  //   const typeA = this.getNodeDatatype(ctx.expr(0));
+  //   const typeB = this.getNodeDatatype(ctx.expr(1));
 
-      case "and":
-      case "or":
-        if (typeA.isBoolean() && typeB.isBoolean()) {
-          this.setNodeDatatype(ctx, this.db.getBuiltinDatatype("boolean"));
-        } else {
-          datatypesUnrelated();
-        }
-        break;
+  //   const datatypesUnrelated = () => {
+  //     throw new CompilerError(
+  //       `Datatypes '${typeA.getDisplayName()}' and '${typeB.getDisplayName()}' are unrelated and cannot be used for binary operation`,
+  //       this.getLocation(ctx),
+  //     );
+  //   };
 
-      default:
-        throw new CompilerError(
-          `Operation '${operation}' is not implemented for types '${typeA.getDisplayName()}' and '${typeB.getDisplayName()}'`,
-          this.getLocation(ctx),
-        );
-    }
-  }
+  //   switch (operation) {
+  //     case "*":
+  //     case "/":
+  //     case "%":
+  //     case "+":
+  //     case "-":
+  //       if (typeA.isInteger() && typeB.isInteger()) {
+  //         this.setNodeDatatype(ctx, typeA);
+  //       } else {
+  //         datatypesUnrelated();
+  //       }
+  //       break;
 
-  visitIfexpr(ctx: IfexprContext): void {
-    this.visitChildren(ctx);
-    // this.setNodeDatatype(ctx, this.getNodeDatatype(ctx.expr()));
-  }
+  //     case "<":
+  //     case ">":
+  //     case "<=":
+  //     case ">=":
+  //       if (typeA.isInteger() && typeB.isInteger()) {
+  //         this.setNodeDatatype(ctx, this.db.getBuiltinDatatype("boolean"));
+  //       } else {
+  //         datatypesUnrelated();
+  //       }
+  //       break;
 
-  visitElseifexpr(ctx: ElseifexprContext): void {
-    this.visitChildren(ctx);
-    // this.setNodeDatatype(ctx, this.getNodeDatatype(ctx.expr()));
-  }
+  //     case "==":
+  //     case "!=":
+  //     case "is":
+  //     case "is not":
+  //       if (typeA.isInteger() && typeB.isInteger()) {
+  //         this.setNodeDatatype(ctx, this.db.getBuiltinDatatype("boolean"));
+  //       } else if (typeA.isBoolean() && typeB.isBoolean()) {
+  //         this.setNodeDatatype(ctx, this.db.getBuiltinDatatype("boolean"));
+  //       } else {
+  //         datatypesUnrelated();
+  //       }
+  //       break;
 
-  visitStructFuncDecl(ctx: StructFuncDeclContext): void {
+  //     case "and":
+  //     case "or":
+  //       if (typeA.isBoolean() && typeB.isBoolean()) {
+  //         this.setNodeDatatype(ctx, this.db.getBuiltinDatatype("boolean"));
+  //       } else {
+  //         datatypesUnrelated();
+  //       }
+  //       break;
+
+  //     default:
+  //       throw new CompilerError(
+  //         `Operation '${operation}' is not implemented for types '${typeA.getDisplayName()}' and '${typeB.getDisplayName()}'`,
+  //         this.getLocation(ctx),
+  //       );
+  //   }
+  // };
+
+  // visitIfexpr(ctx: IfexprContext): void {
+  //   this.visitChildren(ctx);
+  //   // this.setNodeDatatype(ctx, this.getNodeDatatype(ctx.expr()));
+  // }
+
+  // visitElseifexpr(ctx: ElseifexprContext): void {
+  //   this.visitChildren(ctx);
+  //   // this.setNodeDatatype(ctx, this.getNodeDatatype(ctx.expr()));
+  // }
+
+  visitStructMethod = (ctx: StructMethodContext): void => {
     this.implFunc(ctx);
-  }
+  };
 
-  visitIntegerConstant(ctx: IntegerConstantContext): ConstantSymbol {
+  visitIntegerConstant = (ctx: IntegerConstantContext): ConstantSymbol => {
     const value = parseInt(ctx.getText(), 10);
     if (Number.isNaN(value)) {
       throw new CompilerError(
         `Could not parse '${ctx.getText()}' as an integer.`,
-        this.getLocation(ctx),
+        this.program.getLoc(ctx),
       );
     }
 
     if (value < -(2 ** 31) || value > 2 ** 31 - 1) {
-      return new ConstantSymbol(this.db.getBuiltinDatatype("i64"), value);
+      return {
+        variant: "Constant",
+        type: this.program.globalScope.lookupSymbol(
+          "i64",
+          this.program.getLoc(ctx),
+        ).type,
+        value,
+      };
     } else if (value < -(2 ** 15) || value > 2 ** 15 - 1) {
-      return new ConstantSymbol(this.db.getBuiltinDatatype("i32"), value);
+      return {
+        variant: "Constant",
+        type: this.program.globalScope.lookupSymbol(
+          "i32",
+          this.program.getLoc(ctx),
+        ).type,
+        value,
+      };
     } else if (value < -(2 ** 7) || value > 2 ** 7 - 1) {
-      return new ConstantSymbol(this.db.getBuiltinDatatype("i16"), value);
+      return {
+        variant: "Constant",
+        type: this.program.globalScope.lookupSymbol(
+          "i16",
+          this.program.getLoc(ctx),
+        ).type,
+        value,
+      };
     } else {
-      return new ConstantSymbol(this.db.getBuiltinDatatype("i8"), value);
+      return {
+        variant: "Constant",
+        type: this.program.globalScope.lookupSymbol(
+          "i8",
+          this.program.getLoc(ctx),
+        ).type,
+        value,
+      };
     }
-  }
+  };
 
-  visitStringConstant(ctx: StringConstantContext): ConstantSymbol {
-    return new ConstantSymbol(
-      this.db.getBuiltinDatatype("stringview"),
-      ctx.getText(),
-    );
-  }
+  visitStringConstant = (ctx: StringConstantContext): ConstantSymbol => {
+    return {
+      variant: "Constant",
+      type: this.program.globalScope.lookupSymbol(
+        "stringview",
+        this.program.getLoc(ctx),
+      ).type,
+      value: ctx.getText(),
+    };
+  };
 
-  visitBooleanConstant(ctx: BooleanConstantContext): ConstantSymbol {
+  visitBooleanConstant = (ctx: BooleanConstantContext): ConstantSymbol => {
     const text = ctx.getText();
     let value = false;
     if (text === "true") {
@@ -411,166 +496,186 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
     } else if (text !== "false") {
       throw new InternalError(`Invalid boolean constant: ${text}`);
     }
-    return new ConstantSymbol(this.db.getBuiltinDatatype("boolean"), value);
-  }
+    return {
+      variant: "Constant",
+      type: this.program.globalScope.lookupSymbol(
+        "boolean",
+        this.program.getLoc(ctx),
+      ).type,
+      value,
+    };
+  };
 
-  visitConstantExpr(ctx: ConstantExprContext): ConstantExpression {
+  visitConstantExpr = (ctx: ConstantExprContext): ConstantExpression => {
     const symbol: ConstantSymbol = this.visit(ctx.constant());
-    return new ConstantExpression(symbol, symbol.type, ctx);
-  }
+    return {
+      constantSymbol: symbol,
+      ctx: ctx,
+      type: symbol.type,
+    };
+  };
 
-  visitThenblock(ctx: ThenblockContext): void {
-    this.visitChildren(ctx);
-  }
+  // visitThenblock(ctx: ThenblockContext): void {
+  //   this.visitChildren(ctx);
+  // }
 
-  visitElseifblock(ctx: ElseifblockContext): void {
-    this.visitChildren(ctx);
-  }
+  // visitElseifblock(ctx: ElseifblockContext): void {
+  //   this.visitChildren(ctx);
+  // }
 
-  visitElseblock(ctx: ElseblockContext): void {
-    this.visitChildren(ctx);
-  }
+  // visitElseblock(ctx: ElseblockContext): void {
+  //   this.visitChildren(ctx);
+  // }
 
-  visitBody(ctx: BodyContext): void {
-    this.visitChildren(ctx);
-  }
+  // visitFuncRefExpr = (ctx: FuncRefExprContext): void => {
+  //   this.visitChildren(ctx);
+  //   // this.setNodeSymbol(ctx, this.getNodeSymbol(ctx.func()));
+  //   // this.setNodeDatatype(ctx, this.getNodeSymbol(ctx.func()).type);
+  // };
 
-  visitFuncRefExpr(ctx: FuncRefExprContext): void {
-    this.visitChildren(ctx);
-    this.setNodeSymbol(ctx, this.getNodeSymbol(ctx.func()));
-    this.setNodeDatatype(ctx, this.getNodeSymbol(ctx.func()).type);
-  }
-
-  visitReturnStatement(ctx: ReturnStatementContext): ReturnStatement {
+  visitReturnStatement = (ctx: ReturnStatementContext): ReturnStatement => {
     if (ctx.expr()) {
       const expr: Expression = this.visit(ctx.expr());
       implicitConversion(
         expr.type,
-        this.functionStack[
-          this.functionStack.length - 1
-        ].type.functionReturnType(),
+        this.functionStack[this.functionStack.length - 1].type
+          .functionReturnType,
         "",
-        this.getLocation(ctx),
+        this.program.getLoc(ctx),
       );
-      return new ReturnStatement(expr, ctx);
+      return {
+        variant: "Return",
+        expr,
+        ctx,
+      };
     } else {
       implicitConversion(
-        this.db.getBuiltinDatatype("none"),
-        this.functionStack[
-          this.functionStack.length - 1
-        ].type.functionReturnType(),
+        this.program.currentScope.lookupSymbol("none", this.program.getLoc(ctx))
+          .type,
+        this.functionStack[this.functionStack.length - 1].type
+          .functionReturnType,
         "",
-        this.getLocation(ctx),
+        this.program.getLoc(ctx),
       );
-      return new ReturnStatement(null, ctx);
+      return {
+        variant: "Return",
+        ctx,
+      };
     }
-  }
+  };
 
-  visitIfStatement(ctx: IfStatementContext): void {
-    this.visit(ctx.ifexpr());
-    for (const expr of ctx.elseifexpr()) {
-      this.visit(expr);
-    }
+  // visitIfStatement(ctx: IfStatementContext): void {
+  //   this.visit(ctx.ifexpr());
+  //   for (const expr of ctx.elseifexpr()) {
+  //     this.visit(expr);
+  //   }
 
-    if (!this.getNodeDatatype(ctx.ifexpr()).isBoolean()) {
-      throw new CompilerError(
-        `If expression of type '${this.getNodeDatatype(ctx.ifexpr()).getDisplayName()}' is not a boolean`,
-        this.getLocation(ctx),
-      );
-    }
+  //   if (!this.getNodeDatatype(ctx.ifexpr()).isBoolean()) {
+  //     throw new CompilerError(
+  //       `If expression of type '${this.getNodeDatatype(ctx.ifexpr()).getDisplayName()}' is not a boolean`,
+  //       this.getLocation(ctx),
+  //     );
+  //   }
 
-    this.db.pushScope(this.getNodeScope(ctx.thenblock()));
-    this.visit(ctx.thenblock());
-    this.db.popScope();
+  //   this.db.pushScope(this.getNodeScope(ctx.thenblock()));
+  //   this.visit(ctx.thenblock());
+  //   this.db.popScope();
 
-    for (const elifblock of ctx.elseifblock()) {
-      this.db.pushScope(this.getNodeScope(elifblock));
-      this.visit(elifblock);
-      this.db.popScope();
-    }
+  //   for (const elifblock of ctx.elseifblock()) {
+  //     this.db.pushScope(this.getNodeScope(elifblock));
+  //     this.visit(elifblock);
+  //     this.db.popScope();
+  //   }
 
-    if (ctx.elseblock()) {
-      this.db.pushScope(this.getNodeScope(ctx.elseblock()));
-      this.visit(ctx.elseblock());
-      this.db.popScope();
-    }
-  }
+  //   if (ctx.elseblock()) {
+  //     this.db.pushScope(this.getNodeScope(ctx.elseblock()));
+  //     this.visit(ctx.elseblock());
+  //     this.db.popScope();
+  //   }
+  // }
 
-  visitArgs(ctx: ArgsContext): Expression[] {
+  visitArgs = (ctx: ArgsContext): Expression[] => {
     const args: Expression[] = [];
-    for (const e of ctx.expr()) {
+    for (const e of ctx.expr_list()) {
       args.push(this.visit(e));
     }
     return args;
-  }
+  };
 
-  visitMutableVariableDefinition(
-    ctx: MutableVariableDefinitionContext,
-  ): VariableDefinitionStatement {
-    return this.implVariableDefinition(ctx, VariableType.MutableVariable);
-  }
-
-  visitImmutableVariableDefinition(
-    ctx: ImmutableVariableDefinitionContext,
-  ): VariableDefinitionStatement {
-    return this.implVariableDefinition(ctx, VariableType.ConstantVariable);
-  }
-
-  visitExprAssignmentStatement(ctx: ExprAssignmentStatementContext): void {
-    const rightExpr = this.visit(ctx.expr()[1]);
+  visitExprAssignmentStatement = (
+    ctx: ExprAssignmentStatementContext,
+  ): void => {
+    const rightExpr = this.visit(ctx.expr_list()[1]);
     if (rightExpr.type.isNone()) {
       throw new CompilerError(
         "Cannot assign 'none' to a variable.",
-        this.getLocation(ctx),
+        this.program.getLoc(ctx),
       );
     }
-  }
+  };
 
-  visitObjectAttr(ctx: ObjectAttrContext): [VariableSymbol, Expression] {
+  visitStructMemberValue = (
+    ctx: StructMemberValueContext,
+  ): [VariableSymbol, Expression] => {
     const name = ctx.ID().getText();
     const expr = this.visit(ctx.expr());
-    const symbol = new VariableSymbol(
-      name,
-      null,
-      expr.type,
-      VariableType.MutableStructField,
-    );
+    const symbol: VariableSymbol = {
+      name: name,
+      type: expr.type,
+      variableType: VariableType.MutableStructField,
+      variant: "Variable",
+    };
     return [symbol, expr];
-  }
+  };
 
-  visitObjectExpr(ctx: ObjectExprContext): ObjectExpression {
-    const symbolTable = new SymbolTable();
-    const members: Array<[VariableSymbol, Expression]> = [];
-    for (const attr of ctx.objectattribute()) {
-      const [symbol, expr] = this.visit(attr);
-      symbolTable.insert(symbol, this.getLocation(ctx));
-      members.push([symbol, expr]);
-    }
+  // visitObjectExpr = (ctx: ObjectExprContext): ObjectExpression => {
+  //   const newType: StructDatatype = {
+  //     variant: "Struct",
+  //     members: [],
+  //   };
+  //   const members: Array<[VariableSymbol, Expression]> = [];
+  //   for (const attr of ctx.objectattribute_list()) {
+  //     const [symbol, expr] = this.visit(attr);
+  //     newType.members.push(symbol);
+  //     members.push([symbol, expr]);
+  //   }
 
-    const struct = Datatype.createStructDatatype(
-      this.db.makeAnonymousStructName(),
-      [],
-      symbolTable,
-    );
-    return new ObjectExpression(struct, members, ctx);
-  }
+  //   const struct = Datatype.createStructDatatype(
+  //     this.db.makeAnonymousStructName(),
+  //     [],
+  //     symbolTable,
+  //   );
+  //   return {
+  //     ctx: ctx,
+  //     type: struct,
+  //     members: members,
+  //   };
+  // };
 
-  visitNamedObjectExpr(ctx: NamedObjectExprContext): ObjectExpression {
+  visitStructInstantiationExpr = (
+    ctx: StructInstantiationExprContext,
+  ): ObjectExpression => {
     const structtype: Datatype = this.visit(ctx.datatype());
     const members: Array<[VariableSymbol, Expression]> = [];
 
-    for (const attr of ctx.objectattribute()) {
+    if (structtype.variant !== "Struct") {
+      throw new CompilerError(
+        `Expression of type '${serializeDatatype(structtype)}' is not a struct`,
+        this.program.getLoc(ctx),
+      );
+    }
+
+    for (const attr of ctx.structmembervalue_list()) {
       const [symbol, expr] = this.visit(attr);
       members.push([symbol, expr]);
 
-      const existingSymbol = structtype
-        .structSymbolTable()
-        .tryLookup(symbol.name, this.getLocation(ctx));
-
+      const existingSymbol = structtype.members.find(
+        (m) => m.name === symbol.name,
+      );
       if (!existingSymbol) {
         throw new CompilerError(
-          `'${symbol.name}' is not a member of '${structtype.getDisplayName()}'`,
-          this.getLocation(ctx),
+          `'${symbol.name}' is not a member of '${serializeDatatype(structtype)}'`,
+          this.program.getLoc(ctx),
         );
       }
 
@@ -578,78 +683,119 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
         symbol.type,
         existingSymbol.type,
         "",
-        this.getLocation(ctx),
+        this.program.getLoc(ctx),
       );
     }
 
-    return new ObjectExpression(structtype, members, ctx);
-  }
+    return {
+      ctx: ctx,
+      members: members,
+      type: structtype,
+    };
+  };
 
-  exprMemberAccessImpl(
+  visitExprMemberAccess = (
     ctx: ExprMemberAccessContext,
-    expr: Expression,
-  ): MemberAccessExpression | MethodAccessExpression {
-    if (expr.type.isStruct()) {
-      const name: string = ctx.ID().getText();
-      const field: VariableSymbol | undefined = getStructField(expr.type, name);
-      let method: FunctionSymbol | undefined = getStructMethod(expr.type, name);
+  ): MemberAccessExpression | MethodAccessExpression => {
+    const expr: Expression = this.visit(ctx.expr());
+    if (expr.type.variant !== "Struct") {
+      throw new CompilerError(
+        `Expression of type '${serializeDatatype(expr.type)}' is not a struct`,
+        this.program.getLoc(ctx),
+      );
+    }
+    const name: string = ctx.ID().getText();
+    const field: VariableSymbol | undefined = expr.type.members.find(
+      (m) => m.name === name,
+    );
+    const method: FunctionSymbol | undefined = expr.type.methods.find(
+      (m) => m.name === name,
+    );
 
-      if (!field && !method) {
-        throw new CompilerError(
-          `Expression '${name}' is not a member of type '${expr.type.getDisplayName()}'`,
-          this.getLocation(ctx),
-        );
+    if (!field && !method) {
+      throw new CompilerError(
+        `Expression '${name}' is not a member of type '${serializeDatatype(expr.type)}'`,
+        this.program.getLoc(ctx),
+      );
+    }
+
+    if (field && method) {
+      throw new CompilerError(
+        `Access to member '${name}' of type '${serializeDatatype(expr.type)}' is ambiguous`,
+        this.program.getLoc(ctx),
+      );
+    }
+
+    if (field) {
+      return {
+        ctx: ctx,
+        expr: expr,
+        memberName: name,
+        type: field.type,
+      };
+    }
+
+    if (method) {
+      if (!method.ctx) {
+        throw new ImpossibleSituation();
+      }
+      // method = { ...method };
+
+      if (!method.parentSymbol) {
+        throw new InternalError("Method has no parent symbol");
+      }
+      if (method.parentSymbol.type.variant !== "Struct") {
+        throw new InternalError("Parent symbol is not a struct");
       }
 
-      if (field && method) {
-        throw new CompilerError(
-          `Access to member '${name}' of type '${expr.type.getDisplayName()}' is ambiguous`,
-          this.getLocation(ctx),
-        );
-      }
+      // method.parentSymbol = { ...method.parentSymbol };
+      // method.parentSymbol.type = {
+      //   variant: "Struct",
+      //   generics: method.parentSymbol.type.generics,
+      // };
+      // Datatype.createStructDatatype(
+      //   method.parentSymbol.type.name(),
+      //   expr.type.generics(),
+      //   method.parentSymbol.type.structSymbolTable(),
+      // );
 
-      if (field) {
-        return new MemberAccessExpression(expr, name, field, ctx);
-      }
-
-      if (method) {
-        if (!method.ctx) {
-          throw new ImpossibleSituation();
+      // this.setNodeSymbol(method.ctx, { ...method });
+      for (const [name, tp] of expr.type.generics) {
+        if (!tp) {
+          throw new CompilerError(
+            `Generic parameter '${name}' has no type`,
+            this.program.getLoc(ctx),
+          );
         }
-        method = { ...method };
-
-        if (!method.parentSymbol) {
-          throw new InternalError("Method has no parent symbol");
-        }
-        if (!method.parentSymbol.type.isStruct()) {
-          throw new InternalError("Parent symbol is not a struct");
-        }
-
-        method.parentSymbol = { ...method.parentSymbol };
-        method.parentSymbol.type = Datatype.createStructDatatype(
-          method.parentSymbol.type.name(),
-          expr.type.generics(),
-          method.parentSymbol.type.structSymbolTable(),
+        const symbol = this.program.ctxToSymbolMap.get(
+          method.ctx,
+        ) as FunctionSymbol;
+        symbol.scope.defineSymbol(
+          {
+            variant: "Datatype",
+            name: name,
+            scope: symbol.scope,
+            type: tp,
+          },
+          this.program.getLoc(ctx),
         );
-
-        this.setNodeSymbol(method.ctx, { ...method });
-        this.implFunc(method.ctx);
-        return new MethodAccessExpression({ ...expr }, { ...method }, ctx);
+        console.log("Defining symbol", symbol);
       }
+      // this.implFunc(method.ctx as FuncContext);
+
+      return {
+        ctx: ctx,
+        expr: expr,
+        memberName: name,
+        type: method.type,
+      };
     } else {
       throw new CompilerError(
-        `Cannot access member of non-structural datatype '${expr.type.getDisplayName()}'`,
-        this.getLocation(ctx),
+        `Cannot access member of non-structural datatype '${serializeDatatype(expr.type)}'`,
+        this.program.getLoc(ctx),
       );
     }
-  }
-
-  visitExprMemberAccess(
-    ctx: ExprMemberAccessContext,
-  ): MemberAccessExpression | MethodAccessExpression {
-    const expr: Expression = this.visit(ctx.expr());
-    return this.exprMemberAccessImpl(ctx, expr);
-  }
+  };
 }
 
 function analyzeFunctionSymbol(program: Program, symbol: FunctionSymbol) {

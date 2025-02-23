@@ -1,5 +1,14 @@
-import type { Location } from "./Errors";
-import type { FunctionSymbol, VariableSymbol } from "./Symbol";
+import {
+  CompilerError,
+  InternalError,
+  UnreachableCode,
+  type Location,
+} from "./Errors";
+import {
+  mangleDatatype,
+  type FunctionSymbol,
+  type VariableSymbol,
+} from "./Symbol";
 
 export enum Primitive {
   none = 1,
@@ -99,6 +108,25 @@ export function primitiveVariantToString(dt: PrimitiveDatatype): string {
       return "stringview";
   }
   throw new Error("Datatype has no string representation");
+}
+
+export function isInteger(dt: Datatype): boolean {
+  switch (dt.variant) {
+    case "Primitive":
+      switch (dt.primitive) {
+        case Primitive.i8:
+        case Primitive.i16:
+        case Primitive.i32:
+        case Primitive.i64:
+        case Primitive.u8:
+        case Primitive.u16:
+        case Primitive.u32:
+        case Primitive.u64:
+          return true;
+      }
+      return false;
+  }
+  return false;
 }
 
 export function serializeDatatype(datatype: Datatype): string {
@@ -362,208 +390,198 @@ export function serializeDatatype(datatype: Datatype): string {
 //   throw new InternalError(`Invalid variant ${this._variant}`);
 // }
 
-// function generateUsageCode(): string {
-//   switch (this._variant) {
-//     case Datatype.Variants.Primitive:
-//       switch (this._primitiveVariant) {
-//         case Primitive.none:
-//           return "void";
-//         case Primitive.unknown:
-//           throw new InternalError(
-//             "Type 'unknown' is compiler internal and must not appear in generated C-code",
-//           );
-//         case Primitive.boolean:
-//           return "bool";
-//         case Primitive.booleanptr:
-//           return "bool*";
-//         case Primitive.i8:
-//           return "int8_t";
-//         case Primitive.i16:
-//           return "int16_t";
-//         case Primitive.i32:
-//           return "int32_t";
-//         case Primitive.i64:
-//           return "int64_t";
-//         case Primitive.u8:
-//           return "uint8_t";
-//         case Primitive.u16:
-//           return "uint16_t";
-//         case Primitive.u32:
-//           return "uint32_t";
-//         case Primitive.u64:
-//           return "uint64_t";
-//         case Primitive.stringview:
-//           return "char*";
-//       }
-//       throw new UnreachableCode();
+export function generateUsageCode(dt: Datatype): string {
+  switch (dt.variant) {
+    case "Primitive":
+      switch (dt.primitive) {
+        case Primitive.none:
+          return "void";
+        case Primitive.unknown:
+          throw new InternalError(
+            "Type 'unknown' is compiler internal and must not appear in generated C-code",
+          );
+        case Primitive.boolean:
+          return "bool";
+        case Primitive.booleanptr:
+          return "bool*";
+        case Primitive.i8:
+          return "int8_t";
+        case Primitive.i16:
+          return "int16_t";
+        case Primitive.i32:
+          return "int32_t";
+        case Primitive.i64:
+          return "int64_t";
+        case Primitive.u8:
+          return "uint8_t";
+        case Primitive.u16:
+          return "uint16_t";
+        case Primitive.u32:
+          return "uint32_t";
+        case Primitive.u64:
+          return "uint64_t";
+        case Primitive.stringview:
+          return "char*";
+      }
+      throw new UnreachableCode();
 
-//     case Datatype.Variants.Pointer:
-//       if (!this._pointee) {
-//         throw new InternalError("bullshit happening");
-//       }
-//       return `${this._pointee.generateUsageCode()}*`;
+    // case Datatype.Variants.Pointer:
+    //   if (!this._pointee) {
+    //     throw new InternalError("bullshit happening");
+    //   }
+    //   return `${this._pointee.generateUsageCode()}*`;
 
-//     case Datatype.Variants.ResolutionDeferred:
-//       throw new InternalError("Cannot generate usage code for deferred");
-//     case Datatype.Variants.Struct:
-//       return `_H${this.getMangledName()}`;
-//     case Datatype.Variants.Function:
-//       return `_H${this.getMangledName()}`;
-//   }
-//   throw new InternalError(`Invalid variant ${this._variant}`);
-// }
+    case "Deferred":
+      throw new InternalError("Cannot generate usage code for deferred");
+    case "Struct":
+      return `_H${mangleDatatype(dt)}`;
+    case "Function":
+      return `_H${mangleDatatype(dt)}`;
 
-// function isSame(other: Datatype): boolean {
-//   if (this.isPrimitive() && other.isPrimitive()) {
-//     return this._primitiveVariant === other._primitiveVariant;
-//   }
+    case "Generic":
+      throw new InternalError("Cannot generate usage code for generic");
+  }
+  // throw new InternalError(`Invalid variant ${dt.variant}`);
+}
 
-//   if (this.isPointer() && other.isPointer()) {
-//     if (!this._pointee || !other._pointee) {
-//       return false;
-//     }
-//     return this._pointee.isSame(other._pointee);
-//   }
+export function isSame(a: Datatype, b: Datatype): boolean {
+  if (a.variant === "Primitive" && b.variant === "Primitive") {
+    return a.primitive === b.primitive;
+  }
 
-//   if (this.isFunction() && other.isFunction()) {
-//     if (!this._functionReturnType || !other._functionReturnType) {
-//       return false;
-//     }
-//     if (!this._functionReturnType.isSame(other._functionReturnType)) {
-//       return false;
-//     }
-//     if (this._functionParameters.length !== other._functionParameters.length) {
-//       return false;
-//     }
-//     for (let i = 0; i < this._functionParameters.length; i++) {
-//       if (
-//         !this._functionParameters[i][1].isSame(other._functionParameters[i][1])
-//       ) {
-//         return false;
-//       }
-//     }
-//     return true;
-//   }
+  // if (a.isPointer() && b.isPointer()) {
+  //   if (!a._pointee || !b._pointee) {
+  //     return false;
+  //   }
+  //   return a._pointee.isSame(b._pointee);
+  // }
 
-//   if (this.isStruct() && other.isStruct()) {
-//     const aMembers = this.structSymbolTable().getFiltered(VariableSymbol);
-//     const bMembers = other.structSymbolTable().getFiltered(VariableSymbol);
-//     if (aMembers.length !== bMembers.length) {
-//       return false;
-//     }
-//     for (let i = 0; i < aMembers.length; i++) {
-//       if (
-//         aMembers[i].name !== bMembers[i].name ||
-//         !aMembers[i].type.isSame(bMembers[i].type)
-//       ) {
-//         return false;
-//       }
-//     }
-//     return true;
-//   }
-//   return false;
-// }
+  if (a.variant === "Function" && b.variant === "Function") {
+    if (!a.functionReturnType || !b.functionReturnType) {
+      return false;
+    }
+    if (!isSame(a.functionReturnType, b.functionReturnType)) {
+      return false;
+    }
+    if (a.functionParameters.length !== b.functionParameters.length) {
+      return false;
+    }
+    for (let i = 0; i < a.functionParameters.length; i++) {
+      if (!isSame(a.functionParameters[i][1], b.functionParameters[i][1])) {
+        return false;
+      }
+    }
+    return true;
+  }
 
-// function implicitConversion(
-//   _from: Datatype,
-//   to: Datatype,
-//   expr: string,
-//   loc: Location,
-// ): string {
-//   if (_from.isSame(to)) {
-//     return expr;
-//   }
+  if (a.variant === "Struct" && b.variant === "Struct") {
+    if (a.members.length !== b.members.length) {
+      return false;
+    }
+    for (let i = 0; i < a.members.length; i++) {
+      if (
+        a.members[i].name !== b.members[i].name ||
+        !isSame(a.members[i].type, b.members[i].type)
+      ) {
+        return false;
+      }
+    }
+    return true;
+  }
+  return false;
+}
 
-//   if (_from.isPrimitive() && to.isPrimitive()) {
-//     if (_from.isInteger() && to.isInteger()) {
-//       return `(${to.generateUsageCode()})(${expr})`;
-//     }
-//     throw new InternalError(
-//       `No implicit conversion from ${_from.getDisplayName()} to ${to.getDisplayName()}`,
-//     );
-//   }
+export function implicitConversion(
+  from: Datatype,
+  to: Datatype,
+  expr: string,
+  loc: Location,
+): string {
+  if (from.variant === "Primitive" && to.variant === "Primitive") {
+    if (isInteger(from) && isInteger(to)) {
+      return `(${generateUsageCode(to)})(${expr})`;
+    }
+    throw new InternalError(
+      `No implicit conversion from ${serializeDatatype(from)} to ${serializeDatatype(to)}`,
+    );
+  }
 
-//   if (_from.isPointer() && to.isPointer()) {
-//     throw new CompilerError(
-//       "Pointer types are not convertible. Polymorphism is not implemented yet",
-//       loc,
-//     );
-//   }
+  // if (from.variant === "Pointer" && to.variant === "Pointer") {
+  //   throw new CompilerError(
+  //     "Pointer types are not convertible. Polymorphism is not implemented yet",
+  //     loc,
+  //   );
+  // }
 
-//   if (_from.isFunction() && to.isFunction()) {
-//     if (!_from._functionReturnType || !to._functionReturnType) {
-//       throw new InternalError("bullshit happening");
-//     }
-//     if (_from._functionReturnType.isSame(to._functionReturnType)) {
-//       if (_from._functionParameters.length === to._functionParameters.length) {
-//         let equal = true;
-//         for (let i = 0; i < _from._functionParameters.length; i++) {
-//           if (
-//             !_from._functionParameters[i][1].isSame(
-//               to._functionParameters[i][1],
-//             )
-//           ) {
-//             equal = false;
-//           }
-//         }
-//         if (equal) {
-//           return expr;
-//         }
-//       }
-//     }
-//     throw new CompilerError(
-//       `No implicit conversion from '${_from.getDisplayName()}' to '${to.getDisplayName()}'`,
-//       loc,
-//     );
-//   }
+  if (from.variant === "Function" && to.variant === "Function") {
+    if (!from.functionReturnType || !to.functionReturnType) {
+      throw new InternalError("bullshit happening");
+    }
+    if (isSame(from.functionReturnType, to.functionReturnType)) {
+      if (from.functionParameters.length === to.functionParameters.length) {
+        let equal = true;
+        for (let i = 0; i < from.functionParameters.length; i++) {
+          if (
+            !isSame(from.functionParameters[i][1], to.functionParameters[i][1])
+          ) {
+            equal = false;
+          }
+        }
+        if (equal) {
+          return expr;
+        }
+      }
+    }
+    throw new CompilerError(
+      `No implicit conversion from '${serializeDatatype(from)}' to '${serializeDatatype(to)}'`,
+      loc,
+    );
+  }
 
-//   if (_from.isStruct() && to.isStruct()) {
-//     const aList = _from.structSymbolTable().getFiltered(VariableSymbol);
-//     const bList = to.structSymbolTable().getFiltered(VariableSymbol);
+  if (from.variant === "Struct" && to.variant === "Struct") {
+    if (from.members.length !== to.members.length) {
+      throw new CompilerError(
+        `No implicit conversion from '${serializeDatatype(from)}' to '${serializeDatatype(to)}': different number of fields`,
+        loc,
+      );
+    }
 
-//     if (aList.length !== bList.length) {
-//       throw new CompilerError(
-//         `No implicit conversion from '${_from.getDisplayName()}' to '${to.getDisplayName()}': different number of fields`,
-//         loc,
-//       );
-//     }
+    const exactMatchInTheOther = (
+      a: VariableSymbol,
+      bList: VariableSymbol[],
+    ) => {
+      for (const b of bList) {
+        if (a.name === b.name && isSame(a.type, b.type)) {
+          return true;
+        }
+      }
+      return false;
+    };
 
-//     const exactMatchInTheOther = (
-//       a: VariableSymbol,
-//       bList: VariableSymbol[],
-//     ) => {
-//       for (const b of bList) {
-//         if (a.name === b.name && a.type.isSame(b.type)) {
-//           return true;
-//         }
-//       }
-//       return false;
-//     };
+    let equal = true;
+    for (const a of from.members) {
+      if (!exactMatchInTheOther(a, to.members)) {
+        equal = false;
+      }
+    }
+    for (const b of to.members) {
+      if (!exactMatchInTheOther(b, from.members)) {
+        equal = false;
+      }
+    }
 
-//     let equal = true;
-//     for (const a of aList) {
-//       if (!exactMatchInTheOther(a, bList)) {
-//         equal = false;
-//       }
-//     }
-//     for (const b of bList) {
-//       if (!exactMatchInTheOther(b, aList)) {
-//         equal = false;
-//       }
-//     }
+    if (equal) {
+      return expr;
+    }
 
-//     if (equal) {
-//       return expr;
-//     }
+    throw new CompilerError(
+      `No implicit conversion from '${serializeDatatype(from)}' to '${serializeDatatype(to)}'`,
+      loc,
+    );
+  }
 
-//     throw new CompilerError(
-//       `No implicit conversion from '${_from.getDisplayName()}' to '${to.getDisplayName()}'`,
-//       loc,
-//     );
-//   }
-
-//   throw new CompilerError(
-//     `No implicit conversion from '${_from.getDisplayName()}' to '${to.getDisplayName()}'`,
-//     loc,
-//   );
-// }
+  throw new CompilerError(
+    `No implicit conversion from '${serializeDatatype(from)}' to '${serializeDatatype(to)}'`,
+    loc,
+  );
+}

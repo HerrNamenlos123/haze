@@ -1,7 +1,6 @@
 import { CompilerError, type Location } from "./Errors";
+import type { Statement } from "./Statement";
 import { mangleSymbol, type Symbol } from "./Symbol";
-
-export type Statement = {};
 
 export class Scope {
   public location: Location;
@@ -18,6 +17,9 @@ export class Scope {
   }
 
   defineSymbol(symbol: Symbol, loc: Location) {
+    if (symbol.variant === "Constant") {
+      throw new CompilerError(`Cannot define a constant symbol`, loc);
+    }
     if (this.tryLookupSymbol(symbol.name, loc)) {
       throw new CompilerError(
         `Symbol '${symbol.name}' was already defined in this scope`,
@@ -28,7 +30,9 @@ export class Scope {
   }
 
   removeSymbol(name: string) {
-    this.symbols = this.symbols.filter((s) => s.name !== name);
+    this.symbols = this.symbols.filter(
+      (s) => s.variant !== "Constant" && s.name !== name,
+    );
   }
 
   getSymbols() {
@@ -36,7 +40,9 @@ export class Scope {
   }
 
   tryLookupSymbol(name: string, loc: Location): Symbol | undefined {
-    let symbol = this.symbols.find((s) => s.name === name);
+    let symbol = this.symbols.find(
+      (s) => s.variant !== "Constant" && s.name === name,
+    );
     if (symbol) {
       return symbol;
     }

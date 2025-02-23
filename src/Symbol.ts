@@ -50,14 +50,17 @@ export type DatatypeSymbol<T = Datatype> = {
   scope: Scope;
 };
 
-// export type ConstantSymbol = {
-//   variant: "Constant";
-//   type: DatatypeRef;
-//   value: string | number | boolean;
-// };
+export type ConstantSymbol = {
+  variant: "Constant";
+  type: Datatype;
+  value: string | number | boolean;
+};
 
-export type Symbol = VariableSymbol | DatatypeSymbol | FunctionSymbol;
-//   | ConstantSymbol;
+export type Symbol =
+  | VariableSymbol
+  | DatatypeSymbol
+  | FunctionSymbol
+  | ConstantSymbol;
 
 export function isDatatypeGeneric(datatype: Datatype) {
   switch (datatype.variant) {
@@ -82,12 +85,16 @@ export function isSymbolGeneric(symbol: Symbol) {
   if (isDatatypeGeneric(symbol.type)) {
     return true;
   }
-  let p = symbol.parentSymbol;
-  while (p) {
-    if (isDatatypeGeneric(p.type)) {
-      return true;
+  if (symbol.variant !== "Constant") {
+    let p = symbol.parentSymbol;
+    while (p) {
+      if (isDatatypeGeneric(p.type)) {
+        return true;
+      }
+      if (p.variant !== "Constant") {
+        p = p.parentSymbol;
+      }
     }
-    p = p.parentSymbol;
   }
   return false;
 }
@@ -95,7 +102,8 @@ export function isSymbolGeneric(symbol: Symbol) {
 export function mangleDatatype(datatype: Datatype): string {
   switch (datatype.variant) {
     case "Primitive":
-      return primitiveVariantToString(datatype);
+      const s = primitiveVariantToString(datatype);
+      return s.length.toString() + s;
 
     case "Function":
       let mangled = "F";
@@ -134,27 +142,34 @@ export function mangleSymbol(symbol: Symbol): string {
         return symbol.name;
       }
       let mangled = "_H";
-      let p = symbol.parentSymbol;
-      if (p) {
+      if (symbol.parentSymbol) {
+        let p: Symbol | undefined = symbol.parentSymbol;
         mangled += "N";
         while (p) {
           mangled += mangleDatatype(p.type);
-          p = p.parentSymbol;
+          if (p.variant !== "Constant") {
+            p = p.parentSymbol;
+          }
         }
       }
       mangled += symbol.name.length.toString();
       mangled += symbol.name;
 
-      // if symbol.type.generics) > 0:
+      // if (symbol.type.generics.size > 0) {
       //     mangled += "I"
       //     for t in symbol.type.generics():
       //         if not t[1]:
       //             raise InternalError("Cannot mangle non-instantiated generic type")
       //         mangled += t[1].getMangledName()
       //     mangled += "E"
+      // }
 
       if (symbol.parentSymbol) {
         mangled += "E";
+      }
+
+      for (const [name, tp] of symbol.type.functionParameters) {
+        mangled += mangleDatatype(tp);
       }
       return mangled;
 
@@ -170,12 +185,16 @@ export function mangleSymbol(symbol: Symbol): string {
 
 export function serializeSymbol(symbol: Symbol): string {
   let name = "";
-  let p = symbol.parentSymbol;
-  while (p) {
-    name = `${serializeDatatype(p.type)}.${name}`;
-    p = p.parentSymbol;
+  if (symbol.variant !== "Constant") {
+    let p = symbol.parentSymbol;
+    while (p) {
+      name = `${serializeDatatype(p.type)}.${name}`;
+      if (p.variant !== "Constant") {
+        p = p.parentSymbol;
+      }
+    }
+    name += symbol.name;
   }
-  name += symbol.name;
   return ` * ${name}: ${serializeDatatype(symbol.type)}      [mangle]: ${mangleSymbol(symbol)}`;
 }
 

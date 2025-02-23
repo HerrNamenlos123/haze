@@ -21,24 +21,27 @@ thenblock: body;
 elseifblock: body;
 elseblock: body;
 
+variablemutability
+    : ('let' | 'const')     #VariableMutability
+    ;
+
 statement
-    : '__c__' '(' STRING_LITERAL ')' ';'          #InlineCStatement
-    | expr ';'                                    #ExprStatement
-    | 'return' expr? ';'                          #ReturnStatement
-    | expr '=' expr ';'                           #ExprAssignmentStatement
-    | 'let' ID (':' datatype)? '=' expr ';'       #MutableVariableDefinition
-    | 'const' ID (':' datatype)? '=' expr ';'     #ImmutableVariableDefinition
+    : '__c__' '(' STRING_LITERAL ')' ';'                        #InlineCStatement
+    | expr ';'                                                  #ExprStatement
+    | 'return' expr? ';'                                        #ReturnStatement
+    | expr '=' expr ';'                                         #ExprAssignmentStatement
+    | variablemutability ID (':' datatype)? '=' expr ';'         #VariableDefinition
     | 'if' ifexpr '{' thenblock '}' ('else' 'if' elseifexpr '{' elseifblock '}')* ('else' '{' elseblock '}')?  #IfStatement
     ;
 
-objectattribute
-    : '.' ID ':' expr   #ObjectAttr
+structmembervalue
+    : '.' ID ':' expr   #StructMemberValue
     ;
 
 expr
-    : '(' expr ')'                                                      #BracketExpr
-    | '{' objectattribute? (',' objectattribute)* ','? '}'              #ObjectExpr
-    | datatype '{' objectattribute? (',' objectattribute)* ','? '}'     #NamedObjectExpr
+    : '(' expr ')'                                                      #ParenthesisExpr
+    // | '{' objectattribute? (',' objectattribute)* ','? '}'              #AnonymousStructInstantiationExpr
+    | datatype '{' structmembervalue? (',' structmembervalue)* ','? '}'     #StructInstantiationExpr
     | expr '(' args ')'                                         #ExprCallExpr
     | expr '.' ID                                               #ExprMemberAccess
     | expr ('*'|'/'|'%') expr                                   #BinaryExpr

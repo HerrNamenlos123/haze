@@ -15,6 +15,7 @@ import {
   FunctionType,
   isSymbolGeneric,
   mangleSymbol,
+  serializeSymbol,
   VariableType,
   type DatatypeSymbol,
   type FunctionSymbol,
@@ -29,6 +30,8 @@ import {
   type StructDatatype,
 } from "./Datatype";
 import { Scope } from "./Scope";
+import type { ParserRuleContext } from "antlr4";
+import { visitCommonDatatypeImpl } from "./utils";
 
 export class SymbolCollector extends HazeVisitor<any> {
   private program: Program;
@@ -47,42 +50,7 @@ export class SymbolCollector extends HazeVisitor<any> {
   };
 
   visitCommonDatatype = (ctx: CommonDatatypeContext): Datatype => {
-    const name = ctx.ID().getText();
-    const baseType = this.program.findBaseDatatype(name);
-    if (!baseType) {
-      const d: GenericPlaceholderDatatype = {
-        variant: "Generic",
-        name: name,
-      };
-      // throw new Error("Type not found: " + name);
-      return d;
-    }
-
-    const genericsProvided: Datatype[] = ctx
-      .datatype_list()
-      .map((n) => this.visit(n));
-    switch (baseType.variant) {
-      case "Primitive":
-        if (genericsProvided.length > 0) {
-          throw new CompilerError(
-            `Type '${name}' expected no generic arguments but got ${genericsProvided.length}.`,
-            this.program.getLoc(ctx),
-          );
-        }
-        return baseType;
-
-      case "Struct":
-        if (genericsProvided.length > 0) {
-          throw new CompilerError(
-            `Type '${name}<>' expected ${Object.keys(baseType.generics).length} generic arguments but got ${genericsProvided.length}.`,
-            this.program.getLoc(ctx),
-          );
-        }
-        return baseType;
-
-      default:
-        throw new ImpossibleSituation();
-    }
+    return visitCommonDatatypeImpl(this, this.program, ctx);
   };
 
   visitFunctionDatatype = (ctx: FunctionDatatypeContext): Datatype => {
@@ -203,6 +171,7 @@ export class SymbolCollector extends HazeVisitor<any> {
       ctx: ctx,
     };
     parentScope.defineSymbol(symbol, this.program.getLoc(ctx));
+    this.program.ctxToSymbolMap.set(ctx, symbol);
 
     if (symbol.functionType !== FunctionType.Internal) {
       this.program.externFunctions[mangleSymbol(symbol)] = symbol;
@@ -265,12 +234,15 @@ export class SymbolCollector extends HazeVisitor<any> {
       scope: scope,
     };
     parentScope.defineSymbol(symbol, this.program.getLoc(ctx));
-    // for (const [name, tp] of type.generics) {
-    //   const sym: GenericPlaceholderDatatype = {
-    //     name: generic,
-    //   };
-    //   scope.defineSymbol(symbol, this.program.getLoc(ctx));
-    // }
+    for (const [name, tp] of type.generics) {
+      const sym: DatatypeSymbol = {
+        name: name,
+        variant: "Datatype",
+        scope: scope,
+        type: { variant: "Generic", name: name },
+      };
+      scope.defineSymbol(sym, this.program.getLoc(ctx));
+    }
     this.structStack.push(symbol);
 
     ctx.structcontent_list().forEach((c) => {

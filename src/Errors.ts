@@ -81,7 +81,7 @@ export class ImpossibleSituation extends Error {
   constructor() {
     super(
       formatErrorMessage(
-        getCallerLocation(),
+        getCallerLocation(2),
         "Impossible situation, something fatal has happened",
       ),
     );
