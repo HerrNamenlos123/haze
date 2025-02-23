@@ -11,13 +11,14 @@ import {
 import {
   generateDefinitionCCode,
   generateUsageCode,
+  implicitConversion,
   type Datatype,
   type FunctionDatatype,
 } from "./Datatype";
 import type { Statement } from "./Statement";
 import type { Expression } from "./Expression";
 import { OutputWriter } from "./OutputWriter";
-import { datatypeUsed } from "./utils";
+import { datatypeSymbolUsed } from "./utils";
 
 const CONTEXT_STRUCT = "_HN4Haze7ContextE";
 
@@ -53,7 +54,7 @@ class CodeGenerator {
 
   includeHeader(filename: string) {
     this.init(filename, this.out.includes);
-    this.out.includes[filename].writeLine(`#include <${filename}>`);
+    this.out.includes[filename].write(`#include <${filename}>`);
   }
 
   writeFile(filename: string) {
@@ -62,7 +63,6 @@ class CodeGenerator {
     writer.write("// Include section\n");
     for (const include of Object.values(this.out.includes)) {
       writer.write(include);
-      writer.writeLine();
     }
 
     writer.write("\n\n// Type declaration section\n");
@@ -120,12 +120,12 @@ class CodeGenerator {
           `${generateUsageCode(symbol.thisPointer, this.program)} this`,
         );
       }
-      params.push(
-        ...ftype.functionParameters.map(
-          ([paramName, paramType]) =>
-            generateUsageCode(paramType, this.program) + " " + paramName,
-        ),
-      );
+      for (const [paramName, paramType] of ftype.functionParameters) {
+        params.push(
+          generateUsageCode(paramType, this.program) + " " + paramName,
+        );
+        // datatypeSymbolUsed(paramType);
+      }
       decl += params.join(", ");
       decl += ")";
       return decl;
@@ -199,8 +199,20 @@ class CodeGenerator {
         if (expr.thisPointerExpr) {
           args.push("&" + this.emitExpr(expr.thisPointerExpr).get());
         }
-        for (const arg of expr.args) {
-          args.push(this.emitExpr(arg).get());
+        for (let i = 0; i < expr.args.length; i++) {
+          const val = this.emitExpr(expr.args[i]).get();
+          if (expr.expr.type.variant !== "Function") {
+            throw new ImpossibleSituation();
+          }
+          const converted = implicitConversion(
+            expr.args[i].type,
+            expr.expr.type.functionParameters[i][1],
+            val,
+            this.program.currentScope,
+            this.program.getLoc(expr.args[i].ctx),
+            this.program,
+          );
+          args.push(converted);
         }
         writer.write(
           this.emitExpr(expr.expr).get() + "(" + args.join(", ") + ")",

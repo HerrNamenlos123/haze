@@ -24,6 +24,7 @@ import {
 } from "./Symbol";
 import {
   FuncdeclContext,
+  FunctionDatatypeContext,
   type ArgsContext,
   type BinaryExprContext,
   type BooleanConstantContext,
@@ -45,7 +46,7 @@ import {
   type VariableDefinitionContext,
 } from "./parser/HazeParser";
 import {
-  datatypeUsed,
+  datatypeSymbolUsed,
   defineGenericsInScope,
   resolveGenerics,
   visitCommonDatatypeImpl,
@@ -130,16 +131,17 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
 
     const args: Expression[] = [];
     const params = expr.type.functionParameters;
-    const _args = this.visit(ctx.args());
-    if (_args.length !== params.length) {
+    const visitedArgs = this.visit(ctx.args());
+    if (visitedArgs.length !== params.length) {
       throw new CompilerError(
-        `Expected ${params.length} arguments but got ${_args.length}`,
+        `Expected ${params.length} arguments but got ${visitedArgs.length}`,
         this.program.getLoc(ctx),
       );
     }
-    _args.forEach((_argExpr: Expression) => {
-      args.push(_argExpr);
-    });
+    for (let i = 0; i < params.length; i++) {
+      const arg = visitedArgs[i];
+      args.push(arg);
+    }
 
     return {
       type: expr.type.functionReturnType,
@@ -818,7 +820,6 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
           },
           this.program.getLoc(ctx),
         );
-        console.log("Defining symbol", symbol);
       }
       // this.implFunc(method.ctx as FuncContext);
 
@@ -844,7 +845,6 @@ function analyzeFunctionSymbol(program: Program, symbol: FunctionSymbol) {
 }
 
 export function performSemanticAnalysis(program: Program) {
-  console.log("analyzing");
   for (const symbol of Object.values(program.concreteFunctions)) {
     analyzeFunctionSymbol(program, symbol);
   }

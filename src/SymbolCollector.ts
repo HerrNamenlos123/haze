@@ -30,7 +30,7 @@ import {
 } from "./Datatype";
 import { Scope } from "./Scope";
 import type { ParserRuleContext } from "antlr4";
-import { visitCommonDatatypeImpl } from "./utils";
+import { datatypeSymbolUsed, visitCommonDatatypeImpl } from "./utils";
 
 export class SymbolCollector extends HazeVisitor<any> {
   private program: Program;
@@ -60,6 +60,15 @@ export class SymbolCollector extends HazeVisitor<any> {
         .map((n) => [n.ID().getText(), this.visit(n.datatype())]),
       functionReturnType: this.visit(ctx.functype().datatype()),
     };
+    datatypeSymbolUsed(
+      {
+        name: "",
+        scope: this.program.currentScope,
+        type: type,
+        variant: "Datatype",
+      },
+      this.program,
+    );
     return type;
   };
 

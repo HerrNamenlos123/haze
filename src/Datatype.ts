@@ -4,15 +4,16 @@ import {
   UnreachableCode,
   type Location,
 } from "./Errors";
+import { OutputWriter } from "./OutputWriter";
 import type { Program } from "./Program";
-import type { Scope } from "./Scope";
+import { Scope } from "./Scope";
 import {
   mangleDatatype,
   type DatatypeSymbol,
   type FunctionSymbol,
   type VariableSymbol,
 } from "./Symbol";
-import { datatypeUsed, resolveGenerics } from "./utils";
+import { defineGenericsInScope, resolveGenerics } from "./utils";
 
 export enum Primitive {
   none = 1,
@@ -366,34 +367,54 @@ export function serializeDatatype(datatype: Datatype): string {
 // }
 
 export function generateDefinitionCCode(
-  datatype: DatatypeSymbol,
+  _datatype: DatatypeSymbol,
   program: Program,
-): string {
+): OutputWriter {
+  const writer = new OutputWriter();
+  const scope = new Scope(_datatype.scope.location, _datatype.scope);
+  if (_datatype.type.variant === "Struct") {
+    defineGenericsInScope(_datatype.type.generics, scope);
+  }
+  const datatype: DatatypeSymbol = {
+    name: _datatype.name,
+    scope: _datatype.scope,
+    variant: _datatype.variant,
+    parentSymbol: _datatype.parentSymbol,
+    type: resolveGenerics(_datatype.type, scope, _datatype.scope.location),
+  };
   switch (datatype.type.variant) {
     case "Primitive":
-      return "";
+      return writer;
 
     case "Struct":
-      let out = `typedef struct __${generateUsageCode(datatype.type, program)}__ {`;
+      writer
+        .writeLine(
+          `typedef struct __${generateUsageCode(datatype.type, program)}__ {`,
+        )
+        .pushIndent();
       for (const memberSymbol of datatype.type.members) {
-        out += `    ${generateUsageCode(memberSymbol.type, program)} ${memberSymbol.name};`;
+        writer.writeLine(
+          `${generateUsageCode(memberSymbol.type, program)} ${memberSymbol.name};`,
+        );
       }
-      out += `} ${generateUsageCode(datatype.type, program)};`;
-      return out;
+      writer
+        .popIndent()
+        .writeLine(`} ${generateUsageCode(datatype.type, program)};`);
+      return writer;
 
     case "Function":
       const params = datatype.type.functionParameters.map(([name, tp]) =>
         generateUsageCode(datatype.type, program),
       );
-      return `typedef ${generateUsageCode(datatype.type.functionReturnType, program)} (*${generateUsageCode(datatype.type, program)})(${params.join(", ")});`;
+      writer.write(
+        `typedef ${generateUsageCode(datatype.type.functionReturnType, program)} (*${generateUsageCode(datatype.type, program)})(${params.join(", ")});`,
+      );
+      return writer;
   }
   throw new InternalError(`Invalid variant ${datatype.variant}`);
 }
 
 export function generateUsageCode(dt: Datatype, program: Program): string {
-  // console.log("A", dt);
-  // datatypeUsed(dt, program);
-  console.log("after: ", serializeDatatype(dt));
   switch (dt.variant) {
     case "Primitive":
       switch (dt.primitive) {

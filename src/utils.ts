@@ -186,8 +186,28 @@ export const visitCommonDatatypeImpl = (
       }
       let index = 0;
       for (const i of symbol.type.generics.keys()) {
-        structtype.generics.set(i, genericsProvided[index]);
+        if (genericsProvided[index].variant !== "Generic") {
+          structtype.generics.set(i, genericsProvided[index]);
+        } else {
+          structtype.generics.set(i, undefined);
+        }
         index++;
+      }
+      if (
+        structtype.generics
+          .entries()
+          .every((e) => e[1] !== undefined && e[1].variant !== "Generic")
+      ) {
+        datatypeSymbolUsed(
+          {
+            name: symbol.name,
+            scope: symbol.scope,
+            type: structtype,
+            variant: "Datatype",
+            parentSymbol: symbol.parentSymbol,
+          },
+          program,
+        );
       }
       return structtype;
 
@@ -196,7 +216,7 @@ export const visitCommonDatatypeImpl = (
   }
 };
 
-export function datatypeUsed(symbol: DatatypeSymbol, program: Program) {
+export function datatypeSymbolUsed(symbol: DatatypeSymbol, program: Program) {
   const mangled = mangleSymbol(symbol);
   if (!(mangled in program.concreteDatatypes)) {
     program.concreteDatatypes[mangled] = symbol;
