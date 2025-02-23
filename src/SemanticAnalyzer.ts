@@ -17,6 +17,7 @@ import {
   mangleSymbol,
   VariableType,
   type ConstantSymbol,
+  type DatatypeSymbol,
   type FunctionSymbol,
   type Symbol,
   type VariableSymbol,
@@ -44,6 +45,7 @@ import {
   type VariableDefinitionContext,
 } from "./parser/HazeParser";
 import {
+  datatypeUsed,
   defineGenericsInScope,
   resolveGenerics,
   visitCommonDatatypeImpl,
@@ -291,6 +293,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
         "",
         this.program.currentScope,
         this.program.getLoc(ctx),
+        this.program,
       );
       return [{ variant: "Return", ctx: ctx, expr: expr } as ReturnStatement];
     } else {
@@ -559,6 +562,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
         "",
         this.program.currentScope,
         this.program.getLoc(ctx),
+        this.program,
       );
       return {
         variant: "Return",
@@ -574,6 +578,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
         "",
         this.program.currentScope,
         this.program.getLoc(ctx),
+        this.program,
       );
       return {
         variant: "Return",
@@ -690,7 +695,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
     defineGenericsInScope(structtype.generics, scope);
 
     for (const attr of ctx.structmembervalue_list()) {
-      const [symbol, expr] = this.visit(attr);
+      const [symbol, expr] = this.visit(attr) as [VariableSymbol, Expression];
       members.push([symbol, expr]);
 
       const existingSymbol = structtype.members.find(
@@ -715,6 +720,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
         "",
         scope,
         this.program.getLoc(ctx),
+        this.program,
       );
     }
 

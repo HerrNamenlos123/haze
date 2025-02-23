@@ -4,13 +4,15 @@ import {
   UnreachableCode,
   type Location,
 } from "./Errors";
+import type { Program } from "./Program";
 import type { Scope } from "./Scope";
 import {
   mangleDatatype,
+  type DatatypeSymbol,
   type FunctionSymbol,
   type VariableSymbol,
 } from "./Symbol";
-import { resolveGenerics } from "./utils";
+import { datatypeUsed, resolveGenerics } from "./utils";
 
 export enum Primitive {
   none = 1,
@@ -363,29 +365,35 @@ export function serializeDatatype(datatype: Datatype): string {
 //   throw new InternalError(`Invalid variant ${this._variant}`);
 // }
 
-export function generateDefinitionCCode(datatype: Datatype): string {
-  switch (datatype.variant) {
+export function generateDefinitionCCode(
+  datatype: DatatypeSymbol,
+  program: Program,
+): string {
+  switch (datatype.type.variant) {
     case "Primitive":
       return "";
 
     case "Struct":
-      let out = `typedef struct __${generateUsageCode(datatype)}__ {`;
-      for (const memberSymbol of datatype.members) {
-        out += `    ${generateUsageCode(memberSymbol.type)} ${memberSymbol.name};`;
+      let out = `typedef struct __${generateUsageCode(datatype.type, program)}__ {`;
+      for (const memberSymbol of datatype.type.members) {
+        out += `    ${generateUsageCode(memberSymbol.type, program)} ${memberSymbol.name};`;
       }
-      out += `} ${generateUsageCode(datatype)};`;
+      out += `} ${generateUsageCode(datatype.type, program)};`;
       return out;
 
     case "Function":
-      const params = datatype.functionParameters.map(([name, tp]) =>
-        generateUsageCode(datatype),
+      const params = datatype.type.functionParameters.map(([name, tp]) =>
+        generateUsageCode(datatype.type, program),
       );
-      return `typedef ${generateUsageCode(datatype.functionReturnType)} (*${generateUsageCode(datatype)})(${params.join(", ")});`;
+      return `typedef ${generateUsageCode(datatype.type.functionReturnType, program)} (*${generateUsageCode(datatype.type, program)})(${params.join(", ")});`;
   }
   throw new InternalError(`Invalid variant ${datatype.variant}`);
 }
 
-export function generateUsageCode(dt: Datatype): string {
+export function generateUsageCode(dt: Datatype, program: Program): string {
+  // console.log("A", dt);
+  // datatypeUsed(dt, program);
+  console.log("after: ", serializeDatatype(dt));
   switch (dt.variant) {
     case "Primitive":
       switch (dt.primitive) {
@@ -492,6 +500,7 @@ export function implicitConversion(
   expr: string,
   scope: Scope,
   loc: Location,
+  program: Program,
 ): string {
   const from = resolveGenerics(_from, scope, loc);
   const to = resolveGenerics(_to, scope, loc);
@@ -502,7 +511,7 @@ export function implicitConversion(
 
   if (from.variant === "Primitive" && to.variant === "Primitive") {
     if (isInteger(from) && isInteger(to)) {
-      return `(${generateUsageCode(to)})(${expr})`;
+      return `(${generateUsageCode(to, program)})(${expr})`;
     }
     throw new CompilerError(
       `No implicit conversion from ${serializeDatatype(from)} to ${serializeDatatype(to)}`,

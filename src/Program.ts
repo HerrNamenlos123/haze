@@ -11,6 +11,7 @@ import {
 import {
   Primitive,
   primitiveVariantToString,
+  serializeDatatype,
   type Datatype,
   type PrimitiveDatatype,
   type StructDatatype,

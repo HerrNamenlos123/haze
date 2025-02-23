@@ -1,8 +1,9 @@
-import type {
-  Datatype,
-  FunctionDatatype,
-  Generics,
-  StructDatatype,
+import {
+  serializeDatatype,
+  type Datatype,
+  type FunctionDatatype,
+  type Generics,
+  type StructDatatype,
 } from "./Datatype";
 import {
   CompilerError,
@@ -14,7 +15,13 @@ import type { CommonDatatypeContext } from "./parser/HazeParser";
 import type HazeVisitor from "./parser/HazeVisitor";
 import type { Program } from "./Program";
 import { Scope } from "./Scope";
-import { isSymbolGeneric } from "./Symbol";
+import {
+  isSymbolGeneric,
+  mangleDatatype,
+  mangleSymbol,
+  serializeSymbol,
+  type DatatypeSymbol,
+} from "./Symbol";
 
 export function defineGenericsInScope(generics: Generics, scope: Scope) {
   for (const [name, tp] of generics) {
@@ -158,9 +165,6 @@ export const visitCommonDatatypeImpl = (
           program.getLoc(ctx),
         );
       }
-      if (!isSymbolGeneric(symbol)) {
-        program.concreteDatatypes[name] = symbol;
-      }
       return symbol.type;
 
     case "Generic":
@@ -185,12 +189,16 @@ export const visitCommonDatatypeImpl = (
         structtype.generics.set(i, genericsProvided[index]);
         index++;
       }
-      if (!isSymbolGeneric(symbol)) {
-        program.concreteDatatypes[name] = symbol;
-      }
       return structtype;
 
     default:
       throw new ImpossibleSituation();
   }
 };
+
+export function datatypeUsed(symbol: DatatypeSymbol, program: Program) {
+  const mangled = mangleSymbol(symbol);
+  if (!(mangled in program.concreteDatatypes)) {
+    program.concreteDatatypes[mangled] = symbol;
+  }
+}

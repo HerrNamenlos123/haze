@@ -73,7 +73,7 @@ export class CompilerError extends Error {
 
 export class InternalError extends Error {
   constructor(msg: string, loc?: Location) {
-    super(formatErrorMessage(loc ?? getCallerLocation(), msg));
+    super(formatErrorMessage(loc ?? getCallerLocation(2), msg));
   }
 }
 

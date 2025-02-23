@@ -5,6 +5,7 @@ import {
   FunctionType,
   mangleDatatype,
   mangleSymbol,
+  type DatatypeSymbol,
   type FunctionSymbol,
 } from "./Symbol";
 import {
@@ -15,73 +16,76 @@ import {
 } from "./Datatype";
 import type { Statement } from "./Statement";
 import type { Expression } from "./Expression";
+import { OutputWriter } from "./OutputWriter";
+import { datatypeUsed } from "./utils";
 
 const CONTEXT_STRUCT = "_HN4Haze7ContextE";
 
 class CodeGenerator {
   private program: Program;
-  private output: Record<string, Record<string, string>>;
+  private includeWriter = new OutputWriter();
+  private out = {
+    includes: {} as Record<string, OutputWriter>,
+    type_declarations: {} as Record<string, OutputWriter>,
+    function_declarations: {} as Record<string, OutputWriter>,
+    function_definitions: {} as Record<string, OutputWriter>,
+  };
 
   constructor(program: Program) {
     this.program = program;
-    this.output = {
-      includes: {},
-      type_declarations: {},
-      function_declarations: {},
-      function_definitions: {},
-    };
-    this.output["type_declarations"][CONTEXT_STRUCT] =
-      `typedef struct __${CONTEXT_STRUCT}__ {} ${CONTEXT_STRUCT};`;
-    this.output["function_definitions"]["main"] =
-      `int32_t main() {\n    ${CONTEXT_STRUCT} context = { };\n    return _H4main(&context);\n}`;
+    this.out.type_declarations[CONTEXT_STRUCT] = new OutputWriter().write(
+      `typedef struct __${CONTEXT_STRUCT}__ {} ${CONTEXT_STRUCT};`,
+    );
+    this.out.function_definitions["main"] = new OutputWriter()
+      .writeLine("int32_t main() {")
+      .pushIndent()
+      .writeLine(`${CONTEXT_STRUCT} context = { };`)
+      .writeLine("return _H4main(&context);")
+      .popIndent()
+      .writeLine("}");
+  }
+
+  init(field: string, out: Record<string, OutputWriter>) {
+    if (!(field in out)) {
+      out[field] = new OutputWriter();
+    }
   }
 
   includeHeader(filename: string) {
-    this.output["includes"][filename] = `#include <${filename}>`;
-  }
-
-  outputFunctionDecl(symbol: FunctionSymbol, value: string) {
-    if (!(mangleSymbol(symbol) in this.output["function_declarations"])) {
-      this.output["function_declarations"][mangleSymbol(symbol)] = "";
-    }
-    this.output["function_declarations"][mangleSymbol(symbol)] += value;
-  }
-
-  outputFunctionDef(symbol: FunctionSymbol, value: string) {
-    if (!(mangleSymbol(symbol) in this.output["function_definitions"])) {
-      this.output["function_definitions"][mangleSymbol(symbol)] = "";
-    }
-    this.output["function_definitions"][mangleSymbol(symbol)] += value;
+    this.init(filename, this.out.includes);
+    this.out.includes[filename].writeLine(`#include <${filename}>`);
   }
 
   writeFile(filename: string) {
     const fs = require("fs");
+    const writer = new OutputWriter();
+    writer.write("// Include section\n");
+    for (const include of Object.values(this.out.includes)) {
+      writer.write(include);
+      writer.writeLine();
+    }
+
+    writer.write("\n\n// Type declaration section\n");
+    for (const decl of Object.values(this.out.type_declarations)) {
+      writer.write(decl);
+      writer.writeLine();
+    }
+
+    writer.write("\n\n// Function declaration section\n");
+    for (const decl of Object.values(this.out.function_declarations)) {
+      writer.write(decl);
+      writer.writeLine();
+    }
+
+    writer.write("\n\n// Function definition section\n");
+    for (const def of Object.values(this.out.function_definitions)) {
+      writer.write(def);
+      writer.writeLine();
+    }
+
     const path = require("path");
-
     fs.mkdirSync(path.dirname(filename), { recursive: true });
-    fs.writeFileSync(filename, "// Include section\n");
-    fs.appendFileSync(
-      filename,
-      Object.values(this.output["includes"]).join("\n"),
-    );
-
-    fs.appendFileSync(filename, "\n\n// Type declaration section\n");
-    fs.appendFileSync(
-      filename,
-      Object.values(this.output["type_declarations"]).join("\n"),
-    );
-
-    fs.appendFileSync(filename, "\n\n// Function declaration section\n");
-    fs.appendFileSync(
-      filename,
-      Object.values(this.output["function_declarations"]).join("\n"),
-    );
-
-    fs.appendFileSync(filename, "\n\n// Function definition section\n");
-    fs.appendFileSync(
-      filename,
-      Object.values(this.output["function_definitions"]).join("\n\n"),
-    );
+    fs.writeFileSync(filename, writer.get());
   }
 
   generate() {
@@ -95,7 +99,7 @@ class CodeGenerator {
     }
 
     for (const dt of Object.values(this.program.concreteDatatypes)) {
-      this.generateDatatypeUse(dt.type);
+      this.generateDatatypeUse(dt);
     }
   }
 
@@ -105,16 +109,21 @@ class CodeGenerator {
       returntype: Datatype,
     ): string => {
       let decl =
-        generateUsageCode(returntype) + " " + mangleSymbol(symbol) + "(";
+        generateUsageCode(returntype, this.program) +
+        " " +
+        mangleSymbol(symbol) +
+        "(";
       const params = [];
       params.push(`${CONTEXT_STRUCT}* context`);
       if (symbol.thisPointer) {
-        params.push(`${generateUsageCode(symbol.thisPointer)} this`);
+        params.push(
+          `${generateUsageCode(symbol.thisPointer, this.program)} this`,
+        );
       }
       params.push(
         ...ftype.functionParameters.map(
           ([paramName, paramType]) =>
-            generateUsageCode(paramType) + " " + paramName,
+            generateUsageCode(paramType, this.program) + " " + paramName,
         ),
       );
       decl += params.join(", ");
@@ -122,24 +131,35 @@ class CodeGenerator {
       return decl;
     };
 
+    this.init(mangleSymbol(symbol), this.out.function_definitions);
+    this.init(mangleSymbol(symbol), this.out.function_declarations);
     const decl = declaration(symbol.type, symbol.type.functionReturnType);
-    this.outputFunctionDecl(symbol, decl + ";");
-    this.outputFunctionDef(symbol, decl + " {\n");
+    this.out.function_declarations[mangleSymbol(symbol)].write(decl + ";");
+    this.out.function_definitions[mangleSymbol(symbol)]
+      .writeLine(decl + " {")
+      .pushIndent();
 
     for (const statement of symbol.scope.statements) {
-      this.outputFunctionDef(symbol, this.cgStatement(statement) + "\n");
+      this.out.function_definitions[mangleSymbol(symbol)].write(
+        this.emitStatement(statement),
+      );
     }
 
-    this.outputFunctionDef(symbol, "}");
+    this.out.function_definitions[mangleSymbol(symbol)]
+      .popIndent()
+      .writeLine("}");
   }
 
-  cgStatement(statement: Statement): string {
+  emitStatement(statement: Statement): OutputWriter {
+    const writer = new OutputWriter();
     switch (statement.variant) {
       case "Return":
         if (!statement.expr) {
-          return "return;";
+          writer.writeLine("return;");
+          return writer;
         }
-        return "return " + this.cgExpr(statement.expr) + ";";
+        writer.writeLine("return " + this.emitExpr(statement.expr).get() + ";");
+        return writer;
 
       case "VariableDefinition":
         if (
@@ -149,18 +169,23 @@ class CodeGenerator {
         ) {
           throw new ImpossibleSituation();
         }
-        const ret = generateUsageCode(statement.symbol.type);
-        return `${ret} ${statement.symbol.name} = ${this.cgExpr(statement.expr)};`;
+        const ret = generateUsageCode(statement.symbol.type, this.program);
+        writer.writeLine(
+          `${ret} ${statement.symbol.name} = ${this.emitExpr(statement.expr).get()};`,
+        );
+        return writer;
 
       case "Expr":
-        return this.cgExpr(statement.expr) + ";";
+        writer.writeLine(this.emitExpr(statement.expr).get() + ";");
+        return writer;
 
-      default:
-        throw new InternalError(`Unknown statement type ${statement.variant}`);
+      // default:
+      //   throw new InternalError(`Unknown statement type ${statement.variant}`);
     }
   }
 
-  cgExpr(expr: Expression): string {
+  emitExpr(expr: Expression): OutputWriter {
+    const writer = new OutputWriter();
     switch (expr.variant) {
       case "ExprCall":
         const args = [];
@@ -172,36 +197,52 @@ class CodeGenerator {
           }
         }
         if (expr.thisPointerExpr) {
-          args.push("&" + this.cgExpr(expr.thisPointerExpr));
+          args.push("&" + this.emitExpr(expr.thisPointerExpr).get());
         }
         for (const arg of expr.args) {
-          args.push(this.cgExpr(arg));
+          args.push(this.emitExpr(arg).get());
         }
-        return this.cgExpr(expr.expr) + "(" + args.join(", ") + ")";
+        writer.write(
+          this.emitExpr(expr.expr).get() + "(" + args.join(", ") + ")",
+        );
+        return writer;
+
       case "Object":
-        let s = `((${generateUsageCode(expr.type)}) { `;
+        writer
+          .writeLine(`((${generateUsageCode(expr.type, this.program)}) { `)
+          .pushIndent();
         for (const [symbol, memberExpr] of expr.members) {
-          s += `.${symbol.name} = ${this.cgExpr(memberExpr)}, `;
+          writer.writeLine(
+            `.${symbol.name} = ${this.emitExpr(memberExpr).get()}, `,
+          );
         }
-        s += " })";
-        return s;
+        writer.popIndent().write(" })");
+        return writer;
+
       case "MemberAccess":
-        return this.cgExpr(expr.expr) + "." + expr.memberName;
+        writer.write(this.emitExpr(expr.expr) + "." + expr.memberName);
+        return writer;
+
       case "SymbolValue":
         if (expr.symbol.variant === "Function") {
-          return mangleSymbol(expr.symbol);
+          writer.write(mangleSymbol(expr.symbol));
+          return writer;
         } else if (expr.symbol.variant !== "Constant") {
-          return expr.symbol.name;
+          writer.write(expr.symbol.name);
+          return writer;
         } else {
           throw new ImpossibleSituation();
         }
+
       case "Constant":
         switch (typeof expr.constantSymbol.value) {
           case "number":
           case "boolean":
-            return expr.constantSymbol.value.toString();
+            writer.write(expr.constantSymbol.value.toString());
+            return writer;
           case "string":
-            return expr.constantSymbol.value;
+            writer.write(expr.constantSymbol.value);
+            return writer;
           default:
             throw new InternalError(
               `Unknown constant type ${typeof expr.constantSymbol.value}`,
@@ -227,9 +268,11 @@ class CodeGenerator {
   //     }
   //   }
 
-  generateDatatypeUse(datatype: Datatype) {
-    this.output["type_declarations"][mangleDatatype(datatype)] =
-      generateDefinitionCCode(datatype);
+  generateDatatypeUse(datatype: DatatypeSymbol) {
+    this.init(mangleSymbol(datatype), this.out.type_declarations);
+    this.out.type_declarations[mangleSymbol(datatype)].write(
+      generateDefinitionCCode(datatype, this.program),
+    );
   }
 
   //   visitInlineCStatement(ctx: any) {
@@ -405,58 +448,58 @@ class CodeGenerator {
   //         const objattr: ObjAttribute = attr;
   //         ctx.code += `.
 
-  visitNamedObjectExpr(ctx) {
-    throw new InternalError("Not implemented");
-    // self.visitChildren(ctx)
-    // structtype = self.getNodeDatatype(ctx)
-    // if not structtype.isStruct():
-    //     raise InternalError("StructDatatype is not of type struct")
+  // visitNamedObjectExpr(ctx) {
+  //   throw new InternalError("Not implemented");
+  //   // self.visitChildren(ctx)
+  //   // structtype = self.getNodeDatatype(ctx)
+  //   // if not structtype.isStruct():
+  //   //     raise InternalError("StructDatatype is not of type struct")
 
-    // ctx.code = f"({structtype.generateUsageCode()}){{ "  # type: ignore
-    // fields = getStructFields(structtype)
-    // for i in range(len(fields)):
-    //     expr = ctx.objectattribute()[i].expr()
-    //     ctx.code += f".{fields[i].name} = {implicitConversion(self.getNodeDatatype(expr), fields[i].type, expr.code, self.getLocation(ctx))}, "  # type: ignore
-    // ctx.code += " }"  # type: ignore
-  }
+  //   // ctx.code = f"({structtype.generateUsageCode()}){{ "  # type: ignore
+  //   // fields = getStructFields(structtype)
+  //   // for i in range(len(fields)):
+  //   //     expr = ctx.objectattribute()[i].expr()
+  //   //     ctx.code += f".{fields[i].name} = {implicitConversion(self.getNodeDatatype(expr), fields[i].type, expr.code, self.getLocation(ctx))}, "  # type: ignore
+  //   // ctx.code += " }"  # type: ignore
+  // }
 
-  visitExprMemberAccess(self, ctx) {
-    throw new InternalError("Not implemented");
+  // visitExprMemberAccess(self, ctx) {
+  //   throw new InternalError("Not implemented");
 
-    // self.visitChildren(ctx)
+  //   // self.visitChildren(ctx)
 
-    // symbol = self.getNodeSymbol(ctx.expr())
-    // if symbol.type.isStruct():
-    //     if self.hasNodeMemberAccessFieldIndex(ctx):
-    //         fieldIndex = self.getNodeMemberAccessFieldIndex(ctx)
-    //         ctx.code = (  # type: ignore
-    //             f"{symbol.name}.{getStructFields(symbol.type)[fieldIndex].name}"
-    //         )
-    //         # symbol.type.genericsDict = symbol.type.genericsDict
-    //         ctx.structSymbol = symbol  # type: ignore
+  //   // symbol = self.getNodeSymbol(ctx.expr())
+  //   // if symbol.type.isStruct():
+  //   //     if self.hasNodeMemberAccessFieldIndex(ctx):
+  //   //         fieldIndex = self.getNodeMemberAccessFieldIndex(ctx)
+  //   //         ctx.code = (  # type: ignore
+  //   //             f"{symbol.name}.{getStructFields(symbol.type)[fieldIndex].name}"
+  //   //         )
+  //   //         # symbol.type.genericsDict = symbol.type.genericsDict
+  //   //         ctx.structSymbol = symbol  # type: ignore
 
-    //     elif self.hasNodeMemberAccessFunctionSymbol(ctx):
-    //         memberFuncSymbol = self.getNodeMemberAccessFunctionSymbol(ctx)
-    //         # memberFuncSymbol.parentNamespace = Namespace(
-    //         #     symbol.type.getDisplayName()
-    //         # )
-    //         # memberFuncSymbol.type.genericsDict = symbol.type.genericsDict
-    //         ctx.code = f"{memberFuncSymbol.getMangledName()}"  # type: ignore
-    //         ctx.structSymbol = symbol  # type: ignore
-    //     else:
-    //         raise InternalError("Neither field nor function")
-    // elif symbol.type.isPointer():
-    //     if self.hasNodeMemberAccessFieldIndex(ctx) and symbol.type.pointee:
-    //         fieldIndex = self.getNodeMemberAccessFieldIndex(ctx)
-    //         ctx.code = f"{symbol.name}->{getStructFields(symbol.type.pointee)[fieldIndex].name}"  # type: ignore
-    //         # ctx.structSymbol = symbol
-    //     else:
-    //         raise InternalError("Cannot call function on pointer")
-    // else:
-    //     raise InternalError(
-    //         f"Member access type {symbol.type.getDisplayName()} is not structural"
-    //     )
-  }
+  //   //     elif self.hasNodeMemberAccessFunctionSymbol(ctx):
+  //   //         memberFuncSymbol = self.getNodeMemberAccessFunctionSymbol(ctx)
+  //   //         # memberFuncSymbol.parentNamespace = Namespace(
+  //   //         #     symbol.type.getDisplayName()
+  //   //         # )
+  //   //         # memberFuncSymbol.type.genericsDict = symbol.type.genericsDict
+  //   //         ctx.code = f"{memberFuncSymbol.getMangledName()}"  # type: ignore
+  //   //         ctx.structSymbol = symbol  # type: ignore
+  //   //     else:
+  //   //         raise InternalError("Neither field nor function")
+  //   // elif symbol.type.isPointer():
+  //   //     if self.hasNodeMemberAccessFieldIndex(ctx) and symbol.type.pointee:
+  //   //         fieldIndex = self.getNodeMemberAccessFieldIndex(ctx)
+  //   //         ctx.code = f"{symbol.name}->{getStructFields(symbol.type.pointee)[fieldIndex].name}"  # type: ignore
+  //   //         # ctx.structSymbol = symbol
+  //   //     else:
+  //   //         raise InternalError("Cannot call function on pointer")
+  //   // else:
+  //   //     raise InternalError(
+  //   //         f"Member access type {symbol.type.getDisplayName()} is not structural"
+  //   //     )
+  // }
 }
 
 export function generateCode(program: Program, outfile: string) {
