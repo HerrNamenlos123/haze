@@ -89,12 +89,14 @@ class CodeGenerator {
     this.includeHeader("stdint.h");
 
     for (const symbol of Object.values(this.program.concreteFunctions)) {
-      this.generateFuncUse(symbol);
+      if (symbol.functionType === FunctionType.Internal) {
+        this.generateFuncUse(symbol);
+      }
     }
 
-    // for (const dt of Object.values(this.program.con)) {
-    //   this.generateDatatypeUse(dt);
-    // }
+    for (const dt of Object.values(this.program.concreteDatatypes)) {
+      this.generateDatatypeUse(dt.type);
+    }
   }
 
   generateFuncUse(symbol: FunctionSymbol) {
@@ -132,21 +134,30 @@ class CodeGenerator {
   }
 
   cgStatement(statement: Statement): string {
-    // if (statement instanceof ReturnStatement) {
-    //   if (!statement.expr) {
-    //     return "return;";
-    //   }
-    //   return "return " + this.cgExpr(statement.expr) + ";";
-    // } else if (statement instanceof VariableDefinitionStatement) {
-    //   if (!statement.expr || !statement.symbol.type) {
-    //     throw new ImpossibleSituation();
-    //   }
-    //   const ret = statement.symbol.type.generateUsageCode();
-    //   return `${ret} ${statement.symbol.name} = ${this.cgExpr(statement.expr)};`;
-    // } else if (statement instanceof ExprStatement) {
-    //   return this.cgExpr(statement.expr) + ";";
-    // }
-    throw new InternalError(`Unknown statement type ${typeof statement}`);
+    switch (statement.variant) {
+      case "Return":
+        if (!statement.expr) {
+          return "return;";
+        }
+        return "return " + this.cgExpr(statement.expr) + ";";
+
+      case "VariableDefinition":
+        if (
+          !statement.expr ||
+          !statement.symbol.type ||
+          statement.symbol.variant !== "Variable"
+        ) {
+          throw new ImpossibleSituation();
+        }
+        const ret = generateUsageCode(statement.symbol.type);
+        return `${ret} ${statement.symbol.name} = ${this.cgExpr(statement.expr)};`;
+
+      case "Expr":
+        return this.cgExpr(statement.expr) + ";";
+
+      default:
+        throw new InternalError(`Unknown statement type ${statement.variant}`);
+    }
   }
 
   cgExpr(expr: Expression): string {
@@ -197,7 +208,7 @@ class CodeGenerator {
             );
         }
       default:
-        throw new InternalError(`Unknown expression type ${typeof expr}`);
+        throw new InternalError(`Unknown expression type ${expr.variant}`);
     }
   }
 

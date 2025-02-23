@@ -166,15 +166,11 @@ export class SymbolCollector extends HazeVisitor<any> {
     parentScope.defineSymbol(symbol, this.program.getLoc(ctx));
     this.program.ctxToSymbolMap.set(ctx, symbol);
 
-    if (symbol.functionType !== FunctionType.Internal) {
-      this.program.externFunctions[mangleSymbol(symbol)] = symbol;
-    } else {
-      if (
-        !isSymbolGeneric(symbol) &&
-        (!parentSymbol || Object.keys(parentSymbol.type.generics).length === 0)
-      ) {
-        this.program.concreteFunctions[mangleSymbol(symbol)] = symbol;
-      }
+    if (
+      !isSymbolGeneric(symbol) &&
+      (!parentSymbol || Object.keys(parentSymbol.type.generics).length === 0)
+    ) {
+      this.program.concreteFunctions[mangleSymbol(symbol)] = symbol;
     }
 
     this.program.popScope();

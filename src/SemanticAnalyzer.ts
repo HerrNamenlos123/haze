@@ -234,11 +234,11 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
       const returnedTypes: Record<string, Datatype> = {};
       if (!(ctx instanceof FuncdeclContext)) {
         this.visit(ctx.funcbody()).forEach((statement: Statement) => {
-          //   symbol.scope.statements.push(statement);
-          //   if (statement.variant === "Return" && statement.expr) {
-          //     returnedTypes[serializeDatatype(statement.expr.type)] =
-          //       statement.expr.type;
-          //   }
+          symbol.scope.statements.push(statement);
+          if (statement.variant === "Return" && statement.expr) {
+            returnedTypes[serializeDatatype(statement.expr.type)] =
+              statement.expr.type;
+          }
         });
       }
 

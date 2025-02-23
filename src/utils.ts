@@ -14,7 +14,7 @@ import type { CommonDatatypeContext } from "./parser/HazeParser";
 import type HazeVisitor from "./parser/HazeVisitor";
 import type { Program } from "./Program";
 import { Scope } from "./Scope";
-import type { DatatypeSymbol } from "./Symbol";
+import { isSymbolGeneric } from "./Symbol";
 
 export function defineGenericsInScope(generics: Generics, scope: Scope) {
   for (const [name, tp] of generics) {
@@ -143,6 +143,9 @@ export const visitCommonDatatypeImpl = (
 ): Datatype => {
   const name = ctx.ID().getText();
   const symbol = program.currentScope.lookupSymbol(name, program.getLoc(ctx));
+  if (symbol.variant !== "Datatype") {
+    throw new ImpossibleSituation();
+  }
 
   const genericsProvided: Datatype[] = ctx
     .datatype_list()
@@ -155,15 +158,15 @@ export const visitCommonDatatypeImpl = (
           program.getLoc(ctx),
         );
       }
+      if (!isSymbolGeneric(symbol)) {
+        program.concreteDatatypes[name] = symbol;
+      }
       return symbol.type;
 
     case "Generic":
       return symbol.type;
 
     case "Struct":
-      if (symbol.variant !== "Datatype") {
-        throw new ImpossibleSituation();
-      }
       const structtype: StructDatatype = {
         variant: "Struct",
         name: symbol.name,
@@ -181,6 +184,9 @@ export const visitCommonDatatypeImpl = (
       for (const i of symbol.type.generics.keys()) {
         structtype.generics.set(i, genericsProvided[index]);
         index++;
+      }
+      if (!isSymbolGeneric(symbol)) {
+        program.concreteDatatypes[name] = symbol;
       }
       return structtype;
 

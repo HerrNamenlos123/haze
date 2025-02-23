@@ -373,7 +373,7 @@ export function generateDefinitionCCode(datatype: Datatype): string {
       for (const memberSymbol of datatype.members) {
         out += `    ${generateUsageCode(memberSymbol.type)} ${memberSymbol.name};`;
       }
-      out += `}} ${generateUsageCode(datatype)};`;
+      out += `} ${generateUsageCode(datatype)};`;
       return out;
 
     case "Function":

@@ -11,7 +11,6 @@ import {
 import {
   Primitive,
   primitiveVariantToString,
-  serializeDatatype,
   type Datatype,
   type PrimitiveDatatype,
   type StructDatatype,
@@ -21,7 +20,8 @@ import { isDeeplyEqual } from "./deep-equal";
 export class Program {
   globalScope: Scope;
   concreteFunctions: { [name: string]: FunctionSymbol } = {};
-  externFunctions: { [name: string]: FunctionSymbol } = {};
+  concreteDatatypes: { [name: string]: DatatypeSymbol } = {};
+  // externFunctions: { [name: string]: FunctionSymbol } = {};
   filename: string;
   scopeStack: Scope[];
 
@@ -169,8 +169,8 @@ export class Program {
       console.log(serializeSymbol(symbol));
     }
 
-    console.log("\nExtern Functions:");
-    for (const [name, symbol] of Object.entries(this.externFunctions)) {
+    console.log("\nConcrete Datatypes:");
+    for (const [name, symbol] of Object.entries(this.concreteDatatypes)) {
       console.log(serializeSymbol(symbol));
     }
   }
