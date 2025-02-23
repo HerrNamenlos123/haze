@@ -29,7 +29,7 @@ a() {
     .data: 0,
     .length: 0,
   };
-  s.test(s);
+  // s.test(s);
 }
 
 b() {
@@ -37,7 +37,7 @@ b() {
     .data: 0,
     .length: 0,
   };
-  s.test(s);
+  // s.test(s);
 }
 
 c() {
@@ -45,7 +45,7 @@ c() {
     .data: 0,
     .length: 0,
   };
-  s.test(s);
+  // s.test(s);
 }
 
 d() {
@@ -53,7 +53,7 @@ d() {
     .data: 0,
     .length: 0,
   };
-  s.test(s);
+  // s.test(s);
 }
 
 struct MemoryBuffer {
@@ -87,11 +87,9 @@ struct String {
   }
 }
 
-extern "C" {
-  printf(str: stringview);
-  malloc(n: i32, test: String): u64;
+declare "C" printf(str: stringview);
+declare "C" malloc(n: i32, test: String): u64;
   // free(ptr);
-}
 
 // struct Test {
 //   test: i32;
@@ -108,9 +106,9 @@ x(fn: () => none): () => none {
 }
 
 test5(s: stringview, num: Array<u32>): Array<i32> {
-  return String {
-    .test1: 2,
-    .other: "Test",
+  return Array<i32> {
+    .data: 2,
+    .length: 64,
   };
 }
 
@@ -118,6 +116,6 @@ main(): i32 {
   printf("Hello world!\n");
   const a = test5("test", 0);
   // a.test(a);
-  return a.toNumber();
+  // return a.toNumber();
   return 0;
 }

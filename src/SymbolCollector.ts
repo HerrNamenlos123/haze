@@ -1,8 +1,7 @@
 import {
   CommonDatatypeContext,
-  ExternblockContext,
-  ExternfuncdefContext,
   FuncContext,
+  FuncdeclContext,
   FunctionDatatypeContext,
   NamedfuncContext,
   StructDeclContext,
@@ -35,13 +34,11 @@ import { visitCommonDatatypeImpl } from "./utils";
 
 export class SymbolCollector extends HazeVisitor<any> {
   private program: Program;
-  private currentFunctionType: FunctionType | undefined;
   private structStack: DatatypeSymbol<StructDatatype>[];
 
   constructor(program: Program) {
     super();
     this.program = program;
-    this.currentFunctionType = undefined;
     this.structStack = [];
   }
 
@@ -66,36 +63,27 @@ export class SymbolCollector extends HazeVisitor<any> {
     return type;
   };
 
-  visitExternblock = (ctx: ExternblockContext): void => {
+  visitFuncdecl = (ctx: FuncdeclContext): void => {
+    if (!ctx.externlang()) {
+      throw new CompilerError(
+        "Currently function declarations need an extern language",
+        this.program.getLoc(ctx),
+      );
+    }
+
     const lang = ctx.externlang().getText()[1];
+    let functype = FunctionType.Internal;
     if (lang === "C") {
-      if (this.currentFunctionType) {
-        throw new CompilerError(
-          "Extern blocks cannot be nested",
-          this.program.getLoc(ctx),
-        );
-      }
-      this.currentFunctionType = FunctionType.External_C;
-      this.visitChildren(ctx);
-      this.currentFunctionType = undefined;
+      functype = FunctionType.External_C;
     } else {
       throw new CompilerError(
         `Extern Language '${lang}' is not supported.`,
         this.program.getLoc(ctx),
       );
     }
-  };
-
-  visitExternfuncdef = (ctx: ExternfuncdefContext): void => {
-    if (!this.currentFunctionType) {
-      throw new ImpossibleSituation();
-    }
 
     const signature = ctx.ID_list().map((n) => n.getText());
-    if (
-      signature.length > 1 &&
-      this.currentFunctionType === FunctionType.External_C
-    ) {
+    if (signature.length > 1 && functype === FunctionType.External_C) {
       throw new CompilerError(
         "Extern C functions cannot be namespaced",
         this.program.getLoc(ctx),
@@ -107,29 +95,34 @@ export class SymbolCollector extends HazeVisitor<any> {
         "Namespacing for external function is not implemented yet",
       );
     }
+
+    this.implFunc(ctx, signature[0], functype);
   };
 
   private implFunc(
-    ctx: FuncContext | NamedfuncContext | StructMethodContext,
+    ctx: FuncContext | NamedfuncContext | StructMethodContext | FuncdeclContext,
     name: string,
+    functype: FunctionType = FunctionType.Internal,
   ): FunctionSymbol {
     const parentScope = this.program.currentScope;
     const scope = this.program.pushScope(
       new Scope(this.program.getLoc(ctx), this.program.currentScope),
     );
 
-    if (this.currentFunctionType) {
-      throw new ImpossibleSituation();
-    }
-
     let returntype: Datatype = { variant: "Deferred" };
     if (ctx.datatype()) {
       returntype = this.visit(ctx.datatype());
-    } else {
-      if (ctx.funcbody().expr()) {
+    }
+    if (!(ctx instanceof FuncdeclContext)) {
+      if (returntype.variant === "Deferred" && ctx.funcbody().expr()) {
         const expr = this.visit(ctx.funcbody().expr());
         returntype = expr.type;
       }
+    } else {
+      returntype = this.program.globalScope.lookupSymbol(
+        "none",
+        this.program.getLoc(ctx),
+      ).type;
     }
 
     const parentSymbol = this.structStack[this.structStack.length - 1];
@@ -162,7 +155,7 @@ export class SymbolCollector extends HazeVisitor<any> {
     const symbol: FunctionSymbol = {
       variant: "Function",
       name: name,
-      functionType: FunctionType.Internal,
+      functionType: functype,
       type: type,
       isConstructor: isConstructor,
       thisPointer: thisPointerType,

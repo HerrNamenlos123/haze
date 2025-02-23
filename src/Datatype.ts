@@ -4,11 +4,13 @@ import {
   UnreachableCode,
   type Location,
 } from "./Errors";
+import type { Scope } from "./Scope";
 import {
   mangleDatatype,
   type FunctionSymbol,
   type VariableSymbol,
 } from "./Symbol";
+import { resolveGenerics } from "./utils";
 
 export enum Primitive {
   none = 1,
@@ -361,34 +363,27 @@ export function serializeDatatype(datatype: Datatype): string {
 //   throw new InternalError(`Invalid variant ${this._variant}`);
 // }
 
-// function generateDefinitionCCode(): string {
-//   switch (this._variant) {
-//     case Datatype.Variants.Primitive:
-//       return "";
+export function generateDefinitionCCode(datatype: Datatype): string {
+  switch (datatype.variant) {
+    case "Primitive":
+      return "";
 
-//     case Datatype.Variants.Struct:
-//       const out = `typedef struct __${this.generateUsageCode()}__ {`;
-//       for (const memberSymbol of this.structSymbolTable().symbols) {
-//         if (memberSymbol instanceof VariableSymbol) {
-//           out += `    ${memberSymbol.type.generateUsageCode()} ${memberSymbol.name};`;
-//         }
-//       }
-//       out += `}} ${this.generateUsageCode()};`;
-//       return out;
+    case "Struct":
+      let out = `typedef struct __${generateUsageCode(datatype)}__ {`;
+      for (const memberSymbol of datatype.members) {
+        out += `    ${generateUsageCode(memberSymbol.type)} ${memberSymbol.name};`;
+      }
+      out += `}} ${generateUsageCode(datatype)};`;
+      return out;
 
-//     case Datatype.Variants.Function:
-//       if (!this._functionParameters || !this._functionReturnType) {
-//         throw new InternalError(
-//           "Function is missing functionReturnType or functionParameters",
-//         );
-//       }
-//       const params = this._functionParameters.map(([name, tp]) =>
-//         tp.generateUsageCode(),
-//       );
-//       return `typedef ${this._functionReturnType.generateUsageCode()} (*${this.generateUsageCode()})(${params.join(", ")});`;
-//   }
-//   throw new InternalError(`Invalid variant ${this._variant}`);
-// }
+    case "Function":
+      const params = datatype.functionParameters.map(([name, tp]) =>
+        generateUsageCode(datatype),
+      );
+      return `typedef ${generateUsageCode(datatype.functionReturnType)} (*${generateUsageCode(datatype)})(${params.join(", ")});`;
+  }
+  throw new InternalError(`Invalid variant ${datatype.variant}`);
+}
 
 export function generateUsageCode(dt: Datatype): string {
   switch (dt.variant) {
@@ -492,17 +487,26 @@ export function isSame(a: Datatype, b: Datatype): boolean {
 }
 
 export function implicitConversion(
-  from: Datatype,
-  to: Datatype,
+  _from: Datatype,
+  _to: Datatype,
   expr: string,
+  scope: Scope,
   loc: Location,
 ): string {
+  const from = resolveGenerics(_from, scope, loc);
+  const to = resolveGenerics(_to, scope, loc);
+
+  if (isSame(from, to)) {
+    return expr;
+  }
+
   if (from.variant === "Primitive" && to.variant === "Primitive") {
     if (isInteger(from) && isInteger(to)) {
       return `(${generateUsageCode(to)})(${expr})`;
     }
-    throw new InternalError(
+    throw new CompilerError(
       `No implicit conversion from ${serializeDatatype(from)} to ${serializeDatatype(to)}`,
+      loc,
     );
   }
 
@@ -514,9 +518,6 @@ export function implicitConversion(
   // }
 
   if (from.variant === "Function" && to.variant === "Function") {
-    if (!from.functionReturnType || !to.functionReturnType) {
-      throw new InternalError("bullshit happening");
-    }
     if (isSame(from.functionReturnType, to.functionReturnType)) {
       if (from.functionParameters.length === to.functionParameters.length) {
         let equal = true;

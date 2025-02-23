@@ -14,6 +14,7 @@ import { ParserRuleContext, ParseTree, RuleNode, TerminalNode } from "antlr4";
 import { ProgContext } from "./parser/HazeParser";
 import { generateGraphviz as generateGraph } from "./graph";
 import { performSemanticAnalysis } from "./SemanticAnalyzer";
+import { generateCode } from "./CodeGenerator";
 
 // import { Parser } from "./Parser";
 // import { CompilationDatabase } from "./CompilationDatabase";
@@ -51,6 +52,8 @@ export class ModuleCompiler {
       performSemanticAnalysis(program);
       program.print();
       // console.log(JSON.stringify(program, null, 2));
+
+      generateCode(program, `build/${this.filename}.c`);
 
       // Bun.write(
       //   path.join("build", this.filename + ".mmd"),

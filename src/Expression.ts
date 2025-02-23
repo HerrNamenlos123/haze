@@ -1,36 +1,55 @@
 import type { ParserRuleContext } from "antlr4";
 import type { Datatype } from "./Datatype";
-import type { ConstantSymbol, FunctionSymbol, VariableSymbol } from "./Symbol";
+import type {
+  ConstantSymbol,
+  FunctionSymbol,
+  Symbol,
+  VariableSymbol,
+} from "./Symbol";
 
-export type Expression = {
+type BaseExpression = {
   type: Datatype;
   ctx: ParserRuleContext;
 };
 
-export type ConstantExpression = Expression & {
+export type ConstantExpression = BaseExpression & {
+  variant: "Constant";
   constantSymbol: ConstantSymbol;
 };
 
-export type ObjectExpression = Expression & {
+export type ObjectExpression = BaseExpression & {
+  variant: "Object";
   members: Array<[VariableSymbol, Expression]>;
 };
 
-export type SymbolValueExpression = Expression & {
+export type SymbolValueExpression = BaseExpression & {
+  variant: "SymbolValue";
   symbol: Symbol;
 };
 
-export type MemberAccessExpression = Expression & {
+export type MemberAccessExpression = BaseExpression & {
+  variant: "MemberAccess";
   expr: Expression;
   memberName: string;
 };
 
-export type MethodAccessExpression = Expression & {
+export type MethodAccessExpression = BaseExpression & {
+  variant: "MethodAccess";
   expr: Expression;
   method: FunctionSymbol;
 };
 
-export type ExprCallExpression = Expression & {
+export type ExprCallExpression = BaseExpression & {
+  variant: "ExprCall";
   expr: Expression;
   thisPointerExpr?: Expression;
   args: Expression[];
 };
+
+export type Expression =
+  | ConstantExpression
+  | ObjectExpression
+  | SymbolValueExpression
+  | MemberAccessExpression
+  | MethodAccessExpression
+  | ExprCallExpression;

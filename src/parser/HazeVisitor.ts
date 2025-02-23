@@ -10,8 +10,7 @@ import { FuncbodyContext } from "./HazeParser.js";
 import { BodyContext } from "./HazeParser.js";
 import { ParamContext } from "./HazeParser.js";
 import { ParamsContext } from "./HazeParser.js";
-import { ExternfuncdefContext } from "./HazeParser.js";
-import { ExternblockContext } from "./HazeParser.js";
+import { FuncdeclContext } from "./HazeParser.js";
 import { ExternlangContext } from "./HazeParser.js";
 import { IfexprContext } from "./HazeParser.js";
 import { ElseifexprContext } from "./HazeParser.js";
@@ -102,17 +101,11 @@ export default class HazeVisitor<Result> extends ParseTreeVisitor<Result> {
 	 */
 	visitParams?: (ctx: ParamsContext) => Result;
 	/**
-	 * Visit a parse tree produced by `HazeParser.externfuncdef`.
+	 * Visit a parse tree produced by `HazeParser.funcdecl`.
 	 * @param ctx the parse tree
 	 * @return the visitor result
 	 */
-	visitExternfuncdef?: (ctx: ExternfuncdefContext) => Result;
-	/**
-	 * Visit a parse tree produced by `HazeParser.externblock`.
-	 * @param ctx the parse tree
-	 * @return the visitor result
-	 */
-	visitExternblock?: (ctx: ExternblockContext) => Result;
+	visitFuncdecl?: (ctx: FuncdeclContext) => Result;
 	/**
 	 * Visit a parse tree produced by `HazeParser.externlang`.
 	 * @param ctx the parse tree

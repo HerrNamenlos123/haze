@@ -3,22 +3,26 @@ import type { Symbol } from "./Symbol";
 import type { Datatype } from "./Datatype";
 import type { Expression } from "./Expression";
 
-export type Statement = {
-  ctx: ParserRuleContext;
-};
-
-export type VariableDefinitionStatement = Statement & {
+export type VariableDefinitionStatement = {
   variant: "VariableDefinition";
   symbol: Symbol;
+  ctx: ParserRuleContext;
   expr: Expression;
 };
 
-export type ReturnStatement = Statement & {
+export type ReturnStatement = {
   variant: "Return";
+  ctx: ParserRuleContext;
   expr?: Expression;
 };
 
-export type ExprStatement = Statement & {
+export type ExprStatement = {
   variant: "Expr";
+  ctx: ParserRuleContext;
   expr: Expression;
 };
+
+export type Statement =
+  | VariableDefinitionStatement
+  | ReturnStatement
+  | ExprStatement;

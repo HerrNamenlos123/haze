@@ -22,7 +22,7 @@ import {
   type VariableSymbol,
 } from "./Symbol";
 import {
-  ExternfuncdefContext,
+  FuncdeclContext,
   type ArgsContext,
   type BinaryExprContext,
   type BooleanConstantContext,
@@ -43,7 +43,11 @@ import {
   type StructMethodContext,
   type VariableDefinitionContext,
 } from "./parser/HazeParser";
-import { resolveGenerics, visitCommonDatatypeImpl } from "./utils";
+import {
+  defineGenericsInScope,
+  resolveGenerics,
+  visitCommonDatatypeImpl,
+} from "./utils";
 import type { ParserRuleContext } from "antlr4";
 import type {
   ConstantExpression,
@@ -102,6 +106,8 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
 
     return {
       type: symbol.type,
+      variant: "SymbolValue",
+      symbol: symbol,
       ctx: ctx,
     };
   };
@@ -135,11 +141,14 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
 
     return {
       type: expr.type.functionReturnType,
+      variant: "ExprCall",
+      args: args,
+      expr: expr,
       ctx: ctx,
     };
   };
 
-  implFunc(ctx: FuncContext | NamedfuncContext | ExternfuncdefContext): void {
+  implFunc(ctx: FuncContext | NamedfuncContext | FuncdeclContext): void {
     let symbol = this.program.ctxToSymbolMap.get(ctx);
     if (symbol?.variant !== "Function") {
       throw new ImpossibleSituation();
@@ -210,16 +219,28 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
       this.program.pushScope(symbol.scope);
       this.functionStack.push(symbol);
 
+      for (const [name, tp] of symbol.type.functionParameters) {
+        symbol.scope.defineSymbol(
+          {
+            variant: "Variable",
+            name: name,
+            type: tp,
+            variableType: VariableType.Parameter,
+          },
+          loc,
+        );
+      }
+
       const returnedTypes: Record<string, Datatype> = {};
-      // if (!(ctx instanceof ExternfuncdefContext)) {
-      //   this.visit(ctx.funcbody()).forEach((statement: Statement) => {
-      //     symbol.scope.statements.push(statement);
-      //     // if (statement instanceof ReturnStatement && statement.expr) {
-      //     //   returnedTypes[statement.expr.type.getDisplayName()] =
-      //     //     statement.expr.type;
-      //     // }
-      //   });
-      // }
+      if (!(ctx instanceof FuncdeclContext)) {
+        this.visit(ctx.funcbody()).forEach((statement: Statement) => {
+          //   symbol.scope.statements.push(statement);
+          //   if (statement.variant === "Return" && statement.expr) {
+          //     returnedTypes[serializeDatatype(statement.expr.type)] =
+          //       statement.expr.type;
+          //   }
+        });
+      }
 
       // addedSymbols.forEach((sym) => {
       //   symbol.scope?.purgeSymbol(sym);
@@ -240,10 +261,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
           returntype = this.program.currentScope.lookupSymbol("none", loc).type;
         }
 
-        // symbol.type = Datatype.createFunctionType(
-        //   symbol.type.functionParameters(),
-        //   returntype,
-        // );
+        symbol.type.functionReturnType = returntype;
       }
 
       this.functionStack.pop();
@@ -263,10 +281,6 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
     this.implFunc(ctx);
   };
 
-  visitExternfuncdef = (ctx: ExternfuncdefContext): void => {
-    this.implFunc(ctx);
-  };
-
   visitFuncbody = (ctx: FuncbodyContext): Statement[] => {
     if (ctx.expr()) {
       const expr: Expression = this.visit(ctx.expr());
@@ -275,6 +289,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
         this.functionStack[this.functionStack.length - 1].type
           .functionReturnType,
         "",
+        this.program.currentScope,
         this.program.getLoc(ctx),
       );
       return [{ variant: "Return", ctx: ctx, expr: expr } as ReturnStatement];
@@ -509,6 +524,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
   visitConstantExpr = (ctx: ConstantExprContext): ConstantExpression => {
     const symbol: ConstantSymbol = this.visit(ctx.constant());
     return {
+      variant: "Constant",
       constantSymbol: symbol,
       ctx: ctx,
       type: symbol.type,
@@ -541,6 +557,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
         this.functionStack[this.functionStack.length - 1].type
           .functionReturnType,
         "",
+        this.program.currentScope,
         this.program.getLoc(ctx),
       );
       return {
@@ -555,6 +572,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
         this.functionStack[this.functionStack.length - 1].type
           .functionReturnType,
         "",
+        this.program.currentScope,
         this.program.getLoc(ctx),
       );
       return {
@@ -665,6 +683,12 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
       );
     }
 
+    const scope = new Scope(
+      this.program.getLoc(ctx),
+      this.program.currentScope,
+    );
+    defineGenericsInScope(structtype.generics, scope);
+
     for (const attr of ctx.structmembervalue_list()) {
       const [symbol, expr] = this.visit(attr);
       members.push([symbol, expr]);
@@ -679,15 +703,23 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
         );
       }
 
+      const symType = resolveGenerics(
+        existingSymbol.type,
+        scope,
+        this.program.getLoc(ctx),
+      );
+
       implicitConversion(
         symbol.type,
-        existingSymbol.type,
+        symType,
         "",
+        scope,
         this.program.getLoc(ctx),
       );
     }
 
     return {
+      variant: "Object",
       ctx: ctx,
       members: members,
       type: structtype,
@@ -729,6 +761,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
     if (field) {
       return {
         ctx: ctx,
+        variant: "MemberAccess",
         expr: expr,
         memberName: name,
         type: field.type,
@@ -785,8 +818,9 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
 
       return {
         ctx: ctx,
+        variant: "MethodAccess",
         expr: expr,
-        memberName: name,
+        method: method,
         type: method.type,
       };
     } else {

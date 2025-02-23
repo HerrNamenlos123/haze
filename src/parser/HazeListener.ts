@@ -10,8 +10,7 @@ import { FuncbodyContext } from "./HazeParser.js";
 import { BodyContext } from "./HazeParser.js";
 import { ParamContext } from "./HazeParser.js";
 import { ParamsContext } from "./HazeParser.js";
-import { ExternfuncdefContext } from "./HazeParser.js";
-import { ExternblockContext } from "./HazeParser.js";
+import { FuncdeclContext } from "./HazeParser.js";
 import { ExternlangContext } from "./HazeParser.js";
 import { IfexprContext } from "./HazeParser.js";
 import { ElseifexprContext } from "./HazeParser.js";
@@ -127,25 +126,15 @@ export default class HazeListener extends ParseTreeListener {
 	 */
 	exitParams?: (ctx: ParamsContext) => void;
 	/**
-	 * Enter a parse tree produced by `HazeParser.externfuncdef`.
+	 * Enter a parse tree produced by `HazeParser.funcdecl`.
 	 * @param ctx the parse tree
 	 */
-	enterExternfuncdef?: (ctx: ExternfuncdefContext) => void;
+	enterFuncdecl?: (ctx: FuncdeclContext) => void;
 	/**
-	 * Exit a parse tree produced by `HazeParser.externfuncdef`.
+	 * Exit a parse tree produced by `HazeParser.funcdecl`.
 	 * @param ctx the parse tree
 	 */
-	exitExternfuncdef?: (ctx: ExternfuncdefContext) => void;
-	/**
-	 * Enter a parse tree produced by `HazeParser.externblock`.
-	 * @param ctx the parse tree
-	 */
-	enterExternblock?: (ctx: ExternblockContext) => void;
-	/**
-	 * Exit a parse tree produced by `HazeParser.externblock`.
-	 * @param ctx the parse tree
-	 */
-	exitExternblock?: (ctx: ExternblockContext) => void;
+	exitFuncdecl?: (ctx: FuncdeclContext) => void;
 	/**
 	 * Enter a parse tree produced by `HazeParser.externlang`.
 	 * @param ctx the parse tree

@@ -20,7 +20,7 @@ export class Scope {
     if (symbol.variant === "Constant") {
       throw new CompilerError(`Cannot define a constant symbol`, loc);
     }
-    if (this.tryLookupSymbol(symbol.name, loc)) {
+    if (this.tryLookupSymbolHere(symbol.name)) {
       throw new CompilerError(
         `Symbol '${symbol.name}' was already defined in this scope`,
         loc,
@@ -51,6 +51,12 @@ export class Scope {
       return this.parentScope.tryLookupSymbol(name, loc);
     }
     return undefined;
+  }
+
+  tryLookupSymbolHere(name: string): Symbol | undefined {
+    return this.symbols.find(
+      (s) => s.variant !== "Constant" && s.name === name,
+    );
   }
 
   lookupSymbol(name: string, loc: Location): Symbol {

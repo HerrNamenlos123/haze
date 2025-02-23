@@ -1,6 +1,6 @@
 grammar Haze;
 
-prog: (namedfunc | externblock | compilationhint | linkerhint | structdecl)*;
+prog: (namedfunc | funcdecl | compilationhint | linkerhint | structdecl)*;
 
 namedfunc: ID '(' params ')' (':' datatype)? funcbody;
 func: '(' params ')' (':' datatype)? funcbody;
@@ -11,8 +11,7 @@ body: (statement)*;
 param: ID ':' datatype;
 params: (param (',' param)*)?;
 
-externfuncdef: (ID '.')* ID '(' params ')' (':' datatype)? ';';
-externblock: 'extern' externlang '{' (externfuncdef)* '}';
+funcdecl: 'declare' (externlang)? (ID '.')* ID '(' params ')' (':' datatype)? ';';
 externlang: '"C"' | '"C++"';
 
 ifexpr: expr;

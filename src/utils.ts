@@ -16,7 +16,7 @@ import type { Program } from "./Program";
 import { Scope } from "./Scope";
 import type { DatatypeSymbol } from "./Symbol";
 
-function defineGenericsInScope(generics: Generics, scope: Scope) {
+export function defineGenericsInScope(generics: Generics, scope: Scope) {
   for (const [name, tp] of generics) {
     if (tp) {
       scope.defineSymbol(
