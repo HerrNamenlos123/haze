@@ -30,6 +30,8 @@ export type SymbolValueExpression = BaseExpression & {
 export type MemberAccessExpression = BaseExpression & {
   variant: "MemberAccess";
   expr: Expression;
+  thisPointerExpr?: Expression;
+  thisPointerSymbol?: Symbol;
   memberName: string;
 };
 
@@ -41,8 +43,8 @@ export type MethodAccessExpression = BaseExpression & {
 
 export type ExprCallExpression = BaseExpression & {
   variant: "ExprCall";
-  expr: Expression;
   thisPointerExpr?: Expression;
+  expr: Expression;
   args: Expression[];
 };
 

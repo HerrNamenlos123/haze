@@ -18,7 +18,7 @@ import {
 import type { Statement } from "./Statement";
 import type { Expression } from "./Expression";
 import { OutputWriter } from "./OutputWriter";
-import { datatypeSymbolUsed } from "./utils";
+import { datatypeSymbolUsed, resolveGenerics } from "./utils";
 
 const CONTEXT_STRUCT = "_HN4Haze7ContextE";
 
@@ -204,19 +204,59 @@ class CodeGenerator {
           if (expr.expr.type.variant !== "Function") {
             throw new ImpossibleSituation();
           }
+          let scope = this.program.currentScope;
+          if (
+            expr.expr.variant === "MemberAccess" &&
+            expr.expr.thisPointerExpr &&
+            expr.expr.thisPointerSymbol &&
+            expr.expr.thisPointerSymbol.variant === "Function"
+          ) {
+            scope = expr.expr.thisPointerSymbol.scope;
+          }
           const converted = implicitConversion(
             expr.args[i].type,
             expr.expr.type.functionParameters[i][1],
             val,
-            this.program.currentScope,
+            scope,
             this.program.getLoc(expr.args[i].ctx),
             this.program,
           );
           args.push(converted);
         }
-        writer.write(
-          this.emitExpr(expr.expr).get() + "(" + args.join(", ") + ")",
-        );
+        if (
+          expr.expr.variant === "MemberAccess" &&
+          expr.expr.thisPointerExpr &&
+          expr.expr.thisPointerSymbol &&
+          expr.expr.thisPointerSymbol.variant === "Function"
+        ) {
+          const sym: FunctionSymbol = {
+            variant: "Function",
+            ctx: expr.expr.ctx,
+            functionType: expr.expr.thisPointerSymbol.functionType,
+            name: expr.expr.thisPointerSymbol.name,
+            type: resolveGenerics(
+              expr.expr.thisPointerSymbol.type,
+              expr.expr.thisPointerSymbol.scope,
+              this.program.getLoc(expr.expr.thisPointerSymbol.ctx),
+            ) as FunctionDatatype,
+            scope: expr.expr.thisPointerSymbol.scope,
+            isConstructor: expr.expr.thisPointerSymbol.isConstructor,
+            parentSymbol: expr.expr.thisPointerSymbol.parentSymbol,
+            thisPointer: expr.expr.thisPointerSymbol.thisPointer,
+          };
+          writer.write(
+            mangleSymbol(sym) +
+              "(&" +
+              this.emitExpr(expr.expr.thisPointerExpr).get() +
+              ", " +
+              args.join(", ") +
+              ")",
+          );
+        } else {
+          writer.write(
+            this.emitExpr(expr.expr).get() + "(" + args.join(", ") + ")",
+          );
+        }
         return writer;
 
       case "Object":
@@ -232,7 +272,7 @@ class CodeGenerator {
         return writer;
 
       case "MemberAccess":
-        writer.write(this.emitExpr(expr.expr) + "." + expr.memberName);
+        writer.write(this.emitExpr(expr.expr).get() + "." + expr.memberName);
         return writer;
 
       case "SymbolValue":

@@ -15,6 +15,7 @@ import { Program } from "./Program";
 import {
   FunctionType,
   mangleSymbol,
+  serializeSymbol,
   VariableType,
   type ConstantSymbol,
   type DatatypeSymbol,
@@ -736,7 +737,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
 
   visitExprMemberAccess = (
     ctx: ExprMemberAccessContext,
-  ): MemberAccessExpression | MethodAccessExpression => {
+  ): MemberAccessExpression => {
     const expr: Expression = this.visit(ctx.expr());
     if (expr.type.variant !== "Struct") {
       throw new CompilerError(
@@ -801,6 +802,9 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
       // );
 
       // this.setNodeSymbol(method.ctx, { ...method });
+      const symbol = this.program.ctxToSymbolMap.get(
+        method.ctx,
+      ) as FunctionSymbol;
       for (const [name, tp] of expr.type.generics) {
         if (!tp) {
           throw new CompilerError(
@@ -808,9 +812,6 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
             this.program.getLoc(ctx),
           );
         }
-        const symbol = this.program.ctxToSymbolMap.get(
-          method.ctx,
-        ) as FunctionSymbol;
         symbol.scope.defineSymbol(
           {
             variant: "Datatype",
@@ -821,13 +822,15 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
           this.program.getLoc(ctx),
         );
       }
-      // this.implFunc(method.ctx as FuncContext);
+      this.implFunc(method.ctx as FuncContext);
 
       return {
         ctx: ctx,
-        variant: "MethodAccess",
+        variant: "MemberAccess",
+        thisPointerExpr: expr,
+        thisPointerSymbol: symbol,
+        memberName: name,
         expr: expr,
-        method: method,
         type: method.type,
       };
     } else {

@@ -1,4 +1,9 @@
-import { CompilerError, type Location } from "./Errors";
+import {
+  CompilerError,
+  getCallerLocation,
+  InternalError,
+  type Location,
+} from "./Errors";
 import type { Statement } from "./Statement";
 import { mangleSymbol, type Symbol } from "./Symbol";
 

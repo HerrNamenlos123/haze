@@ -51,12 +51,18 @@ export function resolveGenerics(
       const newType: StructDatatype = {
         variant: "Struct",
         name: datatype.name,
-        generics: datatype.generics,
+        generics: new Map(datatype.generics),
         members: [],
         methods: [],
       };
       const tempScope = new Scope(scope.location, scope);
       defineGenericsInScope(datatype.generics, tempScope);
+      for (const [name, tp] of datatype.generics) {
+        const s = tempScope.tryLookupSymbol(name, loc);
+        if (s) {
+          newType.generics.set(name, s.type);
+        }
+      }
       for (const field of datatype.members) {
         newType.members.push({
           name: field.name,
@@ -100,31 +106,34 @@ export function resolveGenerics(
         throw new ImpossibleSituation();
       }
 
-      const retScope = new Scope(loc, scope);
-      const newType2: FunctionDatatype = {
+      const tempFuncScope = new Scope(loc, scope);
+
+      if (datatype.functionReturnType.variant === "Struct") {
+        defineGenericsInScope(
+          datatype.functionReturnType.generics,
+          tempFuncScope,
+        );
+      }
+
+      const newFunctype: FunctionDatatype = {
         variant: "Function",
         functionParameters: [],
         functionReturnType: resolveGenerics(
           datatype.functionReturnType,
-          retScope,
+          tempFuncScope,
           loc,
         ),
       };
-
-      //   defineGenericsInScope(datatype.functionReturnType.generics, retScope);
-      const params: Array<[string, Datatype]> = [];
       for (let i = 0; i < datatype.functionParameters.length; i++) {
         const parScope = new Scope(loc, scope);
-        // defineGenericsInScope(
-        //   datatype.functionParameters[i][1].generics(),
-        //   parScope,
-        // );
-        newType2.functionParameters.push([
-          datatype.functionParameters[i][0],
-          resolveGenerics(datatype.functionParameters[i][1], parScope, loc),
-        ]);
+        const par = datatype.functionParameters[i];
+        if (par[1].variant === "Struct") {
+          defineGenericsInScope(par[1].generics, parScope);
+        }
+        const t = resolveGenerics(par[1], parScope, loc);
+        newFunctype.functionParameters.push([par[0], t]);
       }
-      return newType2;
+      return newFunctype;
 
     // case "":
     //   if (datatype.pointee() === null) {
