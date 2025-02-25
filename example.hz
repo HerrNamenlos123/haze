@@ -26,39 +26,31 @@ struct Array<T> {
   }
 }
 
-declare "C" calloc(num: u64, size: u64): RawPtr<i32>;
-declare "C" free(ptr: RawPtr<i32>);
+declare "C" calloc(num: u64, size: u64): RawPtr<none>;
+declare "C" free(ptr: RawPtr<none>);
 
-malloc(size: u64): RawPtr<i32> {
+malloc(size: u64): RawPtr<none> {
   return calloc(1, size);
 }
 
+struct Test {
+  data: i32;
+}
+
 struct MemoryBuffer {
-  data: RawPtr<i32>;
+  data: RawPtr<none>;
   length: u64;
 
   constructor(size: u64) {
-    // printf("Constructing MemoryBuffer\n");
-    const buffer = MemoryBuffer {
+    // __c__("buffer.data = calloc(size)");
+    return MemoryBuffer {
       .data: malloc(32),
       .length: size,
     };
-    // __c__("buffer.data = calloc(size)");
-    return buffer;
-  }
-
-  print() {
-    const a: RawPtr<RawPtr<i32>> = 0;
-    __c__("a = malloc(sizeof(int32_t*))");
-    __c__("*a = malloc(sizeof(int32_t))");
-    __c__("**a = 187");
-    printf("Print: %d\n", a.ptr.ptr);
-    // printf("Print: %d\n", this.load().length);
   }
 
   destructor() {
-    // printf("Destructing MemoryBuffer\n");
-    // free(this.data);
+    free(this.data);
   }
 
   // __copy__(): MemoryBuffer {
@@ -74,7 +66,6 @@ main(): i32 {
   // printf("Hello world!\n");
 
   const buf = MemoryBuffer(132);
-  buf.print();
   // printf("Data: %d\n", buf.length);
 
   return 0;

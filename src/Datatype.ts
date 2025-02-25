@@ -152,12 +152,16 @@ export function serializeDatatype(datatype: Datatype): string {
       const g2 = [] as string[];
       for (const [name, tp] of datatype.generics) {
         if (tp) {
-          g2.push(`${name}=${serializeDatatype(tp)}`);
+          g2.push(`${serializeDatatype(tp)}`);
         } else {
           g2.push(name);
         }
       }
-      return `RawPtr<${g2.join(", ")}>`;
+      let pp = "RawPtr";
+      if (g2.length > 0) {
+        pp += `<${g2.join(", ")}>`;
+      }
+      return pp;
 
     case "Struct":
       let s = datatype.name;
@@ -169,7 +173,9 @@ export function serializeDatatype(datatype: Datatype): string {
           g.push(name);
         }
       }
-      s += `<${g.join(", ")}>`;
+      if (g.length > 0) {
+        s += `<${g.join(", ")}>`;
+      }
       return s;
 
     case "Function":

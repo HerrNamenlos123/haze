@@ -333,7 +333,7 @@ class CodeGenerator {
         return writer;
 
       case "RawPtrDeref":
-        writer.write(`(*${this.emitExpr(expr.expr).get()})`);
+        writer.write(`(*(${this.emitExpr(expr.expr).get()}))`);
         return writer;
 
       case "MemberAccess":

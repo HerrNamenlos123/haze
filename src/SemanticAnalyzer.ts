@@ -650,6 +650,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
   visitExprAssignmentStatement = (
     ctx: ExprAssignmentStatementContext,
   ): void => {
+    throw new InternalError("Not implemented");
     const rightExpr = this.visit(ctx.expr_list()[1]);
     if (rightExpr.type.isNone()) {
       throw new CompilerError(
@@ -755,10 +756,17 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
   };
 
   visitExprMemberAccess = (ctx: ExprMemberAccessContext): Expression => {
-    const expr: Expression = this.visit(ctx.expr());
+    let expr: Expression = this.visit(ctx.expr());
     const name: string = ctx.ID().getText();
 
-    if (expr.type.variant === "RawPointer") {
+    while (expr.type.variant !== "Struct") {
+      if (expr.type.variant !== "RawPointer") {
+        throw new CompilerError(
+          `Cannot access member '${name}' of non-structural datatype '${serializeDatatype(expr.type)}'`,
+          this.program.getLoc(ctx),
+        );
+      }
+
       const p = expr.type.generics.get("__Pointee");
       if (!p) {
         throw new ImpossibleSituation();
@@ -772,14 +780,17 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
         };
         return e;
       }
+
+      // console.log("Old expr: ", expr.variant, serializeDatatype(expr.type));
+      expr = {
+        variant: "RawPtrDeref",
+        expr: expr,
+        ctx: ctx,
+        type: p.variant === "RawPointer" ? p.generics.get("__Pointee")! : p,
+      } as RawPointerDereferenceExpression;
+      // console.log("New expr: ", expr.variant, serializeDatatype(expr.type));
     }
 
-    if (expr.type.variant !== "Struct") {
-      throw new CompilerError(
-        `Expression of type '${serializeDatatype(expr.type)}' is not a struct`,
-        this.program.getLoc(ctx),
-      );
-    }
     const field: VariableSymbol | undefined = expr.type.members.find(
       (m) => m.name === name,
     );

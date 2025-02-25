@@ -60,7 +60,6 @@ export function resolveGenerics(
       }
       const newRawPtr: RawPointerDatatype = {
         variant: "RawPointer",
-        pointee: resolveGenerics(datatype.pointee, tempScope2, loc),
         generics: generics,
       };
       return newRawPtr;
@@ -219,7 +218,6 @@ export const visitCommonDatatypeImpl = (
       const ptrtype: RawPointerDatatype = {
         variant: "RawPointer",
         generics: ptrGenerics,
-        pointee: symbol.type.pointee,
       };
 
       if (
