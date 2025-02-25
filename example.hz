@@ -26,33 +26,22 @@ struct MemoryBuffer {
   }
 }
 
-struct Array<T> {
+struct List<T> {
   buffer: MemoryBuffer;
-  length: u64;
 
   constructor() {
-    return Array<T> {
-      .data: 0,
-      .length: 0,
+    return List<T> {
+      .buffer: MemoryBuffer(0),
     };
-  }
-
-  test(myArray: Array<T>): Array<T> {
-    return Array<T> {
-      .data: 0,
-      .length: 0,
-    };
-  }
-
-  toNumber(): i64 {
-    return 64;
   }
 }
 
 main(): i32 {
   // printf("Hello world!\n");
 
-  const buf = MemoryBuffer(132);
+  const s = List<i32>();
+  // s.constructor();
+
   // printf("Data: %d\n", buf.length);
 
   return 0;

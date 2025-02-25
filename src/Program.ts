@@ -183,11 +183,26 @@ export class Program {
     console.log("Program");
     for (const symbol of this.globalScope.getSymbols()) {
       console.log(serializeSymbol(symbol));
+      // if (symbol.type.variant === "Struct") {
+      //   for (const s of symbol.type.members) {
+      //     console.log(serializeDatatype(s.type));
+      //   }
+      // }
     }
 
     console.log("\nConcrete Functions:");
     for (const [name, symbol] of Object.entries(this.concreteFunctions)) {
       console.log(serializeSymbol(symbol));
+      // if (symbol.type.functionParameters.length > 0) {
+      //   const [name, p] = symbol.type.functionParameters[0];
+      //   if (p) {
+      //     if (p.variant === "Struct") {
+      //       for (const s of p.members) {
+      //         console.log(serializeDatatype(s.type));
+      //       }
+      //     }
+      //   }
+      // }
     }
 
     console.log("\nConcrete Datatypes:");

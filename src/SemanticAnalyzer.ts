@@ -76,6 +76,7 @@ import type {
 import type { MemberExpression } from "typescript";
 
 const RESERVED_VARIABLE_NAMES = ["this", "context", "__returnval__"];
+const INTERNAL_METHOD_NAMES = ["constructor", "destructor"];
 
 class FunctionBodyAnalyzer extends HazeVisitor<any> {
   private program: Program;
@@ -96,7 +97,6 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
       ctx.ID().getText(),
       this.program.getLoc(ctx),
     );
-    // symbol = copy(symbol);
 
     if (symbol.variant === "Datatype") {
       if (symbol.type.variant === "Struct") {
@@ -106,12 +106,31 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
             this.program.getLoc(ctx),
           );
         }
-        // for (let i = 0; i < symbol.type.generics.size; i++) {
-        //   symbol.type.generics()[i] = [
-        //     symbol.type.generics()[i][0],
-        //     this.visit(ctx.datatype()[i]),
-        //   ];
-        // }
+        let index = 0;
+        for (const [name, tp] of symbol.type.generics) {
+          symbol.type.generics.set(
+            name,
+            this.visit(ctx.datatype_list()[index]),
+          );
+          index++;
+        }
+
+        if (
+          symbol.type.generics
+            .entries()
+            .every((e) => e[1] !== undefined && e[1].variant !== "Generic")
+        ) {
+          datatypeSymbolUsed(
+            {
+              name: symbol.name,
+              scope: symbol.scope,
+              type: symbol.type,
+              variant: "Datatype",
+              parentSymbol: symbol.parentSymbol,
+            },
+            this.program,
+          );
+        }
       }
     }
 
@@ -147,11 +166,64 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
         type: constructor.type,
       };
     }
-    if (expr.type.variant !== "Function") {
+    if (
+      expr.variant !== "SymbolValue" ||
+      expr.type.variant !== "Function" ||
+      expr.symbol.variant !== "Function"
+    ) {
       throw new CompilerError(
         `Expression of type '${serializeDatatype(expr.type)}' is not callable`,
         this.program.getLoc(ctx),
       );
+    }
+
+    // expr.type = resolveGenerics(
+    //   symbol.type,
+    //   symbol.scope,
+    //   this.program.getLoc(symbol.ctx),
+    // ) as FunctionDatatype;
+    // this.program.ctxToSymbolMap.set(method.ctx, symbol);
+    if (
+      expr.symbol.specialMethod === "constructor" ||
+      expr.symbol.specialMethod === "destructor"
+    ) {
+      const mangled = mangleSymbol(expr.symbol);
+      if (!this.program.concreteFunctions[mangled]) {
+        const symbol = { ...expr.symbol };
+        symbol.scope = new Scope(symbol.scope.location, symbol.scope);
+        symbol.parentSymbol = { ...expr.symbol.parentSymbol! };
+        symbol.parentSymbol.type = { ...expr.symbol.parentSymbol!.type };
+        if (symbol.parentSymbol.type.variant !== "Struct") {
+          throw new ImpossibleSituation();
+        }
+        for (const [name, tp] of symbol.parentSymbol.type.generics) {
+          if (!tp) {
+            throw new CompilerError(
+              `Generic parameter '${name}' has no type`,
+              this.program.getLoc(ctx),
+            );
+          }
+          if (symbol.parentSymbol.type.generics.get(name) === undefined) {
+            symbol.parentSymbol.type.generics.set(name, tp);
+          }
+          symbol.scope.defineSymbol(
+            {
+              variant: "Datatype",
+              name: name,
+              scope: symbol.scope,
+              type: tp,
+            },
+            this.program.getLoc(ctx),
+          );
+        }
+        symbol.type = resolveGenerics(
+          symbol.type,
+          symbol.scope,
+          this.program.getLoc(symbol.ctx),
+        ) as FunctionDatatype;
+        this.program.ctxToSymbolMap.set(symbol.ctx, symbol);
+        this.implFunc(symbol.ctx as FuncContext);
+      }
     }
 
     const args: Expression[] = [];
@@ -773,6 +845,13 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
   visitExprMemberAccess = (ctx: ExprMemberAccessContext): Expression => {
     let expr: Expression = this.visit(ctx.expr());
     const name: string = ctx.ID().getText();
+
+    if (name in INTERNAL_METHOD_NAMES) {
+      throw new CompilerError(
+        `Cannot access internal method '${name}'`,
+        this.program.getLoc(ctx),
+      );
+    }
 
     while (expr.type.variant !== "Struct") {
       if (expr.type.variant !== "RawPointer") {
