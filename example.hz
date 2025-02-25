@@ -28,26 +28,37 @@ struct MemoryBuffer {
 
 struct List<T> {
   buffer: MemoryBuffer;
+  length: u64;
 
   constructor() {
     return List<T> {
       .buffer: MemoryBuffer(0),
     };
   }
+
+  push(n: T): none {
+    // buffer.length;
+    
+  }
+
+  get(n: T): T {
+    return n;
+  }
+}
+
+fib(count: i32) {
+  const fibs = List<i32>();
+  fibs.push(0);
+  fibs.push(1);
+
+  const i = 2;
+  while (i < count) {
+    fibs.push(fibs.get(i - 1) + fibs.get(i - 2));
+    printf("Found fib number: %d\n", fibs.get(fibs.length - 1));
+  }
 }
 
 main(): i32 {
-  // printf("Hello world!\n");
-
-  // s.constructor();
-
-  // printf("Data: %d\n", buf.length);
-
-  const i = 0;
-  while (true) {
-    printf("Du loser: %d\n", i);
-    i = i + 1;
-  }
-
+  fib(0);
   return 0;
 }

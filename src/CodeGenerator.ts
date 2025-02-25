@@ -325,6 +325,9 @@ class CodeGenerator {
     switch (expr.variant) {
       case "ExprCall":
         const args = [];
+        if (expr.thisPointerExpr) {
+          args.push("&" + this.emitExpr(expr.thisPointerExpr).get());
+        }
         if (expr.expr.variant === "SymbolValue") {
           if (expr.expr.symbol.variant === "Function") {
             if (expr.expr.symbol.functionType === FunctionType.Internal) {
@@ -334,9 +337,6 @@ class CodeGenerator {
         } else if (expr.expr.variant === "MemberAccess") {
           args.push("context");
         }
-        if (expr.thisPointerExpr) {
-          args.push("&" + this.emitExpr(expr.thisPointerExpr).get());
-        }
         for (let i = 0; i < expr.args.length; i++) {
           const val = this.emitExpr(expr.args[i]).get();
           if (expr.expr.type.variant !== "Function") {
@@ -345,8 +345,8 @@ class CodeGenerator {
           let scope = this.program.currentScope;
           if (
             expr.expr.variant === "MemberAccess" &&
-            expr.expr.thisPointerExpr &&
             expr.expr.methodSymbol &&
+            expr.expr.methodSymbol.thisPointerExpr &&
             expr.expr.methodSymbol.variant === "Function"
           ) {
             scope = expr.expr.methodSymbol.scope;
@@ -363,14 +363,14 @@ class CodeGenerator {
         }
         if (
           expr.expr.variant === "MemberAccess" &&
-          expr.expr.thisPointerExpr &&
           expr.expr.methodSymbol &&
+          expr.expr.methodSymbol.thisPointerExpr &&
           expr.expr.methodSymbol.variant === "Function"
         ) {
           writer.write(
             mangleSymbol(expr.expr.methodSymbol) +
               "(&" +
-              this.emitExpr(expr.expr.thisPointerExpr).get() +
+              this.emitExpr(expr.expr.methodSymbol.thisPointerExpr).get() +
               ", " +
               args.join(", ") +
               ")",

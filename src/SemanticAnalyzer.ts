@@ -156,6 +156,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
     // thisPointerExpr = copy(expr.expr);
     // expr = new SymbolValueExpression(expr.method, ctx);
 
+    let thisPointerExpr = undefined as Expression | undefined;
     if (expr.type.variant === "Struct") {
       const constructor = expr.type.methods.find(
         (m) => m.name === "constructor",
@@ -173,6 +174,17 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
         type: constructor.type,
       };
     }
+
+    if (expr.variant === "MemberAccess" && expr.methodSymbol) {
+      thisPointerExpr = expr.methodSymbol.thisPointerExpr;
+      expr = {
+        variant: "SymbolValue",
+        ctx: ctx,
+        symbol: expr.methodSymbol,
+        type: expr.methodSymbol.type,
+      };
+    }
+
     if (
       expr.variant !== "SymbolValue" ||
       expr.type.variant !== "Function" ||
@@ -252,6 +264,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
       variant: "ExprCall",
       args: args,
       expr: expr,
+      thisPointerExpr: thisPointerExpr,
       ctx: ctx,
     };
   };
@@ -912,7 +925,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
     let expr: Expression = this.visit(ctx.expr());
     const name: string = ctx.ID().getText();
 
-    if (name in INTERNAL_METHOD_NAMES) {
+    if (INTERNAL_METHOD_NAMES.includes(name)) {
       throw new CompilerError(
         `Cannot access internal method '${name}'`,
         this.program.getLoc(ctx),
@@ -1041,13 +1054,13 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
         symbol.scope,
         this.program.getLoc(symbol.ctx),
       ) as FunctionDatatype;
+      symbol.thisPointerExpr = expr;
       this.program.ctxToSymbolMap.set(method.ctx, symbol);
       this.implFunc(method.ctx as FuncContext);
 
       return {
         ctx: ctx,
         variant: "MemberAccess",
-        thisPointerExpr: expr,
         methodSymbol: symbol,
         memberName: name,
         expr: expr,

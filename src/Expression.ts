@@ -35,8 +35,7 @@ export type RawPointerDereferenceExpression = BaseExpression & {
 export type MemberAccessExpression = BaseExpression & {
   variant: "MemberAccess";
   expr: Expression;
-  thisPointerExpr?: Expression;
-  methodSymbol?: Symbol;
+  methodSymbol?: FunctionSymbol;
   memberName: string;
 };
 

@@ -11,6 +11,7 @@ import {
   InternalError,
 } from "./Errors";
 import type { Scope } from "./Scope";
+import type { Expression } from "./Expression";
 
 export enum VariableType {
   MutableVariable,
@@ -44,6 +45,7 @@ export type FunctionSymbol = {
   parentSymbol?: Symbol;
   scope: Scope;
   thisPointer?: Datatype;
+  thisPointerExpr?: Expression;
   specialMethod?: SpecialMethod;
   ctx: ParserRuleContext;
 };
