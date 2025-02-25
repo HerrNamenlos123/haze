@@ -46,6 +46,7 @@ main(): i32 {
   const i = 0;
   while (true) {
     printf("Du loser: %d\n", i);
+    i = i + 1;
   }
 
   return 0;

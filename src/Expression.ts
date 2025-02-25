@@ -58,9 +58,30 @@ export type ExplicitCastExpression = BaseExpression & {
   expr: Expression;
 };
 
+export type BinaryExpression = BaseExpression & {
+  variant: "Binary";
+  leftExpr: Expression;
+  rightExpr: Expression;
+  operation:
+    | "+"
+    | "-"
+    | "*"
+    | "/"
+    | "%"
+    | "=="
+    | "!="
+    | ">"
+    | "<"
+    | ">="
+    | "<="
+    | "&&"
+    | "||";
+};
+
 export type Expression =
   | ConstantExpression
   | ObjectExpression
+  | BinaryExpression
   | SymbolValueExpression
   | MemberAccessExpression
   | RawPointerDereferenceExpression

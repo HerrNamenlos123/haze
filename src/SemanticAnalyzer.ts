@@ -1,11 +1,15 @@
 import HazeVisitor from "./parser/HazeVisitor";
 
 import {
+  getIntegerBinaryResult,
   implicitConversion,
+  isBoolean,
+  isInteger,
   Primitive,
   serializeDatatype,
   type Datatype,
   type FunctionDatatype,
+  type PrimitiveDatatype,
 } from "./Datatype";
 import { CompilerError, ImpossibleSituation, InternalError } from "./Errors";
 import { Scope } from "./Scope";
@@ -19,6 +23,7 @@ import {
   type VariableSymbol,
 } from "./Symbol";
 import {
+  BinaryExprContext,
   BodyContext,
   ElseifexprContext,
   ExplicitCastExprContext,
@@ -56,6 +61,7 @@ import {
 } from "./utils";
 import type { ParserRuleContext } from "antlr4";
 import type {
+  BinaryExpression,
   ConstantExpression,
   ExplicitCastExpression,
   ExprCallExpression,
@@ -67,6 +73,7 @@ import type {
 } from "./Expression";
 import type {
   ConditionalStatement,
+  ExprAssignmentStatement,
   ExprStatement,
   InlineCStatement,
   ReturnStatement,
@@ -74,7 +81,6 @@ import type {
   VariableDefinitionStatement,
   WhileStatement,
 } from "./Statement";
-import type { MemberExpression } from "typescript";
 
 const RESERVED_VARIABLE_NAMES = ["this", "context", "__returnval__"];
 const INTERNAL_METHOD_NAMES = ["constructor", "destructor"];
@@ -459,77 +465,85 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
     };
   };
 
-  // visitBinaryExpr = (ctx: BinaryExprContext): void => {
-  //   this.visitChildren(ctx);
-  //   let operation = ctx.children[1].getText();
-  //   if (ctx.children[2].getText() === "not") {
-  //     operation += " not";
-  //   }
+  visitBinaryExpr = (ctx: BinaryExprContext): BinaryExpression => {
+    const left: Expression = this.visit(ctx.expr_list()[0]);
+    const right: Expression = this.visit(ctx.expr_list()[1]);
+    let operation = ctx.getChild(1).getText();
+    if (operation === "is" && ctx.getChild(2).getText() === "not") {
+      operation = "!=";
+    }
+    if (operation === "is") {
+      operation = "==";
+    }
+    if (operation === "and") {
+      operation = "&&";
+    }
+    if (operation === "or") {
+      operation = "||";
+    }
 
-  //   this.setNodeBinaryOperator(ctx, operation);
-  //   const typeA = this.getNodeDatatype(ctx.expr(0));
-  //   const typeB = this.getNodeDatatype(ctx.expr(1));
+    switch (operation) {
+      case "*":
+      case "/":
+      case "%":
+      case "+":
+      case "-":
+      case "<":
+      case ">":
+      case "<=":
+      case ">=":
+        if (isInteger(left.type) && isInteger(right.type)) {
+          return {
+            variant: "Binary",
+            ctx: ctx,
+            leftExpr: left,
+            operation: operation,
+            rightExpr: right,
+            type: getIntegerBinaryResult(
+              left.type as PrimitiveDatatype,
+              right.type as PrimitiveDatatype,
+            ),
+          };
+        }
+        break;
 
-  //   const datatypesUnrelated = () => {
-  //     throw new CompilerError(
-  //       `Datatypes '${typeA.getDisplayName()}' and '${typeB.getDisplayName()}' are unrelated and cannot be used for binary operation`,
-  //       this.getLocation(ctx),
-  //     );
-  //   };
+      case "==":
+      case "!=":
+        if (
+          (isBoolean(left.type) && isBoolean(right.type)) ||
+          (isInteger(left.type) && isInteger(right.type))
+        ) {
+          return {
+            variant: "Binary",
+            ctx: ctx,
+            leftExpr: left,
+            operation: operation,
+            rightExpr: right,
+            type: this.program.getBuiltinType("boolean"),
+          };
+        }
+        break;
 
-  //   switch (operation) {
-  //     case "*":
-  //     case "/":
-  //     case "%":
-  //     case "+":
-  //     case "-":
-  //       if (typeA.isInteger() && typeB.isInteger()) {
-  //         this.setNodeDatatype(ctx, typeA);
-  //       } else {
-  //         datatypesUnrelated();
-  //       }
-  //       break;
+      case "&&":
+      case "||":
+        if (isBoolean(left.type) && isBoolean(right.type)) {
+          return {
+            variant: "Binary",
+            ctx: ctx,
+            leftExpr: left,
+            operation: operation,
+            rightExpr: right,
+            type: this.program.getBuiltinType("boolean"),
+          };
+        }
+        break;
+    }
 
-  //     case "<":
-  //     case ">":
-  //     case "<=":
-  //     case ">=":
-  //       if (typeA.isInteger() && typeB.isInteger()) {
-  //         this.setNodeDatatype(ctx, this.db.getBuiltinDatatype("boolean"));
-  //       } else {
-  //         datatypesUnrelated();
-  //       }
-  //       break;
-
-  //     case "==":
-  //     case "!=":
-  //     case "is":
-  //     case "is not":
-  //       if (typeA.isInteger() && typeB.isInteger()) {
-  //         this.setNodeDatatype(ctx, this.db.getBuiltinDatatype("boolean"));
-  //       } else if (typeA.isBoolean() && typeB.isBoolean()) {
-  //         this.setNodeDatatype(ctx, this.db.getBuiltinDatatype("boolean"));
-  //       } else {
-  //         datatypesUnrelated();
-  //       }
-  //       break;
-
-  //     case "and":
-  //     case "or":
-  //       if (typeA.isBoolean() && typeB.isBoolean()) {
-  //         this.setNodeDatatype(ctx, this.db.getBuiltinDatatype("boolean"));
-  //       } else {
-  //         datatypesUnrelated();
-  //       }
-  //       break;
-
-  //     default:
-  //       throw new CompilerError(
-  //         `Operation '${operation}' is not implemented for types '${typeA.getDisplayName()}' and '${typeB.getDisplayName()}'`,
-  //         this.getLocation(ctx),
-  //       );
-  //   }
-  // };
+    throw new CompilerError(
+      `No comparison operator '${operation}' is known for types '${serializeDatatype(left.type)}' and '${serializeDatatype(right.type)}'`,
+      this.program.getLoc(ctx),
+    );
+  };
 
   visitStructMethod = (ctx: StructMethodContext): void => {
     this.implFunc(ctx);
@@ -768,15 +782,35 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
 
   visitExprAssignmentStatement = (
     ctx: ExprAssignmentStatementContext,
-  ): void => {
-    throw new InternalError("Not implemented");
-    const rightExpr = this.visit(ctx.expr_list()[1]);
-    if (rightExpr.type.isNone()) {
+  ): ExprAssignmentStatement => {
+    const leftExpr: Expression = this.visit(ctx.expr_list()[0]);
+    const rightExpr: Expression = this.visit(ctx.expr_list()[1]);
+    if (
+      rightExpr.type.variant === "Primitive" &&
+      rightExpr.type.primitive === Primitive.none
+    ) {
       throw new CompilerError(
-        "Cannot assign 'none' to a variable.",
+        "Cannot assign a value of type 'none'.",
         this.program.getLoc(ctx),
       );
     }
+    if (
+      leftExpr.type.variant === "Primitive" &&
+      leftExpr.type.primitive === Primitive.none
+    ) {
+      throw new CompilerError(
+        "Cannot assign to an expression of type 'none'.",
+        this.program.getLoc(ctx),
+      );
+    }
+
+    return {
+      variant: "ExprAssign",
+      ctx: ctx,
+      leftExpr: leftExpr,
+      rightExpr: rightExpr,
+      scope: this.program.currentScope,
+    };
   };
 
   visitStructMemberValue = (

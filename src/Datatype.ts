@@ -136,6 +136,96 @@ export function isBoolean(dt: Datatype): boolean {
   return false;
 }
 
+function widenInteger(a: PrimitiveDatatype): PrimitiveDatatype {
+  switch (a.primitive) {
+    case Primitive.i8:
+      return { variant: "Primitive", primitive: Primitive.i16 };
+    case Primitive.i16:
+      return { variant: "Primitive", primitive: Primitive.i32 };
+    case Primitive.i32:
+      return { variant: "Primitive", primitive: Primitive.i64 };
+    case Primitive.u8:
+      return { variant: "Primitive", primitive: Primitive.u16 };
+    case Primitive.u16:
+      return { variant: "Primitive", primitive: Primitive.u32 };
+    case Primitive.u32:
+      return { variant: "Primitive", primitive: Primitive.u64 };
+    default:
+      return a;
+  }
+}
+
+function getWiderInteger(
+  a: PrimitiveDatatype,
+  b: PrimitiveDatatype,
+): PrimitiveDatatype {
+  const aBits = getIntegerBits(a);
+  const bBits = getIntegerBits(b);
+  return aBits > bBits ? a : b;
+}
+
+function promoteType(
+  a: PrimitiveDatatype,
+  b: PrimitiveDatatype,
+): PrimitiveDatatype {
+  if (a.primitive == b.primitive) return a;
+  if (isIntegerUnsigned(a) && !isIntegerUnsigned(b)) return widenInteger(b);
+  if (!isIntegerUnsigned(a) && isIntegerUnsigned(b)) return widenInteger(a);
+  return getWiderInteger(a, b);
+}
+
+export function getIntegerBinaryResult(
+  a: PrimitiveDatatype,
+  b: PrimitiveDatatype,
+): Datatype {
+  if (a.variant !== "Primitive" || b.variant !== "Primitive") {
+    throw new InternalError("Datatype is not an integer");
+  }
+  return promoteType(a, b);
+}
+
+export function isIntegerUnsigned(dt: Datatype): boolean {
+  switch (dt.variant) {
+    case "Primitive":
+      switch (dt.primitive) {
+        case Primitive.i8:
+        case Primitive.i16:
+        case Primitive.i32:
+        case Primitive.i64:
+          return false;
+        case Primitive.u8:
+        case Primitive.u16:
+        case Primitive.u32:
+        case Primitive.u64:
+          return true;
+      }
+      return false;
+  }
+  return false;
+}
+
+export function getIntegerBits(dt: Datatype): number {
+  switch (dt.variant) {
+    case "Primitive":
+      switch (dt.primitive) {
+        case Primitive.i8:
+        case Primitive.u8:
+          return 8;
+        case Primitive.i16:
+        case Primitive.u16:
+          return 16;
+        case Primitive.i32:
+        case Primitive.u32:
+          return 32;
+        case Primitive.i64:
+        case Primitive.u64:
+          return 64;
+      }
+      return 0;
+  }
+  return 0;
+}
+
 export function isInteger(dt: Datatype): boolean {
   switch (dt.variant) {
     case "Primitive":

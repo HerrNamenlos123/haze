@@ -1,6 +1,5 @@
 import type { ParserRuleContext } from "antlr4";
 import type { Symbol } from "./Symbol";
-import type { Datatype } from "./Datatype";
 import type { Expression } from "./Expression";
 import type { Scope } from "./Scope";
 
@@ -44,10 +43,19 @@ export type WhileStatement = {
   scope: Scope;
 };
 
+export type ExprAssignmentStatement = {
+  variant: "ExprAssign";
+  ctx: ParserRuleContext;
+  leftExpr: Expression;
+  rightExpr: Expression;
+  scope: Scope;
+};
+
 export type Statement =
   | VariableDefinitionStatement
   | ReturnStatement
   | ExprStatement
   | WhileStatement
   | ConditionalStatement
+  | ExprAssignmentStatement
   | InlineCStatement;

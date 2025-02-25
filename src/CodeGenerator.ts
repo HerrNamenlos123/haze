@@ -20,6 +20,7 @@ import {
   generateDefinitionCCode,
   generateUsageCode,
   implicitConversion,
+  isInteger,
   serializeDatatype,
   type Datatype,
   type FunctionDatatype,
@@ -300,6 +301,20 @@ class CodeGenerator {
         }
         return writer;
 
+      case "ExprAssign":
+        const assignConv = implicitConversion(
+          statement.rightExpr.type,
+          statement.leftExpr.type,
+          this.emitExpr(statement.rightExpr).get(),
+          statement.scope,
+          this.program.getLoc(statement.rightExpr.ctx),
+          this.program,
+        );
+        writer.writeLine(
+          `${this.emitExpr(statement.leftExpr).get()} = ${assignConv};`,
+        );
+        return writer;
+
       // default:
       //   throw new InternalError(`Unknown statement type ${statement.variant}`);
     }
@@ -411,6 +426,75 @@ class CodeGenerator {
         );
         return writer;
 
+      case "Binary":
+        switch (expr.operation) {
+          case "*":
+          case "/":
+          case "%":
+          case "+":
+          case "-":
+          case "<":
+          case ">":
+          case "<=":
+          case ">=":
+            {
+              const left = implicitConversion(
+                expr.leftExpr.type,
+                expr.type,
+                this.emitExpr(expr.leftExpr).get(),
+                this.program.currentScope,
+                this.program.getLoc(expr.ctx),
+                this.program,
+              );
+              const right = implicitConversion(
+                expr.rightExpr.type,
+                expr.type,
+                this.emitExpr(expr.rightExpr).get(),
+                this.program.currentScope,
+                this.program.getLoc(expr.ctx),
+                this.program,
+              );
+              writer.write(
+                "(" + left + " " + expr.operation + " " + right + ")",
+              );
+            }
+            break;
+
+          case "==":
+          case "!=":
+            {
+              writer.write(
+                "(" +
+                  this.emitExpr(expr.leftExpr).get() +
+                  " " +
+                  expr.operation +
+                  " " +
+                  this.emitExpr(expr.rightExpr).get() +
+                  ")",
+              );
+            }
+            break;
+
+          case "&&":
+          case "||":
+            {
+              writer.write(
+                "(" +
+                  this.emitExpr(expr.leftExpr).get() +
+                  " " +
+                  expr.operation +
+                  " " +
+                  this.emitExpr(expr.rightExpr).get() +
+                  ")",
+              );
+            }
+            break;
+
+          default:
+            throw new ImpossibleSituation();
+        }
+        return writer;
+
       case "Constant":
         switch (typeof expr.constantSymbol.value) {
           case "number":
@@ -430,6 +514,7 @@ class CodeGenerator {
               `Unknown constant type ${typeof expr.constantSymbol.value}`,
             );
         }
+
       default:
         throw new InternalError(`Unknown expression type ${expr.variant}`);
     }
