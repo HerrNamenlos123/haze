@@ -25,7 +25,7 @@ struct Array<T> {
 }
 
 struct MemoryBuffer {
-  data: i8;
+  data: i16;
   length: u64;
 
   constructor(size: u64) {
@@ -45,11 +45,14 @@ struct MemoryBuffer {
   // }
 }
 
-declare "C" printf(str: stringview);
+declare "C" printf(str: stringview, v: i32);
 // declare "C" malloc(n: i32, test: String): u64;
 
 main(): i32 {
-  printf("Hello world!\n");
+  // printf("Hello world!\n");
+
+  const buf = MemoryBuffer(132);
+  printf("Data: %d\n", buf.length);
 
   return 0;
 }

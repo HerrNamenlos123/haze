@@ -26,6 +26,7 @@ import {
 import {
   FuncdeclContext,
   FunctionDatatypeContext,
+  SymbolValueExprContext,
   type ArgsContext,
   type BinaryExprContext,
   type BooleanConstantContext,
@@ -84,7 +85,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
     return visitCommonDatatypeImpl(this, this.program, ctx);
   };
 
-  visitSymbolValueExpr = (ctx: any): Expression => {
+  visitSymbolValueExpr = (ctx: SymbolValueExprContext): Expression => {
     let symbol = this.program.currentScope.lookupSymbol(
       ctx.ID().getText(),
       this.program.getLoc(ctx),
@@ -93,9 +94,9 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
 
     if (symbol.variant === "Datatype") {
       if (symbol.type.variant === "Struct") {
-        if (symbol.type.generics.size !== ctx.datatype().length) {
+        if (symbol.type.generics.size !== ctx.datatype_list().length) {
           throw new CompilerError(
-            `Datatype expected ${symbol.type.generics.size} generic arguments but got ${ctx.datatype().length}.`,
+            `Datatype expected ${symbol.type.generics.size} generic arguments but got ${ctx.datatype_list().length}.`,
             this.program.getLoc(ctx),
           );
         }
@@ -123,6 +124,23 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
     // thisPointerExpr = copy(expr.expr);
     // expr = new SymbolValueExpression(expr.method, ctx);
 
+    if (expr.type.variant === "Struct") {
+      const constructor = expr.type.methods.find(
+        (m) => m.name === "constructor",
+      );
+      if (!constructor) {
+        throw new CompilerError(
+          `Type '${serializeDatatype(expr.type)}' does not provide a constructor`,
+          this.program.getLoc(ctx),
+        );
+      }
+      expr = {
+        variant: "SymbolValue",
+        ctx: ctx,
+        symbol: constructor,
+        type: constructor.type,
+      };
+    }
     if (expr.type.variant !== "Function") {
       throw new CompilerError(
         `Expression of type '${serializeDatatype(expr.type)}' is not callable`,
