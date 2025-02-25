@@ -1,31 +1,4 @@
-
-//import "test.hz"
-
-declare "C" printf(str: stringview, d: i32);
-
-struct Array<T> {
-  data: T;
-  length: u64;
-
-  // constructor() {
-  //   return Array<T> {
-  //     .data: 0,
-  //     .length: 0,
-  //   };
-  // }
-
-  test(myArray: Array<T>): Array<T> {
-    return Array<T> {
-      .data: 0,
-      .length: 0,
-    };
-  }
-
-  toNumber(): i64 {
-    return 64;
-  }
-}
-
+declare "C" printf(str: stringview, d: i8);
 declare "C" calloc(num: u64, size: u64): RawPtr<none>;
 declare "C" free(ptr: RawPtr<none>);
 
@@ -39,28 +12,42 @@ struct Test {
 
 struct MemoryBuffer {
   data: RawPtr<none>;
-  length: u64;
+  size: u64;
 
   constructor(size: u64) {
-    // __c__("buffer.data = calloc(size)");
     return MemoryBuffer {
-      .data: malloc(32),
-      .length: size,
+      .data: malloc(size),
+      .size: size,
     };
   }
 
   destructor() {
     free(this.data);
   }
-
-  // __copy__(): MemoryBuffer {
-  //     // const ptr = malloc(size);
-  //   return MemoryBuffer {
-  //     .data: 0,
-  //   };
-  // }
 }
-// declare "C" malloc(n: i32, test: String): u64;
+
+struct Array<T> {
+  buffer: MemoryBuffer;
+  length: u64;
+
+  constructor() {
+    return Array<T> {
+      .data: 0,
+      .length: 0,
+    };
+  }
+
+  test(myArray: Array<T>): Array<T> {
+    return Array<T> {
+      .data: 0,
+      .length: 0,
+    };
+  }
+
+  toNumber(): i64 {
+    return 64;
+  }
+}
 
 main(): i32 {
   // printf("Hello world!\n");

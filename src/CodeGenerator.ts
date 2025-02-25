@@ -16,6 +16,7 @@ import {
   type VariableSymbol,
 } from "./Symbol";
 import {
+  explicitConversion,
   generateDefinitionCCode,
   generateUsageCode,
   implicitConversion,
@@ -350,6 +351,19 @@ class CodeGenerator {
         } else {
           throw new ImpossibleSituation();
         }
+
+      case "ExplicitCast":
+        writer.write(
+          explicitConversion(
+            expr.expr.type,
+            expr.type,
+            this.emitExpr(expr.expr).get(),
+            this.program.currentScope,
+            this.program.getLoc(expr.ctx),
+            this.program,
+          ),
+        );
+        return writer;
 
       case "Constant":
         switch (typeof expr.constantSymbol.value) {

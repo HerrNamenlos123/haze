@@ -53,6 +53,11 @@ export type ExprCallExpression = BaseExpression & {
   args: Expression[];
 };
 
+export type ExplicitCastExpression = BaseExpression & {
+  variant: "ExplicitCast";
+  expr: Expression;
+};
+
 export type Expression =
   | ConstantExpression
   | ObjectExpression
@@ -60,4 +65,5 @@ export type Expression =
   | MemberAccessExpression
   | RawPointerDereferenceExpression
   | MethodAccessExpression
+  | ExplicitCastExpression
   | ExprCallExpression;

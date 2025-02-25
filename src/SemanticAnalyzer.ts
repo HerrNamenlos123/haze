@@ -24,6 +24,7 @@ import {
   type VariableSymbol,
 } from "./Symbol";
 import {
+  ExplicitCastExprContext,
   FuncdeclContext,
   FunctionDatatypeContext,
   InlineCStatementContext,
@@ -57,6 +58,7 @@ import {
 import type { ParserRuleContext } from "antlr4";
 import type {
   ConstantExpression,
+  ExplicitCastExpression,
   ExprCallExpression,
   Expression,
   MemberAccessExpression,
@@ -372,6 +374,19 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
 
   visitParenthesisExpr = (ctx: ParenthesisExprContext): Expression => {
     return this.visit(ctx.expr());
+  };
+
+  visitExplicitCastExpr = (
+    ctx: ExplicitCastExprContext,
+  ): ExplicitCastExpression => {
+    const expr: Expression = this.visit(ctx.expr());
+    const targetType: Datatype = this.visit(ctx.datatype());
+    return {
+      variant: "ExplicitCast",
+      expr: expr,
+      ctx: ctx,
+      type: targetType,
+    };
   };
 
   // visitBinaryExpr = (ctx: BinaryExprContext): void => {

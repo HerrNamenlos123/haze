@@ -42,6 +42,7 @@ expr
     // | '{' objectattribute? (',' objectattribute)* ','? '}'              #AnonymousStructInstantiationExpr
     | datatype '{' structmembervalue? (',' structmembervalue)* ','? '}'     #StructInstantiationExpr
     | expr '(' args ')'                                         #ExprCallExpr
+    | expr 'as' datatype                                        #ExplicitCastExpr
     | expr '.' ID                                               #ExprMemberAccess
     | expr ('*'|'/'|'%') expr                                   #BinaryExpr
     | expr ('+'|'-') expr                                       #BinaryExpr

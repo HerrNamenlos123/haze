@@ -382,6 +382,13 @@ export function implicitConversion(
     ) {
       return expr;
     }
+    const topointee = to.generics.get("__Pointee")!;
+    if (
+      topointee.variant === "Primitive" &&
+      topointee.primitive === Primitive.none
+    ) {
+      return `(void*)(${expr})`;
+    }
     throw new CompilerError(
       `No implicit conversion from ${serializeDatatype(from)} to ${serializeDatatype(to)}`,
       loc,
@@ -454,6 +461,105 @@ export function implicitConversion(
 
   throw new CompilerError(
     `No implicit conversion from '${serializeDatatype(from)}' to '${serializeDatatype(to)}'`,
+    loc,
+  );
+}
+
+export function explicitConversion(
+  _from: Datatype,
+  _to: Datatype,
+  expr: string,
+  scope: Scope,
+  loc: Location,
+  program: Program,
+): string {
+  const from = resolveGenerics(_from, scope, loc);
+  const to = resolveGenerics(_to, scope, loc);
+
+  if (isSame(from, to)) {
+    return expr;
+  }
+
+  if (from.variant === "Primitive" && to.variant === "Primitive") {
+    if (isInteger(from) && isInteger(to)) {
+      return `(${generateUsageCode(to, program)})(${expr})`;
+    }
+    throw new CompilerError(
+      `No explicit conversion from ${serializeDatatype(from)} to ${serializeDatatype(to)}`,
+      loc,
+    );
+  }
+
+  if (from.variant === "RawPointer" && to.variant === "RawPointer") {
+    return `(${generateUsageCode(to.generics.get("__Pointee")!, program)}*)(${expr})`;
+  }
+
+  if (from.variant === "Function" && to.variant === "Function") {
+    if (isSame(from.functionReturnType, to.functionReturnType)) {
+      if (from.functionParameters.length === to.functionParameters.length) {
+        let equal = true;
+        for (let i = 0; i < from.functionParameters.length; i++) {
+          if (
+            !isSame(from.functionParameters[i][1], to.functionParameters[i][1])
+          ) {
+            equal = false;
+          }
+        }
+        if (equal) {
+          return expr;
+        }
+      }
+    }
+    throw new CompilerError(
+      `No explicit conversion from '${serializeDatatype(from)}' to '${serializeDatatype(to)}'`,
+      loc,
+    );
+  }
+
+  if (from.variant === "Struct" && to.variant === "Struct") {
+    if (from.members.length !== to.members.length) {
+      throw new CompilerError(
+        `No explicit conversion from '${serializeDatatype(from)}' to '${serializeDatatype(to)}': different number of fields`,
+        loc,
+      );
+    }
+
+    const exactMatchInTheOther = (
+      a: VariableSymbol,
+      bList: VariableSymbol[],
+    ) => {
+      for (const b of bList) {
+        if (a.name === b.name && isSame(a.type, b.type)) {
+          return true;
+        }
+      }
+      return false;
+    };
+
+    let equal = true;
+    for (const a of from.members) {
+      if (!exactMatchInTheOther(a, to.members)) {
+        equal = false;
+      }
+    }
+    for (const b of to.members) {
+      if (!exactMatchInTheOther(b, from.members)) {
+        equal = false;
+      }
+    }
+
+    if (equal) {
+      return expr;
+    }
+
+    throw new CompilerError(
+      `No explicit conversion from '${serializeDatatype(from)}' to '${serializeDatatype(to)}'`,
+      loc,
+    );
+  }
+
+  throw new CompilerError(
+    `No explicit conversion from '${serializeDatatype(from)}' to '${serializeDatatype(to)}'`,
     loc,
   );
 }
