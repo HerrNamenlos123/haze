@@ -65,6 +65,10 @@ struct List<T> {
     };
   }
 
+  destructor() {
+    printf("TODO: Fix cascading destructor calls\n");
+  }
+
   reserve(size: u64): none {
     if size <= this.capacity() {
       return;
@@ -116,6 +120,6 @@ fib(count: i32) {
 }
 
 main(): i32 {
-  fib(100);
+  fib(10);
   return 0;
 }

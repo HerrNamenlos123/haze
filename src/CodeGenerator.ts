@@ -222,6 +222,11 @@ class CodeGenerator {
         writer.write(this.emitStatement(statement));
       }
     }
+
+    if (!returned) {
+      this.outputDestructorCalls(scope, writer);
+    }
+
     return writer;
   }
 
@@ -521,11 +526,6 @@ class CodeGenerator {
               );
             }
             break;
-
-          default:
-            throw new InternalError(
-              `Unrecognized binary operator: ${expr.operation}`,
-            );
         }
         return writer;
 

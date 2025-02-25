@@ -139,6 +139,96 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
             },
             this.program,
           );
+          const constructor = symbol.type.methods.find(
+            (m) => m.name === "constructor",
+          );
+          const destructor = symbol.type.methods.find(
+            (m) => m.name === "destructor",
+          );
+          if (!constructor) {
+            throw new CompilerError(
+              `Type '${serializeDatatype(symbol.type)}' does not provide a constructor`,
+              this.program.getLoc(ctx),
+            );
+          }
+          if (!destructor) {
+            throw new CompilerError(
+              `Type '${serializeDatatype(symbol.type)}' does not provide a destructor`,
+              this.program.getLoc(ctx),
+            );
+          }
+          if (!this.program.concreteFunctions[mangleSymbol(constructor)]) {
+            const symbol = { ...constructor };
+            symbol.scope = new Scope(symbol.scope.location, symbol.scope);
+            symbol.parentSymbol = { ...symbol.parentSymbol! };
+            symbol.parentSymbol.type = { ...symbol.parentSymbol!.type };
+            if (symbol.parentSymbol.type.variant !== "Struct") {
+              throw new ImpossibleSituation();
+            }
+            for (const [name, tp] of symbol.parentSymbol.type.generics) {
+              if (!tp) {
+                throw new CompilerError(
+                  `Generic parameter '${name}' has no type`,
+                  this.program.getLoc(ctx),
+                );
+              }
+              if (symbol.parentSymbol.type.generics.get(name) === undefined) {
+                symbol.parentSymbol.type.generics.set(name, tp);
+              }
+              symbol.scope.defineSymbol(
+                {
+                  variant: "Datatype",
+                  name: name,
+                  scope: symbol.scope,
+                  type: tp,
+                },
+                this.program.getLoc(ctx),
+              );
+            }
+            symbol.type = resolveGenerics(
+              symbol.type,
+              symbol.scope,
+              this.program.getLoc(symbol.ctx),
+            ) as FunctionDatatype;
+            this.program.ctxToSymbolMap.set(symbol.ctx, symbol);
+            this.implFunc(constructor.ctx as FuncContext);
+          }
+          if (!this.program.concreteFunctions[mangleSymbol(destructor)]) {
+            const symbol = { ...destructor };
+            symbol.scope = new Scope(symbol.scope.location, symbol.scope);
+            symbol.parentSymbol = { ...symbol.parentSymbol! };
+            symbol.parentSymbol.type = { ...symbol.parentSymbol!.type };
+            if (symbol.parentSymbol.type.variant !== "Struct") {
+              throw new ImpossibleSituation();
+            }
+            for (const [name, tp] of symbol.parentSymbol.type.generics) {
+              if (!tp) {
+                throw new CompilerError(
+                  `Generic parameter '${name}' has no type`,
+                  this.program.getLoc(ctx),
+                );
+              }
+              if (symbol.parentSymbol.type.generics.get(name) === undefined) {
+                symbol.parentSymbol.type.generics.set(name, tp);
+              }
+              symbol.scope.defineSymbol(
+                {
+                  variant: "Datatype",
+                  name: name,
+                  scope: symbol.scope,
+                  type: tp,
+                },
+                this.program.getLoc(ctx),
+              );
+            }
+            symbol.type = resolveGenerics(
+              symbol.type,
+              symbol.scope,
+              this.program.getLoc(symbol.ctx),
+            ) as FunctionDatatype;
+            this.program.ctxToSymbolMap.set(symbol.ctx, symbol);
+            this.implFunc(destructor.ctx as FuncContext);
+          }
         }
       }
     }
