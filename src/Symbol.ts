@@ -5,7 +5,11 @@ import {
   type Datatype,
   type FunctionDatatype,
 } from "./Datatype";
-import { InternalError } from "./Errors";
+import {
+  getCallerLocation,
+  ImpossibleSituation,
+  InternalError,
+} from "./Errors";
 import type { Scope } from "./Scope";
 
 export enum VariableType {
@@ -129,6 +133,17 @@ export function mangleDatatype(datatype: Datatype): string {
         mangled2 += "E";
       }
       return mangled2;
+
+    case "RawPointer":
+      let ptrMangled = "RawPtrI";
+      const tp = datatype.generics.get("__Pointee");
+      if (tp) {
+        ptrMangled += mangleDatatype(tp);
+      } else {
+        ptrMangled += "__Pointee_";
+      }
+      ptrMangled += "E";
+      return ptrMangled;
 
     default:
       throw new InternalError(

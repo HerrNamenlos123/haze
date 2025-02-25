@@ -1,5 +1,6 @@
 import {
   CompilerError,
+  getCallerLocation,
   InternalError,
   UnreachableCode,
   type Location,
@@ -9,6 +10,7 @@ import type { Program } from "./Program";
 import { Scope } from "./Scope";
 import {
   mangleDatatype,
+  mangleSymbol,
   type DatatypeSymbol,
   type FunctionSymbol,
   type VariableSymbol,
@@ -70,6 +72,12 @@ export type StructDatatype = {
   methods: FunctionSymbol[];
 };
 
+export type RawPointerDatatype = {
+  variant: "RawPointer";
+  pointee: Datatype;
+  generics: Generics;
+};
+
 export type PrimitiveDatatype = {
   variant: "Primitive";
   primitive: Primitive;
@@ -79,6 +87,7 @@ export type Datatype =
   | DeferredDatatype
   | FunctionDatatype
   | StructDatatype
+  | RawPointerDatatype
   | GenericPlaceholderDatatype
   | PrimitiveDatatype
   | FunctionDatatype;
@@ -139,6 +148,17 @@ export function serializeDatatype(datatype: Datatype): string {
     case "Primitive":
       return primitiveVariantToString(datatype);
 
+    case "RawPointer":
+      const g2 = [] as string[];
+      for (const [name, tp] of datatype.generics) {
+        if (tp) {
+          g2.push(`${name}=${serializeDatatype(tp)}`);
+        } else {
+          g2.push(name);
+        }
+      }
+      return `RawPtr<${g2.join(", ")}>`;
+
     case "Struct":
       let s = datatype.name;
       const g = [] as string[];
@@ -167,204 +187,6 @@ export function serializeDatatype(datatype: Datatype): string {
       return datatype.name;
   }
 }
-
-// function getDisplayName(type: Datatype): string {
-//   switch (type.variant) {
-//     case "Primitive":
-//       return primitiveVariantToString(type);
-//     case "Function":
-//       const genericArr: string[] = [];
-//       for (const [name, tp] of type.generics) {
-//         let nm = name;
-//         if (tp) {
-//           nm += ` = ${getDisplayName(tp)}`;
-//         }
-//         genericArr.push(nm);
-//       }
-//       const params = type.functionParameters.map((f) => getDisplayName(f[1]));
-//       const s = genericArr.length > 0 ? `<${genericArr.join(", ")}> ` : "";
-//       return `${s}(${params.join(", ")}) -> ${this._functionReturnType.getDisplayName()}`;
-//     case Datatype.Variants.Pointer:
-//       return `Ptr<${this._pointee.getDisplayName()}>`;
-//     case Datatype.Variants.ResolutionDeferred:
-//       return "__Deferred";
-//     case Datatype.Variants.Struct:
-//       if (this._name.startsWith("__anonym_")) {
-//         const val = "struct {";
-//         for (const symbol of this._structMemberSymbols!.symbols) {
-//           val += `${symbol.name}: ${symbol.type.getDisplayName()}, `;
-//         }
-//         if (this._structMemberSymbols!.symbols.length > 0) {
-//           val = val.slice(0, -2);
-//         }
-//         val += "}";
-//         return val;
-//       } else {
-//         let s = this._name;
-//         if (this._generics.length > 0) {
-//           const g = this._generics.map((gg) =>
-//             gg[1] ? `${gg[0]} = ${gg[1].getDisplayName()}` : gg[0],
-//           );
-//           s += `<${g.join(", ")}> `;
-//         }
-//         if (this._structMemberSymbols) {
-//           s += "{";
-//           s += this._structMemberSymbols.symbols
-//             .map((m) => `${m.name}: ${m.type}`)
-//             .join(", ");
-//           s += "}";
-//         }
-//         return s;
-//       }
-//     default:
-//       throw new Error("Invalid variant");
-//   }
-// }
-
-// function getMangledName(): string {
-//   switch (this._variant) {
-//     case Datatype.Variants.Primitive:
-//       return Datatype.primitiveVariantToString(this._primitiveVariant);
-//     case Datatype.Variants.Pointer:
-//       throw new InternalError("Cannot mangle pointer");
-//     case Datatype.Variants.ResolutionDeferred:
-//       throw new InternalError("Cannot mangle deferred");
-//     case Datatype.Variants.Struct:
-//       let mangled = this._name.length.toString();
-//       mangled += this._name;
-//       if (this._generics.length > 0) {
-//         mangled += "I";
-//         for (const [name, tp] of this._generics) {
-//           if (!tp) {
-//             throw new InternalError(
-//               `Generic placeholder '${name}' is missing value`,
-//               getCallerLocation(),
-//             );
-//           }
-//           mangled += tp.getMangledName();
-//         }
-//         mangled += "E";
-//       }
-//       return mangled;
-//     case Datatype.Variants.Function:
-//       let mangled = "F";
-//       for (const [name, tp] of this._functionParameters) {
-//         mangled += tp.getMangledName();
-//       }
-//       mangled += "E";
-//       return mangled;
-//   }
-//   throw new InternalError(`Invalid variant ${this._variant}`);
-// }
-
-// function areAllGenericsResolved(): boolean {
-//   if (!this.isGeneric()) {
-//     return true;
-//   }
-//   switch (this._variant) {
-//     case Datatype.Variants.Primitive:
-//       return true;
-//     case Datatype.Variants.GenericPlaceholder:
-//       return false;
-//     case Datatype.Variants.ResolutionDeferred:
-//       throw new InternalError(
-//         "Deferred type should no longer be in this stage",
-//       );
-//     case Datatype.Variants.Pointer:
-//       return !!this._pointee && this._pointee.areAllGenericsResolved();
-//     case Datatype.Variants.Function:
-//       if (
-//         this._functionReturnType &&
-//         !this._functionReturnType.areAllGenericsResolved()
-//       ) {
-//         return false;
-//       }
-//       for (const [name, type] of this._functionParameters) {
-//         if (!type.areAllGenericsResolved()) {
-//           return false;
-//         }
-//       }
-//       for (const [name, tp] of this._generics) {
-//         if (!tp) {
-//           return false;
-//         }
-//       }
-//       return true;
-//     case Datatype.Variants.Struct:
-//       for (const vsym of this.structSymbolTable().getFiltered(VariableSymbol)) {
-//         const vsymbol = vsym as VariableSymbol;
-//         if (!vsymbol.type.areAllGenericsResolved()) {
-//           return false;
-//         }
-//       }
-//       for (const [name, tp] of this._generics) {
-//         if (!tp) {
-//           return false;
-//         }
-//       }
-//       return true;
-//   }
-//   throw new InternalError(`Invalid variant ${this._variant}`);
-// }
-
-// function isGeneric(): boolean {
-//   switch (this._variant) {
-//     case Datatype.Variants.Primitive:
-//       return false;
-
-//     case Datatype.Variants.GenericPlaceholder:
-//       return true;
-
-//     case Datatype.Variants.ResolutionDeferred:
-//       return false;
-
-//     case Datatype.Variants.Pointer:
-//       return !!this._pointee && this._pointee.isGeneric();
-
-//     case Datatype.Variants.Function:
-//       if (this._functionReturnType && this._functionReturnType.isGeneric()) {
-//         return true;
-//       }
-//       for (const [name, type] of this._functionParameters) {
-//         if (type.isGeneric()) {
-//           return true;
-//         }
-//       }
-//       return this._generics.length > 0;
-
-//     case Datatype.Variants.Struct:
-//       const vsyms = this.structSymbolTable().getFiltered(VariableSymbol);
-//       for (const vsym of vsyms) {
-//         const vsymbol = vsym as VariableSymbol;
-//         if (vsymbol.type.isGeneric()) {
-//           return true;
-//         }
-//       }
-//       return this._generics.length > 0;
-//   }
-//   throw new InternalError(`Invalid variant ${this._variant}`);
-// }
-
-// function containsUnknown(): boolean {
-//   switch (this._variant) {
-//     case Datatype.Variants.Primitive:
-//       return this.isUnknown();
-//     case Datatype.Variants.Function:
-//       if (!this._functionReturnType) {
-//         throw new InternalError("bullshit happening");
-//       }
-//       if (this._functionReturnType.isUnknown()) {
-//         return true;
-//       }
-//       for (const [name, type] of this._functionParameters) {
-//         if (type.isUnknown()) {
-//           return true;
-//         }
-//       }
-//       return false;
-//   }
-//   throw new InternalError(`Invalid variant ${this._variant}`);
-// }
 
 export function generateDefinitionCCode(
   _datatype: DatatypeSymbol,
@@ -402,6 +224,12 @@ export function generateDefinitionCCode(
         .writeLine(`} ${generateUsageCode(datatype.type, program)};`);
       return writer;
 
+    case "RawPointer":
+      writer.writeLine(
+        `typedef ${generateUsageCode(datatype.type.pointee, program)}* ${mangleSymbol(datatype)};`,
+      );
+      return writer;
+
     case "Function":
       const params = datatype.type.functionParameters.map(([name, tp]) =>
         generateUsageCode(datatype.type, program),
@@ -411,7 +239,7 @@ export function generateDefinitionCCode(
       );
       return writer;
   }
-  throw new InternalError(`Invalid variant ${datatype.variant}`);
+  throw new InternalError(`Invalid variant ${datatype.type.variant}`);
 }
 
 export function generateUsageCode(dt: Datatype, program: Program): string {
@@ -449,11 +277,8 @@ export function generateUsageCode(dt: Datatype, program: Program): string {
       }
       throw new UnreachableCode();
 
-    // case Datatype.Variants.Pointer:
-    //   if (!this._pointee) {
-    //     throw new InternalError("bullshit happening");
-    //   }
-    //   return `${this._pointee.generateUsageCode()}*`;
+    case "RawPointer":
+      return `${generateUsageCode(dt.pointee, program)}*`;
 
     case "Deferred":
       throw new InternalError("Cannot generate usage code for deferred");

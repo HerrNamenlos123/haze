@@ -26,6 +26,9 @@ struct Array<T> {
   }
 }
 
+declare "C" calloc2(size: u64): Array<i32>;
+declare "C" calloc(size: u64): RawPtr<i32>;
+
 struct MemoryBuffer {
   data: i16;
   length: u64;
@@ -36,7 +39,7 @@ struct MemoryBuffer {
       .data: 0,
       .length: size,
     };
-    __c__("buffer.data = calloc(size)");
+    // __c__("buffer.data = calloc(size)");
     return buffer;
   }
 

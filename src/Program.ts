@@ -14,6 +14,7 @@ import {
   serializeDatatype,
   type Datatype,
   type PrimitiveDatatype,
+  type RawPointerDatatype,
   type StructDatatype,
 } from "./Datatype";
 import { isDeeplyEqual } from "./deep-equal";
@@ -63,6 +64,21 @@ export class Program {
     define("i16", Primitive.i16);
     define("i32", Primitive.i32);
     define("i64", Primitive.i64);
+
+    const symbol: DatatypeSymbol<RawPointerDatatype> = {
+      variant: "Datatype",
+      name: "RawPtr",
+      type: {
+        variant: "RawPointer",
+        pointee: {
+          variant: "Generic",
+          name: "__Pointee",
+        },
+        generics: new Map().set("__Pointee", undefined),
+      },
+      scope: this.globalScope,
+    };
+    this.globalScope.defineSymbol(symbol, this.globalScope.location);
   }
 
   getBuiltinType(name: string) {

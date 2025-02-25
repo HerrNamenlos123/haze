@@ -3,6 +3,7 @@ import {
   type Datatype,
   type FunctionDatatype,
   type Generics,
+  type RawPointerDatatype,
   type StructDatatype,
 } from "./Datatype";
 import {
@@ -46,6 +47,23 @@ export function resolveGenerics(
       //     return datatype;
       //   }
       return symbol.type;
+
+    case "RawPointer":
+      const generics = new Map(datatype.generics);
+      const tempScope2 = new Scope(scope.location, scope);
+      defineGenericsInScope(datatype.generics, tempScope2);
+      for (const [name, tp] of datatype.generics) {
+        const s = tempScope2.tryLookupSymbol(name, loc);
+        if (s) {
+          generics.set(name, s.type);
+        }
+      }
+      const newRawPtr: RawPointerDatatype = {
+        variant: "RawPointer",
+        pointee: resolveGenerics(datatype.pointee, tempScope2, loc),
+        generics: generics,
+      };
+      return newRawPtr;
 
     case "Struct":
       const newType: StructDatatype = {
@@ -178,6 +196,49 @@ export const visitCommonDatatypeImpl = (
 
     case "Generic":
       return symbol.type;
+
+    case "RawPointer":
+      if (genericsProvided.length != symbol.type.generics.size) {
+        throw new CompilerError(
+          `Type '${name}<>' expected ${symbol.type.generics.size} generic arguments but got ${genericsProvided.length}.`,
+          program.getLoc(ctx),
+        );
+      }
+
+      const ptrGenerics = new Map(symbol.type.generics);
+      let ptrIndex = 0;
+      for (const i of symbol.type.generics.keys()) {
+        if (genericsProvided[ptrIndex].variant !== "Generic") {
+          ptrGenerics.set(i, genericsProvided[ptrIndex]);
+        } else {
+          ptrGenerics.set(i, undefined);
+        }
+        ptrIndex++;
+      }
+
+      const ptrtype: RawPointerDatatype = {
+        variant: "RawPointer",
+        generics: ptrGenerics,
+        pointee: symbol.type.pointee,
+      };
+
+      if (
+        ptrGenerics
+          .entries()
+          .every((e) => e[1] !== undefined && e[1].variant !== "Generic")
+      ) {
+        datatypeSymbolUsed(
+          {
+            name: symbol.name,
+            scope: symbol.scope,
+            type: ptrtype,
+            variant: "Datatype",
+            parentSymbol: symbol.parentSymbol,
+          },
+          program,
+        );
+      }
+      return ptrtype;
 
     case "Struct":
       const structtype: StructDatatype = {
