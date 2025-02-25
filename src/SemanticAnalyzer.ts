@@ -6,8 +6,6 @@ import {
   serializeDatatype,
   type Datatype,
   type FunctionDatatype,
-  type GenericPlaceholderDatatype,
-  type StructDatatype,
 } from "./Datatype";
 import { CompilerError, ImpossibleSituation, InternalError } from "./Errors";
 import { Scope } from "./Scope";
@@ -15,22 +13,21 @@ import { Program } from "./Program";
 import {
   FunctionType,
   mangleSymbol,
-  serializeSymbol,
   VariableType,
   type ConstantSymbol,
-  type DatatypeSymbol,
   type FunctionSymbol,
-  type Symbol,
   type VariableSymbol,
 } from "./Symbol";
 import {
+  BodyContext,
+  ElseifexprContext,
   ExplicitCastExprContext,
   FuncdeclContext,
-  FunctionDatatypeContext,
+  IfexprContext,
+  IfStatementContext,
   InlineCStatementContext,
   SymbolValueExprContext,
   type ArgsContext,
-  type BinaryExprContext,
   type BooleanConstantContext,
   type CommonDatatypeContext,
   type ConstantExprContext,
@@ -52,6 +49,7 @@ import {
 import {
   datatypeSymbolUsed,
   defineGenericsInScope,
+  getNestedReturnTypes,
   resolveGenerics,
   visitCommonDatatypeImpl,
 } from "./utils";
@@ -67,6 +65,7 @@ import type {
   RawPointerDereferenceExpression,
 } from "./Expression";
 import type {
+  ConditionalStatement,
   ExprStatement,
   InlineCStatement,
   ReturnStatement,
@@ -324,28 +323,24 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
         );
       }
 
-      const returnedTypes: Record<string, Datatype> = {};
       if (!(ctx instanceof FuncdeclContext)) {
         this.visit(ctx.funcbody()).forEach((statement: Statement) => {
           symbol.scope.statements.push(statement);
-          if (statement.variant === "Return" && statement.expr) {
-            returnedTypes[serializeDatatype(statement.expr.type)] =
-              statement.expr.type;
-          }
         });
       }
 
+      const returnedTypes = getNestedReturnTypes(symbol.scope);
       if (!ctx.datatype()) {
         let returntype: Datatype = symbol.type.functionReturnType;
-        if (Object.keys(returnedTypes).length > 1) {
+        if (returnedTypes.length > 1) {
           throw new CompilerError(
-            `Cannot deduce return type. Multiple return types: ${Object.keys(
-              returnedTypes,
-            ).join(", ")}`,
+            `Cannot deduce return type. Multiple return types: ${returnedTypes
+              .map((tp) => serializeDatatype(tp))
+              .join(", ")}`,
             this.program.getLoc(ctx),
           );
-        } else if (Object.keys(returnedTypes).length === 1) {
-          returntype = Object.values(returnedTypes)[0];
+        } else if (returnedTypes.length === 1) {
+          returntype = returnedTypes[0];
         } else {
           returntype = this.program.currentScope.lookupSymbol("none", loc).type;
         }
@@ -384,11 +379,12 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
       );
       return [{ variant: "Return", ctx: ctx, expr: expr } as ReturnStatement];
     } else {
-      return ctx
-        .body()
-        .statement_list()
-        .map((s) => this.visit(s));
+      return this.visitBody(ctx.body());
     }
+  };
+
+  visitBody = (ctx: BodyContext): Statement[] => {
+    return ctx.statement_list().map((s) => this.visit(s));
   };
 
   visitExprStatement = (ctx: ExprStatementContext): ExprStatement => {
@@ -532,16 +528,6 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
   //       );
   //   }
   // };
-
-  // visitIfexpr(ctx: IfexprContext): void {
-  //   this.visitChildren(ctx);
-  //   // this.setNodeDatatype(ctx, this.getNodeDatatype(ctx.expr()));
-  // }
-
-  // visitElseifexpr(ctx: ElseifexprContext): void {
-  //   this.visitChildren(ctx);
-  //   // this.setNodeDatatype(ctx, this.getNodeDatatype(ctx.expr()));
-  // }
 
   visitStructMethod = (ctx: StructMethodContext): void => {
     this.implFunc(ctx);
@@ -696,35 +682,77 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
     }
   };
 
-  // visitIfStatement(ctx: IfStatementContext): void {
-  //   this.visit(ctx.ifexpr());
-  //   for (const expr of ctx.elseifexpr()) {
-  //     this.visit(expr);
-  //   }
+  visitIfexpr = (ctx: IfexprContext): Expression => {
+    return this.visit(ctx.expr());
+  };
 
-  //   if (!this.getNodeDatatype(ctx.ifexpr()).isBoolean()) {
-  //     throw new CompilerError(
-  //       `If expression of type '${this.getNodeDatatype(ctx.ifexpr()).getDisplayName()}' is not a boolean`,
-  //       this.getLocation(ctx),
-  //     );
-  //   }
+  visitElseifexpr = (ctx: ElseifexprContext): Expression => {
+    return this.visit(ctx.expr());
+  };
 
-  //   this.db.pushScope(this.getNodeScope(ctx.thenblock()));
-  //   this.visit(ctx.thenblock());
-  //   this.db.popScope();
+  visitIfStatement = (ctx: IfStatementContext): Statement => {
+    const ifExpr: Expression = this.visitIfexpr(ctx.ifexpr());
+    const elseIfExprs: Expression[] = [];
+    for (const expr of ctx.elseifexpr_list()) {
+      elseIfExprs.push(this.visit(expr));
+    }
 
-  //   for (const elifblock of ctx.elseifblock()) {
-  //     this.db.pushScope(this.getNodeScope(elifblock));
-  //     this.visit(elifblock);
-  //     this.db.popScope();
-  //   }
+    if (
+      !(
+        ifExpr.type.variant === "Primitive" &&
+        ifExpr.type.primitive === Primitive.boolean
+      )
+    ) {
+      implicitConversion(
+        ifExpr.type,
+        this.program.getBuiltinType("boolean"),
+        "",
+        this.program.currentScope,
+        this.program.getLoc(ctx),
+        this.program,
+      );
+    }
 
-  //   if (ctx.elseblock()) {
-  //     this.db.pushScope(this.getNodeScope(ctx.elseblock()));
-  //     this.visit(ctx.elseblock());
-  //     this.db.popScope();
-  //   }
-  // }
+    const parentScope = this.program.currentScope;
+    const statement: ConditionalStatement = {
+      variant: "Conditional",
+      if: [ifExpr, new Scope(this.program.getLoc(ctx), parentScope)],
+      elseIf: elseIfExprs.map((e) => [
+        e,
+        new Scope(this.program.getLoc(ctx), parentScope),
+      ]),
+      else: ctx.elseblock() && new Scope(this.program.getLoc(ctx), parentScope),
+      ctx,
+    };
+
+    const ifScope = this.program.pushScope(statement.if[1]);
+    this.visitBody(ctx.thenblock().body()).forEach((statement: Statement) => {
+      ifScope.statements.push(statement);
+    });
+    this.program.popScope();
+
+    let index = 0;
+    for (const [expr, scope] of statement.elseIf) {
+      this.program.pushScope(scope);
+      this.visitBody(ctx.elseifblock_list()[index].body()).forEach(
+        (statement: Statement) => {
+          scope.statements.push(statement);
+        },
+      );
+      this.program.popScope();
+      index++;
+    }
+
+    if (statement.else) {
+      const scope = this.program.pushScope(statement.else);
+      this.visitBody(ctx.elseblock().body()).forEach((statement: Statement) => {
+        scope.statements.push(statement);
+      });
+      this.program.popScope();
+    }
+
+    return statement;
+  };
 
   visitArgs = (ctx: ArgsContext): Expression[] => {
     const args: Expression[] = [];

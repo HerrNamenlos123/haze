@@ -2,6 +2,7 @@ import type { ParserRuleContext } from "antlr4";
 import type { Symbol } from "./Symbol";
 import type { Datatype } from "./Datatype";
 import type { Expression } from "./Expression";
+import type { Scope } from "./Scope";
 
 export type VariableDefinitionStatement = {
   variant: "VariableDefinition";
@@ -28,8 +29,17 @@ export type InlineCStatement = {
   code: string;
 };
 
+export type ConditionalStatement = {
+  variant: "Conditional";
+  ctx: ParserRuleContext;
+  if: [Expression, Scope];
+  elseIf: [Expression, Scope][];
+  else?: Scope;
+};
+
 export type Statement =
   | VariableDefinitionStatement
   | ReturnStatement
   | ExprStatement
+  | ConditionalStatement
   | InlineCStatement;

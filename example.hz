@@ -1,4 +1,4 @@
-declare "C" printf(str: stringview, d: i8);
+declare "C" printf(str: stringview);
 declare "C" calloc(num: u64, size: u64): RawPtr<none>;
 declare "C" free(ptr: RawPtr<none>);
 
@@ -39,10 +39,19 @@ struct List<T> {
 main(): i32 {
   // printf("Hello world!\n");
 
-  const s = List<i32>();
   // s.constructor();
 
   // printf("Data: %d\n", buf.length);
+
+  const a = 18;
+  if a {
+    const a = 17;
+    printf("A");
+  }
+  else {
+    const a = 23;
+    printf("B");
+  }
 
   return 0;
 }

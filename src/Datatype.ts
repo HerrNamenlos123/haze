@@ -124,6 +124,18 @@ export function primitiveVariantToString(dt: PrimitiveDatatype): string {
   throw new Error("Datatype has no string representation");
 }
 
+export function isBoolean(dt: Datatype): boolean {
+  switch (dt.variant) {
+    case "Primitive":
+      switch (dt.primitive) {
+        case Primitive.boolean:
+          return true;
+      }
+      return false;
+  }
+  return false;
+}
+
 export function isInteger(dt: Datatype): boolean {
   switch (dt.variant) {
     case "Primitive":
@@ -367,6 +379,12 @@ export function implicitConversion(
   }
 
   if (from.variant === "Primitive" && to.variant === "Primitive") {
+    if (isInteger(from) && isBoolean(to)) {
+      return `(${expr} != 0)`;
+    }
+    if (isBoolean(from) && isInteger(to)) {
+      return `(${expr} ? 1 : 0)`;
+    }
     if (isInteger(from) && isInteger(to)) {
       return `(${generateUsageCode(to, program)})(${expr})`;
     }
@@ -481,6 +499,12 @@ export function explicitConversion(
   }
 
   if (from.variant === "Primitive" && to.variant === "Primitive") {
+    if (isInteger(from) && isBoolean(to)) {
+      return `(${expr} != 0)`;
+    }
+    if (isBoolean(from) && isInteger(to)) {
+      return `(${expr} ? 1 : 0)`;
+    }
     if (isInteger(from) && isInteger(to)) {
       return `(${generateUsageCode(to, program)})(${expr})`;
     }

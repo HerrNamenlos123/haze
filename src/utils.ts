@@ -290,3 +290,23 @@ export function datatypeSymbolUsed(symbol: DatatypeSymbol, program: Program) {
     program.concreteDatatypes[mangled] = symbol;
   }
 }
+
+export function getNestedReturnTypes(scope: Scope) {
+  const returnedTypes = [] as Datatype[];
+  for (const statement of scope.statements) {
+    if (statement.variant === "Return" && statement.expr) {
+      returnedTypes.push(statement.expr.type);
+    } else if (statement.variant === "Conditional") {
+      returnedTypes.push(...getNestedReturnTypes(statement.if[1]));
+      for (const elseIf of statement.elseIf) {
+        returnedTypes.push(...getNestedReturnTypes(elseIf[1]));
+      }
+      if (statement.else) {
+        returnedTypes.push(...getNestedReturnTypes(statement.else));
+      }
+    }
+  }
+  // Deduplicate
+  const uniqueTypes = new Set(returnedTypes);
+  return Array.from(uniqueTypes);
+}

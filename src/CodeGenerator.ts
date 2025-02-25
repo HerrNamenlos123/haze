@@ -254,6 +254,38 @@ class CodeGenerator {
         writer.writeLine(statement.code + ";");
         return writer;
 
+      case "Conditional":
+        const convexpr = implicitConversion(
+          statement.if[0].type,
+          this.program.getBuiltinType("boolean"),
+          this.emitExpr(statement.if[0]).get(),
+          statement.if[1],
+          this.program.getLoc(statement.if[0].ctx),
+          this.program,
+        );
+        writer.writeLine(`if (${convexpr}) {`).pushIndent();
+        writer.write(this.emitScope(statement.if[1]));
+        writer.popIndent().writeLine("}");
+        for (const [expr, scope] of statement.elseIf) {
+          const convexpr = implicitConversion(
+            expr.type,
+            this.program.getBuiltinType("boolean"),
+            this.emitExpr(expr).get(),
+            scope,
+            this.program.getLoc(expr.ctx),
+            this.program,
+          );
+          writer.writeLine(`else if (${convexpr}) {`).pushIndent();
+          writer.write(this.emitScope(scope));
+          writer.popIndent().writeLine("}");
+        }
+        if (statement.else) {
+          writer.writeLine(`else {`).pushIndent();
+          writer.write(this.emitScope(statement.else));
+          writer.popIndent().writeLine("}");
+        }
+        return writer;
+
       // default:
       //   throw new InternalError(`Unknown statement type ${statement.variant}`);
     }
@@ -368,12 +400,17 @@ class CodeGenerator {
       case "Constant":
         switch (typeof expr.constantSymbol.value) {
           case "number":
-          case "boolean":
             writer.write(expr.constantSymbol.value.toString());
             return writer;
+
+          case "boolean":
+            writer.write(expr.constantSymbol.value ? "1" : "0");
+            return writer;
+
           case "string":
             writer.write(expr.constantSymbol.value);
             return writer;
+
           default:
             throw new InternalError(
               `Unknown constant type ${typeof expr.constantSymbol.value}`,
