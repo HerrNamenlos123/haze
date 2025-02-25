@@ -9,7 +9,7 @@ funcbody: ('=>')? '{' body '}' | '=>' expr;
 body: (statement)*;
 
 param: ID ':' datatype;
-params: (param (',' param)*)?;
+params: (param (',' param)* (',' ellipsis)?)? | ellipsis;
 
 funcdecl: 'declare' (externlang)? (ID '.')* ID '(' params ')' (':' datatype)? ';';
 externlang: '"C"' | '"C++"';
@@ -45,6 +45,7 @@ expr
     | expr '(' args ')'                                         #ExprCallExpr
     | expr 'as' datatype                                        #ExplicitCastExpr
     | expr '.' ID                                               #ExprMemberAccess
+    | ('not' | '!') expr                                        #UnaryExpr
     | expr ('*'|'/'|'%') expr                                   #BinaryExpr
     | expr ('+'|'-') expr                                       #BinaryExpr
     | expr ('<'|'>'|'<='|'>=') expr                             #BinaryExpr
@@ -56,6 +57,8 @@ expr
     ;
 
 args: (expr (',' expr)*)?;
+
+ellipsis: '...';
 
 functype: '(' params ')' '=>' datatype;
 

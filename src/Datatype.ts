@@ -54,6 +54,7 @@ export type FunctionDatatype = {
   variant: "Function";
   functionParameters: [string, Datatype][];
   functionReturnType: Datatype;
+  vararg: boolean;
 };
 
 export type DeferredDatatype = {
@@ -136,25 +137,6 @@ export function isBoolean(dt: Datatype): boolean {
   return false;
 }
 
-function widenInteger(a: PrimitiveDatatype): PrimitiveDatatype {
-  switch (a.primitive) {
-    case Primitive.i8:
-      return { variant: "Primitive", primitive: Primitive.i16 };
-    case Primitive.i16:
-      return { variant: "Primitive", primitive: Primitive.i32 };
-    case Primitive.i32:
-      return { variant: "Primitive", primitive: Primitive.i64 };
-    case Primitive.u8:
-      return { variant: "Primitive", primitive: Primitive.u16 };
-    case Primitive.u16:
-      return { variant: "Primitive", primitive: Primitive.u32 };
-    case Primitive.u32:
-      return { variant: "Primitive", primitive: Primitive.u64 };
-    default:
-      return a;
-  }
-}
-
 function getWiderInteger(
   a: PrimitiveDatatype,
   b: PrimitiveDatatype,
@@ -164,13 +146,49 @@ function getWiderInteger(
   return aBits > bBits ? a : b;
 }
 
+function widenInteger(
+  a: PrimitiveDatatype,
+  b: PrimitiveDatatype,
+): PrimitiveDatatype {
+  if (a.primitive == b.primitive) {
+    return a;
+  }
+
+  let sizeA = getIntegerBits(a);
+  let sizeB = getIntegerBits(b);
+
+  // If one of the types is unsigned and larger in size, widen accordingly
+  if (isIntegerUnsigned(a) && !isIntegerUnsigned(b)) {
+    if (sizeA > sizeB) {
+      return a; // Promote the unsigned type
+    } else {
+      return b; // Promote the signed type to the larger unsigned type
+    }
+  }
+
+  if (isIntegerUnsigned(b) && !isIntegerUnsigned(a)) {
+    if (sizeB > sizeA) {
+      return b; // Promote the unsigned type
+    } else {
+      return a; // Promote the signed type to the larger unsigned type
+    }
+  }
+
+  // Otherwise, promote to the larger type based on size
+  if (sizeA > sizeB) {
+    return a;
+  } else {
+    return b;
+  }
+}
+
 function promoteType(
   a: PrimitiveDatatype,
   b: PrimitiveDatatype,
 ): PrimitiveDatatype {
   if (a.primitive == b.primitive) return a;
-  if (isIntegerUnsigned(a) && !isIntegerUnsigned(b)) return widenInteger(b);
-  if (!isIntegerUnsigned(a) && isIntegerUnsigned(b)) return widenInteger(a);
+  if (isIntegerUnsigned(a) && !isIntegerUnsigned(b)) return widenInteger(a, b);
+  if (!isIntegerUnsigned(a) && isIntegerUnsigned(b)) return widenInteger(a, b);
   return getWiderInteger(a, b);
 }
 
@@ -484,6 +502,14 @@ export function implicitConversion(
     );
   }
 
+  if (
+    from.variant === "RawPointer" &&
+    to.variant === "Primitive" &&
+    to.primitive === Primitive.boolean
+  ) {
+    return `(${expr} != 0)`;
+  }
+
   if (from.variant === "RawPointer" && to.variant === "RawPointer") {
     if (
       isSame(from.generics.get("__Pointee")!, to.generics.get("__Pointee")!)
@@ -602,6 +628,14 @@ export function explicitConversion(
       `No explicit conversion from ${serializeDatatype(from)} to ${serializeDatatype(to)}`,
       loc,
     );
+  }
+
+  if (
+    from.variant === "RawPointer" &&
+    to.variant === "Primitive" &&
+    to.primitive === Primitive.boolean
+  ) {
+    return `(${expr} != 0)`;
   }
 
   if (from.variant === "RawPointer" && to.variant === "RawPointer") {

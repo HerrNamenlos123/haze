@@ -1,4 +1,4 @@
-declare "C" printf(str: stringview, d: i32);
+declare "C" printf(str: stringview, ...);
 declare "C" calloc(num: u64, size: u64): RawPtr<none>;
 declare "C" free(ptr: RawPtr<none>);
 
@@ -15,8 +15,12 @@ struct MemoryBuffer {
   size: u64;
 
   constructor(size: u64) {
+    const buffer = malloc(size);
+    if !buffer {
+      printf("Failed\n");
+    }
     return MemoryBuffer {
-      .data: malloc(size),
+      .data: buffer,
       .size: size,
     };
   }
@@ -36,13 +40,24 @@ struct List<T> {
     };
   }
 
-  push(n: T): none {
-    // buffer.length;
-    
+  push(n: T) {
+    printf("Buffer: %d\n", this.buffer.data);
+    const buf = this.buffer.data as RawPtr<T>;
+    __c__("buf[this->length] = n");
+    this.length = this.length + 1;
+    printf("Length: %d\n", this.length);
+    printf("Capacity: %d\n", this.capacity());
   }
 
   get(n: T): T {
     return n;
+  }
+
+  capacity(): u64 {
+    const dummy = 0 as T;
+    const size = this.buffer.size;
+    __c__("size /= sizeof(dummy)");
+    return size;
   }
 }
 

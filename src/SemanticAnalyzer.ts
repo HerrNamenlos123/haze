@@ -32,6 +32,7 @@ import {
   IfStatementContext,
   InlineCStatementContext,
   SymbolValueExprContext,
+  UnaryExprContext,
   WhileStatementContext,
   type ArgsContext,
   type BooleanConstantContext,
@@ -70,6 +71,7 @@ import type {
   MethodAccessExpression,
   ObjectExpression,
   RawPointerDereferenceExpression,
+  UnaryExpression,
 } from "./Expression";
 import type {
   ConditionalStatement,
@@ -249,12 +251,19 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
     const params = expr.type.functionParameters;
     const visitedArgs = this.visit(ctx.args());
     if (visitedArgs.length !== params.length) {
-      throw new CompilerError(
-        `Expected ${params.length} arguments but got ${visitedArgs.length}`,
-        this.program.getLoc(ctx),
-      );
+      if (!expr.type.vararg) {
+        throw new CompilerError(
+          `Expected ${params.length} arguments but got ${visitedArgs.length}`,
+          this.program.getLoc(ctx),
+        );
+      } else if (visitedArgs.length < params.length) {
+        throw new CompilerError(
+          `Expected at least ${params.length} arguments but got ${visitedArgs.length}`,
+          this.program.getLoc(ctx),
+        );
+      }
     }
-    for (let i = 0; i < params.length; i++) {
+    for (let i = 0; i < visitedArgs.length; i++) {
       const arg = visitedArgs[i];
       args.push(arg);
     }
@@ -554,6 +563,30 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
 
     throw new CompilerError(
       `No comparison operator '${operation}' is known for types '${serializeDatatype(left.type)}' and '${serializeDatatype(right.type)}'`,
+      this.program.getLoc(ctx),
+    );
+  };
+
+  visitUnaryExpr = (ctx: UnaryExprContext): UnaryExpression => {
+    const expr: Expression = this.visit(ctx.expr());
+    let operation = ctx.getChild(0).getText();
+    if (operation === "not") {
+      operation = "!";
+    }
+
+    switch (operation) {
+      case "!":
+        return {
+          variant: "Unary",
+          ctx: ctx,
+          expr: expr,
+          operation: operation,
+          type: this.program.getBuiltinType("boolean"),
+        };
+    }
+
+    throw new CompilerError(
+      `No unary operator '${operation}' is known for type '${serializeDatatype(expr.type)}'`,
       this.program.getLoc(ctx),
     );
   };

@@ -34,8 +34,10 @@ import { BinaryExprContext } from "./HazeParser.js";
 import { FuncRefExprContext } from "./HazeParser.js";
 import { ConstantExprContext } from "./HazeParser.js";
 import { StructInstantiationExprContext } from "./HazeParser.js";
+import { UnaryExprContext } from "./HazeParser.js";
 import { ExplicitCastExprContext } from "./HazeParser.js";
 import { ArgsContext } from "./HazeParser.js";
+import { EllipsisContext } from "./HazeParser.js";
 import { FunctypeContext } from "./HazeParser.js";
 import { IntegerConstantContext } from "./HazeParser.js";
 import { StringConstantContext } from "./HazeParser.js";
@@ -402,6 +404,18 @@ export default class HazeListener extends ParseTreeListener {
 	 */
 	exitStructInstantiationExpr?: (ctx: StructInstantiationExprContext) => void;
 	/**
+	 * Enter a parse tree produced by the `UnaryExpr`
+	 * labeled alternative in `HazeParser.expr`.
+	 * @param ctx the parse tree
+	 */
+	enterUnaryExpr?: (ctx: UnaryExprContext) => void;
+	/**
+	 * Exit a parse tree produced by the `UnaryExpr`
+	 * labeled alternative in `HazeParser.expr`.
+	 * @param ctx the parse tree
+	 */
+	exitUnaryExpr?: (ctx: UnaryExprContext) => void;
+	/**
 	 * Enter a parse tree produced by the `ExplicitCastExpr`
 	 * labeled alternative in `HazeParser.expr`.
 	 * @param ctx the parse tree
@@ -423,6 +437,16 @@ export default class HazeListener extends ParseTreeListener {
 	 * @param ctx the parse tree
 	 */
 	exitArgs?: (ctx: ArgsContext) => void;
+	/**
+	 * Enter a parse tree produced by `HazeParser.ellipsis`.
+	 * @param ctx the parse tree
+	 */
+	enterEllipsis?: (ctx: EllipsisContext) => void;
+	/**
+	 * Exit a parse tree produced by `HazeParser.ellipsis`.
+	 * @param ctx the parse tree
+	 */
+	exitEllipsis?: (ctx: EllipsisContext) => void;
 	/**
 	 * Enter a parse tree produced by `HazeParser.functype`.
 	 * @param ctx the parse tree

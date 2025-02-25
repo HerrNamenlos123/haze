@@ -4,6 +4,7 @@ import {
   FuncdeclContext,
   FunctionDatatypeContext,
   NamedfuncContext,
+  ParamsContext,
   StructDeclContext,
   StructMemberContext,
   StructMethodContext,
@@ -47,19 +48,24 @@ export class SymbolCollector extends HazeVisitor<any> {
     return [ctx.ID().getText(), this.visit(ctx.datatype())];
   };
 
+  visitParams = (
+    ctx: ParamsContext,
+  ): { params: [string, Datatype][]; vararg: boolean } => {
+    const params = ctx.param_list().map((n) => this.visitParam(n));
+    return { params: params, vararg: ctx.ellipsis() !== undefined };
+  };
+
   visitCommonDatatype = (ctx: CommonDatatypeContext): Datatype => {
     return visitCommonDatatypeImpl(this, this.program, ctx);
   };
 
   visitFunctionDatatype = (ctx: FunctionDatatypeContext): Datatype => {
+    const params = this.visitParams(ctx.functype().params());
     const type: FunctionDatatype = {
       variant: "Function",
-      functionParameters: ctx
-        .functype()
-        .params()
-        .param_list()
-        .map((n) => [n.ID().getText(), this.visit(n.datatype())]),
+      functionParameters: params.params,
       functionReturnType: this.visit(ctx.functype().datatype()),
+      vararg: params.vararg,
     };
     datatypeSymbolUsed(
       {
@@ -170,13 +176,12 @@ export class SymbolCollector extends HazeVisitor<any> {
       }
     }
 
+    const params = this.visitParams(ctx.params());
     const type: FunctionDatatype = {
       variant: "Function",
-      functionParameters: ctx
-        .params()
-        .param_list()
-        .map((n) => this.visitParam(n)),
+      functionParameters: params.params,
       functionReturnType: returntype,
+      vararg: params.vararg,
     };
     const symbol: FunctionSymbol = {
       variant: "Function",

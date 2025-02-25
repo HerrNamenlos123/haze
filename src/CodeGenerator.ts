@@ -351,9 +351,12 @@ class CodeGenerator {
           ) {
             scope = expr.expr.methodSymbol.scope;
           }
+          const target = expr.expr.type.functionParameters[i]
+            ? expr.expr.type.functionParameters[i][1]
+            : expr.args[i].type;
           const converted = implicitConversion(
             expr.args[i].type,
-            expr.expr.type.functionParameters[i][1],
+            target,
             val,
             scope,
             this.program.getLoc(expr.args[i].ctx),
@@ -424,6 +427,24 @@ class CodeGenerator {
             this.program,
           ),
         );
+        return writer;
+
+      case "Unary":
+        switch (expr.operation) {
+          case "!":
+            {
+              const unaryExpr = implicitConversion(
+                expr.expr.type,
+                expr.type,
+                this.emitExpr(expr.expr).get(),
+                this.program.currentScope,
+                this.program.getLoc(expr.ctx),
+                this.program,
+              );
+              writer.write("(" + expr.operation + " " + unaryExpr + ")");
+            }
+            break;
+        }
         return writer;
 
       case "Binary":

@@ -77,10 +77,17 @@ export type BinaryExpression = BaseExpression & {
     | "||";
 };
 
+export type UnaryExpression = BaseExpression & {
+  variant: "Unary";
+  expr: Expression;
+  operation: "!";
+};
+
 export type Expression =
   | ConstantExpression
   | ObjectExpression
   | BinaryExpression
+  | UnaryExpression
   | SymbolValueExpression
   | MemberAccessExpression
   | RawPointerDereferenceExpression
