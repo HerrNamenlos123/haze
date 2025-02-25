@@ -1,7 +1,7 @@
 
 //import "test.hz"
 
-declare "C" printf(str: stringview);
+declare "C" printf(str: stringview, d: i32);
 
 struct Array<T> {
   data: T;
@@ -26,26 +26,39 @@ struct Array<T> {
   }
 }
 
-declare "C" calloc2(size: u64): Array<i32>;
-declare "C" calloc(size: u64): RawPtr<i32>;
+declare "C" calloc(num: u64, size: u64): RawPtr<i32>;
+declare "C" free(ptr: RawPtr<i32>);
+
+malloc(size: u64): RawPtr<i32> {
+  return calloc(1, size);
+}
 
 struct MemoryBuffer {
-  data: i16;
+  data: RawPtr<i32>;
   length: u64;
 
   constructor(size: u64) {
-    printf("Constructing MemoryBuffer\n");
+    // printf("Constructing MemoryBuffer\n");
     const buffer = MemoryBuffer {
-      .data: 0,
+      .data: malloc(32),
       .length: size,
     };
     // __c__("buffer.data = calloc(size)");
     return buffer;
   }
 
+  print() {
+    const a: RawPtr<RawPtr<i32>> = 0;
+    __c__("a = malloc(sizeof(int32_t*))");
+    __c__("*a = malloc(sizeof(int32_t))");
+    __c__("**a = 187");
+    printf("Print: %d\n", a.ptr.ptr);
+    // printf("Print: %d\n", this.load().length);
+  }
+
   destructor() {
-    printf("Destructing MemoryBuffer\n");
-    // __c__("free(buffer.data)");
+    // printf("Destructing MemoryBuffer\n");
+    // free(this.data);
   }
 
   // __copy__(): MemoryBuffer {
@@ -61,6 +74,7 @@ main(): i32 {
   // printf("Hello world!\n");
 
   const buf = MemoryBuffer(132);
+  buf.print();
   // printf("Data: %d\n", buf.length);
 
   return 0;

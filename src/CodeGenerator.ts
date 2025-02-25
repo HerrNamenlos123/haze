@@ -10,6 +10,7 @@ import {
   FunctionType,
   mangleDatatype,
   mangleSymbol,
+  serializeSymbol,
   type DatatypeSymbol,
   type FunctionSymbol,
   type VariableSymbol,
@@ -99,6 +100,7 @@ class CodeGenerator {
   generate() {
     this.includeHeader("stdio.h");
     this.includeHeader("stdint.h");
+    this.includeHeader("stdlib.h");
 
     for (const symbol of Object.values(this.program.concreteFunctions)) {
       if (symbol.functionType === FunctionType.Internal) {
@@ -124,7 +126,7 @@ class CodeGenerator {
       const params = [];
       if (symbol.thisPointer) {
         params.push(
-          `${generateUsageCode(symbol.thisPointer, this.program)}* this`,
+          `${generateUsageCode(symbol.thisPointer, this.program)} this`,
         );
       }
       params.push(`${CONTEXT_STRUCT}* context`);
@@ -328,6 +330,10 @@ class CodeGenerator {
           );
         }
         writer.popIndent().write(" })");
+        return writer;
+
+      case "RawPtrDeref":
+        writer.write(`(*${this.emitExpr(expr.expr).get()})`);
         return writer;
 
       case "MemberAccess":

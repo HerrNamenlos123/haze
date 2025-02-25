@@ -1,6 +1,7 @@
 import {
   CompilerError,
   getCallerLocation,
+  ImpossibleSituation,
   InternalError,
   UnreachableCode,
   type Location,
@@ -74,7 +75,6 @@ export type StructDatatype = {
 
 export type RawPointerDatatype = {
   variant: "RawPointer";
-  pointee: Datatype;
   generics: Generics;
 };
 
@@ -225,8 +225,12 @@ export function generateDefinitionCCode(
       return writer;
 
     case "RawPointer":
+      const generic = datatype.type.generics.get("__Pointee");
+      if (!generic) {
+        throw new ImpossibleSituation();
+      }
       writer.writeLine(
-        `typedef ${generateUsageCode(datatype.type.pointee, program)}* ${mangleSymbol(datatype)};`,
+        `typedef ${generateUsageCode(generic, program)}* ${mangleSymbol(datatype)};`,
       );
       return writer;
 
@@ -278,7 +282,11 @@ export function generateUsageCode(dt: Datatype, program: Program): string {
       throw new UnreachableCode();
 
     case "RawPointer":
-      return `${generateUsageCode(dt.pointee, program)}*`;
+      const ptrGeneric = dt.generics.get("__Pointee");
+      if (!ptrGeneric) {
+        throw new ImpossibleSituation();
+      }
+      return `${generateUsageCode(ptrGeneric, program)}*`;
 
     case "Deferred":
       throw new InternalError("Cannot generate usage code for deferred");
@@ -298,12 +306,9 @@ export function isSame(a: Datatype, b: Datatype): boolean {
     return a.primitive === b.primitive;
   }
 
-  // if (a.isPointer() && b.isPointer()) {
-  //   if (!a._pointee || !b._pointee) {
-  //     return false;
-  //   }
-  //   return a._pointee.isSame(b._pointee);
-  // }
+  if (a.variant === "RawPointer" && b.variant === "RawPointer") {
+    return isSame(a.generics.get("__Pointee")!, b.generics.get("__Pointee")!);
+  }
 
   if (a.variant === "Function" && b.variant === "Function") {
     if (!a.functionReturnType || !b.functionReturnType) {
@@ -365,12 +370,17 @@ export function implicitConversion(
     );
   }
 
-  // if (from.variant === "Pointer" && to.variant === "Pointer") {
-  //   throw new CompilerError(
-  //     "Pointer types are not convertible. Polymorphism is not implemented yet",
-  //     loc,
-  //   );
-  // }
+  if (from.variant === "RawPointer" && to.variant === "RawPointer") {
+    if (
+      isSame(from.generics.get("__Pointee")!, to.generics.get("__Pointee")!)
+    ) {
+      return expr;
+    }
+    throw new CompilerError(
+      `No implicit conversion from ${serializeDatatype(from)} to ${serializeDatatype(to)}`,
+      loc,
+    );
+  }
 
   if (from.variant === "Function" && to.variant === "Function") {
     if (isSame(from.functionReturnType, to.functionReturnType)) {

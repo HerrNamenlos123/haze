@@ -122,8 +122,7 @@ export class SymbolCollector extends HazeVisitor<any> {
     let returntype: Datatype = { variant: "Deferred" };
     if (ctx.datatype()) {
       returntype = this.visit(ctx.datatype());
-    }
-    if (!(ctx instanceof FuncdeclContext)) {
+    } else if (!(ctx instanceof FuncdeclContext)) {
       if (returntype.variant === "Deferred" && ctx.funcbody().expr()) {
         const expr = this.visit(ctx.funcbody().expr());
         returntype = expr.type;
@@ -159,9 +158,15 @@ export class SymbolCollector extends HazeVisitor<any> {
           );
         }
         specialMethod = "destructor";
-        thisPointerType = parentSymbol.type;
+        thisPointerType = {
+          variant: "RawPointer",
+          generics: new Map().set("__Pointee", parentSymbol.type),
+        };
       } else {
-        thisPointerType = parentSymbol.type;
+        thisPointerType = {
+          variant: "RawPointer",
+          generics: new Map().set("__Pointee", parentSymbol.type),
+        };
       }
     }
 

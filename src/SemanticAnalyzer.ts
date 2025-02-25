@@ -62,6 +62,7 @@ import type {
   MemberAccessExpression,
   MethodAccessExpression,
   ObjectExpression,
+  RawPointerDereferenceExpression,
 } from "./Expression";
 import type {
   ExprStatement,
@@ -70,6 +71,7 @@ import type {
   Statement,
   VariableDefinitionStatement,
 } from "./Statement";
+import type { MemberExpression } from "typescript";
 
 const RESERVED_VARIABLE_NAMES = ["this", "context", "__returnval__"];
 
@@ -223,6 +225,18 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
 
       this.program.pushScope(symbol.scope);
       this.functionStack.push(symbol);
+
+      if (symbol.thisPointer) {
+        symbol.scope.defineSymbol(
+          {
+            variant: "Variable",
+            name: "this",
+            type: symbol.thisPointer,
+            variableType: VariableType.Parameter,
+          },
+          loc,
+        );
+      }
 
       for (const [name, tp] of symbol.type.functionParameters) {
         symbol.scope.defineSymbol(
@@ -740,17 +754,32 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
     };
   };
 
-  visitExprMemberAccess = (
-    ctx: ExprMemberAccessContext,
-  ): MemberAccessExpression => {
+  visitExprMemberAccess = (ctx: ExprMemberAccessContext): Expression => {
     const expr: Expression = this.visit(ctx.expr());
+    const name: string = ctx.ID().getText();
+
+    if (expr.type.variant === "RawPointer") {
+      const p = expr.type.generics.get("__Pointee");
+      if (!p) {
+        throw new ImpossibleSituation();
+      }
+      if (name === "ptr") {
+        const e: RawPointerDereferenceExpression = {
+          variant: "RawPtrDeref",
+          expr: expr,
+          ctx: ctx,
+          type: p,
+        };
+        return e;
+      }
+    }
+
     if (expr.type.variant !== "Struct") {
       throw new CompilerError(
         `Expression of type '${serializeDatatype(expr.type)}' is not a struct`,
         this.program.getLoc(ctx),
       );
     }
-    const name: string = ctx.ID().getText();
     const field: VariableSymbol | undefined = expr.type.members.find(
       (m) => m.name === name,
     );
@@ -842,7 +871,6 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
         this.program.getLoc(symbol.ctx),
       ) as FunctionDatatype;
       this.program.ctxToSymbolMap.set(method.ctx, symbol);
-      // console.log("Method access ", serializeSymbol(symbol));
       this.implFunc(method.ctx as FuncContext);
 
       return {

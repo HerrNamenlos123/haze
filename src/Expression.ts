@@ -27,6 +27,11 @@ export type SymbolValueExpression = BaseExpression & {
   symbol: Symbol;
 };
 
+export type RawPointerDereferenceExpression = BaseExpression & {
+  variant: "RawPtrDeref";
+  expr: Expression;
+};
+
 export type MemberAccessExpression = BaseExpression & {
   variant: "MemberAccess";
   expr: Expression;
@@ -53,5 +58,6 @@ export type Expression =
   | ObjectExpression
   | SymbolValueExpression
   | MemberAccessExpression
+  | RawPointerDereferenceExpression
   | MethodAccessExpression
   | ExprCallExpression;
