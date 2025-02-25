@@ -30,6 +30,8 @@ export type VariableSymbol = {
   parentSymbol?: Symbol;
 };
 
+export type SpecialMethod = undefined | "constructor" | "destructor";
+
 export type FunctionSymbol = {
   variant: "Function";
   name: string;
@@ -38,7 +40,7 @@ export type FunctionSymbol = {
   parentSymbol?: Symbol;
   scope: Scope;
   thisPointer?: Datatype;
-  isConstructor?: boolean;
+  specialMethod?: SpecialMethod;
   ctx: ParserRuleContext;
 };
 

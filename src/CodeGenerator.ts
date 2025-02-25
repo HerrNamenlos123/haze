@@ -1,5 +1,10 @@
 import { Program } from "./Program";
-import { InternalError, ImpossibleSituation } from "./Errors";
+import {
+  InternalError,
+  ImpossibleSituation,
+  printCompilerMessage,
+  ErrorType,
+} from "./Errors";
 import type { StructDeclContext } from "./parser/HazeParser";
 import {
   FunctionType,
@@ -7,6 +12,7 @@ import {
   mangleSymbol,
   type DatatypeSymbol,
   type FunctionSymbol,
+  type VariableSymbol,
 } from "./Symbol";
 import {
   generateDefinitionCCode,
@@ -20,6 +26,7 @@ import type { Statement } from "./Statement";
 import type { Expression } from "./Expression";
 import { OutputWriter } from "./OutputWriter";
 import { datatypeSymbolUsed, resolveGenerics } from "./utils";
+import type { Scope } from "./Scope";
 
 const CONTEXT_STRUCT = "_HN4Haze7ContextE";
 
@@ -140,27 +147,87 @@ class CodeGenerator {
       .writeLine(decl + " {")
       .pushIndent();
 
-    for (const statement of symbol.scope.statements) {
-      this.out.function_definitions[mangleSymbol(symbol)].write(
-        this.emitStatement(statement),
-      );
-    }
+    this.out.function_definitions[mangleSymbol(symbol)].write(
+      this.emitScope(symbol.scope),
+    );
 
     this.out.function_definitions[mangleSymbol(symbol)]
       .popIndent()
       .writeLine("}");
   }
 
+  outputDestructorCalls(
+    scope: Scope,
+    writer: OutputWriter,
+    returnedSymbol?: VariableSymbol,
+  ) {
+    for (const symbol of Object.values(scope.getSymbols()).reverse()) {
+      if (symbol.variant === "Variable" && symbol.type.variant === "Struct") {
+        const destructor = symbol.type.methods.find(
+          (m) => m.specialMethod === "destructor",
+        );
+        if (destructor) {
+          if (returnedSymbol && returnedSymbol === symbol) {
+            continue;
+          }
+          writer.writeLine(
+            `${mangleSymbol(destructor)}(&${symbol.name}, context);`,
+          );
+        }
+      }
+    }
+  }
+
+  emitScope(scope: Scope): OutputWriter {
+    const writer = new OutputWriter();
+
+    let returned = false;
+    for (const statement of scope.statements) {
+      if (returned) {
+        printCompilerMessage(
+          this.program.getLoc(statement.ctx),
+          ErrorType.Warning,
+          "warning",
+          `Dead code detected and stripped`,
+        );
+        break;
+      }
+
+      if (statement.variant === "Return") {
+        returned = true;
+        if (statement.expr) {
+          writer.writeLine(
+            `${generateUsageCode(statement.expr.type, this.program)} __returnval__ = ` +
+              this.emitExpr(statement.expr).get() +
+              ";",
+          );
+        }
+        const returnedSymbol =
+          statement.expr?.variant === "SymbolValue"
+            ? statement.expr.symbol.variant === "Variable"
+              ? statement.expr.symbol
+              : undefined
+            : undefined;
+        this.outputDestructorCalls(scope, writer, returnedSymbol);
+        if (!statement.expr) {
+          writer.writeLine("return;");
+        } else {
+          writer.writeLine("return __returnval__;");
+        }
+      } else {
+        writer.write(this.emitStatement(statement));
+      }
+    }
+    return writer;
+  }
+
   emitStatement(statement: Statement): OutputWriter {
     const writer = new OutputWriter();
     switch (statement.variant) {
       case "Return":
-        if (!statement.expr) {
-          writer.writeLine("return;");
-          return writer;
-        }
-        writer.writeLine("return " + this.emitExpr(statement.expr).get() + ";");
-        return writer;
+        throw new InternalError(
+          "Cannot call emitStatement for return statement, use emitExpression instead",
+        );
 
       case "VariableDefinition":
         if (
@@ -178,6 +245,10 @@ class CodeGenerator {
 
       case "Expr":
         writer.writeLine(this.emitExpr(statement.expr).get() + ";");
+        return writer;
+
+      case "InlineC":
+        writer.writeLine(statement.code + ";");
         return writer;
 
       // default:
@@ -314,11 +385,6 @@ class CodeGenerator {
       generateDefinitionCCode(datatype, this.program),
     );
   }
-
-  //   visitInlineCStatement(ctx: any) {
-  //     const string = ctx.STRING_LITERAL().getText().slice(1, -1);
-  //     ctx.code = string + "\n"; // type: ignore
-  //   }
 
   //   getCurrentFunction() {
   //     return this.currentFunctionStack[this.currentFunctionStack.length - 1];

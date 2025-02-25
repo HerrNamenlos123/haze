@@ -22,7 +22,14 @@ export type ExprStatement = {
   expr: Expression;
 };
 
+export type InlineCStatement = {
+  variant: "InlineC";
+  ctx: ParserRuleContext;
+  code: string;
+};
+
 export type Statement =
   | VariableDefinitionStatement
   | ReturnStatement
-  | ExprStatement;
+  | ExprStatement
+  | InlineCStatement;

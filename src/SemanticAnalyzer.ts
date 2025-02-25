@@ -26,6 +26,7 @@ import {
 import {
   FuncdeclContext,
   FunctionDatatypeContext,
+  InlineCStatementContext,
   SymbolValueExprContext,
   type ArgsContext,
   type BinaryExprContext,
@@ -64,12 +65,13 @@ import type {
 } from "./Expression";
 import type {
   ExprStatement,
+  InlineCStatement,
   ReturnStatement,
   Statement,
   VariableDefinitionStatement,
 } from "./Statement";
 
-const RESERVED_VARIABLE_NAMES = ["this", "context"];
+const RESERVED_VARIABLE_NAMES = ["this", "context", "__returnval__"];
 
 class FunctionBodyAnalyzer extends HazeVisitor<any> {
   private program: Program;
@@ -214,26 +216,6 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
       }
 
       const loc = this.program.getLoc(ctx);
-      // const scope = symbol.scope;
-      // const newType = resolveGenerics(
-      //   symbol.type,
-      //   scope,
-      //   loc,
-      // ) as FunctionDatatype;
-      // if (symbol.thisPointer !== undefined) {
-      //   symbol.thisPointer = resolveGenerics(symbol.thisPointer, scope, loc);
-      // }
-      // symbol.type = newType;
-
-      // if (
-      //   symbol.type.areAllGenericsResolved() &&
-      //   this.program.resolvedFunctions[symbol.getMangledName()]
-      // ) {
-      //   addedSymbols.forEach((sym) => {
-      //     symbol.scope?.purgeSymbol(sym);
-      //   });
-      //   return;
-      // }
 
       if (!symbol || !symbol.scope) {
         throw new ImpossibleSituation();
@@ -264,10 +246,6 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
           }
         });
       }
-
-      // addedSymbols.forEach((sym) => {
-      //   symbol.scope?.purgeSymbol(sym);
-      // });
 
       if (!ctx.datatype()) {
         let returntype: Datatype = symbol.type.functionReturnType;
@@ -572,6 +550,15 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
   //   // this.setNodeSymbol(ctx, this.getNodeSymbol(ctx.func()));
   //   // this.setNodeDatatype(ctx, this.getNodeSymbol(ctx.func()).type);
   // };
+
+  visitInlineCStatement = (ctx: InlineCStatementContext): InlineCStatement => {
+    const string = ctx.STRING_LITERAL().getText().slice(1, -1);
+    return {
+      variant: "InlineC",
+      ctx,
+      code: string,
+    };
+  };
 
   visitReturnStatement = (ctx: ReturnStatementContext): ReturnStatement => {
     if (ctx.expr()) {

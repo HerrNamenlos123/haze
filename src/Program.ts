@@ -65,6 +65,10 @@ export class Program {
     define("i64", Primitive.i64);
   }
 
+  getBuiltinType(name: string) {
+    return this.globalScope.lookupSymbol(name, this.globalScope.location).type;
+  }
+
   pushScope(scope: Scope) {
     this.scopeStack.push(scope);
     return scope;

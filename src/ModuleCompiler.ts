@@ -67,10 +67,14 @@ export class ModuleCompiler {
 
       // prettyPrintAST(ast);
 
-      child_process.execSync(
-        `${C_COMPILER} build/${this.filename}.c -o build/out`,
-      );
-      child_process.execSync("build/out", { stdio: "inherit" });
+      try {
+        child_process.execSync(
+          `${C_COMPILER} build/${this.filename}.c -o build/out`,
+        );
+        child_process.execSync("build/out", { stdio: "inherit" });
+      } catch (e) {
+        console.error("Build failed");
+      }
 
       return true;
     } catch (e) {

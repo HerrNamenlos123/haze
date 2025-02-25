@@ -18,6 +18,7 @@ import {
   VariableType,
   type DatatypeSymbol,
   type FunctionSymbol,
+  type SpecialMethod,
   type VariableSymbol,
 } from "./Symbol";
 import HazeVisitor from "./parser/HazeVisitor";
@@ -135,11 +136,11 @@ export class SymbolCollector extends HazeVisitor<any> {
     }
 
     const parentSymbol = this.structStack[this.structStack.length - 1];
-    let isConstructor = undefined as boolean | undefined;
+    let specialMethod: SpecialMethod = undefined;
     let thisPointerType = undefined as Datatype | undefined;
     if (parentSymbol && parentSymbol.type?.variant === "Struct") {
       if (name === "constructor") {
-        isConstructor = true;
+        specialMethod = "constructor";
         if (returntype.variant === "Deferred") {
           returntype = parentSymbol.type;
         } else {
@@ -148,6 +149,17 @@ export class SymbolCollector extends HazeVisitor<any> {
             this.program.getLoc(ctx),
           );
         }
+      } else if (name === "destructor") {
+        if (returntype.variant === "Deferred") {
+          returntype = this.program.getBuiltinType("none");
+        } else {
+          throw new CompilerError(
+            `Destructor of struct '${parentSymbol.name}' cannot have a return type`,
+            this.program.getLoc(ctx),
+          );
+        }
+        specialMethod = "destructor";
+        thisPointerType = parentSymbol.type;
       } else {
         thisPointerType = parentSymbol.type;
       }
@@ -166,12 +178,24 @@ export class SymbolCollector extends HazeVisitor<any> {
       name: name,
       functionType: functype,
       type: type,
-      isConstructor: isConstructor,
+      specialMethod: specialMethod,
       thisPointer: thisPointerType,
       scope: scope,
       parentSymbol: parentSymbol,
       ctx: ctx,
     };
+
+    if (parentSymbol && parentSymbol.type?.variant === "Struct") {
+      if (name === "destructor") {
+        if (type.functionParameters.length !== 0) {
+          throw new CompilerError(
+            `Destructor of struct '${parentSymbol.name}' cannot have any parameters`,
+            this.program.getLoc(ctx),
+          );
+        }
+      }
+    }
+
     parentScope.defineSymbol(symbol, this.program.getLoc(ctx));
     this.program.ctxToSymbolMap.set(ctx, symbol);
 
