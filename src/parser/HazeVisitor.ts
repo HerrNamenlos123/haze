@@ -24,6 +24,7 @@ import { ReturnStatementContext } from "./HazeParser.js";
 import { ExprAssignmentStatementContext } from "./HazeParser.js";
 import { VariableDefinitionContext } from "./HazeParser.js";
 import { IfStatementContext } from "./HazeParser.js";
+import { WhileStatementContext } from "./HazeParser.js";
 import { StructMemberValueContext } from "./HazeParser.js";
 import { SymbolValueExprContext } from "./HazeParser.js";
 import { ExprCallExprContext } from "./HazeParser.js";
@@ -192,6 +193,13 @@ export default class HazeVisitor<Result> extends ParseTreeVisitor<Result> {
 	 * @return the visitor result
 	 */
 	visitIfStatement?: (ctx: IfStatementContext) => Result;
+	/**
+	 * Visit a parse tree produced by the `WhileStatement`
+	 * labeled alternative in `HazeParser.statement`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitWhileStatement?: (ctx: WhileStatementContext) => Result;
 	/**
 	 * Visit a parse tree produced by the `StructMemberValue`
 	 * labeled alternative in `HazeParser.structmembervalue`.

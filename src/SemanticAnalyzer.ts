@@ -27,6 +27,7 @@ import {
   IfStatementContext,
   InlineCStatementContext,
   SymbolValueExprContext,
+  WhileStatementContext,
   type ArgsContext,
   type BooleanConstantContext,
   type CommonDatatypeContext,
@@ -71,6 +72,7 @@ import type {
   ReturnStatement,
   Statement,
   VariableDefinitionStatement,
+  WhileStatement,
 } from "./Statement";
 import type { MemberExpression } from "typescript";
 
@@ -697,22 +699,6 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
       elseIfExprs.push(this.visit(expr));
     }
 
-    if (
-      !(
-        ifExpr.type.variant === "Primitive" &&
-        ifExpr.type.primitive === Primitive.boolean
-      )
-    ) {
-      implicitConversion(
-        ifExpr.type,
-        this.program.getBuiltinType("boolean"),
-        "",
-        this.program.currentScope,
-        this.program.getLoc(ctx),
-        this.program,
-      );
-    }
-
     const parentScope = this.program.currentScope;
     const statement: ConditionalStatement = {
       variant: "Conditional",
@@ -752,6 +738,24 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
     }
 
     return statement;
+  };
+
+  visitWhileStatement = (ctx: WhileStatementContext): Statement => {
+    const expr: Expression = this.visit(ctx.expr());
+
+    const whileStatement: WhileStatement = {
+      variant: "While",
+      expr: expr,
+      scope: new Scope(this.program.getLoc(ctx), this.program.currentScope),
+      ctx,
+    };
+
+    this.program.pushScope(whileStatement.scope);
+    this.visitBody(ctx.body()).forEach((statement: Statement) => {
+      whileStatement.scope.statements.push(statement);
+    });
+    this.program.popScope();
+    return whileStatement;
   };
 
   visitArgs = (ctx: ArgsContext): Expression[] => {

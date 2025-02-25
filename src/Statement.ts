@@ -37,9 +37,17 @@ export type ConditionalStatement = {
   else?: Scope;
 };
 
+export type WhileStatement = {
+  variant: "While";
+  ctx: ParserRuleContext;
+  expr: Expression;
+  scope: Scope;
+};
+
 export type Statement =
   | VariableDefinitionStatement
   | ReturnStatement
   | ExprStatement
+  | WhileStatement
   | ConditionalStatement
   | InlineCStatement;

@@ -254,6 +254,20 @@ class CodeGenerator {
         writer.writeLine(statement.code + ";");
         return writer;
 
+      case "While":
+        const whileexpr = implicitConversion(
+          statement.expr.type,
+          this.program.getBuiltinType("boolean"),
+          this.emitExpr(statement.expr).get(),
+          statement.scope,
+          this.program.getLoc(statement.expr.ctx),
+          this.program,
+        );
+        writer.writeLine(`while (${whileexpr}) {`).pushIndent();
+        writer.write(this.emitScope(statement.scope));
+        writer.popIndent().writeLine("}");
+        return writer;
+
       case "Conditional":
         const convexpr = implicitConversion(
           statement.if[0].type,

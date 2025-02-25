@@ -1,4 +1,4 @@
-declare "C" printf(str: stringview);
+declare "C" printf(str: stringview, d: i32);
 declare "C" calloc(num: u64, size: u64): RawPtr<none>;
 declare "C" free(ptr: RawPtr<none>);
 
@@ -43,14 +43,9 @@ main(): i32 {
 
   // printf("Data: %d\n", buf.length);
 
-  const a = 18;
-  if a {
-    const a = 17;
-    printf("A");
-  }
-  else {
-    const a = 23;
-    printf("B");
+  const i = 0;
+  while (true) {
+    printf("Du loser: %d\n", i);
   }
 
   return 0;

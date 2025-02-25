@@ -31,6 +31,7 @@ statement
     | expr '=' expr ';'                                         #ExprAssignmentStatement
     | variablemutability ID (':' datatype)? '=' expr ';'         #VariableDefinition
     | 'if' ifexpr '{' thenblock '}' ('else' 'if' elseifexpr '{' elseifblock '}')* ('else' '{' elseblock '}')?  #IfStatement
+    | 'while' expr '{' body '}'                                 #WhileStatement
     ;
 
 structmembervalue
