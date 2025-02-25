@@ -175,15 +175,15 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
             haveAllGenerics = false;
             break;
           }
-          symbol.scope.defineSymbol(
-            {
-              variant: "Datatype",
-              name: name,
-              type: tp,
-              scope: symbol.scope,
-            },
-            this.program.getLoc(ctx),
-          );
+          // symbol.scope.defineSymbol(
+          //   {
+          //     variant: "Datatype",
+          //     name: name,
+          //     type: tp,
+          //     scope: symbol.scope,
+          //   },
+          //   this.program.getLoc(ctx),
+          // );
           // addedSymbols.push(name);
         }
         if (p.variant !== "Constant") {
@@ -802,15 +802,24 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
       // );
 
       // this.setNodeSymbol(method.ctx, { ...method });
-      const symbol = this.program.ctxToSymbolMap.get(
-        method.ctx,
-      ) as FunctionSymbol;
+      const symbol = {
+        ...(this.program.ctxToSymbolMap.get(method.ctx) as FunctionSymbol),
+      };
+      symbol.scope = new Scope(symbol.scope.location, symbol.scope);
+      symbol.parentSymbol = { ...method.parentSymbol };
+      symbol.parentSymbol.type = { ...method.parentSymbol.type };
+      if (symbol.parentSymbol.type.variant !== "Struct") {
+        throw new ImpossibleSituation();
+      }
       for (const [name, tp] of expr.type.generics) {
         if (!tp) {
           throw new CompilerError(
             `Generic parameter '${name}' has no type`,
             this.program.getLoc(ctx),
           );
+        }
+        if (symbol.parentSymbol.type.generics.get(name) === undefined) {
+          symbol.parentSymbol.type.generics.set(name, tp);
         }
         symbol.scope.defineSymbol(
           {
@@ -822,13 +831,20 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
           this.program.getLoc(ctx),
         );
       }
+      symbol.type = resolveGenerics(
+        symbol.type,
+        symbol.scope,
+        this.program.getLoc(symbol.ctx),
+      ) as FunctionDatatype;
+      this.program.ctxToSymbolMap.set(method.ctx, symbol);
+      // console.log("Method access ", serializeSymbol(symbol));
       this.implFunc(method.ctx as FuncContext);
 
       return {
         ctx: ctx,
         variant: "MemberAccess",
         thisPointerExpr: expr,
-        thisPointerSymbol: symbol,
+        methodSymbol: symbol,
         memberName: name,
         expr: expr,
         type: method.type,

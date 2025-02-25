@@ -31,7 +31,7 @@ export type MemberAccessExpression = BaseExpression & {
   variant: "MemberAccess";
   expr: Expression;
   thisPointerExpr?: Expression;
-  thisPointerSymbol?: Symbol;
+  methodSymbol?: Symbol;
   memberName: string;
 };
 

@@ -12,6 +12,7 @@ import {
   generateDefinitionCCode,
   generateUsageCode,
   implicitConversion,
+  serializeDatatype,
   type Datatype,
   type FunctionDatatype,
 } from "./Datatype";
@@ -114,12 +115,12 @@ class CodeGenerator {
         mangleSymbol(symbol) +
         "(";
       const params = [];
-      params.push(`${CONTEXT_STRUCT}* context`);
       if (symbol.thisPointer) {
         params.push(
-          `${generateUsageCode(symbol.thisPointer, this.program)} this`,
+          `${generateUsageCode(symbol.thisPointer, this.program)}* this`,
         );
       }
+      params.push(`${CONTEXT_STRUCT}* context`);
       for (const [paramName, paramType] of ftype.functionParameters) {
         params.push(
           generateUsageCode(paramType, this.program) + " " + paramName,
@@ -195,6 +196,8 @@ class CodeGenerator {
               args.push("context");
             }
           }
+        } else if (expr.expr.variant === "MemberAccess") {
+          args.push("context");
         }
         if (expr.thisPointerExpr) {
           args.push("&" + this.emitExpr(expr.thisPointerExpr).get());
@@ -208,10 +211,10 @@ class CodeGenerator {
           if (
             expr.expr.variant === "MemberAccess" &&
             expr.expr.thisPointerExpr &&
-            expr.expr.thisPointerSymbol &&
-            expr.expr.thisPointerSymbol.variant === "Function"
+            expr.expr.methodSymbol &&
+            expr.expr.methodSymbol.variant === "Function"
           ) {
-            scope = expr.expr.thisPointerSymbol.scope;
+            scope = expr.expr.methodSymbol.scope;
           }
           const converted = implicitConversion(
             expr.args[i].type,
@@ -226,26 +229,11 @@ class CodeGenerator {
         if (
           expr.expr.variant === "MemberAccess" &&
           expr.expr.thisPointerExpr &&
-          expr.expr.thisPointerSymbol &&
-          expr.expr.thisPointerSymbol.variant === "Function"
+          expr.expr.methodSymbol &&
+          expr.expr.methodSymbol.variant === "Function"
         ) {
-          const sym: FunctionSymbol = {
-            variant: "Function",
-            ctx: expr.expr.ctx,
-            functionType: expr.expr.thisPointerSymbol.functionType,
-            name: expr.expr.thisPointerSymbol.name,
-            type: resolveGenerics(
-              expr.expr.thisPointerSymbol.type,
-              expr.expr.thisPointerSymbol.scope,
-              this.program.getLoc(expr.expr.thisPointerSymbol.ctx),
-            ) as FunctionDatatype,
-            scope: expr.expr.thisPointerSymbol.scope,
-            isConstructor: expr.expr.thisPointerSymbol.isConstructor,
-            parentSymbol: expr.expr.thisPointerSymbol.parentSymbol,
-            thisPointer: expr.expr.thisPointerSymbol.thisPointer,
-          };
           writer.write(
-            mangleSymbol(sym) +
+            mangleSymbol(expr.expr.methodSymbol) +
               "(&" +
               this.emitExpr(expr.expr.thisPointerExpr).get() +
               ", " +
