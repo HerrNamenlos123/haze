@@ -1,30 +1,11 @@
-import * as fs from "fs";
-import * as path from "path";
 import * as child_process from "child_process";
 import { Parser } from "./parser";
-import {
-  CompilerError,
-  ImpossibleSituation,
-  InternalError,
-  UnreachableCode,
-} from "./Errors";
+import { CompilerError, InternalError, UnreachableCode } from "./Errors";
 import { Program } from "./Program";
 import { SymbolCollector } from "./SymbolCollector";
-import { ParserRuleContext, ParseTree, RuleNode, TerminalNode } from "antlr4";
-import { ProgContext } from "./parser/HazeParser";
-import { generateGraphviz as generateGraph } from "./graph";
+import { ParserRuleContext, TerminalNode } from "antlr4";
 import { performSemanticAnalysis } from "./SemanticAnalyzer";
 import { generateCode } from "./CodeGenerator";
-
-// import { Parser } from "./Parser";
-// import { CompilationDatabase } from "./CompilationDatabase";
-// import { InternalError, CompilerError, UnreachableCode } from "./Error";
-
-// import { SymbolCollector } from "./SymbolCollector";
-// import { performSemanticAnalysis } from "./SemanticAnalyzer";
-// import { SymbolTypeResolver } from "./SymbolTypeResolver";
-// import { ReturnVerifier } from "./ReturnVerifier";
-// import { generateCode } from "./CodeGenerator";
 
 const CXX_COMPILER = "clang++";
 const C_COMPILER = "clang";
@@ -34,7 +15,6 @@ export class ModuleCompiler {
 
   constructor(filename: string) {
     this.filename = filename;
-    // this.db = new CompilationDatabase();
   }
 
   async build() {
@@ -87,14 +67,10 @@ export class ModuleCompiler {
 
       // prettyPrintAST(ast);
 
-      //   performSemanticAnalysis(collector.program, this.filename, this.db);
-
-      //   generateCode(collector.program, path.join("build", this.filename + ".c"));
-
-      //   child_process.execSync(
-      //     `${CXX_COMPILER} build/${this.filename}.c -o build/out`,
-      //   );
-      //   child_process.execSync("build/out", { stdio: "inherit" });
+      child_process.execSync(
+        `${C_COMPILER} build/${this.filename}.c -o build/out`,
+      );
+      child_process.execSync("build/out", { stdio: "inherit" });
 
       return true;
     } catch (e) {
