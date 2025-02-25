@@ -510,10 +510,6 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
       case "%":
       case "+":
       case "-":
-      case "<":
-      case ">":
-      case "<=":
-      case ">=":
         if (isInteger(left.type) && isInteger(right.type)) {
           return {
             variant: "Binary",
@@ -525,6 +521,22 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
               left.type as PrimitiveDatatype,
               right.type as PrimitiveDatatype,
             ),
+          };
+        }
+        break;
+
+      case "<":
+      case ">":
+      case "<=":
+      case ">=":
+        if (isInteger(left.type) && isInteger(right.type)) {
+          return {
+            variant: "Binary",
+            ctx: ctx,
+            leftExpr: left,
+            operation: operation,
+            rightExpr: right,
+            type: this.program.getBuiltinType("boolean"),
           };
         }
         break;

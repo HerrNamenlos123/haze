@@ -454,10 +454,6 @@ class CodeGenerator {
           case "%":
           case "+":
           case "-":
-          case "<":
-          case ">":
-          case "<=":
-          case ">=":
             {
               const left = implicitConversion(
                 expr.leftExpr.type,
@@ -479,6 +475,21 @@ class CodeGenerator {
                 "(" + left + " " + expr.operation + " " + right + ")",
               );
             }
+            break;
+
+          case "<":
+          case ">":
+          case "<=":
+          case ">=":
+            writer.write(
+              "(" +
+                this.emitExpr(expr.leftExpr).get() +
+                " " +
+                expr.operation +
+                " " +
+                this.emitExpr(expr.rightExpr).get() +
+                ")",
+            );
             break;
 
           case "==":
@@ -512,7 +523,9 @@ class CodeGenerator {
             break;
 
           default:
-            throw new ImpossibleSituation();
+            throw new InternalError(
+              `Unrecognized binary operator: ${expr.operation}`,
+            );
         }
         return writer;
 

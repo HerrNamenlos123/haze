@@ -638,6 +638,13 @@ export function explicitConversion(
     return `(${expr} != 0)`;
   }
 
+  if (from.variant === "RawPointer" && isInteger(to)) {
+    return `(${generateUsageCode(to, program)})(${expr})`;
+  }
+  if (to.variant === "RawPointer" && isInteger(from)) {
+    return `(${generateUsageCode(to, program)})(${expr})`;
+  }
+
   if (from.variant === "RawPointer" && to.variant === "RawPointer") {
     return `(${generateUsageCode(to.generics.get("__Pointee")!, program)}*)(${expr})`;
   }
