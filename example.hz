@@ -4,134 +4,122 @@ declare "C" free(ptr: RawPtr<none>);
 declare "C" abort();
 declare "C" realloc(ptr: RawPtr<none>, newSize: u64): RawPtr<none>;
 
-// c_realloc(ptr: RawPtr<none>, newSize: u64): RawPtr<none> {
-//   return realloc(ptr, newSize);
-// }
+c_realloc(ptr: RawPtr<none>, newSize: u64): RawPtr<none> {
+  return realloc(ptr, newSize);
+}
 
-// malloc(size: u64): RawPtr<none> {
-//   return calloc(1, size);
-// }
+malloc(size: u64): RawPtr<none> {
+  return calloc(1, size);
+}
 
-// panic(msg: stringview) {
-//   printf("PANIC: %s\n", msg);
-//   abort();
-// }
+panic(msg: stringview) {
+  printf("PANIC: %s\n", msg);
+  abort();
+}
 
-// struct Test {
-//   data: i32;
-// }
+struct Test {
+  data: i32;
+}
 
-// struct MemoryBuffer {
-//   data: RawPtr<none>;
-//   size: u64;
+struct MemoryBuffer {
+  data: RawPtr<none>;
+  size: u64;
 
-//   constructor(size: u64) {
-//     const buffer = malloc(size);
-//     if !buffer {
-//       panic("Allocation failed");
-//     }
-//     return MemoryBuffer {
-//       .data: buffer,
-//       .size: size,
-//     };
-//   }
+  constructor(size: u64) {
+    const buffer = malloc(size);
+    if !buffer {
+      panic("Allocation failed");
+    }
+    return MemoryBuffer {
+      .data: buffer,
+      .size: size,
+    };
+  }
 
-//   realloc(newSize: u64) {
-//     this.data = c_realloc(this.data, newSize);
-//     if !this.data {
-//       panic("Allocation failed");
-//     }
-//     this.size = newSize;
-//   }
+  realloc(newSize: u64) {
+    this.data = c_realloc(this.data, newSize);
+    if !this.data {
+      panic("Allocation failed");
+    }
+    this.size = newSize;
+  }
 
-//   destructor() {
-//     free(this.data);
-//   }
-// }
+  destructor() {
+    free(this.data);
+  }
+}
 
-// struct List<T> {
-//   buffer: MemoryBuffer;
-//   elementSize: i32;
-//   length: u64;
+struct List<T> {
+  buffer: MemoryBuffer;
+  elementSize: i32;
+  length: u64;
 
-//   constructor() {
-//     const elementSize: i32 = 0;
-//     const initialCapacity = 4;
-//     const dummy = 0 as T;
-//     printf("int = %lu\n", sizeof<T>);
-//     __c__("elementSize = sizeof(dummy)");
-//     return List<T> {
-//       .buffer: MemoryBuffer(initialCapacity * elementSize),
-//       .elementSize: elementSize,
-//     };
-//   }
+  constructor() {
+    const elementSize: i32 = 0;
+    const initialCapacity = 4;
+    const dummy = 0 as T;
+    printf("int = %lu\n", sizeof<T>);
+    __c__("elementSize = sizeof(dummy)");
+    return List<T> {
+      .buffer: MemoryBuffer(initialCapacity * elementSize),
+      .elementSize: elementSize,
+    };
+  }
 
-//   destructor() {}
-
-//   reserve(size: u64): none {
-//     if size <= this.capacity() {
-//       return;
-//     }
-//     this.buffer.realloc(size * this.elementSize);
-//   }
-
-//   push(n: T) {
-//     if this.length >= this.capacity() {
-//       this.reserve(this.length * 2);
-//     }
-//     const buf = this.buffer.data as RawPtr<T>;
-//     __c__("buf[this->length] = n");
-//     this.length = this.length + 1;
-//   }
-
-//   pop(): T {
-//     const back = this.get(this.length - 1);
-//     this.length = this.length - 1;
-//     return back;
-//   }
-
-//   get(n: T): T {
-//     if n < 0 or n >= this.length {
-//       panic("OUT OF BOUNDS");
-//     }
-//     const buf = this.buffer.data as RawPtr<T>;
-//     const result: T = 0;
-//     __c__("result = buf[n]");
-//     return result;
-//   }
-
-//   capacity(): u64 {
-//     return this.buffer.size / this.elementSize;
-//   }
-// }
-
-// fib(count: i32) {
-//   const fibs = List<i32>();
-//   fibs.push(0);
-//   fibs.push(1);
-
-//   const i = 2;
-//   while (i < count) {
-//     fibs.push(fibs.get(i - 1) + fibs.get(i - 2));
-//     printf("Found fib number: %d\n", fibs.get(fibs.length - 1));
-//     i++;
-//   }
-// }
-
-struct Test<T> {
-  a: T;
-
-  constructor() {}
   destructor() {}
+
+  reserve(size: u64): none {
+    if size <= this.capacity() {
+      return;
+    }
+    this.buffer.realloc(size * this.elementSize);
+  }
+
+  push(n: T) {
+    if this.length >= this.capacity() {
+      this.reserve(this.length * 2);
+    }
+    const buf = this.buffer.data as RawPtr<T>;
+    __c__("buf[this->length] = n");
+    this.length = this.length + 1;
+  }
+
+  pop(): T {
+    const back = this.get(this.length - 1);
+    this.length = this.length - 1;
+    return back;
+  }
+
+  get(n: T): T {
+    if n < 0 or n >= this.length {
+      panic("OUT OF BOUNDS");
+    }
+    const buf = this.buffer.data as RawPtr<T>;
+    const result: T = 0;
+    __c__("result = buf[n]");
+    return result;
+  }
+
+  capacity(): u64 {
+    return this.buffer.size / this.elementSize;
+  }
+}
+
+fib(count: i32) {
+  const fibs = List<i32>();
+  fibs.push(0);
+  fibs.push(1);
+
+  const i = 2;
+  while (i < count) {
+    fibs.push(fibs.get(i - 1) + fibs.get(i - 2));
+    printf("Found fib number: %d\n", fibs.get(fibs.length - 1));
+    i++;
+  }
 }
 
 main(): i32 {
   // const a = List<u8>();
-  const a: RawPtr<Test<i32>> = 0;
-  const b: RawPtr<Test<u8>> = 0;
-
-  const c = Test<i64>();
-  const d = Test<u32>();
   // fib(10);
   return 0;
 }

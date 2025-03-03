@@ -244,6 +244,18 @@ export function getIntegerBits(dt: Datatype): number {
   return 0;
 }
 
+export function isNone(dt: Datatype): boolean {
+  switch (dt.variant) {
+    case "Primitive":
+      switch (dt.primitive) {
+        case Primitive.none:
+          return true;
+      }
+      return false;
+  }
+  return false;
+}
+
 export function isInteger(dt: Datatype): boolean {
   switch (dt.variant) {
     case "Primitive":
@@ -408,7 +420,6 @@ export function generateUsageCode(dt: Datatype, program: Program): string {
       if (!ptrGeneric) {
         throw new ImpossibleSituation();
       }
-      console.log("ptrGeneric", ptrGeneric.variant);
       return `${generateUsageCode(ptrGeneric, program)}*`;
 
     case "Deferred":

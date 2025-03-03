@@ -5,6 +5,7 @@ import {
   implicitConversion,
   isBoolean,
   isInteger,
+  isNone,
   Primitive,
   serializeDatatype,
   type Datatype,
@@ -19,6 +20,7 @@ import {
   FunctionType,
   mangleDatatype,
   mangleSymbol,
+  serializeSymbol,
   VariableType,
   type ConstantSymbol,
   type DatatypeSymbol,
@@ -219,6 +221,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
               constructorSymbol.scope,
               this.program.getLoc(constructorSymbol.ctx),
             ) as FunctionDatatype;
+            constructorSymbol.type.functionReturnType = symbol.type;
             constructorSymbol.parentSymbol = symbol;
             this.program.ctxToSymbolMap.set(
               constructorSymbol.ctx,
@@ -326,10 +329,6 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
   visitExprCallExpr = (ctx: any): Expression => {
     let expr: Expression = this.visit(ctx.expr());
 
-    // let thisPointerExpr: Expression | null = null;
-    // thisPointerExpr = copy(expr.expr);
-    // expr = new SymbolValueExpression(expr.method, ctx);
-
     if (expr.type.variant === "Struct") {
       const constructor = expr.type.methods.find(
         (m) => m.name === "constructor",
@@ -340,11 +339,6 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
           this.program.getLoc(ctx),
         );
       }
-      console.log(
-        "call: ",
-        mangleSymbol(constructor),
-        mangleDatatype(constructor.type.functionReturnType),
-      );
       expr = {
         variant: "SymbolValue",
         ctx: ctx,
@@ -373,7 +367,6 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
       );
     }
 
-    console.log("Call: ", expr.symbol.name, expr.symbol.thisPointerExpr);
     if (
       expr.symbol.specialMethod === "constructor" ||
       expr.symbol.specialMethod === "destructor"
@@ -405,13 +398,11 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
           this.program.getLoc(ctx),
         );
       }
-      console.log("Resolving: ", mangleSymbol(symbol));
       symbol.type = resolveGenerics(
         symbol.type,
         symbol.scope,
         this.program.getLoc(symbol.ctx),
       ) as FunctionDatatype;
-      console.log("Resolving: b", mangleSymbol(symbol));
       this.program.ctxToSymbolMap.set(symbol.ctx, symbol);
       this.implFunc(symbol.ctx as FuncContext);
     }
@@ -440,6 +431,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
     return {
       type: expr.type.functionReturnType,
       variant: "ExprCall",
+      thisPointerExpr: expr.symbol.thisPointerExpr,
       args: args,
       expr: expr,
       ctx: ctx,
@@ -520,6 +512,22 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
         }
 
         symbol.type.functionReturnType = returntype;
+      }
+
+      if (!isNone(symbol.type.functionReturnType)) {
+        if (!symbol.scope.statements.some((s) => s.variant === "Return")) {
+          throw new CompilerError(
+            `Function ${symbol.name} is missing return statement`,
+            this.program.getLoc(ctx),
+          );
+        }
+      } else {
+        if (symbol.scope.statements.some((s) => s.variant === "Return")) {
+          throw new CompilerError(
+            `Function ${symbol.name} returning none cannot return a value `,
+            this.program.getLoc(ctx),
+          );
+        }
       }
 
       this.functionStack.pop();
@@ -1160,14 +1168,12 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
         return e;
       }
 
-      // console.log("Old expr: ", expr.variant, serializeDatatype(expr.type));
       expr = {
         variant: "RawPtrDeref",
         expr: expr,
         ctx: ctx,
         type: p.variant === "RawPointer" ? p.generics.get("__Pointee")! : p,
       } as RawPointerDereferenceExpression;
-      // console.log("New expr: ", expr.variant, serializeDatatype(expr.type));
     }
 
     const field: VariableSymbol | undefined = expr.type.members.find(
