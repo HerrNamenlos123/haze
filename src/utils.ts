@@ -140,6 +140,7 @@ export function resolveGenerics(
           tempFuncScope,
           loc,
         ),
+        vararg: datatype.vararg,
       };
       for (let i = 0; i < datatype.functionParameters.length; i++) {
         const parScope = new Scope(loc, scope);

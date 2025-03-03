@@ -25,6 +25,7 @@ import {
   serializeDatatype,
   type Datatype,
   type FunctionDatatype,
+  type RawPointerDatatype,
 } from "./Datatype";
 import type { Statement } from "./Statement";
 import type { Expression } from "./Expression";
@@ -127,10 +128,12 @@ class CodeGenerator {
         mangleSymbol(symbol) +
         "(";
       const params = [];
-      if (symbol.thisPointer) {
-        params.push(
-          `${generateUsageCode(symbol.thisPointer, this.program)} this`,
-        );
+      if (symbol.parentSymbol && symbol.specialMethod !== "constructor") {
+        const thisPtr: RawPointerDatatype = {
+          variant: "RawPointer",
+          generics: new Map().set("__Pointee", symbol.parentSymbol.type),
+        };
+        params.push(`${generateUsageCode(thisPtr, this.program)} this`);
       }
       params.push(`${CONTEXT_STRUCT}* context`);
       for (const [paramName, paramType] of ftype.functionParameters) {

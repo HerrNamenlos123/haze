@@ -43,9 +43,8 @@ export type FunctionSymbol = {
   type: FunctionDatatype;
   functionType: FunctionType;
   parentSymbol?: Symbol;
-  scope: Scope;
-  thisPointer?: Datatype;
   thisPointerExpr?: Expression;
+  scope: Scope;
   specialMethod?: SpecialMethod;
   ctx: ParserRuleContext;
 };

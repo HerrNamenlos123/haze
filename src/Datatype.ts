@@ -335,11 +335,7 @@ export function generateDefinitionCCode(
       return writer;
 
     case "Struct":
-      writer
-        .writeLine(
-          `typedef struct __${generateUsageCode(datatype.type, program)}__ {`,
-        )
-        .pushIndent();
+      writer.writeLine(`typedef struct {`).pushIndent();
       for (const memberSymbol of datatype.type.members) {
         writer.writeLine(
           `${generateUsageCode(memberSymbol.type, program)} ${memberSymbol.name};`,
@@ -412,6 +408,7 @@ export function generateUsageCode(dt: Datatype, program: Program): string {
       if (!ptrGeneric) {
         throw new ImpossibleSituation();
       }
+      console.log("ptrGeneric", ptrGeneric.variant);
       return `${generateUsageCode(ptrGeneric, program)}*`;
 
     case "Deferred":

@@ -142,7 +142,6 @@ export class SymbolCollector extends HazeVisitor<any> {
 
     const parentSymbol = this.structStack[this.structStack.length - 1];
     let specialMethod: SpecialMethod = undefined;
-    let thisPointerType = undefined as Datatype | undefined;
     if (parentSymbol && parentSymbol.type?.variant === "Struct") {
       if (name === "constructor") {
         specialMethod = "constructor";
@@ -164,15 +163,6 @@ export class SymbolCollector extends HazeVisitor<any> {
           );
         }
         specialMethod = "destructor";
-        thisPointerType = {
-          variant: "RawPointer",
-          generics: new Map().set("__Pointee", parentSymbol.type),
-        };
-      } else {
-        thisPointerType = {
-          variant: "RawPointer",
-          generics: new Map().set("__Pointee", parentSymbol.type),
-        };
       }
     }
 
@@ -189,7 +179,6 @@ export class SymbolCollector extends HazeVisitor<any> {
       functionType: functype,
       type: type,
       specialMethod: specialMethod,
-      thisPointer: thisPointerType,
       scope: scope,
       parentSymbol: parentSymbol,
       ctx: ctx,
