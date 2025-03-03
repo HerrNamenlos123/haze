@@ -31,7 +31,9 @@ export enum Primitive {
   u16 = 10,
   u32 = 11,
   u64 = 12,
-  stringview = 13,
+  f32 = 13,
+  f64 = 14,
+  stringview = 15,
 }
 
 /**
@@ -120,6 +122,10 @@ export function primitiveVariantToString(dt: PrimitiveDatatype): string {
       return "u32";
     case Primitive.u64:
       return "u64";
+    case Primitive.f32:
+      return "f32";
+    case Primitive.f64:
+      return "f64";
     case Primitive.stringview:
       return "stringview";
   }
@@ -411,6 +417,10 @@ export function generateUsageCode(dt: Datatype, program: Program): string {
           return "uint32_t";
         case Primitive.u64:
           return "uint64_t";
+        case Primitive.f32:
+          return "float";
+        case Primitive.f64:
+          return "double";
         case Primitive.stringview:
           return "char*";
       }

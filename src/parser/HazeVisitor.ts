@@ -42,9 +42,9 @@ import { ExplicitCastExprContext } from "./HazeParser.js";
 import { ArgsContext } from "./HazeParser.js";
 import { EllipsisContext } from "./HazeParser.js";
 import { FunctypeContext } from "./HazeParser.js";
-import { IntegerConstantContext } from "./HazeParser.js";
-import { StringConstantContext } from "./HazeParser.js";
 import { BooleanConstantContext } from "./HazeParser.js";
+import { LiteralConstantContext } from "./HazeParser.js";
+import { StringConstantContext } from "./HazeParser.js";
 import { CompilationhintContext } from "./HazeParser.js";
 import { CompilationhintfilenameContext } from "./HazeParser.js";
 import { CompilationhintflagsContext } from "./HazeParser.js";
@@ -321,12 +321,19 @@ export default class HazeVisitor<Result> extends ParseTreeVisitor<Result> {
 	 */
 	visitFunctype?: (ctx: FunctypeContext) => Result;
 	/**
-	 * Visit a parse tree produced by the `IntegerConstant`
+	 * Visit a parse tree produced by the `BooleanConstant`
 	 * labeled alternative in `HazeParser.constant`.
 	 * @param ctx the parse tree
 	 * @return the visitor result
 	 */
-	visitIntegerConstant?: (ctx: IntegerConstantContext) => Result;
+	visitBooleanConstant?: (ctx: BooleanConstantContext) => Result;
+	/**
+	 * Visit a parse tree produced by the `LiteralConstant`
+	 * labeled alternative in `HazeParser.constant`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitLiteralConstant?: (ctx: LiteralConstantContext) => Result;
 	/**
 	 * Visit a parse tree produced by the `StringConstant`
 	 * labeled alternative in `HazeParser.constant`.
@@ -334,13 +341,6 @@ export default class HazeVisitor<Result> extends ParseTreeVisitor<Result> {
 	 * @return the visitor result
 	 */
 	visitStringConstant?: (ctx: StringConstantContext) => Result;
-	/**
-	 * Visit a parse tree produced by the `BooleanConstant`
-	 * labeled alternative in `HazeParser.constant`.
-	 * @param ctx the parse tree
-	 * @return the visitor result
-	 */
-	visitBooleanConstant?: (ctx: BooleanConstantContext) => Result;
 	/**
 	 * Visit a parse tree produced by `HazeParser.compilationhint`.
 	 * @param ctx the parse tree

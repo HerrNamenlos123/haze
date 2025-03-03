@@ -43,6 +43,7 @@ expr
     : '(' expr ')'                                                                  #ParenthesisExpr
     // | '{' objectattribute? (',' objectattribute)* ','? '}'              #AnonymousStructInstantiationExpr
     | func                                                      #FuncRefExpr
+    | constant                                                  #ConstantExpr
 
     // Part 1: Left to right
     | expr op=('++' | '--')                                                         #PostIncrExpr
@@ -69,7 +70,6 @@ expr
     | expr op=('='|'+='|'-='|'*='|'/='|'%='|'<<='|'>>='|'&='|'^='|'|=') expr   #ExprAssignmentExpr
 
     | ID ('<' datatype (',' datatype)* '>')?                    #SymbolValueExpr
-    | constant                                                  #ConstantExpr
     ;
 
 args: (expr (',' expr)*)?;
@@ -79,9 +79,10 @@ ellipsis: '...';
 functype: '(' params ')' '=>' datatype;
 
 constant
-    : INT                   #IntegerConstant
-    | STRING_LITERAL        #StringConstant
-    | ('true' | 'false')    #BooleanConstant
+    : ('true' | 'false')                        #BooleanConstant
+    | UNIT_LITERAL                              #LiteralConstant
+    | NUMBER_LITERAL                            #LiteralConstant
+    | STRING_LITERAL                            #StringConstant
     ;
 
 compilationhint: '#compile' compilationlang compilationhintfilename compilationhintflags?;
@@ -117,8 +118,15 @@ fragment HEX
     :   [0-9a-fA-F]
     ;
 
+fragment DEC_PART: DIGIT+;
+fragment FLOAT_PART: DIGIT+ '.' DIGIT*; // Handles 123., .456, 123.45
+fragment DIGIT: [0-9];
+
+UNIT_LITERAL: (DEC_PART | FLOAT_PART) ('s' | 'ms' | 'us' | 'ns' | 'm' | 'h' | 'd');
+NUMBER_LITERAL: (DEC_PART | FLOAT_PART);
+
 // Tokens
+
 ID: [a-zA-Z_][a-zA-Z_0-9]*;
-INT: [0-9]+;
 WS: [ \t\n\r]+ -> skip;
 COMMENT: '//' ~[\r\n]* -> skip; // Single-line comments

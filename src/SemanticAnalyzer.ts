@@ -22,9 +22,13 @@ import {
   mangleSymbol,
   serializeSymbol,
   VariableType,
+  type BooleanConstantSymbol,
   type ConstantSymbol,
   type DatatypeSymbol,
   type FunctionSymbol,
+  type LiteralConstantSymbol,
+  type LiteralUnit,
+  type StringConstantSymbol,
   type VariableSymbol,
 } from "./Symbol";
 import {
@@ -37,6 +41,7 @@ import {
   IfexprContext,
   IfStatementContext,
   InlineCStatementContext,
+  LiteralConstantContext,
   PostIncrExprContext,
   PreIncrExprContext,
   SymbolValueExprContext,
@@ -50,7 +55,6 @@ import {
   type ExprStatementContext,
   type FuncbodyContext,
   type FuncContext,
-  type IntegerConstantContext,
   type NamedfuncContext,
   type ParenthesisExprContext,
   type ReturnStatementContext,
@@ -776,57 +780,9 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
     this.implFunc(ctx);
   };
 
-  visitIntegerConstant = (ctx: IntegerConstantContext): ConstantSymbol => {
-    const value = parseInt(ctx.getText(), 10);
-    if (Number.isNaN(value)) {
-      throw new CompilerError(
-        `Could not parse '${ctx.getText()}' as an integer.`,
-        this.program.getLoc(ctx),
-      );
-    }
-
-    if (value < -(2 ** 31) || value > 2 ** 31 - 1) {
-      return {
-        variant: "Constant",
-        type: this.program.globalScope.lookupSymbol(
-          "i64",
-          this.program.getLoc(ctx),
-        ).type,
-        value,
-      };
-    } else if (value < -(2 ** 15) || value > 2 ** 15 - 1) {
-      return {
-        variant: "Constant",
-        type: this.program.globalScope.lookupSymbol(
-          "i32",
-          this.program.getLoc(ctx),
-        ).type,
-        value,
-      };
-    } else if (value < -(2 ** 7) || value > 2 ** 7 - 1) {
-      return {
-        variant: "Constant",
-        type: this.program.globalScope.lookupSymbol(
-          "i16",
-          this.program.getLoc(ctx),
-        ).type,
-        value,
-      };
-    } else {
-      return {
-        variant: "Constant",
-        type: this.program.globalScope.lookupSymbol(
-          "i8",
-          this.program.getLoc(ctx),
-        ).type,
-        value,
-      };
-    }
-  };
-
-  visitStringConstant = (ctx: StringConstantContext): ConstantSymbol => {
+  visitStringConstant = (ctx: StringConstantContext): StringConstantSymbol => {
     return {
-      variant: "Constant",
+      variant: "StringConstant",
       type: this.program.globalScope.lookupSymbol(
         "stringview",
         this.program.getLoc(ctx),
@@ -835,7 +791,65 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
     };
   };
 
-  visitBooleanConstant = (ctx: BooleanConstantContext): ConstantSymbol => {
+  visitLiteralConstant = (ctx: LiteralConstantContext): ConstantSymbol => {
+    const match = ctx.getText().match(/^(\d+(?:\.\d+)?)(s|ms|us|ns|m|h|d)?$/);
+    if (!match) {
+      throw new InternalError(
+        "Could not parse literal",
+        this.program.getLoc(ctx),
+      );
+    }
+    const [, valueStr, unitStr] = match;
+    const isFloat = valueStr.indexOf(".") !== -1;
+    let value = isFloat ? parseFloat(valueStr) : parseInt(valueStr);
+
+    if (Number.isNaN(value)) {
+      throw new CompilerError(
+        `Could not parse '${ctx.getText()}'.`,
+        this.program.getLoc(ctx),
+      );
+    }
+
+    let type = isFloat
+      ? this.program.getBuiltinType("f64")
+      : this.program.getBuiltinType("i64");
+    let unit: LiteralUnit | undefined = undefined;
+
+    if (unitStr) {
+      switch (unitStr) {
+        case "s":
+        case "ms":
+        case "us":
+        case "ns":
+        case "m":
+        case "h":
+        case "d":
+          type = this.program.globalScope.lookupSymbol(
+            "Duration",
+            this.program.getLoc(ctx),
+          ).type;
+          unit = unitStr;
+          break;
+
+        default:
+          throw new CompilerError(
+            `'${unitStr}' is not a valid unit`,
+            this.program.getLoc(ctx),
+          );
+      }
+    }
+
+    return {
+      variant: "LiteralConstant",
+      type: type,
+      value: value,
+      unit: unit,
+    };
+  };
+
+  visitBooleanConstant = (
+    ctx: BooleanConstantContext,
+  ): BooleanConstantSymbol => {
     const text = ctx.getText();
     let value = false;
     if (text === "true") {
@@ -844,7 +858,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
       throw new InternalError(`Invalid boolean constant: ${text}`);
     }
     return {
-      variant: "Constant",
+      variant: "BooleanConstant",
       type: this.program.globalScope.lookupSymbol(
         "boolean",
         this.program.getLoc(ctx),

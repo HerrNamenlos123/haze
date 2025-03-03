@@ -57,11 +57,31 @@ export type DatatypeSymbol<T = Datatype> = {
   scope: Scope;
 };
 
-export type ConstantSymbol = {
-  variant: "Constant";
+export type StringConstantSymbol = {
+  variant: "StringConstant";
   type: Datatype;
-  value: string | number | boolean;
+  value: string;
 };
+
+export type BooleanConstantSymbol = {
+  variant: "BooleanConstant";
+  type: Datatype;
+  value: boolean;
+};
+
+export type LiteralUnit = "s" | "ms" | "us" | "ns" | "m" | "h" | "d";
+
+export type LiteralConstantSymbol = {
+  variant: "LiteralConstant";
+  type: Datatype;
+  value: number;
+  unit?: LiteralUnit;
+};
+
+export type ConstantSymbol =
+  | StringConstantSymbol
+  | BooleanConstantSymbol
+  | LiteralConstantSymbol;
 
 export type Symbol =
   | VariableSymbol
@@ -92,13 +112,21 @@ export function isSymbolGeneric(symbol: Symbol) {
   if (isDatatypeGeneric(symbol.type)) {
     return true;
   }
-  if (symbol.variant !== "Constant") {
+  if (
+    symbol.variant === "Variable" ||
+    symbol.variant === "Function" ||
+    symbol.variant === "Datatype"
+  ) {
     let p = symbol.parentSymbol;
     while (p) {
       if (isDatatypeGeneric(p.type)) {
         return true;
       }
-      if (p.variant !== "Constant") {
+      if (
+        p.variant === "Variable" ||
+        p.variant === "Function" ||
+        p.variant === "Datatype"
+      ) {
         p = p.parentSymbol;
       }
     }
@@ -165,7 +193,11 @@ export function mangleSymbol(symbol: Symbol): string {
         mangled += "N";
         while (p) {
           mangled += mangleDatatype(p.type);
-          if (p.variant !== "Constant") {
+          if (
+            p.variant === "Variable" ||
+            p.variant === "Function" ||
+            p.variant === "Datatype"
+          ) {
             p = p.parentSymbol;
           }
         }
@@ -203,11 +235,19 @@ export function mangleSymbol(symbol: Symbol): string {
 
 export function serializeSymbol(symbol: Symbol): string {
   let name = "";
-  if (symbol.variant !== "Constant") {
+  if (
+    symbol.variant === "Datatype" ||
+    symbol.variant === "Function" ||
+    symbol.variant === "Variable"
+  ) {
     let p = symbol.parentSymbol;
     while (p) {
       name = `${serializeDatatype(p.type)}.${name}`;
-      if (p.variant !== "Constant") {
+      if (
+        p.variant === "Datatype" ||
+        p.variant === "Function" ||
+        p.variant === "Variable"
+      ) {
         p = p.parentSymbol;
       }
     }

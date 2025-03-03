@@ -31,11 +31,19 @@ assertTypes() {
 
 struct Duration {
   nanoseconds: u64;
+
+  constructor(nanoseconds: u64) {
+    return Duration {
+      .nanoseconds: nanoseconds,
+    };
+  }
+
+  destructor() {}
 }
 
 sleep(duration: Duration) {
   const sec = duration.nanoseconds / 1000000000;
-  const nsec = duration.nanoseconds - sec;
+  const nsec = duration.nanoseconds - sec * 1000000000;
   __c__("struct timespec t;");
   __c__("t.tv_sec = sec");
   __c__("t.tv_nsec = nsec");
@@ -137,5 +145,11 @@ fib(count: i32) {
 main(): i32 {
   assertTypes();
   // fib(10);
+  const a: u64 = 0;
+  while (true) {
+    printf("Hi! %d\n", a);
+    sleep(100ms);
+    a++;
+  }
   return 0;
 }

@@ -42,9 +42,9 @@ import { ExplicitCastExprContext } from "./HazeParser.js";
 import { ArgsContext } from "./HazeParser.js";
 import { EllipsisContext } from "./HazeParser.js";
 import { FunctypeContext } from "./HazeParser.js";
-import { IntegerConstantContext } from "./HazeParser.js";
-import { StringConstantContext } from "./HazeParser.js";
 import { BooleanConstantContext } from "./HazeParser.js";
+import { LiteralConstantContext } from "./HazeParser.js";
+import { StringConstantContext } from "./HazeParser.js";
 import { CompilationhintContext } from "./HazeParser.js";
 import { CompilationhintfilenameContext } from "./HazeParser.js";
 import { CompilationhintflagsContext } from "./HazeParser.js";
@@ -495,17 +495,29 @@ export default class HazeListener extends ParseTreeListener {
 	 */
 	exitFunctype?: (ctx: FunctypeContext) => void;
 	/**
-	 * Enter a parse tree produced by the `IntegerConstant`
+	 * Enter a parse tree produced by the `BooleanConstant`
 	 * labeled alternative in `HazeParser.constant`.
 	 * @param ctx the parse tree
 	 */
-	enterIntegerConstant?: (ctx: IntegerConstantContext) => void;
+	enterBooleanConstant?: (ctx: BooleanConstantContext) => void;
 	/**
-	 * Exit a parse tree produced by the `IntegerConstant`
+	 * Exit a parse tree produced by the `BooleanConstant`
 	 * labeled alternative in `HazeParser.constant`.
 	 * @param ctx the parse tree
 	 */
-	exitIntegerConstant?: (ctx: IntegerConstantContext) => void;
+	exitBooleanConstant?: (ctx: BooleanConstantContext) => void;
+	/**
+	 * Enter a parse tree produced by the `LiteralConstant`
+	 * labeled alternative in `HazeParser.constant`.
+	 * @param ctx the parse tree
+	 */
+	enterLiteralConstant?: (ctx: LiteralConstantContext) => void;
+	/**
+	 * Exit a parse tree produced by the `LiteralConstant`
+	 * labeled alternative in `HazeParser.constant`.
+	 * @param ctx the parse tree
+	 */
+	exitLiteralConstant?: (ctx: LiteralConstantContext) => void;
 	/**
 	 * Enter a parse tree produced by the `StringConstant`
 	 * labeled alternative in `HazeParser.constant`.
@@ -518,18 +530,6 @@ export default class HazeListener extends ParseTreeListener {
 	 * @param ctx the parse tree
 	 */
 	exitStringConstant?: (ctx: StringConstantContext) => void;
-	/**
-	 * Enter a parse tree produced by the `BooleanConstant`
-	 * labeled alternative in `HazeParser.constant`.
-	 * @param ctx the parse tree
-	 */
-	enterBooleanConstant?: (ctx: BooleanConstantContext) => void;
-	/**
-	 * Exit a parse tree produced by the `BooleanConstant`
-	 * labeled alternative in `HazeParser.constant`.
-	 * @param ctx the parse tree
-	 */
-	exitBooleanConstant?: (ctx: BooleanConstantContext) => void;
 	/**
 	 * Enter a parse tree produced by `HazeParser.compilationhint`.
 	 * @param ctx the parse tree

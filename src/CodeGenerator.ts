@@ -28,7 +28,7 @@ import {
   type RawPointerDatatype,
 } from "./Datatype";
 import type { Statement } from "./Statement";
-import type { Expression } from "./Expression";
+import type { Expression, ObjectExpression } from "./Expression";
 import { OutputWriter } from "./OutputWriter";
 import { datatypeSymbolUsed, resolveGenerics } from "./utils";
 import type { Scope } from "./Scope";
@@ -458,7 +458,10 @@ class CodeGenerator {
         if (expr.symbol.variant === "Function") {
           writer.write(mangleSymbol(expr.symbol));
           return writer;
-        } else if (expr.symbol.variant !== "Constant") {
+        } else if (
+          expr.symbol.variant === "Variable" ||
+          expr.symbol.variant === "Datatype"
+        ) {
           writer.write(expr.symbol.name);
           return writer;
         } else {
@@ -599,23 +602,86 @@ class CodeGenerator {
         return writer;
 
       case "Constant":
-        switch (typeof expr.constantSymbol.value) {
-          case "number":
-            writer.write(expr.constantSymbol.value.toString());
+        switch (expr.constantSymbol.variant) {
+          case "LiteralConstant":
+            if (expr.constantSymbol.unit) {
+              let value = 0;
+              switch (expr.constantSymbol.unit) {
+                case "ns":
+                  value = expr.constantSymbol.value;
+                  break;
+
+                case "us":
+                  value = expr.constantSymbol.value * 1000;
+                  break;
+
+                case "ms":
+                  value = expr.constantSymbol.value * 1000 * 1000;
+                  break;
+
+                case "s":
+                  value = expr.constantSymbol.value * 1000 * 1000 * 1000;
+                  break;
+
+                case "m":
+                  value = expr.constantSymbol.value * 60 * 1000 * 1000 * 1000;
+                  break;
+
+                case "h":
+                  value = expr.constantSymbol.value * 3600 * 1000 * 1000 * 1000;
+                  break;
+
+                case "d":
+                  value =
+                    expr.constantSymbol.value * 24 * 3600 * 1000 * 1000 * 1000;
+                  break;
+
+                default:
+                  throw new InternalError(
+                    `Unknown unit ${expr.constantSymbol.unit}`,
+                  );
+              }
+              if (expr.constantSymbol.type.variant !== "Struct") {
+                throw new ImpossibleSituation();
+              }
+              const durationExpr: ObjectExpression = {
+                variant: "Object",
+                type: expr.constantSymbol.type,
+                ctx: expr.ctx,
+                members: [
+                  [
+                    expr.constantSymbol.type.members[0],
+                    {
+                      variant: "Constant",
+                      constantSymbol: {
+                        variant: "LiteralConstant",
+                        type: expr.constantSymbol.type.members[0].type,
+                        value: value,
+                      },
+                      ctx: expr.ctx,
+                      type: expr.constantSymbol.type.members[0].type,
+                    },
+                  ],
+                ],
+              };
+              writer.write(this.emitExpr(durationExpr).get());
+            } else {
+              writer.write(expr.constantSymbol.value.toString());
+            }
             return writer;
 
-          case "boolean":
+          case "BooleanConstant":
             writer.write(expr.constantSymbol.value ? "1" : "0");
             return writer;
 
-          case "string":
+          case "StringConstant":
             writer.write(expr.constantSymbol.value);
             return writer;
 
-          default:
-            throw new InternalError(
-              `Unknown constant type ${typeof expr.constantSymbol.value}`,
-            );
+          // default:
+          //   throw new InternalError(
+          //     `Unknown constant type ${typeof expr.constantSymbol.value}`,
+          //   );
         }
 
       default:
