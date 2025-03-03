@@ -1318,6 +1318,7 @@ public class HazeParser extends Parser {
 	}
 	@SuppressWarnings("CheckReturnValue")
 	public static class PreIncrExprContext extends ExprContext {
+		public Token op;
 		public ExprContext expr() {
 			return getRuleContext(ExprContext.class,0);
 		}
@@ -1338,6 +1339,7 @@ public class HazeParser extends Parser {
 	}
 	@SuppressWarnings("CheckReturnValue")
 	public static class UnaryExprContext extends ExprContext {
+		public Token op;
 		public ExprContext expr() {
 			return getRuleContext(ExprContext.class,0);
 		}
@@ -1355,6 +1357,7 @@ public class HazeParser extends Parser {
 	}
 	@SuppressWarnings("CheckReturnValue")
 	public static class PostIncrExprContext extends ExprContext {
+		public Token op;
 		public ExprContext expr() {
 			return getRuleContext(ExprContext.class,0);
 		}
@@ -1460,9 +1463,10 @@ public class HazeParser extends Parser {
 				_ctx = _localctx;
 				_prevctx = _localctx;
 				setState(250);
+				((PreIncrExprContext)_localctx).op = _input.LT(1);
 				_la = _input.LA(1);
 				if ( !(_la==T__20 || _la==T__21) ) {
-				_errHandler.recoverInline(this);
+					((PreIncrExprContext)_localctx).op = (Token)_errHandler.recoverInline(this);
 				}
 				else {
 					if ( _input.LA(1)==Token.EOF ) matchedEOF = true;
@@ -1479,9 +1483,10 @@ public class HazeParser extends Parser {
 				_ctx = _localctx;
 				_prevctx = _localctx;
 				setState(252);
+				((UnaryExprContext)_localctx).op = _input.LT(1);
 				_la = _input.LA(1);
 				if ( !(_la==T__22 || _la==T__23) ) {
-				_errHandler.recoverInline(this);
+					((UnaryExprContext)_localctx).op = (Token)_errHandler.recoverInline(this);
 				}
 				else {
 					if ( _input.LA(1)==Token.EOF ) matchedEOF = true;
@@ -1701,9 +1706,10 @@ public class HazeParser extends Parser {
 						setState(294);
 						if (!(precpred(_ctx, 15))) throw new FailedPredicateException(this, "precpred(_ctx, 15)");
 						setState(295);
+						((PostIncrExprContext)_localctx).op = _input.LT(1);
 						_la = _input.LA(1);
 						if ( !(_la==T__20 || _la==T__21) ) {
-						_errHandler.recoverInline(this);
+							((PostIncrExprContext)_localctx).op = (Token)_errHandler.recoverInline(this);
 						}
 						else {
 							if ( _input.LA(1)==Token.EOF ) matchedEOF = true;

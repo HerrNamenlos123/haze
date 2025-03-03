@@ -31,6 +31,8 @@ import {
   IfexprContext,
   IfStatementContext,
   InlineCStatementContext,
+  PostIncrExprContext,
+  PreIncrExprContext,
   SymbolValueExprContext,
   UnaryExprContext,
   WhileStatementContext,
@@ -70,6 +72,8 @@ import type {
   MemberAccessExpression,
   MethodAccessExpression,
   ObjectExpression,
+  PostIncrExpr,
+  PreIncrExpr,
   RawPointerDereferenceExpression,
   UnaryExpression,
 } from "./Expression";
@@ -239,6 +243,54 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
       variant: "SymbolValue",
       symbol: symbol,
       ctx: ctx,
+    };
+  };
+
+  visitPreIncrExpr = (ctx: PreIncrExprContext): PreIncrExpr => {
+    const expr: Expression = this.visit(ctx.expr());
+    const operator = ctx._op.text;
+    if (operator !== "++" && operator !== "--") {
+      throw new CompilerError(
+        `Unknown operator ${operator}`,
+        this.program.getLoc(ctx),
+      );
+    }
+    if (!isInteger(expr.type)) {
+      throw new CompilerError(
+        `Unary operator '${operator}' is not known for type '${serializeDatatype(expr.type)}'`,
+        this.program.getLoc(ctx),
+      );
+    }
+    return {
+      variant: "PreIncr",
+      ctx: ctx,
+      expr: expr,
+      operation: operator,
+      type: expr.type,
+    };
+  };
+
+  visitPostIncrExpr = (ctx: PostIncrExprContext): PostIncrExpr => {
+    const expr: Expression = this.visit(ctx.expr());
+    const operator = ctx._op.text;
+    if (operator !== "++" && operator !== "--") {
+      throw new CompilerError(
+        `Unknown operator ${operator}`,
+        this.program.getLoc(ctx),
+      );
+    }
+    if (!isInteger(expr.type)) {
+      throw new CompilerError(
+        `Unary operator '${operator}' is not known for type '${serializeDatatype(expr.type)}'`,
+        this.program.getLoc(ctx),
+      );
+    }
+    return {
+      variant: "PostIncr",
+      ctx: ctx,
+      expr: expr,
+      operation: operator,
+      type: expr.type,
     };
   };
 
@@ -686,12 +738,29 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
           operation: operation,
           type: this.program.getBuiltinType("boolean"),
         };
-    }
 
-    throw new CompilerError(
-      `No unary operator '${operation}' is known for type '${serializeDatatype(expr.type)}'`,
-      this.program.getLoc(ctx),
-    );
+      case "+":
+      case "-":
+        if (!isInteger(expr.type)) {
+          throw new CompilerError(
+            `Unary operator '${operation}' is not known for type '${serializeDatatype(expr.type)}'`,
+            this.program.getLoc(ctx),
+          );
+        }
+        return {
+          variant: "Unary",
+          ctx: ctx,
+          expr: expr,
+          operation: operation,
+          type: expr.type,
+        };
+
+      default:
+        throw new CompilerError(
+          `No unary operator '${operation}' is known for type '${serializeDatatype(expr.type)}'`,
+          this.program.getLoc(ctx),
+        );
+    }
   };
 
   visitStructMethod = (ctx: StructMethodContext): void => {

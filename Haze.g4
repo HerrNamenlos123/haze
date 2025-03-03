@@ -45,14 +45,14 @@ expr
     | func                                                      #FuncRefExpr
 
     // Part 1: Left to right
-    | expr ('++' | '--')                                                            #PostIncrExpr
+    | expr op=('++' | '--')                                                         #PostIncrExpr
     | expr '(' args ')'                                                             #ExprCallExpr
     // <- Array Subscripting here: expr[]
     | expr '.' ID                                                                   #ExprMemberAccess
     | datatype '{' structmembervalue? (',' structmembervalue)* ','? '}'             #StructInstantiationExpr
     // Part 2: Right to left
-    | <assoc=right> ('++' | '--') expr                                              #PreIncrExpr
-    | <assoc=right> ('+' | '-') expr                                                #UnaryExpr
+    | <assoc=right> op=('++' | '--') expr                                           #PreIncrExpr
+    | <assoc=right> op=('+' | '-') expr                                             #UnaryExpr
     | <assoc=right> ('not' | '!') expr /* and bitwise not */                        #UnaryExpr
     | <assoc=right> expr 'as' datatype                                              #ExplicitCastExpr
     // Part 3: Left to right

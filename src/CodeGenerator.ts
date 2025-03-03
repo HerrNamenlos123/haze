@@ -459,6 +459,22 @@ class CodeGenerator {
         );
         return writer;
 
+      case "PreIncr":
+        {
+          writer.write(
+            "(" + expr.operation + this.emitExpr(expr.expr).get() + ")",
+          );
+        }
+        return writer;
+
+      case "PostIncr":
+        {
+          writer.write(
+            "(" + this.emitExpr(expr.expr).get() + expr.operation + ")",
+          );
+        }
+        return writer;
+
       case "Unary":
         switch (expr.operation) {
           case "!":
@@ -471,7 +487,16 @@ class CodeGenerator {
                 this.program.getLoc(expr.ctx),
                 this.program,
               );
-              writer.write("(" + expr.operation + " " + unaryExpr + ")");
+              writer.write("(!" + unaryExpr + ")");
+            }
+            break;
+
+          case "+":
+          case "-":
+            {
+              writer.write(
+                "(" + expr.operation + this.emitExpr(expr.expr).get() + ")",
+              );
             }
             break;
         }

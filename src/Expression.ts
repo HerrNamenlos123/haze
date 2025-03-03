@@ -80,7 +80,19 @@ export type BinaryExpression = BaseExpression & {
 export type UnaryExpression = BaseExpression & {
   variant: "Unary";
   expr: Expression;
-  operation: "!";
+  operation: "!" | "+" | "-";
+};
+
+export type PostIncrExpr = BaseExpression & {
+  variant: "PostIncr";
+  expr: Expression;
+  operation: "++" | "--";
+};
+
+export type PreIncrExpr = BaseExpression & {
+  variant: "PreIncr";
+  expr: Expression;
+  operation: "++" | "--";
 };
 
 export type Expression =
@@ -90,6 +102,8 @@ export type Expression =
   | UnaryExpression
   | SymbolValueExpression
   | MemberAccessExpression
+  | PostIncrExpr
+  | PreIncrExpr
   | RawPointerDereferenceExpression
   | MethodAccessExpression
   | ExplicitCastExpression

@@ -1128,9 +1128,10 @@ export default class HazeParser extends Parser {
 				this._ctx = localctx;
 				_prevctx = localctx;
 				this.state = 250;
+				(localctx as PreIncrExprContext)._op = this._input.LT(1);
 				_la = this._input.LA(1);
 				if(!(_la===21 || _la===22)) {
-				this._errHandler.recoverInline(this);
+				    (localctx as PreIncrExprContext)._op = this._errHandler.recoverInline(this);
 				}
 				else {
 					this._errHandler.reportMatch(this);
@@ -1146,9 +1147,10 @@ export default class HazeParser extends Parser {
 				this._ctx = localctx;
 				_prevctx = localctx;
 				this.state = 252;
+				(localctx as UnaryExprContext)._op = this._input.LT(1);
 				_la = this._input.LA(1);
 				if(!(_la===23 || _la===24)) {
-				this._errHandler.recoverInline(this);
+				    (localctx as UnaryExprContext)._op = this._errHandler.recoverInline(this);
 				}
 				else {
 					this._errHandler.reportMatch(this);
@@ -1376,9 +1378,10 @@ export default class HazeParser extends Parser {
 							throw this.createFailedPredicateException("this.precpred(this._ctx, 15)");
 						}
 						this.state = 295;
+						(localctx as PostIncrExprContext)._op = this._input.LT(1);
 						_la = this._input.LA(1);
 						if(!(_la===21 || _la===22)) {
-						this._errHandler.recoverInline(this);
+						    (localctx as PostIncrExprContext)._op = this._errHandler.recoverInline(this);
 						}
 						else {
 							this._errHandler.reportMatch(this);
@@ -3217,6 +3220,7 @@ export class ConstantExprContext extends ExprContext {
 	}
 }
 export class PreIncrExprContext extends ExprContext {
+	public _op!: Token;
 	constructor(parser: HazeParser, ctx: ExprContext) {
 		super(parser, ctx.parentCtx, ctx.invokingState);
 		super.copyFrom(ctx);
@@ -3277,6 +3281,7 @@ export class StructInstantiationExprContext extends ExprContext {
 	}
 }
 export class UnaryExprContext extends ExprContext {
+	public _op!: Token;
 	constructor(parser: HazeParser, ctx: ExprContext) {
 		super(parser, ctx.parentCtx, ctx.invokingState);
 		super.copyFrom(ctx);
@@ -3334,6 +3339,7 @@ export class ExplicitCastExprContext extends ExprContext {
 	}
 }
 export class PostIncrExprContext extends ExprContext {
+	public _op!: Token;
 	constructor(parser: HazeParser, ctx: ExprContext) {
 		super(parser, ctx.parentCtx, ctx.invokingState);
 		super.copyFrom(ctx);
