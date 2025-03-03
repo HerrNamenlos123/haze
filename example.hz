@@ -51,18 +51,13 @@ struct MemoryBuffer {
 
 struct List<T> {
   buffer: MemoryBuffer;
-  elementSize: i32;
   length: u64;
 
   constructor() {
-    const elementSize: i32 = 0;
     const initialCapacity = 4;
-    const dummy = 0 as T;
-    printf("int = %lu\n", sizeof<T>);
-    __c__("elementSize = sizeof(dummy)");
     return List<T> {
-      .buffer: MemoryBuffer(initialCapacity * elementSize),
-      .elementSize: elementSize,
+      .buffer: MemoryBuffer(initialCapacity * sizeof<T>),
+      .length: 0,
     };
   }
 
@@ -72,7 +67,7 @@ struct List<T> {
     if size <= this.capacity() {
       return;
     }
-    this.buffer.realloc(size * this.elementSize);
+    this.buffer.realloc(size * sizeof<T>);
   }
 
   push(n: T) {
@@ -101,7 +96,7 @@ struct List<T> {
   }
 
   capacity(): u64 {
-    return this.buffer.size / this.elementSize;
+    return this.buffer.size / sizeof<T>;
   }
 }
 
@@ -119,7 +114,6 @@ fib(count: i32) {
 }
 
 main(): i32 {
-  // const a = List<u8>();
-  // fib(10);
+  fib(10);
   return 0;
 }
