@@ -21,13 +21,11 @@ import { VariableMutabilityContext } from "./HazeParser.js";
 import { InlineCStatementContext } from "./HazeParser.js";
 import { ExprStatementContext } from "./HazeParser.js";
 import { ReturnStatementContext } from "./HazeParser.js";
-import { ExprAssignmentStatementContext } from "./HazeParser.js";
 import { VariableDefinitionContext } from "./HazeParser.js";
 import { IfStatementContext } from "./HazeParser.js";
 import { WhileStatementContext } from "./HazeParser.js";
 import { StructMemberValueContext } from "./HazeParser.js";
 import { SymbolValueExprContext } from "./HazeParser.js";
-import { ExprCallExprContext } from "./HazeParser.js";
 import { ParenthesisExprContext } from "./HazeParser.js";
 import { ExprMemberAccessContext } from "./HazeParser.js";
 import { BinaryExprContext } from "./HazeParser.js";
@@ -36,8 +34,10 @@ import { ConstantExprContext } from "./HazeParser.js";
 import { PreIncrExprContext } from "./HazeParser.js";
 import { StructInstantiationExprContext } from "./HazeParser.js";
 import { UnaryExprContext } from "./HazeParser.js";
-import { ExplicitCastExprContext } from "./HazeParser.js";
 import { PostIncrExprContext } from "./HazeParser.js";
+import { ExprCallExprContext } from "./HazeParser.js";
+import { ExprAssignmentExprContext } from "./HazeParser.js";
+import { ExplicitCastExprContext } from "./HazeParser.js";
 import { ArgsContext } from "./HazeParser.js";
 import { EllipsisContext } from "./HazeParser.js";
 import { FunctypeContext } from "./HazeParser.js";
@@ -250,18 +250,6 @@ export default class HazeListener extends ParseTreeListener {
 	 */
 	exitReturnStatement?: (ctx: ReturnStatementContext) => void;
 	/**
-	 * Enter a parse tree produced by the `ExprAssignmentStatement`
-	 * labeled alternative in `HazeParser.statement`.
-	 * @param ctx the parse tree
-	 */
-	enterExprAssignmentStatement?: (ctx: ExprAssignmentStatementContext) => void;
-	/**
-	 * Exit a parse tree produced by the `ExprAssignmentStatement`
-	 * labeled alternative in `HazeParser.statement`.
-	 * @param ctx the parse tree
-	 */
-	exitExprAssignmentStatement?: (ctx: ExprAssignmentStatementContext) => void;
-	/**
 	 * Enter a parse tree produced by the `VariableDefinition`
 	 * labeled alternative in `HazeParser.statement`.
 	 * @param ctx the parse tree
@@ -321,18 +309,6 @@ export default class HazeListener extends ParseTreeListener {
 	 * @param ctx the parse tree
 	 */
 	exitSymbolValueExpr?: (ctx: SymbolValueExprContext) => void;
-	/**
-	 * Enter a parse tree produced by the `ExprCallExpr`
-	 * labeled alternative in `HazeParser.expr`.
-	 * @param ctx the parse tree
-	 */
-	enterExprCallExpr?: (ctx: ExprCallExprContext) => void;
-	/**
-	 * Exit a parse tree produced by the `ExprCallExpr`
-	 * labeled alternative in `HazeParser.expr`.
-	 * @param ctx the parse tree
-	 */
-	exitExprCallExpr?: (ctx: ExprCallExprContext) => void;
 	/**
 	 * Enter a parse tree produced by the `ParenthesisExpr`
 	 * labeled alternative in `HazeParser.expr`.
@@ -430,18 +406,6 @@ export default class HazeListener extends ParseTreeListener {
 	 */
 	exitUnaryExpr?: (ctx: UnaryExprContext) => void;
 	/**
-	 * Enter a parse tree produced by the `ExplicitCastExpr`
-	 * labeled alternative in `HazeParser.expr`.
-	 * @param ctx the parse tree
-	 */
-	enterExplicitCastExpr?: (ctx: ExplicitCastExprContext) => void;
-	/**
-	 * Exit a parse tree produced by the `ExplicitCastExpr`
-	 * labeled alternative in `HazeParser.expr`.
-	 * @param ctx the parse tree
-	 */
-	exitExplicitCastExpr?: (ctx: ExplicitCastExprContext) => void;
-	/**
 	 * Enter a parse tree produced by the `PostIncrExpr`
 	 * labeled alternative in `HazeParser.expr`.
 	 * @param ctx the parse tree
@@ -453,6 +417,42 @@ export default class HazeListener extends ParseTreeListener {
 	 * @param ctx the parse tree
 	 */
 	exitPostIncrExpr?: (ctx: PostIncrExprContext) => void;
+	/**
+	 * Enter a parse tree produced by the `ExprCallExpr`
+	 * labeled alternative in `HazeParser.expr`.
+	 * @param ctx the parse tree
+	 */
+	enterExprCallExpr?: (ctx: ExprCallExprContext) => void;
+	/**
+	 * Exit a parse tree produced by the `ExprCallExpr`
+	 * labeled alternative in `HazeParser.expr`.
+	 * @param ctx the parse tree
+	 */
+	exitExprCallExpr?: (ctx: ExprCallExprContext) => void;
+	/**
+	 * Enter a parse tree produced by the `ExprAssignmentExpr`
+	 * labeled alternative in `HazeParser.expr`.
+	 * @param ctx the parse tree
+	 */
+	enterExprAssignmentExpr?: (ctx: ExprAssignmentExprContext) => void;
+	/**
+	 * Exit a parse tree produced by the `ExprAssignmentExpr`
+	 * labeled alternative in `HazeParser.expr`.
+	 * @param ctx the parse tree
+	 */
+	exitExprAssignmentExpr?: (ctx: ExprAssignmentExprContext) => void;
+	/**
+	 * Enter a parse tree produced by the `ExplicitCastExpr`
+	 * labeled alternative in `HazeParser.expr`.
+	 * @param ctx the parse tree
+	 */
+	enterExplicitCastExpr?: (ctx: ExplicitCastExprContext) => void;
+	/**
+	 * Exit a parse tree produced by the `ExplicitCastExpr`
+	 * labeled alternative in `HazeParser.expr`.
+	 * @param ctx the parse tree
+	 */
+	exitExplicitCastExpr?: (ctx: ExplicitCastExprContext) => void;
 	/**
 	 * Enter a parse tree produced by `HazeParser.args`.
 	 * @param ctx the parse tree

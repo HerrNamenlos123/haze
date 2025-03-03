@@ -331,20 +331,6 @@ class CodeGenerator {
         }
         return writer;
 
-      case "ExprAssign":
-        const assignConv = implicitConversion(
-          statement.rightExpr.type,
-          statement.leftExpr.type,
-          this.emitExpr(statement.rightExpr).get(),
-          statement.scope,
-          this.program.getLoc(statement.rightExpr.ctx),
-          this.program,
-        );
-        writer.writeLine(
-          `${this.emitExpr(statement.leftExpr).get()} = ${assignConv};`,
-        );
-        return writer;
-
       // default:
       //   throw new InternalError(`Unknown statement type ${statement.variant}`);
     }
@@ -413,6 +399,18 @@ class CodeGenerator {
             this.emitExpr(expr.expr).get() + "(" + args.join(", ") + ")",
           );
         }
+        return writer;
+
+      case "ExprAssign":
+        const assignConv = implicitConversion(
+          expr.rightExpr.type,
+          expr.leftExpr.type,
+          this.emitExpr(expr.rightExpr).get(),
+          this.program.currentScope,
+          this.program.getLoc(expr.rightExpr.ctx),
+          this.program,
+        );
+        writer.write(`(${this.emitExpr(expr.leftExpr).get()} = ${assignConv})`);
         return writer;
 
       case "Object":

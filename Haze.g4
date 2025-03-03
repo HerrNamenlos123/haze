@@ -28,7 +28,6 @@ statement
     : '__c__' '(' STRING_LITERAL ')' ';'                        #InlineCStatement
     | expr ';'                                                  #ExprStatement
     | 'return' expr? ';'                                        #ReturnStatement
-    | expr '=' expr ';'                                         #ExprAssignmentStatement
     | variablemutability ID (':' datatype)? '=' expr ';'         #VariableDefinition
     | 'if' ifexpr '{' thenblock '}' ('else' 'if' elseifexpr '{' elseifblock '}')* ('else' '{' elseblock '}')?  #IfStatement
     | 'while' expr '{' body '}'                                 #WhileStatement
@@ -66,6 +65,7 @@ expr
     // | expr ('|') expr                                           #BinaryExpr
     | expr ('and'|'or') expr                                    #BinaryExpr
     // <- ternary
+    | expr op=('='|'+='|'-='|'*='|'/='|'%='|'<<='|'>>='|'&='|'^='|'|=') expr   #ExprAssignmentExpr
 
     | ID ('<' datatype (',' datatype)* '>')?                    #SymbolValueExpr
     | constant                                                  #ConstantExpr

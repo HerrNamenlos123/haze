@@ -43,19 +43,10 @@ export type WhileStatement = {
   scope: Scope;
 };
 
-export type ExprAssignmentStatement = {
-  variant: "ExprAssign";
-  ctx: ParserRuleContext;
-  leftExpr: Expression;
-  rightExpr: Expression;
-  scope: Scope;
-};
-
 export type Statement =
   | VariableDefinitionStatement
   | ReturnStatement
   | ExprStatement
   | WhileStatement
   | ConditionalStatement
-  | ExprAssignmentStatement
   | InlineCStatement;

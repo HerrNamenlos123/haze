@@ -27,6 +27,7 @@ import {
   BodyContext,
   ElseifexprContext,
   ExplicitCastExprContext,
+  ExprAssignmentExprContext,
   FuncdeclContext,
   IfexprContext,
   IfStatementContext,
@@ -40,7 +41,6 @@ import {
   type BooleanConstantContext,
   type CommonDatatypeContext,
   type ConstantExprContext,
-  type ExprAssignmentStatementContext,
   type ExprMemberAccessContext,
   type ExprStatementContext,
   type FuncbodyContext,
@@ -67,6 +67,7 @@ import type {
   BinaryExpression,
   ConstantExpression,
   ExplicitCastExpression,
+  ExprAssignmentExpr,
   ExprCallExpression,
   Expression,
   MemberAccessExpression,
@@ -79,7 +80,6 @@ import type {
 } from "./Expression";
 import type {
   ConditionalStatement,
-  ExprAssignmentStatement,
   ExprStatement,
   InlineCStatement,
   ReturnStatement,
@@ -998,9 +998,9 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
     return args;
   };
 
-  visitExprAssignmentStatement = (
-    ctx: ExprAssignmentStatementContext,
-  ): ExprAssignmentStatement => {
+  visitExprAssignmentExpr = (
+    ctx: ExprAssignmentExprContext,
+  ): ExprAssignmentExpr => {
     const leftExpr: Expression = this.visit(ctx.expr_list()[0]);
     const rightExpr: Expression = this.visit(ctx.expr_list()[1]);
     if (
@@ -1024,10 +1024,10 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
 
     return {
       variant: "ExprAssign",
+      type: leftExpr.type,
       ctx: ctx,
       leftExpr: leftExpr,
       rightExpr: rightExpr,
-      scope: this.program.currentScope,
     };
   };
 

@@ -113,7 +113,7 @@ fib(count: i32) {
   while (i < count) {
     fibs.push(fibs.get(i - 1) + fibs.get(i - 2));
     printf("Found fib number: %d\n", fibs.get(fibs.length - 1));
-    i = i + 1;
+    i++;
   }
 }
 

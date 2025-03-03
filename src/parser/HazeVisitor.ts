@@ -21,13 +21,11 @@ import { VariableMutabilityContext } from "./HazeParser.js";
 import { InlineCStatementContext } from "./HazeParser.js";
 import { ExprStatementContext } from "./HazeParser.js";
 import { ReturnStatementContext } from "./HazeParser.js";
-import { ExprAssignmentStatementContext } from "./HazeParser.js";
 import { VariableDefinitionContext } from "./HazeParser.js";
 import { IfStatementContext } from "./HazeParser.js";
 import { WhileStatementContext } from "./HazeParser.js";
 import { StructMemberValueContext } from "./HazeParser.js";
 import { SymbolValueExprContext } from "./HazeParser.js";
-import { ExprCallExprContext } from "./HazeParser.js";
 import { ParenthesisExprContext } from "./HazeParser.js";
 import { ExprMemberAccessContext } from "./HazeParser.js";
 import { BinaryExprContext } from "./HazeParser.js";
@@ -36,8 +34,10 @@ import { ConstantExprContext } from "./HazeParser.js";
 import { PreIncrExprContext } from "./HazeParser.js";
 import { StructInstantiationExprContext } from "./HazeParser.js";
 import { UnaryExprContext } from "./HazeParser.js";
-import { ExplicitCastExprContext } from "./HazeParser.js";
 import { PostIncrExprContext } from "./HazeParser.js";
+import { ExprCallExprContext } from "./HazeParser.js";
+import { ExprAssignmentExprContext } from "./HazeParser.js";
+import { ExplicitCastExprContext } from "./HazeParser.js";
 import { ArgsContext } from "./HazeParser.js";
 import { EllipsisContext } from "./HazeParser.js";
 import { FunctypeContext } from "./HazeParser.js";
@@ -177,13 +177,6 @@ export default class HazeVisitor<Result> extends ParseTreeVisitor<Result> {
 	 */
 	visitReturnStatement?: (ctx: ReturnStatementContext) => Result;
 	/**
-	 * Visit a parse tree produced by the `ExprAssignmentStatement`
-	 * labeled alternative in `HazeParser.statement`.
-	 * @param ctx the parse tree
-	 * @return the visitor result
-	 */
-	visitExprAssignmentStatement?: (ctx: ExprAssignmentStatementContext) => Result;
-	/**
 	 * Visit a parse tree produced by the `VariableDefinition`
 	 * labeled alternative in `HazeParser.statement`.
 	 * @param ctx the parse tree
@@ -218,13 +211,6 @@ export default class HazeVisitor<Result> extends ParseTreeVisitor<Result> {
 	 * @return the visitor result
 	 */
 	visitSymbolValueExpr?: (ctx: SymbolValueExprContext) => Result;
-	/**
-	 * Visit a parse tree produced by the `ExprCallExpr`
-	 * labeled alternative in `HazeParser.expr`.
-	 * @param ctx the parse tree
-	 * @return the visitor result
-	 */
-	visitExprCallExpr?: (ctx: ExprCallExprContext) => Result;
 	/**
 	 * Visit a parse tree produced by the `ParenthesisExpr`
 	 * labeled alternative in `HazeParser.expr`.
@@ -282,19 +268,33 @@ export default class HazeVisitor<Result> extends ParseTreeVisitor<Result> {
 	 */
 	visitUnaryExpr?: (ctx: UnaryExprContext) => Result;
 	/**
-	 * Visit a parse tree produced by the `ExplicitCastExpr`
-	 * labeled alternative in `HazeParser.expr`.
-	 * @param ctx the parse tree
-	 * @return the visitor result
-	 */
-	visitExplicitCastExpr?: (ctx: ExplicitCastExprContext) => Result;
-	/**
 	 * Visit a parse tree produced by the `PostIncrExpr`
 	 * labeled alternative in `HazeParser.expr`.
 	 * @param ctx the parse tree
 	 * @return the visitor result
 	 */
 	visitPostIncrExpr?: (ctx: PostIncrExprContext) => Result;
+	/**
+	 * Visit a parse tree produced by the `ExprCallExpr`
+	 * labeled alternative in `HazeParser.expr`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitExprCallExpr?: (ctx: ExprCallExprContext) => Result;
+	/**
+	 * Visit a parse tree produced by the `ExprAssignmentExpr`
+	 * labeled alternative in `HazeParser.expr`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitExprAssignmentExpr?: (ctx: ExprAssignmentExprContext) => Result;
+	/**
+	 * Visit a parse tree produced by the `ExplicitCastExpr`
+	 * labeled alternative in `HazeParser.expr`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitExplicitCastExpr?: (ctx: ExplicitCastExprContext) => Result;
 	/**
 	 * Visit a parse tree produced by `HazeParser.args`.
 	 * @param ctx the parse tree

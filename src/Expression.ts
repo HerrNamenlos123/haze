@@ -95,6 +95,12 @@ export type PreIncrExpr = BaseExpression & {
   operation: "++" | "--";
 };
 
+export type ExprAssignmentExpr = BaseExpression & {
+  variant: "ExprAssign";
+  leftExpr: Expression;
+  rightExpr: Expression;
+};
+
 export type Expression =
   | ConstantExpression
   | ObjectExpression
@@ -107,4 +113,5 @@ export type Expression =
   | RawPointerDereferenceExpression
   | MethodAccessExpression
   | ExplicitCastExpression
-  | ExprCallExpression;
+  | ExprCallExpression
+  | ExprAssignmentExpr;
