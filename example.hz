@@ -65,9 +65,7 @@ struct List<T> {
     };
   }
 
-  destructor() {
-    printf("TODO: Fix cascading destructor calls\n");
-  }
+  destructor() {}
 
   reserve(size: u64): none {
     if size <= this.capacity() {

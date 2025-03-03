@@ -187,9 +187,9 @@ export function mangleSymbol(symbol: Symbol): string {
         mangled += "E";
       }
 
-      for (const [name, tp] of symbol.type.functionParameters) {
-        mangled += mangleDatatype(tp);
-      }
+      // for (const [name, tp] of symbol.type.functionParameters) {
+      //   mangled += mangleDatatype(tp);
+      // }
       return mangled;
 
     case "Datatype":

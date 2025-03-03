@@ -13,6 +13,7 @@ import {
   serializeSymbol,
   type DatatypeSymbol,
   type FunctionSymbol,
+  type Symbol,
   type VariableSymbol,
 } from "./Symbol";
 import {
@@ -155,17 +156,37 @@ class CodeGenerator {
       this.emitScope(symbol.scope),
     );
 
+    if (symbol.specialMethod === "destructor") {
+      if (!symbol.parentSymbol) {
+        throw new ImpossibleSituation();
+      }
+      if (
+        symbol.parentSymbol.variant !== "Datatype" ||
+        symbol.parentSymbol.type.variant !== "Struct"
+      ) {
+        throw new ImpossibleSituation();
+      }
+      const members = symbol.parentSymbol.type.members;
+      this.outputDestructorCalls(
+        members,
+        this.out.function_definitions[mangleSymbol(symbol)],
+        undefined,
+        true,
+      );
+    }
+
     this.out.function_definitions[mangleSymbol(symbol)]
       .popIndent()
       .writeLine("}");
   }
 
   outputDestructorCalls(
-    scope: Scope,
+    symbols: Symbol[],
     writer: OutputWriter,
     returnedSymbol?: VariableSymbol,
+    isMember?: boolean,
   ) {
-    for (const symbol of Object.values(scope.getSymbols()).reverse()) {
+    for (const symbol of symbols.reverse()) {
       if (symbol.variant === "Variable" && symbol.type.variant === "Struct") {
         const destructor = symbol.type.methods.find(
           (m) => m.specialMethod === "destructor",
@@ -175,7 +196,7 @@ class CodeGenerator {
             continue;
           }
           writer.writeLine(
-            `${mangleSymbol(destructor)}(&${symbol.name}, context);`,
+            `${mangleSymbol(destructor)}(&${isMember ? "this->" : ""}${symbol.name}, context);`,
           );
         }
       }
@@ -212,7 +233,11 @@ class CodeGenerator {
               ? statement.expr.symbol
               : undefined
             : undefined;
-        this.outputDestructorCalls(scope, writer, returnedSymbol);
+        this.outputDestructorCalls(
+          Object.values(scope.getSymbols()),
+          writer,
+          returnedSymbol,
+        );
         if (!statement.expr) {
           writer.writeLine("return;");
         } else {
@@ -224,7 +249,7 @@ class CodeGenerator {
     }
 
     if (!returned) {
-      this.outputDestructorCalls(scope, writer);
+      this.outputDestructorCalls(Object.values(scope.getSymbols()), writer);
     }
 
     return writer;

@@ -86,6 +86,7 @@ import type {
 
 const RESERVED_VARIABLE_NAMES = ["this", "context", "__returnval__"];
 const INTERNAL_METHOD_NAMES = ["constructor", "destructor"];
+const RESERVED_NAMESPACES = ["global"];
 
 class FunctionBodyAnalyzer extends HazeVisitor<any> {
   private program: Program;
