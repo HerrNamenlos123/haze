@@ -76,6 +76,7 @@ import type {
   PostIncrExpr,
   PreIncrExpr,
   RawPointerDereferenceExpression,
+  SizeofExpr,
   UnaryExpression,
 } from "./Expression";
 import type {
@@ -89,7 +90,7 @@ import type {
 } from "./Statement";
 
 const RESERVED_VARIABLE_NAMES = ["this", "context", "__returnval__"];
-const INTERNAL_METHOD_NAMES = ["constructor", "destructor"];
+const INTERNAL_METHOD_NAMES = ["constructor", "destructor", "sizeof"];
 const RESERVED_NAMESPACES = ["global"];
 
 class FunctionBodyAnalyzer extends HazeVisitor<any> {
@@ -107,8 +108,25 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
   };
 
   visitSymbolValueExpr = (ctx: SymbolValueExprContext): Expression => {
+    const name = ctx.ID().getText();
+    if (name === "sizeof") {
+      if (ctx.datatype_list().length !== 1) {
+        throw new CompilerError(
+          `sizeof<> Operator expected 1 generic argument but got ${ctx.datatype_list().length}.`,
+          this.program.getLoc(ctx),
+        );
+      }
+      const datatype: Datatype = this.visit(ctx.datatype_list()[0]);
+      return {
+        variant: "Sizeof",
+        ctx: ctx,
+        type: this.program.getBuiltinType("u64"),
+        datatype: datatype,
+      };
+    }
+
     let symbol = this.program.currentScope.lookupSymbol(
-      ctx.ID().getText(),
+      name,
       this.program.getLoc(ctx),
     );
 

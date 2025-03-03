@@ -58,6 +58,7 @@ struct List<T> {
     const elementSize: i32 = 0;
     const initialCapacity = 4;
     const dummy = 0 as T;
+    printf("int = %lu\n", sizeof<T>);
     __c__("elementSize = sizeof(dummy)");
     return List<T> {
       .buffer: MemoryBuffer(initialCapacity * elementSize),
@@ -118,6 +119,7 @@ fib(count: i32) {
 }
 
 main(): i32 {
+  // const a = List<u8>();
   fib(10);
   return 0;
 }

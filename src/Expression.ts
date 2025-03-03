@@ -57,6 +57,11 @@ export type ExplicitCastExpression = BaseExpression & {
   expr: Expression;
 };
 
+export type SizeofExpr = BaseExpression & {
+  variant: "Sizeof";
+  datatype: Datatype;
+};
+
 export type BinaryExpression = BaseExpression & {
   variant: "Binary";
   leftExpr: Expression;
@@ -107,6 +112,7 @@ export type Expression =
   | BinaryExpression
   | UnaryExpression
   | SymbolValueExpression
+  | SizeofExpr
   | MemberAccessExpression
   | PostIncrExpr
   | PreIncrExpr

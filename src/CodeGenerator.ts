@@ -433,6 +433,12 @@ class CodeGenerator {
         writer.write(this.emitExpr(expr.expr).get() + "." + expr.memberName);
         return writer;
 
+      case "Sizeof":
+        writer.write(
+          `sizeof(${generateUsageCode(expr.datatype, this.program)})`,
+        );
+        return writer;
+
       case "SymbolValue":
         if (expr.symbol.variant === "Function") {
           writer.write(mangleSymbol(expr.symbol));
