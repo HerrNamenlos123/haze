@@ -70,6 +70,7 @@ export type StructDatatype = {
   variant: "Struct";
   name: string;
   generics: Generics;
+  declared: boolean;
   members: VariableSymbol[];
   methods: FunctionSymbol[];
 };
@@ -391,9 +392,9 @@ export function generateUsageCode(dt: Datatype, program: Program): string {
             "Type 'unknown' is compiler internal and must not appear in generated C-code",
           );
         case Primitive.boolean:
-          return "bool";
+          return "char";
         case Primitive.booleanptr:
-          return "bool*";
+          return "char*";
         case Primitive.i8:
           return "int8_t";
         case Primitive.i16:

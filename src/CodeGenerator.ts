@@ -40,6 +40,7 @@ class CodeGenerator {
   private includeWriter = new OutputWriter();
   private out = {
     includes: {} as Record<string, OutputWriter>,
+    cDecls: {} as Record<string, OutputWriter>,
     type_declarations: {} as Record<string, OutputWriter>,
     function_declarations: {} as Record<string, OutputWriter>,
     function_definitions: {} as Record<string, OutputWriter>,
@@ -78,6 +79,12 @@ class CodeGenerator {
       writer.write(include);
     }
 
+    writer.write("\n\n// C Declaration section\n");
+    for (const decl of Object.values(this.out.cDecls)) {
+      writer.write(decl);
+      writer.writeLine();
+    }
+
     writer.write("\n\n// Type declaration section\n");
     for (const decl of Object.values(this.out.type_declarations)) {
       writer.write(decl);
@@ -105,6 +112,11 @@ class CodeGenerator {
     this.includeHeader("stdio.h");
     this.includeHeader("stdint.h");
     this.includeHeader("stdlib.h");
+    this.includeHeader("time.h");
+
+    for (const decl of this.program.cDefinitionDecl) {
+      this.out.cDecls[decl] = new OutputWriter().writeLine(decl);
+    }
 
     for (const symbol of Object.values(this.program.concreteFunctions)) {
       if (symbol.functionType === FunctionType.Internal) {

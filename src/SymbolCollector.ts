@@ -1,4 +1,5 @@
 import {
+  CdefinitiondeclContext,
   CommonDatatypeContext,
   FuncContext,
   FuncdeclContext,
@@ -57,6 +58,11 @@ export class SymbolCollector extends HazeVisitor<any> {
 
   visitCommonDatatype = (ctx: CommonDatatypeContext): Datatype => {
     return visitCommonDatatypeImpl(this, this.program, ctx);
+  };
+
+  visitCdefinitiondecl = (ctx: CdefinitiondeclContext): void => {
+    const text = JSON.parse(ctx.STRING_LITERAL().getText());
+    this.program.cDefinitionDecl.push(text);
   };
 
   visitFunctionDatatype = (ctx: FunctionDatatypeContext): Datatype => {
@@ -244,6 +250,7 @@ export class SymbolCollector extends HazeVisitor<any> {
     const type: StructDatatype = {
       variant: "Struct",
       name: name,
+      declared: Boolean(ctx.externlang()),
       generics: new Map<string, undefined>(genericsList),
       members: [],
       methods: [],
@@ -254,6 +261,7 @@ export class SymbolCollector extends HazeVisitor<any> {
       type: type,
       scope: scope,
     };
+
     parentScope.defineSymbol(symbol, this.program.getLoc(ctx));
     for (const [name, tp] of type.generics) {
       const sym: DatatypeSymbol = {
@@ -271,6 +279,12 @@ export class SymbolCollector extends HazeVisitor<any> {
       if (content.variant === "Variable") {
         type.members.push(content);
       } else {
+        if (symbol.type.declared) {
+          throw new CompilerError(
+            `A declared struct cannot have methods`,
+            this.program.getLoc(ctx),
+          );
+        }
         type.methods.push(content);
       }
     });

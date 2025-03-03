@@ -23,7 +23,7 @@ export class Program {
   globalScope: Scope;
   concreteFunctions: { [name: string]: FunctionSymbol } = {};
   concreteDatatypes: { [name: string]: DatatypeSymbol } = {};
-  // externFunctions: { [name: string]: FunctionSymbol } = {};
+  cDefinitionDecl: string[] = [];
   filename: string;
   scopeStack: Scope[];
 
@@ -70,10 +70,6 @@ export class Program {
       name: "RawPtr",
       type: {
         variant: "RawPointer",
-        pointee: {
-          variant: "Generic",
-          name: "__Pointee",
-        },
         generics: new Map().set("__Pointee", undefined),
       },
       scope: this.globalScope,

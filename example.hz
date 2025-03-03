@@ -17,8 +17,29 @@ panic(msg: stringview) {
   abort();
 }
 
-struct Test {
-  data: i32;
+assert(v: boolean) {
+  if not v {
+    panic("Assertion failed");
+  }
+}
+
+assertTypes() {
+  __c__("struct timespec t;");
+  __c__("_H6assert(context, sizeof(t.tv_sec) == 8)");
+  __c__("_H6assert(context, sizeof(t.tv_nsec) == 8)");
+}
+
+struct Duration {
+  nanoseconds: u64;
+}
+
+sleep(duration: Duration) {
+  const sec = duration.nanoseconds / 1000000000;
+  const nsec = duration.nanoseconds - sec;
+  __c__("struct timespec t;");
+  __c__("t.tv_sec = sec");
+  __c__("t.tv_nsec = nsec");
+  __c__("nanosleep(&t, NULL)");
 }
 
 struct MemoryBuffer {
@@ -114,6 +135,7 @@ fib(count: i32) {
 }
 
 main(): i32 {
-  fib(10);
+  assertTypes();
+  // fib(10);
   return 0;
 }

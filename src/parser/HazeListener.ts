@@ -10,6 +10,7 @@ import { FuncbodyContext } from "./HazeParser.js";
 import { BodyContext } from "./HazeParser.js";
 import { ParamContext } from "./HazeParser.js";
 import { ParamsContext } from "./HazeParser.js";
+import { CdefinitiondeclContext } from "./HazeParser.js";
 import { FuncdeclContext } from "./HazeParser.js";
 import { ExternlangContext } from "./HazeParser.js";
 import { IfexprContext } from "./HazeParser.js";
@@ -131,6 +132,16 @@ export default class HazeListener extends ParseTreeListener {
 	 * @param ctx the parse tree
 	 */
 	exitParams?: (ctx: ParamsContext) => void;
+	/**
+	 * Enter a parse tree produced by `HazeParser.cdefinitiondecl`.
+	 * @param ctx the parse tree
+	 */
+	enterCdefinitiondecl?: (ctx: CdefinitiondeclContext) => void;
+	/**
+	 * Exit a parse tree produced by `HazeParser.cdefinitiondecl`.
+	 * @param ctx the parse tree
+	 */
+	exitCdefinitiondecl?: (ctx: CdefinitiondeclContext) => void;
 	/**
 	 * Enter a parse tree produced by `HazeParser.funcdecl`.
 	 * @param ctx the parse tree

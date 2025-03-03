@@ -30,7 +30,7 @@ export class ModuleCompiler {
       const collector = new SymbolCollector(program);
       collector.visit(ast);
       performSemanticAnalysis(program);
-      program.print();
+      // program.print();
       // console.log(JSON.stringify(program, null, 2));
 
       generateCode(program, `build/${this.filename}.c`);

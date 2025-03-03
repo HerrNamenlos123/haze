@@ -882,7 +882,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
   // };
 
   visitInlineCStatement = (ctx: InlineCStatementContext): InlineCStatement => {
-    const string = ctx.STRING_LITERAL().getText().slice(1, -1);
+    const string = JSON.parse(ctx.STRING_LITERAL().getText());
     return {
       variant: "InlineC",
       ctx,
@@ -1097,6 +1097,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
     );
     defineGenericsInScope(structtype.generics, scope);
 
+    const assignedMembers = [] as Array<[VariableSymbol, Expression]>;
     for (const attr of ctx.structmembervalue_list()) {
       const [symbol, expr] = this.visit(attr) as [VariableSymbol, Expression];
       members.push([symbol, expr]);
@@ -1125,6 +1126,17 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
         this.program.getLoc(ctx),
         this.program,
       );
+
+      assignedMembers.push([symbol, expr]);
+    }
+
+    for (const member of structtype.members) {
+      if (!assignedMembers.find((m) => m[0].name === member.name)) {
+        throw new CompilerError(
+          `'${member.name}' is not assigned in struct instantiation`,
+          this.program.getLoc(ctx),
+        );
+      }
     }
 
     return {
