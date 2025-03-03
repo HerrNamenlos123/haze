@@ -33,9 +33,11 @@ import { ExprMemberAccessContext } from "./HazeParser.js";
 import { BinaryExprContext } from "./HazeParser.js";
 import { FuncRefExprContext } from "./HazeParser.js";
 import { ConstantExprContext } from "./HazeParser.js";
+import { PreIncrExprContext } from "./HazeParser.js";
 import { StructInstantiationExprContext } from "./HazeParser.js";
 import { UnaryExprContext } from "./HazeParser.js";
 import { ExplicitCastExprContext } from "./HazeParser.js";
+import { PostIncrExprContext } from "./HazeParser.js";
 import { ArgsContext } from "./HazeParser.js";
 import { EllipsisContext } from "./HazeParser.js";
 import { FunctypeContext } from "./HazeParser.js";
@@ -392,6 +394,18 @@ export default class HazeListener extends ParseTreeListener {
 	 */
 	exitConstantExpr?: (ctx: ConstantExprContext) => void;
 	/**
+	 * Enter a parse tree produced by the `PreIncrExpr`
+	 * labeled alternative in `HazeParser.expr`.
+	 * @param ctx the parse tree
+	 */
+	enterPreIncrExpr?: (ctx: PreIncrExprContext) => void;
+	/**
+	 * Exit a parse tree produced by the `PreIncrExpr`
+	 * labeled alternative in `HazeParser.expr`.
+	 * @param ctx the parse tree
+	 */
+	exitPreIncrExpr?: (ctx: PreIncrExprContext) => void;
+	/**
 	 * Enter a parse tree produced by the `StructInstantiationExpr`
 	 * labeled alternative in `HazeParser.expr`.
 	 * @param ctx the parse tree
@@ -427,6 +441,18 @@ export default class HazeListener extends ParseTreeListener {
 	 * @param ctx the parse tree
 	 */
 	exitExplicitCastExpr?: (ctx: ExplicitCastExprContext) => void;
+	/**
+	 * Enter a parse tree produced by the `PostIncrExpr`
+	 * labeled alternative in `HazeParser.expr`.
+	 * @param ctx the parse tree
+	 */
+	enterPostIncrExpr?: (ctx: PostIncrExprContext) => void;
+	/**
+	 * Exit a parse tree produced by the `PostIncrExpr`
+	 * labeled alternative in `HazeParser.expr`.
+	 * @param ctx the parse tree
+	 */
+	exitPostIncrExpr?: (ctx: PostIncrExprContext) => void;
 	/**
 	 * Enter a parse tree produced by `HazeParser.args`.
 	 * @param ctx the parse tree

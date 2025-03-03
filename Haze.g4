@@ -39,19 +39,34 @@ structmembervalue
     ;
 
 expr
-    : '(' expr ')'                                                      #ParenthesisExpr
+    // https://en.cppreference.com/w/c/language/operator_precedence
+    : '(' expr ')'                                                                  #ParenthesisExpr
     // | '{' objectattribute? (',' objectattribute)* ','? '}'              #AnonymousStructInstantiationExpr
-    | datatype '{' structmembervalue? (',' structmembervalue)* ','? '}'     #StructInstantiationExpr
-    | expr '(' args ')'                                         #ExprCallExpr
-    | expr 'as' datatype                                        #ExplicitCastExpr
-    | expr '.' ID                                               #ExprMemberAccess
-    | ('not' | '!') expr                                        #UnaryExpr
+    | func                                                      #FuncRefExpr
+
+    // Part 1: Left to right
+    | expr ('++' | '--')                                                            #PostIncrExpr
+    | expr '(' args ')'                                                             #ExprCallExpr
+    // <- Array Subscripting here: expr[]
+    | expr '.' ID                                                                   #ExprMemberAccess
+    | datatype '{' structmembervalue? (',' structmembervalue)* ','? '}'             #StructInstantiationExpr
+    // Part 2: Right to left
+    | <assoc=right> ('++' | '--') expr                                              #PreIncrExpr
+    | <assoc=right> ('+' | '-') expr                                                #UnaryExpr
+    | <assoc=right> ('not' | '!') expr /* and bitwise not */                        #UnaryExpr
+    | <assoc=right> expr 'as' datatype                                              #ExplicitCastExpr
+    // Part 3: Left to right
     | expr ('*'|'/'|'%') expr                                   #BinaryExpr
     | expr ('+'|'-') expr                                       #BinaryExpr
+    // | expr ('<<'|'>>') expr                                       #BinaryExpr
     | expr ('<'|'>'|'<='|'>=') expr                             #BinaryExpr
     | expr ('=='|'!='|'is'|('is' 'not')) expr                   #BinaryExpr
+    // | expr ('&') expr                                           #BinaryExpr
+    // | expr ('^') expr                                           #BinaryExpr
+    // | expr ('|') expr                                           #BinaryExpr
     | expr ('and'|'or') expr                                    #BinaryExpr
-    | func                                                      #FuncRefExpr
+    // <- ternary
+
     | ID ('<' datatype (',' datatype)* '>')?                    #SymbolValueExpr
     | constant                                                  #ConstantExpr
     ;

@@ -33,9 +33,11 @@ import { ExprMemberAccessContext } from "./HazeParser.js";
 import { BinaryExprContext } from "./HazeParser.js";
 import { FuncRefExprContext } from "./HazeParser.js";
 import { ConstantExprContext } from "./HazeParser.js";
+import { PreIncrExprContext } from "./HazeParser.js";
 import { StructInstantiationExprContext } from "./HazeParser.js";
 import { UnaryExprContext } from "./HazeParser.js";
 import { ExplicitCastExprContext } from "./HazeParser.js";
+import { PostIncrExprContext } from "./HazeParser.js";
 import { ArgsContext } from "./HazeParser.js";
 import { EllipsisContext } from "./HazeParser.js";
 import { FunctypeContext } from "./HazeParser.js";
@@ -259,6 +261,13 @@ export default class HazeVisitor<Result> extends ParseTreeVisitor<Result> {
 	 */
 	visitConstantExpr?: (ctx: ConstantExprContext) => Result;
 	/**
+	 * Visit a parse tree produced by the `PreIncrExpr`
+	 * labeled alternative in `HazeParser.expr`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitPreIncrExpr?: (ctx: PreIncrExprContext) => Result;
+	/**
 	 * Visit a parse tree produced by the `StructInstantiationExpr`
 	 * labeled alternative in `HazeParser.expr`.
 	 * @param ctx the parse tree
@@ -279,6 +288,13 @@ export default class HazeVisitor<Result> extends ParseTreeVisitor<Result> {
 	 * @return the visitor result
 	 */
 	visitExplicitCastExpr?: (ctx: ExplicitCastExprContext) => Result;
+	/**
+	 * Visit a parse tree produced by the `PostIncrExpr`
+	 * labeled alternative in `HazeParser.expr`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitPostIncrExpr?: (ctx: PostIncrExprContext) => Result;
 	/**
 	 * Visit a parse tree produced by `HazeParser.args`.
 	 * @param ctx the parse tree
