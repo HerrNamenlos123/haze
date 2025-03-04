@@ -149,22 +149,26 @@ export function mangleDatatype(datatype: Datatype): string {
       return mangled;
 
     case "Struct":
-      let mangled2 = datatype.name.length.toString() + datatype.name;
-      if (datatype.generics.size > 0) {
-        mangled2 += "I";
-        for (const [name, tp] of datatype.generics) {
-          if (tp) {
-            mangled2 += mangleDatatype(tp);
-          } else {
-            mangled2 += name + "_";
+      if (datatype.declared) {
+        return datatype.name;
+      } else {
+        let mangled2 = datatype.name.length.toString() + datatype.name;
+        if (datatype.generics.size > 0) {
+          mangled2 += "I";
+          for (const [name, tp] of datatype.generics) {
+            if (tp) {
+              mangled2 += mangleDatatype(tp);
+            } else {
+              mangled2 += name + "_";
+            }
           }
+          mangled2 += "E";
         }
-        mangled2 += "E";
+        return mangled2;
       }
-      return mangled2;
 
     case "RawPointer":
-      let ptrMangled = "RawPtrI";
+      let ptrMangled = "PI";
       const tp = datatype.generics.get("__Pointee");
       if (tp) {
         ptrMangled += mangleDatatype(tp);
@@ -224,7 +228,11 @@ export function mangleSymbol(symbol: Symbol): string {
       return mangled;
 
     case "Datatype":
-      return "_H" + mangleDatatype(symbol.type);
+      if (symbol.type.variant === "Struct" && symbol.type.declared) {
+        return mangleDatatype(symbol.type);
+      } else {
+        return "_H" + mangleDatatype(symbol.type);
+      }
 
     default:
       throw new InternalError(
@@ -253,7 +261,7 @@ export function serializeSymbol(symbol: Symbol): string {
     }
     name += symbol.name;
   }
-  return ` * ${name}: ${serializeDatatype(symbol.type)}      [mangle]: ${mangleSymbol(symbol)}`;
+  return ` * ${name}: ${serializeDatatype(symbol.type)}      [mangle]: ${mangleSymbol(symbol)} ${symbol.type.variant === "Struct" && symbol.type.declared ? "(declared)" : ""}`;
 }
 
 // let s = ""

@@ -526,7 +526,11 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
           );
         }
       } else {
-        if (symbol.scope.statements.some((s) => s.variant === "Return")) {
+        if (
+          symbol.scope.statements.some(
+            (s) => s.variant === "Return" && s.expr !== undefined,
+          )
+        ) {
           throw new CompilerError(
             `Function ${symbol.name} returning none cannot return a value `,
             this.program.getLoc(ctx),

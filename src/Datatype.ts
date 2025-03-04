@@ -354,15 +354,17 @@ export function generateDefinitionCCode(
       return writer;
 
     case "Struct":
-      writer.writeLine(`typedef struct {`).pushIndent();
-      for (const memberSymbol of datatype.type.members) {
-        writer.writeLine(
-          `${generateUsageCode(memberSymbol.type, program)} ${memberSymbol.name};`,
-        );
+      if (!datatype.type.declared) {
+        writer.writeLine(`typedef struct {`).pushIndent();
+        for (const memberSymbol of datatype.type.members) {
+          writer.writeLine(
+            `${generateUsageCode(memberSymbol.type, program)} ${memberSymbol.name};`,
+          );
+        }
+        writer
+          .popIndent()
+          .writeLine(`} ${generateUsageCode(datatype.type, program)};`);
       }
-      writer
-        .popIndent()
-        .writeLine(`} ${generateUsageCode(datatype.type, program)};`);
       return writer;
 
     case "RawPointer":
@@ -436,7 +438,11 @@ export function generateUsageCode(dt: Datatype, program: Program): string {
     case "Deferred":
       throw new InternalError("Cannot generate usage code for deferred");
     case "Struct":
-      return `_H${mangleDatatype(dt)}`;
+      if (dt.declared) {
+        return `${mangleDatatype(dt)}`;
+      } else {
+        return `_H${mangleDatatype(dt)}`;
+      }
     case "Function":
       return `_H${mangleDatatype(dt)}`;
 

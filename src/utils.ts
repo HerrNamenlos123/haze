@@ -69,6 +69,7 @@ export function resolveGenerics(
         variant: "Struct",
         name: datatype.name,
         generics: new Map(datatype.generics),
+        declared: datatype.declared,
         members: [],
         methods: [],
       };
@@ -244,6 +245,7 @@ export const visitCommonDatatypeImpl = (
         variant: "Struct",
         name: symbol.name,
         generics: new Map(symbol.type.generics),
+        declared: symbol.type.declared,
         members: symbol.type.members,
         methods: symbol.type.methods,
       };

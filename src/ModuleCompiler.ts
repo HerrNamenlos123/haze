@@ -69,7 +69,7 @@ export class ModuleCompiler {
 
       try {
         child_process.execSync(
-          `${C_COMPILER} build/${this.filename}.c -o build/out`,
+          `${C_COMPILER} build/${this.filename}.c -o build/out -lglfw -lSDL2main -lSDL2`,
         );
         child_process.execSync("build/out", { stdio: "inherit" });
       } catch (e) {
