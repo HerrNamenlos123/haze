@@ -4,19 +4,37 @@ declare "C" free(ptr: RawPtr<none>);
 declare "C" abort();
 declare "C" realloc(ptr: RawPtr<none>, newSize: u64): RawPtr<none>;
 
-// declare "C" "#include <GLFW/glfw3.h>";
-// declare "C" struct GLFWwindow {};
-// declare "C" glfwInit(): boolean;
-// declare "C" glfwTerminate(): none;
-// declare "C" glfwCreateWindow(): RawPtr<GLFWwindow>;
-// declare "C" glfwMakeContextCurrent(w: RawPtr<GLFWwindow>);
-// declare "C" glfwWindowShouldClose(w: RawPtr<GLFWwindow>): boolean;
-// declare "C" glClear(flag: i64): boolean;
-// declare "C" glfwSwapBuffers(w: RawPtr<GLFWwindow>);
-// declare "C" glfwPollEvents();
+declare "C" "#include <GLFW/glfw3.h>";
+declare "C" struct GLFWwindow {};
+declare "C" glfwInit(): boolean;
+declare "C" glfwTerminate(): none;
+declare "C" glfwCreateWindow(): RawPtr<GLFWwindow>;
+declare "C" glfwMakeContextCurrent(w: RawPtr<GLFWwindow>);
+declare "C" glfwWindowShouldClose(w: RawPtr<GLFWwindow>): boolean;
+declare "C" glClear(flag: i64): boolean;
+declare "C" glfwSwapBuffers(w: RawPtr<GLFWwindow>);
+declare "C" glfwPollEvents();
+declare "C" glfwSwapInterval(flag: i8);
+
+struct Window {
+    glfwWindow: RawPtr<GLFWwindow>;
+
+    constructor(title: stringview) {
+        const window = glfwCreateWindow(640, 480, "Hello World", 0, 0);
+        if (!window)
+        {
+            glfwTerminate();
+            //return 0;
+        }
+        return Window {
+            .glfwWindow: window,
+        };
+    }
+}
 
 declare "C" "#include <SDL2/SDL.h>";
 declare "C" "#include \"../clay.h\"";
+declare "C" "#include \"../test.c\"";
 declare "C" struct SDL_Window {};
 declare "C" struct SDL_Renderer {};
 declare "C" SDL_Init(flags: u32): i32;
@@ -25,6 +43,8 @@ declare "C" SDL_Quit();
 declare "C" SDL_CreateRenderer(window: RawPtr<SDL_Window>, index: i32, flags: u32): RawPtr<SDL_Renderer>;
 declare "C" SDL_DestroyWindow(window: RawPtr<SDL_Window>);
 declare "C" SDL_RenderPresent(window: RawPtr<SDL_Window>);
+
+//declare "C" drawLine();
 
 declare "C" struct SDL_MouseMotionEvent {
     type: u32;       
@@ -184,115 +204,122 @@ fib(count: i32) {
   }
 }
 
+declare "C" draw();
+
 window(): i32 {
-  // if !glfwInit() {
-  //   printf("Failed");
-  //   return;
-  // }
-
-  //   const window = glfwCreateWindow(640, 480, "Hello World", 0, 0);
-  //   if (!window)
-  //   {
-  //       glfwTerminate();
-  //       return;
-  //   }
-
-  //   glfwMakeContextCurrent(window);
-
-  //   while (!glfwWindowShouldClose(window))
-  //   {
-  //     glfwSwapBuffers(window);
-  //     glfwPollEvents();
-  //   }
-
-  //   glfwTerminate();
-  //   return;
-  const _SDL_INIT_VIDEO = 32;
-
-  if (SDL_Init(_SDL_INIT_VIDEO) != 0) {
-      // SDL_Log("SDL_Init Error: %s", SDL_GetError());
-        printf("failed 1\n");
-        return 1;
-    }
-
-    // Create an SDL2 window
-    const _SDL_WINDOWPOS_CENTERED = 805240832;
-    const _SDL_WINDOW_SHOWN = 4;
-    const window = SDL_CreateWindow("Clay + SDL2", 
-                                          _SDL_WINDOWPOS_CENTERED, 
-                                          _SDL_WINDOWPOS_CENTERED, 
-                                          800, 600, 
-                                          _SDL_WINDOW_SHOWN);
-    if (!window) {
-        // SDL_Log("SDL_CreateWindow Error: %s", SDL_GetError());
-        printf("failed 2\n");
-        SDL_Quit();
-        return 1;
-    }
-
-    // Create an SDL2 renderer
-    const _SDL_RENDERER_ACCELERATED = 2;
-    const renderer = SDL_CreateRenderer(window, -1, _SDL_RENDERER_ACCELERATED);
-    if (!renderer) {
-        // SDL_Log("SDL_CreateRenderer Error: %s", SDL_GetError());
-        SDL_DestroyWindow(window);
-        SDL_Quit();
-        return 1;
-    }
-
-    // Initialize Clay with SDL2 renderer
-    // clay_init(SDL_GetTicks, SDL_GetRendererTarget(renderer), renderer);
-
-    // Main loop
-    const running = true;
-    while (running) {
-        // printf("failed 2\n");
-        // Handle events
-        const _event = SDL_Event {
-          .type: 0,
-          .motion: SDL_MouseMotionEvent { 
-            .type: 0,       
-            .timestamp: 0,   
-            .windowID: 0,
-            .which: 0,       
-            .state: 0,
-            .x: 0,
-            .y: 0,
-            .xrel: 0,
-            .yrel: 0,
-          }
-        };
-        const event: RawPtr<SDL_Event> = 0;
-        __c__("event = &_event");
-        const _SDL_QUIT = 256;
-        while (SDL_PollEvent(event)) {
-            if (event.type == _SDL_QUIT) {
-                running = false;
-            }
-        }
-
-        // // Clear screen
-        // SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
-        // SDL_RenderClear(renderer);
-
-        // // Your Clay UI rendering here
-        // clay_render();
-
-        // // Present the renderer
-        SDL_RenderPresent(renderer);
-    }
-
-    // Cleanup
-    // clay_shutdown();
-    SDL_DestroyRenderer(renderer);
-    SDL_DestroyWindow(window);
-    SDL_Quit();
+  if !glfwInit() {
+    printf("Failed");
     return 0;
+  }
+
+    const window = glfwCreateWindow(640, 480, "Hello World", 0, 0);
+    if (!window)
+    {
+        glfwTerminate();
+        return 0;
+    }
+
+    glfwMakeContextCurrent(window);
+    glfwSwapInterval(1);
+
+    while (!glfwWindowShouldClose(window))
+    {
+        draw();
+        glfwSwapBuffers(window);
+        glfwPollEvents();
+    }
+
+    glfwTerminate();
+    return 0;
+  // const _SDL_INIT_VIDEO = 32;
+
+  // if (SDL_Init(_SDL_INIT_VIDEO) != 0) {
+  //     // SDL_Log("SDL_Init Error: %s", SDL_GetError());
+  //       printf("failed 1\n");
+  //       return 1;
+  //   }
+
+  //   // Create an SDL2 window
+  //   const _SDL_WINDOWPOS_CENTERED = 805240832;
+  //   const _SDL_WINDOW_SHOWN = 4;
+  //   const window = SDL_CreateWindow("Clay + SDL2", 
+  //                                         _SDL_WINDOWPOS_CENTERED, 
+  //                                         _SDL_WINDOWPOS_CENTERED, 
+  //                                         800, 600, 
+  //                                         _SDL_WINDOW_SHOWN);
+  //   if (!window) {
+  //       // SDL_Log("SDL_CreateWindow Error: %s", SDL_GetError());
+  //       printf("failed 2\n");
+  //       SDL_Quit();
+  //       return 1;
+  //   }
+
+  //   // Create an SDL2 renderer
+  //   const _SDL_RENDERER_ACCELERATED = 2;
+  //   const renderer = SDL_CreateRenderer(window, -1, _SDL_RENDERER_ACCELERATED);
+  //   if (!renderer) {
+  //       // SDL_Log("SDL_CreateRenderer Error: %s", SDL_GetError());
+  //       SDL_DestroyWindow(window);
+  //       SDL_Quit();
+  //       return 1;
+  //   }
+
+  //   // Initialize Clay with SDL2 renderer
+  //   // clay_init(SDL_GetTicks, SDL_GetRendererTarget(renderer), renderer);
+
+  //   // Main loop
+  //   const running = true;
+  //   while (running) {
+  //       // printf("failed 2\n");
+  //       // Handle events
+  //       const _event = SDL_Event {
+  //         .type: 0,
+  //         .motion: SDL_MouseMotionEvent { 
+  //           .type: 0,       
+  //           .timestamp: 0,   
+  //           .windowID: 0,
+  //           .which: 0,       
+  //           .state: 0,
+  //           .x: 0,
+  //           .y: 0,
+  //           .xrel: 0,
+  //           .yrel: 0,
+  //         }
+  //       };
+  //       const event: RawPtr<SDL_Event> = 0;
+  //       __c__("event = &_event");
+  //       const _SDL_QUIT = 256;
+  //       while (SDL_PollEvent(event)) {
+  //           if (event.type == _SDL_QUIT) {
+  //               running = false;
+  //           }
+  //       }
+
+  //       // // Clear screen
+  //       // SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+  //       // SDL_RenderClear(renderer);
+
+  //       // // Your Clay UI rendering here
+  //       // clay_render();
+
+  //       // // Present the renderer
+  //       SDL_RenderPresent(renderer);
+  //   }
+
+  //   // Cleanup
+  //   // clay_shutdown();
+  //   SDL_DestroyRenderer(renderer);
+  //   SDL_DestroyWindow(window);
+  //   SDL_Quit();
 
 }
+
+declare "C" init();
 
 main(): i32 {
   assertTypes();
   // fib(10);
+  // init(); 
+  // test2(); 
   return window();
 }
