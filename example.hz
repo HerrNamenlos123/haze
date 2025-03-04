@@ -19,16 +19,17 @@ declare "C" glfwSwapInterval(flag: i8);
 struct Window {
     glfwWindow: RawPtr<GLFWwindow>;
 
-    constructor(title: stringview) {
+    constructor(title: stringview): i32 {
         const window = glfwCreateWindow(640, 480, "Hello World", 0, 0);
         if (!window)
         {
             glfwTerminate();
             //return 0;
         }
-        return Window {
+        Window {
             .glfwWindow: window,
         };
+        return 5;
     }
 }
 
@@ -94,13 +95,13 @@ assertTypes() {
 struct Duration {
   nanoseconds: u64;
 
-  constructor(nanoseconds: u64) {
+  constructor(nanoseconds: u64): Duration {
     return Duration {
       .nanoseconds: nanoseconds,
     };
   }
 
-  destructor() {}
+  destructor(): none {}
 }
 
 sleep(duration: Duration) {
@@ -116,7 +117,7 @@ struct MemoryBuffer {
   data: RawPtr<none>;
   size: u64;
 
-  constructor(size: u64) {
+  constructor(size: u64): MemoryBuffer {
     const buffer = malloc(size);
     if !buffer {
       panic("Allocation failed");
@@ -135,7 +136,7 @@ struct MemoryBuffer {
     this.size = newSize;
   }
 
-  destructor() {
+  destructor(): none {
     free(this.data);
   }
 }
@@ -144,7 +145,7 @@ struct List<T> {
   buffer: MemoryBuffer;
   length: u64;
 
-  constructor() {
+  constructor(): List<T> {
     const initialCapacity = 4;
     return List<T> {
       .buffer: MemoryBuffer(initialCapacity * sizeof<T>),
@@ -152,7 +153,7 @@ struct List<T> {
     };
   }
 
-  destructor() {}
+  destructor(): none {}
 
   reserve(size: u64): none {
     if size <= this.capacity() {
