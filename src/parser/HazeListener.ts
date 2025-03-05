@@ -52,6 +52,7 @@ import { CompilationlangContext } from "./HazeParser.js";
 import { LinkerhintContext } from "./HazeParser.js";
 import { StructMemberContext } from "./HazeParser.js";
 import { StructMethodContext } from "./HazeParser.js";
+import { StructUnionFieldsContext } from "./HazeParser.js";
 import { StructDeclContext } from "./HazeParser.js";
 import { CommonDatatypeContext } from "./HazeParser.js";
 import { FunctionDatatypeContext } from "./HazeParser.js";
@@ -604,6 +605,18 @@ export default class HazeListener extends ParseTreeListener {
 	 * @param ctx the parse tree
 	 */
 	exitStructMethod?: (ctx: StructMethodContext) => void;
+	/**
+	 * Enter a parse tree produced by the `StructUnionFields`
+	 * labeled alternative in `HazeParser.structcontent`.
+	 * @param ctx the parse tree
+	 */
+	enterStructUnionFields?: (ctx: StructUnionFieldsContext) => void;
+	/**
+	 * Exit a parse tree produced by the `StructUnionFields`
+	 * labeled alternative in `HazeParser.structcontent`.
+	 * @param ctx the parse tree
+	 */
+	exitStructUnionFields?: (ctx: StructUnionFieldsContext) => void;
 	/**
 	 * Enter a parse tree produced by the `StructDecl`
 	 * labeled alternative in `HazeParser.structdecl`.

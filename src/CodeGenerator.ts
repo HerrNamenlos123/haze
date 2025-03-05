@@ -181,7 +181,9 @@ class CodeGenerator {
       ) {
         throw new ImpossibleSituation();
       }
-      const members = symbol.parentSymbol.type.members;
+      const members = symbol.parentSymbol.type.members.filter(
+        (m) => m.variant === "Variable",
+      );
       this.outputDestructorCalls(
         members,
         this.out.function_definitions[mangleSymbol(symbol)],
@@ -650,16 +652,20 @@ class CodeGenerator {
                 ctx: expr.ctx,
                 members: [
                   [
-                    expr.constantSymbol.type.members[0],
+                    expr.constantSymbol.type.members[0] as VariableSymbol,
                     {
                       variant: "Constant",
                       constantSymbol: {
                         variant: "LiteralConstant",
-                        type: expr.constantSymbol.type.members[0].type,
+                        type: (
+                          expr.constantSymbol.type.members[0] as VariableSymbol
+                        ).type,
                         value: value,
                       },
                       ctx: expr.ctx,
-                      type: expr.constantSymbol.type.members[0].type,
+                      type: (
+                        expr.constantSymbol.type.members[0] as VariableSymbol
+                      ).type,
                     },
                   ],
                 ],

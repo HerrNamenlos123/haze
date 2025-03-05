@@ -94,6 +94,7 @@ linkerhint: '#link' STRING_LITERAL;
 structcontent
     : ID ':' datatype ';'                                    #StructMember
     | ID '(' params ')' (':' datatype)? funcbody             #StructMethod
+    | 'unsafe_union' '{' (structcontent)* '}'                   #StructUnionFields
     ;
 
 structdecl

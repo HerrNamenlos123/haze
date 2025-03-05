@@ -1,7 +1,10 @@
 import HazeVisitor from "./parser/HazeVisitor";
 
 import {
+  findMemberInStruct,
+  findMethodInStruct,
   getIntegerBinaryResult,
+  getStructMembers,
   implicitConversion,
   isBoolean,
   isInteger,
@@ -183,13 +186,13 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
           );
           if (!constructorSymbol) {
             throw new CompilerError(
-              `Type '${serializeDatatype(symbol.type)}' does not provide a constructor`,
+              `Type '${serializeDatatype(symbol.type)}' must provide a constructor`,
               this.program.getLoc(ctx),
             );
           }
           if (!destructorSymbol) {
             throw new CompilerError(
-              `Type '${serializeDatatype(symbol.type)}' does not provide a destructor`,
+              `Type '${serializeDatatype(symbol.type)}' must provide a destructor`,
               this.program.getLoc(ctx),
             );
           }
@@ -1115,14 +1118,12 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
     );
     defineGenericsInScope(structtype.generics, scope);
 
-    const assignedMembers = [] as Array<[VariableSymbol, Expression]>;
+    const assignedMembers = [] as string[];
     for (const attr of ctx.structmembervalue_list()) {
       const [symbol, expr] = this.visit(attr) as [VariableSymbol, Expression];
       members.push([symbol, expr]);
 
-      const existingSymbol = structtype.members.find(
-        (m) => m.name === symbol.name,
-      );
+      const existingSymbol = findMemberInStruct(structtype, symbol.name);
       if (!existingSymbol) {
         throw new CompilerError(
           `'${symbol.name}' is not a member of '${serializeDatatype(structtype)}'`,
@@ -1145,15 +1146,37 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
         this.program,
       );
 
-      assignedMembers.push([symbol, expr]);
+      assignedMembers.push(symbol.name);
     }
 
     for (const member of structtype.members) {
-      if (!assignedMembers.find((m) => m[0].name === member.name)) {
-        throw new CompilerError(
-          `'${member.name}' is not assigned in struct instantiation`,
-          this.program.getLoc(ctx),
-        );
+      if (member.variant === "Variable") {
+        if (!assignedMembers.includes(member.name)) {
+          throw new CompilerError(
+            `'${member.name}' is not assigned in struct instantiation`,
+            this.program.getLoc(ctx),
+          );
+        }
+      } else if (member.variant === "StructMemberUnion") {
+        // We need to set exactly one of the union members
+        let setMember = undefined as VariableSymbol | undefined;
+        for (const inner of member.symbols) {
+          if (assignedMembers.includes(inner.name)) {
+            if (setMember) {
+              throw new CompilerError(
+                `Cannot set more than one member of union in struct instantiation`,
+                this.program.getLoc(ctx),
+              );
+            }
+            setMember = inner;
+          }
+        }
+        if (!setMember) {
+          throw new CompilerError(
+            `No member of union is not assigned in struct instantiation`,
+            this.program.getLoc(ctx),
+          );
+        }
       }
     }
 
@@ -1175,6 +1198,19 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
         this.program.getLoc(ctx),
       );
     }
+
+    console.log(
+      name,
+      "from",
+      serializeDatatype(expr.type),
+      (expr.type.variant === "Struct" &&
+        expr.type.methods.map((m) => m.name)) ||
+        (expr.type.variant === "RawPointer" &&
+          (expr.type.generics.get("__Pointee") as StructDatatype).methods.map(
+            (m) => m.name,
+          )) ||
+        "",
+    );
 
     while (expr.type.variant !== "Struct") {
       if (expr.type.variant !== "RawPointer") {
@@ -1206,11 +1242,13 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
       } as RawPointerDereferenceExpression;
     }
 
-    const field: VariableSymbol | undefined = expr.type.members.find(
-      (m) => m.name === name,
+    const field: VariableSymbol | undefined = findMemberInStruct(
+      expr.type,
+      name,
     );
-    const method: FunctionSymbol | undefined = expr.type.methods.find(
-      (m) => m.name === name,
+    const method: FunctionSymbol | undefined = findMethodInStruct(
+      expr.type,
+      name,
     );
 
     if (!field && !method) {
@@ -1228,12 +1266,48 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
     }
 
     if (field) {
+      const symbol = { ...field };
+      symbol.type = { ...symbol.type };
+      if (symbol.type.variant === "Struct") {
+        symbol.type.generics = new Map(symbol.type.generics);
+      }
+      const scope = new Scope(
+        this.program.currentScope.location,
+        this.program.currentScope,
+      );
+      for (const [name, tp] of expr.type.generics) {
+        if (!tp) {
+          throw new CompilerError(
+            `Generic parameter '${name}' has no type`,
+            this.program.getLoc(ctx),
+          );
+        }
+        if (symbol.type.variant === "Struct") {
+          if (symbol.type.generics.get(name) === undefined) {
+            // symbol.type.generics.set(name, tp);
+          }
+        }
+        scope.defineSymbol(
+          {
+            variant: "Datatype",
+            name: name,
+            scope: scope,
+            type: tp,
+          },
+          this.program.getLoc(ctx),
+        );
+      }
+      // symbol.type = resolveGenerics(
+      //   symbol.type,
+      //   scope,
+      //   this.program.getLoc(ctx),
+      // );
       return {
         ctx: ctx,
         variant: "MemberAccess",
         expr: expr,
         memberName: name,
-        type: field.type,
+        type: symbol.type,
       };
     }
 

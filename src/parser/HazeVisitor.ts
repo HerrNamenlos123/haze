@@ -52,6 +52,7 @@ import { CompilationlangContext } from "./HazeParser.js";
 import { LinkerhintContext } from "./HazeParser.js";
 import { StructMemberContext } from "./HazeParser.js";
 import { StructMethodContext } from "./HazeParser.js";
+import { StructUnionFieldsContext } from "./HazeParser.js";
 import { StructDeclContext } from "./HazeParser.js";
 import { CommonDatatypeContext } from "./HazeParser.js";
 import { FunctionDatatypeContext } from "./HazeParser.js";
@@ -385,6 +386,13 @@ export default class HazeVisitor<Result> extends ParseTreeVisitor<Result> {
 	 * @return the visitor result
 	 */
 	visitStructMethod?: (ctx: StructMethodContext) => Result;
+	/**
+	 * Visit a parse tree produced by the `StructUnionFields`
+	 * labeled alternative in `HazeParser.structcontent`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitStructUnionFields?: (ctx: StructUnionFieldsContext) => Result;
 	/**
 	 * Visit a parse tree produced by the `StructDecl`
 	 * labeled alternative in `HazeParser.structdecl`.

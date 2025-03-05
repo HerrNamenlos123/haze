@@ -5,6 +5,7 @@ import {
   type Generics,
   type RawPointerDatatype,
   type StructDatatype,
+  type StructMemberUnion,
 } from "./Datatype";
 import {
   CompilerError,
@@ -82,41 +83,52 @@ export function resolveGenerics(
         }
       }
       for (const field of datatype.members) {
-        newType.members.push({
-          name: field.name,
-          type: resolveGenerics(field.type, tempScope, loc),
-          variant: "Variable",
-          variableType: field.variableType,
+        if (field.variant === "Variable") {
+          newType.members.push({
+            name: field.name,
+            type: resolveGenerics(field.type, tempScope, loc),
+            variant: "Variable",
+            variableType: field.variableType,
+          });
+        } else {
+          const newUnion: StructMemberUnion = {
+            variant: "StructMemberUnion",
+            symbols: [],
+          };
+          for (const inner of field.symbols) {
+            newUnion.symbols.push({
+              name: inner.name,
+              type: resolveGenerics(inner.type, tempScope, loc),
+              variant: "Variable",
+              variableType: inner.variableType,
+            });
+          }
+          newType.members.push(newUnion);
+        }
+      }
+      for (const method of datatype.methods) {
+        newType.methods.push({
+          name: method.name,
+          // type: resolveGenerics(method.type, scope, loc) as FunctionDatatype,
+          type: method.type,
+          variant: "Function",
+          functionType: method.functionType,
+          scope: method.scope,
+          ctx: method.ctx,
+          parentSymbol: method.parentSymbol,
+          specialMethod: method.specialMethod,
+          thisPointerExpr: method.thisPointerExpr,
         });
       }
-      // for (const method of datatype.methods) {
-      //   newType.methods.push({
-      //     name: method.name,
-      //     type: resolveGenerics(method.type, scope, loc) as FunctionDatatype,
-      //     variant: "Function",
-      //     functionType: method.functionType,
-      //     scope: method.scope,
-      //     ctx: method.ctx,
-      //     isConstructor: method.isConstructor,
-      //     parentSymbol: method.parentSymbol,
-      //     thisPointer: method.thisPointer,
-      //   });
-      // }
-      //   const generics: Array<[string, Datatype | null]> = [];
-      //   for (let i = 0; i < datatype.generics().length; i++) {
-      //     const sym = scope.lookupSymbol(datatype.generics()[i][0], loc);
-      //     if (sym.type.isGeneric()) {
-      //       generics.push([sym.name, null]);
-      //     } else {
-      //       generics.push([sym.name, sym.type]);
-      //     }
+      // const generics: Array<[string, Datatype | null]> = [];
+      // for (let i = 0; i < datatype.generics().length; i++) {
+      //   const sym = scope.lookupSymbol(datatype.generics()[i][0], loc);
+      //   if (sym.type.isGeneric()) {
+      //     generics.push([sym.name, null]);
+      //   } else {
+      //     generics.push([sym.name, sym.type]);
       //   }
-      //   const dt = Datatype.createStructDatatype(
-      //     datatype.name(),
-      //     generics,
-      //     symbolTable,
-      //   );
-      //   return dt;
+      // }
       return newType;
 
     case "Function":

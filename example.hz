@@ -16,21 +16,35 @@ declare "C" glfwSwapBuffers(w: RawPtr<GLFWwindow>);
 declare "C" glfwPollEvents();
 declare "C" glfwSwapInterval(flag: i8);
 
+struct Result<TSuccess, TError> {
+  unsafe_union {
+    success: TSuccess;
+    error: TError;
+  }
+  isSuccess: boolean;
+}
+
 struct Window {
     glfwWindow: RawPtr<GLFWwindow>;
 
-    constructor(title: stringview): i32 {
-        const window = glfwCreateWindow(640, 480, "Hello World", 0, 0);
-        if (!window)
-        {
-            glfwTerminate();
-            //return 0;
-        }
-        Window {
-            .glfwWindow: window,
-        };
-        return 5;
+    constructor(title: stringview): Result<Window, stringview> {
+      const window = glfwCreateWindow(640, 480, title, 0, 0);
+      if not window {
+          glfwTerminate();
+          return Result<Window, stringview> {
+            .error: "Window creation failed",
+            .isSuccess: false,
+          };
+      }
+      return Result<Window, stringview> {
+        .success: Window {
+          .glfwWindow: window,
+        },
+        .isSuccess: true,
+      };
     }
+
+    destructor(): none {}
 }
 
 declare "C" "#include <SDL2/SDL.h>";
@@ -47,25 +61,25 @@ declare "C" SDL_RenderPresent(window: RawPtr<SDL_Window>);
 
 //declare "C" drawLine();
 
-declare "C" struct SDL_MouseMotionEvent {
-    type: u32;       
-    timestamp: u32;   
-    windowID: u32;
-    which: u32;       
-    state: u32;
-    x: i32;
-    y: i32;          
-    xrel: i32;
-    yrel: i32;
-}
+// declare "C" struct SDL_MouseMotionEvent {
+//     type: u32;       
+//     timestamp: u32;   
+//     windowID: u32;
+//     which: u32;       
+//     state: u32;
+//     x: i32;
+//     y: i32;          
+//     xrel: i32;
+//     yrel: i32;
+// }
 
-declare "C" struct SDL_Event {
-    type: u32;
-    motion: SDL_MouseMotionEvent;
-}
+// declare "C" struct SDL_Event {
+//     type: u32;
+//     motion: SDL_MouseMotionEvent;
+// }
 
-declare "C" SDL_PollEvent(event: RawPtr<SDL_Event>): i32;
-declare "C" SDL_DestroyRenderer(renderer: RawPtr<SDL_Renderer>);
+// declare "C" SDL_PollEvent(event: RawPtr<SDL_Event>): i32;
+// declare "C" SDL_DestroyRenderer(renderer: RawPtr<SDL_Renderer>);
 
 c_realloc(ptr: RawPtr<none>, newSize: u64): RawPtr<none> {
   return realloc(ptr, newSize);
@@ -208,27 +222,27 @@ fib(count: i32) {
 declare "C" draw();
 
 window(): i32 {
-  if !glfwInit() {
+  if not glfwInit() {
     printf("Failed");
     return 0;
   }
 
-    const window = glfwCreateWindow(640, 480, "Hello World", 0, 0);
-    if (!window)
-    {
+    // const window = glfwCreateWindow(640, 480, "Hello World", 0, 0);
+    const window = Window("Test 1");
+    if not window.isSuccess {
         glfwTerminate();
         return 0;
     }
 
-    glfwMakeContextCurrent(window);
-    glfwSwapInterval(1);
+    // glfwMakeContextCurrent(window.success.glfwWindow);
+    // glfwSwapInterval(1);
 
-    while (!glfwWindowShouldClose(window))
-    {
-        draw();
-        glfwSwapBuffers(window);
-        glfwPollEvents();
-    }
+    // while (!glfwWindowShouldClose(window.success.glfwWindow))
+    // {
+    //     draw();
+    //     glfwSwapBuffers(window.success.glfwWindow);
+    //     glfwPollEvents();
+    // }
 
     glfwTerminate();
     return 0;
@@ -321,6 +335,11 @@ main(): i32 {
   assertTypes();
   // fib(10);
   // init(); 
+  const a = Result<i32, u8> {
+    .success: false,
+    .isSuccess: false,
+  };
   // test2(); 
-  return window();
+  return 0;
+  // return window();
 }

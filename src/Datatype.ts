@@ -68,12 +68,17 @@ export type GenericPlaceholderDatatype = {
   name: string;
 };
 
+export type StructMemberUnion = {
+  variant: "StructMemberUnion";
+  symbols: VariableSymbol[];
+};
+
 export type StructDatatype = {
   variant: "Struct";
   name: string;
   generics: Generics;
   declared: boolean;
-  members: VariableSymbol[];
+  members: (VariableSymbol | StructMemberUnion)[];
   methods: FunctionSymbol[];
 };
 
@@ -282,6 +287,44 @@ export function isInteger(dt: Datatype): boolean {
   return false;
 }
 
+export function getStructMembers(struct: StructDatatype) {
+  const members = [] as VariableSymbol[];
+  for (const member of struct.members) {
+    if (member.variant === "Variable") {
+      members.push(member);
+    } else {
+      for (const inner of member.symbols) {
+        members.push(inner);
+      }
+    }
+  }
+  return members;
+}
+
+export function findMemberInStruct(struct: StructDatatype, name: string) {
+  for (const member of struct.members) {
+    if (member.variant === "Variable") {
+      if (member.name === name) {
+        return member;
+      }
+    } else {
+      for (const inner of member.symbols) {
+        if (inner.name === name) {
+          return inner;
+        }
+      }
+    }
+  }
+}
+
+export function findMethodInStruct(struct: StructDatatype, name: string) {
+  for (const member of struct.methods) {
+    if (member.name === name) {
+      return member;
+    }
+  }
+}
+
 export function serializeDatatype(datatype: Datatype): string {
   switch (datatype.variant) {
     case "Primitive":
@@ -357,9 +400,19 @@ export function generateDefinitionCCode(
       if (!datatype.type.declared) {
         writer.writeLine(`typedef struct {`).pushIndent();
         for (const memberSymbol of datatype.type.members) {
-          writer.writeLine(
-            `${generateUsageCode(memberSymbol.type, program)} ${memberSymbol.name};`,
-          );
+          if (memberSymbol.variant === "Variable") {
+            writer.writeLine(
+              `${generateUsageCode(memberSymbol.type, program)} ${memberSymbol.name};`,
+            );
+          } else {
+            writer.writeLine("union {").pushIndent();
+            for (const innerMember of memberSymbol.symbols) {
+              writer.writeLine(
+                `${generateUsageCode(innerMember.type, program)} ${innerMember.name};`,
+              );
+            }
+            writer.popIndent().writeLine("};");
+          }
         }
         writer
           .popIndent()
@@ -484,17 +537,65 @@ export function isSame(a: Datatype, b: Datatype): boolean {
       return false;
     }
     for (let i = 0; i < a.members.length; i++) {
-      if (
-        a.members[i].name !== b.members[i].name ||
-        !isSame(a.members[i].type, b.members[i].type)
-      ) {
+      const aa = a.members[i];
+      const bb = b.members[i];
+      if (aa.variant !== bb.variant) {
         return false;
+      }
+      if (aa.variant === "Variable" && bb.variant === "Variable") {
+        if (aa.name !== bb.name || !isSame(aa.type, bb.type)) {
+          return false;
+        }
+      } else if (
+        aa.variant === "StructMemberUnion" &&
+        bb.variant === "StructMemberUnion"
+      ) {
+        for (let j = 0; j < aa.symbols.length; j++) {
+          if (
+            aa.symbols[i].name !== bb.symbols[i].name ||
+            !isSame(aa.symbols[i].type, bb.symbols[i].type)
+          ) {
+            return false;
+          }
+        }
       }
     }
     return true;
   }
   return false;
 }
+
+const exactMatchInTheOther = (
+  a: VariableSymbol | StructMemberUnion,
+  bList: (VariableSymbol | StructMemberUnion)[],
+) => {
+  if (a.variant === "Variable") {
+    for (const b of bList) {
+      if (b.variant === "Variable") {
+        if (a.name === b.name && isSame(a.type, b.type)) {
+          return true;
+        }
+      }
+    }
+  } else {
+    for (const b of bList) {
+      if (b.variant === "StructMemberUnion") {
+        for (const inner of a.symbols) {
+          if (!exactMatchInTheOther(inner, b.symbols)) {
+            return false;
+          }
+        }
+        for (const inner of b.symbols) {
+          if (!exactMatchInTheOther(inner, a.symbols)) {
+            return false;
+          }
+        }
+        return true;
+      }
+    }
+  }
+  return false;
+};
 
 export function implicitConversion(
   _from: Datatype,
@@ -583,18 +684,6 @@ export function implicitConversion(
         loc,
       );
     }
-
-    const exactMatchInTheOther = (
-      a: VariableSymbol,
-      bList: VariableSymbol[],
-    ) => {
-      for (const b of bList) {
-        if (a.name === b.name && isSame(a.type, b.type)) {
-          return true;
-        }
-      }
-      return false;
-    };
 
     let equal = true;
     for (const a of from.members) {
@@ -703,18 +792,6 @@ export function explicitConversion(
         loc,
       );
     }
-
-    const exactMatchInTheOther = (
-      a: VariableSymbol,
-      bList: VariableSymbol[],
-    ) => {
-      for (const b of bList) {
-        if (a.name === b.name && isSame(a.type, b.type)) {
-          return true;
-        }
-      }
-      return false;
-    };
 
     let equal = true;
     for (const a of from.members) {
