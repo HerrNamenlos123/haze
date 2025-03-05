@@ -27,7 +27,7 @@ struct Result<TSuccess, TError> {
 struct Window {
     glfwWindow: RawPtr<GLFWwindow>;
 
-    constructor(title: stringview): Result<Window, stringview> {
+    constructor(title: i8): Result<Window, stringview> {
       const window = glfwCreateWindow(640, 480, title, 0, 0);
       if not window {
           glfwTerminate();

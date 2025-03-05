@@ -1,5 +1,5 @@
 import type { ParserRuleContext } from "antlr4";
-import type { Datatype } from "./Datatype";
+import type { Datatype, DatatypeId } from "./Datatype";
 import type {
   ConstantSymbol,
   FunctionSymbol,
@@ -8,7 +8,7 @@ import type {
 } from "./Symbol";
 
 type BaseExpression = {
-  type: Datatype;
+  type: DatatypeId;
   ctx: ParserRuleContext;
 };
 
@@ -47,7 +47,7 @@ export type MethodAccessExpression = BaseExpression & {
 
 export type ExprCallExpression = BaseExpression & {
   variant: "ExprCall";
-  thisPointerExpr?: Expression;
+  methodOfStructExpr?: Expression;
   expr: Expression;
   args: Expression[];
 };
@@ -59,7 +59,7 @@ export type ExplicitCastExpression = BaseExpression & {
 
 export type SizeofExpr = BaseExpression & {
   variant: "Sizeof";
-  datatype: Datatype;
+  datatype: DatatypeId;
 };
 
 export type BinaryExpression = BaseExpression & {

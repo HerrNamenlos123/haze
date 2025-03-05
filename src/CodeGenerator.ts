@@ -7,8 +7,8 @@ import {
 } from "./Errors";
 import type { StructDeclContext } from "./parser/HazeParser";
 import {
-  FunctionType,
-  mangleDatatype,
+  Language,
+  getDatatypeId,
   mangleSymbol,
   serializeSymbol,
   type DatatypeSymbol,
@@ -26,11 +26,11 @@ import {
   type Datatype,
   type FunctionDatatype,
   type RawPointerDatatype,
+  type StructDatatype,
 } from "./Datatype";
 import type { Statement } from "./Statement";
 import type { Expression, ObjectExpression } from "./Expression";
 import { OutputWriter } from "./OutputWriter";
-import { datatypeSymbolUsed, resolveGenerics } from "./utils";
 import type { Scope } from "./Scope";
 
 const CONTEXT_STRUCT = "_HN4Haze7ContextE";
@@ -119,7 +119,10 @@ class CodeGenerator {
     }
 
     for (const symbol of Object.values(this.program.concreteFunctions)) {
-      if (symbol.functionType === FunctionType.Internal) {
+      if (
+        (this.program.lookupDt(symbol.type) as FunctionDatatype).language ===
+        Language.Internal
+      ) {
         this.generateFuncUse(symbol);
       }
     }
@@ -135,17 +138,19 @@ class CodeGenerator {
       returntype: Datatype,
     ): string => {
       let decl =
-        generateUsageCode(returntype, this.program) +
+        generateUsageCode(getDatatypeId(returntype), this.program) +
         " " +
-        mangleSymbol(symbol) +
+        mangleSymbol(symbol, this.program) +
         "(";
       const params = [];
-      if (symbol.parentSymbol && symbol.specialMethod !== "constructor") {
-        const thisPtr: RawPointerDatatype = {
+      if (symbol.methodOfStructSymbol && symbol.methodType !== "constructor") {
+        const { id, type } = this.program.datatypeDatabase.upsert({
           variant: "RawPointer",
-          generics: new Map().set("__Pointee", symbol.parentSymbol.type),
-        };
-        params.push(`${generateUsageCode(thisPtr, this.program)} this`);
+          generics: {
+            __Pointee: symbol.methodOfStructSymbol.type,
+          },
+        });
+        params.push(`${generateUsageCode(id, this.program)} this`);
       }
       params.push(`${CONTEXT_STRUCT}* context`);
       for (const [paramName, paramType] of ftype.functionParameters) {
@@ -159,40 +164,58 @@ class CodeGenerator {
       return decl;
     };
 
-    this.init(mangleSymbol(symbol), this.out.function_definitions);
-    this.init(mangleSymbol(symbol), this.out.function_declarations);
-    const decl = declaration(symbol.type, symbol.type.functionReturnType);
-    this.out.function_declarations[mangleSymbol(symbol)].write(decl + ";");
-    this.out.function_definitions[mangleSymbol(symbol)]
+    this.init(
+      mangleSymbol(symbol, this.program),
+      this.out.function_definitions,
+    );
+    this.init(
+      mangleSymbol(symbol, this.program),
+      this.out.function_declarations,
+    );
+    const decl = declaration(
+      this.program.lookupDt(symbol.type) as FunctionDatatype,
+      this.program.lookupDt(
+        (this.program.lookupDt(symbol.type) as FunctionDatatype)
+          .functionReturnType,
+      ),
+    );
+    this.out.function_declarations[mangleSymbol(symbol, this.program)].write(
+      decl + ";",
+    );
+    this.out.function_definitions[mangleSymbol(symbol, this.program)]
       .writeLine(decl + " {")
       .pushIndent();
 
-    this.out.function_definitions[mangleSymbol(symbol)].write(
-      this.emitScope(symbol.scope),
-    );
+    if (symbol.body) {
+      this.out.function_definitions[mangleSymbol(symbol, this.program)].write(
+        this.emitScope(symbol.body),
+      );
+    }
 
-    if (symbol.specialMethod === "destructor") {
-      if (!symbol.parentSymbol) {
+    if (symbol.methodType === "destructor") {
+      if (!symbol.methodOfStructSymbol) {
         throw new ImpossibleSituation();
       }
       if (
-        symbol.parentSymbol.variant !== "Datatype" ||
-        symbol.parentSymbol.type.variant !== "Struct"
+        this.program.lookupDt(symbol.methodOfStructSymbol.type).variant !==
+        "Struct"
       ) {
         throw new ImpossibleSituation();
       }
-      const members = symbol.parentSymbol.type.members.filter(
-        (m) => m.variant === "Variable",
-      );
+      const members = (
+        this.program.lookupDt(
+          symbol.methodOfStructSymbol.type,
+        ) as StructDatatype
+      ).members.filter((m) => m.variant === "Variable");
       this.outputDestructorCalls(
         members,
-        this.out.function_definitions[mangleSymbol(symbol)],
+        this.out.function_definitions[mangleSymbol(symbol, this.program)],
         undefined,
         true,
       );
     }
 
-    this.out.function_definitions[mangleSymbol(symbol)]
+    this.out.function_definitions[mangleSymbol(symbol, this.program)]
       .popIndent()
       .writeLine("}");
   }
@@ -204,16 +227,19 @@ class CodeGenerator {
     isMember?: boolean,
   ) {
     for (const symbol of symbols.reverse()) {
-      if (symbol.variant === "Variable" && symbol.type.variant === "Struct") {
-        const destructor = symbol.type.methods.find(
-          (m) => m.specialMethod === "destructor",
-        );
+      if (
+        symbol.variant === "Variable" &&
+        this.program.lookupDt(symbol.type).variant === "Struct"
+      ) {
+        const destructor = (
+          this.program.lookupDt(symbol.type) as StructDatatype
+        ).methods.find((m) => m.methodType === "destructor");
         if (destructor) {
           if (returnedSymbol && returnedSymbol === symbol) {
             continue;
           }
           writer.writeLine(
-            `${mangleSymbol(destructor)}(&${isMember ? "this->" : ""}${symbol.name}, context);`,
+            `${mangleSymbol(destructor, this.program)}(&${isMember ? "this->" : ""}${symbol.name}, context);`,
           );
         }
       }
@@ -307,8 +333,7 @@ class CodeGenerator {
           statement.expr.type,
           this.program.getBuiltinType("boolean"),
           this.emitExpr(statement.expr).get(),
-          statement.scope,
-          this.program.getLoc(statement.expr.ctx),
+          statement.ctx,
           this.program,
         );
         writer.writeLine(`while (${whileexpr}) {`).pushIndent();
@@ -321,8 +346,7 @@ class CodeGenerator {
           statement.if[0].type,
           this.program.getBuiltinType("boolean"),
           this.emitExpr(statement.if[0]).get(),
-          statement.if[1],
-          this.program.getLoc(statement.if[0].ctx),
+          statement.ctx,
           this.program,
         );
         writer.writeLine(`if (${convexpr}) {`).pushIndent();
@@ -333,8 +357,7 @@ class CodeGenerator {
             expr.type,
             this.program.getBuiltinType("boolean"),
             this.emitExpr(expr).get(),
-            scope,
-            this.program.getLoc(expr.ctx),
+            statement.ctx,
             this.program,
           );
           writer.writeLine(`else if (${convexpr}) {`).pushIndent();
@@ -358,12 +381,15 @@ class CodeGenerator {
     switch (expr.variant) {
       case "ExprCall":
         const args = [];
-        if (expr.thisPointerExpr) {
-          args.push("&" + this.emitExpr(expr.thisPointerExpr).get());
+        if (expr.methodOfStructExpr) {
+          args.push("&" + this.emitExpr(expr.methodOfStructExpr).get());
         }
         if (expr.expr.variant === "SymbolValue") {
           if (expr.expr.symbol.variant === "Function") {
-            if (expr.expr.symbol.functionType === FunctionType.Internal) {
+            if (
+              (this.program.lookupDt(expr.expr.symbol.type) as FunctionDatatype)
+                .language === Language.Internal
+            ) {
               args.push("context");
             }
           }
@@ -372,27 +398,32 @@ class CodeGenerator {
         }
         for (let i = 0; i < expr.args.length; i++) {
           const val = this.emitExpr(expr.args[i]).get();
-          if (expr.expr.type.variant !== "Function") {
+          if (this.program.lookupDt(expr.expr.type).variant !== "Function") {
             throw new ImpossibleSituation();
           }
           let scope = this.program.currentScope;
           if (
             expr.expr.variant === "MemberAccess" &&
             expr.expr.methodSymbol &&
-            expr.expr.methodSymbol.thisPointerExpr &&
+            expr.expr.methodSymbol.methodOfStructExpr &&
             expr.expr.methodSymbol.variant === "Function"
           ) {
-            scope = expr.expr.methodSymbol.scope;
+            if (!expr.expr.methodSymbol.body) {
+              throw new ImpossibleSituation();
+            }
+            scope = expr.expr.methodSymbol.body;
           }
-          const target = expr.expr.type.functionParameters[i]
-            ? expr.expr.type.functionParameters[i][1]
+          const target = (
+            this.program.lookupDt(expr.expr.type) as FunctionDatatype
+          ).functionParameters[i]
+            ? (this.program.lookupDt(expr.expr.type) as FunctionDatatype)
+                .functionParameters[i][1]
             : expr.args[i].type;
           const converted = implicitConversion(
             expr.args[i].type,
             target,
             val,
-            scope,
-            this.program.getLoc(expr.args[i].ctx),
+            expr.args[i].ctx,
             this.program,
           );
           args.push(converted);
@@ -400,13 +431,13 @@ class CodeGenerator {
         if (
           expr.expr.variant === "MemberAccess" &&
           expr.expr.methodSymbol &&
-          expr.expr.methodSymbol.thisPointerExpr &&
+          expr.expr.methodSymbol.methodOfStructExpr &&
           expr.expr.methodSymbol.variant === "Function"
         ) {
           writer.write(
-            mangleSymbol(expr.expr.methodSymbol) +
+            mangleSymbol(expr.expr.methodSymbol, this.program) +
               "(&" +
-              this.emitExpr(expr.expr.methodSymbol.thisPointerExpr).get() +
+              this.emitExpr(expr.expr.methodSymbol.methodOfStructExpr).get() +
               ", " +
               args.join(", ") +
               ")",
@@ -423,8 +454,7 @@ class CodeGenerator {
           expr.rightExpr.type,
           expr.leftExpr.type,
           this.emitExpr(expr.rightExpr).get(),
-          this.program.currentScope,
-          this.program.getLoc(expr.rightExpr.ctx),
+          expr.rightExpr.ctx,
           this.program,
         );
         writer.write(`(${this.emitExpr(expr.leftExpr).get()} = ${assignConv})`);
@@ -458,7 +488,7 @@ class CodeGenerator {
 
       case "SymbolValue":
         if (expr.symbol.variant === "Function") {
-          writer.write(mangleSymbol(expr.symbol));
+          writer.write(mangleSymbol(expr.symbol, this.program));
           return writer;
         } else if (
           expr.symbol.variant === "Variable" ||
@@ -476,8 +506,7 @@ class CodeGenerator {
             expr.expr.type,
             expr.type,
             this.emitExpr(expr.expr).get(),
-            this.program.currentScope,
-            this.program.getLoc(expr.ctx),
+            expr.ctx,
             this.program,
           ),
         );
@@ -507,8 +536,7 @@ class CodeGenerator {
                 expr.expr.type,
                 expr.type,
                 this.emitExpr(expr.expr).get(),
-                this.program.currentScope,
-                this.program.getLoc(expr.ctx),
+                expr.ctx,
                 this.program,
               );
               writer.write("(!" + unaryExpr + ")");
@@ -538,16 +566,14 @@ class CodeGenerator {
                 expr.leftExpr.type,
                 expr.type,
                 this.emitExpr(expr.leftExpr).get(),
-                this.program.currentScope,
-                this.program.getLoc(expr.ctx),
+                expr.ctx,
                 this.program,
               );
               const right = implicitConversion(
                 expr.rightExpr.type,
                 expr.type,
                 this.emitExpr(expr.rightExpr).get(),
-                this.program.currentScope,
-                this.program.getLoc(expr.ctx),
+                expr.ctx,
                 this.program,
               );
               writer.write(
@@ -643,29 +669,32 @@ class CodeGenerator {
                     `Unknown unit ${expr.constantSymbol.unit}`,
                   );
               }
-              if (expr.constantSymbol.type.variant !== "Struct") {
+              if (
+                this.program.lookupDt(expr.constantSymbol.type).variant !==
+                "Struct"
+              ) {
                 throw new ImpossibleSituation();
               }
+              const structdatatype = this.program.lookupDt(
+                expr.constantSymbol.type,
+              ) as StructDatatype;
               const durationExpr: ObjectExpression = {
                 variant: "Object",
                 type: expr.constantSymbol.type,
                 ctx: expr.ctx,
                 members: [
                   [
-                    expr.constantSymbol.type.members[0] as VariableSymbol,
+                    structdatatype.members[0] as VariableSymbol,
                     {
                       variant: "Constant",
                       constantSymbol: {
                         variant: "LiteralConstant",
-                        type: (
-                          expr.constantSymbol.type.members[0] as VariableSymbol
-                        ).type,
+                        type: (structdatatype.members[0] as VariableSymbol)
+                          .type,
                         value: value,
                       },
                       ctx: expr.ctx,
-                      type: (
-                        expr.constantSymbol.type.members[0] as VariableSymbol
-                      ).type,
+                      type: (structdatatype.members[0] as VariableSymbol).type,
                     },
                   ],
                 ],
@@ -711,8 +740,8 @@ class CodeGenerator {
   //   }
 
   generateDatatypeUse(datatype: DatatypeSymbol) {
-    this.init(mangleSymbol(datatype), this.out.type_declarations);
-    this.out.type_declarations[mangleSymbol(datatype)].write(
+    this.init(mangleSymbol(datatype, this.program), this.out.type_declarations);
+    this.out.type_declarations[mangleSymbol(datatype, this.program)].write(
       generateDefinitionCCode(datatype, this.program),
     );
   }

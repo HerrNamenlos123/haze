@@ -1,6 +1,8 @@
+import type { ParserRuleContext } from "antlr4";
 import {
   serializeDatatype,
   type Datatype,
+  type DatatypeId,
   type FunctionDatatype,
   type Generics,
   type RawPointerDatatype,
@@ -18,15 +20,14 @@ import type HazeVisitor from "./parser/HazeVisitor";
 import type { Program } from "./Program";
 import { Scope } from "./Scope";
 import {
-  isSymbolGeneric,
-  mangleDatatype,
+  getDatatypeId,
   mangleSymbol,
   serializeSymbol,
   type DatatypeSymbol,
 } from "./Symbol";
 
 export function defineGenericsInScope(generics: Generics, scope: Scope) {
-  for (const [name, tp] of generics) {
+  for (const [name, tp] of Object.entries(generics)) {
     if (tp) {
       scope.defineSymbol(
         { variant: "Datatype", name: name, type: tp, scope: scope },
@@ -36,168 +37,169 @@ export function defineGenericsInScope(generics: Generics, scope: Scope) {
   }
 }
 
-export function resolveGenerics(
-  datatype: Datatype,
-  scope: Scope,
-  loc: Location,
-): Datatype {
-  switch (datatype.variant) {
-    case "Generic":
-      const symbol = scope.lookupSymbol(datatype.name, loc);
-      //   if (symbol.type.isGeneric()) {
-      //     return datatype;
-      //   }
-      return symbol.type;
+// export function resolveGenerics(
+//   datatype: Datatype,
+//   scope: Scope,
+//   loc: Location,
+// ): DatatypeId {
+//   switch (datatype.variant) {
+//     case "Generic":
+//       const symbol = scope.lookupSymbol(datatype.name, loc);
+//       //   if (symbol.type.isGeneric()) {
+//       //     return datatype;
+//       //   }
+//       return symbol.type;
 
-    case "RawPointer":
-      const generics = new Map(datatype.generics);
-      const tempScope2 = new Scope(scope.location, scope);
-      defineGenericsInScope(datatype.generics, tempScope2);
-      for (const [name, tp] of datatype.generics) {
-        const s = tempScope2.tryLookupSymbol(name, loc);
-        if (s) {
-          generics.set(name, s.type);
-        }
-      }
-      const newRawPtr: RawPointerDatatype = {
-        variant: "RawPointer",
-        generics: generics,
-      };
-      return newRawPtr;
+//     case "RawPointer":
+//       const generics = new Map(datatype.generics);
+//       const tempScope2 = new Scope(scope.location, scope);
+//       defineGenericsInScope(datatype.generics, tempScope2);
+//       for (const [name, tp] of datatype.generics) {
+//         const s = tempScope2.tryLookupSymbol(name, loc);
+//         if (s) {
+//           generics.set(name, s.type);
+//         }
+//       }
+//       const newRawPtr: RawPointerDatatype = {
+//         variant: "RawPointer",
+//         generics: generics,
+//       };
+//       return newRawPtr;
 
-    case "Struct":
-      const newType: StructDatatype = {
-        variant: "Struct",
-        name: datatype.name,
-        generics: new Map(datatype.generics),
-        declared: datatype.declared,
-        members: [],
-        methods: [],
-      };
-      const tempScope = new Scope(scope.location, scope);
-      defineGenericsInScope(datatype.generics, tempScope);
-      for (const [name, tp] of datatype.generics) {
-        const s = tempScope.tryLookupSymbol(name, loc);
-        if (s) {
-          newType.generics.set(name, s.type);
-        }
-      }
-      for (const field of datatype.members) {
-        if (field.variant === "Variable") {
-          newType.members.push({
-            name: field.name,
-            type: resolveGenerics(field.type, tempScope, loc),
-            variant: "Variable",
-            variableType: field.variableType,
-          });
-        } else {
-          const newUnion: StructMemberUnion = {
-            variant: "StructMemberUnion",
-            symbols: [],
-          };
-          for (const inner of field.symbols) {
-            newUnion.symbols.push({
-              name: inner.name,
-              type: resolveGenerics(inner.type, tempScope, loc),
-              variant: "Variable",
-              variableType: inner.variableType,
-            });
-          }
-          newType.members.push(newUnion);
-        }
-      }
-      for (const method of datatype.methods) {
-        newType.methods.push({
-          name: method.name,
-          // type: resolveGenerics(method.type, scope, loc) as FunctionDatatype,
-          type: method.type,
-          variant: "Function",
-          functionType: method.functionType,
-          scope: method.scope,
-          ctx: method.ctx,
-          parentSymbol: method.parentSymbol,
-          specialMethod: method.specialMethod,
-          thisPointerExpr: method.thisPointerExpr,
-        });
-      }
-      // const generics: Array<[string, Datatype | null]> = [];
-      // for (let i = 0; i < datatype.generics().length; i++) {
-      //   const sym = scope.lookupSymbol(datatype.generics()[i][0], loc);
-      //   if (sym.type.isGeneric()) {
-      //     generics.push([sym.name, null]);
-      //   } else {
-      //     generics.push([sym.name, sym.type]);
-      //   }
-      // }
-      return newType;
+//     case "Struct":
+//       const newType: StructDatatype = {
+//         variant: "Struct",
+//         name: datatype.name,
+//         generics: new Map(datatype.generics),
+//         declared: datatype.declared,
+//         members: [],
+//         methods: [],
+//       };
+//       const tempScope = new Scope(scope.location, scope);
+//       defineGenericsInScope(datatype.generics, tempScope);
+//       for (const [name, tp] of datatype.generics) {
+//         const s = tempScope.tryLookupSymbol(name, loc);
+//         if (s) {
+//           newType.generics.set(name, s.type);
+//         }
+//       }
+//       for (const field of datatype.members) {
+//         if (field.variant === "Variable") {
+//           newType.members.push({
+//             name: field.name,
+//             type: resolveGenerics(field.type, tempScope, loc),
+//             variant: "Variable",
+//             variableType: field.variableType,
+//           });
+//         } else {
+//           const newUnion: StructMemberUnion = {
+//             variant: "StructMemberUnion",
+//             symbols: [],
+//           };
+//           for (const inner of field.symbols) {
+//             newUnion.symbols.push({
+//               name: inner.name,
+//               type: resolveGenerics(inner.type, tempScope, loc),
+//               variant: "Variable",
+//               variableType: inner.variableType,
+//             });
+//           }
+//           newType.members.push(newUnion);
+//         }
+//       }
+//       for (const method of datatype.methods) {
+//         newType.methods.push({
+//           name: method.name,
+//           // type: resolveGenerics(method.type, scope, loc) as FunctionDatatype,
+//           type: method.type,
+//           variant: "Function",
+//           language: method.language,
+//           scope: method.scope,
+//           ctx: method.ctx,
+//           parentSymbol: method.parentSymbol,
+//           specialMethod: method.specialMethod,
+//           thisPointerExpr: method.thisPointerExpr,
+//         });
+//       }
+//       // const generics: Array<[string, Datatype | null]> = [];
+//       // for (let i = 0; i < datatype.generics().length; i++) {
+//       //   const sym = scope.lookupSymbol(datatype.generics()[i][0], loc);
+//       //   if (sym.type.isGeneric()) {
+//       //     generics.push([sym.name, null]);
+//       //   } else {
+//       //     generics.push([sym.name, sym.type]);
+//       //   }
+//       // }
+//       return newType;
 
-    case "Function":
-      if (datatype.variant !== "Function") {
-        throw new ImpossibleSituation();
-      }
+//     case "Function":
+//       if (datatype.variant !== "Function") {
+//         throw new ImpossibleSituation();
+//       }
 
-      const tempFuncScope = new Scope(loc, scope);
+//       const tempFuncScope = new Scope(loc, scope);
 
-      if (datatype.functionReturnType.variant === "Struct") {
-        defineGenericsInScope(
-          datatype.functionReturnType.generics,
-          tempFuncScope,
-        );
-      }
+//       if (datatype.functionReturnType.variant === "Struct") {
+//         defineGenericsInScope(
+//           datatype.functionReturnType.generics,
+//           tempFuncScope,
+//         );
+//       }
 
-      const newFunctype: FunctionDatatype = {
-        variant: "Function",
-        functionParameters: [],
-        functionReturnType: resolveGenerics(
-          datatype.functionReturnType,
-          tempFuncScope,
-          loc,
-        ),
-        vararg: datatype.vararg,
-      };
-      for (let i = 0; i < datatype.functionParameters.length; i++) {
-        const parScope = new Scope(loc, scope);
-        const par = datatype.functionParameters[i];
-        if (par[1].variant === "Struct") {
-          defineGenericsInScope(par[1].generics, parScope);
-        }
-        const t = resolveGenerics(par[1], parScope, loc);
-        newFunctype.functionParameters.push([par[0], t]);
-      }
-      return newFunctype;
+//       const newFunctype: FunctionDatatype = {
+//         variant: "Function",
+//         functionParameters: [],
+//         functionReturnType: resolveGenerics(
+//           datatype.functionReturnType,
+//           tempFuncScope,
+//           loc,
+//         ),
+//         vararg: datatype.vararg,
+//       };
+//       for (let i = 0; i < datatype.functionParameters.length; i++) {
+//         const parScope = new Scope(loc, scope);
+//         const par = datatype.functionParameters[i];
+//         if (par[1].variant === "Struct") {
+//           defineGenericsInScope(par[1].generics, parScope);
+//         }
+//         const t = resolveGenerics(par[1], parScope, loc);
+//         newFunctype.functionParameters.push([par[0], t]);
+//       }
+//       return newFunctype;
 
-    // case "":
-    //   if (datatype.pointee() === null) {
-    //     throw new UnreachableCode();
-    //   }
-    //   const pointee = resolveGenerics(datatype.pointee(), scope, loc);
-    //   return Datatype.createPointerDatatype(pointee);
+//     // case "":
+//     //   if (datatype.pointee() === null) {
+//     //     throw new UnreachableCode();
+//     //   }
+//     //   const pointee = resolveGenerics(datatype.pointee(), scope, loc);
+//     //   return Datatype.createPointerDatatype(pointee);
 
-    case "Deferred":
-      return datatype;
+//     case "Deferred":
+//       return datatype;
 
-    case "Primitive":
-      return datatype;
-  }
+//     case "Primitive":
+//       return datatype;
+//   }
 
-  //   throw new InternalError(`Invalid variant: ${datatype.variant}`);
-}
+//   //   throw new InternalError(`Invalid variant: ${datatype.variant}`);
+// }
 
 export const visitCommonDatatypeImpl = (
   _this: HazeVisitor<any>,
   program: Program,
   ctx: CommonDatatypeContext,
-): Datatype => {
+): DatatypeId => {
   const name = ctx.ID().getText();
   const symbol = program.currentScope.lookupSymbol(name, program.getLoc(ctx));
   if (symbol.variant !== "Datatype") {
     throw new ImpossibleSituation();
   }
+  const type = program.lookupDt(symbol.type);
 
-  const genericsProvided: Datatype[] = ctx
+  const genericsProvided: DatatypeId[] = ctx
     .datatype_list()
     .map((n) => _this.visit(n));
-  switch (symbol.type.variant) {
+  switch (type.variant) {
     case "Primitive":
       if (genericsProvided.length > 0) {
         throw new CompilerError(
@@ -210,89 +212,81 @@ export const visitCommonDatatypeImpl = (
     case "Generic":
       return symbol.type;
 
-    case "RawPointer":
-      if (genericsProvided.length != symbol.type.generics.size) {
+    case "RawPointer": {
+      if (genericsProvided.length != 1) {
         throw new CompilerError(
-          `Type '${name}<>' expected ${symbol.type.generics.size} generic arguments but got ${genericsProvided.length}.`,
+          `Type '${name}<>' expected 1 generic arguments but got ${genericsProvided.length}.`,
           program.getLoc(ctx),
         );
       }
 
-      const ptrGenerics = new Map(symbol.type.generics);
-      let ptrIndex = 0;
-      for (const i of symbol.type.generics.keys()) {
-        if (genericsProvided[ptrIndex].variant !== "Generic") {
-          ptrGenerics.set(i, genericsProvided[ptrIndex]);
-        } else {
-          ptrGenerics.set(i, undefined);
-        }
-        ptrIndex++;
-      }
-
-      const ptrtype: RawPointerDatatype = {
+      const { id } = program.datatypeDatabase.upsert({
         variant: "RawPointer",
-        generics: ptrGenerics,
-      };
+        generics: { __Pointee: genericsProvided[0] },
+      });
 
-      if (
-        ptrGenerics
-          .entries()
-          .every((e) => e[1] !== undefined && e[1].variant !== "Generic")
-      ) {
-        datatypeSymbolUsed(
-          {
-            name: symbol.name,
-            scope: symbol.scope,
-            type: ptrtype,
-            variant: "Datatype",
-            parentSymbol: symbol.parentSymbol,
-          },
-          program,
-        );
-      }
-      return ptrtype;
+      // if (
+      //   ptrGenerics
+      //     .entries()
+      //     .every((e) => e[1] !== undefined && e[1].variant !== "Generic")
+      // ) {
+      //   datatypeSymbolUsed(
+      //     {
+      //       name: symbol.name,
+      //       scope: symbol.scope,
+      //       type: ptrtype,
+      //       variant: "Datatype",
+      //       parentSymbol: symbol.parentSymbol,
+      //     },
+      //     program,
+      //   );
+      // }
+      return id;
+    }
 
-    case "Struct":
-      const structtype: StructDatatype = {
-        variant: "Struct",
-        name: symbol.name,
-        generics: new Map(symbol.type.generics),
-        declared: symbol.type.declared,
-        members: symbol.type.members,
-        methods: symbol.type.methods,
-      };
-      if (genericsProvided.length != symbol.type.generics.size) {
+    case "Struct": {
+      if (genericsProvided.length != Object.keys(type.generics).length) {
         throw new CompilerError(
-          `Type '${name}<>' expected ${symbol.type.generics.size} generic arguments but got ${genericsProvided.length}.`,
+          `Type '${name}<>' expected ${Object(type.generics).length} generic arguments but got ${genericsProvided.length}.`,
           program.getLoc(ctx),
         );
       }
+
+      const generics: Generics = {};
       let index = 0;
-      for (const i of symbol.type.generics.keys()) {
-        if (genericsProvided[index].variant !== "Generic") {
-          structtype.generics.set(i, genericsProvided[index]);
+      for (const name of Object.keys(type.generics)) {
+        if (program.lookupDt(genericsProvided[index]).variant !== "Generic") {
+          generics[name] = genericsProvided[index];
         } else {
-          structtype.generics.set(i, undefined);
+          generics[name] = null;
         }
         index++;
       }
-      if (
-        structtype.generics
-          .entries()
-          .every((e) => e[1] !== undefined && e[1].variant !== "Generic")
-      ) {
-        datatypeSymbolUsed(
-          {
-            name: symbol.name,
-            scope: symbol.scope,
-            type: structtype,
-            variant: "Datatype",
-            parentSymbol: symbol.parentSymbol,
-          },
-          program,
-        );
-      }
-      return structtype;
+
+      const { id } = program.datatypeDatabase.instantiateDatatype(
+        symbol.type,
+        generics,
+        program.getLoc(ctx),
+      );
+
+      // if (
+      //   structtype.generics
+      //     .entries()
+      //     .every((e) => e[1] !== undefined && e[1].variant !== "Generic")
+      // ) {
+      //   datatypeSymbolUsed(
+      //     {
+      //       name: symbol.name,
+      //       scope: symbol.scope,
+      //       type: structtype,
+      //       variant: "Datatype",
+      //       parentSymbol: symbol.parentSymbol,
+      //     },
+      //     program,
+      //   );
+      // }
+      return id;
+    }
 
     default:
       throw new ImpossibleSituation();
@@ -300,14 +294,14 @@ export const visitCommonDatatypeImpl = (
 };
 
 export function datatypeSymbolUsed(symbol: DatatypeSymbol, program: Program) {
-  const mangled = mangleSymbol(symbol);
+  const mangled = mangleSymbol(symbol, program);
   if (!(mangled in program.concreteDatatypes)) {
     program.concreteDatatypes[mangled] = symbol;
   }
 }
 
 export function getNestedReturnTypes(scope: Scope) {
-  const returnedTypes = [] as Datatype[];
+  const returnedTypes = [] as DatatypeId[];
   for (const statement of scope.statements) {
     if (statement.variant === "Return" && statement.expr) {
       returnedTypes.push(statement.expr.type);

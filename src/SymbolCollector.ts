@@ -14,21 +14,24 @@ import {
 } from "./parser/HazeParser";
 import type { Program } from "./Program";
 import {
-  FunctionType,
-  isSymbolGeneric,
+  Language,
+  getDatatypeId,
   mangleSymbol,
   serializeSymbol,
   VariableType,
   type DatatypeSymbol,
   type FunctionSymbol,
-  type SpecialMethod,
+  type MethodType,
   type VariableSymbol,
+  isSymbolGeneric,
 } from "./Symbol";
 import HazeVisitor from "./parser/HazeVisitor";
 import { CompilerError, ImpossibleSituation, InternalError } from "./Errors";
 import {
   getStructMembers,
+  isDeferred,
   type Datatype,
+  type DatatypeId,
   type FunctionDatatype,
   type GenericPlaceholderDatatype,
   type StructDatatype,
@@ -36,11 +39,11 @@ import {
 } from "./Datatype";
 import { Scope } from "./Scope";
 import type { ParserRuleContext } from "antlr4";
-import { datatypeSymbolUsed, visitCommonDatatypeImpl } from "./utils";
+import { visitCommonDatatypeImpl } from "./utils";
 
 export class SymbolCollector extends HazeVisitor<any> {
   private program: Program;
-  private structStack: DatatypeSymbol<StructDatatype>[];
+  private structStack: DatatypeSymbol[];
 
   constructor(program: Program) {
     super();
@@ -48,18 +51,18 @@ export class SymbolCollector extends HazeVisitor<any> {
     this.structStack = [];
   }
 
-  visitParam = (ctx: ParamContext): [string, Datatype] => {
+  visitParam = (ctx: ParamContext): [string, DatatypeId] => {
     return [ctx.ID().getText(), this.visit(ctx.datatype())];
   };
 
   visitParams = (
     ctx: ParamsContext,
-  ): { params: [string, Datatype][]; vararg: boolean } => {
+  ): { params: [string, DatatypeId][]; vararg: boolean } => {
     const params = ctx.param_list().map((n) => this.visitParam(n));
     return { params: params, vararg: ctx.ellipsis() !== undefined };
   };
 
-  visitCommonDatatype = (ctx: CommonDatatypeContext): Datatype => {
+  visitCommonDatatype = (ctx: CommonDatatypeContext): DatatypeId => {
     return visitCommonDatatypeImpl(this, this.program, ctx);
   };
 
@@ -68,24 +71,16 @@ export class SymbolCollector extends HazeVisitor<any> {
     this.program.cDefinitionDecl.push(text);
   };
 
-  visitFunctionDatatype = (ctx: FunctionDatatypeContext): Datatype => {
+  visitFunctionDatatype = (ctx: FunctionDatatypeContext): DatatypeId => {
     const params = this.visitParams(ctx.functype().params());
-    const type: FunctionDatatype = {
+    const { id } = this.program.datatypeDatabase.upsert({
       variant: "Function",
+      generics: {},
       functionParameters: params.params,
       functionReturnType: this.visit(ctx.functype().datatype()),
       vararg: params.vararg,
-    };
-    datatypeSymbolUsed(
-      {
-        name: "",
-        scope: this.program.currentScope,
-        type: type,
-        variant: "Datatype",
-      },
-      this.program,
-    );
-    return type;
+    });
+    return id;
   };
 
   visitFuncdecl = (ctx: FuncdeclContext): void => {
@@ -97,9 +92,9 @@ export class SymbolCollector extends HazeVisitor<any> {
     }
 
     const lang = ctx.externlang().getText()[1];
-    let functype = FunctionType.Internal;
+    let functype = Language.Internal;
     if (lang === "C") {
-      functype = FunctionType.External_C;
+      functype = Language.External_C;
     } else {
       throw new CompilerError(
         `Extern Language '${lang}' is not supported.`,
@@ -108,7 +103,7 @@ export class SymbolCollector extends HazeVisitor<any> {
     }
 
     const signature = ctx.ID_list().map((n) => n.getText());
-    if (signature.length > 1 && functype === FunctionType.External_C) {
+    if (signature.length > 1 && functype === Language.External_C) {
       throw new CompilerError(
         "Extern C functions cannot be namespaced",
         this.program.getLoc(ctx),
@@ -127,61 +122,62 @@ export class SymbolCollector extends HazeVisitor<any> {
   private implFunc(
     ctx: FuncContext | NamedfuncContext | StructMethodContext | FuncdeclContext,
     name: string,
-    functype: FunctionType = FunctionType.Internal,
+    language: Language = Language.Internal,
   ): FunctionSymbol {
     const parentScope = this.program.currentScope;
     const scope = this.program.pushScope(
       new Scope(this.program.getLoc(ctx), this.program.currentScope),
     );
 
-    let returntype: Datatype = { variant: "Deferred" };
+    let returntype = this.program.datatypeDatabase.upsert({
+      variant: "DeferredReturn",
+    }).id;
     if (ctx.datatype()) {
       returntype = this.visit(ctx.datatype());
-    } else if (!(ctx instanceof FuncdeclContext)) {
-      if (returntype.variant === "Deferred" && ctx.funcbody().expr()) {
-        const expr = this.visit(ctx.funcbody().expr());
-        returntype = expr.type;
-      }
-    } else {
-      returntype = this.program.globalScope.lookupSymbol(
-        "none",
-        this.program.getLoc(ctx),
-      ).type;
+    } else if ("funcbody" in ctx && ctx.funcbody().expr()) {
+      returntype = this.visit(ctx.funcbody().expr()).type;
     }
 
-    const parentSymbol = this.structStack[this.structStack.length - 1];
-    let specialMethod: SpecialMethod = undefined;
-    if (parentSymbol && parentSymbol.type?.variant === "Struct") {
+    const enclosingStructSymbol = this.structStack[this.structStack.length - 1];
+    const enclosingStruct =
+      this.structStack.length > 0
+        ? (this.program.lookupDt(
+            this.structStack[this.structStack.length - 1].type,
+          ) as StructDatatype)
+        : undefined;
+    let methodType: MethodType = undefined;
+    if (enclosingStruct && enclosingStruct.variant === "Struct") {
       if (name === "constructor") {
-        specialMethod = "constructor";
+        methodType = "constructor";
       } else if (name === "destructor") {
-        specialMethod = "destructor";
+        methodType = "destructor";
       }
     }
 
     const params = this.visitParams(ctx.params());
-    const type: FunctionDatatype = {
+    const { id, type } = this.program.datatypeDatabase.upsert({
       variant: "Function",
+      generics: {},
       functionParameters: params.params,
       functionReturnType: returntype,
       vararg: params.vararg,
-    };
+    });
     const symbol: FunctionSymbol = {
       variant: "Function",
       name: name,
-      functionType: functype,
-      type: type,
-      specialMethod: specialMethod,
-      scope: scope,
-      parentSymbol: parentSymbol,
+      language: language,
+      type: id,
+      methodType: methodType,
+      body: scope,
+      methodOfStructSymbol: enclosingStructSymbol,
       ctx: ctx,
     };
 
-    if (parentSymbol && parentSymbol.type?.variant === "Struct") {
+    if (enclosingStruct && enclosingStruct.variant === "Struct") {
       if (name === "destructor") {
-        if (type.functionParameters.length !== 0) {
+        if (params.params.length !== 0) {
           throw new CompilerError(
-            `Destructor of struct '${parentSymbol.name}' cannot have any parameters`,
+            `Destructor of struct '${enclosingStruct.name}' cannot have any parameters`,
             this.program.getLoc(ctx),
           );
         }
@@ -189,13 +185,21 @@ export class SymbolCollector extends HazeVisitor<any> {
     }
 
     parentScope.defineSymbol(symbol, this.program.getLoc(ctx));
+    console.log(
+      "Define symbol ",
+      mangleSymbol(symbol, this.program),
+      "enclosed by",
+      enclosingStructSymbol &&
+        mangleSymbol(enclosingStructSymbol, this.program),
+    );
     this.program.ctxToSymbolMap.set(ctx, symbol);
 
     if (
-      !isSymbolGeneric(symbol) &&
-      (!parentSymbol || Object.keys(parentSymbol.type.generics).length === 0)
+      !isSymbolGeneric(symbol, this.program) &&
+      (!enclosingStruct || Object.keys(enclosingStruct.generics).length === 0)
     ) {
-      this.program.concreteFunctions[mangleSymbol(symbol)] = symbol;
+      this.program.concreteFunctions[mangleSymbol(symbol, this.program)] =
+        symbol;
     }
 
     this.program.popScope();
@@ -238,33 +242,47 @@ export class SymbolCollector extends HazeVisitor<any> {
       new Scope(this.program.getLoc(ctx), parentScope),
     );
 
-    const genericsList: [string, undefined][] = ctx
+    const lang = ctx.externlang()?.getText()[1];
+    let language = Language.Internal;
+    if (lang === "C") {
+      language = Language.External_C;
+    } else if (lang) {
+      throw new CompilerError(
+        `Language '${lang}' is not supported.`,
+        this.program.getLoc(ctx),
+      );
+    }
+
+    const genericsList: [string, null][] = ctx
       .ID_list()
       .slice(1)
-      .map((n) => [n.getText(), undefined]);
+      .map((n) => [n.getText(), null]);
 
-    const type: StructDatatype = {
+    const { type, id } = this.program.datatypeDatabase.insertNew({
       variant: "Struct",
       name: name,
-      declared: Boolean(ctx.externlang()),
-      generics: new Map<string, undefined>(genericsList),
+      language: language,
+      generics: Object.fromEntries(genericsList),
       members: [],
       methods: [],
-    };
-    const symbol: DatatypeSymbol<StructDatatype> = {
+    }) as { type: StructDatatype; id: DatatypeId };
+    const symbol: DatatypeSymbol = {
       variant: "Datatype",
       name: name,
-      type: type,
+      type: id,
       scope: scope,
     };
 
     parentScope.defineSymbol(symbol, this.program.getLoc(ctx));
-    for (const [name, tp] of type.generics) {
+    for (const [name, tp] of Object.entries(type.generics)) {
       const sym: DatatypeSymbol = {
         name: name,
         variant: "Datatype",
         scope: scope,
-        type: { variant: "Generic", name: name },
+        type: this.program.datatypeDatabase.upsert({
+          variant: "Generic",
+          name: name,
+        }).id,
       };
       scope.defineSymbol(sym, this.program.getLoc(ctx));
     }
@@ -276,12 +294,6 @@ export class SymbolCollector extends HazeVisitor<any> {
       if (content.variant === "Variable") {
         type.members.push(content);
       } else if (content.variant === "Function") {
-        if (symbol.type.declared) {
-          throw new CompilerError(
-            `A declared struct cannot have methods`,
-            this.program.getLoc(ctx),
-          );
-        }
         type.methods.push(content);
       } else if (content.variant === "StructMemberUnion") {
         type.members.push(content);

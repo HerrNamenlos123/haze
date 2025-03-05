@@ -3,7 +3,9 @@ import {
   primitiveVariantToString,
   serializeDatatype,
   type Datatype,
+  type DatatypeId,
   type FunctionDatatype,
+  type StructDatatype,
 } from "./Datatype";
 import {
   getCallerLocation,
@@ -12,6 +14,7 @@ import {
 } from "./Errors";
 import type { Scope } from "./Scope";
 import type { Expression } from "./Expression";
+import type { Program } from "./Program";
 
 export enum VariableType {
   MutableVariable,
@@ -21,7 +24,7 @@ export enum VariableType {
   ConstantStructField,
 }
 
-export enum FunctionType {
+export enum Language {
   Internal,
   External_C,
   External_CXX,
@@ -30,42 +33,41 @@ export enum FunctionType {
 export type VariableSymbol = {
   variant: "Variable";
   name: string;
-  type: Datatype;
+  type: DatatypeId;
   variableType: VariableType;
-  parentSymbol?: Symbol;
+  memberOfStruct?: DatatypeId;
 };
 
-export type SpecialMethod = undefined | "constructor" | "destructor";
+export type MethodType = undefined | "constructor" | "destructor";
 
 export type FunctionSymbol = {
   variant: "Function";
   name: string;
-  type: FunctionDatatype;
-  functionType: FunctionType;
-  parentSymbol?: Symbol;
-  thisPointerExpr?: Expression;
-  scope: Scope;
-  specialMethod?: SpecialMethod;
+  type: DatatypeId;
+  language: Language;
+  methodOfStructExpr?: Expression;
+  methodOfStructSymbol?: DatatypeSymbol;
+  methodType?: MethodType;
+  body?: Scope;
   ctx: ParserRuleContext;
 };
 
-export type DatatypeSymbol<T = Datatype> = {
+export type DatatypeSymbol = {
   variant: "Datatype";
-  parentSymbol?: Symbol;
   name: string;
-  type: T;
+  type: DatatypeId;
   scope: Scope;
 };
 
 export type StringConstantSymbol = {
   variant: "StringConstant";
-  type: Datatype;
+  type: DatatypeId;
   value: string;
 };
 
 export type BooleanConstantSymbol = {
   variant: "BooleanConstant";
-  type: Datatype;
+  type: DatatypeId;
   value: boolean;
 };
 
@@ -73,7 +75,7 @@ export type LiteralUnit = "s" | "ms" | "us" | "ns" | "m" | "h" | "d";
 
 export type LiteralConstantSymbol = {
   variant: "LiteralConstant";
-  type: Datatype;
+  type: DatatypeId;
   value: number;
   unit?: LiteralUnit;
 };
@@ -91,7 +93,7 @@ export type Symbol =
 
 export function isDatatypeGeneric(datatype: Datatype) {
   switch (datatype.variant) {
-    case "Deferred":
+    case "DeferredReturn":
       throw new InternalError("Cannot determine if __Deferred type is generic");
 
     case "Function":
@@ -104,37 +106,36 @@ export function isDatatypeGeneric(datatype: Datatype) {
       return false;
 
     case "Struct":
-      return datatype.generics.size > 0;
+      return Object.keys(datatype.generics).length > 0;
   }
 }
 
-export function isSymbolGeneric(symbol: Symbol) {
-  if (isDatatypeGeneric(symbol.type)) {
+export function isSymbolGeneric(symbol: Symbol, program: Program) {
+  const type = program.lookupDt(symbol.type);
+  if (isDatatypeGeneric(type)) {
     return true;
   }
-  if (
-    symbol.variant === "Variable" ||
-    symbol.variant === "Function" ||
-    symbol.variant === "Datatype"
-  ) {
-    let p = symbol.parentSymbol;
-    while (p) {
-      if (isDatatypeGeneric(p.type)) {
-        return true;
-      }
-      if (
-        p.variant === "Variable" ||
-        p.variant === "Function" ||
-        p.variant === "Datatype"
-      ) {
-        p = p.parentSymbol;
-      }
-    }
-  }
+  // if (
+  //   symbol.variant === "Datatype" && type.variant === "Struct"
+  // ) {
+  //   let p = type.;
+  //   while (p) {
+  //     if (isDatatypeGeneric(p.type)) {
+  //       return true;
+  //     }
+  //     if (
+  //       p.variant === "Variable" ||
+  //       p.variant === "Function" ||
+  //       p.variant === "Datatype"
+  //     ) {
+  //       p = p.parentSymbol;
+  //     }
+  //   }
+  // }
   return false;
 }
 
-export function mangleDatatype(datatype: Datatype): string {
+export function getDatatypeId(datatype: Datatype): DatatypeId {
   switch (datatype.variant) {
     case "Primitive":
       const s = primitiveVariantToString(datatype);
@@ -143,21 +144,19 @@ export function mangleDatatype(datatype: Datatype): string {
     case "Function":
       let mangled = "F";
       for (const [name, tp] of datatype.functionParameters) {
-        mangled += mangleDatatype(tp);
+        mangled += tp;
       }
       mangled += "E";
       return mangled;
 
     case "Struct":
-      if (datatype.declared) {
-        return datatype.name;
-      } else {
+      if (datatype.language === Language.Internal) {
         let mangled2 = datatype.name.length.toString() + datatype.name;
-        if (datatype.generics.size > 0) {
+        if (Object.keys(datatype.generics).length > 0) {
           mangled2 += "I";
-          for (const [name, tp] of datatype.generics) {
+          for (const [name, tp] of Object.entries(datatype.generics)) {
             if (tp) {
-              mangled2 += mangleDatatype(tp);
+              mangled2 += tp;
             } else {
               mangled2 += name + "_";
             }
@@ -165,73 +164,75 @@ export function mangleDatatype(datatype: Datatype): string {
           mangled2 += "E";
         }
         return mangled2;
+      } else {
+        return datatype.name;
       }
 
     case "RawPointer":
       let ptrMangled = "PI";
-      const tp = datatype.generics.get("__Pointee");
+      const tp = datatype.generics["__Pointee"];
       if (tp) {
-        ptrMangled += mangleDatatype(tp);
+        ptrMangled += tp;
       } else {
         ptrMangled += "__Pointee_";
       }
       ptrMangled += "E";
       return ptrMangled;
 
-    default:
-      throw new InternalError(
-        "Cannot mangle datatype variant: " + datatype.variant,
-      );
+    case "DeferredReturn":
+      return "__DeferredReturn";
+
+    case "Generic":
+      return datatype.name;
+
+    // default:
+    //   throw new InternalError(
+    //     "Cannot mangle datatype variant: " + datatype.variant,
+    //   );
   }
 }
 
-export function mangleSymbol(symbol: Symbol): string {
+export function mangleSymbol(symbol: Symbol, program: Program): string {
+  const type = program.lookupDt(symbol.type);
   switch (symbol.variant) {
     case "Function":
-      if (symbol.functionType === FunctionType.External_C) {
+      if (symbol.language === Language.External_C) {
         return symbol.name;
       }
       let mangled = "_H";
-      if (symbol.parentSymbol) {
-        let p: Symbol | undefined = symbol.parentSymbol;
+      let p = symbol.methodOfStructSymbol;
+      if (p) {
         mangled += "N";
-        while (p) {
-          mangled += mangleDatatype(p.type);
-          if (
-            p.variant === "Variable" ||
-            p.variant === "Function" ||
-            p.variant === "Datatype"
-          ) {
-            p = p.parentSymbol;
-          }
-        }
+        mangled += p.type;
       }
       mangled += symbol.name.length.toString();
       mangled += symbol.name;
 
-      // if (symbol.type.generics.size > 0) {
-      //     mangled += "I"
-      //     for t in symbol.type.generics():
-      //         if not t[1]:
-      //             raise InternalError("Cannot mangle non-instantiated generic type")
-      //         mangled += t[1].getMangledName()
-      //     mangled += "E"
-      // }
-
-      if (symbol.parentSymbol) {
+      if (Object.keys((type as FunctionDatatype).generics).length > 0) {
+        mangled += "I";
+        for (const [name, tp] of Object.entries(
+          (type as FunctionDatatype).generics,
+        )) {
+          mangled += tp ? tp : name + "_";
+        }
         mangled += "E";
       }
 
-      // for (const [name, tp] of symbol.type.functionParameters) {
-      //   mangled += mangleDatatype(tp);
-      // }
+      if (symbol.methodOfStructSymbol) {
+        mangled += "E";
+      }
+
+      for (const [name, tp] of (type as FunctionDatatype).functionParameters) {
+        mangled += serializeDatatype(tp, program);
+      }
+
       return mangled;
 
     case "Datatype":
-      if (symbol.type.variant === "Struct" && symbol.type.declared) {
-        return mangleDatatype(symbol.type);
+      if (type.variant === "Struct" && type.language === Language.Internal) {
+        return "_H" + symbol.type;
       } else {
-        return "_H" + mangleDatatype(symbol.type);
+        return symbol.type;
       }
 
     default:
@@ -241,27 +242,29 @@ export function mangleSymbol(symbol: Symbol): string {
   }
 }
 
-export function serializeSymbol(symbol: Symbol): string {
-  let name = "";
+export function serializeSymbol(symbol: Symbol, program: Program): string {
   if (
-    symbol.variant === "Datatype" ||
-    symbol.variant === "Function" ||
-    symbol.variant === "Variable"
+    symbol.variant === "StringConstant" ||
+    symbol.variant === "BooleanConstant" ||
+    symbol.variant === "LiteralConstant"
   ) {
-    let p = symbol.parentSymbol;
-    while (p) {
-      name = `${serializeDatatype(p.type)}.${name}`;
-      if (
-        p.variant === "Datatype" ||
-        p.variant === "Function" ||
-        p.variant === "Variable"
-      ) {
-        p = p.parentSymbol;
-      }
-    }
-    name += symbol.name;
+    return "ConstantSymbol";
   }
-  return ` * ${name}: ${serializeDatatype(symbol.type)}      [mangle]: ${mangleSymbol(symbol)} ${symbol.type.variant === "Struct" && symbol.type.declared ? "(declared)" : ""}`;
+  let name = "";
+  // let p = symbol;
+  // while (p) {
+  //   name = `${serializeDatatype(p.type)}.${name}`;
+  //   if (
+  //     p.variant === "Datatype" ||
+  //     p.variant === "Function" ||
+  //     p.variant === "Variable"
+  //   ) {
+  //     p = p.parentSymbol;
+  //   }
+  // }
+  name += symbol.name;
+  const type = program.lookupDt(symbol.type);
+  return ` * ${name}: ${serializeDatatype(symbol.type, program)}      [mangle]: ${mangleSymbol(symbol, program)} ${type.variant === "Struct" && type.language}`;
 }
 
 // let s = ""

@@ -13,11 +13,13 @@ import {
   primitiveVariantToString,
   serializeDatatype,
   type Datatype,
+  type DatatypeId,
   type PrimitiveDatatype,
   type RawPointerDatatype,
   type StructDatatype,
 } from "./Datatype";
 import { isDeeplyEqual } from "./deep-equal";
+import { DatatypeDatabase } from "./DatatypeDatabase";
 
 export class Program {
   globalScope: Scope;
@@ -26,6 +28,7 @@ export class Program {
   cDefinitionDecl: string[] = [];
   filename: string;
   scopeStack: Scope[];
+  datatypeDatabase: DatatypeDatabase = new DatatypeDatabase();
 
   datatypes: Datatype[] = [];
   ctxToSymbolMap = new WeakMap<ParserRuleContext, Symbol>();
@@ -38,15 +41,14 @@ export class Program {
     this.scopeStack = [];
 
     const define = (name: string, primitive: Primitive) => {
-      const type: PrimitiveDatatype = {
-        variant: "Primitive",
-        primitive,
-      };
       const symbol: DatatypeSymbol = {
         variant: "Datatype",
         name: name,
         scope: this.globalScope,
-        type,
+        type: this.datatypeDatabase.upsert({
+          variant: "Primitive",
+          primitive,
+        }).id,
       };
       this.globalScope.defineSymbol(symbol, this.globalScope.location);
     };
@@ -67,14 +69,15 @@ export class Program {
     define("f32", Primitive.i64);
     define("f64", Primitive.i64);
 
-    const symbol: DatatypeSymbol<RawPointerDatatype> = {
+    const symbol: DatatypeSymbol = {
       variant: "Datatype",
       name: "RawPtr",
-      type: {
-        variant: "RawPointer",
-        generics: new Map().set("__Pointee", undefined),
-      },
       scope: this.globalScope,
+      type: this.datatypeDatabase.upsert({
+        variant: "RawPointer",
+        generics: { __Pointee: null },
+      }).id,
+      // scope: this.globalScope,
     };
     this.globalScope.defineSymbol(symbol, this.globalScope.location);
   }
@@ -103,6 +106,10 @@ export class Program {
     return new Location(this.filename, ctx.start.line, ctx.start.column);
   }
 
+  lookupDt(id: DatatypeId): Datatype {
+    return this.datatypeDatabase.lookup(id);
+  }
+
   findBaseDatatype(basename: string) {
     for (const dt of this.datatypes) {
       switch (dt.variant) {
@@ -122,56 +129,56 @@ export class Program {
     return undefined;
   }
 
-  addDatatypeRef(type: Datatype, loc: Location) {
-    switch (type.variant) {
-      case "Primitive":
-        if (
-          !this.datatypes.find(
-            (d) => d.variant === "Primitive" && d.primitive === type.primitive,
-          )
-        ) {
-          this.datatypes.push(type);
-        }
-        break;
+  // addDatatypeRef(type: Datatype, loc: Location) {
+  //   switch (type.variant) {
+  //     case "Primitive":
+  //       if (
+  //         !this.datatypes.find(
+  //           (d) => d.variant === "Primitive" && d.primitive === type.primitive,
+  //         )
+  //       ) {
+  //         this.datatypes.push(type);
+  //       }
+  //       break;
 
-      case "Generic":
-        break;
+  //     case "Generic":
+  //       break;
 
-      case "Struct":
-        const found = this.datatypes.find(
-          (d) => d.variant === "Struct" && d.name === type.name,
-        ) as StructDatatype | undefined;
-        if (found) {
-          if (found.generics !== type.generics) {
-            throw new CompilerError(
-              `Type '${found.name}<>' was already declared with incompatible generics list`,
-              loc,
-            );
-          }
-          if (!isDeeplyEqual(found.members, type.members)) {
-            throw new CompilerError(
-              `Type '${found.name}<>' was already declared with incompatible members list`,
-              loc,
-            );
-          }
-          if (!isDeeplyEqual(found.methods, type.methods)) {
-            throw new CompilerError(
-              `Type '${found.name}<>' was already declared with incompatible methods list`,
-              loc,
-            );
-          }
-        } else {
-          this.datatypes.push(type);
-        }
-        break;
+  //     case "Struct":
+  //       const found = this.datatypes.find(
+  //         (d) => d.variant === "Struct" && d.name === type.name,
+  //       ) as StructDatatype | undefined;
+  //       if (found) {
+  //         if (found.generics !== type.generics) {
+  //           throw new CompilerError(
+  //             `Type '${found.name}<>' was already declared with incompatible generics list`,
+  //             loc,
+  //           );
+  //         }
+  //         if (!isDeeplyEqual(found.members, type.members)) {
+  //           throw new CompilerError(
+  //             `Type '${found.name}<>' was already declared with incompatible members list`,
+  //             loc,
+  //           );
+  //         }
+  //         if (!isDeeplyEqual(found.methods, type.methods)) {
+  //           throw new CompilerError(
+  //             `Type '${found.name}<>' was already declared with incompatible methods list`,
+  //             loc,
+  //           );
+  //         }
+  //       } else {
+  //         this.datatypes.push(type);
+  //       }
+  //       break;
 
-      case "Function":
-        this.addDatatypeRef(type.functionReturnType, loc);
-        type.functionParameters.forEach((p) => this.addDatatypeRef(p[1], loc));
-        break;
-    }
-    this.datatypes.push(type);
-  }
+  //     case "Function":
+  //       // this.addDatatypeRef(type.functionReturnType, loc);
+  //       type.functionParameters.forEach((p) => this.addDatatypeRef(p[1], loc));
+  //       break;
+  //   }
+  //   this.datatypes.push(type);
+  // }
 
   makeAnonymousName() {
     return `__anonym_${this.anonymousStuffCounter++}`;
@@ -180,7 +187,7 @@ export class Program {
   print() {
     console.log("Program");
     for (const symbol of this.globalScope.getSymbols()) {
-      console.log(serializeSymbol(symbol));
+      console.log(serializeSymbol(symbol, this));
       // if (symbol.type.variant === "Struct") {
       //   for (const s of symbol.type.members) {
       //     console.log(serializeDatatype(s.type));
@@ -190,7 +197,7 @@ export class Program {
 
     console.log("\nConcrete Functions:");
     for (const [name, symbol] of Object.entries(this.concreteFunctions)) {
-      console.log(serializeSymbol(symbol));
+      console.log(serializeSymbol(symbol, this));
       // if (symbol.type.functionParameters.length > 0) {
       //   const [name, p] = symbol.type.functionParameters[0];
       //   if (p) {
@@ -205,7 +212,7 @@ export class Program {
 
     console.log("\nConcrete Datatypes:");
     for (const [name, symbol] of Object.entries(this.concreteDatatypes)) {
-      console.log(serializeSymbol(symbol));
+      console.log(serializeSymbol(symbol, this));
     }
   }
 }

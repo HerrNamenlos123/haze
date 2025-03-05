@@ -1,3 +1,4 @@
+import type { ParserRuleContext } from "antlr4";
 import {
   CompilerError,
   getCallerLocation,
@@ -10,13 +11,14 @@ import { OutputWriter } from "./OutputWriter";
 import type { Program } from "./Program";
 import { Scope } from "./Scope";
 import {
-  mangleDatatype,
+  getDatatypeId,
+  Language,
   mangleSymbol,
   type DatatypeSymbol,
   type FunctionSymbol,
   type VariableSymbol,
 } from "./Symbol";
-import { defineGenericsInScope, resolveGenerics } from "./utils";
+import { defineGenericsInScope } from "./utils";
 
 export enum Primitive {
   none = 1,
@@ -36,6 +38,8 @@ export enum Primitive {
   stringview = 15,
 }
 
+export type DatatypeId = string;
+
 /**
  * Explanation what is a datatype:
  *
@@ -50,17 +54,18 @@ export enum Primitive {
  *  - Primitives are directly instantiated as concrete
  */
 
-export type Generics = Map<string, Datatype | undefined>;
+export type Generics = { [name: string]: DatatypeId | null };
 
 export type FunctionDatatype = {
   variant: "Function";
-  functionParameters: [string, Datatype][];
-  functionReturnType: Datatype;
+  generics: Generics;
+  functionParameters: [string, DatatypeId][];
+  functionReturnType: DatatypeId;
   vararg: boolean;
 };
 
-export type DeferredDatatype = {
-  variant: "Deferred";
+export type DeferredReturnDatatype = {
+  variant: "DeferredReturn";
 };
 
 export type GenericPlaceholderDatatype = {
@@ -76,8 +81,8 @@ export type StructMemberUnion = {
 export type StructDatatype = {
   variant: "Struct";
   name: string;
+  language: Language;
   generics: Generics;
-  declared: boolean;
   members: (VariableSymbol | StructMemberUnion)[];
   methods: FunctionSymbol[];
 };
@@ -93,7 +98,7 @@ export type PrimitiveDatatype = {
 };
 
 export type Datatype =
-  | DeferredDatatype
+  | DeferredReturnDatatype
   | FunctionDatatype
   | StructDatatype
   | RawPointerDatatype
@@ -138,6 +143,22 @@ export function primitiveVariantToString(dt: PrimitiveDatatype): string {
 }
 
 export function isBoolean(dt: Datatype): boolean {
+  switch (dt.variant) {
+    case "Primitive":
+      switch (dt.primitive) {
+        case Primitive.boolean:
+          return true;
+      }
+      return false;
+  }
+  return false;
+}
+
+export function isDeferred(id: DatatypeId, program: Program): boolean {
+  const dt = program.datatypeDatabase.tryLookup(id);
+  if (!dt) {
+    return false;
+  }
   switch (dt.variant) {
     case "Primitive":
       switch (dt.primitive) {
@@ -207,11 +228,11 @@ function promoteType(
 export function getIntegerBinaryResult(
   a: PrimitiveDatatype,
   b: PrimitiveDatatype,
-): Datatype {
+): DatatypeId {
   if (a.variant !== "Primitive" || b.variant !== "Primitive") {
     throw new InternalError("Datatype is not an integer");
   }
-  return promoteType(a, b);
+  return getDatatypeId(promoteType(a, b));
 }
 
 export function isIntegerUnsigned(dt: Datatype): boolean {
@@ -325,16 +346,17 @@ export function findMethodInStruct(struct: StructDatatype, name: string) {
   }
 }
 
-export function serializeDatatype(datatype: Datatype): string {
-  switch (datatype.variant) {
+export function serializeDatatype(id: DatatypeId, program: Program): string {
+  const type = program.lookupDt(id);
+  switch (type.variant) {
     case "Primitive":
-      return primitiveVariantToString(datatype);
+      return primitiveVariantToString(type);
 
     case "RawPointer":
       const g2 = [] as string[];
-      for (const [name, tp] of datatype.generics) {
+      for (const [name, tp] of Object.entries(type.generics)) {
         if (tp) {
-          g2.push(`${serializeDatatype(tp)}`);
+          g2.push(`${serializeDatatype(tp, program)}`);
         } else {
           g2.push(name);
         }
@@ -346,11 +368,11 @@ export function serializeDatatype(datatype: Datatype): string {
       return pp;
 
     case "Struct":
-      let s = datatype.name;
+      let s = type.name;
       const g = [] as string[];
-      for (const [name, tp] of datatype.generics) {
+      for (const [name, tp] of Object.entries(type.generics)) {
         if (tp) {
-          g.push(`${name}=${serializeDatatype(tp)}`);
+          g.push(`${name}=${serializeDatatype(tp, program)}`);
         } else {
           g.push(name);
         }
@@ -362,17 +384,17 @@ export function serializeDatatype(datatype: Datatype): string {
 
     case "Function":
       let ss = "(";
-      ss += datatype.functionParameters
-        .map((p) => `${p[0]}: ${serializeDatatype(p[1])}`)
+      ss += type.functionParameters
+        .map((p) => `${p[0]}: ${serializeDatatype(p[1], program)}`)
         .join(", ");
-      ss += ") -> " + serializeDatatype(datatype.functionReturnType);
+      ss += ") -> " + serializeDatatype(type.functionReturnType, program);
       return ss;
 
-    case "Deferred":
-      return "__Deferred";
+    case "DeferredReturn":
+      return "DeferredReturn";
 
     case "Generic":
-      return datatype.name;
+      return type.name;
   }
 }
 
@@ -381,25 +403,19 @@ export function generateDefinitionCCode(
   program: Program,
 ): OutputWriter {
   const writer = new OutputWriter();
+  const type = program.lookupDt(_datatype.type);
   const scope = new Scope(_datatype.scope.location, _datatype.scope);
-  if (_datatype.type.variant === "Struct") {
-    defineGenericsInScope(_datatype.type.generics, scope);
+  if (type.variant === "Struct") {
+    defineGenericsInScope(type.generics, scope);
   }
-  const datatype: DatatypeSymbol = {
-    name: _datatype.name,
-    scope: _datatype.scope,
-    variant: _datatype.variant,
-    parentSymbol: _datatype.parentSymbol,
-    type: resolveGenerics(_datatype.type, scope, _datatype.scope.location),
-  };
-  switch (datatype.type.variant) {
+  switch (type.variant) {
     case "Primitive":
       return writer;
 
     case "Struct":
-      if (!datatype.type.declared) {
+      if (type.language === Language.Internal) {
         writer.writeLine(`typedef struct {`).pushIndent();
-        for (const memberSymbol of datatype.type.members) {
+        for (const memberSymbol of type.members) {
           if (memberSymbol.variant === "Variable") {
             writer.writeLine(
               `${generateUsageCode(memberSymbol.type, program)} ${memberSymbol.name};`,
@@ -416,36 +432,37 @@ export function generateDefinitionCCode(
         }
         writer
           .popIndent()
-          .writeLine(`} ${generateUsageCode(datatype.type, program)};`);
+          .writeLine(`} ${generateUsageCode(_datatype.type, program)};`);
       }
       return writer;
 
     case "RawPointer":
-      const generic = datatype.type.generics.get("__Pointee");
+      const generic = type.generics["__Pointee"];
       if (!generic) {
         throw new ImpossibleSituation();
       }
       writer.writeLine(
-        `typedef ${generateUsageCode(generic, program)}* ${mangleSymbol(datatype)};`,
+        `typedef ${generateUsageCode(generic, program)}* ${mangleSymbol(_datatype, program)};`,
       );
       return writer;
 
     case "Function":
-      const params = datatype.type.functionParameters.map(([name, tp]) =>
-        generateUsageCode(datatype.type, program),
+      const params = type.functionParameters.map(([name, tp]) =>
+        generateUsageCode(_datatype.type, program),
       );
       writer.write(
-        `typedef ${generateUsageCode(datatype.type.functionReturnType, program)} (*${generateUsageCode(datatype.type, program)})(${params.join(", ")});`,
+        `typedef ${generateUsageCode(type.functionReturnType, program)} (*${generateUsageCode(_datatype.type, program)})(${params.join(", ")});`,
       );
       return writer;
   }
-  throw new InternalError(`Invalid variant ${datatype.type.variant}`);
+  throw new InternalError(`Invalid variant ${type.variant}`);
 }
 
-export function generateUsageCode(dt: Datatype, program: Program): string {
-  switch (dt.variant) {
+export function generateUsageCode(dt: DatatypeId, program: Program): string {
+  const type = program.lookupDt(dt);
+  switch (type.variant) {
     case "Primitive":
-      switch (dt.primitive) {
+      switch (type.primitive) {
         case Primitive.none:
           return "void";
         case Primitive.unknown:
@@ -482,22 +499,22 @@ export function generateUsageCode(dt: Datatype, program: Program): string {
       throw new UnreachableCode();
 
     case "RawPointer":
-      const ptrGeneric = dt.generics.get("__Pointee");
+      const ptrGeneric = type.generics["__Pointee"];
       if (!ptrGeneric) {
         throw new ImpossibleSituation();
       }
       return `${generateUsageCode(ptrGeneric, program)}*`;
 
-    case "Deferred":
+    case "DeferredReturn":
       throw new InternalError("Cannot generate usage code for deferred");
     case "Struct":
-      if (dt.declared) {
-        return `${mangleDatatype(dt)}`;
+      if (type.language === Language.Internal) {
+        return `_H${dt}`;
       } else {
-        return `_H${mangleDatatype(dt)}`;
+        return `${dt}`;
       }
     case "Function":
-      return `_H${mangleDatatype(dt)}`;
+      return `_H${dt}`;
 
     case "Generic":
       throw new InternalError("Cannot generate usage code for generic");
@@ -505,27 +522,35 @@ export function generateUsageCode(dt: Datatype, program: Program): string {
   // throw new InternalError(`Invalid variant ${dt.variant}`);
 }
 
-export function isSame(a: Datatype, b: Datatype): boolean {
+export function isSame(
+  _a: DatatypeId,
+  _b: DatatypeId,
+  program: Program,
+): boolean {
+  const a = program.lookupDt(_a);
+  const b = program.lookupDt(_b);
   if (a.variant === "Primitive" && b.variant === "Primitive") {
     return a.primitive === b.primitive;
   }
 
   if (a.variant === "RawPointer" && b.variant === "RawPointer") {
-    return isSame(a.generics.get("__Pointee")!, b.generics.get("__Pointee")!);
+    return isSame(a.generics["__Pointee"]!, b.generics["__Pointee"]!, program);
   }
 
   if (a.variant === "Function" && b.variant === "Function") {
     if (!a.functionReturnType || !b.functionReturnType) {
       return false;
     }
-    if (!isSame(a.functionReturnType, b.functionReturnType)) {
+    if (!isSame(a.functionReturnType, b.functionReturnType, program)) {
       return false;
     }
     if (a.functionParameters.length !== b.functionParameters.length) {
       return false;
     }
     for (let i = 0; i < a.functionParameters.length; i++) {
-      if (!isSame(a.functionParameters[i][1], b.functionParameters[i][1])) {
+      if (
+        !isSame(a.functionParameters[i][1], b.functionParameters[i][1], program)
+      ) {
         return false;
       }
     }
@@ -543,7 +568,7 @@ export function isSame(a: Datatype, b: Datatype): boolean {
         return false;
       }
       if (aa.variant === "Variable" && bb.variant === "Variable") {
-        if (aa.name !== bb.name || !isSame(aa.type, bb.type)) {
+        if (aa.name !== bb.name || !isSame(aa.type, bb.type, program)) {
           return false;
         }
       } else if (
@@ -553,7 +578,7 @@ export function isSame(a: Datatype, b: Datatype): boolean {
         for (let j = 0; j < aa.symbols.length; j++) {
           if (
             aa.symbols[i].name !== bb.symbols[i].name ||
-            !isSame(aa.symbols[i].type, bb.symbols[i].type)
+            !isSame(aa.symbols[i].type, bb.symbols[i].type, program)
           ) {
             return false;
           }
@@ -568,11 +593,12 @@ export function isSame(a: Datatype, b: Datatype): boolean {
 const exactMatchInTheOther = (
   a: VariableSymbol | StructMemberUnion,
   bList: (VariableSymbol | StructMemberUnion)[],
+  program: Program,
 ) => {
   if (a.variant === "Variable") {
     for (const b of bList) {
       if (b.variant === "Variable") {
-        if (a.name === b.name && isSame(a.type, b.type)) {
+        if (a.name === b.name && isSame(a.type, b.type, program)) {
           return true;
         }
       }
@@ -581,12 +607,12 @@ const exactMatchInTheOther = (
     for (const b of bList) {
       if (b.variant === "StructMemberUnion") {
         for (const inner of a.symbols) {
-          if (!exactMatchInTheOther(inner, b.symbols)) {
+          if (!exactMatchInTheOther(inner, b.symbols, program)) {
             return false;
           }
         }
         for (const inner of b.symbols) {
-          if (!exactMatchInTheOther(inner, a.symbols)) {
+          if (!exactMatchInTheOther(inner, a.symbols, program)) {
             return false;
           }
         }
@@ -598,17 +624,16 @@ const exactMatchInTheOther = (
 };
 
 export function implicitConversion(
-  _from: Datatype,
-  _to: Datatype,
+  _from: DatatypeId,
+  _to: DatatypeId,
   expr: string,
-  scope: Scope,
-  loc: Location,
+  ctx: ParserRuleContext,
   program: Program,
 ): string {
-  const from = resolveGenerics(_from, scope, loc);
-  const to = resolveGenerics(_to, scope, loc);
+  const from = program.lookupDt(_from);
+  const to = program.lookupDt(_to);
 
-  if (isSame(from, to)) {
+  if (isSame(_from, _to, program)) {
     return expr;
   }
 
@@ -620,11 +645,11 @@ export function implicitConversion(
       return `(${expr} ? 1 : 0)`;
     }
     if (isInteger(from) && isInteger(to)) {
-      return `(${generateUsageCode(to, program)})(${expr})`;
+      return `(${generateUsageCode(_to, program)})(${expr})`;
     }
     throw new CompilerError(
-      `No implicit conversion from ${serializeDatatype(from)} to ${serializeDatatype(to)}`,
-      loc,
+      `No implicit conversion from ${serializeDatatype(_from, program)} to ${serializeDatatype(_to, program)}`,
+      program.getLoc(ctx),
     );
   }
 
@@ -638,11 +663,11 @@ export function implicitConversion(
 
   if (from.variant === "RawPointer" && to.variant === "RawPointer") {
     if (
-      isSame(from.generics.get("__Pointee")!, to.generics.get("__Pointee")!)
+      isSame(from.generics["__Pointee"]!, to.generics["__Pointee"]!, program)
     ) {
       return expr;
     }
-    const topointee = to.generics.get("__Pointee")!;
+    const topointee = program.lookupDt(to.generics["__Pointee"]!);
     if (
       topointee.variant === "Primitive" &&
       topointee.primitive === Primitive.none
@@ -650,18 +675,22 @@ export function implicitConversion(
       return `(void*)(${expr})`;
     }
     throw new CompilerError(
-      `No implicit conversion from ${serializeDatatype(from)} to ${serializeDatatype(to)}`,
-      loc,
+      `No implicit conversion from ${serializeDatatype(_from, program)} to ${serializeDatatype(_to, program)}`,
+      program.getLoc(ctx),
     );
   }
 
   if (from.variant === "Function" && to.variant === "Function") {
-    if (isSame(from.functionReturnType, to.functionReturnType)) {
+    if (isSame(from.functionReturnType, to.functionReturnType, program)) {
       if (from.functionParameters.length === to.functionParameters.length) {
         let equal = true;
         for (let i = 0; i < from.functionParameters.length; i++) {
           if (
-            !isSame(from.functionParameters[i][1], to.functionParameters[i][1])
+            !isSame(
+              from.functionParameters[i][1],
+              to.functionParameters[i][1],
+              program,
+            )
           ) {
             equal = false;
           }
@@ -672,27 +701,27 @@ export function implicitConversion(
       }
     }
     throw new CompilerError(
-      `No implicit conversion from '${serializeDatatype(from)}' to '${serializeDatatype(to)}'`,
-      loc,
+      `No implicit conversion from '${serializeDatatype(_from, program)}' to '${serializeDatatype(_to, program)}'`,
+      program.getLoc(ctx),
     );
   }
 
   if (from.variant === "Struct" && to.variant === "Struct") {
     if (from.members.length !== to.members.length) {
       throw new CompilerError(
-        `No implicit conversion from '${serializeDatatype(from)}' to '${serializeDatatype(to)}': different number of fields`,
-        loc,
+        `No implicit conversion from '${serializeDatatype(_from, program)}' to '${serializeDatatype(_to, program)}': different number of fields`,
+        program.getLoc(ctx),
       );
     }
 
     let equal = true;
     for (const a of from.members) {
-      if (!exactMatchInTheOther(a, to.members)) {
+      if (!exactMatchInTheOther(a, to.members, program)) {
         equal = false;
       }
     }
     for (const b of to.members) {
-      if (!exactMatchInTheOther(b, from.members)) {
+      if (!exactMatchInTheOther(b, from.members, program)) {
         equal = false;
       }
     }
@@ -702,29 +731,28 @@ export function implicitConversion(
     }
 
     throw new CompilerError(
-      `No implicit conversion from '${serializeDatatype(from)}' to '${serializeDatatype(to)}'`,
-      loc,
+      `No implicit conversion from '${serializeDatatype(_from, program)}' to '${serializeDatatype(_to, program)}'`,
+      program.getLoc(ctx),
     );
   }
 
   throw new CompilerError(
-    `No implicit conversion from '${serializeDatatype(from)}' to '${serializeDatatype(to)}'`,
-    loc,
+    `No implicit conversion from '${serializeDatatype(_from, program)}' to '${serializeDatatype(_to, program)}'`,
+    program.getLoc(ctx),
   );
 }
 
 export function explicitConversion(
-  _from: Datatype,
-  _to: Datatype,
+  _from: DatatypeId,
+  _to: DatatypeId,
   expr: string,
-  scope: Scope,
-  loc: Location,
+  ctx: ParserRuleContext,
   program: Program,
 ): string {
-  const from = resolveGenerics(_from, scope, loc);
-  const to = resolveGenerics(_to, scope, loc);
+  const from = program.lookupDt(_from);
+  const to = program.lookupDt(_to);
 
-  if (isSame(from, to)) {
+  if (isSame(_from, _to, program)) {
     return expr;
   }
 
@@ -736,11 +764,11 @@ export function explicitConversion(
       return `(${expr} ? 1 : 0)`;
     }
     if (isInteger(from) && isInteger(to)) {
-      return `(${generateUsageCode(to, program)})(${expr})`;
+      return `(${generateUsageCode(_to, program)})(${expr})`;
     }
     throw new CompilerError(
-      `No explicit conversion from ${serializeDatatype(from)} to ${serializeDatatype(to)}`,
-      loc,
+      `No explicit conversion from ${serializeDatatype(_from, program)} to ${serializeDatatype(_to, program)}`,
+      program.getLoc(ctx),
     );
   }
 
@@ -753,23 +781,27 @@ export function explicitConversion(
   }
 
   if (from.variant === "RawPointer" && isInteger(to)) {
-    return `(${generateUsageCode(to, program)})(${expr})`;
+    return `(${generateUsageCode(_to, program)})(${expr})`;
   }
   if (to.variant === "RawPointer" && isInteger(from)) {
-    return `(${generateUsageCode(to, program)})(${expr})`;
+    return `(${generateUsageCode(_to, program)})(${expr})`;
   }
 
   if (from.variant === "RawPointer" && to.variant === "RawPointer") {
-    return `(${generateUsageCode(to.generics.get("__Pointee")!, program)}*)(${expr})`;
+    return `(${generateUsageCode(to.generics["__Pointee"]!, program)}*)(${expr})`;
   }
 
   if (from.variant === "Function" && to.variant === "Function") {
-    if (isSame(from.functionReturnType, to.functionReturnType)) {
+    if (isSame(from.functionReturnType, to.functionReturnType, program)) {
       if (from.functionParameters.length === to.functionParameters.length) {
         let equal = true;
         for (let i = 0; i < from.functionParameters.length; i++) {
           if (
-            !isSame(from.functionParameters[i][1], to.functionParameters[i][1])
+            !isSame(
+              from.functionParameters[i][1],
+              to.functionParameters[i][1],
+              program,
+            )
           ) {
             equal = false;
           }
@@ -780,27 +812,27 @@ export function explicitConversion(
       }
     }
     throw new CompilerError(
-      `No explicit conversion from '${serializeDatatype(from)}' to '${serializeDatatype(to)}'`,
-      loc,
+      `No explicit conversion from '${serializeDatatype(_from, program)}' to '${serializeDatatype(_to, program)}'`,
+      program.getLoc(ctx),
     );
   }
 
   if (from.variant === "Struct" && to.variant === "Struct") {
     if (from.members.length !== to.members.length) {
       throw new CompilerError(
-        `No explicit conversion from '${serializeDatatype(from)}' to '${serializeDatatype(to)}': different number of fields`,
-        loc,
+        `No explicit conversion from '${serializeDatatype(_from, program)}' to '${serializeDatatype(_to, program)}': different number of fields`,
+        program.getLoc(ctx),
       );
     }
 
     let equal = true;
     for (const a of from.members) {
-      if (!exactMatchInTheOther(a, to.members)) {
+      if (!exactMatchInTheOther(a, to.members, program)) {
         equal = false;
       }
     }
     for (const b of to.members) {
-      if (!exactMatchInTheOther(b, from.members)) {
+      if (!exactMatchInTheOther(b, from.members, program)) {
         equal = false;
       }
     }
@@ -810,13 +842,13 @@ export function explicitConversion(
     }
 
     throw new CompilerError(
-      `No explicit conversion from '${serializeDatatype(from)}' to '${serializeDatatype(to)}'`,
-      loc,
+      `No explicit conversion from '${serializeDatatype(_from, program)}' to '${serializeDatatype(_to, program)}'`,
+      program.getLoc(ctx),
     );
   }
 
   throw new CompilerError(
-    `No explicit conversion from '${serializeDatatype(from)}' to '${serializeDatatype(to)}'`,
-    loc,
+    `No explicit conversion from '${serializeDatatype(_from, program)}' to '${serializeDatatype(_to, program)}'`,
+    program.getLoc(ctx),
   );
 }
