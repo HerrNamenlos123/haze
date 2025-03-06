@@ -21,7 +21,7 @@ export enum VariableType {
   ConstantStructField,
 }
 
-export enum FunctionType {
+export enum Language {
   Internal,
   External_C,
   External_CXX,
@@ -41,7 +41,7 @@ export type FunctionSymbol = {
   variant: "Function";
   name: string;
   type: FunctionDatatype;
-  functionType: FunctionType;
+  language: Language;
   parentSymbol?: Symbol;
   thisPointerExpr?: Expression;
   scope: Scope;
@@ -149,9 +149,7 @@ export function mangleDatatype(datatype: Datatype): string {
       return mangled;
 
     case "Struct":
-      if (datatype.declared) {
-        return datatype.name;
-      } else {
+      if (datatype.language === Language.Internal) {
         let mangled2 = datatype.name.length.toString() + datatype.name;
         if (datatype.generics.size > 0) {
           mangled2 += "I";
@@ -165,6 +163,8 @@ export function mangleDatatype(datatype: Datatype): string {
           mangled2 += "E";
         }
         return mangled2;
+      } else {
+        return datatype.name;
       }
 
     case "RawPointer":
@@ -178,6 +178,9 @@ export function mangleDatatype(datatype: Datatype): string {
       ptrMangled += "E";
       return ptrMangled;
 
+    case "Generic":
+      return datatype.name;
+
     default:
       throw new InternalError(
         "Cannot mangle datatype variant: " + datatype.variant,
@@ -188,7 +191,7 @@ export function mangleDatatype(datatype: Datatype): string {
 export function mangleSymbol(symbol: Symbol): string {
   switch (symbol.variant) {
     case "Function":
-      if (symbol.functionType === FunctionType.External_C) {
+      if (symbol.language === Language.External_C) {
         return symbol.name;
       }
       let mangled = "_H";
@@ -228,7 +231,7 @@ export function mangleSymbol(symbol: Symbol): string {
       return mangled;
 
     case "Datatype":
-      if (symbol.type.variant === "Struct" && symbol.type.declared) {
+      if (symbol.type.variant === "Struct" && symbol.type.language) {
         return mangleDatatype(symbol.type);
       } else {
         return "_H" + mangleDatatype(symbol.type);
@@ -261,7 +264,7 @@ export function serializeSymbol(symbol: Symbol): string {
     }
     name += symbol.name;
   }
-  return ` * ${name}: ${serializeDatatype(symbol.type)}      [mangle]: ${mangleSymbol(symbol)} ${symbol.type.variant === "Struct" && symbol.type.declared ? "(declared)" : ""}`;
+  return ` * ${name}: ${serializeDatatype(symbol.type)}      [mangle]: ${mangleSymbol(symbol)} ${symbol.type.variant === "Struct" && symbol.type.language ? "(declared)" : ""}`;
 }
 
 // let s = ""

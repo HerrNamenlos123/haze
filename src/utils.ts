@@ -24,6 +24,7 @@ import {
   serializeSymbol,
   type DatatypeSymbol,
 } from "./Symbol";
+import * as _ from "lodash";
 
 export function defineGenericsInScope(generics: Generics, scope: Scope) {
   for (const [name, tp] of generics) {
@@ -36,11 +37,19 @@ export function defineGenericsInScope(generics: Generics, scope: Scope) {
   }
 }
 
+type ResolvageContext = {
+  resolvedMangledType: Record<string, Datatype>;
+};
+
 export function resolveGenerics(
   datatype: Datatype,
   scope: Scope,
   loc: Location,
+  resolvageContext: ResolvageContext = { resolvedMangledType: {} },
 ): Datatype {
+  if (mangleDatatype(datatype) in resolvageContext.resolvedMangledType) {
+    return resolvageContext.resolvedMangledType[mangleDatatype(datatype)];
+  }
   switch (datatype.variant) {
     case "Generic":
       const symbol = scope.lookupSymbol(datatype.name, loc);
@@ -49,7 +58,7 @@ export function resolveGenerics(
       //   }
       return symbol.type;
 
-    case "RawPointer":
+    case "RawPointer": {
       const generics = new Map(datatype.generics);
       const tempScope2 = new Scope(scope.location, scope);
       defineGenericsInScope(datatype.generics, tempScope2);
@@ -64,13 +73,18 @@ export function resolveGenerics(
         generics: generics,
       };
       return newRawPtr;
+    }
 
-    case "Struct":
-      const newType: StructDatatype = {
+    case "Struct": {
+      if (!(mangleDatatype(datatype) in resolvageContext.resolvedMangledType)) {
+        resolvageContext.resolvedMangledType[mangleDatatype(datatype)] =
+          datatype;
+      }
+      const cloned: StructDatatype = {
         variant: "Struct",
         name: datatype.name,
+        language: datatype.language,
         generics: new Map(datatype.generics),
-        declared: datatype.declared,
         members: [],
         methods: [],
       };
@@ -79,40 +93,56 @@ export function resolveGenerics(
       for (const [name, tp] of datatype.generics) {
         const s = tempScope.tryLookupSymbol(name, loc);
         if (s) {
-          newType.generics.set(name, s.type);
+          cloned.generics.set(name, s.type);
         }
       }
-      for (const field of datatype.members) {
-        if (field.variant === "Variable") {
-          newType.members.push({
-            name: field.name,
-            type: resolveGenerics(field.type, tempScope, loc),
+      for (const member of datatype.members) {
+        if (member.variant === "Variable") {
+          cloned.members.push({
             variant: "Variable",
-            variableType: field.variableType,
+            name: member.name,
+            variableType: member.variableType,
+            parentSymbol: member.parentSymbol,
+            type: resolveGenerics(
+              member.type,
+              tempScope,
+              loc,
+              resolvageContext,
+            ),
           });
         } else {
           const newUnion: StructMemberUnion = {
             variant: "StructMemberUnion",
             symbols: [],
           };
-          for (const inner of field.symbols) {
+          for (const inner of member.symbols) {
             newUnion.symbols.push({
               name: inner.name,
-              type: resolveGenerics(inner.type, tempScope, loc),
+              type: resolveGenerics(
+                inner.type,
+                tempScope,
+                loc,
+                resolvageContext,
+              ),
               variant: "Variable",
               variableType: inner.variableType,
             });
           }
-          newType.members.push(newUnion);
+          cloned.members.push(newUnion);
         }
       }
       for (const method of datatype.methods) {
-        newType.methods.push({
+        cloned.methods.push({
           name: method.name,
-          // type: resolveGenerics(method.type, scope, loc) as FunctionDatatype,
-          type: method.type,
+          type: resolveGenerics(
+            method.type,
+            scope,
+            loc,
+            resolvageContext,
+          ) as FunctionDatatype,
+          // type: method.type,
           variant: "Function",
-          functionType: method.functionType,
+          language: method.language,
           scope: method.scope,
           ctx: method.ctx,
           parentSymbol: method.parentSymbol,
@@ -129,9 +159,15 @@ export function resolveGenerics(
       //     generics.push([sym.name, sym.type]);
       //   }
       // }
-      return newType;
+      return cloned;
+    }
 
-    case "Function":
+    case "Function": {
+      if (!(mangleDatatype(datatype) in resolvageContext.resolvedMangledType)) {
+        resolvageContext.resolvedMangledType[mangleDatatype(datatype)] =
+          datatype;
+      }
+
       if (datatype.variant !== "Function") {
         throw new ImpossibleSituation();
       }
@@ -152,6 +188,7 @@ export function resolveGenerics(
           datatype.functionReturnType,
           tempFuncScope,
           loc,
+          resolvageContext,
         ),
         vararg: datatype.vararg,
       };
@@ -161,10 +198,11 @@ export function resolveGenerics(
         if (par[1].variant === "Struct") {
           defineGenericsInScope(par[1].generics, parScope);
         }
-        const t = resolveGenerics(par[1], parScope, loc);
+        const t = resolveGenerics(par[1], parScope, loc, resolvageContext);
         newFunctype.functionParameters.push([par[0], t]);
       }
       return newFunctype;
+    }
 
     // case "":
     //   if (datatype.pointee() === null) {
@@ -257,7 +295,7 @@ export const visitCommonDatatypeImpl = (
         variant: "Struct",
         name: symbol.name,
         generics: new Map(symbol.type.generics),
-        declared: symbol.type.declared,
+        language: symbol.type.language,
         members: symbol.type.members,
         methods: symbol.type.methods,
       };

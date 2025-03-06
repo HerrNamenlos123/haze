@@ -1,0 +1,26 @@
+struct Test {
+    bar: i32;
+}
+
+struct Result<TSuccess, TError> {
+  unsafe_union {
+    success: TSuccess;
+    error: TError;
+  }
+  isSuccess: boolean;
+}
+
+foo(): Result<Test, u8> {
+    return Result<Test, u8> {
+        .success: Test {
+            .bar: 187,
+        },
+        .isSuccess: true,
+    };
+}
+
+main(): i32 {
+    const x = foo();
+    const y = x.success.bar;
+    return 0;
+}

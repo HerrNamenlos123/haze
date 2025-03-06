@@ -10,6 +10,7 @@ import { OutputWriter } from "./OutputWriter";
 import type { Program } from "./Program";
 import { Scope } from "./Scope";
 import {
+  Language,
   mangleDatatype,
   mangleSymbol,
   type DatatypeSymbol,
@@ -77,7 +78,7 @@ export type StructDatatype = {
   variant: "Struct";
   name: string;
   generics: Generics;
-  declared: boolean;
+  language: Language;
   members: (VariableSymbol | StructMemberUnion)[];
   methods: FunctionSymbol[];
 };
@@ -397,7 +398,7 @@ export function generateDefinitionCCode(
       return writer;
 
     case "Struct":
-      if (!datatype.type.declared) {
+      if (!datatype.type.language) {
         writer.writeLine(`typedef struct {`).pushIndent();
         for (const memberSymbol of datatype.type.members) {
           if (memberSymbol.variant === "Variable") {
@@ -491,7 +492,7 @@ export function generateUsageCode(dt: Datatype, program: Program): string {
     case "Deferred":
       throw new InternalError("Cannot generate usage code for deferred");
     case "Struct":
-      if (dt.declared) {
+      if (dt.language) {
         return `${mangleDatatype(dt)}`;
       } else {
         return `_H${mangleDatatype(dt)}`;

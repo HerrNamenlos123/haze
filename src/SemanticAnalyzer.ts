@@ -20,7 +20,7 @@ import { CompilerError, ImpossibleSituation, InternalError } from "./Errors";
 import { Scope } from "./Scope";
 import { Program } from "./Program";
 import {
-  FunctionType,
+  Language,
   mangleDatatype,
   mangleSymbol,
   serializeSymbol,
@@ -100,6 +100,7 @@ import type {
   VariableDefinitionStatement,
   WhileStatement,
 } from "./Statement";
+import { SymbolFlags } from "typescript";
 
 const RESERVED_VARIABLE_NAMES = ["this", "context", "__returnval__"];
 const INTERNAL_METHOD_NAMES = ["constructor", "destructor", "sizeof"];
@@ -451,7 +452,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
       throw new ImpossibleSituation();
     }
 
-    if (symbol.functionType === FunctionType.Internal) {
+    if (symbol.language === Language.Internal) {
       if (!symbol.scope) {
         throw new InternalError("Function missing scope");
       }
@@ -520,6 +521,12 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
 
         symbol.type.functionReturnType = returntype;
       }
+
+      symbol.type.functionReturnType = resolveGenerics(
+        symbol.type.functionReturnType,
+        symbol.scope,
+        symbol.scope.location,
+      );
 
       if (!isNone(symbol.type.functionReturnType)) {
         if (!symbol.scope.statements.some((s) => s.variant === "Return")) {
@@ -1198,19 +1205,6 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
         this.program.getLoc(ctx),
       );
     }
-
-    console.log(
-      name,
-      "from",
-      serializeDatatype(expr.type),
-      (expr.type.variant === "Struct" &&
-        expr.type.methods.map((m) => m.name)) ||
-        (expr.type.variant === "RawPointer" &&
-          (expr.type.generics.get("__Pointee") as StructDatatype).methods.map(
-            (m) => m.name,
-          )) ||
-        "",
-    );
 
     while (expr.type.variant !== "Struct") {
       if (expr.type.variant !== "RawPointer") {

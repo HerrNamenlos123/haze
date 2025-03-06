@@ -7,7 +7,7 @@ import {
 } from "./Errors";
 import type { StructDeclContext } from "./parser/HazeParser";
 import {
-  FunctionType,
+  Language,
   mangleDatatype,
   mangleSymbol,
   serializeSymbol,
@@ -119,7 +119,7 @@ class CodeGenerator {
     }
 
     for (const symbol of Object.values(this.program.concreteFunctions)) {
-      if (symbol.functionType === FunctionType.Internal) {
+      if (symbol.language === Language.Internal) {
         this.generateFuncUse(symbol);
       }
     }
@@ -363,7 +363,7 @@ class CodeGenerator {
         }
         if (expr.expr.variant === "SymbolValue") {
           if (expr.expr.symbol.variant === "Function") {
-            if (expr.expr.symbol.functionType === FunctionType.Internal) {
+            if (expr.expr.symbol.language === Language.Internal) {
               args.push("context");
             }
           }

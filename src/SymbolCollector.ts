@@ -14,7 +14,7 @@ import {
 } from "./parser/HazeParser";
 import type { Program } from "./Program";
 import {
-  FunctionType,
+  Language,
   isSymbolGeneric,
   mangleSymbol,
   serializeSymbol,
@@ -97,9 +97,9 @@ export class SymbolCollector extends HazeVisitor<any> {
     }
 
     const lang = ctx.externlang().getText()[1];
-    let functype = FunctionType.Internal;
+    let functype = Language.Internal;
     if (lang === "C") {
-      functype = FunctionType.External_C;
+      functype = Language.External_C;
     } else {
       throw new CompilerError(
         `Extern Language '${lang}' is not supported.`,
@@ -108,7 +108,7 @@ export class SymbolCollector extends HazeVisitor<any> {
     }
 
     const signature = ctx.ID_list().map((n) => n.getText());
-    if (signature.length > 1 && functype === FunctionType.External_C) {
+    if (signature.length > 1 && functype === Language.External_C) {
       throw new CompilerError(
         "Extern C functions cannot be namespaced",
         this.program.getLoc(ctx),
@@ -127,14 +127,14 @@ export class SymbolCollector extends HazeVisitor<any> {
   private implFunc(
     ctx: FuncContext | NamedfuncContext | StructMethodContext | FuncdeclContext,
     name: string,
-    functype: FunctionType = FunctionType.Internal,
+    functype: Language = Language.Internal,
   ): FunctionSymbol {
     const parentScope = this.program.currentScope;
     const scope = this.program.pushScope(
       new Scope(this.program.getLoc(ctx), this.program.currentScope),
     );
 
-    let returntype: Datatype = { variant: "Deferred" };
+    let returntype: Datatype = this.program.getBuiltinType("none");
     if (ctx.datatype()) {
       returntype = this.visit(ctx.datatype());
     } else if (!(ctx instanceof FuncdeclContext)) {
@@ -142,12 +142,10 @@ export class SymbolCollector extends HazeVisitor<any> {
         const expr = this.visit(ctx.funcbody().expr());
         returntype = expr.type;
       }
-    } else {
-      returntype = this.program.globalScope.lookupSymbol(
-        "none",
-        this.program.getLoc(ctx),
-      ).type;
     }
+    // else {
+    //   returntype = this.program.getBuiltinType("none");
+    // }
 
     const parentSymbol = this.structStack[this.structStack.length - 1];
     let specialMethod: SpecialMethod = undefined;
@@ -169,7 +167,7 @@ export class SymbolCollector extends HazeVisitor<any> {
     const symbol: FunctionSymbol = {
       variant: "Function",
       name: name,
-      functionType: functype,
+      language: functype,
       type: type,
       specialMethod: specialMethod,
       scope: scope,
@@ -243,10 +241,21 @@ export class SymbolCollector extends HazeVisitor<any> {
       .slice(1)
       .map((n) => [n.getText(), undefined]);
 
+    const lang = ctx.externlang()?.getText()[1];
+    let language = Language.Internal;
+    if (lang === "C") {
+      language = Language.External_C;
+    } else if (lang) {
+      throw new CompilerError(
+        `Extern Language '${lang}' is not supported.`,
+        this.program.getLoc(ctx),
+      );
+    }
+
     const type: StructDatatype = {
       variant: "Struct",
       name: name,
-      declared: Boolean(ctx.externlang()),
+      language: language,
       generics: new Map<string, undefined>(genericsList),
       members: [],
       methods: [],
@@ -276,7 +285,7 @@ export class SymbolCollector extends HazeVisitor<any> {
       if (content.variant === "Variable") {
         type.members.push(content);
       } else if (content.variant === "Function") {
-        if (symbol.type.declared) {
+        if (symbol.type.language) {
           throw new CompilerError(
             `A declared struct cannot have methods`,
             this.program.getLoc(ctx),
