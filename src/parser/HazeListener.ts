@@ -4,6 +4,8 @@ import {ParseTreeListener} from "antlr4";
 
 
 import { ProgContext } from "./HazeParser.js";
+import { ToplevelnodeContext } from "./HazeParser.js";
+import { NamespaceContext } from "./HazeParser.js";
 import { NamedfuncContext } from "./HazeParser.js";
 import { FuncContext } from "./HazeParser.js";
 import { FuncbodyContext } from "./HazeParser.js";
@@ -73,6 +75,26 @@ export default class HazeListener extends ParseTreeListener {
 	 * @param ctx the parse tree
 	 */
 	exitProg?: (ctx: ProgContext) => void;
+	/**
+	 * Enter a parse tree produced by `HazeParser.toplevelnode`.
+	 * @param ctx the parse tree
+	 */
+	enterToplevelnode?: (ctx: ToplevelnodeContext) => void;
+	/**
+	 * Exit a parse tree produced by `HazeParser.toplevelnode`.
+	 * @param ctx the parse tree
+	 */
+	exitToplevelnode?: (ctx: ToplevelnodeContext) => void;
+	/**
+	 * Enter a parse tree produced by `HazeParser.namespace`.
+	 * @param ctx the parse tree
+	 */
+	enterNamespace?: (ctx: NamespaceContext) => void;
+	/**
+	 * Exit a parse tree produced by `HazeParser.namespace`.
+	 * @param ctx the parse tree
+	 */
+	exitNamespace?: (ctx: NamespaceContext) => void;
 	/**
 	 * Enter a parse tree produced by `HazeParser.namedfunc`.
 	 * @param ctx the parse tree

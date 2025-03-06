@@ -1,6 +1,11 @@
 grammar Haze;
 
-prog: (cdefinitiondecl | namedfunc | funcdecl | compilationhint | linkerhint | structdecl)*;
+prog: (toplevelnode)*;
+toplevelnode: cdefinitiondecl | namedfunc | funcdecl | compilationhint | linkerhint | structdecl | namespace;
+
+namespace
+    : 'namespace' ID '{' (toplevelnode)* '}'
+    ;
 
 namedfunc: ID '(' params ')' (':' datatype)? funcbody;
 func: '(' params ')' (':' datatype)? funcbody;

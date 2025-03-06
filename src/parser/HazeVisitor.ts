@@ -4,6 +4,8 @@ import {ParseTreeVisitor} from 'antlr4';
 
 
 import { ProgContext } from "./HazeParser.js";
+import { ToplevelnodeContext } from "./HazeParser.js";
+import { NamespaceContext } from "./HazeParser.js";
 import { NamedfuncContext } from "./HazeParser.js";
 import { FuncContext } from "./HazeParser.js";
 import { FuncbodyContext } from "./HazeParser.js";
@@ -72,6 +74,18 @@ export default class HazeVisitor<Result> extends ParseTreeVisitor<Result> {
 	 * @return the visitor result
 	 */
 	visitProg?: (ctx: ProgContext) => Result;
+	/**
+	 * Visit a parse tree produced by `HazeParser.toplevelnode`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitToplevelnode?: (ctx: ToplevelnodeContext) => Result;
+	/**
+	 * Visit a parse tree produced by `HazeParser.namespace`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitNamespace?: (ctx: NamespaceContext) => Result;
 	/**
 	 * Visit a parse tree produced by `HazeParser.namedfunc`.
 	 * @param ctx the parse tree

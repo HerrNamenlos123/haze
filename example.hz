@@ -66,17 +66,17 @@ struct Window {
     }
 }
 
-declare "C" "#include <SDL2/SDL.h>";
-declare "C" "#include \"../clay.h\"";
-declare "C" "#include \"../test.c\"";
-declare "C" struct SDL_Window {};
-declare "C" struct SDL_Renderer {};
-declare "C" SDL_Init(flags: u32): i32;
-declare "C" SDL_CreateWindow(title: stringview, x: i32, y: i32, w: i32, h: i32, flags: u32): RawPtr<SDL_Window>;
-declare "C" SDL_Quit();
-declare "C" SDL_CreateRenderer(window: RawPtr<SDL_Window>, index: i32, flags: u32): RawPtr<SDL_Renderer>;
-declare "C" SDL_DestroyWindow(window: RawPtr<SDL_Window>);
-declare "C" SDL_RenderPresent(window: RawPtr<SDL_Window>);
+// declare "C" "#include <SDL2/SDL.h>";
+// declare "C" "#include \"../clay.h\"";
+// declare "C" "#include \"../test.c\"";
+// declare "C" struct SDL_Window {};
+// declare "C" struct SDL_Renderer {};
+// declare "C" SDL_Init(flags: u32): i32;
+// declare "C" SDL_CreateWindow(title: stringview, x: i32, y: i32, w: i32, h: i32, flags: u32): RawPtr<SDL_Window>;
+// declare "C" SDL_Quit();
+// declare "C" SDL_CreateRenderer(window: RawPtr<SDL_Window>, index: i32, flags: u32): RawPtr<SDL_Renderer>;
+// declare "C" SDL_DestroyWindow(window: RawPtr<SDL_Window>);
+// declare "C" SDL_RenderPresent(window: RawPtr<SDL_Window>);
 
 //declare "C" drawLine();
 
@@ -239,6 +239,11 @@ fib(count: i32) {
 }
 
 declare "C" draw();
+declare "C" "#include \"../gl.c\"";
+
+namespace Test {
+  struct Inner {};
+}
 
 window(): i32 {
   if not glfwInit() {
@@ -255,7 +260,7 @@ window(): i32 {
     const window = windowResult.success;
 
     window.makeContextCurrent();
-    window.makeContextCurrent();
+    window.setVSync(true);
 
     while (!window.shouldClose())
     {
@@ -275,6 +280,6 @@ main(): i32 {
   // fib(10);
   // init(); 
   // test2(); 
-  // return 0;
-  return window();
+  return 0;
+  // return window();
 }
