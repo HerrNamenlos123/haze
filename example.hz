@@ -6,11 +6,12 @@ declare "C" realloc(ptr: RawPtr<none>, newSize: u64): RawPtr<none>;
 
 declare "C" "#include <GLFW/glfw3.h>";
 declare "C" struct GLFWwindow {};
+declare "C" struct GLFWmonitor {};
 declare "C" glfwInit(): boolean;
 declare "C" glfwTerminate(): none;
 declare "C" glfwMakeContextCurrent(w: RawPtr<GLFWwindow>);
 declare "C" glfwWindowShouldClose(w: RawPtr<GLFWwindow>): boolean;
-declare "C" glfwCreateWindow(width: i32, height: i32, title: stringview, a: i32, b: i32): RawPtr<GLFWwindow>;
+declare "C" glfwCreateWindow(width: i32, height: i32, title: stringview, monitor: RawPtr<GLFWmonitor>, share: RawPtr<GLFWwindow>): RawPtr<GLFWwindow>;
 declare "C" glClear(flag: i64): boolean;
 declare "C" glfwSwapBuffers(w: RawPtr<GLFWwindow>);
 declare "C" glfwPollEvents();
@@ -28,7 +29,7 @@ struct Window {
     glfwWindow: RawPtr<GLFWwindow>;
 
     constructor(width: i32, height: i32, title: stringview): Result<Window, stringview> {
-      const window = glfwCreateWindow(width, height, title, 0, 0);
+      const window = glfwCreateWindow(width, height, title, 0 as RawPtr<GLFWmonitor>, 0 as RawPtr<GLFWwindow>);
       if not window {
           return Result<Window, stringview> {
             .error: "Window creation failed",
@@ -241,8 +242,12 @@ fib(count: i32) {
 declare "C" draw();
 declare "C" "#include \"../gl.c\"";
 
-namespace Test {
-  struct Inner {};
+namespace Outer {
+  namespace Inner {
+    struct Test {
+      a: i32;
+    };
+  }
 }
 
 window(): i32 {

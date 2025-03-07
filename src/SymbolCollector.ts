@@ -5,6 +5,7 @@ import {
   FuncdeclContext,
   FunctionDatatypeContext,
   NamedfuncContext,
+  NamespaceContext,
   ParamsContext,
   StructDeclContext,
   StructMemberContext,
@@ -31,6 +32,7 @@ import {
   type Datatype,
   type FunctionDatatype,
   type GenericPlaceholderDatatype,
+  type NamespaceDatatype,
   type StructDatatype,
   type StructMemberUnion,
 } from "./Datatype";
@@ -40,12 +42,14 @@ import { datatypeSymbolUsed, visitCommonDatatypeImpl } from "./utils";
 
 export class SymbolCollector extends HazeVisitor<any> {
   private program: Program;
-  private structStack: DatatypeSymbol<StructDatatype>[];
+  private parentSymbolStack: DatatypeSymbol<
+    StructDatatype | NamespaceDatatype
+  >[];
 
   constructor(program: Program) {
     super();
     this.program = program;
-    this.structStack = [];
+    this.parentSymbolStack = [];
   }
 
   visitParam = (ctx: ParamContext): [string, Datatype] => {
@@ -147,9 +151,14 @@ export class SymbolCollector extends HazeVisitor<any> {
     //   returntype = this.program.getBuiltinType("none");
     // }
 
-    const parentSymbol = this.structStack[this.structStack.length - 1];
+    const parentSymbol =
+      this.parentSymbolStack[this.parentSymbolStack.length - 1];
     let specialMethod: SpecialMethod = undefined;
-    if (parentSymbol && parentSymbol.type?.variant === "Struct") {
+    if (
+      parentSymbol &&
+      parentSymbol.variant === "Datatype" &&
+      parentSymbol.type?.variant === "Struct"
+    ) {
       if (name === "constructor") {
         specialMethod = "constructor";
       } else if (name === "destructor") {
@@ -175,7 +184,11 @@ export class SymbolCollector extends HazeVisitor<any> {
       ctx: ctx,
     };
 
-    if (parentSymbol && parentSymbol.type?.variant === "Struct") {
+    if (
+      parentSymbol &&
+      parentSymbol.variant === "Datatype" &&
+      parentSymbol.type?.variant === "Struct"
+    ) {
       if (name === "destructor") {
         if (type.functionParameters.length !== 0) {
           throw new CompilerError(
@@ -191,7 +204,11 @@ export class SymbolCollector extends HazeVisitor<any> {
 
     if (
       !isSymbolGeneric(symbol) &&
-      (!parentSymbol || Object.keys(parentSymbol.type.generics).length === 0)
+      (!parentSymbol ||
+        parentSymbol.type.variant === "Namespace" ||
+        Object.keys(
+          parentSymbol.variant === "Datatype" && parentSymbol.type.generics,
+        ).length === 0)
     ) {
       this.program.concreteFunctions[mangleSymbol(symbol)] = symbol;
     }
@@ -265,6 +282,7 @@ export class SymbolCollector extends HazeVisitor<any> {
       name: name,
       type: type,
       scope: scope,
+      parentSymbol: this.parentSymbolStack[this.parentSymbolStack.length - 1],
     };
 
     parentScope.defineSymbol(symbol, this.program.getLoc(ctx));
@@ -277,7 +295,7 @@ export class SymbolCollector extends HazeVisitor<any> {
       };
       scope.defineSymbol(sym, this.program.getLoc(ctx));
     }
-    this.structStack.push(symbol);
+    this.parentSymbolStack.push(symbol);
 
     ctx.structcontent_list().forEach((c) => {
       const content: VariableSymbol | StructMemberUnion | FunctionSymbol =
@@ -299,7 +317,7 @@ export class SymbolCollector extends HazeVisitor<any> {
       }
     });
 
-    this.structStack.pop();
+    this.parentSymbolStack.pop();
     this.program.popScope();
     return symbol;
   };
@@ -307,6 +325,34 @@ export class SymbolCollector extends HazeVisitor<any> {
   visitStructMethod = (ctx: StructMethodContext): FunctionSymbol => {
     const name = ctx.ID().getText();
     const symbol = this.implFunc(ctx, name);
+    return symbol;
+  };
+
+  visitNamespace = (ctx: NamespaceContext): DatatypeSymbol => {
+    const scope = new Scope(
+      this.program.getLoc(ctx),
+      this.program.currentScope,
+    );
+    this.program.pushScope(scope);
+
+    const name = ctx.ID().getText();
+    ctx.toplevelnode_list().forEach((n) => {
+      const symbol = this.visit(n);
+      scope.defineSymbol(symbol, this.program.getLoc(ctx));
+    });
+
+    this.program.popScope();
+
+    const symbol: DatatypeSymbol = {
+      name: name,
+      variant: "Datatype",
+      scope: this.program.currentScope,
+      type: { variant: "Namespace", name: name, symbolsScope: scope },
+      parentSymbol: this.parentSymbolStack[this.parentSymbolStack.length - 1],
+    };
+
+    this.program.currentScope.defineSymbol(symbol, this.program.getLoc(ctx));
+
     return symbol;
   };
 }

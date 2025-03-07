@@ -4,6 +4,7 @@ import {
   serializeDatatype,
   type Datatype,
   type FunctionDatatype,
+  type NamespaceDatatype,
 } from "./Datatype";
 import {
   getCallerLocation,
@@ -140,6 +141,9 @@ export function mangleDatatype(datatype: Datatype): string {
       const s = primitiveVariantToString(datatype);
       return s.length.toString() + s;
 
+    case "Namespace":
+      return datatype.name.length.toString() + datatype.name;
+
     case "Function":
       let mangled = "F";
       for (const [name, tp] of datatype.functionParameters) {
@@ -149,20 +153,36 @@ export function mangleDatatype(datatype: Datatype): string {
       return mangled;
 
     case "Struct":
+      let nesting = "";
+      if (datatype.parentSymbol) {
+        let p: Datatype | undefined = datatype.parentSymbol.type;
+        while (p) {
+          if (p.variant !== "Struct" && p.variant !== "Namespace") {
+            throw new ImpossibleSituation();
+          }
+          nesting = mangleDatatype(p) + nesting;
+          p = p.parentSymbol?.type;
+        }
+      }
       if (datatype.language === Language.Internal) {
-        let mangled2 = datatype.name.length.toString() + datatype.name;
+        let innerMangling = datatype.name.length.toString() + datatype.name;
         if (datatype.generics.size > 0) {
-          mangled2 += "I";
+          innerMangling += "I";
           for (const [name, tp] of datatype.generics) {
             if (tp) {
-              mangled2 += mangleDatatype(tp);
+              innerMangling += mangleDatatype(tp);
             } else {
-              mangled2 += name + "_";
+              innerMangling += name + "_";
             }
           }
-          mangled2 += "E";
+          innerMangling += "E";
         }
-        return mangled2;
+
+        if (nesting !== "") {
+          return `N${nesting}${innerMangling}E`;
+        } else {
+          return innerMangling;
+        }
       } else {
         return datatype.name;
       }

@@ -107,8 +107,8 @@ structdecl
     ;
 
 datatype
-    : ID ('<' datatype (',' datatype)* '>')?        #CommonDatatype
-    | functype                                      #FunctionDatatype
+    : ID ('<' generics+=datatype (',' generics+=datatype)* '>')? ('.' nested=datatype)?         #CommonDatatype
+    | functype                                                                                  #FunctionDatatype
     ;
 
 STRING_LITERAL

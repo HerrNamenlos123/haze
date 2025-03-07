@@ -5,7 +5,7 @@ import {
   type Location,
 } from "./Errors";
 import type { Statement } from "./Statement";
-import { mangleSymbol, type Symbol } from "./Symbol";
+import { mangleSymbol, type DatatypeSymbol, type Symbol } from "./Symbol";
 
 export class Scope {
   public location: Location;
@@ -22,7 +22,11 @@ export class Scope {
   }
 
   defineSymbol(symbol: Symbol, loc: Location) {
-    if (symbol.variant === "Constant") {
+    if (
+      symbol.variant === "StringConstant" ||
+      symbol.variant === "BooleanConstant" ||
+      symbol.variant === "LiteralConstant"
+    ) {
       throw new CompilerError(`Cannot define a constant symbol`, loc);
     }
     if (this.tryLookupSymbolHere(symbol.name)) {
@@ -35,9 +39,7 @@ export class Scope {
   }
 
   removeSymbol(name: string) {
-    this.symbols = this.symbols.filter(
-      (s) => s.variant !== "Constant" && s.name !== name,
-    );
+    this.symbols = this.symbols.filter((s) => "name" in s && s.name === name);
   }
 
   getSymbols() {
@@ -45,9 +47,7 @@ export class Scope {
   }
 
   tryLookupSymbol(name: string, loc: Location): Symbol | undefined {
-    let symbol = this.symbols.find(
-      (s) => s.variant !== "Constant" && s.name === name,
-    );
+    let symbol = this.symbols.find((s) => "name" in s && s.name === name);
     if (symbol) {
       return symbol;
     }
@@ -59,9 +59,7 @@ export class Scope {
   }
 
   tryLookupSymbolHere(name: string): Symbol | undefined {
-    return this.symbols.find(
-      (s) => s.variant !== "Constant" && s.name === name,
-    );
+    return this.symbols.find((s) => "name" in s && s.name === name);
   }
 
   lookupSymbol(name: string, loc: Location): Symbol {
@@ -76,5 +74,16 @@ export class Scope {
       `Symbol '${name}' was not declared in this scope`,
       loc,
     );
+  }
+
+  lookupDatatypeSymbol(name: string, loc: Location): DatatypeSymbol {
+    const symbol = this.lookupSymbol(name, loc);
+    if (symbol.variant !== "Datatype") {
+      throw new CompilerError(
+        `Expected Datatype but found symbol of variant ${symbol.variant}`,
+        loc,
+      );
+    }
+    return symbol;
   }
 }

@@ -3,6 +3,7 @@ import {
   type Datatype,
   type FunctionDatatype,
   type Generics,
+  type NamespaceDatatype,
   type RawPointerDatatype,
   type StructDatatype,
   type StructMemberUnion,
@@ -13,7 +14,7 @@ import {
   InternalError,
   type Location,
 } from "./Errors";
-import type { CommonDatatypeContext } from "./parser/HazeParser";
+import { CommonDatatypeContext } from "./parser/HazeParser";
 import type HazeVisitor from "./parser/HazeVisitor";
 import type { Program } from "./Program";
 import { Scope } from "./Scope";
@@ -75,6 +76,9 @@ export function resolveGenerics(
       return newRawPtr;
     }
 
+    case "Namespace":
+      return datatype;
+
     case "Struct": {
       if (!(mangleDatatype(datatype) in resolvageContext.resolvedMangledType)) {
         resolvageContext.resolvedMangledType[mangleDatatype(datatype)] =
@@ -87,6 +91,7 @@ export function resolveGenerics(
         generics: new Map(datatype.generics),
         members: [],
         methods: [],
+        parentSymbol: datatype.parentSymbol,
       };
       const tempScope = new Scope(scope.location, scope);
       defineGenericsInScope(datatype.generics, tempScope);
@@ -225,16 +230,20 @@ export const visitCommonDatatypeImpl = (
   _this: HazeVisitor<any>,
   program: Program,
   ctx: CommonDatatypeContext,
+  resolvageContext?: { scope?: Scope },
 ): Datatype => {
   const name = ctx.ID().getText();
-  const symbol = program.currentScope.lookupSymbol(name, program.getLoc(ctx));
+
+  const symbol = (resolvageContext?.scope || program.currentScope).lookupSymbol(
+    name,
+    program.getLoc(ctx),
+  );
+
   if (symbol.variant !== "Datatype") {
     throw new ImpossibleSituation();
   }
 
-  const genericsProvided: Datatype[] = ctx
-    .datatype_list()
-    .map((n) => _this.visit(n));
+  const genericsProvided: Datatype[] = ctx._generics.map((n) => _this.visit(n));
   switch (symbol.type.variant) {
     case "Primitive":
       if (genericsProvided.length > 0) {
@@ -243,9 +252,21 @@ export const visitCommonDatatypeImpl = (
           program.getLoc(ctx),
         );
       }
+      if (ctx._nested) {
+        throw new CompilerError(
+          `Type '${name}' is not a namespace`,
+          program.getLoc(ctx),
+        );
+      }
       return symbol.type;
 
     case "Generic":
+      if (ctx._nested) {
+        throw new CompilerError(
+          `Type '${name}' is not a namespace`,
+          program.getLoc(ctx),
+        );
+      }
       return symbol.type;
 
     case "RawPointer":
@@ -286,6 +307,12 @@ export const visitCommonDatatypeImpl = (
             parentSymbol: symbol.parentSymbol,
           },
           program,
+        );
+      }
+      if (ctx._nested) {
+        throw new CompilerError(
+          `Type '${name}' is not a namespace`,
+          program.getLoc(ctx),
         );
       }
       return ptrtype;
@@ -330,7 +357,62 @@ export const visitCommonDatatypeImpl = (
           program,
         );
       }
+      if (ctx._nested) {
+        throw new CompilerError(
+          `Type '${name}' is not a namespace`,
+          program.getLoc(ctx),
+        );
+      }
       return structtype;
+
+    case "Namespace":
+      if (genericsProvided.length != 0) {
+        throw new CompilerError(
+          `Namespace '${name}' cannot take generic arguments but got ${genericsProvided.length}.`,
+          program.getLoc(ctx),
+        );
+      }
+      datatypeSymbolUsed(symbol, program);
+
+      if (!ctx._nested) {
+        return symbol.type;
+      } else {
+        // We have <symbol.type>.<nesteddatatype>
+        if (!(ctx._nested instanceof CommonDatatypeContext)) {
+          throw new CompilerError(
+            `Cannot use a function datatype inside a namespace`,
+            program.getLoc(ctx),
+          );
+        }
+        const second: Datatype = visitCommonDatatypeImpl(
+          _this,
+          program,
+          ctx._nested,
+          {
+            scope: symbol.type.symbolsScope,
+          },
+        );
+        if (second.variant !== "Struct") {
+          throw new CompilerError(
+            `Type '${serializeDatatype(second)}' is not a struct and cannot be namespaced`,
+            program.getLoc(ctx),
+          );
+        }
+        let p: StructDatatype | NamespaceDatatype | undefined = second;
+        while (p?.parentSymbol) {
+          if (
+            p.parentSymbol.type.variant !== "Struct" &&
+            p.parentSymbol.type.variant !== "Namespace"
+          ) {
+            throw new ImpossibleSituation();
+          }
+          p = p.parentSymbol.type;
+        }
+        if (p && serializeDatatype(p) !== serializeDatatype(symbol.type)) {
+          p.parentSymbol = symbol;
+        }
+        return second;
+      }
 
     default:
       throw new ImpossibleSituation();

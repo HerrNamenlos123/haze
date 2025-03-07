@@ -81,6 +81,7 @@ export type StructDatatype = {
   language: Language;
   members: (VariableSymbol | StructMemberUnion)[];
   methods: FunctionSymbol[];
+  parentSymbol?: DatatypeSymbol;
 };
 
 export type RawPointerDatatype = {
@@ -93,10 +94,18 @@ export type PrimitiveDatatype = {
   primitive: Primitive;
 };
 
+export type NamespaceDatatype = {
+  variant: "Namespace";
+  name: string;
+  symbolsScope: Scope;
+  parentSymbol?: DatatypeSymbol;
+};
+
 export type Datatype =
   | DeferredDatatype
   | FunctionDatatype
   | StructDatatype
+  | NamespaceDatatype
   | RawPointerDatatype
   | GenericPlaceholderDatatype
   | PrimitiveDatatype
@@ -331,6 +340,9 @@ export function serializeDatatype(datatype: Datatype): string {
     case "Primitive":
       return primitiveVariantToString(datatype);
 
+    case "Namespace":
+      return datatype.name;
+
     case "RawPointer":
       const g2 = [] as string[];
       for (const [name, tp] of datatype.generics) {
@@ -348,6 +360,17 @@ export function serializeDatatype(datatype: Datatype): string {
 
     case "Struct":
       let s = datatype.name;
+
+      let p = datatype.parentSymbol?.type;
+      while (p) {
+        if (p.variant === "Struct" || p.variant === "Namespace") {
+          s = `${p.name}.${s}`;
+          p = p.parentSymbol?.type;
+        } else {
+          throw new ImpossibleSituation();
+        }
+      }
+
       const g = [] as string[];
       for (const [name, tp] of datatype.generics) {
         if (tp) {
@@ -439,6 +462,9 @@ export function generateDefinitionCCode(
         `typedef ${generateUsageCode(datatype.type.functionReturnType, program)} (*${generateUsageCode(datatype.type, program)})(${params.join(", ")});`,
       );
       return writer;
+
+    case "Namespace":
+      return writer;
   }
   throw new InternalError(`Invalid variant ${datatype.type.variant}`);
 }
@@ -491,17 +517,22 @@ export function generateUsageCode(dt: Datatype, program: Program): string {
 
     case "Deferred":
       throw new InternalError("Cannot generate usage code for deferred");
+
     case "Struct":
-      if (dt.language) {
-        return `${mangleDatatype(dt)}`;
-      } else {
+      if (dt.language === Language.Internal) {
         return `_H${mangleDatatype(dt)}`;
+      } else {
+        return `${mangleDatatype(dt)}`;
       }
+
     case "Function":
       return `_H${mangleDatatype(dt)}`;
 
     case "Generic":
       throw new InternalError("Cannot generate usage code for generic");
+
+    case "Namespace":
+      throw new InternalError("Cannot generate usage code for a namespace");
   }
   // throw new InternalError(`Invalid variant ${dt.variant}`);
 }

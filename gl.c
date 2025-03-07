@@ -27,7 +27,6 @@ double _time = 0;
 void draw()
 {
   glClear(GL_COLOR_BUFFER_BIT);
-  draw_triangle();
   rotation += 1.f;
   double now = glfwGetTime();
   double elapsed = now - _time;

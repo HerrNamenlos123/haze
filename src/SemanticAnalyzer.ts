@@ -144,9 +144,9 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
     );
 
     symbol = { ...symbol };
-    symbol.type = { ...symbol.type };
     if (symbol.variant === "Datatype") {
       if (symbol.type.variant === "Struct") {
+        symbol.type = { ...symbol.type };
         symbol.type.generics = new Map(symbol.type.generics);
         symbol.type.methods = symbol.type.methods.map((m) => ({ ...m }));
         if (symbol.type.generics.size !== ctx.datatype_list().length) {
@@ -381,8 +381,16 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
     ) {
       const symbol = { ...expr.symbol };
       symbol.scope = new Scope(symbol.scope.location, symbol.scope);
-      symbol.parentSymbol = { ...expr.symbol.parentSymbol! };
-      symbol.parentSymbol.type = { ...expr.symbol.parentSymbol!.type };
+      if (
+        expr.symbol.parentSymbol?.variant !== "Datatype" ||
+        expr.symbol.parentSymbol.type.variant !== "Struct"
+      ) {
+        throw new ImpossibleSituation();
+      }
+      symbol.parentSymbol = {
+        ...expr.symbol.parentSymbol!,
+      } as DatatypeSymbol<StructDatatype>;
+      symbol.parentSymbol.type = { ...symbol.parentSymbol!.type };
       if (symbol.parentSymbol.type.variant !== "Struct") {
         throw new ImpossibleSituation();
       }
@@ -466,7 +474,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
       this.program.pushScope(symbol.scope);
       this.functionStack.push(symbol);
 
-      if (symbol.parentSymbol) {
+      if (symbol.parentSymbol && symbol.parentSymbol.variant === "Datatype") {
         symbol.scope.defineSymbol(
           {
             variant: "Variable",
@@ -516,7 +524,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
         } else if (returnedTypes.length === 1) {
           returntype = returnedTypes[0];
         } else {
-          returntype = this.program.currentScope.lookupSymbol("none", loc).type;
+          returntype = this.program.getBuiltinType("none");
         }
 
         symbol.type.functionReturnType = returntype;
@@ -613,12 +621,9 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
       datatype = this.visit(ctx.datatype());
     }
 
-    if (
-      datatype.variant === "Primitive" &&
-      datatype.primitive === Primitive.none
-    ) {
+    if (isNone(datatype) || datatype.variant === "Namespace") {
       throw new CompilerError(
-        `'none' is not a valid variable type.`,
+        `'${serializeDatatype(datatype)}' is not a valid variable type.`,
         this.program.getLoc(ctx),
       );
     }
@@ -797,10 +802,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
   visitStringConstant = (ctx: StringConstantContext): StringConstantSymbol => {
     return {
       variant: "StringConstant",
-      type: this.program.globalScope.lookupSymbol(
-        "stringview",
-        this.program.getLoc(ctx),
-      ).type,
+      type: this.program.getBuiltinType("stringview"),
       value: ctx.getText(),
     };
   };
@@ -838,11 +840,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
         case "m":
         case "h":
         case "d":
-          type = this.program.globalScope.lookupSymbol(
-            "Duration",
-            this.program.getLoc(ctx),
-          ).type;
-          unit = unitStr;
+          (type = this.program.getBuiltinType("Duration")), (unit = unitStr);
           break;
 
         default:
@@ -873,10 +871,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
     }
     return {
       variant: "BooleanConstant",
-      type: this.program.globalScope.lookupSymbol(
-        "boolean",
-        this.program.getLoc(ctx),
-      ).type,
+      type: this.program.getBuiltinType("boolean"),
       value,
     };
   };
@@ -937,8 +932,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
       };
     } else {
       implicitConversion(
-        this.program.currentScope.lookupSymbol("none", this.program.getLoc(ctx))
-          .type,
+        this.program.getBuiltinType("none"),
         this.functionStack[this.functionStack.length - 1].type
           .functionReturnType,
         "",
@@ -1314,7 +1308,10 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
       if (!method.parentSymbol) {
         throw new InternalError("Method has no parent symbol");
       }
-      if (method.parentSymbol.type.variant !== "Struct") {
+      if (
+        !("type" in method.parentSymbol) ||
+        method.parentSymbol.type.variant !== "Struct"
+      ) {
         throw new InternalError("Parent symbol is not a struct");
       }
 
