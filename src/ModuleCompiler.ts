@@ -69,11 +69,36 @@ export class ModuleCompiler {
       // prettyPrintAST(ast);
 
       try {
-        // -lglfw -lSDL2main -lSDL2
+        // -lglfw -lSDL2main -lSDL2  -lwayland-client -lglfw -lGL
+        if (program.prebuildCmds) {
+          for (const cmd of program.prebuildCmds) {
+            try {
+              console.log(`\x1b[32mExecuting pre-build command:\x1b[0m ${cmd}`);
+              child_process.execSync(cmd, { stdio: "pipe" });
+            } catch (e) {
+              console.error("Requirement check failed: " + cmd);
+              return false;
+            }
+          }
+        }
         console.log(`\x1b[32mC-Compiling\x1b[0m ${this.filename}`);
+
         child_process.execSync(
-          `${C_COMPILER} -g build/${this.filename}.c -o build/out -lwayland-client -lglfw -lGL`,
+          `${C_COMPILER} -g build/${this.filename}.c -o build/out ${program.linkerFlags.join(" ")}`,
         );
+        if (program.postbuildCmds) {
+          for (const cmd of program.postbuildCmds) {
+            try {
+              console.log(
+                `\x1b[32mExecuting post-build command:\x1b[0m ${cmd}`,
+              );
+              child_process.execSync(cmd);
+            } catch (e) {
+              console.error("Requirement check failed: " + cmd);
+              return false;
+            }
+          }
+        }
         console.log(`\x1b[32mExecuting\x1b[0m ${this.filename}`);
         child_process.execSync("build/out", { stdio: "inherit" });
       } catch (e) {

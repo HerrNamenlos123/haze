@@ -76,15 +76,18 @@ export default class HazeParser extends Parser {
 	public static readonly T__54 = 55;
 	public static readonly T__55 = 56;
 	public static readonly T__56 = 57;
-	public static readonly STRING_LITERAL = 58;
-	public static readonly UNIT_LITERAL = 59;
-	public static readonly NUMBER_LITERAL = 60;
-	public static readonly ID = 61;
-	public static readonly WS = 62;
-	public static readonly COMMENT = 63;
+	public static readonly T__57 = 58;
+	public static readonly T__58 = 59;
+	public static readonly T__59 = 60;
+	public static readonly STRING_LITERAL = 61;
+	public static readonly UNIT_LITERAL = 62;
+	public static readonly NUMBER_LITERAL = 63;
+	public static readonly ID = 64;
+	public static readonly WS = 65;
+	public static readonly COMMENT = 66;
 	public static override readonly EOF = Token.EOF;
 	public static readonly RULE_prog = 0;
-	public static readonly RULE_toplevelnode = 1;
+	public static readonly RULE_namespacecontent = 1;
 	public static readonly RULE_namespace = 2;
 	public static readonly RULE_namedfunc = 3;
 	public static readonly RULE_func = 4;
@@ -93,36 +96,41 @@ export default class HazeParser extends Parser {
 	public static readonly RULE_param = 7;
 	public static readonly RULE_params = 8;
 	public static readonly RULE_cdefinitiondecl = 9;
-	public static readonly RULE_funcdecl = 10;
-	public static readonly RULE_externlang = 11;
-	public static readonly RULE_ifexpr = 12;
-	public static readonly RULE_elseifexpr = 13;
-	public static readonly RULE_thenblock = 14;
-	public static readonly RULE_elseifblock = 15;
-	public static readonly RULE_elseblock = 16;
-	public static readonly RULE_variablemutability = 17;
-	public static readonly RULE_statement = 18;
-	public static readonly RULE_structmembervalue = 19;
-	public static readonly RULE_expr = 20;
-	public static readonly RULE_args = 21;
-	public static readonly RULE_ellipsis = 22;
-	public static readonly RULE_functype = 23;
-	public static readonly RULE_constant = 24;
-	public static readonly RULE_compilationhint = 25;
-	public static readonly RULE_compilationhintfilename = 26;
-	public static readonly RULE_compilationhintflags = 27;
-	public static readonly RULE_compilationlang = 28;
-	public static readonly RULE_linkerhint = 29;
-	public static readonly RULE_structcontent = 30;
-	public static readonly RULE_structdecl = 31;
-	public static readonly RULE_datatype = 32;
+	public static readonly RULE_prebuildcmd = 10;
+	public static readonly RULE_postbuildcmd = 11;
+	public static readonly RULE_funcdecl = 12;
+	public static readonly RULE_externlang = 13;
+	public static readonly RULE_ifexpr = 14;
+	public static readonly RULE_elseifexpr = 15;
+	public static readonly RULE_thenblock = 16;
+	public static readonly RULE_elseifblock = 17;
+	public static readonly RULE_elseblock = 18;
+	public static readonly RULE_variablemutability = 19;
+	public static readonly RULE_statement = 20;
+	public static readonly RULE_structmembervalue = 21;
+	public static readonly RULE_expr = 22;
+	public static readonly RULE_args = 23;
+	public static readonly RULE_ellipsis = 24;
+	public static readonly RULE_functype = 25;
+	public static readonly RULE_constant = 26;
+	public static readonly RULE_compilationhint = 27;
+	public static readonly RULE_compilationhintfilename = 28;
+	public static readonly RULE_compilationhintflags = 29;
+	public static readonly RULE_compilationlang = 30;
+	public static readonly RULE_linkerhint = 31;
+	public static readonly RULE_structcontent = 32;
+	public static readonly RULE_structdecl = 33;
+	public static readonly RULE_datatype = 34;
 	public static readonly literalNames: (string | null)[] = [ null, "'namespace'", 
                                                             "'{'", "'}'", 
                                                             "'('", "')'", 
                                                             "':'", "'=>'", 
-                                                            "','", "'declare'", 
-                                                            "';'", "'.'", 
-                                                            "'\"C\"'", "'\"C++\"'", 
+                                                            "','", "'inject'", 
+                                                            "';'", "'prebuildcmd'", 
+                                                            "'postbuildcmd'", 
+                                                            "'declare'", 
+                                                            "'.'", "'\"C\"'", 
+                                                            "'\"C++\"'", 
                                                             "'let'", "'const'", 
                                                             "'__c__'", "'return'", 
                                                             "'='", "'if'", 
@@ -144,7 +152,7 @@ export default class HazeParser extends Parser {
                                                             "'|='", "'...'", 
                                                             "'true'", "'false'", 
                                                             "'#compile'", 
-                                                            "'#link'", "'unsafe_union'", 
+                                                            "'link'", "'unsafe_union'", 
                                                             "'struct'" ];
 	public static readonly symbolicNames: (string | null)[] = [ null, null, 
                                                              null, null, 
@@ -175,19 +183,21 @@ export default class HazeParser extends Parser {
                                                              null, null, 
                                                              null, null, 
                                                              null, null, 
-                                                             "STRING_LITERAL", 
+                                                             null, null, 
+                                                             null, "STRING_LITERAL", 
                                                              "UNIT_LITERAL", 
                                                              "NUMBER_LITERAL", 
                                                              "ID", "WS", 
                                                              "COMMENT" ];
 	// tslint:disable:no-trailing-whitespace
 	public static readonly ruleNames: string[] = [
-		"prog", "toplevelnode", "namespace", "namedfunc", "func", "funcbody", 
-		"body", "param", "params", "cdefinitiondecl", "funcdecl", "externlang", 
-		"ifexpr", "elseifexpr", "thenblock", "elseifblock", "elseblock", "variablemutability", 
-		"statement", "structmembervalue", "expr", "args", "ellipsis", "functype", 
-		"constant", "compilationhint", "compilationhintfilename", "compilationhintflags", 
-		"compilationlang", "linkerhint", "structcontent", "structdecl", "datatype",
+		"prog", "namespacecontent", "namespace", "namedfunc", "func", "funcbody", 
+		"body", "param", "params", "cdefinitiondecl", "prebuildcmd", "postbuildcmd", 
+		"funcdecl", "externlang", "ifexpr", "elseifexpr", "thenblock", "elseifblock", 
+		"elseblock", "variablemutability", "statement", "structmembervalue", "expr", 
+		"args", "ellipsis", "functype", "constant", "compilationhint", "compilationhintfilename", 
+		"compilationhintflags", "compilationlang", "linkerhint", "structcontent", 
+		"structdecl", "datatype",
 	];
 	public get grammarFileName(): string { return "Haze.g4"; }
 	public get literalNames(): (string | null)[] { return HazeParser.literalNames; }
@@ -211,17 +221,71 @@ export default class HazeParser extends Parser {
 		try {
 			this.enterOuterAlt(localctx, 1);
 			{
-			this.state = 69;
+			this.state = 81;
 			this._errHandler.sync(this);
 			_la = this._input.LA(1);
-			while (_la===1 || _la===9 || ((((_la - 54)) & ~0x1F) === 0 && ((1 << (_la - 54)) & 139) !== 0)) {
+			while ((((_la) & ~0x1F) === 0 && ((1 << _la) & 14850) !== 0) || ((((_la - 57)) & ~0x1F) === 0 && ((1 << (_la - 57)) & 139) !== 0)) {
 				{
-				{
-				this.state = 66;
-				this.toplevelnode();
+				this.state = 79;
+				this._errHandler.sync(this);
+				switch ( this._interp.adaptivePredict(this._input, 0, this._ctx) ) {
+				case 1:
+					{
+					this.state = 70;
+					this.cdefinitiondecl();
+					}
+					break;
+				case 2:
+					{
+					this.state = 71;
+					this.prebuildcmd();
+					}
+					break;
+				case 3:
+					{
+					this.state = 72;
+					this.postbuildcmd();
+					}
+					break;
+				case 4:
+					{
+					this.state = 73;
+					this.namedfunc();
+					}
+					break;
+				case 5:
+					{
+					this.state = 74;
+					this.funcdecl();
+					}
+					break;
+				case 6:
+					{
+					this.state = 75;
+					this.compilationhint();
+					}
+					break;
+				case 7:
+					{
+					this.state = 76;
+					this.linkerhint();
+					}
+					break;
+				case 8:
+					{
+					this.state = 77;
+					this.structdecl();
+					}
+					break;
+				case 9:
+					{
+					this.state = 78;
+					this.namespace();
+					}
+					break;
 				}
 				}
-				this.state = 71;
+				this.state = 83;
 				this._errHandler.sync(this);
 				_la = this._input.LA(1);
 			}
@@ -242,62 +306,63 @@ export default class HazeParser extends Parser {
 		return localctx;
 	}
 	// @RuleVersion(0)
-	public toplevelnode(): ToplevelnodeContext {
-		let localctx: ToplevelnodeContext = new ToplevelnodeContext(this, this._ctx, this.state);
-		this.enterRule(localctx, 2, HazeParser.RULE_toplevelnode);
+	public namespacecontent(): NamespacecontentContext {
+		let localctx: NamespacecontentContext = new NamespacecontentContext(this, this._ctx, this.state);
+		this.enterRule(localctx, 2, HazeParser.RULE_namespacecontent);
+		let _la: number;
 		try {
-			this.state = 79;
+			this.enterOuterAlt(localctx, 1);
+			{
+			this.state = 92;
 			this._errHandler.sync(this);
-			switch ( this._interp.adaptivePredict(this._input, 1, this._ctx) ) {
-			case 1:
-				this.enterOuterAlt(localctx, 1);
+			_la = this._input.LA(1);
+			while (_la===1 || _la===13 || ((((_la - 57)) & ~0x1F) === 0 && ((1 << (_la - 57)) & 139) !== 0)) {
 				{
-				this.state = 72;
-				this.cdefinitiondecl();
+				this.state = 90;
+				this._errHandler.sync(this);
+				switch ( this._interp.adaptivePredict(this._input, 2, this._ctx) ) {
+				case 1:
+					{
+					this.state = 84;
+					this.namedfunc();
+					}
+					break;
+				case 2:
+					{
+					this.state = 85;
+					this.funcdecl();
+					}
+					break;
+				case 3:
+					{
+					this.state = 86;
+					this.compilationhint();
+					}
+					break;
+				case 4:
+					{
+					this.state = 87;
+					this.linkerhint();
+					}
+					break;
+				case 5:
+					{
+					this.state = 88;
+					this.structdecl();
+					}
+					break;
+				case 6:
+					{
+					this.state = 89;
+					this.namespace();
+					}
+					break;
 				}
-				break;
-			case 2:
-				this.enterOuterAlt(localctx, 2);
-				{
-				this.state = 73;
-				this.namedfunc();
 				}
-				break;
-			case 3:
-				this.enterOuterAlt(localctx, 3);
-				{
-				this.state = 74;
-				this.funcdecl();
-				}
-				break;
-			case 4:
-				this.enterOuterAlt(localctx, 4);
-				{
-				this.state = 75;
-				this.compilationhint();
-				}
-				break;
-			case 5:
-				this.enterOuterAlt(localctx, 5);
-				{
-				this.state = 76;
-				this.linkerhint();
-				}
-				break;
-			case 6:
-				this.enterOuterAlt(localctx, 6);
-				{
-				this.state = 77;
-				this.structdecl();
-				}
-				break;
-			case 7:
-				this.enterOuterAlt(localctx, 7);
-				{
-				this.state = 78;
-				this.namespace();
-				}
-				break;
+				this.state = 94;
+				this._errHandler.sync(this);
+				_la = this._input.LA(1);
+			}
 			}
 		}
 		catch (re) {
@@ -318,31 +383,18 @@ export default class HazeParser extends Parser {
 	public namespace(): NamespaceContext {
 		let localctx: NamespaceContext = new NamespaceContext(this, this._ctx, this.state);
 		this.enterRule(localctx, 4, HazeParser.RULE_namespace);
-		let _la: number;
 		try {
 			this.enterOuterAlt(localctx, 1);
 			{
-			this.state = 81;
+			this.state = 95;
 			this.match(HazeParser.T__0);
-			this.state = 82;
+			this.state = 96;
 			this.match(HazeParser.ID);
-			this.state = 83;
+			this.state = 97;
 			this.match(HazeParser.T__1);
-			this.state = 87;
-			this._errHandler.sync(this);
-			_la = this._input.LA(1);
-			while (_la===1 || _la===9 || ((((_la - 54)) & ~0x1F) === 0 && ((1 << (_la - 54)) & 139) !== 0)) {
-				{
-				{
-				this.state = 84;
-				this.toplevelnode();
-				}
-				}
-				this.state = 89;
-				this._errHandler.sync(this);
-				_la = this._input.LA(1);
-			}
-			this.state = 90;
+			this.state = 98;
+			this.namespacecontent();
+			this.state = 99;
 			this.match(HazeParser.T__2);
 			}
 		}
@@ -368,52 +420,8 @@ export default class HazeParser extends Parser {
 		try {
 			this.enterOuterAlt(localctx, 1);
 			{
-			this.state = 92;
+			this.state = 101;
 			this.match(HazeParser.ID);
-			this.state = 93;
-			this.match(HazeParser.T__3);
-			this.state = 94;
-			this.params();
-			this.state = 95;
-			this.match(HazeParser.T__4);
-			this.state = 98;
-			this._errHandler.sync(this);
-			_la = this._input.LA(1);
-			if (_la===6) {
-				{
-				this.state = 96;
-				this.match(HazeParser.T__5);
-				this.state = 97;
-				this.datatype();
-				}
-			}
-
-			this.state = 100;
-			this.funcbody();
-			}
-		}
-		catch (re) {
-			if (re instanceof RecognitionException) {
-				localctx.exception = re;
-				this._errHandler.reportError(this, re);
-				this._errHandler.recover(this, re);
-			} else {
-				throw re;
-			}
-		}
-		finally {
-			this.exitRule();
-		}
-		return localctx;
-	}
-	// @RuleVersion(0)
-	public func(): FuncContext {
-		let localctx: FuncContext = new FuncContext(this, this._ctx, this.state);
-		this.enterRule(localctx, 8, HazeParser.RULE_func);
-		let _la: number;
-		try {
-			this.enterOuterAlt(localctx, 1);
-			{
 			this.state = 102;
 			this.match(HazeParser.T__3);
 			this.state = 103;
@@ -451,41 +459,85 @@ export default class HazeParser extends Parser {
 		return localctx;
 	}
 	// @RuleVersion(0)
+	public func(): FuncContext {
+		let localctx: FuncContext = new FuncContext(this, this._ctx, this.state);
+		this.enterRule(localctx, 8, HazeParser.RULE_func);
+		let _la: number;
+		try {
+			this.enterOuterAlt(localctx, 1);
+			{
+			this.state = 111;
+			this.match(HazeParser.T__3);
+			this.state = 112;
+			this.params();
+			this.state = 113;
+			this.match(HazeParser.T__4);
+			this.state = 116;
+			this._errHandler.sync(this);
+			_la = this._input.LA(1);
+			if (_la===6) {
+				{
+				this.state = 114;
+				this.match(HazeParser.T__5);
+				this.state = 115;
+				this.datatype();
+				}
+			}
+
+			this.state = 118;
+			this.funcbody();
+			}
+		}
+		catch (re) {
+			if (re instanceof RecognitionException) {
+				localctx.exception = re;
+				this._errHandler.reportError(this, re);
+				this._errHandler.recover(this, re);
+			} else {
+				throw re;
+			}
+		}
+		finally {
+			this.exitRule();
+		}
+		return localctx;
+	}
+	// @RuleVersion(0)
 	public funcbody(): FuncbodyContext {
 		let localctx: FuncbodyContext = new FuncbodyContext(this, this._ctx, this.state);
 		this.enterRule(localctx, 10, HazeParser.RULE_funcbody);
 		let _la: number;
 		try {
-			this.state = 120;
+			this.state = 129;
 			this._errHandler.sync(this);
-			switch ( this._interp.adaptivePredict(this._input, 6, this._ctx) ) {
+			switch ( this._interp.adaptivePredict(this._input, 7, this._ctx) ) {
 			case 1:
 				this.enterOuterAlt(localctx, 1);
 				{
-				this.state = 112;
+				this.state = 121;
 				this._errHandler.sync(this);
 				_la = this._input.LA(1);
 				if (_la===7) {
 					{
-					this.state = 111;
+					this.state = 120;
 					this.match(HazeParser.T__6);
 					}
 				}
 
-				this.state = 114;
+				this.state = 123;
 				this.match(HazeParser.T__1);
-				this.state = 115;
+				this.state = 124;
 				this.body();
-				this.state = 116;
+				this.state = 125;
 				this.match(HazeParser.T__2);
 				}
 				break;
 			case 2:
 				this.enterOuterAlt(localctx, 2);
 				{
-				this.state = 118;
+				this.state = 127;
 				this.match(HazeParser.T__6);
-				this.state = 119;
+				this.state = 128;
 				this.expr(0);
 				}
 				break;
@@ -513,17 +565,17 @@ export default class HazeParser extends Parser {
 		try {
 			this.enterOuterAlt(localctx, 1);
 			{
-			this.state = 125;
+			this.state = 134;
 			this._errHandler.sync(this);
 			_la = this._input.LA(1);
-			while ((((_la) & ~0x1F) === 0 && ((1 << _la) & 267108368) !== 0) || ((((_la - 52)) & ~0x1F) === 0 && ((1 << (_la - 52)) & 963) !== 0)) {
+			while ((((_la) & ~0x1F) === 0 && ((1 << _la) & 2136866832) !== 0) || ((((_la - 55)) & ~0x1F) === 0 && ((1 << (_la - 55)) & 963) !== 0)) {
 				{
 				{
-				this.state = 122;
+				this.state = 131;
 				this.statement();
 				}
 				}
-				this.state = 127;
+				this.state = 136;
 				this._errHandler.sync(this);
 				_la = this._input.LA(1);
 			}
@@ -550,11 +602,11 @@ export default class HazeParser extends Parser {
 		try {
 			this.enterOuterAlt(localctx, 1);
 			{
-			this.state = 128;
+			this.state = 137;
 			this.match(HazeParser.ID);
-			this.state = 129;
+			this.state = 138;
 			this.match(HazeParser.T__5);
-			this.state = 130;
+			this.state = 139;
 			this.datatype();
 			}
 		}
@@ -579,46 +631,46 @@ export default class HazeParser extends Parser {
 		let _la: number;
 		try {
 			let _alt: number;
-			this.state = 147;
+			this.state = 156;
 			this._errHandler.sync(this);
 			switch (this._input.LA(1)) {
 			case 5:
-			case 61:
+			case 64:
 				this.enterOuterAlt(localctx, 1);
 				{
-				this.state = 144;
+				this.state = 153;
 				this._errHandler.sync(this);
 				_la = this._input.LA(1);
-				if (_la===61) {
+				if (_la===64) {
 					{
-					this.state = 132;
+					this.state = 141;
 					this.param();
-					this.state = 137;
+					this.state = 146;
 					this._errHandler.sync(this);
-					_alt = this._interp.adaptivePredict(this._input, 8, this._ctx);
+					_alt = this._interp.adaptivePredict(this._input, 9, this._ctx);
 					while (_alt !== 2 && _alt !== ATN.INVALID_ALT_NUMBER) {
 						if (_alt === 1) {
 							{
 							{
-							this.state = 133;
+							this.state = 142;
 							this.match(HazeParser.T__7);
-							this.state = 134;
+							this.state = 143;
 							this.param();
 							}
 							}
 						}
-						this.state = 139;
+						this.state = 148;
 						this._errHandler.sync(this);
-						_alt = this._interp.adaptivePredict(this._input, 8, this._ctx);
+						_alt = this._interp.adaptivePredict(this._input, 9, this._ctx);
 					}
-					this.state = 142;
+					this.state = 151;
 					this._errHandler.sync(this);
 					_la = this._input.LA(1);
 					if (_la===8) {
 						{
-						this.state = 140;
+						this.state = 149;
 						this.match(HazeParser.T__7);
-						this.state = 141;
+						this.state = 150;
 						this.ellipsis();
 						}
 					}
@@ -628,10 +680,10 @@ export default class HazeParser extends Parser {
 
 				}
 				break;
-			case 51:
+			case 54:
 				this.enterOuterAlt(localctx, 2);
 				{
-				this.state = 146;
+				this.state = 155;
 				this.ellipsis();
 				}
 				break;
@@ -660,15 +712,69 @@ export default class HazeParser extends Parser {
 		try {
 			this.enterOuterAlt(localctx, 1);
 			{
-			this.state = 149;
+			this.state = 158;
 			this.match(HazeParser.T__8);
-			{
-			this.state = 150;
-			this.externlang();
-			}
-			this.state = 151;
+			this.state = 159;
 			this.match(HazeParser.STRING_LITERAL);
-			this.state = 152;
+			this.state = 160;
+			this.match(HazeParser.T__9);
+			}
+		}
+		catch (re) {
+			if (re instanceof RecognitionException) {
+				localctx.exception = re;
+				this._errHandler.reportError(this, re);
+				this._errHandler.recover(this, re);
+			} else {
+				throw re;
+			}
+		}
+		finally {
+			this.exitRule();
+		}
+		return localctx;
+	}
+	// @RuleVersion(0)
+	public prebuildcmd(): PrebuildcmdContext {
+		let localctx: PrebuildcmdContext = new PrebuildcmdContext(this, this._ctx, this.state);
+		this.enterRule(localctx, 20, HazeParser.RULE_prebuildcmd);
+		try {
+			this.enterOuterAlt(localctx, 1);
+			{
+			this.state = 162;
+			this.match(HazeParser.T__10);
+			this.state = 163;
+			this.match(HazeParser.STRING_LITERAL);
+			this.state = 164;
+			this.match(HazeParser.T__9);
+			}
+		}
+		catch (re) {
+			if (re instanceof RecognitionException) {
+				localctx.exception = re;
+				this._errHandler.reportError(this, re);
+				this._errHandler.recover(this, re);
+			} else {
+				throw re;
+			}
+		}
+		finally {
+			this.exitRule();
+		}
+		return localctx;
+	}
+	// @RuleVersion(0)
+	public postbuildcmd(): PostbuildcmdContext {
+		let localctx: PostbuildcmdContext = new PostbuildcmdContext(this, this._ctx, this.state);
+		this.enterRule(localctx, 22, HazeParser.RULE_postbuildcmd);
+		try {
+			this.enterOuterAlt(localctx, 1);
+			{
+			this.state = 166;
+			this.match(HazeParser.T__11);
+			this.state = 167;
+			this.match(HazeParser.STRING_LITERAL);
+			this.state = 168;
 			this.match(HazeParser.T__9);
 			}
 		}
@@ -689,63 +795,63 @@ export default class HazeParser extends Parser {
 	// @RuleVersion(0)
 	public funcdecl(): FuncdeclContext {
 		let localctx: FuncdeclContext = new FuncdeclContext(this, this._ctx, this.state);
-		this.enterRule(localctx, 20, HazeParser.RULE_funcdecl);
+		this.enterRule(localctx, 24, HazeParser.RULE_funcdecl);
 		let _la: number;
 		try {
 			let _alt: number;
 			this.enterOuterAlt(localctx, 1);
 			{
-			this.state = 154;
-			this.match(HazeParser.T__8);
-			this.state = 156;
+			this.state = 170;
+			this.match(HazeParser.T__12);
+			this.state = 172;
 			this._errHandler.sync(this);
 			_la = this._input.LA(1);
-			if (_la===12 || _la===13) {
+			if (_la===15 || _la===16) {
 				{
-				this.state = 155;
+				this.state = 171;
 				this.externlang();
 				}
 			}
 
-			this.state = 162;
+			this.state = 178;
 			this._errHandler.sync(this);
-			_alt = this._interp.adaptivePredict(this._input, 13, this._ctx);
+			_alt = this._interp.adaptivePredict(this._input, 14, this._ctx);
 			while (_alt !== 2 && _alt !== ATN.INVALID_ALT_NUMBER) {
 				if (_alt === 1) {
 					{
 					{
-					this.state = 158;
+					this.state = 174;
 					this.match(HazeParser.ID);
-					this.state = 159;
-					this.match(HazeParser.T__10);
+					this.state = 175;
+					this.match(HazeParser.T__13);
 					}
 					}
 				}
-				this.state = 164;
+				this.state = 180;
 				this._errHandler.sync(this);
-				_alt = this._interp.adaptivePredict(this._input, 13, this._ctx);
+				_alt = this._interp.adaptivePredict(this._input, 14, this._ctx);
 			}
-			this.state = 165;
+			this.state = 181;
 			this.match(HazeParser.ID);
-			this.state = 166;
+			this.state = 182;
 			this.match(HazeParser.T__3);
-			this.state = 167;
+			this.state = 183;
 			this.params();
-			this.state = 168;
+			this.state = 184;
 			this.match(HazeParser.T__4);
-			this.state = 171;
+			this.state = 187;
 			this._errHandler.sync(this);
 			_la = this._input.LA(1);
 			if (_la===6) {
 				{
-				this.state = 169;
+				this.state = 185;
 				this.match(HazeParser.T__5);
-				this.state = 170;
+				this.state = 186;
 				this.datatype();
 				}
 			}
 
-			this.state = 173;
+			this.state = 189;
 			this.match(HazeParser.T__9);
 			}
 		}
@@ -766,14 +872,14 @@ export default class HazeParser extends Parser {
 	// @RuleVersion(0)
 	public externlang(): ExternlangContext {
 		let localctx: ExternlangContext = new ExternlangContext(this, this._ctx, this.state);
-		this.enterRule(localctx, 22, HazeParser.RULE_externlang);
+		this.enterRule(localctx, 26, HazeParser.RULE_externlang);
 		let _la: number;
 		try {
 			this.enterOuterAlt(localctx, 1);
 			{
-			this.state = 175;
+			this.state = 191;
 			_la = this._input.LA(1);
-			if(!(_la===12 || _la===13)) {
+			if(!(_la===15 || _la===16)) {
 			this._errHandler.recoverInline(this);
 			}
 			else {
@@ -799,11 +905,11 @@ export default class HazeParser extends Parser {
 	// @RuleVersion(0)
 	public ifexpr(): IfexprContext {
 		let localctx: IfexprContext = new IfexprContext(this, this._ctx, this.state);
-		this.enterRule(localctx, 24, HazeParser.RULE_ifexpr);
+		this.enterRule(localctx, 28, HazeParser.RULE_ifexpr);
 		try {
 			this.enterOuterAlt(localctx, 1);
 			{
-			this.state = 177;
+			this.state = 193;
 			this.expr(0);
 			}
 		}
@@ -824,11 +930,11 @@ export default class HazeParser extends Parser {
 	// @RuleVersion(0)
 	public elseifexpr(): ElseifexprContext {
 		let localctx: ElseifexprContext = new ElseifexprContext(this, this._ctx, this.state);
-		this.enterRule(localctx, 26, HazeParser.RULE_elseifexpr);
+		this.enterRule(localctx, 30, HazeParser.RULE_elseifexpr);
 		try {
 			this.enterOuterAlt(localctx, 1);
 			{
-			this.state = 179;
+			this.state = 195;
 			this.expr(0);
 			}
 		}
@@ -849,11 +955,11 @@ export default class HazeParser extends Parser {
 	// @RuleVersion(0)
 	public thenblock(): ThenblockContext {
 		let localctx: ThenblockContext = new ThenblockContext(this, this._ctx, this.state);
-		this.enterRule(localctx, 28, HazeParser.RULE_thenblock);
+		this.enterRule(localctx, 32, HazeParser.RULE_thenblock);
 		try {
 			this.enterOuterAlt(localctx, 1);
 			{
-			this.state = 181;
+			this.state = 197;
 			this.body();
 			}
 		}
@@ -874,11 +980,11 @@ export default class HazeParser extends Parser {
 	// @RuleVersion(0)
 	public elseifblock(): ElseifblockContext {
 		let localctx: ElseifblockContext = new ElseifblockContext(this, this._ctx, this.state);
-		this.enterRule(localctx, 30, HazeParser.RULE_elseifblock);
+		this.enterRule(localctx, 34, HazeParser.RULE_elseifblock);
 		try {
 			this.enterOuterAlt(localctx, 1);
 			{
-			this.state = 183;
+			this.state = 199;
 			this.body();
 			}
 		}
@@ -899,11 +1005,11 @@ export default class HazeParser extends Parser {
 	// @RuleVersion(0)
 	public elseblock(): ElseblockContext {
 		let localctx: ElseblockContext = new ElseblockContext(this, this._ctx, this.state);
-		this.enterRule(localctx, 32, HazeParser.RULE_elseblock);
+		this.enterRule(localctx, 36, HazeParser.RULE_elseblock);
 		try {
 			this.enterOuterAlt(localctx, 1);
 			{
-			this.state = 185;
+			this.state = 201;
 			this.body();
 			}
 		}
@@ -924,15 +1030,15 @@ export default class HazeParser extends Parser {
 	// @RuleVersion(0)
 	public variablemutability(): VariablemutabilityContext {
 		let localctx: VariablemutabilityContext = new VariablemutabilityContext(this, this._ctx, this.state);
-		this.enterRule(localctx, 34, HazeParser.RULE_variablemutability);
+		this.enterRule(localctx, 38, HazeParser.RULE_variablemutability);
 		let _la: number;
 		try {
 			localctx = new VariableMutabilityContext(this, localctx);
 			this.enterOuterAlt(localctx, 1);
 			{
-			this.state = 187;
+			this.state = 203;
 			_la = this._input.LA(1);
-			if(!(_la===14 || _la===15)) {
+			if(!(_la===17 || _la===18)) {
 			this._errHandler.recoverInline(this);
 			}
 			else {
@@ -958,171 +1064,171 @@ export default class HazeParser extends Parser {
 	// @RuleVersion(0)
 	public statement(): StatementContext {
 		let localctx: StatementContext = new StatementContext(this, this._ctx, this.state);
-		this.enterRule(localctx, 36, HazeParser.RULE_statement);
+		this.enterRule(localctx, 40, HazeParser.RULE_statement);
 		let _la: number;
 		try {
 			let _alt: number;
-			this.state = 242;
+			this.state = 258;
 			this._errHandler.sync(this);
 			switch (this._input.LA(1)) {
-			case 16:
+			case 19:
 				localctx = new InlineCStatementContext(this, localctx);
 				this.enterOuterAlt(localctx, 1);
 				{
-				this.state = 189;
-				this.match(HazeParser.T__15);
-				this.state = 190;
+				this.state = 205;
+				this.match(HazeParser.T__18);
+				this.state = 206;
 				this.match(HazeParser.T__3);
-				this.state = 191;
+				this.state = 207;
 				this.match(HazeParser.STRING_LITERAL);
-				this.state = 192;
+				this.state = 208;
 				this.match(HazeParser.T__4);
-				this.state = 193;
+				this.state = 209;
 				this.match(HazeParser.T__9);
 				}
 				break;
 			case 4:
-			case 22:
-			case 23:
-			case 24:
 			case 25:
 			case 26:
 			case 27:
-			case 52:
-			case 53:
-			case 58:
-			case 59:
-			case 60:
+			case 28:
+			case 29:
+			case 30:
+			case 55:
+			case 56:
 			case 61:
+			case 62:
+			case 63:
+			case 64:
 				localctx = new ExprStatementContext(this, localctx);
 				this.enterOuterAlt(localctx, 2);
 				{
-				this.state = 194;
+				this.state = 210;
 				this.expr(0);
-				this.state = 195;
+				this.state = 211;
 				this.match(HazeParser.T__9);
 				}
 				break;
-			case 17:
+			case 20:
 				localctx = new ReturnStatementContext(this, localctx);
 				this.enterOuterAlt(localctx, 3);
 				{
-				this.state = 197;
-				this.match(HazeParser.T__16);
-				this.state = 199;
+				this.state = 213;
+				this.match(HazeParser.T__19);
+				this.state = 215;
 				this._errHandler.sync(this);
 				_la = this._input.LA(1);
-				if ((((_la) & ~0x1F) === 0 && ((1 << _la) & 264241168) !== 0) || ((((_la - 52)) & ~0x1F) === 0 && ((1 << (_la - 52)) & 963) !== 0)) {
+				if ((((_la) & ~0x1F) === 0 && ((1 << _la) & 2113929232) !== 0) || ((((_la - 55)) & ~0x1F) === 0 && ((1 << (_la - 55)) & 963) !== 0)) {
 					{
-					this.state = 198;
+					this.state = 214;
 					this.expr(0);
 					}
 				}
 
-				this.state = 201;
+				this.state = 217;
 				this.match(HazeParser.T__9);
 				}
 				break;
-			case 14:
-			case 15:
+			case 17:
+			case 18:
 				localctx = new VariableDefinitionContext(this, localctx);
 				this.enterOuterAlt(localctx, 4);
 				{
-				this.state = 202;
+				this.state = 218;
 				this.variablemutability();
-				this.state = 203;
+				this.state = 219;
 				this.match(HazeParser.ID);
-				this.state = 206;
+				this.state = 222;
 				this._errHandler.sync(this);
 				_la = this._input.LA(1);
 				if (_la===6) {
 					{
-					this.state = 204;
+					this.state = 220;
 					this.match(HazeParser.T__5);
-					this.state = 205;
+					this.state = 221;
 					this.datatype();
 					}
 				}
 
-				this.state = 208;
-				this.match(HazeParser.T__17);
-				this.state = 209;
+				this.state = 224;
+				this.match(HazeParser.T__20);
+				this.state = 225;
 				this.expr(0);
-				this.state = 210;
+				this.state = 226;
 				this.match(HazeParser.T__9);
 				}
 				break;
-			case 19:
+			case 22:
 				localctx = new IfStatementContext(this, localctx);
 				this.enterOuterAlt(localctx, 5);
 				{
-				this.state = 212;
-				this.match(HazeParser.T__18);
-				this.state = 213;
+				this.state = 228;
+				this.match(HazeParser.T__21);
+				this.state = 229;
 				this.ifexpr();
-				this.state = 214;
+				this.state = 230;
 				this.match(HazeParser.T__1);
-				this.state = 215;
+				this.state = 231;
 				this.thenblock();
-				this.state = 216;
+				this.state = 232;
 				this.match(HazeParser.T__2);
-				this.state = 226;
+				this.state = 242;
 				this._errHandler.sync(this);
-				_alt = this._interp.adaptivePredict(this._input, 17, this._ctx);
+				_alt = this._interp.adaptivePredict(this._input, 18, this._ctx);
 				while (_alt !== 2 && _alt !== ATN.INVALID_ALT_NUMBER) {
 					if (_alt === 1) {
 						{
 						{
-						this.state = 217;
-						this.match(HazeParser.T__19);
-						this.state = 218;
-						this.match(HazeParser.T__18);
-						this.state = 219;
+						this.state = 233;
+						this.match(HazeParser.T__22);
+						this.state = 234;
+						this.match(HazeParser.T__21);
+						this.state = 235;
 						this.elseifexpr();
-						this.state = 220;
+						this.state = 236;
 						this.match(HazeParser.T__1);
-						this.state = 221;
+						this.state = 237;
 						this.elseifblock();
-						this.state = 222;
+						this.state = 238;
 						this.match(HazeParser.T__2);
 						}
 						}
 					}
-					this.state = 228;
+					this.state = 244;
 					this._errHandler.sync(this);
-					_alt = this._interp.adaptivePredict(this._input, 17, this._ctx);
+					_alt = this._interp.adaptivePredict(this._input, 18, this._ctx);
 				}
-				this.state = 234;
+				this.state = 250;
 				this._errHandler.sync(this);
 				_la = this._input.LA(1);
-				if (_la===20) {
+				if (_la===23) {
 					{
-					this.state = 229;
-					this.match(HazeParser.T__19);
-					this.state = 230;
+					this.state = 245;
+					this.match(HazeParser.T__22);
+					this.state = 246;
 					this.match(HazeParser.T__1);
-					this.state = 231;
+					this.state = 247;
 					this.elseblock();
-					this.state = 232;
+					this.state = 248;
 					this.match(HazeParser.T__2);
 					}
 				}
 
 				}
 				break;
-			case 21:
+			case 24:
 				localctx = new WhileStatementContext(this, localctx);
 				this.enterOuterAlt(localctx, 6);
 				{
-				this.state = 236;
-				this.match(HazeParser.T__20);
-				this.state = 237;
+				this.state = 252;
+				this.match(HazeParser.T__23);
+				this.state = 253;
 				this.expr(0);
-				this.state = 238;
+				this.state = 254;
 				this.match(HazeParser.T__1);
-				this.state = 239;
+				this.state = 255;
 				this.body();
-				this.state = 240;
+				this.state = 256;
 				this.match(HazeParser.T__2);
 				}
 				break;
@@ -1147,18 +1253,18 @@ export default class HazeParser extends Parser {
 	// @RuleVersion(0)
 	public structmembervalue(): StructmembervalueContext {
 		let localctx: StructmembervalueContext = new StructmembervalueContext(this, this._ctx, this.state);
-		this.enterRule(localctx, 38, HazeParser.RULE_structmembervalue);
+		this.enterRule(localctx, 42, HazeParser.RULE_structmembervalue);
 		try {
 			localctx = new StructMemberValueContext(this, localctx);
 			this.enterOuterAlt(localctx, 1);
 			{
-			this.state = 244;
-			this.match(HazeParser.T__10);
-			this.state = 245;
+			this.state = 260;
+			this.match(HazeParser.T__13);
+			this.state = 261;
 			this.match(HazeParser.ID);
-			this.state = 246;
+			this.state = 262;
 			this.match(HazeParser.T__5);
-			this.state = 247;
+			this.state = 263;
 			this.expr(0);
 			}
 		}
@@ -1189,27 +1295,27 @@ export default class HazeParser extends Parser {
 		let _parentState: number = this.state;
 		let localctx: ExprContext = new ExprContext(this, this._ctx, _parentState);
 		let _prevctx: ExprContext = localctx;
-		let _startState: number = 40;
-		this.enterRecursionRule(localctx, 40, HazeParser.RULE_expr, _p);
+		let _startState: number = 44;
+		this.enterRecursionRule(localctx, 44, HazeParser.RULE_expr, _p);
 		let _la: number;
 		try {
 			let _alt: number;
 			this.enterOuterAlt(localctx, 1);
 			{
-			this.state = 293;
+			this.state = 309;
 			this._errHandler.sync(this);
-			switch ( this._interp.adaptivePredict(this._input, 25, this._ctx) ) {
+			switch ( this._interp.adaptivePredict(this._input, 26, this._ctx) ) {
 			case 1:
 				{
 				localctx = new ParenthesisExprContext(this, localctx);
 				this._ctx = localctx;
 				_prevctx = localctx;
 
-				this.state = 250;
+				this.state = 266;
 				this.match(HazeParser.T__3);
-				this.state = 251;
+				this.state = 267;
 				this.expr(0);
-				this.state = 252;
+				this.state = 268;
 				this.match(HazeParser.T__4);
 				}
 				break;
@@ -1218,7 +1324,7 @@ export default class HazeParser extends Parser {
 				localctx = new FuncRefExprContext(this, localctx);
 				this._ctx = localctx;
 				_prevctx = localctx;
-				this.state = 254;
+				this.state = 270;
 				this.func();
 				}
 				break;
@@ -1227,7 +1333,7 @@ export default class HazeParser extends Parser {
 				localctx = new ConstantExprContext(this, localctx);
 				this._ctx = localctx;
 				_prevctx = localctx;
-				this.state = 255;
+				this.state = 271;
 				this.constant();
 				}
 				break;
@@ -1236,49 +1342,49 @@ export default class HazeParser extends Parser {
 				localctx = new StructInstantiationExprContext(this, localctx);
 				this._ctx = localctx;
 				_prevctx = localctx;
-				this.state = 256;
+				this.state = 272;
 				this.datatype();
-				this.state = 257;
+				this.state = 273;
 				this.match(HazeParser.T__1);
-				this.state = 259;
+				this.state = 275;
 				this._errHandler.sync(this);
 				_la = this._input.LA(1);
-				if (_la===11) {
+				if (_la===14) {
 					{
-					this.state = 258;
+					this.state = 274;
 					this.structmembervalue();
 					}
 				}
 
-				this.state = 265;
+				this.state = 281;
 				this._errHandler.sync(this);
-				_alt = this._interp.adaptivePredict(this._input, 21, this._ctx);
+				_alt = this._interp.adaptivePredict(this._input, 22, this._ctx);
 				while (_alt !== 2 && _alt !== ATN.INVALID_ALT_NUMBER) {
 					if (_alt === 1) {
 						{
 						{
-						this.state = 261;
+						this.state = 277;
 						this.match(HazeParser.T__7);
-						this.state = 262;
+						this.state = 278;
 						this.structmembervalue();
 						}
 						}
 					}
-					this.state = 267;
+					this.state = 283;
 					this._errHandler.sync(this);
-					_alt = this._interp.adaptivePredict(this._input, 21, this._ctx);
+					_alt = this._interp.adaptivePredict(this._input, 22, this._ctx);
 				}
-				this.state = 269;
+				this.state = 285;
 				this._errHandler.sync(this);
 				_la = this._input.LA(1);
 				if (_la===8) {
 					{
-					this.state = 268;
+					this.state = 284;
 					this.match(HazeParser.T__7);
 					}
 				}
 
-				this.state = 271;
+				this.state = 287;
 				this.match(HazeParser.T__2);
 				}
 				break;
@@ -1287,17 +1393,17 @@ export default class HazeParser extends Parser {
 				localctx = new PreIncrExprContext(this, localctx);
 				this._ctx = localctx;
 				_prevctx = localctx;
-				this.state = 273;
+				this.state = 289;
 				(localctx as PreIncrExprContext)._op = this._input.LT(1);
 				_la = this._input.LA(1);
-				if(!(_la===22 || _la===23)) {
+				if(!(_la===25 || _la===26)) {
 				    (localctx as PreIncrExprContext)._op = this._errHandler.recoverInline(this);
 				}
 				else {
 					this._errHandler.reportMatch(this);
 				    this.consume();
 				}
-				this.state = 274;
+				this.state = 290;
 				this.expr(11);
 				}
 				break;
@@ -1306,17 +1412,17 @@ export default class HazeParser extends Parser {
 				localctx = new UnaryExprContext(this, localctx);
 				this._ctx = localctx;
 				_prevctx = localctx;
-				this.state = 275;
+				this.state = 291;
 				(localctx as UnaryExprContext)._op = this._input.LT(1);
 				_la = this._input.LA(1);
-				if(!(_la===24 || _la===25)) {
+				if(!(_la===27 || _la===28)) {
 				    (localctx as UnaryExprContext)._op = this._errHandler.recoverInline(this);
 				}
 				else {
 					this._errHandler.reportMatch(this);
 				    this.consume();
 				}
-				this.state = 276;
+				this.state = 292;
 				this.expr(10);
 				}
 				break;
@@ -1325,16 +1431,16 @@ export default class HazeParser extends Parser {
 				localctx = new UnaryExprContext(this, localctx);
 				this._ctx = localctx;
 				_prevctx = localctx;
-				this.state = 277;
+				this.state = 293;
 				_la = this._input.LA(1);
-				if(!(_la===26 || _la===27)) {
+				if(!(_la===29 || _la===30)) {
 				this._errHandler.recoverInline(this);
 				}
 				else {
 					this._errHandler.reportMatch(this);
 				    this.consume();
 				}
-				this.state = 278;
+				this.state = 294;
 				this.expr(9);
 				}
 				break;
@@ -1343,35 +1449,35 @@ export default class HazeParser extends Parser {
 				localctx = new SymbolValueExprContext(this, localctx);
 				this._ctx = localctx;
 				_prevctx = localctx;
-				this.state = 279;
+				this.state = 295;
 				this.match(HazeParser.ID);
-				this.state = 291;
+				this.state = 307;
 				this._errHandler.sync(this);
-				switch ( this._interp.adaptivePredict(this._input, 24, this._ctx) ) {
+				switch ( this._interp.adaptivePredict(this._input, 25, this._ctx) ) {
 				case 1:
 					{
-					this.state = 280;
-					this.match(HazeParser.T__31);
-					this.state = 281;
+					this.state = 296;
+					this.match(HazeParser.T__34);
+					this.state = 297;
 					this.datatype();
-					this.state = 286;
+					this.state = 302;
 					this._errHandler.sync(this);
 					_la = this._input.LA(1);
 					while (_la===8) {
 						{
 						{
-						this.state = 282;
+						this.state = 298;
 						this.match(HazeParser.T__7);
-						this.state = 283;
+						this.state = 299;
 						this.datatype();
 						}
 						}
-						this.state = 288;
+						this.state = 304;
 						this._errHandler.sync(this);
 						_la = this._input.LA(1);
 					}
-					this.state = 289;
-					this.match(HazeParser.T__32);
+					this.state = 305;
+					this.match(HazeParser.T__35);
 					}
 					break;
 				}
@@ -1379,9 +1485,9 @@ export default class HazeParser extends Parser {
 				break;
 			}
 			this._ctx.stop = this._input.LT(-1);
-			this.state = 334;
+			this.state = 350;
 			this._errHandler.sync(this);
-			_alt = this._interp.adaptivePredict(this._input, 28, this._ctx);
+			_alt = this._interp.adaptivePredict(this._input, 29, this._ctx);
 			while (_alt !== 2 && _alt !== ATN.INVALID_ALT_NUMBER) {
 				if (_alt === 1) {
 					if (this._parseListeners != null) {
@@ -1389,27 +1495,27 @@ export default class HazeParser extends Parser {
 					}
 					_prevctx = localctx;
 					{
-					this.state = 332;
+					this.state = 348;
 					this._errHandler.sync(this);
-					switch ( this._interp.adaptivePredict(this._input, 27, this._ctx) ) {
+					switch ( this._interp.adaptivePredict(this._input, 28, this._ctx) ) {
 					case 1:
 						{
 						localctx = new BinaryExprContext(this, new ExprContext(this, _parentctx, _parentState));
 						this.pushNewRecursionContext(localctx, _startState, HazeParser.RULE_expr);
-						this.state = 295;
+						this.state = 311;
 						if (!(this.precpred(this._ctx, 7))) {
 							throw this.createFailedPredicateException("this.precpred(this._ctx, 7)");
 						}
-						this.state = 296;
+						this.state = 312;
 						_la = this._input.LA(1);
-						if(!((((_la) & ~0x1F) === 0 && ((1 << _la) & 3758096384) !== 0))) {
+						if(!(((((_la - 32)) & ~0x1F) === 0 && ((1 << (_la - 32)) & 7) !== 0))) {
 						this._errHandler.recoverInline(this);
 						}
 						else {
 							this._errHandler.reportMatch(this);
 						    this.consume();
 						}
-						this.state = 297;
+						this.state = 313;
 						this.expr(8);
 						}
 						break;
@@ -1417,20 +1523,20 @@ export default class HazeParser extends Parser {
 						{
 						localctx = new BinaryExprContext(this, new ExprContext(this, _parentctx, _parentState));
 						this.pushNewRecursionContext(localctx, _startState, HazeParser.RULE_expr);
-						this.state = 298;
+						this.state = 314;
 						if (!(this.precpred(this._ctx, 6))) {
 							throw this.createFailedPredicateException("this.precpred(this._ctx, 6)");
 						}
-						this.state = 299;
+						this.state = 315;
 						_la = this._input.LA(1);
-						if(!(_la===24 || _la===25)) {
+						if(!(_la===27 || _la===28)) {
 						this._errHandler.recoverInline(this);
 						}
 						else {
 							this._errHandler.reportMatch(this);
 						    this.consume();
 						}
-						this.state = 300;
+						this.state = 316;
 						this.expr(7);
 						}
 						break;
@@ -1438,20 +1544,20 @@ export default class HazeParser extends Parser {
 						{
 						localctx = new BinaryExprContext(this, new ExprContext(this, _parentctx, _parentState));
 						this.pushNewRecursionContext(localctx, _startState, HazeParser.RULE_expr);
-						this.state = 301;
+						this.state = 317;
 						if (!(this.precpred(this._ctx, 5))) {
 							throw this.createFailedPredicateException("this.precpred(this._ctx, 5)");
 						}
-						this.state = 302;
+						this.state = 318;
 						_la = this._input.LA(1);
-						if(!(((((_la - 32)) & ~0x1F) === 0 && ((1 << (_la - 32)) & 15) !== 0))) {
+						if(!(((((_la - 35)) & ~0x1F) === 0 && ((1 << (_la - 35)) & 15) !== 0))) {
 						this._errHandler.recoverInline(this);
 						}
 						else {
 							this._errHandler.reportMatch(this);
 						    this.consume();
 						}
-						this.state = 303;
+						this.state = 319;
 						this.expr(6);
 						}
 						break;
@@ -1459,43 +1565,43 @@ export default class HazeParser extends Parser {
 						{
 						localctx = new BinaryExprContext(this, new ExprContext(this, _parentctx, _parentState));
 						this.pushNewRecursionContext(localctx, _startState, HazeParser.RULE_expr);
-						this.state = 304;
+						this.state = 320;
 						if (!(this.precpred(this._ctx, 4))) {
 							throw this.createFailedPredicateException("this.precpred(this._ctx, 4)");
 						}
-						this.state = 310;
+						this.state = 326;
 						this._errHandler.sync(this);
-						switch ( this._interp.adaptivePredict(this._input, 26, this._ctx) ) {
+						switch ( this._interp.adaptivePredict(this._input, 27, this._ctx) ) {
 						case 1:
 							{
-							this.state = 305;
-							this.match(HazeParser.T__35);
+							this.state = 321;
+							this.match(HazeParser.T__38);
 							}
 							break;
 						case 2:
 							{
-							this.state = 306;
-							this.match(HazeParser.T__36);
+							this.state = 322;
+							this.match(HazeParser.T__39);
 							}
 							break;
 						case 3:
 							{
-							this.state = 307;
-							this.match(HazeParser.T__37);
+							this.state = 323;
+							this.match(HazeParser.T__40);
 							}
 							break;
 						case 4:
 							{
 							{
-							this.state = 308;
-							this.match(HazeParser.T__37);
-							this.state = 309;
-							this.match(HazeParser.T__25);
+							this.state = 324;
+							this.match(HazeParser.T__40);
+							this.state = 325;
+							this.match(HazeParser.T__28);
 							}
 							}
 							break;
 						}
-						this.state = 312;
+						this.state = 328;
 						this.expr(5);
 						}
 						break;
@@ -1503,20 +1609,20 @@ export default class HazeParser extends Parser {
 						{
 						localctx = new BinaryExprContext(this, new ExprContext(this, _parentctx, _parentState));
 						this.pushNewRecursionContext(localctx, _startState, HazeParser.RULE_expr);
-						this.state = 313;
+						this.state = 329;
 						if (!(this.precpred(this._ctx, 3))) {
 							throw this.createFailedPredicateException("this.precpred(this._ctx, 3)");
 						}
-						this.state = 314;
+						this.state = 330;
 						_la = this._input.LA(1);
-						if(!(_la===39 || _la===40)) {
+						if(!(_la===42 || _la===43)) {
 						this._errHandler.recoverInline(this);
 						}
 						else {
 							this._errHandler.reportMatch(this);
 						    this.consume();
 						}
-						this.state = 315;
+						this.state = 331;
 						this.expr(4);
 						}
 						break;
@@ -1524,21 +1630,21 @@ export default class HazeParser extends Parser {
 						{
 						localctx = new ExprAssignmentExprContext(this, new ExprContext(this, _parentctx, _parentState));
 						this.pushNewRecursionContext(localctx, _startState, HazeParser.RULE_expr);
-						this.state = 316;
+						this.state = 332;
 						if (!(this.precpred(this._ctx, 2))) {
 							throw this.createFailedPredicateException("this.precpred(this._ctx, 2)");
 						}
-						this.state = 317;
+						this.state = 333;
 						(localctx as ExprAssignmentExprContext)._op = this._input.LT(1);
 						_la = this._input.LA(1);
-						if(!(_la===18 || ((((_la - 41)) & ~0x1F) === 0 && ((1 << (_la - 41)) & 1023) !== 0))) {
+						if(!(_la===21 || ((((_la - 44)) & ~0x1F) === 0 && ((1 << (_la - 44)) & 1023) !== 0))) {
 						    (localctx as ExprAssignmentExprContext)._op = this._errHandler.recoverInline(this);
 						}
 						else {
 							this._errHandler.reportMatch(this);
 						    this.consume();
 						}
-						this.state = 318;
+						this.state = 334;
 						this.expr(3);
 						}
 						break;
@@ -1546,14 +1652,14 @@ export default class HazeParser extends Parser {
 						{
 						localctx = new PostIncrExprContext(this, new ExprContext(this, _parentctx, _parentState));
 						this.pushNewRecursionContext(localctx, _startState, HazeParser.RULE_expr);
-						this.state = 319;
+						this.state = 335;
 						if (!(this.precpred(this._ctx, 15))) {
 							throw this.createFailedPredicateException("this.precpred(this._ctx, 15)");
 						}
-						this.state = 320;
+						this.state = 336;
 						(localctx as PostIncrExprContext)._op = this._input.LT(1);
 						_la = this._input.LA(1);
-						if(!(_la===22 || _la===23)) {
+						if(!(_la===25 || _la===26)) {
 						    (localctx as PostIncrExprContext)._op = this._errHandler.recoverInline(this);
 						}
 						else {
@@ -1566,15 +1672,15 @@ export default class HazeParser extends Parser {
 						{
 						localctx = new ExprCallExprContext(this, new ExprContext(this, _parentctx, _parentState));
 						this.pushNewRecursionContext(localctx, _startState, HazeParser.RULE_expr);
-						this.state = 321;
+						this.state = 337;
 						if (!(this.precpred(this._ctx, 14))) {
 							throw this.createFailedPredicateException("this.precpred(this._ctx, 14)");
 						}
-						this.state = 322;
+						this.state = 338;
 						this.match(HazeParser.T__3);
-						this.state = 323;
+						this.state = 339;
 						this.args();
-						this.state = 324;
+						this.state = 340;
 						this.match(HazeParser.T__4);
 						}
 						break;
@@ -1582,13 +1688,13 @@ export default class HazeParser extends Parser {
 						{
 						localctx = new ExprMemberAccessContext(this, new ExprContext(this, _parentctx, _parentState));
 						this.pushNewRecursionContext(localctx, _startState, HazeParser.RULE_expr);
-						this.state = 326;
+						this.state = 342;
 						if (!(this.precpred(this._ctx, 13))) {
 							throw this.createFailedPredicateException("this.precpred(this._ctx, 13)");
 						}
-						this.state = 327;
-						this.match(HazeParser.T__10);
-						this.state = 328;
+						this.state = 343;
+						this.match(HazeParser.T__13);
+						this.state = 344;
 						this.match(HazeParser.ID);
 						}
 						break;
@@ -1596,22 +1702,22 @@ export default class HazeParser extends Parser {
 						{
 						localctx = new ExplicitCastExprContext(this, new ExprContext(this, _parentctx, _parentState));
 						this.pushNewRecursionContext(localctx, _startState, HazeParser.RULE_expr);
-						this.state = 329;
+						this.state = 345;
 						if (!(this.precpred(this._ctx, 8))) {
 							throw this.createFailedPredicateException("this.precpred(this._ctx, 8)");
 						}
-						this.state = 330;
-						this.match(HazeParser.T__27);
-						this.state = 331;
+						this.state = 346;
+						this.match(HazeParser.T__30);
+						this.state = 347;
 						this.datatype();
 						}
 						break;
 					}
 					}
 				}
-				this.state = 336;
+				this.state = 352;
 				this._errHandler.sync(this);
-				_alt = this._interp.adaptivePredict(this._input, 28, this._ctx);
+				_alt = this._interp.adaptivePredict(this._input, 29, this._ctx);
 			}
 			}
 		}
@@ -1632,31 +1738,31 @@ export default class HazeParser extends Parser {
 	// @RuleVersion(0)
 	public args(): ArgsContext {
 		let localctx: ArgsContext = new ArgsContext(this, this._ctx, this.state);
-		this.enterRule(localctx, 42, HazeParser.RULE_args);
+		this.enterRule(localctx, 46, HazeParser.RULE_args);
 		let _la: number;
 		try {
 			this.enterOuterAlt(localctx, 1);
 			{
-			this.state = 345;
+			this.state = 361;
 			this._errHandler.sync(this);
 			_la = this._input.LA(1);
-			if ((((_la) & ~0x1F) === 0 && ((1 << _la) & 264241168) !== 0) || ((((_la - 52)) & ~0x1F) === 0 && ((1 << (_la - 52)) & 963) !== 0)) {
+			if ((((_la) & ~0x1F) === 0 && ((1 << _la) & 2113929232) !== 0) || ((((_la - 55)) & ~0x1F) === 0 && ((1 << (_la - 55)) & 963) !== 0)) {
 				{
-				this.state = 337;
+				this.state = 353;
 				this.expr(0);
-				this.state = 342;
+				this.state = 358;
 				this._errHandler.sync(this);
 				_la = this._input.LA(1);
 				while (_la===8) {
 					{
 					{
-					this.state = 338;
+					this.state = 354;
 					this.match(HazeParser.T__7);
-					this.state = 339;
+					this.state = 355;
 					this.expr(0);
 					}
 					}
-					this.state = 344;
+					this.state = 360;
 					this._errHandler.sync(this);
 					_la = this._input.LA(1);
 				}
@@ -1682,12 +1788,12 @@ export default class HazeParser extends Parser {
 	// @RuleVersion(0)
 	public ellipsis(): EllipsisContext {
 		let localctx: EllipsisContext = new EllipsisContext(this, this._ctx, this.state);
-		this.enterRule(localctx, 44, HazeParser.RULE_ellipsis);
+		this.enterRule(localctx, 48, HazeParser.RULE_ellipsis);
 		try {
 			this.enterOuterAlt(localctx, 1);
 			{
-			this.state = 347;
-			this.match(HazeParser.T__50);
+			this.state = 363;
+			this.match(HazeParser.T__53);
 			}
 		}
 		catch (re) {
@@ -1707,19 +1813,19 @@ export default class HazeParser extends Parser {
 	// @RuleVersion(0)
 	public functype(): FunctypeContext {
 		let localctx: FunctypeContext = new FunctypeContext(this, this._ctx, this.state);
-		this.enterRule(localctx, 46, HazeParser.RULE_functype);
+		this.enterRule(localctx, 50, HazeParser.RULE_functype);
 		try {
 			this.enterOuterAlt(localctx, 1);
 			{
-			this.state = 349;
+			this.state = 365;
 			this.match(HazeParser.T__3);
-			this.state = 350;
+			this.state = 366;
 			this.params();
-			this.state = 351;
+			this.state = 367;
 			this.match(HazeParser.T__4);
-			this.state = 352;
+			this.state = 368;
 			this.match(HazeParser.T__6);
-			this.state = 353;
+			this.state = 369;
 			this.datatype();
 			}
 		}
@@ -1740,20 +1846,20 @@ export default class HazeParser extends Parser {
 	// @RuleVersion(0)
 	public constant(): ConstantContext {
 		let localctx: ConstantContext = new ConstantContext(this, this._ctx, this.state);
-		this.enterRule(localctx, 48, HazeParser.RULE_constant);
+		this.enterRule(localctx, 52, HazeParser.RULE_constant);
 		let _la: number;
 		try {
-			this.state = 359;
+			this.state = 375;
 			this._errHandler.sync(this);
 			switch (this._input.LA(1)) {
-			case 52:
-			case 53:
+			case 55:
+			case 56:
 				localctx = new BooleanConstantContext(this, localctx);
 				this.enterOuterAlt(localctx, 1);
 				{
-				this.state = 355;
+				this.state = 371;
 				_la = this._input.LA(1);
-				if(!(_la===52 || _la===53)) {
+				if(!(_la===55 || _la===56)) {
 				this._errHandler.recoverInline(this);
 				}
 				else {
@@ -1762,27 +1868,27 @@ export default class HazeParser extends Parser {
 				}
 				}
 				break;
-			case 59:
+			case 62:
 				localctx = new LiteralConstantContext(this, localctx);
 				this.enterOuterAlt(localctx, 2);
 				{
-				this.state = 356;
+				this.state = 372;
 				this.match(HazeParser.UNIT_LITERAL);
 				}
 				break;
-			case 60:
+			case 63:
 				localctx = new LiteralConstantContext(this, localctx);
 				this.enterOuterAlt(localctx, 3);
 				{
-				this.state = 357;
+				this.state = 373;
 				this.match(HazeParser.NUMBER_LITERAL);
 				}
 				break;
-			case 58:
+			case 61:
 				localctx = new StringConstantContext(this, localctx);
 				this.enterOuterAlt(localctx, 4);
 				{
-				this.state = 358;
+				this.state = 374;
 				this.match(HazeParser.STRING_LITERAL);
 				}
 				break;
@@ -1807,23 +1913,23 @@ export default class HazeParser extends Parser {
 	// @RuleVersion(0)
 	public compilationhint(): CompilationhintContext {
 		let localctx: CompilationhintContext = new CompilationhintContext(this, this._ctx, this.state);
-		this.enterRule(localctx, 50, HazeParser.RULE_compilationhint);
+		this.enterRule(localctx, 54, HazeParser.RULE_compilationhint);
 		let _la: number;
 		try {
 			this.enterOuterAlt(localctx, 1);
 			{
-			this.state = 361;
-			this.match(HazeParser.T__53);
-			this.state = 362;
+			this.state = 377;
+			this.match(HazeParser.T__56);
+			this.state = 378;
 			this.compilationlang();
-			this.state = 363;
+			this.state = 379;
 			this.compilationhintfilename();
-			this.state = 365;
+			this.state = 381;
 			this._errHandler.sync(this);
 			_la = this._input.LA(1);
-			if (_la===58) {
+			if (_la===61) {
 				{
-				this.state = 364;
+				this.state = 380;
 				this.compilationhintflags();
 				}
 			}
@@ -1847,11 +1953,11 @@ export default class HazeParser extends Parser {
 	// @RuleVersion(0)
 	public compilationhintfilename(): CompilationhintfilenameContext {
 		let localctx: CompilationhintfilenameContext = new CompilationhintfilenameContext(this, this._ctx, this.state);
-		this.enterRule(localctx, 52, HazeParser.RULE_compilationhintfilename);
+		this.enterRule(localctx, 56, HazeParser.RULE_compilationhintfilename);
 		try {
 			this.enterOuterAlt(localctx, 1);
 			{
-			this.state = 367;
+			this.state = 383;
 			this.match(HazeParser.STRING_LITERAL);
 			}
 		}
@@ -1872,11 +1978,11 @@ export default class HazeParser extends Parser {
 	// @RuleVersion(0)
 	public compilationhintflags(): CompilationhintflagsContext {
 		let localctx: CompilationhintflagsContext = new CompilationhintflagsContext(this, this._ctx, this.state);
-		this.enterRule(localctx, 54, HazeParser.RULE_compilationhintflags);
+		this.enterRule(localctx, 58, HazeParser.RULE_compilationhintflags);
 		try {
 			this.enterOuterAlt(localctx, 1);
 			{
-			this.state = 369;
+			this.state = 385;
 			this.match(HazeParser.STRING_LITERAL);
 			}
 		}
@@ -1897,14 +2003,14 @@ export default class HazeParser extends Parser {
 	// @RuleVersion(0)
 	public compilationlang(): CompilationlangContext {
 		let localctx: CompilationlangContext = new CompilationlangContext(this, this._ctx, this.state);
-		this.enterRule(localctx, 56, HazeParser.RULE_compilationlang);
+		this.enterRule(localctx, 60, HazeParser.RULE_compilationlang);
 		let _la: number;
 		try {
 			this.enterOuterAlt(localctx, 1);
 			{
-			this.state = 371;
+			this.state = 387;
 			_la = this._input.LA(1);
-			if(!(_la===12 || _la===13)) {
+			if(!(_la===15 || _la===16)) {
 			this._errHandler.recoverInline(this);
 			}
 			else {
@@ -1930,13 +2036,13 @@ export default class HazeParser extends Parser {
 	// @RuleVersion(0)
 	public linkerhint(): LinkerhintContext {
 		let localctx: LinkerhintContext = new LinkerhintContext(this, this._ctx, this.state);
-		this.enterRule(localctx, 58, HazeParser.RULE_linkerhint);
+		this.enterRule(localctx, 62, HazeParser.RULE_linkerhint);
 		try {
 			this.enterOuterAlt(localctx, 1);
 			{
-			this.state = 373;
-			this.match(HazeParser.T__54);
-			this.state = 374;
+			this.state = 389;
+			this.match(HazeParser.T__57);
+			this.state = 390;
 			this.match(HazeParser.STRING_LITERAL);
 			}
 		}
@@ -1957,23 +2063,23 @@ export default class HazeParser extends Parser {
 	// @RuleVersion(0)
 	public structcontent(): StructcontentContext {
 		let localctx: StructcontentContext = new StructcontentContext(this, this._ctx, this.state);
-		this.enterRule(localctx, 60, HazeParser.RULE_structcontent);
+		this.enterRule(localctx, 64, HazeParser.RULE_structcontent);
 		let _la: number;
 		try {
-			this.state = 400;
+			this.state = 416;
 			this._errHandler.sync(this);
-			switch ( this._interp.adaptivePredict(this._input, 35, this._ctx) ) {
+			switch ( this._interp.adaptivePredict(this._input, 36, this._ctx) ) {
 			case 1:
 				localctx = new StructMemberContext(this, localctx);
 				this.enterOuterAlt(localctx, 1);
 				{
-				this.state = 376;
+				this.state = 392;
 				this.match(HazeParser.ID);
-				this.state = 377;
+				this.state = 393;
 				this.match(HazeParser.T__5);
-				this.state = 378;
+				this.state = 394;
 				this.datatype();
-				this.state = 379;
+				this.state = 395;
 				this.match(HazeParser.T__9);
 				}
 				break;
@@ -1981,27 +2087,27 @@ export default class HazeParser extends Parser {
 				localctx = new StructMethodContext(this, localctx);
 				this.enterOuterAlt(localctx, 2);
 				{
-				this.state = 381;
+				this.state = 397;
 				this.match(HazeParser.ID);
-				this.state = 382;
+				this.state = 398;
 				this.match(HazeParser.T__3);
-				this.state = 383;
+				this.state = 399;
 				this.params();
-				this.state = 384;
+				this.state = 400;
 				this.match(HazeParser.T__4);
-				this.state = 387;
+				this.state = 403;
 				this._errHandler.sync(this);
 				_la = this._input.LA(1);
 				if (_la===6) {
 					{
-					this.state = 385;
+					this.state = 401;
 					this.match(HazeParser.T__5);
-					this.state = 386;
+					this.state = 402;
 					this.datatype();
 					}
 				}
 
-				this.state = 389;
+				this.state = 405;
 				this.funcbody();
 				}
 				break;
@@ -2009,25 +2115,25 @@ export default class HazeParser extends Parser {
 				localctx = new StructUnionFieldsContext(this, localctx);
 				this.enterOuterAlt(localctx, 3);
 				{
-				this.state = 391;
-				this.match(HazeParser.T__55);
-				this.state = 392;
+				this.state = 407;
+				this.match(HazeParser.T__58);
+				this.state = 408;
 				this.match(HazeParser.T__1);
-				this.state = 396;
+				this.state = 412;
 				this._errHandler.sync(this);
 				_la = this._input.LA(1);
-				while (_la===56 || _la===61) {
+				while (_la===59 || _la===64) {
 					{
 					{
-					this.state = 393;
+					this.state = 409;
 					this.structcontent();
 					}
 					}
-					this.state = 398;
+					this.state = 414;
 					this._errHandler.sync(this);
 					_la = this._input.LA(1);
 				}
-				this.state = 399;
+				this.state = 415;
 				this.match(HazeParser.T__2);
 				}
 				break;
@@ -2050,82 +2156,82 @@ export default class HazeParser extends Parser {
 	// @RuleVersion(0)
 	public structdecl(): StructdeclContext {
 		let localctx: StructdeclContext = new StructdeclContext(this, this._ctx, this.state);
-		this.enterRule(localctx, 62, HazeParser.RULE_structdecl);
+		this.enterRule(localctx, 66, HazeParser.RULE_structdecl);
 		let _la: number;
 		try {
 			localctx = new StructDeclContext(this, localctx);
 			this.enterOuterAlt(localctx, 1);
 			{
-			this.state = 404;
+			this.state = 420;
 			this._errHandler.sync(this);
 			_la = this._input.LA(1);
-			if (_la===9) {
+			if (_la===13) {
 				{
-				this.state = 402;
-				this.match(HazeParser.T__8);
-				this.state = 403;
+				this.state = 418;
+				this.match(HazeParser.T__12);
+				this.state = 419;
 				this.externlang();
 				}
 			}
 
-			this.state = 406;
-			this.match(HazeParser.T__56);
-			this.state = 407;
+			this.state = 422;
+			this.match(HazeParser.T__59);
+			this.state = 423;
 			this.match(HazeParser.ID);
-			this.state = 418;
+			this.state = 434;
 			this._errHandler.sync(this);
 			_la = this._input.LA(1);
-			if (_la===32) {
+			if (_la===35) {
 				{
-				this.state = 408;
-				this.match(HazeParser.T__31);
-				this.state = 409;
+				this.state = 424;
+				this.match(HazeParser.T__34);
+				this.state = 425;
 				this.match(HazeParser.ID);
-				this.state = 414;
+				this.state = 430;
 				this._errHandler.sync(this);
 				_la = this._input.LA(1);
 				while (_la===8) {
 					{
 					{
-					this.state = 410;
+					this.state = 426;
 					this.match(HazeParser.T__7);
-					this.state = 411;
+					this.state = 427;
 					this.match(HazeParser.ID);
 					}
 					}
-					this.state = 416;
+					this.state = 432;
 					this._errHandler.sync(this);
 					_la = this._input.LA(1);
 				}
-				this.state = 417;
-				this.match(HazeParser.T__32);
+				this.state = 433;
+				this.match(HazeParser.T__35);
 				}
 			}
 
-			this.state = 420;
+			this.state = 436;
 			this.match(HazeParser.T__1);
-			this.state = 424;
+			this.state = 440;
 			this._errHandler.sync(this);
 			_la = this._input.LA(1);
-			while (_la===56 || _la===61) {
+			while (_la===59 || _la===64) {
 				{
 				{
-				this.state = 421;
+				this.state = 437;
 				this.structcontent();
 				}
 				}
-				this.state = 426;
+				this.state = 442;
 				this._errHandler.sync(this);
 				_la = this._input.LA(1);
 			}
-			this.state = 427;
+			this.state = 443;
 			this.match(HazeParser.T__2);
-			this.state = 429;
+			this.state = 445;
 			this._errHandler.sync(this);
 			_la = this._input.LA(1);
 			if (_la===10) {
 				{
-				this.state = 428;
+				this.state = 444;
 				this.match(HazeParser.T__9);
 				}
 			}
@@ -2149,58 +2255,58 @@ export default class HazeParser extends Parser {
 	// @RuleVersion(0)
 	public datatype(): DatatypeContext {
 		let localctx: DatatypeContext = new DatatypeContext(this, this._ctx, this.state);
-		this.enterRule(localctx, 64, HazeParser.RULE_datatype);
+		this.enterRule(localctx, 68, HazeParser.RULE_datatype);
 		let _la: number;
 		try {
-			this.state = 450;
+			this.state = 466;
 			this._errHandler.sync(this);
 			switch (this._input.LA(1)) {
-			case 61:
+			case 64:
 				localctx = new CommonDatatypeContext(this, localctx);
 				this.enterOuterAlt(localctx, 1);
 				{
-				this.state = 431;
+				this.state = 447;
 				this.match(HazeParser.ID);
-				this.state = 443;
+				this.state = 459;
 				this._errHandler.sync(this);
-				switch ( this._interp.adaptivePredict(this._input, 42, this._ctx) ) {
+				switch ( this._interp.adaptivePredict(this._input, 43, this._ctx) ) {
 				case 1:
 					{
-					this.state = 432;
-					this.match(HazeParser.T__31);
-					this.state = 433;
+					this.state = 448;
+					this.match(HazeParser.T__34);
+					this.state = 449;
 					(localctx as CommonDatatypeContext)._datatype = this.datatype();
 					(localctx as CommonDatatypeContext)._generics.push((localctx as CommonDatatypeContext)._datatype);
-					this.state = 438;
+					this.state = 454;
 					this._errHandler.sync(this);
 					_la = this._input.LA(1);
 					while (_la===8) {
 						{
 						{
-						this.state = 434;
+						this.state = 450;
 						this.match(HazeParser.T__7);
-						this.state = 435;
+						this.state = 451;
 						(localctx as CommonDatatypeContext)._datatype = this.datatype();
 						(localctx as CommonDatatypeContext)._generics.push((localctx as CommonDatatypeContext)._datatype);
 						}
 						}
-						this.state = 440;
+						this.state = 456;
 						this._errHandler.sync(this);
 						_la = this._input.LA(1);
 					}
-					this.state = 441;
-					this.match(HazeParser.T__32);
+					this.state = 457;
+					this.match(HazeParser.T__35);
 					}
 					break;
 				}
-				this.state = 447;
+				this.state = 463;
 				this._errHandler.sync(this);
-				switch ( this._interp.adaptivePredict(this._input, 43, this._ctx) ) {
+				switch ( this._interp.adaptivePredict(this._input, 44, this._ctx) ) {
 				case 1:
 					{
-					this.state = 445;
-					this.match(HazeParser.T__10);
-					this.state = 446;
+					this.state = 461;
+					this.match(HazeParser.T__13);
+					this.state = 462;
 					(localctx as CommonDatatypeContext)._nested = this.datatype();
 					}
 					break;
@@ -2211,7 +2317,7 @@ export default class HazeParser extends Parser {
 				localctx = new FunctionDatatypeContext(this, localctx);
 				this.enterOuterAlt(localctx, 2);
 				{
-				this.state = 449;
+				this.state = 465;
 				this.functype();
 				}
 				break;
@@ -2236,7 +2342,7 @@ export default class HazeParser extends Parser {
 
 	public sempred(localctx: RuleContext, ruleIndex: number, predIndex: number): boolean {
 		switch (ruleIndex) {
-		case 20:
+		case 22:
 			return this.expr_sempred(localctx as ExprContext, predIndex);
 		}
 		return true;
@@ -2267,156 +2373,162 @@ export default class HazeParser extends Parser {
 		return true;
 	}
 
-	public static readonly _serializedATN: number[] = [4,1,63,453,2,0,7,0,2,
+	public static readonly _serializedATN: number[] = [4,1,66,469,2,0,7,0,2,
 	1,7,1,2,2,7,2,2,3,7,3,2,4,7,4,2,5,7,5,2,6,7,6,2,7,7,7,2,8,7,8,2,9,7,9,2,
 	10,7,10,2,11,7,11,2,12,7,12,2,13,7,13,2,14,7,14,2,15,7,15,2,16,7,16,2,17,
 	7,17,2,18,7,18,2,19,7,19,2,20,7,20,2,21,7,21,2,22,7,22,2,23,7,23,2,24,7,
 	24,2,25,7,25,2,26,7,26,2,27,7,27,2,28,7,28,2,29,7,29,2,30,7,30,2,31,7,31,
-	2,32,7,32,1,0,5,0,68,8,0,10,0,12,0,71,9,0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,3,
-	1,80,8,1,1,2,1,2,1,2,1,2,5,2,86,8,2,10,2,12,2,89,9,2,1,2,1,2,1,3,1,3,1,
-	3,1,3,1,3,1,3,3,3,99,8,3,1,3,1,3,1,4,1,4,1,4,1,4,1,4,3,4,108,8,4,1,4,1,
-	4,1,5,3,5,113,8,5,1,5,1,5,1,5,1,5,1,5,1,5,3,5,121,8,5,1,6,5,6,124,8,6,10,
-	6,12,6,127,9,6,1,7,1,7,1,7,1,7,1,8,1,8,1,8,5,8,136,8,8,10,8,12,8,139,9,
-	8,1,8,1,8,3,8,143,8,8,3,8,145,8,8,1,8,3,8,148,8,8,1,9,1,9,1,9,1,9,1,9,1,
-	10,1,10,3,10,157,8,10,1,10,1,10,5,10,161,8,10,10,10,12,10,164,9,10,1,10,
-	1,10,1,10,1,10,1,10,1,10,3,10,172,8,10,1,10,1,10,1,11,1,11,1,12,1,12,1,
-	13,1,13,1,14,1,14,1,15,1,15,1,16,1,16,1,17,1,17,1,18,1,18,1,18,1,18,1,18,
-	1,18,1,18,1,18,1,18,1,18,3,18,200,8,18,1,18,1,18,1,18,1,18,1,18,3,18,207,
-	8,18,1,18,1,18,1,18,1,18,1,18,1,18,1,18,1,18,1,18,1,18,1,18,1,18,1,18,1,
-	18,1,18,1,18,5,18,225,8,18,10,18,12,18,228,9,18,1,18,1,18,1,18,1,18,1,18,
-	3,18,235,8,18,1,18,1,18,1,18,1,18,1,18,1,18,3,18,243,8,18,1,19,1,19,1,19,
-	1,19,1,19,1,20,1,20,1,20,1,20,1,20,1,20,1,20,1,20,1,20,1,20,3,20,260,8,
-	20,1,20,1,20,5,20,264,8,20,10,20,12,20,267,9,20,1,20,3,20,270,8,20,1,20,
-	1,20,1,20,1,20,1,20,1,20,1,20,1,20,1,20,1,20,1,20,1,20,1,20,5,20,285,8,
-	20,10,20,12,20,288,9,20,1,20,1,20,3,20,292,8,20,3,20,294,8,20,1,20,1,20,
-	1,20,1,20,1,20,1,20,1,20,1,20,1,20,1,20,1,20,1,20,1,20,1,20,1,20,3,20,311,
+	2,32,7,32,2,33,7,33,2,34,7,34,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,5,0,80,
+	8,0,10,0,12,0,83,9,0,1,1,1,1,1,1,1,1,1,1,1,1,5,1,91,8,1,10,1,12,1,94,9,
+	1,1,2,1,2,1,2,1,2,1,2,1,2,1,3,1,3,1,3,1,3,1,3,1,3,3,3,108,8,3,1,3,1,3,1,
+	4,1,4,1,4,1,4,1,4,3,4,117,8,4,1,4,1,4,1,5,3,5,122,8,5,1,5,1,5,1,5,1,5,1,
+	5,1,5,3,5,130,8,5,1,6,5,6,133,8,6,10,6,12,6,136,9,6,1,7,1,7,1,7,1,7,1,8,
+	1,8,1,8,5,8,145,8,8,10,8,12,8,148,9,8,1,8,1,8,3,8,152,8,8,3,8,154,8,8,1,
+	8,3,8,157,8,8,1,9,1,9,1,9,1,9,1,10,1,10,1,10,1,10,1,11,1,11,1,11,1,11,1,
+	12,1,12,3,12,173,8,12,1,12,1,12,5,12,177,8,12,10,12,12,12,180,9,12,1,12,
+	1,12,1,12,1,12,1,12,1,12,3,12,188,8,12,1,12,1,12,1,13,1,13,1,14,1,14,1,
+	15,1,15,1,16,1,16,1,17,1,17,1,18,1,18,1,19,1,19,1,20,1,20,1,20,1,20,1,20,
+	1,20,1,20,1,20,1,20,1,20,3,20,216,8,20,1,20,1,20,1,20,1,20,1,20,3,20,223,
 	8,20,1,20,1,20,1,20,1,20,1,20,1,20,1,20,1,20,1,20,1,20,1,20,1,20,1,20,1,
-	20,1,20,1,20,1,20,1,20,1,20,1,20,5,20,333,8,20,10,20,12,20,336,9,20,1,21,
-	1,21,1,21,5,21,341,8,21,10,21,12,21,344,9,21,3,21,346,8,21,1,22,1,22,1,
-	23,1,23,1,23,1,23,1,23,1,23,1,24,1,24,1,24,1,24,3,24,360,8,24,1,25,1,25,
-	1,25,1,25,3,25,366,8,25,1,26,1,26,1,27,1,27,1,28,1,28,1,29,1,29,1,29,1,
-	30,1,30,1,30,1,30,1,30,1,30,1,30,1,30,1,30,1,30,1,30,3,30,388,8,30,1,30,
-	1,30,1,30,1,30,1,30,5,30,395,8,30,10,30,12,30,398,9,30,1,30,3,30,401,8,
-	30,1,31,1,31,3,31,405,8,31,1,31,1,31,1,31,1,31,1,31,1,31,5,31,413,8,31,
-	10,31,12,31,416,9,31,1,31,3,31,419,8,31,1,31,1,31,5,31,423,8,31,10,31,12,
-	31,426,9,31,1,31,1,31,3,31,430,8,31,1,32,1,32,1,32,1,32,1,32,5,32,437,8,
-	32,10,32,12,32,440,9,32,1,32,1,32,3,32,444,8,32,1,32,1,32,3,32,448,8,32,
-	1,32,3,32,451,8,32,1,32,0,1,40,33,0,2,4,6,8,10,12,14,16,18,20,22,24,26,
-	28,30,32,34,36,38,40,42,44,46,48,50,52,54,56,58,60,62,64,0,10,1,0,12,13,
-	1,0,14,15,1,0,22,23,1,0,24,25,1,0,26,27,1,0,29,31,1,0,32,35,1,0,39,40,2,
-	0,18,18,41,50,1,0,52,53,492,0,69,1,0,0,0,2,79,1,0,0,0,4,81,1,0,0,0,6,92,
-	1,0,0,0,8,102,1,0,0,0,10,120,1,0,0,0,12,125,1,0,0,0,14,128,1,0,0,0,16,147,
-	1,0,0,0,18,149,1,0,0,0,20,154,1,0,0,0,22,175,1,0,0,0,24,177,1,0,0,0,26,
-	179,1,0,0,0,28,181,1,0,0,0,30,183,1,0,0,0,32,185,1,0,0,0,34,187,1,0,0,0,
-	36,242,1,0,0,0,38,244,1,0,0,0,40,293,1,0,0,0,42,345,1,0,0,0,44,347,1,0,
-	0,0,46,349,1,0,0,0,48,359,1,0,0,0,50,361,1,0,0,0,52,367,1,0,0,0,54,369,
-	1,0,0,0,56,371,1,0,0,0,58,373,1,0,0,0,60,400,1,0,0,0,62,404,1,0,0,0,64,
-	450,1,0,0,0,66,68,3,2,1,0,67,66,1,0,0,0,68,71,1,0,0,0,69,67,1,0,0,0,69,
-	70,1,0,0,0,70,1,1,0,0,0,71,69,1,0,0,0,72,80,3,18,9,0,73,80,3,6,3,0,74,80,
-	3,20,10,0,75,80,3,50,25,0,76,80,3,58,29,0,77,80,3,62,31,0,78,80,3,4,2,0,
+	20,1,20,1,20,5,20,241,8,20,10,20,12,20,244,9,20,1,20,1,20,1,20,1,20,1,20,
+	3,20,251,8,20,1,20,1,20,1,20,1,20,1,20,1,20,3,20,259,8,20,1,21,1,21,1,21,
+	1,21,1,21,1,22,1,22,1,22,1,22,1,22,1,22,1,22,1,22,1,22,1,22,3,22,276,8,
+	22,1,22,1,22,5,22,280,8,22,10,22,12,22,283,9,22,1,22,3,22,286,8,22,1,22,
+	1,22,1,22,1,22,1,22,1,22,1,22,1,22,1,22,1,22,1,22,1,22,1,22,5,22,301,8,
+	22,10,22,12,22,304,9,22,1,22,1,22,3,22,308,8,22,3,22,310,8,22,1,22,1,22,
+	1,22,1,22,1,22,1,22,1,22,1,22,1,22,1,22,1,22,1,22,1,22,1,22,1,22,3,22,327,
+	8,22,1,22,1,22,1,22,1,22,1,22,1,22,1,22,1,22,1,22,1,22,1,22,1,22,1,22,1,
+	22,1,22,1,22,1,22,1,22,1,22,1,22,5,22,349,8,22,10,22,12,22,352,9,22,1,23,
+	1,23,1,23,5,23,357,8,23,10,23,12,23,360,9,23,3,23,362,8,23,1,24,1,24,1,
+	25,1,25,1,25,1,25,1,25,1,25,1,26,1,26,1,26,1,26,3,26,376,8,26,1,27,1,27,
+	1,27,1,27,3,27,382,8,27,1,28,1,28,1,29,1,29,1,30,1,30,1,31,1,31,1,31,1,
+	32,1,32,1,32,1,32,1,32,1,32,1,32,1,32,1,32,1,32,1,32,3,32,404,8,32,1,32,
+	1,32,1,32,1,32,1,32,5,32,411,8,32,10,32,12,32,414,9,32,1,32,3,32,417,8,
+	32,1,33,1,33,3,33,421,8,33,1,33,1,33,1,33,1,33,1,33,1,33,5,33,429,8,33,
+	10,33,12,33,432,9,33,1,33,3,33,435,8,33,1,33,1,33,5,33,439,8,33,10,33,12,
+	33,442,9,33,1,33,1,33,3,33,446,8,33,1,34,1,34,1,34,1,34,1,34,5,34,453,8,
+	34,10,34,12,34,456,9,34,1,34,1,34,3,34,460,8,34,1,34,1,34,3,34,464,8,34,
+	1,34,3,34,467,8,34,1,34,0,1,44,35,0,2,4,6,8,10,12,14,16,18,20,22,24,26,
+	28,30,32,34,36,38,40,42,44,46,48,50,52,54,56,58,60,62,64,66,68,0,10,1,0,
+	15,16,1,0,17,18,1,0,25,26,1,0,27,28,1,0,29,30,1,0,32,34,1,0,35,38,1,0,42,
+	43,2,0,21,21,44,53,1,0,55,56,513,0,81,1,0,0,0,2,92,1,0,0,0,4,95,1,0,0,0,
+	6,101,1,0,0,0,8,111,1,0,0,0,10,129,1,0,0,0,12,134,1,0,0,0,14,137,1,0,0,
+	0,16,156,1,0,0,0,18,158,1,0,0,0,20,162,1,0,0,0,22,166,1,0,0,0,24,170,1,
+	0,0,0,26,191,1,0,0,0,28,193,1,0,0,0,30,195,1,0,0,0,32,197,1,0,0,0,34,199,
+	1,0,0,0,36,201,1,0,0,0,38,203,1,0,0,0,40,258,1,0,0,0,42,260,1,0,0,0,44,
+	309,1,0,0,0,46,361,1,0,0,0,48,363,1,0,0,0,50,365,1,0,0,0,52,375,1,0,0,0,
+	54,377,1,0,0,0,56,383,1,0,0,0,58,385,1,0,0,0,60,387,1,0,0,0,62,389,1,0,
+	0,0,64,416,1,0,0,0,66,420,1,0,0,0,68,466,1,0,0,0,70,80,3,18,9,0,71,80,3,
+	20,10,0,72,80,3,22,11,0,73,80,3,6,3,0,74,80,3,24,12,0,75,80,3,54,27,0,76,
+	80,3,62,31,0,77,80,3,66,33,0,78,80,3,4,2,0,79,70,1,0,0,0,79,71,1,0,0,0,
 	79,72,1,0,0,0,79,73,1,0,0,0,79,74,1,0,0,0,79,75,1,0,0,0,79,76,1,0,0,0,79,
-	77,1,0,0,0,79,78,1,0,0,0,80,3,1,0,0,0,81,82,5,1,0,0,82,83,5,61,0,0,83,87,
-	5,2,0,0,84,86,3,2,1,0,85,84,1,0,0,0,86,89,1,0,0,0,87,85,1,0,0,0,87,88,1,
-	0,0,0,88,90,1,0,0,0,89,87,1,0,0,0,90,91,5,3,0,0,91,5,1,0,0,0,92,93,5,61,
-	0,0,93,94,5,4,0,0,94,95,3,16,8,0,95,98,5,5,0,0,96,97,5,6,0,0,97,99,3,64,
-	32,0,98,96,1,0,0,0,98,99,1,0,0,0,99,100,1,0,0,0,100,101,3,10,5,0,101,7,
-	1,0,0,0,102,103,5,4,0,0,103,104,3,16,8,0,104,107,5,5,0,0,105,106,5,6,0,
-	0,106,108,3,64,32,0,107,105,1,0,0,0,107,108,1,0,0,0,108,109,1,0,0,0,109,
-	110,3,10,5,0,110,9,1,0,0,0,111,113,5,7,0,0,112,111,1,0,0,0,112,113,1,0,
-	0,0,113,114,1,0,0,0,114,115,5,2,0,0,115,116,3,12,6,0,116,117,5,3,0,0,117,
-	121,1,0,0,0,118,119,5,7,0,0,119,121,3,40,20,0,120,112,1,0,0,0,120,118,1,
-	0,0,0,121,11,1,0,0,0,122,124,3,36,18,0,123,122,1,0,0,0,124,127,1,0,0,0,
-	125,123,1,0,0,0,125,126,1,0,0,0,126,13,1,0,0,0,127,125,1,0,0,0,128,129,
-	5,61,0,0,129,130,5,6,0,0,130,131,3,64,32,0,131,15,1,0,0,0,132,137,3,14,
-	7,0,133,134,5,8,0,0,134,136,3,14,7,0,135,133,1,0,0,0,136,139,1,0,0,0,137,
-	135,1,0,0,0,137,138,1,0,0,0,138,142,1,0,0,0,139,137,1,0,0,0,140,141,5,8,
-	0,0,141,143,3,44,22,0,142,140,1,0,0,0,142,143,1,0,0,0,143,145,1,0,0,0,144,
-	132,1,0,0,0,144,145,1,0,0,0,145,148,1,0,0,0,146,148,3,44,22,0,147,144,1,
-	0,0,0,147,146,1,0,0,0,148,17,1,0,0,0,149,150,5,9,0,0,150,151,3,22,11,0,
-	151,152,5,58,0,0,152,153,5,10,0,0,153,19,1,0,0,0,154,156,5,9,0,0,155,157,
-	3,22,11,0,156,155,1,0,0,0,156,157,1,0,0,0,157,162,1,0,0,0,158,159,5,61,
-	0,0,159,161,5,11,0,0,160,158,1,0,0,0,161,164,1,0,0,0,162,160,1,0,0,0,162,
-	163,1,0,0,0,163,165,1,0,0,0,164,162,1,0,0,0,165,166,5,61,0,0,166,167,5,
-	4,0,0,167,168,3,16,8,0,168,171,5,5,0,0,169,170,5,6,0,0,170,172,3,64,32,
-	0,171,169,1,0,0,0,171,172,1,0,0,0,172,173,1,0,0,0,173,174,5,10,0,0,174,
-	21,1,0,0,0,175,176,7,0,0,0,176,23,1,0,0,0,177,178,3,40,20,0,178,25,1,0,
-	0,0,179,180,3,40,20,0,180,27,1,0,0,0,181,182,3,12,6,0,182,29,1,0,0,0,183,
-	184,3,12,6,0,184,31,1,0,0,0,185,186,3,12,6,0,186,33,1,0,0,0,187,188,7,1,
-	0,0,188,35,1,0,0,0,189,190,5,16,0,0,190,191,5,4,0,0,191,192,5,58,0,0,192,
-	193,5,5,0,0,193,243,5,10,0,0,194,195,3,40,20,0,195,196,5,10,0,0,196,243,
-	1,0,0,0,197,199,5,17,0,0,198,200,3,40,20,0,199,198,1,0,0,0,199,200,1,0,
-	0,0,200,201,1,0,0,0,201,243,5,10,0,0,202,203,3,34,17,0,203,206,5,61,0,0,
-	204,205,5,6,0,0,205,207,3,64,32,0,206,204,1,0,0,0,206,207,1,0,0,0,207,208,
-	1,0,0,0,208,209,5,18,0,0,209,210,3,40,20,0,210,211,5,10,0,0,211,243,1,0,
-	0,0,212,213,5,19,0,0,213,214,3,24,12,0,214,215,5,2,0,0,215,216,3,28,14,
-	0,216,226,5,3,0,0,217,218,5,20,0,0,218,219,5,19,0,0,219,220,3,26,13,0,220,
-	221,5,2,0,0,221,222,3,30,15,0,222,223,5,3,0,0,223,225,1,0,0,0,224,217,1,
-	0,0,0,225,228,1,0,0,0,226,224,1,0,0,0,226,227,1,0,0,0,227,234,1,0,0,0,228,
-	226,1,0,0,0,229,230,5,20,0,0,230,231,5,2,0,0,231,232,3,32,16,0,232,233,
-	5,3,0,0,233,235,1,0,0,0,234,229,1,0,0,0,234,235,1,0,0,0,235,243,1,0,0,0,
-	236,237,5,21,0,0,237,238,3,40,20,0,238,239,5,2,0,0,239,240,3,12,6,0,240,
-	241,5,3,0,0,241,243,1,0,0,0,242,189,1,0,0,0,242,194,1,0,0,0,242,197,1,0,
-	0,0,242,202,1,0,0,0,242,212,1,0,0,0,242,236,1,0,0,0,243,37,1,0,0,0,244,
-	245,5,11,0,0,245,246,5,61,0,0,246,247,5,6,0,0,247,248,3,40,20,0,248,39,
-	1,0,0,0,249,250,6,20,-1,0,250,251,5,4,0,0,251,252,3,40,20,0,252,253,5,5,
-	0,0,253,294,1,0,0,0,254,294,3,8,4,0,255,294,3,48,24,0,256,257,3,64,32,0,
-	257,259,5,2,0,0,258,260,3,38,19,0,259,258,1,0,0,0,259,260,1,0,0,0,260,265,
-	1,0,0,0,261,262,5,8,0,0,262,264,3,38,19,0,263,261,1,0,0,0,264,267,1,0,0,
-	0,265,263,1,0,0,0,265,266,1,0,0,0,266,269,1,0,0,0,267,265,1,0,0,0,268,270,
-	5,8,0,0,269,268,1,0,0,0,269,270,1,0,0,0,270,271,1,0,0,0,271,272,5,3,0,0,
-	272,294,1,0,0,0,273,274,7,2,0,0,274,294,3,40,20,11,275,276,7,3,0,0,276,
-	294,3,40,20,10,277,278,7,4,0,0,278,294,3,40,20,9,279,291,5,61,0,0,280,281,
-	5,32,0,0,281,286,3,64,32,0,282,283,5,8,0,0,283,285,3,64,32,0,284,282,1,
-	0,0,0,285,288,1,0,0,0,286,284,1,0,0,0,286,287,1,0,0,0,287,289,1,0,0,0,288,
-	286,1,0,0,0,289,290,5,33,0,0,290,292,1,0,0,0,291,280,1,0,0,0,291,292,1,
-	0,0,0,292,294,1,0,0,0,293,249,1,0,0,0,293,254,1,0,0,0,293,255,1,0,0,0,293,
-	256,1,0,0,0,293,273,1,0,0,0,293,275,1,0,0,0,293,277,1,0,0,0,293,279,1,0,
-	0,0,294,334,1,0,0,0,295,296,10,7,0,0,296,297,7,5,0,0,297,333,3,40,20,8,
-	298,299,10,6,0,0,299,300,7,3,0,0,300,333,3,40,20,7,301,302,10,5,0,0,302,
-	303,7,6,0,0,303,333,3,40,20,6,304,310,10,4,0,0,305,311,5,36,0,0,306,311,
-	5,37,0,0,307,311,5,38,0,0,308,309,5,38,0,0,309,311,5,26,0,0,310,305,1,0,
-	0,0,310,306,1,0,0,0,310,307,1,0,0,0,310,308,1,0,0,0,311,312,1,0,0,0,312,
-	333,3,40,20,5,313,314,10,3,0,0,314,315,7,7,0,0,315,333,3,40,20,4,316,317,
-	10,2,0,0,317,318,7,8,0,0,318,333,3,40,20,3,319,320,10,15,0,0,320,333,7,
-	2,0,0,321,322,10,14,0,0,322,323,5,4,0,0,323,324,3,42,21,0,324,325,5,5,0,
-	0,325,333,1,0,0,0,326,327,10,13,0,0,327,328,5,11,0,0,328,333,5,61,0,0,329,
-	330,10,8,0,0,330,331,5,28,0,0,331,333,3,64,32,0,332,295,1,0,0,0,332,298,
-	1,0,0,0,332,301,1,0,0,0,332,304,1,0,0,0,332,313,1,0,0,0,332,316,1,0,0,0,
-	332,319,1,0,0,0,332,321,1,0,0,0,332,326,1,0,0,0,332,329,1,0,0,0,333,336,
-	1,0,0,0,334,332,1,0,0,0,334,335,1,0,0,0,335,41,1,0,0,0,336,334,1,0,0,0,
-	337,342,3,40,20,0,338,339,5,8,0,0,339,341,3,40,20,0,340,338,1,0,0,0,341,
-	344,1,0,0,0,342,340,1,0,0,0,342,343,1,0,0,0,343,346,1,0,0,0,344,342,1,0,
-	0,0,345,337,1,0,0,0,345,346,1,0,0,0,346,43,1,0,0,0,347,348,5,51,0,0,348,
-	45,1,0,0,0,349,350,5,4,0,0,350,351,3,16,8,0,351,352,5,5,0,0,352,353,5,7,
-	0,0,353,354,3,64,32,0,354,47,1,0,0,0,355,360,7,9,0,0,356,360,5,59,0,0,357,
-	360,5,60,0,0,358,360,5,58,0,0,359,355,1,0,0,0,359,356,1,0,0,0,359,357,1,
-	0,0,0,359,358,1,0,0,0,360,49,1,0,0,0,361,362,5,54,0,0,362,363,3,56,28,0,
-	363,365,3,52,26,0,364,366,3,54,27,0,365,364,1,0,0,0,365,366,1,0,0,0,366,
-	51,1,0,0,0,367,368,5,58,0,0,368,53,1,0,0,0,369,370,5,58,0,0,370,55,1,0,
-	0,0,371,372,7,0,0,0,372,57,1,0,0,0,373,374,5,55,0,0,374,375,5,58,0,0,375,
-	59,1,0,0,0,376,377,5,61,0,0,377,378,5,6,0,0,378,379,3,64,32,0,379,380,5,
-	10,0,0,380,401,1,0,0,0,381,382,5,61,0,0,382,383,5,4,0,0,383,384,3,16,8,
-	0,384,387,5,5,0,0,385,386,5,6,0,0,386,388,3,64,32,0,387,385,1,0,0,0,387,
-	388,1,0,0,0,388,389,1,0,0,0,389,390,3,10,5,0,390,401,1,0,0,0,391,392,5,
-	56,0,0,392,396,5,2,0,0,393,395,3,60,30,0,394,393,1,0,0,0,395,398,1,0,0,
-	0,396,394,1,0,0,0,396,397,1,0,0,0,397,399,1,0,0,0,398,396,1,0,0,0,399,401,
-	5,3,0,0,400,376,1,0,0,0,400,381,1,0,0,0,400,391,1,0,0,0,401,61,1,0,0,0,
-	402,403,5,9,0,0,403,405,3,22,11,0,404,402,1,0,0,0,404,405,1,0,0,0,405,406,
-	1,0,0,0,406,407,5,57,0,0,407,418,5,61,0,0,408,409,5,32,0,0,409,414,5,61,
-	0,0,410,411,5,8,0,0,411,413,5,61,0,0,412,410,1,0,0,0,413,416,1,0,0,0,414,
-	412,1,0,0,0,414,415,1,0,0,0,415,417,1,0,0,0,416,414,1,0,0,0,417,419,5,33,
-	0,0,418,408,1,0,0,0,418,419,1,0,0,0,419,420,1,0,0,0,420,424,5,2,0,0,421,
-	423,3,60,30,0,422,421,1,0,0,0,423,426,1,0,0,0,424,422,1,0,0,0,424,425,1,
-	0,0,0,425,427,1,0,0,0,426,424,1,0,0,0,427,429,5,3,0,0,428,430,5,10,0,0,
-	429,428,1,0,0,0,429,430,1,0,0,0,430,63,1,0,0,0,431,443,5,61,0,0,432,433,
-	5,32,0,0,433,438,3,64,32,0,434,435,5,8,0,0,435,437,3,64,32,0,436,434,1,
-	0,0,0,437,440,1,0,0,0,438,436,1,0,0,0,438,439,1,0,0,0,439,441,1,0,0,0,440,
-	438,1,0,0,0,441,442,5,33,0,0,442,444,1,0,0,0,443,432,1,0,0,0,443,444,1,
-	0,0,0,444,447,1,0,0,0,445,446,5,11,0,0,446,448,3,64,32,0,447,445,1,0,0,
-	0,447,448,1,0,0,0,448,451,1,0,0,0,449,451,3,46,23,0,450,431,1,0,0,0,450,
-	449,1,0,0,0,451,65,1,0,0,0,45,69,79,87,98,107,112,120,125,137,142,144,147,
-	156,162,171,199,206,226,234,242,259,265,269,286,291,293,310,332,334,342,
-	345,359,365,387,396,400,404,414,418,424,429,438,443,447,450];
+	77,1,0,0,0,79,78,1,0,0,0,80,83,1,0,0,0,81,79,1,0,0,0,81,82,1,0,0,0,82,1,
+	1,0,0,0,83,81,1,0,0,0,84,91,3,6,3,0,85,91,3,24,12,0,86,91,3,54,27,0,87,
+	91,3,62,31,0,88,91,3,66,33,0,89,91,3,4,2,0,90,84,1,0,0,0,90,85,1,0,0,0,
+	90,86,1,0,0,0,90,87,1,0,0,0,90,88,1,0,0,0,90,89,1,0,0,0,91,94,1,0,0,0,92,
+	90,1,0,0,0,92,93,1,0,0,0,93,3,1,0,0,0,94,92,1,0,0,0,95,96,5,1,0,0,96,97,
+	5,64,0,0,97,98,5,2,0,0,98,99,3,2,1,0,99,100,5,3,0,0,100,5,1,0,0,0,101,102,
+	5,64,0,0,102,103,5,4,0,0,103,104,3,16,8,0,104,107,5,5,0,0,105,106,5,6,0,
+	0,106,108,3,68,34,0,107,105,1,0,0,0,107,108,1,0,0,0,108,109,1,0,0,0,109,
+	110,3,10,5,0,110,7,1,0,0,0,111,112,5,4,0,0,112,113,3,16,8,0,113,116,5,5,
+	0,0,114,115,5,6,0,0,115,117,3,68,34,0,116,114,1,0,0,0,116,117,1,0,0,0,117,
+	118,1,0,0,0,118,119,3,10,5,0,119,9,1,0,0,0,120,122,5,7,0,0,121,120,1,0,
+	0,0,121,122,1,0,0,0,122,123,1,0,0,0,123,124,5,2,0,0,124,125,3,12,6,0,125,
+	126,5,3,0,0,126,130,1,0,0,0,127,128,5,7,0,0,128,130,3,44,22,0,129,121,1,
+	0,0,0,129,127,1,0,0,0,130,11,1,0,0,0,131,133,3,40,20,0,132,131,1,0,0,0,
+	133,136,1,0,0,0,134,132,1,0,0,0,134,135,1,0,0,0,135,13,1,0,0,0,136,134,
+	1,0,0,0,137,138,5,64,0,0,138,139,5,6,0,0,139,140,3,68,34,0,140,15,1,0,0,
+	0,141,146,3,14,7,0,142,143,5,8,0,0,143,145,3,14,7,0,144,142,1,0,0,0,145,
+	148,1,0,0,0,146,144,1,0,0,0,146,147,1,0,0,0,147,151,1,0,0,0,148,146,1,0,
+	0,0,149,150,5,8,0,0,150,152,3,48,24,0,151,149,1,0,0,0,151,152,1,0,0,0,152,
+	154,1,0,0,0,153,141,1,0,0,0,153,154,1,0,0,0,154,157,1,0,0,0,155,157,3,48,
+	24,0,156,153,1,0,0,0,156,155,1,0,0,0,157,17,1,0,0,0,158,159,5,9,0,0,159,
+	160,5,61,0,0,160,161,5,10,0,0,161,19,1,0,0,0,162,163,5,11,0,0,163,164,5,
+	61,0,0,164,165,5,10,0,0,165,21,1,0,0,0,166,167,5,12,0,0,167,168,5,61,0,
+	0,168,169,5,10,0,0,169,23,1,0,0,0,170,172,5,13,0,0,171,173,3,26,13,0,172,
+	171,1,0,0,0,172,173,1,0,0,0,173,178,1,0,0,0,174,175,5,64,0,0,175,177,5,
+	14,0,0,176,174,1,0,0,0,177,180,1,0,0,0,178,176,1,0,0,0,178,179,1,0,0,0,
+	179,181,1,0,0,0,180,178,1,0,0,0,181,182,5,64,0,0,182,183,5,4,0,0,183,184,
+	3,16,8,0,184,187,5,5,0,0,185,186,5,6,0,0,186,188,3,68,34,0,187,185,1,0,
+	0,0,187,188,1,0,0,0,188,189,1,0,0,0,189,190,5,10,0,0,190,25,1,0,0,0,191,
+	192,7,0,0,0,192,27,1,0,0,0,193,194,3,44,22,0,194,29,1,0,0,0,195,196,3,44,
+	22,0,196,31,1,0,0,0,197,198,3,12,6,0,198,33,1,0,0,0,199,200,3,12,6,0,200,
+	35,1,0,0,0,201,202,3,12,6,0,202,37,1,0,0,0,203,204,7,1,0,0,204,39,1,0,0,
+	0,205,206,5,19,0,0,206,207,5,4,0,0,207,208,5,61,0,0,208,209,5,5,0,0,209,
+	259,5,10,0,0,210,211,3,44,22,0,211,212,5,10,0,0,212,259,1,0,0,0,213,215,
+	5,20,0,0,214,216,3,44,22,0,215,214,1,0,0,0,215,216,1,0,0,0,216,217,1,0,
+	0,0,217,259,5,10,0,0,218,219,3,38,19,0,219,222,5,64,0,0,220,221,5,6,0,0,
+	221,223,3,68,34,0,222,220,1,0,0,0,222,223,1,0,0,0,223,224,1,0,0,0,224,225,
+	5,21,0,0,225,226,3,44,22,0,226,227,5,10,0,0,227,259,1,0,0,0,228,229,5,22,
+	0,0,229,230,3,28,14,0,230,231,5,2,0,0,231,232,3,32,16,0,232,242,5,3,0,0,
+	233,234,5,23,0,0,234,235,5,22,0,0,235,236,3,30,15,0,236,237,5,2,0,0,237,
+	238,3,34,17,0,238,239,5,3,0,0,239,241,1,0,0,0,240,233,1,0,0,0,241,244,1,
+	0,0,0,242,240,1,0,0,0,242,243,1,0,0,0,243,250,1,0,0,0,244,242,1,0,0,0,245,
+	246,5,23,0,0,246,247,5,2,0,0,247,248,3,36,18,0,248,249,5,3,0,0,249,251,
+	1,0,0,0,250,245,1,0,0,0,250,251,1,0,0,0,251,259,1,0,0,0,252,253,5,24,0,
+	0,253,254,3,44,22,0,254,255,5,2,0,0,255,256,3,12,6,0,256,257,5,3,0,0,257,
+	259,1,0,0,0,258,205,1,0,0,0,258,210,1,0,0,0,258,213,1,0,0,0,258,218,1,0,
+	0,0,258,228,1,0,0,0,258,252,1,0,0,0,259,41,1,0,0,0,260,261,5,14,0,0,261,
+	262,5,64,0,0,262,263,5,6,0,0,263,264,3,44,22,0,264,43,1,0,0,0,265,266,6,
+	22,-1,0,266,267,5,4,0,0,267,268,3,44,22,0,268,269,5,5,0,0,269,310,1,0,0,
+	0,270,310,3,8,4,0,271,310,3,52,26,0,272,273,3,68,34,0,273,275,5,2,0,0,274,
+	276,3,42,21,0,275,274,1,0,0,0,275,276,1,0,0,0,276,281,1,0,0,0,277,278,5,
+	8,0,0,278,280,3,42,21,0,279,277,1,0,0,0,280,283,1,0,0,0,281,279,1,0,0,0,
+	281,282,1,0,0,0,282,285,1,0,0,0,283,281,1,0,0,0,284,286,5,8,0,0,285,284,
+	1,0,0,0,285,286,1,0,0,0,286,287,1,0,0,0,287,288,5,3,0,0,288,310,1,0,0,0,
+	289,290,7,2,0,0,290,310,3,44,22,11,291,292,7,3,0,0,292,310,3,44,22,10,293,
+	294,7,4,0,0,294,310,3,44,22,9,295,307,5,64,0,0,296,297,5,35,0,0,297,302,
+	3,68,34,0,298,299,5,8,0,0,299,301,3,68,34,0,300,298,1,0,0,0,301,304,1,0,
+	0,0,302,300,1,0,0,0,302,303,1,0,0,0,303,305,1,0,0,0,304,302,1,0,0,0,305,
+	306,5,36,0,0,306,308,1,0,0,0,307,296,1,0,0,0,307,308,1,0,0,0,308,310,1,
+	0,0,0,309,265,1,0,0,0,309,270,1,0,0,0,309,271,1,0,0,0,309,272,1,0,0,0,309,
+	289,1,0,0,0,309,291,1,0,0,0,309,293,1,0,0,0,309,295,1,0,0,0,310,350,1,0,
+	0,0,311,312,10,7,0,0,312,313,7,5,0,0,313,349,3,44,22,8,314,315,10,6,0,0,
+	315,316,7,3,0,0,316,349,3,44,22,7,317,318,10,5,0,0,318,319,7,6,0,0,319,
+	349,3,44,22,6,320,326,10,4,0,0,321,327,5,39,0,0,322,327,5,40,0,0,323,327,
+	5,41,0,0,324,325,5,41,0,0,325,327,5,29,0,0,326,321,1,0,0,0,326,322,1,0,
+	0,0,326,323,1,0,0,0,326,324,1,0,0,0,327,328,1,0,0,0,328,349,3,44,22,5,329,
+	330,10,3,0,0,330,331,7,7,0,0,331,349,3,44,22,4,332,333,10,2,0,0,333,334,
+	7,8,0,0,334,349,3,44,22,3,335,336,10,15,0,0,336,349,7,2,0,0,337,338,10,
+	14,0,0,338,339,5,4,0,0,339,340,3,46,23,0,340,341,5,5,0,0,341,349,1,0,0,
+	0,342,343,10,13,0,0,343,344,5,14,0,0,344,349,5,64,0,0,345,346,10,8,0,0,
+	346,347,5,31,0,0,347,349,3,68,34,0,348,311,1,0,0,0,348,314,1,0,0,0,348,
+	317,1,0,0,0,348,320,1,0,0,0,348,329,1,0,0,0,348,332,1,0,0,0,348,335,1,0,
+	0,0,348,337,1,0,0,0,348,342,1,0,0,0,348,345,1,0,0,0,349,352,1,0,0,0,350,
+	348,1,0,0,0,350,351,1,0,0,0,351,45,1,0,0,0,352,350,1,0,0,0,353,358,3,44,
+	22,0,354,355,5,8,0,0,355,357,3,44,22,0,356,354,1,0,0,0,357,360,1,0,0,0,
+	358,356,1,0,0,0,358,359,1,0,0,0,359,362,1,0,0,0,360,358,1,0,0,0,361,353,
+	1,0,0,0,361,362,1,0,0,0,362,47,1,0,0,0,363,364,5,54,0,0,364,49,1,0,0,0,
+	365,366,5,4,0,0,366,367,3,16,8,0,367,368,5,5,0,0,368,369,5,7,0,0,369,370,
+	3,68,34,0,370,51,1,0,0,0,371,376,7,9,0,0,372,376,5,62,0,0,373,376,5,63,
+	0,0,374,376,5,61,0,0,375,371,1,0,0,0,375,372,1,0,0,0,375,373,1,0,0,0,375,
+	374,1,0,0,0,376,53,1,0,0,0,377,378,5,57,0,0,378,379,3,60,30,0,379,381,3,
+	56,28,0,380,382,3,58,29,0,381,380,1,0,0,0,381,382,1,0,0,0,382,55,1,0,0,
+	0,383,384,5,61,0,0,384,57,1,0,0,0,385,386,5,61,0,0,386,59,1,0,0,0,387,388,
+	7,0,0,0,388,61,1,0,0,0,389,390,5,58,0,0,390,391,5,61,0,0,391,63,1,0,0,0,
+	392,393,5,64,0,0,393,394,5,6,0,0,394,395,3,68,34,0,395,396,5,10,0,0,396,
+	417,1,0,0,0,397,398,5,64,0,0,398,399,5,4,0,0,399,400,3,16,8,0,400,403,5,
+	5,0,0,401,402,5,6,0,0,402,404,3,68,34,0,403,401,1,0,0,0,403,404,1,0,0,0,
+	404,405,1,0,0,0,405,406,3,10,5,0,406,417,1,0,0,0,407,408,5,59,0,0,408,412,
+	5,2,0,0,409,411,3,64,32,0,410,409,1,0,0,0,411,414,1,0,0,0,412,410,1,0,0,
+	0,412,413,1,0,0,0,413,415,1,0,0,0,414,412,1,0,0,0,415,417,5,3,0,0,416,392,
+	1,0,0,0,416,397,1,0,0,0,416,407,1,0,0,0,417,65,1,0,0,0,418,419,5,13,0,0,
+	419,421,3,26,13,0,420,418,1,0,0,0,420,421,1,0,0,0,421,422,1,0,0,0,422,423,
+	5,60,0,0,423,434,5,64,0,0,424,425,5,35,0,0,425,430,5,64,0,0,426,427,5,8,
+	0,0,427,429,5,64,0,0,428,426,1,0,0,0,429,432,1,0,0,0,430,428,1,0,0,0,430,
+	431,1,0,0,0,431,433,1,0,0,0,432,430,1,0,0,0,433,435,5,36,0,0,434,424,1,
+	0,0,0,434,435,1,0,0,0,435,436,1,0,0,0,436,440,5,2,0,0,437,439,3,64,32,0,
+	438,437,1,0,0,0,439,442,1,0,0,0,440,438,1,0,0,0,440,441,1,0,0,0,441,443,
+	1,0,0,0,442,440,1,0,0,0,443,445,5,3,0,0,444,446,5,10,0,0,445,444,1,0,0,
+	0,445,446,1,0,0,0,446,67,1,0,0,0,447,459,5,64,0,0,448,449,5,35,0,0,449,
+	454,3,68,34,0,450,451,5,8,0,0,451,453,3,68,34,0,452,450,1,0,0,0,453,456,
+	1,0,0,0,454,452,1,0,0,0,454,455,1,0,0,0,455,457,1,0,0,0,456,454,1,0,0,0,
+	457,458,5,36,0,0,458,460,1,0,0,0,459,448,1,0,0,0,459,460,1,0,0,0,460,463,
+	1,0,0,0,461,462,5,14,0,0,462,464,3,68,34,0,463,461,1,0,0,0,463,464,1,0,
+	0,0,464,467,1,0,0,0,465,467,3,50,25,0,466,447,1,0,0,0,466,465,1,0,0,0,467,
+	69,1,0,0,0,46,79,81,90,92,107,116,121,129,134,146,151,153,156,172,178,187,
+	215,222,242,250,258,275,281,285,302,307,309,326,348,350,358,361,375,381,
+	403,412,416,420,430,434,440,445,454,459,463,466];
 
 	private static __ATN: ATN;
 	public static get _ATN(): ATN {
@@ -2437,11 +2549,59 @@ export class ProgContext extends ParserRuleContext {
 		super(parent, invokingState);
     	this.parser = parser;
 	}
-	public toplevelnode_list(): ToplevelnodeContext[] {
-		return this.getTypedRuleContexts(ToplevelnodeContext) as ToplevelnodeContext[];
+	public cdefinitiondecl_list(): CdefinitiondeclContext[] {
+		return this.getTypedRuleContexts(CdefinitiondeclContext) as CdefinitiondeclContext[];
 	}
-	public toplevelnode(i: number): ToplevelnodeContext {
-		return this.getTypedRuleContext(ToplevelnodeContext, i) as ToplevelnodeContext;
+	public cdefinitiondecl(i: number): CdefinitiondeclContext {
+		return this.getTypedRuleContext(CdefinitiondeclContext, i) as CdefinitiondeclContext;
+	}
+	public prebuildcmd_list(): PrebuildcmdContext[] {
+		return this.getTypedRuleContexts(PrebuildcmdContext) as PrebuildcmdContext[];
+	}
+	public prebuildcmd(i: number): PrebuildcmdContext {
+		return this.getTypedRuleContext(PrebuildcmdContext, i) as PrebuildcmdContext;
+	}
+	public postbuildcmd_list(): PostbuildcmdContext[] {
+		return this.getTypedRuleContexts(PostbuildcmdContext) as PostbuildcmdContext[];
+	}
+	public postbuildcmd(i: number): PostbuildcmdContext {
+		return this.getTypedRuleContext(PostbuildcmdContext, i) as PostbuildcmdContext;
+	}
+	public namedfunc_list(): NamedfuncContext[] {
+		return this.getTypedRuleContexts(NamedfuncContext) as NamedfuncContext[];
+	}
+	public namedfunc(i: number): NamedfuncContext {
+		return this.getTypedRuleContext(NamedfuncContext, i) as NamedfuncContext;
+	}
+	public funcdecl_list(): FuncdeclContext[] {
+		return this.getTypedRuleContexts(FuncdeclContext) as FuncdeclContext[];
+	}
+	public funcdecl(i: number): FuncdeclContext {
+		return this.getTypedRuleContext(FuncdeclContext, i) as FuncdeclContext;
+	}
+	public compilationhint_list(): CompilationhintContext[] {
+		return this.getTypedRuleContexts(CompilationhintContext) as CompilationhintContext[];
+	}
+	public compilationhint(i: number): CompilationhintContext {
+		return this.getTypedRuleContext(CompilationhintContext, i) as CompilationhintContext;
+	}
+	public linkerhint_list(): LinkerhintContext[] {
+		return this.getTypedRuleContexts(LinkerhintContext) as LinkerhintContext[];
+	}
+	public linkerhint(i: number): LinkerhintContext {
+		return this.getTypedRuleContext(LinkerhintContext, i) as LinkerhintContext;
+	}
+	public structdecl_list(): StructdeclContext[] {
+		return this.getTypedRuleContexts(StructdeclContext) as StructdeclContext[];
+	}
+	public structdecl(i: number): StructdeclContext {
+		return this.getTypedRuleContext(StructdeclContext, i) as StructdeclContext;
+	}
+	public namespace_list(): NamespaceContext[] {
+		return this.getTypedRuleContexts(NamespaceContext) as NamespaceContext[];
+	}
+	public namespace(i: number): NamespaceContext {
+		return this.getTypedRuleContext(NamespaceContext, i) as NamespaceContext;
 	}
     public get ruleIndex(): number {
     	return HazeParser.RULE_prog;
@@ -2467,49 +2627,64 @@ export class ProgContext extends ParserRuleContext {
 }
 
 
-export class ToplevelnodeContext extends ParserRuleContext {
+export class NamespacecontentContext extends ParserRuleContext {
 	constructor(parser?: HazeParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
     	this.parser = parser;
 	}
-	public cdefinitiondecl(): CdefinitiondeclContext {
-		return this.getTypedRuleContext(CdefinitiondeclContext, 0) as CdefinitiondeclContext;
+	public namedfunc_list(): NamedfuncContext[] {
+		return this.getTypedRuleContexts(NamedfuncContext) as NamedfuncContext[];
 	}
-	public namedfunc(): NamedfuncContext {
-		return this.getTypedRuleContext(NamedfuncContext, 0) as NamedfuncContext;
+	public namedfunc(i: number): NamedfuncContext {
+		return this.getTypedRuleContext(NamedfuncContext, i) as NamedfuncContext;
 	}
-	public funcdecl(): FuncdeclContext {
-		return this.getTypedRuleContext(FuncdeclContext, 0) as FuncdeclContext;
+	public funcdecl_list(): FuncdeclContext[] {
+		return this.getTypedRuleContexts(FuncdeclContext) as FuncdeclContext[];
 	}
-	public compilationhint(): CompilationhintContext {
-		return this.getTypedRuleContext(CompilationhintContext, 0) as CompilationhintContext;
+	public funcdecl(i: number): FuncdeclContext {
+		return this.getTypedRuleContext(FuncdeclContext, i) as FuncdeclContext;
 	}
-	public linkerhint(): LinkerhintContext {
-		return this.getTypedRuleContext(LinkerhintContext, 0) as LinkerhintContext;
+	public compilationhint_list(): CompilationhintContext[] {
+		return this.getTypedRuleContexts(CompilationhintContext) as CompilationhintContext[];
 	}
-	public structdecl(): StructdeclContext {
-		return this.getTypedRuleContext(StructdeclContext, 0) as StructdeclContext;
+	public compilationhint(i: number): CompilationhintContext {
+		return this.getTypedRuleContext(CompilationhintContext, i) as CompilationhintContext;
 	}
-	public namespace(): NamespaceContext {
-		return this.getTypedRuleContext(NamespaceContext, 0) as NamespaceContext;
+	public linkerhint_list(): LinkerhintContext[] {
+		return this.getTypedRuleContexts(LinkerhintContext) as LinkerhintContext[];
+	}
+	public linkerhint(i: number): LinkerhintContext {
+		return this.getTypedRuleContext(LinkerhintContext, i) as LinkerhintContext;
+	}
+	public structdecl_list(): StructdeclContext[] {
+		return this.getTypedRuleContexts(StructdeclContext) as StructdeclContext[];
+	}
+	public structdecl(i: number): StructdeclContext {
+		return this.getTypedRuleContext(StructdeclContext, i) as StructdeclContext;
+	}
+	public namespace_list(): NamespaceContext[] {
+		return this.getTypedRuleContexts(NamespaceContext) as NamespaceContext[];
+	}
+	public namespace(i: number): NamespaceContext {
+		return this.getTypedRuleContext(NamespaceContext, i) as NamespaceContext;
 	}
     public get ruleIndex(): number {
-    	return HazeParser.RULE_toplevelnode;
+    	return HazeParser.RULE_namespacecontent;
 	}
 	public enterRule(listener: HazeListener): void {
-	    if(listener.enterToplevelnode) {
-	 		listener.enterToplevelnode(this);
+	    if(listener.enterNamespacecontent) {
+	 		listener.enterNamespacecontent(this);
 		}
 	}
 	public exitRule(listener: HazeListener): void {
-	    if(listener.exitToplevelnode) {
-	 		listener.exitToplevelnode(this);
+	    if(listener.exitNamespacecontent) {
+	 		listener.exitNamespacecontent(this);
 		}
 	}
 	// @Override
 	public accept<Result>(visitor: HazeVisitor<Result>): Result {
-		if (visitor.visitToplevelnode) {
-			return visitor.visitToplevelnode(this);
+		if (visitor.visitNamespacecontent) {
+			return visitor.visitNamespacecontent(this);
 		} else {
 			return visitor.visitChildren(this);
 		}
@@ -2525,11 +2700,8 @@ export class NamespaceContext extends ParserRuleContext {
 	public ID(): TerminalNode {
 		return this.getToken(HazeParser.ID, 0);
 	}
-	public toplevelnode_list(): ToplevelnodeContext[] {
-		return this.getTypedRuleContexts(ToplevelnodeContext) as ToplevelnodeContext[];
-	}
-	public toplevelnode(i: number): ToplevelnodeContext {
-		return this.getTypedRuleContext(ToplevelnodeContext, i) as ToplevelnodeContext;
+	public namespacecontent(): NamespacecontentContext {
+		return this.getTypedRuleContext(NamespacecontentContext, 0) as NamespacecontentContext;
 	}
     public get ruleIndex(): number {
     	return HazeParser.RULE_namespace;
@@ -2785,9 +2957,6 @@ export class CdefinitiondeclContext extends ParserRuleContext {
 	public STRING_LITERAL(): TerminalNode {
 		return this.getToken(HazeParser.STRING_LITERAL, 0);
 	}
-	public externlang(): ExternlangContext {
-		return this.getTypedRuleContext(ExternlangContext, 0) as ExternlangContext;
-	}
     public get ruleIndex(): number {
     	return HazeParser.RULE_cdefinitiondecl;
 	}
@@ -2805,6 +2974,70 @@ export class CdefinitiondeclContext extends ParserRuleContext {
 	public accept<Result>(visitor: HazeVisitor<Result>): Result {
 		if (visitor.visitCdefinitiondecl) {
 			return visitor.visitCdefinitiondecl(this);
+		} else {
+			return visitor.visitChildren(this);
+		}
+	}
+}
+
+
+export class PrebuildcmdContext extends ParserRuleContext {
+	constructor(parser?: HazeParser, parent?: ParserRuleContext, invokingState?: number) {
+		super(parent, invokingState);
+    	this.parser = parser;
+	}
+	public STRING_LITERAL(): TerminalNode {
+		return this.getToken(HazeParser.STRING_LITERAL, 0);
+	}
+    public get ruleIndex(): number {
+    	return HazeParser.RULE_prebuildcmd;
+	}
+	public enterRule(listener: HazeListener): void {
+	    if(listener.enterPrebuildcmd) {
+	 		listener.enterPrebuildcmd(this);
+		}
+	}
+	public exitRule(listener: HazeListener): void {
+	    if(listener.exitPrebuildcmd) {
+	 		listener.exitPrebuildcmd(this);
+		}
+	}
+	// @Override
+	public accept<Result>(visitor: HazeVisitor<Result>): Result {
+		if (visitor.visitPrebuildcmd) {
+			return visitor.visitPrebuildcmd(this);
+		} else {
+			return visitor.visitChildren(this);
+		}
+	}
+}
+
+
+export class PostbuildcmdContext extends ParserRuleContext {
+	constructor(parser?: HazeParser, parent?: ParserRuleContext, invokingState?: number) {
+		super(parent, invokingState);
+    	this.parser = parser;
+	}
+	public STRING_LITERAL(): TerminalNode {
+		return this.getToken(HazeParser.STRING_LITERAL, 0);
+	}
+    public get ruleIndex(): number {
+    	return HazeParser.RULE_postbuildcmd;
+	}
+	public enterRule(listener: HazeListener): void {
+	    if(listener.enterPostbuildcmd) {
+	 		listener.enterPostbuildcmd(this);
+		}
+	}
+	public exitRule(listener: HazeListener): void {
+	    if(listener.exitPostbuildcmd) {
+	 		listener.exitPostbuildcmd(this);
+		}
+	}
+	// @Override
+	public accept<Result>(visitor: HazeVisitor<Result>): Result {
+		if (visitor.visitPostbuildcmd) {
+			return visitor.visitPostbuildcmd(this);
 		} else {
 			return visitor.visitChildren(this);
 		}

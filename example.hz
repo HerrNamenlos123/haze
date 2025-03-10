@@ -4,7 +4,7 @@ declare "C" free(ptr: RawPtr<none>);
 declare "C" abort();
 declare "C" realloc(ptr: RawPtr<none>, newSize: u64): RawPtr<none>;
 
-declare "C" "#include <GLFW/glfw3.h>";
+inject "#include <GLFW/glfw3.h>";
 declare "C" struct GLFWwindow {};
 declare "C" struct GLFWmonitor {};
 declare "C" glfwInit(): boolean;
@@ -240,15 +240,15 @@ fib(count: i32) {
 }
 
 declare "C" draw();
-declare "C" "#include \"../gl.c\"";
-
-namespace Outer {
-  namespace Inner {
-    struct Test {
-      a: i32;
-    };
-  }
-}
+declare "C" init();
+declare "C" exitt();
+inject "#define TRAY_APPINDICATOR 1";
+inject "#include \"../tray.h\"";
+inject "#include \"../gl.c\"";
+prebuildcmd "pkg-config --version";
+link "$(pkg-config --cflags --libs gtk+-3.0)"
+link "$(pkg-config --cflags --libs appindicator3-0.1)"
+link "-lGL -lglfw"
 
 window(): i32 {
   if not glfwInit() {
@@ -256,35 +256,35 @@ window(): i32 {
     return 0;
   }
 
-    const windowResult = Window(720, 480, "Test 1");
-    if not windowResult.isSuccess {
-        printf("%s\n", windowResult.error);
-        glfwTerminate();
-        return 0;
-    }
-    const window = windowResult.success;
+  init();
+  const windowResult = Window(720, 480, "Test 1");
+  if not windowResult.isSuccess {
+      printf("%s\n", windowResult.error);
+      glfwTerminate();
+      return 0;
+  }
+  const window = windowResult.success;
 
-    window.makeContextCurrent();
-    window.setVSync(true);
+  window.makeContextCurrent();
+  window.setVSync(true);
 
-    while (!window.shouldClose())
-    {
-        draw();
-        window.swapBuffers();
-        window.pollEvents();
-    }
+  while (!window.shouldClose())
+  {
+      draw();
+      window.swapBuffers();
+      window.pollEvents();
+  }
 
-    glfwTerminate();
-    return 0;
+  exitt();
+  glfwTerminate();
+  return 0;
 }
-
-declare "C" init();
 
 main(): i32 {
   assertTypes();
   // fib(10);
   // init(); 
   // test2(); 
-  return 0;
-  // return window();
+  // return 0;
+  return window();
 }

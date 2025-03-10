@@ -4,7 +4,7 @@ import {ParseTreeListener} from "antlr4";
 
 
 import { ProgContext } from "./HazeParser.js";
-import { ToplevelnodeContext } from "./HazeParser.js";
+import { NamespacecontentContext } from "./HazeParser.js";
 import { NamespaceContext } from "./HazeParser.js";
 import { NamedfuncContext } from "./HazeParser.js";
 import { FuncContext } from "./HazeParser.js";
@@ -13,6 +13,8 @@ import { BodyContext } from "./HazeParser.js";
 import { ParamContext } from "./HazeParser.js";
 import { ParamsContext } from "./HazeParser.js";
 import { CdefinitiondeclContext } from "./HazeParser.js";
+import { PrebuildcmdContext } from "./HazeParser.js";
+import { PostbuildcmdContext } from "./HazeParser.js";
 import { FuncdeclContext } from "./HazeParser.js";
 import { ExternlangContext } from "./HazeParser.js";
 import { IfexprContext } from "./HazeParser.js";
@@ -76,15 +78,15 @@ export default class HazeListener extends ParseTreeListener {
 	 */
 	exitProg?: (ctx: ProgContext) => void;
 	/**
-	 * Enter a parse tree produced by `HazeParser.toplevelnode`.
+	 * Enter a parse tree produced by `HazeParser.namespacecontent`.
 	 * @param ctx the parse tree
 	 */
-	enterToplevelnode?: (ctx: ToplevelnodeContext) => void;
+	enterNamespacecontent?: (ctx: NamespacecontentContext) => void;
 	/**
-	 * Exit a parse tree produced by `HazeParser.toplevelnode`.
+	 * Exit a parse tree produced by `HazeParser.namespacecontent`.
 	 * @param ctx the parse tree
 	 */
-	exitToplevelnode?: (ctx: ToplevelnodeContext) => void;
+	exitNamespacecontent?: (ctx: NamespacecontentContext) => void;
 	/**
 	 * Enter a parse tree produced by `HazeParser.namespace`.
 	 * @param ctx the parse tree
@@ -165,6 +167,26 @@ export default class HazeListener extends ParseTreeListener {
 	 * @param ctx the parse tree
 	 */
 	exitCdefinitiondecl?: (ctx: CdefinitiondeclContext) => void;
+	/**
+	 * Enter a parse tree produced by `HazeParser.prebuildcmd`.
+	 * @param ctx the parse tree
+	 */
+	enterPrebuildcmd?: (ctx: PrebuildcmdContext) => void;
+	/**
+	 * Exit a parse tree produced by `HazeParser.prebuildcmd`.
+	 * @param ctx the parse tree
+	 */
+	exitPrebuildcmd?: (ctx: PrebuildcmdContext) => void;
+	/**
+	 * Enter a parse tree produced by `HazeParser.postbuildcmd`.
+	 * @param ctx the parse tree
+	 */
+	enterPostbuildcmd?: (ctx: PostbuildcmdContext) => void;
+	/**
+	 * Exit a parse tree produced by `HazeParser.postbuildcmd`.
+	 * @param ctx the parse tree
+	 */
+	exitPostbuildcmd?: (ctx: PostbuildcmdContext) => void;
 	/**
 	 * Enter a parse tree produced by `HazeParser.funcdecl`.
 	 * @param ctx the parse tree

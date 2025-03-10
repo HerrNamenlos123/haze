@@ -23,7 +23,10 @@ export class Program {
   globalScope: Scope;
   concreteFunctions: { [name: string]: FunctionSymbol } = {};
   concreteDatatypes: { [name: string]: DatatypeSymbol } = {};
+  prebuildCmds: string[] = [];
+  postbuildCmds: string[] = [];
   cDefinitionDecl: string[] = [];
+  linkerFlags: string[] = [];
   filename: string;
   scopeStack: Scope[];
 

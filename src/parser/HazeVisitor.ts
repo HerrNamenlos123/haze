@@ -4,7 +4,7 @@ import {ParseTreeVisitor} from 'antlr4';
 
 
 import { ProgContext } from "./HazeParser.js";
-import { ToplevelnodeContext } from "./HazeParser.js";
+import { NamespacecontentContext } from "./HazeParser.js";
 import { NamespaceContext } from "./HazeParser.js";
 import { NamedfuncContext } from "./HazeParser.js";
 import { FuncContext } from "./HazeParser.js";
@@ -13,6 +13,8 @@ import { BodyContext } from "./HazeParser.js";
 import { ParamContext } from "./HazeParser.js";
 import { ParamsContext } from "./HazeParser.js";
 import { CdefinitiondeclContext } from "./HazeParser.js";
+import { PrebuildcmdContext } from "./HazeParser.js";
+import { PostbuildcmdContext } from "./HazeParser.js";
 import { FuncdeclContext } from "./HazeParser.js";
 import { ExternlangContext } from "./HazeParser.js";
 import { IfexprContext } from "./HazeParser.js";
@@ -75,11 +77,11 @@ export default class HazeVisitor<Result> extends ParseTreeVisitor<Result> {
 	 */
 	visitProg?: (ctx: ProgContext) => Result;
 	/**
-	 * Visit a parse tree produced by `HazeParser.toplevelnode`.
+	 * Visit a parse tree produced by `HazeParser.namespacecontent`.
 	 * @param ctx the parse tree
 	 * @return the visitor result
 	 */
-	visitToplevelnode?: (ctx: ToplevelnodeContext) => Result;
+	visitNamespacecontent?: (ctx: NamespacecontentContext) => Result;
 	/**
 	 * Visit a parse tree produced by `HazeParser.namespace`.
 	 * @param ctx the parse tree
@@ -128,6 +130,18 @@ export default class HazeVisitor<Result> extends ParseTreeVisitor<Result> {
 	 * @return the visitor result
 	 */
 	visitCdefinitiondecl?: (ctx: CdefinitiondeclContext) => Result;
+	/**
+	 * Visit a parse tree produced by `HazeParser.prebuildcmd`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitPrebuildcmd?: (ctx: PrebuildcmdContext) => Result;
+	/**
+	 * Visit a parse tree produced by `HazeParser.postbuildcmd`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitPostbuildcmd?: (ctx: PostbuildcmdContext) => Result;
 	/**
 	 * Visit a parse tree produced by `HazeParser.funcdecl`.
 	 * @param ctx the parse tree

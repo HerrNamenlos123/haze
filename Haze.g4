@@ -1,10 +1,10 @@
 grammar Haze;
 
-prog: (toplevelnode)*;
-toplevelnode: cdefinitiondecl | namedfunc | funcdecl | compilationhint | linkerhint | structdecl | namespace;
+prog: (cdefinitiondecl | prebuildcmd | postbuildcmd | namedfunc | funcdecl | compilationhint | linkerhint | structdecl | namespace)*;
 
+namespacecontent: (namedfunc | funcdecl | compilationhint | linkerhint | structdecl | namespace)*;
 namespace
-    : 'namespace' ID '{' (toplevelnode)* '}'
+    : 'namespace' ID '{' namespacecontent '}'
     ;
 
 namedfunc: ID '(' params ')' (':' datatype)? funcbody;
@@ -16,7 +16,9 @@ body: (statement)*;
 param: ID ':' datatype;
 params: (param (',' param)* (',' ellipsis)?)? | ellipsis;
 
-cdefinitiondecl: 'declare' (externlang) STRING_LITERAL ';';
+cdefinitiondecl: 'inject' STRING_LITERAL ';';
+prebuildcmd: 'prebuildcmd' STRING_LITERAL ';';
+postbuildcmd: 'postbuildcmd' STRING_LITERAL ';';
 funcdecl: 'declare' (externlang)? (ID '.')* ID '(' params ')' (':' datatype)? ';';
 externlang: '"C"' | '"C++"';
 
@@ -94,7 +96,7 @@ compilationhint: '#compile' compilationlang compilationhintfilename compilationh
 compilationhintfilename: STRING_LITERAL;
 compilationhintflags: STRING_LITERAL;
 compilationlang: '"C"' | '"C++"';
-linkerhint: '#link' STRING_LITERAL;
+linkerhint: 'link' STRING_LITERAL;
 
 structcontent
     : ID ':' datatype ';'                                    #StructMember

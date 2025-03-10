@@ -4,9 +4,12 @@ import {
   FuncContext,
   FuncdeclContext,
   FunctionDatatypeContext,
+  LinkerhintContext,
   NamedfuncContext,
   NamespaceContext,
   ParamsContext,
+  PostbuildcmdContext,
+  PrebuildcmdContext,
   StructDeclContext,
   StructMemberContext,
   StructMethodContext,
@@ -336,7 +339,7 @@ export class SymbolCollector extends HazeVisitor<any> {
     this.program.pushScope(scope);
 
     const name = ctx.ID().getText();
-    ctx.toplevelnode_list().forEach((n) => {
+    ctx.namespacecontent().children?.forEach((n) => {
       const symbol = this.visit(n);
       scope.defineSymbol(symbol, this.program.getLoc(ctx));
     });
@@ -354,5 +357,20 @@ export class SymbolCollector extends HazeVisitor<any> {
     this.program.currentScope.defineSymbol(symbol, this.program.getLoc(ctx));
 
     return symbol;
+  };
+
+  visitPrebuildcmd = (ctx: PrebuildcmdContext): void => {
+    const cmd = JSON.parse(ctx.STRING_LITERAL().getText()) as string;
+    this.program.prebuildCmds.push(cmd);
+  };
+
+  visitPostbuildcmd = (ctx: PostbuildcmdContext): void => {
+    const cmd = JSON.parse(ctx.STRING_LITERAL().getText()) as string;
+    this.program.postbuildCmds.push(cmd);
+  };
+
+  visitLinkerhint = (ctx: LinkerhintContext): void => {
+    const cmd = JSON.parse(ctx.STRING_LITERAL().getText()) as string;
+    this.program.linkerFlags.push(cmd);
   };
 }
