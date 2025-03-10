@@ -17,6 +17,18 @@ declare "C" glfwSwapBuffers(w: RawPtr<GLFWwindow>);
 declare "C" glfwPollEvents();
 declare "C" glfwSwapInterval(flag: i8);
 
+struct LogContext {
+  trace: (fmt: stringview, ...) => none;
+  info: (fmt: stringview, ...) => none;
+  debug: (fmt: stringview, ...) => none;
+  warn: (fmt: stringview, ...) => none;
+  error: (fmt: stringview, ...) => none;
+}
+
+struct Context {
+  log: LogContext;
+};
+
 struct Result<TSuccess, TError> {
   unsafe_union {
     success: TSuccess;
@@ -114,16 +126,18 @@ panic(msg: stringview) {
   abort();
 }
 
-assert(v: boolean) {
-  if not v {
-    panic("Assertion failed");
-  }
+inject "typedef struct timespec timespec_t;";
+declare "C" struct timespec_t {
+  tv_sec: u64;
+  tv_nsec: u64;
 }
+
+declare "C" assert(cond: boolean);
 
 assertTypes() {
   __c__("struct timespec t;");
-  __c__("_H6assert(context, sizeof(t.tv_sec) == 8)");
-  __c__("_H6assert(context, sizeof(t.tv_nsec) == 8)");
+  __c__("assert(sizeof(t.tv_sec) == 8)");
+  __c__("assert(sizeof(t.tv_nsec) == 8)");
 }
 
 struct Duration {
@@ -152,6 +166,7 @@ struct MemoryBuffer {
   size: u64;
 
   constructor(size: u64): MemoryBuffer {
+    const a = ctx;
     const buffer = malloc(size);
     if !buffer {
       panic("Allocation failed");
@@ -270,9 +285,15 @@ window(): i32 {
 
   while (!window.shouldClose())
   {
-      draw();
-      window.swapBuffers();
-      window.pollEvents();
+    // printf("\n");
+    // ctx.log.trace("Test: %d", 56);
+    // ctx.log.info("Test: %d", 56);
+    // ctx.log.debug("Test: %d", 56);
+    // ctx.log.warn("Test: %d", 56);
+    // ctx.log.error("Test: %d", 56);
+    draw();
+    window.swapBuffers();
+    window.pollEvents();
   }
 
   exitt();
@@ -282,6 +303,46 @@ window(): i32 {
 
 main(): i32 {
   assertTypes();
+  ctx.log.trace = (fmt: stringview, ...) => {
+    printf("[\033[37mtrace\033[0m] ");
+    __c__("va_list args");
+    __c__("va_start(args, fmt)");
+    __c__("vprintf(fmt, args)");
+    __c__("va_end(args)");
+    printf("\n");
+  };
+  ctx.log.info = (fmt: stringview, ...) => {
+    printf("[\033[32minfo\033[0m] ");
+    __c__("va_list args");
+    __c__("va_start(args, fmt)");
+    __c__("vprintf(fmt, args)");
+    __c__("va_end(args)");
+    printf("\n");
+  };
+  ctx.log.debug = (fmt: stringview, ...) => {
+    printf("[\033[34mdebug\033[0m] ");
+    __c__("va_list args");
+    __c__("va_start(args, fmt)");
+    __c__("vprintf(fmt, args)");
+    __c__("va_end(args)");
+    printf("\n");
+  };
+  ctx.log.warn = (fmt: stringview, ...) => {
+    printf("[\033[33mwarn\033[0m] ");
+    __c__("va_list args");
+    __c__("va_start(args, fmt)");
+    __c__("vprintf(fmt, args)");
+    __c__("va_end(args)");
+    printf("\n");
+  };
+  ctx.log.error = (fmt: stringview, ...) => {
+    printf("[\033[31merror\033[0m] ");
+    __c__("va_list args");
+    __c__("va_start(args, fmt)");
+    __c__("vprintf(fmt, args)");
+    __c__("va_end(args)");
+    printf("\n");
+  };
   // fib(10);
   // init(); 
   // test2(); 

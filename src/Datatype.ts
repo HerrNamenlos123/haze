@@ -400,6 +400,59 @@ export function serializeDatatype(datatype: Datatype): string {
   }
 }
 
+export function generateDeclarationCCode(
+  _datatype: DatatypeSymbol,
+  program: Program,
+): OutputWriter {
+  const writer = new OutputWriter();
+  const scope = new Scope(_datatype.scope.location, _datatype.scope);
+  if (_datatype.type.variant === "Struct") {
+    defineGenericsInScope(_datatype.type.generics, scope);
+  }
+  const datatype: DatatypeSymbol = {
+    name: _datatype.name,
+    scope: _datatype.scope,
+    variant: _datatype.variant,
+    parentSymbol: _datatype.parentSymbol,
+    type: resolveGenerics(_datatype.type, scope, _datatype.scope.location),
+  };
+  switch (datatype.type.variant) {
+    case "Primitive":
+      return writer;
+
+    case "Struct":
+      if (!datatype.type.language) {
+        const struct = generateUsageCode(datatype.type, program);
+        writer.writeLine(`struct ${struct}_;`);
+        writer.writeLine(`typedef struct ${struct}_ ${struct};`);
+      }
+      return writer;
+
+    case "RawPointer":
+      const generic = datatype.type.generics.get("__Pointee");
+      if (!generic) {
+        throw new ImpossibleSituation();
+      }
+      writer.writeLine(
+        `typedef ${generateUsageCode(generic, program)}* ${mangleSymbol(datatype)};`,
+      );
+      return writer;
+
+    case "Function":
+      const params = datatype.type.functionParameters.map(([name, tp]) =>
+        generateUsageCode(tp, program),
+      );
+      writer.write(
+        `typedef ${generateUsageCode(datatype.type.functionReturnType, program)} (*${generateUsageCode(datatype.type, program)})(${generateUsageCode(program.getBuiltinType("Context"), program)}* ctx, ${params.join(", ")}${datatype.type.vararg ? ", ..." : ""});`,
+      );
+      return writer;
+
+    case "Namespace":
+      return writer;
+  }
+  throw new InternalError(`Invalid variant ${datatype.type.variant}`);
+}
+
 export function generateDefinitionCCode(
   _datatype: DatatypeSymbol,
   program: Program,
@@ -422,7 +475,9 @@ export function generateDefinitionCCode(
 
     case "Struct":
       if (!datatype.type.language) {
-        writer.writeLine(`typedef struct {`).pushIndent();
+        writer
+          .writeLine(`struct ${generateUsageCode(datatype.type, program)}_ {`)
+          .pushIndent();
         for (const memberSymbol of datatype.type.members) {
           if (memberSymbol.variant === "Variable") {
             writer.writeLine(
@@ -438,29 +493,14 @@ export function generateDefinitionCCode(
             writer.popIndent().writeLine("};");
           }
         }
-        writer
-          .popIndent()
-          .writeLine(`} ${generateUsageCode(datatype.type, program)};`);
+        writer.popIndent().writeLine(`};`);
       }
       return writer;
 
     case "RawPointer":
-      const generic = datatype.type.generics.get("__Pointee");
-      if (!generic) {
-        throw new ImpossibleSituation();
-      }
-      writer.writeLine(
-        `typedef ${generateUsageCode(generic, program)}* ${mangleSymbol(datatype)};`,
-      );
       return writer;
 
     case "Function":
-      const params = datatype.type.functionParameters.map(([name, tp]) =>
-        generateUsageCode(datatype.type, program),
-      );
-      writer.write(
-        `typedef ${generateUsageCode(datatype.type.functionReturnType, program)} (*${generateUsageCode(datatype.type, program)})(${params.join(", ")});`,
-      );
       return writer;
 
     case "Namespace":

@@ -14,18 +14,37 @@ import {
   InternalError,
   type Location,
 } from "./Errors";
-import { CommonDatatypeContext } from "./parser/HazeParser";
+import {
+  CommonDatatypeContext,
+  FuncContext,
+  FuncdeclContext,
+  NamedfuncContext,
+  ParamContext,
+  ParamsContext,
+  StructMethodContext,
+} from "./parser/HazeParser";
 import type HazeVisitor from "./parser/HazeVisitor";
 import type { Program } from "./Program";
 import { Scope } from "./Scope";
 import {
   isSymbolGeneric,
+  Language,
   mangleDatatype,
   mangleSymbol,
   serializeSymbol,
   type DatatypeSymbol,
+  type FunctionSymbol,
+  type SpecialMethod,
+  type Symbol,
 } from "./Symbol";
 import * as _ from "lodash";
+
+export const RESERVED_VARIABLE_NAMES = ["this", "ctx", "__returnval__"];
+export const RESERVED_STRUCT_NAMES = ["RawPtr"]; // "Context"
+export const INTERNAL_METHOD_NAMES = ["constructor", "destructor", "sizeof"];
+export const RESERVED_NAMESPACES = ["global"];
+
+export type ParamPack = { params: [string, Datatype][]; vararg: boolean };
 
 export function defineGenericsInScope(generics: Generics, scope: Scope) {
   for (const [name, tp] of generics) {
@@ -422,7 +441,7 @@ export const visitCommonDatatypeImpl = (
 export function datatypeSymbolUsed(symbol: DatatypeSymbol, program: Program) {
   const mangled = mangleSymbol(symbol);
   if (!(mangled in program.concreteDatatypes)) {
-    program.concreteDatatypes[mangled] = symbol;
+    program.concreteDatatypes.set(mangled, symbol);
   }
 }
 
@@ -444,4 +463,108 @@ export function getNestedReturnTypes(scope: Scope) {
   // Deduplicate
   const uniqueTypes = new Set(returnedTypes);
   return Array.from(uniqueTypes);
+}
+
+export function collectFunction(
+  _this: HazeVisitor<any>,
+  ctx: FuncContext | NamedfuncContext | StructMethodContext | FuncdeclContext,
+  name: string,
+  program: Program,
+  parentSymbol: Symbol,
+  functype: Language = Language.Internal,
+): FunctionSymbol {
+  const parentScope = program.currentScope;
+  const scope = program.pushScope(
+    new Scope(program.getLoc(ctx), program.currentScope),
+  );
+
+  let returntype: Datatype = program.getBuiltinType("none");
+  if (ctx.datatype()) {
+    returntype = _this.visit(ctx.datatype());
+  } else if (!(ctx instanceof FuncdeclContext)) {
+    if (returntype.variant === "Deferred" && ctx.funcbody().expr()) {
+      const expr = _this.visit(ctx.funcbody().expr());
+      returntype = expr.type;
+    }
+  }
+  // else {
+  //   returntype = this.program.getBuiltinType("none");
+  // }
+
+  let specialMethod: SpecialMethod = undefined;
+  if (
+    parentSymbol &&
+    parentSymbol.variant === "Datatype" &&
+    parentSymbol.type?.variant === "Struct"
+  ) {
+    if (name === "constructor") {
+      specialMethod = "constructor";
+    } else if (name === "destructor") {
+      specialMethod = "destructor";
+    }
+  }
+
+  const params: ParamPack = _this.visit(ctx.params());
+  const type: FunctionDatatype = {
+    variant: "Function",
+    functionParameters: params.params,
+    functionReturnType: returntype,
+    vararg: params.vararg,
+  };
+  const symbol: FunctionSymbol = {
+    variant: "Function",
+    name: name,
+    language: functype,
+    type: type,
+    specialMethod: specialMethod,
+    scope: scope,
+    parentSymbol: parentSymbol,
+    ctx: ctx,
+  };
+
+  if (
+    parentSymbol &&
+    parentSymbol.variant === "Datatype" &&
+    parentSymbol.type?.variant === "Struct"
+  ) {
+    if (name === "destructor") {
+      if (type.functionParameters.length !== 0) {
+        throw new CompilerError(
+          `Destructor of struct '${parentSymbol.name}' cannot have any parameters`,
+          program.getLoc(ctx),
+        );
+      }
+    }
+  }
+
+  parentScope.defineSymbol(symbol, program.getLoc(ctx));
+  program.ctxToSymbolMap.set(ctx, symbol);
+
+  if (
+    !isSymbolGeneric(symbol) &&
+    (!parentSymbol ||
+      parentSymbol.type.variant === "Namespace" ||
+      Object.keys("generics" in parentSymbol.type && parentSymbol.type.generics)
+        .length === 0)
+  ) {
+    program.concreteFunctions.set(mangleSymbol(symbol), symbol);
+  }
+
+  program.popScope();
+  return symbol;
+}
+
+export function visitParam(
+  _this: HazeVisitor<any>,
+  ctx: ParamContext,
+): [string, Datatype] {
+  return [ctx.ID().getText(), _this.visit(ctx.datatype())];
+}
+
+export function visitParams(
+  _this: HazeVisitor<any>,
+  ctx: ParamsContext,
+): ParamPack {
+  const params = ctx.param_list().map((n) => visitParam(_this, n));
+  return { params: params, vararg: ctx.ellipsis() !== undefined };
 }

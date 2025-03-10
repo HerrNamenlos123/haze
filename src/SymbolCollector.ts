@@ -41,7 +41,15 @@ import {
 } from "./Datatype";
 import { Scope } from "./Scope";
 import type { ParserRuleContext } from "antlr4";
-import { datatypeSymbolUsed, visitCommonDatatypeImpl } from "./utils";
+import {
+  collectFunction,
+  datatypeSymbolUsed,
+  RESERVED_STRUCT_NAMES,
+  visitCommonDatatypeImpl,
+  visitParam,
+  visitParams,
+  type ParamPack,
+} from "./utils";
 
 export class SymbolCollector extends HazeVisitor<any> {
   private program: Program;
@@ -56,14 +64,11 @@ export class SymbolCollector extends HazeVisitor<any> {
   }
 
   visitParam = (ctx: ParamContext): [string, Datatype] => {
-    return [ctx.ID().getText(), this.visit(ctx.datatype())];
+    return visitParam(this, ctx);
   };
 
-  visitParams = (
-    ctx: ParamsContext,
-  ): { params: [string, Datatype][]; vararg: boolean } => {
-    const params = ctx.param_list().map((n) => this.visitParam(n));
-    return { params: params, vararg: ctx.ellipsis() !== undefined };
+  visitParams = (ctx: ParamsContext): ParamPack => {
+    return visitParams(this, ctx);
   };
 
   visitCommonDatatype = (ctx: CommonDatatypeContext): Datatype => {
@@ -128,104 +133,35 @@ export class SymbolCollector extends HazeVisitor<any> {
       );
     }
 
-    this.implFunc(ctx, signature[0], functype);
-  };
-
-  private implFunc(
-    ctx: FuncContext | NamedfuncContext | StructMethodContext | FuncdeclContext,
-    name: string,
-    functype: Language = Language.Internal,
-  ): FunctionSymbol {
-    const parentScope = this.program.currentScope;
-    const scope = this.program.pushScope(
-      new Scope(this.program.getLoc(ctx), this.program.currentScope),
+    collectFunction(
+      this,
+      ctx,
+      signature[0],
+      this.program,
+      this.parentSymbolStack[this.parentSymbolStack.length - 1],
+      functype,
     );
-
-    let returntype: Datatype = this.program.getBuiltinType("none");
-    if (ctx.datatype()) {
-      returntype = this.visit(ctx.datatype());
-    } else if (!(ctx instanceof FuncdeclContext)) {
-      if (returntype.variant === "Deferred" && ctx.funcbody().expr()) {
-        const expr = this.visit(ctx.funcbody().expr());
-        returntype = expr.type;
-      }
-    }
-    // else {
-    //   returntype = this.program.getBuiltinType("none");
-    // }
-
-    const parentSymbol =
-      this.parentSymbolStack[this.parentSymbolStack.length - 1];
-    let specialMethod: SpecialMethod = undefined;
-    if (
-      parentSymbol &&
-      parentSymbol.variant === "Datatype" &&
-      parentSymbol.type?.variant === "Struct"
-    ) {
-      if (name === "constructor") {
-        specialMethod = "constructor";
-      } else if (name === "destructor") {
-        specialMethod = "destructor";
-      }
-    }
-
-    const params = this.visitParams(ctx.params());
-    const type: FunctionDatatype = {
-      variant: "Function",
-      functionParameters: params.params,
-      functionReturnType: returntype,
-      vararg: params.vararg,
-    };
-    const symbol: FunctionSymbol = {
-      variant: "Function",
-      name: name,
-      language: functype,
-      type: type,
-      specialMethod: specialMethod,
-      scope: scope,
-      parentSymbol: parentSymbol,
-      ctx: ctx,
-    };
-
-    if (
-      parentSymbol &&
-      parentSymbol.variant === "Datatype" &&
-      parentSymbol.type?.variant === "Struct"
-    ) {
-      if (name === "destructor") {
-        if (type.functionParameters.length !== 0) {
-          throw new CompilerError(
-            `Destructor of struct '${parentSymbol.name}' cannot have any parameters`,
-            this.program.getLoc(ctx),
-          );
-        }
-      }
-    }
-
-    parentScope.defineSymbol(symbol, this.program.getLoc(ctx));
-    this.program.ctxToSymbolMap.set(ctx, symbol);
-
-    if (
-      !isSymbolGeneric(symbol) &&
-      (!parentSymbol ||
-        parentSymbol.type.variant === "Namespace" ||
-        Object.keys(
-          parentSymbol.variant === "Datatype" && parentSymbol.type.generics,
-        ).length === 0)
-    ) {
-      this.program.concreteFunctions[mangleSymbol(symbol)] = symbol;
-    }
-
-    this.program.popScope();
-    return symbol;
-  }
-
-  visitFunc = (ctx: FuncContext): FunctionSymbol => {
-    return this.implFunc(ctx, this.program.makeAnonymousName());
   };
+
+  // Disabled because anonymous functions are collected in the semantic analyzer
+  // visitFunc = (ctx: FuncContext): FunctionSymbol => {
+  //   return collectFunction(
+  //     this,
+  //     ctx,
+  //     this.program.makeAnonymousName(),
+  //     this.program,
+  //     this.parentSymbolStack[this.parentSymbolStack.length - 1],
+  //   );
+  // };
 
   visitNamedfunc = (ctx: NamedfuncContext): FunctionSymbol => {
-    return this.implFunc(ctx, ctx.ID().getText());
+    return collectFunction(
+      this,
+      ctx,
+      ctx.ID().getText(),
+      this.program,
+      this.parentSymbolStack[this.parentSymbolStack.length - 1],
+    );
   };
 
   visitStructMember = (ctx: StructMemberContext) => {
@@ -255,6 +191,13 @@ export class SymbolCollector extends HazeVisitor<any> {
     const scope = this.program.pushScope(
       new Scope(this.program.getLoc(ctx), parentScope),
     );
+
+    if (RESERVED_STRUCT_NAMES.includes(name)) {
+      throw new CompilerError(
+        `'${name}' is a reserved name`,
+        this.program.getLoc(ctx),
+      );
+    }
 
     const genericsList: [string, undefined][] = ctx
       .ID_list()
@@ -327,7 +270,13 @@ export class SymbolCollector extends HazeVisitor<any> {
 
   visitStructMethod = (ctx: StructMethodContext): FunctionSymbol => {
     const name = ctx.ID().getText();
-    const symbol = this.implFunc(ctx, name);
+    const symbol = collectFunction(
+      this,
+      ctx,
+      name,
+      this.program,
+      this.parentSymbolStack[this.parentSymbolStack.length - 1],
+    );
     return symbol;
   };
 

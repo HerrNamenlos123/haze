@@ -118,8 +118,14 @@ STRING_LITERAL
     ;
 
 fragment ESC
-    :   '\\' [btnfr"'\\]
+    :   '\\x' HEX HEX
+    |   '\\' [btnfr"'\\]
     |   '\\' ('u' HEX HEX HEX HEX | 'U' HEX HEX HEX HEX HEX HEX HEX HEX)
+    |   '\\' OCTAL
+    ;
+
+fragment OCTAL
+    :   [0-3]? [0-7] [0-7]?                    // Matches up to \377
     ;
 
 fragment HEX

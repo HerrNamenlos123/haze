@@ -41,10 +41,13 @@ import {
   ExplicitCastExprContext,
   ExprAssignmentExprContext,
   FuncdeclContext,
+  FuncRefExprContext,
   IfexprContext,
   IfStatementContext,
   InlineCStatementContext,
   LiteralConstantContext,
+  ParamContext,
+  ParamsContext,
   PostIncrExprContext,
   PreIncrExprContext,
   SymbolValueExprContext,
@@ -68,11 +71,17 @@ import {
   type VariableDefinitionContext,
 } from "./parser/HazeParser";
 import {
+  collectFunction,
   datatypeSymbolUsed,
   defineGenericsInScope,
   getNestedReturnTypes,
+  INTERNAL_METHOD_NAMES,
+  RESERVED_VARIABLE_NAMES,
   resolveGenerics,
   visitCommonDatatypeImpl,
+  visitParam,
+  visitParams,
+  type ParamPack,
 } from "./utils";
 import type { ParserRuleContext } from "antlr4";
 import type {
@@ -89,6 +98,7 @@ import type {
   PreIncrExpr,
   RawPointerDereferenceExpression,
   SizeofExpr,
+  SymbolValueExpression,
   UnaryExpression,
 } from "./Expression";
 import type {
@@ -102,10 +112,6 @@ import type {
 } from "./Statement";
 import { SymbolFlags } from "typescript";
 
-const RESERVED_VARIABLE_NAMES = ["this", "context", "__returnval__"];
-const INTERNAL_METHOD_NAMES = ["constructor", "destructor", "sizeof"];
-const RESERVED_NAMESPACES = ["global"];
-
 class FunctionBodyAnalyzer extends HazeVisitor<any> {
   private program: Program;
   private functionStack: FunctionSymbol[];
@@ -115,6 +121,14 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
     this.program = program;
     this.functionStack = [];
   }
+
+  visitParam = (ctx: ParamContext): [string, Datatype] => {
+    return visitParam(this, ctx);
+  };
+
+  visitParams = (ctx: ParamsContext): ParamPack => {
+    return visitParams(this, ctx);
+  };
 
   visitCommonDatatype = (ctx: CommonDatatypeContext): Datatype => {
     return visitCommonDatatypeImpl(this, this.program, ctx);
@@ -198,7 +212,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
             );
           }
           if (
-            !this.program.concreteFunctions[mangleSymbol(constructorSymbol)]
+            !this.program.concreteFunctions.get(mangleSymbol(constructorSymbol))
           ) {
             constructorSymbol.scope = new Scope(
               constructorSymbol.scope.location,
@@ -237,7 +251,9 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
             );
             this.implFunc(constructorSymbol.ctx as FuncContext);
           }
-          if (!this.program.concreteFunctions[mangleSymbol(destructorSymbol)]) {
+          if (
+            !this.program.concreteFunctions.get(mangleSymbol(destructorSymbol))
+          ) {
             destructorSymbol.scope = new Scope(
               destructorSymbol.scope.location,
               destructorSymbol.scope,
@@ -364,11 +380,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
       };
     }
 
-    if (
-      expr.variant !== "SymbolValue" ||
-      expr.type.variant !== "Function" ||
-      expr.symbol.variant !== "Function"
-    ) {
+    if (expr.type.variant !== "Function") {
       throw new CompilerError(
         `Expression of type '${serializeDatatype(expr.type)}' is not callable`,
         this.program.getLoc(ctx),
@@ -376,8 +388,10 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
     }
 
     if (
-      expr.symbol.specialMethod === "constructor" ||
-      expr.symbol.specialMethod === "destructor"
+      expr.variant === "SymbolValue" &&
+      expr.symbol.variant === "Function" &&
+      (expr.symbol.specialMethod === "constructor" ||
+        expr.symbol.specialMethod === "destructor")
     ) {
       const symbol = { ...expr.symbol };
       symbol.scope = new Scope(symbol.scope.location, symbol.scope);
@@ -444,14 +458,35 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
       args.push(arg);
     }
 
+    let thisPointerExpr: Expression | undefined = undefined;
+    if (expr.variant === "SymbolValue" && expr.symbol.variant === "Function") {
+      thisPointerExpr = expr.symbol.thisPointerExpr;
+    } else if (expr.variant === "MemberAccess") {
+      thisPointerExpr = undefined;
+    } else {
+      throw new ImpossibleSituation();
+    }
+
     return {
       type: expr.type.functionReturnType,
       variant: "ExprCall",
-      thisPointerExpr: expr.symbol.thisPointerExpr,
+      thisPointerExpr: thisPointerExpr,
       args: args,
       expr: expr,
       ctx: ctx,
     };
+  };
+
+  visitFunc = (ctx: FuncContext): FunctionSymbol => {
+    const symbol = collectFunction(
+      this,
+      ctx,
+      this.program.makeAnonymousName(),
+      this.program,
+      this.functionStack[this.functionStack.length - 1],
+    );
+    this.implFunc(ctx);
+    return symbol;
   };
 
   implFunc(ctx: FuncContext | NamedfuncContext | FuncdeclContext): void {
@@ -500,6 +535,22 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
           loc,
         );
       }
+
+      symbol.scope.defineSymbol(
+        {
+          variant: "Variable",
+          name: "ctx",
+          type: {
+            variant: "RawPointer",
+            generics: new Map().set(
+              "__Pointee",
+              this.program.getBuiltinType("Context"),
+            ),
+          },
+          variableType: VariableType.Parameter,
+        },
+        loc,
+      );
 
       if (!(ctx instanceof FuncdeclContext)) {
         this.visit(ctx.funcbody()).forEach((statement: Statement) => {
@@ -559,15 +610,11 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
       this.functionStack.pop();
       this.program.popScope();
       this.program.ctxToSymbolMap.set(ctx, symbol);
-      this.program.concreteFunctions[mangleSymbol(symbol)] = symbol;
+      this.program.concreteFunctions.set(mangleSymbol(symbol), symbol);
     } else {
       this.visitChildren(ctx);
     }
   }
-
-  visitFunc = (ctx: FuncContext): void => {
-    this.implFunc(ctx);
-  };
 
   visitNamedfunc = (ctx: NamedfuncContext): void => {
     this.implFunc(ctx);
@@ -898,11 +945,15 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
   //   this.visitChildren(ctx);
   // }
 
-  // visitFuncRefExpr = (ctx: FuncRefExprContext): void => {
-  //   this.visitChildren(ctx);
-  //   // this.setNodeSymbol(ctx, this.getNodeSymbol(ctx.func()));
-  //   // this.setNodeDatatype(ctx, this.getNodeSymbol(ctx.func()).type);
-  // };
+  visitFuncRefExpr = (ctx: FuncRefExprContext): SymbolValueExpression => {
+    const symbol = this.visitFunc(ctx.func());
+    return {
+      variant: "SymbolValue",
+      ctx: ctx,
+      symbol: symbol,
+      type: symbol.type,
+    };
+  };
 
   visitInlineCStatement = (ctx: InlineCStatementContext): InlineCStatement => {
     const string = JSON.parse(ctx.STRING_LITERAL().getText());
@@ -1388,7 +1439,8 @@ function analyzeFunctionSymbol(program: Program, symbol: FunctionSymbol) {
 }
 
 export function performSemanticAnalysis(program: Program) {
-  for (const symbol of Object.values(program.concreteFunctions)) {
+  const clonedFuncs = program.concreteFunctions.values().toArray();
+  for (const symbol of clonedFuncs) {
     analyzeFunctionSymbol(program, symbol);
   }
 }

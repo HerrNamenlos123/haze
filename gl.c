@@ -56,7 +56,7 @@ void draw()
   double now = glfwGetTime();
   double elapsed = now - _time;
   _time = now;
-  printf("FPS: %.0f\n", 1.0 / elapsed);
+  // printf("FPS: %.0f\n", 1.0 / elapsed);
 
   tray_loop(0);
 }

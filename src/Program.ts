@@ -21,8 +21,8 @@ import { isDeeplyEqual } from "./deep-equal";
 
 export class Program {
   globalScope: Scope;
-  concreteFunctions: { [name: string]: FunctionSymbol } = {};
-  concreteDatatypes: { [name: string]: DatatypeSymbol } = {};
+  concreteFunctions: Map<string, FunctionSymbol> = new Map();
+  concreteDatatypes: Map<string, DatatypeSymbol> = new Map();
   prebuildCmds: string[] = [];
   postbuildCmds: string[] = [];
   cDefinitionDecl: string[] = [];
@@ -192,7 +192,7 @@ export class Program {
     }
 
     console.log("\nConcrete Functions:");
-    for (const [name, symbol] of Object.entries(this.concreteFunctions)) {
+    for (const [name, symbol] of this.concreteFunctions.entries()) {
       console.log(serializeSymbol(symbol));
       // if (symbol.type.functionParameters.length > 0) {
       //   const [name, p] = symbol.type.functionParameters[0];
@@ -207,7 +207,7 @@ export class Program {
     }
 
     console.log("\nConcrete Datatypes:");
-    for (const [name, symbol] of Object.entries(this.concreteDatatypes)) {
+    for (const [name, symbol] of this.concreteDatatypes.entries()) {
       console.log(serializeSymbol(symbol));
     }
   }

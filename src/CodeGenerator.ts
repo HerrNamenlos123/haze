@@ -18,6 +18,7 @@ import {
 } from "./Symbol";
 import {
   explicitConversion,
+  generateDeclarationCCode,
   generateDefinitionCCode,
   generateUsageCode,
   implicitConversion,
@@ -33,29 +34,36 @@ import { OutputWriter } from "./OutputWriter";
 import { datatypeSymbolUsed, resolveGenerics } from "./utils";
 import type { Scope } from "./Scope";
 
-const CONTEXT_STRUCT = "_HN4Haze7ContextE";
-
 class CodeGenerator {
   private program: Program;
-  private includeWriter = new OutputWriter();
   private out = {
     includes: {} as Record<string, OutputWriter>,
     cDecls: {} as Record<string, OutputWriter>,
     type_declarations: {} as Record<string, OutputWriter>,
+    type_definitions: {} as Record<string, OutputWriter>,
     function_declarations: {} as Record<string, OutputWriter>,
     function_definitions: {} as Record<string, OutputWriter>,
   };
 
   constructor(program: Program) {
     this.program = program;
-    this.out.type_declarations[CONTEXT_STRUCT] = new OutputWriter().write(
-      `typedef struct __${CONTEXT_STRUCT}__ {} ${CONTEXT_STRUCT};`,
+
+    const contextSymbol = this.program.globalScope.lookupSymbol(
+      "Context",
+      this.program.globalScope.location,
     );
+    const context = generateUsageCode(contextSymbol.type, this.program);
+    this.out.type_declarations[mangleSymbol(contextSymbol)] = new OutputWriter()
+      .writeLine(`struct ${context}_;`)
+      .writeLine(`typedef struct ${context}_ ${context};`);
+
     this.out.function_definitions["main"] = new OutputWriter()
       .writeLine("int32_t main() {")
       .pushIndent()
-      .writeLine(`${CONTEXT_STRUCT} context = { };`)
-      .writeLine("return _H4main(&context);")
+      .writeLine(
+        `${generateUsageCode(this.program.getBuiltinType("Context"), this.program)} ctx = { };`,
+      )
+      .writeLine("return _H4main(&ctx);")
       .popIndent()
       .writeLine("}");
   }
@@ -85,8 +93,21 @@ class CodeGenerator {
       writer.writeLine();
     }
 
+    this.generateDatatypeUse(
+      this.program.globalScope.lookupDatatypeSymbol(
+        "Context",
+        this.program.globalScope.location,
+      ),
+    );
+
     writer.write("\n\n// Type declaration section\n");
     for (const decl of Object.values(this.out.type_declarations)) {
+      writer.write(decl);
+      writer.writeLine();
+    }
+
+    writer.write("\n\n// Type definition section\n");
+    for (const decl of Object.values(this.out.type_definitions)) {
       writer.write(decl);
       writer.writeLine();
     }
@@ -110,6 +131,7 @@ class CodeGenerator {
 
   generate() {
     this.includeHeader("stdio.h");
+    this.includeHeader("assert.h");
     this.includeHeader("stdint.h");
     this.includeHeader("stdlib.h");
     this.includeHeader("time.h");
@@ -118,13 +140,13 @@ class CodeGenerator {
       this.out.cDecls[decl] = new OutputWriter().writeLine(decl);
     }
 
-    for (const symbol of Object.values(this.program.concreteFunctions)) {
+    for (const symbol of this.program.concreteFunctions.values()) {
       if (symbol.language === Language.Internal) {
         this.generateFuncUse(symbol);
       }
     }
 
-    for (const dt of Object.values(this.program.concreteDatatypes)) {
+    for (const dt of this.program.concreteDatatypes.values()) {
       this.generateDatatypeUse(dt);
     }
   }
@@ -140,14 +162,20 @@ class CodeGenerator {
         mangleSymbol(symbol) +
         "(";
       const params = [];
-      if (symbol.parentSymbol && symbol.specialMethod !== "constructor") {
+      if (
+        symbol.parentSymbol &&
+        symbol.parentSymbol.variant === "Datatype" &&
+        symbol.specialMethod !== "constructor"
+      ) {
         const thisPtr: RawPointerDatatype = {
           variant: "RawPointer",
           generics: new Map().set("__Pointee", symbol.parentSymbol.type),
         };
         params.push(`${generateUsageCode(thisPtr, this.program)} this`);
       }
-      params.push(`${CONTEXT_STRUCT}* context`);
+      params.push(
+        `${generateUsageCode(this.program.getBuiltinType("Context"), this.program)}* ctx`,
+      );
       for (const [paramName, paramType] of ftype.functionParameters) {
         params.push(
           generateUsageCode(paramType, this.program) + " " + paramName,
@@ -155,6 +183,9 @@ class CodeGenerator {
         // datatypeSymbolUsed(paramType);
       }
       decl += params.join(", ");
+      if (ftype.vararg) {
+        decl += ", ...";
+      }
       decl += ")";
       return decl;
     };
@@ -213,7 +244,7 @@ class CodeGenerator {
             continue;
           }
           writer.writeLine(
-            `${mangleSymbol(destructor)}(&${isMember ? "this->" : ""}${symbol.name}, context);`,
+            `${mangleSymbol(destructor)}(&${isMember ? "this->" : ""}${symbol.name}, ctx);`,
           );
         }
       }
@@ -364,11 +395,11 @@ class CodeGenerator {
         if (expr.expr.variant === "SymbolValue") {
           if (expr.expr.symbol.variant === "Function") {
             if (expr.expr.symbol.language === Language.Internal) {
-              args.push("context");
+              args.push("ctx");
             }
           }
         } else if (expr.expr.variant === "MemberAccess") {
-          args.push("context");
+          args.push("ctx");
         }
         for (let i = 0; i < expr.args.length; i++) {
           const val = this.emitExpr(expr.args[i]).get();
@@ -711,10 +742,18 @@ class CodeGenerator {
   //   }
 
   generateDatatypeUse(datatype: DatatypeSymbol) {
-    this.init(mangleSymbol(datatype), this.out.type_declarations);
-    this.out.type_declarations[mangleSymbol(datatype)].write(
-      generateDefinitionCCode(datatype, this.program),
-    );
+    if (!this.out.type_declarations[mangleSymbol(datatype)]) {
+      this.init(mangleSymbol(datatype), this.out.type_declarations);
+      this.out.type_declarations[mangleSymbol(datatype)].write(
+        generateDeclarationCCode(datatype, this.program),
+      );
+    }
+    if (!this.out.type_definitions[mangleSymbol(datatype)]) {
+      this.init(mangleSymbol(datatype), this.out.type_definitions);
+      this.out.type_definitions[mangleSymbol(datatype)].write(
+        generateDefinitionCCode(datatype, this.program),
+      );
+    }
   }
 
   //   getCurrentFunction() {

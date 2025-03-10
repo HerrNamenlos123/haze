@@ -150,6 +150,7 @@ export function mangleDatatype(datatype: Datatype): string {
         mangled += mangleDatatype(tp);
       }
       mangled += "E";
+      mangled += mangleDatatype(datatype.functionReturnType);
       return mangled;
 
     case "Struct":
