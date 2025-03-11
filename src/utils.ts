@@ -257,6 +257,7 @@ export const visitCommonDatatypeImpl = (
     name,
     program.getLoc(ctx),
   );
+  console.log("Symbol", symbol.variant, symbol.type.variant, symbol.name);
 
   if (symbol.variant !== "Datatype") {
     throw new ImpossibleSituation();
@@ -317,6 +318,7 @@ export const visitCommonDatatypeImpl = (
           .entries()
           .every((e) => e[1] !== undefined && e[1].variant !== "Generic")
       ) {
+        console.log("? use 1", serializeDatatype(symbol.type));
         datatypeSymbolUsed(
           {
             name: symbol.name,
@@ -365,6 +367,8 @@ export const visitCommonDatatypeImpl = (
           .entries()
           .every((e) => e[1] !== undefined && e[1].variant !== "Generic")
       ) {
+        console.log(structtype);
+        console.log("? use 2", serializeDatatype(structtype));
         datatypeSymbolUsed(
           {
             name: symbol.name,

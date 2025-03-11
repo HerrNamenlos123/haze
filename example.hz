@@ -359,18 +359,18 @@ struct List<T> {
   }
 }
 
-fib(count: i32) {
+fib() {
   const fibs = List<i32>();
-  const b = List<i32>();
   fibs.push(0);
-  fibs.push(1);
+  // fibs.push(1);
+  // const count = 10;
 
-  const i = 2;
-  while (i < count) {
-    fibs.push(fibs.get(i - 1) + fibs.get(i - 2));
-    printf("Found fib number: %d\n", fibs.get(fibs.length - 1));
-    i++;
-  }
+  // const i = 2;
+  // while (i < count) {
+  //   fibs.push(fibs.get(i - 1) + fibs.get(i - 2));
+  //   printf("Found fib number: %d\n", fibs.get(fibs.length - 1));
+  //   i++;
+  // }
 }
 
 // declare "C" draw();
@@ -420,7 +420,7 @@ degToRad(v: f64): f64 {
 }
 
 drawVector(vector: Vec2, position: Vec2, color: Color) {
-  const arrowLength = 25;
+  const arrowLength = 25.0;
   const arrowAngle = degToRad(30);
   const lineThickness = 2;
 
@@ -437,7 +437,7 @@ drawVector(vector: Vec2, position: Vec2, color: Color) {
   drawTriangle(tip, cross.add(sideVec), cross.sub(sideVec), color);
 }
 
-window(): i32 {
+window(): i32 { 
   if not glfwInit() {
     ctx.log.error("Initializing GLFW failed");
     return 0;
@@ -462,6 +462,10 @@ window(): i32 {
   const oldTime = getTime();
   const startTime = getTime();
 
+  const path = List<Vec2>();
+  path.capacity();
+  // if 0 == path {}
+
   while !window.shouldClose() {
     beginFrame();
     frame();
@@ -484,6 +488,7 @@ window(): i32 {
       velocity = Vec2(0, v_phi_const);
       acceleration = Vec2(0, 0);
       startTime = getTime();
+      // path = List<Vec2>();
     }
 
     const origin = Vec2(200, 600);
@@ -494,6 +499,7 @@ window(): i32 {
       velocity = Vec2(0, v_phi_const);
       acceleration = Vec2(0, 0);
       startTime = getTime();
+      // path = List<Vec2>();
     }
 
     // =========================================
@@ -518,6 +524,8 @@ window(): i32 {
 
     velocity = velocity.add(acceleration.mul(dt));
     P = P.add(velocity.mul(dt));
+
+    // path.push(P);
 
     drawVector(Vec2(600, 0), origin, Color(255, 255, 255));
     drawVector(Vec2(0, -500), origin, Color(255, 255, 255));
@@ -590,45 +598,10 @@ main(): i32 {
     __c__("va_end(args)");
     printf("\n");
   };
+
   // fib(10);
   // init(); 
   // test2(); 
-  // return 0;
-  return window();
+  return 0;
+  // return window();
 }
-
-
-    // RSGL_init((RSGL_area) { width, height }, glfwGetProcAddress);
-    // FONT_ID_BODY_16 = RSGL_loadFont("resources/Roboto-Regular.ttf");
-    // RSGL_setFont(FONT_ID_BODY_16);
-
-    // uint64_t totalMemorySize = Clay_MinMemorySize();
-    // Clay_Arena clayMemory = Clay_CreateArenaWithCapacityAndMemory(totalMemorySize, malloc(totalMemorySize));
-
-    // Clay_SetMeasureTextFunction(RSGL_MeasureText);
-
-    // Clay_Initialize(
-    //     clayMemory, (Clay_Dimensions) { (float)width, (float)height }, (Clay_ErrorHandler) { HandleClayErrors });
-    // u32 NOW = glfwGetTime();
-    // u32 LAST = 0;
-    // double deltaTime = 0;
-
-    // clay_GLFW_callbackInit(window);
-
-    // while (glfwWindowShouldClose(window) == false) {
-    //   LAST = NOW;
-    //   NOW = glfwGetTime();
-    //   deltaTime = NOW - LAST;
-
-    //   glfwPollEvents();
-
-    //   RSGL_clear(RSGL_RGB(0, 0, 0));
-    //   Clay_RenderCommandArray renderCommands = CreateLayout();
-    //   Clay_RSGL_Render(renderCommands);
-    //   RSGL_draw();
-
-    //   glfwSwapBuffers(window);
-    // }
-
-    // glfwDestroyWindow(window);
-    // RSGL_free();

@@ -2,12 +2,31 @@ struct Test {
     bar: i32;
 }
 
+struct Context {
+};
+
 struct Result<TSuccess, TError> {
   unsafe_union {
     success: TSuccess;
     error: TError;
   }
   isSuccess: boolean;
+}
+
+struct List<T> {
+  data: T;
+
+  constructor(v: T): List<T> {
+    return List<T> {
+      .data: v,
+    };
+  }
+
+  destructor() {}
+
+  test(): T {
+    return this.data;
+  }
 }
 
 foo(): Result<Test, u8> {
@@ -19,8 +38,21 @@ foo(): Result<Test, u8> {
     };
 }
 
+fibs() {
+    const fibs = List<i32>(18);
+    const a: i32 = fibs.test();
+}
+
+struct A {
+    data: u8;
+}
+
 main(): i32 {
     const x = foo();
     const y = x.success.bar;
+
+    const fibs = List<A>(A { .data: 18 });
+    const a: A = fibs.test();
+
     return 0;
 }

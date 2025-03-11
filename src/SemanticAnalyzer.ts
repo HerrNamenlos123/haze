@@ -22,6 +22,8 @@ import { CompilerError, ImpossibleSituation, InternalError } from "./Errors";
 import { Scope } from "./Scope";
 import { Program } from "./Program";
 import {
+  isDatatypeGeneric,
+  isSymbolGeneric,
   Language,
   mangleDatatype,
   mangleSymbol,
@@ -162,6 +164,19 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
     symbol = { ...symbol };
     if (symbol.variant === "Datatype") {
       if (symbol.type.variant === "Struct") {
+        console.log("Make symbol ", serializeDatatype(symbol.type));
+
+        if (
+          symbol.type.generics
+            .entries()
+            .toArray()
+            .some((a) => a[1])
+        ) {
+          throw new InternalError(
+            `Found Datatype ${serializeDatatype(symbol.type)} but it already has generics`,
+          );
+        }
+
         symbol.type = { ...symbol.type };
         symbol.type.generics = new Map(symbol.type.generics);
         symbol.type.methods = symbol.type.methods.map((m) => ({ ...m }));
@@ -173,10 +188,12 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
         }
         let index = 0;
         for (const [name, tp] of symbol.type.generics) {
-          symbol.type.generics.set(
-            name,
-            this.visit(ctx.datatype_list()[index]),
-          );
+          if (tp?.variant !== "Generic") {
+            symbol.type.generics.set(
+              name,
+              this.visit(ctx.datatype_list()[index]),
+            );
+          }
           index++;
         }
 
@@ -185,6 +202,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
             .entries()
             .every((e) => e[1] !== undefined && e[1].variant !== "Generic")
         ) {
+          console.log("Datatype used 1", serializeDatatype(symbol.type));
           datatypeSymbolUsed(
             {
               name: symbol.name,
@@ -293,6 +311,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
             this.implFunc(destructorSymbol.ctx as FuncContext);
           }
         }
+        console.log(">Made symbol ", serializeDatatype(symbol.type));
       }
     }
 
@@ -472,7 +491,6 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
     ) {
       thisPointerExpr = undefined;
     } else {
-      console.log(expr);
       throw new ImpossibleSituation();
     }
 
@@ -590,11 +608,13 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
         symbol.type.functionReturnType = returntype;
       }
 
-      symbol.type.functionReturnType = resolveGenerics(
-        symbol.type.functionReturnType,
-        symbol.scope,
-        symbol.scope.location,
-      );
+      symbol = { ...symbol };
+      symbol.type = { ...symbol.type };
+      // symbol.type.functionReturnType = resolveGenerics(
+      //   symbol.type.functionReturnType,
+      //   symbol.scope,
+      //   symbol.scope.location,
+      // );
 
       if (!isNone(symbol.type.functionReturnType)) {
         if (!symbol.scope.statements.some((s) => s.variant === "Return")) {
@@ -1227,11 +1247,12 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
         );
       }
 
-      const symType = resolveGenerics(
-        existingSymbol.type,
-        scope,
-        this.program.getLoc(ctx),
-      );
+      const symType = existingSymbol.type;
+      // const symType = resolveGenerics(
+      //   existingSymbol.type,
+      //   scope,
+      //   this.program.getLoc(ctx),
+      // );
 
       implicitConversion(
         symbol.type,
@@ -1288,6 +1309,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
     let expr: Expression = this.visit(ctx.expr());
     const name: string = ctx.ID().getText();
 
+    console.log("Accessing member", name, "from", serializeDatatype(expr.type));
     if (INTERNAL_METHOD_NAMES.includes(name)) {
       throw new CompilerError(
         `Cannot access internal method '${name}'`,
@@ -1367,7 +1389,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
         }
         if (symbol.type.variant === "Struct") {
           if (symbol.type.generics.get(name) === undefined) {
-            // symbol.type.generics.set(name, tp);
+            symbol.type.generics.set(name, tp);
           }
         }
         scope.defineSymbol(
@@ -1380,17 +1402,17 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
           this.program.getLoc(ctx),
         );
       }
-      // symbol.type = resolveGenerics(
-      //   symbol.type,
-      //   scope,
-      //   this.program.getLoc(ctx),
-      // );
+      const symtype = resolveGenerics(
+        symbol.type,
+        scope,
+        this.program.getLoc(ctx),
+      );
       return {
         ctx: ctx,
         variant: "MemberAccess",
         expr: expr,
         memberName: name,
-        type: symbol.type,
+        type: symtype,
       };
     }
 
@@ -1425,9 +1447,13 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
       const symbol = {
         ...(this.program.ctxToSymbolMap.get(method.ctx) as FunctionSymbol),
       };
+      symbol.type = { ...symbol.type };
       symbol.scope = new Scope(symbol.scope.location, symbol.scope);
       symbol.parentSymbol = { ...method.parentSymbol };
       symbol.parentSymbol.type = { ...method.parentSymbol.type };
+      symbol.parentSymbol.type.generics = new Map(
+        symbol.parentSymbol.type.generics,
+      );
       if (symbol.parentSymbol.type.variant !== "Struct") {
         throw new ImpossibleSituation();
       }
@@ -1451,14 +1477,16 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
           this.program.getLoc(ctx),
         );
       }
-      symbol.type = resolveGenerics(
-        symbol.type,
-        symbol.scope,
-        this.program.getLoc(symbol.ctx),
-      ) as FunctionDatatype;
+      // symbol.type = resolveGenerics(
+      //   symbol.type,
+      //   symbol.scope,
+      //   this.program.getLoc(symbol.ctx),
+      // ) as FunctionDatatype;
+      console.log("Begin Impl func", serializeSymbol(symbol));
       symbol.thisPointerExpr = expr;
       this.program.ctxToSymbolMap.set(method.ctx, symbol);
       this.implFunc(method.ctx as FuncContext);
+      console.log("Impl func", serializeSymbol(symbol));
 
       return {
         ctx: ctx,
