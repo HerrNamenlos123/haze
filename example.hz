@@ -164,7 +164,7 @@ declare "C" struct timespec_t {
 declare "C" assert(cond: boolean);
 
 assertTypes() {
-  __c__("struct timespec t;");
+  __c__("timespec_t t");
   __c__("assert(sizeof(t.tv_sec) == 8)");
   __c__("assert(sizeof(t.tv_nsec) == 8)");
 }
@@ -286,13 +286,13 @@ fib(count: i32) {
 // declare "C" draw();
 // declare "C" init();
 // declare "C" exitt();
-inject "#define TRAY_APPINDICATOR 1";
-inject "#include \"../tray.h\"";
+// inject "#define TRAY_APPINDICATOR 1";
+// inject "#include \"../tray.h\"";
 inject "#include \"../gl.c\"";
 prebuildcmd "pkg-config --version";
-link "$(pkg-config --cflags --libs gtk+-3.0)"
-link "$(pkg-config --cflags --libs appindicator3-0.1)"
-link "-lGL -lraylib -Iclay -lm -std=c99"
+// link "$(pkg-config --cflags --libs gtk+-3.0)"
+// link "$(pkg-config --cflags --libs appindicator3-0.1)"
+link "-lGL -Iclay -lm -lglfw"
 
 window(): i32 {
   if not glfwInit() {
@@ -381,8 +381,8 @@ main(): i32 {
   // fib(10);
   // init(); 
   // test2(); 
-  // return 0;
-  return window();
+  return 0;
+  // return window();
 }
 
 

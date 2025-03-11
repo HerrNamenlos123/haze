@@ -83,9 +83,9 @@ export class ModuleCompiler {
         }
         console.log(`\x1b[32mC-Compiling\x1b[0m ${this.filename}`);
 
-        child_process.execSync(
-          `${C_COMPILER} -g build/${this.filename}.c -o build/out ${program.linkerFlags.join(" ")}`,
-        );
+        const cmd = `${C_COMPILER} -g build/${this.filename}.c -o build/out -std=c11 ${program.linkerFlags.join(" ")}`;
+        // console.log(cmd);
+        child_process.execSync(cmd);
         if (program.postbuildCmds) {
           for (const cmd of program.postbuildCmds) {
             try {

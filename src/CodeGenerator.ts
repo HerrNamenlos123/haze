@@ -82,6 +82,9 @@ class CodeGenerator {
   writeFile(filename: string) {
     const fs = require("fs");
     const writer = new OutputWriter();
+
+    writer.writeLine("#define _POSIX_C_SOURCE 199309L\n");
+
     writer.write("// Include section\n");
     for (const include of Object.values(this.out.includes)) {
       writer.write(include);
