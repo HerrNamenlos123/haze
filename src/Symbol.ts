@@ -48,6 +48,7 @@ export type FunctionSymbol = {
   scope: Scope;
   specialMethod?: SpecialMethod;
   ctx: ParserRuleContext;
+  wasAnalyzed: boolean;
 };
 
 export type DatatypeSymbol<T = Datatype> = {

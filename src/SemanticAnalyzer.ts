@@ -164,8 +164,6 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
     symbol = { ...symbol };
     if (symbol.variant === "Datatype") {
       if (symbol.type.variant === "Struct") {
-        console.log("Make symbol ", serializeDatatype(symbol.type));
-
         if (
           symbol.type.generics
             .entries()
@@ -202,7 +200,6 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
             .entries()
             .every((e) => e[1] !== undefined && e[1].variant !== "Generic")
         ) {
-          console.log("Datatype used 1", serializeDatatype(symbol.type));
           datatypeSymbolUsed(
             {
               name: symbol.name,
@@ -265,11 +262,10 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
             ) as FunctionDatatype;
             constructorSymbol.type.functionReturnType = symbol.type;
             constructorSymbol.parentSymbol = symbol;
-            this.program.ctxToSymbolMap.set(
-              constructorSymbol.ctx,
+            this.implFunc(
+              constructorSymbol.ctx as FuncContext,
               constructorSymbol,
             );
-            this.implFunc(constructorSymbol.ctx as FuncContext);
           }
           if (
             !this.program.concreteFunctions.get(mangleSymbol(destructorSymbol))
@@ -304,14 +300,12 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
               this.program.getLoc(destructorSymbol.ctx),
             ) as FunctionDatatype;
             destructorSymbol.parentSymbol = symbol;
-            this.program.ctxToSymbolMap.set(
-              destructorSymbol.ctx,
+            this.implFunc(
+              destructorSymbol.ctx as FuncContext,
               destructorSymbol,
             );
-            this.implFunc(destructorSymbol.ctx as FuncContext);
           }
         }
-        console.log(">Made symbol ", serializeDatatype(symbol.type));
       }
     }
 
@@ -454,8 +448,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
         symbol.scope,
         this.program.getLoc(symbol.ctx),
       ) as FunctionDatatype;
-      this.program.ctxToSymbolMap.set(symbol.ctx, symbol);
-      this.implFunc(symbol.ctx as FuncContext);
+      this.implFunc(symbol.ctx as FuncContext, symbol);
     }
 
     const args: Expression[] = [];
@@ -512,15 +505,24 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
       this.program,
       this.functionStack[this.functionStack.length - 1],
     );
-    this.implFunc(ctx);
+    this.implFunc(ctx, symbol);
     return symbol;
   };
 
-  implFunc(ctx: FuncContext | NamedfuncContext | FuncdeclContext): void {
-    let symbol = this.program.ctxToSymbolMap.get(ctx);
-    if (symbol?.variant !== "Function") {
+  implFunc(
+    ctx: FuncContext | NamedfuncContext | FuncdeclContext,
+    symbol: FunctionSymbol,
+  ): void {
+    if (symbol.variant !== "Function") {
       throw new ImpossibleSituation();
     }
+
+    if (symbol.wasAnalyzed) {
+      return;
+    }
+
+    this.program.pushScope(symbol.scope);
+    this.functionStack.push(symbol);
 
     if (symbol.language === Language.Internal) {
       if (!symbol.scope) {
@@ -532,9 +534,6 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
       if (!symbol || !symbol.scope) {
         throw new ImpossibleSituation();
       }
-
-      this.program.pushScope(symbol.scope);
-      this.functionStack.push(symbol);
 
       if (symbol.parentSymbol && symbol.parentSymbol.variant === "Datatype") {
         symbol.scope.defineSymbol(
@@ -610,11 +609,11 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
 
       symbol = { ...symbol };
       symbol.type = { ...symbol.type };
-      // symbol.type.functionReturnType = resolveGenerics(
-      //   symbol.type.functionReturnType,
-      //   symbol.scope,
-      //   symbol.scope.location,
-      // );
+      symbol.type.functionReturnType = resolveGenerics(
+        symbol.type.functionReturnType,
+        symbol.scope,
+        symbol.scope.location,
+      );
 
       if (!isNone(symbol.type.functionReturnType)) {
         if (!symbol.scope.statements.some((s) => s.variant === "Return")) {
@@ -636,18 +635,14 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
         }
       }
 
+      symbol.wasAnalyzed = true;
       this.functionStack.pop();
       this.program.popScope();
-      this.program.ctxToSymbolMap.set(ctx, symbol);
       this.program.concreteFunctions.set(mangleSymbol(symbol), symbol);
     } else {
       this.visitChildren(ctx);
     }
   }
-
-  visitNamedfunc = (ctx: NamedfuncContext): void => {
-    this.implFunc(ctx);
-  };
 
   visitFuncbody = (ctx: FuncbodyContext): Statement[] => {
     if (ctx.expr()) {
@@ -906,9 +901,9 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
     }
   };
 
-  visitStructMethod = (ctx: StructMethodContext): void => {
-    this.implFunc(ctx);
-  };
+  // visitStructMethod = (ctx: StructMethodContext): void => {
+  //   this.implFunc(ctx);
+  // };
 
   visitStringConstant = (ctx: StringConstantContext): StringConstantSymbol => {
     return {
@@ -996,18 +991,6 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
       type: symbol.type,
     };
   };
-
-  // visitThenblock(ctx: ThenblockContext): void {
-  //   this.visitChildren(ctx);
-  // }
-
-  // visitElseifblock(ctx: ElseifblockContext): void {
-  //   this.visitChildren(ctx);
-  // }
-
-  // visitElseblock(ctx: ElseblockContext): void {
-  //   this.visitChildren(ctx);
-  // }
 
   visitFuncRefExpr = (ctx: FuncRefExprContext): SymbolValueExpression => {
     const symbol = this.visitFunc(ctx.func());
@@ -1247,12 +1230,12 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
         );
       }
 
-      const symType = existingSymbol.type;
-      // const symType = resolveGenerics(
-      //   existingSymbol.type,
-      //   scope,
-      //   this.program.getLoc(ctx),
-      // );
+      // const symType = existingSymbol.type;
+      const symType = resolveGenerics(
+        existingSymbol.type,
+        scope,
+        this.program.getLoc(ctx),
+      );
 
       implicitConversion(
         symbol.type,
@@ -1309,7 +1292,6 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
     let expr: Expression = this.visit(ctx.expr());
     const name: string = ctx.ID().getText();
 
-    console.log("Accessing member", name, "from", serializeDatatype(expr.type));
     if (INTERNAL_METHOD_NAMES.includes(name)) {
       throw new CompilerError(
         `Cannot access internal method '${name}'`,
@@ -1444,9 +1426,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
       // );
 
       // this.setNodeSymbol(method.ctx, { ...method });
-      const symbol = {
-        ...(this.program.ctxToSymbolMap.get(method.ctx) as FunctionSymbol),
-      };
+      const symbol = { ...method };
       symbol.type = { ...symbol.type };
       symbol.scope = new Scope(symbol.scope.location, symbol.scope);
       symbol.parentSymbol = { ...method.parentSymbol };
@@ -1477,16 +1457,13 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
           this.program.getLoc(ctx),
         );
       }
-      // symbol.type = resolveGenerics(
-      //   symbol.type,
-      //   symbol.scope,
-      //   this.program.getLoc(symbol.ctx),
-      // ) as FunctionDatatype;
-      console.log("Begin Impl func", serializeSymbol(symbol));
+      symbol.type = resolveGenerics(
+        symbol.type,
+        symbol.scope,
+        this.program.getLoc(symbol.ctx),
+      ) as FunctionDatatype;
       symbol.thisPointerExpr = expr;
-      this.program.ctxToSymbolMap.set(method.ctx, symbol);
-      this.implFunc(method.ctx as FuncContext);
-      console.log("Impl func", serializeSymbol(symbol));
+      this.implFunc(method.ctx as FuncContext, symbol);
 
       return {
         ctx: ctx,
@@ -1507,7 +1484,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
 
 function analyzeFunctionSymbol(program: Program, symbol: FunctionSymbol) {
   const analyzer = new FunctionBodyAnalyzer(program);
-  analyzer.visit(symbol.ctx);
+  analyzer.implFunc(symbol.ctx as FuncContext, symbol);
 }
 
 export function performSemanticAnalysis(program: Program) {

@@ -172,6 +172,7 @@ export function resolveGenerics(
           parentSymbol: method.parentSymbol,
           specialMethod: method.specialMethod,
           thisPointerExpr: method.thisPointerExpr,
+          wasAnalyzed: method.wasAnalyzed,
         });
       }
       // const generics: Array<[string, Datatype | null]> = [];
@@ -257,7 +258,6 @@ export const visitCommonDatatypeImpl = (
     name,
     program.getLoc(ctx),
   );
-  console.log("Symbol", symbol.variant, symbol.type.variant, symbol.name);
 
   if (symbol.variant !== "Datatype") {
     throw new ImpossibleSituation();
@@ -318,7 +318,6 @@ export const visitCommonDatatypeImpl = (
           .entries()
           .every((e) => e[1] !== undefined && e[1].variant !== "Generic")
       ) {
-        console.log("? use 1", serializeDatatype(symbol.type));
         datatypeSymbolUsed(
           {
             name: symbol.name,
@@ -341,7 +340,7 @@ export const visitCommonDatatypeImpl = (
     case "Struct":
       const structtype: StructDatatype = {
         variant: "Struct",
-        name: symbol.name,
+        name: symbol.type.name,
         generics: new Map(symbol.type.generics),
         language: symbol.type.language,
         members: symbol.type.members,
@@ -367,8 +366,6 @@ export const visitCommonDatatypeImpl = (
           .entries()
           .every((e) => e[1] !== undefined && e[1].variant !== "Generic")
       ) {
-        console.log(structtype);
-        console.log("? use 2", serializeDatatype(structtype));
         datatypeSymbolUsed(
           {
             name: symbol.name,
@@ -524,6 +521,7 @@ export function collectFunction(
     scope: scope,
     parentSymbol: parentSymbol,
     ctx: ctx,
+    wasAnalyzed: false,
   };
 
   if (
@@ -542,7 +540,6 @@ export function collectFunction(
   }
 
   parentScope.defineSymbol(symbol, program.getLoc(ctx));
-  program.ctxToSymbolMap.set(ctx, symbol);
 
   if (
     !isSymbolGeneric(symbol) &&

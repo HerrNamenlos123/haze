@@ -31,7 +31,6 @@ export class Program {
   scopeStack: Scope[];
 
   datatypes: Datatype[] = [];
-  ctxToSymbolMap = new WeakMap<ParserRuleContext, Symbol>();
 
   private anonymousStuffCounter = 0;
 

@@ -39,7 +39,7 @@ foo(): Result<Test, u8> {
 }
 
 fibs() {
-    const fibs = List<i32>(18);
+    const fibs: List<i32> = List<i32>(18);
     const a: i32 = fibs.test();
 }
 

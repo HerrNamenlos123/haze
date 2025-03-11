@@ -31,8 +31,12 @@ import {
 import type { Statement } from "./Statement";
 import type { Expression, ObjectExpression } from "./Expression";
 import { OutputWriter } from "./OutputWriter";
-import { datatypeSymbolUsed, resolveGenerics } from "./utils";
-import type { Scope } from "./Scope";
+import {
+  datatypeSymbolUsed,
+  defineGenericsInScope,
+  resolveGenerics,
+} from "./utils";
+import { Scope } from "./Scope";
 
 class CodeGenerator {
   private program: Program;
@@ -323,11 +327,24 @@ class CodeGenerator {
           throw new ImpossibleSituation();
         }
         const ret = generateUsageCode(statement.symbol.type, this.program);
+        console.log(
+          "Conversion from ",
+          serializeDatatype(statement.expr.type),
+          "to",
+          serializeDatatype(statement.symbol.type),
+        );
+        const scope = new Scope(
+          this.program.getLoc(statement.ctx),
+          this.program.currentScope,
+        );
+        if ("generics" in statement.expr.type) {
+          defineGenericsInScope(statement.expr.type.generics, scope);
+        }
         const assignConv = implicitConversion(
           statement.expr.type,
           statement.symbol.type,
           this.emitExpr(statement.expr).get(),
-          this.program.currentScope,
+          scope,
           this.program.getLoc(statement.expr.ctx),
           this.program,
         );
