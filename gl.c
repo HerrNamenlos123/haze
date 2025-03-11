@@ -105,8 +105,9 @@ static void CreateLayout()
 
 void initClayAndRSGL(GLFWwindow* window)
 {
-  const int width = 720;
-  const int height = 480;
+  int width = 0;
+  int height = 0;
+  glfwGetWindowSize(window, &width, &height);
   RSGL_init((RSGL_area) { width, height }, glfwGetProcAddress);
   FONT_ID_BODY_16 = RSGL_loadFont("clay/examples/RSGL_rendering/GLFW_windowing/resources/Roboto-Regular.ttf");
   RSGL_setFont(FONT_ID_BODY_16);
