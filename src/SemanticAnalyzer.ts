@@ -463,7 +463,14 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
       thisPointerExpr = expr.symbol.thisPointerExpr;
     } else if (expr.variant === "MemberAccess") {
       thisPointerExpr = undefined;
+    } else if (
+      expr.variant === "SymbolValue" &&
+      expr.symbol.variant === "Variable" &&
+      expr.symbol.type.variant === "Function"
+    ) {
+      thisPointerExpr = undefined;
     } else {
+      console.log(expr);
       throw new ImpossibleSituation();
     }
 

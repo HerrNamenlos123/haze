@@ -397,6 +397,8 @@ class CodeGenerator {
             if (expr.expr.symbol.language === Language.Internal) {
               args.push("ctx");
             }
+          } else if (expr.expr.symbol.variant === "Variable") {
+            args.push("ctx");
           }
         } else if (expr.expr.variant === "MemberAccess") {
           args.push("ctx");

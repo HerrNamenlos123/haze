@@ -37,10 +37,31 @@ struct Result<TSuccess, TError> {
   isSuccess: boolean;
 }
 
+declare "C" initClayAndRSGL(window: RawPtr<GLFWwindow>);
+declare "C" beginFrame();
+declare "C" frame();
+declare "C" endFrame();
+declare "C" destroyClayAndRSGL(window: RawPtr<GLFWwindow>);
+
+declare "C" text(text: stringview, fontSize: i32);
+// declare "C" _div(cb: () => none);
+
+div(cb: () => none) {
+  __c__("Clay_ElementDeclaration elem = { .layout = { .sizing = { CLAY_SIZING_FIXED(400), CLAY_SIZING_FIXED(200) } }, .backgroundColor = { 217, 91, 67, 255 } };");
+  __c__("CLAY(elem) {");
+    // if (cb) {
+      cb();
+    // }
+  __c__("}");
+}
+
 struct Window {
     glfwWindow: RawPtr<GLFWwindow>;
 
     constructor(width: i32, height: i32, title: stringview): Result<Window, stringview> {
+      __c__("glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);");
+      __c__("glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);");
+      __c__("glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);");
       const window = glfwCreateWindow(width, height, title, 0 as RawPtr<GLFWmonitor>, 0 as RawPtr<GLFWwindow>);
       if not window {
           return Result<Window, stringview> {
@@ -48,6 +69,12 @@ struct Window {
             .isSuccess: false,
           };
       }
+
+      glfwMakeContextCurrent(window);
+      glfwSwapInterval(1);
+
+      initClayAndRSGL(window);
+
       return Result<Window, stringview> {
         .success: Window {
           .glfwWindow: window,
@@ -56,7 +83,9 @@ struct Window {
       };
     }
 
-    destructor(): none {}
+    destructor(): none {
+      destroyClayAndRSGL(this.glfwWindow);
+    }
 
     makeContextCurrent() {
       glfwMakeContextCurrent(this.glfwWindow);
@@ -254,24 +283,24 @@ fib(count: i32) {
   }
 }
 
-declare "C" draw();
-declare "C" init();
-declare "C" exitt();
+// declare "C" draw();
+// declare "C" init();
+// declare "C" exitt();
 inject "#define TRAY_APPINDICATOR 1";
 inject "#include \"../tray.h\"";
 inject "#include \"../gl.c\"";
 prebuildcmd "pkg-config --version";
 link "$(pkg-config --cflags --libs gtk+-3.0)"
 link "$(pkg-config --cflags --libs appindicator3-0.1)"
-link "-lGL -lglfw"
+link "-lGL -lraylib -Iclay -lm -std=c99"
 
 window(): i32 {
   if not glfwInit() {
-    printf("Failed");
+    ctx.log.error("Initializing GLFW failed");
     return 0;
   }
 
-  init();
+  // init();
   const windowResult = Window(720, 480, "Test 1");
   if not windowResult.isSuccess {
       printf("%s\n", windowResult.error);
@@ -279,9 +308,6 @@ window(): i32 {
       return 0;
   }
   const window = windowResult.success;
-
-  window.makeContextCurrent();
-  window.setVSync(true);
 
   while (!window.shouldClose())
   {
@@ -291,12 +317,21 @@ window(): i32 {
     // ctx.log.debug("Test: %d", 56);
     // ctx.log.warn("Test: %d", 56);
     // ctx.log.error("Test: %d", 56);
-    draw();
+    // draw();
+    beginFrame();
+    frame();
+
+    text("Hallo cooler Test!", 60);
+    div(() => {
+      text("Oh Yeah!", 18);
+    });
+
+    endFrame();
     window.swapBuffers();
     window.pollEvents();
   }
 
-  exitt();
+  // exitt();
   glfwTerminate();
   return 0;
 }
@@ -349,3 +384,39 @@ main(): i32 {
   // return 0;
   return window();
 }
+
+
+    // RSGL_init((RSGL_area) { width, height }, glfwGetProcAddress);
+    // FONT_ID_BODY_16 = RSGL_loadFont("resources/Roboto-Regular.ttf");
+    // RSGL_setFont(FONT_ID_BODY_16);
+
+    // uint64_t totalMemorySize = Clay_MinMemorySize();
+    // Clay_Arena clayMemory = Clay_CreateArenaWithCapacityAndMemory(totalMemorySize, malloc(totalMemorySize));
+
+    // Clay_SetMeasureTextFunction(RSGL_MeasureText);
+
+    // Clay_Initialize(
+    //     clayMemory, (Clay_Dimensions) { (float)width, (float)height }, (Clay_ErrorHandler) { HandleClayErrors });
+    // u32 NOW = glfwGetTime();
+    // u32 LAST = 0;
+    // double deltaTime = 0;
+
+    // clay_GLFW_callbackInit(window);
+
+    // while (glfwWindowShouldClose(window) == false) {
+    //   LAST = NOW;
+    //   NOW = glfwGetTime();
+    //   deltaTime = NOW - LAST;
+
+    //   glfwPollEvents();
+
+    //   RSGL_clear(RSGL_RGB(0, 0, 0));
+    //   Clay_RenderCommandArray renderCommands = CreateLayout();
+    //   Clay_RSGL_Render(renderCommands);
+    //   RSGL_draw();
+
+    //   glfwSwapBuffers(window);
+    // }
+
+    // glfwDestroyWindow(window);
+    // RSGL_free();

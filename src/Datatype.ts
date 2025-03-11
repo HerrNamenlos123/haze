@@ -442,8 +442,11 @@ export function generateDeclarationCCode(
       const params = datatype.type.functionParameters.map(([name, tp]) =>
         generateUsageCode(tp, program),
       );
+      if (datatype.type.vararg) {
+        params.push("...");
+      }
       writer.write(
-        `typedef ${generateUsageCode(datatype.type.functionReturnType, program)} (*${generateUsageCode(datatype.type, program)})(${generateUsageCode(program.getBuiltinType("Context"), program)}* ctx, ${params.join(", ")}${datatype.type.vararg ? ", ..." : ""});`,
+        `typedef ${generateUsageCode(datatype.type.functionReturnType, program)} (*${generateUsageCode(datatype.type, program)})(${generateUsageCode(program.getBuiltinType("Context"), program)}* ctx, ${params.join(", ")});`,
       );
       return writer;
 
