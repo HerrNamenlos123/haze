@@ -148,7 +148,15 @@ void beginFrame()
   Clay_BeginLayout();
 }
 
-void frame() { CreateLayout(); }
+void frame()
+{
+  CreateLayout();
+  // RSGL_drawTriangle(
+  //     (RSGL_triangle) { .p1 = (RSGL_point) { 0, 0 }, .p1 = (RSGL_point) { 0, 0 }, .p1 = (RSGL_point) { 0, 0 } },
+  //     RSGL_RGB());
+
+  // Draw a green line
+}
 
 void endFrame()
 {

@@ -7,6 +7,8 @@ import {
   getStructMembers,
   implicitConversion,
   isBoolean,
+  isF32,
+  isFloat,
   isInteger,
   isNone,
   Primitive,
@@ -752,13 +754,47 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
             ),
           };
         }
+        if (isF32(left.type) && isF32(right.type)) {
+          return {
+            variant: "Binary",
+            ctx: ctx,
+            leftExpr: left,
+            operation: operation,
+            rightExpr: right,
+            type: this.program.getBuiltinType("f32"),
+          };
+        } else if (isFloat(left.type) && isFloat(right.type)) {
+          return {
+            variant: "Binary",
+            ctx: ctx,
+            leftExpr: left,
+            operation: operation,
+            rightExpr: right,
+            type: this.program.getBuiltinType("f64"),
+          };
+        } else if (
+          (isFloat(left.type) && isInteger(right.type)) ||
+          (isInteger(left.type) && isFloat(right.type))
+        ) {
+          return {
+            variant: "Binary",
+            ctx: ctx,
+            leftExpr: left,
+            operation: operation,
+            rightExpr: right,
+            type: this.program.getBuiltinType("f64"),
+          };
+        }
         break;
 
       case "<":
       case ">":
       case "<=":
       case ">=":
-        if (isInteger(left.type) && isInteger(right.type)) {
+        if (
+          (isInteger(left.type) || isFloat(left.type)) &&
+          (isInteger(right.type) || isFloat(right.type))
+        ) {
           return {
             variant: "Binary",
             ctx: ctx,
@@ -774,7 +810,8 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
       case "!=":
         if (
           (isBoolean(left.type) && isBoolean(right.type)) ||
-          (isInteger(left.type) && isInteger(right.type))
+          (isInteger(left.type) && isInteger(right.type)) ||
+          (isFloat(left.type) && isFloat(right.type))
         ) {
           return {
             variant: "Binary",
@@ -803,7 +840,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
     }
 
     throw new CompilerError(
-      `No comparison operator '${operation}' is known for types '${serializeDatatype(left.type)}' and '${serializeDatatype(right.type)}'`,
+      `No binary operator '${operation}' is known for types '${serializeDatatype(left.type)}' and '${serializeDatatype(right.type)}'`,
       this.program.getLoc(ctx),
     );
   };
@@ -827,7 +864,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
 
       case "+":
       case "-":
-        if (!isInteger(expr.type)) {
+        if (!isInteger(expr.type) && !isFloat(expr.type)) {
           throw new CompilerError(
             `Unary operator '${operation}' is not known for type '${serializeDatatype(expr.type)}'`,
             this.program.getLoc(ctx),

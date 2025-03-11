@@ -1,8 +1,10 @@
 import {
   CompilerError,
+  ErrorType,
   getCallerLocation,
   ImpossibleSituation,
   InternalError,
+  printCompilerMessage,
   UnreachableCode,
   type Location,
 } from "./Errors";
@@ -290,6 +292,43 @@ export function isInteger(dt: Datatype): boolean {
         case Primitive.u16:
         case Primitive.u32:
         case Primitive.u64:
+          return true;
+      }
+      return false;
+  }
+  return false;
+}
+
+export function isF32(dt: Datatype): boolean {
+  switch (dt.variant) {
+    case "Primitive":
+      switch (dt.primitive) {
+        case Primitive.f32:
+          return true;
+      }
+      return false;
+  }
+  return false;
+}
+
+export function isF64(dt: Datatype): boolean {
+  switch (dt.variant) {
+    case "Primitive":
+      switch (dt.primitive) {
+        case Primitive.f64:
+          return true;
+      }
+      return false;
+  }
+  return false;
+}
+
+export function isFloat(dt: Datatype): boolean {
+  switch (dt.variant) {
+    case "Primitive":
+      switch (dt.primitive) {
+        case Primitive.f32:
+        case Primitive.f64:
           return true;
       }
       return false;
@@ -697,6 +736,21 @@ export function implicitConversion(
     if (isInteger(from) && isInteger(to)) {
       return `(${generateUsageCode(to, program)})(${expr})`;
     }
+    if (isFloat(from) && isFloat(to)) {
+      return `(${generateUsageCode(to, program)})(${expr})`;
+    }
+    if (isInteger(from) && isFloat(to)) {
+      return `(${generateUsageCode(to, program)})(${expr})`;
+    }
+    if (isFloat(from) && isInteger(to)) {
+      printCompilerMessage(
+        loc,
+        ErrorType.Warning,
+        "Warning",
+        `Implicit conversion from ${serializeDatatype(from)} to ${serializeDatatype(to)} may lose precision`,
+      );
+      return `(${generateUsageCode(to, program)})(${expr})`;
+    }
     throw new CompilerError(
       `No implicit conversion from ${serializeDatatype(from)} to ${serializeDatatype(to)}`,
       loc,
@@ -811,6 +865,15 @@ export function explicitConversion(
       return `(${expr} ? 1 : 0)`;
     }
     if (isInteger(from) && isInteger(to)) {
+      return `(${generateUsageCode(to, program)})(${expr})`;
+    }
+    if (isFloat(from) && isFloat(to)) {
+      return `(${generateUsageCode(to, program)})(${expr})`;
+    }
+    if (isInteger(from) && isFloat(to)) {
+      return `(${generateUsageCode(to, program)})(${expr})`;
+    }
+    if (isFloat(from) && isInteger(to)) {
       return `(${generateUsageCode(to, program)})(${expr})`;
     }
     throw new CompilerError(

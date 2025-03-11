@@ -67,8 +67,8 @@ export class Program {
     define("i16", Primitive.i16);
     define("i32", Primitive.i32);
     define("i64", Primitive.i64);
-    define("f32", Primitive.i64);
-    define("f64", Primitive.i64);
+    define("f32", Primitive.f32);
+    define("f64", Primitive.f64);
 
     const symbol: DatatypeSymbol<RawPointerDatatype> = {
       variant: "Datatype",

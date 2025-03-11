@@ -323,9 +323,15 @@ class CodeGenerator {
           throw new ImpossibleSituation();
         }
         const ret = generateUsageCode(statement.symbol.type, this.program);
-        writer.writeLine(
-          `${ret} ${statement.symbol.name} = ${this.emitExpr(statement.expr).get()};`,
+        const assignConv = implicitConversion(
+          statement.expr.type,
+          statement.symbol.type,
+          this.emitExpr(statement.expr).get(),
+          this.program.currentScope,
+          this.program.getLoc(statement.expr.ctx),
+          this.program,
         );
+        writer.writeLine(`${ret} ${statement.symbol.name} = ${assignConv};`);
         return writer;
 
       case "Expr":
