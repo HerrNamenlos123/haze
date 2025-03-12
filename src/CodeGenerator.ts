@@ -412,10 +412,16 @@ class CodeGenerator {
     switch (expr.variant) {
       case "ExprCall":
         const args = [];
+        let useCommaOperatorForThisAssignment: string | undefined = undefined;
         if (expr.thisPointerExpr) {
           const exprWriter = this.emitExpr(expr.thisPointerExpr);
           tempWriter.write(exprWriter.temp);
-          args.push("&" + exprWriter.out.get());
+          const tempname = this.program.makeTempVarname();
+          tempWriter.writeLine(
+            `${generateUsageCode(expr.thisPointerExpr.type, this.program)} ${tempname};`,
+          );
+          args.push("&" + tempname);
+          useCommaOperatorForThisAssignment = `${tempname} = ${exprWriter.out.get()}`;
         }
         if (expr.expr.variant === "SymbolValue") {
           if (expr.expr.symbol.variant === "Function") {
@@ -457,28 +463,16 @@ class CodeGenerator {
           );
           args.push(converted);
         }
-        if (
-          expr.expr.variant === "MemberAccess" &&
-          expr.expr.methodSymbol &&
-          expr.expr.methodSymbol.thisPointerExpr &&
-          expr.expr.methodSymbol.variant === "Function"
-        ) {
-          const exprWriter = this.emitExpr(
-            expr.expr.methodSymbol.thisPointerExpr,
-          );
-          tempWriter.write(exprWriter.temp);
+        const callExprWriter = this.emitExpr(expr.expr);
+        tempWriter.write(callExprWriter.temp);
+        if (useCommaOperatorForThisAssignment) {
           outWriter.write(
-            mangleSymbol(expr.expr.methodSymbol) +
-              "(&" +
-              exprWriter.out.get() +
-              ", " +
-              args.join(", ") +
-              ")",
+            `(${useCommaOperatorForThisAssignment},${callExprWriter.out.get()}(${args.join(", ")}))`,
           );
         } else {
-          const exprWriter = this.emitExpr(expr.expr);
-          tempWriter.write(exprWriter.temp);
-          outWriter.write(exprWriter.out.get() + "(" + args.join(", ") + ")");
+          outWriter.write(
+            callExprWriter.out.get() + "(" + args.join(", ") + ")",
+          );
         }
         return { out: outWriter, temp: tempWriter };
 

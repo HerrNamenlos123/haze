@@ -179,6 +179,10 @@ export class Program {
     return `__anonym_${this.anonymousStuffCounter++}`;
   }
 
+  makeTempVarname() {
+    return `__temp_${this.anonymousStuffCounter++}`;
+  }
+
   print() {
     console.log("Program");
     for (const symbol of this.globalScope.getSymbols()) {

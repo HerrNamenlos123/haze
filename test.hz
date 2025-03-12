@@ -28,7 +28,25 @@ bar(): A {
   };
 }
 
+struct Counter {
+  counter: i32;
+
+  inc(): Counter {
+    this.counter++;
+    return this.ptr;
+  }
+
+  get(): i32 {
+    return this.counter;
+  }
+}
+
+declare "C" printf(fmt: stringview, ...);
+
 main(): i32 {
   const a = foo() + get((A {.data: 0}).a().b()) + get(bar());
+
+  const result = Counter {.counter: 0}.inc().inc().inc().inc().inc().get();
+  printf("Result: %d\n", result);
   return 0;
 }
