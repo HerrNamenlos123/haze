@@ -1,88 +1,34 @@
-struct Test {
-    bar: i32;
-}
 
 struct Context {
 };
 
-struct Result<TSuccess, TError> {
-  unsafe_union {
-    success: TSuccess;
-    error: TError;
-  }
-  isSuccess: boolean;
-}
-
-struct MemoryBuffer {
-  data: RawPtr<none>;
-  size: u64;
-
-  constructor(size: u64): MemoryBuffer {
-    const a = ctx;
-    return MemoryBuffer {
-      .data: 0 as RawPtr<none>,
-      .size: size,
-    };
-  }
-
-  realloc(newSize: u64) {
-    this.size = newSize;
-  }
-
-  destructor(): none {
-  }
-}
-
-struct List<T> {
-  buffer: MemoryBuffer;
-  length: u64;
-
-  constructor(): List<T> {
-    const initialCapacity = 4;
-    return List<T> {
-      .buffer: MemoryBuffer(initialCapacity * sizeof<T>),
-      .length: 0,
-    };
-  }
-
-  destructor(): none {}
-
-  reserve(size: u64): none {
-    this.buffer.realloc(size * sizeof<T>);
-  }
-
-  push(n: T) {
-    const buf = this.buffer.data as RawPtr<T>;
-    __c__("buf[this->length] = n");
-    this.length = this.length + 1;
-  }
-
-}
-
-foo(): Result<Test, u8> {
-    return Result<Test, u8> {
-        .success: Test {
-            .bar: 187,
-        },
-        .isSuccess: true,
-    };
-}
-
-fibs() {
-    const fibs: List<i32> = List<i32>(18);
-    fibs.reserve(10);
+foo(): i8 {
+  return 0;
 }
 
 struct A {
-    data: u8;
+  data: i8;
+
+  a(): A {
+    return this.ptr;
+  }
+
+  b(): A {
+    return this.ptr;
+  }
+}
+
+get(a: A): i8 {
+  return 0;
+}
+
+bar(): A {
+  return A {
+    .data: 0,
+  };
 }
 
 main(): i32 {
-    const x = foo();
-    const y = x.success.bar;
-
-    const fibs = List<A>(A { .data: 18 });
-    fibs.reserve(10);
-
-    return 0;
+  const a = foo() + get((A {.data: 0}).a().b()) + get(bar());
+  return 0;
 }

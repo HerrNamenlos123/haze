@@ -205,9 +205,9 @@ class CodeGenerator {
       .writeLine(decl + " {")
       .pushIndent();
 
-    this.out.function_definitions[mangleSymbol(symbol)].write(
-      this.emitScope(symbol.scope),
-    );
+    const s = this.emitScope(symbol.scope);
+    this.out.function_definitions[mangleSymbol(symbol)].write(s.temp);
+    this.out.function_definitions[mangleSymbol(symbol)].write(s.out);
 
     // if (symbol.specialMethod === "destructor") {
     //   if (!symbol.parentSymbol) {
@@ -258,8 +258,9 @@ class CodeGenerator {
   //   }
   // }
 
-  emitScope(scope: Scope): OutputWriter {
-    const writer = new OutputWriter();
+  emitScope(scope: Scope): { temp: OutputWriter; out: OutputWriter } {
+    const tempWriter = new OutputWriter();
+    const outWriter = new OutputWriter();
 
     let returned = false;
     for (const statement of scope.statements) {
@@ -275,50 +276,35 @@ class CodeGenerator {
 
       if (statement.variant === "Return") {
         returned = true;
-        if (statement.expr) {
-          writer.writeLine(
-            `${generateUsageCode(statement.expr.type, this.program)} __returnval__ = ` +
-              this.emitExpr(statement.expr).get() +
-              ";",
-          );
-        }
-        const returnedSymbol =
-          statement.expr?.variant === "SymbolValue"
-            ? statement.expr.symbol.variant === "Variable"
-              ? statement.expr.symbol
-              : undefined
-            : undefined;
-        // this.outputDestructorCalls(
-        //   Object.values(scope.getSymbols()),
-        //   writer,
-        //   returnedSymbol,
-        // );
-        if (!statement.expr) {
-          writer.writeLine("return;");
-        } else {
-          writer.writeLine("return __returnval__;");
-        }
-      } else {
-        writer.write(this.emitStatement(statement));
       }
+
+      const s = this.emitStatement(statement);
+      tempWriter.write(s.temp);
+      outWriter.write(s.out);
     }
 
-    // if (!returned) {
-    //   this.outputDestructorCalls(Object.values(scope.getSymbols()), writer);
-    // }
-
-    return writer;
+    return { temp: tempWriter, out: outWriter };
   }
 
-  emitStatement(statement: Statement): OutputWriter {
-    const writer = new OutputWriter();
+  emitStatement(statement: Statement): {
+    temp: OutputWriter;
+    out: OutputWriter;
+  } {
+    const tempWriter = new OutputWriter();
+    const outWriter = new OutputWriter();
     switch (statement.variant) {
-      case "Return":
-        throw new InternalError(
-          "Cannot call emitStatement for return statement, use emitExpression instead",
-        );
+      case "Return": {
+        if (statement.expr) {
+          const exprWriter = this.emitExpr(statement.expr);
+          tempWriter.write(exprWriter.temp);
+          outWriter.writeLine(`return ` + exprWriter.out.get() + ";");
+        } else {
+          outWriter.writeLine("return;");
+        }
+        return { temp: tempWriter, out: outWriter };
+      }
 
-      case "VariableDefinition":
+      case "VariableDefinition": {
         if (
           !statement.expr ||
           !statement.symbol.type ||
@@ -327,83 +313,109 @@ class CodeGenerator {
           throw new ImpossibleSituation();
         }
         const ret = generateUsageCode(statement.symbol.type, this.program);
+        const exprWriter = this.emitExpr(statement.expr);
+        tempWriter.write(exprWriter.temp);
         const assignConv = implicitConversion(
           statement.expr.type,
           statement.symbol.type,
-          this.emitExpr(statement.expr).get(),
+          exprWriter.out.get(),
           this.program.currentScope,
           this.program.getLoc(statement.expr.ctx),
           this.program,
         );
-        writer.writeLine(`${ret} ${statement.symbol.name} = ${assignConv};`);
-        return writer;
+        outWriter.writeLine(`${ret} ${statement.symbol.name} = ${assignConv};`);
+        return { temp: tempWriter, out: outWriter };
+      }
 
-      case "Expr":
-        writer.writeLine(this.emitExpr(statement.expr).get() + ";");
-        return writer;
+      case "Expr": {
+        const exprWriter = this.emitExpr(statement.expr);
+        tempWriter.write(exprWriter.temp);
+        outWriter.writeLine(exprWriter.out.get() + ";");
+        return { temp: tempWriter, out: outWriter };
+      }
 
-      case "InlineC":
-        writer.writeLine(statement.code + ";");
-        return writer;
+      case "InlineC": {
+        outWriter.writeLine(statement.code + ";");
+        return { temp: tempWriter, out: outWriter };
+      }
 
-      case "While":
+      case "While": {
+        const exprWriter = this.emitExpr(statement.expr);
+        tempWriter.write(exprWriter.temp);
         const whileexpr = implicitConversion(
           statement.expr.type,
           this.program.getBuiltinType("boolean"),
-          this.emitExpr(statement.expr).get(),
+          exprWriter.out.get(),
           statement.scope,
           this.program.getLoc(statement.expr.ctx),
           this.program,
         );
-        writer.writeLine(`while (${whileexpr}) {`).pushIndent();
-        writer.write(this.emitScope(statement.scope));
-        writer.popIndent().writeLine("}");
-        return writer;
+        outWriter.writeLine(`while (${whileexpr}) {`).pushIndent();
+        const scope = this.emitScope(statement.scope);
+        tempWriter.write(scope.temp);
+        outWriter.write(scope.out);
+        outWriter.popIndent().writeLine("}");
+        return { temp: tempWriter, out: outWriter };
+      }
 
-      case "Conditional":
+      case "Conditional": {
+        const exprWriter = this.emitExpr(statement.if[0]);
+        tempWriter.write(exprWriter.temp);
         const convexpr = implicitConversion(
           statement.if[0].type,
           this.program.getBuiltinType("boolean"),
-          this.emitExpr(statement.if[0]).get(),
+          exprWriter.out.get(),
           statement.if[1],
           this.program.getLoc(statement.if[0].ctx),
           this.program,
         );
-        writer.writeLine(`if (${convexpr}) {`).pushIndent();
-        writer.write(this.emitScope(statement.if[1]));
-        writer.popIndent().writeLine("}");
+        outWriter.writeLine(`if (${convexpr}) {`).pushIndent();
+        const scope = this.emitScope(statement.if[1]);
+        tempWriter.write(scope.temp);
+        outWriter.write(scope.out);
+        outWriter.popIndent().writeLine("}");
         for (const [expr, scope] of statement.elseIf) {
+          const exprWriter = this.emitExpr(expr);
+          tempWriter.write(exprWriter.temp);
           const convexpr = implicitConversion(
             expr.type,
             this.program.getBuiltinType("boolean"),
-            this.emitExpr(expr).get(),
+            exprWriter.out.get(),
             scope,
             this.program.getLoc(expr.ctx),
             this.program,
           );
-          writer.writeLine(`else if (${convexpr}) {`).pushIndent();
-          writer.write(this.emitScope(scope));
-          writer.popIndent().writeLine("}");
+          outWriter.writeLine(`else if (${convexpr}) {`).pushIndent();
+          const s = this.emitScope(scope);
+          tempWriter.write(s.temp);
+          outWriter.write(s.out);
+          outWriter.popIndent().writeLine("}");
         }
         if (statement.else) {
-          writer.writeLine(`else {`).pushIndent();
-          writer.write(this.emitScope(statement.else));
-          writer.popIndent().writeLine("}");
+          outWriter.writeLine(`else {`).pushIndent();
+          const scope = this.emitScope(statement.else);
+          tempWriter.write(scope.temp);
+          outWriter.write(scope.out);
+          outWriter.popIndent().writeLine("}");
         }
-        return writer;
+        return { temp: tempWriter, out: outWriter };
+      }
 
       // default:
       //   throw new InternalError(`Unknown statement type ${statement.variant}`);
     }
   }
 
-  emitExpr(expr: Expression): OutputWriter {
-    const writer = new OutputWriter();
+  emitExpr(expr: Expression): { temp: OutputWriter; out: OutputWriter } {
+    const tempWriter = new OutputWriter();
+    const outWriter = new OutputWriter();
     switch (expr.variant) {
       case "ExprCall":
         const args = [];
         if (expr.thisPointerExpr) {
-          args.push("&" + this.emitExpr(expr.thisPointerExpr).get());
+          const exprWriter = this.emitExpr(expr.thisPointerExpr);
+          tempWriter.write(exprWriter.temp);
+          args.push("&" + exprWriter.out.get());
         }
         if (expr.expr.variant === "SymbolValue") {
           if (expr.expr.symbol.variant === "Function") {
@@ -417,7 +429,9 @@ class CodeGenerator {
           args.push("ctx");
         }
         for (let i = 0; i < expr.args.length; i++) {
-          const val = this.emitExpr(expr.args[i]).get();
+          const exprWriter = this.emitExpr(expr.args[i]);
+          tempWriter.write(exprWriter.temp);
+          const val = exprWriter.out.get();
           if (expr.expr.type.variant !== "Function") {
             throw new ImpossibleSituation();
           }
@@ -449,128 +463,144 @@ class CodeGenerator {
           expr.expr.methodSymbol.thisPointerExpr &&
           expr.expr.methodSymbol.variant === "Function"
         ) {
-          writer.write(
+          const exprWriter = this.emitExpr(
+            expr.expr.methodSymbol.thisPointerExpr,
+          );
+          tempWriter.write(exprWriter.temp);
+          outWriter.write(
             mangleSymbol(expr.expr.methodSymbol) +
               "(&" +
-              this.emitExpr(expr.expr.methodSymbol.thisPointerExpr).get() +
+              exprWriter.out.get() +
               ", " +
               args.join(", ") +
               ")",
           );
         } else {
-          writer.write(
-            this.emitExpr(expr.expr).get() + "(" + args.join(", ") + ")",
-          );
+          const exprWriter = this.emitExpr(expr.expr);
+          tempWriter.write(exprWriter.temp);
+          outWriter.write(exprWriter.out.get() + "(" + args.join(", ") + ")");
         }
-        return writer;
+        return { out: outWriter, temp: tempWriter };
 
-      case "ExprAssign":
+      case "ExprAssign": {
+        const leftWriter = this.emitExpr(expr.leftExpr);
+        const rightWriter = this.emitExpr(expr.rightExpr);
+        tempWriter.write(leftWriter.temp);
+        tempWriter.write(rightWriter.temp);
         const assignConv = implicitConversion(
           expr.rightExpr.type,
           expr.leftExpr.type,
-          this.emitExpr(expr.rightExpr).get(),
+          rightWriter.out.get(),
           this.program.currentScope,
           this.program.getLoc(expr.rightExpr.ctx),
           this.program,
         );
-        writer.write(`(${this.emitExpr(expr.leftExpr).get()} = ${assignConv})`);
-        return writer;
+        outWriter.write(`(${leftWriter.out.get()} = ${assignConv})`);
+        return { out: outWriter, temp: tempWriter };
+      }
 
-      case "Object":
-        writer
+      case "Object": {
+        outWriter
           .writeLine(`((${generateUsageCode(expr.type, this.program)}) { `)
           .pushIndent();
         for (const [symbol, memberExpr] of expr.members) {
-          writer.writeLine(
-            `.${symbol.name} = ${this.emitExpr(memberExpr).get()}, `,
-          );
+          const exprWriter = this.emitExpr(memberExpr);
+          tempWriter.write(exprWriter.temp);
+          outWriter.writeLine(`.${symbol.name} = ${exprWriter.out.get()}, `);
         }
-        writer.popIndent().write(" })");
-        return writer;
+        outWriter.popIndent().write(" })");
+        return { out: outWriter, temp: tempWriter };
+      }
 
-      case "RawPtrDeref":
-        writer.write(`(*(${this.emitExpr(expr.expr).get()}))`);
-        return writer;
+      case "RawPtrDeref": {
+        const exprWriter = this.emitExpr(expr.expr);
+        tempWriter.write(exprWriter.temp);
+        outWriter.write(`(*(${exprWriter.out.get()}))`);
+        return { out: outWriter, temp: tempWriter };
+      }
 
-      case "MemberAccess":
-        writer.write(this.emitExpr(expr.expr).get() + "." + expr.memberName);
-        return writer;
+      case "MemberAccess": {
+        const exprWriter = this.emitExpr(expr.expr);
+        tempWriter.write(exprWriter.temp);
+        outWriter.write(exprWriter.out.get() + "." + expr.memberName);
+        return { out: outWriter, temp: tempWriter };
+      }
 
       case "Sizeof":
-        writer.write(
+        outWriter.write(
           `sizeof(${generateUsageCode(expr.datatype, this.program)})`,
         );
-        return writer;
+        return { out: outWriter, temp: tempWriter };
 
       case "SymbolValue":
         if (expr.symbol.variant === "Function") {
-          writer.write(mangleSymbol(expr.symbol));
-          return writer;
+          outWriter.write(mangleSymbol(expr.symbol));
+          return { out: outWriter, temp: tempWriter };
         } else if (
           expr.symbol.variant === "Variable" ||
           expr.symbol.variant === "Datatype"
         ) {
-          writer.write(expr.symbol.name);
-          return writer;
+          outWriter.write(expr.symbol.name);
+          return { out: outWriter, temp: tempWriter };
         } else {
           throw new ImpossibleSituation();
         }
 
       case "ExplicitCast":
-        writer.write(
+        const exprWriter = this.emitExpr(expr.expr);
+        tempWriter.write(exprWriter.temp);
+        outWriter.write(
           explicitConversion(
             expr.expr.type,
             expr.type,
-            this.emitExpr(expr.expr).get(),
+            exprWriter.out.get(),
             this.program.currentScope,
             this.program.getLoc(expr.ctx),
             this.program,
           ),
         );
-        return writer;
+        return { out: outWriter, temp: tempWriter };
 
-      case "PreIncr":
-        {
-          writer.write(
-            "(" + expr.operation + this.emitExpr(expr.expr).get() + ")",
-          );
-        }
-        return writer;
+      case "PreIncr": {
+        const exprWriter = this.emitExpr(expr.expr);
+        tempWriter.write(exprWriter.temp);
+        outWriter.write("(" + expr.operation + exprWriter.out.get() + ")");
+        return { out: outWriter, temp: tempWriter };
+      }
 
-      case "PostIncr":
-        {
-          writer.write(
-            "(" + this.emitExpr(expr.expr).get() + expr.operation + ")",
-          );
-        }
-        return writer;
+      case "PostIncr": {
+        const exprWriter = this.emitExpr(expr.expr);
+        tempWriter.write(exprWriter.temp);
+        outWriter.write("(" + exprWriter.out.get() + expr.operation + ")");
+        return { out: outWriter, temp: tempWriter };
+      }
 
       case "Unary":
         switch (expr.operation) {
-          case "!":
-            {
-              const unaryExpr = implicitConversion(
-                expr.expr.type,
-                expr.type,
-                this.emitExpr(expr.expr).get(),
-                this.program.currentScope,
-                this.program.getLoc(expr.ctx),
-                this.program,
-              );
-              writer.write("(!" + unaryExpr + ")");
-            }
+          case "!": {
+            const exprWriter = this.emitExpr(expr.expr);
+            tempWriter.write(exprWriter.temp);
+            const unaryExpr = implicitConversion(
+              expr.expr.type,
+              expr.type,
+              exprWriter.out.get(),
+              this.program.currentScope,
+              this.program.getLoc(expr.ctx),
+              this.program,
+            );
+            outWriter.write("(!" + unaryExpr + ")");
             break;
+          }
 
           case "+":
-          case "-":
-            {
-              writer.write(
-                "(" + expr.operation + this.emitExpr(expr.expr).get() + ")",
-              );
-            }
+          case "-": {
+            const exprWriter = this.emitExpr(expr.expr);
+            tempWriter.write(exprWriter.temp);
+            outWriter.write("(" + expr.operation + exprWriter.out.get() + ")");
             break;
+          }
         }
-        return writer;
+        return { out: outWriter, temp: tempWriter };
 
       case "Binary":
         switch (expr.operation) {
@@ -578,76 +608,90 @@ class CodeGenerator {
           case "/":
           case "%":
           case "+":
-          case "-":
-            {
-              const left = implicitConversion(
-                expr.leftExpr.type,
-                expr.type,
-                this.emitExpr(expr.leftExpr).get(),
-                this.program.currentScope,
-                this.program.getLoc(expr.ctx),
-                this.program,
-              );
-              const right = implicitConversion(
-                expr.rightExpr.type,
-                expr.type,
-                this.emitExpr(expr.rightExpr).get(),
-                this.program.currentScope,
-                this.program.getLoc(expr.ctx),
-                this.program,
-              );
-              writer.write(
-                "(" + left + " " + expr.operation + " " + right + ")",
-              );
-            }
+          case "-": {
+            const leftWriter = this.emitExpr(expr.leftExpr);
+            const rightWriter = this.emitExpr(expr.rightExpr);
+            tempWriter.write(leftWriter.temp);
+            tempWriter.write(rightWriter.temp);
+            const left = implicitConversion(
+              expr.leftExpr.type,
+              expr.type,
+              leftWriter.out.get(),
+              this.program.currentScope,
+              this.program.getLoc(expr.ctx),
+              this.program,
+            );
+            const right = implicitConversion(
+              expr.rightExpr.type,
+              expr.type,
+              rightWriter.out.get(),
+              this.program.currentScope,
+              this.program.getLoc(expr.ctx),
+              this.program,
+            );
+            outWriter.write(
+              "(" + left + " " + expr.operation + " " + right + ")",
+            );
             break;
+          }
 
           case "<":
           case ">":
           case "<=":
-          case ">=":
-            writer.write(
+          case ">=": {
+            const leftWriter = this.emitExpr(expr.leftExpr);
+            const rightWriter = this.emitExpr(expr.rightExpr);
+            tempWriter.write(leftWriter.temp);
+            tempWriter.write(rightWriter.temp);
+            outWriter.write(
               "(" +
-                this.emitExpr(expr.leftExpr).get() +
+                leftWriter.out.get() +
                 " " +
                 expr.operation +
                 " " +
-                this.emitExpr(expr.rightExpr).get() +
+                rightWriter.out.get() +
                 ")",
             );
             break;
+          }
 
           case "==":
-          case "!=":
-            {
-              writer.write(
-                "(" +
-                  this.emitExpr(expr.leftExpr).get() +
-                  " " +
-                  expr.operation +
-                  " " +
-                  this.emitExpr(expr.rightExpr).get() +
-                  ")",
-              );
-            }
+          case "!=": {
+            const leftWriter = this.emitExpr(expr.leftExpr);
+            const rightWriter = this.emitExpr(expr.rightExpr);
+            tempWriter.write(leftWriter.temp);
+            tempWriter.write(rightWriter.temp);
+            outWriter.write(
+              "(" +
+                leftWriter.out.get() +
+                " " +
+                expr.operation +
+                " " +
+                rightWriter.out.get() +
+                ")",
+            );
             break;
+          }
 
           case "&&":
-          case "||":
-            {
-              writer.write(
-                "(" +
-                  this.emitExpr(expr.leftExpr).get() +
-                  " " +
-                  expr.operation +
-                  " " +
-                  this.emitExpr(expr.rightExpr).get() +
-                  ")",
-              );
-            }
+          case "||": {
+            const leftWriter = this.emitExpr(expr.leftExpr);
+            const rightWriter = this.emitExpr(expr.rightExpr);
+            tempWriter.write(leftWriter.temp);
+            tempWriter.write(rightWriter.temp);
+            outWriter.write(
+              "(" +
+                leftWriter.out.get() +
+                " " +
+                expr.operation +
+                " " +
+                rightWriter.out.get() +
+                ")",
+            );
             break;
+          }
         }
-        return writer;
+        return { out: outWriter, temp: tempWriter };
 
       case "Constant":
         switch (expr.constantSymbol.variant) {
@@ -716,19 +760,21 @@ class CodeGenerator {
                   ],
                 ],
               };
-              writer.write(this.emitExpr(durationExpr).get());
+              const exprWriter = this.emitExpr(durationExpr);
+              tempWriter.write(exprWriter.temp);
+              outWriter.write(exprWriter.out.get());
             } else {
-              writer.write(expr.constantSymbol.value.toString());
+              outWriter.write(expr.constantSymbol.value.toString());
             }
-            return writer;
+            return { out: outWriter, temp: tempWriter };
 
           case "BooleanConstant":
-            writer.write(expr.constantSymbol.value ? "1" : "0");
-            return writer;
+            outWriter.write(expr.constantSymbol.value ? "1" : "0");
+            return { out: outWriter, temp: tempWriter };
 
           case "StringConstant":
-            writer.write(expr.constantSymbol.value);
-            return writer;
+            outWriter.write(expr.constantSymbol.value);
+            return { out: outWriter, temp: tempWriter };
 
           // default:
           //   throw new InternalError(

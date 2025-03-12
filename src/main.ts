@@ -5,8 +5,8 @@ async function main() {
   // # if not testCompiler.build():
   // #     exit(1)
 
-  const mainCompiler = new ModuleCompiler("example.hz");
-  // const mainCompiler = new ModuleCompiler("test.hz");
+  // const mainCompiler = new ModuleCompiler("example.hz");
+  const mainCompiler = new ModuleCompiler("test.hz");
   if (!(await mainCompiler.build())) {
     process.exit(1);
   }
