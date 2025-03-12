@@ -11,9 +11,8 @@ import { SymbolCollector } from "./SymbolCollector";
 import { performSemanticAnalysis } from "./SemanticAnalyzer";
 import { generateCode } from "./CodeGenerator";
 import { readdirSync, statSync } from "fs";
-import { extname, join } from "path";
+import { dirname, extname, join } from "path";
 import fs from "fs";
-import { embeddedFiles } from "bun";
 
 const C_COMPILER = "clang";
 
@@ -47,10 +46,15 @@ export class ModuleCompiler {
     try {
       let stdlib_files: { name: string; content: string }[] = [];
       if (process.env.NODE_ENV === "production") {
-        const files = Array.from(embeddedFiles);
-        files.sort((a, b) => a.name.localeCompare(b.name));
-        for (const file of embeddedFiles) {
-          stdlib_files.push({ content: await file.text(), name: file.name });
+        const whichHz = Bun.which("hz");
+        if (!whichHz) {
+          throw new GeneralError(`Compiler not found in path`);
+        }
+        const allFiles = listFiles(join(dirname(whichHz), "stdlib"));
+        allFiles.sort((a, b) => a.localeCompare(b));
+        for (const file of allFiles) {
+          const text = await Bun.file(file).text();
+          stdlib_files.push({ name: file, content: text });
         }
       } else {
         const allFiles = listFiles(join(__dirname, "../stdlib"));

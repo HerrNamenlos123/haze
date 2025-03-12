@@ -1,20 +1,3 @@
-fib() {
-  const fibs = List<i32>();
-  fibs.push(0);
-  fibs.push(1);
-  const count = 10;
-
-  const i = 2;
-  while (i < count) {
-    fibs.push(fibs.get(i - 1) + fibs.get(i - 2));
-    printf("Found fib number: %d\n", fibs.get(fibs.length - 1));
-    i++;
-  }
-}
-
-getTime(): f64 {
-  return glfwGetTime();
-}
 
 window(): i32 { 
   if not glfwInit() {
@@ -140,6 +123,5 @@ window(): i32 {
 }
 
 main(): i32 {
-  // return 0;
   return window();
 }

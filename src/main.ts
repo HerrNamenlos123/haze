@@ -1,8 +1,5 @@
 import { ArgumentParser } from "argparse";
 import { ModuleCompiler } from "./ModuleCompiler";
-import { execSync } from "child_process";
-import { readFileSync } from "fs";
-import { join } from "path";
 import { version } from "../package.json";
 import { ConfigParser } from "./Program";
 import { GeneralError } from "./Errors";

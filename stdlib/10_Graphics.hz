@@ -134,3 +134,7 @@ drawVector(vector: Vec2, position: Vec2, color: Color) {
   const sideVec = sidedir.mul(arrowLength * tan(arrowAngle / 2));
   drawTriangle(tip, cross.add(sideVec), cross.sub(sideVec), color);
 }
+
+getTime(): f64 {
+  return glfwGetTime();
+}
