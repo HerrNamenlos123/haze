@@ -38,8 +38,13 @@ struct LogContext {
   error: (fmt: stringview, ...) => none;
 }
 
+struct MemContext {
+  alloc: (size: u64) => RawPtr<none>;
+}
+
 struct Context {
   log: LogContext;
+  mem: MemContext;
 };
 
 struct Result<TSuccess, TError> {
@@ -60,8 +65,6 @@ struct Vec2 {
       .y: y,
     };
   }
-
-  destructor() {}
 
   neg(): Vec2 {
     return Vec2(-this.x, -this.y);
@@ -108,8 +111,6 @@ struct Color {
       .b: b,
     };
   }
-
-  destructor() {}
 }
 
 declare "C" initClayAndRSGL(window: RawPtr<GLFWwindow>);
@@ -156,10 +157,6 @@ struct Window {
         },
         .isSuccess: true,
       };
-    }
-
-    destructor(): none {
-      destroyClayAndRSGL(this.glfwWindow);
     }
 
     makeContextCurrent() {
@@ -266,8 +263,6 @@ struct Duration {
       .nanoseconds: nanoseconds,
     };
   }
-
-  destructor(): none {}
 }
 
 sleep(duration: Duration) {
@@ -302,10 +297,6 @@ struct MemoryBuffer {
     }
     this.size = newSize;
   }
-
-  destructor(): none {
-    free(this.data);
-  }
 }
 
 struct List<T> {
@@ -319,8 +310,6 @@ struct List<T> {
       .length: 0,
     };
   }
-
-  destructor(): none {}
 
   reserve(size: u64): none {
     if size <= this.capacity() {
@@ -551,6 +540,8 @@ window(): i32 {
     window.swapBuffers();
   }
 
+  destroyClayAndRSGL(window.glfwWindow);
+
   // exitt();
   glfwTerminate();
   return 0;
@@ -598,10 +589,13 @@ main(): i32 {
     __c__("va_end(args)");
     printf("\n");
   };
+  ctx.mem.alloc = (size: u64): RawPtr<none> => {
+    return malloc(size);
+  };
 
   // fib(10);
   // init(); 
   // test2(); 
-  return 0;
-  // return window();
+  // return 0;
+  return window();
 }

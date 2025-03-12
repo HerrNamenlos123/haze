@@ -213,18 +213,9 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
           const constructorSymbol = symbol.type.methods.find(
             (m) => m.name === "constructor",
           );
-          const destructorSymbol = symbol.type.methods.find(
-            (m) => m.name === "destructor",
-          );
           if (!constructorSymbol) {
             throw new CompilerError(
               `Type '${serializeDatatype(symbol.type)}' must provide a constructor`,
-              this.program.getLoc(ctx),
-            );
-          }
-          if (!destructorSymbol) {
-            throw new CompilerError(
-              `Type '${serializeDatatype(symbol.type)}' must provide a destructor`,
               this.program.getLoc(ctx),
             );
           }
@@ -265,44 +256,6 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
             this.implFunc(
               constructorSymbol.ctx as FuncContext,
               constructorSymbol,
-            );
-          }
-          if (
-            !this.program.concreteFunctions.get(mangleSymbol(destructorSymbol))
-          ) {
-            destructorSymbol.scope = new Scope(
-              destructorSymbol.scope.location,
-              destructorSymbol.scope,
-            );
-            for (const [name, tp] of symbol.type.generics) {
-              if (!tp) {
-                throw new CompilerError(
-                  `Generic parameter '${name}' has no type`,
-                  this.program.getLoc(ctx),
-                );
-              }
-              if (symbol.type.generics.get(name) === undefined) {
-                symbol.type.generics.set(name, tp);
-              }
-              destructorSymbol.scope.defineSymbol(
-                {
-                  variant: "Datatype",
-                  name: name,
-                  scope: destructorSymbol.scope,
-                  type: tp,
-                },
-                this.program.getLoc(ctx),
-              );
-            }
-            destructorSymbol.type = resolveGenerics(
-              destructorSymbol.type,
-              destructorSymbol.scope,
-              this.program.getLoc(destructorSymbol.ctx),
-            ) as FunctionDatatype;
-            destructorSymbol.parentSymbol = symbol;
-            this.implFunc(
-              destructorSymbol.ctx as FuncContext,
-              destructorSymbol,
             );
           }
         }
@@ -405,8 +358,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
     if (
       expr.variant === "SymbolValue" &&
       expr.symbol.variant === "Function" &&
-      (expr.symbol.specialMethod === "constructor" ||
-        expr.symbol.specialMethod === "destructor")
+      expr.symbol.specialMethod === "constructor"
     ) {
       const symbol = { ...expr.symbol };
       symbol.scope = new Scope(symbol.scope.location, symbol.scope);
@@ -585,11 +537,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
       }
 
       const returnedTypes = getNestedReturnTypes(symbol.scope);
-      if (
-        !ctx.datatype() &&
-        symbol.specialMethod !== "constructor" &&
-        symbol.specialMethod !== "destructor"
-      ) {
+      if (!ctx.datatype() && symbol.specialMethod !== "constructor") {
         let returntype: Datatype = symbol.type.functionReturnType;
         if (returnedTypes.length > 1) {
           throw new CompilerError(
@@ -1370,7 +1318,10 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
           );
         }
         if (symbol.type.variant === "Struct") {
-          if (symbol.type.generics.get(name) === undefined) {
+          if (
+            symbol.type.generics.has(name) &&
+            symbol.type.generics.get(name) === undefined
+          ) {
             symbol.type.generics.set(name, tp);
           }
         }
@@ -1427,6 +1378,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
 
       // this.setNodeSymbol(method.ctx, { ...method });
       const symbol = { ...method };
+      // console.log("SYMBOL", serializeSymbol(symbol));
       symbol.type = { ...symbol.type };
       symbol.scope = new Scope(symbol.scope.location, symbol.scope);
       symbol.parentSymbol = { ...method.parentSymbol };
@@ -1434,6 +1386,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
       symbol.parentSymbol.type.generics = new Map(
         symbol.parentSymbol.type.generics,
       );
+      // console.log(">> PArent", serializeSymbol(symbol.parentSymbol));
       if (symbol.parentSymbol.type.variant !== "Struct") {
         throw new ImpossibleSituation();
       }

@@ -209,54 +209,54 @@ class CodeGenerator {
       this.emitScope(symbol.scope),
     );
 
-    if (symbol.specialMethod === "destructor") {
-      if (!symbol.parentSymbol) {
-        throw new ImpossibleSituation();
-      }
-      if (
-        symbol.parentSymbol.variant !== "Datatype" ||
-        symbol.parentSymbol.type.variant !== "Struct"
-      ) {
-        throw new ImpossibleSituation();
-      }
-      const members = symbol.parentSymbol.type.members.filter(
-        (m) => m.variant === "Variable",
-      );
-      this.outputDestructorCalls(
-        members,
-        this.out.function_definitions[mangleSymbol(symbol)],
-        undefined,
-        true,
-      );
-    }
+    // if (symbol.specialMethod === "destructor") {
+    //   if (!symbol.parentSymbol) {
+    //     throw new ImpossibleSituation();
+    //   }
+    //   if (
+    //     symbol.parentSymbol.variant !== "Datatype" ||
+    //     symbol.parentSymbol.type.variant !== "Struct"
+    //   ) {
+    //     throw new ImpossibleSituation();
+    //   }
+    //   // const members = symbol.parentSymbol.type.members.filter(
+    //   //   (m) => m.variant === "Variable",
+    //   // );
+    //   // this.outputDestructorCalls(
+    //   //   members,
+    //   //   this.out.function_definitions[mangleSymbol(symbol)],
+    //   //   undefined,
+    //   //   true,
+    //   // );
+    // }
 
     this.out.function_definitions[mangleSymbol(symbol)]
       .popIndent()
       .writeLine("}");
   }
 
-  outputDestructorCalls(
-    symbols: Symbol[],
-    writer: OutputWriter,
-    returnedSymbol?: VariableSymbol,
-    isMember?: boolean,
-  ) {
-    for (const symbol of symbols.reverse()) {
-      if (symbol.variant === "Variable" && symbol.type.variant === "Struct") {
-        const destructor = symbol.type.methods.find(
-          (m) => m.specialMethod === "destructor",
-        );
-        if (destructor) {
-          if (returnedSymbol && returnedSymbol === symbol) {
-            continue;
-          }
-          writer.writeLine(
-            `${mangleSymbol(destructor)}(&${isMember ? "this->" : ""}${symbol.name}, ctx);`,
-          );
-        }
-      }
-    }
-  }
+  // outputDestructorCalls(
+  //   symbols: Symbol[],
+  //   writer: OutputWriter,
+  //   returnedSymbol?: VariableSymbol,
+  //   isMember?: boolean,
+  // ) {
+  //   for (const symbol of symbols.reverse()) {
+  //     if (symbol.variant === "Variable" && symbol.type.variant === "Struct") {
+  //       const destructor = symbol.type.methods.find(
+  //         (m) => m.specialMethod === "destructor",
+  //       );
+  //       if (destructor) {
+  //         if (returnedSymbol && returnedSymbol === symbol) {
+  //           continue;
+  //         }
+  //         writer.writeLine(
+  //           `${mangleSymbol(destructor)}(&${isMember ? "this->" : ""}${symbol.name}, ctx);`,
+  //         );
+  //       }
+  //     }
+  //   }
+  // }
 
   emitScope(scope: Scope): OutputWriter {
     const writer = new OutputWriter();
@@ -288,11 +288,11 @@ class CodeGenerator {
               ? statement.expr.symbol
               : undefined
             : undefined;
-        this.outputDestructorCalls(
-          Object.values(scope.getSymbols()),
-          writer,
-          returnedSymbol,
-        );
+        // this.outputDestructorCalls(
+        //   Object.values(scope.getSymbols()),
+        //   writer,
+        //   returnedSymbol,
+        // );
         if (!statement.expr) {
           writer.writeLine("return;");
         } else {
@@ -303,9 +303,9 @@ class CodeGenerator {
       }
     }
 
-    if (!returned) {
-      this.outputDestructorCalls(Object.values(scope.getSymbols()), writer);
-    }
+    // if (!returned) {
+    //   this.outputDestructorCalls(Object.values(scope.getSymbols()), writer);
+    // }
 
     return writer;
   }
@@ -327,12 +327,6 @@ class CodeGenerator {
           throw new ImpossibleSituation();
         }
         const ret = generateUsageCode(statement.symbol.type, this.program);
-        console.log(
-          "Conversion from ",
-          serializeDatatype(statement.expr.type),
-          "to",
-          serializeDatatype(statement.symbol.type),
-        );
         const scope = new Scope(
           this.program.getLoc(statement.ctx),
           this.program.currentScope,

@@ -41,7 +41,7 @@ import * as _ from "lodash";
 
 export const RESERVED_VARIABLE_NAMES = ["this", "ctx", "__returnval__"];
 export const RESERVED_STRUCT_NAMES = ["RawPtr"]; // "Context"
-export const INTERNAL_METHOD_NAMES = ["constructor", "destructor", "sizeof"];
+export const INTERNAL_METHOD_NAMES = ["constructor", "sizeof"];
 export const RESERVED_NAMESPACES = ["global"];
 
 export type ParamPack = { params: [string, Datatype][]; vararg: boolean };
@@ -500,8 +500,6 @@ export function collectFunction(
   ) {
     if (name === "constructor") {
       specialMethod = "constructor";
-    } else if (name === "destructor") {
-      specialMethod = "destructor";
     }
   }
 
@@ -523,21 +521,6 @@ export function collectFunction(
     ctx: ctx,
     wasAnalyzed: false,
   };
-
-  if (
-    parentSymbol &&
-    parentSymbol.variant === "Datatype" &&
-    parentSymbol.type?.variant === "Struct"
-  ) {
-    if (name === "destructor") {
-      if (type.functionParameters.length !== 0) {
-        throw new CompilerError(
-          `Destructor of struct '${parentSymbol.name}' cannot have any parameters`,
-          program.getLoc(ctx),
-        );
-      }
-    }
-  }
 
   parentScope.defineSymbol(symbol, program.getLoc(ctx));
 

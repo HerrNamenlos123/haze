@@ -13,20 +13,50 @@ struct Result<TSuccess, TError> {
   isSuccess: boolean;
 }
 
-struct List<T> {
-  data: T;
+struct MemoryBuffer {
+  data: RawPtr<none>;
+  size: u64;
 
-  constructor(v: T): List<T> {
-    return List<T> {
-      .data: v,
+  constructor(size: u64): MemoryBuffer {
+    const a = ctx;
+    return MemoryBuffer {
+      .data: 0 as RawPtr<none>,
+      .size: size,
     };
   }
 
-  destructor() {}
-
-  test(): T {
-    return this.data;
+  realloc(newSize: u64) {
+    this.size = newSize;
   }
+
+  destructor(): none {
+  }
+}
+
+struct List<T> {
+  buffer: MemoryBuffer;
+  length: u64;
+
+  constructor(): List<T> {
+    const initialCapacity = 4;
+    return List<T> {
+      .buffer: MemoryBuffer(initialCapacity * sizeof<T>),
+      .length: 0,
+    };
+  }
+
+  destructor(): none {}
+
+  reserve(size: u64): none {
+    this.buffer.realloc(size * sizeof<T>);
+  }
+
+  push(n: T) {
+    const buf = this.buffer.data as RawPtr<T>;
+    __c__("buf[this->length] = n");
+    this.length = this.length + 1;
+  }
+
 }
 
 foo(): Result<Test, u8> {
@@ -40,7 +70,7 @@ foo(): Result<Test, u8> {
 
 fibs() {
     const fibs: List<i32> = List<i32>(18);
-    const a: i32 = fibs.test();
+    fibs.reserve(10);
 }
 
 struct A {
@@ -52,7 +82,7 @@ main(): i32 {
     const y = x.success.bar;
 
     const fibs = List<A>(A { .data: 18 });
-    const a: A = fibs.test();
+    fibs.reserve(10);
 
     return 0;
 }

@@ -36,7 +36,7 @@ export type VariableSymbol = {
   parentSymbol?: Symbol;
 };
 
-export type SpecialMethod = undefined | "constructor" | "destructor";
+export type SpecialMethod = undefined | "constructor";
 
 export type FunctionSymbol = {
   variant: "Function";
