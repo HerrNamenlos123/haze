@@ -416,10 +416,7 @@ class CodeGenerator {
         if (expr.thisPointerExpr) {
           const exprWriter = this.emitExpr(expr.thisPointerExpr);
           tempWriter.write(exprWriter.temp);
-          if (
-            expr.thisPointerExpr.variant === "SymbolValue" ||
-            expr.thisPointerExpr.variant === "MemberAccess"
-          ) {
+          if (expr.thisPointerExpr.variant !== "ExprCall") {
             args.push("&" + exprWriter.out.get());
           } else {
             const tempname = this.program.makeTempVarname();
