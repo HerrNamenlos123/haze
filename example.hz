@@ -333,18 +333,22 @@ struct List<T> {
     return back;
   }
 
-  get(n: T): T {
+  get(n: u64, dummyValue: T): T {
     if n < 0 or n >= this.length {
       panic("OUT OF BOUNDS");
     }
     const buf = this.buffer.data as RawPtr<T>;
-    const result: T = 0;
+    const result: T = dummyValue;
     __c__("result = buf[n]");
     return result;
   }
 
   capacity(): u64 {
     return this.buffer.size / sizeof<T>;
+  }
+
+  clear() {
+    this.length = 0;
   }
 }
 
@@ -452,8 +456,6 @@ window(): i32 {
   const startTime = getTime();
 
   const path = List<Vec2>();
-  path.capacity();
-  // if 0 == path {}
 
   while !window.shouldClose() {
     beginFrame();
@@ -478,6 +480,7 @@ window(): i32 {
       acceleration = Vec2(0, 0);
       startTime = getTime();
       // path = List<Vec2>();
+      path.clear();
     }
 
     const origin = Vec2(200, 600);
@@ -489,6 +492,7 @@ window(): i32 {
       acceleration = Vec2(0, 0);
       startTime = getTime();
       // path = List<Vec2>();
+      path.clear();
     }
 
     // =========================================
@@ -514,7 +518,14 @@ window(): i32 {
     velocity = velocity.add(acceleration.mul(dt));
     P = P.add(velocity.mul(dt));
 
-    // path.push(P);
+    path.push(P);
+
+    const a = 0;
+    while a < path.length - 1 {
+      const dummy = Vec2(0, 0);
+      drawLine(origin.add(Vec2(path.get(a, dummy).x, -path.get(a, dummy).y)), origin.add(Vec2(path.get(a + 1, dummy).x, -path.get(a + 1, dummy).y)), 1, Color(255, 255, 255));
+      a++;
+    }
 
     drawVector(Vec2(600, 0), origin, Color(255, 255, 255));
     drawVector(Vec2(0, -500), origin, Color(255, 255, 255));
