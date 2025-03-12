@@ -12,31 +12,31 @@ namespace Memory {
   copy(to: RawPtr<none>, from: RawPtr<none>, length: u64) {
     memcpy(to, from, length);
   }
-}
 
-struct MemoryBuffer {
-  data: RawPtr<none>;
-  size: u64;
+  struct Buffer {
+    data: RawPtr<none>;
+    size: u64;
 
-  constructor(size: u64): MemoryBuffer {
-    const a = ctx;
-    const buffer = Memory.allocate(size);
-    if !buffer {
-      System.panic("Allocation failed");
+    constructor(size: u64): Memory.Buffer {
+      const a = ctx;
+      const buffer = Memory.allocate(size);
+      if !buffer {
+        System.panic("Allocation failed");
+      }
+      return Memory.Buffer {
+        .data: buffer,
+        .size: size,
+      };
     }
-    return MemoryBuffer {
-      .data: buffer,
-      .size: size,
-    };
-  }
 
-  resize(newSize: u64) {
-    const newData = Memory.allocate(newSize);
-    if !newData {
-      System.panic("Allocation failed");
+    resize(newSize: u64) {
+      const newData = Memory.allocate(newSize);
+      if !newData {
+        System.panic("Allocation failed");
+      }
+      Memory.copy(newData, this.data, this.size);
+      this.size = newSize;
+      this.data = newData;
     }
-    Memory.copy(newData, this.data, this.size);
-    this.size = newSize;
-    this.data = newData;
   }
 }

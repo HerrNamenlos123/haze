@@ -164,6 +164,7 @@ export function resolveGenerics(
                 resolvageContext,
               ),
               variant: "Variable",
+              parentSymbol: inner.parentSymbol,
               variableType: inner.variableType,
               variableScope: inner.variableScope,
               ctx: inner.ctx,
@@ -362,6 +363,7 @@ export const visitCommonDatatypeImpl = (
         language: symbol.type.language,
         members: symbol.type.members,
         methods: symbol.type.methods,
+        parentSymbol: symbol.type.parentSymbol,
       };
       if (genericsProvided.length != symbol.type.generics.size) {
         throw new CompilerError(

@@ -62,16 +62,18 @@ class CodeGenerator {
       .writeLine(`struct ${context}_;`)
       .writeLine(`typedef struct ${context}_ ${context};`);
 
-    this.out.function_definitions["main"] = new OutputWriter()
+    const mainWriter = (this.out.function_definitions["main"] =
+      new OutputWriter());
+    mainWriter
       .writeLine("int32_t main() {")
       .pushIndent()
       .writeLine(
         `${generateUsageCode(this.program.getBuiltinType("Context"), this.program)} ctx = {};`,
-      )
-      .writeLine("_H13__setupStdlib(&ctx);")
-      .writeLine("return _H4main(&ctx);")
-      .popIndent()
-      .writeLine("}");
+      );
+    if (!this.program.projectConfig.nostdlib) {
+      mainWriter.writeLine("_H13__setupStdlib(&ctx);");
+    }
+    mainWriter.writeLine("return _H4main(&ctx);").popIndent().writeLine("}");
   }
 
   init(field: string, out: Record<string, OutputWriter>) {

@@ -1,12 +1,12 @@
 
 struct List<T> {
-  buffer: MemoryBuffer;
+  buffer: Memory.Buffer;
   length: u64;
 
   constructor(): List<T> {
     const initialCapacity = 4;
     return List<T> {
-      .buffer: MemoryBuffer(initialCapacity * sizeof<T>),
+      .buffer: Memory.Buffer(initialCapacity * sizeof<T>),
       .length: 0,
     };
   }

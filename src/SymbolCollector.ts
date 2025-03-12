@@ -228,6 +228,7 @@ export class SymbolCollector extends HazeVisitor<any> {
       generics: new Map<string, undefined>(genericsList),
       members: [],
       methods: [],
+      parentSymbol: this.parentSymbolStack[this.parentSymbolStack.length - 1],
     };
     const symbol: DatatypeSymbol<StructDatatype> = {
       variant: "Datatype",
@@ -301,17 +302,16 @@ export class SymbolCollector extends HazeVisitor<any> {
       parentSymbol: this.parentSymbolStack[this.parentSymbolStack.length - 1],
     };
 
+    this.program.currentScope.defineSymbol(symbol, this.program.getLoc(ctx));
     this.program.pushScope(scope);
     this.parentSymbolStack.push(symbol);
 
     ctx.namespacecontent().children?.forEach((n) => {
-      const symbol = this.visit(n);
+      this.visit(n);
     });
 
     this.parentSymbolStack.pop();
     this.program.popScope();
-
-    this.program.currentScope.defineSymbol(symbol, this.program.getLoc(ctx));
 
     return symbol;
   };

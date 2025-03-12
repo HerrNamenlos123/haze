@@ -36,6 +36,11 @@ async function main() {
     help: "Build or Run the project",
   });
 
+  parser.add_argument("--nostdlib", {
+    action: "store_true",
+    help: "Compile a pure program without a standard library",
+  });
+
   const args = parser.parse_args();
 
   if (args.version) {
@@ -49,6 +54,7 @@ async function main() {
       if (!config) {
         process.exit(1);
       }
+      config.nostdlib = args.nostdlib;
       const module = new ModuleCompiler(config);
       if (!(await module.build())) {
         process.exit(1);
@@ -65,6 +71,7 @@ async function main() {
       if (!config) {
         process.exit(1);
       }
+      config.nostdlib = args.nostdlib;
       const module = new ModuleCompiler(config);
       if (!(await module.build())) {
         process.exit(1);

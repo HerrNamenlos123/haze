@@ -5,6 +5,7 @@ import { existsSync } from "fs";
 import { parse } from "@ltd/j-toml";
 import { Scope } from "./Scope";
 import {
+  Language,
   mangleSymbol,
   serializeSymbol,
   type DatatypeSymbol,
@@ -35,6 +36,7 @@ export type ProjectConfig = {
   projectAuthors?: string[];
   scripts: { name: string; command: string }[];
   srcDirectory: string;
+  nostdlib: boolean;
 };
 
 export type ModuleConfig = {
@@ -138,6 +140,7 @@ export class ConfigParser {
         dirname(this.configPath),
         this.getOptionalString(toml, "src") || "src",
       ),
+      nostdlib: false,
     };
   }
 }
@@ -208,6 +211,23 @@ export class Program {
       scope: this.globalScope,
     };
     this.globalScope.defineSymbol(symbol, this.globalScope.location);
+
+    if (this.projectConfig.nostdlib) {
+      const symbol: DatatypeSymbol = {
+        variant: "Datatype",
+        name: "Context",
+        scope: this.globalScope,
+        type: {
+          variant: "Struct",
+          generics: new Map(),
+          language: Language.Internal,
+          members: [],
+          methods: [],
+          name: "Context",
+        },
+      };
+      this.globalScope.defineSymbol(symbol, this.globalScope.location);
+    }
   }
 
   getBuiltinType(name: string) {

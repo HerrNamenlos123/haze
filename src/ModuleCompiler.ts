@@ -44,44 +44,45 @@ export class ModuleCompiler {
 
   async build() {
     try {
-      let stdlib_files: { name: string; content: string }[] = [];
-      if (process.env.NODE_ENV === "production") {
-        const whichHz = Bun.which("hz");
-        if (!whichHz) {
-          throw new GeneralError(`Compiler not found in path`);
+      const program = new Program(this.projectConfig);
+      const collector = new SymbolCollector(program);
+
+      if (!this.projectConfig.nostdlib) {
+        let stdlib_files: { name: string; content: string }[] = [];
+        if (process.env.NODE_ENV === "production") {
+          const whichHz = Bun.which("hz");
+          if (!whichHz) {
+            throw new GeneralError(`Compiler not found in path`);
+          }
+          const allFiles = listFiles(join(dirname(whichHz), "stdlib"));
+          allFiles.sort((a, b) => a.localeCompare(b));
+          for (const file of allFiles) {
+            const text = await Bun.file(file).text();
+            stdlib_files.push({ name: file, content: text });
+          }
+        } else {
+          const allFiles = listFiles(join(__dirname, "../stdlib"));
+          allFiles.sort((a, b) => a.localeCompare(b));
+          for (const file of allFiles) {
+            const text = await Bun.file(file).text();
+            stdlib_files.push({ name: file, content: text });
+          }
         }
-        const allFiles = listFiles(join(dirname(whichHz), "stdlib"));
-        allFiles.sort((a, b) => a.localeCompare(b));
-        for (const file of allFiles) {
-          const text = await Bun.file(file).text();
-          stdlib_files.push({ name: file, content: text });
-        }
-      } else {
-        const allFiles = listFiles(join(__dirname, "../stdlib"));
-        allFiles.sort((a, b) => a.localeCompare(b));
-        for (const file of allFiles) {
-          const text = await Bun.file(file).text();
-          stdlib_files.push({ name: file, content: text });
+
+        for (const stdlibFile of stdlib_files) {
+          const parser = new Parser();
+          const ast = await parser.parse(stdlibFile.content, stdlibFile.name);
+          if (!ast) {
+            throw new GeneralError("Parsing failed");
+          }
+
+          program.filename = stdlibFile.name;
+          program.ast = ast;
+          collector.visit(ast);
         }
       }
 
       const files = readdirSync(this.projectConfig.srcDirectory);
-
-      const program = new Program(this.projectConfig);
-      const collector = new SymbolCollector(program);
-
-      for (const stdlibFile of stdlib_files) {
-        const parser = new Parser();
-        const ast = await parser.parse(stdlibFile.content, stdlibFile.name);
-        if (!ast) {
-          throw new GeneralError("Parsing failed");
-        }
-
-        program.filename = stdlibFile.name;
-        program.ast = ast;
-        collector.visit(ast);
-      }
-
       const sortedFiles = files.sort((a, b) => a.localeCompare(b));
       for (const file of sortedFiles) {
         const fullPath = join(this.projectConfig.srcDirectory, file);
