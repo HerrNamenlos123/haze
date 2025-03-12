@@ -7,7 +7,7 @@ namespace
     : 'namespace' ID '{' namespacecontent '}'
     ;
 
-namedfunc: ID '(' params ')' (':' datatype)? funcbody;
+namedfunc: (export='export')? ID '(' params ')' (':' datatype)? funcbody;
 func: '(' params ')' (':' datatype)? funcbody;
 
 funcbody: ('=>')? '{' body '}' | '=>' expr;
@@ -19,7 +19,7 @@ params: (param (',' param)* (',' ellipsis)?)? | ellipsis;
 cdefinitiondecl: 'inject' STRING_LITERAL ';';
 prebuildcmd: 'prebuildcmd' STRING_LITERAL ';';
 postbuildcmd: 'postbuildcmd' STRING_LITERAL ';';
-funcdecl: 'declare' (externlang)? (ID '.')* ID '(' params ')' (':' datatype)? ';';
+funcdecl: (export='export')? 'declare' (externlang)? (ID '.')* ID '(' params ')' (':' datatype)? ';';
 externlang: '"C"' | '"C++"';
 
 ifexpr: expr;
@@ -33,8 +33,8 @@ variablemutability
     ;
 
 variablestatement
-    : variablemutability ID (':' datatype)? '=' expr ';'        #VariableDefinition
-    | variablemutability ID (':' datatype) ';'                  #VariableDeclaration
+    : (export='export')? variablemutability ID (':' datatype)? '=' expr ';'        #VariableDefinition
+    | (export='export')? variablemutability ID (':' datatype) ';'                  #VariableDeclaration
     ;
 
 statement
@@ -110,7 +110,7 @@ structcontent
     ;
 
 structdecl
-    : ('declare' externlang)? 'struct' ID ('<' ID (',' ID)* '>')? '{' (structcontent)* '}' (';')?      #StructDecl
+    : (export='export')? ('declare' externlang)? 'struct' ID ('<' ID (',' ID)* '>')? '{' (structcontent)* '}' (';')?      #StructDecl
     ;
 
 datatype

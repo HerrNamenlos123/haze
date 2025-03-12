@@ -63,7 +63,13 @@ export function defineGenericsInScope(generics: Generics, scope: Scope) {
   for (const [name, tp] of generics) {
     if (tp) {
       scope.defineSymbol(
-        { variant: "Datatype", name: name, type: tp, scope: scope },
+        {
+          variant: "Datatype",
+          name: name,
+          type: tp,
+          scope: scope,
+          export: false,
+        },
         scope.location,
       );
     }
@@ -148,6 +154,7 @@ export function resolveGenerics(
               loc,
               resolvageContext,
             ),
+            export: member.export,
           });
         } else {
           const newUnion: StructMemberUnion = {
@@ -168,6 +175,7 @@ export function resolveGenerics(
               variableType: inner.variableType,
               variableScope: inner.variableScope,
               ctx: inner.ctx,
+              export: inner.export,
             });
           }
           cloned.members.push(newUnion);
@@ -191,6 +199,7 @@ export function resolveGenerics(
           specialMethod: method.specialMethod,
           thisPointerExpr: method.thisPointerExpr,
           wasAnalyzed: method.wasAnalyzed,
+          export: method.export,
         });
       }
       // const generics: Array<[string, Datatype | null]> = [];
@@ -343,6 +352,7 @@ export const visitCommonDatatypeImpl = (
             type: ptrtype,
             variant: "Datatype",
             parentSymbol: symbol.parentSymbol,
+            export: symbol.export,
           },
           program,
         );
@@ -392,6 +402,7 @@ export const visitCommonDatatypeImpl = (
             type: structtype,
             variant: "Datatype",
             parentSymbol: symbol.parentSymbol,
+            export: symbol.export,
           },
           program,
         );
@@ -522,6 +533,13 @@ export function collectFunction(
     }
   }
 
+  let exports = false;
+  if (ctx instanceof NamedfuncContext || ctx instanceof FuncdeclContext) {
+    if (ctx._export_) {
+      exports = true;
+    }
+  }
+
   const params: ParamPack = _this.visit(ctx.params());
   const type: FunctionDatatype = {
     variant: "Function",
@@ -539,6 +557,7 @@ export function collectFunction(
     parentSymbol: parentSymbol,
     ctx: ctx,
     wasAnalyzed: false,
+    export: exports,
   };
 
   parentScope.defineSymbol(symbol, program.getLoc(ctx));
@@ -611,6 +630,13 @@ export function collectVariableStatement(
     );
   }
 
+  let exports = false;
+  if (ctx instanceof NamedfuncContext || ctx instanceof FuncdeclContext) {
+    if (ctx._export_) {
+      exports = true;
+    }
+  }
+
   const symbol: VariableSymbol = {
     variableType: mutable
       ? VariableType.MutableVariable
@@ -621,6 +647,7 @@ export function collectVariableStatement(
     variant: "Variable",
     parentSymbol: parentSymbol,
     ctx: ctx,
+    export: exports,
   };
   program.currentScope.defineSymbol(symbol, program.getLoc(ctx));
 

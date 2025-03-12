@@ -56,6 +56,7 @@ import {
   IfStatementContext,
   InlineCStatementContext,
   LiteralConstantContext,
+  NamedfuncContext,
   ParamContext,
   ParamsContext,
   PostIncrExprContext,
@@ -74,7 +75,6 @@ import {
   type ExprStatementContext,
   type FuncbodyContext,
   type FuncContext,
-  type NamedfuncContext,
   type ParenthesisExprContext,
   type ReturnStatementContext,
   type StringConstantContext,
@@ -218,6 +218,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
               type: symbol.type,
               variant: "Datatype",
               parentSymbol: symbol.parentSymbol,
+              export: symbol.export,
             },
             this.program,
           );
@@ -253,6 +254,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
                   name: name,
                   scope: constructorSymbol.scope,
                   type: tp,
+                  export: false,
                 },
                 this.program.getLoc(ctx),
               );
@@ -402,6 +404,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
             name: name,
             scope: symbol.scope,
             type: tp,
+            export: false,
           },
           this.program.getLoc(ctx),
         );
@@ -509,6 +512,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
             },
             variableType: VariableType.Parameter,
             variableScope: VariableScope.Local,
+            export: false,
           },
           loc,
         );
@@ -522,6 +526,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
             type: tp,
             variableType: VariableType.Parameter,
             variableScope: VariableScope.Local,
+            export: false,
           },
           loc,
         );
@@ -540,6 +545,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
           },
           variableType: VariableType.Parameter,
           variableScope: VariableScope.Local,
+          export: false,
         },
         loc,
       );
@@ -1117,6 +1123,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
       variableType: VariableType.MutableStructField,
       variableScope: VariableScope.Member,
       variant: "Variable",
+      export: false,
     };
     return [symbol, expr];
   };
@@ -1333,6 +1340,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
               name: name,
               scope: scope,
               type: tp,
+              export: false,
             },
             this.program.getLoc(ctx),
           );
@@ -1406,6 +1414,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
               name: name,
               scope: symbol.scope,
               type: tp,
+              export: false,
             },
             this.program.getLoc(ctx),
           );

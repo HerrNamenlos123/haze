@@ -230,6 +230,7 @@ export class Program {
         name: name,
         scope: this.globalScope,
         type,
+        export: false,
       };
       this.globalScope.defineSymbol(symbol, this.globalScope.location);
     };
@@ -258,6 +259,7 @@ export class Program {
         generics: new Map().set("__Pointee", undefined),
       },
       scope: this.globalScope,
+      export: false,
     };
     this.globalScope.defineSymbol(symbol, this.globalScope.location);
 
@@ -274,6 +276,7 @@ export class Program {
           methods: [],
           name: "Context",
         },
+        export: false,
       };
       this.globalScope.defineSymbol(symbol, this.globalScope.location);
     }

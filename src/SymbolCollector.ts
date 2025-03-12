@@ -99,6 +99,7 @@ export class SymbolCollector extends HazeVisitor<any> {
         scope: this.program.currentScope,
         type: type,
         variant: "Datatype",
+        export: false,
       },
       this.program,
     );
@@ -178,6 +179,7 @@ export class SymbolCollector extends HazeVisitor<any> {
       type: datatype,
       variableType: VariableType.MutableStructField,
       variableScope: VariableScope.Member,
+      export: false,
     };
     return symbol;
   };
@@ -221,6 +223,11 @@ export class SymbolCollector extends HazeVisitor<any> {
       );
     }
 
+    let exports = false;
+    if (ctx._export_) {
+      exports = true;
+    }
+
     const type: StructDatatype = {
       variant: "Struct",
       name: name,
@@ -236,6 +243,7 @@ export class SymbolCollector extends HazeVisitor<any> {
       type: type,
       scope: scope,
       parentSymbol: this.parentSymbolStack[this.parentSymbolStack.length - 1],
+      export: exports,
     };
 
     parentScope.defineSymbol(symbol, this.program.getLoc(ctx));
@@ -245,6 +253,7 @@ export class SymbolCollector extends HazeVisitor<any> {
         variant: "Datatype",
         scope: scope,
         type: { variant: "Generic", name: name },
+        export: false,
       };
       scope.defineSymbol(sym, this.program.getLoc(ctx));
     }
@@ -300,6 +309,7 @@ export class SymbolCollector extends HazeVisitor<any> {
       scope: this.program.currentScope,
       type: { variant: "Namespace", name: name, symbolsScope: scope },
       parentSymbol: this.parentSymbolStack[this.parentSymbolStack.length - 1],
+      export: false,
     };
 
     this.program.currentScope.defineSymbol(symbol, this.program.getLoc(ctx));

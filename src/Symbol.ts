@@ -46,6 +46,7 @@ export type VariableSymbol = {
   variableScope: VariableScope;
   parentSymbol?: Symbol;
   ctx?: VariableDefinitionContext | VariableDeclarationContext;
+  export: boolean;
 };
 
 export type SpecialMethod = undefined | "constructor";
@@ -61,6 +62,7 @@ export type FunctionSymbol = {
   specialMethod?: SpecialMethod;
   ctx: ParserRuleContext;
   wasAnalyzed: boolean;
+  export: boolean;
 };
 
 export type DatatypeSymbol<T = Datatype> = {
@@ -69,6 +71,7 @@ export type DatatypeSymbol<T = Datatype> = {
   name: string;
   type: T;
   scope: Scope;
+  export: boolean;
 };
 
 export type StringConstantSymbol = {
