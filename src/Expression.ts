@@ -6,10 +6,12 @@ import type {
   Symbol,
   VariableSymbol,
 } from "./Symbol";
+import type { Location } from "./Errors";
 
 type BaseExpression = {
   type: Datatype;
   ctx: ParserRuleContext;
+  location: Location;
 };
 
 export type ConstantExpression = BaseExpression & {

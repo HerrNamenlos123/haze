@@ -85,9 +85,8 @@ export class ModuleCompiler {
             throw new GeneralError("Parsing failed");
           }
 
-          program.filename = stdlibFile.name;
           program.ast = ast;
-          collector.visit(ast);
+          collector.collect(ast, stdlibFile.name);
         }
       }
 
@@ -106,9 +105,8 @@ export class ModuleCompiler {
           throw new GeneralError("Parsing failed");
         }
 
-        program.filename = fullPath;
         program.ast = ast;
-        collector.visit(ast);
+        collector.collect(ast, fullPath);
       }
 
       performSemanticAnalysis(program);
@@ -131,7 +129,7 @@ export class ModuleCompiler {
         console.log(`\x1b[32mC-Compiling\x1b[0m build/main.c`);
 
         if (this.projectConfig.moduleType === ModuleType.Executable) {
-          const cmd = `${C_COMPILER} -g build/main.c -o build/out -std=c11 ${program.linkerFlags.join(" ")}`;
+          const cmd = `${C_COMPILER} -g build/main.c -o build/main -std=c11 ${program.linkerFlags.join(" ")}`;
           child_process.execSync(cmd);
         } else {
           const cmd = `${C_COMPILER} -g build/main.c -c -o build/main.o -fPIC -std=c11 ${program.linkerFlags.join(" ")}`;
@@ -152,6 +150,7 @@ export class ModuleCompiler {
                 type: "static",
               },
             ],
+            exportedSymbols: [],
           };
           await Bun.write(
             "build/metadata.json",
@@ -201,8 +200,8 @@ export class ModuleCompiler {
 
   async run(): Promise<number> {
     try {
-      console.log(`\x1b[32mExecuting\x1b[0m build/out`);
-      child_process.execSync("build/out", { stdio: "inherit" });
+      console.log(`\x1b[32mExecuting\x1b[0m build/main`);
+      child_process.execSync("build/main", { stdio: "inherit" });
       return 0;
     } catch (e: any) {
       console.error("Execution failed");

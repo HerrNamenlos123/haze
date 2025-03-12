@@ -21,18 +21,21 @@ export class Scope {
     this.statements = [];
   }
 
-  defineSymbol(symbol: Symbol, loc: Location) {
+  defineSymbol(symbol: Symbol) {
     if (
       symbol.variant === "StringConstant" ||
       symbol.variant === "BooleanConstant" ||
       symbol.variant === "LiteralConstant"
     ) {
-      throw new CompilerError(`Cannot define a constant symbol`, loc);
+      throw new CompilerError(
+        `Cannot define a constant symbol`,
+        symbol.location,
+      );
     }
     if (this.tryLookupSymbolHere(symbol.name)) {
       throw new CompilerError(
         `Symbol '${symbol.name}' was already defined in this scope`,
-        loc,
+        symbol.location,
       );
     }
     this.symbols.push(symbol);

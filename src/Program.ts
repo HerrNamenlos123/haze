@@ -1,5 +1,11 @@
 import type { ParserRuleContext } from "antlr4";
-import { CompilerError, GeneralError, InternalError, Location } from "./Errors";
+import {
+  CompilerError,
+  GeneralError,
+  getCallerLocation,
+  InternalError,
+  Location,
+} from "./Errors";
 import { dirname, join } from "path";
 import { existsSync } from "fs";
 import { parse } from "@ltd/j-toml";
@@ -61,6 +67,7 @@ export type ModuleMetadata = {
     filename: string;
     type: "static" | "shared";
   }[];
+  exportedSymbols: Symbol[];
 };
 
 export class ConfigParser {
@@ -170,12 +177,9 @@ export class ConfigParser {
     const content = await Bun.file(this.configPath).text();
     const toml = parse(content, { bigint: false });
 
-    const type = this.getOptionalStringAnyOf(toml, "type", [
-      "library",
-      "executable",
-    ]);
+    const type = this.getOptionalStringAnyOf(toml, "type", ["lib", "exe"]);
     const moduleType =
-      type === "executable" ? ModuleType.Executable : ModuleType.Library;
+      type === "exe" ? ModuleType.Executable : ModuleType.Library;
 
     return {
       projectName: this.getString(toml, "name"),
@@ -208,10 +212,13 @@ export class Program {
   linkerFlags: string[] = [];
   scopeStack: Scope[];
   projectConfig: ProjectConfig;
-  filename?: string;
   ast?: ParserRuleContext;
+  filename?: string;
 
   datatypes: Datatype[] = [];
+
+  exportFunctions: Map<string, FunctionSymbol> = new Map();
+  exportDatatypes: Map<string, DatatypeSymbol> = new Map();
 
   private anonymousStuffCounter = 0;
 
@@ -231,8 +238,9 @@ export class Program {
         scope: this.globalScope,
         type,
         export: false,
+        location: this.globalScope.location,
       };
-      this.globalScope.defineSymbol(symbol, this.globalScope.location);
+      this.globalScope.defineSymbol(symbol);
     };
 
     define("none", Primitive.none);
@@ -260,8 +268,9 @@ export class Program {
       },
       scope: this.globalScope,
       export: false,
+      location: this.globalScope.location,
     };
-    this.globalScope.defineSymbol(symbol, this.globalScope.location);
+    this.globalScope.defineSymbol(symbol);
 
     if (this.projectConfig.nostdlib) {
       const symbol: DatatypeSymbol = {
@@ -277,9 +286,17 @@ export class Program {
           name: "Context",
         },
         export: false,
+        location: this.globalScope.location,
       };
-      this.globalScope.defineSymbol(symbol, this.globalScope.location);
+      this.globalScope.defineSymbol(symbol);
     }
+  }
+
+  location(ctx: ParserRuleContext) {
+    if (!this.filename) {
+      throw new InternalError("Missing filename", getCallerLocation(2));
+    }
+    return new Location(this.filename, ctx.start.line, ctx.start.column);
   }
 
   getBuiltinType(name: string) {
@@ -300,13 +317,6 @@ export class Program {
       return this.globalScope;
     }
     return this.scopeStack[this.scopeStack.length - 1];
-  }
-
-  getLoc(ctx: ParserRuleContext) {
-    if (!this.filename) {
-      throw new InternalError("Filename missing");
-    }
-    return new Location(this.filename, ctx.start.line, ctx.start.column);
   }
 
   findBaseDatatype(basename: string) {

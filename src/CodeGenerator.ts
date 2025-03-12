@@ -244,7 +244,7 @@ class CodeGenerator {
       if (returned) {
         printWarningMessage(
           `Dead code detected and stripped`,
-          this.program.getLoc(statement.ctx),
+          statement.location,
         );
         break;
       }
@@ -304,7 +304,7 @@ class CodeGenerator {
           statement.symbol.type,
           exprWriter.out.get(),
           this.program.currentScope,
-          this.program.getLoc(statement.expr.ctx),
+          statement.expr.location,
           this.program,
         );
         outWriter.writeLine(
@@ -333,7 +333,7 @@ class CodeGenerator {
           this.program.getBuiltinType("boolean"),
           exprWriter.out.get(),
           statement.scope,
-          this.program.getLoc(statement.expr.ctx),
+          statement.expr.location,
           this.program,
         );
         outWriter.writeLine(`while (${whileexpr}) {`).pushIndent();
@@ -352,7 +352,7 @@ class CodeGenerator {
           this.program.getBuiltinType("boolean"),
           exprWriter.out.get(),
           statement.if[1],
-          this.program.getLoc(statement.if[0].ctx),
+          statement.if[0].location,
           this.program,
         );
         outWriter.writeLine(`if (${convexpr}) {`).pushIndent();
@@ -368,7 +368,7 @@ class CodeGenerator {
             this.program.getBuiltinType("boolean"),
             exprWriter.out.get(),
             scope,
-            this.program.getLoc(expr.ctx),
+            expr.location,
             this.program,
           );
           outWriter.writeLine(`else if (${convexpr}) {`).pushIndent();
@@ -448,7 +448,7 @@ class CodeGenerator {
             target,
             val,
             scope,
-            this.program.getLoc(expr.args[i].ctx),
+            expr.args[i].location,
             this.program,
           );
           args.push(converted);
@@ -476,7 +476,7 @@ class CodeGenerator {
           expr.leftExpr.type,
           rightWriter.out.get(),
           this.program.currentScope,
-          this.program.getLoc(expr.rightExpr.ctx),
+          expr.rightExpr.location,
           this.program,
         );
         outWriter.write(`(${leftWriter.out.get()} = ${assignConv})`);
@@ -537,7 +537,7 @@ class CodeGenerator {
             expr.type,
             exprWriter.out.get(),
             this.program.currentScope,
-            this.program.getLoc(expr.ctx),
+            expr.expr.location,
             this.program,
           ),
         );
@@ -567,7 +567,7 @@ class CodeGenerator {
               expr.type,
               exprWriter.out.get(),
               this.program.currentScope,
-              this.program.getLoc(expr.ctx),
+              expr.expr.location,
               this.program,
             );
             outWriter.write("(!" + unaryExpr + ")");
@@ -600,7 +600,7 @@ class CodeGenerator {
               expr.type,
               leftWriter.out.get(),
               this.program.currentScope,
-              this.program.getLoc(expr.ctx),
+              expr.leftExpr.location,
               this.program,
             );
             const right = implicitConversion(
@@ -608,7 +608,7 @@ class CodeGenerator {
               expr.type,
               rightWriter.out.get(),
               this.program.currentScope,
-              this.program.getLoc(expr.ctx),
+              expr.rightExpr.location,
               this.program,
             );
             outWriter.write(
@@ -733,14 +733,17 @@ class CodeGenerator {
                           expr.constantSymbol.type.members[0] as VariableSymbol
                         ).type,
                         value: value,
+                        location: expr.constantSymbol.location,
                       },
                       ctx: expr.ctx,
                       type: (
                         expr.constantSymbol.type.members[0] as VariableSymbol
                       ).type,
+                      location: expr.constantSymbol.location,
                     },
                   ],
                 ],
+                location: expr.constantSymbol.location,
               };
               const exprWriter = this.emitExpr(durationExpr);
               tempWriter.write(exprWriter.temp);

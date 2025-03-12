@@ -455,6 +455,7 @@ export function generateDeclarationCCode(
     parentSymbol: _datatype.parentSymbol,
     type: resolveGenerics(_datatype.type, scope, _datatype.scope.location),
     export: _datatype.export,
+    location: _datatype.location,
   };
   switch (datatype.type.variant) {
     case "Primitive":
@@ -512,6 +513,7 @@ export function generateDefinitionCCode(
     parentSymbol: _datatype.parentSymbol,
     type: resolveGenerics(_datatype.type, scope, _datatype.scope.location),
     export: _datatype.export,
+    location: _datatype.location,
   };
   switch (datatype.type.variant) {
     case "Primitive":

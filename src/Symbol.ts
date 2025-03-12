@@ -4,13 +4,8 @@ import {
   serializeDatatype,
   type Datatype,
   type FunctionDatatype,
-  type NamespaceDatatype,
 } from "./Datatype";
-import {
-  getCallerLocation,
-  ImpossibleSituation,
-  InternalError,
-} from "./Errors";
+import { ImpossibleSituation, InternalError, Location } from "./Errors";
 import type { Scope } from "./Scope";
 import type { Expression } from "./Expression";
 import type {
@@ -47,6 +42,7 @@ export type VariableSymbol = {
   parentSymbol?: Symbol;
   ctx?: VariableDefinitionContext | VariableDeclarationContext;
   export: boolean;
+  location: Location;
 };
 
 export type SpecialMethod = undefined | "constructor";
@@ -60,9 +56,10 @@ export type FunctionSymbol = {
   thisPointerExpr?: Expression;
   scope: Scope;
   specialMethod?: SpecialMethod;
-  ctx: ParserRuleContext;
+  ctx?: ParserRuleContext;
   wasAnalyzed: boolean;
   export: boolean;
+  location: Location;
 };
 
 export type DatatypeSymbol<T = Datatype> = {
@@ -72,18 +69,21 @@ export type DatatypeSymbol<T = Datatype> = {
   type: T;
   scope: Scope;
   export: boolean;
+  location: Location;
 };
 
 export type StringConstantSymbol = {
   variant: "StringConstant";
   type: Datatype;
   value: string;
+  location: Location;
 };
 
 export type BooleanConstantSymbol = {
   variant: "BooleanConstant";
   type: Datatype;
   value: boolean;
+  location: Location;
 };
 
 export type LiteralUnit = "s" | "ms" | "us" | "ns" | "m" | "h" | "d";
@@ -93,6 +93,7 @@ export type LiteralConstantSymbol = {
   type: Datatype;
   value: number;
   unit?: LiteralUnit;
+  location: Location;
 };
 
 export type ConstantSymbol =

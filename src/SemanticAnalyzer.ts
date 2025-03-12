@@ -155,7 +155,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
       if (ctx.datatype_list().length !== 1) {
         throw new CompilerError(
           `sizeof<> Operator expected 1 generic argument but got ${ctx.datatype_list().length}.`,
-          this.program.getLoc(ctx),
+          this.program.location(ctx),
         );
       }
       const datatype: Datatype = this.visit(ctx.datatype_list()[0]);
@@ -164,12 +164,13 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
         ctx: ctx,
         type: this.program.getBuiltinType("u64"),
         datatype: datatype,
+        location: this.program.location(ctx),
       };
     }
 
     let symbol = this.program.currentScope.lookupSymbol(
       name,
-      this.program.getLoc(ctx),
+      this.program.location(ctx),
     );
 
     symbol = { ...symbol };
@@ -192,7 +193,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
         if (symbol.type.generics.size !== ctx.datatype_list().length) {
           throw new CompilerError(
             `Datatype expected ${symbol.type.generics.size} generic arguments but got ${ctx.datatype_list().length}.`,
-            this.program.getLoc(ctx),
+            this.program.location(ctx),
           );
         }
         let index = 0;
@@ -219,6 +220,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
               variant: "Datatype",
               parentSymbol: symbol.parentSymbol,
               export: symbol.export,
+              location: symbol.location,
             },
             this.program,
           );
@@ -228,7 +230,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
           if (!constructorSymbol) {
             throw new CompilerError(
               `Type '${serializeDatatype(symbol.type)}' must provide a constructor`,
-              this.program.getLoc(ctx),
+              this.program.location(ctx),
             );
           }
           if (
@@ -242,27 +244,25 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
               if (!tp) {
                 throw new CompilerError(
                   `Generic parameter '${name}' has no type`,
-                  this.program.getLoc(ctx),
+                  this.program.location(ctx),
                 );
               }
               if (symbol.type.generics.get(name) === undefined) {
                 symbol.type.generics.set(name, tp);
               }
-              constructorSymbol.scope.defineSymbol(
-                {
-                  variant: "Datatype",
-                  name: name,
-                  scope: constructorSymbol.scope,
-                  type: tp,
-                  export: false,
-                },
-                this.program.getLoc(ctx),
-              );
+              constructorSymbol.scope.defineSymbol({
+                variant: "Datatype",
+                name: name,
+                scope: constructorSymbol.scope,
+                type: tp,
+                export: false,
+                location: constructorSymbol.location,
+              });
             }
             constructorSymbol.type = resolveGenerics(
               constructorSymbol.type,
               constructorSymbol.scope,
-              this.program.getLoc(constructorSymbol.ctx),
+              constructorSymbol.location,
             ) as FunctionDatatype;
             constructorSymbol.type.functionReturnType = symbol.type;
             constructorSymbol.parentSymbol = symbol;
@@ -280,6 +280,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
       variant: "SymbolValue",
       symbol: symbol,
       ctx: ctx,
+      location: symbol.location,
     };
   };
 
@@ -289,13 +290,13 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
     if (operator !== "++" && operator !== "--") {
       throw new CompilerError(
         `Unknown operator ${operator}`,
-        this.program.getLoc(ctx),
+        this.program.location(ctx),
       );
     }
     if (!isInteger(expr.type)) {
       throw new CompilerError(
         `Unary operator '${operator}' is not known for type '${serializeDatatype(expr.type)}'`,
-        this.program.getLoc(ctx),
+        this.program.location(ctx),
       );
     }
     return {
@@ -304,6 +305,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
       expr: expr,
       operation: operator,
       type: expr.type,
+      location: expr.location,
     };
   };
 
@@ -313,13 +315,13 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
     if (operator !== "++" && operator !== "--") {
       throw new CompilerError(
         `Unknown operator ${operator}`,
-        this.program.getLoc(ctx),
+        this.program.location(ctx),
       );
     }
     if (!isInteger(expr.type)) {
       throw new CompilerError(
         `Unary operator '${operator}' is not known for type '${serializeDatatype(expr.type)}'`,
-        this.program.getLoc(ctx),
+        this.program.location(ctx),
       );
     }
     return {
@@ -328,6 +330,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
       expr: expr,
       operation: operator,
       type: expr.type,
+      location: expr.location,
     };
   };
 
@@ -341,7 +344,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
       if (!constructor) {
         throw new CompilerError(
           `Type '${serializeDatatype(expr.type)}' does not provide a constructor`,
-          this.program.getLoc(ctx),
+          this.program.location(ctx),
         );
       }
       expr = {
@@ -349,6 +352,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
         ctx: ctx,
         symbol: constructor,
         type: constructor.type,
+        location: expr.location,
       };
     }
 
@@ -358,13 +362,14 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
         ctx: ctx,
         symbol: expr.methodSymbol,
         type: expr.methodSymbol.type,
+        location: expr.location,
       };
     }
 
     if (expr.type.variant !== "Function") {
       throw new CompilerError(
         `Expression of type '${serializeDatatype(expr.type)}' is not callable`,
-        this.program.getLoc(ctx),
+        this.program.location(ctx),
       );
     }
 
@@ -392,27 +397,25 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
         if (!tp) {
           throw new CompilerError(
             `Generic parameter '${name}' has no type`,
-            this.program.getLoc(ctx),
+            this.program.location(ctx),
           );
         }
         if (symbol.parentSymbol.type.generics.get(name) === undefined) {
           symbol.parentSymbol.type.generics.set(name, tp);
         }
-        symbol.scope.defineSymbol(
-          {
-            variant: "Datatype",
-            name: name,
-            scope: symbol.scope,
-            type: tp,
-            export: false,
-          },
-          this.program.getLoc(ctx),
-        );
+        symbol.scope.defineSymbol({
+          variant: "Datatype",
+          name: name,
+          scope: symbol.scope,
+          type: tp,
+          export: false,
+          location: symbol.location,
+        });
       }
       symbol.type = resolveGenerics(
         symbol.type,
         symbol.scope,
-        this.program.getLoc(symbol.ctx),
+        this.program.location(ctx),
       ) as FunctionDatatype;
       this.implFunc(symbol.ctx as FuncContext, symbol);
     }
@@ -424,12 +427,12 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
       if (!expr.type.vararg) {
         throw new CompilerError(
           `Expected ${params.length} arguments but got ${visitedArgs.length}`,
-          this.program.getLoc(ctx),
+          this.program.location(ctx),
         );
       } else if (visitedArgs.length < params.length) {
         throw new CompilerError(
           `Expected at least ${params.length} arguments but got ${visitedArgs.length}`,
-          this.program.getLoc(ctx),
+          this.program.location(ctx),
         );
       }
     }
@@ -460,6 +463,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
       args: args,
       expr: expr,
       ctx: ctx,
+      location: this.program.location(ctx),
     };
   };
 
@@ -495,60 +499,52 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
         throw new InternalError("Function missing scope");
       }
 
-      const loc = this.program.getLoc(ctx);
-
       if (!symbol || !symbol.scope) {
         throw new ImpossibleSituation();
       }
 
       if (symbol.parentSymbol && symbol.parentSymbol.variant === "Datatype") {
-        symbol.scope.defineSymbol(
-          {
-            variant: "Variable",
-            name: "this",
-            type: {
-              variant: "RawPointer",
-              generics: new Map().set("__Pointee", symbol.parentSymbol.type),
-            },
-            variableType: VariableType.Parameter,
-            variableScope: VariableScope.Local,
-            export: false,
-          },
-          loc,
-        );
-      }
-
-      for (const [name, tp] of symbol.type.functionParameters) {
-        symbol.scope.defineSymbol(
-          {
-            variant: "Variable",
-            name: name,
-            type: tp,
-            variableType: VariableType.Parameter,
-            variableScope: VariableScope.Local,
-            export: false,
-          },
-          loc,
-        );
-      }
-
-      symbol.scope.defineSymbol(
-        {
+        symbol.scope.defineSymbol({
           variant: "Variable",
-          name: "ctx",
+          name: "this",
           type: {
             variant: "RawPointer",
-            generics: new Map().set(
-              "__Pointee",
-              this.program.getBuiltinType("Context"),
-            ),
+            generics: new Map().set("__Pointee", symbol.parentSymbol.type),
           },
           variableType: VariableType.Parameter,
           variableScope: VariableScope.Local,
           export: false,
+          location: symbol.location,
+        });
+      }
+
+      for (const [name, tp] of symbol.type.functionParameters) {
+        symbol.scope.defineSymbol({
+          variant: "Variable",
+          name: name,
+          type: tp,
+          variableType: VariableType.Parameter,
+          variableScope: VariableScope.Local,
+          export: false,
+          location: symbol.location,
+        });
+      }
+
+      symbol.scope.defineSymbol({
+        variant: "Variable",
+        name: "ctx",
+        type: {
+          variant: "RawPointer",
+          generics: new Map().set(
+            "__Pointee",
+            this.program.getBuiltinType("Context"),
+          ),
         },
-        loc,
-      );
+        variableType: VariableType.Parameter,
+        variableScope: VariableScope.Local,
+        export: false,
+        location: symbol.location,
+      });
 
       if (!(ctx instanceof FuncdeclContext)) {
         this.visit(ctx.funcbody()).forEach((statement: Statement) => {
@@ -564,7 +560,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
             `Cannot deduce return type. Multiple return types: ${returnedTypes
               .map((tp) => serializeDatatype(tp))
               .join(", ")}`,
-            this.program.getLoc(ctx),
+            this.program.location(ctx),
           );
         } else if (returnedTypes.length === 1) {
           returntype = returnedTypes[0];
@@ -587,7 +583,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
         if (!symbol.scope.statements.some((s) => s.variant === "Return")) {
           throw new CompilerError(
             `Function ${symbol.name} is missing return statement`,
-            this.program.getLoc(ctx),
+            this.program.location(ctx),
           );
         }
       } else {
@@ -598,7 +594,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
         ) {
           throw new CompilerError(
             `Function ${symbol.name} returning none cannot return a value `,
-            this.program.getLoc(ctx),
+            this.program.location(ctx),
           );
         }
       }
@@ -607,6 +603,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
       this.functionStack.pop();
       this.program.popScope();
       this.program.concreteFunctions.set(mangleSymbol(symbol), symbol);
+      this.program.exportFunctions.set(mangleSymbol(symbol), symbol);
     } else {
       this.visitChildren(ctx);
     }
@@ -621,10 +618,17 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
           .functionReturnType,
         "",
         this.program.currentScope,
-        this.program.getLoc(ctx),
+        this.program.location(ctx),
         this.program,
       );
-      return [{ variant: "Return", ctx: ctx, expr: expr } as ReturnStatement];
+      return [
+        {
+          variant: "Return",
+          ctx: ctx,
+          expr: expr,
+          location: this.program.location(ctx),
+        } as ReturnStatement,
+      ];
     } else {
       return this.visitBody(ctx.body());
     }
@@ -639,6 +643,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
       variant: "Expr",
       ctx: ctx,
       expr: this.visit(ctx.expr()),
+      location: this.program.location(ctx),
     };
   };
 
@@ -682,6 +687,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
       expr: expr,
       ctx: ctx,
       type: targetType,
+      location: this.program.location(ctx),
     };
   };
 
@@ -719,6 +725,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
               left.type as PrimitiveDatatype,
               right.type as PrimitiveDatatype,
             ),
+            location: this.program.location(ctx),
           };
         }
         if (isF32(left.type) && isF32(right.type)) {
@@ -728,6 +735,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
             leftExpr: left,
             operation: operation,
             rightExpr: right,
+            location: this.program.location(ctx),
             type: this.program.getBuiltinType("f32"),
           };
         } else if (isFloat(left.type) && isFloat(right.type)) {
@@ -737,6 +745,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
             leftExpr: left,
             operation: operation,
             rightExpr: right,
+            location: this.program.location(ctx),
             type: this.program.getBuiltinType("f64"),
           };
         } else if (
@@ -750,6 +759,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
             operation: operation,
             rightExpr: right,
             type: this.program.getBuiltinType("f64"),
+            location: this.program.location(ctx),
           };
         }
         break;
@@ -769,6 +779,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
             operation: operation,
             rightExpr: right,
             type: this.program.getBuiltinType("boolean"),
+            location: this.program.location(ctx),
           };
         }
         break;
@@ -787,6 +798,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
             operation: operation,
             rightExpr: right,
             type: this.program.getBuiltinType("boolean"),
+            location: this.program.location(ctx),
           };
         }
         break;
@@ -801,6 +813,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
             operation: operation,
             rightExpr: right,
             type: this.program.getBuiltinType("boolean"),
+            location: this.program.location(ctx),
           };
         }
         break;
@@ -808,7 +821,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
 
     throw new CompilerError(
       `No binary operator '${operation}' is known for types '${serializeDatatype(left.type)}' and '${serializeDatatype(right.type)}'`,
-      this.program.getLoc(ctx),
+      this.program.location(ctx),
     );
   };
 
@@ -826,6 +839,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
           ctx: ctx,
           expr: expr,
           operation: operation,
+          location: this.program.location(ctx),
           type: this.program.getBuiltinType("boolean"),
         };
 
@@ -834,7 +848,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
         if (!isInteger(expr.type) && !isFloat(expr.type)) {
           throw new CompilerError(
             `Unary operator '${operation}' is not known for type '${serializeDatatype(expr.type)}'`,
-            this.program.getLoc(ctx),
+            this.program.location(ctx),
           );
         }
         return {
@@ -843,12 +857,13 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
           expr: expr,
           operation: operation,
           type: expr.type,
+          location: this.program.location(ctx),
         };
 
       default:
         throw new CompilerError(
           `No unary operator '${operation}' is known for type '${serializeDatatype(expr.type)}'`,
-          this.program.getLoc(ctx),
+          this.program.location(ctx),
         );
     }
   };
@@ -862,6 +877,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
       variant: "StringConstant",
       type: this.program.getBuiltinType("stringview"),
       value: ctx.getText(),
+      location: this.program.location(ctx),
     };
   };
 
@@ -870,7 +886,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
     if (!match) {
       throw new InternalError(
         "Could not parse literal",
-        this.program.getLoc(ctx),
+        this.program.location(ctx),
       );
     }
     const [, valueStr, unitStr] = match;
@@ -880,7 +896,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
     if (Number.isNaN(value)) {
       throw new CompilerError(
         `Could not parse '${ctx.getText()}'.`,
-        this.program.getLoc(ctx),
+        this.program.location(ctx),
       );
     }
 
@@ -904,7 +920,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
         default:
           throw new CompilerError(
             `'${unitStr}' is not a valid unit`,
-            this.program.getLoc(ctx),
+            this.program.location(ctx),
           );
       }
     }
@@ -913,6 +929,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
       variant: "LiteralConstant",
       type: type,
       value: value,
+      location: this.program.location(ctx),
       unit: unit,
     };
   };
@@ -931,6 +948,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
       variant: "BooleanConstant",
       type: this.program.getBuiltinType("boolean"),
       value,
+      location: this.program.location(ctx),
     };
   };
 
@@ -941,6 +959,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
       constantSymbol: symbol,
       ctx: ctx,
       type: symbol.type,
+      location: this.program.location(ctx),
     };
   };
 
@@ -951,6 +970,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
       ctx: ctx,
       symbol: symbol,
       type: symbol.type,
+      location: this.program.location(ctx),
     };
   };
 
@@ -960,6 +980,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
       variant: "InlineC",
       ctx,
       code: string,
+      location: this.program.location(ctx),
     };
   };
 
@@ -972,13 +993,14 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
           .functionReturnType,
         "",
         this.program.currentScope,
-        this.program.getLoc(ctx),
+        this.program.location(ctx),
         this.program,
       );
       return {
         variant: "Return",
         expr,
         ctx,
+        location: this.program.location(ctx),
       };
     } else {
       implicitConversion(
@@ -987,12 +1009,13 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
           .functionReturnType,
         "",
         this.program.currentScope,
-        this.program.getLoc(ctx),
+        this.program.location(ctx),
         this.program,
       );
       return {
         variant: "Return",
-        ctx,
+        ctx: ctx,
+        location: this.program.location(ctx),
       };
     }
   };
@@ -1013,15 +1036,14 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
     }
 
     const parentScope = this.program.currentScope;
+    const location = this.program.location(ctx);
     const statement: ConditionalStatement = {
       variant: "Conditional",
-      if: [ifExpr, new Scope(this.program.getLoc(ctx), parentScope)],
-      elseIf: elseIfExprs.map((e) => [
-        e,
-        new Scope(this.program.getLoc(ctx), parentScope),
-      ]),
-      else: ctx.elseblock() && new Scope(this.program.getLoc(ctx), parentScope),
-      ctx,
+      if: [ifExpr, new Scope(location, parentScope)],
+      elseIf: elseIfExprs.map((e) => [e, new Scope(location, parentScope)]),
+      else: ctx.elseblock() && new Scope(location, parentScope),
+      ctx: ctx,
+      location: location,
     };
 
     const ifScope = this.program.pushScope(statement.if[1]);
@@ -1056,11 +1078,13 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
   visitWhileStatement = (ctx: WhileStatementContext): Statement => {
     const expr: Expression = this.visit(ctx.expr());
 
+    const location = this.program.location(ctx);
     const whileStatement: WhileStatement = {
       variant: "While",
       expr: expr,
-      scope: new Scope(this.program.getLoc(ctx), this.program.currentScope),
-      ctx,
+      scope: new Scope(location, this.program.currentScope),
+      ctx: ctx,
+      location: location,
     };
 
     this.program.pushScope(whileStatement.scope);
@@ -1090,7 +1114,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
     ) {
       throw new CompilerError(
         "Cannot assign a value of type 'none'.",
-        this.program.getLoc(ctx),
+        this.program.location(ctx),
       );
     }
     if (
@@ -1099,7 +1123,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
     ) {
       throw new CompilerError(
         "Cannot assign to an expression of type 'none'.",
-        this.program.getLoc(ctx),
+        this.program.location(ctx),
       );
     }
 
@@ -1109,6 +1133,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
       ctx: ctx,
       leftExpr: leftExpr,
       rightExpr: rightExpr,
+      location: this.program.location(ctx),
     };
   };
 
@@ -1124,6 +1149,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
       variableScope: VariableScope.Member,
       variant: "Variable",
       export: false,
+      location: this.program.location(ctx),
     };
     return [symbol, expr];
   };
@@ -1161,12 +1187,12 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
     if (structtype.variant !== "Struct") {
       throw new CompilerError(
         `Expression of type '${serializeDatatype(structtype)}' is not a struct`,
-        this.program.getLoc(ctx),
+        this.program.location(ctx),
       );
     }
 
     const scope = new Scope(
-      this.program.getLoc(ctx),
+      this.program.location(ctx),
       this.program.currentScope,
     );
     defineGenericsInScope(structtype.generics, scope);
@@ -1180,7 +1206,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
       if (!existingSymbol) {
         throw new CompilerError(
           `'${symbol.name}' is not a member of '${serializeDatatype(structtype)}'`,
-          this.program.getLoc(ctx),
+          this.program.location(ctx),
         );
       }
 
@@ -1188,7 +1214,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
       const symType = resolveGenerics(
         existingSymbol.type,
         scope,
-        this.program.getLoc(ctx),
+        this.program.location(ctx),
       );
 
       implicitConversion(
@@ -1196,7 +1222,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
         symType,
         "",
         scope,
-        this.program.getLoc(ctx),
+        this.program.location(ctx),
         this.program,
       );
 
@@ -1208,7 +1234,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
         if (!assignedMembers.includes(member.name)) {
           throw new CompilerError(
             `'${member.name}' is not assigned in struct instantiation`,
-            this.program.getLoc(ctx),
+            this.program.location(ctx),
           );
         }
       } else if (member.variant === "StructMemberUnion") {
@@ -1219,7 +1245,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
             if (setMember) {
               throw new CompilerError(
                 `Cannot set more than one member of union in struct instantiation`,
-                this.program.getLoc(ctx),
+                this.program.location(ctx),
               );
             }
             setMember = inner;
@@ -1228,7 +1254,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
         if (!setMember) {
           throw new CompilerError(
             `No member of union is not assigned in struct instantiation`,
-            this.program.getLoc(ctx),
+            this.program.location(ctx),
           );
         }
       }
@@ -1239,6 +1265,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
       ctx: ctx,
       members: members,
       type: structtype,
+      location: this.program.location(ctx),
     };
   };
 
@@ -1249,7 +1276,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
     if (INTERNAL_METHOD_NAMES.includes(name)) {
       throw new CompilerError(
         `Cannot access internal method '${name}'`,
-        this.program.getLoc(ctx),
+        this.program.location(ctx),
       );
     }
 
@@ -1258,7 +1285,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
         if (expr.type.variant !== "RawPointer") {
           throw new CompilerError(
             `Cannot access member '${name}' of non-structural datatype '${serializeDatatype(expr.type)}'`,
-            this.program.getLoc(ctx),
+            this.program.location(ctx),
           );
         }
 
@@ -1272,6 +1299,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
             expr: expr,
             ctx: ctx,
             type: p,
+            location: this.program.location(ctx),
           };
           return e;
         }
@@ -1281,6 +1309,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
           expr: expr,
           ctx: ctx,
           type: p.variant === "RawPointer" ? p.generics.get("__Pointee")! : p,
+          location: this.program.location(ctx),
         } as RawPointerDereferenceExpression;
       }
     }
@@ -1298,14 +1327,14 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
       if (!field && !method) {
         throw new CompilerError(
           `Expression '${name}' is not a member of type '${serializeDatatype(expr.type)}'`,
-          this.program.getLoc(ctx),
+          this.program.location(ctx),
         );
       }
 
       if (field && method) {
         throw new CompilerError(
           `Access to member '${name}' of type '${serializeDatatype(expr.type)}' is ambiguous`,
-          this.program.getLoc(ctx),
+          this.program.location(ctx),
         );
       }
 
@@ -1323,7 +1352,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
           if (!tp) {
             throw new CompilerError(
               `Generic parameter '${name}' has no type`,
-              this.program.getLoc(ctx),
+              this.program.location(ctx),
             );
           }
           if (symbol.type.variant === "Struct") {
@@ -1334,21 +1363,19 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
               symbol.type.generics.set(name, tp);
             }
           }
-          scope.defineSymbol(
-            {
-              variant: "Datatype",
-              name: name,
-              scope: scope,
-              type: tp,
-              export: false,
-            },
-            this.program.getLoc(ctx),
-          );
+          scope.defineSymbol({
+            variant: "Datatype",
+            name: name,
+            scope: scope,
+            type: tp,
+            export: false,
+            location: this.program.location(ctx),
+          });
         }
         const symtype = resolveGenerics(
           symbol.type,
           scope,
-          this.program.getLoc(ctx),
+          this.program.location(ctx),
         );
         return {
           ctx: ctx,
@@ -1356,6 +1383,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
           expr: expr,
           memberName: name,
           type: symtype,
+          location: this.program.location(ctx),
         };
       }
 
@@ -1402,27 +1430,25 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
           if (!tp) {
             throw new CompilerError(
               `Generic parameter '${name}' has no type`,
-              this.program.getLoc(ctx),
+              this.program.location(ctx),
             );
           }
           if (symbol.parentSymbol.type.generics.get(name) === undefined) {
             symbol.parentSymbol.type.generics.set(name, tp);
           }
-          symbol.scope.defineSymbol(
-            {
-              variant: "Datatype",
-              name: name,
-              scope: symbol.scope,
-              type: tp,
-              export: false,
-            },
-            this.program.getLoc(ctx),
-          );
+          symbol.scope.defineSymbol({
+            variant: "Datatype",
+            name: name,
+            scope: symbol.scope,
+            type: tp,
+            export: false,
+            location: this.program.location(ctx),
+          });
         }
         symbol.type = resolveGenerics(
           symbol.type,
           symbol.scope,
-          this.program.getLoc(symbol.ctx),
+          symbol.location,
         ) as FunctionDatatype;
         symbol.thisPointerExpr = expr;
         this.implFunc(method.ctx as FuncContext, symbol);
@@ -1434,11 +1460,12 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
           memberName: name,
           expr: expr,
           type: method.type,
+          location: this.program.location(ctx),
         };
       } else {
         throw new CompilerError(
           `Cannot access member of non-structural datatype '${serializeDatatype(expr.type)}'`,
-          this.program.getLoc(ctx),
+          this.program.location(ctx),
         );
       }
     } else {
@@ -1447,13 +1474,13 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
       }
       let symbol = expr.type.symbolsScope.lookupSymbol(
         name,
-        this.program.getLoc(ctx),
+        this.program.location(ctx),
       );
 
       if (!symbol) {
         throw new CompilerError(
           `'${name}' is not a member of type '${serializeDatatype(expr.type)}'`,
-          this.program.getLoc(ctx),
+          this.program.location(ctx),
         );
       }
       return {
@@ -1461,6 +1488,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
         variant: "SymbolValue",
         symbol: symbol,
         type: symbol.type,
+        location: this.program.location(ctx),
       };
     }
   };
@@ -1468,7 +1496,9 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
 
 function analyzeFunctionSymbol(program: Program, symbol: FunctionSymbol) {
   const analyzer = new FunctionBodyAnalyzer(program);
+  program.filename = symbol.location.filename;
   analyzer.implFunc(symbol.ctx as FuncContext, symbol);
+  program.filename = undefined;
 }
 
 function analyzeVariableSymbol(
@@ -1476,11 +1506,13 @@ function analyzeVariableSymbol(
   statement: VariableDeclarationStatement | VariableDefinitionStatement,
 ) {
   const analyzer = new FunctionBodyAnalyzer(program);
+  program.filename = statement.location.filename;
   if (statement.ctx instanceof VariableDeclarationContext) {
     return analyzeVariableStatement(analyzer, program, statement);
   } else if (statement.ctx instanceof VariableDefinitionContext) {
     return analyzeVariableStatement(analyzer, program, statement);
   }
+  program.filename = undefined;
 }
 
 export function performSemanticAnalysis(program: Program) {

@@ -68,6 +68,12 @@ export class SymbolCollector extends HazeVisitor<any> {
     this.parentSymbolStack = [];
   }
 
+  collect = (ctx: ParserRuleContext, filename: string) => {
+    this.program.filename = filename;
+    this.visit(ctx);
+    this.program.filename = undefined;
+  };
+
   visitParam = (ctx: ParamContext): [string, Datatype] => {
     return visitParam(this, ctx);
   };
@@ -100,6 +106,7 @@ export class SymbolCollector extends HazeVisitor<any> {
         type: type,
         variant: "Datatype",
         export: false,
+        location: this.program.location(ctx),
       },
       this.program,
     );
@@ -110,7 +117,7 @@ export class SymbolCollector extends HazeVisitor<any> {
     if (!ctx.externlang()) {
       throw new CompilerError(
         "Currently function declarations need an extern language",
-        this.program.getLoc(ctx),
+        this.program.location(ctx),
       );
     }
 
@@ -121,7 +128,7 @@ export class SymbolCollector extends HazeVisitor<any> {
     } else {
       throw new CompilerError(
         `Extern Language '${lang}' is not supported.`,
-        this.program.getLoc(ctx),
+        this.program.location(ctx),
       );
     }
 
@@ -129,7 +136,7 @@ export class SymbolCollector extends HazeVisitor<any> {
     if (signature.length > 1 && functype === Language.External_C) {
       throw new CompilerError(
         "Extern C functions cannot be namespaced",
-        this.program.getLoc(ctx),
+        this.program.location(ctx),
       );
     }
 
@@ -180,6 +187,7 @@ export class SymbolCollector extends HazeVisitor<any> {
       variableType: VariableType.MutableStructField,
       variableScope: VariableScope.Member,
       export: false,
+      location: this.program.location(ctx),
     };
     return symbol;
   };
@@ -197,13 +205,13 @@ export class SymbolCollector extends HazeVisitor<any> {
     const name = ctx.ID(0).getText();
     const parentScope = this.program.currentScope;
     const scope = this.program.pushScope(
-      new Scope(this.program.getLoc(ctx), parentScope),
+      new Scope(this.program.location(ctx), parentScope),
     );
 
     if (RESERVED_STRUCT_NAMES.includes(name)) {
       throw new CompilerError(
         `'${name}' is a reserved name`,
-        this.program.getLoc(ctx),
+        this.program.location(ctx),
       );
     }
 
@@ -219,7 +227,7 @@ export class SymbolCollector extends HazeVisitor<any> {
     } else if (lang) {
       throw new CompilerError(
         `Extern Language '${lang}' is not supported.`,
-        this.program.getLoc(ctx),
+        this.program.location(ctx),
       );
     }
 
@@ -244,9 +252,10 @@ export class SymbolCollector extends HazeVisitor<any> {
       scope: scope,
       parentSymbol: this.parentSymbolStack[this.parentSymbolStack.length - 1],
       export: exports,
+      location: this.program.location(ctx),
     };
 
-    parentScope.defineSymbol(symbol, this.program.getLoc(ctx));
+    parentScope.defineSymbol(symbol);
     for (const [name, tp] of type.generics) {
       const sym: DatatypeSymbol = {
         name: name,
@@ -254,8 +263,9 @@ export class SymbolCollector extends HazeVisitor<any> {
         scope: scope,
         type: { variant: "Generic", name: name },
         export: false,
+        location: symbol.location,
       };
-      scope.defineSymbol(sym, this.program.getLoc(ctx));
+      scope.defineSymbol(sym);
     }
     this.parentSymbolStack.push(symbol);
 
@@ -268,7 +278,7 @@ export class SymbolCollector extends HazeVisitor<any> {
         if (symbol.type.language) {
           throw new CompilerError(
             `A declared struct cannot have methods`,
-            this.program.getLoc(ctx),
+            symbol.location,
           );
         }
         type.methods.push(content);
@@ -299,7 +309,7 @@ export class SymbolCollector extends HazeVisitor<any> {
   visitNamespace = (ctx: NamespaceContext): DatatypeSymbol => {
     const name = ctx.ID().getText();
     const scope = new Scope(
-      this.program.getLoc(ctx),
+      this.program.location(ctx),
       this.program.currentScope,
     );
 
@@ -310,9 +320,10 @@ export class SymbolCollector extends HazeVisitor<any> {
       type: { variant: "Namespace", name: name, symbolsScope: scope },
       parentSymbol: this.parentSymbolStack[this.parentSymbolStack.length - 1],
       export: false,
+      location: this.program.location(ctx),
     };
 
-    this.program.currentScope.defineSymbol(symbol, this.program.getLoc(ctx));
+    this.program.currentScope.defineSymbol(symbol);
     this.program.pushScope(scope);
     this.parentSymbolStack.push(symbol);
 

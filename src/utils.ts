@@ -12,9 +12,10 @@ import {
 } from "./Datatype";
 import {
   CompilerError,
+  getCallerLocation,
   ImpossibleSituation,
   InternalError,
-  type Location,
+  Location,
 } from "./Errors";
 import type { Expression } from "./Expression";
 import {
@@ -51,6 +52,7 @@ import {
   type VariableSymbol,
 } from "./Symbol";
 import * as _ from "lodash";
+import type { ParserRuleContext } from "antlr4";
 
 export const RESERVED_VARIABLE_NAMES = ["this", "ctx", "__returnval__"];
 export const RESERVED_STRUCT_NAMES = ["RawPtr"]; // "Context"
@@ -62,16 +64,14 @@ export type ParamPack = { params: [string, Datatype][]; vararg: boolean };
 export function defineGenericsInScope(generics: Generics, scope: Scope) {
   for (const [name, tp] of generics) {
     if (tp) {
-      scope.defineSymbol(
-        {
-          variant: "Datatype",
-          name: name,
-          type: tp,
-          scope: scope,
-          export: false,
-        },
-        scope.location,
-      );
+      scope.defineSymbol({
+        variant: "Datatype",
+        name: name,
+        type: tp,
+        scope: scope,
+        export: false,
+        location: scope.location,
+      });
     }
   }
 }
@@ -79,6 +79,35 @@ export function defineGenericsInScope(generics: Generics, scope: Scope) {
 type ResolvageContext = {
   resolvedMangledType: Record<string, Datatype>;
 };
+
+// export function setFilename(ctx: ParserRuleContext, filename?: string) {
+//   if (!filename) {
+//     throw new InternalError("Missing filename", getCallerLocation(2));
+//   }
+//   if (!(ctx as any).filename) {
+//     (ctx as any).filename = filename;
+//   }
+// }
+
+// export function forwardFilename(
+//   from: ParserRuleContext,
+//   to: ParserRuleContext,
+// ) {
+//   if (!(from as any).filename) {
+//     throw new InternalError("Missing filename", getCallerLocation(2));
+//   }
+//   if (!(to as any).filename) {
+//     (to as any).filename = from;
+//   }
+// }
+
+// export function location(ctx: ParserRuleContext) {
+//   const filename = (ctx as any).filename as string;
+//   if (!filename) {
+//     throw new InternalError("Ctx missing filename", getCallerLocation(2));
+//   }
+//   return new Location(filename, ctx.start.line, ctx.start.column);
+// }
 
 export function resolveGenerics(
   datatype: Datatype,
@@ -155,6 +184,7 @@ export function resolveGenerics(
               resolvageContext,
             ),
             export: member.export,
+            location: member.location,
           });
         } else {
           const newUnion: StructMemberUnion = {
@@ -176,6 +206,7 @@ export function resolveGenerics(
               variableScope: inner.variableScope,
               ctx: inner.ctx,
               export: inner.export,
+              location: inner.location,
             });
           }
           cloned.members.push(newUnion);
@@ -200,6 +231,7 @@ export function resolveGenerics(
           thisPointerExpr: method.thisPointerExpr,
           wasAnalyzed: method.wasAnalyzed,
           export: method.export,
+          location: method.location,
         });
       }
       // const generics: Array<[string, Datatype | null]> = [];
@@ -283,7 +315,7 @@ export const visitCommonDatatypeImpl = (
 
   const symbol = (resolvageContext?.scope || program.currentScope).lookupSymbol(
     name,
-    program.getLoc(ctx),
+    program.location(ctx),
   );
 
   if (symbol.variant !== "Datatype") {
@@ -296,13 +328,13 @@ export const visitCommonDatatypeImpl = (
       if (genericsProvided.length > 0) {
         throw new CompilerError(
           `Type '${name}' expected no generic arguments but got ${genericsProvided.length}.`,
-          program.getLoc(ctx),
+          symbol.location,
         );
       }
       if (ctx._nested) {
         throw new CompilerError(
           `Type '${name}' is not a namespace`,
-          program.getLoc(ctx),
+          symbol.location,
         );
       }
       return symbol.type;
@@ -311,7 +343,7 @@ export const visitCommonDatatypeImpl = (
       if (ctx._nested) {
         throw new CompilerError(
           `Type '${name}' is not a namespace`,
-          program.getLoc(ctx),
+          symbol.location,
         );
       }
       return symbol.type;
@@ -320,7 +352,7 @@ export const visitCommonDatatypeImpl = (
       if (genericsProvided.length != symbol.type.generics.size) {
         throw new CompilerError(
           `Type '${name}<>' expected ${symbol.type.generics.size} generic arguments but got ${genericsProvided.length}.`,
-          program.getLoc(ctx),
+          symbol.location,
         );
       }
 
@@ -353,6 +385,7 @@ export const visitCommonDatatypeImpl = (
             variant: "Datatype",
             parentSymbol: symbol.parentSymbol,
             export: symbol.export,
+            location: symbol.location,
           },
           program,
         );
@@ -360,7 +393,7 @@ export const visitCommonDatatypeImpl = (
       if (ctx._nested) {
         throw new CompilerError(
           `Type '${name}' is not a namespace`,
-          program.getLoc(ctx),
+          symbol.location,
         );
       }
       return ptrtype;
@@ -378,7 +411,7 @@ export const visitCommonDatatypeImpl = (
       if (genericsProvided.length != symbol.type.generics.size) {
         throw new CompilerError(
           `Type '${name}<>' expected ${symbol.type.generics.size} generic arguments but got ${genericsProvided.length}.`,
-          program.getLoc(ctx),
+          symbol.location,
         );
       }
       let index = 0;
@@ -403,6 +436,7 @@ export const visitCommonDatatypeImpl = (
             variant: "Datatype",
             parentSymbol: symbol.parentSymbol,
             export: symbol.export,
+            location: symbol.location,
           },
           program,
         );
@@ -410,7 +444,7 @@ export const visitCommonDatatypeImpl = (
       if (ctx._nested) {
         throw new CompilerError(
           `Type '${name}' is not a namespace`,
-          program.getLoc(ctx),
+          symbol.location,
         );
       }
       return structtype;
@@ -419,7 +453,7 @@ export const visitCommonDatatypeImpl = (
       if (genericsProvided.length != 0) {
         throw new CompilerError(
           `Namespace '${name}' cannot take generic arguments but got ${genericsProvided.length}.`,
-          program.getLoc(ctx),
+          symbol.location,
         );
       }
       datatypeSymbolUsed(symbol, program);
@@ -431,9 +465,10 @@ export const visitCommonDatatypeImpl = (
         if (!(ctx._nested instanceof CommonDatatypeContext)) {
           throw new CompilerError(
             `Cannot use a function datatype inside a namespace`,
-            program.getLoc(ctx),
+            symbol.location,
           );
         }
+
         const second: Datatype = visitCommonDatatypeImpl(
           _this,
           program,
@@ -445,7 +480,7 @@ export const visitCommonDatatypeImpl = (
         if (second.variant !== "Struct") {
           throw new CompilerError(
             `Type '${serializeDatatype(second)}' is not a struct and cannot be namespaced`,
-            program.getLoc(ctx),
+            symbol.location,
           );
         }
         let p: StructDatatype | NamespaceDatatype | undefined = second;
@@ -506,7 +541,7 @@ export function collectFunction(
 ): FunctionSymbol {
   const parentScope = program.currentScope;
   const scope = program.pushScope(
-    new Scope(program.getLoc(ctx), program.currentScope),
+    new Scope(program.location(ctx), program.currentScope),
   );
 
   let returntype: Datatype = program.getBuiltinType("none");
@@ -558,9 +593,10 @@ export function collectFunction(
     ctx: ctx,
     wasAnalyzed: false,
     export: exports,
+    location: program.location(ctx),
   };
 
-  parentScope.defineSymbol(symbol, program.getLoc(ctx));
+  parentScope.defineSymbol(symbol);
 
   if (
     !isSymbolGeneric(symbol) &&
@@ -602,7 +638,7 @@ export function collectVariableStatement(
   if (RESERVED_VARIABLE_NAMES.includes(name)) {
     throw new CompilerError(
       `'${name}' is not a valid variable name.`,
-      program.getLoc(ctx),
+      program.location(ctx),
     );
   }
   const mutable = ctx.variablemutability().getText() === "let";
@@ -626,7 +662,7 @@ export function collectVariableStatement(
   if (isNone(datatype) || datatype.variant === "Namespace") {
     throw new CompilerError(
       `'${serializeDatatype(datatype)}' is not a valid variable type.`,
-      program.getLoc(ctx),
+      program.location(ctx),
     );
   }
 
@@ -648,8 +684,9 @@ export function collectVariableStatement(
     parentSymbol: parentSymbol,
     ctx: ctx,
     export: exports,
+    location: program.location(ctx),
   };
-  program.currentScope.defineSymbol(symbol, program.getLoc(ctx));
+  program.currentScope.defineSymbol(symbol);
 
   const statement: VariableDefinitionStatement | VariableDeclarationStatement =
     ctx instanceof VariableDefinitionContext
@@ -658,11 +695,13 @@ export function collectVariableStatement(
           ctx: ctx,
           symbol: symbol,
           expr: expr!,
+          location: symbol.location,
         }
       : {
           variant: "VariableDeclaration",
           ctx: ctx,
           symbol: symbol,
+          location: symbol.location,
         };
 
   if (variableScope === VariableScope.Global) {
@@ -696,7 +735,7 @@ export function analyzeVariableStatement(
   ) {
     throw new CompilerError(
       `'${serializeDatatype(statement.symbol.type)}' is not a valid variable type.`,
-      program.getLoc(statement.ctx),
+      statement.location,
     );
   }
 
@@ -706,12 +745,14 @@ export function analyzeVariableStatement(
       ctx: statement.ctx,
       symbol: statement.symbol,
       expr: statement.expr,
+      location: statement.location,
     };
   } else {
     return {
       variant: "VariableDeclaration",
       ctx: statement.ctx,
       symbol: statement.symbol,
+      location: statement.location,
     };
   }
 }
