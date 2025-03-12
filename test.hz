@@ -1,52 +1,69 @@
+declare "C" printf(str: stringview, ...);
+declare "C" calloc(num: u64, size: u64): RawPtr<none>;
+declare "C" free(ptr: RawPtr<none>);
+declare "C" abort();
+declare "C" realloc(ptr: RawPtr<none>, newSize: u64): RawPtr<none>;
 
 struct Context {
 };
 
-foo(): i8 {
-  return 0;
+c_realloc(ptr: RawPtr<none>, newSize: u64): RawPtr<none> {
+  return realloc(ptr, newSize);
 }
 
-struct A {
-  data: i8;
+malloc(size: u64): RawPtr<none> {
+  return calloc(1, size);
+}
 
-  a(): A {
-    return this.ptr;
+panic(msg: stringview) {
+  printf("PANIC: %s\n", msg);
+  abort();
+}
+
+struct MemoryBuffer {
+  data: RawPtr<none>;
+  size: u64;
+
+  constructor(size: u64): MemoryBuffer {
+    return MemoryBuffer {
+      .data: malloc(size),
+      .size: size,
+    };
   }
 
-  b(): A {
-    return this.ptr;
-  }
-}
-
-get(a: A): i8 {
-  return 0;
-}
-
-bar(): A {
-  return A {
-    .data: 0,
-  };
-}
-
-struct Counter {
-  counter: i32;
-
-  inc(): Counter {
-    this.counter++;
-    return this.ptr;
-  }
-
-  get(): i32 {
-    return this.counter;
+  realloc(newSize: u64) {
+    printf("Realloc with %lu\n", newSize);
+    this.data = c_realloc(this.data, newSize);
+    this.size = newSize;
   }
 }
 
-declare "C" printf(fmt: stringview, ...);
+struct List<T> {
+  buffer: MemoryBuffer;
+  length: u64;
+
+  constructor(): List<T> {
+    return List<T> {
+      .buffer: MemoryBuffer(4 * sizeof<T>),
+      .length: 0,
+    };
+  }
+
+  push(n: T) {
+    if this.length >= this.buffer.size / sizeof<T> {
+      if this.length * 2 <= this.buffer.size / sizeof<T> {
+        return;
+      }
+      this.buffer.realloc(this.length * 2 * sizeof<T>);
+    }
+    this.length = this.length + 1;
+  }
+}
 
 main(): i32 {
-  const a = foo() + get((A {.data: 0}).a().b()) + get(bar());
-
-  const result = Counter {.counter: 0}.inc().inc().inc().inc().inc().get();
-  printf("Result: %d\n", result);
+  const path = List<i32>();
+  while true {
+    path.push(0);
+  }
   return 0;
 }

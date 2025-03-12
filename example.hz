@@ -291,6 +291,7 @@ struct MemoryBuffer {
   }
 
   realloc(newSize: u64) {
+    ctx.log.warn("Realloc with %d, %d", this.data, newSize);
     this.data = c_realloc(this.data, newSize);
     if !this.data {
       panic("Allocation failed");

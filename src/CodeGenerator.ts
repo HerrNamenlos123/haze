@@ -416,12 +416,19 @@ class CodeGenerator {
         if (expr.thisPointerExpr) {
           const exprWriter = this.emitExpr(expr.thisPointerExpr);
           tempWriter.write(exprWriter.temp);
-          const tempname = this.program.makeTempVarname();
-          tempWriter.writeLine(
-            `${generateUsageCode(expr.thisPointerExpr.type, this.program)} ${tempname};`,
-          );
-          args.push("&" + tempname);
-          useCommaOperatorForThisAssignment = `${tempname} = ${exprWriter.out.get()}`;
+          if (
+            expr.thisPointerExpr.variant === "SymbolValue" ||
+            expr.thisPointerExpr.variant === "MemberAccess"
+          ) {
+            args.push("&" + exprWriter.out.get());
+          } else {
+            const tempname = this.program.makeTempVarname();
+            tempWriter.writeLine(
+              `${generateUsageCode(expr.thisPointerExpr.type, this.program)} ${tempname};`,
+            );
+            args.push("&" + tempname);
+            useCommaOperatorForThisAssignment = `${tempname} = ${exprWriter.out.get()}`;
+          }
         }
         if (expr.expr.variant === "SymbolValue") {
           if (expr.expr.symbol.variant === "Function") {
