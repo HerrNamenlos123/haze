@@ -1,4 +1,5 @@
 import * as child_process from "child_process";
+import { $ } from "bun";
 import { Parser } from "./parser";
 import {
   CompilerError,
@@ -6,15 +7,23 @@ import {
   InternalError,
   UnreachableCode,
 } from "./Errors";
-import { Program, type ProjectConfig } from "./Program";
+import {
+  ModuleType,
+  Program,
+  type ModuleConfig,
+  type ModuleMetadata,
+  type ProjectConfig,
+} from "./Program";
 import { SymbolCollector } from "./SymbolCollector";
 import { performSemanticAnalysis } from "./SemanticAnalyzer";
 import { generateCode } from "./CodeGenerator";
 import { readdirSync, statSync } from "fs";
 import { dirname, extname, join } from "path";
 import fs from "fs";
+import { version } from "../package.json";
 
 const C_COMPILER = "clang";
+const ARCHIVE_TOOL = "ar";
 
 function listFiles(dir: string): string[] {
   let files: string[] = [];
@@ -121,8 +130,40 @@ export class ModuleCompiler {
         }
         console.log(`\x1b[32mC-Compiling\x1b[0m build/main.c`);
 
-        const cmd = `${C_COMPILER} -g build/main.c -o build/out -std=c11 ${program.linkerFlags.join(" ")}`;
-        child_process.execSync(cmd);
+        if (this.projectConfig.moduleType === ModuleType.Executable) {
+          const cmd = `${C_COMPILER} -g build/main.c -o build/out -std=c11 ${program.linkerFlags.join(" ")}`;
+          child_process.execSync(cmd);
+        } else {
+          const cmd = `${C_COMPILER} -g build/main.c -c -o build/main.o -fPIC -std=c11 ${program.linkerFlags.join(" ")}`;
+          child_process.execSync(cmd);
+          child_process.execSync(
+            `${ARCHIVE_TOOL} r build/linux-x64-static.a build/main.o`,
+          );
+
+          const moduleMetadata: ModuleMetadata = {
+            compilerVersion: version,
+            fileformatVersion: 1,
+            name: this.projectConfig.projectName,
+            version: this.projectConfig.projectVersion,
+            libs: [
+              {
+                filename: `linux-x64-static.a`,
+                platform: "linux-x64",
+                type: "static",
+              },
+            ],
+          };
+          await Bun.write(
+            "build/metadata.json",
+            JSON.stringify(moduleMetadata),
+          );
+
+          if (fs.existsSync("build/main.hzlib")) {
+            await $`rm build/main.hzlib`;
+          }
+          await $`tar -C build -cvf build/main.hzlib linux-x64-static.a metadata.json > nul`;
+        }
+
         if (program.postbuildCmds) {
           for (const cmd of program.postbuildCmds) {
             try {
@@ -142,7 +183,9 @@ export class ModuleCompiler {
 
       return true;
     } catch (e) {
-      if (e instanceof InternalError) {
+      if (e instanceof GeneralError) {
+        console.error(e.message);
+      } else if (e instanceof InternalError) {
         console.error(e.stack);
         console.error(e.message);
       } else if (e instanceof CompilerError) {

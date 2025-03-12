@@ -1,7 +1,7 @@
 import { ArgumentParser } from "argparse";
 import { ModuleCompiler } from "./ModuleCompiler";
 import { version } from "../package.json";
-import { ConfigParser } from "./Program";
+import { ConfigParser, ModuleType } from "./Program";
 import { GeneralError } from "./Errors";
 
 const HAZE_CONFIG_FILE = "haze.toml";
@@ -71,6 +71,13 @@ async function main() {
       if (!config) {
         process.exit(1);
       }
+
+      if (config.moduleType === ModuleType.Library) {
+        throw new GeneralError(
+          `This module is a library and cannot be executed. Use 'hz build' to build it.`,
+        );
+      }
+
       config.nostdlib = args.nostdlib;
       const module = new ModuleCompiler(config);
       if (!(await module.build())) {
@@ -79,7 +86,11 @@ async function main() {
       const exitCode = await module.run();
       process.exit(exitCode);
     } catch (err) {
-      console.error(err);
+      if (err instanceof GeneralError) {
+        console.log(err.message);
+      } else {
+        console.error(err);
+      }
       process.exit(1);
     }
   }

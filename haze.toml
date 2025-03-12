@@ -5,6 +5,7 @@ description = "A sample Haze project"
 license = "MIT"
 authors = []
 src = "test"
+type = "library"
 
 # [dependencies]
 # serde = "1.0.193"

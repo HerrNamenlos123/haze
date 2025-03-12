@@ -18,9 +18,14 @@ import {
   type PrimitiveDatatype,
   type StructDatatype,
 } from "./Datatype";
-import { CompilerError, ImpossibleSituation, InternalError } from "./Errors";
+import {
+  CompilerError,
+  GeneralError,
+  ImpossibleSituation,
+  InternalError,
+} from "./Errors";
 import { Scope } from "./Scope";
-import { Program } from "./Program";
+import { ModuleType, Program } from "./Program";
 import {
   isDatatypeGeneric,
   isSymbolGeneric,
@@ -1478,5 +1483,23 @@ export function performSemanticAnalysis(program: Program) {
   const clonedFuncs = program.concreteFunctions.values().toArray();
   for (const symbol of clonedFuncs) {
     analyzeFunctionSymbol(program, symbol);
+  }
+
+  const mainFunction = program.globalScope.tryLookupSymbol(
+    "main",
+    program.globalScope.location,
+  );
+  if (
+    program.projectConfig.moduleType === ModuleType.Executable &&
+    !mainFunction
+  ) {
+    throw new GeneralError(
+      `Function 'main()' was not defined. This executable needs it as an entry point.`,
+    );
+  }
+  if (program.projectConfig.moduleType === ModuleType.Library && mainFunction) {
+    throw new GeneralError(
+      `Function 'main()' was defined, but this module is a library and it cannot define a main function`,
+    );
   }
 }

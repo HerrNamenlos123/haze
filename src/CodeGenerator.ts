@@ -1,4 +1,4 @@
-import { Program } from "./Program";
+import { ModuleType, Program } from "./Program";
 import {
   InternalError,
   ImpossibleSituation,
@@ -62,18 +62,20 @@ class CodeGenerator {
       .writeLine(`struct ${context}_;`)
       .writeLine(`typedef struct ${context}_ ${context};`);
 
-    const mainWriter = (this.out.function_definitions["main"] =
-      new OutputWriter());
-    mainWriter
-      .writeLine("int32_t main() {")
-      .pushIndent()
-      .writeLine(
-        `${generateUsageCode(this.program.getBuiltinType("Context"), this.program)} ctx = {};`,
-      );
-    if (!this.program.projectConfig.nostdlib) {
-      mainWriter.writeLine("_H13__setupStdlib(&ctx);");
+    if (this.program.projectConfig.moduleType === ModuleType.Executable) {
+      const mainWriter = new OutputWriter();
+      this.out.function_definitions["main"] = mainWriter;
+      mainWriter
+        .writeLine("int32_t main() {")
+        .pushIndent()
+        .writeLine(
+          `${generateUsageCode(this.program.getBuiltinType("Context"), this.program)} ctx = {};`,
+        );
+      if (!this.program.projectConfig.nostdlib) {
+        mainWriter.writeLine("_H13__setupStdlib(&ctx);");
+      }
+      mainWriter.writeLine("return _H4main(&ctx);").popIndent().writeLine("}");
     }
-    mainWriter.writeLine("return _H4main(&ctx);").popIndent().writeLine("}");
   }
 
   init(field: string, out: Record<string, OutputWriter>) {

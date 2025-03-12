@@ -28,6 +28,11 @@ import type {
   VariableDefinitionStatement,
 } from "./Statement";
 
+export enum ModuleType {
+  Library,
+  Executable,
+}
+
 export type ProjectConfig = {
   projectName: string;
   projectVersion: string;
@@ -37,10 +42,25 @@ export type ProjectConfig = {
   scripts: { name: string; command: string }[];
   srcDirectory: string;
   nostdlib: boolean;
+  moduleType: ModuleType;
 };
 
 export type ModuleConfig = {
   module: {};
+};
+
+export type PlatformString = "linux-x64";
+
+export type ModuleMetadata = {
+  compilerVersion: string;
+  fileformatVersion: number;
+  name: string;
+  version: string;
+  libs: {
+    platform: PlatformString;
+    filename: string;
+    type: "static" | "shared";
+  }[];
 };
 
 export class ConfigParser {
@@ -91,6 +111,26 @@ export class ConfigParser {
     return undefined;
   }
 
+  getOptionalStringAnyOf(
+    toml: any,
+    field: string,
+    options: string[],
+  ): string | undefined {
+    if (typeof toml[field] === "string") {
+      if (options.includes(toml[field])) {
+        return toml[field];
+      }
+      throw new GeneralError(
+        `Field '${field}' in file ${this.configPath} must be any of '${options}'`,
+      );
+    } else if (field in toml) {
+      throw new GeneralError(
+        `Field '${field}' in file ${this.configPath} must be of type string`,
+      );
+    }
+    return undefined;
+  }
+
   getOptionalStringArray(toml: any, field: string): string[] | undefined {
     if (Array.isArray(toml[field])) {
       const array = toml[field];
@@ -129,6 +169,14 @@ export class ConfigParser {
   async parseConfig(): Promise<ProjectConfig> {
     const content = await Bun.file(this.configPath).text();
     const toml = parse(content, { bigint: false });
+
+    const type = this.getOptionalStringAnyOf(toml, "type", [
+      "library",
+      "executable",
+    ]);
+    const moduleType =
+      type === "executable" ? ModuleType.Executable : ModuleType.Library;
+
     return {
       projectName: this.getString(toml, "name"),
       projectVersion: this.getString(toml, "version"),
@@ -140,6 +188,7 @@ export class ConfigParser {
         dirname(this.configPath),
         this.getOptionalString(toml, "src") || "src",
       ),
+      moduleType: moduleType,
       nostdlib: false,
     };
   }
