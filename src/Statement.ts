@@ -1,13 +1,23 @@
 import type { ParserRuleContext } from "antlr4";
-import type { Symbol } from "./Symbol";
+import type { Symbol, VariableSymbol } from "./Symbol";
 import type { Expression } from "./Expression";
 import type { Scope } from "./Scope";
+import type {
+  VariableDeclarationContext,
+  VariableDefinitionContext,
+} from "./parser/HazeParser";
 
 export type VariableDefinitionStatement = {
   variant: "VariableDefinition";
-  symbol: Symbol;
-  ctx: ParserRuleContext;
+  symbol: VariableSymbol;
+  ctx: VariableDefinitionContext;
   expr: Expression;
+};
+
+export type VariableDeclarationStatement = {
+  variant: "VariableDeclaration";
+  symbol: VariableSymbol;
+  ctx: VariableDeclarationContext;
 };
 
 export type ReturnStatement = {
@@ -45,6 +55,7 @@ export type WhileStatement = {
 
 export type Statement =
   | VariableDefinitionStatement
+  | VariableDeclarationStatement
   | ReturnStatement
   | ExprStatement
   | WhileStatement

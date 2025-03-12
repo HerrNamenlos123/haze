@@ -47,6 +47,7 @@ class CodeGenerator {
     type_definitions: {} as Record<string, OutputWriter>,
     function_declarations: {} as Record<string, OutputWriter>,
     function_definitions: {} as Record<string, OutputWriter>,
+    global_variables: {} as Record<string, OutputWriter>,
   };
 
   constructor(program: Program) {
@@ -125,6 +126,12 @@ class CodeGenerator {
       writer.writeLine();
     }
 
+    writer.write("\n\n// Global Variable section\n");
+    for (const decl of Object.values(this.out.global_variables)) {
+      writer.write(decl);
+      writer.writeLine();
+    }
+
     writer.write("\n\n// Function definition section\n");
     for (const def of Object.values(this.out.function_definitions)) {
       writer.write(def);
@@ -145,6 +152,14 @@ class CodeGenerator {
 
     for (const decl of this.program.cDefinitionDecl) {
       this.out.cDecls[decl] = new OutputWriter().writeLine(decl);
+    }
+
+    for (const statement of this.program.concreteGlobalStatements.values()) {
+      const s = this.emitStatement(statement);
+      this.out.global_variables[mangleSymbol(statement.symbol)] =
+        new OutputWriter().write(s.temp);
+      this.out.global_variables[mangleSymbol(statement.symbol)] =
+        new OutputWriter().write(s.out);
     }
 
     for (const symbol of this.program.concreteFunctions.values()) {
@@ -209,54 +224,10 @@ class CodeGenerator {
     this.out.function_definitions[mangleSymbol(symbol)].write(s.temp);
     this.out.function_definitions[mangleSymbol(symbol)].write(s.out);
 
-    // if (symbol.specialMethod === "destructor") {
-    //   if (!symbol.parentSymbol) {
-    //     throw new ImpossibleSituation();
-    //   }
-    //   if (
-    //     symbol.parentSymbol.variant !== "Datatype" ||
-    //     symbol.parentSymbol.type.variant !== "Struct"
-    //   ) {
-    //     throw new ImpossibleSituation();
-    //   }
-    //   // const members = symbol.parentSymbol.type.members.filter(
-    //   //   (m) => m.variant === "Variable",
-    //   // );
-    //   // this.outputDestructorCalls(
-    //   //   members,
-    //   //   this.out.function_definitions[mangleSymbol(symbol)],
-    //   //   undefined,
-    //   //   true,
-    //   // );
-    // }
-
     this.out.function_definitions[mangleSymbol(symbol)]
       .popIndent()
       .writeLine("}");
   }
-
-  // outputDestructorCalls(
-  //   symbols: Symbol[],
-  //   writer: OutputWriter,
-  //   returnedSymbol?: VariableSymbol,
-  //   isMember?: boolean,
-  // ) {
-  //   for (const symbol of symbols.reverse()) {
-  //     if (symbol.variant === "Variable" && symbol.type.variant === "Struct") {
-  //       const destructor = symbol.type.methods.find(
-  //         (m) => m.specialMethod === "destructor",
-  //       );
-  //       if (destructor) {
-  //         if (returnedSymbol && returnedSymbol === symbol) {
-  //           continue;
-  //         }
-  //         writer.writeLine(
-  //           `${mangleSymbol(destructor)}(&${isMember ? "this->" : ""}${symbol.name}, ctx);`,
-  //         );
-  //       }
-  //     }
-  //   }
-  // }
 
   emitScope(scope: Scope): { temp: OutputWriter; out: OutputWriter } {
     const tempWriter = new OutputWriter();
@@ -304,6 +275,15 @@ class CodeGenerator {
         return { temp: tempWriter, out: outWriter };
       }
 
+      case "VariableDeclaration": {
+        if (!statement.symbol.type || statement.symbol.variant !== "Variable") {
+          throw new ImpossibleSituation();
+        }
+        const ret = generateUsageCode(statement.symbol.type, this.program);
+        outWriter.writeLine(`${ret} ${statement.symbol.name} = {0};`);
+        return { temp: tempWriter, out: outWriter };
+      }
+
       case "VariableDefinition": {
         if (
           !statement.expr ||
@@ -323,7 +303,9 @@ class CodeGenerator {
           this.program.getLoc(statement.expr.ctx),
           this.program,
         );
-        outWriter.writeLine(`${ret} ${statement.symbol.name} = ${assignConv};`);
+        outWriter.writeLine(
+          `${ret} ${mangleSymbol(statement.symbol)} = ${assignConv};`,
+        );
         return { temp: tempWriter, out: outWriter };
       }
 
@@ -533,16 +515,14 @@ class CodeGenerator {
       case "SymbolValue":
         if (expr.symbol.variant === "Function") {
           outWriter.write(mangleSymbol(expr.symbol));
-          return { out: outWriter, temp: tempWriter };
-        } else if (
-          expr.symbol.variant === "Variable" ||
-          expr.symbol.variant === "Datatype"
-        ) {
-          outWriter.write(expr.symbol.name);
-          return { out: outWriter, temp: tempWriter };
+        } else if (expr.symbol.variant === "Datatype") {
+          outWriter.write(mangleSymbol(expr.symbol));
+        } else if (expr.symbol.variant === "Variable") {
+          outWriter.write(mangleSymbol(expr.symbol));
         } else {
           throw new ImpossibleSituation();
         }
+        return { out: outWriter, temp: tempWriter };
 
       case "ExplicitCast":
         const exprWriter = this.emitExpr(expr.expr);
@@ -785,21 +765,6 @@ class CodeGenerator {
     }
   }
 
-  //   implVariableDefinition(ctx: any, isMutable: boolean) {
-  //     const symbol = this.getNodeSymbol(ctx);
-  //     if (symbol instanceof VariableSymbol) {
-  //       const value = implicitConversion(
-  //         this.getNodeDatatype(ctx.expr()),
-  //         symbol.type,
-  //         ctx.expr().code,
-  //         this.getLocation(ctx),
-  //       );
-  //       ctx.code = `${symbol.type.generateUsageCode()} ${symbol.name} = ${value};\n`;
-  //     } else {
-  //       throw new InternalError("Symbol is not a variable");
-  //     }
-  //   }
-
   generateDatatypeUse(datatype: DatatypeSymbol) {
     if (!this.out.type_declarations[mangleSymbol(datatype)]) {
       this.init(mangleSymbol(datatype), this.out.type_declarations);
@@ -814,227 +779,6 @@ class CodeGenerator {
       );
     }
   }
-
-  //   getCurrentFunction() {
-  //     return this.currentFunctionStack[this.currentFunctionStack.length - 1];
-  //   }
-
-  //   getExpectedReturntype() {
-  //     const r = this.getCurrentFunction().type.functionReturnType;
-  //     if (!r) {
-  //       throw new InternalError("Function is missing return type");
-  //     }
-  //     return r;
-  //   }
-
-  //   pushCurrentFunction(symbol: FunctionSymbol) {
-  //     this.currentFunctionStack.push(symbol);
-  //   }
-
-  //   popCurrentFunction() {
-  //     this.currentFunctionStack.pop();
-  //   }
-
-  //   visitReturnStatement(ctx: any) {
-  //     const scope = this.getNodeScope(ctx);
-  //     scope.setTerminated(true);
-  //     this.visitChildren(ctx);
-  //     const type = this.getNodeDatatype(ctx);
-  //     if (type.isNone()) {
-  //       ctx.code = "return;\n"; // type: ignore
-  //     } else {
-  //       const value = implicitConversion(
-  //         type,
-  //         this.getExpectedReturntype(),
-  //         ctx.expr().code,
-  //         this.getLocation(ctx),
-  //       );
-  //       ctx.code = `return ${value};\n`; // type: ignore
-  //     }
-  //   }
-
-  //   visitConstantExpr(ctx: any) {
-  //     this.visitChildren(ctx);
-  //     ctx.code = ctx.constant().code; // type: ignore
-  //   }
-
-  //   visitIntegerConstant(ctx: any) {
-  //     this.visitChildren(ctx);
-  //     const value = parseInt(ctx.getText());
-  //     ctx.code = value.toString(); // type: ignore
-  //   }
-
-  //   visitStringConstant(ctx: any) {
-  //     this.visitChildren(ctx);
-  //     ctx.code = `"${ctx.getText().slice(1, -1)}"`; // type: ignore
-  //   }
-
-  //   visitFunc(ctx: any) {
-  //     return this.provideFuncDef(ctx);
-  //   }
-
-  //   visitNamedfunc(ctx: any) {
-  //     return this.provideFuncDef(ctx);
-  //   }
-
-  //   visitMutableVariableDefinition(ctx: any) {
-  //     return this.implVariableDefinition(ctx, true);
-  //   }
-
-  //   visitImmutableVariableDefinition(ctx: any) {
-  //     return this.implVariableDefinition(ctx, false);
-  //   }
-
-  //   visitSymbolValueExpr(ctx: any) {
-  //     this.visitChildren(ctx);
-  //     const symbol = this.getNodeSymbol(ctx);
-
-  //     if (symbol instanceof FunctionSymbol) {
-  //       ctx.code = symbol.getMangledName(); // type: ignore
-  //     } else {
-  //       ctx.code = symbol.name; // type: ignore
-  //     }
-  //     this.setNodeSymbol(ctx, symbol);
-  //   }
-
-  //   visitExprStatement(ctx: any) {
-  //     this.visitChildren(ctx);
-  //     ctx.code = `${ctx.expr().code};\n`; // type: ignore
-  //   }
-
-  //   visitExprCallExpr(ctx: ExprCallExprContext) {
-  //     this.visitChildren(ctx);
-  //     const symbol = this.getNodeSymbol(ctx.expr());
-  //     const exprtype = symbol.type;
-
-  //     // thisPointer = this.getNodeThisPointer(ctx.expr());
-  //     // args.push_back(thisPointer);
-  //     // thisPointerType = this.getNodeDatatype(expr);
-
-  //     if (!(symbol instanceof FunctionSymbol) || !exprtype.isFunction()) {
-  //       throw new CompilerError(
-  //         `Expression of type '${exprtype.getDisplayName()}' is not callable`,
-  //         this.getLocation(ctx),
-  //       );
-  //     }
-
-  //     ctx.code = `${ctx.expr().code}(`; // type: ignore
-
-  //     const params: string[] = [];
-  //     if (symbol.functionLinkage !== FunctionLinkage.External_C) {
-  //       params.push("context");
-  //     }
-  //     if (symbol.thisPointerType) {
-  //       params.push(`&${ctx.expr().structSymbol.name}`);
-  //     }
-  //     for (let i = 0; i < exprtype.functionParameters.length; i++) {
-  //       const paramexpr = ctx.args().expr()[i];
-  //       const expectedtype = exprtype.functionParameters[i][1];
-  //       params.push(
-  //         implicitConversion(
-  //           this.getNodeDatatype(paramexpr),
-  //           expectedtype,
-  //           paramexpr.code,
-  //           this.getLocation(paramexpr),
-  //         ),
-  //       );
-  //     }
-
-  //     ctx.code += `${params.join(", ")});`; // type: ignore
-
-  //     if (symbol.type.generics.length > 0) {
-  //       if (!symbol.ctx) {
-  //         throw new InternalError("Function missing context");
-  //       }
-
-  //       if (ctx.expr().structSymbol) {
-  //         // symbol.type.genericsDict = ctx.expr().structSymbol.type.genericsDict
-  //         this.setNodeSymbol(symbol.ctx, symbol);
-  //         this.generateFuncUse(symbol.ctx);
-  //       } else {
-  //         throw new InternalError("Function missing context generics dict");
-  //       }
-  //     }
-  //   }
-
-  //   visitStructFuncDecl(ctx: StructFuncDeclContext) {
-  //     return this.provideFuncDef(ctx);
-  //   }
-
-  //   visitStructDecl(ctx: StructDeclContext) {
-  //     this.visitChildren(ctx);
-  //     const datatype = this.getNodeDatatype(ctx);
-  //     this.structCtx[datatype.name] = ctx;
-  //     if (!datatype.generics) {
-  //       this.output["type_declarations"][datatype.getMangledName()] =
-  //         datatype.generateDefinitionCCode();
-  //     }
-  //   }
-
-  // visitObjectExpr(ctx: ObjectExprContext) {
-  //     this.visitChildren(ctx);
-  //     const type = this.getNodeDatatype(ctx);
-  //     if (!(type instanceof StructDatatype)) {
-  //         throw new InternalError("StructDatatype is not of type struct");
-  //     }
-
-  //     ctx.code = `(${type.generateUsageCode()}){ `;
-  //     for (const attr of this.getNodeObjectAttributes(ctx)) {
-  //         const objattr: ObjAttribute = attr;
-  //         ctx.code += `.
-
-  // visitNamedObjectExpr(ctx) {
-  //   throw new InternalError("Not implemented");
-  //   // self.visitChildren(ctx)
-  //   // structtype = self.getNodeDatatype(ctx)
-  //   // if not structtype.isStruct():
-  //   //     raise InternalError("StructDatatype is not of type struct")
-
-  //   // ctx.code = f"({structtype.generateUsageCode()}){{ "  # type: ignore
-  //   // fields = getStructFields(structtype)
-  //   // for i in range(len(fields)):
-  //   //     expr = ctx.objectattribute()[i].expr()
-  //   //     ctx.code += f".{fields[i].name} = {implicitConversion(self.getNodeDatatype(expr), fields[i].type, expr.code, self.getLocation(ctx))}, "  # type: ignore
-  //   // ctx.code += " }"  # type: ignore
-  // }
-
-  // visitExprMemberAccess(self, ctx) {
-  //   throw new InternalError("Not implemented");
-
-  //   // self.visitChildren(ctx)
-
-  //   // symbol = self.getNodeSymbol(ctx.expr())
-  //   // if symbol.type.isStruct():
-  //   //     if self.hasNodeMemberAccessFieldIndex(ctx):
-  //   //         fieldIndex = self.getNodeMemberAccessFieldIndex(ctx)
-  //   //         ctx.code = (  # type: ignore
-  //   //             f"{symbol.name}.{getStructFields(symbol.type)[fieldIndex].name}"
-  //   //         )
-  //   //         # symbol.type.genericsDict = symbol.type.genericsDict
-  //   //         ctx.structSymbol = symbol  # type: ignore
-
-  //   //     elif self.hasNodeMemberAccessFunctionSymbol(ctx):
-  //   //         memberFuncSymbol = self.getNodeMemberAccessFunctionSymbol(ctx)
-  //   //         # memberFuncSymbol.parentNamespace = Namespace(
-  //   //         #     symbol.type.getDisplayName()
-  //   //         # )
-  //   //         # memberFuncSymbol.type.genericsDict = symbol.type.genericsDict
-  //   //         ctx.code = f"{memberFuncSymbol.getMangledName()}"  # type: ignore
-  //   //         ctx.structSymbol = symbol  # type: ignore
-  //   //     else:
-  //   //         raise InternalError("Neither field nor function")
-  //   // elif symbol.type.isPointer():
-  //   //     if self.hasNodeMemberAccessFieldIndex(ctx) and symbol.type.pointee:
-  //   //         fieldIndex = self.getNodeMemberAccessFieldIndex(ctx)
-  //   //         ctx.code = f"{symbol.name}->{getStructFields(symbol.type.pointee)[fieldIndex].name}"  # type: ignore
-  //   //         # ctx.structSymbol = symbol
-  //   //     else:
-  //   //         raise InternalError("Cannot call function on pointer")
-  //   // else:
-  //   //     raise InternalError(
-  //   //         f"Member access type {symbol.type.getDisplayName()} is not structural"
-  //   //     )
-  // }
 }
 
 export function generateCode(program: Program, outfile: string) {

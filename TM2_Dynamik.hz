@@ -333,12 +333,12 @@ struct List<T> {
     return back;
   }
 
-  get(n: u64, dummyValue: T): T {
+  get(n: u64): T {
     if n < 0 or n >= this.length {
       panic("OUT OF BOUNDS");
     }
     const buf = this.buffer.data as RawPtr<T>;
-    const result: T = dummyValue;
+    const result: T;
     __c__("result = buf[n]");
     return result;
   }
@@ -358,12 +358,12 @@ fib() {
   fibs.push(1);
   const count = 10;
 
-  // const i = 2;
-  // while (i < count) {
-  //   fibs.push(fibs.get(i - 1) + fibs.get(i - 2));
-  //   printf("Found fib number: %d\n", fibs.get(fibs.length - 1));
-  //   i++;
-  // }
+  const i = 2;
+  while (i < count) {
+    fibs.push(fibs.get(i - 1) + fibs.get(i - 2));
+    printf("Found fib number: %d\n", fibs.get(fibs.length - 1));
+    i++;
+  }
 }
 
 // declare "C" draw();
@@ -490,7 +490,6 @@ window(): i32 {
       velocity = Vec2(0, v_phi_const);
       acceleration = Vec2(0, 0);
       startTime = getTime();
-      // path = List<Vec2>();
       path.clear();
     }
 
@@ -521,8 +520,7 @@ window(): i32 {
 
     const a = 0;
     while a < path.length - 1 {
-      const dummy = Vec2(0, 0);
-      drawLine(origin.add(Vec2(path.get(a, dummy).x, -path.get(a, dummy).y)), origin.add(Vec2(path.get(a + 1, dummy).x, -path.get(a + 1, dummy).y)), 1, Color(255, 255, 255));
+      drawLine(origin.add(Vec2(path.get(a).x, -path.get(a).y)), origin.add(Vec2(path.get(a + 1).x, -path.get(a + 1).y)), 1, Color(255, 255, 255));
       a++;
     }
 

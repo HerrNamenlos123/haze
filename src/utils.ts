@@ -1,4 +1,6 @@
+import type { VariableStatement } from "typescript";
 import {
+  isNone,
   serializeDatatype,
   type Datatype,
   type FunctionDatatype,
@@ -14,6 +16,7 @@ import {
   InternalError,
   type Location,
 } from "./Errors";
+import type { Expression } from "./Expression";
 import {
   CommonDatatypeContext,
   FuncContext,
@@ -22,20 +25,30 @@ import {
   ParamContext,
   ParamsContext,
   StructMethodContext,
+  VariableDeclarationContext,
+  VariableDefinitionContext,
 } from "./parser/HazeParser";
 import type HazeVisitor from "./parser/HazeVisitor";
 import type { Program } from "./Program";
 import { Scope } from "./Scope";
+import type {
+  Statement,
+  VariableDeclarationStatement,
+  VariableDefinitionStatement,
+} from "./Statement";
 import {
   isSymbolGeneric,
   Language,
   mangleDatatype,
   mangleSymbol,
   serializeSymbol,
+  VariableScope,
+  VariableType,
   type DatatypeSymbol,
   type FunctionSymbol,
   type SpecialMethod,
   type Symbol,
+  type VariableSymbol,
 } from "./Symbol";
 import * as _ from "lodash";
 
@@ -126,7 +139,9 @@ export function resolveGenerics(
             variant: "Variable",
             name: member.name,
             variableType: member.variableType,
+            variableScope: member.variableScope,
             parentSymbol: member.parentSymbol,
+            ctx: member.ctx,
             type: resolveGenerics(
               member.type,
               tempScope,
@@ -150,6 +165,8 @@ export function resolveGenerics(
               ),
               variant: "Variable",
               variableType: inner.variableType,
+              variableScope: inner.variableScope,
+              ctx: inner.ctx,
             });
           }
           cloned.members.push(newUnion);
@@ -551,4 +568,121 @@ export function visitParams(
 ): ParamPack {
   const params = ctx.param_list().map((n) => visitParam(_this, n));
   return { params: params, vararg: ctx.ellipsis() !== undefined };
+}
+
+export function collectVariableStatement(
+  _this: HazeVisitor<any>,
+  ctx: VariableDefinitionContext | VariableDeclarationContext,
+  program: Program,
+  variableScope: VariableScope,
+  parentSymbol?: Symbol,
+): VariableDefinitionStatement | VariableDeclarationStatement {
+  const name = ctx.ID().getText();
+  if (RESERVED_VARIABLE_NAMES.includes(name)) {
+    throw new CompilerError(
+      `'${name}' is not a valid variable name.`,
+      program.getLoc(ctx),
+    );
+  }
+  const mutable = ctx.variablemutability().getText() === "let";
+
+  let datatype: Datatype = { variant: "Deferred" };
+  let expr: Expression | undefined;
+  if (ctx instanceof VariableDefinitionContext) {
+    if (ctx.datatype()) {
+      datatype = _this.visit(ctx.datatype());
+    }
+    if (!datatype) {
+      throw new ImpossibleSituation();
+    }
+  } else {
+    datatype = _this.visit(ctx.datatype());
+    if (!datatype) {
+      throw new ImpossibleSituation();
+    }
+  }
+
+  if (isNone(datatype) || datatype.variant === "Namespace") {
+    throw new CompilerError(
+      `'${serializeDatatype(datatype)}' is not a valid variable type.`,
+      program.getLoc(ctx),
+    );
+  }
+
+  const symbol: VariableSymbol = {
+    variableType: mutable
+      ? VariableType.MutableVariable
+      : VariableType.ConstantVariable,
+    variableScope: variableScope,
+    name: name,
+    type: datatype,
+    variant: "Variable",
+    parentSymbol: parentSymbol,
+    ctx: ctx,
+  };
+  program.currentScope.defineSymbol(symbol, program.getLoc(ctx));
+
+  const statement: VariableDefinitionStatement | VariableDeclarationStatement =
+    ctx instanceof VariableDefinitionContext
+      ? {
+          variant: "VariableDefinition",
+          ctx: ctx,
+          symbol: symbol,
+          expr: expr!,
+        }
+      : {
+          variant: "VariableDeclaration",
+          ctx: ctx,
+          symbol: symbol,
+        };
+
+  if (variableScope === VariableScope.Global) {
+    program.concreteGlobalStatements.set(mangleSymbol(symbol), statement);
+  }
+
+  return statement;
+}
+
+export function analyzeVariableStatement(
+  _this: HazeVisitor<any>,
+  program: Program,
+  statement: VariableDefinitionStatement | VariableDeclarationStatement,
+): Statement {
+  if (statement.variant === "VariableDefinition") {
+    statement.expr = _this.visit(statement.ctx.expr()) as Expression;
+    statement.symbol.type = statement.expr.type;
+    if (statement.ctx.datatype()) {
+      statement.symbol.type = _this.visit(statement.ctx.datatype());
+    }
+  } else {
+    statement.symbol.type = _this.visit(statement.ctx.datatype());
+  }
+  if (!statement.symbol.type || statement.symbol.type.variant === "Generic") {
+    throw new ImpossibleSituation();
+  }
+
+  if (
+    isNone(statement.symbol.type) ||
+    statement.symbol.type.variant === "Namespace"
+  ) {
+    throw new CompilerError(
+      `'${serializeDatatype(statement.symbol.type)}' is not a valid variable type.`,
+      program.getLoc(statement.ctx),
+    );
+  }
+
+  if (statement.variant === "VariableDefinition") {
+    return {
+      variant: "VariableDefinition",
+      ctx: statement.ctx,
+      symbol: statement.symbol,
+      expr: statement.expr,
+    };
+  } else {
+    return {
+      variant: "VariableDeclaration",
+      ctx: statement.ctx,
+      symbol: statement.symbol,
+    };
+  }
 }

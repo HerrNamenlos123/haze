@@ -23,10 +23,12 @@ import { ThenblockContext } from "./HazeParser.js";
 import { ElseifblockContext } from "./HazeParser.js";
 import { ElseblockContext } from "./HazeParser.js";
 import { VariableMutabilityContext } from "./HazeParser.js";
+import { VariableDefinitionContext } from "./HazeParser.js";
+import { VariableDeclarationContext } from "./HazeParser.js";
 import { InlineCStatementContext } from "./HazeParser.js";
 import { ExprStatementContext } from "./HazeParser.js";
 import { ReturnStatementContext } from "./HazeParser.js";
-import { VariableDefinitionContext } from "./HazeParser.js";
+import { VariableStatementContext } from "./HazeParser.js";
 import { IfStatementContext } from "./HazeParser.js";
 import { WhileStatementContext } from "./HazeParser.js";
 import { StructMemberValueContext } from "./HazeParser.js";
@@ -270,6 +272,30 @@ export default class HazeListener extends ParseTreeListener {
 	 */
 	exitVariableMutability?: (ctx: VariableMutabilityContext) => void;
 	/**
+	 * Enter a parse tree produced by the `VariableDefinition`
+	 * labeled alternative in `HazeParser.variablestatement`.
+	 * @param ctx the parse tree
+	 */
+	enterVariableDefinition?: (ctx: VariableDefinitionContext) => void;
+	/**
+	 * Exit a parse tree produced by the `VariableDefinition`
+	 * labeled alternative in `HazeParser.variablestatement`.
+	 * @param ctx the parse tree
+	 */
+	exitVariableDefinition?: (ctx: VariableDefinitionContext) => void;
+	/**
+	 * Enter a parse tree produced by the `VariableDeclaration`
+	 * labeled alternative in `HazeParser.variablestatement`.
+	 * @param ctx the parse tree
+	 */
+	enterVariableDeclaration?: (ctx: VariableDeclarationContext) => void;
+	/**
+	 * Exit a parse tree produced by the `VariableDeclaration`
+	 * labeled alternative in `HazeParser.variablestatement`.
+	 * @param ctx the parse tree
+	 */
+	exitVariableDeclaration?: (ctx: VariableDeclarationContext) => void;
+	/**
 	 * Enter a parse tree produced by the `InlineCStatement`
 	 * labeled alternative in `HazeParser.statement`.
 	 * @param ctx the parse tree
@@ -306,17 +332,17 @@ export default class HazeListener extends ParseTreeListener {
 	 */
 	exitReturnStatement?: (ctx: ReturnStatementContext) => void;
 	/**
-	 * Enter a parse tree produced by the `VariableDefinition`
+	 * Enter a parse tree produced by the `VariableStatement`
 	 * labeled alternative in `HazeParser.statement`.
 	 * @param ctx the parse tree
 	 */
-	enterVariableDefinition?: (ctx: VariableDefinitionContext) => void;
+	enterVariableStatement?: (ctx: VariableStatementContext) => void;
 	/**
-	 * Exit a parse tree produced by the `VariableDefinition`
+	 * Exit a parse tree produced by the `VariableStatement`
 	 * labeled alternative in `HazeParser.statement`.
 	 * @param ctx the parse tree
 	 */
-	exitVariableDefinition?: (ctx: VariableDefinitionContext) => void;
+	exitVariableStatement?: (ctx: VariableStatementContext) => void;
 	/**
 	 * Enter a parse tree produced by the `IfStatement`
 	 * labeled alternative in `HazeParser.statement`.

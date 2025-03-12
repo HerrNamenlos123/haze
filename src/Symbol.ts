@@ -13,6 +13,10 @@ import {
 } from "./Errors";
 import type { Scope } from "./Scope";
 import type { Expression } from "./Expression";
+import type {
+  VariableDeclarationContext,
+  VariableDefinitionContext,
+} from "./parser/HazeParser";
 
 export enum VariableType {
   MutableVariable,
@@ -20,6 +24,12 @@ export enum VariableType {
   Parameter,
   MutableStructField,
   ConstantStructField,
+}
+
+export enum VariableScope {
+  Local,
+  Member,
+  Global,
 }
 
 export enum Language {
@@ -33,7 +43,9 @@ export type VariableSymbol = {
   name: string;
   type: Datatype;
   variableType: VariableType;
+  variableScope: VariableScope;
   parentSymbol?: Symbol;
+  ctx?: VariableDefinitionContext | VariableDeclarationContext;
 };
 
 export type SpecialMethod = undefined | "constructor";
@@ -212,7 +224,7 @@ export function mangleDatatype(datatype: Datatype): string {
 
 export function mangleSymbol(symbol: Symbol): string {
   switch (symbol.variant) {
-    case "Function":
+    case "Function": {
       if (symbol.language === Language.External_C) {
         return symbol.name;
       }
@@ -233,24 +245,11 @@ export function mangleSymbol(symbol: Symbol): string {
       }
       mangled += symbol.name.length.toString();
       mangled += symbol.name;
-
-      // if (symbol.type.generics.size > 0) {
-      //     mangled += "I"
-      //     for t in symbol.type.generics():
-      //         if not t[1]:
-      //             raise InternalError("Cannot mangle non-instantiated generic type")
-      //         mangled += t[1].getMangledName()
-      //     mangled += "E"
-      // }
-
       if (symbol.parentSymbol) {
         mangled += "E";
       }
-
-      // for (const [name, tp] of symbol.type.functionParameters) {
-      //   mangled += mangleDatatype(tp);
-      // }
       return mangled;
+    }
 
     case "Datatype":
       if (symbol.type.variant === "Struct" && symbol.type.language) {
@@ -258,6 +257,34 @@ export function mangleSymbol(symbol: Symbol): string {
       } else {
         return "_H" + mangleDatatype(symbol.type);
       }
+
+    case "Variable": {
+      if (symbol.variableScope === VariableScope.Global) {
+        let mangled = "_H";
+        if (symbol.parentSymbol) {
+          let p: Symbol | undefined = symbol.parentSymbol;
+          mangled += "N";
+          while (p) {
+            mangled += mangleDatatype(p.type);
+            if (
+              p.variant === "Variable" ||
+              p.variant === "Function" ||
+              p.variant === "Datatype"
+            ) {
+              p = p.parentSymbol;
+            }
+          }
+        }
+        mangled += symbol.name.length.toString();
+        mangled += symbol.name;
+        if (symbol.parentSymbol) {
+          mangled += "E";
+        }
+        return mangled;
+      } else {
+        return symbol.name;
+      }
+    }
 
     default:
       throw new InternalError(

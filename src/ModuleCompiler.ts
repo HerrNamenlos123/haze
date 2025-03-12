@@ -26,7 +26,7 @@ export class ModuleCompiler {
         return false;
       }
 
-      const program = new Program(this.filename);
+      const program = new Program(this.filename, ast);
       const collector = new SymbolCollector(program);
       collector.visit(ast);
       performSemanticAnalysis(program);

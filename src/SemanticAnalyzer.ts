@@ -28,6 +28,7 @@ import {
   mangleDatatype,
   mangleSymbol,
   serializeSymbol,
+  VariableScope,
   VariableType,
   type BooleanConstantSymbol,
   type ConstantSymbol,
@@ -56,6 +57,9 @@ import {
   PreIncrExprContext,
   SymbolValueExprContext,
   UnaryExprContext,
+  VariableDeclarationContext,
+  VariableDefinitionContext,
+  VariableStatementContext,
   WhileStatementContext,
   type ArgsContext,
   type BooleanConstantContext,
@@ -72,10 +76,11 @@ import {
   type StructInstantiationExprContext,
   type StructMemberValueContext,
   type StructMethodContext,
-  type VariableDefinitionContext,
 } from "./parser/HazeParser";
 import {
+  analyzeVariableStatement,
   collectFunction,
+  collectVariableStatement,
   datatypeSymbolUsed,
   defineGenericsInScope,
   getNestedReturnTypes,
@@ -87,7 +92,7 @@ import {
   visitParams,
   type ParamPack,
 } from "./utils";
-import type { ParserRuleContext } from "antlr4";
+import { ParserRuleContext } from "antlr4";
 import type {
   BinaryExpression,
   ConstantExpression,
@@ -111,6 +116,7 @@ import type {
   InlineCStatement,
   ReturnStatement,
   Statement,
+  VariableDeclarationStatement,
   VariableDefinitionStatement,
   WhileStatement,
 } from "./Statement";
@@ -497,6 +503,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
               generics: new Map().set("__Pointee", symbol.parentSymbol.type),
             },
             variableType: VariableType.Parameter,
+            variableScope: VariableScope.Local,
           },
           loc,
         );
@@ -509,6 +516,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
             name: name,
             type: tp,
             variableType: VariableType.Parameter,
+            variableScope: VariableScope.Local,
           },
           loc,
         );
@@ -526,6 +534,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
             ),
           },
           variableType: VariableType.Parameter,
+          variableScope: VariableScope.Local,
         },
         loc,
       );
@@ -622,46 +631,30 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
     };
   };
 
-  visitVariableDefinition = (
-    ctx: VariableDefinitionContext,
-  ): VariableDefinitionStatement => {
-    const name = ctx.ID().getText();
-    if (RESERVED_VARIABLE_NAMES.includes(name)) {
-      throw new CompilerError(
-        `'${name}' is not a valid variable name.`,
-        this.program.getLoc(ctx),
-      );
-    }
-    const mutable = ctx.variablemutability().getText() === "let";
+  visitVariableDefinition = (ctx: VariableDefinitionContext): Statement => {
+    const statement = collectVariableStatement(
+      this,
+      ctx,
+      this.program,
+      VariableScope.Local,
+      this.functionStack[this.functionStack.length - 1],
+    );
+    return analyzeVariableStatement(this, this.program, statement);
+  };
 
-    const expr: Expression = this.visit(ctx.expr());
-    let datatype = expr.type;
-    if (ctx.datatype()) {
-      datatype = this.visit(ctx.datatype());
-    }
+  visitVariableDeclaration = (ctx: VariableDeclarationContext): Statement => {
+    const statement = collectVariableStatement(
+      this,
+      ctx,
+      this.program,
+      VariableScope.Local,
+      this.functionStack[this.functionStack.length - 1],
+    );
+    return analyzeVariableStatement(this, this.program, statement);
+  };
 
-    if (isNone(datatype) || datatype.variant === "Namespace") {
-      throw new CompilerError(
-        `'${serializeDatatype(datatype)}' is not a valid variable type.`,
-        this.program.getLoc(ctx),
-      );
-    }
-
-    const symbol: VariableSymbol = {
-      variableType: mutable
-        ? VariableType.MutableVariable
-        : VariableType.ConstantVariable,
-      name: name,
-      type: datatype,
-      variant: "Variable",
-    };
-    this.program.currentScope.defineSymbol(symbol, this.program.getLoc(ctx));
-    return {
-      variant: "VariableDefinition",
-      ctx: ctx,
-      symbol: symbol,
-      expr: expr,
-    };
+  visitVariableStatement = (ctx: VariableStatementContext): Statement => {
+    return this.visit(ctx.variablestatement());
   };
 
   visitParenthesisExpr = (ctx: ParenthesisExprContext): Expression => {
@@ -1117,6 +1110,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
       name: name,
       type: expr.type,
       variableType: VariableType.MutableStructField,
+      variableScope: VariableScope.Member,
       variant: "Variable",
     };
     return [symbol, expr];
@@ -1247,188 +1241,213 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
       );
     }
 
-    while (expr.type.variant !== "Struct") {
-      if (expr.type.variant !== "RawPointer") {
-        throw new CompilerError(
-          `Cannot access member '${name}' of non-structural datatype '${serializeDatatype(expr.type)}'`,
-          this.program.getLoc(ctx),
-        );
-      }
+    if (expr.type.variant !== "Namespace") {
+      while (expr.type.variant !== "Struct") {
+        if (expr.type.variant !== "RawPointer") {
+          throw new CompilerError(
+            `Cannot access member '${name}' of non-structural datatype '${serializeDatatype(expr.type)}'`,
+            this.program.getLoc(ctx),
+          );
+        }
 
-      const p = expr.type.generics.get("__Pointee");
-      if (!p) {
-        throw new ImpossibleSituation();
-      }
-      if (name === "ptr") {
-        const e: RawPointerDereferenceExpression = {
+        const p = expr.type.generics.get("__Pointee");
+        if (!p) {
+          throw new ImpossibleSituation();
+        }
+        if (name === "ptr") {
+          const e: RawPointerDereferenceExpression = {
+            variant: "RawPtrDeref",
+            expr: expr,
+            ctx: ctx,
+            type: p,
+          };
+          return e;
+        }
+
+        expr = {
           variant: "RawPtrDeref",
           expr: expr,
           ctx: ctx,
-          type: p,
-        };
-        return e;
+          type: p.variant === "RawPointer" ? p.generics.get("__Pointee")! : p,
+        } as RawPointerDereferenceExpression;
+      }
+    }
+
+    if (expr.type.variant === "Struct") {
+      const field: VariableSymbol | undefined = findMemberInStruct(
+        expr.type,
+        name,
+      );
+      const method: FunctionSymbol | undefined = findMethodInStruct(
+        expr.type,
+        name,
+      );
+
+      if (!field && !method) {
+        throw new CompilerError(
+          `Expression '${name}' is not a member of type '${serializeDatatype(expr.type)}'`,
+          this.program.getLoc(ctx),
+        );
       }
 
-      expr = {
-        variant: "RawPtrDeref",
-        expr: expr,
-        ctx: ctx,
-        type: p.variant === "RawPointer" ? p.generics.get("__Pointee")! : p,
-      } as RawPointerDereferenceExpression;
-    }
-
-    const field: VariableSymbol | undefined = findMemberInStruct(
-      expr.type,
-      name,
-    );
-    const method: FunctionSymbol | undefined = findMethodInStruct(
-      expr.type,
-      name,
-    );
-
-    if (!field && !method) {
-      throw new CompilerError(
-        `Expression '${name}' is not a member of type '${serializeDatatype(expr.type)}'`,
-        this.program.getLoc(ctx),
-      );
-    }
-
-    if (field && method) {
-      throw new CompilerError(
-        `Access to member '${name}' of type '${serializeDatatype(expr.type)}' is ambiguous`,
-        this.program.getLoc(ctx),
-      );
-    }
-
-    if (field) {
-      const symbol = { ...field };
-      symbol.type = { ...symbol.type };
-      if (symbol.type.variant === "Struct") {
-        symbol.type.generics = new Map(symbol.type.generics);
+      if (field && method) {
+        throw new CompilerError(
+          `Access to member '${name}' of type '${serializeDatatype(expr.type)}' is ambiguous`,
+          this.program.getLoc(ctx),
+        );
       }
-      const scope = new Scope(
-        this.program.currentScope.location,
-        this.program.currentScope,
-      );
-      for (const [name, tp] of expr.type.generics) {
-        if (!tp) {
-          throw new CompilerError(
-            `Generic parameter '${name}' has no type`,
-            this.program.getLoc(ctx),
-          );
-        }
+
+      if (field) {
+        const symbol = { ...field };
+        symbol.type = { ...symbol.type };
         if (symbol.type.variant === "Struct") {
-          if (
-            symbol.type.generics.has(name) &&
-            symbol.type.generics.get(name) === undefined
-          ) {
-            symbol.type.generics.set(name, tp);
-          }
+          symbol.type.generics = new Map(symbol.type.generics);
         }
-        scope.defineSymbol(
-          {
-            variant: "Datatype",
-            name: name,
-            scope: scope,
-            type: tp,
-          },
-          this.program.getLoc(ctx),
+        const scope = new Scope(
+          this.program.currentScope.location,
+          this.program.currentScope,
         );
-      }
-      const symtype = resolveGenerics(
-        symbol.type,
-        scope,
-        this.program.getLoc(ctx),
-      );
-      return {
-        ctx: ctx,
-        variant: "MemberAccess",
-        expr: expr,
-        memberName: name,
-        type: symtype,
-      };
-    }
-
-    if (method) {
-      if (!method.ctx) {
-        throw new ImpossibleSituation();
-      }
-      // method = { ...method };
-
-      if (!method.parentSymbol) {
-        throw new InternalError("Method has no parent symbol");
-      }
-      if (
-        !("type" in method.parentSymbol) ||
-        method.parentSymbol.type.variant !== "Struct"
-      ) {
-        throw new InternalError("Parent symbol is not a struct");
-      }
-
-      // method.parentSymbol = { ...method.parentSymbol };
-      // method.parentSymbol.type = {
-      //   variant: "Struct",
-      //   generics: method.parentSymbol.type.generics,
-      // };
-      // Datatype.createStructDatatype(
-      //   method.parentSymbol.type.name(),
-      //   expr.type.generics(),
-      //   method.parentSymbol.type.structSymbolTable(),
-      // );
-
-      // this.setNodeSymbol(method.ctx, { ...method });
-      const symbol = { ...method };
-      symbol.type = { ...symbol.type };
-      symbol.scope = new Scope(symbol.scope.location, symbol.scope);
-      symbol.parentSymbol = { ...method.parentSymbol };
-      symbol.parentSymbol.type = { ...method.parentSymbol.type };
-      symbol.parentSymbol.type.generics = new Map(
-        symbol.parentSymbol.type.generics,
-      );
-      if (symbol.parentSymbol.type.variant !== "Struct") {
-        throw new ImpossibleSituation();
-      }
-      for (const [name, tp] of expr.type.generics) {
-        if (!tp) {
-          throw new CompilerError(
-            `Generic parameter '${name}' has no type`,
+        for (const [name, tp] of expr.type.generics) {
+          if (!tp) {
+            throw new CompilerError(
+              `Generic parameter '${name}' has no type`,
+              this.program.getLoc(ctx),
+            );
+          }
+          if (symbol.type.variant === "Struct") {
+            if (
+              symbol.type.generics.has(name) &&
+              symbol.type.generics.get(name) === undefined
+            ) {
+              symbol.type.generics.set(name, tp);
+            }
+          }
+          scope.defineSymbol(
+            {
+              variant: "Datatype",
+              name: name,
+              scope: scope,
+              type: tp,
+            },
             this.program.getLoc(ctx),
           );
         }
-        if (symbol.parentSymbol.type.generics.get(name) === undefined) {
-          symbol.parentSymbol.type.generics.set(name, tp);
+        const symtype = resolveGenerics(
+          symbol.type,
+          scope,
+          this.program.getLoc(ctx),
+        );
+        return {
+          ctx: ctx,
+          variant: "MemberAccess",
+          expr: expr,
+          memberName: name,
+          type: symtype,
+        };
+      }
+
+      if (method) {
+        if (!method.ctx) {
+          throw new ImpossibleSituation();
         }
-        symbol.scope.defineSymbol(
-          {
-            variant: "Datatype",
-            name: name,
-            scope: symbol.scope,
-            type: tp,
-          },
+        // method = { ...method };
+
+        if (!method.parentSymbol) {
+          throw new InternalError("Method has no parent symbol");
+        }
+        if (
+          !("type" in method.parentSymbol) ||
+          method.parentSymbol.type.variant !== "Struct"
+        ) {
+          throw new InternalError("Parent symbol is not a struct");
+        }
+
+        // method.parentSymbol = { ...method.parentSymbol };
+        // method.parentSymbol.type = {
+        //   variant: "Struct",
+        //   generics: method.parentSymbol.type.generics,
+        // };
+        // Datatype.createStructDatatype(
+        //   method.parentSymbol.type.name(),
+        //   expr.type.generics(),
+        //   method.parentSymbol.type.structSymbolTable(),
+        // );
+
+        // this.setNodeSymbol(method.ctx, { ...method });
+        const symbol = { ...method };
+        symbol.type = { ...symbol.type };
+        symbol.scope = new Scope(symbol.scope.location, symbol.scope);
+        symbol.parentSymbol = { ...method.parentSymbol };
+        symbol.parentSymbol.type = { ...method.parentSymbol.type };
+        symbol.parentSymbol.type.generics = new Map(
+          symbol.parentSymbol.type.generics,
+        );
+        if (symbol.parentSymbol.type.variant !== "Struct") {
+          throw new ImpossibleSituation();
+        }
+        for (const [name, tp] of expr.type.generics) {
+          if (!tp) {
+            throw new CompilerError(
+              `Generic parameter '${name}' has no type`,
+              this.program.getLoc(ctx),
+            );
+          }
+          if (symbol.parentSymbol.type.generics.get(name) === undefined) {
+            symbol.parentSymbol.type.generics.set(name, tp);
+          }
+          symbol.scope.defineSymbol(
+            {
+              variant: "Datatype",
+              name: name,
+              scope: symbol.scope,
+              type: tp,
+            },
+            this.program.getLoc(ctx),
+          );
+        }
+        symbol.type = resolveGenerics(
+          symbol.type,
+          symbol.scope,
+          this.program.getLoc(symbol.ctx),
+        ) as FunctionDatatype;
+        symbol.thisPointerExpr = expr;
+        this.implFunc(method.ctx as FuncContext, symbol);
+
+        return {
+          ctx: ctx,
+          variant: "MemberAccess",
+          methodSymbol: symbol,
+          memberName: name,
+          expr: expr,
+          type: method.type,
+        };
+      } else {
+        throw new CompilerError(
+          `Cannot access member of non-structural datatype '${serializeDatatype(expr.type)}'`,
           this.program.getLoc(ctx),
         );
       }
-      symbol.type = resolveGenerics(
-        symbol.type,
-        symbol.scope,
-        this.program.getLoc(symbol.ctx),
-      ) as FunctionDatatype;
-      symbol.thisPointerExpr = expr;
-      this.implFunc(method.ctx as FuncContext, symbol);
-
-      return {
-        ctx: ctx,
-        variant: "MemberAccess",
-        methodSymbol: symbol,
-        memberName: name,
-        expr: expr,
-        type: method.type,
-      };
     } else {
-      throw new CompilerError(
-        `Cannot access member of non-structural datatype '${serializeDatatype(expr.type)}'`,
+      if (expr.type.variant !== "Namespace") {
+        throw new ImpossibleSituation();
+      }
+      let symbol = expr.type.symbolsScope.lookupSymbol(
+        name,
         this.program.getLoc(ctx),
       );
+
+      if (!symbol) {
+        throw new CompilerError(
+          `'${name}' is not a member of type '${serializeDatatype(expr.type)}'`,
+          this.program.getLoc(ctx),
+        );
+      }
+      return {
+        ctx: ctx,
+        variant: "SymbolValue",
+        symbol: symbol,
+        type: symbol.type,
+      };
     }
   };
 }
@@ -1438,7 +1457,24 @@ function analyzeFunctionSymbol(program: Program, symbol: FunctionSymbol) {
   analyzer.implFunc(symbol.ctx as FuncContext, symbol);
 }
 
+function analyzeVariableSymbol(
+  program: Program,
+  statement: VariableDeclarationStatement | VariableDefinitionStatement,
+) {
+  const analyzer = new FunctionBodyAnalyzer(program);
+  if (statement.ctx instanceof VariableDeclarationContext) {
+    return analyzeVariableStatement(analyzer, program, statement);
+  } else if (statement.ctx instanceof VariableDefinitionContext) {
+    return analyzeVariableStatement(analyzer, program, statement);
+  }
+}
+
 export function performSemanticAnalysis(program: Program) {
+  const clonedGlobals = program.concreteGlobalStatements.values().toArray();
+  for (const statement of clonedGlobals) {
+    analyzeVariableSymbol(program, statement);
+  }
+
   const clonedFuncs = program.concreteFunctions.values().toArray();
   for (const symbol of clonedFuncs) {
     analyzeFunctionSymbol(program, symbol);

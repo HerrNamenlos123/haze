@@ -14,6 +14,8 @@ import {
   StructMemberContext,
   StructMethodContext,
   StructUnionFieldsContext,
+  VariableDeclarationContext,
+  VariableDefinitionContext,
   type ParamContext,
 } from "./parser/HazeParser";
 import type { Program } from "./Program";
@@ -27,6 +29,7 @@ import {
   type FunctionSymbol,
   type SpecialMethod,
   type VariableSymbol,
+  VariableScope,
 } from "./Symbol";
 import HazeVisitor from "./parser/HazeVisitor";
 import { CompilerError, ImpossibleSituation, InternalError } from "./Errors";
@@ -43,6 +46,7 @@ import { Scope } from "./Scope";
 import type { ParserRuleContext } from "antlr4";
 import {
   collectFunction,
+  collectVariableStatement,
   datatypeSymbolUsed,
   RESERVED_STRUCT_NAMES,
   visitCommonDatatypeImpl,
@@ -50,6 +54,7 @@ import {
   visitParams,
   type ParamPack,
 } from "./utils";
+import type { Statement } from "./Statement";
 
 export class SymbolCollector extends HazeVisitor<any> {
   private program: Program;
@@ -172,6 +177,7 @@ export class SymbolCollector extends HazeVisitor<any> {
       name: name,
       type: datatype,
       variableType: VariableType.MutableStructField,
+      variableScope: VariableScope.Member,
     };
     return symbol;
   };
@@ -281,27 +287,30 @@ export class SymbolCollector extends HazeVisitor<any> {
   };
 
   visitNamespace = (ctx: NamespaceContext): DatatypeSymbol => {
+    const name = ctx.ID().getText();
     const scope = new Scope(
       this.program.getLoc(ctx),
       this.program.currentScope,
     );
-    this.program.pushScope(scope);
 
-    const name = ctx.ID().getText();
-    ctx.namespacecontent().children?.forEach((n) => {
-      const symbol = this.visit(n);
-      scope.defineSymbol(symbol, this.program.getLoc(ctx));
-    });
-
-    this.program.popScope();
-
-    const symbol: DatatypeSymbol = {
+    const symbol: DatatypeSymbol<NamespaceDatatype> = {
       name: name,
       variant: "Datatype",
       scope: this.program.currentScope,
       type: { variant: "Namespace", name: name, symbolsScope: scope },
       parentSymbol: this.parentSymbolStack[this.parentSymbolStack.length - 1],
     };
+
+    this.program.pushScope(scope);
+    this.parentSymbolStack.push(symbol);
+
+    ctx.namespacecontent().children?.forEach((n) => {
+      const symbol = this.visit(n);
+      scope.defineSymbol(symbol, this.program.getLoc(ctx));
+    });
+
+    this.parentSymbolStack.pop();
+    this.program.popScope();
 
     this.program.currentScope.defineSymbol(symbol, this.program.getLoc(ctx));
 
@@ -321,5 +330,25 @@ export class SymbolCollector extends HazeVisitor<any> {
   visitLinkerhint = (ctx: LinkerhintContext): void => {
     const cmd = JSON.parse(ctx.STRING_LITERAL().getText()) as string;
     this.program.linkerFlags.push(cmd);
+  };
+
+  visitVariableDefinition = (ctx: VariableDefinitionContext): Statement => {
+    return collectVariableStatement(
+      this,
+      ctx,
+      this.program,
+      VariableScope.Global,
+      this.parentSymbolStack[this.parentSymbolStack.length - 1],
+    );
+  };
+
+  visitVariableDeclaration = (ctx: VariableDeclarationContext): Statement => {
+    return collectVariableStatement(
+      this,
+      ctx,
+      this.program,
+      VariableScope.Global,
+      this.parentSymbolStack[this.parentSymbolStack.length - 1],
+    );
   };
 }

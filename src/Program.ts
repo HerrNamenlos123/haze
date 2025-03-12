@@ -7,6 +7,7 @@ import {
   type DatatypeSymbol,
   type FunctionSymbol,
   type Symbol,
+  type VariableSymbol,
 } from "./Symbol";
 import {
   Primitive,
@@ -18,9 +19,17 @@ import {
   type StructDatatype,
 } from "./Datatype";
 import { isDeeplyEqual } from "./deep-equal";
+import type {
+  VariableDeclarationStatement,
+  VariableDefinitionStatement,
+} from "./Statement";
 
 export class Program {
   globalScope: Scope;
+  concreteGlobalStatements: Map<
+    string,
+    VariableDefinitionStatement | VariableDeclarationStatement
+  > = new Map();
   concreteFunctions: Map<string, FunctionSymbol> = new Map();
   concreteDatatypes: Map<string, DatatypeSymbol> = new Map();
   prebuildCmds: string[] = [];
@@ -29,15 +38,17 @@ export class Program {
   linkerFlags: string[] = [];
   filename: string;
   scopeStack: Scope[];
+  ast: ParserRuleContext;
 
   datatypes: Datatype[] = [];
 
   private anonymousStuffCounter = 0;
 
-  constructor(filename: string) {
+  constructor(filename: string, ast: ParserRuleContext) {
     this.filename = filename;
     this.globalScope = new Scope(new Location("global", 0, 0));
     this.scopeStack = [];
+    this.ast = ast;
 
     const define = (name: string, primitive: Primitive) => {
       const type: PrimitiveDatatype = {

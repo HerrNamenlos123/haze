@@ -23,10 +23,12 @@ import { ThenblockContext } from "./HazeParser.js";
 import { ElseifblockContext } from "./HazeParser.js";
 import { ElseblockContext } from "./HazeParser.js";
 import { VariableMutabilityContext } from "./HazeParser.js";
+import { VariableDefinitionContext } from "./HazeParser.js";
+import { VariableDeclarationContext } from "./HazeParser.js";
 import { InlineCStatementContext } from "./HazeParser.js";
 import { ExprStatementContext } from "./HazeParser.js";
 import { ReturnStatementContext } from "./HazeParser.js";
-import { VariableDefinitionContext } from "./HazeParser.js";
+import { VariableStatementContext } from "./HazeParser.js";
 import { IfStatementContext } from "./HazeParser.js";
 import { WhileStatementContext } from "./HazeParser.js";
 import { StructMemberValueContext } from "./HazeParser.js";
@@ -192,6 +194,20 @@ export default class HazeVisitor<Result> extends ParseTreeVisitor<Result> {
 	 */
 	visitVariableMutability?: (ctx: VariableMutabilityContext) => Result;
 	/**
+	 * Visit a parse tree produced by the `VariableDefinition`
+	 * labeled alternative in `HazeParser.variablestatement`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitVariableDefinition?: (ctx: VariableDefinitionContext) => Result;
+	/**
+	 * Visit a parse tree produced by the `VariableDeclaration`
+	 * labeled alternative in `HazeParser.variablestatement`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitVariableDeclaration?: (ctx: VariableDeclarationContext) => Result;
+	/**
 	 * Visit a parse tree produced by the `InlineCStatement`
 	 * labeled alternative in `HazeParser.statement`.
 	 * @param ctx the parse tree
@@ -213,12 +229,12 @@ export default class HazeVisitor<Result> extends ParseTreeVisitor<Result> {
 	 */
 	visitReturnStatement?: (ctx: ReturnStatementContext) => Result;
 	/**
-	 * Visit a parse tree produced by the `VariableDefinition`
+	 * Visit a parse tree produced by the `VariableStatement`
 	 * labeled alternative in `HazeParser.statement`.
 	 * @param ctx the parse tree
 	 * @return the visitor result
 	 */
-	visitVariableDefinition?: (ctx: VariableDefinitionContext) => Result;
+	visitVariableStatement?: (ctx: VariableStatementContext) => Result;
 	/**
 	 * Visit a parse tree produced by the `IfStatement`
 	 * labeled alternative in `HazeParser.statement`.

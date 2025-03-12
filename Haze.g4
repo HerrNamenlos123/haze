@@ -1,8 +1,8 @@
 grammar Haze;
 
-prog: (cdefinitiondecl | prebuildcmd | postbuildcmd | namedfunc | funcdecl | compilationhint | linkerhint | structdecl | namespace)*;
+prog: (cdefinitiondecl | prebuildcmd | postbuildcmd | namedfunc | funcdecl | compilationhint | linkerhint | structdecl | namespace | variablestatement)*;
 
-namespacecontent: (namedfunc | funcdecl | compilationhint | linkerhint | structdecl | namespace)*;
+namespacecontent: (namedfunc | funcdecl | compilationhint | linkerhint | structdecl | namespace | variablestatement)*;
 namespace
     : 'namespace' ID '{' namespacecontent '}'
     ;
@@ -32,11 +32,16 @@ variablemutability
     : ('let' | 'const')     #VariableMutability
     ;
 
+variablestatement
+    : variablemutability ID (':' datatype)? '=' expr ';'        #VariableDefinition
+    | variablemutability ID (':' datatype) ';'                  #VariableDeclaration
+    ;
+
 statement
     : '__c__' '(' STRING_LITERAL ')' ';'                        #InlineCStatement
     | expr ';'                                                  #ExprStatement
     | 'return' expr? ';'                                        #ReturnStatement
-    | variablemutability ID (':' datatype)? '=' expr ';'         #VariableDefinition
+    | variablestatement                                         #VariableStatement
     | 'if' ifexpr '{' thenblock '}' ('else' 'if' elseifexpr '{' elseifblock '}')* ('else' '{' elseblock '}')?  #IfStatement
     | 'while' expr '{' body '}'                                 #WhileStatement
     ;
