@@ -1378,7 +1378,6 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
 
       // this.setNodeSymbol(method.ctx, { ...method });
       const symbol = { ...method };
-      // console.log("SYMBOL", serializeSymbol(symbol));
       symbol.type = { ...symbol.type };
       symbol.scope = new Scope(symbol.scope.location, symbol.scope);
       symbol.parentSymbol = { ...method.parentSymbol };
@@ -1386,7 +1385,6 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
       symbol.parentSymbol.type.generics = new Map(
         symbol.parentSymbol.type.generics,
       );
-      // console.log(">> PArent", serializeSymbol(symbol.parentSymbol));
       if (symbol.parentSymbol.type.variant !== "Struct") {
         throw new ImpossibleSituation();
       }

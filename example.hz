@@ -355,8 +355,8 @@ struct List<T> {
 fib() {
   const fibs = List<i32>();
   fibs.push(0);
-  // fibs.push(1);
-  // const count = 10;
+  fibs.push(1);
+  const count = 10;
 
   // const i = 2;
   // while (i < count) {
@@ -479,7 +479,6 @@ window(): i32 {
       velocity = Vec2(0, v_phi_const);
       acceleration = Vec2(0, 0);
       startTime = getTime();
-      // path = List<Vec2>();
       path.clear();
     }
 

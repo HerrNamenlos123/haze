@@ -160,7 +160,7 @@ export function resolveGenerics(
           name: method.name,
           type: resolveGenerics(
             method.type,
-            scope,
+            tempScope,
             loc,
             resolvageContext,
           ) as FunctionDatatype,

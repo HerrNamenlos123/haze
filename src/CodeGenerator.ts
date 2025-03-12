@@ -327,18 +327,11 @@ class CodeGenerator {
           throw new ImpossibleSituation();
         }
         const ret = generateUsageCode(statement.symbol.type, this.program);
-        const scope = new Scope(
-          this.program.getLoc(statement.ctx),
-          this.program.currentScope,
-        );
-        if ("generics" in statement.expr.type) {
-          defineGenericsInScope(statement.expr.type.generics, scope);
-        }
         const assignConv = implicitConversion(
           statement.expr.type,
           statement.symbol.type,
           this.emitExpr(statement.expr).get(),
-          scope,
+          this.program.currentScope,
           this.program.getLoc(statement.expr.ctx),
           this.program,
         );
