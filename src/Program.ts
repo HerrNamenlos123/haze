@@ -24,6 +24,19 @@ import type {
   VariableDefinitionStatement,
 } from "./Statement";
 
+export type ProjectConfig = {
+  projectName: string;
+  projectVersion: string;
+  projectDescription?: string;
+  projectLicense?: string;
+  projectAuthors?: string[];
+  scripts: { name: string; command: string }[];
+};
+
+export type ModuleConfig = {
+  module: {};
+};
+
 export class Program {
   globalScope: Scope;
   concreteGlobalStatements: Map<
@@ -39,16 +52,22 @@ export class Program {
   filename: string;
   scopeStack: Scope[];
   ast: ParserRuleContext;
+  projectConfig: ProjectConfig;
 
   datatypes: Datatype[] = [];
 
   private anonymousStuffCounter = 0;
 
-  constructor(filename: string, ast: ParserRuleContext) {
+  constructor(
+    filename: string,
+    ast: ParserRuleContext,
+    projectConfig: ProjectConfig,
+  ) {
     this.filename = filename;
     this.globalScope = new Scope(new Location("global", 0, 0));
     this.scopeStack = [];
     this.ast = ast;
+    this.projectConfig = projectConfig;
 
     const define = (name: string, primitive: Primitive) => {
       const type: PrimitiveDatatype = {

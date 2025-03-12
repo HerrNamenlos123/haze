@@ -4,7 +4,7 @@ import {
   getCallerLocation,
   ImpossibleSituation,
   InternalError,
-  printCompilerMessage,
+  printWarningMessage,
   UnreachableCode,
   type Location,
 } from "./Errors";
@@ -743,11 +743,9 @@ export function implicitConversion(
       return `(${generateUsageCode(to, program)})(${expr})`;
     }
     if (isFloat(from) && isInteger(to)) {
-      printCompilerMessage(
-        loc,
-        ErrorType.Warning,
-        "Warning",
+      printWarningMessage(
         `Implicit conversion from ${serializeDatatype(from)} to ${serializeDatatype(to)} may lose precision`,
+        loc,
       );
       return `(${generateUsageCode(to, program)})(${expr})`;
     }

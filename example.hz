@@ -30,12 +30,6 @@ declare "C" glfwGetTime(): f64;
 declare "C" glfwGetKey(w: RawPtr<GLFWwindow>, key: i32): i32;
 declare "C" glfwGetMouseButton(w: RawPtr<GLFWwindow>, button: i32): i32;
 
-const TEST = 0;
-
-namespace Inner {
-  const Outer = 187;
-}
-
 struct LogContext {
   trace: (fmt: stringview, ...) => none;
   info: (fmt: stringview, ...) => none;

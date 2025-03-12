@@ -1,0 +1,23 @@
+
+name = "my_project"
+version = "0.1.0"
+description = "A sample Haze project"
+license = "MIT"
+authors = ["Your Name <your.email@example.com>"]
+
+# [dependencies]
+# serde = "1.0.193"
+# haze-utils = "0.2.4"
+
+# [build]
+# output = "build/"
+# optimize = true
+
+[scripts]
+build = "haze build"
+run = "haze run"
+test = "haze test"
+
+# [tool.haze]
+# strict = true
+# warnings_as_errors = false

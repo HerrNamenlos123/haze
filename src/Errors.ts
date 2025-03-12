@@ -17,38 +17,51 @@ export class Location {
   }
 }
 
-export function formatCompilerMessage(
-  loc: Location,
+function formatCompilerMessage(
   type: ErrorType,
   error: string,
   msg: string,
+  loc?: Location,
 ): string {
-  return `[${loc.filename}:${loc.line}:${loc.column}]: ${type === ErrorType.Error ? "\x1b[31m" : "\x1b[33m"}${error}\x1b[0m: ${msg}`;
+  let text = "";
+  if (loc) {
+    text += `[${loc.filename}:${loc.line}:${loc.column}]: `;
+  }
+  if (type === ErrorType.Error) {
+    text += `\x1b[31m${error}\x1b[0m: ${msg}`;
+  } else {
+    text += `\x1b[33m${error}\x1b[0m: ${msg}`;
+  }
+  return text;
 }
 
-export function printCompilerMessage(
-  loc: Location,
+function printCompilerMessage(
   type: ErrorType,
   error: string,
   msg: string,
+  loc?: Location,
 ): void {
-  console.log(formatCompilerMessage(loc, type, error, msg));
+  console.log(formatCompilerMessage(type, error, msg, loc));
 }
 
-export function formatErrorMessage(loc: Location, msg: string): string {
-  return formatCompilerMessage(loc, ErrorType.Error, "Error", msg);
+export function formatErrorMessage(msg: string, loc?: Location): string {
+  return formatCompilerMessage(ErrorType.Error, "Error", msg, loc);
 }
 
-export function printErrorMessage(loc: Location, msg: string): void {
-  printCompilerMessage(loc, ErrorType.Error, "Error", msg);
+export function printErrorMessage(
+  msg: string,
+  loc?: Location,
+  title?: string,
+): void {
+  printCompilerMessage(ErrorType.Error, title ?? "Error", msg, loc);
 }
 
-export function formatWarningMessage(loc: Location, msg: string): string {
-  return formatCompilerMessage(loc, ErrorType.Warning, "Warning", msg);
+export function formatWarningMessage(msg: string, loc?: Location): string {
+  return formatCompilerMessage(ErrorType.Warning, "Warning", msg, loc);
 }
 
-export function printWarningMessage(loc: Location, msg: string): void {
-  printCompilerMessage(loc, ErrorType.Warning, "Warning", msg);
+export function printWarningMessage(msg: string, loc?: Location): void {
+  printCompilerMessage(ErrorType.Warning, "Warning", msg, loc);
 }
 
 export function getCallerLocation(depth = 1): Location {
@@ -67,13 +80,13 @@ export function getCallerLocation(depth = 1): Location {
 
 export class CompilerError extends Error {
   constructor(msg: string, loc: Location) {
-    super(formatErrorMessage(loc, msg));
+    super(formatErrorMessage(msg, loc));
   }
 }
 
 export class InternalError extends Error {
   constructor(msg: string, loc?: Location) {
-    super(formatErrorMessage(loc ?? getCallerLocation(2), msg));
+    super(formatErrorMessage(msg, loc ?? getCallerLocation(2)));
   }
 }
 
@@ -81,8 +94,8 @@ export class ImpossibleSituation extends Error {
   constructor() {
     super(
       formatErrorMessage(
-        getCallerLocation(2),
         "Impossible situation, something fatal has happened",
+        getCallerLocation(2),
       ),
     );
   }
@@ -91,7 +104,16 @@ export class ImpossibleSituation extends Error {
 export class UnreachableCode extends Error {
   constructor() {
     super(
-      formatErrorMessage(getCallerLocation(), "Unreachable Code was reached"),
+      formatErrorMessage("Unreachable Code was reached", getCallerLocation()),
     );
+  }
+}
+
+export class GeneralError extends Error {
+  text: string;
+
+  constructor(msg: string) {
+    super(formatErrorMessage(msg));
+    this.text = formatErrorMessage(msg);
   }
 }

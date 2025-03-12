@@ -4,6 +4,7 @@
     "": {
       "name": "haze",
       "dependencies": {
+        "@ltd/j-toml": "^1.38.0",
         "@types/lodash": "^4.17.16",
         "antlr4": "^4.13.2",
         "bun": "^1.2.2",
@@ -77,6 +78,8 @@
     "@jridgewell/sourcemap-codec": ["@jridgewell/sourcemap-codec@1.5.0", "", {}, "sha512-gv3ZRaISU3fjPAgNsriBRqGWQL6quFx04YMPW/zD8XMLsU32mhCCbfbO6KZFLjvYpCZ8zyDEgqsgf+PwPaM7GQ=="],
 
     "@jridgewell/trace-mapping": ["@jridgewell/trace-mapping@0.3.25", "", { "dependencies": { "@jridgewell/resolve-uri": "^3.1.0", "@jridgewell/sourcemap-codec": "^1.4.14" } }, "sha512-vNk6aEwybGtawWmy/PzwnGDOjCkLWSD2wqvjGGAgOAwCGWySYXfYoxt00IJkTF+8Lb57DwOb3Aa0o9CApepiYQ=="],
+
+    "@ltd/j-toml": ["@ltd/j-toml@1.38.0", "", {}, "sha512-lYtBcmvHustHQtg4X7TXUu1Xa/tbLC3p2wLvgQI+fWVySguVZJF60Snxijw5EiohumxZbR10kWYFFebh1zotiw=="],
 
     "@mermaid-js/mermaid-cli": ["@mermaid-js/mermaid-cli@11.4.2", "", { "dependencies": { "@mermaid-js/mermaid-zenuml": "^0.2.0", "chalk": "^5.0.1", "commander": "^12.1.0", "import-meta-resolve": "^4.1.0", "mermaid": "^11.0.2" }, "peerDependencies": { "puppeteer": "^23" }, "bin": { "mmdc": "src/cli.js" } }, "sha512-nBsEW1AxHsjsjTBrqFInkh91Vvb5vNPmnN7UGWkutExcQQZev6XzMlEZp0i6HYFSoGTHZT2tOT0l/KLzvDyPfg=="],
 

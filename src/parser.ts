@@ -1,6 +1,6 @@
 import HazeLexer from "./parser/HazeLexer";
 import HazeParser from "./parser/HazeParser";
-import { ErrorType, Location, printCompilerMessage } from "./Errors";
+import { ErrorType, Location, printErrorMessage } from "./Errors";
 import { CharStream, CommonTokenStream, ErrorListener } from "antlr4";
 
 class HazeErrorListener extends ErrorListener<any> {
@@ -19,11 +19,10 @@ class HazeErrorListener extends ErrorListener<any> {
     msg: string,
     e: any,
   ) {
-    printCompilerMessage(
-      new Location(this.filename, line, column),
-      ErrorType.Error,
-      "SyntaxError",
+    printErrorMessage(
       msg,
+      new Location(this.filename, line, column),
+      "SyntaxError",
     );
   }
 }

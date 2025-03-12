@@ -2,8 +2,8 @@ import { Program } from "./Program";
 import {
   InternalError,
   ImpossibleSituation,
-  printCompilerMessage,
   ErrorType,
+  printWarningMessage,
 } from "./Errors";
 import type { StructDeclContext } from "./parser/HazeParser";
 import {
@@ -236,11 +236,9 @@ class CodeGenerator {
     let returned = false;
     for (const statement of scope.statements) {
       if (returned) {
-        printCompilerMessage(
-          this.program.getLoc(statement.ctx),
-          ErrorType.Warning,
-          "warning",
+        printWarningMessage(
           `Dead code detected and stripped`,
+          this.program.getLoc(statement.ctx),
         );
         break;
       }
