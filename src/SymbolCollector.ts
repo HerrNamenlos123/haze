@@ -306,7 +306,6 @@ export class SymbolCollector extends HazeVisitor<any> {
 
     ctx.namespacecontent().children?.forEach((n) => {
       const symbol = this.visit(n);
-      scope.defineSymbol(symbol, this.program.getLoc(ctx));
     });
 
     this.parentSymbolStack.pop();

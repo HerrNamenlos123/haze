@@ -66,8 +66,9 @@ class CodeGenerator {
       .writeLine("int32_t main() {")
       .pushIndent()
       .writeLine(
-        `${generateUsageCode(this.program.getBuiltinType("Context"), this.program)} ctx = { };`,
+        `${generateUsageCode(this.program.getBuiltinType("Context"), this.program)} ctx = {};`,
       )
+      .writeLine("_H13__setupStdlib(&ctx);")
       .writeLine("return _H4main(&ctx);")
       .popIndent()
       .writeLine("}");
@@ -187,6 +188,7 @@ class CodeGenerator {
       if (
         symbol.parentSymbol &&
         symbol.parentSymbol.variant === "Datatype" &&
+        symbol.parentSymbol.type.variant !== "Namespace" &&
         symbol.specialMethod !== "constructor"
       ) {
         const thisPtr: RawPointerDatatype = {

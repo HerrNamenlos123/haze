@@ -8,180 +8,101 @@ import {
 } from "./Errors";
 import { Program, type ProjectConfig } from "./Program";
 import { SymbolCollector } from "./SymbolCollector";
-import { ParserRuleContext, TerminalNode } from "antlr4";
 import { performSemanticAnalysis } from "./SemanticAnalyzer";
 import { generateCode } from "./CodeGenerator";
-import { dirname, join } from "path";
-import { existsSync } from "fs";
-import { parse } from "@ltd/j-toml";
+import { readdirSync, statSync } from "fs";
+import { extname, join } from "path";
+import fs from "fs";
+import { embeddedFiles } from "bun";
 
-const CXX_COMPILER = "clang++";
 const C_COMPILER = "clang";
-const HAZE_CONFIG_FILE = "haze.toml";
+
+function listFiles(dir: string): string[] {
+  let files: string[] = [];
+
+  const items = fs.readdirSync(dir);
+
+  items.forEach((item) => {
+    const fullPath = join(dir, item);
+    const stat = fs.statSync(fullPath);
+
+    if (stat.isDirectory()) {
+      files = [...files, ...listFiles(fullPath)]; // Recursively add files from subdirectories
+    } else {
+      files.push(fullPath);
+    }
+  });
+
+  return files;
+}
 
 export class ModuleCompiler {
-  private filename: string;
-  private fullConfigPath?: string;
+  private projectConfig: ProjectConfig;
 
-  constructor(filename: string) {
-    this.filename = filename;
-  }
-
-  findUpwards(filename: string, startDir = process.cwd()): string | undefined {
-    let dir = startDir;
-    while (dir !== dirname(dir)) {
-      const filePath = join(dir, filename);
-      if (existsSync(filePath)) return filePath;
-      dir = dirname(dir);
-    }
-    return undefined;
-  }
-
-  getString(toml: any, field: string): string {
-    if (typeof toml[field] === "string") {
-      return toml[field];
-    } else if (field in toml) {
-      throw new GeneralError(
-        `Field '${field}' in file ${this.fullConfigPath} must be of type string`,
-      );
-    } else {
-      throw new GeneralError(
-        `Required field '${field}' is missing in ${this.fullConfigPath}`,
-      );
-    }
-  }
-
-  getOptionalString(toml: any, field: string): string | undefined {
-    if (typeof toml[field] === "string") {
-      return toml[field];
-    } else if (field in toml) {
-      throw new GeneralError(
-        `Field '${field}' in file ${this.fullConfigPath} must be of type string`,
-      );
-    }
-    return undefined;
-  }
-
-  getOptionalStringArray(toml: any, field: string): string[] | undefined {
-    if (Array.isArray(toml[field])) {
-      const array = toml[field];
-      array.forEach((s) => {
-        if (typeof s !== "string") {
-          throw new GeneralError(
-            `Element '${s}' of field '${field}' in file ${this.fullConfigPath} must be of type string`,
-          );
-        }
-      });
-      return array;
-    } else if (field in toml) {
-      throw new GeneralError(
-        `Field '${field}' in file ${this.fullConfigPath} must be an array`,
-      );
-    }
-    return undefined;
-  }
-
-  getScripts(toml: any) {
-    const scripts = [] as { name: string; command: string }[];
-    for (const [name, cmd] of Object.entries(toml["scripts"])) {
-      if (typeof cmd !== "string") {
-        throw new GeneralError(
-          `Script '${name}' in file ${this.fullConfigPath} must be of type string`,
-        );
-      }
-      scripts.push({
-        name: name,
-        command: cmd,
-      });
-    }
-    return scripts;
-  }
-
-  async parseConfig(path: string): Promise<ProjectConfig> {
-    const content = await Bun.file(path).text();
-    const toml = parse(content, { bigint: false });
-    return {
-      projectName: this.getString(toml, "name"),
-      projectVersion: this.getString(toml, "version"),
-      projectAuthors: this.getOptionalStringArray(toml, "authors"),
-      projectDescription: this.getOptionalString(toml, "description"),
-      projectLicense: this.getOptionalString(toml, "license"),
-      scripts: this.getScripts(toml),
-    };
+  constructor(projectConfig: ProjectConfig) {
+    this.projectConfig = projectConfig;
   }
 
   async build() {
     try {
-      this.fullConfigPath = this.findUpwards(HAZE_CONFIG_FILE);
-      if (!this.fullConfigPath) {
-        console.log(
-          `No '${HAZE_CONFIG_FILE}' file found in any parent directory. Are you in the correct directory?`,
-        );
-        return false;
-      }
-
-      let config: ProjectConfig;
-      try {
-        config = await this.parseConfig(this.fullConfigPath);
-      } catch (e: unknown) {
-        if (e instanceof GeneralError) {
-          console.log(e.message);
-        } else {
-          console.error(e);
+      let stdlib_files: { name: string; content: string }[] = [];
+      if (process.env.NODE_ENV === "production") {
+        const files = Array.from(embeddedFiles);
+        files.sort((a, b) => a.name.localeCompare(b.name));
+        for (const file of embeddedFiles) {
+          stdlib_files.push({ content: await file.text(), name: file.name });
         }
-        return false;
+      } else {
+        const allFiles = listFiles(join(__dirname, "../stdlib"));
+        allFiles.sort((a, b) => a.localeCompare(b));
+        for (const file of allFiles) {
+          const text = await Bun.file(file).text();
+          stdlib_files.push({ name: file, content: text });
+        }
       }
 
-      console.log(`\x1b[32mTranspiling\x1b[0m ${this.filename}`);
-      const parser = new Parser();
-      const ast = await parser.parse(this.filename);
-      if (!ast) {
-        return false;
-      }
+      const files = readdirSync(this.projectConfig.srcDirectory);
 
-      const program = new Program(this.filename, ast, config);
+      const program = new Program(this.projectConfig);
       const collector = new SymbolCollector(program);
-      collector.visit(ast);
+
+      for (const stdlibFile of stdlib_files) {
+        const parser = new Parser();
+        const ast = await parser.parse(stdlibFile.content, stdlibFile.name);
+        if (!ast) {
+          throw new GeneralError("Parsing failed");
+        }
+
+        program.filename = stdlibFile.name;
+        program.ast = ast;
+        collector.visit(ast);
+      }
+
+      const sortedFiles = files.sort((a, b) => a.localeCompare(b));
+      for (const file of sortedFiles) {
+        const fullPath = join(this.projectConfig.srcDirectory, file);
+        const stats = statSync(fullPath);
+        if (stats.isDirectory() || extname(fullPath) !== ".hz") {
+          return;
+        }
+        console.log(`\x1b[32mTranspiling\x1b[0m ${fullPath}`);
+        const parser = new Parser();
+        const ast = await parser.parseFile(fullPath);
+        if (!ast) {
+          throw new GeneralError("Parsing failed");
+        }
+
+        program.filename = fullPath;
+        program.ast = ast;
+        collector.visit(ast);
+      }
+
       performSemanticAnalysis(program);
       // program.print();
 
-      console.log(`\x1b[32mGenerating\x1b[0m ${this.filename}`);
-      generateCode(program, `build/${this.filename}.c`);
-
-      // Bun.write(
-      //   path.join("build", this.filename + ".mmd"),
-      //   generateGraph(program),
-      // );
-      // try {
-      //   child_process.execSync(
-      //     `mmdc -i build/${this.filename}.mmd -o build/${this.filename}.svg -t default`,
-      //   );
-      // } catch (e) {
-      //   console.error("Running mermaid failed");
-      //   return;
-      // }
-
-      function prettyPrintAST(
-        node: ParserRuleContext | TerminalNode,
-        indent: string = "",
-      ): void {
-        if (node instanceof TerminalNode) {
-          console.log(`${indent}TerminalNode: ${node.getText()}`);
-        } else {
-          console.log(`${indent}RuleNode: ${node.constructor.name}`);
-        }
-        if (node instanceof ParserRuleContext) {
-          for (let i = 0; i < node.getChildCount(); i++) {
-            const child = node.getChild(i) as ParserRuleContext | TerminalNode;
-            prettyPrintAST(child, indent + "  ");
-          }
-        }
-      }
-
-      // prettyPrintAST(ast);
+      generateCode(program, `build/main.c`);
 
       try {
-        // -lglfw -lSDL2main -lSDL2  -lwayland-client -lglfw -lGL
         if (program.prebuildCmds) {
           for (const cmd of program.prebuildCmds) {
             try {
@@ -193,10 +114,9 @@ export class ModuleCompiler {
             }
           }
         }
-        console.log(`\x1b[32mC-Compiling\x1b[0m ${this.filename}`);
+        console.log(`\x1b[32mC-Compiling\x1b[0m build/main.c`);
 
-        const cmd = `${C_COMPILER} -g build/${this.filename}.c -o build/out -std=c11 ${program.linkerFlags.join(" ")}`;
-        // console.log(cmd);
+        const cmd = `${C_COMPILER} -g build/main.c -o build/out -std=c11 ${program.linkerFlags.join(" ")}`;
         child_process.execSync(cmd);
         if (program.postbuildCmds) {
           for (const cmd of program.postbuildCmds) {
@@ -211,8 +131,6 @@ export class ModuleCompiler {
             }
           }
         }
-        console.log(`\x1b[32mExecuting\x1b[0m ${this.filename}`);
-        child_process.execSync("build/out", { stdio: "inherit" });
       } catch (e) {
         console.error("Build failed");
       }
@@ -233,8 +151,14 @@ export class ModuleCompiler {
     return false;
   }
 
-  execute(): number {
-    // TODO
-    return 0;
+  async run(): Promise<number> {
+    try {
+      console.log(`\x1b[32mExecuting\x1b[0m build/out`);
+      child_process.execSync("build/out", { stdio: "inherit" });
+      return 0;
+    } catch (e: any) {
+      console.error("Execution failed");
+      return e.status as number;
+    }
   }
 }

@@ -1,5 +1,8 @@
 import type { ParserRuleContext } from "antlr4";
-import { CompilerError, Location } from "./Errors";
+import { CompilerError, GeneralError, InternalError, Location } from "./Errors";
+import { dirname, join } from "path";
+import { existsSync } from "fs";
+import { parse } from "@ltd/j-toml";
 import { Scope } from "./Scope";
 import {
   mangleSymbol,
@@ -31,11 +34,113 @@ export type ProjectConfig = {
   projectLicense?: string;
   projectAuthors?: string[];
   scripts: { name: string; command: string }[];
+  srcDirectory: string;
 };
 
 export type ModuleConfig = {
   module: {};
 };
+
+export class ConfigParser {
+  configPath: string;
+
+  constructor(hazeConfigFile: string) {
+    const configPath = this.findUpwards(hazeConfigFile);
+    if (!configPath) {
+      throw new GeneralError(
+        `No '${hazeConfigFile}' file found in any parent directory. Are you in the correct directory?`,
+      );
+    }
+    this.configPath = configPath;
+  }
+
+  findUpwards(filename: string, startDir = process.cwd()): string | undefined {
+    let dir = startDir;
+    while (dir !== dirname(dir)) {
+      const filePath = join(dir, filename);
+      if (existsSync(filePath)) return filePath;
+      dir = dirname(dir);
+    }
+    return undefined;
+  }
+
+  getString(toml: any, field: string): string {
+    if (typeof toml[field] === "string") {
+      return toml[field];
+    } else if (field in toml) {
+      throw new GeneralError(
+        `Field '${field}' in file ${this.configPath} must be of type string`,
+      );
+    } else {
+      throw new GeneralError(
+        `Required field '${field}' is missing in ${this.configPath}`,
+      );
+    }
+  }
+
+  getOptionalString(toml: any, field: string): string | undefined {
+    if (typeof toml[field] === "string") {
+      return toml[field];
+    } else if (field in toml) {
+      throw new GeneralError(
+        `Field '${field}' in file ${this.configPath} must be of type string`,
+      );
+    }
+    return undefined;
+  }
+
+  getOptionalStringArray(toml: any, field: string): string[] | undefined {
+    if (Array.isArray(toml[field])) {
+      const array = toml[field];
+      array.forEach((s) => {
+        if (typeof s !== "string") {
+          throw new GeneralError(
+            `Element '${s}' of field '${field}' in file ${this.configPath} must be of type string`,
+          );
+        }
+      });
+      return array;
+    } else if (field in toml) {
+      throw new GeneralError(
+        `Field '${field}' in file ${this.configPath} must be an array`,
+      );
+    }
+    return undefined;
+  }
+
+  getScripts(toml: any) {
+    const scripts = [] as { name: string; command: string }[];
+    for (const [name, cmd] of Object.entries(toml["scripts"])) {
+      if (typeof cmd !== "string") {
+        throw new GeneralError(
+          `Script '${name}' in file ${this.configPath} must be of type string`,
+        );
+      }
+      scripts.push({
+        name: name,
+        command: cmd,
+      });
+    }
+    return scripts;
+  }
+
+  async parseConfig(): Promise<ProjectConfig> {
+    const content = await Bun.file(this.configPath).text();
+    const toml = parse(content, { bigint: false });
+    return {
+      projectName: this.getString(toml, "name"),
+      projectVersion: this.getString(toml, "version"),
+      projectAuthors: this.getOptionalStringArray(toml, "authors"),
+      projectDescription: this.getOptionalString(toml, "description"),
+      projectLicense: this.getOptionalString(toml, "license"),
+      scripts: this.getScripts(toml),
+      srcDirectory: join(
+        dirname(this.configPath),
+        this.getOptionalString(toml, "src") || "src",
+      ),
+    };
+  }
+}
 
 export class Program {
   globalScope: Scope;
@@ -49,24 +154,18 @@ export class Program {
   postbuildCmds: string[] = [];
   cDefinitionDecl: string[] = [];
   linkerFlags: string[] = [];
-  filename: string;
   scopeStack: Scope[];
-  ast: ParserRuleContext;
   projectConfig: ProjectConfig;
+  filename?: string;
+  ast?: ParserRuleContext;
 
   datatypes: Datatype[] = [];
 
   private anonymousStuffCounter = 0;
 
-  constructor(
-    filename: string,
-    ast: ParserRuleContext,
-    projectConfig: ProjectConfig,
-  ) {
-    this.filename = filename;
+  constructor(projectConfig: ProjectConfig) {
     this.globalScope = new Scope(new Location("global", 0, 0));
     this.scopeStack = [];
-    this.ast = ast;
     this.projectConfig = projectConfig;
 
     const define = (name: string, primitive: Primitive) => {
@@ -132,6 +231,9 @@ export class Program {
   }
 
   getLoc(ctx: ParserRuleContext) {
+    if (!this.filename) {
+      throw new InternalError("Filename missing");
+    }
     return new Location(this.filename, ctx.start.line, ctx.start.column);
   }
 

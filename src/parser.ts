@@ -30,11 +30,14 @@ class HazeErrorListener extends ErrorListener<any> {
 export class Parser {
   constructor() {}
 
-  async parse(filename: string) {
+  async parseFile(filename: string) {
     const file = Bun.file(filename);
     const text = await file.text();
+    return await this.parse(text, filename);
+  }
 
-    const errorListener = new HazeErrorListener(filename);
+  async parse(text: string, errorListenerFilename: string) {
+    const errorListener = new HazeErrorListener(errorListenerFilename);
     let inputStream = new CharStream(text);
     let lexer = new HazeLexer(inputStream);
     lexer.removeErrorListeners();

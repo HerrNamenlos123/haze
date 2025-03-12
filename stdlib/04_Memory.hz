@@ -1,0 +1,42 @@
+
+declare "C" calloc(num: u64, size: u64): RawPtr<none>;
+declare "C" realloc(ptr: RawPtr<none>, newSize: u64): RawPtr<none>;
+declare "C" free(ptr: RawPtr<none>);
+declare "C" memcpy(to: RawPtr<none>, from: RawPtr<none>, length: u64): RawPtr<none>;
+
+namespace Memory {
+  allocate(size: u64): RawPtr<none> {
+    return ctx.mem.alloc(size);
+  }
+
+  copy(to: RawPtr<none>, from: RawPtr<none>, length: u64) {
+    memcpy(to, from, length);
+  }
+}
+
+struct MemoryBuffer {
+  data: RawPtr<none>;
+  size: u64;
+
+  constructor(size: u64): MemoryBuffer {
+    const a = ctx;
+    const buffer = Memory.allocate(size);
+    if !buffer {
+      System.panic("Allocation failed");
+    }
+    return MemoryBuffer {
+      .data: buffer,
+      .size: size,
+    };
+  }
+
+  resize(newSize: u64) {
+    const newData = Memory.allocate(newSize);
+    if !newData {
+      System.panic("Allocation failed");
+    }
+    Memory.copy(newData, this.data, this.size);
+    this.size = newSize;
+    this.data = newData;
+  }
+}

@@ -614,7 +614,10 @@ export function generateUsageCode(dt: Datatype, program: Program): string {
       throw new InternalError("Cannot generate usage code for generic");
 
     case "Namespace":
-      throw new InternalError("Cannot generate usage code for a namespace");
+      throw new InternalError(
+        "Cannot generate usage code for a namespace",
+        getCallerLocation(3),
+      );
   }
   // throw new InternalError(`Invalid variant ${dt.variant}`);
 }

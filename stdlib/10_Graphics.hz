@@ -1,0 +1,136 @@
+inject "#include <GLFW/glfw3.h>";
+declare "C" struct GLFWwindow {};
+declare "C" struct GLFWmonitor {};
+declare "C" glfwInit(): boolean;
+declare "C" glfwTerminate(): none;
+declare "C" glfwMakeContextCurrent(w: RawPtr<GLFWwindow>);
+declare "C" glfwWindowShouldClose(w: RawPtr<GLFWwindow>): boolean;
+declare "C" glfwCreateWindow(width: i32, height: i32, title: stringview, monitor: RawPtr<GLFWmonitor>, share: RawPtr<GLFWwindow>): RawPtr<GLFWwindow>;
+declare "C" glClear(flag: i64): boolean;
+declare "C" glfwSwapBuffers(w: RawPtr<GLFWwindow>);
+declare "C" glfwPollEvents();
+declare "C" glfwSwapInterval(flag: i8);
+declare "C" glfwGetTime(): f64;
+declare "C" glfwGetKey(w: RawPtr<GLFWwindow>, key: i32): i32;
+declare "C" glfwGetMouseButton(w: RawPtr<GLFWwindow>, button: i32): i32;
+
+declare "C" initClayAndRSGL(window: RawPtr<GLFWwindow>);
+declare "C" beginFrame();
+declare "C" frame();
+declare "C" endFrame();
+declare "C" destroyClayAndRSGL(window: RawPtr<GLFWwindow>);
+
+declare "C" text(text: stringview, fontSize: i32);
+
+inject "#include \"../gl.c\"";
+prebuildcmd "pkg-config --version";
+// link "$(pkg-config --cflags --libs gtk+-3.0)"
+// link "$(pkg-config --cflags --libs appindicator3-0.1)"
+link "-lGL -Iclay -lm -lglfw"
+
+div(cb: () => none) {
+  __c__("Clay_ElementDeclaration elem = { .layout = { .sizing = { CLAY_SIZING_FIXED(400), CLAY_SIZING_FIXED(200) } }, .backgroundColor = { 217, 91, 67, 255 } };");
+  __c__("CLAY(elem) {");
+    // if (cb) {
+      cb();
+    // }
+  __c__("}");
+}
+
+struct Window {
+    glfwWindow: RawPtr<GLFWwindow>;
+
+    constructor(width: i32, height: i32, title: stringview): Result<Window, stringview> {
+      __c__("glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);");
+      __c__("glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);");
+      __c__("glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);");
+      const window = glfwCreateWindow(width, height, title, 0 as RawPtr<GLFWmonitor>, 0 as RawPtr<GLFWwindow>);
+      if not window {
+          return Result<Window, stringview> {
+            .error: "Window creation failed",
+            .isSuccess: false,
+          };
+      }
+
+      glfwMakeContextCurrent(window);
+      glfwSwapInterval(1);
+
+      initClayAndRSGL(window);
+
+      return Result<Window, stringview> {
+        .success: Window {
+          .glfwWindow: window,
+        },
+        .isSuccess: true,
+      };
+    }
+
+    makeContextCurrent() {
+      glfwMakeContextCurrent(this.glfwWindow);
+    }
+
+    setVSync(enabled: boolean) {
+      glfwSwapInterval(enabled);
+    }
+
+    shouldClose(): boolean {
+      return glfwWindowShouldClose(this.glfwWindow);
+    }
+
+    swapBuffers() {
+      glfwSwapBuffers(this.glfwWindow);
+    }
+
+    pollEvents() {
+      glfwPollEvents();
+    }
+
+    getCursorPos(): Vec2 {
+      const pos = Vec2(0, 0);
+      __c__("glfwGetCursorPos(this->glfwWindow, &pos.x, &pos.y)");
+      return pos;
+    }
+
+    getKey(key: i32): boolean {
+      return glfwGetKey(this.glfwWindow, key) != 0;
+    }
+
+    getMouseButton(button: i32): boolean {
+      return glfwGetMouseButton(this.glfwWindow, button) != 0;
+    }
+}
+
+drawLine(p1: Vec2, p2: Vec2, thickness: f64, color: Color) {
+  if thickness > 7 {
+    thickness = 7;
+  }
+  __c__("RSGL_drawLine((RSGL_point) { p1.x, p1.y }, (RSGL_point) { p2.x, p2.y }, thickness, RSGL_RGB(color.r, color.g, color.b))");
+  __c__("RSGL_drawCircle((RSGL_circle) { p1.x - thickness / 2.0, p1.y - thickness / 2.0, thickness }, RSGL_RGB(color.r, color.g, color.b))");
+  __c__("RSGL_drawCircle((RSGL_circle) { p2.x - thickness / 2.0, p2.y - thickness / 2.0, thickness }, RSGL_RGB(color.r, color.g, color.b))");
+}
+
+drawCircle(center: Vec2, radius: i16, color: Color) {
+  __c__("RSGL_drawCircle((RSGL_circle) { center.x - radius, center.y - radius, radius * 2 }, RSGL_RGB(color.r, color.g, color.b))");
+}
+
+drawTriangle(p1: Vec2, p2: Vec2, p3: Vec2, color: Color) {
+  __c__("RSGL_drawTriangle((RSGL_triangle) { .p1 = (RSGL_point) { p1.x, p1.y }, .p2 = (RSGL_point) { p2.x, p2.y }, .p3 = (RSGL_point) { p3.x, p3.y } }, RSGL_RGB(color.r, color.g, color.b))");
+}
+
+drawVector(vector: Vec2, position: Vec2, color: Color) {
+  const arrowLength = 25.0;
+  const arrowAngle = Math.degToRad(30);
+  const lineThickness = 2;
+
+  if vector.length() < arrowLength * 4 {
+    arrowLength = vector.length() / 4.0;
+  }
+
+  const tip = position.add(vector);
+  const dir = vector.normalize();
+  const sidedir = Vec2(dir.y, -dir.x);
+  drawLine(position, tip, lineThickness, color);
+  const cross = tip.sub(dir.mul(arrowLength));
+  const sideVec = sidedir.mul(arrowLength * tan(arrowAngle / 2));
+  drawTriangle(tip, cross.add(sideVec), cross.sub(sideVec), color);
+}
