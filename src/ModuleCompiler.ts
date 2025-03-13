@@ -346,7 +346,7 @@ export class ModuleCompiler {
             await $`rm ${moduleOutputLib}`;
           }
 
-          await $`tar -C ${moduleBuildDir} -cvzf ${moduleOutputLib} ${makerel(moduleArchive)} ${makerel(moduleMetadataFile)} > nul`;
+          await $`tar -C ${moduleBuildDir} -cvzf ${moduleOutputLib} ${makerel(moduleArchive)} ${makerel(moduleMetadataFile)} > /dev/null`;
         }
 
         if (program.postbuildCmds) {
