@@ -320,14 +320,12 @@ export class SymbolCollector extends HazeVisitor<any> {
       let insertionSymbol: Symbol | undefined;
       let insertionScope: Scope;
       if (!symbol) {
-        console.log("Lookup", names[0], "globally");
         symbol = this.program.currentScope.tryLookupSymbolHere(names[0]);
         insertionScope = this.program.currentScope;
       } else {
         if (symbol.type.variant !== "Namespace") {
           throw new ImpossibleSituation();
         }
-        console.log("Lookup", names[0], "locally");
         insertionScope = symbol.type.symbolsScope;
         insertionSymbol = symbol;
         symbol = symbol.type.symbolsScope.tryLookupSymbolHere(names[0]);
@@ -337,6 +335,9 @@ export class SymbolCollector extends HazeVisitor<any> {
           this.program.location(ctx),
           this.program.currentScope,
         );
+        if (insertionSymbol && insertionSymbol.variant !== "Datatype") {
+          throw new ImpossibleSituation();
+        }
         symbol = {
           name: names[0],
           variant: "Datatype",
@@ -345,12 +346,12 @@ export class SymbolCollector extends HazeVisitor<any> {
             variant: "Namespace",
             name: names[0],
             symbolsScope: newScope,
+            parentSymbol: insertionSymbol,
           },
           parentSymbol: insertionSymbol,
           export: false,
           location: this.program.location(ctx),
         };
-        console.log("Define symbol:", serializeSymbol(symbol));
         insertionScope.defineSymbol(symbol);
       }
       names.splice(0, 1);

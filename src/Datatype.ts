@@ -726,16 +726,21 @@ export function generateSymbolUsageHazeCode(symbol: Symbol) {
   const writer = new OutputWriter();
   switch (symbol.variant) {
     case "Datatype": {
-      let tp = generateDatatypeDeclarationHazeCode(symbol.type).get();
+      const namespaces = [] as string[];
       let p = symbol.parentSymbol;
       while (p) {
         if (p.variant !== "Datatype" || p.type.variant !== "Namespace") {
           throw new InternalError("Unexpected parent");
         }
-        tp = `namespace ${p.type.name}{${tp}}`;
+        namespaces.push(p.type.name);
         p = p.parentSymbol;
       }
-      writer.write(tp);
+      let tp = generateDatatypeDeclarationHazeCode(symbol.type).get();
+      if (namespaces.length > 0) {
+        writer.write(`namespace ${namespaces.join(".")} {${tp}}`);
+      } else {
+        writer.write(tp);
+      }
       return writer;
     }
   }

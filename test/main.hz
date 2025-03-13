@@ -147,6 +147,10 @@ export struct Another<T> {
 }
   }
 
+namespace impl {
+
 foo() {
-  const a: Outer.Inner.Test;
+  const a: Outer.Inner.A.Another<i32>;
+  // a == 0;
+}
 }
