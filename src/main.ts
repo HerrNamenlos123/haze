@@ -1,5 +1,5 @@
 import { ArgumentParser } from "argparse";
-import { ModuleCompiler, ProjectCompiler } from "./ModuleCompiler";
+import { ProjectCompiler } from "./ModuleCompiler";
 import { version } from "../package.json";
 import { GeneralError } from "./Errors";
 import { join } from "path";

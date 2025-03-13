@@ -1,5 +1,5 @@
 
-struct Result<TSuccess, TError> {
+export struct Result<TSuccess, TError> {
   unsafe_union {
     success: TSuccess;
     error: TError;

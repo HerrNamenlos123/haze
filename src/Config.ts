@@ -9,6 +9,8 @@ export enum ModuleType {
   Executable,
 }
 
+export type ModuleDependency = { name: string; path: string };
+
 export type ModuleConfig = {
   projectName: string;
   projectVersion: string;
@@ -20,7 +22,7 @@ export type ModuleConfig = {
   nostdlib: boolean;
   moduleType: ModuleType;
   buildDir: string;
-  dependencies: { name: string; path: string }[];
+  dependencies: ModuleDependency[];
   linkerFlags: string[];
   platform: PlatformString;
 };

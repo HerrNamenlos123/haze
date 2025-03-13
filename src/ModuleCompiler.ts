@@ -31,6 +31,8 @@ import {
   ModuleType,
   parseModuleMetadata,
   type ModuleConfig,
+  type ModuleDependency,
+  type ModuleLibMetadata,
   type ModuleMetadata,
 } from "./Config";
 
@@ -76,101 +78,6 @@ async function parseConfig(startDir?: string) {
 export class ProjectCompiler {
   constructor() {}
 
-  async loadDependencyMetadata(libpath: string, libname: string) {
-    if (!this.projectConfig) {
-      throw new GeneralError("Config missing");
-    }
-    const tempdir = join(this.projectConfig.buildDir, "temp-" + libname);
-    await $`mkdir -p ${tempdir}`;
-    await $`tar -xzf ${libpath} -C ${tempdir} metadata.json`;
-    return parseModuleMetadata(
-      await Bun.file(join(tempdir, "metadata.json")).text(),
-    );
-  }
-
-  async buildDependencies(stdlibDirectory: string) {
-    if (!this.projectConfig) {
-      throw new GeneralError("Config missing");
-    }
-
-    if (!this.projectConfig?.nostdlib) {
-      this.projectConfig.dependencies.unshift({
-        name: "stdlib",
-        path: HAZE_STDLIB_NAME,
-      });
-    }
-    console.log(this.projectConfig.dependencies);
-
-    for (const dep of this.projectConfig.dependencies || []) {
-      const depdir = join(stdlibDirectory, dep.path);
-      console.log(depdir);
-
-      const module = new ModuleCompiler();
-      await module.loadConfig(depdir);
-      module.projectConfig!.buildDir = this.projectConfig!.buildDir;
-      if (!(await module.build())) {
-        process.exit(1);
-      }
-    }
-  }
-
-  async loadDependencies(program: Module, collector: SymbolCollector) {
-    if (!this.projectConfig) {
-      throw new GeneralError("Config missing");
-    }
-    for (const dep of this.projectConfig.dependencies || []) {
-      const libpath = join(
-        join(this.projectConfig.buildDir, dep.path),
-        dep.path + ".hzlib",
-      );
-      const metadata = await this.loadDependencyMetadata(libpath, dep.path);
-
-      const declarations = new OutputWriter();
-      for (const decl of metadata.exportedDeclarations) {
-        declarations.writeLine(decl);
-      }
-
-      const parser = new Parser();
-      const ast = await parser.parse(declarations.get(), dep.name + ".hzlib");
-      if (!ast) {
-        throw new GeneralError("Parsing failed");
-      }
-      program.ast = ast;
-      collector.collect(ast, dep.name + ".hzlib");
-    }
-  }
-
-  async loadDependencyLibs() {
-    if (!this.projectConfig) {
-      throw new GeneralError("Config missing");
-    }
-    const libs: string[] = [];
-    const linkerFlags: string[] = [];
-    for (const dep of this.projectConfig.dependencies || []) {
-      const libpath = join(
-        join(this.projectConfig.buildDir, dep.path),
-        dep.path + ".hzlib",
-      );
-      const metadata = await this.loadDependencyMetadata(libpath, dep.path);
-
-      const lib = metadata.libs.find((l) => l.platform === "linux-x64");
-      if (!lib) {
-        throw new GeneralError(
-          `Lib ${dep.path} does not provide platform ${"linux-x64"}`,
-        );
-      }
-
-      const tempdir = join(this.projectConfig.buildDir, "temp-" + dep.path);
-      await $`mkdir -p ${tempdir}`;
-      await $`tar -xzf ${libpath} -C ${tempdir} ${lib.filename}`;
-
-      const archiveFile = join(tempdir, lib.filename);
-      libs.push(archiveFile);
-      linkerFlags.push(...metadata.linkerFlags);
-    }
-    return [libs, linkerFlags];
-  }
-
   async build() {
     const config = await parseConfig();
     if (!config) {
@@ -184,11 +91,10 @@ export class ProjectCompiler {
     if (!stdlibConfig) {
       return false;
     }
-    stdlibConfig.buildDir = join(
-      mainModule.module.moduleConfig.buildDir,
-      HAZE_STDLIB_NAME,
+    const stdlibModule = new ModuleCompiler(
+      stdlibConfig,
+      mainModule.globalBuildDir,
     );
-    const stdlibModule = new ModuleCompiler(stdlibConfig);
     if (!(await stdlibModule.build())) {
       return false;
     }
@@ -202,8 +108,7 @@ export class ProjectCompiler {
         return false;
       }
 
-      config.buildDir = join(mainModule.module.moduleConfig.buildDir, dep.path);
-      const depModule = new ModuleCompiler(config);
+      const depModule = new ModuleCompiler(config, mainModule.globalBuildDir);
       if (!(await depModule.build())) {
         return false;
       }
@@ -262,8 +167,16 @@ class ModuleCompiler {
 
   constructor(moduleConfig: ModuleConfig, globalBuildDir?: string) {
     this.module = new Module(moduleConfig);
-    this.moduleBuildDir = join(moduleConfig.buildDir, moduleConfig.projectName);
-    this.globalBuildDir = globalBuildDir || this.moduleBuildDir;
+    if (!globalBuildDir) {
+      this.globalBuildDir = moduleConfig.buildDir;
+      this.moduleBuildDir = join(
+        moduleConfig.buildDir,
+        moduleConfig.projectName,
+      );
+    } else {
+      this.globalBuildDir = globalBuildDir;
+      this.moduleBuildDir = join(globalBuildDir, moduleConfig.projectName);
+    }
   }
 
   getStdlibDirectory() {
@@ -301,9 +214,16 @@ class ModuleCompiler {
   }
 
   async importDeps() {
-    for (const dep of this.module.moduleConfig.dependencies || []) {
+    const deps = this.module.moduleConfig.dependencies;
+    if (this.module.moduleConfig.projectName !== HAZE_STDLIB_NAME) {
+      deps.push({
+        name: HAZE_STDLIB_NAME,
+        path: HAZE_STDLIB_NAME,
+      });
+    }
+    for (const dep of deps) {
       const libpath = join(
-        join(this.module.moduleConfig.buildDir, dep.path),
+        join(this.globalBuildDir, dep.path),
         dep.path + ".hzlib",
       );
       const metadata = await this.loadDependencyMetadata(libpath, dep.path);
@@ -348,7 +268,7 @@ class ModuleCompiler {
     const linkerFlags: string[] = [];
     for (const dep of this.module.moduleConfig.dependencies || []) {
       const libpath = join(
-        join(this.module.moduleConfig.buildDir, dep.path),
+        join(this.globalBuildDir, dep.path),
         dep.path + ".hzlib",
       );
       const metadata = await this.loadDependencyMetadata(libpath, dep.path);
@@ -362,10 +282,7 @@ class ModuleCompiler {
         );
       }
 
-      const tempdir = join(
-        this.module.moduleConfig.buildDir,
-        "temp-" + dep.path,
-      );
+      const tempdir = join(this.globalBuildDir, "temp-" + dep.path);
       await $`mkdir -p ${tempdir}`;
       await $`tar -xzf ${libpath} -C ${tempdir} ${lib.filename}`;
 
