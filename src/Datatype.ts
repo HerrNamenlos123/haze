@@ -17,6 +17,7 @@ import {
   mangleSymbol,
   type DatatypeSymbol,
   type FunctionSymbol,
+  type Symbol,
   type VariableSymbol,
 } from "./Symbol";
 import { defineGenericsInScope, resolveGenerics } from "./utils";
@@ -624,6 +625,121 @@ export function generateUsageCode(dt: Datatype, program: Program): string {
       );
   }
   // throw new InternalError(`Invalid variant ${dt.variant}`);
+}
+
+export function generateDatatypeDeclarationHazeCode(
+  datatype: Datatype,
+): OutputWriter {
+  const writer = new OutputWriter();
+  switch (datatype.variant) {
+    case "Primitive":
+      return writer;
+
+    case "Deferred":
+      throw new ImpossibleSituation();
+
+    case "Struct": {
+      let generics: string[] = [];
+      for (const [name, tp] of datatype.generics) {
+        if (tp !== undefined) {
+          throw new ImpossibleSituation();
+        }
+        generics.push(name);
+      }
+      writer.write(
+        `struct ${datatype.name}${generics.length > 0 ? "<" + generics.join(",") + ">" : ""} {`,
+      );
+      for (const member of datatype.members) {
+        if (member.variant === "Variable") {
+          writer.write(
+            `${member.name}: ${generateDatatypeUsageHazeCode(member.type).get()};`,
+          );
+        } else {
+          writer.write(`unsafe_union {`);
+          for (const inner of member.symbols) {
+            writer.write(
+              `${inner.name}: ${generateDatatypeUsageHazeCode(inner.type).get()};`,
+            );
+          }
+          writer.write(`}`);
+        }
+      }
+      writer.write("}");
+      return writer;
+    }
+
+    case "RawPointer": {
+      return writer;
+    }
+  }
+  throw new UnreachableCode();
+}
+
+export function generateDatatypeUsageHazeCode(
+  datatype: Datatype,
+): OutputWriter {
+  const writer = new OutputWriter();
+  switch (datatype.variant) {
+    case "Primitive":
+      writer.write(primitiveVariantToString(datatype));
+      return writer;
+
+    case "Deferred":
+      throw new ImpossibleSituation();
+
+    case "Struct": {
+      let generics: string[] = [];
+      for (const [name, tp] of datatype.generics) {
+        if (tp === undefined) {
+          generics.push(name);
+        } else {
+          generics.push(generateDatatypeUsageHazeCode(tp).get());
+        }
+      }
+      writer.write(
+        `${datatype.name}${generics.length > 0 ? "<" + generics.join(",") + ">" : ""}`,
+      );
+      return writer;
+    }
+
+    case "RawPointer": {
+      let generics: string[] = [];
+      for (const [name, tp] of datatype.generics) {
+        if (tp === undefined) {
+          throw new ImpossibleSituation();
+        }
+        generics.push(generateDatatypeUsageHazeCode(tp).get());
+      }
+      writer.write(`RawPtr<${generics.join(",")}>`);
+      return writer;
+    }
+
+    case "Generic": {
+      writer.write(`${datatype.name}`);
+      return writer;
+    }
+  }
+  throw new UnreachableCode();
+}
+
+export function generateSymbolUsageHazeCode(symbol: Symbol) {
+  const writer = new OutputWriter();
+  switch (symbol.variant) {
+    case "Datatype": {
+      let tp = generateDatatypeDeclarationHazeCode(symbol.type).get();
+      let p = symbol.parentSymbol;
+      while (p) {
+        if (p.variant !== "Datatype" || p.type.variant !== "Namespace") {
+          throw new InternalError("Unexpected parent");
+        }
+        tp = `namespace ${p.type.name}{${tp}}`;
+        p = p.parentSymbol;
+      }
+      writer.write(tp);
+      return writer;
+    }
+  }
+  throw new UnreachableCode();
 }
 
 export function isSame(a: Datatype, b: Datatype): boolean {

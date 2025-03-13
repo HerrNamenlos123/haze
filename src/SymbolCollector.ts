@@ -30,6 +30,7 @@ import {
   type SpecialMethod,
   type VariableSymbol,
   VariableScope,
+  type Symbol,
 } from "./Symbol";
 import HazeVisitor from "./parser/HazeVisitor";
 import { CompilerError, ImpossibleSituation, InternalError } from "./Errors";
@@ -289,6 +290,10 @@ export class SymbolCollector extends HazeVisitor<any> {
       }
     });
 
+    if (symbol.export) {
+      this.program.exportDatatypes.set(mangleSymbol(symbol), symbol);
+    }
+
     this.parentSymbolStack.pop();
     this.program.popScope();
     return symbol;
@@ -307,25 +312,56 @@ export class SymbolCollector extends HazeVisitor<any> {
   };
 
   visitNamespace = (ctx: NamespaceContext): DatatypeSymbol => {
-    const name = ctx.ID().getText();
-    const scope = new Scope(
-      this.program.location(ctx),
-      this.program.currentScope,
-    );
+    const names = ctx.ID_list().map((c) => c.getText());
 
-    const symbol: DatatypeSymbol<NamespaceDatatype> = {
-      name: name,
-      variant: "Datatype",
-      scope: this.program.currentScope,
-      type: { variant: "Namespace", name: name, symbolsScope: scope },
-      parentSymbol: this.parentSymbolStack[this.parentSymbolStack.length - 1],
-      export: false,
-      location: this.program.location(ctx),
-    };
+    let symbol: Symbol | undefined =
+      this.parentSymbolStack[this.parentSymbolStack.length - 1];
+    do {
+      let insertionSymbol: Symbol | undefined;
+      let insertionScope: Scope;
+      if (!symbol) {
+        console.log("Lookup", names[0], "globally");
+        symbol = this.program.currentScope.tryLookupSymbolHere(names[0]);
+        insertionScope = this.program.currentScope;
+      } else {
+        if (symbol.type.variant !== "Namespace") {
+          throw new ImpossibleSituation();
+        }
+        console.log("Lookup", names[0], "locally");
+        insertionScope = symbol.type.symbolsScope;
+        insertionSymbol = symbol;
+        symbol = symbol.type.symbolsScope.tryLookupSymbolHere(names[0]);
+      }
+      if (!symbol) {
+        const newScope = new Scope(
+          this.program.location(ctx),
+          this.program.currentScope,
+        );
+        symbol = {
+          name: names[0],
+          variant: "Datatype",
+          scope: newScope,
+          type: {
+            variant: "Namespace",
+            name: names[0],
+            symbolsScope: newScope,
+          },
+          parentSymbol: insertionSymbol,
+          export: false,
+          location: this.program.location(ctx),
+        };
+        console.log("Define symbol:", serializeSymbol(symbol));
+        insertionScope.defineSymbol(symbol);
+      }
+      names.splice(0, 1);
+    } while (names.length > 0);
 
-    this.program.currentScope.defineSymbol(symbol);
-    this.program.pushScope(scope);
-    this.parentSymbolStack.push(symbol);
+    if (symbol.variant !== "Datatype" || symbol.type.variant !== "Namespace") {
+      throw new InternalError("Namespace is not a datatype");
+    }
+
+    this.program.pushScope(symbol.scope);
+    this.parentSymbolStack.push(symbol as DatatypeSymbol<NamespaceDatatype>);
 
     ctx.namespacecontent().children?.forEach((n) => {
       this.visit(n);

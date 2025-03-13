@@ -20,6 +20,7 @@ import {
 import type { Expression } from "./Expression";
 import {
   CommonDatatypeContext,
+  DatatypeimplContext,
   FuncContext,
   FuncdeclContext,
   NamedfuncContext,
@@ -305,21 +306,41 @@ export function resolveGenerics(
   //   throw new InternalError(`Invalid variant: ${datatype.variant}`);
 }
 
-export const visitCommonDatatypeImpl = (
+function lookupDatatype(
   _this: HazeVisitor<any>,
+  ctx: DatatypeimplContext,
   program: Program,
-  ctx: CommonDatatypeContext,
-  resolvageContext?: { scope?: Scope },
-): Datatype => {
+  parentSymbol?: DatatypeSymbol,
+): DatatypeSymbol {
   const name = ctx.ID().getText();
-
-  const symbol = (resolvageContext?.scope || program.currentScope).lookupSymbol(
-    name,
-    program.location(ctx),
-  );
+  let symbol: Symbol;
+  if (!parentSymbol) {
+    symbol = program.currentScope.lookupSymbol(
+      ctx.ID().getText(),
+      program.location(ctx),
+    );
+  } else {
+    if (parentSymbol.type.variant !== "Namespace") {
+      throw new CompilerError(
+        `Symbol '${serializeSymbol(parentSymbol)}' cannot be used as a namespace`,
+        program.location(ctx),
+      );
+    }
+    const s = parentSymbol.type.symbolsScope.tryLookupSymbolHere(name);
+    if (!s) {
+      throw new CompilerError(
+        `Type '${ctx.ID().getText()}' was not declared in this scope`,
+        program.location(ctx),
+      );
+    }
+    symbol = s;
+  }
 
   if (symbol.variant !== "Datatype") {
-    throw new ImpossibleSituation();
+    throw new CompilerError(
+      `Symbol '${serializeSymbol(symbol)}' cannot be used as a datatype`,
+      program.location(ctx),
+    );
   }
 
   const genericsProvided: Datatype[] = ctx._generics.map((n) => _this.visit(n));
@@ -331,24 +352,24 @@ export const visitCommonDatatypeImpl = (
           symbol.location,
         );
       }
-      if (ctx._nested) {
-        throw new CompilerError(
-          `Type '${name}' is not a namespace`,
-          symbol.location,
-        );
-      }
-      return symbol.type;
+      return symbol;
 
     case "Generic":
-      if (ctx._nested) {
-        throw new CompilerError(
-          `Type '${name}' is not a namespace`,
-          symbol.location,
-        );
-      }
-      return symbol.type;
+      return symbol;
 
-    case "RawPointer":
+    case "RawPointer": {
+      const newSymbol: DatatypeSymbol<RawPointerDatatype> = {
+        name: symbol.name,
+        scope: symbol.scope,
+        variant: "Datatype",
+        parentSymbol: symbol.parentSymbol,
+        export: symbol.export,
+        location: symbol.location,
+        type: {
+          variant: "RawPointer",
+          generics: new Map(symbol.type.generics),
+        },
+      };
       if (genericsProvided.length != symbol.type.generics.size) {
         throw new CompilerError(
           `Type '${name}<>' expected ${symbol.type.generics.size} generic arguments but got ${genericsProvided.length}.`,
@@ -356,57 +377,43 @@ export const visitCommonDatatypeImpl = (
         );
       }
 
-      const ptrGenerics = new Map(symbol.type.generics);
       let ptrIndex = 0;
       for (const i of symbol.type.generics.keys()) {
         if (genericsProvided[ptrIndex].variant !== "Generic") {
-          ptrGenerics.set(i, genericsProvided[ptrIndex]);
+          newSymbol.type.generics.set(i, genericsProvided[ptrIndex]);
         } else {
-          ptrGenerics.set(i, undefined);
+          newSymbol.type.generics.set(i, undefined);
         }
         ptrIndex++;
       }
 
-      const ptrtype: RawPointerDatatype = {
-        variant: "RawPointer",
-        generics: ptrGenerics,
-      };
-
       if (
-        ptrGenerics
+        newSymbol.type.generics
           .entries()
           .every((e) => e[1] !== undefined && e[1].variant !== "Generic")
       ) {
-        datatypeSymbolUsed(
-          {
-            name: symbol.name,
-            scope: symbol.scope,
-            type: ptrtype,
-            variant: "Datatype",
-            parentSymbol: symbol.parentSymbol,
-            export: symbol.export,
-            location: symbol.location,
-          },
-          program,
-        );
+        datatypeSymbolUsed(newSymbol, program);
       }
-      if (ctx._nested) {
-        throw new CompilerError(
-          `Type '${name}' is not a namespace`,
-          symbol.location,
-        );
-      }
-      return ptrtype;
+      return newSymbol;
+    }
 
-    case "Struct":
-      const structtype: StructDatatype = {
-        variant: "Struct",
-        name: symbol.type.name,
-        generics: new Map(symbol.type.generics),
-        language: symbol.type.language,
-        members: symbol.type.members,
-        methods: symbol.type.methods,
-        parentSymbol: symbol.type.parentSymbol,
+    case "Struct": {
+      const newSymbol: DatatypeSymbol<StructDatatype> = {
+        name: symbol.name,
+        scope: symbol.scope,
+        variant: "Datatype",
+        parentSymbol: symbol.parentSymbol,
+        export: symbol.export,
+        location: symbol.location,
+        type: {
+          variant: "Struct",
+          name: symbol.type.name,
+          generics: new Map(symbol.type.generics),
+          language: symbol.type.language,
+          members: symbol.type.members,
+          methods: symbol.type.methods,
+          parentSymbol: symbol.type.parentSymbol,
+        },
       };
       if (genericsProvided.length != symbol.type.generics.size) {
         throw new CompilerError(
@@ -417,91 +424,52 @@ export const visitCommonDatatypeImpl = (
       let index = 0;
       for (const i of symbol.type.generics.keys()) {
         if (genericsProvided[index].variant !== "Generic") {
-          structtype.generics.set(i, genericsProvided[index]);
+          newSymbol.type.generics.set(i, genericsProvided[index]);
         } else {
-          structtype.generics.set(i, undefined);
+          newSymbol.type.generics.set(i, undefined);
         }
         index++;
       }
       if (
-        structtype.generics
+        newSymbol.type.generics
           .entries()
           .every((e) => e[1] !== undefined && e[1].variant !== "Generic")
       ) {
-        datatypeSymbolUsed(
-          {
-            name: symbol.name,
-            scope: symbol.scope,
-            type: structtype,
-            variant: "Datatype",
-            parentSymbol: symbol.parentSymbol,
-            export: symbol.export,
-            location: symbol.location,
-          },
-          program,
-        );
+        datatypeSymbolUsed(newSymbol, program);
       }
-      if (ctx._nested) {
-        throw new CompilerError(
-          `Type '${name}' is not a namespace`,
-          symbol.location,
-        );
-      }
-      return structtype;
+      return newSymbol;
+    }
 
     case "Namespace":
-      if (genericsProvided.length != 0) {
-        throw new CompilerError(
-          `Namespace '${name}' cannot take generic arguments but got ${genericsProvided.length}.`,
-          symbol.location,
-        );
-      }
-      datatypeSymbolUsed(symbol, program);
-
-      if (!ctx._nested) {
-        return symbol.type;
-      } else {
-        // We have <symbol.type>.<nesteddatatype>
-        if (!(ctx._nested instanceof CommonDatatypeContext)) {
-          throw new CompilerError(
-            `Cannot use a function datatype inside a namespace`,
-            symbol.location,
-          );
-        }
-
-        const second: Datatype = visitCommonDatatypeImpl(
-          _this,
-          program,
-          ctx._nested,
-          {
-            scope: symbol.type.symbolsScope,
-          },
-        );
-        if (second.variant !== "Struct") {
-          throw new CompilerError(
-            `Type '${serializeDatatype(second)}' is not a struct and cannot be namespaced`,
-            symbol.location,
-          );
-        }
-        let p: StructDatatype | NamespaceDatatype | undefined = second;
-        while (p?.parentSymbol) {
-          if (
-            p.parentSymbol.type.variant !== "Struct" &&
-            p.parentSymbol.type.variant !== "Namespace"
-          ) {
-            throw new ImpossibleSituation();
-          }
-          p = p.parentSymbol.type;
-        }
-        if (p && serializeDatatype(p) !== serializeDatatype(symbol.type)) {
-          p.parentSymbol = symbol;
-        }
-        return second;
-      }
+      return symbol;
 
     default:
       throw new ImpossibleSituation();
   }
+}
+
+export const visitCommonDatatypeImpl = (
+  _this: HazeVisitor<any>,
+  program: Program,
+  ctx: CommonDatatypeContext,
+): Datatype => {
+  const datatypes = ctx.datatypeimpl_list();
+
+  if (datatypes.length === 0) {
+    throw new ImpossibleSituation();
+  }
+
+  let symbol: DatatypeSymbol | undefined = undefined;
+  do {
+    symbol = lookupDatatype(_this, datatypes[0], program, symbol);
+    datatypes.splice(0, 1);
+  } while (datatypes.length > 0);
+
+  if (symbol?.variant !== "Datatype") {
+    throw new ImpossibleSituation();
+  }
+
+  return symbol.type;
 };
 
 export function datatypeSymbolUsed(symbol: DatatypeSymbol, program: Program) {

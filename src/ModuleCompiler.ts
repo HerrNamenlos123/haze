@@ -21,6 +21,15 @@ import { readdirSync, statSync } from "fs";
 import { dirname, extname, join } from "path";
 import fs from "fs";
 import { version } from "../package.json";
+import { datatypeToBlob, symbolToBlob, type VariableSymbol } from "./Symbol";
+import { TypeExporter } from "./TypeExporter";
+import {
+  generateDatatypeDeclarationHazeCode,
+  generateDatatypeUsageHazeCode,
+  generateSymbolUsageHazeCode,
+  type RawPointerDatatype,
+  type StructDatatype,
+} from "./Datatype";
 
 const C_COMPILER = "clang";
 const ARCHIVE_TOOL = "ar";
@@ -138,6 +147,11 @@ export class ModuleCompiler {
             `${ARCHIVE_TOOL} r build/linux-x64-static.a build/main.o`,
           );
 
+          const typeExporter = new TypeExporter();
+          for (const [name, s] of program.exportDatatypes) {
+            console.log(generateSymbolUsageHazeCode(s).get());
+          }
+
           const moduleMetadata: ModuleMetadata = {
             compilerVersion: version,
             fileformatVersion: 1,
@@ -150,11 +164,15 @@ export class ModuleCompiler {
                 type: "static",
               },
             ],
-            exportedSymbols: [],
+            // exportedFunctions: program.exportFunctions
+            //   .values()
+            //   .toArray()
+            //   .map((f) => symbolToBlob(f)),
+            exportedDatatypes: typeExporter.get(),
           };
           await Bun.write(
             "build/metadata.json",
-            JSON.stringify(moduleMetadata),
+            JSON.stringify(moduleMetadata, undefined, 2),
           );
 
           if (fs.existsSync("build/main.hzlib")) {
@@ -177,7 +195,7 @@ export class ModuleCompiler {
           }
         }
       } catch (e) {
-        console.error("Build failed");
+        console.error(e);
       }
 
       return true;

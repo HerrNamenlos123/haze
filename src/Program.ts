@@ -33,6 +33,7 @@ import type {
   VariableDeclarationStatement,
   VariableDefinitionStatement,
 } from "./Statement";
+import type { ExportedTypesystem } from "./TypeExporter";
 
 export enum ModuleType {
   Library,
@@ -67,7 +68,8 @@ export type ModuleMetadata = {
     filename: string;
     type: "static" | "shared";
   }[];
-  exportedSymbols: Symbol[];
+  // exportedFunctions: Symbol[];
+  exportedDatatypes: ExportedTypesystem;
 };
 
 export class ConfigParser {

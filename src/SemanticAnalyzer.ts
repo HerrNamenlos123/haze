@@ -15,6 +15,7 @@ import {
   serializeDatatype,
   type Datatype,
   type FunctionDatatype,
+  type NamespaceDatatype,
   type PrimitiveDatatype,
   type StructDatatype,
 } from "./Datatype";
@@ -666,7 +667,8 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
       VariableScope.Local,
       this.functionStack[this.functionStack.length - 1],
     );
-    return analyzeVariableStatement(this, this.program, statement);
+    const s = analyzeVariableStatement(this, this.program, statement);
+    return s;
   };
 
   visitVariableStatement = (ctx: VariableStatementContext): Statement => {

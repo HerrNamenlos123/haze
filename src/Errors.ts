@@ -104,7 +104,7 @@ export class ImpossibleSituation extends Error {
 export class UnreachableCode extends Error {
   constructor() {
     super(
-      formatErrorMessage("Unreachable Code was reached", getCallerLocation()),
+      formatErrorMessage("Unreachable Code was reached", getCallerLocation(2)),
     );
   }
 }

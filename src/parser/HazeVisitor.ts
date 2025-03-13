@@ -62,6 +62,7 @@ import { StructUnionFieldsContext } from "./HazeParser.js";
 import { StructDeclContext } from "./HazeParser.js";
 import { CommonDatatypeContext } from "./HazeParser.js";
 import { FunctionDatatypeContext } from "./HazeParser.js";
+import { DatatypeimplContext } from "./HazeParser.js";
 
 
 /**
@@ -458,5 +459,11 @@ export default class HazeVisitor<Result> extends ParseTreeVisitor<Result> {
 	 * @return the visitor result
 	 */
 	visitFunctionDatatype?: (ctx: FunctionDatatypeContext) => Result;
+	/**
+	 * Visit a parse tree produced by `HazeParser.datatypeimpl`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitDatatypeimpl?: (ctx: DatatypeimplContext) => Result;
 }
 

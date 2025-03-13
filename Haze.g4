@@ -4,7 +4,7 @@ prog: (cdefinitiondecl | prebuildcmd | postbuildcmd | namedfunc | funcdecl | com
 
 namespacecontent: (namedfunc | funcdecl | compilationhint | linkerhint | structdecl | namespace | variablestatement)*;
 namespace
-    : 'namespace' ID '{' namespacecontent '}'
+    : 'namespace' ID ('.' ID)* '{' namespacecontent '}'
     ;
 
 namedfunc: (export='export')? ID '(' params ')' (':' datatype)? funcbody;
@@ -114,8 +114,12 @@ structdecl
     ;
 
 datatype
-    : ID ('<' generics+=datatype (',' generics+=datatype)* '>')? ('.' nested=datatype)?         #CommonDatatype
+    : datatypeimpl ('.' datatypeimpl)*                                                          #CommonDatatype
     | functype                                                                                  #FunctionDatatype
+    ;
+
+datatypeimpl
+    : ID ('<' generics+=datatype (',' generics+=datatype)* '>')?
     ;
 
 STRING_LITERAL
