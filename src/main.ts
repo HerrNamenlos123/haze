@@ -28,7 +28,7 @@ async function main() {
     process.exit(0);
   }
 
-  if (args.command === "build") {
+  if (args.command === "build" || args.command === "run") {
     try {
       const module = new ModuleCompiler();
       await module.loadConfig();
@@ -45,34 +45,20 @@ async function main() {
       if (!(await module.build())) {
         process.exit(1);
       }
+
+      if (args.command === "run") {
+        const exitCode = await module.run();
+        process.exit(exitCode);
+      }
     } catch (err) {
-      console.error(err);
+      if (err instanceof GeneralError) {
+        console.log(err.message);
+      } else {
+        console.error(err);
+      }
       process.exit(1);
     }
   }
-
-  // if (args.command === "run") {
-  //   try {
-  //     const stdlib = new ModuleCompiler();
-  //     if (!(await stdlib.build())) {
-  //       process.exit(1);
-  //     }
-
-  //     const module = new ModuleCompiler();
-  //     if (!(await module.build())) {
-  //       process.exit(1);
-  //     }
-  //     const exitCode = await module.run();
-  //     process.exit(exitCode);
-  //   } catch (err) {
-  //     if (err instanceof GeneralError) {
-  //       console.log(err.message);
-  //     } else {
-  //       console.error(err);
-  //     }
-  //     process.exit(1);
-  //   }
-  // }
 
   process.exit(0);
 }

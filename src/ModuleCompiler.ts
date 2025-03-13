@@ -405,8 +405,19 @@ export class ModuleCompiler {
           `This module is a library and cannot be executed. Use 'hz build' to build it.`,
         );
       }
-      console.log(`\x1b[32mExecuting\x1b[0m build/main`);
-      child_process.execSync("build/main", { stdio: "inherit" });
+
+      const platform = "linux-x64";
+      const moduleBuildDir = join(
+        this.projectConfig.buildDir,
+        this.projectConfig.projectName,
+      );
+      const moduleExecutable = join(
+        moduleBuildDir,
+        this.projectConfig.projectName + "-" + platform,
+      );
+
+      console.log(`\x1b[32mExecuting\x1b[0m`);
+      child_process.execSync(moduleExecutable, { stdio: "inherit" });
       return 0;
     } catch (e: any) {
       if (e instanceof GeneralError) {
