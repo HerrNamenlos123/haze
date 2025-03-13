@@ -8,9 +8,6 @@ src = "test"
 type = "exe"
 # std = "none"
 
-# [dependencies]
-# serde = "1.0.193"
-# haze-utils = "0.2.4"
 
 # [build]
 # output = "build/"

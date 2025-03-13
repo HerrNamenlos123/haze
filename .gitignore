@@ -174,4 +174,4 @@ node_modules
 glfw
 clay
 package-lock.json
-bun.lock
+# bun.lock
