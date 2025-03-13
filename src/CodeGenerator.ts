@@ -1,4 +1,4 @@
-import { ModuleType, Program } from "./Program";
+import { Module } from "./Module";
 import {
   InternalError,
   ImpossibleSituation,
@@ -37,9 +37,10 @@ import {
   resolveGenerics,
 } from "./utils";
 import { Scope } from "./Scope";
+import { ModuleType } from "./Config";
 
 class CodeGenerator {
-  private program: Program;
+  private program: Module;
   private out = {
     includes: {} as Record<string, OutputWriter>,
     cDecls: {} as Record<string, OutputWriter>,
@@ -50,7 +51,7 @@ class CodeGenerator {
     global_variables: {} as Record<string, OutputWriter>,
   };
 
-  constructor(program: Program) {
+  constructor(program: Module) {
     this.program = program;
 
     const contextSymbol = this.program.globalScope.lookupSymbol(
@@ -62,7 +63,7 @@ class CodeGenerator {
       .writeLine(`struct ${context}_;`)
       .writeLine(`typedef struct ${context}_ ${context};`);
 
-    if (this.program.projectConfig.moduleType === ModuleType.Executable) {
+    if (this.program.moduleConfig.moduleType === ModuleType.Executable) {
       const mainWriter = new OutputWriter();
       this.out.function_definitions["main"] = mainWriter;
       mainWriter
@@ -71,7 +72,7 @@ class CodeGenerator {
         .writeLine(
           `${generateUsageCode(this.program.getBuiltinType("Context"), this.program)} ctx = {};`,
         );
-      if (!this.program.projectConfig.nostdlib) {
+      if (!this.program.moduleConfig.nostdlib) {
         this.init("_H13__setupStdlib", this.out.function_declarations);
         this.out.function_declarations["_H13__setupStdlib"].writeLine(
           `void _H13__setupStdlib(${generateUsageCode(this.program.getBuiltinType("Context"), this.program)}* ctx);`,
@@ -801,7 +802,7 @@ class CodeGenerator {
   }
 }
 
-export function generateCode(program: Program, outfile: string) {
+export function generateCode(program: Module, outfile: string) {
   const gen = new CodeGenerator(program);
   gen.generate();
   gen.writeFile(outfile);

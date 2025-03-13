@@ -1,8 +1,0 @@
-
-struct Result<TSuccess, TError> {
-  unsafe_union {
-    success: TSuccess;
-    error: TError;
-  }
-  isSuccess: boolean;
-}

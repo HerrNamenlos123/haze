@@ -1,3 +1,4 @@
+
 inject "#include <GLFW/glfw3.h>";
 export declare "C" struct GLFWwindow {};
 declare "C" struct GLFWmonitor {};

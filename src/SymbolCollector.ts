@@ -15,7 +15,7 @@ import {
   VariableDefinitionContext,
   type ParamContext,
 } from "./parser/HazeParser";
-import type { Program } from "./Program";
+import type { Module } from "./Module";
 import {
   Language,
   isSymbolGeneric,
@@ -55,12 +55,12 @@ import {
 import type { Statement } from "./Statement";
 
 export class SymbolCollector extends HazeVisitor<any> {
-  private program: Program;
+  private program: Module;
   private parentSymbolStack: DatatypeSymbol<
     StructDatatype | NamespaceDatatype
   >[];
 
-  constructor(program: Program) {
+  constructor(program: Module) {
     super();
     this.program = program;
     this.parentSymbolStack = [];

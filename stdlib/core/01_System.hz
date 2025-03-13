@@ -3,8 +3,11 @@ declare "C" assert(cond: boolean);
 declare "C" printf(str: stringview, ...);
 
 namespace Console {
-  export print(str: stringview, ...) {
-
+  export print(fmt: stringview, ...) {
+    __c__("va_list args");
+    __c__("va_start(args, fmt)");
+    __c__("vprintf(fmt, args)");
+    __c__("va_end(args)");
   }
 }
 
@@ -59,4 +62,9 @@ namespace System {
       return calloc(1, size);
     };
   }
+}
+
+__setupStdlib() {
+  System.__setupContext();
+  Time.__assertTypes();
 }

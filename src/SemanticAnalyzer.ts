@@ -26,7 +26,7 @@ import {
   InternalError,
 } from "./Errors";
 import { Scope } from "./Scope";
-import { ModuleType, Program } from "./Program";
+import { Module } from "./Module";
 import {
   isDatatypeGeneric,
   isSymbolGeneric,
@@ -127,12 +127,13 @@ import type {
   WhileStatement,
 } from "./Statement";
 import { SymbolFlags } from "typescript";
+import { ModuleType } from "./Config";
 
 class FunctionBodyAnalyzer extends HazeVisitor<any> {
-  private program: Program;
+  private program: Module;
   private functionStack: FunctionSymbol[];
 
-  constructor(program: Program) {
+  constructor(program: Module) {
     super();
     this.program = program;
     this.functionStack = [];
@@ -1500,7 +1501,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
   };
 }
 
-function analyzeFunctionSymbol(program: Program, symbol: FunctionSymbol) {
+function analyzeFunctionSymbol(program: Module, symbol: FunctionSymbol) {
   const analyzer = new FunctionBodyAnalyzer(program);
   program.filename = symbol.location.filename;
   analyzer.implFunc(symbol.ctx as FuncContext, symbol);
@@ -1508,7 +1509,7 @@ function analyzeFunctionSymbol(program: Program, symbol: FunctionSymbol) {
 }
 
 function analyzeVariableSymbol(
-  program: Program,
+  program: Module,
   statement: VariableDeclarationStatement | VariableDefinitionStatement,
 ) {
   const analyzer = new FunctionBodyAnalyzer(program);
@@ -1521,7 +1522,7 @@ function analyzeVariableSymbol(
   program.filename = undefined;
 }
 
-export function performSemanticAnalysis(program: Program) {
+export function performSemanticAnalysis(program: Module) {
   const clonedGlobals = program.concreteGlobalStatements.values().toArray();
   for (const statement of clonedGlobals) {
     analyzeVariableSymbol(program, statement);
@@ -1537,14 +1538,14 @@ export function performSemanticAnalysis(program: Program) {
     program.globalScope.location,
   );
   if (
-    program.projectConfig.moduleType === ModuleType.Executable &&
+    program.moduleConfig.moduleType === ModuleType.Executable &&
     !mainFunction
   ) {
     throw new GeneralError(
       `Function 'main()' was not defined. This executable needs it as an entry point.`,
     );
   }
-  if (program.projectConfig.moduleType === ModuleType.Library && mainFunction) {
+  if (program.moduleConfig.moduleType === ModuleType.Library && mainFunction) {
     throw new GeneralError(
       `Function 'main()' was defined, but this module is a library and it cannot define a main function`,
     );

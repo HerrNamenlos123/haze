@@ -23,4 +23,4 @@ test = "haze test"
 # warnings_as_errors = false
 
 [dependencies]
-stdlib = "haze-stdlib"
+glfw = "glfw"

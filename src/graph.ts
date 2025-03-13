@@ -5,11 +5,11 @@ import type {
   FunctionDatatype,
 } from "./Datatype";
 import { ImpossibleSituation } from "./Errors";
-import type { Program } from "./Program";
+import type { Module } from "./Module";
 import type { Scope } from "./Scope";
 import type { DatatypeSymbol, FunctionSymbol } from "./Symbol";
 
-export function generateGraphviz(program: Program): string {
+export function generateGraphviz(program: Module): string {
   let out = `graph TD\n`;
 
   function addStruct(symbol: DatatypeSymbol, type: BaseStructDatatype) {

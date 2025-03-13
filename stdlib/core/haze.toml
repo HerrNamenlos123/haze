@@ -4,6 +4,7 @@ description = "The default standard library for Haze"
 license = "MIT"
 authors = []
 type = "lib"
+src = "."
 
 # [dependencies]
 # serde = "1.0.193"

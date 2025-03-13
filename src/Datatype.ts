@@ -9,7 +9,7 @@ import {
   type Location,
 } from "./Errors";
 import { OutputWriter } from "./OutputWriter";
-import type { Program } from "./Program";
+import type { Module } from "./Module";
 import { Scope } from "./Scope";
 import {
   Language,
@@ -443,7 +443,7 @@ export function serializeDatatype(datatype: Datatype): string {
 
 export function generateDeclarationCCode(
   _datatype: DatatypeSymbol,
-  program: Program,
+  program: Module,
 ): OutputWriter {
   const writer = new OutputWriter();
   const scope = new Scope(_datatype.scope.location, _datatype.scope);
@@ -501,7 +501,7 @@ export function generateDeclarationCCode(
 
 export function generateDefinitionCCode(
   _datatype: DatatypeSymbol,
-  program: Program,
+  program: Module,
 ): OutputWriter {
   const writer = new OutputWriter();
   const scope = new Scope(_datatype.scope.location, _datatype.scope);
@@ -557,7 +557,7 @@ export function generateDefinitionCCode(
   throw new InternalError(`Invalid variant ${datatype.type.variant}`);
 }
 
-export function generateUsageCode(dt: Datatype, program: Program): string {
+export function generateUsageCode(dt: Datatype, program: Module): string {
   switch (dt.variant) {
     case "Primitive":
       switch (dt.primitive) {
@@ -882,7 +882,7 @@ export function implicitConversion(
   expr: string,
   scope: Scope,
   loc: Location,
-  program: Program,
+  program: Module,
 ): string {
   const from = resolveGenerics(_from, scope, loc);
   const to = resolveGenerics(_to, scope, loc);
@@ -1011,7 +1011,7 @@ export function explicitConversion(
   expr: string,
   scope: Scope,
   loc: Location,
-  program: Program,
+  program: Module,
 ): string {
   const from = resolveGenerics(_from, scope, loc);
   const to = resolveGenerics(_to, scope, loc);

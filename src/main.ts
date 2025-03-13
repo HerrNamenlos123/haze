@@ -1,5 +1,5 @@
 import { ArgumentParser } from "argparse";
-import { ModuleCompiler } from "./ModuleCompiler";
+import { ModuleCompiler, ProjectCompiler } from "./ModuleCompiler";
 import { version } from "../package.json";
 import { GeneralError } from "./Errors";
 import { join } from "path";
@@ -24,24 +24,14 @@ async function main() {
 
   if (args.command === "build" || args.command === "run") {
     try {
-      const module = new ModuleCompiler();
-      await module.loadConfig();
+      const project = new ProjectCompiler();
 
-      if (!module.projectConfig?.nostdlib) {
-        const stdlib = new ModuleCompiler();
-        await stdlib.loadConfig(join(__dirname, "../stdlib"));
-        stdlib.projectConfig!.buildDir = module.projectConfig!.buildDir;
-        if (!(await stdlib.build())) {
-          process.exit(1);
-        }
-      }
-
-      if (!(await module.build())) {
+      if (!(await project.build())) {
         process.exit(1);
       }
 
       if (args.command === "run") {
-        const exitCode = await module.run();
+        const exitCode = await project.run();
         process.exit(exitCode);
       }
     } catch (err) {

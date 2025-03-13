@@ -1,5 +1,0 @@
-
-__setupStdlib() {
-  System.__setupContext();
-  // Time.__assertTypes();
-}

@@ -31,7 +31,7 @@ import {
   VariableDefinitionContext,
 } from "./parser/HazeParser";
 import type HazeVisitor from "./parser/HazeVisitor";
-import type { Program } from "./Program";
+import type { Module } from "./Module";
 import { Scope } from "./Scope";
 import type {
   Statement,
@@ -310,7 +310,7 @@ export function resolveGenerics(
 function lookupDatatype(
   _this: HazeVisitor<any>,
   ctx: DatatypeimplContext,
-  program: Program,
+  program: Module,
   parentSymbol?: DatatypeSymbol,
 ): DatatypeSymbol {
   const name = ctx.ID().getText();
@@ -451,7 +451,7 @@ function lookupDatatype(
 
 export const visitCommonDatatypeImpl = (
   _this: HazeVisitor<any>,
-  program: Program,
+  program: Module,
   ctx: CommonDatatypeContext,
 ): Datatype => {
   const datatypes = ctx.datatypeimpl_list();
@@ -473,7 +473,7 @@ export const visitCommonDatatypeImpl = (
   return symbol.type;
 };
 
-export function datatypeSymbolUsed(symbol: DatatypeSymbol, program: Program) {
+export function datatypeSymbolUsed(symbol: DatatypeSymbol, program: Module) {
   const mangled = mangleSymbol(symbol);
   if (!(mangled in program.concreteDatatypes)) {
     program.concreteDatatypes.set(mangled, symbol);
@@ -504,7 +504,7 @@ export function collectFunction(
   _this: HazeVisitor<any>,
   ctx: FuncContext | NamedfuncContext | StructMethodContext | FuncdeclContext,
   name: string,
-  program: Program,
+  program: Module,
   parentSymbol: Symbol,
   functype: Language = Language.Internal,
 ): FunctionSymbol {
@@ -600,7 +600,7 @@ export function visitParams(
 export function collectVariableStatement(
   _this: HazeVisitor<any>,
   ctx: VariableDefinitionContext | VariableDeclarationContext,
-  program: Program,
+  program: Module,
   variableScope: VariableScope,
   parentSymbol?: Symbol,
 ): VariableDefinitionStatement | VariableDeclarationStatement {
@@ -683,7 +683,7 @@ export function collectVariableStatement(
 
 export function analyzeVariableStatement(
   _this: HazeVisitor<any>,
-  program: Program,
+  program: Module,
   statement: VariableDefinitionStatement | VariableDeclarationStatement,
 ): Statement {
   if (statement.variant === "VariableDefinition") {
