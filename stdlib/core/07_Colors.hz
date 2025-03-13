@@ -12,3 +12,7 @@ export struct Color {
     };
   }
 }
+
+export struct A {
+  foo();
+}

@@ -96,9 +96,9 @@ constant
     ;
 
 structcontent
-    : ID ':' datatype ';'                                    #StructMember
-    | ID '(' params ')' (':' datatype)? funcbody             #StructMethod
-    | 'unsafe_union' '{' (structcontent)* '}'                   #StructUnionFields
+    : ID ':' datatype ';'                                           #StructMember
+    | ID '(' params ')' (':' datatype)? (funcbody | ';')            #StructMethod
+    | 'unsafe_union' '{' (structcontent)* '}'                       #StructUnionFields
     ;
 
 structdecl

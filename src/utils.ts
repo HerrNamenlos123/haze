@@ -563,7 +563,9 @@ export function collectFunction(
     wasAnalyzed: false,
     export: exports,
     location: program.location(ctx),
-    declared: ctx instanceof FuncdeclContext,
+    declared:
+      ctx instanceof FuncdeclContext ||
+      (ctx instanceof StructMethodContext && !ctx.funcbody()),
   };
 
   parentScope.defineSymbol(symbol);

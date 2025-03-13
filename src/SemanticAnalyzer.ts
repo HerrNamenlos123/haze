@@ -62,6 +62,7 @@ import {
   ParamsContext,
   PostIncrExprContext,
   PreIncrExprContext,
+  StructMethodContext,
   SymbolValueExprContext,
   UnaryExprContext,
   VariableDeclarationContext,
@@ -81,7 +82,6 @@ import {
   type StringConstantContext,
   type StructInstantiationExprContext,
   type StructMemberValueContext,
-  type StructMethodContext,
 } from "./parser/HazeParser";
 import {
   analyzeVariableStatement,
@@ -548,7 +548,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
         location: symbol.location,
       });
 
-      if (!(ctx instanceof FuncdeclContext)) {
+      if (!(ctx instanceof FuncdeclContext) && !symbol.declared) {
         this.visit(ctx.funcbody()).forEach((statement: Statement) => {
           symbol.scope.statements.push(statement);
         });
@@ -601,6 +601,14 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
             );
           }
         }
+      }
+
+      if (
+        symbol.parentSymbol &&
+        symbol.parentSymbol.variant === "Datatype" &&
+        symbol.parentSymbol.type.variant === "Struct"
+      ) {
+        datatypeSymbolUsed(symbol.parentSymbol, this.program);
       }
 
       symbol.wasAnalyzed = true;
