@@ -1,27 +1,21 @@
 import { ArgumentParser } from "argparse";
 import { ModuleCompiler } from "./ModuleCompiler";
 import { version } from "../package.json";
-import { ConfigParser, ModuleType } from "./Program";
 import { GeneralError } from "./Errors";
 import { join } from "path";
 
 async function main() {
-  const parser = new ArgumentParser({
-    description: "Haze Compiler",
-    prog: "hz",
-  });
+  const parser = new ArgumentParser({ add_help: false });
+  parser.add_argument("--version", { action: "version", version: version });
 
-  parser.add_argument("--version", {
-    action: "store_true",
-    help: "Show version information",
-  });
+  const main_parser = new ArgumentParser({ parents: [parser] });
 
-  parser.add_argument("command", {
+  main_parser.add_argument("command", {
     choices: ["build", "run"],
     help: "Build or Run the project",
   });
 
-  const args = parser.parse_args();
+  const args = main_parser.parse_args();
 
   if (args.version) {
     console.log(`Haze version ${version}`);
