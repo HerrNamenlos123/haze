@@ -3,13 +3,13 @@ declare "C" assert(cond: boolean);
 declare "C" printf(str: stringview, ...);
 
 namespace Console {
-  print(str: stringview, ...) {
+  export print(str: stringview, ...) {
 
   }
 }
 
 namespace System {
-  panic(msg: stringview) {
+  export panic(msg: stringview) {
     Console.print("Thread panicked: %s\n", msg);
     abort();
   }

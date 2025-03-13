@@ -1549,4 +1549,19 @@ export function performSemanticAnalysis(program: Program) {
       `Function 'main()' was defined, but this module is a library and it cannot define a main function`,
     );
   }
+
+  if (mainFunction) {
+    if (mainFunction.type.variant !== "Function") {
+      throw new ImpossibleSituation();
+    }
+    if (
+      mainFunction.type.functionReturnType.variant !== "Primitive" ||
+      mainFunction.type.functionReturnType.primitive !== Primitive.i32
+    ) {
+      throw new CompilerError(
+        `Main function must return 'i32'`,
+        mainFunction.location,
+      );
+    }
+  }
 }

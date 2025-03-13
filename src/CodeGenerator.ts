@@ -72,6 +72,10 @@ class CodeGenerator {
           `${generateUsageCode(this.program.getBuiltinType("Context"), this.program)} ctx = {};`,
         );
       if (!this.program.projectConfig.nostdlib) {
+        this.init("_H13__setupStdlib", this.out.function_declarations);
+        this.out.function_declarations["_H13__setupStdlib"].writeLine(
+          `void _H13__setupStdlib(${generateUsageCode(this.program.getBuiltinType("Context"), this.program)}* ctx);`,
+        );
         mainWriter.writeLine("_H13__setupStdlib(&ctx);");
       }
       mainWriter.writeLine("return _H4main(&ctx);").popIndent().writeLine("}");

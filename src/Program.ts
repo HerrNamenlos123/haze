@@ -60,19 +60,110 @@ export type ModuleConfig = {
 
 export type PlatformString = "linux-x64";
 
+export type ModuleLibMetadata = {
+  platform: PlatformString;
+  filename: string;
+  type: "static" | "shared";
+};
+
 export type ModuleMetadata = {
   compilerVersion: string;
   fileformatVersion: number;
   name: string;
   version: string;
-  libs: {
-    platform: PlatformString;
-    filename: string;
-    type: "static" | "shared";
-  }[];
-  // exportedFunctions: Symbol[];
+  libs: ModuleLibMetadata[];
   exportedDeclarations: string[];
 };
+
+export function parseModuleMetadata(metadata: string): ModuleMetadata {
+  const obj = JSON.parse(metadata);
+
+  const getString = (v: any) => {
+    if (typeof v !== "string") {
+      throw new GeneralError(
+        "Inconsistent module config: Expected string instead of '" + v + "'",
+      );
+    }
+    return v as string;
+  };
+
+  function getStringAnyOf<T extends string>(v: any, options: string[]): T {
+    if (typeof v !== "string") {
+      throw new GeneralError(
+        "Inconsistent module config: Expected string instead of '" + v + "'",
+      );
+    }
+    if (!options.includes(v)) {
+      throw new GeneralError(
+        "Inconsistent module config: Expected any of '" + options + "'",
+      );
+    }
+    return v as T;
+  }
+
+  const getStringArray = (v: any) => {
+    if (!Array.isArray(v)) {
+      throw new GeneralError(
+        "Inconsistent module config: Expected string array instead of '" +
+          v +
+          "'",
+      );
+    }
+    for (const s of v) {
+      if (typeof s !== "string") {
+        throw new GeneralError(
+          "Inconsistent module config: Expected string instead of '" + s + "'",
+        );
+      }
+    }
+    return v as string[];
+  };
+
+  const getNumber = (v: any) => {
+    if (typeof v !== "number") {
+      throw new GeneralError(
+        "Inconsistent module config: Expected number instead of '" + v + "'",
+      );
+    }
+    return v as number;
+  };
+
+  const getLibs = (v: any): ModuleLibMetadata[] => {
+    if (!Array.isArray(v)) {
+      throw new GeneralError(
+        "Inconsistent module config: Expected object array instead of '" +
+          v +
+          "'",
+      );
+    }
+    const libs: ModuleLibMetadata[] = [];
+    for (const obj of v) {
+      if (typeof obj !== "object") {
+        throw new GeneralError(
+          "Inconsistent module config: Expected object instead of '" + v + "'",
+        );
+      }
+      libs.push({
+        filename: getString(obj["filename"]),
+        platform: getStringAnyOf<"linux-x64">(obj["platform"], ["linux-x64"]),
+        type: getStringAnyOf<"static" | "shared">(obj["type"], [
+          "static",
+          "shared",
+        ]),
+      });
+    }
+    return libs;
+  };
+
+  return {
+    compilerVersion: getString(obj["compilerVersion"]),
+    fileformatVersion: getNumber(obj["fileformatVersion"]),
+    name: getString(obj["name"]),
+    version: getString(obj["version"]),
+    exportedDeclarations: getStringArray(obj["exportedDeclarations"]),
+    libs: getLibs(obj["libs"]),
+  };
+}
 
 export class ConfigParser {
   configPath: string;

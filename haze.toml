@@ -5,7 +5,7 @@ description = "A sample Haze project"
 license = "MIT"
 authors = []
 src = "test"
-type = "lib"
+type = "exe"
 # std = "none"
 
 # [dependencies]

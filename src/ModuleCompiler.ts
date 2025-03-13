@@ -10,6 +10,7 @@ import {
 import {
   ConfigParser,
   ModuleType,
+  parseModuleMetadata,
   Program,
   type ModuleConfig,
   type ModuleMetadata,
@@ -32,6 +33,7 @@ import {
   type StructDatatype,
 } from "./Datatype";
 import exp from "constants";
+import { OutputWriter } from "./OutputWriter";
 
 const C_COMPILER = "clang";
 const ARCHIVE_TOOL = "ar";
@@ -83,26 +85,71 @@ export class ModuleCompiler {
     }
   }
 
+  async loadDependencyMetadata(libpath: string, libname: string) {
+    if (!this.projectConfig) {
+      throw new GeneralError("Config missing");
+    }
+    const tempdir = join(this.projectConfig.buildDir, "temp-" + libname);
+    await $`mkdir -p ${tempdir}`;
+    await $`tar -xzf ${libpath} -C ${tempdir} metadata.json`;
+    return parseModuleMetadata(
+      await Bun.file(join(tempdir, "metadata.json")).text(),
+    );
+  }
+
   async loadDependencies(program: Program, collector: SymbolCollector) {
     if (!this.projectConfig) {
       throw new GeneralError("Config missing");
     }
     for (const dep of this.projectConfig.dependencies || []) {
-      const lib = join(
+      const libpath = join(
         join(this.projectConfig.buildDir, dep.path),
         dep.path + ".hzlib",
       );
-      const config = await Bun.file(lib).text();
-      console.log(config);
-      // const declarations = "";
-      // const parser = new Parser();
-      // const ast = await parser.parse(declarations, dep.name + ".hzlib");
-      // if (!ast) {
-      //   throw new GeneralError("Parsing failed");
-      // }
-      // program.ast = ast;
-      // collector.collect(ast, internalContext);
+      const metadata = await this.loadDependencyMetadata(libpath, dep.path);
+
+      const declarations = new OutputWriter();
+      for (const decl of metadata.exportedDeclarations) {
+        declarations.writeLine(decl);
+      }
+
+      const parser = new Parser();
+      const ast = await parser.parse(declarations.get(), dep.name + ".hzlib");
+      if (!ast) {
+        throw new GeneralError("Parsing failed");
+      }
+      program.ast = ast;
+      collector.collect(ast, dep.name + ".hzlib");
     }
+  }
+
+  async loadDependencyLibs() {
+    if (!this.projectConfig) {
+      throw new GeneralError("Config missing");
+    }
+    const libs: string[] = [];
+    for (const dep of this.projectConfig.dependencies || []) {
+      const libpath = join(
+        join(this.projectConfig.buildDir, dep.path),
+        dep.path + ".hzlib",
+      );
+      const metadata = await this.loadDependencyMetadata(libpath, dep.path);
+
+      const lib = metadata.libs.find((l) => l.platform === "linux-x64");
+      if (!lib) {
+        throw new GeneralError(
+          `Lib ${dep.path} does not provide platform ${"linux-x64"}`,
+        );
+      }
+
+      const tempdir = join(this.projectConfig.buildDir, "temp-" + dep.path);
+      await $`mkdir -p ${tempdir}`;
+      await $`tar -xzf ${libpath} -C ${tempdir} ${lib.filename}`;
+
+      const archiveFile = join(tempdir, lib.filename);
+      libs.push(archiveFile);
+    }
+    return libs;
   }
 
   async loadInternals(
@@ -251,7 +298,8 @@ export class ModuleCompiler {
         );
 
         if (this.projectConfig.moduleType === ModuleType.Executable) {
-          const cmd = `${C_COMPILER} -g ${moduleCFile} -o ${moduleExecutable} -std=c11 ${program.linkerFlags.join(" ")}`;
+          const libs = await this.loadDependencyLibs();
+          const cmd = `${C_COMPILER} -g ${moduleCFile} -o ${moduleExecutable} ${libs.join(" ")} -std=c11 ${program.linkerFlags.join(" ")}`;
           child_process.execSync(cmd);
         } else {
           const cmd = `${C_COMPILER} -g ${moduleCFile} -c -o ${moduleOFile} -fPIC -std=c11 ${program.linkerFlags.join(" ")}`;
@@ -259,6 +307,10 @@ export class ModuleCompiler {
           child_process.execSync(
             `${ARCHIVE_TOOL} r ${moduleArchive} ${moduleOFile}`,
           );
+
+          const makerel = (absolute: string) => {
+            return absolute.replace(moduleBuildDir + "/", "");
+          };
 
           const exportedDeclarations = new Set<string>();
           for (const [name, s] of program.exportDatatypes) {
@@ -275,7 +327,7 @@ export class ModuleCompiler {
             version: this.projectConfig.projectVersion,
             libs: [
               {
-                filename: moduleArchive,
+                filename: makerel(moduleArchive),
                 platform: platform,
                 type: "static",
               },
@@ -291,10 +343,7 @@ export class ModuleCompiler {
             await $`rm ${moduleOutputLib}`;
           }
 
-          const makerel = (absolute: string) => {
-            return absolute.replace(moduleBuildDir + "/", "");
-          };
-          await $`tar -C ${moduleBuildDir} -cvf ${moduleOutputLib} ${makerel(moduleArchive)} ${makerel(moduleMetadataFile)} > nul`;
+          await $`tar -C ${moduleBuildDir} -cvzf ${moduleOutputLib} ${makerel(moduleArchive)} ${makerel(moduleMetadataFile)} > nul`;
         }
 
         if (program.postbuildCmds) {
@@ -311,7 +360,18 @@ export class ModuleCompiler {
           }
         }
       } catch (e) {
-        console.error(e);
+        if (e instanceof GeneralError) {
+          console.error(e.message);
+        } else if (e instanceof InternalError) {
+          console.error(e.stack);
+          console.error(e.message);
+        } else if (e instanceof CompilerError) {
+          console.error(e.message);
+        } else if (e instanceof UnreachableCode) {
+          console.error(e.message);
+        } else {
+          console.error("Build failed");
+        }
       }
 
       return true;

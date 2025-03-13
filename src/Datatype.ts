@@ -763,7 +763,7 @@ export function generateSymbolUsageHazeCode(symbol: Symbol) {
         }
         p = p.parentSymbol;
       }
-      let tp = symbol.name + "(";
+      let tp = "declare " + symbol.name + "(";
       const params = [] as string[];
       for (const [name, tp] of symbol.type.functionParameters) {
         params.push(`${name}:${generateDatatypeUsageHazeCode(tp).get()}`);

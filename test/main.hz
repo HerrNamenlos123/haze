@@ -159,5 +159,10 @@ namespace impl {
 }
 
 foo() {
-  System.print();
+  Console.print("Test");
+}
+
+main(): i32 {
+  foo();
+  return 0;
 }
