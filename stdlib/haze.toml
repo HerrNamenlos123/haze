@@ -1,12 +1,9 @@
-
-name = "my_project"
-version = "0.1.0"
-description = "A sample Haze project"
+name = "haze-stdlib"
+version = "0.0.0"
+description = "The default standard library for Haze"
 license = "MIT"
 authors = []
-src = "test"
 type = "lib"
-# std = "none"
 
 # [dependencies]
 # serde = "1.0.193"
@@ -16,14 +13,6 @@ type = "lib"
 # output = "build/"
 # optimize = true
 
-[scripts]
-build = "haze build"
-run = "haze run"
-test = "haze test"
-
 # [tool.haze]
 # strict = true
 # warnings_as_errors = false
-
-[dependencies]
-stdlib = "haze-stdlib"

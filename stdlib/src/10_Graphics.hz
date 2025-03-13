@@ -22,7 +22,7 @@ inject "#include <GLFW/glfw3.h>";
 
 // declare "C" text(text: stringview, fontSize: i32);
 
-inject "#include \"../gl.c\"";
+// inject "#include \"../gl.c\"";
 // prebuildcmd "pkg-config --version";
 // // link "$(pkg-config --cflags --libs gtk+-3.0)"
 // // link "$(pkg-config --cflags --libs appindicator3-0.1)"

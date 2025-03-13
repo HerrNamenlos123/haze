@@ -3,22 +3,7 @@ import { ModuleCompiler } from "./ModuleCompiler";
 import { version } from "../package.json";
 import { ConfigParser, ModuleType } from "./Program";
 import { GeneralError } from "./Errors";
-
-const HAZE_CONFIG_FILE = "haze.toml";
-
-async function parseConfig() {
-  try {
-    const parser = new ConfigParser(HAZE_CONFIG_FILE);
-    return await parser.parseConfig();
-  } catch (e: unknown) {
-    if (e instanceof GeneralError) {
-      console.log(e.message);
-    } else {
-      console.error(e);
-    }
-    return false;
-  }
-}
+import { join } from "path";
 
 async function main() {
   const parser = new ArgumentParser({
@@ -36,11 +21,6 @@ async function main() {
     help: "Build or Run the project",
   });
 
-  parser.add_argument("--nostdlib", {
-    action: "store_true",
-    help: "Compile a pure program without a standard library",
-  });
-
   const args = parser.parse_args();
 
   if (args.version) {
@@ -50,12 +30,18 @@ async function main() {
 
   if (args.command === "build") {
     try {
-      const config = await parseConfig();
-      if (!config) {
-        process.exit(1);
+      const module = new ModuleCompiler();
+      await module.loadConfig();
+
+      if (!module.projectConfig?.nostdlib) {
+        const stdlib = new ModuleCompiler();
+        await stdlib.loadConfig(join(__dirname, "../stdlib"));
+        stdlib.projectConfig!.buildDir = module.projectConfig!.buildDir;
+        if (!(await stdlib.build())) {
+          process.exit(1);
+        }
       }
-      config.nostdlib = args.nostdlib;
-      const module = new ModuleCompiler(config);
+
       if (!(await module.build())) {
         process.exit(1);
       }
@@ -65,35 +51,28 @@ async function main() {
     }
   }
 
-  if (args.command === "run") {
-    try {
-      const config = await parseConfig();
-      if (!config) {
-        process.exit(1);
-      }
+  // if (args.command === "run") {
+  //   try {
+  //     const stdlib = new ModuleCompiler();
+  //     if (!(await stdlib.build())) {
+  //       process.exit(1);
+  //     }
 
-      if (config.moduleType === ModuleType.Library) {
-        throw new GeneralError(
-          `This module is a library and cannot be executed. Use 'hz build' to build it.`,
-        );
-      }
-
-      config.nostdlib = args.nostdlib;
-      const module = new ModuleCompiler(config);
-      if (!(await module.build())) {
-        process.exit(1);
-      }
-      const exitCode = await module.run();
-      process.exit(exitCode);
-    } catch (err) {
-      if (err instanceof GeneralError) {
-        console.log(err.message);
-      } else {
-        console.error(err);
-      }
-      process.exit(1);
-    }
-  }
+  //     const module = new ModuleCompiler();
+  //     if (!(await module.build())) {
+  //       process.exit(1);
+  //     }
+  //     const exitCode = await module.run();
+  //     process.exit(exitCode);
+  //   } catch (err) {
+  //     if (err instanceof GeneralError) {
+  //       console.log(err.message);
+  //     } else {
+  //       console.error(err);
+  //     }
+  //     process.exit(1);
+  //   }
+  // }
 
   process.exit(0);
 }

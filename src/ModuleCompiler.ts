@@ -8,6 +8,7 @@ import {
   UnreachableCode,
 } from "./Errors";
 import {
+  ConfigParser,
   ModuleType,
   Program,
   type ModuleConfig,
@@ -21,7 +22,7 @@ import { readdirSync, statSync } from "fs";
 import { dirname, extname, join } from "path";
 import fs from "fs";
 import { version } from "../package.json";
-import { datatypeToBlob, symbolToBlob, type VariableSymbol } from "./Symbol";
+import { type VariableSymbol } from "./Symbol";
 import { TypeExporter } from "./TypeExporter";
 import {
   generateDatatypeDeclarationHazeCode,
@@ -30,6 +31,7 @@ import {
   type RawPointerDatatype,
   type StructDatatype,
 } from "./Datatype";
+import exp from "constants";
 
 const C_COMPILER = "clang";
 const ARCHIVE_TOOL = "ar";
@@ -53,51 +55,138 @@ function listFiles(dir: string): string[] {
   return files;
 }
 
-export class ModuleCompiler {
-  private projectConfig: ProjectConfig;
+const HAZE_CONFIG_FILE = "haze.toml";
 
-  constructor(projectConfig: ProjectConfig) {
-    this.projectConfig = projectConfig;
+async function parseConfig(startDir?: string) {
+  try {
+    const parser = new ConfigParser(HAZE_CONFIG_FILE, startDir);
+    return await parser.parseConfig();
+  } catch (e: unknown) {
+    if (e instanceof GeneralError) {
+      console.log(e.message);
+    } else {
+      console.error(e);
+    }
+    return;
+  }
+}
+
+export class ModuleCompiler {
+  projectConfig?: ProjectConfig;
+
+  constructor() {}
+
+  async loadConfig(moduleDir?: string) {
+    this.projectConfig = await parseConfig(moduleDir);
+    if (!this.projectConfig) {
+      process.exit(1);
+    }
+  }
+
+  async loadDependencies(program: Program, collector: SymbolCollector) {
+    if (!this.projectConfig) {
+      throw new GeneralError("Config missing");
+    }
+    for (const dep of this.projectConfig.dependencies || []) {
+      const lib = join(
+        join(this.projectConfig.buildDir, dep.path),
+        dep.path + ".hzlib",
+      );
+      const config = await Bun.file(lib).text();
+      console.log(config);
+      // const declarations = "";
+      // const parser = new Parser();
+      // const ast = await parser.parse(declarations, dep.name + ".hzlib");
+      // if (!ast) {
+      //   throw new GeneralError("Parsing failed");
+      // }
+      // program.ast = ast;
+      // collector.collect(ast, internalContext);
+    }
+  }
+
+  async loadInternals(
+    program: Program,
+    collector: SymbolCollector,
+    stdlibDirectory: string,
+  ) {
+    const internalContext = join(
+      join(stdlibDirectory, "internal"),
+      "internal.hz",
+    );
+    const parser = new Parser();
+    const ast = await parser.parse(
+      await Bun.file(internalContext).text(),
+      internalContext,
+    );
+    if (!ast) {
+      throw new GeneralError("Parsing failed");
+    }
+    program.ast = ast;
+    collector.collect(ast, internalContext);
   }
 
   async build() {
     try {
+      if (!this.projectConfig) {
+        throw new GeneralError("Config missing");
+      }
+
       const program = new Program(this.projectConfig);
       const collector = new SymbolCollector(program);
 
-      if (!this.projectConfig.nostdlib) {
-        let stdlib_files: { name: string; content: string }[] = [];
-        if (process.env.NODE_ENV === "production") {
-          const whichHz = Bun.which("hz");
-          if (!whichHz) {
-            throw new GeneralError(`Compiler not found in path`);
-          }
-          const allFiles = listFiles(join(dirname(whichHz), "stdlib"));
-          allFiles.sort((a, b) => a.localeCompare(b));
-          for (const file of allFiles) {
-            const text = await Bun.file(file).text();
-            stdlib_files.push({ name: file, content: text });
-          }
-        } else {
-          const allFiles = listFiles(join(__dirname, "../stdlib"));
-          allFiles.sort((a, b) => a.localeCompare(b));
-          for (const file of allFiles) {
-            const text = await Bun.file(file).text();
-            stdlib_files.push({ name: file, content: text });
-          }
+      let stdlibDirectory: string;
+      if (process.env.NODE_ENV === "production") {
+        const whichHz = Bun.which("hz");
+        if (!whichHz) {
+          throw new GeneralError(`Compiler not found in path`);
         }
-
-        for (const stdlibFile of stdlib_files) {
-          const parser = new Parser();
-          const ast = await parser.parse(stdlibFile.content, stdlibFile.name);
-          if (!ast) {
-            throw new GeneralError("Parsing failed");
-          }
-
-          program.ast = ast;
-          collector.collect(ast, stdlibFile.name);
-        }
+        stdlibDirectory = join(dirname(whichHz), "stdlib/");
+      } else {
+        stdlibDirectory = join(__dirname, "../stdlib");
       }
+
+      const moduleBuildDir = join(
+        this.projectConfig.buildDir,
+        this.projectConfig.projectName,
+      );
+
+      // if (!this.projectConfig.nostdlib) {
+      //   let stdlib_files: { name: string; content: string }[] = [];
+      //   if (process.env.NODE_ENV === "production") {
+      //     const whichHz = Bun.which("hz");
+      //     if (!whichHz) {
+      //       throw new GeneralError(`Compiler not found in path`);
+      //     }
+      //     const allFiles = listFiles(join(dirname(whichHz), "stdlib/"));
+      //     allFiles.sort((a, b) => a.localeCompare(b));
+      //     for (const file of allFiles) {
+      //       const text = await Bun.file(file).text();
+      //       stdlib_files.push({ name: file, content: text });
+      //     }
+      //   } else {
+      //     const allFiles = listFiles(join(__dirname, "../stdlib"));
+      //     allFiles.sort((a, b) => a.localeCompare(b));
+      //     for (const file of allFiles) {
+      //       const text = await Bun.file(file).text();
+      //       stdlib_files.push({ name: file, content: text });
+      //     }
+      //   }
+
+      //   for (const stdlibFile of stdlib_files) {
+      //     const parser = new Parser();
+      //     const ast = await parser.parse(stdlibFile.content, stdlibFile.name);
+      //     if (!ast) {
+      //       throw new GeneralError("Parsing failed");
+      //     }
+
+      //     program.ast = ast;
+      //     collector.collect(ast, stdlibFile.name);
+      //   }
+      // }
+
+      await this.loadInternals(program, collector, stdlibDirectory);
+      await this.loadDependencies(program, collector);
 
       const files = readdirSync(this.projectConfig.srcDirectory);
       const sortedFiles = files.sort((a, b) => a.localeCompare(b));
@@ -121,7 +210,29 @@ export class ModuleCompiler {
       performSemanticAnalysis(program);
       // program.print();
 
-      generateCode(program, `build/main.c`);
+      const platform = "linux-x64";
+      const moduleCFile = join(
+        moduleBuildDir,
+        this.projectConfig.projectName + "-" + platform + ".c",
+      );
+      const moduleOFile = join(
+        moduleBuildDir,
+        this.projectConfig.projectName + "-" + platform + ".o",
+      );
+      const moduleArchive = join(
+        moduleBuildDir,
+        this.projectConfig.projectName + "-" + platform + ".a",
+      );
+      const moduleExecutable = join(
+        moduleBuildDir,
+        this.projectConfig.projectName + "-" + platform,
+      );
+      const moduleMetadataFile = join(moduleBuildDir, "metadata.json");
+      const moduleOutputLib = join(
+        moduleBuildDir,
+        this.projectConfig.projectName + ".hzlib",
+      );
+      generateCode(program, moduleCFile);
 
       try {
         if (program.prebuildCmds) {
@@ -135,21 +246,26 @@ export class ModuleCompiler {
             }
           }
         }
-        console.log(`\x1b[32mC-Compiling\x1b[0m build/main.c`);
+        console.log(
+          `\x1b[32mC-Compiling\x1b[0m ${this.projectConfig.projectName}`,
+        );
 
         if (this.projectConfig.moduleType === ModuleType.Executable) {
-          const cmd = `${C_COMPILER} -g build/main.c -o build/main -std=c11 ${program.linkerFlags.join(" ")}`;
+          const cmd = `${C_COMPILER} -g ${moduleCFile} -o ${moduleExecutable} -std=c11 ${program.linkerFlags.join(" ")}`;
           child_process.execSync(cmd);
         } else {
-          const cmd = `${C_COMPILER} -g build/main.c -c -o build/main.o -fPIC -std=c11 ${program.linkerFlags.join(" ")}`;
+          const cmd = `${C_COMPILER} -g ${moduleCFile} -c -o ${moduleOFile} -fPIC -std=c11 ${program.linkerFlags.join(" ")}`;
           child_process.execSync(cmd);
           child_process.execSync(
-            `${ARCHIVE_TOOL} r build/linux-x64-static.a build/main.o`,
+            `${ARCHIVE_TOOL} r ${moduleArchive} ${moduleOFile}`,
           );
 
-          const typeExporter = new TypeExporter();
+          const exportedDeclarations = new Set<string>();
           for (const [name, s] of program.exportDatatypes) {
-            console.log(generateSymbolUsageHazeCode(s).get());
+            exportedDeclarations.add(generateSymbolUsageHazeCode(s).get());
+          }
+          for (const [name, s] of program.exportFunctions) {
+            exportedDeclarations.add(generateSymbolUsageHazeCode(s).get());
           }
 
           const moduleMetadata: ModuleMetadata = {
@@ -159,26 +275,26 @@ export class ModuleCompiler {
             version: this.projectConfig.projectVersion,
             libs: [
               {
-                filename: `linux-x64-static.a`,
-                platform: "linux-x64",
+                filename: moduleArchive,
+                platform: platform,
                 type: "static",
               },
             ],
-            // exportedFunctions: program.exportFunctions
-            //   .values()
-            //   .toArray()
-            //   .map((f) => symbolToBlob(f)),
-            exportedDatatypes: typeExporter.get(),
+            exportedDeclarations: [...exportedDeclarations],
           };
           await Bun.write(
-            "build/metadata.json",
+            moduleMetadataFile,
             JSON.stringify(moduleMetadata, undefined, 2),
           );
 
-          if (fs.existsSync("build/main.hzlib")) {
-            await $`rm build/main.hzlib`;
+          if (fs.existsSync(moduleOutputLib)) {
+            await $`rm ${moduleOutputLib}`;
           }
-          await $`tar -C build -cvf build/main.hzlib linux-x64-static.a metadata.json > nul`;
+
+          const makerel = (absolute: string) => {
+            return absolute.replace(moduleBuildDir + "/", "");
+          };
+          await $`tar -C ${moduleBuildDir} -cvf ${moduleOutputLib} ${makerel(moduleArchive)} ${makerel(moduleMetadataFile)} > nul`;
         }
 
         if (program.postbuildCmds) {
@@ -218,12 +334,32 @@ export class ModuleCompiler {
 
   async run(): Promise<number> {
     try {
+      if (!this.projectConfig) {
+        throw new GeneralError("Config missing");
+      }
+      if (this.projectConfig?.moduleType === ModuleType.Library) {
+        throw new GeneralError(
+          `This module is a library and cannot be executed. Use 'hz build' to build it.`,
+        );
+      }
       console.log(`\x1b[32mExecuting\x1b[0m build/main`);
       child_process.execSync("build/main", { stdio: "inherit" });
       return 0;
     } catch (e: any) {
-      console.error("Execution failed");
-      return e.status as number;
+      if (e instanceof GeneralError) {
+        console.error(e.message);
+      } else if (e instanceof InternalError) {
+        console.error(e.stack);
+        console.error(e.message);
+      } else if (e instanceof CompilerError) {
+        console.error(e.message);
+      } else if (e instanceof UnreachableCode) {
+        console.error(e.message);
+      } else {
+        console.error("Execution failed");
+        return e.status as number;
+      }
+      return -1;
     }
   }
 }

@@ -65,6 +65,7 @@ export type FunctionSymbol = {
   wasAnalyzed: boolean;
   export: boolean;
   location: Location;
+  declared: boolean;
 };
 
 export type DatatypeSymbol<T = Datatype> = {
@@ -111,116 +112,6 @@ export type Symbol =
   | DatatypeSymbol
   | FunctionSymbol
   | ConstantSymbol;
-
-export function scopeToBlob(scope: Scope): object {
-  return {
-    location: scope.location,
-    parentScope: scope.parentScope && scopeToBlob(scope.parentScope),
-    statements: scope.statements.map((s) => statementToBlob(s)),
-    terminated: scope.terminated,
-    symbols: scope.getSymbols().map((s) => symbolToBlob(s)),
-  };
-}
-
-export function structUnionToBlob(union: StructMemberUnion): object {
-  return {
-    variant: union.variant,
-    symbols: union.symbols.map((s) => symbolToBlob(s)),
-  };
-}
-
-export function datatypeToBlob(datatype: Datatype): object {
-  switch (datatype.variant) {
-    case "Deferred":
-      return datatype;
-
-    case "Function":
-      return {
-        variant: datatype.variant,
-        functionParameters: datatype.functionParameters.map((v) => [
-          v[0],
-          datatypeToBlob(v[1]),
-        ]),
-        functionReturnType: datatypeToBlob(datatype.functionReturnType),
-        vararg: datatype.vararg,
-      };
-
-    case "Generic":
-      return { variant: datatype.variant, name: datatype.name };
-
-    case "Namespace":
-      return {
-        variant: datatype.variant,
-        name: datatype.name,
-        symbolsScope: scopeToBlob(datatype.symbolsScope),
-        parentSymbol:
-          datatype.parentSymbol && symbolToBlob(datatype.parentSymbol),
-      };
-
-    case "Primitive":
-      return { variant: datatype.variant, primitive: datatype.primitive };
-
-    case "RawPointer":
-      return {
-        variant: datatype.variant,
-        generics: datatype.generics,
-      };
-
-    case "Struct":
-      return {
-        variant: datatype.variant,
-        name: datatype.name,
-        generics: datatype.generics,
-        language: datatype.language,
-        members: datatype.members.map((m) =>
-          m.variant === "Variable" ? symbolToBlob(m) : structUnionToBlob(m),
-        ),
-        methods: datatype.methods.map((m) => symbolToBlob(m)),
-        parentSymbol:
-          datatype.parentSymbol && symbolToBlob(datatype.parentSymbol),
-      };
-  }
-
-  throw new UnreachableCode();
-}
-
-export function symbolToBlob(symbol: Symbol) {
-  switch (symbol.variant) {
-    case "BooleanConstant":
-    case "StringConstant":
-    case "LiteralConstant":
-      return symbol;
-
-    case "Datatype":
-      return {
-        variant: symbol.variant,
-        parentSymbol: symbol.parentSymbol && symbolToBlob(symbol.parentSymbol),
-        name: symbol.name,
-        type: datatypeToBlob(symbol.type),
-        scope: scopeToBlob(symbol.scope),
-        export: symbol.export,
-        location: symbol.location,
-      };
-
-    //   case "Function":
-    //     return {
-    //         variant: symbol.variant,
-    // name: symbol.name,
-    // type: datatypeToBlob(symbol.type),
-    // language: symbol.language,
-    // parentSymbol: symbol.parentSymbol && symbolToBlob(symbol.parentSymbol),
-    // thisPointerExpr: symbol.thisPointerExpr && exprToBlob(symbol.thisPointerExpr),
-    // scope: scopeToBlob(symbol.scope),
-    // specialMethod?: SpecialMethod;
-    // ctx?: ParserRuleContext;
-    // wasAnalyzed: boolean;
-    // export: boolean;
-    // location: Location;
-    //     }
-  }
-
-  throw new UnreachableCode();
-}
 
 export function isDatatypeGeneric(datatype: Datatype) {
   switch (datatype.variant) {

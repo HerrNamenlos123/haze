@@ -50,6 +50,8 @@ export type ProjectConfig = {
   srcDirectory: string;
   nostdlib: boolean;
   moduleType: ModuleType;
+  buildDir: string;
+  dependencies: { name: string; path: string }[];
 };
 
 export type ModuleConfig = {
@@ -69,14 +71,14 @@ export type ModuleMetadata = {
     type: "static" | "shared";
   }[];
   // exportedFunctions: Symbol[];
-  exportedDatatypes: ExportedTypesystem;
+  exportedDeclarations: string[];
 };
 
 export class ConfigParser {
   configPath: string;
 
-  constructor(hazeConfigFile: string) {
-    const configPath = this.findUpwards(hazeConfigFile);
+  constructor(hazeConfigFile: string, startDir?: string) {
+    const configPath = this.findUpwards(hazeConfigFile, startDir);
     if (!configPath) {
       throw new GeneralError(
         `No '${hazeConfigFile}' file found in any parent directory. Are you in the correct directory?`,
@@ -85,8 +87,8 @@ export class ConfigParser {
     this.configPath = configPath;
   }
 
-  findUpwards(filename: string, startDir = process.cwd()): string | undefined {
-    let dir = startDir;
+  findUpwards(filename: string, startDir?: string): string | undefined {
+    let dir = startDir || process.cwd();
     while (dir !== dirname(dir)) {
       const filePath = join(dir, filename);
       if (existsSync(filePath)) return filePath;
@@ -161,18 +163,38 @@ export class ConfigParser {
 
   getScripts(toml: any) {
     const scripts = [] as { name: string; command: string }[];
-    for (const [name, cmd] of Object.entries(toml["scripts"])) {
-      if (typeof cmd !== "string") {
-        throw new GeneralError(
-          `Script '${name}' in file ${this.configPath} must be of type string`,
-        );
+    if (toml["scripts"]) {
+      for (const [name, cmd] of Object.entries(toml["scripts"])) {
+        if (typeof cmd !== "string") {
+          throw new GeneralError(
+            `Script '${name}' in file ${this.configPath} must be of type string`,
+          );
+        }
+        scripts.push({
+          name: name,
+          command: cmd,
+        });
       }
-      scripts.push({
-        name: name,
-        command: cmd,
-      });
     }
     return scripts;
+  }
+
+  getDependencies(toml: any) {
+    const deps = [] as { name: string; path: string }[];
+    if (toml["dependencies"]) {
+      for (const [name, path] of Object.entries(toml["dependencies"])) {
+        if (typeof path !== "string") {
+          throw new GeneralError(
+            `Dependency path '${path}' in file ${this.configPath} must be of type string`,
+          );
+        }
+        deps.push({
+          name: name,
+          path: path,
+        });
+      }
+    }
+    return deps;
   }
 
   async parseConfig(): Promise<ProjectConfig> {
@@ -190,12 +212,14 @@ export class ConfigParser {
       projectDescription: this.getOptionalString(toml, "description"),
       projectLicense: this.getOptionalString(toml, "license"),
       scripts: this.getScripts(toml),
+      dependencies: this.getDependencies(toml),
       srcDirectory: join(
         dirname(this.configPath),
         this.getOptionalString(toml, "src") || "src",
       ),
       moduleType: moduleType,
-      nostdlib: false,
+      nostdlib: this.getOptionalStringAnyOf(toml, "std", ["none"]) === "none",
+      buildDir: join(dirname(this.configPath), "build"),
     };
   }
 }

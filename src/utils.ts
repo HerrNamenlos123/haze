@@ -233,6 +233,7 @@ export function resolveGenerics(
           wasAnalyzed: method.wasAnalyzed,
           export: method.export,
           location: method.location,
+          declared: method.declared,
         });
       }
       // const generics: Array<[string, Datatype | null]> = [];
@@ -562,6 +563,7 @@ export function collectFunction(
     wasAnalyzed: false,
     export: exports,
     location: program.location(ctx),
+    declared: ctx instanceof FuncdeclContext,
   };
 
   parentScope.defineSymbol(symbol);
@@ -592,7 +594,7 @@ export function visitParams(
   ctx: ParamsContext,
 ): ParamPack {
   const params = ctx.param_list().map((n) => visitParam(_this, n));
-  return { params: params, vararg: ctx.ellipsis() !== undefined };
+  return { params: params, vararg: ctx.ellipsis() !== null };
 }
 
 export function collectVariableStatement(

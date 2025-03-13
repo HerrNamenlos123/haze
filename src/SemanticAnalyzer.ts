@@ -580,23 +580,25 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
         symbol.scope.location,
       );
 
-      if (!isNone(symbol.type.functionReturnType)) {
-        if (!symbol.scope.statements.some((s) => s.variant === "Return")) {
-          throw new CompilerError(
-            `Function ${symbol.name} is missing return statement`,
-            this.program.location(ctx),
-          );
-        }
-      } else {
-        if (
-          symbol.scope.statements.some(
-            (s) => s.variant === "Return" && s.expr !== undefined,
-          )
-        ) {
-          throw new CompilerError(
-            `Function ${symbol.name} returning none cannot return a value `,
-            this.program.location(ctx),
-          );
+      if (!symbol.declared) {
+        if (!isNone(symbol.type.functionReturnType)) {
+          if (!symbol.scope.statements.some((s) => s.variant === "Return")) {
+            throw new CompilerError(
+              `Function ${symbol.name} is missing return statement`,
+              this.program.location(ctx),
+            );
+          }
+        } else {
+          if (
+            symbol.scope.statements.some(
+              (s) => s.variant === "Return" && s.expr !== undefined,
+            )
+          ) {
+            throw new CompilerError(
+              `Function ${symbol.name} returning none cannot return a value `,
+              this.program.location(ctx),
+            );
+          }
         }
       }
 
@@ -604,7 +606,9 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
       this.functionStack.pop();
       this.program.popScope();
       this.program.concreteFunctions.set(mangleSymbol(symbol), symbol);
-      this.program.exportFunctions.set(mangleSymbol(symbol), symbol);
+      if (symbol.export) {
+        this.program.exportFunctions.set(mangleSymbol(symbol), symbol);
+      }
     } else {
       this.visitChildren(ctx);
     }

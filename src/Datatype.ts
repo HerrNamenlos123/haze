@@ -15,6 +15,7 @@ import {
   Language,
   mangleDatatype,
   mangleSymbol,
+  serializeSymbol,
   type DatatypeSymbol,
   type FunctionSymbol,
   type Symbol,
@@ -732,10 +733,46 @@ export function generateSymbolUsageHazeCode(symbol: Symbol) {
         if (p.variant !== "Datatype" || p.type.variant !== "Namespace") {
           throw new InternalError("Unexpected parent");
         }
-        namespaces.push(p.type.name);
+        namespaces.unshift(p.type.name);
         p = p.parentSymbol;
       }
       let tp = generateDatatypeDeclarationHazeCode(symbol.type).get();
+      if (namespaces.length > 0) {
+        writer.write(`namespace ${namespaces.join(".")} {${tp}}`);
+      } else {
+        writer.write(tp);
+      }
+      return writer;
+    }
+
+    case "Function": {
+      const namespaces = [] as string[];
+      let p = symbol.parentSymbol;
+      while (p) {
+        if (p.variant === "Function") {
+          // noop
+        } else if (p.variant === "Datatype") {
+          if (p.type.variant === "Struct") {
+            // noop
+          } else if (p.type.variant !== "Namespace") {
+            throw new InternalError("Unexpected parent: " + p.type.variant);
+          }
+          namespaces.unshift(p.type.name);
+        } else {
+          throw new InternalError("Unexpected symbol type: " + p.variant);
+        }
+        p = p.parentSymbol;
+      }
+      let tp = symbol.name + "(";
+      const params = [] as string[];
+      for (const [name, tp] of symbol.type.functionParameters) {
+        params.push(`${name}:${generateDatatypeUsageHazeCode(tp).get()}`);
+      }
+      if (symbol.type.vararg) {
+        params.push("...");
+      }
+      tp += params.join(",");
+      tp += `):${generateDatatypeUsageHazeCode(symbol.type.functionReturnType).get()};`;
       if (namespaces.length > 0) {
         writer.write(`namespace ${namespaces.join(".")} {${tp}}`);
       } else {

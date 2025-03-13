@@ -10,17 +10,13 @@ declare "C" tan(v: f64): f64;
 declare "C" atan2(y: f64, x: f64): f64;
 
 namespace Math {
-  PI(): f64 {
-    const pi: f64 = 0;
-    __c__("pi = M_PI");
-    return pi;
-  }
+  const PI = 3.141592653589793115997963468544185161590576171875;
 
   radToDeg(v: f64): f64 {
-    return v / PI() * 180;
+    return v / Math.PI * 180;
   }
 
   degToRad(v: f64): f64 {
-    return v * PI() / 180;
+    return v * Math.PI / 180;
   }
 }

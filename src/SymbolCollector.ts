@@ -115,18 +115,11 @@ export class SymbolCollector extends HazeVisitor<any> {
   };
 
   visitFuncdecl = (ctx: FuncdeclContext): void => {
-    if (!ctx.externlang()) {
-      throw new CompilerError(
-        "Currently function declarations need an extern language",
-        this.program.location(ctx),
-      );
-    }
-
-    const lang = ctx.externlang().getText()[1];
+    const lang = ctx.externlang()?.getText()[1];
     let functype = Language.Internal;
     if (lang === "C") {
       functype = Language.External_C;
-    } else {
+    } else if (functype) {
       throw new CompilerError(
         `Extern Language '${lang}' is not supported.`,
         this.program.location(ctx),

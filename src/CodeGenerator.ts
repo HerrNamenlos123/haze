@@ -149,10 +149,16 @@ class CodeGenerator {
   }
 
   generate() {
+    this.out.includes["_USE_MATH_DEFINES"] = new OutputWriter().writeLine(
+      "#define _USE_MATH_DEFINES",
+    );
     this.includeHeader("stdio.h");
     this.includeHeader("assert.h");
     this.includeHeader("stdint.h");
     this.includeHeader("stdlib.h");
+    this.includeHeader("memory.h");
+    this.includeHeader("stdarg.h");
+    this.includeHeader("math.h");
     this.includeHeader("time.h");
 
     for (const decl of this.program.cDefinitionDecl) {
@@ -218,21 +224,24 @@ class CodeGenerator {
       return decl;
     };
 
-    this.init(mangleSymbol(symbol), this.out.function_definitions);
     this.init(mangleSymbol(symbol), this.out.function_declarations);
     const decl = declaration(symbol.type, symbol.type.functionReturnType);
     this.out.function_declarations[mangleSymbol(symbol)].write(decl + ";");
-    this.out.function_definitions[mangleSymbol(symbol)]
-      .writeLine(decl + " {")
-      .pushIndent();
 
-    const s = this.emitScope(symbol.scope);
-    this.out.function_definitions[mangleSymbol(symbol)].write(s.temp);
-    this.out.function_definitions[mangleSymbol(symbol)].write(s.out);
+    if (!symbol.declared) {
+      this.init(mangleSymbol(symbol), this.out.function_definitions);
+      this.out.function_definitions[mangleSymbol(symbol)]
+        .writeLine(decl + " {")
+        .pushIndent();
 
-    this.out.function_definitions[mangleSymbol(symbol)]
-      .popIndent()
-      .writeLine("}");
+      const s = this.emitScope(symbol.scope);
+      this.out.function_definitions[mangleSymbol(symbol)].write(s.temp);
+      this.out.function_definitions[mangleSymbol(symbol)].write(s.out);
+
+      this.out.function_definitions[mangleSymbol(symbol)]
+        .popIndent()
+        .writeLine("}");
+    }
   }
 
   emitScope(scope: Scope): { temp: OutputWriter; out: OutputWriter } {
