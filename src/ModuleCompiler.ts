@@ -245,7 +245,6 @@ export class ModuleCompiler {
         if (stats.isDirectory() || extname(fullPath) !== ".hz") {
           return;
         }
-        console.log(`\x1b[32mTranspiling\x1b[0m ${fullPath}`);
         const parser = new Parser();
         const ast = await parser.parseFile(fullPath);
         if (!ast) {
@@ -284,27 +283,12 @@ export class ModuleCompiler {
       generateCode(program, moduleCFile);
 
       try {
-        if (program.prebuildCmds) {
-          for (const cmd of program.prebuildCmds) {
-            try {
-              console.log(`\x1b[32mExecuting pre-build command:\x1b[0m ${cmd}`);
-              child_process.execSync(cmd, { stdio: "pipe" });
-            } catch (e) {
-              console.error("Requirement check failed: " + cmd);
-              return false;
-            }
-          }
-        }
-        console.log(
-          `\x1b[32mC-Compiling\x1b[0m ${this.projectConfig.projectName}`,
-        );
-
         if (this.projectConfig.moduleType === ModuleType.Executable) {
           const [libs, linkerFlags] = await this.loadDependencyLibs();
-          const cmd = `${C_COMPILER} -g ${moduleCFile} -o ${moduleExecutable} ${libs.join(" ")} ${linkerFlags.join(" ")} -std=c11 ${program.linkerFlags.join(" ")}`;
+          const cmd = `${C_COMPILER} -g ${moduleCFile} -o ${moduleExecutable} ${libs.join(" ")} ${linkerFlags.join(" ")} -std=c11`;
           child_process.execSync(cmd);
         } else {
-          const cmd = `${C_COMPILER} -g ${moduleCFile} -c -o ${moduleOFile} -fPIC -std=c11 ${program.linkerFlags.join(" ")}`;
+          const cmd = `${C_COMPILER} -g ${moduleCFile} -c -o ${moduleOFile} -fPIC -std=c11`;
           child_process.execSync(cmd);
           child_process.execSync(
             `${ARCHIVE_TOOL} r ${moduleArchive} ${moduleOFile}`,
@@ -347,20 +331,6 @@ export class ModuleCompiler {
           }
 
           await $`tar -C ${moduleBuildDir} -cvzf ${moduleOutputLib} ${makerel(moduleArchive)} ${makerel(moduleMetadataFile)} > /dev/null`;
-        }
-
-        if (program.postbuildCmds) {
-          for (const cmd of program.postbuildCmds) {
-            try {
-              console.log(
-                `\x1b[32mExecuting post-build command:\x1b[0m ${cmd}`,
-              );
-              child_process.execSync(cmd);
-            } catch (e) {
-              console.error("Requirement check failed: " + cmd);
-              return false;
-            }
-          }
         }
       } catch (e) {
         if (e instanceof GeneralError) {
@@ -416,7 +386,6 @@ export class ModuleCompiler {
         this.projectConfig.projectName + "-" + platform,
       );
 
-      console.log(`\x1b[32mExecuting\x1b[0m`);
       child_process.execSync(moduleExecutable, { stdio: "inherit" });
       return 0;
     } catch (e: any) {

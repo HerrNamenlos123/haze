@@ -22,11 +22,11 @@ declare "C" destroyClayAndRSGL(window: RawPtr<GLFWwindow>);
 
 declare "C" text(text: stringview, fontSize: i32);
 
-inject "#include \"../gl.c\"";
-prebuildcmd "pkg-config --version";
+inject "#include \"../../gl.c\"";
+// prebuildcmd "pkg-config --version";
 // link "$(pkg-config --cflags --libs gtk+-3.0)"
 // link "$(pkg-config --cflags --libs appindicator3-0.1)"
-link "-lGL -Iclay -lm -lglfw"
+// link "-lGL -Iclay -lm -lglfw"
 
 div(cb: () => none) {
   __c__("Clay_ElementDeclaration elem = { .layout = { .sizing = { CLAY_SIZING_FIXED(400), CLAY_SIZING_FIXED(200) } }, .backgroundColor = { 217, 91, 67, 255 } };");

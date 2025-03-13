@@ -4,12 +4,9 @@ import {
   FuncContext,
   FuncdeclContext,
   FunctionDatatypeContext,
-  LinkerhintContext,
   NamedfuncContext,
   NamespaceContext,
   ParamsContext,
-  PostbuildcmdContext,
-  PrebuildcmdContext,
   StructDeclContext,
   StructMemberContext,
   StructMethodContext,
@@ -365,21 +362,6 @@ export class SymbolCollector extends HazeVisitor<any> {
     this.program.popScope();
 
     return symbol;
-  };
-
-  visitPrebuildcmd = (ctx: PrebuildcmdContext): void => {
-    const cmd = JSON.parse(ctx.STRING_LITERAL().getText()) as string;
-    this.program.prebuildCmds.push(cmd);
-  };
-
-  visitPostbuildcmd = (ctx: PostbuildcmdContext): void => {
-    const cmd = JSON.parse(ctx.STRING_LITERAL().getText()) as string;
-    this.program.postbuildCmds.push(cmd);
-  };
-
-  visitLinkerhint = (ctx: LinkerhintContext): void => {
-    const cmd = JSON.parse(ctx.STRING_LITERAL().getText()) as string;
-    this.program.linkerFlags.push(cmd);
   };
 
   visitVariableDefinition = (ctx: VariableDefinitionContext): Statement => {

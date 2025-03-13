@@ -13,8 +13,6 @@ import { BodyContext } from "./HazeParser.js";
 import { ParamContext } from "./HazeParser.js";
 import { ParamsContext } from "./HazeParser.js";
 import { CdefinitiondeclContext } from "./HazeParser.js";
-import { PrebuildcmdContext } from "./HazeParser.js";
-import { PostbuildcmdContext } from "./HazeParser.js";
 import { FuncdeclContext } from "./HazeParser.js";
 import { ExternlangContext } from "./HazeParser.js";
 import { IfexprContext } from "./HazeParser.js";
@@ -51,11 +49,6 @@ import { FunctypeContext } from "./HazeParser.js";
 import { BooleanConstantContext } from "./HazeParser.js";
 import { LiteralConstantContext } from "./HazeParser.js";
 import { StringConstantContext } from "./HazeParser.js";
-import { CompilationhintContext } from "./HazeParser.js";
-import { CompilationhintfilenameContext } from "./HazeParser.js";
-import { CompilationhintflagsContext } from "./HazeParser.js";
-import { CompilationlangContext } from "./HazeParser.js";
-import { LinkerhintContext } from "./HazeParser.js";
 import { StructMemberContext } from "./HazeParser.js";
 import { StructMethodContext } from "./HazeParser.js";
 import { StructUnionFieldsContext } from "./HazeParser.js";
@@ -170,26 +163,6 @@ export default class HazeListener extends ParseTreeListener {
 	 * @param ctx the parse tree
 	 */
 	exitCdefinitiondecl?: (ctx: CdefinitiondeclContext) => void;
-	/**
-	 * Enter a parse tree produced by `HazeParser.prebuildcmd`.
-	 * @param ctx the parse tree
-	 */
-	enterPrebuildcmd?: (ctx: PrebuildcmdContext) => void;
-	/**
-	 * Exit a parse tree produced by `HazeParser.prebuildcmd`.
-	 * @param ctx the parse tree
-	 */
-	exitPrebuildcmd?: (ctx: PrebuildcmdContext) => void;
-	/**
-	 * Enter a parse tree produced by `HazeParser.postbuildcmd`.
-	 * @param ctx the parse tree
-	 */
-	enterPostbuildcmd?: (ctx: PostbuildcmdContext) => void;
-	/**
-	 * Exit a parse tree produced by `HazeParser.postbuildcmd`.
-	 * @param ctx the parse tree
-	 */
-	exitPostbuildcmd?: (ctx: PostbuildcmdContext) => void;
 	/**
 	 * Enter a parse tree produced by `HazeParser.funcdecl`.
 	 * @param ctx the parse tree
@@ -602,56 +575,6 @@ export default class HazeListener extends ParseTreeListener {
 	 * @param ctx the parse tree
 	 */
 	exitStringConstant?: (ctx: StringConstantContext) => void;
-	/**
-	 * Enter a parse tree produced by `HazeParser.compilationhint`.
-	 * @param ctx the parse tree
-	 */
-	enterCompilationhint?: (ctx: CompilationhintContext) => void;
-	/**
-	 * Exit a parse tree produced by `HazeParser.compilationhint`.
-	 * @param ctx the parse tree
-	 */
-	exitCompilationhint?: (ctx: CompilationhintContext) => void;
-	/**
-	 * Enter a parse tree produced by `HazeParser.compilationhintfilename`.
-	 * @param ctx the parse tree
-	 */
-	enterCompilationhintfilename?: (ctx: CompilationhintfilenameContext) => void;
-	/**
-	 * Exit a parse tree produced by `HazeParser.compilationhintfilename`.
-	 * @param ctx the parse tree
-	 */
-	exitCompilationhintfilename?: (ctx: CompilationhintfilenameContext) => void;
-	/**
-	 * Enter a parse tree produced by `HazeParser.compilationhintflags`.
-	 * @param ctx the parse tree
-	 */
-	enterCompilationhintflags?: (ctx: CompilationhintflagsContext) => void;
-	/**
-	 * Exit a parse tree produced by `HazeParser.compilationhintflags`.
-	 * @param ctx the parse tree
-	 */
-	exitCompilationhintflags?: (ctx: CompilationhintflagsContext) => void;
-	/**
-	 * Enter a parse tree produced by `HazeParser.compilationlang`.
-	 * @param ctx the parse tree
-	 */
-	enterCompilationlang?: (ctx: CompilationlangContext) => void;
-	/**
-	 * Exit a parse tree produced by `HazeParser.compilationlang`.
-	 * @param ctx the parse tree
-	 */
-	exitCompilationlang?: (ctx: CompilationlangContext) => void;
-	/**
-	 * Enter a parse tree produced by `HazeParser.linkerhint`.
-	 * @param ctx the parse tree
-	 */
-	enterLinkerhint?: (ctx: LinkerhintContext) => void;
-	/**
-	 * Exit a parse tree produced by `HazeParser.linkerhint`.
-	 * @param ctx the parse tree
-	 */
-	exitLinkerhint?: (ctx: LinkerhintContext) => void;
 	/**
 	 * Enter a parse tree produced by the `StructMember`
 	 * labeled alternative in `HazeParser.structcontent`.

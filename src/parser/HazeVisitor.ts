@@ -13,8 +13,6 @@ import { BodyContext } from "./HazeParser.js";
 import { ParamContext } from "./HazeParser.js";
 import { ParamsContext } from "./HazeParser.js";
 import { CdefinitiondeclContext } from "./HazeParser.js";
-import { PrebuildcmdContext } from "./HazeParser.js";
-import { PostbuildcmdContext } from "./HazeParser.js";
 import { FuncdeclContext } from "./HazeParser.js";
 import { ExternlangContext } from "./HazeParser.js";
 import { IfexprContext } from "./HazeParser.js";
@@ -51,11 +49,6 @@ import { FunctypeContext } from "./HazeParser.js";
 import { BooleanConstantContext } from "./HazeParser.js";
 import { LiteralConstantContext } from "./HazeParser.js";
 import { StringConstantContext } from "./HazeParser.js";
-import { CompilationhintContext } from "./HazeParser.js";
-import { CompilationhintfilenameContext } from "./HazeParser.js";
-import { CompilationhintflagsContext } from "./HazeParser.js";
-import { CompilationlangContext } from "./HazeParser.js";
-import { LinkerhintContext } from "./HazeParser.js";
 import { StructMemberContext } from "./HazeParser.js";
 import { StructMethodContext } from "./HazeParser.js";
 import { StructUnionFieldsContext } from "./HazeParser.js";
@@ -133,18 +126,6 @@ export default class HazeVisitor<Result> extends ParseTreeVisitor<Result> {
 	 * @return the visitor result
 	 */
 	visitCdefinitiondecl?: (ctx: CdefinitiondeclContext) => Result;
-	/**
-	 * Visit a parse tree produced by `HazeParser.prebuildcmd`.
-	 * @param ctx the parse tree
-	 * @return the visitor result
-	 */
-	visitPrebuildcmd?: (ctx: PrebuildcmdContext) => Result;
-	/**
-	 * Visit a parse tree produced by `HazeParser.postbuildcmd`.
-	 * @param ctx the parse tree
-	 * @return the visitor result
-	 */
-	visitPostbuildcmd?: (ctx: PostbuildcmdContext) => Result;
 	/**
 	 * Visit a parse tree produced by `HazeParser.funcdecl`.
 	 * @param ctx the parse tree
@@ -387,36 +368,6 @@ export default class HazeVisitor<Result> extends ParseTreeVisitor<Result> {
 	 * @return the visitor result
 	 */
 	visitStringConstant?: (ctx: StringConstantContext) => Result;
-	/**
-	 * Visit a parse tree produced by `HazeParser.compilationhint`.
-	 * @param ctx the parse tree
-	 * @return the visitor result
-	 */
-	visitCompilationhint?: (ctx: CompilationhintContext) => Result;
-	/**
-	 * Visit a parse tree produced by `HazeParser.compilationhintfilename`.
-	 * @param ctx the parse tree
-	 * @return the visitor result
-	 */
-	visitCompilationhintfilename?: (ctx: CompilationhintfilenameContext) => Result;
-	/**
-	 * Visit a parse tree produced by `HazeParser.compilationhintflags`.
-	 * @param ctx the parse tree
-	 * @return the visitor result
-	 */
-	visitCompilationhintflags?: (ctx: CompilationhintflagsContext) => Result;
-	/**
-	 * Visit a parse tree produced by `HazeParser.compilationlang`.
-	 * @param ctx the parse tree
-	 * @return the visitor result
-	 */
-	visitCompilationlang?: (ctx: CompilationlangContext) => Result;
-	/**
-	 * Visit a parse tree produced by `HazeParser.linkerhint`.
-	 * @param ctx the parse tree
-	 * @return the visitor result
-	 */
-	visitLinkerhint?: (ctx: LinkerhintContext) => Result;
 	/**
 	 * Visit a parse tree produced by the `StructMember`
 	 * labeled alternative in `HazeParser.structcontent`.

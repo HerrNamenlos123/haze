@@ -330,10 +330,7 @@ export class Program {
   > = new Map();
   concreteFunctions: Map<string, FunctionSymbol> = new Map();
   concreteDatatypes: Map<string, DatatypeSymbol> = new Map();
-  prebuildCmds: string[] = [];
-  postbuildCmds: string[] = [];
   cDefinitionDecl: string[] = [];
-  linkerFlags: string[] = [];
   scopeStack: Scope[];
   projectConfig: ProjectConfig;
   ast?: ParserRuleContext;
