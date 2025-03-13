@@ -128,6 +128,7 @@ export class ModuleCompiler {
       throw new GeneralError("Config missing");
     }
     const libs: string[] = [];
+    const linkerFlags: string[] = [];
     for (const dep of this.projectConfig.dependencies || []) {
       const libpath = join(
         join(this.projectConfig.buildDir, dep.path),
@@ -148,8 +149,9 @@ export class ModuleCompiler {
 
       const archiveFile = join(tempdir, lib.filename);
       libs.push(archiveFile);
+      linkerFlags.push(...metadata.linkerFlags);
     }
-    return libs;
+    return [libs, linkerFlags];
   }
 
   async loadInternals(
@@ -298,8 +300,8 @@ export class ModuleCompiler {
         );
 
         if (this.projectConfig.moduleType === ModuleType.Executable) {
-          const libs = await this.loadDependencyLibs();
-          const cmd = `${C_COMPILER} -g ${moduleCFile} -o ${moduleExecutable} ${libs.join(" ")} -std=c11 ${program.linkerFlags.join(" ")}`;
+          const [libs, linkerFlags] = await this.loadDependencyLibs();
+          const cmd = `${C_COMPILER} -g ${moduleCFile} -o ${moduleExecutable} ${libs.join(" ")} ${linkerFlags.join(" ")} -std=c11 ${program.linkerFlags.join(" ")}`;
           child_process.execSync(cmd);
         } else {
           const cmd = `${C_COMPILER} -g ${moduleCFile} -c -o ${moduleOFile} -fPIC -std=c11 ${program.linkerFlags.join(" ")}`;
@@ -333,6 +335,7 @@ export class ModuleCompiler {
               },
             ],
             exportedDeclarations: [...exportedDeclarations],
+            linkerFlags: this.projectConfig.linkerFlags,
           };
           await Bun.write(
             moduleMetadataFile,

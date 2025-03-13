@@ -52,6 +52,7 @@ export type ProjectConfig = {
   moduleType: ModuleType;
   buildDir: string;
   dependencies: { name: string; path: string }[];
+  linkerFlags: string[];
 };
 
 export type ModuleConfig = {
@@ -73,6 +74,7 @@ export type ModuleMetadata = {
   version: string;
   libs: ModuleLibMetadata[];
   exportedDeclarations: string[];
+  linkerFlags: string[];
 };
 
 export function parseModuleMetadata(metadata: string): ModuleMetadata {
@@ -162,6 +164,7 @@ export function parseModuleMetadata(metadata: string): ModuleMetadata {
     version: getString(obj["version"]),
     exportedDeclarations: getStringArray(obj["exportedDeclarations"]),
     libs: getLibs(obj["libs"]),
+    linkerFlags: getStringArray(obj["linkerFlags"]),
   };
 }
 
@@ -311,6 +314,10 @@ export class ConfigParser {
       moduleType: moduleType,
       nostdlib: this.getOptionalStringAnyOf(toml, "std", ["none"]) === "none",
       buildDir: join(dirname(this.configPath), "build"),
+      linkerFlags:
+        (toml["linker"] &&
+          this.getOptionalStringArray(toml["linker"], "flags")) ||
+        [],
     };
   }
 }

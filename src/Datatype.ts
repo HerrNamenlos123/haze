@@ -489,7 +489,7 @@ export function generateDeclarationCCode(
         params.push("...");
       }
       writer.write(
-        `typedef ${generateUsageCode(datatype.type.functionReturnType, program)} (*${generateUsageCode(datatype.type, program)})(${generateUsageCode(program.getBuiltinType("Context"), program)}* ctx, ${params.join(", ")});`,
+        `typedef ${generateUsageCode(datatype.type.functionReturnType, program)} (*${generateUsageCode(datatype.type, program)})(${generateUsageCode(program.getBuiltinType("Context"), program)}* ctx${params.length > 0 ? ", " : ""}${params.join(", ")});`,
       );
       return writer;
 
