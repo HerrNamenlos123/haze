@@ -1,6 +1,6 @@
-declare "C" abort();
-declare "C" assert(cond: boolean);
-declare "C" printf(str: stringview, ...);
+extern "C" abort();
+extern "C" assert(cond: boolean);
+extern "C" printf(str: stringview, ...);
 
 namespace Console {
   export print(fmt: stringview, ...) {

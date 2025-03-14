@@ -7,7 +7,7 @@ import {
 } from "./Errors";
 import type { StructDeclContext } from "./parser/HazeParser";
 import {
-  Language,
+  Linkage,
   mangleDatatype,
   mangleSymbol,
   serializeSymbol,
@@ -179,7 +179,7 @@ class CodeGenerator {
     }
 
     for (const symbol of this.program.concreteFunctions.values()) {
-      if (symbol.language === Language.Internal) {
+      if (symbol.extern === Linkage.Internal) {
         this.generateFuncUse(symbol);
       }
     }
@@ -298,7 +298,17 @@ class CodeGenerator {
           throw new ImpossibleSituation();
         }
         const ret = generateUsageCode(statement.symbol.type, this.program);
-        outWriter.writeLine(`${ret} ${statement.symbol.name} = {0};`);
+
+        if (statement.symbol.extern !== Linkage.Internal) {
+          outWriter.write("extern ");
+        }
+        outWriter.write(`${ret} ${mangleSymbol(statement.symbol)}`);
+
+        if (statement.symbol.extern !== Linkage.Internal) {
+          outWriter.writeLine(`;`);
+        } else {
+          outWriter.writeLine(` = {0};`);
+        }
         return { temp: tempWriter, out: outWriter };
       }
 
@@ -429,7 +439,7 @@ class CodeGenerator {
         }
         if (expr.expr.variant === "SymbolValue") {
           if (expr.expr.symbol.variant === "Function") {
-            if (expr.expr.symbol.language === Language.Internal) {
+            if (expr.expr.symbol.extern === Linkage.Internal) {
               args.push("ctx");
             }
           } else if (expr.expr.symbol.variant === "Variable") {
@@ -532,7 +542,11 @@ class CodeGenerator {
 
       case "SymbolValue":
         if (expr.symbol.variant === "Function") {
-          outWriter.write(mangleSymbol(expr.symbol));
+          if (expr.symbol.extern === Linkage.External_C) {
+            outWriter.write(expr.symbol.name);
+          } else {
+            outWriter.write(mangleSymbol(expr.symbol));
+          }
         } else if (expr.symbol.variant === "Datatype") {
           outWriter.write(mangleSymbol(expr.symbol));
         } else if (expr.symbol.variant === "Variable") {

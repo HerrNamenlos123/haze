@@ -30,7 +30,7 @@ import { Module } from "./Module";
 import {
   isDatatypeGeneric,
   isSymbolGeneric,
-  Language,
+  Linkage,
   mangleDatatype,
   mangleSymbol,
   serializeSymbol,
@@ -496,7 +496,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
     this.program.pushScope(symbol.scope);
     this.functionStack.push(symbol);
 
-    if (symbol.language === Language.Internal) {
+    if (symbol.extern === Linkage.Internal) {
       if (!symbol.scope) {
         throw new InternalError("Function missing scope");
       }
@@ -517,6 +517,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
           variableScope: VariableScope.Local,
           export: false,
           location: symbol.location,
+          extern: Linkage.Internal,
         });
       }
 
@@ -529,6 +530,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
           variableScope: VariableScope.Local,
           export: false,
           location: symbol.location,
+          extern: Linkage.Internal,
         });
       }
 
@@ -546,6 +548,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
         variableScope: VariableScope.Local,
         export: false,
         location: symbol.location,
+        extern: Linkage.Internal,
       });
 
       if (!(ctx instanceof FuncdeclContext) && !symbol.declared) {
@@ -616,7 +619,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
       this.program.popScope();
       this.program.concreteFunctions.set(mangleSymbol(symbol), symbol);
       if (symbol.export) {
-        this.program.exportFunctions.set(mangleSymbol(symbol), symbol);
+        this.program.exportSymbols.set(mangleSymbol(symbol), symbol);
       }
     } else {
       this.visitChildren(ctx);
@@ -882,10 +885,6 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
         );
     }
   };
-
-  // visitStructMethod = (ctx: StructMethodContext): void => {
-  //   this.implFunc(ctx);
-  // };
 
   visitStringConstant = (ctx: StringConstantContext): StringConstantSymbol => {
     return {
@@ -1165,6 +1164,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
       variant: "Variable",
       export: false,
       location: this.program.location(ctx),
+      extern: Linkage.Internal,
     };
     return [symbol, expr];
   };

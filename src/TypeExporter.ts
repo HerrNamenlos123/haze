@@ -4,7 +4,7 @@ import {
   type Primitive,
 } from "./Datatype";
 import { ImpossibleSituation, Location, UnreachableCode } from "./Errors";
-import type { Language, Symbol, VariableScope, VariableType } from "./Symbol";
+import type { Linkage, Symbol, VariableScope, VariableType } from "./Symbol";
 
 export type ExportedTypesystem = {
   datatypes: StrippedDatatype[];
@@ -38,7 +38,7 @@ type StrippedStructDatatype = {
   typeId: number;
   name: string;
   generics: Record<string, DatatypeId | null>;
-  language: Language;
+  language: Linkage;
   members: (SymbolId | StrippedStructMemberUnion)[];
   methods: SymbolId[];
   parentSymbol: SymbolId | null;
@@ -87,7 +87,7 @@ type StrippedFunctionSymbol = {
   variant: "Function";
   name: string;
   typeId: DatatypeId;
-  language: Language;
+  language: Linkage;
   parentSymbol?: Symbol;
   // thisPointerExpr?: Expression;
   // scope: Scope;

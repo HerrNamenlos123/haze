@@ -17,7 +17,7 @@ import {
 } from "./parser/HazeParser";
 import type { Module } from "./Module";
 import {
-  Language,
+  Linkage,
   isSymbolGeneric,
   mangleSymbol,
   serializeSymbol,
@@ -41,7 +41,7 @@ import {
   type StructMemberUnion,
 } from "./Datatype";
 import { Scope } from "./Scope";
-import type { ParserRuleContext } from "antlr4";
+import { Interval, type ParserRuleContext } from "antlr4";
 import {
   collectFunction,
   collectVariableStatement,
@@ -53,12 +53,14 @@ import {
   type ParamPack,
 } from "./utils";
 import type { Statement } from "./Statement";
+import type { Parser } from "./parser";
 
 export class SymbolCollector extends HazeVisitor<any> {
   private program: Module;
   private parentSymbolStack: DatatypeSymbol<
     StructDatatype | NamespaceDatatype
   >[];
+  private parser?: Parser;
 
   constructor(program: Module) {
     super();
@@ -66,9 +68,11 @@ export class SymbolCollector extends HazeVisitor<any> {
     this.parentSymbolStack = [];
   }
 
-  collect = (ctx: ParserRuleContext, filename: string) => {
+  collect = (ctx: ParserRuleContext, parser: Parser, filename: string) => {
     this.program.filename = filename;
+    this.parser = parser;
     this.visit(ctx);
+    this.parser = undefined;
     this.program.filename = undefined;
   };
 
@@ -112,10 +116,12 @@ export class SymbolCollector extends HazeVisitor<any> {
   };
 
   visitFuncdecl = (ctx: FuncdeclContext): void => {
+    // const extern = Boolean(ctx._extern);
+
     const lang = ctx.externlang()?.getText()[1];
-    let functype = Language.Internal;
+    let functype = Linkage.Internal;
     if (lang === "C") {
-      functype = Language.External_C;
+      functype = Linkage.External_C;
     } else if (functype) {
       throw new CompilerError(
         `Extern Language '${lang}' is not supported.`,
@@ -124,7 +130,7 @@ export class SymbolCollector extends HazeVisitor<any> {
     }
 
     const signature = ctx.ID_list().map((n) => n.getText());
-    if (signature.length > 1 && functype === Language.External_C) {
+    if (signature.length > 1 && functype === Linkage.External_C) {
       throw new CompilerError(
         "Extern C functions cannot be namespaced",
         this.program.location(ctx),
@@ -137,7 +143,7 @@ export class SymbolCollector extends HazeVisitor<any> {
       );
     }
 
-    collectFunction(
+    const symbol = collectFunction(
       this,
       ctx,
       signature[0],
@@ -145,6 +151,9 @@ export class SymbolCollector extends HazeVisitor<any> {
       this.parentSymbolStack[this.parentSymbolStack.length - 1],
       functype,
     );
+    if (symbol.export) {
+      this.program.exportSymbols.set(mangleSymbol(symbol), symbol);
+    }
   };
 
   // Disabled because anonymous functions are collected in the semantic analyzer
@@ -179,6 +188,7 @@ export class SymbolCollector extends HazeVisitor<any> {
       variableScope: VariableScope.Member,
       export: false,
       location: this.program.location(ctx),
+      extern: Linkage.Internal,
     };
     return symbol;
   };
@@ -212,9 +222,9 @@ export class SymbolCollector extends HazeVisitor<any> {
       .map((n) => [n.getText(), undefined]);
 
     const lang = ctx.externlang()?.getText()[1];
-    let language = Language.Internal;
+    let language = Linkage.Internal;
     if (lang === "C") {
-      language = Language.External_C;
+      language = Linkage.External_C;
     } else if (lang) {
       throw new CompilerError(
         `Extern Language '${lang}' is not supported.`,
@@ -245,6 +255,20 @@ export class SymbolCollector extends HazeVisitor<any> {
       export: exports,
       location: this.program.location(ctx),
     };
+
+    if (genericsList.length > 0) {
+      if (!this.parser?.parser || !ctx.stop) {
+        throw new ImpossibleSituation();
+      }
+      const tokens = this.parser.parser.getTokenStream();
+      let originalText = tokens.getText(
+        new Interval(ctx.start.tokenIndex, ctx.stop.tokenIndex),
+      );
+      if (originalText.startsWith("export ")) {
+        originalText = originalText.replace("export ", "");
+      }
+      symbol.originalGenericSourcecode = originalText;
+    }
 
     parentScope.defineSymbol(symbol);
     for (const [name, tp] of type.generics) {
@@ -281,7 +305,7 @@ export class SymbolCollector extends HazeVisitor<any> {
     });
 
     if (symbol.export) {
-      this.program.exportDatatypes.set(mangleSymbol(symbol), symbol);
+      this.program.exportSymbols.set(mangleSymbol(symbol), symbol);
     }
 
     this.parentSymbolStack.pop();
@@ -360,6 +384,10 @@ export class SymbolCollector extends HazeVisitor<any> {
 
     this.parentSymbolStack.pop();
     this.program.popScope();
+
+    if (ctx._export_) {
+      this.program.exportSymbols.set(mangleSymbol(symbol), symbol);
+    }
 
     return symbol;
   };

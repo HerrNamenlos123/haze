@@ -12,10 +12,11 @@ import { OutputWriter } from "./OutputWriter";
 import type { Module } from "./Module";
 import { Scope } from "./Scope";
 import {
-  Language,
+  Linkage,
   mangleDatatype,
   mangleSymbol,
   serializeSymbol,
+  VariableType,
   type DatatypeSymbol,
   type FunctionSymbol,
   type Symbol,
@@ -82,7 +83,7 @@ export type StructDatatype = {
   variant: "Struct";
   name: string;
   generics: Generics;
-  language: Language;
+  language: Linkage;
   members: (VariableSymbol | StructMemberUnion)[];
   methods: FunctionSymbol[];
   parentSymbol?: DatatypeSymbol;
@@ -607,7 +608,7 @@ export function generateUsageCode(dt: Datatype, program: Module): string {
       throw new InternalError("Cannot generate usage code for deferred");
 
     case "Struct":
-      if (dt.language === Language.Internal) {
+      if (dt.language === Linkage.Internal) {
         return `_H${mangleDatatype(dt)}`;
       } else {
         return `${mangleDatatype(dt)}`;
@@ -665,6 +666,19 @@ export function generateDatatypeDeclarationHazeCode(
           writer.write(`}`);
         }
       }
+      for (const method of datatype.methods) {
+        let out = method.name + "(";
+        const params = [] as string[];
+        for (const [name, tp] of method.type.functionParameters) {
+          params.push(`${name}:${generateDatatypeUsageHazeCode(tp).get()}`);
+        }
+        if (method.type.vararg) {
+          params.push("...");
+        }
+        out += params.join(",");
+        out += `):${generateDatatypeUsageHazeCode(method.type.functionReturnType).get()};`;
+        writer.write(out);
+      }
       writer.write("}");
       return writer;
     }
@@ -672,8 +686,15 @@ export function generateDatatypeDeclarationHazeCode(
     case "RawPointer": {
       return writer;
     }
+
+    case "Namespace": {
+      for (const symbol of datatype.symbolsScope.getSymbols()) {
+        writer.writeLine(generateSymbolUsageHazeCode(symbol));
+      }
+      return writer;
+    }
   }
-  throw new UnreachableCode();
+  throw new InternalError("Invalid datatype: " + datatype.variant);
 }
 
 export function generateDatatypeUsageHazeCode(
@@ -697,8 +718,17 @@ export function generateDatatypeUsageHazeCode(
           generics.push(generateDatatypeUsageHazeCode(tp).get());
         }
       }
+      const namespaces = [] as string[];
+      let p: Symbol | undefined = datatype.parentSymbol;
+      while (p) {
+        if (p.variant !== "Datatype" || p.type.variant !== "Namespace") {
+          throw new InternalError("Unexpected parent");
+        }
+        namespaces.unshift(p.type.name);
+        p = p.parentSymbol;
+      }
       writer.write(
-        `${datatype.name}${generics.length > 0 ? "<" + generics.join(",") + ">" : ""}`,
+        `${namespaces.map((n) => n + ".").join("")}${datatype.name}${generics.length > 0 ? "<" + generics.join(",") + ">" : ""}`,
       );
       return writer;
     }
@@ -736,11 +766,19 @@ export function generateSymbolUsageHazeCode(symbol: Symbol) {
         namespaces.unshift(p.type.name);
         p = p.parentSymbol;
       }
-      let tp = generateDatatypeDeclarationHazeCode(symbol.type).get();
-      if (namespaces.length > 0) {
-        writer.write(`namespace ${namespaces.join(".")} {${tp}}`);
+      let out = "";
+      if (symbol.type.variant === "Struct" && symbol.type.generics.size > 0) {
+        if (!symbol.originalGenericSourcecode) {
+          throw new InternalError("Generic struct is missing ctx");
+        }
+        out = symbol.originalGenericSourcecode;
       } else {
-        writer.write(tp);
+        out = generateDatatypeDeclarationHazeCode(symbol.type).get();
+      }
+      if (namespaces.length > 0) {
+        writer.write(`namespace ${namespaces.join(".")} {${out}}`);
+      } else {
+        writer.write(out);
       }
       return writer;
     }
@@ -763,7 +801,13 @@ export function generateSymbolUsageHazeCode(symbol: Symbol) {
         }
         p = p.parentSymbol;
       }
-      let tp = "declare " + symbol.name + "(";
+      let tp = "";
+      if (symbol.extern == Linkage.External) {
+        tp += "extern ";
+      } else if (symbol.extern == Linkage.External_C) {
+        tp += 'extern "C" ';
+      }
+      tp += symbol.name + "(";
       const params = [] as string[];
       for (const [name, tp] of symbol.type.functionParameters) {
         params.push(`${name}:${generateDatatypeUsageHazeCode(tp).get()}`);
@@ -777,6 +821,57 @@ export function generateSymbolUsageHazeCode(symbol: Symbol) {
         writer.write(`namespace ${namespaces.join(".")} {${tp}}`);
       } else {
         writer.write(tp);
+      }
+      return writer;
+    }
+
+    case "Variable": {
+      const namespaces = [] as string[];
+      let p = symbol.parentSymbol;
+      while (p) {
+        if (p.variant === "Function") {
+          // noop
+        } else if (p.variant === "Datatype") {
+          if (p.type.variant === "Struct") {
+            // noop
+          } else if (p.type.variant !== "Namespace") {
+            throw new InternalError("Unexpected parent: " + p.type.variant);
+          }
+          namespaces.unshift(p.type.name);
+        } else {
+          throw new InternalError("Unexpected symbol type: " + p.variant);
+        }
+        p = p.parentSymbol;
+      }
+      let out = "";
+      if (symbol.extern == Linkage.External) {
+        out += "extern ";
+      } else if (symbol.extern == Linkage.External_C) {
+        out += 'extern "C" ';
+      }
+      switch (symbol.variableType) {
+        case VariableType.ConstantStructField:
+        case VariableType.ConstantVariable:
+          out += "const ";
+          break;
+
+        case VariableType.MutableStructField:
+        case VariableType.MutableVariable:
+          out += "let ";
+          break;
+
+        case VariableType.Parameter:
+          throw new ImpossibleSituation();
+      }
+      out +=
+        symbol.name +
+        ":" +
+        generateDatatypeUsageHazeCode(symbol.type).get() +
+        ";";
+      if (namespaces.length > 0) {
+        writer.write(`namespace ${namespaces.join(".")} {${out}}`);
+      } else {
+        writer.write(out);
       }
       return writer;
     }

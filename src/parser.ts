@@ -28,6 +28,8 @@ class HazeErrorListener extends ErrorListener<any> {
 }
 
 export class Parser {
+  parser?: HazeParser;
+
   constructor() {}
 
   async parseFile(filename: string) {
@@ -44,15 +46,15 @@ export class Parser {
     lexer.addErrorListener(errorListener);
 
     let tokenStream = new CommonTokenStream(lexer);
-    let parser = new HazeParser(tokenStream);
-    parser.removeErrorListeners();
-    parser.addErrorListener(errorListener);
+    this.parser = new HazeParser(tokenStream);
+    this.parser.removeErrorListeners();
+    this.parser.addErrorListener(errorListener);
 
-    if (parser.syntaxErrorsCount != 0) {
+    if (this.parser.syntaxErrorsCount != 0) {
       return;
     }
-    const ast = parser.prog();
-    if (parser.syntaxErrorsCount != 0) {
+    const ast = this.parser.prog();
+    if (this.parser.syntaxErrorsCount != 0) {
       return;
     }
     return ast;

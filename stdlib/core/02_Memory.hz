@@ -1,10 +1,10 @@
 
-declare "C" calloc(num: u64, size: u64): RawPtr<none>;
-declare "C" realloc(ptr: RawPtr<none>, newSize: u64): RawPtr<none>;
-declare "C" free(ptr: RawPtr<none>);
-declare "C" memcpy(to: RawPtr<none>, from: RawPtr<none>, length: u64): RawPtr<none>;
+extern "C" calloc(num: u64, size: u64): RawPtr<none>;
+extern "C" realloc(ptr: RawPtr<none>, newSize: u64): RawPtr<none>;
+extern "C" free(ptr: RawPtr<none>);
+extern "C" memcpy(to: RawPtr<none>, from: RawPtr<none>, length: u64): RawPtr<none>;
 
-namespace Memory {
+export namespace Memory {
   allocate(size: u64): RawPtr<none> {
     return ctx.mem.alloc(size);
   }

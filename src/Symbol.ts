@@ -33,8 +33,9 @@ export enum VariableScope {
   Global,
 }
 
-export enum Language {
+export enum Linkage {
   Internal,
+  External,
   External_C,
 }
 
@@ -47,6 +48,7 @@ export type VariableSymbol = {
   parentSymbol?: Symbol;
   ctx?: VariableDefinitionContext | VariableDeclarationContext;
   export: boolean;
+  extern: Linkage;
   location: Location;
 };
 
@@ -56,7 +58,7 @@ export type FunctionSymbol = {
   variant: "Function";
   name: string;
   type: FunctionDatatype;
-  language: Language;
+  extern: Linkage;
   parentSymbol?: Symbol;
   thisPointerExpr?: Expression;
   scope: Scope;
@@ -76,6 +78,7 @@ export type DatatypeSymbol<T = Datatype> = {
   scope: Scope;
   export: boolean;
   location: Location;
+  originalGenericSourcecode?: string;
 };
 
 export type StringConstantSymbol = {
@@ -188,7 +191,7 @@ export function mangleDatatype(datatype: Datatype): string {
           p = p.parentSymbol?.type;
         }
       }
-      if (datatype.language === Language.Internal) {
+      if (datatype.language === Linkage.Internal) {
         let innerMangling = datatype.name.length.toString() + datatype.name;
         if (datatype.generics.size > 0) {
           innerMangling += "I";
@@ -235,7 +238,7 @@ export function mangleDatatype(datatype: Datatype): string {
 export function mangleSymbol(symbol: Symbol): string {
   switch (symbol.variant) {
     case "Function": {
-      if (symbol.language === Language.External_C) {
+      if (symbol.extern === Linkage.External_C) {
         return symbol.name;
       }
       let mangled = "_H";

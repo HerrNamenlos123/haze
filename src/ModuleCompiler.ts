@@ -121,42 +121,43 @@ export class ProjectCompiler {
   }
 
   async run(): Promise<number> {
-    // try {
-    //   if (!this.projectConfig) {
-    //     throw new GeneralError("Config missing");
-    //   }
-    //   if (this.projectConfig?.moduleType === ModuleType.Library) {
-    //     throw new GeneralError(
-    //       `This module is a library and cannot be executed. Use 'hz build' to build it.`,
-    //     );
-    //   }
-    //   const platform = "linux-x64";
-    //   const moduleBuildDir = join(
-    //     this.projectConfig.buildDir,
-    //     this.projectConfig.projectName,
-    //   );
-    //   const moduleExecutable = join(
-    //     moduleBuildDir,
-    //     this.projectConfig.projectName + "-" + platform,
-    //   );
-    //   child_process.execSync(moduleExecutable, { stdio: "inherit" });
-    //   return 0;
-    // } catch (e: any) {
-    //   if (e instanceof GeneralError) {
-    //     console.error(e.message);
-    //   } else if (e instanceof InternalError) {
-    //     console.error(e.stack);
-    //     console.error(e.message);
-    //   } else if (e instanceof CompilerError) {
-    //     console.error(e.message);
-    //   } else if (e instanceof UnreachableCode) {
-    //     console.error(e.message);
-    //   } else {
-    //     console.error("Execution failed");
-    //     return e.status as number;
-    //   }
-    //   return -1;
-    // }
+    try {
+      const config = await parseConfig();
+      if (!config) {
+        return -1;
+      }
+
+      if (config?.moduleType === ModuleType.Library) {
+        throw new GeneralError(
+          `This module is a library and cannot be executed. Use 'hz build' to build it.`,
+        );
+      }
+
+      if (!(await this.build())) {
+        return -1;
+      }
+
+      const platform = "linux-x64";
+      const moduleBuildDir = join(config.buildDir, config.projectName);
+      const moduleExecutable = join(moduleBuildDir, config.projectName);
+      child_process.execSync(moduleExecutable, { stdio: "inherit" });
+      return 0;
+    } catch (e: any) {
+      if (e instanceof GeneralError) {
+        console.error(e.message);
+      } else if (e instanceof InternalError) {
+        console.error(e.stack);
+        console.error(e.message);
+      } else if (e instanceof CompilerError) {
+        console.error(e.message);
+      } else if (e instanceof UnreachableCode) {
+        console.error(e.message);
+      } else {
+        console.error("Execution failed");
+        return e.status as number;
+      }
+      return -1;
+    }
   }
 }
 
@@ -181,7 +182,7 @@ class ModuleCompiler {
 
   getStdlibDirectory() {
     if (process.env.NODE_ENV === "production") {
-      const whichHz = Bun.which("hz");
+      const whichHz = Bun.which("haze");
       if (!whichHz) {
         throw new GeneralError(`Compiler not found in path`);
       }
@@ -201,7 +202,7 @@ class ModuleCompiler {
       throw new GeneralError("Parsing failed");
     }
     this.module.ast = ast;
-    this.module.collector.collect(ast, "internal.hz");
+    this.module.collector.collect(ast, parser, "internal.hz");
   }
 
   async loadDependencyMetadata(libpath: string, libname: string) {
@@ -239,7 +240,7 @@ class ModuleCompiler {
         throw new GeneralError("Parsing failed");
       }
       this.module.ast = ast;
-      this.module.collector.collect(ast, dep.name + ".hzlib");
+      this.module.collector.collect(ast, parser, dep.name + ".hzlib");
     }
   }
 
@@ -259,7 +260,7 @@ class ModuleCompiler {
       }
 
       this.module.ast = ast;
-      this.module.collector.collect(ast, fullPath);
+      this.module.collector.collect(ast, parser, fullPath);
     }
   }
 
@@ -295,7 +296,6 @@ class ModuleCompiler {
 
   async build() {
     try {
-      console.log("Building module", this.module.moduleConfig.projectName);
       await this.loadInternals();
       await this.importDeps();
       await this.loadSources();
@@ -332,10 +332,7 @@ class ModuleCompiler {
           };
 
           const exportedDeclarations = new Set<string>();
-          for (const [name, s] of this.module.exportDatatypes) {
-            exportedDeclarations.add(generateSymbolUsageHazeCode(s).get());
-          }
-          for (const [name, s] of this.module.exportFunctions) {
+          for (const [name, s] of this.module.exportSymbols) {
             exportedDeclarations.add(generateSymbolUsageHazeCode(s).get());
           }
 

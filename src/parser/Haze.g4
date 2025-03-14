@@ -4,7 +4,7 @@ prog: (cdefinitiondecl | namedfunc | funcdecl | structdecl | namespace | variabl
 
 namespacecontent: (namedfunc | funcdecl | structdecl | namespace | variablestatement)*;
 namespace
-    : 'namespace' ID ('.' ID)* '{' namespacecontent '}'
+    : (export='export')? 'namespace' ID ('.' ID)* '{' namespacecontent '}'
     ;
 
 namedfunc: (export='export')? ID '(' params ')' (':' datatype)? funcbody;
@@ -17,7 +17,7 @@ param: ID ':' datatype;
 params: (param (',' param)* (',' ellipsis)?)? | ellipsis;
 
 cdefinitiondecl: 'inject' STRING_LITERAL ';';
-funcdecl: (export='export')? 'declare' (externlang)? (ID '.')* ID '(' params ')' (':' datatype)? ';';
+funcdecl: (export='export')? (extern='extern' externlang?)? (ID '.')* ID '(' params ')' (':' datatype)? ';';
 externlang: '"C"' | '"C++"';
 
 ifexpr: expr;
@@ -31,8 +31,8 @@ variablemutability
     ;
 
 variablestatement
-    : (export='export')? variablemutability ID (':' datatype)? '=' expr ';'        #VariableDefinition
-    | (export='export')? variablemutability ID (':' datatype) ';'                  #VariableDeclaration
+    : (export='export')? (extern='extern' externlang?)? variablemutability ID (':' datatype)? '=' expr ';'        #VariableDefinition
+    | (export='export')? (extern='extern' externlang?)? variablemutability ID (':' datatype) ';'                  #VariableDeclaration
     ;
 
 statement
@@ -102,7 +102,7 @@ structcontent
     ;
 
 structdecl
-    : (export='export')? ('declare' externlang)? 'struct' ID ('<' ID (',' ID)* '>')? '{' (structcontent)* '}' (';')?      #StructDecl
+    : (export='export')? ('extern' externlang)? 'struct' ID ('<' ID (',' ID)* '>')? '{' (structcontent)* '}' (';')?      #StructDecl
     ;
 
 datatype
@@ -143,5 +143,5 @@ NUMBER_LITERAL: (DEC_PART | FLOAT_PART);
 // Tokens
 
 ID: [a-zA-Z_][a-zA-Z_0-9]*;
-WS: [ \t\n\r]+ -> skip;
-COMMENT: '//' ~[\r\n]* -> skip; // Single-line comments
+WS: [ \t\r\n]+ -> channel(HIDDEN);
+COMMENT: '//' ~[\r\n]* -> channel(HIDDEN); 

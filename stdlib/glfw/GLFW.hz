@@ -1,27 +1,27 @@
 
 inject "#include <GLFW/glfw3.h>";
-export declare "C" struct GLFWwindow {};
-declare "C" struct GLFWmonitor {};
-declare "C" glfwInit(): boolean;
-declare "C" glfwTerminate(): none;
-declare "C" glfwMakeContextCurrent(w: RawPtr<GLFWwindow>);
-declare "C" glfwWindowShouldClose(w: RawPtr<GLFWwindow>): boolean;
-declare "C" glfwCreateWindow(width: i32, height: i32, title: stringview, monitor: RawPtr<GLFWmonitor>, share: RawPtr<GLFWwindow>): RawPtr<GLFWwindow>;
-declare "C" glClear(flag: i64): boolean;
-declare "C" glfwSwapBuffers(w: RawPtr<GLFWwindow>);
-declare "C" glfwPollEvents();
-declare "C" glfwSwapInterval(flag: i8);
-declare "C" glfwGetTime(): f64;
-declare "C" glfwGetKey(w: RawPtr<GLFWwindow>, key: i32): i32;
-declare "C" glfwGetMouseButton(w: RawPtr<GLFWwindow>, button: i32): i32;
+export extern "C" struct GLFWwindow {};
+extern "C" struct GLFWmonitor {};
+extern "C" glfwInit(): boolean;
+extern "C" glfwTerminate(): none;
+extern "C" glfwMakeContextCurrent(w: RawPtr<GLFWwindow>);
+extern "C" glfwWindowShouldClose(w: RawPtr<GLFWwindow>): boolean;
+extern "C" glfwCreateWindow(width: i32, height: i32, title: stringview, monitor: RawPtr<GLFWmonitor>, share: RawPtr<GLFWwindow>): RawPtr<GLFWwindow>;
+extern "C" glClear(flag: i64): boolean;
+extern "C" glfwSwapBuffers(w: RawPtr<GLFWwindow>);
+extern "C" glfwPollEvents();
+extern "C" glfwSwapInterval(flag: i8);
+extern "C" glfwGetTime(): f64;
+extern "C" glfwGetKey(w: RawPtr<GLFWwindow>, key: i32): i32;
+extern "C" glfwGetMouseButton(w: RawPtr<GLFWwindow>, button: i32): i32;
 
-declare "C" initClayAndRSGL(window: RawPtr<GLFWwindow>);
-declare "C" beginFrame();
-declare "C" frame();
-declare "C" endFrame();
-declare "C" destroyClayAndRSGL(window: RawPtr<GLFWwindow>);
+extern "C" initClayAndRSGL(window: RawPtr<GLFWwindow>);
+extern "C" beginFrame();
+extern "C" frame();
+extern "C" endFrame();
+extern "C" destroyClayAndRSGL(window: RawPtr<GLFWwindow>);
 
-declare "C" text(text: stringview, fontSize: i32);
+extern "C" text(text: stringview, fontSize: i32);
 
 inject "#include \"../../gl.c\"";
 // prebuildcmd "pkg-config --version";
@@ -132,7 +132,7 @@ drawVector(vector: Vec2, position: Vec2, color: Color) {
   const sidedir = Vec2(dir.y, -dir.x);
   drawLine(position, tip, lineThickness, color);
   const cross = tip.sub(dir.mul(arrowLength));
-  const sideVec = sidedir.mul(arrowLength * tan(arrowAngle / 2));
+  const sideVec = sidedir.mul(arrowLength * Math.tan(arrowAngle / 2));
   drawTriangle(tip, cross.add(sideVec), cross.sub(sideVec), color);
 }
 
@@ -148,7 +148,7 @@ export TM2(): i32 {
 
   const windowResult = Window(1080, 720, "Test 1");
   if not windowResult.isSuccess {
-      printf("%s\n", windowResult.error);
+      Console.print("%s\n", windowResult.error);
       glfwTerminate();
       return 0;
   }
@@ -204,7 +204,7 @@ export TM2(): i32 {
 
     // =========================================
 
-    const phi = atan2(P.y, P.x);
+    const phi = Math.atan2(P.y, P.x);
 
     const e_r = P.normalize();
     const e_phi = Vec2(-e_r.y, e_r.x);
@@ -212,14 +212,14 @@ export TM2(): i32 {
     const v_phi = velocity.dot(e_phi);
     const v_r = velocity.dot(e_r);
 
-    const a_phi = pow(v_phi, 2) / R * phi;
-    const a_r = pow(v_phi, 2) / R * 
+    const a_phi = Math.pow(v_phi, 2) / R * phi;
+    const a_r = Math.pow(v_phi, 2) / R * 
                 (
-                    cosh((2*v_phi*elapsed) / (sqrt(2) * R)) 
+                    Math.cosh((2*v_phi*elapsed) / (Math.sqrt(2) * R)) 
                     - 
-                    1/pow(cosh((v_phi*elapsed)/(sqrt(2)*R)), 2));
+                    1/Math.pow(Math.cosh((v_phi*elapsed)/(Math.sqrt(2)*R)), 2));
 
-    acceleration = Vec2(a_r * cos(phi) - a_phi * sin(phi), a_r * sin(phi) + a_phi * cos(phi));
+    acceleration = Vec2(a_r * Math.cos(phi) - a_phi * Math.sin(phi), a_r * Math.sin(phi) + a_phi * Math.cos(phi));
     ctx.log.debug("v_phi: %f", v_phi);
 
     velocity = velocity.add(acceleration.mul(dt));

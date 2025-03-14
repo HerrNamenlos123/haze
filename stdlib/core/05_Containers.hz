@@ -7,7 +7,7 @@ export struct Result<TSuccess, TError> {
   isSuccess: boolean;
 }
 
-struct List<T> {
+export struct List<T> {
   buffer: Memory.Buffer;
   length: u64;
 

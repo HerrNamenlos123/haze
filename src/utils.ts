@@ -40,7 +40,7 @@ import type {
 } from "./Statement";
 import {
   isSymbolGeneric,
-  Language,
+  Linkage,
   mangleDatatype,
   mangleSymbol,
   serializeSymbol,
@@ -186,6 +186,7 @@ export function resolveGenerics(
             ),
             export: member.export,
             location: member.location,
+            extern: member.extern,
           });
         } else {
           const newUnion: StructMemberUnion = {
@@ -208,6 +209,7 @@ export function resolveGenerics(
               ctx: inner.ctx,
               export: inner.export,
               location: inner.location,
+              extern: inner.extern,
             });
           }
           cloned.members.push(newUnion);
@@ -224,7 +226,7 @@ export function resolveGenerics(
           ) as FunctionDatatype,
           // type: method.type,
           variant: "Function",
-          language: method.language,
+          extern: method.extern,
           scope: method.scope,
           ctx: method.ctx,
           parentSymbol: method.parentSymbol,
@@ -506,7 +508,7 @@ export function collectFunction(
   name: string,
   program: Module,
   parentSymbol: Symbol,
-  functype: Language = Language.Internal,
+  functype: Linkage = Linkage.Internal,
 ): FunctionSymbol {
   const parentScope = program.currentScope;
   const scope = program.pushScope(
@@ -554,7 +556,7 @@ export function collectFunction(
   const symbol: FunctionSymbol = {
     variant: "Function",
     name: name,
-    language: functype,
+    extern: functype,
     type: type,
     specialMethod: specialMethod,
     scope: scope,
@@ -645,6 +647,20 @@ export function collectVariableStatement(
     }
   }
 
+  let extern = Linkage.Internal;
+  if (ctx._extern) {
+    const lang = ctx.externlang()?.getText();
+    if (lang == "C") {
+      extern = Linkage.External_C;
+    } else if (lang) {
+      throw new CompilerError(
+        `Extern language ${lang} is not supported`,
+        program.location(ctx),
+      );
+    }
+    extern = Linkage.External;
+  }
+
   const symbol: VariableSymbol = {
     variableType: mutable
       ? VariableType.MutableVariable
@@ -657,6 +673,7 @@ export function collectVariableStatement(
     ctx: ctx,
     export: exports,
     location: program.location(ctx),
+    extern: extern,
   };
   program.currentScope.defineSymbol(symbol);
 

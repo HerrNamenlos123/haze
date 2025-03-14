@@ -8,7 +8,7 @@ import {
 } from "./Errors";
 import { Scope } from "./Scope";
 import {
-  Language,
+  Linkage,
   mangleSymbol,
   serializeSymbol,
   type DatatypeSymbol,
@@ -50,8 +50,7 @@ export class Module {
 
   datatypes: Datatype[] = [];
 
-  exportFunctions: Map<string, FunctionSymbol> = new Map();
-  exportDatatypes: Map<string, DatatypeSymbol> = new Map();
+  exportSymbols: Map<string, Symbol> = new Map();
 
   private anonymousStuffCounter = 0;
 
@@ -114,7 +113,7 @@ export class Module {
         type: {
           variant: "Struct",
           generics: new Map(),
-          language: Language.Internal,
+          language: Linkage.Internal,
           members: [],
           methods: [],
           name: "Context",
