@@ -137,7 +137,6 @@ export class ProjectCompiler {
         return -1;
       }
 
-      const platform = "linux-x64";
       const moduleBuildDir = join(config.buildDir, config.projectName);
       const moduleExecutable = join(moduleBuildDir, config.projectName);
       child_process.execSync(moduleExecutable, { stdio: "inherit" });

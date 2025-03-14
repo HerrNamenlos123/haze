@@ -2,6 +2,14 @@ extern "C" abort();
 extern "C" assert(cond: boolean);
 extern "C" printf(str: stringview, ...);
 
+inject "#include <stdarg.h>";
+inject "#include <stdlib.h>";
+inject "#include <stdio.h>";
+inject "#include <math.h>";
+inject "#include <time.h>";
+inject "#include <assert.h>";
+inject "#include <memory.h>";
+
 namespace Console {
   export print(fmt: stringview, ...) {
     __c__("va_list args");

@@ -105,10 +105,9 @@ class CodeGenerator {
       writer.write(include);
     }
 
-    writer.write("\n\n// C Declaration section\n");
+    writer.write("\n\n// C Injection section\n");
     for (const decl of Object.values(this.out.cDecls)) {
       writer.write(decl);
-      writer.writeLine();
     }
 
     this.generateDatatypeUse(
@@ -154,17 +153,7 @@ class CodeGenerator {
   }
 
   generate() {
-    this.out.includes["_USE_MATH_DEFINES"] = new OutputWriter().writeLine(
-      "#define _USE_MATH_DEFINES",
-    );
-    this.includeHeader("stdio.h");
-    this.includeHeader("assert.h");
     this.includeHeader("stdint.h");
-    this.includeHeader("stdlib.h");
-    this.includeHeader("memory.h");
-    this.includeHeader("stdarg.h");
-    this.includeHeader("math.h");
-    this.includeHeader("time.h");
 
     for (const decl of this.program.cDefinitionDecl) {
       this.out.cDecls[decl] = new OutputWriter().writeLine(decl);
