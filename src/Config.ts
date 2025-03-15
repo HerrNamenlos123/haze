@@ -22,7 +22,7 @@ export type ModuleConfig = {
   nostdlib: boolean;
   moduleType: ModuleType;
   buildDir: string;
-  configFilePath: string;
+  configFilePath?: string;
   dependencies: ModuleDependency[];
   linkerFlags: string[];
   platform: PlatformString;

@@ -14,7 +14,7 @@ import { performSemanticAnalysis } from "./SemanticAnalyzer";
 import { generateCode } from "./CodeGenerator";
 import { readdirSync, statSync } from "fs";
 import { readdir, stat } from "fs/promises";
-import { dirname, extname, join } from "path";
+import { basename, dirname, extname, join } from "path";
 import fs from "fs";
 import { version } from "../package.json";
 import { type VariableSymbol } from "./Symbol";
@@ -169,12 +169,39 @@ export class ProjectCompiler {
 
   constructor() {}
 
-  async build() {
-    const config = await parseConfig();
+  async getConfig(singleFilename?: string) {
+    let config: ModuleConfig | undefined;
+    if (!singleFilename) {
+      config = await parseConfig();
+    } else {
+      config = {
+        buildDir: join(process.cwd(), "__haze__"),
+        configFilePath: undefined,
+        dependencies: [],
+        linkerFlags: [],
+        moduleType: ModuleType.Executable,
+        nostdlib: false,
+        platform: "linux-x64",
+        projectName: basename(singleFilename),
+        projectVersion: "0.0.0",
+        scripts: [],
+        srcDirectory: dirname(singleFilename),
+        projectAuthors: undefined,
+        projectDescription: undefined,
+        projectLicense: undefined,
+      };
+    }
+    return config;
+  }
+
+  async build(singleFilename?: string) {
+    const config = await this.getConfig(singleFilename);
     if (!config) {
       return false;
     }
-    await this.cache.load(join(config.buildDir, "cache.json"));
+    if (!singleFilename) {
+      await this.cache.load(join(config.buildDir, "cache.json"));
+    }
     const mainModule = new ModuleCompiler(config, this.cache);
 
     const stdlibConfig = await parseConfig(
@@ -192,35 +219,39 @@ export class ProjectCompiler {
       return false;
     }
 
-    const deps = mainModule.module.moduleConfig.dependencies;
-    for (const dep of deps) {
-      const depdir = join(mainModule.getStdlibDirectory(), dep.path);
+    if (!singleFilename) {
+      const deps = mainModule.module.moduleConfig.dependencies;
+      for (const dep of deps) {
+        const depdir = join(mainModule.getStdlibDirectory(), dep.path);
 
-      const config = await parseConfig(depdir);
-      if (!config) {
-        return false;
-      }
+        const config = await parseConfig(depdir);
+        if (!config) {
+          return false;
+        }
 
-      const depModule = new ModuleCompiler(
-        config,
-        this.cache,
-        mainModule.globalBuildDir,
-      );
-      if (!(await depModule.build())) {
-        return false;
+        const depModule = new ModuleCompiler(
+          config,
+          this.cache,
+          mainModule.globalBuildDir,
+        );
+        if (!(await depModule.build())) {
+          return false;
+        }
       }
     }
 
     if (!(await mainModule.build())) {
       return false;
     }
-    await this.cache.save();
+    if (!singleFilename) {
+      await this.cache.save();
+    }
     return true;
   }
 
-  async run(): Promise<number> {
+  async run(singleFilename?: string): Promise<number> {
     try {
-      const config = await parseConfig();
+      const config = await this.getConfig(singleFilename);
       if (!config) {
         return -1;
       }
@@ -231,7 +262,7 @@ export class ProjectCompiler {
         );
       }
 
-      if (!(await this.build())) {
+      if (!(await this.build(singleFilename))) {
         return -1;
       }
 
@@ -402,17 +433,23 @@ class ModuleCompiler {
 
   async build() {
     try {
-      if (
-        !(await this.cache.hasModuleChanged(
-          this.module.moduleConfig.projectName,
-          this.module.moduleConfig.srcDirectory,
-          this.module.moduleConfig.configFilePath,
-        ))
-      ) {
-        console.log(`Skipping module ${this.module.moduleConfig.projectName}`);
-        return true;
-      } else {
-        console.log(`Building module ${this.module.moduleConfig.projectName}`);
+      if (this.module.moduleConfig.configFilePath) {
+        if (
+          !(await this.cache.hasModuleChanged(
+            this.module.moduleConfig.projectName,
+            this.module.moduleConfig.srcDirectory,
+            this.module.moduleConfig.configFilePath,
+          ))
+        ) {
+          console.log(
+            `Skipping module ${this.module.moduleConfig.projectName}`,
+          );
+          return true;
+        } else {
+          console.log(
+            `Building module ${this.module.moduleConfig.projectName}`,
+          );
+        }
       }
 
       await this.loadInternals();
@@ -443,7 +480,7 @@ class ModuleCompiler {
           const cmd = `${C_COMPILER} -g ${moduleCFile} -c -o ${moduleOFile} -fPIC -std=c11`;
           child_process.execSync(cmd);
           child_process.execSync(
-            `${ARCHIVE_TOOL} r ${moduleAFile} ${moduleOFile}`,
+            `${ARCHIVE_TOOL} r ${moduleAFile} ${moduleOFile} > /dev/null`,
           );
 
           const makerel = (absolute: string) => {
@@ -481,11 +518,13 @@ class ModuleCompiler {
 
           await $`tar -C ${this.moduleBuildDir} -cvzf ${moduleOutputLib} ${makerel(moduleAFile)} ${makerel(moduleMetadataFile)} > /dev/null`;
         }
-        await this.cache.compiledModule(
-          this.module.moduleConfig.projectName,
-          this.module.moduleConfig.srcDirectory,
-          this.module.moduleConfig.configFilePath,
-        );
+        if (this.module.moduleConfig.configFilePath) {
+          await this.cache.compiledModule(
+            this.module.moduleConfig.projectName,
+            this.module.moduleConfig.srcDirectory,
+            this.module.moduleConfig.configFilePath,
+          );
+        }
         return true;
       } catch (e) {
         if (e instanceof GeneralError) {

@@ -1,0 +1,5 @@
+
+main(): i32 {
+    Console.print("Bebi hallo!\n");
+    return 0;
+}

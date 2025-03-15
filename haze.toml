@@ -24,3 +24,4 @@ test = "haze test"
 
 [dependencies]
 glfw = "glfw"
+SDL = "SDL"
