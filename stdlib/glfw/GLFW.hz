@@ -140,6 +140,12 @@ getTime(): f64 {
   return glfwGetTime();
 }
 
+extern "C" glfwPlatformSupported(flag: i32): boolean;
+extern "C" glfwInitHint(a: i32, b: i32);
+
+// extern "C" const GLFW_PLATFORM_WAYLAND: i32;
+// extern "C" const GLFW_PLATFORM: i32;
+
 export TM2(): i32 { 
   if not glfwInit() {
     ctx.log.error("Initializing GLFW failed");

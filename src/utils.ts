@@ -649,16 +649,17 @@ export function collectVariableStatement(
 
   let extern = Linkage.Internal;
   if (ctx._extern) {
-    const lang = ctx.externlang()?.getText();
-    if (lang == "C") {
+    const lang = ctx.externlang()?.getText().slice(1, -1);
+    if (lang === "C") {
       extern = Linkage.External_C;
     } else if (lang) {
       throw new CompilerError(
         `Extern language ${lang} is not supported`,
         program.location(ctx),
       );
+    } else {
+      extern = Linkage.External;
     }
-    extern = Linkage.External;
   }
 
   const symbol: VariableSymbol = {

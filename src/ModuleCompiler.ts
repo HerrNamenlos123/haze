@@ -4,6 +4,7 @@ import { Parser } from "./parser";
 import {
   CompilerError,
   GeneralError,
+  ImpossibleSituation,
   InternalError,
   UnreachableCode,
 } from "./Errors";
@@ -12,6 +13,7 @@ import { SymbolCollector } from "./SymbolCollector";
 import { performSemanticAnalysis } from "./SemanticAnalyzer";
 import { generateCode } from "./CodeGenerator";
 import { readdirSync, statSync } from "fs";
+import { readdir, stat } from "fs/promises";
 import { dirname, extname, join } from "path";
 import fs from "fs";
 import { version } from "../package.json";
@@ -75,7 +77,96 @@ async function parseConfig(startDir?: string) {
   }
 }
 
+class Cache {
+  filename?: string;
+  data: Record<string, any> = {};
+
+  constructor() {}
+
+  async getFilesWithModificationDates(
+    dir: string,
+  ): Promise<{ file: string; modified: Date }[]> {
+    const files: { file: string; modified: Date }[] = [];
+
+    async function traverse(currentDir: string) {
+      const entries = await readdir(currentDir, { withFileTypes: true });
+
+      for (const entry of entries) {
+        const fullPath = join(currentDir, entry.name);
+        if (entry.isDirectory()) {
+          await traverse(fullPath);
+        } else {
+          const fileStat = await stat(fullPath);
+          files.push({ file: fullPath, modified: fileStat.mtime });
+        }
+      }
+    }
+
+    await traverse(dir);
+    return files;
+  }
+
+  async getFileModificationDate(
+    file: string,
+  ): Promise<{ file: string; modified: Date }> {
+    const fileStat = await stat(file);
+    return { file: file, modified: fileStat.mtime };
+  }
+
+  async load(filename: string) {
+    this.filename = filename;
+
+    if (fs.existsSync(filename)) {
+      const file = await Bun.file(filename).text();
+      this.data = JSON.parse(file);
+    }
+  }
+
+  async save() {
+    if (!this.filename) {
+      throw new ImpossibleSituation();
+    } else {
+      await Bun.write(this.filename, JSON.stringify(this.data, undefined, 2));
+    }
+  }
+
+  async compiledModule(name: string, moduleDir: string, configFile: string) {
+    const files = [
+      ...(await this.getFilesWithModificationDates(moduleDir)),
+      await this.getFileModificationDate(configFile),
+    ];
+    if (!this.data[name]) {
+      this.data[name] = {};
+    }
+    this.data[name]["files"] = files;
+  }
+
+  async hasModuleChanged(name: string, moduleDir: string, configFile: string) {
+    const files = new Set(
+      [
+        ...(await this.getFilesWithModificationDates(moduleDir)),
+        await this.getFileModificationDate(configFile),
+      ].map((f) => `${f.file}=${new Date(f.modified).toISOString()}`),
+    );
+    if (!this.data[name]) {
+      return true;
+    }
+    const foundFiles = new Set(
+      this.data[name]["files"].map(
+        (f: { file: string; modified: string }) =>
+          `${f.file}=${new Date(f.modified).toISOString()}`,
+      ),
+    );
+    if (foundFiles.difference(files).size !== 0) {
+      return true;
+    }
+    return false;
+  }
+}
+
 export class ProjectCompiler {
+  cache: Cache = new Cache();
+
   constructor() {}
 
   async build() {
@@ -83,7 +174,8 @@ export class ProjectCompiler {
     if (!config) {
       return false;
     }
-    const mainModule = new ModuleCompiler(config);
+    await this.cache.load(join(config.buildDir, "cache.json"));
+    const mainModule = new ModuleCompiler(config, this.cache);
 
     const stdlibConfig = await parseConfig(
       join(mainModule.getStdlibDirectory(), "core"),
@@ -93,6 +185,7 @@ export class ProjectCompiler {
     }
     const stdlibModule = new ModuleCompiler(
       stdlibConfig,
+      this.cache,
       mainModule.globalBuildDir,
     );
     if (!(await stdlibModule.build())) {
@@ -108,7 +201,11 @@ export class ProjectCompiler {
         return false;
       }
 
-      const depModule = new ModuleCompiler(config, mainModule.globalBuildDir);
+      const depModule = new ModuleCompiler(
+        config,
+        this.cache,
+        mainModule.globalBuildDir,
+      );
       if (!(await depModule.build())) {
         return false;
       }
@@ -117,6 +214,7 @@ export class ProjectCompiler {
     if (!(await mainModule.build())) {
       return false;
     }
+    await this.cache.save();
     return true;
   }
 
@@ -164,9 +262,15 @@ class ModuleCompiler {
   module: Module;
   globalBuildDir: string;
   moduleBuildDir: string;
+  cache: Cache;
 
-  constructor(moduleConfig: ModuleConfig, globalBuildDir?: string) {
+  constructor(
+    moduleConfig: ModuleConfig,
+    cache: Cache,
+    globalBuildDir?: string,
+  ) {
     this.module = new Module(moduleConfig);
+    this.cache = cache;
     if (!globalBuildDir) {
       this.globalBuildDir = moduleConfig.buildDir;
       this.moduleBuildDir = join(
@@ -244,6 +348,7 @@ class ModuleCompiler {
   }
 
   async loadSources() {
+    const sources = [] as string[];
     const files = readdirSync(this.module.moduleConfig.srcDirectory);
     const sortedFiles = files.sort((a, b) => a.localeCompare(b));
     for (const file of sortedFiles.filter((f) => extname(f) === ".hz")) {
@@ -260,7 +365,9 @@ class ModuleCompiler {
 
       this.module.ast = ast;
       this.module.collector.collect(ast, parser, fullPath);
+      sources.push(file);
     }
+    return sources;
   }
 
   async loadDependencyLibs() {
@@ -295,6 +402,19 @@ class ModuleCompiler {
 
   async build() {
     try {
+      if (
+        !(await this.cache.hasModuleChanged(
+          this.module.moduleConfig.projectName,
+          this.module.moduleConfig.srcDirectory,
+          this.module.moduleConfig.configFilePath,
+        ))
+      ) {
+        console.log(`Skipping module ${this.module.moduleConfig.projectName}`);
+        return true;
+      } else {
+        console.log(`Building module ${this.module.moduleConfig.projectName}`);
+      }
+
       await this.loadInternals();
       await this.importDeps();
       await this.loadSources();
@@ -361,6 +481,11 @@ class ModuleCompiler {
 
           await $`tar -C ${this.moduleBuildDir} -cvzf ${moduleOutputLib} ${makerel(moduleAFile)} ${makerel(moduleMetadataFile)} > /dev/null`;
         }
+        await this.cache.compiledModule(
+          this.module.moduleConfig.projectName,
+          this.module.moduleConfig.srcDirectory,
+          this.module.moduleConfig.configFilePath,
+        );
         return true;
       } catch (e) {
         if (e instanceof GeneralError) {

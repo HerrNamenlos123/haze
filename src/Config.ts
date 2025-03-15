@@ -22,6 +22,7 @@ export type ModuleConfig = {
   nostdlib: boolean;
   moduleType: ModuleType;
   buildDir: string;
+  configFilePath: string;
   dependencies: ModuleDependency[];
   linkerFlags: string[];
   platform: PlatformString;
@@ -279,6 +280,7 @@ export class ConfigParser {
         dirname(this.configPath),
         this.getOptionalString(toml, "src") || "src",
       ),
+      configFilePath: this.configPath,
       moduleType: moduleType,
       nostdlib: this.getOptionalStringAnyOf(toml, "std", ["none"]) === "none",
       buildDir: join(dirname(this.configPath), "build"),

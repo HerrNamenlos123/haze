@@ -19,4 +19,4 @@ src = "."
 # warnings_as_errors = false
 
 [linker]
-flags = ["-lm", "-lglfw", "-lGL", "-lpthread"]
+flags = ["-lm", "-lGL", "-lpthread"]

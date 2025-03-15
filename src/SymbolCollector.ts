@@ -118,7 +118,7 @@ export class SymbolCollector extends HazeVisitor<any> {
   visitFuncdecl = (ctx: FuncdeclContext): void => {
     // const extern = Boolean(ctx._extern);
 
-    const lang = ctx.externlang()?.getText()[1];
+    const lang = ctx.externlang()?.getText().slice(1, -1);
     let functype = Linkage.Internal;
     if (lang === "C") {
       functype = Linkage.External_C;
@@ -221,7 +221,7 @@ export class SymbolCollector extends HazeVisitor<any> {
       .slice(1)
       .map((n) => [n.getText(), undefined]);
 
-    const lang = ctx.externlang()?.getText()[1];
+    const lang = ctx.externlang()?.getText().slice(1, -1);
     let language = Linkage.Internal;
     if (lang === "C") {
       language = Linkage.External_C;

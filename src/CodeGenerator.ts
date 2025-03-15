@@ -291,7 +291,12 @@ class CodeGenerator {
         if (statement.symbol.extern !== Linkage.Internal) {
           outWriter.write("extern ");
         }
-        outWriter.write(`${ret} ${mangleSymbol(statement.symbol)}`);
+
+        if (statement.symbol.extern === Linkage.External_C) {
+          outWriter.write(`${ret} ${statement.symbol.name}`);
+        } else {
+          outWriter.write(`${ret} ${mangleSymbol(statement.symbol)}`);
+        }
 
         if (statement.symbol.extern !== Linkage.Internal) {
           outWriter.writeLine(`;`);
@@ -320,9 +325,11 @@ class CodeGenerator {
           statement.expr.location,
           this.program,
         );
-        outWriter.writeLine(
-          `${ret} ${mangleSymbol(statement.symbol)} = ${assignConv};`,
-        );
+        const name =
+          statement.symbol.extern === Linkage.External_C
+            ? statement.symbol.name
+            : mangleSymbol(statement.symbol);
+        outWriter.writeLine(`${ret} ${name} = ${assignConv};`);
         return { temp: tempWriter, out: outWriter };
       }
 
@@ -539,7 +546,11 @@ class CodeGenerator {
         } else if (expr.symbol.variant === "Datatype") {
           outWriter.write(mangleSymbol(expr.symbol));
         } else if (expr.symbol.variant === "Variable") {
-          outWriter.write(mangleSymbol(expr.symbol));
+          if (expr.symbol.extern === Linkage.External_C) {
+            outWriter.write(expr.symbol.name);
+          } else {
+            outWriter.write(mangleSymbol(expr.symbol));
+          }
         } else {
           throw new ImpossibleSituation();
         }
