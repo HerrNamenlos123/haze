@@ -30,6 +30,7 @@ namespace Process {
     export exec(cmd: String): i32 {
         const cmd_cstr = cmd.cStr() as RawPtr<u8>;
         const result: i32 = 0;
+        ctx.log.trace("exec %s\n", cmd.cStr());
         __c__("result = system((char*)cmd_cstr)");
         if result != 0  {
             result = -1;

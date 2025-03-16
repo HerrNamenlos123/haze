@@ -1,3 +1,9 @@
+inject "#include \"filesystem.c\"";
+
+extern "C" haze_filesystem_remove(path: stringview): i32;
+extern "C" haze_get_errno_string(): stringview;
+extern "C" haze_filename_exists(path: stringview): i32;
+extern "C" haze_mkdir(path: stringview): i32;
 
 namespace Fs {
     export struct Path {
@@ -13,5 +19,65 @@ namespace Fs {
             this.path.append(String("/"));
             this.path.append(element);
         }
+
+        dirname(): Path {
+            const other = this.path;
+            while other.length > 0 and other.back() != String("/").back() {
+                other.pop_back(1);
+            }
+            return Path(other);
+        }
+
+        // basename(): Path {
+        //     const basename = String("");
+        //     let index = this.path.length - 1;
+        //     while index > 0 and this.path.get(index) != String("/").back() {
+        //         basename.
+        //         other.pop(1);
+        //     }
+        //     return Path(other);
+        // }
+    }
+
+    export remove(path: Path): Result<String, String> {
+        const result = haze_filesystem_remove(path.path.cStr());
+        if result != 0 {
+            return Result<String, String> {
+                .isSuccess: false,
+                .error: String(haze_get_errno_string()),
+            };
+        }
+        return Result<String, String> {
+            .isSuccess: true,
+            .success: String("Success"),
+        };
+    }
+
+    export exists(path: Path): boolean {
+        if haze_filename_exists(path.path.cStr()) {
+            return true;
+        }
+        return false;
+    }
+
+    export mkdirs(path: Path): Result<String, String> {
+        if (not exists(path)) {
+            const parent = path.dirname();
+            if (exists(parent)) {
+                if (haze_mkdir(parent.path.cStr()) != 0) {
+                    return Result<String, String> {
+                        .isSuccess: false,
+                        .error: String(haze_get_errno_string()),
+                    };
+                }
+            }
+            else {
+                return mkdirs(parent);
+            }
+        }
+        return Result<String, String> {
+            .isSuccess: true,
+            .success: String("Success"),
+        };
     }
 }

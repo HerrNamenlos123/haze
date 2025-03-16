@@ -17,29 +17,47 @@ unwrap_path(result: Result<Fs.Path, String>): Fs.Path {
     return result.success;
 }
 
-getSDL(): boolean {
+getSDL(sdlBuildDir: Fs.Path): boolean {
+    sdlBuildDir.append(String("SDL"));
+    const tarfile = sdlBuildDir;
+    tarfile.append(String("src.tar.gz"));
     const cmd = String("haze get https://github.com/libsdl-org/SDL/archive/refs/tags/release-3.2.8.tar.gz ");
-    const cwd = unwrap_path(Process.cwd());
-    ctx.log.info("%s", cwd.path.cStr());
-    cwd.append(String("__haze__"));
-    ctx.log.info("%s", cwd.path.cStr());
-    cmd.append(cwd.path);
-    ctx.log.info("%s", cmd.cStr());
-    // if (!Process.exec(cmd)) {
-    //     return false;
-    // }
+    cmd.append(tarfile.path);
+    if Process.exec(cmd) != 0 {
+        ctx.log.error("Download failed");
+        return false;
+    }
+    cmd = String("tar -zxf ");
+    const srcDir = sdlBuildDir;
+    srcDir.append(String("src"));
+    cmd.append(srcDir.path);
+    if Process.exec(cmd) != 0 {
+        ctx.log.error("Untarring failed");
+        return false;
+    }
+    return true;
+}
+
+cleanup(sdlBuildDir: Fs.Path): boolean {
+    sdlBuildDir.append(String("SDL"));
+    if Fs.exists(sdlBuildDir) {
+        if not Fs.remove(sdlBuildDir).isSuccess {
+            return false;
+        }
+    }
     return true;
 }
 
 main(args: List<String>): i32 {
-    if (!getSDL()) {
+    if (args.length != 2) {
+        Console.print("Requires 1 <sdl_build_dir> parameter\n");
         return -1;
     }
-    ctx.log.info("Args: %d", args.length);
-    let i = 0;
-    while i < args.length {
-        ctx.log.info("arg[%d] = %s", i, args.get(i).cStr());
-        i++;
+    if (!cleanup(Fs.Path(args.get(1)))) {
+        return -1;
+    }
+    if (!getSDL(Fs.Path(args.get(1)))) {
+        return -1;
     }
     return 0;
 }

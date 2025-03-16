@@ -3,13 +3,13 @@ import { ProjectCompiler } from "./ModuleCompiler";
 import { version } from "../package.json";
 import { GeneralError } from "./Errors";
 import { join } from "path";
+import path from "node:path";
 
 async function getFile(url: string, outfile: string) {
   const response = await fetch(url);
   if (!response.ok) throw new Error(`Failed to fetch: ${response.statusText}`);
-
-  const file = Bun.file(outfile);
-  await Bun.write(file, response);
+  const buffer = await response.arrayBuffer();
+  await Bun.write(outfile, new Uint8Array(buffer));
 }
 
 async function main() {
@@ -81,7 +81,11 @@ async function main() {
     }
   } else {
     if (args.command === "get") {
-      await getFile(args.url, join(process.cwd(), args.filename));
+      if (path.isAbsolute(args.filename)) {
+        await getFile(args.url, args.filename);
+      } else {
+        await getFile(args.url, join(process.cwd(), args.filename));
+      }
     }
   }
 

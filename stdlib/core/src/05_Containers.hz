@@ -93,8 +93,17 @@ export struct String {
     __c__("((uint8_t*)dest)[this->length] = 0");
   }
 
-  pop(n: u64) {
-    this.length -= n;
+  get(index: u64): u8 {
+    const cchar = 0 as u8;
+    if index < 0 or index >= this.length {
+      System.panic("String index out of bounds");
+    }
+    __c__("cchar = ((uint8_t*)this->data.data)[index]");
+    return cchar;
+  }
+
+  pop_back(count: u64) {
+    this.length -= count;
   }
 
   capacity(): u64 {
@@ -114,4 +123,13 @@ export struct String {
     __c__("lastChar = ((uint8_t*)this->data.data)[this->length - 1]");
     return lastChar;
   }
+
+  // split(delimiter: String): List<String> {
+  //   const list = List<String>();
+  //   const tmp = String("");
+
+  //   let index = 0;
+  //   while index < this.length {
+  //   }
+  // }
 }

@@ -25,6 +25,7 @@ export type ModuleConfig = {
   configFilePath?: string;
   dependencies: ModuleDependency[];
   linkerFlags: string[];
+  compilerFlags: string[];
   platform: PlatformString;
 };
 
@@ -287,6 +288,10 @@ export class ConfigParser {
       linkerFlags:
         (toml["linker"] &&
           this.getOptionalStringArray(toml["linker"], "flags")) ||
+        [],
+      compilerFlags:
+        (toml["compiler"] &&
+          this.getOptionalStringArray(toml["compiler"], "flags")) ||
         [],
       platform: "linux-x64",
     };

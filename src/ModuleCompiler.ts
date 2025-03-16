@@ -189,6 +189,7 @@ export class ProjectCompiler {
         projectAuthors: undefined,
         projectDescription: undefined,
         projectLicense: undefined,
+        compilerFlags: [],
       };
     }
     return config;
@@ -469,13 +470,14 @@ class ModuleCompiler {
       );
       generateCode(this.module, moduleCFile);
 
+      const compilerFlags = this.module.moduleConfig.compilerFlags;
       try {
         if (this.module.moduleConfig.moduleType === ModuleType.Executable) {
           const [libs, linkerFlags] = await this.loadDependencyLibs();
-          const cmd = `${C_COMPILER} -g ${moduleCFile} -o ${moduleExecutable} ${libs.join(" ")} ${linkerFlags.join(" ")} -std=c11`;
+          const cmd = `${C_COMPILER} -g ${moduleCFile} -o ${moduleExecutable} -I${this.module.moduleConfig.srcDirectory} ${libs.join(" ")} ${compilerFlags.join(" ")} ${linkerFlags.join(" ")} -std=c11`;
           child_process.execSync(cmd);
         } else {
-          const cmd = `${C_COMPILER} -g ${moduleCFile} -c -o ${moduleOFile} -fPIC -std=c11`;
+          const cmd = `${C_COMPILER} -g ${moduleCFile} -c -o ${moduleOFile} -I${this.module.moduleConfig.srcDirectory} ${compilerFlags.join(" ")} -fPIC -std=c11`;
           child_process.execSync(cmd);
           child_process.execSync(
             `${ARCHIVE_TOOL} r ${moduleAFile} ${moduleOFile} > /dev/null`,

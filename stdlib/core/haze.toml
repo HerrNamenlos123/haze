@@ -17,5 +17,8 @@ type = "lib"
 # strict = true
 # warnings_as_errors = false
 
+[compiler]
+flags = ["-D_XOPEN_SOURCE=500"]
+
 [linker]
 flags = ["-lm", "-lGL", "-lpthread"]
