@@ -501,7 +501,9 @@ class CodeGenerator {
           expr.rightExpr.location,
           this.program,
         );
-        outWriter.write(`(${leftWriter.out.get()} = ${assignConv})`);
+        outWriter.write(
+          `(${leftWriter.out.get()} ${expr.operation} ${assignConv})`,
+        );
         return { out: outWriter, temp: tempWriter };
       }
 

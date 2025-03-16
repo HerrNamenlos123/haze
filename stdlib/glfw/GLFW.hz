@@ -226,7 +226,7 @@ export TM2(): i32 {
                     1/Math.pow(Math.cosh((v_phi*elapsed)/(Math.sqrt(2)*R)), 2));
 
     acceleration = Vec2(a_r * Math.cos(phi) - a_phi * Math.sin(phi), a_r * Math.sin(phi) + a_phi * Math.cos(phi));
-    ctx.log.debug("v_phi: %f", v_phi);
+    // ctx.log.debug("v_phi: %f", v_phi);
 
     velocity = velocity.add(acceleration.mul(dt));
     P = P.add(velocity.mul(dt));

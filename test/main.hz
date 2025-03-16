@@ -24,7 +24,7 @@ testArena() {
 }
 
 main(): i32 {
-  // return TM2();
-  testArena();
+  return TM2();
+  // testArena();
   return 0;
 }

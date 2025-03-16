@@ -1,4 +1,3 @@
-import type { VariableStatement } from "typescript";
 import {
   isNone,
   serializeDatatype,

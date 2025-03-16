@@ -104,6 +104,7 @@ import {
 } from "./utils";
 import { ParserRuleContext } from "antlr4";
 import type {
+  AssignOperation,
   BinaryExpression,
   ConstantExpression,
   ExplicitCastExpression,
@@ -1109,10 +1110,34 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
       );
     }
 
+    let operation: AssignOperation;
+    switch (ctx._op.text) {
+      case "=":
+      case "+=":
+      case "-=":
+      case "*=":
+      case "/=":
+      case "%=":
+      case "<<=":
+      case ">>=":
+      case "&=":
+      case "^=":
+      case "|=":
+        operation = ctx._op.text;
+        break;
+
+      default:
+        throw new CompilerError(
+          `Unsupported operation: ${ctx._op.text}`,
+          this.program.location(ctx),
+        );
+    }
+
     return {
       variant: "ExprAssign",
       type: leftExpr.type,
       ctx: ctx,
+      operation: operation,
       leftExpr: leftExpr,
       rightExpr: rightExpr,
       location: this.program.location(ctx),

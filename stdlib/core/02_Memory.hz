@@ -9,63 +9,72 @@ extern "C" memcpy(to: RawPtr<none>, from: RawPtr<none>, length: u64): RawPtr<non
 //   data: __C_Array<i32, Size>;
 // }
 
-export namespace Memory {
+namespace Memory {
+  const DEFAULT_ARENA_SIZE = 16 * 1024 * 1024;
 
-  generalPurposeMalloc(size: u64): RawPtr<none> {
+  export generalPurposeMalloc(size: u64): RawPtr<none> {
     return calloc(1, size);
   }
 
-  generalPurposeFree(ptr: RawPtr<none>) {
+  export generalPurposeFree(ptr: RawPtr<none>) {
     free(ptr);
   }
 
-  copy(to: RawPtr<none>, from: RawPtr<none>, length: u64) {
+  export copy(to: RawPtr<none>, from: RawPtr<none>, length: u64) {
     memcpy(to, from, length);
   }
 
-  struct ArenaChunk {
+  export struct ArenaChunk {
     nextChunk: RawPtr<ArenaChunk>;
     allocated: u64;
-    data: __C_Array<u8, 16384>;
-
-    capacity(): u64 {
-      const cap = 0 as u64;
-      __c__("cap = sizeof(this->data);");
-      return cap;
-    }
+    capacity: u64;
+    dataFirstByte: u8;
 
     canAllocate(size: u64): boolean {
-      return this.allocated + size < this.capacity();
+      return this.allocated + size <= this.capacity;
     }
 
     allocate(size: u64): RawPtr<none> {
-      if this.allocated + size >= this.capacity() {
+      if this.allocated + size > this.capacity {
         System.panic("ArenaChunk was instructed to allocate, but it is too small");
       }
       const ptr = 0 as RawPtr<none>;
-      __c__("ptr = &(this->data) + this->allocated;");
+      __c__("ptr = &(this->dataFirstByte) + this->allocated");
       this.allocated += size;
       return ptr;
     }
   }
 
-  struct Arena {
+  export struct Arena {
     firstChunk: RawPtr<ArenaChunk>;
 
     init() {
       if this.firstChunk {
         System.panic("Arena is already initialized");
       }
-      this.firstChunk = Memory.generalPurposeMalloc(sizeof<ArenaChunk>) as RawPtr<ArenaChunk>;
+      const chunkSize = sizeof<RawPtr<none>> + 2 * sizeof<u64> + Memory.DEFAULT_ARENA_SIZE;
+      this.firstChunk = Memory.generalPurposeMalloc(chunkSize) as RawPtr<ArenaChunk>;
+      this.firstChunk.capacity = Memory.DEFAULT_ARENA_SIZE;
     }
 
     allocate(size: u64): RawPtr<none> {
       let chunk = this.firstChunk;
-      while not chunk.canAllocate(size) {
-        if not chunk.nextChunk {
-          chunk.nextChunk = Memory.generalPurposeMalloc(sizeof<ArenaChunk>) as RawPtr<ArenaChunk>;
-        }
+      while chunk.nextChunk {
         chunk = chunk.nextChunk;
+      }
+      if not chunk.canAllocate(size) {
+        const chunkSize = sizeof<RawPtr<none>> + 2 * sizeof<u64> + Math.maxu64(Memory.DEFAULT_ARENA_SIZE, size);
+        chunk.nextChunk = Memory.generalPurposeMalloc(chunkSize) as RawPtr<ArenaChunk>;
+        if not chunk.nextChunk {
+          System.panic("Allocation failed while enlarging arena");
+        }
+        chunk.nextChunk.capacity = Math.maxu64(Memory.DEFAULT_ARENA_SIZE, size);
+        ctx.log.warn("Arena was enlarged. Consider creating a bigger, short-lived arena for memory-heavy calculations.");
+        chunk = chunk.nextChunk;
+        if not chunk.canAllocate(size) {
+          Console.print("New chunk: Allocated=%lu, capacity=%lu, requested=%lu\n", chunk.allocated, chunk.capacity, size);
+          System.panic("Allocation failed: Requested size is too large to fit in Arena chunk (Internal error)");
+        }
       }
       return chunk.allocate(size);
     }
@@ -95,35 +104,25 @@ export namespace Memory {
   //   }
   // }
 
-  struct Buffer {
+  export struct Buffer {
     data: RawPtr<none>;
     size: u64;
 
     constructor(size: u64): Memory.Buffer {
-      const a = ctx;
-      const buffer = Memory.generalPurposeMalloc(size);
-      if !buffer {
-        System.panic("Allocation failed");
-      }
       return Memory.Buffer {
-        .data: buffer,
+        .data: ctx.mem.alloc(size),
         .size: size,
       };
     }
 
     resize(newSize: u64) {
-      const newData = Memory.generalPurposeMalloc(newSize);
-      if !newData {
-        System.panic("Allocation failed");
-      }
+      const newData = ctx.mem.alloc(newSize);
       Memory.copy(newData, this.data, this.size);
       this.size = newSize;
       this.data = newData;
     }
   }
-}
 
-namespace Memory {
   __setupMemoryContext() {
     ctx.mem.alloc = (size: u64): RawPtr<none> => {
       const arena = ctx.mem.globalDefaultArena as RawPtr<Arena>;

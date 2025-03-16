@@ -102,10 +102,24 @@ export type PreIncrExpr = BaseExpression & {
   operation: "++" | "--";
 };
 
+export type AssignOperation =
+  | "="
+  | "+="
+  | "-="
+  | "*="
+  | "/="
+  | "%="
+  | "<<="
+  | ">>="
+  | "&="
+  | "^="
+  | "|=";
+
 export type ExprAssignmentExpr = BaseExpression & {
   variant: "ExprAssign";
   leftExpr: Expression;
   rightExpr: Expression;
+  operation: AssignOperation;
 };
 
 export type Expression =

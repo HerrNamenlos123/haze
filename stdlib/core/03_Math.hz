@@ -19,4 +19,11 @@ export namespace Math {
   degToRad(v: f64): f64 {
     return v * Math.PI / 180;
   }
+
+  maxu64(a: u64, b: u64): u64 {
+    if a >= b {
+      return a;
+    }
+    return b;
+  }
 }

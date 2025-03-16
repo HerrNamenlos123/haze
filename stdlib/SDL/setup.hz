@@ -1,5 +1,7 @@
 
+
+
 main(): i32 {
-    Console.print("Hallo!\n");
+    ctx.log.info("Hallo\n");
     return 0;
 }
