@@ -17,6 +17,7 @@ import {
   mangleSymbol,
   serializeSymbol,
   VariableType,
+  type ConstantSymbol,
   type DatatypeSymbol,
   type FunctionSymbol,
   type Symbol,
@@ -389,6 +390,9 @@ export function serializeDatatype(datatype: Datatype): string {
       const g2 = [] as string[];
       for (const [name, tp] of datatype.generics) {
         if (tp) {
+          if ("constant" in tp) {
+            throw new InternalError("Cannot have constant in pointer");
+          }
           g2.push(`${serializeDatatype(tp)}`);
         } else {
           g2.push(name);
@@ -416,7 +420,11 @@ export function serializeDatatype(datatype: Datatype): string {
       const g = [] as string[];
       for (const [name, tp] of datatype.generics) {
         if (tp) {
-          g.push(`${name}=${serializeDatatype(tp)}`);
+          if ("constant" in tp) {
+            g.push(`${name}=${tp.constant.value}`);
+          } else {
+            g.push(`${name}=${serializeDatatype(tp)}`);
+          }
         } else {
           g.push(name);
         }
@@ -477,6 +485,9 @@ export function generateDeclarationCCode(
       if (!generic) {
         throw new ImpossibleSituation();
       }
+      if ("constant" in generic) {
+        throw new InternalError("Cannot have constant in pointer");
+      }
       writer.writeLine(
         `typedef ${generateUsageCode(generic, program)}* ${mangleSymbol(datatype)};`,
       );
@@ -529,9 +540,26 @@ export function generateDefinitionCCode(
           .pushIndent();
         for (const memberSymbol of datatype.type.members) {
           if (memberSymbol.variant === "Variable") {
-            writer.writeLine(
-              `${generateUsageCode(memberSymbol.type, program)} ${memberSymbol.name};`,
-            );
+            if (
+              memberSymbol.type.variant === "Struct" &&
+              memberSymbol.type.name === "__C_Array"
+            ) {
+              const typeGeneric = memberSymbol.type.generics.get("_Arr_T");
+              const sizeGeneric = memberSymbol.type.generics.get("_Arr_Size");
+              if (!typeGeneric || !sizeGeneric) {
+                throw new ImpossibleSituation();
+              }
+              if ("constant" in typeGeneric || !("constant" in sizeGeneric)) {
+                throw new ImpossibleSituation();
+              }
+              writer.writeLine(
+                `${generateUsageCode(typeGeneric, program)} ${memberSymbol.name}[${sizeGeneric.constant.value.toString()}];`,
+              );
+            } else {
+              writer.writeLine(
+                `${generateUsageCode(memberSymbol.type, program)} ${memberSymbol.name};`,
+              );
+            }
           } else {
             writer.writeLine("union {").pushIndent();
             for (const innerMember of memberSymbol.symbols) {
@@ -600,6 +628,9 @@ export function generateUsageCode(dt: Datatype, program: Module): string {
     case "RawPointer":
       const ptrGeneric = dt.generics.get("__Pointee");
       if (!ptrGeneric) {
+        throw new ImpossibleSituation();
+      }
+      if ("constant" in ptrGeneric) {
         throw new ImpossibleSituation();
       }
       return `${generateUsageCode(ptrGeneric, program)}*`;
@@ -697,6 +728,28 @@ export function generateDatatypeDeclarationHazeCode(
   throw new InternalError("Invalid datatype: " + datatype.variant);
 }
 
+export function generateConstantUsageHazeCode(
+  constant: ConstantSymbol,
+): OutputWriter {
+  const writer = new OutputWriter();
+  switch (constant.variant) {
+    case "LiteralConstant": {
+      writer.write(constant.value.toString());
+      if (constant.unit) {
+        writer.write(constant.unit);
+      }
+      return writer;
+    }
+
+    case "StringConstant":
+    case "BooleanConstant": {
+      writer.write(constant.value.toString());
+      return writer;
+    }
+  }
+  throw new UnreachableCode();
+}
+
 export function generateDatatypeUsageHazeCode(
   datatype: Datatype,
 ): OutputWriter {
@@ -714,6 +767,8 @@ export function generateDatatypeUsageHazeCode(
       for (const [name, tp] of datatype.generics) {
         if (tp === undefined) {
           generics.push(name);
+        } else if ("constant" in tp) {
+          generics.push(generateConstantUsageHazeCode(tp.constant).get());
         } else {
           generics.push(generateDatatypeUsageHazeCode(tp).get());
         }
@@ -736,7 +791,7 @@ export function generateDatatypeUsageHazeCode(
     case "RawPointer": {
       let generics: string[] = [];
       for (const [name, tp] of datatype.generics) {
-        if (tp === undefined) {
+        if (tp === undefined || "constant" in tp) {
           throw new ImpossibleSituation();
         }
         generics.push(generateDatatypeUsageHazeCode(tp).get());
@@ -885,7 +940,15 @@ export function isSame(a: Datatype, b: Datatype): boolean {
   }
 
   if (a.variant === "RawPointer" && b.variant === "RawPointer") {
-    return isSame(a.generics.get("__Pointee")!, b.generics.get("__Pointee")!);
+    const aa = a.generics.get("__Pointee");
+    const bb = b.generics.get("__Pointee");
+    if (!aa || "constant" in aa) {
+      throw new ImpossibleSituation();
+    }
+    if (!bb || "constant" in bb) {
+      throw new ImpossibleSituation();
+    }
+    return isSame(aa, bb);
   }
 
   if (a.variant === "Function" && b.variant === "Function") {
@@ -911,14 +974,37 @@ export function isSame(a: Datatype, b: Datatype): boolean {
       return false;
     }
     for (let i = 0; i < a.members.length; i++) {
-      const aa = a.members[i];
-      const bb = b.members[i];
+      const aa: VariableSymbol | StructMemberUnion = a.members[i];
+      const bb: VariableSymbol | StructMemberUnion = b.members[i];
       if (aa.variant !== bb.variant) {
         return false;
       }
       if (aa.variant === "Variable" && bb.variant === "Variable") {
-        if (aa.name !== bb.name || !isSame(aa.type, bb.type)) {
+        // Prevent infinite recursion if: struct Test { member: RawPtr<Test> }
+        if (aa.type === a && bb.type !== b) {
           return false;
+        }
+        if (aa.type !== a && bb.type === b) {
+          return false;
+        }
+        if (aa.type.variant !== bb.type.variant) {
+          return false;
+        }
+        if (
+          aa.type.variant === "RawPointer" &&
+          bb.type.variant === "RawPointer"
+        ) {
+          const aaa = aa.type.generics.get("__Pointee");
+          const bbb = bb.type.generics.get("__Pointee");
+          if (!aaa || "constant" in aaa) {
+            throw new ImpossibleSituation();
+          }
+          if (!bbb || "constant" in bbb) {
+            throw new ImpossibleSituation();
+          }
+          if (mangleDatatype(aaa) !== mangleDatatype(bbb)) {
+            return false;
+          }
         }
       } else if (
         aa.variant === "StructMemberUnion" &&
@@ -1024,12 +1110,21 @@ export function implicitConversion(
   }
 
   if (from.variant === "RawPointer" && to.variant === "RawPointer") {
-    if (
-      isSame(from.generics.get("__Pointee")!, to.generics.get("__Pointee")!)
-    ) {
+    const _from = from.generics.get("__Pointee");
+    const _to = to.generics.get("__Pointee");
+    if (!_from || "constant" in _from) {
+      throw new ImpossibleSituation();
+    }
+    if (!_to || "constant" in _to) {
+      throw new ImpossibleSituation();
+    }
+    if (isSame(_from, _to)) {
       return expr;
     }
     const topointee = to.generics.get("__Pointee")!;
+    if ("constant" in topointee) {
+      throw new ImpossibleSituation();
+    }
     if (
       topointee.variant === "Primitive" &&
       topointee.primitive === Primitive.none
@@ -1156,7 +1251,11 @@ export function explicitConversion(
   }
 
   if (from.variant === "RawPointer" && to.variant === "RawPointer") {
-    return `(${generateUsageCode(to.generics.get("__Pointee")!, program)}*)(${expr})`;
+    const _to = to.generics.get("__Pointee");
+    if (!_to || "constant" in _to) {
+      throw new ImpossibleSituation();
+    }
+    return `(${generateUsageCode(_to, program)}*)(${expr})`;
   }
 
   if (from.variant === "Function" && to.variant === "Function") {

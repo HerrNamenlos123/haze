@@ -4,7 +4,6 @@ description = "SDL Bindings for Haze"
 license = "MIT"
 authors = ["HerrNamenlos123"]
 type = "lib"
-src = "."
 
 [scripts]
 prebuild = "haze get https://github.com/libsdl-org/SDL/archive/refs/tags/release-3.2.8.tar.gz SDL"

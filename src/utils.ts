@@ -224,10 +224,10 @@ export function resolveGenerics(
             loc,
             resolvageContext,
           ) as FunctionDatatype,
-          // type: method.type,
           variant: "Function",
           extern: method.extern,
           scope: method.scope,
+          definedInScope: method.definedInScope,
           ctx: method.ctx,
           parentSymbol: method.parentSymbol,
           specialMethod: method.specialMethod,
@@ -560,6 +560,7 @@ export function collectFunction(
     type: type,
     specialMethod: specialMethod,
     scope: scope,
+    definedInScope: parentScope,
     parentSymbol: parentSymbol,
     ctx: ctx,
     wasAnalyzed: false,
@@ -570,7 +571,21 @@ export function collectFunction(
       (ctx instanceof StructMethodContext && !ctx.funcbody()),
   };
 
-  parentScope.defineSymbol(symbol);
+  const existingSymbol = parentScope.tryLookupSymbol(
+    symbol.name,
+    symbol.location,
+  );
+  if (existingSymbol && existingSymbol.variant !== "Function") {
+    throw new CompilerError(
+      `Symbol ${symbol.name} cannot be redeclared as a different type`,
+      symbol.location,
+    );
+  }
+  if (existingSymbol && existingSymbol.declared && !symbol.declared) {
+    existingSymbol.definedInScope.replaceSymbol(symbol);
+  } else {
+    parentScope.defineSymbol(symbol);
+  }
 
   if (
     !isSymbolGeneric(symbol) &&

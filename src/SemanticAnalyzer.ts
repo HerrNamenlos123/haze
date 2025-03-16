@@ -200,19 +200,26 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
         }
         let index = 0;
         for (const [name, tp] of symbol.type.generics) {
-          if (tp?.variant !== "Generic") {
-            symbol.type.generics.set(
-              name,
-              this.visit(ctx.datatype_list()[index]),
-            );
+          if (tp && "variant" in tp && tp.variant === "Generic") {
+            index++;
+            continue;
           }
+          symbol.type.generics.set(
+            name,
+            this.visit(ctx.datatype_list()[index]),
+          );
           index++;
         }
 
         if (
           symbol.type.generics
             .entries()
-            .every((e) => e[1] !== undefined && e[1].variant !== "Generic")
+            .every(
+              (e) =>
+                e[1] !== undefined &&
+                "variant" in e[1] &&
+                e[1].variant !== "Generic",
+            )
         ) {
           datatypeSymbolUsed(
             {
@@ -252,14 +259,16 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
               if (symbol.type.generics.get(name) === undefined) {
                 symbol.type.generics.set(name, tp);
               }
-              constructorSymbol.scope.defineSymbol({
-                variant: "Datatype",
-                name: name,
-                scope: constructorSymbol.scope,
-                type: tp,
-                export: false,
-                location: constructorSymbol.location,
-              });
+              if (!("constant" in tp)) {
+                constructorSymbol.scope.defineSymbol({
+                  variant: "Datatype",
+                  name: name,
+                  scope: constructorSymbol.scope,
+                  type: tp,
+                  export: false,
+                  location: constructorSymbol.location,
+                });
+              }
             }
             constructorSymbol.type = resolveGenerics(
               constructorSymbol.type,
@@ -405,14 +414,16 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
         if (symbol.parentSymbol.type.generics.get(name) === undefined) {
           symbol.parentSymbol.type.generics.set(name, tp);
         }
-        symbol.scope.defineSymbol({
-          variant: "Datatype",
-          name: name,
-          scope: symbol.scope,
-          type: tp,
-          export: false,
-          location: symbol.location,
-        });
+        if (!("constant" in tp)) {
+          symbol.scope.defineSymbol({
+            variant: "Datatype",
+            name: name,
+            scope: symbol.scope,
+            type: tp,
+            export: false,
+            location: symbol.location,
+          });
+        }
       }
       symbol.type = resolveGenerics(
         symbol.type,
@@ -1305,7 +1316,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
         }
 
         const p = expr.type.generics.get("__Pointee");
-        if (!p) {
+        if (!p || "constant" in p) {
           throw new ImpossibleSituation();
         }
         if (name === "ptr") {
@@ -1378,14 +1389,16 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
               symbol.type.generics.set(name, tp);
             }
           }
-          scope.defineSymbol({
-            variant: "Datatype",
-            name: name,
-            scope: scope,
-            type: tp,
-            export: false,
-            location: this.program.location(ctx),
-          });
+          if (!("constant" in tp)) {
+            scope.defineSymbol({
+              variant: "Datatype",
+              name: name,
+              scope: scope,
+              type: tp,
+              export: false,
+              location: this.program.location(ctx),
+            });
+          }
         }
         const symtype = resolveGenerics(
           symbol.type,
@@ -1451,14 +1464,16 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
           if (symbol.parentSymbol.type.generics.get(name) === undefined) {
             symbol.parentSymbol.type.generics.set(name, tp);
           }
-          symbol.scope.defineSymbol({
-            variant: "Datatype",
-            name: name,
-            scope: symbol.scope,
-            type: tp,
-            export: false,
-            location: this.program.location(ctx),
-          });
+          if (!("constant" in tp)) {
+            symbol.scope.defineSymbol({
+              variant: "Datatype",
+              name: name,
+              scope: symbol.scope,
+              type: tp,
+              export: false,
+              location: this.program.location(ctx),
+            });
+          }
         }
         symbol.type = resolveGenerics(
           symbol.type,

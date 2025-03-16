@@ -9,6 +9,7 @@ struct LogContext {
 
 struct MemContext {
   alloc: (size: u64) => RawPtr<none>;
+  globalDefaultArena: RawPtr<none>;
 }
 
 struct Context {

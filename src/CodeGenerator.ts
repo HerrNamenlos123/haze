@@ -71,7 +71,9 @@ class CodeGenerator {
         .pushIndent()
         .writeLine(
           `${generateUsageCode(this.program.getBuiltinType("Context"), this.program)} ctx = {};`,
-        );
+        )
+        .writeLine(`_HN6Memory5ArenaE defaultArena = {};`)
+        .writeLine(`ctx.mem.globalDefaultArena = &defaultArena;`);
       if (!this.program.moduleConfig.nostdlib) {
         this.init("_H13__setupStdlib", this.out.function_declarations);
         this.out.function_declarations["_H13__setupStdlib"].writeLine(

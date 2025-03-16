@@ -19,6 +19,10 @@ namespace Console {
   }
 }
 
+namespace Memory {
+  __setupMemoryContext();
+}
+
 namespace System {
   export panic(msg: stringview) {
     Console.print("Thread panicked: %s\n", msg);
@@ -66,9 +70,7 @@ namespace System {
       __c__("va_end(args)");
       printf("\n");
     };
-    ctx.mem.alloc = (size: u64): RawPtr<none> => {
-      return calloc(1, size);
-    };
+    Memory.__setupMemoryContext();
   }
 }
 

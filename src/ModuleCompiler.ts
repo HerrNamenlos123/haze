@@ -262,10 +262,6 @@ export class ProjectCompiler {
         );
       }
 
-      if (!(await this.build(singleFilename))) {
-        return -1;
-      }
-
       const moduleBuildDir = join(config.buildDir, config.projectName);
       const moduleExecutable = join(moduleBuildDir, config.projectName);
       child_process.execSync(moduleExecutable, { stdio: "inherit" });
@@ -519,11 +515,11 @@ class ModuleCompiler {
           await $`tar -C ${this.moduleBuildDir} -cvzf ${moduleOutputLib} ${makerel(moduleAFile)} ${makerel(moduleMetadataFile)} > /dev/null`;
         }
         if (this.module.moduleConfig.configFilePath) {
-          await this.cache.compiledModule(
-            this.module.moduleConfig.projectName,
-            this.module.moduleConfig.srcDirectory,
-            this.module.moduleConfig.configFilePath,
-          );
+          // await this.cache.compiledModule(
+          //   this.module.moduleConfig.projectName,
+          //   this.module.moduleConfig.srcDirectory,
+          //   this.module.moduleConfig.configFilePath,
+          // );
         }
         return true;
       } catch (e) {

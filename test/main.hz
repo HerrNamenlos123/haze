@@ -1,5 +1,16 @@
 
+foo(i: RawPtr<i32>) {
+  i.ptr = 187;
+}
+
+testArena() {
+  const ints = ctx.mem.alloc(sizeof<i32>) as RawPtr<i32>;
+  // foo(ints);
+  Console.print("Integer: %d\n", ints.ptr);
+}
+
 main(): i32 {
-  // return 0;
-  return TM2();
+  // return TM2();
+  testArena();
+  return 0;
 }

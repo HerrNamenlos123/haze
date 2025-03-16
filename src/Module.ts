@@ -105,6 +105,25 @@ export class Module {
     };
     this.globalScope.defineSymbol(symbol);
 
+    const array: DatatypeSymbol<StructDatatype> = {
+      variant: "Datatype",
+      name: "__C_Array",
+      type: {
+        variant: "Struct",
+        generics: new Map()
+          .set("_Arr_T", undefined)
+          .set("_Arr_Size", undefined),
+        language: Linkage.Internal,
+        members: [],
+        methods: [],
+        name: "__C_Array",
+      },
+      scope: this.globalScope,
+      export: false,
+      location: this.globalScope.location,
+    };
+    this.globalScope.defineSymbol(array);
+
     if (this.moduleConfig.nostdlib) {
       const symbol: DatatypeSymbol = {
         variant: "Datatype",

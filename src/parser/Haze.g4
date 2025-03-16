@@ -79,7 +79,7 @@ expr
     // <- ternary
     | expr op=('='|'+='|'-='|'*='|'/='|'%='|'<<='|'>>='|'&='|'^='|'|=') expr   #ExprAssignmentExpr
 
-    | ID ('<' datatype (',' datatype)* '>')?                    #SymbolValueExpr
+    | ID ('<' (datatype | constant) (',' (datatype | constant))* '>')?                    #SymbolValueExpr
     ;
 
 args: (expr (',' expr)*)?;
@@ -111,7 +111,11 @@ datatype
     ;
 
 datatypeimpl
-    : ID ('<' generics+=datatype (',' generics+=datatype)* '>')?
+    : ID ('<' generics+=genericsvalue (',' generics+=genericsvalue)* '>')?
+    ;
+
+genericsvalue
+    : datatype | constant
     ;
 
 STRING_LITERAL

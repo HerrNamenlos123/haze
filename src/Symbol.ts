@@ -62,6 +62,7 @@ export type FunctionSymbol = {
   parentSymbol?: Symbol;
   thisPointerExpr?: Expression;
   scope: Scope;
+  definedInScope: Scope;
   specialMethod?: SpecialMethod;
   ctx?: ParserRuleContext;
   wasAnalyzed: boolean;
@@ -197,7 +198,13 @@ export function mangleDatatype(datatype: Datatype): string {
           innerMangling += "I";
           for (const [name, tp] of datatype.generics) {
             if (tp) {
-              innerMangling += mangleDatatype(tp);
+              if ("constant" in tp) {
+                innerMangling += tp.constant.value
+                  .toString()
+                  .replaceAll(".", "_");
+              } else {
+                innerMangling += mangleDatatype(tp);
+              }
             } else {
               innerMangling += name + "_";
             }
@@ -218,7 +225,11 @@ export function mangleDatatype(datatype: Datatype): string {
       let ptrMangled = "PI";
       const tp = datatype.generics.get("__Pointee");
       if (tp) {
-        ptrMangled += mangleDatatype(tp);
+        if ("constant" in tp) {
+          ptrMangled += tp.constant.value.toString().replaceAll(".", "_");
+        } else {
+          ptrMangled += mangleDatatype(tp);
+        }
       } else {
         ptrMangled += "__Pointee_";
       }

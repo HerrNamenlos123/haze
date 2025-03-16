@@ -5,7 +5,13 @@ import {
   type Location,
 } from "./Errors";
 import type { Statement } from "./Statement";
-import { mangleSymbol, type DatatypeSymbol, type Symbol } from "./Symbol";
+import {
+  mangleSymbol,
+  type DatatypeSymbol,
+  type FunctionSymbol,
+  type Symbol,
+  type VariableSymbol,
+} from "./Symbol";
 
 export class Scope {
   public location: Location;
@@ -41,8 +47,18 @@ export class Scope {
     this.symbols.push(symbol);
   }
 
+  replaceSymbol(symbol: FunctionSymbol | VariableSymbol) {
+    if (!this.symbols.find((s) => "name" in s && s.name === symbol.name)) {
+      throw new InternalError("Symbol for replacing not found");
+    }
+    this.removeSymbol(symbol.name);
+    this.defineSymbol(symbol);
+  }
+
   removeSymbol(name: string) {
-    this.symbols = this.symbols.filter((s) => "name" in s && s.name === name);
+    this.symbols = this.symbols.filter(
+      (s) => !("name" in s && s.name === name),
+    );
   }
 
   getSymbols() {
