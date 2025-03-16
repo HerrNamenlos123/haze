@@ -1,4 +1,4 @@
-import { ArgumentParser } from "argparse";
+import { ArgumentParser, REMAINDER } from "argparse";
 import { ProjectCompiler } from "./ModuleCompiler";
 import { version } from "../package.json";
 import { GeneralError } from "./Errors";
@@ -29,11 +29,23 @@ async function main() {
   get_parser.add_argument("filename", { help: "Filename to save as" });
 
   const run_parser = subparsers.add_parser("run", {
-    help: "Run the project or a single file",
+    help: "Run the project",
   });
-  run_parser.add_argument("filename", {
+  run_parser.add_argument("args", {
+    nargs: REMAINDER,
+    help: "Arguments to pass to the running program",
+  });
+
+  const exec_parser = subparsers.add_parser("exec", {
+    help: "Run a single file immediately as a script",
+  });
+  exec_parser.add_argument("filename", {
     nargs: "?",
     help: "File to run",
+  });
+  exec_parser.add_argument("args", {
+    nargs: REMAINDER,
+    help: "Arguments to pass to the script",
   });
 
   const args = main_parser.parse_args();
@@ -43,7 +55,11 @@ async function main() {
     process.exit(0);
   }
 
-  if (args.command === "build" || args.command === "run") {
+  if (
+    args.command === "build" ||
+    args.command === "run" ||
+    args.command === "exec"
+  ) {
     try {
       const project = new ProjectCompiler();
 
@@ -51,8 +67,8 @@ async function main() {
         process.exit(1);
       }
 
-      if (args.command === "run") {
-        const exitCode = await project.run(args.filename);
+      if (args.command === "run" || args.command === "exec") {
+        const exitCode = await project.run(args.filename, args.args);
         process.exit(exitCode);
       }
     } catch (err) {

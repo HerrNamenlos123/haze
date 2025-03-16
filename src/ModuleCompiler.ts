@@ -249,7 +249,7 @@ export class ProjectCompiler {
     return true;
   }
 
-  async run(singleFilename?: string): Promise<number> {
+  async run(singleFilename?: string, args?: string[]): Promise<number> {
     try {
       const config = await this.getConfig(singleFilename);
       if (!config) {
@@ -264,7 +264,9 @@ export class ProjectCompiler {
 
       const moduleBuildDir = join(config.buildDir, config.projectName);
       const moduleExecutable = join(moduleBuildDir, config.projectName);
-      child_process.execSync(moduleExecutable, { stdio: "inherit" });
+      child_process.execSync(`${moduleExecutable} ${args?.join(" ")}`, {
+        stdio: "inherit",
+      });
       return 0;
     } catch (e: any) {
       if (e instanceof GeneralError) {

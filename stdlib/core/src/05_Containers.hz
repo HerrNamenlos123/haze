@@ -19,11 +19,11 @@ export struct List<_List_T> {
     };
   }
 
-  reserve(size: u64): none {
-    if size <= this.capacity() {
+  reserve(count: u64): none {
+    if count <= this.capacity() {
       return;
     }
-    this.buffer.resize(size * sizeof<_List_T>);
+    this.buffer.resize(count * sizeof<_List_T>);
   }
 
   push(n: _List_T) {
@@ -107,5 +107,11 @@ export struct String {
 
   cStr(): stringview {
     return this.data.data as RawPtr<u8> as stringview;
+  }
+
+  back(): u8 {
+    const lastChar: u8;
+    __c__("lastChar = ((uint8_t*)this->data.data)[this->length - 1]");
+    return lastChar;
   }
 }

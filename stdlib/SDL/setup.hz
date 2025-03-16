@@ -1,13 +1,45 @@
 
-
-
-main(): i32 {
-    const cwd = Process.cwd();
-    if cwd.isSuccess {
-        ctx.log.info("%s", cwd.success.cStr());
+unwrap_str(result: Result<String, String>): String {
+    if not result.isSuccess {
+        const msg = String("Unwrapping result failed: ");
+        msg.append(result.error);
+        System.panic(msg.cStr());
     }
-    else {
-        ctx.log.error("%s", cwd.error.cStr());
+    return result.success;
+}
+
+unwrap_path(result: Result<Fs.Path, String>): Fs.Path {
+    if not result.isSuccess {
+        const msg = String("Unwrapping result failed: ");
+        msg.append(result.error);
+        System.panic(msg.cStr());
+    }
+    return result.success;
+}
+
+getSDL(): boolean {
+    const cmd = String("haze get https://github.com/libsdl-org/SDL/archive/refs/tags/release-3.2.8.tar.gz ");
+    const cwd = unwrap_path(Process.cwd());
+    ctx.log.info("%s", cwd.path.cStr());
+    cwd.append(String("__haze__"));
+    ctx.log.info("%s", cwd.path.cStr());
+    cmd.append(cwd.path);
+    ctx.log.info("%s", cmd.cStr());
+    // if (!Process.exec(cmd)) {
+    //     return false;
+    // }
+    return true;
+}
+
+main(args: List<String>): i32 {
+    if (!getSDL()) {
+        return -1;
+    }
+    ctx.log.info("Args: %d", args.length);
+    let i = 0;
+    while i < args.length {
+        ctx.log.info("arg[%d] = %s", i, args.get(i).cStr());
+        i++;
     }
     return 0;
 }

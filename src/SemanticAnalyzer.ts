@@ -1590,5 +1590,16 @@ export function performSemanticAnalysis(program: Module) {
         mainFunction.location,
       );
     }
+    const params = mainFunction.type.functionParameters;
+    if (
+      params.length !== 1 ||
+      params[0][0] !== "args" ||
+      mangleDatatype(params[0][1]) !== "4ListI6StringE"
+    ) {
+      throw new CompilerError(
+        `Main function must have exactly one 'args: List<String>' parameter`,
+        mainFunction.location,
+      );
+    }
   }
 }

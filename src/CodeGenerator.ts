@@ -67,7 +67,7 @@ class CodeGenerator {
       const mainWriter = new OutputWriter();
       this.out.function_definitions["main"] = mainWriter;
       mainWriter
-        .writeLine("int32_t main() {")
+        .writeLine("int32_t main(int argc, const char* argv[]) {")
         .pushIndent()
         .writeLine(
           `${generateUsageCode(this.program.getBuiltinType("Context"), this.program)} ctx = {};`,
@@ -81,7 +81,14 @@ class CodeGenerator {
         );
         mainWriter.writeLine("_H13__setupStdlib(&ctx);");
       }
-      mainWriter.writeLine("return _H4main(&ctx);").popIndent().writeLine("}");
+
+      mainWriter.writeLine(
+        `_H4ListI6StringE argsList = _HN7Process10__loadArgvE(&ctx, argc, (uint8_t**)argv);`,
+      );
+      mainWriter
+        .writeLine("return _H4main(&ctx, argsList);")
+        .popIndent()
+        .writeLine("}");
     }
   }
 

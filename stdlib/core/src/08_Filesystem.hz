@@ -1,0 +1,17 @@
+
+namespace Fs {
+    export struct Path {
+        path: String;
+
+        constructor(path: String): Path {
+            return Path {
+                .path: path,
+            };
+        }
+
+        append(element: String) {
+            this.path.append(String("/"));
+            this.path.append(element);
+        }
+    }
+}

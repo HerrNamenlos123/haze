@@ -23,8 +23,8 @@ testArena() {
   Console.print("B: %d\n", three.ptr);
 }
 
-main(): i32 {
+main(args: List<String>): i32 {
   return TM2();
   // testArena();
-  return 0;
+  // return 0;
 }
