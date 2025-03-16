@@ -4,14 +4,12 @@ extern "C" realloc(ptr: RawPtr<none>, newSize: u64): RawPtr<none>;
 extern "C" free(ptr: RawPtr<none>);
 extern "C" memcpy(to: RawPtr<none>, from: RawPtr<none>, length: u64): RawPtr<none>;
 
-export struct Array<T, Size> {
-  length: u64;
-  data: __C_Array<i32, Size>;
-}
+// export struct Array<T, Size> {
+//   length: u64;
+//   data: __C_Array<i32, Size>;
+// }
 
 export namespace Memory {
-
-  extern const DEFAULT_ARENA_SIZE = 16 * 1024;
 
   generalPurposeMalloc(size: u64): RawPtr<none> {
     return calloc(1, size);
@@ -27,17 +25,21 @@ export namespace Memory {
 
   struct ArenaChunk {
     nextChunk: RawPtr<ArenaChunk>;
-    capacity: u64;
     allocated: u64;
-    data: RawPtr<none>;
+    data: __C_Array<u8, 16384>;
+
+    capacity(): u64 {
+      const cap = 0 as u64;
+      __c__("cap = sizeof(this->data);");
+      return cap;
+    }
 
     canAllocate(size: u64): boolean {
-      const a: Array<i32, 69>;
-      return this.allocated + size < this.capacity;
+      return this.allocated + size < this.capacity();
     }
 
     allocate(size: u64): RawPtr<none> {
-      if this.allocated + size >= this.capacity {
+      if this.allocated + size >= this.capacity() {
         System.panic("ArenaChunk was instructed to allocate, but it is too small");
       }
       const ptr = 0 as RawPtr<none>;
@@ -54,18 +56,14 @@ export namespace Memory {
       if this.firstChunk {
         System.panic("Arena is already initialized");
       }
-      const totalSize = Memory.DEFAULT_ARENA_SIZE + 2 * sizeof<u64> + sizeof<RawPtr<ArenaChunk>>;
-      this.firstChunk = Memory.generalPurposeMalloc(totalSize) as RawPtr<ArenaChunk>;
-      this.firstChunk.capacity = Memory.DEFAULT_ARENA_SIZE;
+      this.firstChunk = Memory.generalPurposeMalloc(sizeof<ArenaChunk>) as RawPtr<ArenaChunk>;
     }
 
     allocate(size: u64): RawPtr<none> {
       let chunk = this.firstChunk;
       while not chunk.canAllocate(size) {
         if not chunk.nextChunk {
-          const totalSize = Memory.DEFAULT_ARENA_SIZE + 2 * sizeof<u64> + sizeof<RawPtr<ArenaChunk>>;
-          chunk.nextChunk = Memory.generalPurposeMalloc(totalSize) as RawPtr<ArenaChunk>;
-          chunk.nextChunk.capacity = Memory.DEFAULT_ARENA_SIZE;
+          chunk.nextChunk = Memory.generalPurposeMalloc(sizeof<ArenaChunk>) as RawPtr<ArenaChunk>;
         }
         chunk = chunk.nextChunk;
       }

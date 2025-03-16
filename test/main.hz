@@ -1,12 +1,26 @@
 
-foo(i: RawPtr<i32>) {
+a(i: RawPtr<i32>) {
   i.ptr = 187;
 }
 
+b(i: RawPtr<u64>) {
+  i.ptr = 204060;
+}
+
+c(i: RawPtr<boolean>) {
+  i.ptr = true;
+}
+
 testArena() {
-  const ints = ctx.mem.alloc(sizeof<i32>) as RawPtr<i32>;
-  // foo(ints);
-  Console.print("Integer: %d\n", ints.ptr);
+  const one = ctx.mem.alloc(sizeof<i32>) as RawPtr<i32>;
+  const two = ctx.mem.alloc(sizeof<u64>) as RawPtr<u64>;
+  const three = ctx.mem.alloc(sizeof<boolean>) as RawPtr<boolean>;
+  a(one);
+  b(two);
+  c(three);
+  Console.print("Integer: %d\n", one.ptr);
+  Console.print("U: %lu\n", two.ptr);
+  Console.print("B: %d\n", three.ptr);
 }
 
 main(): i32 {
