@@ -1,5 +1,5 @@
 
 main(): i32 {
-    Console.print("Bebi hallo!\n");
+    Console.print("Hallo!\n");
     return 0;
 }

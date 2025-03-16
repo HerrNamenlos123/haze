@@ -7,14 +7,14 @@ export struct Result<TSuccess, TError> {
   isSuccess: boolean;
 }
 
-export struct List<T> {
+export struct List<_List_T> {
   buffer: Memory.Buffer;
   length: u64;
 
-  constructor(): List<T> {
+  constructor(): List<_List_T> {
     const initialCapacity = 4;
-    return List<T> {
-      .buffer: Memory.Buffer(initialCapacity * sizeof<T>),
+    return List<_List_T> {
+      .buffer: Memory.Buffer(initialCapacity * sizeof<_List_T>),
       .length: 0,
     };
   }
@@ -23,36 +23,36 @@ export struct List<T> {
     if size <= this.capacity() {
       return;
     }
-    this.buffer.resize(size * sizeof<T>);
+    this.buffer.resize(size * sizeof<_List_T>);
   }
 
-  push(n: T) {
+  push(n: _List_T) {
     if this.length >= this.capacity() {
       this.reserve(this.length * 2);
     }
-    const buf = this.buffer.data as RawPtr<T>;
+    const buf = this.buffer.data as RawPtr<_List_T>;
     __c__("buf[this->length] = n");
     this.length = this.length + 1;
   }
 
-  pop(): T {
+  pop(): _List_T {
     const back = this.get(this.length - 1);
     this.length = this.length - 1;
     return back;
   }
 
-  get(n: u64): T {
+  get(n: u64): _List_T {
     if n < 0 or n >= this.length {
       System.panic("OUT OF BOUNDS");
     }
-    const buf = this.buffer.data as RawPtr<T>;
-    const result: T;
+    const buf = this.buffer.data as RawPtr<_List_T>;
+    const result: _List_T;
     __c__("result = buf[n]");
     return result;
   }
 
   capacity(): u64 {
-    return this.buffer.size / sizeof<T>;
+    return this.buffer.size / sizeof<_List_T>;
   }
 
   clear() {

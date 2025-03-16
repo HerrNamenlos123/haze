@@ -24,6 +24,7 @@ import {
   type VariableSymbol,
 } from "./Symbol";
 import { defineGenericsInScope, resolveGenerics } from "./utils";
+import { resolve } from "bun";
 
 export enum Primitive {
   none = 1,
@@ -57,7 +58,7 @@ export enum Primitive {
  *  - Primitives are directly instantiated as concrete
  */
 
-export type Generics = Map<string, Datatype | undefined>;
+export type Generics = Map<string, DatatypeSymbol | ConstantSymbol | undefined>;
 
 export type FunctionDatatype = {
   variant: "Function";
@@ -92,7 +93,7 @@ export type StructDatatype = {
 
 export type RawPointerDatatype = {
   variant: "RawPointer";
-  generics: Generics;
+  pointee: DatatypeSymbol;
 };
 
 export type PrimitiveDatatype = {
@@ -387,22 +388,7 @@ export function serializeDatatype(datatype: Datatype): string {
       return datatype.name;
 
     case "RawPointer":
-      const g2 = [] as string[];
-      for (const [name, tp] of datatype.generics) {
-        if (tp) {
-          if ("constant" in tp) {
-            throw new InternalError("Cannot have constant in pointer");
-          }
-          g2.push(`${serializeDatatype(tp)}`);
-        } else {
-          g2.push(name);
-        }
-      }
-      let pp = "RawPtr";
-      if (g2.length > 0) {
-        pp += `<${g2.join(", ")}>`;
-      }
-      return pp;
+      return `RawPtr<${serializeDatatype(datatype.pointee.type)}>`;
 
     case "Struct":
       let s = datatype.name;
@@ -420,10 +406,10 @@ export function serializeDatatype(datatype: Datatype): string {
       const g = [] as string[];
       for (const [name, tp] of datatype.generics) {
         if (tp) {
-          if ("constant" in tp) {
-            g.push(`${name}=${tp.constant.value}`);
+          if (tp.variant === "Datatype") {
+            g.push(`${name}=${serializeDatatype(tp.type)}`);
           } else {
-            g.push(`${name}=${serializeDatatype(tp)}`);
+            g.push(`${name}=${tp.value.toString()}`);
           }
         } else {
           g.push(name);
@@ -481,7 +467,7 @@ export function generateDeclarationCCode(
       return writer;
 
     case "RawPointer":
-      const generic = datatype.type.generics.get("__Pointee");
+      const generic = datatype.type.pointee;
       if (!generic) {
         throw new ImpossibleSituation();
       }
@@ -489,7 +475,7 @@ export function generateDeclarationCCode(
         throw new InternalError("Cannot have constant in pointer");
       }
       writer.writeLine(
-        `typedef ${generateUsageCode(generic, program)}* ${mangleSymbol(datatype)};`,
+        `typedef ${generateUsageCode(generic.type, program)}* ${mangleSymbol(datatype)};`,
       );
       return writer;
 
@@ -549,11 +535,23 @@ export function generateDefinitionCCode(
               if (!typeGeneric || !sizeGeneric) {
                 throw new ImpossibleSituation();
               }
-              if ("constant" in typeGeneric || !("constant" in sizeGeneric)) {
-                throw new ImpossibleSituation();
+              if (typeGeneric.variant !== "Datatype") {
+                throw new CompilerError(
+                  `A C-Array cannot take a constant as a datatype`,
+                  datatype.location,
+                );
+              }
+              if (
+                sizeGeneric.variant !== "LiteralConstant" ||
+                !isInteger(sizeGeneric.type)
+              ) {
+                throw new CompilerError(
+                  `A C-Array can only take integer constants as size parameters`,
+                  datatype.location,
+                );
               }
               writer.writeLine(
-                `${generateUsageCode(typeGeneric, program)} ${memberSymbol.name}[${sizeGeneric.constant.value.toString()}];`,
+                `${generateUsageCode(typeGeneric.type, program)} ${memberSymbol.name}[${sizeGeneric.value.toString()}];`,
               );
             } else {
               writer.writeLine(
@@ -626,7 +624,7 @@ export function generateUsageCode(dt: Datatype, program: Module): string {
       throw new UnreachableCode();
 
     case "RawPointer":
-      const ptrGeneric = dt.generics.get("__Pointee");
+      const ptrGeneric = dt.pointee.type;
       if (!ptrGeneric) {
         throw new ImpossibleSituation();
       }
@@ -767,10 +765,10 @@ export function generateDatatypeUsageHazeCode(
       for (const [name, tp] of datatype.generics) {
         if (tp === undefined) {
           generics.push(name);
-        } else if ("constant" in tp) {
-          generics.push(generateConstantUsageHazeCode(tp.constant).get());
+        } else if (tp.variant !== "Datatype") {
+          generics.push(generateConstantUsageHazeCode(tp).get());
         } else {
-          generics.push(generateDatatypeUsageHazeCode(tp).get());
+          generics.push(generateDatatypeUsageHazeCode(tp.type).get());
         }
       }
       const namespaces = [] as string[];
@@ -789,14 +787,9 @@ export function generateDatatypeUsageHazeCode(
     }
 
     case "RawPointer": {
-      let generics: string[] = [];
-      for (const [name, tp] of datatype.generics) {
-        if (tp === undefined || "constant" in tp) {
-          throw new ImpossibleSituation();
-        }
-        generics.push(generateDatatypeUsageHazeCode(tp).get());
-      }
-      writer.write(`RawPtr<${generics.join(",")}>`);
+      writer.write(
+        `RawPtr<${generateDatatypeUsageHazeCode(datatype.pointee.type).get()}>`,
+      );
       return writer;
     }
 
@@ -940,15 +933,7 @@ export function isSame(a: Datatype, b: Datatype): boolean {
   }
 
   if (a.variant === "RawPointer" && b.variant === "RawPointer") {
-    const aa = a.generics.get("__Pointee");
-    const bb = b.generics.get("__Pointee");
-    if (!aa || "constant" in aa) {
-      throw new ImpossibleSituation();
-    }
-    if (!bb || "constant" in bb) {
-      throw new ImpossibleSituation();
-    }
-    return isSame(aa, bb);
+    return isSame(a.pointee.type, b.pointee.type);
   }
 
   if (a.variant === "Function" && b.variant === "Function") {
@@ -994,15 +979,10 @@ export function isSame(a: Datatype, b: Datatype): boolean {
           aa.type.variant === "RawPointer" &&
           bb.type.variant === "RawPointer"
         ) {
-          const aaa = aa.type.generics.get("__Pointee");
-          const bbb = bb.type.generics.get("__Pointee");
-          if (!aaa || "constant" in aaa) {
-            throw new ImpossibleSituation();
-          }
-          if (!bbb || "constant" in bbb) {
-            throw new ImpossibleSituation();
-          }
-          if (mangleDatatype(aaa) !== mangleDatatype(bbb)) {
+          if (
+            mangleDatatype(aa.type.pointee.type) !==
+            mangleDatatype(bb.type.pointee.type)
+          ) {
             return false;
           }
         }
@@ -1110,24 +1090,12 @@ export function implicitConversion(
   }
 
   if (from.variant === "RawPointer" && to.variant === "RawPointer") {
-    const _from = from.generics.get("__Pointee");
-    const _to = to.generics.get("__Pointee");
-    if (!_from || "constant" in _from) {
-      throw new ImpossibleSituation();
-    }
-    if (!_to || "constant" in _to) {
-      throw new ImpossibleSituation();
-    }
-    if (isSame(_from, _to)) {
+    if (isSame(from.pointee.type, to.pointee.type)) {
       return expr;
     }
-    const topointee = to.generics.get("__Pointee")!;
-    if ("constant" in topointee) {
-      throw new ImpossibleSituation();
-    }
     if (
-      topointee.variant === "Primitive" &&
-      topointee.primitive === Primitive.none
+      to.pointee.type.variant === "Primitive" &&
+      to.pointee.type.primitive === Primitive.none
     ) {
       return `(void*)(${expr})`;
     }
@@ -1251,11 +1219,7 @@ export function explicitConversion(
   }
 
   if (from.variant === "RawPointer" && to.variant === "RawPointer") {
-    const _to = to.generics.get("__Pointee");
-    if (!_to || "constant" in _to) {
-      throw new ImpossibleSituation();
-    }
-    return `(${generateUsageCode(_to, program)}*)(${expr})`;
+    return `(${generateUsageCode(to.pointee.type, program)}*)(${expr})`;
   }
 
   if (from.variant === "Function" && to.variant === "Function") {

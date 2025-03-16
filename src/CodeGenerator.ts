@@ -199,7 +199,7 @@ class CodeGenerator {
       ) {
         const thisPtr: RawPointerDatatype = {
           variant: "RawPointer",
-          generics: new Map().set("__Pointee", symbol.parentSymbol.type),
+          pointee: symbol.parentSymbol,
         };
         params.push(`${generateUsageCode(thisPtr, this.program)} this`);
       }

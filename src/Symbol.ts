@@ -82,6 +82,14 @@ export type DatatypeSymbol<T = Datatype> = {
   originalGenericSourcecode?: string;
 };
 
+export type ConstantLookupSymbol = {
+  variant: "ConstantLookup";
+  type: Datatype;
+  name: string;
+  constant: ConstantSymbol;
+  location: Location;
+};
+
 export type StringConstantSymbol = {
   variant: "StringConstant";
   type: Datatype;
@@ -113,6 +121,7 @@ export type ConstantSymbol =
 
 export type Symbol =
   | VariableSymbol
+  | ConstantLookupSymbol
   | DatatypeSymbol
   | FunctionSymbol
   | ConstantSymbol;
@@ -163,6 +172,9 @@ export function isSymbolGeneric(symbol: Symbol) {
 }
 
 export function mangleDatatype(datatype: Datatype): string {
+  if (!datatype) {
+    throw new InternalError("");
+  }
   switch (datatype.variant) {
     case "Primitive":
       const s = primitiveVariantToString(datatype);
@@ -198,12 +210,10 @@ export function mangleDatatype(datatype: Datatype): string {
           innerMangling += "I";
           for (const [name, tp] of datatype.generics) {
             if (tp) {
-              if ("constant" in tp) {
-                innerMangling += tp.constant.value
-                  .toString()
-                  .replaceAll(".", "_");
+              if (tp.variant === "Datatype") {
+                innerMangling += mangleDatatype(tp.type);
               } else {
-                innerMangling += mangleDatatype(tp);
+                innerMangling += tp.value.toString().replaceAll(".", "_");
               }
             } else {
               innerMangling += name + "_";
@@ -223,15 +233,10 @@ export function mangleDatatype(datatype: Datatype): string {
 
     case "RawPointer":
       let ptrMangled = "PI";
-      const tp = datatype.generics.get("__Pointee");
-      if (tp) {
-        if ("constant" in tp) {
-          ptrMangled += tp.constant.value.toString().replaceAll(".", "_");
-        } else {
-          ptrMangled += mangleDatatype(tp);
-        }
+      if (datatype.pointee) {
+        ptrMangled += mangleDatatype(datatype.pointee.type);
       } else {
-        ptrMangled += "__Pointee_";
+        throw new InternalError("Pointer pointing to nothing");
       }
       ptrMangled += "E";
       return ptrMangled;

@@ -19,13 +19,16 @@ import {
 } from "./Errors";
 import type { Expression } from "./Expression";
 import {
+  BooleanConstantContext,
   CommonDatatypeContext,
   DatatypeimplContext,
   FuncContext,
   FuncdeclContext,
+  LiteralConstantContext,
   NamedfuncContext,
   ParamContext,
   ParamsContext,
+  StringConstantContext,
   StructMethodContext,
   VariableDeclarationContext,
   VariableDefinitionContext,
@@ -46,14 +49,17 @@ import {
   serializeSymbol,
   VariableScope,
   VariableType,
+  type BooleanConstantSymbol,
+  type ConstantSymbol,
   type DatatypeSymbol,
   type FunctionSymbol,
+  type LiteralUnit,
   type SpecialMethod,
+  type StringConstantSymbol,
   type Symbol,
   type VariableSymbol,
 } from "./Symbol";
 import * as _ from "lodash";
-import type { ParserRuleContext } from "antlr4";
 
 export const RESERVED_VARIABLE_NAMES = ["this", "ctx", "__returnval__"];
 export const RESERVED_STRUCT_NAMES = ["RawPtr"]; // "Context"
@@ -65,14 +71,24 @@ export type ParamPack = { params: [string, Datatype][]; vararg: boolean };
 export function defineGenericsInScope(generics: Generics, scope: Scope) {
   for (const [name, tp] of generics) {
     if (tp) {
-      scope.defineSymbol({
-        variant: "Datatype",
-        name: name,
-        type: tp,
-        scope: scope,
-        export: false,
-        location: scope.location,
-      });
+      if (tp.variant === "Datatype") {
+        scope.defineSymbol({
+          variant: "Datatype",
+          name: name,
+          type: tp.type,
+          scope: scope,
+          export: false,
+          location: scope.location,
+        });
+      } else {
+        scope.defineSymbol({
+          variant: "ConstantLookup",
+          constant: tp,
+          location: tp.location,
+          name: name,
+          type: tp.type,
+        });
+      }
     }
   }
 }
@@ -128,20 +144,35 @@ export function resolveGenerics(
       return symbol.type;
 
     case "RawPointer": {
-      const generics = new Map(datatype.generics);
-      const tempScope2 = new Scope(scope.location, scope);
-      defineGenericsInScope(datatype.generics, tempScope2);
-      for (const [name, tp] of datatype.generics) {
-        const s = tempScope2.tryLookupSymbol(name, loc);
-        if (s) {
-          generics.set(name, s.type);
-        }
+      if (
+        datatype.pointee.type.variant === "Struct" &&
+        datatype.pointee.type.generics.size > 0
+      ) {
+        const tempScope = new Scope(scope.location, scope);
+        defineGenericsInScope(datatype.pointee.type.generics, tempScope);
+        const newRawPtr: RawPointerDatatype = {
+          variant: "RawPointer",
+          pointee: {
+            variant: "Datatype",
+            export: datatype.pointee.export,
+            location: datatype.pointee.location,
+            name: datatype.pointee.name,
+            scope: datatype.pointee.scope,
+            type: resolveGenerics(
+              datatype.pointee.type,
+              tempScope,
+              loc,
+              resolvageContext,
+            ),
+            originalGenericSourcecode:
+              datatype.pointee.originalGenericSourcecode,
+            parentSymbol: datatype.pointee.parentSymbol,
+          },
+        };
+        return newRawPtr;
+      } else {
+        return datatype;
       }
-      const newRawPtr: RawPointerDatatype = {
-        variant: "RawPointer",
-        generics: generics,
-      };
-      return newRawPtr;
     }
 
     case "Namespace":
@@ -164,9 +195,24 @@ export function resolveGenerics(
       const tempScope = new Scope(scope.location, scope);
       defineGenericsInScope(datatype.generics, tempScope);
       for (const [name, tp] of datatype.generics) {
-        const s = tempScope.tryLookupSymbol(name, loc);
+        let s = tempScope.tryLookupSymbol(name, loc);
+        while (s && s.type.variant === "Generic") {
+          if (s.variant === "Datatype") {
+            s = s.scope.parentScope?.tryLookupSymbol(s.type.name, loc);
+          } else if (s.variant === "ConstantLookup") {
+            s = tempScope.tryLookupSymbol(s.type.name, loc);
+          } else {
+            throw new ImpossibleSituation();
+          }
+        }
         if (s) {
-          cloned.generics.set(name, s.type);
+          if (s.variant === "Datatype") {
+            cloned.generics.set(name, s);
+          } else if (s.variant === "ConstantLookup") {
+            cloned.generics.set(name, s.constant);
+          } else {
+            throw new InternalError("Wrong type");
+          }
         }
       }
       for (const member of datatype.members) {
@@ -316,6 +362,35 @@ function lookupDatatype(
   parentSymbol?: DatatypeSymbol,
 ): DatatypeSymbol {
   const name = ctx.ID().getText();
+  const genericsProvided: (DatatypeSymbol | ConstantSymbol)[] =
+    ctx._generics.map((n) => _this.visitGenericsvalue!(n));
+
+  if (name === "RawPtr") {
+    if (genericsProvided.length != 1) {
+      throw new CompilerError(
+        `Type '${name}<>' expected 1 generic argument but got ${genericsProvided.length}.`,
+        program.location(ctx),
+      );
+    }
+    if (!genericsProvided[0] || genericsProvided[0].variant !== "Datatype") {
+      throw new ImpossibleSituation();
+    }
+    const newSymbol: DatatypeSymbol<RawPointerDatatype> = {
+      name: "RawPtr",
+      scope: program.currentScope,
+      variant: "Datatype",
+      parentSymbol: undefined,
+      export: false,
+      location: program.location(ctx),
+      type: {
+        variant: "RawPointer",
+        pointee: genericsProvided[0],
+      },
+    };
+    datatypeSymbolUsed(newSymbol, program);
+    return newSymbol;
+  }
+
   let symbol: Symbol;
   if (!parentSymbol) {
     symbol = program.currentScope.lookupSymbol(
@@ -336,6 +411,15 @@ function lookupDatatype(
         program.location(ctx),
       );
     }
+    // let ptrIndex = 0;
+    // for (const i of symbol.type.generics.keys()) {
+    //   if (genericsProvided[ptrIndex].variant !== "Generic") {
+    //     newSymbol.type.generics.set(i, genericsProvided[ptrIndex]);
+    //   } else {
+    //     newSymbol.type.generics.set(i, undefined);
+    //   }
+    //   ptrIndex++;
+    // }
     symbol = s;
   }
 
@@ -346,7 +430,6 @@ function lookupDatatype(
     );
   }
 
-  const genericsProvided: Datatype[] = ctx._generics.map((n) => _this.visit(n));
   switch (symbol.type.variant) {
     case "Primitive":
       if (genericsProvided.length > 0) {
@@ -359,46 +442,6 @@ function lookupDatatype(
 
     case "Generic":
       return symbol;
-
-    case "RawPointer": {
-      const newSymbol: DatatypeSymbol<RawPointerDatatype> = {
-        name: symbol.name,
-        scope: symbol.scope,
-        variant: "Datatype",
-        parentSymbol: symbol.parentSymbol,
-        export: symbol.export,
-        location: symbol.location,
-        type: {
-          variant: "RawPointer",
-          generics: new Map(symbol.type.generics),
-        },
-      };
-      if (genericsProvided.length != symbol.type.generics.size) {
-        throw new CompilerError(
-          `Type '${name}<>' expected ${symbol.type.generics.size} generic arguments but got ${genericsProvided.length}.`,
-          symbol.location,
-        );
-      }
-
-      let ptrIndex = 0;
-      for (const i of symbol.type.generics.keys()) {
-        if (genericsProvided[ptrIndex].variant !== "Generic") {
-          newSymbol.type.generics.set(i, genericsProvided[ptrIndex]);
-        } else {
-          newSymbol.type.generics.set(i, undefined);
-        }
-        ptrIndex++;
-      }
-
-      if (
-        newSymbol.type.generics
-          .entries()
-          .every((e) => e[1] !== undefined && e[1].variant !== "Generic")
-      ) {
-        datatypeSymbolUsed(newSymbol, program);
-      }
-      return newSymbol;
-    }
 
     case "Struct": {
       const newSymbol: DatatypeSymbol<StructDatatype> = {
@@ -426,17 +469,13 @@ function lookupDatatype(
       }
       let index = 0;
       for (const i of symbol.type.generics.keys()) {
-        if (genericsProvided[index].variant !== "Generic") {
-          newSymbol.type.generics.set(i, genericsProvided[index]);
-        } else {
-          newSymbol.type.generics.set(i, undefined);
-        }
+        newSymbol.type.generics.set(i, genericsProvided[index]);
         index++;
       }
       if (
         newSymbol.type.generics
           .entries()
-          .every((e) => e[1] !== undefined && e[1].variant !== "Generic")
+          .every((e) => e[1] !== undefined && e[1].type.variant !== "Generic")
       ) {
         datatypeSymbolUsed(newSymbol, program);
       }
@@ -455,7 +494,7 @@ export const visitCommonDatatypeImpl = (
   _this: HazeVisitor<any>,
   program: Module,
   ctx: CommonDatatypeContext,
-): Datatype => {
+): DatatypeSymbol => {
   const datatypes = ctx.datatypeimpl_list();
 
   if (datatypes.length === 0) {
@@ -472,7 +511,7 @@ export const visitCommonDatatypeImpl = (
     throw new ImpossibleSituation();
   }
 
-  return symbol.type;
+  return symbol;
 };
 
 export function datatypeSymbolUsed(symbol: DatatypeSymbol, program: Module) {
@@ -517,10 +556,11 @@ export function collectFunction(
 
   let returntype: Datatype = program.getBuiltinType("none");
   if (ctx.datatype()) {
-    returntype = _this.visit(ctx.datatype());
+    const tp: DatatypeSymbol = _this.visit(ctx.datatype());
+    returntype = tp.type;
   } else if (!(ctx instanceof FuncdeclContext)) {
     if (returntype.variant === "Deferred" && ctx.funcbody().expr()) {
-      const expr = _this.visit(ctx.funcbody().expr());
+      const expr: Expression = _this.visit(ctx.funcbody().expr());
       returntype = expr.type;
     }
   }
@@ -605,7 +645,7 @@ export function visitParam(
   _this: HazeVisitor<any>,
   ctx: ParamContext,
 ): [string, Datatype] {
-  return [ctx.ID().getText(), _this.visit(ctx.datatype())];
+  return [ctx.ID().getText(), _this.visit(ctx.datatype()).type];
 }
 
 export function visitParams(
@@ -636,13 +676,13 @@ export function collectVariableStatement(
   let expr: Expression | undefined;
   if (ctx instanceof VariableDefinitionContext) {
     if (ctx.datatype()) {
-      datatype = _this.visit(ctx.datatype());
+      datatype = _this.visit(ctx.datatype()).type;
     }
     if (!datatype) {
       throw new ImpossibleSituation();
     }
   } else {
-    datatype = _this.visit(ctx.datatype());
+    datatype = _this.visit(ctx.datatype()).type;
     if (!datatype) {
       throw new ImpossibleSituation();
     }
@@ -725,10 +765,10 @@ export function analyzeVariableStatement(
     statement.expr = _this.visit(statement.ctx.expr()) as Expression;
     statement.symbol.type = statement.expr.type;
     if (statement.ctx.datatype()) {
-      statement.symbol.type = _this.visit(statement.ctx.datatype());
+      statement.symbol.type = _this.visit(statement.ctx.datatype()).type;
     }
   } else {
-    statement.symbol.type = _this.visit(statement.ctx.datatype());
+    statement.symbol.type = _this.visit(statement.ctx.datatype()).type;
   }
   if (!statement.symbol.type || statement.symbol.type.variant === "Generic") {
     throw new ImpossibleSituation();
@@ -760,4 +800,91 @@ export function analyzeVariableStatement(
       location: statement.location,
     };
   }
+}
+
+export function visitLiteralConstantImpl(
+  _this: HazeVisitor<any>,
+  ctx: LiteralConstantContext,
+  program: Module,
+): ConstantSymbol {
+  const match = ctx.getText().match(/^(\d+(?:\.\d+)?)(s|ms|us|ns|m|h|d)?$/);
+  if (!match) {
+    throw new InternalError("Could not parse literal", program.location(ctx));
+  }
+  const [, valueStr, unitStr] = match;
+  const isFloat = valueStr.indexOf(".") !== -1;
+  let value = isFloat ? parseFloat(valueStr) : parseInt(valueStr);
+
+  if (Number.isNaN(value)) {
+    throw new CompilerError(
+      `Could not parse '${ctx.getText()}'.`,
+      program.location(ctx),
+    );
+  }
+
+  let type = isFloat
+    ? program.getBuiltinType("f64")
+    : program.getBuiltinType("i64");
+  let unit: LiteralUnit | undefined = undefined;
+
+  if (unitStr) {
+    switch (unitStr) {
+      case "s":
+      case "ms":
+      case "us":
+      case "ns":
+      case "m":
+      case "h":
+      case "d":
+        (type = program.getBuiltinType("Duration")), (unit = unitStr);
+        break;
+
+      default:
+        throw new CompilerError(
+          `'${unitStr}' is not a valid unit`,
+          program.location(ctx),
+        );
+    }
+  }
+
+  return {
+    variant: "LiteralConstant",
+    type: type,
+    value: value,
+    location: program.location(ctx),
+    unit: unit,
+  };
+}
+
+export function visitStringConstantImpl(
+  _this: HazeVisitor<any>,
+  ctx: StringConstantContext,
+  program: Module,
+): StringConstantSymbol {
+  return {
+    variant: "StringConstant",
+    type: program.getBuiltinType("stringview"),
+    value: ctx.getText(),
+    location: program.location(ctx),
+  };
+}
+
+export function visitBooleanConstantImpl(
+  _this: HazeVisitor<any>,
+  ctx: BooleanConstantContext,
+  program: Module,
+): BooleanConstantSymbol {
+  const text = ctx.getText();
+  let value = false;
+  if (text === "true") {
+    value = true;
+  } else if (text !== "false") {
+    throw new InternalError(`Invalid boolean constant: ${text}`);
+  }
+  return {
+    variant: "BooleanConstant",
+    type: program.getBuiltinType("boolean"),
+    value: value,
+    location: program.location(ctx),
+  };
 }

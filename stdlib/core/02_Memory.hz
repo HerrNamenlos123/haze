@@ -6,7 +6,7 @@ extern "C" memcpy(to: RawPtr<none>, from: RawPtr<none>, length: u64): RawPtr<non
 
 export struct Array<T, Size> {
   length: u64;
-  data: __C_Array<i32, 5>;
+  data: __C_Array<i32, Size>;
 }
 
 export namespace Memory {
@@ -32,7 +32,7 @@ export namespace Memory {
     data: RawPtr<none>;
 
     canAllocate(size: u64): boolean {
-      const a: Array<i32, i32>;
+      const a: Array<i32, 69>;
       return this.allocated + size < this.capacity;
     }
 

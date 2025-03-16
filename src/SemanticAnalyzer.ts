@@ -53,6 +53,7 @@ import {
   ExprAssignmentExprContext,
   FuncdeclContext,
   FuncRefExprContext,
+  GenericsvalueContext,
   IfexprContext,
   IfStatementContext,
   InlineCStatementContext,
@@ -93,9 +94,12 @@ import {
   INTERNAL_METHOD_NAMES,
   RESERVED_VARIABLE_NAMES,
   resolveGenerics,
+  visitBooleanConstantImpl,
   visitCommonDatatypeImpl,
+  visitLiteralConstantImpl,
   visitParam,
   visitParams,
+  visitStringConstantImpl,
   type ParamPack,
 } from "./utils";
 import { ParserRuleContext } from "antlr4";
@@ -147,7 +151,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
     return visitParams(this, ctx);
   };
 
-  visitCommonDatatype = (ctx: CommonDatatypeContext): Datatype => {
+  visitCommonDatatype = (ctx: CommonDatatypeContext): DatatypeSymbol => {
     return visitCommonDatatypeImpl(this, this.program, ctx);
   };
 
@@ -160,12 +164,12 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
           this.program.location(ctx),
         );
       }
-      const datatype: Datatype = this.visit(ctx.datatype_list()[0]);
+      const datatype: DatatypeSymbol = this.visit(ctx.datatype_list()[0]);
       return {
         variant: "Sizeof",
         ctx: ctx,
         type: this.program.getBuiltinType("u64"),
-        datatype: datatype,
+        datatype: datatype.type,
         location: this.program.location(ctx),
       };
     }
@@ -200,26 +204,22 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
         }
         let index = 0;
         for (const [name, tp] of symbol.type.generics) {
-          if (tp && "variant" in tp && tp.variant === "Generic") {
+          if (tp && tp.type.variant === "Generic") {
+            // skip
             index++;
             continue;
           }
-          symbol.type.generics.set(
-            name,
-            this.visit(ctx.datatype_list()[index]),
+          const datatypeSymbol: DatatypeSymbol = this.visit(
+            ctx.datatype_list()[index],
           );
+          symbol.type.generics.set(name, datatypeSymbol);
           index++;
         }
 
         if (
           symbol.type.generics
             .entries()
-            .every(
-              (e) =>
-                e[1] !== undefined &&
-                "variant" in e[1] &&
-                e[1].variant !== "Generic",
-            )
+            .every((e) => e[1] !== undefined && e[1].type.variant !== "Generic")
         ) {
           datatypeSymbolUsed(
             {
@@ -259,14 +259,22 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
               if (symbol.type.generics.get(name) === undefined) {
                 symbol.type.generics.set(name, tp);
               }
-              if (!("constant" in tp)) {
+              if (tp.variant === "Datatype") {
                 constructorSymbol.scope.defineSymbol({
                   variant: "Datatype",
                   name: name,
                   scope: constructorSymbol.scope,
-                  type: tp,
+                  type: tp.type,
                   export: false,
                   location: constructorSymbol.location,
+                });
+              } else {
+                constructorSymbol.scope.defineSymbol({
+                  variant: "ConstantLookup",
+                  constant: tp,
+                  name: name,
+                  type: tp.type,
+                  location: tp.location,
                 });
               }
             }
@@ -414,14 +422,22 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
         if (symbol.parentSymbol.type.generics.get(name) === undefined) {
           symbol.parentSymbol.type.generics.set(name, tp);
         }
-        if (!("constant" in tp)) {
+        if (tp.variant === "Datatype") {
           symbol.scope.defineSymbol({
             variant: "Datatype",
             name: name,
             scope: symbol.scope,
-            type: tp,
+            type: tp.type,
             export: false,
             location: symbol.location,
+          });
+        } else {
+          symbol.scope.defineSymbol({
+            variant: "ConstantLookup",
+            constant: tp,
+            location: tp.location,
+            name: name,
+            type: tp.type,
           });
         }
       }
@@ -435,7 +451,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
 
     const args: Expression[] = [];
     const params = expr.type.functionParameters;
-    const visitedArgs = this.visit(ctx.args());
+    const visitedArgs = this.visitArgs(ctx.args());
     if (visitedArgs.length !== params.length) {
       if (!expr.type.vararg) {
         throw new CompilerError(
@@ -522,7 +538,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
           name: "this",
           type: {
             variant: "RawPointer",
-            generics: new Map().set("__Pointee", symbol.parentSymbol.type),
+            pointee: symbol.parentSymbol,
           },
           variableType: VariableType.Parameter,
           variableScope: VariableScope.Local,
@@ -550,10 +566,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
         name: "ctx",
         type: {
           variant: "RawPointer",
-          generics: new Map().set(
-            "__Pointee",
-            this.program.getBuiltinType("Context"),
-          ),
+          pointee: this.program.getBuiltinTypeSymbol("Context"),
         },
         variableType: VariableType.Parameter,
         variableScope: VariableScope.Local,
@@ -563,7 +576,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
       });
 
       if (!(ctx instanceof FuncdeclContext) && !symbol.declared) {
-        this.visit(ctx.funcbody()).forEach((statement: Statement) => {
+        this.visitFuncbody(ctx.funcbody()).forEach((statement: Statement) => {
           symbol.scope.statements.push(statement);
         });
       }
@@ -710,12 +723,12 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
     ctx: ExplicitCastExprContext,
   ): ExplicitCastExpression => {
     const expr: Expression = this.visit(ctx.expr());
-    const targetType: Datatype = this.visit(ctx.datatype());
+    const targetType: DatatypeSymbol = this.visit(ctx.datatype());
     return {
       variant: "ExplicitCast",
       expr: expr,
       ctx: ctx,
-      type: targetType,
+      type: targetType.type,
       location: this.program.location(ctx),
     };
   };
@@ -897,84 +910,28 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
     }
   };
 
+  visitGenericsvalue = (
+    ctx: GenericsvalueContext,
+  ): ConstantSymbol | DatatypeSymbol => {
+    if (ctx.constant()) {
+      return this.visit(ctx.constant()) as ConstantSymbol;
+    } else {
+      return this.visit(ctx.datatype()) as DatatypeSymbol;
+    }
+  };
+
   visitStringConstant = (ctx: StringConstantContext): StringConstantSymbol => {
-    return {
-      variant: "StringConstant",
-      type: this.program.getBuiltinType("stringview"),
-      value: ctx.getText(),
-      location: this.program.location(ctx),
-    };
+    return visitStringConstantImpl(this, ctx, this.program);
   };
 
   visitLiteralConstant = (ctx: LiteralConstantContext): ConstantSymbol => {
-    const match = ctx.getText().match(/^(\d+(?:\.\d+)?)(s|ms|us|ns|m|h|d)?$/);
-    if (!match) {
-      throw new InternalError(
-        "Could not parse literal",
-        this.program.location(ctx),
-      );
-    }
-    const [, valueStr, unitStr] = match;
-    const isFloat = valueStr.indexOf(".") !== -1;
-    let value = isFloat ? parseFloat(valueStr) : parseInt(valueStr);
-
-    if (Number.isNaN(value)) {
-      throw new CompilerError(
-        `Could not parse '${ctx.getText()}'.`,
-        this.program.location(ctx),
-      );
-    }
-
-    let type = isFloat
-      ? this.program.getBuiltinType("f64")
-      : this.program.getBuiltinType("i64");
-    let unit: LiteralUnit | undefined = undefined;
-
-    if (unitStr) {
-      switch (unitStr) {
-        case "s":
-        case "ms":
-        case "us":
-        case "ns":
-        case "m":
-        case "h":
-        case "d":
-          (type = this.program.getBuiltinType("Duration")), (unit = unitStr);
-          break;
-
-        default:
-          throw new CompilerError(
-            `'${unitStr}' is not a valid unit`,
-            this.program.location(ctx),
-          );
-      }
-    }
-
-    return {
-      variant: "LiteralConstant",
-      type: type,
-      value: value,
-      location: this.program.location(ctx),
-      unit: unit,
-    };
+    return visitLiteralConstantImpl(this, ctx, this.program);
   };
 
   visitBooleanConstant = (
     ctx: BooleanConstantContext,
   ): BooleanConstantSymbol => {
-    const text = ctx.getText();
-    let value = false;
-    if (text === "true") {
-      value = true;
-    } else if (text !== "false") {
-      throw new InternalError(`Invalid boolean constant: ${text}`);
-    }
-    return {
-      variant: "BooleanConstant",
-      type: this.program.getBuiltinType("boolean"),
-      value,
-      location: this.program.location(ctx),
-    };
+    return visitBooleanConstantImpl(this, ctx, this.program);
   };
 
   visitConstantExpr = (ctx: ConstantExprContext): ConstantExpression => {
@@ -1166,7 +1123,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
     ctx: StructMemberValueContext,
   ): [VariableSymbol, Expression] => {
     const name = ctx.ID().getText();
-    const expr = this.visit(ctx.expr());
+    const expr: Expression = this.visit(ctx.expr());
     const symbol: VariableSymbol = {
       name: name,
       type: expr.type,
@@ -1207,12 +1164,12 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
   visitStructInstantiationExpr = (
     ctx: StructInstantiationExprContext,
   ): ObjectExpression => {
-    const structtype: Datatype = this.visit(ctx.datatype());
+    const structtypeSymbol: DatatypeSymbol = this.visit(ctx.datatype());
     const members: Array<[VariableSymbol, Expression]> = [];
 
-    if (structtype.variant !== "Struct") {
+    if (structtypeSymbol.type.variant !== "Struct") {
       throw new CompilerError(
-        `Expression of type '${serializeDatatype(structtype)}' is not a struct`,
+        `Expression of type '${serializeDatatype(structtypeSymbol.type)}' is not a struct`,
         this.program.location(ctx),
       );
     }
@@ -1221,17 +1178,20 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
       this.program.location(ctx),
       this.program.currentScope,
     );
-    defineGenericsInScope(structtype.generics, scope);
+    defineGenericsInScope(structtypeSymbol.type.generics, scope);
 
     const assignedMembers = [] as string[];
     for (const attr of ctx.structmembervalue_list()) {
       const [symbol, expr] = this.visit(attr) as [VariableSymbol, Expression];
       members.push([symbol, expr]);
 
-      const existingSymbol = findMemberInStruct(structtype, symbol.name);
+      const existingSymbol = findMemberInStruct(
+        structtypeSymbol.type,
+        symbol.name,
+      );
       if (!existingSymbol) {
         throw new CompilerError(
-          `'${symbol.name}' is not a member of '${serializeDatatype(structtype)}'`,
+          `'${symbol.name}' is not a member of '${serializeDatatype(structtypeSymbol.type)}'`,
           this.program.location(ctx),
         );
       }
@@ -1255,7 +1215,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
       assignedMembers.push(symbol.name);
     }
 
-    for (const member of structtype.members) {
+    for (const member of structtypeSymbol.type.members) {
       if (member.variant === "Variable") {
         if (!assignedMembers.includes(member.name)) {
           throw new CompilerError(
@@ -1290,7 +1250,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
       variant: "Object",
       ctx: ctx,
       members: members,
-      type: structtype,
+      type: structtypeSymbol.type,
       location: this.program.location(ctx),
     };
   };
@@ -1315,16 +1275,12 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
           );
         }
 
-        const p = expr.type.generics.get("__Pointee");
-        if (!p || "constant" in p) {
-          throw new ImpossibleSituation();
-        }
         if (name === "ptr") {
           const e: RawPointerDereferenceExpression = {
             variant: "RawPtrDeref",
             expr: expr,
             ctx: ctx,
-            type: p,
+            type: expr.type.pointee.type,
             location: this.program.location(ctx),
           };
           return e;
@@ -1334,7 +1290,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
           variant: "RawPtrDeref",
           expr: expr,
           ctx: ctx,
-          type: p.variant === "RawPointer" ? p.generics.get("__Pointee")! : p,
+          type: expr.type.pointee.type,
           location: this.program.location(ctx),
         } as RawPointerDereferenceExpression;
       }
@@ -1389,14 +1345,22 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
               symbol.type.generics.set(name, tp);
             }
           }
-          if (!("constant" in tp)) {
+          if (tp.variant === "Datatype") {
             scope.defineSymbol({
               variant: "Datatype",
               name: name,
               scope: scope,
-              type: tp,
+              type: tp.type,
               export: false,
               location: this.program.location(ctx),
+            });
+          } else {
+            scope.defineSymbol({
+              variant: "ConstantLookup",
+              constant: tp,
+              name: name,
+              location: tp.location,
+              type: tp.type,
             });
           }
         }
@@ -1464,14 +1428,22 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
           if (symbol.parentSymbol.type.generics.get(name) === undefined) {
             symbol.parentSymbol.type.generics.set(name, tp);
           }
-          if (!("constant" in tp)) {
+          if (tp.variant === "Datatype") {
             symbol.scope.defineSymbol({
               variant: "Datatype",
               name: name,
               scope: symbol.scope,
-              type: tp,
+              type: tp.type,
               export: false,
               location: this.program.location(ctx),
+            });
+          } else {
+            symbol.scope.defineSymbol({
+              variant: "ConstantLookup",
+              constant: tp,
+              name: name,
+              location: tp.location,
+              type: tp.type,
             });
           }
         }
@@ -1512,6 +1484,9 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
           `'${name}' is not a member of type '${serializeDatatype(expr.type)}'`,
           this.program.location(ctx),
         );
+      }
+      if (symbol.variant === "ConstantLookup") {
+        throw new ImpossibleSituation();
       }
       return {
         ctx: ctx,
@@ -1575,6 +1550,9 @@ export function performSemanticAnalysis(program: Module) {
   }
 
   if (mainFunction) {
+    if (mainFunction.variant === "ConstantLookup") {
+      throw new ImpossibleSituation();
+    }
     if (mainFunction.type.variant !== "Function") {
       throw new ImpossibleSituation();
     }

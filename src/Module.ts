@@ -3,6 +3,7 @@ import {
   CompilerError,
   GeneralError,
   getCallerLocation,
+  ImpossibleSituation,
   InternalError,
   Location,
 } from "./Errors";
@@ -92,19 +93,6 @@ export class Module {
     define("f32", Primitive.f32);
     define("f64", Primitive.f64);
 
-    const symbol: DatatypeSymbol<RawPointerDatatype> = {
-      variant: "Datatype",
-      name: "RawPtr",
-      type: {
-        variant: "RawPointer",
-        generics: new Map().set("__Pointee", undefined),
-      },
-      scope: this.globalScope,
-      export: false,
-      location: this.globalScope.location,
-    };
-    this.globalScope.defineSymbol(symbol);
-
     const array: DatatypeSymbol<StructDatatype> = {
       variant: "Datatype",
       name: "__C_Array",
@@ -151,8 +139,19 @@ export class Module {
     return new Location(this.filename, ctx.start.line, ctx.start.column);
   }
 
-  getBuiltinType(name: string) {
-    return this.globalScope.lookupSymbol(name, this.globalScope.location).type;
+  getBuiltinType(name: string): Datatype {
+    return this.getBuiltinTypeSymbol(name).type;
+  }
+
+  getBuiltinTypeSymbol(name: string): DatatypeSymbol {
+    const symbol = this.globalScope.lookupSymbol(
+      name,
+      this.globalScope.location,
+    );
+    if (symbol.variant !== "Datatype") {
+      throw new ImpossibleSituation();
+    }
+    return symbol;
   }
 
   pushScope(scope: Scope) {

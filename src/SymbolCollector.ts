@@ -1,12 +1,16 @@
 import {
+  BooleanConstantContext,
   CdefinitiondeclContext,
   CommonDatatypeContext,
   FuncContext,
   FuncdeclContext,
   FunctionDatatypeContext,
+  GenericsvalueContext,
+  LiteralConstantContext,
   NamedfuncContext,
   NamespaceContext,
   ParamsContext,
+  StringConstantContext,
   StructDeclContext,
   StructMemberContext,
   StructMethodContext,
@@ -28,6 +32,9 @@ import {
   type VariableSymbol,
   VariableScope,
   type Symbol,
+  type ConstantSymbol,
+  type StringConstantSymbol,
+  type BooleanConstantSymbol,
 } from "./Symbol";
 import HazeVisitor from "./parser/HazeVisitor";
 import { CompilerError, ImpossibleSituation, InternalError } from "./Errors";
@@ -47,9 +54,12 @@ import {
   collectVariableStatement,
   datatypeSymbolUsed,
   RESERVED_STRUCT_NAMES,
+  visitBooleanConstantImpl,
   visitCommonDatatypeImpl,
+  visitLiteralConstantImpl,
   visitParam,
   visitParams,
+  visitStringConstantImpl,
   type ParamPack,
 } from "./utils";
 import type { Statement } from "./Statement";
@@ -84,7 +94,7 @@ export class SymbolCollector extends HazeVisitor<any> {
     return visitParams(this, ctx);
   };
 
-  visitCommonDatatype = (ctx: CommonDatatypeContext): Datatype => {
+  visitCommonDatatype = (ctx: CommonDatatypeContext): DatatypeSymbol => {
     return visitCommonDatatypeImpl(this, this.program, ctx);
   };
 
@@ -93,26 +103,24 @@ export class SymbolCollector extends HazeVisitor<any> {
     this.program.cDefinitionDecl.push(text);
   };
 
-  visitFunctionDatatype = (ctx: FunctionDatatypeContext): Datatype => {
+  visitFunctionDatatype = (ctx: FunctionDatatypeContext): DatatypeSymbol => {
     const params = this.visitParams(ctx.functype().params());
     const type: FunctionDatatype = {
       variant: "Function",
       functionParameters: params.params,
-      functionReturnType: this.visit(ctx.functype().datatype()),
+      functionReturnType: this.visit(ctx.functype().datatype()).type,
       vararg: params.vararg,
     };
-    datatypeSymbolUsed(
-      {
-        name: "",
-        scope: this.program.currentScope,
-        type: type,
-        variant: "Datatype",
-        export: false,
-        location: this.program.location(ctx),
-      },
-      this.program,
-    );
-    return type;
+    const symbol: Symbol = {
+      name: "",
+      scope: this.program.currentScope,
+      type: type,
+      variant: "Datatype",
+      export: false,
+      location: this.program.location(ctx),
+    };
+    datatypeSymbolUsed(symbol, this.program);
+    return symbol;
   };
 
   visitFuncdecl = (ctx: FuncdeclContext): void => {
@@ -179,11 +187,11 @@ export class SymbolCollector extends HazeVisitor<any> {
 
   visitStructMember = (ctx: StructMemberContext) => {
     const name = ctx.ID().getText();
-    const datatype = this.visit(ctx.datatype());
+    const datatypeSymbol: DatatypeSymbol = this.visit(ctx.datatype());
     const symbol: VariableSymbol = {
       variant: "Variable",
       name: name,
-      type: datatype,
+      type: datatypeSymbol.type,
       variableType: VariableType.MutableStructField,
       variableScope: VariableScope.Member,
       export: false,
@@ -390,6 +398,30 @@ export class SymbolCollector extends HazeVisitor<any> {
     }
 
     return symbol;
+  };
+
+  visitGenericsvalue = (
+    ctx: GenericsvalueContext,
+  ): ConstantSymbol | DatatypeSymbol => {
+    if (ctx.constant()) {
+      return this.visit(ctx.constant()) as ConstantSymbol;
+    } else {
+      return this.visit(ctx.datatype()) as DatatypeSymbol;
+    }
+  };
+
+  visitStringConstant = (ctx: StringConstantContext): StringConstantSymbol => {
+    return visitStringConstantImpl(this, ctx, this.program);
+  };
+
+  visitLiteralConstant = (ctx: LiteralConstantContext): ConstantSymbol => {
+    return visitLiteralConstantImpl(this, ctx, this.program);
+  };
+
+  visitBooleanConstant = (
+    ctx: BooleanConstantContext,
+  ): BooleanConstantSymbol => {
+    return visitBooleanConstantImpl(this, ctx, this.program);
   };
 
   visitVariableDefinition = (ctx: VariableDefinitionContext): Statement => {
