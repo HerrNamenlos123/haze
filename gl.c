@@ -62,6 +62,8 @@
 // }
 
 // #define CLAY_DISABLE_CULLING
+#include <GLFW/glfw3.h>
+#include <string.h>
 #define CLAY_IMPLEMENTATION
 #define RSGL_IMPLEMENTATION
 #include "clay/renderers/RSGL/clay_renderer_RSGL.c"

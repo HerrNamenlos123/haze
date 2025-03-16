@@ -2,6 +2,12 @@
 
 
 main(): i32 {
-    ctx.log.info("Hallo\n");
+    const cwd = Process.cwd();
+    if cwd.isSuccess {
+        ctx.log.info("%s", cwd.success.cStr());
+    }
+    else {
+        ctx.log.error("%s", cwd.error.cStr());
+    }
     return 0;
 }

@@ -26,4 +26,11 @@ export namespace Math {
     }
     return b;
   }
+
+  minu64(a: u64, b: u64): u64 {
+    if a <= b {
+      return a;
+    }
+    return b;
+  }
 }

@@ -1211,6 +1211,26 @@ export function explicitConversion(
     return `(${expr} != 0)`;
   }
 
+  if (
+    from.variant === "Primitive" &&
+    from.primitive === Primitive.stringview &&
+    to.variant === "RawPointer" &&
+    to.pointee.type.variant === "Primitive" &&
+    to.pointee.type.primitive === Primitive.u8
+  ) {
+    return `(${generateUsageCode(to, program)})(${expr})`;
+  }
+
+  if (
+    to.variant === "Primitive" &&
+    to.primitive === Primitive.stringview &&
+    from.variant === "RawPointer" &&
+    from.pointee.type.variant === "Primitive" &&
+    from.pointee.type.primitive === Primitive.u8
+  ) {
+    return `(${generateUsageCode(to, program)})(${expr})`;
+  }
+
   if (from.variant === "RawPointer" && isInteger(to)) {
     return `(${generateUsageCode(to, program)})(${expr})`;
   }
