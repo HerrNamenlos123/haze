@@ -1,5 +1,7 @@
 
 inject "#include <GLFW/glfw3.h>";
+inject "#include <math.h>";
+
 export extern "C" struct GLFWwindow {};
 extern "C" struct GLFWmonitor {};
 extern "C" glfwInit(): boolean;

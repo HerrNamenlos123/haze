@@ -24,8 +24,8 @@ testArena() {
 }
 
 main(args: List<String>): i32 {
-  return TM2();
-  // testArena();
-  // return 0;
+  // return TM2();
+  testArena();
+  return 0;
 }
 

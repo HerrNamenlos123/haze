@@ -23,5 +23,5 @@ test = "haze test"
 # warnings_as_errors = false
 
 [dependencies]
-glfw = "glfw"
-SDL = "SDL"
+# glfw = "glfw"
+# SDL = "SDL"

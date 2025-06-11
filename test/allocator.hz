@@ -1,51 +1,51 @@
 
-struct App {
+// struct App {
 
-}
+// }
 
-foo<App> () {
+// foo<App> () {
 
-}
+// }
 
-runApp<R>(app: Ptr<R, App>) {
+// runApp<R>(app: Ptr<R, App>) {
 
-}
+// }
 
-createNumber(): Result<i32*, Error> {
-    return try new i32(187);
-}
+// createNumber(): Result<i32*, Error> {
+//     return try new i32(187);
+// }
 
-makeNumber(): Result<None, Error> {
-    const oldArena = ctx.arena;
-    ctx.arena = Arena.create();
-    defer { ctx.arena.destroy(); ctx.arena = oldArena; }
+// makeNumber(): Result<None, Error> {
+//     const oldArena = ctx.arena;
+//     ctx.arena = Arena.create();
+//     defer { ctx.arena.destroy(); ctx.arena = oldArena; }
 
-    useArena(() => {
-        print("Using new arena", try new i32[42]);
-    });
+//     useArena(() => {
+//         print("Using new arena", try new i32[42]);
+//     });
 
-    const number = try createNumber();
-    print(f"Number: {*number}")
-}
+//     const number = try createNumber();
+//     print(f"Number: {*number}")
+// }
 
-foo() {
-    // region RApp {
-    //     call<RApp>();
-    //     const app = alloc<RApp>(App);
-    // }
+// foo() {
+//     // region RApp {
+//     //     call<RApp>();
+//     //     const app = alloc<RApp>(App);
+//     // }
 
-    {
-        const outerArena = Arena.create();
-        const ptr = new(outerArena) i32*(0);
+//     {
+//         const outerArena = Arena.create();
+//         const ptr = new(outerArena) i32*(0);
 
-        {
-            const arena = Arena.create();
-            defer arena.destroy();
+//         {
+//             const arena = Arena.create();
+//             defer arena.destroy();
 
-            const value = new(innerArena) i32(0);
-            ptr = &value;
-        }
+//             const value = new(innerArena) i32(0);
+//             ptr = &value;
+//         }
 
-        print(*ptr);
-    }
-}
+//         print(*ptr);
+//     }
+// }
