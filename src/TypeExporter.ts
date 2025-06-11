@@ -123,7 +123,7 @@ export class TypeExporter {
   }[] = [];
   nextId = 1;
 
-  constructor() {}
+  constructor() { }
 
   tryGetDatatypeId(datatype: Datatype): DatatypeId | undefined {
     const found = this.datatypes.find((d) => d.originalType === datatype);
@@ -176,7 +176,7 @@ export class TypeExporter {
 
           for (const [name, tp] of datatype.generics.entries()) {
             if (tp) {
-              struct.generics[name] = this.getDatatypeId(tp);
+              struct.generics[name] = this.getDatatypeId(tp.type);
             } else {
               struct.generics[name] = null;
             }

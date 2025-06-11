@@ -5,7 +5,7 @@ import {
   ErrorType,
   printWarningMessage,
 } from "./Errors";
-import type { StructDeclContext } from "./parser/HazeParser";
+import type { StructDeclContext } from "./grammar/autogen/HazeParser";
 import {
   Linkage,
   mangleDatatype,
@@ -666,12 +666,12 @@ class CodeGenerator {
             tempWriter.write(rightWriter.temp);
             outWriter.write(
               "(" +
-                leftWriter.out.get() +
-                " " +
-                expr.operation +
-                " " +
-                rightWriter.out.get() +
-                ")",
+              leftWriter.out.get() +
+              " " +
+              expr.operation +
+              " " +
+              rightWriter.out.get() +
+              ")",
             );
             break;
           }
@@ -684,12 +684,12 @@ class CodeGenerator {
             tempWriter.write(rightWriter.temp);
             outWriter.write(
               "(" +
-                leftWriter.out.get() +
-                " " +
-                expr.operation +
-                " " +
-                rightWriter.out.get() +
-                ")",
+              leftWriter.out.get() +
+              " " +
+              expr.operation +
+              " " +
+              rightWriter.out.get() +
+              ")",
             );
             break;
           }
@@ -702,12 +702,12 @@ class CodeGenerator {
             tempWriter.write(rightWriter.temp);
             outWriter.write(
               "(" +
-                leftWriter.out.get() +
-                " " +
-                expr.operation +
-                " " +
-                rightWriter.out.get() +
-                ")",
+              leftWriter.out.get() +
+              " " +
+              expr.operation +
+              " " +
+              rightWriter.out.get() +
+              ")",
             );
             break;
           }

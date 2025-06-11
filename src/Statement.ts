@@ -1,11 +1,11 @@
-import type { ParserRuleContext } from "antlr4";
+import type { ParserRuleContext } from "antlr4ng";
 import type { Symbol, VariableSymbol } from "./Symbol";
 import type { Expression } from "./Expression";
 import type { Scope } from "./Scope";
 import type {
   VariableDeclarationContext,
   VariableDefinitionContext,
-} from "./parser/HazeParser";
+} from "./grammar/autogen/HazeParser";
 import type { Location } from "./Errors";
 
 export type VariableDefinitionStatement = {

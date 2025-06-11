@@ -1,4 +1,4 @@
-import HazeVisitor from "./parser/HazeVisitor";
+import { HazeVisitor } from "./grammar/autogen/HazeVisitor";
 
 import {
   findMemberInStruct,
@@ -83,7 +83,7 @@ import {
   type StringConstantContext,
   type StructInstantiationExprContext,
   type StructMemberValueContext,
-} from "./parser/HazeParser";
+} from "./grammar/autogen/HazeParser";
 import {
   analyzeVariableStatement,
   collectFunction,
@@ -102,7 +102,7 @@ import {
   visitStringConstantImpl,
   type ParamPack,
 } from "./utils";
-import { ParserRuleContext } from "antlr4";
+import { ParserRuleContext } from "antlr4ng";
 import type {
   AssignOperation,
   BinaryExpression,
@@ -159,13 +159,13 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
   visitSymbolValueExpr = (ctx: SymbolValueExprContext): Expression => {
     const name = ctx.ID().getText();
     if (name === "sizeof") {
-      if (ctx.datatype_list().length !== 1) {
+      if (ctx.datatype().length !== 1) {
         throw new CompilerError(
-          `sizeof<> Operator expected 1 generic argument but got ${ctx.datatype_list().length}.`,
+          `sizeof<> Operator expected 1 generic argument but got ${ctx.datatype().length}.`,
           this.program.location(ctx),
         );
       }
-      const datatype: DatatypeSymbol = this.visit(ctx.datatype_list()[0]);
+      const datatype: DatatypeSymbol = this.visit(ctx.datatype()[0]);
       return {
         variant: "Sizeof",
         ctx: ctx,
@@ -197,9 +197,9 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
         symbol.type = { ...symbol.type };
         symbol.type.generics = new Map(symbol.type.generics);
         symbol.type.methods = symbol.type.methods.map((m) => ({ ...m }));
-        if (symbol.type.generics.size !== ctx.datatype_list().length) {
+        if (symbol.type.generics.size !== ctx.datatype().length) {
           throw new CompilerError(
-            `Datatype expected ${symbol.type.generics.size} generic arguments but got ${ctx.datatype_list().length}.`,
+            `Datatype expected ${symbol.type.generics.size} generic arguments but got ${ctx.datatype().length}.`,
             this.program.location(ctx),
           );
         }
@@ -211,7 +211,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
             continue;
           }
           const datatypeSymbol: DatatypeSymbol = this.visit(
-            ctx.datatype_list()[index],
+            ctx.datatype()[index],
           );
           symbol.type.generics.set(name, datatypeSymbol);
           index++;
@@ -306,7 +306,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
 
   visitPreIncrExpr = (ctx: PreIncrExprContext): PreIncrExpr => {
     const expr: Expression = this.visit(ctx.expr());
-    const operator = ctx._op.text;
+    const operator = ctx._op?.text;
     if (operator !== "++" && operator !== "--") {
       throw new CompilerError(
         `Unknown operator ${operator}`,
@@ -331,7 +331,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
 
   visitPostIncrExpr = (ctx: PostIncrExprContext): PostIncrExpr => {
     const expr: Expression = this.visit(ctx.expr());
-    const operator = ctx._op.text;
+    const operator = ctx._op?.text;
     if (operator !== "++" && operator !== "--") {
       throw new CompilerError(
         `Unknown operator ${operator}`,
@@ -653,7 +653,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
 
   visitFuncbody = (ctx: FuncbodyContext): Statement[] => {
     if (ctx.expr()) {
-      const expr: Expression = this.visit(ctx.expr());
+      const expr: Expression = this.visit(ctx.expr()!);
       implicitConversion(
         expr.type,
         this.functionStack[this.functionStack.length - 1].type
@@ -672,12 +672,12 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
         } as ReturnStatement,
       ];
     } else {
-      return this.visitBody(ctx.body());
+      return this.visitBody(ctx.body()!);
     }
   };
 
   visitBody = (ctx: BodyContext): Statement[] => {
-    return ctx.statement_list().map((s) => this.visit(s));
+    return ctx.statement().map((s) => this.visit(s));
   };
 
   visitExprStatement = (ctx: ExprStatementContext): ExprStatement => {
@@ -735,10 +735,10 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
   };
 
   visitBinaryExpr = (ctx: BinaryExprContext): BinaryExpression => {
-    const left: Expression = this.visit(ctx.expr_list()[0]);
-    const right: Expression = this.visit(ctx.expr_list()[1]);
-    let operation = ctx.getChild(1).getText();
-    if (operation === "is" && ctx.getChild(2).getText() === "not") {
+    const left: Expression = this.visit(ctx.expr()[0]);
+    const right: Expression = this.visit(ctx.expr()[1]);
+    let operation = ctx.getChild(1)?.getText();
+    if (operation === "is" && ctx.getChild(2)?.getText() === "not") {
       operation = "!=";
     }
     if (operation === "is") {
@@ -870,7 +870,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
 
   visitUnaryExpr = (ctx: UnaryExprContext): UnaryExpression => {
     const expr: Expression = this.visit(ctx.expr());
-    let operation = ctx.getChild(0).getText();
+    let operation = ctx.getChild(0)?.getText();
     if (operation === "not") {
       operation = "!";
     }
@@ -915,9 +915,9 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
     ctx: GenericsvalueContext,
   ): ConstantSymbol | DatatypeSymbol => {
     if (ctx.constant()) {
-      return this.visit(ctx.constant()) as ConstantSymbol;
+      return this.visit(ctx.constant()!) as ConstantSymbol;
     } else {
-      return this.visit(ctx.datatype()) as DatatypeSymbol;
+      return this.visit(ctx.datatype()!) as DatatypeSymbol;
     }
   };
 
@@ -969,7 +969,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
 
   visitReturnStatement = (ctx: ReturnStatementContext): ReturnStatement => {
     if (ctx.expr()) {
-      const expr: Expression = this.visit(ctx.expr());
+      const expr: Expression = this.visit(ctx.expr()!);
       implicitConversion(
         expr.type,
         this.functionStack[this.functionStack.length - 1].type
@@ -1014,7 +1014,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
   visitIfStatement = (ctx: IfStatementContext): Statement => {
     const ifExpr: Expression = this.visitIfexpr(ctx.ifexpr());
     const elseIfExprs: Expression[] = [];
-    for (const expr of ctx.elseifexpr_list()) {
+    for (const expr of ctx.elseifexpr()) {
       elseIfExprs.push(this.visit(expr));
     }
 
@@ -1024,7 +1024,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
       variant: "Conditional",
       if: [ifExpr, new Scope(location, parentScope)],
       elseIf: elseIfExprs.map((e) => [e, new Scope(location, parentScope)]),
-      else: ctx.elseblock() && new Scope(location, parentScope),
+      else: (ctx.elseblock() || undefined) && new Scope(location, parentScope),
       ctx: ctx,
       location: location,
     };
@@ -1038,7 +1038,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
     let index = 0;
     for (const [expr, scope] of statement.elseIf) {
       this.program.pushScope(scope);
-      this.visitBody(ctx.elseifblock_list()[index].body()).forEach(
+      this.visitBody(ctx.elseifblock()[index].body()).forEach(
         (statement: Statement) => {
           scope.statements.push(statement);
         },
@@ -1049,7 +1049,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
 
     if (statement.else) {
       const scope = this.program.pushScope(statement.else);
-      this.visitBody(ctx.elseblock().body()).forEach((statement: Statement) => {
+      this.visitBody(ctx.elseblock()!.body()).forEach((statement: Statement) => {
         scope.statements.push(statement);
       });
       this.program.popScope();
@@ -1080,7 +1080,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
 
   visitArgs = (ctx: ArgsContext): Expression[] => {
     const args: Expression[] = [];
-    for (const e of ctx.expr_list()) {
+    for (const e of ctx.expr()) {
       args.push(this.visit(e));
     }
     return args;
@@ -1089,8 +1089,8 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
   visitExprAssignmentExpr = (
     ctx: ExprAssignmentExprContext,
   ): ExprAssignmentExpr => {
-    const leftExpr: Expression = this.visit(ctx.expr_list()[0]);
-    const rightExpr: Expression = this.visit(ctx.expr_list()[1]);
+    const leftExpr: Expression = this.visit(ctx.expr()[0]);
+    const rightExpr: Expression = this.visit(ctx.expr()[1]);
     if (
       rightExpr.type.variant === "Primitive" &&
       rightExpr.type.primitive === Primitive.none
@@ -1111,7 +1111,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
     }
 
     let operation: AssignOperation;
-    switch (ctx._op.text) {
+    switch (ctx._op?.text) {
       case "=":
       case "+=":
       case "-=":
@@ -1128,7 +1128,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
 
       default:
         throw new CompilerError(
-          `Unsupported operation: ${ctx._op.text}`,
+          `Unsupported operation: ${ctx._op?.text}`,
           this.program.location(ctx),
         );
     }
@@ -1206,7 +1206,7 @@ class FunctionBodyAnalyzer extends HazeVisitor<any> {
     defineGenericsInScope(structtypeSymbol.type.generics, scope);
 
     const assignedMembers = [] as string[];
-    for (const attr of ctx.structmembervalue_list()) {
+    for (const attr of ctx.structmembervalue()) {
       const [symbol, expr] = this.visit(attr) as [VariableSymbol, Expression];
       members.push([symbol, expr]);
 

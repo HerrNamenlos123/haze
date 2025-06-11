@@ -31,8 +31,8 @@ import {
   StructMethodContext,
   VariableDeclarationContext,
   VariableDefinitionContext,
-} from "./parser/HazeParser";
-import type HazeVisitor from "./parser/HazeVisitor";
+} from "./grammar/autogen/HazeParser";
+import type { HazeVisitor } from "./grammar/autogen/HazeVisitor";
 import type { Module } from "./Module";
 import { Scope } from "./Scope";
 import type {
@@ -494,7 +494,7 @@ export const visitCommonDatatypeImpl = (
   program: Module,
   ctx: CommonDatatypeContext,
 ): DatatypeSymbol => {
-  const datatypes = ctx.datatypeimpl_list();
+  const datatypes = ctx.datatypeimpl();
 
   if (datatypes.length === 0) {
     throw new ImpossibleSituation();
@@ -555,11 +555,11 @@ export function collectFunction(
 
   let returntype: Datatype = program.getBuiltinType("none");
   if (ctx.datatype()) {
-    const tp: DatatypeSymbol = _this.visit(ctx.datatype());
+    const tp: DatatypeSymbol = _this.visit(ctx.datatype()!);
     returntype = tp.type;
   } else if (!(ctx instanceof FuncdeclContext)) {
-    if (returntype.variant === "Deferred" && ctx.funcbody().expr()) {
-      const expr: Expression = _this.visit(ctx.funcbody().expr());
+    if (returntype.variant === "Deferred" && ctx.funcbody()!.expr()) {
+      const expr: Expression = _this.visit(ctx.funcbody()!.expr()!);
       returntype = expr.type;
     }
   }
@@ -651,7 +651,7 @@ export function visitParams(
   _this: HazeVisitor<any>,
   ctx: ParamsContext,
 ): ParamPack {
-  const params = ctx.param_list().map((n) => visitParam(_this, n));
+  const params = ctx.param().map((n) => visitParam(_this, n));
   return { params: params, vararg: ctx.ellipsis() !== null };
 }
 
@@ -675,13 +675,13 @@ export function collectVariableStatement(
   let expr: Expression | undefined;
   if (ctx instanceof VariableDefinitionContext) {
     if (ctx.datatype()) {
-      datatype = _this.visit(ctx.datatype()).type;
+      datatype = _this.visit(ctx.datatype()!).type;
     }
     if (!datatype) {
       throw new ImpossibleSituation();
     }
   } else {
-    datatype = _this.visit(ctx.datatype()).type;
+    datatype = _this.visit(ctx.datatype()!).type;
     if (!datatype) {
       throw new ImpossibleSituation();
     }
@@ -735,18 +735,18 @@ export function collectVariableStatement(
   const statement: VariableDefinitionStatement | VariableDeclarationStatement =
     ctx instanceof VariableDefinitionContext
       ? {
-          variant: "VariableDefinition",
-          ctx: ctx,
-          symbol: symbol,
-          expr: expr!,
-          location: symbol.location,
-        }
+        variant: "VariableDefinition",
+        ctx: ctx,
+        symbol: symbol,
+        expr: expr!,
+        location: symbol.location,
+      }
       : {
-          variant: "VariableDeclaration",
-          ctx: ctx,
-          symbol: symbol,
-          location: symbol.location,
-        };
+        variant: "VariableDeclaration",
+        ctx: ctx,
+        symbol: symbol,
+        location: symbol.location,
+      };
 
   if (variableScope === VariableScope.Global) {
     program.concreteGlobalStatements.set(mangleSymbol(symbol), statement);
@@ -764,10 +764,10 @@ export function analyzeVariableStatement(
     statement.expr = _this.visit(statement.ctx.expr()) as Expression;
     statement.symbol.type = statement.expr.type;
     if (statement.ctx.datatype()) {
-      statement.symbol.type = _this.visit(statement.ctx.datatype()).type;
+      statement.symbol.type = _this.visit(statement.ctx.datatype()!).type;
     }
   } else {
-    statement.symbol.type = _this.visit(statement.ctx.datatype()).type;
+    statement.symbol.type = _this.visit(statement.ctx.datatype()!).type;
   }
   if (!statement.symbol.type || statement.symbol.type.variant === "Generic") {
     throw new ImpossibleSituation();

@@ -1,4 +1,4 @@
-import type { ParserRuleContext } from "antlr4";
+import type { ParserRuleContext } from "antlr4ng";
 
 export enum ErrorType {
   Error,
@@ -10,7 +10,7 @@ export class Location {
     public filename: string,
     public line: number,
     public column: number,
-  ) {}
+  ) { }
 
   public toString(): string {
     return `${this.filename}:${this.line}:${this.column}`;

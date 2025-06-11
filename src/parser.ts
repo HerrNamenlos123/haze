@@ -1,9 +1,9 @@
-import HazeLexer from "./parser/HazeLexer";
-import HazeParser from "./parser/HazeParser";
-import { ErrorType, Location, printErrorMessage } from "./Errors";
-import { CharStream, CommonTokenStream, ErrorListener } from "antlr4";
+import { HazeLexer } from "./grammar/autogen/HazeLexer";
+import { HazeParser } from "./grammar/autogen/HazeParser";
+import { Location, printErrorMessage } from "./Errors";
+import { BaseErrorListener, CharStream, CommonTokenStream } from "antlr4ng";
 
-class HazeErrorListener extends ErrorListener<any> {
+class HazeErrorListener extends BaseErrorListener {
   filename: string;
 
   constructor(filename: string) {
@@ -30,7 +30,7 @@ class HazeErrorListener extends ErrorListener<any> {
 export class Parser {
   parser?: HazeParser;
 
-  constructor() {}
+  constructor() { }
 
   async parseFile(filename: string) {
     const file = Bun.file(filename);
@@ -40,7 +40,7 @@ export class Parser {
 
   async parse(text: string, errorListenerFilename: string) {
     const errorListener = new HazeErrorListener(errorListenerFilename);
-    let inputStream = new CharStream(text);
+    let inputStream = CharStream.fromString(text);
     let lexer = new HazeLexer(inputStream);
     lexer.removeErrorListeners();
     lexer.addErrorListener(errorListener);
@@ -50,11 +50,11 @@ export class Parser {
     this.parser.removeErrorListeners();
     this.parser.addErrorListener(errorListener);
 
-    if (this.parser.syntaxErrorsCount != 0) {
+    if (this.parser.numberOfSyntaxErrors != 0) {
       return;
     }
     const ast = this.parser.prog();
-    if (this.parser.syntaxErrorsCount != 0) {
+    if (this.parser.numberOfSyntaxErrors != 0) {
       return;
     }
     return ast;

@@ -1,4 +1,4 @@
-import type { ParserRuleContext } from "antlr4";
+import type { ParserRuleContext } from "antlr4ng";
 import {
   primitiveVariantToString,
   serializeDatatype,
@@ -17,7 +17,7 @@ import type { Expression } from "./Expression";
 import type {
   VariableDeclarationContext,
   VariableDefinitionContext,
-} from "./parser/HazeParser";
+} from "./grammar/autogen/HazeParser";
 
 export enum VariableType {
   MutableVariable,

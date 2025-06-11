@@ -1,4 +1,4 @@
-import type { ParserRuleContext } from "antlr4";
+import type { ParserRuleContext } from "antlr4ng";
 import type { Datatype } from "./Datatype";
 import type {
   ConstantSymbol,
@@ -69,19 +69,19 @@ export type BinaryExpression = BaseExpression & {
   leftExpr: Expression;
   rightExpr: Expression;
   operation:
-    | "+"
-    | "-"
-    | "*"
-    | "/"
-    | "%"
-    | "=="
-    | "!="
-    | ">"
-    | "<"
-    | ">="
-    | "<="
-    | "&&"
-    | "||";
+  | "+"
+  | "-"
+  | "*"
+  | "/"
+  | "%"
+  | "=="
+  | "!="
+  | ">"
+  | "<"
+  | ">="
+  | "<="
+  | "&&"
+  | "||";
 };
 
 export type UnaryExpression = BaseExpression & {

@@ -18,7 +18,7 @@ import {
   VariableDeclarationContext,
   VariableDefinitionContext,
   type ParamContext,
-} from "./parser/HazeParser";
+} from "./grammar/autogen/HazeParser";
 import type { Module } from "./Module";
 import {
   Linkage,
@@ -36,7 +36,7 @@ import {
   type StringConstantSymbol,
   type BooleanConstantSymbol,
 } from "./Symbol";
-import HazeVisitor from "./parser/HazeVisitor";
+import { HazeVisitor } from "./grammar/autogen/HazeVisitor";
 import { CompilerError, ImpossibleSituation, InternalError } from "./Errors";
 import {
   getStructMembers,
@@ -48,7 +48,7 @@ import {
   type StructMemberUnion,
 } from "./Datatype";
 import { Scope } from "./Scope";
-import { Interval, type ParserRuleContext } from "antlr4";
+import { Interval, type ParserRuleContext } from "antlr4ng";
 import {
   collectFunction,
   collectVariableStatement,
@@ -137,7 +137,7 @@ export class SymbolCollector extends HazeVisitor<any> {
       );
     }
 
-    const signature = ctx.ID_list().map((n) => n.getText());
+    const signature = ctx.ID().map((n) => n.getText());
     if (signature.length > 1 && functype === Linkage.External_C) {
       throw new CompilerError(
         "Extern C functions cannot be namespaced",
@@ -206,12 +206,12 @@ export class SymbolCollector extends HazeVisitor<any> {
   ): StructMemberUnion => {
     return {
       variant: "StructMemberUnion",
-      symbols: ctx.structcontent_list().map((n) => this.visit(n)),
+      symbols: ctx.structcontent().map((n) => this.visit(n)),
     };
   };
 
   visitStructDecl = (ctx: StructDeclContext): DatatypeSymbol => {
-    const name = ctx.ID(0).getText();
+    const name = ctx.ID(0)!.getText();
     const parentScope = this.program.currentScope;
     const scope = this.program.pushScope(
       new Scope(this.program.location(ctx), parentScope),
@@ -225,7 +225,7 @@ export class SymbolCollector extends HazeVisitor<any> {
     }
 
     const genericsList: [string, undefined][] = ctx
-      .ID_list()
+      .ID()
       .slice(1)
       .map((n) => [n.getText(), undefined]);
 
@@ -268,10 +268,7 @@ export class SymbolCollector extends HazeVisitor<any> {
       if (!this.parser?.parser || !ctx.stop) {
         throw new ImpossibleSituation();
       }
-      const tokens = this.parser.parser.getTokenStream();
-      let originalText = tokens.getText(
-        new Interval(ctx.start.tokenIndex, ctx.stop.tokenIndex),
-      );
+      let originalText = this.parser.parser.tokenStream.getTextFromInterval(new Interval(ctx.start?.tokenIndex || 0, ctx.stop.tokenIndex));
       if (originalText.startsWith("export ")) {
         originalText = originalText.replace("export ", "");
       }
@@ -292,7 +289,7 @@ export class SymbolCollector extends HazeVisitor<any> {
     }
     this.parentSymbolStack.push(symbol);
 
-    ctx.structcontent_list().forEach((c) => {
+    ctx.structcontent().forEach((c) => {
       const content: VariableSymbol | StructMemberUnion | FunctionSymbol =
         this.visit(c);
       if (content.variant === "Variable") {
@@ -334,7 +331,7 @@ export class SymbolCollector extends HazeVisitor<any> {
   };
 
   visitNamespace = (ctx: NamespaceContext): DatatypeSymbol => {
-    const names = ctx.ID_list().map((c) => c.getText());
+    const names = ctx.ID().map((c) => c.getText());
 
     let symbol: Symbol | undefined =
       this.parentSymbolStack[this.parentSymbolStack.length - 1];
@@ -404,9 +401,9 @@ export class SymbolCollector extends HazeVisitor<any> {
     ctx: GenericsvalueContext,
   ): ConstantSymbol | DatatypeSymbol => {
     if (ctx.constant()) {
-      return this.visit(ctx.constant()) as ConstantSymbol;
+      return this.visit(ctx.constant()!) as ConstantSymbol;
     } else {
-      return this.visit(ctx.datatype()) as DatatypeSymbol;
+      return this.visit(ctx.datatype()!) as DatatypeSymbol;
     }
   };
 

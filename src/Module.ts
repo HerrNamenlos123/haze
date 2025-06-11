@@ -1,4 +1,4 @@
-import type { ParserRuleContext } from "antlr4";
+import type { ParserRuleContext } from "antlr4ng";
 import {
   CompilerError,
   GeneralError,
@@ -136,7 +136,7 @@ export class Module {
     if (!this.filename) {
       throw new InternalError("Missing filename", getCallerLocation(2));
     }
-    return new Location(this.filename, ctx.start.line, ctx.start.column);
+    return new Location(this.filename, ctx.start?.line ?? 0, ctx.start?.column ?? 0);
   }
 
   getBuiltinType(name: string): Datatype {
