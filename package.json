@@ -11,7 +11,7 @@
     "build": "npx cross-env NODE_ENV=production bun build --production --compile ./src/main.ts --outfile dist/haze && bun run copylib",
     "test": "echo \"Error: no test specified\" && exit 1",
     "copylib": "mkdir -p ./dist/stdlib && cp -r ./stdlib/* ./dist/stdlib",
-    "postinstall": "cd src/parser && bunx antlr4 -Dlanguage=TypeScript -visitor Haze.g4 && cd ../.."
+    "postinstall": "cd src/parser && bunx antlr4ng-cli -Dlanguage=TypeScript -visitor Haze.g4 && cd ../.."
   },
   "author": "",
   "license": "ISC",
@@ -19,13 +19,11 @@
     "@ltd/j-toml": "^1.38.0",
     "@types/argparse": "^2.0.17",
     "@types/lodash": "^4.17.16",
-    "antlr4": "^4.13.2",
     "argparse": "^2.0.1",
     "bun": "^1.2.2",
     "cross-env": "^7.0.3"
   },
   "devDependencies": {
-    "antlr4-cli": "^4.5.3",
     "@mermaid-js/mermaid-cli": "^11.4.2",
     "mermaid": "^11.4.1",
     "@types/bun": "latest"
