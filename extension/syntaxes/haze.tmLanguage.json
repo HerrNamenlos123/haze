@@ -31,7 +31,15 @@
     "keywords": {
       "patterns": [
         {
-          "name": "keyword.control.haze",
+          "name": "keyword.control.module",
+          "match": "\\b(export|inject)\\b"
+        },
+        {
+          "name": "keyword.control.as",
+          "match": "\\bas\\b"
+        },
+        {
+          "name": "keyword.control",
           "match": "\\b(extern|const|let|if|else|while|do|for|return)\\b"
         },
         {
@@ -39,17 +47,25 @@
           "match": "\\b(new|drop)\\b"
         },
         {
-          "name": "keyword.struct.haze",
+          "name": "keyword.struct",
           "match": "\\b(struct)\\b"
         },
         {
           "match": "\\b(is|not)\\b",
           "name": "keyword.operator.expression"
+        },
+        {
+          "name": "keyword.other.union",
+          "match": "\\b(union|unsafe_union)\\b"
+        },
+        {
+          "name": "keyword.other.namespace",
+          "match": "\\bnamespace\\b"
         }
       ]
     },
     "strings": {
-      "name": "string.quoted.double.haze",
+      "name": "string.quoted.double",
       "begin": "\"",
       "end": "\"",
       "patterns": [
@@ -62,19 +78,19 @@
     "hints": {
       "patterns": [
         {
-          "name": "keyword.control.export.ts",
+          "name": "keyword.control.module",
           "match": "#compile(?=\\s*\".*\")"
         },
         {
-          "name": "keyword.control.import.ts",
+          "name": "keyword.control.module",
           "match": "import "
         },
         {
-          "name": "keyword.control.import.ts",
+          "name": "keyword.control.module",
           "match": " from "
         },
         {
-          "name": "keyword.control.export.ts",
+          "name": "keyword.control.module",
           "match": "#link(?=\\s*\".*\")"
         }
       ]
@@ -82,11 +98,11 @@
     "comments": {
       "patterns": [
         {
-          "name": "comment.line.double-slash.haze",
+          "name": "comment.line.double-slash",
           "match": "//.*"
         },
         {
-          "name": "comment.block.haze",
+          "name": "comment.block",
           "begin": "/\\*",
           "end": "\\*/"
         }
@@ -95,7 +111,7 @@
     "functions": {
       "patterns": [
         {
-          "name": "meta.function-call.haze",
+          "name": "entity.name.function",
           "match": "\\b([a-zA-Z_][a-zA-Z0-9_]*)\\b(?=\\s*\\()"
         }
       ]
@@ -103,23 +119,31 @@
     "variables": {
       "patterns": [
         {
-          "name": "variable.other.readwrite.haze",
+          "name": "variable.other.readwrite",
           "match": "\\blet\\s+([a-zA-Z_][a-zA-Z0-9_]*)\\b"
         },
         {
-          "name": "variable.other.readwrite.haze",
+          "name": "variable.other.readwrite",
           "match": "\\bconst\\s+([a-zA-Z_][a-zA-Z0-9_]*)\\b"
         },
         {
-          "name": "variable.other.member.haze",
+          "name": "variable.other.member",
           "match": "\\.[a-zA-Z_][a-zA-Z_0-9]*\\s*:"
+        },
+        {
+          "name": "variable.language.this",
+          "match": "\\bthis\\b"
+        },
+        {
+          "name": "entity.name.namespace",
+          "match": "\\b[a-zA-Z_][a-zA-Z0-9_]*\\b(?=\\.\\s*[a-zA-Z_][a-zA-Z0-9_]*\\s*\\()"
         }
       ]
     },
     "constants": {
       "patterns": [
         {
-          "name": "constant.numeric.haze",
+          "name": "constant.numeric",
           "match": "\\b\\d+\\b"
         },
         { "match": "\\b(true)\\b", "name": "constant.language.boolean.true.ts" },
@@ -129,12 +153,16 @@
     "datatypes": {
       "patterns": [
         {
-          "name": "support.type.primitive.haze",
+          "name": "support.type.primitive",
           "match": "\\b(i8|i16|i32|i64|u8|u16|u32|u64|stringview|String|boolean)\\b"
         },
         {
-          "name": "support.type.builtin.haze",
+          "name": "support.type.builtin",
           "match": "\\b(none|unknown)\\b"
+        },
+        {
+          "name": "storage.type",
+          "match": "(?<=\\bas\\s)[a-zA-Z_][a-zA-Z0-9_]*"
         }
       ]
     }

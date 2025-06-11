@@ -12,7 +12,7 @@ import { Module } from "./Module";
 import { SymbolCollector } from "./SymbolCollector";
 import { performSemanticAnalysis } from "./SemanticAnalyzer";
 import { generateCode } from "./CodeGenerator";
-import { readdirSync, statSync } from "fs";
+import { readdirSync, realpathSync, statSync } from "fs";
 import { readdir, stat } from "fs/promises";
 import { basename, dirname, extname, join } from "path";
 import fs from "fs";
@@ -81,7 +81,7 @@ class Cache {
   filename?: string;
   data: Record<string, any> = {};
 
-  constructor() {}
+  constructor() { }
 
   async getFilesWithModificationDates(
     dir: string,
@@ -167,7 +167,7 @@ class Cache {
 export class ProjectCompiler {
   cache: Cache = new Cache();
 
-  constructor() {}
+  constructor() { }
 
   async getConfig(singleFilename?: string) {
     let config: ModuleConfig | undefined;
@@ -205,6 +205,7 @@ export class ProjectCompiler {
     }
     const mainModule = new ModuleCompiler(config, this.cache);
 
+    console.log("starting in ", join(mainModule.getStdlibDirectory(), "core"))
     const stdlibConfig = await parseConfig(
       join(mainModule.getStdlibDirectory(), "core"),
     );
@@ -317,9 +318,10 @@ class ModuleCompiler {
     if (process.env.NODE_ENV === "production") {
       const whichHz = Bun.which("haze");
       if (!whichHz) {
-        throw new GeneralError(`Compiler not found in path`);
+        throw new GeneralError("Compiler not found in path");
       }
-      return join(dirname(whichHz), "stdlib/");
+      const realHz = realpathSync(whichHz);
+      return join(dirname(realHz), "stdlib/");
     } else {
       return join(__dirname, "../stdlib");
     }

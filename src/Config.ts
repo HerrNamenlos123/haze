@@ -77,8 +77,8 @@ export function parseModuleMetadata(metadata: string): ModuleMetadata {
     if (!Array.isArray(v)) {
       throw new GeneralError(
         "Inconsistent module config: Expected string array instead of '" +
-          v +
-          "'",
+        v +
+        "'",
       );
     }
     for (const s of v) {
@@ -104,8 +104,8 @@ export function parseModuleMetadata(metadata: string): ModuleMetadata {
     if (!Array.isArray(v)) {
       throw new GeneralError(
         "Inconsistent module config: Expected object array instead of '" +
-          v +
-          "'",
+        v +
+        "'",
       );
     }
     const libs: ModuleLibMetadata[] = [];
@@ -155,7 +155,9 @@ export class ConfigParser {
     let dir = startDir || process.cwd();
     while (dir !== dirname(dir)) {
       const filePath = join(dir, filename);
-      if (existsSync(filePath)) return filePath;
+      if (existsSync(filePath)) {
+        return filePath;
+      }
       dir = dirname(dir);
     }
     return undefined;
