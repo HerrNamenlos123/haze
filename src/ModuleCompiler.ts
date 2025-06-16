@@ -9,32 +9,17 @@ import {
   UnreachableCode,
 } from "./Errors";
 import { Module } from "./Module";
-import { SymbolCollector } from "./SymbolCollector";
-import { performSemanticAnalysis } from "./SemanticAnalyzer";
-import { generateCode } from "./CodeGenerator";
 import { readdirSync, realpathSync, statSync } from "fs";
 import { readdir, stat } from "fs/promises";
 import { basename, dirname, extname, join } from "path";
 import fs from "fs";
 import { version } from "../package.json";
-import { type VariableSymbol } from "./Symbol";
-import { TypeExporter } from "./TypeExporter";
-import {
-  generateDatatypeDeclarationHazeCode,
-  generateDatatypeUsageHazeCode,
-  generateSymbolUsageHazeCode,
-  type RawPointerDatatype,
-  type StructDatatype,
-} from "./Datatype";
-import exp from "constants";
 import { OutputWriter } from "./OutputWriter";
 import {
   ConfigParser,
   ModuleType,
   parseModuleMetadata,
   type ModuleConfig,
-  type ModuleDependency,
-  type ModuleLibMetadata,
   type ModuleMetadata,
 } from "./Config";
 
@@ -81,7 +66,7 @@ class Cache {
   filename?: string;
   data: Record<string, any> = {};
 
-  constructor() { }
+  constructor() {}
 
   async getFilesWithModificationDates(
     dir: string,
@@ -167,7 +152,7 @@ class Cache {
 export class ProjectCompiler {
   cache: Cache = new Cache();
 
-  constructor() { }
+  constructor() {}
 
   async getConfig(singleFilename?: string) {
     let config: ModuleConfig | undefined;
@@ -205,7 +190,7 @@ export class ProjectCompiler {
     }
     const mainModule = new ModuleCompiler(config, this.cache);
 
-    console.log("starting in ", join(mainModule.getStdlibDirectory(), "core"))
+    console.log("starting in ", join(mainModule.getStdlibDirectory(), "core"));
     const stdlibConfig = await parseConfig(
       join(mainModule.getStdlibDirectory(), "core"),
     );
@@ -456,7 +441,7 @@ class ModuleCompiler {
       await this.loadInternals();
       await this.importDeps();
       await this.loadSources();
-      performSemanticAnalysis(this.module);
+      // performSemanticAnalysis(this.module);
 
       const name = this.module.moduleConfig.projectName;
       const platform = this.module.moduleConfig.platform;
@@ -470,7 +455,7 @@ class ModuleCompiler {
         this.moduleBuildDir,
         this.module.moduleConfig.projectName + ".hzlib",
       );
-      generateCode(this.module, moduleCFile);
+      // generateCode(this.module, moduleCFile);
 
       const compilerFlags = this.module.moduleConfig.compilerFlags;
       try {
@@ -491,7 +476,7 @@ class ModuleCompiler {
 
           const exportedDeclarations = new Set<string>();
           for (const [name, s] of this.module.exportSymbols) {
-            exportedDeclarations.add(generateSymbolUsageHazeCode(s).get());
+            // exportedDeclarations.add(generateSymbolUsageHazeCode(s).get());
           }
 
           const moduleMetadata: ModuleMetadata = {

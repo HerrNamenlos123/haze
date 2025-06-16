@@ -1,7 +1,7 @@
 import type { ParserRuleContext } from "antlr4ng";
 import type { Symbol, VariableSymbol } from "./Symbol";
 import type { Expression } from "./Expression";
-import type { Scope } from "./Scope";
+import type { ResolvedScope } from "./Scope";
 import type {
   VariableDeclarationContext,
   VariableDefinitionContext,
@@ -47,9 +47,9 @@ export type InlineCStatement = {
 export type ConditionalStatement = {
   variant: "Conditional";
   ctx: ParserRuleContext;
-  if: [Expression, Scope];
-  elseIf: [Expression, Scope][];
-  else?: Scope;
+  if: [Expression, ResolvedScope];
+  elseIf: [Expression, ResolvedScope][];
+  else?: ResolvedScope;
   location: Location;
 };
 
@@ -57,7 +57,7 @@ export type WhileStatement = {
   variant: "While";
   ctx: ParserRuleContext;
   expr: Expression;
-  scope: Scope;
+  scope: ResolvedScope;
   location: Location;
 };
 

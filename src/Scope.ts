@@ -1,38 +1,22 @@
-import {
-  CompilerError,
-  getCallerLocation,
-  InternalError,
-  type Location,
-} from "./Errors";
+import { CompilerError, type Location } from "./Errors";
+import type { Module } from "./Module";
+import type { ParsedSymbol } from "./ParsedTypes";
 import type { Statement } from "./Statement";
-import {
-  mangleSymbol,
-  type DatatypeSymbol,
-  type FunctionSymbol,
-  type Symbol,
-  type VariableSymbol,
-} from "./Symbol";
+import type { ScopeId } from "./store";
 
-export class Scope {
-  public location: Location;
-  public parentScope?: Scope;
-  public statements: Statement[];
+export class ResolvedScope {
+  private symbols: ParsedSymbol.Symbol[] = [];
+  public statements: Statement[] = [];
   public terminated: boolean = false;
-  private symbols: Symbol[];
 
-  constructor(location: Location, parentScope?: Scope) {
-    this.symbols = [];
-    this.location = location;
-    this.parentScope = parentScope;
-    this.statements = [];
-  }
+  constructor(
+    public id: ScopeId,
+    public location: Location,
+    public parentScope?: ScopeId,
+  ) {}
 
-  defineSymbol(symbol: Symbol) {
-    if (
-      symbol.variant === "StringConstant" ||
-      symbol.variant === "BooleanConstant" ||
-      symbol.variant === "LiteralConstant"
-    ) {
+  defineSymbol(symbol: ParsedSymbol.Symbol) {
+    if (symbol.variant === "Constant") {
       throw new CompilerError(
         `Cannot define a constant symbol`,
         symbol.location,
@@ -47,62 +31,49 @@ export class Scope {
     this.symbols.push(symbol);
   }
 
-  replaceSymbol(symbol: FunctionSymbol | VariableSymbol) {
-    if (!this.symbols.find((s) => "name" in s && s.name === symbol.name)) {
-      throw new InternalError("Symbol for replacing not found");
-    }
-    this.removeSymbol(symbol.name);
-    this.defineSymbol(symbol);
-  }
-
-  removeSymbol(name: string) {
-    this.symbols = this.symbols.filter(
-      (s) => !("name" in s && s.name === name),
-    );
-  }
-
-  getSymbols() {
+  getAllSymbols() {
     return this.symbols;
   }
 
-  tryLookupSymbol(name: string, loc: Location): Symbol | undefined {
+  tryLookupSymbol(
+    module: Module,
+    name: string,
+    loc: Location,
+  ): ParsedSymbol.Symbol | undefined {
     let symbol = this.symbols.find((s) => "name" in s && s.name === name);
     if (symbol) {
       return symbol;
     }
 
     if (this.parentScope) {
-      return this.parentScope.tryLookupSymbol(name, loc);
+      return module.parsedStore
+        .getScope(this.parentScope)
+        .tryLookupSymbol(module, name, loc);
     }
     return undefined;
   }
 
-  tryLookupSymbolHere(name: string): Symbol | undefined {
+  tryLookupSymbolHere(name: string): ParsedSymbol.Symbol | undefined {
     return this.symbols.find((s) => "name" in s && s.name === name);
   }
 
-  lookupSymbol(name: string, loc: Location): Symbol {
-    let symbol = this.tryLookupSymbol(name, loc);
+  lookupSymbol(
+    module: Module,
+    name: string,
+    loc: Location,
+  ): ParsedSymbol.Symbol {
+    let symbol = this.tryLookupSymbol(module, name, loc);
     if (symbol) {
       return symbol;
     }
     if (this.parentScope) {
-      return this.parentScope.lookupSymbol(name, loc);
+      return module.parsedStore
+        .getScope(this.parentScope)
+        .lookupSymbol(module, name, loc);
     }
     throw new CompilerError(
       `Symbol '${name}' was not declared in this scope`,
       loc,
     );
-  }
-
-  lookupDatatypeSymbol(name: string, loc: Location): DatatypeSymbol {
-    const symbol = this.lookupSymbol(name, loc);
-    if (symbol.variant !== "Datatype") {
-      throw new CompilerError(
-        `Expected Datatype but found symbol of variant ${symbol.variant}`,
-        loc,
-      );
-    }
-    return symbol;
   }
 }

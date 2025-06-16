@@ -1,7 +1,7 @@
 import {
   primitiveVariantToString,
   type Datatype,
-  type Primitive,
+  type EPrimitive,
 } from "./Datatype";
 import { ImpossibleSituation, Location, UnreachableCode } from "./Errors";
 import type { Linkage, Symbol, VariableScope, VariableType } from "./Symbol";
@@ -123,7 +123,7 @@ export class TypeExporter {
   }[] = [];
   nextId = 1;
 
-  constructor() { }
+  constructor() {}
 
   tryGetDatatypeId(datatype: Datatype): DatatypeId | undefined {
     const found = this.datatypes.find((d) => d.originalType === datatype);

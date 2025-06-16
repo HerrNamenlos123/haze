@@ -1,0 +1,32 @@
+
+
+struct Box<T> {
+    value: T;
+}
+
+struct Foo<T> {
+    box: Box<T>;
+}
+
+bar() {
+    const foo: Foo<i32>;
+    foo.box.value = i32;
+}
+
+
+
+
+
+
+
+
+
+struct Foo<T> {
+    struct Box {
+        value: T;
+    }
+
+    box: Box;
+}
+
+const foo: Foo<i32>.Box;

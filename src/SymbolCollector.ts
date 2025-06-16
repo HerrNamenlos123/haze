@@ -2,7 +2,6 @@ import {
   BooleanConstantContext,
   CdefinitiondeclContext,
   CommonDatatypeContext,
-  FuncContext,
   FuncdeclContext,
   FunctionDatatypeContext,
   GenericsvalueContext,
@@ -20,39 +19,15 @@ import {
   type ParamContext,
 } from "./grammar/autogen/HazeParser";
 import type { Module } from "./Module";
-import {
-  Linkage,
-  isSymbolGeneric,
-  mangleSymbol,
-  serializeSymbol,
-  VariableType,
-  type DatatypeSymbol,
-  type FunctionSymbol,
-  type SpecialMethod,
-  type VariableSymbol,
-  VariableScope,
-  type Symbol,
-  type ConstantSymbol,
-  type StringConstantSymbol,
-  type BooleanConstantSymbol,
-} from "./Symbol";
 import { HazeVisitor } from "./grammar/autogen/HazeVisitor";
 import { CompilerError, ImpossibleSituation, InternalError } from "./Errors";
-import {
-  getStructMembers,
-  type Datatype,
-  type FunctionDatatype,
-  type GenericPlaceholderDatatype,
-  type NamespaceDatatype,
-  type StructDatatype,
-  type StructMemberUnion,
-} from "./Datatype";
-import { Scope } from "./Scope";
+import { ResolvedScope } from "./Scope";
 import { Interval, type ParserRuleContext } from "antlr4ng";
 import {
   collectFunction,
   collectVariableStatement,
   datatypeSymbolUsed,
+  mangleSymbol,
   RESERVED_STRUCT_NAMES,
   visitBooleanConstantImpl,
   visitCommonDatatypeImpl,
@@ -64,29 +39,29 @@ import {
 } from "./utils";
 import type { Statement } from "./Statement";
 import type { Parser } from "./parser";
+import type { ParsedDatatype, ParsedSymbol } from "./ParsedTypes";
+import { ELinkage, EVariableContext, EVariableMutability } from "./common";
 
 export class SymbolCollector extends HazeVisitor<any> {
-  private program: Module;
-  private parentSymbolStack: DatatypeSymbol<
-    StructDatatype | NamespaceDatatype
-  >[];
+  private module: Module;
+  private parentSymbolStack: ParsedSymbol.Symbol[];
   private parser?: Parser;
 
-  constructor(program: Module) {
+  constructor(module: Module) {
     super();
-    this.program = program;
+    this.module = module;
     this.parentSymbolStack = [];
   }
 
   collect = (ctx: ParserRuleContext, parser: Parser, filename: string) => {
-    this.program.filename = filename;
+    this.module.filename = filename;
     this.parser = parser;
     this.visit(ctx);
     this.parser = undefined;
-    this.program.filename = undefined;
+    this.module.filename = undefined;
   };
 
-  visitParam = (ctx: ParamContext): [string, Datatype] => {
+  visitParam = (ctx: ParamContext): [string, ParsedDatatype.Datatype] => {
     return visitParam(this, ctx);
   };
 
@@ -94,18 +69,22 @@ export class SymbolCollector extends HazeVisitor<any> {
     return visitParams(this, ctx);
   };
 
-  visitCommonDatatype = (ctx: CommonDatatypeContext): DatatypeSymbol => {
-    return visitCommonDatatypeImpl(this, this.program, ctx);
+  visitCommonDatatype = (
+    ctx: CommonDatatypeContext,
+  ): ParsedSymbol.DatatypeSymbol => {
+    return visitCommonDatatypeImpl(this, this.module, ctx);
   };
 
   visitCdefinitiondecl = (ctx: CdefinitiondeclContext): void => {
     const text = JSON.parse(ctx.STRING_LITERAL().getText());
-    this.program.cDefinitionDecl.push(text);
+    this.module.cDefinitionDecl.push(text);
   };
 
-  visitFunctionDatatype = (ctx: FunctionDatatypeContext): DatatypeSymbol => {
+  visitFunctionDatatype = (
+    ctx: FunctionDatatypeContext,
+  ): ParsedSymbol.DatatypeSymbol => {
     const params = this.visitParams(ctx.functype().params());
-    const type: FunctionDatatype = {
+    const type: ParsedDatatype.Function = {
       variant: "Function",
       functionParameters: params.params,
       functionReturnType: this.visit(ctx.functype().datatype()).type,
@@ -113,13 +92,13 @@ export class SymbolCollector extends HazeVisitor<any> {
     };
     const symbol: Symbol = {
       name: "",
-      scope: this.program.currentScope,
+      scope: this.module.currentScope,
       type: type,
       variant: "Datatype",
       export: false,
-      location: this.program.location(ctx),
+      location: this.module.location(ctx),
     };
-    datatypeSymbolUsed(symbol, this.program);
+    datatypeSymbolUsed(symbol, this.module);
     return symbol;
   };
 
@@ -127,21 +106,21 @@ export class SymbolCollector extends HazeVisitor<any> {
     // const extern = Boolean(ctx._extern);
 
     const lang = ctx.externlang()?.getText().slice(1, -1);
-    let functype = Linkage.Internal;
+    let functype = ELinkage.Internal;
     if (lang === "C") {
-      functype = Linkage.External_C;
+      functype = ELinkage.External_C;
     } else if (functype) {
       throw new CompilerError(
         `Extern Language '${lang}' is not supported.`,
-        this.program.location(ctx),
+        this.module.location(ctx),
       );
     }
 
     const signature = ctx.ID().map((n) => n.getText());
-    if (signature.length > 1 && functype === Linkage.External_C) {
+    if (signature.length > 1 && functype === ELinkage.External_C) {
       throw new CompilerError(
         "Extern C functions cannot be namespaced",
-        this.program.location(ctx),
+        this.module.location(ctx),
       );
     }
 
@@ -152,91 +131,85 @@ export class SymbolCollector extends HazeVisitor<any> {
     }
 
     const symbol = collectFunction(
+      this.module,
       this,
       ctx,
       signature[0],
-      this.program,
       this.parentSymbolStack[this.parentSymbolStack.length - 1],
       functype,
     );
-    if (symbol.export) {
-      this.program.exportSymbols.set(mangleSymbol(symbol), symbol);
+    if (symbol.isExported) {
+      this.module.exportSymbols.set(mangleSymbol(this.module, symbol), symbol);
     }
   };
 
-  // Disabled because anonymous functions are collected in the semantic analyzer
-  // visitFunc = (ctx: FuncContext): FunctionSymbol => {
-  //   return collectFunction(
-  //     this,
-  //     ctx,
-  //     this.program.makeAnonymousName(),
-  //     this.program,
-  //     this.parentSymbolStack[this.parentSymbolStack.length - 1],
-  //   );
-  // };
-
-  visitNamedfunc = (ctx: NamedfuncContext): FunctionSymbol => {
+  visitNamedfunc = (ctx: NamedfuncContext): ParsedSymbol.FunctionSymbol => {
     return collectFunction(
+      this.module,
       this,
       ctx,
       ctx.ID().getText(),
-      this.program,
       this.parentSymbolStack[this.parentSymbolStack.length - 1],
     );
   };
 
   visitStructMember = (ctx: StructMemberContext) => {
-    const name = ctx.ID().getText();
-    const datatypeSymbol: DatatypeSymbol = this.visit(ctx.datatype());
-    const symbol: VariableSymbol = {
+    const datatypeSymbol: ParsedSymbol.DatatypeSymbol = this.visit(
+      ctx.datatype(),
+    );
+    const symbol = this.module.parsedStore.createSymbol((id) => ({
+      id,
       variant: "Variable",
-      name: name,
+      name: ctx.ID().getText(),
       type: datatypeSymbol.type,
-      variableType: VariableType.MutableStructField,
-      variableScope: VariableScope.Member,
-      export: false,
-      location: this.program.location(ctx),
-      extern: Linkage.Internal,
-    };
+      variableType: EVariableMutability.MutableStructField,
+      variableContext: EVariableContext.MemberOfStruct,
+      isExported: false,
+      location: this.module.location(ctx),
+      linkage: ELinkage.Internal,
+    }));
     return symbol;
   };
 
-  visitStructUnionFields = (
-    ctx: StructUnionFieldsContext,
-  ): StructMemberUnion => {
-    return {
-      variant: "StructMemberUnion",
-      symbols: ctx.structcontent().map((n) => this.visit(n)),
-    };
-  };
+  // visitStructUnionFields = (
+  //   ctx: StructUnionFieldsContext,
+  // ): StructMemberUnion => {
+  //   return {
+  //     variant: "StructMemberUnion",
+  //     symbols: ctx.structcontent().map((n) => this.visit(n)),
+  //   };
+  // };
 
-  visitStructDecl = (ctx: StructDeclContext): DatatypeSymbol => {
+  visitStructDecl = (ctx: StructDeclContext): ParsedSymbol.DatatypeSymbol => {
     const name = ctx.ID(0)!.getText();
-    const parentScope = this.program.currentScope;
-    const scope = this.program.pushScope(
-      new Scope(this.program.location(ctx), parentScope),
+    const parentScope = this.module.currentScope;
+    const scope = this.module.pushScope(
+      this.module.parsedStore.createScope(
+        this.module.location(ctx),
+        parentScope.id,
+      ),
     );
 
     if (RESERVED_STRUCT_NAMES.includes(name)) {
       throw new CompilerError(
         `'${name}' is a reserved name`,
-        this.program.location(ctx),
+        this.module.location(ctx),
       );
     }
 
-    const genericsList: [string, undefined][] = ctx
+    const genericsList: string[] = ctx
       .ID()
       .slice(1)
-      .map((n) => [n.getText(), undefined]);
+      .map((n) => n.getText());
 
     const lang = ctx.externlang()?.getText().slice(1, -1);
-    let language = Linkage.Internal;
+    let language = ELinkage.Internal;
     if (lang === "C") {
-      language = Linkage.External_C;
+      language = ELinkage.External_C;
     } else if (lang) {
       throw new CompilerError(
         `Extern Language '${lang}' is not supported.`,
-        this.program.location(ctx),
+        this.module.location(ctx),
       );
     }
 
@@ -245,52 +218,58 @@ export class SymbolCollector extends HazeVisitor<any> {
       exports = true;
     }
 
-    const type: StructDatatype = {
+    const type = this.module.parsedStore.createDatatype((id) => ({
+      id,
       variant: "Struct",
       name: name,
       language: language,
-      generics: new Map<string, undefined>(genericsList),
+      generics: genericsList,
       members: [],
       methods: [],
-      parentSymbol: this.parentSymbolStack[this.parentSymbolStack.length - 1],
-    };
-    const symbol: DatatypeSymbol<StructDatatype> = {
+      parentSymbol:
+        this.parentSymbolStack[this.parentSymbolStack.length - 1].id,
+    }));
+    const symbol = this.module.parsedStore.createSymbol((id) => ({
+      id,
       variant: "Datatype",
       name: name,
-      type: type,
-      scope: scope,
-      parentSymbol: this.parentSymbolStack[this.parentSymbolStack.length - 1],
-      export: exports,
-      location: this.program.location(ctx),
-    };
+      type: type.id,
+      definedInScope: scope.id,
+      parentSymbol:
+        this.parentSymbolStack[this.parentSymbolStack.length - 1].id,
+      isExported: exports,
+      location: this.module.location(ctx),
+    }));
 
     if (genericsList.length > 0) {
       if (!this.parser?.parser || !ctx.stop) {
         throw new ImpossibleSituation();
       }
-      let originalText = this.parser.parser.tokenStream.getTextFromInterval(new Interval(ctx.start?.tokenIndex || 0, ctx.stop.tokenIndex));
+      let originalText = this.parser.parser.tokenStream.getTextFromInterval(
+        new Interval(ctx.start?.tokenIndex || 0, ctx.stop.tokenIndex),
+      );
       if (originalText.startsWith("export ")) {
         originalText = originalText.replace("export ", "");
       }
-      symbol.originalGenericSourcecode = originalText;
+      // symbol.originalGenericSourcecode = originalText;
     }
 
     parentScope.defineSymbol(symbol);
-    for (const [name, tp] of type.generics) {
-      const sym: DatatypeSymbol = {
-        name: name,
-        variant: "Datatype",
-        scope: scope,
-        type: { variant: "Generic", name: name },
-        export: false,
-        location: symbol.location,
-      };
-      scope.defineSymbol(sym);
-    }
+    // for (const [name, tp] of type.generics) {
+    //   const sym: DatatypeSymbol = {
+    //     name: name,
+    //     variant: "Datatype",
+    //     scope: scope,
+    //     type: { variant: "Generic", name: name },
+    //     export: false,
+    //     location: symbol.location,
+    //   };
+    //   scope.defineSymbol(sym);
+    // }
     this.parentSymbolStack.push(symbol);
 
     ctx.structcontent().forEach((c) => {
-      const content: VariableSymbol | StructMemberUnion | FunctionSymbol =
+      const content: ParsedSymbol.VariableSymbol | ParsedSymbol.FunctionSymbol =
         this.visit(c);
       if (content.variant === "Variable") {
         type.members.push(content);
@@ -310,37 +289,39 @@ export class SymbolCollector extends HazeVisitor<any> {
     });
 
     if (symbol.export) {
-      this.program.exportSymbols.set(mangleSymbol(symbol), symbol);
+      this.module.exportSymbols.set(mangleSymbol(symbol), symbol);
     }
 
     this.parentSymbolStack.pop();
-    this.program.popScope();
+    this.module.popScope();
     return symbol;
   };
 
-  visitStructMethod = (ctx: StructMethodContext): FunctionSymbol => {
+  visitStructMethod = (
+    ctx: StructMethodContext,
+  ): ParsedSymbol.FunctionSymbol => {
     const name = ctx.ID().getText();
     const symbol = collectFunction(
       this,
       ctx,
       name,
-      this.program,
+      this.module,
       this.parentSymbolStack[this.parentSymbolStack.length - 1],
     );
     return symbol;
   };
 
-  visitNamespace = (ctx: NamespaceContext): DatatypeSymbol => {
+  visitNamespace = (ctx: NamespaceContext): ParsedSymbol.DatatypeSymbol => {
     const names = ctx.ID().map((c) => c.getText());
 
     let symbol: Symbol | undefined =
       this.parentSymbolStack[this.parentSymbolStack.length - 1];
     do {
       let insertionSymbol: Symbol | undefined;
-      let insertionScope: Scope;
+      let insertionScope: ResolvedScope;
       if (!symbol) {
-        symbol = this.program.currentScope.tryLookupSymbolHere(names[0]);
-        insertionScope = this.program.currentScope;
+        symbol = this.module.currentScope.tryLookupSymbolHere(names[0]);
+        insertionScope = this.module.currentScope;
       } else {
         if (symbol.type.variant !== "Namespace") {
           throw new ImpossibleSituation();
@@ -350,9 +331,9 @@ export class SymbolCollector extends HazeVisitor<any> {
         symbol = symbol.type.symbolsScope.tryLookupSymbolHere(names[0]);
       }
       if (!symbol) {
-        const newScope = new Scope(
-          this.program.location(ctx),
-          this.program.currentScope,
+        const newScope = new ResolvedScope(
+          this.module.location(ctx),
+          this.module.currentScope,
         );
         if (insertionSymbol && insertionSymbol.variant !== "Datatype") {
           throw new ImpossibleSituation();
@@ -369,7 +350,7 @@ export class SymbolCollector extends HazeVisitor<any> {
           },
           parentSymbol: insertionSymbol,
           export: false,
-          location: this.program.location(ctx),
+          location: this.module.location(ctx),
         };
         insertionScope.defineSymbol(symbol);
       }
@@ -380,18 +361,18 @@ export class SymbolCollector extends HazeVisitor<any> {
       throw new InternalError("Namespace is not a datatype");
     }
 
-    this.program.pushScope(symbol.scope);
-    this.parentSymbolStack.push(symbol as DatatypeSymbol<NamespaceDatatype>);
+    this.module.pushScope(symbol.scope);
+    this.parentSymbolStack.push(symbol as ParsedSymbol.DatatypeSymbol);
 
     ctx.namespacecontent().children?.forEach((n) => {
       this.visit(n);
     });
 
     this.parentSymbolStack.pop();
-    this.program.popScope();
+    this.module.popScope();
 
     if (ctx._export_) {
-      this.program.exportSymbols.set(mangleSymbol(symbol), symbol);
+      this.module.exportSymbols.set(mangleSymbol(this.module, symbol), symbol);
     }
 
     return symbol;
@@ -408,24 +389,26 @@ export class SymbolCollector extends HazeVisitor<any> {
   };
 
   visitStringConstant = (ctx: StringConstantContext): StringConstantSymbol => {
-    return visitStringConstantImpl(this, ctx, this.program);
+    return visitStringConstantImpl(this, ctx, this.module);
   };
 
-  visitLiteralConstant = (ctx: LiteralConstantContext): ConstantSymbol => {
-    return visitLiteralConstantImpl(this, ctx, this.program);
+  visitLiteralConstant = (
+    ctx: LiteralConstantContext,
+  ): ParsedSymbol.ConstantSymbol => {
+    return visitLiteralConstantImpl(this, ctx, this.module);
   };
 
   visitBooleanConstant = (
     ctx: BooleanConstantContext,
-  ): BooleanConstantSymbol => {
-    return visitBooleanConstantImpl(this, ctx, this.program);
+  ): ParsedSymbol.BooleanConstantSymbol => {
+    return visitBooleanConstantImpl(this, ctx, this.module);
   };
 
   visitVariableDefinition = (ctx: VariableDefinitionContext): Statement => {
     return collectVariableStatement(
       this,
       ctx,
-      this.program,
+      this.module,
       VariableScope.Global,
       this.parentSymbolStack[this.parentSymbolStack.length - 1],
     );
@@ -435,7 +418,7 @@ export class SymbolCollector extends HazeVisitor<any> {
     return collectVariableStatement(
       this,
       ctx,
-      this.program,
+      this.module,
       VariableScope.Global,
       this.parentSymbolStack[this.parentSymbolStack.length - 1],
     );
