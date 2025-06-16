@@ -9,28 +9,24 @@ grammar Haze;
 // ║                           P A R S E R   R U L E S                             ║
 // ╚═══════════════════════════════════════════════════════════════════════════════╝
 
-prog: topLevelStatement*;
-topLevelStatement
+prog: topLevelDeclaration*;
+topLevelDeclaration
     : cInjectDirective
-    | functionDefinition
-    | functionDeclaration
-    | structDefinition
-    | namespaceDefinition
-    | globalVariableDef
+    | globalDeclaration
     ;
 
 // Namespaces
 
-namespacedStatement
+globalDeclaration
     : functionDefinition
     | functionDeclaration
-    | structDefinition
+    | typeDefinition
     | namespaceDefinition
     | variableCreation
     ;
 
 namespaceDefinition
-    : (export='export')? 'namespace' ID ('.' ID)* '{' namespacedStatement* '}'
+    : (export='export')? 'namespace' ID ('.' ID)* '{' globalDeclaration* '}'
     ;
 
 // Directives
@@ -43,7 +39,7 @@ functionDeclaration: (export='export')? (extern='extern' externLanguage?)? (ID '
 externLanguage: '"C"';
 
 functionDefinition: (export='export')? ID '(' params ')' (':' datatype)? funcbody;
-func: '(' params ')' (':' datatype)? funcbody;
+lambda: '(' params ')' (':' datatype)? funcbody;
 param: ID ':' datatype;
 params: (param (',' param)* (',' ellipsis)?)? | ellipsis;
 ellipsis: '...';
@@ -54,18 +50,14 @@ scope: '{' (statement)* '}';
 // Variables
 
 globalVariableDef
-    : (export='export')? (extern='extern' externLanguage?)? mutability=('let' | 'const') ID (':' datatype)? '=' expr ';'        #GlobalVariableDefinition
-    | (export='export')? (extern='extern' externLanguage?)? mutability=('let' | 'const') ID (':' datatype) ';'                  #GlobalVariableDeclaration
+    : (export='export')? (extern='extern' externLanguage?)? mutability=('let' | 'const') ID (((':' datatype)? '=' expr) | (':' datatype)) ';'        #GlobalVariableDefinition
     ;
 
 variableCreation
-    : mutability=('let' | 'const') ID (':' datatype)? '=' expr ';'        #VariableDefinition
-    | mutability=('let' | 'const') ID (':' datatype) ';'                  #VariableDeclaration
+    : mutability=('let' | 'const') ID (((':' datatype)? '=' expr) | (':' datatype)) ';'        #VariableDefinition
     ;
 
 // Datatypes
-
-funcDatatype: '(' params ')' '=>' datatype;
 
 constant
     : ('true' | 'false')                        #BooleanConstant
@@ -76,7 +68,7 @@ constant
 
 datatype
     : datatypeFragment ('.' datatypeFragment)*    #NamedDatatype
-    | funcDatatype                                #FunctionDatatype
+    | '(' params ')' '=>' datatype                #FunctionDatatype
     ;
 
 datatypeFragment
@@ -96,6 +88,10 @@ structDefinition
     : (export='export')? ('extern' externLanguage)? 'struct' ID ('<' ID (',' ID)* '>')? '{' (structContent)* '}' (';')?
     ;
 
+typeDefinition
+    : structDefinition
+    ;
+
 // Expressions
 
 structmembervalue
@@ -106,7 +102,7 @@ expr
     // https://en.cppreference.com/w/c/language/operator_precedence
     : '(' expr ')'                                                                  #ParenthesisExpr
     // | '{' objectattribute? (',' objectattribute)* ','? '}'                       #AnonymousStructInstantiationExpr
-    | func                                                                          #FuncRefExpr
+    | lambda                                                                        #LambdaExpr
     | constant                                                                      #ConstantExpr
 
     // Part 1: Left to right
@@ -119,7 +115,7 @@ expr
     // Part 2: Right to left
     | <assoc=right> op=('++' | '--') expr                                           #PreIncrExpr
     | <assoc=right> op=('+' | '-') expr                                             #UnaryExpr
-    | <assoc=right> ('not' | '!') expr /* and bitwise not */                        #UnaryExpr
+    | <assoc=right> op=('not' | '!') expr /* and bitwise not */                     #UnaryExpr
     | <assoc=right> expr 'as' datatype                                              #ExplicitCastExpr
 
     // Part 3: Left to right
@@ -133,7 +129,7 @@ expr
     // | expr ('|') expr                                                            #BinaryExpr
     | expr ('and'|'or') expr                                                        #BinaryExpr
     // <- ternary
-    | expr op=('='|'+='|'-='|'*='|'/='|'%='|'<<='|'>>='|'&='|'^='|'|=') expr        #ExprAssignmentExpr
+    | expr op=('='|'+='|'-='|'*='|'/='|'%=') expr                                   #ExprAssignmentExpr
 
     | ID ('<' (datatype | constant) (',' (datatype | constant))* '>')?              #SymbolValueExpr
     ;
@@ -141,7 +137,7 @@ expr
 // Statements & Conditionals
 
 statement
-    : '__c__' '(' STRING_LITERAL ')' ';'                        #CInlineDirective
+    : '__c__' '(' STRING_LITERAL ')' ';'                        #CInlineStatement
     | expr ';'                                                  #ExprStatement
     | 'return' expr? ';'                                        #ReturnStatement
     | variableCreation                                          #VariableCreationStatement
