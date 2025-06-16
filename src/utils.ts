@@ -10,7 +10,7 @@ import {
   getCallerLocation,
   ImpossibleSituation,
   InternalError,
-  Location,
+  SourceLoc,
 } from "./Errors";
 import type { Expression } from "./Expression";
 import {
@@ -252,7 +252,7 @@ type ResolvageContext = {
 export function resolveGenerics(
   datatype: Datatype,
   scope: ResolvedScope,
-  loc: Location,
+  loc: SourceLoc,
 ): Datatype {
   switch (datatype.variant) {
     case "Generic":

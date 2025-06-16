@@ -3,7 +3,7 @@ import {
   type Datatype,
   type EPrimitive,
 } from "./Datatype";
-import { ImpossibleSituation, Location, UnreachableCode } from "./Errors";
+import { ImpossibleSituation, SourceLoc, UnreachableCode } from "./Errors";
 import type { Linkage, Symbol, VariableScope, VariableType } from "./Symbol";
 
 export type ExportedTypesystem = {
@@ -80,7 +80,7 @@ type StrippedVariableSymbol = {
   variableType: VariableType;
   variableScope: VariableScope;
   parentSymbol: SymbolId | null;
-  location: Location;
+  location: SourceLoc;
 };
 
 type StrippedFunctionSymbol = {
@@ -95,7 +95,7 @@ type StrippedFunctionSymbol = {
   // ctx?: ParserRuleContext;
   wasAnalyzed: boolean;
   export: boolean;
-  location: Location;
+  location: SourceLoc;
 };
 
 // type StrippedDatatypeSymbol<T = Datatype> = {

@@ -5,7 +5,7 @@ import {
   getCallerLocation,
   ImpossibleSituation,
   InternalError,
-  Location,
+  SourceLoc,
 } from "./Errors";
 import { ResolvedScope } from "./Scope";
 import { isDeeplyEqual } from "./deep-equal";
@@ -84,7 +84,7 @@ export class Module {
     if (!this.filename) {
       throw new InternalError("Missing filename", getCallerLocation(2));
     }
-    return new Location(
+    return new SourceLoc(
       this.filename,
       ctx.start?.line ?? 0,
       ctx.start?.column ?? 0,

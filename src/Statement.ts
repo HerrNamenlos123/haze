@@ -6,42 +6,42 @@ import type {
   VariableDeclarationContext,
   VariableDefinitionContext,
 } from "./grammar/autogen/HazeParser";
-import type { Location } from "./Errors";
+import type { SourceLoc } from "./Errors";
 
 export type VariableDefinitionStatement = {
   variant: "VariableDefinition";
   symbol: VariableSymbol;
   ctx: VariableDefinitionContext;
   expr: Expression;
-  location: Location;
+  location: SourceLoc;
 };
 
 export type VariableDeclarationStatement = {
   variant: "VariableDeclaration";
   symbol: VariableSymbol;
   ctx: VariableDeclarationContext;
-  location: Location;
+  location: SourceLoc;
 };
 
 export type ReturnStatement = {
   variant: "Return";
   ctx: ParserRuleContext;
   expr?: Expression;
-  location: Location;
+  location: SourceLoc;
 };
 
 export type ExprStatement = {
   variant: "Expr";
   ctx: ParserRuleContext;
   expr: Expression;
-  location: Location;
+  location: SourceLoc;
 };
 
 export type InlineCStatement = {
   variant: "InlineC";
   ctx: ParserRuleContext;
   code: string;
-  location: Location;
+  location: SourceLoc;
 };
 
 export type ConditionalStatement = {
@@ -50,7 +50,7 @@ export type ConditionalStatement = {
   if: [Expression, ResolvedScope];
   elseIf: [Expression, ResolvedScope][];
   else?: ResolvedScope;
-  location: Location;
+  location: SourceLoc;
 };
 
 export type WhileStatement = {
@@ -58,7 +58,7 @@ export type WhileStatement = {
   ctx: ParserRuleContext;
   expr: Expression;
   scope: ResolvedScope;
-  location: Location;
+  location: SourceLoc;
 };
 
 export type Statement =

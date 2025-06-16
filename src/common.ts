@@ -1,5 +1,5 @@
 import type { ParserRuleContext } from "antlr4ng";
-import type { Location } from "./Errors";
+import type { SourceLoc } from "./Errors";
 import type {
   VariableDeclarationContext,
   VariableDefinitionContext,
@@ -119,7 +119,7 @@ export namespace BaseSymbol {
     variableContext: EVariableContext;
     isExported: boolean;
     linkage: ELinkage;
-    location: Location;
+    location: SourceLoc;
     parentSymbol?: SymbolId;
     ctx?: VariableDefinitionContext | VariableDeclarationContext;
   } & BaseSymbol;
@@ -136,7 +136,7 @@ export namespace BaseSymbol {
     variant: "GenericParameter";
     name: string;
     visibleName: string;
-    location: Location;
+    location: SourceLoc;
     parentSymbol?: SymbolId;
   } & BaseSymbol;
 
@@ -148,7 +148,7 @@ export namespace BaseSymbol {
     bodyScope: ScopeId;
     definedInScope: ScopeId;
     isExported: boolean;
-    location: Location;
+    location: SourceLoc;
     kindOfFunction: EKindOfFunction;
     parentSymbol?: SymbolId;
     thisPointerExpr?: Expression;
@@ -161,7 +161,7 @@ export namespace BaseSymbol {
     type: TypeId;
     definedInScope: ScopeId;
     isExported: boolean;
-    location: Location;
+    location: SourceLoc;
     parentSymbol?: SymbolId;
   } & BaseSymbol;
 
@@ -172,22 +172,22 @@ export namespace BaseSymbol {
           variant: "String";
           type: TypeId;
           value: string;
-          location: Location;
+          location: SourceLoc;
         }
       | {
           variant: "Boolean";
           type: TypeId;
           value: boolean;
-          location: Location;
+          location: SourceLoc;
         }
       | {
           variant: "Literal";
           type: TypeId;
           value: number;
           unit?: LiteralUnits;
-          location: Location;
+          location: SourceLoc;
         };
-    location: Location;
+    location: SourceLoc;
   } & BaseSymbol;
 
   export type Symbol =

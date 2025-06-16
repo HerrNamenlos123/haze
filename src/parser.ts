@@ -1,6 +1,6 @@
 import { HazeLexer } from "./grammar/autogen/HazeLexer";
 import { HazeParser } from "./grammar/autogen/HazeParser";
-import { Location, printErrorMessage } from "./Errors";
+import { SourceLoc, printErrorMessage } from "./Errors";
 import { BaseErrorListener, CharStream, CommonTokenStream } from "antlr4ng";
 
 class HazeErrorListener extends BaseErrorListener {
@@ -21,7 +21,7 @@ class HazeErrorListener extends BaseErrorListener {
   ) {
     printErrorMessage(
       msg,
-      new Location(this.filename, line, column),
+      new SourceLoc(this.filename, line, column),
       "SyntaxError",
     );
   }
@@ -30,7 +30,7 @@ class HazeErrorListener extends BaseErrorListener {
 export class Parser {
   parser?: HazeParser;
 
-  constructor() { }
+  constructor() {}
 
   async parseFile(filename: string) {
     const file = Bun.file(filename);

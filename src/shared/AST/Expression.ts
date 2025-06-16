@@ -1,17 +1,8 @@
-import type { ParserRuleContext } from "antlr4ng";
-import type { Datatype } from "./Datatype";
-import type {
-  ConstantSymbol,
-  FunctionSymbol,
-  Symbol,
-  VariableSymbol,
-} from "./Symbol";
-import type { Location } from "./Errors";
+import type { SourceLoc } from "../../Errors";
 
 type BaseExpression = {
   type: Datatype;
-  ctx: ParserRuleContext;
-  location: Location;
+  location: SourceLoc;
 };
 
 export type ConstantExpression = BaseExpression & {
@@ -69,19 +60,19 @@ export type BinaryExpression = BaseExpression & {
   leftExpr: Expression;
   rightExpr: Expression;
   operation:
-  | "+"
-  | "-"
-  | "*"
-  | "/"
-  | "%"
-  | "=="
-  | "!="
-  | ">"
-  | "<"
-  | ">="
-  | "<="
-  | "&&"
-  | "||";
+    | "+"
+    | "-"
+    | "*"
+    | "/"
+    | "%"
+    | "=="
+    | "!="
+    | ">"
+    | "<"
+    | ">="
+    | "<="
+    | "&&"
+    | "||";
 };
 
 export type UnaryExpression = BaseExpression & {

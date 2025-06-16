@@ -1,4 +1,4 @@
-import { CompilerError, type Location } from "./Errors";
+import { CompilerError, type SourceLoc } from "./Errors";
 import type { Module } from "./Module";
 import type { ParsedSymbol } from "./ParsedTypes";
 import type { Statement } from "./Statement";
@@ -11,7 +11,7 @@ export class ResolvedScope {
 
   constructor(
     public id: ScopeId,
-    public location: Location,
+    public location: SourceLoc,
     public parentScope?: ScopeId,
   ) {}
 
@@ -38,7 +38,7 @@ export class ResolvedScope {
   tryLookupSymbol(
     module: Module,
     name: string,
-    loc: Location,
+    loc: SourceLoc,
   ): ParsedSymbol.Symbol | undefined {
     let symbol = this.symbols.find((s) => "name" in s && s.name === name);
     if (symbol) {
@@ -60,7 +60,7 @@ export class ResolvedScope {
   lookupSymbol(
     module: Module,
     name: string,
-    loc: Location,
+    loc: SourceLoc,
   ): ParsedSymbol.Symbol {
     let symbol = this.tryLookupSymbol(module, name, loc);
     if (symbol) {

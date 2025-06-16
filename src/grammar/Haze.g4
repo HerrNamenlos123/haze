@@ -1,48 +1,102 @@
+
+// ╔═══════════════════════════════════════════════════════════════════════════════╗
+// ║                        G R A M M A R   H E A D E R                            ║
+// ╚═══════════════════════════════════════════════════════════════════════════════╝
+
 grammar Haze;
 
-prog: (cdefinitiondecl | namedfunc | funcdecl | structdecl | namespace | variablestatement)*;
+// ╔═══════════════════════════════════════════════════════════════════════════════╗
+// ║                           P A R S E R   R U L E S                             ║
+// ╚═══════════════════════════════════════════════════════════════════════════════╝
 
-namespacecontent: (namedfunc | funcdecl | structdecl | namespace | variablestatement)*;
-namespace
-    : (export='export')? 'namespace' ID ('.' ID)* '{' namespacecontent '}'
+prog: topLevelStatement*;
+topLevelStatement
+    : cInjectDirective
+    | functionDefinition
+    | functionDeclaration
+    | structDefinition
+    | namespaceDefinition
+    | globalVariableDef
     ;
 
-namedfunc: (export='export')? ID '(' params ')' (':' datatype)? funcbody;
+// Namespaces
+
+namespacedStatement
+    : functionDefinition
+    | functionDeclaration
+    | structDefinition
+    | namespaceDefinition
+    | variableCreation
+    ;
+
+namespaceDefinition
+    : (export='export')? 'namespace' ID ('.' ID)* '{' namespacedStatement* '}'
+    ;
+
+// Directives
+
+cInjectDirective: 'inject' STRING_LITERAL ';';
+
+// Functions
+
+functionDeclaration: (export='export')? (extern='extern' externLanguage?)? (ID '.')* ID '(' params ')' (':' datatype)? ';';
+externLanguage: '"C"';
+
+functionDefinition: (export='export')? ID '(' params ')' (':' datatype)? funcbody;
 func: '(' params ')' (':' datatype)? funcbody;
-
-funcbody: ('=>')? '{' body '}' | '=>' expr;
-body: (statement)*;
-
 param: ID ':' datatype;
 params: (param (',' param)* (',' ellipsis)?)? | ellipsis;
+ellipsis: '...';
 
-cdefinitiondecl: 'inject' STRING_LITERAL ';';
-funcdecl: (export='export')? (extern='extern' externlang?)? (ID '.')* ID '(' params ')' (':' datatype)? ';';
-externlang: '"C"' | '"C++"';
+funcbody: '=>' (scope | expr);
+scope: '{' (statement)* '}';
 
-ifexpr: expr;
-elseifexpr: expr;
-thenblock: body;
-elseifblock: body;
-elseblock: body;
+// Variables
 
-variablemutability
-    : ('let' | 'const')     #VariableMutability
+globalVariableDef
+    : (export='export')? (extern='extern' externLanguage?)? mutability=('let' | 'const') ID (':' datatype)? '=' expr ';'        #GlobalVariableDefinition
+    | (export='export')? (extern='extern' externLanguage?)? mutability=('let' | 'const') ID (':' datatype) ';'                  #GlobalVariableDeclaration
     ;
 
-variablestatement
-    : (export='export')? (extern='extern' externlang?)? variablemutability ID (':' datatype)? '=' expr ';'        #VariableDefinition
-    | (export='export')? (extern='extern' externlang?)? variablemutability ID (':' datatype) ';'                  #VariableDeclaration
+variableCreation
+    : mutability=('let' | 'const') ID (':' datatype)? '=' expr ';'        #VariableDefinition
+    | mutability=('let' | 'const') ID (':' datatype) ';'                  #VariableDeclaration
     ;
 
-statement
-    : '__c__' '(' STRING_LITERAL ')' ';'                        #InlineCStatement
-    | expr ';'                                                  #ExprStatement
-    | 'return' expr? ';'                                        #ReturnStatement
-    | variablestatement                                         #VariableStatement
-    | 'if' ifexpr '{' thenblock '}' ('else' 'if' elseifexpr '{' elseifblock '}')* ('else' '{' elseblock '}')?  #IfStatement
-    | 'while' expr '{' body '}'                                 #WhileStatement
+// Datatypes
+
+funcDatatype: '(' params ')' '=>' datatype;
+
+constant
+    : ('true' | 'false')                        #BooleanConstant
+    | UNIT_LITERAL                              #LiteralConstant
+    | NUMBER_LITERAL                            #NumberConstant
+    | STRING_LITERAL                            #StringConstant
     ;
+
+datatype
+    : datatypeFragment ('.' datatypeFragment)*    #NamedDatatype
+    | funcDatatype                                #FunctionDatatype
+    ;
+
+datatypeFragment
+    : ID ('<' generics+=genericLiteral (',' generics+=genericLiteral)* '>')?
+    ;
+
+genericLiteral
+    : datatype | constant
+    ;
+
+structContent
+    : ID ':' datatype ';'                                           #StructMember
+    | ID '(' params ')' (':' datatype)? (funcbody | ';')            #StructMethod
+    ;
+
+structDefinition
+    : (export='export')? ('extern' externLanguage)? 'struct' ID ('<' ID (',' ID)* '>')? '{' (structContent)* '}' (';')?
+    ;
+
+// Expressions
 
 structmembervalue
     : '.' ID ':' expr   #StructMemberValue
@@ -51,76 +105,66 @@ structmembervalue
 expr
     // https://en.cppreference.com/w/c/language/operator_precedence
     : '(' expr ')'                                                                  #ParenthesisExpr
-    // | '{' objectattribute? (',' objectattribute)* ','? '}'              #AnonymousStructInstantiationExpr
-    | func                                                      #FuncRefExpr
-    | constant                                                  #ConstantExpr
+    // | '{' objectattribute? (',' objectattribute)* ','? '}'                       #AnonymousStructInstantiationExpr
+    | func                                                                          #FuncRefExpr
+    | constant                                                                      #ConstantExpr
 
     // Part 1: Left to right
     | expr op=('++' | '--')                                                         #PostIncrExpr
-    | expr '(' args ')'                                                             #ExprCallExpr
+    | expr '(' (expr (',' expr)*)? ')'                                              #ExprCallExpr
     // <- Array Subscripting here: expr[]
     | expr '.' ID                                                                   #ExprMemberAccess
     | datatype '{' structmembervalue? (',' structmembervalue)* ','? '}'             #StructInstantiationExpr
+
     // Part 2: Right to left
     | <assoc=right> op=('++' | '--') expr                                           #PreIncrExpr
     | <assoc=right> op=('+' | '-') expr                                             #UnaryExpr
     | <assoc=right> ('not' | '!') expr /* and bitwise not */                        #UnaryExpr
     | <assoc=right> expr 'as' datatype                                              #ExplicitCastExpr
+
     // Part 3: Left to right
-    | expr ('*'|'/'|'%') expr                                   #BinaryExpr
-    | expr ('+'|'-') expr                                       #BinaryExpr
-    // | expr ('<<'|'>>') expr                                       #BinaryExpr
-    | expr ('<'|'>'|'<='|'>=') expr                             #BinaryExpr
-    | expr ('=='|'!='|'is'|('is' 'not')) expr                   #BinaryExpr
-    // | expr ('&') expr                                           #BinaryExpr
-    // | expr ('^') expr                                           #BinaryExpr
-    // | expr ('|') expr                                           #BinaryExpr
-    | expr ('and'|'or') expr                                    #BinaryExpr
+    | expr ('*'|'/'|'%') expr                                                       #BinaryExpr
+    | expr ('+'|'-') expr                                                           #BinaryExpr
+    // | expr ('<<'|'>>') expr                                                      #BinaryExpr
+    | expr ('<'|'>'|'<='|'>=') expr                                                 #BinaryExpr
+    | expr ('=='|'!='|'is'|('is' 'not')) expr                                       #BinaryExpr
+    // | expr ('&') expr                                                            #BinaryExpr
+    // | expr ('^') expr                                                            #BinaryExpr
+    // | expr ('|') expr                                                            #BinaryExpr
+    | expr ('and'|'or') expr                                                        #BinaryExpr
     // <- ternary
-    | expr op=('='|'+='|'-='|'*='|'/='|'%='|'<<='|'>>='|'&='|'^='|'|=') expr   #ExprAssignmentExpr
+    | expr op=('='|'+='|'-='|'*='|'/='|'%='|'<<='|'>>='|'&='|'^='|'|=') expr        #ExprAssignmentExpr
 
-    | ID ('<' (datatype | constant) (',' (datatype | constant))* '>')?                    #SymbolValueExpr
+    | ID ('<' (datatype | constant) (',' (datatype | constant))* '>')?              #SymbolValueExpr
     ;
 
-args: (expr (',' expr)*)?;
+// Statements & Conditionals
 
-ellipsis: '...';
-
-functype: '(' params ')' '=>' datatype;
-
-constant
-    : ('true' | 'false')                        #BooleanConstant
-    | UNIT_LITERAL                              #LiteralConstant
-    | NUMBER_LITERAL                            #LiteralConstant
-    | STRING_LITERAL                            #StringConstant
+statement
+    : '__c__' '(' STRING_LITERAL ')' ';'                        #CInlineDirective
+    | expr ';'                                                  #ExprStatement
+    | 'return' expr? ';'                                        #ReturnStatement
+    | variableCreation                                          #VariableCreationStatement
+    | 'if' ifExpr=expr then=scope ('else' 'if' elseIfExpr=expr elseIfThen=scope)* ('else' elseBlock=scope)?  #IfStatement
+    | 'while' expr scope                                        #WhileStatement
     ;
 
-structcontent
-    : ID ':' datatype ';'                                           #StructMember
-    | ID '(' params ')' (':' datatype)? (funcbody | ';')            #StructMethod
-    | 'unsafe_union' '{' (structcontent)* '}'                       #StructUnionFields
-    ;
-
-structdecl
-    : (export='export')? ('extern' externlang)? 'struct' ID ('<' ID (',' ID)* '>')? '{' (structcontent)* '}' (';')?      #StructDecl
-    ;
-
-datatype
-    : datatypeimpl ('.' datatypeimpl)*                                                          #CommonDatatype
-    | functype                                                                                  #FunctionDatatype
-    ;
-
-datatypeimpl
-    : ID ('<' generics+=genericsvalue (',' generics+=genericsvalue)* '>')?
-    ;
-
-genericsvalue
-    : datatype | constant
-    ;
+// ╔═══════════════════════════════════════════════════════════════════════════════╗
+// ║                           L E X E R   R U L E S                               ║
+// ╚═══════════════════════════════════════════════════════════════════════════════╝
 
 STRING_LITERAL
     :   '"' (ESC | ~["\\])* '"'
     ;
+
+UNIT_LITERAL: (DEC_PART | FLOAT_PART) ('s' | 'ms' | 'us' | 'ns' | 'm' | 'h' | 'd');
+NUMBER_LITERAL: (DEC_PART | FLOAT_PART);
+
+ID: [a-zA-Z_][a-zA-Z_0-9]*;
+
+// ╔═══════════════════════════════════════════════════════════════════════════════╗
+// ║                        F R A G M E N T   R U L E S                            ║
+// ╚═══════════════════════════════════════════════════════════════════════════════╝
 
 fragment ESC
     :   '\\x' HEX HEX
@@ -141,11 +185,10 @@ fragment DEC_PART: DIGIT+;
 fragment FLOAT_PART: DIGIT+ '.' DIGIT*; // Handles 123., .456, 123.45
 fragment DIGIT: [0-9];
 
-UNIT_LITERAL: (DEC_PART | FLOAT_PART) ('s' | 'ms' | 'us' | 'ns' | 'm' | 'h' | 'd');
-NUMBER_LITERAL: (DEC_PART | FLOAT_PART);
+// ╔═══════════════════════════════════════════════════════════════════════════════╗
+// ║                  W H I T E S P A C E   &   C O M M E N T S                    ║
+// ╚═══════════════════════════════════════════════════════════════════════════════╝
 
-// Tokens
-
-ID: [a-zA-Z_][a-zA-Z_0-9]*;
 WS: [ \t\r\n]+ -> channel(HIDDEN);
 COMMENT: '//' ~[\r\n]* -> channel(HIDDEN); 
+BLOCK_COMMENT: '/*' .*? '*/' -> channel(HIDDEN);

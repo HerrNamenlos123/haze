@@ -1,4 +1,4 @@
-import { InternalError, Location } from "./Errors";
+import { InternalError, SourceLoc } from "./Errors";
 import { ResolvedScope } from "./Scope";
 import type { Module } from "./Module";
 import type { ParsedDatatype, ParsedSymbol } from "./ParsedTypes";
@@ -67,7 +67,7 @@ export class ParsedStore extends BaseStore {
   constructor(module: Module) {
     super(module);
 
-    this.globalScope = this.createScope(new Location("global", 0, 0));
+    this.globalScope = this.createScope(new SourceLoc("global", 0, 0));
     this.createPrimitiveTypeAndSymbol(EPrimitive.none);
     this.createPrimitiveTypeAndSymbol(EPrimitive.unknown);
     this.createPrimitiveTypeAndSymbol(EPrimitive.stringview);
@@ -115,7 +115,7 @@ export class ParsedStore extends BaseStore {
     return dt;
   }
 
-  createScope(location: Location, parentScope?: ScopeId) {
+  createScope(location: SourceLoc, parentScope?: ScopeId) {
     const id = this.makeScopeId();
     return new ResolvedScope(id, location, parentScope);
   }
