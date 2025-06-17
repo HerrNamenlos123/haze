@@ -5,7 +5,7 @@ import type { ResolvedScope } from "./Scope";
 import type {
   VariableDeclarationContext,
   VariableDefinitionContext,
-} from "./grammar/autogen/HazeParser";
+} from "./parser/grammar/autogen/HazeParser";
 import type { SourceLoc } from "./Errors";
 
 export type VariableDefinitionStatement = {

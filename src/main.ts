@@ -1,9 +1,10 @@
 import { ArgumentParser, REMAINDER } from "argparse";
-import { ProjectCompiler } from "./ModuleCompiler";
+// import { ProjectCompiler } from "./ModuleCompiler";
 import { version } from "../package.json";
 import { GeneralError } from "./Errors";
 import { join } from "path";
 import path from "node:path";
+import { Parser } from "./parser/Parser";
 
 async function getFile(url: string, outfile: string) {
   const response = await fetch(url);
@@ -61,16 +62,15 @@ async function main() {
     args.command === "exec"
   ) {
     try {
-      const project = new ProjectCompiler();
-
-      if (!(await project.build(args.filename))) {
-        process.exit(1);
-      }
-
-      if (args.command === "run" || args.command === "exec") {
-        const exitCode = await project.run(args.filename, args.args);
-        process.exit(exitCode);
-      }
+      await Parser.parseFileToAST("src/parser/ParsingTest.hz");
+      // const project = new ProjectCompiler();
+      // if (!(await project.build(args.filename))) {
+      //   process.exit(1);
+      // }
+      // if (args.command === "run" || args.command === "exec") {
+      //   const exitCode = await project.run(args.filename, args.args);
+      //   process.exit(exitCode);
+      // }
     } catch (err) {
       if (err instanceof GeneralError) {
         console.log(err.message);

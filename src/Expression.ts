@@ -1,4 +1,4 @@
-import type { SourceLoc } from "../../Errors";
+import type { SourceLoc } from "./Errors";
 
 type BaseExpression = {
   type: Datatype;

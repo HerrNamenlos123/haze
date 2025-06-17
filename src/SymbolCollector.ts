@@ -17,9 +17,9 @@ import {
   VariableDeclarationContext,
   VariableDefinitionContext,
   type ParamContext,
-} from "./grammar/autogen/HazeParser";
+} from "./parser/grammar/autogen/HazeParser";
 import type { Module } from "./Module";
-import { HazeVisitor } from "./grammar/autogen/HazeVisitor";
+import { HazeVisitor } from "./parser/grammar/autogen/HazeVisitor";
 import { CompilerError, ImpossibleSituation, InternalError } from "./Errors";
 import { ResolvedScope } from "./Scope";
 import { Interval, type ParserRuleContext } from "antlr4ng";

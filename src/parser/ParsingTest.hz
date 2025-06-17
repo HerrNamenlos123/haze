@@ -1,0 +1,123 @@
+inject "#include <string.h>";
+
+extern "C" malloc(size: u64, ...): none;
+extern "C" printf(fmt: String, ...): none;
+export extern UI.ImGui.Begin(name: String): none;
+
+let CONST_1: i64 = 42;
+let CONST_2: i64 = CONST_1 + 10;
+const CONST_3 = 69;
+export const CONST_4: i32 = 123;
+export extern const CONST_5: i8;
+export extern "C" const M_PI: f32;
+
+struct Test {
+    value: i32;
+}
+
+extern "C" struct timeval_t {
+    ns: u64;
+}
+
+foo(bar: i32) => {
+    let x = bar + 1;
+    return x * 2;
+}
+
+bar<T>(bar: Foo<T, T>): Foo<T, T> => {
+    bar.print(123);
+    return bar;
+}
+
+namespace Outer.Inner {
+    namespace Subspace {
+        extern "C" malloc(size: u64): none;
+        export extern ImGui.Begin(name: String): none;
+
+        export struct Foo<T, U> {
+            value: Box<T>;
+            other: U;
+
+            print(value: i32): i8 => {
+                printf("Value: %d\n", value);
+                return 0;
+            }
+
+            method(param: T): U => {
+                return this.other;
+            }
+
+            other() => {
+                printf("Other!\n");
+            }
+        }
+
+        // Function to test all C operator precedences in a nested, logical, yet comprehensive way
+        func<T>(param: Foo<i32, Box<i8>>, ...): Foo<i8, i32> => {
+            __c__("abort();");
+
+            let a: i32 = 1;
+            let b: i32 = 2;
+            let c: i32 = 3;
+            let x: i32 = 5;
+            let y: i32 = 0;
+            let z: i8 = 2;
+
+            // Primary (x), Postfix (a++), Prefix (++a), Unary (-a, !a)
+            x = a++ + ++b - -c + !0;
+
+            // Multiplicative (*, /, %)
+            y = a * b / 2 % 3;
+
+            // Additive (+, -)
+            y = a + b - c;
+
+            // Relational (<, >, <=, >=)
+            if (x < y or x >= z) {
+                printf("Relational test passed\n");
+            }
+
+            // Equality (==, !=)
+            if (x == 5 and y != 3) {
+                printf("Equality test passed\n");
+            }
+
+            // Logical AND, OR
+            if (x and y or z) {
+                printf("Logical ops passed\n");
+            }
+
+            // Assignment
+            let assignTest: i32;
+            assignTest = x += 2;
+            assignTest *= 3;
+
+            // Loop and conditionals
+            while (x != 0) {
+                x -= 1;
+            }
+
+            if (z > 0) {
+                printf("Z is positive\n");
+            }
+            else {
+                printf("Z is not positive\n");
+            }
+
+            // Lambdas
+            const a = (callback: (number: i32) => i32) => {
+                callback(8);
+            };
+            a((number: i32): i32 => {
+                print(number);
+            });
+
+            const a: Array<187>;
+
+            return Foo<i8, i32> {
+                .value: Box<i8> {},
+                .other: 42
+            };
+        }
+    }
+}

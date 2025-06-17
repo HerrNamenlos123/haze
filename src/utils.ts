@@ -27,8 +27,8 @@ import {
   StructMethodContext,
   VariableDeclarationContext,
   VariableDefinitionContext,
-} from "./grammar/autogen/HazeParser";
-import type { HazeVisitor } from "./grammar/autogen/HazeVisitor";
+} from "./parser/grammar/autogen/HazeParser";
+import type { HazeVisitor } from "./parser/grammar/autogen/HazeVisitor";
 import type { Module } from "./Module";
 import type { ParsedDatatype, ParsedSymbol } from "./ParsedTypes";
 import { ResolvedScope } from "./Scope";

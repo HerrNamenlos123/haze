@@ -12,15 +12,15 @@ extern "C" memcpy(to: RawPtr<none>, from: RawPtr<none>, length: u64): RawPtr<non
 namespace Memory {
   const DEFAULT_ARENA_SIZE = 16 * 1024 * 1024;
 
-  export generalPurposeMalloc(size: u64): RawPtr<none> {
+  export generalPurposeMalloc(size: u64): RawPtr<none> => {
     return calloc(1, size);
   }
 
-  export generalPurposeFree(ptr: RawPtr<none>) {
+  export generalPurposeFree(ptr: RawPtr<none>) => {
     free(ptr);
   }
 
-  export copy(to: RawPtr<none>, from: RawPtr<none>, length: u64) {
+  export copy(to: RawPtr<none>, from: RawPtr<none>, length: u64) => {
     memcpy(to, from, length);
   }
 
@@ -30,11 +30,11 @@ namespace Memory {
     capacity: u64;
     dataFirstByte: u8;
 
-    canAllocate(size: u64): boolean {
+    canAllocate(size: u64): boolean => {
       return this.allocated + size <= this.capacity;
     }
 
-    allocate(size: u64): RawPtr<none> {
+    allocate(size: u64): RawPtr<none> => {
       if this.allocated + size > this.capacity {
         System.panic("ArenaChunk was instructed to allocate, but it is too small");
       }
@@ -48,7 +48,7 @@ namespace Memory {
   export struct Arena {
     firstChunk: RawPtr<ArenaChunk>;
 
-    init() {
+    init() => {
       if this.firstChunk {
         System.panic("Arena is already initialized");
       }
@@ -57,7 +57,7 @@ namespace Memory {
       this.firstChunk.capacity = Memory.DEFAULT_ARENA_SIZE;
     }
 
-    allocate(size: u64): RawPtr<none> {
+    allocate(size: u64): RawPtr<none> => {
       let chunk = this.firstChunk;
       while chunk.nextChunk {
         chunk = chunk.nextChunk;
@@ -79,7 +79,7 @@ namespace Memory {
       return chunk.allocate(size);
     }
 
-    cleanup() {
+    cleanup() => {
       let chunk = this.firstChunk;
       while chunk {
         const next = chunk.nextChunk;
@@ -108,14 +108,14 @@ namespace Memory {
     data: RawPtr<none>;
     size: u64;
 
-    constructor(size: u64): Memory.Buffer {
+    constructor(size: u64): Memory.Buffer => {
       return Memory.Buffer {
         .data: ctx.mem.alloc(size),
         .size: size,
       };
     }
 
-    resize(newSize: u64) {
+    resize(newSize: u64) => {
       const newData = ctx.mem.alloc(newSize);
       Memory.copy(newData, this.data, this.size);
       this.size = newSize;
@@ -123,7 +123,7 @@ namespace Memory {
     }
   }
 
-  __setupMemoryContext() {
+  __setupMemoryContext() => {
     ctx.mem.alloc = (size: u64): RawPtr<none> => {
       const arena = ctx.mem.globalDefaultArena as RawPtr<Arena>;
       return arena.allocate(size);

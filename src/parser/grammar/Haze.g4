@@ -22,7 +22,7 @@ globalDeclaration
     | functionDeclaration
     | typeDefinition
     | namespaceDefinition
-    | variableCreation
+    | globalVariableDef
     ;
 
 namespaceDefinition
@@ -35,10 +35,10 @@ cInjectDirective: 'inject' STRING_LITERAL ';';
 
 // Functions
 
-functionDeclaration: (export='export')? (extern='extern' externLanguage?)? (ID '.')* ID '(' params ')' (':' datatype)? ';';
+functionDeclaration: (export='export')? (extern='extern' externLang=externLanguage?)? (ID '.')* ID '(' params ')' (':' datatype)? ';';
 externLanguage: '"C"';
 
-functionDefinition: (export='export')? ID '(' params ')' (':' datatype)? funcbody;
+functionDefinition: (export='export')? ID ('<' ID (',' ID)* '>')? '(' params ')' (':' datatype)? funcbody;
 lambda: '(' params ')' (':' datatype)? funcbody;
 param: ID ':' datatype;
 params: (param (',' param)* (',' ellipsis)?)? | ellipsis;
@@ -50,7 +50,7 @@ scope: '{' (statement)* '}';
 // Variables
 
 globalVariableDef
-    : (export='export')? (extern='extern' externLanguage?)? mutability=('let' | 'const') ID (((':' datatype)? '=' expr) | (':' datatype)) ';'        #GlobalVariableDefinition
+    : (export='export')? (extern='extern' externLang=externLanguage?)? mutability=('let' | 'const') ID (((':' datatype)? '=' expr) | (':' datatype)) ';'        #GlobalVariableDefinition
     ;
 
 variableCreation
@@ -76,16 +76,17 @@ datatypeFragment
     ;
 
 genericLiteral
-    : datatype | constant
+    : datatype              #GenericLiteralDatatype
+    | constant              #GenericLiteralConstant
     ;
 
 structContent
-    : ID ':' datatype ';'                                           #StructMember
-    | ID '(' params ')' (':' datatype)? (funcbody | ';')            #StructMethod
+    : ID ':' datatype ';'                                                                   #StructMember
+    | ID ('<' ID (',' ID)* '>')? '(' params ')' (':' datatype)? (funcbody | ';')            #StructMethod
     ;
 
 structDefinition
-    : (export='export')? ('extern' externLanguage)? 'struct' ID ('<' ID (',' ID)* '>')? '{' (structContent)* '}' (';')?
+    : (export='export')? (extern='extern' externLang=externLanguage)? 'struct' ID ('<' ID (',' ID)* '>')? '{' (content+=structContent)* '}' (';')?
     ;
 
 typeDefinition

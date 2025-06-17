@@ -1,21 +1,13 @@
-import type { ParserRuleContext } from "antlr4ng";
-
 export enum ErrorType {
   Error,
   Warning,
 }
 
-export class SourceLoc {
-  constructor(
-    public filename: string,
-    public line: number,
-    public column: number,
-  ) {}
-
-  public toString(): string {
-    return `${this.filename}:${this.line}:${this.column}`;
-  }
-}
+export type SourceLoc = {
+  filename: string;
+  line: number;
+  column: number;
+};
 
 function formatCompilerMessage(
   type: ErrorType,
@@ -69,13 +61,17 @@ export function getCallerLocation(depth = 1): SourceLoc {
   const frame = stack[depth + 1];
   const matches = frame.match(/at (?:(.+)\s+\()?(.+?):(\d+):(\d+)/);
   if (!matches) {
-    return new SourceLoc("Unknown", 0, 0);
+    return {
+      line: 0,
+      column: 0,
+      filename: "Unknown",
+    };
   }
-  return new SourceLoc(
-    matches[2],
-    parseInt(matches[3], 10),
-    parseInt(matches[4], 10),
-  );
+  return {
+    line: parseInt(matches[3], 10),
+    column: parseInt(matches[4], 10),
+    filename: matches[2],
+  };
 }
 
 export class CompilerError extends Error {

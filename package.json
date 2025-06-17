@@ -11,7 +11,7 @@
     "build": "npx cross-env NODE_ENV=production bun build --production --compile ./src/main.ts --outfile dist/haze && bun run copylib && bun link",
     "test": "echo \"Error: no test specified\" && exit 1",
     "copylib": "mkdir -p ./dist/stdlib && cp -r ./stdlib/* ./dist/stdlib",
-    "postinstall": "cd src/grammar && bunx antlr4ng-cli -Dlanguage=TypeScript -visitor Haze.g4 -o autogen && cd ../.."
+    "postinstall": "cd src/parser/grammar && bunx antlr4ng-cli -Dlanguage=TypeScript -visitor Haze.g4 -o autogen && cd ../../.."
   },
   "bin": {
     "haze": "dist/haze"

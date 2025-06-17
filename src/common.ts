@@ -3,7 +3,7 @@ import type { SourceLoc } from "./Errors";
 import type {
   VariableDeclarationContext,
   VariableDefinitionContext,
-} from "./grammar/autogen/HazeParser";
+} from "./parser/grammar/autogen/HazeParser";
 import type { ScopeId, SymbolId, TypeId } from "./store";
 import type { Expression } from "./Expression";
 

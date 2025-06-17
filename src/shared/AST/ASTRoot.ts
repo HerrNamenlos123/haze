@@ -2,7 +2,8 @@ import type { SourceLoc } from "../../Errors";
 
 export enum EExternLanguage {
   None,
-  C,
+  Extern,
+  Extern_C,
 }
 
 export enum ELiteralUnit {
@@ -73,7 +74,7 @@ export type ASTNamedDatatype = {
   variant: "NamedDatatype";
   name: string;
   generics: (ASTDatatype | ASTConstant)[];
-  parent?: ASTNamedDatatype;
+  nestedParent?: ASTNamedDatatype;
   sourceloc: SourceLoc;
 };
 
@@ -91,16 +92,10 @@ export type ASTBooleanConstant = {
   sourceloc: SourceLoc;
 };
 
-export type ASTUnitConstant = {
-  variant: "UnitConstant";
-  value: number;
-  unit: ELiteralUnit;
-  sourceloc: SourceLoc;
-};
-
 export type ASTNumberConstant = {
   variant: "NumberConstant";
   value: number;
+  unit?: ELiteralUnit;
   sourceloc: SourceLoc;
 };
 
@@ -112,7 +107,6 @@ export type ASTStringConstant = {
 
 export type ASTConstant =
   | ASTBooleanConstant
-  | ASTUnitConstant
   | ASTNumberConstant
   | ASTStringConstant;
 
@@ -322,19 +316,30 @@ export type ASTCInjectDirective = {
   sourceloc: SourceLoc;
 };
 
+export type ASTStructMemberDefinition = {
+  variant: "StructMember";
+  name: string;
+  type: ASTDatatype;
+  sourceloc: SourceLoc;
+};
+
+export type ASTStructMethodDefinition = {
+  variant: "StructMethod";
+  params: ASTParam[];
+  ellipsis: boolean;
+  returnType?: ASTDatatype;
+  funcbody: ASTFuncBody;
+  sourceloc: SourceLoc;
+};
+
 export type ASTStructDefinition = {
   variant: "StructDefinition";
   export: boolean;
   externLanguage: EExternLanguage;
   name: string;
   genericPlaceholders: string[];
-  members: { name: string; type: ASTDatatype }[];
-  methods: {
-    params: ASTParam[];
-    ellipsis: boolean;
-    returnType?: ASTDatatype;
-    funcbody: ASTFuncBody;
-  }[];
+  members: ASTStructMemberDefinition[];
+  methods: ASTStructMethodDefinition[];
   sourceloc: SourceLoc;
 };
 
