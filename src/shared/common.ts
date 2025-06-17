@@ -1,7 +1,3 @@
-import type { SourceLoc } from "../Errors";
-import type { ELiteralUnit } from "./AST";
-import type { ID } from "./store";
-
 export enum EPrimitive {
   none = 1,
   unknown = 2,
@@ -41,54 +37,54 @@ export enum EFunctionType {
   Constructor,
 }
 
-export type BaseDatatype = {
-  id: ID;
-};
+// export type BaseDatatype = {
+//   id: ID;
+// };
 
-export type FunctionDatatype = {
-  variant: "Function";
-  generics: ID[];
-  functionParameters: ID[];
-  functionReturnValue: ID;
-  vararg: boolean;
-} & BaseDatatype;
+// export type FunctionDatatype = {
+//   variant: "Function";
+//   generics: ID[];
+//   functionParameters: ID[];
+//   functionReturnValue: ID;
+//   vararg: boolean;
+// } & BaseDatatype;
 
-export type StructDatatype = {
-  variant: "Struct";
-  name: string;
-  generics: ID[];
-  linkage: ELinkage;
-  members: ID[];
-  methods: ID[];
-  parentSymbol?: ID;
-} & BaseDatatype;
+// export type StructDatatype = {
+//   variant: "Struct";
+//   name: string;
+//   generics: ID[];
+//   linkage: ELinkage;
+//   members: ID[];
+//   methods: ID[];
+//   parentSymbol?: ID;
+// } & BaseDatatype;
 
-export type RawPointerDatatype = {
-  variant: "RawPointer";
-  pointee: ID;
-} & BaseDatatype;
+// export type RawPointerDatatype = {
+//   variant: "RawPointer";
+//   pointee: ID;
+// } & BaseDatatype;
 
-export type PrimitiveDatatype = {
-  variant: "Primitive";
-  primitive: EPrimitive;
-} & BaseDatatype;
+// export type PrimitiveDatatype = {
+//   variant: "Primitive";
+//   primitive: EPrimitive;
+// } & BaseDatatype;
 
-export type NamespaceDatatype = {
-  variant: "Namespace";
-  name: string;
-  symbolsScope: ID;
-} & BaseDatatype;
+// export type NamespaceDatatype = {
+//   variant: "Namespace";
+//   name: string;
+//   symbolsScope: ID;
+// } & BaseDatatype;
 
-export type Datatype =
-  | FunctionDatatype
-  | StructDatatype
-  | RawPointerDatatype
-  | PrimitiveDatatype
-  | NamespaceDatatype;
+// export type Datatype =
+//   | FunctionDatatype
+//   | StructDatatype
+//   | RawPointerDatatype
+//   | PrimitiveDatatype
+//   | NamespaceDatatype;
 
-export type DatatypeVariants =
-  | FunctionDatatype["variant"]
-  | StructDatatype["variant"]
-  | RawPointerDatatype["variant"]
-  | PrimitiveDatatype["variant"]
-  | NamespaceDatatype["variant"];
+// export type DatatypeVariants =
+//   | FunctionDatatype["variant"]
+//   | StructDatatype["variant"]
+//   | RawPointerDatatype["variant"]
+//   | PrimitiveDatatype["variant"]
+//   | NamespaceDatatype["variant"];

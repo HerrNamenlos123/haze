@@ -1,5 +1,5 @@
 import type { SourceLoc } from "../Errors";
-import type { Collect } from "./CollectSymbols";
+import type { Collect } from "../SymbolCollection/CollectSymbols";
 
 export enum EExternLanguage {
   None,

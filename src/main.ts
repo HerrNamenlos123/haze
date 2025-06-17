@@ -66,7 +66,7 @@ async function main() {
     args.command === "exec"
   ) {
     try {
-      const filename = "src/parser/ParsingTest.hz";
+      const filename = "src/SymbolCollection/CollectionTest.hz";
       const ast = await Parser.parseFileToAST(filename);
       if (ast) {
         // console.log(JSON.stringify(ast[0].funcbody, undefined, 4));

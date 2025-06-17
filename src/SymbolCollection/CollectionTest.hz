@@ -3,12 +3,13 @@ inject "#include <stdio.h>";
 extern "C" printf(fmt: String, ...): none;
 
 namespace Core.Math {
-    export func square(x: i32): i32 => {
+    export square(x: i32): i32 => {
         return x * x;
     }
 
-    export func max<T: Ord>(a: T, b: T): T => {
-        return a > b ? a : b;
+    export max<T>(a: T, b: T): T => {
+        return a;
+        // return a > b ? a : b;
     }
 }
 
@@ -22,10 +23,11 @@ namespace Core.Utils {
         }
     }
 
-    export func foreach<T>(arr: Array<T>, callback: (item: T) => none): none => {
+    export foreach<T>(arr: Array<T>, callback: (item: T) => none): none => {
         let i: i32 = 0;
         while (i < arr.length) {
-            callback(arr[i]);
+            // callback(arr[i]);
+            callback(0);
             i += 1;
         }
     }
@@ -46,7 +48,7 @@ main() => {
     };
     p.print();
 
-    let values: Array<i32> = [1, 2, 3, 4, 5];
+    let values: Array<i32>;
 
     Core.Utils.foreach(values, (item: i32) => {
         if (item % 2 == 0) {

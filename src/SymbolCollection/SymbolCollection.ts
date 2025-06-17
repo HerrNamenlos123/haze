@@ -25,8 +25,7 @@ import type {
   ASTSymbolValueExpr,
   ASTUnaryExpr,
 } from "../shared/AST";
-import { Collect } from "../shared/CollectSymbols";
-import type { CollectResult } from "./types";
+import { Collect, type CollectResult } from "./CollectSymbols";
 
 function collect(
   scope: Collect.Scope,

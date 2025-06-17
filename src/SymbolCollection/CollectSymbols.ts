@@ -9,9 +9,14 @@ import type {
   ASTVariableDefinitionStatement,
   EExternLanguage,
   ELiteralUnit,
-} from "./AST";
-import type { EVariableContext, EVariableMutability } from "./common";
-import type { ID } from "./store";
+} from "../shared/AST";
+import type { EVariableContext, EVariableMutability } from "../shared/common";
+import type { ID } from "../shared/store";
+
+export type CollectResult = {
+  globalScope: Collect.Scope;
+  cInjections: { code: string; sourceloc: SourceLoc }[];
+};
 
 export namespace Collect {
   export type VariableSymbol = {
@@ -76,18 +81,6 @@ export namespace Collect {
     | ASTVariableDefinitionStatement
     | ASTGlobalVariableDefinition
     | ASTStructDefinition;
-  // | VariableSymbol
-  // | GenericParameterSymbol
-  // | FunctionSymbol
-  // | DatatypeSymbol
-  // | ConstantSymbol;
-
-  // export type SymbolVariants =
-  //   | VariableSymbol["variant"]
-  //   | GenericParameterSymbol["variant"]
-  //   | FunctionSymbol["variant"]
-  //   | DatatypeSymbol["variant"]
-  //   | ConstantSymbol["variant"];
 
   export class SymbolTable {
     symbols: Symbol[] = [];
