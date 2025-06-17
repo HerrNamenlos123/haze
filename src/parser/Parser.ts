@@ -5,48 +5,95 @@ import {
   type SourceLoc,
 } from "../Errors";
 import {
+  EAssignmentOperation,
+  EBinaryOperation,
   EExternLanguage,
+  EIncrOperation,
   ELiteralUnit,
+  EUnaryOperation,
+  type ASTBinaryExpr,
   type ASTBooleanConstant,
   type ASTCInjectDirective,
   type ASTConstant,
+  type ASTConstantExpr,
   type ASTDatatype,
+  type ASTExplicitCastExpr,
+  type ASTExpr,
+  type ASTExprAssignmentExpr,
+  type ASTExprCallExpr,
+  type ASTExprMemberAccess,
+  type ASTExprStatement,
+  type ASTFunctionDatatype,
   type ASTFunctionDeclaration,
+  type ASTFunctionDefinition,
   type ASTGlobalVariableDefinition,
+  type ASTIfStatement,
+  type ASTInlineCStatement,
+  type ASTLambda,
+  type ASTLambdaExpr,
   type ASTNamedDatatype,
+  type ASTNamespaceDefinition,
   type ASTNumberConstant,
   type ASTParam,
+  type ASTParenthesisExpr,
+  type ASTPostIncrExpr,
+  type ASTPreIncrExpr,
+  type ASTReturnStatement,
   type ASTRoot,
+  type ASTScope,
   type ASTStringConstant,
   type ASTStructDefinition,
+  type ASTStructInstantiationExpr,
   type ASTStructMemberDefinition,
   type ASTStructMethodDefinition,
-  type ASTTopLevelDeclaration,
+  type ASTSymbolValueExpr,
+  type ASTUnaryExpr,
+  type ASTVariableDefinitionStatement,
+  type ASTWhileStatement,
 } from "../shared/AST/ASTRoot";
 import { HazeLexer } from "./grammar/autogen/HazeLexer";
 import {
+  BinaryExprContext,
   BooleanConstantContext,
   CInjectDirectiveContext,
+  CInlineStatementContext,
   ConstantExprContext,
   DatatypeFragmentContext,
-  ExternLanguageContext,
+  ExplicitCastExprContext,
+  ExprAssignmentExprContext,
+  ExprCallExprContext,
+  ExprMemberAccessContext,
+  ExprStatementContext,
+  FunctionDatatypeContext,
   FunctionDeclarationContext,
+  FunctionDefinitionContext,
   GenericLiteralConstantContext,
-  GenericLiteralContext,
   GenericLiteralDatatypeContext,
   GlobalVariableDefinitionContext,
   HazeParser,
+  IfStatementContext,
+  LambdaContext,
+  LambdaExprContext,
   LiteralConstantContext,
   NamedDatatypeContext,
+  NamespaceDefinitionContext,
   NumberConstantContext,
   ParamsContext,
+  ParenthesisExprContext,
+  PostIncrExprContext,
+  PreIncrExprContext,
   ProgContext,
+  ReturnStatementContext,
+  ScopeContext,
   StringConstantContext,
   StructDefinitionContext,
+  StructInstantiationExprContext,
   StructMemberContext,
-  StructMemberValueContext,
   StructMethodContext,
-  TopLevelDeclarationContext,
+  SymbolValueExprContext,
+  UnaryExprContext,
+  VariableCreationStatementContext,
+  WhileStatementContext,
 } from "./grammar/autogen/HazeParser";
 import {
   BaseErrorListener,
@@ -154,7 +201,9 @@ class ASTTransformer extends HazeVisitor<any> {
     }
   }
 
-  mutability(ctx: GlobalVariableDefinitionContext): boolean {
+  mutability(
+    ctx: GlobalVariableDefinitionContext | VariableCreationStatementContext,
+  ): boolean {
     if (!ctx._mutability) {
       throw new InternalError("Mutability field of variable is not available");
     }
@@ -165,6 +214,99 @@ class ASTTransformer extends HazeVisitor<any> {
     } else {
       throw new InternalError(
         "Mutability field of variable is neither let nor const",
+      );
+    }
+  }
+
+  incrop(ctx: PostIncrExprContext): EIncrOperation {
+    if (!ctx._op) {
+      throw new InternalError("Operator missing");
+    }
+    if (ctx._op.text === "++") {
+      return EIncrOperation.Incr;
+    } else if (ctx._op.text === "--") {
+      return EIncrOperation.Decr;
+    } else {
+      throw new InternalError("Operator is neither increment nor decrement");
+    }
+  }
+
+  unaryop(ctx: UnaryExprContext) {
+    if (!ctx._op) {
+      throw new InternalError("Operator missing");
+    }
+    if (ctx._op.text === "-") {
+      return EUnaryOperation.Minus;
+    } else if (ctx._op.text === "+") {
+      return EUnaryOperation.Plus;
+    } else if (ctx._op.text === "not") {
+      return EUnaryOperation.Negate;
+    } else if (ctx._op.text === "!") {
+      return EUnaryOperation.Negate;
+    } else {
+      throw new InternalError("Operator is neither increment nor decrement");
+    }
+  }
+
+  assignop(ctx: ExprAssignmentExprContext) {
+    if (!ctx._op) {
+      throw new InternalError("Operator missing");
+    }
+    if (ctx._op.text === "=") {
+      return EAssignmentOperation.Assign;
+    } else if (ctx._op.text === "+=") {
+      return EAssignmentOperation.Add;
+    } else if (ctx._op.text === "-=") {
+      return EAssignmentOperation.Subtract;
+    } else if (ctx._op.text === "*=") {
+      return EAssignmentOperation.Multiply;
+    } else if (ctx._op.text === "/=") {
+      return EAssignmentOperation.Divide;
+    } else if (ctx._op.text === "%=") {
+      return EAssignmentOperation.Modulo;
+    } else {
+      throw new InternalError("Operator is unknown: " + ctx._op.text);
+    }
+  }
+
+  binaryop(ctx: BinaryExprContext) {
+    if (ctx._op.length === 1 && ctx._op[0].text === "*") {
+      return EBinaryOperation.Multiply;
+    } else if (ctx._op.length === 1 && ctx._op[0].text === "/") {
+      return EBinaryOperation.Divide;
+    } else if (ctx._op.length === 1 && ctx._op[0].text === "%") {
+      return EBinaryOperation.Modulo;
+    } else if (ctx._op.length === 1 && ctx._op[0].text === "+") {
+      return EBinaryOperation.Add;
+    } else if (ctx._op.length === 1 && ctx._op[0].text === "-") {
+      return EBinaryOperation.Subtract;
+    } else if (ctx._op.length === 1 && ctx._op[0].text === "<") {
+      return EBinaryOperation.LessThan;
+    } else if (ctx._op.length === 1 && ctx._op[0].text === ">") {
+      return EBinaryOperation.GreaterThan;
+    } else if (ctx._op.length === 1 && ctx._op[0].text === "<=") {
+      return EBinaryOperation.LessEqal;
+    } else if (ctx._op.length === 1 && ctx._op[0].text === ">=") {
+      return EBinaryOperation.GreaterEqual;
+    } else if (ctx._op.length === 1 && ctx._op[0].text === "==") {
+      return EBinaryOperation.Equal;
+    } else if (ctx._op.length === 1 && ctx._op[0].text === "!=") {
+      return EBinaryOperation.Unequal;
+    } else if (ctx._op.length === 1 && ctx._op[0].text === "is") {
+      return EBinaryOperation.Equal;
+    } else if (
+      ctx._op.length === 2 &&
+      ctx._op[0].text === "is" &&
+      ctx._op[1].text === "not"
+    ) {
+      return EBinaryOperation.Unequal;
+    } else if (ctx._op.length === 1 && ctx._op[0].text === "and") {
+      return EBinaryOperation.BoolAnd;
+    } else if (ctx._op.length === 1 && ctx._op[0].text === "or") {
+      return EBinaryOperation.BoolOr;
+    } else {
+      throw new InternalError(
+        "Operator is not known: " + JSON.stringify(ctx._op.map((o) => o.text)),
       );
     }
   }
@@ -278,9 +420,9 @@ class ASTTransformer extends HazeVisitor<any> {
   visitDatatypeFragment = (ctx: DatatypeFragmentContext) => {
     return {
       name: ctx.ID().getText(),
-      generics: ctx._generics.map(
-        (g) => this.visit(g) as ASTDatatype | ASTConstant,
-      ),
+      generics: ctx
+        .genericLiteral()
+        .map((g) => this.visit(g) as ASTDatatype | ASTConstant),
       sourceloc: this.loc(ctx),
     };
   };
@@ -334,6 +476,36 @@ class ASTTransformer extends HazeVisitor<any> {
       params: params.params,
       ellipsis: params.ellipsis,
       returnType: (ctx.datatype() && this.visit(ctx.datatype()!)) || undefined,
+    };
+  };
+
+  visitFunctionDefinition = (
+    ctx: FunctionDefinitionContext,
+  ): ASTFunctionDefinition => {
+    const names = ctx.ID().map((c) => c.getText());
+    const params = this.visitParams(ctx.params());
+    return {
+      variant: "FunctionDefinition",
+      export: Boolean(ctx._export_),
+      params: params.params,
+      generics: names.slice(1),
+      name: names[0],
+      ellipsis: params.ellipsis,
+      funcbody: (ctx.funcbody() && this.visit(ctx.funcbody()!)) || undefined,
+      returnType: (ctx.datatype() && this.visit(ctx.datatype()!)) || undefined,
+      sourceloc: this.loc(ctx),
+    };
+  };
+
+  visitLambda = (ctx: LambdaContext): ASTLambda => {
+    const params = this.visitParams(ctx.params());
+    return {
+      variant: "Lambda",
+      params: params.params,
+      ellipsis: params.ellipsis,
+      funcbody: (ctx.funcbody() && this.visit(ctx.funcbody()!)) || undefined,
+      returnType: (ctx.datatype() && this.visit(ctx.datatype()!)) || undefined,
+      sourceloc: this.loc(ctx),
     };
   };
 
@@ -400,9 +572,269 @@ class ASTTransformer extends HazeVisitor<any> {
       export: Boolean(ctx._export_),
       externLanguage: this.exlang(ctx),
       name: name,
-      genericPlaceholders: generics,
+      generics: generics,
       members: members,
       methods: methods,
+      sourceloc: this.loc(ctx),
+    };
+  };
+
+  visitScope = (ctx: ScopeContext): ASTScope => {
+    return {
+      variant: "Scope",
+      sourceloc: this.loc(ctx),
+      statements: ctx.statement().map((s) => this.visit(s)),
+    };
+  };
+
+  visitCInlineStatement = (
+    ctx: CInlineStatementContext,
+  ): ASTInlineCStatement => {
+    return {
+      variant: "InlineCStatement",
+      code: ctx.STRING_LITERAL().getText(),
+      sourceloc: this.loc(ctx),
+    };
+  };
+
+  visitExprStatement = (ctx: ExprStatementContext): ASTExprStatement => {
+    return {
+      variant: "ExprStatement",
+      expr: this.visit(ctx.expr()),
+      sourceloc: this.loc(ctx),
+    };
+  };
+
+  visitReturnStatement = (ctx: ReturnStatementContext): ASTReturnStatement => {
+    return {
+      variant: "ReturnStatement",
+      expr: (ctx.expr() && this.visit(ctx.expr()!)) || undefined,
+      sourceloc: this.loc(ctx),
+    };
+  };
+
+  visitVariableCreationStatement = (
+    ctx: VariableCreationStatementContext,
+  ): ASTVariableDefinitionStatement => {
+    return {
+      variant: "VariableDefinitionStatement",
+      mutable: this.mutability(ctx),
+      name: ctx.ID().getText(),
+      sourceloc: this.loc(ctx),
+      datatype: (ctx.datatype() && this.visit(ctx.datatype()!)) || undefined,
+      expr: (ctx.expr() && this.visit(ctx.expr()!)) || undefined,
+    };
+  };
+
+  visitIfStatement = (ctx: IfStatementContext): ASTIfStatement => {
+    if (!ctx._ifExpr) {
+      throw new InternalError("if expression is missing");
+    }
+    if (!ctx._then) {
+      throw new InternalError("then scope is missing");
+    }
+
+    let elseIfs: {
+      condition: ASTExpr;
+      then: ASTScope;
+    }[] = [];
+
+    if (ctx._elseIfExpr.length !== ctx._elseIfThen.length) {
+      throw new InternalError("inconsistent length");
+    }
+
+    for (let i = 0; i < ctx._elseIfExpr.length; i++) {
+      elseIfs.push({
+        condition: this.visit(ctx._elseIfExpr[i]),
+        then: this.visit(ctx._elseIfThen[i]),
+      });
+    }
+
+    let elseBlock: ASTScope | undefined = undefined;
+    if (ctx._elseBlock) {
+      elseBlock = this.visit(ctx._elseBlock);
+    }
+
+    return {
+      variant: "IfStatement",
+      condition: this.visit(ctx._ifExpr),
+      then: this.visit(ctx._then),
+      sourceloc: this.loc(ctx),
+      elseIfs: elseIfs,
+      else: elseBlock,
+    };
+  };
+
+  visitWhileStatement = (ctx: WhileStatementContext): ASTWhileStatement => {
+    return {
+      variant: "WhileStatement",
+      condition: this.visit(ctx.expr()),
+      body: this.visit(ctx.scope()),
+      sourceloc: this.loc(ctx),
+    };
+  };
+
+  visitParenthesisExpr = (ctx: ParenthesisExprContext): ASTParenthesisExpr => {
+    return {
+      variant: "ParenthesisExpr",
+      expr: this.visit(ctx.expr()),
+      sourceloc: this.loc(ctx),
+    };
+  };
+
+  visitLambdaExpr = (ctx: LambdaExprContext): ASTLambdaExpr => {
+    return {
+      variant: "LambdaExpr",
+      lambda: this.visit(ctx.lambda()),
+      sourceloc: this.loc(ctx),
+    };
+  };
+
+  visitConstantExpr = (ctx: ConstantExprContext): ASTConstantExpr => {
+    return {
+      variant: "ConstantExpr",
+      constant: this.visit(ctx.constant()),
+      sourceloc: this.loc(ctx),
+    };
+  };
+
+  visitPostIncrExpr = (ctx: PostIncrExprContext): ASTPostIncrExpr => {
+    return {
+      variant: "PostIncrExpr",
+      expr: this.visit(ctx.expr()),
+      operation: this.incrop(ctx),
+      sourceloc: this.loc(ctx),
+    };
+  };
+
+  visitExprCallExpr = (ctx: ExprCallExprContext): ASTExprCallExpr => {
+    const exprs = ctx.expr().map((e) => this.visit(e));
+    return {
+      variant: "ExprCallExpr",
+      calledExpr: exprs[0],
+      arguments: exprs.slice(1),
+      sourceloc: this.loc(ctx),
+    };
+  };
+
+  visitExprMemberAccess = (
+    ctx: ExprMemberAccessContext,
+  ): ASTExprMemberAccess => {
+    return {
+      variant: "ExprMemberAccess",
+      expr: this.visit(ctx.expr()),
+      member: ctx.ID().getText(),
+      sourceloc: this.loc(ctx),
+    };
+  };
+
+  visitStructInstantiationExpr = (
+    ctx: StructInstantiationExprContext,
+  ): ASTStructInstantiationExpr => {
+    if (ctx.ID().length !== ctx.expr().length) {
+      throw new InternalError("Inconsistent size");
+    }
+    const members: { name: string; value: ASTExpr }[] = [];
+    for (let i = 0; i < ctx.ID().length; i++) {
+      members.push({
+        name: ctx.ID()[i].getText(),
+        value: this.visit(ctx.expr()[i]),
+      });
+    }
+    return {
+      variant: "StructInstantiationExpr",
+      datatype: this.visit(ctx.datatype()),
+      members: members,
+      sourceloc: this.loc(ctx),
+    };
+  };
+
+  visitPreIncrExpr = (ctx: PreIncrExprContext): ASTPreIncrExpr => {
+    return {
+      variant: "PreIncrExpr",
+      expr: this.visit(ctx.expr()),
+      operation: this.incrop(ctx),
+      sourceloc: this.loc(ctx),
+    };
+  };
+
+  visitUnaryExpr = (ctx: UnaryExprContext): ASTUnaryExpr => {
+    return {
+      variant: "UnaryExpr",
+      expr: this.visit(ctx.expr()),
+      operation: this.unaryop(ctx),
+      sourceloc: this.loc(ctx),
+    };
+  };
+
+  visitExplicitCastExpr = (
+    ctx: ExplicitCastExprContext,
+  ): ASTExplicitCastExpr => {
+    return {
+      variant: "ExplicitCastExpr",
+      castedTo: this.visit(ctx.datatype()),
+      expr: this.visit(ctx.expr()),
+      sourceloc: this.loc(ctx),
+    };
+  };
+
+  visitBinaryExpr = (ctx: BinaryExprContext): ASTBinaryExpr => {
+    return {
+      variant: "BinaryExpr",
+      a: this.visit(ctx.expr()[0]),
+      b: this.visit(ctx.expr()[1]),
+      operation: this.binaryop(ctx),
+      sourceloc: this.loc(ctx),
+    };
+  };
+
+  visitExprAssignmentExpr = (
+    ctx: ExprAssignmentExprContext,
+  ): ASTExprAssignmentExpr => {
+    return {
+      variant: "ExprAssignmentExpr",
+      target: this.visit(ctx.expr()[0]),
+      value: this.visit(ctx.expr()[1]),
+      operation: this.assignop(ctx),
+      sourceloc: this.loc(ctx),
+    };
+  };
+
+  visitSymbolValueExpr = (ctx: SymbolValueExprContext): ASTSymbolValueExpr => {
+    const generics: (ASTDatatype | ASTConstant)[] = [];
+    for (let i = 0; i < ctx.genericLiteral().length; i++) {
+      generics.push(this.visit(ctx.genericLiteral()[i]));
+    }
+    return {
+      variant: "SymbolValueExpr",
+      generics: generics,
+      name: ctx.ID().getText(),
+      sourceloc: this.loc(ctx),
+    };
+  };
+
+  visitFunctionDatatype = (
+    ctx: FunctionDatatypeContext,
+  ): ASTFunctionDatatype => {
+    const params = this.visitParams(ctx.params());
+    return {
+      variant: "FunctionDatatype",
+      params: params.params,
+      ellipsis: params.ellipsis,
+      returnType: (ctx.datatype() && this.visit(ctx.datatype()!)) || undefined,
+      sourceloc: this.loc(ctx),
+    };
+  };
+
+  visitNamespaceDefinition = (
+    ctx: NamespaceDefinitionContext,
+  ): ASTNamespaceDefinition => {
+    const names = ctx.ID().map((c) => c.getText());
+    return {
+      variant: "NamespaceDefinition",
+      declarations: ctx.globalDeclaration().map((g) => this.visit(g)),
+      export: Boolean(ctx._export_),
+      names: names,
       sourceloc: this.loc(ctx),
     };
   };

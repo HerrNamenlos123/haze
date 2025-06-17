@@ -35,7 +35,7 @@ export enum EBinaryOperation {
   Subtract,
   LessThan,
   LessEqal,
-  Greater,
+  GreaterThan,
   GreaterEqual,
   Equal,
   Unequal,
@@ -117,6 +117,7 @@ export type ASTFunctionDefinition = {
   export: boolean;
   name: string;
   params: ASTParam[];
+  generics: string[];
   ellipsis: boolean;
   returnType: ASTDatatype;
   funcbody: ASTFuncBody;
@@ -215,7 +216,7 @@ export type ASTConstantExpr = {
 export type ASTPostIncrExpr = {
   variant: "PostIncrExpr";
   expr: ASTExpr;
-  operation: "++" | "--";
+  operation: EIncrOperation;
   sourceloc: SourceLoc;
 };
 
@@ -337,7 +338,7 @@ export type ASTStructDefinition = {
   export: boolean;
   externLanguage: EExternLanguage;
   name: string;
-  genericPlaceholders: string[];
+  generics: string[];
   members: ASTStructMemberDefinition[];
   methods: ASTStructMethodDefinition[];
   sourceloc: SourceLoc;
@@ -349,7 +350,7 @@ export type ASTNamespaceDefinition = {
   variant: "NamespaceDefinition";
   export: boolean;
   names: string[];
-  declarations: ASTGlobalDeclaration;
+  declarations: ASTGlobalDeclaration[];
   sourceloc: SourceLoc;
 };
 

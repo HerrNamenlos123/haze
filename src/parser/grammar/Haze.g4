@@ -53,10 +53,6 @@ globalVariableDef
     : (export='export')? (extern='extern' externLang=externLanguage?)? mutability=('let' | 'const') ID (((':' datatype)? '=' expr) | (':' datatype)) ';'        #GlobalVariableDefinition
     ;
 
-variableCreation
-    : mutability=('let' | 'const') ID (((':' datatype)? '=' expr) | (':' datatype)) ';'        #VariableDefinition
-    ;
-
 // Datatypes
 
 constant
@@ -72,7 +68,7 @@ datatype
     ;
 
 datatypeFragment
-    : ID ('<' generics+=genericLiteral (',' generics+=genericLiteral)* '>')?
+    : ID ('<' genericLiteral (',' genericLiteral)* '>')?
     ;
 
 genericLiteral
@@ -95,10 +91,6 @@ typeDefinition
 
 // Expressions
 
-structmembervalue
-    : '.' ID ':' expr   #StructMemberValue
-    ;
-
 expr
     // https://en.cppreference.com/w/c/language/operator_precedence
     : '(' expr ')'                                                                  #ParenthesisExpr
@@ -111,7 +103,7 @@ expr
     | expr '(' (expr (',' expr)*)? ')'                                              #ExprCallExpr
     // <- Array Subscripting here: expr[]
     | expr '.' ID                                                                   #ExprMemberAccess
-    | datatype '{' structmembervalue? (',' structmembervalue)* ','? '}'             #StructInstantiationExpr
+    | datatype '{' ('.' ID ':' expr)? (',' ('.' ID ':' expr))* ','? '}'             #StructInstantiationExpr
 
     // Part 2: Right to left
     | <assoc=right> op=('++' | '--') expr                                           #PreIncrExpr
@@ -120,19 +112,19 @@ expr
     | <assoc=right> expr 'as' datatype                                              #ExplicitCastExpr
 
     // Part 3: Left to right
-    | expr ('*'|'/'|'%') expr                                                       #BinaryExpr
-    | expr ('+'|'-') expr                                                           #BinaryExpr
+    | expr op+=('*'|'/'|'%') expr                                                   #BinaryExpr
+    | expr op+=('+'|'-') expr                                                       #BinaryExpr
     // | expr ('<<'|'>>') expr                                                      #BinaryExpr
-    | expr ('<'|'>'|'<='|'>=') expr                                                 #BinaryExpr
-    | expr ('=='|'!='|'is'|('is' 'not')) expr                                       #BinaryExpr
+    | expr op+=('<'|'>'|'<='|'>=') expr                                             #BinaryExpr
+    | expr (op+='=='|op+='!='|op+='is'|(op+='is' op+='not')) expr                   #BinaryExpr
     // | expr ('&') expr                                                            #BinaryExpr
     // | expr ('^') expr                                                            #BinaryExpr
     // | expr ('|') expr                                                            #BinaryExpr
-    | expr ('and'|'or') expr                                                        #BinaryExpr
+    | expr op+=('and'|'or') expr                                                    #BinaryExpr
     // <- ternary
     | expr op=('='|'+='|'-='|'*='|'/='|'%=') expr                                   #ExprAssignmentExpr
 
-    | ID ('<' (datatype | constant) (',' (datatype | constant))* '>')?              #SymbolValueExpr
+    | ID ('<' genericLiteral (',' genericLiteral)* '>')?                            #SymbolValueExpr
     ;
 
 // Statements & Conditionals
@@ -141,8 +133,8 @@ statement
     : '__c__' '(' STRING_LITERAL ')' ';'                        #CInlineStatement
     | expr ';'                                                  #ExprStatement
     | 'return' expr? ';'                                        #ReturnStatement
-    | variableCreation                                          #VariableCreationStatement
-    | 'if' ifExpr=expr then=scope ('else' 'if' elseIfExpr=expr elseIfThen=scope)* ('else' elseBlock=scope)?  #IfStatement
+    | mutability=('let' | 'const') ID (((':' datatype)? '=' expr) | (':' datatype)) ';'       #VariableCreationStatement
+    | 'if' ifExpr=expr then=scope ('else' 'if' elseIfExpr+=expr elseIfThen+=scope)* ('else' elseBlock=scope)? #IfStatement
     | 'while' expr scope                                        #WhileStatement
     ;
 
