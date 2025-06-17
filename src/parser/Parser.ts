@@ -19,6 +19,7 @@ import {
   type ASTDatatype,
   type ASTExplicitCastExpr,
   type ASTExpr,
+  type ASTExprAsFuncbody,
   type ASTExprAssignmentExpr,
   type ASTExprCallExpr,
   type ASTExprMemberAccess,
@@ -50,7 +51,7 @@ import {
   type ASTUnaryExpr,
   type ASTVariableDefinitionStatement,
   type ASTWhileStatement,
-} from "../shared/AST/ASTRoot";
+} from "../shared/AST";
 import { HazeLexer } from "./grammar/autogen/HazeLexer";
 import {
   BinaryExprContext,
@@ -60,6 +61,7 @@ import {
   ConstantExprContext,
   DatatypeFragmentContext,
   ExplicitCastExprContext,
+  ExprAsFuncbodyContext,
   ExprAssignmentExprContext,
   ExprCallExprContext,
   ExprMemberAccessContext,
@@ -158,10 +160,7 @@ export namespace Parser {
 
   function transformAST(ctx: ProgContext, filename: string): ASTRoot {
     const transformer = new ASTTransformer(filename);
-    const ast: ASTRoot = transformer.visit(ctx);
-    // console.log(ast);
-    console.log(JSON.stringify(ast, undefined, 4));
-    return ast;
+    return transformer.visit(ctx);
   }
 
   export async function parseFileToAST(filename: string) {
@@ -320,7 +319,7 @@ class ASTTransformer extends HazeVisitor<any> {
   ): ASTCInjectDirective => {
     return {
       variant: "CInjectDirective",
-      code: ctx.STRING_LITERAL().getText(),
+      code: ctx.STRING_LITERAL().getText().slice(1, -1),
       sourceloc: this.loc(ctx),
     };
   };
@@ -479,6 +478,13 @@ class ASTTransformer extends HazeVisitor<any> {
     };
   };
 
+  visitExprAsFuncbody = (ctx: ExprAsFuncbodyContext): ASTExprAsFuncbody => {
+    return {
+      variant: "ExprAsFuncBody",
+      expr: this.visit(ctx.expr()),
+    };
+  };
+
   visitFunctionDefinition = (
     ctx: FunctionDefinitionContext,
   ): ASTFunctionDefinition => {
@@ -534,10 +540,13 @@ class ASTTransformer extends HazeVisitor<any> {
   };
 
   visitStructMethod = (ctx: StructMethodContext): ASTStructMethodDefinition => {
+    const names = ctx.ID().map((c) => c.getText());
     const params = this.visitParams(ctx.params());
     return {
       variant: "StructMethod",
       params: params.params,
+      name: names[0],
+      generics: names.slice(1),
       ellipsis: params.ellipsis,
       returnType: (ctx.datatype() && this.visit(ctx.datatype()!)) || undefined,
       funcbody: (ctx.funcbody() && this.visit(ctx.funcbody()!)) || undefined,
@@ -830,12 +839,26 @@ class ASTTransformer extends HazeVisitor<any> {
     ctx: NamespaceDefinitionContext,
   ): ASTNamespaceDefinition => {
     const names = ctx.ID().map((c) => c.getText());
-    return {
+    const namesReversed = names.reverse();
+
+    let currentNamespace: ASTNamespaceDefinition = {
       variant: "NamespaceDefinition",
       declarations: ctx.globalDeclaration().map((g) => this.visit(g)),
       export: Boolean(ctx._export_),
-      names: names,
+      name: namesReversed[0],
       sourceloc: this.loc(ctx),
     };
+
+    for (const name of namesReversed.slice(1)) {
+      currentNamespace = {
+        variant: "NamespaceDefinition",
+        declarations: [currentNamespace],
+        export: Boolean(ctx._export_),
+        name: name,
+        sourceloc: this.loc(ctx),
+      };
+    }
+
+    return currentNamespace;
   };
 }

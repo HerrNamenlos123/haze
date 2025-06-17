@@ -4,7 +4,7 @@ import {
   type BaseDatatype,
   type BaseSymbol,
   type LiteralUnits,
-} from "./common";
+} from "./shared/common";
 import {
   CompilerError,
   getCallerLocation,
@@ -31,14 +31,14 @@ import {
 import type { HazeVisitor } from "./parser/grammar/autogen/HazeVisitor";
 import type { Module } from "./Module";
 import type { ParsedDatatype, ParsedSymbol } from "./ParsedTypes";
-import { ResolvedScope } from "./Scope";
+import { ResolvedScope } from "./shared/CollectionScope";
 import type {
   Statement,
   VariableDeclarationStatement,
   VariableDefinitionStatement,
 } from "./Statement";
 import * as _ from "lodash";
-import type { SymbolId } from "./store";
+import type { SymbolId } from "./shared/store";
 
 export const RESERVED_VARIABLE_NAMES = ["this", "ctx", "__returnval__"];
 export const RESERVED_STRUCT_NAMES = ["RawPtr"]; // "Context"

@@ -1,0 +1,65 @@
+inject "#include <stdio.h>";
+
+extern "C" printf(fmt: String, ...): none;
+
+namespace Core.Math {
+    export func square(x: i32): i32 => {
+        return x * x;
+    }
+
+    export func max<T: Ord>(a: T, b: T): T => {
+        return a > b ? a : b;
+    }
+}
+
+namespace Core.Utils {
+    export struct Pair<T, U> {
+        first: T;
+        second: U;
+
+        print() => {
+            printf("First: %d, Second: %d\n", this.first, this.second);
+        }
+    }
+
+    export func foreach<T>(arr: Array<T>, callback: (item: T) => none): none => {
+        let i: i32 = 0;
+        while (i < arr.length) {
+            callback(arr[i]);
+            i += 1;
+        }
+    }
+}
+
+main() => {
+    let a: i32 = 3;
+    let b: i32 = 5;
+    let result = Core.Math.square(a);
+    printf("Square of %d is %d\n", a, result);
+
+    let maxVal = Core.Math.max(b, a);
+    printf("Max value: %d\n", maxVal);
+
+    let p = Core.Utils.Pair<i32, i32> {
+        .first: 10,
+        .second: 20
+    };
+    p.print();
+
+    let values: Array<i32> = [1, 2, 3, 4, 5];
+
+    Core.Utils.foreach(values, (item: i32) => {
+        if (item % 2 == 0) {
+            printf("%d is even\n", item);
+        }
+        else {
+            printf("%d is odd\n", item);
+        }
+    });
+
+    let sum: i32 = 0;
+    Core.Utils.foreach(values, (item: i32) => {
+        sum += item;
+    });
+    printf("Sum: %d\n", sum);
+}

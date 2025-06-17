@@ -1,7 +1,7 @@
 import type { ParserRuleContext } from "antlr4ng";
 import type { Symbol, VariableSymbol } from "./Symbol";
 import type { Expression } from "./Expression";
-import type { ResolvedScope } from "./Scope";
+import type { ResolvedScope } from "./shared/CollectionScope";
 import type {
   VariableDeclarationContext,
   VariableDefinitionContext,

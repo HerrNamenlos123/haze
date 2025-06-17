@@ -13,6 +13,10 @@ export extern "C" const M_PI: f32;
 
 struct Test {
     value: i32;
+
+    print<T>(): T => {
+        let bar = 0;
+    }
 }
 
 extern "C" struct timeval_t {
@@ -26,6 +30,7 @@ foo(bar: i32) => {
 
 bar<T>(bar: Foo<T, T>): Foo<T, T> => {
     bar.print(123);
+    let baz: i8;
     return bar;
 }
 
@@ -105,14 +110,14 @@ namespace Outer.Inner {
             }
 
             // Lambdas
-            const a = (callback: (number: i32) => i32) => {
+            const l = (callback: (number: i32) => i32) => {
                 callback(8);
             };
-            a((number: i32): i32 => {
+            l((number: i32): i32 => {
                 print(number);
             });
 
-            const a: Array<187>;
+            const arr: Array<187>;
 
             return Foo<i8, i32> {
                 .value: Box<i8> {},
@@ -120,4 +125,16 @@ namespace Outer.Inner {
             };
         }
     }
+}
+
+namespace A {
+    namespace B {
+        foo(): none;
+    }
+}
+namespace A {
+    foo2(): none;
+}
+namespace A.B.C {
+    foo3(): none;
 }

@@ -44,8 +44,9 @@ param: ID ':' datatype;
 params: (param (',' param)* (',' ellipsis)?)? | ellipsis;
 ellipsis: '...';
 
-funcbody: '=>' (scope | expr);
+funcbody: '=>' (scope | exprAsFuncbody);
 scope: '{' (statement)* '}';
+exprAsFuncbody: expr;
 
 // Variables
 

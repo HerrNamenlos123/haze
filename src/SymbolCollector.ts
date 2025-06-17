@@ -21,7 +21,7 @@ import {
 import type { Module } from "./Module";
 import { HazeVisitor } from "./parser/grammar/autogen/HazeVisitor";
 import { CompilerError, ImpossibleSituation, InternalError } from "./Errors";
-import { ResolvedScope } from "./Scope";
+import { ResolvedScope } from "./shared/CollectionScope";
 import { Interval, type ParserRuleContext } from "antlr4ng";
 import {
   collectFunction,
@@ -40,7 +40,11 @@ import {
 import type { Statement } from "./Statement";
 import type { Parser } from "./parser";
 import type { ParsedDatatype, ParsedSymbol } from "./ParsedTypes";
-import { ELinkage, EVariableContext, EVariableMutability } from "./common";
+import {
+  ELinkage,
+  EVariableContext,
+  EVariableMutability,
+} from "./shared/common";
 
 export class SymbolCollector extends HazeVisitor<any> {
   private module: Module;

@@ -5,6 +5,10 @@ import { GeneralError } from "./Errors";
 import { join } from "path";
 import path from "node:path";
 import { Parser } from "./parser/Parser";
+import {
+  CollectSymbols,
+  PrettyPrintCollected,
+} from "./SymbolCollection/SymbolCollection";
 
 async function getFile(url: string, outfile: string) {
   const response = await fetch(url);
@@ -62,7 +66,18 @@ async function main() {
     args.command === "exec"
   ) {
     try {
-      await Parser.parseFileToAST("src/parser/ParsingTest.hz");
+      const filename = "src/parser/ParsingTest.hz";
+      const ast = await Parser.parseFileToAST(filename);
+      if (ast) {
+        // console.log(JSON.stringify(ast[0].funcbody, undefined, 4));
+        const cr = CollectSymbols(ast, { filename, line: 0, column: 0 });
+        // console.log(cr.globalScope);
+        // console.log(
+        //   cr.globalScope.symbolTable.lookupSymbol("A", cr.globalScope.location),
+        // );
+        PrettyPrintCollected(cr);
+      }
+      // console.log(ast);
       // const project = new ProjectCompiler();
       // if (!(await project.build(args.filename))) {
       //   process.exit(1);

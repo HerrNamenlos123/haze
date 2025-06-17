@@ -7,7 +7,7 @@ import {
   InternalError,
   SourceLoc,
 } from "./Errors";
-import { ResolvedScope } from "./Scope";
+import { ResolvedScope } from "./shared/CollectionScope";
 import { isDeeplyEqual } from "./deep-equal";
 import type {
   VariableDeclarationStatement,
@@ -15,7 +15,7 @@ import type {
 } from "./Statement";
 import { SymbolCollector } from "./SymbolCollector";
 import type { ModuleConfig } from "./Config";
-import { ParsedStore } from "./store";
+import { ParsedStore } from "./shared/store";
 import type { ParsedDatatype, ParsedSymbol } from "./ParsedTypes";
 
 export class Module {

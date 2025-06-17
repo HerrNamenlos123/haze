@@ -1,5 +1,5 @@
-import type { SymbolId } from "./store";
-import type { BaseDatatype, BaseSymbol } from "./common";
+import type { SymbolId } from "./shared/store";
+import type { BaseDatatype, BaseSymbol } from "./shared/common";
 
 export namespace ParsedDatatype {
   export type FunctionDatatype = {

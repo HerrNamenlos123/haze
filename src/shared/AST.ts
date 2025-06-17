@@ -1,4 +1,5 @@
-import type { SourceLoc } from "../../Errors";
+import type { SourceLoc } from "../Errors";
+import type { Collect } from "./CollectSymbols";
 
 export enum EExternLanguage {
   None,
@@ -119,7 +120,7 @@ export type ASTFunctionDefinition = {
   params: ASTParam[];
   generics: string[];
   ellipsis: boolean;
-  returnType: ASTDatatype;
+  returnType?: ASTDatatype;
   funcbody: ASTFuncBody;
   sourceloc: SourceLoc;
 };
@@ -159,6 +160,7 @@ export type ASTVariableDefinitionStatement = {
   name: string;
   datatype?: ASTDatatype;
   expr?: ASTExpr;
+  isParameter?: boolean;
   sourceloc: SourceLoc;
 };
 
@@ -193,6 +195,7 @@ export type ASTScope = {
   variant: "Scope";
   statements: ASTStatement[];
   sourceloc: SourceLoc;
+  scope?: Collect.Scope;
 };
 
 export type ASTParenthesisExpr = {
@@ -309,7 +312,13 @@ export type ASTLambda = {
   sourceloc: SourceLoc;
 };
 
-export type ASTFuncBody = ASTScope | ASTExpr;
+export type ASTExprAsFuncbody = {
+  variant: "ExprAsFuncBody";
+  expr: ASTExpr;
+  scope?: Collect.Scope;
+};
+
+export type ASTFuncBody = ASTScope | ASTExprAsFuncbody;
 
 export type ASTCInjectDirective = {
   variant: "CInjectDirective";
@@ -327,6 +336,8 @@ export type ASTStructMemberDefinition = {
 export type ASTStructMethodDefinition = {
   variant: "StructMethod";
   params: ASTParam[];
+  name: string;
+  generics: string[];
   ellipsis: boolean;
   returnType?: ASTDatatype;
   funcbody: ASTFuncBody;
@@ -349,9 +360,10 @@ export type ASTTypeDefinition = ASTStructDefinition;
 export type ASTNamespaceDefinition = {
   variant: "NamespaceDefinition";
   export: boolean;
-  names: string[];
+  name: string;
   declarations: ASTGlobalDeclaration[];
   sourceloc: SourceLoc;
+  scope?: Collect.Scope;
 };
 
 export type ASTGlobalDeclaration =
