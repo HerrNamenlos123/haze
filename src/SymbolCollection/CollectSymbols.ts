@@ -10,8 +10,6 @@ import type {
   EExternLanguage,
   ELiteralUnit,
 } from "../shared/AST";
-import type { EVariableContext, EVariableMutability } from "../shared/common";
-import type { ID } from "../shared/store";
 
 export type CollectResult = {
   globalScope: Collect.Scope;
@@ -19,61 +17,6 @@ export type CollectResult = {
 };
 
 export namespace Collect {
-  export type VariableSymbol = {
-    variant: "Variable";
-    name: string;
-    type: ID;
-    variableType: EVariableMutability;
-    variableContext: EVariableContext;
-    isExported: boolean;
-    externLanguage: EExternLanguage;
-    sourceloc: SourceLoc;
-    parentSymbol?: ID;
-  };
-
-  export type GenericParameterSymbol = {
-    variant: "GenericParameter";
-    name: string;
-    visibleName: string;
-    sourceloc: SourceLoc;
-    parentSymbol?: ID;
-  };
-
-  export type DatatypeSymbol = {
-    variant: "Datatype";
-    name: string;
-    type: ID;
-    definedInScope: ID;
-    isExported: boolean;
-    sourceloc: SourceLoc;
-    parentSymbol?: ID;
-  };
-
-  export type ConstantSymbol = {
-    variant: "Constant";
-    constant:
-      | {
-          variant: "String";
-          type: ID;
-          value: string;
-          location: SourceLoc;
-        }
-      | {
-          variant: "Boolean";
-          type: ID;
-          value: boolean;
-          location: SourceLoc;
-        }
-      | {
-          variant: "Literal";
-          type: ID;
-          value: number;
-          unit?: ELiteralUnit;
-          location: SourceLoc;
-        };
-    location: SourceLoc;
-  };
-
   export type Symbol =
     | ASTFunctionDeclaration
     | ASTFunctionDefinition
@@ -129,7 +72,7 @@ export namespace Collect {
     public symbolTable: SymbolTable;
 
     constructor(
-      public location: SourceLoc,
+      public sourceloc: SourceLoc,
       public parentScope?: Scope,
     ) {
       this.symbolTable = new SymbolTable(parentScope?.symbolTable);

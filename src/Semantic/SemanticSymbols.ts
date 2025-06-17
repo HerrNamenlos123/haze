@@ -1,0 +1,457 @@
+import type { SymbolTable } from "typescript";
+import { CompilerError, InternalError, type SourceLoc } from "../Errors";
+import type {
+  ASTStatement,
+  EExternLanguage,
+  ELiteralUnit,
+} from "../shared/AST";
+import {
+  primitiveToString,
+  type EMethodType,
+  type EPrimitive,
+  type EVariableContext,
+} from "../shared/common";
+import { makeSymbolId, makeTypeId, type ID } from "../shared/store";
+
+export type SemanticResult = {
+  symbolTable: Semantic.SymbolTable;
+  typeTable: Semantic.TypeTable;
+};
+
+// export class ParsedStore extends BaseStore {
+//   globalScope: ResolvedScope;
+
+//   private scopes: Map<ScopeId, ResolvedScope> = new Map();
+//   private symbols: Map<SymbolId, ParsedSymbol.Symbol> = new Map();
+//   private datatypes: Map<TypeId, ParsedDatatype.Datatype> = new Map();
+
+//   constructor(module: Module) {
+//     super(module);
+
+//     this.globalScope = this.createScope(new SourceLoc("global", 0, 0));
+//     this.createPrimitiveTypeAndSymbol(EPrimitive.none);
+//     this.createPrimitiveTypeAndSymbol(EPrimitive.unknown);
+//     this.createPrimitiveTypeAndSymbol(EPrimitive.stringview);
+//     this.createPrimitiveTypeAndSymbol(EPrimitive.boolean);
+//     this.createPrimitiveTypeAndSymbol(EPrimitive.booleanptr);
+//     this.createPrimitiveTypeAndSymbol(EPrimitive.u8);
+//     this.createPrimitiveTypeAndSymbol(EPrimitive.u16);
+//     this.createPrimitiveTypeAndSymbol(EPrimitive.u32);
+//     this.createPrimitiveTypeAndSymbol(EPrimitive.u64);
+//     this.createPrimitiveTypeAndSymbol(EPrimitive.i8);
+//     this.createPrimitiveTypeAndSymbol(EPrimitive.i16);
+//     this.createPrimitiveTypeAndSymbol(EPrimitive.i32);
+//     this.createPrimitiveTypeAndSymbol(EPrimitive.i64);
+//     this.createPrimitiveTypeAndSymbol(EPrimitive.f32);
+//     this.createPrimitiveTypeAndSymbol(EPrimitive.f64);
+//   }
+
+//   getSymbol(id: SymbolId) {
+//     const dt = this.symbols.get(id);
+//     if (!dt) {
+//       throw new InternalError(
+//         `Symbol with id ${id} is not known to the compiler`,
+//       );
+//     }
+//     return dt;
+//   }
+
+//   getScope(id: ScopeId) {
+//     const dt = this.scopes.get(id);
+//     if (!dt) {
+//       throw new InternalError(
+//         `Scope with id ${id} is not known to the compiler`,
+//       );
+//     }
+//     return dt;
+//   }
+
+//   getType(id: TypeId) {
+//     const dt = this.datatypes.get(id);
+//     if (!dt) {
+//       throw new InternalError(
+//         `Datatype with id ${id} is not known to the compiler`,
+//       );
+//     }
+//     return dt;
+//   }
+
+//   createScope(location: SourceLoc, parentScope?: ScopeId) {
+//     const id = this.makeScopeId();
+//     return new ResolvedScope(id, location, parentScope);
+//   }
+
+//   createSymbol<T extends ParsedSymbol.Symbol>(fn: (id: SymbolId) => T) {
+//     const id = this.makeSymbolId();
+//     const symbol = fn(id);
+//     this.symbols.set(id, symbol);
+//     return symbol;
+//   }
+
+//   createDatatype<T extends ParsedDatatype.Datatype>(fn: (id: TypeId) => T) {
+//     const id = this.makeTypeId();
+//     const type = fn(id);
+//     this.datatypes.set(id, type);
+//     return type;
+//   }
+
+//   private createPrimitiveTypeAndSymbol(primitive: EPrimitive) {
+//     const dt = this.createDatatype((id) => ({
+//       id,
+//       variant: "Primitive",
+//       primitive: primitive,
+//     }));
+//     this.createSymbol((id) => ({
+//       id,
+//       variant: "Datatype",
+//       name: primitiveToString(dt),
+//       type: dt.id,
+//       definedInScope: this.globalScope.id,
+//       isExported: false,
+//       location: this.globalScope.location,
+//     }));
+//   }
+// }
+
+// export type BaseDatatype = {
+//   id: ID;
+// };
+
+// export type FunctionDatatype = {
+//   variant: "Function";
+//   generics: ID[];
+//   functionParameters: ID[];
+//   functionReturnValue: ID;
+//   vararg: boolean;
+// } & BaseDatatype;
+
+// export type StructDatatype = {
+//   variant: "Struct";
+//   name: string;
+//   generics: ID[];
+//   linkage: ELinkage;
+//   members: ID[];
+//   methods: ID[];
+//   parentSymbol?: ID;
+// } & BaseDatatype;
+
+// export type RawPointerDatatype = {
+//   variant: "RawPointer";
+//   pointee: ID;
+// } & BaseDatatype;
+
+// export type PrimitiveDatatype = {
+//   variant: "Primitive";
+//   primitive: EPrimitive;
+// } & BaseDatatype;
+
+// export type NamespaceDatatype = {
+//   variant: "Namespace";
+//   name: string;
+//   symbolsScope: ID;
+// } & BaseDatatype;
+
+// export type Datatype =
+//   | FunctionDatatype
+//   | StructDatatype
+//   | RawPointerDatatype
+//   | PrimitiveDatatype
+//   | NamespaceDatatype;
+
+// export type DatatypeVariants =
+//   | FunctionDatatype["variant"]
+//   | StructDatatype["variant"]
+//   | RawPointerDatatype["variant"]
+//   | PrimitiveDatatype["variant"]
+//   | NamespaceDatatype["variant"];
+
+export namespace Semantic {
+  export type FunctionDatatype = {
+    id?: ID;
+    variant: "Function";
+    generics: ID[];
+    functionParameters: ID[];
+    functionReturnValue: ID;
+    vararg: boolean;
+  };
+
+  export type StructDatatype = {
+    id?: ID;
+    variant: "Struct";
+    name: string;
+    genericSymbols: ID[];
+    externLanguage: EExternLanguage;
+    members: ID[];
+    methods: ID[];
+    // parentSymbol?: ID;
+  };
+
+  //   export type RawPointerDatatype = {
+  //     id: ID;
+  //     variant: "RawPointer";
+  //     pointee: ID;
+  //   };
+
+  export type PrimitiveDatatype = {
+    id?: ID;
+    variant: "Primitive";
+    primitive: EPrimitive;
+  };
+
+  //   export type NamespaceDatatype = {
+  //     id: ID;
+  //     variant: "Namespace";
+  //     name: string;
+  //     symbolsScope: ID;
+  //   };
+
+  export type Datatype =
+    | FunctionDatatype
+    | StructDatatype
+    //   | RawPointerDatatype
+    | PrimitiveDatatype;
+  //   | NamespaceDatatype;
+
+  //   export type DatatypeVariants =
+  //     | FunctionDatatype["variant"]
+  //     | StructDatatype["variant"]
+  //     | RawPointerDatatype["variant"]
+  //     | PrimitiveDatatype["variant"]
+  //     | NamespaceDatatype["variant"];
+
+  export type VariableSymbol = {
+    id?: ID;
+    variant: "Variable";
+    name: string;
+    type: ID;
+    memberOfType?: ID;
+    mutable: boolean;
+    export: boolean;
+    externLanguage: EExternLanguage;
+    sourceLoc: SourceLoc;
+  };
+
+  export type GenericParameterSymbol = {
+    id?: ID;
+    variant: "GenericParameter";
+    name: string;
+    sourceLoc: SourceLoc;
+    belongsToType: ID;
+  };
+
+  export type FunctionDefinitionSymbol = {
+    id?: ID;
+    variant: "FunctionDefinition";
+    name: string;
+    namespacePath: string[];
+    type: ID;
+    externLanguage: EExternLanguage;
+    scope: Semantic.Scope;
+    export: boolean;
+    method: EMethodType;
+    sourceloc: SourceLoc;
+  };
+
+  export type FunctionDeclarationSymbol = {
+    id?: ID;
+    variant: "FunctionDeclaration";
+    name: string;
+    namespacePath: string[];
+    type: ID;
+    externLanguage: EExternLanguage;
+    export: boolean;
+    method: EMethodType;
+    sourceloc: SourceLoc;
+  };
+
+  export type DatatypeSymbol = {
+    id?: ID;
+    variant: "Datatype";
+    name: string;
+    type: ID;
+    export: boolean;
+    sourceloc: SourceLoc;
+  };
+
+  //   export type ConstantSymbol = {
+  //     id: ID;
+  //     variant: "Constant";
+  //     constant:
+  //       | {
+  //           variant: "String";
+  //           type: ID;
+  //           value: string;
+  //           location: SourceLoc;
+  //         }
+  //       | {
+  //           variant: "Boolean";
+  //           type: ID;
+  //           value: boolean;
+  //           location: SourceLoc;
+  //         }
+  //       | {
+  //           variant: "Literal";
+  //           type: ID;
+  //           value: number;
+  //           unit?: ELiteralUnit;
+  //           location: SourceLoc;
+  //         };
+  //     location: SourceLoc;
+  //   };
+
+  export type Symbol =
+    | VariableSymbol
+    | GenericParameterSymbol
+    | FunctionDefinitionSymbol
+    | FunctionDeclarationSymbol
+    | DatatypeSymbol;
+  // | ConstantSymbol
+
+  export type InlineCStatement = {
+    id: ID;
+    value: string;
+    sourceloc: SourceLoc;
+  };
+
+  export type Statement = InlineCStatement;
+
+  export class SymbolTable {
+    symbols: Map<ID, Symbol> = new Map();
+
+    constructor() {}
+
+    defineSymbol(symbol: Symbol) {
+      if (this.tryLookupSymbol(symbol.name)) {
+        throw new InternalError(
+          `Symbol '${symbol.name}' already exists in symbol table`,
+        );
+      }
+      symbol.id = makeSymbolId();
+      this.symbols.set(symbol.id, symbol);
+      return symbol.id;
+    }
+
+    makeSymbolAvailable(symbol: Symbol) {
+      if (this.findSymbol(symbol)) {
+        return symbol.id!;
+      } else {
+        return this.defineSymbol(symbol);
+      }
+    }
+
+    findSymbol(symbol: Symbol) {
+      switch (symbol.variant) {
+        case "Datatype":
+          return [...this.symbols.values()].find(
+            (s) =>
+              s.variant === "Datatype" &&
+              s.type === symbol.type &&
+              s.export === symbol.export &&
+              s.name === symbol.name,
+          );
+
+        case "Variable":
+          return [...this.symbols.values()].find(
+            (s) =>
+              s.variant === "Variable" &&
+              s.name === symbol.name &&
+              s.memberOfType === symbol.memberOfType,
+          );
+
+        default:
+          throw new InternalError("Unexpected symbol type");
+      }
+    }
+
+    tryLookupSymbol(name: string): Symbol | undefined {
+      const symbol = [...this.symbols.values()].find(
+        (s) => "name" in s && s.name === name,
+      );
+      if (symbol) {
+        return symbol;
+      }
+      return undefined;
+    }
+
+    lookupSymbol(name: string, loc: SourceLoc): Symbol {
+      const symbol = this.tryLookupSymbol(name);
+      if (symbol) {
+        return symbol;
+      }
+      throw new CompilerError(
+        `Symbol '${name}' was not declared in this scope`,
+        loc,
+      );
+    }
+  }
+
+  export class TypeTable {
+    datatypes: Map<ID, Datatype> = new Map();
+
+    constructor() {}
+
+    defineDatatype(datatype: Datatype) {
+      if (this.exists(datatype)) {
+        throw new InternalError(`Symbol already exists in symbol table`);
+      }
+      datatype.id = makeTypeId();
+      this.datatypes.set(datatype.id, datatype);
+      return datatype.id;
+    }
+
+    exists(datatype: Datatype) {
+      return Boolean(this.findDatatype(datatype));
+    }
+
+    findDatatype(datatype: Datatype) {
+      switch (datatype.variant) {
+        case "Function":
+          return [...this.datatypes.values()].find(
+            (f) =>
+              f.variant === "Function" &&
+              f.functionParameters === datatype.functionParameters &&
+              f.functionReturnValue === datatype.functionReturnValue &&
+              f.generics === datatype.generics &&
+              f.vararg === datatype.vararg,
+          );
+
+        case "Primitive":
+          return [...this.datatypes.values()].find(
+            (d) =>
+              d.variant === "Primitive" && d.primitive === datatype.primitive,
+          );
+
+        default:
+          throw new InternalError("Unexpected symbol type");
+      }
+    }
+
+    makeDatatypeAvailable(datatype: Datatype) {
+      const dt = this.findDatatype(datatype);
+      if (dt) {
+        return dt.id!;
+      } else {
+        return this.defineDatatype(datatype);
+      }
+    }
+
+    lookupByName(name: string): Datatype | undefined {
+      const symbol = [...this.datatypes.values()].find(
+        (s) => "name" in s && s.name === name,
+      );
+      if (symbol) {
+        return symbol;
+      }
+      return undefined;
+    }
+  }
+
+  export class Scope {
+    public statements: Semantic.Statement[] = [];
+    public symbolTable: SymbolTable;
+
+    constructor(public location: SourceLoc) {
+      this.symbolTable = new SymbolTable();
+    }
+  }
+}

@@ -1,0 +1,16 @@
+namespace A.B {
+    export struct Box<T> {
+        value: T;
+
+        get(): T => {
+            return this.value;
+        }
+    }
+}
+
+namespace Main {
+    main(): none => {
+        let b = A.B.Box<i32> { .value: 42 };
+        let v = b.get();
+    }
+}

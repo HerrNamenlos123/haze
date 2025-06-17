@@ -1,87 +1,8 @@
-import {
-  BooleanConstantContext,
-  CdefinitiondeclContext,
-  CommonDatatypeContext,
-  FuncdeclContext,
-  FunctionDatatypeContext,
-  GenericsvalueContext,
-  LiteralConstantContext,
-  NamedfuncContext,
-  NamespaceContext,
-  ParamsContext,
-  StringConstantContext,
-  StructDeclContext,
-  StructMemberContext,
-  StructMethodContext,
-  StructUnionFieldsContext,
-  VariableDeclarationContext,
-  VariableDefinitionContext,
-  type ParamContext,
-} from "./parser/grammar/autogen/HazeParser";
-import type { Module } from "./Module";
-import { HazeVisitor } from "./parser/grammar/autogen/HazeVisitor";
-import { CompilerError, ImpossibleSituation, InternalError } from "./Errors";
-import { ResolvedScope } from "./shared/CollectionScope";
-import { Interval, type ParserRuleContext } from "antlr4ng";
-import {
-  collectFunction,
-  collectVariableStatement,
-  datatypeSymbolUsed,
-  mangleSymbol,
-  RESERVED_STRUCT_NAMES,
-  visitBooleanConstantImpl,
-  visitCommonDatatypeImpl,
-  visitLiteralConstantImpl,
-  visitParam,
-  visitParams,
-  visitStringConstantImpl,
-  type ParamPack,
-} from "./utils";
-import type { Statement } from "./Statement";
-import type { Parser } from "./parser";
-import type { ParsedDatatype, ParsedSymbol } from "./ParsedTypes";
-import {
-  ELinkage,
-  EVariableContext,
-  EVariableMutability,
-} from "./shared/common";
-
 export class SymbolCollector extends HazeVisitor<any> {
-  private module: Module;
-  private parentSymbolStack: ParsedSymbol.Symbol[];
-  private parser?: Parser;
-
-  constructor(module: Module) {
-    super();
-    this.module = module;
-    this.parentSymbolStack = [];
-  }
-
-  collect = (ctx: ParserRuleContext, parser: Parser, filename: string) => {
-    this.module.filename = filename;
-    this.parser = parser;
-    this.visit(ctx);
-    this.parser = undefined;
-    this.module.filename = undefined;
-  };
-
-  visitParam = (ctx: ParamContext): [string, ParsedDatatype.Datatype] => {
-    return visitParam(this, ctx);
-  };
-
-  visitParams = (ctx: ParamsContext): ParamPack => {
-    return visitParams(this, ctx);
-  };
-
   visitCommonDatatype = (
     ctx: CommonDatatypeContext,
   ): ParsedSymbol.DatatypeSymbol => {
     return visitCommonDatatypeImpl(this, this.module, ctx);
-  };
-
-  visitCdefinitiondecl = (ctx: CdefinitiondeclContext): void => {
-    const text = JSON.parse(ctx.STRING_LITERAL().getText());
-    this.module.cDefinitionDecl.push(text);
   };
 
   visitFunctionDatatype = (
@@ -106,57 +27,6 @@ export class SymbolCollector extends HazeVisitor<any> {
     return symbol;
   };
 
-  visitFuncdecl = (ctx: FuncdeclContext): void => {
-    // const extern = Boolean(ctx._extern);
-
-    const lang = ctx.externlang()?.getText().slice(1, -1);
-    let functype = ELinkage.Internal;
-    if (lang === "C") {
-      functype = ELinkage.External_C;
-    } else if (functype) {
-      throw new CompilerError(
-        `Extern Language '${lang}' is not supported.`,
-        this.module.location(ctx),
-      );
-    }
-
-    const signature = ctx.ID().map((n) => n.getText());
-    if (signature.length > 1 && functype === ELinkage.External_C) {
-      throw new CompilerError(
-        "Extern C functions cannot be namespaced",
-        this.module.location(ctx),
-      );
-    }
-
-    if (signature.length > 1) {
-      throw new InternalError(
-        "Namespacing for external function is not implemented yet",
-      );
-    }
-
-    const symbol = collectFunction(
-      this.module,
-      this,
-      ctx,
-      signature[0],
-      this.parentSymbolStack[this.parentSymbolStack.length - 1],
-      functype,
-    );
-    if (symbol.isExported) {
-      this.module.exportSymbols.set(mangleSymbol(this.module, symbol), symbol);
-    }
-  };
-
-  visitNamedfunc = (ctx: NamedfuncContext): ParsedSymbol.FunctionSymbol => {
-    return collectFunction(
-      this.module,
-      this,
-      ctx,
-      ctx.ID().getText(),
-      this.parentSymbolStack[this.parentSymbolStack.length - 1],
-    );
-  };
-
   visitStructMember = (ctx: StructMemberContext) => {
     const datatypeSymbol: ParsedSymbol.DatatypeSymbol = this.visit(
       ctx.datatype(),
@@ -174,15 +44,6 @@ export class SymbolCollector extends HazeVisitor<any> {
     }));
     return symbol;
   };
-
-  // visitStructUnionFields = (
-  //   ctx: StructUnionFieldsContext,
-  // ): StructMemberUnion => {
-  //   return {
-  //     variant: "StructMemberUnion",
-  //     symbols: ctx.structcontent().map((n) => this.visit(n)),
-  //   };
-  // };
 
   visitStructDecl = (ctx: StructDeclContext): ParsedSymbol.DatatypeSymbol => {
     const name = ctx.ID(0)!.getText();

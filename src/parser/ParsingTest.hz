@@ -36,7 +36,7 @@ bar<T>(bar: Foo<T, T>): Foo<T, T> => {
 
 namespace Outer.Inner {
     namespace Subspace {
-        extern "C" malloc(size: u64): none;
+        extern malloc(size: u64): none;
         export extern ImGui.Begin(name: String): none;
 
         export struct Foo<T, U> {

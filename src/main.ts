@@ -9,6 +9,7 @@ import {
   CollectSymbols,
   PrettyPrintCollected,
 } from "./SymbolCollection/SymbolCollection";
+import { PrettyPrintAnalyzed, SemanticallyAnalyze } from "./Semantic/Semantic";
 
 async function getFile(url: string, outfile: string) {
   const response = await fetch(url);
@@ -66,7 +67,9 @@ async function main() {
     args.command === "exec"
   ) {
     try {
-      const filename = "src/SymbolCollection/CollectionTest.hz";
+      // const filename = "src/SymbolCollection/CollectionTest.hz";
+      // const filename = "src/parser/ParsingTest.hz";
+      const filename = "src/Semantic/SemanticTest.hz";
       const ast = await Parser.parseFileToAST(filename);
       if (ast) {
         // console.log(JSON.stringify(ast[0].funcbody, undefined, 4));
@@ -76,6 +79,8 @@ async function main() {
         //   cr.globalScope.symbolTable.lookupSymbol("A", cr.globalScope.location),
         // );
         PrettyPrintCollected(cr);
+        const sr = SemanticallyAnalyze(cr.globalScope);
+        PrettyPrintAnalyzed(sr);
       }
       // console.log(ast);
       // const project = new ProjectCompiler();

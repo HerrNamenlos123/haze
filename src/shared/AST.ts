@@ -1,5 +1,7 @@
 import type { SourceLoc } from "../Errors";
 import type { Collect } from "../SymbolCollection/CollectSymbols";
+import type { EMethodType } from "./common";
+import type { ID } from "./store";
 
 export enum EExternLanguage {
   None,
@@ -53,6 +55,10 @@ export enum EAssignmentOperation {
   Modulo,
 }
 
+export type ASTDeferredType = {
+  variant: "Deferred";
+};
+
 export type ASTFunctionDeclaration = {
   variant: "FunctionDeclaration";
   export: boolean;
@@ -61,8 +67,35 @@ export type ASTFunctionDeclaration = {
   namespacePath: string[];
   params: ASTParam[];
   ellipsis: boolean;
-  returnType: ASTDatatype;
+  returnType?: ASTDatatype;
   sourceloc: SourceLoc;
+  _collect: {
+    definedInNamespace?: ASTNamespaceDefinition;
+    definedInStruct?: ASTStructDefinition;
+    definedInScope?: Collect.Scope;
+    namespacePath?: string[];
+    method?: EMethodType;
+  };
+};
+
+export type ASTFunctionDefinition = {
+  variant: "FunctionDefinition";
+  export: boolean;
+  externLanguage: EExternLanguage;
+  name: string;
+  params: ASTParam[];
+  generics: string[];
+  ellipsis: boolean;
+  returnType?: ASTDatatype;
+  funcbody: ASTFuncBody;
+  sourceloc: SourceLoc;
+  _collect: {
+    definedInNamespace?: ASTNamespaceDefinition;
+    definedInStruct?: ASTStructDefinition;
+    definedInScope?: Collect.Scope;
+    namespacePath?: string[];
+    method?: EMethodType;
+  };
 };
 
 export type ASTParam = {
@@ -111,19 +144,10 @@ export type ASTConstant =
   | ASTNumberConstant
   | ASTStringConstant;
 
-export type ASTDatatype = ASTNamedDatatype | ASTFunctionDatatype;
-
-export type ASTFunctionDefinition = {
-  variant: "FunctionDefinition";
-  export: boolean;
-  name: string;
-  params: ASTParam[];
-  generics: string[];
-  ellipsis: boolean;
-  returnType?: ASTDatatype;
-  funcbody: ASTFuncBody;
-  sourceloc: SourceLoc;
-};
+export type ASTDatatype =
+  | ASTNamedDatatype
+  | ASTFunctionDatatype
+  | ASTDeferredType;
 
 export type ASTGlobalVariableDefinition = {
   variant: "GlobalVariableDefinition";
@@ -195,7 +219,9 @@ export type ASTScope = {
   variant: "Scope";
   statements: ASTStatement[];
   sourceloc: SourceLoc;
-  scope?: Collect.Scope;
+  _collect: {
+    scope?: Collect.Scope;
+  };
 };
 
 export type ASTParenthesisExpr = {
@@ -315,7 +341,9 @@ export type ASTLambda = {
 export type ASTExprAsFuncbody = {
   variant: "ExprAsFuncBody";
   expr: ASTExpr;
-  scope?: Collect.Scope;
+  _collect: {
+    scope?: Collect.Scope;
+  };
 };
 
 export type ASTFuncBody = ASTScope | ASTExprAsFuncbody;
@@ -353,6 +381,9 @@ export type ASTStructDefinition = {
   members: ASTStructMemberDefinition[];
   methods: ASTStructMethodDefinition[];
   sourceloc: SourceLoc;
+  _collect: {
+    definedInScope?: Collect.Scope;
+  };
 };
 
 export type ASTTypeDefinition = ASTStructDefinition;
@@ -363,7 +394,9 @@ export type ASTNamespaceDefinition = {
   name: string;
   declarations: ASTGlobalDeclaration[];
   sourceloc: SourceLoc;
-  scope?: Collect.Scope;
+  _collect: {
+    scope?: Collect.Scope;
+  };
 };
 
 export type ASTGlobalDeclaration =

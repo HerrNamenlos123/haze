@@ -38,7 +38,7 @@ cInjectDirective: 'inject' STRING_LITERAL ';';
 functionDeclaration: (export='export')? (extern='extern' externLang=externLanguage?)? (ID '.')* ID '(' params ')' (':' datatype)? ';';
 externLanguage: '"C"';
 
-functionDefinition: (export='export')? ID ('<' ID (',' ID)* '>')? '(' params ')' (':' datatype)? funcbody;
+functionDefinition: (export='export')? (extern='extern' externLang=externLanguage?)?  ID ('<' ID (',' ID)* '>')? '(' params ')' (':' datatype)? funcbody;
 lambda: '(' params ')' (':' datatype)? funcbody;
 param: ID ':' datatype;
 params: (param (',' param)* (',' ellipsis)?)? | ellipsis;

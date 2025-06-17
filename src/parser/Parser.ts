@@ -189,6 +189,7 @@ class ASTTransformer extends HazeVisitor<any> {
     ctx:
       | FunctionDeclarationContext
       | GlobalVariableDefinitionContext
+      | FunctionDefinitionContext
       | StructDefinitionContext,
   ): EExternLanguage {
     if (!Boolean(ctx._extern)) {
@@ -319,7 +320,7 @@ class ASTTransformer extends HazeVisitor<any> {
   ): ASTCInjectDirective => {
     return {
       variant: "CInjectDirective",
-      code: ctx.STRING_LITERAL().getText().slice(1, -1),
+      code: JSON.parse(ctx.STRING_LITERAL().getText()),
       sourceloc: this.loc(ctx),
     };
   };
@@ -336,7 +337,7 @@ class ASTTransformer extends HazeVisitor<any> {
     return {
       variant: "StringConstant",
       sourceloc: this.loc(ctx),
-      value: ctx.STRING_LITERAL().getText().slice(1, -1),
+      value: JSON.parse(ctx.STRING_LITERAL().getText()),
     };
   };
 
@@ -475,6 +476,7 @@ class ASTTransformer extends HazeVisitor<any> {
       params: params.params,
       ellipsis: params.ellipsis,
       returnType: (ctx.datatype() && this.visit(ctx.datatype()!)) || undefined,
+      _collect: {},
     };
   };
 
@@ -482,6 +484,7 @@ class ASTTransformer extends HazeVisitor<any> {
     return {
       variant: "ExprAsFuncBody",
       expr: this.visit(ctx.expr()),
+      _collect: {},
     };
   };
 
@@ -493,6 +496,7 @@ class ASTTransformer extends HazeVisitor<any> {
     return {
       variant: "FunctionDefinition",
       export: Boolean(ctx._export_),
+      externLanguage: this.exlang(ctx),
       params: params.params,
       generics: names.slice(1),
       name: names[0],
@@ -500,6 +504,7 @@ class ASTTransformer extends HazeVisitor<any> {
       funcbody: (ctx.funcbody() && this.visit(ctx.funcbody()!)) || undefined,
       returnType: (ctx.datatype() && this.visit(ctx.datatype()!)) || undefined,
       sourceloc: this.loc(ctx),
+      _collect: {},
     };
   };
 
@@ -585,6 +590,7 @@ class ASTTransformer extends HazeVisitor<any> {
       members: members,
       methods: methods,
       sourceloc: this.loc(ctx),
+      _collect: {},
     };
   };
 
@@ -593,6 +599,7 @@ class ASTTransformer extends HazeVisitor<any> {
       variant: "Scope",
       sourceloc: this.loc(ctx),
       statements: ctx.statement().map((s) => this.visit(s)),
+      _collect: {},
     };
   };
 
@@ -847,6 +854,7 @@ class ASTTransformer extends HazeVisitor<any> {
       export: Boolean(ctx._export_),
       name: namesReversed[0],
       sourceloc: this.loc(ctx),
+      _collect: {},
     };
 
     for (const name of namesReversed.slice(1)) {
@@ -856,6 +864,7 @@ class ASTTransformer extends HazeVisitor<any> {
         export: Boolean(ctx._export_),
         name: name,
         sourceloc: this.loc(ctx),
+        _collect: {},
       };
     }
 
