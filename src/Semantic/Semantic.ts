@@ -2,9 +2,16 @@ import { CompilerError, ImpossibleSituation, InternalError } from "../Errors";
 import {
   EExternLanguage,
   type ASTDatatype,
+  type ASTExpr,
   type ASTFunctionDatatype,
 } from "../shared/AST";
-import { primitiveToString, stringToPrimitive } from "../shared/common";
+import {
+  assertID,
+  assertScope,
+  EPrimitive,
+  primitiveToString,
+  stringToPrimitive,
+} from "../shared/common";
 import { makeTypeId, type ID } from "../shared/store";
 import type { Collect } from "../SymbolCollection/CollectSymbols";
 import { Semantic, type SemanticResult } from "./SemanticSymbols";
@@ -116,7 +123,15 @@ function resolveSymbol(
   };
 
   if (datatype.variant === "Deferred") {
-    throw new InternalError("Cannot resolve a deferred datatype");
+    const dt = sr.typeTable.makeDatatypeAvailable({
+      variant: "Deferred",
+    });
+    return sr.symbolTable.makeSymbolAvailable({
+      variant: "Datatype",
+      export: false,
+      type: dt,
+      sourceloc: scope.sourceloc,
+    });
   } else if (datatype.variant === "FunctionDatatype") {
     const dt = sr.typeTable.makeDatatypeAvailable({
       variant: "Function",
@@ -271,6 +286,68 @@ function resolveSymbol(
   }
 }
 
+function analyzeExpr(sr: SemanticResult, scope: Collect.Scope, expr: ASTExpr) {
+  switch (expr.variant) {
+    case "BinaryExpr":
+      break;
+
+    case "ConstantExpr": {
+      expr._semantic.typeSymbol = sr.typeTable.makeDatatypeAvailable({
+        variant: "Primitive",
+        primitive: EPrimitive.i32,
+      });
+      break;
+    }
+
+    default:
+      throw new InternalError("Unhandled variant: " + expr.variant);
+  }
+}
+
+function analyzeScope(sr: SemanticResult, scope: Collect.Scope) {
+  scope._semantic.returnTypeSymbols = [];
+  for (const s of scope.statements) {
+    switch (s.variant) {
+      case "InlineCStatement":
+        break;
+
+      case "IfStatement":
+        analyzeExpr(sr, scope, s.condition);
+        analyzeScope(sr, assertScope(s.then._collect.scope));
+        for (const e of s.elseIfs) {
+          analyzeExpr(sr, assertScope(e.then._collect.scope), e.condition);
+          analyzeScope(sr, assertScope(e.then._collect.scope));
+        }
+        if (s.else) {
+          analyzeScope(sr, assertScope(s.else._collect.scope));
+        }
+        break;
+
+      case "WhileStatement":
+        analyzeExpr(sr, scope, s.condition);
+        analyzeScope(sr, assertScope(s.body._collect.scope));
+        break;
+
+      case "ReturnStatement":
+        if (s.expr) {
+          analyzeExpr(sr, scope, s.expr);
+          scope._semantic.returnTypeSymbols.push(
+            assertID(s.expr._semantic.typeSymbol),
+          );
+        }
+        break;
+
+      case "VariableDefinitionStatement":
+        // analyzeExpr(sr, s.expr);
+        break;
+
+      case "ExprStatement":
+        analyzeExpr(sr, scope, s.expr);
+        break;
+    }
+  }
+}
+
 function analyze(sr: SemanticResult, item: Collect.Symbol) {
   switch (item.variant) {
     case "FunctionDeclaration": {
@@ -325,17 +402,83 @@ function analyze(sr: SemanticResult, item: Collect.Symbol) {
         sourceloc: item.sourceloc,
       };
 
-      sr.symbolTable.defineSymbol({
-        variant: "FunctionDefinition",
-        typeSymbol: resolveSymbol(sr, item._collect.definedInScope!, type),
-        export: item.export,
-        externLanguage: item.externLanguage,
-        method: item._collect.method!,
-        name: item.name,
-        namespacePath: item._collect.namespacePath!,
-        sourceloc: item.sourceloc,
-        scope: new Semantic.Scope(item.sourceloc),
-      });
+      let symbol = sr.symbolTable.get(
+        sr.symbolTable.defineSymbol({
+          variant: "FunctionDefinition",
+          typeSymbol: resolveSymbol(sr, item._collect.definedInScope!, type),
+          export: item.export,
+          externLanguage: item.externLanguage,
+          method: item._collect.method!,
+          name: item.name,
+          namespacePath: item._collect.namespacePath!,
+          sourceloc: item.sourceloc,
+          scope: new Semantic.Scope(item.sourceloc),
+        }),
+      ) as Semantic.FunctionDefinitionSymbol;
+
+      if (item.funcbody._collect.scope) {
+        analyzeScope(sr, item.funcbody._collect.scope);
+      }
+
+      const scope = assertScope(item.funcbody._collect.scope);
+      if (item.returnType!.variant === "Deferred") {
+        if (
+          scope._semantic.returnTypeSymbols &&
+          scope._semantic.returnTypeSymbols.length > 0
+        ) {
+          if (scope._semantic.returnTypeSymbols) {
+            for (const id of scope._semantic.returnTypeSymbols) {
+              if (id !== scope._semantic.returnTypeSymbols[0]) {
+                throw new CompilerError(
+                  "Multiple different return types are not supported yet",
+                  scope.sourceloc,
+                );
+              }
+            }
+          }
+
+          const functypeSymbol = sr.symbolTable.get(
+            symbol.typeSymbol,
+          ) as Semantic.DatatypeSymbol;
+          const functype = sr.typeTable.get(
+            functypeSymbol.type,
+          ) as Semantic.FunctionDatatype;
+          functype.functionReturnValue = scope._semantic.returnTypeSymbols[0];
+          symbol.typeSymbol = sr.typeTable.makeDatatypeAvailable(functype);
+          symbol = sr.symbolTable.get(
+            sr.symbolTable.makeSymbolAvailable(symbol),
+          ) as Semantic.FunctionDefinitionSymbol;
+        } else {
+          const functypeSymbol = sr.symbolTable.get(
+            symbol.typeSymbol,
+          ) as Semantic.DatatypeSymbol;
+          const functype = sr.typeTable.get(
+            functypeSymbol.type,
+          ) as Semantic.FunctionDatatype;
+          functype.functionReturnValue = sr.typeTable.makeDatatypeAvailable({
+            variant: "Primitive",
+            primitive: EPrimitive.none,
+          });
+          symbol.typeSymbol = sr.typeTable.makeDatatypeAvailable(functype);
+          symbol = sr.symbolTable.get(
+            sr.symbolTable.makeSymbolAvailable(symbol),
+          ) as Semantic.FunctionDefinitionSymbol;
+        }
+      } else {
+        if (scope._semantic.returnTypeSymbols) {
+          for (const id of scope._semantic.returnTypeSymbols) {
+            if (id !== scope._semantic.returnTypeSymbols[0]) {
+              throw new CompilerError(
+                "Multiple different return types are not supported yet",
+                scope.sourceloc,
+              );
+            }
+          }
+
+          // TODO
+        }
+      }
+
       break;
     }
 
@@ -425,6 +568,10 @@ export function PrettyPrintAnalyzed(sr: SemanticResult) {
 
       case "Struct":
         print(` - [${id}] StructType ${typeFunc(id)}`);
+        break;
+
+      case "Deferred":
+        print(` - [${id}] Deferred`);
         break;
 
       // case "GenericPlaceholder":

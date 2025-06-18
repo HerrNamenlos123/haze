@@ -188,6 +188,11 @@ export namespace Semantic {
     // parentSymbol?: ID;
   };
 
+  export type DeferredDatatype = {
+    id?: ID;
+    variant: "Deferred";
+  };
+
   // export type GenericPlaceholderType = {
   //   id?: ID;
   //   variant: "GenericPlaceholder";
@@ -216,6 +221,7 @@ export namespace Semantic {
 
   export type Datatype =
     | FunctionDatatype
+    | DeferredDatatype
     // | GenericPlaceholderType
     | StructDatatype
     //   | RawPointerDatatype
@@ -478,6 +484,11 @@ export namespace Semantic {
               d.name === datatype.name &&
               d.genericSymbols.toString() ===
                 datatype.genericSymbols.toString(),
+          );
+
+        case "Deferred":
+          return [...this.datatypes.values()].find(
+            (d) => d.variant === "Deferred",
           );
 
         // case "GenericPlaceholder":

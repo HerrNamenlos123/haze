@@ -8,9 +8,8 @@ import type {
   ASTStatement,
   ASTStructDefinition,
   ASTVariableDefinitionStatement,
-  EExternLanguage,
-  ELiteralUnit,
 } from "../shared/AST";
+import type { ID } from "../shared/store";
 
 export type CollectResult = {
   globalScope: Collect.Scope;
@@ -79,6 +78,9 @@ export namespace Collect {
   export class Scope {
     public statements: ASTStatement[] = [];
     public symbolTable: SymbolTable;
+    public _semantic: {
+      returnTypeSymbols?: ID[];
+    } = {};
 
     constructor(
       public sourceloc: SourceLoc,

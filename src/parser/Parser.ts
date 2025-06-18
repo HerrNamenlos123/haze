@@ -696,6 +696,7 @@ class ASTTransformer extends HazeVisitor<any> {
       variant: "ParenthesisExpr",
       expr: this.visit(ctx.expr()),
       sourceloc: this.loc(ctx),
+      _semantic: {},
     };
   };
 
@@ -704,6 +705,7 @@ class ASTTransformer extends HazeVisitor<any> {
       variant: "LambdaExpr",
       lambda: this.visit(ctx.lambda()),
       sourceloc: this.loc(ctx),
+      _semantic: {},
     };
   };
 
@@ -712,6 +714,7 @@ class ASTTransformer extends HazeVisitor<any> {
       variant: "ConstantExpr",
       constant: this.visit(ctx.constant()),
       sourceloc: this.loc(ctx),
+      _semantic: {},
     };
   };
 
@@ -721,6 +724,7 @@ class ASTTransformer extends HazeVisitor<any> {
       expr: this.visit(ctx.expr()),
       operation: this.incrop(ctx),
       sourceloc: this.loc(ctx),
+      _semantic: {},
     };
   };
 
@@ -731,6 +735,7 @@ class ASTTransformer extends HazeVisitor<any> {
       calledExpr: exprs[0],
       arguments: exprs.slice(1),
       sourceloc: this.loc(ctx),
+      _semantic: {},
     };
   };
 
@@ -742,6 +747,7 @@ class ASTTransformer extends HazeVisitor<any> {
       expr: this.visit(ctx.expr()),
       member: ctx.ID().getText(),
       sourceloc: this.loc(ctx),
+      _semantic: {},
     };
   };
 
@@ -763,6 +769,7 @@ class ASTTransformer extends HazeVisitor<any> {
       datatype: this.visit(ctx.datatype()),
       members: members,
       sourceloc: this.loc(ctx),
+      _semantic: {},
     };
   };
 
@@ -772,6 +779,7 @@ class ASTTransformer extends HazeVisitor<any> {
       expr: this.visit(ctx.expr()),
       operation: this.incrop(ctx),
       sourceloc: this.loc(ctx),
+      _semantic: {},
     };
   };
 
@@ -781,6 +789,7 @@ class ASTTransformer extends HazeVisitor<any> {
       expr: this.visit(ctx.expr()),
       operation: this.unaryop(ctx),
       sourceloc: this.loc(ctx),
+      _semantic: {},
     };
   };
 
@@ -792,6 +801,7 @@ class ASTTransformer extends HazeVisitor<any> {
       castedTo: this.visit(ctx.datatype()),
       expr: this.visit(ctx.expr()),
       sourceloc: this.loc(ctx),
+      _semantic: {},
     };
   };
 
@@ -802,6 +812,7 @@ class ASTTransformer extends HazeVisitor<any> {
       b: this.visit(ctx.expr()[1]),
       operation: this.binaryop(ctx),
       sourceloc: this.loc(ctx),
+      _semantic: {},
     };
   };
 
@@ -814,6 +825,7 @@ class ASTTransformer extends HazeVisitor<any> {
       value: this.visit(ctx.expr()[1]),
       operation: this.assignop(ctx),
       sourceloc: this.loc(ctx),
+      _semantic: {},
     };
   };
 
@@ -827,6 +839,7 @@ class ASTTransformer extends HazeVisitor<any> {
       generics: generics,
       name: ctx.ID().getText(),
       sourceloc: this.loc(ctx),
+      _semantic: {},
     };
   };
 

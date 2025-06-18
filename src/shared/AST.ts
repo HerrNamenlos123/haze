@@ -228,18 +228,27 @@ export type ASTParenthesisExpr = {
   variant: "ParenthesisExpr";
   expr: ASTExpr;
   sourceloc: SourceLoc;
+  _semantic: {
+    typeSymbol?: ID;
+  };
 };
 
 export type ASTLambdaExpr = {
   variant: "LambdaExpr";
   lambda: ASTLambda;
   sourceloc: SourceLoc;
+  _semantic: {
+    typeSymbol?: ID;
+  };
 };
 
 export type ASTConstantExpr = {
   variant: "ConstantExpr";
   constant: ASTConstant;
   sourceloc: SourceLoc;
+  _semantic: {
+    typeSymbol?: ID;
+  };
 };
 
 export type ASTPostIncrExpr = {
@@ -247,6 +256,9 @@ export type ASTPostIncrExpr = {
   expr: ASTExpr;
   operation: EIncrOperation;
   sourceloc: SourceLoc;
+  _semantic: {
+    typeSymbol?: ID;
+  };
 };
 
 export type ASTExprCallExpr = {
@@ -254,6 +266,9 @@ export type ASTExprCallExpr = {
   calledExpr: ASTExpr;
   arguments: ASTExpr[];
   sourceloc: SourceLoc;
+  _semantic: {
+    typeSymbol?: ID;
+  };
 };
 
 export type ASTExprMemberAccess = {
@@ -261,6 +276,9 @@ export type ASTExprMemberAccess = {
   expr: ASTExpr;
   member: string;
   sourceloc: SourceLoc;
+  _semantic: {
+    typeSymbol?: ID;
+  };
 };
 
 export type ASTStructInstantiationExpr = {
@@ -268,6 +286,9 @@ export type ASTStructInstantiationExpr = {
   datatype: ASTDatatype;
   members: { name: string; value: ASTExpr }[];
   sourceloc: SourceLoc;
+  _semantic: {
+    typeSymbol?: ID;
+  };
 };
 
 export type ASTPreIncrExpr = {
@@ -275,6 +296,9 @@ export type ASTPreIncrExpr = {
   expr: ASTExpr;
   operation: EIncrOperation;
   sourceloc: SourceLoc;
+  _semantic: {
+    typeSymbol?: ID;
+  };
 };
 
 export type ASTUnaryExpr = {
@@ -282,6 +306,9 @@ export type ASTUnaryExpr = {
   expr: ASTExpr;
   operation: EUnaryOperation;
   sourceloc: SourceLoc;
+  _semantic: {
+    typeSymbol?: ID;
+  };
 };
 
 export type ASTExplicitCastExpr = {
@@ -289,6 +316,9 @@ export type ASTExplicitCastExpr = {
   expr: ASTExpr;
   castedTo: ASTDatatype;
   sourceloc: SourceLoc;
+  _semantic: {
+    typeSymbol?: ID;
+  };
 };
 
 export type ASTBinaryExpr = {
@@ -297,6 +327,9 @@ export type ASTBinaryExpr = {
   b: ASTExpr;
   operation: EBinaryOperation;
   sourceloc: SourceLoc;
+  _semantic: {
+    typeSymbol?: ID;
+  };
 };
 
 export type ASTExprAssignmentExpr = {
@@ -305,6 +338,9 @@ export type ASTExprAssignmentExpr = {
   value: ASTExpr;
   operation: EAssignmentOperation;
   sourceloc: SourceLoc;
+  _semantic: {
+    typeSymbol?: ID;
+  };
 };
 
 export type ASTSymbolValueExpr = {
@@ -312,6 +348,9 @@ export type ASTSymbolValueExpr = {
   name: string;
   generics: (ASTDatatype | ASTConstant)[];
   sourceloc: SourceLoc;
+  _semantic: {
+    typeSymbol?: ID;
+  };
 };
 
 export type ASTExpr =

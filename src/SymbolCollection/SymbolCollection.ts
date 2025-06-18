@@ -1,4 +1,4 @@
-import { CompilerError, type SourceLoc } from "../Errors";
+import { CompilerError, InternalError, type SourceLoc } from "../Errors";
 import type {
   ASTBinaryExpr,
   ASTConstant,
@@ -9,6 +9,7 @@ import type {
   ASTExprAssignmentExpr,
   ASTExprCallExpr,
   ASTExprMemberAccess,
+  ASTFuncBody,
   ASTFunctionDeclaration,
   ASTFunctionDefinition,
   ASTGlobalVariableDefinition,
@@ -25,7 +26,7 @@ import type {
   ASTSymbolValueExpr,
   ASTUnaryExpr,
 } from "../shared/AST";
-import { EMethodType } from "../shared/common";
+import { assertScope, EMethodType } from "../shared/common";
 import { Collect, type CollectResult } from "./CollectSymbols";
 
 function collect(
@@ -133,7 +134,30 @@ function collect(
       }
 
       scope.symbolTable.defineSymbol(statement);
-      collect(statement.funcbody._collect.scope, statement.funcbody, meta);
+      if (statement.funcbody.variant === "ExprAsFuncBody") {
+        // Rebuilding "() => x" into "() => { return x; }"
+        statement.funcbody = {
+          variant: "Scope",
+          statements: [
+            {
+              variant: "ReturnStatement",
+              sourceloc: statement.sourceloc,
+              expr: statement.funcbody.expr,
+            },
+          ],
+          sourceloc: statement.sourceloc,
+          _collect: {
+            scope: statement.funcbody._collect.scope,
+          },
+        };
+        collect(
+          assertScope(statement.funcbody._collect.scope),
+          statement.funcbody,
+          meta,
+        );
+      } else {
+        collect(statement.funcbody._collect.scope, statement.funcbody, meta);
+      }
       break;
 
     // =================================================================================================================
@@ -141,8 +165,7 @@ function collect(
     // =================================================================================================================
 
     case "ExprAsFuncBody":
-      collect(statement._collect.scope!, statement.expr, meta);
-      break;
+      throw new InternalError("This is handled elsewhere");
 
     // =================================================================================================================
     // =================================================================================================================
@@ -280,6 +303,7 @@ function collect(
             scope.symbolTable.defineSymbol(s);
             break;
         }
+        scope.statements.push(s);
       }
       break;
 

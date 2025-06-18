@@ -1,4 +1,6 @@
 import { InternalError } from "../Errors";
+import type { Collect } from "../SymbolCollection/CollectSymbols";
+import type { ID } from "./store";
 
 export enum EPrimitive {
   none = 1,
@@ -104,4 +106,18 @@ export function stringToPrimitive(str: string) {
     default:
       return undefined;
   }
+}
+
+export function assertScope(id: Collect.Scope | undefined) {
+  if (!id) {
+    throw new InternalError("Scope is undefined!");
+  }
+  return id;
+}
+
+export function assertID(id: ID | undefined) {
+  if (!id) {
+    throw new InternalError("ID is undefined!");
+  }
+  return id;
 }
