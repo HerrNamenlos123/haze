@@ -1,4 +1,4 @@
-import { InternalError } from "../Errors";
+import { InternalError } from "./Errors";
 import type { Collect } from "../SymbolCollection/CollectSymbols";
 import type { ID } from "./store";
 

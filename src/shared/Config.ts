@@ -52,23 +52,17 @@ export function parseModuleMetadata(metadata: string): ModuleMetadata {
 
   const getString = (v: any) => {
     if (typeof v !== "string") {
-      throw new GeneralError(
-        "Inconsistent module config: Expected string instead of '" + v + "'",
-      );
+      throw new GeneralError("Inconsistent module config: Expected string instead of '" + v + "'");
     }
     return v as string;
   };
 
   function getStringAnyOf<T extends string>(v: any, options: string[]): T {
     if (typeof v !== "string") {
-      throw new GeneralError(
-        "Inconsistent module config: Expected string instead of '" + v + "'",
-      );
+      throw new GeneralError("Inconsistent module config: Expected string instead of '" + v + "'");
     }
     if (!options.includes(v)) {
-      throw new GeneralError(
-        "Inconsistent module config: Expected any of '" + options + "'",
-      );
+      throw new GeneralError("Inconsistent module config: Expected any of '" + options + "'");
     }
     return v as T;
   }
@@ -76,9 +70,7 @@ export function parseModuleMetadata(metadata: string): ModuleMetadata {
   const getStringArray = (v: any) => {
     if (!Array.isArray(v)) {
       throw new GeneralError(
-        "Inconsistent module config: Expected string array instead of '" +
-        v +
-        "'",
+        "Inconsistent module config: Expected string array instead of '" + v + "'",
       );
     }
     for (const s of v) {
@@ -93,9 +85,7 @@ export function parseModuleMetadata(metadata: string): ModuleMetadata {
 
   const getNumber = (v: any) => {
     if (typeof v !== "number") {
-      throw new GeneralError(
-        "Inconsistent module config: Expected number instead of '" + v + "'",
-      );
+      throw new GeneralError("Inconsistent module config: Expected number instead of '" + v + "'");
     }
     return v as number;
   };
@@ -103,9 +93,7 @@ export function parseModuleMetadata(metadata: string): ModuleMetadata {
   const getLibs = (v: any): ModuleLibMetadata[] => {
     if (!Array.isArray(v)) {
       throw new GeneralError(
-        "Inconsistent module config: Expected object array instead of '" +
-        v +
-        "'",
+        "Inconsistent module config: Expected object array instead of '" + v + "'",
       );
     }
     const libs: ModuleLibMetadata[] = [];
@@ -118,10 +106,7 @@ export function parseModuleMetadata(metadata: string): ModuleMetadata {
       libs.push({
         filename: getString(obj["filename"]),
         platform: getStringAnyOf<"linux-x64">(obj["platform"], ["linux-x64"]),
-        type: getStringAnyOf<"static" | "shared">(obj["type"], [
-          "static",
-          "shared",
-        ]),
+        type: getStringAnyOf<"static" | "shared">(obj["type"], ["static", "shared"]),
       });
     }
     return libs;
@@ -167,13 +152,9 @@ export class ConfigParser {
     if (typeof toml[field] === "string") {
       return toml[field];
     } else if (field in toml) {
-      throw new GeneralError(
-        `Field '${field}' in file ${this.configPath} must be of type string`,
-      );
+      throw new GeneralError(`Field '${field}' in file ${this.configPath} must be of type string`);
     } else {
-      throw new GeneralError(
-        `Required field '${field}' is missing in ${this.configPath}`,
-      );
+      throw new GeneralError(`Required field '${field}' is missing in ${this.configPath}`);
     }
   }
 
@@ -181,18 +162,12 @@ export class ConfigParser {
     if (typeof toml[field] === "string") {
       return toml[field];
     } else if (field in toml) {
-      throw new GeneralError(
-        `Field '${field}' in file ${this.configPath} must be of type string`,
-      );
+      throw new GeneralError(`Field '${field}' in file ${this.configPath} must be of type string`);
     }
     return undefined;
   }
 
-  getOptionalStringAnyOf(
-    toml: any,
-    field: string,
-    options: string[],
-  ): string | undefined {
+  getOptionalStringAnyOf(toml: any, field: string, options: string[]): string | undefined {
     if (typeof toml[field] === "string") {
       if (options.includes(toml[field])) {
         return toml[field];
@@ -201,9 +176,7 @@ export class ConfigParser {
         `Field '${field}' in file ${this.configPath} must be any of '${options}'`,
       );
     } else if (field in toml) {
-      throw new GeneralError(
-        `Field '${field}' in file ${this.configPath} must be of type string`,
-      );
+      throw new GeneralError(`Field '${field}' in file ${this.configPath} must be of type string`);
     }
     return undefined;
   }
@@ -220,9 +193,7 @@ export class ConfigParser {
       });
       return array;
     } else if (field in toml) {
-      throw new GeneralError(
-        `Field '${field}' in file ${this.configPath} must be an array`,
-      );
+      throw new GeneralError(`Field '${field}' in file ${this.configPath} must be an array`);
     }
     return undefined;
   }
@@ -268,8 +239,7 @@ export class ConfigParser {
     const toml = parse(content, { bigint: false });
 
     const type = this.getOptionalStringAnyOf(toml, "type", ["lib", "exe"]);
-    const moduleType =
-      type === "exe" ? ModuleType.Executable : ModuleType.Library;
+    const moduleType = type === "exe" ? ModuleType.Executable : ModuleType.Library;
 
     return {
       projectName: this.getString(toml, "name"),
@@ -279,22 +249,14 @@ export class ConfigParser {
       projectLicense: this.getOptionalString(toml, "license"),
       scripts: this.getScripts(toml),
       dependencies: this.getDependencies(toml),
-      srcDirectory: join(
-        dirname(this.configPath),
-        this.getOptionalString(toml, "src") || "src",
-      ),
+      srcDirectory: join(dirname(this.configPath), this.getOptionalString(toml, "src") || "src"),
       configFilePath: this.configPath,
       moduleType: moduleType,
       nostdlib: this.getOptionalStringAnyOf(toml, "std", ["none"]) === "none",
       buildDir: join(dirname(this.configPath), "build"),
-      linkerFlags:
-        (toml["linker"] &&
-          this.getOptionalStringArray(toml["linker"], "flags")) ||
-        [],
+      linkerFlags: (toml["linker"] && this.getOptionalStringArray(toml["linker"], "flags")) || [],
       compilerFlags:
-        (toml["compiler"] &&
-          this.getOptionalStringArray(toml["compiler"], "flags")) ||
-        [],
+        (toml["compiler"] && this.getOptionalStringArray(toml["compiler"], "flags")) || [],
       platform: "linux-x64",
     };
   }

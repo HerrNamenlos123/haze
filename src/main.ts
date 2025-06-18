@@ -1,14 +1,11 @@
 import { ArgumentParser, REMAINDER } from "argparse";
 // import { ProjectCompiler } from "./ModuleCompiler";
 import { version } from "../package.json";
-import { GeneralError } from "./Errors";
+import { GeneralError } from "./shared/Errors";
 import { join } from "path";
 import path from "node:path";
 import { Parser } from "./parser/Parser";
-import {
-  CollectSymbols,
-  PrettyPrintCollected,
-} from "./SymbolCollection/SymbolCollection";
+import { CollectSymbols, PrettyPrintCollected } from "./SymbolCollection/SymbolCollection";
 import { PrettyPrintAnalyzed, SemanticallyAnalyze } from "./Semantic/Semantic";
 
 async function getFile(url: string, outfile: string) {
@@ -61,11 +58,7 @@ async function main() {
     process.exit(0);
   }
 
-  if (
-    args.command === "build" ||
-    args.command === "run" ||
-    args.command === "exec"
-  ) {
+  if (args.command === "build" || args.command === "run" || args.command === "exec") {
     try {
       // const filename = "src/SymbolCollection/CollectionTest.hz";
       // const filename = "src/parser/ParsingTest.hz";

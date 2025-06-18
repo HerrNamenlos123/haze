@@ -1,4 +1,4 @@
-import { CompilerError, InternalError, printErrorMessage, type SourceLoc } from "../Errors";
+import { CompilerError, InternalError, printErrorMessage, type SourceLoc } from "../shared/Errors";
 import {
   EAssignmentOperation,
   EBinaryOperation,

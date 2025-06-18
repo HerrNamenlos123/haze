@@ -1,4 +1,4 @@
-import { CompilerError, InternalError, type SourceLoc } from "../Errors";
+import { CompilerError, InternalError, type SourceLoc } from "../shared/Errors";
 import type {
   ASTFunctionDeclaration,
   ASTFunctionDefinition,

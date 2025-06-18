@@ -11,7 +11,7 @@ import {
   ImpossibleSituation,
   InternalError,
   SourceLoc,
-} from "./Errors";
+} from "./shared/Errors";
 import type { Expression } from "./Expression";
 import {
   BooleanConstantContext,
@@ -48,10 +48,7 @@ export const RESERVED_NAMESPACES = ["global"];
 export function assertDatatypeVariant<const T extends BaseDatatype.Variants[]>(
   datatype: ParsedDatatype.Datatype,
   allowedVariants: T,
-): asserts datatype is Extract<
-  ParsedDatatype.Datatype,
-  { variant: T[number] }
-> {
+): asserts datatype is Extract<ParsedDatatype.Datatype, { variant: T[number] }> {
   if (!allowedVariants.includes(datatype.variant as T[number])) {
     throw new InternalError(`Invalid variant: ${datatype.variant}`);
   }
@@ -79,10 +76,7 @@ export function queryParentSymbol(module: Module, symbol: ParsedSymbol.Symbol) {
   }
 }
 
-export function serializeType(
-  module: Module,
-  datatype: ParsedDatatype.Datatype,
-): string {
+export function serializeType(module: Module, datatype: ParsedDatatype.Datatype): string {
   switch (datatype.variant) {
     case "Function":
       return (
@@ -95,17 +89,12 @@ export function serializeType(
           })
           .join(", ") +
         ") -> " +
-        serializeSymbol(
-          module,
-          module.parsedStore.getSymbol(datatype.functionReturnValue),
-        )
+        serializeSymbol(module, module.parsedStore.getSymbol(datatype.functionReturnValue))
       );
 
     case "Struct": {
       let s = datatype.name;
-      let p =
-        datatype.parentSymbol &&
-        module.parsedStore.getSymbol(datatype.parentSymbol);
+      let p = datatype.parentSymbol && module.parsedStore.getSymbol(datatype.parentSymbol);
       while (p) {
         assertSymbolVariant(p, ["Datatype"]);
         const pType = module.parsedStore.getType(p.type);
@@ -136,20 +125,14 @@ export function serializeType(
   }
 }
 
-export function serializeSymbol(
-  module: Module,
-  symbol: ParsedSymbol.Symbol,
-): string {
+export function serializeSymbol(module: Module, symbol: ParsedSymbol.Symbol): string {
   switch (symbol.variant) {
     default:
       throw new InternalError("Unexpected variant in serialize symbol");
   }
 }
 
-export function mangleDatatype(
-  module: Module,
-  datatype: ParsedDatatype.Datatype,
-): string {
+export function mangleDatatype(module: Module, datatype: ParsedDatatype.Datatype): string {
   switch (datatype.variant) {
     case "Function":
       return (
@@ -158,20 +141,14 @@ export function mangleDatatype(
           .map((p) => mangleSymbol(module, module.parsedStore.getSymbol(p)))
           .join("") +
         "E" +
-        mangleSymbol(
-          module,
-          module.parsedStore.getSymbol(datatype.functionReturnValue),
-        )
+        mangleSymbol(module, module.parsedStore.getSymbol(datatype.functionReturnValue))
       );
     default:
       throw new InternalError("Unexpected variant in mangle datatype");
   }
 }
 
-export function mangleSymbol(
-  module: Module,
-  symbol: ParsedSymbol.Symbol,
-): string {
+export function mangleSymbol(module: Module, symbol: ParsedSymbol.Symbol): string {
   switch (symbol.variant) {
     default:
       throw new InternalError("Unexpected variant in mangle symbol");
@@ -183,11 +160,7 @@ export type ParamPack = {
   vararg: boolean;
 };
 
-export function defineGenericsInScope(
-  module: Module,
-  generics: Generics,
-  scope: ResolvedScope,
-) {
+export function defineGenericsInScope(module: Module, generics: Generics, scope: ResolvedScope) {
   for (const { name, type } of generics) {
     if (type) {
       const typeSym = module.parsedStore.getSymbolOrFail(type);
@@ -263,10 +236,7 @@ export function resolveGenerics(
       return symbol.type;
 
     case "RawPointer": {
-      if (
-        datatype.pointee.type.variant === "Struct" &&
-        datatype.pointee.type.generics.size > 0
-      ) {
+      if (datatype.pointee.type.variant === "Struct" && datatype.pointee.type.generics.size > 0) {
         const tempScope = new ResolvedScope(scope.location, scope);
         defineGenericsInScope(datatype.pointee.type.generics, tempScope);
         const newRawPtr: RawPointerDatatype = {
@@ -277,14 +247,8 @@ export function resolveGenerics(
             location: datatype.pointee.location,
             name: datatype.pointee.name,
             scope: datatype.pointee.scope,
-            type: resolveGenerics(
-              datatype.pointee.type,
-              tempScope,
-              loc,
-              resolvageContext,
-            ),
-            originalGenericSourcecode:
-              datatype.pointee.originalGenericSourcecode,
+            type: resolveGenerics(datatype.pointee.type, tempScope, loc, resolvageContext),
+            originalGenericSourcecode: datatype.pointee.originalGenericSourcecode,
             parentSymbol: datatype.pointee.parentSymbol,
           },
         };
@@ -299,8 +263,7 @@ export function resolveGenerics(
 
     case "Struct": {
       if (!(mangleDatatype(datatype) in resolvageContext.resolvedMangledType)) {
-        resolvageContext.resolvedMangledType[mangleDatatype(datatype)] =
-          datatype;
+        resolvageContext.resolvedMangledType[mangleDatatype(datatype)] = datatype;
       }
       const cloned: StructDatatype = {
         variant: "Struct",
@@ -343,12 +306,7 @@ export function resolveGenerics(
             variableLifetime: member.variableLifetime,
             parentSymbol: member.parentSymbol,
             ctx: member.ctx,
-            type: resolveGenerics(
-              member.type,
-              tempScope,
-              loc,
-              resolvageContext,
-            ),
+            type: resolveGenerics(member.type, tempScope, loc, resolvageContext),
             export: member.export,
             location: member.location,
             extern: member.extern,
@@ -361,12 +319,7 @@ export function resolveGenerics(
           for (const inner of member.symbols) {
             newUnion.symbols.push({
               name: inner.name,
-              type: resolveGenerics(
-                inner.type,
-                tempScope,
-                loc,
-                resolvageContext,
-              ),
+              type: resolveGenerics(inner.type, tempScope, loc, resolvageContext),
               variant: "Variable",
               parentSymbol: inner.parentSymbol,
               variableType: inner.variableType,
@@ -383,12 +336,7 @@ export function resolveGenerics(
       for (const method of datatype.methods) {
         cloned.methods.push({
           name: method.name,
-          type: resolveGenerics(
-            method.type,
-            tempScope,
-            loc,
-            resolvageContext,
-          ) as FunctionDatatype,
+          type: resolveGenerics(method.type, tempScope, loc, resolvageContext) as FunctionDatatype,
           variant: "Function",
           extern: method.extern,
           scope: method.scope,
@@ -417,8 +365,7 @@ export function resolveGenerics(
 
     case "Function": {
       if (!(mangleDatatype(datatype) in resolvageContext.resolvedMangledType)) {
-        resolvageContext.resolvedMangledType[mangleDatatype(datatype)] =
-          datatype;
+        resolvageContext.resolvedMangledType[mangleDatatype(datatype)] = datatype;
       }
 
       if (datatype.variant !== "Function") {
@@ -428,10 +375,7 @@ export function resolveGenerics(
       const tempFuncScope = new ResolvedScope(loc, scope);
 
       if (datatype.functionReturnType.variant === "Struct") {
-        defineGenericsInScope(
-          datatype.functionReturnType.generics,
-          tempFuncScope,
-        );
+        defineGenericsInScope(datatype.functionReturnType.generics, tempFuncScope);
       }
 
       const newFunctype: FunctionDatatype = {
@@ -481,8 +425,9 @@ function lookupDatatype(
   parentSymbol?: DatatypeSymbol,
 ): DatatypeSymbol {
   const name = ctx.ID().getText();
-  const genericsProvided: (DatatypeSymbol | ConstantSymbol)[] =
-    ctx._generics.map((n) => _this.visitGenericsvalue!(n));
+  const genericsProvided: (DatatypeSymbol | ConstantSymbol)[] = ctx._generics.map((n) =>
+    _this.visitGenericsvalue!(n),
+  );
 
   if (name === "RawPtr") {
     if (genericsProvided.length != 1) {
@@ -512,10 +457,7 @@ function lookupDatatype(
 
   let symbol: Symbol;
   if (!parentSymbol) {
-    symbol = program.currentScope.lookupSymbol(
-      ctx.ID().getText(),
-      program.location(ctx),
-    );
+    symbol = program.currentScope.lookupSymbol(ctx.ID().getText(), program.location(ctx));
   } else {
     if (parentSymbol.type.variant !== "Namespace") {
       throw new CompilerError(
@@ -669,10 +611,7 @@ export function collectVariableStatement(
 ): VariableDefinitionStatement | VariableDeclarationStatement {
   const name = ctx.ID().getText();
   if (RESERVED_VARIABLE_NAMES.includes(name)) {
-    throw new CompilerError(
-      `'${name}' is not a valid variable name.`,
-      module.location(ctx),
-    );
+    throw new CompilerError(`'${name}' is not a valid variable name.`, module.location(ctx));
   }
   const mutable = ctx.variablemutability().getText() === "let";
 
@@ -712,19 +651,14 @@ export function collectVariableStatement(
     if (lang === "C") {
       extern = ELinkage.External_C;
     } else if (lang) {
-      throw new CompilerError(
-        `Extern language ${lang} is not supported`,
-        module.location(ctx),
-      );
+      throw new CompilerError(`Extern language ${lang} is not supported`, module.location(ctx));
     } else {
       extern = ELinkage.External;
     }
   }
 
   const symbol: VariableSymbol = {
-    variableType: mutable
-      ? VariableType.MutableVariable
-      : VariableType.ConstantVariable,
+    variableType: mutable ? VariableType.MutableVariable : VariableType.ConstantVariable,
     variableScope: variableContext,
     name: name,
     type: datatype,
@@ -754,10 +688,7 @@ export function collectVariableStatement(
         };
 
   if (variableContext === EVariableContext.Global) {
-    module.concreteGlobalStatements.set(
-      mangleSymbol(module, symbol),
-      statement,
-    );
+    module.concreteGlobalStatements.set(mangleSymbol(module, symbol), statement);
   }
 
   return statement;
@@ -781,10 +712,7 @@ export function analyzeVariableStatement(
     throw new ImpossibleSituation();
   }
 
-  if (
-    isNone(statement.symbol.type) ||
-    statement.symbol.type.variant === "Namespace"
-  ) {
+  if (isNone(statement.symbol.type) || statement.symbol.type.variant === "Namespace") {
     throw new CompilerError(
       `'${serializeDatatype(statement.symbol.type)}' is not a valid variable type.`,
       statement.location,
@@ -823,15 +751,10 @@ export function visitLiteralConstantImpl(
   let value = isFloat ? parseFloat(valueStr) : parseInt(valueStr);
 
   if (Number.isNaN(value)) {
-    throw new CompilerError(
-      `Could not parse '${ctx.getText()}'.`,
-      module.location(ctx),
-    );
+    throw new CompilerError(`Could not parse '${ctx.getText()}'.`, module.location(ctx));
   }
 
-  let type = isFloat
-    ? module.getBuiltinPrimitive("f64")
-    : module.getBuiltinPrimitive("i64");
+  let type = isFloat ? module.getBuiltinPrimitive("f64") : module.getBuiltinPrimitive("i64");
   let unit: LiteralUnits | undefined = undefined;
 
   if (unitStr) {
@@ -847,10 +770,7 @@ export function visitLiteralConstantImpl(
         break;
 
       default:
-        throw new CompilerError(
-          `'${unitStr}' is not a valid unit`,
-          module.location(ctx),
-        );
+        throw new CompilerError(`'${unitStr}' is not a valid unit`, module.location(ctx));
     }
   }
 

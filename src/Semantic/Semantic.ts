@@ -1,4 +1,4 @@
-import { CompilerError, ImpossibleSituation, InternalError } from "../Errors";
+import { CompilerError, ImpossibleSituation, InternalError } from "../shared/Errors";
 import {
   EExternLanguage,
   type ASTDatatype,

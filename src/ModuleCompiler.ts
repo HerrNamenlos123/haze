@@ -7,21 +7,21 @@ import {
   ImpossibleSituation,
   InternalError,
   UnreachableCode,
-} from "./Errors";
+} from "./shared/Errors";
 import { Module } from "./Module";
 import { readdirSync, realpathSync, statSync } from "fs";
 import { readdir, stat } from "fs/promises";
 import { basename, dirname, extname, join } from "path";
 import fs from "fs";
 import { version } from "../package.json";
-import { OutputWriter } from "./OutputWriter";
+import { OutputWriter } from "./Codegen/OutputWriter";
 import {
   ConfigParser,
   ModuleType,
   parseModuleMetadata,
   type ModuleConfig,
   type ModuleMetadata,
-} from "./Config";
+} from "./shared/Config";
 
 const C_COMPILER = "clang";
 const ARCHIVE_TOOL = "ar";
@@ -68,9 +68,7 @@ class Cache {
 
   constructor() {}
 
-  async getFilesWithModificationDates(
-    dir: string,
-  ): Promise<{ file: string; modified: Date }[]> {
+  async getFilesWithModificationDates(dir: string): Promise<{ file: string; modified: Date }[]> {
     const files: { file: string; modified: Date }[] = [];
 
     async function traverse(currentDir: string) {
@@ -91,9 +89,7 @@ class Cache {
     return files;
   }
 
-  async getFileModificationDate(
-    file: string,
-  ): Promise<{ file: string; modified: Date }> {
+  async getFileModificationDate(file: string): Promise<{ file: string; modified: Date }> {
     const fileStat = await stat(file);
     return { file: file, modified: fileStat.mtime };
   }
@@ -191,17 +187,11 @@ export class ProjectCompiler {
     const mainModule = new ModuleCompiler(config, this.cache);
 
     console.log("starting in ", join(mainModule.getStdlibDirectory(), "core"));
-    const stdlibConfig = await parseConfig(
-      join(mainModule.getStdlibDirectory(), "core"),
-    );
+    const stdlibConfig = await parseConfig(join(mainModule.getStdlibDirectory(), "core"));
     if (!stdlibConfig) {
       return false;
     }
-    const stdlibModule = new ModuleCompiler(
-      stdlibConfig,
-      this.cache,
-      mainModule.globalBuildDir,
-    );
+    const stdlibModule = new ModuleCompiler(stdlibConfig, this.cache, mainModule.globalBuildDir);
     if (!(await stdlibModule.build())) {
       return false;
     }
@@ -216,11 +206,7 @@ export class ProjectCompiler {
           return false;
         }
 
-        const depModule = new ModuleCompiler(
-          config,
-          this.cache,
-          mainModule.globalBuildDir,
-        );
+        const depModule = new ModuleCompiler(config, this.cache, mainModule.globalBuildDir);
         if (!(await depModule.build())) {
           return false;
         }
@@ -280,19 +266,12 @@ class ModuleCompiler {
   moduleBuildDir: string;
   cache: Cache;
 
-  constructor(
-    moduleConfig: ModuleConfig,
-    cache: Cache,
-    globalBuildDir?: string,
-  ) {
+  constructor(moduleConfig: ModuleConfig, cache: Cache, globalBuildDir?: string) {
     this.module = new Module(moduleConfig);
     this.cache = cache;
     if (!globalBuildDir) {
       this.globalBuildDir = moduleConfig.buildDir;
-      this.moduleBuildDir = join(
-        moduleConfig.buildDir,
-        moduleConfig.projectName,
-      );
+      this.moduleBuildDir = join(moduleConfig.buildDir, moduleConfig.projectName);
     } else {
       this.globalBuildDir = globalBuildDir;
       this.moduleBuildDir = join(globalBuildDir, moduleConfig.projectName);
@@ -329,9 +308,7 @@ class ModuleCompiler {
     const tempdir = join(this.globalBuildDir, "temp-" + libname);
     await $`mkdir -p ${tempdir}`;
     await $`tar -xzf ${libpath} -C ${tempdir} metadata.json`;
-    return parseModuleMetadata(
-      await Bun.file(join(tempdir, "metadata.json")).text(),
-    );
+    return parseModuleMetadata(await Bun.file(join(tempdir, "metadata.json")).text());
   }
 
   async importDeps() {
@@ -343,10 +320,7 @@ class ModuleCompiler {
       });
     }
     for (const dep of deps) {
-      const libpath = join(
-        join(this.globalBuildDir, dep.path),
-        dep.path + ".hzlib",
-      );
+      const libpath = join(join(this.globalBuildDir, dep.path), dep.path + ".hzlib");
       const metadata = await this.loadDependencyMetadata(libpath, dep.path);
 
       const declarations = new OutputWriter();
@@ -391,15 +365,10 @@ class ModuleCompiler {
     const libs: string[] = [];
     const linkerFlags: string[] = [];
     for (const dep of this.module.moduleConfig.dependencies || []) {
-      const libpath = join(
-        join(this.globalBuildDir, dep.path),
-        dep.path + ".hzlib",
-      );
+      const libpath = join(join(this.globalBuildDir, dep.path), dep.path + ".hzlib");
       const metadata = await this.loadDependencyMetadata(libpath, dep.path);
 
-      const lib = metadata.libs.find(
-        (l) => l.platform === this.module.moduleConfig.platform,
-      );
+      const lib = metadata.libs.find((l) => l.platform === this.module.moduleConfig.platform);
       if (!lib) {
         throw new GeneralError(
           `Lib ${dep.path} does not provide platform ${this.module.moduleConfig.platform}`,
@@ -427,14 +396,10 @@ class ModuleCompiler {
             this.module.moduleConfig.configFilePath,
           ))
         ) {
-          console.log(
-            `Skipping module ${this.module.moduleConfig.projectName}`,
-          );
+          console.log(`Skipping module ${this.module.moduleConfig.projectName}`);
           return true;
         } else {
-          console.log(
-            `Building module ${this.module.moduleConfig.projectName}`,
-          );
+          console.log(`Building module ${this.module.moduleConfig.projectName}`);
         }
       }
 
@@ -466,9 +431,7 @@ class ModuleCompiler {
         } else {
           const cmd = `${C_COMPILER} -g ${moduleCFile} -c -o ${moduleOFile} -I${this.module.moduleConfig.srcDirectory} ${compilerFlags.join(" ")} -fPIC -std=c11`;
           child_process.execSync(cmd);
-          child_process.execSync(
-            `${ARCHIVE_TOOL} r ${moduleAFile} ${moduleOFile} > /dev/null`,
-          );
+          child_process.execSync(`${ARCHIVE_TOOL} r ${moduleAFile} ${moduleOFile} > /dev/null`);
 
           const makerel = (absolute: string) => {
             return absolute.replace(this.moduleBuildDir + "/", "");
@@ -494,10 +457,7 @@ class ModuleCompiler {
             exportedDeclarations: [...exportedDeclarations],
             linkerFlags: this.module.moduleConfig.linkerFlags,
           };
-          await Bun.write(
-            moduleMetadataFile,
-            JSON.stringify(moduleMetadata, undefined, 2),
-          );
+          await Bun.write(moduleMetadataFile, JSON.stringify(moduleMetadata, undefined, 2));
 
           if (fs.existsSync(moduleOutputLib)) {
             await $`rm ${moduleOutputLib}`;

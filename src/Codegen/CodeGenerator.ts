@@ -1,30 +1,9 @@
-// import { Module } from "./Module";
-// import {
-//   InternalError,
-//   ImpossibleSituation,
-//   printWarningMessage,
-// } from "./Errors";
-// import {
-//   explicitConversion,
-//   generateDeclarationCCode,
-//   generateDefinitionCCode,
-//   generateUsageCode,
-//   implicitConversion,
-//   ELinkage,
-//   mangleSymbol,
-//   type Datatype,
-//   type FunctionDatatype,
-//   type FunctionSymbol,
-//   type RawPointerDatatype,
-// } from "./Datatype";
-// import type { Statement } from "./Statement";
-// import type { Expression, ObjectExpression } from "./Expression";
+// import type { Module } from "../Module";
 // import { OutputWriter } from "./OutputWriter";
-// import { ResolvedScope } from "./Scope";
-// import { ModuleType } from "./Config";
 
 // class CodeGenerator {
-//   private program: Module;
+//   private module: Module;
+
 //   private out = {
 //     includes: {} as Record<string, OutputWriter>,
 //     cDecls: {} as Record<string, OutputWriter>,
@@ -36,32 +15,32 @@
 //   };
 
 //   constructor(program: Module) {
-//     this.program = program;
+//     this.module = program;
 
-//     const contextSymbol = this.program.globalScope.lookupSymbol(
+//     const contextSymbol = this.module.globalScope.lookupSymbol(
 //       "Context",
-//       this.program.globalScope.location,
+//       this.module.globalScope.location,
 //     );
-//     const context = generateUsageCode(contextSymbol.type, this.program);
+//     const context = generateUsageCode(contextSymbol.type, this.module);
 //     this.out.type_declarations[mangleSymbol(contextSymbol)] = new OutputWriter()
 //       .writeLine(`struct ${context}_;`)
 //       .writeLine(`typedef struct ${context}_ ${context};`);
 
-//     if (this.program.moduleConfig.moduleType === ModuleType.Executable) {
+//     if (this.module.moduleConfig.moduleType === ModuleType.Executable) {
 //       const mainWriter = new OutputWriter();
 //       this.out.function_definitions["main"] = mainWriter;
 //       mainWriter
 //         .writeLine("int32_t main(int argc, const char* argv[]) {")
 //         .pushIndent()
 //         .writeLine(
-//           `${generateUsageCode(this.program.getBuiltinType("Context"), this.program)} ctx = {};`,
+//           `${generateUsageCode(this.module.getBuiltinType("Context"), this.module)} ctx = {};`,
 //         )
 //         .writeLine(`_HN6Memory5ArenaE defaultArena = {};`)
 //         .writeLine(`ctx.mem.globalDefaultArena = &defaultArena;`);
-//       if (!this.program.moduleConfig.nostdlib) {
+//       if (!this.module.moduleConfig.nostdlib) {
 //         this.init("_H13__setupStdlib", this.out.function_declarations);
 //         this.out.function_declarations["_H13__setupStdlib"].writeLine(
-//           `void _H13__setupStdlib(${generateUsageCode(this.program.getBuiltinType("Context"), this.program)}* ctx);`,
+//           `void _H13__setupStdlib(${generateUsageCode(this.module.getBuiltinType("Context"), this.module)}* ctx);`,
 //         );
 //         mainWriter.writeLine("_H13__setupStdlib(&ctx);");
 //       }
@@ -69,10 +48,7 @@
 //       mainWriter.writeLine(
 //         `_H4ListI6StringE argsList = _HN7Process10__loadArgvE(&ctx, argc, (uint8_t**)argv);`,
 //       );
-//       mainWriter
-//         .writeLine("return _H4main(&ctx, argsList);")
-//         .popIndent()
-//         .writeLine("}");
+//       mainWriter.writeLine("return _H4main(&ctx, argsList);").popIndent().writeLine("}");
 //     }
 //   }
 
@@ -104,10 +80,7 @@
 //     }
 
 //     this.generateDatatypeUse(
-//       this.program.globalScope.lookupDatatypeSymbol(
-//         "Context",
-//         this.program.globalScope.location,
-//       ),
+//       this.module.globalScope.lookupDatatypeSymbol("Context", this.module.globalScope.location),
 //     );
 
 //     writer.write("\n\n// Type declaration section\n");
@@ -148,39 +121,30 @@
 //   generate() {
 //     this.includeHeader("stdint.h");
 
-//     for (const decl of this.program.cDefinitionDecl) {
+//     for (const decl of this.module.cDefinitionDecl) {
 //       this.out.cDecls[decl] = new OutputWriter().writeLine(decl);
 //     }
 
-//     for (const statement of this.program.concreteGlobalStatements.values()) {
+//     for (const statement of this.module.concreteGlobalStatements.values()) {
 //       const s = this.emitStatement(statement);
-//       this.out.global_variables[mangleSymbol(statement.symbol)] =
-//         new OutputWriter().write(s.temp);
-//       this.out.global_variables[mangleSymbol(statement.symbol)] =
-//         new OutputWriter().write(s.out);
+//       this.out.global_variables[mangleSymbol(statement.symbol)] = new OutputWriter().write(s.temp);
+//       this.out.global_variables[mangleSymbol(statement.symbol)] = new OutputWriter().write(s.out);
 //     }
 
-//     for (const symbol of this.program.concreteFunctions.values()) {
+//     for (const symbol of this.module.concreteFunctions.values()) {
 //       if (symbol.extern === ELinkage.Internal) {
 //         this.generateFuncUse(symbol);
 //       }
 //     }
 
-//     for (const dt of this.program.concreteDatatypes.values()) {
+//     for (const dt of this.module.concreteDatatypes.values()) {
 //       this.generateDatatypeUse(dt);
 //     }
 //   }
 
 //   generateFuncUse(symbol: FunctionSymbol) {
-//     const declaration = (
-//       ftype: FunctionDatatype,
-//       returntype: Datatype,
-//     ): string => {
-//       let decl =
-//         generateUsageCode(returntype, this.program) +
-//         " " +
-//         mangleSymbol(symbol) +
-//         "(";
+//     const declaration = (ftype: FunctionDatatype, returntype: Datatype): string => {
+//       let decl = generateUsageCode(returntype, this.module) + " " + mangleSymbol(symbol) + "(";
 //       const params = [];
 //       if (
 //         symbol.parentSymbol &&
@@ -192,15 +156,11 @@
 //           variant: "RawPointer",
 //           pointee: symbol.parentSymbol,
 //         };
-//         params.push(`${generateUsageCode(thisPtr, this.program)} this`);
+//         params.push(`${generateUsageCode(thisPtr, this.module)} this`);
 //       }
-//       params.push(
-//         `${generateUsageCode(this.program.getBuiltinType("Context"), this.program)}* ctx`,
-//       );
+//       params.push(`${generateUsageCode(this.module.getBuiltinType("Context"), this.module)}* ctx`);
 //       for (const [paramName, paramType] of ftype.functionParameters) {
-//         params.push(
-//           generateUsageCode(paramType, this.program) + " " + paramName,
-//         );
+//         params.push(generateUsageCode(paramType, this.module) + " " + paramName);
 //         // datatypeSymbolUsed(paramType);
 //       }
 //       decl += params.join(", ");
@@ -217,17 +177,13 @@
 
 //     if (!symbol.declared) {
 //       this.init(mangleSymbol(symbol), this.out.function_definitions);
-//       this.out.function_definitions[mangleSymbol(symbol)]
-//         .writeLine(decl + " {")
-//         .pushIndent();
+//       this.out.function_definitions[mangleSymbol(symbol)].writeLine(decl + " {").pushIndent();
 
 //       const s = this.emitScope(symbol.scope);
 //       this.out.function_definitions[mangleSymbol(symbol)].write(s.temp);
 //       this.out.function_definitions[mangleSymbol(symbol)].write(s.out);
 
-//       this.out.function_definitions[mangleSymbol(symbol)]
-//         .popIndent()
-//         .writeLine("}");
+//       this.out.function_definitions[mangleSymbol(symbol)].popIndent().writeLine("}");
 //     }
 //   }
 
@@ -238,10 +194,7 @@
 //     let returned = false;
 //     for (const statement of scope.statements) {
 //       if (returned) {
-//         printWarningMessage(
-//           `Dead code detected and stripped`,
-//           statement.location,
-//         );
+//         printWarningMessage(`Dead code detected and stripped`, statement.location);
 //         break;
 //       }
 
@@ -279,7 +232,7 @@
 //         if (!statement.symbol.type || statement.symbol.variant !== "Variable") {
 //           throw new ImpossibleSituation();
 //         }
-//         const ret = generateUsageCode(statement.symbol.type, this.program);
+//         const ret = generateUsageCode(statement.symbol.type, this.module);
 
 //         if (statement.symbol.extern !== ELinkage.Internal) {
 //           outWriter.write("extern ");
@@ -300,23 +253,19 @@
 //       }
 
 //       case "VariableDefinition": {
-//         if (
-//           !statement.expr ||
-//           !statement.symbol.type ||
-//           statement.symbol.variant !== "Variable"
-//         ) {
+//         if (!statement.expr || !statement.symbol.type || statement.symbol.variant !== "Variable") {
 //           throw new ImpossibleSituation();
 //         }
-//         const ret = generateUsageCode(statement.symbol.type, this.program);
+//         const ret = generateUsageCode(statement.symbol.type, this.module);
 //         const exprWriter = this.emitExpr(statement.expr);
 //         tempWriter.write(exprWriter.temp);
 //         const assignConv = implicitConversion(
 //           statement.expr.type,
 //           statement.symbol.type,
 //           exprWriter.out.get(),
-//           this.program.currentScope,
+//           this.module.currentScope,
 //           statement.expr.location,
-//           this.program,
+//           this.module,
 //         );
 //         const name =
 //           statement.symbol.extern === ELinkage.External_C
@@ -343,11 +292,11 @@
 //         tempWriter.write(exprWriter.temp);
 //         const whileexpr = implicitConversion(
 //           statement.expr.type,
-//           this.program.getBuiltinType("boolean"),
+//           this.module.getBuiltinType("boolean"),
 //           exprWriter.out.get(),
 //           statement.scope,
 //           statement.expr.location,
-//           this.program,
+//           this.module,
 //         );
 //         outWriter.writeLine(`while (${whileexpr}) {`).pushIndent();
 //         const scope = this.emitScope(statement.scope);
@@ -362,11 +311,11 @@
 //         tempWriter.write(exprWriter.temp);
 //         const convexpr = implicitConversion(
 //           statement.if[0].type,
-//           this.program.getBuiltinType("boolean"),
+//           this.module.getBuiltinType("boolean"),
 //           exprWriter.out.get(),
 //           statement.if[1],
 //           statement.if[0].location,
-//           this.program,
+//           this.module,
 //         );
 //         outWriter.writeLine(`if (${convexpr}) {`).pushIndent();
 //         const scope = this.emitScope(statement.if[1]);
@@ -378,11 +327,11 @@
 //           tempWriter.write(exprWriter.temp);
 //           const convexpr = implicitConversion(
 //             expr.type,
-//             this.program.getBuiltinType("boolean"),
+//             this.module.getBuiltinType("boolean"),
 //             exprWriter.out.get(),
 //             scope,
 //             expr.location,
-//             this.program,
+//             this.module,
 //           );
 //           outWriter.writeLine(`else if (${convexpr}) {`).pushIndent();
 //           const s = this.emitScope(scope);
@@ -418,9 +367,9 @@
 //           if (expr.thisPointerExpr.variant !== "ExprCall") {
 //             args.push("&" + exprWriter.out.get());
 //           } else {
-//             const tempname = this.program.makeTempVarname();
+//             const tempname = this.module.makeTempVarname();
 //             tempWriter.writeLine(
-//               `${generateUsageCode(expr.thisPointerExpr.type, this.program)} ${tempname};`,
+//               `${generateUsageCode(expr.thisPointerExpr.type, this.module)} ${tempname};`,
 //             );
 //             args.push("&" + tempname);
 //             useCommaOperatorForThisAssignment = `${tempname} = ${exprWriter.out.get()}`;
@@ -444,7 +393,7 @@
 //           if (expr.expr.type.variant !== "Function") {
 //             throw new ImpossibleSituation();
 //           }
-//           let scope = this.program.currentScope;
+//           let scope = this.module.currentScope;
 //           if (
 //             expr.expr.variant === "MemberAccess" &&
 //             expr.expr.methodSymbol &&
@@ -462,7 +411,7 @@
 //             val,
 //             scope,
 //             expr.args[i].location,
-//             this.program,
+//             this.module,
 //           );
 //           args.push(converted);
 //         }
@@ -473,9 +422,7 @@
 //             `(${useCommaOperatorForThisAssignment},${callExprWriter.out.get()}(${args.join(", ")}))`,
 //           );
 //         } else {
-//           outWriter.write(
-//             callExprWriter.out.get() + "(" + args.join(", ") + ")",
-//           );
+//           outWriter.write(callExprWriter.out.get() + "(" + args.join(", ") + ")");
 //         }
 //         return { out: outWriter, temp: tempWriter };
 
@@ -488,20 +435,16 @@
 //           expr.rightExpr.type,
 //           expr.leftExpr.type,
 //           rightWriter.out.get(),
-//           this.program.currentScope,
+//           this.module.currentScope,
 //           expr.rightExpr.location,
-//           this.program,
+//           this.module,
 //         );
-//         outWriter.write(
-//           `(${leftWriter.out.get()} ${expr.operation} ${assignConv})`,
-//         );
+//         outWriter.write(`(${leftWriter.out.get()} ${expr.operation} ${assignConv})`);
 //         return { out: outWriter, temp: tempWriter };
 //       }
 
 //       case "Object": {
-//         outWriter
-//           .writeLine(`((${generateUsageCode(expr.type, this.program)}) { `)
-//           .pushIndent();
+//         outWriter.writeLine(`((${generateUsageCode(expr.type, this.module)}) { `).pushIndent();
 //         for (const [symbol, memberExpr] of expr.members) {
 //           const exprWriter = this.emitExpr(memberExpr);
 //           tempWriter.write(exprWriter.temp);
@@ -526,9 +469,7 @@
 //       }
 
 //       case "Sizeof":
-//         outWriter.write(
-//           `sizeof(${generateUsageCode(expr.datatype, this.program)})`,
-//         );
+//         outWriter.write(`sizeof(${generateUsageCode(expr.datatype, this.module)})`);
 //         return { out: outWriter, temp: tempWriter };
 
 //       case "SymbolValue":
@@ -559,9 +500,9 @@
 //             expr.expr.type,
 //             expr.type,
 //             exprWriter.out.get(),
-//             this.program.currentScope,
+//             this.module.currentScope,
 //             expr.expr.location,
-//             this.program,
+//             this.module,
 //           ),
 //         );
 //         return { out: outWriter, temp: tempWriter };
@@ -589,9 +530,9 @@
 //               expr.expr.type,
 //               expr.type,
 //               exprWriter.out.get(),
-//               this.program.currentScope,
+//               this.module.currentScope,
 //               expr.expr.location,
-//               this.program,
+//               this.module,
 //             );
 //             outWriter.write("(!" + unaryExpr + ")");
 //             break;
@@ -622,21 +563,19 @@
 //               expr.leftExpr.type,
 //               expr.type,
 //               leftWriter.out.get(),
-//               this.program.currentScope,
+//               this.module.currentScope,
 //               expr.leftExpr.location,
-//               this.program,
+//               this.module,
 //             );
 //             const right = implicitConversion(
 //               expr.rightExpr.type,
 //               expr.type,
 //               rightWriter.out.get(),
-//               this.program.currentScope,
+//               this.module.currentScope,
 //               expr.rightExpr.location,
-//               this.program,
+//               this.module,
 //             );
-//             outWriter.write(
-//               "(" + left + " " + expr.operation + " " + right + ")",
-//             );
+//             outWriter.write("(" + left + " " + expr.operation + " " + right + ")");
 //             break;
 //           }
 
@@ -649,13 +588,7 @@
 //             tempWriter.write(leftWriter.temp);
 //             tempWriter.write(rightWriter.temp);
 //             outWriter.write(
-//               "(" +
-//                 leftWriter.out.get() +
-//                 " " +
-//                 expr.operation +
-//                 " " +
-//                 rightWriter.out.get() +
-//                 ")",
+//               "(" + leftWriter.out.get() + " " + expr.operation + " " + rightWriter.out.get() + ")",
 //             );
 //             break;
 //           }
@@ -667,13 +600,7 @@
 //             tempWriter.write(leftWriter.temp);
 //             tempWriter.write(rightWriter.temp);
 //             outWriter.write(
-//               "(" +
-//                 leftWriter.out.get() +
-//                 " " +
-//                 expr.operation +
-//                 " " +
-//                 rightWriter.out.get() +
-//                 ")",
+//               "(" + leftWriter.out.get() + " " + expr.operation + " " + rightWriter.out.get() + ")",
 //             );
 //             break;
 //           }
@@ -685,13 +612,7 @@
 //             tempWriter.write(leftWriter.temp);
 //             tempWriter.write(rightWriter.temp);
 //             outWriter.write(
-//               "(" +
-//                 leftWriter.out.get() +
-//                 " " +
-//                 expr.operation +
-//                 " " +
-//                 rightWriter.out.get() +
-//                 ")",
+//               "(" + leftWriter.out.get() + " " + expr.operation + " " + rightWriter.out.get() + ")",
 //             );
 //             break;
 //           }
@@ -729,14 +650,11 @@
 //                   break;
 
 //                 case "d":
-//                   value =
-//                     expr.constantSymbol.value * 24 * 3600 * 1000 * 1000 * 1000;
+//                   value = expr.constantSymbol.value * 24 * 3600 * 1000 * 1000 * 1000;
 //                   break;
 
 //                 default:
-//                   throw new InternalError(
-//                     `Unknown unit ${expr.constantSymbol.unit}`,
-//                   );
+//                   throw new InternalError(`Unknown unit ${expr.constantSymbol.unit}`);
 //               }
 //               if (expr.constantSymbol.type.variant !== "Struct") {
 //                 throw new ImpossibleSituation();
@@ -752,16 +670,12 @@
 //                       variant: "Constant",
 //                       constantSymbol: {
 //                         variant: "LiteralConstant",
-//                         type: (
-//                           expr.constantSymbol.type.members[0] as VariableSymbol
-//                         ).type,
+//                         type: (expr.constantSymbol.type.members[0] as VariableSymbol).type,
 //                         value: value,
 //                         location: expr.constantSymbol.location,
 //                       },
 //                       ctx: expr.ctx,
-//                       type: (
-//                         expr.constantSymbol.type.members[0] as VariableSymbol
-//                       ).type,
+//                       type: (expr.constantSymbol.type.members[0] as VariableSymbol).type,
 //                       location: expr.constantSymbol.location,
 //                     },
 //                   ],
@@ -799,13 +713,13 @@
 //     if (!this.out.type_declarations[mangleSymbol(datatype)]) {
 //       this.init(mangleSymbol(datatype), this.out.type_declarations);
 //       this.out.type_declarations[mangleSymbol(datatype)].write(
-//         generateDeclarationCCode(datatype, this.program),
+//         generateDeclarationCCode(datatype, this.module),
 //       );
 //     }
 //     if (!this.out.type_definitions[mangleSymbol(datatype)]) {
 //       this.init(mangleSymbol(datatype), this.out.type_definitions);
 //       this.out.type_definitions[mangleSymbol(datatype)].write(
-//         generateDefinitionCCode(datatype, this.program),
+//         generateDefinitionCCode(datatype, this.module),
 //       );
 //     }
 //   }

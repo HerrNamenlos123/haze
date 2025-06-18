@@ -1,4 +1,4 @@
-import { CompilerError, InternalError, type SourceLoc } from "../Errors";
+import { CompilerError, InternalError, type SourceLoc } from "../shared/Errors";
 import type { EExternLanguage } from "../shared/AST";
 import { type EMethodType, type EPrimitive } from "../shared/common";
 import { makeScopeId, makeSymbolId, makeTypeId, type ID } from "../shared/store";

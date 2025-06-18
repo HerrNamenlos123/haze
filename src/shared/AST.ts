@@ -1,4 +1,4 @@
-import type { SourceLoc } from "../Errors";
+import type { SourceLoc } from "./Errors";
 import type { Collect } from "../SymbolCollection/CollectSymbols";
 import type { EMethodType } from "./common";
 import type { ID } from "./store";

@@ -6,7 +6,7 @@ import type {
   VariableDeclarationContext,
   VariableDefinitionContext,
 } from "./parser/grammar/autogen/HazeParser";
-import type { SourceLoc } from "./Errors";
+import type { SourceLoc } from "./shared/Errors";
 
 export type VariableDefinitionStatement = {
   variant: "VariableDefinition";

@@ -6,15 +6,12 @@ import {
   ImpossibleSituation,
   InternalError,
   SourceLoc,
-} from "./Errors";
+} from "./shared/Errors";
 import { ResolvedScope } from "./shared/CollectionScope";
 import { isDeeplyEqual } from "./deep-equal";
-import type {
-  VariableDeclarationStatement,
-  VariableDefinitionStatement,
-} from "./Statement";
+import type { VariableDeclarationStatement, VariableDefinitionStatement } from "./Statement";
 import { SymbolCollector } from "./SymbolCollector";
-import type { ModuleConfig } from "./Config";
+import type { ModuleConfig } from "./shared/Config";
 import { ParsedStore } from "./shared/store";
 import type { ParsedDatatype, ParsedSymbol } from "./ParsedTypes";
 
@@ -84,11 +81,7 @@ export class Module {
     if (!this.filename) {
       throw new InternalError("Missing filename", getCallerLocation(2));
     }
-    return new SourceLoc(
-      this.filename,
-      ctx.start?.line ?? 0,
-      ctx.start?.column ?? 0,
-    );
+    return new SourceLoc(this.filename, ctx.start?.line ?? 0, ctx.start?.column ?? 0);
   }
 
   getBuiltinPrimitive(name: string) {
