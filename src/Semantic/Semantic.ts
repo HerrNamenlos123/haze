@@ -4,10 +4,12 @@ import {
   type ASTDatatype,
   type ASTExpr,
   type ASTFunctionDatatype,
+  type ASTNamedDatatype,
 } from "../shared/AST";
 import {
   assertID,
   assertScope,
+  EMethodType,
   EPrimitive,
   primitiveToString,
   stringToPrimitive,
@@ -37,15 +39,13 @@ function getSymbol(sr: SemanticResult, id: ID): Semantic.Symbol & { id: ID } {
   return symbol as Semantic.Symbol & { id: ID };
 }
 
-function getTypeFromSymbol(
-  sr: SemanticResult,
-  id: ID,
-): Semantic.Datatype & { id: ID } {
+function getTypeFromSymbol(sr: SemanticResult, id: ID): Semantic.Datatype & { id: ID } {
   const symbol = getSymbol(sr, id);
   if (!symbol.id) {
     throw new InternalError("Symbol id is null");
   }
-  return getType(sr, symbol.id) as Semantic.Datatype & { id: ID };
+  if (symbol.variant !== "Datatype") throw new InternalError("Symbol is not a datatype");
+  return getType(sr, symbol.type) as Semantic.Datatype & { id: ID };
 }
 
 function instantiateDatatype(
@@ -64,11 +64,7 @@ function instantiateDatatype(
         functionParameters: type.functionParameters.map(
           (p) => instantiateSymbol(sr, p, genericContext).id,
         ),
-        functionReturnValue: instantiateSymbol(
-          sr,
-          type.functionReturnValue,
-          genericContext,
-        ).id,
+        functionReturnValue: instantiateSymbol(sr, type.functionReturnValue, genericContext).id,
         generics: [],
       });
 
@@ -76,21 +72,30 @@ function instantiateDatatype(
       return type as Semantic.Datatype & { id: ID };
 
     case "Struct": {
-      const id = sr.typeTable.makeDatatypeAvailable({
+      const struct = sr.typeTable.makeDatatypeAvailable({
         variant: "Struct",
         name: type.name,
-        genericSymbols: type.genericSymbols.map(
-          (g) => instantiateSymbol(sr, g, genericContext).id,
-        ),
+        genericSymbols: type.genericSymbols.map((g) => instantiateSymbol(sr, g, genericContext).id),
         externLanguage: type.externLanguage,
-        members: type.members.map((m) => {
-          return instantiateSymbol(sr, m, genericContext).id;
-        }),
+        members: [],
         methods: [],
         fullNamespacedName: type.fullNamespacedName,
         namespaces: type.namespaces,
+      }) as Semantic.StructDatatype;
+
+      struct.members = type.members.map((m) => {
+        return instantiateSymbol(sr, m, genericContext, {
+          newParentSymbol: struct.id,
+        }).id;
       });
-      return id;
+
+      struct.methods = type.methods.map((m) => {
+        return instantiateSymbol(sr, m, genericContext, {
+          newParentSymbol: struct.id,
+        }).id;
+      });
+
+      return struct as Semantic.Datatype & { id: ID };
     }
 
     default:
@@ -102,6 +107,9 @@ function instantiateSymbol(
   sr: SemanticResult,
   id: ID,
   genericContext: GenericContext,
+  meta?: {
+    newParentSymbol?: ID;
+  },
 ): Semantic.Symbol & { id: ID } {
   const symbol = sr.symbolTable.get(id);
 
@@ -115,6 +123,8 @@ function instantiateSymbol(
         mutable: symbol.mutable,
         sourceLoc: symbol.sourceLoc,
         typeSymbol: instantiateSymbol(sr, symbol.typeSymbol, genericContext).id,
+        memberOfType: meta?.newParentSymbol,
+        definedInCollectorScope: symbol.definedInCollectorScope,
       });
       return id;
     }
@@ -144,9 +154,8 @@ function instantiateSymbol(
         externLanguage: symbol.externLanguage,
         method: symbol.method,
         name: symbol.name,
-        namespacePath: symbol.namespacePath,
-        typeSymbol: instantiateSymbol(sr, symbol.typeSymbol!, genericContext)
-          .id,
+        typeSymbol: instantiateSymbol(sr, symbol.typeSymbol!, genericContext).id,
+        nestedParentTypeSymbol: meta?.newParentSymbol,
       });
     }
 
@@ -158,14 +167,15 @@ function instantiateSymbol(
         externLanguage: symbol.externLanguage,
         method: symbol.method,
         name: symbol.name,
-        namespacePath: symbol.namespacePath,
-        typeSymbol: instantiateSymbol(sr, symbol.id!, genericContext).id,
+        typeSymbol: instantiateSymbol(sr, symbol.typeSymbol!, genericContext).id,
         scope: symbol.scope,
+        methodOfSymbol: meta?.newParentSymbol,
+        nestedParentTypeSymbol: meta?.newParentSymbol,
       });
     }
 
     default:
-      throw new InternalError("Unhandled variant: " + symbol.variant);
+      throw new InternalError("Unhandled variant");
   }
 }
 
@@ -193,12 +203,7 @@ function resolveSymbol(
     const dt = sr.typeTable.makeDatatypeAvailable({
       variant: "Function",
       vararg: datatype.ellipsis,
-      functionReturnValue: resolveSymbol(
-        sr,
-        scope,
-        datatype.returnType,
-        genericContext,
-      ).id,
+      functionReturnValue: resolveSymbol(sr, scope, datatype.returnType, genericContext).id,
       functionParameters: datatype.params.map(
         (p) => resolveSymbol(sr, scope, p.datatype, genericContext).id,
       ),
@@ -256,23 +261,23 @@ function resolveSymbol(
         );
       }
 
-      // if (found.generics.length > 0) {
-      //   for (let i = 0; i < found.generics.length; i++) {
-      //     const g = datatype.generics[i];
-      //     if (
-      //       g.variant === "NumberConstant" ||
-      //       g.variant === "StringConstant" ||
-      //       g.variant === "BooleanConstant"
-      //     ) {
-      //       throw new InternalError("Constants not implemented in generics");
-      //     }
-      //     console.log("Mapping", found._collect.fullNamespacedName);
-      //     genericContext.symbolToSymbol.set(
-      //       generics[i],
-      //       resolveSymbol(sr, scope!, g, genericContext).id,
-      //     );
-      //   }
-      // }
+      if (found.generics.length > 0) {
+        for (let i = 0; i < found.generics.length; i++) {
+          const g = datatype.generics[i];
+          if (
+            g.variant === "NumberConstant" ||
+            g.variant === "StringConstant" ||
+            g.variant === "BooleanConstant"
+          ) {
+            throw new InternalError("Constants not implemented in generics");
+          }
+
+          genericContext.symbolToSymbol.set(
+            generics[i],
+            resolveSymbol(sr, assertScope(datatype._collect.usedInScope), g, genericContext).id,
+          );
+        }
+      }
 
       const struct = sr.typeTable.makeDatatypeAvailable({
         variant: "Struct",
@@ -286,55 +291,51 @@ function resolveSymbol(
       });
       if (struct.variant !== "Struct") throw new ImpossibleSituation();
       found._semantic.type = struct.id;
-      // console.log("Made struct ", struct.fullNamespacedName, generics);
-      // PrettyPrintAnalyzed(sr);
+
+      const structSym = sr.symbolTable.makeSymbolAvailable({
+        variant: "Datatype",
+        export: false,
+        sourceloc: found.sourceloc,
+        type: struct.id,
+      });
 
       // Add members
       struct.members = found.members.map((m) => {
-        console.log(
-          "Resolving member of",
-          found._collect.fullNamespacedName,
-          found._collect.scope?.symbolTable.symbols.map((s) => s.name),
-          m.type,
-        );
-        const type = resolveSymbol(
-          sr,
-          found._collect.scope!,
-          m.type,
-          genericContext,
-        );
         return sr.symbolTable.makeSymbolAvailable({
           variant: "Variable",
           name: m.name,
           externLanguage: EExternLanguage.None,
           export: false,
           mutable: true,
+          definedInCollectorScope: found._collect.scope!.id,
           sourceLoc: m.sourceloc,
-          typeSymbol: type.id,
+          typeSymbol: resolveSymbol(sr, found._collect.scope!, m.type, genericContext).id,
+          memberOfType: struct.id,
         }).id;
       });
 
-      // return struct;
-      // const dt = instantiateDatatype(sr, struct.id, genericContext);
-      return sr.symbolTable.makeSymbolAvailable({
+      // Add methods
+      struct.methods = found.methods
+        .map((m) => {
+          m._semantic.memberOfSymbol = structSym.id;
+          return analyze(sr, m);
+        })
+        .filter(Boolean)
+        .map((m) => m!);
+
+      const dt = instantiateDatatype(sr, struct.id, genericContext);
+      const sym = sr.symbolTable.makeSymbolAvailable({
         variant: "Datatype",
         export: false,
-        type: struct.id,
+        type: dt.id,
         sourceloc: found.sourceloc,
       });
+      return sym;
     } else if (found.variant === "NamespaceDefinition") {
       if (datatype.nested) {
-        return resolveSymbol(
-          sr,
-          found._collect.scope!,
-          datatype.nested,
-          genericContext,
-        );
+        return resolveSymbol(sr, found._collect.scope!, datatype.nested, genericContext);
       } else {
-        throw new CompilerError(
-          `Namespace cannot be used as a datatype here`,
-          datatype.sourceloc,
-        );
+        throw new CompilerError(`Namespace cannot be used as a datatype here`, datatype.sourceloc);
       }
     } else if (found.variant === "GenericPlaceholder") {
       if (found.belongsToSymbol.variant !== "StructDefinition") {
@@ -362,23 +363,25 @@ function resolveSymbol(
   }
 }
 
-function analyzeExpr(
-  sr: SemanticResult,
-  scope: Collect.Scope,
-  expr: ASTExpr,
-): Semantic.Expression {
+function analyzeExpr(sr: SemanticResult, scope: Collect.Scope, expr: ASTExpr): Semantic.Expression {
   switch (expr.variant) {
     case "BinaryExpr":
-      break;
+      throw new ImpossibleSituation();
 
     case "ConstantExpr": {
       const dt = sr.typeTable.makeDatatypeAvailable({
         variant: "Primitive",
         primitive: EPrimitive.i32,
       });
+      const sym = sr.symbolTable.makeSymbolAvailable({
+        variant: "Datatype",
+        export: false,
+        type: dt.id,
+        sourceloc: expr.sourceloc,
+      });
       return {
         variant: "Constant",
-        type: dt.id,
+        typeSymbol: sym.id,
         value: expr.constant.value,
       };
     }
@@ -390,35 +393,54 @@ function analyzeExpr(
     case "ExprCallExpr": {
       const calledExpr = analyzeExpr(sr, scope, expr.calledExpr);
       const args = expr.arguments.map((a) => analyzeExpr(sr, scope, a));
-      const functype = getType(
-        sr,
-        calledExpr.type,
-      ) as Semantic.FunctionDatatype;
+      const functype = getTypeFromSymbol(sr, calledExpr.typeSymbol) as Semantic.FunctionDatatype;
       return {
         variant: "ExprCall",
         calledExpr: calledExpr,
         arguments: args,
-        type: getTypeFromSymbol(sr, functype.functionReturnValue).id!,
+        typeSymbol: getSymbol(sr, functype.functionReturnValue).id!,
       };
     }
 
     case "SymbolValueExpr": {
+      if (expr.name === "this") {
+        let s: Collect.Scope | undefined = scope;
+        while (s) {
+          if (scope._semantic.forFunctionSymbol) {
+            const symbol = getSymbol(sr, scope._semantic.forFunctionSymbol);
+            if (
+              symbol.variant === "FunctionDefinition" &&
+              symbol.method !== EMethodType.NotAMethod &&
+              symbol.methodOfSymbol
+            ) {
+              const structType = getTypeFromSymbol(sr, symbol.methodOfSymbol);
+              if (structType.variant !== "Struct") {
+                throw new ImpossibleSituation();
+              }
+              return {
+                variant: "SymbolValueThisPointer",
+                typeSymbol: symbol.methodOfSymbol!,
+              };
+            }
+            break;
+          }
+          s = s.parentScope;
+        }
+      }
+
       const symbol = scope.symbolTable.lookupSymbol(expr.name, expr.sourceloc);
       if (
         symbol.variant === "VariableDefinitionStatement" ||
         symbol.variant === "GlobalVariableDefinition"
       ) {
-        if (!symbol._semantic.symbol)
-          throw new InternalError("Semantic Symbol missing");
-        const variableSymbol = getSymbol(
-          sr,
-          symbol._semantic.symbol,
-        ) as Semantic.VariableSymbol;
+        if (!symbol._semantic.symbol) throw new InternalError("Semantic Symbol missing");
+        const variableSymbol = getSymbol(sr, symbol._semantic.symbol) as Semantic.VariableSymbol;
+        console.log("VAR SYM", variableSymbol);
 
         return {
           variant: "SymbolValue",
           symbol: variableSymbol.id!,
-          type: variableSymbol.typeSymbol,
+          typeSymbol: variableSymbol.typeSymbol,
         };
       } else if (
         symbol.variant === "FunctionDeclaration" ||
@@ -442,19 +464,16 @@ function analyzeExpr(
         return {
           variant: "SymbolValue",
           symbol: functionSymbol.id,
-          type: functionSymbol.typeSymbol,
+          typeSymbol: functionSymbol.typeSymbol,
         };
       } else {
-        throw new CompilerError(
-          `Symbol ${symbol.name} cannot be used as a value`,
-          expr.sourceloc,
-        );
+        throw new CompilerError(`Symbol ${symbol.name} cannot be used as a value`, expr.sourceloc);
       }
     }
 
     case "ExprMemberAccess": {
       const object = analyzeExpr(sr, scope, expr.expr);
-      const structType = getTypeFromSymbol(sr, object.type);
+      const structType = getTypeFromSymbol(sr, object.typeSymbol);
       if (structType.variant !== "Struct") {
         throw new CompilerError(
           "This expression is not a struct and there are no members to access",
@@ -466,22 +485,38 @@ function analyzeExpr(
         const mm = sr.symbolTable.get(m)! as Semantic.VariableSymbol;
         return mm.name === expr.member;
       });
-      if (!memberId) {
-        throw new CompilerError(
-          `No such member in struct ${structType.name}`,
-          expr.sourceloc,
-        );
+      const methodId = structType.methods.find((m) => {
+        const mm = sr.symbolTable.get(m)! as Semantic.FunctionDefinitionSymbol;
+        return mm.name === expr.member;
+      });
+      // console.log(structType);
+
+      if (memberId) {
+        const member = getSymbol(sr, memberId) as Semantic.VariableSymbol;
+        const memberTypeSymbol = getSymbol(sr, member.typeSymbol);
+
+        return {
+          variant: "ExprMemberAccess",
+          expr: object,
+          memberName: expr.member,
+          typeSymbol: memberTypeSymbol.id!,
+        };
+      } else if (methodId) {
+        const method = getSymbol(sr, methodId) as
+          | Semantic.FunctionDeclarationSymbol
+          | Semantic.FunctionDefinitionSymbol;
+        const methodTypeSymbol = getSymbol(sr, method.typeSymbol);
+
+        return {
+          variant: "ExprMemberAccess",
+          expr: object,
+          method: method.id,
+          memberName: expr.member,
+          typeSymbol: methodTypeSymbol.id!,
+        };
+      } else {
+        throw new CompilerError(`No such member in struct ${structType.name}`, expr.sourceloc);
       }
-
-      const member = getSymbol(sr, memberId) as Semantic.VariableSymbol;
-      const memberType = getTypeFromSymbol(sr, member.typeSymbol);
-
-      return {
-        variant: "ExprMemberAccess",
-        expr: object,
-        memberName: expr.member,
-        type: memberType.id!,
-      };
     }
 
     case "StructInstantiationExpr": {
@@ -489,10 +524,7 @@ function analyzeExpr(
       if (symbol.variant !== "Datatype") throw new ImpossibleSituation();
       const type = getType(sr, symbol.type);
       if (type.variant !== "Struct")
-        throw new CompilerError(
-          "This type cannot be instantiated",
-          expr.sourceloc,
-        );
+        throw new CompilerError("This type cannot be instantiated", expr.sourceloc);
 
       let remainingMembers = type.members.map(
         (m) => (getSymbol(sr, m) as Semantic.VariableSymbol).name,
@@ -512,10 +544,7 @@ function analyzeExpr(
         });
 
         if (!variableId) {
-          throw new CompilerError(
-            `Member with name ${m.name} does not exist`,
-            expr.sourceloc,
-          );
+          throw new CompilerError(`Member with name ${m.name} does not exist`, expr.sourceloc);
         }
         const variable = getSymbol(sr, variableId) as Semantic.VariableSymbol;
         const variableTypeSymbol = getSymbol(sr, variable.typeSymbol);
@@ -526,14 +555,13 @@ function analyzeExpr(
           throw new ImpossibleSituation();
 
         if (assignedMembers.includes(m.name)) {
-          throw new CompilerError(
-            `Cannot assign member ${m.name} twice`,
-            expr.sourceloc,
-          );
+          throw new CompilerError(`Cannot assign member ${m.name} twice`, expr.sourceloc);
         }
 
         if (variableTypeSymbol.variant !== "GenericParameter") {
-          if (e.type !== variableTypeSymbol.type) {
+          console.log(e.typeSymbol, variableTypeSymbol.id);
+          PrettyPrintAnalyzed(sr);
+          if (e.typeSymbol !== variableTypeSymbol.id) {
             throw new CompilerError(
               `Member assignment ${m.name} has type mismatch`,
               expr.sourceloc,
@@ -558,7 +586,7 @@ function analyzeExpr(
       return {
         variant: "StructInstantiation",
         assign: assign,
-        type: type.id!,
+        typeSymbol: symbol.id!,
       };
     }
 
@@ -567,11 +595,7 @@ function analyzeExpr(
   }
 }
 
-function analyzeScope(
-  sr: SemanticResult,
-  scope: Collect.Scope,
-  semanticScope: Semantic.Scope,
-) {
+function analyzeScope(sr: SemanticResult, scope: Collect.Scope, semanticScope: Semantic.Scope) {
   scope._semantic.returnTypeSymbols = [];
   for (const s of scope.statements) {
     switch (s.variant) {
@@ -598,23 +622,20 @@ function analyzeScope(
       case "ReturnStatement":
         if (s.expr) {
           const expr = analyzeExpr(sr, scope, s.expr);
-          scope._semantic.returnTypeSymbols.push(expr.type);
+          scope._semantic.returnTypeSymbols.push(expr.typeSymbol);
         }
         break;
 
       case "VariableDefinitionStatement": {
         const expr = s.expr && analyzeExpr(sr, scope, s.expr);
-        let datatypeSym = s.datatype && resolveSymbol(sr, scope, s.datatype);
-        if (!expr && !datatypeSym) throw new ImpossibleSituation();
-        if (datatypeSym && datatypeSym.variant !== "Datatype")
-          throw new ImpossibleSituation();
-        let datatype = datatypeSym && getType(sr, datatypeSym.type);
-        if (!datatype && expr) {
-          datatype = getType(sr, expr.type);
+
+        let typeSymbolId: ID | undefined = undefined;
+        if (s.datatype) {
+          typeSymbolId = resolveSymbol(sr, scope, s.datatype).id;
+        } else {
+          if (!expr) throw new ImpossibleSituation();
+          typeSymbolId = expr.typeSymbol;
         }
-        if (!datatype?.id) throw new ImpossibleSituation();
-        if (!expr)
-          throw new InternalError("Zero initializing not implemented yet");
 
         const symbol = sr.symbolTable.makeSymbolAvailable({
           variant: "Variable",
@@ -622,8 +643,10 @@ function analyzeScope(
           externLanguage: EExternLanguage.None,
           mutable: s.mutable,
           name: s.name,
-          typeSymbol: datatype.id,
+          typeSymbol: typeSymbolId,
+          definedInCollectorScope: scope.id,
           sourceLoc: s.sourceloc,
+          memberOfType: undefined,
         });
         s._semantic.symbol = symbol.id;
 
@@ -631,7 +654,7 @@ function analyzeScope(
           variant: "Variable",
           mutable: s.mutable,
           name: s.name,
-          type: datatype.id,
+          typeSymbol: typeSymbolId,
           value: expr,
         });
         break;
@@ -644,7 +667,20 @@ function analyzeScope(
   }
 }
 
-function analyze(sr: SemanticResult, item: Collect.Symbol) {
+function assertSameReturnTypes(scope: Collect.Scope) {
+  if (scope._semantic.returnTypeSymbols) {
+    for (const id of scope._semantic.returnTypeSymbols) {
+      if (id !== scope._semantic.returnTypeSymbols[0]) {
+        throw new CompilerError(
+          "Multiple different return types are not supported yet",
+          scope.sourceloc,
+        );
+      }
+    }
+  }
+}
+
+function analyze(sr: SemanticResult, item: Collect.Symbol): ID | undefined {
   switch (item.variant) {
     case "FunctionDeclaration": {
       const type: ASTFunctionDatatype = {
@@ -663,10 +699,10 @@ function analyze(sr: SemanticResult, item: Collect.Symbol) {
         method: item._collect.method!,
         name: item.name,
         // namespacePath: item.namespacePath,
-        namespacePath: [],
         sourceloc: item.sourceloc,
       }).id;
-      break;
+
+      return item._semantic.symbol!;
     }
 
     case "FunctionDefinition": {
@@ -685,54 +721,33 @@ function analyze(sr: SemanticResult, item: Collect.Symbol) {
         externLanguage: item.externLanguage,
         method: item._collect.method!,
         name: item.name,
-        namespacePath: item._collect.namespacePath!,
         sourceloc: item.sourceloc,
         scope: new Semantic.Scope(item.sourceloc),
       });
       if (symbol.variant !== "FunctionDefinition") {
         throw new ImpossibleSituation();
       }
-
       item._semantic.symbol = symbol.id;
 
       if (item.funcbody._collect.scope) {
+        item.funcbody._collect.scope._semantic.forFunctionSymbol = symbol.id;
         analyzeScope(sr, item.funcbody._collect.scope, symbol.scope);
       }
 
       const scope = assertScope(item.funcbody._collect.scope);
       if (item.returnType!.variant === "Deferred") {
-        if (
-          scope._semantic.returnTypeSymbols &&
-          scope._semantic.returnTypeSymbols.length > 0
-        ) {
-          if (scope._semantic.returnTypeSymbols) {
-            for (const id of scope._semantic.returnTypeSymbols) {
-              if (id !== scope._semantic.returnTypeSymbols[0]) {
-                throw new CompilerError(
-                  "Multiple different return types are not supported yet",
-                  scope.sourceloc,
-                );
-              }
-            }
-          }
+        if (scope._semantic.returnTypeSymbols && scope._semantic.returnTypeSymbols.length > 0) {
+          assertSameReturnTypes(scope);
 
-          const functypeSymbol = sr.symbolTable.get(
-            symbol.typeSymbol,
-          ) as Semantic.DatatypeSymbol;
-          const functype = sr.typeTable.get(
-            functypeSymbol.type,
-          ) as Semantic.FunctionDatatype;
+          const functypeSymbol = sr.symbolTable.get(symbol.typeSymbol) as Semantic.DatatypeSymbol;
+          const functype = sr.typeTable.get(functypeSymbol.type) as Semantic.FunctionDatatype;
           functype.functionReturnValue = scope._semantic.returnTypeSymbols[0];
           symbol.typeSymbol = sr.typeTable.makeDatatypeAvailable(functype).id;
           symbol = sr.symbolTable.makeSymbolAvailable(symbol);
           item._semantic.symbol = symbol.id;
         } else {
-          const functypeSymbol = sr.symbolTable.get(
-            symbol.typeSymbol,
-          ) as Semantic.DatatypeSymbol;
-          const functype = sr.typeTable.get(
-            functypeSymbol.type,
-          ) as Semantic.FunctionDatatype;
+          const functypeSymbol = sr.symbolTable.get(symbol.typeSymbol) as Semantic.DatatypeSymbol;
+          const functype = sr.typeTable.get(functypeSymbol.type) as Semantic.FunctionDatatype;
           functype.functionReturnValue = sr.typeTable.makeDatatypeAvailable({
             variant: "Primitive",
             primitive: EPrimitive.none,
@@ -742,28 +757,77 @@ function analyze(sr: SemanticResult, item: Collect.Symbol) {
           item._semantic.symbol = symbol.id;
         }
       } else {
-        if (scope._semantic.returnTypeSymbols) {
-          for (const id of scope._semantic.returnTypeSymbols) {
-            if (id !== scope._semantic.returnTypeSymbols[0]) {
-              throw new CompilerError(
-                "Multiple different return types are not supported yet",
-                scope.sourceloc,
-              );
-            }
-          }
-
-          // TODO
-        }
+        assertSameReturnTypes(scope);
       }
 
-      break;
+      return symbol.id;
+    }
+
+    case "StructMethod": {
+      const type: ASTFunctionDatatype = {
+        variant: "FunctionDatatype",
+        params: item.params,
+        ellipsis: item.ellipsis,
+        returnType: item.returnType!,
+        sourceloc: item.sourceloc,
+      };
+
+      let symbol = sr.symbolTable.defineSymbol({
+        variant: "FunctionDefinition",
+        typeSymbol: resolveSymbol(sr, item._collect.definedInScope!, type).id,
+        export: false,
+        externLanguage: EExternLanguage.None,
+        method: EMethodType.Method,
+        name: item.name,
+        sourceloc: item.sourceloc,
+        methodOfSymbol: item._semantic.memberOfSymbol,
+        scope: new Semantic.Scope(item.sourceloc),
+        nestedParentTypeSymbol: item._semantic.memberOfSymbol,
+      });
+      if (symbol.variant !== "FunctionDefinition") {
+        throw new ImpossibleSituation();
+      }
+      item._semantic.symbol = symbol.id;
+
+      if (item.funcbody._collect.scope) {
+        item.funcbody._collect.scope._semantic.forFunctionSymbol = symbol.id;
+        analyzeScope(sr, item.funcbody._collect.scope, symbol.scope);
+      }
+
+      const scope = assertScope(item.funcbody._collect.scope);
+      if (item.returnType!.variant === "Deferred") {
+        if (scope._semantic.returnTypeSymbols && scope._semantic.returnTypeSymbols.length > 0) {
+          assertSameReturnTypes(scope);
+
+          const functypeSymbol = sr.symbolTable.get(symbol.typeSymbol) as Semantic.DatatypeSymbol;
+          const functype = sr.typeTable.get(functypeSymbol.type) as Semantic.FunctionDatatype;
+          functype.functionReturnValue = scope._semantic.returnTypeSymbols[0];
+          symbol.typeSymbol = sr.typeTable.makeDatatypeAvailable(functype).id;
+          symbol = sr.symbolTable.makeSymbolAvailable(symbol);
+          item._semantic.symbol = symbol.id;
+        } else {
+          const functypeSymbol = sr.symbolTable.get(symbol.typeSymbol) as Semantic.DatatypeSymbol;
+          const functype = sr.typeTable.get(functypeSymbol.type) as Semantic.FunctionDatatype;
+          functype.functionReturnValue = sr.typeTable.makeDatatypeAvailable({
+            variant: "Primitive",
+            primitive: EPrimitive.none,
+          }).id;
+          symbol.typeSymbol = sr.typeTable.makeDatatypeAvailable(functype).id;
+          symbol = sr.symbolTable.makeSymbolAvailable(symbol);
+          item._semantic.symbol = symbol.id;
+        }
+      } else {
+        assertSameReturnTypes(scope);
+      }
+
+      return symbol.id;
     }
 
     case "NamespaceDefinition":
       for (const symbol of item._collect.scope!.symbolTable.symbols) {
         analyze(sr, symbol);
       }
-      break;
+      return undefined;
   }
 }
 
@@ -811,6 +875,12 @@ export function PrettyPrintAnalyzed(sr: SemanticResult) {
         return "(" + s + ")";
       }
 
+      case "Deferred":
+        return "_deferred_";
+
+      case "Namespace":
+        return t.name;
+
       // case "GenericPlaceholder":
       //   return t.name;
 
@@ -844,7 +914,9 @@ export function PrettyPrintAnalyzed(sr: SemanticResult) {
         break;
 
       case "Struct":
-        print(` - [${id}] StructType ${typeFunc(id)}`);
+        print(
+          ` - [${id}] StructType ${typeFunc(id)} members=${type.members.map((id) => id).join(", ")}`,
+        );
         break;
 
       case "Deferred":
@@ -872,9 +944,7 @@ export function PrettyPrintAnalyzed(sr: SemanticResult) {
         break;
 
       case "FunctionDefinition":
-        print(
-          ` - [${id}] FuncDef ${symbol.namespacePath.map((p) => p + ".")}${symbol.name}() type=${symbol.typeSymbol}`,
-        );
+        print(` - [${id}] FuncDef ${symbol.name}() type=${symbol.typeSymbol}`);
         break;
 
       case "GenericParameter":
@@ -883,7 +953,7 @@ export function PrettyPrintAnalyzed(sr: SemanticResult) {
 
       case "Variable":
         print(
-          ` - [${id}] Variable ${symbol.name} typeSymbol=${symbol.typeSymbol}`,
+          ` - [${id}] Variable ${symbol.name} typeSymbol=${symbol.typeSymbol} memberOf=${symbol.memberOfType}`,
         );
         break;
     }

@@ -1,9 +1,4 @@
-import {
-  CompilerError,
-  InternalError,
-  printErrorMessage,
-  type SourceLoc,
-} from "../Errors";
+import { CompilerError, InternalError, printErrorMessage, type SourceLoc } from "../Errors";
 import {
   EAssignmentOperation,
   EBinaryOperation,
@@ -97,12 +92,7 @@ import {
   VariableCreationStatementContext,
   WhileStatementContext,
 } from "./grammar/autogen/HazeParser";
-import {
-  BaseErrorListener,
-  CharStream,
-  CommonTokenStream,
-  ParserRuleContext,
-} from "antlr4ng";
+import { BaseErrorListener, CharStream, CommonTokenStream, ParserRuleContext } from "antlr4ng";
 import { HazeVisitor } from "./grammar/autogen/HazeVisitor";
 
 export namespace Parser {
@@ -122,11 +112,7 @@ export namespace Parser {
       msg: string,
       e: any,
     ) {
-      printErrorMessage(
-        msg,
-        { filename: this.filename, line, column },
-        "SyntaxError",
-      );
+      printErrorMessage(msg, { filename: this.filename, line, column }, "SyntaxError");
     }
   }
 
@@ -201,9 +187,7 @@ class ASTTransformer extends HazeVisitor<any> {
     }
   }
 
-  mutability(
-    ctx: GlobalVariableDefinitionContext | VariableCreationStatementContext,
-  ): boolean {
+  mutability(ctx: GlobalVariableDefinitionContext | VariableCreationStatementContext): boolean {
     if (!ctx._mutability) {
       throw new InternalError("Mutability field of variable is not available");
     }
@@ -212,9 +196,7 @@ class ASTTransformer extends HazeVisitor<any> {
     } else if (ctx._mutability.text === "const") {
       return false;
     } else {
-      throw new InternalError(
-        "Mutability field of variable is neither let nor const",
-      );
+      throw new InternalError("Mutability field of variable is neither let nor const");
     }
   }
 
@@ -294,11 +276,7 @@ class ASTTransformer extends HazeVisitor<any> {
       return EBinaryOperation.Unequal;
     } else if (ctx._op.length === 1 && ctx._op[0].text === "is") {
       return EBinaryOperation.Equal;
-    } else if (
-      ctx._op.length === 2 &&
-      ctx._op[0].text === "is" &&
-      ctx._op[1].text === "not"
-    ) {
+    } else if (ctx._op.length === 2 && ctx._op[0].text === "is" && ctx._op[1].text === "not") {
       return EBinaryOperation.Unequal;
     } else if (ctx._op.length === 1 && ctx._op[0].text === "and") {
       return EBinaryOperation.BoolAnd;
@@ -315,9 +293,7 @@ class ASTTransformer extends HazeVisitor<any> {
     return ctx.children.map((c) => this.visit(c));
   };
 
-  visitCInjectDirective = (
-    ctx: CInjectDirectiveContext,
-  ): ASTCInjectDirective => {
+  visitCInjectDirective = (ctx: CInjectDirectiveContext): ASTCInjectDirective => {
     return {
       variant: "CInjectDirective",
       code: JSON.parse(ctx.STRING_LITERAL().getText()),
@@ -391,10 +367,7 @@ class ASTTransformer extends HazeVisitor<any> {
         break;
 
       default:
-        throw new CompilerError(
-          `The unit '${unit}' is not known to the compiler`,
-          this.loc(ctx),
-        );
+        throw new CompilerError(`The unit '${unit}' is not known to the compiler`, this.loc(ctx));
     }
 
     return {
@@ -405,32 +378,24 @@ class ASTTransformer extends HazeVisitor<any> {
     };
   };
 
-  visitGenericLiteralDatatype = (
-    ctx: GenericLiteralDatatypeContext,
-  ): ASTDatatype => {
+  visitGenericLiteralDatatype = (ctx: GenericLiteralDatatypeContext): ASTDatatype => {
     return this.visit(ctx.datatype());
   };
 
-  visitGenericLiteralConstant = (
-    ctx: GenericLiteralConstantContext,
-  ): ASTConstant => {
+  visitGenericLiteralConstant = (ctx: GenericLiteralConstantContext): ASTConstant => {
     return this.visit(ctx.constant());
   };
 
   visitDatatypeFragment = (ctx: DatatypeFragmentContext) => {
     return {
       name: ctx.ID().getText(),
-      generics: ctx
-        .genericLiteral()
-        .map((g) => this.visit(g) as ASTDatatype | ASTConstant),
+      generics: ctx.genericLiteral().map((g) => this.visit(g) as ASTDatatype | ASTConstant),
       sourceloc: this.loc(ctx),
     };
   };
 
   visitNamedDatatype = (ctx: NamedDatatypeContext): ASTNamedDatatype => {
-    const fragments = ctx
-      .datatypeFragment()
-      .map((c) => this.visitDatatypeFragment(c));
+    const fragments = ctx.datatypeFragment().map((c) => this.visitDatatypeFragment(c));
     const datatypes: ASTNamedDatatype[] = [];
     for (const fragment of fragments.reverse()) {
       datatypes.push({
@@ -439,14 +404,13 @@ class ASTTransformer extends HazeVisitor<any> {
         sourceloc: fragment.sourceloc,
         generics: fragment.generics,
         nested: datatypes[datatypes.length - 1],
+        _collect: {},
       });
     }
     return datatypes[datatypes.length - 1];
   };
 
-  visitParams = (
-    ctx: ParamsContext,
-  ): { params: ASTParam[]; ellipsis: boolean } => {
+  visitParams = (ctx: ParamsContext): { params: ASTParam[]; ellipsis: boolean } => {
     const params = ctx.param().map(
       (p) =>
         ({
@@ -461,9 +425,7 @@ class ASTTransformer extends HazeVisitor<any> {
     };
   };
 
-  visitFunctionDeclaration = (
-    ctx: FunctionDeclarationContext,
-  ): ASTFunctionDeclaration => {
+  visitFunctionDeclaration = (ctx: FunctionDeclarationContext): ASTFunctionDeclaration => {
     const names = ctx.ID().map((c) => c.getText());
     const params = this.visitParams(ctx.params());
     return {
@@ -489,9 +451,7 @@ class ASTTransformer extends HazeVisitor<any> {
     };
   };
 
-  visitFunctionDefinition = (
-    ctx: FunctionDefinitionContext,
-  ): ASTFunctionDefinition => {
+  visitFunctionDefinition = (ctx: FunctionDefinitionContext): ASTFunctionDefinition => {
     const names = ctx.ID().map((c) => c.getText());
     const params = this.visitParams(ctx.params());
     return {
@@ -559,12 +519,12 @@ class ASTTransformer extends HazeVisitor<any> {
       returnType: (ctx.datatype() && this.visit(ctx.datatype()!)) || undefined,
       funcbody: (ctx.funcbody() && this.visit(ctx.funcbody()!)) || undefined,
       sourceloc: this.loc(ctx),
+      _collect: {},
+      _semantic: {},
     };
   };
 
-  visitStructDefinition = (
-    ctx: StructDefinitionContext,
-  ): ASTStructDefinition => {
+  visitStructDefinition = (ctx: StructDefinitionContext): ASTStructDefinition => {
     const name = ctx.ID()[0].getText();
     const generics = ctx
       .ID()
@@ -607,9 +567,7 @@ class ASTTransformer extends HazeVisitor<any> {
     };
   };
 
-  visitCInlineStatement = (
-    ctx: CInlineStatementContext,
-  ): ASTInlineCStatement => {
+  visitCInlineStatement = (ctx: CInlineStatementContext): ASTInlineCStatement => {
     return {
       variant: "InlineCStatement",
       code: ctx.STRING_LITERAL().getText(),
@@ -743,9 +701,7 @@ class ASTTransformer extends HazeVisitor<any> {
     };
   };
 
-  visitExprMemberAccess = (
-    ctx: ExprMemberAccessContext,
-  ): ASTExprMemberAccess => {
+  visitExprMemberAccess = (ctx: ExprMemberAccessContext): ASTExprMemberAccess => {
     return {
       variant: "ExprMemberAccess",
       expr: this.visit(ctx.expr()),
@@ -797,9 +753,7 @@ class ASTTransformer extends HazeVisitor<any> {
     };
   };
 
-  visitExplicitCastExpr = (
-    ctx: ExplicitCastExprContext,
-  ): ASTExplicitCastExpr => {
+  visitExplicitCastExpr = (ctx: ExplicitCastExprContext): ASTExplicitCastExpr => {
     return {
       variant: "ExplicitCastExpr",
       castedTo: this.visit(ctx.datatype()),
@@ -820,9 +774,7 @@ class ASTTransformer extends HazeVisitor<any> {
     };
   };
 
-  visitExprAssignmentExpr = (
-    ctx: ExprAssignmentExprContext,
-  ): ASTExprAssignmentExpr => {
+  visitExprAssignmentExpr = (ctx: ExprAssignmentExprContext): ASTExprAssignmentExpr => {
     return {
       variant: "ExprAssignmentExpr",
       target: this.visit(ctx.expr()[0]),
@@ -847,9 +799,7 @@ class ASTTransformer extends HazeVisitor<any> {
     };
   };
 
-  visitFunctionDatatype = (
-    ctx: FunctionDatatypeContext,
-  ): ASTFunctionDatatype => {
+  visitFunctionDatatype = (ctx: FunctionDatatypeContext): ASTFunctionDatatype => {
     const params = this.visitParams(ctx.params());
     return {
       variant: "FunctionDatatype",
@@ -860,9 +810,7 @@ class ASTTransformer extends HazeVisitor<any> {
     };
   };
 
-  visitNamespaceDefinition = (
-    ctx: NamespaceDefinitionContext,
-  ): ASTNamespaceDefinition => {
+  visitNamespaceDefinition = (ctx: NamespaceDefinitionContext): ASTNamespaceDefinition => {
     const names = ctx.ID().map((c) => c.getText());
     const namesReversed = names.reverse();
 

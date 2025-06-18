@@ -70,8 +70,7 @@ export type ASTFunctionDeclaration = {
   returnType?: ASTDatatype;
   sourceloc: SourceLoc;
   _collect: {
-    definedInNamespace?: ASTNamespaceDefinition;
-    definedInStruct?: ASTStructDefinition;
+    definedInNamespaceOrStruct?: ASTNamespaceDefinition | ASTStructDefinition;
     definedInScope?: Collect.Scope;
     namespacePath?: string[];
     method?: EMethodType;
@@ -93,10 +92,8 @@ export type ASTFunctionDefinition = {
   funcbody: ASTFuncBody;
   sourceloc: SourceLoc;
   _collect: {
-    definedInNamespace?: ASTNamespaceDefinition;
-    definedInStruct?: ASTStructDefinition;
+    definedInNamespaceOrStruct?: ASTNamespaceDefinition | ASTStructDefinition;
     definedInScope?: Collect.Scope;
-    namespacePath?: string[];
     method?: EMethodType;
   };
   _semantic: {
@@ -116,6 +113,9 @@ export type ASTNamedDatatype = {
   generics: (ASTDatatype | ASTConstant)[];
   nested?: ASTNamedDatatype;
   sourceloc: SourceLoc;
+  _collect: {
+    usedInScope?: Collect.Scope;
+  };
 };
 
 export type ASTFunctionDatatype = {
@@ -145,15 +145,9 @@ export type ASTStringConstant = {
   sourceloc: SourceLoc;
 };
 
-export type ASTConstant =
-  | ASTBooleanConstant
-  | ASTNumberConstant
-  | ASTStringConstant;
+export type ASTConstant = ASTBooleanConstant | ASTNumberConstant | ASTStringConstant;
 
-export type ASTDatatype =
-  | ASTNamedDatatype
-  | ASTFunctionDatatype
-  | ASTDeferredType;
+export type ASTDatatype = ASTNamedDatatype | ASTFunctionDatatype | ASTDeferredType;
 
 export type ASTGlobalVariableDefinition = {
   variant: "GlobalVariableDefinition";
@@ -395,6 +389,14 @@ export type ASTStructMethodDefinition = {
   returnType?: ASTDatatype;
   funcbody: ASTFuncBody;
   sourceloc: SourceLoc;
+  _collect: {
+    fullNamespacePath?: string[];
+    definedInScope?: Collect.Scope;
+  };
+  _semantic: {
+    symbol?: ID;
+    memberOfSymbol?: ID;
+  };
 };
 
 export type ASTStructDefinition = {

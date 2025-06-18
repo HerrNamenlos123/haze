@@ -26,3 +26,7 @@ export function makeTypeId() {
 export function makeSymbolId() {
   return makeId(2);
 }
+
+export function makeScopeId() {
+  return makeId(3);
+}

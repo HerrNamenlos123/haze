@@ -18,19 +18,19 @@ namespace A {
     }
 }
 
-// namespace C {
-//     export struct Processor<T> {
-//         wrap: A.B.Wrapper<T>;
+namespace C {
+    export struct Processor<T> {
+        wrap: A.B.Wrapper<T>;
 
-//         extract(): T => {
-//             return this.wrap.getInner();
-//         }
-//     }
-// }
+        extract(): T => {
+            return this.wrap.getInner();
+        }
+    }
+}
 
 namespace Main {
     main() => {
-        let outer: A.Wrapper<i32> = A.Wrapper<i32> {
+        let outer = A.Wrapper<i32> {
             .value: 123
         };
 
@@ -38,18 +38,18 @@ namespace Main {
             .value: outer
         };
 
-        // let proc = C.Processor<i32> {
-        //     .wrap: inner
-        // };
+        let proc = C.Processor<i32> {
+            .wrap: inner
+        };
 
-        // let result = proc.extract();
+        let result = proc.extract();
 
-        // // Final check to ensure correct value is passed through all layers
-        // if (result == 123) {
-        //     printf("Success: %d\n", result);
-        // } else {
-        //     printf("Failure: %d\n", result);
-        // }
+        // Final check to ensure correct value is passed through all layers
+        if (result == 123) {
+            printf("Success: %d\n", result);
+        } else {
+            printf("Failure: %d\n", result);
+        }
     }
 
     extern "C" printf(fmt: stringview, ...): none;

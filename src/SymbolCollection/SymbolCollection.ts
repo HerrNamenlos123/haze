@@ -31,7 +31,7 @@ import { Collect, type CollectResult } from "./CollectSymbols";
 
 function collect(
   scope: Collect.Scope,
-  statement:
+  item:
     | ASTFunctionDeclaration
     | ASTFunctionDefinition
     | ASTGlobalVariableDefinition
@@ -51,48 +51,52 @@ function collect(
     | ASTBinaryExpr
     | ASTExprAsFuncbody
     | ASTSymbolValueExpr
-    | ASTStructDefinition,
+    | ASTStructDefinition
+    | ASTDatatype,
   meta: {
-    currentNamespace?: ASTNamespaceDefinition;
-    currentStruct?: ASTStructDefinition;
-    namespaceStack: ASTNamespaceDefinition[];
+    currentNamespaceOrStruct?: ASTNamespaceDefinition | ASTStructDefinition;
+    namespaceStack: (ASTNamespaceDefinition | ASTStructDefinition)[];
   },
 ) {
-  switch (statement.variant) {
+  switch (item.variant) {
     // =================================================================================================================
     // =================================================================================================================
     // =================================================================================================================
 
     case "FunctionDeclaration":
-      if (!statement.returnType) {
-        statement.returnType = {
+      if (!item.returnType) {
+        item.returnType = {
           variant: "NamedDatatype",
           name: "none",
           generics: [],
-          sourceloc: statement.sourceloc,
+          sourceloc: item.sourceloc,
+          _collect: {
+            usedInScope: scope,
+          },
         };
       }
 
-      statement._collect.definedInStruct = meta.currentStruct;
-      statement._collect.definedInNamespace = meta.currentNamespace;
-      statement._collect.definedInScope = scope;
-      statement._collect.namespacePath = [
+      item._collect.definedInNamespaceOrStruct = meta.currentNamespaceOrStruct;
+      item._collect.definedInScope = scope;
+      item._collect.namespacePath = [
         ...meta.namespaceStack.map((n) => n.name),
-        ...statement.namespacePath,
+        ...item.namespacePath,
       ];
-      statement._collect.method = EMethodType.NotAMethod;
-      if (statement._collect.definedInStruct) {
-        statement._collect.method = EMethodType.Method;
+      item._collect.method = EMethodType.NotAMethod;
+      if (item._collect.definedInNamespaceOrStruct?.variant === "StructDefinition") {
+        item._collect.method = EMethodType.Method;
       }
 
-      if (scope.symbolTable.tryLookupSymbolHere(statement.name)) {
-        throw new CompilerError(
-          `Symbol was already declared in this scope`,
-          statement.sourceloc,
-        );
+      if (scope.symbolTable.tryLookupSymbolHere(item.name)) {
+        throw new CompilerError(`Symbol was already declared in this scope`, item.sourceloc);
       }
 
-      scope.symbolTable.defineSymbol(statement);
+      for (const param of item.params) {
+        collect(scope, param.datatype, meta);
+      }
+      collect(scope, item.returnType, meta);
+
+      scope.symbolTable.defineSymbol(item);
       break;
 
     // =================================================================================================================
@@ -100,30 +104,22 @@ function collect(
     // =================================================================================================================
 
     case "FunctionDefinition":
-      statement.funcbody._collect.scope = new Collect.Scope(
-        statement.sourceloc,
-        scope,
-      );
-      statement._collect.definedInNamespace = meta.currentNamespace;
-      statement._collect.definedInStruct = meta.currentStruct;
-      statement._collect.definedInScope = scope;
-      statement._collect.namespacePath = meta.namespaceStack.map((n) => n.name);
+      item.funcbody._collect.scope = new Collect.Scope(item.sourceloc, scope);
+      item._collect.definedInNamespaceOrStruct = meta.currentNamespaceOrStruct;
+      item._collect.definedInScope = scope;
 
-      if (!statement.returnType) {
-        statement.returnType = {
+      if (!item.returnType) {
+        item.returnType = {
           variant: "Deferred",
         };
       }
 
-      if (scope.symbolTable.tryLookupSymbolHere(statement.name)) {
-        throw new CompilerError(
-          `Symbol was already declared in this scope`,
-          statement.sourceloc,
-        );
+      if (scope.symbolTable.tryLookupSymbolHere(item.name)) {
+        throw new CompilerError(`Symbol was already declared in this scope`, item.sourceloc);
       }
 
-      for (const param of statement.params) {
-        statement.funcbody._collect.scope.symbolTable.defineSymbol({
+      for (const param of item.params) {
+        item.funcbody._collect.scope.symbolTable.defineSymbol({
           variant: "VariableDefinitionStatement",
           mutable: false,
           name: param.name,
@@ -134,30 +130,31 @@ function collect(
         });
       }
 
-      scope.symbolTable.defineSymbol(statement);
-      if (statement.funcbody.variant === "ExprAsFuncBody") {
+      for (const param of item.params) {
+        collect(scope, param.datatype, meta);
+      }
+      collect(scope, item.returnType, meta);
+
+      scope.symbolTable.defineSymbol(item);
+      if (item.funcbody.variant === "ExprAsFuncBody") {
         // Rebuilding "() => x" into "() => { return x; }"
-        statement.funcbody = {
+        item.funcbody = {
           variant: "Scope",
           statements: [
             {
               variant: "ReturnStatement",
-              sourceloc: statement.sourceloc,
-              expr: statement.funcbody.expr,
+              sourceloc: item.sourceloc,
+              expr: item.funcbody.expr,
             },
           ],
-          sourceloc: statement.sourceloc,
+          sourceloc: item.sourceloc,
           _collect: {
-            scope: statement.funcbody._collect.scope,
+            scope: item.funcbody._collect.scope,
           },
         };
-        collect(
-          assertScope(statement.funcbody._collect.scope),
-          statement.funcbody,
-          meta,
-        );
+        collect(assertScope(item.funcbody._collect.scope), item.funcbody, meta);
       } else {
-        collect(statement.funcbody._collect.scope, statement.funcbody, meta);
+        collect(item.funcbody._collect.scope, item.funcbody, meta);
       }
       break;
 
@@ -173,7 +170,10 @@ function collect(
     // =================================================================================================================
 
     case "GlobalVariableDefinition":
-      scope.symbolTable.defineSymbol(statement);
+      scope.symbolTable.defineSymbol(item);
+      if (item.datatype) {
+        collect(scope, item.datatype, meta);
+      }
       break;
 
     // =================================================================================================================
@@ -181,22 +181,17 @@ function collect(
     // =================================================================================================================
 
     case "NamespaceDefinition": {
-      let namespace = statement;
+      let namespace = item;
       if (scope.symbolTable.tryLookupSymbolHere(namespace.name)) {
-        namespace = scope.symbolTable.tryLookupSymbolHere(
-          namespace.name,
-        ) as ASTNamespaceDefinition;
+        namespace = scope.symbolTable.tryLookupSymbolHere(namespace.name) as ASTNamespaceDefinition;
       } else {
-        namespace._collect.scope = new Collect.Scope(
-          namespace.sourceloc,
-          scope,
-        );
+        namespace._collect.scope = new Collect.Scope(namespace.sourceloc, scope);
         scope.symbolTable.defineSymbol(namespace);
       }
-      for (const s of statement.declarations) {
+      for (const s of item.declarations) {
         collect(namespace._collect.scope!, s, {
           ...meta,
-          currentNamespace: namespace,
+          currentNamespaceOrStruct: namespace,
           namespaceStack: [...meta.namespaceStack, namespace],
         });
       }
@@ -208,34 +203,37 @@ function collect(
     // =================================================================================================================
 
     case "StructDefinition":
-      statement._collect.definedInScope = scope;
-      statement._collect.scope = new Collect.Scope(statement.sourceloc, scope);
-      statement._collect.namespaces = meta.namespaceStack.map((n) => n.name);
-      statement._collect.fullNamespacedName = [
-        ...statement._collect.namespaces,
-        statement.name,
-      ];
-      for (const g of statement.generics) {
-        statement._collect.scope.symbolTable.defineSymbol({
+      item._collect.definedInScope = scope;
+      item._collect.scope = new Collect.Scope(item.sourceloc, scope);
+      item._collect.namespaces = meta.namespaceStack.map((n) => n.name);
+      item._collect.fullNamespacedName = [...item._collect.namespaces, item.name];
+      for (const g of item.generics) {
+        item._collect.scope.symbolTable.defineSymbol({
           variant: "GenericPlaceholder",
           name: g,
-          belongsToSymbol: statement,
-          sourceloc: statement.sourceloc,
+          belongsToSymbol: item,
+          sourceloc: item.sourceloc,
         });
       }
-      scope.symbolTable.defineSymbol(statement);
+      scope.symbolTable.defineSymbol(item);
 
-      console.log(
-        "Collected: ",
-        statement.name,
-        statement._collect.scope.symbolTable.symbols.map((s) => s.name),
-      );
+      const newMeta = {
+        ...meta,
+        currentNamespaceOrStruct: item,
+        namespaceStack: [...meta.namespaceStack, item],
+      };
 
-      for (const method of statement.methods) {
-        method.funcbody._collect.scope = new Collect.Scope(
-          statement.sourceloc,
-          scope,
-        );
+      for (const member of item.members) {
+        collect(item._collect.scope, member.type, newMeta);
+      }
+
+      for (const method of item.methods) {
+        method.funcbody._collect.scope = new Collect.Scope(item.sourceloc, item._collect.scope);
+        method._collect.fullNamespacePath = [
+          ...meta.namespaceStack.map((n) => n.name),
+          method.name,
+        ];
+        method._collect.definedInScope = item._collect.scope;
         for (const param of method.params) {
           method.funcbody._collect.scope.symbolTable.defineSymbol({
             variant: "VariableDefinitionStatement",
@@ -246,11 +244,12 @@ function collect(
             isParameter: true,
             _semantic: {},
           });
+          collect(item._collect.scope, param.datatype, newMeta);
         }
-        collect(method.funcbody._collect.scope, method.funcbody, {
-          ...meta,
-          currentStruct: statement,
-        });
+        if (method.returnType) {
+          collect(item._collect.scope, method.returnType, newMeta);
+        }
+        collect(method.funcbody._collect.scope, method.funcbody, newMeta);
       }
       break;
 
@@ -259,7 +258,7 @@ function collect(
     // =================================================================================================================
 
     case "Scope":
-      for (const s of statement.statements) {
+      for (const s of item.statements) {
         switch (s.variant) {
           case "ExprStatement":
             collect(scope, s.expr, meta);
@@ -271,17 +270,11 @@ function collect(
             collect(s.then._collect.scope, s.then, meta);
             for (const e of s.elseIfs) {
               collect(scope, e.condition, meta);
-              e.then._collect.scope = new Collect.Scope(
-                e.then.sourceloc,
-                scope,
-              );
+              e.then._collect.scope = new Collect.Scope(e.then.sourceloc, scope);
               collect(e.then._collect.scope, e.then, meta);
             }
             if (s.else) {
-              s.else._collect.scope = new Collect.Scope(
-                s.else.sourceloc,
-                scope,
-              );
+              s.else._collect.scope = new Collect.Scope(s.else.sourceloc, scope);
               collect(s.else._collect.scope, s.else, meta);
             }
             break;
@@ -308,6 +301,12 @@ function collect(
                 s.sourceloc,
               );
             }
+            if (s.datatype) {
+              collect(scope, s.datatype, meta);
+            }
+            if (s.expr) {
+              collect(scope, s.expr, meta);
+            }
             scope.symbolTable.defineSymbol(s);
             break;
         }
@@ -320,7 +319,7 @@ function collect(
     // =================================================================================================================
 
     case "ParenthesisExpr":
-      collect(scope, statement.expr, meta);
+      collect(scope, item.expr, meta);
       break;
 
     // =================================================================================================================
@@ -328,8 +327,8 @@ function collect(
     // =================================================================================================================
 
     case "BinaryExpr":
-      collect(scope, statement.a, meta);
-      collect(scope, statement.b, meta);
+      collect(scope, item.a, meta);
+      collect(scope, item.b, meta);
       break;
 
     // =================================================================================================================
@@ -351,12 +350,9 @@ function collect(
     // =================================================================================================================
 
     case "LambdaExpr":
-      statement.lambda.funcbody._collect.scope = new Collect.Scope(
-        statement.sourceloc,
-        scope,
-      );
-      for (const param of statement.lambda.params) {
-        statement.lambda.funcbody._collect.scope.symbolTable.defineSymbol({
+      item.lambda.funcbody._collect.scope = new Collect.Scope(item.sourceloc, scope);
+      for (const param of item.lambda.params) {
+        item.lambda.funcbody._collect.scope.symbolTable.defineSymbol({
           variant: "VariableDefinitionStatement",
           mutable: false,
           name: param.name,
@@ -366,11 +362,15 @@ function collect(
           _semantic: {},
         });
       }
-      collect(
-        statement.lambda.funcbody._collect.scope,
-        statement.lambda.funcbody,
-        meta,
-      );
+
+      for (const param of item.lambda.params) {
+        collect(scope, param.datatype, meta);
+      }
+      if (item.lambda.returnType) {
+        collect(scope, item.lambda.returnType, meta);
+      }
+
+      collect(item.lambda.funcbody._collect.scope, item.lambda.funcbody, meta);
       break;
 
     // =================================================================================================================
@@ -378,9 +378,10 @@ function collect(
     // =================================================================================================================
 
     case "StructInstantiationExpr":
-      for (const member of statement.members) {
+      for (const member of item.members) {
         collect(scope, member.value, meta);
       }
+      collect(scope, item.datatype, meta);
       break;
 
     // =================================================================================================================
@@ -388,7 +389,7 @@ function collect(
     // =================================================================================================================
 
     case "UnaryExpr":
-      collect(scope, statement.expr, meta);
+      collect(scope, item.expr, meta);
       break;
 
     // =================================================================================================================
@@ -396,7 +397,7 @@ function collect(
     // =================================================================================================================
 
     case "PreIncrExpr":
-      collect(scope, statement.expr, meta);
+      collect(scope, item.expr, meta);
       break;
 
     // =================================================================================================================
@@ -404,7 +405,7 @@ function collect(
     // =================================================================================================================
 
     case "PostIncrExpr":
-      collect(scope, statement.expr, meta);
+      collect(scope, item.expr, meta);
       break;
 
     // =================================================================================================================
@@ -412,7 +413,7 @@ function collect(
     // =================================================================================================================
 
     case "ExprMemberAccess":
-      collect(scope, statement.expr, meta);
+      collect(scope, item.expr, meta);
       break;
 
     // =================================================================================================================
@@ -420,7 +421,8 @@ function collect(
     // =================================================================================================================
 
     case "ExplicitCastExpr":
-      collect(scope, statement.expr, meta);
+      collect(scope, item.expr, meta);
+      collect(scope, item.castedTo, meta);
       break;
 
     // =================================================================================================================
@@ -428,8 +430,8 @@ function collect(
     // =================================================================================================================
 
     case "ExprAssignmentExpr":
-      collect(scope, statement.target, meta);
-      collect(scope, statement.value, meta);
+      collect(scope, item.target, meta);
+      collect(scope, item.value, meta);
       break;
 
     // =================================================================================================================
@@ -437,9 +439,39 @@ function collect(
     // =================================================================================================================
 
     case "ExprCallExpr":
-      collect(scope, statement.calledExpr, meta);
-      for (const a of statement.arguments) {
+      collect(scope, item.calledExpr, meta);
+      for (const a of item.arguments) {
         collect(scope, a, meta);
+      }
+      break;
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
+    case "Deferred":
+      break;
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
+    case "FunctionDatatype":
+      for (const param of item.params) {
+        collect(scope, param.datatype, meta);
+      }
+      collect(scope, item.returnType, meta);
+      break;
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
+    case "NamedDatatype":
+      let p: ASTNamedDatatype | undefined = item;
+      while (p) {
+        p._collect.usedInScope = scope;
+        p = p.nested;
       }
       break;
   }
@@ -484,9 +516,7 @@ export function PrettyPrintCollected(cr: CollectResult) {
   }
   console.log("\n");
 
-  const serializeAstDatatype = (
-    datatype: ASTDatatype | ASTConstant,
-  ): string => {
+  const serializeAstDatatype = (datatype: ASTDatatype | ASTConstant): string => {
     if (datatype.variant === "FunctionDatatype") {
       return `(${datatype.params.map((p) => `${p.name}: ${serializeAstDatatype(p.datatype)}`).join(", ")}${datatype.ellipsis ? ", ..." : ""}) => ${serializeAstDatatype(datatype.returnType)}`;
     } else if (datatype.variant === "NamedDatatype") {
@@ -531,14 +561,11 @@ export function PrettyPrintCollected(cr: CollectResult) {
           print(
             `  - FuncDef ${s.name}${s.generics.length > 0 ? "<" + s.generics.join(", ") + ">" : ""}(${s.params.map((p) => `${p.name}: ${serializeAstDatatype(p.datatype)}`).join(", ")}${s.ellipsis ? ", ..." : ""}): ${s.returnType && serializeAstDatatype(s.returnType)} export=${s.export}`,
           );
-          if (s.funcbody._collect.scope)
-            printScope(s.funcbody._collect.scope, indent + 6);
+          if (s.funcbody._collect.scope) printScope(s.funcbody._collect.scope, indent + 6);
           break;
 
         case "GlobalVariableDefinition":
-          print(
-            `  - Global Variable ${s.mutable ? "let" : "const"} ${s.name} export=${s.export}`,
-          );
+          print(`  - Global Variable ${s.mutable ? "let" : "const"} ${s.name} export=${s.export}`);
           break;
 
         case "StructDefinition":
@@ -547,17 +574,14 @@ export function PrettyPrintCollected(cr: CollectResult) {
           );
           print(`      Members:`);
           for (const member of s.members) {
-            print(
-              `        - ${member.name}: ${serializeAstDatatype(member.type)}`,
-            );
+            print(`        - ${member.name}: ${serializeAstDatatype(member.type)}`);
           }
           print(`      Methods:`);
           for (const m of s.methods) {
             print(
               `        - ${m.name}${m.generics.length > 0 ? "<" + m.generics.join(", ") + ">" : ""}(${m.params.map((p) => `${p.name}: ${serializeAstDatatype(p.datatype)}`).join(", ")}${m.ellipsis ? ", ..." : ""}): ${m.returnType && serializeAstDatatype(m.returnType)}`,
             );
-            if (m.funcbody._collect.scope)
-              printScope(m.funcbody._collect.scope, indent + 12);
+            if (m.funcbody._collect.scope) printScope(m.funcbody._collect.scope, indent + 12);
           }
           break;
 

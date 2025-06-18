@@ -1,15 +1,15 @@
 import { CompilerError, InternalError, type SourceLoc } from "../Errors";
 import type {
-  ASTDatatype,
   ASTFunctionDeclaration,
   ASTFunctionDefinition,
   ASTGlobalVariableDefinition,
   ASTNamespaceDefinition,
   ASTStatement,
   ASTStructDefinition,
+  ASTStructMethodDefinition,
   ASTVariableDefinitionStatement,
 } from "../shared/AST";
-import type { ID } from "../shared/store";
+import { makeScopeId, type ID } from "../shared/store";
 
 export type CollectResult = {
   globalScope: Collect.Scope;
@@ -31,6 +31,7 @@ export namespace Collect {
     | ASTVariableDefinitionStatement
     | ASTGlobalVariableDefinition
     | ASTStructDefinition
+    | ASTStructMethodDefinition
     | GenericPlaceholder;
 
   export class SymbolTable {
@@ -40,9 +41,7 @@ export namespace Collect {
 
     defineSymbol(symbol: Symbol) {
       if (this.tryLookupSymbolHere(symbol.name)) {
-        throw new InternalError(
-          `Symbol '${symbol.name}' already exists in symbol table`,
-        );
+        throw new InternalError(`Symbol '${symbol.name}' already exists in symbol table`);
       }
       this.symbols.push(symbol);
     }
@@ -68,24 +67,24 @@ export namespace Collect {
       if (symbol) {
         return symbol;
       }
-      throw new CompilerError(
-        `Symbol '${name}' was not declared in this scope`,
-        loc,
-      );
+      throw new CompilerError(`Symbol '${name}' was not declared in this scope`, loc);
     }
   }
 
   export class Scope {
+    public id: ID;
     public statements: ASTStatement[] = [];
     public symbolTable: SymbolTable;
     public _semantic: {
       returnTypeSymbols?: ID[];
+      forFunctionSymbol?: ID;
     } = {};
 
     constructor(
       public sourceloc: SourceLoc,
       public parentScope?: Scope,
     ) {
+      this.id = makeScopeId();
       this.symbolTable = new SymbolTable(parentScope?.symbolTable);
     }
   }
