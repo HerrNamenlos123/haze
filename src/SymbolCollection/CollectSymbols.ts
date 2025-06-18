@@ -1,5 +1,6 @@
 import { CompilerError, InternalError, type SourceLoc } from "../Errors";
 import type {
+  ASTDatatype,
   ASTFunctionDeclaration,
   ASTFunctionDefinition,
   ASTGlobalVariableDefinition,
@@ -17,13 +18,21 @@ export type CollectResult = {
 };
 
 export namespace Collect {
+  export type GenericPlaceholder = {
+    variant: "GenericPlaceholder";
+    name: string;
+    belongsToSymbol: Symbol;
+    sourceloc: SourceLoc;
+  };
+
   export type Symbol =
     | ASTFunctionDeclaration
     | ASTFunctionDefinition
     | ASTNamespaceDefinition
     | ASTVariableDefinitionStatement
     | ASTGlobalVariableDefinition
-    | ASTStructDefinition;
+    | ASTStructDefinition
+    | GenericPlaceholder;
 
   export class SymbolTable {
     symbols: Symbol[] = [];

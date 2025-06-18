@@ -432,13 +432,13 @@ class ASTTransformer extends HazeVisitor<any> {
       .datatypeFragment()
       .map((c) => this.visitDatatypeFragment(c));
     const datatypes: ASTNamedDatatype[] = [];
-    for (const fragment of fragments) {
+    for (const fragment of fragments.reverse()) {
       datatypes.push({
         variant: "NamedDatatype",
         name: fragment.name,
         sourceloc: fragment.sourceloc,
         generics: fragment.generics,
-        nestedParent: datatypes[datatypes.length - 1],
+        nested: datatypes[datatypes.length - 1],
       });
     }
     return datatypes[datatypes.length - 1];
@@ -591,6 +591,7 @@ class ASTTransformer extends HazeVisitor<any> {
       methods: methods,
       sourceloc: this.loc(ctx),
       _collect: {},
+      _semantic: {},
     };
   };
 

@@ -184,6 +184,18 @@ function collect(
     // =================================================================================================================
 
     case "StructDefinition":
+      statement._collect.definedInScope = scope;
+      statement._collect.scope = new Collect.Scope(statement.sourceloc, scope);
+      for (const g of statement.generics) {
+        statement._collect.scope.symbolTable.defineSymbol({
+          variant: "GenericPlaceholder",
+          name: g,
+          belongsToSymbol: statement,
+          sourceloc: statement.sourceloc,
+        });
+      }
+      scope.symbolTable.defineSymbol(statement);
+
       for (const method of statement.methods) {
         method.funcbody._collect.scope = new Collect.Scope(
           statement.sourceloc,
@@ -204,8 +216,6 @@ function collect(
           currentStruct: statement,
         });
       }
-      statement._collect.definedInScope = scope;
-      scope.symbolTable.defineSymbol(statement);
       break;
 
     // =================================================================================================================
@@ -445,10 +455,8 @@ export function PrettyPrintCollected(cr: CollectResult) {
       let s = "";
       let d: ASTNamedDatatype | undefined = datatype;
       while (d) {
-        s =
-          `${datatype.name}${datatype.generics.length > 0 ? `<${datatype.generics.map((g) => serializeAstDatatype(g)).join(", ")}>` : ""}` +
-          s;
-        d = d.nestedParent;
+        s += `${datatype.name}${datatype.generics.length > 0 ? `<${datatype.generics.map((g) => serializeAstDatatype(g)).join(", ")}>` : ""}`;
+        d = d.nested;
       }
       return s;
     } else if (datatype.variant === "Deferred") {

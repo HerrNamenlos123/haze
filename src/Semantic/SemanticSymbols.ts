@@ -186,6 +186,14 @@ export namespace Semantic {
     // parentSymbol?: ID;
   };
 
+  export type GenericPlaceholderType = {
+    id?: ID;
+    variant: "GenericPlaceholder";
+    name: string;
+    sourceLoc: SourceLoc;
+    belongsToType: ID;
+  };
+
   //   export type RawPointerDatatype = {
   //     id: ID;
   //     variant: "RawPointer";
@@ -198,19 +206,19 @@ export namespace Semantic {
     primitive: EPrimitive;
   };
 
-  //   export type NamespaceDatatype = {
-  //     id: ID;
-  //     variant: "Namespace";
-  //     name: string;
-  //     symbolsScope: ID;
-  //   };
+  // export type NamespaceDatatype = {
+  //   id?: ID;
+  //   variant: "Namespace";
+  //   name: string;
+  // };
 
   export type Datatype =
     | FunctionDatatype
+    | GenericPlaceholderType
     | StructDatatype
     //   | RawPointerDatatype
     | PrimitiveDatatype;
-  //   | NamespaceDatatype;
+  // | NamespaceDatatype;
 
   //   export type DatatypeVariants =
   //     | FunctionDatatype["variant"]
@@ -326,7 +334,9 @@ export namespace Semantic {
           `Symbol '${symbol.name}' already exists in symbol table`,
         );
       }
+      // if (!symbol.id) {
       symbol.id = makeSymbolId();
+      // }
       this.symbols.set(symbol.id, symbol);
       return symbol.id;
     }
@@ -343,11 +353,7 @@ export namespace Semantic {
       switch (symbol.variant) {
         case "Datatype":
           return [...this.symbols.values()].find(
-            (s) =>
-              s.variant === "Datatype" &&
-              s.type === symbol.type &&
-              s.export === symbol.export &&
-              s.name === symbol.name,
+            (s) => s.variant === "Datatype" && s.name === symbol.name,
           );
 
         case "Variable":
@@ -356,6 +362,25 @@ export namespace Semantic {
               s.variant === "Variable" &&
               s.name === symbol.name &&
               s.memberOfType === symbol.memberOfType,
+          );
+
+        case "GenericParameter":
+          return [...this.symbols.values()].find(
+            (s) =>
+              s.variant === "GenericParameter" &&
+              s.name === symbol.name &&
+              s.belongsToType === symbol.belongsToType,
+          );
+
+        case "FunctionDefinition":
+          return [...this.symbols.values()].find(
+            (s) => s.variant === "FunctionDefinition" && s.name === symbol.name,
+          );
+
+        case "FunctionDeclaration":
+          return [...this.symbols.values()].find(
+            (s) =>
+              s.variant === "FunctionDeclaration" && s.name === symbol.name,
           );
 
         default:
@@ -394,7 +419,9 @@ export namespace Semantic {
       if (this.exists(datatype)) {
         throw new InternalError(`Symbol already exists in symbol table`);
       }
+      // if (!datatype.id) {
       datatype.id = makeTypeId();
+      // }
       this.datatypes.set(datatype.id, datatype);
       return datatype.id;
     }
@@ -420,6 +447,24 @@ export namespace Semantic {
             (d) =>
               d.variant === "Primitive" && d.primitive === datatype.primitive,
           );
+
+        case "Struct":
+          return [...this.datatypes.values()].find(
+            (d) => d.variant === "Struct" && d.name === datatype.name,
+          );
+
+        case "GenericPlaceholder":
+          return [...this.datatypes.values()].find(
+            (d) =>
+              d.variant === "GenericPlaceholder" &&
+              d.name === datatype.name &&
+              d.belongsToType === datatype.belongsToType,
+          );
+
+        // case "Namespace":
+        //   return [...this.datatypes.values()].find(
+        //     (d) => d.variant === "Namespace" && d.name === datatype.name,
+        //   );
 
         default:
           throw new InternalError("Unexpected symbol type");

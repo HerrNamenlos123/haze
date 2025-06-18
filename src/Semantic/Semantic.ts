@@ -5,7 +5,7 @@ import {
   type ASTFunctionDatatype,
 } from "../shared/AST";
 import { primitiveToString, stringToPrimitive } from "../shared/common";
-import type { ID } from "../shared/store";
+import { makeTypeId, type ID } from "../shared/store";
 import type { Collect } from "../SymbolCollection/CollectSymbols";
 import { Semantic, type SemanticResult } from "./SemanticSymbols";
 
@@ -38,48 +38,7 @@ function resolveDatatype(
       });
     }
 
-    const datatypes: ASTDatatype[] = [];
-    let d: ASTDatatype | undefined = datatype;
-    while (d) {
-      if (d.variant !== "NamedDatatype") throw new ImpossibleSituation();
-      datatypes.push(d);
-      d = d.nestedParent;
-    }
-    const reversed = datatypes.reverse();
-
-    let loopScope: Collect.Scope | undefined = scope;
-    for (const d of reversed.slice(0, -1)) {
-      if (d.variant !== "NamedDatatype") throw new ImpossibleSituation();
-      const found: Collect.Symbol = loopScope!.symbolTable.lookupSymbol(
-        d.name,
-        d.sourceloc,
-      );
-      if (!found) {
-        throw new CompilerError(
-          `${d.name} was not declared in this scope`,
-          d.sourceloc,
-        );
-      }
-      if (found.variant === "StructDefinition") {
-        throw new CompilerError(
-          `Struct '${d.name}' cannot be used as a namespace`,
-          d.sourceloc,
-        );
-      } else if (found.variant === "NamespaceDefinition") {
-        loopScope = found._collect.scope;
-      } else {
-        throw new CompilerError(
-          `Symbol '${d.name}' cannot be used as a datatype here`,
-          d.sourceloc,
-        );
-      }
-    }
-
-    if (!loopScope) {
-      throw new ImpossibleSituation();
-    }
-
-    const found: Collect.Symbol = loopScope.symbolTable.lookupSymbol(
+    const found: Collect.Symbol = scope!.symbolTable.lookupSymbol(
       datatype.name,
       datatype.sourceloc,
     );
@@ -95,31 +54,70 @@ function resolveDatatype(
         name: found.name,
         externLanguage: found.externLanguage,
         members: [],
-        methods: found.members.map((m) =>
-          sr.symbolTable.makeSymbolAvailable({
-            variant: "Variable",
-            name: m.name,
-            externLanguage: EExternLanguage.None,
-            export: false,
-            mutable: true,
-            sourceLoc: m.sourceloc,
-            type: resolveDatatype(sr, found._collect.definedInScope!, m.type),
-            memberOfType: undefined,
-          }),
-        ),
+        methods: [],
         genericSymbols: [],
       });
-
-      // Fix circular references
       const struct = sr.typeTable.datatypes.get(id) as Semantic.StructDatatype;
-      struct.members.forEach(
-        (m) =>
-          ((
-            sr.symbolTable.symbols.get(m)! as Semantic.VariableSymbol
-          ).memberOfType = id),
+      found._semantic.type = id;
+
+      // Add generics
+      struct.genericSymbols = found.generics.map((g) =>
+        sr.symbolTable.makeSymbolAvailable({
+          variant: "GenericParameter",
+          name: g,
+          belongsToType: id,
+          sourceLoc: found.sourceloc,
+        }),
       );
 
+      // Add members
+      found.members.map((m) =>
+        sr.symbolTable.makeSymbolAvailable({
+          variant: "Variable",
+          name: m.name,
+          externLanguage: EExternLanguage.None,
+          export: false,
+          mutable: true,
+          sourceLoc: m.sourceloc,
+          type: resolveDatatype(sr, found._collect.scope!, m.type),
+          memberOfType: id,
+        }),
+      );
+
+      // if (datatype.nested) {
+      //   return resolveDatatype(sr, struct.)
+      // }
+      // else {
       return id;
+      // }
+    } else if (found.variant === "NamespaceDefinition") {
+      if (datatype.nested) {
+        return resolveDatatype(sr, found._collect.scope!, datatype.nested);
+      } else {
+        throw new CompilerError(
+          `Namespace cannot be used as a datatype here`,
+          datatype.sourceloc,
+        );
+      }
+    } else if (found.variant === "GenericPlaceholder") {
+      if (found.belongsToSymbol.variant !== "StructDefinition") {
+        throw new ImpossibleSituation();
+      }
+      const structId = found.belongsToSymbol._semantic.type;
+      if (!structId) {
+        throw new ImpossibleSituation();
+      }
+      const struct = sr.typeTable.datatypes.get(
+        structId,
+      ) as Semantic.StructDatatype;
+
+      const typeId = sr.typeTable.makeDatatypeAvailable({
+        variant: "GenericPlaceholder",
+        name: found.name,
+        belongsToType: structId,
+        sourceLoc: found.sourceloc,
+      });
+      return typeId;
     } else {
       throw new CompilerError(
         `Symbol '${datatype.name}' cannot be used as a datatype here`,
@@ -228,7 +226,10 @@ export function PrettyPrintAnalyzed(sr: SemanticResult) {
   };
 
   const typeFunc = (id: ID): string => {
-    const t = sr.typeTable.datatypes.get(id)!;
+    const t = sr.typeTable.datatypes.get(id);
+    if (!t) {
+      throw new ImpossibleSituation();
+    }
     switch (t.variant) {
       case "Function":
         return func(t.functionParameters, t.functionReturnValue, t.vararg);
@@ -236,8 +237,21 @@ export function PrettyPrintAnalyzed(sr: SemanticResult) {
       case "Primitive":
         return primitiveToString(t.primitive);
 
-      case "Struct":
+      case "Struct": {
+        let s = t.name;
+
+        if (t.genericSymbols.length > 0) {
+          s += " generics=[" + t.genericSymbols.join(", ") + "]";
+        }
+
+        return "(" + s + ")";
+      }
+
+      case "GenericPlaceholder":
         return t.name;
+
+      // case "Namespace":
+      //   return t.name;
     }
   };
 
@@ -258,15 +272,21 @@ export function PrettyPrintAnalyzed(sr: SemanticResult) {
   for (const [id, type] of sr.typeTable.datatypes) {
     switch (type.variant) {
       case "Function":
-        print(` - FunctionType ${typeFunc(id)}`);
+        print(` - [${id}] FunctionType ${typeFunc(id)}`);
         break;
 
       case "Primitive":
-        print(` - PrimitiveType ${typeFunc(id)}`);
+        print(` - [${id}] PrimitiveType ${typeFunc(id)}`);
         break;
 
       case "Struct":
-        print(` - StructType ${typeFunc(id)}`);
+        print(` - [${id}] StructType ${typeFunc(id)}`);
+        break;
+
+      case "GenericPlaceholder":
+        print(
+          ` - [${id}] GenericPlaceholder ${type.name} ofType=${type.belongsToType}`,
+        );
         break;
     }
   }
@@ -276,25 +296,29 @@ export function PrettyPrintAnalyzed(sr: SemanticResult) {
   for (const [id, symbol] of sr.symbolTable.symbols) {
     switch (symbol.variant) {
       case "Datatype":
-        print(` - Datatype`);
+        print(` - [${id}] Datatype`);
         break;
 
       case "FunctionDeclaration":
-        print(` - FuncDecl`);
+        print(` - [${id}] FuncDecl`);
         break;
 
       case "FunctionDefinition":
         print(
-          ` - FuncDef ${symbol.namespacePath.map((p) => p + ".")}${symbol.name} ${typeFunc(symbol.type)}`,
+          ` - [${id}] FuncDef ${symbol.namespacePath.map((p) => p + ".")}${symbol.name}() type=${symbol.type}`,
         );
         break;
 
       case "GenericParameter":
-        print(` - GenericParameter`);
+        print(
+          ` - [${id}] GenericParameter ${symbol.name} ofType=${symbol.belongsToType}`,
+        );
         break;
 
       case "Variable":
-        print(` - Variable`);
+        print(
+          ` - [${id}] Variable ${symbol.name} type=${symbol.type} memberof=${symbol.memberOfType}`,
+        );
         break;
     }
   }

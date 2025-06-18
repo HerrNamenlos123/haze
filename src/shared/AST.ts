@@ -108,7 +108,7 @@ export type ASTNamedDatatype = {
   variant: "NamedDatatype";
   name: string;
   generics: (ASTDatatype | ASTConstant)[];
-  nestedParent?: ASTNamedDatatype;
+  nested?: ASTNamedDatatype;
   sourceloc: SourceLoc;
 };
 
@@ -383,6 +383,10 @@ export type ASTStructDefinition = {
   sourceloc: SourceLoc;
   _collect: {
     definedInScope?: Collect.Scope;
+    scope?: Collect.Scope;
+  };
+  _semantic: {
+    type?: ID;
   };
 };
 

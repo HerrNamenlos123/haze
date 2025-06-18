@@ -9,7 +9,7 @@ namespace A.B {
 }
 
 namespace Main {
-    main(): none => {
+    main(): A.B.Box<i32> => {
         let b = A.B.Box<i32> { .value: 42 };
         let v = b.get();
     }
