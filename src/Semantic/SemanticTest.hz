@@ -1,3 +1,56 @@
-main() => {
-    return 5;
+namespace A {
+    export struct Wrapper<T> {
+        value: T;
+
+        get(): T => {
+            return this.value;
+        }
+    }
+
+    namespace B {
+        export struct Wrapper<T> {
+            value: A.Wrapper<T>;
+
+            getInner(): T => {
+                return this.value.get();
+            }
+        }
+    }
+}
+
+// namespace C {
+//     export struct Processor<T> {
+//         wrap: A.B.Wrapper<T>;
+
+//         extract(): T => {
+//             return this.wrap.getInner();
+//         }
+//     }
+// }
+
+namespace Main {
+    main() => {
+        let outer: A.Wrapper<i32> = A.Wrapper<i32> {
+            .value: 123
+        };
+
+        let inner = A.B.Wrapper<i32> {
+            .value: outer
+        };
+
+        // let proc = C.Processor<i32> {
+        //     .wrap: inner
+        // };
+
+        // let result = proc.extract();
+
+        // // Final check to ensure correct value is passed through all layers
+        // if (result == 123) {
+        //     printf("Success: %d\n", result);
+        // } else {
+        //     printf("Failure: %d\n", result);
+        // }
+    }
+
+    extern "C" printf(fmt: stringview, ...): none;
 }

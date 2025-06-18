@@ -130,6 +130,7 @@ function collect(
           datatype: param.datatype,
           sourceloc: param.sourceloc,
           isParameter: true,
+          _semantic: {},
         });
       }
 
@@ -224,6 +225,12 @@ function collect(
       }
       scope.symbolTable.defineSymbol(statement);
 
+      console.log(
+        "Collected: ",
+        statement.name,
+        statement._collect.scope.symbolTable.symbols.map((s) => s.name),
+      );
+
       for (const method of statement.methods) {
         method.funcbody._collect.scope = new Collect.Scope(
           statement.sourceloc,
@@ -237,6 +244,7 @@ function collect(
             datatype: param.datatype,
             sourceloc: param.sourceloc,
             isParameter: true,
+            _semantic: {},
           });
         }
         collect(method.funcbody._collect.scope, method.funcbody, {
@@ -355,6 +363,7 @@ function collect(
           datatype: param.datatype,
           sourceloc: param.sourceloc,
           isParameter: true,
+          _semantic: {},
         });
       }
       collect(
@@ -502,7 +511,7 @@ export function PrettyPrintCollected(cr: CollectResult) {
 
     print(`Statements (${scope.statements.length}):`);
     for (const s of scope.statements) {
-      print("  - " + JSON.stringify(s));
+      // print("  - " + JSON.stringify(s));
     }
     print(`Symbols (${scope.symbolTable.symbols.length}):`);
     for (const s of scope.symbolTable.symbols) {

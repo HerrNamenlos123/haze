@@ -78,7 +78,7 @@ async function main() {
         // console.log(
         //   cr.globalScope.symbolTable.lookupSymbol("A", cr.globalScope.location),
         // );
-        PrettyPrintCollected(cr);
+        // PrettyPrintCollected(cr);
         const sr = SemanticallyAnalyze(cr.globalScope);
         PrettyPrintAnalyzed(sr);
       }

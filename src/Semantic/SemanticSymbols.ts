@@ -251,7 +251,7 @@ export namespace Semantic {
     variant: "GenericParameter";
     name: string;
     belongsToStruct: string[];
-    sourceLoc: SourceLoc;
+    sourceloc: SourceLoc;
   };
 
   export type FunctionDefinitionSymbol = {
@@ -321,25 +321,94 @@ export namespace Semantic {
     | DatatypeSymbol;
   // | ConstantSymbol
 
+  export type ExprMemberAccessExpr = {
+    variant: "ExprMemberAccess";
+    expr: Expression;
+    memberName: string;
+    type: ID;
+  };
+
+  export type SymbolValueExpr = {
+    variant: "SymbolValue";
+    symbol: ID;
+    type: ID;
+  };
+
+  export type ExprCallExpr = {
+    variant: "ExprCall";
+    calledExpr: Expression;
+    arguments: Expression[];
+    type: ID;
+  };
+
+  export type StructInstantiationExpr = {
+    variant: "StructInstantiation";
+    assign: {
+      name: string;
+      value: Expression;
+    }[];
+    type: ID;
+  };
+
+  export type ConstantExpr = {
+    variant: "Constant";
+    value: number | string | boolean;
+    type: ID;
+  };
+
+  export type Expression =
+    | ExprMemberAccessExpr
+    | SymbolValueExpr
+    | ExprCallExpr
+    | StructInstantiationExpr
+    | ConstantExpr;
+
   export type InlineCStatement = {
-    id: ID;
+    variant: "InlineC";
     value: string;
     sourceloc: SourceLoc;
   };
 
-  export type Statement = InlineCStatement;
+  export type ReturnStatement = {
+    variant: "Return";
+    expr: Expression;
+    sourceloc: SourceLoc;
+  };
+
+  export type IfStatement = {
+    variant: "If";
+  };
+
+  export type WhileStatement = {
+    variant: "While";
+  };
+
+  export type VariableStatement = {
+    variant: "Variable";
+    name: string;
+    value: Expression;
+    mutable: boolean;
+    type: ID;
+  };
+
+  export type Statement =
+    | InlineCStatement
+    | ReturnStatement
+    | VariableStatement
+    | IfStatement
+    | WhileStatement;
 
   export class SymbolTable {
     private symbols: Map<ID, Symbol> = new Map();
 
     constructor() {}
 
-    defineSymbol(symbol: Symbol) {
+    defineSymbol(symbol: Symbol): Symbol & { id: ID } {
       // if (!symbol.id) {
       symbol.id = makeSymbolId();
       // }
       this.symbols.set(symbol.id, symbol);
-      return symbol.id;
+      return symbol as Symbol & { id: ID };
     }
 
     getAll() {
@@ -359,23 +428,23 @@ export namespace Semantic {
     makeSymbolAvailable(symbol: Symbol) {
       const s = this.findSymbol(symbol);
       if (s) {
-        return s.id!;
+        return s;
       } else {
         return this.defineSymbol(symbol);
       }
     }
 
-    findSymbol(symbol: Symbol) {
+    findSymbol(symbol: Symbol): (Symbol & { id: ID }) | undefined {
       switch (symbol.variant) {
         case "Datatype":
           return [...this.symbols.values()].find(
             (s) => s.variant === "Datatype" && s.type === symbol.type,
-          );
+          ) as (Symbol & { id: ID }) | undefined;
 
         case "Variable":
           return [...this.symbols.values()].find(
             (s) => s.variant === "Variable" && s.name === symbol.name,
-          );
+          ) as (Symbol & { id: ID }) | undefined;
 
         case "GenericParameter":
           return [...this.symbols.values()].find(
@@ -384,18 +453,18 @@ export namespace Semantic {
               s.name === symbol.name &&
               s.belongsToStruct.toString() ===
                 symbol.belongsToStruct.toString(),
-          );
+          ) as (Symbol & { id: ID }) | undefined;
 
         case "FunctionDefinition":
           return [...this.symbols.values()].find(
             (s) => s.variant === "FunctionDefinition" && s.name === symbol.name,
-          );
+          ) as (Symbol & { id: ID }) | undefined;
 
         case "FunctionDeclaration":
           return [...this.symbols.values()].find(
             (s) =>
               s.variant === "FunctionDeclaration" && s.name === symbol.name,
-          );
+          ) as (Symbol & { id: ID }) | undefined;
 
         default:
           throw new InternalError("Unexpected symbol type");
@@ -429,7 +498,7 @@ export namespace Semantic {
 
     constructor() {}
 
-    defineDatatype(datatype: Datatype) {
+    defineDatatype(datatype: Datatype): Datatype & { id: ID } {
       if (this.exists(datatype)) {
         throw new InternalError(`Symbol already exists in symbol table`);
       }
@@ -437,7 +506,7 @@ export namespace Semantic {
       datatype.id = makeTypeId();
       // }
       this.datatypes.set(datatype.id, datatype);
-      return datatype.id;
+      return datatype as Datatype & { id: ID };
     }
 
     exists(datatype: Datatype) {
@@ -458,7 +527,7 @@ export namespace Semantic {
       return s;
     }
 
-    findDatatype(datatype: Datatype) {
+    findDatatype(datatype: Datatype): (Datatype & { id: ID }) | undefined {
       switch (datatype.variant) {
         case "Function":
           return [...this.datatypes.values()].find(
@@ -469,13 +538,13 @@ export namespace Semantic {
               f.functionReturnValue === datatype.functionReturnValue &&
               f.generics.toString() === datatype.generics.toString() &&
               f.vararg === datatype.vararg,
-          );
+          ) as (Datatype & { id: ID }) | undefined;
 
         case "Primitive":
           return [...this.datatypes.values()].find(
             (d) =>
               d.variant === "Primitive" && d.primitive === datatype.primitive,
-          );
+          ) as (Datatype & { id: ID }) | undefined;
 
         case "Struct":
           return [...this.datatypes.values()].find(
@@ -484,12 +553,12 @@ export namespace Semantic {
               d.name === datatype.name &&
               d.genericSymbols.toString() ===
                 datatype.genericSymbols.toString(),
-          );
+          ) as (Datatype & { id: ID }) | undefined;
 
         case "Deferred":
           return [...this.datatypes.values()].find(
             (d) => d.variant === "Deferred",
-          );
+          ) as (Datatype & { id: ID }) | undefined;
 
         // case "GenericPlaceholder":
         //   return [...this.datatypes.values()].find(
@@ -512,7 +581,7 @@ export namespace Semantic {
     makeDatatypeAvailable(datatype: Datatype) {
       const dt = this.findDatatype(datatype);
       if (dt) {
-        return dt.id!;
+        return dt;
       } else {
         return this.defineDatatype(datatype);
       }

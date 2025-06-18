@@ -2,7 +2,8 @@ export type ID = bigint & {
   __nonZeroBrand?: never;
 };
 
-const ID_BASE = 10n ** 18n;
+// const ID_BASE = 10n ** 18n;
+const ID_BASE = 10n ** 3n;
 let nextIdCounter = 0n;
 
 function assertId() {

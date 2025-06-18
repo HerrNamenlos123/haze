@@ -477,6 +477,7 @@ class ASTTransformer extends HazeVisitor<any> {
       ellipsis: params.ellipsis,
       returnType: (ctx.datatype() && this.visit(ctx.datatype()!)) || undefined,
       _collect: {},
+      _semantic: {},
     };
   };
 
@@ -505,6 +506,7 @@ class ASTTransformer extends HazeVisitor<any> {
       returnType: (ctx.datatype() && this.visit(ctx.datatype()!)) || undefined,
       sourceloc: this.loc(ctx),
       _collect: {},
+      _semantic: {},
     };
   };
 
@@ -532,6 +534,7 @@ class ASTTransformer extends HazeVisitor<any> {
       sourceloc: this.loc(ctx),
       datatype: (ctx.datatype() && this.visit(ctx.datatype()!)) || undefined,
       expr: (ctx.expr() && this.visit(ctx.expr()!)) || undefined,
+      _semantic: {},
     };
   };
 
@@ -640,6 +643,7 @@ class ASTTransformer extends HazeVisitor<any> {
       sourceloc: this.loc(ctx),
       datatype: (ctx.datatype() && this.visit(ctx.datatype()!)) || undefined,
       expr: (ctx.expr() && this.visit(ctx.expr()!)) || undefined,
+      _semantic: {},
     };
   };
 
