@@ -186,6 +186,11 @@ function collect(
     case "StructDefinition":
       statement._collect.definedInScope = scope;
       statement._collect.scope = new Collect.Scope(statement.sourceloc, scope);
+      statement._collect.namespaces = meta.namespaceStack.map((n) => n.name);
+      statement._collect.fullNamespacedName = [
+        ...statement._collect.namespaces,
+        statement.name,
+      ];
       for (const g of statement.generics) {
         statement._collect.scope.symbolTable.defineSymbol({
           variant: "GenericPlaceholder",

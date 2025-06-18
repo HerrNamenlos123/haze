@@ -179,6 +179,8 @@ export namespace Semantic {
     id?: ID;
     variant: "Struct";
     name: string;
+    namespaces: string[];
+    fullNamespacedName: string[];
     genericSymbols: ID[];
     externLanguage: EExternLanguage;
     members: ID[];
@@ -186,13 +188,13 @@ export namespace Semantic {
     // parentSymbol?: ID;
   };
 
-  export type GenericPlaceholderType = {
-    id?: ID;
-    variant: "GenericPlaceholder";
-    name: string;
-    sourceLoc: SourceLoc;
-    belongsToType: ID;
-  };
+  // export type GenericPlaceholderType = {
+  //   id?: ID;
+  //   variant: "GenericPlaceholder";
+  //   name: string;
+  //   sourceLoc: SourceLoc;
+  //   belongsToType: ID;
+  // };
 
   //   export type RawPointerDatatype = {
   //     id: ID;
@@ -214,7 +216,7 @@ export namespace Semantic {
 
   export type Datatype =
     | FunctionDatatype
-    | GenericPlaceholderType
+    // | GenericPlaceholderType
     | StructDatatype
     //   | RawPointerDatatype
     | PrimitiveDatatype;
@@ -231,8 +233,7 @@ export namespace Semantic {
     id?: ID;
     variant: "Variable";
     name: string;
-    type: ID;
-    memberOfType?: ID;
+    typeSymbol: ID;
     mutable: boolean;
     export: boolean;
     externLanguage: EExternLanguage;
@@ -243,8 +244,8 @@ export namespace Semantic {
     id?: ID;
     variant: "GenericParameter";
     name: string;
+    belongsToStruct: string[];
     sourceLoc: SourceLoc;
-    belongsToType: ID;
   };
 
   export type FunctionDefinitionSymbol = {
@@ -252,7 +253,7 @@ export namespace Semantic {
     variant: "FunctionDefinition";
     name: string;
     namespacePath: string[];
-    type: ID;
+    typeSymbol: ID;
     externLanguage: EExternLanguage;
     scope: Semantic.Scope;
     export: boolean;
@@ -265,7 +266,7 @@ export namespace Semantic {
     variant: "FunctionDeclaration";
     name: string;
     namespacePath: string[];
-    type: ID;
+    typeSymbol: ID;
     externLanguage: EExternLanguage;
     export: boolean;
     method: EMethodType;
@@ -275,7 +276,6 @@ export namespace Semantic {
   export type DatatypeSymbol = {
     id?: ID;
     variant: "Datatype";
-    name: string;
     type: ID;
     export: boolean;
     sourceloc: SourceLoc;
@@ -324,16 +324,11 @@ export namespace Semantic {
   export type Statement = InlineCStatement;
 
   export class SymbolTable {
-    symbols: Map<ID, Symbol> = new Map();
+    private symbols: Map<ID, Symbol> = new Map();
 
     constructor() {}
 
     defineSymbol(symbol: Symbol) {
-      if (this.tryLookupSymbol(symbol.name)) {
-        throw new InternalError(
-          `Symbol '${symbol.name}' already exists in symbol table`,
-        );
-      }
       // if (!symbol.id) {
       symbol.id = makeSymbolId();
       // }
@@ -341,9 +336,24 @@ export namespace Semantic {
       return symbol.id;
     }
 
+    getAll() {
+      return this.symbols;
+    }
+
+    get(id: ID) {
+      const s = this.symbols.get(id);
+      if (!s) {
+        throw new InternalError(
+          "Symbol with id " + id + " does not exist in symbol table",
+        );
+      }
+      return s;
+    }
+
     makeSymbolAvailable(symbol: Symbol) {
-      if (this.findSymbol(symbol)) {
-        return symbol.id!;
+      const s = this.findSymbol(symbol);
+      if (s) {
+        return s.id!;
       } else {
         return this.defineSymbol(symbol);
       }
@@ -353,15 +363,12 @@ export namespace Semantic {
       switch (symbol.variant) {
         case "Datatype":
           return [...this.symbols.values()].find(
-            (s) => s.variant === "Datatype" && s.name === symbol.name,
+            (s) => s.variant === "Datatype" && s.type === symbol.type,
           );
 
         case "Variable":
           return [...this.symbols.values()].find(
-            (s) =>
-              s.variant === "Variable" &&
-              s.name === symbol.name &&
-              s.memberOfType === symbol.memberOfType,
+            (s) => s.variant === "Variable" && s.name === symbol.name,
           );
 
         case "GenericParameter":
@@ -369,7 +376,8 @@ export namespace Semantic {
             (s) =>
               s.variant === "GenericParameter" &&
               s.name === symbol.name &&
-              s.belongsToType === symbol.belongsToType,
+              s.belongsToStruct.toString() ===
+                symbol.belongsToStruct.toString(),
           );
 
         case "FunctionDefinition":
@@ -411,7 +419,7 @@ export namespace Semantic {
   }
 
   export class TypeTable {
-    datatypes: Map<ID, Datatype> = new Map();
+    private datatypes: Map<ID, Datatype> = new Map();
 
     constructor() {}
 
@@ -430,15 +438,30 @@ export namespace Semantic {
       return Boolean(this.findDatatype(datatype));
     }
 
+    getAll() {
+      return this.datatypes;
+    }
+
+    get(id: ID) {
+      const s = this.datatypes.get(id);
+      if (!s) {
+        throw new InternalError(
+          "Type with id " + id + " does not exist in type table",
+        );
+      }
+      return s;
+    }
+
     findDatatype(datatype: Datatype) {
       switch (datatype.variant) {
         case "Function":
           return [...this.datatypes.values()].find(
             (f) =>
               f.variant === "Function" &&
-              f.functionParameters === datatype.functionParameters &&
+              f.functionParameters.toString() ===
+                datatype.functionParameters.toString() &&
               f.functionReturnValue === datatype.functionReturnValue &&
-              f.generics === datatype.generics &&
+              f.generics.toString() === datatype.generics.toString() &&
               f.vararg === datatype.vararg,
           );
 
@@ -450,16 +473,20 @@ export namespace Semantic {
 
         case "Struct":
           return [...this.datatypes.values()].find(
-            (d) => d.variant === "Struct" && d.name === datatype.name,
+            (d) =>
+              d.variant === "Struct" &&
+              d.name === datatype.name &&
+              d.genericSymbols.toString() ===
+                datatype.genericSymbols.toString(),
           );
 
-        case "GenericPlaceholder":
-          return [...this.datatypes.values()].find(
-            (d) =>
-              d.variant === "GenericPlaceholder" &&
-              d.name === datatype.name &&
-              d.belongsToType === datatype.belongsToType,
-          );
+        // case "GenericPlaceholder":
+        //   return [...this.datatypes.values()].find(
+        //     (d) =>
+        //       d.variant === "GenericPlaceholder" &&
+        //       d.name === datatype.name &&
+        //       d.belongsToType === datatype.belongsToType,
+        //   );
 
         // case "Namespace":
         //   return [...this.datatypes.values()].find(

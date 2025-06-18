@@ -383,6 +383,8 @@ export type ASTStructDefinition = {
   sourceloc: SourceLoc;
   _collect: {
     definedInScope?: Collect.Scope;
+    fullNamespacedName?: string[];
+    namespaces?: string[];
     scope?: Collect.Scope;
   };
   _semantic: {
