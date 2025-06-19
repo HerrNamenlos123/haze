@@ -63,19 +63,16 @@ async function main() {
     try {
       // const filename = "src/SymbolCollection/CollectionTest.hz";
       // const filename = "src/parser/ParsingTest.hz";
-      logger.info("Parsing file");
       const filename = "src/Semantic/SemanticTest.hz";
       const ast = await Parser.parseFileToAST(filename);
       if (ast) {
         // console.log(JSON.stringify(ast[0].funcbody, undefined, 4));
-        logger.info("Collecting symbols");
         const cr = CollectSymbols(ast, { filename, line: 0, column: 0 });
         // console.log(cr.globalScope);
         // console.log(
         //   cr.globalScope.symbolTable.lookupSymbol("A", cr.globalScope.location),
         // );
         // PrettyPrintCollected(cr);
-        logger.info("Performing semantic analysis");
         const sr = SemanticallyAnalyze(cr.globalScope);
         PrettyPrintAnalyzed(sr);
       }

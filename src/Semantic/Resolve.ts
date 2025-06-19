@@ -97,7 +97,6 @@ export function resolveDatatype(
             );
           }
 
-          console.log("struct definition of ", struct);
           const newGenericContext: Semantic.GenericContext = {
             symbolToSymbol: new Map(genericContext.symbolToSymbol),
           };
@@ -114,8 +113,6 @@ export function resolveDatatype(
               }
 
               const from = struct.genericSymbols[i];
-              console.log(datatype._collect.usedInScope?.sourceloc);
-              // throw new InternalError();
               const to = resolveDatatype(
                 sr,
                 assertScope(datatype._collect.usedInScope),

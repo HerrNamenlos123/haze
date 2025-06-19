@@ -131,8 +131,6 @@ export function instantiateSymbol(
       const mappedTo = genericContext.symbolToSymbol.get(symbol.id!);
       if (mappedTo) {
         if (mappedTo === symbol.id) {
-          console.log(genericContext);
-          PrettyPrintAnalyzed(sr);
           throw new InternalError("Generic Mapping is circular - Parameter points to itself");
         }
         return instantiateSymbol(sr, mappedTo, genericContext);
