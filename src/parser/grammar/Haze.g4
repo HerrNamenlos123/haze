@@ -80,6 +80,7 @@ genericLiteral
 structContent
     : ID ':' datatype ';'                                                                   #StructMember
     | ID ('<' ID (',' ID)* '>')? '(' params ')' (':' datatype)? (funcbody | ';')            #StructMethod
+    | structDefinition                                                                      #NestedStructDefinition
     ;
 
 structDefinition

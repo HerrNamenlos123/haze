@@ -1,3 +1,4 @@
+import { logger } from "../log/log";
 import {
   EBinaryOperation,
   EExternLanguage,
@@ -11,8 +12,8 @@ import type { ID } from "../shared/store";
 import type { Collect } from "../SymbolCollection/CollectSymbols";
 import { hasOnlyDuplicates } from "../utils";
 import { Conversion } from "./Conversion";
-import { instantiateSymbol } from "./Instantiate";
-import { resolveSymbol } from "./Resolve";
+import { instantiateDatatype, instantiateSymbol } from "./Instantiate";
+import { resolveDatatype } from "./Resolve";
 import {
   getSymbol,
   getType,
@@ -25,11 +26,18 @@ export function elaborateExpr(
   sr: SemanticResult,
   scope: Semantic.Scope,
   expr: ASTExpr,
+  genericContext: Semantic.GenericContext | null,
 ): Semantic.Expression {
+  if (!genericContext) {
+    genericContext = {
+      symbolToSymbol: new Map<ID, ID>(),
+    };
+  }
+
   switch (expr.variant) {
     case "BinaryExpr": {
-      const a = elaborateExpr(sr, scope, expr.a);
-      const b = elaborateExpr(sr, scope, expr.b);
+      const a = elaborateExpr(sr, scope, expr.a, genericContext);
+      const b = elaborateExpr(sr, scope, expr.b, genericContext);
 
       const leftType = getTypeFromSymbol(sr, a.typeSymbol);
       const rightType = getTypeFromSymbol(sr, a.typeSymbol);
@@ -179,7 +187,7 @@ export function elaborateExpr(
     // =================================================================================================================
 
     case "ParenthesisExpr": {
-      return elaborateExpr(sr, scope, expr.expr);
+      return elaborateExpr(sr, scope, expr.expr, genericContext);
     }
 
     // =================================================================================================================
@@ -187,8 +195,8 @@ export function elaborateExpr(
     // =================================================================================================================
 
     case "ExprCallExpr": {
-      const calledExpr = elaborateExpr(sr, scope, expr.calledExpr);
-      const args = expr.arguments.map((a) => elaborateExpr(sr, scope, a));
+      const calledExpr = elaborateExpr(sr, scope, expr.calledExpr, genericContext);
+      const args = expr.arguments.map((a) => elaborateExpr(sr, scope, a, genericContext));
       const functype = getTypeFromSymbol(sr, calledExpr.typeSymbol) as Semantic.FunctionDatatype;
       return {
         variant: "ExprCall",
@@ -245,7 +253,7 @@ export function elaborateExpr(
         symbol.variant === "FunctionDeclaration" ||
         symbol.variant === "FunctionDefinition"
       ) {
-        elaborate(sr, symbol);
+        elaborate(sr, symbol, genericContext);
         if (!symbol._semantic.symbol) throw new ImpossibleSituation();
         const rawFunctionSymbol = getSymbol(sr, symbol._semantic.symbol) as
           | Semantic.FunctionDeclarationSymbol
@@ -275,7 +283,7 @@ export function elaborateExpr(
     // =================================================================================================================
 
     case "ExprMemberAccess": {
-      const object = elaborateExpr(sr, scope, expr.expr);
+      const object = elaborateExpr(sr, scope, expr.expr, genericContext);
       const structType = getTypeFromSymbol(sr, object.typeSymbol);
       if (structType.variant !== "Struct") {
         throw new CompilerError("Cannot access member of a non-structural type", expr.sourceloc);
@@ -323,7 +331,7 @@ export function elaborateExpr(
     // =================================================================================================================
 
     case "StructInstantiationExpr": {
-      const symbol = resolveSymbol(sr, scope.collectScope, expr.datatype);
+      const symbol = resolveDatatype(sr, scope.collectScope, expr.datatype, genericContext);
       if (symbol.variant !== "Datatype") throw new ImpossibleSituation();
       const type = getType(sr, symbol.type);
       if (type.variant !== "Struct")
@@ -338,7 +346,7 @@ export function elaborateExpr(
         value: Semantic.Expression;
       }[] = [];
       for (const m of expr.members) {
-        const e = elaborateExpr(sr, scope, m.value);
+        const e = elaborateExpr(sr, scope, m.value, genericContext);
 
         const variableId = type.members.find((mm) => {
           const s = getSymbol(sr, mm);
@@ -404,7 +412,14 @@ export function elaborateStatement(
   sr: SemanticResult,
   scope: Semantic.Scope,
   s: ASTStatement,
+  genericContext: Semantic.GenericContext | null,
 ): Semantic.Statement {
+  if (!genericContext) {
+    genericContext = {
+      symbolToSymbol: new Map<ID, ID>(),
+    };
+  }
+
   switch (s.variant) {
     // =================================================================================================================
     // =================================================================================================================
@@ -422,15 +437,16 @@ export function elaborateStatement(
     // =================================================================================================================
 
     case "IfStatement": {
-      const condition = elaborateExpr(sr, scope, s.condition);
-      const then = elaborateScope(sr, assertScope(s.then._collect.scope), scope);
+      const condition = elaborateExpr(sr, scope, s.condition, genericContext);
+      const then = elaborateScope(sr, assertScope(s.then._collect.scope), genericContext, scope);
       const elseIfs = s.elseIfs.map((e) => {
         return {
-          condition: elaborateExpr(sr, scope, e.condition),
-          then: elaborateScope(sr, assertScope(e.then._collect.scope), scope),
+          condition: elaborateExpr(sr, scope, e.condition, genericContext),
+          then: elaborateScope(sr, assertScope(e.then._collect.scope), genericContext, scope),
         };
       });
-      const _else = s.else && elaborateScope(sr, assertScope(s.else._collect.scope), scope);
+      const _else =
+        s.else && elaborateScope(sr, assertScope(s.else._collect.scope), genericContext, scope);
       return {
         variant: "IfStatement",
         condition: condition,
@@ -447,8 +463,8 @@ export function elaborateStatement(
     case "WhileStatement":
       return {
         variant: "WhileStatement",
-        condition: elaborateExpr(sr, scope, s.condition),
-        then: elaborateScope(sr, assertScope(s.body._collect.scope), scope),
+        condition: elaborateExpr(sr, scope, s.condition, genericContext),
+        then: elaborateScope(sr, assertScope(s.body._collect.scope), genericContext, scope),
       };
 
     // =================================================================================================================
@@ -458,7 +474,7 @@ export function elaborateStatement(
     case "ReturnStatement":
       return {
         variant: "ReturnStatement",
-        expr: s.expr && elaborateExpr(sr, scope, s.expr),
+        expr: s.expr && elaborateExpr(sr, scope, s.expr, genericContext),
         sourceloc: s.sourceloc,
       };
 
@@ -467,11 +483,11 @@ export function elaborateStatement(
     // =================================================================================================================
 
     case "VariableDefinitionStatement": {
-      const expr = s.expr && elaborateExpr(sr, scope, s.expr);
+      const expr = s.expr && elaborateExpr(sr, scope, s.expr, genericContext);
 
       let typeSymbolId: ID | undefined = undefined;
       if (s.datatype) {
-        typeSymbolId = resolveSymbol(sr, scope.collectScope, s.datatype).id;
+        typeSymbolId = resolveDatatype(sr, scope.collectScope, s.datatype, genericContext).id;
       } else {
         if (!expr) throw new ImpossibleSituation();
         typeSymbolId = expr.typeSymbol;
@@ -506,7 +522,7 @@ export function elaborateStatement(
     case "ExprStatement":
       return {
         variant: "ExprStatement",
-        expr: elaborateExpr(sr, scope, s.expr),
+        expr: elaborateExpr(sr, scope, s.expr, genericContext),
       };
   }
 }
@@ -514,11 +530,18 @@ export function elaborateStatement(
 export function elaborateScope(
   sr: SemanticResult,
   astScope: Collect.Scope,
+  genericContext: Semantic.GenericContext | null,
   parentScope?: Semantic.Scope,
 ): Semantic.Scope {
+  if (!genericContext) {
+    genericContext = {
+      symbolToSymbol: new Map<ID, ID>(),
+    };
+  }
+
   const scope = new Semantic.Scope(astScope.sourceloc, astScope, parentScope);
   for (const s of astScope.statements) {
-    const statement = elaborateStatement(sr, scope, s);
+    const statement = elaborateStatement(sr, scope, s, genericContext);
     scope.statements.push(statement);
 
     if (statement.variant === "ReturnStatement") {
@@ -528,7 +551,19 @@ export function elaborateScope(
   return scope;
 }
 
-export function elaborate(sr: SemanticResult, item: Collect.Symbol): ID | undefined {
+export function elaborate(
+  sr: SemanticResult,
+  item: Collect.Symbol,
+  genericContext: Semantic.GenericContext | null,
+): ID {
+  logger.trace("elaborate()");
+  if (!genericContext) {
+    genericContext = {
+      symbolToSymbol: new Map<ID, ID>(),
+      elaborateCurrentStructOrNamespace: null,
+    };
+  }
+
   switch (item.variant) {
     // =================================================================================================================
     // =================================================================================================================
@@ -545,7 +580,7 @@ export function elaborate(sr: SemanticResult, item: Collect.Symbol): ID | undefi
 
       item._semantic.symbol = sr.symbolTable.defineSymbol({
         variant: "FunctionDeclaration",
-        typeSymbol: resolveSymbol(sr, item._collect.definedInScope!, type).id,
+        typeSymbol: resolveDatatype(sr, item._collect.definedInScope!, type, genericContext).id,
         export: item.export,
         externLanguage: item.externLanguage,
         method: item._collect.method!,
@@ -572,7 +607,7 @@ export function elaborate(sr: SemanticResult, item: Collect.Symbol): ID | undefi
 
       let symbol = sr.symbolTable.defineSymbol({
         variant: "FunctionDefinition",
-        typeSymbol: resolveSymbol(sr, item._collect.definedInScope!, type).id,
+        typeSymbol: resolveDatatype(sr, item._collect.definedInScope!, type, genericContext).id,
         export: item.export,
         externLanguage: item.externLanguage,
         method: item._collect.method!,
@@ -587,7 +622,12 @@ export function elaborate(sr: SemanticResult, item: Collect.Symbol): ID | undefi
 
       if (item.funcbody._collect.scope) {
         item.funcbody._collect.scope._semantic.forFunctionSymbol = symbol.id;
-        symbol.scope = elaborateScope(sr, item.funcbody._collect.scope, symbol.scope);
+        symbol.scope = elaborateScope(
+          sr,
+          item.funcbody._collect.scope,
+          genericContext,
+          symbol.scope,
+        );
       }
 
       if (item.returnType!.variant === "Deferred") {
@@ -640,7 +680,7 @@ export function elaborate(sr: SemanticResult, item: Collect.Symbol): ID | undefi
 
       let symbol = sr.symbolTable.defineSymbol({
         variant: "FunctionDefinition",
-        typeSymbol: resolveSymbol(sr, item._collect.definedInScope!, type).id,
+        typeSymbol: resolveDatatype(sr, item._collect.definedInScope!, type, genericContext).id,
         export: false,
         externLanguage: EExternLanguage.None,
         method: EMethodType.Method,
@@ -657,7 +697,12 @@ export function elaborate(sr: SemanticResult, item: Collect.Symbol): ID | undefi
 
       if (item.funcbody._collect.scope) {
         item.funcbody._collect.scope._semantic.forFunctionSymbol = symbol.id;
-        symbol.scope = elaborateScope(sr, item.funcbody._collect.scope, symbol.scope);
+        symbol.scope = elaborateScope(
+          sr,
+          item.funcbody._collect.scope,
+          genericContext,
+          symbol.scope,
+        );
       }
 
       if (item.returnType!.variant === "Deferred") {
@@ -699,17 +744,111 @@ export function elaborate(sr: SemanticResult, item: Collect.Symbol): ID | undefi
     // =================================================================================================================
     // =================================================================================================================
 
-    case "NamespaceDefinition":
-      for (const symbol of item._collect.scope!.symbolTable.symbols) {
-        elaborate(sr, symbol);
+    case "NamespaceDefinition": {
+      if (genericContext.elaborateCurrentStructOrNamespace === undefined) {
+        throw new ImpossibleSituation();
       }
-      return undefined;
+      const namespace = sr.symbolTable.makeSymbolAvailable({
+        variant: "Namespace",
+        name: item.name,
+        declarations: [],
+        nestedParentTypeSymbol: genericContext.elaborateCurrentStructOrNamespace,
+      }) as Semantic.NamespaceSymbol;
+      logger.debug("Defined Namespace " + namespace.name + " " + namespace.id);
+      namespace.declarations = item.declarations.map((d) =>
+        elaborate(sr, d, {
+          ...genericContext,
+          elaborateCurrentStructOrNamespace: namespace.id,
+        }),
+      );
+      return namespace.id!;
+    }
+
+    case "StructDefinition": {
+      if (item._semantic.symbol) {
+        return item._semantic.symbol;
+      }
+
+      const generics = item.generics.map(
+        (g) =>
+          sr.symbolTable.makeSymbolAvailable({
+            variant: "GenericParameter",
+            name: g,
+            belongsToStruct: item._collect.fullNamespacedName!,
+            sourceloc: item.sourceloc,
+          }).id,
+      );
+
+      if (genericContext.elaborateCurrentStructOrNamespace === undefined) {
+        throw new ImpossibleSituation();
+      }
+      const struct = sr.typeTable.makeDatatypeAvailable({
+        variant: "Struct",
+        name: item.name,
+        externLanguage: item.externLanguage,
+        members: [],
+        methods: [],
+        definedInNamespaceOrStruct: genericContext.elaborateCurrentStructOrNamespace,
+        genericSymbols: generics,
+        fullNamespacedName: item._collect.fullNamespacedName!,
+        namespaces: item._collect.namespaces!,
+      });
+      if (struct.variant !== "Struct") throw new ImpossibleSituation();
+      item._semantic.type = struct.id;
+
+      const structSym = sr.symbolTable.makeSymbolAvailable({
+        variant: "Datatype",
+        export: false,
+        type: struct.id,
+      });
+      item._semantic.symbol = structSym.id;
+
+      // Add members
+      struct.members = item.members.map((m) => {
+        return sr.symbolTable.makeSymbolAvailable({
+          variant: "Variable",
+          name: m.name,
+          externLanguage: EExternLanguage.None,
+          export: false,
+          mutable: true,
+          definedInCollectorScope: item._collect.scope!.id,
+          sourceLoc: m.sourceloc,
+          typeSymbol: resolveDatatype(sr, item._collect.scope!, m.type, genericContext).id,
+          memberOfType: struct.id,
+        }).id;
+      });
+
+      // Add methods
+      struct.methods = item.methods
+        .map((m) => {
+          m._semantic.memberOfSymbol = structSym.id;
+          return elaborate(sr, m, genericContext);
+        })
+        .filter(Boolean)
+        .map((m) => m!);
+
+      return sr.symbolTable.makeDatatypeSymbolAvailable(struct.id).id;
+    }
+
+    default:
+      throw new ImpossibleSituation();
   }
 }
 
-function analyzeGlobalScope(sr: SemanticResult, globalScope: Collect.Scope) {
+function analyzeGlobalScope(
+  sr: SemanticResult,
+  globalScope: Collect.Scope,
+  genericContext: Semantic.GenericContext | null,
+) {
+  logger.trace("Analyzing global scope");
+  if (!genericContext) {
+    genericContext = {
+      symbolToSymbol: new Map<ID, ID>(),
+      elaborateCurrentStructOrNamespace: null,
+    };
+  }
   for (const symbol of globalScope.symbolTable.symbols) {
-    elaborate(sr, symbol);
+    elaborate(sr, symbol, genericContext);
   }
 }
 
@@ -718,7 +857,7 @@ export function SemanticallyAnalyze(globalScope: Collect.Scope) {
     symbolTable: new Semantic.SymbolTable(),
     typeTable: new Semantic.TypeTable(),
   };
-  analyzeGlobalScope(sr, globalScope);
+  analyzeGlobalScope(sr, globalScope, null);
   return sr;
 }
 
@@ -810,7 +949,7 @@ export function PrettyPrintAnalyzed(sr: SemanticResult) {
         break;
 
       case "FunctionDeclaration":
-        print(` - [${id}] FuncDecl`);
+        print(` - [${id}] FuncDecl ${symbol.name}() type=${symbol.typeSymbol}`);
         break;
 
       case "FunctionDefinition":

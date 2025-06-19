@@ -74,6 +74,7 @@ import {
   LiteralConstantContext,
   NamedDatatypeContext,
   NamespaceDefinitionContext,
+  NestedStructDefinitionContext,
   NumberConstantContext,
   ParamsContext,
   ParenthesisExprContext,
@@ -524,6 +525,10 @@ class ASTTransformer extends HazeVisitor<any> {
     };
   };
 
+  visitNestedStructDefinition = (ctx: NestedStructDefinitionContext): ASTStructDefinition => {
+    return this.visit(ctx.structDefinition());
+  };
+
   visitStructDefinition = (ctx: StructDefinitionContext): ASTStructDefinition => {
     const name = ctx.ID()[0].getText();
     const generics = ctx
@@ -533,12 +538,15 @@ class ASTTransformer extends HazeVisitor<any> {
     const content = ctx._content.map((c) => this.visit(c));
     const members: ASTStructMemberDefinition[] = [];
     const methods: ASTStructMethodDefinition[] = [];
+    const declarations: ASTStructDefinition[] = [];
 
     for (const c of content) {
       if (c.variant === "StructMember") {
         members.push(c);
       } else if (c.variant === "StructMethod") {
         methods.push(c);
+      } else if (c.variant === "StructDefinition") {
+        declarations.push(c);
       } else {
         throw new InternalError("Struct content was neither member nor method");
       }
@@ -550,6 +558,7 @@ class ASTTransformer extends HazeVisitor<any> {
       externLanguage: this.exlang(ctx),
       name: name,
       generics: generics,
+      declarations: declarations,
       members: members,
       methods: methods,
       sourceloc: this.loc(ctx),

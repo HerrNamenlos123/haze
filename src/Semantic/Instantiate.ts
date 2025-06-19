@@ -1,5 +1,7 @@
+import { logger } from "../log/log";
 import { ImpossibleSituation, InternalError } from "../shared/Errors";
 import type { ID } from "../shared/store";
+import { PrettyPrintAnalyzed } from "./Elaborate";
 import type { Semantic, SemanticResult } from "./SemanticSymbols";
 
 export function instantiateDatatype(
@@ -7,6 +9,7 @@ export function instantiateDatatype(
   id: ID,
   genericContext: Semantic.GenericContext,
 ): Semantic.Datatype & { id: ID } {
+  logger.trace("instantiateDatatype()");
   const type = sr.typeTable.get(id);
   if (!type.id) throw new ImpossibleSituation();
 
@@ -43,6 +46,7 @@ export function instantiateDatatype(
         name: type.name,
         genericSymbols: type.genericSymbols.map((g) => instantiateSymbol(sr, g, genericContext).id),
         externLanguage: type.externLanguage,
+        definedInNamespaceOrStruct: type.definedInNamespaceOrStruct,
         members: [],
         methods: [],
         fullNamespacedName: type.fullNamespacedName,
@@ -81,6 +85,7 @@ export function instantiateSymbol(
     newParentSymbol?: ID;
   },
 ): Semantic.Symbol & { id: ID } {
+  logger.trace("instantiateSymbol() ");
   const symbol = sr.symbolTable.get(id);
 
   switch (symbol.variant) {
@@ -89,6 +94,7 @@ export function instantiateSymbol(
     // ◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈
 
     case "Variable": {
+      logger.trace("instantiateSymbol Variable");
       const id = sr.symbolTable.makeSymbolAvailable({
         variant: "Variable",
         name: symbol.name,
@@ -108,6 +114,7 @@ export function instantiateSymbol(
     // ◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈
 
     case "Datatype": {
+      logger.trace("instantiateSymbol Datatype");
       return sr.symbolTable.makeSymbolAvailable({
         variant: "Datatype",
         export: symbol.export,
@@ -120,11 +127,18 @@ export function instantiateSymbol(
     // ◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈
 
     case "GenericParameter": {
-      const got = genericContext.symbolToSymbol.get(symbol.id!);
-      if (!got) {
-        throw new InternalError("Generic Parameter has no mapping");
+      logger.trace("instantiateSymbol GenericParameter");
+      const mappedTo = genericContext.symbolToSymbol.get(symbol.id!);
+      if (mappedTo) {
+        if (mappedTo === symbol.id) {
+          console.log(genericContext);
+          PrettyPrintAnalyzed(sr);
+          throw new InternalError("Generic Mapping is circular - Parameter points to itself");
+        }
+        return instantiateSymbol(sr, mappedTo, genericContext);
+      } else {
+        return symbol as Semantic.Symbol & { id: ID };
       }
-      return instantiateSymbol(sr, got, genericContext);
     }
 
     // ◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈
@@ -132,6 +146,7 @@ export function instantiateSymbol(
     // ◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈
 
     case "FunctionDeclaration": {
+      logger.trace("instantiateSymbol FunctionDeclaration");
       return sr.symbolTable.makeSymbolAvailable({
         variant: "FunctionDeclaration",
         export: symbol.export,
@@ -149,6 +164,7 @@ export function instantiateSymbol(
     // ◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈
 
     case "FunctionDefinition": {
+      logger.trace("instantiateSymbol FunctionDefinition");
       return sr.symbolTable.makeSymbolAvailable({
         variant: "FunctionDefinition",
         export: symbol.export,

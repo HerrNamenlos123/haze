@@ -46,56 +46,6 @@ import type { Module } from "./Module";
 //     serialize(module: Module): string {}
 
 //     mangle(module: Module) {
-//       let nesting = "";
-//       if (this.parentSymbol) {
-//         let p: Datatype.BaseDatatype | undefined = module.parsedStore
-//           .getSymbolOrFail(this.parentSymbol)
-//           .asDatatypeSymbol().type;
-//         while (p) {
-//           if (!p.isStruct() || !p.isNamespace()) {
-//             throw new ImpossibleSituation();
-//           }
-//           nesting = p.mangle(module) + nesting;
-//           p = p.parentSymbol
-//             ? module.parsedStore
-//                 .getSymbolOrFail(this.parentSymbol)
-//                 .asDatatypeSymbol().type
-//             : undefined;
-//         }
-//       }
-//       if (this.linkage === ELinkage.Internal) {
-//         let innerMangling = this.name.length.toString() + this.name;
-//         if (this.generics.length > 0) {
-//           innerMangling += "I";
-//           for (const { name, type } of this.generics) {
-//             if (type) {
-//               const typeSym = module.parsedStore.getSymbolOrFail(type);
-//               if (typeSym.isDatatype()) {
-//                 innerMangling += typeSym.type.mangle(module);
-//               } else if (typeSym.isConstant()) {
-//                 innerMangling += typeSym.constant.value
-//                   .toString()
-//                   .replaceAll(".", "_");
-//               } else {
-//                 throw new InternalError(
-//                   "A symbol that is not a constant or a datatype went into a generic",
-//                 );
-//               }
-//             } else {
-//               innerMangling += name + "_";
-//             }
-//           }
-//           innerMangling += "E";
-//         }
-
-//         if (nesting !== "") {
-//           return `N${nesting}${innerMangling}E`;
-//         } else {
-//           return innerMangling;
-//         }
-//       } else {
-//         return this.name;
-//       }
 //     }
 
 //     resolve(module: Module): BaseDatatype {
@@ -180,43 +130,6 @@ import type { Module } from "./Module";
 //       }
 //     }
 //   }
-
-//   export class Primitive extends BaseDatatype {
-//     constructor(
-//       id: TypeId,
-//       isResolved: boolean,
-//       public primitive: EPrimitive,
-//     ) {
-//       super(id, isResolved);
-//     }
-
-//     isPrimitive(): this is Primitive {
-//       return true;
-//     }
-
-//     isBoolean(): boolean {
-//       return this.primitive === EPrimitive.boolean;
-//     }
-
-//     isNone(): boolean {
-//       return this.primitive === EPrimitive.none;
-//     }
-
-//     isF32(): boolean {
-//       return this.primitive === EPrimitive.f32;
-//     }
-
-//     isF64(): boolean {
-//       return this.primitive === EPrimitive.f64;
-//     }
-
-//     isFloat() {
-//       return this.isF32() || this.isF64();
-//     }
-
-//     serialize(module: Module): string {
-//       return this.toString();
-//     }
 
 //     mangle(module: Module) {
 //       const s = this.toString();
@@ -583,12 +496,6 @@ import type { Module } from "./Module";
 //     }
 
 //     mangle(module: Module) {
-//       const type = module.parsedStore.getType(this.type, this.isResolved);
-//       if (type.isStruct() && type.linkage) {
-//         return type.mangle(module);
-//       } else {
-//         return "_H" + type.mangle(module);
-//       }
 //     }
 
 //     getName() {
@@ -599,51 +506,3 @@ import type { Module } from "./Module";
 //       return this.location;
 //     }
 //   }
-
-//   export class ConstantSymbol extends BaseSymbol {
-//     constructor(
-//       id: SymbolId,
-//       isResolved: boolean,
-//       public name: string,
-//       public constant:
-//         | {
-//             variant: "String";
-//             type: ID;
-//             value: string;
-//             location: Location;
-//           }
-//         | {
-//             variant: "Boolean";
-//             type: ID;
-//             value: boolean;
-//             location: Location;
-//           }
-//         | {
-//             variant: "Literal";
-//             type: ID;
-//             value: number;
-//             unit?: "s" | "ms" | "us" | "ns" | "m" | "h" | "d";
-//             location: Location;
-//           },
-//       public location: Location,
-//     ) {
-//       super(id, isResolved);
-//     }
-
-//     isConstant(): this is ConstantSymbol {
-//       return true;
-//     }
-
-//     mangle(module: Module): string {
-//       throw new InternalError("A Constant symbol cannot be mangled");
-//     }
-
-//     getName() {
-//       return this.name;
-//     }
-
-//     getLocation() {
-//       return this.location;
-//     }
-//   }
-// }

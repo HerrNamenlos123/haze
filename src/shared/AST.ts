@@ -407,8 +407,10 @@ export type ASTStructDefinition = {
   generics: string[];
   members: ASTStructMemberDefinition[];
   methods: ASTStructMethodDefinition[];
+  declarations: ASTStructDefinition[];
   sourceloc: SourceLoc;
   _collect: {
+    definedInNamespaceOrStruct?: ASTNamespaceDefinition | ASTStructDefinition;
     definedInScope?: Collect.Scope;
     fullNamespacedName?: string[];
     namespaces?: string[];
@@ -416,6 +418,7 @@ export type ASTStructDefinition = {
   };
   _semantic: {
     type?: ID;
+    symbol?: ID;
   };
 };
 
@@ -428,6 +431,7 @@ export type ASTNamespaceDefinition = {
   declarations: ASTGlobalDeclaration[];
   sourceloc: SourceLoc;
   _collect: {
+    definedInNamespaceOrStruct?: ASTNamespaceDefinition | ASTStructDefinition;
     scope?: Collect.Scope;
   };
 };

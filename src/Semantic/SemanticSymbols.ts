@@ -29,6 +29,7 @@ export namespace Semantic {
     externLanguage: EExternLanguage;
     members: ID[];
     methods: ID[];
+    definedInNamespaceOrStruct: ID | null;
   };
 
   export type DeferredDatatype = {
@@ -110,12 +111,21 @@ export namespace Semantic {
     export: boolean;
   };
 
+  export type NamespaceSymbol = {
+    id?: ID;
+    variant: "Namespace";
+    name: string;
+    declarations: ID[];
+    nestedParentTypeSymbol: ID | null;
+  };
+
   export type Symbol =
     | VariableSymbol
     | GenericParameterSymbol
     | FunctionDefinitionSymbol
     | FunctionDeclarationSymbol
-    | DatatypeSymbol;
+    | DatatypeSymbol
+    | NamespaceSymbol;
 
   export type ExprMemberAccessExpr = {
     variant: "ExprMemberAccess";
@@ -291,12 +301,26 @@ export namespace Semantic {
 
         case "FunctionDefinition":
           return [...this.symbols.values()].find(
-            (s) => s.variant === "FunctionDefinition" && s.name === symbol.name,
+            (s) =>
+              s.variant === "FunctionDefinition" &&
+              s.name === symbol.name &&
+              s.nestedParentTypeSymbol === symbol.nestedParentTypeSymbol,
           ) as (Symbol & { id: ID }) | undefined;
 
         case "FunctionDeclaration":
           return [...this.symbols.values()].find(
-            (s) => s.variant === "FunctionDeclaration" && s.name === symbol.name,
+            (s) =>
+              s.variant === "FunctionDeclaration" &&
+              s.name === symbol.name &&
+              s.nestedParentTypeSymbol === symbol.nestedParentTypeSymbol,
+          ) as (Symbol & { id: ID }) | undefined;
+
+        case "Namespace":
+          return [...this.symbols.values()].find(
+            (s) =>
+              s.variant === "Namespace" &&
+              s.name === symbol.name &&
+              s.nestedParentTypeSymbol === symbol.nestedParentTypeSymbol,
           ) as (Symbol & { id: ID }) | undefined;
 
         default:
@@ -372,7 +396,7 @@ export namespace Semantic {
           return [...this.datatypes.values()].find(
             (d) =>
               d.variant === "Struct" &&
-              d.fullNamespacedName === datatype.fullNamespacedName &&
+              d.definedInNamespaceOrStruct === datatype.definedInNamespaceOrStruct &&
               d.genericSymbols.toString() === datatype.genericSymbols.toString(),
           ) as (Datatype & { id: ID }) | undefined;
 
@@ -429,6 +453,7 @@ export namespace Semantic {
 
   export type GenericContext = {
     symbolToSymbol: Map<ID, ID>;
+    elaborateCurrentStructOrNamespace?: ID | null;
   };
 }
 

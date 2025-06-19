@@ -182,6 +182,7 @@ function collect(
 
     case "NamespaceDefinition": {
       let namespace = item;
+      item._collect.definedInNamespaceOrStruct = meta.currentNamespaceOrStruct;
       if (scope.symbolTable.tryLookupSymbolHere(namespace.name)) {
         namespace = scope.symbolTable.tryLookupSymbolHere(namespace.name) as ASTNamespaceDefinition;
       } else {
@@ -206,6 +207,7 @@ function collect(
       item._collect.definedInScope = scope;
       item._collect.scope = new Collect.Scope(item.sourceloc, scope);
       item._collect.namespaces = meta.namespaceStack.map((n) => n.name);
+      item._collect.definedInNamespaceOrStruct = meta.currentNamespaceOrStruct;
       item._collect.fullNamespacedName = [...item._collect.namespaces, item.name];
       for (const g of item.generics) {
         item._collect.scope.symbolTable.defineSymbol({
@@ -222,6 +224,10 @@ function collect(
         currentNamespaceOrStruct: item,
         namespaceStack: [...meta.namespaceStack, item],
       };
+
+      for (const decl of item.declarations) {
+        collect(item._collect.scope, decl, newMeta);
+      }
 
       for (const member of item.members) {
         collect(item._collect.scope, member.type, newMeta);

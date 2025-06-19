@@ -27,6 +27,11 @@ export namespace Conversion {
     }
   }
 
+  export function isStruct(type: Semantic.Datatype): type is Semantic.StructDatatype {
+    if (type.variant !== "Struct") return false;
+    return true;
+  }
+
   export function isF32(type: Semantic.Datatype): type is Semantic.PrimitiveDatatype {
     if (type.variant !== "Primitive") return false;
     return type.primitive === EPrimitive.f32;

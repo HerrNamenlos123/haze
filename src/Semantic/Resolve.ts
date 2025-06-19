@@ -1,21 +1,30 @@
+import { logger } from "../log/log";
 import { EExternLanguage, type ASTDatatype } from "../shared/AST";
 import { assertID, assertScope, stringToPrimitive } from "../shared/common";
 import { CompilerError, ImpossibleSituation, InternalError } from "../shared/Errors";
 import type { ID } from "../shared/store";
 import type { Collect } from "../SymbolCollection/CollectSymbols";
-import { elaborate } from "./Elaborate";
+import { elaborate, PrettyPrintAnalyzed } from "./Elaborate";
 import { instantiateDatatype } from "./Instantiate";
-import type { Semantic, SemanticResult } from "./SemanticSymbols";
+import {
+  getSymbol,
+  getTypeFromSymbol,
+  type Semantic,
+  type SemanticResult,
+} from "./SemanticSymbols";
 
-export function resolveSymbol(
+export function resolveDatatype(
   sr: SemanticResult,
   scope: Collect.Scope,
   datatype: ASTDatatype,
-  _genericContext?: Semantic.GenericContext,
+  genericContext: Semantic.GenericContext | null,
 ): Semantic.Symbol & { id: ID } {
-  const genericContext: Semantic.GenericContext = _genericContext || {
-    symbolToSymbol: new Map<ID, ID>(),
-  };
+  logger.trace("resolveDatatype()");
+  if (!genericContext) {
+    genericContext = {
+      symbolToSymbol: new Map<ID, ID>(),
+    };
+  }
 
   switch (datatype.variant) {
     // =================================================================================================================
@@ -37,9 +46,9 @@ export function resolveSymbol(
       const dt = sr.typeTable.makeDatatypeAvailable({
         variant: "Function",
         vararg: datatype.ellipsis,
-        functionReturnValue: resolveSymbol(sr, scope, datatype.returnType, genericContext).id,
+        functionReturnValue: resolveDatatype(sr, scope, datatype.returnType, genericContext).id,
         functionParameters: datatype.params.map(
-          (p) => resolveSymbol(sr, scope, p.datatype, genericContext).id,
+          (p) => resolveDatatype(sr, scope, p.datatype, genericContext).id,
         ),
         generics: [],
       });
@@ -78,25 +87,23 @@ export function resolveSymbol(
         // ◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈
 
         case "StructDefinition": {
-          const generics = found.generics.map(
-            (g) =>
-              sr.symbolTable.makeSymbolAvailable({
-                variant: "GenericParameter",
-                name: g,
-                belongsToStruct: found._collect.fullNamespacedName!,
-                sourceloc: found.sourceloc,
-              }).id,
-          );
+          const struct = getTypeFromSymbol(sr, elaborate(sr, found, null)!);
+          if (struct.variant !== "Struct") throw new ImpossibleSituation();
 
-          if (found.generics.length !== datatype.generics.length) {
+          if (struct.genericSymbols.length !== datatype.generics.length) {
             throw new CompilerError(
               `Type ${found.name} expects ${found.generics.length} generics but received ${datatype.generics.length}`,
               datatype.sourceloc,
             );
           }
 
-          if (found.generics.length > 0) {
-            for (let i = 0; i < found.generics.length; i++) {
+          console.log("struct definition of ", struct);
+          const newGenericContext: Semantic.GenericContext = {
+            symbolToSymbol: new Map(genericContext.symbolToSymbol),
+          };
+
+          if (struct.genericSymbols.length > 0) {
+            for (let i = 0; i < struct.genericSymbols.length; i++) {
               const g = datatype.generics[i];
               if (
                 g.variant === "NumberConstant" ||
@@ -106,63 +113,22 @@ export function resolveSymbol(
                 throw new InternalError("Constants not implemented in generics");
               }
 
-              genericContext.symbolToSymbol.set(
-                generics[i],
-                resolveSymbol(sr, assertScope(datatype._collect.usedInScope), g, genericContext).id,
-              );
+              const from = struct.genericSymbols[i];
+              console.log(datatype._collect.usedInScope?.sourceloc);
+              // throw new InternalError();
+              const to = resolveDatatype(
+                sr,
+                assertScope(datatype._collect.usedInScope),
+                g,
+                genericContext,
+              ).id;
+              newGenericContext.symbolToSymbol.set(from, to);
+              logger.debug(`Mapping generic parameter from ${from} to ${to}`);
             }
           }
 
-          const struct = sr.typeTable.makeDatatypeAvailable({
-            variant: "Struct",
-            name: found.name,
-            externLanguage: found.externLanguage,
-            members: [],
-            methods: [],
-            genericSymbols: generics,
-            fullNamespacedName: found._collect.fullNamespacedName!,
-            namespaces: found._collect.namespaces!,
-          });
-          if (struct.variant !== "Struct") throw new ImpossibleSituation();
-          found._semantic.type = struct.id;
-
-          const structSym = sr.symbolTable.makeSymbolAvailable({
-            variant: "Datatype",
-            export: false,
-            type: struct.id,
-          });
-
-          // Add members
-          struct.members = found.members.map((m) => {
-            return sr.symbolTable.makeSymbolAvailable({
-              variant: "Variable",
-              name: m.name,
-              externLanguage: EExternLanguage.None,
-              export: false,
-              mutable: true,
-              definedInCollectorScope: found._collect.scope!.id,
-              sourceLoc: m.sourceloc,
-              typeSymbol: resolveSymbol(sr, found._collect.scope!, m.type, genericContext).id,
-              memberOfType: struct.id,
-            }).id;
-          });
-
-          // Add methods
-          struct.methods = found.methods
-            .map((m) => {
-              m._semantic.memberOfSymbol = structSym.id;
-              return elaborate(sr, m);
-            })
-            .filter(Boolean)
-            .map((m) => m!);
-
-          const dt = instantiateDatatype(sr, struct.id, genericContext);
-          const sym = sr.symbolTable.makeSymbolAvailable({
-            variant: "Datatype",
-            export: false,
-            type: dt.id,
-          });
-          return sym;
+          const dt = instantiateDatatype(sr, struct.id, newGenericContext);
+          return sr.symbolTable.makeDatatypeSymbolAvailable(dt.id);
         }
 
         // ◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈
@@ -171,7 +137,7 @@ export function resolveSymbol(
 
         case "NamespaceDefinition":
           if (datatype.nested) {
-            return resolveSymbol(sr, found._collect.scope!, datatype.nested, genericContext);
+            return resolveDatatype(sr, found._collect.scope!, datatype.nested, genericContext);
           }
           throw new CompilerError(
             `Namespace cannot be used as a datatype here`,
