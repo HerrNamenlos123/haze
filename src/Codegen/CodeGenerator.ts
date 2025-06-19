@@ -199,7 +199,6 @@ class CodeGenerator {
   emitFunction(symbol: Lowered.FunctionDeclaration | Lowered.FunctionDefinition) {
     const declaration = (type: Lowered.Datatype): string => {
       if (type.variant !== "Function") throw new ImpossibleSituation();
-      console.log(type);
       let decl =
         "_H" +
         this.emitDatatype(type.returnType) +
@@ -287,11 +286,13 @@ class CodeGenerator {
         }
         // }
 
-        // if (statement.extern !== ELinkage.Internal) {
-        //   outWriter.writeLine(`;`);
-        // } else {
-        outWriter.writeLine(` = {0};`);
-        // }
+        if (statement.value) {
+          const exprWriter = this.emitExpr(statement.value);
+          tempWriter.write(exprWriter.temp);
+          outWriter.write(` = ${exprWriter.out.get()};`);
+        } else {
+          outWriter.writeLine(` = {0};`);
+        }
         return { temp: tempWriter, out: outWriter };
       }
 
@@ -299,8 +300,6 @@ class CodeGenerator {
         if (!statement.expr || !statement.symbol.type || statement.symbol.variant !== "Variable") {
           throw new ImpossibleSituation();
         }
-        const ret = generateUsageCode(statement.symbol.type, this.module);
-        const exprWriter = this.emitExpr(statement.expr);
         tempWriter.write(exprWriter.temp);
         const assignConv = implicitConversion(
           statement.expr.type,
@@ -462,16 +461,16 @@ class CodeGenerator {
       //     return { out: outWriter, temp: tempWriter };
       //   }
 
-      //   case "Object": {
-      //     outWriter.writeLine(`((${generateUsageCode(expr.type, this.module)}) { `).pushIndent();
-      //     for (const [symbol, memberExpr] of expr.members) {
-      //       const exprWriter = this.emitExpr(memberExpr);
-      //       tempWriter.write(exprWriter.temp);
-      //       outWriter.writeLine(`.${symbol.name} = ${exprWriter.out.get()}, `);
-      //     }
-      //     outWriter.popIndent().write(" })");
-      //     return { out: outWriter, temp: tempWriter };
-      //   }
+      case "StructInstantiation": {
+        outWriter.writeLine(`((_H${this.emitDatatype(expr.type)}) { `).pushIndent();
+        for (const assign of expr.memberAssigns) {
+          const exprWriter = this.emitExpr(assign.value);
+          tempWriter.write(exprWriter.temp);
+          outWriter.writeLine(`.${assign.name} = ${exprWriter.out.get()}, `);
+        }
+        outWriter.popIndent().write(" })");
+        return { out: outWriter, temp: tempWriter };
+      }
 
       //   case "RawPtrDeref": {
       //     const exprWriter = this.emitExpr(expr.expr);
@@ -480,12 +479,12 @@ class CodeGenerator {
       //     return { out: outWriter, temp: tempWriter };
       //   }
 
-      //   case "MemberAccess": {
-      //     const exprWriter = this.emitExpr(expr.expr);
-      //     tempWriter.write(exprWriter.temp);
-      //     outWriter.write(exprWriter.out.get() + "." + expr.memberName);
-      //     return { out: outWriter, temp: tempWriter };
-      //   }
+      case "ExprMemberAccess": {
+        const exprWriter = this.emitExpr(expr.expr);
+        tempWriter.write(exprWriter.temp);
+        outWriter.write(exprWriter.out.get() + "." + expr.memberName);
+        return { out: outWriter, temp: tempWriter };
+      }
 
       //   case "Sizeof":
       //     outWriter.write(`sizeof(${generateUsageCode(expr.datatype, this.module)})`);
@@ -541,32 +540,32 @@ class CodeGenerator {
       //     return { out: outWriter, temp: tempWriter };
       //   }
 
-      //   case "Unary":
-      //     switch (expr.operation) {
-      //       case "!": {
-      //         const exprWriter = this.emitExpr(expr.expr);
-      //         tempWriter.write(exprWriter.temp);
-      //         const unaryExpr = implicitConversion(
-      //           expr.expr.type,
-      //           expr.type,
-      //           exprWriter.out.get(),
-      //           this.module.currentScope,
-      //           expr.expr.location,
-      //           this.module,
-      //         );
-      //         outWriter.write("(!" + unaryExpr + ")");
-      //         break;
-      //       }
-
-      //       case "+":
-      //       case "-": {
-      //         const exprWriter = this.emitExpr(expr.expr);
-      //         tempWriter.write(exprWriter.temp);
-      //         outWriter.write("(" + expr.operation + exprWriter.out.get() + ")");
-      //         break;
-      //       }
+      // case "Unary":
+      //   switch (expr.operation) {
+      //     case "!": {
+      //       const exprWriter = this.emitExpr(expr.expr);
+      //       tempWriter.write(exprWriter.temp);
+      //       const unaryExpr = implicitConversion(
+      //         expr.expr.type,
+      //         expr.type,
+      //         exprWriter.out.get(),
+      //         this.module.currentScope,
+      //         expr.expr.location,
+      //         this.module,
+      //       );
+      //       outWriter.write("(!" + unaryExpr + ")");
+      //       break;
       //     }
-      //     return { out: outWriter, temp: tempWriter };
+
+      //     case "+":
+      //     case "-": {
+      //       const exprWriter = this.emitExpr(expr.expr);
+      //       tempWriter.write(exprWriter.temp);
+      //       outWriter.write("(" + expr.operation + exprWriter.out.get() + ")");
+      //       break;
+      //     }
+      //   }
+      //   return { out: outWriter, temp: tempWriter };
 
       case "BinaryExpr":
         switch (expr.operation) {

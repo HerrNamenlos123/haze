@@ -47,9 +47,14 @@ function lowerExpr(lr: Lowered.Module, expr: Semantic.Expression): Lowered.Expre
       };
     }
 
-    // case "ExprMemberAccess": {
-
-    // }
+    case "ExprMemberAccess": {
+      return {
+        variant: "ExprMemberAccess",
+        expr: lowerExpr(lr, expr.expr),
+        memberName: expr.memberName,
+        type: resolveType(lr, expr.typeSymbol),
+      };
+    }
 
     case "Constant": {
       return {
@@ -328,7 +333,6 @@ function lower(lr: Lowered.Module, symbol: Semantic.Symbol): ID | undefined {
 
     default:
       throw new InternalError("Unhandled variant: " + symbol.variant);
-
   }
 }
 

@@ -31,6 +31,13 @@ export namespace Lowered {
     type: ID;
   };
 
+  export type ExprMemberAccessExpr = {
+    variant: "ExprMemberAccess";
+    expr: Expression;
+    memberName: string;
+    type: ID;
+  };
+
   export type ConstantExpr = {
     variant: "ConstantExpr";
     value: string | number | boolean;
@@ -56,6 +63,7 @@ export namespace Lowered {
     | ExprCallExpr
     | BinaryExpr
     | StructInstantiationExpr
+    | ExprMemberAccessExpr
     | ConstantExpr
     | SymbolValueExpr;
 
