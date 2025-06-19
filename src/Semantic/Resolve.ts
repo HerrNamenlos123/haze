@@ -34,8 +34,9 @@ export function resolveDatatype(
     case "Deferred": {
       const dt = sr.typeTable.makeDatatypeAvailable({
         variant: "Deferred",
+        concrete: false,
       });
-      return sr.symbolTable.makeDatatypeSymbolAvailable(dt.id);
+      return sr.symbolTable.makeDatatypeSymbolAvailable(dt.id, false);
     }
 
     // =================================================================================================================
@@ -43,17 +44,25 @@ export function resolveDatatype(
     // =================================================================================================================
 
     case "FunctionDatatype": {
+      const returnValue = resolveDatatype(sr, scope, datatype.returnType, genericContext);
+      let paramsConcrete = true;
+      const parameters = datatype.params.map((p) => {
+        const resolved = resolveDatatype(sr, scope, p.datatype, genericContext);
+        if (!resolved.concrete) paramsConcrete = false;
+        return {
+          name: p.name,
+          type: resolved.id,
+        };
+      });
       const dt = sr.typeTable.makeDatatypeAvailable({
         variant: "Function",
         vararg: datatype.ellipsis,
-        functionReturnValue: resolveDatatype(sr, scope, datatype.returnType, genericContext).id,
-        functionParameters: datatype.params.map((p) => ({
-          name: p.name,
-          typeSymbol: resolveDatatype(sr, scope, p.datatype, genericContext).id,
-        })),
+        functionReturnValue: returnValue.id,
+        functionParameters: parameters,
         generics: [],
+        concrete: returnValue.concrete && paramsConcrete,
       });
-      return sr.symbolTable.makeDatatypeSymbolAvailable(dt.id);
+      return sr.symbolTable.makeDatatypeSymbolAvailable(dt.id, dt.concrete);
     }
 
     // =================================================================================================================
@@ -68,6 +77,7 @@ export function resolveDatatype(
         }
         return sr.symbolTable.makeDatatypeSymbolAvailable(
           sr.typeTable.makePrimitiveDatatypeAvailable(primitive).id,
+          true,
         );
       }
 
@@ -126,7 +136,7 @@ export function resolveDatatype(
           }
 
           const dt = instantiateDatatype(sr, struct.id, newGenericContext);
-          return sr.symbolTable.makeDatatypeSymbolAvailable(dt.id);
+          return sr.symbolTable.makeDatatypeSymbolAvailable(dt.id, dt.concrete);
         }
 
         // ◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈
@@ -158,6 +168,7 @@ export function resolveDatatype(
             name: found.name,
             belongsToStruct: struct.fullNamespacedName,
             sourceloc: found.sourceloc,
+            concrete: false,
           });
           return id;
         }

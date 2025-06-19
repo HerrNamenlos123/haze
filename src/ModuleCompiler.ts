@@ -185,10 +185,10 @@ export class ProjectCompiler {
       const sr = SemanticallyAnalyze(cr.globalScope);
       PrettyPrintAnalyzed(sr);
       const lowered = LowerModule(cr, sr);
-      // const code = generateCode(mainModule.module, cr, sr);
+      const code = generateCode(mainModule.module, lowered);
 
-      // console.log("Code:");
-      // console.log(code);
+      console.log("Code:");
+      console.log(code);
     }
     return true;
     // console.log(ast);

@@ -109,8 +109,15 @@ function collect(
       item._collect.definedInScope = scope;
 
       if (!item.returnType) {
+        // item.returnType = {
+        //   variant: "Deferred",
+        // };
         item.returnType = {
-          variant: "Deferred",
+          variant: "NamedDatatype",
+          name: "none",
+          generics: [],
+          sourceloc: item.sourceloc,
+          _collect: {},
         };
       }
 

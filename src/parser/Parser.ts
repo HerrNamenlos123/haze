@@ -268,7 +268,7 @@ class ASTTransformer extends HazeVisitor<any> {
     } else if (ctx._op.length === 1 && ctx._op[0].text === ">") {
       return EBinaryOperation.GreaterThan;
     } else if (ctx._op.length === 1 && ctx._op[0].text === "<=") {
-      return EBinaryOperation.LessEqal;
+      return EBinaryOperation.LessEqual;
     } else if (ctx._op.length === 1 && ctx._op[0].text === ">=") {
       return EBinaryOperation.GreaterEqual;
     } else if (ctx._op.length === 1 && ctx._op[0].text === "==") {

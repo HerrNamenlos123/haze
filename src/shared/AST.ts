@@ -1,4 +1,4 @@
-import type { SourceLoc } from "./Errors";
+import { ImpossibleSituation, type SourceLoc } from "./Errors";
 import type { Collect } from "../SymbolCollection/CollectSymbols";
 import type { EMethodType } from "./common";
 import type { ID } from "./store";
@@ -37,13 +37,46 @@ export enum EBinaryOperation {
   Add,
   Subtract,
   LessThan,
-  LessEqal,
+  LessEqual,
   GreaterThan,
   GreaterEqual,
   Equal,
   Unequal,
   BoolAnd,
   BoolOr,
+}
+
+export function BinaryOperationToString(op: EBinaryOperation): string {
+  switch (op) {
+    case EBinaryOperation.Multiply:
+      return "*";
+    case EBinaryOperation.Divide:
+      return "/";
+    case EBinaryOperation.Modulo:
+      return "%";
+    case EBinaryOperation.Add:
+      return "+";
+    case EBinaryOperation.Subtract:
+      return "-";
+    case EBinaryOperation.LessThan:
+      return "<";
+    case EBinaryOperation.LessEqual:
+      return "<=";
+    case EBinaryOperation.GreaterThan:
+      return ">";
+    case EBinaryOperation.GreaterEqual:
+      return ">=";
+    case EBinaryOperation.Equal:
+      return "==";
+    case EBinaryOperation.Unequal:
+      return "!=";
+    case EBinaryOperation.BoolAnd:
+      return "&&";
+    case EBinaryOperation.BoolOr:
+      return "||";
+    default:
+      throw new ImpossibleSituation();
+  }
 }
 
 export enum EAssignmentOperation {

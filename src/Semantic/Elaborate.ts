@@ -6,7 +6,13 @@ import {
   type ASTFunctionDatatype,
   type ASTStatement,
 } from "../shared/AST";
-import { assertScope, EMethodType, EPrimitive, primitiveToString } from "../shared/common";
+import {
+  assertScope,
+  EMethodType,
+  EPrimitive,
+  EVariableContext,
+  primitiveToString,
+} from "../shared/common";
 import { CompilerError, ImpossibleSituation, InternalError } from "../shared/Errors";
 import type { ID } from "../shared/store";
 import type { Collect } from "../SymbolCollection/CollectSymbols";
@@ -56,6 +62,7 @@ export function elaborateExpr(
               right: b,
               typeSymbol: sr.symbolTable.makeDatatypeSymbolAvailable(
                 Conversion.getIntegerBinaryResult(leftType, rightType).id!,
+                true,
               ).id,
             };
           }
@@ -67,6 +74,7 @@ export function elaborateExpr(
               right: b,
               typeSymbol: sr.symbolTable.makeDatatypeSymbolAvailable(
                 sr.typeTable.makePrimitiveDatatypeAvailable(EPrimitive.f32).id,
+                true,
               ).id,
             };
           } else if (Conversion.isFloat(leftType) && Conversion.isFloat(rightType)) {
@@ -77,6 +85,7 @@ export function elaborateExpr(
               right: b,
               typeSymbol: sr.symbolTable.makeDatatypeSymbolAvailable(
                 sr.typeTable.makePrimitiveDatatypeAvailable(EPrimitive.f64).id,
+                true,
               ).id,
             };
           } else if (
@@ -90,12 +99,13 @@ export function elaborateExpr(
               right: b,
               typeSymbol: sr.symbolTable.makeDatatypeSymbolAvailable(
                 sr.typeTable.makePrimitiveDatatypeAvailable(EPrimitive.f64).id,
+                true,
               ).id,
             };
           }
           break;
 
-        case EBinaryOperation.LessEqal:
+        case EBinaryOperation.LessEqual:
         case EBinaryOperation.LessThan:
         case EBinaryOperation.GreaterEqual:
         case EBinaryOperation.GreaterThan:
@@ -110,6 +120,7 @@ export function elaborateExpr(
               right: b,
               typeSymbol: sr.symbolTable.makeDatatypeSymbolAvailable(
                 sr.typeTable.makePrimitiveDatatypeAvailable(EPrimitive.boolean).id,
+                true,
               ).id,
             };
           }
@@ -129,6 +140,7 @@ export function elaborateExpr(
               right: b,
               typeSymbol: sr.symbolTable.makeDatatypeSymbolAvailable(
                 sr.typeTable.makePrimitiveDatatypeAvailable(EPrimitive.boolean).id,
+                true,
               ).id,
             };
           }
@@ -144,6 +156,7 @@ export function elaborateExpr(
               right: b,
               typeSymbol: sr.symbolTable.makeDatatypeSymbolAvailable(
                 sr.typeTable.makePrimitiveDatatypeAvailable(EPrimitive.boolean).id,
+                true,
               ).id,
             };
           }
@@ -160,7 +173,8 @@ export function elaborateExpr(
           operation: expr.operation,
           right: b,
           typeSymbol: sr.symbolTable.makeDatatypeSymbolAvailable(
-            sr.typeTable.makeDatatypeAvailable({ variant: "Deferred" }).id,
+            sr.typeTable.makeDatatypeAvailable({ variant: "Deferred", concrete: false }).id,
+            false,
           ).id,
         };
       }
@@ -175,7 +189,7 @@ export function elaborateExpr(
     case "ConstantExpr": {
       if (expr.constant.variant === "BooleanConstant") {
         const dt = sr.typeTable.makePrimitiveDatatypeAvailable(EPrimitive.boolean);
-        const sym = sr.symbolTable.makeDatatypeSymbolAvailable(dt.id);
+        const sym = sr.symbolTable.makeDatatypeSymbolAvailable(dt.id, true);
         return {
           variant: "Constant",
           typeSymbol: sym.id,
@@ -183,7 +197,7 @@ export function elaborateExpr(
         };
       } else if (expr.constant.variant === "NumberConstant") {
         const dt = sr.typeTable.makePrimitiveDatatypeAvailable(EPrimitive.i32);
-        const sym = sr.symbolTable.makeDatatypeSymbolAvailable(dt.id);
+        const sym = sr.symbolTable.makeDatatypeSymbolAvailable(dt.id, true);
         return {
           variant: "Constant",
           typeSymbol: sym.id,
@@ -191,7 +205,7 @@ export function elaborateExpr(
         };
       } else {
         const dt = sr.typeTable.makePrimitiveDatatypeAvailable(EPrimitive.str);
-        const sym = sr.symbolTable.makeDatatypeSymbolAvailable(dt.id);
+        const sym = sr.symbolTable.makeDatatypeSymbolAvailable(dt.id, true);
         return {
           variant: "Constant",
           typeSymbol: sym.id,
@@ -471,6 +485,7 @@ export function elaborateStatement(
         then: then,
         elseIfs: elseIfs,
         else: _else,
+        sourceloc: s.sourceloc,
       };
     }
 
@@ -483,6 +498,7 @@ export function elaborateStatement(
         variant: "WhileStatement",
         condition: elaborateExpr(sr, scope, s.condition, genericContext),
         then: elaborateScope(sr, assertScope(s.body._collect.scope), genericContext, scope),
+        sourceloc: s.sourceloc,
       };
 
     // =================================================================================================================
@@ -520,7 +536,9 @@ export function elaborateStatement(
         typeSymbol: typeSymbolId,
         definedInCollectorScope: scope.id,
         sourceLoc: s.sourceloc,
+        variableContext: EVariableContext.FunctionLocal,
         memberOfType: undefined,
+        concrete: getSymbol(sr, typeSymbolId).concrete,
       });
       s._semantic.symbol = symbol.id;
 
@@ -528,8 +546,9 @@ export function elaborateStatement(
         variant: "VariableStatement",
         mutable: s.mutable,
         name: s.name,
-        typeSymbol: typeSymbolId,
+        variableSymbol: symbol.id,
         value: expr,
+        sourceloc: s.sourceloc,
       };
     }
 
@@ -541,6 +560,7 @@ export function elaborateStatement(
       return {
         variant: "ExprStatement",
         expr: elaborateExpr(sr, scope, s.expr, genericContext),
+        sourceloc: s.sourceloc,
       };
   }
 }
@@ -596,16 +616,17 @@ export function elaborate(
         sourceloc: item.sourceloc,
       };
 
+      const resolved = resolveDatatype(sr, item._collect.definedInScope!, type, genericContext);
       item._semantic.symbol = sr.symbolTable.makeSymbolAvailable({
         variant: "FunctionDeclaration",
-        typeSymbol: resolveDatatype(sr, item._collect.definedInScope!, type, genericContext).id,
+        typeSymbol: resolved.id,
         export: item.export,
         externLanguage: item.externLanguage,
         method: item._collect.method!,
         nestedParentTypeSymbol: genericContext.elaborateCurrentStructOrNamespace || undefined,
         name: item.name,
-        // namespacePath: item.namespacePath,
         sourceloc: item.sourceloc,
+        concrete: resolved.concrete,
       }).id;
 
       return item._semantic.symbol!;
@@ -624,9 +645,10 @@ export function elaborate(
         sourceloc: item.sourceloc,
       };
 
+      const resolved = resolveDatatype(sr, item._collect.definedInScope!, type, genericContext);
       let symbol = sr.symbolTable.defineSymbol({
         variant: "FunctionDefinition",
-        typeSymbol: resolveDatatype(sr, item._collect.definedInScope!, type, genericContext).id,
+        typeSymbol: resolved.id,
         export: item.export,
         nestedParentTypeSymbol: genericContext.elaborateCurrentStructOrNamespace || undefined,
         externLanguage: item.externLanguage,
@@ -634,6 +656,7 @@ export function elaborate(
         name: item.name,
         sourceloc: item.sourceloc,
         scope: new Semantic.Scope(item.sourceloc, item.funcbody._collect.scope!),
+        concrete: resolved.concrete,
       });
       if (symbol.variant !== "FunctionDefinition") {
         throw new ImpossibleSituation();
@@ -650,37 +673,38 @@ export function elaborate(
         );
       }
 
-      if (item.returnType!.variant === "Deferred") {
-        if (symbol.scope.returnedTypes.length > 0) {
-          if (!hasOnlyDuplicates(symbol.scope.returnedTypes)) {
-            throw new InternalError("Multiple different return types not supported yet");
-          }
+      // if (item.returnType!.variant === "Deferred") {
+      //   if (symbol.scope.returnedTypes.length > 0) {
+      //     if (!hasOnlyDuplicates(symbol.scope.returnedTypes)) {
+      //       throw new InternalError("Multiple different return types not supported yet");
+      //     }
 
-          const functypeSymbol = sr.symbolTable.get(symbol.typeSymbol) as Semantic.DatatypeSymbol;
-          const functype = sr.typeTable.get(functypeSymbol.type) as Semantic.FunctionDatatype;
-          functype.functionReturnValue =
-            symbol.scope.returnedTypes[0] ||
-            sr.symbolTable.makeDatatypeSymbolAvailable(
-              sr.typeTable.makePrimitiveDatatypeAvailable(EPrimitive.none).id,
-            ).id;
-          symbol.typeSymbol = sr.typeTable.makeDatatypeAvailable(functype).id;
-          symbol = sr.symbolTable.makeSymbolAvailable(symbol);
-          item._semantic.symbol = symbol.id;
-        } else {
-          const functypeSymbol = sr.symbolTable.get(symbol.typeSymbol) as Semantic.DatatypeSymbol;
-          const functype = sr.typeTable.get(functypeSymbol.type) as Semantic.FunctionDatatype;
-          functype.functionReturnValue = sr.symbolTable.makeDatatypeSymbolAvailable(
-            sr.typeTable.makePrimitiveDatatypeAvailable(EPrimitive.none).id,
-          ).id;
-          symbol.typeSymbol = sr.typeTable.makeDatatypeAvailable(functype).id;
-          symbol = sr.symbolTable.makeSymbolAvailable(symbol);
-          item._semantic.symbol = symbol.id;
-        }
-      } else {
-        if (!hasOnlyDuplicates(symbol.scope.returnedTypes)) {
-          throw new InternalError("Multiple different return types not supported yet");
-        }
-      }
+      //     const functypeSymbol = sr.symbolTable.get(symbol.typeSymbol) as Semantic.DatatypeSymbol;
+      //     const functype = sr.typeTable.get(functypeSymbol.type) as Semantic.FunctionDatatype;
+      //     const tp = sr.typeTable.makePrimitiveDatatypeAvailable(EPrimitive.none);
+      //     functype.functionReturnValue =
+      //       symbol.scope.returnedTypes[0] ||
+      //       sr.symbolTable.makeDatatypeSymbolAvailable(tp.id, tp.concrete).id;
+      //     symbol.typeSymbol = sr.typeTable.makeDatatypeAvailable(functype).id;
+      //     symbol = sr.symbolTable.makeSymbolAvailable(symbol);
+      //     item._semantic.symbol = symbol.id;
+      //   } else {
+      //     const functypeSymbol = sr.symbolTable.get(symbol.typeSymbol) as Semantic.DatatypeSymbol;
+      //     const functype = sr.typeTable.get(functypeSymbol.type) as Semantic.FunctionDatatype;
+      //     const tp = sr.typeTable.makePrimitiveDatatypeAvailable(EPrimitive.none);
+      //     functype.functionReturnValue = sr.symbolTable.makeDatatypeSymbolAvailable(
+      //       tp.id,
+      //       tp.concrete,
+      //     ).id;
+      //     symbol.typeSymbol = sr.typeTable.makeDatatypeAvailable(functype).id;
+      //     symbol = sr.symbolTable.makeSymbolAvailable(symbol);
+      //     item._semantic.symbol = symbol.id;
+      //   }
+      // } else {
+      //   if (!hasOnlyDuplicates(symbol.scope.returnedTypes)) {
+      //     throw new InternalError("Multiple different return types not supported yet");
+      //   }
+      // }
 
       return symbol.id;
     }
@@ -698,9 +722,10 @@ export function elaborate(
         sourceloc: item.sourceloc,
       };
 
+      const resolved = resolveDatatype(sr, item._collect.definedInScope!, type, genericContext);
       let symbol = sr.symbolTable.defineSymbol({
         variant: "FunctionDefinition",
-        typeSymbol: resolveDatatype(sr, item._collect.definedInScope!, type, genericContext).id,
+        typeSymbol: resolved.id,
         export: false,
         externLanguage: EExternLanguage.None,
         method: EMethodType.Method,
@@ -709,6 +734,7 @@ export function elaborate(
         methodOfSymbol: item._semantic.memberOfSymbol,
         scope: new Semantic.Scope(item.sourceloc, assertScope(item.funcbody._collect.scope)),
         nestedParentTypeSymbol: item._semantic.memberOfSymbol,
+        concrete: resolved.concrete,
       });
       if (symbol.variant !== "FunctionDefinition") {
         throw new ImpossibleSituation();
@@ -733,19 +759,20 @@ export function elaborate(
 
           const functypeSymbol = sr.symbolTable.get(symbol.typeSymbol) as Semantic.DatatypeSymbol;
           const functype = sr.typeTable.get(functypeSymbol.type) as Semantic.FunctionDatatype;
+          const tp = sr.typeTable.makePrimitiveDatatypeAvailable(EPrimitive.none);
           functype.functionReturnValue =
             symbol.scope.returnedTypes[0] ||
-            sr.symbolTable.makeDatatypeSymbolAvailable(
-              sr.typeTable.makePrimitiveDatatypeAvailable(EPrimitive.none).id,
-            ).id;
+            sr.symbolTable.makeDatatypeSymbolAvailable(tp.id, tp.concrete).id;
           symbol.typeSymbol = sr.typeTable.makeDatatypeAvailable(functype).id;
           symbol = sr.symbolTable.makeSymbolAvailable(symbol);
           item._semantic.symbol = symbol.id;
         } else {
           const functypeSymbol = sr.symbolTable.get(symbol.typeSymbol) as Semantic.DatatypeSymbol;
           const functype = sr.typeTable.get(functypeSymbol.type) as Semantic.FunctionDatatype;
+          const tp = sr.typeTable.makePrimitiveDatatypeAvailable(EPrimitive.none);
           functype.functionReturnValue = sr.symbolTable.makeDatatypeSymbolAvailable(
-            sr.typeTable.makePrimitiveDatatypeAvailable(EPrimitive.none).id,
+            tp.id,
+            tp.concrete,
           ).id;
           symbol.typeSymbol = sr.typeTable.makeDatatypeAvailable(functype).id;
           symbol = sr.symbolTable.makeSymbolAvailable(symbol);
@@ -773,6 +800,7 @@ export function elaborate(
         name: item.name,
         declarations: [],
         nestedParentTypeSymbol: genericContext.elaborateCurrentStructOrNamespace,
+        concrete: true,
       }) as Semantic.NamespaceSymbol;
       logger.debug("Defined Namespace " + namespace.name + " " + namespace.id);
       namespace.declarations = item.declarations.map((d) =>
@@ -796,6 +824,7 @@ export function elaborate(
             name: g,
             belongsToStruct: item._collect.fullNamespacedName!,
             sourceloc: item.sourceloc,
+            concrete: false,
           }).id,
       );
 
@@ -812,6 +841,7 @@ export function elaborate(
         genericSymbols: generics,
         fullNamespacedName: item._collect.fullNamespacedName!,
         namespaces: item._collect.namespaces!,
+        concrete: generics.every((g) => getSymbol(sr, g).concrete),
       });
       if (struct.variant !== "Struct") throw new ImpossibleSituation();
       item._semantic.type = struct.id;
@@ -820,11 +850,13 @@ export function elaborate(
         variant: "Datatype",
         export: false,
         type: struct.id,
+        concrete: struct.concrete,
       });
       item._semantic.symbol = structSym.id;
 
       // Add members
       struct.members = item.members.map((m) => {
+        const resolved = resolveDatatype(sr, item._collect.scope!, m.type, genericContext);
         return sr.symbolTable.makeSymbolAvailable({
           variant: "Variable",
           name: m.name,
@@ -833,8 +865,10 @@ export function elaborate(
           mutable: true,
           definedInCollectorScope: item._collect.scope!.id,
           sourceLoc: m.sourceloc,
-          typeSymbol: resolveDatatype(sr, item._collect.scope!, m.type, genericContext).id,
+          typeSymbol: resolved.id,
+          variableContext: EVariableContext.MemberOfStruct,
           memberOfType: struct.id,
+          concrete: resolved.concrete,
         }).id;
       });
 
@@ -847,7 +881,7 @@ export function elaborate(
         .filter(Boolean)
         .map((m) => m!);
 
-      return sr.symbolTable.makeDatatypeSymbolAvailable(struct.id).id;
+      return sr.symbolTable.makeDatatypeSymbolAvailable(struct.id, struct.concrete).id;
     }
 
     default:
@@ -884,47 +918,11 @@ export function SemanticallyAnalyze(globalScope: Collect.Scope) {
 export function PrettyPrintAnalyzed(sr: SemanticResult) {
   const indent = 0;
 
-  const print = (str: string, _indent = 0) => {
-    console.log(" ".repeat(indent + _indent) + str);
-  };
+  const gray = "\x1b[90m";
+  const reset = "\x1b[0m";
 
-  const typeFunc = (id: ID): string => {
-    const t = sr.typeTable.get(id);
-    if (!t) {
-      throw new ImpossibleSituation();
-    }
-    switch (t.variant) {
-      case "Primitive":
-        return primitiveToString(t.primitive);
-
-      case "Struct": {
-        let s = t.fullNamespacedName.join(".");
-
-        if (t.genericSymbols.length > 0) {
-          s += " generics=[" + t.genericSymbols.join(", ") + "]";
-        }
-
-        return "(" + s + ")";
-      }
-
-      case "Deferred":
-        return "_deferred_";
-
-      case "Function":
-        return "functype";
-
-      case "Namespace":
-        return t.name;
-    }
-  };
-
-  const params = (ps: ID[]) => {
-    return ps
-      .map((p) => {
-        const s = sr.symbolTable.get(p) as Semantic.VariableSymbol;
-        return `${s.name}: ${s.typeSymbol}`;
-      })
-      .join(", ");
+  const print = (str: string, color = reset) => {
+    console.log(color + " ".repeat(indent) + str + reset);
   };
 
   print("Datatype Table:");
@@ -932,22 +930,32 @@ export function PrettyPrintAnalyzed(sr: SemanticResult) {
     switch (type.variant) {
       case "Function":
         print(
-          ` - [${id}] FunctionType [${type.functionParameters}] => ${type.functionReturnValue} vararg=${type.vararg}`,
+          ` - [${id}] FunctionType [${type.functionParameters.map((p) => `${p.name}: ${p.type}`).join(", ")}] => ${type.functionReturnValue} vararg=${type.vararg}`,
+          type.concrete ? reset : gray,
         );
         break;
 
       case "Primitive":
-        print(` - [${id}] PrimitiveType ${typeFunc(id)}`);
+        print(
+          ` - [${id}] PrimitiveType ${primitiveToString(type.primitive)}`,
+          type.concrete ? reset : gray,
+        );
         break;
 
       case "Struct":
+        let s = "(" + type.fullNamespacedName.join(".");
+        if (type.genericSymbols.length > 0) {
+          s += " generics=[" + type.genericSymbols.join(", ") + "]";
+        }
+        s += ")";
         print(
-          ` - [${id}] StructType ${typeFunc(id)} members=${type.members.map((id) => id).join(", ")}`,
+          ` - [${id}] StructType ${s} members=${type.members.map((id) => id).join(", ")}`,
+          type.concrete ? reset : gray,
         );
         break;
 
       case "Deferred":
-        print(` - [${id}] Deferred`);
+        print(` - [${id}] Deferred`, type.concrete ? reset : gray);
         break;
 
       // case "GenericPlaceholder":
@@ -963,26 +971,31 @@ export function PrettyPrintAnalyzed(sr: SemanticResult) {
   for (const [id, symbol] of sr.symbolTable.getAll()) {
     switch (symbol.variant) {
       case "Datatype":
-        print(` - [${id}] Datatype type=${symbol.type}`);
+        print(` - [${id}] Datatype type=${symbol.type}`, symbol.concrete ? reset : gray);
         break;
 
       case "FunctionDeclaration":
-        print(` - [${id}] FuncDecl ${symbol.name}() type=${symbol.typeSymbol}`);
+        print(
+          ` - [${id}] FuncDecl ${symbol.name}() type=${symbol.typeSymbol}`,
+          symbol.concrete ? reset : gray,
+        );
         break;
 
       case "FunctionDefinition":
         print(
           ` - [${id}] FuncDef ${symbol.name}() type=${symbol.typeSymbol} methodOf=${symbol.methodOfSymbol} parent=${symbol.nestedParentTypeSymbol}`,
+          symbol.concrete ? reset : gray,
         );
         break;
 
       case "GenericParameter":
-        print(` - [${id}] GenericParameter ${symbol.name}`);
+        print(` - [${id}] GenericParameter ${symbol.name}`, symbol.concrete ? reset : gray);
         break;
 
       case "Variable":
         print(
           ` - [${id}] Variable ${symbol.name} typeSymbol=${symbol.typeSymbol} memberOf=${symbol.memberOfType}`,
+          symbol.concrete ? reset : gray,
         );
         break;
     }

@@ -1,6 +1,7 @@
 import type { SemanticResult } from "../Semantic/SemanticSymbols";
 import type { EBinaryOperation } from "../shared/AST";
-import type { EPrimitive } from "../shared/common";
+import type { EPrimitive, EVariableContext } from "../shared/common";
+import type { SourceLoc } from "../shared/Errors";
 import type { ID } from "../shared/store";
 import type { CollectResult } from "../SymbolCollection/CollectSymbols";
 
@@ -12,7 +13,7 @@ export namespace Lowered {
     cDeclarations: string[];
 
     datatypes: Map<ID, Datatype>;
-    functions: (FunctionDeclaration | FunctionDefinition)[];
+    functions: Map<ID, FunctionDeclaration | FunctionDefinition>;
   };
 
   export type BinaryExpr = {
@@ -73,18 +74,22 @@ export namespace Lowered {
   export type InlineCStatement = {
     variant: "InlineCStatement";
     value: string;
+    sourceloc: SourceLoc;
   };
 
   export type VariableStatement = {
     variant: "VariableStatement";
     name: string;
     type: ID;
+    variableContext: EVariableContext;
     value?: Expression;
+    sourceloc: SourceLoc;
   };
 
   export type ReturnStatement = {
     variant: "ReturnStatement";
     expr?: Expression;
+    sourceloc: SourceLoc;
   };
 
   export type IfStatement = {
@@ -96,25 +101,30 @@ export namespace Lowered {
       then: Scope;
     }[];
     else?: Scope;
+    sourceloc: SourceLoc;
   };
 
   export type WhileStatement = {
     variant: "WhileStatement";
     condition: Expression;
     then: Scope;
+    sourceloc: SourceLoc;
   };
 
   export type ExprStatement = {
     variant: "ExprStatement";
     expr: Expression;
+    sourceloc: SourceLoc;
   };
 
   export type FunctionDeclaration = {
     id?: ID;
     variant: "FunctionDeclaration";
     name: string;
-    parent: ID;
+    parent?: ID;
+    type: ID;
     semanticId: ID;
+    sourceloc: SourceLoc;
   };
 
   export type FunctionDefinition = {
@@ -122,8 +132,10 @@ export namespace Lowered {
     variant: "FunctionDefinition";
     name: string;
     parent?: ID;
+    type: ID;
     semanticId: ID;
     scope: Scope;
+    sourceloc: SourceLoc;
   };
 
   export type Datatype = StructDatatype | NamespaceDatatype | PrimitiveDatatype | FunctionDatatype;
@@ -147,7 +159,11 @@ export namespace Lowered {
     variant: "Struct";
     name: string;
     generics: ID[];
-    parent: ID;
+    parent?: ID;
+    members: {
+      name: string;
+      type: ID;
+    }[];
     semanticId: ID;
   };
 
@@ -158,6 +174,7 @@ export namespace Lowered {
       name: string;
       type: ID;
     }[];
+    returnType: ID;
     vararg: boolean;
     semanticId: ID;
   };

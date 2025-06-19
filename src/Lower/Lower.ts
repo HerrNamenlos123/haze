@@ -5,6 +5,7 @@ import {
   type Semantic,
   type SemanticResult,
 } from "../Semantic/SemanticSymbols";
+import { EVariableContext } from "../shared/common";
 import { ImpossibleSituation, InternalError } from "../shared/Errors";
 import { makeLoweredId, type ID } from "../shared/store";
 import type { CollectResult } from "../SymbolCollection/CollectSymbols";
@@ -86,6 +87,14 @@ function resolveType(lr: Lowered.Module, typeSymbolId: ID): ID {
       name: type.name,
       generics: type.genericSymbols.map((id) => resolveType(lr, id)),
       parent: lower(lr, getSymbol(lr.sr, type.definedInNamespaceOrStruct!)),
+      members: type.members.map((m) => {
+        const sym = getSymbol(lr.sr, m);
+        if (sym.variant !== "Variable") throw new ImpossibleSituation();
+        return {
+          name: sym.name,
+          type: resolveType(lr, sym.typeSymbol),
+        };
+      }),
       semanticId: typeSymbolId,
     });
     return id;
@@ -113,12 +122,12 @@ function resolveType(lr: Lowered.Module, typeSymbolId: ID): ID {
       id: id,
       variant: "Function",
       parameters: type.functionParameters.map((p) => {
-        return { name: p.name, type: resolveType(lr, p.typeSymbol) };
+        return { name: p.name, type: resolveType(lr, p.type) };
       }),
+      returnType: resolveType(lr, type.functionReturnValue),
       vararg: type.vararg,
       semanticId: type.id,
     });
-    console.log("Made Ftype", type);
     return id;
   } else {
     throw new InternalError("Unhandled variant: " + type.variant);
@@ -128,11 +137,15 @@ function resolveType(lr: Lowered.Module, typeSymbolId: ID): ID {
 function lowerStatement(lr: Lowered.Module, statement: Semantic.Statement): Lowered.Statement {
   switch (statement.variant) {
     case "VariableStatement": {
+      const symbol = getSymbol(lr.sr, statement.variableSymbol);
+      if (symbol.variant !== "Variable") throw new ImpossibleSituation();
       return {
         variant: "VariableStatement",
         name: statement.name,
-        type: resolveType(lr, statement.typeSymbol),
+        type: resolveType(lr, symbol.typeSymbol),
         value: statement.value && lowerExpr(lr, statement.value),
+        variableContext: symbol.variableContext,
+        sourceloc: statement.sourceloc,
       };
     }
 
@@ -146,6 +159,7 @@ function lowerStatement(lr: Lowered.Module, statement: Semantic.Statement): Lowe
           then: lowerScope(lr, e.then),
         })),
         else: statement.else && lowerScope(lr, statement.else),
+        sourceloc: statement.sourceloc,
       };
     }
 
@@ -154,6 +168,7 @@ function lowerStatement(lr: Lowered.Module, statement: Semantic.Statement): Lowe
         variant: "WhileStatement",
         condition: lowerExpr(lr, statement.condition),
         then: lowerScope(lr, statement.then),
+        sourceloc: statement.sourceloc,
       };
     }
 
@@ -161,6 +176,7 @@ function lowerStatement(lr: Lowered.Module, statement: Semantic.Statement): Lowe
       return {
         variant: "ExprStatement",
         expr: lowerExpr(lr, statement.expr),
+        sourceloc: statement.sourceloc,
       };
     }
 
@@ -179,8 +195,30 @@ function lowerScope(lr: Lowered.Module, semanticScope: Semantic.Scope): Lowered.
   return scope;
 }
 
-function lower(lr: Lowered.Module, symbol: Semantic.Symbol): ID {
+function lower(lr: Lowered.Module, symbol: Semantic.Symbol): ID | undefined {
   switch (symbol.variant) {
+    case "FunctionDeclaration": {
+      const existing = [...lr.functions.values()].find(
+        (s) => s.variant === "FunctionDeclaration" && s.semanticId === symbol.id,
+      );
+      if (existing) return existing.id!;
+
+      const parent =
+        symbol.nestedParentTypeSymbol && lower(lr, getSymbol(lr.sr, symbol.nestedParentTypeSymbol));
+
+      const id = makeLoweredId();
+      lr.functions.set(id, {
+        id: id,
+        variant: "FunctionDeclaration",
+        name: symbol.name,
+        parent: parent,
+        type: resolveType(lr, symbol.typeSymbol),
+        semanticId: symbol.id!,
+        sourceloc: symbol.sourceloc,
+      });
+      return id;
+    }
+
     case "FunctionDefinition": {
       const existing = [...lr.functions.values()].find(
         (s) => s.variant === "FunctionDefinition" && s.semanticId === symbol.id,
@@ -193,18 +231,23 @@ function lower(lr: Lowered.Module, symbol: Semantic.Symbol): ID {
           symbol.nestedParentTypeSymbol &&
           lower(lr, getSymbol(lr.sr, symbol.nestedParentTypeSymbol));
 
-        const func: Lowered.FunctionDefinition = {
+        const id = makeLoweredId();
+        lr.functions.set(id, {
+          id: id,
           variant: "FunctionDefinition",
           name: symbol.name,
           parent: parent,
+          type: resolveType(lr, symbol.typeSymbol),
           scope: lowerScope(lr, symbol.scope),
           semanticId: symbol.id!,
-        };
-        lr.functions.push(func);
+          sourceloc: symbol.sourceloc,
+        });
+        return id;
       } else {
         // Method
+        return undefined;
+        throw new InternalError("Not implemented yet");
       }
-      break;
     }
 
     case "Namespace": {
@@ -220,6 +263,72 @@ function lower(lr: Lowered.Module, symbol: Semantic.Symbol): ID {
         semanticId: symbol.id!,
       });
     }
+
+    case "Datatype": {
+      const type = getType(lr.sr, symbol.type);
+      switch (type.variant) {
+        case "Deferred":
+          throw new InternalError("No deferred type should exist in lowering");
+
+        case "Struct": {
+          for (const g of type.genericSymbols) {
+            const sym = getSymbol(lr.sr, g);
+            if (sym.variant === "GenericParameter") {
+              return undefined;
+            }
+            if (sym.variant === "Datatype") {
+              const tp = getType(lr.sr, sym.type);
+              if (tp.variant === "Deferred") {
+                return undefined;
+              }
+            }
+          }
+          return resolveType(lr, symbol.id!);
+        }
+
+        case "Primitive": {
+          const existing = [...lr.datatypes.values()].find(
+            (s) => s.variant === "Primitive" && s.primitive === type.primitive,
+          );
+          if (existing) return existing.id!;
+          return makeDatatype(lr, {
+            variant: "Primitive",
+            primitive: type.primitive,
+          });
+        }
+
+        case "Function": {
+          const existing = [...lr.datatypes.values()].find(
+            (s) => s.variant === "Function" && s.semanticId === type.id,
+          );
+          if (existing) return existing.id!;
+          return makeDatatype(lr, {
+            variant: "Function",
+            parameters: type.functionParameters.map((p) => ({
+              name: p.name,
+              type: resolveType(lr, p.type),
+            })),
+            returnType: resolveType(lr, type.functionReturnValue),
+            semanticId: type.id!,
+            vararg: type.vararg,
+          });
+        }
+
+        default:
+          throw new InternalError("Unhandled variant: " + type.variant);
+      }
+    }
+
+    case "Variable": {
+      if (symbol.variableContext !== EVariableContext.Global) {
+        return undefined;
+      }
+      throw new InternalError("Not implemented");
+    }
+
+    default:
+      throw new InternalError("Unhandled variant: " + symbol.variant);
+
   }
 }
 
@@ -237,21 +346,24 @@ export function LowerModule(cr: CollectResult, sr: SemanticResult): Lowered.Modu
     cDeclarations: cr.cInjections.map((i) => i.code),
 
     datatypes: new Map(),
-    functions: [],
+    functions: new Map(),
   };
 
   for (const [id, symbol] of sr.symbolTable.getAll()) {
+    if (!symbol.concrete || symbol.variant === "GenericParameter") {
+      continue;
+    }
     lower(lr, symbol);
   }
 
-  console.log(lr.datatypes);
-  console.log(
-    JSON.stringify(
-      lr.functions,
-      (_, value) => (typeof value === "bigint" ? Number(value) : value),
-      4,
-    ),
-  );
+  // console.log(lr.datatypes);
+  // console.log(
+  //   JSON.stringify(
+  //     lr.functions,
+  //     (_, value) => (typeof value === "bigint" ? Number(value) : value),
+  //     4,
+  //   ),
+  // );
 
   return lr;
 }

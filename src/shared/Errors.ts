@@ -27,12 +27,7 @@ function formatCompilerMessage(
   return text;
 }
 
-function printCompilerMessage(
-  type: ErrorType,
-  error: string,
-  msg: string,
-  loc?: SourceLoc,
-): void {
+function printCompilerMessage(type: ErrorType, error: string, msg: string, loc?: SourceLoc): void {
   console.log(formatCompilerMessage(type, error, msg, loc));
 }
 
@@ -40,11 +35,7 @@ export function formatErrorMessage(msg: string, loc?: SourceLoc): string {
   return formatCompilerMessage(ErrorType.Error, "Error", msg, loc);
 }
 
-export function printErrorMessage(
-  msg: string,
-  loc?: SourceLoc,
-  title?: string,
-): void {
+export function printErrorMessage(msg: string, loc?: SourceLoc, title?: string): void {
   printCompilerMessage(ErrorType.Error, title ?? "Error", msg, loc);
 }
 
@@ -81,8 +72,8 @@ export class CompilerError extends Error {
 }
 
 export class InternalError extends Error {
-  constructor(msg: string, loc?: SourceLoc) {
-    super(formatErrorMessage(msg, loc ?? getCallerLocation(2)));
+  constructor(msg: string, loc?: SourceLoc, callFrames?: number) {
+    super(formatErrorMessage(msg, loc ?? getCallerLocation(callFrames ? callFrames + 2 : 2)));
   }
 }
 
@@ -99,9 +90,7 @@ export class ImpossibleSituation extends Error {
 
 export class UnreachableCode extends Error {
   constructor() {
-    super(
-      formatErrorMessage("Unreachable Code was reached", getCallerLocation(2)),
-    );
+    super(formatErrorMessage("Unreachable Code was reached", getCallerLocation(2)));
   }
 }
 

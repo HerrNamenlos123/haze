@@ -1,26 +1,27 @@
+import type { Lowered } from "../Lower/LowerTypes";
 import type { Module } from "../Module";
-import type { Semantic, SemanticResult } from "../Semantic/SemanticSymbols";
-import { EBinaryOperation, EExternLanguage } from "../shared/AST";
+import type { Semantic } from "../Semantic/SemanticSymbols";
+import { BinaryOperationToString, EBinaryOperation } from "../shared/AST";
+import { EVariableContext, primitiveToString } from "../shared/common";
 import { ModuleType } from "../shared/Config";
-import { InternalError } from "../shared/Errors";
-import type { CollectResult } from "../SymbolCollection/CollectSymbols";
+import { ImpossibleSituation, InternalError, printWarningMessage } from "../shared/Errors";
+import type { ID } from "../shared/store";
 import { OutputWriter } from "./OutputWriter";
 
 class CodeGenerator {
   private out = {
-    includes: {} as Record<string, OutputWriter>,
-    cDecls: {} as Record<string, OutputWriter>,
-    type_declarations: {} as Record<string, OutputWriter>,
-    type_definitions: {} as Record<string, OutputWriter>,
-    function_declarations: {} as Record<string, OutputWriter>,
+    includes: new OutputWriter(),
+    cDecls: new OutputWriter(),
+    type_declarations: new OutputWriter(),
+    type_definitions: new OutputWriter(),
+    function_declarations: new OutputWriter(),
     function_definitions: new OutputWriter(),
-    global_variables: {} as Record<string, OutputWriter>,
+    global_variables: new OutputWriter(),
   };
 
   constructor(
     public module: Module,
-    public cr: CollectResult,
-    public sr: SemanticResult,
+    public lr: Lowered.Module,
   ) {
     // const contextSymbol = this.module.globalScope.lookupSymbol(
     //   "Context",
@@ -40,7 +41,6 @@ class CodeGenerator {
         .writeLine(`_HN6Memory5ArenaE defaultArena = {};`)
         .writeLine(`ctx.mem.globalDefaultArena = &defaultArena;`);
       if (!this.module.moduleConfig.nostdlib) {
-        this.init("_H13__setupStdlib", this.out.function_declarations);
         // this.out.function_declarations["_H13__setupStdlib"].writeLine(
         //   `void _H13__setupStdlib(${generateUsageCode(this.module.getBuiltinType("Context"), this.module)}* ctx);`,
         // );
@@ -56,15 +56,16 @@ class CodeGenerator {
     }
   }
 
-  init(field: string, out: Record<string, OutputWriter>) {
-    if (!(field in out)) {
-      out[field] = new OutputWriter();
+  getType(id: ID) {
+    const type = this.lr.datatypes.get(id);
+    if (!type) {
+      throw new InternalError("Type with id " + id + " does not exist", undefined, 1);
     }
+    return type;
   }
 
   includeHeader(filename: string) {
-    this.init(filename, this.out.includes);
-    this.out.includes[filename].write(`#include <${filename}>`);
+    this.out.includes.write(`#include <${filename}>`);
   }
 
   writeString() {
@@ -73,48 +74,30 @@ class CodeGenerator {
     writer.writeLine("#define _POSIX_C_SOURCE 199309L\n");
 
     writer.write("// Include section\n");
-    for (const include of Object.values(this.out.includes)) {
-      writer.write(include);
-    }
+    writer.write(this.out.includes);
 
     writer.write("\n\n// C Injection section\n");
-    for (const decl of Object.values(this.out.cDecls)) {
-      writer.write(decl);
-    }
-
-    // this.generateDatatypeUse(
-    //   this.module.globalScope.lookupDatatypeSymbol("Context", this.module.globalScope.location),
-    // );
+    writer.write(this.out.cDecls);
 
     writer.write("\n\n// Type declaration section\n");
-    for (const decl of Object.values(this.out.type_declarations)) {
-      writer.write(decl);
-      writer.writeLine();
-    }
+    writer.write(this.out.type_declarations);
+    writer.writeLine();
 
     writer.write("\n\n// Type definition section\n");
-    for (const decl of Object.values(this.out.type_definitions)) {
-      writer.write(decl);
-      writer.writeLine();
-    }
+    writer.write(this.out.type_definitions);
+    writer.writeLine();
 
     writer.write("\n\n// Function declaration section\n");
-    for (const decl of Object.values(this.out.function_declarations)) {
-      writer.write(decl);
-      writer.writeLine();
-    }
+    writer.write(this.out.function_declarations);
+    writer.writeLine();
 
     writer.write("\n\n// Global Variable section\n");
-    for (const decl of Object.values(this.out.global_variables)) {
-      writer.write(decl);
-      writer.writeLine();
-    }
+    writer.write(this.out.global_variables);
+    writer.writeLine();
 
     writer.write("\n\n// Function definition section\n");
-    for (const def of Object.values(this.out.function_definitions)) {
-      writer.write(def);
-      writer.writeLine();
-    }
+    writer.write(this.out.function_definitions);
+    writer.writeLine();
 
     return writer.get();
   }
@@ -122,244 +105,279 @@ class CodeGenerator {
   generate() {
     this.includeHeader("stdint.h");
 
-    // for (const decl of this.module.cDefinitionDecl) {
-    //   this.out.cDecls[decl] = new OutputWriter().writeLine(decl);
-    // }
+    for (const decl of this.lr.cDeclarations) {
+      this.out.cDecls.writeLine(decl);
+    }
 
-    // for (const statement of this.module.concreteGlobalStatements.values()) {
-    //   const s = this.emitStatement(statement);
-    //   //   this.out.global_variables[mangleSymbol(statement.symbol)] = new OutputWriter().write(s.temp);
-    //   //   this.out.global_variables[mangleSymbol(statement.symbol)] = new OutputWriter().write(s.out);
-    // }
-
-    // for (const symbol of this.module.concreteFunctions.values()) {
-    //   if (symbol.extern === ELinkage.Internal) {
-    //     this.generateFuncUse(symbol);
-    //   }
-    // }
+    for (const [id, symbol] of this.lr.functions) {
+      this.emitFunction(symbol);
+    }
 
     // for (const dt of this.module.concreteDatatypes.values()) {
     //   this.generateDatatypeUse(dt);
     // }
   }
 
-  //   generateFuncUse(symbol: FunctionSymbol) {
-  //     const declaration = (ftype: FunctionDatatype, returntype: Datatype): string => {
-  //       let decl = generateUsageCode(returntype, this.module) + " " + mangleSymbol(symbol) + "(";
-  //       const params = [];
-  //       if (
-  //         symbol.parentSymbol &&
-  //         symbol.parentSymbol.variant === "Datatype" &&
-  //         symbol.parentSymbol.type.variant !== "Namespace" &&
-  //         symbol.specialMethod !== "constructor"
-  //       ) {
-  //         const thisPtr: RawPointerDatatype = {
-  //           variant: "RawPointer",
-  //           pointee: symbol.parentSymbol,
-  //         };
-  //         params.push(`${generateUsageCode(thisPtr, this.module)} this`);
-  //       }
-  //       params.push(`${generateUsageCode(this.module.getBuiltinType("Context"), this.module)}* ctx`);
-  //       for (const [paramName, paramType] of ftype.functionParameters) {
-  //         params.push(generateUsageCode(paramType, this.module) + " " + paramName);
-  //         // datatypeSymbolUsed(paramType);
-  //       }
-  //       decl += params.join(", ");
-  //       if (ftype.vararg) {
-  //         decl += ", ...";
-  //       }
-  //       decl += ")";
-  //       return decl;
-  //     };
+  mangleNestedName(
+    symbol:
+      | Lowered.StructDatatype
+      | Lowered.NamespaceDatatype
+      | Lowered.FunctionDeclaration
+      | Lowered.FunctionDefinition,
+  ) {
+    const fragments: string[] = [];
+    let p:
+      | Lowered.StructDatatype
+      | Lowered.NamespaceDatatype
+      | Lowered.FunctionDeclaration
+      | Lowered.FunctionDefinition
+      | undefined = symbol;
+    while (p) {
+      if (p.variant !== "Struct") {
+        fragments.push(p.name.length + p.name);
+      } else {
+        let generics = "";
+        if (p.generics.length > 0) {
+          generics += "I";
+          for (const g of p.generics) {
+            generics += this.emitDatatype(this.getType(g));
+          }
+          generics += "E";
+        }
+        fragments.push(p.name.length + p.name + generics);
+      }
+      const pParent: Lowered.Datatype | undefined = p.parent && this.getType(p.parent);
+      if (pParent) {
+        if (pParent.variant !== "Struct" && pParent.variant !== "Namespace") {
+          throw new ImpossibleSituation();
+        }
+      }
+      p = pParent;
+    }
+    fragments.reverse();
+    let functionPart = "";
+    if (symbol.variant === "FunctionDeclaration" || symbol.variant === "FunctionDefinition") {
+      const ftype = this.getType(symbol.type);
+      if (ftype.variant !== "Function") throw new ImpossibleSituation();
+      if (ftype.parameters.length === 0) {
+        functionPart += "v";
+      } else {
+        for (const p of ftype.parameters) {
+          functionPart += this.emitDatatype(this.getType(p.type));
+        }
+      }
+    }
+    if (fragments.length > 1) {
+      return "N" + fragments.join("") + "E" + functionPart;
+    } else {
+      return fragments[0] + functionPart;
+    }
+  }
 
-  //     this.init(mangleSymbol(symbol), this.out.function_declarations);
-  //     const decl = declaration(symbol.type, symbol.type.functionReturnType);
-  //     this.out.function_declarations[mangleSymbol(symbol)].write(decl + ";");
+  emitDatatype(idOrType: ID | Lowered.Datatype): string {
+    const type = typeof idOrType === "bigint" ? this.getType(idOrType) : idOrType;
+    switch (type.variant) {
+      case "Struct": {
+        return this.mangleNestedName(type);
+      }
 
-  //     if (!symbol.declared) {
-  //       this.init(mangleSymbol(symbol), this.out.function_definitions);
-  //       this.out.function_definitions[mangleSymbol(symbol)].writeLine(decl + " {").pushIndent();
+      case "Namespace":
+        throw new InternalError("Emitting a namespace is a mistake");
 
-  //       const s = this.emitScope(symbol.scope);
-  //       this.out.function_definitions[mangleSymbol(symbol)].write(s.temp);
-  //       this.out.function_definitions[mangleSymbol(symbol)].write(s.out);
+      case "Primitive": {
+        const name = primitiveToString(type.primitive);
+        return name.length + name;
+      }
 
-  //       this.out.function_definitions[mangleSymbol(symbol)].popIndent().writeLine("}");
-  //     }
-  //   }
+      default:
+        throw new InternalError("Unhandled variant: " + type.variant);
+    }
+  }
 
-  //   emitScope(scope: ResolvedScope): { temp: OutputWriter; out: OutputWriter } {
-  //     const tempWriter = new OutputWriter();
-  //     const outWriter = new OutputWriter();
+  emitSymbol(symbol: Lowered.FunctionDeclaration | Lowered.FunctionDefinition) {}
 
-  //     let returned = false;
-  //     for (const statement of scope.statements) {
-  //       if (returned) {
-  //         printWarningMessage(`Dead code detected and stripped`, statement.location);
-  //         break;
-  //       }
+  emitFunction(symbol: Lowered.FunctionDeclaration | Lowered.FunctionDefinition) {
+    const declaration = (type: Lowered.Datatype): string => {
+      if (type.variant !== "Function") throw new ImpossibleSituation();
+      console.log(type);
+      let decl =
+        "_H" +
+        this.emitDatatype(type.returnType) +
+        " " +
+        "_H" +
+        this.mangleNestedName(symbol) +
+        "(";
+      decl += type.parameters.map((p) => `${this.emitDatatype(p.type)} ${p.name}`).join(", ");
+      if (type.vararg) {
+        decl += ", ...";
+      }
+      decl += ")";
+      return decl;
+    };
 
-  //       if (statement.variant === "Return") {
-  //         returned = true;
-  //       }
+    const decl = declaration(this.getType(symbol.type));
+    this.out.function_declarations.write(decl + ";");
 
-  //       const s = this.emitStatement(statement);
-  //       tempWriter.write(s.temp);
-  //       outWriter.write(s.out);
-  //     }
+    if (symbol.variant === "FunctionDefinition") {
+      this.out.function_definitions.writeLine(decl + " {").pushIndent();
 
-  //     return { temp: tempWriter, out: outWriter };
-  //   }
+      const s = this.emitScope(symbol.scope);
+      this.out.function_definitions.write(s.temp);
+      this.out.function_definitions.write(s.out);
 
-  //   emitStatement(statement: Statement): {
-  //     temp: OutputWriter;
-  //     out: OutputWriter;
-  //   } {
-  //     const tempWriter = new OutputWriter();
-  //     const outWriter = new OutputWriter();
-  //     switch (statement.variant) {
-  //       case "Return": {
-  //         if (statement.expr) {
-  //           const exprWriter = this.emitExpr(statement.expr);
-  //           tempWriter.write(exprWriter.temp);
-  //           outWriter.writeLine(`return ` + exprWriter.out.get() + ";");
-  //         } else {
-  //           outWriter.writeLine("return;");
-  //         }
-  //         return { temp: tempWriter, out: outWriter };
-  //       }
+      this.out.function_definitions.popIndent().writeLine("}");
+    }
+  }
 
-  //       case "VariableDeclaration": {
-  //         if (!statement.symbol.type || statement.symbol.variant !== "Variable") {
-  //           throw new ImpossibleSituation();
-  //         }
-  //         const ret = generateUsageCode(statement.symbol.type, this.module);
+  emitScope(scope: Lowered.Scope): { temp: OutputWriter; out: OutputWriter } {
+    const tempWriter = new OutputWriter();
+    const outWriter = new OutputWriter();
 
-  //         if (statement.symbol.extern !== ELinkage.Internal) {
-  //           outWriter.write("extern ");
-  //         }
+    let returned = false;
+    for (const statement of scope.statements) {
+      if (returned) {
+        printWarningMessage(`Dead code detected and stripped`, statement.sourceloc);
+        break;
+      }
 
-  //         if (statement.symbol.extern === ELinkage.External_C) {
-  //           outWriter.write(`${ret} ${statement.symbol.name}`);
-  //         } else {
-  //           outWriter.write(`${ret} ${mangleSymbol(statement.symbol)}`);
-  //         }
+      if (statement.variant === "ReturnStatement") {
+        returned = true;
+      }
 
-  //         if (statement.symbol.extern !== ELinkage.Internal) {
-  //           outWriter.writeLine(`;`);
-  //         } else {
-  //           outWriter.writeLine(` = {0};`);
-  //         }
-  //         return { temp: tempWriter, out: outWriter };
-  //       }
+      const s = this.emitStatement(statement);
+      tempWriter.write(s.temp);
+      outWriter.write(s.out);
+    }
 
-  //       case "VariableDefinition": {
-  //         if (!statement.expr || !statement.symbol.type || statement.symbol.variant !== "Variable") {
-  //           throw new ImpossibleSituation();
-  //         }
-  //         const ret = generateUsageCode(statement.symbol.type, this.module);
-  //         const exprWriter = this.emitExpr(statement.expr);
-  //         tempWriter.write(exprWriter.temp);
-  //         const assignConv = implicitConversion(
-  //           statement.expr.type,
-  //           statement.symbol.type,
-  //           exprWriter.out.get(),
-  //           this.module.currentScope,
-  //           statement.expr.location,
-  //           this.module,
-  //         );
-  //         const name =
-  //           statement.symbol.extern === ELinkage.External_C
-  //             ? statement.symbol.name
-  //             : mangleSymbol(statement.symbol);
-  //         outWriter.writeLine(`${ret} ${name} = ${assignConv};`);
-  //         return { temp: tempWriter, out: outWriter };
-  //       }
+    return { temp: tempWriter, out: outWriter };
+  }
 
-  //       case "Expr": {
-  //         const exprWriter = this.emitExpr(statement.expr);
-  //         tempWriter.write(exprWriter.temp);
-  //         outWriter.writeLine(exprWriter.out.get() + ";");
-  //         return { temp: tempWriter, out: outWriter };
-  //       }
+  emitStatement(statement: Lowered.Statement): {
+    temp: OutputWriter;
+    out: OutputWriter;
+  } {
+    const tempWriter = new OutputWriter();
+    const outWriter = new OutputWriter();
+    switch (statement.variant) {
+      case "ReturnStatement": {
+        if (statement.expr) {
+          const exprWriter = this.emitExpr(statement.expr);
+          tempWriter.write(exprWriter.temp);
+          outWriter.writeLine(`return ` + exprWriter.out.get() + ";");
+        } else {
+          outWriter.writeLine("return;");
+        }
+        return { temp: tempWriter, out: outWriter };
+      }
 
-  //       case "InlineC": {
-  //         outWriter.writeLine(statement.code + ";");
-  //         return { temp: tempWriter, out: outWriter };
-  //       }
+      case "VariableStatement": {
+        const type = this.emitDatatype(statement.type);
 
-  //       case "While": {
-  //         const exprWriter = this.emitExpr(statement.expr);
-  //         tempWriter.write(exprWriter.temp);
-  //         const whileexpr = implicitConversion(
-  //           statement.expr.type,
-  //           this.module.getBuiltinType("boolean"),
-  //           exprWriter.out.get(),
-  //           statement.scope,
-  //           statement.expr.location,
-  //           this.module,
-  //         );
-  //         outWriter.writeLine(`while (${whileexpr}) {`).pushIndent();
-  //         const scope = this.emitScope(statement.scope);
-  //         tempWriter.write(scope.temp);
-  //         outWriter.write(scope.out);
-  //         outWriter.popIndent().writeLine("}");
-  //         return { temp: tempWriter, out: outWriter };
-  //       }
+        // if (statement.symbol.extern !== ELinkage.Internal) {
+        //   outWriter.write("extern ");
+        // }
 
-  //       case "Conditional": {
-  //         const exprWriter = this.emitExpr(statement.if[0]);
-  //         tempWriter.write(exprWriter.temp);
-  //         const convexpr = implicitConversion(
-  //           statement.if[0].type,
-  //           this.module.getBuiltinType("boolean"),
-  //           exprWriter.out.get(),
-  //           statement.if[1],
-  //           statement.if[0].location,
-  //           this.module,
-  //         );
-  //         outWriter.writeLine(`if (${convexpr}) {`).pushIndent();
-  //         const scope = this.emitScope(statement.if[1]);
-  //         tempWriter.write(scope.temp);
-  //         outWriter.write(scope.out);
-  //         outWriter.popIndent().writeLine("}");
-  //         for (const [expr, scope] of statement.elseIf) {
-  //           const exprWriter = this.emitExpr(expr);
-  //           tempWriter.write(exprWriter.temp);
-  //           const convexpr = implicitConversion(
-  //             expr.type,
-  //             this.module.getBuiltinType("boolean"),
-  //             exprWriter.out.get(),
-  //             scope,
-  //             expr.location,
-  //             this.module,
-  //           );
-  //           outWriter.writeLine(`else if (${convexpr}) {`).pushIndent();
-  //           const s = this.emitScope(scope);
-  //           tempWriter.write(s.temp);
-  //           outWriter.write(s.out);
-  //           outWriter.popIndent().writeLine("}");
-  //         }
-  //         if (statement.else) {
-  //           outWriter.writeLine(`else {`).pushIndent();
-  //           const scope = this.emitScope(statement.else);
-  //           tempWriter.write(scope.temp);
-  //           outWriter.write(scope.out);
-  //           outWriter.popIndent().writeLine("}");
-  //         }
-  //         return { temp: tempWriter, out: outWriter };
-  //       }
+        // if (statement.symbol.extern === ELinkage.External_C) {
+        // outWriter.write(`${ret} ${statement.symbol.name}`);
+        // } else {
+        if (statement.variableContext === EVariableContext.Global) {
+          outWriter.write(`_H${type} _H${statement.name.length}${statement.name}`);
+        } else {
+          outWriter.write(`_H${type} ${statement.name}`);
+        }
+        // }
 
-  //       // default:
-  //       //   throw new InternalError(`Unknown statement type ${statement.variant}`);
-  //     }
-  //   }
+        // if (statement.extern !== ELinkage.Internal) {
+        //   outWriter.writeLine(`;`);
+        // } else {
+        outWriter.writeLine(` = {0};`);
+        // }
+        return { temp: tempWriter, out: outWriter };
+      }
 
-  emitExpr(expr: Semantic.Expression): { temp: OutputWriter; out: OutputWriter } {
+      case "VariableDefinition": {
+        if (!statement.expr || !statement.symbol.type || statement.symbol.variant !== "Variable") {
+          throw new ImpossibleSituation();
+        }
+        const ret = generateUsageCode(statement.symbol.type, this.module);
+        const exprWriter = this.emitExpr(statement.expr);
+        tempWriter.write(exprWriter.temp);
+        const assignConv = implicitConversion(
+          statement.expr.type,
+          statement.symbol.type,
+          exprWriter.out.get(),
+          this.module.currentScope,
+          statement.expr.location,
+          this.module,
+        );
+        const name =
+          statement.symbol.extern === ELinkage.External_C
+            ? statement.symbol.name
+            : mangleSymbol(statement.symbol);
+        outWriter.writeLine(`${ret} ${name} = ${assignConv};`);
+        return { temp: tempWriter, out: outWriter };
+      }
+
+      case "ExprStatement": {
+        const exprWriter = this.emitExpr(statement.expr);
+        tempWriter.write(exprWriter.temp);
+        outWriter.writeLine(exprWriter.out.get() + ";");
+        return { temp: tempWriter, out: outWriter };
+      }
+
+      case "InlineCStatement": {
+        outWriter.writeLine(statement.value + ";");
+        return { temp: tempWriter, out: outWriter };
+      }
+
+      case "WhileStatement": {
+        const exprWriter = this.emitExpr(statement.condition);
+        tempWriter.write(exprWriter.temp);
+        outWriter.writeLine(`while (${exprWriter.out.get()}) {`).pushIndent();
+        const scope = this.emitScope(statement.then);
+        tempWriter.write(scope.temp);
+        outWriter.write(scope.out);
+        outWriter.popIndent().writeLine("}");
+        return { temp: tempWriter, out: outWriter };
+      }
+
+      case "IfStatement": {
+        const exprWriter = this.emitExpr(statement.condition);
+        tempWriter.write(exprWriter.temp);
+        outWriter.writeLine(`if (${exprWriter.out.get()}) {`).pushIndent();
+        const scope = this.emitScope(statement.then);
+        tempWriter.write(scope.temp);
+        outWriter.write(scope.out);
+        outWriter.popIndent().writeLine("}");
+        for (const elseif of statement.elseIfs) {
+          const exprWriter = this.emitExpr(elseif.condition);
+          tempWriter.write(exprWriter.temp);
+          outWriter.writeLine(`else if (${exprWriter.out.get()}) {`).pushIndent();
+          const s = this.emitScope(elseif.then);
+          tempWriter.write(s.temp);
+          outWriter.write(s.out);
+          outWriter.popIndent().writeLine("}");
+        }
+        if (statement.else) {
+          outWriter.writeLine(`else {`).pushIndent();
+          const scope = this.emitScope(statement.else);
+          tempWriter.write(scope.temp);
+          outWriter.write(scope.out);
+          outWriter.popIndent().writeLine("}");
+        }
+        return { temp: tempWriter, out: outWriter };
+      }
+
+      default:
+        throw new InternalError(`Unknown statement type ${statement.variant}`);
+    }
+  }
+
+  emitExpr(expr: Lowered.Expression): { temp: OutputWriter; out: OutputWriter } {
     const tempWriter = new OutputWriter();
     const outWriter = new OutputWriter();
     switch (expr.variant) {
-      case "ExprCall":
+      case "ExprCallExpr":
         const args: string[] = [];
         let useCommaOperatorForThisAssignment: string | undefined = undefined;
         // if (expr.thisPointerExpr) {
@@ -416,7 +434,7 @@ class CodeGenerator {
         //   );
         //   args.push(converted);
         // }
-        const callExprWriter = this.emitExpr(expr.calledExpr);
+        const callExprWriter = this.emitExpr(expr.expr);
         tempWriter.write(callExprWriter.temp);
         if (useCommaOperatorForThisAssignment) {
           outWriter.write(
@@ -473,25 +491,26 @@ class CodeGenerator {
       //     outWriter.write(`sizeof(${generateUsageCode(expr.datatype, this.module)})`);
       //     return { out: outWriter, temp: tempWriter };
 
-      //   case "SymbolValue":
-      //     if (expr.symbol.variant === "Function") {
-      //       if (expr.symbol.extern === ELinkage.External_C) {
-      //         outWriter.write(expr.symbol.name);
-      //       } else {
-      //         outWriter.write(mangleSymbol(expr.symbol));
-      //       }
-      //     } else if (expr.symbol.variant === "Datatype") {
-      //       outWriter.write(mangleSymbol(expr.symbol));
-      //     } else if (expr.symbol.variant === "Variable") {
-      //       if (expr.symbol.extern === ELinkage.External_C) {
-      //         outWriter.write(expr.symbol.name);
-      //       } else {
-      //         outWriter.write(mangleSymbol(expr.symbol));
-      //       }
-      //     } else {
-      //       throw new ImpossibleSituation();
-      //     }
-      //     return { out: outWriter, temp: tempWriter };
+      case "SymbolValue":
+        outWriter.write(expr.name);
+        // if (expr.variant === "Function") {
+        //   if (expr.symbol.extern === ELinkage.External_C) {
+        //     outWriter.write(expr.symbol.name);
+        //   } else {
+        //     outWriter.write(mangleSymbol(expr.symbol));
+        //   }
+        // } else if (expr.symbol.variant === "Datatype") {
+        //   outWriter.write(mangleSymbol(expr.symbol));
+        // } else if (expr.symbol.variant === "Variable") {
+        //   if (expr.symbol.extern === ELinkage.External_C) {
+        //     outWriter.write(expr.symbol.name);
+        //   } else {
+        //     outWriter.write(mangleSymbol(expr.symbol));
+        //   }
+        // } else {
+        //   throw new ImpossibleSituation();
+        // }
+        return { out: outWriter, temp: tempWriter };
 
       //   case "ExplicitCast":
       //     const exprWriter = this.emitExpr(expr.expr);
@@ -549,155 +568,173 @@ class CodeGenerator {
       //     }
       //     return { out: outWriter, temp: tempWriter };
 
-      //   case "BinaryExpr":
-      //     switch (expr.operation) {
-      //       case EBinaryOperation.Multiply:
-      //       case EBinaryOperation.Divide:
-      //       case EBinaryOperation.Modulo:
-      //       case EBinaryOperation.Add:
-      //       case EBinaryOperation.Subtract: {
-      //         const leftWriter = this.emitExpr(expr.left);
-      //         const rightWriter = this.emitExpr(expr.right);
-      //         tempWriter.write(leftWriter.temp);
-      //         tempWriter.write(rightWriter.temp);
-      //         const left = implicitConversion(
-      //           expr.leftExpr.type,
-      //           expr.type,
-      //           leftWriter.out.get(),
-      //           this.module.currentScope,
-      //           expr.leftExpr.location,
-      //           this.module,
-      //         );
-      //         const right = implicitConversion(
-      //           expr.rightExpr.type,
-      //           expr.type,
-      //           rightWriter.out.get(),
-      //           this.module.currentScope,
-      //           expr.rightExpr.location,
-      //           this.module,
-      //         );
-      //         outWriter.write("(" + left + " " + expr.operation + " " + right + ")");
-      //         break;
-      //       }
+      case "BinaryExpr":
+        switch (expr.operation) {
+          case EBinaryOperation.Multiply:
+          case EBinaryOperation.Divide:
+          case EBinaryOperation.Modulo:
+          case EBinaryOperation.Add:
+          case EBinaryOperation.Subtract: {
+            const leftWriter = this.emitExpr(expr.left);
+            const rightWriter = this.emitExpr(expr.right);
+            tempWriter.write(leftWriter.temp);
+            tempWriter.write(rightWriter.temp);
+            outWriter.write(
+              "(" +
+                leftWriter.out.get() +
+                " " +
+                BinaryOperationToString(expr.operation) +
+                " " +
+                rightWriter.out.get() +
+                ")",
+            );
+            break;
+          }
 
-      //       case "<":
-      //       case ">":
-      //       case "<=":
-      //       case ">=": {
-      //         const leftWriter = this.emitExpr(expr.leftExpr);
-      //         const rightWriter = this.emitExpr(expr.rightExpr);
-      //         tempWriter.write(leftWriter.temp);
-      //         tempWriter.write(rightWriter.temp);
-      //         outWriter.write(
-      //           "(" + leftWriter.out.get() + " " + expr.operation + " " + rightWriter.out.get() + ")",
-      //         );
-      //         break;
-      //       }
+          case EBinaryOperation.LessEqual:
+          case EBinaryOperation.LessThan:
+          case EBinaryOperation.GreaterEqual:
+          case EBinaryOperation.GreaterThan: {
+            const leftWriter = this.emitExpr(expr.left);
+            const rightWriter = this.emitExpr(expr.right);
+            tempWriter.write(leftWriter.temp);
+            tempWriter.write(rightWriter.temp);
+            outWriter.write(
+              "(" +
+                leftWriter.out.get() +
+                " " +
+                BinaryOperationToString(expr.operation) +
+                " " +
+                rightWriter.out.get() +
+                ")",
+            );
+            break;
+          }
 
-      //       case "==":
-      //       case "!=": {
-      //         const leftWriter = this.emitExpr(expr.leftExpr);
-      //         const rightWriter = this.emitExpr(expr.rightExpr);
-      //         tempWriter.write(leftWriter.temp);
-      //         tempWriter.write(rightWriter.temp);
-      //         outWriter.write(
-      //           "(" + leftWriter.out.get() + " " + expr.operation + " " + rightWriter.out.get() + ")",
-      //         );
-      //         break;
-      //       }
+          case EBinaryOperation.Equal:
+          case EBinaryOperation.Unequal: {
+            const leftWriter = this.emitExpr(expr.left);
+            const rightWriter = this.emitExpr(expr.right);
+            tempWriter.write(leftWriter.temp);
+            tempWriter.write(rightWriter.temp);
+            outWriter.write(
+              "(" +
+                leftWriter.out.get() +
+                " " +
+                BinaryOperationToString(expr.operation) +
+                " " +
+                rightWriter.out.get() +
+                ")",
+            );
+            break;
+          }
 
-      //       case "&&":
-      //       case "||": {
-      //         const leftWriter = this.emitExpr(expr.leftExpr);
-      //         const rightWriter = this.emitExpr(expr.rightExpr);
-      //         tempWriter.write(leftWriter.temp);
-      //         tempWriter.write(rightWriter.temp);
-      //         outWriter.write(
-      //           "(" + leftWriter.out.get() + " " + expr.operation + " " + rightWriter.out.get() + ")",
-      //         );
-      //         break;
+          case EBinaryOperation.BoolAnd:
+          case EBinaryOperation.BoolOr: {
+            const leftWriter = this.emitExpr(expr.left);
+            const rightWriter = this.emitExpr(expr.right);
+            tempWriter.write(leftWriter.temp);
+            tempWriter.write(rightWriter.temp);
+            outWriter.write(
+              "(" +
+                leftWriter.out.get() +
+                " " +
+                BinaryOperationToString(expr.operation) +
+                " " +
+                rightWriter.out.get() +
+                ")",
+            );
+            break;
+          }
+        }
+        return { out: outWriter, temp: tempWriter };
+
+      case "ConstantExpr":
+        if (typeof expr.value === "string") {
+          outWriter.write('"' + expr.value + '"');
+        } else if (typeof expr.value === "boolean") {
+          outWriter.write(expr.value ? "1" : "0");
+        } else {
+          outWriter.write(expr.value.toString());
+        }
+        return { out: outWriter, temp: tempWriter };
+      // switch (expr.) {
+      //   case "LiteralConstant":
+      //     if (expr.constantSymbol.unit) {
+      //       let value = 0;
+      //       switch (expr.constantSymbol.unit) {
+      //         case "ns":
+      //           value = expr.constantSymbol.value;
+      //           break;
+
+      //         case "us":
+      //           value = expr.constantSymbol.value * 1000;
+      //           break;
+
+      //         case "ms":
+      //           value = expr.constantSymbol.value * 1000 * 1000;
+      //           break;
+
+      //         case "s":
+      //           value = expr.constantSymbol.value * 1000 * 1000 * 1000;
+      //           break;
+
+      //         case "m":
+      //           value = expr.constantSymbol.value * 60 * 1000 * 1000 * 1000;
+      //           break;
+
+      //         case "h":
+      //           value = expr.constantSymbol.value * 3600 * 1000 * 1000 * 1000;
+      //           break;
+
+      //         case "d":
+      //           value = expr.constantSymbol.value * 24 * 3600 * 1000 * 1000 * 1000;
+      //           break;
+
+      //         default:
+      //           throw new InternalError(`Unknown unit ${expr.constantSymbol.unit}`);
       //       }
+      //       if (expr.constantSymbol.type.variant !== "Struct") {
+      //         throw new ImpossibleSituation();
+      //       }
+      //       const durationExpr: ObjectExpression = {
+      //         variant: "Object",
+      //         type: expr.constantSymbol.type,
+      //         ctx: expr.ctx,
+      //         members: [
+      //           [
+      //             expr.constantSymbol.type.members[0] as VariableSymbol,
+      //             {
+      //               variant: "Constant",
+      //               constantSymbol: {
+      //                 variant: "LiteralConstant",
+      //                 type: (expr.constantSymbol.type.members[0] as VariableSymbol).type,
+      //                 value: value,
+      //                 location: expr.constantSymbol.location,
+      //               },
+      //               ctx: expr.ctx,
+      //               type: (expr.constantSymbol.type.members[0] as VariableSymbol).type,
+      //               location: expr.constantSymbol.location,
+      //             },
+      //           ],
+      //         ],
+      //         location: expr.constantSymbol.location,
+      //       };
+      //       const exprWriter = this.emitExpr(durationExpr);
+      //       tempWriter.write(exprWriter.temp);
+      //       outWriter.write(exprWriter.out.get());
+      //     } else {
+      //       outWriter.write(expr.constantSymbol.value.toString());
       //     }
       //     return { out: outWriter, temp: tempWriter };
 
-      //   case "Constant":
-      //     switch (expr.constantSymbol.variant) {
-      //       case "LiteralConstant":
-      //         if (expr.constantSymbol.unit) {
-      //           let value = 0;
-      //           switch (expr.constantSymbol.unit) {
-      //             case "ns":
-      //               value = expr.constantSymbol.value;
-      //               break;
+      //   case "BooleanConstant":
+      //     outWriter.write(expr.constantSymbol.value ? "1" : "0");
+      //     return { out: outWriter, temp: tempWriter };
 
-      //             case "us":
-      //               value = expr.constantSymbol.value * 1000;
-      //               break;
-
-      //             case "ms":
-      //               value = expr.constantSymbol.value * 1000 * 1000;
-      //               break;
-
-      //             case "s":
-      //               value = expr.constantSymbol.value * 1000 * 1000 * 1000;
-      //               break;
-
-      //             case "m":
-      //               value = expr.constantSymbol.value * 60 * 1000 * 1000 * 1000;
-      //               break;
-
-      //             case "h":
-      //               value = expr.constantSymbol.value * 3600 * 1000 * 1000 * 1000;
-      //               break;
-
-      //             case "d":
-      //               value = expr.constantSymbol.value * 24 * 3600 * 1000 * 1000 * 1000;
-      //               break;
-
-      //             default:
-      //               throw new InternalError(`Unknown unit ${expr.constantSymbol.unit}`);
-      //           }
-      //           if (expr.constantSymbol.type.variant !== "Struct") {
-      //             throw new ImpossibleSituation();
-      //           }
-      //           const durationExpr: ObjectExpression = {
-      //             variant: "Object",
-      //             type: expr.constantSymbol.type,
-      //             ctx: expr.ctx,
-      //             members: [
-      //               [
-      //                 expr.constantSymbol.type.members[0] as VariableSymbol,
-      //                 {
-      //                   variant: "Constant",
-      //                   constantSymbol: {
-      //                     variant: "LiteralConstant",
-      //                     type: (expr.constantSymbol.type.members[0] as VariableSymbol).type,
-      //                     value: value,
-      //                     location: expr.constantSymbol.location,
-      //                   },
-      //                   ctx: expr.ctx,
-      //                   type: (expr.constantSymbol.type.members[0] as VariableSymbol).type,
-      //                   location: expr.constantSymbol.location,
-      //                 },
-      //               ],
-      //             ],
-      //             location: expr.constantSymbol.location,
-      //           };
-      //           const exprWriter = this.emitExpr(durationExpr);
-      //           tempWriter.write(exprWriter.temp);
-      //           outWriter.write(exprWriter.out.get());
-      //         } else {
-      //           outWriter.write(expr.constantSymbol.value.toString());
-      //         }
-      //         return { out: outWriter, temp: tempWriter };
-
-      //       case "BooleanConstant":
-      //         outWriter.write(expr.constantSymbol.value ? "1" : "0");
-      //         return { out: outWriter, temp: tempWriter };
-
-      //       case "StringConstant":
-      //         outWriter.write(expr.constantSymbol.value);
-      //         return { out: outWriter, temp: tempWriter };
+      //   case "StringConstant":
+      //     outWriter.write(expr.constantSymbol.value);
+      //     return { out: outWriter, temp: tempWriter };
 
       // default:
       //   throw new InternalError(
@@ -726,8 +763,8 @@ class CodeGenerator {
   //   }
 }
 
-export function generateCode(module: Module, cr: CollectResult, sr: SemanticResult): string {
-  const gen = new CodeGenerator(module, cr, sr);
+export function generateCode(module: Module, lr: Lowered.Module): string {
+  const gen = new CodeGenerator(module, lr);
   gen.generate();
   return gen.writeString();
 }
