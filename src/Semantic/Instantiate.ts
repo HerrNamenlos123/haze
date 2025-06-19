@@ -2,7 +2,7 @@ import { logger } from "../log/log";
 import { ImpossibleSituation, InternalError } from "../shared/Errors";
 import type { ID } from "../shared/store";
 import { PrettyPrintAnalyzed } from "./Elaborate";
-import type { Semantic, SemanticResult } from "./SemanticSymbols";
+import { getType, getTypeFromSymbol, type Semantic, type SemanticResult } from "./SemanticSymbols";
 
 export function instantiateDatatype(
   sr: SemanticResult,
@@ -52,6 +52,13 @@ export function instantiateDatatype(
     // ◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈
 
     case "Struct": {
+      if (genericContext.datatypesDone.has(type.id)) {
+        const struct = getType(sr, genericContext.datatypesDone.get(type.id)!);
+        return struct as Semantic.Datatype & { id: ID };
+      }
+
+      console.log("Make struct", type);
+      PrettyPrintAnalyzed(sr);
       const struct = sr.typeTable.makeDatatypeAvailable({
         variant: "Struct",
         name: type.name,
@@ -64,6 +71,7 @@ export function instantiateDatatype(
         namespaces: type.namespaces,
         concrete: true,
       }) as Semantic.StructDatatype;
+      genericContext.datatypesDone.set(type.id, struct.id!);
 
       struct.members = type.members.map((m) => {
         const sym = instantiateSymbol(sr, m, genericContext, {

@@ -23,6 +23,8 @@ export function resolveDatatype(
   if (!genericContext) {
     genericContext = {
       symbolToSymbol: new Map<ID, ID>(),
+      elaborateCurrentStructOrNamespace: null,
+      datatypesDone: new Map(),
     };
   }
 
@@ -110,6 +112,7 @@ export function resolveDatatype(
 
           const newGenericContext: Semantic.GenericContext = {
             symbolToSymbol: new Map(genericContext.symbolToSymbol),
+            datatypesDone: new Map(),
           };
 
           if (struct.genericSymbols.length > 0) {

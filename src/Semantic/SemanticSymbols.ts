@@ -1,5 +1,5 @@
 import { CompilerError, InternalError, type SourceLoc } from "../shared/Errors";
-import type { EBinaryOperation, EExternLanguage } from "../shared/AST";
+import type { ASTStructDefinition, EBinaryOperation, EExternLanguage } from "../shared/AST";
 import { EVariableContext, type EMethodType, type EPrimitive } from "../shared/common";
 import { makeScopeId, makeSymbolId, makeTypeId, type ID } from "../shared/store";
 import type { Collect } from "../SymbolCollection/CollectSymbols";
@@ -479,6 +479,7 @@ export namespace Semantic {
   export type GenericContext = {
     symbolToSymbol: Map<ID, ID>;
     elaborateCurrentStructOrNamespace?: ID | null;
+    datatypesDone: Map<ID, ID>;
   };
 }
 
