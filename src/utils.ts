@@ -1,129 +1,93 @@
-import {
-  ELinkage,
-  EVariableContext,
-  type BaseDatatype,
-  type BaseSymbol,
-  type LiteralUnits,
-} from "./shared/common";
-import {
-  CompilerError,
-  getCallerLocation,
-  ImpossibleSituation,
-  InternalError,
-  SourceLoc,
-} from "./shared/Errors";
-import type { Expression } from "./Expression";
+import { EVariableContext } from "./shared/common";
+import { CompilerError, ImpossibleSituation, InternalError } from "./shared/Errors";
 import {
   BooleanConstantContext,
-  CommonDatatypeContext,
-  DatatypeimplContext,
-  FuncContext,
-  FuncdeclContext,
   LiteralConstantContext,
-  NamedfuncContext,
   ParamContext,
   ParamsContext,
   StringConstantContext,
   StructMethodContext,
-  VariableDeclarationContext,
-  VariableDefinitionContext,
 } from "./parser/grammar/autogen/HazeParser";
 import type { HazeVisitor } from "./parser/grammar/autogen/HazeVisitor";
 import type { Module } from "./Module";
-import type { ParsedDatatype, ParsedSymbol } from "./ParsedTypes";
-import { ResolvedScope } from "./shared/CollectionScope";
 import type {
   Statement,
   VariableDeclarationStatement,
   VariableDefinitionStatement,
 } from "./Statement";
 import * as _ from "lodash";
-import type { SymbolId } from "./shared/store";
 
 export const RESERVED_VARIABLE_NAMES = ["this", "ctx", "__returnval__"];
 export const RESERVED_STRUCT_NAMES = ["RawPtr"]; // "Context"
 export const INTERNAL_METHOD_NAMES = ["constructor", "sizeof"];
 export const RESERVED_NAMESPACES = ["global"];
 
-export function assertDatatypeVariant<const T extends BaseDatatype.Variants[]>(
-  datatype: ParsedDatatype.Datatype,
-  allowedVariants: T,
-): asserts datatype is Extract<ParsedDatatype.Datatype, { variant: T[number] }> {
-  if (!allowedVariants.includes(datatype.variant as T[number])) {
-    throw new InternalError(`Invalid variant: ${datatype.variant}`);
-  }
+export function hasOnlyDuplicates<T>(arr: T[]): boolean {
+  if (arr.length === 0) return false; // or true, depending on your definition
+  return arr.every((val) => val === arr[0]);
 }
 
-export function assertSymbolVariant<const T extends BaseSymbol.Variants[]>(
-  datatype: ParsedSymbol.Symbol,
-  allowedVariants: T,
-): asserts datatype is Extract<ParsedSymbol.Symbol, { variant: T[number] }> {
-  if (!allowedVariants.includes(datatype.variant as T[number])) {
-    throw new InternalError(`Invalid variant: ${datatype.variant}`);
-  }
-}
+// export function queryParentSymbol(module: Module, symbol: ParsedSymbol.Symbol) {
+//   if (
+//     (symbol.variant === "Variable" ||
+//       symbol.variant === "Function" ||
+//       symbol.variant === "Datatype") &&
+//     symbol.parentSymbol
+//   ) {
+//     return module.parsedStore.getSymbol(symbol.parentSymbol);
+//   } else {
+//     return undefined;
+//   }
+// }
 
-export function queryParentSymbol(module: Module, symbol: ParsedSymbol.Symbol) {
-  if (
-    (symbol.variant === "Variable" ||
-      symbol.variant === "Function" ||
-      symbol.variant === "Datatype") &&
-    symbol.parentSymbol
-  ) {
-    return module.parsedStore.getSymbol(symbol.parentSymbol);
-  } else {
-    return undefined;
-  }
-}
+// export function serializeType(module: Module, datatype: ParsedDatatype.Datatype): string {
+//   switch (datatype.variant) {
+//     case "Function":
+//       return (
+//         "(" +
+//         datatype.functionParameters
+//           .map((id) => {
+//             const sym = module.parsedStore.getSymbol(id);
+//             assertSymbolVariant(sym, ["Variable", "GenericParameter"]);
+//             return `${sym.name}: ${serializeSymbol(module, sym)}`;
+//           })
+//           .join(", ") +
+//         ") -> " +
+//         serializeSymbol(module, module.parsedStore.getSymbol(datatype.functionReturnValue))
+//       );
 
-export function serializeType(module: Module, datatype: ParsedDatatype.Datatype): string {
-  switch (datatype.variant) {
-    case "Function":
-      return (
-        "(" +
-        datatype.functionParameters
-          .map((id) => {
-            const sym = module.parsedStore.getSymbol(id);
-            assertSymbolVariant(sym, ["Variable", "GenericParameter"]);
-            return `${sym.name}: ${serializeSymbol(module, sym)}`;
-          })
-          .join(", ") +
-        ") -> " +
-        serializeSymbol(module, module.parsedStore.getSymbol(datatype.functionReturnValue))
-      );
+//     case "Struct": {
+//       let s = datatype.name;
+//       let p = datatype.parentSymbol && module.parsedStore.getSymbol(datatype.parentSymbol);
+//       while (p) {
+//         assertSymbolVariant(p, ["Datatype"]);
+//         const pType = module.parsedStore.getType(p.type);
+//         if (pType.variant === "Struct" || pType.variant === "Namespace") {
+//           s = `${pType.name}.${s}`;
+//         }
+//         p = queryParentSymbol(module, p);
+//       }
 
-    case "Struct": {
-      let s = datatype.name;
-      let p = datatype.parentSymbol && module.parsedStore.getSymbol(datatype.parentSymbol);
-      while (p) {
-        assertSymbolVariant(p, ["Datatype"]);
-        const pType = module.parsedStore.getType(p.type);
-        if (pType.variant === "Struct" || pType.variant === "Namespace") {
-          s = `${pType.name}.${s}`;
-        }
-        p = queryParentSymbol(module, p);
-      }
-
-      const g = [] as string[];
-      for (const generic of datatype.generics) {
-        // const typeSym = module.parsedStore.getSymbol(generic.symbol);
-        // if (typeSym.variant === "Datatype") {
-        //   g.push(`${typeSym.name}=${typeSym.type.serialize(module)}`);
-        // } else if (typeSym.isConstant()) {
-        //   g.push(`${name}=${typeSym.constant.value.toString()}`);
-        // } else {
-        //   throw new ImpossibleSituation();
-        // }
-      }
-      if (g.length > 0) {
-        s += `<${g.join(", ")}>`;
-      }
-      return s;
-    }
-    default:
-      throw new InternalError("Unexpected variant in serialize type");
-  }
-}
+//       const g = [] as string[];
+//       for (const generic of datatype.generics) {
+//         // const typeSym = module.parsedStore.getSymbol(generic.symbol);
+//         // if (typeSym.variant === "Datatype") {
+//         //   g.push(`${typeSym.name}=${typeSym.type.serialize(module)}`);
+//         // } else if (typeSym.isConstant()) {
+//         //   g.push(`${name}=${typeSym.constant.value.toString()}`);
+//         // } else {
+//         //   throw new ImpossibleSituation();
+//         // }
+//       }
+//       if (g.length > 0) {
+//         s += `<${g.join(", ")}>`;
+//       }
+//       return s;
+//     }
+//     default:
+//       throw new InternalError("Unexpected variant in serialize type");
+//   }
+// }
 
 export function serializeSymbol(module: Module, symbol: ParsedSymbol.Symbol): string {
   switch (symbol.variant) {

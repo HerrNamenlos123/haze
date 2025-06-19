@@ -76,7 +76,6 @@ export namespace Collect {
     public statements: ASTStatement[] = [];
     public symbolTable: SymbolTable;
     public _semantic: {
-      returnTypeSymbols?: ID[];
       forFunctionSymbol?: ID;
     } = {};
 

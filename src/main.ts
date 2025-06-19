@@ -6,7 +6,7 @@ import { join } from "path";
 import path from "node:path";
 import { Parser } from "./parser/Parser";
 import { CollectSymbols, PrettyPrintCollected } from "./SymbolCollection/SymbolCollection";
-import { PrettyPrintAnalyzed, SemanticallyAnalyze } from "./Semantic/Semantic";
+import { PrettyPrintAnalyzed, SemanticallyAnalyze } from "./Semantic/Elaborate";
 
 async function getFile(url: string, outfile: string) {
   const response = await fetch(url);
