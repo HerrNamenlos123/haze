@@ -1,6 +1,5 @@
 import * as child_process from "child_process";
 import { $ } from "bun";
-import { Parser } from "./parser";
 import {
   CompilerError,
   GeneralError,
@@ -22,30 +21,15 @@ import {
   type ModuleConfig,
   type ModuleMetadata,
 } from "./shared/Config";
+import { Parser } from "./parser/Parser";
+import { CollectSymbols } from "./SymbolCollection/SymbolCollection";
+import { PrettyPrintAnalyzed, SemanticallyAnalyze } from "./Semantic/Elaborate";
+import { generateCode } from "./Codegen/CodeGenerator";
+import { LowerModule } from "./Lower/Lower";
 
 const C_COMPILER = "clang";
 const ARCHIVE_TOOL = "ar";
 const HAZE_STDLIB_NAME = "haze-stdlib";
-
-function listFiles(dir: string): string[] {
-  let files: string[] = [];
-
-  const items = fs.readdirSync(dir);
-
-  items.forEach((item) => {
-    const fullPath = join(dir, item);
-    const stat = fs.statSync(fullPath);
-
-    if (stat.isDirectory()) {
-      files = [...files, ...listFiles(fullPath)]; // Recursively add files from subdirectories
-    } else {
-      files.push(fullPath);
-    }
-  });
-
-  return files;
-}
-
 const HAZE_CONFIG_FILE = "haze.toml";
 
 async function parseConfig(startDir?: string) {
@@ -186,7 +170,29 @@ export class ProjectCompiler {
     }
     const mainModule = new ModuleCompiler(config, this.cache);
 
-    console.log("starting in ", join(mainModule.getStdlibDirectory(), "core"));
+    // const filename = "src/SymbolCollection/CollectionTest.hz";
+    // const filename = "src/parser/ParsingTest.hz";
+    const filename = "src/Semantic/SemanticTest.hz";
+    const ast = await Parser.parseFileToAST(filename);
+    if (ast) {
+      // console.log(JSON.stringify(ast[0].funcbody, undefined, 4));
+      const cr = CollectSymbols(ast, { filename, line: 0, column: 0 });
+      // console.log(cr.globalScope);
+      // console.log(
+      //   cr.globalScope.symbolTable.lookupSymbol("A", cr.globalScope.location),
+      // );
+      // PrettyPrintCollected(cr);
+      const sr = SemanticallyAnalyze(cr.globalScope);
+      PrettyPrintAnalyzed(sr);
+      const lowered = LowerModule(cr, sr);
+      // const code = generateCode(mainModule.module, cr, sr);
+
+      // console.log("Code:");
+      // console.log(code);
+    }
+    return true;
+    // console.log(ast);
+
     const stdlibConfig = await parseConfig(join(mainModule.getStdlibDirectory(), "core"));
     if (!stdlibConfig) {
       return false;
@@ -295,13 +301,13 @@ class ModuleCompiler {
     const internal = await Bun.file(
       join(join(this.getStdlibDirectory(), "internal"), "internal.hz"),
     ).text();
-    const parser = new Parser();
-    const ast = await parser.parse(internal, "internal.hz");
-    if (!ast) {
-      throw new GeneralError("Parsing failed");
-    }
-    this.module.ast = ast;
-    this.module.collector.collect(ast, parser, "internal.hz");
+    // const parser = new Parser();
+    // const ast = await parser.parse(internal, "internal.hz");
+    // if (!ast) {
+    //   throw new GeneralError("Parsing failed");
+    // }
+    // this.module.ast = ast;
+    // this.module.collector.collect(ast, parser, "internal.hz");
   }
 
   async loadDependencyMetadata(libpath: string, libname: string) {
@@ -328,13 +334,13 @@ class ModuleCompiler {
         declarations.writeLine(decl);
       }
 
-      const parser = new Parser();
-      const ast = await parser.parse(declarations.get(), dep.name + ".hzlib");
-      if (!ast) {
-        throw new GeneralError("Parsing failed");
-      }
-      this.module.ast = ast;
-      this.module.collector.collect(ast, parser, dep.name + ".hzlib");
+      // const parser = new Parser();
+      // const ast = await parser.parse(declarations.get(), dep.name + ".hzlib");
+      // if (!ast) {
+      //   throw new GeneralError("Parsing failed");
+      // }
+      // this.module.ast = ast;
+      // this.module.collector.collect(ast, parser, dep.name + ".hzlib");
     }
   }
 
@@ -348,14 +354,14 @@ class ModuleCompiler {
       if (stats.isDirectory() || extname(fullPath) !== ".hz") {
         return;
       }
-      const parser = new Parser();
-      const ast = await parser.parseFile(fullPath);
-      if (!ast) {
-        throw new GeneralError("Parsing failed");
-      }
+      // const parser = new Parser();
+      // const ast = await parser.parseFile(fullPath);
+      // if (!ast) {
+      //   throw new GeneralError("Parsing failed");
+      // }
 
-      this.module.ast = ast;
-      this.module.collector.collect(ast, parser, fullPath);
+      // this.module.ast = ast;
+      // this.module.collector.collect(ast, parser, fullPath);
       sources.push(file);
     }
     return sources;
@@ -438,9 +444,9 @@ class ModuleCompiler {
           };
 
           const exportedDeclarations = new Set<string>();
-          for (const [name, s] of this.module.exportSymbols) {
-            // exportedDeclarations.add(generateSymbolUsageHazeCode(s).get());
-          }
+          // for (const [name, s] of this.module.exportSymbols) {
+          // exportedDeclarations.add(generateSymbolUsageHazeCode(s).get());
+          // }
 
           const moduleMetadata: ModuleMetadata = {
             compilerVersion: version,

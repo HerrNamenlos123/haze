@@ -1,3 +1,5 @@
+inject "#include <stdio.h>";
+
 namespace A {
     export struct Wrapper<T> {
         value: T;

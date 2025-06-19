@@ -8,6 +8,8 @@ import { Parser } from "./parser/Parser";
 import { CollectSymbols, PrettyPrintCollected } from "./SymbolCollection/SymbolCollection";
 import { PrettyPrintAnalyzed, SemanticallyAnalyze } from "./Semantic/Elaborate";
 import { logger } from "./log/log";
+import { generateCode } from "./Codegen/CodeGenerator";
+import { ProjectCompiler } from "./ModuleCompiler";
 
 async function getFile(url: string, outfile: string) {
   const response = await fetch(url);
@@ -61,30 +63,14 @@ async function main() {
 
   if (args.command === "build" || args.command === "run" || args.command === "exec") {
     try {
-      // const filename = "src/SymbolCollection/CollectionTest.hz";
-      // const filename = "src/parser/ParsingTest.hz";
-      const filename = "src/Semantic/SemanticTest.hz";
-      const ast = await Parser.parseFileToAST(filename);
-      if (ast) {
-        // console.log(JSON.stringify(ast[0].funcbody, undefined, 4));
-        const cr = CollectSymbols(ast, { filename, line: 0, column: 0 });
-        // console.log(cr.globalScope);
-        // console.log(
-        //   cr.globalScope.symbolTable.lookupSymbol("A", cr.globalScope.location),
-        // );
-        // PrettyPrintCollected(cr);
-        const sr = SemanticallyAnalyze(cr.globalScope);
-        PrettyPrintAnalyzed(sr);
+      const project = new ProjectCompiler();
+      if (!(await project.build(args.filename))) {
+        process.exit(1);
       }
-      // console.log(ast);
-      // const project = new ProjectCompiler();
-      // if (!(await project.build(args.filename))) {
-      //   process.exit(1);
-      // }
-      // if (args.command === "run" || args.command === "exec") {
-      //   const exitCode = await project.run(args.filename, args.args);
-      //   process.exit(exitCode);
-      // }
+      if (args.command === "run" || args.command === "exec") {
+        const exitCode = await project.run(args.filename, args.args);
+        process.exit(exitCode);
+      }
     } catch (err) {
       if (err instanceof GeneralError) {
         console.log(err.message);
