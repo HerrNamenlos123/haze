@@ -173,13 +173,31 @@ export function elaborateExpr(
     // =================================================================================================================
 
     case "ConstantExpr": {
-      const dt = sr.typeTable.makePrimitiveDatatypeAvailable(EPrimitive.i32);
-      const sym = sr.symbolTable.makeDatatypeSymbolAvailable(dt.id);
-      return {
-        variant: "Constant",
-        typeSymbol: sym.id,
-        value: expr.constant.value,
-      };
+      if (expr.constant.variant === "BooleanConstant") {
+        const dt = sr.typeTable.makePrimitiveDatatypeAvailable(EPrimitive.boolean);
+        const sym = sr.symbolTable.makeDatatypeSymbolAvailable(dt.id);
+        return {
+          variant: "Constant",
+          typeSymbol: sym.id,
+          value: expr.constant.value,
+        };
+      } else if (expr.constant.variant === "NumberConstant") {
+        const dt = sr.typeTable.makePrimitiveDatatypeAvailable(EPrimitive.i32);
+        const sym = sr.symbolTable.makeDatatypeSymbolAvailable(dt.id);
+        return {
+          variant: "Constant",
+          typeSymbol: sym.id,
+          value: expr.constant.value,
+        };
+      } else {
+        const dt = sr.typeTable.makePrimitiveDatatypeAvailable(EPrimitive.str);
+        const sym = sr.symbolTable.makeDatatypeSymbolAvailable(dt.id);
+        return {
+          variant: "Constant",
+          typeSymbol: sym.id,
+          value: expr.constant.value,
+        };
+      }
     }
 
     // =================================================================================================================
@@ -578,12 +596,13 @@ export function elaborate(
         sourceloc: item.sourceloc,
       };
 
-      item._semantic.symbol = sr.symbolTable.defineSymbol({
+      item._semantic.symbol = sr.symbolTable.makeSymbolAvailable({
         variant: "FunctionDeclaration",
         typeSymbol: resolveDatatype(sr, item._collect.definedInScope!, type, genericContext).id,
         export: item.export,
         externLanguage: item.externLanguage,
         method: item._collect.method!,
+        nestedParentTypeSymbol: genericContext.elaborateCurrentStructOrNamespace || undefined,
         name: item.name,
         // namespacePath: item.namespacePath,
         sourceloc: item.sourceloc,
@@ -609,6 +628,7 @@ export function elaborate(
         variant: "FunctionDefinition",
         typeSymbol: resolveDatatype(sr, item._collect.definedInScope!, type, genericContext).id,
         export: item.export,
+        nestedParentTypeSymbol: genericContext.elaborateCurrentStructOrNamespace || undefined,
         externLanguage: item.externLanguage,
         method: item._collect.method!,
         name: item.name,
@@ -874,9 +894,6 @@ export function PrettyPrintAnalyzed(sr: SemanticResult) {
       throw new ImpossibleSituation();
     }
     switch (t.variant) {
-      case "Function":
-        return func(t.functionParameters, t.functionReturnValue, t.vararg);
-
       case "Primitive":
         return primitiveToString(t.primitive);
 
@@ -893,6 +910,9 @@ export function PrettyPrintAnalyzed(sr: SemanticResult) {
       case "Deferred":
         return "_deferred_";
 
+      case "Function":
+        return "functype";
+
       case "Namespace":
         return t.name;
     }
@@ -907,15 +927,13 @@ export function PrettyPrintAnalyzed(sr: SemanticResult) {
       .join(", ");
   };
 
-  const func = (ps: ID[], retType: ID, vararg: boolean) => {
-    return `(${params(ps)}${vararg ? ", ..." : ""}) => ${retType}`;
-  };
-
   print("Datatype Table:");
   for (const [id, type] of sr.typeTable.getAll()) {
     switch (type.variant) {
       case "Function":
-        print(` - [${id}] FunctionType ${typeFunc(id)}`);
+        print(
+          ` - [${id}] FunctionType [${type.functionParameters}] => ${type.functionReturnValue} vararg=${type.vararg}`,
+        );
         break;
 
       case "Primitive":
@@ -953,7 +971,9 @@ export function PrettyPrintAnalyzed(sr: SemanticResult) {
         break;
 
       case "FunctionDefinition":
-        print(` - [${id}] FuncDef ${symbol.name}() type=${symbol.typeSymbol}`);
+        print(
+          ` - [${id}] FuncDef ${symbol.name}() type=${symbol.typeSymbol} methodOf=${symbol.methodOfSymbol} parent=${symbol.nestedParentTypeSymbol}`,
+        );
         break;
 
       case "GenericParameter":

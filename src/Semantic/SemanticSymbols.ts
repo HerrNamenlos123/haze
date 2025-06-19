@@ -14,7 +14,10 @@ export namespace Semantic {
     id?: ID;
     variant: "Function";
     generics: ID[];
-    functionParameters: ID[];
+    functionParameters: {
+      name: string;
+      typeSymbol: ID;
+    }[];
     functionReturnValue: ID;
     vararg: boolean;
   };

@@ -4,20 +4,18 @@ import type { ID } from "./store";
 
 export enum EPrimitive {
   none = 1,
-  unknown = 2,
-  boolean = 3,
-  booleanptr = 4,
-  i8 = 5,
-  i16 = 6,
-  i32 = 7,
-  i64 = 8,
-  u8 = 9,
-  u16 = 10,
-  u32 = 11,
-  u64 = 12,
-  f32 = 13,
-  f64 = 14,
-  stringview = 15,
+  boolean,
+  i8,
+  i16,
+  i32,
+  i64,
+  u8,
+  u16,
+  u32,
+  u64,
+  f32,
+  f64,
+  str,
 }
 
 export enum EVariableContext {
@@ -38,12 +36,8 @@ export function primitiveToString(primitive: EPrimitive) {
   switch (primitive) {
     case EPrimitive.none:
       return "none";
-    case EPrimitive.unknown:
-      return "unknown";
     case EPrimitive.boolean:
       return "boolean";
-    case EPrimitive.booleanptr:
-      return "booleanptr";
     case EPrimitive.i8:
       return "i8";
     case EPrimitive.i16:
@@ -64,8 +58,8 @@ export function primitiveToString(primitive: EPrimitive) {
       return "f32";
     case EPrimitive.f64:
       return "f64";
-    case EPrimitive.stringview:
-      return "stringview";
+    case EPrimitive.str:
+      return "str";
     default:
       throw new InternalError("Unexpected datatype");
   }
@@ -75,12 +69,8 @@ export function stringToPrimitive(str: string) {
   switch (str) {
     case "none":
       return EPrimitive.none;
-    case "unknown":
-      return EPrimitive.unknown;
     case "boolean":
       return EPrimitive.boolean;
-    case "booleanptr":
-      return EPrimitive.booleanptr;
     case "i8":
       return EPrimitive.i8;
     case "i16":
@@ -101,8 +91,8 @@ export function stringToPrimitive(str: string) {
       return EPrimitive.f32;
     case "f64":
       return EPrimitive.f64;
-    case "stringview":
-      return EPrimitive.stringview;
+    case "str":
+      return EPrimitive.str;
     default:
       return undefined;
   }

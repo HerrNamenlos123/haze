@@ -22,9 +22,10 @@ export function instantiateDatatype(
       return sr.typeTable.makeDatatypeAvailable({
         variant: "Function",
         vararg: type.vararg,
-        functionParameters: type.functionParameters.map(
-          (p) => instantiateSymbol(sr, p, genericContext).id,
-        ),
+        functionParameters: type.functionParameters.map((p) => ({
+          name: p.name,
+          typeSymbol: instantiateSymbol(sr, p.typeSymbol, genericContext).id,
+        })),
         functionReturnValue: instantiateSymbol(sr, type.functionReturnValue, genericContext).id,
         generics: [],
       });

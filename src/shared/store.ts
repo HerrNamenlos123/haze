@@ -30,3 +30,7 @@ export function makeSymbolId() {
 export function makeScopeId() {
   return makeId(3);
 }
+
+export function makeLoweredId() {
+  return makeId(4);
+}

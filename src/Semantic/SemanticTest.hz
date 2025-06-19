@@ -54,5 +54,5 @@ namespace Main {
         }
     }
 
-    extern "C" printf(fmt: stringview, ...): none;
+    extern "C" printf(fmt: str, ...): none;
 }

@@ -47,9 +47,10 @@ export function resolveDatatype(
         variant: "Function",
         vararg: datatype.ellipsis,
         functionReturnValue: resolveDatatype(sr, scope, datatype.returnType, genericContext).id,
-        functionParameters: datatype.params.map(
-          (p) => resolveDatatype(sr, scope, p.datatype, genericContext).id,
-        ),
+        functionParameters: datatype.params.map((p) => ({
+          name: p.name,
+          typeSymbol: resolveDatatype(sr, scope, p.datatype, genericContext).id,
+        })),
         generics: [],
       });
       return sr.symbolTable.makeDatatypeSymbolAvailable(dt.id);
