@@ -15,8 +15,8 @@ import {
   primitiveToString,
 } from "../shared/common";
 import { CompilerError, ImpossibleSituation, InternalError } from "../shared/Errors";
-import type { SemanticSymbolId } from "../shared/store";
-import type { Collect } from "../SymbolCollection/CollectSymbols";
+import { makeCollectScopeId, type SemanticSymbolId } from "../shared/store";
+import { Collect } from "../SymbolCollection/CollectSymbols";
 import { hasOnlyDuplicates } from "../utils";
 import { Conversion } from "./Conversion";
 import { instantiateDatatype, instantiateSymbol } from "./Instantiate";
@@ -66,6 +66,7 @@ export function elaborateExpr(
                 Conversion.getIntegerBinaryResult(leftType, rightType).id!,
                 true,
               ).id,
+              sourceloc: expr.sourceloc,
             };
           }
           if (Conversion.isF32(leftType) && Conversion.isF32(rightType)) {
@@ -78,6 +79,7 @@ export function elaborateExpr(
                 sr.typeTable.makePrimitiveDatatypeAvailable(EPrimitive.f32).id,
                 true,
               ).id,
+              sourceloc: expr.sourceloc,
             };
           } else if (Conversion.isFloat(leftType) && Conversion.isFloat(rightType)) {
             return {
@@ -89,6 +91,7 @@ export function elaborateExpr(
                 sr.typeTable.makePrimitiveDatatypeAvailable(EPrimitive.f64).id,
                 true,
               ).id,
+              sourceloc: expr.sourceloc,
             };
           } else if (
             (Conversion.isFloat(leftType) && Conversion.isInteger(rightType)) ||
@@ -103,6 +106,7 @@ export function elaborateExpr(
                 sr.typeTable.makePrimitiveDatatypeAvailable(EPrimitive.f64).id,
                 true,
               ).id,
+              sourceloc: expr.sourceloc,
             };
           }
           break;
@@ -124,6 +128,7 @@ export function elaborateExpr(
                 sr.typeTable.makePrimitiveDatatypeAvailable(EPrimitive.boolean).id,
                 true,
               ).id,
+              sourceloc: expr.sourceloc,
             };
           }
           break;
@@ -144,6 +149,7 @@ export function elaborateExpr(
                 sr.typeTable.makePrimitiveDatatypeAvailable(EPrimitive.boolean).id,
                 true,
               ).id,
+              sourceloc: expr.sourceloc,
             };
           }
           break;
@@ -160,6 +166,7 @@ export function elaborateExpr(
                 sr.typeTable.makePrimitiveDatatypeAvailable(EPrimitive.boolean).id,
                 true,
               ).id,
+              sourceloc: expr.sourceloc,
             };
           }
           break;
@@ -178,6 +185,7 @@ export function elaborateExpr(
             sr.typeTable.makeDatatypeAvailable({ variant: "Deferred", concrete: false }).id,
             false,
           ).id,
+          sourceloc: expr.sourceloc,
         };
       }
 
@@ -196,6 +204,7 @@ export function elaborateExpr(
           variant: "Constant",
           typeSymbol: sym.id,
           value: expr.constant.value,
+          sourceloc: expr.sourceloc,
         };
       } else if (expr.constant.variant === "NumberConstant") {
         const dt = sr.typeTable.makePrimitiveDatatypeAvailable(EPrimitive.i32);
@@ -204,6 +213,7 @@ export function elaborateExpr(
           variant: "Constant",
           typeSymbol: sym.id,
           value: expr.constant.value,
+          sourceloc: expr.sourceloc,
         };
       } else {
         const dt = sr.typeTable.makePrimitiveDatatypeAvailable(EPrimitive.str);
@@ -212,6 +222,7 @@ export function elaborateExpr(
           variant: "Constant",
           typeSymbol: sym.id,
           value: expr.constant.value,
+          sourceloc: expr.sourceloc,
         };
       }
     }
@@ -243,6 +254,7 @@ export function elaborateExpr(
           calledExpr: calledExpr,
           arguments: args,
           typeSymbol: getSymbol(sr, ftype.functionReturnValue).id!,
+          sourceloc: expr.sourceloc,
         };
       }
 
@@ -252,6 +264,7 @@ export function elaborateExpr(
           calledExpr: calledExpr,
           arguments: args,
           typeSymbol: getSymbol(sr, type.functionReturnValue).id!,
+          sourceloc: expr.sourceloc,
         };
       } else if (type.variant === "Struct") {
         throw new CompilerError(
@@ -290,6 +303,7 @@ export function elaborateExpr(
           variant: "SymbolValue",
           symbol: variableSymbol.id!,
           typeSymbol: variableSymbol.typeSymbol,
+          sourceloc: expr.sourceloc,
         };
       } else if (
         symbol.variant === "FunctionDeclaration" ||
@@ -315,6 +329,7 @@ export function elaborateExpr(
           variant: "SymbolValue",
           symbol: functionSymbol.id,
           typeSymbol: functionSymbol.typeSymbol,
+          sourceloc: expr.sourceloc,
         };
       } else {
         throw new CompilerError(`Symbol ${symbol.name} cannot be used as a value`, expr.sourceloc);
@@ -350,6 +365,7 @@ export function elaborateExpr(
           expr: object,
           memberName: expr.member,
           typeSymbol: memberTypeSymbol.id!,
+          sourceloc: expr.sourceloc,
         };
       } else if (methodId) {
         const method = getSymbol(sr, methodId) as
@@ -357,9 +373,15 @@ export function elaborateExpr(
           | Semantic.FunctionDefinitionSymbol;
         const methodFuncTypeSymbol = getSymbol(sr, method.typeSymbol);
 
+        const objRef = sr.typeTable.makeDatatypeAvailable({
+          variant: "Reference",
+          referee: object.typeSymbol,
+          concrete: getTypeFromSymbol(sr, object.typeSymbol).concrete,
+        });
+
         const callable = sr.typeTable.makeDatatypeAvailable({
           variant: "Callable",
-          thisExprType: object.typeSymbol,
+          thisExprType: sr.symbolTable.makeDatatypeSymbolAvailable(objRef.id, objRef.concrete).id,
           functionType: methodFuncTypeSymbol.id,
           concrete: methodFuncTypeSymbol.concrete,
         });
@@ -370,6 +392,7 @@ export function elaborateExpr(
           functionSymbol: method.id!,
           typeSymbol: sr.symbolTable.makeDatatypeSymbolAvailable(callable.id!, callable.concrete)
             .id,
+          sourceloc: expr.sourceloc,
         };
       } else {
         throw new CompilerError(`No such member in struct ${structType.name}`, expr.sourceloc);
@@ -446,6 +469,7 @@ export function elaborateExpr(
         variant: "StructInstantiation",
         assign: assign,
         typeSymbol: symbol.id!,
+        sourceloc: expr.sourceloc,
       };
     }
 
@@ -941,6 +965,40 @@ export function elaborate(
         .filter(Boolean)
         .map((m) => m!);
 
+      // Add drop function
+      if (
+        struct.methods.every(
+          (m) => (getSymbol(sr, m) as Semantic.FunctionDeclarationSymbol).name !== "drop",
+        )
+      ) {
+        if (!item._collect.scope) throw new ImpossibleSituation();
+        const dropType = sr.typeTable.makeDatatypeAvailable({
+          variant: "Function",
+          concrete: struct.concrete,
+          functionParameters: [],
+          functionReturnValue: sr.symbolTable.makeDatatypeSymbolAvailable(
+            sr.typeTable.makePrimitiveDatatypeAvailable(EPrimitive.none).id,
+            struct.concrete,
+          ).id,
+          generics: [],
+          vararg: false,
+        });
+        const drop = sr.symbolTable.makeSymbolAvailable({
+          variant: "FunctionDefinition",
+          export: false,
+          concrete: struct.concrete,
+          externLanguage: EExternLanguage.None,
+          method: EMethodType.Drop,
+          name: "drop",
+          scope: new Semantic.Scope(item.sourceloc, item._collect.scope),
+          typeSymbol: sr.symbolTable.makeDatatypeSymbolAvailable(dropType.id, struct.concrete).id,
+          methodOfSymbol: structSym.id,
+          nestedParentTypeSymbol: structSym.id,
+          sourceloc: item.sourceloc,
+        });
+        struct.methods.push(drop.id);
+      }
+
       return sr.symbolTable.makeDatatypeSymbolAvailable(struct.id, struct.concrete).id;
     }
 
@@ -1046,6 +1104,13 @@ export function PrettyPrintAnalyzed(sr: SemanticResult) {
 
       case "Reference":
         print(` - [${id}] Reference referee=${type.referee}`, type.concrete ? reset : gray);
+        break;
+
+      case "Callable":
+        print(
+          ` - [${id}] Callable functionType=${type.functionType} thisExprType=${type.thisExprType}`,
+          type.concrete ? reset : gray,
+        );
         break;
 
       // case "GenericPlaceholder":

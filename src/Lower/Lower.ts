@@ -7,26 +7,56 @@ import {
 } from "../Semantic/SemanticSymbols";
 import { EVariableContext } from "../shared/common";
 import { ImpossibleSituation, InternalError } from "../shared/Errors";
-import { makeLoweredId, type LoweredTypeId, type SemanticSymbolId } from "../shared/store";
+import {
+  makeLoweredId,
+  makeTempName,
+  type LoweredTypeId,
+  type SemanticSymbolId,
+} from "../shared/store";
 import type { CollectResult } from "../SymbolCollection/CollectSymbols";
 import type { Lowered } from "./LowerTypes";
 
-function lowerExpr(lr: Lowered.Module, expr: Semantic.Expression): Lowered.Expression {
+function lowerExpr(
+  lr: Lowered.Module,
+  expr: Semantic.Expression,
+  flattened: Lowered.Statement[],
+): Lowered.Expression {
   switch (expr.variant) {
     case "ExprCall": {
+      const varname = makeTempName();
+      const calledExpr = lowerExpr(lr, expr.calledExpr, flattened);
+      const calledExprType = lr.datatypes.get(calledExpr.type)!;
+      let vartype = calledExpr.type;
+      if (calledExprType.variant === "Callable") {
+        const functype = lr.datatypes.get(calledExprType.functionType);
+        if (functype?.variant !== "Function") throw new ImpossibleSituation();
+        vartype = functype.returnType;
+      }
+      flattened.push({
+        variant: "VariableStatement",
+        name: varname,
+        type: vartype,
+        variableContext: EVariableContext.FunctionLocal,
+        value: {
+          variant: "ExprCallExpr",
+          expr: calledExpr,
+          arguments: expr.arguments.map((a) => lowerExpr(lr, a, flattened)),
+          type: resolveType(lr, expr.typeSymbol),
+        },
+        sourceloc: expr.sourceloc,
+      });
       return {
-        variant: "ExprCallExpr",
-        expr: lowerExpr(lr, expr.calledExpr),
-        arguments: expr.arguments.map((a) => lowerExpr(lr, a)),
-        type: resolveType(lr, expr.typeSymbol),
+        variant: "SymbolValue",
+        name: varname,
+        type: calledExpr.type,
       };
     }
 
     case "BinaryExpr": {
       return {
         variant: "BinaryExpr",
-        left: lowerExpr(lr, expr.left),
-        right: lowerExpr(lr, expr.right),
+        left: lowerExpr(lr, expr.left, flattened),
+        right: lowerExpr(lr, expr.right, flattened),
         operation: expr.operation,
         type: resolveType(lr, expr.typeSymbol),
       };
@@ -50,7 +80,7 @@ function lowerExpr(lr: Lowered.Module, expr: Semantic.Expression): Lowered.Expre
     case "ExprMemberAccess": {
       return {
         variant: "ExprMemberAccess",
-        expr: lowerExpr(lr, expr.expr),
+        expr: lowerExpr(lr, expr.expr, flattened),
         memberName: expr.memberName,
         type: resolveType(lr, expr.typeSymbol),
       };
@@ -70,7 +100,7 @@ function lowerExpr(lr: Lowered.Module, expr: Semantic.Expression): Lowered.Expre
         type: resolveType(lr, expr.typeSymbol),
         memberAssigns: expr.assign.map((a) => ({
           name: a.name,
-          value: lowerExpr(lr, a.value),
+          value: lowerExpr(lr, a.value, flattened),
         })),
       };
     }
@@ -81,7 +111,7 @@ function lowerExpr(lr: Lowered.Module, expr: Semantic.Expression): Lowered.Expre
       return {
         variant: "Callable",
         functionSymbol: funcSymbol,
-        thisExpr: lowerExpr(lr, expr.thisExpr),
+        thisExpr: lowerExpr(lr, expr.thisExpr, flattened),
         type: resolveType(lr, expr.typeSymbol),
       };
     }
@@ -209,66 +239,88 @@ function resolveType(lr: Lowered.Module, typeSymbolId: SemanticSymbolId): Lowere
   }
 }
 
-function lowerStatement(lr: Lowered.Module, statement: Semantic.Statement): Lowered.Statement {
+function lowerStatement(lr: Lowered.Module, statement: Semantic.Statement): Lowered.Statement[] {
   switch (statement.variant) {
     case "VariableStatement": {
+      // console.log(
+      //   JSON.stringify(
+      //     statement.value,
+      //     (_, value) => (typeof value === "bigint" ? value.toString() : value),
+      //     4,
+      //   ),
+      // );
+      const flattened: Lowered.Statement[] = [];
       const symbol = getSymbol(lr.sr, statement.variableSymbol);
       if (symbol.variant !== "Variable") throw new ImpossibleSituation();
-      return {
+      const s: Lowered.Statement = {
         variant: "VariableStatement",
         name: statement.name,
         type: resolveType(lr, symbol.typeSymbol),
-        value: statement.value && lowerExpr(lr, statement.value),
+        value: statement.value && lowerExpr(lr, statement.value, flattened),
         variableContext: symbol.variableContext,
         sourceloc: statement.sourceloc,
       };
+      return [...flattened, s];
     }
 
     case "IfStatement": {
-      return {
+      const flattened: Lowered.Statement[] = [];
+      const s: Lowered.Statement = {
         variant: "IfStatement",
-        condition: lowerExpr(lr, statement.condition),
+        condition: lowerExpr(lr, statement.condition, flattened),
         then: lowerScope(lr, statement.then),
-        elseIfs: statement.elseIfs.map((e) => ({
-          condition: lowerExpr(lr, e.condition),
-          then: lowerScope(lr, e.then),
-        })),
+        elseIfs: statement.elseIfs.map((e) => {
+          const flattened: Lowered.Statement[] = [];
+          return {
+            condition: lowerExpr(lr, e.condition, flattened),
+            then: lowerScope(lr, e.then),
+          };
+        }),
         else: statement.else && lowerScope(lr, statement.else),
         sourceloc: statement.sourceloc,
       };
+      return [...flattened, s];
     }
 
     case "WhileStatement": {
-      return {
+      const flattened: Lowered.Statement[] = [];
+      const s: Lowered.Statement = {
         variant: "WhileStatement",
-        condition: lowerExpr(lr, statement.condition),
+        condition: lowerExpr(lr, statement.condition, flattened),
         then: lowerScope(lr, statement.then),
         sourceloc: statement.sourceloc,
       };
+      return [...flattened, s];
     }
 
     case "ExprStatement": {
-      return {
+      const flattened: Lowered.Statement[] = [];
+      const s: Lowered.Statement = {
         variant: "ExprStatement",
-        expr: lowerExpr(lr, statement.expr),
+        expr: lowerExpr(lr, statement.expr, flattened),
         sourceloc: statement.sourceloc,
       };
+      return [...flattened, s];
     }
 
     case "ReturnStatement": {
-      return {
+      const flattened: Lowered.Statement[] = [];
+      const s: Lowered.Statement = {
         variant: "ReturnStatement",
-        expr: statement.expr && lowerExpr(lr, statement.expr),
+        expr: statement.expr && lowerExpr(lr, statement.expr, flattened),
         sourceloc: statement.sourceloc,
       };
+      return [...flattened, s];
     }
 
     case "InlineCStatement": {
-      return {
-        variant: "InlineCStatement",
-        value: statement.value,
-        sourceloc: statement.sourceloc,
-      };
+      return [
+        {
+          variant: "InlineCStatement",
+          value: statement.value,
+          sourceloc: statement.sourceloc,
+        },
+      ];
     }
 
     default:
@@ -281,7 +333,7 @@ function lowerScope(lr: Lowered.Module, semanticScope: Semantic.Scope): Lowered.
     statements: [],
   };
   for (const s of semanticScope.statements) {
-    scope.statements.push(lowerStatement(lr, s));
+    scope.statements.push(...lowerStatement(lr, s));
   }
   return scope;
 }

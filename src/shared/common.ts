@@ -28,6 +28,7 @@ export enum EVariableContext {
 export enum EMethodType {
   NotAMethod,
   Method,
+  Drop,
   // Constructor
   // Destructor
 }

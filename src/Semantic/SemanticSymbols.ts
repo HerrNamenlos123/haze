@@ -199,6 +199,7 @@ export namespace Semantic {
     method?: SemanticSymbolId;
     memberName: string;
     typeSymbol: SemanticSymbolId;
+    sourceloc: SourceLoc;
   };
 
   export type CallableExpr = {
@@ -206,17 +207,20 @@ export namespace Semantic {
     thisExpr: Expression;
     functionSymbol: SemanticSymbolId;
     typeSymbol: SemanticSymbolId;
+    sourceloc: SourceLoc;
   };
 
   export type SymbolValueExpr = {
     variant: "SymbolValue";
     symbol: SemanticSymbolId;
     typeSymbol: SemanticSymbolId;
+    sourceloc: SourceLoc;
   };
 
   export type SymbolValueThisPtrExpr = {
     variant: "SymbolValueThisPointer";
     typeSymbol: SemanticSymbolId;
+    sourceloc: SourceLoc;
   };
 
   export type BinaryExpr = {
@@ -225,6 +229,7 @@ export namespace Semantic {
     right: Expression;
     operation: EBinaryOperation;
     typeSymbol: SemanticSymbolId;
+    sourceloc: SourceLoc;
   };
 
   export type ExprCallExpr = {
@@ -232,6 +237,7 @@ export namespace Semantic {
     calledExpr: Expression;
     arguments: Expression[];
     typeSymbol: SemanticSymbolId;
+    sourceloc: SourceLoc;
   };
 
   export type StructInstantiationExpr = {
@@ -241,12 +247,14 @@ export namespace Semantic {
       value: Expression;
     }[];
     typeSymbol: SemanticSymbolId;
+    sourceloc: SourceLoc;
   };
 
   export type ConstantExpr = {
     variant: "Constant";
     value: number | string | boolean;
     typeSymbol: SemanticSymbolId;
+    sourceloc: SourceLoc;
   };
 
   export type Expression =

@@ -14,6 +14,8 @@ export type LoweredTypeId = ID & { __brand: "LoweredTypeId" };
 const ID_BASE = 10n ** 3n;
 let nextIdCounter = 0n;
 
+let nextTempId = 0n;
+
 function assertId() {
   if (nextIdCounter >= ID_BASE) {
     throw new InternalError(
@@ -22,6 +24,10 @@ function assertId() {
       2,
     );
   }
+}
+
+export function makeTempName() {
+  return `__temp_${nextTempId++}`;
 }
 
 function makeId(namespace: number): ID {

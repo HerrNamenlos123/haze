@@ -5,7 +5,7 @@ import { BinaryOperationToString, EBinaryOperation } from "../shared/AST";
 import { EPrimitive, EVariableContext, primitiveToString } from "../shared/common";
 import { ModuleType } from "../shared/Config";
 import { ImpossibleSituation, InternalError, printWarningMessage } from "../shared/Errors";
-import type { LoweredTypeId } from "../shared/store";
+import { makeTempName, type LoweredTypeId } from "../shared/store";
 import { OutputWriter } from "./OutputWriter";
 
 class CodeGenerator {
@@ -18,7 +18,6 @@ class CodeGenerator {
     function_definitions: new OutputWriter(),
     global_variables: new OutputWriter(),
   };
-  private nextTempId = 0;
 
   constructor(
     public module: Module,
@@ -52,10 +51,6 @@ class CodeGenerator {
       // );
       this.out.function_definitions.writeLine("return _H4mainv();").popIndent().writeLine("}");
     }
-  }
-
-  makeTempName() {
-    return `__temp_${this.nextTempId++}`;
   }
 
   getType(id: LoweredTypeId) {
@@ -116,7 +111,6 @@ class CodeGenerator {
       this.emitFunction(symbol);
     }
 
-    // console.log(this.lr.datatypes);
     for (const [id, symbol] of this.lr.datatypes) {
       if (symbol.variant === "Namespace") {
       } else if (symbol.variant === "Primitive") {
@@ -148,11 +142,12 @@ class CodeGenerator {
             .join(", ")});`,
         );
       } else if (symbol.variant === "Callable") {
-        // this.out.type_declarations.writeLine(
-        //   `typedef _H${this.emitDatatype(symbol)} (*_H${this.emitDatatype(symbol)})(${symbol.parameters
-        //     .map((p) => `_H${this.emitDatatype(p.type)} ${p.name}`)
-        //     .join(", ")});`,
-        // );
+        const dt = this.emitDatatype(symbol);
+        this.out.type_declarations.writeLine(`typedef struct _H${dt} _H${dt};`);
+        this.out.type_definitions.writeLine(`struct _H${dt} {`).pushIndent();
+        this.out.type_definitions.writeLine(`void* thisPtr;`);
+        this.out.type_definitions.writeLine(`_H${this.emitDatatype(symbol.functionType)} fn;`);
+        this.out.type_definitions.popIndent().writeLine(`};`).writeLine();
       } else {
       }
     }
@@ -421,7 +416,7 @@ class CodeGenerator {
       case "ExprStatement": {
         const exprWriter = this.emitExpr(statement.expr);
         tempWriter.write(exprWriter.temp);
-        outWriter.writeLine(exprWriter.out.get() + ";");
+        outWriter.writeLine(`(void)(${exprWriter.out.get()});`);
         return { temp: tempWriter, out: outWriter };
       }
 
@@ -486,17 +481,21 @@ class CodeGenerator {
           tempWriter.write(r.temp);
           return r.out.get();
         });
+        const exprEmitted = this.emitExpr(expr.expr);
         if (expr.expr.variant === "Callable") {
-          const funcname = this.mangleNestedName(this.lr.functions.get(expr.expr.functionSymbol)!);
+          const callableType = this.lr.datatypes.get(expr.expr.type)!;
+          if (callableType.variant !== "Callable") throw new ImpossibleSituation();
+
           if (expr.expr.thisExpr) {
-            const tempname = this.makeTempName();
-            const thisType = this.emitDatatype(expr.expr.thisExpr.type);
-            const thisExpr = this.emitExpr(expr.expr.thisExpr);
-            tempWriter.write(thisExpr.temp);
-            tempWriter.writeLine(`_H${thisType} ${tempname} = {0};`);
-            args.unshift(`&${tempname}`);
+            const callableTempName = makeTempName();
+            tempWriter.writeLine(
+              `_H${this.emitDatatype(expr.expr.type)} ${callableTempName} = {0};`,
+            );
+            args.unshift(
+              `(_H${this.emitDatatype(callableType.thisExprType)})${callableTempName}.thisPtr`,
+            );
             outWriter.write(
-              `(${tempname} = ${thisExpr.out.get()}, _H${funcname}(${args.join(", ")}))`,
+              `(${callableTempName} = ${exprEmitted.out.get()}, ${callableTempName}.fn)(${args.join(", ")})`,
             );
           }
         } else {
@@ -714,14 +713,18 @@ class CodeGenerator {
         return { out: outWriter, temp: tempWriter };
 
       case "Callable":
-        throw new InternalError("Callables should not be emitted");
-        if (expr.thisExpr) {
-          const funcname = this.mangleNestedName(this.lr.functions.get(expr.functionSymbol)!);
-          outWriter.write(`_H${funcname}`);
-        } else {
-          const funcname = this.mangleNestedName(this.lr.functions.get(expr.functionSymbol)!);
-          outWriter.write(`_H${funcname}`);
-        }
+        // if (expr.thisExpr) {
+        //   const funcname = this.mangleNestedName(this.lr.functions.get(expr.functionSymbol)!);
+        //   outWriter.write(`_H${funcname}`);
+        // } else {
+        //   const funcname = this.mangleNestedName(this.lr.functions.get(expr.functionSymbol)!);
+        //   outWriter.write(`_H${funcname}`);
+        // }
+        const thisExpr = this.emitExpr(expr.thisExpr);
+        tempWriter.write(thisExpr.temp);
+        outWriter.write(
+          `((_H${this.emitDatatype(expr.type)}) { .thisPtr = (void*)(&${thisExpr.out.get()}), .fn = _H${this.mangleNestedName(this.lr.functions.get(expr.functionSymbol)!)} })`,
+        );
         return { out: outWriter, temp: tempWriter };
 
       case "ConstantExpr":
