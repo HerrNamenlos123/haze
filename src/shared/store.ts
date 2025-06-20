@@ -5,7 +5,6 @@ type ID = bigint & {
 };
 
 export type CollectScopeId = ID & { __brand: "CollectScopeId" };
-export type SemanticTypeId = ID & { __brand: "SemanticTypeId" };
 export type SemanticSymbolId = ID & { __brand: "SemanticSymbolId" };
 export type SemanticScopeId = ID & { __brand: "SemanticScopeId" };
 export type LoweredTypeId = ID & { __brand: "LoweredTypeId" };
@@ -39,18 +38,14 @@ export function makeCollectScopeId() {
   return makeId(1) as CollectScopeId;
 }
 
-export function makeSemanticTypeId() {
-  return makeId(2) as SemanticTypeId;
-}
-
 export function makeSemanticSymbolId() {
-  return makeId(3) as SemanticSymbolId;
+  return makeId(2) as SemanticSymbolId;
 }
 
 export function makeSemanticScopeId() {
-  return makeId(4) as SemanticScopeId;
+  return makeId(3) as SemanticScopeId;
 }
 
 export function makeLoweredId() {
-  return makeId(5) as LoweredTypeId;
+  return makeId(4) as LoweredTypeId;
 }

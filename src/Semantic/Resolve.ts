@@ -1,11 +1,11 @@
 import { logger } from "../log/log";
 import { type ASTDatatype } from "../shared/AST";
 import { assertID, assertScope, stringToPrimitive } from "../shared/common";
-import { CompilerError, ImpossibleSituation, InternalError } from "../shared/Errors";
+import { assert, CompilerError, ImpossibleSituation, InternalError } from "../shared/Errors";
 import type { Collect } from "../SymbolCollection/CollectSymbols";
 import { elaborate } from "./Elaborate";
-import { instantiateDatatype } from "./Instantiate";
-import { getTypeFromSymbol, type Semantic, type SemanticResult } from "./SemanticSymbols";
+import { instantiateSymbol } from "./Instantiate";
+import { getSymbol, type Semantic, type SemanticResult } from "./SemanticSymbols";
 
 export function resolveDatatype(
   sr: SemanticResult,
@@ -28,11 +28,11 @@ export function resolveDatatype(
     // =================================================================================================================
 
     case "Deferred": {
-      const dt = sr.typeTable.makeDatatypeAvailable({
-        variant: "Deferred",
+      const dt = sr.symbolTable.makeSymbolAvailable({
+        variant: "DeferredDatatype",
         concrete: false,
       });
-      return sr.symbolTable.makeDatatypeSymbolAvailable(dt.id, false);
+      return dt;
     }
 
     // =================================================================================================================
@@ -50,15 +50,15 @@ export function resolveDatatype(
           type: resolved.id,
         };
       });
-      const dt = sr.typeTable.makeDatatypeAvailable({
-        variant: "Function",
+      const dt = sr.symbolTable.makeSymbolAvailable({
+        variant: "FunctionDatatype",
         vararg: datatype.ellipsis,
         functionReturnValue: returnValue.id,
         functionParameters: parameters,
         generics: [],
         concrete: returnValue.concrete && paramsConcrete,
       });
-      return sr.symbolTable.makeDatatypeSymbolAvailable(dt.id, dt.concrete);
+      return dt;
     }
 
     // =================================================================================================================
@@ -67,12 +67,12 @@ export function resolveDatatype(
 
     case "RawPointerDatatype": {
       const type = resolveDatatype(sr, scope, datatype.pointee, genericContext);
-      const dt = sr.typeTable.makeDatatypeAvailable({
-        variant: "RawPointer",
+      const dt = sr.symbolTable.makeSymbolAvailable({
+        variant: "RawPointerDatatype",
         pointee: type.id,
         concrete: type.concrete,
       });
-      return sr.symbolTable.makeDatatypeSymbolAvailable(dt.id, dt.concrete);
+      return dt;
     }
 
     // =================================================================================================================
@@ -81,12 +81,12 @@ export function resolveDatatype(
 
     case "ReferenceDatatype": {
       const type = resolveDatatype(sr, scope, datatype.referee, genericContext);
-      const dt = sr.typeTable.makeDatatypeAvailable({
-        variant: "Reference",
+      const dt = sr.symbolTable.makeSymbolAvailable({
+        variant: "ReferenceDatatype",
         referee: type.id,
         concrete: type.concrete,
       });
-      return sr.symbolTable.makeDatatypeSymbolAvailable(dt.id, dt.concrete);
+      return dt;
     }
 
     // =================================================================================================================
@@ -99,10 +99,7 @@ export function resolveDatatype(
         if (datatype.generics.length > 0) {
           throw new Error(`Type ${datatype.name} is not generic`);
         }
-        return sr.symbolTable.makeDatatypeSymbolAvailable(
-          sr.typeTable.makePrimitiveDatatypeAvailable(primitive).id,
-          true,
-        );
+        return sr.symbolTable.makePrimitiveAvailable(primitive);
       }
 
       if (datatype.name === "Callable") {
@@ -118,18 +115,16 @@ export function resolveDatatype(
             datatype.sourceloc,
           );
         }
-        const functypeSym = resolveDatatype(sr, scope, datatype.generics[0], genericContext);
-        if (functypeSym.variant !== "Datatype") throw new ImpossibleSituation();
-        const functype = sr.typeTable.get(functypeSym.type)!;
-        if (functype.variant !== "Function") throw new ImpossibleSituation();
+        const functype = resolveDatatype(sr, scope, datatype.generics[0], genericContext);
+        assert(functype.variant === "FunctionDatatype");
 
-        const sym = sr.typeTable.makeDatatypeAvailable({
-          variant: "Callable",
-          functionType: functypeSym.id,
+        const sym = sr.symbolTable.makeSymbolAvailable({
+          variant: "CallableDatatype",
+          functionType: functype.id,
           thisExprType: undefined,
           concrete: functype.concrete,
         });
-        return sr.symbolTable.makeDatatypeSymbolAvailable(sym.id, sym.concrete);
+        return sym;
       }
 
       const found: Collect.Symbol = scope!.symbolTable.lookupSymbol(
@@ -149,8 +144,8 @@ export function resolveDatatype(
         // ◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈
 
         case "StructDefinition": {
-          const struct = getTypeFromSymbol(sr, elaborate(sr, found, null)!);
-          if (struct.variant !== "Struct") throw new ImpossibleSituation();
+          const struct = getSymbol(sr, elaborate(sr, found, null)!);
+          assert(struct.variant === "StructDatatype");
 
           if (struct.genericSymbols.length !== datatype.generics.length) {
             throw new CompilerError(
@@ -161,7 +156,8 @@ export function resolveDatatype(
 
           const newGenericContext: Semantic.GenericContext = {
             symbolToSymbol: new Map(genericContext.symbolToSymbol),
-            datatypesDone: new Map(),
+            elaborateCurrentStructOrNamespace: genericContext.elaborateCurrentStructOrNamespace,
+            datatypesDone: new Map(genericContext.datatypesDone),
           };
 
           if (struct.genericSymbols.length > 0) {
@@ -187,8 +183,8 @@ export function resolveDatatype(
             }
           }
 
-          const dt = instantiateDatatype(sr, struct.id, newGenericContext);
-          return sr.symbolTable.makeDatatypeSymbolAvailable(dt.id, dt.concrete);
+          const dt = instantiateSymbol(sr, struct.id, newGenericContext);
+          return dt;
         }
 
         // ◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈
@@ -212,8 +208,8 @@ export function resolveDatatype(
           if (found.belongsToSymbol.variant !== "StructDefinition") {
             throw new ImpossibleSituation();
           }
-          const structId = assertID(found.belongsToSymbol._semantic.type);
-          const struct = sr.typeTable.get(structId) as Semantic.StructDatatype;
+          const struct = sr.symbolTable.get(assertID(found.belongsToSymbol._semantic.symbol));
+          assert(struct.variant === "StructDatatype");
 
           const id = sr.symbolTable.makeSymbolAvailable({
             variant: "GenericParameter",

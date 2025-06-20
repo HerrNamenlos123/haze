@@ -1,7 +1,7 @@
 import { ImpossibleSituation, type SourceLoc } from "./Errors";
 import type { Collect } from "../SymbolCollection/CollectSymbols";
 import type { EMethodType } from "./common";
-import type { SemanticSymbolId, SemanticTypeId } from "./store";
+import type { SemanticSymbolId } from "./store";
 
 export enum EExternLanguage {
   None,
@@ -467,7 +467,6 @@ export type ASTStructDefinition = {
     scope?: Collect.Scope;
   };
   _semantic: {
-    type?: SemanticTypeId;
     symbol?: SemanticSymbolId;
   };
 };

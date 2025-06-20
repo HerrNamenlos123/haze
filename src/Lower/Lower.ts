@@ -1,10 +1,4 @@
-import {
-  getSymbol,
-  getType,
-  getTypeFromSymbol,
-  type Semantic,
-  type SemanticResult,
-} from "../Semantic/SemanticSymbols";
+import { getSymbol, type Semantic, type SemanticResult } from "../Semantic/SemanticSymbols";
 import { EVariableContext } from "../shared/common";
 import { ImpossibleSituation, InternalError } from "../shared/Errors";
 import {
@@ -41,7 +35,7 @@ function lowerExpr(
           variant: "ExprCallExpr",
           expr: calledExpr,
           arguments: expr.arguments.map((a) => lowerExpr(lr, a, flattened)),
-          type: resolveType(lr, expr.typeSymbol),
+          type: resolveType(lr, expr.type),
         },
         sourceloc: expr.sourceloc,
       });
@@ -58,7 +52,7 @@ function lowerExpr(
         left: lowerExpr(lr, expr.left, flattened),
         right: lowerExpr(lr, expr.right, flattened),
         operation: expr.operation,
-        type: resolveType(lr, expr.typeSymbol),
+        type: resolveType(lr, expr.type),
       };
     }
 
@@ -81,7 +75,7 @@ function lowerExpr(
       return {
         variant: "ExplicitCast",
         expr: lowerExpr(lr, expr.expr, flattened),
-        type: resolveType(lr, expr.typeSymbol),
+        type: resolveType(lr, expr.type),
       };
     }
 
@@ -90,7 +84,7 @@ function lowerExpr(
         variant: "ExprMemberAccess",
         expr: lowerExpr(lr, expr.expr, flattened),
         memberName: expr.memberName,
-        type: resolveType(lr, expr.typeSymbol),
+        type: resolveType(lr, expr.type),
       };
     }
 
@@ -98,14 +92,14 @@ function lowerExpr(
       return {
         variant: "ConstantExpr",
         value: expr.value,
-        type: resolveType(lr, expr.typeSymbol),
+        type: resolveType(lr, expr.type),
       };
     }
 
     case "StructInstantiation": {
       return {
         variant: "StructInstantiation",
-        type: resolveType(lr, expr.typeSymbol),
+        type: resolveType(lr, expr.type),
         memberAssigns: expr.assign.map((a) => ({
           name: a.name,
           value: lowerExpr(lr, a.value, flattened),
@@ -120,7 +114,7 @@ function lowerExpr(
         variant: "Callable",
         functionSymbol: funcSymbol,
         thisExpr: lowerExpr(lr, expr.thisExpr, flattened),
-        type: resolveType(lr, expr.typeSymbol),
+        type: resolveType(lr, expr.type),
       };
     }
 
@@ -129,13 +123,13 @@ function lowerExpr(
   }
 }
 
-function resolveType(lr: Lowered.Module, typeSymbolId: SemanticSymbolId): LoweredTypeId {
-  if (!typeSymbolId) throw new InternalError("ID is undefined", undefined, 1);
-  const type = getTypeFromSymbol(lr.sr, typeSymbolId, 1);
+function resolveType(lr: Lowered.Module, typeId: SemanticSymbolId): LoweredTypeId {
+  if (!typeId) throw new InternalError("ID is undefined", undefined, 1);
+  const type = getSymbol(lr.sr, typeId, 1);
 
-  if (type.variant === "Struct") {
+  if (type.variant === "StructDatatype") {
     const existing = [...lr.datatypes.values()].find(
-      (s) => s.variant === "Struct" && s.semanticId === typeSymbolId,
+      (s) => s.variant === "Struct" && s.semanticId === typeId,
     );
     if (existing) return existing.id!;
 
@@ -150,7 +144,7 @@ function resolveType(lr: Lowered.Module, typeSymbolId: SemanticSymbolId): Lowere
           lower(lr, getSymbol(lr.sr, type.definedInNamespaceOrStruct))) ||
         undefined,
       members: [],
-      semanticId: typeSymbolId,
+      semanticId: typeId,
     };
     lr.datatypes.set(id, struct);
 
@@ -164,7 +158,7 @@ function resolveType(lr: Lowered.Module, typeSymbolId: SemanticSymbolId): Lowere
     });
 
     return id;
-  } else if (type.variant === "Primitive") {
+  } else if (type.variant === "PrimitiveDatatype") {
     const existing = [...lr.datatypes.values()].find(
       (s) => s.variant === "Primitive" && s.primitive === type.primitive,
     );
@@ -177,9 +171,9 @@ function resolveType(lr: Lowered.Module, typeSymbolId: SemanticSymbolId): Lowere
       primitive: type.primitive,
     });
     return id;
-  } else if (type.variant === "Function") {
+  } else if (type.variant === "FunctionDatatype") {
     const existing = [...lr.datatypes.values()].find(
-      (s) => s.variant === "Function" && s.semanticId === typeSymbolId,
+      (s) => s.variant === "Function" && s.semanticId === typeId,
     );
     if (existing) return existing.id!;
 
@@ -192,10 +186,10 @@ function resolveType(lr: Lowered.Module, typeSymbolId: SemanticSymbolId): Lowere
       }),
       returnType: resolveType(lr, type.functionReturnValue),
       vararg: type.vararg,
-      semanticId: typeSymbolId,
+      semanticId: typeId,
     });
     return id;
-  } else if (type.variant === "RawPointer") {
+  } else if (type.variant === "RawPointerDatatype") {
     const pointee = resolveType(lr, type.pointee);
     const existing = [...lr.datatypes.values()].find(
       (s) => s.variant === "RawPointer" && s.pointee === pointee,
@@ -209,7 +203,7 @@ function resolveType(lr: Lowered.Module, typeSymbolId: SemanticSymbolId): Lowere
       pointee: pointee,
     });
     return id;
-  } else if (type.variant === "Reference") {
+  } else if (type.variant === "ReferenceDatatype") {
     const referee = resolveType(lr, type.referee);
     const existing = [...lr.datatypes.values()].find(
       (s) => s.variant === "Reference" && s.referee === referee,
@@ -223,7 +217,7 @@ function resolveType(lr: Lowered.Module, typeSymbolId: SemanticSymbolId): Lowere
       referee: referee,
     });
     return id;
-  } else if (type.variant === "Callable") {
+  } else if (type.variant === "CallableDatatype") {
     const functionType = resolveType(lr, type.functionType);
     const thisExprType = type.thisExprType && resolveType(lr, type.thisExprType);
     const existing = [...lr.datatypes.values()].find(
@@ -429,58 +423,47 @@ function lower(lr: Lowered.Module, symbol: Semantic.Symbol): LoweredTypeId | und
       });
     }
 
-    case "Datatype": {
-      const type = getType(lr.sr, symbol.type);
-      switch (type.variant) {
-        case "Deferred":
-          throw new InternalError("No deferred type should exist in lowering");
+    case "DeferredDatatype":
+      throw new InternalError("No deferred type should exist in lowering");
 
-        case "Struct": {
-          for (const g of type.genericSymbols) {
-            const sym = getSymbol(lr.sr, g);
-            if (sym.variant === "GenericParameter") {
-              return undefined;
-            }
-            if (sym.variant === "Datatype") {
-              const tp = getType(lr.sr, sym.type);
-              if (tp.variant === "Deferred") {
-                return undefined;
-              }
-            }
-          }
-          return resolveType(lr, symbol.id!);
+    case "StructDatatype": {
+      for (const g of symbol.genericSymbols) {
+        const sym = getSymbol(lr.sr, g);
+        if (sym.variant === "GenericParameter") {
+          return undefined;
         }
-
-        case "Primitive": {
-          const existing = [...lr.datatypes.values()].find(
-            (s) => s.variant === "Primitive" && s.primitive === type.primitive,
-          );
-          if (existing) return existing.id!;
-          return makeDatatype(lr, {
-            variant: "Primitive",
-            primitive: type.primitive,
-          });
+        if (sym.variant === "DeferredDatatype") {
+          return undefined;
         }
-
-        case "Function": {
-          return resolveType(lr, symbol.id!);
-        }
-
-        case "RawPointer": {
-          return resolveType(lr, type.pointee);
-        }
-
-        case "Callable": {
-          return resolveType(lr, symbol.id!);
-        }
-
-        case "Reference": {
-          return resolveType(lr, symbol.id!);
-        }
-
-        default:
-          throw new InternalError("Unhandled variant: " + type.variant);
       }
+      return resolveType(lr, symbol.id!);
+    }
+
+    case "PrimitiveDatatype": {
+      const existing = [...lr.datatypes.values()].find(
+        (s) => s.variant === "Primitive" && s.primitive === symbol.primitive,
+      );
+      if (existing) return existing.id!;
+      return makeDatatype(lr, {
+        variant: "Primitive",
+        primitive: symbol.primitive,
+      });
+    }
+
+    case "FunctionDatatype": {
+      return resolveType(lr, symbol.id!);
+    }
+
+    case "RawPointerDatatype": {
+      return resolveType(lr, symbol.pointee);
+    }
+
+    case "CallableDatatype": {
+      return resolveType(lr, symbol.id!);
+    }
+
+    case "ReferenceDatatype": {
+      return resolveType(lr, symbol.id!);
     }
 
     case "Variable": {

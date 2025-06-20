@@ -102,3 +102,9 @@ export class GeneralError extends Error {
     this.text = formatErrorMessage(msg);
   }
 }
+
+export function assert(condition: unknown, message = "Assertion failed"): asserts condition {
+  if (!condition) {
+    throw new InternalError(message, undefined, 1);
+  }
+}
