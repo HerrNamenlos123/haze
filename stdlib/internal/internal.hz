@@ -2,7 +2,12 @@
 struct CString {
 }
 
-struct Callable<TFunc> {}
+struct SharedPtr<T> {
+  target: T*;
+
+  get(): T => {
+  }
+}
 
 struct LogContext {
   trace: (fmt: str, ...) => none;
@@ -32,10 +37,15 @@ struct Foo {
 
 printf();
 
+namespace Outer.Inner {
+  struct Subspace<T> {}
+}
+
+struct Test {
+  test: i8;
+}
+
 foo() => {
-  const foo = Foo {
-    .value: 5,
-  };
-  const a = foo.get;
-  return a();
+  const s = SharedPtr<Test> { .target: 0 as Test* };
+  const a = s.get().test;
 }

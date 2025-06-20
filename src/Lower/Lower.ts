@@ -77,6 +77,14 @@ function lowerExpr(
       };
     }
 
+    case "ExplicitCast": {
+      return {
+        variant: "ExplicitCast",
+        expr: lowerExpr(lr, expr.expr, flattened),
+        type: resolveType(lr, expr.typeSymbol),
+      };
+    }
+
     case "ExprMemberAccess": {
       return {
         variant: "ExprMemberAccess",

@@ -569,20 +569,11 @@ class CodeGenerator {
         // }
         return { out: outWriter, temp: tempWriter };
 
-      //   case "ExplicitCast":
-      //     const exprWriter = this.emitExpr(expr.expr);
-      //     tempWriter.write(exprWriter.temp);
-      //     outWriter.write(
-      //       explicitConversion(
-      //         expr.expr.type,
-      //         expr.type,
-      //         exprWriter.out.get(),
-      //         this.module.currentScope,
-      //         expr.expr.location,
-      //         this.module,
-      //       ),
-      //     );
-      //     return { out: outWriter, temp: tempWriter };
+      case "ExplicitCast":
+        const exprWriter = this.emitExpr(expr.expr);
+        tempWriter.write(exprWriter.temp);
+        outWriter.write(`((_H${this.emitDatatype(expr.type)})${exprWriter.out.get()})`);
+        return { out: outWriter, temp: tempWriter };
 
       //   case "PreIncr": {
       //     const exprWriter = this.emitExpr(expr.expr);

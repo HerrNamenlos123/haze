@@ -38,6 +38,12 @@ export namespace Lowered {
     type: LoweredTypeId;
   };
 
+  export type ExplicitCastExpr = {
+    variant: "ExplicitCast";
+    expr: Expression;
+    type: LoweredTypeId;
+  };
+
   export type ExprMemberAccessExpr = {
     variant: "ExprMemberAccess";
     expr: Expression;
@@ -71,6 +77,7 @@ export namespace Lowered {
     | BinaryExpr
     | CallableExpr
     | StructInstantiationExpr
+    | ExplicitCastExpr
     | ExprMemberAccessExpr
     | ConstantExpr
     | SymbolValueExpr;

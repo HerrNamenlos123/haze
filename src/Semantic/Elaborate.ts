@@ -334,6 +334,18 @@ export function elaborateExpr(
         throw new CompilerError(`Symbol ${symbol.name} cannot be used as a value`, expr.sourceloc);
       }
     }
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
+    case "ExplicitCastExpr": {
+      return {
+        variant: "ExplicitCast",
+        typeSymbol: resolveDatatype(sr, scope.collectScope, expr.castedTo, genericContext).id,
+        expr: elaborateExpr(sr, scope, expr.expr, genericContext),
+        sourceloc: expr.sourceloc,
+      };
+    }
 
     // =================================================================================================================
     // =================================================================================================================

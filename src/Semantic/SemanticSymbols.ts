@@ -217,6 +217,13 @@ export namespace Semantic {
     sourceloc: SourceLoc;
   };
 
+  export type ExplicitCastExpr = {
+    variant: "ExplicitCast";
+    expr: Expression;
+    typeSymbol: SemanticSymbolId;
+    sourceloc: SourceLoc;
+  };
+
   export type SymbolValueThisPtrExpr = {
     variant: "SymbolValueThisPointer";
     typeSymbol: SemanticSymbolId;
@@ -263,6 +270,7 @@ export namespace Semantic {
     | SymbolValueThisPtrExpr
     | BinaryExpr
     | CallableExpr
+    | ExplicitCastExpr
     | ExprCallExpr
     | StructInstantiationExpr
     | ConstantExpr;

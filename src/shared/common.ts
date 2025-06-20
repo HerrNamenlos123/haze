@@ -101,7 +101,7 @@ export function stringToPrimitive(str: string) {
 
 export function assertScope(id: Collect.Scope | undefined) {
   if (!id) {
-    throw new InternalError("Scope is undefined!");
+    throw new InternalError("Scope is undefined!", undefined, 1);
   }
   return id;
 }
