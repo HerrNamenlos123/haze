@@ -6,7 +6,7 @@ license = "MIT"
 authors = []
 src = "test"
 type = "exe"
-# std = "none"
+std = "none"
 
 
 # [build]

@@ -931,6 +931,27 @@ export function SemanticallyAnalyze(globalScope: Collect.Scope) {
     typeTable: new Semantic.TypeTable(),
   };
   analyzeGlobalScope(sr, globalScope, null);
+
+  const mainFunction = [...sr.symbolTable.getAll().values()].find(
+    (s) =>
+      s.variant === "FunctionDefinition" &&
+      s.nestedParentTypeSymbol === undefined &&
+      s.name === "main",
+  ) as Semantic.FunctionDefinitionSymbol;
+  if (!mainFunction) {
+    throw new CompilerError("No main function is defined", {
+      filename: "global",
+      line: 0,
+      column: 0,
+    });
+  }
+
+  const funcType = getTypeFromSymbol(sr, mainFunction.typeSymbol) as Semantic.FunctionDatatype;
+  const retType = getTypeFromSymbol(sr, funcType.functionReturnValue);
+  if (retType.variant !== "Primitive" || retType.primitive !== EPrimitive.i32) {
+    throw new CompilerError("main function must return i32", mainFunction.sourceloc);
+  }
+
   return sr;
 }
 
@@ -975,6 +996,10 @@ export function PrettyPrintAnalyzed(sr: SemanticResult) {
 
       case "Deferred":
         print(` - [${id}] Deferred`, type.concrete ? reset : gray);
+        break;
+
+      case "RawPointer":
+        print(` - [${id}] RawPointer pointee=${type.pointee}`, type.concrete ? reset : gray);
         break;
 
       // case "GenericPlaceholder":

@@ -34,25 +34,22 @@ class CodeGenerator {
     if (this.module.moduleConfig.moduleType === ModuleType.Executable) {
       this.out.function_definitions
         .writeLine("int32_t main(int argc, const char* argv[]) {")
-        .pushIndent()
-        // .writeLine(
-        //   `${generateUsageCode(this.module.getBuiltinType("Context"), this.module)} ctx = {};`,
-        // )
-        .writeLine(`_HN6Memory5ArenaE defaultArena = {};`)
-        .writeLine(`ctx.mem.globalDefaultArena = &defaultArena;`);
-      if (!this.module.moduleConfig.nostdlib) {
-        // this.out.function_declarations["_H13__setupStdlib"].writeLine(
-        //   `void _H13__setupStdlib(${generateUsageCode(this.module.getBuiltinType("Context"), this.module)}* ctx);`,
-        // );
-        this.out.function_definitions.writeLine("_H13__setupStdlib(&ctx);");
-      }
-      this.out.function_definitions.writeLine(
-        `_H4ListI6StringE argsList = _HN7Process10__loadArgvE(&ctx, argc, (uint8_t**)argv);`,
-      );
-      this.out.function_definitions
-        .writeLine("return _H4main(&ctx, argsList);")
-        .popIndent()
-        .writeLine("}");
+        .pushIndent();
+      //   // .writeLine(
+      //   //   `${generateUsageCode(this.module.getBuiltinType("Context"), this.module)} ctx = {};`,
+      //   // )
+      //   .writeLine(`_HN6Memory5ArenaE defaultArena = {};`)
+      //   .writeLine(`ctx.mem.globalDefaultArena = &defaultArena;`);
+      // if (!this.module.moduleConfig.nostdlib) {
+      //   // this.out.function_declarations["_H13__setupStdlib"].writeLine(
+      //   //   `void _H13__setupStdlib(${generateUsageCode(this.module.getBuiltinType("Context"), this.module)}* ctx);`,
+      //   // );
+      //   this.out.function_definitions.writeLine("_H13__setupStdlib(&ctx);");
+      // }
+      // this.out.function_definitions.writeLine(
+      //   `_H4ListI6StringE argsList = _HN7Process10__loadArgvE(&ctx, argc, (uint8_t**)argv);`,
+      // );
+      this.out.function_definitions.writeLine("return _H4mainv();").popIndent().writeLine("}");
     }
   }
 
@@ -65,7 +62,7 @@ class CodeGenerator {
   }
 
   includeHeader(filename: string) {
-    this.out.includes.write(`#include <${filename}>`);
+    this.out.includes.writeLine(`#include <${filename}>`);
   }
 
   writeString() {
@@ -104,6 +101,7 @@ class CodeGenerator {
 
   generate() {
     this.includeHeader("stdint.h");
+    this.includeHeader("stdbool.h");
 
     for (const decl of this.lr.cDeclarations) {
       this.out.cDecls.writeLine(decl);
@@ -131,12 +129,15 @@ class CodeGenerator {
         }
         this.out.type_definitions.popIndent().writeLine(`};`).writeLine();
       } else if (symbol.variant === "RawPointer") {
-        this.out.type_definitions
-          .writeLine(
-            `typedef _H${this.emitDatatype(symbol.pointee)}* _H${this.emitDatatype(symbol)};`,
-          )
-          .writeLine();
+        this.out.type_declarations.writeLine(
+          `typedef _H${this.emitDatatype(symbol.pointee)}* _H${this.emitDatatype(symbol)};`,
+        );
       } else {
+        this.out.type_declarations.writeLine(
+          `typedef _H${this.emitDatatype(symbol.returnType)} (*_H${this.emitDatatype(symbol)})(${symbol.parameters
+            .map((p) => `_H${this.emitDatatype(p.type)} ${p.name}`)
+            .join(", ")});`,
+        );
       }
     }
   }

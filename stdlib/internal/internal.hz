@@ -1,15 +1,18 @@
 
+struct CString {
+}
+
 struct LogContext {
-  trace: (fmt: stringview, ...) => none;
-  info: (fmt: stringview, ...) => none;
-  debug: (fmt: stringview, ...) => none;
-  warn: (fmt: stringview, ...) => none;
-  error: (fmt: stringview, ...) => none;
+  trace: (fmt: str, ...) => none;
+  info: (fmt: str, ...) => none;
+  debug: (fmt: str, ...) => none;
+  warn: (fmt: str, ...) => none;
+  error: (fmt: str, ...) => none;
 }
 
 struct MemContext {
-  alloc: (size: u64) => RawPtr<none>;
-  globalDefaultArena: RawPtr<none>;
+  alloc: (size: u64) => none*;
+  globalDefaultArena: none*;
 }
 
 struct Context {

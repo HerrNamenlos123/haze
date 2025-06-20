@@ -513,13 +513,9 @@ function collectProg(cr: CollectResult, ast: ASTRoot) {
   }
 }
 
-export function CollectSymbols(ast: ASTRoot, rootLocation: SourceLoc) {
-  const cr: CollectResult = {
-    cInjections: [],
-    globalScope: new Collect.Scope(rootLocation),
-  };
+export function CollectSymbols(cr: CollectResult, ast: ASTRoot, rootLocation: SourceLoc) {
   collectProg(cr, ast);
-  return cr;
+  // PrettyPrintCollected(cr);
 }
 
 export function PrettyPrintCollected(cr: CollectResult) {

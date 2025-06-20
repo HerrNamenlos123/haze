@@ -1,3 +1,5 @@
+import { InternalError } from "./Errors";
+
 export type ID = bigint & {
   __nonZeroBrand?: never;
 };
@@ -8,8 +10,10 @@ let nextIdCounter = 0n;
 
 function assertId() {
   if (nextIdCounter >= ID_BASE) {
-    throw new Error(
+    throw new InternalError(
       "Ran out of parsed Symbol IDs - What did you do to make the program so huge???",
+      undefined,
+      2,
     );
   }
 }

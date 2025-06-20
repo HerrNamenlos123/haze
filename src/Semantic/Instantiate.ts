@@ -94,8 +94,18 @@ export function instantiateDatatype(
     // ◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆
     // ◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈
 
+    case "RawPointer": {
+      const pointee = instantiateSymbol(sr, type.pointee, genericContext);
+      const dt = sr.typeTable.makeDatatypeAvailable({
+        variant: "RawPointer",
+        pointee: pointee.id,
+        concrete: pointee.concrete,
+      });
+      return dt;
+    }
+
     default:
-      throw new ImpossibleSituation();
+      throw new InternalError("Unhandled variant: " + type.variant);
   }
 }
 

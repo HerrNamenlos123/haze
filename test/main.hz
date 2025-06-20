@@ -1,31 +1,93 @@
 
-a(i: RawPtr<i32>) {
-  i.ptr = 187;
-}
+// a(i: RawPtr<i32>) {
+//   i.ptr = 187;
+// }
 
-b(i: RawPtr<u64>) {
-  i.ptr = 204060;
-}
+// b(i: RawPtr<u64>) {
+//   i.ptr = 204060;
+// }
 
-c(i: RawPtr<boolean>) {
-  i.ptr = true;
-}
+// c(i: RawPtr<boolean>) {
+//   i.ptr = true;
+// }
 
-testArena() {
-  const one = ctx.mem.alloc(sizeof<i32>) as RawPtr<i32>;
-  const two = ctx.mem.alloc(sizeof<u64>) as RawPtr<u64>;
-  const three = ctx.mem.alloc(sizeof<boolean>) as RawPtr<boolean>;
-  a(one);
-  b(two);
-  c(three);
-  Console.print("Integer: %d\n", one.ptr);
-  Console.print("U: %lu\n", two.ptr);
-  Console.print("B: %d\n", three.ptr);
-}
+// testArena() {
+//   const one = ctx.mem.alloc(sizeof<i32>) as RawPtr<i32>;
+//   const two = ctx.mem.alloc(sizeof<u64>) as RawPtr<u64>;
+//   const three = ctx.mem.alloc(sizeof<boolean>) as RawPtr<boolean>;
+//   a(one);
+//   b(two);
+//   c(three);
+//   Console.print("Integer: %d\n", one.ptr);
+//   Console.print("U: %lu\n", two.ptr);
+//   Console.print("B: %d\n", three.ptr);
+// }
 
-main(args: List<String>): i32 {
-  // return TM2();
-  testArena();
-  return 0;
-}
+// main(args: List<String>): i32 {
+//   // return TM2();
+//   testArena();
+//   return 0;
+// }
 
+
+
+inject "#include <stdio.h>";
+
+// namespace A {
+//     export struct Wrapper<T> {
+//         value: T;
+
+//         get(): T => {
+//             return this.value;
+//         }
+//     }
+
+//     namespace B {
+//         export struct Wrapper<T> {
+//             value: A.Wrapper<T>;
+
+//             getInner(): T => {
+//                 return this.value.get();
+//             }
+//         }
+//     }
+// }
+
+// namespace C {
+//     export struct Processor<T> {
+//         wrap: A.B.Wrapper<T>;
+
+//         extract(): T => {
+//             return this.wrap.getInner();
+//         }
+//     }
+// }
+
+// namespace Main {
+//     main() => {
+//         let outer = A.Wrapper<i32> {
+//             .value: 123
+//         };
+
+//         let inner = A.B.Wrapper<i32> {
+//             .value: outer
+//         };
+
+//         let proc = C.Processor<i32> {
+//             .wrap: inner
+//         };
+
+//         let result = proc.extract();
+
+//         // Final check to ensure correct value is passed through all layers
+//         if (result == 123) {
+//             printf("Success: %d\n", result);
+//         } else {
+//             printf("Failure: %d\n", result);
+//         }
+//     }
+
+//     extern "C" printf(fmt: str, ...): none;
+// }
+
+main(): i32 => {}

@@ -30,12 +30,6 @@ namespace C {
     }
 }
 
-// foo(bar: i32): i32 => {
-//     return bar;
-// }
-
-foo(bar: i32*);
-
 namespace Main {
     main() => {
         let outer = A.Wrapper<i32> {

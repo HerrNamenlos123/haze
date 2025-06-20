@@ -152,6 +152,14 @@ export namespace Parser {
     return transformer.visit(ctx);
   }
 
+  export function parseTextToAST(text: string, filename: string) {
+    const ctx = parse(text, filename);
+    if (!ctx) {
+      return;
+    }
+    return transformAST(ctx, filename);
+  }
+
   export async function parseFileToAST(filename: string) {
     const ctx = await parseFile(filename);
     if (!ctx) {

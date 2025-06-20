@@ -428,6 +428,7 @@ export namespace Semantic {
           return [...this.datatypes.values()].find(
             (d) =>
               d.variant === "Struct" &&
+              d.name === datatype.name &&
               d.definedInNamespaceOrStruct === datatype.definedInNamespaceOrStruct &&
               d.genericSymbols.toString() === datatype.genericSymbols.toString(),
           ) as (Datatype & { id: ID }) | undefined;

@@ -91,22 +91,29 @@ function resolveType(lr: Lowered.Module, typeSymbolId: ID): ID {
     if (existing) return existing.id!;
 
     const id = makeLoweredId();
-    lr.datatypes.set(id, {
+    const struct: Lowered.StructDatatype = {
       id: id,
       variant: "Struct",
       name: type.name,
       generics: type.genericSymbols.map((id) => resolveType(lr, id)),
-      parent: lower(lr, getSymbol(lr.sr, type.definedInNamespaceOrStruct!)),
-      members: type.members.map((m) => {
-        const sym = getSymbol(lr.sr, m);
-        if (sym.variant !== "Variable") throw new ImpossibleSituation();
-        return {
-          name: sym.name,
-          type: resolveType(lr, sym.typeSymbol),
-        };
-      }),
+      parent:
+        (type.definedInNamespaceOrStruct &&
+          lower(lr, getSymbol(lr.sr, type.definedInNamespaceOrStruct))) ||
+        undefined,
+      members: [],
       semanticId: typeSymbolId,
+    };
+    lr.datatypes.set(id, struct);
+
+    struct.members = type.members.map((m) => {
+      const sym = getSymbol(lr.sr, m);
+      if (sym.variant !== "Variable") throw new ImpossibleSituation();
+      return {
+        name: sym.name,
+        type: resolveType(lr, sym.typeSymbol),
+      };
     });
+
     return id;
   } else if (type.variant === "Primitive") {
     const existing = [...lr.datatypes.values()].find(
@@ -322,20 +329,7 @@ function lower(lr: Lowered.Module, symbol: Semantic.Symbol): ID | undefined {
         }
 
         case "Function": {
-          const existing = [...lr.datatypes.values()].find(
-            (s) => s.variant === "Function" && s.semanticId === type.id,
-          );
-          if (existing) return existing.id!;
-          return makeDatatype(lr, {
-            variant: "Function",
-            parameters: type.functionParameters.map((p) => ({
-              name: p.name,
-              type: resolveType(lr, p.type),
-            })),
-            returnType: resolveType(lr, type.functionReturnValue),
-            semanticId: type.id!,
-            vararg: type.vararg,
-          });
+          return resolveType(lr, symbol.id!);
         }
 
         case "RawPointer": {
