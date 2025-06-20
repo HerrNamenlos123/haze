@@ -146,7 +146,12 @@ export namespace Lowered {
     sourceloc: SourceLoc;
   };
 
-  export type Datatype = StructDatatype | NamespaceDatatype | PrimitiveDatatype | FunctionDatatype;
+  export type Datatype =
+    | StructDatatype
+    | NamespaceDatatype
+    | PrimitiveDatatype
+    | FunctionDatatype
+    | RawPointerDatatype;
 
   export type NamespaceDatatype = {
     id?: ID;
@@ -154,6 +159,12 @@ export namespace Lowered {
     name: string;
     parent: ID;
     semanticId: ID;
+  };
+
+  export type RawPointerDatatype = {
+    id?: ID;
+    variant: "RawPointer";
+    pointee: ID;
   };
 
   export type PrimitiveDatatype = {

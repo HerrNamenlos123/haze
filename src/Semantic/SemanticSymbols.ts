@@ -37,6 +37,13 @@ export namespace Semantic {
     concrete: boolean;
   };
 
+  export type RawPointerDatatype = {
+    id?: ID;
+    variant: "RawPointer";
+    pointee: ID;
+    concrete: boolean;
+  };
+
   export type DeferredDatatype = {
     id?: ID;
     variant: "Deferred";
@@ -62,6 +69,7 @@ export namespace Semantic {
     | FunctionDatatype
     | DeferredDatatype
     | StructDatatype
+    | RawPointerDatatype
     | PrimitiveDatatype
     | NamespaceDatatype;
 
@@ -429,6 +437,11 @@ export namespace Semantic {
             | (Datatype & { id: ID })
             | undefined;
 
+        case "RawPointer":
+          return [...this.datatypes.values()].find(
+            (d) => d.variant === "RawPointer" && d.pointee === datatype.pointee,
+          ) as (Datatype & { id: ID }) | undefined;
+
         default:
           throw new InternalError("Unexpected symbol type");
       }
@@ -484,6 +497,7 @@ export namespace Semantic {
 }
 
 export function getType(sr: SemanticResult, id: ID) {
+  if (!id) throw new InternalError("ID is undefined", undefined, 1);
   const type = sr.typeTable.get(id);
   if (!type) {
     throw new InternalError("Type does not exist " + id);
@@ -492,6 +506,7 @@ export function getType(sr: SemanticResult, id: ID) {
 }
 
 export function getSymbol(sr: SemanticResult, id: ID): Semantic.Symbol & { id: ID } {
+  if (!id) throw new InternalError("ID is undefined", undefined, 1);
   const symbol = sr.symbolTable.get(id);
   if (!symbol) {
     throw new InternalError("Symbol does not exist " + id);
@@ -500,6 +515,7 @@ export function getSymbol(sr: SemanticResult, id: ID): Semantic.Symbol & { id: I
 }
 
 export function getTypeFromSymbol(sr: SemanticResult, id: ID): Semantic.Datatype & { id: ID } {
+  if (!id) throw new InternalError("ID is undefined", undefined, 1);
   const symbol = getSymbol(sr, id);
   if (!symbol.id) {
     throw new InternalError("Symbol id is null");

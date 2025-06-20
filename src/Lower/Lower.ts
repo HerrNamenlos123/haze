@@ -74,10 +74,14 @@ function lowerExpr(lr: Lowered.Module, expr: Semantic.Expression): Lowered.Expre
         })),
       };
     }
+
+    case "SymbolValueThisPointer": {
+    }
   }
 }
 
 function resolveType(lr: Lowered.Module, typeSymbolId: ID): ID {
+  if (!typeSymbolId) throw new InternalError("ID is undefined");
   const type = getTypeFromSymbol(lr.sr, typeSymbolId);
 
   if (type.variant === "Struct") {
@@ -133,6 +137,20 @@ function resolveType(lr: Lowered.Module, typeSymbolId: ID): ID {
       returnType: resolveType(lr, type.functionReturnValue),
       vararg: type.vararg,
       semanticId: typeSymbolId,
+    });
+    return id;
+  } else if (type.variant === "RawPointer") {
+    const pointee = resolveType(lr, type.pointee);
+    const existing = [...lr.datatypes.values()].find(
+      (s) => s.variant === "RawPointer" && s.pointee === pointee,
+    );
+    if (existing) return existing.id!;
+
+    const id = makeLoweredId();
+    lr.datatypes.set(id, {
+      id: id,
+      variant: "RawPointer",
+      pointee: pointee,
     });
     return id;
   } else {
@@ -318,6 +336,10 @@ function lower(lr: Lowered.Module, symbol: Semantic.Symbol): ID | undefined {
             semanticId: type.id!,
             vararg: type.vararg,
           });
+        }
+
+        case "RawPointer": {
+          return resolveType(lr, type.pointee);
         }
 
         default:

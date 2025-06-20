@@ -34,6 +34,7 @@ import {
   type ASTParenthesisExpr,
   type ASTPostIncrExpr,
   type ASTPreIncrExpr,
+  type ASTRawPointerDatatype,
   type ASTReturnStatement,
   type ASTRoot,
   type ASTScope,
@@ -81,6 +82,7 @@ import {
   PostIncrExprContext,
   PreIncrExprContext,
   ProgContext,
+  RawPointerDatatypeContext,
   ReturnStatementContext,
   ScopeContext,
   StringConstantContext,
@@ -815,6 +817,14 @@ class ASTTransformer extends HazeVisitor<any> {
       params: params.params,
       ellipsis: params.ellipsis,
       returnType: (ctx.datatype() && this.visit(ctx.datatype()!)) || undefined,
+      sourceloc: this.loc(ctx),
+    };
+  };
+
+  visitRawPointerDatatype = (ctx: RawPointerDatatypeContext): ASTRawPointerDatatype => {
+    return {
+      variant: "RawPointerDatatype",
+      pointee: this.visit(ctx.datatype()),
       sourceloc: this.loc(ctx),
     };
   };

@@ -542,6 +542,8 @@ export function PrettyPrintCollected(cr: CollectResult) {
       return s;
     } else if (datatype.variant === "Deferred") {
       return "_deferred_";
+    } else if (datatype.variant === "RawPointerDatatype") {
+      return serializeAstDatatype(datatype.pointee) + "*";
     } else {
       return datatype.value.toString();
     }

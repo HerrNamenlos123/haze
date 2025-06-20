@@ -6,12 +6,7 @@ import type { ID } from "../shared/store";
 import type { Collect } from "../SymbolCollection/CollectSymbols";
 import { elaborate } from "./Elaborate";
 import { instantiateDatatype } from "./Instantiate";
-import {
-  getSymbol,
-  getTypeFromSymbol,
-  type Semantic,
-  type SemanticResult,
-} from "./SemanticSymbols";
+import { getTypeFromSymbol, type Semantic, type SemanticResult } from "./SemanticSymbols";
 
 export function resolveDatatype(
   sr: SemanticResult,
@@ -63,6 +58,20 @@ export function resolveDatatype(
         functionParameters: parameters,
         generics: [],
         concrete: returnValue.concrete && paramsConcrete,
+      });
+      return sr.symbolTable.makeDatatypeSymbolAvailable(dt.id, dt.concrete);
+    }
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
+    case "RawPointerDatatype": {
+      const type = resolveDatatype(sr, scope, datatype.pointee, genericContext);
+      const dt = sr.typeTable.makeDatatypeAvailable({
+        variant: "RawPointer",
+        pointee: type.id,
+        concrete: type.concrete,
       });
       return sr.symbolTable.makeDatatypeSymbolAvailable(dt.id, dt.concrete);
     }

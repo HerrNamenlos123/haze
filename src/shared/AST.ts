@@ -159,6 +159,12 @@ export type ASTFunctionDatatype = {
   sourceloc: SourceLoc;
 };
 
+export type ASTRawPointerDatatype = {
+  variant: "RawPointerDatatype";
+  pointee: ASTDatatype;
+  sourceloc: SourceLoc;
+};
+
 export type ASTBooleanConstant = {
   variant: "BooleanConstant";
   value: boolean;
@@ -180,7 +186,11 @@ export type ASTStringConstant = {
 
 export type ASTConstant = ASTBooleanConstant | ASTNumberConstant | ASTStringConstant;
 
-export type ASTDatatype = ASTNamedDatatype | ASTFunctionDatatype | ASTDeferredType;
+export type ASTDatatype =
+  | ASTNamedDatatype
+  | ASTFunctionDatatype
+  | ASTDeferredType
+  | ASTRawPointerDatatype;
 
 export type ASTGlobalVariableDefinition = {
   variant: "GlobalVariableDefinition";

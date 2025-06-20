@@ -34,6 +34,8 @@ namespace C {
 //     return bar;
 // }
 
+foo(bar: i32*);
+
 namespace Main {
     main() => {
         let outer = A.Wrapper<i32> {

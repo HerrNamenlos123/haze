@@ -130,6 +130,12 @@ class CodeGenerator {
           );
         }
         this.out.type_definitions.popIndent().writeLine(`};`).writeLine();
+      } else if (symbol.variant === "RawPointer") {
+        this.out.type_definitions
+          .writeLine(
+            `typedef _H${this.emitDatatype(symbol.pointee)}* _H${this.emitDatatype(symbol)};`,
+          )
+          .writeLine();
       } else {
       }
     }
@@ -247,6 +253,10 @@ class CodeGenerator {
         );
       }
 
+      case "RawPointer": {
+        return "P" + this.emitDatatype(type.pointee);
+      }
+
       default:
         throw new InternalError("Unhandled variant: " + type.variant);
     }
@@ -264,7 +274,7 @@ class CodeGenerator {
         "_H" +
         this.mangleNestedName(symbol) +
         "(";
-      decl += type.parameters.map((p) => `${this.emitDatatype(p.type)} ${p.name}`).join(", ");
+      decl += type.parameters.map((p) => `_H${this.emitDatatype(p.type)} ${p.name}`).join(", ");
       if (type.vararg) {
         decl += ", ...";
       }
@@ -273,7 +283,7 @@ class CodeGenerator {
     };
 
     const decl = declaration(this.getType(symbol.type));
-    this.out.function_declarations.write(decl + ";");
+    this.out.function_declarations.writeLine(decl + ";");
 
     if (symbol.variant === "FunctionDefinition") {
       this.out.function_definitions.writeLine(decl + " {").pushIndent();
