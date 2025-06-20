@@ -35,6 +35,7 @@ import {
   type ASTPostIncrExpr,
   type ASTPreIncrExpr,
   type ASTRawPointerDatatype,
+  type ASTReferenceDatatype,
   type ASTReturnStatement,
   type ASTRoot,
   type ASTScope,
@@ -83,6 +84,7 @@ import {
   PreIncrExprContext,
   ProgContext,
   RawPointerDatatypeContext,
+  ReferenceDatatypeContext,
   ReturnStatementContext,
   ScopeContext,
   StringConstantContext,
@@ -815,6 +817,14 @@ class ASTTransformer extends HazeVisitor<any> {
       name: ctx.ID().getText(),
       sourceloc: this.loc(ctx),
       _semantic: {},
+    };
+  };
+
+  visitReferenceDatatype = (ctx: ReferenceDatatypeContext): ASTReferenceDatatype => {
+    return {
+      variant: "ReferenceDatatype",
+      referee: this.visit(ctx.datatype()),
+      sourceloc: this.loc(ctx),
     };
   };
 

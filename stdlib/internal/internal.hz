@@ -2,6 +2,11 @@
 struct CString {
 }
 
+struct Callable<TFunc> {
+  __this: none*;
+  fn: TFunc;
+}
+
 struct LogContext {
   trace: (fmt: str, ...) => none;
   info: (fmt: str, ...) => none;
@@ -19,3 +24,18 @@ struct Context {
   log: LogContext;
   mem: MemContext;
 };
+
+struct Foo {
+  value: i32;
+
+  get(): Foo => {
+    return 5;
+  }
+}
+
+foo() => {
+  const foo = Foo {
+    .value: 5,
+  };
+  const a = foo.get().get().get();
+}

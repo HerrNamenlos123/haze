@@ -1,7 +1,7 @@
 import { ImpossibleSituation, type SourceLoc } from "./Errors";
 import type { Collect } from "../SymbolCollection/CollectSymbols";
 import type { EMethodType } from "./common";
-import type { ID } from "./store";
+import type { SemanticSymbolId, SemanticTypeId } from "./store";
 
 export enum EExternLanguage {
   None,
@@ -109,7 +109,7 @@ export type ASTFunctionDeclaration = {
     method?: EMethodType;
   };
   _semantic: {
-    symbol?: ID;
+    symbol?: SemanticSymbolId;
   };
 };
 
@@ -130,7 +130,7 @@ export type ASTFunctionDefinition = {
     method?: EMethodType;
   };
   _semantic: {
-    symbol?: ID;
+    symbol?: SemanticSymbolId;
   };
 };
 
@@ -165,6 +165,12 @@ export type ASTRawPointerDatatype = {
   sourceloc: SourceLoc;
 };
 
+export type ASTReferenceDatatype = {
+  variant: "ReferenceDatatype";
+  referee: ASTDatatype;
+  sourceloc: SourceLoc;
+};
+
 export type ASTBooleanConstant = {
   variant: "BooleanConstant";
   value: boolean;
@@ -190,7 +196,8 @@ export type ASTDatatype =
   | ASTNamedDatatype
   | ASTFunctionDatatype
   | ASTDeferredType
-  | ASTRawPointerDatatype;
+  | ASTRawPointerDatatype
+  | ASTReferenceDatatype;
 
 export type ASTGlobalVariableDefinition = {
   variant: "GlobalVariableDefinition";
@@ -202,7 +209,7 @@ export type ASTGlobalVariableDefinition = {
   expr?: ASTExpr;
   sourceloc: SourceLoc;
   _semantic: {
-    symbol?: ID;
+    symbol?: SemanticSymbolId;
   };
 };
 
@@ -233,7 +240,7 @@ export type ASTVariableDefinitionStatement = {
   isParameter?: boolean;
   sourceloc: SourceLoc;
   _semantic: {
-    symbol?: ID;
+    symbol?: SemanticSymbolId;
   };
 };
 
@@ -437,8 +444,8 @@ export type ASTStructMethodDefinition = {
     definedInScope?: Collect.Scope;
   };
   _semantic: {
-    symbol?: ID;
-    memberOfSymbol?: ID;
+    symbol?: SemanticSymbolId;
+    memberOfSymbol?: SemanticSymbolId;
   };
 };
 
@@ -460,8 +467,8 @@ export type ASTStructDefinition = {
     scope?: Collect.Scope;
   };
   _semantic: {
-    type?: ID;
-    symbol?: ID;
+    type?: SemanticTypeId;
+    symbol?: SemanticSymbolId;
   };
 };
 

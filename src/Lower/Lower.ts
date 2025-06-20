@@ -7,7 +7,7 @@ import {
 } from "../Semantic/SemanticSymbols";
 import { EVariableContext } from "../shared/common";
 import { ImpossibleSituation, InternalError } from "../shared/Errors";
-import { makeLoweredId, type ID } from "../shared/store";
+import { makeLoweredId, type LoweredTypeId, type SemanticSymbolId } from "../shared/store";
 import type { CollectResult } from "../SymbolCollection/CollectSymbols";
 import type { Lowered } from "./LowerTypes";
 
@@ -75,14 +75,25 @@ function lowerExpr(lr: Lowered.Module, expr: Semantic.Expression): Lowered.Expre
       };
     }
 
-    case "SymbolValueThisPointer": {
+    case "CallableExpr": {
+      const funcSymbol = lower(lr, getSymbol(lr.sr, expr.functionSymbol));
+      if (!funcSymbol) throw new InternalError("Callable Function Symbol missing");
+      return {
+        variant: "Callable",
+        functionSymbol: funcSymbol,
+        thisExpr: lowerExpr(lr, expr.thisExpr),
+        type: resolveType(lr, expr.typeSymbol),
+      };
     }
+
+    default:
+      throw new InternalError("Unhandled variant: " + expr.variant);
   }
 }
 
-function resolveType(lr: Lowered.Module, typeSymbolId: ID): ID {
+function resolveType(lr: Lowered.Module, typeSymbolId: SemanticSymbolId): LoweredTypeId {
   if (!typeSymbolId) throw new InternalError("ID is undefined");
-  const type = getTypeFromSymbol(lr.sr, typeSymbolId);
+  const type = getTypeFromSymbol(lr.sr, typeSymbolId, 1);
 
   if (type.variant === "Struct") {
     const existing = [...lr.datatypes.values()].find(
@@ -160,6 +171,39 @@ function resolveType(lr: Lowered.Module, typeSymbolId: ID): ID {
       pointee: pointee,
     });
     return id;
+  } else if (type.variant === "Reference") {
+    const referee = resolveType(lr, type.referee);
+    const existing = [...lr.datatypes.values()].find(
+      (s) => s.variant === "Reference" && s.referee === referee,
+    );
+    if (existing) return existing.id!;
+
+    const id = makeLoweredId();
+    lr.datatypes.set(id, {
+      id: id,
+      variant: "Reference",
+      referee: referee,
+    });
+    return id;
+  } else if (type.variant === "Callable") {
+    const functionType = resolveType(lr, type.functionType);
+    const thisExprType = resolveType(lr, type.thisExprType);
+    const existing = [...lr.datatypes.values()].find(
+      (s) =>
+        s.variant === "Callable" &&
+        s.functionType === functionType &&
+        s.thisExprType === thisExprType,
+    );
+    if (existing) return existing.id!;
+
+    const id = makeLoweredId();
+    lr.datatypes.set(id, {
+      id: id,
+      variant: "Callable",
+      thisExprType: thisExprType,
+      functionType: functionType,
+    });
+    return id;
   } else {
     throw new InternalError("Unhandled variant: " + type.variant);
   }
@@ -211,6 +255,22 @@ function lowerStatement(lr: Lowered.Module, statement: Semantic.Statement): Lowe
       };
     }
 
+    case "ReturnStatement": {
+      return {
+        variant: "ReturnStatement",
+        expr: statement.expr && lowerExpr(lr, statement.expr),
+        sourceloc: statement.sourceloc,
+      };
+    }
+
+    case "InlineCStatement": {
+      return {
+        variant: "InlineCStatement",
+        value: statement.value,
+        sourceloc: statement.sourceloc,
+      };
+    }
+
     default:
       throw new InternalError("Unhandled case: " + statement.variant);
   }
@@ -226,7 +286,7 @@ function lowerScope(lr: Lowered.Module, semanticScope: Semantic.Scope): Lowered.
   return scope;
 }
 
-function lower(lr: Lowered.Module, symbol: Semantic.Symbol): ID | undefined {
+function lower(lr: Lowered.Module, symbol: Semantic.Symbol): LoweredTypeId | undefined {
   switch (symbol.variant) {
     case "FunctionDeclaration": {
       const existing = [...lr.functions.values()].find(
@@ -276,8 +336,22 @@ function lower(lr: Lowered.Module, symbol: Semantic.Symbol): ID | undefined {
         return id;
       } else {
         // Method
-        return undefined;
-        throw new InternalError("Not implemented yet");
+        const parent =
+          symbol.nestedParentTypeSymbol &&
+          lower(lr, getSymbol(lr.sr, symbol.nestedParentTypeSymbol));
+
+        const id = makeLoweredId();
+        lr.functions.set(id, {
+          id: id,
+          variant: "FunctionDefinition",
+          name: symbol.name,
+          parent: parent,
+          type: resolveType(lr, symbol.typeSymbol),
+          scope: lowerScope(lr, symbol.scope),
+          semanticId: symbol.id!,
+          sourceloc: symbol.sourceloc,
+        });
+        return id;
       }
     }
 
@@ -336,6 +410,14 @@ function lower(lr: Lowered.Module, symbol: Semantic.Symbol): ID | undefined {
           return resolveType(lr, type.pointee);
         }
 
+        case "Callable": {
+          return resolveType(lr, symbol.id!);
+        }
+
+        case "Reference": {
+          return resolveType(lr, symbol.id!);
+        }
+
         default:
           throw new InternalError("Unhandled variant: " + type.variant);
       }
@@ -353,10 +435,11 @@ function lower(lr: Lowered.Module, symbol: Semantic.Symbol): ID | undefined {
   }
 }
 
-function makeDatatype(lr: Lowered.Module, datatype: Lowered.Datatype): ID {
-  datatype.id = makeLoweredId();
-  lr.datatypes.set(datatype.id!, datatype);
-  return datatype.id!;
+function makeDatatype(lr: Lowered.Module, datatype: Lowered.DatatypeWithoutId): LoweredTypeId {
+  const _datatype = datatype as Lowered.Datatype;
+  _datatype.id = makeLoweredId();
+  lr.datatypes.set(_datatype.id, _datatype);
+  return _datatype.id;
 }
 
 export function LowerModule(cr: CollectResult, sr: SemanticResult): Lowered.Module {

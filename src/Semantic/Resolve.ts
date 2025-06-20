@@ -2,7 +2,6 @@ import { logger } from "../log/log";
 import { type ASTDatatype } from "../shared/AST";
 import { assertID, assertScope, stringToPrimitive } from "../shared/common";
 import { CompilerError, ImpossibleSituation, InternalError } from "../shared/Errors";
-import type { ID } from "../shared/store";
 import type { Collect } from "../SymbolCollection/CollectSymbols";
 import { elaborate } from "./Elaborate";
 import { instantiateDatatype } from "./Instantiate";
@@ -13,11 +12,11 @@ export function resolveDatatype(
   scope: Collect.Scope,
   datatype: ASTDatatype,
   genericContext: Semantic.GenericContext | null,
-): Semantic.Symbol & { id: ID } {
+): Semantic.Symbol {
   logger.trace("resolveDatatype()");
   if (!genericContext) {
     genericContext = {
-      symbolToSymbol: new Map<ID, ID>(),
+      symbolToSymbol: new Map(),
       elaborateCurrentStructOrNamespace: null,
       datatypesDone: new Map(),
     };
@@ -71,6 +70,20 @@ export function resolveDatatype(
       const dt = sr.typeTable.makeDatatypeAvailable({
         variant: "RawPointer",
         pointee: type.id,
+        concrete: type.concrete,
+      });
+      return sr.symbolTable.makeDatatypeSymbolAvailable(dt.id, dt.concrete);
+    }
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
+    case "ReferenceDatatype": {
+      const type = resolveDatatype(sr, scope, datatype.referee, genericContext);
+      const dt = sr.typeTable.makeDatatypeAvailable({
+        variant: "Reference",
+        referee: type.id,
         concrete: type.concrete,
       });
       return sr.symbolTable.makeDatatypeSymbolAvailable(dt.id, dt.concrete);

@@ -1,6 +1,6 @@
 import { InternalError } from "./Errors";
 import type { Collect } from "../SymbolCollection/CollectSymbols";
-import type { ID } from "./store";
+import type { SemanticSymbolId, SemanticTypeId } from "./store";
 
 export enum EPrimitive {
   none = 1,
@@ -105,7 +105,7 @@ export function assertScope(id: Collect.Scope | undefined) {
   return id;
 }
 
-export function assertID(id: ID | undefined) {
+export function assertID<T>(id: T | undefined) {
   if (!id) {
     throw new InternalError("ID is undefined!");
   }

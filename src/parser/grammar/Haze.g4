@@ -66,6 +66,7 @@ constant
 datatype
     : datatypeFragment ('.' datatypeFragment)*    #NamedDatatype
     | datatype '*'                                #RawPointerDatatype
+    | datatype '&'                                #ReferenceDatatype
     | '(' params ')' '=>' datatype                #FunctionDatatype
     ;
 

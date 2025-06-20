@@ -1,7 +1,15 @@
 import { CompilerError, InternalError, type SourceLoc } from "../shared/Errors";
 import type { ASTStructDefinition, EBinaryOperation, EExternLanguage } from "../shared/AST";
 import { EVariableContext, type EMethodType, type EPrimitive } from "../shared/common";
-import { makeScopeId, makeSymbolId, makeTypeId, type ID } from "../shared/store";
+import {
+  makeSemanticScopeId,
+  makeSemanticSymbolId,
+  makeSemanticTypeId,
+  type CollectScopeId,
+  type SemanticScopeId,
+  type SemanticSymbolId,
+  type SemanticTypeId,
+} from "../shared/store";
 import type { Collect } from "../SymbolCollection/CollectSymbols";
 
 export type SemanticResult = {
@@ -11,75 +19,102 @@ export type SemanticResult = {
 
 export namespace Semantic {
   export type FunctionDatatype = {
-    id?: ID;
+    id: SemanticTypeId;
     variant: "Function";
-    generics: ID[];
+    generics: SemanticSymbolId[];
     functionParameters: {
       name: string;
-      type: ID;
+      type: SemanticSymbolId;
     }[];
-    functionReturnValue: ID;
+    functionReturnValue: SemanticSymbolId;
     vararg: boolean;
     concrete: boolean;
   };
 
   export type StructDatatype = {
-    id?: ID;
+    id: SemanticTypeId;
     variant: "Struct";
     name: string;
     namespaces: string[];
     fullNamespacedName: string[];
-    genericSymbols: ID[];
+    genericSymbols: SemanticSymbolId[];
     externLanguage: EExternLanguage;
-    members: ID[];
-    methods: ID[];
-    definedInNamespaceOrStruct: ID | null;
+    members: SemanticSymbolId[];
+    methods: SemanticSymbolId[];
+    definedInNamespaceOrStruct: SemanticSymbolId | null;
     concrete: boolean;
   };
 
   export type RawPointerDatatype = {
-    id?: ID;
+    id: SemanticTypeId;
     variant: "RawPointer";
-    pointee: ID;
+    pointee: SemanticSymbolId;
+    concrete: boolean;
+  };
+
+  export type ReferenceDatatype = {
+    id: SemanticTypeId;
+    variant: "Reference";
+    referee: SemanticSymbolId;
+    concrete: boolean;
+  };
+
+  export type CallableDatatype = {
+    id: SemanticTypeId;
+    variant: "Callable";
+    thisExprType: SemanticSymbolId;
+    functionType: SemanticSymbolId;
     concrete: boolean;
   };
 
   export type DeferredDatatype = {
-    id?: ID;
+    id: SemanticTypeId;
     variant: "Deferred";
     concrete: boolean;
   };
 
   export type PrimitiveDatatype = {
-    id?: ID;
+    id: SemanticTypeId;
     variant: "Primitive";
     primitive: EPrimitive;
     concrete: boolean;
   };
 
   export type NamespaceDatatype = {
-    id?: ID;
+    id: SemanticTypeId;
     variant: "Namespace";
     name: string;
-    nestedParentTypeSymbol?: ID;
+    nestedParentTypeSymbol?: SemanticSymbolId;
     concrete: boolean;
   };
 
   export type Datatype =
     | FunctionDatatype
     | DeferredDatatype
+    | CallableDatatype
     | StructDatatype
     | RawPointerDatatype
+    | ReferenceDatatype
     | PrimitiveDatatype
     | NamespaceDatatype;
 
+  export type DatatypeWithoutId =
+    | (Omit<FunctionDatatype, "id"> & { variant: "Function" })
+    | (Omit<DeferredDatatype, "id"> & { variant: "Deferred" })
+    | (Omit<CallableDatatype, "id"> & { variant: "Callable" })
+    | (Omit<StructDatatype, "id"> & { variant: "Struct" })
+    | (Omit<RawPointerDatatype, "id"> & { variant: "RawPointer" })
+    | (Omit<ReferenceDatatype, "id"> & { variant: "Reference" })
+    | (Omit<PrimitiveDatatype, "id"> & { variant: "Primitive" })
+    | (Omit<NamespaceDatatype, "id"> & { variant: "Namespace" });
+
   export type VariableSymbol = {
-    id?: ID;
+    id: SemanticSymbolId;
     variant: "Variable";
     name: string;
-    memberOfType?: ID;
-    typeSymbol: ID;
-    definedInCollectorScope: ID;
+    memberOfType?: SemanticTypeId;
+    typeSymbol: SemanticSymbolId;
+    definedInScope: CollectScopeId | SemanticScopeId;
     mutable: boolean;
     export: boolean;
     externLanguage: EExternLanguage;
@@ -89,7 +124,7 @@ export namespace Semantic {
   };
 
   export type GenericParameterSymbol = {
-    id?: ID;
+    id: SemanticSymbolId;
     variant: "GenericParameter";
     name: string;
     belongsToStruct: string[];
@@ -98,47 +133,47 @@ export namespace Semantic {
   };
 
   export type FunctionDefinitionSymbol = {
-    id?: ID;
+    id: SemanticSymbolId;
     variant: "FunctionDefinition";
     name: string;
-    typeSymbol: ID;
+    typeSymbol: SemanticSymbolId;
     externLanguage: EExternLanguage;
     scope: Semantic.Scope;
     export: boolean;
     method: EMethodType;
-    methodOfSymbol?: ID;
+    methodOfSymbol?: SemanticSymbolId;
     sourceloc: SourceLoc;
-    nestedParentTypeSymbol?: ID;
+    nestedParentTypeSymbol?: SemanticSymbolId;
     concrete: boolean;
   };
 
   export type FunctionDeclarationSymbol = {
-    id?: ID;
+    id: SemanticSymbolId;
     variant: "FunctionDeclaration";
     name: string;
-    typeSymbol: ID;
+    typeSymbol: SemanticSymbolId;
     externLanguage: EExternLanguage;
     export: boolean;
     method: EMethodType;
     sourceloc: SourceLoc;
-    nestedParentTypeSymbol?: ID;
+    nestedParentTypeSymbol?: SemanticSymbolId;
     concrete: boolean;
   };
 
   export type DatatypeSymbol = {
-    id?: ID;
+    id: SemanticSymbolId;
     variant: "Datatype";
-    type: ID;
+    type: SemanticTypeId;
     export: boolean;
     concrete: boolean;
   };
 
   export type NamespaceSymbol = {
-    id?: ID;
+    id: SemanticSymbolId;
     variant: "Namespace";
     name: string;
-    declarations: ID[];
-    nestedParentTypeSymbol: ID | null;
+    declarations: SemanticSymbolId[];
+    nestedParentTypeSymbol: SemanticSymbolId | null;
     concrete: boolean;
   };
 
@@ -150,23 +185,38 @@ export namespace Semantic {
     | DatatypeSymbol
     | NamespaceSymbol;
 
+  export type SymbolWithoutId =
+    | (Omit<VariableSymbol, "id"> & { variant: "Variable" })
+    | (Omit<GenericParameterSymbol, "id"> & { variant: "GenericParameter" })
+    | (Omit<FunctionDefinitionSymbol, "id"> & { variant: "FunctionDefinition" })
+    | (Omit<FunctionDeclarationSymbol, "id"> & { variant: "FunctionDeclaration" })
+    | (Omit<DatatypeSymbol, "id"> & { variant: "Datatype" })
+    | (Omit<NamespaceSymbol, "id"> & { variant: "Namespace" });
+
   export type ExprMemberAccessExpr = {
     variant: "ExprMemberAccess";
     expr: Expression;
-    method?: ID;
+    method?: SemanticSymbolId;
     memberName: string;
-    typeSymbol: ID;
+    typeSymbol: SemanticSymbolId;
+  };
+
+  export type CallableExpr = {
+    variant: "CallableExpr";
+    thisExpr: Expression;
+    functionSymbol: SemanticSymbolId;
+    typeSymbol: SemanticSymbolId;
   };
 
   export type SymbolValueExpr = {
     variant: "SymbolValue";
-    symbol: ID;
-    typeSymbol: ID;
+    symbol: SemanticSymbolId;
+    typeSymbol: SemanticSymbolId;
   };
 
   export type SymbolValueThisPtrExpr = {
     variant: "SymbolValueThisPointer";
-    typeSymbol: ID;
+    typeSymbol: SemanticSymbolId;
   };
 
   export type BinaryExpr = {
@@ -174,14 +224,14 @@ export namespace Semantic {
     left: Expression;
     right: Expression;
     operation: EBinaryOperation;
-    typeSymbol: ID;
+    typeSymbol: SemanticSymbolId;
   };
 
   export type ExprCallExpr = {
     variant: "ExprCall";
     calledExpr: Expression;
     arguments: Expression[];
-    typeSymbol: ID;
+    typeSymbol: SemanticSymbolId;
   };
 
   export type StructInstantiationExpr = {
@@ -190,13 +240,13 @@ export namespace Semantic {
       name: string;
       value: Expression;
     }[];
-    typeSymbol: ID;
+    typeSymbol: SemanticSymbolId;
   };
 
   export type ConstantExpr = {
     variant: "Constant";
     value: number | string | boolean;
-    typeSymbol: ID;
+    typeSymbol: SemanticSymbolId;
   };
 
   export type Expression =
@@ -204,6 +254,7 @@ export namespace Semantic {
     | SymbolValueExpr
     | SymbolValueThisPtrExpr
     | BinaryExpr
+    | CallableExpr
     | ExprCallExpr
     | StructInstantiationExpr
     | ConstantExpr;
@@ -244,7 +295,7 @@ export namespace Semantic {
     name: string;
     value?: Expression;
     mutable: boolean;
-    variableSymbol: ID;
+    variableSymbol: SemanticSymbolId;
     sourceloc: SourceLoc;
   };
 
@@ -263,33 +314,34 @@ export namespace Semantic {
     | ExprStatement;
 
   export class SymbolTable {
-    private symbols: Map<ID, Symbol> = new Map();
+    private symbols: Map<SemanticSymbolId, Symbol> = new Map();
 
     constructor() {}
 
-    defineSymbol(symbol: Symbol): Symbol & { id: ID } {
-      symbol.id = makeSymbolId();
-      this.symbols.set(symbol.id, symbol);
-      return symbol as Symbol & { id: ID };
+    defineSymbol(symbol: SymbolWithoutId): Symbol {
+      const _symbol = symbol as Symbol;
+      _symbol.id = makeSemanticSymbolId();
+      this.symbols.set(_symbol.id, _symbol);
+      return _symbol;
     }
 
     getAll() {
       return this.symbols;
     }
 
-    get(id: ID) {
+    get(id: SemanticSymbolId, errorPropagationSteps = 0) {
       const s = this.symbols.get(id);
       if (!s) {
         throw new InternalError(
           "Symbol with id " + id + " does not exist in symbol table",
           undefined,
-          1,
+          errorPropagationSteps + 1,
         );
       }
       return s;
     }
 
-    makeSymbolAvailable(symbol: Symbol) {
+    makeSymbolAvailable(symbol: SymbolWithoutId) {
       const s = this.findSymbol(symbol);
       if (s) {
         return s;
@@ -298,7 +350,7 @@ export namespace Semantic {
       }
     }
 
-    makeDatatypeSymbolAvailable(datatype: ID, concrete: boolean) {
+    makeDatatypeSymbolAvailable(datatype: SemanticTypeId, concrete: boolean) {
       return this.makeSymbolAvailable({
         variant: "Datatype",
         export: false,
@@ -307,12 +359,12 @@ export namespace Semantic {
       });
     }
 
-    findSymbol(symbol: Symbol): (Symbol & { id: ID }) | undefined {
+    findSymbol(symbol: SymbolWithoutId): Symbol | undefined {
       switch (symbol.variant) {
         case "Datatype":
           return [...this.symbols.values()].find(
             (s) => s.variant === "Datatype" && s.type === symbol.type,
-          ) as (Symbol & { id: ID }) | undefined;
+          );
 
         case "Variable":
           return [...this.symbols.values()].find(
@@ -320,8 +372,8 @@ export namespace Semantic {
               s.variant === "Variable" &&
               s.name === symbol.name &&
               s.memberOfType === symbol.memberOfType &&
-              s.definedInCollectorScope === symbol.definedInCollectorScope,
-          ) as (Symbol & { id: ID }) | undefined;
+              s.definedInScope === symbol.definedInScope,
+          );
 
         case "GenericParameter":
           return [...this.symbols.values()].find(
@@ -329,7 +381,7 @@ export namespace Semantic {
               s.variant === "GenericParameter" &&
               s.name === symbol.name &&
               s.belongsToStruct.toString() === symbol.belongsToStruct.toString(),
-          ) as (Symbol & { id: ID }) | undefined;
+          );
 
         case "FunctionDefinition":
           return [...this.symbols.values()].find(
@@ -337,7 +389,7 @@ export namespace Semantic {
               s.variant === "FunctionDefinition" &&
               s.name === symbol.name &&
               s.nestedParentTypeSymbol === symbol.nestedParentTypeSymbol,
-          ) as (Symbol & { id: ID }) | undefined;
+          );
 
         case "FunctionDeclaration":
           return [...this.symbols.values()].find(
@@ -345,7 +397,7 @@ export namespace Semantic {
               s.variant === "FunctionDeclaration" &&
               s.name === symbol.name &&
               s.nestedParentTypeSymbol === symbol.nestedParentTypeSymbol,
-          ) as (Symbol & { id: ID }) | undefined;
+          );
 
         case "Namespace":
           return [...this.symbols.values()].find(
@@ -353,7 +405,7 @@ export namespace Semantic {
               s.variant === "Namespace" &&
               s.name === symbol.name &&
               s.nestedParentTypeSymbol === symbol.nestedParentTypeSymbol,
-          ) as (Symbol & { id: ID }) | undefined;
+          );
 
         default:
           throw new InternalError("Unexpected symbol type");
@@ -378,20 +430,21 @@ export namespace Semantic {
   }
 
   export class TypeTable {
-    private datatypes: Map<ID, Datatype> = new Map();
+    private datatypes: Map<SemanticTypeId, Datatype> = new Map();
 
     constructor() {}
 
-    defineDatatype(datatype: Datatype): Datatype & { id: ID } {
+    defineDatatype(datatype: DatatypeWithoutId): Datatype {
       if (this.exists(datatype)) {
         throw new InternalError(`Symbol already exists in symbol table`);
       }
-      datatype.id = makeTypeId();
-      this.datatypes.set(datatype.id, datatype);
-      return datatype as Datatype & { id: ID };
+      const _datatype = datatype as Datatype;
+      _datatype.id = makeSemanticTypeId();
+      this.datatypes.set(_datatype.id, _datatype);
+      return _datatype;
     }
 
-    exists(datatype: Datatype) {
+    exists(datatype: DatatypeWithoutId) {
       return Boolean(this.findDatatype(datatype));
     }
 
@@ -399,15 +452,19 @@ export namespace Semantic {
       return this.datatypes;
     }
 
-    get(id: ID) {
+    get(id: SemanticTypeId, errorPropagationSteps = 0) {
       const s = this.datatypes.get(id);
       if (!s) {
-        throw new InternalError("Type with id " + id + " does not exist in type table");
+        throw new InternalError(
+          "Type with id " + id + " does not exist in type table",
+          undefined,
+          1 + errorPropagationSteps,
+        );
       }
       return s;
     }
 
-    findDatatype(datatype: Datatype): (Datatype & { id: ID }) | undefined {
+    findDatatype(datatype: DatatypeWithoutId) {
       switch (datatype.variant) {
         case "Function":
           return [...this.datatypes.values()].find(
@@ -417,12 +474,12 @@ export namespace Semantic {
               f.functionReturnValue === datatype.functionReturnValue &&
               f.generics.toString() === datatype.generics.toString() &&
               f.vararg === datatype.vararg,
-          ) as (Datatype & { id: ID }) | undefined;
+          );
 
         case "Primitive":
           return [...this.datatypes.values()].find(
             (d) => d.variant === "Primitive" && d.primitive === datatype.primitive,
-          ) as (Datatype & { id: ID }) | undefined;
+          );
 
         case "Struct":
           return [...this.datatypes.values()].find(
@@ -431,24 +488,36 @@ export namespace Semantic {
               d.name === datatype.name &&
               d.definedInNamespaceOrStruct === datatype.definedInNamespaceOrStruct &&
               d.genericSymbols.toString() === datatype.genericSymbols.toString(),
-          ) as (Datatype & { id: ID }) | undefined;
+          );
 
         case "Deferred":
-          return [...this.datatypes.values()].find((d) => d.variant === "Deferred") as
-            | (Datatype & { id: ID })
-            | undefined;
+          return [...this.datatypes.values()].find((d) => d.variant === "Deferred");
 
         case "RawPointer":
           return [...this.datatypes.values()].find(
             (d) => d.variant === "RawPointer" && d.pointee === datatype.pointee,
-          ) as (Datatype & { id: ID }) | undefined;
+          );
+
+        case "Reference":
+          return [...this.datatypes.values()].find(
+            (d) => d.variant === "Reference" && d.referee === datatype.referee,
+          );
+
+        case "Callable": {
+          return [...this.datatypes.values()].find(
+            (d) =>
+              d.variant === "Callable" &&
+              d.functionType === datatype.functionType &&
+              d.thisExprType === datatype.thisExprType,
+          );
+        }
 
         default:
           throw new InternalError("Unexpected symbol type");
       }
     }
 
-    makeDatatypeAvailable(datatype: Datatype) {
+    makeDatatypeAvailable(datatype: DatatypeWithoutId) {
       const dt = this.findDatatype(datatype);
       if (dt) {
         return dt;
@@ -475,53 +544,57 @@ export namespace Semantic {
   }
 
   export class Scope {
-    public id: ID;
+    public id: SemanticScopeId;
     public statements: Semantic.Statement[] = [];
     public symbolTable: SymbolTable;
-    public returnedTypes: (ID | undefined)[] = [];
+    public returnedTypes: (SemanticSymbolId | undefined)[] = [];
 
     constructor(
       public sourceloc: SourceLoc,
       public collectScope: Collect.Scope,
       public parentScope?: Scope,
     ) {
-      this.id = makeScopeId();
+      this.id = makeSemanticScopeId();
       this.symbolTable = new SymbolTable();
     }
   }
 
   export type GenericContext = {
-    symbolToSymbol: Map<ID, ID>;
-    elaborateCurrentStructOrNamespace?: ID | null;
-    datatypesDone: Map<ID, ID>;
+    symbolToSymbol: Map<SemanticSymbolId, SemanticSymbolId>;
+    elaborateCurrentStructOrNamespace?: SemanticSymbolId | null;
+    datatypesDone: Map<SemanticTypeId, SemanticTypeId>;
   };
 }
 
-export function getType(sr: SemanticResult, id: ID) {
+export function getType(sr: SemanticResult, id: SemanticTypeId) {
   if (!id) throw new InternalError("ID is undefined", undefined, 1);
-  const type = sr.typeTable.get(id);
+  const type = sr.typeTable.get(id, 1);
   if (!type) {
     throw new InternalError("Type does not exist " + id);
   }
   return type;
 }
 
-export function getSymbol(sr: SemanticResult, id: ID): Semantic.Symbol & { id: ID } {
+export function getSymbol(sr: SemanticResult, id: SemanticSymbolId, errorPropagationSteps = 0) {
   if (!id) throw new InternalError("ID is undefined", undefined, 1);
-  const symbol = sr.symbolTable.get(id);
+  const symbol = sr.symbolTable.get(id, 1 + errorPropagationSteps);
   if (!symbol) {
     throw new InternalError("Symbol does not exist " + id);
   }
-  return symbol as Semantic.Symbol & { id: ID };
+  return symbol;
 }
 
-export function getTypeFromSymbol(sr: SemanticResult, id: ID): Semantic.Datatype & { id: ID } {
-  if (!id) throw new InternalError("ID is undefined", undefined, 1);
-  const symbol = getSymbol(sr, id);
+export function getTypeFromSymbol(
+  sr: SemanticResult,
+  id: SemanticSymbolId,
+  errorPropagationSteps = 0,
+) {
+  if (!id) throw new InternalError("ID is undefined", undefined, 1 + errorPropagationSteps);
+  const symbol = getSymbol(sr, id, 1 + errorPropagationSteps);
   if (!symbol.id) {
     throw new InternalError("Symbol id is null");
   }
   if (symbol.variant !== "Datatype")
     return sr.typeTable.makeDatatypeAvailable({ variant: "Deferred", concrete: false });
-  return getType(sr, symbol.type) as Semantic.Datatype & { id: ID };
+  return getType(sr, symbol.type);
 }

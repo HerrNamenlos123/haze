@@ -9,7 +9,12 @@ import type {
   ASTStructMethodDefinition,
   ASTVariableDefinitionStatement,
 } from "../shared/AST";
-import { makeScopeId, type ID } from "../shared/store";
+import {
+  makeCollectScopeId,
+  makeSemanticScopeId,
+  type CollectScopeId,
+  type SemanticSymbolId,
+} from "../shared/store";
 
 export type CollectResult = {
   globalScope: Collect.Scope;
@@ -72,18 +77,18 @@ export namespace Collect {
   }
 
   export class Scope {
-    public id: ID;
+    public id: CollectScopeId;
     public statements: ASTStatement[] = [];
     public symbolTable: SymbolTable;
     public _semantic: {
-      forFunctionSymbol?: ID;
+      forFunctionSymbol?: SemanticSymbolId;
     } = {};
 
     constructor(
       public sourceloc: SourceLoc,
       public parentScope?: Scope,
     ) {
-      this.id = makeScopeId();
+      this.id = makeCollectScopeId();
       this.symbolTable = new SymbolTable(parentScope?.symbolTable);
     }
   }

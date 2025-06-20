@@ -1,8 +1,14 @@
 import { InternalError } from "./Errors";
 
-export type ID = bigint & {
+type ID = bigint & {
   __nonZeroBrand?: never;
 };
+
+export type CollectScopeId = ID & { __brand: "CollectScopeId" };
+export type SemanticTypeId = ID & { __brand: "SemanticTypeId" };
+export type SemanticSymbolId = ID & { __brand: "SemanticSymbolId" };
+export type SemanticScopeId = ID & { __brand: "SemanticScopeId" };
+export type LoweredTypeId = ID & { __brand: "LoweredTypeId" };
 
 // const ID_BASE = 10n ** 18n;
 const ID_BASE = 10n ** 3n;
@@ -23,18 +29,22 @@ function makeId(namespace: number): ID {
   return (nextIdCounter++ + ID_BASE * BigInt(namespace)) as ID;
 }
 
-export function makeTypeId() {
-  return makeId(1);
+export function makeCollectScopeId() {
+  return makeId(1) as CollectScopeId;
 }
 
-export function makeSymbolId() {
-  return makeId(2);
+export function makeSemanticTypeId() {
+  return makeId(2) as SemanticTypeId;
 }
 
-export function makeScopeId() {
-  return makeId(3);
+export function makeSemanticSymbolId() {
+  return makeId(3) as SemanticSymbolId;
+}
+
+export function makeSemanticScopeId() {
+  return makeId(4) as SemanticScopeId;
 }
 
 export function makeLoweredId() {
-  return makeId(4);
+  return makeId(5) as LoweredTypeId;
 }

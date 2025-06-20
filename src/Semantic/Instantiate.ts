@@ -1,14 +1,13 @@
 import { logger } from "../log/log";
 import { ImpossibleSituation, InternalError } from "../shared/Errors";
-import type { ID } from "../shared/store";
-import { PrettyPrintAnalyzed } from "./Elaborate";
+import type { SemanticSymbolId, SemanticTypeId } from "../shared/store";
 import { getType, getTypeFromSymbol, type Semantic, type SemanticResult } from "./SemanticSymbols";
 
 export function instantiateDatatype(
   sr: SemanticResult,
-  id: ID,
+  id: SemanticTypeId,
   genericContext: Semantic.GenericContext,
-): Semantic.Datatype & { id: ID } {
+): Semantic.Datatype {
   logger.trace("instantiateDatatype()");
   const type = sr.typeTable.get(id);
   if (!type.id) throw new ImpossibleSituation();
@@ -45,7 +44,7 @@ export function instantiateDatatype(
     // ◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈
 
     case "Primitive":
-      return type as Semantic.Datatype & { id: ID };
+      return type;
 
     // ◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈
     // ◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆
@@ -54,7 +53,7 @@ export function instantiateDatatype(
     case "Struct": {
       if (genericContext.datatypesDone.has(type.id)) {
         const struct = getType(sr, genericContext.datatypesDone.get(type.id)!);
-        return struct as Semantic.Datatype & { id: ID };
+        return struct;
       }
 
       const struct = sr.typeTable.makeDatatypeAvailable({
@@ -73,7 +72,8 @@ export function instantiateDatatype(
 
       struct.members = type.members.map((m) => {
         const sym = instantiateSymbol(sr, m, genericContext, {
-          newParentSymbol: struct.id,
+          newParentSymbol: sr.symbolTable.makeDatatypeSymbolAvailable(struct.id, struct.concrete)
+            .id,
         });
         if (!sym.concrete) struct.concrete = false;
         return sym.id;
@@ -81,13 +81,14 @@ export function instantiateDatatype(
 
       struct.methods = type.methods.map((m) => {
         const sym = instantiateSymbol(sr, m, genericContext, {
-          newParentSymbol: struct.id,
+          newParentSymbol: sr.symbolTable.makeDatatypeSymbolAvailable(struct.id, struct.concrete)
+            .id,
         });
         if (!sym.concrete) struct.concrete = false;
         return sym.id;
       });
 
-      return struct as Semantic.Datatype & { id: ID };
+      return struct;
     }
 
     // ◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈
@@ -104,6 +105,24 @@ export function instantiateDatatype(
       return dt;
     }
 
+    // ◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈
+    // ◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆
+    // ◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈
+
+    case "Reference": {
+      const pointee = instantiateSymbol(sr, type.referee, genericContext);
+      const dt = sr.typeTable.makeDatatypeAvailable({
+        variant: "Reference",
+        referee: pointee.id,
+        concrete: pointee.concrete,
+      });
+      return dt;
+    }
+
+    // ◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈
+    // ◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆
+    // ◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈
+
     default:
       throw new InternalError("Unhandled variant: " + type.variant);
   }
@@ -111,12 +130,12 @@ export function instantiateDatatype(
 
 export function instantiateSymbol(
   sr: SemanticResult,
-  id: ID,
+  id: SemanticSymbolId,
   genericContext: Semantic.GenericContext,
   meta?: {
-    newParentSymbol?: ID;
+    newParentSymbol?: SemanticSymbolId;
   },
-): Semantic.Symbol & { id: ID } {
+): Semantic.Symbol {
   logger.trace("instantiateSymbol() ");
   const symbol = sr.symbolTable.get(id);
 
@@ -136,8 +155,8 @@ export function instantiateSymbol(
         mutable: symbol.mutable,
         sourceLoc: symbol.sourceLoc,
         typeSymbol: typeSym.id,
-        memberOfType: meta?.newParentSymbol,
-        definedInCollectorScope: symbol.definedInCollectorScope,
+        memberOfType: meta?.newParentSymbol && getTypeFromSymbol(sr, meta.newParentSymbol).id,
+        definedInScope: symbol.definedInScope,
         concrete: typeSym.concrete,
         variableContext: symbol.variableContext,
       });
@@ -172,7 +191,7 @@ export function instantiateSymbol(
         }
         return instantiateSymbol(sr, mappedTo, genericContext);
       } else {
-        return symbol as Semantic.Symbol & { id: ID };
+        return symbol as Semantic.Symbol;
       }
     }
 
