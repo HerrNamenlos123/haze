@@ -57,8 +57,6 @@ export function instantiateDatatype(
         return struct as Semantic.Datatype & { id: ID };
       }
 
-      console.log("Make struct", type);
-      PrettyPrintAnalyzed(sr);
       const struct = sr.typeTable.makeDatatypeAvailable({
         variant: "Struct",
         name: type.name,

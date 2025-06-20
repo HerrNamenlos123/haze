@@ -15,24 +15,26 @@ export class OutputWriter {
   }
 
   write(value: string | OutputWriter) {
-    if (value instanceof OutputWriter) {
-      const lines = value
-        .get()
-        .split("\n")
-        .filter((line) => line !== "");
-      for (const line of lines) {
-        this.writeLine(line);
-      }
-    } else {
-      this.content += "  ".repeat(this.indent) + value;
+    const raw = value instanceof OutputWriter ? value.get() : value;
+
+    // Match all lines, including empty ones, preserving the newline characters
+    const lines = raw.match(/[^\n]*\n?|$/g);
+    for (const line of lines || []) {
+      if (line === "") continue; // avoid trailing empty match
+      this.content += "  ".repeat(this.indent) + line;
     }
+
     return this;
   }
 
   writeLine(value: string | OutputWriter = "") {
-    this.write(value);
-    this.write("\n");
-    return this;
+    // If it doesn't already end in \n, we add one
+    if (value instanceof OutputWriter) {
+      const raw = value.get();
+      return this.write(raw.endsWith("\n") ? value : raw + "\n");
+    } else {
+      return this.write(value.endsWith("\n") ? value : value + "\n");
+    }
   }
 
   get() {

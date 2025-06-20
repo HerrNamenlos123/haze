@@ -2,7 +2,7 @@ import type { Lowered } from "../Lower/LowerTypes";
 import type { Module } from "../Module";
 import type { Semantic } from "../Semantic/SemanticSymbols";
 import { BinaryOperationToString, EBinaryOperation } from "../shared/AST";
-import { EVariableContext, primitiveToString } from "../shared/common";
+import { EPrimitive, EVariableContext, primitiveToString } from "../shared/common";
 import { ModuleType } from "../shared/Config";
 import { ImpossibleSituation, InternalError, printWarningMessage } from "../shared/Errors";
 import type { ID } from "../shared/store";
@@ -113,9 +113,57 @@ class CodeGenerator {
       this.emitFunction(symbol);
     }
 
-    // for (const dt of this.module.concreteDatatypes.values()) {
-    //   this.generateDatatypeUse(dt);
-    // }
+    // console.log(this.lr.datatypes);
+    for (const [id, symbol] of this.lr.datatypes) {
+      if (symbol.variant === "Namespace") {
+      } else if (symbol.variant === "Primitive") {
+        this.out.type_declarations.writeLine(
+          `typedef ${this.primitiveToC(symbol.primitive)} _H${this.emitDatatype(symbol)};`,
+        );
+      } else if (symbol.variant === "Struct") {
+        const dt = this.emitDatatype(symbol);
+        this.out.type_declarations.writeLine(`typedef struct _H${dt} _H${dt};`);
+        this.out.type_definitions.writeLine(`struct _H${dt} {`).pushIndent();
+        for (const member of symbol.members) {
+          this.out.type_definitions.writeLine(
+            `_H${this.emitDatatype(member.type)} ${member.name};`,
+          );
+        }
+        this.out.type_definitions.popIndent().writeLine(`};`).writeLine();
+      } else {
+      }
+    }
+  }
+
+  primitiveToC(primitive: EPrimitive) {
+    switch (primitive) {
+      case EPrimitive.boolean:
+        return "bool";
+      case EPrimitive.f32:
+        return "float";
+      case EPrimitive.f64:
+        return "double";
+      case EPrimitive.i16:
+        return "int16_t";
+      case EPrimitive.i32:
+        return "int32_t";
+      case EPrimitive.i64:
+        return "int64_t";
+      case EPrimitive.i8:
+        return "int8_t";
+      case EPrimitive.u16:
+        return "uint16_t";
+      case EPrimitive.u32:
+        return "uint32_t";
+      case EPrimitive.u64:
+        return "uint64_t";
+      case EPrimitive.u8:
+        return "uint8_t";
+      case EPrimitive.none:
+        return "void";
+      case EPrimitive.str:
+        return "const char*";
+    }
   }
 
   mangleNestedName(
@@ -176,6 +224,7 @@ class CodeGenerator {
 
   emitDatatype(idOrType: ID | Lowered.Datatype): string {
     const type = typeof idOrType === "bigint" ? this.getType(idOrType) : idOrType;
+    if (!type) throw new InternalError("Type not found: " + idOrType, undefined, 1);
     switch (type.variant) {
       case "Struct": {
         return this.mangleNestedName(type);
@@ -187,6 +236,15 @@ class CodeGenerator {
       case "Primitive": {
         const name = primitiveToString(type.primitive);
         return name.length + name;
+      }
+
+      case "Function": {
+        return (
+          "F" +
+          type.parameters.map((p) => this.emitDatatype(p.type)).join("") +
+          "E" +
+          this.emitDatatype(type.returnType)
+        );
       }
 
       default:
@@ -224,7 +282,7 @@ class CodeGenerator {
       this.out.function_definitions.write(s.temp);
       this.out.function_definitions.write(s.out);
 
-      this.out.function_definitions.popIndent().writeLine("}");
+      this.out.function_definitions.popIndent().writeLine("}").writeLine();
     }
   }
 
@@ -289,7 +347,7 @@ class CodeGenerator {
         if (statement.value) {
           const exprWriter = this.emitExpr(statement.value);
           tempWriter.write(exprWriter.temp);
-          outWriter.write(` = ${exprWriter.out.get()};`);
+          outWriter.writeLine(` = ${exprWriter.out.get()};`);
         } else {
           outWriter.writeLine(` = {0};`);
         }

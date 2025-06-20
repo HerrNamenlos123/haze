@@ -1,10 +1,10 @@
 import { logger } from "../log/log";
-import { EExternLanguage, type ASTDatatype } from "../shared/AST";
+import { type ASTDatatype } from "../shared/AST";
 import { assertID, assertScope, stringToPrimitive } from "../shared/common";
 import { CompilerError, ImpossibleSituation, InternalError } from "../shared/Errors";
 import type { ID } from "../shared/store";
 import type { Collect } from "../SymbolCollection/CollectSymbols";
-import { elaborate, PrettyPrintAnalyzed } from "./Elaborate";
+import { elaborate } from "./Elaborate";
 import { instantiateDatatype } from "./Instantiate";
 import {
   getSymbol,

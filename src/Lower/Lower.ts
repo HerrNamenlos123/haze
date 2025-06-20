@@ -82,12 +82,13 @@ function resolveType(lr: Lowered.Module, typeSymbolId: ID): ID {
 
   if (type.variant === "Struct") {
     const existing = [...lr.datatypes.values()].find(
-      (s) => s.variant === "Struct" && s.semanticId === type.id,
+      (s) => s.variant === "Struct" && s.semanticId === typeSymbolId,
     );
     if (existing) return existing.id!;
 
     const id = makeLoweredId();
     lr.datatypes.set(id, {
+      id: id,
       variant: "Struct",
       name: type.name,
       generics: type.genericSymbols.map((id) => resolveType(lr, id)),
@@ -118,7 +119,7 @@ function resolveType(lr: Lowered.Module, typeSymbolId: ID): ID {
     return id;
   } else if (type.variant === "Function") {
     const existing = [...lr.datatypes.values()].find(
-      (s) => s.variant === "Function" && s.semanticId === type.id,
+      (s) => s.variant === "Function" && s.semanticId === typeSymbolId,
     );
     if (existing) return existing.id!;
 
@@ -131,7 +132,7 @@ function resolveType(lr: Lowered.Module, typeSymbolId: ID): ID {
       }),
       returnType: resolveType(lr, type.functionReturnValue),
       vararg: type.vararg,
-      semanticId: type.id,
+      semanticId: typeSymbolId,
     });
     return id;
   } else {

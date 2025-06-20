@@ -250,7 +250,6 @@ export function elaborateExpr(
         symbol.variant === "VariableDefinitionStatement" ||
         symbol.variant === "GlobalVariableDefinition"
       ) {
-        console.log(symbol);
         if (!symbol._semantic.symbol) throw new InternalError("Semantic Symbol missing");
         const variableSymbol = getSymbol(sr, symbol._semantic.symbol) as Semantic.VariableSymbol;
 
