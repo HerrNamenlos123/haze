@@ -250,14 +250,9 @@ class CodeGenerator {
 
       case "Callable": {
         const name = "Callable";
-        return (
-          name.length +
-          name +
-          "I" +
-          this.emitDatatype(type.thisExprType) +
-          "E" +
-          this.emitDatatype(type.functionType)
-        );
+        const generic =
+          (type.thisExprType && "I" + this.emitDatatype(type.thisExprType) + "E") || "";
+        return name.length + name + generic + this.emitDatatype(type.functionType);
       }
 
       case "Namespace":
@@ -489,9 +484,11 @@ class CodeGenerator {
 
           const callableTempName = makeTempName();
           tempWriter.writeLine(`_H${this.emitDatatype(expr.expr.type)} ${callableTempName} = {0};`);
-          args.unshift(
-            `(_H${this.emitDatatype(callableType.thisExprType)})${callableTempName}.thisPtr`,
-          );
+          if (callableType.thisExprType) {
+            args.unshift(
+              `(_H${this.emitDatatype(callableType.thisExprType)})${callableTempName}.thisPtr`,
+            );
+          }
           outWriter.write(
             `(${callableTempName} = ${exprEmitted.out.get()}, ${callableTempName}.fn)(${args.join(", ")})`,
           );

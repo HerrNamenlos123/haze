@@ -122,7 +122,7 @@ function lowerExpr(
 }
 
 function resolveType(lr: Lowered.Module, typeSymbolId: SemanticSymbolId): LoweredTypeId {
-  if (!typeSymbolId) throw new InternalError("ID is undefined");
+  if (!typeSymbolId) throw new InternalError("ID is undefined", undefined, 1);
   const type = getTypeFromSymbol(lr.sr, typeSymbolId, 1);
 
   if (type.variant === "Struct") {
@@ -217,7 +217,7 @@ function resolveType(lr: Lowered.Module, typeSymbolId: SemanticSymbolId): Lowere
     return id;
   } else if (type.variant === "Callable") {
     const functionType = resolveType(lr, type.functionType);
-    const thisExprType = resolveType(lr, type.thisExprType);
+    const thisExprType = type.thisExprType && resolveType(lr, type.thisExprType);
     const existing = [...lr.datatypes.values()].find(
       (s) =>
         s.variant === "Callable" &&
@@ -324,7 +324,7 @@ function lowerStatement(lr: Lowered.Module, statement: Semantic.Statement): Lowe
     }
 
     default:
-      throw new InternalError("Unhandled case: " + statement.variant);
+      throw new InternalError("Unhandled case: ");
   }
 }
 

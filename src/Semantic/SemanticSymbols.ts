@@ -62,7 +62,7 @@ export namespace Semantic {
   export type CallableDatatype = {
     id: SemanticTypeId;
     variant: "Callable";
-    thisExprType: SemanticSymbolId;
+    thisExprType?: SemanticSymbolId;
     functionType: SemanticSymbolId;
     concrete: boolean;
   };

@@ -195,7 +195,7 @@ export namespace Lowered {
   export type CallableDatatype = {
     id: LoweredTypeId;
     variant: "Callable";
-    thisExprType: LoweredTypeId;
+    thisExprType?: LoweredTypeId;
     functionType: LoweredTypeId;
   };
 

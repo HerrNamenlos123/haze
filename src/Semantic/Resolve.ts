@@ -105,6 +105,33 @@ export function resolveDatatype(
         );
       }
 
+      if (datatype.name === "Callable") {
+        if (datatype.generics.length != 1) {
+          throw new CompilerError(
+            `Type Callable<> must take exactly 1 generic argument`,
+            datatype.sourceloc,
+          );
+        }
+        if (datatype.generics[0].variant !== "FunctionDatatype") {
+          throw new CompilerError(
+            `Type Callable<> must take a function datatype as the generic argument`,
+            datatype.sourceloc,
+          );
+        }
+        const functypeSym = resolveDatatype(sr, scope, datatype.generics[0], genericContext);
+        if (functypeSym.variant !== "Datatype") throw new ImpossibleSituation();
+        const functype = sr.typeTable.get(functypeSym.type)!;
+        if (functype.variant !== "Function") throw new ImpossibleSituation();
+
+        const sym = sr.typeTable.makeDatatypeAvailable({
+          variant: "Callable",
+          functionType: functypeSym.id,
+          thisExprType: undefined,
+          concrete: functype.concrete,
+        });
+        return sr.symbolTable.makeDatatypeSymbolAvailable(sym.id, sym.concrete);
+      }
+
       const found: Collect.Symbol = scope!.symbolTable.lookupSymbol(
         datatype.name,
         datatype.sourceloc,
