@@ -94,6 +94,12 @@ export class UnreachableCode extends Error {
   }
 }
 
+export class ExitSilently extends Error {
+  constructor() {
+    super("Exit Silently");
+  }
+}
+
 export class GeneralError extends Error {
   text: string;
 

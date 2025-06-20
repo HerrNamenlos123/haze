@@ -1,7 +1,3 @@
-import { primitiveVariantToString, type Datatype, type EPrimitive } from "./Datatype";
-import { ImpossibleSituation, SourceLoc, UnreachableCode } from "./shared/Errors";
-import type { Linkage, Symbol, VariableScope, VariableType } from "./Symbol";
-
 export type ExportedTypesystem = {
   datatypes: StrippedDatatype[];
   symbols: StrippedSymbol[];

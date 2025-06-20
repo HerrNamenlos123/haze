@@ -1,10 +1,9 @@
 import type { Lowered } from "../Lower/LowerTypes";
-import type { Module } from "../Module";
 import type { Semantic } from "../Semantic/SemanticSymbols";
 import { BinaryOperationToString, EBinaryOperation } from "../shared/AST";
 import { EPrimitive, EVariableContext, primitiveToString } from "../shared/common";
-import { ModuleType } from "../shared/Config";
-import { ImpossibleSituation, InternalError, printWarningMessage } from "../shared/Errors";
+import { ModuleType, type ModuleConfig } from "../shared/Config";
+import { assert, ImpossibleSituation, InternalError, printWarningMessage } from "../shared/Errors";
 import { makeTempName, type LoweredTypeId } from "../shared/store";
 import { OutputWriter } from "./OutputWriter";
 
@@ -20,7 +19,7 @@ class CodeGenerator {
   };
 
   constructor(
-    public module: Module,
+    public config: ModuleConfig,
     public lr: Lowered.Module,
   ) {
     // const contextSymbol = this.module.globalScope.lookupSymbol(
@@ -31,7 +30,7 @@ class CodeGenerator {
     // this.out.type_declarations[mangleSymbol(contextSymbol)] = new OutputWriter()
     //   .writeLine(`struct ${context}_;`)
     //   .writeLine(`typedef struct ${context}_ ${context};`);
-    if (this.module.moduleConfig.moduleType === ModuleType.Executable) {
+    if (this.config.moduleType === ModuleType.Executable) {
       this.out.function_definitions
         .writeLine("int32_t main(int argc, const char* argv[]) {")
         .pushIndent();
@@ -799,7 +798,7 @@ class CodeGenerator {
       // }
 
       default:
-        throw new InternalError(`Unknown expression type ${expr.variant}`);
+        assert(false && "All cases handled");
     }
   }
 
@@ -819,8 +818,8 @@ class CodeGenerator {
   //   }
 }
 
-export function generateCode(module: Module, lr: Lowered.Module): string {
-  const gen = new CodeGenerator(module, lr);
+export function generateCode(config: ModuleConfig, lr: Lowered.Module): string {
+  const gen = new CodeGenerator(config, lr);
   gen.generate();
   return gen.writeString();
 }

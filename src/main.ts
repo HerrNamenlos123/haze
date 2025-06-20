@@ -1,15 +1,9 @@
 import { ArgumentParser, REMAINDER } from "argparse";
-// import { ProjectCompiler } from "./ModuleCompiler";
 import { version } from "../package.json";
 import { GeneralError } from "./shared/Errors";
 import { join } from "path";
 import path from "node:path";
-import { Parser } from "./parser/Parser";
-import { CollectSymbols, PrettyPrintCollected } from "./SymbolCollection/SymbolCollection";
-import { PrettyPrintAnalyzed, SemanticallyAnalyze } from "./Semantic/Elaborate";
-import { logger } from "./log/log";
-import { generateCode } from "./Codegen/CodeGenerator";
-import { ProjectCompiler } from "./ModuleCompiler";
+import { ProjectCompiler } from "./Module";
 
 async function getFile(url: string, outfile: string) {
   const response = await fetch(url);
@@ -80,7 +74,7 @@ async function main() {
       process.exit(1);
     }
   } else {
-    if (args.command === "get") {
+    if (args.command === "wget") {
       if (path.isAbsolute(args.filename)) {
         await getFile(args.url, args.filename);
       } else {
