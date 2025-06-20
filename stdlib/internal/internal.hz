@@ -36,6 +36,6 @@ foo() => {
   const foo = Foo {
     .value: 5,
   };
-  printf();
-  const a = foo.get().get().get();
+  const a = foo.get;
+  return a();
 }

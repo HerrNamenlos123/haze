@@ -482,22 +482,19 @@ class CodeGenerator {
           return r.out.get();
         });
         const exprEmitted = this.emitExpr(expr.expr);
-        if (expr.expr.variant === "Callable") {
+        const exprType = this.lr.datatypes.get(expr.expr.type)!;
+        if (exprType.variant === "Callable") {
           const callableType = this.lr.datatypes.get(expr.expr.type)!;
           if (callableType.variant !== "Callable") throw new ImpossibleSituation();
 
-          if (expr.expr.thisExpr) {
-            const callableTempName = makeTempName();
-            tempWriter.writeLine(
-              `_H${this.emitDatatype(expr.expr.type)} ${callableTempName} = {0};`,
-            );
-            args.unshift(
-              `(_H${this.emitDatatype(callableType.thisExprType)})${callableTempName}.thisPtr`,
-            );
-            outWriter.write(
-              `(${callableTempName} = ${exprEmitted.out.get()}, ${callableTempName}.fn)(${args.join(", ")})`,
-            );
-          }
+          const callableTempName = makeTempName();
+          tempWriter.writeLine(`_H${this.emitDatatype(expr.expr.type)} ${callableTempName} = {0};`);
+          args.unshift(
+            `(_H${this.emitDatatype(callableType.thisExprType)})${callableTempName}.thisPtr`,
+          );
+          outWriter.write(
+            `(${callableTempName} = ${exprEmitted.out.get()}, ${callableTempName}.fn)(${args.join(", ")})`,
+          );
         } else {
           const callExprWriter = this.emitExpr(expr.expr);
           tempWriter.write(callExprWriter.temp);
@@ -713,13 +710,6 @@ class CodeGenerator {
         return { out: outWriter, temp: tempWriter };
 
       case "Callable":
-        // if (expr.thisExpr) {
-        //   const funcname = this.mangleNestedName(this.lr.functions.get(expr.functionSymbol)!);
-        //   outWriter.write(`_H${funcname}`);
-        // } else {
-        //   const funcname = this.mangleNestedName(this.lr.functions.get(expr.functionSymbol)!);
-        //   outWriter.write(`_H${funcname}`);
-        // }
         const thisExpr = this.emitExpr(expr.thisExpr);
         tempWriter.write(thisExpr.temp);
         outWriter.write(

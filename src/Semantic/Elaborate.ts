@@ -244,7 +244,7 @@ export function elaborateExpr(
       const args = expr.arguments.map((a) => elaborateExpr(sr, scope, a, genericContext));
       const type = getTypeFromSymbol(sr, calledExpr.typeSymbol);
 
-      if (calledExpr.variant === "CallableExpr") {
+      if (type.variant === "Callable") {
         const callableFunc = getTypeFromSymbol(sr, calledExpr.typeSymbol);
         if (callableFunc.variant !== "Callable") throw new ImpossibleSituation();
         const ftype = getTypeFromSymbol(sr, callableFunc.functionType);
@@ -309,7 +309,6 @@ export function elaborateExpr(
         symbol.variant === "FunctionDeclaration" ||
         symbol.variant === "FunctionDefinition"
       ) {
-        elaborate(sr, symbol, genericContext);
         if (!symbol._semantic.symbol) throw new ImpossibleSituation();
         const rawFunctionSymbol = getSymbol(sr, symbol._semantic.symbol) as
           | Semantic.FunctionDeclarationSymbol
