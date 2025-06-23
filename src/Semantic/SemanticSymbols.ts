@@ -1,5 +1,5 @@
 import { CompilerError, InternalError, type SourceLoc } from "../shared/Errors";
-import type { ASTStructDefinition, EBinaryOperation, EExternLanguage } from "../shared/AST";
+import type { ASTStructDefinition, EBinaryOperation, EExternLanguage, EIncrOperation } from "../shared/AST";
 import { EVariableContext, type EMethodType, type EPrimitive } from "../shared/common";
 import {
   makeSemanticScopeId,
@@ -187,6 +187,7 @@ export namespace Semantic {
     variant: "SymbolValue";
     symbol: SemanticSymbolId;
     type: SemanticSymbolId;
+    functionSymbol?: SemanticSymbolId;
     sourceloc: SourceLoc;
   };
 
@@ -208,6 +209,22 @@ export namespace Semantic {
     left: Expression;
     right: Expression;
     operation: EBinaryOperation;
+    type: SemanticSymbolId;
+    sourceloc: SourceLoc;
+  };
+
+  export type PostIncrExpr = {
+    variant: "PostIncrExpr";
+    expr: Expression;
+    operation: EIncrOperation;
+    type: SemanticSymbolId;
+    sourceloc: SourceLoc;
+  };
+
+  export type PreIncrExpr = {
+    variant: "PreIncrExpr";
+    expr: Expression;
+    operation: EIncrOperation;
     type: SemanticSymbolId;
     sourceloc: SourceLoc;
   };
@@ -243,6 +260,7 @@ export namespace Semantic {
     | SymbolValueThisPtrExpr
     | BinaryExpr
     | CallableExpr
+    | PreIncrExpr | PostIncrExpr
     | ExplicitCastExpr
     | ExprCallExpr
     | StructInstantiationExpr
@@ -305,7 +323,7 @@ export namespace Semantic {
   export class SymbolTable {
     private symbols: Map<SemanticSymbolId, Symbol> = new Map();
 
-    constructor() {}
+    constructor() { }
 
     defineSymbol(symbol: SymbolWithoutId): Symbol {
       const _symbol = symbol as Symbol;

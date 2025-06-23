@@ -1,5 +1,5 @@
 import type { SemanticResult } from "../Semantic/SemanticSymbols";
-import type { EBinaryOperation } from "../shared/AST";
+import type { EBinaryOperation, EExternLanguage, EIncrOperation } from "../shared/AST";
 import type { EPrimitive, EVariableContext } from "../shared/common";
 import type { SourceLoc } from "../shared/Errors";
 import type { LoweredTypeId, SemanticSymbolId } from "../shared/store";
@@ -60,6 +60,21 @@ export namespace Lowered {
   export type SymbolValueExpr = {
     variant: "SymbolValue";
     name: string;
+    functionSymbol?: LoweredTypeId;
+    type: LoweredTypeId;
+  };
+
+  export type PostIncrExpr = {
+    variant: "PostIncrExpr";
+    expr: Expression;
+    operation: EIncrOperation;
+    type: LoweredTypeId;
+  };
+
+  export type PreIncrExpr = {
+    variant: "PreIncrExpr";
+    expr: Expression;
+    operation: EIncrOperation;
     type: LoweredTypeId;
   };
 
@@ -80,6 +95,7 @@ export namespace Lowered {
     | ExplicitCastExpr
     | ExprMemberAccessExpr
     | ConstantExpr
+    | PreIncrExpr | PostIncrExpr
     | SymbolValueExpr;
 
   export type Scope = {
@@ -147,6 +163,7 @@ export namespace Lowered {
     parent?: LoweredTypeId;
     type: LoweredTypeId;
     semanticId: SemanticSymbolId;
+    externLanguage: EExternLanguage;
     sourceloc: SourceLoc;
   };
 
@@ -157,6 +174,7 @@ export namespace Lowered {
     parent?: LoweredTypeId;
     type: LoweredTypeId;
     semanticId: SemanticSymbolId;
+    externLanguage: EExternLanguage;
     scope: Scope;
     sourceloc: SourceLoc;
   };

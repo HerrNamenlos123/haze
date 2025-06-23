@@ -1,3 +1,13 @@
 {
-    "bun.runtime": "~/.bun/bin/bun"
+    "bun.runtime": "~/.bun/bin/bun",
+    "files.exclude": {
+        "**/dist": true,
+        "**/build": true,
+        "**/autogen": true,
+    },
+    "search.exclude": {
+        "**/dist": true,
+        "**/build": true,
+        "**/autogen": true,
+    }
 }

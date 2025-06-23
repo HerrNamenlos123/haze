@@ -29,6 +29,11 @@
         "scopeName": "source.hz",
         "path": "./syntaxes/haze.tmLanguage.json"
       }
+    ],
+    "breakpoints": [
+      {
+        "language": "haze"
+      }
     ]
   }
 }

@@ -282,7 +282,7 @@ export function elaborateExpr(
         });
         assert(
           functionSymbol.variant === "FunctionDefinition" ||
-            functionSymbol.variant === "FunctionDeclaration",
+          functionSymbol.variant === "FunctionDeclaration",
         );
         return {
           variant: "SymbolValue",
@@ -294,6 +294,7 @@ export function elaborateExpr(
         throw new CompilerError(`Symbol ${symbol.name} cannot be used as a value`, expr.sourceloc);
       }
     }
+
     // =================================================================================================================
     // =================================================================================================================
     // =================================================================================================================
@@ -303,6 +304,36 @@ export function elaborateExpr(
         variant: "ExplicitCast",
         type: resolveDatatype(sr, scope.collectScope, expr.castedTo, genericContext).id,
         expr: elaborateExpr(sr, scope, expr.expr, genericContext),
+        sourceloc: expr.sourceloc,
+      };
+    }
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
+    case "PostIncrExpr": {
+      const e = elaborateExpr(sr, scope, expr.expr, genericContext);
+      return {
+        variant: "PostIncrExpr",
+        type: e.type,
+        expr: e,
+        operation: expr.operation,
+        sourceloc: expr.sourceloc,
+      };
+    }
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
+    case "PreIncrExpr": {
+      const e = elaborateExpr(sr, scope, expr.expr, genericContext);
+      return {
+        variant: "PreIncrExpr",
+        type: e.type,
+        expr: e,
+        operation: expr.operation,
         sourceloc: expr.sourceloc,
       };
     }
