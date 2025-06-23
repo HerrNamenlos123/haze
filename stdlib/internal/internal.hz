@@ -32,8 +32,10 @@ struct Context {
 struct Foo {
   value: i32;
 
-  get(): Foo => {
-    return 5;
+  getter(): Foo => {
+    return Foo {
+      .value: 5,
+    };
   }
 }
 

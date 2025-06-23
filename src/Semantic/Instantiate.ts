@@ -2,7 +2,7 @@ import { logger } from "../log/log";
 import { assertID } from "../shared/common";
 import { assert, ImpossibleSituation, InternalError } from "../shared/Errors";
 import type { SemanticSymbolId } from "../shared/store";
-import { getSymbol, type Semantic, type SemanticResult } from "./SemanticSymbols";
+import { getSymbol, Semantic, type SemanticResult } from "./SemanticSymbols";
 
 export function instantiateSymbol(
   sr: SemanticResult,
@@ -136,8 +136,13 @@ export function instantiateSymbol(
     // ◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈
 
     case "StructDatatype": {
-      if (genericContext.datatypesDone.has(symbol.id)) {
-        const struct = getSymbol(sr, assertID(genericContext.datatypesDone.get(symbol.id)));
+      const newGenerics = symbol.genericSymbols.map(
+        (g) => instantiateSymbol(sr, g, genericContext).id,
+      );
+
+      const datatypeDoneMapKey = Semantic.makeDatatypeDoneMapKey({ id: symbol.id, generics: newGenerics });
+      if (genericContext.datatypesDone.has(datatypeDoneMapKey)) {
+        const struct = getSymbol(sr, assertID(genericContext.datatypesDone.get(datatypeDoneMapKey)));
         return struct;
       }
 
@@ -155,7 +160,7 @@ export function instantiateSymbol(
         namespaces: symbol.namespaces,
         concrete: true,
       });
-      genericContext.datatypesDone.set(symbol.id, struct.id!);
+      genericContext.datatypesDone.set(datatypeDoneMapKey, struct.id!);
       assert(struct.variant === "StructDatatype");
 
       struct.members = symbol.members.map((m) => {

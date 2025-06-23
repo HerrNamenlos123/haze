@@ -179,7 +179,6 @@ export function resolveDatatype(
                 genericContext,
               ).id;
               newGenericContext.symbolToSymbol.set(from, to);
-              logger.debug(`Mapping generic parameter from ${from} to ${to}`);
             }
           }
 

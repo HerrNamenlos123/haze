@@ -64,7 +64,7 @@ class Cache {
   filename?: string;
   data: Record<string, any> = {};
 
-  constructor() {}
+  constructor() { }
 
   async getFilesWithModificationDates(dir: string): Promise<{ file: string; modified: Date }[]> {
     const files: { file: string; modified: Date }[] = [];
@@ -146,7 +146,7 @@ class Cache {
 export class ProjectCompiler {
   cache: Cache = new Cache();
 
-  constructor() {}
+  constructor() { }
 
   async getConfig(singleFilename?: string) {
     let config: ModuleConfig | undefined;
@@ -272,7 +272,7 @@ class ModuleCompiler {
   constructor(
     public config: ModuleConfig,
     public cache: Cache,
-  ) {}
+  ) { }
 
   get globalBuildDir() {
     return this.config.buildDir;
@@ -407,6 +407,8 @@ class ModuleCompiler {
       } else if (e instanceof UnreachableCode) {
         console.error(e.message);
       } else if (e instanceof ExitSilently) {
+        return false;
+      } else if (e instanceof $.ShellError) {
         return false;
       } else {
         console.error("Build failed");

@@ -754,7 +754,7 @@ export function elaborate(
     // =================================================================================================================
 
     case "StructMethod": {
-      const type: ASTFunctionDatatype = {
+      const methodFunctype: ASTFunctionDatatype = {
         variant: "FunctionDatatype",
         params: item.params,
         ellipsis: item.ellipsis,
@@ -773,14 +773,13 @@ export function elaborate(
         },
         sourceloc: item.sourceloc,
       };
-      type.params = [thisType, ...type.params];
+      methodFunctype.params = [thisType, ...methodFunctype.params];
 
-      const resolved = resolveDatatype(sr, item._collect.definedInScope!, type, genericContext);
+      let resolvedMethodFunctype = resolveDatatype(sr, item._collect.definedInScope!, methodFunctype, genericContext);
 
       // Second part of this pointer
-      const functype = getSymbol(sr, resolved.id);
-      assert(functype.variant === "FunctionDatatype");
-      for (const param of functype.functionParameters) {
+      assert(resolvedMethodFunctype.variant === "FunctionDatatype");
+      for (const param of resolvedMethodFunctype.functionParameters) {
         if (param.name === "this") {
           const thisReference = sr.symbolTable.makeSymbolAvailable({
             variant: "ReferenceDatatype",
@@ -791,9 +790,11 @@ export function elaborate(
         }
       }
 
+      resolvedMethodFunctype = instantiateSymbol(sr, resolvedMethodFunctype.id, genericContext);
+
       let symbol = sr.symbolTable.defineSymbol({
         variant: "FunctionDefinition",
-        typeSymbol: resolved.id,
+        typeSymbol: resolvedMethodFunctype.id,
         export: false,
         externLanguage: EExternLanguage.None,
         method: EMethodType.Method,
@@ -802,12 +803,13 @@ export function elaborate(
         methodOfSymbol: item._semantic.memberOfSymbol,
         scope: new Semantic.Scope(item.sourceloc, assertScope(item.funcbody._collect.scope)),
         nestedParentTypeSymbol: item._semantic.memberOfSymbol,
-        concrete: resolved.concrete,
+        concrete: resolvedMethodFunctype.concrete,
       });
       if (symbol.variant !== "FunctionDefinition") {
         throw new ImpossibleSituation();
       }
       item._semantic.symbol = symbol.id;
+      console.log("Made method ", symbol.name, symbol.concrete, symbol.id);
 
       const scope = item.funcbody._collect.scope;
       if (scope && symbol.concrete) {
