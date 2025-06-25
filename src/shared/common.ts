@@ -1,6 +1,5 @@
 import { InternalError } from "./Errors";
 import type { Collect } from "../SymbolCollection/CollectSymbols";
-import type { SemanticSymbolId, SemanticTypeId } from "./store";
 
 export enum EPrimitive {
   none = 1,

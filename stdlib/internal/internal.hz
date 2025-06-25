@@ -20,20 +20,20 @@ struct LogContext {
   error: (fmt: str, ...) => none;
 }
 
-struct MemContext {
-  alloc: (size: u64) => none*;
-  globalDefaultArena: none*;
-}
-
 struct Context {
   log: LogContext;
   mem: MemContext;
 };
 
+struct MemContext {
+  alloc: (size: u64) => none*;
+  globalDefaultArena: none*;
+}
+
 struct Foo {
   value: i32;
 
-  getter(): Foo => {
+  fooGet(): Foo => {
     return Foo {
       .value: 5,
     };

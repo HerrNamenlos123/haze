@@ -1,42 +1,34 @@
-import { logger } from "../log/log";
-import { assertID } from "../shared/common";
-import { assert, ImpossibleSituation, InternalError } from "../shared/Errors";
-import type { SemanticSymbolId } from "../shared/store";
-import { getSymbol, Semantic, type SemanticResult } from "./SemanticSymbols";
+import { assert, InternalError } from "../shared/Errors";
+import { defineThisReference, elaborateScope } from "./Elaborate";
+import { Semantic, type SemanticResult } from "./SemanticSymbols";
 
-export function instantiateSymbol(
+export function instantiateSymbol<T extends Semantic.Symbol>(
   sr: SemanticResult,
-  id: SemanticSymbolId,
+  symbol: T,
   genericContext: Semantic.GenericContext,
   meta?: {
-    newParentSymbol?: SemanticSymbolId;
+    newMemberOf?: Semantic.StructDatatypeSymbol;
   },
-): Semantic.Symbol {
-  logger.trace("instantiateSymbol() ");
-  const symbol = sr.symbolTable.get(id);
-
+): T {
   switch (symbol.variant) {
     // ◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈
     // ◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆
     // ◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈
 
     case "Variable": {
-      logger.trace("instantiateSymbol Variable");
-      const typeSym = instantiateSymbol(sr, symbol.type, genericContext);
-      const id = sr.symbolTable.makeSymbolAvailable({
+      const type = instantiateSymbol(sr, symbol.type, genericContext);
+      return {
         variant: "Variable",
         name: symbol.name,
         externLanguage: symbol.externLanguage,
         export: symbol.export,
         mutable: symbol.mutable,
-        sourceLoc: symbol.sourceLoc,
-        type: typeSym.id,
-        memberOf: meta?.newParentSymbol && getSymbol(sr, meta.newParentSymbol).id,
-        definedInScope: symbol.definedInScope,
-        concrete: typeSym.concrete,
+        type: type,
+        memberOf: meta?.newMemberOf,
+        concrete: type.concrete,
+        sourceloc: symbol.sourceloc,
         variableContext: symbol.variableContext,
-      });
-      return id;
+      } satisfies Semantic.Symbol as T;
     }
 
     // ◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈
@@ -44,15 +36,14 @@ export function instantiateSymbol(
     // ◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈
 
     case "GenericParameter": {
-      logger.trace("instantiateSymbol GenericParameter");
-      const mappedTo = genericContext.symbolToSymbol.get(symbol.id!);
+      const mappedTo = genericContext.mapping.get(symbol);
       if (mappedTo) {
-        if (mappedTo === symbol.id) {
+        if (mappedTo === symbol) {
           throw new InternalError("Generic Mapping is circular - Parameter points to itself");
         }
-        return instantiateSymbol(sr, mappedTo, genericContext);
+        return instantiateSymbol(sr, mappedTo, genericContext) as T;
       } else {
-        return symbol as Semantic.Symbol;
+        return symbol;
       }
     }
 
@@ -61,19 +52,18 @@ export function instantiateSymbol(
     // ◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈
 
     case "FunctionDeclaration": {
-      logger.trace("instantiateSymbol FunctionDeclaration");
-      const typeSym = instantiateSymbol(sr, symbol.type!, genericContext);
-      return sr.symbolTable.makeSymbolAvailable({
+      const type = instantiateSymbol(sr, symbol.type, genericContext);
+      return {
         variant: "FunctionDeclaration",
         export: symbol.export,
         sourceloc: symbol.sourceloc,
         externLanguage: symbol.externLanguage,
-        method: symbol.method,
+        methodType: symbol.methodType,
         name: symbol.name,
-        type: typeSym.id,
-        nestedParentTypeSymbol: meta?.newParentSymbol,
-        concrete: typeSym.concrete,
-      });
+        type: type,
+        nestedParentTypeSymbol: meta?.newMemberOf,
+        concrete: type.concrete,
+      } satisfies Semantic.Symbol as T;
     }
 
     // ◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈
@@ -81,21 +71,37 @@ export function instantiateSymbol(
     // ◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈
 
     case "FunctionDefinition": {
-      logger.trace("instantiateSymbol FunctionDefinition");
-      const typeSym = instantiateSymbol(sr, symbol.type!, genericContext);
-      return sr.symbolTable.makeSymbolAvailable({
+      const funcTypeSym = instantiateSymbol(sr, symbol.type, genericContext);
+
+      const scope: Semantic.BlockScope | undefined = undefined;
+      if (funcTypeSym.concrete) {
+        if (symbol.methodOf && !symbol.scope) {
+          const struct = symbol.methodOf;
+          assert(struct.variant === "StructDatatype");
+          assert(symbol.collectedScope);
+
+          const scope = new Semantic.BlockScope(
+            symbol.sourceloc,
+            symbol.collectedScope.rawStatements,
+          );
+          defineThisReference(sr, scope, struct, genericContext);
+          elaborateScope(sr, scope, genericContext);
+        }
+      }
+
+      return {
         variant: "FunctionDefinition",
         export: symbol.export,
         sourceloc: symbol.sourceloc,
         externLanguage: symbol.externLanguage,
-        method: symbol.method,
+        methodType: symbol.methodType,
         name: symbol.name,
-        type: typeSym.id,
-        scope: symbol.scope,
-        methodOfSymbol: meta?.newParentSymbol,
-        nestedParentTypeSymbol: meta?.newParentSymbol,
-        concrete: typeSym.concrete,
-      });
+        type: funcTypeSym,
+        scope: scope,
+        methodOf: meta?.newMemberOf,
+        nestedParentTypeSymbol: meta?.newMemberOf,
+        concrete: funcTypeSym.concrete,
+      } satisfies Semantic.Symbol as T;
     }
 
     // ◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈
@@ -103,25 +109,20 @@ export function instantiateSymbol(
     // ◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈
 
     case "FunctionDatatype": {
-      let paramsConcrete = true;
-      const params = symbol.functionParameters.map((p) => {
-        const instantiated = instantiateSymbol(sr, p.type, genericContext);
-        if (!instantiated.concrete) paramsConcrete = false;
-        return {
-          name: p.name,
-          type: instantiated.id,
-        };
-      });
-      const returnType = instantiateSymbol(sr, symbol.functionReturnValue, genericContext);
-      const dt = sr.symbolTable.makeSymbolAvailable({
+      const dt: Semantic.FunctionDatatypeSymbol = {
         variant: "FunctionDatatype",
         vararg: symbol.vararg,
-        functionParameters: params,
-        functionReturnValue: returnType.id,
+        functionParameters: symbol.functionParameters.map((p) => ({
+          name: p.name,
+          type: instantiateSymbol(sr, p.type, genericContext),
+        })),
+        functionReturnValue: instantiateSymbol(sr, symbol.functionReturnValue, genericContext),
         generics: [],
-        concrete: returnType.concrete && paramsConcrete,
-      });
-      return dt;
+        concrete: false,
+      };
+      dt.concrete =
+        dt.functionReturnValue.concrete && dt.functionParameters.every((p) => p.type.concrete);
+      return dt as T;
     }
 
     // ◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈
@@ -136,58 +137,52 @@ export function instantiateSymbol(
     // ◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈
 
     case "StructDatatype": {
-      const newGenerics = symbol.genericSymbols.map(
-        (g) => instantiateSymbol(sr, g, genericContext).id,
-      );
+      const key: Semantic.DatatypeDoneMapKey = {
+        symbol: symbol,
+        generics: symbol.genericSymbols.map((g) => instantiateSymbol(sr, g, genericContext)),
+      };
 
-      const datatypeDoneMapKey = Semantic.makeDatatypeDoneMapKey({
-        id: symbol.id,
-        generics: newGenerics,
-      });
-      if (genericContext.datatypesDone.has(datatypeDoneMapKey)) {
-        const struct = getSymbol(
-          sr,
-          assertID(genericContext.datatypesDone.get(datatypeDoneMapKey)),
-        );
-        return struct;
+      if (genericContext.datatypesDone.has(key)) {
+        return genericContext.datatypesDone.get(key) as T;
       }
 
-      const struct = sr.symbolTable.makeSymbolAvailable({
+      const struct: Semantic.StructDatatypeSymbol = {
         variant: "StructDatatype",
         name: symbol.name,
-        genericSymbols: symbol.genericSymbols.map(
-          (g) => instantiateSymbol(sr, g, genericContext).id,
-        ),
+        genericSymbols: symbol.genericSymbols.map((g) => instantiateSymbol(sr, g, genericContext)),
         externLanguage: symbol.externLanguage,
         definedInNamespaceOrStruct: symbol.definedInNamespaceOrStruct,
         members: [],
         methods: [],
         fullNamespacedName: symbol.fullNamespacedName,
         namespaces: symbol.namespaces,
+        collectedDeclaration: symbol.collectedDeclaration,
+        scope: new Semantic.DeclScope(symbol.sourceloc, symbol.definedInNamespaceOrStruct?.scope),
+        sourceloc: symbol.sourceloc,
         concrete: true,
-      });
+      };
       if (struct.concrete) {
-        genericContext.datatypesDone.set(datatypeDoneMapKey, struct.id!);
+        genericContext.datatypesDone.set(key, struct);
       }
       assert(struct.variant === "StructDatatype");
 
       struct.members = symbol.members.map((m) => {
         const sym = instantiateSymbol(sr, m, genericContext, {
-          newParentSymbol: struct.id,
+          newMemberOf: struct,
         });
         if (!sym.concrete) struct.concrete = false;
-        return sym.id;
+        return sym;
       });
 
       struct.methods = symbol.methods.map((m) => {
         const sym = instantiateSymbol(sr, m, genericContext, {
-          newParentSymbol: struct.id,
+          newMemberOf: struct,
         });
         if (!sym.concrete) struct.concrete = false;
-        return sym.id;
+        return sym;
       });
 
-      return struct;
+      return struct as T;
     }
 
     // ◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈
@@ -196,12 +191,11 @@ export function instantiateSymbol(
 
     case "RawPointerDatatype": {
       const pointee = instantiateSymbol(sr, symbol.pointee, genericContext);
-      const dt = sr.symbolTable.makeSymbolAvailable({
+      return {
         variant: "RawPointerDatatype",
-        pointee: pointee.id,
+        pointee: pointee,
         concrete: pointee.concrete,
-      });
-      return dt;
+      } satisfies Semantic.Symbol as T;
     }
 
     // ◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈
@@ -210,13 +204,11 @@ export function instantiateSymbol(
 
     case "ReferenceDatatype": {
       const referee = instantiateSymbol(sr, symbol.referee, genericContext);
-      const dt = sr.symbolTable.makeSymbolAvailable({
+      return {
         variant: "ReferenceDatatype",
-        referee: referee.id,
+        referee: referee,
         concrete: referee.concrete,
-      });
-      console.log("Instantiated reference from ", dt);
-      return dt;
+      } satisfies Semantic.Symbol as T;
     }
 
     // ◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈

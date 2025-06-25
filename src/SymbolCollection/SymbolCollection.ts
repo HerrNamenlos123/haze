@@ -82,9 +82,9 @@ function collect(
         ...meta.namespaceStack.map((n) => n.name),
         ...item.namespacePath,
       ];
-      item._collect.method = EMethodType.NotAMethod;
+      item.methodType = EMethodType.NotAMethod;
       if (item._collect.definedInNamespaceOrStruct?.variant === "StructDefinition") {
-        item._collect.method = EMethodType.Method;
+        item.methodType = EMethodType.Method;
       }
 
       if (scope.symbolTable.tryLookupSymbolHere(item.name)) {
@@ -144,7 +144,6 @@ function collect(
 
       scope.symbolTable.defineSymbol(item);
       if (item.funcbody.variant === "ExprAsFuncBody") {
-        // Rebuilding "() => x" into "() => { return x; }"
         item.funcbody = {
           variant: "Scope",
           statements: [
@@ -323,7 +322,7 @@ function collect(
             scope.symbolTable.defineSymbol(s);
             break;
         }
-        scope.statements.push(s);
+        scope.rawStatements.push(s);
       }
       break;
 
@@ -587,8 +586,8 @@ export function PrettyPrintCollected(cr: CollectResult) {
       console.log(" ".repeat(indent + _indent) + str);
     };
 
-    print(`Statements (${scope.statements.length}):`);
-    for (const s of scope.statements) {
+    print(`Statements (${scope.rawStatements.length}):`);
+    for (const s of scope.rawStatements) {
       // print("  - " + JSON.stringify(s));
     }
     print(`Symbols (${scope.symbolTable.symbols.length}):`);

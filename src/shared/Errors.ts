@@ -100,6 +100,12 @@ export class ExitSilently extends Error {
   }
 }
 
+export class CmdFailed extends Error {
+  constructor() {
+    super("Cmd Failed");
+  }
+}
+
 export class GeneralError extends Error {
   text: string;
 

@@ -1,4 +1,4 @@
-import { getSymbol, type Semantic, type SemanticResult } from "../Semantic/SemanticSymbols";
+import { type Semantic, type SemanticResult } from "../Semantic/SemanticSymbols";
 import { EPrimitive, EVariableContext } from "../shared/common";
 import { assert, ImpossibleSituation, InternalError } from "../shared/Errors";
 import {
@@ -158,13 +158,10 @@ function lowerExpr(
   }
 }
 
-function resolveType(lr: Lowered.Module, typeId: SemanticSymbolId): LoweredTypeId {
-  if (!typeId) throw new InternalError("ID is undefined", undefined, 1);
-  const type = getSymbol(lr.sr, typeId, 1);
-
+function resolveType(lr: Lowered.Module, type: Semantic.DatatypeSymbol): LoweredTypeId {
   if (type.variant === "StructDatatype") {
     const existing = [...lr.datatypes.values()].find(
-      (s) => s.variant === "Struct" && s.semanticId === typeId,
+      (s) => s.variant === "Struct" && s.semanticId === type,
     );
     if (existing) return existing.id!;
 
@@ -365,7 +362,7 @@ function lowerStatement(lr: Lowered.Module, statement: Semantic.Statement): Lowe
   }
 }
 
-function lowerScope(lr: Lowered.Module, semanticScope: Semantic.Scope): Lowered.Scope {
+function lowerScope(lr: Lowered.Module, semanticScope: Semantic.BlockScope): Lowered.Scope {
   const scope: Lowered.Scope = {
     statements: [],
   };
@@ -406,7 +403,7 @@ function lower(lr: Lowered.Module, symbol: Semantic.Symbol): LoweredTypeId | und
       );
       if (existing) return existing.id!;
 
-      if (symbol.methodOfSymbol === undefined) {
+      if (symbol.methodOf === undefined) {
         // Normal function
         const parent =
           symbol.nestedParentTypeSymbol &&

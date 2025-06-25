@@ -1,23 +1,23 @@
 import { logger } from "../log/log";
 import { type ASTDatatype } from "../shared/AST";
-import { assertID, assertScope, stringToPrimitive } from "../shared/common";
+import { assertID, stringToPrimitive } from "../shared/common";
 import { assert, CompilerError, ImpossibleSituation, InternalError } from "../shared/Errors";
 import type { Collect } from "../SymbolCollection/CollectSymbols";
-import { elaborate, PrettyPrintAnalyzed } from "./Elaborate";
+import { elaborate } from "./Elaborate";
 import { instantiateSymbol } from "./Instantiate";
-import { getSymbol, type Semantic, type SemanticResult } from "./SemanticSymbols";
+import { Semantic, type SemanticResult } from "./SemanticSymbols";
 
 export function resolveDatatype(
   sr: SemanticResult,
-  scope: Collect.Scope,
   datatype: ASTDatatype,
+  scope: Semantic.DeclScope | Semantic.BlockScope,
+  collectScope: Collect.Scope,
   genericContext: Semantic.GenericContext | null,
-): Semantic.Symbol {
+): Semantic.DatatypeSymbol {
   logger.trace("resolveDatatype()");
   if (!genericContext) {
     genericContext = {
-      symbolToSymbol: new Map(),
-      elaborateCurrentStructOrNamespace: null,
+      mapping: new Map(),
       datatypesDone: new Map(),
     };
   }
@@ -28,11 +28,10 @@ export function resolveDatatype(
     // =================================================================================================================
 
     case "Deferred": {
-      const dt = sr.symbolTable.makeSymbolAvailable({
+      return {
         variant: "DeferredDatatype",
         concrete: false,
-      });
-      return dt;
+      };
     }
 
     // =================================================================================================================
@@ -47,18 +46,17 @@ export function resolveDatatype(
         if (!resolved.concrete) paramsConcrete = false;
         return {
           name: p.name,
-          type: resolved.id,
+          type: resolved,
         };
       });
-      const dt = sr.symbolTable.makeSymbolAvailable({
+      return {
         variant: "FunctionDatatype",
         vararg: datatype.ellipsis,
-        functionReturnValue: returnValue.id,
+        functionReturnValue: returnValue,
         functionParameters: parameters,
         generics: [],
         concrete: returnValue.concrete && paramsConcrete,
-      });
-      return dt;
+      };
     }
 
     // =================================================================================================================
@@ -67,12 +65,11 @@ export function resolveDatatype(
 
     case "RawPointerDatatype": {
       const type = resolveDatatype(sr, scope, datatype.pointee, genericContext);
-      const dt = sr.symbolTable.makeSymbolAvailable({
+      return {
         variant: "RawPointerDatatype",
-        pointee: type.id,
+        pointee: type,
         concrete: type.concrete,
-      });
-      return dt;
+      };
     }
 
     // =================================================================================================================
@@ -81,12 +78,11 @@ export function resolveDatatype(
 
     case "ReferenceDatatype": {
       const type = resolveDatatype(sr, scope, datatype.referee, genericContext);
-      const dt = sr.symbolTable.makeSymbolAvailable({
+      return {
         variant: "ReferenceDatatype",
-        referee: type.id,
+        referee: type,
         concrete: type.concrete,
-      });
-      return dt;
+      };
     }
 
     // =================================================================================================================
@@ -99,7 +95,7 @@ export function resolveDatatype(
         if (datatype.generics.length > 0) {
           throw new Error(`Type ${datatype.name} is not generic`);
         }
-        return sr.symbolTable.makePrimitiveAvailable(primitive);
+        return sr.globalScope.makePrimitiveAvailable(primitive);
       }
 
       if (datatype.name === "Callable") {
@@ -118,19 +114,15 @@ export function resolveDatatype(
         const functype = resolveDatatype(sr, scope, datatype.generics[0], genericContext);
         assert(functype.variant === "FunctionDatatype");
 
-        const sym = sr.symbolTable.makeSymbolAvailable({
+        return {
           variant: "CallableDatatype",
-          functionType: functype.id,
+          functionType: functype,
           thisExprType: undefined,
           concrete: functype.concrete,
-        });
-        return sym;
+        };
       }
 
-      const found: Collect.Symbol = scope!.symbolTable.lookupSymbol(
-        datatype.name,
-        datatype.sourceloc,
-      );
+      const found = scope.symbolTable.lookupSymbol(datatype.name, datatype.sourceloc);
       if (!found) {
         throw new CompilerError(
           `${datatype.name} was not declared in this scope`,
@@ -144,19 +136,19 @@ export function resolveDatatype(
         // ◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈
 
         case "StructDefinition": {
-          const struct = getSymbol(sr, elaborate(sr, found, null)!);
+          const struct = instantiateSymbol(sr, elaborate(sr, found, collectScope, genericContext), genericContext);
           assert(struct.variant === "StructDatatype");
 
           if (struct.genericSymbols.length !== datatype.generics.length) {
             throw new CompilerError(
-              `Type ${found.name} expects ${found.generics.length} generics but received ${datatype.generics.length}`,
+              `Type ${found.name} expects ${found.genericSymbols.length} generics but received ${datatype.generics.length}`,
               datatype.sourceloc,
             );
           }
 
           const newGenericContext: Semantic.GenericContext = {
-            symbolToSymbol: new Map(genericContext.symbolToSymbol),
-            elaborateCurrentStructOrNamespace: genericContext.elaborateCurrentStructOrNamespace,
+            mapping: new Map(genericContext.mapping),
+            currentStructOrNamespace: genericContext.currentStructOrNamespace,
             datatypesDone: new Map(genericContext.datatypesDone),
           };
 
@@ -172,17 +164,12 @@ export function resolveDatatype(
               }
 
               const from = struct.genericSymbols[i];
-              const to = resolveDatatype(
-                sr,
-                assertScope(datatype._collect.usedInScope),
-                g,
-                genericContext,
-              ).id;
-              newGenericContext.symbolToSymbol.set(from, to);
+              const to = resolveDatatype(sr, scope, g, genericContext);
+              newGenericContext.mapping.set(from, to);
             }
           }
 
-          const dt = instantiateSymbol(sr, struct.id, newGenericContext);
+          const dt = instantiateSymbol(sr, struct, newGenericContext);
           return dt;
         }
 
@@ -190,9 +177,9 @@ export function resolveDatatype(
         // ◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆
         // ◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈
 
-        case "NamespaceDefinition":
+        case "Namespace":
           if (datatype.nested) {
-            return resolveDatatype(sr, found._collect.scope!, datatype.nested, genericContext);
+            return resolveDatatype(sr, scope, datatype.nested, genericContext);
           }
           throw new CompilerError(
             `Namespace cannot be used as a datatype here`,
@@ -203,21 +190,13 @@ export function resolveDatatype(
         // ◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆
         // ◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈
 
-        case "GenericPlaceholder": {
-          if (found.belongsToSymbol.variant !== "StructDefinition") {
-            throw new ImpossibleSituation();
-          }
-          const struct = sr.symbolTable.get(assertID(found.belongsToSymbol._semantic.symbol));
-          assert(struct.variant === "StructDatatype");
-
-          const id = sr.symbolTable.makeSymbolAvailable({
+        case "GenericParameter": {
+          return {
             variant: "GenericParameter",
             name: found.name,
-            belongsToStruct: struct.fullNamespacedName,
             sourceloc: found.sourceloc,
             concrete: false,
-          });
-          return id;
+          } satisfies Semantic.DatatypeSymbol;
         }
 
         // ◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈

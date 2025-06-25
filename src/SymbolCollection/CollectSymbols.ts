@@ -3,6 +3,7 @@ import type {
   ASTFunctionDeclaration,
   ASTFunctionDefinition,
   ASTGlobalVariableDefinition,
+  ASTNamedDatatype,
   ASTNamespaceDefinition,
   ASTStatement,
   ASTStructDefinition,
@@ -39,6 +40,8 @@ export namespace Collect {
     | ASTStructMethodDefinition
     | GenericPlaceholder;
 
+  export type Statement = ASTStatement;
+
   export class SymbolTable {
     symbols: Symbol[] = [];
 
@@ -46,7 +49,11 @@ export namespace Collect {
 
     defineSymbol(symbol: Symbol) {
       if (this.tryLookupSymbolHere(symbol.name)) {
-        throw new InternalError(`Symbol '${symbol.name}' already exists in symbol table`);
+        throw new InternalError(
+          `Symbol '${symbol.name}' already exists in symbol table`,
+          undefined,
+          1,
+        );
       }
       this.symbols.push(symbol);
     }
@@ -78,7 +85,7 @@ export namespace Collect {
 
   export class Scope {
     public id: CollectScopeId;
-    public statements: ASTStatement[] = [];
+    public rawStatements: ASTStatement[] = [];
     public symbolTable: SymbolTable;
     public _semantic: {
       forFunctionSymbol?: SemanticSymbolId;

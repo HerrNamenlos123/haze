@@ -1,6 +1,7 @@
 import * as child_process from "child_process";
 import { $ } from "bun";
 import {
+  CmdFailed,
   CompilerError,
   ExitSilently,
   GeneralError,
@@ -64,7 +65,7 @@ class Cache {
   filename?: string;
   data: Record<string, any> = {};
 
-  constructor() { }
+  constructor() {}
 
   async getFilesWithModificationDates(dir: string): Promise<{ file: string; modified: Date }[]> {
     const files: { file: string; modified: Date }[] = [];
@@ -146,7 +147,7 @@ class Cache {
 export class ProjectCompiler {
   cache: Cache = new Cache();
 
-  constructor() { }
+  constructor() {}
 
   async getConfig(singleFilename?: string) {
     let config: ModuleConfig | undefined;
@@ -259,6 +260,14 @@ export class ProjectCompiler {
   }
 }
 
+async function exec(str: string) {
+  try {
+    return await $`${str}`;
+  } catch (e) {
+    throw new CmdFailed();
+  }
+}
+
 class ModuleCompiler {
   cr: CollectResult = {
     cInjections: [],
@@ -272,7 +281,7 @@ class ModuleCompiler {
   constructor(
     public config: ModuleConfig,
     public cache: Cache,
-  ) { }
+  ) {}
 
   get globalBuildDir() {
     return this.config.buildDir;
@@ -383,10 +392,12 @@ class ModuleCompiler {
         await Bun.write(moduleMetadataFile, JSON.stringify(moduleMetadata, undefined, 2));
 
         if (fs.existsSync(moduleOutputLib)) {
-          await $`rm ${moduleOutputLib}`;
+          await exec(`rm ${moduleOutputLib}`);
         }
 
-        await $`tar -C ${this.moduleBuildDir} -cvzf ${moduleOutputLib} ${makerel(moduleAFile)} ${makerel(moduleMetadataFile)} > /dev/null`;
+        await exec(
+          `tar -C ${this.moduleBuildDir} -cvzf ${moduleOutputLib} ${makerel(moduleAFile)} ${makerel(moduleMetadataFile)} > /dev/null`,
+        );
       }
       if (this.config.configFilePath) {
         // await this.cache.compiledModule(
@@ -408,10 +419,11 @@ class ModuleCompiler {
         console.error(e.message);
       } else if (e instanceof ExitSilently) {
         return false;
-      } else if (e instanceof $.ShellError) {
+      } else if (e instanceof CmdFailed) {
+        console.error("Build failed");
         return false;
       } else {
-        console.error("Build failed");
+        console.error(e);
       }
     }
     return false;
@@ -430,8 +442,8 @@ class ModuleCompiler {
       }
 
       const tempdir = join(this.globalBuildDir, "temp-" + dep.path);
-      await $`mkdir -p ${tempdir}`;
-      await $`tar -xzf ${libpath} -C ${tempdir} ${lib.filename}`;
+      await exec(`mkdir -p ${tempdir}`);
+      await exec(`tar -xzf ${libpath} -C ${tempdir} ${lib.filename}`);
 
       const archiveFile = join(tempdir, lib.filename);
       libs.push(archiveFile);
@@ -442,8 +454,8 @@ class ModuleCompiler {
 
   private async loadDependencyMetadata(libpath: string, libname: string) {
     const tempdir = join(this.globalBuildDir, "temp-" + libname);
-    await $`mkdir -p ${tempdir}`;
-    await $`tar -xzf ${libpath} -C ${tempdir} metadata.json`;
+    await exec(`mkdir -p ${tempdir}`);
+    await exec(`tar -xzf ${libpath} -C ${tempdir} metadata.json`);
     return parseModuleMetadata(await Bun.file(join(tempdir, "metadata.json")).text());
   }
 

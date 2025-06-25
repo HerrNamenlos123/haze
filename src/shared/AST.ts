@@ -101,12 +101,12 @@ export type ASTFunctionDeclaration = {
   params: ASTParam[];
   ellipsis: boolean;
   returnType?: ASTDatatype;
+  methodType?: EMethodType;
   sourceloc: SourceLoc;
   _collect: {
     definedInNamespaceOrStruct?: ASTNamespaceDefinition | ASTStructDefinition;
     definedInScope?: Collect.Scope;
     namespacePath?: string[];
-    method?: EMethodType;
   };
   _semantic: {
     symbol?: SemanticSymbolId;
@@ -445,7 +445,7 @@ export type ASTStructMethodDefinition = {
   };
   _semantic: {
     symbol?: SemanticSymbolId;
-    memberOfSymbol?: SemanticSymbolId;
+    // memberOfSymbol?: Semantic.Struc;
   };
 };
 
