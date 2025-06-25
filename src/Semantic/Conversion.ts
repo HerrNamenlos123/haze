@@ -3,7 +3,7 @@ import { InternalError } from "../shared/Errors";
 import { Semantic } from "./SemanticSymbols";
 
 export namespace Conversion {
-  export function isSignedInteger(type: Semantic.PrimitiveDatatype): boolean {
+  export function isSignedInteger(type: Semantic.PrimitiveDatatypeSymbol): boolean {
     switch (type.primitive) {
       case EPrimitive.i8:
       case EPrimitive.i16:
@@ -15,7 +15,7 @@ export namespace Conversion {
     }
   }
 
-  export function isUnsignedInteger(type: Semantic.PrimitiveDatatype): boolean {
+  export function isUnsignedInteger(type: Semantic.PrimitiveDatatypeSymbol): boolean {
     switch (type.primitive) {
       case EPrimitive.u8:
       case EPrimitive.u16:
@@ -27,36 +27,36 @@ export namespace Conversion {
     }
   }
 
-  export function isStruct(type: Semantic.Datatype): type is Semantic.StructDatatype {
-    if (type.variant !== "Struct") return false;
+  export function isStruct(type: Semantic.Symbol): type is Semantic.StructDatatypeSymbol {
+    if (type.variant !== "StructDatatype") return false;
     return true;
   }
 
-  export function isF32(type: Semantic.Datatype): type is Semantic.PrimitiveDatatype {
-    if (type.variant !== "Primitive") return false;
+  export function isF32(type: Semantic.Symbol): type is Semantic.PrimitiveDatatypeSymbol {
+    if (type.variant !== "PrimitiveDatatype") return false;
     return type.primitive === EPrimitive.f32;
   }
 
-  export function isF64(type: Semantic.Datatype): type is Semantic.PrimitiveDatatype {
-    if (type.variant !== "Primitive") return false;
+  export function isF64(type: Semantic.Symbol): type is Semantic.PrimitiveDatatypeSymbol {
+    if (type.variant !== "PrimitiveDatatype") return false;
     return type.primitive === EPrimitive.f64;
   }
 
-  export function isFloat(type: Semantic.Datatype): type is Semantic.PrimitiveDatatype {
+  export function isFloat(type: Semantic.Symbol): type is Semantic.PrimitiveDatatypeSymbol {
     return isF32(type) || isF64(type);
   }
 
-  export function isBoolean(type: Semantic.Datatype): type is Semantic.PrimitiveDatatype {
-    if (type.variant !== "Primitive") return false;
+  export function isBoolean(type: Semantic.Symbol): type is Semantic.PrimitiveDatatypeSymbol {
+    if (type.variant !== "PrimitiveDatatype") return false;
     return type.primitive === EPrimitive.boolean;
   }
 
-  export function isInteger(type: Semantic.Datatype): type is Semantic.PrimitiveDatatype {
-    if (type.variant !== "Primitive") return false;
+  export function isInteger(type: Semantic.Symbol): type is Semantic.PrimitiveDatatypeSymbol {
+    if (type.variant !== "PrimitiveDatatype") return false;
     return isSignedInteger(type) || isUnsignedInteger(type);
   }
 
-  export function getIntegerBits(type: Semantic.PrimitiveDatatype): number {
+  export function getIntegerBits(type: Semantic.PrimitiveDatatypeSymbol): number {
     switch (type.primitive) {
       case EPrimitive.i8:
       case EPrimitive.u8:
@@ -75,20 +75,20 @@ export namespace Conversion {
   }
 
   function promoteInteger(
-    a: Semantic.PrimitiveDatatype,
-    b: Semantic.PrimitiveDatatype,
-  ): Semantic.PrimitiveDatatype {
-    if (a.variant !== "Primitive" || b.variant !== "Primitive") {
+    a: Semantic.PrimitiveDatatypeSymbol,
+    b: Semantic.PrimitiveDatatypeSymbol,
+  ): Semantic.PrimitiveDatatypeSymbol {
+    if (a.variant !== "PrimitiveDatatype" || b.variant !== "PrimitiveDatatype") {
       throw new InternalError("promoteInteger got non primitives");
     }
 
-    const getWiderInteger = (a: Semantic.PrimitiveDatatype, b: Semantic.PrimitiveDatatype) => {
+    const getWiderInteger = (a: Semantic.PrimitiveDatatypeSymbol, b: Semantic.PrimitiveDatatypeSymbol) => {
       const aBits = getIntegerBits(a);
       const bBits = getIntegerBits(b);
       return aBits > bBits ? a : b;
     };
 
-    const widenInteger = (a: Semantic.PrimitiveDatatype, b: Semantic.PrimitiveDatatype) => {
+    const widenInteger = (a: Semantic.PrimitiveDatatypeSymbol, b: Semantic.PrimitiveDatatypeSymbol) => {
       if (a.primitive == b.primitive) {
         return a;
       }
@@ -128,9 +128,9 @@ export namespace Conversion {
   }
 
   export function getIntegerBinaryResult(
-    a: Semantic.PrimitiveDatatype,
-    b: Semantic.PrimitiveDatatype,
-  ): Semantic.PrimitiveDatatype {
+    a: Semantic.PrimitiveDatatypeSymbol,
+    b: Semantic.PrimitiveDatatypeSymbol,
+  ): Semantic.PrimitiveDatatypeSymbol {
     return promoteInteger(a, b);
   }
 }

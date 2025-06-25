@@ -1,6 +1,6 @@
 import { getSymbol, type Semantic, type SemanticResult } from "../Semantic/SemanticSymbols";
-import { EVariableContext } from "../shared/common";
-import { ImpossibleSituation, InternalError } from "../shared/Errors";
+import { EPrimitive, EVariableContext } from "../shared/common";
+import { assert, ImpossibleSituation, InternalError } from "../shared/Errors";
 import {
   makeLoweredId,
   makeTempName,
@@ -17,33 +17,47 @@ function lowerExpr(
 ): Lowered.Expression {
   switch (expr.variant) {
     case "ExprCall": {
-      const varname = makeTempName();
       const calledExpr = lowerExpr(lr, expr.calledExpr, flattened);
       const calledExprType = lr.datatypes.get(calledExpr.type)!;
-      let vartype = calledExpr.type;
+      assert(calledExprType.variant === "Function" || calledExprType.variant === "Callable");
+      let vartype: LoweredTypeId | undefined = undefined;
       if (calledExprType.variant === "Callable") {
         const functype = lr.datatypes.get(calledExprType.functionType);
         if (functype?.variant !== "Function") throw new ImpossibleSituation();
         vartype = functype.returnType;
+      } else {
+        vartype = calledExprType.returnType;
       }
-      flattened.push({
-        variant: "VariableStatement",
-        name: varname,
-        type: vartype,
-        variableContext: EVariableContext.FunctionLocal,
-        value: {
+
+      const vartypeSym = lr.datatypes.get(vartype)!;
+      if (vartypeSym.variant !== "Struct") {
+        return {
           variant: "ExprCallExpr",
           expr: calledExpr,
           arguments: expr.arguments.map((a) => lowerExpr(lr, a, flattened)),
           type: resolveType(lr, expr.type),
-        },
-        sourceloc: expr.sourceloc,
-      });
-      return {
-        variant: "SymbolValue",
-        name: varname,
-        type: calledExpr.type,
-      };
+        };
+      } else {
+        const varname = makeTempName();
+        flattened.push({
+          variant: "VariableStatement",
+          name: varname,
+          type: vartype,
+          variableContext: EVariableContext.FunctionLocal,
+          value: {
+            variant: "ExprCallExpr",
+            expr: calledExpr,
+            arguments: expr.arguments.map((a) => lowerExpr(lr, a, flattened)),
+            type: resolveType(lr, expr.type),
+          },
+          sourceloc: expr.sourceloc,
+        });
+        return {
+          variant: "SymbolValue",
+          name: varname,
+          type: calledExpr.type,
+        };
+      }
     }
 
     case "BinaryExpr": {
@@ -62,12 +76,14 @@ function lowerExpr(
         symbol.variant !== "Variable" &&
         symbol.variant !== "FunctionDeclaration" &&
         symbol.variant !== "FunctionDefinition"
-      )
+      ) {
         throw new ImpossibleSituation();
+      }
       return {
         variant: "SymbolValue",
         name: symbol.name,
         type: resolveType(lr, symbol.type),
+        functionSymbol: lower(lr, symbol),
       };
     }
 
@@ -105,6 +121,24 @@ function lowerExpr(
           name: a.name,
           value: lowerExpr(lr, a.value, flattened),
         })),
+      };
+    }
+
+    case "PostIncrExpr": {
+      return {
+        variant: "PostIncrExpr",
+        expr: lowerExpr(lr, expr.expr, flattened),
+        operation: expr.operation,
+        type: resolveType(lr, expr.type),
+      };
+    }
+
+    case "PreIncrExpr": {
+      return {
+        variant: "PreIncrExpr",
+        expr: lowerExpr(lr, expr.expr, flattened),
+        operation: expr.operation,
+        type: resolveType(lr, expr.type),
       };
     }
 
@@ -360,6 +394,7 @@ function lower(lr: Lowered.Module, symbol: Semantic.Symbol): LoweredTypeId | und
         parent: parent,
         type: resolveType(lr, symbol.type),
         semanticId: symbol.id!,
+        externLanguage: symbol.externLanguage,
         sourceloc: symbol.sourceloc,
       });
       return id;
@@ -387,6 +422,7 @@ function lower(lr: Lowered.Module, symbol: Semantic.Symbol): LoweredTypeId | und
           scope: lowerScope(lr, symbol.scope),
           semanticId: symbol.id!,
           sourceloc: symbol.sourceloc,
+          externLanguage: symbol.externLanguage,
         });
         return id;
       } else {
@@ -407,6 +443,7 @@ function lower(lr: Lowered.Module, symbol: Semantic.Symbol): LoweredTypeId | und
           type: resolveType(lr, symbol.type),
           scope: lowerScope(lr, symbol.scope),
           semanticId: symbol.id!,
+          externLanguage: symbol.externLanguage,
           sourceloc: symbol.sourceloc,
         });
         return id;

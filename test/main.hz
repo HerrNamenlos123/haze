@@ -90,4 +90,16 @@ inject "#include <stdio.h>";
 //     extern "C" printf(fmt: str, ...): none;
 // }
 
-main(): i32 => {}
+test(): i32 =>  {
+    const i = 10;
+    while i {
+        printf("Testing...\n");
+        i--;
+    }
+    printf("Done!\n");
+}
+
+main(): i32 => {
+    foo();
+    return test();
+}

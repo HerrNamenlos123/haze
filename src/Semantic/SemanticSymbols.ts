@@ -1,5 +1,5 @@
 import { CompilerError, InternalError, type SourceLoc } from "../shared/Errors";
-import type { ASTStructDefinition, EBinaryOperation, EExternLanguage } from "../shared/AST";
+import type { ASTStructDefinition, EBinaryOperation, EExternLanguage, EIncrOperation } from "../shared/AST";
 import { EVariableContext, type EMethodType, type EPrimitive } from "../shared/common";
 import {
   makeSemanticScopeId,
@@ -188,6 +188,7 @@ export namespace Semantic {
     variant: "SymbolValue";
     symbol: SemanticSymbolId;
     type: SemanticSymbolId;
+    functionSymbol?: SemanticSymbolId;
     sourceloc: SourceLoc;
   };
 
@@ -209,6 +210,22 @@ export namespace Semantic {
     left: Expression;
     right: Expression;
     operation: EBinaryOperation;
+    type: SemanticSymbolId;
+    sourceloc: SourceLoc;
+  };
+
+  export type PostIncrExpr = {
+    variant: "PostIncrExpr";
+    expr: Expression;
+    operation: EIncrOperation;
+    type: SemanticSymbolId;
+    sourceloc: SourceLoc;
+  };
+
+  export type PreIncrExpr = {
+    variant: "PreIncrExpr";
+    expr: Expression;
+    operation: EIncrOperation;
     type: SemanticSymbolId;
     sourceloc: SourceLoc;
   };
@@ -244,6 +261,7 @@ export namespace Semantic {
     | SymbolValueThisPtrExpr
     | BinaryExpr
     | CallableExpr
+    | PreIncrExpr | PostIncrExpr
     | ExplicitCastExpr
     | ExprCallExpr
     | StructInstantiationExpr
@@ -306,7 +324,7 @@ export namespace Semantic {
   export class SymbolTable {
     private symbols: Map<SemanticSymbolId, Symbol> = new Map();
 
-    constructor() {}
+    constructor() { }
 
     defineSymbol(symbol: SymbolWithoutId): Symbol {
       const _symbol = symbol as Symbol;
@@ -355,6 +373,7 @@ export namespace Semantic {
             (s) =>
               s.variant === "Variable" &&
               s.name === symbol.name &&
+              s.concrete === symbol.concrete &&
               s.memberOf === symbol.memberOf &&
               s.definedInScope === symbol.definedInScope,
           );
@@ -372,6 +391,7 @@ export namespace Semantic {
             (s) =>
               s.variant === "FunctionDefinition" &&
               s.name === symbol.name &&
+              s.concrete === symbol.concrete &&
               s.nestedParentTypeSymbol === symbol.nestedParentTypeSymbol,
           );
 
@@ -380,6 +400,7 @@ export namespace Semantic {
             (s) =>
               s.variant === "FunctionDeclaration" &&
               s.name === symbol.name &&
+              s.concrete === symbol.concrete &&
               s.nestedParentTypeSymbol === symbol.nestedParentTypeSymbol,
           );
 
@@ -398,6 +419,7 @@ export namespace Semantic {
               f.functionParameters.toString() === symbol.functionParameters.toString() &&
               f.functionReturnValue === symbol.functionReturnValue &&
               f.generics.toString() === symbol.generics.toString() &&
+              f.concrete === symbol.concrete &&
               f.vararg === symbol.vararg,
           );
 
@@ -410,6 +432,7 @@ export namespace Semantic {
           return [...this.symbols.values()].find(
             (d) =>
               d.variant === "StructDatatype" &&
+              d.concrete === symbol.concrete &&
               d.name === symbol.name &&
               d.definedInNamespaceOrStruct === symbol.definedInNamespaceOrStruct &&
               d.genericSymbols.toString() === symbol.genericSymbols.toString(),
@@ -433,6 +456,7 @@ export namespace Semantic {
             (d) =>
               d.variant === "CallableDatatype" &&
               d.functionType === symbol.functionType &&
+              d.concrete === symbol.concrete &&
               d.thisExprType === symbol.thisExprType,
           );
         }
@@ -491,10 +515,18 @@ export namespace Semantic {
     }
   }
 
+  export type DatatypeDoneMapKey = { id: SemanticSymbolId, generics: SemanticSymbolId[] };
+  export function makeDatatypeDoneMapKey(key: DatatypeDoneMapKey) {
+    return JSON.stringify({
+      id: key.id.toString(),
+      generics: key.generics.map((id) => id.toString()),
+    });
+  }
+
   export type GenericContext = {
     symbolToSymbol: Map<SemanticSymbolId, SemanticSymbolId>;
     elaborateCurrentStructOrNamespace: SemanticSymbolId | null;
-    datatypesDone: Map<SemanticSymbolId, SemanticSymbolId>;
+    datatypesDone: Map<string, SemanticSymbolId>;
   };
 }
 

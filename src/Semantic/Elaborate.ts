@@ -294,6 +294,7 @@ export function elaborateExpr(
         throw new CompilerError(`Symbol ${symbol.name} cannot be used as a value`, expr.sourceloc);
       }
     }
+
     // =================================================================================================================
     // =================================================================================================================
     // =================================================================================================================
@@ -303,6 +304,36 @@ export function elaborateExpr(
         variant: "ExplicitCast",
         type: resolveDatatype(sr, scope.collectScope, expr.castedTo, genericContext).id,
         expr: elaborateExpr(sr, scope, expr.expr, genericContext),
+        sourceloc: expr.sourceloc,
+      };
+    }
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
+    case "PostIncrExpr": {
+      const e = elaborateExpr(sr, scope, expr.expr, genericContext);
+      return {
+        variant: "PostIncrExpr",
+        type: e.type,
+        expr: e,
+        operation: expr.operation,
+        sourceloc: expr.sourceloc,
+      };
+    }
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
+    case "PreIncrExpr": {
+      const e = elaborateExpr(sr, scope, expr.expr, genericContext);
+      return {
+        variant: "PreIncrExpr",
+        type: e.type,
+        expr: e,
+        operation: expr.operation,
         sourceloc: expr.sourceloc,
       };
     }
@@ -728,7 +759,7 @@ export function elaborate(
     // =================================================================================================================
 
     case "StructMethod": {
-      const type: ASTFunctionDatatype = {
+      const methodFunctype: ASTFunctionDatatype = {
         variant: "FunctionDatatype",
         params: item.params,
         ellipsis: item.ellipsis,
@@ -747,13 +778,18 @@ export function elaborate(
         },
         sourceloc: item.sourceloc,
       };
-      type.params = [thisType, ...type.params];
+      methodFunctype.params = [thisType, ...methodFunctype.params];
 
-      const resolved = resolveDatatype(sr, item._collect.definedInScope!, type, genericContext);
+      let resolvedMethodFunctype = resolveDatatype(
+        sr,
+        item._collect.definedInScope!,
+        methodFunctype,
+        genericContext,
+      );
 
       // Second part of this pointer
-      assert(resolved.variant === "FunctionDatatype");
-      for (const param of resolved.functionParameters) {
+      assert(resolvedMethodFunctype.variant === "FunctionDatatype");
+      for (const param of resolvedMethodFunctype.functionParameters) {
         if (param.name === "this") {
           const thisReference = sr.symbolTable.makeSymbolAvailable({
             variant: "ReferenceDatatype",
@@ -763,14 +799,16 @@ export function elaborate(
           param.type = thisReference.id;
         }
       }
-      resolved.concrete =
-        resolved.functionParameters.every((p) => getSymbol(sr, p.type).concrete) &&
-        getSymbol(sr, resolved.functionReturnValue).concrete &&
-        resolved.generics.every((g) => getSymbol(sr, g).concrete);
+      resolvedMethodFunctype.concrete =
+        resolvedMethodFunctype.functionParameters.every((p) => getSymbol(sr, p.type).concrete) &&
+        getSymbol(sr, resolvedMethodFunctype.functionReturnValue).concrete &&
+        resolvedMethodFunctype.generics.every((g) => getSymbol(sr, g).concrete);
+
+      resolvedMethodFunctype = instantiateSymbol(sr, resolvedMethodFunctype.id, genericContext);
 
       let symbol = sr.symbolTable.defineSymbol({
         variant: "FunctionDefinition",
-        type: resolved.id,
+        type: resolvedMethodFunctype.id,
         export: false,
         externLanguage: EExternLanguage.None,
         method: EMethodType.Method,
@@ -779,7 +817,7 @@ export function elaborate(
         methodOfSymbol: item._semantic.memberOfSymbol,
         scope: new Semantic.Scope(item.sourceloc, assertScope(item.funcbody._collect.scope)),
         nestedParentTypeSymbol: item._semantic.memberOfSymbol,
-        concrete: resolved.concrete,
+        concrete: resolvedMethodFunctype.concrete,
       });
       if (symbol.variant !== "FunctionDefinition") {
         throw new ImpossibleSituation();
