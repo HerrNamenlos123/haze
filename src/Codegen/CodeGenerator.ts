@@ -310,6 +310,7 @@ class CodeGenerator {
     if (symbol.variant === "FunctionDefinition") {
       this.out.function_definitions.writeLine(decl + " {").pushIndent();
 
+      // console.log(symbol.name, symbol.scope.statements);
       const s = this.emitScope(symbol.scope);
       this.out.function_definitions.write(s.temp);
       this.out.function_definitions.write(s.out);
@@ -539,7 +540,11 @@ class CodeGenerator {
       case "ExprMemberAccess": {
         const exprWriter = this.emitExpr(expr.expr);
         tempWriter.write(exprWriter.temp);
-        outWriter.write(exprWriter.out.get() + "." + expr.memberName);
+        if (expr.isReference) {
+          outWriter.write(exprWriter.out.get() + "->" + expr.memberName);
+        } else {
+          outWriter.write(exprWriter.out.get() + "." + expr.memberName);
+        }
         return { out: outWriter, temp: tempWriter };
       }
 

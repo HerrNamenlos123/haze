@@ -67,7 +67,7 @@ function lowerExpr(
       return {
         variant: "SymbolValue",
         name: symbol.name,
-        type: resolveType(lr, symbol.typeSymbol),
+        type: resolveType(lr, symbol.type),
       };
     }
 
@@ -83,6 +83,7 @@ function lowerExpr(
       return {
         variant: "ExprMemberAccess",
         expr: lowerExpr(lr, expr.expr, flattened),
+        isReference: expr.isReference,
         memberName: expr.memberName,
         type: resolveType(lr, expr.type),
       };
@@ -153,7 +154,7 @@ function resolveType(lr: Lowered.Module, typeId: SemanticSymbolId): LoweredTypeI
       if (sym.variant !== "Variable") throw new ImpossibleSituation();
       return {
         name: sym.name,
-        type: resolveType(lr, sym.typeSymbol),
+        type: resolveType(lr, sym.type),
       };
     });
 
@@ -257,7 +258,7 @@ function lowerStatement(lr: Lowered.Module, statement: Semantic.Statement): Lowe
       const s: Lowered.Statement = {
         variant: "VariableStatement",
         name: statement.name,
-        type: resolveType(lr, symbol.typeSymbol),
+        type: resolveType(lr, symbol.type),
         value: statement.value && lowerExpr(lr, statement.value, flattened),
         variableContext: symbol.variableContext,
         sourceloc: statement.sourceloc,
@@ -357,7 +358,7 @@ function lower(lr: Lowered.Module, symbol: Semantic.Symbol): LoweredTypeId | und
         variant: "FunctionDeclaration",
         name: symbol.name,
         parent: parent,
-        type: resolveType(lr, symbol.typeSymbol),
+        type: resolveType(lr, symbol.type),
         semanticId: symbol.id!,
         sourceloc: symbol.sourceloc,
       });
@@ -382,7 +383,7 @@ function lower(lr: Lowered.Module, symbol: Semantic.Symbol): LoweredTypeId | und
           variant: "FunctionDefinition",
           name: symbol.name,
           parent: parent,
-          type: resolveType(lr, symbol.typeSymbol),
+          type: resolveType(lr, symbol.type),
           scope: lowerScope(lr, symbol.scope),
           semanticId: symbol.id!,
           sourceloc: symbol.sourceloc,
@@ -394,13 +395,16 @@ function lower(lr: Lowered.Module, symbol: Semantic.Symbol): LoweredTypeId | und
           symbol.nestedParentTypeSymbol &&
           lower(lr, getSymbol(lr.sr, symbol.nestedParentTypeSymbol));
 
+        if (symbol.name === "get") {
+          console.log(symbol.scope.sourceloc, symbol.scope.statements);
+        }
         const id = makeLoweredId();
         lr.functions.set(id, {
           id: id,
           variant: "FunctionDefinition",
           name: symbol.name,
           parent: parent,
-          type: resolveType(lr, symbol.typeSymbol),
+          type: resolveType(lr, symbol.type),
           scope: lowerScope(lr, symbol.scope),
           semanticId: symbol.id!,
           sourceloc: symbol.sourceloc,

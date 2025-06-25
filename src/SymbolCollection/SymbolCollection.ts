@@ -1,4 +1,4 @@
-import { CompilerError, InternalError, type SourceLoc } from "../shared/Errors";
+import { assert, CompilerError, InternalError, type SourceLoc } from "../shared/Errors";
 import type {
   ASTBinaryExpr,
   ASTConstant,
@@ -488,6 +488,15 @@ function collect(
     // =================================================================================================================
     // =================================================================================================================
 
+    case "ReferenceDatatype": {
+      collect(scope, item.referee, meta);
+      break;
+    }
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
     case "NamedDatatype": {
       const process = (_item: ASTNamedDatatype) => {
         let p: ASTNamedDatatype | undefined = _item;
@@ -512,7 +521,7 @@ function collect(
     // =================================================================================================================
 
     default:
-      throw new InternalError("Unhandled case: " + item.variant);
+      assert(false && "All cases handled");
   }
 }
 
@@ -566,6 +575,8 @@ export function PrettyPrintCollected(cr: CollectResult) {
       return "_deferred_";
     } else if (datatype.variant === "RawPointerDatatype") {
       return serializeAstDatatype(datatype.pointee) + "*";
+    } else if (datatype.variant === "ReferenceDatatype") {
+      return serializeAstDatatype(datatype.referee) + "&";
     } else {
       return datatype.value.toString();
     }

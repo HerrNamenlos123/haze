@@ -22,7 +22,7 @@ export function instantiateSymbol(
 
     case "Variable": {
       logger.trace("instantiateSymbol Variable");
-      const typeSym = instantiateSymbol(sr, symbol.typeSymbol, genericContext);
+      const typeSym = instantiateSymbol(sr, symbol.type, genericContext);
       const id = sr.symbolTable.makeSymbolAvailable({
         variant: "Variable",
         name: symbol.name,
@@ -30,7 +30,7 @@ export function instantiateSymbol(
         export: symbol.export,
         mutable: symbol.mutable,
         sourceLoc: symbol.sourceLoc,
-        typeSymbol: typeSym.id,
+        type: typeSym.id,
         memberOf: meta?.newParentSymbol && getSymbol(sr, meta.newParentSymbol).id,
         definedInScope: symbol.definedInScope,
         concrete: typeSym.concrete,
@@ -62,7 +62,7 @@ export function instantiateSymbol(
 
     case "FunctionDeclaration": {
       logger.trace("instantiateSymbol FunctionDeclaration");
-      const typeSym = instantiateSymbol(sr, symbol.typeSymbol!, genericContext);
+      const typeSym = instantiateSymbol(sr, symbol.type!, genericContext);
       return sr.symbolTable.makeSymbolAvailable({
         variant: "FunctionDeclaration",
         export: symbol.export,
@@ -70,7 +70,7 @@ export function instantiateSymbol(
         externLanguage: symbol.externLanguage,
         method: symbol.method,
         name: symbol.name,
-        typeSymbol: typeSym.id,
+        type: typeSym.id,
         nestedParentTypeSymbol: meta?.newParentSymbol,
         concrete: typeSym.concrete,
       });
@@ -82,7 +82,7 @@ export function instantiateSymbol(
 
     case "FunctionDefinition": {
       logger.trace("instantiateSymbol FunctionDefinition");
-      const typeSym = instantiateSymbol(sr, symbol.typeSymbol!, genericContext);
+      const typeSym = instantiateSymbol(sr, symbol.type!, genericContext);
       return sr.symbolTable.makeSymbolAvailable({
         variant: "FunctionDefinition",
         export: symbol.export,
@@ -90,7 +90,7 @@ export function instantiateSymbol(
         externLanguage: symbol.externLanguage,
         method: symbol.method,
         name: symbol.name,
-        typeSymbol: typeSym.id,
+        type: typeSym.id,
         scope: symbol.scope,
         methodOfSymbol: meta?.newParentSymbol,
         nestedParentTypeSymbol: meta?.newParentSymbol,
@@ -155,7 +155,9 @@ export function instantiateSymbol(
         namespaces: symbol.namespaces,
         concrete: true,
       });
-      genericContext.datatypesDone.set(symbol.id, struct.id!);
+      if (struct.concrete) {
+        genericContext.datatypesDone.set(symbol.id, struct.id!);
+      }
       assert(struct.variant === "StructDatatype");
 
       struct.members = symbol.members.map((m) => {
@@ -196,12 +198,13 @@ export function instantiateSymbol(
     // ◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈
 
     case "ReferenceDatatype": {
-      const pointee = instantiateSymbol(sr, symbol.referee, genericContext);
+      const referee = instantiateSymbol(sr, symbol.referee, genericContext);
       const dt = sr.symbolTable.makeSymbolAvailable({
         variant: "ReferenceDatatype",
-        referee: pointee.id,
-        concrete: pointee.concrete,
+        referee: referee.id,
+        concrete: referee.concrete,
       });
+      console.log("Instantiated reference from ", dt);
       return dt;
     }
 

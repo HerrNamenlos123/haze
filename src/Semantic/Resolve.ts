@@ -3,7 +3,7 @@ import { type ASTDatatype } from "../shared/AST";
 import { assertID, assertScope, stringToPrimitive } from "../shared/common";
 import { assert, CompilerError, ImpossibleSituation, InternalError } from "../shared/Errors";
 import type { Collect } from "../SymbolCollection/CollectSymbols";
-import { elaborate } from "./Elaborate";
+import { elaborate, PrettyPrintAnalyzed } from "./Elaborate";
 import { instantiateSymbol } from "./Instantiate";
 import { getSymbol, type Semantic, type SemanticResult } from "./SemanticSymbols";
 

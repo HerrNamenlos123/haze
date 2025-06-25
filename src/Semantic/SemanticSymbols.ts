@@ -20,7 +20,7 @@ export namespace Semantic {
     variant: "Variable";
     name: string;
     memberOf?: SemanticSymbolId;
-    typeSymbol: SemanticSymbolId;
+    type: SemanticSymbolId;
     definedInScope: CollectScopeId | SemanticScopeId;
     mutable: boolean;
     export: boolean;
@@ -43,7 +43,7 @@ export namespace Semantic {
     id: SemanticSymbolId;
     variant: "FunctionDefinition";
     name: string;
-    typeSymbol: SemanticSymbolId;
+    type: SemanticSymbolId;
     externLanguage: EExternLanguage;
     scope: Semantic.Scope;
     export: boolean;
@@ -58,7 +58,7 @@ export namespace Semantic {
     id: SemanticSymbolId;
     variant: "FunctionDeclaration";
     name: string;
-    typeSymbol: SemanticSymbolId;
+    type: SemanticSymbolId;
     externLanguage: EExternLanguage;
     export: boolean;
     method: EMethodType;
@@ -171,6 +171,7 @@ export namespace Semantic {
     expr: Expression;
     method?: SemanticSymbolId;
     memberName: string;
+    isReference: boolean;
     type: SemanticSymbolId;
     sourceloc: SourceLoc;
   };

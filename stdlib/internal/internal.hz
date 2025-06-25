@@ -5,7 +5,8 @@ struct CString {
 struct SharedPtr<T> {
   target: T*;
 
-  get(): T => {
+  get(): T& => {
+    return this.target;
   }
 }
 

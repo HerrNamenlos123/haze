@@ -48,6 +48,7 @@ export namespace Lowered {
     variant: "ExprMemberAccess";
     expr: Expression;
     memberName: string;
+    isReference: boolean;
     type: LoweredTypeId;
   };
 
