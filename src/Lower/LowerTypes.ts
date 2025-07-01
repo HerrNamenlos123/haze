@@ -1,4 +1,4 @@
-import type { SemanticResult } from "../Semantic/SemanticSymbols";
+import type { Semantic, SemanticResult } from "../Semantic/SemanticSymbols";
 import type { EBinaryOperation, EExternLanguage, EIncrOperation } from "../shared/AST";
 import type { EPrimitive, EVariableContext } from "../shared/common";
 import type { SourceLoc } from "../shared/Errors";
@@ -12,8 +12,8 @@ export namespace Lowered {
 
     cDeclarations: string[];
 
-    datatypes: Map<LoweredTypeId, Datatype>;
-    functions: Map<LoweredTypeId, FunctionDeclaration | FunctionDefinition>;
+    loweredTypes: Map<Semantic.Symbol, Lowered.Datatype>
+    loweredFunctions: Map<Semantic.Symbol, Lowered.FunctionDeclaration | Lowered.FunctionDefinition>;
   };
 
   export type BinaryExpr = {
@@ -21,27 +21,27 @@ export namespace Lowered {
     left: Expression;
     operation: EBinaryOperation;
     right: Expression;
-    type: LoweredTypeId;
+    type: Datatype;
   };
 
   export type ExprCallExpr = {
     variant: "ExprCallExpr";
     expr: Expression;
     arguments: Expression[];
-    type: LoweredTypeId;
+    type: Datatype;
   };
 
   export type CallableExpr = {
     variant: "Callable";
     thisExpr: Expression;
-    functionSymbol: LoweredTypeId;
-    type: LoweredTypeId;
+    functionSymbol: FunctionDefinition | FunctionDeclaration;
+    type: Datatype;
   };
 
   export type ExplicitCastExpr = {
     variant: "ExplicitCast";
     expr: Expression;
-    type: LoweredTypeId;
+    type: Datatype;
   };
 
   export type ExprMemberAccessExpr = {
@@ -49,39 +49,39 @@ export namespace Lowered {
     expr: Expression;
     memberName: string;
     isReference: boolean;
-    type: LoweredTypeId;
+    type: Datatype;
   };
 
   export type ConstantExpr = {
     variant: "ConstantExpr";
     value: string | number | boolean;
-    type: LoweredTypeId;
+    type: Datatype;
   };
 
   export type SymbolValueExpr = {
     variant: "SymbolValue";
     name: string;
-    functionSymbol?: LoweredTypeId;
-    type: LoweredTypeId;
+    functionSymbol?: FunctionDeclaration | FunctionDefinition;
+    type: Datatype;
   };
 
   export type PostIncrExpr = {
     variant: "PostIncrExpr";
     expr: Expression;
     operation: EIncrOperation;
-    type: LoweredTypeId;
+    type: Datatype;
   };
 
   export type PreIncrExpr = {
     variant: "PreIncrExpr";
     expr: Expression;
     operation: EIncrOperation;
-    type: LoweredTypeId;
+    type: Datatype;
   };
 
   export type StructInstantiationExpr = {
     variant: "StructInstantiation";
-    type: LoweredTypeId;
+    type: Datatype;
     memberAssigns: {
       name: string;
       value: Expression;
@@ -120,7 +120,7 @@ export namespace Lowered {
   export type VariableStatement = {
     variant: "VariableStatement";
     name: string;
-    type: LoweredTypeId;
+    type: Datatype;
     variableContext: EVariableContext;
     value?: Expression;
     sourceloc: SourceLoc;
@@ -195,60 +195,47 @@ export namespace Lowered {
     | (Omit<RawPointerDatatype, "id"> & { variant: "RawPointer" });
 
   export type NamespaceDatatype = {
-    id: LoweredTypeId;
     variant: "Namespace";
     name: string;
-    parent: LoweredTypeId;
-    semanticId: SemanticSymbolId;
+    parent: NamespaceDatatype | StructDatatype;
   };
 
   export type RawPointerDatatype = {
-    id: LoweredTypeId;
     variant: "RawPointer";
-    pointee: LoweredTypeId;
+    pointee: Datatype;
   };
 
   export type ReferenceDatatype = {
-    id: LoweredTypeId;
     variant: "Reference";
-    referee: LoweredTypeId;
+    referee: Datatype;
   };
 
   export type CallableDatatype = {
-    id: LoweredTypeId;
     variant: "Callable";
-    thisExprType?: LoweredTypeId;
-    functionType: LoweredTypeId;
+    thisExprType?: Datatype;
+    functionType: FunctionDatatype;
   };
 
   export type PrimitiveDatatype = {
-    id: LoweredTypeId;
     variant: "Primitive";
     primitive: EPrimitive;
   };
 
   export type StructDatatype = {
-    id: LoweredTypeId;
     variant: "Struct";
     name: string;
-    generics: LoweredTypeId[];
-    parent?: LoweredTypeId;
+    generics: Datatype[];
+    parent?: NamespaceDatatype | StructDatatype;
     members: {
       name: string;
-      type: LoweredTypeId;
+      type: Datatype;
     }[];
-    semanticId: SemanticSymbolId;
   };
 
   export type FunctionDatatype = {
-    id: LoweredTypeId;
     variant: "Function";
-    parameters: {
-      name: string;
-      type: LoweredTypeId;
-    }[];
-    returnType: LoweredTypeId;
+    parameters: Datatype[];
+    returnType: Datatype;
     vararg: boolean;
-    semanticId: SemanticSymbolId;
   };
 }
