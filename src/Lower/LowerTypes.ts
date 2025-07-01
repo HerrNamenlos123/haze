@@ -158,23 +158,19 @@ export namespace Lowered {
   };
 
   export type FunctionDeclaration = {
-    id: LoweredTypeId;
     variant: "FunctionDeclaration";
     name: string;
-    parent?: LoweredTypeId;
-    type: LoweredTypeId;
-    semanticId: SemanticSymbolId;
+    parent?: NamespaceDatatype | StructDatatype;
+    type: FunctionDatatype;
     externLanguage: EExternLanguage;
     sourceloc: SourceLoc;
   };
 
   export type FunctionDefinition = {
-    id: LoweredTypeId;
     variant: "FunctionDefinition";
     name: string;
-    parent?: LoweredTypeId;
-    type: LoweredTypeId;
-    semanticId: SemanticSymbolId;
+    parent?: NamespaceDatatype | StructDatatype;
+    type: FunctionDatatype;
     externLanguage: EExternLanguage;
     scope: Scope;
     sourceloc: SourceLoc;

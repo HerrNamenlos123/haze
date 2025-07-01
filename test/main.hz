@@ -92,6 +92,7 @@ inject "#include <stdio.h>";
 
 test(): i32 =>  {
     const i = 10;
+    printf("Start\n");
     while i {
         printf("Testing...\n");
         i--;

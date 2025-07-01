@@ -1,28 +1,90 @@
-import { logger } from "../log/log";
-import { type ASTDatatype } from "../shared/AST";
-import { assertID, stringToPrimitive } from "../shared/common";
+import { isFunctionOrConstructorTypeNode } from "typescript";
+import { EExternLanguage, type ASTConstant, type ASTDatatype } from "../shared/AST";
+import { assertScope, EMethodType, EPrimitive, EVariableContext, stringToPrimitive } from "../shared/common";
 import { assert, CompilerError, ImpossibleSituation, InternalError } from "../shared/Errors";
-import type { Collect } from "../SymbolCollection/CollectSymbols";
-import { elaborate } from "./Elaborate";
-import { instantiateSymbol } from "./Instantiate";
-import { Semantic, type SemanticResult } from "./SemanticSymbols";
+import { Collect } from "../SymbolCollection/CollectSymbols";
+import { inheritElaborationContext, type ElaborationContext } from "./Elaborate";
+import { isDatatypeSymbol, Semantic, type SemanticResult } from "./SemanticSymbols";
+import { ScopeContext } from "../parser/grammar/autogen/HazeParser";
+import { serializeDatatype } from "./Serialize";
+
+export function makeFunctionDatatypeAvailable(parameters: Semantic.DatatypeSymbol[], returnType: Semantic.DatatypeSymbol, vararg: boolean, context: ElaborationContext): Semantic.FunctionDatatypeSymbol {
+  for (const type of context.global.functionTypeCache) {
+    if (type.parameters.length !== parameters.length) {
+      continue;
+    }
+    let wrong = false;
+    for (let i = 0; i < parameters.length; i++) {
+      if (type.parameters[i] !== parameters[i]) {
+        wrong = true;
+        break;
+      }
+    }
+    if (wrong) continue;
+    if (type.returnType !== returnType) {
+      continue;
+    }
+    if (type.vararg !== vararg) continue;
+
+    // Everything matches
+    return type;
+  }
+
+  // Nothing found
+  const ftype: Semantic.FunctionDatatypeSymbol = {
+    variant: "FunctionDatatype",
+    parameters: parameters,
+    returnType: returnType,
+    vararg: vararg,
+    concrete: parameters.every((p) => p.concrete) && returnType.concrete,
+  };
+  context.global.functionTypeCache.push(ftype);
+  return ftype;
+}
+
+export function makeRawPointerDatatypeAvailable(pointee: Semantic.DatatypeSymbol, context: ElaborationContext): Semantic.RawPointerDatatypeSymbol {
+  for (const type of context.global.rawPointerTypeCache) {
+    if (type.pointee !== pointee) {
+      continue;
+    }
+    return type;
+  }
+
+  // Nothing found
+  const type: Semantic.RawPointerDatatypeSymbol = {
+    variant: "RawPointerDatatype",
+    pointee: pointee,
+    concrete: pointee.concrete,
+  };
+  context.global.rawPointerTypeCache.push(type);
+  return type;
+}
+
+export function makeReferenceDatatypeAvailable(referee: Semantic.DatatypeSymbol, context: ElaborationContext): Semantic.ReferenceDatatypeSymbol {
+  for (const type of context.global.referenceTypeCache) {
+    if (type.referee !== referee) {
+      continue;
+    }
+    return type;
+  }
+
+  // Nothing found
+  const type: Semantic.ReferenceDatatypeSymbol = {
+    variant: "ReferenceDatatype",
+    referee: referee,
+    concrete: referee.concrete,
+  };
+  context.global.referenceTypeCache.push(type);
+  return type;
+}
 
 export function resolveDatatype(
   sr: SemanticResult,
-  datatype: ASTDatatype,
-  scope: Semantic.DeclScope | Semantic.BlockScope,
-  collectScope: Collect.Scope,
-  genericContext: Semantic.GenericContext | null,
+  rawAstDatatype: ASTDatatype | ASTConstant,
+  rawAstScope: Collect.Scope,
+  context: ElaborationContext,
 ): Semantic.DatatypeSymbol {
-  logger.trace("resolveDatatype()");
-  if (!genericContext) {
-    genericContext = {
-      mapping: new Map(),
-      datatypesDone: new Map(),
-    };
-  }
-
-  switch (datatype.variant) {
+  switch (rawAstDatatype.variant) {
     // =================================================================================================================
     // =================================================================================================================
     // =================================================================================================================
@@ -39,24 +101,11 @@ export function resolveDatatype(
     // =================================================================================================================
 
     case "FunctionDatatype": {
-      const returnValue = resolveDatatype(sr, scope, datatype.returnType, genericContext);
-      let paramsConcrete = true;
-      const parameters = datatype.params.map((p) => {
-        const resolved = resolveDatatype(sr, scope, p.datatype, genericContext);
-        if (!resolved.concrete) paramsConcrete = false;
-        return {
-          name: p.name,
-          type: resolved,
-        };
-      });
-      return {
-        variant: "FunctionDatatype",
-        vararg: datatype.ellipsis,
-        functionReturnValue: returnValue,
-        functionParameters: parameters,
-        generics: [],
-        concrete: returnValue.concrete && paramsConcrete,
-      };
+      const parameters = rawAstDatatype.params.map((p) =>
+        resolveDatatype(sr, p.datatype, rawAstScope, context),
+      );
+      const returnValue = resolveDatatype(sr, rawAstDatatype.returnType, rawAstScope, context);
+      return makeFunctionDatatypeAvailable(parameters, returnValue, rawAstDatatype.ellipsis, context);
     }
 
     // =================================================================================================================
@@ -64,12 +113,8 @@ export function resolveDatatype(
     // =================================================================================================================
 
     case "RawPointerDatatype": {
-      const type = resolveDatatype(sr, scope, datatype.pointee, genericContext);
-      return {
-        variant: "RawPointerDatatype",
-        pointee: type,
-        concrete: type.concrete,
-      };
+      const pointee = resolveDatatype(sr, rawAstDatatype.pointee, rawAstScope, context);
+      return makeRawPointerDatatypeAvailable(pointee, context);
     }
 
     // =================================================================================================================
@@ -77,12 +122,8 @@ export function resolveDatatype(
     // =================================================================================================================
 
     case "ReferenceDatatype": {
-      const type = resolveDatatype(sr, scope, datatype.referee, genericContext);
-      return {
-        variant: "ReferenceDatatype",
-        referee: type,
-        concrete: type.concrete,
-      };
+      const referee = resolveDatatype(sr, rawAstDatatype.referee, rawAstScope, context);
+      return makeReferenceDatatypeAvailable(referee, context);
     }
 
     // =================================================================================================================
@@ -90,30 +131,29 @@ export function resolveDatatype(
     // =================================================================================================================
 
     case "NamedDatatype":
-      const primitive = stringToPrimitive(datatype.name);
+      const primitive = stringToPrimitive(rawAstDatatype.name);
       if (primitive) {
-        if (datatype.generics.length > 0) {
-          throw new Error(`Type ${datatype.name} is not generic`);
+        if (rawAstDatatype.generics.length > 0) {
+          throw new Error(`Type ${rawAstDatatype.name} is not generic`);
         }
-        return sr.globalScope.makePrimitiveAvailable(primitive);
+        return sr.globalNamespace.scope.makePrimitiveAvailable(primitive);
       }
 
-      if (datatype.name === "Callable") {
-        if (datatype.generics.length != 1) {
+      if (rawAstDatatype.name === "Callable") {
+        if (rawAstDatatype.generics.length != 1) {
           throw new CompilerError(
-            `Type Callable<> must take exactly 1 generic argument`,
-            datatype.sourceloc,
+            `Type Callable<> must take exactly 1 type parameter`,
+            rawAstDatatype.sourceloc,
           );
         }
-        if (datatype.generics[0].variant !== "FunctionDatatype") {
+        if (rawAstDatatype.generics[0].variant !== "FunctionDatatype") {
           throw new CompilerError(
             `Type Callable<> must take a function datatype as the generic argument`,
-            datatype.sourceloc,
+            rawAstDatatype.sourceloc,
           );
         }
-        const functype = resolveDatatype(sr, scope, datatype.generics[0], genericContext);
+        const functype = resolveDatatype(sr, rawAstDatatype.generics[0], rawAstScope, context);
         assert(functype.variant === "FunctionDatatype");
-
         return {
           variant: "CallableDatatype",
           functionType: functype,
@@ -122,11 +162,11 @@ export function resolveDatatype(
         };
       }
 
-      const found = scope.symbolTable.lookupSymbol(datatype.name, datatype.sourceloc);
+      const found = rawAstScope.symbolTable.lookupSymbol(rawAstDatatype.name, rawAstDatatype.sourceloc);
       if (!found) {
         throw new CompilerError(
-          `${datatype.name} was not declared in this scope`,
-          datatype.sourceloc,
+          `${rawAstDatatype.name} was not declared in this scope`,
+          rawAstDatatype.sourceloc,
         );
       }
 
@@ -136,54 +176,139 @@ export function resolveDatatype(
         // ◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈
 
         case "StructDefinition": {
-          const struct = instantiateSymbol(sr, elaborate(sr, found, collectScope, genericContext), genericContext);
-          assert(struct.variant === "StructDatatype");
 
-          if (struct.genericSymbols.length !== datatype.generics.length) {
-            throw new CompilerError(
-              `Type ${found.name} expects ${found.genericSymbols.length} generics but received ${datatype.generics.length}`,
-              datatype.sourceloc,
-            );
-          }
+          // This part resolves a struct datatype. It resolves all its generics.
+          // If it was already done, skips. Then struct is created and stored, so members can reach it.
+          // Then members and methods are added, if it is concrete.
 
-          const newGenericContext: Semantic.GenericContext = {
-            mapping: new Map(genericContext.mapping),
-            currentStructOrNamespace: genericContext.currentStructOrNamespace,
-            datatypesDone: new Map(genericContext.datatypesDone),
-          };
+          const generics = rawAstDatatype.generics.map((g) => resolveDatatype(sr, g, rawAstScope, context));
 
-          if (struct.genericSymbols.length > 0) {
-            for (let i = 0; i < struct.genericSymbols.length; i++) {
-              const g = datatype.generics[i];
-              if (
-                g.variant === "NumberConstant" ||
-                g.variant === "StringConstant" ||
-                g.variant === "BooleanConstant"
-              ) {
-                throw new InternalError("Constants not implemented in generics");
-              }
-
-              const from = struct.genericSymbols[i];
-              const to = resolveDatatype(sr, scope, g, genericContext);
-              newGenericContext.mapping.set(from, to);
+          for (const s of context.global.elaboratedStructDatatypes) {
+            if (s.generics.length === generics.length && s.generics.every((g, index) => g === generics[index]) && s.originalSymbol === found) {
+              return s.resultSymbol;
             }
           }
 
-          const dt = instantiateSymbol(sr, struct, newGenericContext);
-          return dt;
+          if (found.generics.length !== generics.length) {
+            throw new CompilerError(
+              `Type ${found.name} expects ${found.generics.length} type parameters but got ${rawAstDatatype.generics.length}`,
+              rawAstDatatype.sourceloc,
+            );
+          }
+
+          const newContext = inheritElaborationContext(context);
+          for (let i = 0; i < found.generics.length; i++) {
+            newContext.local.substitute.set(found.generics[i], generics[i]);
+          }
+
+          const struct: Semantic.StructDatatypeSymbol = {
+            variant: "StructDatatype",
+            name: found.name,
+            generics: generics,
+            externLanguage: found.externLanguage,
+            parent: context.global.currentNamespace,
+            members: [],
+            methods: [],
+            rawAst: found,
+            scope: new Semantic.DeclScope(found.sourceloc, assertScope(found._collect.scope), context.global.currentNamespace.scope),
+            sourceloc: found.sourceloc,
+            concrete: generics.every((g) => g.concrete),
+          };
+
+          // for (const g of generics) {
+          //   struct.scope.symbolTable.defineSymbol(g);
+          // }
+
+          if (struct.concrete) {
+            context.global.elaboratedStructDatatypes.push({
+              generics: generics,
+              originalSymbol: found,
+              resultSymbol: struct
+            })
+
+            struct.members = found.members.map((m) => {
+              const type = resolveDatatype(sr, m.type, assertScope(found._collect.scope), newContext);
+              return {
+                variant: "Variable",
+                name: m.name,
+                export: false,
+                externLanguage: EExternLanguage.None,
+                mutable: true,
+                sourceloc: m.sourceloc,
+                type: type,
+                variableContext: EVariableContext.MemberOfStruct,
+                memberOf: struct,
+                concrete: type.concrete,
+              }
+            });
+
+            struct.methods = found.methods.map((m) => {
+              const parameters = m.params.map((p) => resolveDatatype(sr, p.datatype, assertScope(found._collect.scope), newContext));
+              assert(m.returnType);
+              const returnType = resolveDatatype(sr, m.returnType, assertScope(found._collect.scope), newContext);
+              const ftype = makeFunctionDatatypeAvailable(parameters, returnType, m.ellipsis, newContext);
+
+              let methodType = EMethodType.NotAMethod;
+              if (m.name === "drop") {
+                methodType = EMethodType.Drop
+              }
+
+              return {
+                variant: "FunctionDefinition",
+                name: m.name,
+                export: false,
+                externLanguage: EExternLanguage.None,
+                sourceloc: m.sourceloc,
+                type: ftype,
+                methodType: methodType,
+                collectedScope: assertScope(found._collect.scope),
+                methodOf: struct,
+                parent: struct,
+                // TODO: Scope
+                concrete: ftype.concrete,
+              } satisfies Semantic.Symbol;
+            });
+
+            // Add drop function
+            if (struct.methods.every((m) => m.name !== "drop")) {
+              const dropType: Semantic.FunctionDatatypeSymbol = {
+                variant: "FunctionDatatype",
+                concrete: struct.concrete,
+                parameters: [],
+                returnType: sr.globalNamespace.scope.makePrimitiveAvailable(EPrimitive.none),
+                vararg: false,
+              };
+              const drop: Semantic.FunctionDefinitionSymbol = {
+                variant: "FunctionDefinition",
+                export: false,
+                concrete: struct.concrete,
+                externLanguage: EExternLanguage.None,
+                methodType: EMethodType.Drop,
+                name: "drop",
+                scope: new Semantic.BlockScope(struct.sourceloc, new Collect.Scope(struct.sourceloc, struct.scope.collectedScope)),
+                type: dropType,
+                methodOf: struct,
+                parent: struct,
+                sourceloc: struct.sourceloc,
+              };
+              struct.methods.push(drop);
+            }
+          }
+
+          return struct;
         }
 
         // ◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈
         // ◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆
         // ◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈
 
-        case "Namespace":
-          if (datatype.nested) {
-            return resolveDatatype(sr, scope, datatype.nested, genericContext);
+        case "NamespaceDefinition":
+          if (rawAstDatatype.nested) {
+            return resolveDatatype(sr, rawAstDatatype.nested, rawAstScope, context);
           }
           throw new CompilerError(
             `Namespace cannot be used as a datatype here`,
-            datatype.sourceloc,
+            rawAstDatatype.sourceloc,
           );
 
         // ◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈
@@ -191,12 +316,17 @@ export function resolveDatatype(
         // ◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈
 
         case "GenericParameter": {
-          return {
-            variant: "GenericParameter",
-            name: found.name,
-            sourceloc: found.sourceloc,
-            concrete: false,
-          } satisfies Semantic.DatatypeSymbol;
+          const mappedTo = context.local.substitute.get(found);
+          if (mappedTo) {
+            assert(isDatatypeSymbol(mappedTo));
+            return mappedTo;
+          } else {
+            return {
+              variant: "GenericParameterDatatype",
+              name: found.name,
+              concrete: false,
+            };
+          }
         }
 
         // ◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈
@@ -205,8 +335,8 @@ export function resolveDatatype(
 
         default:
           throw new CompilerError(
-            `Symbol '${datatype.name}' cannot be used as a datatype here`,
-            datatype.sourceloc,
+            `Symbol '${rawAstDatatype.name}' cannot be used as a datatype here`,
+            rawAstDatatype.sourceloc,
           );
       }
 

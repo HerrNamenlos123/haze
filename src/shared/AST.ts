@@ -454,7 +454,7 @@ export type ASTStructDefinition = {
   export: boolean;
   externLanguage: EExternLanguage;
   name: string;
-  generics: string[];
+  generics: Collect.GenericParameter[];
   members: ASTStructMemberDefinition[];
   methods: ASTStructMethodDefinition[];
   declarations: ASTStructDefinition[];

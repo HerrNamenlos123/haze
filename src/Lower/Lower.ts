@@ -170,10 +170,10 @@ function resolveType(lr: Lowered.Module, type: Semantic.DatatypeSymbol): Lowered
       id: id,
       variant: "Struct",
       name: type.name,
-      generics: type.genericSymbols.map((id) => resolveType(lr, id)),
+      generics: type.generics.map((id) => resolveType(lr, id)),
       parent:
-        (type.definedInNamespaceOrStruct &&
-          lower(lr, getSymbol(lr.sr, type.definedInNamespaceOrStruct))) ||
+        (type.parent &&
+          lower(lr, getSymbol(lr.sr, type.parent))) ||
         undefined,
       members: [],
       semanticId: typeId,
@@ -213,10 +213,10 @@ function resolveType(lr: Lowered.Module, type: Semantic.DatatypeSymbol): Lowered
     lr.datatypes.set(id, {
       id: id,
       variant: "Function",
-      parameters: type.functionParameters.map((p) => {
+      parameters: type.parameters.map((p) => {
         return { name: p.name, type: resolveType(lr, p.type) };
       }),
-      returnType: resolveType(lr, type.functionReturnValue),
+      returnType: resolveType(lr, type.returnType),
       vararg: type.vararg,
       semanticId: typeId,
     });
@@ -375,11 +375,6 @@ function lowerScope(lr: Lowered.Module, semanticScope: Semantic.BlockScope): Low
 function lower(lr: Lowered.Module, symbol: Semantic.Symbol): LoweredTypeId | undefined {
   switch (symbol.variant) {
     case "FunctionDeclaration": {
-      const existing = [...lr.functions.values()].find(
-        (s) => s.variant === "FunctionDeclaration" && s.semanticId === symbol.id,
-      );
-      if (existing) return existing.id!;
-
       const parent =
         symbol.nestedParentTypeSymbol && lower(lr, getSymbol(lr.sr, symbol.nestedParentTypeSymbol));
 
@@ -406,8 +401,8 @@ function lower(lr: Lowered.Module, symbol: Semantic.Symbol): LoweredTypeId | und
       if (symbol.methodOf === undefined) {
         // Normal function
         const parent =
-          symbol.nestedParentTypeSymbol &&
-          lower(lr, getSymbol(lr.sr, symbol.nestedParentTypeSymbol));
+          symbol.parent &&
+          lower(lr, getSymbol(lr.sr, symbol.parent));
 
         const id = makeLoweredId();
         lr.functions.set(id, {
@@ -425,8 +420,8 @@ function lower(lr: Lowered.Module, symbol: Semantic.Symbol): LoweredTypeId | und
       } else {
         // Method
         const parent =
-          symbol.nestedParentTypeSymbol &&
-          lower(lr, getSymbol(lr.sr, symbol.nestedParentTypeSymbol));
+          symbol.parent &&
+          lower(lr, getSymbol(lr.sr, symbol.parent));
 
         if (symbol.name === "get") {
           console.log(symbol.scope.sourceloc, symbol.scope.statements);
@@ -465,7 +460,7 @@ function lower(lr: Lowered.Module, symbol: Semantic.Symbol): LoweredTypeId | und
       throw new InternalError("No deferred type should exist in lowering");
 
     case "StructDatatype": {
-      for (const g of symbol.genericSymbols) {
+      for (const g of symbol.generics) {
         const sym = getSymbol(lr.sr, g);
         if (sym.variant === "GenericParameter") {
           return undefined;
@@ -534,8 +529,8 @@ export function LowerModule(cr: CollectResult, sr: SemanticResult): Lowered.Modu
     functions: new Map(),
   };
 
-  for (const [id, symbol] of sr.symbolTable.getAll()) {
-    if (!symbol.concrete || symbol.variant === "GenericParameter") {
+  for (const symbol of sr.globalNamespace.scope.symbolTable.symbols) {
+    if (!symbol.concrete) {
       continue;
     }
     lower(lr, symbol);

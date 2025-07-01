@@ -9,7 +9,6 @@ import type {
   ASTExprAssignmentExpr,
   ASTExprCallExpr,
   ASTExprMemberAccess,
-  ASTFuncBody,
   ASTFunctionDeclaration,
   ASTFunctionDefinition,
   ASTGlobalVariableDefinition,
@@ -216,12 +215,7 @@ function collect(
       item._collect.definedInNamespaceOrStruct = meta.currentNamespaceOrStruct;
       item._collect.fullNamespacedName = [...item._collect.namespaces, item.name];
       for (const g of item.generics) {
-        item._collect.scope.symbolTable.defineSymbol({
-          variant: "GenericPlaceholder",
-          name: g,
-          belongsToSymbol: item,
-          sourceloc: item.sourceloc,
-        });
+        item._collect.scope.symbolTable.defineSymbol(g);
       }
       scope.symbolTable.defineSymbol(item);
 

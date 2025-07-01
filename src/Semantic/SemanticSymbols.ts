@@ -22,8 +22,12 @@ import type { Collect } from "../SymbolCollection/CollectSymbols";
 
 export type SemanticResult = {
   // symbolTable: Semantic.SymbolTable;
-  globalScope: Semantic.DeclScope;
+  globalNamespace: Semantic.NamespaceSymbol;
 };
+
+export function isDatatypeSymbol(x: Semantic.Symbol): x is Semantic.DatatypeSymbol {
+  return x.variant.endsWith("Datatype");
+}
 
 export namespace Semantic {
   export type VariableSymbol = {
@@ -40,13 +44,6 @@ export namespace Semantic {
     concrete: boolean;
   };
 
-  export type GenericParameterSymbol = {
-    variant: "GenericParameter";
-    name: string;
-    concrete: boolean;
-    sourceloc: SourceLoc;
-  };
-
   export type FunctionDefinitionSymbol = {
     variant: "FunctionDefinition";
     name: string;
@@ -58,7 +55,7 @@ export namespace Semantic {
     methodType: EMethodType;
     methodOf?: StructDatatypeSymbol;
     sourceloc: SourceLoc;
-    nestedParentTypeSymbol?: StructDatatypeSymbol | NamespaceSymbol;
+    parent?: StructDatatypeSymbol | NamespaceSymbol;
     concrete: boolean;
   };
 
@@ -76,12 +73,8 @@ export namespace Semantic {
 
   export type FunctionDatatypeSymbol = {
     variant: "FunctionDatatype";
-    generics: DatatypeSymbol[];
-    functionParameters: {
-      name: string;
-      type: DatatypeSymbol;
-    }[];
-    functionReturnValue: DatatypeSymbol;
+    parameters: DatatypeSymbol[];
+    returnType: DatatypeSymbol;
     vararg: boolean;
     concrete: boolean;
   };
@@ -89,14 +82,12 @@ export namespace Semantic {
   export type StructDatatypeSymbol = {
     variant: "StructDatatype";
     name: string;
-    namespaces: string[];
-    fullNamespacedName: string[];
-    genericSymbols: DatatypeSymbol[];
+    generics: DatatypeSymbol[];
     externLanguage: EExternLanguage;
     members: VariableSymbol[];
     methods: FunctionDefinitionSymbol[];
-    definedInNamespaceOrStruct?: StructDatatypeSymbol | NamespaceSymbol;
-    collectedDeclaration: ASTStructDefinition;
+    parent?: StructDatatypeSymbol | NamespaceSymbol;
+    rawAst: ASTStructDefinition;
     scope: Semantic.DeclScope;
     sourceloc: SourceLoc;
     concrete: boolean;
@@ -132,32 +123,36 @@ export namespace Semantic {
     concrete: boolean;
   };
 
+  export type GenericParameterDatatypeSymbol = {
+    variant: "GenericParameterDatatype";
+    name: string;
+    concrete: boolean;
+  };
+
   export type NamespaceSymbol = {
     variant: "Namespace";
     name: string;
-    declarations: Semantic.Symbol[];
     nestedParentTypeSymbol?: Semantic.NamespaceSymbol | Semantic.StructDatatypeSymbol;
     scope: Semantic.DeclScope;
     sourceloc: SourceLoc;
     concrete: boolean;
   };
 
-  export type DatatypeSymbol =
+  export type Symbol =
+    | VariableSymbol
+    | FunctionDefinitionSymbol
+    | FunctionDeclarationSymbol
+    | GenericParameterDatatypeSymbol
+    | NamespaceSymbol
     | FunctionDatatypeSymbol
     | StructDatatypeSymbol
     | RawPointerDatatypeSymbol
     | ReferenceDatatypeSymbol
     | CallableDatatypeSymbol
-    | GenericParameterSymbol
     | DeferredDatatypeSymbol
     | PrimitiveDatatypeSymbol;
 
-  export type Symbol =
-    | VariableSymbol
-    | FunctionDefinitionSymbol
-    | FunctionDeclarationSymbol
-    | NamespaceSymbol
-    | DatatypeSymbol;
+  export type DatatypeSymbol = Extract<Symbol, { variant: `${string}Datatype` }>;
 
   // export type SymbolWithoutId =
   //   | (Omit<VariableSymbol, "id"> & { variant: "Variable" })
@@ -523,7 +518,6 @@ export namespace Semantic {
   export class SymbolTable {
     symbols: (
       | VariableSymbol
-      | GenericParameterSymbol
       | FunctionDefinitionSymbol
       | FunctionDeclarationSymbol
       | NamespaceSymbol
@@ -531,7 +525,7 @@ export namespace Semantic {
       | StructDatatypeSymbol
     )[] = [];
 
-    constructor(public parentTable?: SymbolTable) {}
+    constructor(public parentTable?: SymbolTable) { }
 
     defineSymbol(symbol: Symbol): Symbol {
       if (symbol.variant === "FunctionDatatype") {
@@ -548,6 +542,9 @@ export namespace Semantic {
       }
       if (symbol.variant === "DeferredDatatype") {
         throw new InternalError("A Deferred Datatype cannot be defined as a symbol");
+      }
+      if (symbol.variant === "GenericParameterDatatype") {
+        throw new InternalError("A Generic Parameter Datatype cannot be defined as a symbol");
       }
       if (symbol.variant === "PrimitiveDatatype") {
         const name = primitiveToString(symbol.primitive);
@@ -609,6 +606,7 @@ export namespace Semantic {
 
     constructor(
       public sourceloc: SourceLoc,
+      public collectedScope: Collect.Scope,
       public parentScope?: DeclScope,
     ) {
       this.id = makeSemanticScopeId();
@@ -637,21 +635,13 @@ export namespace Semantic {
 
     constructor(
       public sourceloc: SourceLoc,
-      public rawStatements: Collect.Statement[],
+      public collectedScope: Collect.Scope,
       public parentScope?: BlockScope | DeclScope,
     ) {
       this.id = makeSemanticScopeId();
       this.symbolTable = new SymbolTable(parentScope?.symbolTable);
     }
   }
-
-  export type DatatypeDoneMapKey = { symbol: Symbol; generics: Symbol[] };
-
-  export type GenericContext = {
-    mapping: Map<Semantic.Symbol, Semantic.Symbol>;
-    currentStructOrNamespace?: StructDatatypeSymbol | NamespaceSymbol;
-    datatypesDone: Map<DatatypeDoneMapKey, Symbol>;
-  };
 }
 
 // export function getSymbol(sr: SemanticResult, id: SemanticSymbolId, errorPropagationSteps = 0) {

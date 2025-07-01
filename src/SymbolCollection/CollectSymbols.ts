@@ -23,11 +23,9 @@ export type CollectResult = {
 };
 
 export namespace Collect {
-  export type GenericPlaceholder = {
-    variant: "GenericPlaceholder";
+  export type GenericParameter = {
+    variant: "GenericParameter";
     name: string;
-    belongsToSymbol: Symbol;
-    sourceloc: SourceLoc;
   };
 
   export type Symbol =
@@ -38,14 +36,14 @@ export namespace Collect {
     | ASTGlobalVariableDefinition
     | ASTStructDefinition
     | ASTStructMethodDefinition
-    | GenericPlaceholder;
+    | GenericParameter;
 
   export type Statement = ASTStatement;
 
   export class SymbolTable {
     symbols: Symbol[] = [];
 
-    constructor(public parentTable?: SymbolTable) {}
+    constructor(public parentTable?: SymbolTable) { }
 
     defineSymbol(symbol: Symbol) {
       if (this.tryLookupSymbolHere(symbol.name)) {

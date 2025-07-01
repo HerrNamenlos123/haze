@@ -99,6 +99,8 @@ import {
 } from "./grammar/autogen/HazeParser";
 import { BaseErrorListener, CharStream, CommonTokenStream, ParserRuleContext } from "antlr4ng";
 import { HazeVisitor } from "./grammar/autogen/HazeVisitor";
+import type { Collect } from "../SymbolCollection/CollectSymbols";
+import type { Semantic } from "../Semantic/SemanticSymbols";
 
 export namespace Parser {
   class HazeErrorListener extends BaseErrorListener {
@@ -569,7 +571,10 @@ class ASTTransformer extends HazeVisitor<any> {
       export: Boolean(ctx._export_),
       externLanguage: this.exlang(ctx),
       name: name,
-      generics: generics,
+      generics: generics.map((p) => ({
+        variant: "GenericParameter",
+        name: p,
+      } satisfies Collect.GenericParameter)),
       declarations: declarations,
       members: members,
       methods: methods,

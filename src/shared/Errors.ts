@@ -7,7 +7,7 @@ export type SourceLoc = {
   filename: string;
   line: number;
   column: number;
-};
+} | null;
 
 function formatCompilerMessage(
   type: ErrorType,
