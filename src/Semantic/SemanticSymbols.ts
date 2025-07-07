@@ -21,8 +21,8 @@ import {
 import type { Collect } from "../SymbolCollection/CollectSymbols";
 
 export type SemanticResult = {
-  // symbolTable: Semantic.SymbolTable;
   globalNamespace: Semantic.NamespaceSymbol;
+  monomorphizedSymbols: Semantic.StructDatatypeSymbol[];
 };
 
 export function isDatatypeSymbol(x: Semantic.Symbol): x is Semantic.DatatypeSymbol {

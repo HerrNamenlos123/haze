@@ -46,6 +46,30 @@ export enum EBinaryOperation {
   BoolOr,
 }
 
+export function IncrOperationToString(op: EIncrOperation): string {
+  switch (op) {
+    case EIncrOperation.Incr:
+      return "++";
+    case EIncrOperation.Decr:
+      return "--";
+    default:
+      throw new ImpossibleSituation();
+  }
+}
+
+export function UnaryOperationToString(op: EUnaryOperation): string {
+  switch (op) {
+    case EUnaryOperation.Plus:
+      return "+";
+    case EUnaryOperation.Minus:
+      return "-";
+    case EUnaryOperation.Negate:
+      return "!";
+    default:
+      throw new ImpossibleSituation();
+  }
+}
+
 export function BinaryOperationToString(op: EBinaryOperation): string {
   switch (op) {
     case EBinaryOperation.Multiply:

@@ -1,12 +1,9 @@
-import { isFunctionOrConstructorTypeNode } from "typescript";
 import { EExternLanguage, type ASTConstant, type ASTDatatype } from "../shared/AST";
 import { assertScope, EMethodType, EPrimitive, EVariableContext, stringToPrimitive } from "../shared/common";
-import { assert, CompilerError, ImpossibleSituation, InternalError } from "../shared/Errors";
+import { assert, CompilerError, ImpossibleSituation } from "../shared/Errors";
 import { Collect } from "../SymbolCollection/CollectSymbols";
-import { inheritElaborationContext, type ElaborationContext } from "./Elaborate";
+import { elaborateBlockScope, elaborateBodies, elaborateSignature, inheritElaborationContext, type ElaborationContext } from "./Elaborate";
 import { isDatatypeSymbol, Semantic, type SemanticResult } from "./SemanticSymbols";
-import { ScopeContext } from "../parser/grammar/autogen/HazeParser";
-import { serializeDatatype } from "./Serialize";
 
 export function makeFunctionDatatypeAvailable(parameters: Semantic.DatatypeSymbol[], returnType: Semantic.DatatypeSymbol, vararg: boolean, context: ElaborationContext): Semantic.FunctionDatatypeSymbol {
   for (const type of context.global.functionTypeCache) {
@@ -215,10 +212,6 @@ export function resolveDatatype(
             concrete: generics.every((g) => g.concrete),
           };
 
-          // for (const g of generics) {
-          //   struct.scope.symbolTable.defineSymbol(g);
-          // }
-
           if (struct.concrete) {
             context.global.elaboratedStructDatatypes.push({
               generics: generics,
@@ -253,20 +246,12 @@ export function resolveDatatype(
                 methodType = EMethodType.Drop
               }
 
-              return {
-                variant: "FunctionDefinition",
-                name: m.name,
-                export: false,
-                externLanguage: EExternLanguage.None,
-                sourceloc: m.sourceloc,
-                type: ftype,
-                methodType: methodType,
-                collectedScope: assertScope(found._collect.scope),
-                methodOf: struct,
-                parent: struct,
-                // TODO: Scope
-                concrete: ftype.concrete,
-              } satisfies Semantic.Symbol;
+              assert(m.funcbody._collect.scope);
+              const symbol = elaborateSignature(sr, m, m.funcbody._collect.scope, inheritElaborationContext(newContext, struct));
+              assert(symbol && symbol.variant === "FunctionDefinition");
+              elaborateBodies(sr, symbol, newContext);
+
+              return symbol;
             });
 
             // Add drop function
@@ -293,6 +278,8 @@ export function resolveDatatype(
               };
               struct.methods.push(drop);
             }
+
+            sr.monomorphizedSymbols.push(struct);
           }
 
           return struct;

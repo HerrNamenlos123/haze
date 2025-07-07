@@ -70,14 +70,23 @@ function lowerExpr(
 
     case "SymbolValue": {
       assert(expr.symbol.variant === "Variable" || expr.symbol.variant === "FunctionDeclaration" || expr.symbol.variant === "FunctionDefinition")
-      const func = lower(lr, expr.symbol)
-      assert(func?.variant === "FunctionDeclaration" || func?.variant === "FunctionDefinition")
-      return {
-        variant: "SymbolValue",
-        name: expr.symbol.name,
-        type: resolveType(lr, expr.symbol.type),
-        functionSymbol: func,
-      };
+      if (expr.symbol.variant === "Variable") {
+        return {
+          variant: "SymbolValue",
+          name: expr.symbol.name,
+          type: resolveType(lr, expr.symbol.type),
+        };
+      }
+      else {
+        const func = lower(lr, expr.symbol)
+        assert(func?.variant === "FunctionDeclaration" || func?.variant === "FunctionDefinition")
+        return {
+          variant: "SymbolValue",
+          name: expr.symbol.name,
+          type: resolveType(lr, expr.symbol.type),
+          functionSymbol: func,
+        };
+      }
     }
 
     case "ExplicitCast": {
@@ -398,9 +407,6 @@ function lower(lr: Lowered.Module, symbol: Semantic.Symbol) {
         assert(!parent || parent?.variant === "Struct" || parent?.variant === "Namespace");
 
         assert(symbol.scope)
-        if (symbol.name === "get") {
-          console.log(symbol.scope.sourceloc, symbol.scope.statements);
-        }
         const ftype = resolveType(lr, symbol.type)
         assert(ftype.variant === "Function");
         const f: Lowered.FunctionDefinition = {

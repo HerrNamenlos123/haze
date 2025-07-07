@@ -1,3 +1,4 @@
+import { escapeLeadingUnderscores } from "typescript";
 import { logger } from "../log/log";
 import {
   EBinaryOperation,
@@ -26,6 +27,7 @@ import { Collect } from "../SymbolCollection/CollectSymbols";
 import { Conversion } from "./Conversion";
 import { makeFunctionDatatypeAvailable, resolveDatatype } from "./Resolve";
 import { Semantic, type SemanticResult } from "./SemanticSymbols";
+import { serializeDatatype, serializeExpr } from "./Serialize";
 
 export type ElaborationContext = {
   local: {
@@ -400,7 +402,6 @@ export function elaborateExpr(
           sourceloc: expr.sourceloc,
         };
       } else if (method) {
-        console.log("Calling method ", method.name);
         return {
           variant: "CallableExpr",
           thisExpr: object,
@@ -808,10 +809,9 @@ export function elaborateSignature(
       }
 
       if (item.funcbody._collect.scope && symbol.concrete && !symbol.scope) {
-        assert(symbol.collectedScope);
         symbol.scope = new Semantic.BlockScope(
           symbol.sourceloc,
-          symbol.collectedScope,
+          item.funcbody._collect.scope,
         );
         defineThisReference(sr, symbol.scope, struct, context);
       }
@@ -922,6 +922,7 @@ export function SemanticallyAnalyze(collectedGlobalScope: Collect.Scope) {
       scope: new Semantic.DeclScope(null, new Collect.Scope(null)),
       sourceloc: null,
     },
+    monomorphizedSymbols: [],
   };
 
   const declarations = collectedGlobalScope.symbolTable.symbols.map((s) => elaborateSignature(sr, s, collectedGlobalScope, makeElaborationContext(sr.globalNamespace))).filter((s) => !!s);
@@ -953,17 +954,131 @@ export function SemanticallyAnalyze(collectedGlobalScope: Collect.Scope) {
   return sr;
 }
 
+const gray = "\x1b[90m";
+const reset = "\x1b[0m";
+
+const print = (str: string, indent = 0, color = reset) => {
+  console.log(color + " ".repeat(indent) + str + reset);
+};
+
+function printSymbol(symbol: Semantic.NamespaceSymbol | Semantic.DeclScope | Semantic.BlockScope | Semantic.VariableSymbol | Semantic.FunctionDefinitionSymbol | Semantic.FunctionDeclarationSymbol | Semantic.PrimitiveDatatypeSymbol | Semantic.StructDatatypeSymbol | Semantic.Statement, indent: number) {
+
+  if (symbol instanceof Semantic.DeclScope) {
+    for (const s of symbol.symbolTable.symbols) {
+      printSymbol(s, indent);
+    }
+    return;
+  }
+
+  if (symbol instanceof Semantic.BlockScope) {
+    for (const s of symbol.symbolTable.symbols) {
+      printSymbol(s, indent);
+    }
+    for (const s of symbol.statements) {
+      printSymbol(s, indent);
+    }
+    return;
+  }
+
+  switch (symbol.variant) {
+    case "Namespace":
+      print(`Namespace ${symbol.name} {`, indent);
+      printSymbol(symbol.scope, indent + 2);
+      print(`}`, indent);
+      break;
+
+    case "Variable":
+      print(`Variable Symbol ${symbol.name};`, indent);
+      break;
+
+    case "FunctionDeclaration":
+      print(`Function ${symbol.name}`, indent);
+      break;
+
+    case "FunctionDefinition":
+      print(`Function ${symbol.name} {`, indent);
+      if (symbol.scope) {
+        printSymbol(symbol.scope, indent + 2);
+      }
+      else {
+        print("Scope missing", indent + 2);
+      }
+      print(`}`, indent);
+      break;
+
+    case "PrimitiveDatatype":
+      print(`${serializeDatatype(symbol)}`, indent);
+      break;
+
+    case "StructDatatype":
+      print(`Struct ${serializeDatatype(symbol)} {`, indent);
+      for (const member of symbol.members) {
+        print(`${member.name}: ${serializeDatatype(member.type)}`, indent + 2);
+      }
+      for (const method of symbol.methods) {
+        print(``, indent + 2);
+        print(`${method.name}(): ${serializeDatatype(method.type.returnType)} {`, indent + 2);
+        if (method.scope) {
+          printSymbol(method.scope, indent + 4);
+        }
+        else {
+          print(`scope missing`, indent + 4);
+        }
+        print(`}`, indent + 2);
+      }
+      print(`}`, indent);
+      break;
+
+    case "InlineCStatement":
+      print(`InlineC "${symbol.value}"`, indent);
+      break;
+
+    case "ReturnStatement":
+      print(`Return ${symbol.expr ? serializeExpr(symbol.expr) : ''}`, indent);
+      break;
+
+    case "VariableStatement":
+      print(`Variable ${symbol.name} ${symbol.value ? '= ' + serializeExpr(symbol.value) : ''}`, indent);
+      break;
+
+    case "IfStatement":
+      print(`If ${serializeExpr(symbol.condition)} {`, indent);
+      printSymbol(symbol.then, indent + 2);
+      for (const elseif of symbol.elseIfs) {
+        print(`} else if ${serializeExpr(elseif.condition)} {`, indent);
+        printSymbol(elseif.then, indent + 2);
+      }
+      if (symbol.else) {
+        print(`} else {`, indent);
+        printSymbol(symbol.else, indent + 2);
+      }
+      print(`}`, indent);
+      break;
+
+    case "WhileStatement":
+      print(`While ${serializeExpr(symbol.condition)} {`, indent);
+      printSymbol(symbol.then, indent + 2);
+      print(`}`, indent);
+      break;
+
+    case "ExprStatement":
+      print(`Expr ${serializeExpr(symbol.expr)};`, indent);
+      break;
+
+  }
+}
+
 export function PrettyPrintAnalyzed(sr: SemanticResult) {
-  const indent = 0;
 
-  const gray = "\x1b[90m";
-  const reset = "\x1b[0m";
+  printSymbol(sr.globalNamespace, 0);
 
-  const print = (str: string, color = reset) => {
-    console.log(color + " ".repeat(indent) + str + reset);
-  };
+  print("");
+  print("Monomorphized Symbols:");
+  for (const symbol of sr.monomorphizedSymbols) {
+    print("");
+    printSymbol(symbol, 0);
+  }
 
-  print("Symbol Table:");
   // for (const symbol of sr.globalScope.symbolTable.symbols) {
   //   switch (symbol.variant) {
   //     case "FunctionDatatype":

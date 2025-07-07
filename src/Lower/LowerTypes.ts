@@ -197,7 +197,7 @@ export namespace Lowered {
   export type NamespaceDatatype = {
     variant: "Namespace";
     name: string;
-    parent: NamespaceDatatype | StructDatatype;
+    parent?: NamespaceDatatype | StructDatatype;
   };
 
   export type RawPointerDatatype = {
