@@ -1,5 +1,5 @@
 
-extern "C" printf(fmt: str, ...);
+extern "C" printf(fmt: str, ...): i32;
 
 struct CString {
 }

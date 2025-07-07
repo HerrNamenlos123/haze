@@ -2,7 +2,6 @@ import type { Semantic, SemanticResult } from "../Semantic/SemanticSymbols";
 import type { EBinaryOperation, EExternLanguage, EIncrOperation } from "../shared/AST";
 import type { EPrimitive, EVariableContext } from "../shared/common";
 import type { SourceLoc } from "../shared/Errors";
-import type { LoweredTypeId, SemanticSymbolId } from "../shared/store";
 import type { CollectResult } from "../SymbolCollection/CollectSymbols";
 
 export namespace Lowered {
@@ -32,9 +31,16 @@ export namespace Lowered {
   };
 
   export type CallableExpr = {
-    variant: "Callable";
+    variant: "CallableExpr";
     thisExpr: Expression;
-    functionSymbol: FunctionDefinition | FunctionDeclaration;
+    functionPrettyName: string;
+    functionMangledName: string;
+    type: Datatype;
+  };
+
+  export type AddressOperatorExpr = {
+    variant: "AddressOperator";
+    expr: Expression;
     type: Datatype;
   };
 
@@ -60,8 +66,9 @@ export namespace Lowered {
 
   export type SymbolValueExpr = {
     variant: "SymbolValue";
-    name: string;
-    functionSymbol?: FunctionDeclaration | FunctionDefinition;
+    prettyName: string;
+    mangledName: string;
+    wasMangled: boolean;
     type: Datatype;
   };
 
@@ -93,6 +100,7 @@ export namespace Lowered {
     | BinaryExpr
     | CallableExpr
     | StructInstantiationExpr
+    | AddressOperatorExpr
     | ExplicitCastExpr
     | ExprMemberAccessExpr
     | ConstantExpr
@@ -119,7 +127,9 @@ export namespace Lowered {
 
   export type VariableStatement = {
     variant: "VariableStatement";
-    name: string;
+    prettyName: string;
+    mangledName: string;
+    wasMangled: boolean;
     type: Datatype;
     variableContext: EVariableContext;
     value?: Expression;
@@ -159,8 +169,10 @@ export namespace Lowered {
 
   export type FunctionDeclaration = {
     variant: "FunctionDeclaration";
-    name: string;
-    parent?: NamespaceDatatype | StructDatatype;
+    prettyName: string;
+    mangledName: string;
+    wasMangled: boolean;
+    parameterNames: string[];
     type: FunctionDatatype;
     externLanguage: EExternLanguage;
     sourceloc: SourceLoc;
@@ -168,9 +180,11 @@ export namespace Lowered {
 
   export type FunctionDefinition = {
     variant: "FunctionDefinition";
-    name: string;
-    parent?: NamespaceDatatype | StructDatatype;
+    prettyName: string;
+    mangledName: string;
+    wasMangled: boolean;
     type: FunctionDatatype;
+    parameterNames: string[];
     externLanguage: EExternLanguage;
     scope: Scope;
     sourceloc: SourceLoc;
@@ -178,54 +192,51 @@ export namespace Lowered {
 
   export type Datatype =
     | StructDatatype
-    | NamespaceDatatype
     | CallableDatatype
     | PrimitiveDatatype
     | FunctionDatatype
     | ReferenceDatatype
     | RawPointerDatatype;
 
-  export type DatatypeWithoutId =
-    | (Omit<StructDatatype, "id"> & { variant: "Struct" })
-    | (Omit<NamespaceDatatype, "id"> & { variant: "Namespace" })
-    | (Omit<CallableDatatype, "id"> & { variant: "Callable" })
-    | (Omit<PrimitiveDatatype, "id"> & { variant: "Primitive" })
-    | (Omit<FunctionDatatype, "id"> & { variant: "Function" })
-    | (Omit<ReferenceDatatype, "id"> & { variant: "Reference" })
-    | (Omit<RawPointerDatatype, "id"> & { variant: "RawPointer" });
-
-  export type NamespaceDatatype = {
-    variant: "Namespace";
-    name: string;
-    parent?: NamespaceDatatype | StructDatatype;
-  };
-
   export type RawPointerDatatype = {
     variant: "RawPointer";
+    prettyName: string;
+    mangledName: string;
+    wasMangled: boolean;
     pointee: Datatype;
   };
 
   export type ReferenceDatatype = {
     variant: "Reference";
+    prettyName: string;
+    mangledName: string;
+    wasMangled: boolean;
     referee: Datatype;
   };
 
   export type CallableDatatype = {
     variant: "Callable";
+    prettyName: string;
+    mangledName: string;
+    wasMangled: boolean;
     thisExprType?: Datatype;
     functionType: FunctionDatatype;
   };
 
   export type PrimitiveDatatype = {
     variant: "Primitive";
+    prettyName: string;
+    mangledName: string;
+    wasMangled: boolean;
     primitive: EPrimitive;
   };
 
   export type StructDatatype = {
     variant: "Struct";
-    name: string;
+    prettyName: string;
+    mangledName: string;
+    wasMangled: boolean;
     generics: Datatype[];
-    parent?: NamespaceDatatype | StructDatatype;
     members: {
       name: string;
       type: Datatype;
@@ -234,6 +245,9 @@ export namespace Lowered {
 
   export type FunctionDatatype = {
     variant: "Function";
+    prettyName: string;
+    mangledName: string;
+    wasMangled: boolean;
     parameters: Datatype[];
     returnType: Datatype;
     vararg: boolean;

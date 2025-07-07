@@ -722,8 +722,9 @@ export function elaborateSignature(
         type: resolved,
         export: item.export,
         externLanguage: item.externLanguage,
+        parameterNames: item.params.map((p) => p.name),
         methodType: item.methodType,
-        nestedParentTypeSymbol: context.global.currentNamespace,
+        parent: context.global.currentNamespace,
         name: item.name,
         sourceloc: item.sourceloc,
         concrete: resolved.concrete,
@@ -754,6 +755,7 @@ export function elaborateSignature(
         parent: context.global.currentNamespace,
         externLanguage: item.externLanguage,
         methodType: item._collect.method!,
+        parameterNames: item.params.map((p) => p.name),
         name: item.name,
         sourceloc: item.sourceloc,
         scope: undefined,
@@ -784,8 +786,10 @@ export function elaborateSignature(
         concrete: struct.concrete,
       };
 
+      const parameterNames = item.params.map((p) => p.name);
       const parameters = item.params.map((p) => resolveDatatype(sr, p.datatype, scope, context));
       parameters.unshift(thisReference);
+      parameterNames.unshift("this");
       assert(item.returnType);
       const returnType = resolveDatatype(sr, item.returnType, scope, context);
 
@@ -799,6 +803,7 @@ export function elaborateSignature(
         methodType: EMethodType.Method,
         name: item.name,
         sourceloc: item.sourceloc,
+        parameterNames: parameterNames,
         methodOf: struct,
         scope: undefined,
         parent: struct,
@@ -837,7 +842,7 @@ export function elaborateSignature(
       const namespace: Semantic.NamespaceSymbol = {
         variant: "Namespace",
         name: item.name,
-        nestedParentTypeSymbol: context.global.currentNamespace,
+        parent: context.global.currentNamespace,
         scope: new Semantic.DeclScope(
           item.sourceloc,
           assertScope(item._collect.scope),
@@ -925,13 +930,15 @@ export function SemanticallyAnalyze(collectedGlobalScope: Collect.Scope) {
     monomorphizedSymbols: [],
   };
 
-  const declarations = collectedGlobalScope.symbolTable.symbols.map((s) => elaborateSignature(sr, s, collectedGlobalScope, makeElaborationContext(sr.globalNamespace))).filter((s) => !!s);
+  const context = makeElaborationContext(sr.globalNamespace)
+
+  const declarations = collectedGlobalScope.symbolTable.symbols.map((s) => elaborateSignature(sr, s, collectedGlobalScope, inheritElaborationContext(context))).filter((s) => !!s);
   for (const a of declarations) {
     sr.globalNamespace.scope.symbolTable.defineSymbol(a);
   }
 
   for (const s of sr.globalNamespace.scope.symbolTable.symbols) {
-    elaborateBodies(sr, s, makeElaborationContext(sr.globalNamespace));
+    elaborateBodies(sr, s, inheritElaborationContext(context));
   }
 
   const mainFunction = sr.globalNamespace.scope.symbolTable.symbols.find(

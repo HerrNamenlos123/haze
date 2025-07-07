@@ -1,5 +1,4 @@
 import * as child_process from "child_process";
-import { $ } from "bun";
 import {
   CmdFailed,
   CompilerError,
@@ -65,7 +64,7 @@ class Cache {
   filename?: string;
   data: Record<string, any> = {};
 
-  constructor() {}
+  constructor() { }
 
   async getFilesWithModificationDates(dir: string): Promise<{ file: string; modified: Date }[]> {
     const files: { file: string; modified: Date }[] = [];
@@ -147,7 +146,7 @@ class Cache {
 export class ProjectCompiler {
   cache: Cache = new Cache();
 
-  constructor() {}
+  constructor() { }
 
   async getConfig(singleFilename?: string) {
     let config: ModuleConfig | undefined;
@@ -262,7 +261,7 @@ export class ProjectCompiler {
 
 async function exec(str: string) {
   try {
-    return await $`${str}`;
+    child_process.execSync(str);
   } catch (e) {
     throw new CmdFailed();
   }
@@ -281,7 +280,7 @@ class ModuleCompiler {
   constructor(
     public config: ModuleConfig,
     public cache: Cache,
-  ) {}
+  ) { }
 
   get globalBuildDir() {
     return this.config.buildDir;
@@ -359,11 +358,11 @@ class ModuleCompiler {
       if (this.config.moduleType === ModuleType.Executable) {
         const [libs, linkerFlags] = await this.loadDependencyBinaries();
         const cmd = `${C_COMPILER} -g ${moduleCFile} -o ${moduleExecutable} -I${this.config.srcDirectory} ${libs.join(" ")} ${compilerFlags.join(" ")} ${linkerFlags.join(" ")} -std=c11`;
-        child_process.execSync(cmd);
+        await exec(cmd);
       } else {
         const cmd = `${C_COMPILER} -g ${moduleCFile} -c -o ${moduleOFile} -I${this.config.srcDirectory} ${compilerFlags.join(" ")} -fPIC -std=c11`;
-        child_process.execSync(cmd);
-        child_process.execSync(`${ARCHIVE_TOOL} r ${moduleAFile} ${moduleOFile} > /dev/null`);
+        await exec(cmd);
+        await exec(`${ARCHIVE_TOOL} r ${moduleAFile} ${moduleOFile} > /dev/null`);
 
         const makerel = (absolute: string) => {
           return absolute.replace(this.moduleBuildDir + "/", "");

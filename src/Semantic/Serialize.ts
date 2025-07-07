@@ -1,4 +1,5 @@
-import { BinaryOperationToString, IncrOperationToString } from "../shared/AST";
+import { SymbolFlags } from "typescript";
+import { BinaryOperationToString, EExternLanguage, IncrOperationToString } from "../shared/AST";
 import { EPrimitive, primitiveToString } from "../shared/common";
 import { GLOBAL_NAMESPACE_NAME } from "../shared/Config";
 import { ImpossibleSituation, InternalError } from "../shared/Errors";
@@ -25,6 +26,9 @@ export function serializeDatatype(datatype: Semantic.DatatypeSymbol): string {
         case "FunctionDatatype":
             return `(${datatype.parameters.map((p) => serializeDatatype(p)).join(", ")}${datatype.vararg ? ', ...' : ''}) => ${serializeDatatype(datatype.returnType)}`;
 
+        case "CallableDatatype":
+            return `Callable<${serializeDatatype(datatype.functionType)}>(this=${datatype.thisExprType ? serializeDatatype(datatype.thisExprType) : ''})`;
+
         default:
             throw new InternalError("Not handled: " + datatype.variant);
     }
@@ -43,18 +47,124 @@ function getParentNames(symbol: Semantic.NamespaceSymbol | Semantic.StructDataty
             if (node.name !== GLOBAL_NAMESPACE_NAME) {
                 fullName = `${node.name}${fullName.length === 0 ? fullName : '.' + fullName}`;
             }
-            node = node.nestedParentTypeSymbol;
+            node = node.parent;
         }
     }
     return fullName;
 }
 
-export function serializeFunctionName(expr: Semantic.FunctionDefinitionSymbol): string {
-    if (expr.methodOf) {
-        return `${getParentNames(expr.methodOf)}${expr.name}`;
+export function serializeNestedName(expr: Semantic.FunctionDefinitionSymbol | Semantic.FunctionDeclarationSymbol): string {
+    if (expr.variant === "FunctionDeclaration") {
+        return `${expr.parent.name !== GLOBAL_NAMESPACE_NAME ? (getParentNames(expr.parent) + '.') : ''}${expr.name}`;
+    }
+    else if (expr.methodOf) {
+        return `${getParentNames(expr.methodOf)}.${expr.name}`;
     }
     else {
-        throw new InternalError("Not implemented");
+        return `${expr.parent.name !== GLOBAL_NAMESPACE_NAME ? (getParentNames(expr.parent) + '.') : ''}${expr.name}`;
+    }
+}
+
+export function mangleNestedName(
+    symbol:
+        | Semantic.StructDatatypeSymbol
+        | Semantic.NamespaceSymbol
+        | Semantic.FunctionDeclarationSymbol
+        | Semantic.FunctionDefinitionSymbol,
+) {
+    if (symbol.variant !== "Namespace" && symbol.externLanguage === EExternLanguage.Extern_C) {
+        return symbol.name;
+    }
+
+    const fragments: string[] = [];
+    let p:
+        | Semantic.StructDatatypeSymbol
+        | Semantic.NamespaceSymbol
+        | Semantic.FunctionDeclarationSymbol
+        | Semantic.FunctionDefinitionSymbol
+        | undefined = symbol;
+    while (p) {
+        if (p.variant !== "StructDatatype") {
+            fragments.push(p.name.length + p.name);
+        } else {
+            let generics = "";
+            if (p.generics.length > 0) {
+                generics += "I";
+                for (const g of p.generics) {
+                    generics += mangleDatatype(g);
+                }
+                generics += "E";
+            }
+            fragments.push(p.name.length + p.name + generics);
+        }
+        const pParent: Semantic.DatatypeSymbol | Semantic.NamespaceSymbol | undefined = p.parent;
+        if (pParent) {
+            if (pParent.variant !== "StructDatatype" && pParent.variant !== "Namespace") {
+                throw new ImpossibleSituation();
+            }
+        }
+        p = pParent;
+        if (p?.name === GLOBAL_NAMESPACE_NAME) {
+            p = undefined;
+        }
+    }
+    fragments.reverse();
+    let functionPart = "";
+    if (symbol.variant === "FunctionDeclaration" || symbol.variant === "FunctionDefinition") {
+        const ftype = symbol.type;
+        if (ftype.variant !== "FunctionDatatype") throw new ImpossibleSituation();
+        if (ftype.parameters.length === 0) {
+            functionPart += "v";
+        } else {
+            for (const p of ftype.parameters) {
+                functionPart += mangleDatatype(p);
+            }
+        }
+    }
+    if (fragments.length > 1) {
+        return "N" + fragments.join("") + "E" + functionPart;
+    } else {
+        return fragments[0] + functionPart;
+    }
+}
+
+export function mangleDatatype(type: Semantic.DatatypeSymbol): string {
+    switch (type.variant) {
+        case "StructDatatype": {
+            return mangleNestedName(type);
+        }
+
+        case "CallableDatatype": {
+            const name = "Callable";
+            const generic =
+                (type.thisExprType && "I" + mangleDatatype(type.thisExprType) + "E") || "";
+            return name.length + name + generic + mangleDatatype(type.functionType);
+        }
+
+        case "PrimitiveDatatype": {
+            const name = primitiveToString(type.primitive);
+            return name.length + name;
+        }
+
+        case "FunctionDatatype": {
+            return (
+                "F" +
+                type.parameters.map((p) => mangleDatatype(p)).join("") +
+                "E" +
+                mangleDatatype(type.returnType)
+            );
+        }
+
+        case "RawPointerDatatype": {
+            return "P" + mangleDatatype(type.pointee);
+        }
+
+        case "ReferenceDatatype": {
+            return "R" + mangleDatatype(type.referee);
+        }
+
+        default:
+            throw new InternalError("Unhandled variant: ");
     }
 }
 
@@ -103,6 +213,6 @@ export function serializeExpr(expr: Semantic.Expression): string {
             return `(${serializeExpr(expr.expr)}.${expr.memberName})`;
 
         case "CallableExpr":
-            return `Callable(${serializeFunctionName(expr.functionSymbol)}, this=${serializeExpr(expr.thisExpr)})`;
+            return `Callable(${serializeNestedName(expr.functionSymbol)}, this=${serializeExpr(expr.thisExpr)})`;
     }
 }

@@ -5,8 +5,8 @@ import { BinaryOperationToString, EBinaryOperation, EExternLanguage, EIncrOperat
 import { EPrimitive, EVariableContext, primitiveToString } from "../shared/common";
 import { ModuleType, type ModuleConfig } from "../shared/Config";
 import { assert, ImpossibleSituation, InternalError, printWarningMessage } from "../shared/Errors";
-import { makeTempName, type LoweredTypeId } from "../shared/store";
 import { OutputWriter } from "./OutputWriter";
+import { makeTempName } from "../shared/store";
 
 class CodeGenerator {
   private out = {
@@ -51,14 +51,6 @@ class CodeGenerator {
       // );
       this.out.function_definitions.writeLine("return _H4mainv();").popIndent().writeLine("}");
     }
-  }
-
-  getType(id: LoweredTypeId) {
-    const type = this.lr.datatypes.get(id);
-    if (!type) {
-      throw new InternalError("Type with id " + id + " does not exist", undefined, 1);
-    }
-    return type;
   }
 
   includeHeader(filename: string) {
@@ -107,46 +99,43 @@ class CodeGenerator {
       this.out.cDecls.writeLine(decl);
     }
 
-    for (const [id, symbol] of this.lr.functions) {
+    for (const [id, symbol] of this.lr.loweredFunctions) {
       this.emitFunction(symbol);
     }
 
-    for (const [id, symbol] of this.lr.datatypes) {
-      if (symbol.variant === "Namespace") {
-      } else if (symbol.variant === "Primitive") {
+    for (const [id, symbol] of this.lr.loweredTypes) {
+      if (symbol.variant === "Primitive") {
         this.out.type_declarations.writeLine(
-          `typedef ${this.primitiveToC(symbol.primitive)} _H${this.emitDatatype(symbol)};`,
+          `typedef ${this.primitiveToC(symbol.primitive)} ${this.mangle(symbol)};`,
         );
       } else if (symbol.variant === "Struct") {
-        const dt = this.emitDatatype(symbol);
-        this.out.type_declarations.writeLine(`typedef struct _H${dt} _H${dt};`);
-        this.out.type_definitions.writeLine(`struct _H${dt} {`).pushIndent();
+        this.out.type_declarations.writeLine(`typedef struct ${this.mangle(symbol)} ${this.mangle(symbol)};`);
+        this.out.type_definitions.writeLine(`struct ${this.mangle(symbol)} {`).pushIndent();
         for (const member of symbol.members) {
           this.out.type_definitions.writeLine(
-            `_H${this.emitDatatype(member.type)} ${member.name};`,
+            `${this.mangle(member.type)} ${member.name};`,
           );
         }
         this.out.type_definitions.popIndent().writeLine(`};`).writeLine();
       } else if (symbol.variant === "RawPointer") {
         this.out.type_declarations.writeLine(
-          `typedef _H${this.emitDatatype(symbol.pointee)}* _H${this.emitDatatype(symbol)};`,
+          `typedef ${this.mangle(symbol.pointee)}* ${this.mangle(symbol)};`,
         );
       } else if (symbol.variant === "Reference") {
         this.out.type_declarations.writeLine(
-          `typedef _H${this.emitDatatype(symbol.referee)}* _H${this.emitDatatype(symbol)};`,
+          `typedef ${this.mangle(symbol.referee)}* ${this.mangle(symbol)};`,
         );
       } else if (symbol.variant === "Function") {
         this.out.type_declarations.writeLine(
-          `typedef _H${this.emitDatatype(symbol.returnType)} (*_H${this.emitDatatype(symbol)})(${symbol.parameters
-            .map((p) => `_H${this.emitDatatype(p.type)} ${p.name}`)
+          `typedef ${this.mangle(symbol.returnType)} (*${this.mangle(symbol)})(${symbol.parameters
+            .map((p) => `${this.mangle(p)}`)
             .join(", ")});`,
         );
       } else if (symbol.variant === "Callable") {
-        const dt = this.emitDatatype(symbol);
-        this.out.type_declarations.writeLine(`typedef struct _H${dt} _H${dt};`);
-        this.out.type_definitions.writeLine(`struct _H${dt} {`).pushIndent();
+        this.out.type_declarations.writeLine(`typedef struct ${this.mangle(symbol)} ${this.mangle(symbol)};`);
+        this.out.type_definitions.writeLine(`struct ${this.mangle(symbol)} {`).pushIndent();
         this.out.type_definitions.writeLine(`void* thisPtr;`);
-        this.out.type_definitions.writeLine(`_H${this.emitDatatype(symbol.functionType)} fn;`);
+        this.out.type_definitions.writeLine(`${this.mangle(symbol.functionType)} fn;`);
         this.out.type_definitions.popIndent().writeLine(`};`).writeLine();
       } else {
       }
@@ -184,132 +173,37 @@ class CodeGenerator {
     }
   }
 
-  mangleNestedName(
-    symbol:
-      | Lowered.StructDatatype
-      | Lowered.NamespaceDatatype
-      | Lowered.FunctionDeclaration
-      | Lowered.FunctionDefinition,
-  ) {
-    const fragments: string[] = [];
-    let p:
-      | Lowered.StructDatatype
-      | Lowered.NamespaceDatatype
-      | Lowered.FunctionDeclaration
-      | Lowered.FunctionDefinition
-      | undefined = symbol;
-    while (p) {
-      if (p.variant !== "Struct") {
-        fragments.push(p.name.length + p.name);
-      } else {
-        let generics = "";
-        if (p.generics.length > 0) {
-          generics += "I";
-          for (const g of p.generics) {
-            generics += this.emitDatatype(this.getType(g));
-          }
-          generics += "E";
-        }
-        fragments.push(p.name.length + p.name + generics);
-      }
-      const pParent: Lowered.Datatype | undefined = p.parent && this.getType(p.parent);
-      if (pParent) {
-        if (pParent.variant !== "Struct" && pParent.variant !== "Namespace") {
-          throw new ImpossibleSituation();
-        }
-      }
-      p = pParent;
+  mangle(datatypeOrSymbol: Lowered.Datatype | Lowered.FunctionDeclaration | Lowered.FunctionDefinition | Lowered.VariableStatement | Lowered.SymbolValueExpr | Lowered.CallableExpr) {
+    if (datatypeOrSymbol.variant === "CallableExpr") {
+      return "_H" + datatypeOrSymbol.functionMangledName;
     }
-    fragments.reverse();
-    let functionPart = "";
-    if (symbol.variant === "FunctionDeclaration" || symbol.variant === "FunctionDefinition") {
-      const ftype = this.getType(symbol.type);
-      if (ftype.variant !== "Function") throw new ImpossibleSituation();
-      if (ftype.parameters.length === 0) {
-        functionPart += "v";
-      } else {
-        for (const p of ftype.parameters) {
-          functionPart += this.emitDatatype(this.getType(p.type));
-        }
-      }
+    if (datatypeOrSymbol.wasMangled) {
+      return "_H" + datatypeOrSymbol.mangledName;
     }
-    if (fragments.length > 1) {
-      return "N" + fragments.join("") + "E" + functionPart;
-    } else {
-      return fragments[0] + functionPart;
-    }
-  }
-
-  emitDatatype(idOrType: LoweredTypeId | Lowered.Datatype): string {
-    const type = typeof idOrType === "bigint" ? this.getType(idOrType) : idOrType;
-    if (!type) throw new InternalError("Type not found: " + idOrType, undefined, 1);
-    switch (type.variant) {
-      case "Struct": {
-        return this.mangleNestedName(type);
-      }
-
-      case "Callable": {
-        const name = "Callable";
-        const generic =
-          (type.thisExprType && "I" + this.emitDatatype(type.thisExprType) + "E") || "";
-        return name.length + name + generic + this.emitDatatype(type.functionType);
-      }
-
-      case "Namespace":
-        throw new InternalError("Emitting a namespace is a mistake");
-
-      case "Primitive": {
-        const name = primitiveToString(type.primitive);
-        return name.length + name;
-      }
-
-      case "Function": {
-        return (
-          "F" +
-          type.parameters.map((p) => this.emitDatatype(p.type)).join("") +
-          "E" +
-          this.emitDatatype(type.returnType)
-        );
-      }
-
-      case "RawPointer": {
-        return "P" + this.emitDatatype(type.pointee);
-      }
-
-      case "Reference": {
-        return "R" + this.emitDatatype(type.referee);
-      }
-
-      default:
-        throw new InternalError("Unhandled variant: ");
+    else {
+      return datatypeOrSymbol.mangledName;
     }
   }
 
   emitSymbol(symbol: Lowered.FunctionDeclaration | Lowered.FunctionDefinition) { }
 
   emitFunction(symbol: Lowered.FunctionDeclaration | Lowered.FunctionDefinition) {
-    const declaration = (type: Lowered.Datatype): string => {
-      if (type.variant !== "Function") throw new ImpossibleSituation();
-      let decl =
-        "_H" +
-        this.emitDatatype(type.returnType) +
-        " " +
-        "_H" +
-        this.mangleNestedName(symbol) +
-        "(";
-      decl += type.parameters.map((p) => `_H${this.emitDatatype(p.type)} ${p.name}`).join(", ");
-      if (type.vararg) {
-        decl += ", ...";
-      }
-      decl += ")";
-      return decl;
-    };
+    let signature =
+      this.mangle(symbol.type.returnType) +
+      " " +
+      this.mangle(symbol) +
+      "(";
+    console.log(symbol.prettyName, symbol.parameterNames)
+    signature += symbol.type.parameters.map((p, i) => `${this.mangle(p)} ${symbol.parameterNames[i]}`).join(", ");
+    if (symbol.type.vararg) {
+      signature += ", ...";
+    }
+    signature += ")";
 
-    const decl = declaration(this.getType(symbol.type));
-    this.out.function_declarations.writeLine(decl + ";");
+    this.out.function_declarations.writeLine(signature + ";");
 
     if (symbol.variant === "FunctionDefinition") {
-      this.out.function_definitions.writeLine(decl + " {").pushIndent();
+      this.out.function_definitions.writeLine(signature + " {").pushIndent();
 
       // console.log(symbol.name, symbol.scope.statements);
       const s = this.emitScope(symbol.scope);
@@ -351,7 +245,9 @@ class CodeGenerator {
     const outWriter = new OutputWriter();
     switch (statement.variant) {
       case "ReturnStatement": {
-        outWriter.writeLine(`#line ${statement.sourceloc.line} ${JSON.stringify(statement.sourceloc.filename)}`);
+        if (statement.sourceloc) {
+          outWriter.writeLine(`#line ${statement.sourceloc.line} ${JSON.stringify(statement.sourceloc.filename)}`);
+        }
         if (statement.expr) {
           const exprWriter = this.emitExpr(statement.expr);
           tempWriter.write(exprWriter.temp);
@@ -363,56 +259,30 @@ class CodeGenerator {
       }
 
       case "VariableStatement": {
-        const type = this.emitDatatype(statement.type);
-
-        // if (statement.symbol.extern !== ELinkage.Internal) {
-        //   outWriter.write("extern ");
-        // }
-
-        // if (statement.symbol.extern === ELinkage.External_C) {
-        // outWriter.write(`${ret} ${statement.symbol.name}`);
-        // } else {
-        outWriter.writeLine(`#line ${statement.sourceloc.line} ${JSON.stringify(statement.sourceloc.filename)}`);
-        if (statement.variableContext === EVariableContext.Global) {
-          outWriter.write(`_H${type} _H${statement.name.length}${statement.name}`);
-        } else {
-          outWriter.write(`_H${type} ${statement.name}`);
+        if (statement.sourceloc) {
+          outWriter.writeLine(`#line ${statement.sourceloc.line} ${JSON.stringify(statement.sourceloc.filename)}`);
         }
-        // }
+        outWriter.write(`${this.mangle(statement.type)} ${this.mangle(statement)}`);
 
         if (statement.value) {
           const exprWriter = this.emitExpr(statement.value);
           tempWriter.write(exprWriter.temp);
           outWriter.writeLine(` = ${exprWriter.out.get()};`);
         } else {
-          outWriter.writeLine(` = {0};`);
+          if (statement.type.variant === "Struct" && statement.type.members.length === 0) {
+            outWriter.writeLine(`;`);
+          }
+          else {
+            outWriter.writeLine(` = {0};`);
+          }
         }
         return { temp: tempWriter, out: outWriter };
       }
 
-      // case "VariableDefinition": {
-      //   if (!statement.expr || !statement.symbol.type || statement.symbol.variant !== "Variable") {
-      //     throw new ImpossibleSituation();
-      //   }
-      //   tempWriter.write(exprWriter.temp);
-      //   const assignConv = implicitConversion(
-      //     statement.expr.type,
-      //     statement.symbol.type,
-      //     exprWriter.out.get(),
-      //     this.module.currentScope,
-      //     statement.expr.location,
-      //     this.module,
-      //   );
-      //   const name =
-      //     statement.symbol.extern === ELinkage.External_C
-      //       ? statement.symbol.name
-      //       : mangleSymbol(statement.symbol);
-      //   outWriter.writeLine(`${ret} ${name} = ${assignConv};`);
-      //   return { temp: tempWriter, out: outWriter };
-      // }
-
       case "ExprStatement": {
-        outWriter.writeLine(`#line ${statement.sourceloc.line} ${JSON.stringify(statement.sourceloc.filename)}`);
+        if (statement.sourceloc) {
+          outWriter.writeLine(`#line ${statement.sourceloc.line} ${JSON.stringify(statement.sourceloc.filename)}`);
+        }
         const exprWriter = this.emitExpr(statement.expr);
         tempWriter.write(exprWriter.temp);
         outWriter.writeLine(`(void)(${exprWriter.out.get()});`);
@@ -420,13 +290,17 @@ class CodeGenerator {
       }
 
       case "InlineCStatement": {
-        outWriter.writeLine(`#line ${statement.sourceloc.line} ${JSON.stringify(statement.sourceloc.filename)}`);
+        if (statement.sourceloc) {
+          outWriter.writeLine(`#line ${statement.sourceloc.line} ${JSON.stringify(statement.sourceloc.filename)}`);
+        }
         outWriter.writeLine(statement.value + ";");
         return { temp: tempWriter, out: outWriter };
       }
 
       case "WhileStatement": {
-        outWriter.writeLine(`#line ${statement.sourceloc.line} ${JSON.stringify(statement.sourceloc.filename)}`);
+        if (statement.sourceloc) {
+          outWriter.writeLine(`#line ${statement.sourceloc.line} ${JSON.stringify(statement.sourceloc.filename)}`);
+        }
         const exprWriter = this.emitExpr(statement.condition);
         tempWriter.write(exprWriter.temp);
         outWriter.writeLine(`while (${exprWriter.out.get()}) {`).pushIndent();
@@ -438,7 +312,9 @@ class CodeGenerator {
       }
 
       case "IfStatement": {
-        outWriter.writeLine(`#line ${statement.sourceloc.line} ${JSON.stringify(statement.sourceloc.filename)}`);
+        if (statement.sourceloc) {
+          outWriter.writeLine(`#line ${statement.sourceloc.line} ${JSON.stringify(statement.sourceloc.filename)}`);
+        }
         const exprWriter = this.emitExpr(statement.condition);
         tempWriter.write(exprWriter.temp);
         outWriter.writeLine(`if (${exprWriter.out.get()}) {`).pushIndent();
@@ -483,51 +359,16 @@ class CodeGenerator {
           tempWriter.write(r.temp);
           return r.out.get();
         });
-        const exprEmitted = this.emitExpr(expr.expr);
-        const exprType = this.lr.datatypes.get(expr.expr.type)!;
-        if (exprType.variant === "Callable") {
-          const callableType = this.lr.datatypes.get(expr.expr.type)!;
-          if (callableType.variant !== "Callable") throw new ImpossibleSituation();
-
-          const callableTempName = makeTempName();
-          tempWriter.writeLine(`_H${this.emitDatatype(expr.expr.type)} ${callableTempName} = {0};`);
-          if (callableType.thisExprType) {
-            args.unshift(
-              `(_H${this.emitDatatype(callableType.thisExprType)})${callableTempName}.thisPtr`,
-            );
-          }
-          outWriter.write(
-            `(${callableTempName} = ${exprEmitted.out.get()}, ${callableTempName}.fn)(${args.join(", ")})`,
-          );
-        } else {
-          const callExprWriter = this.emitExpr(expr.expr);
-          tempWriter.write(callExprWriter.temp);
-          // const funcname = this.mangleNestedName(this.lr.functions.get(expr.functionSymbol)!);
-          // outWriter.write(`_H${funcname}`);
-          outWriter.write(callExprWriter.out.get() + "(" + args.join(", ") + ")");
-        }
+        const callExprWriter = this.emitExpr(expr.expr);
+        tempWriter.write(callExprWriter.temp);
+        // const funcname = this.mangleNestedName(this.lr.functions.get(expr.functionSymbol)!);
+        // outWriter.write(`_H${funcname}`);
+        outWriter.write(callExprWriter.out.get() + "(" + args.join(", ") + ")");
 
         return { out: outWriter, temp: tempWriter };
 
-      //   case "ExprAssign": {
-      //     const leftWriter = this.emitExpr(expr.leftExpr);
-      //     const rightWriter = this.emitExpr(expr.rightExpr);
-      //     tempWriter.write(leftWriter.temp);
-      //     tempWriter.write(rightWriter.temp);
-      //     const assignConv = implicitConversion(
-      //       expr.rightExpr.type,
-      //       expr.leftExpr.type,
-      //       rightWriter.out.get(),
-      //       this.module.currentScope,
-      //       expr.rightExpr.location,
-      //       this.module,
-      //     );
-      //     outWriter.write(`(${leftWriter.out.get()} ${expr.operation} ${assignConv})`);
-      //     return { out: outWriter, temp: tempWriter };
-      //   }
-
       case "StructInstantiation": {
-        outWriter.writeLine(`((_H${this.emitDatatype(expr.type)}) { `).pushIndent();
+        outWriter.writeLine(`((${this.mangle(expr.type)}) { `).pushIndent();
         for (const assign of expr.memberAssigns) {
           const exprWriter = this.emitExpr(assign.value);
           tempWriter.write(exprWriter.temp);
@@ -536,13 +377,6 @@ class CodeGenerator {
         outWriter.popIndent().write(" })");
         return { out: outWriter, temp: tempWriter };
       }
-
-      //   case "RawPtrDeref": {
-      //     const exprWriter = this.emitExpr(expr.expr);
-      //     tempWriter.write(exprWriter.temp);
-      //     outWriter.write(`(*(${exprWriter.out.get()}))`);
-      //     return { out: outWriter, temp: tempWriter };
-      //   }
 
       case "ExprMemberAccess": {
         const exprWriter = this.emitExpr(expr.expr);
@@ -555,50 +389,15 @@ class CodeGenerator {
         return { out: outWriter, temp: tempWriter };
       }
 
-      //   case "Sizeof":
-      //     outWriter.write(`sizeof(${generateUsageCode(expr.datatype, this.module)})`);
-      //     return { out: outWriter, temp: tempWriter };
-
       case "SymbolValue": {
-        const type = this.lr.datatypes.get(expr.type);
-        if (type?.variant === "Function") {
-          assert(expr.functionSymbol !== undefined);
-          const functionSymbol = this.lr.functions.get(expr.functionSymbol);
-          assert(functionSymbol?.variant === "FunctionDeclaration" || functionSymbol?.variant === "FunctionDefinition");
-          if (functionSymbol.externLanguage === EExternLanguage.Extern_C) {
-            outWriter.write(expr.name);
-          }
-          else {
-            outWriter.write("_H" + this.mangleNestedName(functionSymbol));
-          }
-        }
-        else {
-          outWriter.write(expr.name);
-        }
-        // if (expr.variant === "Function") {
-        //   if (expr.symbol.extern === ELinkage.External_C) {
-        //     outWriter.write(expr.symbol.name);
-        //   } else {
-        //     outWriter.write(mangleSymbol(expr.symbol));
-        //   }
-        // } else if (expr.symbol.variant === "Datatype") {
-        //   outWriter.write(mangleSymbol(expr.symbol));
-        // } else if (expr.symbol.variant === "Variable") {
-        //   if (expr.symbol.extern === ELinkage.External_C) {
-        //     outWriter.write(expr.symbol.name);
-        //   } else {
-        //     outWriter.write(mangleSymbol(expr.symbol));
-        //   }
-        // } else {
-        //   throw new ImpossibleSituation();
-        // }
+        outWriter.write(this.mangle(expr));
         return { out: outWriter, temp: tempWriter };
       }
 
       case "ExplicitCast":
         const exprWriter = this.emitExpr(expr.expr);
         tempWriter.write(exprWriter.temp);
-        outWriter.write(`((_H${this.emitDatatype(expr.type)})${exprWriter.out.get()})`);
+        outWriter.write(`((${this.mangle(expr.type)})${exprWriter.out.get()})`);
         return { out: outWriter, temp: tempWriter };
 
       case "PreIncrExpr": {
@@ -723,12 +522,18 @@ class CodeGenerator {
         }
         return { out: outWriter, temp: tempWriter };
 
-      case "Callable":
+      case "CallableExpr":
         const thisExpr = this.emitExpr(expr.thisExpr);
         tempWriter.write(thisExpr.temp);
         outWriter.write(
-          `((_H${this.emitDatatype(expr.type)}) { .thisPtr = (void*)(&${thisExpr.out.get()}), .fn = _H${this.mangleNestedName(this.lr.functions.get(expr.functionSymbol)!)} })`,
+          `((${this.mangle(expr.type)}) { .thisPtr = (void*)(&${thisExpr.out.get()}), .fn = ${this.mangle(expr)} })`,
         );
+        return { out: outWriter, temp: tempWriter };
+
+      case "AddressOperator":
+        const e = this.emitExpr(expr.expr);
+        tempWriter.write(e.temp);
+        outWriter.write("&" + e.out.get());
         return { out: outWriter, temp: tempWriter };
 
       case "ConstantExpr":

@@ -2,9 +2,8 @@ import { EExternLanguage, type ASTConstant, type ASTDatatype } from "../shared/A
 import { assertScope, EMethodType, EPrimitive, EVariableContext, stringToPrimitive } from "../shared/common";
 import { assert, CompilerError, ImpossibleSituation } from "../shared/Errors";
 import { Collect } from "../SymbolCollection/CollectSymbols";
-import { elaborateBlockScope, elaborateBodies, elaborateSignature, inheritElaborationContext, type ElaborationContext } from "./Elaborate";
+import { elaborateBodies, elaborateSignature, inheritElaborationContext, type ElaborationContext } from "./Elaborate";
 import { isDatatypeSymbol, Semantic, type SemanticResult } from "./SemanticSymbols";
-import { serializeDatatype } from "./Serialize";
 
 export function makeFunctionDatatypeAvailable(parameters: Semantic.DatatypeSymbol[], returnType: Semantic.DatatypeSymbol, vararg: boolean, context: ElaborationContext): Semantic.FunctionDatatypeSymbol {
   for (const type of context.global.functionTypeCache) {
@@ -270,6 +269,7 @@ export function resolveDatatype(
                 concrete: struct.concrete,
                 externLanguage: EExternLanguage.None,
                 methodType: EMethodType.Drop,
+                parameterNames: [],
                 name: "drop",
                 scope: new Semantic.BlockScope(struct.sourceloc, new Collect.Scope(struct.sourceloc, struct.scope.collectedScope)),
                 type: dropType,
