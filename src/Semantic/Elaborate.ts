@@ -328,6 +328,41 @@ export function elaborateExpr(
     // =================================================================================================================
     // =================================================================================================================
 
+    case "RawPointerAddressOf": {
+      const _expr = elaborateExpr(sr, scope, expr.expr, context);
+      return {
+        variant: "RawPointerAddressOf",
+        type: {
+          variant: "RawPointerDatatype",
+          pointee: _expr.type,
+          concrete: _expr.type.concrete,
+        },
+        expr: _expr,
+        sourceloc: expr.sourceloc,
+      };
+    }
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
+    case "RawPointerDereference": {
+      const _expr = elaborateExpr(sr, scope, expr.expr, context);
+      if (_expr.type.variant !== "RawPointerDatatype") {
+        throw new CompilerError(`This expression is not a pointer and cannot be dereferenced`, expr.expr.sourceloc);
+      }
+      return {
+        variant: "RawPointerAddressOf",
+        type: _expr.type.pointee,
+        expr: _expr,
+        sourceloc: expr.sourceloc,
+      };
+    }
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
     case "ExplicitCastExpr": {
       return {
         variant: "ExplicitCast",

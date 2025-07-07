@@ -214,5 +214,11 @@ export function serializeExpr(expr: Semantic.Expression): string {
 
         case "CallableExpr":
             return `Callable(${serializeNestedName(expr.functionSymbol)}, this=${serializeExpr(expr.thisExpr)})`;
+
+        case "RawPointerAddressOf":
+            return `&${serializeExpr(expr.expr)}`;
+
+        case "RawPointerDereference":
+            return `*${serializeExpr(expr.expr)}`;
     }
 }

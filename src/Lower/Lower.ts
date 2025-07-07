@@ -1,5 +1,5 @@
 import { type Semantic, type SemanticResult } from "../Semantic/SemanticSymbols";
-import { mangleDatatype, mangleNestedName, serializeDatatype, serializeNestedName } from "../Semantic/Serialize";
+import { mangleDatatype, mangleNestedName, serializeDatatype, serializeExpr, serializeNestedName } from "../Semantic/Serialize";
 import { BinaryOperationToString, EExternLanguage, IncrOperationToString } from "../shared/AST";
 import { EPrimitive, EVariableContext } from "../shared/common";
 import { assert, ImpossibleSituation, InternalError } from "../shared/Errors";
@@ -51,6 +51,18 @@ function lowerExpr(
         }
 
         const type = lowerType(lr, expr.type);
+
+        let thisExpr = calledExpr.thisExpr;
+        // TODO: This is not right, Callables are wrapped
+        if (thisExpr.type.variant !== "Reference" && thisExpr.type.variant !== "RawPointer") {
+          thisExpr = {
+            variant: "RawPointerAddressOf",
+            expr:
+              calledExpr.thisExpr,
+            type: lowerType(lr, thisPointer),
+          }
+        }
+
         return storeInTempVarAndGet(type, {
           variant: "ExprCallExpr",
           expr: {
@@ -60,12 +72,7 @@ function lowerExpr(
             type: calledExpr.type,
             expr: tempCallableValue,
           },
-          arguments: [{
-            variant: "AddressOperator",
-            expr:
-              calledExpr.thisExpr,
-            type: lowerType(lr, thisPointer),
-          }, ...expr.arguments.map((a) => lowerExpr(lr, a, flattened))],
+          arguments: [thisExpr, ...expr.arguments.map((a) => lowerExpr(lr, a, flattened))],
           type: type,
         });
       }
@@ -116,6 +123,22 @@ function lowerExpr(
           type: lowerType(lr, expr.symbol.type),
         };
       }
+    }
+
+    case "RawPointerAddressOf": {
+      return {
+        variant: "RawPointerAddressOf",
+        expr: lowerExpr(lr, expr.expr, flattened),
+        type: lowerType(lr, expr.type),
+      };
+    }
+
+    case "RawPointerDereference": {
+      return {
+        variant: "RawPointerDereference",
+        expr: lowerExpr(lr, expr.expr, flattened),
+        type: lowerType(lr, expr.type),
+      };
     }
 
     case "ExplicitCast": {
@@ -517,29 +540,6 @@ function lower(lr: Lowered.Module, symbol: Semantic.Symbol) {
   }
 }
 
-export function LowerModule(cr: CollectResult, sr: SemanticResult): Lowered.Module {
-  const lr: Lowered.Module = {
-    cr: cr,
-    sr: sr,
-
-    cDeclarations: cr.cInjections.map((i) => i.code),
-
-    loweredTypes: new Map(),
-    loweredFunctions: new Map(),
-  };
-
-  for (const symbol of sr.globalNamespace.scope.symbolTable.symbols) {
-    if (!symbol.concrete) {
-      continue;
-    }
-    lower(lr, symbol);
-  }
-
-  PrettyPrintLowered(lr);
-
-  return lr;
-}
-
 const print = (str: string, indent = 0) => {
   console.log(" ".repeat(indent) + str);
 };
@@ -603,8 +603,11 @@ function serializeLoweredExpr(expr: Lowered.Expression): string {
     case "CallableExpr":
       return `Callable(${expr.functionPrettyName}, this=${serializeLoweredExpr(expr.thisExpr)})`;
 
-    case "AddressOperator":
+    case "RawPointerAddressOf":
       return `&${serializeLoweredExpr(expr.expr)}`;
+
+    case "RawPointerDereference":
+      return `*${serializeLoweredExpr(expr.expr)}`;
   }
 }
 
@@ -679,4 +682,27 @@ export function PrettyPrintLowered(lr: Lowered.Module) {
   for (const t of [...lr.loweredFunctions.values()]) {
     printLoweredFunction(t);
   }
+}
+
+export function LowerModule(cr: CollectResult, sr: SemanticResult): Lowered.Module {
+  const lr: Lowered.Module = {
+    cr: cr,
+    sr: sr,
+
+    cDeclarations: cr.cInjections.map((i) => i.code),
+
+    loweredTypes: new Map(),
+    loweredFunctions: new Map(),
+  };
+
+  for (const symbol of sr.globalNamespace.scope.symbolTable.symbols) {
+    if (!symbol.concrete) {
+      continue;
+    }
+    lower(lr, symbol);
+  }
+
+  // PrettyPrintLowered(lr);
+
+  return lr;
 }

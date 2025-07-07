@@ -18,6 +18,8 @@ import type {
   ASTParenthesisExpr,
   ASTPostIncrExpr,
   ASTPreIncrExpr,
+  ASTRawPointerAddressOfExpr,
+  ASTRawPointerDereferenceExpr,
   ASTRoot,
   ASTScope,
   ASTStructDefinition,
@@ -44,6 +46,8 @@ function collect(
     | ASTLambdaExpr
     | ASTPreIncrExpr
     | ASTConstantExpr
+    | ASTRawPointerAddressOfExpr
+    | ASTRawPointerDereferenceExpr
     | ASTPostIncrExpr
     | ASTStructInstantiationExpr
     | ASTExplicitCastExpr
@@ -429,6 +433,22 @@ function collect(
     case "ExplicitCastExpr":
       collect(scope, item.expr, meta);
       collect(scope, item.castedTo, meta);
+      break;
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
+    case "RawPointerAddressOf":
+      collect(scope, item.expr, meta);
+      break;
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
+    case "RawPointerDereference":
+      collect(scope, item.expr, meta);
       break;
 
     // =================================================================================================================

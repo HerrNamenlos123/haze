@@ -172,6 +172,20 @@ export namespace Semantic {
     sourceloc: SourceLoc;
   };
 
+  export type RawPointerDereferenceExpr = {
+    variant: "RawPointerDereference";
+    expr: Expression;
+    type: DatatypeSymbol;
+    sourceloc: SourceLoc;
+  };
+
+  export type RawPointerAddressOfExpr = {
+    variant: "RawPointerAddressOf";
+    expr: Expression;
+    type: DatatypeSymbol;
+    sourceloc: SourceLoc;
+  };
+
   export type ExplicitCastExpr = {
     variant: "ExplicitCast";
     expr: Expression;
@@ -236,6 +250,8 @@ export namespace Semantic {
     | CallableExpr
     | PreIncrExpr
     | PostIncrExpr
+    | RawPointerAddressOfExpr
+    | RawPointerDereferenceExpr
     | ExplicitCastExpr
     | ExprCallExpr
     | StructInstantiationExpr

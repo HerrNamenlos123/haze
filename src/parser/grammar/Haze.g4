@@ -114,6 +114,8 @@ expr
     | <assoc=right> op=('+' | '-') expr                                             #UnaryExpr
     | <assoc=right> op=('not' | '!') expr /* and bitwise not */                     #UnaryExpr
     | <assoc=right> expr 'as' datatype                                              #ExplicitCastExpr
+    | <assoc=right> '*' expr                                                        #RawPointerDereference
+    | <assoc=right> '&' expr                                                        #RawPointerAddressOf
 
     // Part 3: Left to right
     | expr op+=('*'|'/'|'%') expr                                                   #BinaryExpr

@@ -533,13 +533,17 @@ class CodeGenerator {
         return { out: outWriter, temp: tempWriter };
       }
 
-      case "AddressOperator": {
+      case "RawPointerAddressOf": {
         const e = this.emitExpr(expr.expr);
         tempWriter.write(e.temp);
-        const isPointerOrReference = expr.expr.type.variant === "Reference" || expr.expr.type.variant === "RawPointer";
-        const referenced = isPointerOrReference ? e.out.get() : "&" + e.out.get();
-        console.log("Type", expr.expr.type.variant)
-        outWriter.write(referenced);
+        outWriter.write('&' + e.out.get());
+        return { out: outWriter, temp: tempWriter };
+      }
+
+      case "RawPointerDereference": {
+        const e = this.emitExpr(expr.expr);
+        tempWriter.write(e.temp);
+        outWriter.write('*' + e.out.get());
         return { out: outWriter, temp: tempWriter };
       }
 

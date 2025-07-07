@@ -1,7 +1,6 @@
 import { ImpossibleSituation, type SourceLoc } from "./Errors";
 import type { Collect } from "../SymbolCollection/CollectSymbols";
 import type { EMethodType } from "./common";
-import type { SemanticSymbolId } from "./store";
 
 export enum EExternLanguage {
   None,
@@ -133,7 +132,6 @@ export type ASTFunctionDeclaration = {
     namespacePath?: string[];
   };
   _semantic: {
-    symbol?: SemanticSymbolId;
   };
 };
 
@@ -154,7 +152,6 @@ export type ASTFunctionDefinition = {
     method?: EMethodType;
   };
   _semantic: {
-    symbol?: SemanticSymbolId;
   };
 };
 
@@ -233,7 +230,6 @@ export type ASTGlobalVariableDefinition = {
   expr?: ASTExpr;
   sourceloc: SourceLoc;
   _semantic: {
-    symbol?: SemanticSymbolId;
   };
 };
 
@@ -264,7 +260,6 @@ export type ASTVariableDefinitionStatement = {
   isParameter?: boolean;
   sourceloc: SourceLoc;
   _semantic: {
-    symbol?: SemanticSymbolId;
   };
 };
 
@@ -381,6 +376,20 @@ export type ASTExplicitCastExpr = {
   _semantic: {};
 };
 
+export type ASTRawPointerAddressOfExpr = {
+  variant: "RawPointerAddressOf";
+  expr: ASTExpr;
+  sourceloc: SourceLoc;
+  _semantic: {};
+};
+
+export type ASTRawPointerDereferenceExpr = {
+  variant: "RawPointerDereference";
+  expr: ASTExpr;
+  sourceloc: SourceLoc;
+  _semantic: {};
+};
+
 export type ASTBinaryExpr = {
   variant: "BinaryExpr";
   a: ASTExpr;
@@ -416,6 +425,8 @@ export type ASTExpr =
   | ASTExprMemberAccess
   | ASTStructInstantiationExpr
   | ASTPreIncrExpr
+  | ASTRawPointerAddressOfExpr
+  | ASTRawPointerDereferenceExpr
   | ASTUnaryExpr
   | ASTExplicitCastExpr
   | ASTBinaryExpr
@@ -468,7 +479,6 @@ export type ASTStructMethodDefinition = {
     definedInScope?: Collect.Scope;
   };
   _semantic: {
-    symbol?: SemanticSymbolId;
     // memberOfSymbol?: Semantic.Struc;
   };
 };
@@ -491,7 +501,6 @@ export type ASTStructDefinition = {
     scope?: Collect.Scope;
   };
   _semantic: {
-    symbol?: SemanticSymbolId;
   };
 };
 

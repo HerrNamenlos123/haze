@@ -38,8 +38,14 @@ export namespace Lowered {
     type: Datatype;
   };
 
-  export type AddressOperatorExpr = {
-    variant: "AddressOperator";
+  export type RawPointerDereferenceExpr = {
+    variant: "RawPointerDereference";
+    expr: Expression;
+    type: Datatype;
+  };
+
+  export type RawPointerAddressOfExpr = {
+    variant: "RawPointerAddressOf";
     expr: Expression;
     type: Datatype;
   };
@@ -100,7 +106,8 @@ export namespace Lowered {
     | BinaryExpr
     | CallableExpr
     | StructInstantiationExpr
-    | AddressOperatorExpr
+    | RawPointerDereferenceExpr
+    | RawPointerAddressOfExpr
     | ExplicitCastExpr
     | ExprMemberAccessExpr
     | ConstantExpr

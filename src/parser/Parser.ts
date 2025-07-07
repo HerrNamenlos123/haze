@@ -34,7 +34,9 @@ import {
   type ASTParenthesisExpr,
   type ASTPostIncrExpr,
   type ASTPreIncrExpr,
+  type ASTRawPointerAddressOfExpr,
   type ASTRawPointerDatatype,
+  type ASTRawPointerDereferenceExpr,
   type ASTReferenceDatatype,
   type ASTReturnStatement,
   type ASTRoot,
@@ -83,7 +85,9 @@ import {
   PostIncrExprContext,
   PreIncrExprContext,
   ProgContext,
+  RawPointerAddressOfContext,
   RawPointerDatatypeContext,
+  RawPointerDereferenceContext,
   ReferenceDatatypeContext,
   ReturnStatementContext,
   ScopeContext,
@@ -732,6 +736,24 @@ class ASTTransformer extends HazeVisitor<any> {
       variant: "ExprMemberAccess",
       expr: this.visit(ctx.expr()),
       member: ctx.ID().getText(),
+      sourceloc: this.loc(ctx),
+      _semantic: {},
+    };
+  };
+
+  visitRawPointerDereference = (ctx: RawPointerDereferenceContext): ASTRawPointerDereferenceExpr => {
+    return {
+      variant: "RawPointerDereference",
+      expr: this.visit(ctx.expr()),
+      sourceloc: this.loc(ctx),
+      _semantic: {},
+    };
+  };
+
+  visitRawPointerAddressOf = (ctx: RawPointerAddressOfContext): ASTRawPointerAddressOfExpr => {
+    return {
+      variant: "RawPointerAddressOf",
+      expr: this.visit(ctx.expr()),
       sourceloc: this.loc(ctx),
       _semantic: {},
     };
