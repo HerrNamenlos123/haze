@@ -437,6 +437,7 @@ export function elaborateExpr(
           sourceloc: expr.sourceloc,
         };
       } else if (method) {
+        console.log("Callable: thisExpr = ", serializeDatatype(object.type))
         return {
           variant: "CallableExpr",
           thisExpr: object,

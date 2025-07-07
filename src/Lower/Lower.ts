@@ -54,15 +54,18 @@ function lowerExpr(
 
         let thisExpr = calledExpr.thisExpr;
         // TODO: This is not right, Callables are wrapped
+        console.log(">> Calling callable", calledExpr.type.prettyName)
+        console.log("this=", calledExpr.thisExpr.type.prettyName)
         if (thisExpr.type.variant !== "Reference" && thisExpr.type.variant !== "RawPointer") {
-          thisExpr = {
-            variant: "RawPointerAddressOf",
-            expr:
-              calledExpr.thisExpr,
-            type: lowerType(lr, thisPointer),
-          }
+          // thisExpr = {
+          //   variant: "RawPointerAddressOf",
+          //   expr:
+          //     calledExpr.thisExpr,
+          //   type: lowerType(lr, thisPointer),
+          // }
         }
 
+        console.log("Callable being called, result = ", type.prettyName)
         return storeInTempVarAndGet(type, {
           variant: "ExprCallExpr",
           expr: {
@@ -198,6 +201,9 @@ function lowerExpr(
 
     case "CallableExpr": {
       lower(lr, expr.functionSymbol);
+      console.log("\n");
+      console.log("thisExpr=", serializeExpr(expr.thisExpr), "type=", serializeDatatype(expr.thisExpr.type));
+      console.log("Lowering Callable", lowerExpr(lr, expr.thisExpr, flattened).type.prettyName)
       return {
         variant: "CallableExpr",
         functionMangledName: mangleNestedName(expr.functionSymbol),
