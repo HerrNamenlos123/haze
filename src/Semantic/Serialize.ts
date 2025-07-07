@@ -20,12 +20,7 @@ export function serializeDatatype(datatype: Semantic.DatatypeSymbol): string {
             return datatype.name;
 
         case "StructDatatype":
-            if (datatype.generics.length === 0) {
-                return datatype.name;
-            }
-            else {
-                return datatype.name + "<" + datatype.generics.map((g) => serializeDatatype(g)).join(", ") + ">";
-            }
+            return getParentNames(datatype);
 
         case "FunctionDatatype":
             return `(${datatype.parameters.map((p) => serializeDatatype(p)).join(", ")}${datatype.vararg ? ', ...' : ''}) => ${serializeDatatype(datatype.returnType)}`;
@@ -35,24 +30,28 @@ export function serializeDatatype(datatype: Semantic.DatatypeSymbol): string {
     }
 }
 
+function getParentNames(symbol: Semantic.NamespaceSymbol | Semantic.StructDatatypeSymbol) {
+    let fullName = "";
+    let node: Semantic.NamespaceSymbol | Semantic.StructDatatypeSymbol | undefined = symbol;
+    while (node) {
+        if (node.variant === "StructDatatype") {
+            const generics = node.generics.map((g) => serializeDatatype(g)).join(", ");
+            fullName = `${node.name}${generics.length > 0 ? `<${generics}>` : ''}${fullName.length === 0 ? fullName : '.' + fullName}`;
+            node = node.parent;
+        }
+        else {
+            if (node.name !== GLOBAL_NAMESPACE_NAME) {
+                fullName = `${node.name}${fullName.length === 0 ? fullName : '.' + fullName}`;
+            }
+            node = node.nestedParentTypeSymbol;
+        }
+    }
+    return fullName;
+}
+
 export function serializeFunctionName(expr: Semantic.FunctionDefinitionSymbol): string {
     if (expr.methodOf) {
-        let fullName = "";
-        let node: Semantic.NamespaceSymbol | Semantic.StructDatatypeSymbol | undefined = expr.methodOf;
-        while (node) {
-            if (node.variant === "StructDatatype") {
-                const generics = node.generics.map((g) => serializeDatatype(g)).join(", ");
-                fullName = `${node.name}${generics.length > 0 ? `<${generics}>` : ''}.${fullName}`;
-                node = node.parent;
-            }
-            else {
-                if (node.name !== GLOBAL_NAMESPACE_NAME) {
-                    fullName = `${node.name}.${fullName}`;
-                }
-                node = node.nestedParentTypeSymbol;
-            }
-        }
-        return `${fullName}${expr.name}`;
+        return `${getParentNames(expr.methodOf)}${expr.name}`;
     }
     else {
         throw new InternalError("Not implemented");

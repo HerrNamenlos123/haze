@@ -4,6 +4,7 @@ import { assert, CompilerError, ImpossibleSituation } from "../shared/Errors";
 import { Collect } from "../SymbolCollection/CollectSymbols";
 import { elaborateBlockScope, elaborateBodies, elaborateSignature, inheritElaborationContext, type ElaborationContext } from "./Elaborate";
 import { isDatatypeSymbol, Semantic, type SemanticResult } from "./SemanticSymbols";
+import { serializeDatatype } from "./Serialize";
 
 export function makeFunctionDatatypeAvailable(parameters: Semantic.DatatypeSymbol[], returnType: Semantic.DatatypeSymbol, vararg: boolean, context: ElaborationContext): Semantic.FunctionDatatypeSymbol {
   for (const type of context.global.functionTypeCache) {

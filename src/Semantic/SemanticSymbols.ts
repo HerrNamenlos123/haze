@@ -86,7 +86,7 @@ export namespace Semantic {
     externLanguage: EExternLanguage;
     members: VariableSymbol[];
     methods: FunctionDefinitionSymbol[];
-    parent?: StructDatatypeSymbol | NamespaceSymbol;
+    parent: StructDatatypeSymbol | NamespaceSymbol;
     rawAst: ASTStructDefinition;
     scope: Semantic.DeclScope;
     sourceloc: SourceLoc;

@@ -51,5 +51,5 @@ struct Test {
 foo() => {
   const s = SharedPtr<Test> { .target: 0 as Test* };
   const a = s.get().test;
-  // const b: Outer.Inner.Subspace<SharedPtr<Test>>;
+  const b: Outer.Inner.Subspace<SharedPtr<Test>>;
 }
