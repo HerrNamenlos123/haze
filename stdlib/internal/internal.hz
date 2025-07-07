@@ -7,8 +7,8 @@ struct CString {
 struct SharedPtr<T> {
   target: T*;
 
-  get(): T& => {
-    return this.target;
+  get(): SharedPtr<T>& => {
+    return this;
   }
 }
 
@@ -50,6 +50,6 @@ struct Test {
 
 foo() => {
   const s = SharedPtr<Test> { .target: 0 as Test* };
-  const a = s.get().test;
+  const a = s.get().get().get();
   const b: Outer.Inner.Subspace<SharedPtr<Test>>;
 }

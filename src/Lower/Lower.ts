@@ -50,7 +50,8 @@ function lowerExpr(
           pointee: expr.calledExpr.type
         }
 
-        return {
+        const type = lowerType(lr, expr.type);
+        return storeInTempVarAndGet(type, {
           variant: "ExprCallExpr",
           expr: {
             variant: "ExprMemberAccess",
@@ -65,8 +66,8 @@ function lowerExpr(
               calledExpr.thisExpr,
             type: lowerType(lr, thisPointer),
           }, ...expr.arguments.map((a) => lowerExpr(lr, a, flattened))],
-          type: lowerType(lr, expr.type),
-        }
+          type: type,
+        });
       }
       else {
         const exprCall: Lowered.ExprCallExpr = {

@@ -522,19 +522,26 @@ class CodeGenerator {
         }
         return { out: outWriter, temp: tempWriter };
 
-      case "CallableExpr":
+      case "CallableExpr": {
         const thisExpr = this.emitExpr(expr.thisExpr);
         tempWriter.write(thisExpr.temp);
+        const isPointerOrReference = expr.thisExpr.type.variant === "Reference" || expr.thisExpr.type.variant === "RawPointer";
+        const referenced = isPointerOrReference ? thisExpr.out.get() : "&" + thisExpr.out.get();
         outWriter.write(
-          `((${this.mangle(expr.type)}) { .thisPtr = (void*)(&${thisExpr.out.get()}), .fn = ${this.mangle(expr)} })`,
+          `((${this.mangle(expr.type)}) { .thisPtr = (void*)(${referenced}), .fn = ${this.mangle(expr)} })`,
         );
         return { out: outWriter, temp: tempWriter };
+      }
 
-      case "AddressOperator":
+      case "AddressOperator": {
         const e = this.emitExpr(expr.expr);
         tempWriter.write(e.temp);
-        outWriter.write("&" + e.out.get());
+        const isPointerOrReference = expr.expr.type.variant === "Reference" || expr.expr.type.variant === "RawPointer";
+        const referenced = isPointerOrReference ? e.out.get() : "&" + e.out.get();
+        console.log("Type", expr.expr.type.variant)
+        outWriter.write(referenced);
         return { out: outWriter, temp: tempWriter };
+      }
 
       case "ConstantExpr":
         if (typeof expr.value === "string") {
