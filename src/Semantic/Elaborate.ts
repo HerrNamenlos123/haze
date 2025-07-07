@@ -1038,7 +1038,7 @@ function printSymbol(symbol: Semantic.NamespaceSymbol | Semantic.DeclScope | Sem
       break;
 
     case "VariableStatement":
-      print(`Variable ${symbol.name} ${symbol.value ? '= ' + serializeExpr(symbol.value) : ''}`, indent);
+      print(`var ${symbol.name}: ${serializeDatatype(symbol.variableSymbol.type)} ${symbol.value ? '= ' + serializeExpr(symbol.value) : ''}`, indent);
       break;
 
     case "IfStatement":

@@ -201,12 +201,6 @@ export namespace Semantic {
     sourceloc: SourceLoc;
   };
 
-  export type SymbolValueThisPtrExpr = {
-    variant: "SymbolValueThisPointer";
-    type: DatatypeSymbol;
-    sourceloc: SourceLoc;
-  };
-
   export type BinaryExpr = {
     variant: "BinaryExpr";
     left: Expression;
@@ -260,7 +254,6 @@ export namespace Semantic {
   export type Expression =
     | ExprMemberAccessExpr
     | SymbolValueExpr
-    | SymbolValueThisPtrExpr
     | BinaryExpr
     | CallableExpr
     | PreIncrExpr

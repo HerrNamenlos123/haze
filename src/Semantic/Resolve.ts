@@ -291,7 +291,11 @@ export function resolveDatatype(
 
         case "NamespaceDefinition":
           if (rawAstDatatype.nested) {
-            return resolveDatatype(sr, rawAstDatatype.nested, rawAstScope, context);
+            assert(found._collect.scope);
+            const namespace = elaborateSignature(sr, found, found._collect.scope, context);
+            assert(namespace && namespace.variant === "Namespace");
+            const nested = resolveDatatype(sr, rawAstDatatype.nested, found._collect.scope, inheritElaborationContext(context, namespace));
+            return nested;
           }
           throw new CompilerError(
             `Namespace cannot be used as a datatype here`,
