@@ -2,7 +2,6 @@ import * as child_process from "child_process";
 import {
   CmdFailed,
   CompilerError,
-  ExitSilently,
   GeneralError,
   ImpossibleSituation,
   InternalError,
@@ -21,7 +20,7 @@ import {
   type ModuleConfig,
   type ModuleMetadata,
 } from "./shared/Config";
-import { Parser } from "./parser/Parser";
+import { Parser } from "./Parser/Parser";
 import { CollectSymbols } from "./SymbolCollection/SymbolCollection";
 import { PrettyPrintAnalyzed, SemanticallyAnalyze } from "./Semantic/Elaborate";
 import { generateCode } from "./Codegen/CodeGenerator";
@@ -291,12 +290,7 @@ class ModuleCompiler {
   }
 
   addSourceFromString(text: string, filename: string) {
-    const ast = Parser.parseTextToAST(text, filename);
-    if (!ast) {
-      throw new ExitSilently();
-    }
-    CollectSymbols(this.cr, ast, { filename: filename, line: 0, column: 0 });
-    return true;
+    CollectSymbols(this.cr, Parser.parseTextToAST(text, filename), { filename: filename, line: 0, column: 0 });
   }
 
   async addProjectSourceFiles() {
@@ -416,7 +410,7 @@ class ModuleCompiler {
         console.error(e.message);
       } else if (e instanceof UnreachableCode) {
         console.error(e.message);
-      } else if (e instanceof ExitSilently) {
+      } else if (e instanceof SyntaxError) {
         return false;
       } else if (e instanceof CmdFailed) {
         console.error("Build failed");

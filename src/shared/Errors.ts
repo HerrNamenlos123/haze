@@ -94,9 +94,9 @@ export class UnreachableCode extends Error {
   }
 }
 
-export class ExitSilently extends Error {
+export class SyntaxError extends Error {
   constructor() {
-    super("Exit Silently");
+    super("Syntax Error");
   }
 }
 

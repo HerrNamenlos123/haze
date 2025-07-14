@@ -9,7 +9,7 @@ grammar Haze;
 // ║                           P A R S E R   R U L E S                             ║
 // ╚═══════════════════════════════════════════════════════════════════════════════╝
 
-prog: topLevelDeclaration*;
+prog: topLevelDeclaration* EOF;
 topLevelDeclaration
     : cInjectDirective
     | globalDeclaration

@@ -9,9 +9,9 @@
   "scripts": {
     "dev": "npx cross-env NODE_ENV=development bun run src/main.ts",
     "build": "npx cross-env NODE_ENV=production bun build --production --compile ./src/main.ts --outfile dist/haze && bun run copylib && bun link",
-    "test": "echo \"Error: no test specified\" && exit 1",
     "copylib": "mkdir -p ./dist/stdlib && cp -r ./stdlib/* ./dist/stdlib",
-    "postinstall": "cd src/parser/grammar && bunx antlr4ng-cli -Dlanguage=TypeScript -visitor Haze.g4 -o autogen && cd ../../.."
+    "postinstall": "cd src/Parser/grammar && bunx antlr4ng-cli -Dlanguage=TypeScript -visitor Haze.g4 -o autogen && cd ../../..",
+    "test": "bun run src/all.test.ts"
   },
   "bin": {
     "haze": "dist/haze"
@@ -26,12 +26,14 @@
     "antlr4ng-cli": "^2.0.0",
     "argparse": "^2.0.1",
     "bun": "^1.2.2",
-    "cross-env": "^7.0.3"
+    "cross-env": "^7.0.3",
+    "deep-equal": "^2.2.3"
   },
   "devDependencies": {
     "@mermaid-js/mermaid-cli": "^11.4.2",
-    "mermaid": "^11.4.1",
-    "@types/bun": "latest"
+    "@types/bun": "latest",
+    "@types/deep-equal": "^1.0.4",
+    "mermaid": "^11.4.1"
   },
   "peerDependencies": {
     "typescript": "^5.0.0"

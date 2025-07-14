@@ -1,5 +1,5 @@
 import { escapeLeadingUnderscores } from "typescript";
-import { logger } from "../log/log";
+import { logger } from "../Log/log";
 import {
   EBinaryOperation,
   EExternLanguage,

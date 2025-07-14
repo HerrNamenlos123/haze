@@ -1,4 +1,4 @@
-import { CompilerError, InternalError, printErrorMessage, type SourceLoc } from "../shared/Errors";
+import { CompilerError, InternalError, printErrorMessage, SyntaxError, type SourceLoc } from "../shared/Errors";
 import {
   EAssignmentOperation,
   EBinaryOperation,
@@ -101,10 +101,9 @@ import {
   VariableCreationStatementContext,
   WhileStatementContext,
 } from "./grammar/autogen/HazeParser";
-import { BaseErrorListener, CharStream, CommonTokenStream, ParserRuleContext } from "antlr4ng";
+import { BaseErrorListener, CharStream, CommonTokenStream, ParserRuleContext, TerminalNode } from "antlr4ng";
 import { HazeVisitor } from "./grammar/autogen/HazeVisitor";
 import type { Collect } from "../SymbolCollection/CollectSymbols";
-import type { Semantic } from "../Semantic/SemanticSymbols";
 
 export namespace Parser {
   class HazeErrorListener extends BaseErrorListener {
@@ -163,7 +162,7 @@ export namespace Parser {
   export function parseTextToAST(text: string, filename: string) {
     const ctx = parse(text, filename);
     if (!ctx) {
-      return;
+      throw new SyntaxError();
     }
     return transformAST(ctx, filename);
   }
@@ -171,7 +170,7 @@ export namespace Parser {
   export async function parseFileToAST(filename: string) {
     const ctx = await parseFile(filename);
     if (!ctx) {
-      return;
+      throw new SyntaxError();
     }
     return transformAST(ctx, filename);
   }
@@ -309,7 +308,12 @@ class ASTTransformer extends HazeVisitor<any> {
   }
 
   visitProg = (ctx: ProgContext): ASTRoot => {
-    return ctx.children.map((c) => this.visit(c));
+    return ctx.children.map((c) => {
+      if (c instanceof TerminalNode && c.getText() === "<EOF>") {
+        return;
+      }
+      return this.visit(c)
+    }).filter((c) => !!c);
   };
 
   visitCInjectDirective = (ctx: CInjectDirectiveContext): ASTCInjectDirective => {
