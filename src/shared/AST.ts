@@ -8,6 +8,12 @@ export enum EExternLanguage {
   Extern_C,
 }
 
+export enum EOperator {
+  Add,
+  Sub,
+  As
+}
+
 export enum ELiteralUnit {
   s,
   ms,
@@ -139,6 +145,10 @@ export type ASTFunctionDefinition = {
   variant: "FunctionDefinition";
   export: boolean;
   externLanguage: EExternLanguage;
+  operatorOverloading?: {
+    operator: EOperator;
+    asTarget: ASTDatatype;
+  };
   name: string;
   params: ASTParam[];
   generics: string[];
@@ -471,6 +481,10 @@ export type ASTStructMethodDefinition = {
   name: string;
   generics: string[];
   ellipsis: boolean;
+  operatorOverloading?: {
+    operator: EOperator;
+    asTarget: ASTDatatype;
+  };
   returnType?: ASTDatatype;
   funcbody: ASTFuncBody;
   sourceloc: SourceLoc;

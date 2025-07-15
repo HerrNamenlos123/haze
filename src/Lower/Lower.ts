@@ -1,3 +1,5 @@
+import { setTextRange } from "typescript";
+import { Conversion } from "../Semantic/Conversion";
 import { type Semantic, type SemanticResult } from "../Semantic/SemanticSymbols";
 import { mangleDatatype, mangleNestedName, serializeDatatype, serializeExpr, serializeNestedName } from "../Semantic/Serialize";
 import { BinaryOperationToString, EExternLanguage, IncrOperationToString } from "../shared/AST";
@@ -44,28 +46,9 @@ function lowerExpr(
         assert(calledExpr.variant === "CallableExpr");
         const tempCallableValue = storeInTempVarAndGet(calledExpr.type, calledExpr);
 
-        const thisPointer: Semantic.RawPointerDatatypeSymbol = {
-          variant: "RawPointerDatatype",
-          concrete: true,
-          pointee: expr.calledExpr.type
-        }
-
         const type = lowerType(lr, expr.type);
-
         let thisExpr = calledExpr.thisExpr;
-        // TODO: This is not right, Callables are wrapped
-        console.log(">> Calling callable", calledExpr.type.prettyName)
-        console.log("this=", calledExpr.thisExpr.type.prettyName)
-        if (thisExpr.type.variant !== "Reference" && thisExpr.type.variant !== "RawPointer") {
-          // thisExpr = {
-          //   variant: "RawPointerAddressOf",
-          //   expr:
-          //     calledExpr.thisExpr,
-          //   type: lowerType(lr, thisPointer),
-          // }
-        }
 
-        console.log("Callable being called, result = ", type.prettyName)
         return storeInTempVarAndGet(type, {
           variant: "ExprCallExpr",
           expr: {
@@ -145,10 +128,46 @@ function lowerExpr(
     }
 
     case "ExplicitCast": {
+      const loweredExpr = lowerExpr(lr, expr.expr, flattened);
+      const targetType = lowerType(lr, expr.type);
+
+      if (expr.type.variant === "ReferenceDatatype" && expr.type.referee === expr.expr.type) {
+        // Conversion from anything to its own reference form
+        if (expr.expr.type.variant === "RawPointerDatatype") {
+          return loweredExpr;
+        }
+        else if (expr.expr.type.variant === "StructDatatype") {
+          return {
+            variant: "RawPointerAddressOf",
+            expr: loweredExpr,
+            type: targetType,
+          };
+        }
+        else {
+          throw new InternalError("Not implemented");
+        }
+      }
+
+      if (expr.expr.type.variant === "ReferenceDatatype" && expr.type === expr.expr.type.referee) {
+        // Conversion from a reference to what it points to
+        if (expr.type.variant === "RawPointerDatatype") {
+          return loweredExpr;
+        }
+        return {
+          variant: "RawPointerDereference",
+          expr: loweredExpr,
+          type: targetType,
+        };
+      }
+
+      if (expr.expr.type === expr.type) {
+        return loweredExpr;
+      }
+
       return {
         variant: "ExplicitCast",
-        expr: lowerExpr(lr, expr.expr, flattened),
-        type: lowerType(lr, expr.type),
+        expr: loweredExpr,
+        type: targetType,
       };
     }
 
@@ -201,9 +220,6 @@ function lowerExpr(
 
     case "CallableExpr": {
       lower(lr, expr.functionSymbol);
-      console.log("\n");
-      console.log("thisExpr=", serializeExpr(expr.thisExpr), "type=", serializeDatatype(expr.thisExpr.type));
-      console.log("Lowering Callable", lowerExpr(lr, expr.thisExpr, flattened).type.prettyName)
       return {
         variant: "CallableExpr",
         functionMangledName: mangleNestedName(expr.functionSymbol),

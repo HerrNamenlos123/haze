@@ -2,8 +2,8 @@ import { SymbolFlags } from "typescript";
 import { BinaryOperationToString, EExternLanguage, IncrOperationToString } from "../shared/AST";
 import { EPrimitive, primitiveToString } from "../shared/common";
 import { GLOBAL_NAMESPACE_NAME } from "../shared/Config";
-import { ImpossibleSituation, InternalError } from "../shared/Errors";
-import type { Semantic } from "./SemanticSymbols";
+import { assert, ImpossibleSituation, InternalError } from "../shared/Errors";
+import { Semantic } from "./SemanticSymbols";
 
 export function serializeDatatype(datatype: Semantic.DatatypeSymbol): string {
     switch (datatype.variant) {
@@ -128,6 +128,9 @@ export function mangleNestedName(
     }
 }
 
+let CallableUniqueCounter = 1;
+const CallableManglingHashStore = new Map<Semantic.CallableDatatypeSymbol, number>();
+
 export function mangleDatatype(type: Semantic.DatatypeSymbol): string {
     switch (type.variant) {
         case "StructDatatype": {
@@ -135,10 +138,15 @@ export function mangleDatatype(type: Semantic.DatatypeSymbol): string {
         }
 
         case "CallableDatatype": {
-            const name = "Callable";
-            const generic =
-                (type.thisExprType && "I" + mangleDatatype(type.thisExprType) + "E") || "";
-            return name.length + name + generic + mangleDatatype(type.functionType);
+            if (!CallableManglingHashStore.has(type)) {
+                CallableManglingHashStore.set(type, CallableUniqueCounter++);
+            }
+            const uniqueID = CallableManglingHashStore.get(type);
+            assert(uniqueID);
+
+            // const generic =
+            //     (type.thisExprType && "I" + mangleDatatype(type.thisExprType) + "E") || "";
+            return "__Callable__" + uniqueID.toString();
         }
 
         case "PrimitiveDatatype": {

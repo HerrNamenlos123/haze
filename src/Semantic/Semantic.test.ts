@@ -290,21 +290,6 @@ const tests: StageTests<Collect.Scope, SemanticResult> = [
                 assert(collectedStruct._collect.scope);
                 semanticResult.monomorphizedSymbols.push(structType);
                 semanticResult.globalNamespace.scope.symbolTable.defineSymbol(noneType);
-
-                // semanticResult.globalNamespace.scope.symbolTable.defineSymbol({
-                //     sourceloc: sourceloc(2, 0)
-                // });
-
-                // semanticResult.globalNamespace.scope.symbolTable.defineSymbol({
-                //     // variant: "StructDatatype",
-                //     // concrete: true,
-                //     name: "Bar",
-                //     // externLanguage: EExternLanguage.None,
-                //     // generics: [],
-                //     // members: [],
-                //     // methods: [],
-                //     sourceloc: sourceloc(2, 0)
-                // });
                 return semanticResult;
             })(),
         };

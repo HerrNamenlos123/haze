@@ -44,6 +44,8 @@ namespace Outer.Inner {
   struct Subspace<T> {}
 }
 
+// extern "C" sort(cb: RawFunctionPtr<(i32, i32) => boolean>);
+
 struct Test {
   test: i8;
 }

@@ -275,6 +275,7 @@ export function resolveDatatype(
                 externLanguage: EExternLanguage.None,
                 methodType: EMethodType.Drop,
                 parameterNames: ["this"],
+                operatorOverloading: undefined,
                 name: "drop",
                 scope: new Semantic.BlockScope(struct.sourceloc, new Collect.Scope(struct.sourceloc, struct.scope.collectedScope)),
                 type: dropType,

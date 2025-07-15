@@ -4,6 +4,7 @@ import type {
   EBinaryOperation,
   EExternLanguage,
   EIncrOperation,
+  EOperator,
 } from "../shared/AST";
 import {
   EVariableContext,
@@ -16,6 +17,7 @@ import type { Collect } from "../SymbolCollection/CollectSymbols";
 export type SemanticResult = {
   globalNamespace: Semantic.NamespaceSymbol;
   monomorphizedSymbols: Semantic.StructDatatypeSymbol[];
+  overloadedOperators: Semantic.FunctionDefinitionSymbol[];
 };
 
 export function isDatatypeSymbol(x: Semantic.Symbol): x is Semantic.DatatypeSymbol {
@@ -40,6 +42,10 @@ export namespace Semantic {
     variant: "FunctionDefinition";
     name: string;
     type: FunctionDatatypeSymbol;
+    operatorOverloading?: {
+      operator: EOperator;
+      asTarget: DatatypeSymbol;
+    };
     parameterNames: string[];
     externLanguage: EExternLanguage;
     collectedScope?: Collect.Scope;

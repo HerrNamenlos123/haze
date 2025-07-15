@@ -3,6 +3,7 @@ import { logger } from "../Log/log";
 import {
   EBinaryOperation,
   EExternLanguage,
+  EOperator,
   type ASTExpr,
   type ASTFunctionDatatype,
   type ASTNamedDatatype,
@@ -28,6 +29,7 @@ import { Conversion } from "./Conversion";
 import { makeFunctionDatatypeAvailable, resolveDatatype } from "./Resolve";
 import { Semantic, type SemanticResult } from "./SemanticSymbols";
 import { serializeDatatype, serializeExpr } from "./Serialize";
+import { makeTempName } from "../shared/store";
 
 export type ElaborationContext = {
   local: {
@@ -437,17 +439,18 @@ export function elaborateExpr(
           sourceloc: expr.sourceloc,
         };
       } else if (method) {
+        const thisExprType = object.type.variant === "ReferenceDatatype" ? object.type : {
+          variant: "ReferenceDatatype",
+          referee: object.type,
+          concrete: object.type.concrete,
+        } satisfies Semantic.ReferenceDatatypeSymbol;
         return {
           variant: "CallableExpr",
-          thisExpr: object,
+          thisExpr: Conversion.MakeExplicitConversion(object, thisExprType, expr.sourceloc),
           functionSymbol: method,
           type: {
             variant: "CallableDatatype",
-            thisExprType: {
-              variant: "ReferenceDatatype",
-              referee: object.type,
-              concrete: object.type.concrete,
-            },
+            thisExprType: thisExprType,
             functionType: method.type,
             concrete: method.type.concrete,
           },
@@ -792,6 +795,10 @@ export function elaborateSignature(
         parent: context.global.currentNamespace,
         externLanguage: item.externLanguage,
         methodType: item.methodType,
+        operatorOverloading: item.operatorOverloading && {
+          asTarget: resolveDatatype(sr, item.operatorOverloading.asTarget, scope, context),
+          operator: item.operatorOverloading.operator,
+        },
         parameterNames: item.params.map((p) => p.name),
         name: item.name,
         sourceloc: item.sourceloc,
@@ -839,6 +846,10 @@ export function elaborateSignature(
         externLanguage: EExternLanguage.None,
         methodType: EMethodType.Method,
         name: item.name,
+        operatorOverloading: item.operatorOverloading && {
+          asTarget: resolveDatatype(sr, item.operatorOverloading.asTarget, scope, context),
+          operator: item.operatorOverloading.operator,
+        },
         sourceloc: item.sourceloc,
         parameterNames: parameterNames,
         methodOf: struct,
@@ -964,6 +975,7 @@ export function SemanticallyAnalyze(collectedGlobalScope: Collect.Scope) {
       scope: new Semantic.DeclScope(null, collectedGlobalScope),
       sourceloc: null,
     },
+    overloadedOperators: [],
     monomorphizedSymbols: [],
   };
 

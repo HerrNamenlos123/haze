@@ -134,7 +134,9 @@ class CodeGenerator {
       } else if (symbol.variant === "Callable") {
         this.out.type_declarations.writeLine(`typedef struct ${this.mangle(symbol)} ${this.mangle(symbol)};`);
         this.out.type_definitions.writeLine(`struct ${this.mangle(symbol)} {`).pushIndent();
-        this.out.type_definitions.writeLine(`void* thisPtr;`);
+        if (symbol.thisExprType) {
+          this.out.type_definitions.writeLine(`${this.mangle(symbol.thisExprType)} thisPtr;`);
+        }
         this.out.type_definitions.writeLine(`${this.mangle(symbol.functionType)} fn;`);
         this.out.type_definitions.popIndent().writeLine(`};`).writeLine();
       } else {
@@ -193,7 +195,6 @@ class CodeGenerator {
       " " +
       this.mangle(symbol) +
       "(";
-    console.log(symbol.prettyName, symbol.parameterNames)
     signature += symbol.type.parameters.map((p, i) => `${this.mangle(p)} ${symbol.parameterNames[i]}`).join(", ");
     if (symbol.type.vararg) {
       signature += ", ...";
@@ -205,7 +206,6 @@ class CodeGenerator {
     if (symbol.variant === "FunctionDefinition") {
       this.out.function_definitions.writeLine(signature + " {").pushIndent();
 
-      // console.log(symbol.name, symbol.scope.statements);
       const s = this.emitScope(symbol.scope);
       this.out.function_definitions.write(s.temp);
       this.out.function_definitions.write(s.out);
@@ -525,10 +525,8 @@ class CodeGenerator {
       case "CallableExpr": {
         const thisExpr = this.emitExpr(expr.thisExpr);
         tempWriter.write(thisExpr.temp);
-        const isPointerOrReference = expr.thisExpr.type.variant === "Reference" || expr.thisExpr.type.variant === "RawPointer";
-        const referenced = isPointerOrReference ? thisExpr.out.get() : "&" + thisExpr.out.get();
         outWriter.write(
-          `((${this.mangle(expr.type)}) { .thisPtr = (void*)(${referenced}), .fn = ${this.mangle(expr)} })`,
+          `((${this.mangle(expr.type)}) { .thisPtr = ${thisExpr.out.get()}, .fn = ${this.mangle(expr)} })`,
         );
         return { out: outWriter, temp: tempWriter };
       }
