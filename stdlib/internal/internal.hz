@@ -7,8 +7,8 @@ struct CString {
 struct SharedPtr<T> {
   target: T*;
 
-  get(): T* => {
-    return this.target;
+  get(): T& => {
+    return *this.target;
   }
 }
 
@@ -28,29 +28,4 @@ struct Context {
 struct MemContext {
   alloc: (size: u64) => none*;
   globalDefaultArena: none*;
-}
-
-struct Foo {
-  value: i32;
-
-  fooGet(): Foo => {
-    return Foo {
-      .value: 5,
-    };
-  }
-}
-
-namespace Outer.Inner {
-  struct Subspace<T> {}
-}
-
-// extern "C" sort(cb: RawFunctionPtr<(i32, i32) => boolean>);
-
-struct Test {
-  test: i8;
-}
-
-foo() => {
-  const s = SharedPtr<Test> { .target: 0 as Test* };
-  const a = s.get();
 }

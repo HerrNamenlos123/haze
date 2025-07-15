@@ -149,7 +149,11 @@ function lowerExpr(
         if (expr.expr.type.variant === "RawPointerDatatype") {
           return loweredExpr;
         }
-        else if (expr.expr.type.variant === "StructDatatype") {
+        else if (expr.expr.type.variant === "StructDatatype" || expr.expr.type.variant === "PrimitiveDatatype") {
+          // Prevent double indirection &*a => a
+          if (expr.expr.variant === "RawPointerDereference") {
+            return lowerExpr(lr, expr.expr.expr, flattened);
+          }
           return {
             variant: "RawPointerAddressOf",
             expr: loweredExpr,

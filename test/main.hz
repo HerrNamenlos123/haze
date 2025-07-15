@@ -90,17 +90,8 @@ inject "#include <stdio.h>";
 //     extern "C" printf(fmt: str, ...): none;
 // }
 
-test(): i32 =>  {
-    const i = 10;
-    printf("Start\n");
-    while i {
-        printf("Testing...\n");
-        i--;
-    }
-    printf("Done!\n");
-}
-
 main(): i32 => {
-    foo();
-    return test();
+    const a = SharedPtr<i32> { .target: 0 as i32* };
+    const b: i32 = a.get();
+    return 0;
 }

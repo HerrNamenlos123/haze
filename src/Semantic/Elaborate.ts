@@ -42,6 +42,8 @@ export type ElaborationContext = {
 
     currentNamespace: Semantic.NamespaceSymbol | Semantic.StructDatatypeSymbol;
 
+    currentlyExpectedReturnType: Semantic.DatatypeSymbol[];
+
     elaboratedStructDatatypes: {
       originalSymbol: Collect.Symbol;
       generics: Semantic.Symbol[];
@@ -66,6 +68,8 @@ export function makeElaborationContext(globalNamespace: Semantic.NamespaceSymbol
       referenceTypeCache: [],
 
       currentNamespace: globalNamespace,
+
+      currentlyExpectedReturnType: [],
 
       elaboratedStructDatatypes: [],
       elaboratedFunctionSymbols: [],
@@ -354,7 +358,7 @@ export function elaborateExpr(
         throw new CompilerError(`This expression is not a pointer and cannot be dereferenced`, expr.expr.sourceloc);
       }
       return {
-        variant: "RawPointerAddressOf",
+        variant: "RawPointerDereference",
         type: _expr.type.pointee,
         expr: _expr,
         sourceloc: expr.sourceloc,
@@ -612,12 +616,24 @@ export function elaborateStatement(
     // =================================================================================================================
     // =================================================================================================================
 
-    case "ReturnStatement":
-      return {
-        variant: "ReturnStatement",
-        expr: s.expr && elaborateExpr(sr, scope, s.expr, context),
-        sourceloc: s.sourceloc,
-      };
+    case "ReturnStatement": {
+      if (s.expr) {
+        const expectedReturnType = context.global.currentlyExpectedReturnType[context.global.currentlyExpectedReturnType.length - 1];
+        assert(expectedReturnType);
+        return {
+          variant: "ReturnStatement",
+          expr: Conversion.MakeImplicitConversion(
+            elaborateExpr(sr, scope, s.expr, context), expectedReturnType, s.sourceloc),
+          sourceloc: s.sourceloc,
+        };
+      }
+      else {
+        return {
+          variant: "ReturnStatement",
+          sourceloc: s.sourceloc,
+        };
+      }
+    }
 
     // =================================================================================================================
     // =================================================================================================================
@@ -643,7 +659,7 @@ export function elaborateStatement(
         mutable: s.mutable,
         name: s.name,
         variableSymbol: symbol,
-        value: expr,
+        value: expr && Conversion.MakeImplicitConversion(expr, symbol.type, s.sourceloc),
         sourceloc: s.sourceloc,
       };
     }
@@ -937,7 +953,9 @@ export function elaborateBodies(
 
     case "FunctionDefinition": {
       assert(symbol.scope)
+      context.global.currentlyExpectedReturnType.push(symbol.type.returnType);
       elaborateBlockScope(sr, symbol.scope, context);
+      context.global.currentlyExpectedReturnType.pop();
       break;
     }
 
