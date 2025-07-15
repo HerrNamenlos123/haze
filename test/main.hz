@@ -91,7 +91,11 @@ inject "#include <stdio.h>";
 // }
 
 main(): i32 => {
-    const a = SharedPtr<i32> { .target: 0 as i32* };
-    const b: i32 = a.get();
+    const f = Factory<i32> {};
+
+    const c = f.makeShared(4 as u64);
+    *c.target = 123456789;
+    printf("Test %d\n", *c.target);
+    free(c.target as none*);
     return 0;
 }

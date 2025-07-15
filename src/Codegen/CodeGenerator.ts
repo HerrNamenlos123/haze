@@ -545,6 +545,15 @@ class CodeGenerator {
         return { out: outWriter, temp: tempWriter };
       }
 
+      case "ExprAssignmentExpr": {
+        const target = this.emitExpr(expr.target);
+        const value = this.emitExpr(expr.value);
+        tempWriter.write(target.temp);
+        tempWriter.write(value.temp);
+        outWriter.write(target.out.get() + ' = ' + value.out.get());
+        return { out: outWriter, temp: tempWriter };
+      }
+
       case "ConstantExpr":
         if (typeof expr.value === "string") {
           outWriter.write(JSON.stringify(expr.value));

@@ -29,7 +29,6 @@ import { Conversion } from "./Conversion";
 import { makeFunctionDatatypeAvailable, resolveDatatype } from "./Resolve";
 import { Semantic, type SemanticResult } from "./SemanticSymbols";
 import { serializeDatatype, serializeExpr } from "./Serialize";
-import { makeTempName } from "../shared/store";
 
 export type ElaborationContext = {
   local: {
@@ -83,6 +82,13 @@ export function inheritElaborationContext(parent: ElaborationContext, currentNam
       substitute: new Map(parent.local.substitute),
     },
     global: { ...parent.global, currentNamespace: currentNamespace || parent.global.currentNamespace }
+  }
+}
+
+export function useElaborationContextWithGlobalNamespace(parent: ElaborationContext, sr: SemanticResult): ElaborationContext {
+  return {
+    local: parent.local,
+    global: { ...parent.global, currentNamespace: sr.globalNamespace }
   }
 }
 
@@ -204,20 +210,6 @@ export function elaborateExpr(
           throw new ImpossibleSituation();
       }
 
-      if (leftType.variant === "DeferredDatatype" || rightType.variant === "DeferredDatatype") {
-        return {
-          variant: "BinaryExpr",
-          left: a,
-          operation: expr.operation,
-          right: b,
-          type: {
-            variant: "DeferredDatatype",
-            concrete: false,
-          },
-          sourceloc: expr.sourceloc,
-        };
-      }
-
       throw new InternalError("No known binary result for types ");
     }
 
@@ -266,11 +258,36 @@ export function elaborateExpr(
       const calledExpr = elaborateExpr(sr, scope, expr.calledExpr, context);
       const args = expr.arguments.map((a) => elaborateExpr(sr, scope, a, context));
 
+      const convertArgs = (givenArgs: Semantic.Expression[], requiredTypes: Semantic.DatatypeSymbol[], vararg: boolean) => {
+        if (vararg) {
+          if (givenArgs.length < requiredTypes.length) {
+            throw new CompilerError(`This call requires at least ${requiredTypes.length} arguments but only ${args.length} were given`, calledExpr.sourceloc);
+          }
+        }
+        else {
+          if (givenArgs.length !== requiredTypes.length) {
+            throw new CompilerError(`This call requires ${requiredTypes.length} arguments but ${args.length} were given`, calledExpr.sourceloc);
+          }
+        }
+        return givenArgs.map((a, index) => {
+          if (index < requiredTypes.length) {
+            return Conversion.MakeExplicitConversion(a, requiredTypes[index], expr.sourceloc);
+          }
+          else {
+            return a;
+          }
+        });
+      };
+
       if (calledExpr.type.variant === "CallableDatatype") {
+        let parametersWithoutThis = calledExpr.type.functionType.parameters;
+        if (calledExpr.type.thisExprType) {
+          parametersWithoutThis = parametersWithoutThis.slice(1);
+        }
         return {
           variant: "ExprCall",
           calledExpr: calledExpr,
-          arguments: args,
+          arguments: convertArgs(args, parametersWithoutThis, calledExpr.type.functionType.vararg),
           type: calledExpr.type.functionType.returnType,
           sourceloc: expr.sourceloc,
         };
@@ -280,7 +297,7 @@ export function elaborateExpr(
         return {
           variant: "ExprCall",
           calledExpr: calledExpr,
-          arguments: args,
+          arguments: convertArgs(args, calledExpr.type.parameters, calledExpr.type.vararg),
           type: calledExpr.type.returnType,
           sourceloc: expr.sourceloc,
         };
@@ -372,7 +389,7 @@ export function elaborateExpr(
     case "ExplicitCastExpr": {
       return {
         variant: "ExplicitCast",
-        type: resolveDatatype(sr, expr.castedTo, scope.collectedScope, context),
+        type: resolveDatatype(sr, expr.castedTo, scope.collectedScope, useElaborationContextWithGlobalNamespace(context, sr)),
         expr: elaborateExpr(sr, scope, expr.expr, context),
         sourceloc: expr.sourceloc,
       };
@@ -469,8 +486,24 @@ export function elaborateExpr(
     // =================================================================================================================
     // =================================================================================================================
 
+    case "ExprAssignmentExpr": {
+      const value = elaborateExpr(sr, scope, expr.value, context);
+      const target = elaborateExpr(sr, scope, expr.target, context);
+      return {
+        variant: "ExprAssignmentExpr",
+        value: Conversion.MakeExplicitConversion(value, target.type, expr.sourceloc),
+        target: target,
+        type: target.type,
+        sourceloc: expr.sourceloc,
+      };
+    }
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
     case "StructInstantiationExpr": {
-      const struct = resolveDatatype(sr, expr.datatype, scope.collectedScope, context);
+      const struct = resolveDatatype(sr, expr.datatype, scope.collectedScope, useElaborationContextWithGlobalNamespace(context, sr));
       assert(struct.variant === "StructDatatype");
 
       let remainingMembers = struct.members.map((m) => m.name);
@@ -646,7 +679,7 @@ export function elaborateStatement(
       assert(symbol.variant === "Variable");
 
       if (s.datatype) {
-        symbol.type = resolveDatatype(sr, s.datatype, scope.collectedScope, context);
+        symbol.type = resolveDatatype(sr, s.datatype, scope.collectedScope, useElaborationContextWithGlobalNamespace(context, sr));
       } else {
         assert(expr);
         symbol.type = expr.type;
@@ -696,6 +729,15 @@ export function elaborateBlockScope(
         throw new InternalError("Unexpected case");
 
       case "VariableDefinitionStatement": {
+        let variableContext = EVariableContext.FunctionLocal;
+        let type: Semantic.DatatypeSymbol = { variant: "DeferredDatatype", concrete: false };
+        if (symbol.isParameter) {
+          variableContext = EVariableContext.FunctionParameter;
+          if (!symbol.datatype) {
+            throw new InternalError("Parameter needs datatype");
+          }
+          type = resolveDatatype(sr, symbol.datatype, scope.collectedScope, context);
+        }
         scope.symbolTable.defineSymbol({
           variant: "Variable",
           export: false,
@@ -703,8 +745,8 @@ export function elaborateBlockScope(
           mutable: symbol.mutable,
           name: symbol.name,
           sourceloc: symbol.sourceloc,
-          variableContext: EVariableContext.FunctionLocal,
-          type: { variant: "DeferredDatatype", concrete: false },
+          variableContext: variableContext,
+          type: type,
           concrete: false,
         });
         break;
@@ -769,7 +811,7 @@ export function elaborateSignature(
         sourceloc: item.sourceloc,
       };
 
-      const resolved = resolveDatatype(sr, type, scope, context);
+      const resolved = resolveDatatype(sr, type, scope, useElaborationContextWithGlobalNamespace(context, sr));
       assert(resolved.variant === "FunctionDatatype");
       assert(item.methodType !== undefined);
       const symbol: Semantic.FunctionDeclarationSymbol = {
@@ -800,7 +842,7 @@ export function elaborateSignature(
         sourceloc: item.sourceloc,
       };
 
-      const resolved = resolveDatatype(sr, type, scope, context);
+      const resolved = resolveDatatype(sr, type, scope, useElaborationContextWithGlobalNamespace(context, sr));
       assert(resolved.variant === "FunctionDatatype");
       assert(item.funcbody.variant === "Scope");
       assert(item.methodType !== undefined);
@@ -812,7 +854,7 @@ export function elaborateSignature(
         externLanguage: item.externLanguage,
         methodType: item.methodType,
         operatorOverloading: item.operatorOverloading && {
-          asTarget: resolveDatatype(sr, item.operatorOverloading.asTarget, scope, context),
+          asTarget: resolveDatatype(sr, item.operatorOverloading.asTarget, scope, useElaborationContextWithGlobalNamespace(context, sr)),
           operator: item.operatorOverloading.operator,
         },
         parameterNames: item.params.map((p) => p.name),
@@ -847,11 +889,11 @@ export function elaborateSignature(
       };
 
       const parameterNames = item.params.map((p) => p.name);
-      const parameters = item.params.map((p) => resolveDatatype(sr, p.datatype, scope, context));
+      const parameters = item.params.map((p) => resolveDatatype(sr, p.datatype, scope, useElaborationContextWithGlobalNamespace(context, sr)));
       parameters.unshift(thisReference);
       parameterNames.unshift("this");
       assert(item.returnType);
-      const returnType = resolveDatatype(sr, item.returnType, scope, context);
+      const returnType = resolveDatatype(sr, item.returnType, scope, useElaborationContextWithGlobalNamespace(context, sr));
 
       const ftype = makeFunctionDatatypeAvailable(parameters, returnType, item.ellipsis, context)
 
@@ -863,7 +905,7 @@ export function elaborateSignature(
         methodType: EMethodType.Method,
         name: item.name,
         operatorOverloading: item.operatorOverloading && {
-          asTarget: resolveDatatype(sr, item.operatorOverloading.asTarget, scope, context),
+          asTarget: resolveDatatype(sr, item.operatorOverloading.asTarget, scope, useElaborationContextWithGlobalNamespace(context, sr)),
           operator: item.operatorOverloading.operator,
         },
         sourceloc: item.sourceloc,
@@ -881,6 +923,7 @@ export function elaborateSignature(
         symbol.scope = new Semantic.BlockScope(
           symbol.sourceloc,
           item.funcbody._collect.scope,
+          context.global.currentNamespace.scope
         );
         defineThisReference(sr, symbol.scope, struct, context);
       }

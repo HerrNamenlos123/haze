@@ -246,6 +246,15 @@ function lowerExpr(
       };
     }
 
+    case "ExprAssignmentExpr": {
+      return {
+        variant: "ExprAssignmentExpr",
+        target: lowerExpr(lr, expr.target, flattened),
+        value: lowerExpr(lr, expr.value, flattened),
+        type: lowerType(lr, expr.type),
+      };
+    }
+
     default:
       assert(false, "All cases handled");
   }
@@ -647,6 +656,9 @@ function serializeLoweredExpr(expr: Lowered.Expression): string {
 
     case "RawPointerDereference":
       return `*${serializeLoweredExpr(expr.expr)}`;
+
+    case "ExprAssignmentExpr":
+      return `${serializeLoweredExpr(expr.target)} = ${serializeLoweredExpr(expr.value)}`;
   }
 }
 

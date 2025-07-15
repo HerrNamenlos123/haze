@@ -85,6 +85,13 @@ export namespace Lowered {
     type: Datatype;
   };
 
+  export type ExprAssignmentExpr = {
+    variant: "ExprAssignmentExpr";
+    value: Expression;
+    target: Expression;
+    type: Datatype;
+  };
+
   export type PreIncrExpr = {
     variant: "PreIncrExpr";
     expr: Expression;
@@ -106,6 +113,7 @@ export namespace Lowered {
     | BinaryExpr
     | CallableExpr
     | StructInstantiationExpr
+    | ExprAssignmentExpr
     | RawPointerDereferenceExpr
     | RawPointerAddressOfExpr
     | ExplicitCastExpr

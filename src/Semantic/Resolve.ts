@@ -4,6 +4,7 @@ import { assert, CompilerError, ImpossibleSituation } from "../shared/Errors";
 import { Collect } from "../SymbolCollection/CollectSymbols";
 import { elaborateBodies, elaborateSignature, inheritElaborationContext, type ElaborationContext } from "./Elaborate";
 import { isDatatypeSymbol, Semantic, type SemanticResult } from "./SemanticSymbols";
+import { serializeDatatype } from "./Serialize";
 
 export function makeFunctionDatatypeAvailable(parameters: Semantic.DatatypeSymbol[], returnType: Semantic.DatatypeSymbol, vararg: boolean, context: ElaborationContext): Semantic.FunctionDatatypeSymbol {
   for (const type of context.global.functionTypeCache) {
@@ -236,21 +237,11 @@ export function resolveDatatype(
             });
 
             struct.methods = found.methods.map((m) => {
-              const parameters = m.params.map((p) => resolveDatatype(sr, p.datatype, assertScope(found._collect.scope), newContext));
               assert(m.returnType);
-              const returnType = resolveDatatype(sr, m.returnType, assertScope(found._collect.scope), newContext);
-              const ftype = makeFunctionDatatypeAvailable(parameters, returnType, m.ellipsis, newContext);
-
-              let methodType = EMethodType.NotAMethod;
-              if (m.name === "drop") {
-                methodType = EMethodType.Drop
-              }
-
               assert(m.funcbody._collect.scope);
               const symbol = elaborateSignature(sr, m, m.funcbody._collect.scope, inheritElaborationContext(newContext, struct));
               assert(symbol && symbol.variant === "FunctionDefinition");
               elaborateBodies(sr, symbol, newContext);
-
               return symbol;
             });
 
@@ -301,6 +292,7 @@ export function resolveDatatype(
             assert(found._collect.scope);
             const namespace = elaborateSignature(sr, found, found._collect.scope, context);
             assert(namespace && namespace.variant === "Namespace");
+            console.log("Going deeper", namespace.name)
             const nested = resolveDatatype(sr, rawAstDatatype.nested, found._collect.scope, inheritElaborationContext(context, namespace));
             return nested;
           }

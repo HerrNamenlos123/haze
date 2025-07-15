@@ -178,6 +178,14 @@ export namespace Semantic {
     sourceloc: SourceLoc;
   };
 
+  export type ExprAssignmentExpr = {
+    variant: "ExprAssignmentExpr";
+    value: Expression;
+    target: Expression;
+    type: DatatypeSymbol;
+    sourceloc: SourceLoc;
+  };
+
   export type RawPointerDereferenceExpr = {
     variant: "RawPointerDereference";
     expr: Expression;
@@ -252,6 +260,7 @@ export namespace Semantic {
   export type Expression =
     | ExprMemberAccessExpr
     | SymbolValueExpr
+    | ExprAssignmentExpr
     | BinaryExpr
     | CallableExpr
     | PreIncrExpr
