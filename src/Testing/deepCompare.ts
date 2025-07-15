@@ -13,6 +13,22 @@ export function compareWithDebug(expected: any, actual: any): { equal: boolean; 
     function walk(a: any, b: any, path: string) {
         if (deepEqual(a, b)) return;
 
+        // Handle null/undefined early
+        if (a === undefined && b !== undefined) {
+            diffs.push({ path, expected: a, actual: b });
+            return;
+        }
+
+        if (a !== undefined && b === undefined) {
+            diffs.push({ path, expected: a, actual: b });
+            return;
+        }
+
+        if (a == null || b == null) {
+            diffs.push({ path, expected: a, actual: b });
+            return;
+        }
+
         // Avoid cycles
         if (a && typeof a === 'object') {
             if (seen.has(a)) return;
@@ -21,12 +37,6 @@ export function compareWithDebug(expected: any, actual: any): { equal: boolean; 
 
         // Type mismatch
         if (typeof a !== typeof b) {
-            diffs.push({ path, expected: a, actual: b });
-            return;
-        }
-
-        // Null/undefined mismatch
-        if (a == null || b == null) {
             diffs.push({ path, expected: a, actual: b });
             return;
         }

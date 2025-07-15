@@ -110,6 +110,10 @@ function collect(
       item.funcbody._collect.scope = new Collect.Scope(item.sourceloc, scope);
       item._collect.definedInNamespaceOrStruct = meta.currentNamespaceOrStruct;
       item._collect.definedInScope = scope;
+      item.methodType = EMethodType.NotAMethod;
+      if (item._collect.definedInNamespaceOrStruct?.variant === "StructDefinition") {
+        item.methodType = EMethodType.Method;
+      }
 
       if (!item.returnType) {
         // item.returnType = {

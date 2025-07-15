@@ -1,5 +1,4 @@
-import deepEqual from 'deep-equal';
-import { compareWithDebug, deepCompare } from './deepCompare';
+import { compareWithDebug } from './deepCompare';
 
 export type StageTest<I, O> = {
     name: string;
@@ -27,7 +26,7 @@ export async function runStageTests<I, O>(
                 continue;
             }
 
-            const result = compareWithDebug(output, test.expectedOutput);
+            const result = compareWithDebug(test.expectedOutput, output);
             if (!result.equal) {
                 console.error(`❌ [${test.name}] Output mismatch.`);
                 // console.dir({ output, expected: test.expectedOutput }, { depth: null });

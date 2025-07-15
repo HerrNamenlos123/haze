@@ -1,4 +1,3 @@
-import { InternalError } from "../shared/Errors";
 import { runStageTests, type StageTest, type StageTests } from "../Testing/Testing";
 import { Parser } from "./Parser";
 
@@ -78,7 +77,7 @@ const tests: StageTests<string, any> = [
                 },
                 _collect: {},
                 _semantic: {},
-            }]),
+            }])(),
         }
     }];
 

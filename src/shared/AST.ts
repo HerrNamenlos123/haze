@@ -144,12 +144,12 @@ export type ASTFunctionDefinition = {
   generics: string[];
   ellipsis: boolean;
   returnType?: ASTDatatype;
+  methodType?: EMethodType;
   funcbody: ASTFuncBody;
   sourceloc: SourceLoc;
   _collect: {
     definedInNamespaceOrStruct?: ASTNamespaceDefinition | ASTStructDefinition;
     definedInScope?: Collect.Scope;
-    method?: EMethodType;
   };
   _semantic: {
   };

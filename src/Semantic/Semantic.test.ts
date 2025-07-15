@@ -1,7 +1,8 @@
 
 import { Parser } from "../Parser/Parser";
-import { EPrimitive } from "../shared/common";
+import { EMethodType, EPrimitive } from "../shared/common";
 import { GLOBAL_NAMESPACE_NAME } from "../shared/Config";
+import { assert } from "../shared/Errors";
 import { Collect, type CollectResult } from "../SymbolCollection/CollectSymbols";
 import { CollectSymbols } from "../SymbolCollection/SymbolCollection";
 import { runStageTests, type StageTest, type StageTests } from "../Testing/Testing";
@@ -51,15 +52,32 @@ const tests: StageTests<Collect.Scope, SemanticResult> = [
                     primitive: EPrimitive.i32,
                 })
 
-                // semanticResult.globalNamespace.scope.symbolTable.defineSymbol({
-                //     variant: "FunctionDefinition",
-                //     export: false,
-                //     externLanguage: 0,
-                //     parameterNames: [],
-                //     generics: [],
-                //     name: "main",
-                //     ellipsis: false,
-                // });
+                const collectedMainFunction = cr.globalScope.symbolTable.symbols[0];
+                assert(collectedMainFunction.variant === "FunctionDefinition");
+                assert(collectedMainFunction.funcbody._collect.scope)
+                semanticResult.globalNamespace.scope.symbolTable.defineSymbol({
+                    variant: "FunctionDefinition",
+                    type: {
+                        variant: "FunctionDatatype",
+                        concrete: true,
+                        parameters: [],
+                        returnType: {
+                            variant: "PrimitiveDatatype",
+                            concrete: true,
+                            primitive: EPrimitive.i32,
+                        },
+                        vararg: false,
+                    },
+                    export: false,
+                    parent: semanticResult.globalNamespace,
+                    externLanguage: 0,
+                    methodType: EMethodType.NotAMethod,
+                    parameterNames: [],
+                    name: "main",
+                    sourceloc: sourceloc(2, 12),
+                    scope: new Semantic.BlockScope(sourceloc(2, 12), collectedMainFunction.funcbody._collect.scope, semanticResult.globalNamespace.scope),
+                    concrete: true,
+                });
                 return semanticResult;
             })(),
         };

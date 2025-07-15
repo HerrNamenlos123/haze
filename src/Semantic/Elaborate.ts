@@ -784,13 +784,14 @@ export function elaborateSignature(
       const resolved = resolveDatatype(sr, type, scope, context);
       assert(resolved.variant === "FunctionDatatype");
       assert(item.funcbody.variant === "Scope");
+      assert(item.methodType !== undefined);
       let symbol: Semantic.FunctionDefinitionSymbol = {
         variant: "FunctionDefinition",
         type: resolved,
         export: item.export,
         parent: context.global.currentNamespace,
         externLanguage: item.externLanguage,
-        methodType: item._collect.method!,
+        methodType: item.methodType,
         parameterNames: item.params.map((p) => p.name),
         name: item.name,
         sourceloc: item.sourceloc,
@@ -960,7 +961,7 @@ export function SemanticallyAnalyze(collectedGlobalScope: Collect.Scope) {
       variant: "Namespace",
       name: GLOBAL_NAMESPACE_NAME,
       concrete: true,
-      scope: new Semantic.DeclScope(null, new Collect.Scope(null)),
+      scope: new Semantic.DeclScope(null, collectedGlobalScope),
       sourceloc: null,
     },
     monomorphizedSymbols: [],
