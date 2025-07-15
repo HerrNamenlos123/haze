@@ -437,7 +437,6 @@ export function elaborateExpr(
           sourceloc: expr.sourceloc,
         };
       } else if (method) {
-        console.log("Callable: thisExpr = ", serializeDatatype(object.type))
         return {
           variant: "CallableExpr",
           thisExpr: object,
@@ -634,6 +633,7 @@ export function elaborateStatement(
         symbol.type = expr.type;
       }
       assert(symbol.type);
+      symbol.concrete = symbol.type.concrete;
 
       return {
         variant: "VariableStatement",

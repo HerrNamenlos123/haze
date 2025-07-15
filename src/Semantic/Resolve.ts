@@ -256,10 +256,15 @@ export function resolveDatatype(
 
             // Add drop function
             if (struct.methods.every((m) => m.name !== "drop")) {
+              const thisReference: Semantic.DatatypeSymbol = {
+                variant: "ReferenceDatatype",
+                referee: struct,
+                concrete: struct.concrete,
+              };
               const dropType: Semantic.FunctionDatatypeSymbol = {
                 variant: "FunctionDatatype",
                 concrete: struct.concrete,
-                parameters: [],
+                parameters: [thisReference],
                 returnType: sr.globalNamespace.scope.makePrimitiveAvailable(EPrimitive.none),
                 vararg: false,
               };
@@ -269,7 +274,7 @@ export function resolveDatatype(
                 concrete: struct.concrete,
                 externLanguage: EExternLanguage.None,
                 methodType: EMethodType.Drop,
-                parameterNames: [],
+                parameterNames: ["this"],
                 name: "drop",
                 scope: new Semantic.BlockScope(struct.sourceloc, new Collect.Scope(struct.sourceloc, struct.scope.collectedScope)),
                 type: dropType,
