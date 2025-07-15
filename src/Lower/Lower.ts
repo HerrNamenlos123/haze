@@ -43,12 +43,19 @@ function lowerExpr(
       }
 
       if (calledExpr.type.variant === "Callable") {
-        assert(calledExpr.variant === "CallableExpr");
+        let thisExpr: Lowered.Expression;
+        if (calledExpr.variant === "CallableExpr") {
+          thisExpr = calledExpr.thisExpr;
+        }
+        else if (calledExpr.variant === "SymbolValue") {
+          thisExpr = calledExpr;
+        }
+        else {
+          throw new InternalError("Not implemented");
+        }
+
         const tempCallableValue = storeInTempVarAndGet(calledExpr.type, calledExpr);
-
         const type = lowerType(lr, expr.type);
-        let thisExpr = calledExpr.thisExpr;
-
         return storeInTempVarAndGet(type, {
           variant: "ExprCallExpr",
           expr: {
@@ -58,7 +65,13 @@ function lowerExpr(
             type: calledExpr.type,
             expr: tempCallableValue,
           },
-          arguments: [thisExpr, ...expr.arguments.map((a) => lowerExpr(lr, a, flattened))],
+          arguments: [{
+            variant: "ExprMemberAccess",
+            expr: tempCallableValue,
+            isReference: false,
+            memberName: "thisPtr",
+            type: thisExpr.type,
+          }, ...expr.arguments.map((a) => lowerExpr(lr, a, flattened))],
           type: type,
         });
       }
