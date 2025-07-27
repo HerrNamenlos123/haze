@@ -132,6 +132,10 @@ function collect(
         throw new CompilerError(`Symbol was already declared in this scope`, item.sourceloc);
       }
 
+      for (const g of item.generics) {
+        console.log("Defining generic param in function", g, item.funcbody._collect.scope.id);
+        item.funcbody._collect.scope.symbolTable.defineSymbol(g);
+      }
       for (const param of item.params) {
         item.funcbody._collect.scope.symbolTable.defineSymbol({
           variant: "VariableDefinitionStatement",
@@ -242,12 +246,32 @@ function collect(
       }
 
       for (const method of item.methods) {
-        method.funcbody._collect.scope = new Collect.Scope(item.sourceloc, item._collect.scope);
+        method.declarationScope = new Collect.Scope(item.sourceloc, item._collect.scope);
+        method.funcbody._collect.scope = new Collect.Scope(item.sourceloc, method.declarationScope);
+        console.log(
+          "Made method",
+          method.name,
+          "with inner scope",
+          method.funcbody._collect.scope.id,
+          " decl scope",
+          method.declarationScope.id,
+          "and parent",
+          item._collect.scope.id,
+        );
         method._collect.fullNamespacePath = [
           ...meta.namespaceStack.map((n) => n.name),
           method.name,
         ];
         method._collect.definedInScope = item._collect.scope;
+
+        for (const g of method.generics) {
+          console.log("Defining generic param in method", g, method.funcbody._collect.scope.id);
+          method.declarationScope.symbolTable.defineSymbol({
+            variant: "GenericParameter",
+            name: g,
+          });
+        }
+
         for (const param of method.params) {
           method.funcbody._collect.scope.symbolTable.defineSymbol({
             variant: "VariableDefinitionStatement",

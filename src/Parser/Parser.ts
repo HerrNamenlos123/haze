@@ -1,4 +1,10 @@
-import { CompilerError, InternalError, printErrorMessage, SyntaxError, type SourceLoc } from "../shared/Errors";
+import {
+  CompilerError,
+  InternalError,
+  printErrorMessage,
+  SyntaxError,
+  type SourceLoc,
+} from "../shared/Errors";
 import {
   EAssignmentOperation,
   EBinaryOperation,
@@ -52,7 +58,6 @@ import {
   type ASTVariableDefinitionStatement,
   type ASTWhileStatement,
 } from "../shared/AST";
-import { HazeLexer } from "./grammar/autogen/HazeLexer";
 import {
   BinaryExprContext,
   BooleanConstantContext,
@@ -102,9 +107,16 @@ import {
   VariableCreationStatementContext,
   WhileStatementContext,
 } from "./grammar/autogen/HazeParser";
-import { BaseErrorListener, CharStream, CommonTokenStream, ParserRuleContext, TerminalNode } from "antlr4ng";
-import { HazeVisitor } from "./grammar/autogen/HazeVisitor";
+import {
+  BaseErrorListener,
+  CharStream,
+  CommonTokenStream,
+  ParserRuleContext,
+  TerminalNode,
+} from "antlr4ng";
 import type { Collect } from "../SymbolCollection/CollectSymbols";
+import { HazeLexer } from "./grammar/autogen/HazeLexer";
+import { HazeVisitor } from "./grammar/autogen/HazeVisitor";
 
 export namespace Parser {
   class HazeErrorListener extends BaseErrorListener {
@@ -309,12 +321,14 @@ class ASTTransformer extends HazeVisitor<any> {
   }
 
   visitProg = (ctx: ProgContext): ASTRoot => {
-    return ctx.children.map((c) => {
-      if (c instanceof TerminalNode && c.getText() === "<EOF>") {
-        return;
-      }
-      return this.visit(c)
-    }).filter((c) => !!c);
+    return ctx.children
+      .map((c) => {
+        if (c instanceof TerminalNode && c.getText() === "<EOF>") {
+          return;
+        }
+        return this.visit(c);
+      })
+      .filter((c) => !!c);
   };
 
   visitCInjectDirective = (ctx: CInjectDirectiveContext): ASTCInjectDirective => {
@@ -478,12 +492,23 @@ class ASTTransformer extends HazeVisitor<any> {
   visitFunctionDefinition = (ctx: FunctionDefinitionContext): ASTFunctionDefinition => {
     const names = ctx.ID().map((c) => c.getText());
     const params = this.visitParams(ctx.params());
+    const generics = ctx
+      .ID()
+      .slice(1)
+      .map((g) => g.getText());
+
     return {
       variant: "FunctionDefinition",
       export: Boolean(ctx._export_),
       externLanguage: this.exlang(ctx),
       params: params.params,
-      generics: names.slice(1),
+      generics: generics.map(
+        (p) =>
+          ({
+            variant: "GenericParameter",
+            name: p,
+          }) satisfies Collect.GenericParameter,
+      ),
       name: names[0],
       operatorOverloading: undefined,
       ellipsis: params.ellipsis,
@@ -582,10 +607,13 @@ class ASTTransformer extends HazeVisitor<any> {
       export: Boolean(ctx._export_),
       externLanguage: this.exlang(ctx),
       name: name,
-      generics: generics.map((p) => ({
-        variant: "GenericParameter",
-        name: p,
-      } satisfies Collect.GenericParameter)),
+      generics: generics.map(
+        (p) =>
+          ({
+            variant: "GenericParameter",
+            name: p,
+          }) satisfies Collect.GenericParameter,
+      ),
       declarations: declarations,
       members: members,
       methods: methods,
@@ -748,7 +776,9 @@ class ASTTransformer extends HazeVisitor<any> {
     };
   };
 
-  visitRawPointerDereference = (ctx: RawPointerDereferenceContext): ASTRawPointerDereferenceExpr => {
+  visitRawPointerDereference = (
+    ctx: RawPointerDereferenceContext,
+  ): ASTRawPointerDereferenceExpr => {
     return {
       variant: "RawPointerDereference",
       expr: this.visit(ctx.expr()),

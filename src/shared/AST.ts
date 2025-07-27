@@ -11,7 +11,7 @@ export enum EExternLanguage {
 export enum EOperator {
   Add,
   Sub,
-  As
+  As,
 }
 
 export enum ELiteralUnit {
@@ -137,8 +137,7 @@ export type ASTFunctionDeclaration = {
     definedInScope?: Collect.Scope;
     namespacePath?: string[];
   };
-  _semantic: {
-  };
+  _semantic: {};
 };
 
 export type ASTFunctionDefinition = {
@@ -149,9 +148,9 @@ export type ASTFunctionDefinition = {
     operator: EOperator;
     asTarget: ASTDatatype;
   };
+  generics: Collect.GenericParameter[];
   name: string;
   params: ASTParam[];
-  generics: string[];
   ellipsis: boolean;
   returnType?: ASTDatatype;
   methodType?: EMethodType;
@@ -161,8 +160,7 @@ export type ASTFunctionDefinition = {
     definedInNamespaceOrStruct?: ASTNamespaceDefinition | ASTStructDefinition;
     definedInScope?: Collect.Scope;
   };
-  _semantic: {
-  };
+  _semantic: {};
 };
 
 export type ASTParam = {
@@ -239,8 +237,7 @@ export type ASTGlobalVariableDefinition = {
   datatype?: ASTDatatype;
   expr?: ASTExpr;
   sourceloc: SourceLoc;
-  _semantic: {
-  };
+  _semantic: {};
 };
 
 export type ASTInlineCStatement = {
@@ -269,8 +266,7 @@ export type ASTVariableDefinitionStatement = {
   expr?: ASTExpr;
   isParameter?: boolean;
   sourceloc: SourceLoc;
-  _semantic: {
-  };
+  _semantic: {};
 };
 
 export type ASTIfStatement = {
@@ -486,6 +482,7 @@ export type ASTStructMethodDefinition = {
     asTarget: ASTDatatype;
   };
   returnType?: ASTDatatype;
+  declarationScope?: Collect.Scope;
   funcbody: ASTFuncBody;
   sourceloc: SourceLoc;
   _collect: {
@@ -514,8 +511,7 @@ export type ASTStructDefinition = {
     namespaces?: string[];
     scope?: Collect.Scope;
   };
-  _semantic: {
-  };
+  _semantic: {};
 };
 
 export type ASTTypeDefinition = ASTStructDefinition;

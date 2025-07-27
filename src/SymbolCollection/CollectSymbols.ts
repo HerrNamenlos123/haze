@@ -37,7 +37,7 @@ export namespace Collect {
   export class SymbolTable {
     symbols: Symbol[] = [];
 
-    constructor(public parentTable?: SymbolTable) { }
+    constructor(public parentTable?: SymbolTable) {}
 
     defineSymbol(symbol: Symbol) {
       if (this.tryLookupSymbolHere(symbol.name)) {
@@ -76,13 +76,17 @@ export namespace Collect {
   }
 
   export class Scope {
+    public id: string; // This ID is only for debugging purposes
     public rawStatements: ASTStatement[] = [];
     public symbolTable: SymbolTable;
+
+    private static nextId = 1;
 
     constructor(
       public sourceloc: SourceLoc,
       public parentScope?: Scope,
     ) {
+      this.id = `CollectScope(id=${Scope.nextId++})`;
       this.symbolTable = new SymbolTable(parentScope?.symbolTable);
     }
   }

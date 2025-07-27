@@ -15,8 +15,8 @@ struct SharedPtr<T> {
   }
 }
 
-struct Factory<T> {
-  makeShared(size: u64): SharedPtr<T> => {
+struct Factory {
+  makeShared<T>(size: u64): SharedPtr<T> => {
     return SharedPtr<T> {
       .target: malloc(size) as T*,
     };

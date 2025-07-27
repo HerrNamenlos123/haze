@@ -1,12 +1,28 @@
 import { EExternLanguage, type ASTConstant, type ASTDatatype } from "../shared/AST";
-import { assertScope, EMethodType, EPrimitive, EVariableContext, stringToPrimitive } from "../shared/common";
+import {
+  assertScope,
+  EMethodType,
+  EPrimitive,
+  EVariableContext,
+  stringToPrimitive,
+} from "../shared/common";
 import { assert, CompilerError, ImpossibleSituation } from "../shared/Errors";
 import { Collect } from "../SymbolCollection/CollectSymbols";
-import { elaborateBodies, elaborateSignature, inheritElaborationContext, type ElaborationContext } from "./Elaborate";
+import {
+  elaborateBodies,
+  elaborateSignature,
+  inheritElaborationContext,
+  type ElaborationContext,
+} from "./Elaborate";
 import { isDatatypeSymbol, Semantic, type SemanticResult } from "./SemanticSymbols";
 import { serializeDatatype } from "./Serialize";
 
-export function makeFunctionDatatypeAvailable(parameters: Semantic.DatatypeSymbol[], returnType: Semantic.DatatypeSymbol, vararg: boolean, context: ElaborationContext): Semantic.FunctionDatatypeSymbol {
+export function makeFunctionDatatypeAvailable(
+  parameters: Semantic.DatatypeSymbol[],
+  returnType: Semantic.DatatypeSymbol,
+  vararg: boolean,
+  context: ElaborationContext,
+): Semantic.FunctionDatatypeSymbol {
   for (const type of context.global.functionTypeCache) {
     if (type.parameters.length !== parameters.length) {
       continue;
@@ -40,7 +56,10 @@ export function makeFunctionDatatypeAvailable(parameters: Semantic.DatatypeSymbo
   return ftype;
 }
 
-export function makeRawPointerDatatypeAvailable(pointee: Semantic.DatatypeSymbol, context: ElaborationContext): Semantic.RawPointerDatatypeSymbol {
+export function makeRawPointerDatatypeAvailable(
+  pointee: Semantic.DatatypeSymbol,
+  context: ElaborationContext,
+): Semantic.RawPointerDatatypeSymbol {
   for (const type of context.global.rawPointerTypeCache) {
     if (type.pointee !== pointee) {
       continue;
@@ -58,7 +77,10 @@ export function makeRawPointerDatatypeAvailable(pointee: Semantic.DatatypeSymbol
   return type;
 }
 
-export function makeReferenceDatatypeAvailable(referee: Semantic.DatatypeSymbol, context: ElaborationContext): Semantic.ReferenceDatatypeSymbol {
+export function makeReferenceDatatypeAvailable(
+  referee: Semantic.DatatypeSymbol,
+  context: ElaborationContext,
+): Semantic.ReferenceDatatypeSymbol {
   for (const type of context.global.referenceTypeCache) {
     if (type.referee !== referee) {
       continue;
@@ -103,7 +125,12 @@ export function resolveDatatype(
         resolveDatatype(sr, p.datatype, rawAstScope, context),
       );
       const returnValue = resolveDatatype(sr, rawAstDatatype.returnType, rawAstScope, context);
-      return makeFunctionDatatypeAvailable(parameters, returnValue, rawAstDatatype.ellipsis, context);
+      return makeFunctionDatatypeAvailable(
+        parameters,
+        returnValue,
+        rawAstDatatype.ellipsis,
+        context,
+      );
     }
 
     // =================================================================================================================
@@ -160,7 +187,11 @@ export function resolveDatatype(
         };
       }
 
-      const found = rawAstScope.symbolTable.lookupSymbol(rawAstDatatype.name, rawAstDatatype.sourceloc);
+      console.log("Looking for ", rawAstDatatype.name, rawAstScope.id);
+      const found = rawAstScope.symbolTable.lookupSymbol(
+        rawAstDatatype.name,
+        rawAstDatatype.sourceloc,
+      );
       if (!found) {
         throw new CompilerError(
           `${rawAstDatatype.name} was not declared in this scope`,
@@ -174,15 +205,20 @@ export function resolveDatatype(
         // ◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈
 
         case "StructDefinition": {
-
           // This part resolves a struct datatype. It resolves all its generics.
           // If it was already done, skips. Then struct is created and stored, so members can reach it.
           // Then members and methods are added, if it is concrete.
 
-          const generics = rawAstDatatype.generics.map((g) => resolveDatatype(sr, g, rawAstScope, context));
+          const generics = rawAstDatatype.generics.map((g) =>
+            resolveDatatype(sr, g, rawAstScope, context),
+          );
 
           for (const s of context.global.elaboratedStructDatatypes) {
-            if (s.generics.length === generics.length && s.generics.every((g, index) => g === generics[index]) && s.originalSymbol === found) {
+            if (
+              s.generics.length === generics.length &&
+              s.generics.every((g, index) => g === generics[index]) &&
+              s.originalSymbol === found
+            ) {
               return s.resultSymbol;
             }
           }
@@ -208,7 +244,11 @@ export function resolveDatatype(
             members: [],
             methods: [],
             rawAst: found,
-            scope: new Semantic.DeclScope(found.sourceloc, assertScope(found._collect.scope), context.global.currentNamespace.scope),
+            scope: new Semantic.DeclScope(
+              found.sourceloc,
+              assertScope(found._collect.scope),
+              context.global.currentNamespace.scope,
+            ),
             sourceloc: found.sourceloc,
             concrete: generics.every((g) => g.concrete),
           };
@@ -217,11 +257,16 @@ export function resolveDatatype(
             context.global.elaboratedStructDatatypes.push({
               generics: generics,
               originalSymbol: found,
-              resultSymbol: struct
-            })
+              resultSymbol: struct,
+            });
 
             struct.members = found.members.map((m) => {
-              const type = resolveDatatype(sr, m.type, assertScope(found._collect.scope), newContext);
+              const type = resolveDatatype(
+                sr,
+                m.type,
+                assertScope(found._collect.scope),
+                newContext,
+              );
               return {
                 variant: "Variable",
                 name: m.name,
@@ -233,13 +278,19 @@ export function resolveDatatype(
                 variableContext: EVariableContext.MemberOfStruct,
                 memberOf: struct,
                 concrete: type.concrete,
-              }
+              };
             });
 
             struct.methods = found.methods.map((m) => {
               assert(m.returnType);
               assert(m.funcbody._collect.scope);
-              const symbol = elaborateSignature(sr, m, m.funcbody._collect.scope, inheritElaborationContext(newContext, struct));
+
+              const symbol = elaborateSignature(
+                sr,
+                m,
+                m.funcbody._collect.scope,
+                inheritElaborationContext(newContext, struct),
+              );
               assert(symbol && symbol.variant === "FunctionDefinition");
               elaborateBodies(sr, symbol, newContext);
               return symbol;
@@ -268,7 +319,10 @@ export function resolveDatatype(
                 parameterNames: ["this"],
                 operatorOverloading: undefined,
                 name: "drop",
-                scope: new Semantic.BlockScope(struct.sourceloc, new Collect.Scope(struct.sourceloc, struct.scope.collectedScope)),
+                scope: new Semantic.BlockScope(
+                  struct.sourceloc,
+                  new Collect.Scope(struct.sourceloc, struct.scope.collectedScope),
+                ),
                 type: dropType,
                 methodOf: struct,
                 parent: struct,
@@ -292,8 +346,13 @@ export function resolveDatatype(
             assert(found._collect.scope);
             const namespace = elaborateSignature(sr, found, found._collect.scope, context);
             assert(namespace && namespace.variant === "Namespace");
-            console.log("Going deeper", namespace.name)
-            const nested = resolveDatatype(sr, rawAstDatatype.nested, found._collect.scope, inheritElaborationContext(context, namespace));
+            console.log("Going deeper", namespace.name);
+            const nested = resolveDatatype(
+              sr,
+              rawAstDatatype.nested,
+              found._collect.scope,
+              inheritElaborationContext(context, namespace),
+            );
             return nested;
           }
           throw new CompilerError(
