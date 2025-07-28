@@ -90,15 +90,40 @@ inject "#include <stdio.h>";
 //     extern "C" printf(fmt: str, ...): none;
 // }
 
+// foo(arg: i32) => {
+//     printf("Arg: %d\n", arg);
+// }
+
+struct A {
+    b: B*;
+
+    get(): B => {
+        return *this.b;
+    }
+}
+
+struct B {
+    a: A*;
+
+    get(): A => {
+        return *this.a;
+    }
+}
+
 main(): i32 => {
     // const f = Factory<i32> {};
     // const c = f.makeShared(4 as u64);
 
-    const f = Factory {};
-    const c = f.makeShared<i32>(4 as u64);
+    // const f = Factory {};
+    // const c = f.makeShared<i32>(4 as u64);
 
-    *c.target = 123456789;
-    printf("Test %d\n", *c.target);
-    free(c.target as none*);
+    // *c.target = 123456789;
+    // printf("Test %d\n", *c.target);
+    // free(c.target as none*);
+    // foo(187);
+
+    const a = A { .b: B { .a: 0 as A*} };
+    a.get().get();
+
     return 0;
 }

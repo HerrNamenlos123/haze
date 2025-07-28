@@ -1,3 +1,4 @@
+import { isTemplateExpression } from "typescript";
 import { EExternLanguage, type ASTConstant, type ASTDatatype } from "../shared/AST";
 import {
   assertScope,
@@ -15,7 +16,6 @@ import {
   type ElaborationContext,
 } from "./Elaborate";
 import { isDatatypeSymbol, Semantic, type SemanticResult } from "./SemanticSymbols";
-import { serializeDatatype } from "./Serialize";
 
 export function makeFunctionDatatypeAvailable(
   parameters: Semantic.DatatypeSymbol[],
@@ -101,7 +101,7 @@ export function makeReferenceDatatypeAvailable(
 export function resolveDatatype(
   sr: SemanticResult,
   rawAstDatatype: ASTDatatype | ASTConstant,
-  rawAstScope: Collect.Scope,
+  scope: Semantic.BlockScope | Semantic.DeclScope,
   context: ElaborationContext,
 ): Semantic.DatatypeSymbol {
   switch (rawAstDatatype.variant) {
@@ -122,9 +122,9 @@ export function resolveDatatype(
 
     case "FunctionDatatype": {
       const parameters = rawAstDatatype.params.map((p) =>
-        resolveDatatype(sr, p.datatype, rawAstScope, context),
+        resolveDatatype(sr, p.datatype, scope, context),
       );
-      const returnValue = resolveDatatype(sr, rawAstDatatype.returnType, rawAstScope, context);
+      const returnValue = resolveDatatype(sr, rawAstDatatype.returnType, scope, context);
       return makeFunctionDatatypeAvailable(
         parameters,
         returnValue,
@@ -138,7 +138,7 @@ export function resolveDatatype(
     // =================================================================================================================
 
     case "RawPointerDatatype": {
-      const pointee = resolveDatatype(sr, rawAstDatatype.pointee, rawAstScope, context);
+      const pointee = resolveDatatype(sr, rawAstDatatype.pointee, scope, context);
       return makeRawPointerDatatypeAvailable(pointee, context);
     }
 
@@ -147,7 +147,7 @@ export function resolveDatatype(
     // =================================================================================================================
 
     case "ReferenceDatatype": {
-      const referee = resolveDatatype(sr, rawAstDatatype.referee, rawAstScope, context);
+      const referee = resolveDatatype(sr, rawAstDatatype.referee, scope, context);
       return makeReferenceDatatypeAvailable(referee, context);
     }
 
@@ -177,7 +177,7 @@ export function resolveDatatype(
             rawAstDatatype.sourceloc,
           );
         }
-        const functype = resolveDatatype(sr, rawAstDatatype.generics[0], rawAstScope, context);
+        const functype = resolveDatatype(sr, rawAstDatatype.generics[0], scope, context);
         assert(functype.variant === "FunctionDatatype");
         return {
           variant: "CallableDatatype",
@@ -187,8 +187,7 @@ export function resolveDatatype(
         };
       }
 
-      console.log("Looking for ", rawAstDatatype.name, rawAstScope.id);
-      const found = rawAstScope.symbolTable.lookupSymbol(
+      const found = scope.symbolTable.lookupSymbol(
         rawAstDatatype.name,
         rawAstDatatype.sourceloc,
       );
@@ -204,13 +203,18 @@ export function resolveDatatype(
         // ◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆◆
         // ◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈◇◈
 
-        case "StructDefinition": {
-          // This part resolves a struct datatype. It resolves all its generics.
-          // If it was already done, skips. Then struct is created and stored, so members can reach it.
-          // Then members and methods are added, if it is concrete.
+        case "StructDatatype": {
+
+          let struct = context.global.elaboratedStructDatatypes.find((d) => d.originalSymbol === found.originalCollectedSymbol);
+          if (!struct) {
+            // If it is not signature elaborated yet, do it now. This is required if a struct is used before being defined.
+            struct = elaborateSignature(sr, found.originalCollectedSymbol, scope, context);
+          }
+          assert(struct, "This must exist because all types globally must be signature-elaborated before resolving")
+
 
           const generics = rawAstDatatype.generics.map((g) =>
-            resolveDatatype(sr, g, rawAstScope, context),
+            resolveDatatype(sr, g, scope, context),
           );
 
           for (const s of context.global.elaboratedStructDatatypes) {
@@ -295,41 +299,6 @@ export function resolveDatatype(
               elaborateBodies(sr, symbol, newContext);
               return symbol;
             });
-
-            // Add drop function
-            if (struct.methods.every((m) => m.name !== "drop")) {
-              const thisReference: Semantic.DatatypeSymbol = {
-                variant: "ReferenceDatatype",
-                referee: struct,
-                concrete: struct.concrete,
-              };
-              const dropType: Semantic.FunctionDatatypeSymbol = {
-                variant: "FunctionDatatype",
-                concrete: struct.concrete,
-                parameters: [thisReference],
-                returnType: sr.globalNamespace.scope.makePrimitiveAvailable(EPrimitive.none),
-                vararg: false,
-              };
-              const drop: Semantic.FunctionDefinitionSymbol = {
-                variant: "FunctionDefinition",
-                export: false,
-                concrete: struct.concrete,
-                externLanguage: EExternLanguage.None,
-                methodType: EMethodType.Drop,
-                parameterNames: ["this"],
-                operatorOverloading: undefined,
-                name: "drop",
-                scope: new Semantic.BlockScope(
-                  struct.sourceloc,
-                  new Collect.Scope(struct.sourceloc, struct.scope.collectedScope),
-                ),
-                type: dropType,
-                methodOf: struct,
-                parent: struct,
-                sourceloc: struct.sourceloc,
-              };
-              struct.methods.push(drop);
-            }
 
             sr.monomorphizedSymbols.push(struct);
           }

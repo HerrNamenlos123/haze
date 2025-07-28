@@ -408,7 +408,7 @@ export function elaborateExpr(
         type: resolveDatatype(
           sr,
           expr.castedTo,
-          scope.collectedScope,
+          scope,
           useElaborationContextWithGlobalNamespace(context, sr),
         ),
         expr: elaborateExpr(sr, scope, expr.expr, context),
@@ -485,10 +485,10 @@ export function elaborateExpr(
           object.type.variant === "ReferenceDatatype"
             ? object.type
             : ({
-                variant: "ReferenceDatatype",
-                referee: object.type,
-                concrete: object.type.concrete,
-              } satisfies Semantic.ReferenceDatatypeSymbol);
+              variant: "ReferenceDatatype",
+              referee: object.type,
+              concrete: object.type.concrete,
+            } satisfies Semantic.ReferenceDatatypeSymbol);
 
         // if (method.gen)
 
@@ -533,7 +533,7 @@ export function elaborateExpr(
       const struct = resolveDatatype(
         sr,
         expr.datatype,
-        scope.collectedScope,
+        scope,
         useElaborationContextWithGlobalNamespace(context, sr),
       );
       assert(struct.variant === "StructDatatype");
@@ -681,7 +681,7 @@ export function elaborateStatement(
       if (s.expr) {
         const expectedReturnType =
           context.global.currentlyExpectedReturnType[
-            context.global.currentlyExpectedReturnType.length - 1
+          context.global.currentlyExpectedReturnType.length - 1
           ];
         assert(expectedReturnType);
         return {
@@ -715,7 +715,7 @@ export function elaborateStatement(
         symbol.type = resolveDatatype(
           sr,
           s.datatype,
-          scope.collectedScope,
+          scope,
           useElaborationContextWithGlobalNamespace(context, sr),
         );
       } else {
@@ -774,7 +774,7 @@ export function elaborateBlockScope(
           if (!symbol.datatype) {
             throw new InternalError("Parameter needs datatype");
           }
-          type = resolveDatatype(sr, symbol.datatype, scope.collectedScope, context);
+          type = resolveDatatype(sr, symbol.datatype, scope, context);
         }
         scope.symbolTable.defineSymbol({
           variant: "Variable",
@@ -832,7 +832,7 @@ export function defineThisReference(
 export function elaborateSignature(
   sr: SemanticResult,
   item: Collect.Symbol,
-  scope: Collect.Scope,
+  scope: Semantic.DeclScope | Semantic.BlockScope,
   context: ElaborationContext,
 ): Semantic.Symbol | undefined {
   switch (item.variant) {
@@ -1048,7 +1048,85 @@ export function elaborateSignature(
     }
 
     case "StructDefinition": {
-      return;
+
+      // In the signature elaboration phase, there are no generics resolved yet so we don't need to check them.
+      // There is only a single signature elaboration result for every collected symbol.
+      const alreadyElaborated = context.global.elaboratedStructDatatypes.find((d) => d.originalSymbol === item);
+      if (alreadyElaborated) {
+        return alreadyElaborated.resultSymbol;
+      }
+
+      const generics: Semantic.DatatypeSymbol[] = item.generics.map((g) => ({ variant: "GenericParameterDatatype", concrete: false, name: g.name }));
+      const struct: Semantic.StructDatatypeSymbol = {
+        variant: "StructDatatype",
+        name: item.name,
+        generics: generics,
+        externLanguage: item.externLanguage,
+        parent: context.global.currentNamespace,
+        members: [],
+        methods: [],
+        rawAst: item,
+        scope: new Semantic.DeclScope(
+          item.sourceloc,
+          assertScope(item._collect.scope),
+          context.global.currentNamespace.scope,
+        ),
+        sourceloc: item.sourceloc,
+        concrete: generics.length === 0,
+        originalCollectedSymbol: item,
+      };
+      context.global.elaboratedStructDatatypes.push({
+        generics: generics,
+        originalSymbol: item,
+        resultSymbol: struct,
+      });
+      if (struct.concrete) {
+        sr.monomorphizedSymbols.add(struct);
+      }
+      console.log("Create struct", struct.name)
+
+      const newContext = inheritElaborationContext(context);
+      for (let i = 0; i < item.generics.length; i++) {
+        newContext.local.substitute.set(item.generics[i], generics[i]);
+      }
+
+      struct.members = item.members.map((m) => {
+        console.log("Elaborate ", m.name)
+        const type = resolveDatatype(
+          sr,
+          m.type,
+          struct.scope,
+          newContext,
+        );
+        return {
+          variant: "Variable",
+          name: m.name,
+          export: false,
+          externLanguage: EExternLanguage.None,
+          mutable: true,
+          sourceloc: m.sourceloc,
+          type: type,
+          variableContext: EVariableContext.MemberOfStruct,
+          memberOf: struct,
+          concrete: type.concrete,
+        };
+      });
+
+      struct.methods = item.methods.map((m) => {
+        console.log("Elaborate ", m.name)
+        assert(m.returnType);
+        assert(m.funcbody._collect.scope);
+        const symbol = elaborateSignature(
+          sr,
+          m,
+          struct.scope,
+          inheritElaborationContext(newContext, struct),
+        );
+        assert(symbol && symbol.variant === "FunctionDefinition");
+        return symbol;
+      });
+
+      return struct;
     }
 
     default:
@@ -1076,7 +1154,6 @@ export function elaborateBodies(
 
     case "FunctionDefinition": {
       console.log("Elaborating func ", symbol.name);
-      console.log(symbol.scope);
       assert(symbol.scope);
       context.global.currentlyExpectedReturnType.push(symbol.type.returnType);
       elaborateBlockScope(sr, symbol.scope, context);
@@ -1119,7 +1196,7 @@ export function SemanticallyAnalyze(collectedGlobalScope: Collect.Scope) {
       sourceloc: null,
     },
     overloadedOperators: [],
-    monomorphizedSymbols: [],
+    monomorphizedSymbols: new Set(),
   };
 
   const context = makeElaborationContext(sr.globalNamespace);

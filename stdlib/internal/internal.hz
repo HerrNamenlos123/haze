@@ -7,21 +7,21 @@ extern "C" free(ptr: none*);
 struct CString {
 }
 
-struct SharedPtr<T> {
-  target: T*;
+// struct SharedPtr<T> {
+//   target: T*;
 
-  get(): T& => {
-    return *this.target;
-  }
-}
+//   get(): T& => {
+//     return *this.target;
+//   }
+// }
 
-struct Factory {
-  makeShared<T>(size: u64): SharedPtr<T> => {
-    return SharedPtr<T> {
-      .target: malloc(size) as T*,
-    };
-  }
-}
+// struct Factory {
+//   makeShared<T>(size: u64): SharedPtr<T> => {
+//     return SharedPtr<T> {
+//       .target: malloc(size) as T*,
+//     };
+//   }
+// }
 
 struct LogContext {
   trace: (fmt: str, ...) => none;

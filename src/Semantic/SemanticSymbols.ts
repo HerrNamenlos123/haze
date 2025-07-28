@@ -16,7 +16,7 @@ import type { Collect } from "../SymbolCollection/CollectSymbols";
 
 export type SemanticResult = {
   globalNamespace: Semantic.NamespaceSymbol;
-  monomorphizedSymbols: Semantic.StructDatatypeSymbol[];
+  monomorphizedSymbols: Set<Semantic.StructDatatypeSymbol>;
   overloadedOperators: Semantic.FunctionDefinitionSymbol[];
 };
 
@@ -91,6 +91,7 @@ export namespace Semantic {
     scope: Semantic.DeclScope;
     sourceloc: SourceLoc;
     concrete: boolean;
+    originalCollectedSymbol: Collect.Symbol;
   };
 
   export type RawPointerDatatypeSymbol = {

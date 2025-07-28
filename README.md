@@ -1,6 +1,17 @@
 # haze
 A WIP toy programming language, inspired by the best of TypeScript and C++
 
+## Stopped last time
+
+Beim Umbauen von Elaborate. Der Signature Pass muss komplett durchlaufen durch alles und darf nicht resolveDatatype machen.
+Ich muss resolve auftrennen für signature und body phases. Erst dann darf man Bodies elaboraten und Types resolven wegen Circulars.
+Die Methods dürfen nicht elaborated werden wenn das Struct elaborated wird, sondern erst wenn man mit einem Member Access
+drauf zugreift, da sie auch Generics haben können. Auch globale Funktionen erst dann. ResolveDatatype hat bis jetzt
+immer elaborated und instantiated gleichzeitig. Jetzt muss elaborated im signature pass werden und im Body pass
+wird in resolveDatatype nur noch das Symbol dupliziert und instantiated und body elaborated, aber nicht mehr signature elaborated. 
+Am Ende soll zusätzlich zu den Generics die Lifetimes gecacht werden
+und die Funktion soll elaborated werden und ein Set an Constraints aufbauen für die Lifetime requirements der Parameter.
+
 ## The Pitch
 
 Imagine a new programming language. A pragmatic, batteries-included language.
