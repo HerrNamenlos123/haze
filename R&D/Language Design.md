@@ -288,3 +288,147 @@ useClone<T: Cloneable, U>(a: T, b: U)
   // Implementation
 }
 ```
+
+
+# Discriminated Unions, RTTI, Safe Pattern Matching & Methods without Polymorphism
+
+This document specifies how discriminated unions, runtime type information (RTTI), pattern matching, and methods without inheritance or polymorphism work in the language. It also introduces the `forward` method feature for ergonomic member forwarding.
+
+---
+
+## 1. Discriminated (Tagged) Unions
+
+- A **discriminated union** is a union type composed of multiple variants, each variant being a distinct struct type.
+- Each instance stores a **runtime tag** identifying the active variant (RTTI).
+- Variants do **not share inheritance** but are part of the union type.
+- The union type can be matched on explicitly using **pattern matching**.
+
+### Example:
+
+```ts
+type Entity = EntityA | EntityB | EntityC;
+
+struct EntityA {
+  x: f32;
+  speed: f32;
+  update(self) => {
+    self.x += self.speed;
+  }
+}
+
+struct EntityB {
+  x: f32;
+  speed: f32;
+  update(self) => {
+    self.x += self.speed * 2;
+  }
+}
+
+struct EntityC {
+  // no movement
+}
+````
+
+---
+
+## 2. Runtime Type Information (RTTI)
+
+* Each discriminated union instance stores a hidden tag identifying its variant.
+* The runtime can query this tag to safely perform pattern matching.
+* RTTI allows safe downcasting and variant identification without inheritance.
+
+---
+
+## 3. Safe Pattern Matching
+
+* Pattern matching works by inspecting the variant tag and executing the corresponding case.
+* **Pattern matching must be exhaustive**:
+
+  * All variants must be explicitly matched.
+  * Otherwise, a compile-time error occurs.
+  * To allow partial matching, a `default:` case can be defined.
+* Pattern matching syntax is similar to TypeScript or Rust:
+
+```ts
+match entity:
+  case EntityA: entity.update()
+  case EntityB: entity.update()
+  case EntityC: /* do nothing */
+```
+
+* Exhaustiveness check ensures **no undefined behavior or missed variants**.
+
+---
+
+## 4. Methods without Inheritance or Polymorphism
+
+* Structs may have **methods** defined locally on them.
+* There is **no inheritance hierarchy** and **no virtual dispatch**.
+* Method calls are **static, monomorphic calls** on the concrete type.
+* Methods encapsulate implementation details but do not imply subtyping.
+* Example:
+
+```ts
+struct EntityA {
+  x: f32;
+  fn update(self) {
+    self.x += 1.0;
+  }
+}
+
+struct EntityB {
+  x: f32;
+  fn update(self) {
+    self.x += 2.0;
+  }
+}
+```
+
+* Calls require matching on the union and then dispatching explicitly.
+
+---
+
+## 5. Forward Methods (`forward method()`)
+
+* `forward method()` is a special method modifier that allows forwarding member access from a returned struct to its parent struct.
+* It must return a struct.
+* All members of the returned struct become **directly accessible on the parent** as if they were its own members.
+* Multiple `forward` methods can be defined.
+* If multiple forwarded members collide (ambiguous access), this produces a **compile-time error** when accessing the colliding member.
+* This forwarding feature replaces inheritance and composition boilerplate by **delegating member access transparently**.
+
+### Example:
+
+```ts
+struct Transform {
+  position: Vec3;
+  rotation: Quat;
+}
+
+struct Entity {
+  transform: Transform;
+
+  forward method() {
+    return self.transform;
+  }
+}
+
+let e = Entity { transform: Transform { ... } };
+e.position = Vec3(1, 2, 3);  // directly accesses e.transform.position
+```
+
+* This eliminates the need for manual getter/setter forwarding or inheritance chains.
+
+---
+
+## 6. Summary
+
+| Feature                          | Behavior/Benefit                                                                   |
+| -------------------------------- | ---------------------------------------------------------------------------------- |
+| **Discriminated unions**         | Tagged variants, no inheritance, explicit variant handling                         |
+| **RTTI**                         | Runtime variant identification without polymorphism                                |
+| **Exhaustive pattern matching**  | Ensures all variants handled or default case is present; avoids bugs               |
+| **Methods without polymorphism** | Encapsulate variant-specific logic, static dispatch for simplicity and performance |
+| **Forward methods**              | Transparent member forwarding from returned structs; resolves inheritance needs    |
+
+---
