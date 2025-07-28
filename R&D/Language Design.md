@@ -93,6 +93,107 @@
 
 ---
 
+# Lifetime Constraint Narrowing and Validation
+
+This document describes the approach to lifetime inference and checking in the language's function call system.
+
+---
+
+## Overview
+
+- Every function is initially analyzed with **maximally unconstrained lifetimes**:
+  - The return value is assumed to have the largest possible lifetime (e.g., `'static`).
+  - Parameter lifetimes are initially unconstrained.
+- As the function body is analyzed, **lifetime constraints accumulate** from the operations performed on references.
+- Constraints **narrow the valid lifetime domain** but do **not immediately cause errors** inside the function.
+- At the end of analysis, the **set of lifetime constraints** represents the valid lifetime relations for the function.
+- If this set is empty (unsatisfiable), the function is invalid (a compile-time error).
+- Call sites check their actual argument lifetimes against these constraints.
+  - Valid calls reuse the function body.
+  - Invalid calls cause errors at the call site.
+
+---
+
+## Detailed Process
+
+### 1. Initialization
+
+- Assume return lifetime is `'static` or the broadest possible.
+- Parameter lifetimes start unconstrained.
+
+### 2. Constraint Accumulation
+
+- Each instruction narrows constraints, e.g.:
+  - Returning a reference to a parameter adds:  
+    `return_lifetime ≤ param_lifetime`
+  - Assigning references imposes ordering between lifetimes.
+  - Local references must not escape their scope.
+
+- Constraints are additive and form a system of inequalities or relations.
+
+### 3. Constraint Set
+
+- The combined constraints define a **valid set of lifetime substitutions**.
+- This set represents all allowed lifetime relationships consistent with the function’s logic.
+
+### 4. Validity Check
+
+- If constraints are **unsatisfiable** → function is invalid and a compile-time error occurs.
+- Otherwise, the function has a **lifetime contract** that callers must satisfy.
+
+### 5. Call Site Checking
+
+- When calling the function:
+  - The actual lifetimes of arguments are substituted into the function's constraints.
+  - If the substitution satisfies all constraints → call is valid.
+  - Otherwise → compile-time lifetime error at the call site.
+
+---
+
+## Example
+
+```ts
+example(obj: Foo, name: String): String => {
+    // Start: Lifetime(obj) <= Static and Lifetime(name) <= Static and Lifetime(Return) = Static
+    // Now: 
+    //  - Lifetime(Foo.name) = Lifetime(Foo) by definition
+    //  - Name is written into Foo, so Name must outlive foo
+    //  - Lifetime(name) >= Lifetime(Foo)
+    obj.name = name;
+    // Lifetime(Return) = Lifetime(obj.name) = Lifetime(obj)
+    return obj.name;
+}
+````
+
+Result:
+* `Lifetime(obj) <= Static`
+* `Lifetime(name) <= Static`
+* `Lifetime(name) >= Lifetime(obj)`
+
+All of them must be satisfied so the function can be called, and if it can, it produces:
+* `Lifetime(Return) = Lifetime(obj)`
+
+---
+
+## Benefits
+
+* Allows generic functions to be elaborated **once**, with lifetime constraints inferred.
+* Supports reuse of compiled functions for multiple lifetime instantiations without re-elaboration.
+* Errors appear early if no valid lifetimes satisfy the constraints.
+* Improves compile-time performance and clarity of lifetime contracts.
+* Better diagnostics because every function receives a set of constraint, even when never called, and the constraints can be verified per function.
+
+---
+
+## Summary
+
+* Start with max freedom on lifetimes.
+* Narrow constraints while analyzing function body.
+* Function is valid if constraints are satisfiable.
+* Calls checked against stored constraints.
+* Enables efficient, flexible, and safe lifetime tracking in the compiler.
+
+
 # 🧵 Thread Isolation and Channel-Based Communication
 
 ## 🔒 Thread Isolation Model
@@ -430,5 +531,235 @@ e.position = Vec3(1, 2, 3);  // directly accesses e.transform.position
 | **Exhaustive pattern matching**  | Ensures all variants handled or default case is present; avoids bugs               |
 | **Methods without polymorphism** | Encapsulate variant-specific logic, static dispatch for simplicity and performance |
 | **Forward methods**              | Transparent member forwarding from returned structs; resolves inheritance needs    |
+
+---
+
+
+# 🔁 Hot Reloadable Modules Specification
+
+This document defines the behavior, structure, and constraints for modules that support automatic hot reloading in the language.
+
+---
+
+## Overview
+
+Hot reload allows selected modules to be recompiled and reloaded at runtime without restarting the application. This feature is designed for fast iteration during development while ensuring memory safety and runtime consistency.
+
+---
+
+## 🔒 Interface Restrictions
+
+To allow hot reload, modules must adhere to strict interface constraints:
+
+- ✅ Only **functions** may be exported from a hot-reloadable module.
+- ❌ **Structs, enums, or types** must not be exported, as schema changes are not supported.
+- The function interface must remain stable between reloads.
+
+---
+
+## 🔧 Runtime Structure
+
+1. **Function Pointer Table**:  
+   Each hot-reloadable module compiles into a dynamic library and exports a **table of function pointers**.
+
+2. **Global Module Table Pointer**:  
+   A global module table is created per hot-reloadable module. This table contains metadata about the module such as version, revision, etc. and a function pointer table for all exported functions.
+
+3. **Function Call Access**:
+   Imported function calls go through two levels of indirection. A call like `math.sqrt(2)` accesses the module metadata via its pointer, and then accesses the imported function via another indirection through the function pointer table.
+
+
+## 🔁 Reload Mechanism
+
+* A background thread watches for changes and **recompiles** the module as needed.
+* The updated dynamic library is **loaded under a new unique name** (e.g., `myModule_v2.dll`).
+* A new module metadata table and function pointer table is created.
+* When complete, the global module metadata pointer is **replaced atomically** in the importing module.
+
+---
+
+## 🧠 Memory Safety & Lifecycle
+
+* The **old dynamic libraries are never unloaded immediately**. They remain in memory to support running code that may still be executing functions from the old version.
+
+### Optional Cleanup:
+
+* An **atomic reference counter** tracks active function calls inside each module.
+* Periodically, the reload thread checks for modules where the count is zero.
+* Such old modules are then **safely unloaded** to prevent memory buildup.
+
+---
+
+## 🧵 Thread Safety
+
+* **All module table pointer swaps are atomic** (`atomic_store(ptr, newTable)`).
+* No locking is required in user threads.
+* To avoid partial updates, the entire module table must be replaced in a single operation (not every function pointer by itself)
+* Multiple threads calling into modules concurrently remain safe during a reload.
+
+---
+
+## 🚀 Production Mode
+
+When compiling in `production` mode:
+
+* Hot-reloadable modules are compiled as **static libraries**.
+* All indirections are removed.
+* Function calls are **direct and inlined** where possible for performance.
+
+The calling code has zero knowledge of the module being hot-reloaded.
+
+---
+
+
+
+Here is the **incremental build system specification** in **Markdown format**:
+
+---
+
+# 📦 Incremental Compilation Specification
+
+This document defines the behavior of the **incremental compilation system** for the language, focusing on caching, dependency tracking, and minimal re-elaboration when files or functions change.
+
+---
+
+## 🧠 Overview
+
+The goal is to **avoid recompiling unchanged code** by:
+
+* Parsing only changed files
+* Elaborating only changed symbols (functions, types, constants)
+* Tracking all dependencies of each symbol
+* Reusing cached results when nothing changed
+* Propagating updates only to dependents
+
+---
+
+## 📁 Global Compilation Cache
+
+A persistent in-memory or on-disk **cache** tracks all compiled symbols:
+
+```ts
+type SymbolCache = {
+  id: string              // Unique symbol ID
+  sourcePath: string      // File path where symbol is defined
+  hash: string            // Normalized source or AST hash
+  dependencies: string[]  // List of other symbol IDs used
+  elaboratedType: ...     // Inferred type with lifetimes
+  loweredIR: ...          // Optionally pre-lowered IR
+  valid: boolean          // Marked false if out of date
+}
+```
+
+---
+
+## 🔄 Incremental Compilation Steps
+
+### 1. **Detect Changed Files**
+
+* Track last modified timestamps or hash each file.
+* If unchanged → skip.
+
+### 2. **Parse Changed Files**
+
+* Parse into AST.
+* Identify all top-level symbols (functions, structs, etc.).
+
+### 3. **Compare Symbol Hashes**
+
+* Compute a **normalized hash** for each symbol.
+* Compare to cache:
+
+  * If hash unchanged AND all dependencies unchanged → reuse.
+  * If hash changed OR any dependency changed → mark as invalid.
+
+### 4. **Elaborate Changed Symbols**
+
+* Elaborate only the invalidated symbols.
+* During elaboration:
+
+  * Record all called/used symbols.
+  * Update `dependencies` field in the cache.
+* Replace or update cache entry with new hash + type info.
+
+### 5. **Propagate Invalidation**
+
+* For every symbol `X` that changed:
+
+  * Find all other symbols `Y` that list `X` in their `dependencies`.
+  * Mark `Y` as invalid and re-elaborate.
+  * Repeat transitively.
+
+### 6. **Lower Valid Symbols**
+
+* Once all required symbols are elaborated:
+
+  * Lower only the valid subset.
+  * Emit code or bytecode as normal.
+
+---
+
+## 💡 Key Rules
+
+* Functions are **identified by full name and type parameters**.
+* Dependency tracking is **transitive**.
+* Changes to **function signatures or return types** propagate.
+* Cache reuse is only allowed if:
+
+  * Function body is identical.
+  * All dependencies are identical (by ID/hash).
+
+---
+
+## 🧪 Example
+
+**Before:**
+
+```ts
+// math.xyz
+add(a: int, b: int): int => { return a + b; }
+```
+
+**Then:**
+
+```ts
+// main.xyz
+compute() {
+  let x = add(1, 2);
+}
+```
+
+If `add()` changes, then:
+
+* `add` is re-elaborated.
+* `compute()` depends on `add`, so it is also re-elaborated.
+* Other unrelated functions remain untouched.
+
+---
+
+## 🔥 Optional Optimizations
+
+* Use **fingerprinting** (hashes of normalized ASTs).
+* Store **declaration hashes separately** from **body hashes** to detect API changes specifically.
+* Implement **lazy elaboration** of dependencies during compile.
+
+---
+
+## 🚫 Limitations
+
+* Structural changes (like renaming symbols) may invalidate many dependents.
+* Highly connected dependency graphs may trigger large invalidation cascades.
+* Requires careful tracking of generic instantiations and lifetimes.
+
+---
+
+## ✅ Summary
+
+This incremental build system:
+
+* Improves performance in large codebases.
+* Tracks changes at symbol level, not file level.
+* Maintains correctness by conservative invalidation.
+* Prepares the ground for future features like hot reload and module reuse.
 
 ---
