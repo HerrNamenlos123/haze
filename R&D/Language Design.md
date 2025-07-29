@@ -763,3 +763,129 @@ This incremental build system:
 * Prepares the ground for future features like hot reload and module reuse.
 
 ---
+
+
+
+
+
+# Arena-Associated Resizable Buffers Specification
+
+## Overview
+
+This language uses **arenas** as the core memory management abstraction. Every allocation must belong to an arena, and **no object can outlive its arena**. Arenas internally manage their memory via multiple **chained contiguous chunks** to support efficient allocation without fragmentation.
+
+---
+
+## Buffers Attached to Arenas
+
+In addition to the main arena chunks, the language supports **Arena-Associated Buffers** (e.g., `ArenaBuffer`) for data structures that require **frequent resizing** such as strings, dynamic arrays, or hashmaps.
+
+### Key Characteristics
+
+- **Separate Memory Management:**  
+  Each buffer manages its own heap memory (using conventional `malloc`/`realloc` calls) independent from the arena’s chunk allocations.
+
+- **Lifetime Tied to Arena:**  
+  The buffer itself **does not have a standalone lifetime**. Instead, it is **attached to a specific arena**, and inherits its lifetime implicitly.
+
+- **Arena Tracking:**  
+  The arena maintains a **linked list (or chained pointers)** of all attached buffers.
+
+- **Atomic Deallocation:**  
+  When the arena is freed, it frees:  
+  - All its chained contiguous memory chunks  
+  - All attached buffers and their heap allocations, in one atomic cleanup operation
+
+---
+
+## Usage
+
+- Buffers allow efficient implementation of **resizable data containers** without bloating or fragmenting the arena’s main memory.
+
+- Example use cases:  
+  - `StringBuffer` for ergonomic string building with operator overloading  
+  - Dynamic arrays that grow with appends  
+  - Hashmaps that resize their buckets dynamically
+
+- Users can create a buffer once with a reference to an arena:  
+  ```ts
+  let buf = ArenaBuffer.new(arena, initial_capacity)
+  buf.append("hello")
+  buf.append(" world")
+  ```
+
+* When finished building, the buffer’s contents can be cloned (copied) into a longer-lived arena as an immutable slice.
+
+* After cloning, the buffer and its arena can be safely freed together.
+
+---
+
+## Memory Safety and Errors
+
+* **Strict Lifetime Enforcement:**
+  Buffers never outlive their arenas, preventing dangling pointers.
+
+* **Out-of-Memory (OOM) Handling:**
+  Any allocation failure (in buffer or arena) results in an **immediate panic and program termination**.
+
+---
+
+## Summary Table
+
+| Feature                   | Description                                                        |
+| ------------------------- | ------------------------------------------------------------------ |
+| Arena Memory              | Multiple chained contiguous chunks                                 |
+| Buffer Memory             | Separate heap allocations via malloc/realloc                       |
+| Buffer Lifetime           | Inherits arena lifetime, no standalone lifetime                    |
+| Arena Tracking of Buffers | Arena holds references to all attached buffers (linked list)       |
+| Deallocation              | Arena frees all chunks and buffers atomically on arena destruction |
+| Use Cases                 | Strings, arrays, hashmaps with frequent resizing                   |
+| OOM Handling              | Immediate panic                                                    |
+
+---
+
+## Benefits
+
+* Combines **fast arena lifetime guarantees** with **efficient mutable resizable data structures**
+* Keeps arena chunks **compact and contiguous**, avoiding fragmentation
+* Enables **ergonomic APIs** for strings and containers without losing memory safety
+* Simplifies lifetime tracking by binding buffers to arena lifetimes
+
+---
+
+## Example code to showcase ergonomics
+
+```ts
+foo(): void => {
+    let rootArena = Arena.newRoot();
+    defer rootArena.free();
+
+    let result = "";
+
+    rootArena.useArena((subArena) => {
+        let buf = StringBuffer.new(subArena, 64);
+
+        let name = "ChatGPT";
+        let version = 4.0;
+        buf += f"Hello, {name}! You are running version {version}.\n";
+
+        buf += "This language supports ";
+        buf += "ergonomic string buffers.\n";
+
+        let csv = "apple,banana,carrot";
+        let parts = csv.split(','); // Returns slices with local lifetime
+
+        buf += f"CSV parts count: {parts.length}\n";
+        for (part in parts) {
+            buf += f"- {part}\n";
+        }
+        // buf has lifetime of the subArena
+
+        result = buf.toString(rootArena)
+        // The String in buf is cloned into rootArena and has now root lifetime
+    });
+    // Subarena and the attached StringBuffer is automatically freed
+
+    print(result)
+}
+```

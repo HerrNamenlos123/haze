@@ -12,6 +12,11 @@ wird in resolveDatatype nur noch das Symbol dupliziert und instantiated und body
 Am Ende soll zusätzlich zu den Generics die Lifetimes gecacht werden
 und die Funktion soll elaborated werden und ein Set an Constraints aufbauen für die Lifetime requirements der Parameter.
 
+EDIT:
+Stopp, turns out der Signature Pass ist komplett unnötig. Signature Pass und Body Pass muss kombiniert werden in einen
+einzigen elaborate pass und ALLES wird on-demand elaborated, von Collect zu Semantic. Und gecacht. Cyclic Sachen funktionieren
+da aus der Symbol Collection eh schon alle Symbole bekannt sind.
+
 ## The Pitch
 
 Imagine a new programming language. A pragmatic, batteries-included language.
