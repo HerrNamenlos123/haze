@@ -889,3 +889,186 @@ foo(): void => {
     print(result)
 }
 ```
+
+As an optimization, the first arena chunk is not allocated when creating the arena, but only on the first allocation in the arena, which means that when an arena is created that only attaches buffers, but no memory is allocated in its main chunks, no unnecessary allocation happens.
+
+
+
+
+# 🌀 Specification: Global Thread-Local Temporary Arena for Function-Scoped Allocations
+
+This specification defines a **high-performance, memory-safe mechanism** for managing temporary allocations such as string formatting, intermediate buffers, and transient data. The system is based on a **thread-local, implicit arena** that supports **push/pop semantics** and is designed to operate with **zero allocations in the common case**, while enabling **arbitrarily large temporaries** when needed.
+
+---
+
+## 🎯 Motivation
+
+- Enable expressions like `f"Hello {name}"` without requiring a backing user-defined arena.
+- Avoid costly `malloc/free` operations for each function call.
+- Eliminate stack overflows caused by using `alloca()` for large temporaries.
+- Provide safety through **lifetimes** tied to the function call.
+- Allow **efficient reuse** of memory across deeply nested function calls.
+
+---
+
+## 🧠 Core Concepts
+
+### 🧵 1. Global Thread-Local Temporary Arena
+
+Each thread owns a single hidden arena:
+
+```ts
+thread_local TEMP_ARENA: Arena
+````
+
+This arena is never manually accessed by the user and is automatically managed by the compiler.
+
+---
+
+### 📐 2. Push/Pop Semantics
+
+The arena maintains a **stack of checkpoints** marking the current allocation pointer.
+
+* **`push()`**: Called at the beginning of any function that uses temporary allocations.
+* **`pop()`**: Called at all exit points (return, panic) of such functions.
+
+> In most cases, `push()` is a no-op if no allocations occur in the function.
+
+When `pop()` is called, the arena's current chunk pointer is reset to the state at the last `push()`, and all memory beyond that point is discarded (but not freed). Chunk reuse ensures memory stays warm and fast.
+
+---
+
+### 📦 3. Chunked Growth
+
+The temporary arena grows by appending **heap-allocated chunks**:
+
+* If a temporary allocation exceeds the remaining space in the current chunk, a new chunk is `malloc`ed and appended.
+* There is no hard size limit; large temporaries are safely handled without stack overflow.
+* All chunks are reused unless evicted due to memory pressure.
+
+---
+
+### 🔒 4. Function-Scoped Lifetime
+
+* Temporary values allocated from this arena are **bound to the lifetime of the current function call**.
+* They **cannot escape** to longer-lived scopes unless explicitly `.clone(arena)`d into another arena.
+* This is enforced at compile time via lifetime inference.
+
+---
+
+### 🧑‍💻 5. Compiler Behavior
+
+For any function that may produce temporaries (e.g., `f""`, temp containers, etc.):
+
+* The compiler inserts:
+
+  ```ts
+  TEMP_ARENA.push();
+  ```
+
+  at function entry.
+
+* At all exit paths:
+
+  ```ts
+  TEMP_ARENA.pop();
+  ```
+
+All intermediate temporary constructs (like `f"..."`) internally allocate using:
+
+```ts
+TEMP_ARENA.allocate(size, alignment);
+```
+
+---
+
+## ✅ Benefits
+
+| Feature               | Description                                                           |
+| --------------------- | --------------------------------------------------------------------- |
+| **Fast**              | Most functions incur **zero allocations** if no temporaries are used. |
+| **Safe**              | Lifetimes are automatically enforced; no temporaries can leak.        |
+| **Flexible**          | Arbitrarily large temporary strings or buffers are allowed.           |
+| **No GC**             | Memory is explicitly and predictably reclaimed via `pop()`.           |
+| **No stack overflow** | Unlike `alloca`, this works safely for large or nested temporaries.   |
+| **No manual cleanup** | Fully automatic and transparent to the user.                          |
+
+---
+
+## 🧪 Example
+
+```ts
+fn greet(user: string): void => {
+    log(f"Hello, {user}, welcome back!\n");
+}
+```
+
+Desugars internally to something like:
+
+```ts
+fn greet(user: string): void => {
+    TEMP_ARENA.push();                           // mark allocation point
+    const tmp = format(TEMP_ARENA, "Hello, {}, welcome back!\n", user);
+    log(tmp);
+    TEMP_ARENA.pop();                            // discard temp string
+}
+```
+
+---
+
+## 🔁 Cloning Into Longer-Lived Arenas
+
+To persist a temporary object:
+
+```ts
+fn message(user: str, outArena: Arena): str => {
+    const s = f"Welcome {user}, here are your notifications.";
+    return s.clone(outArena);
+}
+```
+
+In this example, the automatically inferred lifetime constraints, would be evaluated to:
+
+```ts
+fn message(user: str, outArena: Arena): str 
+  requires 
+    Lifetime(user) <= Static, // Any lifetime
+    Lifetime(outArena) <= Static, // Any lifetime
+    Lifetime(Return) = Lifetime(outArena) // Return value has same lifetime as the arena
+=> {
+    // s has function-local lifetime
+    const s = f"Welcome {user}, here are your notifications.";
+    // s.clone has Lifetime(Return) = Lifetime(outArena)
+    const cloned = s.clone(outArena);
+    // Return cloned
+    return cloned;
+}
+```
+---
+
+## 🧯 Out-of-Memory Behavior
+
+* If a chunk cannot be allocated due to OOM, the program **panics and terminates immediately**.
+* There is **no recovery** — this is a deliberate design for predictability and simplicity.
+
+---
+
+## 🚫 User Restrictions
+
+* Users **cannot access** the temporary arena directly.
+* All temporary allocations are strictly scoped to function execution.
+* Leaking a reference to a temporary value into another arena or global context is a compile error.
+
+---
+
+## 🌟 Summary
+
+This design offers:
+
+* GC-free temporary memory management
+* High performance
+* Full memory safety
+* Unlimited temporary sizes
+* Clear and deterministic behavior
+
+All while remaining completely invisible to the end user.
