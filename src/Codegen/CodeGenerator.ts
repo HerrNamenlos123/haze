@@ -95,6 +95,8 @@ class CodeGenerator {
     this.includeHeader("stdint.h");
     this.includeHeader("stdbool.h");
 
+    this.sortTypeDefinitions();
+
     for (const decl of this.lr.cDeclarations) {
       this.out.cDecls.writeLine(decl);
     }
@@ -103,7 +105,7 @@ class CodeGenerator {
       this.emitFunction(symbol);
     }
 
-    for (const [id, symbol] of this.lr.loweredTypes) {
+    for (const symbol of this.lr.sortedLoweredTypes) {
       if (symbol.variant === "Primitive") {
         this.out.type_declarations.writeLine(
           `typedef ${this.primitiveToC(symbol.primitive)} ${this.mangle(symbol)};`,
@@ -141,6 +143,24 @@ class CodeGenerator {
         this.out.type_definitions.popIndent().writeLine(`};`).writeLine();
       } else {
       }
+    }
+  }
+
+  sortTypeDefinitions() {
+    // First define all primitives, pointers and references, they always work
+    for (const [id, t] of this.lr.loweredTypes) {
+      if (t.variant === "Primitive" || t.variant === "RawPointer" || t.variant === "Reference") {
+        this.lr.sortedLoweredTypes.push(t);
+      }
+    }
+
+    for (const [id, t] of this.lr.loweredTypes) {
+      if (t.variant === "Primitive" || t.variant === "RawPointer" || t.variant === "Reference") {
+        continue;
+      }
+
+      // this.lr.sortedLoweredTypes.push(t);
+      assert(false, "TODO: Sort all remaining types");
     }
   }
 

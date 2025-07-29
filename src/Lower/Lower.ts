@@ -744,14 +744,22 @@ export function LowerModule(cr: CollectResult, sr: SemanticResult): Lowered.Modu
 
     loweredTypes: new Map(),
     loweredFunctions: new Map(),
+
+    sortedLoweredTypes: [],
   };
 
-  // for (const symbol of sr.globalNamespace.scope.symbolTable.symbols) {
-  //   if (!symbol.concrete) {
-  //     continue;
-  //   }
-  //   lower(lr, symbol);
-  // }
+  const symbolsForLowering = [
+    ...sr.elaboratedFuncdeclSymbols,
+    ...sr.elaboratedFuncdefSymbols,
+    ...sr.elaboratedPrimitiveTypes,
+    ...sr.elaboratedStructDatatypes,
+  ];
+
+  for (const symbol of symbolsForLowering) {
+    const s = "resultSymbol" in symbol ? symbol.resultSymbol : symbol;
+    assert(s.concrete);
+    lower(lr, s);
+  }
 
   // PrettyPrintLowered(lr);
 

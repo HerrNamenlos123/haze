@@ -13,8 +13,8 @@ import { Collect } from "../SymbolCollection/CollectSymbols";
 import {
   elaborate,
   isolateElaborationContext,
-  makeElaborationContext as makeRootElaborationContext,
-  type ElaborationContext,
+  makeSubstitutionContext as makeRootElaborationContext,
+  type SubstitutionContext,
 } from "./Elaborate";
 import { isDatatypeSymbol, makePrimitiveAvailable, Semantic, type SemanticResult } from "./SemanticSymbols";
 
@@ -106,7 +106,7 @@ export function lookupAndElaborateDatatype(
   args: {
     datatype: ASTDatatype | ASTConstant,
     startLookupInScope: Collect.Scope,
-    context: ElaborationContext,
+    context: SubstitutionContext,
   }
 ): Semantic.DatatypeSymbol {
   switch (args.datatype.variant) {
@@ -232,7 +232,6 @@ export function lookupAndElaborateDatatype(
         // its parent, to build the tree top-down, and then in the end calls instantiate
         const struct = elaborate(sr, {
           sourceSymbol: found,
-          defineInNamespace: null,
           context: isolateElaborationContext(args.context),
         });
         assert(struct?.variant === "StructDatatype");
@@ -243,7 +242,6 @@ export function lookupAndElaborateDatatype(
           const nestedStruct = elaborate(sr,
             {
               sourceSymbol: found,
-              defineInNamespace: null,
               context: args.context
             });
           assert(nestedStruct && nestedStruct.variant === "StructDatatype");
@@ -267,7 +265,6 @@ export function lookupAndElaborateDatatype(
           const namespace = elaborate(sr,
             {
               sourceSymbol: found,
-              defineInNamespace: null,
               context: args.context
             });
           assert(namespace && namespace.variant === "Namespace");
@@ -321,7 +318,7 @@ export function instantiateStruct(sr: SemanticResult, args: {
   definedStructType: ASTStructDefinition, // The defining struct datatype to be instantiated (e.g. struct Foo<T> {})
   receivingType: ASTNamedDatatype, // The receiving side of the instantiation (e.g. Foo<i32> or Foo<U>)
   defineInNamespace: Semantic.NamespaceSymbol | Semantic.StructDatatypeSymbol | null,
-  context: ElaborationContext
+  context: SubstitutionContext
 }) {
 
   // This is now the instantiation of the collected struct, so we resolve what the actually passed type is
@@ -419,7 +416,7 @@ export function instantiateStruct(sr: SemanticResult, args: {
         {
           sourceSymbol: m,
           usageGenerics: [],
-          defineInNamespace: struct,
+          structForMethod: struct,
           context: newContext,
         }
       );
@@ -432,7 +429,6 @@ export function instantiateStruct(sr: SemanticResult, args: {
   for (const d of args.definedStructType.declarations) {
     elaborate(sr, {
       sourceSymbol: d,
-      defineInNamespace: struct,
       context: newContext,
     });
   }

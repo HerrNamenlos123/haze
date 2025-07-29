@@ -13,6 +13,8 @@ export namespace Lowered {
 
     loweredTypes: Map<Semantic.Symbol, Lowered.Datatype>
     loweredFunctions: Map<Semantic.Symbol, Lowered.FunctionDeclaration | Lowered.FunctionDefinition>;
+
+    sortedLoweredTypes: Lowered.Datatype[];
   };
 
   export type BinaryExpr = {

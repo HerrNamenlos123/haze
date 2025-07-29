@@ -180,7 +180,7 @@ export function serializeExpr(expr: Semantic.Expression): string {
             return `(${serializeExpr(expr.expr)} as ${serializeDatatype(expr.type)})`;
 
         case "ExprCall":
-            return `((${serializeExpr(expr.calledExpr)})(${expr.arguments.map((a) => serializeExpr(a)).join(', ')}))`;
+            return `(${serializeExpr(expr.calledExpr)}(${expr.arguments.map((a) => serializeExpr(a)).join(', ')}))`;
 
         case "PostIncrExpr":
             return `((${serializeExpr(expr.expr)})${IncrOperationToString(expr.operation)})`;
@@ -196,7 +196,8 @@ export function serializeExpr(expr: Semantic.Expression): string {
                 return expr.symbol.name;
             }
             else if (expr.symbol.variant === "FunctionDefinition") {
-                return expr.symbol.name;
+                const generic = expr.symbol.generics.length > 0 ? "<" + expr.symbol.generics.map((g) => serializeDatatype(g)).join(", ") + ">" : '';
+                return expr.symbol.name + generic;
             }
             throw new InternalError("Symbol not supported: " + expr.symbol.variant)
 

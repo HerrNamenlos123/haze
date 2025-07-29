@@ -23,33 +23,6 @@ struct CString {
 //   }
 // }
 
-struct m {
-  d: A.C.D;
-}
-
-struct A {
-
-  struct C {
-
-    struct D {
-      b: B;
-    }
-
-  }
-
-  struct B {
-    c: C;
-  }
-}
-
-struct I {
-  j: J;
-}
-
-struct J {
-
-}
-
 struct LogContext {
   trace: (fmt: str, ...) => none;
   info: (fmt: str, ...) => none;

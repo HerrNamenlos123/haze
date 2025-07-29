@@ -133,7 +133,6 @@ function collect(
       }
 
       for (const g of item.generics) {
-        console.log("Defining generic param in function", g, item.funcbody._collect.scope.id);
         item.funcbody._collect.scope.symbolTable.defineSymbol(g);
       }
       for (const param of item.params) {
@@ -254,16 +253,7 @@ function collect(
       for (const method of item.methods) {
         method.declarationScope = new Collect.Scope(item.sourceloc, item._collect.scope);
         method.funcbody._collect.scope = new Collect.Scope(item.sourceloc, method.declarationScope);
-        // console.log(
-        //   "Made method",
-        //   method.name,
-        //   "with inner scope",
-        //   method.funcbody._collect.scope.id,
-        //   " decl scope",
-        //   method.declarationScope.id,
-        //   "and parent",
-        //   item._collect.scope.id,
-        // );
+
         method._collect.fullNamespacePath = [
           ...meta.namespaceStack.map((n) => n.name),
           method.name,
