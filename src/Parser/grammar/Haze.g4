@@ -107,7 +107,7 @@ expr
     | expr '(' (expr (',' expr)*)? ')'                                              #ExprCallExpr
     // <- Array Subscripting here: expr[]
     | expr '.' ID                                                                   #ExprMemberAccess
-    | datatype '{' ('.' ID ':' expr)? (',' ('.' ID ':' expr))* ','? '}'             #StructInstantiationExpr
+    | datatype '{' ('.' ID '=' expr)? (',' ('.' ID '=' expr))* ','? '}'             #StructInstantiationExpr
 
     // Part 2: Right to left
     | <assoc=right> op=('++' | '--') expr                                           #PreIncrExpr

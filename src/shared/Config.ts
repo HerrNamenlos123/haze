@@ -9,8 +9,6 @@ export enum ModuleType {
   Executable,
 }
 
-export const GLOBAL_NAMESPACE_NAME = "__global__";
-
 export type ModuleDependency = { name: string; path: string };
 
 export type ModuleConfig = {

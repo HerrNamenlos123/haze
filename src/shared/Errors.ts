@@ -3,11 +3,17 @@ export enum ErrorType {
   Warning,
 }
 
-export type SourceLoc = {
+export type SourceLocNotNull = {
   filename: string;
   line: number;
   column: number;
-} | null;
+};
+
+export type SourceLoc = SourceLocNotNull | null;
+
+export function formatSourceLoc(loc: SourceLocNotNull) {
+  return `${loc.filename}:${loc.line}:${loc.column}`;
+}
 
 function formatCompilerMessage(
   type: ErrorType,
@@ -17,7 +23,7 @@ function formatCompilerMessage(
 ): string {
   let text = "";
   if (loc) {
-    text += `[${loc.filename}:${loc.line}:${loc.column}]: `;
+    text += `[${formatSourceLoc(loc)}]: `;
   }
   if (type === ErrorType.Error) {
     text += `\x1b[31m${error}\x1b[0m: ${msg}`;

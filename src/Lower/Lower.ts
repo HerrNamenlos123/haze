@@ -746,12 +746,12 @@ export function LowerModule(cr: CollectResult, sr: SemanticResult): Lowered.Modu
     loweredFunctions: new Map(),
   };
 
-  for (const symbol of sr.globalNamespace.scope.symbolTable.symbols) {
-    if (!symbol.concrete) {
-      continue;
-    }
-    lower(lr, symbol);
-  }
+  // for (const symbol of sr.globalNamespace.scope.symbolTable.symbols) {
+  //   if (!symbol.concrete) {
+  //     continue;
+  //   }
+  //   lower(lr, symbol);
+  // }
 
   // PrettyPrintLowered(lr);
 

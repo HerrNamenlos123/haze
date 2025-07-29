@@ -136,7 +136,20 @@ export namespace Conversion {
     return promoteInteger(a, b);
   }
 
-  export function IsStructurallyEquivalent(a: Semantic.DatatypeSymbol, b: Semantic.DatatypeSymbol): boolean {
+  export function IsStructurallyEquivalent(
+    a: Semantic.DatatypeSymbol,
+    b: Semantic.DatatypeSymbol,
+    seen: WeakMap<Semantic.DatatypeSymbol, WeakSet<Semantic.DatatypeSymbol>> = new WeakMap()
+  ): boolean {
+    // Symmetric check: has this pair already been seen?
+    if (seen.get(a)?.has(b) || seen.get(b)?.has(a)) {
+      return true;
+    }
+
+    // Mark pair as seen
+    if (!seen.has(a)) seen.set(a, new WeakSet());
+    seen.get(a)!.add(b);
+
     if (!a.concrete || !b.concrete) {
       throw new InternalError("Cannot check structural equivalence of a non-concrete datatype", undefined, 1);
     }
@@ -153,21 +166,21 @@ export namespace Conversion {
 
       case "RawPointerDatatype":
         assert(b.variant === "RawPointerDatatype")
-        return IsStructurallyEquivalent(a.pointee, b.pointee);
+        return IsStructurallyEquivalent(a.pointee, b.pointee, seen);
 
       case "ReferenceDatatype":
         assert(b.variant === "ReferenceDatatype")
-        return IsStructurallyEquivalent(a.referee, b.referee);
+        return IsStructurallyEquivalent(a.referee, b.referee, seen);
 
       case "FunctionDatatype":
         assert(b.variant === "FunctionDatatype")
-        return a.vararg === b.vararg && IsStructurallyEquivalent(a.returnType, b.returnType) && a.parameters.every((p, index) => IsStructurallyEquivalent(p, b.parameters[index]));
+        return a.vararg === b.vararg && IsStructurallyEquivalent(a.returnType, b.returnType, seen) && a.parameters.every((p, index) => IsStructurallyEquivalent(p, b.parameters[index], seen));
 
       case "CallableDatatype":
         assert(b.variant === "CallableDatatype")
         if (Boolean(a.thisExprType) !== Boolean(b.thisExprType)) return false;
-        if ((a.thisExprType && b.thisExprType) && IsStructurallyEquivalent(a.thisExprType, b.thisExprType)) return false;
-        return IsStructurallyEquivalent(a.functionType, b.functionType);
+        if ((a.thisExprType && b.thisExprType) && IsStructurallyEquivalent(a.thisExprType, b.thisExprType, seen)) return false;
+        return IsStructurallyEquivalent(a.functionType, b.functionType, seen);
 
       case "GenericParameterDatatype":
         throw new InternalError("Cannot check structural equivalence of a generic parameter");
@@ -179,7 +192,7 @@ export namespace Conversion {
         }
 
         for (let i = 0; i < a.generics.length; i++) {
-          if (!IsStructurallyEquivalent(a.generics[i], b.generics[i])) return false;
+          if (!IsStructurallyEquivalent(a.generics[i], b.generics[i], seen)) return false;
         }
 
         if (a.members.length !== b.members.length) {
@@ -203,7 +216,7 @@ export namespace Conversion {
           const am = a.members.find((mm) => mm.name === m);
           const bm = b.members.find((mm) => mm.name === m);
           assert(am && bm);
-          if (!IsStructurallyEquivalent(am.type, bm.type)) {
+          if (!IsStructurallyEquivalent(am.type, bm.type, seen)) {
             return false;
           }
         }
@@ -293,6 +306,7 @@ export namespace Conversion {
       externLanguage: EExternLanguage.None,
       methodType: EMethodType.NotAMethod,
       name: "__operator_as",
+      generics: [],
       parameterNames: [],
       type: {
         variant: "FunctionDatatype",

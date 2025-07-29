@@ -475,7 +475,7 @@ export type ASTStructMethodDefinition = {
   variant: "StructMethod";
   params: ASTParam[];
   name: string;
-  generics: string[];
+  generics: Collect.GenericParameter[];
   ellipsis: boolean;
   operatorOverloading?: {
     operator: EOperator;

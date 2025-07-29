@@ -20,6 +20,7 @@ export namespace Collect {
   export type GenericParameter = {
     variant: "GenericParameter";
     name: string;
+    sourceloc: SourceLoc;
   };
 
   export type Symbol =
@@ -37,7 +38,7 @@ export namespace Collect {
   export class SymbolTable {
     symbols: Symbol[] = [];
 
-    constructor(public parentTable?: SymbolTable) {}
+    constructor(public parentTable?: SymbolTable) { }
 
     defineSymbol(symbol: Symbol) {
       if (this.tryLookupSymbolHere(symbol.name)) {

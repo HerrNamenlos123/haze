@@ -94,20 +94,20 @@ inject "#include <stdio.h>";
 //     printf("Arg: %d\n", arg);
 // }
 
-struct A {
-    b: B*;
+struct X {
+    y: Y*;
 
-    get(): B => {
-        return *this.b;
-    }
+    // get(): Y => {
+    //     return *this.y;
+    // }
 }
 
-struct B {
-    a: A*;
+struct Y {
+    x: X*;
 
-    get(): A => {
-        return *this.a;
-    }
+    // get(): X => {
+    //     return *this.x;
+    // }
 }
 
 main(): i32 => {
@@ -122,8 +122,10 @@ main(): i32 => {
     // free(c.target as none*);
     // foo(187);
 
-    const a = A { .b: B { .a: 0 as A*} };
-    a.get().get();
+    const y = Y { .x = 0 as X*};
+    const yy: Y* = &y;
+    const x = X { .y = yy };
+    // x.get().get();
 
     return 0;
 }

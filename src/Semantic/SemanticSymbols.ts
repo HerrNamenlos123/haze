@@ -15,10 +15,52 @@ import {
 import type { Collect } from "../SymbolCollection/CollectSymbols";
 
 export type SemanticResult = {
-  globalNamespace: Semantic.NamespaceSymbol;
-  monomorphizedSymbols: Set<Semantic.StructDatatypeSymbol>;
+  // globalNamespace: Semantic.NamespaceSymbol;
+  // monomorphizedStructs: Set<Semantic.StructDatatypeSymbol>;
+  // monomorphizedFuncdecls: Set<Semantic.FunctionDeclarationSymbol>;
+  // monomorphizedFuncdefs: Set<Semantic.FunctionDefinitionSymbol>;
   overloadedOperators: Semantic.FunctionDefinitionSymbol[];
+
+  elaboratedStructDatatypes: {
+    originalSymbol: Collect.Symbol;
+    generics: Semantic.Symbol[];
+    resultSymbol: Semantic.StructDatatypeSymbol;
+  }[];
+  elaboratedFuncdeclSymbols: {
+    originalSymbol: Collect.Symbol;
+    generics: Semantic.Symbol[];
+    resultSymbol: Semantic.FunctionDeclarationSymbol;
+  }[];
+  elaboratedFuncdefSymbols: {
+    originalSymbol: Collect.Symbol;
+    generics: Semantic.Symbol[];
+    resultSymbol: Semantic.FunctionDefinitionSymbol;
+  }[];
+  elaboratedNamespaceSymbols: {
+    originalSymbol: Collect.Symbol;
+    resultSymbol: Semantic.NamespaceSymbol;
+  }[];
+
+  elaboratedPrimitiveTypes: Semantic.PrimitiveDatatypeSymbol[];
+  functionTypeCache: Semantic.FunctionDatatypeSymbol[];
+  rawPointerTypeCache: Semantic.RawPointerDatatypeSymbol[];
+  referenceTypeCache: Semantic.ReferenceDatatypeSymbol[];
 };
+
+export function makePrimitiveAvailable(sr: SemanticResult, primitive: EPrimitive): Semantic.PrimitiveDatatypeSymbol {
+  for (const s of sr.elaboratedPrimitiveTypes) {
+    if (s.primitive === primitive) {
+      return s;
+    }
+  }
+  const s = {
+    variant: "PrimitiveDatatype",
+    primitive: primitive,
+    concrete: true,
+  } satisfies Semantic.PrimitiveDatatypeSymbol;
+  sr.elaboratedPrimitiveTypes.push(s);
+  return s;
+}
 
 export function isDatatypeSymbol(x: Semantic.Symbol): x is Semantic.DatatypeSymbol {
   return x.variant.endsWith("Datatype");
@@ -41,6 +83,7 @@ export namespace Semantic {
   export type FunctionDefinitionSymbol = {
     variant: "FunctionDefinition";
     name: string;
+    generics: DatatypeSymbol[];
     type: FunctionDatatypeSymbol;
     operatorOverloading?: {
       operator: EOperator;
@@ -54,7 +97,7 @@ export namespace Semantic {
     methodType: EMethodType;
     methodOf?: StructDatatypeSymbol;
     sourceloc: SourceLoc;
-    parent: StructDatatypeSymbol | NamespaceSymbol;
+    parent: StructDatatypeSymbol | NamespaceSymbol | null;
     concrete: boolean;
   };
 
@@ -67,7 +110,7 @@ export namespace Semantic {
     export: boolean;
     methodType: EMethodType;
     sourceloc: SourceLoc;
-    parent: StructDatatypeSymbol | NamespaceSymbol;
+    parent: StructDatatypeSymbol | NamespaceSymbol | null;
     concrete: boolean;
   };
 
@@ -86,7 +129,7 @@ export namespace Semantic {
     externLanguage: EExternLanguage;
     members: VariableSymbol[];
     methods: FunctionDefinitionSymbol[];
-    parent: StructDatatypeSymbol | NamespaceSymbol;
+    parent: StructDatatypeSymbol | NamespaceSymbol | null;
     rawAst: ASTStructDefinition;
     scope: Semantic.DeclScope;
     sourceloc: SourceLoc;
@@ -133,7 +176,7 @@ export namespace Semantic {
   export type NamespaceSymbol = {
     variant: "Namespace";
     name: string;
-    parent?: Semantic.NamespaceSymbol | Semantic.StructDatatypeSymbol;
+    parent: Semantic.NamespaceSymbol | Semantic.StructDatatypeSymbol | null;
     scope: Semantic.DeclScope;
     sourceloc: SourceLoc;
     concrete: boolean;
@@ -421,19 +464,6 @@ export namespace Semantic {
       public parentScope?: DeclScope,
     ) {
       this.symbolTable = new SymbolTable(parentScope?.symbolTable);
-    }
-
-    makePrimitiveAvailable(primitive: EPrimitive): PrimitiveDatatypeSymbol {
-      const p = this.symbolTable.tryLookupSymbolHere(primitiveToString(primitive));
-      if (p) {
-        return p as PrimitiveDatatypeSymbol;
-      } else {
-        return this.symbolTable.defineSymbol({
-          variant: "PrimitiveDatatype",
-          primitive: primitive,
-          concrete: true,
-        }) as PrimitiveDatatypeSymbol;
-      }
     }
   }
 

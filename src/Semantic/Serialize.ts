@@ -1,7 +1,6 @@
 import { SymbolFlags } from "typescript";
 import { BinaryOperationToString, EExternLanguage, IncrOperationToString } from "../shared/AST";
 import { EPrimitive, primitiveToString } from "../shared/common";
-import { GLOBAL_NAMESPACE_NAME } from "../shared/Config";
 import { assert, ImpossibleSituation, InternalError } from "../shared/Errors";
 import { Semantic } from "./SemanticSymbols";
 
@@ -36,7 +35,7 @@ export function serializeDatatype(datatype: Semantic.DatatypeSymbol): string {
 
 function getParentNames(symbol: Semantic.NamespaceSymbol | Semantic.StructDatatypeSymbol) {
     let fullName = "";
-    let node: Semantic.NamespaceSymbol | Semantic.StructDatatypeSymbol | undefined = symbol;
+    let node: Semantic.NamespaceSymbol | Semantic.StructDatatypeSymbol | null = symbol;
     while (node) {
         if (node.variant === "StructDatatype") {
             const generics = node.generics.map((g) => serializeDatatype(g)).join(", ");
@@ -44,9 +43,7 @@ function getParentNames(symbol: Semantic.NamespaceSymbol | Semantic.StructDataty
             node = node.parent;
         }
         else {
-            if (node.name !== GLOBAL_NAMESPACE_NAME) {
-                fullName = `${node.name}${fullName.length === 0 ? fullName : '.' + fullName}`;
-            }
+            fullName = `${node.name}${fullName.length === 0 ? fullName : '.' + fullName}`;
             node = node.parent;
         }
     }
@@ -55,13 +52,13 @@ function getParentNames(symbol: Semantic.NamespaceSymbol | Semantic.StructDataty
 
 export function serializeNestedName(expr: Semantic.FunctionDefinitionSymbol | Semantic.FunctionDeclarationSymbol): string {
     if (expr.variant === "FunctionDeclaration") {
-        return `${expr.parent.name !== GLOBAL_NAMESPACE_NAME ? (getParentNames(expr.parent) + '.') : ''}${expr.name}`;
+        return `${expr.parent && getParentNames(expr.parent) + '.' || ''}${expr.name}`;
     }
     else if (expr.methodOf) {
         return `${getParentNames(expr.methodOf)}.${expr.name}`;
     }
     else {
-        return `${expr.parent.name !== GLOBAL_NAMESPACE_NAME ? (getParentNames(expr.parent) + '.') : ''}${expr.name}`;
+        return `${expr.parent && getParentNames(expr.parent) + '.' || ''}${expr.name}`;
     }
 }
 
@@ -82,7 +79,7 @@ export function mangleNestedName(
         | Semantic.NamespaceSymbol
         | Semantic.FunctionDeclarationSymbol
         | Semantic.FunctionDefinitionSymbol
-        | undefined = symbol;
+        | null = symbol;
     while (p) {
         if (p.variant !== "StructDatatype") {
             fragments.push(p.name.length + p.name);
@@ -97,16 +94,13 @@ export function mangleNestedName(
             }
             fragments.push(p.name.length + p.name + generics);
         }
-        const pParent: Semantic.DatatypeSymbol | Semantic.NamespaceSymbol | undefined = p.parent;
+        const pParent: Semantic.DatatypeSymbol | Semantic.NamespaceSymbol | null = p.parent;
         if (pParent) {
             if (pParent.variant !== "StructDatatype" && pParent.variant !== "Namespace") {
                 throw new ImpossibleSituation();
             }
         }
         p = pParent;
-        if (p?.name === GLOBAL_NAMESPACE_NAME) {
-            p = undefined;
-        }
     }
     fragments.reverse();
     let functionPart = "";
@@ -228,5 +222,8 @@ export function serializeExpr(expr: Semantic.Expression): string {
 
         case "RawPointerDereference":
             return `*${serializeExpr(expr.expr)}`;
+
+        case "ExprAssignmentExpr":
+            return `${serializeExpr(expr.target)} = ${serializeExpr(expr.value)}`;
     }
 }

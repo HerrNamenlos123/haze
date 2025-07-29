@@ -1,4 +1,4 @@
-import { assert, CompilerError, InternalError, type SourceLoc } from "../shared/Errors";
+import { assert, CompilerError, formatSourceLoc, InternalError, type SourceLoc } from "../shared/Errors";
 import type {
   ASTBinaryExpr,
   ASTConstant,
@@ -229,6 +229,12 @@ function collect(
       for (const g of item.generics) {
         item._collect.scope.symbolTable.defineSymbol(g);
       }
+
+      const alreadyExists = scope.symbolTable.tryLookupSymbolHere(item.name);
+      if (alreadyExists) {
+        const msg = alreadyExists.sourceloc && `Conflicting declaration at ${formatSourceLoc(alreadyExists.sourceloc)}` || '';
+        throw new CompilerError(`Symbol ${item.name} already exists in this scope. ${msg}`, item.sourceloc);
+      }
       scope.symbolTable.defineSymbol(item);
 
       const newMeta = {
@@ -265,11 +271,7 @@ function collect(
         method._collect.definedInScope = item._collect.scope;
 
         for (const g of method.generics) {
-          console.log("Defining generic param in method", g, method.funcbody._collect.scope.id);
-          method.declarationScope.symbolTable.defineSymbol({
-            variant: "GenericParameter",
-            name: g,
-          });
+          method.declarationScope.symbolTable.defineSymbol(g);
         }
 
         for (const param of method.params) {

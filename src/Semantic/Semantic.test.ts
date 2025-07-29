@@ -44,7 +44,7 @@ const tests: StageTests<Collect.Scope, SemanticResult> = [
                     column: column,
                 });
                 const semanticResult: SemanticResult = {
-                    monomorphizedSymbols: [],
+                    monomorphizedStructs: [],
                     globalNamespace: {
                         variant: "Namespace",
                         concrete: true,
@@ -288,7 +288,7 @@ const tests: StageTests<Collect.Scope, SemanticResult> = [
                 });
 
                 assert(collectedStruct._collect.scope);
-                semanticResult.monomorphizedSymbols.push(structType);
+                semanticResult.monomorphizedStructs.push(structType);
                 semanticResult.globalNamespace.scope.symbolTable.defineSymbol(noneType);
                 return semanticResult;
             })(),

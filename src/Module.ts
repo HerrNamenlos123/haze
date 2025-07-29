@@ -5,6 +5,7 @@ import {
   GeneralError,
   ImpossibleSituation,
   InternalError,
+  SyntaxError,
   UnreachableCode,
 } from "./shared/Errors";
 import { readdirSync, realpathSync, statSync } from "fs";
@@ -332,7 +333,7 @@ class ModuleCompiler {
       await this.addProjectSourceFiles();
 
       const sr = SemanticallyAnalyze(this.cr.globalScope);
-      // PrettyPrintAnalyzed(sr);
+      PrettyPrintAnalyzed(sr);
       const lowered = LowerModule(this.cr, sr);
 
       const name = this.config.projectName;
