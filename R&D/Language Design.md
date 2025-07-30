@@ -1072,3 +1072,117 @@ This design offers:
 * Clear and deterministic behavior
 
 All while remaining completely invisible to the end user.
+
+
+
+
+# 📘 Closure and Arena Semantics
+
+This document specifies how closures interact with memory arenas and lifetimes
+
+## 🔧 Closure Syntax
+
+Closures use JavaScript-style arrow syntax:
+
+```haze
+(x) => x + 1                 // Temporary closure
+[arena](x) => x + 1          // Arena-bound closure
+```
+
+* `()` defines parameters.
+* `{ ... }` is optional for single-expression bodies.
+* `[arena]` optionally binds the closure to a specific arena.
+
+---
+
+## 🧠 Closure Classification
+
+Closures are classified at definition time into two categories:
+
+### 1. **Stateless Closures (Decay into Function Pointers)**
+
+Closures **without captured variables** are treated as **plain function pointers** and:
+
+* Have no arena allocation
+* Can be stored, passed, or returned freely
+* Do not carry lifetime constraints
+
+```
+let f = () => 42;  // Treated as `fn() -> int`
+```
+
+---
+
+### 2. **Temporary Closures (With Captures, No Arena)**
+
+Closures **with captured variables but no `[arena]` binding** are **temporary closures**:
+
+* Backed by a **hidden local arena** bound to the current stack frame
+* Lifetime is **strictly local**
+* **Cannot be stored or returned**
+* Can only be passed to functions that accept **temporary closures**
+
+```
+let x = 5;
+let f = (y) => x + y; // ✅ Allowed, temporary closure
+
+return f;             // ❌ Error: cannot return temporary closure
+```
+
+Functions must explicitly opt-in to accepting temporary closures:
+
+```
+fn map<T, U>(self: List<T>, f: temporary fn(&T) -> U) -> List<U>;
+```
+
+---
+
+### 3. **Arena-Bound Closures**
+
+Closures bound to an arena using `[arena]` syntax are **explicitly allocated** in that arena:
+
+```
+let x = 5;
+let f = [my_arena](y) => x + y;
+```
+
+Properties:
+
+* Arena lifetime is tracked by the compiler
+* Closure lifetime = lifetime of the arena
+* ✅ Can be:
+
+  * Returned
+  * Stored
+  * Passed into long-lived structures
+* ❌ Captured variables must **not** come from shorter-lived arenas
+
+```
+fn make_callback(arena: &Arena<'a>) -> fn(int) -> int<'a> {
+    let x = 42;
+    return [arena](y) => x + y; // ✅ OK
+}
+```
+
+---
+
+## 📏 Summary of Rules
+
+| Closure Type        | Syntax                | Can Capture | Needs Arena | Can Escape Scope | Notes             |
+| ------------------- | --------------------- | ----------- | ----------- | ---------------- | ----------------- |
+| Function Pointer    | `(x) => x + 1`        | ❌ No        | ❌ No        | ✅ Yes            | Decays into `fn`  |
+| Temporary Closure   | `(x) => x + captured` | ✅ Yes       | ❌ No        | ❌ No             | Only inline usage |
+| Arena-Bound Closure | `[arena](x) => ...`   | ✅ Yes       | ✅ Yes       | ✅ Yes            | Lifetime = arena  |
+
+---
+
+## ✅ Best Practices
+
+* Use `(x) => ...` for simple inline, non-escaping closures.
+* Use `[arena](x) => ...` when returning or storing a closure.
+
+---
+
+## 🔮 Future Extensions
+
+* **Arena inference**: compiler may infer arena in certain escaping cases.
