@@ -38,13 +38,13 @@ cInjectDirective: 'inject' STRING_LITERAL ';';
 functionDeclaration: (export='export')? (extern='extern' externLang=externLanguage?)? (ID '.')* ID '(' params ')' (':' datatype)? ';';
 externLanguage: '"C"';
 
-functionDefinition: (export='export')? (extern='extern' externLang=externLanguage?)?  ID ('<' ID (',' ID)* '>')? '(' params ')' (':' datatype)? funcbody;
-lambda: '(' params ')' (':' datatype)? funcbody;
+functionDefinition: (export='export')? (extern='extern' externLang=externLanguage?)?  ID ('<' ID (',' ID)* '>')? '(' params ')' (':' datatype)? ('=>')? funcbody;
+lambda: '(' params ')' (':' datatype)? '=>' funcbody;
 param: ID ':' datatype;
 params: (param (',' param)* (',' ellipsis)?)? | ellipsis;
 ellipsis: '...';
 
-funcbody: '=>' (scope | exprAsFuncbody);
+funcbody: (scope | exprAsFuncbody);
 scope: '{' (statement)* '}';
 exprAsFuncbody: expr;
 
@@ -81,7 +81,7 @@ genericLiteral
 
 structContent
     : ID ':' datatype ';'                                                                   #StructMember
-    | ID ('<' ID (',' ID)* '>')? '(' params ')' (':' datatype)? (funcbody | ';')            #StructMethod
+    | static='static'? ID ('<' ID (',' ID)* '>')? '(' params ')' (':' datatype)? (funcbody | ';')  #StructMethod
     | structDefinition                                                                      #NestedStructDefinition
     ;
 

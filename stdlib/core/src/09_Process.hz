@@ -3,7 +3,7 @@ inject "#include <unistd.h>";
 inject "#include <errno.h>";
 
 namespace Process {
-    export cwd(): Result<Fs.Path, String> {
+    export cwd(): Result<Fs.Path, String> => {
         const path = String("");
         const maxlen: u64 = 0;
         __c__("maxlen = PATH_MAX");
@@ -13,8 +13,8 @@ namespace Process {
         __c__("path.length = strlen(path.data.data)");
         if result as u64 != 0 {
             return Result<Fs.Path, String> {
-                .success: Fs.Path(path),
-                .isSuccess: true,
+                .success = Fs.Path(path),
+                .isSuccess = true,
             };
         }
         let err: stringview;
@@ -22,12 +22,12 @@ namespace Process {
         const error = String("getcwd() error: ");
         error.append(String(err));
         return Result<Fs.Path, String> {
-            .error: error,
-            .isSuccess: false,
+            .error = error,
+            .isSuccess = false,
         };
     }
 
-    export exec(cmd: String): i32 {
+    export exec(cmd: String): i32 => {
         const cmd_cstr = cmd.cStr() as RawPtr<u8>;
         const result: i32 = 0;
         ctx.log.trace("exec %s\n", cmd.cStr());
@@ -38,7 +38,7 @@ namespace Process {
         return result;
     }
 
-    export __loadArgv(count: i32, args: RawPtr<RawPtr<u8>>): List<String> {
+    export __loadArgv(count: i32, args: RawPtr<RawPtr<u8>>): List<String> => {
         let i = 0;
         const list = List<String>();
         while i < count {

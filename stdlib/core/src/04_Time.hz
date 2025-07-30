@@ -1,7 +1,7 @@
 inject "typedef struct timespec timespec_t;";
 
 namespace Time {
-  __assertTypes() {
+  __assertTypes() => {
     __c__("timespec_t t");
     __c__("assert(sizeof(t.tv_sec) == 8)");
     __c__("assert(sizeof(t.tv_nsec) == 8)");
@@ -12,12 +12,12 @@ namespace Time {
 
     constructor(nanoseconds: u64): Duration {
       return Duration {
-        .nanoseconds: nanoseconds,
+        .nanoseconds = nanoseconds,
       };
     }
   }
 
-  sleep(duration: Duration) {
+  sleep(duration: Duration) => {
     const sec = duration.nanoseconds / 1000000000;
     const nsec = duration.nanoseconds - sec * 1000000000;
     __c__("struct timespec t;");

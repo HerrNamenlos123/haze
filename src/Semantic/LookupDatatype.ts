@@ -248,7 +248,7 @@ export function lookupAndElaborateDatatype(
             sourceSymbol: found,
             context: args.context,
           });
-          assert(namespace && namespace.variant === "Namespace");
+          assert(namespace && namespace.variant === "NamespaceDatatype");
           const nested = lookupAndElaborateDatatype(sr, {
             datatype: args.datatype.nested,
             startLookupInScope: namespace.scope.collectedScope,
@@ -334,7 +334,7 @@ export function instantiateStruct(
   assert(
     !parentNamespace ||
       parentNamespace.variant === "StructDatatype" ||
-      parentNamespace.variant === "Namespace",
+      parentNamespace.variant === "NamespaceDatatype",
   );
 
   const struct: Semantic.StructDatatypeSymbol = {
@@ -392,7 +392,7 @@ export function instantiateStruct(
 
     args.definedStructType.methods.forEach((m) => {
       assert(m.returnType);
-      assert(m.funcbody._collect.scope);
+      assert(m.funcbody?._collect.scope);
       if (m.generics.length !== 0 || m.operatorOverloading) {
         return;
       }

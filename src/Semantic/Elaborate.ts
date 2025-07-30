@@ -33,7 +33,7 @@ import {
   makeReferenceDatatypeAvailable,
 } from "./LookupDatatype";
 import { makePrimitiveAvailable, Semantic, type SemanticResult } from "./SemanticSymbols";
-import { serializeDatatype, serializeExpr } from "./Serialize";
+import { serializeDatatype, serializeExpr, serializeNestedName } from "./Serialize";
 
 export type SubstitutionContext = {
   substitute: Map<Collect.GenericParameter, Semantic.Symbol>;
@@ -320,6 +320,25 @@ export function elaborateExpr(
     // =================================================================================================================
 
     case "SymbolValueExpr": {
+      if (expr.name === "sizeof") {
+        if (expr.generics.length !== 1) {
+          throw new CompilerError(
+            `The sizeof<> Operator needs exactly 1 type argument`,
+            expr.sourceloc,
+          );
+        }
+        return {
+          variant: "SizeofExpr",
+          datatype: lookupAndElaborateDatatype(sr, {
+            datatype: expr.generics[0],
+            startLookupInScope: args.scope.collectedScope,
+            context: args.context,
+          }),
+          type: makePrimitiveAvailable(sr, EPrimitive.u64),
+          sourceloc: expr.sourceloc,
+        };
+      }
+
       const symbol = args.scope.collectedScope.symbolTable.lookupSymbol(expr.name, expr.sourceloc);
       if (
         symbol.variant === "VariableDefinitionStatement" ||
@@ -354,6 +373,28 @@ export function elaborateExpr(
           variant: "SymbolValue",
           symbol: elaboratedSymbol,
           type: elaboratedSymbol.type,
+          sourceloc: expr.sourceloc,
+        };
+      } else if (
+        symbol.variant === "StructDefinition" ||
+        symbol.variant === "NamespaceDefinition"
+      ) {
+        // This is for static function calls like Arena.create();
+        const elaboratedSymbol = elaborate(sr, {
+          sourceSymbol: symbol,
+          usageGenerics: expr.generics,
+          usageInScope: args.scope.collectedScope,
+          usedAt: expr.sourceloc,
+          context: makeSubstitutionContext(),
+        });
+        assert(
+          elaboratedSymbol?.variant === "NamespaceDatatype" ||
+            elaboratedSymbol?.variant === "StructDatatype",
+        );
+        return {
+          variant: "NamespaceValue",
+          symbol: elaboratedSymbol,
+          type: elaboratedSymbol,
           sourceloc: expr.sourceloc,
         };
       } else {
@@ -484,8 +525,50 @@ export function elaborateExpr(
         isReference = true;
       }
 
+      if (type.variant === "RawPointerDatatype") {
+        type = type.pointee;
+        isReference = true;
+      }
+
+      if (object.variant === "NamespaceValue" && object.type.variant === "NamespaceDatatype") {
+        const found = object.type.scope.collectedScope.symbolTable.tryLookupSymbol(
+          expr.member,
+          expr.sourceloc,
+        );
+        if (!found) {
+          throw new CompilerError(
+            `Namespace '${object.type.name}' does not define any declarations called '${expr.member}'`,
+            expr.sourceloc,
+          );
+        }
+        const elaborated = elaborate(sr, {
+          sourceSymbol: found,
+          usageGenerics: expr.generics,
+          usageInScope: args.scope.collectedScope,
+          usedAt: expr.sourceloc,
+          context: args.context,
+        });
+        assert(elaborated);
+        if (
+          elaborated.variant === "FunctionDefinition" ||
+          elaborated.variant === "FunctionDeclaration"
+        ) {
+          return {
+            variant: "SymbolValue",
+            symbol: elaborated,
+            type: elaborated.type,
+            sourceloc: expr.sourceloc,
+          };
+        } else {
+          assert(false);
+        }
+      }
+
       if (type.variant !== "StructDatatype") {
-        throw new CompilerError("Cannot access member of a non-structural type", expr.sourceloc);
+        throw new CompilerError(
+          "Cannot access member of non-structural type " + serializeDatatype(type),
+          expr.sourceloc,
+        );
       }
 
       const member = type.members.find((m) => {
@@ -498,6 +581,9 @@ export function elaborateExpr(
             `Member '${expr.member}' does not expect any type arguments, but ${expr.generics.length} are given`,
             expr.sourceloc,
           );
+        }
+        if (object.variant === "NamespaceValue") {
+          assert(false, "Static members not implemented yet");
         }
         return {
           variant: "ExprMemberAccess",
@@ -525,23 +611,42 @@ export function elaborateExpr(
         });
         assert(elaboratedMethod?.variant === "FunctionDefinition");
 
-        const thisExprType =
-          object.type.variant === "ReferenceDatatype"
-            ? object.type
-            : makeReferenceDatatypeAvailable(sr, object.type);
+        if (object.variant === "NamespaceValue" && collectedMethod.static) {
+          return {
+            variant: "SymbolValue",
+            symbol: elaboratedMethod,
+            type: elaboratedMethod.type,
+            sourceloc: expr.sourceloc,
+          };
+        } else if (object.variant !== "NamespaceValue" && !collectedMethod.static) {
+          const thisExprType =
+            object.type.variant === "ReferenceDatatype"
+              ? object.type
+              : makeReferenceDatatypeAvailable(sr, object.type);
 
-        return {
-          variant: "CallableExpr",
-          thisExpr: Conversion.MakeExplicitConversion(object, thisExprType, expr.sourceloc),
-          functionSymbol: elaboratedMethod,
-          type: {
-            variant: "CallableDatatype",
-            thisExprType: thisExprType,
-            functionType: elaboratedMethod.type,
-            concrete: elaboratedMethod.type.concrete,
-          },
-          sourceloc: expr.sourceloc,
-        };
+          return {
+            variant: "CallableExpr",
+            thisExpr: Conversion.MakeExplicitConversion(object, thisExprType, expr.sourceloc),
+            functionSymbol: elaboratedMethod,
+            type: {
+              variant: "CallableDatatype",
+              thisExprType: thisExprType,
+              functionType: elaboratedMethod.type,
+              concrete: elaboratedMethod.type.concrete,
+            },
+            sourceloc: expr.sourceloc,
+          };
+        } else if (object.variant === "NamespaceValue") {
+          throw new CompilerError(
+            `Method ${serializeNestedName(elaboratedMethod)} is used in a static context but is not static`,
+            expr.sourceloc,
+          );
+        } else {
+          throw new CompilerError(
+            `Method ${serializeNestedName(elaboratedMethod)} is static but is used in a non-static context`,
+            expr.sourceloc,
+          );
+        }
       }
 
       throw new CompilerError(
@@ -808,6 +913,13 @@ export function elaborateStatement(
           scope: args.scope,
         });
 
+      if (expr?.variant === "NamespaceValue") {
+        throw new CompilerError(
+          `A struct/namespace datatype cannot be written into a variable`,
+          expr.sourceloc,
+        );
+      }
+
       const symbol = args.scope.symbolTable.lookupSymbol(s.name, s.sourceloc);
       assert(symbol.variant === "Variable");
 
@@ -991,7 +1103,9 @@ export function elaborate(
           context: args.context,
         })) ||
       null;
-    assert(!parent || parent.variant === "StructDatatype" || parent.variant === "Namespace");
+    assert(
+      !parent || parent.variant === "StructDatatype" || parent.variant === "NamespaceDatatype",
+    );
     return parent;
   };
 
@@ -1024,6 +1138,7 @@ export function elaborate(
         variant: "FunctionDeclaration",
         type: resolvedFunctype,
         export: args.sourceSymbol.export,
+        staticMethod: false,
         externLanguage: args.sourceSymbol.externLanguage,
         parameterNames: args.sourceSymbol.params.map((p) => p.name),
         methodType: args.sourceSymbol.methodType,
@@ -1092,12 +1207,13 @@ export function elaborate(
       });
       assert(resolvedFunctype.variant === "FunctionDatatype");
       assert(args.sourceSymbol.methodType !== undefined);
-      assert(args.sourceSymbol.funcbody.variant === "Scope");
+      assert(args.sourceSymbol.funcbody?.variant === "Scope");
 
       let symbol: Semantic.FunctionDefinitionSymbol = {
         variant: "FunctionDefinition",
         type: resolvedFunctype,
         export: args.sourceSymbol.export,
+        staticMethod: false,
         parent: elaborateParentSymbol(args.sourceSymbol),
         externLanguage: args.sourceSymbol.externLanguage,
         generics: generics,
@@ -1152,8 +1268,6 @@ export function elaborate(
 
     case "StructMethod": {
       assert(args.structForMethod);
-      const thisReference = makeReferenceDatatypeAvailable(sr, args.structForMethod);
-
       assert(args.usageGenerics);
       const generics = args.usageGenerics.map((g) => {
         assert(args.usageInScope);
@@ -1197,9 +1311,13 @@ export function elaborate(
           context: substitutionContext,
         });
       });
-      parameters.unshift(thisReference);
-      parameterNames.unshift("this");
       assert(args.sourceSymbol.returnType);
+
+      if (!args.sourceSymbol.static) {
+        const thisReference = makeReferenceDatatypeAvailable(sr, args.structForMethod);
+        parameters.unshift(thisReference);
+        parameterNames.unshift("this");
+      }
 
       const returnType = lookupAndElaborateDatatype(sr, {
         datatype: args.sourceSymbol.returnType,
@@ -1218,6 +1336,7 @@ export function elaborate(
         type: ftype,
         export: false,
         generics: generics,
+        staticMethod: args.sourceSymbol.static,
         externLanguage: EExternLanguage.None,
         methodType: EMethodType.Method,
         name: args.sourceSymbol.name,
@@ -1240,7 +1359,7 @@ export function elaborate(
         throw new ImpossibleSituation();
       }
 
-      assert(args.sourceSymbol.funcbody._collect.scope);
+      assert(args.sourceSymbol.funcbody?._collect.scope);
       assert(!symbol.scope);
       if (symbol.concrete) {
         symbol.scope = new Semantic.BlockScope(
@@ -1250,12 +1369,15 @@ export function elaborate(
         );
         const variableMap = new Map<Collect.Symbol, Semantic.VariableSymbol>();
 
-        defineThisReference(sr, {
-          scope: symbol.scope,
-          parentStruct: args.structForMethod,
-          elaboratedVariables: variableMap,
-          context: substitutionContext,
-        });
+        if (!symbol.staticMethod) {
+          defineThisReference(sr, {
+            scope: symbol.scope,
+            parentStruct: args.structForMethod,
+            elaboratedVariables: variableMap,
+            context: substitutionContext,
+          });
+        }
+
         sr.elaboratedFuncdefSymbols.push({
           generics: generics,
           originalSymbol: args.sourceSymbol,
@@ -1286,8 +1408,8 @@ export function elaborate(
       }
 
       const parent = elaborateParentSymbol(args.sourceSymbol);
-      const namespace: Semantic.NamespaceSymbol = {
-        variant: "Namespace",
+      const namespace: Semantic.NamespaceDatatypeSymbol = {
+        variant: "NamespaceDatatype",
         name: args.sourceSymbol.name,
         parent: parent,
         scope: new Semantic.DeclScope(
@@ -1366,8 +1488,40 @@ export function elaborate(
       }
     }
 
+    // case "GlobalVariableDefinition": {
+    //   for (const s of sr.elaboratedGlobalVariableSymbols) {
+    //     if (s.originalSymbol === args.sourceSymbol) {
+    //       return s.resultSymbol;
+    //     }
+    //   }
+    //   const elaboratedExpr = elaborateExpr(sr, args.sourceSymbol.expr, {
+    //     scope: scope,
+    //     elaboratedVariables: new Map(),
+    //     context: args.context,
+    //   })
+    //   const type = args.sourceSymbol.expr && lookupAndElaborateDatatype(sr, {
+    //     datatype: args.sourceSymbol.expr,
+    //     startLookupInScope: assertScope(args.sourceSymbol.declarationScope),
+    //     context: substitutionContext,
+    //   });
+    //   lookupAndElaborateDatatype(sr, {
+    //     datatype: args.sourceSymbol.datatype,
+    //     startLookupInScope: assertScope(args.sourceSymbol.declarationScope),
+    //     context: substitutionContext,
+    //   });
+    //   const s: Semantic.VariableSymbol = {
+    //     variant: "Variable",
+    //     concrete:
+    //   };
+    //   sr.elaboratedGlobalVariableSymbols.push({
+    //     originalSymbol: args.sourceSymbol,
+    //     resultSymbol: s,
+    //   });
+    //   return s;
+    // }
+
     default:
-      throw new ImpossibleSituation();
+      assert(false, args.sourceSymbol.variant);
   }
 }
 
@@ -1380,6 +1534,7 @@ export function SemanticallyAnalyze(collectedGlobalScope: Collect.Scope) {
     elaboratedFuncdefSymbols: [],
     elaboratedPrimitiveTypes: [],
     elaboratedNamespaceSymbols: [],
+    elaboratedGlobalVariableSymbols: [],
     functionTypeCache: [],
     rawPointerTypeCache: [],
     referenceTypeCache: [],
@@ -1423,7 +1578,7 @@ const print = (str: string, indent = 0, color = reset) => {
 
 function printSymbol(
   symbol:
-    | Semantic.NamespaceSymbol
+    | Semantic.NamespaceDatatypeSymbol
     | Semantic.DeclScope
     | Semantic.BlockScope
     | Semantic.VariableSymbol
@@ -1452,7 +1607,7 @@ function printSymbol(
   }
 
   switch (symbol.variant) {
-    case "Namespace":
+    case "NamespaceDatatype":
       print(`Namespace ${symbol.name} {`, indent);
       printSymbol(symbol.scope, indent + 2);
       print(`}`, indent);

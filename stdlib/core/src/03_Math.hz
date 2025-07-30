@@ -1,36 +1,36 @@
-export namespace Math {
-  extern "C" sqrt(v: f64): f64;
-  extern "C" sqrtf(v: f32): f32;
-  extern "C" pow(a: f64, b: f64): f64;
-  extern "C" powf(a: f32, b: f32): f32;
-  extern "C" sin(v: f64): f64;
-  extern "C" sinh(v: f64): f64;
-  extern "C" cos(v: f64): f64;
-  extern "C" cosh(v: f64): f64;
-  extern "C" tan(v: f64): f64;
-  extern "C" atan2(y: f64, x: f64): f64;
+// export namespace Math {
+//   extern "C" sqrt(v: f64): f64;
+//   extern "C" sqrtf(v: f32): f32;
+//   extern "C" pow(a: f64, b: f64): f64;
+//   extern "C" powf(a: f32, b: f32): f32;
+//   extern "C" sin(v: f64): f64;
+//   extern "C" sinh(v: f64): f64;
+//   extern "C" cos(v: f64): f64;
+//   extern "C" cosh(v: f64): f64;
+//   extern "C" tan(v: f64): f64;
+//   extern "C" atan2(y: f64, x: f64): f64;
 
-  extern const PI = 3.141592653589793;
+//   extern const PI = 3.141592653589793;
 
-  radToDeg(v: f64): f64 {
-    return v / Math.PI * 180;
-  }
+//   radToDeg(v: f64): f64 => {
+//     return v / Math.PI * 180;
+//   }
 
-  degToRad(v: f64): f64 {
-    return v * Math.PI / 180;
-  }
+//   degToRad(v: f64): f64 => {
+//     return v * Math.PI / 180;
+//   }
 
-  maxu64(a: u64, b: u64): u64 {
-    if a >= b {
-      return a;
-    }
-    return b;
-  }
+//   maxu64(a: u64, b: u64): u64 => {
+//     if a >= b {
+//       return a;
+//     }
+//     return b;
+//   }
 
-  minu64(a: u64, b: u64): u64 {
-    if a <= b {
-      return a;
-    }
-    return b;
-  }
-}
+//   minu64(a: u64, b: u64): u64 => {
+//     if a <= b {
+//       return a;
+//     }
+//     return b;
+//   }
+// }

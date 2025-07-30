@@ -38,7 +38,11 @@ export type SemanticResult = {
   }[];
   elaboratedNamespaceSymbols: {
     originalSymbol: Collect.Symbol;
-    resultSymbol: Semantic.NamespaceSymbol;
+    resultSymbol: Semantic.NamespaceDatatypeSymbol;
+  }[];
+  elaboratedGlobalVariableSymbols: {
+    originalSymbol: Collect.Symbol;
+    resultSymbol: Semantic.VariableSymbol;
   }[];
 
   elaboratedPrimitiveTypes: Semantic.PrimitiveDatatypeSymbol[];
@@ -73,7 +77,7 @@ export namespace Semantic {
   export type VariableSymbol = {
     variant: "Variable";
     name: string;
-    memberOf?: StructDatatypeSymbol | NamespaceSymbol;
+    memberOf?: StructDatatypeSymbol | NamespaceDatatypeSymbol;
     type: DatatypeSymbol;
     mutable: boolean;
     export: boolean;
@@ -87,6 +91,7 @@ export namespace Semantic {
     variant: "FunctionDefinition";
     name: string;
     generics: DatatypeSymbol[];
+    staticMethod: boolean;
     type: FunctionDatatypeSymbol;
     operatorOverloading?: {
       operator: EOperator;
@@ -100,7 +105,7 @@ export namespace Semantic {
     methodType: EMethodType;
     methodOf?: StructDatatypeSymbol;
     sourceloc: SourceLoc;
-    parent: StructDatatypeSymbol | NamespaceSymbol | null;
+    parent: StructDatatypeSymbol | NamespaceDatatypeSymbol | null;
     concrete: boolean;
   };
 
@@ -108,12 +113,13 @@ export namespace Semantic {
     variant: "FunctionDeclaration";
     name: string;
     type: FunctionDatatypeSymbol;
+    staticMethod: boolean;
     externLanguage: EExternLanguage;
     parameterNames: string[];
     export: boolean;
     methodType: EMethodType;
     sourceloc: SourceLoc;
-    parent: StructDatatypeSymbol | NamespaceSymbol | null;
+    parent: StructDatatypeSymbol | NamespaceDatatypeSymbol | null;
     concrete: boolean;
   };
 
@@ -132,7 +138,7 @@ export namespace Semantic {
     externLanguage: EExternLanguage;
     members: VariableSymbol[];
     methods: Set<FunctionDefinitionSymbol>;
-    parent: StructDatatypeSymbol | NamespaceSymbol | null;
+    parent: StructDatatypeSymbol | NamespaceDatatypeSymbol | null;
     rawAst: ASTStructDefinition;
     scope: Semantic.DeclScope;
     sourceloc: SourceLoc;
@@ -176,10 +182,10 @@ export namespace Semantic {
     concrete: boolean;
   };
 
-  export type NamespaceSymbol = {
-    variant: "Namespace";
+  export type NamespaceDatatypeSymbol = {
+    variant: "NamespaceDatatype";
     name: string;
-    parent: Semantic.NamespaceSymbol | Semantic.StructDatatypeSymbol | null;
+    parent: Semantic.NamespaceDatatypeSymbol | Semantic.StructDatatypeSymbol | null;
     scope: Semantic.DeclScope;
     sourceloc: SourceLoc;
     concrete: boolean;
@@ -190,7 +196,7 @@ export namespace Semantic {
     | FunctionDefinitionSymbol
     | FunctionDeclarationSymbol
     | GenericParameterDatatypeSymbol
-    | NamespaceSymbol
+    | NamespaceDatatypeSymbol
     | FunctionDatatypeSymbol
     | StructDatatypeSymbol
     | RawPointerDatatypeSymbol
@@ -221,6 +227,21 @@ export namespace Semantic {
   export type SymbolValueExpr = {
     variant: "SymbolValue";
     symbol: Symbol;
+    type: DatatypeSymbol;
+    sourceloc: SourceLoc;
+  };
+
+  export type NamespaceValueExpr = {
+    variant: "NamespaceValue";
+    symbol: NamespaceDatatypeSymbol | StructDatatypeSymbol;
+    type: DatatypeSymbol;
+    sourceloc: SourceLoc;
+  };
+
+  export type SizeofExpr = {
+    variant: "SizeofExpr";
+    datatype?: DatatypeSymbol;
+    value?: Expression;
     type: DatatypeSymbol;
     sourceloc: SourceLoc;
   };
@@ -307,6 +328,8 @@ export namespace Semantic {
   export type Expression =
     | ExprMemberAccessExpr
     | SymbolValueExpr
+    | NamespaceValueExpr
+    | SizeofExpr
     | ExprAssignmentExpr
     | BinaryExpr
     | CallableExpr
@@ -378,7 +401,7 @@ export namespace Semantic {
       | VariableSymbol
       | FunctionDefinitionSymbol
       | FunctionDeclarationSymbol
-      | NamespaceSymbol
+      | NamespaceDatatypeSymbol
       | PrimitiveDatatypeSymbol
       | StructDatatypeSymbol
     )[] = [];
@@ -455,6 +478,17 @@ export namespace Semantic {
         p = p.parentTable;
       }
       throw new CompilerError(`Symbol '${name}' was not declared in this scope`, loc);
+    }
+
+    tryLookupSymbol(name: string, loc: SourceLoc): Symbol | undefined {
+      let p: SymbolTable | undefined = this;
+      while (p) {
+        const symbol = p.tryLookupSymbolHere(name);
+        if (symbol) {
+          return symbol;
+        }
+        p = p.parentTable;
+      }
     }
   }
 

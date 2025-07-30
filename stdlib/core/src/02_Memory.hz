@@ -1,8 +1,8 @@
 
-extern "C" calloc(num: u64, size: u64): RawPtr<none>;
-extern "C" realloc(ptr: RawPtr<none>, newSize: u64): RawPtr<none>;
-extern "C" free(ptr: RawPtr<none>);
-extern "C" memcpy(to: RawPtr<none>, from: RawPtr<none>, length: u64): RawPtr<none>;
+extern "C" calloc(num: u64, size: u64): none*;
+extern "C" realloc(ptr: none*, newSize: u64): none*;
+extern "C" free(ptr: none*);
+extern "C" memcpy(to: none*, from: none*, length: u64): none*;
 
 // export struct Array<T, Size> {
 //   length: u64;
@@ -10,35 +10,39 @@ extern "C" memcpy(to: RawPtr<none>, from: RawPtr<none>, length: u64): RawPtr<non
 // }
 
 namespace Memory {
-  const DEFAULT_ARENA_SIZE = 16 * 1024 * 1024;
+  // const DEFAULT_ARENA_SIZE = 16 * 1024 * 1024;
 
-  export generalPurposeMalloc(size: u64): RawPtr<none> => {
-    return calloc(1, size);
+  getDefaultArenaSize(): u64 => {
+    return (16 * 1024 * 1024) as u64;
   }
 
-  export generalPurposeFree(ptr: RawPtr<none>) => {
+  export generalPurposeMalloc(size: u64): none* => {
+    return calloc(1 as u64, size);
+  }
+
+  export generalPurposeFree(ptr: none*) => {
     free(ptr);
   }
 
-  export copy(to: RawPtr<none>, from: RawPtr<none>, length: u64) => {
+  export copy(to: none*, from: none*, length: u64) => {
     memcpy(to, from, length);
   }
 
   export struct ArenaChunk {
-    nextChunk: RawPtr<ArenaChunk>;
+    nextChunk: ArenaChunk*;
     allocated: u64;
     capacity: u64;
     dataFirstByte: u8;
 
-    canAllocate(size: u64): boolean => {
+    canAllocate(size: u64): boolean {
       return this.allocated + size <= this.capacity;
     }
 
-    allocate(size: u64): RawPtr<none> => {
+    allocate(size: u64): none* {
       if this.allocated + size > this.capacity {
         System.panic("ArenaChunk was instructed to allocate, but it is too small");
       }
-      const ptr = 0 as RawPtr<none>;
+      const ptr = 0 as none*;
       __c__("ptr = &(this->dataFirstByte) + this->allocated");
       this.allocated += size;
       return ptr;
@@ -46,29 +50,29 @@ namespace Memory {
   }
 
   export struct Arena {
-    firstChunk: RawPtr<ArenaChunk>;
+    firstChunk: ArenaChunk*;
 
-    init() => {
+    init(): none {
       if this.firstChunk {
         System.panic("Arena is already initialized");
       }
-      const chunkSize = sizeof<RawPtr<none>> + 2 * sizeof<u64> + Memory.DEFAULT_ARENA_SIZE;
-      this.firstChunk = Memory.generalPurposeMalloc(chunkSize) as RawPtr<ArenaChunk>;
-      this.firstChunk.capacity = Memory.DEFAULT_ARENA_SIZE;
+      const chunkSize = sizeof<none*> + 2 * sizeof<u64> + Memory.getDefaultArenaSize();
+      this.firstChunk = Memory.generalPurposeMalloc(chunkSize) as ArenaChunk*;
+      this.firstChunk.capacity = Memory.getDefaultArenaSize();
     }
 
-    allocate(size: u64): RawPtr<none> => {
+    allocate(size: u64): none* {
       let chunk = this.firstChunk;
       while chunk.nextChunk {
         chunk = chunk.nextChunk;
       }
       if not chunk.canAllocate(size) {
-        const chunkSize = sizeof<RawPtr<none>> + 2 * sizeof<u64> + Math.maxu64(Memory.DEFAULT_ARENA_SIZE, size);
-        chunk.nextChunk = Memory.generalPurposeMalloc(chunkSize) as RawPtr<ArenaChunk>;
+        const chunkSize = sizeof<none*> + 2 * sizeof<u64> + Math.maxu64(Memory.getDefaultArenaSize(), size);
+        chunk.nextChunk = Memory.generalPurposeMalloc(chunkSize) as ArenaChunk*;
         if not chunk.nextChunk {
           System.panic("Allocation failed while enlarging arena");
         }
-        chunk.nextChunk.capacity = Math.maxu64(Memory.DEFAULT_ARENA_SIZE, size);
+        chunk.nextChunk.capacity = Math.maxu64(Memory.getDefaultArenaSize(), size);
         ctx.log.warn("Arena was enlarged. Consider creating a bigger, short-lived arena for memory-heavy calculations.");
         chunk = chunk.nextChunk;
         if not chunk.canAllocate(size) {
@@ -79,7 +83,7 @@ namespace Memory {
       return chunk.allocate(size);
     }
 
-    cleanup() => {
+    cleanup() {
       let chunk = this.firstChunk;
       while chunk {
         const next = chunk.nextChunk;
@@ -99,23 +103,23 @@ namespace Memory {
   //     return Arena<T> { .__impl: arena };
   //   }
 
-  //   allocate(size: u64): RawPtr<none> {
+  //   allocate(size: u64): none* {
   //     return this.__impl.allocate(size);
   //   }
   // }
 
   export struct Buffer {
-    data: RawPtr<none>;
+    data: none*;
     size: u64;
 
-    constructor(size: u64): Memory.Buffer => {
+    constructor(size: u64): Memory.Buffer {
       return Memory.Buffer {
-        .data: ctx.mem.alloc(size),
-        .size: size,
+        .data = ctx.mem.alloc(size),
+        .size = size,
       };
     }
 
-    resize(newSize: u64) => {
+    resize(newSize: u64) {
       const newData = ctx.mem.alloc(newSize);
       Memory.copy(newData, this.data, this.size);
       this.size = newSize;
@@ -123,8 +127,8 @@ namespace Memory {
     }
   }
 
-  __setupMemoryContext() => {
-    ctx.mem.alloc = (size: u64): RawPtr<none> => {
+  __setupMemoryContext() {
+    ctx.mem.alloc = (size: u64): none* => {
       const arena = ctx.mem.globalDefaultArena as RawPtr<Arena>;
       return arena.allocate(size);
     };

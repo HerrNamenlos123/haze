@@ -11,8 +11,11 @@ export namespace Lowered {
 
     cDeclarations: string[];
 
-    loweredTypes: Map<Semantic.Symbol, Lowered.Datatype>
-    loweredFunctions: Map<Semantic.Symbol, Lowered.FunctionDeclaration | Lowered.FunctionDefinition>;
+    loweredTypes: Map<Semantic.Symbol, Lowered.Datatype>;
+    loweredFunctions: Map<
+      Semantic.Symbol,
+      Lowered.FunctionDeclaration | Lowered.FunctionDefinition
+    >;
 
     sortedLoweredTypes: Lowered.Datatype[];
   };
@@ -49,6 +52,13 @@ export namespace Lowered {
   export type RawPointerAddressOfExpr = {
     variant: "RawPointerAddressOf";
     expr: Expression;
+    type: Datatype;
+  };
+
+  export type SizeofExpr = {
+    variant: "Sizeof";
+    datatype?: Datatype;
+    value?: Expression;
     type: Datatype;
   };
 
@@ -118,10 +128,12 @@ export namespace Lowered {
     | ExprAssignmentExpr
     | RawPointerDereferenceExpr
     | RawPointerAddressOfExpr
+    | SizeofExpr
     | ExplicitCastExpr
     | ExprMemberAccessExpr
     | ConstantExpr
-    | PreIncrExpr | PostIncrExpr
+    | PreIncrExpr
+    | PostIncrExpr
     | SymbolValueExpr;
 
   export type Scope = {

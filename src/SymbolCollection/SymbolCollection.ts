@@ -114,7 +114,9 @@ function collect(
 
     case "FunctionDefinition":
       item.declarationScope = new Collect.Scope(item.sourceloc, scope);
-      item.funcbody._collect.scope = new Collect.Scope(item.sourceloc, item.declarationScope);
+      if (item.funcbody) {
+        item.funcbody._collect.scope = new Collect.Scope(item.sourceloc, item.declarationScope);
+      }
       item._collect.definedInNamespaceOrStruct = meta.currentNamespaceOrStruct;
       item._collect.definedInScope = scope;
       item.methodType = EMethodType.NotAMethod;
@@ -142,16 +144,19 @@ function collect(
       for (const g of item.generics) {
         item.declarationScope.symbolTable.defineSymbol(g);
       }
-      for (const param of item.params) {
-        item.funcbody._collect.scope.symbolTable.defineSymbol({
-          variant: "VariableDefinitionStatement",
-          mutable: false,
-          name: param.name,
-          datatype: param.datatype,
-          sourceloc: param.sourceloc,
-          kind: EVariableContext.FunctionParameter,
-          _semantic: {},
-        });
+
+      if (item.funcbody?._collect.scope) {
+        for (const param of item.params) {
+          item.funcbody._collect.scope.symbolTable.defineSymbol({
+            variant: "VariableDefinitionStatement",
+            mutable: false,
+            name: param.name,
+            datatype: param.datatype,
+            sourceloc: param.sourceloc,
+            kind: EVariableContext.FunctionParameter,
+            _semantic: {},
+          });
+        }
       }
 
       for (const param of item.params) {
@@ -160,24 +165,26 @@ function collect(
       collect(scope, item.returnType, meta);
 
       scope.symbolTable.defineSymbol(item);
-      if (item.funcbody.variant === "ExprAsFuncBody") {
-        item.funcbody = {
-          variant: "Scope",
-          statements: [
-            {
-              variant: "ReturnStatement",
-              sourceloc: item.sourceloc,
-              expr: item.funcbody.expr,
+      if (item.funcbody?._collect.scope) {
+        if (item.funcbody.variant === "ExprAsFuncBody") {
+          item.funcbody = {
+            variant: "Scope",
+            statements: [
+              {
+                variant: "ReturnStatement",
+                sourceloc: item.sourceloc,
+                expr: item.funcbody.expr,
+              },
+            ],
+            sourceloc: item.sourceloc,
+            _collect: {
+              scope: item.funcbody._collect.scope,
             },
-          ],
-          sourceloc: item.sourceloc,
-          _collect: {
-            scope: item.funcbody._collect.scope,
-          },
-        };
-        collect(assertScope(item.funcbody._collect.scope), item.funcbody, meta);
-      } else {
-        collect(item.funcbody._collect.scope, item.funcbody, meta);
+          };
+          collect(assertScope(item.funcbody._collect.scope), item.funcbody, meta);
+        } else {
+          collect(item.funcbody._collect.scope, item.funcbody, meta);
+        }
       }
       break;
 
@@ -264,8 +271,14 @@ function collect(
       }
 
       for (const method of item.methods) {
+        console.log(item);
         method.declarationScope = new Collect.Scope(item.sourceloc, item._collect.scope);
-        method.funcbody._collect.scope = new Collect.Scope(item.sourceloc, method.declarationScope);
+        if (method.funcbody) {
+          method.funcbody._collect.scope = new Collect.Scope(
+            item.sourceloc,
+            method.declarationScope,
+          );
+        }
 
         method._collect.fullNamespacePath = [
           ...meta.namespaceStack.map((n) => n.name),
@@ -277,32 +290,36 @@ function collect(
           method.declarationScope.symbolTable.defineSymbol(g);
         }
 
-        method.funcbody._collect.scope.symbolTable.defineSymbol({
-          variant: "VariableDefinitionStatement",
-          mutable: false,
-          name: "this",
-          sourceloc: method.sourceloc,
-          datatype: undefined,
-          kind: EVariableContext.ThisReference,
-          _semantic: {},
-        });
+        if (method.funcbody?._collect.scope) {
+          if (!method.static) {
+            method.funcbody._collect.scope.symbolTable.defineSymbol({
+              variant: "VariableDefinitionStatement",
+              mutable: false,
+              name: "this",
+              sourceloc: method.sourceloc,
+              datatype: undefined,
+              kind: EVariableContext.ThisReference,
+              _semantic: {},
+            });
+          }
 
-        for (const param of method.params) {
-          method.funcbody._collect.scope.symbolTable.defineSymbol({
-            variant: "VariableDefinitionStatement",
-            mutable: false,
-            name: param.name,
-            datatype: param.datatype,
-            sourceloc: param.sourceloc,
-            kind: EVariableContext.FunctionParameter,
-            _semantic: {},
-          });
-          collect(method.declarationScope, param.datatype, newMeta);
+          for (const param of method.params) {
+            method.funcbody._collect.scope.symbolTable.defineSymbol({
+              variant: "VariableDefinitionStatement",
+              mutable: false,
+              name: param.name,
+              datatype: param.datatype,
+              sourceloc: param.sourceloc,
+              kind: EVariableContext.FunctionParameter,
+              _semantic: {},
+            });
+            collect(method.declarationScope, param.datatype, newMeta);
+          }
+          if (method.returnType) {
+            collect(method.declarationScope, method.returnType, newMeta);
+          }
+          collect(method.funcbody._collect.scope, method.funcbody, newMeta);
         }
-        if (method.returnType) {
-          collect(method.declarationScope, method.returnType, newMeta);
-        }
-        collect(method.funcbody._collect.scope, method.funcbody, newMeta);
       }
       break;
 
@@ -665,7 +682,7 @@ export function PrettyPrintCollected(cr: CollectResult) {
           print(
             `  - FuncDef ${s.name}${s.generics.length > 0 ? "<" + s.generics.join(", ") + ">" : ""}(${s.params.map((p) => `${p.name}: ${serializeAstDatatype(p.datatype)}`).join(", ")}${s.ellipsis ? ", ..." : ""}): ${s.returnType && serializeAstDatatype(s.returnType)} export=${s.export}`,
           );
-          if (s.funcbody._collect.scope) printScope(s.funcbody._collect.scope, indent + 6);
+          if (s.funcbody?._collect.scope) printScope(s.funcbody._collect.scope, indent + 6);
           break;
 
         case "GlobalVariableDefinition":
@@ -685,7 +702,7 @@ export function PrettyPrintCollected(cr: CollectResult) {
             print(
               `        - ${m.name}${m.generics.length > 0 ? "<" + m.generics.join(", ") + ">" : ""}(${m.params.map((p) => `${p.name}: ${serializeAstDatatype(p.datatype)}`).join(", ")}${m.ellipsis ? ", ..." : ""}): ${m.returnType && serializeAstDatatype(m.returnType)}`,
             );
-            if (m.funcbody._collect.scope) printScope(m.funcbody._collect.scope, indent + 12);
+            if (m.funcbody?._collect.scope) printScope(m.funcbody._collect.scope, indent + 12);
           }
           break;
 

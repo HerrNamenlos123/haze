@@ -155,7 +155,7 @@ export type ASTFunctionDefinition = {
   returnType?: ASTDatatype;
   methodType?: EMethodType;
   declarationScope?: Collect.Scope;
-  funcbody: ASTFuncBody;
+  funcbody?: ASTFuncBody;
   sourceloc: SourceLoc;
   _collect: {
     definedInNamespaceOrStruct?: ASTNamespaceDefinition | ASTStructDefinition;
@@ -478,6 +478,7 @@ export type ASTStructMethodDefinition = {
   params: ASTParam[];
   name: string;
   generics: Collect.GenericParameter[];
+  static: boolean;
   ellipsis: boolean;
   operatorOverloading?: {
     operator: EOperator;
@@ -485,7 +486,7 @@ export type ASTStructMethodDefinition = {
   };
   returnType?: ASTDatatype;
   declarationScope?: Collect.Scope;
-  funcbody: ASTFuncBody;
+  funcbody?: ASTFuncBody;
   sourceloc: SourceLoc;
   _collect: {
     fullNamespacePath?: string[];

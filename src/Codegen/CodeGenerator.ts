@@ -623,6 +623,19 @@ class CodeGenerator {
         return { out: outWriter, temp: tempWriter };
       }
 
+      case "Sizeof": {
+        if (expr.value) {
+          const e = this.emitExpr(expr.value);
+          tempWriter.write(e.temp);
+          outWriter.write("sizeof(" + e.out.get() + ")");
+          return { out: outWriter, temp: tempWriter };
+        } else {
+          assert(expr.datatype);
+          outWriter.write("sizeof(_H" + expr.datatype.mangledName + ")");
+          return { out: outWriter, temp: tempWriter };
+        }
+      }
+
       case "ExprAssignmentExpr": {
         const target = this.emitExpr(expr.target);
         const value = this.emitExpr(expr.value);

@@ -11,7 +11,7 @@ namespace Fs {
 
         constructor(path: String): Path {
             return Path {
-                .path: path,
+                .path = path,
             };
         }
 
@@ -43,13 +43,13 @@ namespace Fs {
         const result = haze_filesystem_remove(path.path.cStr());
         if result != 0 {
             return Result<String, String> {
-                .isSuccess: false,
-                .error: String(haze_get_errno_string()),
+                .isSuccess = false,
+                .error = String(haze_get_errno_string()),
             };
         }
         return Result<String, String> {
-            .isSuccess: true,
-            .success: String("Success"),
+            .isSuccess = true,
+            .success = String("Success"),
         };
     }
 
@@ -66,8 +66,8 @@ namespace Fs {
             if (exists(parent)) {
                 if (haze_mkdir(parent.path.cStr()) != 0) {
                     return Result<String, String> {
-                        .isSuccess: false,
-                        .error: String(haze_get_errno_string()),
+                        .isSuccess = false,
+                        .error = String(haze_get_errno_string()),
                     };
                 }
             }
@@ -76,8 +76,8 @@ namespace Fs {
             }
         }
         return Result<String, String> {
-            .isSuccess: true,
-            .success: String("Success"),
+            .isSuccess = true,
+            .success = String("Success"),
         };
     }
 }

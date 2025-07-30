@@ -1,22 +1,17 @@
 
-extern "C" printf(fmt: str, ...): i32;
-
-extern "C" malloc(size: u64): none*;
-extern "C" free(ptr: none*);
-
 struct CString {
 }
 
 struct SharedPtr<T> {
   target: T*;
 
-  get(): T& => {
+  get(): T& {
     return *this.target;
   }
 }
 
 struct Factory<T> {
-  makeShared(size: u64): SharedPtr<T> => {
+  makeShared(size: u64): SharedPtr<T> {
     return SharedPtr<T> {
       .target = malloc(size) as T*,
     };

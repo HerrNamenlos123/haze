@@ -1,13 +1,17 @@
 import { setTextRange } from "typescript";
 import { Conversion } from "../Semantic/Conversion";
 import { type Semantic, type SemanticResult } from "../Semantic/SemanticSymbols";
-import { mangleDatatype, mangleNestedName, serializeDatatype, serializeExpr, serializeNestedName } from "../Semantic/Serialize";
+import {
+  mangleDatatype,
+  mangleNestedName,
+  serializeDatatype,
+  serializeExpr,
+  serializeNestedName,
+} from "../Semantic/Serialize";
 import { BinaryOperationToString, EExternLanguage, IncrOperationToString } from "../shared/AST";
 import { EPrimitive, EVariableContext } from "../shared/common";
 import { assert, ImpossibleSituation, InternalError } from "../shared/Errors";
-import {
-  makeTempName,
-} from "../shared/store";
+import { makeTempName } from "../shared/store";
 import type { CollectResult } from "../SymbolCollection/CollectSymbols";
 import type { Lowered } from "./LowerTypes";
 
@@ -21,7 +25,10 @@ function lowerExpr(
       const calledExpr = lowerExpr(lr, expr.calledExpr, flattened);
       assert(calledExpr.type.variant === "Function" || calledExpr.type.variant === "Callable");
 
-      const storeInTempVarAndGet = (type: Lowered.Datatype, value: Lowered.Expression): Lowered.Expression => {
+      const storeInTempVarAndGet = (
+        type: Lowered.Datatype,
+        value: Lowered.Expression,
+      ): Lowered.Expression => {
         const varname = makeTempName();
         flattened.push({
           variant: "VariableStatement",
@@ -40,17 +47,15 @@ function lowerExpr(
           wasMangled: false,
           type: calledExpr.type,
         };
-      }
+      };
 
       if (calledExpr.type.variant === "Callable") {
         let thisExpr: Lowered.Expression;
         if (calledExpr.variant === "CallableExpr") {
           thisExpr = calledExpr.thisExpr;
-        }
-        else if (calledExpr.variant === "SymbolValue") {
+        } else if (calledExpr.variant === "SymbolValue") {
           thisExpr = calledExpr;
-        }
-        else {
+        } else {
           throw new InternalError("Not implemented");
         }
 
@@ -65,17 +70,19 @@ function lowerExpr(
             type: calledExpr.type,
             expr: tempCallableValue,
           },
-          arguments: [{
-            variant: "ExprMemberAccess",
-            expr: tempCallableValue,
-            isReference: false,
-            memberName: "thisPtr",
-            type: thisExpr.type,
-          }, ...expr.arguments.map((a) => lowerExpr(lr, a, flattened))],
+          arguments: [
+            {
+              variant: "ExprMemberAccess",
+              expr: tempCallableValue,
+              isReference: false,
+              memberName: "thisPtr",
+              type: thisExpr.type,
+            },
+            ...expr.arguments.map((a) => lowerExpr(lr, a, flattened)),
+          ],
           type: type,
         });
-      }
-      else {
+      } else {
         const exprCall: Lowered.ExprCallExpr = {
           variant: "ExprCallExpr",
           expr: calledExpr,
@@ -102,7 +109,11 @@ function lowerExpr(
     }
 
     case "SymbolValue": {
-      assert(expr.symbol.variant === "Variable" || expr.symbol.variant === "FunctionDeclaration" || expr.symbol.variant === "FunctionDefinition")
+      assert(
+        expr.symbol.variant === "Variable" ||
+          expr.symbol.variant === "FunctionDeclaration" ||
+          expr.symbol.variant === "FunctionDefinition",
+      );
       if (expr.symbol.variant === "Variable") {
         return {
           variant: "SymbolValue",
@@ -111,9 +122,8 @@ function lowerExpr(
           wasMangled: false,
           type: lowerType(lr, expr.symbol.type),
         };
-      }
-      else {
-        lower(lr, expr.symbol)
+      } else {
+        lower(lr, expr.symbol);
         return {
           variant: "SymbolValue",
           prettyName: serializeNestedName(expr.symbol),
@@ -148,8 +158,10 @@ function lowerExpr(
         // Conversion from anything to its own reference form
         if (expr.expr.type.variant === "RawPointerDatatype") {
           return loweredExpr;
-        }
-        else if (expr.expr.type.variant === "StructDatatype" || expr.expr.type.variant === "PrimitiveDatatype") {
+        } else if (
+          expr.expr.type.variant === "StructDatatype" ||
+          expr.expr.type.variant === "PrimitiveDatatype"
+        ) {
           // Prevent double indirection &*a => a
           if (expr.expr.variant === "RawPointerDereference") {
             return lowerExpr(lr, expr.expr.expr, flattened);
@@ -159,8 +171,7 @@ function lowerExpr(
             expr: loweredExpr,
             type: targetType,
           };
-        }
-        else {
+        } else {
           throw new InternalError("Not implemented");
         }
       }
@@ -255,6 +266,22 @@ function lowerExpr(
       };
     }
 
+    case "SizeofExpr": {
+      return {
+        variant: "Sizeof",
+        datatype: expr.datatype && lowerType(lr, expr.datatype),
+        value: expr.value && lowerExpr(lr, expr.value, flattened),
+        type: lowerType(lr, expr.type),
+      };
+    }
+
+    case "NamespaceValue": {
+      assert(
+        false,
+        "A Namespace Value cannot be lowered. This value should not have gotten through semantic analysis",
+      );
+    }
+
     default:
       assert(false, "All cases handled");
   }
@@ -264,8 +291,7 @@ function lowerType(lr: Lowered.Module, type: Semantic.DatatypeSymbol): Lowered.D
   if (type.variant === "StructDatatype") {
     if (lr.loweredTypes.has(type)) {
       return lr.loweredTypes.get(type)!;
-    }
-    else {
+    } else {
       const p: Lowered.StructDatatype = {
         variant: "Struct",
         prettyName: serializeDatatype(type),
@@ -289,8 +315,7 @@ function lowerType(lr: Lowered.Module, type: Semantic.DatatypeSymbol): Lowered.D
   } else if (type.variant === "PrimitiveDatatype") {
     if (lr.loweredTypes.has(type)) {
       return lr.loweredTypes.get(type)!;
-    }
-    else {
+    } else {
       const p: Lowered.PrimitiveDatatype = {
         variant: "Primitive",
         primitive: type.primitive,
@@ -304,13 +329,10 @@ function lowerType(lr: Lowered.Module, type: Semantic.DatatypeSymbol): Lowered.D
   } else if (type.variant === "FunctionDatatype") {
     if (lr.loweredTypes.has(type)) {
       return lr.loweredTypes.get(type)!;
-    }
-    else {
+    } else {
       const p: Lowered.FunctionDatatype = {
         variant: "Function",
-        parameters: type.parameters.map((p) =>
-          lowerType(lr, p)
-        ),
+        parameters: type.parameters.map((p) => lowerType(lr, p)),
         returnType: lowerType(lr, type.returnType),
         prettyName: serializeDatatype(type),
         mangledName: mangleDatatype(type),
@@ -323,8 +345,7 @@ function lowerType(lr: Lowered.Module, type: Semantic.DatatypeSymbol): Lowered.D
   } else if (type.variant === "RawPointerDatatype") {
     if (lr.loweredTypes.has(type)) {
       return lr.loweredTypes.get(type)!;
-    }
-    else {
+    } else {
       const p: Lowered.RawPointerDatatype = {
         variant: "RawPointer",
         pointee: lowerType(lr, type.pointee),
@@ -338,8 +359,7 @@ function lowerType(lr: Lowered.Module, type: Semantic.DatatypeSymbol): Lowered.D
   } else if (type.variant === "ReferenceDatatype") {
     if (lr.loweredTypes.has(type)) {
       return lr.loweredTypes.get(type)!;
-    }
-    else {
+    } else {
       const p: Lowered.ReferenceDatatype = {
         variant: "Reference",
         referee: lowerType(lr, type.referee),
@@ -353,9 +373,8 @@ function lowerType(lr: Lowered.Module, type: Semantic.DatatypeSymbol): Lowered.D
   } else if (type.variant === "CallableDatatype") {
     if (lr.loweredTypes.has(type)) {
       return lr.loweredTypes.get(type)!;
-    }
-    else {
-      const ftype = lowerType(lr, type.functionType)
+    } else {
+      const ftype = lowerType(lr, type.functionType);
       assert(ftype.variant === "Function");
       const p: Lowered.CallableDatatype = {
         variant: "Callable",
@@ -509,8 +528,8 @@ function lower(lr: Lowered.Module, symbol: Semantic.Symbol) {
         lr.loweredFunctions.set(symbol, f);
       } else {
         // Method
-        assert(symbol.scope)
-        const ftype = lowerType(lr, symbol.type)
+        assert(symbol.scope);
+        const ftype = lowerType(lr, symbol.type);
         assert(ftype.variant === "Function");
         const f: Lowered.FunctionDefinition = {
           variant: "FunctionDefinition",
@@ -576,7 +595,7 @@ function lower(lr: Lowered.Module, symbol: Semantic.Symbol) {
       throw new InternalError("Not implemented");
     }
 
-    case "Namespace": {
+    case "NamespaceDatatype": {
       for (const s of symbol.scope.symbolTable.symbols) {
         lower(lr, s);
       }
@@ -609,13 +628,11 @@ function printLoweredType(type: Lowered.Datatype) {
       }
       print("}");
       break;
-
   }
 }
 
 function serializeLoweredExpr(expr: Lowered.Expression): string {
   switch (expr.variant) {
-
     case "BinaryExpr":
       return `(${serializeLoweredExpr(expr.left)} ${BinaryOperationToString(expr.operation)} ${serializeLoweredExpr(expr.left)})`;
 
@@ -623,7 +640,7 @@ function serializeLoweredExpr(expr: Lowered.Expression): string {
       return `(${serializeLoweredExpr(expr.expr)} as ${expr.type.prettyName})`;
 
     case "ExprCallExpr":
-      return `((${serializeLoweredExpr(expr.expr)})(${expr.arguments.map((a) => serializeLoweredExpr(a)).join(', ')}))`;
+      return `((${serializeLoweredExpr(expr.expr)})(${expr.arguments.map((a) => serializeLoweredExpr(a)).join(", ")}))`;
 
     case "PostIncrExpr":
       return `((${serializeLoweredExpr(expr.expr)})${IncrOperationToString(expr.operation)})`;
@@ -640,8 +657,7 @@ function serializeLoweredExpr(expr: Lowered.Expression): string {
     case "ConstantExpr":
       if (expr.type.variant === "Primitive" && expr.type.primitive === EPrimitive.str) {
         return `${JSON.stringify(expr.value)}`;
-      }
-      else {
+      } else {
         return `${expr.value}`;
       }
 
@@ -659,6 +675,13 @@ function serializeLoweredExpr(expr: Lowered.Expression): string {
 
     case "ExprAssignmentExpr":
       return `${serializeLoweredExpr(expr.target)} = ${serializeLoweredExpr(expr.value)}`;
+
+    case "Sizeof":
+      if (expr.value) {
+        return `sizeof(${serializeLoweredExpr(expr.value)})`;
+      } else {
+        return `sizeof<${expr.datatype?.prettyName}>`;
+      }
   }
 }
 
@@ -673,11 +696,19 @@ export function printStatement(s: Lowered.Statement, indent = 0) {
       break;
 
     case "ReturnStatement":
-      print("return" + (s.expr ? ` ${serializeLoweredExpr(s.expr)}` : '') + ";", indent);
+      print("return" + (s.expr ? ` ${serializeLoweredExpr(s.expr)}` : "") + ";", indent);
       break;
 
     case "VariableStatement":
-      print("var " + s.prettyName + ": " + s.type.prettyName + (s.value ? " = " + serializeLoweredExpr(s.value) : '') + ";", indent);
+      print(
+        "var " +
+          s.prettyName +
+          ": " +
+          s.type.prettyName +
+          (s.value ? " = " + serializeLoweredExpr(s.value) : "") +
+          ";",
+        indent,
+      );
       break;
 
     case "IfStatement":
@@ -711,25 +742,24 @@ function printScope(scope: Lowered.Scope, indent = 0) {
 function printLoweredFunction(f: Lowered.FunctionDeclaration | Lowered.FunctionDefinition) {
   if (f.variant === "FunctionDeclaration") {
     print("Funcdef " + f.prettyName);
-  }
-  else {
+  } else {
     print("Funcdecl " + f.prettyName + ":");
     printScope(f.scope);
   }
 }
 
 export function PrettyPrintLowered(lr: Lowered.Module) {
-  print("C Declarations:")
+  print("C Declarations:");
   for (const d of lr.cDeclarations) {
     print("C Decl " + JSON.stringify(d));
   }
 
-  print("Lowered Types:")
+  print("Lowered Types:");
   for (const t of [...lr.loweredTypes.values()]) {
     printLoweredType(t);
   }
 
-  print("Lowered Functions:")
+  print("Lowered Functions:");
   for (const t of [...lr.loweredFunctions.values()]) {
     printLoweredFunction(t);
   }

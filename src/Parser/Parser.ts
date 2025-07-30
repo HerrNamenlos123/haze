@@ -566,6 +566,7 @@ class ASTTransformer extends HazeVisitor<any> {
       variant: "StructMethod",
       params: params.params,
       name: names[0],
+      static: Boolean(ctx._static_),
       generics: names.slice(1).map((n) => ({
         variant: "GenericParameter",
         name: n,
