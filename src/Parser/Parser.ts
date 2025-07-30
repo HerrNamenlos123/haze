@@ -117,6 +117,7 @@ import {
 import type { Collect } from "../SymbolCollection/CollectSymbols";
 import { HazeLexer } from "./grammar/autogen/HazeLexer";
 import { HazeVisitor } from "./grammar/autogen/HazeVisitor";
+import { EVariableContext } from "../shared/common";
 
 export namespace Parser {
   class HazeErrorListener extends BaseErrorListener {
@@ -507,6 +508,7 @@ class ASTTransformer extends HazeVisitor<any> {
           ({
             variant: "GenericParameter",
             name: p,
+            sourceloc: this.loc(ctx), // TODO: Find a better sourceloc from the actual token, not the function
           }) satisfies Collect.GenericParameter,
       ),
       name: names[0],
@@ -567,6 +569,7 @@ class ASTTransformer extends HazeVisitor<any> {
       generics: names.slice(1).map((n) => ({
         variant: "GenericParameter",
         name: n,
+        sourceloc: this.loc(ctx), // TODO: Find a better sourceloc from the actual token, not the function
       })),
       ellipsis: params.ellipsis,
       operatorOverloading: undefined,
@@ -615,6 +618,7 @@ class ASTTransformer extends HazeVisitor<any> {
           ({
             variant: "GenericParameter",
             name: p,
+            sourceloc: this.loc(ctx), // TODO: Find a better sourceloc from the actual token, not the function
           }) satisfies Collect.GenericParameter,
       ),
       declarations: declarations,
@@ -669,6 +673,7 @@ class ASTTransformer extends HazeVisitor<any> {
       sourceloc: this.loc(ctx),
       datatype: (ctx.datatype() && this.visit(ctx.datatype()!)) || undefined,
       expr: (ctx.expr() && this.visit(ctx.expr()!)) || undefined,
+      kind: EVariableContext.FunctionLocal,
       _semantic: {},
     };
   };
@@ -770,11 +775,16 @@ class ASTTransformer extends HazeVisitor<any> {
   };
 
   visitExprMemberAccess = (ctx: ExprMemberAccessContext): ASTExprMemberAccess => {
+    const generics: (ASTDatatype | ASTConstant)[] = [];
+    for (let i = 0; i < ctx.genericLiteral().length; i++) {
+      generics.push(this.visit(ctx.genericLiteral()[i]));
+    }
     return {
       variant: "ExprMemberAccess",
       expr: this.visit(ctx.expr()),
       member: ctx.ID().getText(),
       sourceloc: this.loc(ctx),
+      generics: generics,
       _semantic: {},
     };
   };

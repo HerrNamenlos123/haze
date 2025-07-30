@@ -64,7 +64,7 @@ class Cache {
   filename?: string;
   data: Record<string, any> = {};
 
-  constructor() { }
+  constructor() {}
 
   async getFilesWithModificationDates(dir: string): Promise<{ file: string; modified: Date }[]> {
     const files: { file: string; modified: Date }[] = [];
@@ -146,7 +146,7 @@ class Cache {
 export class ProjectCompiler {
   cache: Cache = new Cache();
 
-  constructor() { }
+  constructor() {}
 
   async getConfig(singleFilename?: string) {
     let config: ModuleConfig | undefined;
@@ -280,7 +280,7 @@ class ModuleCompiler {
   constructor(
     public config: ModuleConfig,
     public cache: Cache,
-  ) { }
+  ) {}
 
   get globalBuildDir() {
     return this.config.buildDir;
@@ -291,7 +291,11 @@ class ModuleCompiler {
   }
 
   addSourceFromString(text: string, filename: string) {
-    CollectSymbols(this.cr, Parser.parseTextToAST(text, filename), { filename: filename, line: 0, column: 0 });
+    CollectSymbols(this.cr, Parser.parseTextToAST(text, filename), {
+      filename: filename,
+      line: 0,
+      column: 0,
+    });
   }
 
   async addProjectSourceFiles() {
@@ -333,7 +337,7 @@ class ModuleCompiler {
       await this.addProjectSourceFiles();
 
       const sr = SemanticallyAnalyze(this.cr.globalScope);
-      PrettyPrintAnalyzed(sr);
+      // PrettyPrintAnalyzed(sr);
       const lowered = LowerModule(this.cr, sr);
 
       const name = this.config.projectName;

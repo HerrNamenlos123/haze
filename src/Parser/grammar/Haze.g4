@@ -106,7 +106,7 @@ expr
     | expr op=('++' | '--')                                                         #PostIncrExpr
     | expr '(' (expr (',' expr)*)? ')'                                              #ExprCallExpr
     // <- Array Subscripting here: expr[]
-    | expr '.' ID                                                                   #ExprMemberAccess
+    | expr '.' ID ('<' genericLiteral (',' genericLiteral)* '>')?                   #ExprMemberAccess
     | datatype '{' ('.' ID '=' expr)? (',' ('.' ID '=' expr))* ','? '}'             #StructInstantiationExpr
 
     // Part 2: Right to left

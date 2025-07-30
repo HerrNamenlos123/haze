@@ -1,5 +1,3 @@
-import { isFunctionOrConstructorTypeNode } from "typescript";
-import { ConstantContext } from "../Parser/grammar/autogen/HazeParser";
 import {
   EExternLanguage,
   type ASTConstant,
@@ -7,28 +5,16 @@ import {
   type ASTNamedDatatype,
   type ASTStructDefinition,
 } from "../shared/AST";
-import {
-  assertScope,
-  EMethodType,
-  EPrimitive,
-  EVariableContext,
-  stringToPrimitive,
-} from "../shared/common";
+import { assertScope, EVariableContext, stringToPrimitive } from "../shared/common";
 import { assert, CompilerError, ImpossibleSituation } from "../shared/Errors";
 import { Collect } from "../SymbolCollection/CollectSymbols";
-import {
-  elaborate,
-  isolateElaborationContext,
-  makeSubstitutionContext as makeRootElaborationContext,
-  type SubstitutionContext,
-} from "./Elaborate";
+import { elaborate, isolateElaborationContext, type SubstitutionContext } from "./Elaborate";
 import {
   isDatatypeSymbol,
   makePrimitiveAvailable,
   Semantic,
   type SemanticResult,
 } from "./SemanticSymbols";
-import { serializeDatatype } from "./Serialize";
 
 export function makeFunctionDatatypeAvailable(
   sr: SemanticResult,
@@ -229,12 +215,6 @@ export function lookupAndElaborateDatatype(
         args.datatype.name,
         args.datatype.sourceloc,
       );
-      if (!found) {
-        throw new CompilerError(
-          `${args.datatype.name} was not declared in this scope`,
-          args.datatype.sourceloc,
-        );
-      }
 
       if (found.variant === "StructDefinition") {
         const struct = instantiateStruct(sr, {
@@ -364,7 +344,7 @@ export function instantiateStruct(
     externLanguage: args.definedStructType.externLanguage,
     parent: parentNamespace,
     members: [],
-    methods: [],
+    methods: new Set(),
     rawAst: args.definedStructType,
     scope: new Semantic.DeclScope(
       args.definedStructType.sourceloc,
@@ -410,24 +390,22 @@ export function instantiateStruct(
       };
     });
 
-    struct.methods = args.definedStructType.methods
-      .map((m) => {
-        assert(m.returnType);
-        assert(m.funcbody._collect.scope);
-        if (m.generics.length !== 0 || m.operatorOverloading) {
-          return undefined;
-        }
+    args.definedStructType.methods.forEach((m) => {
+      assert(m.returnType);
+      assert(m.funcbody._collect.scope);
+      if (m.generics.length !== 0 || m.operatorOverloading) {
+        return;
+      }
 
-        const symbol = elaborate(sr, {
-          sourceSymbol: m,
-          usageGenerics: [],
-          structForMethod: struct,
-          context: newContext,
-        });
-        assert(symbol && symbol.variant === "FunctionDefinition");
-        return symbol;
-      })
-      .filter((m) => !!m);
+      const symbol = elaborate(sr, {
+        sourceSymbol: m,
+        usageGenerics: [],
+        structForMethod: struct,
+        context: newContext,
+      });
+      assert(symbol && symbol.variant === "FunctionDefinition");
+      struct.methods.add(symbol);
+    });
   }
 
   // Now, also elaborate all nested sub structs

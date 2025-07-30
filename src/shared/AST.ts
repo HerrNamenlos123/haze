@@ -154,6 +154,7 @@ export type ASTFunctionDefinition = {
   ellipsis: boolean;
   returnType?: ASTDatatype;
   methodType?: EMethodType;
+  declarationScope?: Collect.Scope;
   funcbody: ASTFuncBody;
   sourceloc: SourceLoc;
   _collect: {
@@ -346,6 +347,7 @@ export type ASTExprMemberAccess = {
   variant: "ExprMemberAccess";
   expr: ASTExpr;
   member: string;
+  generics: (ASTDatatype | ASTConstant)[];
   sourceloc: SourceLoc;
   _semantic: {};
 };

@@ -1,6 +1,12 @@
 import { EExternLanguage, EOperator } from "../shared/AST";
 import { EMethodType, EPrimitive } from "../shared/common";
-import { assert, CompilerError, ImpossibleSituation, InternalError, type SourceLoc } from "../shared/Errors";
+import {
+  assert,
+  CompilerError,
+  ImpossibleSituation,
+  InternalError,
+  type SourceLoc,
+} from "../shared/Errors";
 import { Semantic, type SemanticResult } from "./SemanticSymbols";
 import { serializeDatatype } from "./Serialize";
 
@@ -84,13 +90,19 @@ export namespace Conversion {
       throw new InternalError("promoteInteger got non primitives");
     }
 
-    const getWiderInteger = (a: Semantic.PrimitiveDatatypeSymbol, b: Semantic.PrimitiveDatatypeSymbol) => {
+    const getWiderInteger = (
+      a: Semantic.PrimitiveDatatypeSymbol,
+      b: Semantic.PrimitiveDatatypeSymbol,
+    ) => {
       const aBits = getIntegerBits(a);
       const bBits = getIntegerBits(b);
       return aBits > bBits ? a : b;
     };
 
-    const widenInteger = (a: Semantic.PrimitiveDatatypeSymbol, b: Semantic.PrimitiveDatatypeSymbol) => {
+    const widenInteger = (
+      a: Semantic.PrimitiveDatatypeSymbol,
+      b: Semantic.PrimitiveDatatypeSymbol,
+    ) => {
       if (a.primitive == b.primitive) {
         return a;
       }
@@ -139,7 +151,7 @@ export namespace Conversion {
   export function IsStructurallyEquivalent(
     a: Semantic.DatatypeSymbol,
     b: Semantic.DatatypeSymbol,
-    seen: WeakMap<Semantic.DatatypeSymbol, WeakSet<Semantic.DatatypeSymbol>> = new WeakMap()
+    seen: WeakMap<Semantic.DatatypeSymbol, WeakSet<Semantic.DatatypeSymbol>> = new WeakMap(),
   ): boolean {
     // Symmetric check: has this pair already been seen?
     if (seen.get(a)?.has(b) || seen.get(b)?.has(a)) {
@@ -151,42 +163,55 @@ export namespace Conversion {
     seen.get(a)!.add(b);
 
     if (!a.concrete || !b.concrete) {
-      throw new InternalError("Cannot check structural equivalence of a non-concrete datatype", undefined, 1);
+      throw new InternalError(
+        "Cannot check structural equivalence of a non-concrete datatype",
+        undefined,
+        1,
+      );
     }
     if (a.variant !== b.variant) {
       return false;
     }
     switch (a.variant) {
       case "PrimitiveDatatype":
-        assert(b.variant === "PrimitiveDatatype")
+        assert(b.variant === "PrimitiveDatatype");
         return a.primitive === b.primitive;
 
       case "DeferredDatatype":
         throw new InternalError("Cannot check structural equivalence of a deferred datatype");
 
       case "RawPointerDatatype":
-        assert(b.variant === "RawPointerDatatype")
+        assert(b.variant === "RawPointerDatatype");
         return IsStructurallyEquivalent(a.pointee, b.pointee, seen);
 
       case "ReferenceDatatype":
-        assert(b.variant === "ReferenceDatatype")
+        assert(b.variant === "ReferenceDatatype");
         return IsStructurallyEquivalent(a.referee, b.referee, seen);
 
       case "FunctionDatatype":
-        assert(b.variant === "FunctionDatatype")
-        return a.vararg === b.vararg && IsStructurallyEquivalent(a.returnType, b.returnType, seen) && a.parameters.every((p, index) => IsStructurallyEquivalent(p, b.parameters[index], seen));
+        assert(b.variant === "FunctionDatatype");
+        return (
+          a.vararg === b.vararg &&
+          IsStructurallyEquivalent(a.returnType, b.returnType, seen) &&
+          a.parameters.every((p, index) => IsStructurallyEquivalent(p, b.parameters[index], seen))
+        );
 
       case "CallableDatatype":
-        assert(b.variant === "CallableDatatype")
+        assert(b.variant === "CallableDatatype");
         if (Boolean(a.thisExprType) !== Boolean(b.thisExprType)) return false;
-        if ((a.thisExprType && b.thisExprType) && IsStructurallyEquivalent(a.thisExprType, b.thisExprType, seen)) return false;
+        if (
+          a.thisExprType &&
+          b.thisExprType &&
+          IsStructurallyEquivalent(a.thisExprType, b.thisExprType, seen)
+        )
+          return false;
         return IsStructurallyEquivalent(a.functionType, b.functionType, seen);
 
       case "GenericParameterDatatype":
         throw new InternalError("Cannot check structural equivalence of a generic parameter");
 
       case "StructDatatype":
-        assert(b.variant === "StructDatatype")
+        assert(b.variant === "StructDatatype");
         if (a.generics.length !== b.generics.length) {
           return false;
         }
@@ -228,7 +253,10 @@ export namespace Conversion {
     }
   }
 
-  export function IsImplicitConversionAvailable(from: Semantic.DatatypeSymbol, to: Semantic.DatatypeSymbol) {
+  export function IsImplicitConversionAvailable(
+    from: Semantic.DatatypeSymbol,
+    to: Semantic.DatatypeSymbol,
+  ) {
     if (IsStructurallyEquivalent(from, to)) {
       return true;
     }
@@ -242,21 +270,35 @@ export namespace Conversion {
     return false;
   }
 
-  export function IsExplicitConversionAvailable(from: Semantic.DatatypeSymbol, to: Semantic.DatatypeSymbol) {
+  export function IsExplicitConversionAvailable(
+    from: Semantic.DatatypeSymbol,
+    to: Semantic.DatatypeSymbol,
+  ) {
     if (IsImplicitConversionAvailable(from, to)) {
       return true;
     }
     return false;
   }
 
-  export function MakeImplicitConversion(from: Semantic.Expression, to: Semantic.DatatypeSymbol, sourceloc: SourceLoc) {
+  export function MakeImplicitConversion(
+    from: Semantic.Expression,
+    to: Semantic.DatatypeSymbol,
+    sourceloc: SourceLoc,
+  ) {
     if (!IsImplicitConversionAvailable(from.type, to)) {
-      throw new CompilerError(`No implicit Conversion from ${serializeDatatype(from.type)} to ${serializeDatatype(to)} available`, sourceloc);
+      throw new CompilerError(
+        `No implicit Conversion from ${serializeDatatype(from.type)} to ${serializeDatatype(to)} available`,
+        sourceloc,
+      );
     }
     return MakeExplicitConversion(from, to, sourceloc);
   }
 
-  export function MakeExplicitConversion(from: Semantic.Expression, to: Semantic.DatatypeSymbol, sourceloc: SourceLoc) {
+  export function MakeExplicitConversion(
+    from: Semantic.Expression,
+    to: Semantic.DatatypeSymbol,
+    sourceloc: SourceLoc,
+  ) {
     if (IsStructurallyEquivalent(from.type, to)) {
       return {
         variant: "ExplicitCast",
@@ -267,7 +309,10 @@ export namespace Conversion {
     }
 
     if (!IsExplicitConversionAvailable(from.type, to)) {
-      throw new CompilerError(`No explicit Conversion from ${serializeDatatype(from.type)} to ${serializeDatatype(to)} available`, sourceloc);
+      throw new CompilerError(
+        `No explicit Conversion from ${serializeDatatype(from.type)} to ${serializeDatatype(to)} available`,
+        sourceloc,
+      );
     }
 
     if (to.variant === "ReferenceDatatype") {
@@ -293,9 +338,16 @@ export namespace Conversion {
     throw new ImpossibleSituation();
   }
 
-  export function makeAsOperator(sr: SemanticResult, targetType: Semantic.DatatypeSymbol): Semantic.FunctionDefinitionSymbol {
+  export function makeAsOperator(
+    sr: SemanticResult,
+    targetType: Semantic.DatatypeSymbol,
+  ): Semantic.FunctionDefinitionSymbol {
     for (const f of sr.overloadedOperators) {
-      if (f.name === "__operator_as" && f.operatorOverloading?.operator === EOperator.As && IsStructurallyEquivalent(f.operatorOverloading.asTarget, targetType)) {
+      if (
+        f.name === "__operator_as" &&
+        f.operatorOverloading?.operator === EOperator.As &&
+        IsStructurallyEquivalent(f.operatorOverloading.asTarget, targetType)
+      ) {
         return f;
       }
     }
@@ -315,12 +367,12 @@ export namespace Conversion {
         returnType: targetType,
         vararg: false,
       },
-      parent: sr.globalNamespace,
+      parent: null,
       sourceloc: null,
       operatorOverloading: {
         operator: EOperator.As,
         asTarget: targetType,
-      }
+      },
     } satisfies Semantic.FunctionDefinitionSymbol;
     sr.overloadedOperators.push(func);
     return func;

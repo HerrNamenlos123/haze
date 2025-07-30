@@ -113,7 +113,8 @@ function collect(
     // =================================================================================================================
 
     case "FunctionDefinition":
-      item.funcbody._collect.scope = new Collect.Scope(item.sourceloc, scope);
+      item.declarationScope = new Collect.Scope(item.sourceloc, scope);
+      item.funcbody._collect.scope = new Collect.Scope(item.sourceloc, item.declarationScope);
       item._collect.definedInNamespaceOrStruct = meta.currentNamespaceOrStruct;
       item._collect.definedInScope = scope;
       item.methodType = EMethodType.NotAMethod;
@@ -139,7 +140,7 @@ function collect(
       }
 
       for (const g of item.generics) {
-        item.funcbody._collect.scope.symbolTable.defineSymbol(g);
+        item.declarationScope.symbolTable.defineSymbol(g);
       }
       for (const param of item.params) {
         item.funcbody._collect.scope.symbolTable.defineSymbol({
@@ -281,7 +282,7 @@ function collect(
           mutable: false,
           name: "this",
           sourceloc: method.sourceloc,
-          datatype: undefined, // Will be replaced later
+          datatype: undefined,
           kind: EVariableContext.ThisReference,
           _semantic: {},
         });
@@ -296,10 +297,10 @@ function collect(
             kind: EVariableContext.FunctionParameter,
             _semantic: {},
           });
-          collect(item._collect.scope, param.datatype, newMeta);
+          collect(method.declarationScope, param.datatype, newMeta);
         }
         if (method.returnType) {
-          collect(item._collect.scope, method.returnType, newMeta);
+          collect(method.declarationScope, method.returnType, newMeta);
         }
         collect(method.funcbody._collect.scope, method.funcbody, newMeta);
       }

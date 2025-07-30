@@ -47,7 +47,10 @@ export type SemanticResult = {
   referenceTypeCache: Semantic.ReferenceDatatypeSymbol[];
 };
 
-export function makePrimitiveAvailable(sr: SemanticResult, primitive: EPrimitive): Semantic.PrimitiveDatatypeSymbol {
+export function makePrimitiveAvailable(
+  sr: SemanticResult,
+  primitive: EPrimitive,
+): Semantic.PrimitiveDatatypeSymbol {
   for (const s of sr.elaboratedPrimitiveTypes) {
     if (s.primitive === primitive) {
       return s;
@@ -128,7 +131,7 @@ export namespace Semantic {
     generics: DatatypeSymbol[];
     externLanguage: EExternLanguage;
     members: VariableSymbol[];
-    methods: FunctionDefinitionSymbol[];
+    methods: Set<FunctionDefinitionSymbol>;
     parent: StructDatatypeSymbol | NamespaceSymbol | null;
     rawAst: ASTStructDefinition;
     scope: Semantic.DeclScope;
@@ -380,7 +383,7 @@ export namespace Semantic {
       | StructDatatypeSymbol
     )[] = [];
 
-    constructor(public parentTable?: SymbolTable) { }
+    constructor(public parentTable?: SymbolTable) {}
 
     defineSymbol(symbol: Symbol): Symbol {
       if (symbol.variant === "FunctionDatatype") {
@@ -481,4 +484,3 @@ export namespace Semantic {
     }
   }
 }
-

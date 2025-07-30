@@ -491,11 +491,14 @@ export function elaborateExpr(
       const member = type.members.find((m) => {
         return m.name === expr.member;
       });
-      const method = type.methods.find((m) => {
-        return m.name === expr.member;
-      });
 
       if (member) {
+        if (expr.generics.length > 0) {
+          throw new CompilerError(
+            `Member '${expr.member}' does not expect any type arguments, but ${expr.generics.length} are given`,
+            expr.sourceloc,
+          );
+        }
         return {
           variant: "ExprMemberAccess",
           expr: object,
@@ -504,7 +507,24 @@ export function elaborateExpr(
           type: member.type,
           sourceloc: expr.sourceloc,
         };
-      } else if (method) {
+      }
+
+      assert(type.originalCollectedSymbol.variant === "StructDefinition");
+      const collectedMethod = type.originalCollectedSymbol.methods.find(
+        (m) => m.name === expr.member,
+      );
+
+      if (collectedMethod) {
+        const elaboratedMethod = elaborate(sr, {
+          structForMethod: type,
+          context: args.context,
+          usageGenerics: expr.generics,
+          usageInScope: args.scope.collectedScope,
+          usedAt: expr.sourceloc,
+          sourceSymbol: collectedMethod,
+        });
+        assert(elaboratedMethod?.variant === "FunctionDefinition");
+
         const thisExprType =
           object.type.variant === "ReferenceDatatype"
             ? object.type
@@ -513,21 +533,21 @@ export function elaborateExpr(
         return {
           variant: "CallableExpr",
           thisExpr: Conversion.MakeExplicitConversion(object, thisExprType, expr.sourceloc),
-          functionSymbol: method,
+          functionSymbol: elaboratedMethod,
           type: {
             variant: "CallableDatatype",
             thisExprType: thisExprType,
-            functionType: method.type,
-            concrete: method.type.concrete,
+            functionType: elaboratedMethod.type,
+            concrete: elaboratedMethod.type.concrete,
           },
           sourceloc: expr.sourceloc,
         };
-      } else {
-        throw new CompilerError(
-          `No member named '${expr.member}' in struct ${type.name}`,
-          expr.sourceloc,
-        );
       }
+
+      throw new CompilerError(
+        `No attribute named '${expr.member}' in struct ${type.name}`,
+        expr.sourceloc,
+      );
     }
 
     // =================================================================================================================
@@ -585,7 +605,10 @@ export function elaborateExpr(
         });
 
         if (!variable) {
-          throw new CompilerError(`Member with name ${m.name} does not exist`, expr.sourceloc);
+          throw new CompilerError(
+            `${serializeDatatype(struct)} does not have a member named '${m.name}'`,
+            expr.sourceloc,
+          );
         }
         assert(variable.variant === "Variable");
 
@@ -1051,9 +1074,9 @@ export function elaborate(
       }
 
       // New local substitution context
-      const newContext = isolateElaborationContext(args.context);
+      const substitutionContext = isolateElaborationContext(args.context);
       for (let i = 0; i < args.sourceSymbol.generics.length; i++) {
-        newContext.substitute.set(args.sourceSymbol.generics[i], generics[i]);
+        substitutionContext.substitute.set(args.sourceSymbol.generics[i], generics[i]);
       }
 
       const resolvedFunctype = lookupAndElaborateDatatype(sr, {
@@ -1064,8 +1087,8 @@ export function elaborate(
           returnType: args.sourceSymbol.returnType!,
           sourceloc: args.sourceSymbol.sourceloc,
         },
-        startLookupInScope: assertScope(args.sourceSymbol.funcbody._collect.scope),
-        context: newContext,
+        startLookupInScope: assertScope(args.sourceSymbol.declarationScope),
+        context: substitutionContext,
       });
       assert(resolvedFunctype.variant === "FunctionDatatype");
       assert(args.sourceSymbol.methodType !== undefined);
@@ -1083,7 +1106,7 @@ export function elaborate(
           asTarget: lookupAndElaborateDatatype(sr, {
             datatype: args.sourceSymbol.operatorOverloading.asTarget,
             startLookupInScope: assertScope(args.usageInScope),
-            context: args.context,
+            context: substitutionContext,
           }),
           operator: args.sourceSymbol.operatorOverloading.operator,
         },
@@ -1111,14 +1134,12 @@ export function elaborate(
           resultSymbol: symbol,
         });
 
-        // console.log("", symbol.scope.symbolTable.symbols)
-
         assert(symbol.scope);
         elaborateBlockScope(sr, {
           scope: symbol.scope,
           expectedReturnType: symbol.type.returnType,
           elaboratedVariables: new Map(),
-          context: newContext,
+          context: substitutionContext,
         });
       }
 
@@ -1162,19 +1183,20 @@ export function elaborate(
       }
 
       // New local substitution context
-      const newContext = isolateElaborationContext(args.context);
+      const substitutionContext = isolateElaborationContext(args.context);
       for (let i = 0; i < args.sourceSymbol.generics.length; i++) {
-        newContext.substitute.set(args.sourceSymbol.generics[i], generics[i]);
+        substitutionContext.substitute.set(args.sourceSymbol.generics[i], generics[i]);
       }
 
       const parameterNames = args.sourceSymbol.params.map((p) => p.name);
-      const parameters = args.sourceSymbol.params.map((p) =>
-        lookupAndElaborateDatatype(sr, {
+      const parameters = args.sourceSymbol.params.map((p) => {
+        assert(args.sourceSymbol.variant === "StructMethod");
+        return lookupAndElaborateDatatype(sr, {
           datatype: p.datatype,
-          startLookupInScope: args.structForMethod!.scope.collectedScope,
-          context: args.context,
-        }),
-      );
+          startLookupInScope: assertScope(args.sourceSymbol.declarationScope),
+          context: substitutionContext,
+        });
+      });
       parameters.unshift(thisReference);
       parameterNames.unshift("this");
       assert(args.sourceSymbol.returnType);
@@ -1182,7 +1204,7 @@ export function elaborate(
       const returnType = lookupAndElaborateDatatype(sr, {
         datatype: args.sourceSymbol.returnType,
         startLookupInScope: assertScope(args.sourceSymbol.declarationScope),
-        context: args.context,
+        context: substitutionContext,
       });
 
       const ftype = makeFunctionDatatypeAvailable(sr, {
@@ -1203,7 +1225,7 @@ export function elaborate(
           asTarget: lookupAndElaborateDatatype(sr, {
             datatype: args.sourceSymbol.operatorOverloading.asTarget,
             startLookupInScope: assertScope(args.usageInScope),
-            context: args.context,
+            context: substitutionContext,
           }),
           operator: args.sourceSymbol.operatorOverloading.operator,
         },
@@ -1232,7 +1254,7 @@ export function elaborate(
           scope: symbol.scope,
           parentStruct: args.structForMethod,
           elaboratedVariables: variableMap,
-          context: args.context,
+          context: substitutionContext,
         });
         sr.elaboratedFuncdefSymbols.push({
           generics: generics,
@@ -1245,7 +1267,7 @@ export function elaborate(
           scope: symbol.scope,
           expectedReturnType: symbol.type.returnType,
           elaboratedVariables: variableMap,
-          context: args.context,
+          context: substitutionContext,
         });
       }
 
