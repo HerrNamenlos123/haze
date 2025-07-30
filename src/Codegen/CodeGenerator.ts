@@ -156,14 +156,6 @@ class CodeGenerator {
   sortTypeDefinitions() {
     const appliedTypes = new Set<Lowered.Datatype>();
 
-    // First define all primitives, pointers and references, they always work
-    for (const [id, t] of this.lr.loweredTypes) {
-      if (t.variant === "Primitive" || t.variant === "RawPointer" || t.variant === "Reference") {
-        this.lr.sortedLoweredTypes.push(t);
-        appliedTypes.add(t);
-      }
-    }
-
     // This function processes the type in the sense that it goes over all types that this type depends on,
     // and if there is a direct relationship, then that type is processed, which sorts it first.
     const processType = (type: Lowered.Datatype) => {
@@ -186,6 +178,17 @@ class CodeGenerator {
         for (const m of type.members) {
           processType(m.type);
         }
+        this.lr.sortedLoweredTypes.push(type);
+        appliedTypes.add(type);
+      } else if (type.variant === "Primitive") {
+        this.lr.sortedLoweredTypes.push(type);
+        appliedTypes.add(type);
+      } else if (type.variant === "RawPointer") {
+        processType(type.pointee);
+        this.lr.sortedLoweredTypes.push(type);
+        appliedTypes.add(type);
+      } else if (type.variant === "Reference") {
+        processType(type.referee);
         this.lr.sortedLoweredTypes.push(type);
         appliedTypes.add(type);
       } else {

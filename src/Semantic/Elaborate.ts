@@ -17,10 +17,21 @@ import {
   EVariableContext,
   primitiveToString,
 } from "../shared/common";
-import { assert, CompilerError, ImpossibleSituation, InternalError, type SourceLoc } from "../shared/Errors";
+import {
+  assert,
+  CompilerError,
+  ImpossibleSituation,
+  InternalError,
+  type SourceLoc,
+} from "../shared/Errors";
 import { Collect } from "../SymbolCollection/CollectSymbols";
 import { Conversion } from "./Conversion";
-import { makeFunctionDatatypeAvailable, lookupAndElaborateDatatype, instantiateStruct } from "./LookupDatatype";
+import {
+  makeFunctionDatatypeAvailable,
+  lookupAndElaborateDatatype,
+  instantiateStruct,
+  makeReferenceDatatypeAvailable,
+} from "./LookupDatatype";
 import { makePrimitiveAvailable, Semantic, type SemanticResult } from "./SemanticSymbols";
 import { serializeDatatype, serializeExpr } from "./Serialize";
 
@@ -34,9 +45,7 @@ export function makeSubstitutionContext(): SubstitutionContext {
   };
 }
 
-export function isolateElaborationContext(
-  parent: SubstitutionContext,
-): SubstitutionContext {
+export function isolateElaborationContext(parent: SubstitutionContext): SubstitutionContext {
   return {
     substitute: new Map(parent.substitute),
   };
@@ -46,10 +55,10 @@ export function elaborateExpr(
   sr: SemanticResult,
   expr: ASTExpr,
   args: {
-    scope: Semantic.BlockScope,
-    context: SubstitutionContext,
+    scope: Semantic.BlockScope;
+    context: SubstitutionContext;
     elaboratedVariables: Map<Collect.Symbol, Semantic.VariableSymbol>;
-  }
+  },
 ): Semantic.Expression {
   switch (expr.variant) {
     case "BinaryExpr": {
@@ -211,7 +220,7 @@ export function elaborateExpr(
       return elaborateExpr(sr, expr.expr, {
         scope: args.scope,
         elaboratedVariables: args.elaboratedVariables,
-        context: args.context
+        context: args.context,
       });
     }
 
@@ -225,11 +234,13 @@ export function elaborateExpr(
         elaboratedVariables: args.elaboratedVariables,
         scope: args.scope,
       });
-      const callingArgs = expr.arguments.map((a) => elaborateExpr(sr, a, {
-        scope: args.scope,
-        elaboratedVariables: args.elaboratedVariables,
-        context: args.context
-      }));
+      const callingArgs = expr.arguments.map((a) =>
+        elaborateExpr(sr, a, {
+          scope: args.scope,
+          elaboratedVariables: args.elaboratedVariables,
+          context: args.context,
+        }),
+      );
 
       const convertArgs = (
         givenArgs: Semantic.Expression[],
@@ -268,7 +279,11 @@ export function elaborateExpr(
         return {
           variant: "ExprCall",
           calledExpr: calledExpr,
-          arguments: convertArgs(callingArgs, parametersWithoutThis, calledExpr.type.functionType.vararg),
+          arguments: convertArgs(
+            callingArgs,
+            parametersWithoutThis,
+            calledExpr.type.functionType.vararg,
+          ),
           type: calledExpr.type.functionType.returnType,
           sourceloc: expr.sourceloc,
         };
@@ -306,7 +321,10 @@ export function elaborateExpr(
 
     case "SymbolValueExpr": {
       const symbol = args.scope.collectedScope.symbolTable.lookupSymbol(expr.name, expr.sourceloc);
-      if (symbol.variant === "VariableDefinitionStatement" || symbol.variant === "GlobalVariableDefinition") {
+      if (
+        symbol.variant === "VariableDefinitionStatement" ||
+        symbol.variant === "GlobalVariableDefinition"
+      ) {
         const elaboratedSymbol = args.elaboratedVariables.get(symbol);
         if (!elaboratedSymbol) {
           assert(elaboratedSymbol);
@@ -328,7 +346,10 @@ export function elaborateExpr(
           usedAt: expr.sourceloc,
           context: makeSubstitutionContext(),
         });
-        assert(elaboratedSymbol?.variant === "FunctionDefinition" || elaboratedSymbol?.variant === "FunctionDeclaration");
+        assert(
+          elaboratedSymbol?.variant === "FunctionDefinition" ||
+            elaboratedSymbol?.variant === "FunctionDeclaration",
+        );
         return {
           variant: "SymbolValue",
           symbol: elaboratedSymbol,
@@ -370,7 +391,7 @@ export function elaborateExpr(
       const _expr = elaborateExpr(sr, expr.expr, {
         scope: args.scope,
         elaboratedVariables: args.elaboratedVariables,
-        context: args.context
+        context: args.context,
       });
       if (_expr.type.variant !== "RawPointerDatatype") {
         throw new CompilerError(
@@ -393,14 +414,11 @@ export function elaborateExpr(
     case "ExplicitCastExpr": {
       return {
         variant: "ExplicitCast",
-        type: lookupAndElaborateDatatype(
-          sr,
-          {
-            datatype: expr.castedTo,
-            startLookupInScope: args.scope.collectedScope,
-            context: args.context,
-          }
-        ),
+        type: lookupAndElaborateDatatype(sr, {
+          datatype: expr.castedTo,
+          startLookupInScope: args.scope.collectedScope,
+          context: args.context,
+        }),
         expr: elaborateExpr(sr, expr.expr, {
           context: args.context,
           elaboratedVariables: args.elaboratedVariables,
@@ -418,7 +436,7 @@ export function elaborateExpr(
       const e = elaborateExpr(sr, expr.expr, {
         elaboratedVariables: args.elaboratedVariables,
         scope: args.scope,
-        context: args.context
+        context: args.context,
       });
       return {
         variant: "PostIncrExpr",
@@ -437,7 +455,7 @@ export function elaborateExpr(
       const e = elaborateExpr(sr, expr.expr, {
         context: args.context,
         elaboratedVariables: args.elaboratedVariables,
-        scope: args.scope
+        scope: args.scope,
       });
       return {
         variant: "PreIncrExpr",
@@ -456,7 +474,7 @@ export function elaborateExpr(
       const object = elaborateExpr(sr, expr.expr, {
         context: args.context,
         elaboratedVariables: args.elaboratedVariables,
-        scope: args.scope
+        scope: args.scope,
       });
       let type = object.type;
       let isReference = false;
@@ -490,13 +508,7 @@ export function elaborateExpr(
         const thisExprType =
           object.type.variant === "ReferenceDatatype"
             ? object.type
-            : ({
-              variant: "ReferenceDatatype",
-              referee: object.type,
-              concrete: object.type.concrete,
-            } satisfies Semantic.ReferenceDatatypeSymbol);
-
-        // if (method.gen)
+            : makeReferenceDatatypeAvailable(sr, object.type);
 
         return {
           variant: "CallableExpr",
@@ -511,7 +523,10 @@ export function elaborateExpr(
           sourceloc: expr.sourceloc,
         };
       } else {
-        throw new CompilerError(`No such member in struct ${type.name}`, expr.sourceloc);
+        throw new CompilerError(
+          `No member named '${expr.member}' in struct ${type.name}`,
+          expr.sourceloc,
+        );
       }
     }
 
@@ -523,12 +538,12 @@ export function elaborateExpr(
       const value = elaborateExpr(sr, expr.value, {
         context: args.context,
         elaboratedVariables: args.elaboratedVariables,
-        scope: args.scope
+        scope: args.scope,
       });
       const target = elaborateExpr(sr, expr.target, {
         context: args.context,
         elaboratedVariables: args.elaboratedVariables,
-        scope: args.scope
+        scope: args.scope,
       });
       return {
         variant: "ExprAssignmentExpr",
@@ -544,14 +559,11 @@ export function elaborateExpr(
     // =================================================================================================================
 
     case "StructInstantiationExpr": {
-      const struct = lookupAndElaborateDatatype(
-        sr,
-        {
-          datatype: expr.datatype,
-          startLookupInScope: args.scope.collectedScope,
-          context: args.context,
-        }
-      );
+      const struct = lookupAndElaborateDatatype(sr, {
+        datatype: expr.datatype,
+        startLookupInScope: args.scope.collectedScope,
+        context: args.context,
+      });
       assert(struct.variant === "StructDatatype");
 
       let remainingMembers = struct.members.map((m) => m.name);
@@ -564,7 +576,7 @@ export function elaborateExpr(
         const e = elaborateExpr(sr, m.value, {
           context: args.context,
           elaboratedVariables: args.elaboratedVariables,
-          scope: args.scope
+          scope: args.scope,
         });
 
         const variable = struct.members.find((mm) => {
@@ -620,11 +632,11 @@ export function elaborateStatement(
   sr: SemanticResult,
   s: ASTStatement,
   args: {
-    scope: Semantic.BlockScope,
-    context: SubstitutionContext,
+    scope: Semantic.BlockScope;
+    context: SubstitutionContext;
     elaboratedVariables: Map<Collect.Symbol, Semantic.VariableSymbol>;
-    expectedReturnType: Semantic.DatatypeSymbol,
-  }
+    expectedReturnType: Semantic.DatatypeSymbol;
+  },
 ): Semantic.Statement {
   switch (s.variant) {
     // =================================================================================================================
@@ -657,7 +669,7 @@ export function elaborateStatement(
         scope: thenScope,
         expectedReturnType: args.expectedReturnType,
         elaboratedVariables: args.elaboratedVariables,
-        context: args.context
+        context: args.context,
       });
       const elseIfs = s.elseIfs.map((e) => {
         const newScope = new Semantic.BlockScope(
@@ -669,13 +681,13 @@ export function elaborateStatement(
           scope: newScope,
           expectedReturnType: args.expectedReturnType,
           elaboratedVariables: args.elaboratedVariables,
-          context: args.context
+          context: args.context,
         });
         return {
           condition: elaborateExpr(sr, e.condition, {
             context: args.context,
             elaboratedVariables: args.elaboratedVariables,
-            scope: args.scope
+            scope: args.scope,
           }),
           then: newScope,
         };
@@ -683,12 +695,16 @@ export function elaborateStatement(
 
       let elseScope: Semantic.BlockScope | undefined = undefined;
       if (s.else) {
-        elseScope = new Semantic.BlockScope(s.sourceloc, assertScope(s.else._collect.scope), args.scope);
+        elseScope = new Semantic.BlockScope(
+          s.sourceloc,
+          assertScope(s.else._collect.scope),
+          args.scope,
+        );
         elaborateBlockScope(sr, {
           scope: elseScope,
           expectedReturnType: args.expectedReturnType,
           elaboratedVariables: args.elaboratedVariables,
-          context: args.context
+          context: args.context,
         });
       }
       return {
@@ -715,7 +731,7 @@ export function elaborateStatement(
         scope: newScope,
         expectedReturnType: args.expectedReturnType,
         elaboratedVariables: args.elaboratedVariables,
-        context: args.context
+        context: args.context,
       });
       return {
         variant: "WhileStatement",
@@ -741,7 +757,7 @@ export function elaborateStatement(
             elaborateExpr(sr, s.expr, {
               context: args.context,
               elaboratedVariables: args.elaboratedVariables,
-              scope: args.scope
+              scope: args.scope,
             }),
             args.expectedReturnType,
             s.sourceloc,
@@ -761,24 +777,23 @@ export function elaborateStatement(
     // =================================================================================================================
 
     case "VariableDefinitionStatement": {
-      const expr = s.expr && elaborateExpr(sr, s.expr, {
-        context: args.context,
-        elaboratedVariables: args.elaboratedVariables,
-        scope: args.scope
-      });
+      const expr =
+        s.expr &&
+        elaborateExpr(sr, s.expr, {
+          context: args.context,
+          elaboratedVariables: args.elaboratedVariables,
+          scope: args.scope,
+        });
 
       const symbol = args.scope.symbolTable.lookupSymbol(s.name, s.sourceloc);
       assert(symbol.variant === "Variable");
 
       if (s.datatype) {
-        symbol.type = lookupAndElaborateDatatype(
-          sr,
-          {
-            datatype: s.datatype,
-            startLookupInScope: args.scope.collectedScope,
-            context: args.context,
-          }
-        );
+        symbol.type = lookupAndElaborateDatatype(sr, {
+          datatype: s.datatype,
+          startLookupInScope: args.scope.collectedScope,
+          context: args.context,
+        });
       } else {
         assert(expr);
         symbol.type = expr.type;
@@ -816,11 +831,11 @@ export function elaborateStatement(
 export function elaborateBlockScope(
   sr: SemanticResult,
   args: {
-    scope: Semantic.BlockScope,
-    expectedReturnType: Semantic.DatatypeSymbol,
-    elaboratedVariables: Map<Collect.Symbol, Semantic.VariableSymbol>,
-    context: SubstitutionContext,
-  }
+    scope: Semantic.BlockScope;
+    expectedReturnType: Semantic.DatatypeSymbol;
+    elaboratedVariables: Map<Collect.Symbol, Semantic.VariableSymbol>;
+    context: SubstitutionContext;
+  },
 ) {
   args.scope.statements = [];
 
@@ -851,7 +866,7 @@ export function elaborateBlockScope(
           type = lookupAndElaborateDatatype(sr, {
             datatype: symbol.datatype,
             startLookupInScope: args.scope.collectedScope,
-            context: args.context
+            context: args.context,
           });
         }
         const variable: Semantic.VariableSymbol = {
@@ -880,7 +895,7 @@ export function elaborateBlockScope(
       scope: args.scope,
       expectedReturnType: args.expectedReturnType,
       elaboratedVariables: variableMap,
-      context: args.context
+      context: args.context,
     });
     args.scope.statements.push(statement);
 
@@ -893,16 +908,12 @@ export function elaborateBlockScope(
 export function defineThisReference(
   sr: SemanticResult,
   args: {
-    scope: Semantic.BlockScope,
-    parentStruct: Semantic.StructDatatypeSymbol,
-    context: SubstitutionContext,
-  }
+    scope: Semantic.BlockScope;
+    parentStruct: Semantic.StructDatatypeSymbol;
+    context: SubstitutionContext;
+  },
 ) {
-  const thisReference: Semantic.DatatypeSymbol = {
-    variant: "ReferenceDatatype",
-    referee: args.parentStruct,
-    concrete: args.parentStruct.concrete,
-  };
+  const thisReference = makeReferenceDatatypeAvailable(sr, args.parentStruct);
   args.scope.symbolTable.defineSymbol({
     variant: "Variable",
     mutable: false,
@@ -919,23 +930,31 @@ export function defineThisReference(
 export function elaborate(
   sr: SemanticResult,
   args: {
-    sourceSymbol: Collect.Symbol,
-    usageInScope?: Collect.Scope,
-    usageGenerics?: (ASTDatatype | ASTConstant)[],
-    usedAt?: SourceLoc,
-    structForMethod?: Semantic.StructDatatypeSymbol,
-    context: SubstitutionContext,
-  }
+    sourceSymbol: Collect.Symbol;
+    usageInScope?: Collect.Scope;
+    usageGenerics?: (ASTDatatype | ASTConstant)[];
+    usedAt?: SourceLoc;
+    structForMethod?: Semantic.StructDatatypeSymbol;
+    context: SubstitutionContext;
+  },
 ): Semantic.Symbol | undefined {
-
-  const elaborateParentSymbol = (symbol: ASTFunctionDeclaration | ASTFunctionDefinition | ASTNamespaceDefinition | ASTStructDefinition) => {
-    const parent = symbol._collect.definedInNamespaceOrStruct && elaborate(sr, {
-      sourceSymbol: symbol._collect.definedInNamespaceOrStruct,
-      context: args.context,
-    }) || null;
+  const elaborateParentSymbol = (
+    symbol:
+      | ASTFunctionDeclaration
+      | ASTFunctionDefinition
+      | ASTNamespaceDefinition
+      | ASTStructDefinition,
+  ) => {
+    const parent =
+      (symbol._collect.definedInNamespaceOrStruct &&
+        elaborate(sr, {
+          sourceSymbol: symbol._collect.definedInNamespaceOrStruct,
+          context: args.context,
+        })) ||
+      null;
     assert(!parent || parent.variant === "StructDatatype" || parent.variant === "Namespace");
     return parent;
-  }
+  };
 
   switch (args.sourceSymbol.variant) {
     // =================================================================================================================
@@ -944,28 +963,22 @@ export function elaborate(
 
     case "FunctionDeclaration": {
       for (const s of sr.elaboratedFuncdeclSymbols) {
-        if (
-          s.generics.length === 0 &&
-          s.originalSymbol === args.sourceSymbol
-        ) {
+        if (s.generics.length === 0 && s.originalSymbol === args.sourceSymbol) {
           return s.resultSymbol;
         }
       }
 
-      const resolvedFunctype = lookupAndElaborateDatatype(
-        sr,
-        {
-          datatype: {
-            variant: "FunctionDatatype",
-            params: args.sourceSymbol.params,
-            ellipsis: args.sourceSymbol.ellipsis,
-            returnType: args.sourceSymbol.returnType!,
-            sourceloc: args.sourceSymbol.sourceloc,
-          },
-          startLookupInScope: assertScope(args.sourceSymbol._collect.definedInScope),
-          context: args.context,
-        }
-      );
+      const resolvedFunctype = lookupAndElaborateDatatype(sr, {
+        datatype: {
+          variant: "FunctionDatatype",
+          params: args.sourceSymbol.params,
+          ellipsis: args.sourceSymbol.ellipsis,
+          returnType: args.sourceSymbol.returnType!,
+          sourceloc: args.sourceSymbol.sourceloc,
+        },
+        startLookupInScope: assertScope(args.sourceSymbol._collect.definedInScope),
+        context: args.context,
+      });
       assert(resolvedFunctype.variant === "FunctionDatatype");
       assert(args.sourceSymbol.methodType !== undefined);
       const symbol: Semantic.FunctionDeclarationSymbol = {
@@ -983,7 +996,7 @@ export function elaborate(
       sr.elaboratedFuncdeclSymbols.push({
         originalSymbol: args.sourceSymbol,
         generics: [],
-        resultSymbol: symbol
+        resultSymbol: symbol,
       });
       return symbol;
     }
@@ -999,7 +1012,7 @@ export function elaborate(
         return lookupAndElaborateDatatype(sr, {
           datatype: g,
           startLookupInScope: args.usageInScope,
-          context: args.context
+          context: args.context,
         });
       });
 
@@ -1027,20 +1040,17 @@ export function elaborate(
         newContext.substitute.set(args.sourceSymbol.generics[i], generics[i]);
       }
 
-      const resolvedFunctype = lookupAndElaborateDatatype(
-        sr,
-        {
-          datatype: {
-            variant: "FunctionDatatype",
-            params: args.sourceSymbol.params,
-            ellipsis: args.sourceSymbol.ellipsis,
-            returnType: args.sourceSymbol.returnType!,
-            sourceloc: args.sourceSymbol.sourceloc,
-          },
-          startLookupInScope: assertScope(args.sourceSymbol.funcbody._collect.scope),
-          context: newContext,
-        }
-      );
+      const resolvedFunctype = lookupAndElaborateDatatype(sr, {
+        datatype: {
+          variant: "FunctionDatatype",
+          params: args.sourceSymbol.params,
+          ellipsis: args.sourceSymbol.ellipsis,
+          returnType: args.sourceSymbol.returnType!,
+          sourceloc: args.sourceSymbol.sourceloc,
+        },
+        startLookupInScope: assertScope(args.sourceSymbol.funcbody._collect.scope),
+        context: newContext,
+      });
       assert(resolvedFunctype.variant === "FunctionDatatype");
       assert(args.sourceSymbol.methodType !== undefined);
       assert(args.sourceSymbol.funcbody.variant === "Scope");
@@ -1054,14 +1064,11 @@ export function elaborate(
         generics: generics,
         methodType: args.sourceSymbol.methodType,
         operatorOverloading: args.sourceSymbol.operatorOverloading && {
-          asTarget: lookupAndElaborateDatatype(
-            sr,
-            {
-              datatype: args.sourceSymbol.operatorOverloading.asTarget,
-              startLookupInScope: assertScope(args.usageInScope),
-              context: args.context,
-            }
-          ),
+          asTarget: lookupAndElaborateDatatype(sr, {
+            datatype: args.sourceSymbol.operatorOverloading.asTarget,
+            startLookupInScope: assertScope(args.usageInScope),
+            context: args.context,
+          }),
           operator: args.sourceSymbol.operatorOverloading.operator,
         },
         parameterNames: args.sourceSymbol.params.map((p) => p.name),
@@ -1108,11 +1115,7 @@ export function elaborate(
 
     case "StructMethod": {
       assert(args.structForMethod);
-      const thisReference: Semantic.DatatypeSymbol = {
-        variant: "ReferenceDatatype",
-        referee: args.structForMethod,
-        concrete: args.structForMethod.concrete,
-      };
+      const thisReference = makeReferenceDatatypeAvailable(sr, args.structForMethod);
 
       assert(args.usageGenerics);
       const generics = args.usageGenerics.map((g) => {
@@ -1120,7 +1123,7 @@ export function elaborate(
         return lookupAndElaborateDatatype(sr, {
           datatype: g,
           startLookupInScope: args.usageInScope,
-          context: args.context
+          context: args.context,
         });
       });
 
@@ -1150,26 +1153,20 @@ export function elaborate(
 
       const parameterNames = args.sourceSymbol.params.map((p) => p.name);
       const parameters = args.sourceSymbol.params.map((p) =>
-        lookupAndElaborateDatatype(
-          sr,
-          {
-            datatype: p.datatype,
-            startLookupInScope: args.structForMethod!.scope.collectedScope,
-            context: args.context,
-          }
-        ),
+        lookupAndElaborateDatatype(sr, {
+          datatype: p.datatype,
+          startLookupInScope: args.structForMethod!.scope.collectedScope,
+          context: args.context,
+        }),
       );
       parameters.unshift(thisReference);
       parameterNames.unshift("this");
       assert(args.sourceSymbol.returnType);
-      const returnType = lookupAndElaborateDatatype(
-        sr,
-        {
-          datatype: args.sourceSymbol.returnType,
-          startLookupInScope: assertScope(args.sourceSymbol.declarationScope),
-          context: args.context,
-        }
-      );
+      const returnType = lookupAndElaborateDatatype(sr, {
+        datatype: args.sourceSymbol.returnType,
+        startLookupInScope: assertScope(args.sourceSymbol.declarationScope),
+        context: args.context,
+      });
 
       const ftype = makeFunctionDatatypeAvailable(sr, {
         parameters: parameters,
@@ -1186,14 +1183,11 @@ export function elaborate(
         methodType: EMethodType.Method,
         name: args.sourceSymbol.name,
         operatorOverloading: args.sourceSymbol.operatorOverloading && {
-          asTarget: lookupAndElaborateDatatype(
-            sr,
-            {
-              datatype: args.sourceSymbol.operatorOverloading.asTarget,
-              startLookupInScope: assertScope(args.usageInScope),
-              context: args.context,
-            }
-          ),
+          asTarget: lookupAndElaborateDatatype(sr, {
+            datatype: args.sourceSymbol.operatorOverloading.asTarget,
+            startLookupInScope: assertScope(args.usageInScope),
+            context: args.context,
+          }),
           operator: args.sourceSymbol.operatorOverloading.operator,
         },
         sourceloc: args.sourceSymbol.sourceloc,
@@ -1218,7 +1212,7 @@ export function elaborate(
         defineThisReference(sr, {
           scope: symbol.scope,
           parentStruct: args.structForMethod,
-          context: args.context
+          context: args.context,
         });
         sr.elaboratedFuncdefSymbols.push({
           generics: generics,
@@ -1231,7 +1225,7 @@ export function elaborate(
           scope: symbol.scope,
           expectedReturnType: symbol.type.returnType,
           elaboratedVariables: new Map(),
-          context: args.context
+          context: args.context,
         });
       }
 
@@ -1244,9 +1238,7 @@ export function elaborate(
 
     case "NamespaceDefinition": {
       for (const s of sr.elaboratedNamespaceSymbols) {
-        if (
-          s.originalSymbol === args.sourceSymbol
-        ) {
+        if (s.originalSymbol === args.sourceSymbol) {
           return s.resultSymbol;
         }
       }
@@ -1273,13 +1265,12 @@ export function elaborate(
         if (d.variant === "FunctionDeclaration") {
           const sig = elaborate(sr, {
             sourceSymbol: d,
-            context: isolateElaborationContext(args.context)
+            context: isolateElaborationContext(args.context),
           });
           if (sig) {
             namespace.scope.symbolTable.defineSymbol(sig);
           }
-        }
-        else if (d.variant === "FunctionDefinition") {
+        } else if (d.variant === "FunctionDefinition") {
           if (d.generics.length === 0 && !d.operatorOverloading) {
             const sig = elaborate(sr, {
               sourceSymbol: d,
@@ -1290,8 +1281,11 @@ export function elaborate(
               namespace.scope.symbolTable.defineSymbol(sig);
             }
           }
-        }
-        else if (d.variant === "GlobalVariableDefinition" || d.variant === "NamespaceDefinition" || d.variant === "StructDefinition") {
+        } else if (
+          d.variant === "GlobalVariableDefinition" ||
+          d.variant === "NamespaceDefinition" ||
+          d.variant === "StructDefinition"
+        ) {
           const sig = elaborate(sr, {
             sourceSymbol: d,
             usageGenerics: [],
@@ -1320,14 +1314,12 @@ export function elaborate(
             generics: [],
             variant: "NamedDatatype",
             sourceloc: args.sourceSymbol.sourceloc,
-            _collect: {}
+            _collect: {},
           },
-          defineInNamespace: elaborateParentSymbol(args.sourceSymbol),
           context: args.context,
         });
         return struct;
-      }
-      else {
+      } else {
         return undefined;
       }
     }
@@ -1355,12 +1347,13 @@ export function SemanticallyAnalyze(collectedGlobalScope: Collect.Scope) {
 
   collectedGlobalScope.symbolTable.symbols
     .map((s) => {
-      if (s.variant === "FunctionDefinition" && (s.generics.length !== 0 || s.operatorOverloading)) return undefined;
+      if (s.variant === "FunctionDefinition" && (s.generics.length !== 0 || s.operatorOverloading))
+        return undefined;
       return elaborate(sr, {
         sourceSymbol: s,
         usageGenerics: [],
-        context: isolateElaborationContext(context)
-      })
+        context: isolateElaborationContext(context),
+      });
     })
     .filter((s) => !!s);
 
