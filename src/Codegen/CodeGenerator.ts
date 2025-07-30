@@ -1,7 +1,12 @@
 import { stderr } from "bun";
 import type { Lowered } from "../Lower/LowerTypes";
 import type { Semantic } from "../Semantic/SemanticSymbols";
-import { BinaryOperationToString, EBinaryOperation, EExternLanguage, EIncrOperation } from "../shared/AST";
+import {
+  BinaryOperationToString,
+  EBinaryOperation,
+  EExternLanguage,
+  EIncrOperation,
+} from "../shared/AST";
 import { EPrimitive, EVariableContext, primitiveToString } from "../shared/common";
 import { ModuleType, type ModuleConfig } from "../shared/Config";
 import { assert, ImpossibleSituation, InternalError, printWarningMessage } from "../shared/Errors";
@@ -111,12 +116,12 @@ class CodeGenerator {
           `typedef ${this.primitiveToC(symbol.primitive)} ${this.mangle(symbol)};`,
         );
       } else if (symbol.variant === "Struct") {
-        this.out.type_declarations.writeLine(`typedef struct ${this.mangle(symbol)} ${this.mangle(symbol)};`);
+        this.out.type_declarations.writeLine(
+          `typedef struct ${this.mangle(symbol)} ${this.mangle(symbol)};`,
+        );
         this.out.type_definitions.writeLine(`struct ${this.mangle(symbol)} {`).pushIndent();
         for (const member of symbol.members) {
-          this.out.type_definitions.writeLine(
-            `${this.mangle(member.type)} ${member.name};`,
-          );
+          this.out.type_definitions.writeLine(`${this.mangle(member.type)} ${member.name};`);
         }
         this.out.type_definitions.popIndent().writeLine(`};`).writeLine();
       } else if (symbol.variant === "RawPointer") {
@@ -134,7 +139,9 @@ class CodeGenerator {
             .join(", ")});`,
         );
       } else if (symbol.variant === "Callable") {
-        this.out.type_declarations.writeLine(`typedef struct ${this.mangle(symbol)} ${this.mangle(symbol)};`);
+        this.out.type_declarations.writeLine(
+          `typedef struct ${this.mangle(symbol)} ${this.mangle(symbol)};`,
+        );
         this.out.type_definitions.writeLine(`struct ${this.mangle(symbol)} {`).pushIndent();
         if (symbol.thisExprType) {
           this.out.type_definitions.writeLine(`${this.mangle(symbol.thisExprType)} thisPtr;`);
@@ -147,20 +154,48 @@ class CodeGenerator {
   }
 
   sortTypeDefinitions() {
+    const appliedTypes = new Set<Lowered.Datatype>();
+
     // First define all primitives, pointers and references, they always work
     for (const [id, t] of this.lr.loweredTypes) {
       if (t.variant === "Primitive" || t.variant === "RawPointer" || t.variant === "Reference") {
         this.lr.sortedLoweredTypes.push(t);
+        appliedTypes.add(t);
       }
     }
 
-    for (const [id, t] of this.lr.loweredTypes) {
-      if (t.variant === "Primitive" || t.variant === "RawPointer" || t.variant === "Reference") {
-        continue;
+    // This function processes the type in the sense that it goes over all types that this type depends on,
+    // and if there is a direct relationship, then that type is processed, which sorts it first.
+    const processType = (type: Lowered.Datatype) => {
+      if (appliedTypes.has(type)) {
+        return;
       }
 
-      // this.lr.sortedLoweredTypes.push(t);
-      assert(false, "TODO: Sort all remaining types");
+      if (type.variant === "Function") {
+        for (const p of type.parameters) {
+          processType(p);
+        }
+        processType(type.returnType);
+        this.lr.sortedLoweredTypes.push(type);
+        appliedTypes.add(type);
+      } else if (type.variant === "Callable") {
+        processType(type.functionType);
+        this.lr.sortedLoweredTypes.push(type);
+        appliedTypes.add(type);
+      } else if (type.variant === "Struct") {
+        for (const m of type.members) {
+          processType(m.type);
+        }
+        this.lr.sortedLoweredTypes.push(type);
+        appliedTypes.add(type);
+      } else {
+        assert(false);
+      }
+    };
+
+    // Now define all other types
+    for (const [id, t] of this.lr.loweredTypes) {
+      processType(t);
     }
   }
 
@@ -195,27 +230,32 @@ class CodeGenerator {
     }
   }
 
-  mangle(datatypeOrSymbol: Lowered.Datatype | Lowered.FunctionDeclaration | Lowered.FunctionDefinition | Lowered.VariableStatement | Lowered.SymbolValueExpr | Lowered.CallableExpr) {
+  mangle(
+    datatypeOrSymbol:
+      | Lowered.Datatype
+      | Lowered.FunctionDeclaration
+      | Lowered.FunctionDefinition
+      | Lowered.VariableStatement
+      | Lowered.SymbolValueExpr
+      | Lowered.CallableExpr,
+  ) {
     if (datatypeOrSymbol.variant === "CallableExpr") {
       return "_H" + datatypeOrSymbol.functionMangledName;
     }
     if (datatypeOrSymbol.wasMangled) {
       return "_H" + datatypeOrSymbol.mangledName;
-    }
-    else {
+    } else {
       return datatypeOrSymbol.mangledName;
     }
   }
 
-  emitSymbol(symbol: Lowered.FunctionDeclaration | Lowered.FunctionDefinition) { }
+  emitSymbol(symbol: Lowered.FunctionDeclaration | Lowered.FunctionDefinition) {}
 
   emitFunction(symbol: Lowered.FunctionDeclaration | Lowered.FunctionDefinition) {
-    let signature =
-      this.mangle(symbol.type.returnType) +
-      " " +
-      this.mangle(symbol) +
-      "(";
-    signature += symbol.type.parameters.map((p, i) => `${this.mangle(p)} ${symbol.parameterNames[i]}`).join(", ");
+    let signature = this.mangle(symbol.type.returnType) + " " + this.mangle(symbol) + "(";
+    signature += symbol.type.parameters
+      .map((p, i) => `${this.mangle(p)} ${symbol.parameterNames[i]}`)
+      .join(", ");
     if (symbol.type.vararg) {
       signature += ", ...";
     }
@@ -266,7 +306,9 @@ class CodeGenerator {
     switch (statement.variant) {
       case "ReturnStatement": {
         if (statement.sourceloc) {
-          outWriter.writeLine(`#line ${statement.sourceloc.line} ${JSON.stringify(statement.sourceloc.filename)}`);
+          outWriter.writeLine(
+            `#line ${statement.sourceloc.line} ${JSON.stringify(statement.sourceloc.filename)}`,
+          );
         }
         if (statement.expr) {
           const exprWriter = this.emitExpr(statement.expr);
@@ -280,7 +322,9 @@ class CodeGenerator {
 
       case "VariableStatement": {
         if (statement.sourceloc) {
-          outWriter.writeLine(`#line ${statement.sourceloc.line} ${JSON.stringify(statement.sourceloc.filename)}`);
+          outWriter.writeLine(
+            `#line ${statement.sourceloc.line} ${JSON.stringify(statement.sourceloc.filename)}`,
+          );
         }
         outWriter.write(`${this.mangle(statement.type)} ${this.mangle(statement)}`);
 
@@ -291,8 +335,7 @@ class CodeGenerator {
         } else {
           if (statement.type.variant === "Struct" && statement.type.members.length === 0) {
             outWriter.writeLine(`;`);
-          }
-          else {
+          } else {
             outWriter.writeLine(` = {0};`);
           }
         }
@@ -301,7 +344,9 @@ class CodeGenerator {
 
       case "ExprStatement": {
         if (statement.sourceloc) {
-          outWriter.writeLine(`#line ${statement.sourceloc.line} ${JSON.stringify(statement.sourceloc.filename)}`);
+          outWriter.writeLine(
+            `#line ${statement.sourceloc.line} ${JSON.stringify(statement.sourceloc.filename)}`,
+          );
         }
         const exprWriter = this.emitExpr(statement.expr);
         tempWriter.write(exprWriter.temp);
@@ -311,7 +356,9 @@ class CodeGenerator {
 
       case "InlineCStatement": {
         if (statement.sourceloc) {
-          outWriter.writeLine(`#line ${statement.sourceloc.line} ${JSON.stringify(statement.sourceloc.filename)}`);
+          outWriter.writeLine(
+            `#line ${statement.sourceloc.line} ${JSON.stringify(statement.sourceloc.filename)}`,
+          );
         }
         outWriter.writeLine(statement.value + ";");
         return { temp: tempWriter, out: outWriter };
@@ -319,7 +366,9 @@ class CodeGenerator {
 
       case "WhileStatement": {
         if (statement.sourceloc) {
-          outWriter.writeLine(`#line ${statement.sourceloc.line} ${JSON.stringify(statement.sourceloc.filename)}`);
+          outWriter.writeLine(
+            `#line ${statement.sourceloc.line} ${JSON.stringify(statement.sourceloc.filename)}`,
+          );
         }
         const exprWriter = this.emitExpr(statement.condition);
         tempWriter.write(exprWriter.temp);
@@ -333,7 +382,9 @@ class CodeGenerator {
 
       case "IfStatement": {
         if (statement.sourceloc) {
-          outWriter.writeLine(`#line ${statement.sourceloc.line} ${JSON.stringify(statement.sourceloc.filename)}`);
+          outWriter.writeLine(
+            `#line ${statement.sourceloc.line} ${JSON.stringify(statement.sourceloc.filename)}`,
+          );
         }
         const exprWriter = this.emitExpr(statement.condition);
         tempWriter.write(exprWriter.temp);
@@ -423,14 +474,18 @@ class CodeGenerator {
       case "PreIncrExpr": {
         const exprWriter = this.emitExpr(expr.expr);
         tempWriter.write(exprWriter.temp);
-        outWriter.write("(" + (expr.operation === EIncrOperation.Incr ? "++" : "--") + exprWriter.out.get() + ")");
+        outWriter.write(
+          "(" + (expr.operation === EIncrOperation.Incr ? "++" : "--") + exprWriter.out.get() + ")",
+        );
         return { out: outWriter, temp: tempWriter };
       }
 
       case "PostIncrExpr": {
         const exprWriter = this.emitExpr(expr.expr);
         tempWriter.write(exprWriter.temp);
-        outWriter.write("(" + exprWriter.out.get() + (expr.operation === EIncrOperation.Incr ? "++" : "--") + ")");
+        outWriter.write(
+          "(" + exprWriter.out.get() + (expr.operation === EIncrOperation.Incr ? "++" : "--") + ")",
+        );
         return { out: outWriter, temp: tempWriter };
       }
 
@@ -474,12 +529,12 @@ class CodeGenerator {
             tempWriter.write(rightWriter.temp);
             outWriter.write(
               "(" +
-              leftWriter.out.get() +
-              " " +
-              BinaryOperationToString(expr.operation) +
-              " " +
-              rightWriter.out.get() +
-              ")",
+                leftWriter.out.get() +
+                " " +
+                BinaryOperationToString(expr.operation) +
+                " " +
+                rightWriter.out.get() +
+                ")",
             );
             break;
           }
@@ -494,12 +549,12 @@ class CodeGenerator {
             tempWriter.write(rightWriter.temp);
             outWriter.write(
               "(" +
-              leftWriter.out.get() +
-              " " +
-              BinaryOperationToString(expr.operation) +
-              " " +
-              rightWriter.out.get() +
-              ")",
+                leftWriter.out.get() +
+                " " +
+                BinaryOperationToString(expr.operation) +
+                " " +
+                rightWriter.out.get() +
+                ")",
             );
             break;
           }
@@ -512,12 +567,12 @@ class CodeGenerator {
             tempWriter.write(rightWriter.temp);
             outWriter.write(
               "(" +
-              leftWriter.out.get() +
-              " " +
-              BinaryOperationToString(expr.operation) +
-              " " +
-              rightWriter.out.get() +
-              ")",
+                leftWriter.out.get() +
+                " " +
+                BinaryOperationToString(expr.operation) +
+                " " +
+                rightWriter.out.get() +
+                ")",
             );
             break;
           }
@@ -530,12 +585,12 @@ class CodeGenerator {
             tempWriter.write(rightWriter.temp);
             outWriter.write(
               "(" +
-              leftWriter.out.get() +
-              " " +
-              BinaryOperationToString(expr.operation) +
-              " " +
-              rightWriter.out.get() +
-              ")",
+                leftWriter.out.get() +
+                " " +
+                BinaryOperationToString(expr.operation) +
+                " " +
+                rightWriter.out.get() +
+                ")",
             );
             break;
           }
@@ -554,14 +609,14 @@ class CodeGenerator {
       case "RawPointerAddressOf": {
         const e = this.emitExpr(expr.expr);
         tempWriter.write(e.temp);
-        outWriter.write('&' + e.out.get());
+        outWriter.write("&" + e.out.get());
         return { out: outWriter, temp: tempWriter };
       }
 
       case "RawPointerDereference": {
         const e = this.emitExpr(expr.expr);
         tempWriter.write(e.temp);
-        outWriter.write('*' + e.out.get());
+        outWriter.write("*" + e.out.get());
         return { out: outWriter, temp: tempWriter };
       }
 
@@ -570,7 +625,7 @@ class CodeGenerator {
         const value = this.emitExpr(expr.value);
         tempWriter.write(target.temp);
         tempWriter.write(value.temp);
-        outWriter.write(target.out.get() + ' = ' + value.out.get());
+        outWriter.write(target.out.get() + " = " + value.out.get());
         return { out: outWriter, temp: tempWriter };
       }
 
