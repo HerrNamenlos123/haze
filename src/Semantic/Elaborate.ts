@@ -858,7 +858,7 @@ export function elaborateBlockScope(
       case "VariableDefinitionStatement": {
         let variableContext = EVariableContext.FunctionLocal;
         let type: Semantic.DatatypeSymbol = { variant: "DeferredDatatype", concrete: false };
-        if (symbol.isParameter) {
+        if (symbol.kind === EVariableContext.FunctionParameter) {
           variableContext = EVariableContext.FunctionParameter;
           if (!symbol.datatype) {
             throw new InternalError("Parameter needs datatype");
@@ -868,6 +868,15 @@ export function elaborateBlockScope(
             startLookupInScope: args.scope.collectedScope,
             context: args.context,
           });
+        } else if (symbol.kind === EVariableContext.ThisReference) {
+          if (variableMap.has(symbol)) {
+            break;
+          } else {
+            assert(
+              false,
+              "Variable definition statement for This-Reference was encountered, but it's not yet in the variableMap. It should already be elaborated by the parent.",
+            );
+          }
         }
         const variable: Semantic.VariableSymbol = {
           variant: "Variable",
@@ -911,10 +920,12 @@ export function defineThisReference(
     scope: Semantic.BlockScope;
     parentStruct: Semantic.StructDatatypeSymbol;
     context: SubstitutionContext;
+    elaboratedVariables: Map<Collect.Symbol, Semantic.VariableSymbol>;
   },
 ) {
   const thisReference = makeReferenceDatatypeAvailable(sr, args.parentStruct);
-  args.scope.symbolTable.defineSymbol({
+
+  const vardef: Semantic.Symbol = {
     variant: "Variable",
     mutable: false,
     name: "this",
@@ -924,7 +935,12 @@ export function defineThisReference(
     externLanguage: EExternLanguage.None,
     sourceloc: args.scope.sourceloc,
     variableContext: EVariableContext.FunctionParameter,
-  });
+  };
+  args.scope.symbolTable.defineSymbol(vardef);
+
+  const thisRefVarDef = args.scope.collectedScope.symbolTable.tryLookupSymbolHere("this");
+  assert(thisRefVarDef);
+  args.elaboratedVariables.set(thisRefVarDef, vardef);
 }
 
 export function elaborate(
@@ -1162,6 +1178,7 @@ export function elaborate(
       parameters.unshift(thisReference);
       parameterNames.unshift("this");
       assert(args.sourceSymbol.returnType);
+
       const returnType = lookupAndElaborateDatatype(sr, {
         datatype: args.sourceSymbol.returnType,
         startLookupInScope: assertScope(args.sourceSymbol.declarationScope),
@@ -1209,9 +1226,12 @@ export function elaborate(
           args.sourceSymbol.funcbody._collect.scope,
           symbol.parent?.scope,
         );
+        const variableMap = new Map<Collect.Symbol, Semantic.VariableSymbol>();
+
         defineThisReference(sr, {
           scope: symbol.scope,
           parentStruct: args.structForMethod,
+          elaboratedVariables: variableMap,
           context: args.context,
         });
         sr.elaboratedFuncdefSymbols.push({
@@ -1224,7 +1244,7 @@ export function elaborate(
         elaborateBlockScope(sr, {
           scope: symbol.scope,
           expectedReturnType: symbol.type.returnType,
-          elaboratedVariables: new Map(),
+          elaboratedVariables: variableMap,
           context: args.context,
         });
       }

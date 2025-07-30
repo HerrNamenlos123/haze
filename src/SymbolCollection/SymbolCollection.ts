@@ -1,4 +1,10 @@
-import { assert, CompilerError, formatSourceLoc, InternalError, type SourceLoc } from "../shared/Errors";
+import {
+  assert,
+  CompilerError,
+  formatSourceLoc,
+  InternalError,
+  type SourceLoc,
+} from "../shared/Errors";
 import type {
   ASTBinaryExpr,
   ASTConstant,
@@ -27,7 +33,7 @@ import type {
   ASTSymbolValueExpr,
   ASTUnaryExpr,
 } from "../shared/AST";
-import { assertScope, EMethodType } from "../shared/common";
+import { assertScope, EMethodType, EVariableContext } from "../shared/common";
 import { Collect, type CollectResult } from "./CollectSymbols";
 
 function collect(
@@ -142,7 +148,7 @@ function collect(
           name: param.name,
           datatype: param.datatype,
           sourceloc: param.sourceloc,
-          isParameter: true,
+          kind: EVariableContext.FunctionParameter,
           _semantic: {},
         });
       }
@@ -231,8 +237,14 @@ function collect(
 
       const alreadyExists = scope.symbolTable.tryLookupSymbolHere(item.name);
       if (alreadyExists) {
-        const msg = alreadyExists.sourceloc && `Conflicting declaration at ${formatSourceLoc(alreadyExists.sourceloc)}` || '';
-        throw new CompilerError(`Symbol ${item.name} already exists in this scope. ${msg}`, item.sourceloc);
+        const msg =
+          (alreadyExists.sourceloc &&
+            `Conflicting declaration at ${formatSourceLoc(alreadyExists.sourceloc)}`) ||
+          "";
+        throw new CompilerError(
+          `Symbol ${item.name} already exists in this scope. ${msg}`,
+          item.sourceloc,
+        );
       }
       scope.symbolTable.defineSymbol(item);
 
@@ -264,6 +276,16 @@ function collect(
           method.declarationScope.symbolTable.defineSymbol(g);
         }
 
+        method.funcbody._collect.scope.symbolTable.defineSymbol({
+          variant: "VariableDefinitionStatement",
+          mutable: false,
+          name: "this",
+          sourceloc: method.sourceloc,
+          datatype: undefined, // Will be replaced later
+          kind: EVariableContext.ThisReference,
+          _semantic: {},
+        });
+
         for (const param of method.params) {
           method.funcbody._collect.scope.symbolTable.defineSymbol({
             variant: "VariableDefinitionStatement",
@@ -271,7 +293,7 @@ function collect(
             name: param.name,
             datatype: param.datatype,
             sourceloc: param.sourceloc,
-            isParameter: true,
+            kind: EVariableContext.FunctionParameter,
             _semantic: {},
           });
           collect(item._collect.scope, param.datatype, newMeta);
@@ -388,7 +410,7 @@ function collect(
           name: param.name,
           datatype: param.datatype,
           sourceloc: param.sourceloc,
-          isParameter: true,
+          kind: EVariableContext.FunctionParameter,
           _semantic: {},
         });
       }

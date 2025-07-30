@@ -10,9 +10,9 @@ struct CString {
 struct SharedPtr<T> {
   target: T*;
 
-  // get(): T& => {
-  //   return *this.target;
-  // }
+  get(): T& => {
+    return *this.target;
+  }
 }
 
 struct Factory<T> {

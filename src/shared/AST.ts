@@ -1,6 +1,6 @@
 import { ImpossibleSituation, type SourceLoc } from "./Errors";
 import type { Collect } from "../SymbolCollection/CollectSymbols";
-import type { EMethodType } from "./common";
+import type { EMethodType, EVariableContext } from "./common";
 
 export enum EExternLanguage {
   None,
@@ -264,7 +264,7 @@ export type ASTVariableDefinitionStatement = {
   name: string;
   datatype?: ASTDatatype;
   expr?: ASTExpr;
-  isParameter?: boolean;
+  kind: EVariableContext;
   sourceloc: SourceLoc;
   _semantic: {};
 };

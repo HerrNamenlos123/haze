@@ -21,6 +21,7 @@ export enum EVariableContext {
   FunctionParameter,
   FunctionLocal,
   MemberOfStruct,
+  ThisReference,
   Global,
 }
 
