@@ -126,6 +126,7 @@ export type ASTFunctionDeclaration = {
   export: boolean;
   externLanguage: EExternLanguage;
   name: string;
+  noemit: boolean;
   namespacePath: string[];
   params: ASTParam[];
   ellipsis: boolean;

@@ -488,6 +488,9 @@ function lowerScope(lr: Lowered.Module, semanticScope: Semantic.BlockScope): Low
 function lower(lr: Lowered.Module, symbol: Semantic.Symbol) {
   switch (symbol.variant) {
     case "FunctionDeclaration": {
+      if (symbol.noemit) {
+        return;
+      }
       const ftype = lowerType(lr, symbol.type);
       assert(ftype.variant === "Function");
       const f: Lowered.FunctionDeclaration = {

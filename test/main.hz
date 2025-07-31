@@ -101,9 +101,9 @@ struct ArenaChunk {
 struct Arena {
     next: ArenaChunk*;
 
-    static create(): Arena => {
+    static create(): Arena {
         return Arena {
-            
+            .next = 0 as ArenaChunk*
         };
     }
 }

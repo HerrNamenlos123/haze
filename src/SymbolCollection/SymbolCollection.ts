@@ -271,7 +271,6 @@ function collect(
       }
 
       for (const method of item.methods) {
-        console.log(item);
         method.declarationScope = new Collect.Scope(item.sourceloc, item._collect.scope);
         if (method.funcbody) {
           method.funcbody._collect.scope = new Collect.Scope(

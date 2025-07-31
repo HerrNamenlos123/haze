@@ -355,6 +355,7 @@ export namespace Conversion {
       variant: "FunctionDefinition",
       concrete: true,
       export: false,
+      staticMethod: false,
       externLanguage: EExternLanguage.None,
       methodType: EMethodType.NotAMethod,
       name: "__operator_as",

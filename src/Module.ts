@@ -336,7 +336,10 @@ class ModuleCompiler {
       await this.addDependencySources();
       await this.addProjectSourceFiles();
 
-      const sr = SemanticallyAnalyze(this.cr.globalScope);
+      const sr = SemanticallyAnalyze(
+        this.cr.globalScope,
+        this.config.moduleType === ModuleType.Library,
+      );
       // PrettyPrintAnalyzed(sr);
       const lowered = LowerModule(this.cr, sr);
 

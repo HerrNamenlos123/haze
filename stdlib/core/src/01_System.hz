@@ -1,6 +1,6 @@
 extern "C" abort();
-extern "C" assert(cond: boolean);
-extern "C" printf(str: str, ...);
+extern "C" noemit assert(cond: boolean);
+extern "C" noemit printf(str: str, ...);
 
 inject "#include <stdarg.h>";
 inject "#include <stdlib.h>";
@@ -66,7 +66,7 @@ namespace System {
     //   __c__("va_end(args)");
     //   printf("\n");
     // };
-    Memory.__setupMemoryContext();
+    // Memory.__setupMemoryContext();
   }
 }
 

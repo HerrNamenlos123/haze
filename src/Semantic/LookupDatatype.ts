@@ -15,6 +15,7 @@ import {
   Semantic,
   type SemanticResult,
 } from "./SemanticSymbols";
+import { serializeDatatype } from "./Serialize";
 
 export function makeFunctionDatatypeAvailable(
   sr: SemanticResult,

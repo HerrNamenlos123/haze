@@ -470,6 +470,7 @@ class ASTTransformer extends HazeVisitor<any> {
     return {
       variant: "FunctionDeclaration",
       export: Boolean(ctx._export_),
+      noemit: Boolean(ctx._noemit),
       externLanguage: this.exlang(ctx),
       name: names[names.length - 1],
       namespacePath: names.slice(0, -1),
@@ -643,7 +644,7 @@ class ASTTransformer extends HazeVisitor<any> {
   visitCInlineStatement = (ctx: CInlineStatementContext): ASTInlineCStatement => {
     return {
       variant: "InlineCStatement",
-      code: ctx.STRING_LITERAL().getText(),
+      code: JSON.parse(ctx.STRING_LITERAL().getText()),
       sourceloc: this.loc(ctx),
     };
   };

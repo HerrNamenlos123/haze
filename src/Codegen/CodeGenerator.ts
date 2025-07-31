@@ -1,17 +1,9 @@
-import { stderr } from "bun";
 import type { Lowered } from "../Lower/LowerTypes";
-import type { Semantic } from "../Semantic/SemanticSymbols";
-import {
-  BinaryOperationToString,
-  EBinaryOperation,
-  EExternLanguage,
-  EIncrOperation,
-} from "../shared/AST";
+import { BinaryOperationToString, EBinaryOperation, EIncrOperation } from "../shared/AST";
 import { EPrimitive, EVariableContext, primitiveToString } from "../shared/common";
 import { ModuleType, type ModuleConfig } from "../shared/Config";
 import { assert, ImpossibleSituation, InternalError, printWarningMessage } from "../shared/Errors";
 import { OutputWriter } from "./OutputWriter";
-import { makeTempName } from "../shared/store";
 
 class CodeGenerator {
   private out = {
@@ -164,33 +156,36 @@ class CodeGenerator {
       }
 
       if (type.variant === "Function") {
+        appliedTypes.add(type);
         for (const p of type.parameters) {
           processType(p);
         }
         processType(type.returnType);
         this.lr.sortedLoweredTypes.push(type);
-        appliedTypes.add(type);
       } else if (type.variant === "Callable") {
+        appliedTypes.add(type);
         processType(type.functionType);
         this.lr.sortedLoweredTypes.push(type);
-        appliedTypes.add(type);
       } else if (type.variant === "Struct") {
+        appliedTypes.add(type);
         for (const m of type.members) {
-          processType(m.type);
+          // Pointer do not matter, only direct references are bad.
+          if (m.type.variant !== "RawPointer" && m.type.variant !== "Reference") {
+            processType(m.type);
+          }
         }
         this.lr.sortedLoweredTypes.push(type);
-        appliedTypes.add(type);
       } else if (type.variant === "Primitive") {
-        this.lr.sortedLoweredTypes.push(type);
         appliedTypes.add(type);
+        this.lr.sortedLoweredTypes.push(type);
       } else if (type.variant === "RawPointer") {
+        appliedTypes.add(type);
         processType(type.pointee);
         this.lr.sortedLoweredTypes.push(type);
-        appliedTypes.add(type);
       } else if (type.variant === "Reference") {
+        appliedTypes.add(type);
         processType(type.referee);
         this.lr.sortedLoweredTypes.push(type);
-        appliedTypes.add(type);
       } else {
         assert(false);
       }

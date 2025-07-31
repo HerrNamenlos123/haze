@@ -31,6 +31,7 @@ import {
   lookupAndElaborateDatatype,
   instantiateStruct,
   makeReferenceDatatypeAvailable,
+  makeRawPointerDatatypeAvailable,
 } from "./LookupDatatype";
 import { makePrimitiveAvailable, Semantic, type SemanticResult } from "./SemanticSymbols";
 import { serializeDatatype, serializeExpr, serializeNestedName } from "./Serialize";
@@ -414,11 +415,7 @@ export function elaborateExpr(
       });
       return {
         variant: "RawPointerAddressOf",
-        type: {
-          variant: "RawPointerDatatype",
-          pointee: _expr.type,
-          concrete: _expr.type.concrete,
-        },
+        type: makeRawPointerDatatypeAvailable(sr, _expr.type),
         expr: _expr,
         sourceloc: expr.sourceloc,
       };
@@ -1139,6 +1136,7 @@ export function elaborate(
         type: resolvedFunctype,
         export: args.sourceSymbol.export,
         staticMethod: false,
+        noemit: args.sourceSymbol.noemit,
         externLanguage: args.sourceSymbol.externLanguage,
         parameterNames: args.sourceSymbol.params.map((p) => p.name),
         methodType: args.sourceSymbol.methodType,
@@ -1525,7 +1523,7 @@ export function elaborate(
   }
 }
 
-export function SemanticallyAnalyze(collectedGlobalScope: Collect.Scope) {
+export function SemanticallyAnalyze(collectedGlobalScope: Collect.Scope, isLibrary: boolean) {
   const sr: SemanticResult = {
     overloadedOperators: [],
 
@@ -1540,30 +1538,35 @@ export function SemanticallyAnalyze(collectedGlobalScope: Collect.Scope) {
     referenceTypeCache: [],
   };
 
-  const context = makeSubstitutionContext();
-
-  collectedGlobalScope.symbolTable.symbols
-    .map((s) => {
-      if (s.variant === "FunctionDefinition" && (s.generics.length !== 0 || s.operatorOverloading))
-        return undefined;
-      return elaborate(sr, {
-        sourceSymbol: s,
-        usageGenerics: [],
-        context: isolateElaborationContext(context),
-      });
-    })
-    .filter((s) => !!s);
+  collectedGlobalScope.symbolTable.symbols.forEach((s) => {
+    if (s.variant === "FunctionDefinition" && (s.generics.length !== 0 || s.operatorOverloading))
+      return undefined;
+    return elaborate(sr, {
+      sourceSymbol: s,
+      usageGenerics: [],
+      context: makeSubstitutionContext(),
+    });
+  });
 
   const mainFunction = sr.elaboratedFuncdefSymbols.find((s) => s.resultSymbol.name === "main");
-  if (!mainFunction) {
-    throw new CompilerError("No main function is defined in global scope", null);
-  }
+  if (!isLibrary) {
+    if (!mainFunction) {
+      throw new CompilerError("No main function is defined in global scope", null);
+    }
 
-  if (
-    mainFunction.resultSymbol.type.returnType.variant !== "PrimitiveDatatype" ||
-    mainFunction.resultSymbol.type.returnType.primitive !== EPrimitive.i32
-  ) {
-    throw new CompilerError("Main function must return i32", mainFunction.resultSymbol.sourceloc);
+    if (
+      mainFunction.resultSymbol.type.returnType.variant !== "PrimitiveDatatype" ||
+      mainFunction.resultSymbol.type.returnType.primitive !== EPrimitive.i32
+    ) {
+      throw new CompilerError("Main function must return i32", mainFunction.resultSymbol.sourceloc);
+    }
+  } else {
+    if (mainFunction) {
+      throw new CompilerError(
+        "main function is defined, but not allowed because module is built as library",
+        null,
+      );
+    }
   }
 
   return sr;

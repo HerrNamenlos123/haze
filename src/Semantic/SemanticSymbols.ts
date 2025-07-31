@@ -113,6 +113,7 @@ export namespace Semantic {
     variant: "FunctionDeclaration";
     name: string;
     type: FunctionDatatypeSymbol;
+    noemit: boolean;
     staticMethod: boolean;
     externLanguage: EExternLanguage;
     parameterNames: string[];
