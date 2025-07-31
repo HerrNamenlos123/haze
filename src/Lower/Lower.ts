@@ -59,21 +59,23 @@ function lowerExpr(
           throw new InternalError("Not implemented");
         }
 
-        const tempCallableValue = storeInTempVarAndGet(calledExpr.type, calledExpr);
+        // Always store a Callable
+        const calledValue = storeInTempVarAndGet(calledExpr.type, calledExpr);
+
         const type = lowerType(lr, expr.type);
-        return storeInTempVarAndGet(type, {
+        const callExpr: Lowered.ExprCallExpr = {
           variant: "ExprCallExpr",
           expr: {
             variant: "ExprMemberAccess",
             memberName: "fn",
             isReference: false,
             type: calledExpr.type,
-            expr: tempCallableValue,
+            expr: calledValue,
           },
           arguments: [
             {
               variant: "ExprMemberAccess",
-              expr: tempCallableValue,
+              expr: calledValue,
               isReference: false,
               memberName: "thisPtr",
               type: thisExpr.type,
@@ -81,7 +83,13 @@ function lowerExpr(
             ...expr.arguments.map((a) => lowerExpr(lr, a, flattened)),
           ],
           type: type,
-        });
+        };
+
+        if (callExpr.type.variant === "Struct" || callExpr.type.variant === "Callable") {
+          return storeInTempVarAndGet(type, callExpr);
+        } else {
+          return callExpr;
+        }
       } else {
         const exprCall: Lowered.ExprCallExpr = {
           variant: "ExprCallExpr",

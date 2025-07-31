@@ -299,10 +299,26 @@ export function elaborateExpr(
           sourceloc: expr.sourceloc,
         };
       } else if (calledExpr.type.variant === "StructDatatype") {
-        throw new CompilerError(
-          `Expression of type Struct ${calledExpr.type.name} is not callable`,
-          expr.sourceloc,
-        );
+        assert(calledExpr.type.originalCollectedSymbol.variant === "StructDefinition");
+        const constructor = [...calledExpr.type.methods].find((m) => m.name === "constructor");
+        if (!constructor) {
+          throw new CompilerError(
+            `Struct ${calledExpr.type.name} is called, but it does not provide a constructor`,
+            expr.sourceloc,
+          );
+        }
+        return {
+          variant: "ExprCall",
+          calledExpr: {
+            variant: "SymbolValue",
+            symbol: constructor,
+            type: constructor.type,
+            sourceloc: expr.sourceloc,
+          },
+          arguments: convertArgs(callingArgs, constructor.type.parameters, constructor.type.vararg),
+          type: constructor.type.returnType,
+          sourceloc: expr.sourceloc,
+        };
       } else if (calledExpr.type.variant === "PrimitiveDatatype") {
         throw new CompilerError(
           `Expression of type ${primitiveToString(calledExpr.type.primitive)} is not callable`,
@@ -1311,7 +1327,7 @@ export function elaborate(
       });
       assert(args.sourceSymbol.returnType);
 
-      if (!args.sourceSymbol.static) {
+      if (!args.sourceSymbol.static && args.sourceSymbol.name !== "constructor") {
         const thisReference = makeReferenceDatatypeAvailable(sr, args.structForMethod);
         parameters.unshift(thisReference);
         parameterNames.unshift("this");
@@ -1367,7 +1383,7 @@ export function elaborate(
         );
         const variableMap = new Map<Collect.Symbol, Semantic.VariableSymbol>();
 
-        if (!symbol.staticMethod) {
+        if (!symbol.staticMethod && symbol.name !== "constructor") {
           defineThisReference(sr, {
             scope: symbol.scope,
             parentStruct: args.structForMethod,
@@ -1462,28 +1478,21 @@ export function elaborate(
     }
 
     case "StructDefinition": {
-      if (args.sourceSymbol.generics.length === 0) {
-        // This is for elaborating all structs that are not generic, for the sole purpose of hitting the user
-        // with compiler errors in concrete, yet unused functions.
-
-        // Always recursively elaborate its parent first. This is very important for the context,
-        // so the struct does not end up under the wrong namespace, if elaborate is called from a usage site.
-
-        const struct = instantiateStruct(sr, {
-          definedStructType: args.sourceSymbol,
-          receivingType: {
-            name: args.sourceSymbol.name,
-            generics: [],
-            variant: "NamedDatatype",
-            sourceloc: args.sourceSymbol.sourceloc,
-            _collect: {},
+      assert(args.usageGenerics);
+      const struct = instantiateStruct(sr, {
+        definedStructType: args.sourceSymbol,
+        receivingType: {
+          name: args.sourceSymbol.name,
+          generics: args.usageGenerics,
+          variant: "NamedDatatype",
+          sourceloc: args.sourceSymbol.sourceloc,
+          _collect: {
+            usedInScope: args.usageInScope,
           },
-          context: args.context,
-        });
-        return struct;
-      } else {
-        return undefined;
-      }
+        },
+        context: args.context,
+      });
+      return struct;
     }
 
     // case "GlobalVariableDefinition": {
@@ -1539,8 +1548,14 @@ export function SemanticallyAnalyze(collectedGlobalScope: Collect.Scope, isLibra
   };
 
   collectedGlobalScope.symbolTable.symbols.forEach((s) => {
-    if (s.variant === "FunctionDefinition" && (s.generics.length !== 0 || s.operatorOverloading))
+    if (s.variant === "FunctionDefinition" && (s.generics.length !== 0 || s.operatorOverloading)) {
       return undefined;
+    }
+
+    if (s.variant === "StructDefinition" && s.generics.length > 0) {
+      return undefined;
+    }
+
     return elaborate(sr, {
       sourceSymbol: s,
       usageGenerics: [],

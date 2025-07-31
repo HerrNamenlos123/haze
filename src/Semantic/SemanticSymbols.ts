@@ -192,6 +192,14 @@ export namespace Semantic {
     concrete: boolean;
   };
 
+  export type ConstantDatatypeSymbol = {
+    variant: "ConstantDatatype";
+    kind: "boolean" | "string" | "number";
+    value: boolean | string | number;
+    sourceloc: SourceLoc;
+    concrete: boolean;
+  };
+
   export type Symbol =
     | VariableSymbol
     | FunctionDefinitionSymbol
@@ -204,7 +212,8 @@ export namespace Semantic {
     | ReferenceDatatypeSymbol
     | CallableDatatypeSymbol
     | DeferredDatatypeSymbol
-    | PrimitiveDatatypeSymbol;
+    | PrimitiveDatatypeSymbol
+    | ConstantDatatypeSymbol;
 
   export type DatatypeSymbol = Extract<Symbol, { variant: `${string}Datatype` }>;
 
@@ -427,6 +436,9 @@ export namespace Semantic {
       }
       if (symbol.variant === "GenericParameterDatatype") {
         throw new InternalError("A Generic Parameter Datatype cannot be defined as a symbol");
+      }
+      if (symbol.variant === "ConstantDatatype") {
+        throw new InternalError("A Constant Datatype cannot be defined as a symbol");
       }
       if (symbol.variant === "PrimitiveDatatype") {
         const name = primitiveToString(symbol.primitive);

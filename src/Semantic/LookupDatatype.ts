@@ -281,6 +281,37 @@ export function lookupAndElaborateDatatype(
       }
     }
 
+    case "StringConstant": {
+      return {
+        variant: "ConstantDatatype",
+        kind: "string",
+        sourceloc: args.datatype.sourceloc,
+        value: args.datatype.value,
+        concrete: true,
+      };
+    }
+
+    case "BooleanConstant": {
+      return {
+        variant: "ConstantDatatype",
+        kind: "boolean",
+        sourceloc: args.datatype.sourceloc,
+        value: args.datatype.value,
+        concrete: true,
+      };
+    }
+
+    case "NumberConstant": {
+      assert(!args.datatype.unit);
+      return {
+        variant: "ConstantDatatype",
+        kind: "number",
+        sourceloc: args.datatype.sourceloc,
+        value: args.datatype.value,
+        concrete: true,
+      };
+    }
+
     // =================================================================================================================
     // =================================================================================================================
     // =================================================================================================================

@@ -125,9 +125,6 @@ function collect(
       }
 
       if (!item.returnType) {
-        // item.returnType = {
-        //   variant: "Deferred",
-        // };
         item.returnType = {
           variant: "NamedDatatype",
           name: "none",
@@ -279,6 +276,16 @@ function collect(
           );
         }
 
+        if (!method.returnType) {
+          method.returnType = {
+            variant: "NamedDatatype",
+            name: "none",
+            generics: [],
+            sourceloc: item.sourceloc,
+            _collect: {},
+          };
+        }
+
         method._collect.fullNamespacePath = [
           ...meta.namespaceStack.map((n) => n.name),
           method.name,
@@ -290,7 +297,7 @@ function collect(
         }
 
         if (method.funcbody?._collect.scope) {
-          if (!method.static) {
+          if (!method.static && method.name !== "constructor") {
             method.funcbody._collect.scope.symbolTable.defineSymbol({
               variant: "VariableDefinitionStatement",
               mutable: false,

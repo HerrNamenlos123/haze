@@ -4,10 +4,46 @@ extern "C" noemit realloc(ptr: none*, newSize: u64): none*;
 extern "C" noemit free(ptr: none*);
 extern "C" noemit memcpy(to: none*, from: none*, length: u64): none*;
 
-// export struct Array<T, Size> {
-//   length: u64;
-//   data: __C_Array<i32, Size>;
+export struct StackArray<T, Size> {
+  length: u64;
+  data: __C_Array<i32, Size>;
+}
+
+struct Array<T> {
+  constructor(arena: Arena): Array<T> {
+    return Array<T> {};
+  }
+
+  set() {
+
+  }
+}
+
+foo() {
+  const arena = Arena();
+  // defer arena.free();
+
+  const array = Array<i32>(arena);
+  array.set();
+}
+
+// struct Node<T> {
+//   value: T;
+//   next: Node<T>;
 // }
+
+struct Arena {
+
+  constructor(): Arena {
+    // const arena: ArenaImpl;
+    // arena.init();
+    return Arena {};
+  }
+
+  // allocate(size: u64): none* {
+  //   return this.__impl.allocate(size);
+  // }
+}
 
 namespace Memory {
   // const DEFAULT_ARENA_SIZE = 16 * 1024 * 1024;
