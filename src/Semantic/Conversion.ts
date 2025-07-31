@@ -253,6 +253,70 @@ export namespace Conversion {
     }
   }
 
+  const SafeImplicitPrimitiveConversionTable = [
+    // Integer
+    {
+      from: EPrimitive.i8,
+      to: [EPrimitive.i16, EPrimitive.i32, EPrimitive.i64],
+    },
+    {
+      from: EPrimitive.i16,
+      to: [EPrimitive.i32, EPrimitive.i64],
+    },
+    {
+      from: EPrimitive.i32,
+      to: [EPrimitive.i64],
+    },
+    {
+      from: EPrimitive.u8,
+      to: [
+        EPrimitive.u16,
+        EPrimitive.u32,
+        EPrimitive.u64,
+        EPrimitive.i16,
+        EPrimitive.i32,
+        EPrimitive.i64,
+      ],
+    },
+    {
+      from: EPrimitive.u16,
+      to: [EPrimitive.i32, EPrimitive.i64, EPrimitive.u32, EPrimitive.u64],
+    },
+    {
+      from: EPrimitive.u32,
+      to: [EPrimitive.i64, EPrimitive.u64],
+    },
+    // Floats
+    {
+      from: EPrimitive.i8,
+      to: [EPrimitive.f32, EPrimitive.f64],
+    },
+    {
+      from: EPrimitive.u8,
+      to: [EPrimitive.f32, EPrimitive.f64],
+    },
+    {
+      from: EPrimitive.i16,
+      to: [EPrimitive.f32, EPrimitive.f64],
+    },
+    {
+      from: EPrimitive.u16,
+      to: [EPrimitive.f32, EPrimitive.f64],
+    },
+    {
+      from: EPrimitive.i32,
+      to: [EPrimitive.f64],
+    },
+    {
+      from: EPrimitive.u32,
+      to: [EPrimitive.f64],
+    },
+    {
+      from: EPrimitive.f32,
+      to: [EPrimitive.f64],
+    },
+  ];
+
   export function IsImplicitConversionAvailable(
     from: Semantic.DatatypeSymbol,
     to: Semantic.DatatypeSymbol,
@@ -267,6 +331,17 @@ export namespace Conversion {
     if (from.variant === "ReferenceDatatype") {
       return IsStructurallyEquivalent(from.referee, to);
     }
+
+    if (from.variant === "PrimitiveDatatype" && to.variant === "PrimitiveDatatype") {
+      for (const conv of SafeImplicitPrimitiveConversionTable) {
+        if (conv.from === from.primitive) {
+          if (conv.to.includes(to.primitive)) {
+            return true;
+          }
+        }
+      }
+    }
+
     return false;
   }
 
@@ -333,6 +408,21 @@ export namespace Conversion {
         type: to,
         sourceloc: sourceloc,
       } satisfies Semantic.ExplicitCastExpr;
+    }
+
+    if (from.type.variant === "PrimitiveDatatype" && to.variant === "PrimitiveDatatype") {
+      for (const conv of SafeImplicitPrimitiveConversionTable) {
+        if (conv.from === from.type.primitive) {
+          if (conv.to.includes(to.primitive)) {
+            return {
+              variant: "ExplicitCast",
+              expr: from,
+              type: to,
+              sourceloc: sourceloc,
+            } satisfies Semantic.ExplicitCastExpr;
+          }
+        }
+      }
     }
 
     throw new ImpossibleSituation();

@@ -1,0 +1,7 @@
+
+main(): i32 {
+    const rootArena = Arena();
+    defer rootArena.free();
+
+    // Stack array with fixed size
+}

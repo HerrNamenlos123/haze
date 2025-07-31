@@ -1,10 +1,4 @@
 
-export struct Result<TSuccess, TError> {
-  success: TSuccess;
-  error: TError;
-  isSuccess: boolean;
-}
-
 // export struct List<_List_T> {
 //   buffer: Memory.Buffer;
 //   length: u64;

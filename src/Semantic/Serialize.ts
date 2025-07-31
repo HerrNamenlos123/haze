@@ -1,5 +1,10 @@
 import { SymbolFlags } from "typescript";
-import { BinaryOperationToString, EExternLanguage, IncrOperationToString } from "../shared/AST";
+import {
+  BinaryOperationToString,
+  EExternLanguage,
+  IncrOperationToString,
+  UnaryOperationToString,
+} from "../shared/AST";
 import { EPrimitive, primitiveToString } from "../shared/common";
 import { assert, ImpossibleSituation, InternalError } from "../shared/Errors";
 import { Semantic } from "./SemanticSymbols";
@@ -175,6 +180,12 @@ export function serializeExpr(expr: Semantic.Expression): string {
   switch (expr.variant) {
     case "BinaryExpr":
       return `(${serializeExpr(expr.left)} ${BinaryOperationToString(expr.operation)} ${serializeExpr(expr.left)})`;
+
+    case "UnaryExpr":
+      return `(${UnaryOperationToString(expr.operation)} ${serializeExpr(expr.expr)})`;
+
+    // case "SizeofExpr":
+    //   return `sizeof<${serializeExpr(expr.datatype)}>`;
 
     case "ExplicitCast":
       return `(${serializeExpr(expr.expr)} as ${serializeDatatype(expr.type)})`;

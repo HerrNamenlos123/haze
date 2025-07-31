@@ -360,6 +360,8 @@ export function instantiateStruct(
     (args.definedStructType._collect.definedInNamespaceOrStruct &&
       elaborate(sr, {
         sourceSymbol: args.definedStructType._collect.definedInNamespaceOrStruct,
+        usageGenerics: [], // We can pass an empty array to silence the assert, because if we have gotten so far
+        // that the child of a generic struct is being elaborated, the parent must certainly be cached already
         context: isolateElaborationContext(args.context),
       })) ||
     null;
@@ -374,6 +376,7 @@ export function instantiateStruct(
     name: args.definedStructType.name,
     generics: generics,
     externLanguage: args.definedStructType.externLanguage,
+    noemit: args.definedStructType.noemit,
     parent: parentNamespace,
     members: [],
     methods: new Set(),
@@ -442,10 +445,13 @@ export function instantiateStruct(
 
   // Now, also elaborate all nested sub structs
   for (const d of args.definedStructType.declarations) {
-    elaborate(sr, {
-      sourceSymbol: d,
-      context: newContext,
-    });
+    if (d.generics.length === 0) {
+      elaborate(sr, {
+        sourceSymbol: d,
+        usageGenerics: [],
+        context: newContext,
+      });
+    }
   }
 
   return struct;

@@ -1,5 +1,11 @@
 import type { Lowered } from "../Lower/LowerTypes";
-import { BinaryOperationToString, EBinaryOperation, EIncrOperation } from "../shared/AST";
+import {
+  BinaryOperationToString,
+  EBinaryOperation,
+  EIncrOperation,
+  EUnaryOperation,
+  UnaryOperationToString,
+} from "../shared/AST";
 import { EPrimitive, EVariableContext, primitiveToString } from "../shared/common";
 import { ModuleType, type ModuleConfig } from "../shared/Config";
 import { assert, ImpossibleSituation, InternalError, printWarningMessage } from "../shared/Errors";
@@ -108,14 +114,16 @@ class CodeGenerator {
           `typedef ${this.primitiveToC(symbol.primitive)} ${this.mangle(symbol)};`,
         );
       } else if (symbol.variant === "Struct") {
-        this.out.type_declarations.writeLine(
-          `typedef struct ${this.mangle(symbol)} ${this.mangle(symbol)};`,
-        );
-        this.out.type_definitions.writeLine(`struct ${this.mangle(symbol)} {`).pushIndent();
-        for (const member of symbol.members) {
-          this.out.type_definitions.writeLine(`${this.mangle(member.type)} ${member.name};`);
+        if (!symbol.noemit) {
+          this.out.type_declarations.writeLine(
+            `typedef struct ${this.mangle(symbol)} ${this.mangle(symbol)};`,
+          );
+          this.out.type_definitions.writeLine(`struct ${this.mangle(symbol)} {`).pushIndent();
+          for (const member of symbol.members) {
+            this.out.type_definitions.writeLine(`${this.mangle(member.type)} ${member.name};`);
+          }
+          this.out.type_definitions.popIndent().writeLine(`};`).writeLine();
         }
-        this.out.type_definitions.popIndent().writeLine(`};`).writeLine();
       } else if (symbol.variant === "RawPointer") {
         this.out.type_declarations.writeLine(
           `typedef ${this.mangle(symbol.pointee)}* ${this.mangle(symbol)};`,
@@ -487,32 +495,22 @@ class CodeGenerator {
         return { out: outWriter, temp: tempWriter };
       }
 
-      // case "Unary":
-      //   switch (expr.operation) {
-      //     case "!": {
-      //       const exprWriter = this.emitExpr(expr.expr);
-      //       tempWriter.write(exprWriter.temp);
-      //       const unaryExpr = implicitConversion(
-      //         expr.expr.type,
-      //         expr.type,
-      //         exprWriter.out.get(),
-      //         this.module.currentScope,
-      //         expr.expr.location,
-      //         this.module,
-      //       );
-      //       outWriter.write("(!" + unaryExpr + ")");
-      //       break;
-      //     }
-
-      //     case "+":
-      //     case "-": {
-      //       const exprWriter = this.emitExpr(expr.expr);
-      //       tempWriter.write(exprWriter.temp);
-      //       outWriter.write("(" + expr.operation + exprWriter.out.get() + ")");
-      //       break;
-      //     }
-      //   }
-      //   return { out: outWriter, temp: tempWriter };
+      case "UnaryExpr":
+        switch (expr.operation) {
+          case EUnaryOperation.Minus:
+          case EUnaryOperation.Plus:
+          case EUnaryOperation.Negate: {
+            const writer = this.emitExpr(expr.expr);
+            tempWriter.write(writer.temp);
+            outWriter.write(
+              "(" + UnaryOperationToString(expr.operation) + "(" + writer.out.get() + "))",
+            );
+            break;
+          }
+          default:
+            assert(false);
+        }
+        return { out: outWriter, temp: tempWriter };
 
       case "BinaryExpr":
         switch (expr.operation) {

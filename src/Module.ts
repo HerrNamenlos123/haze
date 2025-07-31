@@ -145,6 +145,7 @@ class Cache {
 
 export class ProjectCompiler {
   cache: Cache = new Cache();
+  globalBuildDir: string = "";
 
   constructor() {}
 
@@ -154,7 +155,6 @@ export class ProjectCompiler {
       config = await parseConfig();
     } else {
       config = {
-        buildDir: join(process.cwd(), "__haze__"),
         configFilePath: undefined,
         dependencies: [],
         linkerFlags: [],
@@ -179,17 +179,29 @@ export class ProjectCompiler {
     if (!config) {
       return false;
     }
+    this.globalBuildDir = join(process.cwd(), "__haze__");
+
     if (!singleFilename) {
-      await this.cache.load(join(config.buildDir, "cache.json"));
+      await this.cache.load(join(this.globalBuildDir, "cache.json"));
     }
-    const mainModule = new ModuleCompiler(config, this.cache);
+    const mainModule = new ModuleCompiler(
+      config,
+      this.cache,
+      this.globalBuildDir,
+      join(this.globalBuildDir, config.projectName),
+    );
 
     if (!mainModule.config.nostdlib) {
       const stdlibConfig = await parseConfig(join(getStdlibDirectory(), "core"));
       if (!stdlibConfig) {
         return false;
       }
-      const stdlibModule = new ModuleCompiler(stdlibConfig, this.cache);
+      const stdlibModule = new ModuleCompiler(
+        stdlibConfig,
+        this.cache,
+        this.globalBuildDir,
+        join(this.globalBuildDir, stdlibConfig.projectName),
+      );
       if (!(await stdlibModule.build())) {
         return false;
       }
@@ -205,7 +217,12 @@ export class ProjectCompiler {
           return false;
         }
 
-        const depModule = new ModuleCompiler(config, this.cache);
+        const depModule = new ModuleCompiler(
+          config,
+          this.cache,
+          this.globalBuildDir,
+          join(this.globalBuildDir, config.projectName),
+        );
         if (!(await depModule.build())) {
           return false;
         }
@@ -230,12 +247,14 @@ export class ProjectCompiler {
 
       if (config?.moduleType === ModuleType.Library) {
         throw new GeneralError(
-          `This module is a library and cannot be executed. Use 'hz build' to build it.`,
+          `This module is a library and cannot be executed. Use 'haze build' to build it instead.`,
         );
       }
 
-      const moduleBuildDir = join(config.buildDir, config.projectName);
-      const moduleExecutable = join(moduleBuildDir, config.projectName);
+      const moduleExecutable = join(
+        join(this.globalBuildDir, config.projectName),
+        config.projectName,
+      );
       child_process.execSync(`${moduleExecutable} ${args?.join(" ")}`, {
         stdio: "inherit",
       });
@@ -280,15 +299,9 @@ class ModuleCompiler {
   constructor(
     public config: ModuleConfig,
     public cache: Cache,
+    public globalBuildDir: string,
+    public moduleBuildDir: string,
   ) {}
-
-  get globalBuildDir() {
-    return this.config.buildDir;
-  }
-
-  get moduleBuildDir() {
-    return join(this.config.buildDir, this.config.projectName);
-  }
 
   addSourceFromString(text: string, filename: string) {
     CollectSymbols(this.cr, Parser.parseTextToAST(text, filename), {
@@ -357,6 +370,7 @@ class ModuleCompiler {
       await Bun.file(moduleCFile).write(code);
 
       const compilerFlags = this.config.compilerFlags;
+      compilerFlags.push("-Wno-parentheses-equality");
       if (this.config.moduleType === ModuleType.Executable) {
         const [libs, linkerFlags] = await this.loadDependencyBinaries();
         const cmd = `${C_COMPILER} -g ${moduleCFile} -o ${moduleExecutable} -I${this.config.srcDirectory} ${libs.join(" ")} ${compilerFlags.join(" ")} ${linkerFlags.join(" ")} -std=c11`;
@@ -371,8 +385,8 @@ class ModuleCompiler {
         };
 
         const exportedDeclarations = new Set<string>();
-        // for (const [name, s] of this.module.exportSymbols) {
-        // exportedDeclarations.add(generateSymbolUsageHazeCode(s).get());
+        // for (const [name, s] of this.exportSymbols) {
+        //   exportedDeclarations.add(generateSymbolUsageHazeCode(s).get());
         // }
 
         const moduleMetadata: ModuleMetadata = {
@@ -483,8 +497,16 @@ class ModuleCompiler {
   }
 
   private async addInternalBuiltinSources() {
-    const filename = join(join(getStdlibDirectory(), "internal"), "internal.hz");
-    const internal = await Bun.file(filename).text();
-    this.addSourceFromString(internal, filename);
+    function listFilesInDir(dir: string): string[] {
+      return readdirSync(dir)
+        .map((name) => join(dir, name))
+        .filter((path) => statSync(path).isFile());
+    }
+
+    const files = listFilesInDir(join(getStdlibDirectory(), "internal"));
+    for (const file of files) {
+      const internal = await Bun.file(file).text();
+      this.addSourceFromString(internal, file);
+    }
   }
 }

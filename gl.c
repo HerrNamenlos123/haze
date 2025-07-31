@@ -66,105 +66,105 @@
 #include <string.h>
 #define CLAY_IMPLEMENTATION
 #define RSGL_IMPLEMENTATION
-#include "clay/renderers/RSGL/clay_renderer_RSGL.c"
+// #include "clay/renderers/RSGL/clay_renderer_RSGL.c"
 
-#include "clay/examples/RSGL_rendering/GLFW_windowing/clay_backend_glfw.c"
+// #include "clay/examples/RSGL_rendering/GLFW_windowing/clay_backend_glfw.c"
 
-#include "clay/clay.h"
+// #include "clay/clay.h"
 
 int FONT_ID_BODY_16 = 0;
 
-void HandleClayErrors(Clay_ErrorData errorData)
-{
-  // See the Clay_ErrorData struct for more information
-  printf("%s", errorData.errorText.chars);
-  // switch (errorData.errorType) {
-  //   // etc
-  // }
-}
+// void HandleClayErrors(Clay_ErrorData errorData)
+// {
+//   // See the Clay_ErrorData struct for more information
+//   printf("%s", errorData.errorText.chars);
+//   // switch (errorData.errorType) {
+//   //   // etc
+//   // }
+// }
 
-void ButtonComponent(Clay_String buttonText)
-{
-  // Red box button with 8px of padding
-  // CLAY({ .layout = { .padding = CLAY_PADDING_ALL(8) }, .backgroundColor = COLOR_RED })
-  // {
-  //   CLAY_TEXT(buttonText, CLAY_TEXT_CONFIG({ .fontSize = 24, .textColor = { 255, 255, 255, 255 } }));
-  // }
-}
+// void ButtonComponent(Clay_String buttonText)
+// {
+//   // Red box button with 8px of padding
+//   // CLAY({ .layout = { .padding = CLAY_PADDING_ALL(8) }, .backgroundColor = COLOR_RED })
+//   // {
+//   //   CLAY_TEXT(buttonText, CLAY_TEXT_CONFIG({ .fontSize = 24, .textColor = { 255, 255, 255, 255 } }));
+//   // }
+// }
 
-static void CreateLayout()
-{
-  // Clay_Sizing layoutExpand = { .width = CLAY_SIZING_GROW(), .height = CLAY_SIZING_GROW() };
+// static void CreateLayout()
+// {
+//   // Clay_Sizing layoutExpand = { .width = CLAY_SIZING_GROW(), .height = CLAY_SIZING_GROW() };
 
-  // Clay_RectangleElementConfig contentBackgroundConfig = { .color = { 90, 90, 90, 255 }, .cornerRadius = 8 };
+//   // Clay_RectangleElementConfig contentBackgroundConfig = { .color = { 90, 90, 90, 255 }, .cornerRadius = 8 };
 
-  // CLAY_TEXT(CLAY_STRING("Clay - UI Library"),
-  //           CLAY_TEXT_CONFIG({ .fontSize = 24, .textColor = { 255, 255, 255, 255 } }));
+//   // CLAY_TEXT(CLAY_STRING("Clay - UI Library"),
+//   //           CLAY_TEXT_CONFIG({ .fontSize = 24, .textColor = { 255, 255, 255, 255 } }));
 
-  // CLAY({ .layout = { .sizing = { CLAY_SIZING_FIXED(400), CLAY_SIZING_FIXED(200) } },
-  //        .backgroundColor = { 217, 91, 67, 255 } }) {};
-}
+//   // CLAY({ .layout = { .sizing = { CLAY_SIZING_FIXED(400), CLAY_SIZING_FIXED(200) } },
+//   //        .backgroundColor = { 217, 91, 67, 255 } }) {};
+// }
 
-void initClayAndRSGL(GLFWwindow* window)
-{
-  int width = 0;
-  int height = 0;
-  glfwGetWindowSize(window, &width, &height);
-  RSGL_init((RSGL_area) { width, height }, glfwGetProcAddress);
-  FONT_ID_BODY_16 = RSGL_loadFont("clay/examples/RSGL_rendering/GLFW_windowing/resources/Roboto-Regular.ttf");
-  RSGL_setFont(FONT_ID_BODY_16);
+// void initClayAndRSGL(GLFWwindow* window)
+// {
+//   int width = 0;
+//   int height = 0;
+//   glfwGetWindowSize(window, &width, &height);
+//   RSGL_init((RSGL_area) { width, height }, glfwGetProcAddress);
+//   FONT_ID_BODY_16 = RSGL_loadFont("clay/examples/RSGL_rendering/GLFW_windowing/resources/Roboto-Regular.ttf");
+//   RSGL_setFont(FONT_ID_BODY_16);
 
-  uint64_t totalMemorySize = Clay_MinMemorySize();
-  Clay_Arena clayMemory = Clay_CreateArenaWithCapacityAndMemory(totalMemorySize, malloc(totalMemorySize));
+//   uint64_t totalMemorySize = Clay_MinMemorySize();
+//   Clay_Arena clayMemory = Clay_CreateArenaWithCapacityAndMemory(totalMemorySize, malloc(totalMemorySize));
 
-  Clay_Initialize(
-      clayMemory, (Clay_Dimensions) { (float)width, (float)height }, (Clay_ErrorHandler) { HandleClayErrors });
-  u32 NOW = glfwGetTime();
-  u32 LAST = 0;
-  double deltaTime = 0;
+//   Clay_Initialize(
+//       clayMemory, (Clay_Dimensions) { (float)width, (float)height }, (Clay_ErrorHandler) { HandleClayErrors });
+//   u32 NOW = glfwGetTime();
+//   u32 LAST = 0;
+//   double deltaTime = 0;
 
-  Clay_SetMeasureTextFunction(RSGL_MeasureText, NULL);
+//   Clay_SetMeasureTextFunction(RSGL_MeasureText, NULL);
 
-  clay_GLFW_callbackInit(window);
-}
+//   clay_GLFW_callbackInit(window);
+// }
 
-void text(char* text, int fontSize)
-{
-  Clay_String string = (Clay_String) { .chars = text, .length = strlen(text) };
-  CLAY_TEXT(string, CLAY_TEXT_CONFIG({ .fontSize = fontSize, .textColor = { 255, 255, 255, 255 } }));
-}
+// void text(char* text, int fontSize)
+// {
+//   Clay_String string = (Clay_String) { .chars = text, .length = strlen(text) };
+//   CLAY_TEXT(string, CLAY_TEXT_CONFIG({ .fontSize = fontSize, .textColor = { 255, 255, 255, 255 } }));
+// }
 
-void _div(void (*cb)(void))
-{
-  CLAY({ .layout = { .sizing = { CLAY_SIZING_FIXED(400), CLAY_SIZING_FIXED(200) } },
-         .backgroundColor = { 217, 91, 67, 255 } })
-  {
-    if (cb) {
-      cb();
-    }
-  }
-}
+// void _div(void (*cb)(void))
+// {
+//   CLAY({ .layout = { .sizing = { CLAY_SIZING_FIXED(400), CLAY_SIZING_FIXED(200) } },
+//          .backgroundColor = { 217, 91, 67, 255 } })
+//   {
+//     if (cb) {
+//       cb();
+//     }
+//   }
+// }
 
-void beginFrame()
-{
-  RSGL_clear(RSGL_RGB(0, 0, 0));
-  Clay_BeginLayout();
-}
+// void beginFrame()
+// {
+//   RSGL_clear(RSGL_RGB(0, 0, 0));
+//   Clay_BeginLayout();
+// }
 
-void frame()
-{
-  CreateLayout();
-  // RSGL_drawTriangle(
-  //     (RSGL_triangle) { .p1 = (RSGL_point) { 0, 0 }, .p1 = (RSGL_point) { 0, 0 }, .p1 = (RSGL_point) { 0, 0 } },
-  //     RSGL_RGB());
+// void frame()
+// {
+//   CreateLayout();
+//   // RSGL_drawTriangle(
+//   //     (RSGL_triangle) { .p1 = (RSGL_point) { 0, 0 }, .p1 = (RSGL_point) { 0, 0 }, .p1 = (RSGL_point) { 0, 0 } },
+//   //     RSGL_RGB());
 
-  // Draw a green line
-}
+//   // Draw a green line
+// }
 
-void endFrame()
-{
-  Clay_RSGL_Render(Clay_EndLayout());
-  RSGL_draw();
-}
+// void endFrame()
+// {
+//   Clay_RSGL_Render(Clay_EndLayout());
+//   RSGL_draw();
+// }
 
-void destroyClayAndRSGL(GLFWwindow* window) { RSGL_free(); }
+// void destroyClayAndRSGL(GLFWwindow* window) { RSGL_free(); }

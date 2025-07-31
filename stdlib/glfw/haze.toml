@@ -3,8 +3,8 @@ version = "1.0.0"
 description = "GLFW support for Haze"
 license = "MIT"
 authors = ["HerrNamenlos123"]
-type = "lib"
-src = "."
+# type = "lib"
+# src = "."
 
 [linker]
 flags = ["-lm", "-lglfw3", "-lGL", "-lpthread"]

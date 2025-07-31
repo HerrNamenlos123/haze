@@ -2,70 +2,54 @@
 inject "#include <GLFW/glfw3.h>";
 inject "#include <math.h>";
 
-export extern "C" struct GLFWwindow {};
-extern "C" struct GLFWmonitor {};
-extern "C" glfwInit(): boolean;
-extern "C" glfwTerminate(): none;
-extern "C" glfwMakeContextCurrent(w: RawPtr<GLFWwindow>);
-extern "C" glfwWindowShouldClose(w: RawPtr<GLFWwindow>): boolean;
-extern "C" glfwCreateWindow(width: i32, height: i32, title: stringview, monitor: RawPtr<GLFWmonitor>, share: RawPtr<GLFWwindow>): RawPtr<GLFWwindow>;
-extern "C" glClear(flag: i64): boolean;
-extern "C" glfwSwapBuffers(w: RawPtr<GLFWwindow>);
-extern "C" glfwPollEvents();
-extern "C" glfwSwapInterval(flag: i8);
-extern "C" glfwGetTime(): f64;
-extern "C" glfwGetKey(w: RawPtr<GLFWwindow>, key: i32): i32;
-extern "C" glfwGetMouseButton(w: RawPtr<GLFWwindow>, button: i32): i32;
+export extern "C" noemit struct GLFWwindow {};
+extern "C" noemit struct GLFWmonitor {};
+extern "C" noemit glfwInit(): boolean;
+extern "C" noemit glfwTerminate(): none;
+extern "C" noemit glfwMakeContextCurrent(w: GLFWwindow*);
+extern "C" noemit glfwWindowShouldClose(w: GLFWwindow*): boolean;
+extern "C" noemit glfwCreateWindow(width: i32, height: i32, title: str, monitor: GLFWmonitor*, share: GLFWwindow*): GLFWwindow*;
+extern "C" noemit glClear(flag: i64): boolean;
+extern "C" noemit glfwSwapBuffers(w: GLFWwindow*);
+extern "C" noemit glfwPollEvents();
+extern "C" noemit glfwSwapInterval(flag: i8);
+extern "C" noemit glfwGetTime(): f64;
+extern "C" noemit glfwGetKey(w: GLFWwindow*, key: i32): i32;
+extern "C" noemit glfwGetMouseButton(w: GLFWwindow*, button: i32): i32;
 
-extern "C" initClayAndRSGL(window: RawPtr<GLFWwindow>);
-extern "C" beginFrame();
-extern "C" frame();
-extern "C" endFrame();
-extern "C" destroyClayAndRSGL(window: RawPtr<GLFWwindow>);
-
-extern "C" text(text: stringview, fontSize: i32);
-
-inject "#include \"../../gl.c\"";
+// inject "#include \"../../../gl.c\"";
 // prebuildcmd "pkg-config --version";
 // link "$(pkg-config --cflags --libs gtk+-3.0)"
 // link "$(pkg-config --cflags --libs appindicator3-0.1)"
 // link "-lGL -Iclay -lm -lglfw"
 
-div(cb: () => none) {
-  __c__("Clay_ElementDeclaration elem = { .layout = { .sizing = { CLAY_SIZING_FIXED(400), CLAY_SIZING_FIXED(200) } }, .backgroundColor = { 217, 91, 67, 255 } };");
-  __c__("CLAY(elem) {");
-    // if (cb) {
-      cb();
-    // }
-  __c__("}");
-}
+// div(cb: () => none) {
+//   __c__("Clay_ElementDeclaration elem = { .layout = { .sizing = { CLAY_SIZING_FIXED(400), CLAY_SIZING_FIXED(200) } }, .backgroundColor = { 217, 91, 67, 255 } };");
+//   __c__("CLAY(elem) {");
+//     // if (cb) {
+//       cb();
+//     // }
+//   __c__("}");
+// }
 
 struct Window {
-    glfwWindow: RawPtr<GLFWwindow>;
+    glfwWindow: GLFWwindow*;
 
-    constructor(width: i32, height: i32, title: stringview): Result<Window, stringview> {
+    constructor(width: i32, height: i32, title: str): Result<Window, str> {
       __c__("glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);");
       __c__("glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);");
       __c__("glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);");
-      const window = glfwCreateWindow(width, height, title, 0 as RawPtr<GLFWmonitor>, 0 as RawPtr<GLFWwindow>);
+      const window = glfwCreateWindow(width, height, title, 0 as GLFWmonitor*, 0 as GLFWwindow*);
       if not window {
-          return Result<Window, stringview> {
-            .error: "Window creation failed",
-            .isSuccess: false,
-          };
+          return Result<Window, str>.error("Window creation failed");
       }
 
       glfwMakeContextCurrent(window);
-      glfwSwapInterval(1);
+      glfwSwapInterval(1 as i8);
 
-      initClayAndRSGL(window);
+      // initClayAndRSGL(window);
 
-      return Result<Window, stringview> {
-        .success: Window {
-          .glfwWindow: window,
-        },
-        .isSuccess: true,
-      };
+      return Result<Window, str>.success(Window { glfwWindow: window });
     }
 
     makeContextCurrent() {
@@ -73,7 +57,7 @@ struct Window {
     }
 
     setVSync(enabled: boolean) {
-      glfwSwapInterval(enabled);
+      glfwSwapInterval(enabled as i8);
     }
 
     shouldClose(): boolean {
@@ -89,7 +73,7 @@ struct Window {
     }
 
     getCursorPos(): Vec2 {
-      const pos = Vec2(0, 0);
+      const pos = Vec2(0 as f64, 0 as f64);
       __c__("glfwGetCursorPos(this->glfwWindow, &pos.x, &pos.y)");
       return pos;
     }
@@ -107,21 +91,21 @@ drawLine(p1: Vec2, p2: Vec2, thickness: f64, color: Color) {
   if thickness > 7 {
     thickness = 7;
   }
-  __c__("RSGL_drawLine((RSGL_point) { p1.x, p1.y }, (RSGL_point) { p2.x, p2.y }, thickness, RSGL_RGB(color.r, color.g, color.b))");
-  __c__("RSGL_drawCircle((RSGL_circle) { p1.x - thickness / 2.0, p1.y - thickness / 2.0, thickness }, RSGL_RGB(color.r, color.g, color.b))");
-  __c__("RSGL_drawCircle((RSGL_circle) { p2.x - thickness / 2.0, p2.y - thickness / 2.0, thickness }, RSGL_RGB(color.r, color.g, color.b))");
+  // __c__("RSGL_drawLine((RSGL_point) { p1.x, p1.y }, (RSGL_point) { p2.x, p2.y }, thickness, RSGL_RGB(color.r, color.g, color.b))");
+  // __c__("RSGL_drawCircle((RSGL_circle) { p1.x - thickness / 2.0, p1.y - thickness / 2.0, thickness }, RSGL_RGB(color.r, color.g, color.b))");
+  // __c__("RSGL_drawCircle((RSGL_circle) { p2.x - thickness / 2.0, p2.y - thickness / 2.0, thickness }, RSGL_RGB(color.r, color.g, color.b))");
 }
 
 drawCircle(center: Vec2, radius: i16, color: Color) {
-  __c__("RSGL_drawCircle((RSGL_circle) { center.x - radius, center.y - radius, radius * 2 }, RSGL_RGB(color.r, color.g, color.b))");
+  // __c__("RSGL_drawCircle((RSGL_circle) { center.x - radius, center.y - radius, radius * 2 }, RSGL_RGB(color.r, color.g, color.b))");
 }
 
 drawTriangle(p1: Vec2, p2: Vec2, p3: Vec2, color: Color) {
-  __c__("RSGL_drawTriangle((RSGL_triangle) { .p1 = (RSGL_point) { p1.x, p1.y }, .p2 = (RSGL_point) { p2.x, p2.y }, .p3 = (RSGL_point) { p3.x, p3.y } }, RSGL_RGB(color.r, color.g, color.b))");
+  // __c__("RSGL_drawTriangle((RSGL_triangle) { .p1 = (RSGL_point) { p1.x, p1.y }, .p2 = (RSGL_point) { p2.x, p2.y }, .p3 = (RSGL_point) { p3.x, p3.y } }, RSGL_RGB(color.r, color.g, color.b))");
 }
 
 drawVector(vector: Vec2, position: Vec2, color: Color) {
-  const arrowLength = 25.0;
+  const arrowLength = 25.0 as f64;
   const arrowAngle = Math.degToRad(30);
   const lineThickness = 2;
 
@@ -142,25 +126,25 @@ getTime(): f64 {
   return glfwGetTime();
 }
 
-extern "C" glfwPlatformSupported(flag: i32): boolean;
-extern "C" glfwInitHint(a: i32, b: i32);
+extern "C" noemit glfwPlatformSupported(flag: i32): boolean;
+extern "C" noemit glfwInitHint(a: i32, b: i32);
 
 // extern "C" const GLFW_PLATFORM_WAYLAND: i32;
 // extern "C" const GLFW_PLATFORM: i32;
 
 export TM2(): i32 { 
   if not glfwInit() {
-    ctx.log.error("Initializing GLFW failed");
+    printf("Initializing GLFW failed\n");
     return 0;
   }
 
   const windowResult = Window(1080, 720, "Test 1");
   if not windowResult.isSuccess {
-      Console.print("%s\n", windowResult.error);
+      printf("%s\n", windowResult.errorValue);
       glfwTerminate();
       return 0;
   }
-  const window = windowResult.success;
+  const window = windowResult.successValue;
 
   const v_phi_const = 50;
   const R = 300;
@@ -172,11 +156,11 @@ export TM2(): i32 {
   const oldTime = getTime();
   const startTime = getTime();
 
-  const path = List<Vec2>();
+  // const path = List<Vec2>();
 
   while !window.shouldClose() {
-    beginFrame();
-    frame();
+    // beginFrame();
+    // frame();
 
     // text("Hallo cooler Test!", 60);
     // div(() => {
@@ -196,7 +180,7 @@ export TM2(): i32 {
       velocity = Vec2(0, v_phi_const);
       acceleration = Vec2(0, 0);
       startTime = getTime();
-      path.clear();
+      // path.clear();
     }
 
     const origin = Vec2(200, 600);
@@ -207,7 +191,7 @@ export TM2(): i32 {
       velocity = Vec2(0, v_phi_const);
       acceleration = Vec2(0, 0);
       startTime = getTime();
-      path.clear();
+      // path.clear();
     }
 
     // =========================================
@@ -233,13 +217,13 @@ export TM2(): i32 {
     velocity = velocity.add(acceleration.mul(dt));
     P = P.add(velocity.mul(dt));
 
-    path.push(P);
+    // path.push(P);
 
-    const a = 0;
-    while a < path.length - 1 {
-      drawLine(origin.add(Vec2(path.get(a).x, -path.get(a).y)), origin.add(Vec2(path.get(a + 1).x, -path.get(a + 1).y)), 1, Color(255, 255, 255));
-      a++;
-    }
+    // const a = 0;
+    // while a < path.length - 1 {
+    //   drawLine(origin.add(Vec2(path.get(a).x, -path.get(a).y)), origin.add(Vec2(path.get(a + 1).x, -path.get(a + 1).y)), 1, Color(255, 255, 255));
+    //   a++;
+    // }
 
     drawVector(Vec2(600, 0), origin, Color(255, 255, 255));
     drawVector(Vec2(0, -500), origin, Color(255, 255, 255));
@@ -261,11 +245,11 @@ export TM2(): i32 {
 
     drawCircle(origin.add(Vec2(P.x, -P.y)), 5, Color(0, 255, 0));
 
-    endFrame();
+    // endFrame();
     window.swapBuffers();
   }
 
-  destroyClayAndRSGL(window.glfwWindow);
+  // destroyClayAndRSGL(window.glfwWindow);
 
   glfwTerminate();
   return 0;

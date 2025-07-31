@@ -94,22 +94,8 @@ inject "#include <stdio.h>";
 //     printf("Arg: %d\n", arg);
 // }
 
-struct ArenaChunk {
-
-}
-
-struct Arena {
-    next: ArenaChunk*;
-
-    static create(): Arena {
-        return Arena {
-            .next = 0 as ArenaChunk*
-        };
-    }
-}
-
 main(): i32 => {
-    const rootArena = Arena.create();
+    const rootArena = Arena();
 
     return 0;
 }

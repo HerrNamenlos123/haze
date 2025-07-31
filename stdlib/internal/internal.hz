@@ -13,7 +13,7 @@ struct SharedPtr<T> {
 struct Factory<T> {
   makeShared(size: u64): SharedPtr<T> {
     return SharedPtr<T> {
-      .target = malloc(size) as T*,
+      target: malloc(size) as T*,
     };
   }
 }

@@ -8,7 +8,12 @@ import {
   serializeExpr,
   serializeNestedName,
 } from "../Semantic/Serialize";
-import { BinaryOperationToString, EExternLanguage, IncrOperationToString } from "../shared/AST";
+import {
+  BinaryOperationToString,
+  EExternLanguage,
+  IncrOperationToString,
+  UnaryOperationToString,
+} from "../shared/AST";
 import { EPrimitive, EVariableContext } from "../shared/common";
 import { assert, ImpossibleSituation, InternalError } from "../shared/Errors";
 import { makeTempName } from "../shared/store";
@@ -111,6 +116,15 @@ function lowerExpr(
         variant: "BinaryExpr",
         left: lowerExpr(lr, expr.left, flattened),
         right: lowerExpr(lr, expr.right, flattened),
+        operation: expr.operation,
+        type: lowerType(lr, expr.type),
+      };
+    }
+
+    case "UnaryExpr": {
+      return {
+        variant: "UnaryExpr",
+        expr: lowerExpr(lr, expr.expr, flattened),
         operation: expr.operation,
         type: lowerType(lr, expr.type),
       };
@@ -302,9 +316,10 @@ function lowerType(lr: Lowered.Module, type: Semantic.DatatypeSymbol): Lowered.D
     } else {
       const p: Lowered.StructDatatype = {
         variant: "Struct",
+        noemit: type.noemit,
         prettyName: serializeDatatype(type),
         mangledName: mangleDatatype(type),
-        wasMangled: true,
+        wasMangled: type.externLanguage !== EExternLanguage.Extern_C,
         generics: type.generics.map((id) => lowerType(lr, id)),
         members: [],
       };
@@ -562,6 +577,9 @@ function lower(lr: Lowered.Module, symbol: Semantic.Symbol) {
       throw new InternalError("No deferred type should exist in lowering");
 
     case "StructDatatype": {
+      if (symbol.noemit) {
+        return undefined;
+      }
       for (const g of symbol.generics) {
         if (g.variant === "GenericParameterDatatype") {
           return undefined;
@@ -646,6 +664,9 @@ function serializeLoweredExpr(expr: Lowered.Expression): string {
   switch (expr.variant) {
     case "BinaryExpr":
       return `(${serializeLoweredExpr(expr.left)} ${BinaryOperationToString(expr.operation)} ${serializeLoweredExpr(expr.left)})`;
+
+    case "UnaryExpr":
+      return `(${UnaryOperationToString(expr.operation)}${serializeLoweredExpr(expr.expr)})`;
 
     case "ExplicitCast":
       return `(${serializeLoweredExpr(expr.expr)} as ${expr.type.prettyName})`;

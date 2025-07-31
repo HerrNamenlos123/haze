@@ -503,6 +503,7 @@ export type ASTStructDefinition = {
   export: boolean;
   externLanguage: EExternLanguage;
   name: string;
+  noemit: boolean;
   generics: Collect.GenericParameter[];
   members: ASTStructMemberDefinition[];
   methods: ASTStructMethodDefinition[];

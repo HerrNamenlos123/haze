@@ -1,5 +1,10 @@
 import type { Semantic, SemanticResult } from "../Semantic/SemanticSymbols";
-import type { EBinaryOperation, EExternLanguage, EIncrOperation } from "../shared/AST";
+import type {
+  EBinaryOperation,
+  EExternLanguage,
+  EIncrOperation,
+  EUnaryOperation,
+} from "../shared/AST";
 import type { EPrimitive, EVariableContext } from "../shared/common";
 import type { SourceLoc } from "../shared/Errors";
 import type { CollectResult } from "../SymbolCollection/CollectSymbols";
@@ -25,6 +30,13 @@ export namespace Lowered {
     left: Expression;
     operation: EBinaryOperation;
     right: Expression;
+    type: Datatype;
+  };
+
+  export type UnaryExpr = {
+    variant: "UnaryExpr";
+    expr: Expression;
+    operation: EUnaryOperation;
     type: Datatype;
   };
 
@@ -123,6 +135,7 @@ export namespace Lowered {
   export type Expression =
     | ExprCallExpr
     | BinaryExpr
+    | UnaryExpr
     | CallableExpr
     | StructInstantiationExpr
     | ExprAssignmentExpr
@@ -262,6 +275,7 @@ export namespace Lowered {
 
   export type StructDatatype = {
     variant: "Struct";
+    noemit: boolean;
     prettyName: string;
     mangledName: string;
     wasMangled: boolean;

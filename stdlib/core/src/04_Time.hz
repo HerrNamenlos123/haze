@@ -12,7 +12,7 @@ namespace Time {
 
     constructor(nanoseconds: u64): Duration {
       return Duration {
-        .nanoseconds = nanoseconds,
+        nanoseconds: nanoseconds,
       };
     }
   }

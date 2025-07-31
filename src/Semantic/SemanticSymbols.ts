@@ -5,6 +5,7 @@ import type {
   EExternLanguage,
   EIncrOperation,
   EOperator,
+  EUnaryOperation,
 } from "../shared/AST";
 import {
   EVariableContext,
@@ -135,6 +136,7 @@ export namespace Semantic {
   export type StructDatatypeSymbol = {
     variant: "StructDatatype";
     name: string;
+    noemit: boolean;
     generics: DatatypeSymbol[];
     externLanguage: EExternLanguage;
     members: VariableSymbol[];
@@ -294,6 +296,14 @@ export namespace Semantic {
     sourceloc: SourceLoc;
   };
 
+  export type UnaryExpr = {
+    variant: "UnaryExpr";
+    expr: Expression;
+    operation: EUnaryOperation;
+    type: DatatypeSymbol;
+    sourceloc: SourceLoc;
+  };
+
   export type PostIncrExpr = {
     variant: "PostIncrExpr";
     expr: Expression;
@@ -341,6 +351,7 @@ export namespace Semantic {
     | NamespaceValueExpr
     | SizeofExpr
     | ExprAssignmentExpr
+    | UnaryExpr
     | BinaryExpr
     | CallableExpr
     | PreIncrExpr

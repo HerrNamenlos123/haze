@@ -86,7 +86,7 @@ structContent
     ;
 
 structDefinition
-    : (export='export')? (extern='extern' externLang=externLanguage)? 'struct' ID ('<' ID (',' ID)* '>')? '{' (content+=structContent)* '}' (';')?
+    : (export='export')? (extern='extern' externLang=externLanguage noemit='noemit'?)? 'struct' ID ('<' ID (',' ID)* '>')? '{' (content+=structContent)* '}' (';')?
     ;
 
 typeDefinition
@@ -107,7 +107,7 @@ expr
     | expr '(' (expr (',' expr)*)? ')'                                              #ExprCallExpr
     // <- Array Subscripting here: expr[]
     | expr '.' ID ('<' genericLiteral (',' genericLiteral)* '>')?                   #ExprMemberAccess
-    | datatype '{' ('.' ID '=' expr)? (',' ('.' ID '=' expr))* ','? '}'             #StructInstantiationExpr
+    | datatype '{' (ID ':' expr)? (',' (ID ':' expr))* ','? '}'                     #StructInstantiationExpr
 
     // Part 2: Right to left
     | <assoc=right> op=('++' | '--') expr                                           #PreIncrExpr

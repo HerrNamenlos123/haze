@@ -1,6 +1,7 @@
 import {
   EBinaryOperation,
   EExternLanguage,
+  EUnaryOperation,
   type ASTConstant,
   type ASTDatatype,
   type ASTExpr,
@@ -75,7 +76,7 @@ export function elaborateExpr(
       });
 
       const leftType = a.type;
-      const rightType = a.type;
+      const rightType = b.type;
 
       switch (expr.operation) {
         case EBinaryOperation.Multiply:
@@ -100,6 +101,24 @@ export function elaborateExpr(
               operation: expr.operation,
               right: b,
               type: makePrimitiveAvailable(sr, EPrimitive.f32),
+              sourceloc: expr.sourceloc,
+            };
+          } else if (rightType.variant === "RawPointerDatatype" && Conversion.isInteger(leftType)) {
+            return {
+              variant: "BinaryExpr",
+              left: a,
+              operation: expr.operation,
+              right: b,
+              type: rightType,
+              sourceloc: expr.sourceloc,
+            };
+          } else if (leftType.variant === "RawPointerDatatype" && Conversion.isInteger(rightType)) {
+            return {
+              variant: "BinaryExpr",
+              left: a,
+              operation: expr.operation,
+              right: b,
+              type: leftType,
               sourceloc: expr.sourceloc,
             };
           } else if (Conversion.isFloat(leftType) && Conversion.isFloat(rightType)) {
@@ -150,7 +169,9 @@ export function elaborateExpr(
           if (
             (Conversion.isBoolean(leftType) && Conversion.isBoolean(rightType)) ||
             (Conversion.isInteger(leftType) && Conversion.isInteger(rightType)) ||
-            (Conversion.isFloat(leftType) && Conversion.isFloat(rightType))
+            (Conversion.isFloat(leftType) && Conversion.isFloat(rightType)) ||
+            (leftType.variant === "RawPointerDatatype" &&
+              rightType.variant === "RawPointerDatatype")
           ) {
             return {
               variant: "BinaryExpr",
@@ -181,7 +202,80 @@ export function elaborateExpr(
           throw new ImpossibleSituation();
       }
 
-      throw new InternalError("No known binary result for types ");
+      throw new CompilerError(
+        `No known binary result for types ${serializeDatatype(leftType)} and ${serializeDatatype(rightType)}`,
+        expr.sourceloc,
+      );
+    }
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+    case "UnaryExpr": {
+      const e = elaborateExpr(sr, expr.expr, {
+        context: args.context,
+        elaboratedVariables: args.elaboratedVariables,
+        scope: args.scope,
+      });
+
+      switch (expr.operation) {
+        case EUnaryOperation.Plus:
+        case EUnaryOperation.Minus:
+          if (Conversion.isInteger(e.type) || Conversion.isFloat(e.type)) {
+            return {
+              variant: "UnaryExpr",
+              expr: e,
+              operation: expr.operation,
+              type: e.type,
+              sourceloc: expr.sourceloc,
+            };
+          }
+          break;
+
+        case EUnaryOperation.Negate:
+          if (Conversion.isInteger(e.type) || Conversion.isFloat(e.type)) {
+            return {
+              variant: "UnaryExpr",
+              expr: e,
+              operation: expr.operation,
+              type: e.type,
+              sourceloc: expr.sourceloc,
+            };
+          }
+          if (Conversion.isBoolean(e.type)) {
+            return {
+              variant: "UnaryExpr",
+              expr: e,
+              operation: expr.operation,
+              type: e.type,
+              sourceloc: expr.sourceloc,
+            };
+          }
+          if (e.type.variant === "RawPointerDatatype" || e.type.variant === "ReferenceDatatype") {
+            return {
+              variant: "BinaryExpr",
+              left: e,
+              right: {
+                variant: "Constant",
+                type: e.type,
+                value: 0,
+                sourceloc: expr.sourceloc,
+              },
+              operation: EBinaryOperation.Equal,
+              type: e.type,
+              sourceloc: expr.sourceloc,
+            };
+          }
+          break;
+
+        default:
+          throw new ImpossibleSituation();
+      }
+
+      throw new CompilerError(
+        `No known unary result for type ${serializeDatatype(e.type)}`,
+        expr.sourceloc,
+      );
     }
 
     // =================================================================================================================
@@ -197,12 +291,59 @@ export function elaborateExpr(
           sourceloc: expr.sourceloc,
         };
       } else if (expr.constant.variant === "NumberConstant") {
-        return {
-          variant: "Constant",
-          type: makePrimitiveAvailable(sr, EPrimitive.i32),
-          value: expr.constant.value,
-          sourceloc: expr.sourceloc,
-        };
+        function isFloat(n: number): boolean {
+          return Number(n) === n && n % 1 !== 0;
+        }
+        if (isFloat(expr.constant.value)) {
+          return {
+            variant: "Constant",
+            type: makePrimitiveAvailable(sr, EPrimitive.f64),
+            value: expr.constant.value,
+            sourceloc: expr.sourceloc,
+          };
+        } else {
+          let type = EPrimitive.u8;
+          if (expr.constant.value >= 0 && expr.constant.value <= Math.pow(2, 8) - 1) {
+            type = EPrimitive.u8;
+          } else if (expr.constant.value >= 0 && expr.constant.value <= Math.pow(2, 16) - 1) {
+            type = EPrimitive.u16;
+          } else if (expr.constant.value >= 0 && expr.constant.value <= Math.pow(2, 32) - 1) {
+            type = EPrimitive.u32;
+          } else if (expr.constant.value >= 0 && expr.constant.value <= Math.pow(2, 64) - 1) {
+            type = EPrimitive.u64;
+          } else if (
+            expr.constant.value >= -Math.pow(2, 7) &&
+            expr.constant.value <= Math.pow(2, 7) - 1
+          ) {
+            type = EPrimitive.i8;
+          } else if (
+            expr.constant.value >= -Math.pow(2, 15) &&
+            expr.constant.value <= Math.pow(2, 15) - 1
+          ) {
+            type = EPrimitive.i16;
+          } else if (
+            expr.constant.value >= -Math.pow(2, 31) &&
+            expr.constant.value <= Math.pow(2, 31) - 1
+          ) {
+            type = EPrimitive.i32;
+          } else if (
+            expr.constant.value >= -Math.pow(2, 63) &&
+            expr.constant.value <= Math.pow(2, 63) - 1
+          ) {
+            type = EPrimitive.i64;
+          } else {
+            throw new CompilerError(
+              `The numeral constant ${expr.constant.value} is outside of any workable integer range`,
+              expr.sourceloc,
+            );
+          }
+          return {
+            variant: "Constant",
+            type: makePrimitiveAvailable(sr, type),
+            value: expr.constant.value,
+            sourceloc: expr.sourceloc,
+          };
+        }
       } else {
         return {
           variant: "Constant",
@@ -265,7 +406,7 @@ export function elaborateExpr(
         }
         return givenArgs.map((a, index) => {
           if (index < requiredTypes.length) {
-            return Conversion.MakeExplicitConversion(a, requiredTypes[index], expr.sourceloc);
+            return Conversion.MakeImplicitConversion(a, requiredTypes[index], expr.sourceloc);
           } else {
             return a;
           }
@@ -685,7 +826,7 @@ export function elaborateExpr(
       });
       return {
         variant: "ExprAssignmentExpr",
-        value: Conversion.MakeExplicitConversion(value, target.type, expr.sourceloc),
+        value: Conversion.MakeImplicitConversion(value, target.type, expr.sourceloc),
         target: target,
         type: target.type,
         sourceloc: expr.sourceloc,
@@ -735,7 +876,10 @@ export function elaborateExpr(
         }
 
         if (e.type !== variable.type) {
-          throw new CompilerError(`Member assignment ${m.name} has type mismatch`, expr.sourceloc);
+          throw new CompilerError(
+            `Member assignment ${m.name} has mismatching types: Cannot assign ${serializeDatatype(e.type)} to ${serializeDatatype(variable.type)}`,
+            expr.sourceloc,
+          );
         }
 
         remainingMembers = remainingMembers.filter((mm) => mm !== m.name);
@@ -745,6 +889,14 @@ export function elaborateExpr(
         });
         assignedMembers.push(m.name);
       }
+
+      if (struct.name === "Result") {
+        // Special exception for standard library Result<> Type, until unions are implemented properly
+        remainingMembers = remainingMembers.filter(
+          (mm) => !["successValue", "errorValue"].includes(mm),
+        );
+      }
+
       if (remainingMembers.length > 0) {
         throw new CompilerError(
           `Members ${remainingMembers.join(", ")} were not assigned`,
