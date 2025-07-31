@@ -114,13 +114,27 @@
     "functions": {
       "patterns": [
         {
-          "name": "meta.function-call",
-          "match": "(?x) (?:extern\\s+\"C\"\\s+)? (?:noemit\\s+)? ([a-zA-Z_][\\w]*) \\s* (?:<.+>)? (?=\\s*\\()",
-          "captures": {
+          "begin": "(?x) (?:[a-zA-Z_][\\w]*\\.)? ([a-zA-Z_][\\w]*) \\s* (?=<|\\()",
+          "end": "(?=[;\\n])",
+          "beginCaptures": {
             "1": {
               "name": "meta.function-call"
             }
-          }
+          },
+          "patterns": [
+            {
+              "name": "meta.generic-args",
+              "begin": "<",
+              "end": ">",
+              "beginCaptures": {
+                "0": { "name": "punctuation.definition.generic.begin" }
+              },
+              "endCaptures": {
+                "0": { "name": "punctuation.definition.generic.end" }
+              },
+              "patterns": [{ "include": "$self" }]
+            }
+          ]
         }
       ]
     },
