@@ -129,3 +129,24 @@ All arrays must be **fully initialized at creation**. You can use:
 | `Vector<T>`     | Dynamic   | ✅              | ✅          | ✅       | Arena lifetime | Growing/shrinking data             |
 | `List<T>`       | Dynamic   | ✅              | ✅ (chunk)  | ❌       | Arena lifetime | Frequent insert/remove             |
 | `StackArena<N>` | Fixed buf | ❌ (internal)   | ❌          | ❌       | Stack scope    | Fast, temporary scoped allocations |
+
+# Array and Slice Type Specification
+
+- **Stack arrays:**  
+  Syntax: `Type[N]`  
+  Represents a fixed-size stack-allocated array of length `N`.  
+  Created using the literal syntax: `[1, 2, ..., N]`.
+
+- **Slices:**  
+  Syntax: `Type[]`  
+  Represents a non-owning view (slice) over a contiguous array of elements of `Type`.  
+  Supports reading elements, iterating, and in-place mutation of existing elements.  
+  Does **not** support adding or removing elements.
+
+- **Conversions:**  
+  All array types (including `Type[N]`, `Vector<Type>`, `List<Type>`, etc.) provide implicit conversion operators to `Type[]` slices spanning their entire contents.
+
+- **Usage guidance:**  
+  `Type[]` slices are expected to be the most common type used in user-facing code for accessing and processing sequences of elements.  
+  For operations that require adding or removing elements (resizing), slices cannot be used; instead, the full owning/resizable array type (e.g. `Vector<Type>`) must be passed.
+

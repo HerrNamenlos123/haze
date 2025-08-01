@@ -3,7 +3,7 @@ version = "1.0.0"
 description = "GLFW support for Haze"
 license = "MIT"
 authors = ["HerrNamenlos123"]
-# type = "lib"
+type = "exe"
 # src = "."
 
 [linker]

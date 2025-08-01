@@ -373,10 +373,13 @@ class ModuleCompiler {
       compilerFlags.push("-Wno-parentheses-equality");
       if (this.config.moduleType === ModuleType.Executable) {
         const [libs, linkerFlags] = await this.loadDependencyBinaries();
-        const cmd = `${C_COMPILER} -g ${moduleCFile} -o ${moduleExecutable} -I${this.config.srcDirectory} ${libs.join(" ")} ${compilerFlags.join(" ")} ${linkerFlags.join(" ")} -std=c11`;
+        const allLinkerFlags = [...linkerFlags, ...this.config.linkerFlags];
+        const cmd = `${C_COMPILER} -g ${moduleCFile} -o ${moduleExecutable} -I${this.config.srcDirectory} ${libs.join(" ")} ${compilerFlags.join(" ")} ${allLinkerFlags.join(" ")} -std=c11`;
+        // console.log(cmd);
         await exec(cmd);
       } else {
         const cmd = `${C_COMPILER} -g ${moduleCFile} -c -o ${moduleOFile} -I${this.config.srcDirectory} ${compilerFlags.join(" ")} -fPIC -std=c11`;
+        // console.log(cmd);
         await exec(cmd);
         await exec(`${ARCHIVE_TOOL} r ${moduleAFile} ${moduleOFile} > /dev/null`);
 
