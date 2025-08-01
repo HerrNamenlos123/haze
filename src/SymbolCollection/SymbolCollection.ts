@@ -77,6 +77,7 @@ function collect(
         item.returnType = {
           variant: "NamedDatatype",
           name: "none",
+          cstruct: false,
           generics: [],
           sourceloc: item.sourceloc,
           _collect: {
@@ -128,6 +129,7 @@ function collect(
         item.returnType = {
           variant: "NamedDatatype",
           name: "none",
+          cstruct: false,
           generics: [],
           sourceloc: item.sourceloc,
           _collect: {},
@@ -198,6 +200,8 @@ function collect(
 
     case "GlobalVariableDefinition":
       scope.symbolTable.defineSymbol(item);
+      item._collect.definedInNamespaceOrStruct = meta.currentNamespaceOrStruct;
+      item._collect.definedInScope = scope;
       if (item.datatype) {
         collect(scope, item.datatype, meta);
       }
@@ -280,6 +284,7 @@ function collect(
           method.returnType = {
             variant: "NamedDatatype",
             name: "none",
+            cstruct: false,
             generics: [],
             sourceloc: item.sourceloc,
             _collect: {},

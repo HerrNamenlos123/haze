@@ -342,6 +342,30 @@ export namespace Conversion {
       }
     }
 
+    // T <-> cstruct T* conversion for C FFI
+    if (
+      from.variant === "RawPointerDatatype" &&
+      from.pointee.variant === "StructDatatype" &&
+      from.pointee.cstruct &&
+      to.variant === "StructDatatype" &&
+      !to.cstruct &&
+      from.pointee === to
+    ) {
+      return true;
+    }
+
+    // T <-> cstruct T* conversion for C FFI
+    if (
+      to.variant === "RawPointerDatatype" &&
+      to.pointee.variant === "StructDatatype" &&
+      to.pointee.cstruct &&
+      from.variant === "StructDatatype" &&
+      !from.cstruct &&
+      to.pointee === from
+    ) {
+      return true;
+    }
+
     return false;
   }
 
@@ -362,7 +386,7 @@ export namespace Conversion {
   ) {
     if (!IsImplicitConversionAvailable(from.type, to)) {
       throw new CompilerError(
-        `No implicit Conversion from ${serializeDatatype(from.type)} to ${serializeDatatype(to)} available`,
+        `No implicit Conversion from '${serializeDatatype(from.type)}' to '${serializeDatatype(to)}' available`,
         sourceloc,
       );
     }
@@ -385,7 +409,7 @@ export namespace Conversion {
 
     if (!IsExplicitConversionAvailable(from.type, to)) {
       throw new CompilerError(
-        `No explicit Conversion from ${serializeDatatype(from.type)} to ${serializeDatatype(to)} available`,
+        `No explicit Conversion from '${serializeDatatype(from.type)}' to '${serializeDatatype(to)}' available`,
         sourceloc,
       );
     }
@@ -423,6 +447,30 @@ export namespace Conversion {
           }
         }
       }
+    }
+
+    // T <-> cstruct T* conversion for C FFI
+    if (
+      from.type.variant === "RawPointerDatatype" &&
+      from.type.pointee.variant === "StructDatatype" &&
+      from.type.pointee.cstruct &&
+      to.variant === "StructDatatype" &&
+      !to.cstruct &&
+      from.type.pointee === to
+    ) {
+      return from;
+    }
+
+    // T <-> cstruct T* conversion for C FFI
+    if (
+      to.variant === "RawPointerDatatype" &&
+      to.pointee.variant === "StructDatatype" &&
+      to.pointee.cstruct &&
+      from.type.variant === "StructDatatype" &&
+      !from.type.cstruct &&
+      to.pointee === from.type
+    ) {
+      return from;
     }
 
     throw new ImpossibleSituation();

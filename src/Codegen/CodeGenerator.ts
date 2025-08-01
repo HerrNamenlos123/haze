@@ -114,7 +114,7 @@ class CodeGenerator {
           `typedef ${this.primitiveToC(symbol.primitive)} ${this.mangle(symbol)};`,
         );
       } else if (symbol.variant === "Struct") {
-        if (!symbol.noemit) {
+        if (!symbol.noemit && !symbol.cstruct) {
           this.out.type_declarations.writeLine(
             `typedef struct ${this.mangle(symbol)} ${this.mangle(symbol)};`,
           );
@@ -125,15 +125,15 @@ class CodeGenerator {
           this.out.type_definitions.popIndent().writeLine(`};`).writeLine();
         }
       } else if (symbol.variant === "RawPointer") {
-        this.out.type_declarations.writeLine(
+        this.out.type_definitions.writeLine(
           `typedef ${this.mangle(symbol.pointee)}* ${this.mangle(symbol)};`,
         );
       } else if (symbol.variant === "Reference") {
-        this.out.type_declarations.writeLine(
+        this.out.type_definitions.writeLine(
           `typedef ${this.mangle(symbol.referee)}* ${this.mangle(symbol)};`,
         );
       } else if (symbol.variant === "Function") {
-        this.out.type_declarations.writeLine(
+        this.out.type_definitions.writeLine(
           `typedef ${this.mangle(symbol.returnType)} (*${this.mangle(symbol)})(${symbol.parameters
             .map((p) => `${this.mangle(p)}`)
             .join(", ")});`,
@@ -150,6 +150,10 @@ class CodeGenerator {
         this.out.type_definitions.popIndent().writeLine(`};`).writeLine();
       } else {
       }
+    }
+
+    for (const [id, symbol] of this.lr.loweredGlobalVariables) {
+      // TODO
     }
   }
 
@@ -366,7 +370,7 @@ class CodeGenerator {
             `#line ${statement.sourceloc.line} ${JSON.stringify(statement.sourceloc.filename)}`,
           );
         }
-        outWriter.writeLine(statement.value + ";");
+        outWriter.writeLine(statement.value);
         return { temp: tempWriter, out: outWriter };
       }
 
@@ -459,9 +463,9 @@ class CodeGenerator {
         const exprWriter = this.emitExpr(expr.expr);
         tempWriter.write(exprWriter.temp);
         if (expr.isReference) {
-          outWriter.write(exprWriter.out.get() + "->" + expr.memberName);
+          outWriter.write("(" + exprWriter.out.get() + ")->" + expr.memberName);
         } else {
-          outWriter.write(exprWriter.out.get() + "." + expr.memberName);
+          outWriter.write("(" + exprWriter.out.get() + ")." + expr.memberName);
         }
         return { out: outWriter, temp: tempWriter };
       }

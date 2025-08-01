@@ -1,101 +1,95 @@
 
-// a(i: RawPtr<i32>) {
-//   i.ptr = 187;
-// }
+inject "#include <GLFW/glfw3.h>";
+inject "#include <math.h>";
 
-// b(i: RawPtr<u64>) {
-//   i.ptr = 204060;
-// }
+export extern "C" struct GLFWwindow {};
+extern "C" struct GLFWmonitor {};
 
-// c(i: RawPtr<boolean>) {
-//   i.ptr = true;
-// }
+extern "C" glfwInit(): i32;
+extern "C" glfwTerminate(): none;
+extern "C" glfwCreateWindow(width: i32, height: i32, title: str, monitor: cstruct GLFWmonitor*, share: cstruct GLFWwindow*): cstruct GLFWwindow*;
+extern "C" glfwWindowShouldClose(w: cstruct GLFWwindow*): i32;
+extern "C" glfwSwapBuffers(w: cstruct GLFWwindow*);
+extern "C" glfwSwapInterval(flag: i32);
+extern "C" glfwMakeContextCurrent(w: cstruct GLFWwindow*);
+extern "C" glfwPollEvents();
+extern "C" glfwInitHint(hint: i32, value: i32);
+extern "C" glfwWindowHint(hint: i32, value: i32);
 
-// testArena() {
-//   const one = ctx.mem.alloc(sizeof<i32>) as RawPtr<i32>;
-//   const two = ctx.mem.alloc(sizeof<u64>) as RawPtr<u64>;
-//   const three = ctx.mem.alloc(sizeof<boolean>) as RawPtr<boolean>;
-//   a(one);
-//   b(two);
-//   c(three);
-//   Console.print("Integer: %d\n", one.ptr);
-//   Console.print("U: %lu\n", two.ptr);
-//   Console.print("B: %d\n", three.ptr);
-// }
+extern "C" strcmp(str1: str, str2: str): i32;
+extern "C" getenv(name: str): str;
 
-// main(args: List<String>): i32 {
-//   // return TM2();
-//   testArena();
-//   return 0;
-// }
+const GLFW_PLATFORM: i32;
+const GLFW_PLATFORM_X11: i32;
+const GLFW_ANY_PLATFORM: i32;
+const GLFW_CONTEXT_VERSION_MAJOR: i32;
+const GLFW_CONTEXT_VERSION_MINOR: i32;
+const GLFW_OPENGL_PROFILE: i32;
+const GLFW_OPENGL_CORE_PROFILE: i32;
 
+export namespace glfw {
 
+    struct Window {
+        handle: cstruct GLFWwindow*;
 
-inject "#include <stdio.h>";
+        makeContextCurrent() {
+            glfwMakeContextCurrent(this.handle);
+        }
 
-// namespace A {
-//     export struct Wrapper<T> {
-//         value: T;
+        shouldClose(): boolean {
+            return glfwWindowShouldClose(this.handle) != 0;
+        }
 
-//         get(): T => {
-//             return this.value;
-//         }
-//     }
+        swapBuffers() {
+            glfwSwapBuffers(this.handle);
+        }
+    }
 
-//     namespace B {
-//         export struct Wrapper<T> {
-//             value: A.Wrapper<T>;
+    init(): boolean {
+        if (strcmp(getenv("XDG_CURRENT_DESKTOP"), "GNOME") == 0) {
+            glfwInitHint(GLFW_PLATFORM, GLFW_PLATFORM_X11);
+        }
+        else {
+            glfwInitHint(GLFW_PLATFORM, GLFW_ANY_PLATFORM);
+        }
+        return glfwInit() != 0;
+    }
 
-//             getInner(): T => {
-//                 return this.value.get();
-//             }
-//         }
-//     }
-// }
+    terminate() {
+        glfwTerminate();
+    }
 
-// namespace C {
-//     export struct Processor<T> {
-//         wrap: A.B.Wrapper<T>;
+    createWindow(width: i32, height: i32, title: str): Window {
+        glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+        glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
+        glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+        const handle = glfwCreateWindow(width, height, title, 0 as cstruct GLFWmonitor*, 0 as cstruct GLFWwindow*);
+        return Window { handle: handle };
+    }
 
-//         extract(): T => {
-//             return this.wrap.getInner();
-//         }
-//     }
-// }
+    swapInterval(interval: i32) {
+        glfwSwapInterval(1);
+    }
 
-// namespace Main {
-//     main() => {
-//         let outer = A.Wrapper<i32> {
-//             .value: 123
-//         };
+    pollEvents() {
+        glfwPollEvents();
+    }
 
-//         let inner = A.B.Wrapper<i32> {
-//             .value: outer
-//         };
-
-//         let proc = C.Processor<i32> {
-//             .wrap: inner
-//         };
-
-//         let result = proc.extract();
-
-//         // Final check to ensure correct value is passed through all layers
-//         if (result == 123) {
-//             printf("Success: %d\n", result);
-//         } else {
-//             printf("Failure: %d\n", result);
-//         }
-//     }
-
-//     extern "C" printf(fmt: str, ...): none;
-// }
-
-// foo<T>(arg: T) => {
-//     printf("Arg: %d\n", arg);
-// }
+}
 
 main(): i32 => {
-    const rootArena = Arena();
+    // const rootArena = Arena();
+    if not glfw.init() { return -1; }
 
+    const window = glfw.createWindow(720, 480, "Test");
+    window.makeContextCurrent();
+    glfw.swapInterval(1);
+
+    while !window.shouldClose() {
+        glfw.pollEvents();
+        window.swapBuffers();
+    }
+
+    glfw.terminate();
     return 0;
 }

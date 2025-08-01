@@ -5,7 +5,12 @@ import {
   type ASTNamedDatatype,
   type ASTStructDefinition,
 } from "../shared/AST";
-import { assertScope, EVariableContext, stringToPrimitive } from "../shared/common";
+import {
+  assertScope,
+  EVariableContext,
+  primitiveToString,
+  stringToPrimitive,
+} from "../shared/common";
 import { assert, CompilerError, ImpossibleSituation } from "../shared/Errors";
 import { Collect } from "../SymbolCollection/CollectSymbols";
 import { elaborate, isolateElaborationContext, type SubstitutionContext } from "./Elaborate";
@@ -106,6 +111,7 @@ export function lookupAndElaborateDatatype(
     datatype: ASTDatatype | ASTConstant;
     startLookupInScope: Collect.Scope;
     context: SubstitutionContext;
+    isInCFuncdecl: boolean;
   },
 ): Semantic.DatatypeSymbol {
   switch (args.datatype.variant) {
@@ -131,12 +137,14 @@ export function lookupAndElaborateDatatype(
             datatype: p.datatype,
             startLookupInScope: args.startLookupInScope,
             context: args.context,
+            isInCFuncdecl: args.isInCFuncdecl,
           }),
         ),
         returnType: lookupAndElaborateDatatype(sr, {
           datatype: args.datatype.returnType,
           startLookupInScope: args.startLookupInScope,
           context: args.context,
+          isInCFuncdecl: args.isInCFuncdecl,
         }),
         vararg: args.datatype.ellipsis,
       });
@@ -153,6 +161,7 @@ export function lookupAndElaborateDatatype(
           datatype: args.datatype.pointee,
           startLookupInScope: args.startLookupInScope,
           context: args.context,
+          isInCFuncdecl: args.isInCFuncdecl,
         }),
       );
     }
@@ -168,6 +177,7 @@ export function lookupAndElaborateDatatype(
           datatype: args.datatype.referee,
           startLookupInScope: args.startLookupInScope,
           context: args.context,
+          isInCFuncdecl: args.isInCFuncdecl,
         }),
       );
     }
@@ -180,12 +190,27 @@ export function lookupAndElaborateDatatype(
       const primitive = stringToPrimitive(args.datatype.name);
       if (primitive) {
         if (args.datatype.generics.length > 0) {
-          throw new Error(`Type ${args.datatype.name} is not generic`);
+          throw new CompilerError(
+            `Type ${args.datatype.name} is not generic`,
+            args.datatype.sourceloc,
+          );
+        }
+        if (args.datatype.cstruct) {
+          throw new CompilerError(
+            `Primitive ${primitiveToString(primitive)} cannot be annotated as a 'cstruct'`,
+            args.datatype.sourceloc,
+          );
         }
         return makePrimitiveAvailable(sr, primitive);
       }
 
       if (args.datatype.name === "Callable") {
+        if (args.datatype.cstruct) {
+          throw new CompilerError(
+            `A Callable cannot be annotated as a 'cstruct'`,
+            args.datatype.sourceloc,
+          );
+        }
         if (args.datatype.generics.length != 1) {
           throw new CompilerError(
             `Type Callable<> must take exactly 1 type parameter`,
@@ -202,6 +227,7 @@ export function lookupAndElaborateDatatype(
           datatype: args.datatype.generics[0],
           startLookupInScope: args.startLookupInScope,
           context: args.context,
+          isInCFuncdecl: args.isInCFuncdecl,
         });
         assert(functype.variant === "FunctionDatatype");
         return {
@@ -218,9 +244,16 @@ export function lookupAndElaborateDatatype(
       );
 
       if (found.variant === "StructDefinition") {
+        if (args.isInCFuncdecl && !args.datatype.cstruct) {
+          throw new CompilerError(
+            `'${args.datatype.name}' is an ordinary, high-level struct reference type and cannot be used in a C function declaration. Did you mean to annotate it as 'cstruct ${args.datatype.name}'?`,
+            args.datatype.sourceloc,
+          );
+        }
         const struct = instantiateStruct(sr, {
           definedStructType: found,
           receivingType: args.datatype,
+          cstruct: args.datatype.cstruct,
           context: isolateElaborationContext(args.context),
         });
         assert(struct?.variant === "StructDatatype");
@@ -229,6 +262,7 @@ export function lookupAndElaborateDatatype(
           const nestedStruct = instantiateStruct(sr, {
             definedStructType: found,
             receivingType: args.datatype.nested,
+            cstruct: args.datatype.cstruct,
             context: isolateElaborationContext(args.context),
           });
           assert(nestedStruct && nestedStruct.variant === "StructDatatype");
@@ -236,12 +270,19 @@ export function lookupAndElaborateDatatype(
             datatype: args.datatype.nested,
             startLookupInScope: nestedStruct.scope.collectedScope,
             context: isolateElaborationContext(args.context),
+            isInCFuncdecl: args.isInCFuncdecl,
           });
           return nested;
         }
 
         return struct;
       } else if (found.variant === "NamespaceDefinition") {
+        if (args.datatype.cstruct) {
+          throw new CompilerError(
+            `A Namespace cannot be annotated as a 'cstruct'`,
+            args.datatype.sourceloc,
+          );
+        }
         if (args.datatype.nested) {
           // Here it is important to elaborate instead of instantiate, because elaborate recursively elaborates
           // its parent, to build the tree top-down, and then in the end calls instantiate
@@ -254,6 +295,7 @@ export function lookupAndElaborateDatatype(
             datatype: args.datatype.nested,
             startLookupInScope: namespace.scope.collectedScope,
             context: isolateElaborationContext(args.context),
+            isInCFuncdecl: args.isInCFuncdecl,
           });
           return nested;
         }
@@ -262,6 +304,12 @@ export function lookupAndElaborateDatatype(
           args.datatype.sourceloc,
         );
       } else if (found.variant === "GenericParameter") {
+        if (args.datatype.cstruct) {
+          throw new CompilerError(
+            `A generic parameter cannot be annotated as a 'cstruct'`,
+            args.datatype.sourceloc,
+          );
+        }
         const mappedTo = args.context.substitute.get(found);
         if (mappedTo) {
           assert(isDatatypeSymbol(mappedTo));
@@ -326,6 +374,7 @@ export function instantiateStruct(
   args: {
     definedStructType: ASTStructDefinition; // The defining struct datatype to be instantiated (e.g. struct Foo<T> {})
     receivingType: ASTNamedDatatype; // The receiving side of the instantiation (e.g. Foo<i32> or Foo<U>)
+    cstruct: boolean;
     context: SubstitutionContext;
   },
 ) {
@@ -335,6 +384,7 @@ export function instantiateStruct(
       datatype: g,
       startLookupInScope: assertScope(args.receivingType!._collect.usedInScope),
       context: args.context,
+      isInCFuncdecl: false,
     }),
   );
 
@@ -343,7 +393,8 @@ export function instantiateStruct(
     if (
       s.generics.length === generics.length &&
       s.generics.every((g, index) => g === generics[index]) &&
-      s.originalSymbol === args.definedStructType
+      s.originalSymbol === args.definedStructType &&
+      s.cstruct === args.cstruct
     ) {
       return s.resultSymbol;
     }
@@ -375,6 +426,7 @@ export function instantiateStruct(
     variant: "StructDatatype",
     name: args.definedStructType.name,
     generics: generics,
+    cstruct: args.cstruct,
     externLanguage: args.definedStructType.externLanguage,
     noemit: args.definedStructType.noemit,
     parent: parentNamespace,
@@ -401,6 +453,7 @@ export function instantiateStruct(
     sr.elaboratedStructDatatypes.push({
       generics: generics,
       originalSymbol: args.definedStructType,
+      cstruct: args.cstruct,
       resultSymbol: struct,
     });
 
@@ -410,6 +463,7 @@ export function instantiateStruct(
         // Start lookup in the struct itself
         startLookupInScope: assertScope(args.definedStructType._collect.scope),
         context: newContext,
+        isInCFuncdecl: false,
       });
       return {
         variant: "Variable",

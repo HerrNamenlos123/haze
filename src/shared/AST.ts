@@ -174,6 +174,7 @@ export type ASTParam = {
 export type ASTNamedDatatype = {
   variant: "NamedDatatype";
   name: string;
+  cstruct: boolean;
   generics: (ASTDatatype | ASTConstant)[];
   nested?: ASTNamedDatatype;
   sourceloc: SourceLoc;
@@ -239,6 +240,10 @@ export type ASTGlobalVariableDefinition = {
   datatype?: ASTDatatype;
   expr?: ASTExpr;
   sourceloc: SourceLoc;
+  _collect: {
+    definedInNamespaceOrStruct?: ASTNamespaceDefinition | ASTStructDefinition;
+    definedInScope?: Collect.Scope;
+  };
   _semantic: {};
 };
 

@@ -1,37 +1,37 @@
 
-struct CString {
-}
+// struct CString {
+// }
 
-struct SharedPtr<T> {
-  target: T*;
+// struct SharedPtr<T> {
+//   target: T*;
 
-  get(): T& {
-    return *this.target;
-  }
-}
+//   get(): T& {
+//     return *this.target;
+//   }
+// }
 
-struct Factory<T> {
-  makeShared(size: u64): SharedPtr<T> {
-    return SharedPtr<T> {
-      target: malloc(size) as T*,
-    };
-  }
-}
+// struct Factory<T> {
+//   makeShared(size: u64): SharedPtr<T> {
+//     return SharedPtr<T> {
+//       target: malloc(size) as T*,
+//     };
+//   }
+// }
 
-struct LogContext {
-  trace: (fmt: str, ...) => none;
-  info: (fmt: str, ...) => none;
-  debug: (fmt: str, ...) => none;
-  warn: (fmt: str, ...) => none;
-  error: (fmt: str, ...) => none;
-}
+// struct LogContext {
+//   trace: (fmt: str, ...) => none;
+//   info: (fmt: str, ...) => none;
+//   debug: (fmt: str, ...) => none;
+//   warn: (fmt: str, ...) => none;
+//   error: (fmt: str, ...) => none;
+// }
 
-struct Context {
-  log: LogContext;
-  mem: MemContext;
-};
+// struct Context {
+//   log: LogContext;
+//   mem: MemContext;
+// };
 
-struct MemContext {
-  alloc: (size: u64) => none*;
-  globalDefaultArena: none*;
-}
+// struct MemContext {
+//   alloc: (size: u64) => none*;
+//   globalDefaultArena: none*;
+// }

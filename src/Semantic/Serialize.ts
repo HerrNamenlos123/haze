@@ -24,7 +24,7 @@ export function serializeDatatype(datatype: Semantic.DatatypeSymbol): string {
       return datatype.name;
 
     case "StructDatatype":
-      return getParentNames(datatype);
+      return (datatype.cstruct ? "cstruct " : "") + getParentNames(datatype);
 
     case "FunctionDatatype":
       return `(${datatype.parameters.map((p) => serializeDatatype(p)).join(", ")}${datatype.vararg ? ", ..." : ""}) => ${serializeDatatype(datatype.returnType)}`;
@@ -54,9 +54,14 @@ function getParentNames(symbol: Semantic.NamespaceDatatypeSymbol | Semantic.Stru
 }
 
 export function serializeNestedName(
-  expr: Semantic.FunctionDefinitionSymbol | Semantic.FunctionDeclarationSymbol,
+  expr:
+    | Semantic.FunctionDefinitionSymbol
+    | Semantic.FunctionDeclarationSymbol
+    | Semantic.GlobalVariableDefinitionSymbol,
 ): string {
-  if (expr.variant === "FunctionDeclaration") {
+  if (expr.variant === "GlobalVariableDefinition") {
+    return `${(expr.parent && getParentNames(expr.parent) + ".") || ""}${expr.name}`;
+  } else if (expr.variant === "FunctionDeclaration") {
     return `${(expr.parent && getParentNames(expr.parent) + ".") || ""}${expr.name}`;
   } else if (expr.methodOf) {
     return `${getParentNames(expr.methodOf)}.${expr.name}`;
@@ -70,7 +75,8 @@ export function mangleNestedName(
     | Semantic.StructDatatypeSymbol
     | Semantic.NamespaceDatatypeSymbol
     | Semantic.FunctionDeclarationSymbol
-    | Semantic.FunctionDefinitionSymbol,
+    | Semantic.FunctionDefinitionSymbol
+    | Semantic.GlobalVariableDefinitionSymbol,
 ) {
   if (
     symbol.variant !== "NamespaceDatatype" &&
@@ -85,6 +91,7 @@ export function mangleNestedName(
     | Semantic.NamespaceDatatypeSymbol
     | Semantic.FunctionDeclarationSymbol
     | Semantic.FunctionDefinitionSymbol
+    | Semantic.GlobalVariableDefinitionSymbol
     | null = symbol;
   while (p) {
     if (p.variant !== "StructDatatype") {
@@ -184,8 +191,8 @@ export function serializeExpr(expr: Semantic.Expression): string {
     case "UnaryExpr":
       return `(${UnaryOperationToString(expr.operation)} ${serializeExpr(expr.expr)})`;
 
-    // case "SizeofExpr":
-    //   return `sizeof<${serializeExpr(expr.datatype)}>`;
+    case "SizeofExpr":
+      return `sizeof<${expr.datatype ? serializeDatatype(expr.datatype) : ""}>`;
 
     case "ExplicitCast":
       return `(${serializeExpr(expr.expr)} as ${serializeDatatype(expr.type)})`;

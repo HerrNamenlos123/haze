@@ -64,10 +64,10 @@ constant
     ;
 
 datatype
-    : datatypeFragment ('.' datatypeFragment)*    #NamedDatatype
-    | datatype '*'                                #RawPointerDatatype
-    | datatype '&'                                #ReferenceDatatype
-    | '(' params ')' '=>' datatype                #FunctionDatatype
+    : cstruct='cstruct'? datatypeFragment ('.' datatypeFragment)*       #NamedDatatype
+    | datatype '*'                                                      #RawPointerDatatype
+    | datatype '&'                                                      #ReferenceDatatype
+    | '(' params ')' '=>' datatype                                      #FunctionDatatype
     ;
 
 datatypeFragment

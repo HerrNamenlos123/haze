@@ -21,6 +21,7 @@ export namespace Lowered {
       Semantic.Symbol,
       Lowered.FunctionDeclaration | Lowered.FunctionDefinition
     >;
+    loweredGlobalVariables: Map<Semantic.Symbol, Lowered.Statement[]>;
 
     sortedLoweredTypes: Lowered.Datatype[];
   };
@@ -276,6 +277,7 @@ export namespace Lowered {
   export type StructDatatype = {
     variant: "Struct";
     noemit: boolean;
+    cstruct: boolean;
     prettyName: string;
     mangledName: string;
     wasMangled: boolean;

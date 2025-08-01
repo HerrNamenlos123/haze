@@ -6,7 +6,7 @@ license = "MIT"
 authors = []
 src = "test"
 type = "exe"
-# std = "none"
+std = "none"
 
 
 # [build]
@@ -25,3 +25,6 @@ test = "haze test"
 [dependencies]
 # glfw = "glfw"
 # SDL = "SDL"
+
+[linker]
+flags = ["-lm", "-lglfw3"]

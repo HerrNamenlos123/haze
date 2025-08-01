@@ -25,6 +25,7 @@ export type SemanticResult = {
   elaboratedStructDatatypes: {
     originalSymbol: Collect.Symbol;
     generics: Semantic.Symbol[];
+    cstruct: boolean;
     resultSymbol: Semantic.StructDatatypeSymbol;
   }[];
   elaboratedFuncdeclSymbols: {
@@ -43,7 +44,7 @@ export type SemanticResult = {
   }[];
   elaboratedGlobalVariableSymbols: {
     originalSymbol: Collect.Symbol;
-    resultSymbol: Semantic.VariableSymbol;
+    resultSymbol: Semantic.GlobalVariableDefinitionSymbol;
   }[];
 
   elaboratedPrimitiveTypes: Semantic.PrimitiveDatatypeSymbol[];
@@ -84,6 +85,19 @@ export namespace Semantic {
     export: boolean;
     externLanguage: EExternLanguage;
     variableContext: EVariableContext;
+    sourceloc: SourceLoc;
+    concrete: boolean;
+  };
+
+  export type GlobalVariableDefinitionSymbol = {
+    variant: "GlobalVariableDefinition";
+    name: string;
+    type: DatatypeSymbol;
+    value?: Expression;
+    mutable: boolean;
+    export: boolean;
+    externLanguage: EExternLanguage;
+    parent: StructDatatypeSymbol | NamespaceDatatypeSymbol | null;
     sourceloc: SourceLoc;
     concrete: boolean;
   };
@@ -137,6 +151,7 @@ export namespace Semantic {
     variant: "StructDatatype";
     name: string;
     noemit: boolean;
+    cstruct: boolean;
     generics: DatatypeSymbol[];
     externLanguage: EExternLanguage;
     members: VariableSymbol[];
@@ -204,6 +219,7 @@ export namespace Semantic {
 
   export type Symbol =
     | VariableSymbol
+    | GlobalVariableDefinitionSymbol
     | FunctionDefinitionSymbol
     | FunctionDeclarationSymbol
     | GenericParameterDatatypeSymbol
@@ -223,7 +239,6 @@ export namespace Semantic {
     variant: "ExprMemberAccess";
     expr: Expression;
     memberName: string;
-    isReference: boolean;
     type: DatatypeSymbol;
     sourceloc: SourceLoc;
   };
@@ -420,6 +435,7 @@ export namespace Semantic {
   export class SymbolTable {
     symbols: (
       | VariableSymbol
+      | GlobalVariableDefinitionSymbol
       | FunctionDefinitionSymbol
       | FunctionDeclarationSymbol
       | NamespaceDatatypeSymbol
