@@ -19,7 +19,7 @@
         },
         {
           "name": "keyword.control",
-          "match": "\\b(extern|noemit|const|let|if|else|while|do|for|return)\\b"
+          "match": "\\b(extern|noemit|const|let|if|else|while|do|for|return|static|defer)\\b"
         },
         {
           "name": "keyword.operator.new",
@@ -155,7 +155,9 @@
               "name": "variable.other.property.my-language",
               "match": "\\b[a-z][\\w]*\\b(?=\\s*:)"
             },
-            { "include": "$self" }
+            {
+              "include": "#main-patterns"
+            }
           ]
         }
       ]
