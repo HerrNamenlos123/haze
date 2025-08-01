@@ -4,4 +4,38 @@ main(): i32 {
     defer rootArena.free();
 
     // Stack array with fixed size
+    const fixed = Array<i32>([1, 2, 3, 4]);
+
+    // Vector on heap
+    const names = Vector<str>(rootArena);
+    names.push("Alice");
+    names.push("Bob");
+
+    // Arena allocation for 100 Vec2 elements
+    const subarena = Arena(rootArena);
+    const positions = Vector<Vec2>(subarena, 100, (i) => Vec2(i, i * 2));
+
+    const values = Vector<Vec2>(subarena, [0.1, 0.2, 0.3, 0.4]);
+    const slice = values.slice(1, 3);
+    for element in slice {
+        print(f"{element}");
+    }
+
+    // Linked list usage
+    const chain = List<int>(subarena, [10, 20, 30]);
+    for element in chain {
+        print(f"{element}");
+    }
+
+    // Vector of pointers allocated in arena
+    const entities = Vector<Entity&>(subarena);
+    for i in range(10) {
+        entities.push(subarena.alloc<Entity>(Entity()));
+    }
+
+    // Stack array initialized with lambda
+    const lookup = Array<int>(128, (i) => i);
+
+    // Arena array initialized with lambda
+    const data = Array<int>(subarena, 128, (i) => i * 2);
 }
