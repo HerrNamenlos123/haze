@@ -8,10 +8,11 @@
     {
       "type": "lldb",
       "request": "launch",
-      "name": "Launch",
-      "program": "${workspaceFolder}/build/test/test",
+      "name": "Launch test project",
+      "program": "${workspaceFolder}/__haze__/test/test",
       "args": [],
-      "cwd": "${workspaceFolder}"
+      "cwd": "${workspaceFolder}",
+      "preLaunchTask": "Build test program"
     },
     {
       "type": "lldb",
