@@ -1,9 +1,8 @@
-import { CompilerError, InternalError, type SourceLoc } from "../shared/Errors";
+import { assert, CompilerError, InternalError, type SourceLoc } from "../shared/Errors";
 import type {
   ASTFunctionDeclaration,
   ASTFunctionDefinition,
   ASTGlobalVariableDefinition,
-  ASTNamedDatatype,
   ASTNamespaceDefinition,
   ASTStatement,
   ASTStructDefinition,
@@ -11,8 +10,10 @@ import type {
   ASTVariableDefinitionStatement,
 } from "../shared/AST";
 
-export type CollectResult = {
-  globalScope: Collect.Scope;
+export type CollectionContext = {
+  moduleName: string;
+  globalScope: string;
+  scopes: Map<string, Collect.Scope>;
   cInjections: { code: string; sourceloc: SourceLoc }[];
 };
 
@@ -35,10 +36,20 @@ export namespace Collect {
 
   export type Statement = ASTStatement;
 
-  export class SymbolTable {
+  export class Scope {
+    id: string;
+    rawStatements: ASTStatement[] = [];
     symbols: Symbol[] = [];
 
-    constructor(public parentTable?: SymbolTable) { }
+    private static nextId = 1;
+
+    constructor(
+      public cc: CollectionContext,
+      public sourceloc: SourceLoc,
+      public parentScope?: string,
+    ) {
+      this.id = `${cc.moduleName}.scope.${Scope.nextId++} `;
+    }
 
     defineSymbol(symbol: Symbol) {
       if (this.tryLookupSymbolHere(symbol.name)) {
@@ -57,8 +68,10 @@ export namespace Collect {
         return symbol;
       }
 
-      if (this.parentTable) {
-        return this.parentTable.tryLookupSymbol(name, loc);
+      if (this.parentScope) {
+        const parent = this.cc.scopes.get(this.parentScope);
+        assert(parent);
+        return parent.tryLookupSymbol(name, loc);
       }
       return undefined;
     }
@@ -73,22 +86,6 @@ export namespace Collect {
         return symbol;
       }
       throw new CompilerError(`Symbol '${name}' was not declared in this scope`, loc);
-    }
-  }
-
-  export class Scope {
-    public id: string; // This ID is only for debugging purposes
-    public rawStatements: ASTStatement[] = [];
-    public symbolTable: SymbolTable;
-
-    private static nextId = 1;
-
-    constructor(
-      public sourceloc: SourceLoc,
-      public parentScope?: Scope,
-    ) {
-      this.id = `CollectScope(id=${Scope.nextId++})`;
-      this.symbolTable = new SymbolTable(parentScope?.symbolTable);
     }
   }
 }

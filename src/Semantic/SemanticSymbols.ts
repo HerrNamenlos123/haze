@@ -13,7 +13,7 @@ import {
   type EMethodType,
   type EPrimitive,
 } from "../shared/common";
-import type { Collect } from "../SymbolCollection/CollectSymbols";
+import type { Collect, CollectionContext } from "../SymbolCollection/CollectSymbols";
 
 export type SemanticResult = {
   // globalNamespace: Semantic.NamespaceSymbol;
@@ -21,6 +21,7 @@ export type SemanticResult = {
   // monomorphizedFuncdecls: Set<Semantic.FunctionDeclarationSymbol>;
   // monomorphizedFuncdefs: Set<Semantic.FunctionDefinitionSymbol>;
   overloadedOperators: Semantic.FunctionDefinitionSymbol[];
+  cc: CollectionContext;
 
   elaboratedStructDatatypes: {
     originalSymbol: Collect.Symbol;
@@ -443,7 +444,7 @@ export namespace Semantic {
       | StructDatatypeSymbol
     )[] = [];
 
-    constructor(public parentTable?: SymbolTable) {}
+    constructor(public parentTable?: SymbolTable) { }
 
     defineSymbol(symbol: Symbol): Symbol {
       if (symbol.variant === "FunctionDatatype") {

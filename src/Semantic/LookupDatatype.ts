@@ -13,6 +13,7 @@ import {
 } from "../shared/common";
 import { assert, CompilerError, ImpossibleSituation } from "../shared/Errors";
 import { Collect } from "../SymbolCollection/CollectSymbols";
+import { getScope } from "../SymbolCollection/SymbolCollection";
 import { elaborate, isolateElaborationContext, type SubstitutionContext } from "./Elaborate";
 import {
   isDatatypeSymbol,
@@ -238,7 +239,7 @@ export function lookupAndElaborateDatatype(
         };
       }
 
-      const found = args.startLookupInScope.symbolTable.lookupSymbol(
+      const found = args.startLookupInScope.lookupSymbol(
         args.datatype.name,
         args.datatype.sourceloc,
       );
@@ -418,10 +419,11 @@ export function instantiateStruct(
     null;
   assert(
     !parentNamespace ||
-      parentNamespace.variant === "StructDatatype" ||
-      parentNamespace.variant === "NamespaceDatatype",
+    parentNamespace.variant === "StructDatatype" ||
+    parentNamespace.variant === "NamespaceDatatype",
   );
 
+  assert(args.definedStructType._collect.scope);
   const struct: Semantic.StructDatatypeSymbol = {
     variant: "StructDatatype",
     name: args.definedStructType.name,
@@ -435,7 +437,7 @@ export function instantiateStruct(
     rawAst: args.definedStructType,
     scope: new Semantic.DeclScope(
       args.definedStructType.sourceloc,
-      assertScope(args.definedStructType._collect.scope),
+      getScope(sr.cc, args.definedStructType._collect.scope),
       parentNamespace?.scope,
     ),
     sourceloc: args.definedStructType.sourceloc,
@@ -458,10 +460,11 @@ export function instantiateStruct(
     });
 
     struct.members = args.definedStructType.members.map((m) => {
+      assert(args.definedStructType._collect.scope);
       const type = lookupAndElaborateDatatype(sr, {
         datatype: m.type,
         // Start lookup in the struct itself
-        startLookupInScope: assertScope(args.definedStructType._collect.scope),
+        startLookupInScope: getScope(sr.cc, args.definedStructType._collect.scope),
         context: newContext,
         isInCFuncdecl: false,
       });

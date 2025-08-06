@@ -26,7 +26,8 @@ import {
   InternalError,
   type SourceLoc,
 } from "../shared/Errors";
-import { Collect } from "../SymbolCollection/CollectSymbols";
+import { Collect, type CollectionContext } from "../SymbolCollection/CollectSymbols";
+import { getScope } from "../SymbolCollection/SymbolCollection";
 import { Conversion } from "./Conversion";
 import {
   makeFunctionDatatypeAvailable,
@@ -489,7 +490,7 @@ export function elaborateExpr(
         };
       }
 
-      const symbol = args.scope.symbolTable.lookupSymbol(expr.name, expr.sourceloc);
+      const symbol = args.scope.lookupSymbol(expr.name, expr.sourceloc);
       if (symbol.variant === "VariableDefinitionStatement") {
         const elaboratedSymbol = args.elaboratedVariables.get(symbol);
         if (!elaboratedSymbol) {
@@ -527,7 +528,7 @@ export function elaborateExpr(
         });
         assert(
           elaboratedSymbol?.variant === "FunctionDefinition" ||
-            elaboratedSymbol?.variant === "FunctionDeclaration",
+          elaboratedSymbol?.variant === "FunctionDeclaration",
         );
         return {
           variant: "SymbolValue",
@@ -549,7 +550,7 @@ export function elaborateExpr(
         });
         assert(
           elaboratedSymbol?.variant === "NamespaceDatatype" ||
-            elaboratedSymbol?.variant === "StructDatatype",
+          elaboratedSymbol?.variant === "StructDatatype",
         );
         return {
           variant: "NamespaceValue",
@@ -681,7 +682,7 @@ export function elaborateExpr(
       }
 
       if (object.variant === "NamespaceValue" && object.type.variant === "NamespaceDatatype") {
-        const found = object.type.scope.collectedScope.symbolTable.tryLookupSymbol(
+        const found = object.type.scope.collectedScope.tryLookupSymbol(
           expr.member,
           expr.sourceloc,
         );
@@ -962,9 +963,10 @@ export function elaborateStatement(
         elaboratedVariables: args.elaboratedVariables,
         scope: args.scope.collectedScope,
       });
+      assert(s.then._collect.scope);
       const thenScope = new Semantic.BlockScope(
         s.sourceloc,
-        assertScope(s.then._collect.scope),
+        getScope(sr.cc, s.then._collect.scope),
         args.scope,
       );
       elaborateBlockScope(sr, {
@@ -974,9 +976,10 @@ export function elaborateStatement(
         context: args.context,
       });
       const elseIfs = s.elseIfs.map((e) => {
+        assert(e.then._collect.scope);
         const newScope = new Semantic.BlockScope(
           s.sourceloc,
-          assertScope(e.then._collect.scope),
+          getScope(sr.cc, e.then._collect.scope),
           args.scope,
         );
         elaborateBlockScope(sr, {
@@ -997,9 +1000,10 @@ export function elaborateStatement(
 
       let elseScope: Semantic.BlockScope | undefined = undefined;
       if (s.else) {
+        assert(s.else._collect.scope);
         elseScope = new Semantic.BlockScope(
           s.sourceloc,
-          assertScope(s.else._collect.scope),
+          getScope(sr.cc, s.else._collect.scope),
           args.scope,
         );
         elaborateBlockScope(sr, {
@@ -1024,9 +1028,10 @@ export function elaborateStatement(
     // =================================================================================================================
 
     case "WhileStatement": {
+      assert(s.body._collect.scope);
       const newScope = new Semantic.BlockScope(
         s.sourceloc,
-        assertScope(s.body._collect.scope),
+        getScope(sr.cc, s.body._collect.scope),
         args.scope,
       );
       elaborateBlockScope(sr, {
@@ -1151,7 +1156,7 @@ export function elaborateBlockScope(
 
   const variableMap = new Map<Collect.Symbol, Semantic.VariableSymbol>(args.elaboratedVariables);
 
-  for (const symbol of args.scope.collectedScope.symbolTable.symbols) {
+  for (const symbol of args.scope.collectedScope.symbols) {
     switch (symbol.variant) {
       case "GenericParameter":
         // This must be skipped. The Collect Scope defines the generic T, but we don't want to elaborate it.
@@ -1249,7 +1254,7 @@ export function defineThisPointer(
   };
   args.scope.symbolTable.defineSymbol(vardef);
 
-  const thisRefVarDef = args.scope.collectedScope.symbolTable.tryLookupSymbolHere("this");
+  const thisRefVarDef = args.scope.collectedScope.tryLookupSymbolHere("this");
   assert(thisRefVarDef);
   args.elaboratedVariables.set(thisRefVarDef, vardef);
 }
@@ -1374,6 +1379,7 @@ export function elaborate(
         substitutionContext.substitute.set(args.sourceSymbol.generics[i], generics[i]);
       }
 
+      assert(args.sourceSymbol.declarationScope);
       const resolvedFunctype = lookupAndElaborateDatatype(sr, {
         datatype: {
           variant: "FunctionDatatype",
@@ -1382,7 +1388,7 @@ export function elaborate(
           returnType: args.sourceSymbol.returnType!,
           sourceloc: args.sourceSymbol.sourceloc,
         },
-        startLookupInScope: assertScope(args.sourceSymbol.declarationScope),
+        startLookupInScope: getScope(sr.cc, args.sourceSymbol.declarationScope),
         isInCFuncdecl: false,
         context: substitutionContext,
       });
@@ -1423,7 +1429,7 @@ export function elaborate(
       if (symbol.concrete) {
         symbol.scope = new Semantic.BlockScope(
           args.sourceSymbol.sourceloc,
-          args.sourceSymbol.funcbody._collect.scope,
+          getScope(sr.cc, args.sourceSymbol.funcbody._collect.scope),
           symbol.parent?.scope,
         );
         sr.elaboratedFuncdefSymbols.push({
@@ -1488,9 +1494,10 @@ export function elaborate(
       const parameterNames = args.sourceSymbol.params.map((p) => p.name);
       const parameters = args.sourceSymbol.params.map((p) => {
         assert(args.sourceSymbol.variant === "StructMethod");
+        assert(args.sourceSymbol.declarationScope);
         return lookupAndElaborateDatatype(sr, {
           datatype: p.datatype,
-          startLookupInScope: assertScope(args.sourceSymbol.declarationScope),
+          startLookupInScope: getScope(sr.cc, args.sourceSymbol.declarationScope),
           isInCFuncdecl: false,
           context: substitutionContext,
         });
@@ -1503,9 +1510,10 @@ export function elaborate(
         parameterNames.unshift("this");
       }
 
+      assert(args.sourceSymbol.declarationScope)
       const returnType = lookupAndElaborateDatatype(sr, {
         datatype: args.sourceSymbol.returnType,
-        startLookupInScope: assertScope(args.sourceSymbol.declarationScope),
+        startLookupInScope: getScope(sr.cc, args.sourceSymbol.declarationScope),
         isInCFuncdecl: false,
         context: substitutionContext,
       });
@@ -1548,9 +1556,10 @@ export function elaborate(
       assert(args.sourceSymbol.funcbody?._collect.scope);
       assert(!symbol.scope);
       if (symbol.concrete) {
+        assert(args.sourceSymbol.funcbody._collect.scope);
         symbol.scope = new Semantic.BlockScope(
           args.sourceSymbol.sourceloc,
-          args.sourceSymbol.funcbody._collect.scope,
+          getScope(sr.cc, args.sourceSymbol.funcbody._collect.scope),
           symbol.parent?.scope,
         );
         const variableMap = new Map<Collect.Symbol, Semantic.VariableSymbol>();
@@ -1594,13 +1603,14 @@ export function elaborate(
       }
 
       const parent = elaborateParentSymbol(args.sourceSymbol);
+      assert(args.sourceSymbol._collect.scope);
       const namespace: Semantic.NamespaceDatatypeSymbol = {
         variant: "NamespaceDatatype",
         name: args.sourceSymbol.name,
         parent: parent,
         scope: new Semantic.DeclScope(
           args.sourceSymbol.sourceloc,
-          assertScope(args.sourceSymbol._collect.scope),
+          getScope(sr.cc, args.sourceSymbol._collect.scope),
           parent?.scope,
         ),
         sourceloc: args.sourceSymbol.sourceloc,
@@ -1720,9 +1730,10 @@ export function elaborate(
   }
 }
 
-export function SemanticallyAnalyze(collectedGlobalScope: Collect.Scope, isLibrary: boolean) {
+export function SemanticallyAnalyze(cc: CollectionContext, isLibrary: boolean) {
   const sr: SemanticResult = {
     overloadedOperators: [],
+    cc: cc,
 
     elaboratedStructDatatypes: [],
     elaboratedFuncdeclSymbols: [],
@@ -1735,7 +1746,9 @@ export function SemanticallyAnalyze(collectedGlobalScope: Collect.Scope, isLibra
     referenceTypeCache: [],
   };
 
-  collectedGlobalScope.symbolTable.symbols.forEach((s) => {
+  const globalScope = getScope(cc, cc.globalScope);
+
+  globalScope.symbols.forEach((s) => {
     if (s.variant === "FunctionDefinition" && (s.generics.length !== 0 || s.operatorOverloading)) {
       return undefined;
     }
@@ -1923,7 +1936,7 @@ export function PrettyPrintAnalyzed(sr: SemanticResult) {
     printSymbol(symbol.resultSymbol, 0);
   }
 
-  // for (const symbol of sr.globalScope.symbolTable.symbols) {
+  // for (const symbol of sr.globalScope.symbols) {
   //   switch (symbol.variant) {
   //     case "FunctionDatatype":
   //       print(

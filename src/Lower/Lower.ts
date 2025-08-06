@@ -14,7 +14,7 @@ import {
 import { EPrimitive, EVariableContext } from "../shared/common";
 import { assert, ImpossibleSituation, InternalError, type SourceLoc } from "../shared/Errors";
 import { makeTempName } from "../shared/store";
-import type { CollectResult } from "../SymbolCollection/CollectSymbols";
+import type { CollectionContext } from "../SymbolCollection/CollectSymbols";
 import type { Lowered } from "./LowerTypes";
 
 const storeInTempVarAndGet = (
@@ -160,9 +160,9 @@ function lowerExpr(
     case "SymbolValue": {
       assert(
         expr.symbol.variant === "Variable" ||
-          expr.symbol.variant === "GlobalVariableDefinition" ||
-          expr.symbol.variant === "FunctionDeclaration" ||
-          expr.symbol.variant === "FunctionDefinition",
+        expr.symbol.variant === "GlobalVariableDefinition" ||
+        expr.symbol.variant === "FunctionDeclaration" ||
+        expr.symbol.variant === "FunctionDefinition",
       );
       if (
         expr.symbol.variant === "Variable" ||
@@ -821,11 +821,11 @@ export function printStatement(s: Lowered.Statement, indent = 0) {
     case "VariableStatement":
       print(
         "var " +
-          s.prettyName +
-          ": " +
-          s.type.prettyName +
-          (s.value ? " = " + serializeLoweredExpr(s.value) : "") +
-          ";",
+        s.prettyName +
+        ": " +
+        s.type.prettyName +
+        (s.value ? " = " + serializeLoweredExpr(s.value) : "") +
+        ";",
         indent,
       );
       break;
@@ -884,12 +884,12 @@ export function PrettyPrintLowered(lr: Lowered.Module) {
   }
 }
 
-export function LowerModule(cr: CollectResult, sr: SemanticResult): Lowered.Module {
+export function LowerModule(cc: CollectionContext, sr: SemanticResult): Lowered.Module {
   const lr: Lowered.Module = {
-    cr: cr,
+    cc: cc,
     sr: sr,
 
-    cDeclarations: cr.cInjections.map((i) => i.code),
+    cDeclarations: cc.cInjections.map((i) => i.code),
 
     loweredTypes: new Map(),
     loweredFunctions: new Map(),

@@ -4,7 +4,7 @@ import { EExternLanguage } from "../shared/AST";
 import { EMethodType, EPrimitive, EVariableContext } from "../shared/common";
 import { GLOBAL_NAMESPACE_NAME } from "../shared/Config";
 import { assert } from "../shared/Errors";
-import { Collect, type CollectResult } from "../SymbolCollection/CollectSymbols";
+import { Collect, type CollectionContext } from "../SymbolCollection/CollectSymbols";
 import { CollectSymbols } from "../SymbolCollection/SymbolCollection";
 import { runStageTests, type StageTest, type StageTests } from "../Testing/Testing";
 import { SemanticallyAnalyze } from "./Elaborate";
@@ -13,21 +13,21 @@ import { Semantic, type SemanticResult } from "./SemanticSymbols";
 const thisTestfile = "src/Semantic/Semantic.test.ts";
 
 function parseAndCollect(input: string) {
-  const cr: CollectResult = {
+  const cc: CollectionContext = {
     cInjections: [],
     globalScope: new Collect.Scope(null),
   };
-  CollectSymbols(cr, Parser.parseTextToAST(input, thisTestfile), {
+  CollectSymbols(cc, Parser.parseTextToAST(input, thisTestfile), {
     filename: thisTestfile,
     line: 0,
     column: 0,
   });
-  return cr;
+  return cc;
 }
 
 const tests: StageTests<Collect.Scope, SemanticResult> = [
   (): StageTest<Collect.Scope, SemanticResult> => {
-    const cr = parseAndCollect(`
+    const cc = parseAndCollect(`
             struct Bar {
                 get(): Bar& => {
                     return this;
@@ -39,7 +39,7 @@ const tests: StageTests<Collect.Scope, SemanticResult> = [
             `);
     return {
       name: "Simple recursive function call",
-      input: cr.globalScope,
+      input: cc.globalScope,
       expectedOutput: (() => {
         const sourceloc = (line: number, column: number) => ({
           filename: thisTestfile,
@@ -53,7 +53,7 @@ const tests: StageTests<Collect.Scope, SemanticResult> = [
             concrete: true,
             name: GLOBAL_NAMESPACE_NAME,
             sourceloc: null,
-            scope: new Semantic.DeclScope(null, cr.globalScope),
+            scope: new Semantic.DeclScope(null, cc.globalScope),
           },
         };
         semanticResult.globalNamespace.scope.symbolTable.defineSymbol({
@@ -62,10 +62,10 @@ const tests: StageTests<Collect.Scope, SemanticResult> = [
           primitive: EPrimitive.i32,
         });
 
-        const collectedStruct = cr.globalScope.symbolTable.symbols[0];
+        const collectedStruct = cc.globalScope.symbolTable.symbols[0];
         assert(collectedStruct.variant === "StructDefinition");
 
-        const collectedMainFunction = cr.globalScope.symbolTable.symbols[1];
+        const collectedMainFunction = cc.globalScope.symbolTable.symbols[1];
         assert(collectedMainFunction.variant === "FunctionDefinition");
         assert(collectedMainFunction.funcbody._collect.scope);
 

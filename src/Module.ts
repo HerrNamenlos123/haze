@@ -22,11 +22,11 @@ import {
   type ModuleMetadata,
 } from "./shared/Config";
 import { Parser } from "./Parser/Parser";
-import { CollectSymbols } from "./SymbolCollection/SymbolCollection";
+import { CollectSymbols, getScope } from "./SymbolCollection/SymbolCollection";
 import { PrettyPrintAnalyzed, SemanticallyAnalyze } from "./Semantic/Elaborate";
 import { generateCode } from "./Codegen/CodeGenerator";
 import { LowerModule } from "./Lower/Lower";
-import { Collect, type CollectResult } from "./SymbolCollection/CollectSymbols";
+import { Collect, type CollectionContext } from "./SymbolCollection/CollectSymbols";
 
 const C_COMPILER = "clang";
 const ARCHIVE_TOOL = "ar";
@@ -64,7 +64,7 @@ class Cache {
   filename?: string;
   data: Record<string, any> = {};
 
-  constructor() {}
+  constructor() { }
 
   async getFilesWithModificationDates(dir: string): Promise<{ file: string; modified: Date }[]> {
     const files: { file: string; modified: Date }[] = [];
@@ -147,7 +147,7 @@ export class ProjectCompiler {
   cache: Cache = new Cache();
   globalBuildDir: string = "";
 
-  constructor() {}
+  constructor() { }
 
   async getConfig(singleFilename?: string) {
     let config: ModuleConfig | undefined;
@@ -287,24 +287,31 @@ async function exec(str: string) {
 }
 
 class ModuleCompiler {
-  cr: CollectResult = {
-    cInjections: [],
-    globalScope: new Collect.Scope({
-      column: 0,
-      filename: "global",
-      line: 0,
-    }),
-  };
+  cc: CollectionContext;
 
   constructor(
     public config: ModuleConfig,
     public cache: Cache,
     public globalBuildDir: string,
     public moduleBuildDir: string,
-  ) {}
+  ) {
+    this.cc = {
+      cInjections: [],
+      globalScope: "",
+      moduleName: config.projectName,
+      scopes: new Map(),
+    };
+    const globalScope = new Collect.Scope(this.cc, {
+      column: 0,
+      filename: "global",
+      line: 0,
+    });
+    this.cc.globalScope = globalScope.id;
+    this.cc.scopes.set(globalScope.id, globalScope);
+  }
 
   addSourceFromString(text: string, filename: string) {
-    CollectSymbols(this.cr, Parser.parseTextToAST(text, filename), {
+    CollectSymbols(this.cc, Parser.parseTextToAST(text, filename), {
       filename: filename,
       line: 0,
       column: 0,
@@ -349,12 +356,11 @@ class ModuleCompiler {
       await this.addDependencySources();
       await this.addProjectSourceFiles();
 
-      const sr = SemanticallyAnalyze(
-        this.cr.globalScope,
+      const sr = SemanticallyAnalyze(this.cc,
         this.config.moduleType === ModuleType.Library,
       );
       // PrettyPrintAnalyzed(sr);
-      const lowered = LowerModule(this.cr, sr);
+      const lowered = LowerModule(this.cc, sr);
 
       const name = this.config.projectName;
       const platform = this.config.platform;

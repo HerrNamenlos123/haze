@@ -155,12 +155,12 @@ export type ASTFunctionDefinition = {
   ellipsis: boolean;
   returnType?: ASTDatatype;
   methodType?: EMethodType;
-  declarationScope?: Collect.Scope;
+  declarationScope?: string;
   funcbody?: ASTFuncBody;
   sourceloc: SourceLoc;
   _collect: {
     definedInNamespaceOrStruct?: ASTNamespaceDefinition | ASTStructDefinition;
-    definedInScope?: Collect.Scope;
+    definedInScope?: string;
   };
   _semantic: {};
 };
@@ -308,7 +308,7 @@ export type ASTScope = {
   statements: ASTStatement[];
   sourceloc: SourceLoc;
   _collect: {
-    scope?: Collect.Scope;
+    scope?: string;
   };
 };
 
@@ -460,7 +460,7 @@ export type ASTExprAsFuncbody = {
   variant: "ExprAsFuncBody";
   expr: ASTExpr;
   _collect: {
-    scope?: Collect.Scope;
+    scope?: string;
   };
 };
 
@@ -491,12 +491,12 @@ export type ASTStructMethodDefinition = {
     asTarget: ASTDatatype;
   };
   returnType?: ASTDatatype;
-  declarationScope?: Collect.Scope;
+  declarationScope?: string;
   funcbody?: ASTFuncBody;
   sourceloc: SourceLoc;
   _collect: {
     fullNamespacePath?: string[];
-    definedInScope?: Collect.Scope;
+    definedInScope?: string;
   };
   _semantic: {
     // memberOfSymbol?: Semantic.Struc;
@@ -519,7 +519,7 @@ export type ASTStructDefinition = {
     definedInScope?: Collect.Scope;
     fullNamespacedName?: string[];
     namespaces?: string[];
-    scope?: Collect.Scope;
+    scope?: string;
   };
   _semantic: {};
 };
@@ -534,7 +534,7 @@ export type ASTNamespaceDefinition = {
   sourceloc: SourceLoc;
   _collect: {
     definedInNamespaceOrStruct?: ASTNamespaceDefinition | ASTStructDefinition;
-    scope?: Collect.Scope;
+    scope?: string;
   };
 };
 

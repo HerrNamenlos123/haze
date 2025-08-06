@@ -7,11 +7,11 @@ import type {
 } from "../shared/AST";
 import type { EPrimitive, EVariableContext } from "../shared/common";
 import type { SourceLoc } from "../shared/Errors";
-import type { CollectResult } from "../SymbolCollection/CollectSymbols";
+import type { CollectionContext } from "../SymbolCollection/CollectSymbols";
 
 export namespace Lowered {
   export type Module = {
-    cr: CollectResult;
+    cc: CollectionContext;
     sr: SemanticResult;
 
     cDeclarations: string[];
