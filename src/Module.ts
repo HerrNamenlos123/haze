@@ -27,6 +27,7 @@ import { PrettyPrintAnalyzed, SemanticallyAnalyze } from "./Semantic/Elaborate";
 import { generateCode } from "./Codegen/CodeGenerator";
 import { LowerModule } from "./Lower/Lower";
 import { Collect, type CollectionContext } from "./SymbolCollection/CollectSymbols";
+import { ExportCollectedSymbols } from "./SymbolCollection/ImportExport";
 
 const C_COMPILER = "clang";
 const ARCHIVE_TOOL = "ar";
@@ -301,7 +302,7 @@ class ModuleCompiler {
       moduleName: config.projectName,
       scopes: new Map(),
     };
-    const globalScope = new Collect.Scope(this.cc, {
+    const globalScope = new Collect.Scope(this.cc.moduleName, {
       column: 0,
       filename: "global",
       line: 0,
@@ -393,10 +394,10 @@ class ModuleCompiler {
           return absolute.replace(this.moduleBuildDir + "/", "");
         };
 
-        const exportedDeclarations = new Set<string>();
-        // for (const [name, s] of this.exportSymbols) {
-        //   exportedDeclarations.add(generateSymbolUsageHazeCode(s).get());
-        // }
+        const exportedDeclarations: string[] = [];
+        for (const symbol of sr.exportedCollectedSymbols) {
+          exportedDeclarations.push(JSON.stringify(symbol));
+        }
 
         const moduleMetadata: ModuleMetadata = {
           compilerVersion: version,

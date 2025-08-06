@@ -110,7 +110,7 @@ export function lookupAndElaborateDatatype(
   sr: SemanticResult,
   args: {
     datatype: ASTDatatype | ASTConstant;
-    startLookupInScope: Collect.Scope;
+    startLookupInScope: string;
     context: SubstitutionContext;
     isInCFuncdecl: boolean;
   },
@@ -239,7 +239,8 @@ export function lookupAndElaborateDatatype(
         };
       }
 
-      const found = args.startLookupInScope.lookupSymbol(
+      const found = getScope(sr.cc, args.startLookupInScope).lookupSymbol(
+        sr.cc,
         args.datatype.name,
         args.datatype.sourceloc,
       );
@@ -269,7 +270,7 @@ export function lookupAndElaborateDatatype(
           assert(nestedStruct && nestedStruct.variant === "StructDatatype");
           const nested = lookupAndElaborateDatatype(sr, {
             datatype: args.datatype.nested,
-            startLookupInScope: nestedStruct.scope.collectedScope,
+            startLookupInScope: nestedStruct.scope.collectedScope.id,
             context: isolateElaborationContext(args.context),
             isInCFuncdecl: args.isInCFuncdecl,
           });
@@ -294,7 +295,7 @@ export function lookupAndElaborateDatatype(
           assert(namespace && namespace.variant === "NamespaceDatatype");
           const nested = lookupAndElaborateDatatype(sr, {
             datatype: args.datatype.nested,
-            startLookupInScope: namespace.scope.collectedScope,
+            startLookupInScope: namespace.scope.collectedScope.id,
             context: isolateElaborationContext(args.context),
             isInCFuncdecl: args.isInCFuncdecl,
           });
@@ -380,13 +381,15 @@ export function instantiateStruct(
   },
 ) {
   // This is now the instantiation of the collected struct, so we resolve what the actually passed type is
-  const generics = args.receivingType.generics.map((g) =>
-    lookupAndElaborateDatatype(sr, {
+  const generics = args.receivingType.generics.map((g) => {
+    assert(args.receivingType!._collect.usedInScope)
+    return lookupAndElaborateDatatype(sr, {
       datatype: g,
-      startLookupInScope: assertScope(args.receivingType!._collect.usedInScope),
+      startLookupInScope: args.receivingType!._collect.usedInScope,
       context: args.context,
       isInCFuncdecl: false,
-    }),
+    });
+  }
   );
 
   // If already existing, return cached to prevent loops
@@ -464,7 +467,7 @@ export function instantiateStruct(
       const type = lookupAndElaborateDatatype(sr, {
         datatype: m.type,
         // Start lookup in the struct itself
-        startLookupInScope: getScope(sr.cc, args.definedStructType._collect.scope),
+        startLookupInScope: args.definedStructType._collect.scope,
         context: newContext,
         isInCFuncdecl: false,
       });

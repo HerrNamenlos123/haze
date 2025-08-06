@@ -44,11 +44,11 @@ export namespace Collect {
     private static nextId = 1;
 
     constructor(
-      public cc: CollectionContext,
+      public moduleName: string,
       public sourceloc: SourceLoc,
       public parentScope?: string,
     ) {
-      this.id = `${cc.moduleName}.scope.${Scope.nextId++} `;
+      this.id = `${moduleName}.scope.${Scope.nextId++} `;
     }
 
     defineSymbol(symbol: Symbol) {
@@ -62,16 +62,16 @@ export namespace Collect {
       this.symbols.push(symbol);
     }
 
-    tryLookupSymbol(name: string, loc: SourceLoc): Symbol | undefined {
+    tryLookupSymbol(cc: CollectionContext, name: string, loc: SourceLoc): Symbol | undefined {
       const symbol = this.symbols.find((s) => "name" in s && s.name === name);
       if (symbol) {
         return symbol;
       }
 
       if (this.parentScope) {
-        const parent = this.cc.scopes.get(this.parentScope);
+        const parent = cc.scopes.get(this.parentScope);
         assert(parent);
-        return parent.tryLookupSymbol(name, loc);
+        return parent.tryLookupSymbol(cc, name, loc);
       }
       return undefined;
     }
@@ -80,8 +80,8 @@ export namespace Collect {
       return this.symbols.find((s) => "name" in s && s.name === name);
     }
 
-    lookupSymbol(name: string, loc: SourceLoc): Symbol {
-      const symbol = this.tryLookupSymbol(name, loc);
+    lookupSymbol(cc: CollectionContext, name: string, loc: SourceLoc): Symbol {
+      const symbol = this.tryLookupSymbol(cc, name, loc);
       if (symbol) {
         return symbol;
       }

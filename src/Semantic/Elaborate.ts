@@ -33,11 +33,66 @@ import {
   makeFunctionDatatypeAvailable,
   lookupAndElaborateDatatype,
   instantiateStruct,
-  makeReferenceDatatypeAvailable,
   makeRawPointerDatatypeAvailable,
 } from "./LookupDatatype";
 import { makePrimitiveAvailable, Semantic, type SemanticResult } from "./SemanticSymbols";
 import { serializeDatatype, serializeExpr, serializeNestedName } from "./Serialize";
+
+export function recursivelyExportCollectedSymbol(sr: SemanticResult, symbol: Collect.Symbol | Collect.Scope) {
+  if (sr.exportedCollectedSymbols.has(symbol) || symbol.sourceloc?.filename === "global") {
+    return; // Prevent recursion
+  }
+
+  if (symbol instanceof Collect.Scope) {
+    sr.exportedCollectedSymbols.add(symbol);
+    if (symbol.parentScope) {
+      recursivelyExportCollectedSymbol(sr, getScope(sr.cc, symbol.parentScope));
+    }
+    for (const s of symbol.symbols) {
+      recursivelyExportCollectedSymbol(sr, s);
+    }
+  }
+  else {
+    switch (symbol.variant) {
+      case "FunctionDeclaration":
+        if (!symbol.export) return;
+        sr.exportedCollectedSymbols.add(symbol);
+        if (symbol._collect.definedInScope) {
+          recursivelyExportCollectedSymbol(sr, getScope(sr.cc, symbol._collect.definedInScope));
+        }
+        break;
+
+      case "FunctionDefinition":
+        if (!symbol.export) return;
+        sr.exportedCollectedSymbols.add(symbol);
+        if (symbol._collect.definedInScope) {
+          recursivelyExportCollectedSymbol(sr, getScope(sr.cc, symbol._collect.definedInScope));
+        }
+        break;
+
+      case "NamespaceDefinition":
+        if (!symbol.export) return;
+        for (const d of symbol.declarations) {
+          recursivelyExportCollectedSymbol(sr, d);
+        }
+        break;
+
+      case "GenericParameter":
+      case "StructMethod":
+      case "VariableDefinitionStatement":
+        assert(false, "TBD");
+
+      case "GlobalVariableDefinition":
+      case "StructDefinition":
+        if (!symbol.export) return;
+        sr.exportedCollectedSymbols.add(symbol);
+        if (symbol._collect.definedInScope) {
+          recursivelyExportCollectedSymbol(sr, getScope(sr.cc, symbol._collect.definedInScope));
+        }
+        break;
+    }
+  }
+}
 
 export type SubstitutionContext = {
   substitute: Map<Collect.GenericParameter, Semantic.Symbol>;
@@ -481,7 +536,7 @@ export function elaborateExpr(
           variant: "SizeofExpr",
           datatype: lookupAndElaborateDatatype(sr, {
             datatype: expr.generics[0],
-            startLookupInScope: args.scope,
+            startLookupInScope: args.scope.id,
             isInCFuncdecl: false,
             context: args.context,
           }),
@@ -490,7 +545,7 @@ export function elaborateExpr(
         };
       }
 
-      const symbol = args.scope.lookupSymbol(expr.name, expr.sourceloc);
+      const symbol = args.scope.lookupSymbol(sr.cc, expr.name, expr.sourceloc);
       if (symbol.variant === "VariableDefinitionStatement") {
         const elaboratedSymbol = args.elaboratedVariables.get(symbol);
         if (!elaboratedSymbol) {
@@ -522,7 +577,7 @@ export function elaborateExpr(
         const elaboratedSymbol = elaborate(sr, {
           sourceSymbol: symbol,
           usageGenerics: expr.generics,
-          usageInScope: args.scope,
+          usageInScope: args.scope.id,
           usedAt: expr.sourceloc,
           context: makeSubstitutionContext(),
         });
@@ -544,7 +599,7 @@ export function elaborateExpr(
         const elaboratedSymbol = elaborate(sr, {
           sourceSymbol: symbol,
           usageGenerics: expr.generics,
-          usageInScope: args.scope,
+          usageInScope: args.scope.id,
           usedAt: expr.sourceloc,
           context: makeSubstitutionContext(),
         });
@@ -614,7 +669,7 @@ export function elaborateExpr(
         variant: "ExplicitCast",
         type: lookupAndElaborateDatatype(sr, {
           datatype: expr.castedTo,
-          startLookupInScope: args.scope,
+          startLookupInScope: args.scope.id,
           isInCFuncdecl: false,
           context: args.context,
         }),
@@ -682,7 +737,7 @@ export function elaborateExpr(
       }
 
       if (object.variant === "NamespaceValue" && object.type.variant === "NamespaceDatatype") {
-        const found = object.type.scope.collectedScope.tryLookupSymbol(
+        const found = object.type.scope.collectedScope.tryLookupSymbol(sr.cc,
           expr.member,
           expr.sourceloc,
         );
@@ -695,7 +750,7 @@ export function elaborateExpr(
         const elaborated = elaborate(sr, {
           sourceSymbol: found,
           usageGenerics: expr.generics,
-          usageInScope: args.scope,
+          usageInScope: args.scope.id,
           usedAt: expr.sourceloc,
           context: args.context,
         });
@@ -755,7 +810,7 @@ export function elaborateExpr(
           structForMethod: type,
           context: args.context,
           usageGenerics: expr.generics,
-          usageInScope: args.scope,
+          usageInScope: args.scope.id,
           usedAt: expr.sourceloc,
           sourceSymbol: collectedMethod,
         });
@@ -849,7 +904,7 @@ export function elaborateExpr(
     case "StructInstantiationExpr": {
       const struct = lookupAndElaborateDatatype(sr, {
         datatype: expr.datatype,
-        startLookupInScope: args.scope,
+        startLookupInScope: args.scope.id,
         isInCFuncdecl: false,
         context: args.context,
       });
@@ -1105,7 +1160,7 @@ export function elaborateStatement(
       if (s.datatype) {
         symbol.type = lookupAndElaborateDatatype(sr, {
           datatype: s.datatype,
-          startLookupInScope: args.scope.collectedScope,
+          startLookupInScope: args.scope.collectedScope.id,
           isInCFuncdecl: false,
           context: args.context,
         });
@@ -1180,7 +1235,7 @@ export function elaborateBlockScope(
           }
           type = lookupAndElaborateDatatype(sr, {
             datatype: symbol.datatype,
-            startLookupInScope: args.scope.collectedScope,
+            startLookupInScope: args.scope.collectedScope.id,
             isInCFuncdecl: false,
             context: args.context,
           });
@@ -1263,7 +1318,7 @@ export function elaborate(
   sr: SemanticResult,
   args: {
     sourceSymbol: Collect.Symbol;
-    usageInScope?: Collect.Scope;
+    usageInScope?: string;
     usageGenerics?: (ASTDatatype | ASTConstant)[];
     usedAt?: SourceLoc;
     structForMethod?: Semantic.StructDatatypeSymbol;
@@ -1303,6 +1358,7 @@ export function elaborate(
         }
       }
 
+      assert(args.sourceSymbol._collect.definedInScope);
       const resolvedFunctype = lookupAndElaborateDatatype(sr, {
         datatype: {
           variant: "FunctionDatatype",
@@ -1312,7 +1368,7 @@ export function elaborate(
           sourceloc: args.sourceSymbol.sourceloc,
         },
         isInCFuncdecl: args.sourceSymbol.externLanguage === EExternLanguage.Extern_C,
-        startLookupInScope: assertScope(args.sourceSymbol._collect.definedInScope),
+        startLookupInScope: args.sourceSymbol._collect.definedInScope,
         context: args.context,
       });
       assert(resolvedFunctype.variant === "FunctionDatatype");
@@ -1336,6 +1392,9 @@ export function elaborate(
         generics: [],
         resultSymbol: symbol,
       });
+      if (symbol.export) {
+        recursivelyExportCollectedSymbol(sr, args.sourceSymbol);
+      }
       return symbol;
     }
 
@@ -1388,7 +1447,7 @@ export function elaborate(
           returnType: args.sourceSymbol.returnType!,
           sourceloc: args.sourceSymbol.sourceloc,
         },
-        startLookupInScope: getScope(sr.cc, args.sourceSymbol.declarationScope),
+        startLookupInScope: args.sourceSymbol.declarationScope,
         isInCFuncdecl: false,
         context: substitutionContext,
       });
@@ -1406,12 +1465,15 @@ export function elaborate(
         generics: generics,
         methodType: args.sourceSymbol.methodType,
         operatorOverloading: args.sourceSymbol.operatorOverloading && {
-          asTarget: lookupAndElaborateDatatype(sr, {
-            datatype: args.sourceSymbol.operatorOverloading.asTarget,
-            startLookupInScope: assertScope(args.usageInScope),
-            isInCFuncdecl: false,
-            context: substitutionContext,
-          }),
+          asTarget: lookupAndElaborateDatatype(sr, (() => {
+            assert(args.usageInScope);
+            return ({
+              datatype: args.sourceSymbol.operatorOverloading.asTarget,
+              startLookupInScope: args.usageInScope,
+              isInCFuncdecl: false,
+              context: substitutionContext,
+            });
+          })()),
           operator: args.sourceSymbol.operatorOverloading.operator,
         },
         parameterNames: args.sourceSymbol.params.map((p) => p.name),
@@ -1445,6 +1507,10 @@ export function elaborate(
           elaboratedVariables: new Map(),
           context: substitutionContext,
         });
+      }
+
+      if (symbol.export) {
+        recursivelyExportCollectedSymbol(sr, args.sourceSymbol);
       }
 
       return symbol;
@@ -1497,7 +1563,7 @@ export function elaborate(
         assert(args.sourceSymbol.declarationScope);
         return lookupAndElaborateDatatype(sr, {
           datatype: p.datatype,
-          startLookupInScope: getScope(sr.cc, args.sourceSymbol.declarationScope),
+          startLookupInScope: args.sourceSymbol.declarationScope,
           isInCFuncdecl: false,
           context: substitutionContext,
         });
@@ -1513,7 +1579,7 @@ export function elaborate(
       assert(args.sourceSymbol.declarationScope)
       const returnType = lookupAndElaborateDatatype(sr, {
         datatype: args.sourceSymbol.returnType,
-        startLookupInScope: getScope(sr.cc, args.sourceSymbol.declarationScope),
+        startLookupInScope: args.sourceSymbol.declarationScope,
         isInCFuncdecl: false,
         context: substitutionContext,
       });
@@ -1534,12 +1600,15 @@ export function elaborate(
         methodType: EMethodType.Method,
         name: args.sourceSymbol.name,
         operatorOverloading: args.sourceSymbol.operatorOverloading && {
-          asTarget: lookupAndElaborateDatatype(sr, {
-            datatype: args.sourceSymbol.operatorOverloading.asTarget,
-            startLookupInScope: assertScope(args.usageInScope),
-            isInCFuncdecl: false,
-            context: substitutionContext,
-          }),
+          asTarget: lookupAndElaborateDatatype(sr, (() => {
+            assert(args.usageInScope);
+            return ({
+              datatype: args.sourceSymbol.operatorOverloading.asTarget,
+              startLookupInScope: args.usageInScope,
+              isInCFuncdecl: false,
+              context: substitutionContext,
+            });
+          })()),
           operator: args.sourceSymbol.operatorOverloading.operator,
         },
         sourceloc: args.sourceSymbol.sourceloc,
@@ -1676,6 +1745,9 @@ export function elaborate(
         cstruct: false,
         context: args.context,
       });
+      // if (struct.export) {
+      // recursivelyExportCollectedSymbol(sr, args.sourceSymbol);
+      // }
       return struct;
     }
 
@@ -1685,7 +1757,8 @@ export function elaborate(
           return s.resultSymbol;
         }
       }
-      const scope = assertScope(args.sourceSymbol._collect.definedInScope);
+      assert(args.sourceSymbol._collect.definedInScope);
+      const scope = getScope(sr.cc, args.sourceSymbol._collect.definedInScope);
       const elaboratedExpr =
         args.sourceSymbol.expr &&
         elaborateExpr(sr, args.sourceSymbol.expr, {
@@ -1698,7 +1771,7 @@ export function elaborate(
         lookupAndElaborateDatatype(sr, {
           datatype: args.sourceSymbol.datatype,
           isInCFuncdecl: false,
-          startLookupInScope: scope,
+          startLookupInScope: scope.id,
           context: args.context,
         });
       if (!type && elaboratedExpr) {
@@ -1744,11 +1817,18 @@ export function SemanticallyAnalyze(cc: CollectionContext, isLibrary: boolean) {
     functionTypeCache: [],
     rawPointerTypeCache: [],
     referenceTypeCache: [],
+
+    exportedCollectedSymbols: new Set(),
   };
 
   const globalScope = getScope(cc, cc.globalScope);
 
   globalScope.symbols.forEach((s) => {
+
+    if (s.variant === "FunctionDefinition" && s.export) {
+      recursivelyExportCollectedSymbol(sr, s);
+    }
+
     if (s.variant === "FunctionDefinition" && (s.generics.length !== 0 || s.operatorOverloading)) {
       return undefined;
     }

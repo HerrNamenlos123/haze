@@ -27,7 +27,7 @@ const GLFW_CONTEXT_VERSION_MINOR: i32;
 const GLFW_OPENGL_PROFILE: i32;
 const GLFW_OPENGL_CORE_PROFILE: i32;
 
-export namespace glfw {
+namespace glfw {
 
     struct Window {
         handle: cstruct GLFWwindow*;
@@ -74,4 +74,8 @@ export namespace glfw {
     pollEvents() {
         glfwPollEvents();
     }
+}
+
+export foo<T>(): i32 {
+    return GLFW_PLATFORM;
 }

@@ -135,7 +135,7 @@ export type ASTFunctionDeclaration = {
   sourceloc: SourceLoc;
   _collect: {
     definedInNamespaceOrStruct?: ASTNamespaceDefinition | ASTStructDefinition;
-    definedInScope?: Collect.Scope;
+    definedInScope?: string;
     namespacePath?: string[];
   };
   _semantic: {};
@@ -179,7 +179,7 @@ export type ASTNamedDatatype = {
   nested?: ASTNamedDatatype;
   sourceloc: SourceLoc;
   _collect: {
-    usedInScope?: Collect.Scope;
+    usedInScope?: string;
   };
 };
 
@@ -242,7 +242,7 @@ export type ASTGlobalVariableDefinition = {
   sourceloc: SourceLoc;
   _collect: {
     definedInNamespaceOrStruct?: ASTNamespaceDefinition | ASTStructDefinition;
-    definedInScope?: Collect.Scope;
+    definedInScope?: string;
   };
   _semantic: {};
 };
@@ -516,7 +516,7 @@ export type ASTStructDefinition = {
   sourceloc: SourceLoc;
   _collect: {
     definedInNamespaceOrStruct?: ASTNamespaceDefinition | ASTStructDefinition;
-    definedInScope?: Collect.Scope;
+    definedInScope?: string;
     fullNamespacedName?: string[];
     namespaces?: string[];
     scope?: string;

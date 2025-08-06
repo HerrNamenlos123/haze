@@ -43,7 +43,7 @@ export function getScope(cc: CollectionContext, id: string) {
 }
 
 export function makeScope(cc: CollectionContext, sourceloc: SourceLoc, parentScope: string) {
-  const scope = new Collect.Scope(cc, sourceloc, parentScope);
+  const scope = new Collect.Scope(cc.moduleName, sourceloc, parentScope);
   cc.scopes.set(scope.id, scope);
   return scope.id;
 }
@@ -94,13 +94,13 @@ function collect(
           generics: [],
           sourceloc: item.sourceloc,
           _collect: {
-            usedInScope: scope,
+            usedInScope: scope.id,
           },
         };
       }
 
       item._collect.definedInNamespaceOrStruct = meta.currentNamespaceOrStruct;
-      item._collect.definedInScope = scope;
+      item._collect.definedInScope = scope.id;
       item._collect.namespacePath = [
         ...meta.namespaceStack.map((n) => n.name),
         ...item.namespacePath,
@@ -215,7 +215,7 @@ function collect(
     case "GlobalVariableDefinition":
       scope.defineSymbol(item);
       item._collect.definedInNamespaceOrStruct = meta.currentNamespaceOrStruct;
-      item._collect.definedInScope = scope;
+      item._collect.definedInScope = scope.id;
       if (item.datatype) {
         collect(cc, scope, item.datatype, meta);
       }
@@ -249,7 +249,7 @@ function collect(
     // =================================================================================================================
 
     case "StructDefinition":
-      item._collect.definedInScope = scope;
+      item._collect.definedInScope = scope.id;
       item._collect.scope = makeScope(cc, item.sourceloc, scope.id);
       item._collect.namespaces = meta.namespaceStack.map((n) => n.name);
       item._collect.definedInNamespaceOrStruct = meta.currentNamespaceOrStruct;
@@ -599,7 +599,7 @@ function collect(
       const process = (_item: ASTNamedDatatype) => {
         let p: ASTNamedDatatype | undefined = _item;
         while (p) {
-          p._collect.usedInScope = scope;
+          p._collect.usedInScope = scope.id;
 
           for (const g of p.generics) {
             if (g.variant === "NamedDatatype") {

@@ -1,5 +1,7 @@
 import { CompilerError, InternalError, type SourceLoc } from "../shared/Errors";
 import type {
+  ASTFunctionDeclaration,
+  ASTFunctionDefinition,
   ASTStructDefinition,
   EBinaryOperation,
   EExternLanguage,
@@ -52,6 +54,8 @@ export type SemanticResult = {
   functionTypeCache: Semantic.FunctionDatatypeSymbol[];
   rawPointerTypeCache: Semantic.RawPointerDatatypeSymbol[];
   referenceTypeCache: Semantic.ReferenceDatatypeSymbol[];
+
+  exportedCollectedSymbols: Set<Collect.Scope | Collect.Symbol>;
 };
 
 export function makePrimitiveAvailable(
