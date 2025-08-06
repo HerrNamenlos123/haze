@@ -6,21 +6,25 @@ import type {
   ASTNamespaceDefinition,
   ASTStatement,
   ASTStructDefinition,
+  ASTStructMemberDefinition,
   ASTStructMethodDefinition,
   ASTVariableDefinitionStatement,
 } from "../shared/AST";
 import type { ModuleConfig } from "../shared/Config";
+import { getScope, getSymbol } from "./SymbolCollection";
 
 export type CollectionContext = {
   config: ModuleConfig;
   globalScope: string;
   scopes: Map<string, Collect.Scope>;
+  symbols: Map<string, Collect.Symbol>;
   cInjections: { code: string; sourceloc: SourceLoc }[];
 };
 
 export namespace Collect {
   export type GenericParameter = {
     variant: "GenericParameter";
+    id: string;
     name: string;
     sourceloc: SourceLoc;
   };
@@ -33,6 +37,7 @@ export namespace Collect {
     | ASTGlobalVariableDefinition
     | ASTStructDefinition
     | ASTStructMethodDefinition
+    | ASTStructMemberDefinition
     | GenericParameter;
 
   export type Statement = ASTStatement;
@@ -41,7 +46,7 @@ export namespace Collect {
     variant = "Collect.ScopeClass" as const;
     id: string;
     rawStatements: ASTStatement[] = [];
-    symbols: Symbol[] = [];
+    symbols: string[] = [];
 
     private static nextId = 1;
 
@@ -66,19 +71,23 @@ export namespace Collect {
       return scope;
     }
 
-    defineSymbol(symbol: Symbol) {
-      if (this.tryLookupSymbolHere(symbol.name)) {
+    defineSymbol(cc: CollectionContext, symbol: Symbol) {
+      if (this.tryLookupSymbolHere(cc, symbol.name)) {
         throw new InternalError(
           `Symbol '${symbol.name}' already exists in symbol table`,
           undefined,
           1,
         );
       }
-      this.symbols.push(symbol);
+      this.symbols.push(symbol.id);
     }
 
     tryLookupSymbol(cc: CollectionContext, name: string, loc: SourceLoc): Symbol | undefined {
-      const symbol = this.symbols.find((s) => "name" in s && s.name === name);
+      const _symbol = this.symbols.find((s) => {
+        const sym = getSymbol(cc, s);
+        return "name" in sym && sym.name === name;
+      });
+      const symbol = _symbol && getSymbol(cc, _symbol);
       if (symbol) {
         return symbol;
       }
@@ -91,8 +100,15 @@ export namespace Collect {
       return undefined;
     }
 
-    tryLookupSymbolHere(name: string): Symbol | undefined {
-      return this.symbols.find((s) => "name" in s && s.name === name);
+    tryLookupSymbolHere(cc: CollectionContext, name: string): Symbol | undefined {
+      const symbol = this.symbols.find((s) => {
+        const sym = getSymbol(cc, s);
+        return "name" in sym && sym.name === name;
+      });
+      if (symbol) {
+        return getSymbol(cc, symbol);
+      }
+      return undefined;
     }
 
     lookupSymbol(cc: CollectionContext, name: string, loc: SourceLoc): Symbol {

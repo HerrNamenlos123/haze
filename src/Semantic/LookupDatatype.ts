@@ -13,7 +13,7 @@ import {
 } from "../shared/common";
 import { assert, CompilerError, ImpossibleSituation } from "../shared/Errors";
 import { Collect } from "../SymbolCollection/CollectSymbols";
-import { getScope } from "../SymbolCollection/SymbolCollection";
+import { getScope, getSymbol } from "../SymbolCollection/SymbolCollection";
 import { elaborate, isolateElaborationContext, type SubstitutionContext } from "./Elaborate";
 import {
   isDatatypeSymbol,
@@ -462,10 +462,10 @@ export function instantiateStruct(
       resultSymbol: struct,
     });
 
-    struct.members = args.definedStructType.members.map((m) => {
+    struct.members = args.definedStructType.members.map((member) => {
       assert(args.definedStructType._collect.scope);
       const type = lookupAndElaborateDatatype(sr, {
-        datatype: m.type,
+        datatype: member.type,
         // Start lookup in the struct itself
         startLookupInScope: args.definedStructType._collect.scope,
         context: newContext,
@@ -473,11 +473,11 @@ export function instantiateStruct(
       });
       return {
         variant: "Variable",
-        name: m.name,
+        name: member.name,
         export: false,
         externLanguage: EExternLanguage.None,
         mutable: true,
-        sourceloc: m.sourceloc,
+        sourceloc: member.sourceloc,
         type: type,
         variableContext: EVariableContext.MemberOfStruct,
         memberOf: struct,
@@ -485,15 +485,15 @@ export function instantiateStruct(
       };
     });
 
-    args.definedStructType.methods.forEach((m) => {
-      assert(m.returnType);
-      assert(m.funcbody?._collect.scope);
-      if (m.generics.length !== 0 || m.operatorOverloading) {
+    args.definedStructType.methods.forEach((method) => {
+      assert(method.returnType);
+      assert(method.funcbody?._collect.scope);
+      if (method.generics.length !== 0 || method.operatorOverloading) {
         return;
       }
 
       const symbol = elaborate(sr, {
-        sourceSymbol: m,
+        sourceSymbol: method,
         usageGenerics: [],
         structForMethod: struct,
         context: newContext,

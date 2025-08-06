@@ -43,6 +43,15 @@ export function getScope(cc: CollectionContext, id: string) {
   return scope;
 }
 
+export function getSymbol(cc: CollectionContext, id: string) {
+  const symbol = cc.symbols.get(id);
+  if (!symbol) {
+    console.error(id)
+    assert(symbol);
+  }
+  return symbol;
+}
+
 export function makeScope(cc: CollectionContext, sourceloc: SourceLoc, parentScope: string) {
   const scope = new Collect.Scope(makeModulePrefix(cc.config), sourceloc, parentScope);
   cc.scopes.set(scope.id, scope);
@@ -111,7 +120,7 @@ function collect(
         item.methodType = EMethodType.Method;
       }
 
-      if (scope.tryLookupSymbolHere(item.name)) {
+      if (scope.tryLookupSymbolHere(cc, item.name)) {
         throw new CompilerError(`Symbol was already declared in this scope`, item.sourceloc);
       }
 
@@ -120,7 +129,8 @@ function collect(
       }
       collect(cc, scope, item.returnType, meta);
 
-      scope.defineSymbol(item);
+      scope.defineSymbol(cc, item);
+      cc.symbols.set(item.id, item);
       break;
 
     // =================================================================================================================
@@ -150,18 +160,19 @@ function collect(
         };
       }
 
-      if (scope.tryLookupSymbolHere(item.name)) {
+      if (scope.tryLookupSymbolHere(cc, item.name)) {
         throw new CompilerError(`Symbol was already declared in this scope`, item.sourceloc);
       }
 
       for (const g of item.generics) {
-        getScope(cc, item.declarationScope).defineSymbol(g);
+        getScope(cc, item.declarationScope).defineSymbol(cc, g);
       }
 
       if (item.funcbody?._collect.scope) {
         for (const param of item.params) {
-          getScope(cc, item.funcbody._collect.scope).defineSymbol({
+          getScope(cc, item.funcbody._collect.scope).defineSymbol(cc, {
             variant: "VariableDefinitionStatement",
+            id: makeModulePrefix(cc.config) + ".vardef." + (cc.config.symbolIdCounter++).toString(),
             mutable: false,
             name: param.name,
             datatype: param.datatype,
@@ -177,7 +188,8 @@ function collect(
       }
       collect(cc, scope, item.returnType, meta);
 
-      scope.defineSymbol(item);
+      scope.defineSymbol(cc, item);
+      cc.symbols.set(item.id, item);
       if (item.funcbody?._collect.scope) {
         if (item.funcbody.variant === "ExprAsFuncBody") {
           item.funcbody = {
@@ -214,7 +226,8 @@ function collect(
     // =================================================================================================================
 
     case "GlobalVariableDefinition":
-      scope.defineSymbol(item);
+      scope.defineSymbol(cc, item);
+      cc.symbols.set(item.id, item);
       item._collect.definedInNamespaceOrStruct = meta.currentNamespaceOrStruct;
       item._collect.definedInScope = scope.id;
       if (item.datatype) {
@@ -229,11 +242,12 @@ function collect(
     case "NamespaceDefinition": {
       let namespace = item;
       item._collect.definedInNamespaceOrStruct = meta.currentNamespaceOrStruct;
-      if (scope.tryLookupSymbolHere(namespace.name)) {
-        namespace = scope.tryLookupSymbolHere(namespace.name) as ASTNamespaceDefinition;
+      if (scope.tryLookupSymbolHere(cc, namespace.name)) {
+        namespace = scope.tryLookupSymbolHere(cc, namespace.name) as ASTNamespaceDefinition;
       } else {
         namespace._collect.scope = makeScope(cc, namespace.sourceloc, scope.id);
-        scope.defineSymbol(namespace);
+        scope.defineSymbol(cc, namespace);
+        cc.symbols.set(item.id, item);
       }
       for (const s of item.declarations) {
         collect(cc, getScope(cc, namespace._collect.scope!), s, {
@@ -256,10 +270,10 @@ function collect(
       item._collect.definedInNamespaceOrStruct = meta.currentNamespaceOrStruct;
       item._collect.fullNamespacedName = [...item._collect.namespaces, item.name];
       for (const g of item.generics) {
-        getScope(cc, item._collect.scope).defineSymbol(g);
+        getScope(cc, item._collect.scope).defineSymbol(cc, g);
       }
 
-      const alreadyExists = scope.tryLookupSymbolHere(item.name);
+      const alreadyExists = scope.tryLookupSymbolHere(cc, item.name);
       if (alreadyExists) {
         const msg =
           (alreadyExists.sourceloc &&
@@ -270,7 +284,8 @@ function collect(
           item.sourceloc,
         );
       }
-      scope.defineSymbol(item);
+      scope.defineSymbol(cc, item);
+      cc.symbols.set(item.id, item);
 
       const newMeta = {
         ...meta,
@@ -282,8 +297,8 @@ function collect(
         collect(cc, getScope(cc, item._collect.scope), decl, newMeta);
       }
 
-      for (const member of item.members) {
-        collect(cc, getScope(cc, item._collect.scope), member.type, newMeta);
+      for (const m of item.members) {
+        collect(cc, getScope(cc, item._collect.scope), m.type, newMeta);
       }
 
       for (const method of item.methods) {
@@ -313,13 +328,14 @@ function collect(
         method._collect.definedInScope = item._collect.scope;
 
         for (const g of method.generics) {
-          getScope(cc, method.declarationScope).defineSymbol(g);
+          getScope(cc, method.declarationScope).defineSymbol(cc, g);
         }
 
         if (method.funcbody?._collect.scope) {
           if (!method.static && method.name !== "constructor") {
-            getScope(cc, method.funcbody._collect.scope).defineSymbol({
+            getScope(cc, method.funcbody._collect.scope).defineSymbol(cc, {
               variant: "VariableDefinitionStatement",
+              id: makeModulePrefix(cc.config) + ".vardef." + (cc.config.symbolIdCounter++).toString(),
               mutable: false,
               name: "this",
               sourceloc: method.sourceloc,
@@ -330,8 +346,9 @@ function collect(
           }
 
           for (const param of method.params) {
-            getScope(cc, method.funcbody._collect.scope).defineSymbol({
+            getScope(cc, method.funcbody._collect.scope).defineSymbol(cc, {
               variant: "VariableDefinitionStatement",
+              id: makeModulePrefix(cc.config) + ".vardef." + (cc.config.symbolIdCounter++).toString(),
               mutable: false,
               name: param.name,
               datatype: param.datatype,
@@ -391,7 +408,7 @@ function collect(
             break;
 
           case "VariableDefinitionStatement":
-            if (scope.tryLookupSymbolHere(s.name)) {
+            if (scope.tryLookupSymbolHere(cc, s.name)) {
               throw new CompilerError(
                 `Variable '${s.name}' is already defined in this scope`,
                 s.sourceloc,
@@ -403,7 +420,8 @@ function collect(
             if (s.expr) {
               collect(cc, scope, s.expr, meta);
             }
-            scope.defineSymbol(s);
+            scope.defineSymbol(cc, s);
+            cc.symbols.set(s.id, s);
             break;
         }
         scope.rawStatements.push(s);
@@ -448,8 +466,9 @@ function collect(
     case "LambdaExpr":
       item.lambda.funcbody._collect.scope = makeScope(cc, item.sourceloc, scope.id);
       for (const param of item.lambda.params) {
-        getScope(cc, item.lambda.funcbody._collect.scope).defineSymbol({
+        getScope(cc, item.lambda.funcbody._collect.scope).defineSymbol(cc, {
           variant: "VariableDefinitionStatement",
+          id: makeModulePrefix(cc.config) + ".vardef." + (cc.config.symbolIdCounter++).toString(),
           mutable: false,
           name: param.name,
           datatype: param.datatype,
@@ -691,7 +710,8 @@ export function PrettyPrintCollected(cc: CollectionContext) {
       // print("  - " + JSON.stringify(s));
     }
     print(`Symbols (${scope.symbols.length}):`);
-    for (const s of scope.symbols) {
+    for (const _s of scope.symbols) {
+      const s = getSymbol(cc, _s);
       switch (s.variant) {
         case "NamespaceDefinition":
           print(`  - Namespace ${s.name}: export=${s.export}`);
@@ -721,14 +741,18 @@ export function PrettyPrintCollected(cc: CollectionContext) {
           );
           print(`      Members:`);
           for (const member of s.members) {
+            // const member = getSymbol(cc, m);
+            // assert(member.variant === "StructMember");
             print(`        - ${member.name}: ${serializeAstDatatype(member.type)}`);
           }
           print(`      Methods:`);
-          for (const m of s.methods) {
+          for (const method of s.methods) {
+            // const method = getSymbol(cc, m);
+            // assert(method.variant === "StructMethod");
             print(
-              `        - ${m.name}${m.generics.length > 0 ? "<" + m.generics.join(", ") + ">" : ""}(${m.params.map((p) => `${p.name}: ${serializeAstDatatype(p.datatype)}`).join(", ")}${m.ellipsis ? ", ..." : ""}): ${m.returnType && serializeAstDatatype(m.returnType)}`,
+              `        - ${method.name}${method.generics.length > 0 ? "<" + method.generics.join(", ") + ">" : ""}(${method.params.map((p) => `${p.name}: ${serializeAstDatatype(p.datatype)}`).join(", ")}${method.ellipsis ? ", ..." : ""}): ${method.returnType && serializeAstDatatype(method.returnType)}`,
             );
-            if (m.funcbody?._collect.scope) printScope(getScope(cc, m.funcbody._collect.scope), indent + 12);
+            if (method.funcbody?._collect.scope) printScope(getScope(cc, method.funcbody._collect.scope), indent + 12);
           }
           break;
 

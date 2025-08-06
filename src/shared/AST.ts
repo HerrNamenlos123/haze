@@ -144,6 +144,7 @@ export type ASTFunctionDeclaration = {
 
 export type ASTFunctionDefinition = {
   variant: "FunctionDefinition";
+  id: string;
   export: boolean;
   externLanguage: EExternLanguage;
   operatorOverloading?: {
@@ -234,6 +235,7 @@ export type ASTDatatype =
 
 export type ASTGlobalVariableDefinition = {
   variant: "GlobalVariableDefinition";
+  id: string;
   export: boolean;
   externLanguage: EExternLanguage;
   mutable: boolean;
@@ -268,6 +270,7 @@ export type ASTReturnStatement = {
 
 export type ASTVariableDefinitionStatement = {
   variant: "VariableDefinitionStatement";
+  id: string;
   mutable: boolean;
   name: string;
   datatype?: ASTDatatype;
@@ -279,6 +282,7 @@ export type ASTVariableDefinitionStatement = {
 
 export type ASTIfStatement = {
   variant: "IfStatement";
+  id: string;
   condition: ASTExpr;
   then: ASTScope;
   elseIfs: {
@@ -291,6 +295,7 @@ export type ASTIfStatement = {
 
 export type ASTWhileStatement = {
   variant: "WhileStatement";
+  id: string;
   condition: ASTExpr;
   body: ASTScope;
   sourceloc: SourceLoc;
@@ -475,6 +480,7 @@ export type ASTCInjectDirective = {
 
 export type ASTStructMemberDefinition = {
   variant: "StructMember";
+  id: string;
   name: string;
   type: ASTDatatype;
   sourceloc: SourceLoc;
@@ -482,6 +488,7 @@ export type ASTStructMemberDefinition = {
 
 export type ASTStructMethodDefinition = {
   variant: "StructMethod";
+  id: string;
   params: ASTParam[];
   name: string;
   generics: Collect.GenericParameter[];
@@ -506,6 +513,7 @@ export type ASTStructMethodDefinition = {
 
 export type ASTStructDefinition = {
   variant: "StructDefinition";
+  id: string;
   export: boolean;
   externLanguage: EExternLanguage;
   name: string;
@@ -529,6 +537,7 @@ export type ASTTypeDefinition = ASTStructDefinition;
 
 export type ASTNamespaceDefinition = {
   variant: "NamespaceDefinition";
+  id: string;
   export: boolean;
   name: string;
   declarations: ASTGlobalDeclaration[];

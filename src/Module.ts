@@ -174,6 +174,7 @@ export class ProjectCompiler {
         projectDescription: undefined,
         projectLicense: undefined,
         compilerFlags: [],
+        symbolIdCounter: 0,
       };
     }
     return config;
@@ -305,6 +306,7 @@ class ModuleCompiler {
       globalScope: "",
       config: config,
       scopes: new Map(),
+      symbols: new Map()
     };
     const globalScope = new Collect.Scope(makeModulePrefix(this.cc.config), {
       column: 0,
@@ -321,7 +323,7 @@ class ModuleCompiler {
   // }
 
   addSourceFromString(text: string, filename: string) {
-    CollectRoot(this.cc, Parser.parseTextToAST(text, filename));
+    CollectRoot(this.cc, Parser.parseTextToAST(this.config, text, filename));
   }
 
   async addProjectSourceFiles() {
@@ -519,7 +521,7 @@ class ModuleCompiler {
         // declarations.writeLine(decl);
       }
 
-      this.addSourceFromString(declarations.get(), libpath);
+      // this.addSourceFromString(declarations.get(), libpath);
     }
   }
 

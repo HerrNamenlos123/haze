@@ -27,7 +27,7 @@ import {
   type SourceLoc,
 } from "../shared/Errors";
 import { Collect, type CollectionContext } from "../SymbolCollection/CollectSymbols";
-import { getScope } from "../SymbolCollection/SymbolCollection";
+import { getScope, getSymbol } from "../SymbolCollection/SymbolCollection";
 import { Conversion } from "./Conversion";
 import {
   makeFunctionDatatypeAvailable,
@@ -50,7 +50,7 @@ export function recursivelyExportCollectedSymbols(sr: SemanticResult, symbol: Co
       recursivelyExportCollectedSymbols(sr, getScope(sr.cc, symbol.parentScope));
     }
     for (const s of symbol.symbols) {
-      recursivelyExportCollectedSymbols(sr, s);
+      recursivelyExportCollectedSymbols(sr, getSymbol(sr.cc, s));
     }
   }
   else {
@@ -802,7 +802,9 @@ export function elaborateExpr(
 
       assert(type.originalCollectedSymbol.variant === "StructDefinition");
       const collectedMethod = type.originalCollectedSymbol.methods.find(
-        (m) => m.name === expr.member,
+        (m) => {
+          return m.name === expr.member;
+        }
       );
 
       if (collectedMethod) {
@@ -1211,7 +1213,8 @@ export function elaborateBlockScope(
 
   const variableMap = new Map<Collect.Symbol, Semantic.VariableSymbol>(args.elaboratedVariables);
 
-  for (const symbol of args.scope.collectedScope.symbols) {
+  for (const _s of args.scope.collectedScope.symbols) {
+    const symbol = getSymbol(sr.cc, _s);
     switch (symbol.variant) {
       case "GenericParameter":
         // This must be skipped. The Collect Scope defines the generic T, but we don't want to elaborate it.
@@ -1309,7 +1312,7 @@ export function defineThisPointer(
   };
   args.scope.symbolTable.defineSymbol(vardef);
 
-  const thisRefVarDef = args.scope.collectedScope.tryLookupSymbolHere("this");
+  const thisRefVarDef = args.scope.collectedScope.tryLookupSymbolHere(sr.cc, "this");
   assert(thisRefVarDef);
   args.elaboratedVariables.set(thisRefVarDef, vardef);
 }
@@ -1816,7 +1819,8 @@ export function SemanticallyAnalyze(cc: CollectionContext, isLibrary: boolean) {
 
   const globalScope = getScope(cc, cc.globalScope);
 
-  globalScope.symbols.forEach((s) => {
+  globalScope.symbols.forEach((_s) => {
+    const s = getSymbol(sr.cc, _s);
     if (s.variant === "FunctionDefinition" && (s.generics.length !== 0 || s.operatorOverloading)) {
       return undefined;
     }
