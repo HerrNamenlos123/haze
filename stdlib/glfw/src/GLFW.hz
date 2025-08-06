@@ -2,107 +2,76 @@
 inject "#include <GLFW/glfw3.h>";
 inject "#include <math.h>";
 
-export extern "C" noemit struct GLFWwindow {};
-extern "C" noemit struct GLFWmonitor {};
-extern "C" noemit glfwInit(): boolean;
-extern "C" noemit glfwTerminate(): none;
-extern "C" noemit glfwMakeContextCurrent(w: GLFWwindow*);
-extern "C" noemit glfwWindowShouldClose(w: GLFWwindow*): boolean;
-extern "C" noemit glfwCreateWindow(width: i32, height: i32, title: str, monitor: GLFWmonitor*, share: GLFWwindow*): GLFWwindow*;
-extern "C" noemit glClear(flag: i64): boolean;
-extern "C" noemit glfwSwapBuffers(w: GLFWwindow*);
-extern "C" noemit glfwPollEvents();
-extern "C" noemit glfwSwapInterval(flag: i8);
-extern "C" noemit glfwGetTime(): f64;
-extern "C" noemit glfwGetKey(w: GLFWwindow*, key: i32): i32;
-extern "C" noemit glfwGetMouseButton(w: GLFWwindow*, button: i32): i32;
+export extern "C" struct GLFWwindow {};
+extern "C" struct GLFWmonitor {};
 
-struct Window {
-    glfwWindow: GLFWwindow*;
+extern "C" glfwInit(): i32;
+extern "C" glfwTerminate(): none;
+extern "C" glfwCreateWindow(width: i32, height: i32, title: str, monitor: cstruct GLFWmonitor*, share: cstruct GLFWwindow*): cstruct GLFWwindow*;
+extern "C" glfwWindowShouldClose(w: cstruct GLFWwindow*): i32;
+extern "C" glfwSwapBuffers(w: cstruct GLFWwindow*);
+extern "C" glfwSwapInterval(flag: i32);
+extern "C" glfwMakeContextCurrent(w: cstruct GLFWwindow*);
+extern "C" glfwPollEvents();
+extern "C" glfwInitHint(hint: i32, value: i32);
+extern "C" glfwWindowHint(hint: i32, value: i32);
 
-    constructor(width: i32, height: i32, title: str): Result<Window, str> {
-      __c__("glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);");
-      __c__("glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);");
-      __c__("glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);");
-      const window = glfwCreateWindow(width, height, title, 0 as GLFWmonitor*, 0 as GLFWwindow*);
-      if not window {
-          return Result<Window, str>.error("Window creation failed");
-      }
+extern "C" strcmp(str1: str, str2: str): i32;
+extern "C" getenv(name: str): str;
 
-      glfwMakeContextCurrent(window);
-      glfwSwapInterval(1 as i8);
+const GLFW_PLATFORM: i32;
+const GLFW_PLATFORM_X11: i32;
+const GLFW_ANY_PLATFORM: i32;
+const GLFW_CONTEXT_VERSION_MAJOR: i32;
+const GLFW_CONTEXT_VERSION_MINOR: i32;
+const GLFW_OPENGL_PROFILE: i32;
+const GLFW_OPENGL_CORE_PROFILE: i32;
 
-      // initClayAndRSGL(window);
+export namespace glfw {
 
-      return Result<Window, str>.success(Window { glfwWindow: window });
+    struct Window {
+        handle: cstruct GLFWwindow*;
+
+        makeContextCurrent() {
+            glfwMakeContextCurrent(this.handle);
+        }
+
+        shouldClose(): boolean {
+            return glfwWindowShouldClose(this.handle) != 0;
+        }
+
+        swapBuffers() {
+            glfwSwapBuffers(this.handle);
+        }
     }
 
-    makeContextCurrent() {
-      glfwMakeContextCurrent(this.glfwWindow);
+    init(): boolean {
+        if (strcmp(getenv("XDG_CURRENT_DESKTOP"), "GNOME") == 0) {
+            glfwInitHint(GLFW_PLATFORM, GLFW_PLATFORM_X11);
+        }
+        else {
+            glfwInitHint(GLFW_PLATFORM, GLFW_ANY_PLATFORM);
+        }
+        return glfwInit() != 0;
     }
 
-    setVSync(enabled: boolean) {
-      glfwSwapInterval(enabled as i8);
+    terminate() {
+        glfwTerminate();
     }
 
-    shouldClose(): boolean {
-      return glfwWindowShouldClose(this.glfwWindow);
+    createWindow(width: i32, height: i32, title: str): Window {
+        glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+        glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
+        glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+        const handle = glfwCreateWindow(width, height, title, 0 as cstruct GLFWmonitor*, 0 as cstruct GLFWwindow*);
+        return Window { handle: handle };
     }
 
-    swapBuffers() {
-      glfwSwapBuffers(this.glfwWindow);
+    swapInterval(interval: i32) {
+        glfwSwapInterval(1);
     }
 
     pollEvents() {
-      glfwPollEvents();
+        glfwPollEvents();
     }
-
-    getCursorPos(): Vec2 {
-      const pos = Vec2(0 as f64, 0 as f64);
-      __c__("glfwGetCursorPos(this->glfwWindow, &pos.x, &pos.y)");
-      return pos;
-    }
-
-    getKey(key: i32): boolean {
-      return glfwGetKey(this.glfwWindow, key) != 0;
-    }
-
-    getMouseButton(button: i32): boolean {
-      return glfwGetMouseButton(this.glfwWindow, button) != 0;
-    }
-}
-
-drawLine(p1: Vec2, p2: Vec2, thickness: f64, color: Color) {
-  if thickness > 7 {
-    thickness = 7;
-  }
-  // __c__("RSGL_drawLine((RSGL_point) { p1.x, p1.y }, (RSGL_point) { p2.x, p2.y }, thickness, RSGL_RGB(color.r, color.g, color.b))");
-  // __c__("RSGL_drawCircle((RSGL_circle) { p1.x - thickness / 2.0, p1.y - thickness / 2.0, thickness }, RSGL_RGB(color.r, color.g, color.b))");
-  // __c__("RSGL_drawCircle((RSGL_circle) { p2.x - thickness / 2.0, p2.y - thickness / 2.0, thickness }, RSGL_RGB(color.r, color.g, color.b))");
-}
-
-drawCircle(center: Vec2, radius: i16, color: Color) {
-  // __c__("RSGL_drawCircle((RSGL_circle) { center.x - radius, center.y - radius, radius * 2 }, RSGL_RGB(color.r, color.g, color.b))");
-}
-
-drawTriangle(p1: Vec2, p2: Vec2, p3: Vec2, color: Color) {
-  // __c__("RSGL_drawTriangle((RSGL_triangle) { .p1 = (RSGL_point) { p1.x, p1.y }, .p2 = (RSGL_point) { p2.x, p2.y }, .p3 = (RSGL_point) { p3.x, p3.y } }, RSGL_RGB(color.r, color.g, color.b))");
-}
-
-drawVector(vector: Vec2, position: Vec2, color: Color) {
-  const arrowLength = 25.0 as f64;
-  const arrowAngle = Math.degToRad(30);
-  const lineThickness = 2;
-
-  if vector.length() < arrowLength * 4 {
-    arrowLength = vector.length() / 4.0;
-  }
-
-  const tip = position.add(vector);
-  const dir = vector.normalize();
-  const sidedir = Vec2(dir.y, -dir.x);
-  drawLine(position, tip, lineThickness, color);
-  const cross = tip.sub(dir.mul(arrowLength));
-  const sideVec = sidedir.mul(arrowLength * Math.tan(arrowAngle / 2));
-  drawTriangle(tip, cross.add(sideVec), cross.sub(sideVec), color);
 }

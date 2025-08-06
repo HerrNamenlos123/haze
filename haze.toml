@@ -23,7 +23,7 @@ test = "haze test"
 # warnings_as_errors = false
 
 [dependencies]
-# glfw = "glfw"
+glfw = "glfw"
 # SDL = "SDL"
 
 [linker]

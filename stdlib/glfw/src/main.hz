@@ -1,129 +1,129 @@
 
 
-export TM2(): i32 { 
-  if not glfwInit() {
-    printf("Initializing GLFW failed\n");
-    return 0;
-  }
+// export TM2(): i32 { 
+//   if not glfwInit() {
+//     printf("Initializing GLFW failed\n");
+//     return 0;
+//   }
 
-  const windowResult = Window(1080, 720, "Test 1");
-  if not windowResult.isSuccess {
-      printf("%s\n", windowResult.errorValue);
-      glfwTerminate();
-      return 0;
-  }
-  const window = windowResult.successValue;
+//   const windowResult = Window(1080, 720, "Test 1");
+//   if not windowResult.isSuccess {
+//       printf("%s\n", windowResult.errorValue);
+//       glfwTerminate();
+//       return 0;
+//   }
+//   const window = windowResult.successValue;
 
-  const v_phi_const = 50;
-  const R = 300;
+//   const v_phi_const = 50;
+//   const R = 300;
 
-  const P = Vec2(0, 0);
-  const velocity = Vec2(0, 0);
-  const acceleration = Vec2(0, 0);
+//   const P = Vec2(0, 0);
+//   const velocity = Vec2(0, 0);
+//   const acceleration = Vec2(0, 0);
 
-  const oldTime = glfwGetTime();
-  const startTime = glfwGetTime();
+//   const oldTime = glfwGetTime();
+//   const startTime = glfwGetTime();
 
-  // const path = List<Vec2>();
+//   // const path = List<Vec2>();
 
-  while !window.shouldClose() {
-    // beginFrame();
-    // frame();
+//   while !window.shouldClose() {
+//     // beginFrame();
+//     // frame();
 
-    // text("Hallo cooler Test!", 60);
-    // div(() => {
-    //   text("Oh Yeah!", 18);
-    // });
+//     // text("Hallo cooler Test!", 60);
+//     // div(() => {
+//     //   text("Oh Yeah!", 18);
+//     // });
 
-    window.pollEvents();
-    const now = glfwGetTime();
-    const dt = now - oldTime;
-    oldTime = now;
-    const elapsed = now - startTime;
+//     window.pollEvents();
+//     const now = glfwGetTime();
+//     const dt = now - oldTime;
+//     oldTime = now;
+//     const elapsed = now - startTime;
 
-    const mouse = window.getCursorPos();
+//     const mouse = window.getCursorPos();
 
-    if window.getKey(32) {
-      P = Vec2(R, 0);
-      velocity = Vec2(0, v_phi_const);
-      acceleration = Vec2(0, 0);
-      startTime = glfwGetTime();
-      // path.clear();
-    }
+//     if window.getKey(32) {
+//       P = Vec2(R, 0);
+//       velocity = Vec2(0, v_phi_const);
+//       acceleration = Vec2(0, 0);
+//       startTime = glfwGetTime();
+//       // path.clear();
+//     }
 
-    const origin = Vec2(200, 600);
-    const m = mouse.sub(origin);
-    m = Vec2(m.x, -m.y);
-    if window.getMouseButton(0) {
-      P = Vec2(m.x, m.y);
-      velocity = Vec2(0, v_phi_const);
-      acceleration = Vec2(0, 0);
-      startTime = glfwGetTime();
-      // path.clear();
-    }
+//     const origin = Vec2(200, 600);
+//     const m = mouse.sub(origin);
+//     m = Vec2(m.x, -m.y);
+//     if window.getMouseButton(0) {
+//       P = Vec2(m.x, m.y);
+//       velocity = Vec2(0, v_phi_const);
+//       acceleration = Vec2(0, 0);
+//       startTime = glfwGetTime();
+//       // path.clear();
+//     }
 
-    // =========================================
+//     // =========================================
 
-    const phi = Math.atan2(P.y, P.x);
+//     const phi = Math.atan2(P.y, P.x);
 
-    const e_r = P.normalize();
-    const e_phi = Vec2(-e_r.y, e_r.x);
+//     const e_r = P.normalize();
+//     const e_phi = Vec2(-e_r.y, e_r.x);
 
-    const v_phi = velocity.dot(e_phi);
-    const v_r = velocity.dot(e_r);
+//     const v_phi = velocity.dot(e_phi);
+//     const v_r = velocity.dot(e_r);
 
-    const a_phi = Math.pow(v_phi, 2) / R * phi;
-    const a_r = Math.pow(v_phi, 2) / R * 
-                (
-                    Math.cosh((2*v_phi*elapsed) / (Math.sqrt(2) * R)) 
-                    - 
-                    1/Math.pow(Math.cosh((v_phi*elapsed)/(Math.sqrt(2)*R)), 2));
+//     const a_phi = Math.pow(v_phi, 2) / R * phi;
+//     const a_r = Math.pow(v_phi, 2) / R * 
+//                 (
+//                     Math.cosh((2*v_phi*elapsed) / (Math.sqrt(2) * R)) 
+//                     - 
+//                     1/Math.pow(Math.cosh((v_phi*elapsed)/(Math.sqrt(2)*R)), 2));
 
-    acceleration = Vec2(a_r * Math.cos(phi) - a_phi * Math.sin(phi), a_r * Math.sin(phi) + a_phi * Math.cos(phi));
-    // ctx.log.debug("v_phi: %f", v_phi);
+//     acceleration = Vec2(a_r * Math.cos(phi) - a_phi * Math.sin(phi), a_r * Math.sin(phi) + a_phi * Math.cos(phi));
+//     // ctx.log.debug("v_phi: %f", v_phi);
 
-    velocity = velocity.add(acceleration.mul(dt));
-    P = P.add(velocity.mul(dt));
+//     velocity = velocity.add(acceleration.mul(dt));
+//     P = P.add(velocity.mul(dt));
 
-    // path.push(P);
+//     // path.push(P);
 
-    // const a = 0;
-    // while a < path.length - 1 {
-    //   drawLine(origin.add(Vec2(path.get(a).x, -path.get(a).y)), origin.add(Vec2(path.get(a + 1).x, -path.get(a + 1).y)), 1, Color(255, 255, 255));
-    //   a++;
-    // }
+//     // const a = 0;
+//     // while a < path.length - 1 {
+//     //   drawLine(origin.add(Vec2(path.get(a).x, -path.get(a).y)), origin.add(Vec2(path.get(a + 1).x, -path.get(a + 1).y)), 1, Color(255, 255, 255));
+//     //   a++;
+//     // }
 
-    drawVector(Vec2(600, 0), origin, Color(255, 255, 255));
-    drawVector(Vec2(0, -500), origin, Color(255, 255, 255));
+//     drawVector(Vec2(600, 0), origin, Color(255, 255, 255));
+//     drawVector(Vec2(0, -500), origin, Color(255, 255, 255));
 
-    // e_r und e_phi
-    drawVector(Vec2(e_phi.x * 100, -e_phi.y * 100), origin.add(Vec2(P.x, -P.y)), Color(255, 255, 255));
-    drawVector(Vec2(e_r.x * 100, -e_r.y * 100), origin.add(Vec2(P.x, -P.y)), Color(255, 255, 255));
+//     // e_r und e_phi
+//     drawVector(Vec2(e_phi.x * 100, -e_phi.y * 100), origin.add(Vec2(P.x, -P.y)), Color(255, 255, 255));
+//     drawVector(Vec2(e_r.x * 100, -e_r.y * 100), origin.add(Vec2(P.x, -P.y)), Color(255, 255, 255));
 
-    // v
-    drawVector(Vec2(velocity.x, -velocity.y), origin.add(Vec2(P.x, -P.y)), Color(255, 0, 0));
-    drawVector(Vec2(e_phi.x * v_phi, -e_phi.y * v_phi), origin.add(Vec2(P.x, -P.y)), Color(255, 0, 0));
-    drawVector(Vec2(e_r.x * v_r, -e_r.y * v_r), origin.add(Vec2(P.x, -P.y)), Color(255, 0, 0));
+//     // v
+//     drawVector(Vec2(velocity.x, -velocity.y), origin.add(Vec2(P.x, -P.y)), Color(255, 0, 0));
+//     drawVector(Vec2(e_phi.x * v_phi, -e_phi.y * v_phi), origin.add(Vec2(P.x, -P.y)), Color(255, 0, 0));
+//     drawVector(Vec2(e_r.x * v_r, -e_r.y * v_r), origin.add(Vec2(P.x, -P.y)), Color(255, 0, 0));
 
-    // a
-    const scaleA = 5;
-    drawVector(Vec2(acceleration.x * scaleA, -acceleration.y * scaleA), origin.add(Vec2(P.x, -P.y)), Color(0, 255, 0));
-    drawVector(Vec2(e_phi.x * a_phi * scaleA, -e_phi.y * a_phi * scaleA), origin.add(Vec2(P.x, -P.y)), Color(0, 255, 0));
-    drawVector(Vec2(e_r.x * a_r * scaleA, -e_r.y * a_r * scaleA), origin.add(Vec2(P.x, -P.y)), Color(0, 255, 0));
+//     // a
+//     const scaleA = 5;
+//     drawVector(Vec2(acceleration.x * scaleA, -acceleration.y * scaleA), origin.add(Vec2(P.x, -P.y)), Color(0, 255, 0));
+//     drawVector(Vec2(e_phi.x * a_phi * scaleA, -e_phi.y * a_phi * scaleA), origin.add(Vec2(P.x, -P.y)), Color(0, 255, 0));
+//     drawVector(Vec2(e_r.x * a_r * scaleA, -e_r.y * a_r * scaleA), origin.add(Vec2(P.x, -P.y)), Color(0, 255, 0));
 
-    drawCircle(origin.add(Vec2(P.x, -P.y)), 5, Color(0, 255, 0));
+//     drawCircle(origin.add(Vec2(P.x, -P.y)), 5, Color(0, 255, 0));
 
-    // endFrame();
-    window.swapBuffers();
-  }
+//     // endFrame();
+//     window.swapBuffers();
+//   }
 
-  // destroyClayAndRSGL(window.glfwWindow);
+//   // destroyClayAndRSGL(window.glfwWindow);
 
-  glfwTerminate();
-  return 0;
-}
+//   glfwTerminate();
+//   return 0;
+// }
 
-main(): i32 {
-  TM2();
-  return 0;
-}
+// main(): i32 {
+//   TM2();
+//   return 0;
+// }
