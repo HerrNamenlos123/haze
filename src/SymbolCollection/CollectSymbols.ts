@@ -9,9 +9,10 @@ import type {
   ASTStructMethodDefinition,
   ASTVariableDefinitionStatement,
 } from "../shared/AST";
+import type { ModuleConfig } from "../shared/Config";
 
 export type CollectionContext = {
-  moduleName: string;
+  config: ModuleConfig;
   globalScope: string;
   scopes: Map<string, Collect.Scope>;
   cInjections: { code: string; sourceloc: SourceLoc }[];
@@ -45,11 +46,11 @@ export namespace Collect {
     private static nextId = 1;
 
     constructor(
-      moduleName: string,
+      modulePrefix: string,
       public sourceloc: SourceLoc,
       public parentScope?: string,
     ) {
-      this.id = `${moduleName}.scope.${Scope.nextId++} `;
+      this.id = `${modulePrefix}.scope.${Scope.nextId++} `;
     }
 
     static rebuild(input: Scope) {

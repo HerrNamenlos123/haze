@@ -24,7 +24,7 @@ import {
 } from "./shared/Config";
 import { Parser } from "./Parser/Parser";
 import { CollectRoot, getScope } from "./SymbolCollection/SymbolCollection";
-import { PrettyPrintAnalyzed, SemanticallyAnalyze } from "./Semantic/Elaborate";
+import { SemanticallyAnalyze } from "./Semantic/Elaborate";
 import { generateCode } from "./Codegen/CodeGenerator";
 import { LowerModule } from "./Lower/Lower";
 import { Collect, type CollectionContext } from "./SymbolCollection/CollectSymbols";
@@ -33,6 +33,10 @@ const C_COMPILER = "clang";
 const ARCHIVE_TOOL = "ar";
 const HAZE_STDLIB_NAME = "haze-stdlib";
 const HAZE_CONFIG_FILE = "haze.toml";
+
+export function makeModulePrefix(config: ModuleConfig) {
+  return config.projectName + "." + config.projectVersion.replaceAll(".", "_");
+}
 
 async function parseConfig(startDir?: string) {
   try {
@@ -299,10 +303,10 @@ class ModuleCompiler {
     this.cc = {
       cInjections: [],
       globalScope: "",
-      moduleName: config.projectName,
+      config: config,
       scopes: new Map(),
     };
-    const globalScope = new Collect.Scope(this.cc.moduleName, {
+    const globalScope = new Collect.Scope(makeModulePrefix(this.cc.config), {
       column: 0,
       filename: "global",
       line: 0,

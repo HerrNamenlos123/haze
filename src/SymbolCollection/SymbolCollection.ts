@@ -35,6 +35,7 @@ import type {
 } from "../shared/AST";
 import { assertScope, EMethodType, EVariableContext } from "../shared/common";
 import { Collect, type CollectionContext } from "./CollectSymbols";
+import { makeModulePrefix } from "../Module";
 
 export function getScope(cc: CollectionContext, id: string) {
   const scope = cc.scopes.get(id);
@@ -43,7 +44,7 @@ export function getScope(cc: CollectionContext, id: string) {
 }
 
 export function makeScope(cc: CollectionContext, sourceloc: SourceLoc, parentScope: string) {
-  const scope = new Collect.Scope(cc.moduleName, sourceloc, parentScope);
+  const scope = new Collect.Scope(makeModulePrefix(cc.config), sourceloc, parentScope);
   cc.scopes.set(scope.id, scope);
   return scope.id;
 }

@@ -123,6 +123,7 @@ export type ASTDeferredType = {
 
 export type ASTFunctionDeclaration = {
   variant: "FunctionDeclaration";
+  id: string;
   export: boolean;
   externLanguage: EExternLanguage;
   name: string;
