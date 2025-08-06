@@ -38,18 +38,19 @@ import {
 import { makePrimitiveAvailable, Semantic, type SemanticResult } from "./SemanticSymbols";
 import { serializeDatatype, serializeExpr, serializeNestedName } from "./Serialize";
 
-export function recursivelyExportCollectedSymbol(sr: SemanticResult, symbol: Collect.Symbol | Collect.Scope) {
-  if (sr.exportedCollectedSymbols.has(symbol) || symbol.sourceloc?.filename === "global") {
+export function recursivelyExportCollectedSymbols(sr: SemanticResult, symbol: Collect.Symbol | Collect.Scope) {
+  console.log(symbol)
+  if (sr.exportedCollectedSymbols.has(symbol)) {
     return; // Prevent recursion
   }
 
   if (symbol instanceof Collect.Scope) {
     sr.exportedCollectedSymbols.add(symbol);
     if (symbol.parentScope) {
-      recursivelyExportCollectedSymbol(sr, getScope(sr.cc, symbol.parentScope));
+      recursivelyExportCollectedSymbols(sr, getScope(sr.cc, symbol.parentScope));
     }
     for (const s of symbol.symbols) {
-      recursivelyExportCollectedSymbol(sr, s);
+      recursivelyExportCollectedSymbols(sr, s);
     }
   }
   else {
@@ -58,7 +59,7 @@ export function recursivelyExportCollectedSymbol(sr: SemanticResult, symbol: Col
         if (!symbol.export) return;
         sr.exportedCollectedSymbols.add(symbol);
         if (symbol._collect.definedInScope) {
-          recursivelyExportCollectedSymbol(sr, getScope(sr.cc, symbol._collect.definedInScope));
+          recursivelyExportCollectedSymbols(sr, getScope(sr.cc, symbol._collect.definedInScope));
         }
         break;
 
@@ -66,14 +67,13 @@ export function recursivelyExportCollectedSymbol(sr: SemanticResult, symbol: Col
         if (!symbol.export) return;
         sr.exportedCollectedSymbols.add(symbol);
         if (symbol._collect.definedInScope) {
-          recursivelyExportCollectedSymbol(sr, getScope(sr.cc, symbol._collect.definedInScope));
+          recursivelyExportCollectedSymbols(sr, getScope(sr.cc, symbol._collect.definedInScope));
         }
         break;
 
       case "NamespaceDefinition":
-        if (!symbol.export) return;
         for (const d of symbol.declarations) {
-          recursivelyExportCollectedSymbol(sr, d);
+          recursivelyExportCollectedSymbols(sr, d);
         }
         break;
 
@@ -87,7 +87,7 @@ export function recursivelyExportCollectedSymbol(sr: SemanticResult, symbol: Col
         if (!symbol.export) return;
         sr.exportedCollectedSymbols.add(symbol);
         if (symbol._collect.definedInScope) {
-          recursivelyExportCollectedSymbol(sr, getScope(sr.cc, symbol._collect.definedInScope));
+          recursivelyExportCollectedSymbols(sr, getScope(sr.cc, symbol._collect.definedInScope));
         }
         break;
     }
@@ -1392,9 +1392,6 @@ export function elaborate(
         generics: [],
         resultSymbol: symbol,
       });
-      if (symbol.export) {
-        recursivelyExportCollectedSymbol(sr, args.sourceSymbol);
-      }
       return symbol;
     }
 
@@ -1507,10 +1504,6 @@ export function elaborate(
           elaboratedVariables: new Map(),
           context: substitutionContext,
         });
-      }
-
-      if (symbol.export) {
-        recursivelyExportCollectedSymbol(sr, args.sourceSymbol);
       }
 
       return symbol;
@@ -1824,11 +1817,6 @@ export function SemanticallyAnalyze(cc: CollectionContext, isLibrary: boolean) {
   const globalScope = getScope(cc, cc.globalScope);
 
   globalScope.symbols.forEach((s) => {
-
-    if (s.variant === "FunctionDefinition" && s.export) {
-      recursivelyExportCollectedSymbol(sr, s);
-    }
-
     if (s.variant === "FunctionDefinition" && (s.generics.length !== 0 || s.operatorOverloading)) {
       return undefined;
     }
@@ -1843,6 +1831,8 @@ export function SemanticallyAnalyze(cc: CollectionContext, isLibrary: boolean) {
       context: makeSubstitutionContext(),
     });
   });
+
+  recursivelyExportCollectedSymbols(sr, globalScope);
 
   const mainFunction = sr.elaboratedFuncdefSymbols.find((s) => s.resultSymbol.name === "main");
   if (!isLibrary) {

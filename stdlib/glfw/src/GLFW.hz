@@ -76,6 +76,10 @@ namespace glfw {
     }
 }
 
-export foo<T>(): i32 {
-    return GLFW_PLATFORM;
+namespace Outer {
+    namespace Inner {
+        export foo<T>(): i32 {
+            return GLFW_PLATFORM;
+        }
+    }
 }

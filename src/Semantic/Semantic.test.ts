@@ -5,7 +5,7 @@ import { EMethodType, EPrimitive, EVariableContext } from "../shared/common";
 import { GLOBAL_NAMESPACE_NAME } from "../shared/Config";
 import { assert } from "../shared/Errors";
 import { Collect, type CollectionContext } from "../SymbolCollection/CollectSymbols";
-import { CollectSymbols } from "../SymbolCollection/SymbolCollection";
+import { CollectRoot } from "../SymbolCollection/SymbolCollection";
 import { runStageTests, type StageTest, type StageTests } from "../Testing/Testing";
 import { SemanticallyAnalyze } from "./Elaborate";
 import { Semantic, type SemanticResult } from "./SemanticSymbols";
@@ -17,7 +17,7 @@ function parseAndCollect(input: string) {
     cInjections: [],
     globalScope: new Collect.Scope(null),
   };
-  CollectSymbols(cc, Parser.parseTextToAST(input, thisTestfile), {
+  CollectRoot(cc, Parser.parseTextToAST(input, thisTestfile), {
     filename: thisTestfile,
     line: 0,
     column: 0,

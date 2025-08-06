@@ -37,6 +37,7 @@ export namespace Collect {
   export type Statement = ASTStatement;
 
   export class Scope {
+    variant = "Collect.ScopeClass" as const;
     id: string;
     rawStatements: ASTStatement[] = [];
     symbols: Symbol[] = [];
@@ -44,11 +45,24 @@ export namespace Collect {
     private static nextId = 1;
 
     constructor(
-      public moduleName: string,
+      moduleName: string,
       public sourceloc: SourceLoc,
       public parentScope?: string,
     ) {
       this.id = `${moduleName}.scope.${Scope.nextId++} `;
+    }
+
+    static rebuild(input: Scope) {
+      // Rebuild class instance if it was JSON deserialized
+      const scope = new Scope("", null, undefined);
+      Scope.nextId--;
+      scope.variant = input.variant;
+      scope.id = input.id;
+      scope.rawStatements = input.rawStatements;
+      scope.symbols = input.symbols;
+      scope.sourceloc = input.sourceloc;
+      scope.parentScope = input.parentScope;
+      return scope;
     }
 
     defineSymbol(symbol: Symbol) {

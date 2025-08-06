@@ -1,5 +1,6 @@
 import * as child_process from "child_process";
 import {
+  assert,
   CmdFailed,
   CompilerError,
   GeneralError,
@@ -22,12 +23,11 @@ import {
   type ModuleMetadata,
 } from "./shared/Config";
 import { Parser } from "./Parser/Parser";
-import { CollectSymbols, getScope } from "./SymbolCollection/SymbolCollection";
+import { CollectRoot, getScope } from "./SymbolCollection/SymbolCollection";
 import { PrettyPrintAnalyzed, SemanticallyAnalyze } from "./Semantic/Elaborate";
 import { generateCode } from "./Codegen/CodeGenerator";
 import { LowerModule } from "./Lower/Lower";
 import { Collect, type CollectionContext } from "./SymbolCollection/CollectSymbols";
-import { ExportCollectedSymbols } from "./SymbolCollection/ImportExport";
 
 const C_COMPILER = "clang";
 const ARCHIVE_TOOL = "ar";
@@ -311,12 +311,13 @@ class ModuleCompiler {
     this.cc.scopes.set(globalScope.id, globalScope);
   }
 
+  // addImportedSymbolTree(symbols: (Collect.Symbol | Collect.Scope)[], filename: string) {
+  //   // Merge symbol
+  //   this.cc.symbol;
+  // }
+
   addSourceFromString(text: string, filename: string) {
-    CollectSymbols(this.cc, Parser.parseTextToAST(text, filename), {
-      filename: filename,
-      line: 0,
-      column: 0,
-    });
+    CollectRoot(this.cc, Parser.parseTextToAST(text, filename));
   }
 
   async addProjectSourceFiles() {
@@ -354,7 +355,7 @@ class ModuleCompiler {
       }
 
       await this.addInternalBuiltinSources();
-      await this.addDependencySources();
+      await this.collectImports();
       await this.addProjectSourceFiles();
 
       const sr = SemanticallyAnalyze(this.cc,
@@ -394,11 +395,6 @@ class ModuleCompiler {
           return absolute.replace(this.moduleBuildDir + "/", "");
         };
 
-        const exportedDeclarations: string[] = [];
-        for (const symbol of sr.exportedCollectedSymbols) {
-          exportedDeclarations.push(JSON.stringify(symbol));
-        }
-
         const moduleMetadata: ModuleMetadata = {
           compilerVersion: version,
           fileformatVersion: 1,
@@ -411,7 +407,7 @@ class ModuleCompiler {
               type: "static",
             },
           ],
-          exportedDeclarations: [...exportedDeclarations],
+          exportedDeclarations: [...sr.exportedCollectedSymbols.values()],
           linkerFlags: this.config.linkerFlags,
         };
         await Bun.write(moduleMetadataFile, JSON.stringify(moduleMetadata, undefined, 2));
@@ -466,7 +462,7 @@ class ModuleCompiler {
         throw new GeneralError(`Lib ${dep.path} does not provide platform ${this.config.platform}`);
       }
 
-      const tempdir = join(this.globalBuildDir, "temp-" + dep.path);
+      const tempdir = join(this.globalBuildDir, "__temp-" + dep.path);
       await exec(`mkdir -p ${tempdir}`);
       await exec(`tar -xzf ${libpath} -C ${tempdir} ${lib.filename}`);
 
@@ -478,13 +474,13 @@ class ModuleCompiler {
   }
 
   private async loadDependencyMetadata(libpath: string, libname: string) {
-    const tempdir = join(this.globalBuildDir, "temp-" + libname);
+    const tempdir = join(this.globalBuildDir, "__temp-" + libname);
     await exec(`mkdir -p ${tempdir}`);
     await exec(`tar -xzf ${libpath} -C ${tempdir} metadata.json`);
     return parseModuleMetadata(await Bun.file(join(tempdir, "metadata.json")).text());
   }
 
-  private async addDependencySources() {
+  private async collectImports() {
     const deps = [...this.config.dependencies];
     if (this.config.projectName !== HAZE_STDLIB_NAME && !this.config.nostdlib) {
       deps.push({
@@ -493,13 +489,30 @@ class ModuleCompiler {
       });
     }
 
+    const globalScope = getScope(this.cc, this.cc.globalScope);
+
     for (const dep of this.config.dependencies) {
       const libpath = join(join(this.globalBuildDir, dep.path), dep.path + ".hzlib");
       const metadata = await this.loadDependencyMetadata(libpath, dep.path);
 
-      const declarations = new OutputWriter();
+      console.log(metadata.exportedDeclarations)
+      const importedRoot = metadata.exportedDeclarations.find((d) => d.variant === "Collect.ScopeClass" && d.parentScope === undefined);
+      assert(importedRoot && importedRoot.variant === "Collect.ScopeClass");
+
+      // const processSymbol = (symbol: Collect.Scope | Collect.Symbol) => {
+      //   globalScope.defineSymbol(symbol);
+      //   if (symbol.variant)
+      // };
+
+      // for (const a of importedRoot.symbols) {
+      //   processScope(globalScope, importedRoot);
+      // }
+
+
       for (const decl of metadata.exportedDeclarations) {
-        declarations.writeLine(decl);
+
+        console.log(decl)
+        // declarations.writeLine(decl);
       }
 
       this.addSourceFromString(declarations.get(), libpath);

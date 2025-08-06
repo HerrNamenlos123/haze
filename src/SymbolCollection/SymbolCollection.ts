@@ -646,7 +646,7 @@ function collectProg(cc: CollectionContext, ast: ASTRoot) {
   }
 }
 
-export function CollectSymbols(cc: CollectionContext, ast: ASTRoot, rootLocation: SourceLoc) {
+export function CollectRoot(cc: CollectionContext, ast: ASTRoot) {
   collectProg(cc, ast);
   // PrettyPrintCollected(cc);
 }

@@ -3,6 +3,7 @@ import { existsSync } from "fs";
 import { parse } from "@ltd/j-toml";
 
 import { GeneralError } from "./Errors";
+import type { Collect } from "../SymbolCollection/CollectSymbols";
 
 export enum ModuleType {
   Library,
@@ -42,7 +43,7 @@ export type ModuleMetadata = {
   name: string;
   version: string;
   libs: ModuleLibMetadata[];
-  exportedDeclarations: string[];
+  exportedDeclarations: (Collect.Scope | Collect.Symbol)[];
   linkerFlags: string[];
 };
 
@@ -116,7 +117,7 @@ export function parseModuleMetadata(metadata: string): ModuleMetadata {
     fileformatVersion: getNumber(obj["fileformatVersion"]),
     name: getString(obj["name"]),
     version: getString(obj["version"]),
-    exportedDeclarations: getStringArray(obj["exportedDeclarations"]),
+    exportedDeclarations: obj["exportedDeclarations"],
     libs: getLibs(obj["libs"]),
     linkerFlags: getStringArray(obj["linkerFlags"]),
   };
