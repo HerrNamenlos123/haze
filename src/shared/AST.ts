@@ -135,7 +135,7 @@ export type ASTFunctionDeclaration = {
   methodType?: EMethodType;
   sourceloc: SourceLoc;
   _collect: {
-    definedInNamespaceOrStruct?: ASTNamespaceDefinition | ASTStructDefinition;
+    definedInNamespaceOrStruct?: string;
     definedInScope?: string;
     namespacePath?: string[];
   };
@@ -161,7 +161,7 @@ export type ASTFunctionDefinition = {
   funcbody?: ASTFuncBody;
   sourceloc: SourceLoc;
   _collect: {
-    definedInNamespaceOrStruct?: ASTNamespaceDefinition | ASTStructDefinition;
+    definedInNamespaceOrStruct?: string;
     definedInScope?: string;
   };
   _semantic: {};
@@ -244,7 +244,7 @@ export type ASTGlobalVariableDefinition = {
   expr?: ASTExpr;
   sourceloc: SourceLoc;
   _collect: {
-    definedInNamespaceOrStruct?: ASTNamespaceDefinition | ASTStructDefinition;
+    definedInNamespaceOrStruct?: string;
     definedInScope?: string;
   };
   _semantic: {};
@@ -524,7 +524,7 @@ export type ASTStructDefinition = {
   declarations: ASTStructDefinition[];
   sourceloc: SourceLoc;
   _collect: {
-    definedInNamespaceOrStruct?: ASTNamespaceDefinition | ASTStructDefinition;
+    definedInNamespaceOrStruct?: string;
     definedInScope?: string;
     fullNamespacedName?: string[];
     namespaces?: string[];
@@ -543,7 +543,7 @@ export type ASTNamespaceDefinition = {
   declarations: ASTGlobalDeclaration[];
   sourceloc: SourceLoc;
   _collect: {
-    definedInNamespaceOrStruct?: ASTNamespaceDefinition | ASTStructDefinition;
+    definedInNamespaceOrStruct?: string;
     scope?: string;
   };
 };

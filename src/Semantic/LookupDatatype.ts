@@ -414,7 +414,7 @@ export function instantiateStruct(
   const parentNamespace =
     (args.definedStructType._collect.definedInNamespaceOrStruct &&
       elaborate(sr, {
-        sourceSymbol: args.definedStructType._collect.definedInNamespaceOrStruct,
+        sourceSymbol: getSymbol(sr.cc, args.definedStructType._collect.definedInNamespaceOrStruct),
         usageGenerics: [], // We can pass an empty array to silence the assert, because if we have gotten so far
         // that the child of a generic struct is being elaborated, the parent must certainly be cached already
         context: isolateElaborationContext(args.context),

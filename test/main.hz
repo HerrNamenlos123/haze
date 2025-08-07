@@ -27,55 +27,6 @@ const GLFW_CONTEXT_VERSION_MINOR: i32;
 const GLFW_OPENGL_PROFILE: i32;
 const GLFW_OPENGL_CORE_PROFILE: i32;
 
-export namespace glfw {
-
-    struct Window {
-        handle: cstruct GLFWwindow*;
-
-        makeContextCurrent() {
-            glfwMakeContextCurrent(this.handle);
-        }
-
-        shouldClose(): boolean {
-            return glfwWindowShouldClose(this.handle) != 0;
-        }
-
-        swapBuffers() {
-            glfwSwapBuffers(this.handle);
-        }
-    }
-
-    init(): boolean {
-        if (strcmp(getenv("XDG_CURRENT_DESKTOP"), "GNOME") == 0) {
-            glfwInitHint(GLFW_PLATFORM, GLFW_PLATFORM_X11);
-        }
-        else {
-            glfwInitHint(GLFW_PLATFORM, GLFW_ANY_PLATFORM);
-        }
-        return glfwInit() != 0;
-    }
-
-    terminate() {
-        glfwTerminate();
-    }
-
-    createWindow(width: i32, height: i32, title: str): Window {
-        glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-        glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
-        glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-        const handle = glfwCreateWindow(width, height, title, 0 as cstruct GLFWmonitor*, 0 as cstruct GLFWwindow*);
-        return Window { handle: handle };
-    }
-
-    swapInterval(interval: i32) {
-        glfwSwapInterval(1);
-    }
-
-    pollEvents() {
-        glfwPollEvents();
-    }
-}
-
 main(): i32 => {
     // const rootArena = Arena();
     if not glfw.init() { return -1; }

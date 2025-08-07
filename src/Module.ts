@@ -501,7 +501,7 @@ class ModuleCompiler {
       const libpath = join(join(this.globalBuildDir, dep.path), dep.path + ".hzlib");
       const metadata = await this.loadDependencyMetadata(libpath, dep.path);
 
-      console.log(metadata.exportedDeclarations)
+      // console.log(metadata.exportedDeclarations)
       const importedRoot = metadata.exportedDeclarations.find((d) => d.variant === "Collect.ScopeClass" && d.parentScope === undefined);
       assert(importedRoot && importedRoot.variant === "Collect.ScopeClass");
 
@@ -516,9 +516,25 @@ class ModuleCompiler {
 
 
       for (const decl of metadata.exportedDeclarations) {
-
-        console.log(decl)
-        // declarations.writeLine(decl);
+        if (decl.variant === "Collect.ScopeClass") {
+          const scope = Collect.Scope.rebuild(decl);
+          if (scope.parentScope === undefined) { // Don't import root
+            continue;
+          }
+          if (scope.parentScope === importedRoot.id) {
+            scope.parentScope = globalScope.id; // Redirect from the imported root to the actual root
+          }
+          this.cc.scopes.set(scope.id, scope);
+        }
+        else {
+          // console.log(decl)
+          if (decl.variant === "StructDefinition" || decl.variant === "FunctionDeclaration" || decl.variant === "FunctionDefinition") {
+            if (decl._collect.definedInNamespaceOrStruct === importedRoot.id) {
+              decl._collect.definedInNamespaceOrStruct = globalScope.id;
+            }
+          }
+          this.cc.symbols.set(decl.id, decl);
+        }
       }
 
       // this.addSourceFromString(declarations.get(), libpath);

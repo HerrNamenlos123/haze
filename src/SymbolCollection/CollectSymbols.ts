@@ -11,7 +11,7 @@ import type {
   ASTVariableDefinitionStatement,
 } from "../shared/AST";
 import type { ModuleConfig } from "../shared/Config";
-import { getScope, getSymbol } from "./SymbolCollection";
+import { getSymbol } from "./SymbolCollection";
 
 export type CollectionContext = {
   config: ModuleConfig;
@@ -59,7 +59,7 @@ export namespace Collect {
     }
 
     static rebuild(input: Scope) {
-      // Rebuild class instance if it was JSON deserialized
+      // Rebuild class instance if it was JSON deserialized, so methods work
       const scope = new Scope("", null, undefined);
       Scope.nextId--;
       scope.variant = input.variant;

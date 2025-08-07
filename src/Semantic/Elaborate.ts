@@ -39,7 +39,6 @@ import { makePrimitiveAvailable, Semantic, type SemanticResult } from "./Semanti
 import { serializeDatatype, serializeExpr, serializeNestedName } from "./Serialize";
 
 export function recursivelyExportCollectedSymbols(sr: SemanticResult, symbol: Collect.Symbol | Collect.Scope) {
-  console.log(symbol)
   if (sr.exportedCollectedSymbols.has(symbol)) {
     return; // Prevent recursion
   }
@@ -1339,7 +1338,7 @@ export function elaborate(
     const parent =
       (symbol._collect.definedInNamespaceOrStruct &&
         elaborate(sr, {
-          sourceSymbol: symbol._collect.definedInNamespaceOrStruct,
+          sourceSymbol: getSymbol(sr.cc, symbol._collect.definedInNamespaceOrStruct),
           context: args.context,
         })) ||
       null;

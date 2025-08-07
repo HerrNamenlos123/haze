@@ -110,14 +110,14 @@ function collect(
         };
       }
 
-      item._collect.definedInNamespaceOrStruct = meta.currentNamespaceOrStruct;
+      item._collect.definedInNamespaceOrStruct = meta.currentNamespaceOrStruct?.id;
       item._collect.definedInScope = scope.id;
       item._collect.namespacePath = [
         ...meta.namespaceStack.map((n) => n.name),
         ...item.namespacePath,
       ];
       item.methodType = EMethodType.NotAMethod;
-      if (item._collect.definedInNamespaceOrStruct?.variant === "StructDefinition") {
+      if (item._collect.definedInNamespaceOrStruct && getSymbol(cc, item._collect.definedInNamespaceOrStruct).variant === "StructDefinition") {
         item.methodType = EMethodType.Method;
       }
 
@@ -143,10 +143,10 @@ function collect(
       if (item.funcbody) {
         item.funcbody._collect.scope = makeScope(cc, item.sourceloc, item.declarationScope);
       }
-      item._collect.definedInNamespaceOrStruct = meta.currentNamespaceOrStruct;
+      item._collect.definedInNamespaceOrStruct = meta.currentNamespaceOrStruct?.id;
       item._collect.definedInScope = scope.id;
       item.methodType = EMethodType.NotAMethod;
-      if (item._collect.definedInNamespaceOrStruct?.variant === "StructDefinition") {
+      if (item._collect.definedInNamespaceOrStruct && getSymbol(cc, item._collect.definedInNamespaceOrStruct).variant === "StructDefinition") {
         item.methodType = EMethodType.Method;
       }
 
@@ -231,7 +231,7 @@ function collect(
     case "GlobalVariableDefinition":
       scope.defineSymbol(cc, item);
       cc.symbols.set(item.id, item);
-      item._collect.definedInNamespaceOrStruct = meta.currentNamespaceOrStruct;
+      item._collect.definedInNamespaceOrStruct = meta.currentNamespaceOrStruct?.id;
       item._collect.definedInScope = scope.id;
       if (item.datatype) {
         collect(cc, scope, item.datatype, meta);
@@ -244,7 +244,7 @@ function collect(
 
     case "NamespaceDefinition": {
       let namespace = item;
-      item._collect.definedInNamespaceOrStruct = meta.currentNamespaceOrStruct;
+      item._collect.definedInNamespaceOrStruct = meta.currentNamespaceOrStruct?.id;
       if (scope.tryLookupSymbolHere(cc, namespace.name)) {
         namespace = scope.tryLookupSymbolHere(cc, namespace.name) as ASTNamespaceDefinition;
       } else {
@@ -270,7 +270,7 @@ function collect(
       item._collect.definedInScope = scope.id;
       item._collect.scope = makeScope(cc, item.sourceloc, scope.id);
       item._collect.namespaces = meta.namespaceStack.map((n) => n.name);
-      item._collect.definedInNamespaceOrStruct = meta.currentNamespaceOrStruct;
+      item._collect.definedInNamespaceOrStruct = meta.currentNamespaceOrStruct?.id;
       item._collect.fullNamespacedName = [...item._collect.namespaces, item.name];
       for (const g of item.generics) {
         getScope(cc, item._collect.scope).defineSymbol(cc, g);
