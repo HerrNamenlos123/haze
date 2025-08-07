@@ -32,6 +32,7 @@ import type {
   ASTStructInstantiationExpr,
   ASTSymbolValueExpr,
   ASTUnaryExpr,
+  ASTVariableDefinitionStatement,
 } from "../shared/AST";
 import { assertScope, EMethodType, EVariableContext } from "../shared/common";
 import { Collect, type CollectionContext } from "./CollectSymbols";
@@ -170,7 +171,7 @@ function collect(
 
       if (item.funcbody?._collect.scope) {
         for (const param of item.params) {
-          getScope(cc, item.funcbody._collect.scope).defineSymbol(cc, {
+          const s: ASTVariableDefinitionStatement = {
             variant: "VariableDefinitionStatement",
             id: makeModulePrefix(cc.config) + ".vardef." + (cc.config.symbolIdCounter++).toString(),
             mutable: false,
@@ -179,7 +180,9 @@ function collect(
             sourceloc: param.sourceloc,
             kind: EVariableContext.FunctionParameter,
             _semantic: {},
-          });
+          };
+          getScope(cc, item.funcbody._collect.scope).defineSymbol(cc, s);
+          cc.symbols.set(s.id, s);
         }
       }
 
@@ -333,7 +336,7 @@ function collect(
 
         if (method.funcbody?._collect.scope) {
           if (!method.static && method.name !== "constructor") {
-            getScope(cc, method.funcbody._collect.scope).defineSymbol(cc, {
+            const s: ASTVariableDefinitionStatement = {
               variant: "VariableDefinitionStatement",
               id: makeModulePrefix(cc.config) + ".vardef." + (cc.config.symbolIdCounter++).toString(),
               mutable: false,
@@ -342,11 +345,13 @@ function collect(
               datatype: undefined,
               kind: EVariableContext.ThisReference,
               _semantic: {},
-            });
+            };
+            getScope(cc, method.funcbody._collect.scope).defineSymbol(cc, s);
+            cc.symbols.set(s.id, s);
           }
 
           for (const param of method.params) {
-            getScope(cc, method.funcbody._collect.scope).defineSymbol(cc, {
+            const s: ASTVariableDefinitionStatement = {
               variant: "VariableDefinitionStatement",
               id: makeModulePrefix(cc.config) + ".vardef." + (cc.config.symbolIdCounter++).toString(),
               mutable: false,
@@ -355,7 +360,9 @@ function collect(
               sourceloc: param.sourceloc,
               kind: EVariableContext.FunctionParameter,
               _semantic: {},
-            });
+            };
+            getScope(cc, method.funcbody._collect.scope).defineSymbol(cc, s);
+            cc.symbols.set(s.id, s);
             collect(cc, getScope(cc, method.declarationScope), param.datatype, newMeta);
           }
           if (method.returnType) {
@@ -466,7 +473,7 @@ function collect(
     case "LambdaExpr":
       item.lambda.funcbody._collect.scope = makeScope(cc, item.sourceloc, scope.id);
       for (const param of item.lambda.params) {
-        getScope(cc, item.lambda.funcbody._collect.scope).defineSymbol(cc, {
+        const s: ASTVariableDefinitionStatement = {
           variant: "VariableDefinitionStatement",
           id: makeModulePrefix(cc.config) + ".vardef." + (cc.config.symbolIdCounter++).toString(),
           mutable: false,
@@ -475,7 +482,9 @@ function collect(
           sourceloc: param.sourceloc,
           kind: EVariableContext.FunctionParameter,
           _semantic: {},
-        });
+        };
+        getScope(cc, item.lambda.funcbody._collect.scope).defineSymbol(cc, s);
+        cc.symbols.set(s.id, s);
       }
 
       for (const param of item.lambda.params) {
