@@ -23,11 +23,11 @@ import {
   type ModuleMetadata,
 } from "./shared/Config";
 import { Parser } from "./Parser/Parser";
-import { CollectRoot, getScope } from "./SymbolCollection/SymbolCollection";
+import { Collect, CollectFileInUnit, getEntityByComponent, makeCollectionContext, setComponent, type CollectionContext } from "./SymbolCollection/SymbolCollection";
 import { SemanticallyAnalyze } from "./Semantic/Elaborate";
 import { generateCode } from "./Codegen/CodeGenerator";
 import { LowerModule } from "./Lower/Lower";
-import { Collect, type CollectionContext } from "./SymbolCollection/CollectSymbols";
+import { addEntity, createWorld } from "bitecs";
 
 const C_COMPILER = "clang";
 const ARCHIVE_TOOL = "ar";
@@ -174,7 +174,6 @@ export class ProjectCompiler {
         projectDescription: undefined,
         projectLicense: undefined,
         compilerFlags: [],
-        symbolIdCounter: 0,
       };
     }
     return config;
@@ -301,46 +300,42 @@ class ModuleCompiler {
     public globalBuildDir: string,
     public moduleBuildDir: string,
   ) {
-    this.cc = {
-      cInjections: [],
-      globalScope: "",
-      config: config,
-      scopes: new Map(),
-      symbols: new Map()
-    };
-    const globalScope = new Collect.Scope(makeModulePrefix(this.cc.config), {
-      column: 0,
-      filename: "global",
-      line: 0,
-    });
-    this.cc.globalScope = globalScope.id;
-    this.cc.scopes.set(globalScope.id, globalScope);
+    this.cc = makeCollectionContext(this.config);
   }
 
-  // addImportedSymbolTree(symbols: (Collect.Symbol | Collect.Scope)[], filename: string) {
-  //   // Merge symbol
-  //   this.cc.symbol;
-  // }
+  async collectFileInUnit(filepath: string, unit: number) {
+    const fileText = await Bun.file(filepath).text();
+    const ast = Parser.parseTextToAST(this.config, fileText, filepath);
+    CollectFileInUnit(this.cc, ast, unit, filepath);
+  }
 
-  addSourceFromString(text: string, filename: string) {
-    CollectRoot(this.cc, Parser.parseTextToAST(this.config, text, filename));
+  private makeUnit() {
+    const unit = addEntity(this.cc.collectWorld);
+    setComponent(this.cc, unit, Collect.UnitScopeComponent, {
+      moduleScope: getEntityByComponent(this.cc, Collect.ModuleScopeComponent),
+    });
+    return unit;
+  }
+
+  async collectUnit(dirpath: string) {
+    const unit = this.makeUnit();
+
+    for (const file of readdirSync(dirpath)) {
+      const fullPath = join(dirpath, file);
+      const stats = statSync(fullPath);
+      if (stats.isDirectory()) {
+        this.collectUnit(fullPath);
+      }
+      else {
+        if (extname(fullPath) == ".hz") {
+          await this.collectFileInUnit(fullPath, unit);
+        }
+      }
+    }
   }
 
   async addProjectSourceFiles() {
-    const sources = [] as string[];
-    const files = readdirSync(this.config.srcDirectory);
-    const sortedFiles = files.sort((a, b) => a.localeCompare(b));
-    for (const file of sortedFiles.filter((f) => extname(f) === ".hz")) {
-      const fullPath = join(this.config.srcDirectory, file);
-      const stats = statSync(fullPath);
-      if (stats.isDirectory() || extname(fullPath) !== ".hz") {
-        return;
-      }
-      const fileText = await Bun.file(fullPath).text();
-      this.addSourceFromString(fileText, fullPath);
-      sources.push(file);
-    }
-    return sources;
+    await this.collectUnit(this.config.srcDirectory);
   }
 
   async build() {
@@ -364,6 +359,7 @@ class ModuleCompiler {
       await this.collectImports();
       await this.addProjectSourceFiles();
 
+      return;
       const sr = SemanticallyAnalyze(this.cc,
         this.config.moduleType === ModuleType.Library,
       );
@@ -495,7 +491,7 @@ class ModuleCompiler {
       });
     }
 
-    const globalScope = getScope(this.cc, this.cc.globalScope);
+    // const globalScope = getScope(this.cc, this.cc.globalScope);
 
     for (const dep of this.config.dependencies) {
       const libpath = join(join(this.globalBuildDir, dep.path), dep.path + ".hzlib");
@@ -515,43 +511,33 @@ class ModuleCompiler {
       // }
 
 
-      for (const decl of metadata.exportedDeclarations) {
-        if (decl.variant === "Collect.ScopeClass") {
-          const scope = Collect.Scope.rebuild(decl);
-          if (scope.parentScope === undefined) { // Don't import root
-            continue;
-          }
-          if (scope.parentScope === importedRoot.id) {
-            scope.parentScope = globalScope.id; // Redirect from the imported root to the actual root
-          }
-          this.cc.scopes.set(scope.id, scope);
-        }
-        else {
-          // console.log(decl)
-          if (decl.variant === "StructDefinition" || decl.variant === "FunctionDeclaration" || decl.variant === "FunctionDefinition") {
-            if (decl._collect.definedInNamespaceOrStruct === importedRoot.id) {
-              decl._collect.definedInNamespaceOrStruct = globalScope.id;
-            }
-          }
-          this.cc.symbols.set(decl.id, decl);
-        }
-      }
+      // for (const decl of metadata.exportedDeclarations) {
+      //   if (decl.variant === "Collect.ScopeClass") {
+      //     const scope = Collect.Scope.rebuild(decl);
+      //     if (scope.parentScope === undefined) { // Don't import root
+      //       continue;
+      //     }
+      //     if (scope.parentScope === importedRoot.id) {
+      //       scope.parentScope = globalScope.id; // Redirect from the imported root to the actual root
+      //     }
+      //     this.cc.scopes.set(scope.id, scope);
+      //   }
+      //   else {
+      //     // console.log(decl)
+      //     if (decl.variant === "StructDefinition" || decl.variant === "FunctionDeclaration" || decl.variant === "FunctionDefinition") {
+      //       if (decl._collect.definedInNamespaceOrStruct === importedRoot.id) {
+      //         decl._collect.definedInNamespaceOrStruct = globalScope.id;
+      //       }
+      //     }
+      //     this.cc.symbols.set(decl.id, decl);
+      //   }
+      // }
 
       // this.addSourceFromString(declarations.get(), libpath);
     }
   }
 
   private async addInternalBuiltinSources() {
-    function listFilesInDir(dir: string): string[] {
-      return readdirSync(dir)
-        .map((name) => join(dir, name))
-        .filter((path) => statSync(path).isFile());
-    }
-
-    const files = listFilesInDir(join(getStdlibDirectory(), "internal"));
-    for (const file of files) {
-      const internal = await Bun.file(file).text();
-      this.addSourceFromString(internal, file);
-    }
+    await this.collectUnit(join(getStdlibDirectory(), "internal"));
   }
 }

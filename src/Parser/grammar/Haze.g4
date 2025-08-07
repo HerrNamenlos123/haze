@@ -19,7 +19,6 @@ topLevelDeclaration
 
 globalDeclaration
     : functionDefinition
-    | functionDeclaration
     | typeDefinition
     | namespaceDefinition
     | globalVariableDef
@@ -31,14 +30,13 @@ namespaceDefinition
 
 // Directives
 
-cInjectDirective: 'inject' STRING_LITERAL ';';
+cInjectDirective: '__c__' '(' STRING_LITERAL ')' ';';
 
 // Functions
 
-functionDeclaration: (export='export')? (extern='extern' externLang=externLanguage? noemit='noemit'?)? (ID '.')* ID '(' params ')' (':' datatype)? ';';
 externLanguage: '"C"';
 
-functionDefinition: (export='export')? (extern='extern' externLang=externLanguage? noemit='noemit'?)?  ID ('<' ID (',' ID)* '>')? '(' params ')' (':' datatype)? ('=>')? funcbody;
+functionDefinition: (export='export')? (extern='extern' externLang=externLanguage? noemit='noemit'?)?  ID ('<' ID (',' ID)* '>')? '(' params ')' (':' datatype)? ('=>')? (funcbody | ';');
 lambda: '(' params ')' (':' datatype)? '=>' funcbody;
 param: ID ':' datatype;
 params: (param (',' param)* (',' ellipsis)?)? | ellipsis;
@@ -51,7 +49,13 @@ exprAsFuncbody: expr;
 // Variables
 
 globalVariableDef
-    : (export='export')? (extern='extern' externLang=externLanguage?)? mutability=('let' | 'const') ID (((':' datatype)? '=' expr) | (':' datatype)) ';'        #GlobalVariableDefinition
+    : (export='export')? (extern='extern' externLang=externLanguage?)? variableMutabilitySpecifier ID (((':' datatype)? '=' expr) | (':' datatype)) ';'        #GlobalVariableDefinition
+    ;
+
+variableMutabilitySpecifier
+    : 'let'                             #VariableBindingImmutable
+    | 'const'                           #VariableImmutable
+    | 'let' 'mut'                       #VariableMutable
     ;
 
 // Datatypes
@@ -65,7 +69,7 @@ constant
 
 datatype
     : cstruct='cstruct'? datatypeFragment ('.' datatypeFragment)*       #NamedDatatype
-    | datatype '*'                                                      #RawPointerDatatype
+    | datatype '*'                                                      #PointerDatatype
     | datatype '&'                                                      #ReferenceDatatype
     | '(' params ')' '=>' datatype                                      #FunctionDatatype
     ;
@@ -114,8 +118,8 @@ expr
     | <assoc=right> op=('+' | '-') expr                                             #UnaryExpr
     | <assoc=right> op=('not' | '!') expr /* and bitwise not */                     #UnaryExpr
     | <assoc=right> expr 'as' datatype                                              #ExplicitCastExpr
-    | <assoc=right> '*' expr                                                        #RawPointerDereference
-    | <assoc=right> '&' expr                                                        #RawPointerAddressOf
+    | <assoc=right> '*' expr                                                        #PointerDereference
+    | <assoc=right> '&' expr                                                        #PointerAddressOf
 
     // Part 3: Left to right
     | expr op+=('*'|'/'|'%') expr                                                   #BinaryExpr
@@ -139,9 +143,10 @@ statement
     : '__c__' '(' STRING_LITERAL ')' ';'                        #CInlineStatement
     | expr ';'                                                  #ExprStatement
     | 'return' expr? ';'                                        #ReturnStatement
-    | mutability=('let' | 'const') ID (((':' datatype)? '=' expr) | (':' datatype)) ';'       #VariableCreationStatement
+    | variableMutabilitySpecifier ID (((':' datatype)? '=' expr) | (':' datatype)) ';'       #VariableCreationStatement
     | 'if' ifExpr=expr then=scope ('else' 'if' elseIfExpr+=expr elseIfThen+=scope)* ('else' elseBlock=scope)? #IfStatement
     | 'while' expr scope                                        #WhileStatement
+    | scope                                                     #ScopeStatement
     ;
 
 // ╔═══════════════════════════════════════════════════════════════════════════════╗

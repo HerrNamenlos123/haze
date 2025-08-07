@@ -1,6 +1,6 @@
 
-inject "#include <GLFW/glfw3.h>";
-inject "#include <math.h>";
+__c__("#include <GLFW/glfw3.h>");
+__c__("#include <math.h>");
 
 export extern "C" struct GLFWwindow {};
 extern "C" struct GLFWmonitor {};

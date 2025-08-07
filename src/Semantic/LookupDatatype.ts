@@ -12,8 +12,6 @@ import {
   stringToPrimitive,
 } from "../shared/common";
 import { assert, CompilerError, ImpossibleSituation } from "../shared/Errors";
-import { Collect } from "../SymbolCollection/CollectSymbols";
-import { getScope, getSymbol } from "../SymbolCollection/SymbolCollection";
 import { elaborate, isolateElaborationContext, type SubstitutionContext } from "./Elaborate";
 import {
   isDatatypeSymbol,

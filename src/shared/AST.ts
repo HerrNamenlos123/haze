@@ -1,5 +1,5 @@
+import type { Collect, EVariableMutability } from "../SymbolCollection/SymbolCollection";
 import { ImpossibleSituation, type SourceLoc } from "./Errors";
-import type { Collect } from "../SymbolCollection/CollectSymbols";
 import type { EMethodType, EVariableContext } from "./common";
 
 export enum EExternLanguage {
@@ -121,30 +121,8 @@ export type ASTDeferredType = {
   variant: "Deferred";
 };
 
-export type ASTFunctionDeclaration = {
-  variant: "FunctionDeclaration";
-  id: string;
-  export: boolean;
-  externLanguage: EExternLanguage;
-  name: string;
-  noemit: boolean;
-  namespacePath: string[];
-  params: ASTParam[];
-  ellipsis: boolean;
-  returnType?: ASTDatatype;
-  methodType?: EMethodType;
-  sourceloc: SourceLoc;
-  _collect: {
-    definedInNamespaceOrStruct?: string;
-    definedInScope?: string;
-    namespacePath?: string[];
-  };
-  _semantic: {};
-};
-
 export type ASTFunctionDefinition = {
   variant: "FunctionDefinition";
-  id: string;
   export: boolean;
   externLanguage: EExternLanguage;
   operatorOverloading?: {
@@ -153,6 +131,7 @@ export type ASTFunctionDefinition = {
   };
   generics: Collect.GenericParameter[];
   name: string;
+  noemit: boolean;
   params: ASTParam[];
   ellipsis: boolean;
   returnType?: ASTDatatype;
@@ -193,8 +172,8 @@ export type ASTFunctionDatatype = {
   sourceloc: SourceLoc;
 };
 
-export type ASTRawPointerDatatype = {
-  variant: "RawPointerDatatype";
+export type ASTPointerDatatype = {
+  variant: "PointerDatatype";
   pointee: ASTDatatype;
   sourceloc: SourceLoc;
 };
@@ -230,15 +209,14 @@ export type ASTDatatype =
   | ASTNamedDatatype
   | ASTFunctionDatatype
   | ASTDeferredType
-  | ASTRawPointerDatatype
+  | ASTPointerDatatype
   | ASTReferenceDatatype;
 
 export type ASTGlobalVariableDefinition = {
   variant: "GlobalVariableDefinition";
-  id: string;
   export: boolean;
   externLanguage: EExternLanguage;
-  mutable: boolean;
+  bindingMutability: EVariableMutability;
   name: string;
   datatype?: ASTDatatype;
   expr?: ASTExpr;
@@ -256,6 +234,12 @@ export type ASTInlineCStatement = {
   sourceloc: SourceLoc;
 };
 
+export type ASTScopeStatement = {
+  variant: "ScopeStatement";
+  scope: ASTScope;
+  sourceloc: SourceLoc;
+};
+
 export type ASTExprStatement = {
   variant: "ExprStatement";
   expr: ASTExpr;
@@ -270,8 +254,7 @@ export type ASTReturnStatement = {
 
 export type ASTVariableDefinitionStatement = {
   variant: "VariableDefinitionStatement";
-  id: string;
-  mutable: boolean;
+  mutable: EVariableMutability;
   name: string;
   datatype?: ASTDatatype;
   expr?: ASTExpr;
@@ -282,7 +265,6 @@ export type ASTVariableDefinitionStatement = {
 
 export type ASTIfStatement = {
   variant: "IfStatement";
-  id: string;
   condition: ASTExpr;
   then: ASTScope;
   elseIfs: {
@@ -295,7 +277,6 @@ export type ASTIfStatement = {
 
 export type ASTWhileStatement = {
   variant: "WhileStatement";
-  id: string;
   condition: ASTExpr;
   body: ASTScope;
   sourceloc: SourceLoc;
@@ -303,6 +284,7 @@ export type ASTWhileStatement = {
 
 export type ASTStatement =
   | ASTInlineCStatement
+  | ASTScopeStatement
   | ASTExprStatement
   | ASTReturnStatement
   | ASTVariableDefinitionStatement
@@ -313,9 +295,6 @@ export type ASTScope = {
   variant: "Scope";
   statements: ASTStatement[];
   sourceloc: SourceLoc;
-  _collect: {
-    scope?: string;
-  };
 };
 
 export type ASTParenthesisExpr = {
@@ -396,15 +375,15 @@ export type ASTExplicitCastExpr = {
   _semantic: {};
 };
 
-export type ASTRawPointerAddressOfExpr = {
-  variant: "RawPointerAddressOf";
+export type ASTPointerAddressOfExpr = {
+  variant: "PointerAddressOf";
   expr: ASTExpr;
   sourceloc: SourceLoc;
   _semantic: {};
 };
 
-export type ASTRawPointerDereferenceExpr = {
-  variant: "RawPointerDereference";
+export type ASTPointerDereferenceExpr = {
+  variant: "PointerDereference";
   expr: ASTExpr;
   sourceloc: SourceLoc;
   _semantic: {};
@@ -445,8 +424,8 @@ export type ASTExpr =
   | ASTExprMemberAccess
   | ASTStructInstantiationExpr
   | ASTPreIncrExpr
-  | ASTRawPointerAddressOfExpr
-  | ASTRawPointerDereferenceExpr
+  | ASTPointerAddressOfExpr
+  | ASTPointerDereferenceExpr
   | ASTUnaryExpr
   | ASTExplicitCastExpr
   | ASTBinaryExpr
@@ -480,7 +459,6 @@ export type ASTCInjectDirective = {
 
 export type ASTStructMemberDefinition = {
   variant: "StructMember";
-  id: string;
   name: string;
   type: ASTDatatype;
   sourceloc: SourceLoc;
@@ -488,7 +466,6 @@ export type ASTStructMemberDefinition = {
 
 export type ASTStructMethodDefinition = {
   variant: "StructMethod";
-  id: string;
   params: ASTParam[];
   name: string;
   generics: Collect.GenericParameter[];
@@ -513,7 +490,6 @@ export type ASTStructMethodDefinition = {
 
 export type ASTStructDefinition = {
   variant: "StructDefinition";
-  id: string;
   export: boolean;
   externLanguage: EExternLanguage;
   name: string;
@@ -537,7 +513,6 @@ export type ASTTypeDefinition = ASTStructDefinition;
 
 export type ASTNamespaceDefinition = {
   variant: "NamespaceDefinition";
-  id: string;
   export: boolean;
   name: string;
   declarations: ASTGlobalDeclaration[];
@@ -550,7 +525,6 @@ export type ASTNamespaceDefinition = {
 
 export type ASTGlobalDeclaration =
   | ASTFunctionDefinition
-  | ASTFunctionDeclaration
   | ASTTypeDefinition
   | ASTNamespaceDefinition
   | ASTGlobalVariableDefinition;

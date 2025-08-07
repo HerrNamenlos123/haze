@@ -27,7 +27,6 @@ import {
   type ASTExprMemberAccess,
   type ASTExprStatement,
   type ASTFunctionDatatype,
-  type ASTFunctionDeclaration,
   type ASTFunctionDefinition,
   type ASTGlobalVariableDefinition,
   type ASTIfStatement,
@@ -41,9 +40,9 @@ import {
   type ASTParenthesisExpr,
   type ASTPostIncrExpr,
   type ASTPreIncrExpr,
-  type ASTRawPointerAddressOfExpr,
-  type ASTRawPointerDatatype,
-  type ASTRawPointerDereferenceExpr,
+  type ASTPointerAddressOfExpr,
+  type ASTPointerDatatype,
+  type ASTPointerDereferenceExpr,
   type ASTReferenceDatatype,
   type ASTReturnStatement,
   type ASTRoot,
@@ -57,6 +56,7 @@ import {
   type ASTUnaryExpr,
   type ASTVariableDefinitionStatement,
   type ASTWhileStatement,
+  type ASTScopeStatement,
 } from "../shared/AST";
 import {
   BinaryExprContext,
@@ -72,7 +72,6 @@ import {
   ExprMemberAccessContext,
   ExprStatementContext,
   FunctionDatatypeContext,
-  FunctionDeclarationContext,
   FunctionDefinitionContext,
   GenericLiteralConstantContext,
   GenericLiteralDatatypeContext,
@@ -91,9 +90,9 @@ import {
   PostIncrExprContext,
   PreIncrExprContext,
   ProgContext,
-  RawPointerAddressOfContext,
-  RawPointerDatatypeContext,
-  RawPointerDereferenceContext,
+  PointerAddressOfContext,
+  PointerDatatypeContext,
+  PointerDereferenceContext,
   ReferenceDatatypeContext,
   ReturnStatementContext,
   ScopeContext,
@@ -106,6 +105,10 @@ import {
   UnaryExprContext,
   VariableCreationStatementContext,
   WhileStatementContext,
+  VariableMutableContext,
+  VariableImmutableContext,
+  VariableBindingImmutableContext,
+  ScopeStatementContext,
 } from "./grammar/autogen/HazeParser";
 import {
   BaseErrorListener,
@@ -114,12 +117,12 @@ import {
   ParserRuleContext,
   TerminalNode,
 } from "antlr4ng";
-import type { Collect } from "../SymbolCollection/CollectSymbols";
 import { HazeLexer } from "./grammar/autogen/HazeLexer";
 import { HazeVisitor } from "./grammar/autogen/HazeVisitor";
 import { EVariableContext } from "../shared/common";
 import { makeModulePrefix } from "../Module";
 import type { ModuleConfig } from "../shared/Config";
+import { EVariableMutability, type Collect } from "../SymbolCollection/SymbolCollection";
 
 export namespace Parser {
   class HazeErrorListener extends BaseErrorListener {
@@ -136,7 +139,7 @@ export namespace Parser {
       line: number,
       column: number,
       msg: string,
-      e: any,
+      e: any
     ) {
       printErrorMessage(msg, { filename: this.filename, line, column }, "SyntaxError");
     }
@@ -206,11 +209,7 @@ class ASTTransformer extends HazeVisitor<any> {
   }
 
   exlang(
-    ctx:
-      | FunctionDeclarationContext
-      | GlobalVariableDefinitionContext
-      | FunctionDefinitionContext
-      | StructDefinitionContext,
+    ctx: GlobalVariableDefinitionContext | FunctionDefinitionContext | StructDefinitionContext
   ): EExternLanguage {
     if (!Boolean(ctx._extern)) {
       return EExternLanguage.None;
@@ -221,17 +220,19 @@ class ASTTransformer extends HazeVisitor<any> {
     }
   }
 
-  mutability(ctx: GlobalVariableDefinitionContext | VariableCreationStatementContext): boolean {
-    if (!ctx._mutability) {
+  mutability(
+    ctx: GlobalVariableDefinitionContext | VariableCreationStatementContext
+  ): EVariableMutability {
+    if (!ctx.variableMutabilitySpecifier) {
       throw new InternalError("Mutability field of variable is not available");
+    } else if (ctx.variableMutabilitySpecifier() instanceof VariableMutableContext) {
+      return EVariableMutability.Mutable;
+    } else if (ctx.variableMutabilitySpecifier() instanceof VariableImmutableContext) {
+      return EVariableMutability.Immutable;
+    } else if (ctx.variableMutabilitySpecifier() instanceof VariableBindingImmutableContext) {
+      return EVariableMutability.BindingImmutable;
     }
-    if (ctx._mutability.text === "let") {
-      return true;
-    } else if (ctx._mutability.text === "const") {
-      return false;
-    } else {
-      throw new InternalError("Mutability field of variable is neither let nor const");
-    }
+    throw new InternalError("Mutability field of variable is neither let nor const");
   }
 
   incrop(ctx: PostIncrExprContext): EIncrOperation {
@@ -318,7 +319,7 @@ class ASTTransformer extends HazeVisitor<any> {
       return EBinaryOperation.BoolOr;
     } else {
       throw new InternalError(
-        "Operator is not known: " + JSON.stringify(ctx._op.map((o) => o.text)),
+        "Operator is not known: " + JSON.stringify(ctx._op.map((o) => o.text))
       );
     }
   }
@@ -459,31 +460,11 @@ class ASTTransformer extends HazeVisitor<any> {
           datatype: this.visit(p.datatype()),
           name: p.ID().getText(),
           sourceloc: this.loc(p),
-        }) satisfies ASTParam,
+        } satisfies ASTParam)
     );
     return {
       params: params,
       ellipsis: Boolean(ctx.ellipsis()),
-    };
-  };
-
-  visitFunctionDeclaration = (ctx: FunctionDeclarationContext): ASTFunctionDeclaration => {
-    const names = ctx.ID().map((c) => c.getText());
-    const params = this.visitParams(ctx.params());
-    return {
-      variant: "FunctionDeclaration",
-      id: makeModulePrefix(this.config) + ".funcdecl." + (this.config.symbolIdCounter++).toString(),
-      export: Boolean(ctx._export_),
-      noemit: Boolean(ctx._noemit),
-      externLanguage: this.exlang(ctx),
-      name: names[names.length - 1],
-      namespacePath: names.slice(0, -1),
-      sourceloc: this.loc(ctx),
-      params: params.params,
-      ellipsis: params.ellipsis,
-      returnType: (ctx.datatype() && this.visit(ctx.datatype()!)) || undefined,
-      _collect: {},
-      _semantic: {},
     };
   };
 
@@ -505,18 +486,17 @@ class ASTTransformer extends HazeVisitor<any> {
 
     return {
       variant: "FunctionDefinition",
-      id: makeModulePrefix(this.config) + ".funcdef." + (this.config.symbolIdCounter++).toString(),
       export: Boolean(ctx._export_),
+      noemit: Boolean(ctx._noemit),
       externLanguage: this.exlang(ctx),
       params: params.params,
       generics: generics.map(
         (p) =>
           ({
             variant: "GenericParameter",
-            id: makeModulePrefix(this.config) + ".funcdecl." + (this.config.symbolIdCounter++).toString(),
             name: p,
             sourceloc: this.loc(ctx), // TODO: Find a better sourceloc from the actual token, not the function
-          }) satisfies Collect.GenericParameter,
+          } satisfies Collect.GenericParameter)
       ),
       name: names[0],
       operatorOverloading: undefined,
@@ -542,14 +522,13 @@ class ASTTransformer extends HazeVisitor<any> {
   };
 
   visitGlobalVariableDefinition = (
-    ctx: GlobalVariableDefinitionContext,
+    ctx: GlobalVariableDefinitionContext
   ): ASTGlobalVariableDefinition => {
     return {
       variant: "GlobalVariableDefinition",
-      id: makeModulePrefix(this.config) + ".globvardef." + (this.config.symbolIdCounter++).toString(),
       export: Boolean(ctx._export_),
       externLanguage: this.exlang(ctx),
-      mutable: this.mutability(ctx),
+      bindingMutability: this.mutability(ctx),
       name: ctx.ID().getText(),
       sourceloc: this.loc(ctx),
       datatype: (ctx.datatype() && this.visit(ctx.datatype()!)) || undefined,
@@ -562,7 +541,6 @@ class ASTTransformer extends HazeVisitor<any> {
   visitStructMember = (ctx: StructMemberContext): ASTStructMemberDefinition => {
     return {
       variant: "StructMember",
-      id: makeModulePrefix(this.config) + ".member." + (this.config.symbolIdCounter++).toString(),
       name: ctx.ID().getText(),
       type: this.visit(ctx.datatype()),
       sourceloc: this.loc(ctx),
@@ -574,13 +552,11 @@ class ASTTransformer extends HazeVisitor<any> {
     const params = this.visitParams(ctx.params());
     return {
       variant: "StructMethod",
-      id: makeModulePrefix(this.config) + ".method." + (this.config.symbolIdCounter++).toString(),
       params: params.params,
       name: names[0],
       static: Boolean(ctx._static_),
       generics: names.slice(1).map((n) => ({
         variant: "GenericParameter",
-        id: makeModulePrefix(this.config) + ".genericparam." + (this.config.symbolIdCounter++).toString(),
         name: n,
         sourceloc: this.loc(ctx), // TODO: Find a better sourceloc from the actual token, not the function
       })),
@@ -623,7 +599,6 @@ class ASTTransformer extends HazeVisitor<any> {
 
     return {
       variant: "StructDefinition",
-      id: makeModulePrefix(this.config) + ".struct." + (this.config.symbolIdCounter++).toString(),
       export: Boolean(ctx._export_),
       externLanguage: this.exlang(ctx),
       name: name,
@@ -632,10 +607,9 @@ class ASTTransformer extends HazeVisitor<any> {
         (p) =>
           ({
             variant: "GenericParameter",
-            id: makeModulePrefix(this.config) + ".genericparam." + (this.config.symbolIdCounter++).toString(),
             name: p,
             sourceloc: this.loc(ctx), // TODO: Find a better sourceloc from the actual token, not the function
-          }) satisfies Collect.GenericParameter,
+          } satisfies Collect.GenericParameter)
       ),
       declarations: declarations,
       members: members,
@@ -651,7 +625,14 @@ class ASTTransformer extends HazeVisitor<any> {
       variant: "Scope",
       sourceloc: this.loc(ctx),
       statements: ctx.statement().map((s) => this.visit(s)),
-      _collect: {},
+    };
+  };
+
+  visitScopeStatement = (ctx: ScopeStatementContext): ASTScopeStatement => {
+    return {
+      variant: "ScopeStatement",
+      scope: this.visitScope(ctx.scope()),
+      sourceloc: this.loc(ctx),
     };
   };
 
@@ -680,11 +661,10 @@ class ASTTransformer extends HazeVisitor<any> {
   };
 
   visitVariableCreationStatement = (
-    ctx: VariableCreationStatementContext,
+    ctx: VariableCreationStatementContext
   ): ASTVariableDefinitionStatement => {
     return {
       variant: "VariableDefinitionStatement",
-      id: makeModulePrefix(this.config) + ".vardef." + (this.config.symbolIdCounter++).toString(),
       mutable: this.mutability(ctx),
       name: ctx.ID().getText(),
       sourceloc: this.loc(ctx),
@@ -726,7 +706,6 @@ class ASTTransformer extends HazeVisitor<any> {
 
     return {
       variant: "IfStatement",
-      id: makeModulePrefix(this.config) + ".if." + (this.config.symbolIdCounter++).toString(),
       condition: this.visit(ctx._ifExpr),
       then: this.visit(ctx._then),
       sourceloc: this.loc(ctx),
@@ -738,7 +717,6 @@ class ASTTransformer extends HazeVisitor<any> {
   visitWhileStatement = (ctx: WhileStatementContext): ASTWhileStatement => {
     return {
       variant: "WhileStatement",
-      id: makeModulePrefix(this.config) + ".while." + (this.config.symbolIdCounter++).toString(),
       condition: this.visit(ctx.expr()),
       body: this.visit(ctx.scope()),
       sourceloc: this.loc(ctx),
@@ -808,20 +786,18 @@ class ASTTransformer extends HazeVisitor<any> {
     };
   };
 
-  visitRawPointerDereference = (
-    ctx: RawPointerDereferenceContext,
-  ): ASTRawPointerDereferenceExpr => {
+  visitPointerDereference = (ctx: PointerDereferenceContext): ASTPointerDereferenceExpr => {
     return {
-      variant: "RawPointerDereference",
+      variant: "PointerDereference",
       expr: this.visit(ctx.expr()),
       sourceloc: this.loc(ctx),
       _semantic: {},
     };
   };
 
-  visitRawPointerAddressOf = (ctx: RawPointerAddressOfContext): ASTRawPointerAddressOfExpr => {
+  visitPointerAddressOf = (ctx: PointerAddressOfContext): ASTPointerAddressOfExpr => {
     return {
-      variant: "RawPointerAddressOf",
+      variant: "PointerAddressOf",
       expr: this.visit(ctx.expr()),
       sourceloc: this.loc(ctx),
       _semantic: {},
@@ -829,7 +805,7 @@ class ASTTransformer extends HazeVisitor<any> {
   };
 
   visitStructInstantiationExpr = (
-    ctx: StructInstantiationExprContext,
+    ctx: StructInstantiationExprContext
   ): ASTStructInstantiationExpr => {
     if (ctx.ID().length !== ctx.expr().length) {
       throw new InternalError("Inconsistent size");
@@ -935,9 +911,9 @@ class ASTTransformer extends HazeVisitor<any> {
     };
   };
 
-  visitRawPointerDatatype = (ctx: RawPointerDatatypeContext): ASTRawPointerDatatype => {
+  visitPointerDatatype = (ctx: PointerDatatypeContext): ASTPointerDatatype => {
     return {
-      variant: "RawPointerDatatype",
+      variant: "PointerDatatype",
       pointee: this.visit(ctx.datatype()),
       sourceloc: this.loc(ctx),
     };
@@ -949,7 +925,6 @@ class ASTTransformer extends HazeVisitor<any> {
 
     let currentNamespace: ASTNamespaceDefinition = {
       variant: "NamespaceDefinition",
-      id: makeModulePrefix(this.config) + ".namespace." + (this.config.symbolIdCounter++).toString(),
       declarations: ctx.globalDeclaration().map((g) => this.visit(g)),
       export: Boolean(ctx._export_),
       name: namesReversed[0],
@@ -960,7 +935,6 @@ class ASTTransformer extends HazeVisitor<any> {
     for (const name of namesReversed.slice(1)) {
       currentNamespace = {
         variant: "NamespaceDefinition",
-        id: makeModulePrefix(this.config) + ".namespace." + (this.config.symbolIdCounter++).toString(),
         declarations: [currentNamespace],
         export: Boolean(ctx._export_),
         name: name,

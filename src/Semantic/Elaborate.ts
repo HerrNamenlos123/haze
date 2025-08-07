@@ -26,8 +26,7 @@ import {
   InternalError,
   type SourceLoc,
 } from "../shared/Errors";
-import { Collect, type CollectionContext } from "../SymbolCollection/CollectSymbols";
-import { getScope, getSymbol } from "../SymbolCollection/SymbolCollection";
+import { Collect, } from "../SymbolCollection/SymbolCollection";
 import { Conversion } from "./Conversion";
 import {
   makeFunctionDatatypeAvailable,
@@ -1779,7 +1778,7 @@ export function elaborate(
         name: args.sourceSymbol.name,
         export: args.sourceSymbol.export,
         externLanguage: args.sourceSymbol.externLanguage,
-        mutable: args.sourceSymbol.mutable,
+        mutable: args.sourceSymbol.bindingMutability,
         type: type,
         value: elaboratedExpr,
         sourceloc: args.sourceSymbol.sourceloc,

@@ -3,7 +3,7 @@ import { existsSync } from "fs";
 import { parse } from "@ltd/j-toml";
 
 import { GeneralError } from "./Errors";
-import type { Collect } from "../SymbolCollection/CollectSymbols";
+import type { Collect } from "../SymbolCollection/SymbolCollection";
 
 export enum ModuleType {
   Library,
@@ -27,8 +27,6 @@ export type ModuleConfig = {
   linkerFlags: string[];
   compilerFlags: string[];
   platform: PlatformString;
-
-  symbolIdCounter: number;
 };
 
 export type PlatformString = "linux-x64";
@@ -259,7 +257,6 @@ export class ConfigParser {
       compilerFlags:
         (toml["compiler"] && this.getOptionalStringArray(toml["compiler"], "flags")) || [],
       platform: "linux-x64",
-      symbolIdCounter: 0,
     };
   }
 }

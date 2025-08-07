@@ -5,65 +5,634 @@ import {
   InternalError,
   type SourceLoc,
 } from "../shared/Errors";
-import type {
-  ASTBinaryExpr,
-  ASTConstant,
-  ASTConstantExpr,
-  ASTDatatype,
-  ASTExplicitCastExpr,
-  ASTExprAsFuncbody,
-  ASTExprAssignmentExpr,
-  ASTExprCallExpr,
-  ASTExprMemberAccess,
-  ASTFunctionDeclaration,
-  ASTFunctionDefinition,
-  ASTGlobalVariableDefinition,
-  ASTLambdaExpr,
-  ASTNamedDatatype,
-  ASTNamespaceDefinition,
-  ASTParenthesisExpr,
-  ASTPostIncrExpr,
-  ASTPreIncrExpr,
-  ASTRawPointerAddressOfExpr,
-  ASTRawPointerDereferenceExpr,
-  ASTRoot,
-  ASTScope,
-  ASTStructDefinition,
-  ASTStructInstantiationExpr,
-  ASTSymbolValueExpr,
-  ASTUnaryExpr,
-  ASTVariableDefinitionStatement,
+import {
+  EExternLanguage,
+  type ASTBinaryExpr,
+  type ASTConstant,
+  type ASTConstantExpr,
+  type ASTDatatype,
+  type ASTExplicitCastExpr,
+  type ASTExprAsFuncbody,
+  type ASTExprAssignmentExpr,
+  type ASTExprCallExpr,
+  type ASTExprMemberAccess,
+  type ASTFunctionDefinition,
+  type ASTGlobalVariableDefinition,
+  type ASTLambdaExpr,
+  type ASTNamedDatatype,
+  type ASTNamespaceDefinition,
+  type ASTParenthesisExpr,
+  type ASTPostIncrExpr,
+  type ASTPreIncrExpr,
+  type ASTPointerAddressOfExpr,
+  type ASTPointerDereferenceExpr,
+  type ASTRoot,
+  type ASTScope,
+  type ASTStructDefinition,
+  type ASTStructInstantiationExpr,
+  type ASTSymbolValueExpr,
+  type ASTUnaryExpr,
+  type ASTVariableDefinitionStatement,
 } from "../shared/AST";
-import { assertScope, EMethodType, EVariableContext } from "../shared/common";
-import { Collect, type CollectionContext } from "./CollectSymbols";
+import {
+  assertScope,
+  EMethodType,
+  EPrimitive,
+  EVariableContext,
+  primitiveToString,
+} from "../shared/common";
 import { makeModulePrefix } from "../Module";
 
-export function getScope(cc: CollectionContext, id: string) {
-  const scope = cc.scopes.get(id);
-  assert(scope);
+import type {
+  ASTStatement,
+  ASTStructMemberDefinition,
+  ASTStructMethodDefinition,
+} from "../shared/AST";
+import type { ModuleConfig } from "../shared/Config";
+import {
+  addComponent,
+  addEntity,
+  createWorld,
+  defineComponent,
+  defineQuery,
+  getAllEntities,
+  hasComponent,
+  Types,
+  type Component,
+  type ComponentType,
+  type ISchema,
+  type IWorld,
+} from "bitecs";
+
+function exportMermaidScopeTree(cc: CollectionContext): string {
+  let output = "";
+  // output += `\`\`\`mermaid\n`;
+  output += `graph TD\n`;
+
+  for (const sc of defineQuery([Collect.ModuleScopeComponent])(cc.collectWorld)) {
+    output += `  E${sc}["Module Scope"]\n`;
+  }
+
+  for (const sc of defineQuery([Collect.UnitScopeComponent])(cc.collectWorld)) {
+    const parent = Collect.UnitScopeComponent.moduleScope[sc];
+    output += `  E${sc}["Unit Scope"] --> E${parent}\n`;
+  }
+
+  for (const sc of defineQuery([Collect.FileScopeComponent])(cc.collectWorld)) {
+    const parent = Collect.FileScopeComponent.unitScope[sc];
+    const filename = cc.idToString.get(Collect.FileScopeComponent.filename[sc]);
+    output += `  E${sc}["${filename}"] --> E${parent}\n`;
+  }
+
+  for (const ns of defineQuery([Collect.NamespaceSymbolComponent])(cc.collectWorld)) {
+    const parent = Collect.NamespaceSymbolComponent.parentScope[ns];
+    const name = cc.idToString.get(Collect.NamespaceSymbolComponent.name[ns]);
+    output += `  E${ns}["Namespace ${name}"] --> E${parent}\n`;
+  }
+
+  for (const ns of defineQuery([Collect.FunctionSymbolComponent])(cc.collectWorld)) {
+    const parent = Collect.FunctionSymbolComponent.parentScope[ns];
+    const overloadGroup = Collect.FunctionSymbolComponent.overloadGroup[ns];
+    output += `  E${ns}["Function Symbol"] --> E${parent}\n`;
+    output += `  E${ns} --> E${overloadGroup}\n`;
+  }
+
+  for (const ns of defineQuery([Collect.FunctionOverloadGroupComponent])(cc.collectWorld)) {
+    const parent = Collect.FunctionOverloadGroupComponent.parentScope[ns];
+    const name = cc.idToString.get(Collect.FunctionOverloadGroupComponent.name[ns]);
+    output += `  E${ns}["Function '${name}' Overload"] --> E${parent}\n`;
+  }
+
+  // output += "\n\`\`\`";
+  return output;
+}
+
+export type CollectionContext = {
+  config: ModuleConfig;
+  collectWorld: IWorld;
+  nextEntityId: number;
+
+  stringToId: Map<string, number>;
+  idToString: Map<number, string>;
+  nextStringId: number;
+
+  sourcelocToId: Map<SourceLoc, number>;
+  idToSourceloc: Map<number, SourceLoc>;
+  nextSourcelocId: number;
+
+  // scopeSymbolMap: Map<number, number[]>;
+};
+
+export enum EVariableMutability {
+  Immutable, // Fully immutable
+  BindingImmutable, // Binding is immutable, but value inside is not (e.g. struct fields)
+  Mutable, // Fully mutable
+}
+
+export function makeCollectionContext(config: ModuleConfig): CollectionContext {
+  const cc: CollectionContext = {
+    config: config,
+    stringToId: new Map(),
+    idToString: new Map(),
+    nextEntityId: 1,
+    nextStringId: 1,
+    idToSourceloc: new Map(),
+    sourcelocToId: new Map(),
+    nextSourcelocId: 1,
+    collectWorld: createWorld(),
+  };
+
+  const globalScope = addEntity(cc.collectWorld);
+  setComponent(cc, globalScope, Collect.ModuleScopeComponent, {});
+
+  return cc;
+}
+
+export function internSourceloc(cc: CollectionContext, loc: SourceLoc) {
+  if (loc === null) {
+    return 0;
+  }
+  for (const [s, id] of cc.sourcelocToId) {
+    if (s === null) continue;
+    if (s.column === loc.column && s.line === loc.line && s.filename === loc.filename) {
+      return id;
+    }
+  }
+  const id = cc.nextSourcelocId++;
+  cc.sourcelocToId.set(loc, id);
+  cc.idToSourceloc.set(id, loc);
+  return id;
+}
+
+export function internString(cc: CollectionContext, path: string): number {
+  if (!cc.stringToId.has(path)) {
+    const id = cc.nextStringId++;
+    cc.stringToId.set(path, id);
+    cc.idToString.set(id, path);
+    return id;
+  }
+  return cc.stringToId.get(path)!;
+}
+
+export function getFilePath(cc: CollectionContext, id: number): string | undefined {
+  return cc.idToString.get(id);
+}
+
+export function setComponent<T extends Record<string, any>>(
+  cc: CollectionContext,
+  eid: number,
+  component: T,
+  data: { [K in keyof T]: number }
+): void {
+  addComponent(cc.collectWorld, component, eid);
+  for (const key in data) {
+    (component as any)[key][eid] = data[key];
+  }
+}
+
+export function getEntityByComponent(cc: CollectionContext, component: Component | Component[]) {
+  return getEntitiesByComponent(cc, component)[0];
+}
+
+export function getEntitiesByComponent(cc: CollectionContext, component: Component | Component[]) {
+  const query = defineQuery(Array.isArray(component) ? component : [component]);
+  const entity = query(cc.collectWorld);
+  return entity;
+}
+
+export namespace Collect {
+  export type GenericParameter = {
+    variant: "GenericParameter";
+    name: string;
+    sourceloc: SourceLoc;
+  };
+
+  export type Symbol =
+    | ASTFunctionDefinition
+    | ASTNamespaceDefinition
+    | ASTVariableDefinitionStatement
+    | ASTGlobalVariableDefinition
+    | ASTStructDefinition
+    | ASTStructMethodDefinition
+    | ASTStructMemberDefinition
+    | GenericParameter;
+
+  export type Statement = ASTStatement;
+
+  /// ===============================================================
+  /// ===                         Scopes                          ===
+  /// ===============================================================
+
+  export const ModuleScopeComponent = defineComponent({});
+
+  export const UnitScopeComponent = defineComponent({
+    moduleScope: Types.eid,
+  });
+
+  export const FileScopeComponent = defineComponent({
+    unitScope: Types.eid,
+    filename: Types.eid,
+  });
+
+  export const FunctionScopeComponent = defineComponent({
+    parentScope: Types.eid,
+    owningSymbol: Types.eid,
+    sourceloc: Types.eid,
+  });
+
+  export const BlockScopeComponent = defineComponent({
+    parentScope: Types.eid,
+    owningFunctionSymbol: Types.eid,
+    sourceloc: Types.eid,
+    firstStatement: Types.eid,
+    lastStatement: Types.eid,
+  });
+
+  /// ===============================================================
+  /// ===                       Overloads                         ===
+  /// ===============================================================
+
+  export const FunctionOverloadGroupComponent = defineComponent({
+    name: Types.eid,
+    parentScope: Types.eid,
+  });
+
+  /// ===============================================================
+  /// ===                     Function Symbols                    ===
+  /// ===============================================================
+
+  export const FunctionSymbolComponent = defineComponent({
+    parentScope: Types.eid,
+    overloadGroup: Types.eid,
+    returnType: Types.eid,
+    sourceloc: Types.eid,
+  });
+
+  export const FunctionParameterComponent = defineComponent({
+    name: Types.eid,
+    type: Types.eid,
+    index: Types.ui8,
+    owningFunctionSymbol: Types.eid,
+  });
+
+  export const VariableSymbolComponent = defineComponent({
+    parentScope: Types.eid,
+    name: Types.eid,
+    type: Types.eid,
+    sourceloc: Types.eid,
+    bindingMutability: Types.ui8,
+  });
+
+  /// ===============================================================
+  /// ===                       Type Symbols                      ===
+  /// ===============================================================
+
+  export const NamedDatatypeSymbolComponent = defineComponent({
+    name: Types.eid,
+    sourceloc: Types.eid,
+  });
+
+  export const PointerDatatypeSymbolComponent = defineComponent({
+    pointee: Types.eid,
+    sourceloc: Types.eid,
+  });
+
+  export const ReferenceDatatypeSymbolComponent = defineComponent({
+    referee: Types.eid,
+    sourceloc: Types.eid,
+  });
+
+  export const StructSymbolComponent = defineComponent({
+    parentScope: Types.eid,
+    name: Types.eid,
+    sourceloc: Types.eid,
+  });
+
+  export const NamespaceSymbolComponent = defineComponent({
+    parentScope: Types.eid,
+    name: Types.eid,
+    sourceloc: Types.eid,
+  });
+
+  export const GenericTypeParameterComponent = defineComponent({
+    name: Types.eid,
+    index: Types.ui8,
+    owningSymbol: Types.eid,
+  });
+
+  /// ===============================================================
+  /// ===                         Flags                           ===
+  /// ===============================================================
+
+  export const ExportedFlagComponent = defineComponent({});
+
+  export const PubFlagComponent = defineComponent({});
+
+  export const ExternFlagComponent = defineComponent({
+    language: Types.ui8,
+  });
+
+  /// ===============================================================
+  /// ===                       Statements                        ===
+  /// ===============================================================
+
+  export const StatementLink = defineComponent({
+    nextStatement: Types.eid,
+    prevStatement: Types.eid,
+  });
+
+  export const InlineCStatement = defineComponent({
+    value: Types.eid,
+  });
+
+  export const ReturnStatement = defineComponent({
+    expr: Types.eid,
+  });
+
+  export const BlockScopeStatement = defineComponent({
+    block: Types.eid,
+  });
+
+  export const IfStatement = defineComponent({
+    firstChainLink: Types.eid,
+  });
+
+  export const IfChainLink = defineComponent({
+    conditionExpr: Types.eid,
+    block: Types.eid,
+    next: Types.eid,
+  });
+
+  export const WhileStatement = defineComponent({
+    nextStatement: Types.eid,
+    prevStatement: Types.eid,
+    conditionExpr: Types.eid,
+    block: Types.eid,
+  });
+
+  // export class Scope {
+  //   variant = "Collect.ScopeClass" as const;
+  //   id: string;
+  //   rawStatements: ASTStatement[] = [];
+  //   symbols: string[] = [];
+
+  //   private static nextId = 1;
+
+  //   constructor(modulePrefix: string, public sourceloc: SourceLoc, public parentScope?: string) {
+  //     this.id = `${modulePrefix}.scope.${Scope.nextId++} `;
+  //   }
+
+  //   static rebuild(input: Scope) {
+  //     // Rebuild class instance if it was JSON deserialized, so methods work
+  //     const scope = new Scope("", null, undefined);
+  //     Scope.nextId--;
+  //     scope.variant = input.variant;
+  //     scope.id = input.id;
+  //     scope.rawStatements = input.rawStatements;
+  //     scope.symbols = input.symbols;
+  //     scope.sourceloc = input.sourceloc;
+  //     scope.parentScope = input.parentScope;
+  //     return scope;
+  //   }
+
+  //   defineSymbol(cc: CollectionContext, symbol: Symbol) {
+  //     if (this.tryLookupSymbolHere(cc, symbol.name)) {
+  //       throw new InternalError(
+  //         `Symbol '${symbol.name}' already exists in symbol table`,
+  //         undefined,
+  //         1
+  //       );
+  //     }
+  //     this.symbols.push(symbol.id);
+  //   }
+
+  //   tryLookupSymbol(cc: CollectionContext, name: string, loc: SourceLoc): Symbol | undefined {
+  //     const _symbol = this.symbols.find((s) => {
+  //       const sym = getSymbol(cc, s);
+  //       return "name" in sym && sym.name === name;
+  //     });
+  //     const symbol = _symbol && getSymbol(cc, _symbol);
+  //     if (symbol) {
+  //       return symbol;
+  //     }
+
+  //     if (this.parentScope) {
+  //       const parent = cc.scopes.get(this.parentScope);
+  //       assert(parent);
+  //       return parent.tryLookupSymbol(cc, name, loc);
+  //     }
+  //     return undefined;
+  //   }
+
+  //   tryLookupSymbolHere(cc: CollectionContext, name: string): Symbol | undefined {
+  //     const symbol = this.symbols.find((s) => {
+  //       const sym = getSymbol(cc, s);
+  //       return "name" in sym && sym.name === name;
+  //     });
+  //     if (symbol) {
+  //       return getSymbol(cc, symbol);
+  //     }
+  //     return undefined;
+  //   }
+
+  //   lookupSymbol(cc: CollectionContext, name: string, loc: SourceLoc): Symbol {
+  //     const symbol = this.tryLookupSymbol(cc, name, loc);
+  //     if (symbol) {
+  //       return symbol;
+  //     }
+  //     throw new CompilerError(`Symbol '${name}' was not declared in this scope`, loc);
+  //   }
+  // }
+}
+
+// export function getScope(cc: CollectionContext, id: string) {
+//   const scope = cc.scopes.get(id);
+//   assert(scope);
+//   return scope;
+// }
+
+// export function getSymbol(cc: CollectionContext, id: string) {
+//   const symbol = cc.symbols.get(id);
+//   if (!symbol) {
+//     console.error(id)
+//     assert(symbol);
+//   }
+//   return symbol;
+// }
+
+// export function makeScope(cc: CollectionContext, sourceloc: SourceLoc, parentScope: string) {
+//   const scope = new Collect.Scope(makeModulePrefix(cc.config), sourceloc, parentScope);
+//   cc.scopes.set(scope.id, scope);
+//   return scope.id;
+// }
+
+function makeNamedType(cc: CollectionContext, name: string, sourceloc: SourceLoc) {
+  const e = addEntity(cc.collectWorld);
+  setComponent(cc, e, Collect.NamedDatatypeSymbolComponent, {
+    name: internString(cc, name),
+    sourceloc: internSourceloc(cc, sourceloc),
+  });
+  return e;
+}
+
+// function addSymbolToScope(cc: CollectionContext, scope: number, symbol: number) {
+//   if (!cc.scopeSymbolMap.has(scope)) {
+//     cc.scopeSymbolMap.set(scope, []);
+//   }
+
+//   const arr = cc.scopeSymbolMap.get(scope)!;
+//   arr.push(symbol);
+// }
+
+// function getScope(cc: CollectionContext, scope: number) {
+//   if (!hasComponent(cc.collectWorld, Collect.Scope, scope)) {
+//     assert(`Entity ${scope} is not a scope`);
+//   }
+//   defineQuery([Collect.NamespaceSymbolComponent])(cc.collectWorld);
+// }
+
+function findAllNamespacesInScope(cc: CollectionContext, scope: number) {
+  const symbols = [];
+  for (const ns of defineQuery([Collect.NamespaceSymbolComponent])(cc.collectWorld)) {
+    const parentScope = Collect.NamespaceSymbolComponent.parentScope[ns];
+    if (parentScope === scope) {
+      symbols.push(ns);
+    }
+  }
+  return symbols;
+}
+
+function findAllOverloadGroupsInScope(cc: CollectionContext, scope: number) {
+  const symbols = [];
+  for (const ns of defineQuery([Collect.FunctionOverloadGroupComponent])(cc.collectWorld)) {
+    const parentScope = Collect.FunctionOverloadGroupComponent.parentScope[ns];
+    if (parentScope === scope) {
+      symbols.push(ns);
+    }
+  }
+  return symbols;
+}
+
+function findAllFunctionOverloadGroupsInScope(cc: CollectionContext, scope: number) {
+  const symbols = [];
+  for (const ns of defineQuery([Collect.FunctionOverloadGroupComponent])(cc.collectWorld)) {
+    const parentScope = Collect.FunctionOverloadGroupComponent.parentScope[ns];
+    if (parentScope === scope) {
+      symbols.push(ns);
+    }
+  }
+  return symbols;
+}
+
+function findAllStructsInScope(cc: CollectionContext, scope: number) {
+  const symbols = [];
+  for (const ns of defineQuery([Collect.StructSymbolComponent])(cc.collectWorld)) {
+    const parentScope = Collect.StructSymbolComponent.parentScope[ns];
+    if (parentScope === scope) {
+      symbols.push(ns);
+    }
+  }
+  return symbols;
+}
+
+function makeBlockScope(cc: CollectionContext, parentBlockScope: number, sourceloc: SourceLoc) {
+  let functionSymbol = 0;
+  if (hasComponent(cc.collectWorld, Collect.BlockScopeComponent, parentBlockScope)) {
+    functionSymbol = Collect.BlockScopeComponent.owningFunctionSymbol[parentBlockScope];
+  } else if (hasComponent(cc.collectWorld, Collect.FunctionScopeComponent, parentBlockScope)) {
+    functionSymbol = Collect.FunctionScopeComponent.owningSymbol[parentBlockScope];
+  } else {
+    assert(false);
+  }
+  const scope = addEntity(cc.collectWorld);
+  setComponent(cc, scope, Collect.BlockScopeComponent, {
+    owningFunctionSymbol: functionSymbol,
+    parentScope: parentBlockScope,
+    sourceloc: internSourceloc(cc, sourceloc),
+    firstStatement: 0,
+  });
   return scope;
 }
 
-export function getSymbol(cc: CollectionContext, id: string) {
-  const symbol = cc.symbols.get(id);
-  if (!symbol) {
-    console.error(id)
-    assert(symbol);
+function collectType(cc: CollectionContext, type: ASTDatatype, sourceloc: SourceLoc) {
+  switch (type.variant) {
+    case "NamedDatatype": {
+      return makeNamedType(cc, type.name, sourceloc);
+    }
+
+    case "PointerDatatype": {
+      const e = addEntity(cc.collectWorld);
+      setComponent(cc, e, Collect.PointerDatatypeSymbolComponent, {
+        pointee: collectType(cc, type.pointee, type.sourceloc),
+        sourceloc: internSourceloc(cc, sourceloc),
+      });
+      return e;
+    }
+
+    case "ReferenceDatatype": {
+      const e = addEntity(cc.collectWorld);
+      setComponent(cc, e, Collect.ReferenceDatatypeSymbolComponent, {
+        referee: collectType(cc, type.referee, type.sourceloc),
+        sourceloc: internSourceloc(cc, sourceloc),
+      });
+      return e;
+    }
+
+    default:
+      assert(false, "" + type.variant);
   }
-  return symbol;
 }
 
-export function makeScope(cc: CollectionContext, sourceloc: SourceLoc, parentScope: string) {
-  const scope = new Collect.Scope(makeModulePrefix(cc.config), sourceloc, parentScope);
-  cc.scopes.set(scope.id, scope);
-  return scope.id;
+function makeOverloadGroup(cc: CollectionContext, scope: number, name: string) {
+  for (const g of findAllOverloadGroupsInScope(cc, scope)) {
+    if (cc.idToString.get(Collect.NamespaceSymbolComponent.name[g]) === name) {
+      return g;
+    }
+  }
+
+  const g = addEntity(cc.collectWorld);
+  setComponent(cc, g, Collect.FunctionOverloadGroupComponent, {
+    name: internString(cc, name),
+    parentScope: scope,
+  });
+  return g;
+}
+
+function appendStatement<T extends Component>(
+  cc: CollectionContext,
+  blockscope: number,
+  component: T,
+  data: Omit<{ [K in keyof T]: number }, "nextStatement" | "prevStatement">
+) {
+  const statement = addEntity(cc.collectWorld);
+  Collect.InlineCStatement;
+
+  // Point last statement here
+  if (Collect.BlockScopeComponent.lastStatement[blockscope] === 0) {
+    // It's the first statement
+    Collect.BlockScopeComponent.firstStatement[blockscope] = statement;
+    Collect.BlockScopeComponent.lastStatement[blockscope] = statement;
+    setComponent(cc, statement, component, {
+      nextStatement: 0,
+      prevStatement: 0,
+      ...data,
+    } as any);
+  } else {
+    const lastStatementLink = Collect.BlockScopeComponent.lastStatement[blockscope];
+    Collect.StatementLink.nextStatement[lastStatementLink] = statement;
+    setComponent(cc, statement, component, {
+      nextStatement: 0,
+      prevStatement: lastStatementLink,
+      ...data,
+    } as any);
+    Collect.BlockScopeComponent.lastStatement[blockscope] = statement;
+  }
+  return statement;
 }
 
 function collect(
   cc: CollectionContext,
-  scope: Collect.Scope,
   item:
-    | ASTFunctionDeclaration
     | ASTFunctionDefinition
     | ASTGlobalVariableDefinition
     | ASTNamespaceDefinition
@@ -76,8 +645,8 @@ function collect(
     | ASTLambdaExpr
     | ASTPreIncrExpr
     | ASTConstantExpr
-    | ASTRawPointerAddressOfExpr
-    | ASTRawPointerDereferenceExpr
+    | ASTPointerAddressOfExpr
+    | ASTPointerDereferenceExpr
     | ASTPostIncrExpr
     | ASTStructInstantiationExpr
     | ASTExplicitCastExpr
@@ -86,114 +655,55 @@ function collect(
     | ASTSymbolValueExpr
     | ASTStructDefinition
     | ASTDatatype,
-  meta: {
-    currentNamespaceOrStruct?: ASTNamespaceDefinition | ASTStructDefinition;
-    namespaceStack: (ASTNamespaceDefinition | ASTStructDefinition)[];
-  },
+  args: {
+    currentParentScope: number;
+  }
 ) {
   switch (item.variant) {
     // =================================================================================================================
     // =================================================================================================================
     // =================================================================================================================
 
-    case "FunctionDeclaration":
-      if (!item.returnType) {
-        item.returnType = {
-          variant: "NamedDatatype",
-          name: "none",
-          cstruct: false,
-          generics: [],
-          sourceloc: item.sourceloc,
-          _collect: {
-            usedInScope: scope.id,
-          },
-        };
-      }
-
-      item._collect.definedInNamespaceOrStruct = meta.currentNamespaceOrStruct?.id;
-      item._collect.definedInScope = scope.id;
-      item._collect.namespacePath = [
-        ...meta.namespaceStack.map((n) => n.name),
-        ...item.namespacePath,
-      ];
-      item.methodType = EMethodType.NotAMethod;
-      if (item._collect.definedInNamespaceOrStruct && getSymbol(cc, item._collect.definedInNamespaceOrStruct).variant === "StructDefinition") {
-        item.methodType = EMethodType.Method;
-      }
-
-      if (scope.tryLookupSymbolHere(cc, item.name)) {
-        throw new CompilerError(`Symbol was already declared in this scope`, item.sourceloc);
-      }
-
-      for (const param of item.params) {
-        collect(cc, scope, param.datatype, meta);
-      }
-      collect(cc, scope, item.returnType, meta);
-
-      scope.defineSymbol(cc, item);
-      cc.symbols.set(item.id, item);
-      break;
-
-    // =================================================================================================================
-    // =================================================================================================================
-    // =================================================================================================================
-
     case "FunctionDefinition":
-      item.declarationScope = makeScope(cc, item.sourceloc, scope.id);
+      const overloadGroup = makeOverloadGroup(cc, args.currentParentScope, item.name);
+
+      const functionSymbol = addEntity(cc.collectWorld);
+      setComponent(cc, functionSymbol, Collect.FunctionSymbolComponent, {
+        overloadGroup: overloadGroup,
+        parentScope: args.currentParentScope,
+        returnType:
+          (item.returnType && collectType(cc, item.returnType, item.sourceloc)) ||
+          makeNamedType(cc, primitiveToString(EPrimitive.none), item.sourceloc),
+        sourceloc: internSourceloc(cc, item.sourceloc),
+      });
+
+      console.warn("TODO: Check if function is redefined with conflicting parameters");
+
+      for (const [i, param] of item.params.entries()) {
+        const paramType = collectType(cc, param.datatype, param.sourceloc);
+        const paramEntity = addEntity(cc.collectWorld);
+        setComponent(cc, paramEntity, Collect.FunctionParameterComponent, {
+          index: i,
+          name: internString(cc, param.name),
+          owningFunctionSymbol: functionSymbol,
+          type: paramType,
+        });
+      }
+
       if (item.funcbody) {
-        item.funcbody._collect.scope = makeScope(cc, item.sourceloc, item.declarationScope);
-      }
-      item._collect.definedInNamespaceOrStruct = meta.currentNamespaceOrStruct?.id;
-      item._collect.definedInScope = scope.id;
-      item.methodType = EMethodType.NotAMethod;
-      if (item._collect.definedInNamespaceOrStruct && getSymbol(cc, item._collect.definedInNamespaceOrStruct).variant === "StructDefinition") {
-        item.methodType = EMethodType.Method;
-      }
+        const functionScope = addEntity(cc.collectWorld);
+        setComponent(cc, functionScope, Collect.FunctionScopeComponent, {
+          owningSymbol: functionSymbol,
+          parentScope: args.currentParentScope,
+          sourceloc: internSourceloc(cc, item.sourceloc),
+        });
 
-      if (!item.returnType) {
-        item.returnType = {
-          variant: "NamedDatatype",
-          name: "none",
-          cstruct: false,
-          generics: [],
-          sourceloc: item.sourceloc,
-          _collect: {},
-        };
-      }
+        const topBlockScope = makeBlockScope(cc, functionScope, item.sourceloc);
 
-      if (scope.tryLookupSymbolHere(cc, item.name)) {
-        throw new CompilerError(`Symbol was already declared in this scope`, item.sourceloc);
-      }
+        // for (const g of item.generics) {
+        //   getScope(cc, item.declarationScope).defineSymbol(cc, g);
+        // }
 
-      for (const g of item.generics) {
-        getScope(cc, item.declarationScope).defineSymbol(cc, g);
-      }
-
-      if (item.funcbody?._collect.scope) {
-        for (const param of item.params) {
-          const s: ASTVariableDefinitionStatement = {
-            variant: "VariableDefinitionStatement",
-            id: makeModulePrefix(cc.config) + ".vardef." + (cc.config.symbolIdCounter++).toString(),
-            mutable: false,
-            name: param.name,
-            datatype: param.datatype,
-            sourceloc: param.sourceloc,
-            kind: EVariableContext.FunctionParameter,
-            _semantic: {},
-          };
-          getScope(cc, item.funcbody._collect.scope).defineSymbol(cc, s);
-          cc.symbols.set(s.id, s);
-        }
-      }
-
-      for (const param of item.params) {
-        collect(cc, scope, param.datatype, meta);
-      }
-      collect(cc, scope, item.returnType, meta);
-
-      scope.defineSymbol(cc, item);
-      cc.symbols.set(item.id, item);
-      if (item.funcbody?._collect.scope) {
         if (item.funcbody.variant === "ExprAsFuncBody") {
           item.funcbody = {
             variant: "Scope",
@@ -205,16 +715,14 @@ function collect(
               },
             ],
             sourceloc: item.sourceloc,
-            _collect: {
-              scope: item.funcbody._collect.scope,
-            },
           };
-          assert(item.funcbody._collect.scope);
-          collect(cc, getScope(cc, item.funcbody._collect.scope), item.funcbody, meta);
-        } else {
-          collect(cc, getScope(cc, item.funcbody._collect.scope), item.funcbody, meta);
         }
+
+        collect(cc, item.funcbody, {
+          currentParentScope: topBlockScope,
+        });
       }
+
       break;
 
     // =================================================================================================================
@@ -228,35 +736,45 @@ function collect(
     // =================================================================================================================
     // =================================================================================================================
 
-    case "GlobalVariableDefinition":
-      scope.defineSymbol(cc, item);
-      cc.symbols.set(item.id, item);
-      item._collect.definedInNamespaceOrStruct = meta.currentNamespaceOrStruct?.id;
-      item._collect.definedInScope = scope.id;
-      if (item.datatype) {
-        collect(cc, scope, item.datatype, meta);
-      }
+    case "GlobalVariableDefinition": {
+      const variable = addEntity(cc.collectWorld);
+      setComponent(cc, variable, Collect.VariableSymbolComponent, {
+        bindingMutability: item.bindingMutability,
+        name: internString(cc, item.name),
+        parentScope: args.currentParentScope,
+        sourceloc: internSourceloc(cc, item.sourceloc),
+        type: (item.datatype && collectType(cc, item.datatype, item.sourceloc)) || 0,
+      });
+      // addSymbolToScope(cc, args.currentParentScope, variable);
       break;
+    }
 
     // =================================================================================================================
     // =================================================================================================================
     // =================================================================================================================
 
     case "NamespaceDefinition": {
-      let namespace = item;
-      item._collect.definedInNamespaceOrStruct = meta.currentNamespaceOrStruct?.id;
-      if (scope.tryLookupSymbolHere(cc, namespace.name)) {
-        namespace = scope.tryLookupSymbolHere(cc, namespace.name) as ASTNamespaceDefinition;
-      } else {
-        namespace._collect.scope = makeScope(cc, namespace.sourceloc, scope.id);
-        scope.defineSymbol(cc, namespace);
-        cc.symbols.set(item.id, item);
+      const allNamespaces = findAllNamespacesInScope(cc, args.currentParentScope);
+      let existingNamespace = 0;
+      for (const ns of allNamespaces) {
+        if (cc.idToString.get(Collect.NamespaceSymbolComponent.name[ns]) === item.name) {
+          existingNamespace = ns;
+          break;
+        }
       }
+
+      if (existingNamespace === 0) {
+        existingNamespace = addEntity(cc.collectWorld);
+        setComponent(cc, existingNamespace, Collect.NamespaceSymbolComponent, {
+          name: internString(cc, item.name),
+          parentScope: args.currentParentScope,
+          sourceloc: internSourceloc(cc, item.sourceloc),
+        });
+      }
+
       for (const s of item.declarations) {
-        collect(cc, getScope(cc, namespace._collect.scope!), s, {
-          ...meta,
-          currentNamespaceOrStruct: namespace,
-          namespaceStack: [...meta.namespaceStack, namespace],
+        collect(cc, s, {
+          currentParentScope: existingNamespace,
         });
       }
       break;
@@ -267,8 +785,9 @@ function collect(
     // =================================================================================================================
 
     case "StructDefinition":
-      item._collect.definedInScope = scope.id;
-      item._collect.scope = makeScope(cc, item.sourceloc, scope.id);
+      return;
+      item._collect.definedInScope = functionScope.id;
+      item._collect.scope = makeScope(cc, item.sourceloc, functionScope.id);
       item._collect.namespaces = meta.namespaceStack.map((n) => n.name);
       item._collect.definedInNamespaceOrStruct = meta.currentNamespaceOrStruct?.id;
       item._collect.fullNamespacedName = [...item._collect.namespaces, item.name];
@@ -276,7 +795,7 @@ function collect(
         getScope(cc, item._collect.scope).defineSymbol(cc, g);
       }
 
-      const alreadyExists = scope.tryLookupSymbolHere(cc, item.name);
+      const alreadyExists = functionScope.tryLookupSymbolHere(cc, item.name);
       if (alreadyExists) {
         const msg =
           (alreadyExists.sourceloc &&
@@ -284,10 +803,10 @@ function collect(
           "";
         throw new CompilerError(
           `Symbol ${item.name} already exists in this scope. ${msg}`,
-          item.sourceloc,
+          item.sourceloc
         );
       }
-      scope.defineSymbol(cc, item);
+      functionScope.defineSymbol(cc, item);
       cc.symbols.set(item.id, item);
 
       const newMeta = {
@@ -307,10 +826,7 @@ function collect(
       for (const method of item.methods) {
         method.declarationScope = makeScope(cc, item.sourceloc, item._collect.scope);
         if (method.funcbody) {
-          method.funcbody._collect.scope = makeScope(cc,
-            item.sourceloc,
-            method.declarationScope,
-          );
+          method.funcbody._collect.scope = makeScope(cc, item.sourceloc, method.declarationScope);
         }
 
         if (!method.returnType) {
@@ -338,7 +854,8 @@ function collect(
           if (!method.static && method.name !== "constructor") {
             const s: ASTVariableDefinitionStatement = {
               variant: "VariableDefinitionStatement",
-              id: makeModulePrefix(cc.config) + ".vardef." + (cc.config.symbolIdCounter++).toString(),
+              id:
+                makeModulePrefix(cc.config) + ".vardef." + (cc.config.symbolIdCounter++).toString(),
               mutable: false,
               name: "this",
               sourceloc: method.sourceloc,
@@ -353,7 +870,8 @@ function collect(
           for (const param of method.params) {
             const s: ASTVariableDefinitionStatement = {
               variant: "VariableDefinitionStatement",
-              id: makeModulePrefix(cc.config) + ".vardef." + (cc.config.symbolIdCounter++).toString(),
+              id:
+                makeModulePrefix(cc.config) + ".vardef." + (cc.config.symbolIdCounter++).toString(),
               mutable: false,
               name: param.name,
               datatype: param.datatype,
@@ -381,57 +899,108 @@ function collect(
       for (const s of item.statements) {
         switch (s.variant) {
           case "ExprStatement":
-            collect(cc, scope, s.expr, meta);
+            collect(cc, s.expr, {
+              currentParentScope: args.currentParentScope,
+            });
             break;
 
-          case "IfStatement":
-            collect(cc, scope, s.condition, meta);
-            s.then._collect.scope = makeScope(cc, s.then.sourceloc, scope.id);
-            collect(cc, getScope(cc, s.then._collect.scope), s.then, meta);
+          case "IfStatement": {
+            let firstChainLink = 0;
+            let lastChainLink = 0;
+            collect(cc, s.condition, { currentParentScope: args.currentParentScope });
+            const firstBlock = makeBlockScope(cc, args.currentParentScope, s.then.sourceloc);
+            collect(cc, s.then, {
+              currentParentScope: firstBlock,
+            });
+            firstChainLink = addEntity(cc.collectWorld);
+            lastChainLink = firstChainLink;
+            setComponent(cc, firstChainLink, Collect.IfChainLink, {
+              block: firstBlock,
+              conditionExpr: 0,
+              next: 0,
+            });
             for (const e of s.elseIfs) {
-              collect(cc, scope, e.condition, meta);
-              e.then._collect.scope = makeScope(cc, e.then.sourceloc, scope.id);
-              collect(cc, getScope(cc, e.then._collect.scope), e.then, meta);
+              collect(cc, e.condition, { currentParentScope: args.currentParentScope });
+              const block = makeBlockScope(cc, args.currentParentScope, e.then.sourceloc);
+              collect(cc, e.then, {
+                currentParentScope: block,
+              });
+              const link = addEntity(cc.collectWorld);
+              Collect.IfChainLink.next[lastChainLink] = link;
+              setComponent(cc, link, Collect.IfChainLink, {
+                block: block,
+                conditionExpr: 0,
+                next: 0,
+              });
+              lastChainLink = link;
             }
             if (s.else) {
-              s.else._collect.scope = makeScope(cc, s.else.sourceloc, scope.id);
-              collect(cc, getScope(cc, s.else._collect.scope), s.else, meta);
+              const block = makeBlockScope(cc, args.currentParentScope, s.else.sourceloc);
+              collect(cc, s.else, {
+                currentParentScope: block,
+              });
+              const link = addEntity(cc.collectWorld);
+              Collect.IfChainLink.next[lastChainLink] = link;
+              setComponent(cc, link, Collect.IfChainLink, {
+                block: block,
+                conditionExpr: 0,
+                next: 0,
+              });
+              lastChainLink = link;
             }
-            break;
 
-          case "InlineCStatement":
+            const entity = addEntity(cc.collectWorld);
+            setComponent(cc, entity, Collect.IfStatement, {
+              firstChainLink: firstChainLink,
+            });
             break;
+          }
+
+          case "InlineCStatement": {
+            appendStatement(cc, args.currentParentScope, Collect.InlineCStatement, {
+              value: internString(cc, s.code),
+            });
+            break;
+          }
 
           case "ReturnStatement":
-            if (s.expr) {
-              collect(cc, scope, s.expr, meta);
-            }
+            appendStatement(cc, args.currentParentScope, Collect.ReturnStatement, {
+              expr: 0,
+            });
+            // if (s.expr) {
+            //   collect(cc, functionScope, s.expr, meta);
+            // }
             break;
 
           case "WhileStatement":
-            collect(cc, scope, s.condition, meta);
-            s.body._collect.scope = makeScope(cc, s.body.sourceloc, scope.id);
-            collect(cc, getScope(cc, s.body._collect.scope), s.body, meta);
+            collect(cc, s.condition, { currentParentScope: args.currentParentScope });
+            const block = makeBlockScope(cc, args.currentParentScope, s.body.sourceloc);
+            collect(cc, s.body, {
+              currentParentScope: block,
+            });
+            appendStatement(cc, args.currentParentScope, Collect.WhileStatement, {
+              block: block,
+              conditionExpr: 0,
+            });
             break;
 
           case "VariableDefinitionStatement":
-            if (scope.tryLookupSymbolHere(cc, s.name)) {
+            if (functionScope.tryLookupSymbolHere(cc, s.name)) {
               throw new CompilerError(
                 `Variable '${s.name}' is already defined in this scope`,
-                s.sourceloc,
+                s.sourceloc
               );
             }
             if (s.datatype) {
-              collect(cc, scope, s.datatype, meta);
+              collect(cc, functionScope, s.datatype, meta);
             }
             if (s.expr) {
-              collect(cc, scope, s.expr, meta);
+              collect(cc, functionScope, s.expr, meta);
             }
-            scope.defineSymbol(cc, s);
+            functionScope.defineSymbol(cc, s);
             cc.symbols.set(s.id, s);
             break;
         }
-        scope.rawStatements.push(s);
       }
       break;
 
@@ -440,7 +1009,7 @@ function collect(
     // =================================================================================================================
 
     case "ParenthesisExpr":
-      collect(cc, scope, item.expr, meta);
+      collect(cc, functionScope, item.expr, meta);
       break;
 
     // =================================================================================================================
@@ -448,8 +1017,8 @@ function collect(
     // =================================================================================================================
 
     case "BinaryExpr":
-      collect(cc, scope, item.a, meta);
-      collect(cc, scope, item.b, meta);
+      collect(cc, functionScope, item.a, meta);
+      collect(cc, functionScope, item.b, meta);
       break;
 
     // =================================================================================================================
@@ -471,7 +1040,7 @@ function collect(
     // =================================================================================================================
 
     case "LambdaExpr":
-      item.lambda.funcbody._collect.scope = makeScope(cc, item.sourceloc, scope.id);
+      item.lambda.funcbody._collect.scope = makeScope(cc, item.sourceloc, functionScope.id);
       for (const param of item.lambda.params) {
         const s: ASTVariableDefinitionStatement = {
           variant: "VariableDefinitionStatement",
@@ -488,10 +1057,10 @@ function collect(
       }
 
       for (const param of item.lambda.params) {
-        collect(cc, scope, param.datatype, meta);
+        collect(cc, functionScope, param.datatype, meta);
       }
       if (item.lambda.returnType) {
-        collect(cc, scope, item.lambda.returnType, meta);
+        collect(cc, functionScope, item.lambda.returnType, meta);
       }
 
       collect(cc, getScope(cc, item.lambda.funcbody._collect.scope), item.lambda.funcbody, meta);
@@ -503,9 +1072,9 @@ function collect(
 
     case "StructInstantiationExpr":
       for (const member of item.members) {
-        collect(cc, scope, member.value, meta);
+        collect(cc, functionScope, member.value, meta);
       }
-      collect(cc, scope, item.datatype, meta);
+      collect(cc, functionScope, item.datatype, meta);
       break;
 
     // =================================================================================================================
@@ -513,7 +1082,7 @@ function collect(
     // =================================================================================================================
 
     case "UnaryExpr":
-      collect(cc, scope, item.expr, meta);
+      collect(cc, functionScope, item.expr, meta);
       break;
 
     // =================================================================================================================
@@ -521,7 +1090,7 @@ function collect(
     // =================================================================================================================
 
     case "PreIncrExpr":
-      collect(cc, scope, item.expr, meta);
+      collect(cc, functionScope, item.expr, meta);
       break;
 
     // =================================================================================================================
@@ -529,7 +1098,7 @@ function collect(
     // =================================================================================================================
 
     case "PostIncrExpr":
-      collect(cc, scope, item.expr, meta);
+      collect(cc, functionScope, item.expr, meta);
       break;
 
     // =================================================================================================================
@@ -537,7 +1106,7 @@ function collect(
     // =================================================================================================================
 
     case "ExprMemberAccess":
-      collect(cc, scope, item.expr, meta);
+      collect(cc, functionScope, item.expr, meta);
       break;
 
     // =================================================================================================================
@@ -545,8 +1114,8 @@ function collect(
     // =================================================================================================================
 
     case "ExplicitCastExpr":
-      collect(cc, scope, item.expr, meta);
-      collect(cc, scope, item.castedTo, meta);
+      collect(cc, functionScope, item.expr, meta);
+      collect(cc, functionScope, item.castedTo, meta);
       break;
 
     // =================================================================================================================
@@ -554,7 +1123,7 @@ function collect(
     // =================================================================================================================
 
     case "RawPointerAddressOf":
-      collect(cc, scope, item.expr, meta);
+      collect(cc, functionScope, item.expr, meta);
       break;
 
     // =================================================================================================================
@@ -562,7 +1131,7 @@ function collect(
     // =================================================================================================================
 
     case "RawPointerDereference":
-      collect(cc, scope, item.expr, meta);
+      collect(cc, functionScope, item.expr, meta);
       break;
 
     // =================================================================================================================
@@ -570,8 +1139,8 @@ function collect(
     // =================================================================================================================
 
     case "ExprAssignmentExpr":
-      collect(cc, scope, item.target, meta);
-      collect(cc, scope, item.value, meta);
+      collect(cc, functionScope, item.target, meta);
+      collect(cc, functionScope, item.value, meta);
       break;
 
     // =================================================================================================================
@@ -579,9 +1148,9 @@ function collect(
     // =================================================================================================================
 
     case "ExprCallExpr":
-      collect(cc, scope, item.calledExpr, meta);
+      collect(cc, functionScope, item.calledExpr, meta);
       for (const a of item.arguments) {
-        collect(cc, scope, a, meta);
+        collect(cc, functionScope, a, meta);
       }
       break;
 
@@ -597,7 +1166,7 @@ function collect(
     // =================================================================================================================
 
     case "RawPointerDatatype":
-      collect(cc, scope, item.pointee, meta);
+      collect(cc, functionScope, item.pointee, meta);
       break;
 
     // =================================================================================================================
@@ -606,9 +1175,9 @@ function collect(
 
     case "FunctionDatatype":
       for (const param of item.params) {
-        collect(cc, scope, param.datatype, meta);
+        collect(cc, functionScope, param.datatype, meta);
       }
-      collect(cc, scope, item.returnType, meta);
+      collect(cc, functionScope, item.returnType, meta);
       break;
 
     // =================================================================================================================
@@ -616,7 +1185,7 @@ function collect(
     // =================================================================================================================
 
     case "ReferenceDatatype": {
-      collect(cc, scope, item.referee, meta);
+      collect(cc, functionScope, item.referee, meta);
       break;
     }
 
@@ -628,7 +1197,7 @@ function collect(
       const process = (_item: ASTNamedDatatype) => {
         let p: ASTNamedDatatype | undefined = _item;
         while (p) {
-          p._collect.usedInScope = scope.id;
+          p._collect.usedInScope = functionScope.id;
 
           for (const g of p.generics) {
             if (g.variant === "NamedDatatype") {
@@ -652,14 +1221,25 @@ function collect(
   }
 }
 
-function collectProg(cc: CollectionContext, ast: ASTRoot) {
-  for (const statement of ast) {
-    switch (statement.variant) {
+export function CollectFileInUnit(
+  cc: CollectionContext,
+  ast: ASTRoot,
+  unitScope: number,
+  filepath: string
+) {
+  const fileScope = addEntity(cc.collectWorld);
+  setComponent(cc, fileScope, Collect.FileScopeComponent, {
+    filename: internString(cc, filepath),
+    unitScope: unitScope,
+  });
+
+  for (const decl of ast) {
+    switch (decl.variant) {
       case "CInjectDirective":
-        cc.cInjections.push({
-          code: statement.code,
-          sourceloc: statement.sourceloc,
-        });
+        // cc.cInjections.push({
+        //   code: decl.code,
+        //   sourceloc: decl.sourceloc,
+        // });
         break;
 
       case "FunctionDeclaration":
@@ -667,17 +1247,19 @@ function collectProg(cc: CollectionContext, ast: ASTRoot) {
       case "GlobalVariableDefinition":
       case "NamespaceDefinition":
       case "StructDefinition":
-        collect(cc, getScope(cc, cc.globalScope), statement, {
-          namespaceStack: [],
+        collect(cc, decl, {
+          currentParentScope: fileScope,
+          fileScope: fileScope,
         });
         break;
     }
   }
-}
 
-export function CollectRoot(cc: CollectionContext, ast: ASTRoot) {
-  collectProg(cc, ast);
-  // PrettyPrintCollected(cc);
+  const globalScope = getEntityByComponent(cc, Collect.ModuleScopeComponent);
+  assert(globalScope);
+  const mermaid = exportMermaidScopeTree(cc);
+  console.log(mermaid);
+  Bun.write("log.md", mermaid);
 }
 
 export function PrettyPrintCollected(cc: CollectionContext) {
@@ -689,12 +1271,20 @@ export function PrettyPrintCollected(cc: CollectionContext) {
 
   const serializeAstDatatype = (datatype: ASTDatatype | ASTConstant): string => {
     if (datatype.variant === "FunctionDatatype") {
-      return `(${datatype.params.map((p) => `${p.name}: ${serializeAstDatatype(p.datatype)}`).join(", ")}${datatype.ellipsis ? ", ..." : ""}) => ${serializeAstDatatype(datatype.returnType)}`;
+      return `(${datatype.params
+        .map((p) => `${p.name}: ${serializeAstDatatype(p.datatype)}`)
+        .join(", ")}${datatype.ellipsis ? ", ..." : ""}) => ${serializeAstDatatype(
+        datatype.returnType
+      )}`;
     } else if (datatype.variant === "NamedDatatype") {
       let s = "";
       let d: ASTNamedDatatype | undefined = datatype;
       while (d) {
-        s += `${datatype.name}${datatype.generics.length > 0 ? `<${datatype.generics.map((g) => serializeAstDatatype(g)).join(", ")}>` : ""}`;
+        s += `${datatype.name}${
+          datatype.generics.length > 0
+            ? `<${datatype.generics.map((g) => serializeAstDatatype(g)).join(", ")}>`
+            : ""
+        }`;
         d = d.nested;
       }
       return s;
@@ -729,15 +1319,24 @@ export function PrettyPrintCollected(cc: CollectionContext) {
 
         case "FunctionDeclaration":
           print(
-            `  - FuncDecl ${s.namespacePath.length > 0 ? s.namespacePath.join(".") + "." : ""}${s.name}(${s.params.map((p) => `${p.name}: ${serializeAstDatatype(p.datatype)}`).join(", ")}${s.ellipsis ? ", ..." : ""}): ${s.returnType && serializeAstDatatype(s.returnType)} export=${s.export}`,
+            `  - FuncDecl ${s.namespacePath.length > 0 ? s.namespacePath.join(".") + "." : ""}${
+              s.name
+            }(${s.params.map((p) => `${p.name}: ${serializeAstDatatype(p.datatype)}`).join(", ")}${
+              s.ellipsis ? ", ..." : ""
+            }): ${s.returnType && serializeAstDatatype(s.returnType)} export=${s.export}`
           );
           break;
 
         case "FunctionDefinition":
           print(
-            `  - FuncDef ${s.name}${s.generics.length > 0 ? "<" + s.generics.join(", ") + ">" : ""}(${s.params.map((p) => `${p.name}: ${serializeAstDatatype(p.datatype)}`).join(", ")}${s.ellipsis ? ", ..." : ""}): ${s.returnType && serializeAstDatatype(s.returnType)} export=${s.export}`,
+            `  - FuncDef ${s.name}${
+              s.generics.length > 0 ? "<" + s.generics.join(", ") + ">" : ""
+            }(${s.params.map((p) => `${p.name}: ${serializeAstDatatype(p.datatype)}`).join(", ")}${
+              s.ellipsis ? ", ..." : ""
+            }): ${s.returnType && serializeAstDatatype(s.returnType)} export=${s.export}`
           );
-          if (s.funcbody?._collect.scope) printScope(getScope(cc, s.funcbody._collect.scope), indent + 6);
+          if (s.funcbody?._collect.scope)
+            printScope(getScope(cc, s.funcbody._collect.scope), indent + 6);
           break;
 
         case "GlobalVariableDefinition":
@@ -746,7 +1345,7 @@ export function PrettyPrintCollected(cc: CollectionContext) {
 
         case "StructDefinition":
           print(
-            `  - Struct ${s.name}${s.generics.length > 0 ? "<" + s.generics.join(", ") + ">" : ""}`,
+            `  - Struct ${s.name}${s.generics.length > 0 ? "<" + s.generics.join(", ") + ">" : ""}`
           );
           print(`      Members:`);
           for (const member of s.members) {
@@ -759,9 +1358,16 @@ export function PrettyPrintCollected(cc: CollectionContext) {
             // const method = getSymbol(cc, m);
             // assert(method.variant === "StructMethod");
             print(
-              `        - ${method.name}${method.generics.length > 0 ? "<" + method.generics.join(", ") + ">" : ""}(${method.params.map((p) => `${p.name}: ${serializeAstDatatype(p.datatype)}`).join(", ")}${method.ellipsis ? ", ..." : ""}): ${method.returnType && serializeAstDatatype(method.returnType)}`,
+              `        - ${method.name}${
+                method.generics.length > 0 ? "<" + method.generics.join(", ") + ">" : ""
+              }(${method.params
+                .map((p) => `${p.name}: ${serializeAstDatatype(p.datatype)}`)
+                .join(", ")}${method.ellipsis ? ", ..." : ""}): ${
+                method.returnType && serializeAstDatatype(method.returnType)
+              }`
             );
-            if (method.funcbody?._collect.scope) printScope(getScope(cc, method.funcbody._collect.scope), indent + 12);
+            if (method.funcbody?._collect.scope)
+              printScope(getScope(cc, method.funcbody._collect.scope), indent + 12);
           }
           break;
 
