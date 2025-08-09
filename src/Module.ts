@@ -23,7 +23,13 @@ import {
   type ModuleMetadata,
 } from "./shared/Config";
 import { Parser } from "./Parser/Parser";
-import { Collect, CollectFileInUnit, getEntityByComponent, makeCollectionContext, setComponent, type CollectionContext } from "./SymbolCollection/SymbolCollection";
+import {
+  Collect,
+  CollectFileInUnit,
+  makeCollectionContext,
+  makeSymbol,
+  type CollectionContext,
+} from "./SymbolCollection/SymbolCollection";
 import { SemanticallyAnalyze } from "./Semantic/Elaborate";
 import { generateCode } from "./Codegen/CodeGenerator";
 import { LowerModule } from "./Lower/Lower";
@@ -69,7 +75,7 @@ class Cache {
   filename?: string;
   data: Record<string, any> = {};
 
-  constructor() { }
+  constructor() {}
 
   async getFilesWithModificationDates(dir: string): Promise<{ file: string; modified: Date }[]> {
     const files: { file: string; modified: Date }[] = [];
@@ -130,16 +136,15 @@ class Cache {
       [
         ...(await this.getFilesWithModificationDates(moduleDir)),
         await this.getFileModificationDate(configFile),
-      ].map((f) => `${f.file}=${new Date(f.modified).toISOString()}`),
+      ].map((f) => `${f.file}=${new Date(f.modified).toISOString()}`)
     );
     if (!this.data[name]) {
       return true;
     }
     const foundFiles = new Set(
       this.data[name]["files"].map(
-        (f: { file: string; modified: string }) =>
-          `${f.file}=${new Date(f.modified).toISOString()}`,
-      ),
+        (f: { file: string; modified: string }) => `${f.file}=${new Date(f.modified).toISOString()}`
+      )
     );
     if (foundFiles.difference(files).size !== 0) {
       return true;
@@ -152,7 +157,7 @@ export class ProjectCompiler {
   cache: Cache = new Cache();
   globalBuildDir: string = "";
 
-  constructor() { }
+  constructor() {}
 
   async getConfig(singleFilename?: string) {
     let config: ModuleConfig | undefined;
@@ -193,7 +198,7 @@ export class ProjectCompiler {
       config,
       this.cache,
       this.globalBuildDir,
-      join(this.globalBuildDir, config.projectName),
+      join(this.globalBuildDir, config.projectName)
     );
 
     if (!mainModule.config.nostdlib) {
@@ -205,7 +210,7 @@ export class ProjectCompiler {
         stdlibConfig,
         this.cache,
         this.globalBuildDir,
-        join(this.globalBuildDir, stdlibConfig.projectName),
+        join(this.globalBuildDir, stdlibConfig.projectName)
       );
       if (!(await stdlibModule.build())) {
         return false;
@@ -226,7 +231,7 @@ export class ProjectCompiler {
           config,
           this.cache,
           this.globalBuildDir,
-          join(this.globalBuildDir, config.projectName),
+          join(this.globalBuildDir, config.projectName)
         );
         if (!(await depModule.build())) {
           return false;
@@ -252,13 +257,13 @@ export class ProjectCompiler {
 
       if (config?.moduleType === ModuleType.Library) {
         throw new GeneralError(
-          `This module is a library and cannot be executed. Use 'haze build' to build it instead.`,
+          `This module is a library and cannot be executed. Use 'haze build' to build it instead.`
         );
       }
 
       const moduleExecutable = join(
         join(this.globalBuildDir, config.projectName),
-        config.projectName,
+        config.projectName
       );
       child_process.execSync(`${moduleExecutable} ${args?.join(" ")}`, {
         stdio: "inherit",
@@ -298,7 +303,7 @@ class ModuleCompiler {
     public config: ModuleConfig,
     public cache: Cache,
     public globalBuildDir: string,
-    public moduleBuildDir: string,
+    public moduleBuildDir: string
   ) {
     this.cc = makeCollectionContext(this.config);
   }
@@ -310,9 +315,9 @@ class ModuleCompiler {
   }
 
   private makeUnit() {
-    const unit = addEntity(this.cc.collectWorld);
-    setComponent(this.cc, unit, Collect.UnitScopeComponent, {
-      moduleScope: getEntityByComponent(this.cc, Collect.ModuleScopeComponent),
+    const unit = makeSymbol(this.cc, {
+      variant: Collect.EEntityType.UnitScope,
+      parentScope: 0,
     });
     return unit;
   }
@@ -325,8 +330,7 @@ class ModuleCompiler {
       const stats = statSync(fullPath);
       if (stats.isDirectory()) {
         this.collectUnit(fullPath);
-      }
-      else {
+      } else {
         if (extname(fullPath) == ".hz") {
           await this.collectFileInUnit(fullPath, unit);
         }
@@ -345,7 +349,7 @@ class ModuleCompiler {
           !(await this.cache.hasModuleChanged(
             this.config.projectName,
             this.config.srcDirectory,
-            this.config.configFilePath,
+            this.config.configFilePath
           ))
         ) {
           console.log(`Skipping module ${this.config.projectName}`);
@@ -360,9 +364,7 @@ class ModuleCompiler {
       await this.addProjectSourceFiles();
 
       return;
-      const sr = SemanticallyAnalyze(this.cc,
-        this.config.moduleType === ModuleType.Library,
-      );
+      const sr = SemanticallyAnalyze(this.cc, this.config.moduleType === ModuleType.Library);
       // PrettyPrintAnalyzed(sr);
       const lowered = LowerModule(this.cc, sr);
 
@@ -384,11 +386,15 @@ class ModuleCompiler {
       if (this.config.moduleType === ModuleType.Executable) {
         const [libs, linkerFlags] = await this.loadDependencyBinaries();
         const allLinkerFlags = [...linkerFlags, ...this.config.linkerFlags];
-        const cmd = `${C_COMPILER} -g ${moduleCFile} -o ${moduleExecutable} -I${this.config.srcDirectory} ${libs.join(" ")} ${compilerFlags.join(" ")} ${allLinkerFlags.join(" ")} -std=c11`;
+        const cmd = `${C_COMPILER} -g ${moduleCFile} -o ${moduleExecutable} -I${
+          this.config.srcDirectory
+        } ${libs.join(" ")} ${compilerFlags.join(" ")} ${allLinkerFlags.join(" ")} -std=c11`;
         // console.log(cmd);
         await exec(cmd);
       } else {
-        const cmd = `${C_COMPILER} -g ${moduleCFile} -c -o ${moduleOFile} -I${this.config.srcDirectory} ${compilerFlags.join(" ")} -fPIC -std=c11`;
+        const cmd = `${C_COMPILER} -g ${moduleCFile} -c -o ${moduleOFile} -I${
+          this.config.srcDirectory
+        } ${compilerFlags.join(" ")} -fPIC -std=c11`;
         // console.log(cmd);
         await exec(cmd);
         await exec(`${ARCHIVE_TOOL} r ${moduleAFile} ${moduleOFile} > /dev/null`);
@@ -419,7 +425,9 @@ class ModuleCompiler {
         }
 
         await exec(
-          `tar -C ${this.moduleBuildDir} -cvzf ${moduleOutputLib} ${makerel(moduleAFile)} ${makerel(moduleMetadataFile)} > /dev/null`,
+          `tar -C ${this.moduleBuildDir} -cvzf ${moduleOutputLib} ${makerel(moduleAFile)} ${makerel(
+            moduleMetadataFile
+          )} > /dev/null`
         );
       }
       if (this.config.configFilePath) {
@@ -498,8 +506,10 @@ class ModuleCompiler {
       const metadata = await this.loadDependencyMetadata(libpath, dep.path);
 
       // console.log(metadata.exportedDeclarations)
-      const importedRoot = metadata.exportedDeclarations.find((d) => d.variant === "Collect.ScopeClass" && d.parentScope === undefined);
-      assert(importedRoot && importedRoot.variant === "Collect.ScopeClass");
+      // const importedRoot = metadata.exportedDeclarations.find(
+      //   (d) => d.variant === "Collect.ScopeClass" && d.parentScope === undefined
+      // );
+      // assert(importedRoot && importedRoot.variant === "Collect.ScopeClass");
 
       // const processSymbol = (symbol: Collect.Scope | Collect.Symbol) => {
       //   globalScope.defineSymbol(symbol);
@@ -509,7 +519,6 @@ class ModuleCompiler {
       // for (const a of importedRoot.symbols) {
       //   processScope(globalScope, importedRoot);
       // }
-
 
       // for (const decl of metadata.exportedDeclarations) {
       //   if (decl.variant === "Collect.ScopeClass") {

@@ -44,11 +44,13 @@ import {
 import { makeModulePrefix } from "../Module";
 
 import type {
+  ASTCInjectDirective,
   ASTExpr,
   ASTStatement,
   ASTStructMemberDefinition,
   ASTStructMethodDefinition,
   EBinaryOperation,
+  EVariableMutability,
 } from "../shared/AST";
 import type { ModuleConfig } from "../shared/Config";
 
@@ -125,10 +127,12 @@ export namespace Collect {
     FileScope,
     FunctionScope,
     StructScope,
+    NamespaceScope,
     BlockScope,
     FunctionOverloadGroup,
     FunctionSymbol,
     VariableSymbol,
+    GlobalVariableDefinition,
     NamedDatatype,
     ReferenceDatatype,
     PointerDatatype,
@@ -141,6 +145,7 @@ export namespace Collect {
     ReturnStatement,
     InlineCStatement,
     BlockScopeStatement,
+    VariableDefinitionStatement,
     ParenthesisExpr,
     BinaryExpr,
     UnaryExpr,
@@ -161,8 +166,9 @@ export namespace Collect {
 
   export type FileScope = {
     variant: EEntityType.FileScope;
-    filename: string;
+    filepath: string;
     parentScope: number;
+    symbols: number[];
   };
 
   export type FunctionScope = {
@@ -183,6 +189,14 @@ export namespace Collect {
     symbols: number[];
   };
 
+  export type NamespaceScope = {
+    variant: EEntityType.NamespaceScope;
+    parentScope: number;
+    owningSymbol: number;
+    sourceloc: SourceLoc;
+    symbols: number[];
+  };
+
   export type BlockScope = {
     variant: EEntityType.BlockScope;
     parentScope: number;
@@ -198,6 +212,7 @@ export namespace Collect {
     | FileScope
     | FunctionScope
     | StructScope
+    | NamespaceScope
     | BlockScope;
 
   /// ===============================================================
@@ -214,7 +229,7 @@ export namespace Collect {
   export type Overloads = FunctionOverloadGroup;
 
   /// ===============================================================
-  /// ===                     Function Symbols                    ===
+  /// ===                          Symbols                        ===
   /// ===============================================================
 
   export type FunctionSymbol = {
@@ -238,7 +253,15 @@ export namespace Collect {
     name: string;
     inScope: number;
     type: number | null;
+    mutability: EVariableMutability;
     variableContext: EVariableContext;
+    sourceloc: SourceLoc;
+  };
+
+  export type GlobalVariableDefinition = {
+    variant: EEntityType.GlobalVariableDefinition;
+    variableSymbol: number;
+    value: number | null;
     sourceloc: SourceLoc;
   };
 
@@ -250,7 +273,7 @@ export namespace Collect {
   //   bindingMutability: Types.ui8,
   // });
 
-  export type Symbols = FunctionSymbol | VariableSymbol;
+  export type Symbols = FunctionSymbol | VariableSymbol | GlobalVariableDefinition;
 
   /// ===============================================================
   /// ===                       Type Symbols                      ===
@@ -276,6 +299,7 @@ export namespace Collect {
 
   export type StructDefinitionSymbol = {
     variant: EEntityType.StructDefinitionSymbol;
+    parentScope: number;
     name: string;
     export: boolean;
     pub: boolean;
@@ -286,8 +310,13 @@ export namespace Collect {
 
   export type NamespaceDefinitionSymbol = {
     variant: EEntityType.NamespaceDefinitionSymbol;
+    parentScope: number;
     name: string;
+    extern: EExternLanguage;
+    pub: boolean;
+    export: boolean;
     sourceloc: SourceLoc;
+    namespaceScope: number;
   };
 
   export type GenericTypeParameter = {
@@ -351,13 +380,20 @@ export namespace Collect {
     block: number;
   };
 
+  export type VariableDefinitionStatement = BaseStatement & {
+    variant: EEntityType.VariableDefinitionStatement;
+    variableSymbol: number;
+    value: number | null;
+  };
+
   export type Statements =
     | ExprStatement
     | InlineCStatement
     | ReturnStatement
     | BlockScopeStatement
     | IfStatement
-    | WhileStatement;
+    | WhileStatement
+    | VariableDefinitionStatement;
 
   export type StatementsWithoutOwningScope =
     | Omit<ExprStatement, "owningScope">
@@ -365,7 +401,8 @@ export namespace Collect {
     | Omit<ReturnStatement, "owningScope">
     | Omit<BlockScopeStatement, "owningScope">
     | Omit<IfStatement, "owningScope">
-    | Omit<WhileStatement, "owningScope">;
+    | Omit<WhileStatement, "owningScope">
+    | Omit<VariableDefinitionStatement, "owningScope">;
 
   /// ===============================================================
   /// ===                      Expressions                        ===
@@ -493,7 +530,7 @@ export namespace Collect {
 //   return scope.id;
 // }
 
-function makeSymbol(cc: CollectionContext, symbol: Collect.Symbol): number {
+export function makeSymbol(cc: CollectionContext, symbol: Collect.Symbol): number {
   cc.entities.push(symbol);
   return cc.entities.length - 1;
 }
@@ -582,10 +619,24 @@ function defineVariableSymbol(
 ) {
   const sc = cc.entities[scope];
   assert(
-    sc.variant === Collect.EEntityType.BlockScope ||
+    sc.variant === Collect.EEntityType.FileScope ||
+      sc.variant === Collect.EEntityType.BlockScope ||
       sc.variant === Collect.EEntityType.FunctionScope ||
       sc.variant === Collect.EEntityType.StructScope
   );
+
+  for (const id of sc.symbols) {
+    const s = cc.entities[id];
+    if (s.variant === Collect.EEntityType.VariableSymbol && s.name === variable.name) {
+      throw new CompilerError(
+        `Symbol '${variable.name}' was already declared in this scope. Previous definition: ${
+          (s.sourceloc && formatSourceLoc(s.sourceloc)) || ""
+        }`,
+        variable.sourceloc
+      );
+    }
+  }
+
   const varsym = makeSymbol(cc, {
     ...variable,
     inScope: scope,
@@ -597,6 +648,13 @@ function defineVariableSymbol(
 function collect(
   cc: CollectionContext,
   item:
+    | ASTDatatype
+    | ASTStructDefinition
+    | ASTExpr
+    | ASTScope
+    | ASTStatement
+    | ASTCInjectDirective
+    | ASTNamespaceDefinition
     | ASTFunctionDefinition
     | ASTGlobalVariableDefinition
     | ASTNamespaceDefinition
@@ -662,13 +720,6 @@ function collect(
           symbols: [],
         });
 
-        const topBlockScope = makeBlockScope(cc, functionScope, item.sourceloc);
-        (cc.entities[functionScope] as Collect.FunctionScope).blockScope = topBlockScope;
-
-        for (const g of item.generics) {
-          defineGenericTypeParameter(cc, g.name, functionScope, g.sourceloc);
-        }
-
         if (item.funcbody.variant === "ExprAsFuncBody") {
           item.funcbody = {
             variant: "Scope",
@@ -683,9 +734,16 @@ function collect(
           };
         }
 
-        collect(cc, item.funcbody, {
-          currentParentScope: topBlockScope,
+        const blockScope = collect(cc, item.funcbody, {
+          currentParentScope: functionScope,
         });
+        (cc.entities[functionScope] as Collect.FunctionScope).blockScope = blockScope;
+
+        for (const g of item.generics) {
+          defineGenericTypeParameter(cc, g.name, functionScope, g.sourceloc);
+        }
+
+        console.warn("TODO: Define parameters as symbols");
       }
 
       break;
@@ -703,15 +761,35 @@ function collect(
     // =================================================================================================================
 
     case "GlobalVariableDefinition": {
-      const variable = addEntity(cc.collectWorld);
-      setComponent(cc, variable, Collect.VariableSymbolComponent, {
-        bindingMutability: item.bindingMutability,
-        name: internString(cc, item.name),
-        parentScope: args.currentParentScope,
-        sourceloc: internSourceloc(cc, item.sourceloc),
-        type: (item.datatype && collectType(cc, item.datatype, item.sourceloc)) || 0,
+      const variableSymbol = defineVariableSymbol(
+        cc,
+        {
+          variant: Collect.EEntityType.VariableSymbol,
+          name: item.name,
+          type:
+            (item.datatype &&
+              collect(cc, item.datatype, { currentParentScope: args.currentParentScope })) ||
+            null,
+          mutability: item.mutability,
+          variableContext: EVariableContext.Global,
+          sourceloc: item.sourceloc,
+        },
+        args.currentParentScope
+      );
+      const globvar = makeSymbol(cc, {
+        variant: Collect.EEntityType.GlobalVariableDefinition,
+        value:
+          (item.expr && collect(cc, item.expr, { currentParentScope: args.currentParentScope })) ||
+          null,
+        variableSymbol: variableSymbol,
+        sourceloc: item.sourceloc,
       });
-      // addSymbolToScope(cc, args.currentParentScope, variable);
+      const parentScope = cc.entities[args.currentParentScope];
+      assert(
+        parentScope.variant === Collect.EEntityType.FileScope ||
+          parentScope.variant === Collect.EEntityType.NamespaceScope
+      );
+      parentScope.symbols.push(globvar);
       break;
     }
 
@@ -720,28 +798,60 @@ function collect(
     // =================================================================================================================
 
     case "NamespaceDefinition": {
-      const allNamespaces = findAllNamespacesInScope(cc, args.currentParentScope);
-      let existingNamespace = 0;
-      for (const ns of allNamespaces) {
-        if (cc.idToString.get(Collect.NamespaceSymbolComponent.name[ns]) === item.name) {
-          existingNamespace = ns;
-          break;
+      const parent = cc.entities[args.currentParentScope];
+      assert(
+        parent.variant === Collect.EEntityType.FileScope ||
+          parent.variant === Collect.EEntityType.NamespaceScope
+      );
+
+      let existingNamespace = -1;
+      for (const id of parent.symbols) {
+        const sym = cc.entities[id];
+        if (sym.variant === Collect.EEntityType.NamespaceDefinitionSymbol) {
+          if (sym.name === item.name) {
+            existingNamespace = id;
+            break;
+          }
+        } else if (sym.variant === Collect.EEntityType.StructDefinitionSymbol) {
+          throw new CompilerError(
+            `Symbol '${
+              item.name
+            }' has already been declared as a Struct, which cannot be extended by a namespace. Original definition: ${
+              (sym.sourceloc && formatSourceLoc(sym.sourceloc)) || ""
+            }`,
+            item.sourceloc
+          );
         }
       }
 
-      if (existingNamespace === 0) {
-        existingNamespace = addEntity(cc.collectWorld);
-        setComponent(cc, existingNamespace, Collect.NamespaceSymbolComponent, {
-          name: internString(cc, item.name),
+      if (existingNamespace === -1) {
+        existingNamespace = makeSymbol(cc, {
+          variant: Collect.EEntityType.NamespaceDefinitionSymbol,
+          name: item.name,
+          export: item.export,
+          // extern: item.
+          extern: EExternLanguage.None,
+          pub: false,
+          namespaceScope: -1,
           parentScope: args.currentParentScope,
-          sourceloc: internSourceloc(cc, item.sourceloc),
+          sourceloc: item.sourceloc,
         });
+        const namespaceScope = makeSymbol(cc, {
+          variant: Collect.EEntityType.NamespaceScope,
+          owningSymbol: existingNamespace,
+          parentScope: args.currentParentScope,
+          sourceloc: item.sourceloc,
+          symbols: [],
+        });
+        (cc.entities[existingNamespace] as Collect.NamespaceDefinitionSymbol).namespaceScope =
+          namespaceScope;
       }
 
       for (const s of item.declarations) {
-        collect(cc, s, {
-          currentParentScope: existingNamespace,
-        });
+        // collect(cc, s, {
+        //   currentParentScope: existingNamespace,
+        // });
+        console.log("push back into namespace now");
       }
       break;
     }
@@ -822,11 +932,11 @@ function collect(
               variant: "VariableDefinitionStatement",
               id:
                 makeModulePrefix(cc.config) + ".vardef." + (cc.config.symbolIdCounter++).toString(),
-              mutable: false,
+              mutability: false,
               name: "this",
               sourceloc: method.sourceloc,
               datatype: undefined,
-              kind: EVariableContext.ThisReference,
+              variableContext: EVariableContext.ThisReference,
               _semantic: {},
             };
             getScope(cc, method.funcbody._collect.scope).defineSymbol(cc, s);
@@ -838,11 +948,11 @@ function collect(
               variant: "VariableDefinitionStatement",
               id:
                 makeModulePrefix(cc.config) + ".vardef." + (cc.config.symbolIdCounter++).toString(),
-              mutable: false,
+              mutability: false,
               name: param.name,
               datatype: param.datatype,
               sourceloc: param.sourceloc,
-              kind: EVariableContext.FunctionParameter,
+              variableContext: EVariableContext.FunctionParameter,
               _semantic: {},
             };
             getScope(cc, method.funcbody._collect.scope).defineSymbol(cc, s);
@@ -862,8 +972,13 @@ function collect(
     // =================================================================================================================
 
     case "NamedDatatype": {
-      return;
-      return makeNamedType(cc, type.name, sourceloc);
+      console.warn("TODO: Properly read named datatype with generics and nesting");
+      return makeSymbol(cc, {
+        variant: Collect.EEntityType.NamedDatatype,
+        name: item.name,
+        // referee: collect(cc, item.n, args),
+        sourceloc: item.sourceloc,
+      });
     }
 
     // =================================================================================================================
@@ -871,12 +986,11 @@ function collect(
     // =================================================================================================================
 
     case "PointerDatatype": {
-      const e = addEntity(cc.collectWorld);
-      setComponent(cc, e, Collect.PointerDatatypeSymbolComponent, {
-        pointee: collectType(cc, type.pointee, type.sourceloc),
-        sourceloc: internSourceloc(cc, sourceloc),
+      return makeSymbol(cc, {
+        variant: Collect.EEntityType.PointerDatatype,
+        pointee: collect(cc, item.pointee, args),
+        sourceloc: item.sourceloc,
       });
-      return e;
     }
 
     // =================================================================================================================
@@ -884,144 +998,122 @@ function collect(
     // =================================================================================================================
 
     case "ReferenceDatatype": {
-      const e = addEntity(cc.collectWorld);
-      setComponent(cc, e, Collect.ReferenceDatatypeSymbolComponent, {
-        referee: collectType(cc, type.referee, type.sourceloc),
-        sourceloc: internSourceloc(cc, sourceloc),
+      return makeSymbol(cc, {
+        variant: Collect.EEntityType.ReferenceDatatype,
+        referee: collect(cc, item.referee, args),
+        sourceloc: item.sourceloc,
       });
-      return e;
     }
 
     // =================================================================================================================
     // =================================================================================================================
     // =================================================================================================================
 
-    case "Scope":
-      for (const s of item.statements) {
-        switch (s.variant) {
+    case "CInjectDirective": {
+      console.warn("TODO: C Inject Directive");
+      break;
+    }
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
+    case "Scope": {
+      const blockScope = makeBlockScope(cc, args.currentParentScope, item.sourceloc);
+      for (const astStatement of item.statements) {
+        switch (astStatement.variant) {
+          case "ExprStatement": {
+            addStatement(cc, blockScope, {
+              variant: Collect.EEntityType.ExprStatement,
+              expr: collect(cc, astStatement.expr, { currentParentScope: blockScope }),
+              sourceloc: astStatement.sourceloc,
+            });
+            break;
+          }
+
+          case "IfStatement": {
+            addStatement(cc, blockScope, {
+              variant: Collect.EEntityType.IfStatement,
+              condition: collect(cc, astStatement.condition, { currentParentScope: blockScope }),
+              elseBlock:
+                (astStatement.else &&
+                  collect(cc, astStatement.else, { currentParentScope: blockScope })) ||
+                null,
+              thenBlock: collect(cc, astStatement.then, { currentParentScope: blockScope }),
+              elseif: astStatement.elseIfs.map((e) => ({
+                condition: collect(cc, e.condition, { currentParentScope: blockScope }),
+                thenBlock: collect(cc, e.then, { currentParentScope: blockScope }),
+              })),
+              sourceloc: astStatement.sourceloc,
+            });
+            break;
+          }
+
+          case "InlineCStatement": {
+            addStatement(cc, blockScope, {
+              variant: Collect.EEntityType.InlineCStatement,
+              value: astStatement.code,
+              sourceloc: astStatement.sourceloc,
+            });
+            break;
+          }
+
+          case "ReturnStatement":
+            addStatement(cc, blockScope, {
+              variant: Collect.EEntityType.ReturnStatement,
+              expr:
+                (astStatement.expr &&
+                  collect(cc, astStatement.expr, { currentParentScope: blockScope })) ||
+                null,
+              sourceloc: astStatement.sourceloc,
+            });
+            break;
+
+          case "WhileStatement":
+            addStatement(cc, blockScope, {
+              variant: Collect.EEntityType.WhileStatement,
+              condition: collect(cc, astStatement.condition, { currentParentScope: blockScope }),
+              block: collect(cc, astStatement.body, { currentParentScope: blockScope }),
+              sourceloc: astStatement.sourceloc,
+            });
+            break;
+
+          case "VariableDefinitionStatement":
+            const variableSymbol = defineVariableSymbol(
+              cc,
+              {
+                variant: Collect.EEntityType.VariableSymbol,
+                name: astStatement.name,
+                type:
+                  (astStatement.datatype &&
+                    collect(cc, astStatement.datatype, { currentParentScope: blockScope })) ||
+                  null,
+                mutability: astStatement.mutability,
+                variableContext: astStatement.variableContext,
+                sourceloc: astStatement.sourceloc,
+              },
+              blockScope
+            );
+            addStatement(cc, blockScope, {
+              variant: Collect.EEntityType.VariableDefinitionStatement,
+              sourceloc: astStatement.sourceloc,
+              value:
+                (astStatement.expr &&
+                  collect(cc, astStatement.expr, { currentParentScope: blockScope })) ||
+                null,
+              variableSymbol: variableSymbol,
+            });
+            break;
         }
       }
       break;
-
-    case "ExprStatement": {
-      const entity = addEntity(cc.collectWorld);
-      setComponent(cc, entity, Collect.ExprStatement, {
-        expr: collectExpr(cc, s.expr),
-        sourceloc: internSourceloc(cc, s.sourceloc),
-      });
-      break;
     }
-
-    case "IfStatement": {
-      let firstChainLink = 0;
-      let lastChainLink = 0;
-      collect(cc, s.condition, { currentParentScope: args.currentParentScope });
-      const firstBlock = makeBlockScope(cc, args.currentParentScope, s.then.sourceloc);
-      collect(cc, s.then, {
-        currentParentScope: firstBlock,
-      });
-      firstChainLink = addEntity(cc.collectWorld);
-      lastChainLink = firstChainLink;
-      setComponent(cc, firstChainLink, Collect.IfChainLink, {
-        block: firstBlock,
-        conditionExpr: 0,
-        next: 0,
-      });
-      for (const e of s.elseIfs) {
-        collect(cc, e.condition, { currentParentScope: args.currentParentScope });
-        const block = makeBlockScope(cc, args.currentParentScope, e.then.sourceloc);
-        collect(cc, e.then, {
-          currentParentScope: block,
-        });
-        const link = addEntity(cc.collectWorld);
-        Collect.IfChainLink.next[lastChainLink] = link;
-        setComponent(cc, link, Collect.IfChainLink, {
-          block: block,
-          conditionExpr: 0,
-          next: 0,
-        });
-        lastChainLink = link;
-      }
-      if (s.else) {
-        const block = makeBlockScope(cc, args.currentParentScope, s.else.sourceloc);
-        collect(cc, s.else, {
-          currentParentScope: block,
-        });
-        const link = addEntity(cc.collectWorld);
-        Collect.IfChainLink.next[lastChainLink] = link;
-        setComponent(cc, link, Collect.IfChainLink, {
-          block: block,
-          conditionExpr: 0,
-          next: 0,
-        });
-        lastChainLink = link;
-      }
-
-      const entity = addEntity(cc.collectWorld);
-      setComponent(cc, entity, Collect.IfStatement, {
-        firstChainLink: firstChainLink,
-      });
-      break;
-    }
-
-    case "InlineCStatement": {
-      appendStatement(cc, args.currentParentScope, Collect.InlineCStatement, {
-        value: internString(cc, s.code),
-      });
-      break;
-    }
-
-    case "ReturnStatement":
-      appendStatement(cc, args.currentParentScope, Collect.ReturnStatement, {
-        expr: 0,
-      });
-      // if (s.expr) {
-      //   collect(cc, functionScope, s.expr, meta);
-      // }
-      break;
-
-    case "WhileStatement":
-      collect(cc, s.condition, { currentParentScope: args.currentParentScope });
-      const block = makeBlockScope(cc, args.currentParentScope, s.body.sourceloc);
-      collect(cc, s.body, {
-        currentParentScope: block,
-      });
-      appendStatement(cc, args.currentParentScope, Collect.WhileStatement, {
-        block: block,
-        conditionExpr: 0,
-      });
-      break;
-
-    case "VariableDefinitionStatement":
-      if (functionScope.tryLookupSymbolHere(cc, s.name)) {
-        throw new CompilerError(
-          `Variable '${s.name}' is already defined in this scope`,
-          s.sourceloc
-        );
-      }
-      if (s.datatype) {
-        collect(cc, functionScope, s.datatype, meta);
-      }
-      if (s.expr) {
-        collect(cc, functionScope, s.expr, meta);
-      }
-      functionScope.defineSymbol(cc, s);
-      cc.symbols.set(s.id, s);
-      break;
 
     // =================================================================================================================
     // =================================================================================================================
     // =================================================================================================================
 
     case "Deferred":
-      break;
-
-    // =================================================================================================================
-    // =================================================================================================================
-    // =================================================================================================================
-
-    case "RawPointerDatatype":
-      collect(cc, functionScope, item.pointee, meta);
       break;
 
     // =================================================================================================================
@@ -1119,11 +1211,11 @@ function collect(
         const s: ASTVariableDefinitionStatement = {
           variant: "VariableDefinitionStatement",
           id: makeModulePrefix(cc.config) + ".vardef." + (cc.config.symbolIdCounter++).toString(),
-          mutable: false,
+          mutability: false,
           name: param.name,
           datatype: param.datatype,
           sourceloc: param.sourceloc,
-          kind: EVariableContext.FunctionParameter,
+          variableContext: EVariableContext.FunctionParameter,
           _semantic: {},
         };
         getScope(cc, item.lambda.funcbody._collect.scope).defineSymbol(cc, s);
@@ -1239,39 +1331,24 @@ export function CollectFileInUnit(
   unitScope: number,
   filepath: string
 ) {
-  const fileScope = addEntity(cc.collectWorld);
-  setComponent(cc, fileScope, Collect.FileScopeComponent, {
-    filename: internString(cc, filepath),
-    unitScope: unitScope,
+  const fileScope = makeSymbol(cc, {
+    variant: Collect.EEntityType.FileScope,
+    filepath: filepath,
+    parentScope: unitScope,
+    symbols: [],
   });
 
   for (const decl of ast) {
-    switch (decl.variant) {
-      case "CInjectDirective":
-        // cc.cInjections.push({
-        //   code: decl.code,
-        //   sourceloc: decl.sourceloc,
-        // });
-        break;
-
-      case "FunctionDeclaration":
-      case "FunctionDefinition":
-      case "GlobalVariableDefinition":
-      case "NamespaceDefinition":
-      case "StructDefinition":
-        collect(cc, decl, {
-          currentParentScope: fileScope,
-          fileScope: fileScope,
-        });
-        break;
-    }
+    collect(cc, decl, {
+      currentParentScope: fileScope,
+    });
   }
 
-  const globalScope = getEntityByComponent(cc, Collect.ModuleScopeComponent);
-  assert(globalScope);
-  const mermaid = exportMermaidScopeTree(cc);
-  console.log(mermaid);
-  Bun.write("log.md", mermaid);
+  // const globalScope = getEntityByComponent(cc, Collect.ModuleScopeComponent);
+  // assert(globalScope);
+  // const mermaid = exportMermaidScopeTree(cc);
+  // console.log(mermaid);
+  // Bun.write("log.md", mermaid);
 }
 
 export function PrettyPrintCollected(cc: CollectionContext) {

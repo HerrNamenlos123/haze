@@ -520,8 +520,8 @@ class ASTTransformer extends HazeVisitor<any> {
     return {
       variant: "GlobalVariableDefinition",
       export: Boolean(ctx._export_),
-      externLanguage: this.exlang(ctx),
-      bindingMutability: this.mutability(ctx),
+      extern: this.exlang(ctx),
+      mutability: this.mutability(ctx),
       name: ctx.ID().getText(),
       sourceloc: this.loc(ctx),
       datatype: (ctx.datatype() && this.visit(ctx.datatype()!)) || undefined,
@@ -648,12 +648,12 @@ class ASTTransformer extends HazeVisitor<any> {
   ): ASTVariableDefinitionStatement => {
     return {
       variant: "VariableDefinitionStatement",
-      mutable: this.mutability(ctx),
+      mutability: this.mutability(ctx),
       name: ctx.ID().getText(),
       sourceloc: this.loc(ctx),
       datatype: (ctx.datatype() && this.visit(ctx.datatype()!)) || undefined,
       expr: (ctx.expr() && this.visit(ctx.expr()!)) || undefined,
-      kind: EVariableContext.FunctionLocal,
+      variableContext: EVariableContext.FunctionLocal,
     };
   };
 

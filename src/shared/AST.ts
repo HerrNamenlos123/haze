@@ -216,8 +216,9 @@ export type ASTDatatype =
 export type ASTGlobalVariableDefinition = {
   variant: "GlobalVariableDefinition";
   export: boolean;
-  externLanguage: EExternLanguage;
-  bindingMutability: EVariableMutability;
+  pub: boolean;
+  extern: EExternLanguage;
+  mutability: EVariableMutability;
   name: string;
   datatype?: ASTDatatype;
   expr?: ASTExpr;
@@ -250,11 +251,11 @@ export type ASTReturnStatement = {
 
 export type ASTVariableDefinitionStatement = {
   variant: "VariableDefinitionStatement";
-  mutable: EVariableMutability;
+  mutability: EVariableMutability;
   name: string;
   datatype?: ASTDatatype;
   expr?: ASTExpr;
-  kind: EVariableContext;
+  variableContext: EVariableContext;
   sourceloc: SourceLoc;
 };
 
