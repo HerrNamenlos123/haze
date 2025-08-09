@@ -44,6 +44,7 @@ import {
 import { makeModulePrefix } from "../Module";
 
 import type {
+  ASTExpr,
   ASTStatement,
   ASTStructMemberDefinition,
   ASTStructMethodDefinition,
@@ -341,20 +342,29 @@ export namespace Collect {
     prevStatement: Types.eid,
   });
 
+  export const ExprStatement = defineComponent({
+    expr: Types.eid,
+    sourceloc: Types.eid,
+  });
+
   export const InlineCStatement = defineComponent({
     value: Types.eid,
+    sourceloc: Types.eid,
   });
 
   export const ReturnStatement = defineComponent({
     expr: Types.eid,
+    sourceloc: Types.eid,
   });
 
   export const BlockScopeStatement = defineComponent({
     block: Types.eid,
+    sourceloc: Types.eid,
   });
 
   export const IfStatement = defineComponent({
     firstChainLink: Types.eid,
+    sourceloc: Types.eid,
   });
 
   export const IfChainLink = defineComponent({
@@ -368,6 +378,29 @@ export namespace Collect {
     prevStatement: Types.eid,
     conditionExpr: Types.eid,
     block: Types.eid,
+    sourceloc: Types.eid,
+  });
+
+  /// ===============================================================
+  /// ===                      Expressions                        ===
+  /// ===============================================================
+
+  export const ParenthesisExpr = defineComponent({
+    innerExpr: Types.eid,
+    sourceloc: Types.eid,
+  });
+
+  export const BinaryExpr = defineComponent({
+    left: Types.eid,
+    operator: Types.ui8,
+    right: Types.eid,
+    sourceloc: Types.eid,
+  });
+
+  export const UnaryExpr = defineComponent({
+    operator: Types.ui8,
+    expr: Types.eid,
+    sourceloc: Types.eid,
   });
 
   // export class Scope {
@@ -550,6 +583,7 @@ function makeBlockScope(cc: CollectionContext, parentBlockScope: number, sourcel
     parentScope: parentBlockScope,
     sourceloc: internSourceloc(cc, sourceloc),
     firstStatement: 0,
+    lastStatement: 0,
   });
   return scope;
 }
@@ -628,6 +662,281 @@ function appendStatement<T extends Component>(
     Collect.BlockScopeComponent.lastStatement[blockscope] = statement;
   }
   return statement;
+}
+
+function collectExpr(cc: CollectionContext, expr: ASTExpr): number {
+  switch (expr.variant) {
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
+    case "ParenthesisExpr": {
+      const entity = addEntity(cc.collectWorld);
+      setComponent(cc, entity, Collect.ParenthesisExpr, {
+        innerExpr: collectExpr(cc, expr.expr),
+        sourceloc: internSourceloc(cc, expr.sourceloc),
+      });
+      return entity;
+    }
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
+    case "BinaryExpr": {
+      const entity = addEntity(cc.collectWorld);
+      setComponent(cc, entity, Collect.BinaryExpr, {
+        left: collectExpr(cc, expr.a),
+        right: collectExpr(cc, expr.b),
+        operator: expr.operation,
+        sourceloc: internSourceloc(cc, expr.sourceloc),
+      });
+      return entity;
+    }
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
+    case "ConstantExpr":
+      break;
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
+    case "SymbolValueExpr":
+      break;
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
+    case "LambdaExpr":
+      item.lambda.funcbody._collect.scope = makeScope(cc, item.sourceloc, functionScope.id);
+      for (const param of item.lambda.params) {
+        const s: ASTVariableDefinitionStatement = {
+          variant: "VariableDefinitionStatement",
+          id: makeModulePrefix(cc.config) + ".vardef." + (cc.config.symbolIdCounter++).toString(),
+          mutable: false,
+          name: param.name,
+          datatype: param.datatype,
+          sourceloc: param.sourceloc,
+          kind: EVariableContext.FunctionParameter,
+          _semantic: {},
+        };
+        getScope(cc, item.lambda.funcbody._collect.scope).defineSymbol(cc, s);
+        cc.symbols.set(s.id, s);
+      }
+
+      for (const param of item.lambda.params) {
+        collect(cc, functionScope, param.datatype, meta);
+      }
+      if (item.lambda.returnType) {
+        collect(cc, functionScope, item.lambda.returnType, meta);
+      }
+
+      collect(cc, getScope(cc, item.lambda.funcbody._collect.scope), item.lambda.funcbody, meta);
+      break;
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
+    case "StructInstantiationExpr":
+      for (const member of item.members) {
+        collect(cc, functionScope, member.value, meta);
+      }
+      collect(cc, functionScope, item.datatype, meta);
+      break;
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
+    case "UnaryExpr":
+      collect(cc, functionScope, item.expr, meta);
+      break;
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
+    case "PreIncrExpr":
+      collect(cc, functionScope, item.expr, meta);
+      break;
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
+    case "PostIncrExpr":
+      collect(cc, functionScope, item.expr, meta);
+      break;
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
+    case "ExprMemberAccess":
+      collect(cc, functionScope, item.expr, meta);
+      break;
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
+    case "ExplicitCastExpr":
+      collect(cc, functionScope, item.expr, meta);
+      collect(cc, functionScope, item.castedTo, meta);
+      break;
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
+    case "RawPointerAddressOf":
+      collect(cc, functionScope, item.expr, meta);
+      break;
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
+    case "RawPointerDereference":
+      collect(cc, functionScope, item.expr, meta);
+      break;
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
+    case "ExprAssignmentExpr":
+      collect(cc, functionScope, item.target, meta);
+      collect(cc, functionScope, item.value, meta);
+      break;
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
+    case "ExprCallExpr":
+      collect(cc, functionScope, item.calledExpr, meta);
+      for (const a of item.arguments) {
+        collect(cc, functionScope, a, meta);
+      }
+      break;
+  }
+}
+
+function collectStatement(cc: CollectionContext, statement: ASTStatement): number {
+  switch (statement.variant) {
+    case "ExprStatement": {
+      const entity = addEntity(cc.collectWorld);
+      setComponent(cc, entity, Collect.ExprStatement, {
+        expr: collectExpr(cc, s.expr),
+        sourceloc: internSourceloc(cc, s.sourceloc),
+      });
+      break;
+    }
+
+    case "IfStatement": {
+      let firstChainLink = 0;
+      let lastChainLink = 0;
+      collect(cc, s.condition, { currentParentScope: args.currentParentScope });
+      const firstBlock = makeBlockScope(cc, args.currentParentScope, s.then.sourceloc);
+      collect(cc, s.then, {
+        currentParentScope: firstBlock,
+      });
+      firstChainLink = addEntity(cc.collectWorld);
+      lastChainLink = firstChainLink;
+      setComponent(cc, firstChainLink, Collect.IfChainLink, {
+        block: firstBlock,
+        conditionExpr: 0,
+        next: 0,
+      });
+      for (const e of s.elseIfs) {
+        collect(cc, e.condition, { currentParentScope: args.currentParentScope });
+        const block = makeBlockScope(cc, args.currentParentScope, e.then.sourceloc);
+        collect(cc, e.then, {
+          currentParentScope: block,
+        });
+        const link = addEntity(cc.collectWorld);
+        Collect.IfChainLink.next[lastChainLink] = link;
+        setComponent(cc, link, Collect.IfChainLink, {
+          block: block,
+          conditionExpr: 0,
+          next: 0,
+        });
+        lastChainLink = link;
+      }
+      if (s.else) {
+        const block = makeBlockScope(cc, args.currentParentScope, s.else.sourceloc);
+        collect(cc, s.else, {
+          currentParentScope: block,
+        });
+        const link = addEntity(cc.collectWorld);
+        Collect.IfChainLink.next[lastChainLink] = link;
+        setComponent(cc, link, Collect.IfChainLink, {
+          block: block,
+          conditionExpr: 0,
+          next: 0,
+        });
+        lastChainLink = link;
+      }
+
+      const entity = addEntity(cc.collectWorld);
+      setComponent(cc, entity, Collect.IfStatement, {
+        firstChainLink: firstChainLink,
+      });
+      break;
+    }
+
+    case "InlineCStatement": {
+      appendStatement(cc, args.currentParentScope, Collect.InlineCStatement, {
+        value: internString(cc, s.code),
+      });
+      break;
+    }
+
+    case "ReturnStatement":
+      appendStatement(cc, args.currentParentScope, Collect.ReturnStatement, {
+        expr: 0,
+      });
+      // if (s.expr) {
+      //   collect(cc, functionScope, s.expr, meta);
+      // }
+      break;
+
+    case "WhileStatement":
+      collect(cc, s.condition, { currentParentScope: args.currentParentScope });
+      const block = makeBlockScope(cc, args.currentParentScope, s.body.sourceloc);
+      collect(cc, s.body, {
+        currentParentScope: block,
+      });
+      appendStatement(cc, args.currentParentScope, Collect.WhileStatement, {
+        block: block,
+        conditionExpr: 0,
+      });
+      break;
+
+    case "VariableDefinitionStatement":
+      if (functionScope.tryLookupSymbolHere(cc, s.name)) {
+        throw new CompilerError(
+          `Variable '${s.name}' is already defined in this scope`,
+          s.sourceloc
+        );
+      }
+      if (s.datatype) {
+        collect(cc, functionScope, s.datatype, meta);
+      }
+      if (s.expr) {
+        collect(cc, functionScope, s.expr, meta);
+      }
+      functionScope.defineSymbol(cc, s);
+      cc.symbols.set(s.id, s);
+      break;
+  }
 }
 
 function collect(
@@ -898,259 +1207,7 @@ function collect(
     case "Scope":
       for (const s of item.statements) {
         switch (s.variant) {
-          case "ExprStatement":
-            collect(cc, s.expr, {
-              currentParentScope: args.currentParentScope,
-            });
-            break;
-
-          case "IfStatement": {
-            let firstChainLink = 0;
-            let lastChainLink = 0;
-            collect(cc, s.condition, { currentParentScope: args.currentParentScope });
-            const firstBlock = makeBlockScope(cc, args.currentParentScope, s.then.sourceloc);
-            collect(cc, s.then, {
-              currentParentScope: firstBlock,
-            });
-            firstChainLink = addEntity(cc.collectWorld);
-            lastChainLink = firstChainLink;
-            setComponent(cc, firstChainLink, Collect.IfChainLink, {
-              block: firstBlock,
-              conditionExpr: 0,
-              next: 0,
-            });
-            for (const e of s.elseIfs) {
-              collect(cc, e.condition, { currentParentScope: args.currentParentScope });
-              const block = makeBlockScope(cc, args.currentParentScope, e.then.sourceloc);
-              collect(cc, e.then, {
-                currentParentScope: block,
-              });
-              const link = addEntity(cc.collectWorld);
-              Collect.IfChainLink.next[lastChainLink] = link;
-              setComponent(cc, link, Collect.IfChainLink, {
-                block: block,
-                conditionExpr: 0,
-                next: 0,
-              });
-              lastChainLink = link;
-            }
-            if (s.else) {
-              const block = makeBlockScope(cc, args.currentParentScope, s.else.sourceloc);
-              collect(cc, s.else, {
-                currentParentScope: block,
-              });
-              const link = addEntity(cc.collectWorld);
-              Collect.IfChainLink.next[lastChainLink] = link;
-              setComponent(cc, link, Collect.IfChainLink, {
-                block: block,
-                conditionExpr: 0,
-                next: 0,
-              });
-              lastChainLink = link;
-            }
-
-            const entity = addEntity(cc.collectWorld);
-            setComponent(cc, entity, Collect.IfStatement, {
-              firstChainLink: firstChainLink,
-            });
-            break;
-          }
-
-          case "InlineCStatement": {
-            appendStatement(cc, args.currentParentScope, Collect.InlineCStatement, {
-              value: internString(cc, s.code),
-            });
-            break;
-          }
-
-          case "ReturnStatement":
-            appendStatement(cc, args.currentParentScope, Collect.ReturnStatement, {
-              expr: 0,
-            });
-            // if (s.expr) {
-            //   collect(cc, functionScope, s.expr, meta);
-            // }
-            break;
-
-          case "WhileStatement":
-            collect(cc, s.condition, { currentParentScope: args.currentParentScope });
-            const block = makeBlockScope(cc, args.currentParentScope, s.body.sourceloc);
-            collect(cc, s.body, {
-              currentParentScope: block,
-            });
-            appendStatement(cc, args.currentParentScope, Collect.WhileStatement, {
-              block: block,
-              conditionExpr: 0,
-            });
-            break;
-
-          case "VariableDefinitionStatement":
-            if (functionScope.tryLookupSymbolHere(cc, s.name)) {
-              throw new CompilerError(
-                `Variable '${s.name}' is already defined in this scope`,
-                s.sourceloc
-              );
-            }
-            if (s.datatype) {
-              collect(cc, functionScope, s.datatype, meta);
-            }
-            if (s.expr) {
-              collect(cc, functionScope, s.expr, meta);
-            }
-            functionScope.defineSymbol(cc, s);
-            cc.symbols.set(s.id, s);
-            break;
         }
-      }
-      break;
-
-    // =================================================================================================================
-    // =================================================================================================================
-    // =================================================================================================================
-
-    case "ParenthesisExpr":
-      collect(cc, functionScope, item.expr, meta);
-      break;
-
-    // =================================================================================================================
-    // =================================================================================================================
-    // =================================================================================================================
-
-    case "BinaryExpr":
-      collect(cc, functionScope, item.a, meta);
-      collect(cc, functionScope, item.b, meta);
-      break;
-
-    // =================================================================================================================
-    // =================================================================================================================
-    // =================================================================================================================
-
-    case "ConstantExpr":
-      break;
-
-    // =================================================================================================================
-    // =================================================================================================================
-    // =================================================================================================================
-
-    case "SymbolValueExpr":
-      break;
-
-    // =================================================================================================================
-    // =================================================================================================================
-    // =================================================================================================================
-
-    case "LambdaExpr":
-      item.lambda.funcbody._collect.scope = makeScope(cc, item.sourceloc, functionScope.id);
-      for (const param of item.lambda.params) {
-        const s: ASTVariableDefinitionStatement = {
-          variant: "VariableDefinitionStatement",
-          id: makeModulePrefix(cc.config) + ".vardef." + (cc.config.symbolIdCounter++).toString(),
-          mutable: false,
-          name: param.name,
-          datatype: param.datatype,
-          sourceloc: param.sourceloc,
-          kind: EVariableContext.FunctionParameter,
-          _semantic: {},
-        };
-        getScope(cc, item.lambda.funcbody._collect.scope).defineSymbol(cc, s);
-        cc.symbols.set(s.id, s);
-      }
-
-      for (const param of item.lambda.params) {
-        collect(cc, functionScope, param.datatype, meta);
-      }
-      if (item.lambda.returnType) {
-        collect(cc, functionScope, item.lambda.returnType, meta);
-      }
-
-      collect(cc, getScope(cc, item.lambda.funcbody._collect.scope), item.lambda.funcbody, meta);
-      break;
-
-    // =================================================================================================================
-    // =================================================================================================================
-    // =================================================================================================================
-
-    case "StructInstantiationExpr":
-      for (const member of item.members) {
-        collect(cc, functionScope, member.value, meta);
-      }
-      collect(cc, functionScope, item.datatype, meta);
-      break;
-
-    // =================================================================================================================
-    // =================================================================================================================
-    // =================================================================================================================
-
-    case "UnaryExpr":
-      collect(cc, functionScope, item.expr, meta);
-      break;
-
-    // =================================================================================================================
-    // =================================================================================================================
-    // =================================================================================================================
-
-    case "PreIncrExpr":
-      collect(cc, functionScope, item.expr, meta);
-      break;
-
-    // =================================================================================================================
-    // =================================================================================================================
-    // =================================================================================================================
-
-    case "PostIncrExpr":
-      collect(cc, functionScope, item.expr, meta);
-      break;
-
-    // =================================================================================================================
-    // =================================================================================================================
-    // =================================================================================================================
-
-    case "ExprMemberAccess":
-      collect(cc, functionScope, item.expr, meta);
-      break;
-
-    // =================================================================================================================
-    // =================================================================================================================
-    // =================================================================================================================
-
-    case "ExplicitCastExpr":
-      collect(cc, functionScope, item.expr, meta);
-      collect(cc, functionScope, item.castedTo, meta);
-      break;
-
-    // =================================================================================================================
-    // =================================================================================================================
-    // =================================================================================================================
-
-    case "RawPointerAddressOf":
-      collect(cc, functionScope, item.expr, meta);
-      break;
-
-    // =================================================================================================================
-    // =================================================================================================================
-    // =================================================================================================================
-
-    case "RawPointerDereference":
-      collect(cc, functionScope, item.expr, meta);
-      break;
-
-    // =================================================================================================================
-    // =================================================================================================================
-    // =================================================================================================================
-
-    case "ExprAssignmentExpr":
-      collect(cc, functionScope, item.target, meta);
-      collect(cc, functionScope, item.value, meta);
-      break;
-
-    // =================================================================================================================
-    // =================================================================================================================
-    // =================================================================================================================
-
-    case "ExprCallExpr":
-      collect(cc, functionScope, item.calledExpr, meta);
-      for (const a of item.arguments) {
-        collect(cc, functionScope, a, meta);
       }
       break;
 
@@ -1217,7 +1274,7 @@ function collect(
     // =================================================================================================================
 
     default:
-      assert(false && "All cases handled");
+      assert(false, "All cases handled" + item.variant);
   }
 }
 

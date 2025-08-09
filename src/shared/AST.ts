@@ -395,7 +395,6 @@ export type ASTBinaryExpr = {
   b: ASTExpr;
   operation: EBinaryOperation;
   sourceloc: SourceLoc;
-  _semantic: {};
 };
 
 export type ASTExprAssignmentExpr = {
@@ -404,7 +403,6 @@ export type ASTExprAssignmentExpr = {
   value: ASTExpr;
   operation: EAssignmentOperation;
   sourceloc: SourceLoc;
-  _semantic: {};
 };
 
 export type ASTSymbolValueExpr = {
@@ -412,7 +410,6 @@ export type ASTSymbolValueExpr = {
   name: string;
   generics: (ASTDatatype | ASTConstant)[];
   sourceloc: SourceLoc;
-  _semantic: {};
 };
 
 export type ASTExpr =
