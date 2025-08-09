@@ -48,61 +48,48 @@ import type {
   ASTStatement,
   ASTStructMemberDefinition,
   ASTStructMethodDefinition,
+  EBinaryOperation,
 } from "../shared/AST";
 import type { ModuleConfig } from "../shared/Config";
-import {
-  addComponent,
-  addEntity,
-  createWorld,
-  defineComponent,
-  defineQuery,
-  getAllEntities,
-  hasComponent,
-  Types,
-  type Component,
-  type ComponentType,
-  type ISchema,
-  type IWorld,
-} from "bitecs";
 
 function exportMermaidScopeTree(cc: CollectionContext): string {
   let output = "";
   // output += `\`\`\`mermaid\n`;
   output += `graph TD\n`;
 
-  for (const sc of defineQuery([Collect.ModuleScopeComponent])(cc.collectWorld)) {
-    output += `  E${sc}["Module Scope"]\n`;
-  }
+  // for (const sc of defineQuery([Collect.ModuleScopeComponent])(cc.collectWorld)) {
+  //   output += `  E${sc}["Module Scope"]\n`;
+  // }
 
-  for (const sc of defineQuery([Collect.UnitScopeComponent])(cc.collectWorld)) {
-    const parent = Collect.UnitScopeComponent.moduleScope[sc];
-    output += `  E${sc}["Unit Scope"] --> E${parent}\n`;
-  }
+  // for (const sc of defineQuery([Collect.UnitScopeComponent])(cc.collectWorld)) {
+  //   const parent = Collect.UnitScopeComponent.moduleScope[sc];
+  //   output += `  E${sc}["Unit Scope"] --> E${parent}\n`;
+  // }
 
-  for (const sc of defineQuery([Collect.FileScopeComponent])(cc.collectWorld)) {
-    const parent = Collect.FileScopeComponent.unitScope[sc];
-    const filename = cc.idToString.get(Collect.FileScopeComponent.filename[sc]);
-    output += `  E${sc}["${filename}"] --> E${parent}\n`;
-  }
+  // for (const sc of defineQuery([Collect.FileScopeComponent])(cc.collectWorld)) {
+  //   const parent = Collect.FileScopeComponent.unitScope[sc];
+  //   const filename = cc.idToString.get(Collect.FileScopeComponent.filename[sc]);
+  //   output += `  E${sc}["${filename}"] --> E${parent}\n`;
+  // }
 
-  for (const ns of defineQuery([Collect.NamespaceSymbolComponent])(cc.collectWorld)) {
-    const parent = Collect.NamespaceSymbolComponent.parentScope[ns];
-    const name = cc.idToString.get(Collect.NamespaceSymbolComponent.name[ns]);
-    output += `  E${ns}["Namespace ${name}"] --> E${parent}\n`;
-  }
+  // for (const ns of defineQuery([Collect.NamespaceSymbolComponent])(cc.collectWorld)) {
+  //   const parent = Collect.NamespaceSymbolComponent.parentScope[ns];
+  //   const name = cc.idToString.get(Collect.NamespaceSymbolComponent.name[ns]);
+  //   output += `  E${ns}["Namespace ${name}"] --> E${parent}\n`;
+  // }
 
-  for (const ns of defineQuery([Collect.FunctionSymbolComponent])(cc.collectWorld)) {
-    const parent = Collect.FunctionSymbolComponent.parentScope[ns];
-    const overloadGroup = Collect.FunctionSymbolComponent.overloadGroup[ns];
-    output += `  E${ns}["Function Symbol"] --> E${parent}\n`;
-    output += `  E${ns} --> E${overloadGroup}\n`;
-  }
+  // for (const ns of defineQuery([Collect.FunctionSymbolComponent])(cc.collectWorld)) {
+  //   const parent = Collect.FunctionSymbolComponent.parentScope[ns];
+  //   const overloadGroup = Collect.FunctionSymbolComponent.overloadGroup[ns];
+  //   output += `  E${ns}["Function Symbol"] --> E${parent}\n`;
+  //   output += `  E${ns} --> E${overloadGroup}\n`;
+  // }
 
-  for (const ns of defineQuery([Collect.FunctionOverloadGroupComponent])(cc.collectWorld)) {
-    const parent = Collect.FunctionOverloadGroupComponent.parentScope[ns];
-    const name = cc.idToString.get(Collect.FunctionOverloadGroupComponent.name[ns]);
-    output += `  E${ns}["Function '${name}' Overload"] --> E${parent}\n`;
-  }
+  // for (const ns of defineQuery([Collect.FunctionOverloadGroupComponent])(cc.collectWorld)) {
+  //   const parent = Collect.FunctionOverloadGroupComponent.parentScope[ns];
+  //   const name = cc.idToString.get(Collect.FunctionOverloadGroupComponent.name[ns]);
+  //   output += `  E${ns}["Function '${name}' Overload"] --> E${parent}\n`;
+  // }
 
   // output += "\n\`\`\`";
   return output;
@@ -110,298 +97,303 @@ function exportMermaidScopeTree(cc: CollectionContext): string {
 
 export type CollectionContext = {
   config: ModuleConfig;
-  collectWorld: IWorld;
-  nextEntityId: number;
+  entities: Collect.Symbol[];
 
-  stringToId: Map<string, number>;
-  idToString: Map<number, string>;
-  nextStringId: number;
-
-  sourcelocToId: Map<SourceLoc, number>;
-  idToSourceloc: Map<number, SourceLoc>;
-  nextSourcelocId: number;
-
-  // scopeSymbolMap: Map<number, number[]>;
+  // Helper utilities
+  overloadGroups: Set<number>;
+  blockScopes: Set<number>;
 };
-
-export enum EVariableMutability {
-  Immutable, // Fully immutable
-  BindingImmutable, // Binding is immutable, but value inside is not (e.g. struct fields)
-  Mutable, // Fully mutable
-}
 
 export function makeCollectionContext(config: ModuleConfig): CollectionContext {
   const cc: CollectionContext = {
     config: config,
-    stringToId: new Map(),
-    idToString: new Map(),
-    nextEntityId: 1,
-    nextStringId: 1,
-    idToSourceloc: new Map(),
-    sourcelocToId: new Map(),
-    nextSourcelocId: 1,
-    collectWorld: createWorld(),
+    entities: [
+      {
+        variant: Collect.EEntityType.ModuleScope,
+      },
+    ],
+    blockScopes: new Set(),
+    overloadGroups: new Set(),
   };
-
-  const globalScope = addEntity(cc.collectWorld);
-  setComponent(cc, globalScope, Collect.ModuleScopeComponent, {});
-
   return cc;
 }
 
-export function internSourceloc(cc: CollectionContext, loc: SourceLoc) {
-  if (loc === null) {
-    return 0;
-  }
-  for (const [s, id] of cc.sourcelocToId) {
-    if (s === null) continue;
-    if (s.column === loc.column && s.line === loc.line && s.filename === loc.filename) {
-      return id;
-    }
-  }
-  const id = cc.nextSourcelocId++;
-  cc.sourcelocToId.set(loc, id);
-  cc.idToSourceloc.set(id, loc);
-  return id;
-}
-
-export function internString(cc: CollectionContext, path: string): number {
-  if (!cc.stringToId.has(path)) {
-    const id = cc.nextStringId++;
-    cc.stringToId.set(path, id);
-    cc.idToString.set(id, path);
-    return id;
-  }
-  return cc.stringToId.get(path)!;
-}
-
-export function getFilePath(cc: CollectionContext, id: number): string | undefined {
-  return cc.idToString.get(id);
-}
-
-export function setComponent<T extends Record<string, any>>(
-  cc: CollectionContext,
-  eid: number,
-  component: T,
-  data: { [K in keyof T]: number }
-): void {
-  addComponent(cc.collectWorld, component, eid);
-  for (const key in data) {
-    (component as any)[key][eid] = data[key];
-  }
-}
-
-export function getEntityByComponent(cc: CollectionContext, component: Component | Component[]) {
-  return getEntitiesByComponent(cc, component)[0];
-}
-
-export function getEntitiesByComponent(cc: CollectionContext, component: Component | Component[]) {
-  const query = defineQuery(Array.isArray(component) ? component : [component]);
-  const entity = query(cc.collectWorld);
-  return entity;
-}
-
 export namespace Collect {
-  export type GenericParameter = {
-    variant: "GenericParameter";
-    name: string;
-    sourceloc: SourceLoc;
-  };
-
-  export type Symbol =
-    | ASTFunctionDefinition
-    | ASTNamespaceDefinition
-    | ASTVariableDefinitionStatement
-    | ASTGlobalVariableDefinition
-    | ASTStructDefinition
-    | ASTStructMethodDefinition
-    | ASTStructMemberDefinition
-    | GenericParameter;
-
-  export type Statement = ASTStatement;
+  export const enum EEntityType {
+    ModuleScope,
+    UnitScope,
+    FileScope,
+    FunctionScope,
+    StructScope,
+    BlockScope,
+    FunctionOverloadGroup,
+    FunctionSymbol,
+    VariableSymbol,
+    NamedDatatype,
+    ReferenceDatatype,
+    PointerDatatype,
+    StructDefinitionSymbol,
+    NamespaceDefinitionSymbol,
+    GenericTypeParameter,
+    ExprStatement,
+    IfStatement,
+    WhileStatement,
+    ReturnStatement,
+    InlineCStatement,
+    BlockScopeStatement,
+    ParenthesisExpr,
+    BinaryExpr,
+    UnaryExpr,
+  }
 
   /// ===============================================================
   /// ===                         Scopes                          ===
   /// ===============================================================
 
-  export const ModuleScopeComponent = defineComponent({});
+  export type ModuleScope = {
+    variant: EEntityType.ModuleScope;
+  };
 
-  export const UnitScopeComponent = defineComponent({
-    moduleScope: Types.eid,
-  });
+  export type UnitScope = {
+    variant: EEntityType.UnitScope;
+    parentScope: number;
+  };
 
-  export const FileScopeComponent = defineComponent({
-    unitScope: Types.eid,
-    filename: Types.eid,
-  });
+  export type FileScope = {
+    variant: EEntityType.FileScope;
+    filename: string;
+    parentScope: number;
+  };
 
-  export const FunctionScopeComponent = defineComponent({
-    parentScope: Types.eid,
-    owningSymbol: Types.eid,
-    sourceloc: Types.eid,
-  });
+  export type FunctionScope = {
+    variant: EEntityType.FunctionScope;
+    parentScope: number;
+    owningSymbol: number;
+    sourceloc: SourceLoc;
+    blockScope: number;
+    symbols: number[];
+  };
 
-  export const BlockScopeComponent = defineComponent({
-    parentScope: Types.eid,
-    owningFunctionSymbol: Types.eid,
-    sourceloc: Types.eid,
-    firstStatement: Types.eid,
-    lastStatement: Types.eid,
-  });
+  export type StructScope = {
+    variant: EEntityType.StructScope;
+    parentScope: number;
+    owningSymbol: number;
+    sourceloc: SourceLoc;
+    blockScope: number;
+    symbols: number[];
+  };
+
+  export type BlockScope = {
+    variant: EEntityType.BlockScope;
+    parentScope: number;
+    owningSymbol: number;
+    sourceloc: SourceLoc;
+    statements: number[];
+    symbols: number[];
+  };
+
+  export type Scope =
+    | ModuleScope
+    | UnitScope
+    | FileScope
+    | FunctionScope
+    | StructScope
+    | BlockScope;
 
   /// ===============================================================
   /// ===                       Overloads                         ===
   /// ===============================================================
 
-  export const FunctionOverloadGroupComponent = defineComponent({
-    name: Types.eid,
-    parentScope: Types.eid,
-  });
+  export type FunctionOverloadGroup = {
+    variant: EEntityType.FunctionOverloadGroup;
+    parentScope: number;
+    name: string;
+    overloads: number[];
+  };
+
+  export type Overloads = FunctionOverloadGroup;
 
   /// ===============================================================
   /// ===                     Function Symbols                    ===
   /// ===============================================================
 
-  export const FunctionSymbolComponent = defineComponent({
-    parentScope: Types.eid,
-    overloadGroup: Types.eid,
-    returnType: Types.eid,
-    sourceloc: Types.eid,
-  });
+  export type FunctionSymbol = {
+    variant: EEntityType.FunctionSymbol;
+    parentScope: number;
+    overloadGroup: number;
+    returnType: number | null;
+    parameters: {
+      name: string;
+      type: number;
+    }[];
+    export: boolean;
+    pub: boolean;
+    extern: EExternLanguage;
+    sourceloc: SourceLoc;
+    functionScope: number | null;
+  };
 
-  export const FunctionParameterComponent = defineComponent({
-    name: Types.eid,
-    type: Types.eid,
-    index: Types.ui8,
-    owningFunctionSymbol: Types.eid,
-  });
+  export type VariableSymbol = {
+    variant: EEntityType.VariableSymbol;
+    name: string;
+    inScope: number;
+    type: number | null;
+    variableContext: EVariableContext;
+    sourceloc: SourceLoc;
+  };
 
-  export const VariableSymbolComponent = defineComponent({
-    parentScope: Types.eid,
-    name: Types.eid,
-    type: Types.eid,
-    sourceloc: Types.eid,
-    bindingMutability: Types.ui8,
-  });
+  // export const VariableSymbolComponent = defineComponent({
+  //   parentScope: Types.eid,
+  //   name: Types.eid,
+  //   type: Types.eid,
+  //   sourceloc: Types.eid,
+  //   bindingMutability: Types.ui8,
+  // });
+
+  export type Symbols = FunctionSymbol | VariableSymbol;
 
   /// ===============================================================
   /// ===                       Type Symbols                      ===
   /// ===============================================================
 
-  export const NamedDatatypeSymbolComponent = defineComponent({
-    name: Types.eid,
-    sourceloc: Types.eid,
-  });
+  export type NamedDatatype = {
+    variant: EEntityType.NamedDatatype;
+    name: string;
+    sourceloc: SourceLoc;
+  };
 
-  export const PointerDatatypeSymbolComponent = defineComponent({
-    pointee: Types.eid,
-    sourceloc: Types.eid,
-  });
+  export type PointerDatatype = {
+    variant: EEntityType.PointerDatatype;
+    pointee: number;
+    sourceloc: SourceLoc;
+  };
 
-  export const ReferenceDatatypeSymbolComponent = defineComponent({
-    referee: Types.eid,
-    sourceloc: Types.eid,
-  });
+  export type ReferenceDatatype = {
+    variant: EEntityType.ReferenceDatatype;
+    referee: number;
+    sourceloc: SourceLoc;
+  };
 
-  export const StructSymbolComponent = defineComponent({
-    parentScope: Types.eid,
-    name: Types.eid,
-    sourceloc: Types.eid,
-  });
+  export type StructDefinitionSymbol = {
+    variant: EEntityType.StructDefinitionSymbol;
+    name: string;
+    export: boolean;
+    pub: boolean;
+    extern: EExternLanguage;
+    sourceloc: SourceLoc;
+    structScope: number | null;
+  };
 
-  export const NamespaceSymbolComponent = defineComponent({
-    parentScope: Types.eid,
-    name: Types.eid,
-    sourceloc: Types.eid,
-  });
+  export type NamespaceDefinitionSymbol = {
+    variant: EEntityType.NamespaceDefinitionSymbol;
+    name: string;
+    sourceloc: SourceLoc;
+  };
 
-  export const GenericTypeParameterComponent = defineComponent({
-    name: Types.eid,
-    index: Types.ui8,
-    owningSymbol: Types.eid,
-  });
+  export type GenericTypeParameter = {
+    variant: EEntityType.GenericTypeParameter;
+    name: string;
+    owningSymbol: number;
+    sourceloc: SourceLoc;
+  };
 
-  /// ===============================================================
-  /// ===                         Flags                           ===
-  /// ===============================================================
-
-  export const ExportedFlagComponent = defineComponent({});
-
-  export const PubFlagComponent = defineComponent({});
-
-  export const ExternFlagComponent = defineComponent({
-    language: Types.ui8,
-  });
+  export type Datatypes =
+    | NamedDatatype
+    | PointerDatatype
+    | ReferenceDatatype
+    | StructDefinitionSymbol
+    | NamespaceDefinitionSymbol
+    | GenericTypeParameter;
 
   /// ===============================================================
   /// ===                       Statements                        ===
   /// ===============================================================
 
-  export const StatementLink = defineComponent({
-    nextStatement: Types.eid,
-    prevStatement: Types.eid,
-  });
+  type BaseStatement = {
+    owningScope: number;
+    sourceloc: SourceLoc;
+  };
 
-  export const ExprStatement = defineComponent({
-    expr: Types.eid,
-    sourceloc: Types.eid,
-  });
+  export type ExprStatement = BaseStatement & {
+    variant: EEntityType.ExprStatement;
+    expr: number;
+  };
 
-  export const InlineCStatement = defineComponent({
-    value: Types.eid,
-    sourceloc: Types.eid,
-  });
+  export type InlineCStatement = BaseStatement & {
+    variant: EEntityType.InlineCStatement;
+    value: string;
+  };
 
-  export const ReturnStatement = defineComponent({
-    expr: Types.eid,
-    sourceloc: Types.eid,
-  });
+  export type ReturnStatement = BaseStatement & {
+    variant: EEntityType.ReturnStatement;
+    expr: number | null;
+  };
 
-  export const BlockScopeStatement = defineComponent({
-    block: Types.eid,
-    sourceloc: Types.eid,
-  });
+  export type BlockScopeStatement = BaseStatement & {
+    variant: EEntityType.BlockScopeStatement;
+    blockscope: number;
+  };
 
-  export const IfStatement = defineComponent({
-    firstChainLink: Types.eid,
-    sourceloc: Types.eid,
-  });
+  export type IfStatement = BaseStatement & {
+    variant: EEntityType.IfStatement;
+    condition: number;
+    thenBlock: number;
+    elseif: {
+      condition: number;
+      thenBlock: number;
+    }[];
+    elseBlock: number | null;
+  };
 
-  export const IfChainLink = defineComponent({
-    conditionExpr: Types.eid,
-    block: Types.eid,
-    next: Types.eid,
-  });
+  export type WhileStatement = BaseStatement & {
+    variant: EEntityType.WhileStatement;
+    condition: number;
+    block: number;
+  };
 
-  export const WhileStatement = defineComponent({
-    nextStatement: Types.eid,
-    prevStatement: Types.eid,
-    conditionExpr: Types.eid,
-    block: Types.eid,
-    sourceloc: Types.eid,
-  });
+  export type Statements =
+    | ExprStatement
+    | InlineCStatement
+    | ReturnStatement
+    | BlockScopeStatement
+    | IfStatement
+    | WhileStatement;
+
+  export type StatementsWithoutOwningScope =
+    | Omit<ExprStatement, "owningScope">
+    | Omit<InlineCStatement, "owningScope">
+    | Omit<ReturnStatement, "owningScope">
+    | Omit<BlockScopeStatement, "owningScope">
+    | Omit<IfStatement, "owningScope">
+    | Omit<WhileStatement, "owningScope">;
 
   /// ===============================================================
   /// ===                      Expressions                        ===
   /// ===============================================================
 
-  export const ParenthesisExpr = defineComponent({
-    innerExpr: Types.eid,
-    sourceloc: Types.eid,
-  });
+  type BaseExpr = {
+    sourceloc: SourceLoc;
+  };
 
-  export const BinaryExpr = defineComponent({
-    left: Types.eid,
-    operator: Types.ui8,
-    right: Types.eid,
-    sourceloc: Types.eid,
-  });
+  export type ParenthesisExpr = BaseExpr & {
+    variant: EEntityType.ParenthesisExpr;
+    expr: number;
+  };
 
-  export const UnaryExpr = defineComponent({
-    operator: Types.ui8,
-    expr: Types.eid,
-    sourceloc: Types.eid,
-  });
+  export type BinaryExpr = BaseExpr & {
+    variant: EEntityType.BinaryExpr;
+    left: number;
+    right: number;
+    operation: EBinaryOperation;
+  };
+
+  export type UnaryExpr = BaseExpr & {
+    variant: EEntityType.UnaryExpr;
+    expr: number;
+    operation: EBinaryOperation;
+  };
+
+  export type Expressions = ParenthesisExpr | BinaryExpr | UnaryExpr;
 
   // export class Scope {
   //   variant = "Collect.ScopeClass" as const;
@@ -476,6 +468,8 @@ export namespace Collect {
   //     throw new CompilerError(`Symbol '${name}' was not declared in this scope`, loc);
   //   }
   // }
+
+  export type Symbol = Scope | Overloads | Symbols | Datatypes | Statements | Expressions;
 }
 
 // export function getScope(cc: CollectionContext, id: string) {
@@ -499,444 +493,105 @@ export namespace Collect {
 //   return scope.id;
 // }
 
-function makeNamedType(cc: CollectionContext, name: string, sourceloc: SourceLoc) {
-  const e = addEntity(cc.collectWorld);
-  setComponent(cc, e, Collect.NamedDatatypeSymbolComponent, {
-    name: internString(cc, name),
-    sourceloc: internSourceloc(cc, sourceloc),
+function makeSymbol(cc: CollectionContext, symbol: Collect.Symbol): number {
+  cc.entities.push(symbol);
+  return cc.entities.length - 1;
+}
+
+function makeOverloadGroupAvailable(cc: CollectionContext, parentScope: number, name: string) {
+  for (const group of cc.overloadGroups) {
+    const og = cc.entities[group];
+    assert(og.variant === Collect.EEntityType.FunctionOverloadGroup);
+    if (og.parentScope === parentScope && og.name === name) {
+      return group;
+    }
+  }
+  const g = makeSymbol(cc, {
+    variant: Collect.EEntityType.FunctionOverloadGroup,
+    name: name,
+    overloads: [],
+    parentScope: parentScope,
   });
-  return e;
-}
-
-// function addSymbolToScope(cc: CollectionContext, scope: number, symbol: number) {
-//   if (!cc.scopeSymbolMap.has(scope)) {
-//     cc.scopeSymbolMap.set(scope, []);
-//   }
-
-//   const arr = cc.scopeSymbolMap.get(scope)!;
-//   arr.push(symbol);
-// }
-
-// function getScope(cc: CollectionContext, scope: number) {
-//   if (!hasComponent(cc.collectWorld, Collect.Scope, scope)) {
-//     assert(`Entity ${scope} is not a scope`);
-//   }
-//   defineQuery([Collect.NamespaceSymbolComponent])(cc.collectWorld);
-// }
-
-function findAllNamespacesInScope(cc: CollectionContext, scope: number) {
-  const symbols = [];
-  for (const ns of defineQuery([Collect.NamespaceSymbolComponent])(cc.collectWorld)) {
-    const parentScope = Collect.NamespaceSymbolComponent.parentScope[ns];
-    if (parentScope === scope) {
-      symbols.push(ns);
-    }
-  }
-  return symbols;
-}
-
-function findAllOverloadGroupsInScope(cc: CollectionContext, scope: number) {
-  const symbols = [];
-  for (const ns of defineQuery([Collect.FunctionOverloadGroupComponent])(cc.collectWorld)) {
-    const parentScope = Collect.FunctionOverloadGroupComponent.parentScope[ns];
-    if (parentScope === scope) {
-      symbols.push(ns);
-    }
-  }
-  return symbols;
-}
-
-function findAllFunctionOverloadGroupsInScope(cc: CollectionContext, scope: number) {
-  const symbols = [];
-  for (const ns of defineQuery([Collect.FunctionOverloadGroupComponent])(cc.collectWorld)) {
-    const parentScope = Collect.FunctionOverloadGroupComponent.parentScope[ns];
-    if (parentScope === scope) {
-      symbols.push(ns);
-    }
-  }
-  return symbols;
-}
-
-function findAllStructsInScope(cc: CollectionContext, scope: number) {
-  const symbols = [];
-  for (const ns of defineQuery([Collect.StructSymbolComponent])(cc.collectWorld)) {
-    const parentScope = Collect.StructSymbolComponent.parentScope[ns];
-    if (parentScope === scope) {
-      symbols.push(ns);
-    }
-  }
-  return symbols;
-}
-
-function makeBlockScope(cc: CollectionContext, parentBlockScope: number, sourceloc: SourceLoc) {
-  let functionSymbol = 0;
-  if (hasComponent(cc.collectWorld, Collect.BlockScopeComponent, parentBlockScope)) {
-    functionSymbol = Collect.BlockScopeComponent.owningFunctionSymbol[parentBlockScope];
-  } else if (hasComponent(cc.collectWorld, Collect.FunctionScopeComponent, parentBlockScope)) {
-    functionSymbol = Collect.FunctionScopeComponent.owningSymbol[parentBlockScope];
-  } else {
-    assert(false);
-  }
-  const scope = addEntity(cc.collectWorld);
-  setComponent(cc, scope, Collect.BlockScopeComponent, {
-    owningFunctionSymbol: functionSymbol,
-    parentScope: parentBlockScope,
-    sourceloc: internSourceloc(cc, sourceloc),
-    firstStatement: 0,
-    lastStatement: 0,
-  });
-  return scope;
-}
-
-function collectType(cc: CollectionContext, type: ASTDatatype, sourceloc: SourceLoc) {
-  switch (type.variant) {
-    case "NamedDatatype": {
-      return makeNamedType(cc, type.name, sourceloc);
-    }
-
-    case "PointerDatatype": {
-      const e = addEntity(cc.collectWorld);
-      setComponent(cc, e, Collect.PointerDatatypeSymbolComponent, {
-        pointee: collectType(cc, type.pointee, type.sourceloc),
-        sourceloc: internSourceloc(cc, sourceloc),
-      });
-      return e;
-    }
-
-    case "ReferenceDatatype": {
-      const e = addEntity(cc.collectWorld);
-      setComponent(cc, e, Collect.ReferenceDatatypeSymbolComponent, {
-        referee: collectType(cc, type.referee, type.sourceloc),
-        sourceloc: internSourceloc(cc, sourceloc),
-      });
-      return e;
-    }
-
-    default:
-      assert(false, "" + type.variant);
-  }
-}
-
-function makeOverloadGroup(cc: CollectionContext, scope: number, name: string) {
-  for (const g of findAllOverloadGroupsInScope(cc, scope)) {
-    if (cc.idToString.get(Collect.NamespaceSymbolComponent.name[g]) === name) {
-      return g;
-    }
-  }
-
-  const g = addEntity(cc.collectWorld);
-  setComponent(cc, g, Collect.FunctionOverloadGroupComponent, {
-    name: internString(cc, name),
-    parentScope: scope,
-  });
+  cc.overloadGroups.add(g);
   return g;
 }
 
-function appendStatement<T extends Component>(
+function makeBlockScope(cc: CollectionContext, parentScope: number, sourceloc: SourceLoc): number {
+  const parent = cc.entities[parentScope];
+  assert(
+    parent.variant === Collect.EEntityType.BlockScope ||
+      parent.variant === Collect.EEntityType.FunctionScope
+  );
+  const scope = makeSymbol(cc, {
+    variant: Collect.EEntityType.BlockScope,
+    owningSymbol: parent.owningSymbol,
+    parentScope: parentScope,
+    statements: [],
+    sourceloc: sourceloc,
+    symbols: [],
+  });
+  cc.blockScopes.add(scope);
+  return scope;
+}
+
+function addStatement(
   cc: CollectionContext,
-  blockscope: number,
-  component: T,
-  data: Omit<{ [K in keyof T]: number }, "nextStatement" | "prevStatement">
+  parentScope: number,
+  statement: Collect.StatementsWithoutOwningScope
 ) {
-  const statement = addEntity(cc.collectWorld);
-  Collect.InlineCStatement;
-
-  // Point last statement here
-  if (Collect.BlockScopeComponent.lastStatement[blockscope] === 0) {
-    // It's the first statement
-    Collect.BlockScopeComponent.firstStatement[blockscope] = statement;
-    Collect.BlockScopeComponent.lastStatement[blockscope] = statement;
-    setComponent(cc, statement, component, {
-      nextStatement: 0,
-      prevStatement: 0,
-      ...data,
-    } as any);
-  } else {
-    const lastStatementLink = Collect.BlockScopeComponent.lastStatement[blockscope];
-    Collect.StatementLink.nextStatement[lastStatementLink] = statement;
-    setComponent(cc, statement, component, {
-      nextStatement: 0,
-      prevStatement: lastStatementLink,
-      ...data,
-    } as any);
-    Collect.BlockScopeComponent.lastStatement[blockscope] = statement;
-  }
-  return statement;
+  const parent = cc.entities[parentScope];
+  assert(parent.variant === Collect.EEntityType.BlockScope);
+  const st = makeSymbol(cc, {
+    ...statement,
+    owningScope: parentScope,
+  });
+  parent.statements.push(st);
+  return st;
 }
 
-function collectExpr(cc: CollectionContext, expr: ASTExpr): number {
-  switch (expr.variant) {
-    // =================================================================================================================
-    // =================================================================================================================
-    // =================================================================================================================
-
-    case "ParenthesisExpr": {
-      const entity = addEntity(cc.collectWorld);
-      setComponent(cc, entity, Collect.ParenthesisExpr, {
-        innerExpr: collectExpr(cc, expr.expr),
-        sourceloc: internSourceloc(cc, expr.sourceloc),
-      });
-      return entity;
-    }
-
-    // =================================================================================================================
-    // =================================================================================================================
-    // =================================================================================================================
-
-    case "BinaryExpr": {
-      const entity = addEntity(cc.collectWorld);
-      setComponent(cc, entity, Collect.BinaryExpr, {
-        left: collectExpr(cc, expr.a),
-        right: collectExpr(cc, expr.b),
-        operator: expr.operation,
-        sourceloc: internSourceloc(cc, expr.sourceloc),
-      });
-      return entity;
-    }
-
-    // =================================================================================================================
-    // =================================================================================================================
-    // =================================================================================================================
-
-    case "ConstantExpr":
-      break;
-
-    // =================================================================================================================
-    // =================================================================================================================
-    // =================================================================================================================
-
-    case "SymbolValueExpr":
-      break;
-
-    // =================================================================================================================
-    // =================================================================================================================
-    // =================================================================================================================
-
-    case "LambdaExpr":
-      item.lambda.funcbody._collect.scope = makeScope(cc, item.sourceloc, functionScope.id);
-      for (const param of item.lambda.params) {
-        const s: ASTVariableDefinitionStatement = {
-          variant: "VariableDefinitionStatement",
-          id: makeModulePrefix(cc.config) + ".vardef." + (cc.config.symbolIdCounter++).toString(),
-          mutable: false,
-          name: param.name,
-          datatype: param.datatype,
-          sourceloc: param.sourceloc,
-          kind: EVariableContext.FunctionParameter,
-          _semantic: {},
-        };
-        getScope(cc, item.lambda.funcbody._collect.scope).defineSymbol(cc, s);
-        cc.symbols.set(s.id, s);
-      }
-
-      for (const param of item.lambda.params) {
-        collect(cc, functionScope, param.datatype, meta);
-      }
-      if (item.lambda.returnType) {
-        collect(cc, functionScope, item.lambda.returnType, meta);
-      }
-
-      collect(cc, getScope(cc, item.lambda.funcbody._collect.scope), item.lambda.funcbody, meta);
-      break;
-
-    // =================================================================================================================
-    // =================================================================================================================
-    // =================================================================================================================
-
-    case "StructInstantiationExpr":
-      for (const member of item.members) {
-        collect(cc, functionScope, member.value, meta);
-      }
-      collect(cc, functionScope, item.datatype, meta);
-      break;
-
-    // =================================================================================================================
-    // =================================================================================================================
-    // =================================================================================================================
-
-    case "UnaryExpr":
-      collect(cc, functionScope, item.expr, meta);
-      break;
-
-    // =================================================================================================================
-    // =================================================================================================================
-    // =================================================================================================================
-
-    case "PreIncrExpr":
-      collect(cc, functionScope, item.expr, meta);
-      break;
-
-    // =================================================================================================================
-    // =================================================================================================================
-    // =================================================================================================================
-
-    case "PostIncrExpr":
-      collect(cc, functionScope, item.expr, meta);
-      break;
-
-    // =================================================================================================================
-    // =================================================================================================================
-    // =================================================================================================================
-
-    case "ExprMemberAccess":
-      collect(cc, functionScope, item.expr, meta);
-      break;
-
-    // =================================================================================================================
-    // =================================================================================================================
-    // =================================================================================================================
-
-    case "ExplicitCastExpr":
-      collect(cc, functionScope, item.expr, meta);
-      collect(cc, functionScope, item.castedTo, meta);
-      break;
-
-    // =================================================================================================================
-    // =================================================================================================================
-    // =================================================================================================================
-
-    case "RawPointerAddressOf":
-      collect(cc, functionScope, item.expr, meta);
-      break;
-
-    // =================================================================================================================
-    // =================================================================================================================
-    // =================================================================================================================
-
-    case "RawPointerDereference":
-      collect(cc, functionScope, item.expr, meta);
-      break;
-
-    // =================================================================================================================
-    // =================================================================================================================
-    // =================================================================================================================
-
-    case "ExprAssignmentExpr":
-      collect(cc, functionScope, item.target, meta);
-      collect(cc, functionScope, item.value, meta);
-      break;
-
-    // =================================================================================================================
-    // =================================================================================================================
-    // =================================================================================================================
-
-    case "ExprCallExpr":
-      collect(cc, functionScope, item.calledExpr, meta);
-      for (const a of item.arguments) {
-        collect(cc, functionScope, a, meta);
-      }
-      break;
-  }
+function defineGenericTypeParameter(
+  cc: CollectionContext,
+  name: string,
+  functionOrStructScopeId: number,
+  sourceloc: SourceLoc
+) {
+  const functionOrStructScope = cc.entities[functionOrStructScopeId];
+  assert(
+    functionOrStructScope.variant === Collect.EEntityType.FunctionScope ||
+      functionOrStructScope.variant === Collect.EEntityType.StructScope
+  );
+  const owner = cc.entities[functionOrStructScope.owningSymbol];
+  assert(
+    owner.variant === Collect.EEntityType.FunctionSymbol ||
+      owner.variant === Collect.EEntityType.StructDefinitionSymbol
+  );
+  const gg = makeSymbol(cc, {
+    variant: Collect.EEntityType.GenericTypeParameter,
+    name: name,
+    owningSymbol: functionOrStructScope.owningSymbol,
+    sourceloc: sourceloc,
+  });
+  functionOrStructScope.symbols.push(gg);
+  return gg;
 }
 
-function collectStatement(cc: CollectionContext, statement: ASTStatement): number {
-  switch (statement.variant) {
-    case "ExprStatement": {
-      const entity = addEntity(cc.collectWorld);
-      setComponent(cc, entity, Collect.ExprStatement, {
-        expr: collectExpr(cc, s.expr),
-        sourceloc: internSourceloc(cc, s.sourceloc),
-      });
-      break;
-    }
-
-    case "IfStatement": {
-      let firstChainLink = 0;
-      let lastChainLink = 0;
-      collect(cc, s.condition, { currentParentScope: args.currentParentScope });
-      const firstBlock = makeBlockScope(cc, args.currentParentScope, s.then.sourceloc);
-      collect(cc, s.then, {
-        currentParentScope: firstBlock,
-      });
-      firstChainLink = addEntity(cc.collectWorld);
-      lastChainLink = firstChainLink;
-      setComponent(cc, firstChainLink, Collect.IfChainLink, {
-        block: firstBlock,
-        conditionExpr: 0,
-        next: 0,
-      });
-      for (const e of s.elseIfs) {
-        collect(cc, e.condition, { currentParentScope: args.currentParentScope });
-        const block = makeBlockScope(cc, args.currentParentScope, e.then.sourceloc);
-        collect(cc, e.then, {
-          currentParentScope: block,
-        });
-        const link = addEntity(cc.collectWorld);
-        Collect.IfChainLink.next[lastChainLink] = link;
-        setComponent(cc, link, Collect.IfChainLink, {
-          block: block,
-          conditionExpr: 0,
-          next: 0,
-        });
-        lastChainLink = link;
-      }
-      if (s.else) {
-        const block = makeBlockScope(cc, args.currentParentScope, s.else.sourceloc);
-        collect(cc, s.else, {
-          currentParentScope: block,
-        });
-        const link = addEntity(cc.collectWorld);
-        Collect.IfChainLink.next[lastChainLink] = link;
-        setComponent(cc, link, Collect.IfChainLink, {
-          block: block,
-          conditionExpr: 0,
-          next: 0,
-        });
-        lastChainLink = link;
-      }
-
-      const entity = addEntity(cc.collectWorld);
-      setComponent(cc, entity, Collect.IfStatement, {
-        firstChainLink: firstChainLink,
-      });
-      break;
-    }
-
-    case "InlineCStatement": {
-      appendStatement(cc, args.currentParentScope, Collect.InlineCStatement, {
-        value: internString(cc, s.code),
-      });
-      break;
-    }
-
-    case "ReturnStatement":
-      appendStatement(cc, args.currentParentScope, Collect.ReturnStatement, {
-        expr: 0,
-      });
-      // if (s.expr) {
-      //   collect(cc, functionScope, s.expr, meta);
-      // }
-      break;
-
-    case "WhileStatement":
-      collect(cc, s.condition, { currentParentScope: args.currentParentScope });
-      const block = makeBlockScope(cc, args.currentParentScope, s.body.sourceloc);
-      collect(cc, s.body, {
-        currentParentScope: block,
-      });
-      appendStatement(cc, args.currentParentScope, Collect.WhileStatement, {
-        block: block,
-        conditionExpr: 0,
-      });
-      break;
-
-    case "VariableDefinitionStatement":
-      if (functionScope.tryLookupSymbolHere(cc, s.name)) {
-        throw new CompilerError(
-          `Variable '${s.name}' is already defined in this scope`,
-          s.sourceloc
-        );
-      }
-      if (s.datatype) {
-        collect(cc, functionScope, s.datatype, meta);
-      }
-      if (s.expr) {
-        collect(cc, functionScope, s.expr, meta);
-      }
-      functionScope.defineSymbol(cc, s);
-      cc.symbols.set(s.id, s);
-      break;
-  }
+function defineVariableSymbol(
+  cc: CollectionContext,
+  variable: Omit<Collect.VariableSymbol, "inScope">,
+  scope: number
+) {
+  const sc = cc.entities[scope];
+  assert(
+    sc.variant === Collect.EEntityType.BlockScope ||
+      sc.variant === Collect.EEntityType.FunctionScope ||
+      sc.variant === Collect.EEntityType.StructScope
+  );
+  const varsym = makeSymbol(cc, {
+    ...variable,
+    inScope: scope,
+  });
+  sc.symbols.push(varsym);
+  return varsym;
 }
 
 function collect(
@@ -967,51 +622,52 @@ function collect(
   args: {
     currentParentScope: number;
   }
-) {
+): number {
   switch (item.variant) {
     // =================================================================================================================
     // =================================================================================================================
     // =================================================================================================================
 
-    case "FunctionDefinition":
-      const overloadGroup = makeOverloadGroup(cc, args.currentParentScope, item.name);
+    case "FunctionDefinition": {
+      const overloadGroup = makeOverloadGroupAvailable(cc, args.currentParentScope, item.name);
 
-      const functionSymbol = addEntity(cc.collectWorld);
-      setComponent(cc, functionSymbol, Collect.FunctionSymbolComponent, {
+      const functionSymbol = makeSymbol(cc, {
+        variant: Collect.EEntityType.FunctionSymbol,
+        export: item.export,
+        extern: item.externLanguage,
         overloadGroup: overloadGroup,
+        parameters: item.params.map((p) => ({
+          name: p.name,
+          type: collect(cc, p.datatype, args),
+        })),
         parentScope: args.currentParentScope,
-        returnType:
-          (item.returnType && collectType(cc, item.returnType, item.sourceloc)) ||
-          makeNamedType(cc, primitiveToString(EPrimitive.none), item.sourceloc),
-        sourceloc: internSourceloc(cc, item.sourceloc),
+        pub: item.pub,
+        returnType: (item.returnType && collect(cc, item.returnType, args)) || null,
+        sourceloc: item.sourceloc,
+        functionScope: null,
       });
 
       console.warn("TODO: Check if function is redefined with conflicting parameters");
 
-      for (const [i, param] of item.params.entries()) {
-        const paramType = collectType(cc, param.datatype, param.sourceloc);
-        const paramEntity = addEntity(cc.collectWorld);
-        setComponent(cc, paramEntity, Collect.FunctionParameterComponent, {
-          index: i,
-          name: internString(cc, param.name),
-          owningFunctionSymbol: functionSymbol,
-          type: paramType,
-        });
-      }
-
       if (item.funcbody) {
-        const functionScope = addEntity(cc.collectWorld);
-        setComponent(cc, functionScope, Collect.FunctionScopeComponent, {
+        const funcSym = cc.entities[functionSymbol];
+        assert(funcSym.variant === Collect.EEntityType.FunctionSymbol);
+
+        const functionScope = makeSymbol(cc, {
+          variant: Collect.EEntityType.FunctionScope,
           owningSymbol: functionSymbol,
           parentScope: args.currentParentScope,
-          sourceloc: internSourceloc(cc, item.sourceloc),
+          sourceloc: item.sourceloc,
+          blockScope: -1,
+          symbols: [],
         });
 
         const topBlockScope = makeBlockScope(cc, functionScope, item.sourceloc);
+        (cc.entities[functionScope] as Collect.FunctionScope).blockScope = topBlockScope;
 
-        // for (const g of item.generics) {
-        //   getScope(cc, item.declarationScope).defineSymbol(cc, g);
-        // }
+        for (const g of item.generics) {
+          defineGenericTypeParameter(cc, g.name, functionScope, g.sourceloc);
+        }
 
         if (item.funcbody.variant === "ExprAsFuncBody") {
           item.funcbody = {
@@ -1033,6 +689,7 @@ function collect(
       }
 
       break;
+    }
 
     // =================================================================================================================
     // =================================================================================================================
@@ -1204,11 +861,152 @@ function collect(
     // =================================================================================================================
     // =================================================================================================================
 
+    case "NamedDatatype": {
+      return;
+      return makeNamedType(cc, type.name, sourceloc);
+    }
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
+    case "PointerDatatype": {
+      const e = addEntity(cc.collectWorld);
+      setComponent(cc, e, Collect.PointerDatatypeSymbolComponent, {
+        pointee: collectType(cc, type.pointee, type.sourceloc),
+        sourceloc: internSourceloc(cc, sourceloc),
+      });
+      return e;
+    }
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
+    case "ReferenceDatatype": {
+      const e = addEntity(cc.collectWorld);
+      setComponent(cc, e, Collect.ReferenceDatatypeSymbolComponent, {
+        referee: collectType(cc, type.referee, type.sourceloc),
+        sourceloc: internSourceloc(cc, sourceloc),
+      });
+      return e;
+    }
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
     case "Scope":
       for (const s of item.statements) {
         switch (s.variant) {
         }
       }
+      break;
+
+    case "ExprStatement": {
+      const entity = addEntity(cc.collectWorld);
+      setComponent(cc, entity, Collect.ExprStatement, {
+        expr: collectExpr(cc, s.expr),
+        sourceloc: internSourceloc(cc, s.sourceloc),
+      });
+      break;
+    }
+
+    case "IfStatement": {
+      let firstChainLink = 0;
+      let lastChainLink = 0;
+      collect(cc, s.condition, { currentParentScope: args.currentParentScope });
+      const firstBlock = makeBlockScope(cc, args.currentParentScope, s.then.sourceloc);
+      collect(cc, s.then, {
+        currentParentScope: firstBlock,
+      });
+      firstChainLink = addEntity(cc.collectWorld);
+      lastChainLink = firstChainLink;
+      setComponent(cc, firstChainLink, Collect.IfChainLink, {
+        block: firstBlock,
+        conditionExpr: 0,
+        next: 0,
+      });
+      for (const e of s.elseIfs) {
+        collect(cc, e.condition, { currentParentScope: args.currentParentScope });
+        const block = makeBlockScope(cc, args.currentParentScope, e.then.sourceloc);
+        collect(cc, e.then, {
+          currentParentScope: block,
+        });
+        const link = addEntity(cc.collectWorld);
+        Collect.IfChainLink.next[lastChainLink] = link;
+        setComponent(cc, link, Collect.IfChainLink, {
+          block: block,
+          conditionExpr: 0,
+          next: 0,
+        });
+        lastChainLink = link;
+      }
+      if (s.else) {
+        const block = makeBlockScope(cc, args.currentParentScope, s.else.sourceloc);
+        collect(cc, s.else, {
+          currentParentScope: block,
+        });
+        const link = addEntity(cc.collectWorld);
+        Collect.IfChainLink.next[lastChainLink] = link;
+        setComponent(cc, link, Collect.IfChainLink, {
+          block: block,
+          conditionExpr: 0,
+          next: 0,
+        });
+        lastChainLink = link;
+      }
+
+      const entity = addEntity(cc.collectWorld);
+      setComponent(cc, entity, Collect.IfStatement, {
+        firstChainLink: firstChainLink,
+      });
+      break;
+    }
+
+    case "InlineCStatement": {
+      appendStatement(cc, args.currentParentScope, Collect.InlineCStatement, {
+        value: internString(cc, s.code),
+      });
+      break;
+    }
+
+    case "ReturnStatement":
+      appendStatement(cc, args.currentParentScope, Collect.ReturnStatement, {
+        expr: 0,
+      });
+      // if (s.expr) {
+      //   collect(cc, functionScope, s.expr, meta);
+      // }
+      break;
+
+    case "WhileStatement":
+      collect(cc, s.condition, { currentParentScope: args.currentParentScope });
+      const block = makeBlockScope(cc, args.currentParentScope, s.body.sourceloc);
+      collect(cc, s.body, {
+        currentParentScope: block,
+      });
+      appendStatement(cc, args.currentParentScope, Collect.WhileStatement, {
+        block: block,
+        conditionExpr: 0,
+      });
+      break;
+
+    case "VariableDefinitionStatement":
+      if (functionScope.tryLookupSymbolHere(cc, s.name)) {
+        throw new CompilerError(
+          `Variable '${s.name}' is already defined in this scope`,
+          s.sourceloc
+        );
+      }
+      if (s.datatype) {
+        collect(cc, functionScope, s.datatype, meta);
+      }
+      if (s.expr) {
+        collect(cc, functionScope, s.expr, meta);
+      }
+      functionScope.defineSymbol(cc, s);
+      cc.symbols.set(s.id, s);
       break;
 
     // =================================================================================================================
@@ -1272,6 +1070,163 @@ function collect(
     // =================================================================================================================
     // =================================================================================================================
     // =================================================================================================================
+
+    case "ParenthesisExpr": {
+      const entity = addEntity(cc.collectWorld);
+      setComponent(cc, entity, Collect.ParenthesisExpr, {
+        innerExpr: collectExpr(cc, expr.expr),
+        sourceloc: internSourceloc(cc, expr.sourceloc),
+      });
+      return entity;
+    }
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
+    case "BinaryExpr": {
+      const entity = addEntity(cc.collectWorld);
+      setComponent(cc, entity, Collect.BinaryExpr, {
+        left: collectExpr(cc, expr.a),
+        right: collectExpr(cc, expr.b),
+        operator: expr.operation,
+        sourceloc: internSourceloc(cc, expr.sourceloc),
+      });
+      return entity;
+    }
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
+    case "ConstantExpr":
+      break;
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
+    case "SymbolValueExpr":
+      break;
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
+    case "LambdaExpr":
+      item.lambda.funcbody._collect.scope = makeScope(cc, item.sourceloc, functionScope.id);
+      for (const param of item.lambda.params) {
+        const s: ASTVariableDefinitionStatement = {
+          variant: "VariableDefinitionStatement",
+          id: makeModulePrefix(cc.config) + ".vardef." + (cc.config.symbolIdCounter++).toString(),
+          mutable: false,
+          name: param.name,
+          datatype: param.datatype,
+          sourceloc: param.sourceloc,
+          kind: EVariableContext.FunctionParameter,
+          _semantic: {},
+        };
+        getScope(cc, item.lambda.funcbody._collect.scope).defineSymbol(cc, s);
+        cc.symbols.set(s.id, s);
+      }
+
+      for (const param of item.lambda.params) {
+        collect(cc, functionScope, param.datatype, meta);
+      }
+      if (item.lambda.returnType) {
+        collect(cc, functionScope, item.lambda.returnType, meta);
+      }
+
+      collect(cc, getScope(cc, item.lambda.funcbody._collect.scope), item.lambda.funcbody, meta);
+      break;
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
+    case "StructInstantiationExpr":
+      for (const member of item.members) {
+        collect(cc, functionScope, member.value, meta);
+      }
+      collect(cc, functionScope, item.datatype, meta);
+      break;
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
+    case "UnaryExpr":
+      collect(cc, functionScope, item.expr, meta);
+      break;
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
+    case "PreIncrExpr":
+      collect(cc, functionScope, item.expr, meta);
+      break;
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
+    case "PostIncrExpr":
+      collect(cc, functionScope, item.expr, meta);
+      break;
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
+    case "ExprMemberAccess":
+      collect(cc, functionScope, item.expr, meta);
+      break;
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
+    case "ExplicitCastExpr":
+      collect(cc, functionScope, item.expr, meta);
+      collect(cc, functionScope, item.castedTo, meta);
+      break;
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
+    case "RawPointerAddressOf":
+      collect(cc, functionScope, item.expr, meta);
+      break;
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
+    case "RawPointerDereference":
+      collect(cc, functionScope, item.expr, meta);
+      break;
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
+    case "ExprAssignmentExpr":
+      collect(cc, functionScope, item.target, meta);
+      collect(cc, functionScope, item.value, meta);
+      break;
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
+    case "ExprCallExpr":
+      collect(cc, functionScope, item.calledExpr, meta);
+      for (const a of item.arguments) {
+        collect(cc, functionScope, a, meta);
+      }
+      break;
 
     default:
       assert(false, "All cases handled" + item.variant);

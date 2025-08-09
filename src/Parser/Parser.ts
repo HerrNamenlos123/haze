@@ -57,6 +57,7 @@ import {
   type ASTVariableDefinitionStatement,
   type ASTWhileStatement,
   type ASTScopeStatement,
+  EVariableMutability,
 } from "../shared/AST";
 import {
   BinaryExprContext,
@@ -122,7 +123,6 @@ import { HazeVisitor } from "./grammar/autogen/HazeVisitor";
 import { EVariableContext } from "../shared/common";
 import { makeModulePrefix } from "../Module";
 import type { ModuleConfig } from "../shared/Config";
-import { EVariableMutability, type Collect } from "../SymbolCollection/SymbolCollection";
 
 export namespace Parser {
   class HazeErrorListener extends BaseErrorListener {
@@ -447,7 +447,6 @@ class ASTTransformer extends HazeVisitor<any> {
         sourceloc: fragment.sourceloc,
         generics: fragment.generics,
         nested: datatypes[datatypes.length - 1],
-        _collect: {},
       });
     }
     return datatypes[datatypes.length - 1];
@@ -472,7 +471,6 @@ class ASTTransformer extends HazeVisitor<any> {
     return {
       variant: "ExprAsFuncBody",
       expr: this.visit(ctx.expr()),
-      _collect: {},
     };
   };
 
@@ -488,24 +486,19 @@ class ASTTransformer extends HazeVisitor<any> {
       variant: "FunctionDefinition",
       export: Boolean(ctx._export_),
       noemit: Boolean(ctx._noemit),
+      pub: Boolean(ctx._pub),
       externLanguage: this.exlang(ctx),
       params: params.params,
-      generics: generics.map(
-        (p) =>
-          ({
-            variant: "GenericParameter",
-            name: p,
-            sourceloc: this.loc(ctx), // TODO: Find a better sourceloc from the actual token, not the function
-          } satisfies Collect.GenericParameter)
-      ),
+      generics: generics.map((p) => ({
+        name: p,
+        sourceloc: this.loc(ctx), // TODO: Find a better sourceloc from the actual token, not the function
+      })),
       name: names[0],
       operatorOverloading: undefined,
       ellipsis: params.ellipsis,
       funcbody: (ctx.funcbody() && this.visit(ctx.funcbody()!)) || undefined,
       returnType: (ctx.datatype() && this.visit(ctx.datatype()!)) || undefined,
       sourceloc: this.loc(ctx),
-      _collect: {},
-      _semantic: {},
     };
   };
 
@@ -533,8 +526,6 @@ class ASTTransformer extends HazeVisitor<any> {
       sourceloc: this.loc(ctx),
       datatype: (ctx.datatype() && this.visit(ctx.datatype()!)) || undefined,
       expr: (ctx.expr() && this.visit(ctx.expr()!)) || undefined,
-      _collect: {},
-      _semantic: {},
     };
   };
 
@@ -556,7 +547,6 @@ class ASTTransformer extends HazeVisitor<any> {
       name: names[0],
       static: Boolean(ctx._static_),
       generics: names.slice(1).map((n) => ({
-        variant: "GenericParameter",
         name: n,
         sourceloc: this.loc(ctx), // TODO: Find a better sourceloc from the actual token, not the function
       })),
@@ -565,8 +555,6 @@ class ASTTransformer extends HazeVisitor<any> {
       returnType: (ctx.datatype() && this.visit(ctx.datatype()!)) || undefined,
       funcbody: (ctx.funcbody() && this.visit(ctx.funcbody()!)) || undefined,
       sourceloc: this.loc(ctx),
-      _collect: {},
-      _semantic: {},
     };
   };
 
@@ -600,23 +588,18 @@ class ASTTransformer extends HazeVisitor<any> {
     return {
       variant: "StructDefinition",
       export: Boolean(ctx._export_),
+      pub: Boolean(ctx._pub),
       externLanguage: this.exlang(ctx),
       name: name,
       noemit: Boolean(ctx._noemit),
-      generics: generics.map(
-        (p) =>
-          ({
-            variant: "GenericParameter",
-            name: p,
-            sourceloc: this.loc(ctx), // TODO: Find a better sourceloc from the actual token, not the function
-          } satisfies Collect.GenericParameter)
-      ),
+      generics: generics.map((p) => ({
+        name: p,
+        sourceloc: this.loc(ctx), // TODO: Find a better sourceloc from the actual token, not the function
+      })),
       declarations: declarations,
       members: members,
       methods: methods,
       sourceloc: this.loc(ctx),
-      _collect: {},
-      _semantic: {},
     };
   };
 
@@ -671,7 +654,6 @@ class ASTTransformer extends HazeVisitor<any> {
       datatype: (ctx.datatype() && this.visit(ctx.datatype()!)) || undefined,
       expr: (ctx.expr() && this.visit(ctx.expr()!)) || undefined,
       kind: EVariableContext.FunctionLocal,
-      _semantic: {},
     };
   };
 
@@ -728,7 +710,6 @@ class ASTTransformer extends HazeVisitor<any> {
       variant: "ParenthesisExpr",
       expr: this.visit(ctx.expr()),
       sourceloc: this.loc(ctx),
-      _semantic: {},
     };
   };
 
@@ -737,7 +718,6 @@ class ASTTransformer extends HazeVisitor<any> {
       variant: "LambdaExpr",
       lambda: this.visit(ctx.lambda()),
       sourceloc: this.loc(ctx),
-      _semantic: {},
     };
   };
 
@@ -746,7 +726,6 @@ class ASTTransformer extends HazeVisitor<any> {
       variant: "ConstantExpr",
       constant: this.visit(ctx.constant()),
       sourceloc: this.loc(ctx),
-      _semantic: {},
     };
   };
 
@@ -756,7 +735,6 @@ class ASTTransformer extends HazeVisitor<any> {
       expr: this.visit(ctx.expr()),
       operation: this.incrop(ctx),
       sourceloc: this.loc(ctx),
-      _semantic: {},
     };
   };
 
@@ -767,7 +745,6 @@ class ASTTransformer extends HazeVisitor<any> {
       calledExpr: exprs[0],
       arguments: exprs.slice(1),
       sourceloc: this.loc(ctx),
-      _semantic: {},
     };
   };
 
@@ -782,7 +759,6 @@ class ASTTransformer extends HazeVisitor<any> {
       member: ctx.ID().getText(),
       sourceloc: this.loc(ctx),
       generics: generics,
-      _semantic: {},
     };
   };
 
@@ -791,7 +767,6 @@ class ASTTransformer extends HazeVisitor<any> {
       variant: "PointerDereference",
       expr: this.visit(ctx.expr()),
       sourceloc: this.loc(ctx),
-      _semantic: {},
     };
   };
 
@@ -800,7 +775,6 @@ class ASTTransformer extends HazeVisitor<any> {
       variant: "PointerAddressOf",
       expr: this.visit(ctx.expr()),
       sourceloc: this.loc(ctx),
-      _semantic: {},
     };
   };
 
@@ -822,7 +796,6 @@ class ASTTransformer extends HazeVisitor<any> {
       datatype: this.visit(ctx.datatype()),
       members: members,
       sourceloc: this.loc(ctx),
-      _semantic: {},
     };
   };
 
@@ -832,7 +805,6 @@ class ASTTransformer extends HazeVisitor<any> {
       expr: this.visit(ctx.expr()),
       operation: this.incrop(ctx),
       sourceloc: this.loc(ctx),
-      _semantic: {},
     };
   };
 
@@ -842,7 +814,6 @@ class ASTTransformer extends HazeVisitor<any> {
       expr: this.visit(ctx.expr()),
       operation: this.unaryop(ctx),
       sourceloc: this.loc(ctx),
-      _semantic: {},
     };
   };
 
@@ -852,7 +823,6 @@ class ASTTransformer extends HazeVisitor<any> {
       castedTo: this.visit(ctx.datatype()),
       expr: this.visit(ctx.expr()),
       sourceloc: this.loc(ctx),
-      _semantic: {},
     };
   };
 
@@ -863,7 +833,6 @@ class ASTTransformer extends HazeVisitor<any> {
       b: this.visit(ctx.expr()[1]),
       operation: this.binaryop(ctx),
       sourceloc: this.loc(ctx),
-      _semantic: {},
     };
   };
 
@@ -874,7 +843,6 @@ class ASTTransformer extends HazeVisitor<any> {
       value: this.visit(ctx.expr()[1]),
       operation: this.assignop(ctx),
       sourceloc: this.loc(ctx),
-      _semantic: {},
     };
   };
 
@@ -888,7 +856,6 @@ class ASTTransformer extends HazeVisitor<any> {
       generics: generics,
       name: ctx.ID().getText(),
       sourceloc: this.loc(ctx),
-      _semantic: {},
     };
   };
 
@@ -929,7 +896,6 @@ class ASTTransformer extends HazeVisitor<any> {
       export: Boolean(ctx._export_),
       name: namesReversed[0],
       sourceloc: this.loc(ctx),
-      _collect: {},
     };
 
     for (const name of namesReversed.slice(1)) {
@@ -939,7 +905,6 @@ class ASTTransformer extends HazeVisitor<any> {
         export: Boolean(ctx._export_),
         name: name,
         sourceloc: this.loc(ctx),
-        _collect: {},
       };
     }
 

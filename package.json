@@ -25,7 +25,6 @@
     "antlr4ng": "^3.0.16",
     "antlr4ng-cli": "^2.0.0",
     "argparse": "^2.0.1",
-    "bitecs": "^0.3.40",
     "bun": "^1.2.2",
     "cross-env": "^7.0.3",
     "deep-equal": "^2.2.3"

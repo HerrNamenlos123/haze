@@ -1,6 +1,11 @@
-import type { Collect, EVariableMutability } from "../SymbolCollection/SymbolCollection";
 import { ImpossibleSituation, type SourceLoc } from "./Errors";
 import type { EMethodType, EVariableContext } from "./common";
+
+export enum EVariableMutability {
+  Immutable, // Fully immutable
+  BindingImmutable, // Binding is immutable, but value inside is not (e.g. struct fields)
+  Mutable, // Fully mutable
+}
 
 export enum EExternLanguage {
   None,
@@ -124,12 +129,16 @@ export type ASTDeferredType = {
 export type ASTFunctionDefinition = {
   variant: "FunctionDefinition";
   export: boolean;
+  pub: boolean;
   externLanguage: EExternLanguage;
   operatorOverloading?: {
     operator: EOperator;
     asTarget: ASTDatatype;
   };
-  generics: Collect.GenericParameter[];
+  generics: {
+    name: string;
+    sourceloc: SourceLoc;
+  }[];
   name: string;
   noemit: boolean;
   params: ASTParam[];
@@ -139,11 +148,6 @@ export type ASTFunctionDefinition = {
   declarationScope?: string;
   funcbody?: ASTFuncBody;
   sourceloc: SourceLoc;
-  _collect: {
-    definedInNamespaceOrStruct?: string;
-    definedInScope?: string;
-  };
-  _semantic: {};
 };
 
 export type ASTParam = {
@@ -159,9 +163,6 @@ export type ASTNamedDatatype = {
   generics: (ASTDatatype | ASTConstant)[];
   nested?: ASTNamedDatatype;
   sourceloc: SourceLoc;
-  _collect: {
-    usedInScope?: string;
-  };
 };
 
 export type ASTFunctionDatatype = {
@@ -221,11 +222,6 @@ export type ASTGlobalVariableDefinition = {
   datatype?: ASTDatatype;
   expr?: ASTExpr;
   sourceloc: SourceLoc;
-  _collect: {
-    definedInNamespaceOrStruct?: string;
-    definedInScope?: string;
-  };
-  _semantic: {};
 };
 
 export type ASTInlineCStatement = {
@@ -260,7 +256,6 @@ export type ASTVariableDefinitionStatement = {
   expr?: ASTExpr;
   kind: EVariableContext;
   sourceloc: SourceLoc;
-  _semantic: {};
 };
 
 export type ASTIfStatement = {
@@ -301,21 +296,18 @@ export type ASTParenthesisExpr = {
   variant: "ParenthesisExpr";
   expr: ASTExpr;
   sourceloc: SourceLoc;
-  _semantic: {};
 };
 
 export type ASTLambdaExpr = {
   variant: "LambdaExpr";
   lambda: ASTLambda;
   sourceloc: SourceLoc;
-  _semantic: {};
 };
 
 export type ASTConstantExpr = {
   variant: "ConstantExpr";
   constant: ASTConstant;
   sourceloc: SourceLoc;
-  _semantic: {};
 };
 
 export type ASTPostIncrExpr = {
@@ -323,7 +315,6 @@ export type ASTPostIncrExpr = {
   expr: ASTExpr;
   operation: EIncrOperation;
   sourceloc: SourceLoc;
-  _semantic: {};
 };
 
 export type ASTExprCallExpr = {
@@ -331,7 +322,6 @@ export type ASTExprCallExpr = {
   calledExpr: ASTExpr;
   arguments: ASTExpr[];
   sourceloc: SourceLoc;
-  _semantic: {};
 };
 
 export type ASTExprMemberAccess = {
@@ -340,7 +330,6 @@ export type ASTExprMemberAccess = {
   member: string;
   generics: (ASTDatatype | ASTConstant)[];
   sourceloc: SourceLoc;
-  _semantic: {};
 };
 
 export type ASTStructInstantiationExpr = {
@@ -348,7 +337,6 @@ export type ASTStructInstantiationExpr = {
   datatype: ASTDatatype;
   members: { name: string; value: ASTExpr }[];
   sourceloc: SourceLoc;
-  _semantic: {};
 };
 
 export type ASTPreIncrExpr = {
@@ -356,7 +344,6 @@ export type ASTPreIncrExpr = {
   expr: ASTExpr;
   operation: EIncrOperation;
   sourceloc: SourceLoc;
-  _semantic: {};
 };
 
 export type ASTUnaryExpr = {
@@ -364,7 +351,6 @@ export type ASTUnaryExpr = {
   expr: ASTExpr;
   operation: EUnaryOperation;
   sourceloc: SourceLoc;
-  _semantic: {};
 };
 
 export type ASTExplicitCastExpr = {
@@ -372,21 +358,18 @@ export type ASTExplicitCastExpr = {
   expr: ASTExpr;
   castedTo: ASTDatatype;
   sourceloc: SourceLoc;
-  _semantic: {};
 };
 
 export type ASTPointerAddressOfExpr = {
   variant: "PointerAddressOf";
   expr: ASTExpr;
   sourceloc: SourceLoc;
-  _semantic: {};
 };
 
 export type ASTPointerDereferenceExpr = {
   variant: "PointerDereference";
   expr: ASTExpr;
   sourceloc: SourceLoc;
-  _semantic: {};
 };
 
 export type ASTBinaryExpr = {
@@ -441,9 +424,6 @@ export type ASTLambda = {
 export type ASTExprAsFuncbody = {
   variant: "ExprAsFuncBody";
   expr: ASTExpr;
-  _collect: {
-    scope?: string;
-  };
 };
 
 export type ASTFuncBody = ASTScope | ASTExprAsFuncbody;
@@ -465,7 +445,10 @@ export type ASTStructMethodDefinition = {
   variant: "StructMethod";
   params: ASTParam[];
   name: string;
-  generics: Collect.GenericParameter[];
+  generics: {
+    name: string;
+    sourceloc: SourceLoc;
+  }[];
   static: boolean;
   ellipsis: boolean;
   operatorOverloading?: {
@@ -476,13 +459,6 @@ export type ASTStructMethodDefinition = {
   declarationScope?: string;
   funcbody?: ASTFuncBody;
   sourceloc: SourceLoc;
-  _collect: {
-    fullNamespacePath?: string[];
-    definedInScope?: string;
-  };
-  _semantic: {
-    // memberOfSymbol?: Semantic.Struc;
-  };
 };
 
 export type ASTStructDefinition = {
@@ -491,19 +467,15 @@ export type ASTStructDefinition = {
   externLanguage: EExternLanguage;
   name: string;
   noemit: boolean;
-  generics: Collect.GenericParameter[];
+  pub: boolean;
+  generics: {
+    name: string;
+    sourceloc: SourceLoc;
+  }[];
   members: ASTStructMemberDefinition[];
   methods: ASTStructMethodDefinition[];
   declarations: ASTStructDefinition[];
   sourceloc: SourceLoc;
-  _collect: {
-    definedInNamespaceOrStruct?: string;
-    definedInScope?: string;
-    fullNamespacedName?: string[];
-    namespaces?: string[];
-    scope?: string;
-  };
-  _semantic: {};
 };
 
 export type ASTTypeDefinition = ASTStructDefinition;
@@ -514,10 +486,6 @@ export type ASTNamespaceDefinition = {
   name: string;
   declarations: ASTGlobalDeclaration[];
   sourceloc: SourceLoc;
-  _collect: {
-    definedInNamespaceOrStruct?: string;
-    scope?: string;
-  };
 };
 
 export type ASTGlobalDeclaration =

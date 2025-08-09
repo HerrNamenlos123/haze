@@ -36,7 +36,7 @@ cInjectDirective: '__c__' '(' STRING_LITERAL ')' ';';
 
 externLanguage: '"C"';
 
-functionDefinition: (export='export')? (extern='extern' externLang=externLanguage? noemit='noemit'?)?  ID ('<' ID (',' ID)* '>')? '(' params ')' (':' datatype)? ('=>')? (funcbody | ';');
+functionDefinition: (export='export')? (extern='extern' externLang=externLanguage? pub='pub'? noemit='noemit'?)?  ID ('<' ID (',' ID)* '>')? '(' params ')' (':' datatype)? ('=>')? (funcbody | ';');
 lambda: '(' params ')' (':' datatype)? '=>' funcbody;
 param: ID ':' datatype;
 params: (param (',' param)* (',' ellipsis)?)? | ellipsis;
@@ -90,7 +90,7 @@ structContent
     ;
 
 structDefinition
-    : (export='export')? (extern='extern' externLang=externLanguage noemit='noemit'?)? 'struct' ID ('<' ID (',' ID)* '>')? '{' (content+=structContent)* '}' (';')?
+    : (export='export')? (extern='extern' externLang=externLanguage pub='pub'? noemit='noemit'?)? 'struct' ID ('<' ID (',' ID)* '>')? '{' (content+=structContent)* '}' (';')?
     ;
 
 typeDefinition
