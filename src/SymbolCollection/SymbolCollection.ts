@@ -50,6 +50,7 @@ import type {
   ASTStructMemberDefinition,
   ASTStructMethodDefinition,
   EBinaryOperation,
+  EUnaryOperation,
   EVariableMutability,
 } from "../shared/AST";
 import type { ModuleConfig } from "../shared/Config";
@@ -149,6 +150,10 @@ export namespace Collect {
     ParenthesisExpr,
     BinaryExpr,
     UnaryExpr,
+    ExprCallExpr,
+    SymbolValueExpr,
+    ExplicitCastExpr,
+    StructInstantiationExpr,
   }
 
   /// ===============================================================
@@ -427,10 +432,42 @@ export namespace Collect {
   export type UnaryExpr = BaseExpr & {
     variant: EEntityType.UnaryExpr;
     expr: number;
-    operation: EBinaryOperation;
+    operation: EUnaryOperation;
   };
 
-  export type Expressions = ParenthesisExpr | BinaryExpr | UnaryExpr;
+  export type ExprCallExpr = BaseExpr & {
+    variant: EEntityType.ExprCallExpr;
+    calledExpr: number;
+    arguments: number[];
+  };
+
+  export type SymbolValueExpr = BaseExpr & {
+    variant: EEntityType.SymbolValueExpr;
+  };
+
+  export type ExplicitCastExpr = BaseExpr & {
+    variant: EEntityType.ExplicitCastExpr;
+    expr: number;
+    targetType: number;
+  };
+
+  export type StructInstantiationExpr = BaseExpr & {
+    variant: EEntityType.StructInstantiationExpr;
+    structType: number;
+    members: {
+      name: string;
+      value: number;
+    }[];
+  };
+
+  export type Expressions =
+    | ParenthesisExpr
+    | BinaryExpr
+    | UnaryExpr
+    | SymbolValueExpr
+    | ExprCallExpr
+    | ExplicitCastExpr
+    | StructInstantiationExpr;
 
   // export class Scope {
   //   variant = "Collect.ScopeClass" as const;
@@ -848,10 +885,13 @@ function collect(
       }
 
       for (const s of item.declarations) {
-        // collect(cc, s, {
-        //   currentParentScope: existingNamespace,
-        // });
-        console.log("push back into namespace now");
+        const namespaceScope = (cc.entities[existingNamespace] as Collect.NamespaceDefinitionSymbol)
+          .namespaceScope;
+        const decl = collect(cc, s, {
+          currentParentScope: namespaceScope,
+        });
+        const symbols = (cc.entities[namespaceScope] as Collect.NamespaceScope).symbols;
+        symbols.push(decl);
       }
       break;
     }
@@ -1164,12 +1204,11 @@ function collect(
     // =================================================================================================================
 
     case "ParenthesisExpr": {
-      const entity = addEntity(cc.collectWorld);
-      setComponent(cc, entity, Collect.ParenthesisExpr, {
-        innerExpr: collectExpr(cc, expr.expr),
-        sourceloc: internSourceloc(cc, expr.sourceloc),
+      return makeSymbol(cc, {
+        variant: Collect.EEntityType.ParenthesisExpr,
+        expr: collect(cc, item.expr, args),
+        sourceloc: item.sourceloc,
       });
-      return entity;
     }
 
     // =================================================================================================================
@@ -1177,14 +1216,13 @@ function collect(
     // =================================================================================================================
 
     case "BinaryExpr": {
-      const entity = addEntity(cc.collectWorld);
-      setComponent(cc, entity, Collect.BinaryExpr, {
-        left: collectExpr(cc, expr.a),
-        right: collectExpr(cc, expr.b),
-        operator: expr.operation,
-        sourceloc: internSourceloc(cc, expr.sourceloc),
+      return makeSymbol(cc, {
+        variant: Collect.EEntityType.BinaryExpr,
+        left: collect(cc, item.a, args),
+        right: collect(cc, item.b, args),
+        operation: item.operation,
+        sourceloc: item.sourceloc,
       });
-      return entity;
     }
 
     // =================================================================================================================
@@ -1237,18 +1275,27 @@ function collect(
     // =================================================================================================================
 
     case "StructInstantiationExpr":
-      for (const member of item.members) {
-        collect(cc, functionScope, member.value, meta);
-      }
-      collect(cc, functionScope, item.datatype, meta);
-      break;
+      return makeSymbol(cc, {
+        variant: Collect.EEntityType.StructInstantiationExpr,
+        structType: collect(cc, item.datatype, args),
+        members: item.members.map((m) => ({
+          name: m.name,
+          value: collect(cc, m.value, args),
+        })),
+        sourceloc: item.sourceloc,
+      });
 
     // =================================================================================================================
     // =================================================================================================================
     // =================================================================================================================
 
     case "UnaryExpr":
-      collect(cc, functionScope, item.expr, meta);
+      return makeSymbol(cc, {
+        variant: Collect.EEntityType.UnaryExpr,
+        expr: collect(cc, item.expr, args),
+        operation: item.operation,
+        sourceloc: item.sourceloc,
+      });
       break;
 
     // =================================================================================================================
@@ -1280,9 +1327,12 @@ function collect(
     // =================================================================================================================
 
     case "ExplicitCastExpr":
-      collect(cc, functionScope, item.expr, meta);
-      collect(cc, functionScope, item.castedTo, meta);
-      break;
+      return makeSymbol(cc, {
+        variant: Collect.EEntityType.ExplicitCastExpr,
+        expr: collect(cc, item.expr, args),
+        targetType: collect(cc, item.castedTo, args),
+        sourceloc: item.sourceloc,
+      });
 
     // =================================================================================================================
     // =================================================================================================================
@@ -1314,11 +1364,12 @@ function collect(
     // =================================================================================================================
 
     case "ExprCallExpr":
-      collect(cc, functionScope, item.calledExpr, meta);
-      for (const a of item.arguments) {
-        collect(cc, functionScope, a, meta);
-      }
-      break;
+      return makeSymbol(cc, {
+        variant: Collect.EEntityType.ExprCallExpr,
+        calledExpr: collect(cc, item.calledExpr, args),
+        arguments: item.arguments.map((a) => collect(cc, a, args)),
+        sourceloc: item.sourceloc,
+      });
 
     default:
       assert(false, "All cases handled" + item.variant);
