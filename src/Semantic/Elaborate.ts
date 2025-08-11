@@ -39,7 +39,7 @@ import { serializeDatatype, serializeExpr, serializeNestedName } from "./Seriali
 
 export function recursivelyExportCollectedSymbols(
   sr: SemanticResult,
-  symbol: Collect.Symbol | Collect.Scope
+  symbol: Collect.Node | Collect.Scope
 ) {
   if (sr.exportedCollectedSymbols.has(symbol)) {
     return; // Prevent recursion
@@ -116,7 +116,7 @@ export function elaborateExpr(
   args: {
     scope: Collect.Scope;
     context: SubstitutionContext;
-    elaboratedVariables: Map<Collect.Symbol, Semantic.VariableSymbol>;
+    elaboratedVariables: Map<Collect.Node, Semantic.VariableSymbol>;
   }
 ): Semantic.Expression {
   switch (expr.variant) {
@@ -342,53 +342,53 @@ export function elaborateExpr(
     // =================================================================================================================
 
     case "ConstantExpr": {
-      if (expr.constant.variant === "BooleanConstant") {
+      if (expr.literal.variant === "BooleanConstant") {
         return {
           variant: "Constant",
           type: makePrimitiveAvailable(sr, EPrimitive.boolean),
-          value: expr.constant.value,
+          value: expr.literal.value,
           sourceloc: expr.sourceloc,
         };
-      } else if (expr.constant.variant === "NumberConstant") {
+      } else if (expr.literal.variant === "NumberConstant") {
         function isFloat(n: number): boolean {
           return Number(n) === n && n % 1 !== 0;
         }
-        if (isFloat(expr.constant.value)) {
+        if (isFloat(expr.literal.value)) {
           return {
             variant: "Constant",
             type: makePrimitiveAvailable(sr, EPrimitive.f64),
-            value: expr.constant.value,
+            value: expr.literal.value,
             sourceloc: expr.sourceloc,
           };
         } else {
           let type = EPrimitive.i8;
-          if (expr.constant.value >= -Math.pow(2, 7) && expr.constant.value <= Math.pow(2, 7) - 1) {
+          if (expr.literal.value >= -Math.pow(2, 7) && expr.literal.value <= Math.pow(2, 7) - 1) {
             type = EPrimitive.i8;
           } else if (
-            expr.constant.value >= -Math.pow(2, 15) &&
-            expr.constant.value <= Math.pow(2, 15) - 1
+            expr.literal.value >= -Math.pow(2, 15) &&
+            expr.literal.value <= Math.pow(2, 15) - 1
           ) {
             type = EPrimitive.i16;
           } else if (
-            expr.constant.value >= -Math.pow(2, 31) &&
-            expr.constant.value <= Math.pow(2, 31) - 1
+            expr.literal.value >= -Math.pow(2, 31) &&
+            expr.literal.value <= Math.pow(2, 31) - 1
           ) {
             type = EPrimitive.i32;
           } else if (
-            expr.constant.value >= -Math.pow(2, 63) &&
-            expr.constant.value <= Math.pow(2, 63) - 1
+            expr.literal.value >= -Math.pow(2, 63) &&
+            expr.literal.value <= Math.pow(2, 63) - 1
           ) {
             type = EPrimitive.i64;
           } else {
             throw new CompilerError(
-              `The numeral constant ${expr.constant.value} is outside of any workable integer range`,
+              `The numeral constant ${expr.literal.value} is outside of any workable integer range`,
               expr.sourceloc
             );
           }
           return {
             variant: "Constant",
             type: makePrimitiveAvailable(sr, type),
-            value: expr.constant.value,
+            value: expr.literal.value,
             sourceloc: expr.sourceloc,
           };
         }
@@ -396,7 +396,7 @@ export function elaborateExpr(
         return {
           variant: "Constant",
           type: makePrimitiveAvailable(sr, EPrimitive.str),
-          value: expr.constant.value,
+          value: expr.literal.value,
           sourceloc: expr.sourceloc,
         };
       }
@@ -1001,7 +1001,7 @@ export function elaborateStatement(
   args: {
     scope: Semantic.BlockScope;
     context: SubstitutionContext;
-    elaboratedVariables: Map<Collect.Symbol, Semantic.VariableSymbol>;
+    elaboratedVariables: Map<Collect.Node, Semantic.VariableSymbol>;
     expectedReturnType: Semantic.DatatypeSymbol;
   }
 ): Semantic.Statement {
@@ -1212,13 +1212,13 @@ export function elaborateBlockScope(
   args: {
     scope: Semantic.BlockScope;
     expectedReturnType: Semantic.DatatypeSymbol;
-    elaboratedVariables: Map<Collect.Symbol, Semantic.VariableSymbol>;
+    elaboratedVariables: Map<Collect.Node, Semantic.VariableSymbol>;
     context: SubstitutionContext;
   }
 ) {
   args.scope.statements = [];
 
-  const variableMap = new Map<Collect.Symbol, Semantic.VariableSymbol>(args.elaboratedVariables);
+  const variableMap = new Map<Collect.Node, Semantic.VariableSymbol>(args.elaboratedVariables);
 
   for (const _s of args.scope.collectedScope.symbols) {
     const symbol = getSymbol(sr.cc, _s);
@@ -1301,7 +1301,7 @@ export function defineThisPointer(
     scope: Semantic.BlockScope;
     parentStruct: Semantic.StructDatatypeSymbol;
     context: SubstitutionContext;
-    elaboratedVariables: Map<Collect.Symbol, Semantic.VariableSymbol>;
+    elaboratedVariables: Map<Collect.Node, Semantic.VariableSymbol>;
   }
 ) {
   const thisPointer = makeRawPointerDatatypeAvailable(sr, args.parentStruct);
@@ -1327,7 +1327,7 @@ export function defineThisPointer(
 export function elaborate(
   sr: SemanticResult,
   args: {
-    sourceSymbol: Collect.Symbol;
+    sourceSymbol: Collect.Node;
     usageInScope?: string;
     usageGenerics?: (ASTDatatype | ASTConstant)[];
     usedAt?: SourceLoc;
@@ -1640,7 +1640,7 @@ export function elaborate(
           getScope(sr.cc, args.sourceSymbol.funcbody._collect.scope),
           symbol.parent?.scope
         );
-        const variableMap = new Map<Collect.Symbol, Semantic.VariableSymbol>();
+        const variableMap = new Map<Collect.Node, Semantic.VariableSymbol>();
 
         if (!symbol.staticMethod && symbol.name !== "constructor") {
           defineThisPointer(sr, {

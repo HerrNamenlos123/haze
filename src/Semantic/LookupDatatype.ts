@@ -502,7 +502,7 @@ export function instantiateStruct(
   }
 
   // Now, also elaborate all nested sub structs
-  for (const d of args.definedStructType.declarations) {
+  for (const d of args.definedStructType.nestedStructs) {
     if (d.generics.length === 0) {
       elaborate(sr, {
         sourceSymbol: d,

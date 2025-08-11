@@ -1,3 +1,4 @@
+import type { ELiteralUnit } from "./AST";
 import { InternalError } from "./Errors";
 
 export enum EPrimitive {
@@ -13,6 +14,8 @@ export enum EPrimitive {
   u64,
   f32,
   f64,
+  int,
+  float,
   str,
 }
 
@@ -23,6 +26,33 @@ export enum EVariableContext {
   ThisReference,
   Global,
 }
+
+export type LiteralValue =
+  | {
+      type: EPrimitive.boolean;
+      value: boolean;
+    }
+  | {
+      type: EPrimitive.str;
+      value: string;
+    }
+  | {
+      type:
+        | EPrimitive.i8
+        | EPrimitive.i16
+        | EPrimitive.i32
+        | EPrimitive.i64
+        | EPrimitive.u8
+        | EPrimitive.u16
+        | EPrimitive.u32
+        | EPrimitive.u64
+        | EPrimitive.f32
+        | EPrimitive.f64
+        | EPrimitive.int
+        | EPrimitive.float;
+      value: number;
+      unit: ELiteralUnit | null;
+    };
 
 export enum EMethodType {
   NotAMethod,
@@ -56,6 +86,10 @@ export function primitiveToString(primitive: EPrimitive) {
       return "u64";
     case EPrimitive.f32:
       return "f32";
+    case EPrimitive.int:
+      return "int";
+    case EPrimitive.float:
+      return "float";
     case EPrimitive.f64:
       return "f64";
     case EPrimitive.str:
@@ -87,6 +121,10 @@ export function stringToPrimitive(str: string) {
       return EPrimitive.u32;
     case "u64":
       return EPrimitive.u64;
+    case "int":
+      return EPrimitive.int;
+    case "float":
+      return EPrimitive.float;
     case "f32":
       return EPrimitive.f32;
     case "f64":

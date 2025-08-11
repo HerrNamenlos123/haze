@@ -28,6 +28,7 @@ import {
   CollectFileInUnit,
   makeCollectionContext,
   makeSymbol,
+  PrettyPrintCollected,
   type CollectionContext,
 } from "./SymbolCollection/SymbolCollection";
 import { SemanticallyAnalyze } from "./Semantic/Elaborate";
@@ -75,7 +76,7 @@ class Cache {
   filename?: string;
   data: Record<string, any> = {};
 
-  constructor() {}
+  constructor() { }
 
   async getFilesWithModificationDates(dir: string): Promise<{ file: string; modified: Date }[]> {
     const files: { file: string; modified: Date }[] = [];
@@ -157,7 +158,7 @@ export class ProjectCompiler {
   cache: Cache = new Cache();
   globalBuildDir: string = "";
 
-  constructor() {}
+  constructor() { }
 
   async getConfig(singleFilename?: string) {
     let config: ModuleConfig | undefined;
@@ -316,7 +317,7 @@ class ModuleCompiler {
 
   private makeUnit() {
     const unit = makeSymbol(this.cc, {
-      variant: Collect.EEntityType.UnitScope,
+      variant: Collect.ENode.UnitScope,
       parentScope: 0,
     });
     return unit;
@@ -363,6 +364,8 @@ class ModuleCompiler {
       await this.collectImports();
       await this.addProjectSourceFiles();
 
+      PrettyPrintCollected(this.cc);
+
       return;
       const sr = SemanticallyAnalyze(this.cc, this.config.moduleType === ModuleType.Library);
       // PrettyPrintAnalyzed(sr);
@@ -386,15 +389,13 @@ class ModuleCompiler {
       if (this.config.moduleType === ModuleType.Executable) {
         const [libs, linkerFlags] = await this.loadDependencyBinaries();
         const allLinkerFlags = [...linkerFlags, ...this.config.linkerFlags];
-        const cmd = `${C_COMPILER} -g ${moduleCFile} -o ${moduleExecutable} -I${
-          this.config.srcDirectory
-        } ${libs.join(" ")} ${compilerFlags.join(" ")} ${allLinkerFlags.join(" ")} -std=c11`;
+        const cmd = `${C_COMPILER} -g ${moduleCFile} -o ${moduleExecutable} -I${this.config.srcDirectory
+          } ${libs.join(" ")} ${compilerFlags.join(" ")} ${allLinkerFlags.join(" ")} -std=c11`;
         // console.log(cmd);
         await exec(cmd);
       } else {
-        const cmd = `${C_COMPILER} -g ${moduleCFile} -c -o ${moduleOFile} -I${
-          this.config.srcDirectory
-        } ${compilerFlags.join(" ")} -fPIC -std=c11`;
+        const cmd = `${C_COMPILER} -g ${moduleCFile} -c -o ${moduleOFile} -I${this.config.srcDirectory
+          } ${compilerFlags.join(" ")} -fPIC -std=c11`;
         // console.log(cmd);
         await exec(cmd);
         await exec(`${ARCHIVE_TOOL} r ${moduleAFile} ${moduleOFile} > /dev/null`);

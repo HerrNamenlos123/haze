@@ -49,7 +49,7 @@ exprAsFuncbody: expr;
 // Variables
 
 globalVariableDef
-    : (export='export')? (extern='extern' externLang=externLanguage?)? variableMutabilitySpecifier ID (((':' datatype)? '=' expr) | (':' datatype)) ';'        #GlobalVariableDefinition
+    : (export='export')? (extern='extern' externLang=externLanguage?)? pub='pub'? variableMutabilitySpecifier ID (((':' datatype)? '=' expr) | (':' datatype)) ';'        #GlobalVariableDefinition
     ;
 
 variableMutabilitySpecifier
@@ -60,15 +60,17 @@ variableMutabilitySpecifier
 
 // Datatypes
 
-constant
+literal
     : ('true' | 'false')                        #BooleanConstant
-    | UNIT_LITERAL                              #LiteralConstant
-    | NUMBER_LITERAL                            #NumberConstant
+    | UNIT_INTEGER_LITERAL                      #IntegerUnitLiteral
+    | UNIT_FLOAT_LITERAL                        #FloatUnitLiteral
+    | INTEGER_LITERAL                           #IntegerLiteral
+    | FLOAT_LITERAL                             #FloatLiteral
     | STRING_LITERAL                            #StringConstant
     ;
 
 datatype
-    : cstruct='cstruct'? datatypeFragment ('.' datatypeFragment)*       #NamedDatatype
+    : datatypeFragment ('.' datatypeFragment)*                          #NamedDatatype
     | datatype '*'                                                      #PointerDatatype
     | datatype '&'                                                      #ReferenceDatatype
     | '(' params ')' '=>' datatype                                      #FunctionDatatype
@@ -80,7 +82,7 @@ datatypeFragment
 
 genericLiteral
     : datatype              #GenericLiteralDatatype
-    | constant              #GenericLiteralConstant
+    | literal               #GenericLiteralConstant
     ;
 
 structContent
@@ -104,7 +106,7 @@ expr
     : '(' expr ')'                                                                  #ParenthesisExpr
     // | '{' objectattribute? (',' objectattribute)* ','? '}'                       #AnonymousStructInstantiationExpr
     | lambda                                                                        #LambdaExpr
-    | constant                                                                      #ConstantExpr
+    | literal                                                                       #LiteralExpr
 
     // Part 1: Left to right
     | expr op=('++' | '--')                                                         #PostIncrExpr
@@ -157,8 +159,10 @@ STRING_LITERAL
     :   '"' (ESC | ~["\\])* '"'
     ;
 
-UNIT_LITERAL: (DEC_PART | FLOAT_PART) ('s' | 'ms' | 'us' | 'ns' | 'm' | 'h' | 'd');
-NUMBER_LITERAL: (DEC_PART | FLOAT_PART);
+UNIT_INTEGER_LITERAL: (DEC_PART) ('s' | 'ms' | 'us' | 'ns' | 'm' | 'h' | 'd');
+UNIT_FLOAT_LITERAL: (FLOAT_PART) ('s' | 'ms' | 'us' | 'ns' | 'm' | 'h' | 'd');
+INTEGER_LITERAL: (DEC_PART);
+FLOAT_LITERAL: (FLOAT_PART);
 
 ID: [a-zA-Z_][a-zA-Z_0-9]*;
 

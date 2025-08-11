@@ -1,5 +1,5 @@
 import { ImpossibleSituation, type SourceLoc } from "./Errors";
-import type { EMethodType, EVariableContext } from "./common";
+import type { EMethodType, EVariableContext, LiteralValue } from "./common";
 
 export enum EVariableMutability {
   Immutable, // Fully immutable
@@ -159,8 +159,7 @@ export type ASTParam = {
 export type ASTNamedDatatype = {
   variant: "NamedDatatype";
   name: string;
-  cstruct: boolean;
-  generics: (ASTDatatype | ASTConstant)[];
+  generics: (ASTDatatype | ASTLiteralExpr)[];
   nested?: ASTNamedDatatype;
   sourceloc: SourceLoc;
 };
@@ -184,27 +183,6 @@ export type ASTReferenceDatatype = {
   referee: ASTDatatype;
   sourceloc: SourceLoc;
 };
-
-export type ASTBooleanConstant = {
-  variant: "BooleanConstant";
-  value: boolean;
-  sourceloc: SourceLoc;
-};
-
-export type ASTNumberConstant = {
-  variant: "NumberConstant";
-  value: number;
-  unit?: ELiteralUnit;
-  sourceloc: SourceLoc;
-};
-
-export type ASTStringConstant = {
-  variant: "StringConstant";
-  value: string;
-  sourceloc: SourceLoc;
-};
-
-export type ASTConstant = ASTBooleanConstant | ASTNumberConstant | ASTStringConstant;
 
 export type ASTDatatype =
   | ASTNamedDatatype
@@ -305,9 +283,9 @@ export type ASTLambdaExpr = {
   sourceloc: SourceLoc;
 };
 
-export type ASTConstantExpr = {
-  variant: "ConstantExpr";
-  constant: ASTConstant;
+export type ASTLiteralExpr = {
+  variant: "LiteralExpr";
+  literal: LiteralValue;
   sourceloc: SourceLoc;
 };
 
@@ -329,7 +307,7 @@ export type ASTExprMemberAccess = {
   variant: "ExprMemberAccess";
   expr: ASTExpr;
   member: string;
-  generics: (ASTDatatype | ASTConstant)[];
+  generics: (ASTDatatype | ASTLiteralExpr)[];
   sourceloc: SourceLoc;
 };
 
@@ -392,14 +370,14 @@ export type ASTExprAssignmentExpr = {
 export type ASTSymbolValueExpr = {
   variant: "SymbolValueExpr";
   name: string;
-  generics: (ASTDatatype | ASTConstant)[];
+  generics: (ASTDatatype | ASTLiteralExpr)[];
   sourceloc: SourceLoc;
 };
 
 export type ASTExpr =
   | ASTParenthesisExpr
   | ASTLambdaExpr
-  | ASTConstantExpr
+  | ASTLiteralExpr
   | ASTPostIncrExpr
   | ASTExprCallExpr
   | ASTExprMemberAccess
@@ -475,7 +453,7 @@ export type ASTStructDefinition = {
   }[];
   members: ASTStructMemberDefinition[];
   methods: ASTStructMethodDefinition[];
-  declarations: ASTStructDefinition[];
+  nestedStructs: ASTStructDefinition[];
   sourceloc: SourceLoc;
 };
 

@@ -27,6 +27,7 @@
     "argparse": "^2.0.1",
     "bun": "^1.2.2",
     "cross-env": "^7.0.3",
+    "d3": "^7.9.0",
     "deep-equal": "^2.2.3"
   },
   "devDependencies": {

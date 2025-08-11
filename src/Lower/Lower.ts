@@ -913,6 +913,7 @@ export function LowerModule(cc: CollectionContext, sr: SemanticResult): Lowered.
   }
 
   // PrettyPrintLowered(lr);
+  // RenderCollectedSymbolTree(lr);
 
   return lr;
 }

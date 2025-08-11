@@ -43,7 +43,7 @@ export type ModuleMetadata = {
   name: string;
   version: string;
   libs: ModuleLibMetadata[];
-  exportedDeclarations: (Collect.Scope | Collect.Symbol)[];
+  exportedDeclarations: (Collect.Scope | Collect.Node)[];
   linkerFlags: string[];
 };
 

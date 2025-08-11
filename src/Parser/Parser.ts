@@ -11,13 +11,10 @@ import {
   EExternLanguage,
   EIncrOperation,
   ELiteralUnit,
-  EOperator,
   EUnaryOperation,
   type ASTBinaryExpr,
-  type ASTBooleanConstant,
   type ASTCInjectDirective,
-  type ASTConstant,
-  type ASTConstantExpr,
+  type ASTLiteralExpr,
   type ASTDatatype,
   type ASTExplicitCastExpr,
   type ASTExpr,
@@ -35,7 +32,6 @@ import {
   type ASTLambdaExpr,
   type ASTNamedDatatype,
   type ASTNamespaceDefinition,
-  type ASTNumberConstant,
   type ASTParam,
   type ASTParenthesisExpr,
   type ASTPostIncrExpr,
@@ -47,7 +43,6 @@ import {
   type ASTReturnStatement,
   type ASTRoot,
   type ASTScope,
-  type ASTStringConstant,
   type ASTStructDefinition,
   type ASTStructInstantiationExpr,
   type ASTStructMemberDefinition,
@@ -64,7 +59,6 @@ import {
   BooleanConstantContext,
   CInjectDirectiveContext,
   CInlineStatementContext,
-  ConstantExprContext,
   DatatypeFragmentContext,
   ExplicitCastExprContext,
   ExprAsFuncbodyContext,
@@ -81,11 +75,9 @@ import {
   IfStatementContext,
   LambdaContext,
   LambdaExprContext,
-  LiteralConstantContext,
   NamedDatatypeContext,
   NamespaceDefinitionContext,
   NestedStructDefinitionContext,
-  NumberConstantContext,
   ParamsContext,
   ParenthesisExprContext,
   PostIncrExprContext,
@@ -110,6 +102,11 @@ import {
   VariableImmutableContext,
   VariableBindingImmutableContext,
   ScopeStatementContext,
+  IntegerLiteralContext,
+  FloatLiteralContext,
+  IntegerUnitLiteralContext,
+  FloatUnitLiteralContext,
+  LiteralExprContext,
 } from "./grammar/autogen/HazeParser";
 import {
   BaseErrorListener,
@@ -120,7 +117,7 @@ import {
 } from "antlr4ng";
 import { HazeLexer } from "./grammar/autogen/HazeLexer";
 import { HazeVisitor } from "./grammar/autogen/HazeVisitor";
-import { EVariableContext } from "../shared/common";
+import { EPrimitive, EVariableContext, type LiteralValue } from "../shared/common";
 import { makeModulePrefix } from "../Module";
 import type { ModuleConfig } from "../shared/Config";
 
@@ -343,39 +340,56 @@ class ASTTransformer extends HazeVisitor<any> {
     };
   };
 
-  visitNumberConstant = (ctx: NumberConstantContext): ASTNumberConstant => {
+  visitIntegerLiteral = (ctx: IntegerLiteralContext): LiteralValue => {
     return {
-      variant: "NumberConstant",
-      sourceloc: this.loc(ctx),
-      value: Number(ctx.NUMBER_LITERAL().getText()),
+      type: EPrimitive.int,
+      value: Number(ctx.INTEGER_LITERAL().getText()),
+      unit: null,
     };
   };
 
-  visitStringConstant = (ctx: StringConstantContext): ASTStringConstant => {
+  visitFloatLiteral = (ctx: FloatLiteralContext): LiteralValue => {
     return {
-      variant: "StringConstant",
-      sourceloc: this.loc(ctx),
+      type: EPrimitive.float,
+      value: Number(ctx.FLOAT_LITERAL().getText()),
+      unit: null,
+    };
+  };
+
+  visitIntegerUnitLiteral = (ctx: IntegerUnitLiteralContext): LiteralValue => {
+    return this.makeUnitLiteral(ctx);
+  };
+
+  visitFloatUnitLiteral = (ctx: FloatUnitLiteralContext): LiteralValue => {
+    return this.makeUnitLiteral(ctx);
+  };
+
+  visitStringConstant = (ctx: StringConstantContext): LiteralValue => {
+    return {
+      type: EPrimitive.str,
       value: JSON.parse(ctx.STRING_LITERAL().getText()),
     };
   };
 
-  visitBooleanConstant = (ctx: BooleanConstantContext): ASTBooleanConstant => {
+  visitBooleanConstant = (ctx: BooleanConstantContext): LiteralValue => {
     return {
-      variant: "BooleanConstant",
-      sourceloc: this.loc(ctx),
+      type: EPrimitive.boolean,
       value: ctx.getText() === "true" ? true : false,
     };
   };
 
-  visitLiteralConstant = (ctx: LiteralConstantContext): ASTNumberConstant => {
+  makeUnitLiteral(ctx: IntegerUnitLiteralContext | FloatUnitLiteralContext): LiteralValue {
     function parseUnit(input: string): [number, string] {
       const match = input.match(/^(-?\d*\.?\d+)([a-zA-Z%]+)$/);
       if (!match) throw new Error(`Invalid format: "${input}"`);
       return [parseFloat(match[1]), match[2]];
     }
-    const [value, unit] = parseUnit(ctx.UNIT_LITERAL().getText());
+    const [value, unit] =
+      ctx instanceof IntegerUnitLiteralContext
+        ? parseUnit(ctx.UNIT_INTEGER_LITERAL().getText())
+        : parseUnit(ctx.UNIT_FLOAT_LITERAL().getText());
 
-    let literalUnit: ELiteralUnit | undefined = undefined;
+    let literalUnit: ELiteralUnit | null = null;
     switch (unit) {
       case undefined:
         break;
@@ -413,25 +427,24 @@ class ASTTransformer extends HazeVisitor<any> {
     }
 
     return {
-      variant: "NumberConstant",
-      sourceloc: this.loc(ctx),
       value: value,
+      type: ctx instanceof IntegerUnitLiteralContext ? EPrimitive.int : EPrimitive.float,
       unit: literalUnit,
     };
-  };
+  }
 
   visitGenericLiteralDatatype = (ctx: GenericLiteralDatatypeContext): ASTDatatype => {
     return this.visit(ctx.datatype());
   };
 
-  visitGenericLiteralConstant = (ctx: GenericLiteralConstantContext): ASTConstant => {
-    return this.visit(ctx.constant());
+  visitGenericLiteralConstant = (ctx: GenericLiteralConstantContext): ASTLiteralExpr => {
+    return this.visit(ctx.literal());
   };
 
   visitDatatypeFragment = (ctx: DatatypeFragmentContext) => {
     return {
       name: ctx.ID().getText(),
-      generics: ctx.genericLiteral().map((g) => this.visit(g) as ASTDatatype | ASTConstant),
+      generics: ctx.genericLiteral().map((g) => this.visit(g) as ASTDatatype | ASTLiteralExpr),
       sourceloc: this.loc(ctx),
     };
   };
@@ -442,7 +455,6 @@ class ASTTransformer extends HazeVisitor<any> {
     for (const fragment of fragments.reverse()) {
       datatypes.push({
         variant: "NamedDatatype",
-        cstruct: Boolean(ctx._cstruct),
         name: fragment.name,
         sourceloc: fragment.sourceloc,
         generics: fragment.generics,
@@ -519,6 +531,7 @@ class ASTTransformer extends HazeVisitor<any> {
   ): ASTGlobalVariableDefinition => {
     return {
       variant: "GlobalVariableDefinition",
+      pub: Boolean(ctx._pub),
       export: Boolean(ctx._export_),
       extern: this.exlang(ctx),
       mutability: this.mutability(ctx),
@@ -596,7 +609,7 @@ class ASTTransformer extends HazeVisitor<any> {
         name: p,
         sourceloc: this.loc(ctx), // TODO: Find a better sourceloc from the actual token, not the function
       })),
-      declarations: declarations,
+      nestedStructs: declarations,
       members: members,
       methods: methods,
       sourceloc: this.loc(ctx),
@@ -721,10 +734,10 @@ class ASTTransformer extends HazeVisitor<any> {
     };
   };
 
-  visitConstantExpr = (ctx: ConstantExprContext): ASTConstantExpr => {
+  visitLiteralExpr = (ctx: LiteralExprContext): ASTLiteralExpr => {
     return {
-      variant: "ConstantExpr",
-      constant: this.visit(ctx.constant()),
+      variant: "LiteralExpr",
+      literal: this.visit(ctx.literal()),
       sourceloc: this.loc(ctx),
     };
   };
@@ -749,7 +762,7 @@ class ASTTransformer extends HazeVisitor<any> {
   };
 
   visitExprMemberAccess = (ctx: ExprMemberAccessContext): ASTExprMemberAccess => {
-    const generics: (ASTDatatype | ASTConstant)[] = [];
+    const generics: (ASTDatatype | ASTLiteralExpr)[] = [];
     for (let i = 0; i < ctx.genericLiteral().length; i++) {
       generics.push(this.visit(ctx.genericLiteral()[i]));
     }
@@ -847,7 +860,7 @@ class ASTTransformer extends HazeVisitor<any> {
   };
 
   visitSymbolValueExpr = (ctx: SymbolValueExprContext): ASTSymbolValueExpr => {
-    const generics: (ASTDatatype | ASTConstant)[] = [];
+    const generics: (ASTDatatype | ASTLiteralExpr)[] = [];
     for (let i = 0; i < ctx.genericLiteral().length; i++) {
       generics.push(this.visit(ctx.genericLiteral()[i]));
     }

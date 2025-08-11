@@ -8,8 +8,7 @@ import {
 import {
   EExternLanguage,
   type ASTBinaryExpr,
-  type ASTConstant,
-  type ASTConstantExpr,
+  type ASTLiteralExpr,
   type ASTDatatype,
   type ASTExplicitCastExpr,
   type ASTExprAsFuncbody,
@@ -33,13 +32,14 @@ import {
   type ASTSymbolValueExpr,
   type ASTUnaryExpr,
   type ASTVariableDefinitionStatement,
+  BinaryOperationToString,
+  UnaryOperationToString,
 } from "../shared/AST";
 import {
-  assertScope,
-  EMethodType,
   EPrimitive,
   EVariableContext,
   primitiveToString,
+  type LiteralValue,
 } from "../shared/common";
 import { makeModulePrefix } from "../Module";
 
@@ -47,9 +47,9 @@ import type {
   ASTCInjectDirective,
   ASTExpr,
   ASTStatement,
-  ASTStructMemberDefinition,
-  ASTStructMethodDefinition,
+  EAssignmentOperation,
   EBinaryOperation,
+  EIncrOperation,
   EUnaryOperation,
   EVariableMutability,
 } from "../shared/AST";
@@ -100,7 +100,7 @@ function exportMermaidScopeTree(cc: CollectionContext): string {
 
 export type CollectionContext = {
   config: ModuleConfig;
-  entities: Collect.Symbol[];
+  nodes: Collect.Node[];
 
   // Helper utilities
   overloadGroups: Set<number>;
@@ -110,9 +110,9 @@ export type CollectionContext = {
 export function makeCollectionContext(config: ModuleConfig): CollectionContext {
   const cc: CollectionContext = {
     config: config,
-    entities: [
+    nodes: [
       {
-        variant: Collect.EEntityType.ModuleScope,
+        variant: Collect.ENode.ModuleScope,
       },
     ],
     blockScopes: new Set(),
@@ -122,7 +122,7 @@ export function makeCollectionContext(config: ModuleConfig): CollectionContext {
 }
 
 export namespace Collect {
-  export const enum EEntityType {
+  export const enum ENode {
     ModuleScope,
     UnitScope,
     FileScope,
@@ -140,6 +140,7 @@ export namespace Collect {
     StructDefinitionSymbol,
     NamespaceDefinitionSymbol,
     GenericTypeParameter,
+    CInjectDirective,
     ExprStatement,
     IfStatement,
     WhileStatement,
@@ -148,12 +149,20 @@ export namespace Collect {
     BlockScopeStatement,
     VariableDefinitionStatement,
     ParenthesisExpr,
+    FunctionDatatype,
     BinaryExpr,
+    LiteralExpr,
     UnaryExpr,
     ExprCallExpr,
     SymbolValueExpr,
     ExplicitCastExpr,
+    MemberAccessExpr,
+    PointerAddressOfExpr,
+    PointerDereferenceExpr,
+    ExprAssignmentExpr,
     StructInstantiationExpr,
+    PreIncrExpr,
+    PostIncrExpr,
   }
 
   /// ===============================================================
@@ -161,23 +170,23 @@ export namespace Collect {
   /// ===============================================================
 
   export type ModuleScope = {
-    variant: EEntityType.ModuleScope;
+    variant: ENode.ModuleScope;
   };
 
   export type UnitScope = {
-    variant: EEntityType.UnitScope;
+    variant: ENode.UnitScope;
     parentScope: number;
   };
 
   export type FileScope = {
-    variant: EEntityType.FileScope;
+    variant: ENode.FileScope;
     filepath: string;
     parentScope: number;
     symbols: number[];
   };
 
   export type FunctionScope = {
-    variant: EEntityType.FunctionScope;
+    variant: ENode.FunctionScope;
     parentScope: number;
     owningSymbol: number;
     sourceloc: SourceLoc;
@@ -186,16 +195,15 @@ export namespace Collect {
   };
 
   export type StructScope = {
-    variant: EEntityType.StructScope;
+    variant: ENode.StructScope;
     parentScope: number;
     owningSymbol: number;
     sourceloc: SourceLoc;
-    blockScope: number;
     symbols: number[];
   };
 
   export type NamespaceScope = {
-    variant: EEntityType.NamespaceScope;
+    variant: ENode.NamespaceScope;
     parentScope: number;
     owningSymbol: number;
     sourceloc: SourceLoc;
@@ -203,7 +211,7 @@ export namespace Collect {
   };
 
   export type BlockScope = {
-    variant: EEntityType.BlockScope;
+    variant: ENode.BlockScope;
     parentScope: number;
     owningSymbol: number;
     sourceloc: SourceLoc;
@@ -225,7 +233,7 @@ export namespace Collect {
   /// ===============================================================
 
   export type FunctionOverloadGroup = {
-    variant: EEntityType.FunctionOverloadGroup;
+    variant: ENode.FunctionOverloadGroup;
     parentScope: number;
     name: string;
     overloads: number[];
@@ -238,7 +246,7 @@ export namespace Collect {
   /// ===============================================================
 
   export type FunctionSymbol = {
-    variant: EEntityType.FunctionSymbol;
+    variant: ENode.FunctionSymbol;
     parentScope: number;
     overloadGroup: number;
     returnType: number | null;
@@ -254,7 +262,7 @@ export namespace Collect {
   };
 
   export type VariableSymbol = {
-    variant: EEntityType.VariableSymbol;
+    variant: ENode.VariableSymbol;
     name: string;
     inScope: number;
     type: number | null;
@@ -264,9 +272,15 @@ export namespace Collect {
   };
 
   export type GlobalVariableDefinition = {
-    variant: EEntityType.GlobalVariableDefinition;
+    variant: ENode.GlobalVariableDefinition;
     variableSymbol: number;
     value: number | null;
+    sourceloc: SourceLoc;
+  };
+
+  export type CInjectDirective = {
+    variant: ENode.CInjectDirective;
+    value: string;
     sourceloc: SourceLoc;
   };
 
@@ -278,32 +292,46 @@ export namespace Collect {
   //   bindingMutability: Types.ui8,
   // });
 
-  export type Symbols = FunctionSymbol | VariableSymbol | GlobalVariableDefinition;
+  export type Symbols =
+    | FunctionSymbol
+    | VariableSymbol
+    | GlobalVariableDefinition
+    | CInjectDirective;
 
   /// ===============================================================
   /// ===                       Type Symbols                      ===
   /// ===============================================================
 
   export type NamedDatatype = {
-    variant: EEntityType.NamedDatatype;
+    variant: ENode.NamedDatatype;
     name: string;
+    innerNested: number | null;
+    genericArgs: number[];
+    sourceloc: SourceLoc;
+  };
+
+  export type FunctionDatatype = {
+    variant: ENode.FunctionDatatype;
+    parameters: number[];
+    returnType: number;
+    vararg: boolean;
     sourceloc: SourceLoc;
   };
 
   export type PointerDatatype = {
-    variant: EEntityType.PointerDatatype;
+    variant: ENode.PointerDatatype;
     pointee: number;
     sourceloc: SourceLoc;
   };
 
   export type ReferenceDatatype = {
-    variant: EEntityType.ReferenceDatatype;
+    variant: ENode.ReferenceDatatype;
     referee: number;
     sourceloc: SourceLoc;
   };
 
   export type StructDefinitionSymbol = {
-    variant: EEntityType.StructDefinitionSymbol;
+    variant: ENode.StructDefinitionSymbol;
     parentScope: number;
     name: string;
     export: boolean;
@@ -314,7 +342,7 @@ export namespace Collect {
   };
 
   export type NamespaceDefinitionSymbol = {
-    variant: EEntityType.NamespaceDefinitionSymbol;
+    variant: ENode.NamespaceDefinitionSymbol;
     parentScope: number;
     name: string;
     extern: EExternLanguage;
@@ -325,7 +353,7 @@ export namespace Collect {
   };
 
   export type GenericTypeParameter = {
-    variant: EEntityType.GenericTypeParameter;
+    variant: ENode.GenericTypeParameter;
     name: string;
     owningSymbol: number;
     sourceloc: SourceLoc;
@@ -333,6 +361,7 @@ export namespace Collect {
 
   export type Datatypes =
     | NamedDatatype
+    | FunctionDatatype
     | PointerDatatype
     | ReferenceDatatype
     | StructDefinitionSymbol
@@ -349,27 +378,27 @@ export namespace Collect {
   };
 
   export type ExprStatement = BaseStatement & {
-    variant: EEntityType.ExprStatement;
+    variant: ENode.ExprStatement;
     expr: number;
   };
 
   export type InlineCStatement = BaseStatement & {
-    variant: EEntityType.InlineCStatement;
+    variant: ENode.InlineCStatement;
     value: string;
   };
 
   export type ReturnStatement = BaseStatement & {
-    variant: EEntityType.ReturnStatement;
+    variant: ENode.ReturnStatement;
     expr: number | null;
   };
 
   export type BlockScopeStatement = BaseStatement & {
-    variant: EEntityType.BlockScopeStatement;
+    variant: ENode.BlockScopeStatement;
     blockscope: number;
   };
 
   export type IfStatement = BaseStatement & {
-    variant: EEntityType.IfStatement;
+    variant: ENode.IfStatement;
     condition: number;
     thenBlock: number;
     elseif: {
@@ -380,13 +409,13 @@ export namespace Collect {
   };
 
   export type WhileStatement = BaseStatement & {
-    variant: EEntityType.WhileStatement;
+    variant: ENode.WhileStatement;
     condition: number;
     block: number;
   };
 
   export type VariableDefinitionStatement = BaseStatement & {
-    variant: EEntityType.VariableDefinitionStatement;
+    variant: ENode.VariableDefinitionStatement;
     variableSymbol: number;
     value: number | null;
   };
@@ -418,46 +447,89 @@ export namespace Collect {
   };
 
   export type ParenthesisExpr = BaseExpr & {
-    variant: EEntityType.ParenthesisExpr;
+    variant: ENode.ParenthesisExpr;
     expr: number;
   };
 
   export type BinaryExpr = BaseExpr & {
-    variant: EEntityType.BinaryExpr;
+    variant: ENode.BinaryExpr;
     left: number;
     right: number;
     operation: EBinaryOperation;
   };
 
   export type UnaryExpr = BaseExpr & {
-    variant: EEntityType.UnaryExpr;
+    variant: ENode.UnaryExpr;
     expr: number;
     operation: EUnaryOperation;
   };
 
   export type ExprCallExpr = BaseExpr & {
-    variant: EEntityType.ExprCallExpr;
+    variant: ENode.ExprCallExpr;
     calledExpr: number;
     arguments: number[];
   };
 
   export type SymbolValueExpr = BaseExpr & {
-    variant: EEntityType.SymbolValueExpr;
+    variant: ENode.SymbolValueExpr;
+    name: string;
+    genericArgs: number[];
   };
 
   export type ExplicitCastExpr = BaseExpr & {
-    variant: EEntityType.ExplicitCastExpr;
+    variant: ENode.ExplicitCastExpr;
     expr: number;
     targetType: number;
   };
 
   export type StructInstantiationExpr = BaseExpr & {
-    variant: EEntityType.StructInstantiationExpr;
+    variant: ENode.StructInstantiationExpr;
     structType: number;
     members: {
       name: string;
       value: number;
     }[];
+  };
+
+  export type ExprAssignmentExpr = BaseExpr & {
+    variant: ENode.ExprAssignmentExpr;
+    expr: number;
+    value: number;
+    operation: EAssignmentOperation;
+  };
+
+  export type PointerAddressOfExpr = BaseExpr & {
+    variant: ENode.PointerAddressOfExpr;
+    expr: number;
+  };
+
+  export type PointerDereferenceExpr = BaseExpr & {
+    variant: ENode.PointerDereferenceExpr;
+    expr: number;
+  };
+
+  export type MemberAccessExpr = BaseExpr & {
+    variant: ENode.MemberAccessExpr;
+    expr: number;
+    memberName: string;
+    genericArgs: number[];
+  };
+
+  export type LiteralExpr = BaseExpr & {
+    variant: ENode.LiteralExpr;
+    literal: LiteralValue;
+  };
+
+  export type PreIncrExpr = BaseExpr & {
+    variant: ENode.PreIncrExpr;
+    expr: number;
+    operation: EIncrOperation;
+  };
+
+  export type PostIncrExpr = BaseExpr & {
+    variant: ENode.PostIncrExpr;
+    expr: number;
+    operation: EIncrOperation;
   };
 
   export type Expressions =
@@ -467,7 +539,14 @@ export namespace Collect {
     | SymbolValueExpr
     | ExprCallExpr
     | ExplicitCastExpr
-    | StructInstantiationExpr;
+    | StructInstantiationExpr
+    | ExprAssignmentExpr
+    | PointerAddressOfExpr
+    | PointerDereferenceExpr
+    | LiteralExpr
+    | PreIncrExpr
+    | PostIncrExpr
+    | MemberAccessExpr;
 
   // export class Scope {
   //   variant = "Collect.ScopeClass" as const;
@@ -543,7 +622,7 @@ export namespace Collect {
   //   }
   // }
 
-  export type Symbol = Scope | Overloads | Symbols | Datatypes | Statements | Expressions;
+  export type Node = Scope | Overloads | Symbols | Datatypes | Statements | Expressions;
 }
 
 // export function getScope(cc: CollectionContext, id: string) {
@@ -567,21 +646,21 @@ export namespace Collect {
 //   return scope.id;
 // }
 
-export function makeSymbol(cc: CollectionContext, symbol: Collect.Symbol): number {
-  cc.entities.push(symbol);
-  return cc.entities.length - 1;
+export function makeSymbol(cc: CollectionContext, symbol: Collect.Node): number {
+  cc.nodes.push(symbol);
+  return cc.nodes.length - 1;
 }
 
 function makeOverloadGroupAvailable(cc: CollectionContext, parentScope: number, name: string) {
   for (const group of cc.overloadGroups) {
-    const og = cc.entities[group];
-    assert(og.variant === Collect.EEntityType.FunctionOverloadGroup);
+    const og = cc.nodes[group];
+    assert(og.variant === Collect.ENode.FunctionOverloadGroup);
     if (og.parentScope === parentScope && og.name === name) {
       return group;
     }
   }
   const g = makeSymbol(cc, {
-    variant: Collect.EEntityType.FunctionOverloadGroup,
+    variant: Collect.ENode.FunctionOverloadGroup,
     name: name,
     overloads: [],
     parentScope: parentScope,
@@ -591,13 +670,12 @@ function makeOverloadGroupAvailable(cc: CollectionContext, parentScope: number, 
 }
 
 function makeBlockScope(cc: CollectionContext, parentScope: number, sourceloc: SourceLoc): number {
-  const parent = cc.entities[parentScope];
+  const parent = cc.nodes[parentScope];
   assert(
-    parent.variant === Collect.EEntityType.BlockScope ||
-      parent.variant === Collect.EEntityType.FunctionScope
+    parent.variant === Collect.ENode.BlockScope || parent.variant === Collect.ENode.FunctionScope
   );
   const scope = makeSymbol(cc, {
-    variant: Collect.EEntityType.BlockScope,
+    variant: Collect.ENode.BlockScope,
     owningSymbol: parent.owningSymbol,
     parentScope: parentScope,
     statements: [],
@@ -613,8 +691,8 @@ function addStatement(
   parentScope: number,
   statement: Collect.StatementsWithoutOwningScope
 ) {
-  const parent = cc.entities[parentScope];
-  assert(parent.variant === Collect.EEntityType.BlockScope);
+  const parent = cc.nodes[parentScope];
+  assert(parent.variant === Collect.ENode.BlockScope);
   const st = makeSymbol(cc, {
     ...statement,
     owningScope: parentScope,
@@ -629,18 +707,18 @@ function defineGenericTypeParameter(
   functionOrStructScopeId: number,
   sourceloc: SourceLoc
 ) {
-  const functionOrStructScope = cc.entities[functionOrStructScopeId];
+  const functionOrStructScope = cc.nodes[functionOrStructScopeId];
   assert(
-    functionOrStructScope.variant === Collect.EEntityType.FunctionScope ||
-      functionOrStructScope.variant === Collect.EEntityType.StructScope
+    functionOrStructScope.variant === Collect.ENode.FunctionScope ||
+      functionOrStructScope.variant === Collect.ENode.StructScope
   );
-  const owner = cc.entities[functionOrStructScope.owningSymbol];
+  const owner = cc.nodes[functionOrStructScope.owningSymbol];
   assert(
-    owner.variant === Collect.EEntityType.FunctionSymbol ||
-      owner.variant === Collect.EEntityType.StructDefinitionSymbol
+    owner.variant === Collect.ENode.FunctionSymbol ||
+      owner.variant === Collect.ENode.StructDefinitionSymbol
   );
   const gg = makeSymbol(cc, {
-    variant: Collect.EEntityType.GenericTypeParameter,
+    variant: Collect.ENode.GenericTypeParameter,
     name: name,
     owningSymbol: functionOrStructScope.owningSymbol,
     sourceloc: sourceloc,
@@ -654,17 +732,17 @@ function defineVariableSymbol(
   variable: Omit<Collect.VariableSymbol, "inScope">,
   scope: number
 ) {
-  const sc = cc.entities[scope];
+  const sc = cc.nodes[scope];
   assert(
-    sc.variant === Collect.EEntityType.FileScope ||
-      sc.variant === Collect.EEntityType.BlockScope ||
-      sc.variant === Collect.EEntityType.FunctionScope ||
-      sc.variant === Collect.EEntityType.StructScope
+    sc.variant === Collect.ENode.FileScope ||
+      sc.variant === Collect.ENode.BlockScope ||
+      sc.variant === Collect.ENode.FunctionScope ||
+      sc.variant === Collect.ENode.StructScope
   );
 
   for (const id of sc.symbols) {
-    const s = cc.entities[id];
-    if (s.variant === Collect.EEntityType.VariableSymbol && s.name === variable.name) {
+    const s = cc.nodes[id];
+    if (s.variant === Collect.ENode.VariableSymbol && s.name === variable.name) {
       throw new CompilerError(
         `Symbol '${variable.name}' was already declared in this scope. Previous definition: ${
           (s.sourceloc && formatSourceLoc(s.sourceloc)) || ""
@@ -685,7 +763,9 @@ function defineVariableSymbol(
 function collect(
   cc: CollectionContext,
   item:
+    | ASTCInjectDirective
     | ASTDatatype
+    | ASTLiteralExpr
     | ASTStructDefinition
     | ASTExpr
     | ASTScope
@@ -703,7 +783,7 @@ function collect(
     | ASTExprMemberAccess
     | ASTLambdaExpr
     | ASTPreIncrExpr
-    | ASTConstantExpr
+    | ASTLiteralExpr
     | ASTPointerAddressOfExpr
     | ASTPointerDereferenceExpr
     | ASTPostIncrExpr
@@ -727,7 +807,7 @@ function collect(
       const overloadGroup = makeOverloadGroupAvailable(cc, args.currentParentScope, item.name);
 
       const functionSymbol = makeSymbol(cc, {
-        variant: Collect.EEntityType.FunctionSymbol,
+        variant: Collect.ENode.FunctionSymbol,
         export: item.export,
         extern: item.externLanguage,
         overloadGroup: overloadGroup,
@@ -741,21 +821,23 @@ function collect(
         sourceloc: item.sourceloc,
         functionScope: null,
       });
+      (cc.nodes[overloadGroup] as Collect.FunctionOverloadGroup).overloads.push(functionSymbol);
 
       console.warn("TODO: Check if function is redefined with conflicting parameters");
 
       if (item.funcbody) {
-        const funcSym = cc.entities[functionSymbol];
-        assert(funcSym.variant === Collect.EEntityType.FunctionSymbol);
+        const funcSym = cc.nodes[functionSymbol];
+        assert(funcSym.variant === Collect.ENode.FunctionSymbol);
 
         const functionScope = makeSymbol(cc, {
-          variant: Collect.EEntityType.FunctionScope,
+          variant: Collect.ENode.FunctionScope,
           owningSymbol: functionSymbol,
           parentScope: args.currentParentScope,
           sourceloc: item.sourceloc,
           blockScope: -1,
           symbols: [],
         });
+        (cc.nodes[functionSymbol] as Collect.FunctionSymbol).functionScope = functionScope;
 
         if (item.funcbody.variant === "ExprAsFuncBody") {
           item.funcbody = {
@@ -774,7 +856,7 @@ function collect(
         const blockScope = collect(cc, item.funcbody, {
           currentParentScope: functionScope,
         });
-        (cc.entities[functionScope] as Collect.FunctionScope).blockScope = blockScope;
+        (cc.nodes[functionScope] as Collect.FunctionScope).blockScope = blockScope;
 
         for (const g of item.generics) {
           defineGenericTypeParameter(cc, g.name, functionScope, g.sourceloc);
@@ -783,7 +865,7 @@ function collect(
         console.warn("TODO: Define parameters as symbols");
       }
 
-      break;
+      return overloadGroup;
     }
 
     // =================================================================================================================
@@ -801,7 +883,7 @@ function collect(
       const variableSymbol = defineVariableSymbol(
         cc,
         {
-          variant: Collect.EEntityType.VariableSymbol,
+          variant: Collect.ENode.VariableSymbol,
           name: item.name,
           type:
             (item.datatype &&
@@ -814,20 +896,14 @@ function collect(
         args.currentParentScope
       );
       const globvar = makeSymbol(cc, {
-        variant: Collect.EEntityType.GlobalVariableDefinition,
+        variant: Collect.ENode.GlobalVariableDefinition,
         value:
           (item.expr && collect(cc, item.expr, { currentParentScope: args.currentParentScope })) ||
           null,
         variableSymbol: variableSymbol,
         sourceloc: item.sourceloc,
       });
-      const parentScope = cc.entities[args.currentParentScope];
-      assert(
-        parentScope.variant === Collect.EEntityType.FileScope ||
-          parentScope.variant === Collect.EEntityType.NamespaceScope
-      );
-      parentScope.symbols.push(globvar);
-      break;
+      return globvar;
     }
 
     // =================================================================================================================
@@ -835,21 +911,21 @@ function collect(
     // =================================================================================================================
 
     case "NamespaceDefinition": {
-      const parent = cc.entities[args.currentParentScope];
+      const parent = cc.nodes[args.currentParentScope];
       assert(
-        parent.variant === Collect.EEntityType.FileScope ||
-          parent.variant === Collect.EEntityType.NamespaceScope
+        parent.variant === Collect.ENode.FileScope ||
+          parent.variant === Collect.ENode.NamespaceScope
       );
 
       let existingNamespace = -1;
       for (const id of parent.symbols) {
-        const sym = cc.entities[id];
-        if (sym.variant === Collect.EEntityType.NamespaceDefinitionSymbol) {
+        const sym = cc.nodes[id];
+        if (sym.variant === Collect.ENode.NamespaceDefinitionSymbol && sym.name === item.name) {
           if (sym.name === item.name) {
             existingNamespace = id;
             break;
           }
-        } else if (sym.variant === Collect.EEntityType.StructDefinitionSymbol) {
+        } else if (sym.variant === Collect.ENode.StructDefinitionSymbol && sym.name === item.name) {
           throw new CompilerError(
             `Symbol '${
               item.name
@@ -863,7 +939,7 @@ function collect(
 
       if (existingNamespace === -1) {
         existingNamespace = makeSymbol(cc, {
-          variant: Collect.EEntityType.NamespaceDefinitionSymbol,
+          variant: Collect.ENode.NamespaceDefinitionSymbol,
           name: item.name,
           export: item.export,
           // extern: item.
@@ -874,148 +950,180 @@ function collect(
           sourceloc: item.sourceloc,
         });
         const namespaceScope = makeSymbol(cc, {
-          variant: Collect.EEntityType.NamespaceScope,
+          variant: Collect.ENode.NamespaceScope,
           owningSymbol: existingNamespace,
           parentScope: args.currentParentScope,
           sourceloc: item.sourceloc,
           symbols: [],
         });
-        (cc.entities[existingNamespace] as Collect.NamespaceDefinitionSymbol).namespaceScope =
+        (cc.nodes[existingNamespace] as Collect.NamespaceDefinitionSymbol).namespaceScope =
           namespaceScope;
       }
 
       for (const s of item.declarations) {
-        const namespaceScope = (cc.entities[existingNamespace] as Collect.NamespaceDefinitionSymbol)
+        const namespaceScope = (cc.nodes[existingNamespace] as Collect.NamespaceDefinitionSymbol)
           .namespaceScope;
         const decl = collect(cc, s, {
           currentParentScope: namespaceScope,
         });
-        const symbols = (cc.entities[namespaceScope] as Collect.NamespaceScope).symbols;
+        const symbols = (cc.nodes[namespaceScope] as Collect.NamespaceScope).symbols;
         symbols.push(decl);
       }
-      break;
+      return existingNamespace;
     }
 
     // =================================================================================================================
     // =================================================================================================================
     // =================================================================================================================
 
-    case "StructDefinition":
-      return;
-      item._collect.definedInScope = functionScope.id;
-      item._collect.scope = makeScope(cc, item.sourceloc, functionScope.id);
-      item._collect.namespaces = meta.namespaceStack.map((n) => n.name);
-      item._collect.definedInNamespaceOrStruct = meta.currentNamespaceOrStruct?.id;
-      item._collect.fullNamespacedName = [...item._collect.namespaces, item.name];
+    case "StructDefinition": {
+      const parent = cc.nodes[args.currentParentScope];
+      assert(
+        parent.variant === Collect.ENode.FileScope ||
+          parent.variant === Collect.ENode.NamespaceScope ||
+          parent.variant === Collect.ENode.StructScope
+      );
+      for (const id of parent.symbols) {
+        const sym = cc.nodes[id];
+        if (sym.variant === Collect.ENode.NamespaceDefinitionSymbol && sym.name === item.name) {
+          throw new CompilerError(
+            `Symbol '${
+              item.name
+            }' has already been declared as a Namespace, which cannot be extended by a struct. Original definition: ${
+              (sym.sourceloc && formatSourceLoc(sym.sourceloc)) || ""
+            }`,
+            item.sourceloc
+          );
+        } else if (sym.variant === Collect.ENode.StructDefinitionSymbol && sym.name === item.name) {
+          throw new CompilerError(
+            `Struct '${item.name}' is already declared in this scope. Original definition: ${
+              (sym.sourceloc && formatSourceLoc(sym.sourceloc)) || ""
+            }`,
+            item.sourceloc
+          );
+        }
+      }
+
+      const struct = makeSymbol(cc, {
+        variant: Collect.ENode.StructDefinitionSymbol,
+        name: item.name,
+        export: item.export,
+        extern: EExternLanguage.None,
+        pub: false,
+        structScope: null,
+        parentScope: args.currentParentScope,
+        sourceloc: item.sourceloc,
+      });
+      const structScope = makeSymbol(cc, {
+        variant: Collect.ENode.StructScope,
+        owningSymbol: struct,
+        parentScope: args.currentParentScope,
+        sourceloc: item.sourceloc,
+        symbols: [],
+      });
+      (cc.nodes[struct] as Collect.NamespaceDefinitionSymbol).namespaceScope = structScope;
+
       for (const g of item.generics) {
-        getScope(cc, item._collect.scope).defineSymbol(cc, g);
+        defineGenericTypeParameter(cc, g.name, structScope, g.sourceloc);
       }
 
-      const alreadyExists = functionScope.tryLookupSymbolHere(cc, item.name);
-      if (alreadyExists) {
-        const msg =
-          (alreadyExists.sourceloc &&
-            `Conflicting declaration at ${formatSourceLoc(alreadyExists.sourceloc)}`) ||
-          "";
-        throw new CompilerError(
-          `Symbol ${item.name} already exists in this scope. ${msg}`,
-          item.sourceloc
-        );
-      }
-      functionScope.defineSymbol(cc, item);
-      cc.symbols.set(item.id, item);
+      // for (const s of item.nestedStructs) {
+      //   const namespaceScope = (cc.nodes[existingNamespace] as Collect.NamespaceDefinitionSymbol)
+      //     .namespaceScope;
+      //   const decl = collect(cc, s, {
+      //     currentParentScope: namespaceScope,
+      //   });
+      //   const symbols = (cc.nodes[namespaceScope] as Collect.NamespaceScope).symbols;
+      //   symbols.push(decl);
+      // }
+      return struct;
 
-      const newMeta = {
-        ...meta,
-        currentNamespaceOrStruct: item,
-        namespaceStack: [...meta.namespaceStack, item],
-      };
+      // for (const decl of item.declarations) {
+      //   collect(cc, getScope(cc, item._collect.scope), decl, newMeta);
+      // }
 
-      for (const decl of item.declarations) {
-        collect(cc, getScope(cc, item._collect.scope), decl, newMeta);
-      }
+      // for (const m of item.members) {
+      //   collect(cc, getScope(cc, item._collect.scope), m.type, newMeta);
+      // }
 
-      for (const m of item.members) {
-        collect(cc, getScope(cc, item._collect.scope), m.type, newMeta);
-      }
+      // for (const method of item.methods) {
+      //   method.declarationScope = makeScope(cc, item.sourceloc, item._collect.scope);
+      //   if (method.funcbody) {
+      //     method.funcbody._collect.scope = makeScope(cc, item.sourceloc, method.declarationScope);
+      //   }
 
-      for (const method of item.methods) {
-        method.declarationScope = makeScope(cc, item.sourceloc, item._collect.scope);
-        if (method.funcbody) {
-          method.funcbody._collect.scope = makeScope(cc, item.sourceloc, method.declarationScope);
-        }
+      //   if (!method.returnType) {
+      //     method.returnType = {
+      //       variant: "NamedDatatype",
+      //       name: "none",
+      //       cstruct: false,
+      //       generics: [],
+      //       sourceloc: item.sourceloc,
+      //       _collect: {},
+      //     };
+      //   }
 
-        if (!method.returnType) {
-          method.returnType = {
-            variant: "NamedDatatype",
-            name: "none",
-            cstruct: false,
-            generics: [],
-            sourceloc: item.sourceloc,
-            _collect: {},
-          };
-        }
+      //   method._collect.fullNamespacePath = [
+      //     ...meta.namespaceStack.map((n) => n.name),
+      //     method.name,
+      //   ];
+      //   method._collect.definedInScope = item._collect.scope;
 
-        method._collect.fullNamespacePath = [
-          ...meta.namespaceStack.map((n) => n.name),
-          method.name,
-        ];
-        method._collect.definedInScope = item._collect.scope;
+      //   for (const g of method.generics) {
+      //     getScope(cc, method.declarationScope).defineSymbol(cc, g);
+      //   }
 
-        for (const g of method.generics) {
-          getScope(cc, method.declarationScope).defineSymbol(cc, g);
-        }
+      //   if (method.funcbody?._collect.scope) {
+      //     if (!method.static && method.name !== "constructor") {
+      //       const s: ASTVariableDefinitionStatement = {
+      //         variant: "VariableDefinitionStatement",
+      //         id:
+      //           makeModulePrefix(cc.config) + ".vardef." + (cc.config.symbolIdCounter++).toString(),
+      //         mutability: false,
+      //         name: "this",
+      //         sourceloc: method.sourceloc,
+      //         datatype: undefined,
+      //         variableContext: EVariableContext.ThisReference,
+      //         _semantic: {},
+      //       };
+      //       getScope(cc, method.funcbody._collect.scope).defineSymbol(cc, s);
+      //       cc.symbols.set(s.id, s);
+      //     }
 
-        if (method.funcbody?._collect.scope) {
-          if (!method.static && method.name !== "constructor") {
-            const s: ASTVariableDefinitionStatement = {
-              variant: "VariableDefinitionStatement",
-              id:
-                makeModulePrefix(cc.config) + ".vardef." + (cc.config.symbolIdCounter++).toString(),
-              mutability: false,
-              name: "this",
-              sourceloc: method.sourceloc,
-              datatype: undefined,
-              variableContext: EVariableContext.ThisReference,
-              _semantic: {},
-            };
-            getScope(cc, method.funcbody._collect.scope).defineSymbol(cc, s);
-            cc.symbols.set(s.id, s);
-          }
-
-          for (const param of method.params) {
-            const s: ASTVariableDefinitionStatement = {
-              variant: "VariableDefinitionStatement",
-              id:
-                makeModulePrefix(cc.config) + ".vardef." + (cc.config.symbolIdCounter++).toString(),
-              mutability: false,
-              name: param.name,
-              datatype: param.datatype,
-              sourceloc: param.sourceloc,
-              variableContext: EVariableContext.FunctionParameter,
-              _semantic: {},
-            };
-            getScope(cc, method.funcbody._collect.scope).defineSymbol(cc, s);
-            cc.symbols.set(s.id, s);
-            collect(cc, getScope(cc, method.declarationScope), param.datatype, newMeta);
-          }
-          if (method.returnType) {
-            collect(cc, getScope(cc, method.declarationScope), method.returnType, newMeta);
-          }
-          collect(cc, getScope(cc, method.funcbody._collect.scope), method.funcbody, newMeta);
-        }
-      }
-      break;
+      //     for (const param of method.params) {
+      //       const s: ASTVariableDefinitionStatement = {
+      //         variant: "VariableDefinitionStatement",
+      //         id:
+      //           makeModulePrefix(cc.config) + ".vardef." + (cc.config.symbolIdCounter++).toString(),
+      //         mutability: false,
+      //         name: param.name,
+      //         datatype: param.datatype,
+      //         sourceloc: param.sourceloc,
+      //         variableContext: EVariableContext.FunctionParameter,
+      //         _semantic: {},
+      //       };
+      //       getScope(cc, method.funcbody._collect.scope).defineSymbol(cc, s);
+      //       cc.symbols.set(s.id, s);
+      //       collect(cc, getScope(cc, method.declarationScope), param.datatype, newMeta);
+      //     }
+      //     if (method.returnType) {
+      //       collect(cc, getScope(cc, method.declarationScope), method.returnType, newMeta);
+      //     }
+      //     collect(cc, getScope(cc, method.funcbody._collect.scope), method.funcbody, newMeta);
+      //   }
+      // }
+    }
 
     // =================================================================================================================
     // =================================================================================================================
     // =================================================================================================================
 
     case "NamedDatatype": {
-      console.warn("TODO: Properly read named datatype with generics and nesting");
       return makeSymbol(cc, {
-        variant: Collect.EEntityType.NamedDatatype,
+        variant: Collect.ENode.NamedDatatype,
         name: item.name,
+        innerNested: (item.nested && collect(cc, item.nested, args)) || null,
+        genericArgs: item.generics.map((g) => collect(cc, g, args)),
         // referee: collect(cc, item.n, args),
         sourceloc: item.sourceloc,
       });
@@ -1027,7 +1135,7 @@ function collect(
 
     case "PointerDatatype": {
       return makeSymbol(cc, {
-        variant: Collect.EEntityType.PointerDatatype,
+        variant: Collect.ENode.PointerDatatype,
         pointee: collect(cc, item.pointee, args),
         sourceloc: item.sourceloc,
       });
@@ -1039,7 +1147,7 @@ function collect(
 
     case "ReferenceDatatype": {
       return makeSymbol(cc, {
-        variant: Collect.EEntityType.ReferenceDatatype,
+        variant: Collect.ENode.ReferenceDatatype,
         referee: collect(cc, item.referee, args),
         sourceloc: item.sourceloc,
       });
@@ -1050,8 +1158,11 @@ function collect(
     // =================================================================================================================
 
     case "CInjectDirective": {
-      console.warn("TODO: C Inject Directive");
-      break;
+      return makeSymbol(cc, {
+        variant: Collect.ENode.CInjectDirective,
+        value: item.code,
+        sourceloc: item.sourceloc,
+      });
     }
 
     // =================================================================================================================
@@ -1064,7 +1175,7 @@ function collect(
         switch (astStatement.variant) {
           case "ExprStatement": {
             addStatement(cc, blockScope, {
-              variant: Collect.EEntityType.ExprStatement,
+              variant: Collect.ENode.ExprStatement,
               expr: collect(cc, astStatement.expr, { currentParentScope: blockScope }),
               sourceloc: astStatement.sourceloc,
             });
@@ -1073,7 +1184,7 @@ function collect(
 
           case "IfStatement": {
             addStatement(cc, blockScope, {
-              variant: Collect.EEntityType.IfStatement,
+              variant: Collect.ENode.IfStatement,
               condition: collect(cc, astStatement.condition, { currentParentScope: blockScope }),
               elseBlock:
                 (astStatement.else &&
@@ -1091,7 +1202,7 @@ function collect(
 
           case "InlineCStatement": {
             addStatement(cc, blockScope, {
-              variant: Collect.EEntityType.InlineCStatement,
+              variant: Collect.ENode.InlineCStatement,
               value: astStatement.code,
               sourceloc: astStatement.sourceloc,
             });
@@ -1100,7 +1211,7 @@ function collect(
 
           case "ReturnStatement":
             addStatement(cc, blockScope, {
-              variant: Collect.EEntityType.ReturnStatement,
+              variant: Collect.ENode.ReturnStatement,
               expr:
                 (astStatement.expr &&
                   collect(cc, astStatement.expr, { currentParentScope: blockScope })) ||
@@ -1111,7 +1222,7 @@ function collect(
 
           case "WhileStatement":
             addStatement(cc, blockScope, {
-              variant: Collect.EEntityType.WhileStatement,
+              variant: Collect.ENode.WhileStatement,
               condition: collect(cc, astStatement.condition, { currentParentScope: blockScope }),
               block: collect(cc, astStatement.body, { currentParentScope: blockScope }),
               sourceloc: astStatement.sourceloc,
@@ -1122,7 +1233,7 @@ function collect(
             const variableSymbol = defineVariableSymbol(
               cc,
               {
-                variant: Collect.EEntityType.VariableSymbol,
+                variant: Collect.ENode.VariableSymbol,
                 name: astStatement.name,
                 type:
                   (astStatement.datatype &&
@@ -1135,7 +1246,7 @@ function collect(
               blockScope
             );
             addStatement(cc, blockScope, {
-              variant: Collect.EEntityType.VariableDefinitionStatement,
+              variant: Collect.ENode.VariableDefinitionStatement,
               sourceloc: astStatement.sourceloc,
               value:
                 (astStatement.expr &&
@@ -1146,7 +1257,7 @@ function collect(
             break;
         }
       }
-      break;
+      return blockScope;
     }
 
     // =================================================================================================================
@@ -1154,50 +1265,20 @@ function collect(
     // =================================================================================================================
 
     case "Deferred":
-      break;
+      return -1;
 
     // =================================================================================================================
     // =================================================================================================================
     // =================================================================================================================
 
     case "FunctionDatatype":
-      for (const param of item.params) {
-        collect(cc, functionScope, param.datatype, meta);
-      }
-      collect(cc, functionScope, item.returnType, meta);
-      break;
-
-    // =================================================================================================================
-    // =================================================================================================================
-    // =================================================================================================================
-
-    case "ReferenceDatatype": {
-      collect(cc, functionScope, item.referee, meta);
-      break;
-    }
-
-    // =================================================================================================================
-    // =================================================================================================================
-    // =================================================================================================================
-
-    case "NamedDatatype": {
-      const process = (_item: ASTNamedDatatype) => {
-        let p: ASTNamedDatatype | undefined = _item;
-        while (p) {
-          p._collect.usedInScope = functionScope.id;
-
-          for (const g of p.generics) {
-            if (g.variant === "NamedDatatype") {
-              process(g);
-            }
-          }
-
-          p = p.nested;
-        }
-      };
-      process(item);
-      break;
-    }
+      return makeSymbol(cc, {
+        variant: Collect.ENode.FunctionDatatype,
+        returnType: collect(cc, item.returnType, args),
+        parameters: item.params.map((p) => collect(cc, p.datatype, args)),
+        vararg: item.ellipsis,
+        sourceloc: item.sourceloc,
+      });
 
     // =================================================================================================================
     // =================================================================================================================
@@ -1205,7 +1286,7 @@ function collect(
 
     case "ParenthesisExpr": {
       return makeSymbol(cc, {
-        variant: Collect.EEntityType.ParenthesisExpr,
+        variant: Collect.ENode.ParenthesisExpr,
         expr: collect(cc, item.expr, args),
         sourceloc: item.sourceloc,
       });
@@ -1217,7 +1298,7 @@ function collect(
 
     case "BinaryExpr": {
       return makeSymbol(cc, {
-        variant: Collect.EEntityType.BinaryExpr,
+        variant: Collect.ENode.BinaryExpr,
         left: collect(cc, item.a, args),
         right: collect(cc, item.b, args),
         operation: item.operation,
@@ -1229,46 +1310,56 @@ function collect(
     // =================================================================================================================
     // =================================================================================================================
 
-    case "ConstantExpr":
-      break;
+    case "LiteralExpr":
+      return makeSymbol(cc, {
+        variant: Collect.ENode.LiteralExpr,
+        literal: item.literal,
+        sourceloc: item.sourceloc,
+      });
 
     // =================================================================================================================
     // =================================================================================================================
     // =================================================================================================================
 
     case "SymbolValueExpr":
-      break;
+      return makeSymbol(cc, {
+        variant: Collect.ENode.SymbolValueExpr,
+        name: item.name,
+        genericArgs: item.generics.map((g) => collect(cc, g, args)),
+        sourceloc: item.sourceloc,
+      });
 
     // =================================================================================================================
     // =================================================================================================================
     // =================================================================================================================
 
     case "LambdaExpr":
-      item.lambda.funcbody._collect.scope = makeScope(cc, item.sourceloc, functionScope.id);
-      for (const param of item.lambda.params) {
-        const s: ASTVariableDefinitionStatement = {
-          variant: "VariableDefinitionStatement",
-          id: makeModulePrefix(cc.config) + ".vardef." + (cc.config.symbolIdCounter++).toString(),
-          mutability: false,
-          name: param.name,
-          datatype: param.datatype,
-          sourceloc: param.sourceloc,
-          variableContext: EVariableContext.FunctionParameter,
-          _semantic: {},
-        };
-        getScope(cc, item.lambda.funcbody._collect.scope).defineSymbol(cc, s);
-        cc.symbols.set(s.id, s);
-      }
+      assert(false, "Not implemented yet");
+    // item.lambda.funcbody._collect.scope = makeScope(cc, item.sourceloc, functionScope.id);
+    // for (const param of item.lambda.params) {
+    //   const s: ASTVariableDefinitionStatement = {
+    //     variant: "VariableDefinitionStatement",
+    //     id: makeModulePrefix(cc.config) + ".vardef." + (cc.config.symbolIdCounter++).toString(),
+    //     mutability: false,
+    //     name: param.name,
+    //     datatype: param.datatype,
+    //     sourceloc: param.sourceloc,
+    //     variableContext: EVariableContext.FunctionParameter,
+    //     _semantic: {},
+    //   };
+    //   getScope(cc, item.lambda.funcbody._collect.scope).defineSymbol(cc, s);
+    //   cc.symbols.set(s.id, s);
+    // }
 
-      for (const param of item.lambda.params) {
-        collect(cc, functionScope, param.datatype, meta);
-      }
-      if (item.lambda.returnType) {
-        collect(cc, functionScope, item.lambda.returnType, meta);
-      }
+    // for (const param of item.lambda.params) {
+    //   collect(cc, functionScope, param.datatype, meta);
+    // }
+    // if (item.lambda.returnType) {
+    //   collect(cc, functionScope, item.lambda.returnType, meta);
+    // }
 
-      collect(cc, getScope(cc, item.lambda.funcbody._collect.scope), item.lambda.funcbody, meta);
-      break;
+    // collect(cc, getScope(cc, item.lambda.funcbody._collect.scope), item.lambda.funcbody, meta);
+    // break;
 
     // =================================================================================================================
     // =================================================================================================================
@@ -1276,7 +1367,7 @@ function collect(
 
     case "StructInstantiationExpr":
       return makeSymbol(cc, {
-        variant: Collect.EEntityType.StructInstantiationExpr,
+        variant: Collect.ENode.StructInstantiationExpr,
         structType: collect(cc, item.datatype, args),
         members: item.members.map((m) => ({
           name: m.name,
@@ -1291,7 +1382,7 @@ function collect(
 
     case "UnaryExpr":
       return makeSymbol(cc, {
-        variant: Collect.EEntityType.UnaryExpr,
+        variant: Collect.ENode.UnaryExpr,
         expr: collect(cc, item.expr, args),
         operation: item.operation,
         sourceloc: item.sourceloc,
@@ -1303,24 +1394,37 @@ function collect(
     // =================================================================================================================
 
     case "PreIncrExpr":
-      collect(cc, functionScope, item.expr, meta);
-      break;
+      return makeSymbol(cc, {
+        variant: Collect.ENode.PreIncrExpr,
+        expr: collect(cc, item.expr, args),
+        operation: item.operation,
+        sourceloc: item.sourceloc,
+      });
 
     // =================================================================================================================
     // =================================================================================================================
     // =================================================================================================================
 
     case "PostIncrExpr":
-      collect(cc, functionScope, item.expr, meta);
-      break;
+      return makeSymbol(cc, {
+        variant: Collect.ENode.PostIncrExpr,
+        expr: collect(cc, item.expr, args),
+        operation: item.operation,
+        sourceloc: item.sourceloc,
+      });
 
     // =================================================================================================================
     // =================================================================================================================
     // =================================================================================================================
 
     case "ExprMemberAccess":
-      collect(cc, functionScope, item.expr, meta);
-      break;
+      return makeSymbol(cc, {
+        variant: Collect.ENode.MemberAccessExpr,
+        expr: collect(cc, item.expr, args),
+        memberName: item.member,
+        genericArgs: item.generics.map((g) => collect(cc, g, args)),
+        sourceloc: item.sourceloc,
+      });
 
     // =================================================================================================================
     // =================================================================================================================
@@ -1328,7 +1432,7 @@ function collect(
 
     case "ExplicitCastExpr":
       return makeSymbol(cc, {
-        variant: Collect.EEntityType.ExplicitCastExpr,
+        variant: Collect.ENode.ExplicitCastExpr,
         expr: collect(cc, item.expr, args),
         targetType: collect(cc, item.castedTo, args),
         sourceloc: item.sourceloc,
@@ -1338,26 +1442,36 @@ function collect(
     // =================================================================================================================
     // =================================================================================================================
 
-    case "RawPointerAddressOf":
-      collect(cc, functionScope, item.expr, meta);
-      break;
+    case "PointerAddressOf":
+      return makeSymbol(cc, {
+        variant: Collect.ENode.PointerAddressOfExpr,
+        expr: collect(cc, item.expr, args),
+        sourceloc: item.sourceloc,
+      });
 
     // =================================================================================================================
     // =================================================================================================================
     // =================================================================================================================
 
-    case "RawPointerDereference":
-      collect(cc, functionScope, item.expr, meta);
-      break;
+    case "PointerDereference":
+      return makeSymbol(cc, {
+        variant: Collect.ENode.PointerDereferenceExpr,
+        expr: collect(cc, item.expr, args),
+        sourceloc: item.sourceloc,
+      });
 
     // =================================================================================================================
     // =================================================================================================================
     // =================================================================================================================
 
     case "ExprAssignmentExpr":
-      collect(cc, functionScope, item.target, meta);
-      collect(cc, functionScope, item.value, meta);
-      break;
+      return makeSymbol(cc, {
+        variant: Collect.ENode.ExprAssignmentExpr,
+        expr: collect(cc, item.target, args),
+        value: collect(cc, item.value, args),
+        operation: item.operation,
+        sourceloc: item.sourceloc,
+      });
 
     // =================================================================================================================
     // =================================================================================================================
@@ -1365,7 +1479,7 @@ function collect(
 
     case "ExprCallExpr":
       return makeSymbol(cc, {
-        variant: Collect.EEntityType.ExprCallExpr,
+        variant: Collect.ENode.ExprCallExpr,
         calledExpr: collect(cc, item.calledExpr, args),
         arguments: item.arguments.map((a) => collect(cc, a, args)),
         sourceloc: item.sourceloc,
@@ -1376,6 +1490,87 @@ function collect(
   }
 }
 
+import { serve } from "bun";
+import * as d3 from "d3";
+
+async function RenderCollectedSymbolTree(cc: CollectionContext) {
+  type Node = {
+    id: number;
+    name: string;
+    children?: Node[];
+  };
+
+  // Example: build your scope/AST tree here
+  const rootNode: Node = {
+    id: 0,
+    name: "root",
+    children: [
+      {
+        id: 1,
+        name: "foo",
+        children: [
+          { id: 3, name: "x" },
+          { id: 4, name: "y" },
+        ],
+      },
+      {
+        id: 2,
+        name: "bar",
+        children: [{ id: 5, name: "baz" }],
+      },
+    ],
+  };
+
+  // Generate SVG as a string using D3
+  function renderTree(root: Node) {
+    const hierarchy = d3.hierarchy(root);
+    const treeLayout = d3.tree<Node>().nodeSize([50, 200]); // vertical spacing, horizontal spacing
+    const treeData = treeLayout(hierarchy);
+
+    let nodes: string[] = [];
+    let links: string[] = [];
+
+    treeData.descendants().forEach((d) => {
+      nodes.push(
+        `<g transform="translate(${d.y},${d.x})">
+        <circle r="10" fill="#69b3a2"></circle>
+        <text dy="4" x="15">${d.data.name}</text>
+      </g>`
+      );
+    });
+
+    treeData.links().forEach((link) => {
+      links.push(
+        `<path d="${d3.linkHorizontal()({
+          source: [link.source.y, link.source.x],
+          target: [link.target.y, link.target.x],
+        })}" fill="none" stroke="#555"/>`
+      );
+    });
+
+    const width = 800;
+    const height = 500;
+    return `<svg width="${width}" height="${height}">
+    <g transform="translate(40,40)">
+      ${links.join("\n")}
+      ${nodes.join("\n")}
+    </g>
+  </svg>`;
+  }
+
+  // Serve the page
+  console.log("Tree viewer: http://localhost:3000");
+  serve({
+    port: 3000,
+    fetch() {
+      const svg = renderTree(rootNode);
+      return new Response(`<html><body>${svg}</body></html>`, {
+        headers: { "Content-Type": "text/html" },
+      });
+    },
+  });
+}
+
 export function CollectFileInUnit(
   cc: CollectionContext,
   ast: ASTRoot,
@@ -1383,16 +1578,18 @@ export function CollectFileInUnit(
   filepath: string
 ) {
   const fileScope = makeSymbol(cc, {
-    variant: Collect.EEntityType.FileScope,
+    variant: Collect.ENode.FileScope,
     filepath: filepath,
     parentScope: unitScope,
     symbols: [],
   });
 
   for (const decl of ast) {
-    collect(cc, decl, {
+    const sym = collect(cc, decl, {
       currentParentScope: fileScope,
     });
+    // console.log(decl, sym);
+    (cc.nodes[fileScope] as Collect.FileScope).symbols.push(sym);
   }
 
   // const globalScope = getEntityByComponent(cc, Collect.ModuleScopeComponent);
@@ -1400,125 +1597,270 @@ export function CollectFileInUnit(
   // const mermaid = exportMermaidScopeTree(cc);
   // console.log(mermaid);
   // Bun.write("log.md", mermaid);
+
+  // RenderCollectedSymbolTree(cc);
 }
 
 export function PrettyPrintCollected(cc: CollectionContext) {
   console.log("C Injections:");
-  for (const i of cc.cInjections) {
-    console.log(" - " + i.code);
-  }
+  // for (const i of cc.cInjections) {
+  //   console.log(" - " + i.code);
+  // }
   console.log("\n");
 
-  const serializeAstDatatype = (datatype: ASTDatatype | ASTConstant): string => {
-    if (datatype.variant === "FunctionDatatype") {
-      return `(${datatype.params
-        .map((p) => `${p.name}: ${serializeAstDatatype(p.datatype)}`)
-        .join(", ")}${datatype.ellipsis ? ", ..." : ""}) => ${serializeAstDatatype(
-        datatype.returnType
-      )}`;
-    } else if (datatype.variant === "NamedDatatype") {
-      let s = "";
-      let d: ASTNamedDatatype | undefined = datatype;
-      while (d) {
-        s += `${datatype.name}${
-          datatype.generics.length > 0
-            ? `<${datatype.generics.map((g) => serializeAstDatatype(g)).join(", ")}>`
-            : ""
-        }`;
-        d = d.nested;
+  const printType = (typeId: number | null): string => {
+    if (typeId === null) {
+      return "?";
+    }
+    const type = cc.nodes[typeId];
+    switch (type.variant) {
+      case Collect.ENode.NamedDatatype: {
+        let str = "";
+        let n: Collect.NamedDatatype | null = type;
+        while (n) {
+          if (str !== "") {
+            str += ".";
+          }
+          str += n.name;
+          if (n.genericArgs.length > 0) {
+            str += "<" + n.genericArgs.map((g) => printType(g)).join(", ") + ">";
+          }
+          n = (n.innerNested && (cc.nodes[n.innerNested] as Collect.NamedDatatype)) || null;
+          assert(n === null || n.variant === Collect.ENode.NamedDatatype);
+        }
+        return str;
       }
-      return s;
-    } else if (datatype.variant === "Deferred") {
-      return "_deferred_";
-    } else if (datatype.variant === "RawPointerDatatype") {
-      return serializeAstDatatype(datatype.pointee) + "*";
-    } else if (datatype.variant === "ReferenceDatatype") {
-      return serializeAstDatatype(datatype.referee) + "&";
-    } else {
-      return datatype.value.toString();
+
+      case Collect.ENode.PointerDatatype: {
+        return `${printType(type.pointee)}*`;
+      }
+
+      case Collect.ENode.ReferenceDatatype: {
+        return `${printType(type.referee)}&`;
+      }
+
+      default:
+        assert(false, type.variant.toString());
     }
   };
 
-  const printScope = (scope: Collect.Scope, indent: number) => {
+  const printExpr = (exprId: number): string => {
+    const expr = cc.nodes[exprId];
+    switch (expr.variant) {
+      case Collect.ENode.ParenthesisExpr: {
+        return `(${printExpr(expr.expr)})`;
+      }
+
+      case Collect.ENode.BinaryExpr: {
+        return `(${printExpr(expr.left)} ${BinaryOperationToString(expr.operation)} ${printExpr(
+          expr.right
+        )})`;
+      }
+
+      case Collect.ENode.UnaryExpr: {
+        return `(${UnaryOperationToString(expr.operation)} ${printExpr(expr.expr)})`;
+      }
+
+      case Collect.ENode.ExprCallExpr: {
+        return `${printExpr(expr.calledExpr)}(${expr.arguments
+          .map((a) => printExpr(a))
+          .join(", ")})`;
+      }
+
+      case Collect.ENode.SymbolValueExpr: {
+        let str = expr.name;
+        if (expr.genericArgs.length > 0) {
+          str += "<" + expr.genericArgs.map((g) => printType(g)).join(", ") + ">";
+        }
+        return str;
+      }
+
+      case Collect.ENode.StructInstantiationExpr: {
+        return (
+          `${printType(expr.structType)} {` +
+          expr.members.map((a) => `${a.name}: ${printExpr(a.value)}`).join(", ") +
+          "}"
+        );
+      }
+
+      case Collect.ENode.LiteralExpr: {
+        if (expr.literal.type !== EPrimitive.str) {
+          return `${primitiveToString(expr.literal.type)}(${expr.literal.value})`;
+        } else {
+          return `${JSON.stringify(expr.literal.value)}`;
+        }
+      }
+
+      case Collect.ENode.ExplicitCastExpr: {
+        return `${printExpr(expr.expr)} as ${printType(expr.targetType)}`;
+      }
+
+      default:
+        assert(false, expr.variant.toString());
+    }
+  };
+
+  const printSymbol = (symbolId: number, indent: number) => {
+    const symbol = cc.nodes[symbolId];
     const print = (str: string, _indent = 0) => {
-      console.log(" ".repeat(indent + _indent) + str);
+      console.log(`[${symbolId}]` + " ".repeat(indent + _indent) + str);
     };
 
-    print(`Statements (${scope.rawStatements.length}):`);
-    for (const s of scope.rawStatements) {
-      // print("  - " + JSON.stringify(s));
-    }
-    print(`Symbols (${scope.symbols.length}):`);
-    for (const _s of scope.symbols) {
-      const s = getSymbol(cc, _s);
-      switch (s.variant) {
-        case "NamespaceDefinition":
-          print(`  - Namespace ${s.name}: export=${s.export}`);
-          if (s._collect.scope) printScope(getScope(cc, s._collect.scope), indent + 6);
-          break;
-
-        case "FunctionDeclaration":
-          print(
-            `  - FuncDecl ${s.namespacePath.length > 0 ? s.namespacePath.join(".") + "." : ""}${
-              s.name
-            }(${s.params.map((p) => `${p.name}: ${serializeAstDatatype(p.datatype)}`).join(", ")}${
-              s.ellipsis ? ", ..." : ""
-            }): ${s.returnType && serializeAstDatatype(s.returnType)} export=${s.export}`
-          );
-          break;
-
-        case "FunctionDefinition":
-          print(
-            `  - FuncDef ${s.name}${
-              s.generics.length > 0 ? "<" + s.generics.join(", ") + ">" : ""
-            }(${s.params.map((p) => `${p.name}: ${serializeAstDatatype(p.datatype)}`).join(", ")}${
-              s.ellipsis ? ", ..." : ""
-            }): ${s.returnType && serializeAstDatatype(s.returnType)} export=${s.export}`
-          );
-          if (s.funcbody?._collect.scope)
-            printScope(getScope(cc, s.funcbody._collect.scope), indent + 6);
-          break;
-
-        case "GlobalVariableDefinition":
-          print(`  - Global Variable ${s.mutable ? "let" : "const"} ${s.name} export=${s.export}`);
-          break;
-
-        case "StructDefinition":
-          print(
-            `  - Struct ${s.name}${s.generics.length > 0 ? "<" + s.generics.join(", ") + ">" : ""}`
-          );
-          print(`      Members:`);
-          for (const member of s.members) {
-            // const member = getSymbol(cc, m);
-            // assert(member.variant === "StructMember");
-            print(`        - ${member.name}: ${serializeAstDatatype(member.type)}`);
+    switch (symbol.variant) {
+      case Collect.ENode.ModuleScope:
+        print(`ModuleScope id=${symbolId}`);
+        cc.nodes.forEach((inner, i) => {
+          if (inner.variant === Collect.ENode.UnitScope && inner.parentScope === symbolId) {
+            printSymbol(i, indent + 2);
           }
-          print(`      Methods:`);
-          for (const method of s.methods) {
-            // const method = getSymbol(cc, m);
-            // assert(method.variant === "StructMethod");
-            print(
-              `        - ${method.name}${
-                method.generics.length > 0 ? "<" + method.generics.join(", ") + ">" : ""
-              }(${method.params
-                .map((p) => `${p.name}: ${serializeAstDatatype(p.datatype)}`)
-                .join(", ")}${method.ellipsis ? ", ..." : ""}): ${
-                method.returnType && serializeAstDatatype(method.returnType)
-              }`
-            );
-            if (method.funcbody?._collect.scope)
-              printScope(getScope(cc, method.funcbody._collect.scope), indent + 12);
-          }
-          break;
+        });
+        break;
 
-        case "VariableDefinitionStatement":
-          print(`  - Variable ${s.mutable ? "let" : "const"} ${s.name}`);
-          break;
+      case Collect.ENode.UnitScope:
+        print(`- UnitScope id=${symbolId}`);
+        cc.nodes.forEach((inner, i) => {
+          if (inner.variant === Collect.ENode.FileScope && inner.parentScope === symbolId) {
+            printSymbol(i, indent + 4);
+          }
+        });
+        break;
+
+      case Collect.ENode.FileScope:
+        print(`- FileScope id=${symbolId} ${symbol.filepath}`);
+        for (const id of symbol.symbols) {
+          printSymbol(id, indent + 4);
+        }
+        break;
+
+      case Collect.ENode.VariableSymbol:
+        print(`- VariableSymbol id=${symbolId} name=${symbol.name} type=${printType(symbol.type)}`);
+        break;
+
+      case Collect.ENode.GenericTypeParameter:
+        print(`- Generic ${symbol.name}`);
+        break;
+
+      case Collect.ENode.GlobalVariableDefinition:
+        print(
+          `- Glob Var Def Statement id=${symbolId} variable=${symbol.variableSymbol} value=${symbol.value}`
+        );
+        break;
+
+      case Collect.ENode.FunctionOverloadGroup:
+        print(`- Overload ${symbol.name}`);
+        for (const id of symbol.overloads) {
+          printSymbol(id, indent + 4);
+        }
+        break;
+
+      case Collect.ENode.FunctionSymbol: {
+        let ftype =
+          "(" +
+          symbol.parameters.map((p) => `${p.name}: ${printType(p.type)}`).join(", ") +
+          ") => " +
+          printType(symbol.returnType);
+        print(`- Function ${ftype}`);
+        if (symbol.functionScope) {
+          printSymbol(symbol.functionScope, indent + 4);
+        }
+        break;
       }
+
+      case Collect.ENode.StructDefinitionSymbol: {
+        print(`- Struct ${symbol.name}`);
+        // for (const members of symbol.members)
+        break;
+      }
+
+      case Collect.ENode.ExprStatement: {
+        print(`${printExpr(symbol.expr)};`);
+        break;
+      }
+
+      case Collect.ENode.ReturnStatement: {
+        if (symbol.expr) {
+          print(`return ${printExpr(symbol.expr)};`);
+        } else {
+          print("return;");
+        }
+        break;
+      }
+
+      case Collect.ENode.NamespaceDefinitionSymbol: {
+        print(`- Namespace ${symbol.name}`);
+        printSymbol(symbol.namespaceScope, indent + 4);
+        break;
+      }
+
+      case Collect.ENode.FunctionScope: {
+        print(`{`);
+        for (const id of symbol.symbols) {
+          printSymbol(id, indent + 2);
+        }
+        printSymbol(symbol.blockScope, indent + 2);
+        print(`}`);
+        break;
+      }
+
+      case Collect.ENode.NamespaceScope: {
+        print(`{`);
+        for (const id of symbol.symbols) {
+          printSymbol(id, indent + 2);
+        }
+        print(`}`);
+        break;
+      }
+
+      case Collect.ENode.BlockScope: {
+        print(`Block {`);
+        for (const id of symbol.symbols) {
+          printSymbol(id, indent + 2);
+        }
+        for (const id of symbol.statements) {
+          printSymbol(id, indent + 2);
+        }
+        print(`}`);
+        break;
+      }
+
+      case Collect.ENode.IfStatement: {
+        print(`If (${printExpr(symbol.condition)})`);
+        printSymbol(symbol.thenBlock, indent + 2);
+        for (const elif of symbol.elseif) {
+          print(`ElseIf (${printExpr(elif.condition)})`);
+          printSymbol(elif.thenBlock, indent + 2);
+        }
+        if (symbol.elseBlock) {
+          print(`Else`);
+          printSymbol(symbol.elseBlock, indent + 2);
+        }
+        break;
+      }
+
+      case Collect.ENode.WhileStatement: {
+        print(`While (${printExpr(symbol.condition)})`);
+        printSymbol(symbol.block, indent + 2);
+        break;
+      }
+
+      case Collect.ENode.VariableDefinitionStatement: {
+        if (symbol.value) {
+          print(`var ${symbol.variableSymbol} = ${printExpr(symbol.value)});`);
+        } else {
+          print(`var ${symbol.variableSymbol};`);
+        }
+        break;
+      }
+
+      case Collect.ENode.CInjectDirective: {
+        print(`- __c__(${symbol.value})`);
+        break;
+      }
+
+      default:
+        assert(false, symbol.variant.toString());
     }
-    console.log("\n");
   };
 
-  console.log("Global Scope:");
-  printScope(getScope(cc, cc.globalScope), 2);
+  printSymbol(0, 2);
 }

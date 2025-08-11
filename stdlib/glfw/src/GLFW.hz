@@ -7,11 +7,11 @@ extern "C" struct GLFWmonitor {};
 
 extern "C" glfwInit(): i32;
 extern "C" glfwTerminate(): none;
-extern "C" glfwCreateWindow(width: i32, height: i32, title: str, monitor: cstruct GLFWmonitor*, share: cstruct GLFWwindow*): cstruct GLFWwindow*;
-extern "C" glfwWindowShouldClose(w: cstruct GLFWwindow*): i32;
-extern "C" glfwSwapBuffers(w: cstruct GLFWwindow*);
+extern "C" glfwCreateWindow(width: i32, height: i32, title: str, monitor: GLFWmonitor*, share: GLFWwindow*): GLFWwindow*;
+extern "C" glfwWindowShouldClose(w: GLFWwindow*): i32;
+extern "C" glfwSwapBuffers(w: GLFWwindow*);
 extern "C" glfwSwapInterval(flag: i32);
-extern "C" glfwMakeContextCurrent(w: cstruct GLFWwindow*);
+extern "C" glfwMakeContextCurrent(w: GLFWwindow*);
 extern "C" glfwPollEvents();
 extern "C" glfwInitHint(hint: i32, value: i32);
 extern "C" glfwWindowHint(hint: i32, value: i32);
@@ -30,7 +30,7 @@ const GLFW_OPENGL_CORE_PROFILE: i32;
 namespace glfw {
 
     struct Window {
-        handle: cstruct GLFWwindow*;
+        handle: GLFWwindow*;
 
         makeContextCurrent() {
             glfwMakeContextCurrent(this.handle);
@@ -63,7 +63,7 @@ namespace glfw {
         glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
         glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
         glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-        const handle = glfwCreateWindow(width, height, title, 0 as cstruct GLFWmonitor*, 0 as cstruct GLFWwindow*);
+        const handle = glfwCreateWindow(width, height, title, 0 as GLFWmonitor*, 0 as GLFWwindow*);
         return Window { handle: handle };
     }
 

@@ -233,6 +233,10 @@ class CodeGenerator {
         return "uint64_t";
       case EPrimitive.u8:
         return "uint8_t";
+      case EPrimitive.int:
+        return "int64_t";
+      case EPrimitive.float:
+        return "double";
       case EPrimitive.none:
         return "void";
       case EPrimitive.str:
@@ -259,7 +263,7 @@ class CodeGenerator {
     }
   }
 
-  emitSymbol(symbol: Lowered.FunctionDeclaration | Lowered.FunctionDefinition) {}
+  emitSymbol(symbol: Lowered.FunctionDeclaration | Lowered.FunctionDefinition) { }
 
   emitFunction(symbol: Lowered.FunctionDeclaration | Lowered.FunctionDefinition) {
     let signature = this.mangle(symbol.type.returnType) + " " + this.mangle(symbol) + "(";
@@ -529,12 +533,12 @@ class CodeGenerator {
             tempWriter.write(rightWriter.temp);
             outWriter.write(
               "(" +
-                leftWriter.out.get() +
-                " " +
-                BinaryOperationToString(expr.operation) +
-                " " +
-                rightWriter.out.get() +
-                ")",
+              leftWriter.out.get() +
+              " " +
+              BinaryOperationToString(expr.operation) +
+              " " +
+              rightWriter.out.get() +
+              ")",
             );
             break;
           }
@@ -549,12 +553,12 @@ class CodeGenerator {
             tempWriter.write(rightWriter.temp);
             outWriter.write(
               "(" +
-                leftWriter.out.get() +
-                " " +
-                BinaryOperationToString(expr.operation) +
-                " " +
-                rightWriter.out.get() +
-                ")",
+              leftWriter.out.get() +
+              " " +
+              BinaryOperationToString(expr.operation) +
+              " " +
+              rightWriter.out.get() +
+              ")",
             );
             break;
           }
@@ -567,12 +571,12 @@ class CodeGenerator {
             tempWriter.write(rightWriter.temp);
             outWriter.write(
               "(" +
-                leftWriter.out.get() +
-                " " +
-                BinaryOperationToString(expr.operation) +
-                " " +
-                rightWriter.out.get() +
-                ")",
+              leftWriter.out.get() +
+              " " +
+              BinaryOperationToString(expr.operation) +
+              " " +
+              rightWriter.out.get() +
+              ")",
             );
             break;
           }
@@ -585,12 +589,12 @@ class CodeGenerator {
             tempWriter.write(rightWriter.temp);
             outWriter.write(
               "(" +
-                leftWriter.out.get() +
-                " " +
-                BinaryOperationToString(expr.operation) +
-                " " +
-                rightWriter.out.get() +
-                ")",
+              leftWriter.out.get() +
+              " " +
+              BinaryOperationToString(expr.operation) +
+              " " +
+              rightWriter.out.get() +
+              ")",
             );
             break;
           }
