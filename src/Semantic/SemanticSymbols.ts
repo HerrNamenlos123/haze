@@ -1,7 +1,5 @@
 import { CompilerError, InternalError, type SourceLoc } from "../shared/Errors";
 import type {
-  ASTFunctionDeclaration,
-  ASTFunctionDefinition,
   ASTStructDefinition,
   EBinaryOperation,
   EExternLanguage,
@@ -15,52 +13,48 @@ import {
   type EMethodType,
   type EPrimitive,
 } from "../shared/common";
-import type { Collect, CollectionContext } from "../SymbolCollection/CollectSymbols";
+import type { CollectionContext } from "../SymbolCollection/SymbolCollection";
 
 export type SemanticResult = {
-  // globalNamespace: Semantic.NamespaceSymbol;
-  // monomorphizedStructs: Set<Semantic.StructDatatypeSymbol>;
-  // monomorphizedFuncdecls: Set<Semantic.FunctionDeclarationSymbol>;
-  // monomorphizedFuncdefs: Set<Semantic.FunctionDefinitionSymbol>;
   overloadedOperators: Semantic.FunctionDefinitionSymbol[];
   cc: CollectionContext;
 
   elaboratedStructDatatypes: {
-    originalSymbol: Collect.Symbol;
+    originalSymbol: number;
     generics: Semantic.Symbol[];
     cstruct: boolean;
     resultSymbol: Semantic.StructDatatypeSymbol;
   }[];
   elaboratedFuncdeclSymbols: {
-    originalSymbol: Collect.Symbol;
+    originalSymbol: number;
     generics: Semantic.Symbol[];
     resultSymbol: Semantic.FunctionDeclarationSymbol;
   }[];
   elaboratedFuncdefSymbols: {
-    originalSymbol: Collect.Symbol;
+    originalSymbol: number;
     generics: Semantic.Symbol[];
     resultSymbol: Semantic.FunctionDefinitionSymbol;
   }[];
   elaboratedNamespaceSymbols: {
-    originalSymbol: Collect.Symbol;
+    originalSymbol: number;
     resultSymbol: Semantic.NamespaceDatatypeSymbol;
   }[];
   elaboratedGlobalVariableSymbols: {
-    originalSymbol: Collect.Symbol;
+    originalSymbol: number;
     resultSymbol: Semantic.GlobalVariableDefinitionSymbol;
   }[];
 
   elaboratedPrimitiveTypes: Semantic.PrimitiveDatatypeSymbol[];
   functionTypeCache: Semantic.FunctionDatatypeSymbol[];
-  rawPointerTypeCache: Semantic.RawPointerDatatypeSymbol[];
+  rawPointerTypeCache: Semantic.PointerDatatypeSymbol[];
   referenceTypeCache: Semantic.ReferenceDatatypeSymbol[];
 
-  exportedCollectedSymbols: Set<Collect.Scope | Collect.Symbol>;
+  exportedCollectedSymbols: Set<number>;
 };
 
 export function makePrimitiveAvailable(
   sr: SemanticResult,
-  primitive: EPrimitive,
+  primitive: EPrimitive
 ): Semantic.PrimitiveDatatypeSymbol {
   for (const s of sr.elaboratedPrimitiveTypes) {
     if (s.primitive === primitive) {
@@ -119,7 +113,7 @@ export namespace Semantic {
     };
     parameterNames: string[];
     externLanguage: EExternLanguage;
-    collectedScope?: Collect.Scope;
+    collectedScope?: number;
     scope?: Semantic.BlockScope;
     export: boolean;
     methodType: EMethodType;
@@ -166,11 +160,11 @@ export namespace Semantic {
     scope: Semantic.DeclScope;
     sourceloc: SourceLoc;
     concrete: boolean;
-    originalCollectedSymbol: Collect.Symbol;
+    originalCollectedSymbol: number;
   };
 
-  export type RawPointerDatatypeSymbol = {
-    variant: "RawPointerDatatype";
+  export type PointerDatatypeSymbol = {
+    variant: "PointerDatatype";
     pointee: DatatypeSymbol;
     concrete: boolean;
   };
@@ -185,11 +179,6 @@ export namespace Semantic {
     variant: "CallableDatatype";
     thisExprType?: DatatypeSymbol;
     functionType: FunctionDatatypeSymbol;
-    concrete: boolean;
-  };
-
-  export type DeferredDatatypeSymbol = {
-    variant: "DeferredDatatype";
     concrete: boolean;
   };
 
@@ -231,10 +220,9 @@ export namespace Semantic {
     | NamespaceDatatypeSymbol
     | FunctionDatatypeSymbol
     | StructDatatypeSymbol
-    | RawPointerDatatypeSymbol
+    | PointerDatatypeSymbol
     | ReferenceDatatypeSymbol
     | CallableDatatypeSymbol
-    | DeferredDatatypeSymbol
     | PrimitiveDatatypeSymbol
     | ConstantDatatypeSymbol;
 
@@ -448,7 +436,7 @@ export namespace Semantic {
       | StructDatatypeSymbol
     )[] = [];
 
-    constructor(public parentTable?: SymbolTable) { }
+    constructor(public parentTable?: SymbolTable) {}
 
     defineSymbol(symbol: Symbol): Symbol {
       if (symbol.variant === "FunctionDatatype") {
@@ -481,7 +469,7 @@ export namespace Semantic {
         if (this.tryLookupSymbolHere(symbol.name)) {
           throw new CompilerError(
             `Symbol ${symbol.name} was already defined in this scope`,
-            symbol.sourceloc,
+            symbol.sourceloc
           );
         }
       }
@@ -543,7 +531,7 @@ export namespace Semantic {
     constructor(
       public sourceloc: SourceLoc,
       public collectedScope: Collect.Scope,
-      public parentScope?: DeclScope,
+      public parentScope?: DeclScope
     ) {
       this.symbolTable = new SymbolTable(parentScope?.symbolTable);
     }
@@ -557,7 +545,7 @@ export namespace Semantic {
     constructor(
       public sourceloc: SourceLoc,
       public collectedScope: Collect.Scope,
-      public parentScope?: BlockScope | DeclScope,
+      public parentScope?: BlockScope | DeclScope
     ) {
       this.symbolTable = new SymbolTable(parentScope?.symbolTable);
     }

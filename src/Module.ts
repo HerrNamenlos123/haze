@@ -76,7 +76,7 @@ class Cache {
   filename?: string;
   data: Record<string, any> = {};
 
-  constructor() { }
+  constructor() {}
 
   async getFilesWithModificationDates(dir: string): Promise<{ file: string; modified: Date }[]> {
     const files: { file: string; modified: Date }[] = [];
@@ -158,7 +158,7 @@ export class ProjectCompiler {
   cache: Cache = new Cache();
   globalBuildDir: string = "";
 
-  constructor() { }
+  constructor() {}
 
   async getConfig(singleFilename?: string) {
     let config: ModuleConfig | undefined;
@@ -366,9 +366,9 @@ class ModuleCompiler {
 
       PrettyPrintCollected(this.cc);
 
-      return;
       const sr = SemanticallyAnalyze(this.cc, this.config.moduleType === ModuleType.Library);
       // PrettyPrintAnalyzed(sr);
+      return;
       const lowered = LowerModule(this.cc, sr);
 
       const name = this.config.projectName;
@@ -389,13 +389,15 @@ class ModuleCompiler {
       if (this.config.moduleType === ModuleType.Executable) {
         const [libs, linkerFlags] = await this.loadDependencyBinaries();
         const allLinkerFlags = [...linkerFlags, ...this.config.linkerFlags];
-        const cmd = `${C_COMPILER} -g ${moduleCFile} -o ${moduleExecutable} -I${this.config.srcDirectory
-          } ${libs.join(" ")} ${compilerFlags.join(" ")} ${allLinkerFlags.join(" ")} -std=c11`;
+        const cmd = `${C_COMPILER} -g ${moduleCFile} -o ${moduleExecutable} -I${
+          this.config.srcDirectory
+        } ${libs.join(" ")} ${compilerFlags.join(" ")} ${allLinkerFlags.join(" ")} -std=c11`;
         // console.log(cmd);
         await exec(cmd);
       } else {
-        const cmd = `${C_COMPILER} -g ${moduleCFile} -c -o ${moduleOFile} -I${this.config.srcDirectory
-          } ${compilerFlags.join(" ")} -fPIC -std=c11`;
+        const cmd = `${C_COMPILER} -g ${moduleCFile} -c -o ${moduleOFile} -I${
+          this.config.srcDirectory
+        } ${compilerFlags.join(" ")} -fPIC -std=c11`;
         // console.log(cmd);
         await exec(cmd);
         await exec(`${ARCHIVE_TOOL} r ${moduleAFile} ${moduleOFile} > /dev/null`);

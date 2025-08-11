@@ -1,6 +1,43 @@
 import type { ELiteralUnit } from "./AST";
 import { InternalError } from "./Errors";
 
+type Brand<T, B> = T & { __brand: B };
+export type CollectId = Brand<number, "Collect">;
+export type SemanticId = Brand<number, "Semantic">;
+
+export class BrandedArray<I extends number, T> {
+  private data: T[];
+
+  constructor(data: T[]) {
+    this.data = data;
+  }
+
+  // Access by branded index I
+  get(index: I): T {
+    return this.data[index as unknown as number]; // cast to number for indexing
+  }
+
+  set(index: I, value: T): void {
+    this.data[index as unknown as number] = value;
+  }
+
+  get length(): number {
+    return this.data.length;
+  }
+
+  push(value: T): I {
+    const index = this.data.length;
+    this.data.push(value);
+    return index as unknown as I;
+  }
+
+  forEach(callback: (value: T, index: I) => void): void {
+    for (let i = 0; i < this.data.length; i++) {
+      callback(this.data[i], i as unknown as I);
+    }
+  }
+}
+
 export enum EPrimitive {
   none = 1,
   boolean,

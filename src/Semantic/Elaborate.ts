@@ -2,23 +2,15 @@ import {
   EBinaryOperation,
   EExternLanguage,
   EUnaryOperation,
-  type ASTConstant,
   type ASTDatatype,
   type ASTExpr,
-  type ASTFunctionDeclaration,
   type ASTFunctionDefinition,
   type ASTGlobalVariableDefinition,
   type ASTNamespaceDefinition,
   type ASTStatement,
   type ASTStructDefinition,
 } from "../shared/AST";
-import {
-  assertScope,
-  EMethodType,
-  EPrimitive,
-  EVariableContext,
-  primitiveToString,
-} from "../shared/common";
+import { EMethodType, EPrimitive, EVariableContext, primitiveToString } from "../shared/common";
 import {
   assert,
   CompilerError,
@@ -26,7 +18,7 @@ import {
   InternalError,
   type SourceLoc,
 } from "../shared/Errors";
-import { Collect } from "../SymbolCollection/SymbolCollection";
+import { Collect, type CollectionContext } from "../SymbolCollection/SymbolCollection";
 import { Conversion } from "./Conversion";
 import {
   makeFunctionDatatypeAvailable,
@@ -37,76 +29,76 @@ import {
 import { makePrimitiveAvailable, Semantic, type SemanticResult } from "./SemanticSymbols";
 import { serializeDatatype, serializeExpr, serializeNestedName } from "./Serialize";
 
-export function recursivelyExportCollectedSymbols(
-  sr: SemanticResult,
-  symbol: Collect.Node | Collect.Scope
-) {
-  if (sr.exportedCollectedSymbols.has(symbol)) {
-    return; // Prevent recursion
-  }
+// export function recursivelyExportCollectedSymbols(
+//   sr: SemanticResult,
+//   symbol: Collect.Node | Collect.Scope
+// ) {
+//   if (sr.exportedCollectedSymbols.has(symbol)) {
+//     return; // Prevent recursion
+//   }
 
-  if (symbol instanceof Collect.Scope) {
-    sr.exportedCollectedSymbols.add(symbol);
-    if (symbol.parentScope) {
-      recursivelyExportCollectedSymbols(sr, getScope(sr.cc, symbol.parentScope));
-    }
-    for (const s of symbol.symbols) {
-      recursivelyExportCollectedSymbols(sr, getSymbol(sr.cc, s));
-    }
-  } else {
-    switch (symbol.variant) {
-      case "FunctionDeclaration":
-        if (!symbol.export) return;
-        sr.exportedCollectedSymbols.add(symbol);
-        if (symbol._collect.definedInScope) {
-          recursivelyExportCollectedSymbols(sr, getScope(sr.cc, symbol._collect.definedInScope));
-        }
-        break;
+//   if (symbol instanceof Collect.Scope) {
+//     sr.exportedCollectedSymbols.add(symbol);
+//     if (symbol.parentScope) {
+//       recursivelyExportCollectedSymbols(sr, getScope(sr.cc, symbol.parentScope));
+//     }
+//     for (const s of symbol.symbols) {
+//       recursivelyExportCollectedSymbols(sr, getSymbol(sr.cc, s));
+//     }
+//   } else {
+//     switch (symbol.variant) {
+//       case "FunctionDeclaration":
+//         if (!symbol.export) return;
+//         sr.exportedCollectedSymbols.add(symbol);
+//         if (symbol._collect.definedInScope) {
+//           recursivelyExportCollectedSymbols(sr, getScope(sr.cc, symbol._collect.definedInScope));
+//         }
+//         break;
 
-      case "FunctionDefinition":
-        if (!symbol.export) return;
-        sr.exportedCollectedSymbols.add(symbol);
-        if (symbol._collect.definedInScope) {
-          recursivelyExportCollectedSymbols(sr, getScope(sr.cc, symbol._collect.definedInScope));
-        }
-        break;
+//       case "FunctionDefinition":
+//         if (!symbol.export) return;
+//         sr.exportedCollectedSymbols.add(symbol);
+//         if (symbol._collect.definedInScope) {
+//           recursivelyExportCollectedSymbols(sr, getScope(sr.cc, symbol._collect.definedInScope));
+//         }
+//         break;
 
-      case "NamespaceDefinition":
-        for (const d of symbol.declarations) {
-          recursivelyExportCollectedSymbols(sr, d);
-        }
-        break;
+//       case "NamespaceDefinition":
+//         for (const d of symbol.declarations) {
+//           recursivelyExportCollectedSymbols(sr, d);
+//         }
+//         break;
 
-      case "GenericParameter":
-      case "StructMethod":
-      case "VariableDefinitionStatement":
-        assert(false, "TBD");
+//       case "GenericParameter":
+//       case "StructMethod":
+//       case "VariableDefinitionStatement":
+//         assert(false, "TBD");
 
-      case "GlobalVariableDefinition":
-      case "StructDefinition":
-        if (!symbol.export) return;
-        sr.exportedCollectedSymbols.add(symbol);
-        if (symbol._collect.definedInScope) {
-          recursivelyExportCollectedSymbols(sr, getScope(sr.cc, symbol._collect.definedInScope));
-        }
-        break;
-    }
-  }
-}
+//       case "GlobalVariableDefinition":
+//       case "StructDefinition":
+//         if (!symbol.export) return;
+//         sr.exportedCollectedSymbols.add(symbol);
+//         if (symbol._collect.definedInScope) {
+//           recursivelyExportCollectedSymbols(sr, getScope(sr.cc, symbol._collect.definedInScope));
+//         }
+//         break;
+//     }
+//   }
+// }
 
 export type SubstitutionContext = {
-  substitute: Map<Collect.GenericParameter, Semantic.Symbol>;
+  substituteCollectGenericToSemantic: Map<number, Semantic.Symbol>;
 };
 
 export function makeSubstitutionContext(): SubstitutionContext {
   return {
-    substitute: new Map(),
+    substituteCollectGenericToSemantic: new Map(),
   };
 }
 
 export function isolateElaborationContext(parent: SubstitutionContext): SubstitutionContext {
   return {
-    substitute: new Map(parent.substitute),
+    substituteCollectGenericToSemantic: new Map(parent.substituteCollectGenericToSemantic),
   };
 }
 
@@ -160,7 +152,7 @@ export function elaborateExpr(
               type: makePrimitiveAvailable(sr, EPrimitive.f32),
               sourceloc: expr.sourceloc,
             };
-          } else if (rightType.variant === "RawPointerDatatype" && Conversion.isInteger(leftType)) {
+          } else if (rightType.variant === "PointerDatatype" && Conversion.isInteger(leftType)) {
             return {
               variant: "BinaryExpr",
               left: a,
@@ -169,7 +161,7 @@ export function elaborateExpr(
               type: rightType,
               sourceloc: expr.sourceloc,
             };
-          } else if (leftType.variant === "RawPointerDatatype" && Conversion.isInteger(rightType)) {
+          } else if (leftType.variant === "PointerDatatype" && Conversion.isInteger(rightType)) {
             return {
               variant: "BinaryExpr",
               left: a,
@@ -1326,8 +1318,8 @@ export function defineThisPointer(
 
 export function elaborate(
   sr: SemanticResult,
+  node: number,
   args: {
-    sourceSymbol: Collect.Node;
     usageInScope?: string;
     usageGenerics?: (ASTDatatype | ASTConstant)[];
     usedAt?: SourceLoc;
@@ -1442,7 +1434,10 @@ export function elaborate(
       // New local substitution context
       const substitutionContext = isolateElaborationContext(args.context);
       for (let i = 0; i < args.sourceSymbol.generics.length; i++) {
-        substitutionContext.substitute.set(args.sourceSymbol.generics[i], generics[i]);
+        substitutionContext.substituteCollectGenericToSemantic.set(
+          args.sourceSymbol.generics[i],
+          generics[i]
+        );
       }
 
       assert(args.sourceSymbol.declarationScope);
@@ -1560,7 +1555,10 @@ export function elaborate(
       // New local substitution context
       const substitutionContext = isolateElaborationContext(args.context);
       for (let i = 0; i < args.sourceSymbol.generics.length; i++) {
-        substitutionContext.substitute.set(args.sourceSymbol.generics[i], generics[i]);
+        substitutionContext.substituteCollectGenericToSemantic.set(
+          args.sourceSymbol.generics[i],
+          generics[i]
+        );
       }
 
       const parameterNames = args.sourceSymbol.params.map((p) => p.name);
@@ -1830,47 +1828,33 @@ export function SemanticallyAnalyze(cc: CollectionContext, isLibrary: boolean) {
     exportedCollectedSymbols: new Set(),
   };
 
-  const globalScope = getScope(cc, cc.globalScope);
-
-  globalScope.symbols.forEach((_s) => {
-    const s = getSymbol(sr.cc, _s);
-    if (s.variant === "FunctionDefinition" && (s.generics.length !== 0 || s.operatorOverloading)) {
-      return undefined;
-    }
-
-    if (s.variant === "StructDefinition" && s.generics.length > 0) {
-      return undefined;
-    }
-
-    return elaborate(sr, {
-      sourceSymbol: s,
-      usageGenerics: [],
-      context: makeSubstitutionContext(),
-    });
+  elaborate(sr, 0, {
+    usageGenerics: [],
+    context: makeSubstitutionContext(),
   });
 
-  recursivelyExportCollectedSymbols(sr, globalScope);
+  // recursivelyExportCollectedSymbols(sr, globalScope);
 
-  const mainFunction = sr.elaboratedFuncdefSymbols.find((s) => s.resultSymbol.name === "main");
-  if (!isLibrary) {
-    if (!mainFunction) {
-      throw new CompilerError("No main function is defined in global scope", null);
-    }
+  // const mainFunction = sr.elaboratedFuncdefSymbols.find((s) => s.resultSymbol.name === "main");
+  // if (!isLibrary) {
+  //   if (!mainFunction) {
+  //     throw new CompilerError("No main function is defined in global scope", null);
+  //   }
 
-    if (
-      mainFunction.resultSymbol.type.returnType.variant !== "PrimitiveDatatype" ||
-      mainFunction.resultSymbol.type.returnType.primitive !== EPrimitive.i32
-    ) {
-      throw new CompilerError("Main function must return i32", mainFunction.resultSymbol.sourceloc);
-    }
-  } else {
-    if (mainFunction) {
-      throw new CompilerError(
-        "main function is defined, but not allowed because module is built as library",
-        null
-      );
-    }
-  }
+  //   if (
+  //     mainFunction.resultSymbol.type.returnType.variant !== "PrimitiveDatatype" ||
+  //     mainFunction.resultSymbol.type.returnType.primitive !== EPrimitive.i32
+  //   ) {
+  //     throw new CompilerError("Main function must return i32", mainFunction.resultSymbol.sourceloc);
+  //   }
+  // } else {
+  //   if (mainFunction) {
+  //     throw new CompilerError(
+  //       "main function is defined, but not allowed because module is built as library",
+  //       null
+  //     );
+  //   }
+  // }
 
   return sr;
 }
