@@ -8,39 +8,40 @@ import type {
   EUnaryOperation,
 } from "../shared/AST";
 import {
+  BrandedArray,
   EVariableContext,
   primitiveToString,
+  type Brand,
   type EMethodType,
   type EPrimitive,
+  type SemanticId,
 } from "../shared/common";
-import type { CollectionContext } from "../SymbolCollection/SymbolCollection";
+import type { Collect, CollectionContext } from "../SymbolCollection/SymbolCollection";
 
 export type SemanticResult = {
-  overloadedOperators: Semantic.FunctionDefinitionSymbol[];
   cc: CollectionContext;
 
+  // nodes: BrandedArray<SemanticId, Semantic.Node>;
+  functionNodes: BrandedArray<SemanticId, Semantic.FunctionDeclarationSymbol>;
+
+  overloadedOperators: Semantic.FunctionDefinitionSymbol[];
+
   elaboratedStructDatatypes: {
-    originalSymbol: number;
-    generics: Semantic.Symbol[];
-    cstruct: boolean;
-    resultSymbol: Semantic.StructDatatypeSymbol;
-  }[];
-  elaboratedFuncdeclSymbols: {
-    originalSymbol: number;
-    generics: Semantic.Symbol[];
-    resultSymbol: Semantic.FunctionDeclarationSymbol;
+    originalSymbol: Collect.Id;
+    generics: Semantic.TypeId[];
+    resultSymbol: Semantic.TypeId;
   }[];
   elaboratedFuncdefSymbols: {
-    originalSymbol: number;
-    generics: Semantic.Symbol[];
-    resultSymbol: Semantic.FunctionDefinitionSymbol;
+    originalSymbol: Collect.Id;
+    generics: Semantic.TypeId[];
+    resultSymbol: Semantic.FunctionId;
   }[];
   elaboratedNamespaceSymbols: {
-    originalSymbol: number;
+    originalSymbol: Collect.Id;
     resultSymbol: Semantic.NamespaceDatatypeSymbol;
   }[];
   elaboratedGlobalVariableSymbols: {
-    originalSymbol: number;
+    originalSymbol: Collect.Id;
     resultSymbol: Semantic.GlobalVariableDefinitionSymbol;
   }[];
 
@@ -75,11 +76,16 @@ export function isDatatypeSymbol(x: Semantic.Symbol): x is Semantic.DatatypeSymb
 }
 
 export namespace Semantic {
+  export type FunctionId = Brand<number, "SemanticFunction">;
+  export type TypeId = Brand<number, "SemanticType">;
+  export type StatementId = Brand<number, "SemanticStatement">;
+  export type ExprId = Brand<number, "SemanticExpr">;
+
   export type VariableSymbol = {
     variant: "Variable";
     name: string;
-    memberOf?: StructDatatypeSymbol | NamespaceDatatypeSymbol;
-    type: DatatypeSymbol;
+    memberOfStruct: TypeId | null;
+    type: TypeId;
     mutable: boolean;
     export: boolean;
     externLanguage: EExternLanguage;
@@ -91,20 +97,17 @@ export namespace Semantic {
   export type GlobalVariableDefinitionSymbol = {
     variant: "GlobalVariableDefinition";
     name: string;
-    type: DatatypeSymbol;
-    value?: Expression;
+    type: TypeId;
+    value: ExprId | null;
     mutable: boolean;
     export: boolean;
     externLanguage: EExternLanguage;
-    parent: StructDatatypeSymbol | NamespaceDatatypeSymbol | null;
     sourceloc: SourceLoc;
     concrete: boolean;
   };
 
   export type FunctionDefinitionSymbol = {
     variant: "FunctionDefinition";
-    name: string;
-    generics: DatatypeSymbol[];
     staticMethod: boolean;
     type: FunctionDatatypeSymbol;
     operatorOverloading?: {
@@ -123,21 +126,6 @@ export namespace Semantic {
     concrete: boolean;
   };
 
-  export type FunctionDeclarationSymbol = {
-    variant: "FunctionDeclaration";
-    name: string;
-    type: FunctionDatatypeSymbol;
-    noemit: boolean;
-    staticMethod: boolean;
-    externLanguage: EExternLanguage;
-    parameterNames: string[];
-    export: boolean;
-    methodType: EMethodType;
-    sourceloc: SourceLoc;
-    parent: StructDatatypeSymbol | NamespaceDatatypeSymbol | null;
-    concrete: boolean;
-  };
-
   export type FunctionDatatypeSymbol = {
     variant: "FunctionDatatype";
     parameters: DatatypeSymbol[];
@@ -150,12 +138,11 @@ export namespace Semantic {
     variant: "StructDatatype";
     name: string;
     noemit: boolean;
-    cstruct: boolean;
     generics: DatatypeSymbol[];
-    externLanguage: EExternLanguage;
+    extern: EExternLanguage;
     members: VariableSymbol[];
     methods: Set<FunctionDefinitionSymbol>;
-    parent: StructDatatypeSymbol | NamespaceDatatypeSymbol | null;
+    parentSymbol: TypeId | null;
     rawAst: ASTStructDefinition;
     scope: Semantic.DeclScope;
     sourceloc: SourceLoc;
@@ -550,4 +537,6 @@ export namespace Semantic {
       this.symbolTable = new SymbolTable(parentScope?.symbolTable);
     }
   }
+
+  export type Node = Expression | Symbol;
 }

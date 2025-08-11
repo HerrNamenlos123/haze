@@ -72,7 +72,7 @@ const tests: StageTests<Collect.Scope, SemanticResult> = [
         const structType: Semantic.StructDatatypeSymbol = {
           variant: "StructDatatype",
           concrete: true,
-          externLanguage: EExternLanguage.None,
+          extern: EExternLanguage.None,
           generics: [],
           members: [],
           methods: [],
@@ -85,7 +85,7 @@ const tests: StageTests<Collect.Scope, SemanticResult> = [
             const scope = new Semantic.DeclScope(
               sourceloc(2, 12),
               collectedStruct._collect.scope,
-              semanticResult.globalNamespace.scope,
+              semanticResult.globalNamespace.scope
             );
             return scope;
           })(),
@@ -123,7 +123,7 @@ const tests: StageTests<Collect.Scope, SemanticResult> = [
             assert(collectedStruct.methods[0].funcbody._collect.scope);
             const scope = new Semantic.BlockScope(
               sourceloc(3, 16),
-              collectedStruct.methods[0].funcbody._collect.scope,
+              collectedStruct.methods[0].funcbody._collect.scope
             );
             scope.symbolTable.defineSymbol({
               variant: "Variable",
@@ -182,7 +182,7 @@ const tests: StageTests<Collect.Scope, SemanticResult> = [
           scope: (() => {
             const scope = new Semantic.BlockScope(
               sourceloc(2, 12),
-              new Collect.Scope(sourceloc(2, 12), structType.scope.collectedScope),
+              new Collect.Scope(sourceloc(2, 12), structType.scope.collectedScope)
             );
             return scope;
           })(),
@@ -213,7 +213,7 @@ const tests: StageTests<Collect.Scope, SemanticResult> = [
             const scope = new Semantic.BlockScope(
               sourceloc(7, 12),
               collectedMainFunction.funcbody._collect.scope,
-              semanticResult.globalNamespace.scope,
+              semanticResult.globalNamespace.scope
             );
             const callableType: Semantic.CallableDatatypeSymbol = {
               variant: "CallableDatatype",

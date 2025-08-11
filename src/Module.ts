@@ -309,7 +309,7 @@ class ModuleCompiler {
     this.cc = makeCollectionContext(this.config);
   }
 
-  async collectFileInUnit(filepath: string, unit: number) {
+  async collectFileInUnit(filepath: string, unit: Collect.Id) {
     const fileText = await Bun.file(filepath).text();
     const ast = Parser.parseTextToAST(this.config, fileText, filepath);
     CollectFileInUnit(this.cc, ast, unit, filepath);
@@ -318,8 +318,12 @@ class ModuleCompiler {
   private makeUnit() {
     const unit = makeSymbol(this.cc, {
       variant: Collect.ENode.UnitScope,
-      parentScope: 0,
+      parentScope: 0 as Collect.Id,
+      files: [],
     });
+    const moduleScope = this.cc.nodes.get(0 as Collect.Id);
+    assert(moduleScope.variant === Collect.ENode.ModuleScope);
+    moduleScope.units.push(unit);
     return unit;
   }
 
@@ -418,7 +422,7 @@ class ModuleCompiler {
               type: "static",
             },
           ],
-          exportedDeclarations: [...sr.exportedCollectedSymbols.values()],
+          // exportedDeclarations: [...sr.exportedCollectedSymbols.values()],
           linkerFlags: this.config.linkerFlags,
         };
         await Bun.write(moduleMetadataFile, JSON.stringify(moduleMetadata, undefined, 2));

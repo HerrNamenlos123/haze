@@ -1,9 +1,7 @@
 import type { ELiteralUnit } from "./AST";
 import { InternalError } from "./Errors";
 
-type Brand<T, B> = T & { __brand: B };
-export type CollectId = Brand<number, "Collect">;
-export type SemanticId = Brand<number, "Semantic">;
+export type Brand<T, B> = T & { __brand: B };
 
 export class BrandedArray<I extends number, T> {
   private data: T[];

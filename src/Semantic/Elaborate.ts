@@ -1,3 +1,4 @@
+import { camelCase } from "lodash";
 import {
   EBinaryOperation,
   EExternLanguage,
@@ -28,6 +29,115 @@ import {
 } from "./LookupDatatype";
 import { makePrimitiveAvailable, Semantic, type SemanticResult } from "./SemanticSymbols";
 import { serializeDatatype, serializeExpr, serializeNestedName } from "./Serialize";
+
+export function tryLookupSymbol(
+  cc: CollectionContext,
+  name: string,
+  args: { startLookupInScope: Collect.Id; sourceloc: SourceLoc; pubRequired?: boolean }
+): Collect.Id | undefined {
+  const scope = cc.nodes.get(args.startLookupInScope);
+
+  const lookupDirect = (symbols: Collect.Id[]) => {
+    for (const id of symbols) {
+      const s = cc.nodes.get(id);
+      if (s.variant === Collect.ENode.FunctionOverloadGroup && s.name === name) {
+        if (
+          s.overloads.some((o) => {
+            const func = cc.nodes.get(o);
+            assert(func.variant === Collect.ENode.FunctionSymbol);
+            return !args.pubRequired || func.pub;
+          })
+        ) {
+          return id;
+        }
+      } else if (s.variant === Collect.ENode.StructDefinitionSymbol && s.name === name) {
+        if (!args.pubRequired || s.pub) {
+          return id;
+        }
+      } else if (s.variant === Collect.ENode.NamespaceDefinitionSymbol && s.name === name) {
+        if (!args.pubRequired || s.pub) {
+          return s.sharedInstance;
+        }
+      } else {
+        throw new CompilerError(`Symbol '${name}' cannot be used as a datatype`, args.sourceloc);
+      }
+    }
+  };
+
+  switch (scope.variant) {
+    case Collect.ENode.ModuleScope:
+    case Collect.ENode.UnitScope:
+      assert(false, "Unreachable");
+
+    case Collect.ENode.NamespaceScope: {
+      const ns = cc.nodes.get(scope.owningSymbol);
+      assert(ns.variant === Collect.ENode.NamespaceDefinitionSymbol);
+      const instance = cc.nodes.get(ns.sharedInstance);
+      assert(instance.variant === Collect.ENode.NamespaceSharedInstance);
+      for (const nsScope of instance.namespaceScopes) {
+        const sc = cc.nodes.get(nsScope);
+        assert(sc.variant === Collect.ENode.NamespaceScope);
+        const found = lookupDirect(sc.symbols);
+        if (found) {
+          return found;
+        }
+      }
+      return tryLookupSymbol(cc, name, {
+        startLookupInScope: scope.parentScope,
+        sourceloc: args.sourceloc,
+      });
+    }
+
+    case Collect.ENode.FileScope:
+    case Collect.ENode.BlockScope:
+    case Collect.ENode.StructScope:
+    case Collect.ENode.FunctionScope: {
+      const found = lookupDirect(scope.symbols);
+      if (found) {
+        return found;
+      }
+
+      if (scope.variant === Collect.ENode.FileScope) {
+        // File Scope -> Don't go higher but look in adjacent files in the same unit
+        const unitScope = cc.nodes.get(scope.parentScope);
+        assert(unitScope.variant === Collect.ENode.UnitScope);
+
+        for (const file of unitScope.files) {
+          if (file === args.startLookupInScope) continue; // Prevent infinite recursion with itself
+
+          const fileScope = cc.nodes.get(file);
+          assert(fileScope.variant === Collect.ENode.FileScope);
+
+          const found = lookupDirect(fileScope.symbols);
+          if (found) {
+            return found;
+          }
+        }
+
+        return undefined;
+      } else {
+        // Not a file scope -> Can go higher
+        return tryLookupSymbol(cc, name, {
+          startLookupInScope: scope.parentScope,
+          sourceloc: args.sourceloc,
+        });
+      }
+    }
+
+    default:
+      assert(false, "Unknown scope type: " + scope.variant);
+  }
+}
+
+export function lookupSymbol(
+  cc: CollectionContext,
+  name: string,
+  args: { startLookupInScope: Collect.Id; sourceloc: SourceLoc }
+): Collect.Id {
+  const found = tryLookupSymbol(cc, name, args);
+  if (found) return found;
+  throw new CompilerError(`Symbol '${name}' was not declared in this scope`, args.sourceloc);
+}
 
 // export function recursivelyExportCollectedSymbols(
 //   sr: SemanticResult,
@@ -87,18 +197,18 @@ import { serializeDatatype, serializeExpr, serializeNestedName } from "./Seriali
 // }
 
 export type SubstitutionContext = {
-  substituteCollectGenericToSemantic: Map<number, Semantic.Symbol>;
+  substitute: Map<Collect.Id, Semantic.TypeId>;
 };
 
 export function makeSubstitutionContext(): SubstitutionContext {
   return {
-    substituteCollectGenericToSemantic: new Map(),
+    substitute: new Map(),
   };
 }
 
 export function isolateElaborationContext(parent: SubstitutionContext): SubstitutionContext {
   return {
-    substituteCollectGenericToSemantic: new Map(parent.substituteCollectGenericToSemantic),
+    substitute: new Map(parent.substitute),
   };
 }
 
@@ -334,64 +444,64 @@ export function elaborateExpr(
     // =================================================================================================================
 
     case "ConstantExpr": {
-      if (expr.literal.variant === "BooleanConstant") {
-        return {
-          variant: "Constant",
-          type: makePrimitiveAvailable(sr, EPrimitive.boolean),
-          value: expr.literal.value,
-          sourceloc: expr.sourceloc,
-        };
-      } else if (expr.literal.variant === "NumberConstant") {
-        function isFloat(n: number): boolean {
-          return Number(n) === n && n % 1 !== 0;
-        }
-        if (isFloat(expr.literal.value)) {
-          return {
-            variant: "Constant",
-            type: makePrimitiveAvailable(sr, EPrimitive.f64),
-            value: expr.literal.value,
-            sourceloc: expr.sourceloc,
-          };
-        } else {
-          let type = EPrimitive.i8;
-          if (expr.literal.value >= -Math.pow(2, 7) && expr.literal.value <= Math.pow(2, 7) - 1) {
-            type = EPrimitive.i8;
-          } else if (
-            expr.literal.value >= -Math.pow(2, 15) &&
-            expr.literal.value <= Math.pow(2, 15) - 1
-          ) {
-            type = EPrimitive.i16;
-          } else if (
-            expr.literal.value >= -Math.pow(2, 31) &&
-            expr.literal.value <= Math.pow(2, 31) - 1
-          ) {
-            type = EPrimitive.i32;
-          } else if (
-            expr.literal.value >= -Math.pow(2, 63) &&
-            expr.literal.value <= Math.pow(2, 63) - 1
-          ) {
-            type = EPrimitive.i64;
-          } else {
-            throw new CompilerError(
-              `The numeral constant ${expr.literal.value} is outside of any workable integer range`,
-              expr.sourceloc
-            );
-          }
-          return {
-            variant: "Constant",
-            type: makePrimitiveAvailable(sr, type),
-            value: expr.literal.value,
-            sourceloc: expr.sourceloc,
-          };
-        }
-      } else {
-        return {
-          variant: "Constant",
-          type: makePrimitiveAvailable(sr, EPrimitive.str),
-          value: expr.literal.value,
-          sourceloc: expr.sourceloc,
-        };
-      }
+      // if (expr.literal.variant === "BooleanConstant") {
+      //   return {
+      //     variant: "Constant",
+      //     type: makePrimitiveAvailable(sr, EPrimitive.boolean),
+      //     value: expr.literal.value,
+      //     sourceloc: expr.sourceloc,
+      //   };
+      // } else if (expr.literal.variant === "NumberConstant") {
+      //   function isFloat(n: number): boolean {
+      //     return Number(n) === n && n % 1 !== 0;
+      //   }
+      //   if (isFloat(expr.literal.value)) {
+      //     return {
+      //       variant: "Constant",
+      //       type: makePrimitiveAvailable(sr, EPrimitive.f64),
+      //       value: expr.literal.value,
+      //       sourceloc: expr.sourceloc,
+      //     };
+      //   } else {
+      //     let type = EPrimitive.i8;
+      //     if (expr.literal.value >= -Math.pow(2, 7) && expr.literal.value <= Math.pow(2, 7) - 1) {
+      //       type = EPrimitive.i8;
+      //     } else if (
+      //       expr.literal.value >= -Math.pow(2, 15) &&
+      //       expr.literal.value <= Math.pow(2, 15) - 1
+      //     ) {
+      //       type = EPrimitive.i16;
+      //     } else if (
+      //       expr.literal.value >= -Math.pow(2, 31) &&
+      //       expr.literal.value <= Math.pow(2, 31) - 1
+      //     ) {
+      //       type = EPrimitive.i32;
+      //     } else if (
+      //       expr.literal.value >= -Math.pow(2, 63) &&
+      //       expr.literal.value <= Math.pow(2, 63) - 1
+      //     ) {
+      //       type = EPrimitive.i64;
+      //     } else {
+      //       throw new CompilerError(
+      //         `The numeral constant ${expr.literal.value} is outside of any workable integer range`,
+      //         expr.sourceloc
+      //       );
+      //     }
+      //     return {
+      //       variant: "Constant",
+      //       type: makePrimitiveAvailable(sr, type),
+      //       value: expr.literal.value,
+      //       sourceloc: expr.sourceloc,
+      //     };
+      //   }
+      // } else {
+      //   return {
+      //     variant: "Constant",
+      //     type: makePrimitiveAvailable(sr, EPrimitive.str),
+      //     value: expr.literal.value,
+      //     sourceloc: expr.sourceloc,
+      //   };
+      // }
     }
 
     // =================================================================================================================
@@ -529,7 +639,7 @@ export function elaborateExpr(
         return {
           variant: "SizeofExpr",
           datatype: lookupAndElaborateDatatype(sr, {
-            datatype: expr.generics[0],
+            type: expr.generics[0],
             startLookupInScope: args.scope.id,
             isInCFuncdecl: false,
             context: args.context,
@@ -662,7 +772,7 @@ export function elaborateExpr(
       return {
         variant: "ExplicitCast",
         type: lookupAndElaborateDatatype(sr, {
-          datatype: expr.castedTo,
+          type: expr.castedTo,
           startLookupInScope: args.scope.id,
           isInCFuncdecl: false,
           context: args.context,
@@ -902,7 +1012,7 @@ export function elaborateExpr(
 
     case "StructInstantiationExpr": {
       const struct = lookupAndElaborateDatatype(sr, {
-        datatype: expr.datatype,
+        type: expr.datatype,
         startLookupInScope: args.scope.id,
         isInCFuncdecl: false,
         context: args.context,
@@ -1160,7 +1270,7 @@ export function elaborateStatement(
 
       if (s.datatype) {
         symbol.type = lookupAndElaborateDatatype(sr, {
-          datatype: s.datatype,
+          type: s.datatype,
           startLookupInScope: args.scope.collectedScope.id,
           isInCFuncdecl: false,
           context: args.context,
@@ -1236,7 +1346,7 @@ export function elaborateBlockScope(
             throw new InternalError("Parameter needs datatype");
           }
           type = lookupAndElaborateDatatype(sr, {
-            datatype: symbol.datatype,
+            type: symbol.datatype,
             startLookupInScope: args.scope.collectedScope.id,
             isInCFuncdecl: false,
             context: args.context,
@@ -1316,9 +1426,137 @@ export function defineThisPointer(
   args.elaboratedVariables.set(thisRefVarDef, vardef);
 }
 
+export function elaborateFunctionSymbol(
+  sr: SemanticResult,
+  collectedFunctionSymbolId: Collect.Id,
+  args: {
+    // usageInScope?: string;
+    generics: Semantic.TypeId[];
+    usageSite: SourceLoc;
+    // structForMethod?: Semantic.StructDatatypeSymbol;
+    context: SubstitutionContext;
+  }
+): Semantic.FunctionId {
+  for (const s of sr.elaboratedFuncdefSymbols) {
+    if (
+      s.generics.length === args.generics.length &&
+      s.generics.every((g, index) => g === args.generics[index]) &&
+      s.originalSymbol === collectedFunctionSymbolId
+    ) {
+      return s.resultSymbol;
+    }
+  }
+
+  const func = sr.cc.nodes.get(collectedFunctionSymbolId);
+  assert(func.variant === Collect.ENode.FunctionSymbol);
+
+  const overloadGroup = sr.cc.nodes.get(func.overloadGroup);
+  assert(overloadGroup.variant === Collect.ENode.FunctionOverloadGroup);
+
+  if (func.generics.length !== args.generics.length) {
+    throw new CompilerError(
+      `Function ${overloadGroup.name} expects ${func.generics.length} type parameters but got ${args.generics.length}`,
+      args.usageSite
+    );
+  }
+
+  // New local substitution context
+  const substitutionContext = isolateElaborationContext(args.context);
+  for (let i = 0; i < func.generics.length; i++) {
+    substitutionContext.substitute.set(func.generics[i], args.generics[i]);
+  }
+
+  const resolvedFunctype = lookupAndElaborateDatatype(sr, {
+    type: {
+      variant: "FunctionDatatype",
+      params: func.parameters,
+      vararg: func.vararg,
+      returnType: func.returnType!,
+      sourceloc: func.sourceloc,
+    },
+    startLookupInScope: func.declarationScope,
+    isInCFuncdecl: false,
+    context: substitutionContext,
+  });
+  assert(resolvedFunctype.variant === "FunctionDatatype");
+  assert(args.sourceSymbol.methodType !== undefined);
+  assert(args.sourceSymbol.funcbody?.variant === "Scope");
+
+  let symbol: Semantic.FunctionDefinitionSymbol = {
+    variant: "FunctionDefinition",
+    type: resolvedFunctype,
+    export: args.sourceSymbol.export,
+    staticMethod: false,
+    parent: elaborateParentSymbol(args.sourceSymbol),
+    externLanguage: args.sourceSymbol.externLanguage,
+    generics: generics,
+    methodType: args.sourceSymbol.methodType,
+    operatorOverloading: args.sourceSymbol.operatorOverloading && {
+      asTarget: lookupAndElaborateDatatype(
+        sr,
+        (() => {
+          assert(args.usageInScope);
+          return {
+            type: args.sourceSymbol.operatorOverloading.asTarget,
+            startLookupInScope: args.usageInScope,
+            isInCFuncdecl: false,
+            context: substitutionContext,
+          };
+        })()
+      ),
+      operator: args.sourceSymbol.operatorOverloading.operator,
+    },
+    parameterNames: args.sourceSymbol.params.map((p) => p.name),
+    name: args.sourceSymbol.name,
+    sourceloc: args.sourceSymbol.sourceloc,
+    scope: undefined,
+    concrete: resolvedFunctype.concrete,
+  };
+  if (symbol.variant !== "FunctionDefinition") {
+    throw new ImpossibleSituation();
+  }
+
+  assert(args.sourceSymbol.funcbody._collect.scope);
+  assert(!symbol.scope);
+  if (symbol.concrete) {
+    symbol.scope = new Semantic.BlockScope(
+      args.sourceSymbol.sourceloc,
+      getScope(sr.cc, args.sourceSymbol.funcbody._collect.scope),
+      symbol.parent?.scope
+    );
+    sr.elaboratedFuncdefSymbols.push({
+      generics: generics,
+      originalSymbol: args.sourceSymbol,
+      resultSymbol: symbol,
+    });
+
+    assert(symbol.scope);
+    elaborateBlockScope(sr, {
+      scope: symbol.scope,
+      expectedReturnType: symbol.type.returnType,
+      elaboratedVariables: new Map(),
+      context: substitutionContext,
+    });
+  }
+
+  return symbol;
+}
+
+export function elaborateStructOrNamespace(
+  sr: SemanticResult,
+  nodeId: Collect.Id,
+  args: {
+    // usageInScope?: string;
+    // usageGenerics?: (ASTDatatype | ASTConstant)[];
+    // usedAt?: SourceLoc;
+    // structForMethod?: Semantic.StructDatatypeSymbol;
+    context: SubstitutionContext;
+  }
+): Semantic.TypeId {}
+
 export function elaborate(
   sr: SemanticResult,
-  node: number,
+  nodeId: Collect.Id,
   args: {
     usageInScope?: string;
     usageGenerics?: (ASTDatatype | ASTConstant)[];
@@ -1327,196 +1565,28 @@ export function elaborate(
     context: SubstitutionContext;
   }
 ): Semantic.Symbol | undefined {
-  const elaborateParentSymbol = (
-    symbol:
-      | ASTFunctionDeclaration
-      | ASTFunctionDefinition
-      | ASTNamespaceDefinition
-      | ASTGlobalVariableDefinition
-      | ASTStructDefinition
-  ) => {
-    const parent =
-      (symbol._collect.definedInNamespaceOrStruct &&
-        elaborate(sr, {
-          sourceSymbol: getSymbol(sr.cc, symbol._collect.definedInNamespaceOrStruct),
-          context: args.context,
-        })) ||
-      null;
-    assert(
-      !parent || parent.variant === "StructDatatype" || parent.variant === "NamespaceDatatype"
-    );
-    return parent;
-  };
+  const node = sr.cc.nodes.get(nodeId);
+  // const elaborateParentSymbol = (
+  //   symbol:
+  //     | ASTFunctionDefinition
+  //     | ASTNamespaceDefinition
+  //     | ASTGlobalVariableDefinition
+  //     | ASTStructDefinition
+  // ) => {
+  //   const parent =
+  //     (symbol._collect.definedInNamespaceOrStruct &&
+  //       elaborate(sr, {
+  //         sourceSymbol: getSymbol(sr.cc, symbol._collect.definedInNamespaceOrStruct),
+  //         context: args.context,
+  //       })) ||
+  //     null;
+  //   assert(
+  //     !parent || parent.variant === "StructDatatype" || parent.variant === "NamespaceDatatype"
+  //   );
+  //   return parent;
+  // };
 
-  switch (args.sourceSymbol.variant) {
-    // =================================================================================================================
-    // =================================================================================================================
-    // =================================================================================================================
-
-    case "FunctionDeclaration": {
-      for (const s of sr.elaboratedFuncdeclSymbols) {
-        if (s.generics.length === 0 && s.originalSymbol === args.sourceSymbol) {
-          return s.resultSymbol;
-        }
-      }
-
-      assert(args.sourceSymbol._collect.definedInScope);
-      const resolvedFunctype = lookupAndElaborateDatatype(sr, {
-        datatype: {
-          variant: "FunctionDatatype",
-          params: args.sourceSymbol.params,
-          ellipsis: args.sourceSymbol.ellipsis,
-          returnType: args.sourceSymbol.returnType!,
-          sourceloc: args.sourceSymbol.sourceloc,
-        },
-        isInCFuncdecl: args.sourceSymbol.externLanguage === EExternLanguage.Extern_C,
-        startLookupInScope: args.sourceSymbol._collect.definedInScope,
-        context: args.context,
-      });
-      assert(resolvedFunctype.variant === "FunctionDatatype");
-      assert(args.sourceSymbol.methodType !== undefined);
-      const symbol: Semantic.FunctionDeclarationSymbol = {
-        variant: "FunctionDeclaration",
-        type: resolvedFunctype,
-        export: args.sourceSymbol.export,
-        staticMethod: false,
-        noemit: args.sourceSymbol.noemit,
-        externLanguage: args.sourceSymbol.externLanguage,
-        parameterNames: args.sourceSymbol.params.map((p) => p.name),
-        methodType: args.sourceSymbol.methodType,
-        parent: elaborateParentSymbol(args.sourceSymbol),
-        name: args.sourceSymbol.name,
-        sourceloc: args.sourceSymbol.sourceloc,
-        concrete: resolvedFunctype.concrete,
-      };
-      sr.elaboratedFuncdeclSymbols.push({
-        originalSymbol: args.sourceSymbol,
-        generics: [],
-        resultSymbol: symbol,
-      });
-      return symbol;
-    }
-
-    // =================================================================================================================
-    // =================================================================================================================
-    // =================================================================================================================
-
-    case "FunctionDefinition": {
-      assert(args.usageGenerics);
-      const generics = args.usageGenerics.map((g) => {
-        assert(args.usageInScope);
-        return lookupAndElaborateDatatype(sr, {
-          datatype: g,
-          startLookupInScope: args.usageInScope,
-          isInCFuncdecl: false,
-          context: args.context,
-        });
-      });
-
-      // If already existing, return cached to prevent loops
-      for (const s of sr.elaboratedFuncdefSymbols) {
-        if (
-          s.generics.length === generics.length &&
-          s.generics.every((g, index) => g === generics[index]) &&
-          s.originalSymbol === args.sourceSymbol
-        ) {
-          return s.resultSymbol;
-        }
-      }
-
-      if (args.sourceSymbol.generics.length !== generics.length) {
-        throw new CompilerError(
-          `Function ${args.sourceSymbol.name} expects ${args.sourceSymbol.generics.length} type parameters but got ${args.usageGenerics.length}`,
-          args.usedAt || args.sourceSymbol.sourceloc
-        );
-      }
-
-      // New local substitution context
-      const substitutionContext = isolateElaborationContext(args.context);
-      for (let i = 0; i < args.sourceSymbol.generics.length; i++) {
-        substitutionContext.substituteCollectGenericToSemantic.set(
-          args.sourceSymbol.generics[i],
-          generics[i]
-        );
-      }
-
-      assert(args.sourceSymbol.declarationScope);
-      const resolvedFunctype = lookupAndElaborateDatatype(sr, {
-        datatype: {
-          variant: "FunctionDatatype",
-          params: args.sourceSymbol.params,
-          ellipsis: args.sourceSymbol.ellipsis,
-          returnType: args.sourceSymbol.returnType!,
-          sourceloc: args.sourceSymbol.sourceloc,
-        },
-        startLookupInScope: args.sourceSymbol.declarationScope,
-        isInCFuncdecl: false,
-        context: substitutionContext,
-      });
-      assert(resolvedFunctype.variant === "FunctionDatatype");
-      assert(args.sourceSymbol.methodType !== undefined);
-      assert(args.sourceSymbol.funcbody?.variant === "Scope");
-
-      let symbol: Semantic.FunctionDefinitionSymbol = {
-        variant: "FunctionDefinition",
-        type: resolvedFunctype,
-        export: args.sourceSymbol.export,
-        staticMethod: false,
-        parent: elaborateParentSymbol(args.sourceSymbol),
-        externLanguage: args.sourceSymbol.externLanguage,
-        generics: generics,
-        methodType: args.sourceSymbol.methodType,
-        operatorOverloading: args.sourceSymbol.operatorOverloading && {
-          asTarget: lookupAndElaborateDatatype(
-            sr,
-            (() => {
-              assert(args.usageInScope);
-              return {
-                datatype: args.sourceSymbol.operatorOverloading.asTarget,
-                startLookupInScope: args.usageInScope,
-                isInCFuncdecl: false,
-                context: substitutionContext,
-              };
-            })()
-          ),
-          operator: args.sourceSymbol.operatorOverloading.operator,
-        },
-        parameterNames: args.sourceSymbol.params.map((p) => p.name),
-        name: args.sourceSymbol.name,
-        sourceloc: args.sourceSymbol.sourceloc,
-        scope: undefined,
-        concrete: resolvedFunctype.concrete,
-      };
-      if (symbol.variant !== "FunctionDefinition") {
-        throw new ImpossibleSituation();
-      }
-
-      assert(args.sourceSymbol.funcbody._collect.scope);
-      assert(!symbol.scope);
-      if (symbol.concrete) {
-        symbol.scope = new Semantic.BlockScope(
-          args.sourceSymbol.sourceloc,
-          getScope(sr.cc, args.sourceSymbol.funcbody._collect.scope),
-          symbol.parent?.scope
-        );
-        sr.elaboratedFuncdefSymbols.push({
-          generics: generics,
-          originalSymbol: args.sourceSymbol,
-          resultSymbol: symbol,
-        });
-
-        assert(symbol.scope);
-        elaborateBlockScope(sr, {
-          scope: symbol.scope,
-          expectedReturnType: symbol.type.returnType,
-          elaboratedVariables: new Map(),
-          context: substitutionContext,
-        });
-      }
-
-      return symbol;
-    }
-
+  switch (node.variant) {
     // =================================================================================================================
     // =================================================================================================================
     // =================================================================================================================
@@ -1527,7 +1597,7 @@ export function elaborate(
       const generics = args.usageGenerics.map((g) => {
         assert(args.usageInScope);
         return lookupAndElaborateDatatype(sr, {
-          datatype: g,
+          type: g,
           startLookupInScope: args.usageInScope,
           isInCFuncdecl: false,
           context: args.context,
@@ -1555,10 +1625,7 @@ export function elaborate(
       // New local substitution context
       const substitutionContext = isolateElaborationContext(args.context);
       for (let i = 0; i < args.sourceSymbol.generics.length; i++) {
-        substitutionContext.substituteCollectGenericToSemantic.set(
-          args.sourceSymbol.generics[i],
-          generics[i]
-        );
+        substitutionContext.substitute.set(args.sourceSymbol.generics[i], generics[i]);
       }
 
       const parameterNames = args.sourceSymbol.params.map((p) => p.name);
@@ -1566,7 +1633,7 @@ export function elaborate(
         assert(args.sourceSymbol.variant === "StructMethod");
         assert(args.sourceSymbol.declarationScope);
         return lookupAndElaborateDatatype(sr, {
-          datatype: p.datatype,
+          type: p.datatype,
           startLookupInScope: args.sourceSymbol.declarationScope,
           isInCFuncdecl: false,
           context: substitutionContext,
@@ -1582,7 +1649,7 @@ export function elaborate(
 
       assert(args.sourceSymbol.declarationScope);
       const returnType = lookupAndElaborateDatatype(sr, {
-        datatype: args.sourceSymbol.returnType,
+        type: args.sourceSymbol.returnType,
         startLookupInScope: args.sourceSymbol.declarationScope,
         isInCFuncdecl: false,
         context: substitutionContext,
@@ -1609,7 +1676,7 @@ export function elaborate(
             (() => {
               assert(args.usageInScope);
               return {
-                datatype: args.sourceSymbol.operatorOverloading.asTarget,
+                type: args.sourceSymbol.operatorOverloading.asTarget,
                 startLookupInScope: args.usageInScope,
                 isInCFuncdecl: false,
                 context: substitutionContext,
@@ -1776,7 +1843,7 @@ export function elaborate(
       let type =
         args.sourceSymbol.datatype &&
         lookupAndElaborateDatatype(sr, {
-          datatype: args.sourceSymbol.datatype,
+          type: args.sourceSymbol.datatype,
           isInCFuncdecl: false,
           startLookupInScope: scope.id,
           context: args.context,

@@ -40,10 +40,9 @@ import {
   EPrimitive,
   EVariableContext,
   primitiveToString,
-  type CollectId,
+  type Brand,
   type LiteralValue,
 } from "../shared/common";
-import { makeModulePrefix } from "../Module";
 
 import {
   EVariableMutability,
@@ -59,11 +58,12 @@ import type { ModuleConfig } from "../shared/Config";
 
 export type CollectionContext = {
   config: ModuleConfig;
-  nodes: BrandedArray<CollectId, Collect.Node>;
+  nodes: BrandedArray<Collect.Id, Collect.Node>;
 
   // Helper utilities
-  overloadGroups: Set<CollectId>;
-  blockScopes: Set<CollectId>;
+  overloadGroups: Set<Collect.Id>;
+  blockScopes: Set<Collect.Id>;
+  sharedNamespaceInstances: Set<Collect.Id>;
 };
 
 export function makeCollectionContext(config: ModuleConfig): CollectionContext {
@@ -72,15 +72,18 @@ export function makeCollectionContext(config: ModuleConfig): CollectionContext {
     nodes: new BrandedArray([
       {
         variant: Collect.ENode.ModuleScope,
+        units: [],
       },
     ]),
     blockScopes: new Set(),
     overloadGroups: new Set(),
+    sharedNamespaceInstances: new Set(),
   };
   return cc;
 }
 
 export namespace Collect {
+  export type Id = Brand<number, "Collect">;
   export const enum ENode {
     ModuleScope,
     UnitScope,
@@ -97,6 +100,7 @@ export namespace Collect {
     ReferenceDatatype,
     PointerDatatype,
     StructDefinitionSymbol,
+    NamespaceSharedInstance,
     NamespaceDefinitionSymbol,
     GenericTypeParameter,
     CInjectDirective,
@@ -130,52 +134,54 @@ export namespace Collect {
 
   export type ModuleScope = {
     variant: ENode.ModuleScope;
+    units: Collect.Id[];
   };
 
   export type UnitScope = {
     variant: ENode.UnitScope;
-    parentScope: CollectId;
+    parentScope: Collect.Id;
+    files: Collect.Id[];
   };
 
   export type FileScope = {
     variant: ENode.FileScope;
     filepath: string;
-    parentScope: CollectId;
-    symbols: CollectId[];
+    parentScope: Collect.Id;
+    symbols: Collect.Id[];
   };
 
   export type FunctionScope = {
     variant: ENode.FunctionScope;
-    parentScope: CollectId;
-    owningSymbol: CollectId;
+    parentScope: Collect.Id;
+    owningSymbol: Collect.Id;
     sourceloc: SourceLoc;
-    blockScope: CollectId;
-    symbols: CollectId[];
+    blockScope: Collect.Id;
+    symbols: Collect.Id[];
   };
 
   export type StructScope = {
     variant: ENode.StructScope;
-    parentScope: CollectId;
-    owningSymbol: CollectId;
+    parentScope: Collect.Id;
+    owningSymbol: Collect.Id;
     sourceloc: SourceLoc;
-    symbols: CollectId[];
+    symbols: Collect.Id[];
   };
 
   export type NamespaceScope = {
     variant: ENode.NamespaceScope;
-    parentScope: CollectId;
-    owningSymbol: CollectId;
+    parentScope: Collect.Id;
+    owningSymbol: Collect.Id;
     sourceloc: SourceLoc;
-    symbols: CollectId[];
+    symbols: Collect.Id[];
   };
 
   export type BlockScope = {
     variant: ENode.BlockScope;
-    parentScope: CollectId;
-    owningSymbol: CollectId;
+    parentScope: Collect.Id;
+    owningSymbol: Collect.Id;
     sourceloc: SourceLoc;
-    statements: CollectId[];
-    symbols: CollectId[];
+    statements: Collect.Id[];
+    symbols: Collect.Id[];
   };
 
   export type Scope =
@@ -193,9 +199,9 @@ export namespace Collect {
 
   export type FunctionOverloadGroup = {
     variant: ENode.FunctionOverloadGroup;
-    parentScope: CollectId;
+    parentScope: Collect.Id;
     name: string;
-    overloads: CollectId[];
+    overloads: Collect.Id[];
   };
 
   export type Overloads = FunctionOverloadGroup;
@@ -206,26 +212,28 @@ export namespace Collect {
 
   export type FunctionSymbol = {
     variant: ENode.FunctionSymbol;
-    parentScope: CollectId;
-    overloadGroup: CollectId;
-    returnType: CollectId | null;
+    parentScope: Collect.Id;
+    overloadGroup: Collect.Id;
+    generics: Collect.Id[];
+    returnType: Collect.Id | null;
     parameters: {
       name: string;
-      type: CollectId;
+      type: Collect.Id;
       sourceloc: SourceLoc;
     }[];
+    vararg: boolean;
     export: boolean;
     pub: boolean;
     extern: EExternLanguage;
     sourceloc: SourceLoc;
-    functionScope: CollectId | null;
+    functionScope: Collect.Id | null;
   };
 
   export type VariableSymbol = {
     variant: ENode.VariableSymbol;
     name: string;
-    inScope: CollectId;
-    type: CollectId | null;
+    inScope: Collect.Id;
+    type: Collect.Id | null;
     mutability: EVariableMutability;
     variableContext: EVariableContext;
     sourceloc: SourceLoc;
@@ -233,8 +241,8 @@ export namespace Collect {
 
   export type GlobalVariableDefinition = {
     variant: ENode.GlobalVariableDefinition;
-    variableSymbol: CollectId;
-    value: CollectId | null;
+    variableSymbol: Collect.Id;
+    value: Collect.Id | null;
     sourceloc: SourceLoc;
   };
 
@@ -265,57 +273,67 @@ export namespace Collect {
   export type NamedDatatype = {
     variant: ENode.NamedDatatype;
     name: string;
-    innerNested: CollectId | null;
-    genericArgs: CollectId[];
+    innerNested: Collect.Id | null;
+    genericArgs: Collect.Id[];
     sourceloc: SourceLoc;
   };
 
   export type FunctionDatatype = {
     variant: ENode.FunctionDatatype;
-    parameters: CollectId[];
-    returnType: CollectId;
+    parameters: Collect.Id[];
+    returnType: Collect.Id;
     vararg: boolean;
     sourceloc: SourceLoc;
   };
 
   export type PointerDatatype = {
     variant: ENode.PointerDatatype;
-    pointee: CollectId;
+    pointee: Collect.Id;
     sourceloc: SourceLoc;
   };
 
   export type ReferenceDatatype = {
     variant: ENode.ReferenceDatatype;
-    referee: CollectId;
+    referee: Collect.Id;
     sourceloc: SourceLoc;
   };
 
   export type StructDefinitionSymbol = {
     variant: ENode.StructDefinitionSymbol;
-    parentScope: CollectId;
+    parentScope: Collect.Id;
+    generics: Collect.Id[];
     name: string;
     export: boolean;
     pub: boolean;
     extern: EExternLanguage;
+    noemit: boolean;
     sourceloc: SourceLoc;
-    structScope: CollectId | null;
+    structScope: Collect.Id | null;
+  };
+
+  export type NamespaceSharedInstance = {
+    variant: ENode.NamespaceSharedInstance;
+    fullyQualifiedName: string;
+    namespaceScopes: Collect.Id[];
   };
 
   export type NamespaceDefinitionSymbol = {
     variant: ENode.NamespaceDefinitionSymbol;
-    parentScope: CollectId;
+    parentScope: Collect.Id;
+    fullyQualifiedName: string;
     name: string;
     extern: EExternLanguage;
     pub: boolean;
     export: boolean;
+    sharedInstance: Collect.Id;
     sourceloc: SourceLoc;
-    namespaceScope: CollectId;
+    namespaceScope: Collect.Id;
   };
 
   export type GenericTypeParameter = {
     variant: ENode.GenericTypeParameter;
     name: string;
-    owningSymbol: CollectId;
+    owningSymbol: Collect.Id;
     sourceloc: SourceLoc;
   };
 
@@ -326,6 +344,7 @@ export namespace Collect {
     | ReferenceDatatype
     | StructDefinitionSymbol
     | NamespaceDefinitionSymbol
+    | NamespaceSharedInstance
     | GenericTypeParameter;
 
   /// ===============================================================
@@ -333,13 +352,13 @@ export namespace Collect {
   /// ===============================================================
 
   type BaseStatement = {
-    owningScope: CollectId;
+    owningScope: Collect.Id;
     sourceloc: SourceLoc;
   };
 
   export type ExprStatement = BaseStatement & {
     variant: ENode.ExprStatement;
-    expr: CollectId;
+    expr: Collect.Id;
   };
 
   export type InlineCStatement = BaseStatement & {
@@ -349,35 +368,35 @@ export namespace Collect {
 
   export type ReturnStatement = BaseStatement & {
     variant: ENode.ReturnStatement;
-    expr: CollectId | null;
+    expr: Collect.Id | null;
   };
 
   export type BlockScopeStatement = BaseStatement & {
     variant: ENode.BlockScopeStatement;
-    blockscope: CollectId;
+    blockscope: Collect.Id;
   };
 
   export type IfStatement = BaseStatement & {
     variant: ENode.IfStatement;
-    condition: CollectId;
-    thenBlock: CollectId;
+    condition: Collect.Id;
+    thenBlock: Collect.Id;
     elseif: {
-      condition: CollectId;
-      thenBlock: CollectId;
+      condition: Collect.Id;
+      thenBlock: Collect.Id;
     }[];
-    elseBlock: CollectId | null;
+    elseBlock: Collect.Id | null;
   };
 
   export type WhileStatement = BaseStatement & {
     variant: ENode.WhileStatement;
-    condition: CollectId;
-    block: CollectId;
+    condition: Collect.Id;
+    block: Collect.Id;
   };
 
   export type VariableDefinitionStatement = BaseStatement & {
     variant: ENode.VariableDefinitionStatement;
-    variableSymbol: CollectId;
-    value: CollectId | null;
+    variableSymbol: Collect.Id;
+    value: Collect.Id | null;
   };
 
   export type Statements =
@@ -408,71 +427,71 @@ export namespace Collect {
 
   export type ParenthesisExpr = BaseExpr & {
     variant: ENode.ParenthesisExpr;
-    expr: CollectId;
+    expr: Collect.Id;
   };
 
   export type BinaryExpr = BaseExpr & {
     variant: ENode.BinaryExpr;
-    left: CollectId;
-    right: CollectId;
+    left: Collect.Id;
+    right: Collect.Id;
     operation: EBinaryOperation;
   };
 
   export type UnaryExpr = BaseExpr & {
     variant: ENode.UnaryExpr;
-    expr: CollectId;
+    expr: Collect.Id;
     operation: EUnaryOperation;
   };
 
   export type ExprCallExpr = BaseExpr & {
     variant: ENode.ExprCallExpr;
-    calledExpr: CollectId;
-    arguments: CollectId[];
+    calledExpr: Collect.Id;
+    arguments: Collect.Id[];
   };
 
   export type SymbolValueExpr = BaseExpr & {
     variant: ENode.SymbolValueExpr;
     name: string;
-    genericArgs: CollectId[];
+    genericArgs: Collect.Id[];
   };
 
   export type ExplicitCastExpr = BaseExpr & {
     variant: ENode.ExplicitCastExpr;
-    expr: CollectId;
-    targetType: CollectId;
+    expr: Collect.Id;
+    targetType: Collect.Id;
   };
 
   export type StructInstantiationExpr = BaseExpr & {
     variant: ENode.StructInstantiationExpr;
-    structType: CollectId;
+    structType: Collect.Id;
     members: {
       name: string;
-      value: CollectId;
+      value: Collect.Id;
     }[];
   };
 
   export type ExprAssignmentExpr = BaseExpr & {
     variant: ENode.ExprAssignmentExpr;
-    expr: CollectId;
-    value: CollectId;
+    expr: Collect.Id;
+    value: Collect.Id;
     operation: EAssignmentOperation;
   };
 
   export type PointerAddressOfExpr = BaseExpr & {
     variant: ENode.PointerAddressOfExpr;
-    expr: CollectId;
+    expr: Collect.Id;
   };
 
   export type PointerDereferenceExpr = BaseExpr & {
     variant: ENode.PointerDereferenceExpr;
-    expr: CollectId;
+    expr: Collect.Id;
   };
 
   export type MemberAccessExpr = BaseExpr & {
     variant: ENode.MemberAccessExpr;
-    expr: CollectId;
+    expr: Collect.Id;
     memberName: string;
-    genericArgs: CollectId[];
+    genericArgs: Collect.Id[];
   };
 
   export type LiteralExpr = BaseExpr & {
@@ -482,13 +501,13 @@ export namespace Collect {
 
   export type PreIncrExpr = BaseExpr & {
     variant: ENode.PreIncrExpr;
-    expr: CollectId;
+    expr: Collect.Id;
     operation: EIncrOperation;
   };
 
   export type PostIncrExpr = BaseExpr & {
     variant: ENode.PostIncrExpr;
-    expr: CollectId;
+    expr: Collect.Id;
     operation: EIncrOperation;
   };
 
@@ -511,12 +530,12 @@ export namespace Collect {
   export type Node = Scope | Overloads | Symbols | Datatypes | Statements | Expressions;
 }
 
-export function makeSymbol(cc: CollectionContext, symbol: Collect.Node): CollectId {
+export function makeSymbol(cc: CollectionContext, symbol: Collect.Node): Collect.Id {
   cc.nodes.push(symbol);
-  return (cc.nodes.length - 1) as CollectId;
+  return (cc.nodes.length - 1) as Collect.Id;
 }
 
-function makeOverloadGroupAvailable(cc: CollectionContext, parentScope: CollectId, name: string) {
+function makeOverloadGroupAvailable(cc: CollectionContext, parentScope: Collect.Id, name: string) {
   for (const group of cc.overloadGroups) {
     const og = cc.nodes.get(group);
     assert(og.variant === Collect.ENode.FunctionOverloadGroup);
@@ -536,9 +555,9 @@ function makeOverloadGroupAvailable(cc: CollectionContext, parentScope: CollectI
 
 function makeBlockScope(
   cc: CollectionContext,
-  parentScope: CollectId,
+  parentScope: Collect.Id,
   sourceloc: SourceLoc
-): CollectId {
+): Collect.Id {
   const parent = cc.nodes.get(parentScope);
   assert(
     parent.variant === Collect.ENode.BlockScope || parent.variant === Collect.ENode.FunctionScope
@@ -557,7 +576,7 @@ function makeBlockScope(
 
 function addStatement(
   cc: CollectionContext,
-  parentScope: CollectId,
+  parentScope: Collect.Id,
   statement: Collect.StatementsWithoutOwningScope
 ) {
   const parent = cc.nodes.get(parentScope);
@@ -573,7 +592,7 @@ function addStatement(
 function defineGenericTypeParameter(
   cc: CollectionContext,
   name: string,
-  functionOrStructScopeId: CollectId,
+  functionOrStructScopeId: Collect.Id,
   sourceloc: SourceLoc
 ) {
   const functionOrStructScope = cc.nodes.get(functionOrStructScopeId);
@@ -599,7 +618,7 @@ function defineGenericTypeParameter(
 function defineVariableSymbol(
   cc: CollectionContext,
   variable: Omit<Collect.VariableSymbol, "inScope">,
-  scope: CollectId
+  scope: Collect.Id
 ) {
   const sc = cc.nodes.get(scope);
   assert(
@@ -664,9 +683,9 @@ function collect(
     | ASTStructDefinition
     | ASTDatatype,
   args: {
-    currentParentScope: CollectId;
+    currentParentScope: Collect.Id;
   }
-): CollectId {
+): Collect.Id {
   switch (item.variant) {
     // =================================================================================================================
     // =================================================================================================================
@@ -684,10 +703,12 @@ function collect(
         variant: Collect.ENode.FunctionSymbol,
         export: item.export,
         extern: item.externLanguage,
+        generics: [],
         overloadGroup: overloadGroup,
         parameters: parameters,
         parentScope: args.currentParentScope,
         pub: item.pub,
+        vararg: item.ellipsis,
         returnType: (item.returnType && collect(cc, item.returnType, args)) || null,
         sourceloc: item.sourceloc,
         functionScope: null,
@@ -705,7 +726,7 @@ function collect(
           owningSymbol: functionSymbol,
           parentScope: args.currentParentScope,
           sourceloc: item.sourceloc,
-          blockScope: -1 as CollectId,
+          blockScope: -1 as Collect.Id,
           symbols: [],
         });
         (cc.nodes.get(functionSymbol) as Collect.FunctionSymbol).functionScope = functionScope;
@@ -730,7 +751,8 @@ function collect(
         (cc.nodes.get(functionScope) as Collect.FunctionScope).blockScope = blockScope;
 
         for (const g of item.generics) {
-          defineGenericTypeParameter(cc, g.name, functionScope, g.sourceloc);
+          const generic = defineGenericTypeParameter(cc, g.name, functionScope, g.sourceloc);
+          (cc.nodes.get(functionSymbol) as Collect.FunctionSymbol).generics.push(generic);
         }
 
         for (const p of parameters) {
@@ -801,7 +823,7 @@ function collect(
           parent.variant === Collect.ENode.NamespaceScope
       );
 
-      let existingNamespace = -1 as CollectId;
+      let existingNamespace = -1 as Collect.Id;
       for (const id of parent.symbols) {
         const sym = cc.nodes.get(id);
         if (sym.variant === Collect.ENode.NamespaceDefinitionSymbol && sym.name === item.name) {
@@ -821,15 +843,41 @@ function collect(
         }
       }
 
+      let fullyQualifiedName = "";
+      if (parent.variant === Collect.ENode.NamespaceScope) {
+        const ns = cc.nodes.get(parent.owningSymbol);
+        assert(ns.variant === Collect.ENode.NamespaceDefinitionSymbol);
+        fullyQualifiedName += ns.fullyQualifiedName + ".";
+      }
+
       if (existingNamespace === -1) {
+        let sharedInstance = -1 as Collect.Id;
+        for (const id of cc.sharedNamespaceInstances) {
+          const ni = cc.nodes.get(id);
+          assert(ni.variant === Collect.ENode.NamespaceSharedInstance);
+          if (ni.fullyQualifiedName === fullyQualifiedName) {
+            sharedInstance = id;
+            break;
+          }
+        }
+
+        if (sharedInstance === -1) {
+          sharedInstance = makeSymbol(cc, {
+            variant: Collect.ENode.NamespaceSharedInstance,
+            fullyQualifiedName: fullyQualifiedName,
+            namespaceScopes: [],
+          });
+        }
+
         existingNamespace = makeSymbol(cc, {
           variant: Collect.ENode.NamespaceDefinitionSymbol,
+          fullyQualifiedName: fullyQualifiedName,
+          sharedInstance: sharedInstance,
           name: item.name,
           export: item.export,
-          // extern: item.
           extern: EExternLanguage.None,
           pub: false,
-          namespaceScope: -1 as CollectId,
+          namespaceScope: -1 as Collect.Id,
           parentScope: args.currentParentScope,
           sourceloc: item.sourceloc,
         });
@@ -842,6 +890,9 @@ function collect(
         });
         (cc.nodes.get(existingNamespace) as Collect.NamespaceDefinitionSymbol).namespaceScope =
           namespaceScope;
+        (cc.nodes.get(sharedInstance) as Collect.NamespaceSharedInstance).namespaceScopes.push(
+          namespaceScope
+        );
       }
 
       for (const s of item.declarations) {
@@ -892,9 +943,11 @@ function collect(
       const struct = makeSymbol(cc, {
         variant: Collect.ENode.StructDefinitionSymbol,
         name: item.name,
+        generics: [],
         export: item.export,
         extern: EExternLanguage.None,
         pub: false,
+        noemit: item.noemit,
         structScope: null,
         parentScope: args.currentParentScope,
         sourceloc: item.sourceloc,
@@ -909,7 +962,8 @@ function collect(
       (cc.nodes.get(struct) as Collect.NamespaceDefinitionSymbol).namespaceScope = structScope;
 
       for (const g of item.generics) {
-        defineGenericTypeParameter(cc, g.name, structScope, g.sourceloc);
+        const generic = defineGenericTypeParameter(cc, g.name, structScope, g.sourceloc);
+        (cc.nodes.get(struct) as Collect.StructDefinitionSymbol).generics.push(generic);
       }
 
       // for (const s of item.nestedStructs) {
@@ -1150,7 +1204,7 @@ function collect(
     // =================================================================================================================
 
     case "Deferred":
-      return -1 as CollectId;
+      return -1 as Collect.Id;
 
     // =================================================================================================================
     // =================================================================================================================
@@ -1378,15 +1432,19 @@ function collect(
 export function CollectFileInUnit(
   cc: CollectionContext,
   ast: ASTRoot,
-  unitScope: CollectId,
+  unitScope: Collect.Id,
   filepath: string
 ) {
+  const unit = cc.nodes.get(unitScope);
+  assert(unit.variant === Collect.ENode.UnitScope);
+
   const fileScope = makeSymbol(cc, {
     variant: Collect.ENode.FileScope,
     filepath: filepath,
     parentScope: unitScope,
     symbols: [],
   });
+  unit.files.push(fileScope);
 
   for (const decl of ast) {
     const sym = collect(cc, decl, {
@@ -1412,7 +1470,7 @@ export function PrettyPrintCollected(cc: CollectionContext) {
   // }
   console.log("\n");
 
-  const printType = (typeId: CollectId | null): string => {
+  const printType = (typeId: Collect.Id | null): string => {
     if (typeId === null) {
       return "?";
     }
@@ -1448,7 +1506,7 @@ export function PrettyPrintCollected(cc: CollectionContext) {
     }
   };
 
-  const printExpr = (exprId: CollectId): string => {
+  const printExpr = (exprId: Collect.Id): string => {
     const expr = cc.nodes.get(exprId);
     switch (expr.variant) {
       case Collect.ENode.ParenthesisExpr: {
@@ -1504,7 +1562,7 @@ export function PrettyPrintCollected(cc: CollectionContext) {
     }
   };
 
-  const printSymbol = (symbolId: CollectId, indent: number) => {
+  const printSymbol = (symbolId: Collect.Id, indent: number) => {
     const symbol = cc.nodes.get(symbolId);
     const print = (str: string, _indent = 0) => {
       console.log(`[${symbolId}]` + " ".repeat(indent + _indent) + str);
@@ -1666,5 +1724,5 @@ export function PrettyPrintCollected(cc: CollectionContext) {
     }
   };
 
-  printSymbol(0 as CollectId, 2);
+  printSymbol(0 as Collect.Id, 2);
 }
