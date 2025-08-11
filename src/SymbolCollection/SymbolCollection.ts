@@ -43,15 +43,15 @@ import {
 } from "../shared/common";
 import { makeModulePrefix } from "../Module";
 
-import type {
-  ASTCInjectDirective,
-  ASTExpr,
-  ASTStatement,
-  EAssignmentOperation,
-  EBinaryOperation,
-  EIncrOperation,
-  EUnaryOperation,
+import {
   EVariableMutability,
+  type ASTCInjectDirective,
+  type ASTExpr,
+  type ASTStatement,
+  type EAssignmentOperation,
+  type EBinaryOperation,
+  type EIncrOperation,
+  type EUnaryOperation,
 } from "../shared/AST";
 import type { ModuleConfig } from "../shared/Config";
 
@@ -253,6 +253,7 @@ export namespace Collect {
     parameters: {
       name: string;
       type: number;
+      sourceloc: SourceLoc;
     }[];
     export: boolean;
     pub: boolean;
@@ -806,15 +807,17 @@ function collect(
     case "FunctionDefinition": {
       const overloadGroup = makeOverloadGroupAvailable(cc, args.currentParentScope, item.name);
 
+      const parameters = item.params.map((p) => ({
+        name: p.name,
+        type: collect(cc, p.datatype, args),
+        sourceloc: p.sourceloc,
+      }));
       const functionSymbol = makeSymbol(cc, {
         variant: Collect.ENode.FunctionSymbol,
         export: item.export,
         extern: item.externLanguage,
         overloadGroup: overloadGroup,
-        parameters: item.params.map((p) => ({
-          name: p.name,
-          type: collect(cc, p.datatype, args),
-        })),
+        parameters: parameters,
         parentScope: args.currentParentScope,
         pub: item.pub,
         returnType: (item.returnType && collect(cc, item.returnType, args)) || null,
@@ -862,7 +865,20 @@ function collect(
           defineGenericTypeParameter(cc, g.name, functionScope, g.sourceloc);
         }
 
-        console.warn("TODO: Define parameters as symbols");
+        for (const p of parameters) {
+          defineVariableSymbol(
+            cc,
+            {
+              variant: Collect.ENode.VariableSymbol,
+              mutability: EVariableMutability.Immutable,
+              name: p.name,
+              sourceloc: p.sourceloc,
+              type: p.type,
+              variableContext: EVariableContext.FunctionParameter,
+            },
+            functionScope
+          );
+        }
       }
 
       return overloadGroup;
