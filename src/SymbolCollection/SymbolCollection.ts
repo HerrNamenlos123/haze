@@ -308,7 +308,7 @@ export namespace Collect {
     extern: EExternLanguage;
     noemit: boolean;
     sourceloc: SourceLoc;
-    structScope: Collect.Id | null;
+    structScope: Collect.Id;
   };
 
   export type NamespaceSharedInstance = {
@@ -948,7 +948,7 @@ function collect(
         extern: EExternLanguage.None,
         pub: false,
         noemit: item.noemit,
-        structScope: null,
+        structScope: -1 as Collect.Id,
         parentScope: args.currentParentScope,
         sourceloc: item.sourceloc,
       });

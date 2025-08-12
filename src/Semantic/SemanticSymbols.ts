@@ -1,4 +1,4 @@
-import { CompilerError, InternalError, type SourceLoc } from "../shared/Errors";
+import { assert, CompilerError, InternalError, type SourceLoc } from "../shared/Errors";
 import type {
   ASTStructDefinition,
   EBinaryOperation,
@@ -14,15 +14,17 @@ import {
   type Brand,
   type EMethodType,
   type EPrimitive,
-  type SemanticId,
+  type LiteralValue,
 } from "../shared/common";
-import type { Collect, CollectionContext } from "../SymbolCollection/SymbolCollection";
+import { Collect, type CollectionContext } from "../SymbolCollection/SymbolCollection";
 
 export type SemanticResult = {
   cc: CollectionContext;
 
   // nodes: BrandedArray<SemanticId, Semantic.Node>;
-  functionNodes: BrandedArray<SemanticId, Semantic.FunctionDeclarationSymbol>;
+  functionNodes: BrandedArray<Semantic.FunctionId, Semantic.FunctionDefinitionSymbol>;
+  typeNodes: BrandedArray<Semantic.TypeId, Semantic.DatatypeSymbol>;
+  exprNodes: BrandedArray<Semantic.ExprId, Semantic.Expression>;
 
   overloadedOperators: Semantic.FunctionDefinitionSymbol[];
 
@@ -45,28 +47,27 @@ export type SemanticResult = {
     resultSymbol: Semantic.GlobalVariableDefinitionSymbol;
   }[];
 
-  elaboratedPrimitiveTypes: Semantic.PrimitiveDatatypeSymbol[];
-  functionTypeCache: Semantic.FunctionDatatypeSymbol[];
-  rawPointerTypeCache: Semantic.PointerDatatypeSymbol[];
-  referenceTypeCache: Semantic.ReferenceDatatypeSymbol[];
+  elaboratedPrimitiveTypes: Semantic.TypeId[];
+  functionTypeCache: Semantic.TypeId[];
+  rawPointerTypeCache: Semantic.TypeId[];
+  referenceTypeCache: Semantic.TypeId[];
 
   exportedCollectedSymbols: Set<number>;
 };
 
-export function makePrimitiveAvailable(
-  sr: SemanticResult,
-  primitive: EPrimitive
-): Semantic.PrimitiveDatatypeSymbol {
-  for (const s of sr.elaboratedPrimitiveTypes) {
+export function makePrimitiveAvailable(sr: SemanticResult, primitive: EPrimitive): Semantic.TypeId {
+  for (const id of sr.elaboratedPrimitiveTypes) {
+    const s = sr.typeNodes.get(id);
+    assert(s.variant === "PrimitiveDatatype");
     if (s.primitive === primitive) {
-      return s;
+      return id;
     }
   }
-  const s = {
+  const s = Semantic.addType(sr, {
     variant: "PrimitiveDatatype",
     primitive: primitive,
     concrete: true,
-  } satisfies Semantic.PrimitiveDatatypeSymbol;
+  });
   sr.elaboratedPrimitiveTypes.push(s);
   return s;
 }
@@ -80,6 +81,16 @@ export namespace Semantic {
   export type TypeId = Brand<number, "SemanticType">;
   export type StatementId = Brand<number, "SemanticStatement">;
   export type ExprId = Brand<number, "SemanticExpr">;
+
+  export function addType(sr: SemanticResult, type: Semantic.DatatypeSymbol) {
+    sr.typeNodes.push(type);
+    return (sr.typeNodes.length - 1) as Semantic.TypeId;
+  }
+
+  export function addExpr(sr: SemanticResult, expr: Semantic.Expression) {
+    sr.exprNodes.push(expr);
+    return (sr.exprNodes.length - 1) as Semantic.ExprId;
+  }
 
   export type VariableSymbol = {
     variant: "Variable";
@@ -128,8 +139,8 @@ export namespace Semantic {
 
   export type FunctionDatatypeSymbol = {
     variant: "FunctionDatatype";
-    parameters: DatatypeSymbol[];
-    returnType: DatatypeSymbol;
+    parameters: TypeId[];
+    returnType: TypeId;
     vararg: boolean;
     concrete: boolean;
   };
@@ -138,34 +149,32 @@ export namespace Semantic {
     variant: "StructDatatype";
     name: string;
     noemit: boolean;
-    generics: DatatypeSymbol[];
+    generics: Semantic.TypeId[];
     extern: EExternLanguage;
     members: VariableSymbol[];
     methods: Set<FunctionDefinitionSymbol>;
     parentSymbol: TypeId | null;
-    rawAst: ASTStructDefinition;
-    scope: Semantic.DeclScope;
     sourceloc: SourceLoc;
     concrete: boolean;
-    originalCollectedSymbol: number;
+    originalCollectedSymbol: Collect.Id;
   };
 
   export type PointerDatatypeSymbol = {
     variant: "PointerDatatype";
-    pointee: DatatypeSymbol;
+    pointee: TypeId;
     concrete: boolean;
   };
 
   export type ReferenceDatatypeSymbol = {
     variant: "ReferenceDatatype";
-    referee: DatatypeSymbol;
+    referee: TypeId;
     concrete: boolean;
   };
 
   export type CallableDatatypeSymbol = {
     variant: "CallableDatatype";
-    thisExprType?: DatatypeSymbol;
-    functionType: FunctionDatatypeSymbol;
+    thisExprType?: TypeId;
+    functionType: TypeId;
     concrete: boolean;
   };
 
@@ -184,10 +193,9 @@ export namespace Semantic {
   export type NamespaceDatatypeSymbol = {
     variant: "NamespaceDatatype";
     name: string;
-    parent: Semantic.NamespaceDatatypeSymbol | Semantic.StructDatatypeSymbol | null;
-    scope: Semantic.DeclScope;
+    parent: Semantic.TypeId | null;
     sourceloc: SourceLoc;
-    concrete: boolean;
+    concrete: boolean; // For consistency, always true
   };
 
   export type ConstantDatatypeSymbol = {
@@ -202,7 +210,6 @@ export namespace Semantic {
     | VariableSymbol
     | GlobalVariableDefinitionSymbol
     | FunctionDefinitionSymbol
-    | FunctionDeclarationSymbol
     | GenericParameterDatatypeSymbol
     | NamespaceDatatypeSymbol
     | FunctionDatatypeSymbol
@@ -333,9 +340,9 @@ export namespace Semantic {
     sourceloc: SourceLoc;
   };
 
-  export type ConstantExpr = {
-    variant: "Constant";
-    value: number | string | boolean;
+  export type LiteralExpr = {
+    variant: "LiteralExpr";
+    literal: LiteralValue;
     type: DatatypeSymbol;
     sourceloc: SourceLoc;
   };
@@ -356,7 +363,7 @@ export namespace Semantic {
     | ExplicitCastExpr
     | ExprCallExpr
     | StructInstantiationExpr
-    | ConstantExpr;
+    | LiteralExpr;
 
   export type InlineCStatement = {
     variant: "InlineCStatement";
@@ -412,131 +419,130 @@ export namespace Semantic {
     | WhileStatement
     | ExprStatement;
 
-  export class SymbolTable {
-    symbols: (
-      | VariableSymbol
-      | GlobalVariableDefinitionSymbol
-      | FunctionDefinitionSymbol
-      | FunctionDeclarationSymbol
-      | NamespaceDatatypeSymbol
-      | PrimitiveDatatypeSymbol
-      | StructDatatypeSymbol
-    )[] = [];
+  // export class SymbolTable {
+  //   symbols: (
+  //     | VariableSymbol
+  //     | GlobalVariableDefinitionSymbol
+  //     | FunctionDefinitionSymbol
+  //     | NamespaceDatatypeSymbol
+  //     | PrimitiveDatatypeSymbol
+  //     | StructDatatypeSymbol
+  //   )[] = [];
 
-    constructor(public parentTable?: SymbolTable) {}
+  //   constructor(public parentTable?: SymbolTable) {}
 
-    defineSymbol(symbol: Symbol): Symbol {
-      if (symbol.variant === "FunctionDatatype") {
-        throw new InternalError("A Function Datatype cannot be defined as a symbol");
-      }
-      if (symbol.variant === "RawPointerDatatype") {
-        throw new InternalError("A Raw Pointer Datatype cannot be defined as a symbol");
-      }
-      if (symbol.variant === "ReferenceDatatype") {
-        throw new InternalError("A Reference Datatype cannot be defined as a symbol");
-      }
-      if (symbol.variant === "CallableDatatype") {
-        throw new InternalError("A Callable Datatype cannot be defined as a symbol");
-      }
-      if (symbol.variant === "DeferredDatatype") {
-        throw new InternalError("A Deferred Datatype cannot be defined as a symbol");
-      }
-      if (symbol.variant === "GenericParameterDatatype") {
-        throw new InternalError("A Generic Parameter Datatype cannot be defined as a symbol");
-      }
-      if (symbol.variant === "ConstantDatatype") {
-        throw new InternalError("A Constant Datatype cannot be defined as a symbol");
-      }
-      if (symbol.variant === "PrimitiveDatatype") {
-        const name = primitiveToString(symbol.primitive);
-        if (this.tryLookupSymbolHere(name)) {
-          throw new InternalError(`Symbol ${name} was already defined in this scope`);
-        }
-      } else {
-        if (this.tryLookupSymbolHere(symbol.name)) {
-          throw new CompilerError(
-            `Symbol ${symbol.name} was already defined in this scope`,
-            symbol.sourceloc
-          );
-        }
-      }
+  //   defineSymbol(symbol: Symbol): Symbol {
+  //     if (symbol.variant === "FunctionDatatype") {
+  //       throw new InternalError("A Function Datatype cannot be defined as a symbol");
+  //     }
+  //     if (symbol.variant === "RawPointerDatatype") {
+  //       throw new InternalError("A Raw Pointer Datatype cannot be defined as a symbol");
+  //     }
+  //     if (symbol.variant === "ReferenceDatatype") {
+  //       throw new InternalError("A Reference Datatype cannot be defined as a symbol");
+  //     }
+  //     if (symbol.variant === "CallableDatatype") {
+  //       throw new InternalError("A Callable Datatype cannot be defined as a symbol");
+  //     }
+  //     if (symbol.variant === "DeferredDatatype") {
+  //       throw new InternalError("A Deferred Datatype cannot be defined as a symbol");
+  //     }
+  //     if (symbol.variant === "GenericParameterDatatype") {
+  //       throw new InternalError("A Generic Parameter Datatype cannot be defined as a symbol");
+  //     }
+  //     if (symbol.variant === "ConstantDatatype") {
+  //       throw new InternalError("A Constant Datatype cannot be defined as a symbol");
+  //     }
+  //     if (symbol.variant === "PrimitiveDatatype") {
+  //       const name = primitiveToString(symbol.primitive);
+  //       if (this.tryLookupSymbolHere(name)) {
+  //         throw new InternalError(`Symbol ${name} was already defined in this scope`);
+  //       }
+  //     } else {
+  //       if (this.tryLookupSymbolHere(symbol.name)) {
+  //         throw new CompilerError(
+  //           `Symbol ${symbol.name} was already defined in this scope`,
+  //           symbol.sourceloc
+  //         );
+  //       }
+  //     }
 
-      this.symbols.push(symbol);
-      return symbol;
-    }
+  //     this.symbols.push(symbol);
+  //     return symbol;
+  //   }
 
-    tryLookupSymbolHere(name: string): Symbol | undefined {
-      const symbol = this.symbols.find((s) => {
-        if (
-          (s.variant === "PrimitiveDatatype" && primitiveToString(s.primitive) === name) ||
-          (s.variant !== "PrimitiveDatatype" && s.name === name)
-        ) {
-          return true;
-        }
-      });
-      if (symbol) {
-        return symbol;
-      }
-      return undefined;
-    }
+  //   tryLookupSymbolHere(name: string): Symbol | undefined {
+  //     const symbol = this.symbols.find((s) => {
+  //       if (
+  //         (s.variant === "PrimitiveDatatype" && primitiveToString(s.primitive) === name) ||
+  //         (s.variant !== "PrimitiveDatatype" && s.name === name)
+  //       ) {
+  //         return true;
+  //       }
+  //     });
+  //     if (symbol) {
+  //       return symbol;
+  //     }
+  //     return undefined;
+  //   }
 
-    lookupSymbolHere(name: string, loc: SourceLoc): Symbol {
-      const symbol = this.tryLookupSymbolHere(name);
-      if (symbol) {
-        return symbol;
-      }
-      throw new CompilerError(`Symbol '${name}' was not declared in this scope`, loc);
-    }
+  //   lookupSymbolHere(name: string, loc: SourceLoc): Symbol {
+  //     const symbol = this.tryLookupSymbolHere(name);
+  //     if (symbol) {
+  //       return symbol;
+  //     }
+  //     throw new CompilerError(`Symbol '${name}' was not declared in this scope`, loc);
+  //   }
 
-    lookupSymbol(name: string, loc: SourceLoc): Symbol {
-      let p: SymbolTable | undefined = this;
-      while (p) {
-        const symbol = p.tryLookupSymbolHere(name);
-        if (symbol) {
-          return symbol;
-        }
-        p = p.parentTable;
-      }
-      throw new CompilerError(`Symbol '${name}' was not declared in this scope`, loc);
-    }
+  //   lookupSymbol(name: string, loc: SourceLoc): Symbol {
+  //     let p: SymbolTable | undefined = this;
+  //     while (p) {
+  //       const symbol = p.tryLookupSymbolHere(name);
+  //       if (symbol) {
+  //         return symbol;
+  //       }
+  //       p = p.parentTable;
+  //     }
+  //     throw new CompilerError(`Symbol '${name}' was not declared in this scope`, loc);
+  //   }
 
-    tryLookupSymbol(name: string, loc: SourceLoc): Symbol | undefined {
-      let p: SymbolTable | undefined = this;
-      while (p) {
-        const symbol = p.tryLookupSymbolHere(name);
-        if (symbol) {
-          return symbol;
-        }
-        p = p.parentTable;
-      }
-    }
-  }
+  //   tryLookupSymbol(name: string, loc: SourceLoc): Symbol | undefined {
+  //     let p: SymbolTable | undefined = this;
+  //     while (p) {
+  //       const symbol = p.tryLookupSymbolHere(name);
+  //       if (symbol) {
+  //         return symbol;
+  //       }
+  //       p = p.parentTable;
+  //     }
+  //   }
+  // }
 
-  export class DeclScope {
-    public symbolTable: SymbolTable;
+  // export class DeclScope {
+  //   public symbolTable: SymbolTable;
 
-    constructor(
-      public sourceloc: SourceLoc,
-      public collectedScope: Collect.Scope,
-      public parentScope?: DeclScope
-    ) {
-      this.symbolTable = new SymbolTable(parentScope?.symbolTable);
-    }
-  }
+  //   constructor(
+  //     public sourceloc: SourceLoc,
+  //     public collectedScope: Collect.Scope,
+  //     public parentScope?: DeclScope
+  //   ) {
+  //     this.symbolTable = new SymbolTable(parentScope?.symbolTable);
+  //   }
+  // }
 
-  export class BlockScope {
-    public statements: Semantic.Statement[] = [];
-    public symbolTable: SymbolTable;
-    public returnedTypes: (DatatypeSymbol | undefined)[] = [];
+  // export class BlockScope {
+  //   public statements: Semantic.Statement[] = [];
+  //   public symbolTable: SymbolTable;
+  //   public returnedTypes: (DatatypeSymbol | undefined)[] = [];
 
-    constructor(
-      public sourceloc: SourceLoc,
-      public collectedScope: Collect.Scope,
-      public parentScope?: BlockScope | DeclScope
-    ) {
-      this.symbolTable = new SymbolTable(parentScope?.symbolTable);
-    }
-  }
+  //   constructor(
+  //     public sourceloc: SourceLoc,
+  //     public collectedScope: Collect.Scope,
+  //     public parentScope?: BlockScope | DeclScope
+  //   ) {
+  //     this.symbolTable = new SymbolTable(parentScope?.symbolTable);
+  //   }
+  // }
 
   export type Node = Expression | Symbol;
 }

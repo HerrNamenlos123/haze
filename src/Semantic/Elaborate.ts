@@ -25,7 +25,7 @@ import {
   makeFunctionDatatypeAvailable,
   lookupAndElaborateDatatype,
   instantiateStruct,
-  makeRawPointerDatatypeAvailable,
+  makePointerDatatypeAvailable,
 } from "./LookupDatatype";
 import { makePrimitiveAvailable, Semantic, type SemanticResult } from "./SemanticSymbols";
 import { serializeDatatype, serializeExpr, serializeNestedName } from "./Serialize";
@@ -734,7 +734,7 @@ export function elaborateExpr(
       });
       return {
         variant: "RawPointerAddressOf",
-        type: makeRawPointerDatatypeAvailable(sr, _expr.type),
+        type: makePointerDatatypeAvailable(sr, _expr.type),
         expr: _expr,
         sourceloc: expr.sourceloc,
       };
@@ -938,13 +938,13 @@ export function elaborateExpr(
               variant: "RawPointerAddressOf",
               expr: thisPointer,
               sourceloc: expr.sourceloc,
-              type: makeRawPointerDatatypeAvailable(sr, thisPointer.type),
+              type: makePointerDatatypeAvailable(sr, thisPointer.type),
             };
           }
 
           let thisPointerType = thisPointer.type;
           if (thisPointer.type.variant === "StructDatatype" && !thisPointer.type.cstruct) {
-            thisPointerType = makeRawPointerDatatypeAvailable(sr, thisPointer.type);
+            thisPointerType = makePointerDatatypeAvailable(sr, thisPointer.type);
           }
 
           return {
@@ -1406,7 +1406,7 @@ export function defineThisPointer(
     elaboratedVariables: Map<Collect.Node, Semantic.VariableSymbol>;
   }
 ) {
-  const thisPointer = makeRawPointerDatatypeAvailable(sr, args.parentStruct);
+  const thisPointer = makePointerDatatypeAvailable(sr, args.parentStruct);
 
   const vardef: Semantic.Symbol = {
     variant: "Variable",
@@ -1542,7 +1542,7 @@ export function elaborateFunctionSymbol(
   return symbol;
 }
 
-export function elaborateStructOrNamespace(
+export function elaborateNamespace(
   sr: SemanticResult,
   nodeId: Collect.Id,
   args: {
@@ -1642,7 +1642,7 @@ export function elaborate(
       assert(args.sourceSymbol.returnType);
 
       if (!args.sourceSymbol.static && args.sourceSymbol.name !== "constructor") {
-        const thisPointer = makeRawPointerDatatypeAvailable(sr, args.structForMethod);
+        const thisPointer = makePointerDatatypeAvailable(sr, args.structForMethod);
         parameters.unshift(thisPointer);
         parameterNames.unshift("this");
       }
