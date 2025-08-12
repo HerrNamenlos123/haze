@@ -7,7 +7,7 @@ import type {
 } from "../shared/AST";
 import type { EPrimitive, EVariableContext } from "../shared/common";
 import type { SourceLoc } from "../shared/Errors";
-import type { CollectionContext } from "../SymbolCollection/CollectSymbols";
+import type { CollectionContext } from "../SymbolCollection/SymbolCollection";
 
 export namespace Lowered {
   export type Module = {

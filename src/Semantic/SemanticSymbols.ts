@@ -105,6 +105,7 @@ export namespace Semantic {
     FunctionSymbol,
     // Datatypes
     FunctionDatatype,
+    BlockScope,
     StructDatatype,
     PointerDatatype,
     ReferenceDatatype,
@@ -203,13 +204,18 @@ export namespace Semantic {
     parameterNames: string[];
     extern: EExternLanguage;
     // collectedScope?: number;
-    // scope?: Semantic.BlockScope;
+    scope?: Semantic.Id;
     export: boolean;
     // methodType: EMethodType;
     methodOf?: StructDatatypeSymbol;
     sourceloc: SourceLoc;
     parentStructOrNS: Semantic.Id | null;
     concrete: boolean;
+  };
+
+  export type BlockScope = {
+    variant: ENode.BlockScope;
+    statements: Id[];
   };
 
   export type FunctionDatatypeSymbol = {
@@ -473,7 +479,7 @@ export namespace Semantic {
   export type VariableStatement = {
     variant: ENode.VariableStatement;
     name: string;
-    value?: Expression;
+    value?: Id;
     mutable: boolean;
     variableSymbol: VariableSymbol;
     sourceloc: SourceLoc;
@@ -481,7 +487,13 @@ export namespace Semantic {
 
   export type ExprStatement = {
     variant: ENode.ExprStatement;
-    expr: Expression;
+    expr: Id;
+    sourceloc: SourceLoc;
+  };
+
+  export type BlockStatement = {
+    variant: ENode.BlockStatement;
+    block: Id;
     sourceloc: SourceLoc;
   };
 
@@ -618,5 +630,5 @@ export namespace Semantic {
   //   }
   // }
 
-  export type Node = Expression | Symbol;
+  export type Node = Expression | Symbol | Statement | BlockScope;
 }

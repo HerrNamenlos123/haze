@@ -941,44 +941,43 @@ export function elaborateExpr(
 
 export function elaborateStatement(
   sr: SemanticResult,
-  s: ASTStatement,
+  statementId: Collect.Id,
   args: {
     scope: Collect.Id;
     context: SubstitutionContext;
-    elaboratedVariables: Map<Collect.Node, Semantic.VariableSymbol>;
-    expectedReturnType: Semantic.DatatypeSymbol;
+    elaboratedVariables: Map<Collect.Id, Semantic.Id>;
   }
-): Semantic.Statement {
+): Semantic.Id {
+  const s = sr.cc.nodes.get(statementId);
+
   switch (s.variant) {
     // =================================================================================================================
     // =================================================================================================================
     // =================================================================================================================
 
-    case "InlineCStatement":
-      return {
-        variant: "InlineCStatement",
-        value: s.code,
+    case Collect.ENode.InlineCStatement:
+      return Semantic.addNode(sr, {
+        variant: Semantic.ENode.InlineCStatement,
+        value: s.value,
         sourceloc: s.sourceloc,
-      };
+      });
 
     // =================================================================================================================
     // =================================================================================================================
     // =================================================================================================================
 
-    case "IfStatement": {
+    case Collect.ENode.IfStatement: {
       const condition = elaborateExpr(sr, s.condition, {
         context: args.context,
         elaboratedVariables: args.elaboratedVariables,
-        scope: args.scope.collectedScope,
+        scope: s.owningScope,
       });
-      assert(s.then._collect.scope);
-      const thenScope = new Semantic.BlockScope(
-        s.sourceloc,
-        getScope(sr.cc, s.then._collect.scope),
-        args.scope
-      );
+      const thenScope = Semantic.addNode(sr, {
+        variant: Semantic.ENode.BlockScope,
+        statements: [],
+      });
       elaborateBlockScope(sr, {
-        scope: thenScope,
+        scopeId: thenScope,
         expectedReturnType: args.expectedReturnType,
         elaboratedVariables: args.elaboratedVariables,
         context: args.context,
@@ -991,19 +990,19 @@ export function elaborateStatement(
           args.scope
         );
         elaborateBlockScope(sr, {
-          scope: newScope,
+          scopeId: newScope,
           expectedReturnType: args.expectedReturnType,
           elaboratedVariables: args.elaboratedVariables,
           context: args.context,
         });
-        return {
+        return Semantic.addNode(sr, {
           condition: elaborateExpr(sr, e.condition, {
             context: args.context,
             elaboratedVariables: args.elaboratedVariables,
             scope: args.scope.collectedScope,
           }),
           then: newScope,
-        };
+        });
       });
 
       let elseScope: Semantic.BlockScope | undefined = undefined;
@@ -1015,27 +1014,27 @@ export function elaborateStatement(
           args.scope
         );
         elaborateBlockScope(sr, {
-          scope: elseScope,
+          scopeId: elseScope,
           expectedReturnType: args.expectedReturnType,
           elaboratedVariables: args.elaboratedVariables,
           context: args.context,
         });
       }
-      return {
-        variant: "IfStatement",
+      return Semantic.addNode(sr, {
+        variant: Semantic.ENode.IfStatement,
         condition: condition,
         then: thenScope,
         elseIfs: elseIfs,
         else: elseScope,
         sourceloc: s.sourceloc,
-      };
+      });
     }
 
     // =================================================================================================================
     // =================================================================================================================
     // =================================================================================================================
 
-    case "WhileStatement": {
+    case Collect.ENode.WhileStatement: {
       assert(s.body._collect.scope);
       const newScope = new Semantic.BlockScope(
         s.sourceloc,
@@ -1043,13 +1042,13 @@ export function elaborateStatement(
         args.scope
       );
       elaborateBlockScope(sr, {
-        scope: newScope,
+        scopeId: newScope,
         expectedReturnType: args.expectedReturnType,
         elaboratedVariables: args.elaboratedVariables,
         context: args.context,
       });
-      return {
-        variant: "WhileStatement",
+      return Semantic.addNode(sr, {
+        variant: Semantic.ENode.WhileStatement,
         condition: elaborateExpr(sr, s.condition, {
           context: args.context,
           scope: args.scope.collectedScope,
@@ -1057,17 +1056,17 @@ export function elaborateStatement(
         }),
         then: newScope,
         sourceloc: s.sourceloc,
-      };
+      });
     }
 
     // =================================================================================================================
     // =================================================================================================================
     // =================================================================================================================
 
-    case "ReturnStatement": {
+    case Collect.ENode.ReturnStatement: {
       if (s.expr) {
-        return {
-          variant: "ReturnStatement",
+        return Semantic.addNode(sr, {
+          variant: Semantic.ENode.ReturnStatement,
           expr: Conversion.MakeImplicitConversion(
             elaborateExpr(sr, s.expr, {
               context: args.context,
@@ -1078,12 +1077,12 @@ export function elaborateStatement(
             s.sourceloc
           ),
           sourceloc: s.sourceloc,
-        };
+        });
       } else {
-        return {
-          variant: "ReturnStatement",
+        return Semantic.addNode(sr, {
+          variant: Semantic.ENode.ReturnStatement,
           sourceloc: s.sourceloc,
-        };
+        });
       }
     }
 
@@ -1091,7 +1090,7 @@ export function elaborateStatement(
     // =================================================================================================================
     // =================================================================================================================
 
-    case "VariableDefinitionStatement": {
+    case Collect.ENode.VariableDefinitionStatement: {
       const expr =
         s.expr &&
         elaborateExpr(sr, s.expr, {
@@ -1108,7 +1107,7 @@ export function elaborateStatement(
       }
 
       const symbol = args.scope.symbolTable.lookupSymbol(s.name, s.sourceloc);
-      assert(symbol.variant === "Variable");
+      assert(symbol.variant === Semantic.ENode.VariableSymbol);
 
       if (s.datatype) {
         symbol.type = lookupAndElaborateDatatype(sr, {
@@ -1124,77 +1123,75 @@ export function elaborateStatement(
       assert(symbol.type);
       symbol.concrete = symbol.type.concrete;
 
-      return {
-        variant: "VariableStatement",
+      return Semantic.addNode(sr, {
+        variant: Semantic.ENode.VariableStatement,
         mutable: s.mutability,
         name: s.name,
         variableSymbol: symbol,
         value: expr && Conversion.MakeImplicitConversion(expr, symbol.type, s.sourceloc),
         sourceloc: s.sourceloc,
-      };
+      });
     }
 
     // =================================================================================================================
     // =================================================================================================================
     // =================================================================================================================
 
-    case "ExprStatement":
-      return {
-        variant: "ExprStatement",
+    case Collect.ENode.ExprStatement:
+      return Semantic.addNode(sr, {
+        variant: Semantic.ENode.ExprStatement,
         expr: elaborateExpr(sr, s.expr, {
+          scope: s.owningScope,
           context: args.context,
           elaboratedVariables: args.elaboratedVariables,
-          scope: args.scope.collectedScope,
         }),
         sourceloc: s.sourceloc,
-      };
+      });
+
+    default:
+      assert(false);
   }
 }
 
 export function elaborateBlockScope(
   sr: SemanticResult,
   args: {
-    scope: Semantic.BlockScope;
-    expectedReturnType: Semantic.DatatypeSymbol;
-    elaboratedVariables: Map<Collect.Node, Semantic.VariableSymbol>;
+    parentStructOrNS: Semantic.Id | null;
+    scopeId: Collect.Id;
+    elaboratedVariables: Map<Collect.Id, Semantic.Id>;
     context: SubstitutionContext;
   }
 ) {
-  args.scope.statements = [];
+  const scope = sr.cc.nodes.get(args.scopeId);
+  assert(scope.variant === Collect.ENode.BlockScope);
 
-  const variableMap = new Map<Collect.Node, Semantic.VariableSymbol>(args.elaboratedVariables);
+  scope.statements = [];
 
-  for (const _s of args.scope.collectedScope.symbols) {
-    const symbol = getSymbol(sr.cc, _s);
+  const variableMap = new Map<Collect.Id, Semantic.Id>(args.elaboratedVariables);
+
+  for (const sId of scope.symbols) {
+    const symbol = sr.cc.nodes.get(sId);
     switch (symbol.variant) {
-      case "GenericParameter":
-        // This must be skipped. The Collect Scope defines the generic T, but we don't want to elaborate it.
-        break;
+      case Collect.ENode.VariableDefinitionStatement: {
+        const variableSymbol = sr.cc.nodes.get(symbol.variableSymbol);
+        assert(variableSymbol.variant === Collect.ENode.VariableSymbol);
 
-      case "FunctionDeclaration":
-      case "FunctionDefinition":
-      case "NamespaceDefinition":
-      case "GlobalVariableDefinition":
-      case "StructDefinition":
-      case "StructMethod":
-        throw new InternalError("Unexpected case: " + symbol.variant);
-
-      case "VariableDefinitionStatement": {
         let variableContext = EVariableContext.FunctionLocal;
-        let type: Semantic.DatatypeSymbol = { variant: "DeferredDatatype", concrete: false };
-        if (symbol.kind === EVariableContext.FunctionParameter) {
+        let type: Semantic.Id | null = null;
+        if (variableSymbol.variableContext === EVariableContext.FunctionParameter) {
           variableContext = EVariableContext.FunctionParameter;
-          if (!symbol.datatype) {
+          if (!variableSymbol.type) {
             throw new InternalError("Parameter needs datatype");
           }
           type = lookupAndElaborateDatatype(sr, {
-            type: symbol.datatype,
-            startLookupInScope: args.scope.collectedScope.id,
+            typeId: variableSymbol.type,
+            parentStructOrNS: args.parentStructOrNS,
+            startLookupInScope: symbol.owningScope,
             isInCFuncdecl: false,
             context: args.context,
           });
-        } else if (symbol.kind === EVariableContext.ThisReference) {
-          if (variableMap.has(symbol)) {
+        } else if (variableSymbol.variableContext === EVariableContext.ThisReference) {
+          if (variableMap.has(sId)) {
             break;
           } else {
             assert(
@@ -1203,19 +1200,20 @@ export function elaborateBlockScope(
             );
           }
         }
-        const variable: Semantic.VariableSymbol = {
-          variant: "Variable",
+        const variable = Semantic.addNode(sr, {
+          variant: Semantic.ENode.VariableSymbol,
           export: false,
           extern: EExternLanguage.None,
-          mutability: symbol.mutable,
-          name: symbol.name,
+          mutability: variableSymbol.mutability,
+          name: variableSymbol.name,
           sourceloc: symbol.sourceloc,
+          memberOfStruct: null,
+          parentStructOrNS: args.parentStructOrNS,
           variableContext: variableContext,
           type: type,
           concrete: false,
-        };
-        variableMap.set(symbol, variable);
-        args.scope.symbolTable.defineSymbol(variable);
+        });
+        variableMap.set(sId, variable);
         break;
       }
 
@@ -1224,18 +1222,17 @@ export function elaborateBlockScope(
     }
   }
 
-  for (const s of args.scope.collectedScope.rawStatements) {
-    const statement = elaborateStatement(sr, s, {
-      scope: args.scope,
-      expectedReturnType: args.expectedReturnType,
+  for (const sId of scope.statements) {
+    const statement = elaborateStatement(sr, sId, {
+      scope: args.scopeId,
       elaboratedVariables: variableMap,
       context: args.context,
     });
-    args.scope.statements.push(statement);
+    // args.scopeId.statements.push(statement);
 
-    if (statement.variant === "ReturnStatement") {
-      args.scope.returnedTypes.push(statement.expr?.type);
-    }
+    // if (statement.variant === "ReturnStatement") {
+    //   args.scopeId.returnedTypes.push(statement.expr?.type);
+    // }
   }
 }
 
