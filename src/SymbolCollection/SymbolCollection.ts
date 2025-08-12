@@ -111,8 +111,8 @@ export namespace Collect {
     InlineCStatement,
     BlockScopeStatement,
     VariableDefinitionStatement,
-    ParenthesisExpr,
     FunctionDatatype,
+    ParenthesisExpr,
     BinaryExpr,
     LiteralExpr,
     UnaryExpr,
@@ -215,7 +215,7 @@ export namespace Collect {
     parentScope: Collect.Id;
     overloadGroup: Collect.Id;
     generics: Collect.Id[];
-    returnType: Collect.Id | null;
+    returnType: Collect.Id;
     parameters: {
       name: string;
       type: Collect.Id;
@@ -709,7 +709,15 @@ function collect(
         parentScope: args.currentParentScope,
         pub: item.pub,
         vararg: item.ellipsis,
-        returnType: (item.returnType && collect(cc, item.returnType, args)) || null,
+        returnType:
+          (item.returnType && collect(cc, item.returnType, args)) ||
+          makeSymbol(cc, {
+            variant: Collect.ENode.NamedDatatype,
+            genericArgs: [],
+            innerNested: null,
+            name: "none",
+            sourceloc: null,
+          }),
         sourceloc: item.sourceloc,
         functionScope: null,
       });
@@ -959,7 +967,7 @@ function collect(
         sourceloc: item.sourceloc,
         symbols: [],
       });
-      (cc.nodes.get(struct) as Collect.NamespaceDefinitionSymbol).namespaceScope = structScope;
+      (cc.nodes.get(struct) as Collect.StructDefinitionSymbol).structScope = structScope;
 
       for (const g of item.generics) {
         const generic = defineGenericTypeParameter(cc, g.name, structScope, g.sourceloc);

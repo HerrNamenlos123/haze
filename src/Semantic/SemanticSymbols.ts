@@ -6,6 +6,7 @@ import type {
   EIncrOperation,
   EOperator,
   EUnaryOperation,
+  EVariableMutability,
 } from "../shared/AST";
 import {
   BrandedArray,
@@ -17,54 +18,61 @@ import {
   type LiteralValue,
 } from "../shared/common";
 import { Collect, type CollectionContext } from "../SymbolCollection/SymbolCollection";
+import type { Encoding } from "bun";
 
 export type SemanticResult = {
   cc: CollectionContext;
 
   // nodes: BrandedArray<SemanticId, Semantic.Node>;
-  functionNodes: BrandedArray<Semantic.FunctionId, Semantic.FunctionDefinitionSymbol>;
-  typeNodes: BrandedArray<Semantic.TypeId, Semantic.DatatypeSymbol>;
-  exprNodes: BrandedArray<Semantic.ExprId, Semantic.Expression>;
+  // functionNodes: BrandedArray<Semantic.FunctionId, Semantic.FunctionDefinitionSymbol>;
+  // typeNodes: BrandedArray<Semantic.TypeId, Semantic.DatatypeSymbol>;
+  // exprNodes: BrandedArray<Semantic.ExprId, Semantic.Expression>;
+  // variableNodes: BrandedArray<Semantic.VariableId, Semantic.VariableSymbol>;
+  nodes: BrandedArray<Semantic.Id, Semantic.Node>;
 
-  overloadedOperators: Semantic.FunctionDefinitionSymbol[];
+  overloadedOperators: Semantic.FunctionSymbol[];
 
   elaboratedStructDatatypes: {
     originalSymbol: Collect.Id;
-    generics: Semantic.TypeId[];
-    resultSymbol: Semantic.TypeId;
+    generics: Semantic.Id[];
+    resultSymbol: Semantic.Id;
   }[];
   elaboratedFuncdefSymbols: {
     originalSymbol: Collect.Id;
-    generics: Semantic.TypeId[];
-    resultSymbol: Semantic.FunctionId;
+    generics: Semantic.Id[];
+    resultSymbol: Semantic.Id;
   }[];
   elaboratedNamespaceSymbols: {
-    originalSymbol: Collect.Id;
-    resultSymbol: Semantic.NamespaceDatatypeSymbol;
+    originalSharedInstance: Collect.Id;
+    resultSymbol: Semantic.Id;
   }[];
-  elaboratedGlobalVariableSymbols: {
+  elaboratedGlobalVariableStatements: {
     originalSymbol: Collect.Id;
-    resultSymbol: Semantic.GlobalVariableDefinitionSymbol;
+    resultSymbol: Semantic.Id;
   }[];
+  elaboratedGlobalVariableSymbols: Map<Collect.Id, Semantic.Id>;
+  // Function-local variable symbols are cached per function call because they are separate for each generic instance.
 
-  elaboratedPrimitiveTypes: Semantic.TypeId[];
-  functionTypeCache: Semantic.TypeId[];
-  rawPointerTypeCache: Semantic.TypeId[];
-  referenceTypeCache: Semantic.TypeId[];
+  elaboratedPrimitiveTypes: Semantic.Id[];
+  functionTypeCache: Semantic.Id[];
+  rawPointerTypeCache: Semantic.Id[];
+  referenceTypeCache: Semantic.Id[];
 
   exportedCollectedSymbols: Set<number>;
+
+  cInjections: Set<Collect.Id>;
 };
 
-export function makePrimitiveAvailable(sr: SemanticResult, primitive: EPrimitive): Semantic.TypeId {
+export function makePrimitiveAvailable(sr: SemanticResult, primitive: EPrimitive): Semantic.Id {
   for (const id of sr.elaboratedPrimitiveTypes) {
-    const s = sr.typeNodes.get(id);
-    assert(s.variant === "PrimitiveDatatype");
+    const s = sr.nodes.get(id);
+    assert(s.variant === Semantic.ENode.PrimitiveDatatype);
     if (s.primitive === primitive) {
       return id;
     }
   }
-  const s = Semantic.addType(sr, {
-    variant: "PrimitiveDatatype",
+  const s = Semantic.addNode(sr, {
+    variant: Semantic.ENode.PrimitiveDatatype,
     primitive: primitive,
     concrete: true,
   });
@@ -72,144 +80,210 @@ export function makePrimitiveAvailable(sr: SemanticResult, primitive: EPrimitive
   return s;
 }
 
-export function isDatatypeSymbol(x: Semantic.Symbol): x is Semantic.DatatypeSymbol {
-  return x.variant.endsWith("Datatype");
+export function isExpression(node: Semantic.Node): node is Semantic.Expression {
+  return ([...Semantic.ExpressionEnums] as number[]).includes(node.variant);
+}
+
+export function getExprType(sr: SemanticResult, exprId: Semantic.Id): Semantic.Id {
+  const expr = sr.nodes.get(exprId);
+  assert(isExpression(expr));
+  return expr.type;
+}
+
+export function isTypeConcrete(sr: SemanticResult, id: Semantic.Id) {
+  const symbol = sr.nodes.get(id);
+  assert("concrete" in symbol);
+  return symbol.concrete;
 }
 
 export namespace Semantic {
-  export type FunctionId = Brand<number, "SemanticFunction">;
-  export type TypeId = Brand<number, "SemanticType">;
-  export type StatementId = Brand<number, "SemanticStatement">;
-  export type ExprId = Brand<number, "SemanticExpr">;
-
-  export function addType(sr: SemanticResult, type: Semantic.DatatypeSymbol) {
-    sr.typeNodes.push(type);
-    return (sr.typeNodes.length - 1) as Semantic.TypeId;
+  export type Id = Brand<number, "Semantic">;
+  export const enum ENode {
+    // Symbols
+    VariableSymbol,
+    GlobalVariableDefinitionSymbol,
+    FunctionSymbol,
+    // Datatypes
+    FunctionDatatype,
+    StructDatatype,
+    PointerDatatype,
+    ReferenceDatatype,
+    CallableDatatype,
+    PrimitiveDatatype,
+    GenericParameterDatatype,
+    NamespaceDatatype,
+    // Statements
+    InlineCStatement,
+    WhileStatement,
+    IfStatement,
+    VariableStatement,
+    ExprStatement,
+    BlockStatement,
+    ReturnStatement,
+    // Expressions
+    ParenthesisExpr,
+    BinaryExpr,
+    LiteralExpr,
+    UnaryExpr,
+    ExprCallExpr,
+    SymbolValueExpr,
+    NamespaceValueExpr,
+    SizeofExpr,
+    ExplicitCastExpr,
+    MemberAccessExpr,
+    CallableExpr,
+    PointerAddressOfExpr,
+    PointerDereferenceExpr,
+    ExprAssignmentExpr,
+    StructInstantiationExpr,
+    PreIncrExpr,
+    PostIncrExpr,
   }
 
-  export function addExpr(sr: SemanticResult, expr: Semantic.Expression) {
-    sr.exprNodes.push(expr);
-    return (sr.exprNodes.length - 1) as Semantic.ExprId;
+  export const ExpressionEnums = [
+    ENode.ParenthesisExpr,
+    ENode.BinaryExpr,
+    ENode.LiteralExpr,
+    ENode.UnaryExpr,
+    ENode.ExprCallExpr,
+    ENode.SymbolValueExpr,
+    ENode.CallableExpr,
+    ENode.SizeofExpr,
+    ENode.ExplicitCastExpr,
+    ENode.NamespaceValueExpr,
+    ENode.MemberAccessExpr,
+    ENode.PointerAddressOfExpr,
+    ENode.PointerDereferenceExpr,
+    ENode.ExprAssignmentExpr,
+    ENode.StructInstantiationExpr,
+    ENode.PreIncrExpr,
+    ENode.PostIncrExpr,
+  ] as const;
+
+  export function addNode(sr: SemanticResult, n: Semantic.Node) {
+    sr.nodes.push(n);
+    return (sr.nodes.length - 1) as Semantic.Id;
   }
 
   export type VariableSymbol = {
-    variant: "Variable";
+    variant: ENode.VariableSymbol;
     name: string;
-    memberOfStruct: TypeId | null;
-    type: TypeId;
-    mutable: boolean;
+    memberOfStruct: Id | null;
+    type: Id | null;
+    mutability: EVariableMutability;
     export: boolean;
-    externLanguage: EExternLanguage;
+    extern: EExternLanguage;
     variableContext: EVariableContext;
+    parentStructOrNS: Semantic.Id | null;
     sourceloc: SourceLoc;
     concrete: boolean;
   };
 
   export type GlobalVariableDefinitionSymbol = {
-    variant: "GlobalVariableDefinition";
+    variant: ENode.GlobalVariableDefinitionSymbol;
+    variableSymbol: Id;
     name: string;
-    type: TypeId;
-    value: ExprId | null;
-    mutable: boolean;
+    value: Id | null;
     export: boolean;
-    externLanguage: EExternLanguage;
+    extern: EExternLanguage;
+    parentStructOrNS: Semantic.Id | null;
     sourceloc: SourceLoc;
     concrete: boolean;
   };
 
-  export type FunctionDefinitionSymbol = {
-    variant: "FunctionDefinition";
+  export type FunctionSymbol = {
+    variant: ENode.FunctionSymbol;
     staticMethod: boolean;
-    type: FunctionDatatypeSymbol;
+    name: string;
+    type: Id;
     operatorOverloading?: {
       operator: EOperator;
-      asTarget: DatatypeSymbol;
+      asTarget: Id;
     };
     parameterNames: string[];
-    externLanguage: EExternLanguage;
-    collectedScope?: number;
-    scope?: Semantic.BlockScope;
+    extern: EExternLanguage;
+    // collectedScope?: number;
+    // scope?: Semantic.BlockScope;
     export: boolean;
-    methodType: EMethodType;
+    // methodType: EMethodType;
     methodOf?: StructDatatypeSymbol;
     sourceloc: SourceLoc;
-    parent: StructDatatypeSymbol | NamespaceDatatypeSymbol | null;
+    parentStructOrNS: Semantic.Id | null;
     concrete: boolean;
   };
 
   export type FunctionDatatypeSymbol = {
-    variant: "FunctionDatatype";
-    parameters: TypeId[];
-    returnType: TypeId;
+    variant: ENode.FunctionDatatype;
+    parameters: Id[];
+    returnType: Id;
     vararg: boolean;
     concrete: boolean;
   };
 
   export type StructDatatypeSymbol = {
-    variant: "StructDatatype";
+    variant: ENode.StructDatatype;
     name: string;
     noemit: boolean;
-    generics: Semantic.TypeId[];
+    generics: Semantic.Id[];
     extern: EExternLanguage;
     members: VariableSymbol[];
-    methods: Set<FunctionDefinitionSymbol>;
-    parentSymbol: TypeId | null;
+    methods: Set<FunctionSymbol>;
+    parentStructOrNS: Id | null;
     sourceloc: SourceLoc;
     concrete: boolean;
     originalCollectedSymbol: Collect.Id;
   };
 
   export type PointerDatatypeSymbol = {
-    variant: "PointerDatatype";
-    pointee: TypeId;
+    variant: ENode.PointerDatatype;
+    pointee: Id;
     concrete: boolean;
   };
 
   export type ReferenceDatatypeSymbol = {
-    variant: "ReferenceDatatype";
-    referee: TypeId;
+    variant: ENode.ReferenceDatatype;
+    referee: Id;
     concrete: boolean;
   };
 
   export type CallableDatatypeSymbol = {
-    variant: "CallableDatatype";
-    thisExprType?: TypeId;
-    functionType: TypeId;
+    variant: ENode.CallableDatatype;
+    thisExprType?: Id;
+    functionType: Id;
     concrete: boolean;
   };
 
   export type PrimitiveDatatypeSymbol = {
-    variant: "PrimitiveDatatype";
+    variant: ENode.PrimitiveDatatype;
     primitive: EPrimitive;
     concrete: boolean;
   };
 
   export type GenericParameterDatatypeSymbol = {
-    variant: "GenericParameterDatatype";
+    variant: ENode.GenericParameterDatatype;
     name: string;
     concrete: boolean;
   };
 
   export type NamespaceDatatypeSymbol = {
-    variant: "NamespaceDatatype";
+    variant: ENode.NamespaceDatatype;
     name: string;
-    parent: Semantic.TypeId | null;
-    sourceloc: SourceLoc;
+    parentStructOrNS: Semantic.Id | null;
     concrete: boolean; // For consistency, always true
   };
 
-  export type ConstantDatatypeSymbol = {
-    variant: "ConstantDatatype";
-    kind: "boolean" | "string" | "number";
-    value: boolean | string | number;
-    sourceloc: SourceLoc;
-    concrete: boolean;
-  };
+  // export type ConstantDatatypeSymbol = {
+  //   variant: "ConstantDatatype";
+  //   kind: "boolean" | "string" | "number";
+  //   value: boolean | string | number;
+  //   sourceloc: SourceLoc;
+  //   concrete: boolean;
+  // };
 
   export type Symbol =
     | VariableSymbol
     | GlobalVariableDefinitionSymbol
-    | FunctionDefinitionSymbol
+    | FunctionSymbol
     | GenericParameterDatatypeSymbol
     | NamespaceDatatypeSymbol
     | FunctionDatatypeSymbol
@@ -217,133 +291,131 @@ export namespace Semantic {
     | PointerDatatypeSymbol
     | ReferenceDatatypeSymbol
     | CallableDatatypeSymbol
-    | PrimitiveDatatypeSymbol
-    | ConstantDatatypeSymbol;
-
-  export type DatatypeSymbol = Extract<Symbol, { variant: `${string}Datatype` }>;
+    | PrimitiveDatatypeSymbol;
+  // | ConstantDatatypeSymbol;
 
   export type ExprMemberAccessExpr = {
-    variant: "ExprMemberAccess";
-    expr: Expression;
+    variant: ENode.MemberAccessExpr;
+    expr: Id;
     memberName: string;
-    type: DatatypeSymbol;
+    type: Id;
     sourceloc: SourceLoc;
   };
 
   export type CallableExpr = {
-    variant: "CallableExpr";
-    thisExpr: Expression;
-    functionSymbol: FunctionDefinitionSymbol;
-    type: DatatypeSymbol;
+    variant: ENode.CallableExpr;
+    thisExpr: Id;
+    functionSymbol: Id;
+    type: Id;
     sourceloc: SourceLoc;
   };
 
   export type SymbolValueExpr = {
-    variant: "SymbolValue";
+    variant: ENode.SymbolValueExpr;
     symbol: Symbol;
-    type: DatatypeSymbol;
+    type: Id;
     sourceloc: SourceLoc;
   };
 
   export type NamespaceValueExpr = {
-    variant: "NamespaceValue";
-    symbol: NamespaceDatatypeSymbol | StructDatatypeSymbol;
-    type: DatatypeSymbol;
+    variant: ENode.NamespaceValueExpr;
+    symbol: Id;
+    type: Id;
     sourceloc: SourceLoc;
   };
 
   export type SizeofExpr = {
-    variant: "SizeofExpr";
-    datatype?: DatatypeSymbol;
+    variant: ENode.SizeofExpr;
+    datatype?: Id;
     value?: Expression;
-    type: DatatypeSymbol;
+    type: Id;
     sourceloc: SourceLoc;
   };
 
   export type ExprAssignmentExpr = {
-    variant: "ExprAssignmentExpr";
-    value: Expression;
-    target: Expression;
-    type: DatatypeSymbol;
+    variant: ENode.ExprAssignmentExpr;
+    value: Id;
+    target: Id;
+    type: Id;
     sourceloc: SourceLoc;
   };
 
-  export type RawPointerDereferenceExpr = {
-    variant: "RawPointerDereference";
-    expr: Expression;
-    type: DatatypeSymbol;
+  export type PointerDereferenceExpr = {
+    variant: ENode.PointerDereferenceExpr;
+    expr: Id;
+    type: Id;
     sourceloc: SourceLoc;
   };
 
-  export type RawPointerAddressOfExpr = {
-    variant: "RawPointerAddressOf";
-    expr: Expression;
-    type: DatatypeSymbol;
+  export type PointerAddressOfExpr = {
+    variant: ENode.PointerAddressOfExpr;
+    expr: Id;
+    type: Id;
     sourceloc: SourceLoc;
   };
 
   export type ExplicitCastExpr = {
-    variant: "ExplicitCast";
-    expr: Expression;
-    type: DatatypeSymbol;
+    variant: ENode.ExplicitCastExpr;
+    expr: Id;
+    type: Id;
     sourceloc: SourceLoc;
   };
 
   export type BinaryExpr = {
-    variant: "BinaryExpr";
-    left: Expression;
-    right: Expression;
+    variant: ENode.BinaryExpr;
+    left: Id;
+    right: Id;
     operation: EBinaryOperation;
-    type: DatatypeSymbol;
+    type: Id;
     sourceloc: SourceLoc;
   };
 
   export type UnaryExpr = {
-    variant: "UnaryExpr";
-    expr: Expression;
+    variant: ENode.UnaryExpr;
+    expr: Id;
     operation: EUnaryOperation;
-    type: DatatypeSymbol;
+    type: Id;
     sourceloc: SourceLoc;
   };
 
   export type PostIncrExpr = {
-    variant: "PostIncrExpr";
-    expr: Expression;
+    variant: ENode.PostIncrExpr;
+    expr: Id;
     operation: EIncrOperation;
-    type: DatatypeSymbol;
+    type: Id;
     sourceloc: SourceLoc;
   };
 
   export type PreIncrExpr = {
-    variant: "PreIncrExpr";
-    expr: Expression;
+    variant: ENode.PreIncrExpr;
+    expr: Id;
     operation: EIncrOperation;
-    type: DatatypeSymbol;
+    type: Id;
     sourceloc: SourceLoc;
   };
 
   export type ExprCallExpr = {
-    variant: "ExprCall";
-    calledExpr: Expression;
-    arguments: Expression[];
-    type: DatatypeSymbol;
+    variant: ENode.ExprCallExpr;
+    calledExpr: Id;
+    arguments: Id[];
+    type: Id;
     sourceloc: SourceLoc;
   };
 
   export type StructInstantiationExpr = {
-    variant: "StructInstantiation";
+    variant: ENode.StructInstantiationExpr;
     assign: {
       name: string;
-      value: Expression;
+      value: Id;
     }[];
-    type: DatatypeSymbol;
+    type: Id;
     sourceloc: SourceLoc;
   };
 
   export type LiteralExpr = {
-    variant: "LiteralExpr";
+    variant: ENode.LiteralExpr;
     literal: LiteralValue;
-    type: DatatypeSymbol;
+    type: Id;
     sourceloc: SourceLoc;
   };
 
@@ -358,46 +430,48 @@ export namespace Semantic {
     | CallableExpr
     | PreIncrExpr
     | PostIncrExpr
-    | RawPointerAddressOfExpr
-    | RawPointerDereferenceExpr
+    | PointerAddressOfExpr
+    | PointerDereferenceExpr
     | ExplicitCastExpr
     | ExprCallExpr
     | StructInstantiationExpr
     | LiteralExpr;
 
+  // =============================================
+
   export type InlineCStatement = {
-    variant: "InlineCStatement";
+    variant: ENode.InlineCStatement;
     value: string;
     sourceloc: SourceLoc;
   };
 
   export type ReturnStatement = {
-    variant: "ReturnStatement";
+    variant: ENode.ReturnStatement;
     expr?: Expression;
     sourceloc: SourceLoc;
   };
 
   export type IfStatement = {
-    variant: "IfStatement";
+    variant: ENode.IfStatement;
     condition: Expression;
-    then: BlockScope;
+    then: Id;
     elseIfs: {
       condition: Expression;
-      then: BlockScope;
+      then: Id;
     }[];
-    else?: BlockScope;
+    else?: Id;
     sourceloc: SourceLoc;
   };
 
   export type WhileStatement = {
-    variant: "WhileStatement";
+    variant: ENode.WhileStatement;
     condition: Expression;
-    then: BlockScope;
+    then: Id;
     sourceloc: SourceLoc;
   };
 
   export type VariableStatement = {
-    variant: "VariableStatement";
+    variant: ENode.VariableStatement;
     name: string;
     value?: Expression;
     mutable: boolean;
@@ -406,7 +480,7 @@ export namespace Semantic {
   };
 
   export type ExprStatement = {
-    variant: "ExprStatement";
+    variant: ENode.ExprStatement;
     expr: Expression;
     sourceloc: SourceLoc;
   };

@@ -101,7 +101,7 @@ const tests: StageTests<Collect.Scope, SemanticResult> = [
           primitive: EPrimitive.none,
         };
 
-        const getMethod: Semantic.FunctionDefinitionSymbol = {
+        const getMethod: Semantic.FunctionSymbol = {
           variant: "FunctionDefinition",
           type: {
             variant: "FunctionDatatype",
@@ -112,12 +112,12 @@ const tests: StageTests<Collect.Scope, SemanticResult> = [
           },
           concrete: true,
           export: false,
-          externLanguage: EExternLanguage.None,
+          extern: EExternLanguage.None,
           methodType: EMethodType.Method,
           name: "get",
           methodOf: structType,
           parameterNames: ["this"],
-          parent: structType,
+          parentStructOrNS: structType,
           sourceloc: sourceloc(3, 16),
           scope: (() => {
             assert(collectedStruct.methods[0].funcbody._collect.scope);

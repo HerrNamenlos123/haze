@@ -31,7 +31,7 @@ import {
   PrettyPrintCollected,
   type CollectionContext,
 } from "./SymbolCollection/SymbolCollection";
-import { SemanticallyAnalyze } from "./Semantic/Elaborate";
+import { PrettyPrintAnalyzed, SemanticallyAnalyze } from "./Semantic/Elaborate";
 import { generateCode } from "./Codegen/CodeGenerator";
 import { LowerModule } from "./Lower/Lower";
 import { addEntity, createWorld } from "bitecs";
@@ -368,10 +368,10 @@ class ModuleCompiler {
       await this.collectImports();
       await this.addProjectSourceFiles();
 
-      PrettyPrintCollected(this.cc);
+      // PrettyPrintCollected(this.cc);
 
       const sr = SemanticallyAnalyze(this.cc, this.config.moduleType === ModuleType.Library);
-      // PrettyPrintAnalyzed(sr);
+      PrettyPrintAnalyzed(sr);
       return;
       const lowered = LowerModule(this.cc, sr);
 

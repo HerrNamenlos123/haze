@@ -21,7 +21,7 @@ const storeInTempVarAndGet = (
   type: Lowered.Datatype,
   value: Lowered.Expression,
   sourceloc: SourceLoc,
-  flattened: Lowered.Statement[],
+  flattened: Lowered.Statement[]
 ): Lowered.Expression => {
   const varname = makeTempName();
   flattened.push({
@@ -46,7 +46,7 @@ const storeInTempVarAndGet = (
 function lowerExpr(
   lr: Lowered.Module,
   expr: Semantic.Expression,
-  flattened: Lowered.Statement[],
+  flattened: Lowered.Statement[]
 ): Lowered.Expression {
   switch (expr.variant) {
     case "ExprCall": {
@@ -68,7 +68,7 @@ function lowerExpr(
           calledExpr.type,
           calledExpr,
           expr.sourceloc,
-          flattened,
+          flattened
         );
 
         const type = lowerHighlevelType(lr, expr.type);
@@ -121,7 +121,7 @@ function lowerExpr(
             calledExpr.type.returnType,
             exprCall,
             expr.sourceloc,
-            flattened,
+            flattened
           );
           if (calledExpr.type.returnType.cstruct) {
             return value;
@@ -160,9 +160,9 @@ function lowerExpr(
     case "SymbolValue": {
       assert(
         expr.symbol.variant === "Variable" ||
-        expr.symbol.variant === "GlobalVariableDefinition" ||
-        expr.symbol.variant === "FunctionDeclaration" ||
-        expr.symbol.variant === "FunctionDefinition",
+          expr.symbol.variant === "GlobalVariableDefinition" ||
+          expr.symbol.variant === "FunctionDeclaration" ||
+          expr.symbol.variant === "FunctionDefinition"
       );
       if (
         expr.symbol.variant === "Variable" ||
@@ -182,7 +182,7 @@ function lowerExpr(
           variant: "SymbolValue",
           prettyName: serializeNestedName(expr.symbol),
           mangledName: mangleNestedName(expr.symbol),
-          wasMangled: expr.symbol.externLanguage !== EExternLanguage.Extern_C,
+          wasMangled: expr.symbol.extern !== EExternLanguage.Extern_C,
           type: lowerHighlevelType(lr, expr.symbol.type),
         };
       }
@@ -286,7 +286,7 @@ function lowerExpr(
           })),
         },
         expr.sourceloc,
-        flattened,
+        flattened
       );
       return {
         variant: "RawPointerAddressOf",
@@ -345,7 +345,7 @@ function lowerExpr(
     case "NamespaceValue": {
       assert(
         false,
-        "A Namespace Value cannot be lowered. This value should not have gotten through semantic analysis",
+        "A Namespace Value cannot be lowered. This value should not have gotten through semantic analysis"
       );
     }
 
@@ -616,11 +616,11 @@ function lower(lr: Lowered.Module, symbol: Semantic.Symbol) {
           prettyName: serializeNestedName(symbol),
           mangledName: mangleNestedName(symbol),
           parameterNames: symbol.parameterNames,
-          wasMangled: symbol.externLanguage !== EExternLanguage.Extern_C,
+          wasMangled: symbol.extern !== EExternLanguage.Extern_C,
           type: ftype,
           scope: lowerScope(lr, symbol.scope),
           sourceloc: symbol.sourceloc,
-          externLanguage: symbol.externLanguage,
+          externLanguage: symbol.extern,
         };
         lr.loweredFunctions.set(symbol, f);
       } else {
@@ -634,9 +634,9 @@ function lower(lr: Lowered.Module, symbol: Semantic.Symbol) {
           mangledName: mangleNestedName(symbol),
           parameterNames: symbol.parameterNames,
           type: ftype,
-          wasMangled: symbol.externLanguage !== EExternLanguage.Extern_C,
+          wasMangled: symbol.extern !== EExternLanguage.Extern_C,
           scope: lowerScope(lr, symbol.scope),
-          externLanguage: symbol.externLanguage,
+          externLanguage: symbol.extern,
           sourceloc: symbol.sourceloc,
         };
         lr.loweredFunctions.set(symbol, f);
@@ -750,7 +750,9 @@ function printLoweredType(type: Lowered.Datatype) {
 function serializeLoweredExpr(expr: Lowered.Expression): string {
   switch (expr.variant) {
     case "BinaryExpr":
-      return `(${serializeLoweredExpr(expr.left)} ${BinaryOperationToString(expr.operation)} ${serializeLoweredExpr(expr.left)})`;
+      return `(${serializeLoweredExpr(expr.left)} ${BinaryOperationToString(
+        expr.operation
+      )} ${serializeLoweredExpr(expr.left)})`;
 
     case "UnaryExpr":
       return `(${UnaryOperationToString(expr.operation)}${serializeLoweredExpr(expr.expr)})`;
@@ -759,7 +761,9 @@ function serializeLoweredExpr(expr: Lowered.Expression): string {
       return `(${serializeLoweredExpr(expr.expr)} as ${expr.type.prettyName})`;
 
     case "ExprCallExpr":
-      return `((${serializeLoweredExpr(expr.expr)})(${expr.arguments.map((a) => serializeLoweredExpr(a)).join(", ")}))`;
+      return `((${serializeLoweredExpr(expr.expr)})(${expr.arguments
+        .map((a) => serializeLoweredExpr(a))
+        .join(", ")}))`;
 
     case "PostIncrExpr":
       return `((${serializeLoweredExpr(expr.expr)})${IncrOperationToString(expr.operation)})`;
@@ -771,7 +775,9 @@ function serializeLoweredExpr(expr: Lowered.Expression): string {
       return expr.prettyName;
 
     case "StructInstantiation":
-      return `${expr.type.prettyName} { ${expr.memberAssigns.map((a) => `.${a.name} = ${serializeLoweredExpr(a.value)}`).join(", ")} }`;
+      return `${expr.type.prettyName} { ${expr.memberAssigns
+        .map((a) => `.${a.name} = ${serializeLoweredExpr(a.value)}`)
+        .join(", ")} }`;
 
     case "ConstantExpr":
       if (expr.type.variant === "Primitive" && expr.type.primitive === EPrimitive.str) {
@@ -821,12 +827,12 @@ export function printStatement(s: Lowered.Statement, indent = 0) {
     case "VariableStatement":
       print(
         "var " +
-        s.prettyName +
-        ": " +
-        s.type.prettyName +
-        (s.value ? " = " + serializeLoweredExpr(s.value) : "") +
-        ";",
-        indent,
+          s.prettyName +
+          ": " +
+          s.type.prettyName +
+          (s.value ? " = " + serializeLoweredExpr(s.value) : "") +
+          ";",
+        indent
       );
       break;
 
@@ -903,7 +909,7 @@ export function LowerModule(cc: CollectionContext, sr: SemanticResult): Lowered.
     ...sr.elaboratedFuncdefSymbols,
     ...sr.elaboratedPrimitiveTypes,
     ...sr.elaboratedStructDatatypes,
-    ...sr.elaboratedGlobalVariableSymbols,
+    ...sr.elaboratedGlobalVariableStatements,
   ];
 
   for (const symbol of symbolsForLowering) {

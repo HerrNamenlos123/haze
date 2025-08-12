@@ -1,4 +1,12 @@
-import { EExternLanguage, EOperator } from "../shared/AST";
+import { scaleRadial } from "d3";
+import {
+  BinaryOperationToString,
+  EBinaryOperation,
+  EExternLanguage,
+  EOperator,
+  EUnaryOperation,
+  UnaryOperationToString,
+} from "../shared/AST";
 import { EMethodType, EPrimitive } from "../shared/common";
 import {
   assert,
@@ -7,7 +15,13 @@ import {
   InternalError,
   type SourceLoc,
 } from "../shared/Errors";
-import { Semantic, type SemanticResult } from "./SemanticSymbols";
+import {
+  isExpression,
+  isTypeConcrete,
+  makePrimitiveAvailable,
+  Semantic,
+  type SemanticResult,
+} from "./SemanticSymbols";
 import { serializeDatatype } from "./Serialize";
 
 export namespace Conversion {
@@ -35,32 +49,37 @@ export namespace Conversion {
     }
   }
 
-  export function isStruct(type: Semantic.Symbol): type is Semantic.StructDatatypeSymbol {
-    if (type.variant !== "StructDatatype") return false;
+  export function isStruct(sr: SemanticResult, typeId: Semantic.Id): boolean {
+    const type = sr.nodes.get(typeId);
+    if (type.variant !== Semantic.ENode.StructDatatype) return false;
     return true;
   }
 
-  export function isF32(type: Semantic.Symbol): type is Semantic.PrimitiveDatatypeSymbol {
-    if (type.variant !== "PrimitiveDatatype") return false;
+  export function isF32(sr: SemanticResult, typeId: Semantic.Id): boolean {
+    const type = sr.nodes.get(typeId);
+    if (type.variant !== Semantic.ENode.PrimitiveDatatype) return false;
     return type.primitive === EPrimitive.f32;
   }
 
-  export function isF64(type: Semantic.Symbol): type is Semantic.PrimitiveDatatypeSymbol {
-    if (type.variant !== "PrimitiveDatatype") return false;
+  export function isF64(sr: SemanticResult, typeId: Semantic.Id): boolean {
+    const type = sr.nodes.get(typeId);
+    if (type.variant !== Semantic.ENode.PrimitiveDatatype) return false;
     return type.primitive === EPrimitive.f64;
   }
 
-  export function isFloat(type: Semantic.Symbol): type is Semantic.PrimitiveDatatypeSymbol {
-    return isF32(type) || isF64(type);
+  export function isFloat(sr: SemanticResult, typeId: Semantic.Id): boolean {
+    return isF32(sr, typeId) || isF64(sr, typeId);
   }
 
-  export function isBoolean(type: Semantic.Symbol): type is Semantic.PrimitiveDatatypeSymbol {
-    if (type.variant !== "PrimitiveDatatype") return false;
+  export function isBoolean(sr: SemanticResult, typeId: Semantic.Id): boolean {
+    const type = sr.nodes.get(typeId);
+    if (type.variant !== Semantic.ENode.PrimitiveDatatype) return false;
     return type.primitive === EPrimitive.boolean;
   }
 
-  export function isInteger(type: Semantic.Symbol): type is Semantic.PrimitiveDatatypeSymbol {
-    if (type.variant !== "PrimitiveDatatype") return false;
+  export function isInteger(sr: SemanticResult, typeId: Semantic.Id): boolean {
+    const type = sr.nodes.get(typeId);
+    if (type.variant !== Semantic.ENode.PrimitiveDatatype) return false;
     return isSignedInteger(type) || isUnsignedInteger(type);
   }
 
@@ -84,15 +103,18 @@ export namespace Conversion {
 
   function promoteInteger(
     a: Semantic.PrimitiveDatatypeSymbol,
-    b: Semantic.PrimitiveDatatypeSymbol,
+    b: Semantic.PrimitiveDatatypeSymbol
   ): Semantic.PrimitiveDatatypeSymbol {
-    if (a.variant !== "PrimitiveDatatype" || b.variant !== "PrimitiveDatatype") {
+    if (
+      a.variant !== Semantic.ENode.PrimitiveDatatype ||
+      b.variant !== Semantic.ENode.PrimitiveDatatype
+    ) {
       throw new InternalError("promoteInteger got non primitives");
     }
 
     const getWiderInteger = (
       a: Semantic.PrimitiveDatatypeSymbol,
-      b: Semantic.PrimitiveDatatypeSymbol,
+      b: Semantic.PrimitiveDatatypeSymbol
     ) => {
       const aBits = getIntegerBits(a);
       const bBits = getIntegerBits(b);
@@ -101,7 +123,7 @@ export namespace Conversion {
 
     const widenInteger = (
       a: Semantic.PrimitiveDatatypeSymbol,
-      b: Semantic.PrimitiveDatatypeSymbol,
+      b: Semantic.PrimitiveDatatypeSymbol
     ) => {
       if (a.primitive == b.primitive) {
         return a;
@@ -142,16 +164,24 @@ export namespace Conversion {
   }
 
   export function getIntegerBinaryResult(
-    a: Semantic.PrimitiveDatatypeSymbol,
-    b: Semantic.PrimitiveDatatypeSymbol,
+    sr: SemanticResult,
+    a: Semantic.Id,
+    b: Semantic.Id
   ): Semantic.PrimitiveDatatypeSymbol {
-    return promoteInteger(a, b);
+    const aa = sr.nodes.get(a);
+    const bb = sr.nodes.get(b);
+    assert(
+      aa.variant === Semantic.ENode.PrimitiveDatatype &&
+        bb.variant === Semantic.ENode.PrimitiveDatatype
+    );
+    return promoteInteger(aa, bb);
   }
 
   export function IsStructurallyEquivalent(
-    a: Semantic.DatatypeSymbol,
-    b: Semantic.DatatypeSymbol,
-    seen: WeakMap<Semantic.DatatypeSymbol, WeakSet<Semantic.DatatypeSymbol>> = new WeakMap(),
+    sr: SemanticResult,
+    a: Semantic.Id,
+    b: Semantic.Id,
+    seen: WeakMap<Semantic.Id, WeakSet<Semantic.Id>> = new WeakMap()
   ): boolean {
     // Symmetric check: has this pair already been seen?
     if (seen.get(a)?.has(b) || seen.get(b)?.has(a)) {
@@ -162,73 +192,79 @@ export namespace Conversion {
     if (!seen.has(a)) seen.set(a, new WeakSet());
     seen.get(a)!.add(b);
 
-    if (!a.concrete || !b.concrete) {
+    if (!isTypeConcrete(sr, a) || !isTypeConcrete(sr, b)) {
       throw new InternalError(
         "Cannot check structural equivalence of a non-concrete datatype",
         undefined,
-        1,
+        1
       );
     }
-    if (a.variant !== b.variant) {
+
+    const at = sr.nodes.get(a);
+    const bt = sr.nodes.get(b);
+
+    if (at.variant !== bt.variant) {
       return false;
     }
-    switch (a.variant) {
-      case "PrimitiveDatatype":
-        assert(b.variant === "PrimitiveDatatype");
-        return a.primitive === b.primitive;
+    switch (at.variant) {
+      case Semantic.ENode.PrimitiveDatatype:
+        assert(bt.variant === Semantic.ENode.PrimitiveDatatype);
+        return at.primitive === bt.primitive;
 
-      case "DeferredDatatype":
-        throw new InternalError("Cannot check structural equivalence of a deferred datatype");
+      // case Semantic.ENode.Defere:
+      //   throw new InternalError("Cannot check structural equivalence of a deferred datatype");
 
-      case "RawPointerDatatype":
-        assert(b.variant === "RawPointerDatatype");
-        return IsStructurallyEquivalent(a.pointee, b.pointee, seen);
+      case Semantic.ENode.PointerDatatype:
+        assert(bt.variant === Semantic.ENode.PointerDatatype);
+        return IsStructurallyEquivalent(sr, at.pointee, bt.pointee, seen);
 
-      case "ReferenceDatatype":
-        assert(b.variant === "ReferenceDatatype");
-        return IsStructurallyEquivalent(a.referee, b.referee, seen);
+      case Semantic.ENode.ReferenceDatatype:
+        assert(bt.variant === Semantic.ENode.ReferenceDatatype);
+        return IsStructurallyEquivalent(sr, at.referee, bt.referee, seen);
 
-      case "FunctionDatatype":
-        assert(b.variant === "FunctionDatatype");
+      case Semantic.ENode.FunctionDatatype:
+        assert(bt.variant === Semantic.ENode.FunctionDatatype);
         return (
-          a.vararg === b.vararg &&
-          IsStructurallyEquivalent(a.returnType, b.returnType, seen) &&
-          a.parameters.every((p, index) => IsStructurallyEquivalent(p, b.parameters[index], seen))
+          at.vararg === bt.vararg &&
+          IsStructurallyEquivalent(sr, at.returnType, bt.returnType, seen) &&
+          at.parameters.every((p, index) =>
+            IsStructurallyEquivalent(sr, p, bt.parameters[index], seen)
+          )
         );
 
-      case "CallableDatatype":
-        assert(b.variant === "CallableDatatype");
-        if (Boolean(a.thisExprType) !== Boolean(b.thisExprType)) return false;
+      case Semantic.ENode.CallableDatatype:
+        assert(bt.variant === Semantic.ENode.CallableDatatype);
+        if (Boolean(at.thisExprType) !== Boolean(bt.thisExprType)) return false;
         if (
-          a.thisExprType &&
-          b.thisExprType &&
-          IsStructurallyEquivalent(a.thisExprType, b.thisExprType, seen)
+          at.thisExprType &&
+          bt.thisExprType &&
+          IsStructurallyEquivalent(sr, at.thisExprType, bt.thisExprType, seen)
         )
           return false;
-        return IsStructurallyEquivalent(a.functionType, b.functionType, seen);
+        return IsStructurallyEquivalent(sr, at.functionType, bt.functionType, seen);
 
-      case "GenericParameterDatatype":
+      case Semantic.ENode.GenericParameterDatatype:
         throw new InternalError("Cannot check structural equivalence of a generic parameter");
 
-      case "StructDatatype":
-        assert(b.variant === "StructDatatype");
-        if (a.generics.length !== b.generics.length) {
+      case Semantic.ENode.StructDatatype:
+        assert(bt.variant === Semantic.ENode.StructDatatype);
+        if (at.generics.length !== bt.generics.length) {
           return false;
         }
 
-        for (let i = 0; i < a.generics.length; i++) {
-          if (!IsStructurallyEquivalent(a.generics[i], b.generics[i], seen)) return false;
+        for (let i = 0; i < at.generics.length; i++) {
+          if (!IsStructurallyEquivalent(sr, at.generics[i], bt.generics[i], seen)) return false;
         }
 
-        if (a.members.length !== b.members.length) {
+        if (at.members.length !== bt.members.length) {
           return false;
         }
 
         // All members are unique
-        const remainingMembersA = [...new Set(a.members.map((m) => m.name))];
-        assert(remainingMembersA.length === a.members.length);
-        let remainingMembersB = [...new Set(b.members.map((m) => m.name))];
-        assert(remainingMembersB.length === b.members.length);
+        const remainingMembersA = [...new Set(at.members.map((m) => m.name))];
+        assert(remainingMembersA.length === at.members.length);
+        let remainingMembersB = [...new Set(bt.members.map((m) => m.name))];
+        assert(remainingMembersB.length === bt.members.length);
 
         // All members are unique and the same count. So if all members from A are in B, the inverse must also be true.
 
@@ -238,10 +274,10 @@ export namespace Conversion {
           }
           remainingMembersB = remainingMembersB.filter((k) => k !== m);
 
-          const am = a.members.find((mm) => mm.name === m);
-          const bm = b.members.find((mm) => mm.name === m);
-          assert(am && bm);
-          if (!IsStructurallyEquivalent(am.type, bm.type, seen)) {
+          const am = at.members.find((mm) => mm.name === m);
+          const bm = bt.members.find((mm) => mm.name === m);
+          assert(am && bm && am.type && bm.type);
+          if (!IsStructurallyEquivalent(sr, am.type, bm.type, seen)) {
             return false;
           }
         }
@@ -318,21 +354,28 @@ export namespace Conversion {
   ];
 
   export function IsImplicitConversionAvailable(
-    from: Semantic.DatatypeSymbol,
-    to: Semantic.DatatypeSymbol,
+    sr: SemanticResult,
+    fromId: Semantic.Id,
+    toId: Semantic.Id
   ) {
-    if (IsStructurallyEquivalent(from, to)) {
+    const from = sr.nodes.get(fromId);
+    const to = sr.nodes.get(toId);
+
+    if (IsStructurallyEquivalent(sr, fromId, toId)) {
       return true;
     }
 
-    if (to.variant === "ReferenceDatatype") {
-      return IsStructurallyEquivalent(from, to.referee);
+    if (to.variant === Semantic.ENode.ReferenceDatatype) {
+      return IsStructurallyEquivalent(sr, fromId, to.referee);
     }
-    if (from.variant === "ReferenceDatatype") {
-      return IsStructurallyEquivalent(from.referee, to);
+    if (from.variant === Semantic.ENode.ReferenceDatatype) {
+      return IsStructurallyEquivalent(sr, from.referee, toId);
     }
 
-    if (from.variant === "PrimitiveDatatype" && to.variant === "PrimitiveDatatype") {
+    if (
+      from.variant === Semantic.ENode.PrimitiveDatatype &&
+      to.variant === Semantic.ENode.PrimitiveDatatype
+    ) {
       for (const conv of SafeImplicitPrimitiveConversionTable) {
         if (conv.from === from.primitive) {
           if (conv.to.includes(to.primitive)) {
@@ -342,106 +385,103 @@ export namespace Conversion {
       }
     }
 
-    // T <-> cstruct T* conversion for C FFI
-    if (
-      from.variant === "RawPointerDatatype" &&
-      from.pointee.variant === "StructDatatype" &&
-      from.pointee.cstruct &&
-      to.variant === "StructDatatype" &&
-      !to.cstruct &&
-      from.pointee === to
-    ) {
-      return true;
-    }
-
-    // T <-> cstruct T* conversion for C FFI
-    if (
-      to.variant === "RawPointerDatatype" &&
-      to.pointee.variant === "StructDatatype" &&
-      to.pointee.cstruct &&
-      from.variant === "StructDatatype" &&
-      !from.cstruct &&
-      to.pointee === from
-    ) {
-      return true;
-    }
-
     return false;
   }
 
   export function IsExplicitConversionAvailable(
-    from: Semantic.DatatypeSymbol,
-    to: Semantic.DatatypeSymbol,
+    sr: SemanticResult,
+    from: Semantic.Id,
+    to: Semantic.Id
   ) {
-    if (IsImplicitConversionAvailable(from, to)) {
+    if (IsImplicitConversionAvailable(sr, from, to)) {
       return true;
     }
     return false;
   }
 
   export function MakeImplicitConversion(
-    from: Semantic.Expression,
-    to: Semantic.DatatypeSymbol,
-    sourceloc: SourceLoc,
+    sr: SemanticResult,
+    fromId: Semantic.Id,
+    to: Semantic.Id,
+    sourceloc: SourceLoc
   ) {
-    if (!IsImplicitConversionAvailable(from.type, to)) {
+    const from = sr.nodes.get(fromId);
+    assert(isExpression(from));
+
+    if (!IsImplicitConversionAvailable(sr, from.type, to)) {
       throw new CompilerError(
-        `No implicit Conversion from '${serializeDatatype(from.type)}' to '${serializeDatatype(to)}' available`,
-        sourceloc,
+        `No implicit Conversion from '${serializeDatatype(sr, from.type)}' to '${serializeDatatype(
+          sr,
+          to
+        )}' available`,
+        sourceloc
       );
     }
-    return MakeExplicitConversion(from, to, sourceloc);
+    return MakeExplicitConversion(sr, fromId, to, sourceloc);
   }
 
   export function MakeExplicitConversion(
-    from: Semantic.Expression,
-    to: Semantic.DatatypeSymbol,
-    sourceloc: SourceLoc,
+    sr: SemanticResult,
+    fromId: Semantic.Id,
+    toId: Semantic.Id,
+    sourceloc: SourceLoc
   ) {
-    if (IsStructurallyEquivalent(from.type, to)) {
+    const from = sr.nodes.get(fromId);
+    assert(isExpression(from));
+    const to = sr.nodes.get(toId);
+    // assert(isData(from));
+
+    if (IsStructurallyEquivalent(sr, from.type, toId)) {
       return {
-        variant: "ExplicitCast",
-        expr: from,
-        type: to,
+        variant: Semantic.ENode.ExplicitCastExpr,
+        expr: fromId,
+        type: toId,
         sourceloc: sourceloc,
       } satisfies Semantic.ExplicitCastExpr;
     }
 
-    if (!IsExplicitConversionAvailable(from.type, to)) {
+    if (!IsExplicitConversionAvailable(sr, from.type, toId)) {
       throw new CompilerError(
-        `No explicit Conversion from '${serializeDatatype(from.type)}' to '${serializeDatatype(to)}' available`,
-        sourceloc,
+        `No explicit Conversion from '${serializeDatatype(sr, from.type)}' to '${serializeDatatype(
+          sr,
+          toId
+        )}' available`,
+        sourceloc
       );
     }
 
-    if (to.variant === "ReferenceDatatype") {
+    if (to.variant === Semantic.ENode.ReferenceDatatype) {
       // Conversion from anything to a reference
       return {
-        variant: "ExplicitCast",
-        expr: from,
-        type: to,
+        variant: Semantic.ENode.ExplicitCastExpr,
+        expr: fromId,
+        type: toId,
         sourceloc: sourceloc,
       } satisfies Semantic.ExplicitCastExpr;
     }
 
-    if (from.type.variant === "ReferenceDatatype") {
+    if (sr.nodes.get(from.type).variant === Semantic.ENode.ReferenceDatatype) {
       // Conversion from a reference to whatever it references
-      return {
-        variant: "ExplicitCast",
-        expr: from,
-        type: to,
+      return Semantic.addNode(sr, {
+        variant: Semantic.ENode.ExplicitCastExpr,
+        expr: fromId,
+        type: toId,
         sourceloc: sourceloc,
-      } satisfies Semantic.ExplicitCastExpr;
+      });
     }
 
-    if (from.type.variant === "PrimitiveDatatype" && to.variant === "PrimitiveDatatype") {
+    const fromType = sr.nodes.get(from.type);
+    if (
+      fromType.variant === Semantic.ENode.PrimitiveDatatype &&
+      to.variant === Semantic.ENode.PrimitiveDatatype
+    ) {
       for (const conv of SafeImplicitPrimitiveConversionTable) {
-        if (conv.from === from.type.primitive) {
+        if (conv.from === fromType.primitive) {
           if (conv.to.includes(to.primitive)) {
             return {
-              variant: "ExplicitCast",
-              expr: from,
-              type: to,
+              variant: Semantic.ENode.ExplicitCastExpr,
+              expr: fromId,
+              type: toId,
               sourceloc: sourceloc,
             } satisfies Semantic.ExplicitCastExpr;
           }
@@ -449,71 +489,249 @@ export namespace Conversion {
       }
     }
 
-    // T <-> cstruct T* conversion for C FFI
-    if (
-      from.type.variant === "RawPointerDatatype" &&
-      from.type.pointee.variant === "StructDatatype" &&
-      from.type.pointee.cstruct &&
-      to.variant === "StructDatatype" &&
-      !to.cstruct &&
-      from.type.pointee === to
-    ) {
-      return from;
-    }
-
-    // T <-> cstruct T* conversion for C FFI
-    if (
-      to.variant === "RawPointerDatatype" &&
-      to.pointee.variant === "StructDatatype" &&
-      to.pointee.cstruct &&
-      from.type.variant === "StructDatatype" &&
-      !from.type.cstruct &&
-      to.pointee === from.type
-    ) {
-      return from;
-    }
-
     throw new ImpossibleSituation();
+  }
+
+  export function makeBinaryResultType(
+    sr: SemanticResult,
+    a: Semantic.Id,
+    b: Semantic.Id,
+    operation: EBinaryOperation,
+    sourceloc: SourceLoc
+  ): Semantic.Id {
+    if (a === b) {
+      return a;
+    }
+
+    throw new CompilerError(
+      `No safe ${BinaryOperationToString(
+        operation
+      )} operation is known between types '${serializeDatatype(sr, a)}' and '${serializeDatatype(
+        sr,
+        b
+      )}'`,
+      sourceloc
+    );
+  }
+
+  const UnaryOperationResults = (sr: SemanticResult) => ({
+    [EUnaryOperation.Plus]: [
+      {
+        from: makePrimitiveAvailable(sr, EPrimitive.i8),
+        to: makePrimitiveAvailable(sr, EPrimitive.i8),
+      },
+      {
+        from: makePrimitiveAvailable(sr, EPrimitive.i16),
+        to: makePrimitiveAvailable(sr, EPrimitive.i16),
+      },
+      {
+        from: makePrimitiveAvailable(sr, EPrimitive.i32),
+        to: makePrimitiveAvailable(sr, EPrimitive.i32),
+      },
+      {
+        from: makePrimitiveAvailable(sr, EPrimitive.i64),
+        to: makePrimitiveAvailable(sr, EPrimitive.i64),
+      },
+      {
+        from: makePrimitiveAvailable(sr, EPrimitive.u8),
+        to: makePrimitiveAvailable(sr, EPrimitive.u8),
+      },
+      {
+        from: makePrimitiveAvailable(sr, EPrimitive.u16),
+        to: makePrimitiveAvailable(sr, EPrimitive.u16),
+      },
+      {
+        from: makePrimitiveAvailable(sr, EPrimitive.u32),
+        to: makePrimitiveAvailable(sr, EPrimitive.u32),
+      },
+      {
+        from: makePrimitiveAvailable(sr, EPrimitive.u64),
+        to: makePrimitiveAvailable(sr, EPrimitive.u64),
+      },
+      {
+        from: makePrimitiveAvailable(sr, EPrimitive.f32),
+        to: makePrimitiveAvailable(sr, EPrimitive.f32),
+      },
+      {
+        from: makePrimitiveAvailable(sr, EPrimitive.f64),
+        to: makePrimitiveAvailable(sr, EPrimitive.f64),
+      },
+      {
+        from: makePrimitiveAvailable(sr, EPrimitive.int),
+        to: makePrimitiveAvailable(sr, EPrimitive.int),
+      },
+      {
+        from: makePrimitiveAvailable(sr, EPrimitive.float),
+        to: makePrimitiveAvailable(sr, EPrimitive.float),
+      },
+    ],
+    [EUnaryOperation.Minus]: [
+      {
+        from: makePrimitiveAvailable(sr, EPrimitive.i8),
+        to: makePrimitiveAvailable(sr, EPrimitive.i8),
+      },
+      {
+        from: makePrimitiveAvailable(sr, EPrimitive.i16),
+        to: makePrimitiveAvailable(sr, EPrimitive.i16),
+      },
+      {
+        from: makePrimitiveAvailable(sr, EPrimitive.i32),
+        to: makePrimitiveAvailable(sr, EPrimitive.i32),
+      },
+      {
+        from: makePrimitiveAvailable(sr, EPrimitive.i64),
+        to: makePrimitiveAvailable(sr, EPrimitive.i64),
+      },
+      {
+        from: makePrimitiveAvailable(sr, EPrimitive.u8),
+        to: makePrimitiveAvailable(sr, EPrimitive.u8),
+      },
+      {
+        from: makePrimitiveAvailable(sr, EPrimitive.u16),
+        to: makePrimitiveAvailable(sr, EPrimitive.u16),
+      },
+      {
+        from: makePrimitiveAvailable(sr, EPrimitive.u32),
+        to: makePrimitiveAvailable(sr, EPrimitive.u32),
+      },
+      {
+        from: makePrimitiveAvailable(sr, EPrimitive.u64),
+        to: makePrimitiveAvailable(sr, EPrimitive.u64),
+      },
+      {
+        from: makePrimitiveAvailable(sr, EPrimitive.f32),
+        to: makePrimitiveAvailable(sr, EPrimitive.f32),
+      },
+      {
+        from: makePrimitiveAvailable(sr, EPrimitive.f64),
+        to: makePrimitiveAvailable(sr, EPrimitive.f64),
+      },
+      {
+        from: makePrimitiveAvailable(sr, EPrimitive.int),
+        to: makePrimitiveAvailable(sr, EPrimitive.int),
+      },
+      {
+        from: makePrimitiveAvailable(sr, EPrimitive.float),
+        to: makePrimitiveAvailable(sr, EPrimitive.float),
+      },
+    ],
+    [EUnaryOperation.Negate]: [
+      {
+        from: makePrimitiveAvailable(sr, EPrimitive.boolean),
+        to: makePrimitiveAvailable(sr, EPrimitive.boolean),
+      },
+      {
+        from: makePrimitiveAvailable(sr, EPrimitive.i8),
+        to: makePrimitiveAvailable(sr, EPrimitive.boolean),
+      },
+      {
+        from: makePrimitiveAvailable(sr, EPrimitive.i16),
+        to: makePrimitiveAvailable(sr, EPrimitive.boolean),
+      },
+      {
+        from: makePrimitiveAvailable(sr, EPrimitive.i32),
+        to: makePrimitiveAvailable(sr, EPrimitive.boolean),
+      },
+      {
+        from: makePrimitiveAvailable(sr, EPrimitive.i64),
+        to: makePrimitiveAvailable(sr, EPrimitive.boolean),
+      },
+      {
+        from: makePrimitiveAvailable(sr, EPrimitive.u8),
+        to: makePrimitiveAvailable(sr, EPrimitive.boolean),
+      },
+      {
+        from: makePrimitiveAvailable(sr, EPrimitive.u16),
+        to: makePrimitiveAvailable(sr, EPrimitive.boolean),
+      },
+      {
+        from: makePrimitiveAvailable(sr, EPrimitive.u32),
+        to: makePrimitiveAvailable(sr, EPrimitive.boolean),
+      },
+      {
+        from: makePrimitiveAvailable(sr, EPrimitive.u64),
+        to: makePrimitiveAvailable(sr, EPrimitive.boolean),
+      },
+      {
+        from: makePrimitiveAvailable(sr, EPrimitive.f32),
+        to: makePrimitiveAvailable(sr, EPrimitive.boolean),
+      },
+      {
+        from: makePrimitiveAvailable(sr, EPrimitive.f64),
+        to: makePrimitiveAvailable(sr, EPrimitive.boolean),
+      },
+      {
+        from: makePrimitiveAvailable(sr, EPrimitive.int),
+        to: makePrimitiveAvailable(sr, EPrimitive.boolean),
+      },
+      {
+        from: makePrimitiveAvailable(sr, EPrimitive.float),
+        to: makePrimitiveAvailable(sr, EPrimitive.boolean),
+      },
+    ],
+  });
+
+  export function makeUnaryResultType(
+    sr: SemanticResult,
+    a: Semantic.Id,
+    operation: EUnaryOperation,
+    sourceloc: SourceLoc
+  ): Semantic.Id {
+    const ops = UnaryOperationResults(sr)[operation];
+
+    for (const op of ops) {
+      if (op.from === a) {
+        return op.to;
+      }
+    }
+
+    throw new CompilerError(
+      `No unary ${UnaryOperationToString(
+        operation
+      )} operation is known for type '${serializeDatatype(sr, a)}'`,
+      sourceloc
+    );
   }
 
   export function makeAsOperator(
     sr: SemanticResult,
-    targetType: Semantic.DatatypeSymbol,
-  ): Semantic.FunctionDefinitionSymbol {
+    targetType: Semantic.Id
+  ): Semantic.FunctionSymbol {
     for (const f of sr.overloadedOperators) {
       if (
         f.name === "__operator_as" &&
         f.operatorOverloading?.operator === EOperator.As &&
-        IsStructurallyEquivalent(f.operatorOverloading.asTarget, targetType)
+        IsStructurallyEquivalent(sr, f.operatorOverloading.asTarget, targetType)
       ) {
         return f;
       }
     }
-    const func = {
-      variant: "FunctionDefinition",
-      concrete: true,
-      export: false,
-      staticMethod: false,
-      externLanguage: EExternLanguage.None,
-      methodType: EMethodType.NotAMethod,
-      name: "__operator_as",
-      generics: [],
-      parameterNames: [],
-      type: {
-        variant: "FunctionDatatype",
-        concrete: true,
-        parameters: [],
-        returnType: targetType,
-        vararg: false,
-      },
-      parent: null,
-      sourceloc: null,
-      operatorOverloading: {
-        operator: EOperator.As,
-        asTarget: targetType,
-      },
-    } satisfies Semantic.FunctionDefinitionSymbol;
-    sr.overloadedOperators.push(func);
-    return func;
+    // const func = {
+    //   variant: Semantic.ENode.FunctionSymbol,
+    //   concrete: true,
+    //   export: false,
+    //   staticMethod: false,
+    //   extern: EExternLanguage.None,
+    //   methodType: EMethodType.NotAMethod,
+    //   name: "__operator_as",
+    //   generics: [],
+    //   parameterNames: [],
+    //   type: {
+    //     variant: "FunctionDatatype",
+    //     concrete: true,
+    //     parameters: [],
+    //     returnType: targetType,
+    //     vararg: false,
+    //   },
+    //   parentStructOrNS: null,
+    //   sourceloc: null,
+    //   operatorOverloading: {
+    //     operator: EOperator.As,
+    //     asTarget: targetType,
+    //   },
+    // } satisfies Semantic.FunctionSymbol;
+    // sr.overloadedOperators.push(func);
+    // return func;
+    assert(false);
   }
 }
