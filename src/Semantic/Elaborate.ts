@@ -1,4 +1,4 @@
-import { EExternLanguage, EVariableMutability } from "../shared/AST";
+import { EExternLanguage } from "../shared/AST";
 import { BrandedArray, EMethodType, EVariableContext, primitiveToString } from "../shared/common";
 import { assert, CompilerError, InternalError, type SourceLoc } from "../shared/Errors";
 import { Collect, type CollectionContext } from "../SymbolCollection/SymbolCollection";
@@ -14,7 +14,6 @@ import {
   asExpression,
   asType,
   getExprType,
-  isExpression,
   isTypeConcrete,
   Semantic,
   type SemanticResult,
@@ -1597,7 +1596,7 @@ export function elaborateFunctionSymbol(
   const ftype = makeFunctionDatatypeAvailable(sr, {
     parameters: func.parameters.map((p) =>
       lookupAndElaborateDatatype(sr, {
-        typeId: func.returnType,
+        typeId: p.type,
         context: substitutionContext,
         currentFileScope: args.currentFileScope,
         parentStructOrNS: args.parentStructOrNS,

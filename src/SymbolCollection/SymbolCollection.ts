@@ -32,6 +32,7 @@ import {
   BinaryOperationToString,
   UnaryOperationToString,
   type ASTLiteralExpr,
+  type ASTStructMemberDefinition,
 } from "../shared/AST";
 import {
   BrandedArray,
@@ -657,6 +658,7 @@ function collect(
   cc: CollectionContext,
   item:
     | ASTCInjectDirective
+    | ASTStructMemberDefinition
     | ASTDatatype
     | ASTLiteralExpr
     | ASTStructDefinition
@@ -802,6 +804,28 @@ function collect(
       }
 
       return overloadGroupId;
+    }
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
+    case "StructMember": {
+      const [member, memberId] = defineVariableSymbol(
+        cc,
+        {
+          variant: Collect.ENode.VariableSymbol,
+          name: item.name,
+          mutability: EVariableMutability.Mutable,
+          sourceloc: item.sourceloc,
+          type: collect(cc, item.type, {
+            currentParentScope: args.currentParentScope,
+          }),
+          variableContext: EVariableContext.MemberOfStruct,
+        },
+        args.currentParentScope
+      );
+      return memberId;
     }
 
     // =================================================================================================================
@@ -1007,9 +1031,12 @@ function collect(
         structScope.symbols.push(decl);
       }
 
-      // for (const m of item.members) {
-
-      // }
+      for (const m of item.members) {
+        const varsym = collect(cc, m, {
+          currentParentScope: structScopeId,
+        });
+        structScope.symbols.push(varsym);
+      }
 
       for (const m of item.methods) {
         const funcsym = collect(cc, m, {

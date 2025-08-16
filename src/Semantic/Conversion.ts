@@ -182,7 +182,7 @@ export namespace Conversion {
     sr: SemanticResult,
     a: Semantic.Id,
     b: Semantic.Id,
-    seen: WeakMap<Semantic.Id, WeakSet<Semantic.Id>> = new WeakMap()
+    seen: Map<Semantic.Id, Set<Semantic.Id>> = new Map()
   ): boolean {
     // Symmetric check: has this pair already been seen?
     if (seen.get(a)?.has(b) || seen.get(b)?.has(a)) {
@@ -190,7 +190,7 @@ export namespace Conversion {
     }
 
     // Mark pair as seen
-    if (!seen.has(a)) seen.set(a, new WeakSet());
+    if (!seen.has(a)) seen.set(a, new Set());
     seen.get(a)!.add(b);
 
     if (!isTypeConcrete(sr, a) || !isTypeConcrete(sr, b)) {
