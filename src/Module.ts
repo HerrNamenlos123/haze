@@ -316,19 +316,19 @@ class ModuleCompiler {
   }
 
   private makeUnit() {
-    const unit = makeSymbol(this.cc, {
+    const [unit, unitId] = makeSymbol(this.cc, {
       variant: Collect.ENode.UnitScope,
       parentScope: 0 as Collect.Id,
       files: [],
     });
     const moduleScope = this.cc.nodes.get(0 as Collect.Id);
     assert(moduleScope.variant === Collect.ENode.ModuleScope);
-    moduleScope.units.push(unit);
-    return unit;
+    moduleScope.units.push(unitId);
+    return [unit, unitId] as const;
   }
 
   async collectUnit(dirpath: string) {
-    const unit = this.makeUnit();
+    const [unit, unitId] = this.makeUnit();
 
     for (const file of readdirSync(dirpath)) {
       const fullPath = join(dirpath, file);
@@ -337,7 +337,7 @@ class ModuleCompiler {
         this.collectUnit(fullPath);
       } else {
         if (extname(fullPath) == ".hz") {
-          await this.collectFileInUnit(fullPath, unit);
+          await this.collectFileInUnit(fullPath, unitId);
         }
       }
     }
@@ -368,7 +368,7 @@ class ModuleCompiler {
       await this.collectImports();
       await this.addProjectSourceFiles();
 
-      // PrettyPrintCollected(this.cc);
+      PrettyPrintCollected(this.cc);
 
       const sr = SemanticallyAnalyze(this.cc, this.config.moduleType === ModuleType.Library);
       PrettyPrintAnalyzed(sr);

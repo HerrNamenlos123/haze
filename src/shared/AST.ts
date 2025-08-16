@@ -141,11 +141,11 @@ export type ASTFunctionDefinition = {
   }[];
   name: string;
   noemit: boolean;
+  static: boolean;
   params: ASTParam[];
   ellipsis: boolean;
   returnType?: ASTDatatype;
   methodType?: EMethodType;
-  declarationScope?: string;
   funcbody?: ASTFuncBody;
   sourceloc: SourceLoc;
 };
@@ -420,26 +420,6 @@ export type ASTStructMemberDefinition = {
   sourceloc: SourceLoc;
 };
 
-export type ASTStructMethodDefinition = {
-  variant: "StructMethod";
-  params: ASTParam[];
-  name: string;
-  generics: {
-    name: string;
-    sourceloc: SourceLoc;
-  }[];
-  static: boolean;
-  ellipsis: boolean;
-  operatorOverloading?: {
-    operator: EOperator;
-    asTarget: ASTDatatype;
-  };
-  returnType?: ASTDatatype;
-  declarationScope?: string;
-  funcbody?: ASTFuncBody;
-  sourceloc: SourceLoc;
-};
-
 export type ASTStructDefinition = {
   variant: "StructDefinition";
   export: boolean;
@@ -452,7 +432,7 @@ export type ASTStructDefinition = {
     sourceloc: SourceLoc;
   }[];
   members: ASTStructMemberDefinition[];
-  methods: ASTStructMethodDefinition[];
+  methods: ASTFunctionDefinition[];
   nestedStructs: ASTStructDefinition[];
   sourceloc: SourceLoc;
 };

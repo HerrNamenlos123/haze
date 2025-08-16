@@ -83,3 +83,13 @@ namespace Outer {
         }
     }
 }
+
+struct A {
+    struct B {}
+}
+
+struct C {
+    foo() {
+        const a: A.B = 0;
+    }
+}

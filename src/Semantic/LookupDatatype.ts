@@ -1,18 +1,23 @@
-import { stringToPrimitive } from "../shared/common";
+import { Cookie } from "bun";
+import { EVariableContext, stringToPrimitive } from "../shared/common";
 import { assert, CompilerError, ImpossibleSituation, type SourceLoc } from "../shared/Errors";
 import { Collect } from "../SymbolCollection/SymbolCollection";
 import {
+  elaborateFunctionSymbol,
+  elaborateGlobalSymbol,
   elaborateNamespace,
   isolateElaborationContext,
   lookupSymbol,
   type SubstitutionContext,
 } from "./Elaborate";
 import {
+  asType,
   isTypeConcrete,
   makePrimitiveAvailable,
   Semantic,
   type SemanticResult,
 } from "./SemanticSymbols";
+import { EExternLanguage, EVariableMutability } from "../shared/AST";
 
 export function makeFunctionDatatypeAvailable(
   sr: SemanticResult,
@@ -46,7 +51,7 @@ export function makeFunctionDatatypeAvailable(
   }
 
   // Nothing found
-  const ftype = Semantic.addNode(sr, {
+  const [ftype, ftypeId] = Semantic.addNode(sr, {
     variant: Semantic.ENode.FunctionDatatype,
     parameters: args.parameters,
     returnType: args.returnType,
@@ -54,8 +59,8 @@ export function makeFunctionDatatypeAvailable(
     concrete:
       args.parameters.every((p) => isTypeConcrete(sr, p)) && isTypeConcrete(sr, args.returnType),
   });
-  sr.functionTypeCache.push(ftype);
-  return ftype;
+  sr.functionTypeCache.push(ftypeId);
+  return ftypeId;
 }
 
 export function makePointerDatatypeAvailable(
@@ -72,13 +77,13 @@ export function makePointerDatatypeAvailable(
   }
 
   // Nothing found
-  const type = Semantic.addNode(sr, {
+  const [type, typeId] = Semantic.addNode(sr, {
     variant: Semantic.ENode.PointerDatatype,
     pointee: pointee,
     concrete: isTypeConcrete(sr, pointee),
   });
-  sr.rawPointerTypeCache.push(type);
-  return type;
+  sr.rawPointerTypeCache.push(typeId);
+  return typeId;
 }
 
 export function makeReferenceDatatypeAvailable(
@@ -95,13 +100,13 @@ export function makeReferenceDatatypeAvailable(
   }
 
   // Nothing found
-  const type = Semantic.addNode(sr, {
+  const [type, typeId] = Semantic.addNode(sr, {
     variant: Semantic.ENode.ReferenceDatatype,
     referee: referee,
     concrete: isTypeConcrete(sr, referee),
   });
-  sr.referenceTypeCache.push(type);
-  return type;
+  sr.referenceTypeCache.push(typeId);
+  return typeId;
 }
 
 export function instantiateAndElaborateStruct(
@@ -111,6 +116,8 @@ export function instantiateAndElaborateStruct(
     genericArgs: Semantic.Id[];
     sourceloc: SourceLoc;
     parentStructOrNS: Semantic.Id | null;
+    currentFileScope: Collect.Id;
+    elaboratedVariables: Map<Collect.Id, Semantic.Id>;
     context: SubstitutionContext;
   }
 ) {
@@ -135,7 +142,7 @@ export function instantiateAndElaborateStruct(
     );
   }
 
-  const struct = Semantic.addNode(sr, {
+  const [struct, structId] = Semantic.addNode<Semantic.StructDatatypeSymbol>(sr, {
     variant: Semantic.ENode.StructDatatype,
     name: definedStructType.name,
     generics: args.genericArgs,
@@ -143,7 +150,8 @@ export function instantiateAndElaborateStruct(
     noemit: definedStructType.noemit,
     parentStructOrNS: args.parentStructOrNS,
     members: [],
-    methods: new Set(),
+    methods: [],
+    nestedStructs: [],
     sourceloc: definedStructType.sourceloc,
     concrete: args.genericArgs.every((g) => isTypeConcrete(sr, g)),
     originalCollectedSymbol: args.definedStructTypeId,
@@ -155,66 +163,85 @@ export function instantiateAndElaborateStruct(
     newContext.substitute.set(definedStructType.generics[i], args.genericArgs[i]);
   }
 
-  if (isTypeConcrete(sr, struct)) {
+  if (isTypeConcrete(sr, structId)) {
     sr.elaboratedStructDatatypes.push({
       generics: args.genericArgs,
       originalSymbol: args.definedStructTypeId,
-      resultSymbol: struct,
+      resultSymbol: structId,
     });
 
-    // struct.members = definedStructType.members.map((member) => {
-    //   assert(args.definedStructType._collect.scope);
-    //   const type = lookupAndElaborateDatatype(sr, {
-    //     type: member.type,
-    //     // Start lookup in the struct itself
-    //     startLookupInScope: args.definedStructType._collect.scope,
-    //     context: newContext,
-    //     isInCFuncdecl: false,
-    //   });
-    //   return {
-    //     variant: "Variable",
-    //     name: member.name,
-    //     export: false,
-    //     externLanguage: EExternLanguage.None,
-    //     mutable: true,
-    //     sourceloc: member.sourceloc,
-    //     type: type,
-    //     variableContext: EVariableContext.MemberOfStruct,
-    //     memberOf: struct,
-    //     concrete: type.concrete,
-    //   };
-    // });
+    const structScope = sr.cc.nodes.get(definedStructType.structScope);
+    assert(structScope.variant === Collect.ENode.StructScope);
 
-    // args.definedStructType.methods.forEach((method) => {
-    //   assert(method.returnType);
-    //   assert(method.funcbody?._collect.scope);
-    //   if (method.generics.length !== 0 || method.operatorOverloading) {
-    //     return;
-    //   }
-
-    //   const symbol = elaborate(sr, {
-    //     sourceSymbol: method,
-    //     usageGenerics: [],
-    //     structForMethod: struct,
-    //     context: newContext,
-    //   });
-    //   assert(symbol && symbol.variant === "FunctionDefinition");
-    //   struct.methods.add(symbol);
-    // });
+    structScope.symbols.forEach((symbolId) => {
+      const symbol = sr.cc.nodes.get(symbolId);
+      if (symbol.variant === Collect.ENode.VariableSymbol) {
+        assert(symbol.type);
+        const type = lookupAndElaborateDatatype(sr, {
+          typeId: symbol.type,
+          parentStructOrNS: structId,
+          // Start lookup in the struct itself
+          startLookupInScope: definedStructType.structScope,
+          currentFileScope: args.currentFileScope,
+          elaboratedVariables: args.elaboratedVariables,
+          context: newContext,
+          isInCFuncdecl: false,
+        });
+        const [variable, variableId] = Semantic.addNode(sr, {
+          variant: Semantic.ENode.VariableSymbol,
+          name: symbol.name,
+          export: false,
+          extern: EExternLanguage.None,
+          mutability: EVariableMutability.Mutable,
+          sourceloc: symbol.sourceloc,
+          memberOfStruct: structId,
+          type: type,
+          variableContext: EVariableContext.MemberOfStruct,
+          parentStructOrNS: args.parentStructOrNS,
+          concrete: asType(sr.nodes.get(type)).concrete,
+        });
+        struct.members.push(variableId);
+      } else if (symbol.variant === Collect.ENode.FunctionOverloadGroup) {
+        symbol.overloads.forEach((overloadId) => {
+          const overloadedFunc = sr.cc.nodes.get(overloadId);
+          assert(overloadedFunc.variant === Collect.ENode.FunctionSymbol);
+          if (overloadedFunc.generics.length !== 0 /* || symbol.operatorOverloading */) {
+            return;
+          }
+          const funcId = elaborateFunctionSymbol(sr, overloadId, {
+            genericArgs: [],
+            context: newContext,
+            usageSite: overloadedFunc.sourceloc,
+            currentFileScope: args.currentFileScope,
+            elaboratedVariables: args.elaboratedVariables,
+            parentStructOrNS: structId,
+          });
+          const func = sr.nodes.get(funcId);
+          assert(funcId && func && func.variant === Semantic.ENode.FunctionSymbol);
+          struct.methods.push(funcId);
+        });
+      } else if (symbol.variant === Collect.ENode.StructDefinitionSymbol) {
+        if (symbol.generics.length !== 0) {
+          return;
+        }
+        // If the nested struct is not generic, instantiate it without generics for early errors
+        const subStructId = instantiateAndElaborateStruct(sr, {
+          definedStructTypeId: symbolId,
+          context: newContext,
+          genericArgs: [],
+          parentStructOrNS: structId,
+          currentFileScope: args.currentFileScope,
+          elaboratedVariables: args.elaboratedVariables,
+          sourceloc: symbol.sourceloc,
+        });
+        struct.nestedStructs.push(subStructId);
+      } else {
+        assert(false, "unexpected type: " + symbol.variant);
+      }
+    });
   }
 
-  // Now, also elaborate all nested sub structs
-  // for (const d of definedStructType.nestedStructs) {
-  //   if (d.generics.length === 0) {
-  //     elaborate(sr, {
-  //       sourceSymbol: d,
-  //       usageGenerics: [],
-  //       context: newContext,
-  //     });
-  //   }
-  // }
-
-  return struct;
+  return structId;
 }
 
 export function lookupAndElaborateDatatype(
@@ -223,7 +250,9 @@ export function lookupAndElaborateDatatype(
     typeId: Collect.Id;
     startLookupInScope: Collect.Id;
     context: SubstitutionContext;
+    currentFileScope: Collect.Id;
     parentStructOrNS: Semantic.Id | null;
+    elaboratedVariables: Map<Collect.Id, Semantic.Id>;
     isInCFuncdecl: boolean;
   }
 ): Semantic.Id {
@@ -242,6 +271,8 @@ export function lookupAndElaborateDatatype(
             startLookupInScope: args.startLookupInScope,
             context: args.context,
             parentStructOrNS: args.parentStructOrNS,
+            currentFileScope: args.currentFileScope,
+            elaboratedVariables: args.elaboratedVariables,
             isInCFuncdecl: args.isInCFuncdecl,
           })
         ),
@@ -250,6 +281,8 @@ export function lookupAndElaborateDatatype(
           startLookupInScope: args.startLookupInScope,
           context: args.context,
           parentStructOrNS: args.parentStructOrNS,
+          elaboratedVariables: args.elaboratedVariables,
+          currentFileScope: args.currentFileScope,
           isInCFuncdecl: args.isInCFuncdecl,
         }),
         vararg: type.vararg,
@@ -268,6 +301,8 @@ export function lookupAndElaborateDatatype(
           startLookupInScope: args.startLookupInScope,
           context: args.context,
           parentStructOrNS: args.parentStructOrNS,
+          currentFileScope: args.currentFileScope,
+          elaboratedVariables: args.elaboratedVariables,
           isInCFuncdecl: args.isInCFuncdecl,
         })
       );
@@ -284,7 +319,9 @@ export function lookupAndElaborateDatatype(
           typeId: type.referee,
           startLookupInScope: args.startLookupInScope,
           context: args.context,
+          elaboratedVariables: args.elaboratedVariables,
           parentStructOrNS: args.parentStructOrNS,
+          currentFileScope: args.currentFileScope,
           isInCFuncdecl: args.isInCFuncdecl,
         })
       );
@@ -322,6 +359,8 @@ export function lookupAndElaborateDatatype(
           startLookupInScope: args.startLookupInScope,
           context: args.context,
           isInCFuncdecl: args.isInCFuncdecl,
+          currentFileScope: args.currentFileScope,
+          elaboratedVariables: args.elaboratedVariables,
           parentStructOrNS: args.parentStructOrNS,
         });
         return Semantic.addNode(sr, {
@@ -329,7 +368,7 @@ export function lookupAndElaborateDatatype(
           functionType: functype,
           thisExprType: undefined,
           concrete: isTypeConcrete(sr, functype),
-        });
+        })[1];
       }
 
       const foundId = lookupSymbol(sr.cc, type.name, {
@@ -345,6 +384,8 @@ export function lookupAndElaborateDatatype(
             startLookupInScope: args.startLookupInScope,
             context: args.context,
             isInCFuncdecl: false,
+            elaboratedVariables: args.elaboratedVariables,
+            currentFileScope: args.currentFileScope,
             parentStructOrNS: args.parentStructOrNS,
           });
         });
@@ -353,6 +394,8 @@ export function lookupAndElaborateDatatype(
           genericArgs: generics,
           parentStructOrNS: args.parentStructOrNS,
           context: args.context,
+          currentFileScope: args.currentFileScope,
+          elaboratedVariables: args.elaboratedVariables,
           sourceloc: type.sourceloc,
         });
         const struct = sr.nodes.get(structId);
@@ -366,6 +409,8 @@ export function lookupAndElaborateDatatype(
             parentStructOrNS: structId,
             startLookupInScope: found.structScope,
             typeId: type.innerNested,
+            currentFileScope: args.currentFileScope,
+            elaboratedVariables: args.elaboratedVariables,
             isInCFuncdecl: false,
             context: args.context,
           });
@@ -379,7 +424,9 @@ export function lookupAndElaborateDatatype(
         const nested = lookupAndElaborateDatatype(sr, {
           typeId: type.innerNested,
           startLookupInScope: found.namespaceScope,
+          currentFileScope: args.currentFileScope,
           context: isolateElaborationContext(args.context),
+          elaboratedVariables: args.elaboratedVariables,
           isInCFuncdecl: args.isInCFuncdecl,
           parentStructOrNS: args.parentStructOrNS,
         });
@@ -395,7 +442,7 @@ export function lookupAndElaborateDatatype(
             variant: Semantic.ENode.GenericParameterDatatype,
             name: found.name,
             concrete: false,
-          });
+          })[1];
         }
       } else {
         throw new CompilerError(

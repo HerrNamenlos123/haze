@@ -16,6 +16,7 @@ import {
   type SourceLoc,
 } from "../shared/Errors";
 import {
+  asType,
   isExpression,
   isTypeConcrete,
   makePrimitiveAvailable,
@@ -261,9 +262,25 @@ export namespace Conversion {
         }
 
         // All members are unique
-        const remainingMembersA = [...new Set(at.members.map((m) => m.name))];
+        const remainingMembersA = [
+          ...new Set(
+            at.members.map((mId) => {
+              const m = sr.nodes.get(mId);
+              assert(m.variant === Semantic.ENode.VariableSymbol);
+              return m.name;
+            })
+          ),
+        ];
         assert(remainingMembersA.length === at.members.length);
-        let remainingMembersB = [...new Set(bt.members.map((m) => m.name))];
+        let remainingMembersB = [
+          ...new Set(
+            bt.members.map((mId) => {
+              const m = sr.nodes.get(mId);
+              assert(m.variant === Semantic.ENode.FunctionSymbol);
+              return m.name;
+            })
+          ),
+        ];
         assert(remainingMembersB.length === bt.members.length);
 
         // All members are unique and the same count. So if all members from A are in B, the inverse must also be true.
@@ -274,9 +291,22 @@ export namespace Conversion {
           }
           remainingMembersB = remainingMembersB.filter((k) => k !== m);
 
-          const am = at.members.find((mm) => mm.name === m);
-          const bm = bt.members.find((mm) => mm.name === m);
-          assert(am && bm && am.type && bm.type);
+          const amId = at.members.find((mmId) => {
+            const mm = sr.nodes.get(mmId);
+            assert(mm.variant === Semantic.ENode.VariableSymbol);
+            return mm.name;
+          });
+          const bmId = bt.members.find((mmId) => {
+            const mm = sr.nodes.get(mmId);
+            assert(mm.variant === Semantic.ENode.VariableSymbol);
+            return mm.name;
+          });
+          assert(amId && bmId);
+          const am = sr.nodes.get(amId);
+          const bm = sr.nodes.get(bmId);
+          assert(am.variant === Semantic.ENode.VariableSymbol);
+          assert(bm.variant === Semantic.ENode.VariableSymbol);
+          assert(am.type && bm.type);
           if (!IsStructurallyEquivalent(sr, am.type, bm.type, seen)) {
             return false;
           }
@@ -432,12 +462,12 @@ export namespace Conversion {
     // assert(isData(from));
 
     if (IsStructurallyEquivalent(sr, from.type, toId)) {
-      return {
+      return Semantic.addNode(sr, {
         variant: Semantic.ENode.ExplicitCastExpr,
         expr: fromId,
         type: toId,
         sourceloc: sourceloc,
-      } satisfies Semantic.ExplicitCastExpr;
+      })[1];
     }
 
     if (!IsExplicitConversionAvailable(sr, from.type, toId)) {
@@ -452,12 +482,12 @@ export namespace Conversion {
 
     if (to.variant === Semantic.ENode.ReferenceDatatype) {
       // Conversion from anything to a reference
-      return {
+      return Semantic.addNode(sr, {
         variant: Semantic.ENode.ExplicitCastExpr,
         expr: fromId,
         type: toId,
         sourceloc: sourceloc,
-      } satisfies Semantic.ExplicitCastExpr;
+      })[1];
     }
 
     if (sr.nodes.get(from.type).variant === Semantic.ENode.ReferenceDatatype) {
@@ -467,7 +497,7 @@ export namespace Conversion {
         expr: fromId,
         type: toId,
         sourceloc: sourceloc,
-      });
+      })[1];
     }
 
     const fromType = sr.nodes.get(from.type);
@@ -478,12 +508,12 @@ export namespace Conversion {
       for (const conv of SafeImplicitPrimitiveConversionTable) {
         if (conv.from === fromType.primitive) {
           if (conv.to.includes(to.primitive)) {
-            return {
+            return Semantic.addNode(sr, {
               variant: Semantic.ENode.ExplicitCastExpr,
               expr: fromId,
               type: toId,
               sourceloc: sourceloc,
-            } satisfies Semantic.ExplicitCastExpr;
+            })[1];
           }
         }
       }

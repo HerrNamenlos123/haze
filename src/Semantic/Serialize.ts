@@ -238,17 +238,19 @@ export function serializeExpr(sr: SemanticResult, exprId: Semantic.Id): string {
     case Semantic.ENode.PreIncrExpr:
       return `(${IncrOperationToString(expr.operation)}(${serializeExpr(sr, expr.expr)}))`;
 
-    case Semantic.ENode.SymbolValueExpr:
-      if (expr.symbol.variant === Semantic.ENode.VariableSymbol) {
-        return expr.symbol.name;
-      } else if (expr.symbol.variant === Semantic.ENode.FunctionSymbol) {
+    case Semantic.ENode.SymbolValueExpr: {
+      const symbol = sr.nodes.get(expr.symbol);
+      if (symbol.variant === Semantic.ENode.VariableSymbol) {
+        return symbol.name;
+      } else if (symbol.variant === Semantic.ENode.FunctionSymbol) {
         const generic =
-          expr.symbol.generics.length > 0
-            ? "<" + expr.symbol.generics.map((g) => serializeDatatype(sr, g)).join(", ") + ">"
+          symbol.generics.length > 0
+            ? "<" + symbol.generics.map((g) => serializeDatatype(sr, g)).join(", ") + ">"
             : "";
-        return expr.symbol.name + generic;
+        return symbol.name + generic;
       }
-      throw new InternalError("Symbol not supported: " + expr.symbol.variant);
+      throw new InternalError("Symbol not supported: " + symbol.variant);
+    }
 
     case Semantic.ENode.StructInstantiationExpr:
       return `${serializeDatatype(sr, expr.type)} { ${expr.assign

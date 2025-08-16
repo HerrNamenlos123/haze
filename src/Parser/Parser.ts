@@ -46,7 +46,6 @@ import {
   type ASTStructDefinition,
   type ASTStructInstantiationExpr,
   type ASTStructMemberDefinition,
-  type ASTStructMethodDefinition,
   type ASTSymbolValueExpr,
   type ASTUnaryExpr,
   type ASTVariableDefinitionStatement,
@@ -117,7 +116,7 @@ import {
 } from "antlr4ng";
 import { HazeLexer } from "./grammar/autogen/HazeLexer";
 import { HazeVisitor } from "./grammar/autogen/HazeVisitor";
-import { EPrimitive, EVariableContext, type LiteralValue } from "../shared/common";
+import { EMethodType, EPrimitive, EVariableContext, type LiteralValue } from "../shared/common";
 import { makeModulePrefix } from "../Module";
 import type { ModuleConfig } from "../shared/Config";
 
@@ -505,6 +504,7 @@ class ASTTransformer extends HazeVisitor<any> {
         name: p,
         sourceloc: this.loc(ctx), // TODO: Find a better sourceloc from the actual token, not the function
       })),
+      static: false,
       name: names[0],
       operatorOverloading: undefined,
       ellipsis: params.ellipsis,
@@ -551,12 +551,17 @@ class ASTTransformer extends HazeVisitor<any> {
     };
   };
 
-  visitStructMethod = (ctx: StructMethodContext): ASTStructMethodDefinition => {
+  visitStructMethod = (ctx: StructMethodContext): ASTFunctionDefinition => {
     const names = ctx.ID().map((c) => c.getText());
     const params = this.visitParams(ctx.params());
     return {
-      variant: "StructMethod",
+      variant: "FunctionDefinition",
       params: params.params,
+      export: false,
+      externLanguage: EExternLanguage.None,
+      noemit: false,
+      pub: false,
+      methodType: EMethodType.Method,
       name: names[0],
       static: Boolean(ctx._static_),
       generics: names.slice(1).map((n) => ({
@@ -583,13 +588,13 @@ class ASTTransformer extends HazeVisitor<any> {
       .map((g) => g.getText());
     const content = ctx._content.map((c) => this.visit(c));
     const members: ASTStructMemberDefinition[] = [];
-    const methods: ASTStructMethodDefinition[] = [];
+    const methods: ASTFunctionDefinition[] = [];
     const declarations: ASTStructDefinition[] = [];
 
     for (const c of content) {
       if (c.variant === "StructMember") {
         members.push(c);
-      } else if (c.variant === "StructMethod") {
+      } else if (c.variant === "FunctionDefinition") {
         methods.push(c);
       } else if (c.variant === "StructDefinition") {
         declarations.push(c);
