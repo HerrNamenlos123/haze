@@ -241,8 +241,8 @@ export namespace Semantic {
     // collectedScope?: number;
     scope: Semantic.Id | null;
     export: boolean;
-    // methodType: EMethodType;
-    methodOf?: StructDatatypeSymbol;
+    methodType: EMethodType;
+    methodOf: Semantic.Id | null;
     sourceloc: SourceLoc;
     parentStructOrNS: Semantic.Id | null;
     concrete: boolean;

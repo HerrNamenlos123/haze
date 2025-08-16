@@ -90,11 +90,9 @@ export type LiteralValue =
     };
 
 export enum EMethodType {
-  NotAMethod,
+  None,
   Method,
-  Drop,
-  // Constructor
-  // Destructor
+  Constructor,
 }
 
 export function primitiveToString(primitive: EPrimitive) {

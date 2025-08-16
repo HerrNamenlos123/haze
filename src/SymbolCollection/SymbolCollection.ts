@@ -35,6 +35,7 @@ import {
 } from "../shared/AST";
 import {
   BrandedArray,
+  EMethodType,
   EPrimitive,
   EVariableContext,
   primitiveToString,
@@ -223,6 +224,7 @@ export namespace Collect {
     vararg: boolean;
     export: boolean;
     pub: boolean;
+    methodType: EMethodType;
     extern: EExternLanguage;
     sourceloc: SourceLoc;
     functionScope: Collect.Id | null;
@@ -714,6 +716,7 @@ function collect(
         overloadGroup: overloadGroupId,
         parameters: parameters,
         parentScope: args.currentParentScope,
+        methodType: item.methodType,
         pub: item.pub,
         vararg: item.ellipsis,
         returnType:
@@ -765,6 +768,21 @@ function collect(
         for (const g of item.generics) {
           const generic = defineGenericTypeParameter(cc, g.name, functionScopeId, g.sourceloc);
           functionSymbol.generics.push(generic);
+        }
+
+        if (item.methodType === EMethodType.Method) {
+          defineVariableSymbol(
+            cc,
+            {
+              variant: Collect.ENode.VariableSymbol,
+              mutability: EVariableMutability.Mutable,
+              name: "this",
+              sourceloc: functionSymbol.sourceloc,
+              type: null,
+              variableContext: EVariableContext.ThisReference,
+            },
+            functionScopeId
+          );
         }
 
         for (const p of parameters) {

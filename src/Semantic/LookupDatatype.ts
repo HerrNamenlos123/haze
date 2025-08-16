@@ -250,8 +250,8 @@ export function lookupAndElaborateDatatype(
     typeId: Collect.Id;
     startLookupInScope: Collect.Id;
     context: SubstitutionContext;
-    currentFileScope: Collect.Id;
     parentStructOrNS: Semantic.Id | null;
+    currentFileScope: Collect.Id;
     elaboratedVariables: Map<Collect.Id, Semantic.Id>;
     isInCFuncdecl: boolean;
   }

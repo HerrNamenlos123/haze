@@ -1,5 +1,5 @@
-import { EExternLanguage } from "../shared/AST";
-import { BrandedArray, EVariableContext, primitiveToString } from "../shared/common";
+import { EExternLanguage, EVariableMutability } from "../shared/AST";
+import { BrandedArray, EMethodType, EVariableContext, primitiveToString } from "../shared/common";
 import { assert, CompilerError, InternalError, type SourceLoc } from "../shared/Errors";
 import { Collect, type CollectionContext } from "../SymbolCollection/SymbolCollection";
 import { Conversion } from "./Conversion";
@@ -8,6 +8,7 @@ import {
   lookupAndElaborateDatatype,
   instantiateAndElaborateStruct,
   makePointerDatatypeAvailable,
+  makeReferenceDatatypeAvailable,
 } from "./LookupDatatype";
 import {
   asExpression,
@@ -47,6 +48,10 @@ export function tryLookupSymbol(
       } else if (s.variant === Collect.ENode.NamespaceDefinitionSymbol && s.name === name) {
         if (!args.pubRequired || s.pub) {
           return s.sharedInstance;
+        }
+      } else if (s.variant === Collect.ENode.VariableSymbol && s.name === name) {
+        if (!args.pubRequired) {
+          return id;
         }
       }
     }
@@ -509,9 +514,9 @@ export function elaborateExpr(
         sourceloc: expr.sourceloc,
       });
       const symbol = sr.cc.nodes.get(symbolId);
-      if (symbol.variant === Collect.ENode.VariableDefinitionStatement) {
+      if (symbol.variant === Collect.ENode.VariableSymbol) {
         const elaboratedSymbolId = args.elaboratedVariables.get(symbolId);
-        assert(elaboratedSymbolId);
+        assert(elaboratedSymbolId, "Variable was not elaborated here: " + symbol.name);
         const elaboratedSymbol = sr.nodes.get(elaboratedSymbolId);
         assert(elaboratedSymbol.variant === Semantic.ENode.VariableSymbol);
         assert(elaboratedSymbol.type);
@@ -1228,6 +1233,67 @@ export function elaborateStatement(
   }
 }
 
+function elaborateVariableSymbolInScope(
+  sr: SemanticResult,
+  variableSymbolId: Collect.Id,
+  args: {
+    currentFileScope: Collect.Id;
+    elaboratedVariables: Map<Collect.Id, Semantic.Id>;
+    parentStructOrNS: Semantic.Id | null;
+    context: SubstitutionContext;
+  }
+) {
+  const symbol = sr.cc.nodes.get(variableSymbolId);
+  switch (symbol.variant) {
+    case Collect.ENode.VariableSymbol: {
+      let variableContext = EVariableContext.FunctionLocal;
+      let type: Semantic.Id | null = null;
+      if (symbol.variableContext === EVariableContext.FunctionParameter) {
+        variableContext = EVariableContext.FunctionParameter;
+        if (!symbol.type) {
+          throw new InternalError("Parameter needs datatype");
+        }
+        type = lookupAndElaborateDatatype(sr, {
+          typeId: symbol.type,
+          parentStructOrNS: args.parentStructOrNS,
+          startLookupInScope: symbol.inScope,
+          isInCFuncdecl: false,
+          currentFileScope: args.currentFileScope,
+          elaboratedVariables: args.elaboratedVariables,
+          context: args.context,
+        });
+      } else if (symbol.variableContext === EVariableContext.ThisReference) {
+        if (args.elaboratedVariables.has(variableSymbolId)) {
+          break;
+        } else {
+          assert(
+            false,
+            "Variable definition statement for This-Reference was encountered, but it's not yet in the variableMap. It should already be elaborated by the parent."
+          );
+        }
+      }
+      const [variable, variableId] = Semantic.addNode(sr, {
+        variant: Semantic.ENode.VariableSymbol,
+        export: false,
+        extern: EExternLanguage.None,
+        mutability: symbol.mutability,
+        name: symbol.name,
+        sourceloc: symbol.sourceloc,
+        memberOfStruct: null,
+        parentStructOrNS: args.parentStructOrNS,
+        variableContext: variableContext,
+        type: type,
+        concrete: false,
+      });
+      args.elaboratedVariables.set(variableSymbolId, variableId);
+      break;
+    }
+
+    default:
+      assert(false, symbol.variant.toString());
+  }
+}
+
 export function elaborateBlockScope(
   sr: SemanticResult,
   args: {
@@ -1243,65 +1309,22 @@ export function elaborateBlockScope(
   const scope = sr.cc.nodes.get(args.sourceScopeId);
   assert(scope.variant === Collect.ENode.BlockScope);
 
-  const variableMap = new Map<Collect.Id, Semantic.Id>(args.elaboratedVariables);
+  const newElaboratedVariables = new Map<Collect.Id, Semantic.Id>(args.elaboratedVariables);
 
   for (const sId of scope.symbols) {
-    const symbol = sr.cc.nodes.get(sId);
-    switch (symbol.variant) {
-      case Collect.ENode.VariableSymbol: {
-        let variableContext = EVariableContext.FunctionLocal;
-        let type: Semantic.Id | null = null;
-        if (symbol.variableContext === EVariableContext.FunctionParameter) {
-          variableContext = EVariableContext.FunctionParameter;
-          if (!symbol.type) {
-            throw new InternalError("Parameter needs datatype");
-          }
-          type = lookupAndElaborateDatatype(sr, {
-            typeId: symbol.type,
-            parentStructOrNS: args.parentStructOrNS,
-            startLookupInScope: symbol.inScope,
-            isInCFuncdecl: false,
-            currentFileScope: args.currentFileScope,
-            elaboratedVariables: args.elaboratedVariables,
-            context: args.context,
-          });
-        } else if (symbol.variableContext === EVariableContext.ThisReference) {
-          if (variableMap.has(sId)) {
-            break;
-          } else {
-            assert(
-              false,
-              "Variable definition statement for This-Reference was encountered, but it's not yet in the variableMap. It should already be elaborated by the parent."
-            );
-          }
-        }
-        const [variable, variableId] = Semantic.addNode(sr, {
-          variant: Semantic.ENode.VariableSymbol,
-          export: false,
-          extern: EExternLanguage.None,
-          mutability: symbol.mutability,
-          name: symbol.name,
-          sourceloc: symbol.sourceloc,
-          memberOfStruct: null,
-          parentStructOrNS: args.parentStructOrNS,
-          variableContext: variableContext,
-          type: type,
-          concrete: false,
-        });
-        variableMap.set(sId, variableId);
-        break;
-      }
-
-      default:
-        assert(false, symbol.variant.toString());
-    }
+    elaborateVariableSymbolInScope(sr, sId, {
+      parentStructOrNS: args.parentStructOrNS,
+      elaboratedVariables: newElaboratedVariables,
+      currentFileScope: args.currentFileScope,
+      context: args.context,
+    });
   }
 
   for (const sId of scope.statements) {
     const statement = elaborateStatement(sr, sId, {
       parentStructOrNS: args.parentStructOrNS,
       expectedReturnType: args.expectedReturnType,
-      elaboratedVariables: variableMap,
+      elaboratedVariables: newElaboratedVariables,
       currentFileScope: args.currentFileScope,
       context: args.context,
     });
@@ -1315,37 +1338,37 @@ export function elaborateBlockScope(
   }
 }
 
-export function defineThisPointer(
-  sr: SemanticResult,
-  args: {
-    // scope: Semantic.Id;
-    parentStruct: Semantic.Id;
-    context: SubstitutionContext;
-    elaboratedVariables: Map<Collect.Node, Semantic.VariableSymbol>;
-  }
-) {
-  const thisPointer = makePointerDatatypeAvailable(sr, args.parentStruct);
+// export function defineThisPointer(
+//   sr: SemanticResult,
+//   args: {
+//     // scope: Semantic.Id;
+//     parentStruct: Semantic.Id;
+//     context: SubstitutionContext;
+//     elaboratedVariables: Map<Collect.Node, Semantic.VariableSymbol>;
+//   }
+// ) {
+//   const thisPointer = makePointerDatatypeAvailable(sr, args.parentStruct);
 
-  // const vardef: Semantic.Symbol = {
-  //   variant: "Variable",
-  //   memberOfStruct: args.parentStruct,
-  //   mutability: EVariableMutability.Mutable,
-  //   name: "this",
-  //   type: thisPointer,
-  //   concrete: isTypeConcrete(sr, thisPointer),
-  //   export: false,
-  //   extern: EExternLanguage.None,
-  //   // sourceloc: args.scope.sourceloc,
-  //   sourceloc: null,
-  //   variableContext: EVariableContext.FunctionParameter,
-  // };
-  console.log("TODO: Fix this pointer + sourceloc");
-  // args.scope.symbolTable.defineSymbol(vardef);
+//   // const vardef: Semantic.Symbol = {
+//   //   variant: "Variable",
+//   //   memberOfStruct: args.parentStruct,
+//   //   mutability: EVariableMutability.Mutable,
+//   //   name: "this",
+//   //   type: thisPointer,
+//   //   concrete: isTypeConcrete(sr, thisPointer),
+//   //   export: false,
+//   //   extern: EExternLanguage.None,
+//   //   // sourceloc: args.scope.sourceloc,
+//   //   sourceloc: null,
+//   //   variableContext: EVariableContext.FunctionParameter,
+//   // };
+//   console.log("TODO: Fix this pointer + sourceloc");
+//   // args.scope.symbolTable.defineSymbol(vardef);
 
-  // const thisRefVarDef = args.scope.collectedScope.tryLookupSymbolHere(sr.cc, "this");
-  // assert(thisRefVarDef);
-  // args.elaboratedVariables.set(thisRefVarDef, vardef);
-}
+//   // const thisRefVarDef = args.scope.collectedScope.tryLookupSymbolHere(sr.cc, "this");
+//   // assert(thisRefVarDef);
+//   // args.elaboratedVariables.set(thisRefVarDef, vardef);
+// }
 
 export function elaborateFunctionSymbol(
   sr: SemanticResult,
@@ -1420,6 +1443,8 @@ export function elaborateFunctionSymbol(
     export: func.export,
     generics: args.genericArgs,
     staticMethod: false,
+    methodOf: args.parentStructOrNS,
+    methodType: func.methodType,
     parentStructOrNS: args.parentStructOrNS,
     extern: func.extern,
     // operatorOverloading: func.operatorOverloading && {
@@ -1460,13 +1485,51 @@ export function elaborateFunctionSymbol(
       const functionScope = sr.cc.nodes.get(func.functionScope);
       assert(functionScope.variant === Collect.ENode.FunctionScope);
 
+      const newElaboratedVariables = new Map<Collect.Id, Semantic.Id>(args.elaboratedVariables);
+
+      if (symbol.methodType === EMethodType.Method) {
+        const collectedThisRefId = functionScope.symbols.find((sId) => {
+          const sym = sr.cc.nodes.get(sId);
+          return sym.variant === Collect.ENode.VariableSymbol && sym.name === "this";
+        });
+        assert(collectedThisRefId);
+        const collectedThisRef = sr.cc.nodes.get(collectedThisRefId);
+        assert(collectedThisRef.variant === Collect.ENode.VariableSymbol);
+
+        assert(symbol.methodOf);
+        const thisRef = makeReferenceDatatypeAvailable(sr, symbol.methodOf);
+        const [variable, variableId] = Semantic.addNode(sr, {
+          variant: Semantic.ENode.VariableSymbol,
+          memberOfStruct: symbol.methodOf,
+          mutability: collectedThisRef.mutability,
+          name: collectedThisRef.name,
+          type: thisRef,
+          concrete: isTypeConcrete(sr, thisRef),
+          export: false,
+          extern: EExternLanguage.None,
+          sourceloc: symbol.sourceloc,
+          parentStructOrNS: symbol.methodOf,
+          variableContext: EVariableContext.FunctionParameter,
+        });
+        newElaboratedVariables.set(collectedThisRefId, variableId);
+      }
+
+      for (const sId of functionScope.symbols) {
+        elaborateVariableSymbolInScope(sr, sId, {
+          parentStructOrNS: args.parentStructOrNS,
+          elaboratedVariables: newElaboratedVariables,
+          currentFileScope: args.currentFileScope,
+          context: args.context,
+        });
+      }
+
       symbol.scope = bodyScopeId;
       elaborateBlockScope(sr, {
         targetScopeId: bodyScopeId,
         sourceScopeId: functionScope.blockScope,
         expectedReturnType: expectedReturnType,
         parentStructOrNS: args.parentStructOrNS,
-        elaboratedVariables: args.elaboratedVariables,
+        elaboratedVariables: newElaboratedVariables,
         currentFileScope: args.currentFileScope,
         context: args.context,
       });
@@ -1687,6 +1750,8 @@ export function elaborateGlobalSymbol(
           scope: args.currentFileScope,
           elaboratedVariables: new Map(),
           context: makeSubstitutionContext(),
+          currentFileScope: args.currentFileScope,
+          parentStructOrNS: args.parentStructOrNS,
         });
       }
       const elaboratedValue = (elaboratedValueId && sr.nodes.get(elaboratedValueId)) || null;

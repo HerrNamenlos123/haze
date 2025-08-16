@@ -145,7 +145,7 @@ export type ASTFunctionDefinition = {
   params: ASTParam[];
   ellipsis: boolean;
   returnType?: ASTDatatype;
-  methodType?: EMethodType;
+  methodType: EMethodType;
   funcbody?: ASTFuncBody;
   sourceloc: SourceLoc;
 };

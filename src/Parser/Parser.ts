@@ -505,6 +505,7 @@ class ASTTransformer extends HazeVisitor<any> {
         sourceloc: this.loc(ctx), // TODO: Find a better sourceloc from the actual token, not the function
       })),
       static: false,
+      methodType: EMethodType.None,
       name: names[0],
       operatorOverloading: undefined,
       ellipsis: params.ellipsis,
