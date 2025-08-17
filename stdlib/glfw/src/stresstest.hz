@@ -198,8 +198,8 @@ namespace ForwardRefs {
 namespace Nested {
   struct Outer<X> {
     struct Mid<Y> {
-      struct Inner<Z> {
-        a: X; b: Y; c: Z;
+      struct Inner<ZZ> {
+        a: X; b: Y; c: ZZ;
       };
     };
 
@@ -215,7 +215,7 @@ namespace Nested {
 
   test() {
     let o = Outer<i32>{};
-    let r = o.build<u16, u8>(1, 2, 3);
+    let r = o.build<u16, u8>(o, 1 as i8, 2 as u8, 3 as u8);
     // static_assert(Core.type_equal< typeof(r), Outer<i32>.Mid<u16>.Inner<u8> >());
   }
 }

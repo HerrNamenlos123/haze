@@ -253,7 +253,8 @@ function lookupSymbolInNamespaceOrStructScope(
           context: args.context,
           isInCFuncdecl: false,
           parentStructOrNS: args.parentStructOrNS,
-          startLookupInScope: args.scope,
+          startLookupInScopeForGenerics: args.scope,
+          startLookupInScopeForSymbol: args.scope,
         });
       }),
       context: args.context,
@@ -280,7 +281,8 @@ function lookupSymbolInNamespaceOrStructScope(
           context: args.context,
           isInCFuncdecl: false,
           parentStructOrNS: args.parentStructOrNS,
-          startLookupInScope: args.scope,
+          startLookupInScopeForGenerics: args.scope,
+          startLookupInScopeForSymbol: args.scope,
         });
       }),
       context: args.context,
@@ -718,7 +720,8 @@ export function elaborateExpr(
               elaboratedVariables: args.elaboratedVariables,
               isInCFuncdecl: false,
               parentStructOrNS: args.parentStructOrNS,
-              startLookupInScope: args.scope,
+              startLookupInScopeForGenerics: args.scope,
+              startLookupInScopeForSymbol: args.scope,
             });
           }),
           usageSite: expr.sourceloc,
@@ -818,7 +821,8 @@ export function elaborateExpr(
         variant: Semantic.ENode.ExplicitCastExpr,
         type: lookupAndElaborateDatatype(sr, {
           typeId: expr.targetType,
-          startLookupInScope: args.scope,
+          startLookupInScopeForGenerics: args.scope,
+          startLookupInScopeForSymbol: args.scope,
           currentFileScope: args.currentFileScope,
           elaboratedVariables: args.elaboratedVariables,
           parentStructOrNS: args.parentStructOrNS,
@@ -977,12 +981,13 @@ export function elaborateExpr(
           genericArgs: expr.genericArgs.map((g) => {
             return lookupAndElaborateDatatype(sr, {
               typeId: g,
-              context: args.context,
+              context: elaboratedStructCache.substitutionContext,
               currentFileScope: args.currentFileScope,
               elaboratedVariables: args.elaboratedVariables,
               isInCFuncdecl: false,
               parentStructOrNS: object.type,
-              startLookupInScope: args.scope,
+              startLookupInScopeForGenerics: args.scope,
+              startLookupInScopeForSymbol: args.scope,
             });
           }),
           usageSite: expr.sourceloc,
@@ -1062,7 +1067,8 @@ export function elaborateExpr(
         currentFileScope: args.currentFileScope,
         elaboratedVariables: args.elaboratedVariables,
         parentStructOrNS: args.parentStructOrNS,
-        startLookupInScope: args.scope,
+        startLookupInScopeForGenerics: args.scope,
+        startLookupInScopeForSymbol: args.scope,
         isInCFuncdecl: false,
         context: args.context,
       });
@@ -1361,7 +1367,8 @@ export function elaborateStatement(
           currentFileScope: args.currentFileScope,
           elaboratedVariables: args.elaboratedVariables,
           parentStructOrNS: args.parentStructOrNS,
-          startLookupInScope: s.owningScope,
+          startLookupInScopeForGenerics: s.owningScope,
+          startLookupInScopeForSymbol: s.owningScope,
           isInCFuncdecl: false,
           context: args.context,
         });
@@ -1429,7 +1436,8 @@ function elaborateVariableSymbolInScope(
         type = lookupAndElaborateDatatype(sr, {
           typeId: symbol.type,
           parentStructOrNS: args.parentStructOrNS,
-          startLookupInScope: symbol.inScope,
+          startLookupInScopeForGenerics: symbol.inScope,
+          startLookupInScopeForSymbol: symbol.inScope,
           isInCFuncdecl: false,
           currentFileScope: args.currentFileScope,
           elaboratedVariables: args.elaboratedVariables,
@@ -1555,7 +1563,8 @@ export function elaborateFunctionSymbol(
     parentStructOrNS: args.parentStructOrNS,
     elaboratedVariables: args.elaboratedVariables,
     isInCFuncdecl: false,
-    startLookupInScope: func.functionScope || func.parentScope,
+    startLookupInScopeForGenerics: func.functionScope || func.parentScope,
+    startLookupInScopeForSymbol: func.functionScope || func.parentScope,
   });
 
   const parameterNames = func.parameters.map((p) => p.name);
@@ -1567,7 +1576,8 @@ export function elaborateFunctionSymbol(
       parentStructOrNS: args.parentStructOrNS,
       elaboratedVariables: args.elaboratedVariables,
       isInCFuncdecl: false,
-      startLookupInScope: func.functionScope || func.parentScope,
+      startLookupInScopeForGenerics: func.functionScope || func.parentScope,
+      startLookupInScopeForSymbol: func.functionScope || func.parentScope,
     })
   );
 
@@ -1832,7 +1842,8 @@ export function elaborateGlobalSymbol(
           lookupAndElaborateDatatype(sr, {
             typeId: node.type,
             parentStructOrNS: args.parentStructOrNS,
-            startLookupInScope: args.currentFileScope,
+            startLookupInScopeForGenerics: args.currentFileScope,
+            startLookupInScopeForSymbol: args.currentFileScope,
             elaboratedVariables: new Map(),
             currentFileScope: args.currentFileScope,
             isInCFuncdecl: false,

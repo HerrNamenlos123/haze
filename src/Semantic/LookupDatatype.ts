@@ -1,14 +1,11 @@
-import { Cookie } from "bun";
 import { EVariableContext, stringToPrimitive } from "../shared/common";
 import { assert, CompilerError, ImpossibleSituation, type SourceLoc } from "../shared/Errors";
 import { Collect } from "../SymbolCollection/SymbolCollection";
 import {
   elaborateFunctionSymbol,
-  elaborateGlobalSymbol,
   elaborateNamespace,
   isolateSubstitutionContext,
   lookupSymbol,
-  mergeSubstitutionContext,
   type SubstitutionContext,
 } from "./Elaborate";
 import {
@@ -19,7 +16,6 @@ import {
   type SemanticResult,
 } from "./SemanticSymbols";
 import { EExternLanguage, EVariableMutability } from "../shared/AST";
-import { serializeDatatype } from "./Serialize";
 
 export function makeFunctionDatatypeAvailable(
   sr: SemanticResult,
@@ -183,8 +179,10 @@ export function instantiateAndElaborateStruct(
         const type = lookupAndElaborateDatatype(sr, {
           typeId: symbol.type,
           parentStructOrNS: structId,
-          // Start lookup in the struct itself
-          startLookupInScope: definedStructType.structScope,
+          // Start lookup in the struct itself, these are members, so both the type and
+          // its generics must be found from within the struct
+          startLookupInScopeForSymbol: definedStructType.structScope,
+          startLookupInScopeForGenerics: definedStructType.structScope,
           currentFileScope: args.currentFileScope,
           elaboratedVariables: args.elaboratedVariables,
           context: newContext,
@@ -253,7 +251,8 @@ export function lookupAndElaborateDatatype(
   sr: SemanticResult,
   args: {
     typeId: Collect.Id;
-    startLookupInScope: Collect.Id;
+    startLookupInScopeForSymbol: Collect.Id;
+    startLookupInScopeForGenerics: Collect.Id;
     context: SubstitutionContext;
     parentStructOrNS: Semantic.Id | null;
     currentFileScope: Collect.Id;
@@ -273,7 +272,8 @@ export function lookupAndElaborateDatatype(
         parameters: type.parameters.map((p) =>
           lookupAndElaborateDatatype(sr, {
             typeId: p,
-            startLookupInScope: args.startLookupInScope,
+            startLookupInScopeForSymbol: args.startLookupInScopeForSymbol,
+            startLookupInScopeForGenerics: args.startLookupInScopeForGenerics,
             context: args.context,
             parentStructOrNS: args.parentStructOrNS,
             currentFileScope: args.currentFileScope,
@@ -283,7 +283,8 @@ export function lookupAndElaborateDatatype(
         ),
         returnType: lookupAndElaborateDatatype(sr, {
           typeId: type.returnType,
-          startLookupInScope: args.startLookupInScope,
+          startLookupInScopeForSymbol: args.startLookupInScopeForSymbol,
+          startLookupInScopeForGenerics: args.startLookupInScopeForGenerics,
           context: args.context,
           parentStructOrNS: args.parentStructOrNS,
           elaboratedVariables: args.elaboratedVariables,
@@ -303,7 +304,8 @@ export function lookupAndElaborateDatatype(
         sr,
         lookupAndElaborateDatatype(sr, {
           typeId: type.pointee,
-          startLookupInScope: args.startLookupInScope,
+          startLookupInScopeForSymbol: args.startLookupInScopeForSymbol,
+          startLookupInScopeForGenerics: args.startLookupInScopeForGenerics,
           context: args.context,
           parentStructOrNS: args.parentStructOrNS,
           currentFileScope: args.currentFileScope,
@@ -322,7 +324,8 @@ export function lookupAndElaborateDatatype(
         sr,
         lookupAndElaborateDatatype(sr, {
           typeId: type.referee,
-          startLookupInScope: args.startLookupInScope,
+          startLookupInScopeForSymbol: args.startLookupInScopeForSymbol,
+          startLookupInScopeForGenerics: args.startLookupInScopeForGenerics,
           context: args.context,
           elaboratedVariables: args.elaboratedVariables,
           parentStructOrNS: args.parentStructOrNS,
@@ -361,7 +364,8 @@ export function lookupAndElaborateDatatype(
         }
         const functype = lookupAndElaborateDatatype(sr, {
           typeId: type.genericArgs[0],
-          startLookupInScope: args.startLookupInScope,
+          startLookupInScopeForSymbol: args.startLookupInScopeForSymbol,
+          startLookupInScopeForGenerics: args.startLookupInScopeForGenerics,
           context: args.context,
           isInCFuncdecl: args.isInCFuncdecl,
           currentFileScope: args.currentFileScope,
@@ -377,7 +381,7 @@ export function lookupAndElaborateDatatype(
       }
 
       const foundId = lookupSymbol(sr.cc, type.name, {
-        startLookupInScope: args.startLookupInScope,
+        startLookupInScope: args.startLookupInScopeForSymbol,
         sourceloc: type.sourceloc,
       });
       const found = sr.cc.nodes.get(foundId);
@@ -386,7 +390,10 @@ export function lookupAndElaborateDatatype(
         const generics = type.genericArgs.map((g) => {
           return lookupAndElaborateDatatype(sr, {
             typeId: g,
-            startLookupInScope: args.startLookupInScope,
+            // This is intentionally generics twice, because in A<X>.B<Y>, Y must be resolved in the usage scope,
+            // not inside A<X>
+            startLookupInScopeForSymbol: args.startLookupInScopeForGenerics,
+            startLookupInScopeForGenerics: args.startLookupInScopeForGenerics,
             context: args.context,
             isInCFuncdecl: false,
             elaboratedVariables: args.elaboratedVariables,
@@ -412,7 +419,8 @@ export function lookupAndElaborateDatatype(
           // Now the nesting
           return lookupAndElaborateDatatype(sr, {
             parentStructOrNS: structId,
-            startLookupInScope: found.structScope,
+            startLookupInScopeForSymbol: found.structScope,
+            startLookupInScopeForGenerics: args.startLookupInScopeForGenerics,
             typeId: type.innerNested,
             currentFileScope: args.currentFileScope,
             elaboratedVariables: args.elaboratedVariables,
@@ -435,7 +443,8 @@ export function lookupAndElaborateDatatype(
 
         const nested = lookupAndElaborateDatatype(sr, {
           typeId: type.innerNested,
-          startLookupInScope: found.namespaceScope,
+          startLookupInScopeForSymbol: found.namespaceScope,
+          startLookupInScopeForGenerics: args.startLookupInScopeForGenerics,
           currentFileScope: args.currentFileScope,
           context: isolateSubstitutionContext(args.context),
           elaboratedVariables: args.elaboratedVariables,
