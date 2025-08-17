@@ -1914,6 +1914,11 @@ export function elaborateGlobalSymbol(
       return [directiveId];
     }
 
+    case Collect.ENode.ModuleImport:
+    case Collect.ENode.SymbolImport: {
+      return [];
+    }
+
     default:
       assert(false, "Global Symbol " + node.variant);
   }

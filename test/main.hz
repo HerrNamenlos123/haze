@@ -44,6 +44,10 @@
 //     return 0;
 // }
 
+import math
+import "glfw"
+from math import sqrt
+
 main(): int {
     return 0;
 }

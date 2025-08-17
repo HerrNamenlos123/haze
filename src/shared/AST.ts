@@ -447,12 +447,35 @@ export type ASTNamespaceDefinition = {
   sourceloc: SourceLoc;
 };
 
+export type ModuleImport = {
+  variant: "ModuleImport";
+  mode: "path" | "module";
+  name: string;
+  alias: string | null;
+  sourceloc: SourceLoc;
+};
+
+export type SymbolImport = {
+  variant: "SymbolImport";
+  mode: "path" | "module";
+  name: string;
+  symbols: {
+    symbol: string;
+    alias: string | null;
+  }[];
+  sourceloc: SourceLoc;
+};
+
 export type ASTGlobalDeclaration =
   | ASTFunctionDefinition
   | ASTTypeDefinition
   | ASTNamespaceDefinition
   | ASTGlobalVariableDefinition;
 
-export type ASTTopLevelDeclaration = ASTCInjectDirective | ASTGlobalDeclaration;
+export type ASTTopLevelDeclaration =
+  | ASTCInjectDirective
+  | ModuleImport
+  | SymbolImport
+  | ASTGlobalDeclaration;
 
 export type ASTRoot = ASTTopLevelDeclaration[];

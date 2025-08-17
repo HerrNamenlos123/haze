@@ -33,6 +33,8 @@ import {
   UnaryOperationToString,
   type ASTLiteralExpr,
   type ASTStructMemberDefinition,
+  type ModuleImport,
+  type SymbolImport,
 } from "../shared/AST";
 import {
   BrandedArray,
@@ -57,6 +59,7 @@ import {
 import type { ModuleConfig } from "../shared/Config";
 import { CONNREFUSED } from "node:dns";
 import { serializeLiteralValue } from "../Semantic/Serialize";
+import type { Import } from "bun";
 
 export type CollectionContext = {
   config: ModuleConfig;
@@ -128,6 +131,9 @@ export namespace Collect {
     StructInstantiationExpr,
     PreIncrExpr,
     PostIncrExpr,
+    // Specials
+    ModuleImport,
+    SymbolImport,
   }
 
   /// ===============================================================
@@ -531,7 +537,34 @@ export namespace Collect {
     | PostIncrExpr
     | MemberAccessExpr;
 
-  export type Node = Scope | Overloads | Symbols | Datatypes | Statements | Expressions;
+  export type ModuleImport = {
+    variant: ENode.ModuleImport;
+    mode: "path" | "module";
+    name: string;
+    alias: string | null;
+    sourceloc: SourceLoc;
+  };
+
+  export type SymbolImport = {
+    variant: ENode.SymbolImport;
+    mode: "path" | "module";
+    name: string;
+    symbols: {
+      symbol: string;
+      alias: string | null;
+    }[];
+    sourceloc: SourceLoc;
+  };
+
+  export type Node =
+    | Scope
+    | Overloads
+    | Symbols
+    | Datatypes
+    | Statements
+    | Expressions
+    | ModuleImport
+    | SymbolImport;
 }
 
 export function makeSymbol<T extends Collect.Node>(
@@ -690,6 +723,8 @@ function collect(
     | ASTExprAsFuncbody
     | ASTSymbolValueExpr
     | ASTStructDefinition
+    | ModuleImport
+    | SymbolImport
     | ASTDatatype,
   args: {
     currentParentScope: Collect.Id;
@@ -1420,6 +1455,34 @@ function collect(
         sourceloc: item.sourceloc,
       })[1];
 
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
+    case "ModuleImport": {
+      return makeSymbol(cc, {
+        variant: Collect.ENode.ModuleImport,
+        alias: item.alias,
+        mode: item.mode,
+        name: item.name,
+        sourceloc: item.sourceloc,
+      })[1];
+    }
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
+    case "SymbolImport": {
+      return makeSymbol(cc, {
+        variant: Collect.ENode.SymbolImport,
+        symbols: item.symbols,
+        mode: item.mode,
+        name: item.name,
+        sourceloc: item.sourceloc,
+      })[1];
+    }
+
     default:
       assert(false, "All cases handled " + item.variant);
   }
@@ -1741,6 +1804,32 @@ export function PrettyPrintCollected(cc: CollectionContext) {
 
       case Collect.ENode.CInjectDirective: {
         print(`- __c__(${symbol.value})`);
+        break;
+      }
+
+      case Collect.ENode.ModuleImport: {
+        if (symbol.mode === "module") {
+          print(`import ${symbol.name}${symbol.alias ? " as " + symbol.alias : ""}`);
+        } else {
+          print(`import "${symbol.name}"${symbol.alias ? " as " + symbol.alias : ""}`);
+        }
+        break;
+      }
+
+      case Collect.ENode.SymbolImport: {
+        let symbols: string[] = [];
+        for (const s of symbol.symbols) {
+          if (s.alias) {
+            symbols.push(`${s.symbol} as ${s.alias}`);
+          } else {
+            symbols.push(`${s.symbol}`);
+          }
+        }
+        if (symbol.mode === "module") {
+          print(`from ${symbol.name} import ${symbols.join(", ")}`);
+        } else {
+          print(`from "${symbol.name}" import ${symbols.join(", ")}`);
+        }
         break;
       }
 

@@ -13,6 +13,18 @@ prog: topLevelDeclaration* EOF;
 topLevelDeclaration
     : cInjectDirective
     | globalDeclaration
+    | importStatements
+    ;
+
+// Imports
+
+importStatements
+    : 'import' (module=ID | path=STRING_LITERAL) ('as' alias=ID)? ';'?                    #ImportStatement
+    | 'from' (module=ID | path=STRING_LITERAL) 'import' importAs (',' importAs)* ';'?          #FromImportStatement
+    ;
+
+importAs
+    : symbol=ID ('as' alias=ID)?
     ;
 
 // Namespaces

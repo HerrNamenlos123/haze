@@ -1,4 +1,5 @@
 import {
+  assert,
   CompilerError,
   InternalError,
   printErrorMessage,
@@ -52,6 +53,8 @@ import {
   type ASTWhileStatement,
   type ASTScopeStatement,
   EVariableMutability,
+  type ModuleImport,
+  type SymbolImport,
 } from "../shared/AST";
 import {
   BinaryExprContext,
@@ -106,6 +109,8 @@ import {
   IntegerUnitLiteralContext,
   FloatUnitLiteralContext,
   LiteralExprContext,
+  FromImportStatementContext,
+  ImportStatementContext,
 } from "./grammar/autogen/HazeParser";
 import {
   BaseErrorListener,
@@ -907,6 +912,57 @@ class ASTTransformer extends HazeVisitor<any> {
       pointee: this.visit(ctx.datatype()),
       sourceloc: this.loc(ctx),
     };
+  };
+
+  visitImportStatement = (ctx: ImportStatementContext): ModuleImport => {
+    if (ctx._path) {
+      assert(ctx._path.text);
+      return {
+        alias: ctx._alias?.text || null,
+        mode: "path",
+        name: JSON.parse(ctx._path.text),
+        sourceloc: this.loc(ctx),
+        variant: "ModuleImport",
+      };
+    } else {
+      assert(ctx._module_?.text);
+      return {
+        alias: ctx._alias?.text || null,
+        mode: "module",
+        name: ctx._module_.text,
+        sourceloc: this.loc(ctx),
+        variant: "ModuleImport",
+      };
+    }
+  };
+
+  visitFromImportStatement = (ctx: FromImportStatementContext): SymbolImport => {
+    const symbols = ctx.importAs().map((imp) => {
+      assert(imp._symbol_?.text);
+      return {
+        alias: imp._alias?.text || null,
+        symbol: imp._symbol_.text,
+      };
+    });
+    if (ctx._path) {
+      assert(ctx._path.text);
+      return {
+        symbols: symbols,
+        mode: "path",
+        name: JSON.parse(ctx._path.text),
+        sourceloc: this.loc(ctx),
+        variant: "SymbolImport",
+      };
+    } else {
+      assert(ctx._module_?.text);
+      return {
+        symbols: symbols,
+        mode: "module",
+        name: ctx._module_.text,
+        sourceloc: this.loc(ctx),
+        variant: "SymbolImport",
+      };
+    }
   };
 
   visitNamespaceDefinition = (ctx: NamespaceDefinitionContext): ASTNamespaceDefinition => {
