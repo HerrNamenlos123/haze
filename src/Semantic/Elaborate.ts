@@ -15,6 +15,7 @@ import {
   asType,
   getExprType,
   isTypeConcrete,
+  makePrimitiveAvailable,
   Semantic,
   type SemanticResult,
 } from "./SemanticSymbols";
@@ -442,65 +443,12 @@ export function elaborateExpr(
     // =================================================================================================================
 
     case Collect.ENode.LiteralExpr: {
-      assert(false);
-      // if (expr.literal.variant === "BooleanConstant") {
-      //   return {
-      //     variant: "Constant",
-      //     type: makePrimitiveAvailable(sr, EPrimitive.boolean),
-      //     value: expr.literal.value,
-      //     sourceloc: expr.sourceloc,
-      //   };
-      // } else if (expr.literal.variant === "NumberConstant") {
-      //   function isFloat(n: number): boolean {
-      //     return Number(n) === n && n % 1 !== 0;
-      //   }
-      //   if (isFloat(expr.literal.value)) {
-      //     return {
-      //       variant: "Constant",
-      //       type: makePrimitiveAvailable(sr, EPrimitive.f64),
-      //       value: expr.literal.value,
-      //       sourceloc: expr.sourceloc,
-      //     };
-      //   } else {
-      //     let type = EPrimitive.i8;
-      //     if (expr.literal.value >= -Math.pow(2, 7) && expr.literal.value <= Math.pow(2, 7) - 1) {
-      //       type = EPrimitive.i8;
-      //     } else if (
-      //       expr.literal.value >= -Math.pow(2, 15) &&
-      //       expr.literal.value <= Math.pow(2, 15) - 1
-      //     ) {
-      //       type = EPrimitive.i16;
-      //     } else if (
-      //       expr.literal.value >= -Math.pow(2, 31) &&
-      //       expr.literal.value <= Math.pow(2, 31) - 1
-      //     ) {
-      //       type = EPrimitive.i32;
-      //     } else if (
-      //       expr.literal.value >= -Math.pow(2, 63) &&
-      //       expr.literal.value <= Math.pow(2, 63) - 1
-      //     ) {
-      //       type = EPrimitive.i64;
-      //     } else {
-      //       throw new CompilerError(
-      //         `The numeral constant ${expr.literal.value} is outside of any workable integer range`,
-      //         expr.sourceloc
-      //       );
-      //     }
-      //     return {
-      //       variant: "Constant",
-      //       type: makePrimitiveAvailable(sr, type),
-      //       value: expr.literal.value,
-      //       sourceloc: expr.sourceloc,
-      //     };
-      //   }
-      // } else {
-      //   return {
-      //     variant: "Constant",
-      //     type: makePrimitiveAvailable(sr, EPrimitive.str),
-      //     value: expr.literal.value,
-      //     sourceloc: expr.sourceloc,
-      //   };
-      // }
+      return Semantic.addNode(sr, {
+        variant: Semantic.ENode.LiteralExpr,
+        literal: expr.literal,
+        sourceloc: expr.sourceloc,
+        type: makePrimitiveAvailable(sr, expr.literal.type),
+      });
     }
 
     // =================================================================================================================
@@ -678,7 +626,17 @@ export function elaborateExpr(
       });
       const symbol = sr.cc.nodes.get(symbolId);
       if (symbol.variant === Collect.ENode.VariableSymbol) {
-        const elaboratedSymbolId = args.elaboratedVariables.get(symbolId);
+        let elaboratedSymbolId = undefined as Semantic.Id | undefined;
+        if (symbol.variableContext === EVariableContext.Global) {
+          // In case it's not elaborated yet, may happen
+          elaborateGlobalSymbol(sr, symbolId, {
+            currentFileScope: args.currentFileScope,
+            parentStructOrNS: args.parentStructOrNS,
+          });
+          elaboratedSymbolId = sr.elaboratedGlobalVariableSymbols.get(symbolId);
+        } else {
+          elaboratedSymbolId = args.elaboratedVariables.get(symbolId);
+        }
         assert(elaboratedSymbolId, "Variable was not elaborated here: " + symbol.name);
         const elaboratedSymbol = sr.nodes.get(elaboratedSymbolId);
         assert(elaboratedSymbol.variant === Semantic.ENode.VariableSymbol);
@@ -1350,27 +1308,30 @@ export function elaborateStatement(
         );
       }
 
+      const collectedVariableSymbol = sr.cc.nodes.get(s.variableSymbol);
+      assert(collectedVariableSymbol.variant === Collect.ENode.VariableSymbol);
       const variableSymbolId = args.elaboratedVariables.get(s.variableSymbol);
       assert(variableSymbolId);
       const variableSymbol = sr.nodes.get(variableSymbolId);
       assert(variableSymbol.variant === Semantic.ENode.VariableSymbol);
 
-      // if (s.) {
-      //   symbol.type = lookupAndElaborateDatatype(sr, {
-      //     type: s.datatype,
-      //     startLookupInScope: args.parentCollectedScope.collectedScope.id,
-      //     isInCFuncdecl: false,
-      //     context: args.context,
-      //   });
-      // } else {
-      //   assert(value);
-      //   symbol.type = value.type;
-      // }
-      // assert(symbol.type);
-      // symbol.concrete = symbol.type.concrete;
-      assert(false as any, "TODO");
-
+      if (collectedVariableSymbol.type) {
+        variableSymbol.type = lookupAndElaborateDatatype(sr, {
+          typeId: collectedVariableSymbol.type,
+          currentFileScope: args.currentFileScope,
+          elaboratedVariables: args.elaboratedVariables,
+          parentStructOrNS: args.parentStructOrNS,
+          startLookupInScope: s.owningScope,
+          isInCFuncdecl: false,
+          context: args.context,
+        });
+        assert(variableSymbol.type);
+      } else {
+        variableSymbol.type = value?.type || null;
+      }
       assert(variableSymbol.type);
+      variableSymbol.concrete = isTypeConcrete(sr, variableSymbol.type);
+
       return Semantic.addNode(sr, {
         variant: Semantic.ENode.VariableStatement,
         mutability: variableSymbol.mutability,
@@ -1893,21 +1854,21 @@ export function elaborateGlobalSymbol(
           })) ||
         null;
 
-      return [
-        Semantic.addNode(sr, {
-          variant: Semantic.ENode.VariableSymbol,
-          parentStructOrNS: args.parentStructOrNS,
-          type: type,
-          export: false,
-          extern: EExternLanguage.None,
-          name: node.name,
-          memberOfStruct: null,
-          mutability: node.mutability,
-          variableContext: EVariableContext.Global,
-          sourceloc: node.sourceloc,
-          concrete: true,
-        })[1],
-      ];
+      const variableId = Semantic.addNode(sr, {
+        variant: Semantic.ENode.VariableSymbol,
+        parentStructOrNS: args.parentStructOrNS,
+        type: type,
+        export: false,
+        extern: EExternLanguage.None,
+        name: node.name,
+        memberOfStruct: null,
+        mutability: node.mutability,
+        variableContext: EVariableContext.Global,
+        sourceloc: node.sourceloc,
+        concrete: true,
+      })[1];
+      sr.elaboratedGlobalVariableSymbols.set(nodeId, variableId);
+      return [variableId];
     }
 
     case Collect.ENode.GlobalVariableDefinition: {

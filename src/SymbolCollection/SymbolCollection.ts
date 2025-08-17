@@ -1032,10 +1032,9 @@ function collect(
       }
 
       for (const m of item.members) {
-        const varsym = collect(cc, m, {
+        collect(cc, m, {
           currentParentScope: structScopeId,
         });
-        structScope.symbols.push(varsym);
       }
 
       for (const m of item.methods) {

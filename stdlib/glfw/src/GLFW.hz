@@ -60,15 +60,15 @@ namespace glfw {
     }
 
     createWindow(width: i32, height: i32, title: str): Window {
-        glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-        glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
+        glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3 as i32);
+        glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3 as i32);
         glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
         const handle = glfwCreateWindow(width, height, title, 0 as GLFWmonitor*, 0 as GLFWwindow*);
         return Window { handle: handle };
     }
 
     swapInterval(interval: i32) {
-        glfwSwapInterval(1);
+        glfwSwapInterval(1 as i32);
     }
 
     pollEvents() {
@@ -90,6 +90,6 @@ struct A {
 
 struct C {
     foo() {
-        const a: A.B = 0;
+        const a: A.B;
     }
 }

@@ -276,7 +276,7 @@ export namespace Conversion {
           ...new Set(
             bt.members.map((mId) => {
               const m = sr.nodes.get(mId);
-              assert(m.variant === Semantic.ENode.FunctionSymbol);
+              assert(m.variant === Semantic.ENode.VariableSymbol);
               return m.name;
             })
           ),
@@ -418,11 +418,7 @@ export namespace Conversion {
     return false;
   }
 
-  export function IsExplicitConversionAvailable(
-    sr: SemanticResult,
-    from: Semantic.Id,
-    to: Semantic.Id
-  ) {
+  function IsExplicitConversionAvailable(sr: SemanticResult, from: Semantic.Id, to: Semantic.Id) {
     if (IsImplicitConversionAvailable(sr, from, to)) {
       return true;
     }
@@ -440,10 +436,10 @@ export namespace Conversion {
 
     if (!IsImplicitConversionAvailable(sr, from.type, to)) {
       throw new CompilerError(
-        `No implicit Conversion from '${serializeDatatype(sr, from.type)}' to '${serializeDatatype(
+        `No implicit lossless Conversion from '${serializeDatatype(
           sr,
-          to
-        )}' available`,
+          from.type
+        )}' to '${serializeDatatype(sr, to)}' available`,
         sourceloc
       );
     }
@@ -522,6 +518,53 @@ export namespace Conversion {
     throw new ImpossibleSituation();
   }
 
+  export function makeComparisonResultType(
+    sr: SemanticResult,
+    a: Semantic.Id,
+    b: Semantic.Id,
+    sourceloc: SourceLoc
+  ): Semantic.Id {
+    const comparisons = [
+      {
+        comparable: [
+          makePrimitiveAvailable(sr, EPrimitive.i8),
+          makePrimitiveAvailable(sr, EPrimitive.i16),
+          makePrimitiveAvailable(sr, EPrimitive.i32),
+          makePrimitiveAvailable(sr, EPrimitive.i64),
+          makePrimitiveAvailable(sr, EPrimitive.int),
+        ],
+      },
+      {
+        comparable: [
+          makePrimitiveAvailable(sr, EPrimitive.u8),
+          makePrimitiveAvailable(sr, EPrimitive.u16),
+          makePrimitiveAvailable(sr, EPrimitive.u32),
+          makePrimitiveAvailable(sr, EPrimitive.u64),
+        ],
+      },
+      {
+        comparable: [
+          makePrimitiveAvailable(sr, EPrimitive.f32),
+          makePrimitiveAvailable(sr, EPrimitive.f64),
+          makePrimitiveAvailable(sr, EPrimitive.float),
+        ],
+      },
+    ];
+    for (const c of comparisons) {
+      if (c.comparable.includes(a) && c.comparable.includes(b)) {
+        return makePrimitiveAvailable(sr, EPrimitive.boolean);
+      }
+    }
+
+    throw new CompilerError(
+      `No safe comparison is available between types '${serializeDatatype(
+        sr,
+        a
+      )}' and '${serializeDatatype(sr, b)}'`,
+      sourceloc
+    );
+  }
+
   export function makeBinaryResultType(
     sr: SemanticResult,
     a: Semantic.Id,
@@ -531,6 +574,16 @@ export namespace Conversion {
   ): Semantic.Id {
     if (a === b) {
       return a;
+    }
+
+    switch (operation) {
+      case EBinaryOperation.Equal:
+      case EBinaryOperation.Unequal:
+      case EBinaryOperation.GreaterEqual:
+      case EBinaryOperation.LessEqual:
+      case EBinaryOperation.LessThan:
+      case EBinaryOperation.GreaterThan:
+        return makeComparisonResultType(sr, a, b, sourceloc);
     }
 
     throw new CompilerError(
