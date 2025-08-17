@@ -1,9 +1,0 @@
-name = "SDL"
-version = "3.2.8"
-description = "SDL Bindings for Haze"
-license = "MIT"
-authors = ["HerrNamenlos123"]
-type = "lib"
-
-[scripts]
-prebuild = "haze get https://github.com/libsdl-org/SDL/archive/refs/tags/release-3.2.8.tar.gz SDL"

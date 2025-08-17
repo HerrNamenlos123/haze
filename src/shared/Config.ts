@@ -70,13 +70,13 @@ export function parseModuleMetadata(metadata: string): ModuleMetadata {
   const getStringArray = (v: any) => {
     if (!Array.isArray(v)) {
       throw new GeneralError(
-        "Inconsistent module config: Expected string array instead of '" + v + "'",
+        "Inconsistent module config: Expected string array instead of '" + v + "'"
       );
     }
     for (const s of v) {
       if (typeof s !== "string") {
         throw new GeneralError(
-          "Inconsistent module config: Expected string instead of '" + s + "'",
+          "Inconsistent module config: Expected string instead of '" + s + "'"
         );
       }
     }
@@ -93,14 +93,14 @@ export function parseModuleMetadata(metadata: string): ModuleMetadata {
   const getLibs = (v: any): ModuleLibMetadata[] => {
     if (!Array.isArray(v)) {
       throw new GeneralError(
-        "Inconsistent module config: Expected object array instead of '" + v + "'",
+        "Inconsistent module config: Expected object array instead of '" + v + "'"
       );
     }
     const libs: ModuleLibMetadata[] = [];
     for (const obj of v) {
       if (typeof obj !== "object") {
         throw new GeneralError(
-          "Inconsistent module config: Expected object instead of '" + v + "'",
+          "Inconsistent module config: Expected object instead of '" + v + "'"
         );
       }
       libs.push({
@@ -130,7 +130,7 @@ export class ConfigParser {
     const configPath = this.findUpwards(hazeConfigFile, startDir);
     if (!configPath) {
       throw new GeneralError(
-        `No '${hazeConfigFile}' file found in any parent directory. Are you in the correct directory?`,
+        `No '${hazeConfigFile}' file found in any parent directory. Are you in the correct directory?`
       );
     }
     this.configPath = configPath;
@@ -173,7 +173,7 @@ export class ConfigParser {
         return toml[field];
       }
       throw new GeneralError(
-        `Field '${field}' in file ${this.configPath} must be any of '${options}'`,
+        `Field '${field}' in file ${this.configPath} must be any of '${options}'`
       );
     } else if (field in toml) {
       throw new GeneralError(`Field '${field}' in file ${this.configPath} must be of type string`);
@@ -187,7 +187,7 @@ export class ConfigParser {
       array.forEach((s) => {
         if (typeof s !== "string") {
           throw new GeneralError(
-            `Element '${s}' of field '${field}' in file ${this.configPath} must be of type string`,
+            `Element '${s}' of field '${field}' in file ${this.configPath} must be of type string`
           );
         }
       });
@@ -204,7 +204,7 @@ export class ConfigParser {
       for (const [name, cmd] of Object.entries(toml["scripts"])) {
         if (typeof cmd !== "string") {
           throw new GeneralError(
-            `Script '${name}' in file ${this.configPath} must be of type string`,
+            `Script '${name}' in file ${this.configPath} must be of type string`
           );
         }
         scripts.push({
@@ -219,15 +219,25 @@ export class ConfigParser {
   getDependencies(toml: any) {
     const deps = [] as { name: string; path: string }[];
     if (toml["dependencies"]) {
-      for (const [name, path] of Object.entries(toml["dependencies"])) {
-        if (typeof path !== "string") {
+      for (const [name, props] of Object.entries(toml["dependencies"])) {
+        if (typeof props !== "object" || props === null) {
           throw new GeneralError(
-            `Dependency path '${path}' in file ${this.configPath} must be of type string`,
+            `Dependency props for dependency '${name}' in file ${this.configPath} must be an object`
+          );
+        }
+        if (!("path" in props)) {
+          throw new GeneralError(
+            `Dependency '${name}' in file ${this.configPath} requires a path attribute`
+          );
+        }
+        if (typeof props["path"] !== "string") {
+          throw new GeneralError(
+            `Dependency path '${props["path"]}' in file ${this.configPath} must be of type string`
           );
         }
         deps.push({
           name: name,
-          path: path,
+          path: props["path"],
         });
       }
     }
