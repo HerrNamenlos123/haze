@@ -1,6 +1,5 @@
-import { assert, CompilerError, InternalError, type SourceLoc } from "../shared/Errors";
+import { assert, type SourceLoc } from "../shared/Errors";
 import type {
-  ASTStructDefinition,
   EBinaryOperation,
   EExternLanguage,
   EIncrOperation,
@@ -11,14 +10,12 @@ import type {
 import {
   BrandedArray,
   EVariableContext,
-  primitiveToString,
   type Brand,
   type EMethodType,
   type EPrimitive,
   type LiteralValue,
 } from "../shared/common";
 import { Collect, type CollectionContext } from "../SymbolCollection/SymbolCollection";
-import type { Encoding } from "bun";
 import type { SubstitutionContext } from "./Elaborate";
 
 export type SemanticResult = {
@@ -240,6 +237,7 @@ export namespace Semantic {
     staticMethod: boolean;
     name: string;
     type: Id;
+    noemit: boolean;
     generics: Semantic.Id[];
     operatorOverloading?: {
       operator: EOperator;
@@ -381,8 +379,8 @@ export namespace Semantic {
 
   export type SizeofExpr = {
     variant: ENode.SizeofExpr;
-    datatype?: Id;
-    value?: Expression;
+    datatype: Id | null;
+    value: Id | null;
     type: Id;
     sourceloc: SourceLoc;
   };

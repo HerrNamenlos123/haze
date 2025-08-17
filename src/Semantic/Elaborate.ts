@@ -1572,6 +1572,7 @@ export function elaborateFunctionSymbol(
     methodOf: args.parentStructOrNS,
     methodType: func.methodType,
     parentStructOrNS: args.parentStructOrNS,
+    noemit: func.noemit,
     extern: func.extern,
     // operatorOverloading: func.operatorOverloading && {
     //   asTarget: lookupAndElaborateDatatype(

@@ -225,6 +225,7 @@ export namespace Collect {
     vararg: boolean;
     export: boolean;
     pub: boolean;
+    noemit: boolean;
     methodType: EMethodType;
     extern: EExternLanguage;
     sourceloc: SourceLoc;
@@ -720,6 +721,7 @@ function collect(
         parentScope: args.currentParentScope,
         methodType: item.methodType,
         pub: item.pub,
+        noemit: item.noemit,
         vararg: item.ellipsis,
         returnType:
           (item.returnType && collect(cc, item.returnType, args)) ||

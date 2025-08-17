@@ -372,8 +372,7 @@ class ModuleCompiler {
 
       const sr = SemanticallyAnalyze(this.cc, this.config.moduleType === ModuleType.Library);
       PrettyPrintAnalyzed(sr);
-      return;
-      const lowered = LowerModule(this.cc, sr);
+      const lowered = LowerModule(sr);
 
       const name = this.config.projectName;
       const platform = this.config.platform;
@@ -422,6 +421,7 @@ class ModuleCompiler {
               type: "static",
             },
           ],
+          exportedDeclarations: [],
           // exportedDeclarations: [...sr.exportedCollectedSymbols.values()],
           linkerFlags: this.config.linkerFlags,
         };
