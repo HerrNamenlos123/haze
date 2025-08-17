@@ -423,7 +423,7 @@ export type ASTStructMemberDefinition = {
 export type ASTStructDefinition = {
   variant: "StructDefinition";
   export: boolean;
-  externLanguage: EExternLanguage;
+  extern: EExternLanguage;
   name: string;
   noemit: boolean;
   pub: boolean;

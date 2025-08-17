@@ -94,7 +94,7 @@ export namespace Lowered {
     exprNodes: BrandedArray<Lowered.ExprId, Lowered.Expression>;
     statementNodes: BrandedArray<Lowered.StatementId, Lowered.Statement>;
     blockScopeNodes: BrandedArray<Lowered.BlockScopeId, Lowered.BlockScope>;
-    cDeclarations: string[];
+    cInjections: string[];
 
     loweredTypes: Map<Semantic.Id, Lowered.TypeId>;
     loweredFunctions: Map<Semantic.Id, Lowered.FunctionId>;
@@ -1255,7 +1255,7 @@ function printLoweredFunction(lr: Lowered.Module, fId: Lowered.FunctionId) {
 
 export function PrettyPrintLowered(lr: Lowered.Module) {
   print("C Declarations:");
-  for (const d of lr.cDeclarations) {
+  for (const d of lr.cInjections) {
     print("C Decl " + JSON.stringify(d));
   }
 
@@ -1280,7 +1280,7 @@ export function LowerModule(sr: SemanticResult): Lowered.Module {
     statementNodes: new BrandedArray<Lowered.StatementId, Lowered.Statement>([]),
     typeNodes: new BrandedArray<Lowered.TypeId, Lowered.Datatype>([]),
 
-    cDeclarations: [],
+    cInjections: [],
 
     loweredTypes: new Map(),
     loweredFunctions: new Map(),
@@ -1301,6 +1301,12 @@ export function LowerModule(sr: SemanticResult): Lowered.Module {
 
   for (const primitive of sr.elaboratedPrimitiveTypes) {
     lower(lr, primitive);
+  }
+
+  for (const id of sr.cInjections) {
+    const injection = sr.nodes.get(id);
+    assert(injection.variant === Semantic.ENode.CInjectDirective);
+    lr.cInjections.push(injection.value);
   }
 
   // PrettyPrintLowered(lr);

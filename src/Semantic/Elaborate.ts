@@ -1905,13 +1905,13 @@ export function elaborateGlobalSymbol(
     }
 
     case Collect.ENode.CInjectDirective: {
-      return [
-        Semantic.addNode(sr, {
-          variant: Semantic.ENode.InlineCStatement,
-          value: node.value,
-          sourceloc: node.sourceloc,
-        })[1],
-      ];
+      const [directive, directiveId] = Semantic.addNode(sr, {
+        variant: Semantic.ENode.CInjectDirective,
+        value: node.value,
+        sourceloc: node.sourceloc,
+      });
+      sr.cInjections.push(directiveId);
+      return [directiveId];
     }
 
     default:
@@ -1938,7 +1938,7 @@ export function SemanticallyAnalyze(cc: CollectionContext, isLibrary: boolean) {
     exportedCollectedSymbols: new Set(),
     elaboratedGlobalVariableSymbols: new Map(),
 
-    cInjections: new Set(),
+    cInjections: [],
   };
 
   const moduleScope = cc.nodes.get(0 as Collect.Id);

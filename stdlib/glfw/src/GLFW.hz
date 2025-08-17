@@ -1,95 +1,77 @@
 
-// __c__("#include <GLFW/glfw3.h>");
-// __c__("#include <math.h>");
+__c__("#include <GLFW/glfw3.h>");
+__c__("#include <math.h>");
 
-// export extern "C" struct GLFWwindow {};
-// extern "C" struct GLFWmonitor {};
+extern "C" struct GLFWwindow {};
+extern "C" struct GLFWmonitor {};
 
-// extern "C" glfwInit(): i32;
-// extern "C" glfwTerminate(): none;
-// extern "C" glfwCreateWindow(width: i32, height: i32, title: str, monitor: GLFWmonitor*, share: GLFWwindow*): GLFWwindow*;
-// extern "C" glfwWindowShouldClose(w: GLFWwindow*): i32;
-// extern "C" glfwSwapBuffers(w: GLFWwindow*);
-// extern "C" glfwSwapInterval(flag: i32);
-// extern "C" glfwMakeContextCurrent(w: GLFWwindow*);
-// extern "C" glfwPollEvents();
-// extern "C" glfwInitHint(hint: i32, value: i32);
-// extern "C" glfwWindowHint(hint: i32, value: i32);
+extern "C" glfwInit(): i32;
+extern "C" glfwTerminate(): none;
+extern "C" glfwCreateWindow(width: i32, height: i32, title: str, monitor: GLFWmonitor*, share: GLFWwindow*): GLFWwindow*;
+extern "C" glfwWindowShouldClose(w: GLFWwindow*): i32;
+extern "C" glfwSwapBuffers(w: GLFWwindow*);
+extern "C" glfwSwapInterval(flag: i32);
+extern "C" glfwMakeContextCurrent(w: GLFWwindow*);
+extern "C" glfwPollEvents();
+extern "C" glfwInitHint(hint: i32, value: i32);
+extern "C" glfwWindowHint(hint: i32, value: i32);
 
-// extern "C" strcmp(str1: str, str2: str): i32;
-// extern "C" getenv(name: str): str;
+extern "C" strcmp(str1: str, str2: str): i32;
+extern "C" getenv(name: str): str;
 
-// const GLFW_PLATFORM: i32;
-// const GLFW_PLATFORM_X11: i32;
-// const GLFW_ANY_PLATFORM: i32;
-// const GLFW_CONTEXT_VERSION_MAJOR: i32;
-// const GLFW_CONTEXT_VERSION_MINOR: i32;
-// const GLFW_OPENGL_PROFILE: i32;
-// const GLFW_OPENGL_CORE_PROFILE: i32;
+const GLFW_PLATFORM: i32;
+const GLFW_PLATFORM_X11: i32;
+const GLFW_ANY_PLATFORM: i32;
+const GLFW_CONTEXT_VERSION_MAJOR: i32;
+const GLFW_CONTEXT_VERSION_MINOR: i32;
+const GLFW_OPENGL_PROFILE: i32;
+const GLFW_OPENGL_CORE_PROFILE: i32;
 
-// namespace glfw {
+namespace glfw {
 
-//     struct Window {
-//         handle: GLFWwindow*;
+    struct Window {
+        handle: GLFWwindow*;
 
-//         makeContextCurrent() {
-//             glfwMakeContextCurrent(this.handle);
-//         }
+        makeContextCurrent() {
+            glfwMakeContextCurrent(this.handle);
+        }
 
-//         shouldClose(): boolean {
-//             return glfwWindowShouldClose(this.handle) != 0;
-//         }
+        shouldClose(): boolean {
+            return glfwWindowShouldClose(this.handle) != 0;
+        }
 
-//         swapBuffers() {
-//             glfwSwapBuffers(this.handle);
-//         }
-//     }
+        swapBuffers() {
+            glfwSwapBuffers(this.handle);
+        }
+    }
 
-//     init(): boolean {
-//         if (strcmp(getenv("XDG_CURRENT_DESKTOP"), "GNOME") == 0) {
-//             glfwInitHint(GLFW_PLATFORM, GLFW_PLATFORM_X11);
-//         }
-//         else {
-//             glfwInitHint(GLFW_PLATFORM, GLFW_ANY_PLATFORM);
-//         }
-//         return glfwInit() != 0;
-//     }
+    init(): boolean {
+        if (strcmp(getenv("XDG_CURRENT_DESKTOP"), "GNOME") == 0) {
+            glfwInitHint(GLFW_PLATFORM, GLFW_PLATFORM_X11);
+        }
+        else {
+            glfwInitHint(GLFW_PLATFORM, GLFW_ANY_PLATFORM);
+        }
+        return glfwInit() != 0;
+    }
 
-//     terminate() {
-//         glfwTerminate();
-//     }
+    terminate() {
+        glfwTerminate();
+    }
 
-//     createWindow(width: i32, height: i32, title: str): Window {
-//         glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3 as i32);
-//         glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3 as i32);
-//         glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-//         const handle = glfwCreateWindow(width, height, title, 0 as GLFWmonitor*, 0 as GLFWwindow*);
-//         return Window { handle: handle };
-//     }
+    createWindow(width: i32, height: i32, title: str): Window {
+        glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3 as i32);
+        glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3 as i32);
+        glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+        const handle = glfwCreateWindow(width, height, title, 0 as GLFWmonitor*, 0 as GLFWwindow*);
+        return Window { handle: handle };
+    }
 
-//     swapInterval(interval: i32) {
-//         glfwSwapInterval(1 as i32);
-//     }
+    swapInterval(interval: i32) {
+        glfwSwapInterval(1 as i32);
+    }
 
-//     pollEvents() {
-//         glfwPollEvents();
-//     }
-// }
-
-// namespace Outer {
-//     namespace Inner {
-//         export foo<T>(): i32 {
-//             return GLFW_PLATFORM;
-//         }
-//     }
-// }
-
-// struct A {
-//     struct B {}
-// }
-
-// struct C {
-//     foo() {
-//         const a: A.B;
-//     }
-// }
+    pollEvents() {
+        glfwPollEvents();
+    }
+}

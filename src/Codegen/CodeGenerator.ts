@@ -97,7 +97,7 @@ class CodeGenerator {
 
     this.sortTypeDefinitions();
 
-    for (const decl of this.lr.cDeclarations) {
+    for (const decl of this.lr.cInjections) {
       this.out.cDecls.writeLine(decl);
     }
 

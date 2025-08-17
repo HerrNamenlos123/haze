@@ -33,11 +33,6 @@ export function printSubstitutionContext(sr: SemanticResult, context: Substituti
 export type SemanticResult = {
   cc: CollectionContext;
 
-  // nodes: BrandedArray<SemanticId, Semantic.Node>;
-  // functionNodes: BrandedArray<Semantic.FunctionId, Semantic.FunctionDefinitionSymbol>;
-  // typeNodes: BrandedArray<Semantic.TypeId, Semantic.DatatypeSymbol>;
-  // exprNodes: BrandedArray<Semantic.ExprId, Semantic.Expression>;
-  // variableNodes: BrandedArray<Semantic.VariableId, Semantic.VariableSymbol>;
   nodes: BrandedArray<Semantic.Id, Semantic.Node>;
 
   overloadedOperators: Semantic.FunctionSymbol[];
@@ -72,7 +67,7 @@ export type SemanticResult = {
 
   exportedCollectedSymbols: Set<number>;
 
-  cInjections: Set<Collect.Id>;
+  cInjections: Semantic.Id[];
 };
 
 export function makePrimitiveAvailable(sr: SemanticResult, primitive: EPrimitive): Semantic.Id {

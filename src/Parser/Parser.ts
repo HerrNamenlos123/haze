@@ -612,7 +612,7 @@ class ASTTransformer extends HazeVisitor<any> {
       variant: "StructDefinition",
       export: Boolean(ctx._export_),
       pub: Boolean(ctx._pub),
-      externLanguage: this.exlang(ctx),
+      extern: this.exlang(ctx),
       name: name,
       noemit: Boolean(ctx._noemit),
       generics: generics.map((p) => ({

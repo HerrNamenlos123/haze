@@ -1006,7 +1006,7 @@ function collect(
         name: item.name,
         generics: [],
         export: item.export,
-        extern: EExternLanguage.None,
+        extern: item.extern,
         pub: false,
         noemit: item.noemit,
         structScope: -1 as Collect.Id,
