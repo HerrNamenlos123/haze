@@ -13,12 +13,10 @@ import {
   asType,
   isTypeConcrete,
   makePrimitiveAvailable,
-  printSubstitutionContext,
   Semantic,
   type SemanticResult,
 } from "./SemanticSymbols";
 import { EExternLanguage, EVariableMutability } from "../shared/AST";
-import { serializeDatatype } from "./Serialize";
 
 export function makeFunctionDatatypeAvailable(
   sr: SemanticResult,
@@ -419,11 +417,16 @@ export function lookupAndElaborateDatatype(
         })[1];
       }
 
-      const foundId = lookupSymbol(sr.cc, type.name, {
+      let foundId = lookupSymbol(sr.cc, type.name, {
         startLookupInScope: args.startLookupInScopeForSymbol,
         sourceloc: type.sourceloc,
       });
-      const found = sr.cc.nodes.get(foundId);
+      let found = sr.cc.nodes.get(foundId);
+
+      while (found.variant === Collect.ENode.AliasSymbol) {
+        foundId = found.target;
+        found = sr.cc.nodes.get(foundId);
+      }
 
       if (found.variant === Collect.ENode.StructDefinitionSymbol) {
         const generics = type.genericArgs.map((g) => {

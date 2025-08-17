@@ -48,6 +48,12 @@ import math
 import "glfw"
 from math import sqrt
 
+struct Foo {}
+
+type Bar = Foo;
+
 main(): int {
+    const foo = Foo {};
+    const bar = Bar {};
     return 0;
 }

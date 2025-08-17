@@ -34,6 +34,7 @@ globalDeclaration
     | typeDefinition
     | namespaceDefinition
     | globalVariableDef
+    | typeDef
     ;
 
 namespaceDefinition
@@ -62,6 +63,10 @@ exprAsFuncbody: expr;
 
 globalVariableDef
     : (export='export')? (extern='extern' externLang=externLanguage?)? pub='pub'? variableMutabilitySpecifier ID (((':' datatype)? '=' expr) | (':' datatype)) ';'        #GlobalVariableDefinition
+    ;
+
+typeDef
+    : (export='export')? (extern='extern' externLang=externLanguage?)? pub='pub'? 'type' ID '=' datatype ';'?        #TypedefDirective
     ;
 
 variableMutabilitySpecifier
@@ -161,6 +166,7 @@ statement
     | 'if' ifExpr=expr then=scope ('else' 'if' elseIfExpr+=expr elseIfThen+=scope)* ('else' elseBlock=scope)? #IfStatement
     | 'while' expr scope                                        #WhileStatement
     | scope                                                     #ScopeStatement
+    | typeDef                                                   #TypedefStatement
     ;
 
 // ╔═══════════════════════════════════════════════════════════════════════════════╗

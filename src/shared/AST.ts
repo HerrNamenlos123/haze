@@ -256,6 +256,16 @@ export type ASTWhileStatement = {
   sourceloc: SourceLoc;
 };
 
+export type ASTTypedefStatement = {
+  variant: "TypedefStatement";
+  name: string;
+  datatype: ASTDatatype;
+  export: boolean;
+  pub: boolean;
+  extern: EExternLanguage;
+  sourceloc: SourceLoc;
+};
+
 export type ASTStatement =
   | ASTInlineCStatement
   | ASTScopeStatement
@@ -263,6 +273,7 @@ export type ASTStatement =
   | ASTReturnStatement
   | ASTVariableDefinitionStatement
   | ASTIfStatement
+  | ASTTypedefStatement
   | ASTWhileStatement;
 
 export type ASTScope = {
@@ -470,6 +481,7 @@ export type ASTGlobalDeclaration =
   | ASTFunctionDefinition
   | ASTTypeDefinition
   | ASTNamespaceDefinition
+  | ASTTypedefStatement
   | ASTGlobalVariableDefinition;
 
 export type ASTTopLevelDeclaration =

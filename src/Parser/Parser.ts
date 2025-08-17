@@ -55,6 +55,7 @@ import {
   EVariableMutability,
   type ModuleImport,
   type SymbolImport,
+  type ASTTypedefStatement,
 } from "../shared/AST";
 import {
   BinaryExprContext,
@@ -111,6 +112,9 @@ import {
   LiteralExprContext,
   FromImportStatementContext,
   ImportStatementContext,
+  TypedefStatementContext,
+  TypeDefinitionContext,
+  TypedefDirectiveContext,
 } from "./grammar/autogen/HazeParser";
 import {
   BaseErrorListener,
@@ -210,7 +214,11 @@ class ASTTransformer extends HazeVisitor<any> {
   }
 
   exlang(
-    ctx: GlobalVariableDefinitionContext | FunctionDefinitionContext | StructDefinitionContext
+    ctx:
+      | GlobalVariableDefinitionContext
+      | FunctionDefinitionContext
+      | StructDefinitionContext
+      | TypedefDirectiveContext
   ): EExternLanguage {
     if (!Boolean(ctx._extern)) {
       return EExternLanguage.None;
@@ -731,6 +739,22 @@ class ASTTransformer extends HazeVisitor<any> {
       body: this.visit(ctx.scope()),
       sourceloc: this.loc(ctx),
     };
+  };
+
+  visitTypedefDirective = (ctx: TypedefDirectiveContext): ASTTypedefStatement => {
+    return {
+      variant: "TypedefStatement",
+      datatype: this.visit(ctx.datatype()),
+      export: Boolean(ctx._export_),
+      extern: this.exlang(ctx),
+      pub: Boolean(ctx._pub),
+      name: ctx.ID().getText(),
+      sourceloc: this.loc(ctx),
+    };
+  };
+
+  visitTypedefStatement = (ctx: TypedefStatementContext): ASTTypedefStatement => {
+    return this.visit(ctx.typeDef());
   };
 
   visitParenthesisExpr = (ctx: ParenthesisExprContext): ASTParenthesisExpr => {

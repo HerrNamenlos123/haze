@@ -100,6 +100,7 @@ export namespace Collect {
     FunctionOverloadGroup,
     FunctionSymbol,
     VariableSymbol,
+    AliasSymbol,
     GlobalVariableDefinition,
     NamedDatatype,
     ReferenceDatatype,
@@ -112,6 +113,7 @@ export namespace Collect {
     ExprStatement,
     IfStatement,
     WhileStatement,
+    TypedefStatement,
     ReturnStatement,
     InlineCStatement,
     BlockScopeStatement,
@@ -249,6 +251,14 @@ export namespace Collect {
     sourceloc: SourceLoc;
   };
 
+  export type AliasSymbol = {
+    variant: ENode.AliasSymbol;
+    name: string;
+    inScope: Collect.Id;
+    target: Collect.Id;
+    sourceloc: SourceLoc;
+  };
+
   export type GlobalVariableDefinition = {
     variant: ENode.GlobalVariableDefinition;
     variableSymbol: Collect.Id;
@@ -273,6 +283,7 @@ export namespace Collect {
   export type Symbols =
     | FunctionSymbol
     | VariableSymbol
+    | AliasSymbol
     | GlobalVariableDefinition
     | CInjectDirective;
 
@@ -409,6 +420,12 @@ export namespace Collect {
     value: Collect.Id | null;
   };
 
+  export type TypedefStatement = BaseStatement & {
+    variant: ENode.TypedefStatement;
+    name: string;
+    datatype: Collect.Id;
+  };
+
   export type Statements =
     | ExprStatement
     | InlineCStatement
@@ -416,6 +433,7 @@ export namespace Collect {
     | BlockScopeStatement
     | IfStatement
     | WhileStatement
+    | TypedefStatement
     | VariableDefinitionStatement;
 
   export type StatementsWithoutOwningScope =
@@ -425,6 +443,7 @@ export namespace Collect {
     | Omit<BlockScopeStatement, "owningScope">
     | Omit<IfStatement, "owningScope">
     | Omit<WhileStatement, "owningScope">
+    | Omit<TypedefStatement, "owningScope">
     | Omit<VariableDefinitionStatement, "owningScope">;
 
   /// ===============================================================
@@ -1200,6 +1219,23 @@ function collect(
             });
             break;
 
+          case "TypedefStatement":
+            addStatement(cc, blockScope, {
+              variant: Collect.ENode.TypedefStatement,
+              datatype: collect(cc, astStatement.datatype, { currentParentScope: blockScope }),
+              name: astStatement.name,
+              sourceloc: astStatement.sourceloc,
+            });
+            const [symbol, symbolId] = makeSymbol(cc, {
+              variant: Collect.ENode.AliasSymbol,
+              inScope: blockScope,
+              name: astStatement.name,
+              target: collect(cc, astStatement.datatype, { currentParentScope: blockScope }),
+              sourceloc: astStatement.sourceloc,
+            });
+            (cc.nodes.get(blockScope) as Collect.BlockScope).symbols.push(symbolId);
+            break;
+
           case "VariableDefinitionStatement":
             const [variableSymbol, variableSymbolId] = defineVariableSymbol(
               cc,
@@ -1481,6 +1517,29 @@ function collect(
         name: item.name,
         sourceloc: item.sourceloc,
       })[1];
+    }
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
+    case "TypedefStatement": {
+      const [symbol, symbolId] = makeSymbol(cc, {
+        variant: Collect.ENode.TypedefStatement,
+        datatype: collect(cc, item.datatype, { currentParentScope: args.currentParentScope }),
+        owningScope: args.currentParentScope,
+        name: item.name,
+        sourceloc: item.sourceloc,
+      });
+      const [alias, aliasId] = makeSymbol(cc, {
+        variant: Collect.ENode.AliasSymbol,
+        inScope: args.currentParentScope,
+        name: item.name,
+        target: collect(cc, item.datatype, { currentParentScope: args.currentParentScope }),
+        sourceloc: item.sourceloc,
+      });
+      (cc.nodes.get(args.currentParentScope) as Collect.BlockScope).symbols.push(aliasId);
+      return symbolId;
     }
 
     default:
@@ -1830,6 +1889,16 @@ export function PrettyPrintCollected(cc: CollectionContext) {
         } else {
           print(`from "${symbol.name}" import ${symbols.join(", ")}`);
         }
+        break;
+      }
+
+      case Collect.ENode.TypedefStatement: {
+        print(`type ${symbol.name} = ${printCollectedDatatype(cc, symbol.datatype)};`);
+        break;
+      }
+
+      case Collect.ENode.AliasSymbol: {
+        print(`alias ${symbol.name} = ${printCollectedDatatype(cc, symbol.target)};`);
         break;
       }
 

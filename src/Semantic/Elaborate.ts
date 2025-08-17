@@ -62,6 +62,8 @@ export function tryLookupSymbol(
         }
       } else if (s.variant === Collect.ENode.GenericTypeParameter && s.name === name) {
         return id;
+      } else if (s.variant === Collect.ENode.AliasSymbol && s.name === name) {
+        return id;
       } else if (s.variant === Collect.ENode.VariableSymbol && s.name === name) {
         if (!args.pubRequired) {
           return id;
@@ -1914,6 +1916,8 @@ export function elaborateGlobalSymbol(
       return [directiveId];
     }
 
+    case Collect.ENode.AliasSymbol:
+    case Collect.ENode.TypedefStatement:
     case Collect.ENode.ModuleImport:
     case Collect.ENode.SymbolImport: {
       return [];
