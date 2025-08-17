@@ -204,9 +204,18 @@ export function makeSubstitutionContext(): SubstitutionContext {
   };
 }
 
-export function isolateElaborationContext(parent: SubstitutionContext): SubstitutionContext {
+export function isolateSubstitutionContext(parent: SubstitutionContext): SubstitutionContext {
   return {
     substitute: new Map(parent.substitute),
+  };
+}
+
+export function mergeSubstitutionContext(
+  a: SubstitutionContext,
+  b: SubstitutionContext
+): SubstitutionContext {
+  return {
+    substitute: new Map([...a.substitute, ...b.substitute]),
   };
 }
 
@@ -327,7 +336,7 @@ function lookupAndElaborateNamespaceMemberAccess(
 
 function lookupAndElaborateStaticStructAccess(
   sr: SemanticResult,
-  namespaceValueId: Semantic.Id,
+  namespaceOrStructValueId: Semantic.Id,
   args: {
     name: string;
     expr: Collect.MemberAccessExpr;
@@ -338,16 +347,21 @@ function lookupAndElaborateStaticStructAccess(
     scope: Collect.Id;
   }
 ) {
-  const namespace = sr.nodes.get(namespaceValueId);
-  assert(namespace.variant === Semantic.ENode.NamespaceOrStructValueExpr);
-  const collectedStruct = sr.cc.nodes.get(namespace.collectedNamespaceOrStruct);
+  const namespaceOrStructValue = sr.nodes.get(namespaceOrStructValueId);
+  assert(namespaceOrStructValue.variant === Semantic.ENode.NamespaceOrStructValueExpr);
+  const collectedStruct = sr.cc.nodes.get(namespaceOrStructValue.collectedNamespaceOrStruct);
   assert(collectedStruct.variant === Collect.ENode.StructDefinitionSymbol);
   const structScope = sr.cc.nodes.get(collectedStruct.structScope);
   assert(structScope.variant === Collect.ENode.StructScope);
 
+  const elaboratedStructCache = sr.elaboratedStructDatatypes.find((d) => {
+    return d.resultSymbol === namespaceOrStructValue.elaboratedNamespaceOrStruct;
+  });
+  assert(elaboratedStructCache);
+
   for (const symbolId of structScope.symbols) {
     const s = lookupSymbolInNamespaceOrStructScope(sr, symbolId, {
-      context: args.context,
+      context: elaboratedStructCache.substitutionContext, // Here choose the correct substitution context: NOT args.context!!!
       currentFileScope: args.currentFileScope,
       elaboratedVariables: args.elaboratedVariables,
       expr: args.expr,
@@ -942,8 +956,13 @@ export function elaborateExpr(
         assert(overloadGroup.variant === Collect.ENode.FunctionOverloadGroup);
         const collectedMethodId = overloadGroup.overloads[0];
 
+        const elaboratedStructCache = sr.elaboratedStructDatatypes.find(
+          (d) => d.resultSymbol === object.type
+        );
+        assert(elaboratedStructCache);
+
         const elaboratedMethodId = elaborateFunctionSymbol(sr, collectedMethodId, {
-          context: args.context,
+          context: elaboratedStructCache.substitutionContext, // Here choose the right context: NOT args.context!!!
           genericArgs: expr.genericArgs.map((g) => {
             return lookupAndElaborateDatatype(sr, {
               typeId: g,
@@ -951,14 +970,14 @@ export function elaborateExpr(
               currentFileScope: args.currentFileScope,
               elaboratedVariables: args.elaboratedVariables,
               isInCFuncdecl: false,
-              parentStructOrNS: args.parentStructOrNS,
+              parentStructOrNS: object.type,
               startLookupInScope: args.scope,
             });
           }),
           usageSite: expr.sourceloc,
           currentFileScope: args.currentFileScope,
           elaboratedVariables: args.elaboratedVariables,
-          parentStructOrNS: args.parentStructOrNS,
+          parentStructOrNS: object.type,
         });
         assert(elaboratedMethodId);
         const elaboratedMethod = sr.nodes.get(elaboratedMethodId);
@@ -1342,16 +1361,6 @@ export function elaborateStatement(
       assert(variableSymbol.type);
       variableSymbol.concrete = isTypeConcrete(sr, variableSymbol.type);
 
-      console.log(
-        "Elaborating statement",
-        serializeDatatype(sr, value?.type!),
-        serializeDatatype(sr, variableSymbol?.type!)
-      );
-      // const a = sr.nodes.get(value?.type!);
-      // assert(a.variant === Semantic.ENode.StructDatatype);
-      // const b = sr.nodes.get(variableSymbol?.type!);
-      // assert(b.variant === Semantic.ENode.StructDatatype);
-      // console.log(a, b);
       return Semantic.addNode(sr, {
         variant: Semantic.ENode.VariableStatement,
         mutability: variableSymbol.mutability,
@@ -1484,44 +1493,8 @@ export function elaborateBlockScope(
     const blockScope = sr.nodes.get(args.targetScopeId);
     assert(blockScope.variant === Semantic.ENode.BlockScope);
     blockScope.statements.push(statement);
-
-    // if (statement.variant === "ReturnStatement") {
-    //   args.scopeId.returnedTypes.push(statement.expr?.type);
-    // }
   }
 }
-
-// export function defineThisPointer(
-//   sr: SemanticResult,
-//   args: {
-//     // scope: Semantic.Id;
-//     parentStruct: Semantic.Id;
-//     context: SubstitutionContext;
-//     elaboratedVariables: Map<Collect.Node, Semantic.VariableSymbol>;
-//   }
-// ) {
-//   const thisPointer = makePointerDatatypeAvailable(sr, args.parentStruct);
-
-//   // const vardef: Semantic.Symbol = {
-//   //   variant: "Variable",
-//   //   memberOfStruct: args.parentStruct,
-//   //   mutability: EVariableMutability.Mutable,
-//   //   name: "this",
-//   //   type: thisPointer,
-//   //   concrete: isTypeConcrete(sr, thisPointer),
-//   //   export: false,
-//   //   extern: EExternLanguage.None,
-//   //   // sourceloc: args.scope.sourceloc,
-//   //   sourceloc: null,
-//   //   variableContext: EVariableContext.FunctionParameter,
-//   // };
-//   console.log("TODO: Fix this pointer + sourceloc");
-//   // args.scope.symbolTable.defineSymbol(vardef);
-
-//   // const thisRefVarDef = args.scope.collectedScope.tryLookupSymbolHere(sr.cc, "this");
-//   // assert(thisRefVarDef);
-//   // args.elaboratedVariables.set(thisRefVarDef, vardef);
-// }
 
 export function elaborateFunctionSymbol(
   sr: SemanticResult,
@@ -1559,7 +1532,7 @@ export function elaborateFunctionSymbol(
   }
 
   // New local substitution context
-  const substitutionContext = isolateElaborationContext(args.context);
+  const substitutionContext = isolateSubstitutionContext(args.context);
   for (let i = 0; i < func.generics.length; i++) {
     substitutionContext.substitute.set(func.generics[i], args.genericArgs[i]);
   }
@@ -1626,6 +1599,7 @@ export function elaborateFunctionSymbol(
     sr.elaboratedFuncdefSymbols.push({
       generics: args.genericArgs,
       originalSymbol: collectedFunctionSymbolId,
+      substitutionContext: substitutionContext,
       resultSymbol: symbolId,
     });
 
@@ -1668,12 +1642,15 @@ export function elaborateFunctionSymbol(
       }
 
       for (const sId of functionScope.symbols) {
-        elaborateVariableSymbolInScope(sr, sId, {
-          parentStructOrNS: args.parentStructOrNS,
-          elaboratedVariables: newElaboratedVariables,
-          currentFileScope: args.currentFileScope,
-          context: args.context,
-        });
+        const symbol = sr.cc.nodes.get(sId);
+        if (symbol.variant === Collect.ENode.VariableSymbol) {
+          elaborateVariableSymbolInScope(sr, sId, {
+            parentStructOrNS: args.parentStructOrNS,
+            elaboratedVariables: newElaboratedVariables,
+            currentFileScope: args.currentFileScope,
+            context: substitutionContext,
+          });
+        }
       }
 
       symbol.scope = bodyScopeId;
@@ -1684,7 +1661,7 @@ export function elaborateFunctionSymbol(
         parentStructOrNS: args.parentStructOrNS,
         elaboratedVariables: newElaboratedVariables,
         currentFileScope: args.currentFileScope,
-        context: args.context,
+        context: substitutionContext,
       });
     }
   }
@@ -1696,7 +1673,7 @@ export function elaborateNamespace(
   sr: SemanticResult,
   namespaceId: Collect.Id,
   args: {
-    currentParent: Semantic.Id | null;
+    parentStructOrNS: Semantic.Id | null;
     currentFileScope: Collect.Id;
     context: SubstitutionContext;
   }
@@ -1715,7 +1692,7 @@ export function elaborateNamespace(
   const [ns, nsId] = Semantic.addNode<Semantic.NamespaceDatatypeSymbol>(sr, {
     variant: Semantic.ENode.NamespaceDatatype,
     name: namespace.name,
-    parentStructOrNS: args.currentParent,
+    parentStructOrNS: args.parentStructOrNS,
     symbols: [],
     concrete: true,
   });
@@ -1736,39 +1713,6 @@ export function elaborateNamespace(
         ns.symbols.push(s);
       }
     }
-    // if (d.variant === "FunctionDeclaration") {
-    //   const sig = elaborate(sr, {
-    //     sourceSymbol: d,
-    //     context: isolateElaborationContext(args.context),
-    //   });
-    //   if (sig) {
-    //     namespace.scope.symbolTable.defineSymbol(sig);
-    //   }
-    // } else if (d.variant === "FunctionDefinition") {
-    //   if (d.generics.length === 0 && !d.operatorOverloading) {
-    //     const sig = elaborate(sr, {
-    //       sourceSymbol: d,
-    //       usageGenerics: [],
-    //       context: isolateElaborationContext(args.context),
-    //     });
-    //     if (sig) {
-    //       namespace.scope.symbolTable.defineSymbol(sig);
-    //     }
-    //   }
-    // } else if (
-    //   d.variant === "GlobalVariableDefinition" ||
-    //   d.variant === "NamespaceDefinition" ||
-    //   d.variant === "StructDefinition"
-    // ) {
-    //   const sig = elaborate(sr, {
-    //     sourceSymbol: d,
-    //     usageGenerics: [],
-    //     context: isolateElaborationContext(args.context),
-    //   });
-    //   if (sig) {
-    //     namespace.scope.symbolTable.defineSymbol(sig);
-    //   }
-    // }
   }
   return nsId;
 }
@@ -1810,7 +1754,7 @@ export function elaborateGlobalSymbol(
     case Collect.ENode.NamespaceDefinitionSymbol: {
       return [
         elaborateNamespace(sr, nodeId, {
-          currentParent: args.parentStructOrNS,
+          parentStructOrNS: args.parentStructOrNS,
           currentFileScope: args.currentFileScope,
           context: makeSubstitutionContext(),
         }),
@@ -2146,76 +2090,5 @@ export function PrettyPrintAnalyzed(sr: SemanticResult) {
     print("");
     printSymbol(sr, symbol.resultSymbol, 0);
   }
-
-  // for (const symbol of sr.globalScope.symbols) {
-  //   switch (symbol.variant) {
-  //     case "FunctionDatatype":
-  //       print(
-  //         ` - FunctionType [${symbol.functionParameters.map((p) => `${p.name}: ${p.type}`).join(", ")}] => ${symbol.functionReturnValue} vararg=${symbol.vararg}`,
-  //         symbol.concrete ? reset : gray,
-  //       );
-  //       break;
-
-  //     case "PrimitiveDatatype":
-  //       print(
-  //         ` - PrimitiveType ${primitiveToString(symbol.primitive)}`,
-  //         symbol.concrete ? reset : gray,
-  //       );
-  //       break;
-
-  //     case "StructDatatype":
-  //       let s = "(" + symbol.fullNamespacedName.join(".");
-  //       if (symbol.generics.length > 0) {
-  //         s += " generics=[" + symbol.generics.join(", ") + "]";
-  //       }
-  //       s += ")";
-  //       print(
-  //         ` - StructType ${s} members=${symbol.members.map((id) => id).join(", ")}`,
-  //         symbol.concrete ? reset : gray,
-  //       );
-  //       break;
-
-  //     case "DeferredDatatype":
-  //       print(` - Deferred`, symbol.concrete ? reset : gray);
-  //       break;
-
-  //     case "RawPointerDatatype":
-  //       print(` - RawPointer pointee=${symbol.pointee}`, symbol.concrete ? reset : gray);
-  //       break;
-
-  //     case "ReferenceDatatype":
-  //       print(` - Reference referee=${symbol.referee}`, symbol.concrete ? reset : gray);
-  //       break;
-
-  //     case "CallableDatatype":
-  //       print(
-  //         ` - Callable functionType=${symbol.functionType} thisExprType=${symbol.thisExprType}`,
-  //         symbol.concrete ? reset : gray,
-  //       );
-  //       break;
-
-  //     case "FunctionDeclaration":
-  //       print(` - FuncDecl ${symbol.name}() type=${symbol.type}`, symbol.concrete ? reset : gray);
-  //       break;
-
-  //     case "FunctionDefinition":
-  //       print(
-  //         ` - FuncDef ${symbol.name}() type=${symbol.type} methodOf=${symbol.methodOfSymbol} parent=${symbol.parent}`,
-  //         symbol.concrete ? reset : gray,
-  //       );
-  //       break;
-
-  //     case "GenericParameter":
-  //       print(` - GenericParameter ${symbol.name}`, symbol.concrete ? reset : gray);
-  //       break;
-
-  //     case "Variable":
-  //       print(
-  //         ` - Variable ${symbol.name} typeSymbol=${symbol.type} memberOf=${symbol.memberOf}`,
-  //         symbol.concrete ? reset : gray,
-  //       );
-  //       break;
-  //   }
-  // }
   print("\n");
 }

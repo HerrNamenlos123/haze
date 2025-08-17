@@ -1,4 +1,3 @@
-import { SymbolFlags } from "typescript";
 import {
   BinaryOperationToString,
   EExternLanguage,
@@ -8,7 +7,6 @@ import {
 import { EPrimitive, primitiveToString } from "../shared/common";
 import { assert, ImpossibleSituation, InternalError } from "../shared/Errors";
 import { Semantic, type SemanticResult } from "./SemanticSymbols";
-import { scaleRadial } from "d3";
 
 export function serializeDatatype(sr: SemanticResult, datatypeId: Semantic.Id): string {
   const datatype = sr.nodes.get(datatypeId);
@@ -38,6 +36,9 @@ export function serializeDatatype(sr: SemanticResult, datatypeId: Semantic.Id): 
       return `Callable<${serializeDatatype(sr, datatype.functionType)}>(this=${
         datatype.thisExprType ? serializeDatatype(sr, datatype.thisExprType) : ""
       })`;
+
+    case Semantic.ENode.NamespaceDatatype:
+      return getParentNames(sr, datatypeId);
 
     default:
       throw new InternalError("Not handled: " + datatype.variant);
@@ -254,7 +255,7 @@ export function serializeExpr(sr: SemanticResult, exprId: Semantic.Id): string {
 
     case Semantic.ENode.StructInstantiationExpr:
       return `${serializeDatatype(sr, expr.type)} { ${expr.assign
-        .map((a) => `.${a.name} = ${serializeExpr(sr, a.value)}`)
+        .map((a) => `${a.name}: ${serializeExpr(sr, a.value)}`)
         .join(", ")} }`;
 
     case Semantic.ENode.LiteralExpr: {

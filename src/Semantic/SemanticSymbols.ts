@@ -19,6 +19,7 @@ import {
 } from "../shared/common";
 import { Collect, type CollectionContext } from "../SymbolCollection/SymbolCollection";
 import type { Encoding } from "bun";
+import type { SubstitutionContext } from "./Elaborate";
 
 export type SemanticResult = {
   cc: CollectionContext;
@@ -35,11 +36,13 @@ export type SemanticResult = {
   elaboratedStructDatatypes: {
     originalSymbol: Collect.Id;
     generics: Semantic.Id[];
+    substitutionContext: SubstitutionContext;
     resultSymbol: Semantic.Id;
   }[];
   elaboratedFuncdefSymbols: {
     originalSymbol: Collect.Id;
     generics: Semantic.Id[];
+    substitutionContext: SubstitutionContext;
     resultSymbol: Semantic.Id;
   }[];
   elaboratedNamespaceSymbols: {
@@ -154,6 +157,8 @@ export namespace Semantic {
     StructInstantiationExpr,
     PreIncrExpr,
     PostIncrExpr,
+    // Dummy
+    Dummy,
   }
 
   export const TypeEnums = [
@@ -189,6 +194,10 @@ export namespace Semantic {
   ] as const;
 
   export function addNode<T extends Semantic.Node>(sr: SemanticResult, n: T): [T, Semantic.Id] {
+    if (sr.nodes.length === 0) {
+      // Push a dummy because it causes issues when the id is zero, so zero is not a valid id.
+      sr.nodes.push({ variant: Semantic.ENode.Dummy });
+    }
     const id = sr.nodes.length as Semantic.Id;
     sr.nodes.push(n);
     return [n, id];
@@ -545,5 +554,9 @@ export namespace Semantic {
     | WhileStatement
     | ExprStatement;
 
-  export type Node = Expression | Symbol | Statement | BlockScope | Datatype;
+  export type DummyNode = {
+    variant: ENode.Dummy;
+  };
+
+  export type Node = DummyNode | Expression | Symbol | Statement | BlockScope | Datatype;
 }

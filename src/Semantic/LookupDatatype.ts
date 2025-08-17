@@ -6,8 +6,9 @@ import {
   elaborateFunctionSymbol,
   elaborateGlobalSymbol,
   elaborateNamespace,
-  isolateElaborationContext,
+  isolateSubstitutionContext,
   lookupSymbol,
+  mergeSubstitutionContext,
   type SubstitutionContext,
 } from "./Elaborate";
 import {
@@ -18,6 +19,7 @@ import {
   type SemanticResult,
 } from "./SemanticSymbols";
 import { EExternLanguage, EVariableMutability } from "../shared/AST";
+import { serializeDatatype } from "./Serialize";
 
 export function makeFunctionDatatypeAvailable(
   sr: SemanticResult,
@@ -158,7 +160,7 @@ export function instantiateAndElaborateStruct(
   });
 
   // New local substitution context
-  const newContext = isolateElaborationContext(args.context);
+  const newContext = isolateSubstitutionContext(args.context);
   for (let i = 0; i < definedStructType.generics.length; i++) {
     newContext.substitute.set(definedStructType.generics[i], args.genericArgs[i]);
   }
@@ -167,6 +169,7 @@ export function instantiateAndElaborateStruct(
     sr.elaboratedStructDatatypes.push({
       generics: args.genericArgs,
       originalSymbol: args.definedStructTypeId,
+      substitutionContext: newContext,
       resultSymbol: structId,
     });
 
@@ -423,14 +426,21 @@ export function lookupAndElaborateDatatype(
         if (!type.innerNested) {
           throw new CompilerError(`Namespace cannot be used as a datatype here`, type.sourceloc);
         }
+
+        const nsId = elaborateNamespace(sr, foundId, {
+          context: args.context,
+          currentFileScope: args.currentFileScope,
+          parentStructOrNS: args.parentStructOrNS,
+        });
+
         const nested = lookupAndElaborateDatatype(sr, {
           typeId: type.innerNested,
           startLookupInScope: found.namespaceScope,
           currentFileScope: args.currentFileScope,
-          context: isolateElaborationContext(args.context),
+          context: isolateSubstitutionContext(args.context),
           elaboratedVariables: args.elaboratedVariables,
           isInCFuncdecl: args.isInCFuncdecl,
-          parentStructOrNS: args.parentStructOrNS,
+          parentStructOrNS: nsId,
         });
         return nested;
       } else if (found.variant === Collect.ENode.GenericTypeParameter) {
@@ -447,7 +457,6 @@ export function lookupAndElaborateDatatype(
           })[1];
         }
       } else {
-        console.log(found);
         throw new CompilerError(
           `Symbol '${type.name}' cannot be used as a datatype here`,
           type.sourceloc

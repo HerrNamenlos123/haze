@@ -307,7 +307,6 @@ export namespace Conversion {
           assert(am.variant === Semantic.ENode.VariableSymbol);
           assert(bm.variant === Semantic.ENode.VariableSymbol);
           assert(am.type && bm.type);
-          console.log(serializeDatatype(sr, am.type), serializeDatatype(sr, bm.type));
           if (!IsStructurallyEquivalent(sr, am.type, bm.type, seen)) {
             return false;
           }
@@ -457,6 +456,10 @@ export namespace Conversion {
     assert(isExpression(from));
     const to = sr.nodes.get(toId);
     // assert(isData(from));
+
+    if (from.type === toId) {
+      return fromId;
+    }
 
     if (IsStructurallyEquivalent(sr, from.type, toId)) {
       return Semantic.addNode(sr, {

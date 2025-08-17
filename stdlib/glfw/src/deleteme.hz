@@ -1,0 +1,30 @@
+
+namespace Model {
+  // A generic with a nested member-type B<U>
+  struct A<T> {
+    value: T;
+
+    // Nested type depending on outer T
+    struct B<U> {
+      outer: T; // captures A<T>.T
+      inner: U;
+    };
+
+    // Method that uses partial inner type reference without `A<T>.` prefix
+    makeB<U>(self: A<T>, u: U): B<U> { 
+      // EXPECT: resolves to A<T>.B<U>
+      let b: B<U> = B<U>{ outer: self.value, inner: u };
+      return b;
+    }
+
+  }
+
+  // Cross-generic reference: inside A<i32>, B<u8> must be the specialized member type
+  test_partial_member_access() {
+    let a: A<i32> = A<i32>{ value: 7 as i32 };
+    let b: A<i32>.B<u8> = a.makeB<u8>(5 as u8);
+
+    // Partial reference inside the method ensured B<u8> bound to the same A<i32> instance
+    // static_assert(Core.type_equal< typeof(b), A<i32>.B<u8> >());
+  }
+}
