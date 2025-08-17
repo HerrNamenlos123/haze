@@ -254,7 +254,8 @@ export function lookupAndElaborateDatatype(
     startLookupInScopeForSymbol: Collect.Id;
     startLookupInScopeForGenerics: Collect.Id;
     context: SubstitutionContext;
-    parentStructOrNS: Semantic.Id | null;
+    lexicalParentStructOrNS: Semantic.Id | null; // This is the lexical parent: Where the type is declared in
+    instanceParentStructOrNS: Semantic.Id | null; // This is the instance parent: Where the type is USED at.
     currentFileScope: Collect.Id;
     elaboratedVariables: Map<Collect.Id, Semantic.Id>;
     isInCFuncdecl: boolean;
