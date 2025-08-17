@@ -47,8 +47,13 @@ export function tryLookupSymbol(
         }
       } else if (s.variant === Collect.ENode.NamespaceDefinitionSymbol && s.name === name) {
         if (!args.pubRequired || s.pub) {
-          return s.sharedInstance;
+          // Caution: This lookup needs to return the actual namespace definition and NOT the shared instance.
+          // Because the lookup must also resolve generics and to do that, it needs to know the correct scopes
+          // and the parent scope stack must be valid, which is not the case with the shared instance as it has multiple.
+          return id;
         }
+      } else if (s.variant === Collect.ENode.GenericTypeParameter && s.name === name) {
+        return id;
       } else if (s.variant === Collect.ENode.VariableSymbol && s.name === name) {
         if (!args.pubRequired) {
           return id;
@@ -926,12 +931,17 @@ export function elaborateExpr(
       assert(collectedStruct.variant === Collect.ENode.StructDefinitionSymbol);
       const structScope = sr.cc.nodes.get(collectedStruct.structScope);
       assert(structScope.variant === Collect.ENode.StructScope);
-      const collectedMethodId = structScope.symbols.find((mId) => {
+      const overloadGroupId = structScope.symbols.find((mId) => {
         const m = sr.cc.nodes.get(mId);
-        return m.variant === Collect.ENode.VariableSymbol && m.name === expr.memberName;
+        return m.variant === Collect.ENode.FunctionOverloadGroup && m.name === expr.memberName;
       });
 
-      if (collectedMethodId) {
+      if (overloadGroupId) {
+        console.log("TODO: Fix overload resolution here ");
+        const overloadGroup = sr.cc.nodes.get(overloadGroupId);
+        assert(overloadGroup.variant === Collect.ENode.FunctionOverloadGroup);
+        const collectedMethodId = overloadGroup.overloads[0];
+
         const elaboratedMethodId = elaborateFunctionSymbol(sr, collectedMethodId, {
           context: args.context,
           genericArgs: expr.genericArgs.map((g) => {
@@ -970,7 +980,7 @@ export function elaborateExpr(
           functionSymbol: elaboratedMethodId,
           type: Semantic.addNode(sr, {
             variant: Semantic.ENode.CallableDatatype,
-            thisExprType: object.type,
+            thisExprType: makeReferenceDatatypeAvailable(sr, object.type),
             functionType: elaboratedMethod.type,
             concrete: isTypeConcrete(sr, elaboratedMethod.type),
           })[1],
@@ -1332,6 +1342,16 @@ export function elaborateStatement(
       assert(variableSymbol.type);
       variableSymbol.concrete = isTypeConcrete(sr, variableSymbol.type);
 
+      console.log(
+        "Elaborating statement",
+        serializeDatatype(sr, value?.type!),
+        serializeDatatype(sr, variableSymbol?.type!)
+      );
+      // const a = sr.nodes.get(value?.type!);
+      // assert(a.variant === Semantic.ENode.StructDatatype);
+      // const b = sr.nodes.get(variableSymbol?.type!);
+      // assert(b.variant === Semantic.ENode.StructDatatype);
+      // console.log(a, b);
       return Semantic.addNode(sr, {
         variant: Semantic.ENode.VariableStatement,
         mutability: variableSymbol.mutability,

@@ -1043,6 +1043,7 @@ function collect(
         });
         structScope.symbols.push(funcsym);
       }
+      console.log(structScope);
 
       return structId;
 

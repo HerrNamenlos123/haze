@@ -235,6 +235,8 @@ export function instantiateAndElaborateStruct(
           sourceloc: symbol.sourceloc,
         });
         struct.nestedStructs.push(subStructId);
+      } else if (symbol.variant === Collect.ENode.GenericTypeParameter) {
+        // Skip this, don't elaborate, it's only used for resolving and instantiation
       } else {
         assert(false, "unexpected type: " + symbol.variant);
       }
@@ -445,6 +447,7 @@ export function lookupAndElaborateDatatype(
           })[1];
         }
       } else {
+        console.log(found);
         throw new CompilerError(
           `Symbol '${type.name}' cannot be used as a datatype here`,
           type.sourceloc

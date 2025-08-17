@@ -307,6 +307,7 @@ export namespace Conversion {
           assert(am.variant === Semantic.ENode.VariableSymbol);
           assert(bm.variant === Semantic.ENode.VariableSymbol);
           assert(am.type && bm.type);
+          console.log(serializeDatatype(sr, am.type), serializeDatatype(sr, bm.type));
           if (!IsStructurallyEquivalent(sr, am.type, bm.type, seen)) {
             return false;
           }
