@@ -107,13 +107,55 @@ export function makeReferenceDatatypeAvailable(
   return typeId;
 }
 
+export function elaborateParentSymbolFromCache(
+  sr: SemanticResult,
+  args: {
+    parentScope: Collect.Id;
+    context: SubstitutionContext;
+    currentFileScope: Collect.Id;
+  }
+): Semantic.Id | null {
+  let parentStructOrNS = null as Semantic.Id | null;
+  const parentScope = sr.cc.nodes.get(args.parentScope);
+  if (parentScope.variant === Collect.ENode.StructScope) {
+    // This parenting works by elaborating the lexical parent on demand. If we somehow got into it, to access one
+    // of its children, then we must have the substitution context from the parent, and it must also be cached.
+    // So we take the lexical parent, substitute all generics, and then use the cache to get the finished parent.
+    const parentStruct = sr.cc.nodes.get(parentScope.owningSymbol);
+    assert(parentStruct.variant === Collect.ENode.StructDefinitionSymbol);
+    const requiredGenerics = parentStruct.generics;
+    const parentGenericArgs = requiredGenerics.map((g) => {
+      const subst = args.context.substitute.get(g);
+      console.log(g);
+      assert(subst);
+      return subst;
+    });
+    for (const cache of sr.elaboratedStructDatatypes) {
+      if (
+        cache.originalSymbol === parentScope.owningSymbol &&
+        cache.generics.length === parentGenericArgs.length &&
+        cache.generics.every((g, i) => g === parentGenericArgs[i])
+      ) {
+        parentStructOrNS = cache.resultSymbol;
+        break;
+      }
+    }
+    assert(parentStructOrNS, "Parent struct not found in cache: Impossible");
+  } else if (parentScope.variant === Collect.ENode.NamespaceScope) {
+    parentStructOrNS = elaborateNamespace(sr, parentScope.owningSymbol, {
+      context: args.context,
+      currentFileScope: args.currentFileScope,
+    });
+  }
+  return parentStructOrNS;
+}
+
 export function instantiateAndElaborateStruct(
   sr: SemanticResult,
   args: {
     definedStructTypeId: Collect.Id; // The defining struct datatype to be instantiated (e.g. struct Foo<T> {})
     genericArgs: Semantic.Id[];
     sourceloc: SourceLoc;
-    parentStructOrNS: Semantic.Id | null;
     currentFileScope: Collect.Id;
     elaboratedVariables: Map<Collect.Id, Semantic.Id>;
     context: SubstitutionContext;
@@ -146,7 +188,11 @@ export function instantiateAndElaborateStruct(
     generics: args.genericArgs,
     extern: definedStructType.extern,
     noemit: definedStructType.noemit,
-    parentStructOrNS: args.parentStructOrNS,
+    parentStructOrNS: elaborateParentSymbolFromCache(sr, {
+      parentScope: definedStructType.parentScope,
+      context: args.context,
+      currentFileScope: args.currentFileScope,
+    }),
     members: [],
     methods: [],
     nestedStructs: [],
@@ -178,7 +224,6 @@ export function instantiateAndElaborateStruct(
         assert(symbol.type);
         const type = lookupAndElaborateDatatype(sr, {
           typeId: symbol.type,
-          parentStructOrNS: structId,
           // Start lookup in the struct itself, these are members, so both the type and
           // its generics must be found from within the struct
           startLookupInScopeForSymbol: definedStructType.structScope,
@@ -198,7 +243,7 @@ export function instantiateAndElaborateStruct(
           memberOfStruct: structId,
           type: type,
           variableContext: EVariableContext.MemberOfStruct,
-          parentStructOrNS: args.parentStructOrNS,
+          parentStructOrNS: structId,
           concrete: asType(sr.nodes.get(type)).concrete,
         });
         struct.members.push(variableId);
@@ -230,7 +275,6 @@ export function instantiateAndElaborateStruct(
           definedStructTypeId: symbolId,
           context: newContext,
           genericArgs: [],
-          parentStructOrNS: structId,
           currentFileScope: args.currentFileScope,
           elaboratedVariables: args.elaboratedVariables,
           sourceloc: symbol.sourceloc,
@@ -254,8 +298,6 @@ export function lookupAndElaborateDatatype(
     startLookupInScopeForSymbol: Collect.Id;
     startLookupInScopeForGenerics: Collect.Id;
     context: SubstitutionContext;
-    lexicalParentStructOrNS: Semantic.Id | null; // This is the lexical parent: Where the type is declared in
-    instanceParentStructOrNS: Semantic.Id | null; // This is the instance parent: Where the type is USED at.
     currentFileScope: Collect.Id;
     elaboratedVariables: Map<Collect.Id, Semantic.Id>;
     isInCFuncdecl: boolean;
@@ -276,7 +318,6 @@ export function lookupAndElaborateDatatype(
             startLookupInScopeForSymbol: args.startLookupInScopeForSymbol,
             startLookupInScopeForGenerics: args.startLookupInScopeForGenerics,
             context: args.context,
-            parentStructOrNS: args.parentStructOrNS,
             currentFileScope: args.currentFileScope,
             elaboratedVariables: args.elaboratedVariables,
             isInCFuncdecl: args.isInCFuncdecl,
@@ -287,7 +328,6 @@ export function lookupAndElaborateDatatype(
           startLookupInScopeForSymbol: args.startLookupInScopeForSymbol,
           startLookupInScopeForGenerics: args.startLookupInScopeForGenerics,
           context: args.context,
-          parentStructOrNS: args.parentStructOrNS,
           elaboratedVariables: args.elaboratedVariables,
           currentFileScope: args.currentFileScope,
           isInCFuncdecl: args.isInCFuncdecl,
@@ -308,7 +348,6 @@ export function lookupAndElaborateDatatype(
           startLookupInScopeForSymbol: args.startLookupInScopeForSymbol,
           startLookupInScopeForGenerics: args.startLookupInScopeForGenerics,
           context: args.context,
-          parentStructOrNS: args.parentStructOrNS,
           currentFileScope: args.currentFileScope,
           elaboratedVariables: args.elaboratedVariables,
           isInCFuncdecl: args.isInCFuncdecl,
@@ -329,7 +368,6 @@ export function lookupAndElaborateDatatype(
           startLookupInScopeForGenerics: args.startLookupInScopeForGenerics,
           context: args.context,
           elaboratedVariables: args.elaboratedVariables,
-          parentStructOrNS: args.parentStructOrNS,
           currentFileScope: args.currentFileScope,
           isInCFuncdecl: args.isInCFuncdecl,
         })
@@ -371,7 +409,6 @@ export function lookupAndElaborateDatatype(
           isInCFuncdecl: args.isInCFuncdecl,
           currentFileScope: args.currentFileScope,
           elaboratedVariables: args.elaboratedVariables,
-          parentStructOrNS: args.parentStructOrNS,
         });
         return Semantic.addNode(sr, {
           variant: Semantic.ENode.CallableDatatype,
@@ -399,13 +436,11 @@ export function lookupAndElaborateDatatype(
             isInCFuncdecl: false,
             elaboratedVariables: args.elaboratedVariables,
             currentFileScope: args.currentFileScope,
-            parentStructOrNS: args.parentStructOrNS,
           });
         });
         const structId = instantiateAndElaborateStruct(sr, {
           definedStructTypeId: foundId,
           genericArgs: generics,
-          parentStructOrNS: args.parentStructOrNS,
           context: args.context,
           currentFileScope: args.currentFileScope,
           elaboratedVariables: args.elaboratedVariables,
@@ -419,7 +454,6 @@ export function lookupAndElaborateDatatype(
         if (type.innerNested) {
           // Now the nesting
           return lookupAndElaborateDatatype(sr, {
-            parentStructOrNS: structId,
             startLookupInScopeForSymbol: found.structScope,
             startLookupInScopeForGenerics: args.startLookupInScopeForGenerics,
             typeId: type.innerNested,
@@ -435,14 +469,7 @@ export function lookupAndElaborateDatatype(
         if (!type.innerNested) {
           throw new CompilerError(`Namespace cannot be used as a datatype here`, type.sourceloc);
         }
-
-        const nsId = elaborateNamespace(sr, foundId, {
-          context: args.context,
-          currentFileScope: args.currentFileScope,
-          parentStructOrNS: args.parentStructOrNS,
-        });
-
-        const nested = lookupAndElaborateDatatype(sr, {
+        return lookupAndElaborateDatatype(sr, {
           typeId: type.innerNested,
           startLookupInScopeForSymbol: found.namespaceScope,
           startLookupInScopeForGenerics: args.startLookupInScopeForGenerics,
@@ -450,9 +477,7 @@ export function lookupAndElaborateDatatype(
           context: isolateSubstitutionContext(args.context),
           elaboratedVariables: args.elaboratedVariables,
           isInCFuncdecl: args.isInCFuncdecl,
-          parentStructOrNS: nsId,
         });
-        return nested;
       } else if (found.variant === Collect.ENode.GenericTypeParameter) {
         const mappedTo = args.context.substitute.get(foundId);
         if (mappedTo) {

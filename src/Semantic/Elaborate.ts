@@ -15,6 +15,7 @@ import {
   instantiateAndElaborateStruct,
   makePointerDatatypeAvailable,
   makeReferenceDatatypeAvailable,
+  elaborateParentSymbolFromCache,
 } from "./LookupDatatype";
 import {
   asExpression,
@@ -234,7 +235,6 @@ function lookupSymbolInNamespaceOrStructScope(
     expr: Collect.MemberAccessExpr;
     currentFileScope: Collect.Id;
     context: SubstitutionContext;
-    parentStructOrNS: Semantic.Id | null;
     elaboratedVariables: Map<Collect.Id, Semantic.Id>;
     scope: Collect.Id;
   }
@@ -252,13 +252,11 @@ function lookupSymbolInNamespaceOrStructScope(
           elaboratedVariables: args.elaboratedVariables,
           context: args.context,
           isInCFuncdecl: false,
-          parentStructOrNS: args.parentStructOrNS,
           startLookupInScopeForGenerics: args.scope,
           startLookupInScopeForSymbol: args.scope,
         });
       }),
       context: args.context,
-      parentStructOrNS: args.parentStructOrNS,
       sourceloc: args.expr.sourceloc,
     });
     return Semantic.addNode(sr, {
@@ -280,13 +278,16 @@ function lookupSymbolInNamespaceOrStructScope(
           elaboratedVariables: args.elaboratedVariables,
           context: args.context,
           isInCFuncdecl: false,
-          parentStructOrNS: args.parentStructOrNS,
           startLookupInScopeForGenerics: args.scope,
           startLookupInScopeForSymbol: args.scope,
         });
       }),
       context: args.context,
-      parentStructOrNS: args.parentStructOrNS,
+      parentStructOrNS: elaborateParentSymbolFromCache(sr, {
+        context: args.context,
+        currentFileScope: args.currentFileScope,
+        parentScope: symbol.parentScope,
+      }),
       usageSite: args.expr.sourceloc,
     });
     const functionSymbol = sr.nodes.get(functionSymbolId);
@@ -311,7 +312,6 @@ function lookupAndElaborateNamespaceMemberAccess(
     expr: Collect.MemberAccessExpr;
     currentFileScope: Collect.Id;
     context: SubstitutionContext;
-    parentStructOrNS: Semantic.Id | null;
     elaboratedVariables: Map<Collect.Id, Semantic.Id>;
     scope: Collect.Id;
   }
@@ -333,7 +333,6 @@ function lookupAndElaborateNamespaceMemberAccess(
         elaboratedVariables: args.elaboratedVariables,
         expr: args.expr,
         name: args.name,
-        parentStructOrNS: args.parentStructOrNS,
         scope: args.scope,
       });
       if (s) {
@@ -355,7 +354,6 @@ function lookupAndElaborateStaticStructAccess(
     expr: Collect.MemberAccessExpr;
     currentFileScope: Collect.Id;
     context: SubstitutionContext;
-    parentStructOrNS: Semantic.Id | null;
     elaboratedVariables: Map<Collect.Id, Semantic.Id>;
     scope: Collect.Id;
   }
@@ -379,7 +377,6 @@ function lookupAndElaborateStaticStructAccess(
       elaboratedVariables: args.elaboratedVariables,
       expr: args.expr,
       name: args.name,
-      parentStructOrNS: args.parentStructOrNS,
       scope: args.scope,
     });
     if (s) {
@@ -408,7 +405,6 @@ export function elaborateExpr(
     scope: Collect.Id;
     context: SubstitutionContext;
     currentFileScope: Collect.Id;
-    parentStructOrNS: Semantic.Id | null;
     elaboratedVariables: Map<Collect.Id, Semantic.Id>;
   }
 ): [Semantic.Expression, Semantic.Id] {
@@ -420,14 +416,12 @@ export function elaborateExpr(
         context: args.context,
         elaboratedVariables: args.elaboratedVariables,
         currentFileScope: args.currentFileScope,
-        parentStructOrNS: args.parentStructOrNS,
         scope: args.scope,
       });
       const [right, rightId] = elaborateExpr(sr, expr.right, {
         context: args.context,
         elaboratedVariables: args.elaboratedVariables,
         currentFileScope: args.currentFileScope,
-        parentStructOrNS: args.parentStructOrNS,
         scope: args.scope,
       });
       const leftType = getExprType(sr, leftId);
@@ -455,7 +449,6 @@ export function elaborateExpr(
       const [e, eId] = elaborateExpr(sr, expr.expr, {
         context: args.context,
         currentFileScope: args.currentFileScope,
-        parentStructOrNS: args.parentStructOrNS,
         elaboratedVariables: args.elaboratedVariables,
         scope: args.scope,
       });
@@ -492,7 +485,6 @@ export function elaborateExpr(
         scope: args.scope,
         elaboratedVariables: args.elaboratedVariables,
         currentFileScope: args.currentFileScope,
-        parentStructOrNS: args.parentStructOrNS,
         context: args.context,
       });
     }
@@ -506,7 +498,6 @@ export function elaborateExpr(
         context: args.context,
         elaboratedVariables: args.elaboratedVariables,
         currentFileScope: args.currentFileScope,
-        parentStructOrNS: args.parentStructOrNS,
         scope: args.scope,
       });
       const calledExprType = asType(sr.nodes.get(calledExpr.type));
@@ -516,7 +507,6 @@ export function elaborateExpr(
           elaborateExpr(sr, a, {
             scope: args.scope,
             currentFileScope: args.currentFileScope,
-            parentStructOrNS: args.parentStructOrNS,
             elaboratedVariables: args.elaboratedVariables,
             context: args.context,
           })[1]
@@ -663,7 +653,6 @@ export function elaborateExpr(
           // In case it's not elaborated yet, may happen
           elaborateGlobalSymbol(sr, symbolId, {
             currentFileScope: args.currentFileScope,
-            parentStructOrNS: args.parentStructOrNS,
           });
           elaboratedSymbolId = sr.elaboratedGlobalVariableSymbols.get(symbolId);
         } else {
@@ -688,7 +677,6 @@ export function elaborateExpr(
       } else if (symbol.variant === Collect.ENode.GlobalVariableDefinition) {
         const [elaboratedSymbolId] = elaborateGlobalSymbol(sr, symbolId, {
           currentFileScope: args.currentFileScope,
-          parentStructOrNS: args.parentStructOrNS,
         });
         assert(elaboratedSymbolId);
         const elaboratedSymbol = sr.nodes.get(elaboratedSymbolId);
@@ -719,7 +707,6 @@ export function elaborateExpr(
               currentFileScope: args.currentFileScope,
               elaboratedVariables: args.elaboratedVariables,
               isInCFuncdecl: false,
-              parentStructOrNS: args.parentStructOrNS,
               startLookupInScopeForGenerics: args.scope,
               startLookupInScopeForSymbol: args.scope,
             });
@@ -727,7 +714,11 @@ export function elaborateExpr(
           usageSite: expr.sourceloc,
           context: args.context,
           currentFileScope: args.currentFileScope,
-          parentStructOrNS: args.parentStructOrNS,
+          parentStructOrNS: elaborateParentSymbolFromCache(sr, {
+            context: args.context,
+            currentFileScope: args.currentFileScope,
+            parentScope: symbol.parentScope,
+          }),
         });
         assert(elaboratedSymbolId);
         const elaboratedSymbol = sr.nodes.get(elaboratedSymbolId);
@@ -745,7 +736,6 @@ export function elaborateExpr(
         // This is for static function calls like Arena.create(); -> "Arena" is now a NamespaceValue
         const [elaboratedSymbolId] = elaborateGlobalSymbol(sr, symbolId, {
           currentFileScope: args.currentFileScope,
-          parentStructOrNS: args.parentStructOrNS,
         });
         assert(elaboratedSymbolId);
         const elaboratedSymbol = sr.nodes.get(elaboratedSymbolId);
@@ -773,7 +763,6 @@ export function elaborateExpr(
       const [_expr, exprId] = elaborateExpr(sr, expr.expr, {
         context: args.context,
         currentFileScope: args.currentFileScope,
-        parentStructOrNS: args.parentStructOrNS,
         elaboratedVariables: args.elaboratedVariables,
         scope: args.scope,
       });
@@ -794,7 +783,6 @@ export function elaborateExpr(
         scope: args.scope,
         elaboratedVariables: args.elaboratedVariables,
         currentFileScope: args.currentFileScope,
-        parentStructOrNS: args.parentStructOrNS,
         context: args.context,
       });
       const exprType = asType(sr.nodes.get(_expr.type));
@@ -825,7 +813,6 @@ export function elaborateExpr(
           startLookupInScopeForSymbol: args.scope,
           currentFileScope: args.currentFileScope,
           elaboratedVariables: args.elaboratedVariables,
-          parentStructOrNS: args.parentStructOrNS,
           isInCFuncdecl: false,
           context: args.context,
         }),
@@ -833,7 +820,6 @@ export function elaborateExpr(
           context: args.context,
           elaboratedVariables: args.elaboratedVariables,
           currentFileScope: args.currentFileScope,
-          parentStructOrNS: args.parentStructOrNS,
           scope: args.scope,
         })[1],
         sourceloc: expr.sourceloc,
@@ -849,7 +835,6 @@ export function elaborateExpr(
         elaboratedVariables: args.elaboratedVariables,
         scope: args.scope,
         currentFileScope: args.currentFileScope,
-        parentStructOrNS: args.parentStructOrNS,
         context: args.context,
       });
       return Semantic.addNode(sr, {
@@ -870,7 +855,6 @@ export function elaborateExpr(
         context: args.context,
         elaboratedVariables: args.elaboratedVariables,
         currentFileScope: args.currentFileScope,
-        parentStructOrNS: args.parentStructOrNS,
         scope: args.scope,
       });
       return Semantic.addNode(sr, {
@@ -891,7 +875,6 @@ export function elaborateExpr(
         context: args.context,
         elaboratedVariables: args.elaboratedVariables,
         currentFileScope: args.currentFileScope,
-        parentStructOrNS: args.parentStructOrNS,
         scope: args.scope,
       });
       let objectType = asType(sr.nodes.get(object.type));
@@ -908,7 +891,6 @@ export function elaborateExpr(
             context: args.context,
             currentFileScope: args.currentFileScope,
             elaboratedVariables: args.elaboratedVariables,
-            parentStructOrNS: args.parentStructOrNS,
             scope: args.scope,
             name: expr.memberName,
           });
@@ -918,7 +900,6 @@ export function elaborateExpr(
             context: args.context,
             currentFileScope: args.currentFileScope,
             elaboratedVariables: args.elaboratedVariables,
-            parentStructOrNS: args.parentStructOrNS,
             scope: args.scope,
             name: expr.memberName,
           });
@@ -985,7 +966,6 @@ export function elaborateExpr(
               currentFileScope: args.currentFileScope,
               elaboratedVariables: args.elaboratedVariables,
               isInCFuncdecl: false,
-              parentStructOrNS: object.type,
               startLookupInScopeForGenerics: args.scope,
               startLookupInScopeForSymbol: args.scope,
             });
@@ -1039,13 +1019,11 @@ export function elaborateExpr(
         elaboratedVariables: args.elaboratedVariables,
         scope: args.scope,
         currentFileScope: args.currentFileScope,
-        parentStructOrNS: args.parentStructOrNS,
       });
       const [target, targetId] = elaborateExpr(sr, expr.expr, {
         context: args.context,
         elaboratedVariables: args.elaboratedVariables,
         currentFileScope: args.currentFileScope,
-        parentStructOrNS: args.parentStructOrNS,
         scope: args.scope,
       });
       return Semantic.addNode(sr, {
@@ -1066,7 +1044,6 @@ export function elaborateExpr(
         typeId: expr.structType,
         currentFileScope: args.currentFileScope,
         elaboratedVariables: args.elaboratedVariables,
-        parentStructOrNS: args.parentStructOrNS,
         startLookupInScopeForGenerics: args.scope,
         startLookupInScopeForSymbol: args.scope,
         isInCFuncdecl: false,
@@ -1090,7 +1067,6 @@ export function elaborateExpr(
           context: args.context,
           elaboratedVariables: args.elaboratedVariables,
           currentFileScope: args.currentFileScope,
-          parentStructOrNS: args.parentStructOrNS,
           scope: args.scope,
         });
 
@@ -1167,7 +1143,6 @@ export function elaborateStatement(
   sr: SemanticResult,
   statementId: Collect.Id,
   args: {
-    parentStructOrNS: Semantic.Id | null;
     expectedReturnType: Semantic.Id;
     context: SubstitutionContext;
     elaboratedVariables: Map<Collect.Id, Semantic.Id>;
@@ -1197,7 +1172,6 @@ export function elaborateStatement(
         context: args.context,
         elaboratedVariables: args.elaboratedVariables,
         currentFileScope: args.currentFileScope,
-        parentStructOrNS: args.parentStructOrNS,
         scope: s.owningScope,
       });
       const [thenScope, thenScopeId] = Semantic.addNode(sr, {
@@ -1209,7 +1183,6 @@ export function elaborateStatement(
         sourceScopeId: s.thenBlock,
         expectedReturnType: args.expectedReturnType,
         currentFileScope: args.currentFileScope,
-        parentStructOrNS: args.parentStructOrNS,
         elaboratedVariables: args.elaboratedVariables,
         context: args.context,
       });
@@ -1221,7 +1194,6 @@ export function elaborateStatement(
         elaborateBlockScope(sr, {
           targetScopeId: innerThenScopeId,
           sourceScopeId: e.thenBlock,
-          parentStructOrNS: args.parentStructOrNS,
           currentFileScope: args.currentFileScope,
           expectedReturnType: args.expectedReturnType,
           elaboratedVariables: args.elaboratedVariables,
@@ -1233,7 +1205,6 @@ export function elaborateStatement(
             elaboratedVariables: args.elaboratedVariables,
             scope: s.owningScope,
             currentFileScope: args.currentFileScope,
-            parentStructOrNS: args.parentStructOrNS,
           })[1],
           then: innerThenScopeId,
         };
@@ -1251,7 +1222,6 @@ export function elaborateStatement(
         elaborateBlockScope(sr, {
           targetScopeId: elseScopeId,
           sourceScopeId: s.elseBlock,
-          parentStructOrNS: args.parentStructOrNS,
           expectedReturnType: args.expectedReturnType,
           currentFileScope: args.currentFileScope,
           elaboratedVariables: args.elaboratedVariables,
@@ -1278,7 +1248,6 @@ export function elaborateStatement(
         elaboratedVariables: args.elaboratedVariables,
         scope: s.owningScope,
         currentFileScope: args.currentFileScope,
-        parentStructOrNS: args.parentStructOrNS,
       });
       const [thenScope, thenScopeId] = Semantic.addNode(sr, {
         variant: Semantic.ENode.BlockScope,
@@ -1287,7 +1256,6 @@ export function elaborateStatement(
       elaborateBlockScope(sr, {
         targetScopeId: thenScopeId,
         sourceScopeId: s.block,
-        parentStructOrNS: args.parentStructOrNS,
         elaboratedVariables: args.elaboratedVariables,
         currentFileScope: args.currentFileScope,
         expectedReturnType: args.expectedReturnType,
@@ -1316,7 +1284,6 @@ export function elaborateStatement(
               elaboratedVariables: args.elaboratedVariables,
               scope: s.owningScope,
               currentFileScope: args.currentFileScope,
-              parentStructOrNS: args.parentStructOrNS,
             })[1],
             args.expectedReturnType,
             s.sourceloc
@@ -1343,7 +1310,6 @@ export function elaborateStatement(
           elaboratedVariables: args.elaboratedVariables,
           scope: s.owningScope,
           currentFileScope: args.currentFileScope,
-          parentStructOrNS: args.parentStructOrNS,
         })[1];
       const value = valueId && asExpression(sr.nodes.get(valueId));
 
@@ -1366,7 +1332,6 @@ export function elaborateStatement(
           typeId: collectedVariableSymbol.type,
           currentFileScope: args.currentFileScope,
           elaboratedVariables: args.elaboratedVariables,
-          parentStructOrNS: args.parentStructOrNS,
           startLookupInScopeForGenerics: s.owningScope,
           startLookupInScopeForSymbol: s.owningScope,
           isInCFuncdecl: false,
@@ -1403,7 +1368,6 @@ export function elaborateStatement(
           context: args.context,
           elaboratedVariables: args.elaboratedVariables,
           currentFileScope: args.currentFileScope,
-          parentStructOrNS: args.parentStructOrNS,
         })[1],
         sourceloc: s.sourceloc,
       })[1];
@@ -1419,7 +1383,6 @@ function elaborateVariableSymbolInScope(
   args: {
     currentFileScope: Collect.Id;
     elaboratedVariables: Map<Collect.Id, Semantic.Id>;
-    parentStructOrNS: Semantic.Id | null;
     context: SubstitutionContext;
   }
 ) {
@@ -1435,7 +1398,6 @@ function elaborateVariableSymbolInScope(
         }
         type = lookupAndElaborateDatatype(sr, {
           typeId: symbol.type,
-          parentStructOrNS: args.parentStructOrNS,
           startLookupInScopeForGenerics: symbol.inScope,
           startLookupInScopeForSymbol: symbol.inScope,
           isInCFuncdecl: false,
@@ -1461,7 +1423,11 @@ function elaborateVariableSymbolInScope(
         name: symbol.name,
         sourceloc: symbol.sourceloc,
         memberOfStruct: null,
-        parentStructOrNS: args.parentStructOrNS,
+        parentStructOrNS: elaborateParentSymbolFromCache(sr, {
+          context: args.context,
+          currentFileScope: args.currentFileScope,
+          parentScope: symbol.inScope,
+        }),
         variableContext: variableContext,
         type: type,
         concrete: false,
@@ -1480,7 +1446,6 @@ export function elaborateBlockScope(
   args: {
     sourceScopeId: Collect.Id;
     targetScopeId: Semantic.Id;
-    parentStructOrNS: Semantic.Id | null;
     currentFileScope: Collect.Id;
     expectedReturnType: Semantic.Id;
     elaboratedVariables: Map<Collect.Id, Semantic.Id>;
@@ -1494,7 +1459,6 @@ export function elaborateBlockScope(
 
   for (const sId of scope.symbols) {
     elaborateVariableSymbolInScope(sr, sId, {
-      parentStructOrNS: args.parentStructOrNS,
       elaboratedVariables: newElaboratedVariables,
       currentFileScope: args.currentFileScope,
       context: args.context,
@@ -1503,7 +1467,6 @@ export function elaborateBlockScope(
 
   for (const sId of scope.statements) {
     const statement = elaborateStatement(sr, sId, {
-      parentStructOrNS: args.parentStructOrNS,
       expectedReturnType: args.expectedReturnType,
       elaboratedVariables: newElaboratedVariables,
       currentFileScope: args.currentFileScope,
@@ -1560,7 +1523,6 @@ export function elaborateFunctionSymbol(
     typeId: func.returnType,
     context: substitutionContext,
     currentFileScope: args.currentFileScope,
-    parentStructOrNS: args.parentStructOrNS,
     elaboratedVariables: args.elaboratedVariables,
     isInCFuncdecl: false,
     startLookupInScopeForGenerics: func.functionScope || func.parentScope,
@@ -1573,7 +1535,6 @@ export function elaborateFunctionSymbol(
       typeId: p.type,
       context: substitutionContext,
       currentFileScope: args.currentFileScope,
-      parentStructOrNS: args.parentStructOrNS,
       elaboratedVariables: args.elaboratedVariables,
       isInCFuncdecl: false,
       startLookupInScopeForGenerics: func.functionScope || func.parentScope,
@@ -1666,8 +1627,8 @@ export function elaborateFunctionSymbol(
           concrete: isTypeConcrete(sr, thisRef),
           export: false,
           extern: EExternLanguage.None,
+          parentStructOrNS: symbol.parentStructOrNS,
           sourceloc: symbol.sourceloc,
-          parentStructOrNS: symbol.methodOf,
           variableContext: EVariableContext.FunctionParameter,
         });
         newElaboratedVariables.set(collectedThisRefId, variableId);
@@ -1677,7 +1638,6 @@ export function elaborateFunctionSymbol(
         const symbol = sr.cc.nodes.get(sId);
         if (symbol.variant === Collect.ENode.VariableSymbol) {
           elaborateVariableSymbolInScope(sr, sId, {
-            parentStructOrNS: args.parentStructOrNS,
             elaboratedVariables: newElaboratedVariables,
             currentFileScope: args.currentFileScope,
             context: substitutionContext,
@@ -1690,7 +1650,6 @@ export function elaborateFunctionSymbol(
         targetScopeId: bodyScopeId,
         sourceScopeId: functionScope.blockScope,
         expectedReturnType: expectedReturnType,
-        parentStructOrNS: args.parentStructOrNS,
         elaboratedVariables: newElaboratedVariables,
         currentFileScope: args.currentFileScope,
         context: substitutionContext,
@@ -1705,7 +1664,6 @@ export function elaborateNamespace(
   sr: SemanticResult,
   namespaceId: Collect.Id,
   args: {
-    parentStructOrNS: Semantic.Id | null;
     currentFileScope: Collect.Id;
     context: SubstitutionContext;
   }
@@ -1721,10 +1679,31 @@ export function elaborateNamespace(
     }
   }
 
+  // const elaborateNestedNamespace = (namespaceId: Collect.Id): Semantic.Id => {
+  //   const namespace = sr.cc.nodes.get(namespaceId);
+  //   assert(namespace.variant === Collect.ENode.NamespaceDefinitionSymbol);
+
+  //   let parentNamespace = -1 as Semantic.Id;
+  //   const parentScope = sr.cc.nodes.get(namespace.parentScope);
+  //   if (parentScope.variant === Collect.ENode.NamespaceScope) {
+  //     parentNamespace = elaborateNestedNamespace(parentScope.owningSymbol);
+  //   }
+
+  // };
+
+  let parentNamespace = null as Semantic.Id | null;
+  const parentScope = sr.cc.nodes.get(namespace.parentScope);
+  if (parentScope.variant === Collect.ENode.NamespaceScope) {
+    parentNamespace = elaborateNamespace(sr, parentScope.owningSymbol, {
+      context: args.context,
+      currentFileScope: args.currentFileScope,
+    });
+  }
+
   const [ns, nsId] = Semantic.addNode<Semantic.NamespaceDatatypeSymbol>(sr, {
     variant: Semantic.ENode.NamespaceDatatype,
     name: namespace.name,
-    parentStructOrNS: args.parentStructOrNS,
+    parentStructOrNS: parentNamespace,
     symbols: [],
     concrete: true,
   });
@@ -1738,7 +1717,6 @@ export function elaborateNamespace(
     assert(nsScope.variant === Collect.ENode.NamespaceScope);
     for (const symbolId of nsScope.symbols) {
       const sym = elaborateGlobalSymbol(sr, symbolId, {
-        parentStructOrNS: nsId,
         currentFileScope: args.currentFileScope,
       });
       for (const s of sym) {
@@ -1753,7 +1731,6 @@ export function elaborateGlobalSymbol(
   sr: SemanticResult,
   nodeId: Collect.Id,
   args: {
-    parentStructOrNS: Semantic.Id | null;
     currentFileScope: Collect.Id;
   }
 ): Semantic.Id[] {
@@ -1786,7 +1763,6 @@ export function elaborateGlobalSymbol(
     case Collect.ENode.NamespaceDefinitionSymbol: {
       return [
         elaborateNamespace(sr, nodeId, {
-          parentStructOrNS: args.parentStructOrNS,
           currentFileScope: args.currentFileScope,
           context: makeSubstitutionContext(),
         }),
@@ -1801,7 +1777,11 @@ export function elaborateGlobalSymbol(
         if (func.generics.length === 0) {
           const sId = elaborateFunctionSymbol(sr, id, {
             genericArgs: [],
-            parentStructOrNS: args.parentStructOrNS,
+            parentStructOrNS: elaborateParentSymbolFromCache(sr, {
+              parentScope: func.parentScope,
+              context: makeSubstitutionContext(),
+              currentFileScope: args.currentFileScope,
+            }),
             usageSite: func.sourceloc,
             currentFileScope: args.currentFileScope,
             elaboratedVariables: new Map(),
@@ -1823,7 +1803,6 @@ export function elaborateGlobalSymbol(
           definedStructTypeId: nodeId,
           context: makeSubstitutionContext(),
           genericArgs: [],
-          parentStructOrNS: args.parentStructOrNS,
           elaboratedVariables: new Map(),
           currentFileScope: args.currentFileScope,
           sourceloc: node.sourceloc,
@@ -1841,7 +1820,6 @@ export function elaborateGlobalSymbol(
         (node.type &&
           lookupAndElaborateDatatype(sr, {
             typeId: node.type,
-            parentStructOrNS: args.parentStructOrNS,
             startLookupInScopeForGenerics: args.currentFileScope,
             startLookupInScopeForSymbol: args.currentFileScope,
             elaboratedVariables: new Map(),
@@ -1853,7 +1831,6 @@ export function elaborateGlobalSymbol(
 
       const variableId = Semantic.addNode(sr, {
         variant: Semantic.ENode.VariableSymbol,
-        parentStructOrNS: args.parentStructOrNS,
         type: type,
         export: false,
         extern: EExternLanguage.None,
@@ -1861,6 +1838,11 @@ export function elaborateGlobalSymbol(
         memberOfStruct: null,
         mutability: node.mutability,
         variableContext: EVariableContext.Global,
+        parentStructOrNS: elaborateParentSymbolFromCache(sr, {
+          currentFileScope: args.currentFileScope,
+          parentScope: node.inScope,
+          context: makeSubstitutionContext(),
+        }),
         sourceloc: node.sourceloc,
         concrete: true,
       })[1];
@@ -1884,13 +1866,11 @@ export function elaborateGlobalSymbol(
           elaboratedVariables: new Map(),
           context: makeSubstitutionContext(),
           currentFileScope: args.currentFileScope,
-          parentStructOrNS: args.parentStructOrNS,
         });
       }
 
       const [variableSymbolId] = elaborateGlobalSymbol(sr, node.variableSymbol, {
         currentFileScope: args.currentFileScope,
-        parentStructOrNS: args.parentStructOrNS,
       });
       assert(variableSymbolId);
       const variableSymbol = sr.nodes.get(variableSymbolId);
@@ -1904,13 +1884,13 @@ export function elaborateGlobalSymbol(
 
       const [s, sId] = Semantic.addNode(sr, {
         variant: Semantic.ENode.GlobalVariableDefinitionSymbol,
-        parentStructOrNS: args.parentStructOrNS,
         export: variableSymbol.export,
         extern: variableSymbol.extern,
         name: variableSymbol.name,
         value: elaboratedValueId,
         sourceloc: node.sourceloc,
         variableSymbol: variableSymbolId,
+        parentStructOrNS: variableSymbol.parentStructOrNS,
         concrete: true,
       });
       sr.elaboratedGlobalVariableStatements.push({
@@ -1967,7 +1947,6 @@ export function SemanticallyAnalyze(cc: CollectionContext, isLibrary: boolean) {
       assert(fileScope.variant === Collect.ENode.FileScope);
       for (const symbolId of fileScope.symbols) {
         elaborateGlobalSymbol(sr, symbolId, {
-          parentStructOrNS: null,
           currentFileScope: fileId,
         });
       }

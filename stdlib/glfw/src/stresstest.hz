@@ -194,31 +194,31 @@
 //   }
 // }
 
-// // --- File: nested/generics_cross.hz ------------------------------------------
-// namespace Nested {
-//   struct Outer<X> {
-//     struct Mid<_Y> {
-//       struct Inner<_Z> {
-//         a: X; b: _Y; c: _Z;
-//       };
-//     };
+// --- File: nested/generics_cross.hz ------------------------------------------
+namespace Nested {
+  struct Outer<X> {
+    struct Mid<_Y> {
+      struct Inner<_Z> {
+        a: X; b: _Y; c: _Z;
+      };
+    };
 
-//     // Inside Outer<X>, allow `Mid<Y>.Inner<Z>` with partial reference, and also just `Inner<Z>`
-//     build<Y, Z>(self: Outer<X>, x: X, y: Y, z: Z): Mid<Y>.Inner<Z> {
-//       let m: Mid<Y>.Inner<Z> = Mid<Y>.Inner<Z>{ a: x, b: y, c: z };
-//       // Short form inside the same generic nest:
-//       let s: Inner<Z> = m; // EXPECT: resolves to Mid<Y>.Inner<Z> bound by the current Y
-//     //   static_assert(Core.type_equal< typeof(s), Mid<Y>.Inner<Z> >());
-//       return m;
-//     }
-//   }
+    // Inside Outer<X>, allow `Mid<Y>.Inner<Z>` with partial reference, and also just `Inner<Z>`
+    build<Y, Z>(self: Outer<X>, x: X, y: Y, z: Z): Mid<Y>.Inner<Z> {
+      let m: Mid<Y>.Inner<Z> = Mid<Y>.Inner<Z>{ a: x, b: y, c: z };
+      // Short form inside the same generic nest:
+      let s: Inner<Z> = m; // EXPECT: resolves to Mid<Y>.Inner<Z> bound by the current Y
+    //   static_assert(Core.type_equal< typeof(s), Mid<Y>.Inner<Z> >());
+      return m;
+    }
+  }
 
-//   test() {
-//     let o = Outer<i32>{};
-//     let r = o.build<u16, u8>(o, 1 as i8, 2 as u8, 3 as u8);
-//     // static_assert(Core.type_equal< typeof(r), Outer<i32>.Mid<u16>.Inner<u8> >());
-//   }
-// }
+  test() {
+    let o = Outer<i32>{};
+    let r = o.build<u16, u8>(o, 1 as i8, 2 as u8, 3 as u8);
+    // static_assert(Core.type_equal< typeof(r), Outer<i32>.Mid<u16>.Inner<u8> >());
+  }
+}
 
 // // --- File: same_name/type_value_ns.hz ----------------------------------------
 // namespace TVN {
@@ -314,22 +314,3 @@
 //   }
 // }
 
-struct A<T> {
-    val: T;
-}
-
-struct B<U> {
-    a: A<U>;
-}
-
-struct X<one> {
-    struct Y<two> {}
-
-    func(): Y<one>;
-}
-
-foo() {
-    const a: B<int>;
-    const x = X<float> {};
-    x.func();
-}
