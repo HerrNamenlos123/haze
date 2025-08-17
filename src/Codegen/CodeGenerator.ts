@@ -210,6 +210,9 @@ class CodeGenerator {
         appliedTypes.add(type);
         processType(type.referee);
         this.lr.sortedLoweredTypes.push(type);
+      } else if (type.variant === Lowered.ENode.LiteralValueDatatype) {
+        appliedTypes.add(type);
+        this.lr.sortedLoweredTypes.push(type);
       } else {
         assert(false);
       }
@@ -681,15 +684,15 @@ class CodeGenerator {
       case Lowered.ENode.LiteralExpr: {
         if (expr.literal.type === EPrimitive.str) {
           outWriter.write(
-            `(${primitiveToString(expr.literal.type)})(${JSON.stringify(expr.literal.value)})`
+            `(${this.primitiveToC(expr.literal.type)})(${JSON.stringify(expr.literal.value)})`
           );
         } else if (expr.literal.type === EPrimitive.boolean) {
           outWriter.write(
-            `(${primitiveToString(expr.literal.type)})(${expr.literal.value ? "1" : "0"})`
+            `(${this.primitiveToC(expr.literal.type)})(${expr.literal.value ? "1" : "0"})`
           );
         } else {
           outWriter.write(
-            `(${primitiveToString(expr.literal.type)})(${expr.literal.value.toString()})`
+            `(${this.primitiveToC(expr.literal.type)})(${expr.literal.value.toString()})`
           );
         }
         return { out: outWriter, temp: tempWriter };

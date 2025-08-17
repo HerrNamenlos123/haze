@@ -4,7 +4,7 @@ import {
   IncrOperationToString,
   UnaryOperationToString,
 } from "../shared/AST";
-import { EPrimitive, primitiveToString } from "../shared/common";
+import { EPrimitive, primitiveToString, type LiteralValue } from "../shared/common";
 import { assert, ImpossibleSituation, InternalError } from "../shared/Errors";
 import { Semantic, type SemanticResult } from "./SemanticSymbols";
 
@@ -40,8 +40,21 @@ export function serializeDatatype(sr: SemanticResult, datatypeId: Semantic.Id): 
     case Semantic.ENode.NamespaceDatatype:
       return getParentNames(sr, datatypeId);
 
+    case Semantic.ENode.LiteralValueDatatype:
+      return serializeLiteralValue(datatype.literal);
+
     default:
       throw new InternalError("Not handled: " + datatype.variant);
+  }
+}
+
+export function serializeLiteralValue(value: LiteralValue) {
+  if (value.type === EPrimitive.str) {
+    return `${JSON.stringify(value.value)}`;
+  } else if (value.type === EPrimitive.boolean) {
+    return `${value.value ? "true" : "false"}`;
+  } else {
+    return `${primitiveToString(value.type)}(${value.value})`;
   }
 }
 
@@ -205,8 +218,27 @@ export function mangleDatatype(sr: SemanticResult, typeId: Semantic.Id): string 
       return "R" + mangleDatatype(sr, type.referee);
     }
 
+    case Semantic.ENode.LiteralValueDatatype: {
+      if (type.literal.type === EPrimitive.boolean) {
+        return `Lb${type.literal.value ? "1" : "0"}E`;
+      } else if (type.literal.type === EPrimitive.str) {
+        const utf8 = new TextEncoder().encode(type.literal.value);
+        let base64 = btoa(String.fromCharCode(...utf8));
+        // make it C-identifier-safe: base64 → base64url (replace +/ with _)
+        base64 = base64.replace(/\+/g, "_").replace(/\//g, "_").replace(/=+$/, "");
+        return `Ls${base64}E`;
+      } else {
+        if (Number.isInteger(type.literal.value)) {
+          return type.literal.value < 0 ? `Lin${-type.literal.value}E` : `Li${type.literal.value}E`;
+        } else {
+          const repr = type.literal.value.toString().replace("-", "n").replace(".", "_");
+          return `Lf${repr}E`;
+        }
+      }
+    }
+
     default:
-      throw new InternalError("Unhandled variant: ");
+      throw new InternalError("Unhandled variant: " + type.variant);
   }
 }
 
@@ -259,12 +291,7 @@ export function serializeExpr(sr: SemanticResult, exprId: Semantic.Id): string {
         .join(", ")} }`;
 
     case Semantic.ENode.LiteralExpr: {
-      const type = sr.nodes.get(expr.type);
-      if (type.variant === Semantic.ENode.PrimitiveDatatype && type.primitive === EPrimitive.str) {
-        return `${JSON.stringify(expr.literal.value)}`;
-      } else {
-        return `${primitiveToString(expr.literal.type)}(${expr.literal.value})`;
-      }
+      return serializeLiteralValue(expr.literal);
     }
 
     case Semantic.ENode.MemberAccessExpr:

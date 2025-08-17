@@ -1957,9 +1957,10 @@ export function SemanticallyAnalyze(cc: CollectionContext, isLibrary: boolean) {
     }
   }
 
-  const mainFunction = sr.elaboratedFuncdefSymbols.find(
-    (s) => (sr.nodes.get(s.resultSymbol) as Semantic.FunctionSymbol).name === "main"
-  );
+  const mainFunction = sr.elaboratedFuncdefSymbols.find((s) => {
+    const symbol = sr.nodes.get(s.resultSymbol) as Semantic.FunctionSymbol;
+    return symbol.name === "main" && symbol.parentStructOrNS === null;
+  });
   if (!isLibrary) {
     if (!mainFunction) {
       throw new CompilerError("No main function is defined in global scope", null);

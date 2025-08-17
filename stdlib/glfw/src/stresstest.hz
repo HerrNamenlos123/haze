@@ -1,316 +1,294 @@
-// // HAZE NAME-RESOLUTION / GENERICS / NAMESPACE STRESS TEST SUITE
-// // -----------------------------------------------------------------------------
-// // This suite is designed to hammer:
-// //  - multi-level namespaces
-// //  - identical namespace names in different modules
-// //  - shadowing of names (types, values, namespaces)
-// //  - selective imports & aliasing
-// //  - nested generic types (Member types inside generic structs)
-// //  - partial member-type references inside a generic context (e.g., `B<u8>`
-// //    inside `A<T>` should resolve to `A<T>.B<u8>` without explicit qualification)
-// //  - ambiguous references (intentional errors)
-// //  - forward references across namespaces
-// //  - const generic–like parameters (if supported), or substitute with value-params
-// //
-// // Conventions used:
-// //  - `static_assert(type_equal<X, Y>)` stands for a compile-time check that X == Y.
-// //  - `expect_error` indicates a line that SHOULD produce a diagnostic.
-// //  - Types: `u8`, `u16`, `u32`, `u64`, `i32`, `bool`, `void` assumed to exist.
-// //  - Functions like `type_equal<T, U>() -> bool` are thought to be built-ins in the
-// //    type system for testing; if you don’t have them, swap for your checker.
-// //  - `using` imports a namespace (or selective symbols) into the current scope.
-// //  - `alias` creates a type alias.
-// // -----------------------------------------------------------------------------
+// ============================================================================
+// HAZE GENERICS / NESTING / NAME-RESOLUTION MEGA STRESS
+// Focus: deep nesting, partial refs, generic shadowing, forward refs,
+//        sibling vs parent lookup, and qualification merging across levels.
+// ============================================================================
 
-// // --- File: common/core.hz -----------------------------------------------------
-// namespace Core {
-//   // A simple equality helper in the type system; adapt to your test harness
-//   extern type_equal<T, U>(): boolean; // compile-time intrinsic
+// --- File: ds/collections.hz -------------------------------------------------
+namespace DS {
+  struct Map<K> {
+    struct Entry<V> { key: K; value: V; }
 
-//   // A small marker types to help identity checks
-//   struct MarkerA {}
-//   struct MarkerB {}
+    // Nested type that itself nests another type
+    struct Bucket<Ix> {
+      struct Cell<T> { idx: Ix; payload: T; }
+    }
 
-//   // Vec appears in Core
-//   struct Vec<T> {
-//     data: T*;
-//     len:  u32;
-//   }
-// }
+    // Return type uses parent (K) + its own (V) + nested child (Ix/T)
+    // Partial references on both levels.
+    make_cell<V, Ix, T>(self: Map<K>, k: K, v: V, ix: Ix, t: T): Bucket<Ix>.Cell<T> {
+      // let c: Bucket<Ix>.Cell<T> = Bucket<Ix>.Cell<T>{ idx: ix, payload: t };
+      // return c;
+    }
+  }
 
-// // --- File: physics/math.hz ----------------------------------------------------
-// namespace Math { // NOTE: a top-level namespace named Math (module: physics)
-//   struct Vec<T> { // Intentionally the same type name as Core.Vec
-//     x: T; 
-//     y: T;
-//   }
+  // Shadowing test: generic name inside child shadows parent's name.
+  struct Shadow<P> {
+    struct Child<P> { // shadows parent P
+      pair(a: P, b: P): P { return a; }
+    }
 
-//   length(v: Vec<float>): float { /* impl irrelevant */ return 0.0; }
-// }
+    // return type refers to Child<P> where P is the *child's* P, not outer
+    use_shadow<P>(self: Shadow<P>, a: P, b: P): Child<P> {
+      // let _ = Child<P>{}; // construct something to force resolution
+      // return _;
+    }
+  }
+}
 
-// // --- File: graphics/math.hz ---------------------------------------------------
-// namespace Math { // Another top-level namespace named Math (module: graphics)
-//   struct Color {
-//     r: u8; 
-//     g: u8; 
-//     b: u8;
-//   }
+// --- File: model/graph.hz ----------------------------------------------------
+namespace Graph {
+  struct Graph<N> {
+    struct Edge<W> { from: N; to: N; w: W; }
 
-//   blend(a: Color, b: Color): Color { 
-//     return a; 
-//   }
-// }
+    // Multi-level nested types with reuse of names
+    struct Layers<L> {
+      struct Node<ID> {
+        id: ID;
+        data: L;
+      }
 
-// // --- File: util/aliases.hz ----------------------------------------------------
-// namespace Util {
-//   // Qualifier/alias tests
-// //   alias GVecF64 = ::Math.Vec<f64>;       // EXPECT: resolves to physics.Math.Vec<f64> or
-// //                                          // whichever `Math` is imported (see imports below).
-// //   alias CColor  = ::Math.Color;          // EXPECT: resolves to graphics.Math.Color when imported correctly.
+      // Method returning a child-of-child type using *partial* references.
+      mkNode<ID>(self: Layers<L>, id: ID, data: L): Node<ID> {
+        // return Node<ID>{ id: id, data: data };
+      }
 
-//   // A namespace nested inside Util to test shadowing
-//   namespace InnerMath {
-//     dot(a: Math.Vec<f64>, b: Math.Vec<f64>): f64 { 
-//         return 0.0 as f64; 
-//     }
-//   }
-// }
+      // Deep child referencing grandparent's generic N via the outer Graph<N>
+      struct Binder {
+        bind<N2>(self: Binder, n: N2, l: L): Node<N2> {
+          // return Node<N2>{ id: n, data: l };
+        }
+      }
+    }
 
-// // --- File: model/shapes.hz ----------------------------------------------------
-// namespace Model {
-//   // A generic with a nested member-type B<U>
-//   struct A<T> {
-//     value: T;
+    // Method that returns a child type of a child type,
+    // requiring parent context merge: Layers<L>.Node<ID>.
+    mkLayerNode<L, ID>(self: Graph<N>, id: ID, data: L): Layers<L>.Node<ID> {
+      // let node: Layers<L>.Node<ID> = Layers<L>.Node<ID>{ id: id, data: data };
+      // return node;
+    }
 
-//     // Nested type depending on outer T
-//     struct B<U> {
-//       outer: T; // captures A<T>.T
-//       inner: U;
-//     };
+    // Method that returns Edge<W> using own N + method W.
+    mkEdge<W>(self: Graph<N>, a: N, b: N, w: W): Edge<W> {
+      // return Edge<W>{ from: a, to: b, w: w };
+    }
+  }
 
-//     // Nested namespace to test same-name shadowing
-//     struct Math {
-//       struct Vec<T> { 
-//         x: T; 
-//         y: T; 
-//       }
-//     }
+  // Forward ref across lexical order inside namespace
+  area_poly<W>(g: Graph<W>.Edge<W>): i32 {
+    // dummy
+    return 0;
+  }
+}
 
-//     // Method that uses partial inner type reference without `A<T>.` prefix
-//     makeB<U>(self: A<T>, u: U): B<U> { 
-//       // EXPECT: resolves to A<T>.B<U>
-//       let b: B<U> = B<U>{ outer: self.value, inner: u };
-//       return b;
-//     }
+// --- File: algebra/monoids.hz -----------------------------------------------
+namespace Algebra {
+  // Monoid<M> with nested Op<T>, and an Adapter<Z> that re-uses parent generics.
+  struct Monoid<M> {
+    struct Op<T> { left: T; right: T; }
 
-//     // Method referencing sibling nested namespace type without full qualification
-//     makeLocalVec(self: A<T>, x: T, y: T): Math.Vec<T> { 
-//       // resolves to A<T>.Math.Vec<T>
-//       return Math.Vec<T>{ x: x, y: y };
-//     }
-//   }
+    struct Adapter<Z> {
+      apply<T>(self: Adapter<Z>, a: T, b: T): Op<T> {
+        // return Op<T>{ left: a, right: b };
+      }
+    }
 
-//   // Cross-generic reference: inside A<i32>, B<u8> must be the specialized member type
-//   test_partial_member_access() {
-//     let a: A<i32> = A<i32>{ value: 7 as i32 };
-//     let b: A<i32>.B<u8> = a.makeB<u8>(a, 5 as u8);
+    // Method that returns nested-nested type: Adapter<Z>.apply produces Op<T>
+    use<Z, T>(self: Monoid<M>, a: T, b: T): Op<T> {
+      // let ad: Adapter<Z> = Adapter<Z>{};
+      // return ad.apply<T>(a, b);
+    }
+  }
 
-//     // Partial reference inside the method ensured B<u8> bound to the same A<i32> instance
-//     // static_assert(Core.type_equal< typeof(b), A<i32>.B<u8> >());
-//   }
-// }
+  // Shadowing across levels: inner struct uses same name as outer generic
+  struct Shadow<S> {
+    struct S<T> { v: T; } // name S shadows type param S in this scope
 
-// // --- File: imports/ambiguous.hz -----------------------------------------------
-// // This file intentionally creates ambiguity to ensure the resolver emits diagnostics
-// namespace ImportsAmbiguous {
-//   // Pull in *both* Math namespaces into the same scope via aliases
-// //   using PhysicsMath = ::Math; // Suppose import path resolves to physics.Math (configured by build)
-// //   using GraphicsMath = ::Math; // Suppose another import brings graphics.Math too (different module)
+    build<T>(self: Shadow<S>, x: T): S<T> {
+      // return S<T>{ v: x };
+    }
+  }
+}
 
-//   // Re-expose both under the same short name – should be illegal/ambiguous unless disambiguated
-//   // expect_error: ambiguous namespace import
-//   // using Math = PhysicsMath;
-//   // using Math = GraphicsMath; // two different targets for the same alias name
+// --- File: nested/tower.hz ---------------------------------------------------
+namespace Tower {
+  // A 3-level tower with heavy cross-referencing
+  struct A<A0> {
+    struct B<B0> {
+      struct C<C0> {
+        aa: A0; bb: B0; cc: C0;
 
-//   // Explicit qualification should be fine
-// //   use_both() {
-// //     let v = PhysicsMath.Vec<f64>{ x: 1.0, y: 2.0 }; // physics.Math.Vec
-// //     let c = GraphicsMath.Color{ r: 1, g: 2, b: 3 };  // graphics.Math.Color
-// //     let _ = PhysicsMath.length(v);
-// //     let _ = GraphicsMath.blend(c, c);
-// //   }
-// }
+        // Returns parent’s sibling’s child type: B<B0>.C<C0>
+        echo(self: C<C0>, a: A0, b: B0, c: C0): C<C0> {
+          // return C<C0>{ aa: a, bb: b, cc: c };
+        }
+      }
 
-// // --- File: imports/selective.hz ----------------------------------------------
-// namespace ImportsSelective {
-//   // Import only a symbol from physics Math
-// //   using ::Math.Vec;    // expects to pull the Vec in-scope (physics one)
-// //   // Import only Color from graphics Math
-// //   using ::Math.Color;  // expects to pull Color in-scope (graphics one)
+      // Returns child type using partial Member reference
+      makeC<C0>(self: B<B0>, a: A0, b: B0, c: C0): C<C0> {
+        // return C<C0>{ aa: a, bb: b, cc: c };
+      }
+    }
 
-// //   fn test() {
-// //     let v = Vec<f64>{ x: 0.0, y: 0.0 }; // should bind to physics.Math.Vec
-// //     let c = Color{ r: 0, g: 0, b: 0 };  // should bind to graphics.Math.Color
-// //   }
-// }
+    // Method that returns B<B0>.C<C0> with arguments threaded through:
+    build<B0, C0>(self: A<A0>, a: A0, b: B0, c: C0): B<B0>.C<C0> {
+      // let out: B<B0>.C<C0> = B<B0>.C<C0>{ aa: a, bb: b, cc: c };
+      // return out;
+    }
+  }
 
-// // --- File: shadowing/local_vs_namespace.hz -----------------------------------
-// namespace Shadowing {
-//   namespace Math { 
-//     struct S { k: u8; }
-//     struct Vec<T> { 
-//         x: T; 
-//         y: T; 
-//     } 
-//   }
+  // Cross-instantiation check: same decls with different concretes
+  test_multi() {
+    let a1 = A<i32>{};
+    let a2 = A<u8>{};
 
-//   f() {
-//     let Math = 42; // value shadows the namespace name `Math` in this local scope
-//     // expect_error: `Math.Vec` here should refer to the *value* `Math`, not a namespace
-//     // let v = Math.Vec<f64>{ x: 1.0, y: 2.0 };
+    // trigger: A<i32>.B<u16>.C<u32>
+    // let c1: A<i32>.B<u16>.C<u32> = a1.build<u16, u32>(1 as i32, 2 as u16, 3 as u32);
 
-//     let v2 = Shadowing.Math.Vec<float>{ x: 1.0, y: 2.0 };
+    // trigger: A<u8>.B<u8>.C<i8>
+    // let c2: A<u8>.B<u8>.C<i8> = a2.build<u8, i8>(1 as u8, 2 as u8, 3 as i8);
 
-//     // Inner namespace still accessible fully qualified
-//     let s = Shadowing.Math.S{ k: 5 as u8 };
-//     Math; 
-//     v2; 
-//     s;
-//   }
-// }
+    a1; a2;
+    // c1; c2;
+  }
+}
 
-// // --- File: forward/refs.hz ----------------------------------------------------
-// namespace ForwardRefs {
-//   // Use before definition via namespace qualification
-//   area(circle: Shape.Circle): f64 { 
-//     return Shape.area(circle); 
-//   }
+// --- File: matrix/linear.hz --------------------------------------------------
+namespace Lin {
+  struct Mat<R, C, T> {
+    struct Row<Idx> { i: Idx; }
+    struct Col<Idx> { j: Idx; }
 
-//   namespace Shape {
-//     struct Circle { r: f64; }
-//     area(c: Circle): f64 { 
-//         return 3.14159 as f64 * c.r * c.r; 
-//     }
-//   }
-// }
+    // A method that returns a nested type depending on both parent and method generics
+    getRow<Ix>(self: Mat<R, C, T>, ix: Ix): Row<Ix> {
+      // return Row<Ix>{ i: ix };
+    }
 
-// --- File: nested/generics_cross.hz ------------------------------------------
-namespace Nested {
-  struct Outer<X> {
-    struct Mid<_Y> {
-      struct Inner<_Z> {
-        a: X; b: _Y; c: _Z;
-      };
-    };
+    getCol<Ix>(self: Mat<R, C, T>, ix: Ix): Col<Ix> {
+      // return Col<Ix>{ j: ix };
+    }
 
-    // Inside Outer<X>, allow `Mid<Y>.Inner<Z>` with partial reference, and also just `Inner<Z>`
-    build<Y, Z>(self: Outer<X>, x: X, y: Y, z: Z): Mid<Y>.Inner<Z> {
-    //   let m: Mid<Y>.Inner<Z> = Mid<Y>.Inner<Z>{ a: x, b: y, c: z };
-    //   // Short form inside the same generic nest:
-    //   let s: Inner<Z> = m; // EXPECT: resolves to Mid<Y>.Inner<Z> bound by the current Y
-    // //   static_assert(Core.type_equal< typeof(s), Mid<Y>.Inner<Z> >());
-    //   return m;
+    // Compose nested types in the return type using partial refs
+    cross<Ix, Jx>(self: Mat<R, C, T>, i: Ix, j: Jx): Row<Ix> {
+      // let r: Row<Ix> = Row<Ix>{ i: i };
+      // let c: Col<Jx> = Col<Jx>{ j: j };
+      // r; c;
+      // return r;
+    }
+  }
+
+  test() {
+    let m = Mat<2, 3, f64>{};
+    // let r = m.getRow<u8>(1 as u8);
+    // let c = m.getCol<u8>(2 as u8);
+    // let rr = m.cross<u8, u8>(3 as u8, 4 as u8);
+
+    m; // r; c; rr;
+  }
+}
+
+// --- File: deep/merges.hz ----------------------------------------------------
+namespace Merges {
+  // Intentionally reuse generic names at multiple levels to test overwrite precedence
+  struct Outer<T> {
+    struct Mid<T> {
+      struct Inner<T> {
+        a: T; // should refer to Inner's T
+        b: T; // same
+      }
+
+      build<T>(self: Mid<T>, x: T): Inner<T> {
+        // let res: Inner<T> = Inner<T>{ a: x, b: x };
+        // return res;
+      }
+    }
+
+    make<T>(self: Outer<T>, x: T): Mid<T>.Inner<T> {
+      // let m: Mid<T>.Inner<T> = Mid<T>.Inner<T>{ a: x, b: x };
+      // return m;
+    }
+  }
+
+  // Same names, but refer to different levels explicitly to test scoping
+  struct Nest<A> {
+    struct Nest<B> {
+      struct Nest<C> { a: A; b: B; c: C; }
+      mk<C>(self: Nest<B>, a: A, b: B, c: C): Nest<C> {
+        // return Nest<C>{ a: a, b: b, c: c };
+      }
     }
   }
 
   test() {
     let o = Outer<i32>{};
-    let r = o.build<u16, u8>(o, 1 as i8, 2 as u8, 3 as u8);
-    // static_assert(Core.type_equal< typeof(r), Outer<i32>.Mid<u16>.Inner<u8> >());
+    // let _ = o.make<i32>(1 as i32);
+
+    let n = Nest<i8>{};
+    // let m: Nest<i8>.Nest<u8>.Nest<i16> = n.Nest<u8>.mk<i16>(1 as i8, 2 as u8, 3 as i16);
+    o; n; // _;
   }
 }
 
-// // --- File: same_name/type_value_ns.hz ----------------------------------------
-// namespace TVN {
-//   // Same identifier used as namespace, type, and variable in different scopes
-//   struct Box { n: i32; struct T { n: i32; } } // type named Box in the same namespace TVN
+// --- File: cross/compose.hz --------------------------------------------------
+namespace Compose {
+  // Compose types from different namespaces via fully qualified paths
 
-//   g() {
-//     let Box = 3; // value named Box shadows the type `Box` *in this block only*
-//     // expect_error: Box{ n: 1 } — attempts to construct the value-`Box` as a type
-//     // let x = Box{ n: 1 };
+  struct Wrap<T> { x: T; }
 
-//     // Disambiguate with `::TVN.Box` (the *type*)
-//     let y = TVN.Box{ n: 1 };
+  // Return type pulls nested types from DS::Map and Graph::Graph
+  make_combo<K, V, W, ID>(
+    k: K, v: V, w: W, id: ID
+  ): DS.Map<K>.Bucket<ID>.Cell<Graph.Graph<W>.Layers<V>.Node<ID>> {
+    // let node: Graph.Graph<W>.Layers<V>.Node<ID> = Graph.Graph<W>.Layers<V>.Node<ID>{ id: id, data: v };
+    // let cell: DS.Map<K>.Bucket<ID>.Cell<Graph.Graph<W>.Layers<V>.Node<ID>>
+    //   = DS.Map<K>.Bucket<ID>.Cell<Graph.Graph<W>.Layers<V>.Node<ID>>{ idx: id, payload: node };
+    // return cell;
+  }
+}
 
-//     // Use the *namespace* TVN.Box to access nested type `T`
-//     let z = TVN.Box.T{ n: 2 };
-//     Box; 
-//     y; 
-//     z;
-//   }
-// }
+// --- File: main.hz -----------------------------------------------------------
+namespace Main {
+  main(): i32 {
+    // Trigger a variety of instantiations (commented constructs force elaboration on type check)
+    let m = DS.Map<i32>{};
+    let cell = m.make_cell<i16, u8, i8>(m, 1 as i32, 2 as i16, 9 as u8, 7 as i8);
 
-// // --- File: prefer_local_member_type.hz ---------------------------------------
-// namespace Preference {
-//   struct A<T> {
-//     struct B<U> { outer: T; inner: U; };
-//   }
-//   struct B<T> { k: T; } // a *top-level* B that should NOT be chosen when inside A<T>
+    let g = Graph.Graph<u32>{};
+    let n = g.mkLayerNode<i64, u8>(g, 5 as u8, 6 as i64);
 
-//   test() {
-//     let a = A<i32>{};
-//     // Here, bare `B<u8>` inside the expression that has `A<i32>` context should resolve to `A<i32>.B<u8>`
-//     let x: A<i32>.B<u8> = a.B<u8>{ outer: 1, inner: 2 }; // explicit qualified construction
+    let a = Algebra.Monoid<i32>{};
+    let op = a.use<u8, i16>(a, 1 as i16, 2 as i16);
 
-//     // If your language supports it, allow elided `A<i32>.` when the lookup receiver is clear:
-//     let y: A<i32>.B<u8> = B<u8>{ outer: 1, inner: 2 }; // EXPECT: binds to A<i32>.B<u8>, not ::Preference.B<u8>
+    let tw = Tower.A<i32>{};
+    let c = tw.build<u16, u8>(tw, 1 as i32, 2 as u16, 3 as u8);
 
-//     // static_assert(Core.type_equal< typeof(y), A<i32>.B<u8> >());
-//   }
-// }
+    let M = Lin.Mat<2, 2, f64>{};
+    let r = M.getRow<u8>(M, 1 as u8);
 
-// // --- File: imports/mixed_paths.hz --------------------------------------------
-// namespace MixedPaths {
-//   // Bring in symbols to create potential collisions intentionally
-// //   using ::Core.Vec;           // Core.Vec<T>
-// //   using ::Math.Vec as PVec;   // physics.Math.Vec<T> aliased as PVec
-// //   using ::Math.Color;         // graphics.Math.Color
+    let combo = Compose.make_combo<i32, i16, u8, u16>(
+      1 as i32, 2 as i16, 3 as u8, 4 as u16
+    );
 
-//   h() {
-//     let a: Vec<i32> = Vec<i32>{ data: null, len: 0 }; // Core.Vec
-//     let b: PVec<f64> = PVec<f64>{ x: 0.0, y: 0.0 };   // physics.Math.Vec
-//     let c: Color = Color{ r: 0, g: 0, b: 0 };         // graphics.Math.Color
-//     a; 
-//     b; 
-//     c;
-//   }
-// }
+    // DS.Shadow and Algebra.Shadow force shadowing paths
+    let sh = DS.Shadow<i32>{};
+    let _cs = sh.use_shadow<i32>(sh, 1 as i32, 2 as i32);
 
-// // --- File: negative/ambiguous_member_in_generic.hz ---------------------------
-// namespace Negative {
-//   struct A<T> {
-//     struct B<U> { t: T; u: U; };
-//   }
-//   struct B<T> { t: T; }
+    let s2 = Algebra.Shadow<i32>{};
+    let _ss = s2.build<i16>(s2, 7 as i16);
 
-//   bad(a: A<i32>) {
-//     // expect_error: ambiguous `B<u8>` — could refer to A<i32>.B<u8> or ::Negative.B<u8> without contextual bias
-//     // let foo: B<u8> = B<u8>{ t: 1, u: 2 };
+    // static_asserts (imaginary) you can enable later:
+    // static_assert(Core.type_equal< typeof(cell), DS.Map<i32>.Bucket<u8>.Cell<i8> >());
+    // static_assert(Core.type_equal< typeof(n), Graph.Graph<u32>.Layers<i64>.Node<u8> >());
+    // static_assert(Core.type_equal< typeof(op), Algebra.Monoid<i32>.Op<i16> >());
+    // static_assert(Core.type_equal< typeof(c), Tower.A<i32>.B<u16>.C<u8> >());
+    // static_assert(Core.type_equal< typeof(r), Lin.Mat<2,2,f64>.Row<u8> >());
+    // static_assert(Core.type_equal< typeof(combo),
+    //     DS.Map<i32>.Bucket<u16>.Cell<Graph.Graph<u8>.Layers<i16>.Node<u16>> >());
 
-//     // Disambiguate explicitly:
-//     let ok1: A<i32>.B<u8> = A<i32>.B<u8>{ t: 1, u: 2 };
-//     let ok2: Negative.B<u8> = Negative.B<u8>{ t: 1 };
-//     a; 
-//     ok1; 
-//     ok2;
-//   }
-// }
+    // Touch values to avoid “unused”
+    cell; n; op; c; r; combo; _cs; _ss;
+    m; g; a; tw; M; sh; s2;
 
-// // --- File: main.hz ------------------------------------------------------------
-// namespace Main {
-// //   using ::Core;
-// //   using ::Model;
-// //   using ::Nested;
-// //   using ::ImportsSelective;
-// //   using ::MixedPaths;
-
-//   main(): i32 {
-//     // Model.test_partial_member_access();
-//     // Nested.test();
-//     // ImportsSelective.test();
-//     // MixedPaths.h();
-//     return 0;
-//   }
-// }
-
+    return 0 as i32;
+  }
+}

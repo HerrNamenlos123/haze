@@ -140,6 +140,7 @@ export namespace Semantic {
     PrimitiveDatatype,
     GenericParameterDatatype,
     NamespaceDatatype,
+    LiteralValueDatatype,
     // Statements
     InlineCStatement,
     WhileStatement,
@@ -180,6 +181,7 @@ export namespace Semantic {
     ENode.PrimitiveDatatype,
     ENode.GenericParameterDatatype,
     ENode.NamespaceDatatype,
+    ENode.LiteralValueDatatype,
   ] as const;
 
   export const ExpressionEnums = [
@@ -334,13 +336,12 @@ export namespace Semantic {
     concrete: boolean; // For consistency, always true
   };
 
-  // export type ConstantDatatypeSymbol = {
-  //   variant: "ConstantDatatype";
-  //   kind: "boolean" | "string" | "number";
-  //   value: boolean | string | number;
-  //   sourceloc: SourceLoc;
-  //   concrete: boolean;
-  // };
+  export type LiteralValueDatatypeSymbol = {
+    variant: ENode.LiteralValueDatatype;
+    literal: LiteralValue;
+    sourceloc: SourceLoc;
+    concrete: boolean;
+  };
 
   export type Datatype =
     | GenericParameterDatatypeSymbol
@@ -350,6 +351,7 @@ export namespace Semantic {
     | PointerDatatypeSymbol
     | ReferenceDatatypeSymbol
     | CallableDatatypeSymbol
+    | LiteralValueDatatypeSymbol
     | PrimitiveDatatypeSymbol;
 
   export type Symbol =

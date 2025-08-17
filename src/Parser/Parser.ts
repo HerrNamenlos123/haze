@@ -437,7 +437,11 @@ class ASTTransformer extends HazeVisitor<any> {
   };
 
   visitGenericLiteralConstant = (ctx: GenericLiteralConstantContext): ASTLiteralExpr => {
-    return this.visit(ctx.literal());
+    return {
+      variant: "LiteralExpr",
+      literal: this.visit(ctx.literal()),
+      sourceloc: this.loc(ctx),
+    };
   };
 
   visitDatatypeFragment = (ctx: DatatypeFragmentContext) => {

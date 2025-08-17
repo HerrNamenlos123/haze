@@ -55,6 +55,7 @@ export namespace Lowered {
     PrimitiveDatatype,
     GenericParameterDatatype,
     NamespaceDatatype,
+    LiteralValueDatatype,
     // Statements
     InlineCStatement,
     WhileStatement,
@@ -370,7 +371,8 @@ export namespace Lowered {
     | PrimitiveDatatype
     | FunctionDatatype
     | ReferenceDatatype
-    | PointerDatatype;
+    | PointerDatatype
+    | LiteralValueDatatype;
 
   export type PointerDatatype = {
     variant: ENode.PointerDatatype;
@@ -426,6 +428,14 @@ export namespace Lowered {
     parameters: TypeId[];
     returnType: TypeId;
     vararg: boolean;
+  };
+
+  export type LiteralValueDatatype = {
+    variant: ENode.LiteralValueDatatype;
+    prettyName: string;
+    mangledName: string;
+    wasMangled: boolean;
+    literal: LiteralValue;
   };
 }
 
@@ -855,6 +865,20 @@ function lowerType(lr: Lowered.Module, typeId: Semantic.Id): Lowered.TypeId {
         mangledName: mangleDatatype(lr.sr, typeId),
         wasMangled: true,
         prettyName: serializeDatatype(lr.sr, typeId),
+      });
+      lr.loweredTypes.set(typeId, pId);
+      return pId;
+    }
+  } else if (type.variant === Semantic.ENode.LiteralValueDatatype) {
+    if (lr.loweredTypes.has(typeId)) {
+      return lr.loweredTypes.get(typeId)!;
+    } else {
+      const [p, pId] = Lowered.addType<Lowered.LiteralValueDatatype>(lr, {
+        variant: Lowered.ENode.LiteralValueDatatype,
+        mangledName: mangleDatatype(lr.sr, typeId),
+        wasMangled: true,
+        prettyName: serializeDatatype(lr.sr, typeId),
+        literal: type.literal,
       });
       lr.loweredTypes.set(typeId, pId);
       return pId;

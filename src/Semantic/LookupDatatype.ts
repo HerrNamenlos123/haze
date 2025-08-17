@@ -513,12 +513,12 @@ export function lookupAndElaborateDatatype(
     }
 
     case Collect.ENode.LiteralExpr: {
-      assert(false, "Not implemented yet");
-      // return Semantic.addExpr(sr, {
-      //   variant: "LiteralExpr",
-      //   literal: "LiteralExpr",
-      //   sourceloc: args.type.sourceloc,
-      // });
+      return Semantic.addNode(sr, {
+        variant: Semantic.ENode.LiteralValueDatatype,
+        literal: type.literal,
+        concrete: true,
+        sourceloc: type.sourceloc,
+      })[1];
     }
 
     // =================================================================================================================

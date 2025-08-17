@@ -56,6 +56,7 @@ import {
 } from "../shared/AST";
 import type { ModuleConfig } from "../shared/Config";
 import { CONNREFUSED } from "node:dns";
+import { serializeLiteralValue } from "../Semantic/Serialize";
 
 export type CollectionContext = {
   config: ModuleConfig;
@@ -1420,7 +1421,7 @@ function collect(
       })[1];
 
     default:
-      assert(false, "All cases handled" + item.variant);
+      assert(false, "All cases handled " + item.variant);
   }
 }
 
@@ -1488,6 +1489,10 @@ export function printCollectedDatatype(cc: CollectionContext, typeId: Collect.Id
 
     case Collect.ENode.GenericTypeParameter: {
       return `${type.name} [${typeId}]`;
+    }
+
+    case Collect.ENode.LiteralExpr: {
+      return serializeLiteralValue(type.literal);
     }
 
     default:

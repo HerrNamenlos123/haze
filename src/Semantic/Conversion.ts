@@ -212,8 +212,9 @@ export namespace Conversion {
         assert(bt.variant === Semantic.ENode.PrimitiveDatatype);
         return at.primitive === bt.primitive;
 
-      // case Semantic.ENode.Defere:
-      //   throw new InternalError("Cannot check structural equivalence of a deferred datatype");
+      case Semantic.ENode.LiteralValueDatatype:
+        assert(bt.variant === Semantic.ENode.LiteralValueDatatype);
+        return at.literal.value === bt.literal.value && at.literal.type === bt.literal.type;
 
       case Semantic.ENode.PointerDatatype:
         assert(bt.variant === Semantic.ENode.PointerDatatype);
