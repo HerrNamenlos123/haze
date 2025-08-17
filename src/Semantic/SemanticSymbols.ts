@@ -15,8 +15,20 @@ import {
   type EPrimitive,
   type LiteralValue,
 } from "../shared/common";
-import { Collect, type CollectionContext } from "../SymbolCollection/SymbolCollection";
+import {
+  Collect,
+  printCollectedDatatype,
+  type CollectionContext,
+} from "../SymbolCollection/SymbolCollection";
 import type { SubstitutionContext } from "./Elaborate";
+import { serializeDatatype } from "./Serialize";
+
+export function printSubstitutionContext(sr: SemanticResult, context: SubstitutionContext) {
+  console.log(`Substitutions: (${[...context.substitute.values()].length})`);
+  for (const [fromId, toId] of context.substitute) {
+    console.log(`${printCollectedDatatype(sr.cc, fromId)} -> ${serializeDatatype(sr, toId)}`);
+  }
+}
 
 export type SemanticResult = {
   cc: CollectionContext;

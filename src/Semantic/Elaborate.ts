@@ -372,7 +372,7 @@ function lookupAndElaborateStaticStructAccess(
 
   for (const symbolId of structScope.symbols) {
     const s = lookupSymbolInNamespaceOrStructScope(sr, symbolId, {
-      context: elaboratedStructCache.substitutionContext, // Here choose the correct substitution context: NOT args.context!!!
+      context: mergeSubstitutionContext(elaboratedStructCache.substitutionContext, args.context),
       currentFileScope: args.currentFileScope,
       elaboratedVariables: args.elaboratedVariables,
       expr: args.expr,
@@ -957,8 +957,12 @@ export function elaborateExpr(
         );
         assert(elaboratedStructCache);
 
+        console.log("Member access", expr.memberName);
         const elaboratedMethodId = elaborateFunctionSymbol(sr, collectedMethodId, {
-          context: elaboratedStructCache.substitutionContext, // Here choose the right context: NOT args.context!!!
+          context: mergeSubstitutionContext(
+            elaboratedStructCache.substitutionContext,
+            args.context
+          ),
           genericArgs: expr.genericArgs.map((g) => {
             return lookupAndElaborateDatatype(sr, {
               typeId: g,

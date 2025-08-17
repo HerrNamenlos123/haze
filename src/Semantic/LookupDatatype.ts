@@ -6,16 +6,19 @@ import {
   elaborateNamespace,
   isolateSubstitutionContext,
   lookupSymbol,
+  mergeSubstitutionContext,
   type SubstitutionContext,
 } from "./Elaborate";
 import {
   asType,
   isTypeConcrete,
   makePrimitiveAvailable,
+  printSubstitutionContext,
   Semantic,
   type SemanticResult,
 } from "./SemanticSymbols";
 import { EExternLanguage, EVariableMutability } from "../shared/AST";
+import { serializeDatatype } from "./Serialize";
 
 export function makeFunctionDatatypeAvailable(
   sr: SemanticResult,
@@ -123,10 +126,8 @@ export function elaborateParentSymbolFromCache(
     // So we take the lexical parent, substitute all generics, and then use the cache to get the finished parent.
     const parentStruct = sr.cc.nodes.get(parentScope.owningSymbol);
     assert(parentStruct.variant === Collect.ENode.StructDefinitionSymbol);
-    const requiredGenerics = parentStruct.generics;
-    const parentGenericArgs = requiredGenerics.map((g) => {
+    const parentGenericArgs = parentStruct.generics.map((g) => {
       const subst = args.context.substitute.get(g);
-      console.log(g);
       assert(subst);
       return subst;
     });
@@ -452,7 +453,19 @@ export function lookupAndElaborateDatatype(
         assert(structScope.variant === Collect.ENode.StructScope);
 
         if (type.innerNested) {
-          // Now the nesting
+          // Here we need to merge the context from the parent into the child
+          let cachedParentSubstitutions = undefined as SubstitutionContext | undefined;
+          for (const cache of sr.elaboratedStructDatatypes) {
+            if (
+              cache.originalSymbol === foundId &&
+              cache.generics.length === generics.length &&
+              cache.generics.every((g, i) => g === generics[i])
+            ) {
+              cachedParentSubstitutions = cache.substitutionContext;
+              break;
+            }
+          }
+          assert(cachedParentSubstitutions);
           return lookupAndElaborateDatatype(sr, {
             startLookupInScopeForSymbol: found.structScope,
             startLookupInScopeForGenerics: args.startLookupInScopeForGenerics,
@@ -460,7 +473,7 @@ export function lookupAndElaborateDatatype(
             currentFileScope: args.currentFileScope,
             elaboratedVariables: args.elaboratedVariables,
             isInCFuncdecl: false,
-            context: args.context,
+            context: mergeSubstitutionContext(cachedParentSubstitutions, args.context),
           });
         } else {
           return structId;

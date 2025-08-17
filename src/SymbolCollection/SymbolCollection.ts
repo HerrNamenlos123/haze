@@ -1455,48 +1455,52 @@ export function CollectFileInUnit(
   // Bun.write("log.md", mermaid);
 }
 
+export function printCollectedDatatype(cc: CollectionContext, typeId: Collect.Id | null): string {
+  if (typeId === null) {
+    return "?";
+  }
+  const type = cc.nodes.get(typeId);
+  switch (type.variant) {
+    case Collect.ENode.NamedDatatype: {
+      let str = "";
+      let n: Collect.NamedDatatype | null = type;
+      while (n) {
+        if (str !== "") {
+          str += ".";
+        }
+        str += n.name;
+        if (n.genericArgs.length > 0) {
+          str += "<" + n.genericArgs.map((g) => printCollectedDatatype(cc, g)).join(", ") + ">";
+        }
+        n = (n.innerNested && (cc.nodes.get(n.innerNested) as Collect.NamedDatatype)) || null;
+        assert(n === null || n.variant === Collect.ENode.NamedDatatype);
+      }
+      return str;
+    }
+
+    case Collect.ENode.PointerDatatype: {
+      return `${printCollectedDatatype(cc, type.pointee)}*`;
+    }
+
+    case Collect.ENode.ReferenceDatatype: {
+      return `${printCollectedDatatype(cc, type.referee)}&`;
+    }
+
+    case Collect.ENode.GenericTypeParameter: {
+      return `${type.name} [${typeId}]`;
+    }
+
+    default:
+      assert(false, type.variant.toString());
+  }
+}
+
 export function PrettyPrintCollected(cc: CollectionContext) {
   console.log("C Injections:");
   // for (const i of cc.cInjections) {
   //   console.log(" - " + i.code);
   // }
   console.log("\n");
-
-  const printType = (typeId: Collect.Id | null): string => {
-    if (typeId === null) {
-      return "?";
-    }
-    const type = cc.nodes.get(typeId);
-    switch (type.variant) {
-      case Collect.ENode.NamedDatatype: {
-        let str = "";
-        let n: Collect.NamedDatatype | null = type;
-        while (n) {
-          if (str !== "") {
-            str += ".";
-          }
-          str += n.name;
-          if (n.genericArgs.length > 0) {
-            str += "<" + n.genericArgs.map((g) => printType(g)).join(", ") + ">";
-          }
-          n = (n.innerNested && (cc.nodes.get(n.innerNested) as Collect.NamedDatatype)) || null;
-          assert(n === null || n.variant === Collect.ENode.NamedDatatype);
-        }
-        return str;
-      }
-
-      case Collect.ENode.PointerDatatype: {
-        return `${printType(type.pointee)}*`;
-      }
-
-      case Collect.ENode.ReferenceDatatype: {
-        return `${printType(type.referee)}&`;
-      }
-
-      default:
-        assert(false, type.variant.toString());
-    }
-  };
 
   const printExpr = (exprId: Collect.Id): string => {
     const expr = cc.nodes.get(exprId);
@@ -1524,14 +1528,14 @@ export function PrettyPrintCollected(cc: CollectionContext) {
       case Collect.ENode.SymbolValueExpr: {
         let str = expr.name;
         if (expr.genericArgs.length > 0) {
-          str += "<" + expr.genericArgs.map((g) => printType(g)).join(", ") + ">";
+          str += "<" + expr.genericArgs.map((g) => printCollectedDatatype(cc, g)).join(", ") + ">";
         }
         return str;
       }
 
       case Collect.ENode.StructInstantiationExpr: {
         return (
-          `${printType(expr.structType)} {` +
+          `${printCollectedDatatype(cc, expr.structType)} {` +
           expr.members.map((a) => `${a.name}: ${printExpr(a.value)}`).join(", ") +
           "}"
         );
@@ -1546,13 +1550,13 @@ export function PrettyPrintCollected(cc: CollectionContext) {
       }
 
       case Collect.ENode.ExplicitCastExpr: {
-        return `${printExpr(expr.expr)} as ${printType(expr.targetType)}`;
+        return `${printExpr(expr.expr)} as ${printCollectedDatatype(cc, expr.targetType)}`;
       }
 
       case Collect.ENode.MemberAccessExpr: {
         let str = `${printExpr(expr.expr)}.${expr.memberName}`;
         if (expr.genericArgs.length > 0) {
-          str += "<" + expr.genericArgs.map((g) => printType(g)).join(", ") + ">";
+          str += "<" + expr.genericArgs.map((g) => printCollectedDatatype(cc, g)).join(", ") + ">";
         }
         return str;
       }
@@ -1595,7 +1599,12 @@ export function PrettyPrintCollected(cc: CollectionContext) {
         break;
 
       case Collect.ENode.VariableSymbol:
-        print(`- VariableSymbol id=${symbolId} name=${symbol.name} type=${printType(symbol.type)}`);
+        print(
+          `- VariableSymbol id=${symbolId} name=${symbol.name} type=${printCollectedDatatype(
+            cc,
+            symbol.type
+          )}`
+        );
         break;
 
       case Collect.ENode.GenericTypeParameter:
@@ -1618,9 +1627,11 @@ export function PrettyPrintCollected(cc: CollectionContext) {
       case Collect.ENode.FunctionSymbol: {
         let ftype =
           "(" +
-          symbol.parameters.map((p) => `${p.name}: ${printType(p.type)}`).join(", ") +
+          symbol.parameters
+            .map((p) => `${p.name}: ${printCollectedDatatype(cc, p.type)}`)
+            .join(", ") +
           ") => " +
-          printType(symbol.returnType);
+          printCollectedDatatype(cc, symbol.returnType);
         print(`- Function ${ftype}`);
         if (symbol.functionScope) {
           printSymbol(symbol.functionScope, indent + 4);
