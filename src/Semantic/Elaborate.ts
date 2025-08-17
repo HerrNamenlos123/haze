@@ -1,5 +1,11 @@
 import { EExternLanguage } from "../shared/AST";
-import { BrandedArray, EMethodType, EVariableContext, primitiveToString } from "../shared/common";
+import {
+  BrandedArray,
+  EMethodType,
+  EPrimitive,
+  EVariableContext,
+  primitiveToString,
+} from "../shared/common";
 import { assert, CompilerError, InternalError, type SourceLoc } from "../shared/Errors";
 import { Collect, type CollectionContext } from "../SymbolCollection/SymbolCollection";
 import { Conversion } from "./Conversion";
@@ -14,6 +20,7 @@ import {
   asExpression,
   asType,
   getExprType,
+  isType,
   isTypeConcrete,
   makePrimitiveAvailable,
   Semantic,
@@ -260,7 +267,9 @@ function lookupSymbolInNamespaceOrStructScope(
       sourceloc: args.expr.sourceloc,
     });
   } else if (symbol.variant === Collect.ENode.FunctionOverloadGroup && symbol.name === args.name) {
-    const functionSymbol = elaborateFunctionSymbol(sr, symbolId, {
+    console.log("TODO: Do overload discrimination here");
+    const overloadId = symbol.overloads[0];
+    const functionSymbolId = elaborateFunctionSymbol(sr, overloadId, {
       currentFileScope: args.currentFileScope,
       elaboratedVariables: args.elaboratedVariables,
       genericArgs: args.expr.genericArgs.map((g) => {
@@ -278,10 +287,12 @@ function lookupSymbolInNamespaceOrStructScope(
       parentStructOrNS: args.parentStructOrNS,
       usageSite: args.expr.sourceloc,
     });
+    const functionSymbol = sr.nodes.get(functionSymbolId);
+    assert(functionSymbol.variant === Semantic.ENode.FunctionSymbol);
     return Semantic.addNode(sr, {
       variant: Semantic.ENode.SymbolValueExpr,
-      symbol: functionSymbol,
-      type: functionSymbol,
+      symbol: functionSymbolId,
+      type: functionSymbol.type,
       sourceloc: args.expr.sourceloc,
     });
   } else {
@@ -1547,18 +1558,28 @@ export function elaborateFunctionSymbol(
     startLookupInScope: func.functionScope || func.parentScope,
   });
 
+  const parameterNames = func.parameters.map((p) => p.name);
+  const parameters = func.parameters.map((p) =>
+    lookupAndElaborateDatatype(sr, {
+      typeId: p.type,
+      context: substitutionContext,
+      currentFileScope: args.currentFileScope,
+      parentStructOrNS: args.parentStructOrNS,
+      elaboratedVariables: args.elaboratedVariables,
+      isInCFuncdecl: false,
+      startLookupInScope: func.functionScope || func.parentScope,
+    })
+  );
+
+  if (func.methodType === EMethodType.Method) {
+    parameterNames.unshift("this");
+    assert(args.parentStructOrNS);
+    const thisReference = makeReferenceDatatypeAvailable(sr, args.parentStructOrNS);
+    parameters.unshift(thisReference);
+  }
+
   const ftype = makeFunctionDatatypeAvailable(sr, {
-    parameters: func.parameters.map((p) =>
-      lookupAndElaborateDatatype(sr, {
-        typeId: p.type,
-        context: substitutionContext,
-        currentFileScope: args.currentFileScope,
-        parentStructOrNS: args.parentStructOrNS,
-        elaboratedVariables: args.elaboratedVariables,
-        isInCFuncdecl: false,
-        startLookupInScope: func.functionScope || func.parentScope,
-      })
-    ),
+    parameters: parameters,
     returnType: expectedReturnType,
     vararg: func.vararg,
   });
@@ -1589,7 +1610,7 @@ export function elaborateFunctionSymbol(
     //   ),
     //   operator: args.sourceSymbol.operatorOverloading.operator,
     // },
-    parameterNames: func.parameters.map((p) => p.name),
+    parameterNames: parameterNames,
     name: overloadGroup.name,
     sourceloc: func.sourceloc,
     scope: null,
@@ -1942,28 +1963,34 @@ export function SemanticallyAnalyze(cc: CollectionContext, isLibrary: boolean) {
     }
   }
 
-  // recursivelyExportCollectedSymbols(sr, globalScope);
+  const mainFunction = sr.elaboratedFuncdefSymbols.find(
+    (s) => (sr.nodes.get(s.resultSymbol) as Semantic.FunctionSymbol).name === "main"
+  );
+  if (!isLibrary) {
+    if (!mainFunction) {
+      throw new CompilerError("No main function is defined in global scope", null);
+    }
 
-  // const mainFunction = sr.elaboratedFuncdefSymbols.find((s) => s.resultSymbol.name === "main");
-  // if (!isLibrary) {
-  //   if (!mainFunction) {
-  //     throw new CompilerError("No main function is defined in global scope", null);
-  //   }
-
-  //   if (
-  //     mainFunction.resultSymbol.type.returnType.variant !== "PrimitiveDatatype" ||
-  //     mainFunction.resultSymbol.type.returnType.primitive !== EPrimitive.i32
-  //   ) {
-  //     throw new CompilerError("Main function must return i32", mainFunction.resultSymbol.sourceloc);
-  //   }
-  // } else {
-  //   if (mainFunction) {
-  //     throw new CompilerError(
-  //       "main function is defined, but not allowed because module is built as library",
-  //       null
-  //     );
-  //   }
-  // }
+    const mainFunctionSymbol = sr.nodes.get(mainFunction.resultSymbol);
+    assert(mainFunctionSymbol.variant === Semantic.ENode.FunctionSymbol);
+    const mainFunctionType = sr.nodes.get(mainFunctionSymbol.type);
+    assert(mainFunctionType.variant === Semantic.ENode.FunctionDatatype);
+    const returnType = sr.nodes.get(mainFunctionType.returnType);
+    assert(isType(returnType));
+    if (
+      returnType.variant !== Semantic.ENode.PrimitiveDatatype ||
+      returnType.primitive !== EPrimitive.int
+    ) {
+      throw new CompilerError("Main function must return int", mainFunctionSymbol.sourceloc);
+    }
+  } else {
+    if (mainFunction) {
+      throw new CompilerError(
+        "main function is defined, but not allowed because module is built as library",
+        null
+      );
+    }
+  }
 
   return sr;
 }

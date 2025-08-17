@@ -1045,84 +1045,8 @@ function collect(
         });
         structScope.symbols.push(funcsym);
       }
-      console.log(structScope);
 
       return structId;
-
-      // for (const decl of item.declarations) {
-      //   collect(cc, getScope(cc, item._collect.scope), decl, newMeta);
-      // }
-
-      // for (const m of item.members) {
-      //   collect(cc, getScope(cc, item._collect.scope), m.type, newMeta);
-      // }
-
-      // for (const method of item.methods) {
-      //   method.declarationScope = makeScope(cc, item.sourceloc, item._collect.scope);
-      //   if (method.funcbody) {
-      //     method.funcbody._collect.scope = makeScope(cc, item.sourceloc, method.declarationScope);
-      //   }
-
-      //   if (!method.returnType) {
-      //     method.returnType = {
-      //       variant: "NamedDatatype",
-      //       name: "none",
-      //       cstruct: false,
-      //       generics: [],
-      //       sourceloc: item.sourceloc,
-      //       _collect: {},
-      //     };
-      //   }
-
-      //   method._collect.fullNamespacePath = [
-      //     ...meta.namespaceStack.map((n) => n.name),
-      //     method.name,
-      //   ];
-      //   method._collect.definedInScope = item._collect.scope;
-
-      //   for (const g of method.generics) {
-      //     getScope(cc, method.declarationScope).defineSymbol(cc, g);
-      //   }
-
-      //   if (method.funcbody?._collect.scope) {
-      //     if (!method.static && method.name !== "constructor") {
-      //       const s: ASTVariableDefinitionStatement = {
-      //         variant: "VariableDefinitionStatement",
-      //         id:
-      //           makeModulePrefix(cc.config) + ".vardef." + (cc.config.symbolIdCounter++).toString(),
-      //         mutability: false,
-      //         name: "this",
-      //         sourceloc: method.sourceloc,
-      //         datatype: undefined,
-      //         variableContext: EVariableContext.ThisReference,
-      //         _semantic: {},
-      //       };
-      //       getScope(cc, method.funcbody._collect.scope).defineSymbol(cc, s);
-      //       cc.symbols.set(s.id, s);
-      //     }
-
-      //     for (const param of method.params) {
-      //       const s: ASTVariableDefinitionStatement = {
-      //         variant: "VariableDefinitionStatement",
-      //         id:
-      //           makeModulePrefix(cc.config) + ".vardef." + (cc.config.symbolIdCounter++).toString(),
-      //         mutability: false,
-      //         name: param.name,
-      //         datatype: param.datatype,
-      //         sourceloc: param.sourceloc,
-      //         variableContext: EVariableContext.FunctionParameter,
-      //         _semantic: {},
-      //       };
-      //       getScope(cc, method.funcbody._collect.scope).defineSymbol(cc, s);
-      //       cc.symbols.set(s.id, s);
-      //       collect(cc, getScope(cc, method.declarationScope), param.datatype, newMeta);
-      //     }
-      //     if (method.returnType) {
-      //       collect(cc, getScope(cc, method.declarationScope), method.returnType, newMeta);
-      //     }
-      //     collect(cc, getScope(cc, method.funcbody._collect.scope), method.funcbody, newMeta);
-      //   }
-      // }
     }
 
     // =================================================================================================================

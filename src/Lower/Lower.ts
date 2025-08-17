@@ -1,4 +1,12 @@
-import { isExpression, isType, Semantic, type SemanticResult } from "../Semantic/SemanticSymbols";
+import { makeReferenceDatatypeAvailable } from "../Semantic/LookupDatatype";
+import {
+  asExpression,
+  asType,
+  isExpression,
+  isType,
+  Semantic,
+  type SemanticResult,
+} from "../Semantic/SemanticSymbols";
 import {
   mangleDatatype,
   mangleNestedName,
@@ -636,9 +644,7 @@ function lowerExpr(
       return Lowered.addExpr(lr, {
         variant: Lowered.ENode.MemberAccessExpr,
         expr: lowerExpr(lr, expr.expr, flattened)[1],
-        isReference:
-          accessedExprType.variant === Semantic.ENode.ReferenceDatatype ||
-          accessedExprType.variant === Semantic.ENode.StructDatatype,
+        isReference: accessedExprType.variant === Semantic.ENode.ReferenceDatatype,
         memberName: expr.memberName,
         type: lowerType(lr, expr.type),
       });
@@ -654,24 +660,13 @@ function lowerExpr(
 
     case Semantic.ENode.StructInstantiationExpr: {
       const structType = lowerType(lr, expr.type);
-      const [value, valueId] = storeInTempVarAndGet(
-        lr,
-        structType,
-        Lowered.addExpr(lr, {
-          variant: Lowered.ENode.StructInstantiationExpr,
-          type: structType,
-          memberAssigns: expr.assign.map((a) => ({
-            name: a.name,
-            value: lowerExpr(lr, a.value, flattened)[1],
-          })),
-        })[1],
-        expr.sourceloc,
-        flattened
-      );
       return Lowered.addExpr(lr, {
-        variant: Lowered.ENode.PointerAddressOfExpr,
-        expr: valueId,
-        type: lowerType(lr, expr.type),
+        variant: Lowered.ENode.StructInstantiationExpr,
+        type: structType,
+        memberAssigns: expr.assign.map((a) => ({
+          name: a.name,
+          value: lowerExpr(lr, a.value, flattened)[1],
+        })),
       });
     }
 
@@ -695,11 +690,34 @@ function lowerExpr(
 
     case Semantic.ENode.CallableExpr: {
       lower(lr, expr.functionSymbol);
+      const thisExpr = asExpression(lr.sr.nodes.get(expr.thisExpr));
+      const thisExprType = asType(lr.sr.nodes.get(thisExpr.type));
+
+      let loweredThisExpression = lowerExpr(lr, expr.thisExpr, flattened)[1];
+      if (thisExprType.variant !== Semantic.ENode.ReferenceDatatype) {
+        assert(thisExprType.variant === Semantic.ENode.StructDatatype);
+        const structReferenceType = lowerType(
+          lr,
+          makeReferenceDatatypeAvailable(lr.sr, thisExpr.type)
+        );
+        const [temp, tempId] = storeInTempVarAndGet(
+          lr,
+          lowerType(lr, thisExpr.type),
+          loweredThisExpression,
+          expr.sourceloc,
+          flattened
+        );
+        loweredThisExpression = Lowered.addExpr(lr, {
+          variant: Lowered.ENode.PointerAddressOfExpr,
+          expr: tempId,
+          type: structReferenceType,
+        })[1];
+      }
       return Lowered.addExpr(lr, {
         variant: Lowered.ENode.CallableExpr,
         functionMangledName: mangleNestedName(lr.sr, expr.functionSymbol),
         functionPrettyName: serializeNestedName(lr.sr, expr.functionSymbol),
-        thisExpr: lowerExpr(lr, expr.thisExpr, flattened)[1],
+        thisExpr: loweredThisExpression,
         type: lowerType(lr, expr.type),
       });
     }
