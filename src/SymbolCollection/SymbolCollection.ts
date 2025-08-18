@@ -56,10 +56,9 @@ import {
   type EIncrOperation,
   type EUnaryOperation,
 } from "../shared/AST";
-import type { ModuleConfig } from "../shared/Config";
-import { CONNREFUSED } from "node:dns";
+import type { ExportData, ModuleConfig } from "../shared/Config";
 import { serializeLiteralValue } from "../Semantic/Serialize";
-import type { Import } from "bun";
+import { ExportCollectedSymbol } from "./ImportExport";
 
 export type CollectionContext = {
   config: ModuleConfig;
@@ -69,6 +68,9 @@ export type CollectionContext = {
   overloadGroups: Set<Collect.Id>;
   blockScopes: Set<Collect.Id>;
   sharedNamespaceInstances: Set<Collect.Id>;
+
+  exportedSymbols: ExportData;
+  exportCache: Map<Collect.Id, Collect.Id>;
 };
 
 export function makeCollectionContext(config: ModuleConfig): CollectionContext {
@@ -83,6 +85,10 @@ export function makeCollectionContext(config: ModuleConfig): CollectionContext {
     blockScopes: new Set(),
     overloadGroups: new Set(),
     sharedNamespaceInstances: new Set(),
+    exportedSymbols: {
+      nodes: [],
+    },
+    exportCache: new Map(),
   };
   return cc;
 }
@@ -93,6 +99,7 @@ export namespace Collect {
     ModuleScope,
     UnitScope,
     FileScope,
+    ExportScope,
     FunctionScope,
     StructScope,
     NamespaceScope,
@@ -153,6 +160,11 @@ export namespace Collect {
     files: Collect.Id[];
   };
 
+  export type ExportScope = {
+    variant: ENode.ExportScope;
+    symbols: Collect.Id[];
+  };
+
   export type FileScope = {
     variant: ENode.FileScope;
     filepath: string;
@@ -197,6 +209,7 @@ export namespace Collect {
   export type Scope =
     | ModuleScope
     | UnitScope
+    | ExportScope
     | FileScope
     | FunctionScope
     | StructScope
@@ -859,6 +872,10 @@ function collect(
           );
         }
       }
+
+      // if (item.export) {
+      //   ExportCollectedSymbol(cc, functionSymbolId);
+      // }
 
       return overloadGroupId;
     }

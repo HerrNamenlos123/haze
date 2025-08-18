@@ -421,8 +421,7 @@ class ModuleCompiler {
               type: "static",
             },
           ],
-          exportedDeclarations: [],
-          // exportedDeclarations: [...sr.exportedCollectedSymbols.values()],
+          exportedSymbols: sr.cc.exportedSymbols,
           linkerFlags: this.config.linkerFlags,
         };
         await Bun.write(moduleMetadataFile, JSON.stringify(moduleMetadata, undefined, 2));

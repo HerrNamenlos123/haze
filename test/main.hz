@@ -61,5 +61,6 @@ main(): int {
     const bar = Bar {
         value: 0 as i32
     };
+    // math.sqrt();
     return 0;
 }

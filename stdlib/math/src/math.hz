@@ -1,4 +1,8 @@
 
-export sqrt(): float {
-    return 0.0;
+export struct Float {
+    value: float;
+}
+
+export sqrt(): Float {
+    return Float { value: 0.0 };
 }

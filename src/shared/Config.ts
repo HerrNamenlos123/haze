@@ -37,13 +37,19 @@ export type ModuleLibMetadata = {
   type: "static" | "shared";
 };
 
+export type ExportNode<T extends Collect.Node> = T & { exportMode: "explicit" | "implicit" };
+
+export type ExportData = {
+  nodes: ExportNode<Collect.Node>[];
+};
+
 export type ModuleMetadata = {
   compilerVersion: string;
   fileformatVersion: number;
   name: string;
   version: string;
   libs: ModuleLibMetadata[];
-  exportedDeclarations: (Collect.Scope | Collect.Node)[];
+  exportedSymbols: ExportData;
   linkerFlags: string[];
 };
 
@@ -117,7 +123,7 @@ export function parseModuleMetadata(metadata: string): ModuleMetadata {
     fileformatVersion: getNumber(obj["fileformatVersion"]),
     name: getString(obj["name"]),
     version: getString(obj["version"]),
-    exportedDeclarations: obj["exportedDeclarations"],
+    exportedSymbols: obj["exportedSymbols"],
     libs: getLibs(obj["libs"]),
     linkerFlags: getStringArray(obj["linkerFlags"]),
   };
