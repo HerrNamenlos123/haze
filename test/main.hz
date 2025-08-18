@@ -48,12 +48,18 @@ import math
 import "glfw"
 from math import sqrt
 
-struct Foo {}
+struct Foo<T> {
+    value: T;
+}
 
-type Bar = Foo;
+type Bar = Foo<i32>;
 
 main(): int {
-    const foo = Foo {};
-    const bar = Bar {};
+    const foo = Foo<i8> {
+        value: 0 as i8
+    };
+    const bar = Bar {
+        value: 0 as i32
+    };
     return 0;
 }

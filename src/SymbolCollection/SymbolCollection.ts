@@ -100,7 +100,7 @@ export namespace Collect {
     FunctionOverloadGroup,
     FunctionSymbol,
     VariableSymbol,
-    AliasSymbol,
+    AliasTypeSymbol,
     GlobalVariableDefinition,
     NamedDatatype,
     ReferenceDatatype,
@@ -251,8 +251,8 @@ export namespace Collect {
     sourceloc: SourceLoc;
   };
 
-  export type AliasSymbol = {
-    variant: ENode.AliasSymbol;
+  export type AliasTypeSymbol = {
+    variant: ENode.AliasTypeSymbol;
     name: string;
     inScope: Collect.Id;
     target: Collect.Id;
@@ -283,7 +283,7 @@ export namespace Collect {
   export type Symbols =
     | FunctionSymbol
     | VariableSymbol
-    | AliasSymbol
+    | AliasTypeSymbol
     | GlobalVariableDefinition
     | CInjectDirective;
 
@@ -1227,7 +1227,7 @@ function collect(
               sourceloc: astStatement.sourceloc,
             });
             const [symbol, symbolId] = makeSymbol(cc, {
-              variant: Collect.ENode.AliasSymbol,
+              variant: Collect.ENode.AliasTypeSymbol,
               inScope: blockScope,
               name: astStatement.name,
               target: collect(cc, astStatement.datatype, { currentParentScope: blockScope }),
@@ -1532,7 +1532,7 @@ function collect(
         sourceloc: item.sourceloc,
       });
       const [alias, aliasId] = makeSymbol(cc, {
-        variant: Collect.ENode.AliasSymbol,
+        variant: Collect.ENode.AliasTypeSymbol,
         inScope: args.currentParentScope,
         name: item.name,
         target: collect(cc, item.datatype, { currentParentScope: args.currentParentScope }),
@@ -1897,7 +1897,7 @@ export function PrettyPrintCollected(cc: CollectionContext) {
         break;
       }
 
-      case Collect.ENode.AliasSymbol: {
+      case Collect.ENode.AliasTypeSymbol: {
         print(`alias ${symbol.name} = ${printCollectedDatatype(cc, symbol.target)};`);
         break;
       }

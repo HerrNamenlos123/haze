@@ -377,6 +377,22 @@ export function lookupAndElaborateDatatype(
     // =================================================================================================================
     // =================================================================================================================
 
+    case Collect.ENode.AliasTypeSymbol: {
+      return lookupAndElaborateDatatype(sr, {
+        typeId: type.target,
+        startLookupInScopeForSymbol: args.startLookupInScopeForSymbol,
+        startLookupInScopeForGenerics: args.startLookupInScopeForGenerics,
+        context: args.context,
+        elaboratedVariables: args.elaboratedVariables,
+        currentFileScope: args.currentFileScope,
+        isInCFuncdecl: args.isInCFuncdecl,
+      });
+    }
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
     case Collect.ENode.NamedDatatype: {
       const primitive = stringToPrimitive(type.name);
       if (primitive) {
@@ -423,9 +439,16 @@ export function lookupAndElaborateDatatype(
       });
       let found = sr.cc.nodes.get(foundId);
 
-      while (found.variant === Collect.ENode.AliasSymbol) {
-        foundId = found.target;
-        found = sr.cc.nodes.get(foundId);
+      if (found.variant === Collect.ENode.AliasTypeSymbol) {
+        return lookupAndElaborateDatatype(sr, {
+          typeId: foundId,
+          context: args.context,
+          currentFileScope: args.currentFileScope,
+          elaboratedVariables: args.elaboratedVariables,
+          isInCFuncdecl: false,
+          startLookupInScopeForGenerics: args.startLookupInScopeForGenerics,
+          startLookupInScopeForSymbol: args.startLookupInScopeForSymbol,
+        });
       }
 
       if (found.variant === Collect.ENode.StructDefinitionSymbol) {
@@ -529,6 +552,6 @@ export function lookupAndElaborateDatatype(
     // =================================================================================================================
 
     default:
-      throw new ImpossibleSituation();
+      assert(false, "" + type.variant);
   }
 }

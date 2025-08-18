@@ -18,6 +18,10 @@
           "match": "\\bas\\b"
         },
         {
+          "name": "keyword.control.type",
+          "match": "\\btype \\b"
+        },
+        {
           "name": "keyword.control",
           "match": "\\b(extern|noemit|const|let|if|else|while|do|for|return|static|defer)\\b"
         },
@@ -35,7 +39,7 @@
         },
         {
           "name": "keyword.other.union",
-          "match": "\\b(union|unsafe_union)\\b"
+          "match": "\\b(union)\\b"
         },
         {
           "name": "keyword.other.namespace",
@@ -66,7 +70,7 @@
         },
         {
           "name": "keyword.control.module",
-          "match": " from "
+          "match": "from "
         },
         {
           "name": "keyword.control.module",
@@ -200,7 +204,7 @@
       "patterns": [
         {
           "name": "support.type.primitive",
-          "match": "\\b(i8|i16|i32|i64|u8|u16|u32|u64|stringview|String|boolean)\\b"
+          "match": "\\b(i8|i16|i32|i64|u8|u16|u32|u64|str|String|boolean|int|float)\\b"
         },
         {
           "name": "support.type.builtin",
