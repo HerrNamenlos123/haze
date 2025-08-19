@@ -56,6 +56,9 @@ import {
   type ModuleImport,
   type SymbolImport,
   type ASTTypedefStatement,
+  type ASTArrayDatatype,
+  type ASTArrayLiteralExpr,
+  type ASTArraySubscriptExpr,
 } from "../shared/AST";
 import {
   BinaryExprContext,
@@ -115,6 +118,9 @@ import {
   TypedefStatementContext,
   TypeDefinitionContext,
   TypedefDirectiveContext,
+  ArrayDatatypeContext,
+  ArrayLiteralContext,
+  ArraySubscriptExprContext,
 } from "./grammar/autogen/HazeParser";
 import {
   BaseErrorListener,
@@ -1026,5 +1032,33 @@ class ASTTransformer extends HazeVisitor<any> {
     }
 
     return currentNamespace;
+  };
+
+  visitArrayDatatype = (ctx: ArrayDatatypeContext): ASTArrayDatatype => {
+    return {
+      variant: "ArrayDatatype",
+      datatype: this.visit(ctx.datatype()),
+      length: Number(ctx.INTEGER_LITERAL()?.getText()),
+      sourceloc: this.loc(ctx),
+    };
+  };
+
+  visitArrayLiteral = (ctx: ArrayLiteralContext): ASTArrayLiteralExpr => {
+    return {
+      variant: "ArrayLiteralExpr",
+      values: ctx.expr().map((e) => this.visit(e)),
+      sourceloc: this.loc(ctx),
+    };
+  };
+
+  visitArraySubscriptExpr = (ctx: ArraySubscriptExprContext): ASTArraySubscriptExpr => {
+    assert(ctx._value);
+    assert(ctx._index);
+    return {
+      variant: "ArraySubscriptExpr",
+      expr: this.visit(ctx._value),
+      indices: ctx._index.map((i) => this.visit(i)),
+      sourceloc: this.loc(ctx),
+    };
   };
 }

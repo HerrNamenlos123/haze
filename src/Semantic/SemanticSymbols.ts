@@ -62,8 +62,10 @@ export type SemanticResult = {
 
   elaboratedPrimitiveTypes: Semantic.Id[];
   functionTypeCache: Semantic.Id[];
-  rawPointerTypeCache: Semantic.Id[];
+  pointerTypeCache: Semantic.Id[];
   referenceTypeCache: Semantic.Id[];
+  arrayTypeCache: Semantic.Id[];
+  sliceTypeCache: Semantic.Id[];
 
   exportedCollectedSymbols: Set<number>;
 
@@ -136,6 +138,8 @@ export namespace Semantic {
     GenericParameterDatatype,
     NamespaceDatatype,
     LiteralValueDatatype,
+    ArrayDatatype,
+    SliceDatatype,
     // Statements
     InlineCStatement,
     WhileStatement,
@@ -162,6 +166,8 @@ export namespace Semantic {
     StructInstantiationExpr,
     PreIncrExpr,
     PostIncrExpr,
+    ArrayLiteralExpr,
+    ArraySubscriptExpr,
     // Dummy
     Dummy,
   }
@@ -177,6 +183,8 @@ export namespace Semantic {
     ENode.GenericParameterDatatype,
     ENode.NamespaceDatatype,
     ENode.LiteralValueDatatype,
+    ENode.ArrayDatatype,
+    ENode.SliceDatatype,
   ] as const;
 
   export const ExpressionEnums = [
@@ -197,6 +205,8 @@ export namespace Semantic {
     ENode.StructInstantiationExpr,
     ENode.PreIncrExpr,
     ENode.PostIncrExpr,
+    ENode.ArrayLiteralExpr,
+    ENode.ArraySubscriptExpr,
   ] as const;
 
   export function addNode<T extends Semantic.Node>(sr: SemanticResult, n: T): [T, Semantic.Id] {
@@ -320,6 +330,19 @@ export namespace Semantic {
     concrete: boolean;
   };
 
+  export type ArrayDatatypeSymbol = {
+    variant: ENode.ArrayDatatype;
+    datatype: Id;
+    length: number;
+    concrete: boolean;
+  };
+
+  export type SliceDatatypeSymbol = {
+    variant: ENode.SliceDatatype;
+    datatype: Id;
+    concrete: boolean;
+  };
+
   export type GenericParameterDatatypeSymbol = {
     variant: ENode.GenericParameterDatatype;
     name: string;
@@ -347,6 +370,8 @@ export namespace Semantic {
     | FunctionDatatypeSymbol
     | StructDatatypeSymbol
     | PointerDatatypeSymbol
+    | ArrayDatatypeSymbol
+    | SliceDatatypeSymbol
     | ReferenceDatatypeSymbol
     | CallableDatatypeSymbol
     | LiteralValueDatatypeSymbol
@@ -484,6 +509,21 @@ export namespace Semantic {
     sourceloc: SourceLoc;
   };
 
+  export type ArrayLiteralExpr = {
+    variant: ENode.ArrayLiteralExpr;
+    values: Id[];
+    type: Id;
+    sourceloc: SourceLoc;
+  };
+
+  export type ArraySubscriptExpr = {
+    variant: ENode.ArraySubscriptExpr;
+    expr: Id;
+    indices: Id[];
+    type: Id;
+    sourceloc: SourceLoc;
+  };
+
   export type Expression =
     | ExprMemberAccessExpr
     | SymbolValueExpr
@@ -500,7 +540,9 @@ export namespace Semantic {
     | ExplicitCastExpr
     | ExprCallExpr
     | StructInstantiationExpr
-    | LiteralExpr;
+    | LiteralExpr
+    | ArrayLiteralExpr
+    | ArraySubscriptExpr;
 
   // =============================================
 

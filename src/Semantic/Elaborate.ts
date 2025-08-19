@@ -18,11 +18,13 @@ import {
   makePointerDatatypeAvailable,
   makeReferenceDatatypeAvailable,
   elaborateParentSymbolFromCache,
+  makeArrayDatatypeAvailable,
 } from "./LookupDatatype";
 import {
   asExpression,
   asType,
   getExprType,
+  isExpression,
   isType,
   isTypeConcrete,
   makePrimitiveAvailable,
@@ -1061,6 +1063,95 @@ export function elaborateExpr(
         value: Conversion.MakeImplicitConversion(sr, valueId, target.type, expr.sourceloc),
         target: targetId,
         type: target.type,
+        sourceloc: expr.sourceloc,
+      });
+    }
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
+    case Collect.ENode.ArrayLiteralExpr: {
+      const values = expr.values.map((v) =>
+        elaborateExpr(sr, v, {
+          context: args.context,
+          elaboratedVariables: args.elaboratedVariables,
+          scope: args.scope,
+          currentScope: args.currentScope,
+        })
+      );
+      let type = null as Semantic.Id | null;
+      for (let i = 0; i < values.length; i++) {
+        const [value, valueId] = values[i];
+        assert(isExpression(value));
+        if (type === null) {
+          type = value.type;
+        }
+        if (type !== value.type) {
+          throw new CompilerError(
+            `Array type mismatch: Value #${i + 1} has type ${serializeDatatype(
+              sr,
+              value.type
+            )}, but ${serializeDatatype(
+              sr,
+              type
+            )} was expected. Cannot deduce array type from multiple different value types.`,
+            expr.sourceloc
+          );
+        }
+      }
+      if (values.length === 0) {
+        throw new CompilerError(`Array literal must contain at least one value`, expr.sourceloc);
+      }
+      assert(type);
+      return Semantic.addNode(sr, {
+        variant: Semantic.ENode.ArrayLiteralExpr,
+        values: values.map((v) => v[1]),
+        type: makeArrayDatatypeAvailable(sr, type, values.length),
+        sourceloc: expr.sourceloc,
+      });
+    }
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
+    case Collect.ENode.ArraySubscriptExpr: {
+      if (expr.indices.length > 1) {
+        throw new CompilerError(
+          `Multidimensional array subscripting is not implemented yet`,
+          expr.sourceloc
+        );
+      }
+      const [value, valueId] = elaborateExpr(sr, expr.expr, {
+        context: args.context,
+        elaboratedVariables: args.elaboratedVariables,
+        scope: args.scope,
+        currentScope: args.currentScope,
+      });
+      const [index, indexId] = elaborateExpr(sr, expr.indices[0], {
+        context: args.context,
+        elaboratedVariables: args.elaboratedVariables,
+        scope: args.scope,
+        currentScope: args.currentScope,
+      });
+
+      const valueType = sr.nodes.get(value.type);
+      if (
+        valueType.variant !== Semantic.ENode.ArrayDatatype &&
+        valueType.variant !== Semantic.ENode.SliceDatatype
+      ) {
+        throw new CompilerError(
+          `Expression of type ${serializeExpr(sr, value.type)} cannot be subscripted`,
+          expr.sourceloc
+        );
+      }
+
+      return Semantic.addNode(sr, {
+        variant: Semantic.ENode.ArraySubscriptExpr,
+        expr: valueId,
+        indices: [indexId],
+        type: valueType.datatype,
         sourceloc: expr.sourceloc,
       });
     }
@@ -2109,8 +2200,10 @@ export function SemanticallyAnalyze(
     elaboratedNamespaceSymbols: [],
     elaboratedGlobalVariableStatements: [],
     functionTypeCache: [],
-    rawPointerTypeCache: [],
+    pointerTypeCache: [],
     referenceTypeCache: [],
+    arrayTypeCache: [],
+    sliceTypeCache: [],
 
     nodes: new BrandedArray<Semantic.Id, Semantic.Node>([]),
 

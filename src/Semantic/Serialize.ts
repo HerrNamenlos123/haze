@@ -43,6 +43,12 @@ export function serializeDatatype(sr: SemanticResult, datatypeId: Semantic.Id): 
     case Semantic.ENode.LiteralValueDatatype:
       return serializeLiteralValue(datatype.literal);
 
+    case Semantic.ENode.ArrayDatatype:
+      return `${serializeDatatype(sr, datatype.datatype)}[${datatype.length}]`;
+
+    case Semantic.ENode.SliceDatatype:
+      return `${serializeDatatype(sr, datatype.datatype)}[]`;
+
     default:
       throw new InternalError("Not handled: " + datatype.variant);
   }
@@ -219,6 +225,15 @@ export function mangleDatatype(sr: SemanticResult, typeId: Semantic.Id): string 
       return "R" + mangleDatatype(sr, type.referee);
     }
 
+    case Semantic.ENode.ArrayDatatype: {
+      const lengthStr = type.length.toString();
+      return "A" + lengthStr + "_" + mangleDatatype(sr, type.datatype);
+    }
+
+    case Semantic.ENode.SliceDatatype: {
+      return "S" + mangleDatatype(sr, type.datatype);
+    }
+
     case Semantic.ENode.LiteralValueDatatype: {
       if (type.literal.type === EPrimitive.bool) {
         return `Lb${type.literal.value ? "1" : "0"}E`;
@@ -315,6 +330,14 @@ export function serializeExpr(sr: SemanticResult, exprId: Semantic.Id): string {
 
     case Semantic.ENode.NamespaceOrStructValueExpr:
       return `${serializeDatatype(sr, expr.elaboratedNamespaceOrStruct)}`;
+
+    case Semantic.ENode.ArrayLiteralExpr:
+      return `[${expr.values.map((v) => serializeExpr(sr, v)).join(", ")}]`;
+
+    case Semantic.ENode.ArraySubscriptExpr:
+      return `${serializeExpr(sr, expr.expr)}[${expr.indices
+        .map((i) => serializeExpr(sr, i))
+        .join(", ")}]`;
 
     default:
       assert(false, expr.variant.toString());

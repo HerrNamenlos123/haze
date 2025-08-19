@@ -198,6 +198,19 @@ export type ASTPointerDatatype = {
   sourceloc: SourceLoc;
 };
 
+export type ASTArrayDatatype = {
+  variant: "ArrayDatatype";
+  datatype: ASTDatatype;
+  length: number;
+  sourceloc: SourceLoc;
+};
+
+export type ASTSliceDatatype = {
+  variant: "SliceDatatype";
+  datatype: ASTDatatype;
+  sourceloc: SourceLoc;
+};
+
 export type ASTReferenceDatatype = {
   variant: "ReferenceDatatype";
   referee: ASTDatatype;
@@ -209,6 +222,8 @@ export type ASTDatatype =
   | ASTFunctionDatatype
   | ASTDeferredType
   | ASTPointerDatatype
+  | ASTArrayDatatype
+  | ASTSliceDatatype
   | ASTReferenceDatatype;
 
 export type ASTGlobalVariableDefinition = {
@@ -323,6 +338,12 @@ export type ASTLiteralExpr = {
   sourceloc: SourceLoc;
 };
 
+export type ASTArrayLiteralExpr = {
+  variant: "ArrayLiteralExpr";
+  values: ASTExpr[];
+  sourceloc: SourceLoc;
+};
+
 export type ASTPostIncrExpr = {
   variant: "PostIncrExpr";
   expr: ASTExpr;
@@ -385,6 +406,13 @@ export type ASTPointerDereferenceExpr = {
   sourceloc: SourceLoc;
 };
 
+export type ASTArraySubscriptExpr = {
+  variant: "ArraySubscriptExpr";
+  expr: ASTExpr;
+  indices: ASTExpr[];
+  sourceloc: SourceLoc;
+};
+
 export type ASTBinaryExpr = {
   variant: "BinaryExpr";
   a: ASTExpr;
@@ -411,6 +439,7 @@ export type ASTSymbolValueExpr = {
 export type ASTExpr =
   | ASTParenthesisExpr
   | ASTLambdaExpr
+  | ASTArrayLiteralExpr
   | ASTLiteralExpr
   | ASTPostIncrExpr
   | ASTExprCallExpr
@@ -421,6 +450,7 @@ export type ASTExpr =
   | ASTPointerDereferenceExpr
   | ASTUnaryExpr
   | ASTExplicitCastExpr
+  | ASTArraySubscriptExpr
   | ASTBinaryExpr
   | ASTExprAssignmentExpr
   | ASTSymbolValueExpr;

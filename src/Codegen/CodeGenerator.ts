@@ -135,6 +135,17 @@ class CodeGenerator {
         this.out.type_declarations.writeLine(
           `typedef ${this.mangle(this.lr.typeNodes.get(symbol.referee))}* ${this.mangle(symbol)};`
         );
+      } else if (symbol.variant === Lowered.ENode.ArrayDatatype) {
+        this.out.type_declarations.writeLine(
+          `typedef struct ${this.mangle(symbol)} ${this.mangle(symbol)};`
+        );
+        this.out.type_definitions.writeLine(`struct ${this.mangle(symbol)} {`).pushIndent();
+        this.out.type_definitions.writeLine(
+          `${this.mangle(this.lr.typeNodes.get(symbol.datatype))} data[${symbol.length}];`
+        );
+        this.out.type_definitions.popIndent().writeLine(`};`);
+      } else if (symbol.variant === Lowered.ENode.SliceDatatype) {
+        assert(false);
       } else if (symbol.variant === Lowered.ENode.FunctionDatatype) {
         this.out.type_definitions.writeLine(
           `typedef ${this.mangle(this.lr.typeNodes.get(symbol.returnType))} (*${this.mangle(
@@ -217,6 +228,14 @@ class CodeGenerator {
       } else if (type.variant === Lowered.ENode.LiteralValueDatatype) {
         appliedTypes.add(type);
         this.lr.sortedLoweredTypes.push(type);
+      } else if (type.variant === Lowered.ENode.ArrayDatatype) {
+        appliedTypes.add(type);
+        processType(type.datatype);
+        this.lr.sortedLoweredTypes.push(type);
+      } else if (type.variant === Lowered.ENode.SliceDatatype) {
+        appliedTypes.add(type);
+        processType(type.datatype);
+        this.lr.sortedLoweredTypes.push(type);
       } else {
         assert(false);
       }
@@ -270,7 +289,7 @@ class CodeGenerator {
       | Lowered.VariableStatement
       | Lowered.SymbolValueExpr
       | Lowered.CallableExpr
-  ) {
+  ): string {
     if (datatypeOrSymbol.variant === Lowered.ENode.CallableExpr) {
       return "_H" + datatypeOrSymbol.functionMangledName;
     }
@@ -685,7 +704,7 @@ class CodeGenerator {
         } else {
           assert(expr.datatype);
           const datatype = this.lr.typeNodes.get(expr.datatype);
-          outWriter.write("sizeof(_H" + datatype.mangledName + ")");
+          outWriter.write("sizeof(" + this.mangle(datatype) + ")");
           return { out: outWriter, temp: tempWriter };
         }
       }
@@ -696,6 +715,29 @@ class CodeGenerator {
         tempWriter.write(target.temp);
         tempWriter.write(value.temp);
         outWriter.write(target.out.get() + " = " + value.out.get());
+        return { out: outWriter, temp: tempWriter };
+      }
+
+      case Lowered.ENode.ArrayLiteralExpr: {
+        const values = expr.values.map((v) => {
+          const e = this.emitExpr(v);
+          tempWriter.write(e.temp);
+          return e.out;
+        });
+        outWriter.write(
+          `(${this.mangle(this.lr.typeNodes.get(expr.type))}){ .data = {${values
+            .map((v) => v.get())
+            .join(", ")}} }`
+        );
+        return { out: outWriter, temp: tempWriter };
+      }
+
+      case Lowered.ENode.ArraySubscriptExpr: {
+        const e = this.emitExpr(expr.expr);
+        tempWriter.write(e.temp);
+        const index = this.emitExpr(expr.index);
+        tempWriter.write(index.temp);
+        outWriter.write(`(${e.out.get()}).data[${index.out.get()}]`);
         return { out: outWriter, temp: tempWriter };
       }
 

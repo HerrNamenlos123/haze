@@ -90,6 +90,8 @@ datatype
     : datatypeFragment ('.' datatypeFragment)*                          #NamedDatatype
     | datatype '*'                                                      #PointerDatatype
     | datatype '&'                                                      #ReferenceDatatype
+    | datatype '[' n=INTEGER_LITERAL ']'                                #ArrayDatatype
+    | datatype '[' ']'                                                  #SliceDatatype
     | '(' params ')' '=>' datatype                                      #FunctionDatatype
     ;
 
@@ -124,11 +126,12 @@ expr
     // | '{' objectattribute? (',' objectattribute)* ','? '}'                       #AnonymousStructInstantiationExpr
     | lambda                                                                        #LambdaExpr
     | literal                                                                       #LiteralExpr
+    | '[' expr? (',' expr)* ','? ']'                                                #ArrayLiteral
 
     // Part 1: Left to right
     | expr op=('++' | '--')                                                         #PostIncrExpr
     | expr '(' (expr (',' expr)*)? ')'                                              #ExprCallExpr
-    // <- Array Subscripting here: expr[]
+    | value=expr '[' index+=expr (',' index+=expr)* ','? ']'                         #ArraySubscriptExpr
     | expr '.' ID ('<' genericLiteral (',' genericLiteral)* '>')?                   #ExprMemberAccess
     | datatype '{' (ID ':' expr)? (',' (ID ':' expr))* ','? '}'                     #StructInstantiationExpr
 

@@ -119,6 +119,8 @@ export namespace Collect {
     NamedDatatype,
     ReferenceDatatype,
     PointerDatatype,
+    ArrayDatatype,
+    SliceDatatype,
     StructDefinitionSymbol,
     NamespaceSharedInstance,
     NamespaceDefinitionSymbol,
@@ -147,6 +149,8 @@ export namespace Collect {
     StructInstantiationExpr,
     PreIncrExpr,
     PostIncrExpr,
+    ArraySubscriptExpr,
+    ArrayLiteralExpr,
     // Specials
     ModuleImport,
     SymbolImport,
@@ -341,6 +345,19 @@ export namespace Collect {
     sourceloc: SourceLoc;
   };
 
+  export type ArrayDatatype = {
+    variant: ENode.ArrayDatatype;
+    datatype: Collect.Id;
+    length: number;
+    sourceloc: SourceLoc;
+  };
+
+  export type SliceDatatype = {
+    variant: ENode.SliceDatatype;
+    datatype: Collect.Id;
+    sourceloc: SourceLoc;
+  };
+
   export type StructDefinitionSymbol = {
     variant: ENode.StructDefinitionSymbol;
     fullyQualifiedName: string;
@@ -387,6 +404,8 @@ export namespace Collect {
     | FunctionDatatype
     | PointerDatatype
     | ReferenceDatatype
+    | ArrayDatatype
+    | SliceDatatype
     | StructDefinitionSymbol
     | NamespaceDefinitionSymbol
     | NamespaceSharedInstance
@@ -566,6 +585,17 @@ export namespace Collect {
     operation: EIncrOperation;
   };
 
+  export type ArrayLiteralExpr = BaseExpr & {
+    variant: ENode.ArrayLiteralExpr;
+    values: Collect.Id[];
+  };
+
+  export type ArraySubscriptExpr = BaseExpr & {
+    variant: ENode.ArraySubscriptExpr;
+    expr: Collect.Id;
+    indices: Collect.Id[];
+  };
+
   export type Expressions =
     | ParenthesisExpr
     | BinaryExpr
@@ -578,6 +608,8 @@ export namespace Collect {
     | PointerAddressOfExpr
     | PointerDereferenceExpr
     | LiteralExpr
+    | ArrayLiteralExpr
+    | ArraySubscriptExpr
     | PreIncrExpr
     | PostIncrExpr
     | MemberAccessExpr;
@@ -760,7 +792,6 @@ function collect(
     | ASTExprMemberAccess
     | ASTLambdaExpr
     | ASTPreIncrExpr
-    | ASTLiteralExpr
     | ASTPointerAddressOfExpr
     | ASTPointerDereferenceExpr
     | ASTPostIncrExpr
@@ -1369,6 +1400,29 @@ function collect(
     // =================================================================================================================
     // =================================================================================================================
 
+    case "ArrayDatatype":
+      return makeSymbol(cc, {
+        variant: Collect.ENode.ArrayDatatype,
+        datatype: collect(cc, item.datatype, args),
+        length: item.length,
+        sourceloc: item.sourceloc,
+      })[1];
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
+    case "SliceDatatype":
+      return makeSymbol(cc, {
+        variant: Collect.ENode.SliceDatatype,
+        datatype: collect(cc, item.datatype, args),
+        sourceloc: item.sourceloc,
+      })[1];
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
     case "ParenthesisExpr": {
       return makeSymbol(cc, {
         variant: Collect.ENode.ParenthesisExpr,
@@ -1573,6 +1627,29 @@ function collect(
     // =================================================================================================================
     // =================================================================================================================
 
+    case "ArrayLiteralExpr":
+      return makeSymbol(cc, {
+        variant: Collect.ENode.ArrayLiteralExpr,
+        values: item.values.map((v) => collect(cc, v, args)),
+        sourceloc: item.sourceloc,
+      })[1];
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
+    case "ArraySubscriptExpr":
+      return makeSymbol(cc, {
+        variant: Collect.ENode.ArraySubscriptExpr,
+        expr: collect(cc, item.expr, args),
+        indices: item.indices.map((i) => collect(cc, i, args)),
+        sourceloc: item.sourceloc,
+      })[1];
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
     case "ModuleImport": {
       // return makeSymbol(cc, {
       //   variant: Collect.ENode.ModuleImport,
@@ -1765,6 +1842,10 @@ export function printCollectedDatatype(cc: CollectionContext, typeId: Collect.Id
       return serializeLiteralValue(type.literal);
     }
 
+    case Collect.ENode.ArrayDatatype: {
+      return `${printCollectedDatatype(cc, type.datatype)}[${type.length}]`;
+    }
+
     default:
       assert(false, type.variant.toString());
   }
@@ -1848,6 +1929,14 @@ export function PrettyPrintCollected(cc: CollectionContext) {
 
       case Collect.ENode.PostIncrExpr: {
         return `${printExpr(expr.expr)}${IncrOperationToString(expr.operation)}`;
+      }
+
+      case Collect.ENode.ArraySubscriptExpr: {
+        return `${printExpr(expr.expr)}[${expr.indices.map((i) => printExpr(i)).join(", ")}]`;
+      }
+
+      case Collect.ENode.ArrayLiteralExpr: {
+        return `[${expr.values.map((v) => printExpr(v)).join(", ")}]`;
       }
 
       default:

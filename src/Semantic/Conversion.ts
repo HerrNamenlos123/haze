@@ -224,6 +224,16 @@ export namespace Conversion {
         assert(bt.variant === Semantic.ENode.ReferenceDatatype);
         return IsStructurallyEquivalent(sr, at.referee, bt.referee, seen);
 
+      case Semantic.ENode.ArrayDatatype:
+        assert(bt.variant === Semantic.ENode.ArrayDatatype);
+        return (
+          IsStructurallyEquivalent(sr, at.datatype, bt.datatype, seen) && at.length === bt.length
+        );
+
+      case Semantic.ENode.SliceDatatype:
+        assert(bt.variant === Semantic.ENode.SliceDatatype);
+        return IsStructurallyEquivalent(sr, at.datatype, bt.datatype, seen);
+
       case Semantic.ENode.FunctionDatatype:
         assert(bt.variant === Semantic.ENode.FunctionDatatype);
         return (

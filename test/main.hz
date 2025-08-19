@@ -49,6 +49,12 @@ import glfw
 __c__("#include <stdio.h>");
 extern "C" noemit printf(fmt: str, ...);
 
+foo(arr: int[3]) {
+    arr[1] = 4;
+}
+
+struct Foo {}
+
 main(): int {
     if not glfw.init() {
         return 0;
@@ -58,20 +64,23 @@ main(): int {
     glfw.makeContextCurrent(window);
     glfw.swapInterval(0);
 
-    const comptime TARGET = "a";
+    let arr = [1, 2, 3];
+    foo(arr);
 
     let oldTime = glfw.getTime();
 
-    if comptime (TARGET == "windows") {
-        printf("Windows!\n");
-    }
-    else if (TARGET == "linux") {
-        printf("Linux!\n");
-    }
-    else {
-        printf("Unknown platform!\n");
-    }
-    return 0;
+    // const comptime TARGET = "a";
+
+    // if comptime (TARGET == "windows") {
+    //     printf("Windows!\n");
+    // }
+    // else if (TARGET == "linux") {
+    //     printf("Linux!\n");
+    // }
+    // else {
+    //     printf("Unknown platform!\n");
+    // }
+    // return 0;
 
     let fps = 0.0;
     while not window.shouldClose() {

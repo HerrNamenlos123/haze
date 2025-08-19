@@ -66,7 +66,7 @@ export function makePointerDatatypeAvailable(
   sr: SemanticResult,
   pointee: Semantic.Id
 ): Semantic.Id {
-  for (const id of sr.rawPointerTypeCache) {
+  for (const id of sr.pointerTypeCache) {
     const type = sr.nodes.get(id);
     assert(type.variant === Semantic.ENode.PointerDatatype);
     if (type.pointee !== pointee) {
@@ -81,7 +81,7 @@ export function makePointerDatatypeAvailable(
     pointee: pointee,
     concrete: isTypeConcrete(sr, pointee),
   });
-  sr.rawPointerTypeCache.push(typeId);
+  sr.pointerTypeCache.push(typeId);
   return typeId;
 }
 
@@ -105,6 +105,51 @@ export function makeReferenceDatatypeAvailable(
     concrete: isTypeConcrete(sr, referee),
   });
   sr.referenceTypeCache.push(typeId);
+  return typeId;
+}
+
+export function makeArrayDatatypeAvailable(
+  sr: SemanticResult,
+  datatype: Semantic.Id,
+  length: number
+): Semantic.Id {
+  for (const id of sr.arrayTypeCache) {
+    const type = sr.nodes.get(id);
+    assert(type.variant === Semantic.ENode.ArrayDatatype);
+    if (type.datatype !== datatype || type.length !== length) {
+      continue;
+    }
+    return id;
+  }
+
+  // Nothing found
+  const [type, typeId] = Semantic.addNode(sr, {
+    variant: Semantic.ENode.ArrayDatatype,
+    datatype: datatype,
+    length: length,
+    concrete: isTypeConcrete(sr, datatype),
+  });
+  sr.arrayTypeCache.push(typeId);
+  return typeId;
+}
+
+export function makeSliceDatatypeAvailable(sr: SemanticResult, datatype: Semantic.Id): Semantic.Id {
+  for (const id of sr.sliceTypeCache) {
+    const type = sr.nodes.get(id);
+    assert(type.variant === Semantic.ENode.SliceDatatype);
+    if (type.datatype !== datatype) {
+      continue;
+    }
+    return id;
+  }
+
+  // Nothing found
+  const [type, typeId] = Semantic.addNode(sr, {
+    variant: Semantic.ENode.SliceDatatype,
+    datatype: datatype,
+    concrete: isTypeConcrete(sr, datatype),
+  });
+  sr.sliceTypeCache.push(typeId);
   return typeId;
 }
 
@@ -243,6 +288,8 @@ export function instantiateAndElaborateStruct(
           type: type,
           variableContext: EVariableContext.MemberOfStruct,
           parentStructOrNS: structId,
+          comptime: false,
+          comptimeValue: null,
           concrete: asType(sr.nodes.get(type)).concrete,
         });
         struct.members.push(variableId);
@@ -344,6 +391,45 @@ export function lookupAndElaborateDatatype(
         sr,
         lookupAndElaborateDatatype(sr, {
           typeId: type.pointee,
+          startLookupInScopeForSymbol: args.startLookupInScopeForSymbol,
+          startLookupInScopeForGenerics: args.startLookupInScopeForGenerics,
+          context: args.context,
+          currentScope: args.currentScope,
+          elaboratedVariables: args.elaboratedVariables,
+          isInCFuncdecl: args.isInCFuncdecl,
+        })
+      );
+    }
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
+    case Collect.ENode.ArrayDatatype: {
+      return makeArrayDatatypeAvailable(
+        sr,
+        lookupAndElaborateDatatype(sr, {
+          typeId: type.datatype,
+          startLookupInScopeForSymbol: args.startLookupInScopeForSymbol,
+          startLookupInScopeForGenerics: args.startLookupInScopeForGenerics,
+          context: args.context,
+          currentScope: args.currentScope,
+          elaboratedVariables: args.elaboratedVariables,
+          isInCFuncdecl: args.isInCFuncdecl,
+        }),
+        type.length
+      );
+    }
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
+    case Collect.ENode.SliceDatatype: {
+      return makeSliceDatatypeAvailable(
+        sr,
+        lookupAndElaborateDatatype(sr, {
+          typeId: type.datatype,
           startLookupInScopeForSymbol: args.startLookupInScopeForSymbol,
           startLookupInScopeForGenerics: args.startLookupInScopeForGenerics,
           context: args.context,
