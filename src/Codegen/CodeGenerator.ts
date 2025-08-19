@@ -7,7 +7,7 @@ import {
   UnaryOperationToString,
 } from "../shared/AST";
 import { EPrimitive, primitiveToString } from "../shared/common";
-import { ModuleType, type ModuleConfig } from "../shared/Config";
+import { getModuleGlobalNamespaceName, ModuleType, type ModuleConfig } from "../shared/Config";
 import { assert, InternalError, printWarningMessage } from "../shared/Errors";
 import { OutputWriter } from "./OutputWriter";
 
@@ -49,7 +49,11 @@ class CodeGenerator {
       // this.out.function_definitions.writeLine(
       //   `_H4ListI6StringE argsList = _HN7Process10__loadArgvE(&ctx, argc, (uint8_t**)argv);`,
       // );
-      this.out.function_definitions.writeLine("return _H4mainv();").popIndent().writeLine("}");
+      const ns = getModuleGlobalNamespaceName(config.projectName, config.projectVersion);
+      this.out.function_definitions
+        .writeLine(`return _HN${ns.length}${ns}4mainEv();`)
+        .popIndent()
+        .writeLine("}");
     }
   }
 

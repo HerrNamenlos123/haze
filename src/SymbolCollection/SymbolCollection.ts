@@ -35,6 +35,7 @@ import {
   type ASTStructMemberDefinition,
   type ModuleImport,
   type SymbolImport,
+  type ASTGlobalDeclaration,
 } from "../shared/AST";
 import {
   BrandedArray,
@@ -56,7 +57,7 @@ import {
   type EIncrOperation,
   type EUnaryOperation,
 } from "../shared/AST";
-import type { ExportData, ModuleConfig } from "../shared/Config";
+import { getModuleGlobalNamespaceName, type ExportData, type ModuleConfig } from "../shared/Config";
 import { serializeLiteralValue } from "../Semantic/Serialize";
 
 export type CollectionContext = {
@@ -67,6 +68,7 @@ export type CollectionContext = {
   overloadGroups: Set<Collect.Id>;
   blockScopes: Set<Collect.Id>;
   sharedNamespaceInstances: Set<Collect.Id>;
+  elaboratedNamespacesAndStructs: Set<Collect.Id>;
 
   exportedSymbols: ExportData;
   // exportCache: Map<Collect.Id, ImpExp.Id>;
@@ -87,6 +89,7 @@ export function makeCollectionContext(config: ModuleConfig): CollectionContext {
     exportedSymbols: {
       exported: new Set(),
     },
+    elaboratedNamespacesAndStructs: new Set(),
     // exportCache: new Map(),
   };
   return cc;
@@ -334,6 +337,7 @@ export namespace Collect {
 
   export type StructDefinitionSymbol = {
     variant: ENode.StructDefinitionSymbol;
+    fullyQualifiedName: string;
     parentScope: Collect.Id;
     generics: Collect.Id[];
     name: string;
@@ -953,18 +957,30 @@ function collect(
           parent.variant === Collect.ENode.NamespaceScope
       );
 
+      let fullyQualifiedName = "";
+      if (parent.variant === Collect.ENode.NamespaceScope) {
+        const ns = cc.nodes.get(parent.owningSymbol);
+        assert(ns.variant === Collect.ENode.NamespaceDefinitionSymbol);
+        fullyQualifiedName += ns.fullyQualifiedName + ".";
+      }
+      fullyQualifiedName += item.name;
+
       let [existingNamespace, existingNamespaceId] = [
         undefined as undefined | Collect.NamespaceDefinitionSymbol,
         -1 as Collect.Id,
       ];
-      for (const id of parent.symbols) {
+      for (const id of cc.elaboratedNamespacesAndStructs) {
         const sym = cc.nodes.get(id);
-        if (sym.variant === Collect.ENode.NamespaceDefinitionSymbol && sym.name === item.name) {
-          if (sym.name === item.name) {
-            [existingNamespace, existingNamespaceId] = [sym, id];
-            break;
-          }
-        } else if (sym.variant === Collect.ENode.StructDefinitionSymbol && sym.name === item.name) {
+        if (
+          sym.variant === Collect.ENode.NamespaceDefinitionSymbol &&
+          sym.fullyQualifiedName === fullyQualifiedName
+        ) {
+          [existingNamespace, existingNamespaceId] = [sym, id];
+          break;
+        } else if (
+          sym.variant === Collect.ENode.StructDefinitionSymbol &&
+          sym.fullyQualifiedName === fullyQualifiedName
+        ) {
           throw new CompilerError(
             `Symbol '${
               item.name
@@ -974,13 +990,6 @@ function collect(
             item.sourceloc
           );
         }
-      }
-
-      let fullyQualifiedName = "";
-      if (parent.variant === Collect.ENode.NamespaceScope) {
-        const ns = cc.nodes.get(parent.owningSymbol);
-        assert(ns.variant === Collect.ENode.NamespaceDefinitionSymbol);
-        fullyQualifiedName += ns.fullyQualifiedName + ".";
       }
 
       if (existingNamespaceId === -1) {
@@ -1028,6 +1037,7 @@ function collect(
         assert(sharedInstance);
         existingNamespace.namespaceScope = namespaceScopeId;
         sharedInstance.namespaceScopes.push(namespaceScopeId);
+        cc.elaboratedNamespacesAndStructs.add(existingNamespaceId);
       }
 
       assert(existingNamespace);
@@ -1053,18 +1063,35 @@ function collect(
           parent.variant === Collect.ENode.NamespaceScope ||
           parent.variant === Collect.ENode.StructScope
       );
-      for (const id of parent.symbols) {
+
+      let fullyQualifiedName = "";
+      if (parent.variant === Collect.ENode.NamespaceScope) {
+        const ns = cc.nodes.get(parent.owningSymbol);
+        assert(ns.variant === Collect.ENode.NamespaceDefinitionSymbol);
+        fullyQualifiedName += ns.fullyQualifiedName + ".";
+      } else if (parent.variant === Collect.ENode.StructScope) {
+        const ns = cc.nodes.get(parent.owningSymbol);
+        assert(ns.variant === Collect.ENode.StructDefinitionSymbol);
+        fullyQualifiedName += ns.fullyQualifiedName + ".";
+      }
+      fullyQualifiedName += item.name;
+
+      for (const id of cc.elaboratedNamespacesAndStructs) {
         const sym = cc.nodes.get(id);
-        if (sym.variant === Collect.ENode.NamespaceDefinitionSymbol && sym.name === item.name) {
+        if (
+          sym.variant === Collect.ENode.NamespaceDefinitionSymbol &&
+          sym.fullyQualifiedName === fullyQualifiedName
+        ) {
           throw new CompilerError(
-            `Symbol '${
-              item.name
-            }' has already been declared as a Namespace, which cannot be extended by a struct. Original definition: ${
+            `Symbol '${fullyQualifiedName}' has already been declared as a Namespace, which cannot be extended by a struct. Original definition: ${
               (sym.sourceloc && formatSourceLoc(sym.sourceloc)) || ""
             }`,
             item.sourceloc
           );
-        } else if (sym.variant === Collect.ENode.StructDefinitionSymbol && sym.name === item.name) {
+        } else if (
+          sym.variant === Collect.ENode.StructDefinitionSymbol &&
+          sym.fullyQualifiedName === fullyQualifiedName
+        ) {
           throw new CompilerError(
             `Struct '${item.name}' is already declared in this scope. Original definition: ${
               (sym.sourceloc && formatSourceLoc(sym.sourceloc)) || ""
@@ -1077,6 +1104,7 @@ function collect(
       const [struct, structId] = makeSymbol<Collect.StructDefinitionSymbol>(cc, {
         variant: Collect.ENode.StructDefinitionSymbol,
         name: item.name,
+        fullyQualifiedName: fullyQualifiedName,
         generics: [],
         export: item.export,
         extern: item.extern,
@@ -1094,6 +1122,7 @@ function collect(
         symbols: [],
       });
       struct.structScope = structScopeId;
+      cc.elaboratedNamespacesAndStructs.add(structId);
 
       for (const g of item.generics) {
         const generic = defineGenericTypeParameter(cc, g.name, structScopeId, g.sourceloc);
@@ -1570,7 +1599,9 @@ export function CollectFileInUnit(
   cc: CollectionContext,
   ast: ASTRoot,
   unitScope: Collect.Id,
-  filepath: string
+  filepath: string,
+  moduleName: string,
+  moduleVersion: string
 ) {
   const unit = cc.nodes.get(unitScope);
   assert(unit.variant === Collect.ENode.UnitScope);
@@ -1583,18 +1614,36 @@ export function CollectFileInUnit(
   });
   unit.files.push(fileScopeId);
 
+  const namespacedDeclarations: ASTGlobalDeclaration[] = [];
   for (const decl of ast) {
-    const sym = collect(cc, decl, {
-      currentParentScope: fileScopeId,
-    });
-    fileScope.symbols.push(sym);
+    if (
+      decl.variant === "CInjectDirective" ||
+      decl.variant === "ModuleImport" ||
+      decl.variant === "SymbolImport"
+    ) {
+      const sym = collect(cc, decl, {
+        currentParentScope: fileScopeId,
+      });
+      fileScope.symbols.push(sym);
+    } else {
+      namespacedDeclarations.push(decl);
+    }
   }
 
-  // const globalScope = getEntityByComponent(cc, Collect.ModuleScopeComponent);
-  // assert(globalScope);
-  // const mermaid = exportMermaidScopeTree(cc);
-  // console.log(mermaid);
-  // Bun.write("log.md", mermaid);
+  const globalNamespaceId = collect(
+    cc,
+    {
+      variant: "NamespaceDefinition",
+      declarations: namespacedDeclarations,
+      export: true,
+      name: getModuleGlobalNamespaceName(moduleName, moduleVersion),
+      sourceloc: null,
+    },
+    {
+      currentParentScope: fileScopeId,
+    }
+  );
+  fileScope.symbols.push(globalNamespaceId);
 }
 
 export function printCollectedDatatype(cc: CollectionContext, typeId: Collect.Id | null): string {

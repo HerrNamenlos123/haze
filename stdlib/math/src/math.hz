@@ -6,3 +6,5 @@ export struct Float {
 export sqrt(): Float {
     return Float { value: 0.0 };
 }
+
+namespace Test {}

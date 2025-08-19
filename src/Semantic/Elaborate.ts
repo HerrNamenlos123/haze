@@ -6,6 +6,7 @@ import {
   EVariableContext,
   primitiveToString,
 } from "../shared/common";
+import { getModuleGlobalNamespaceName } from "../shared/Config";
 import { assert, CompilerError, InternalError, type SourceLoc } from "../shared/Errors";
 import { Collect, type CollectionContext } from "../SymbolCollection/SymbolCollection";
 import { Conversion } from "./Conversion";
@@ -1928,7 +1929,12 @@ export function elaborateGlobalSymbol(
   }
 }
 
-export function SemanticallyAnalyze(cc: CollectionContext, isLibrary: boolean) {
+export function SemanticallyAnalyze(
+  cc: CollectionContext,
+  isLibrary: boolean,
+  moduleName: string,
+  moduleVersion: string
+) {
   const sr: SemanticResult = {
     overloadedOperators: [],
     cc: cc,
@@ -1966,9 +1972,19 @@ export function SemanticallyAnalyze(cc: CollectionContext, isLibrary: boolean) {
     }
   }
 
+  const mainGlobalScope = sr.elaboratedNamespaceSymbols.find((s) => {
+    const symbol = sr.nodes.get(s.resultSymbol) as Semantic.NamespaceDatatypeSymbol;
+    return (
+      symbol.name === getModuleGlobalNamespaceName(moduleName, moduleVersion) &&
+      symbol.parentStructOrNS === null
+    );
+  });
+  assert(mainGlobalScope);
+  const mainNamespace = sr.nodes.get(mainGlobalScope.resultSymbol);
+  assert(mainNamespace.variant === Semantic.ENode.NamespaceDatatype);
   const mainFunction = sr.elaboratedFuncdefSymbols.find((s) => {
     const symbol = sr.nodes.get(s.resultSymbol) as Semantic.FunctionSymbol;
-    return symbol.name === "main" && symbol.parentStructOrNS === null;
+    return symbol.name === "main" && symbol.parentStructOrNS === mainGlobalScope.resultSymbol;
   });
   if (!isLibrary) {
     if (!mainFunction) {

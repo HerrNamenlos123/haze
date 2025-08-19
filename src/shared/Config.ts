@@ -135,6 +135,10 @@ export function parseModuleMetadata(metadata: string): ModuleMetadata {
   };
 }
 
+export function getModuleGlobalNamespaceName(moduleName: string, moduleVersion: string) {
+  return `${moduleName}_v${moduleVersion.replaceAll(".", "_")}`;
+}
+
 export class ConfigParser {
   configPath: string;
 

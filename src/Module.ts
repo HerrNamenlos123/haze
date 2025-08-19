@@ -315,7 +315,14 @@ class ModuleCompiler {
   async collectFileInUnit(filepath: string, unit: Collect.Id) {
     const fileText = await Bun.file(filepath).text();
     const ast = Parser.parseTextToAST(this.config, fileText, filepath);
-    CollectFileInUnit(this.cc, ast, unit, filepath);
+    CollectFileInUnit(
+      this.cc,
+      ast,
+      unit,
+      filepath,
+      this.config.projectName,
+      this.config.projectVersion
+    );
   }
 
   private makeUnit() {
@@ -373,7 +380,12 @@ class ModuleCompiler {
 
       PrettyPrintCollected(this.cc);
 
-      const sr = SemanticallyAnalyze(this.cc, this.config.moduleType === ModuleType.Library);
+      const sr = SemanticallyAnalyze(
+        this.cc,
+        this.config.moduleType === ModuleType.Library,
+        this.config.projectName,
+        this.config.projectVersion
+      );
       PrettyPrintAnalyzed(sr);
       const lowered = LowerModule(sr);
 
