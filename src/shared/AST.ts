@@ -80,6 +80,25 @@ export function UnaryOperationToString(op: EUnaryOperation): string {
   }
 }
 
+export function AssignmentOperationToString(op: EAssignmentOperation): string {
+  switch (op) {
+    case EAssignmentOperation.Assign:
+      return "=";
+    case EAssignmentOperation.Divide:
+      return "/=";
+    case EAssignmentOperation.Modulo:
+      return "%=";
+    case EAssignmentOperation.Add:
+      return "+=";
+    case EAssignmentOperation.Multiply:
+      return "*=";
+    case EAssignmentOperation.Subtract:
+      return "-=";
+    default:
+      throw new ImpossibleSituation();
+  }
+}
+
 export function BinaryOperationToString(op: EBinaryOperation): string {
   switch (op) {
     case EBinaryOperation.Multiply:

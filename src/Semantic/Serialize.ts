@@ -51,7 +51,7 @@ export function serializeDatatype(sr: SemanticResult, datatypeId: Semantic.Id): 
 export function serializeLiteralValue(value: LiteralValue) {
   if (value.type === EPrimitive.str) {
     return `${JSON.stringify(value.value)}`;
-  } else if (value.type === EPrimitive.boolean) {
+  } else if (value.type === EPrimitive.bool) {
     return `${value.value ? "true" : "false"}`;
   } else {
     return `${primitiveToString(value.type)}(${value.value})`;
@@ -220,7 +220,7 @@ export function mangleDatatype(sr: SemanticResult, typeId: Semantic.Id): string 
     }
 
     case Semantic.ENode.LiteralValueDatatype: {
-      if (type.literal.type === EPrimitive.boolean) {
+      if (type.literal.type === EPrimitive.bool) {
         return `Lb${type.literal.value ? "1" : "0"}E`;
       } else if (type.literal.type === EPrimitive.str) {
         const utf8 = new TextEncoder().encode(type.literal.value);

@@ -38,7 +38,7 @@ export class BrandedArray<I extends number, T> {
 
 export enum EPrimitive {
   none = 1,
-  boolean,
+  bool,
   i8,
   i16,
   i32,
@@ -50,7 +50,7 @@ export enum EPrimitive {
   f32,
   f64,
   int,
-  float,
+  real,
   str,
 }
 
@@ -64,7 +64,7 @@ export enum EVariableContext {
 
 export type LiteralValue =
   | {
-      type: EPrimitive.boolean;
+      type: EPrimitive.bool;
       value: boolean;
     }
   | {
@@ -84,7 +84,7 @@ export type LiteralValue =
         | EPrimitive.f32
         | EPrimitive.f64
         | EPrimitive.int
-        | EPrimitive.float;
+        | EPrimitive.real;
       value: number;
       unit: ELiteralUnit | null;
     };
@@ -99,8 +99,8 @@ export function primitiveToString(primitive: EPrimitive) {
   switch (primitive) {
     case EPrimitive.none:
       return "none";
-    case EPrimitive.boolean:
-      return "boolean";
+    case EPrimitive.bool:
+      return "bool";
     case EPrimitive.i8:
       return "i8";
     case EPrimitive.i16:
@@ -121,8 +121,8 @@ export function primitiveToString(primitive: EPrimitive) {
       return "f32";
     case EPrimitive.int:
       return "int";
-    case EPrimitive.float:
-      return "float";
+    case EPrimitive.real:
+      return "real";
     case EPrimitive.f64:
       return "f64";
     case EPrimitive.str:
@@ -136,8 +136,8 @@ export function stringToPrimitive(str: string) {
   switch (str) {
     case "none":
       return EPrimitive.none;
-    case "boolean":
-      return EPrimitive.boolean;
+    case "bool":
+      return EPrimitive.bool;
     case "i8":
       return EPrimitive.i8;
     case "i16":
@@ -156,8 +156,8 @@ export function stringToPrimitive(str: string) {
       return EPrimitive.u64;
     case "int":
       return EPrimitive.int;
-    case "float":
-      return EPrimitive.float;
+    case "real":
+      return EPrimitive.real;
     case "f32":
       return EPrimitive.f32;
     case "f64":

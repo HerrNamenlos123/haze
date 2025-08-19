@@ -9,7 +9,7 @@
       "type": "lldb",
       "request": "launch",
       "name": "Launch test project",
-      "program": "${workspaceFolder}/__haze__/test/test",
+      "program": "${workspaceFolder}/__haze__/test/output/test",
       "args": [],
       "cwd": "${workspaceFolder}",
       "preLaunchTask": "Build test program"

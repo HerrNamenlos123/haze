@@ -52,6 +52,14 @@ function printType(cc: CollectionContext, typeId: Collect.Id): string {
       return str;
     }
 
+    case Collect.ENode.PointerDatatype: {
+      return `${printType(cc, type.pointee)}*`;
+    }
+
+    case Collect.ENode.ReferenceDatatype: {
+      return `${printType(cc, type.referee)}*`;
+    }
+
     default:
       assert(false, type.variant.toString());
   }

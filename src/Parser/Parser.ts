@@ -370,7 +370,7 @@ class ASTTransformer extends HazeVisitor<any> {
 
   visitFloatLiteral = (ctx: FloatLiteralContext): LiteralValue => {
     return {
-      type: EPrimitive.float,
+      type: EPrimitive.real,
       value: Number(ctx.FLOAT_LITERAL().getText()),
       unit: null,
     };
@@ -393,7 +393,7 @@ class ASTTransformer extends HazeVisitor<any> {
 
   visitBooleanConstant = (ctx: BooleanConstantContext): LiteralValue => {
     return {
-      type: EPrimitive.boolean,
+      type: EPrimitive.bool,
       value: ctx.getText() === "true" ? true : false,
     };
   };
@@ -448,7 +448,7 @@ class ASTTransformer extends HazeVisitor<any> {
 
     return {
       value: value,
-      type: ctx instanceof IntegerUnitLiteralContext ? EPrimitive.int : EPrimitive.float,
+      type: ctx instanceof IntegerUnitLiteralContext ? EPrimitive.int : EPrimitive.real,
       unit: literalUnit,
     };
   }

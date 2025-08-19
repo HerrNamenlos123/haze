@@ -44,16 +44,43 @@
 //     return 0;
 // }
 
-import math
+import glfw
 
-__c__("#include <stdio.h>;");
+__c__("#include <stdio.h>");
 extern "C" noemit printf(fmt: str, ...);
 
 main(): int {
-    printf("Result: %ld\n", math.sqrt());
+    if not glfw.init() {
+        return 0;
+    }
 
-    const result = math.test();
-    printf("Other: %f\n", result.get());
+    const window = glfw.createWindow(1920, 1080, "Hello World!");
+    glfw.makeContextCurrent(window);
+    glfw.swapInterval(0);
+
+    let oldTime = glfw.getTime();
+
+    let fps = 0.0;
+    while not window.shouldClose() {
+        glfw.pollEvents();
+
+        let now = glfw.getTime();
+        let elapsed = now - oldTime;
+        oldTime = now;
+
+        if fps == 0.0 {
+            fps = 1.0 / elapsed;
+        }
+
+        let alpha = 0.001;
+        fps = fps * (1.0 - alpha) + 1.0 / elapsed * alpha;
+
+        printf("FPS: %f\n", fps);
+
+        window.swapBuffers();
+    }
+
+    glfw.terminate();
 
     return 0;
 }

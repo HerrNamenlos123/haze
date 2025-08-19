@@ -128,11 +128,11 @@ class CodeGenerator {
           this.out.type_definitions.popIndent().writeLine(`};`).writeLine();
         }
       } else if (symbol.variant === Lowered.ENode.PointerDatatype) {
-        this.out.type_definitions.writeLine(
+        this.out.type_declarations.writeLine(
           `typedef ${this.mangle(this.lr.typeNodes.get(symbol.pointee))}* ${this.mangle(symbol)};`
         );
       } else if (symbol.variant === Lowered.ENode.ReferenceDatatype) {
-        this.out.type_definitions.writeLine(
+        this.out.type_declarations.writeLine(
           `typedef ${this.mangle(this.lr.typeNodes.get(symbol.referee))}* ${this.mangle(symbol)};`
         );
       } else if (symbol.variant === Lowered.ENode.FunctionDatatype) {
@@ -230,7 +230,7 @@ class CodeGenerator {
 
   primitiveToC(primitive: EPrimitive) {
     switch (primitive) {
-      case EPrimitive.boolean:
+      case EPrimitive.bool:
         return "bool";
       case EPrimitive.f32:
         return "float";
@@ -254,7 +254,7 @@ class CodeGenerator {
         return "uint8_t";
       case EPrimitive.int:
         return "int64_t";
-      case EPrimitive.float:
+      case EPrimitive.real:
         return "double";
       case EPrimitive.none:
         return "void";
@@ -690,7 +690,7 @@ class CodeGenerator {
           outWriter.write(
             `(${this.primitiveToC(expr.literal.type)})(${JSON.stringify(expr.literal.value)})`
           );
-        } else if (expr.literal.type === EPrimitive.boolean) {
+        } else if (expr.literal.type === EPrimitive.bool) {
           outWriter.write(
             `(${this.primitiveToC(expr.literal.type)})(${expr.literal.value ? "1" : "0"})`
           );

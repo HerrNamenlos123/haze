@@ -75,7 +75,7 @@ export namespace Conversion {
   export function isBoolean(sr: SemanticResult, typeId: Semantic.Id): boolean {
     const type = sr.nodes.get(typeId);
     if (type.variant !== Semantic.ENode.PrimitiveDatatype) return false;
-    return type.primitive === EPrimitive.boolean;
+    return type.primitive === EPrimitive.bool;
   }
 
   export function isInteger(sr: SemanticResult, typeId: Semantic.Id): boolean {
@@ -551,13 +551,13 @@ export namespace Conversion {
         comparable: [
           makePrimitiveAvailable(sr, EPrimitive.f32),
           makePrimitiveAvailable(sr, EPrimitive.f64),
-          makePrimitiveAvailable(sr, EPrimitive.float),
+          makePrimitiveAvailable(sr, EPrimitive.real),
         ],
       },
     ];
     for (const c of comparisons) {
       if (c.comparable.includes(a) && c.comparable.includes(b)) {
-        return makePrimitiveAvailable(sr, EPrimitive.boolean);
+        return makePrimitiveAvailable(sr, EPrimitive.bool);
       }
     }
 
@@ -649,8 +649,8 @@ export namespace Conversion {
         to: makePrimitiveAvailable(sr, EPrimitive.int),
       },
       {
-        from: makePrimitiveAvailable(sr, EPrimitive.float),
-        to: makePrimitiveAvailable(sr, EPrimitive.float),
+        from: makePrimitiveAvailable(sr, EPrimitive.real),
+        to: makePrimitiveAvailable(sr, EPrimitive.real),
       },
     ],
     [EUnaryOperation.Minus]: [
@@ -699,62 +699,62 @@ export namespace Conversion {
         to: makePrimitiveAvailable(sr, EPrimitive.int),
       },
       {
-        from: makePrimitiveAvailable(sr, EPrimitive.float),
-        to: makePrimitiveAvailable(sr, EPrimitive.float),
+        from: makePrimitiveAvailable(sr, EPrimitive.real),
+        to: makePrimitiveAvailable(sr, EPrimitive.real),
       },
     ],
     [EUnaryOperation.Negate]: [
       {
-        from: makePrimitiveAvailable(sr, EPrimitive.boolean),
-        to: makePrimitiveAvailable(sr, EPrimitive.boolean),
+        from: makePrimitiveAvailable(sr, EPrimitive.bool),
+        to: makePrimitiveAvailable(sr, EPrimitive.bool),
       },
       {
         from: makePrimitiveAvailable(sr, EPrimitive.i8),
-        to: makePrimitiveAvailable(sr, EPrimitive.boolean),
+        to: makePrimitiveAvailable(sr, EPrimitive.bool),
       },
       {
         from: makePrimitiveAvailable(sr, EPrimitive.i16),
-        to: makePrimitiveAvailable(sr, EPrimitive.boolean),
+        to: makePrimitiveAvailable(sr, EPrimitive.bool),
       },
       {
         from: makePrimitiveAvailable(sr, EPrimitive.i32),
-        to: makePrimitiveAvailable(sr, EPrimitive.boolean),
+        to: makePrimitiveAvailable(sr, EPrimitive.bool),
       },
       {
         from: makePrimitiveAvailable(sr, EPrimitive.i64),
-        to: makePrimitiveAvailable(sr, EPrimitive.boolean),
+        to: makePrimitiveAvailable(sr, EPrimitive.bool),
       },
       {
         from: makePrimitiveAvailable(sr, EPrimitive.u8),
-        to: makePrimitiveAvailable(sr, EPrimitive.boolean),
+        to: makePrimitiveAvailable(sr, EPrimitive.bool),
       },
       {
         from: makePrimitiveAvailable(sr, EPrimitive.u16),
-        to: makePrimitiveAvailable(sr, EPrimitive.boolean),
+        to: makePrimitiveAvailable(sr, EPrimitive.bool),
       },
       {
         from: makePrimitiveAvailable(sr, EPrimitive.u32),
-        to: makePrimitiveAvailable(sr, EPrimitive.boolean),
+        to: makePrimitiveAvailable(sr, EPrimitive.bool),
       },
       {
         from: makePrimitiveAvailable(sr, EPrimitive.u64),
-        to: makePrimitiveAvailable(sr, EPrimitive.boolean),
+        to: makePrimitiveAvailable(sr, EPrimitive.bool),
       },
       {
         from: makePrimitiveAvailable(sr, EPrimitive.f32),
-        to: makePrimitiveAvailable(sr, EPrimitive.boolean),
+        to: makePrimitiveAvailable(sr, EPrimitive.bool),
       },
       {
         from: makePrimitiveAvailable(sr, EPrimitive.f64),
-        to: makePrimitiveAvailable(sr, EPrimitive.boolean),
+        to: makePrimitiveAvailable(sr, EPrimitive.bool),
       },
       {
         from: makePrimitiveAvailable(sr, EPrimitive.int),
-        to: makePrimitiveAvailable(sr, EPrimitive.boolean),
+        to: makePrimitiveAvailable(sr, EPrimitive.bool),
       },
       {
-        from: makePrimitiveAvailable(sr, EPrimitive.float),
-        to: makePrimitiveAvailable(sr, EPrimitive.boolean),
+        from: makePrimitiveAvailable(sr, EPrimitive.real),
+        to: makePrimitiveAvailable(sr, EPrimitive.bool),
       },
     ],
   });

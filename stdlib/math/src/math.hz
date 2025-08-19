@@ -1,16 +1,4 @@
 
-export struct Float {
-    value: float;
-
-    get(): float {
-        return this.value;
-    }
-}
-
-export test(): Float {
-    return Float { value: 4.2 };
-}
-
-export sqrt(): int {
-    return 287;
+export sqrt(): real {
+    return 187.0;
 }

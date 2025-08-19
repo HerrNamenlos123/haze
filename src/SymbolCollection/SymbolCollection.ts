@@ -37,6 +37,8 @@ import {
   type ModuleImport,
   type SymbolImport,
   type ASTGlobalDeclaration,
+  AssignmentOperationToString,
+  IncrOperationToString,
 } from "../shared/AST";
 import {
   BrandedArray,
@@ -704,6 +706,8 @@ function defineVariableSymbol(
     sc.variant === Collect.ENode.FileScope ||
       sc.variant === Collect.ENode.BlockScope ||
       sc.variant === Collect.ENode.FunctionScope ||
+      sc.variant === Collect.ENode.NamespaceScope ||
+      sc.variant === Collect.ENode.ModuleScope ||
       sc.variant === Collect.ENode.StructScope
   );
 
@@ -1805,6 +1809,20 @@ export function PrettyPrintCollected(cc: CollectionContext) {
           str += "<" + expr.genericArgs.map((g) => printCollectedDatatype(cc, g)).join(", ") + ">";
         }
         return str;
+      }
+
+      case Collect.ENode.ExprAssignmentExpr: {
+        return `${printExpr(expr.expr)} ${AssignmentOperationToString(expr.operation)} ${printExpr(
+          expr.value
+        )}`;
+      }
+
+      case Collect.ENode.PreIncrExpr: {
+        return `${printExpr(expr.expr)}${IncrOperationToString(expr.operation)}`;
+      }
+
+      case Collect.ENode.PostIncrExpr: {
+        return `${printExpr(expr.expr)}${IncrOperationToString(expr.operation)}`;
       }
 
       default:
