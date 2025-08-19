@@ -1,5 +1,5 @@
 import { EVariableContext, stringToPrimitive } from "../shared/common";
-import { assert, CompilerError, ImpossibleSituation, type SourceLoc } from "../shared/Errors";
+import { assert, CompilerError, type SourceLoc } from "../shared/Errors";
 import { Collect, funcSymHasParameterPack } from "../SymbolCollection/SymbolCollection";
 import {
   elaborateFunctionSymbol,
@@ -11,7 +11,6 @@ import {
 } from "./Elaborate";
 import {
   asType,
-  isType,
   isTypeConcrete,
   makePrimitiveAvailable,
   Semantic,
@@ -238,6 +237,7 @@ export function instantiateAndElaborateStruct(
       context: args.context,
       currentScope: args.currentScope,
     }),
+    collectedSymbol: args.definedStructTypeId,
     members: [],
     methods: [],
     nestedStructs: [],
@@ -521,10 +521,18 @@ export function lookupAndElaborateDatatype(
         })[1];
       }
 
-      let foundId = lookupSymbol(sr, type.name, {
+      let foundResult = lookupSymbol(sr, type.name, {
         startLookupInScope: args.startLookupInScopeForSymbol,
         sourceloc: type.sourceloc,
       });
+      if (foundResult.type === "semantic") {
+        const e = sr.nodes.get(foundResult.id);
+        if (e.variant === Semantic.ENode.DatatypeAsValueExpr) {
+          return e.type;
+        }
+        assert(false);
+      }
+      let foundId = foundResult.id;
       let found = sr.cc.nodes.get(foundId);
 
       if (found.variant === Collect.ENode.AliasTypeSymbol) {

@@ -60,6 +60,7 @@ import {
   type ASTArrayLiteralExpr,
   type ASTArraySubscriptExpr,
   type ASTForEachStatement,
+  type ASTBinaryTypeExpr,
 } from "../shared/AST";
 import {
   BinaryExprContext,
@@ -117,12 +118,10 @@ import {
   FromImportStatementContext,
   ImportStatementContext,
   TypedefStatementContext,
-  TypeDefinitionContext,
   TypedefDirectiveContext,
   ArrayDatatypeContext,
   ArrayLiteralContext,
   ArraySubscriptExprContext,
-  ParamContext,
   ForEachStatementContext,
 } from "./grammar/autogen/HazeParser";
 import {
@@ -135,7 +134,6 @@ import {
 import { HazeLexer } from "./grammar/autogen/HazeLexer";
 import { HazeVisitor } from "./grammar/autogen/HazeVisitor";
 import { EMethodType, EPrimitive, EVariableContext, type LiteralValue } from "../shared/common";
-import { makeModulePrefix } from "../Module";
 import type { ModuleConfig } from "../shared/Config";
 
 export namespace Parser {

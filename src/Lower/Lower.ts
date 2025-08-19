@@ -814,7 +814,7 @@ function lowerExpr(
       });
     }
 
-    case Semantic.ENode.NamespaceOrStructValueExpr: {
+    case Semantic.ENode.DatatypeAsValueExpr: {
       assert(
         false,
         "A Namespace Value cannot be lowered. This value should not have gotten through semantic analysis"

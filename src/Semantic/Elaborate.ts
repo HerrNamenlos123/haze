@@ -1,10 +1,11 @@
-import { EExternLanguage, EVariableMutability } from "../shared/AST";
+import { EBinaryOperation, EExternLanguage, EVariableMutability } from "../shared/AST";
 import {
   BrandedArray,
   EMethodType,
   EPrimitive,
   EVariableContext,
   primitiveToString,
+  stringToPrimitive,
 } from "../shared/common";
 import { getModuleGlobalNamespaceName } from "../shared/Config";
 import { assert, CompilerError, InternalError, type SourceLoc } from "../shared/Errors";
@@ -42,9 +43,28 @@ export function tryLookupSymbol(
   sr: SemanticResult,
   name: string,
   args: { startLookupInScope: Collect.Id; sourceloc: SourceLoc; pubRequired?: boolean }
-): Collect.Id | undefined {
+): { type: "semantic"; id: Semantic.Id } | { type: "collect"; id: Collect.Id } | undefined {
   const cc = sr.cc;
   const scope = cc.nodes.get(args.startLookupInScope);
+
+  if (sr.syntheticScopeToVariableMap.has(args.startLookupInScope)) {
+    const map = sr.syntheticScopeToVariableMap.get(args.startLookupInScope)!;
+    if (map.has(name)) {
+      const symbolId = map.get(name)!;
+      const symbol = sr.nodes.get(symbolId);
+      assert(symbol.variant === Semantic.ENode.VariableSymbol);
+      assert(symbol.type);
+      return {
+        id: Semantic.addNode(sr, {
+          variant: Semantic.ENode.SymbolValueExpr,
+          symbol: symbolId,
+          type: symbol.type,
+          sourceloc: args.sourceloc,
+        })[1],
+        type: "semantic",
+      };
+    }
+  }
 
   const lookupDirect = (symbols: Set<Collect.Id>) => {
     for (const id of symbols) {
@@ -93,7 +113,10 @@ export function tryLookupSymbol(
         assert(sc.variant === Collect.ENode.NamespaceScope);
         const found = lookupDirect(sc.symbols);
         if (found) {
-          return found;
+          return {
+            id: found,
+            type: "collect",
+          };
         }
       }
       return tryLookupSymbol(sr, name, {
@@ -110,7 +133,10 @@ export function tryLookupSymbol(
     case Collect.ENode.FunctionScope: {
       const found = lookupDirect(scope.symbols);
       if (found) {
-        return found;
+        return {
+          id: found,
+          type: "collect",
+        };
       }
 
       if (scope.variant === Collect.ENode.ModuleScope) {
@@ -130,7 +156,10 @@ export function tryLookupSymbol(
 
           const found = lookupDirect(fileScope.symbols);
           if (found) {
-            return found;
+            return {
+              id: found,
+              type: "collect",
+            };
           }
         }
 
@@ -156,7 +185,7 @@ export function lookupSymbol(
   sr: SemanticResult,
   name: string,
   args: { startLookupInScope: Collect.Id; sourceloc: SourceLoc }
-): Collect.Id {
+) {
   const found = tryLookupSymbol(sr, name, args);
   if (found) return found;
   throw new CompilerError(`Symbol '${name}' was not declared in this scope`, args.sourceloc);
@@ -389,8 +418,10 @@ function lookupAndElaborateNamespaceMemberAccess(
   }
 ) {
   const namespace = sr.nodes.get(namespaceValueId);
-  assert(namespace.variant === Semantic.ENode.NamespaceOrStructValueExpr);
-  const collectedNamespace = sr.cc.nodes.get(namespace.collectedNamespaceOrStruct);
+  assert(namespace.variant === Semantic.ENode.DatatypeAsValueExpr);
+  const semanticNamespace = sr.nodes.get(namespace.type);
+  assert(semanticNamespace.variant === Semantic.ENode.NamespaceDatatype);
+  const collectedNamespace = sr.cc.nodes.get(semanticNamespace.collectedNamespace);
   assert(collectedNamespace.variant === Collect.ENode.NamespaceDefinitionSymbol);
   const collectedNSSharedInstance = sr.cc.nodes.get(collectedNamespace.sharedInstance);
   assert(collectedNSSharedInstance.variant === Collect.ENode.NamespaceSharedInstance);
@@ -433,14 +464,16 @@ function lookupAndElaborateStaticStructAccess(
   }
 ) {
   const namespaceOrStructValue = sr.nodes.get(namespaceOrStructValueId);
-  assert(namespaceOrStructValue.variant === Semantic.ENode.NamespaceOrStructValueExpr);
-  const collectedStruct = sr.cc.nodes.get(namespaceOrStructValue.collectedNamespaceOrStruct);
+  assert(namespaceOrStructValue.variant === Semantic.ENode.DatatypeAsValueExpr);
+  const semanticStruct = sr.nodes.get(namespaceOrStructValue.type);
+  assert(semanticStruct.variant === Semantic.ENode.StructDatatype);
+  const collectedStruct = sr.cc.nodes.get(semanticStruct.collectedSymbol);
   assert(collectedStruct.variant === Collect.ENode.StructDefinitionSymbol);
   const structScope = sr.cc.nodes.get(collectedStruct.structScope);
   assert(structScope.variant === Collect.ENode.StructScope);
 
   const elaboratedStructCache = sr.elaboratedStructDatatypes.find((d) => {
-    return d.resultSymbol === namespaceOrStructValue.elaboratedNamespaceOrStruct;
+    return d.resultSymbol === namespaceOrStructValue.type;
   });
   assert(elaboratedStructCache);
 
@@ -500,20 +533,31 @@ export function elaborateExpr(
         currentScope: args.currentScope,
         scope: args.scope,
       });
-      const leftType = getExprType(sr, leftId);
-      const rightType = getExprType(sr, rightId);
+
+      if (
+        (expr.operation === EBinaryOperation.Equal ||
+          expr.operation === EBinaryOperation.Unequal) &&
+        left.variant === Semantic.ENode.DatatypeAsValueExpr &&
+        right.variant === Semantic.ENode.DatatypeAsValueExpr
+      ) {
+        const value = expr.operation === EBinaryOperation.Equal && left.type === right.type;
+        return Semantic.addNode(sr, {
+          variant: Semantic.ENode.LiteralExpr,
+          literal: {
+            type: EPrimitive.bool,
+            value: value,
+          },
+          sourceloc: expr.sourceloc,
+          type: makePrimitiveAvailable(sr, EPrimitive.bool),
+        });
+      }
+
       return Semantic.addNode(sr, {
         variant: Semantic.ENode.BinaryExpr,
         left: leftId,
         operation: expr.operation,
         right: rightId,
-        type: Conversion.makeBinaryResultType(
-          sr,
-          leftType,
-          rightType,
-          expr.operation,
-          expr.sourceloc
-        ),
+        type: Conversion.makeBinaryResultType(sr, leftId, rightId, expr.operation, expr.sourceloc),
         sourceloc: expr.sourceloc,
       });
     }
@@ -580,6 +624,33 @@ export function elaborateExpr(
           })[1]
       );
 
+      const collectedExpr = sr.cc.nodes.get(expr.calledExpr);
+      if (collectedExpr.variant === Collect.ENode.SymbolValueExpr) {
+        if (collectedExpr.name === "typeof") {
+          if (collectedExpr.genericArgs.length !== 0) {
+            throw new CompilerError(
+              "The typeof function cannot take any type parameters",
+              collectedExpr.sourceloc
+            );
+          }
+          if (callingArgs.length !== 1) {
+            throw new CompilerError(
+              "The typeof function can only take exactly one parameter",
+              collectedExpr.sourceloc
+            );
+          }
+          const value = sr.nodes.get(callingArgs[0]);
+          assert(isExpression(value));
+          return Semantic.addNode(sr, {
+            variant: Semantic.ENode.DatatypeAsValueExpr,
+            elaboratedType: value.type,
+            collectedType: null,
+            sourceloc: collectedExpr.sourceloc,
+            type: value.type,
+          });
+        }
+      }
+
       const [calledExpr, calledExprId] = elaborateExpr(sr, expr.calledExpr, {
         context: args.context,
         elaboratedVariables: args.elaboratedVariables,
@@ -645,11 +716,11 @@ export function elaborateExpr(
       }
 
       if (calledExprType.variant === Semantic.ENode.FunctionDatatype) {
-        console.log("Calling function datatype with", callingArgs, calledExprType.parameters);
+        const args = convertArgs(callingArgs, calledExprType.parameters, calledExprType.vararg);
         return Semantic.addNode(sr, {
           variant: Semantic.ENode.ExprCallExpr,
           calledExpr: calledExprId,
-          arguments: convertArgs(callingArgs, calledExprType.parameters, calledExprType.vararg),
+          arguments: args,
           type: calledExprType.returnType,
           sourceloc: expr.sourceloc,
         });
@@ -727,26 +798,28 @@ export function elaborateExpr(
         // });
       }
 
-      if (sr.syntheticScopeToVariableMap.has(args.scope)) {
-        const map = sr.syntheticScopeToVariableMap.get(args.scope)!;
-        if (map.has(expr.name)) {
-          const symbolId = map.get(expr.name)!;
-          const symbol = sr.nodes.get(symbolId);
-          assert(symbol.variant === Semantic.ENode.VariableSymbol);
-          assert(symbol.type);
-          return Semantic.addNode(sr, {
-            variant: Semantic.ENode.SymbolValueExpr,
-            symbol: symbolId,
-            type: symbol.type,
-            sourceloc: expr.sourceloc,
-          });
+      const primitive = stringToPrimitive(expr.name);
+      if (primitive) {
+        if (expr.genericArgs.length > 0) {
+          throw new CompilerError(`Type ${expr.name} is not generic`, expr.sourceloc);
         }
+        return Semantic.addNode(sr, {
+          variant: Semantic.ENode.DatatypeAsValueExpr,
+          type: makePrimitiveAvailable(sr, primitive),
+          sourceloc: expr.sourceloc,
+        });
       }
 
-      let symbolId = lookupSymbol(sr, expr.name, {
+      let foundResult = lookupSymbol(sr, expr.name, {
         startLookupInScope: args.scope,
         sourceloc: expr.sourceloc,
       });
+
+      if (foundResult.type === "semantic") {
+        return [asExpression(sr.nodes.get(foundResult.id)), foundResult.id];
+      }
+
+      let symbolId = foundResult.id;
       let symbol = sr.cc.nodes.get(symbolId);
 
       if (symbol.variant === Collect.ENode.AliasTypeSymbol) {
@@ -755,10 +828,14 @@ export function elaborateExpr(
         symbol = sr.cc.nodes.get(symbolId);
 
         if (symbol.variant === Collect.ENode.NamedDatatype) {
-          symbolId = lookupSymbol(sr, symbol.name, {
+          let foundResult = lookupSymbol(sr, symbol.name, {
             startLookupInScope: aliasScope,
             sourceloc: symbol.sourceloc,
           });
+          if (foundResult.type === "semantic") {
+            return [asExpression(sr.nodes.get(foundResult.id)), foundResult.id];
+          }
+          symbolId = foundResult.id;
           symbol = sr.cc.nodes.get(symbolId);
         }
       }
@@ -825,10 +902,14 @@ export function elaborateExpr(
         console.log("TODO: Implement function overload resolution here");
         const chosenOverloadId = [...symbol.overloads][0];
         const chosenOverload = sr.cc.nodes.get(chosenOverloadId);
+        assert(chosenOverload.variant === Collect.ENode.FunctionSymbol);
 
-        const parameterPackTypes: Semantic.Id[] = [];
-        console.log(chosenOverload);
-        console.error("Todo: Parameter Pack");
+        const parameterPackTypes = prepareParameterPackTypes(sr, {
+          functionName: symbol.name,
+          requiredParameters: chosenOverload.parameters,
+          givenArguments: args.gonnaCallFunctionWithParameterValues,
+          sourceloc: expr.sourceloc,
+        });
 
         const elaboratedSymbolId = elaborateFunctionSymbol(sr, chosenOverloadId, {
           elaboratedVariables: args.elaboratedVariables,
@@ -877,9 +958,7 @@ export function elaborateExpr(
             elaboratedSymbol.variant === Semantic.ENode.StructDatatype
         );
         return Semantic.addNode(sr, {
-          variant: Semantic.ENode.NamespaceOrStructValueExpr,
-          elaboratedNamespaceOrStruct: elaboratedSymbolId,
-          collectedNamespaceOrStruct: symbolId,
+          variant: Semantic.ENode.DatatypeAsValueExpr,
           type: elaboratedSymbolId,
           sourceloc: expr.sourceloc,
         });
@@ -1019,9 +1098,9 @@ export function elaborateExpr(
         objectType = asType(sr.nodes.get(objectType.referee));
       }
 
-      if (object.variant === Semantic.ENode.NamespaceOrStructValueExpr) {
-        const namespaceOrStruct = sr.cc.nodes.get(object.collectedNamespaceOrStruct);
-        if (namespaceOrStruct.variant === Collect.ENode.NamespaceDefinitionSymbol) {
+      if (object.variant === Semantic.ENode.DatatypeAsValueExpr) {
+        const namespaceOrStruct = sr.nodes.get(object.type);
+        if (namespaceOrStruct.variant === Semantic.ENode.NamespaceDatatype) {
           return lookupAndElaborateNamespaceMemberAccess(sr, objectId, {
             expr: expr,
             context: args.context,
@@ -1658,7 +1737,7 @@ export function elaborateStatement(
         })[1];
       const value = valueId && asExpression(sr.nodes.get(valueId));
 
-      if (value?.variant === Semantic.ENode.NamespaceOrStructValueExpr) {
+      if (value?.variant === Semantic.ENode.DatatypeAsValueExpr) {
         throw new CompilerError(
           `A struct/namespace datatype cannot be written into a variable`,
           value.sourceloc
@@ -2052,8 +2131,6 @@ export function elaborateFunctionSymbol(
     vararg: func.vararg,
   });
 
-  console.log(overloadGroup.name, serializeDatatype(sr, ftype));
-
   let [symbol, symbolId] = Semantic.addNode<Semantic.FunctionSymbol>(sr, {
     variant: Semantic.ENode.FunctionSymbol,
     type: ftype,
@@ -2194,6 +2271,7 @@ export function elaborateNamespace(
     parentStructOrNS: parentNamespace,
     symbols: [],
     concrete: true,
+    collectedNamespace: namespaceId,
   });
   sr.elaboratedNamespaceSymbols.push({
     originalSharedInstance: namespace.sharedInstance,

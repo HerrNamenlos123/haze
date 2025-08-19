@@ -159,7 +159,7 @@ export namespace Semantic {
     UnaryExpr,
     ExprCallExpr,
     SymbolValueExpr,
-    NamespaceOrStructValueExpr,
+    DatatypeAsValueExpr,
     SizeofExpr,
     ExplicitCastExpr,
     MemberAccessExpr,
@@ -202,7 +202,7 @@ export namespace Semantic {
     ENode.CallableExpr,
     ENode.SizeofExpr,
     ENode.ExplicitCastExpr,
-    ENode.NamespaceOrStructValueExpr,
+    ENode.DatatypeAsValueExpr,
     ENode.MemberAccessExpr,
     ENode.PointerAddressOfExpr,
     ENode.PointerDereferenceExpr,
@@ -308,6 +308,7 @@ export namespace Semantic {
     parentStructOrNS: Id | null;
     sourceloc: SourceLoc;
     concrete: boolean;
+    collectedSymbol: Collect.Id;
     originalCollectedSymbol: Collect.Id;
   };
 
@@ -366,6 +367,7 @@ export namespace Semantic {
     name: string;
     parentStructOrNS: Semantic.Id | null;
     symbols: Semantic.Id[];
+    collectedNamespace: Collect.Id;
     concrete: boolean; // For consistency, always true
   };
 
@@ -419,10 +421,8 @@ export namespace Semantic {
     sourceloc: SourceLoc;
   };
 
-  export type NamespaceOrStructValueExpr = {
-    variant: ENode.NamespaceOrStructValueExpr;
-    collectedNamespaceOrStruct: Collect.Id;
-    elaboratedNamespaceOrStruct: Id;
+  export type DatatypeAsValueExpr = {
+    variant: ENode.DatatypeAsValueExpr;
     type: Id;
     sourceloc: SourceLoc;
   };
@@ -540,7 +540,7 @@ export namespace Semantic {
   export type Expression =
     | ExprMemberAccessExpr
     | SymbolValueExpr
-    | NamespaceOrStructValueExpr
+    | DatatypeAsValueExpr
     | SizeofExpr
     | ExprAssignmentExpr
     | UnaryExpr

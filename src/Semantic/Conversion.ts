@@ -17,6 +17,7 @@ import {
 } from "../shared/Errors";
 import {
   asType,
+  getExprType,
   isExpression,
   isTypeConcrete,
   makePrimitiveAvailable,
@@ -539,6 +540,9 @@ export namespace Conversion {
     b: Semantic.Id,
     sourceloc: SourceLoc
   ): Semantic.Id {
+    const leftType = getExprType(sr, a);
+    const rightType = getExprType(sr, b);
+
     const comparisons = [
       {
         comparable: [
@@ -566,7 +570,7 @@ export namespace Conversion {
       },
     ];
     for (const c of comparisons) {
-      if (c.comparable.includes(a) && c.comparable.includes(b)) {
+      if (c.comparable.includes(leftType) && c.comparable.includes(rightType)) {
         return makePrimitiveAvailable(sr, EPrimitive.bool);
       }
     }
@@ -574,8 +578,8 @@ export namespace Conversion {
     throw new CompilerError(
       `No safe comparison is available between types '${serializeDatatype(
         sr,
-        a
-      )}' and '${serializeDatatype(sr, b)}'`,
+        leftType
+      )}' and '${serializeDatatype(sr, rightType)}'`,
       sourceloc
     );
   }
@@ -587,8 +591,11 @@ export namespace Conversion {
     operation: EBinaryOperation,
     sourceloc: SourceLoc
   ): Semantic.Id {
-    if (a === b) {
-      return a;
+    const leftType = getExprType(sr, a);
+    const rightType = getExprType(sr, b);
+
+    if (leftType === rightType) {
+      return leftType;
     }
 
     switch (operation) {
@@ -604,10 +611,10 @@ export namespace Conversion {
     throw new CompilerError(
       `No safe ${BinaryOperationToString(
         operation
-      )} operation is known between types '${serializeDatatype(sr, a)}' and '${serializeDatatype(
+      )} operation is known between types '${serializeDatatype(
         sr,
-        b
-      )}'`,
+        leftType
+      )}' and '${serializeDatatype(sr, rightType)}'`,
       sourceloc
     );
   }

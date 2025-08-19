@@ -349,8 +349,8 @@ export function serializeExpr(sr: SemanticResult, exprId: Semantic.Id): string {
     case Semantic.ENode.ExprAssignmentExpr:
       return `${serializeExpr(sr, expr.target)} = ${serializeExpr(sr, expr.value)}`;
 
-    case Semantic.ENode.NamespaceOrStructValueExpr:
-      return `${serializeDatatype(sr, expr.elaboratedNamespaceOrStruct)}`;
+    case Semantic.ENode.DatatypeAsValueExpr:
+      return `${serializeDatatype(sr, expr.type)}`;
 
     case Semantic.ENode.ArrayLiteralExpr:
       return `[${expr.values.map((v) => serializeExpr(sr, v)).join(", ")}]`;
