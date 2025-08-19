@@ -219,19 +219,21 @@ export function mangleDatatype(sr: SemanticResult, typeId: Semantic.Id): string 
     }
 
     case Semantic.ENode.FunctionDatatype: {
-      return (
-        "F" +
-        type.parameters
-          .map((p) => {
-            const pp = sr.nodes.get(p);
-            if (pp.variant === Semantic.ENode.ParameterPackDatatypeSymbol) return undefined;
-            return mangleDatatype(sr, p);
-          })
-          .filter(Boolean)
-          .join("") +
-        "E" +
-        mangleDatatype(sr, type.returnType)
-      );
+      let params = "";
+      for (const p of type.parameters) {
+        const pp = sr.nodes.get(p);
+        if (pp.variant === Semantic.ENode.ParameterPackDatatypeSymbol) {
+          for (const packParam of pp.parameters) {
+            const packParamS = sr.nodes.get(packParam);
+            assert(packParamS.variant === Semantic.ENode.VariableSymbol);
+            assert(packParamS.type);
+            params += mangleDatatype(sr, packParamS.type);
+          }
+        } else {
+          params += mangleDatatype(sr, p);
+        }
+      }
+      return "F" + params + "E" + mangleDatatype(sr, type.returnType);
     }
 
     case Semantic.ENode.PointerDatatype: {

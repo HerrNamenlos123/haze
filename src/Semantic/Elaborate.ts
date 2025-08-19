@@ -649,6 +649,48 @@ export function elaborateExpr(
             type: value.type,
           });
         }
+        if (collectedExpr.name === "static_assert") {
+          if (collectedExpr.genericArgs.length !== 0) {
+            throw new CompilerError(
+              "The static_assert function cannot take any type parameters",
+              collectedExpr.sourceloc
+            );
+          }
+          if (callingArgs.length < 1 || callingArgs.length > 2) {
+            throw new CompilerError(
+              "The static_assert function can only take one or two parameters",
+              collectedExpr.sourceloc
+            );
+          }
+          const second = sr.nodes.get(callingArgs[1]);
+          if (
+            second.variant !== Semantic.ENode.LiteralExpr ||
+            second.literal.type !== EPrimitive.str
+          ) {
+            throw new CompilerError(
+              "The static_assert function requires the second parameter to be a string, or omitted",
+              collectedExpr.sourceloc
+            );
+          }
+          const value = EvalCTFEBoolean(sr, callingArgs[0]);
+          if (value) {
+            return Semantic.addNode(sr, {
+              variant: Semantic.ENode.LiteralExpr,
+              sourceloc: collectedExpr.sourceloc,
+              type: makePrimitiveAvailable(sr, EPrimitive.bool),
+              literal: {
+                type: EPrimitive.bool,
+                value: true,
+              },
+            });
+          } else {
+            const stringValue = second.literal.value;
+            throw new CompilerError(
+              `static_assert evaluated to false${stringValue ? ": " + stringValue : ""}`,
+              expr.sourceloc
+            );
+          }
+        }
       }
 
       const [calledExpr, calledExprId] = elaborateExpr(sr, expr.calledExpr, {

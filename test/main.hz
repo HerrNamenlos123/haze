@@ -51,19 +51,31 @@ extern "C" noemit printf(fmt: str, ...);
 
 print(args: ...) {
     for comptime arg in args {
-        if comptime typeof(arg) is str {
-            printf("Arg: %d\n", typeof(arg) is int);
-            printf("Yes\n");
+        if comptime typeof(arg) is int {
+            printf("%ld", arg);
+        }
+        else if typeof(arg) is str {
+            printf("%s", arg);
+        }
+        else if typeof(arg) is real {
+            printf("%f", arg);
         }
         else {
-            printf("No\n");
+            static_assert(false, "Type not yet supported in print");
         }
     }
 }
 
+println(args: ...) {
+    for comptime arg in args {
+        print(arg);
+    }
+    print("\n");
+}
+
 main(): int {
 
-    print("Hello world: ", 5, "Hi", 3.14);
+    println("Hello world:", 5, "Hi", 3.14);
 
     return 0;
     // if not glfw.init() {

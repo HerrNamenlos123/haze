@@ -750,6 +750,8 @@ class CodeGenerator {
           outWriter.write(
             `(${this.primitiveToC(expr.literal.type)})(${expr.literal.value ? "1" : "0"})`
           );
+        } else if (expr.literal.type === EPrimitive.none) {
+          assert(false, "Cannot codegen a none literal");
         } else {
           outWriter.write(
             `(${this.primitiveToC(expr.literal.type)})(${expr.literal.value.toString()})`
