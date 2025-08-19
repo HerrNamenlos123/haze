@@ -293,6 +293,15 @@ export type ASTIfStatement = {
   sourceloc: SourceLoc;
 };
 
+export type ASTForEachStatement = {
+  variant: "ForEachStatement";
+  variable: string;
+  value: ASTExpr;
+  comptime: boolean;
+  body: ASTScope;
+  sourceloc: SourceLoc;
+};
+
 export type ASTWhileStatement = {
   variant: "WhileStatement";
   condition: ASTExpr;
@@ -314,6 +323,7 @@ export type ASTStatement =
   | ASTInlineCStatement
   | ASTScopeStatement
   | ASTExprStatement
+  | ASTForEachStatement
   | ASTReturnStatement
   | ASTVariableDefinitionStatement
   | ASTIfStatement

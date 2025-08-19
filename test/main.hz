@@ -46,12 +46,16 @@
 
 // import glfw
 
-// __c__("#include <stdio.h>");
-// extern "C" noemit printf(fmt: str, ...);
+__c__("#include <stdio.h>");
+extern "C" noemit printf(fmt: str, ...);
 
 struct Printer {
     print(fmt: str, args: ...) {
-
+        for comptime arg in args {
+            printf("Arg: ", arg);
+            // if comptime typeof(arg) is int {
+            // }
+        }
     }
 }
 

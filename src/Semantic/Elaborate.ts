@@ -1,4 +1,4 @@
-import { EExternLanguage } from "../shared/AST";
+import { EExternLanguage, EVariableMutability } from "../shared/AST";
 import {
   BrandedArray,
   EMethodType,
@@ -10,6 +10,7 @@ import { getModuleGlobalNamespaceName } from "../shared/Config";
 import { assert, CompilerError, InternalError, type SourceLoc } from "../shared/Errors";
 import {
   Collect,
+  defineVariableSymbol,
   funcSymHasParameterPack,
   type CollectionContext,
 } from "../SymbolCollection/SymbolCollection";
@@ -38,10 +39,11 @@ import {
 import { getParentNames, serializeDatatype, serializeExpr, serializeNestedName } from "./Serialize";
 
 export function tryLookupSymbol(
-  cc: CollectionContext,
+  sr: SemanticResult,
   name: string,
   args: { startLookupInScope: Collect.Id; sourceloc: SourceLoc; pubRequired?: boolean }
 ): Collect.Id | undefined {
+  const cc = sr.cc;
   const scope = cc.nodes.get(args.startLookupInScope);
 
   const lookupDirect = (symbols: Set<Collect.Id>) => {
@@ -94,7 +96,7 @@ export function tryLookupSymbol(
           return found;
         }
       }
-      return tryLookupSymbol(cc, name, {
+      return tryLookupSymbol(sr, name, {
         startLookupInScope: scope.parentScope,
         sourceloc: args.sourceloc,
       });
@@ -132,13 +134,13 @@ export function tryLookupSymbol(
           }
         }
 
-        return tryLookupSymbol(cc, name, {
+        return tryLookupSymbol(sr, name, {
           startLookupInScope: scope.parentScope,
           sourceloc: args.sourceloc,
         });
       } else {
         // Not a file scope -> Can go higher
-        return tryLookupSymbol(cc, name, {
+        return tryLookupSymbol(sr, name, {
           startLookupInScope: scope.parentScope,
           sourceloc: args.sourceloc,
         });
@@ -151,11 +153,11 @@ export function tryLookupSymbol(
 }
 
 export function lookupSymbol(
-  cc: CollectionContext,
+  sr: SemanticResult,
   name: string,
   args: { startLookupInScope: Collect.Id; sourceloc: SourceLoc }
 ): Collect.Id {
-  const found = tryLookupSymbol(cc, name, args);
+  const found = tryLookupSymbol(sr, name, args);
   if (found) return found;
   throw new CompilerError(`Symbol '${name}' was not declared in this scope`, args.sourceloc);
 }
@@ -725,7 +727,23 @@ export function elaborateExpr(
         // });
       }
 
-      let symbolId = lookupSymbol(sr.cc, expr.name, {
+      if (sr.syntheticScopeToVariableMap.has(args.scope)) {
+        const map = sr.syntheticScopeToVariableMap.get(args.scope)!;
+        if (map.has(expr.name)) {
+          const symbolId = map.get(expr.name)!;
+          const symbol = sr.nodes.get(symbolId);
+          assert(symbol.variant === Semantic.ENode.VariableSymbol);
+          assert(symbol.type);
+          return Semantic.addNode(sr, {
+            variant: Semantic.ENode.SymbolValueExpr,
+            symbol: symbolId,
+            type: symbol.type,
+            sourceloc: expr.sourceloc,
+          });
+        }
+      }
+
+      let symbolId = lookupSymbol(sr, expr.name, {
         startLookupInScope: args.scope,
         sourceloc: expr.sourceloc,
       });
@@ -737,7 +755,7 @@ export function elaborateExpr(
         symbol = sr.cc.nodes.get(symbolId);
 
         if (symbol.variant === Collect.ENode.NamedDatatype) {
-          symbolId = lookupSymbol(sr.cc, symbol.name, {
+          symbolId = lookupSymbol(sr, symbol.name, {
             startLookupInScope: aliasScope,
             sourceloc: symbol.sourceloc,
           });
@@ -746,6 +764,12 @@ export function elaborateExpr(
       }
 
       if (symbol.variant === Collect.ENode.VariableSymbol) {
+        if (expr.genericArgs.length !== 0) {
+          throw new CompilerError(
+            `A variable access cannot have a type parameter list`,
+            expr.sourceloc
+          );
+        }
         let elaboratedSymbolId = undefined as Semantic.Id | undefined;
         if (symbol.variableContext === EVariableContext.Global) {
           // In case it's not elaborated yet, may happen
@@ -758,20 +782,24 @@ export function elaborateExpr(
         }
         assert(elaboratedSymbolId, "Variable was not elaborated here: " + symbol.name);
         const elaboratedSymbol = sr.nodes.get(elaboratedSymbolId);
-        assert(elaboratedSymbol.variant === Semantic.ENode.VariableSymbol);
-        assert(elaboratedSymbol.type);
-        if (expr.genericArgs.length !== 0) {
-          throw new CompilerError(
-            `A variable access cannot have a type parameter list`,
-            expr.sourceloc
-          );
+        if (elaboratedSymbol.variant === Semantic.ENode.VariableSymbol) {
+          assert(elaboratedSymbol.type);
+          return Semantic.addNode(sr, {
+            variant: Semantic.ENode.SymbolValueExpr,
+            symbol: elaboratedSymbolId,
+            type: elaboratedSymbol.type,
+            sourceloc: expr.sourceloc,
+          });
+        } else if (elaboratedSymbol.variant === Semantic.ENode.ParameterPackDatatypeSymbol) {
+          return Semantic.addNode(sr, {
+            variant: Semantic.ENode.SymbolValueExpr,
+            symbol: elaboratedSymbolId,
+            type: elaboratedSymbolId,
+            sourceloc: expr.sourceloc,
+          });
+        } else {
+          assert(false);
         }
-        return Semantic.addNode(sr, {
-          variant: Semantic.ENode.SymbolValueExpr,
-          symbol: elaboratedSymbolId,
-          type: elaboratedSymbol.type,
-          sourceloc: expr.sourceloc,
-        });
       } else if (symbol.variant === Collect.ENode.GlobalVariableDefinition) {
         const [elaboratedSymbolId] = elaborateGlobalSymbol(sr, symbolId, {
           currentScope: args.currentScope,
@@ -1695,6 +1723,83 @@ export function elaborateStatement(
         sourceloc: s.sourceloc,
       })[1];
 
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
+    case Collect.ENode.ForEachStatement: {
+      if (s.comptime) {
+        const [value, valueId] = elaborateExpr(sr, s.value, {
+          context: args.context,
+          elaboratedVariables: args.elaboratedVariables,
+          scope: s.owningScope,
+          currentScope: args.currentScope,
+        });
+        const [comptimeValue, comptimeValueId] = EvalCTFE(sr, valueId);
+        if (comptimeValue.variant !== Semantic.ENode.SymbolValueExpr) {
+          throw new CompilerError(
+            `For each loop over something other than a parameter pack is not implemented yet`,
+            s.sourceloc
+          );
+        }
+        const comptimeExpr = sr.nodes.get(comptimeValue.type);
+        if (comptimeExpr.variant !== Semantic.ENode.ParameterPackDatatypeSymbol) {
+          throw new CompilerError(
+            `For each loop over something other than a parameter pack is not implemented yet`,
+            s.sourceloc
+          );
+        }
+
+        if (!sr.syntheticScopeToVariableMap.has(s.body)) {
+          sr.syntheticScopeToVariableMap.set(s.body, new Map());
+        }
+        const syntheticMap = sr.syntheticScopeToVariableMap.get(s.body)!;
+
+        const allScopes: Semantic.Id[] = [];
+        for (let i = 0; i < comptimeExpr.parameters.length; i++) {
+          const [thenScope, thenScopeId] = Semantic.addNode(sr, {
+            variant: Semantic.ENode.BlockScope,
+            statements: [],
+          });
+
+          const semanticParamId = comptimeExpr.parameters[i];
+          const paramValue = sr.nodes.get(semanticParamId);
+          assert(paramValue.variant === Semantic.ENode.VariableSymbol);
+          assert(paramValue.type);
+
+          syntheticMap.set(s.variable, semanticParamId);
+          elaborateBlockScope(sr, {
+            targetScopeId: thenScopeId,
+            sourceScopeId: s.body,
+            expectedReturnType: args.expectedReturnType,
+            currentScope: args.currentScope,
+            elaboratedVariables: args.elaboratedVariables,
+            context: args.context,
+          });
+          syntheticMap.delete(s.variable);
+
+          allScopes.push(
+            Semantic.addNode(sr, {
+              variant: Semantic.ENode.BlockScopeStatement,
+              block: thenScopeId,
+              sourceloc: s.sourceloc,
+            })[1]
+          );
+        }
+
+        return Semantic.addNode(sr, {
+          variant: Semantic.ENode.BlockScopeStatement,
+          block: Semantic.addNode(sr, {
+            variant: Semantic.ENode.BlockScope,
+            statements: allScopes,
+          })[1],
+          sourceloc: s.sourceloc,
+        })[1];
+      } else {
+        assert(false, "Non-comptime for each not implemented yet");
+      }
+    }
+
     default:
       assert(false);
   }
@@ -1718,6 +1823,11 @@ function elaborateVariableSymbolInScope(
         variableContext = EVariableContext.FunctionParameter;
         if (!symbol.type) {
           throw new InternalError("Parameter needs datatype");
+        }
+        const symbolType = sr.cc.nodes.get(symbol.type);
+        if (symbolType.variant === Collect.ENode.ParameterPack) {
+          // Is elaborated directly in function
+          break;
         }
         type = lookupAndElaborateDatatype(sr, {
           typeId: symbol.type,
@@ -1866,7 +1976,7 @@ export function elaborateFunctionSymbol(
 
   let parameterPack = false;
   const parameterNames = func.parameters.map((p) => p.name);
-  const parametersWithoutPack = func.parameters
+  const parameters = func.parameters
     .map((p, i) => {
       const paramType = sr.cc.nodes.get(p.type);
       if (paramType.variant === Collect.ENode.ParameterPack) {
@@ -1883,8 +1993,38 @@ export function elaborateFunctionSymbol(
           );
         }
         parameterPack = true;
-        parameterNames.pop();
-        return undefined;
+        const [paramPack, paramPackId] = Semantic.addNode(sr, {
+          variant: Semantic.ENode.ParameterPackDatatypeSymbol,
+          parameters: args.paramPackTypes.map((t, i) => {
+            const [variable, variableId] = Semantic.addNode(sr, {
+              variant: Semantic.ENode.VariableSymbol,
+              comptime: true,
+              comptimeValue: null,
+              concrete: true,
+              name: `__param_pack_${i}`,
+              export: false,
+              extern: EExternLanguage.None,
+              memberOfStruct: null,
+              mutability: EVariableMutability.Immutable,
+              parentStructOrNS: null,
+              type: t,
+              variableContext: EVariableContext.FunctionParameter,
+              sourceloc: func.sourceloc,
+            });
+            return variableId;
+          }),
+          concrete: true,
+        });
+        assert(func.functionScope);
+        const functionScope = sr.cc.nodes.get(func.functionScope);
+        assert(functionScope.variant === Collect.ENode.FunctionScope);
+        const packVariable = [...functionScope.symbols].find((s) => {
+          const sym = sr.cc.nodes.get(s);
+          return sym.variant === Collect.ENode.VariableSymbol && sym.name === p.name;
+        });
+        assert(packVariable);
+        args.elaboratedVariables.set(packVariable, paramPackId);
+        return paramPackId;
       }
       return lookupAndElaborateDatatype(sr, {
         typeId: p.type,
@@ -1899,23 +2039,20 @@ export function elaborateFunctionSymbol(
     .filter((p) => Boolean(p))
     .map((p) => p!);
 
-  const parametersWithPack = [...parametersWithoutPack, ...args.paramPackTypes];
-  for (let i = 0; i < args.paramPackTypes.length; i++) {
-    parameterNames.push(`__param_pack_${i}`);
-  }
-
   if (func.methodType === EMethodType.Method) {
     parameterNames.unshift("this");
     assert(args.parentStructOrNS);
     const thisReference = makeReferenceDatatypeAvailable(sr, args.parentStructOrNS);
-    parametersWithPack.unshift(thisReference);
+    parameters.unshift(thisReference);
   }
 
   const ftype = makeFunctionDatatypeAvailable(sr, {
-    parameters: parametersWithPack,
+    parameters: parameters,
     returnType: expectedReturnType,
     vararg: func.vararg,
   });
+
+  console.log(overloadGroup.name, serializeDatatype(sr, ftype));
 
   let [symbol, symbolId] = Semantic.addNode<Semantic.FunctionSymbol>(sr, {
     variant: Semantic.ENode.FunctionSymbol,
@@ -2322,6 +2459,8 @@ export function SemanticallyAnalyze(
     sliceTypeCache: [],
 
     nodes: new BrandedArray<Semantic.Id, Semantic.Node>([]),
+
+    syntheticScopeToVariableMap: new Map(),
 
     exportedCollectedSymbols: new Set(),
     elaboratedGlobalVariableSymbols: new Map(),

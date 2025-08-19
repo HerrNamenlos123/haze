@@ -138,6 +138,7 @@ export namespace Collect {
     CInjectDirective,
     ExprStatement,
     IfStatement,
+    ForEachStatement,
     WhileStatement,
     TypedefStatement,
     ReturnStatement,
@@ -458,6 +459,14 @@ export namespace Collect {
     blockscope: Collect.Id;
   };
 
+  export type ForEachStatement = BaseStatement & {
+    variant: ENode.ForEachStatement;
+    variable: string;
+    value: Collect.Id;
+    comptime: boolean;
+    body: Collect.Id;
+  };
+
   export type IfStatement = BaseStatement & {
     variant: ENode.IfStatement;
     condition: Collect.Id;
@@ -495,6 +504,7 @@ export namespace Collect {
     | ReturnStatement
     | BlockScopeStatement
     | IfStatement
+    | ForEachStatement
     | WhileStatement
     | TypedefStatement
     | VariableDefinitionStatement;
@@ -505,6 +515,7 @@ export namespace Collect {
     | Omit<ReturnStatement, "owningScope">
     | Omit<BlockScopeStatement, "owningScope">
     | Omit<IfStatement, "owningScope">
+    | Omit<ForEachStatement, "owningScope">
     | Omit<WhileStatement, "owningScope">
     | Omit<TypedefStatement, "owningScope">
     | Omit<VariableDefinitionStatement, "owningScope">;
@@ -751,7 +762,7 @@ function defineGenericTypeParameter(
   return id;
 }
 
-function defineVariableSymbol(
+export function defineVariableSymbol(
   cc: CollectionContext,
   variable: Omit<Collect.VariableSymbol, "inScope">,
   scope: Collect.Id
@@ -924,10 +935,6 @@ function collect(
         }
 
         for (const p of parameters) {
-          const pType = cc.nodes.get(p.type);
-          if (pType.variant === Collect.ENode.ParameterPack) {
-            continue;
-          }
           defineVariableSymbol(
             cc,
             {
@@ -1381,6 +1388,18 @@ function collect(
               variableSymbol: variableSymbolId,
             });
             break;
+
+          case "ForEachStatement": {
+            addStatement(cc, blockScope, {
+              variant: Collect.ENode.ForEachStatement,
+              value: collect(cc, astStatement.value, { currentParentScope: blockScope }),
+              body: collect(cc, astStatement.body, { currentParentScope: blockScope }),
+              comptime: astStatement.comptime,
+              variable: astStatement.variable,
+              sourceloc: astStatement.sourceloc,
+            });
+            break;
+          }
 
           case "ScopeStatement": {
             addStatement(cc, blockScope, {
@@ -2187,6 +2206,16 @@ export function PrettyPrintCollected(cc: CollectionContext) {
 
       case Collect.ENode.BlockScopeStatement: {
         printSymbol(symbol.blockscope, indent + 2);
+        break;
+      }
+
+      case Collect.ENode.ForEachStatement: {
+        print(
+          `for ${symbol.comptime ? "comptime " : ""}${symbol.variable} in ${printExpr(
+            symbol.value
+          )}`
+        );
+        printSymbol(symbol.body, indent + 2);
         break;
       }
 

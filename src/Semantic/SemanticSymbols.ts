@@ -68,6 +68,8 @@ export type SemanticResult = {
   arrayTypeCache: Semantic.Id[];
   sliceTypeCache: Semantic.Id[];
 
+  syntheticScopeToVariableMap: Map<Collect.Id, Map<string, Semantic.Id>>;
+
   exportedCollectedSymbols: Set<number>;
 
   cInjections: Semantic.Id[];
@@ -323,6 +325,7 @@ export namespace Semantic {
 
   export type ParameterPackDatatypeSymbol = {
     variant: ENode.ParameterPackDatatypeSymbol;
+    parameters: Id[];
     concrete: boolean;
   };
 

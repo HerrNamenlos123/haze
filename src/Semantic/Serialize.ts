@@ -50,7 +50,12 @@ export function serializeDatatype(sr: SemanticResult, datatypeId: Semantic.Id): 
       return `${serializeDatatype(sr, datatype.datatype)}[]`;
 
     case Semantic.ENode.ParameterPackDatatypeSymbol:
-      return "...";
+      return `Pack[${datatype.parameters.map((p) => {
+        const param = sr.nodes.get(p);
+        assert(param.variant === Semantic.ENode.VariableSymbol);
+        assert(param.type);
+        return `${param.name}: ${serializeDatatype(sr, param.type)}`;
+      })}]`;
 
     default:
       throw new InternalError("Not handled: " + datatype.variant);
@@ -172,6 +177,8 @@ export function mangleNestedName(sr: SemanticResult, symbolId: Semantic.Id) {
       functionPart += "v";
     } else {
       for (const p of ftype.parameters) {
+        const pp = sr.nodes.get(p);
+        if (pp.variant === Semantic.ENode.ParameterPackDatatypeSymbol) continue;
         functionPart += mangleDatatype(sr, p);
       }
     }
@@ -214,7 +221,14 @@ export function mangleDatatype(sr: SemanticResult, typeId: Semantic.Id): string 
     case Semantic.ENode.FunctionDatatype: {
       return (
         "F" +
-        type.parameters.map((p) => mangleDatatype(sr, p)).join("") +
+        type.parameters
+          .map((p) => {
+            const pp = sr.nodes.get(p);
+            if (pp.variant === Semantic.ENode.ParameterPackDatatypeSymbol) return undefined;
+            return mangleDatatype(sr, p);
+          })
+          .filter(Boolean)
+          .join("") +
         "E" +
         mangleDatatype(sr, type.returnType)
       );
@@ -235,6 +249,10 @@ export function mangleDatatype(sr: SemanticResult, typeId: Semantic.Id): string 
 
     case Semantic.ENode.SliceDatatype: {
       return "S" + mangleDatatype(sr, type.datatype);
+    }
+
+    case Semantic.ENode.ParameterPackDatatypeSymbol: {
+      assert(false, "A parameter pack may not be mangled");
     }
 
     case Semantic.ENode.LiteralValueDatatype: {

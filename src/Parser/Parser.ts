@@ -59,6 +59,7 @@ import {
   type ASTArrayDatatype,
   type ASTArrayLiteralExpr,
   type ASTArraySubscriptExpr,
+  type ASTForEachStatement,
 } from "../shared/AST";
 import {
   BinaryExprContext,
@@ -122,6 +123,7 @@ import {
   ArrayLiteralContext,
   ArraySubscriptExprContext,
   ParamContext,
+  ForEachStatementContext,
 } from "./grammar/autogen/HazeParser";
 import {
   BaseErrorListener,
@@ -718,6 +720,17 @@ class ASTTransformer extends HazeVisitor<any> {
       datatype: (ctx.datatype() && this.visit(ctx.datatype()!)) || undefined,
       expr: (ctx.expr() && this.visit(ctx.expr()!)) || undefined,
       variableContext: EVariableContext.FunctionLocal,
+    };
+  };
+
+  visitForEachStatement = (ctx: ForEachStatementContext): ASTForEachStatement => {
+    return {
+      variant: "ForEachStatement",
+      variable: ctx.ID().getText(),
+      value: this.visit(ctx.expr()),
+      body: this.visit(ctx.scope()),
+      sourceloc: this.loc(ctx),
+      comptime: Boolean(ctx._comptime),
     };
   };
 

@@ -167,6 +167,7 @@ statement
     | 'return' expr? ';'                                        #ReturnStatement
     | variableMutabilitySpecifier comptime='comptime'? ID (((':' datatype)? '=' expr) | (':' datatype)) ';'       #VariableCreationStatement
     | 'if' comptime='comptime'? ifExpr=expr then=scope ('else' 'if' elseIfExpr+=expr elseIfThen+=scope)* ('else' elseBlock=scope)? #IfStatement
+    | 'for' comptime='comptime'? ID 'in' expr scope             #ForEachStatement
     | 'while' expr scope                                        #WhileStatement
     | scope                                                     #ScopeStatement
     | typeDef                                                   #TypedefStatement

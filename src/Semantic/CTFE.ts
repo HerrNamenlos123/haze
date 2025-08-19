@@ -88,6 +88,8 @@ export function EvalCTFE(
         const value = sr.nodes.get(symbol.comptimeValue);
         assert(isExpression(value));
         return [value, symbol.comptimeValue];
+      } else if (symbol.variant === Semantic.ENode.ParameterPackDatatypeSymbol) {
+        return [expr, exprId];
       }
       break;
     }

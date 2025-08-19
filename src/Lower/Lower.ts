@@ -875,9 +875,23 @@ function lowerType(lr: Lowered.Module, typeId: Semantic.Id): Lowered.TypeId {
     if (lr.loweredTypes.has(typeId)) {
       return lr.loweredTypes.get(typeId)!;
     } else {
+      const parameters: Lowered.TypeId[] = [];
+      for (const p of type.parameters) {
+        const pp = lr.sr.nodes.get(p);
+        if (pp.variant === Semantic.ENode.ParameterPackDatatypeSymbol) {
+          for (const packParam of pp.parameters) {
+            const sym = lr.sr.nodes.get(packParam);
+            assert(sym.variant === Semantic.ENode.VariableSymbol);
+            assert(sym.type);
+            parameters.push(lowerType(lr, sym.type));
+          }
+        } else {
+          parameters.push(lowerType(lr, p));
+        }
+      }
       const [p, pId] = Lowered.addType<Lowered.FunctionDatatype>(lr, {
         variant: Lowered.ENode.FunctionDatatype,
-        parameters: type.parameters.map((p) => lowerType(lr, p)),
+        parameters: parameters,
         returnType: lowerType(lr, type.returnType),
         prettyName: serializeDatatype(lr.sr, typeId),
         mangledName: mangleDatatype(lr.sr, typeId),
@@ -976,6 +990,8 @@ function lowerType(lr: Lowered.Module, typeId: Semantic.Id): Lowered.TypeId {
       lr.loweredTypes.set(typeId, pId);
       return pId;
     }
+  } else if (type.variant === Semantic.ENode.ParameterPackDatatypeSymbol) {
+    assert(false, "A Parameter Pack cannot be lowered");
   } else {
     throw new InternalError("Unhandled variant: " + type.variant);
   }
@@ -1104,13 +1120,31 @@ function lower(lr: Lowered.Module, symbolId: Semantic.Id) {
         return;
       }
 
+      const parameterNames: string[] = [...symbol.parameterNames];
+      const functype = lr.sr.nodes.get(symbol.type);
+      assert(functype.variant === Semantic.ENode.FunctionDatatype);
+      const paramPackId = functype.parameters.find((p) => {
+        const pp = lr.sr.nodes.get(p);
+        return pp.variant === Semantic.ENode.ParameterPackDatatypeSymbol;
+      });
+      if (paramPackId) {
+        const paramPack = lr.sr.nodes.get(paramPackId);
+        assert(paramPack.variant === Semantic.ENode.ParameterPackDatatypeSymbol);
+        parameterNames.pop();
+        for (const p of paramPack.parameters) {
+          const pp = lr.sr.nodes.get(p);
+          assert(pp.variant === Semantic.ENode.VariableSymbol);
+          parameterNames.push(pp.name);
+        }
+      }
+
       // Normal function
       const ftype = lowerType(lr, symbol.type);
       const [f, fId] = Lowered.addFunction<Lowered.FunctionSymbol>(lr, {
         variant: Lowered.ENode.FunctionSymbol,
         prettyName: serializeNestedName(lr.sr, symbolId),
         mangledName: mangleNestedName(lr.sr, symbolId),
-        parameterNames: symbol.parameterNames,
+        parameterNames: parameterNames,
         wasMangled: symbol.extern !== EExternLanguage.Extern_C,
         type: ftype,
         scope: (symbol.scope && lowerBlockScope(lr, symbol.scope)) || null,

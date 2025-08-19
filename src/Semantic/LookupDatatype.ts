@@ -521,7 +521,7 @@ export function lookupAndElaborateDatatype(
         })[1];
       }
 
-      let foundId = lookupSymbol(sr.cc, type.name, {
+      let foundId = lookupSymbol(sr, type.name, {
         startLookupInScope: args.startLookupInScopeForSymbol,
         sourceloc: type.sourceloc,
       });
