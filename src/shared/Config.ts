@@ -37,10 +37,16 @@ export type ModuleLibMetadata = {
   type: "static" | "shared";
 };
 
-export type ExportNode<T extends Collect.Node> = T & { exportMode: "explicit" | "implicit" };
+// export type ExportData = {
+//   nodes: ImpExp.Node[];
+// };
+
+// export type ExportData = {
+//   nodes: Collect.Node[];
+// };
 
 export type ExportData = {
-  nodes: ExportNode<Collect.Node>[];
+  exported: Set<Collect.Id>;
 };
 
 export type ModuleMetadata = {
@@ -49,8 +55,8 @@ export type ModuleMetadata = {
   name: string;
   version: string;
   libs: ModuleLibMetadata[];
-  exportedSymbols: ExportData;
   linkerFlags: string[];
+  importFile: "import.hz";
 };
 
 export function parseModuleMetadata(metadata: string): ModuleMetadata {
@@ -123,9 +129,9 @@ export function parseModuleMetadata(metadata: string): ModuleMetadata {
     fileformatVersion: getNumber(obj["fileformatVersion"]),
     name: getString(obj["name"]),
     version: getString(obj["version"]),
-    exportedSymbols: obj["exportedSymbols"],
     libs: getLibs(obj["libs"]),
     linkerFlags: getStringArray(obj["linkerFlags"]),
+    importFile: "import.hz",
   };
 }
 

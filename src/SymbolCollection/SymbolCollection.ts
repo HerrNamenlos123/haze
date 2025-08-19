@@ -58,7 +58,6 @@ import {
 } from "../shared/AST";
 import type { ExportData, ModuleConfig } from "../shared/Config";
 import { serializeLiteralValue } from "../Semantic/Serialize";
-import { ExportCollectedSymbol } from "./ImportExport";
 
 export type CollectionContext = {
   config: ModuleConfig;
@@ -70,7 +69,7 @@ export type CollectionContext = {
   sharedNamespaceInstances: Set<Collect.Id>;
 
   exportedSymbols: ExportData;
-  exportCache: Map<Collect.Id, Collect.Id>;
+  // exportCache: Map<Collect.Id, ImpExp.Id>;
 };
 
 export function makeCollectionContext(config: ModuleConfig): CollectionContext {
@@ -86,9 +85,9 @@ export function makeCollectionContext(config: ModuleConfig): CollectionContext {
     overloadGroups: new Set(),
     sharedNamespaceInstances: new Set(),
     exportedSymbols: {
-      nodes: [],
+      exported: new Set(),
     },
-    exportCache: new Map(),
+    // exportCache: new Map(),
   };
   return cc;
 }
@@ -252,6 +251,7 @@ export namespace Collect {
     extern: EExternLanguage;
     sourceloc: SourceLoc;
     functionScope: Collect.Id | null;
+    originalSourcecode: string;
   };
 
   export type VariableSymbol = {
@@ -802,6 +802,7 @@ function collect(
           })[1],
         sourceloc: item.sourceloc,
         functionScope: null,
+        originalSourcecode: item.originalSourcecode,
       });
       overloadGroup.overloads.push(functionSymbolId);
 
@@ -873,9 +874,10 @@ function collect(
         }
       }
 
-      // if (item.export) {
-      //   ExportCollectedSymbol(cc, functionSymbolId);
-      // }
+      if (item.export) {
+        // ExportCollectedSymbol(cc, functionSymbolId);
+        cc.exportedSymbols.exported.add(functionSymbolId);
+      }
 
       return overloadGroupId;
     }

@@ -148,6 +148,7 @@ export type ASTFunctionDefinition = {
   methodType: EMethodType;
   funcbody?: ASTFuncBody;
   sourceloc: SourceLoc;
+  originalSourcecode: string;
 };
 
 export type ASTParam = {

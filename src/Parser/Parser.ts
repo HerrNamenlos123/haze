@@ -333,6 +333,14 @@ class ASTTransformer extends HazeVisitor<any> {
     }
   }
 
+  getSource(ctx: ParserRuleContext) {
+    if (!ctx.start || !ctx.start.inputStream) return "";
+    const startIdx = ctx.start.start;
+    const stopIdx = ctx.stop?.stop ?? ctx.start.start;
+    const originalText = ctx.start.inputStream.getTextFromRange(startIdx, stopIdx);
+    return originalText;
+  }
+
   visitProg = (ctx: ProgContext): ASTRoot => {
     return ctx.children
       .map((c) => {
@@ -529,6 +537,7 @@ class ASTTransformer extends HazeVisitor<any> {
       funcbody: (ctx.funcbody() && this.visit(ctx.funcbody()!)) || undefined,
       returnType: (ctx.datatype() && this.visit(ctx.datatype()!)) || undefined,
       sourceloc: this.loc(ctx),
+      originalSourcecode: this.getSource(ctx),
     };
   };
 
@@ -591,6 +600,7 @@ class ASTTransformer extends HazeVisitor<any> {
       returnType: (ctx.datatype() && this.visit(ctx.datatype()!)) || undefined,
       funcbody: (ctx.funcbody() && this.visit(ctx.funcbody()!)) || undefined,
       sourceloc: this.loc(ctx),
+      originalSourcecode: this.getSource(ctx),
     };
   };
 

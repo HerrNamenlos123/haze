@@ -1,4 +1,5 @@
 import * as child_process from "child_process";
+import { mkdir } from "fs/promises";
 import {
   assert,
   CmdFailed,
@@ -35,11 +36,13 @@ import { PrettyPrintAnalyzed, SemanticallyAnalyze } from "./Semantic/Elaborate";
 import { generateCode } from "./Codegen/CodeGenerator";
 import { LowerModule } from "./Lower/Lower";
 import { addEntity, createWorld } from "bitecs";
+import { ExportCollectedSymbols } from "./SymbolCollection/Export";
 
 const C_COMPILER = "clang";
 const ARCHIVE_TOOL = "ar";
 const HAZE_STDLIB_NAME = "haze-stdlib";
 const HAZE_CONFIG_FILE = "haze.toml";
+const HAZE_LIB_IMPORT_FILE = "import.hz";
 
 export function makeModulePrefix(config: ModuleConfig) {
   return config.projectName + "." + config.projectVersion.replaceAll(".", "_");
@@ -263,7 +266,7 @@ export class ProjectCompiler {
       }
 
       const moduleExecutable = join(
-        join(this.globalBuildDir, config.projectName),
+        join(this.globalBuildDir, config.projectName, "output"),
         config.projectName
       );
       child_process.execSync(`${moduleExecutable} ${args?.join(" ")}`, {
@@ -376,13 +379,20 @@ class ModuleCompiler {
 
       const name = this.config.projectName;
       const platform = this.config.platform;
-      const moduleCFile = join(this.moduleBuildDir, `${name}-${platform}.c`);
-      const moduleOFile = join(this.moduleBuildDir, `${name}-${platform}.o`);
-      const moduleAFile = join(this.moduleBuildDir, `${name}-${platform}.a`);
-      const moduleExecutable = join(this.moduleBuildDir, `${name}`);
+      const moduleCFile = join(this.moduleBuildDir, `build/${name}-${platform}.c`);
+      const moduleOFile = join(this.moduleBuildDir, `build/${name}-${platform}.o`);
+      const moduleAFile = join(this.moduleBuildDir, `build/${name}-${platform}.a`);
+      const moduleExecutable = join(this.moduleBuildDir, `output/${name}`);
 
-      const moduleMetadataFile = join(this.moduleBuildDir, "metadata.json");
-      const moduleOutputLib = join(this.moduleBuildDir, this.config.projectName + ".hzlib");
+      const moduleMetadataFile = join(this.moduleBuildDir, "build/metadata.json");
+      const moduleOutputLib = join(
+        this.moduleBuildDir,
+        "output/" + this.config.projectName + ".hzlib"
+      );
+      const importFilePath = join(this.moduleBuildDir, "build", HAZE_LIB_IMPORT_FILE);
+
+      await mkdir(join(this.moduleBuildDir, "build/"), { recursive: true });
+      await mkdir(join(this.moduleBuildDir, "output/"), { recursive: true });
 
       const code = generateCode(this.config, lowered);
       await Bun.file(moduleCFile).write(code);
@@ -403,10 +413,15 @@ class ModuleCompiler {
         } ${compilerFlags.join(" ")} -fPIC -std=c11`;
         // console.log(cmd);
         await exec(cmd);
+
+        // if (fs.existsSync(moduleAFile)) {
+        //   await exec(`rm ${moduleAFile}`);
+        // }
+
         await exec(`${ARCHIVE_TOOL} r ${moduleAFile} ${moduleOFile} > /dev/null`);
 
         const makerel = (absolute: string) => {
-          return absolute.replace(this.moduleBuildDir + "/", "");
+          return absolute.replace(this.moduleBuildDir + "/build/", "");
         };
 
         const moduleMetadata: ModuleMetadata = {
@@ -421,19 +436,22 @@ class ModuleCompiler {
               type: "static",
             },
           ],
-          exportedSymbols: sr.cc.exportedSymbols,
           linkerFlags: this.config.linkerFlags,
+          importFile: HAZE_LIB_IMPORT_FILE,
         };
         await Bun.write(moduleMetadataFile, JSON.stringify(moduleMetadata, undefined, 2));
+
+        const importFile = ExportCollectedSymbols(this.cc);
+        await Bun.write(importFilePath, importFile);
 
         if (fs.existsSync(moduleOutputLib)) {
           await exec(`rm ${moduleOutputLib}`);
         }
 
         await exec(
-          `tar -C ${this.moduleBuildDir} -cvzf ${moduleOutputLib} ${makerel(moduleAFile)} ${makerel(
-            moduleMetadataFile
-          )} > /dev/null`
+          `tar -C ${this.moduleBuildDir}/build -cvzf ${moduleOutputLib} ${makerel(
+            moduleAFile
+          )} ${makerel(importFilePath)} ${makerel(moduleMetadataFile)} > /dev/null`
         );
       }
       if (this.config.configFilePath) {
@@ -470,15 +488,15 @@ class ModuleCompiler {
     const libs: string[] = [];
     const linkerFlags: string[] = [];
     for (const dep of this.config.dependencies || []) {
-      const libpath = join(join(this.globalBuildDir, dep.path), dep.path + ".hzlib");
-      const metadata = await this.loadDependencyMetadata(libpath, dep.path);
+      const libpath = join(join(this.globalBuildDir, dep.name), "output", dep.name + ".hzlib");
+      const metadata = await this.loadDependencyMetadata(libpath, dep.name);
 
       const lib = metadata.libs.find((l) => l.platform === this.config.platform);
       if (!lib) {
-        throw new GeneralError(`Lib ${dep.path} does not provide platform ${this.config.platform}`);
+        throw new GeneralError(`Lib ${dep.name} does not provide platform ${this.config.platform}`);
       }
 
-      const tempdir = join(this.globalBuildDir, "__temp-" + dep.path);
+      const tempdir = join(this.moduleBuildDir, "__deps", dep.name);
       await exec(`mkdir -p ${tempdir}`);
       await exec(`tar -xzf ${libpath} -C ${tempdir} ${lib.filename}`);
 
@@ -490,7 +508,7 @@ class ModuleCompiler {
   }
 
   private async loadDependencyMetadata(libpath: string, libname: string) {
-    const tempdir = join(this.globalBuildDir, "__temp-" + libname);
+    const tempdir = join(this.moduleBuildDir, "__deps", libname);
     await exec(`mkdir -p ${tempdir}`);
     await exec(`tar -xzf ${libpath} -C ${tempdir} metadata.json`);
     return parseModuleMetadata(await Bun.file(join(tempdir, "metadata.json")).text());
@@ -508,8 +526,8 @@ class ModuleCompiler {
     // const globalScope = getScope(this.cc, this.cc.globalScope);
 
     for (const dep of this.config.dependencies) {
-      const libpath = join(join(this.globalBuildDir, dep.path), dep.path + ".hzlib");
-      const metadata = await this.loadDependencyMetadata(libpath, dep.path);
+      const libpath = join(join(this.globalBuildDir, dep.name), "output", dep.name + ".hzlib");
+      const metadata = await this.loadDependencyMetadata(libpath, dep.name);
 
       // console.log(metadata.exportedDeclarations)
       // const importedRoot = metadata.exportedDeclarations.find(
