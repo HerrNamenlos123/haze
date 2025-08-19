@@ -13,11 +13,11 @@ export enum ModuleType {
 export type ModuleDependency = { name: string; path: string };
 
 export type ModuleConfig = {
-  projectName: string;
-  projectVersion: string;
-  projectDescription?: string;
-  projectLicense?: string;
-  projectAuthors?: string[];
+  name: string;
+  version: string;
+  description?: string;
+  license?: string;
+  authors?: string[];
   scripts: { name: string; command: string }[];
   srcDirectory: string;
   nostdlib: boolean;
@@ -268,11 +268,11 @@ export class ConfigParser {
     const moduleType = type === "exe" ? ModuleType.Executable : ModuleType.Library;
 
     return {
-      projectName: this.getString(toml, "name"),
-      projectVersion: this.getString(toml, "version"),
-      projectAuthors: this.getOptionalStringArray(toml, "authors"),
-      projectDescription: this.getOptionalString(toml, "description"),
-      projectLicense: this.getOptionalString(toml, "license"),
+      name: this.getString(toml, "name"),
+      version: this.getString(toml, "version"),
+      authors: this.getOptionalStringArray(toml, "authors"),
+      description: this.getOptionalString(toml, "description"),
+      license: this.getOptionalString(toml, "license"),
       scripts: this.getScripts(toml),
       dependencies: this.getDependencies(toml),
       srcDirectory: join(dirname(this.configPath), this.getOptionalString(toml, "src") || "src"),

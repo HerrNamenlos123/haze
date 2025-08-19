@@ -58,14 +58,15 @@ export function serializeLiteralValue(value: LiteralValue) {
   }
 }
 
-function getParentNames(sr: SemanticResult, symbolId: Semantic.Id) {
+export function getParentNames(sr: SemanticResult, symbolId: Semantic.Id) {
   let fullName = "";
   let nodeId: Semantic.Id | null = symbolId;
   while (nodeId) {
     const node = sr.nodes.get(nodeId);
     assert(
       node.variant === Semantic.ENode.NamespaceDatatype ||
-        node.variant === Semantic.ENode.StructDatatype
+        node.variant === Semantic.ENode.StructDatatype ||
+        node.variant === Semantic.ENode.FunctionSymbol
     );
     if (node.variant === Semantic.ENode.StructDatatype) {
       const generics = node.generics.map((g) => serializeDatatype(sr, g)).join(", ");
@@ -280,7 +281,7 @@ export function serializeExpr(sr: SemanticResult, exprId: Semantic.Id): string {
           symbol.generics.length > 0
             ? "<" + symbol.generics.map((g) => serializeDatatype(sr, g)).join(", ") + ">"
             : "";
-        return symbol.name + generic;
+        return getParentNames(sr, expr.symbol) + generic;
       }
       throw new InternalError("Symbol not supported: " + symbol.variant);
     }

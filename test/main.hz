@@ -45,22 +45,11 @@
 // }
 
 import math
-import "glfw"
-from math import sqrt
 
-struct Foo<T> {
-    value: T;
-}
-
-type Bar = Foo<i32>;
+__c__("#include <stdio.h>;");
+extern "C" noemit printf(fmt: str, ...);
 
 main(): int {
-    const foo = Foo<i8> {
-        value: 0 as i8
-    };
-    const bar = Bar {
-        value: 0 as i32
-    };
-    // math.sqrt();
+    printf("Result: %ld\n", math.sqrt());
     return 0;
 }

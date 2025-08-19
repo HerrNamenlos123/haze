@@ -1,10 +1,12 @@
 
 export struct Float {
     value: float;
+
+    get(): float {
+        return this.value;
+    }
 }
 
-export sqrt(): Float {
-    return Float { value: 0.0 };
+export sqrt(): int {
+    return 287;
 }
-
-namespace Test {}

@@ -447,6 +447,7 @@ export type ASTStructDefinition = {
   methods: ASTFunctionDefinition[];
   nestedStructs: ASTStructDefinition[];
   sourceloc: SourceLoc;
+  originalSourcecode: string;
 };
 
 export type ASTTypeDefinition = ASTStructDefinition;

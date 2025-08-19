@@ -28,7 +28,7 @@ import {
   Semantic,
   type SemanticResult,
 } from "./SemanticSymbols";
-import { serializeDatatype, serializeExpr, serializeNestedName } from "./Serialize";
+import { getParentNames, serializeDatatype, serializeExpr, serializeNestedName } from "./Serialize";
 
 export function tryLookupSymbol(
   cc: CollectionContext,
@@ -37,12 +37,12 @@ export function tryLookupSymbol(
 ): Collect.Id | undefined {
   const scope = cc.nodes.get(args.startLookupInScope);
 
-  const lookupDirect = (symbols: Collect.Id[]) => {
+  const lookupDirect = (symbols: Set<Collect.Id>) => {
     for (const id of symbols) {
       const s = cc.nodes.get(id);
       if (s.variant === Collect.ENode.FunctionOverloadGroup && s.name === name) {
         if (
-          s.overloads.some((o) => {
+          [...s.overloads].some((o) => {
             const func = cc.nodes.get(o);
             assert(func.variant === Collect.ENode.FunctionSymbol);
             return !args.pubRequired || func.pub;
@@ -74,10 +74,6 @@ export function tryLookupSymbol(
   };
 
   switch (scope.variant) {
-    case Collect.ENode.ModuleScope:
-    case Collect.ENode.UnitScope:
-      assert(false, "Unreachable");
-
     case Collect.ENode.NamespaceScope: {
       const ns = cc.nodes.get(scope.owningSymbol);
       assert(ns.variant === Collect.ENode.NamespaceDefinitionSymbol);
@@ -97,6 +93,8 @@ export function tryLookupSymbol(
       });
     }
 
+    case Collect.ENode.ModuleScope:
+    case Collect.ENode.UnitScope:
     case Collect.ENode.FileScope:
     case Collect.ENode.BlockScope:
     case Collect.ENode.StructScope:
@@ -106,12 +104,16 @@ export function tryLookupSymbol(
         return found;
       }
 
+      if (scope.variant === Collect.ENode.ModuleScope) {
+        return undefined;
+      }
+
       if (scope.variant === Collect.ENode.FileScope) {
-        // File Scope -> Don't go higher but look in adjacent files in the same unit
+        // File Scope -> Don't go higher but look in adjacent files in the same unit, then go higher
         const unitScope = cc.nodes.get(scope.parentScope);
         assert(unitScope.variant === Collect.ENode.UnitScope);
 
-        for (const file of unitScope.files) {
+        for (const file of unitScope.symbols) {
           if (file === args.startLookupInScope) continue; // Prevent infinite recursion with itself
 
           const fileScope = cc.nodes.get(file);
@@ -123,7 +125,10 @@ export function tryLookupSymbol(
           }
         }
 
-        return undefined;
+        return tryLookupSymbol(cc, name, {
+          startLookupInScope: scope.parentScope,
+          sourceloc: args.sourceloc,
+        });
       } else {
         // Not a file scope -> Can go higher
         return tryLookupSymbol(cc, name, {
@@ -236,7 +241,7 @@ function lookupSymbolInNamespaceOrStructScope(
   args: {
     name: string;
     expr: Collect.MemberAccessExpr;
-    currentFileScope: Collect.Id;
+    currentScope: Collect.Id;
     context: SubstitutionContext;
     elaboratedVariables: Map<Collect.Id, Semantic.Id>;
     scope: Collect.Id;
@@ -245,13 +250,13 @@ function lookupSymbolInNamespaceOrStructScope(
   const symbol = sr.cc.nodes.get(symbolId);
   if (symbol.variant === Collect.ENode.StructDefinitionSymbol && symbol.name === args.name) {
     const instantiated = instantiateAndElaborateStruct(sr, {
-      currentFileScope: args.currentFileScope,
+      currentScope: args.currentScope,
       definedStructTypeId: symbolId,
       elaboratedVariables: args.elaboratedVariables,
       genericArgs: args.expr.genericArgs.map((g) => {
         return lookupAndElaborateDatatype(sr, {
           typeId: g,
-          currentFileScope: args.currentFileScope,
+          currentScope: args.currentScope,
           elaboratedVariables: args.elaboratedVariables,
           context: args.context,
           isInCFuncdecl: false,
@@ -270,14 +275,14 @@ function lookupSymbolInNamespaceOrStructScope(
     });
   } else if (symbol.variant === Collect.ENode.FunctionOverloadGroup && symbol.name === args.name) {
     console.log("TODO: Do overload discrimination here");
-    const overloadId = symbol.overloads[0];
+    const overloadId = [...symbol.overloads][0];
     const functionSymbolId = elaborateFunctionSymbol(sr, overloadId, {
-      currentFileScope: args.currentFileScope,
+      currentScope: args.currentScope,
       elaboratedVariables: args.elaboratedVariables,
       genericArgs: args.expr.genericArgs.map((g) => {
         return lookupAndElaborateDatatype(sr, {
           typeId: g,
-          currentFileScope: args.currentFileScope,
+          currentScope: args.currentScope,
           elaboratedVariables: args.elaboratedVariables,
           context: args.context,
           isInCFuncdecl: false,
@@ -288,7 +293,7 @@ function lookupSymbolInNamespaceOrStructScope(
       context: args.context,
       parentStructOrNS: elaborateParentSymbolFromCache(sr, {
         context: args.context,
-        currentFileScope: args.currentFileScope,
+        currentScope: args.currentScope,
         parentScope: symbol.parentScope,
       }),
       usageSite: args.expr.sourceloc,
@@ -313,7 +318,7 @@ function lookupAndElaborateNamespaceMemberAccess(
   args: {
     name: string;
     expr: Collect.MemberAccessExpr;
-    currentFileScope: Collect.Id;
+    currentScope: Collect.Id;
     context: SubstitutionContext;
     elaboratedVariables: Map<Collect.Id, Semantic.Id>;
     scope: Collect.Id;
@@ -332,7 +337,7 @@ function lookupAndElaborateNamespaceMemberAccess(
     for (const symbolId of scope.symbols) {
       const s = lookupSymbolInNamespaceOrStructScope(sr, symbolId, {
         context: args.context,
-        currentFileScope: args.currentFileScope,
+        currentScope: args.currentScope,
         elaboratedVariables: args.elaboratedVariables,
         expr: args.expr,
         name: args.name,
@@ -355,7 +360,7 @@ function lookupAndElaborateStaticStructAccess(
   args: {
     name: string;
     expr: Collect.MemberAccessExpr;
-    currentFileScope: Collect.Id;
+    currentScope: Collect.Id;
     context: SubstitutionContext;
     elaboratedVariables: Map<Collect.Id, Semantic.Id>;
     scope: Collect.Id;
@@ -376,7 +381,7 @@ function lookupAndElaborateStaticStructAccess(
   for (const symbolId of structScope.symbols) {
     const s = lookupSymbolInNamespaceOrStructScope(sr, symbolId, {
       context: mergeSubstitutionContext(elaboratedStructCache.substitutionContext, args.context),
-      currentFileScope: args.currentFileScope,
+      currentScope: args.currentScope,
       elaboratedVariables: args.elaboratedVariables,
       expr: args.expr,
       name: args.name,
@@ -407,7 +412,7 @@ export function elaborateExpr(
   args: {
     scope: Collect.Id;
     context: SubstitutionContext;
-    currentFileScope: Collect.Id;
+    currentScope: Collect.Id;
     elaboratedVariables: Map<Collect.Id, Semantic.Id>;
   }
 ): [Semantic.Expression, Semantic.Id] {
@@ -418,13 +423,13 @@ export function elaborateExpr(
       const [left, leftId] = elaborateExpr(sr, expr.left, {
         context: args.context,
         elaboratedVariables: args.elaboratedVariables,
-        currentFileScope: args.currentFileScope,
+        currentScope: args.currentScope,
         scope: args.scope,
       });
       const [right, rightId] = elaborateExpr(sr, expr.right, {
         context: args.context,
         elaboratedVariables: args.elaboratedVariables,
-        currentFileScope: args.currentFileScope,
+        currentScope: args.currentScope,
         scope: args.scope,
       });
       const leftType = getExprType(sr, leftId);
@@ -451,7 +456,7 @@ export function elaborateExpr(
     case Collect.ENode.UnaryExpr: {
       const [e, eId] = elaborateExpr(sr, expr.expr, {
         context: args.context,
-        currentFileScope: args.currentFileScope,
+        currentScope: args.currentScope,
         elaboratedVariables: args.elaboratedVariables,
         scope: args.scope,
       });
@@ -487,7 +492,7 @@ export function elaborateExpr(
       return elaborateExpr(sr, expr.expr, {
         scope: args.scope,
         elaboratedVariables: args.elaboratedVariables,
-        currentFileScope: args.currentFileScope,
+        currentScope: args.currentScope,
         context: args.context,
       });
     }
@@ -500,7 +505,7 @@ export function elaborateExpr(
       const [calledExpr, calledExprId] = elaborateExpr(sr, expr.calledExpr, {
         context: args.context,
         elaboratedVariables: args.elaboratedVariables,
-        currentFileScope: args.currentFileScope,
+        currentScope: args.currentScope,
         scope: args.scope,
       });
       const calledExprType = asType(sr.nodes.get(calledExpr.type));
@@ -509,7 +514,7 @@ export function elaborateExpr(
         (a) =>
           elaborateExpr(sr, a, {
             scope: args.scope,
-            currentFileScope: args.currentFileScope,
+            currentScope: args.currentScope,
             elaboratedVariables: args.elaboratedVariables,
             context: args.context,
           })[1]
@@ -645,17 +650,32 @@ export function elaborateExpr(
         // });
       }
 
-      const symbolId = lookupSymbol(sr.cc, expr.name, {
+      let symbolId = lookupSymbol(sr.cc, expr.name, {
         startLookupInScope: args.scope,
         sourceloc: expr.sourceloc,
       });
-      const symbol = sr.cc.nodes.get(symbolId);
+      let symbol = sr.cc.nodes.get(symbolId);
+
+      if (symbol.variant === Collect.ENode.AliasTypeSymbol) {
+        const aliasScope = symbol.inScope;
+        symbolId = symbol.target;
+        symbol = sr.cc.nodes.get(symbolId);
+
+        if (symbol.variant === Collect.ENode.NamedDatatype) {
+          symbolId = lookupSymbol(sr.cc, symbol.name, {
+            startLookupInScope: aliasScope,
+            sourceloc: symbol.sourceloc,
+          });
+          symbol = sr.cc.nodes.get(symbolId);
+        }
+      }
+
       if (symbol.variant === Collect.ENode.VariableSymbol) {
         let elaboratedSymbolId = undefined as Semantic.Id | undefined;
         if (symbol.variableContext === EVariableContext.Global) {
           // In case it's not elaborated yet, may happen
           elaborateGlobalSymbol(sr, symbolId, {
-            currentFileScope: args.currentFileScope,
+            currentScope: args.currentScope,
           });
           elaboratedSymbolId = sr.elaboratedGlobalVariableSymbols.get(symbolId);
         } else {
@@ -679,7 +699,7 @@ export function elaborateExpr(
         });
       } else if (symbol.variant === Collect.ENode.GlobalVariableDefinition) {
         const [elaboratedSymbolId] = elaborateGlobalSymbol(sr, symbolId, {
-          currentFileScope: args.currentFileScope,
+          currentScope: args.currentScope,
         });
         assert(elaboratedSymbolId);
         const elaboratedSymbol = sr.nodes.get(elaboratedSymbolId);
@@ -700,14 +720,14 @@ export function elaborateExpr(
         });
       } else if (symbol.variant === Collect.ENode.FunctionOverloadGroup) {
         console.log("TODO: Implement function overload resolution here");
-        const chosenOverload = symbol.overloads[0];
+        const chosenOverload = [...symbol.overloads][0];
         const elaboratedSymbolId = elaborateFunctionSymbol(sr, chosenOverload, {
           elaboratedVariables: args.elaboratedVariables,
           genericArgs: expr.genericArgs.map((g) => {
             return lookupAndElaborateDatatype(sr, {
               typeId: g,
               context: args.context,
-              currentFileScope: args.currentFileScope,
+              currentScope: args.currentScope,
               elaboratedVariables: args.elaboratedVariables,
               isInCFuncdecl: false,
               startLookupInScopeForGenerics: args.scope,
@@ -716,10 +736,10 @@ export function elaborateExpr(
           }),
           usageSite: expr.sourceloc,
           context: args.context,
-          currentFileScope: args.currentFileScope,
+          currentScope: args.currentScope,
           parentStructOrNS: elaborateParentSymbolFromCache(sr, {
             context: args.context,
-            currentFileScope: args.currentFileScope,
+            currentScope: args.currentScope,
             parentScope: symbol.parentScope,
           }),
         });
@@ -738,7 +758,7 @@ export function elaborateExpr(
       ) {
         // This is for static function calls like Arena.create(); -> "Arena" is now a NamespaceValue
         const [elaboratedSymbolId] = elaborateGlobalSymbol(sr, symbolId, {
-          currentFileScope: args.currentFileScope,
+          currentScope: args.currentScope,
         });
         assert(elaboratedSymbolId);
         const elaboratedSymbol = sr.nodes.get(elaboratedSymbolId);
@@ -754,7 +774,10 @@ export function elaborateExpr(
           sourceloc: expr.sourceloc,
         });
       } else {
-        throw new CompilerError(`Symbol cannot be used as a value`, expr.sourceloc);
+        throw new CompilerError(
+          `Symbol cannot be used as a value: Code ${symbol.variant}`,
+          expr.sourceloc
+        );
       }
     }
 
@@ -765,7 +788,7 @@ export function elaborateExpr(
     case Collect.ENode.PointerAddressOfExpr: {
       const [_expr, exprId] = elaborateExpr(sr, expr.expr, {
         context: args.context,
-        currentFileScope: args.currentFileScope,
+        currentScope: args.currentScope,
         elaboratedVariables: args.elaboratedVariables,
         scope: args.scope,
       });
@@ -785,7 +808,7 @@ export function elaborateExpr(
       const [_expr, _exprId] = elaborateExpr(sr, expr.expr, {
         scope: args.scope,
         elaboratedVariables: args.elaboratedVariables,
-        currentFileScope: args.currentFileScope,
+        currentScope: args.currentScope,
         context: args.context,
       });
       const exprType = asType(sr.nodes.get(_expr.type));
@@ -814,7 +837,7 @@ export function elaborateExpr(
           typeId: expr.targetType,
           startLookupInScopeForGenerics: args.scope,
           startLookupInScopeForSymbol: args.scope,
-          currentFileScope: args.currentFileScope,
+          currentScope: args.currentScope,
           elaboratedVariables: args.elaboratedVariables,
           isInCFuncdecl: false,
           context: args.context,
@@ -822,7 +845,7 @@ export function elaborateExpr(
         expr: elaborateExpr(sr, expr.expr, {
           context: args.context,
           elaboratedVariables: args.elaboratedVariables,
-          currentFileScope: args.currentFileScope,
+          currentScope: args.currentScope,
           scope: args.scope,
         })[1],
         sourceloc: expr.sourceloc,
@@ -837,7 +860,7 @@ export function elaborateExpr(
       const [e, eId] = elaborateExpr(sr, expr.expr, {
         elaboratedVariables: args.elaboratedVariables,
         scope: args.scope,
-        currentFileScope: args.currentFileScope,
+        currentScope: args.currentScope,
         context: args.context,
       });
       return Semantic.addNode(sr, {
@@ -857,7 +880,7 @@ export function elaborateExpr(
       const [e, eId] = elaborateExpr(sr, expr.expr, {
         context: args.context,
         elaboratedVariables: args.elaboratedVariables,
-        currentFileScope: args.currentFileScope,
+        currentScope: args.currentScope,
         scope: args.scope,
       });
       return Semantic.addNode(sr, {
@@ -877,7 +900,7 @@ export function elaborateExpr(
       const [object, objectId] = elaborateExpr(sr, expr.expr, {
         context: args.context,
         elaboratedVariables: args.elaboratedVariables,
-        currentFileScope: args.currentFileScope,
+        currentScope: args.currentScope,
         scope: args.scope,
       });
       let objectType = asType(sr.nodes.get(object.type));
@@ -892,7 +915,7 @@ export function elaborateExpr(
           return lookupAndElaborateNamespaceMemberAccess(sr, objectId, {
             expr: expr,
             context: args.context,
-            currentFileScope: args.currentFileScope,
+            currentScope: args.currentScope,
             elaboratedVariables: args.elaboratedVariables,
             scope: args.scope,
             name: expr.memberName,
@@ -901,7 +924,7 @@ export function elaborateExpr(
           return lookupAndElaborateStaticStructAccess(sr, objectId, {
             expr: expr,
             context: args.context,
-            currentFileScope: args.currentFileScope,
+            currentScope: args.currentScope,
             elaboratedVariables: args.elaboratedVariables,
             scope: args.scope,
             name: expr.memberName,
@@ -944,7 +967,7 @@ export function elaborateExpr(
       assert(collectedStruct.variant === Collect.ENode.StructDefinitionSymbol);
       const structScope = sr.cc.nodes.get(collectedStruct.structScope);
       assert(structScope.variant === Collect.ENode.StructScope);
-      const overloadGroupId = structScope.symbols.find((mId) => {
+      const overloadGroupId = [...structScope.symbols].find((mId) => {
         const m = sr.cc.nodes.get(mId);
         return m.variant === Collect.ENode.FunctionOverloadGroup && m.name === expr.memberName;
       });
@@ -953,14 +976,13 @@ export function elaborateExpr(
         console.log("TODO: Fix overload resolution here ");
         const overloadGroup = sr.cc.nodes.get(overloadGroupId);
         assert(overloadGroup.variant === Collect.ENode.FunctionOverloadGroup);
-        const collectedMethodId = overloadGroup.overloads[0];
+        const collectedMethodId = [...overloadGroup.overloads][0];
 
         const elaboratedStructCache = sr.elaboratedStructDatatypes.find(
           (d) => d.resultSymbol === object.type
         );
         assert(elaboratedStructCache);
 
-        console.log("Member access", expr.memberName);
         const elaboratedMethodId = elaborateFunctionSymbol(sr, collectedMethodId, {
           context: mergeSubstitutionContext(
             elaboratedStructCache.substitutionContext,
@@ -970,7 +992,7 @@ export function elaborateExpr(
             return lookupAndElaborateDatatype(sr, {
               typeId: g,
               context: elaboratedStructCache.substitutionContext,
-              currentFileScope: args.currentFileScope,
+              currentScope: args.currentScope,
               elaboratedVariables: args.elaboratedVariables,
               isInCFuncdecl: false,
               startLookupInScopeForGenerics: args.scope,
@@ -978,7 +1000,7 @@ export function elaborateExpr(
             });
           }),
           usageSite: expr.sourceloc,
-          currentFileScope: args.currentFileScope,
+          currentScope: args.currentScope,
           elaboratedVariables: args.elaboratedVariables,
           parentStructOrNS: object.type,
         });
@@ -1025,12 +1047,12 @@ export function elaborateExpr(
         context: args.context,
         elaboratedVariables: args.elaboratedVariables,
         scope: args.scope,
-        currentFileScope: args.currentFileScope,
+        currentScope: args.currentScope,
       });
       const [target, targetId] = elaborateExpr(sr, expr.expr, {
         context: args.context,
         elaboratedVariables: args.elaboratedVariables,
-        currentFileScope: args.currentFileScope,
+        currentScope: args.currentScope,
         scope: args.scope,
       });
       return Semantic.addNode(sr, {
@@ -1049,7 +1071,7 @@ export function elaborateExpr(
     case Collect.ENode.StructInstantiationExpr: {
       const structId = lookupAndElaborateDatatype(sr, {
         typeId: expr.structType,
-        currentFileScope: args.currentFileScope,
+        currentScope: args.currentScope,
         elaboratedVariables: args.elaboratedVariables,
         startLookupInScopeForGenerics: args.scope,
         startLookupInScopeForSymbol: args.scope,
@@ -1073,7 +1095,7 @@ export function elaborateExpr(
         const [e, eId] = elaborateExpr(sr, m.value, {
           context: args.context,
           elaboratedVariables: args.elaboratedVariables,
-          currentFileScope: args.currentFileScope,
+          currentScope: args.currentScope,
           scope: args.scope,
         });
 
@@ -1153,7 +1175,7 @@ export function elaborateStatement(
     expectedReturnType: Semantic.Id;
     context: SubstitutionContext;
     elaboratedVariables: Map<Collect.Id, Semantic.Id>;
-    currentFileScope: Collect.Id;
+    currentScope: Collect.Id;
   }
 ): Semantic.Id {
   const s = sr.cc.nodes.get(statementId);
@@ -1178,7 +1200,7 @@ export function elaborateStatement(
       const [condition, conditionId] = elaborateExpr(sr, s.condition, {
         context: args.context,
         elaboratedVariables: args.elaboratedVariables,
-        currentFileScope: args.currentFileScope,
+        currentScope: args.currentScope,
         scope: s.owningScope,
       });
       const [thenScope, thenScopeId] = Semantic.addNode(sr, {
@@ -1189,7 +1211,7 @@ export function elaborateStatement(
         targetScopeId: thenScopeId,
         sourceScopeId: s.thenBlock,
         expectedReturnType: args.expectedReturnType,
-        currentFileScope: args.currentFileScope,
+        currentScope: args.currentScope,
         elaboratedVariables: args.elaboratedVariables,
         context: args.context,
       });
@@ -1201,7 +1223,7 @@ export function elaborateStatement(
         elaborateBlockScope(sr, {
           targetScopeId: innerThenScopeId,
           sourceScopeId: e.thenBlock,
-          currentFileScope: args.currentFileScope,
+          currentScope: args.currentScope,
           expectedReturnType: args.expectedReturnType,
           elaboratedVariables: args.elaboratedVariables,
           context: args.context,
@@ -1211,7 +1233,7 @@ export function elaborateStatement(
             context: args.context,
             elaboratedVariables: args.elaboratedVariables,
             scope: s.owningScope,
-            currentFileScope: args.currentFileScope,
+            currentScope: args.currentScope,
           })[1],
           then: innerThenScopeId,
         };
@@ -1230,7 +1252,7 @@ export function elaborateStatement(
           targetScopeId: elseScopeId,
           sourceScopeId: s.elseBlock,
           expectedReturnType: args.expectedReturnType,
-          currentFileScope: args.currentFileScope,
+          currentScope: args.currentScope,
           elaboratedVariables: args.elaboratedVariables,
           context: args.context,
         });
@@ -1254,7 +1276,7 @@ export function elaborateStatement(
         context: args.context,
         elaboratedVariables: args.elaboratedVariables,
         scope: s.owningScope,
-        currentFileScope: args.currentFileScope,
+        currentScope: args.currentScope,
       });
       const [thenScope, thenScopeId] = Semantic.addNode(sr, {
         variant: Semantic.ENode.BlockScope,
@@ -1264,7 +1286,7 @@ export function elaborateStatement(
         targetScopeId: thenScopeId,
         sourceScopeId: s.block,
         elaboratedVariables: args.elaboratedVariables,
-        currentFileScope: args.currentFileScope,
+        currentScope: args.currentScope,
         expectedReturnType: args.expectedReturnType,
         context: args.context,
       });
@@ -1290,7 +1312,7 @@ export function elaborateStatement(
               context: args.context,
               elaboratedVariables: args.elaboratedVariables,
               scope: s.owningScope,
-              currentFileScope: args.currentFileScope,
+              currentScope: args.currentScope,
             })[1],
             args.expectedReturnType,
             s.sourceloc
@@ -1316,7 +1338,7 @@ export function elaborateStatement(
           context: args.context,
           elaboratedVariables: args.elaboratedVariables,
           scope: s.owningScope,
-          currentFileScope: args.currentFileScope,
+          currentScope: args.currentScope,
         })[1];
       const value = valueId && asExpression(sr.nodes.get(valueId));
 
@@ -1337,7 +1359,7 @@ export function elaborateStatement(
       if (collectedVariableSymbol.type) {
         variableSymbol.type = lookupAndElaborateDatatype(sr, {
           typeId: collectedVariableSymbol.type,
-          currentFileScope: args.currentFileScope,
+          currentScope: args.currentScope,
           elaboratedVariables: args.elaboratedVariables,
           startLookupInScopeForGenerics: s.owningScope,
           startLookupInScopeForSymbol: s.owningScope,
@@ -1374,7 +1396,7 @@ export function elaborateStatement(
           scope: s.owningScope,
           context: args.context,
           elaboratedVariables: args.elaboratedVariables,
-          currentFileScope: args.currentFileScope,
+          currentScope: args.currentScope,
         })[1],
         sourceloc: s.sourceloc,
       })[1];
@@ -1388,7 +1410,7 @@ function elaborateVariableSymbolInScope(
   sr: SemanticResult,
   variableSymbolId: Collect.Id,
   args: {
-    currentFileScope: Collect.Id;
+    currentScope: Collect.Id;
     elaboratedVariables: Map<Collect.Id, Semantic.Id>;
     context: SubstitutionContext;
   }
@@ -1408,7 +1430,7 @@ function elaborateVariableSymbolInScope(
           startLookupInScopeForGenerics: symbol.inScope,
           startLookupInScopeForSymbol: symbol.inScope,
           isInCFuncdecl: false,
-          currentFileScope: args.currentFileScope,
+          currentScope: args.currentScope,
           elaboratedVariables: args.elaboratedVariables,
           context: args.context,
         });
@@ -1432,7 +1454,7 @@ function elaborateVariableSymbolInScope(
         memberOfStruct: null,
         parentStructOrNS: elaborateParentSymbolFromCache(sr, {
           context: args.context,
-          currentFileScope: args.currentFileScope,
+          currentScope: args.currentScope,
           parentScope: symbol.inScope,
         }),
         variableContext: variableContext,
@@ -1453,7 +1475,7 @@ export function elaborateBlockScope(
   args: {
     sourceScopeId: Collect.Id;
     targetScopeId: Semantic.Id;
-    currentFileScope: Collect.Id;
+    currentScope: Collect.Id;
     expectedReturnType: Semantic.Id;
     elaboratedVariables: Map<Collect.Id, Semantic.Id>;
     context: SubstitutionContext;
@@ -1467,7 +1489,7 @@ export function elaborateBlockScope(
   for (const sId of scope.symbols) {
     elaborateVariableSymbolInScope(sr, sId, {
       elaboratedVariables: newElaboratedVariables,
-      currentFileScope: args.currentFileScope,
+      currentScope: args.currentScope,
       context: args.context,
     });
   }
@@ -1476,7 +1498,7 @@ export function elaborateBlockScope(
     const statement = elaborateStatement(sr, sId, {
       expectedReturnType: args.expectedReturnType,
       elaboratedVariables: newElaboratedVariables,
-      currentFileScope: args.currentFileScope,
+      currentScope: args.currentScope,
       context: args.context,
     });
     const blockScope = sr.nodes.get(args.targetScopeId);
@@ -1491,7 +1513,7 @@ export function elaborateFunctionSymbol(
   args: {
     genericArgs: Semantic.Id[];
     usageSite: SourceLoc;
-    currentFileScope: Collect.Id;
+    currentScope: Collect.Id;
     parentStructOrNS: Semantic.Id | null;
     elaboratedVariables: Map<Collect.Id, Semantic.Id>;
     context: SubstitutionContext;
@@ -1529,7 +1551,7 @@ export function elaborateFunctionSymbol(
   const expectedReturnType = lookupAndElaborateDatatype(sr, {
     typeId: func.returnType,
     context: substitutionContext,
-    currentFileScope: args.currentFileScope,
+    currentScope: args.currentScope,
     elaboratedVariables: args.elaboratedVariables,
     isInCFuncdecl: false,
     startLookupInScopeForGenerics: func.functionScope || func.parentScope,
@@ -1541,7 +1563,7 @@ export function elaborateFunctionSymbol(
     lookupAndElaborateDatatype(sr, {
       typeId: p.type,
       context: substitutionContext,
-      currentFileScope: args.currentFileScope,
+      currentScope: args.currentScope,
       elaboratedVariables: args.elaboratedVariables,
       isInCFuncdecl: false,
       startLookupInScopeForGenerics: func.functionScope || func.parentScope,
@@ -1615,7 +1637,7 @@ export function elaborateFunctionSymbol(
       const newElaboratedVariables = new Map<Collect.Id, Semantic.Id>(args.elaboratedVariables);
 
       if (symbol.methodType === EMethodType.Method) {
-        const collectedThisRefId = functionScope.symbols.find((sId) => {
+        const collectedThisRefId = [...functionScope.symbols].find((sId) => {
           const sym = sr.cc.nodes.get(sId);
           return sym.variant === Collect.ENode.VariableSymbol && sym.name === "this";
         });
@@ -1646,7 +1668,7 @@ export function elaborateFunctionSymbol(
         if (symbol.variant === Collect.ENode.VariableSymbol) {
           elaborateVariableSymbolInScope(sr, sId, {
             elaboratedVariables: newElaboratedVariables,
-            currentFileScope: args.currentFileScope,
+            currentScope: args.currentScope,
             context: substitutionContext,
           });
         }
@@ -1658,7 +1680,7 @@ export function elaborateFunctionSymbol(
         sourceScopeId: functionScope.blockScope,
         expectedReturnType: expectedReturnType,
         elaboratedVariables: newElaboratedVariables,
-        currentFileScope: args.currentFileScope,
+        currentScope: args.currentScope,
         context: substitutionContext,
       });
     }
@@ -1671,7 +1693,7 @@ export function elaborateNamespace(
   sr: SemanticResult,
   namespaceId: Collect.Id,
   args: {
-    currentFileScope: Collect.Id;
+    currentScope: Collect.Id;
     context: SubstitutionContext;
   }
 ): Semantic.Id {
@@ -1703,7 +1725,7 @@ export function elaborateNamespace(
   if (parentScope.variant === Collect.ENode.NamespaceScope) {
     parentNamespace = elaborateNamespace(sr, parentScope.owningSymbol, {
       context: args.context,
-      currentFileScope: args.currentFileScope,
+      currentScope: args.currentScope,
     });
   }
 
@@ -1724,7 +1746,7 @@ export function elaborateNamespace(
     assert(nsScope.variant === Collect.ENode.NamespaceScope);
     for (const symbolId of nsScope.symbols) {
       const sym = elaborateGlobalSymbol(sr, symbolId, {
-        currentFileScope: args.currentFileScope,
+        currentScope: args.currentScope,
       });
       for (const s of sym) {
         ns.symbols.push(s);
@@ -1738,7 +1760,7 @@ export function elaborateGlobalSymbol(
   sr: SemanticResult,
   nodeId: Collect.Id,
   args: {
-    currentFileScope: Collect.Id;
+    currentScope: Collect.Id;
   }
 ): Semantic.Id[] {
   const node = sr.cc.nodes.get(nodeId);
@@ -1770,7 +1792,7 @@ export function elaborateGlobalSymbol(
     case Collect.ENode.NamespaceDefinitionSymbol: {
       return [
         elaborateNamespace(sr, nodeId, {
-          currentFileScope: args.currentFileScope,
+          currentScope: args.currentScope,
           context: makeSubstitutionContext(),
         }),
       ];
@@ -1787,10 +1809,10 @@ export function elaborateGlobalSymbol(
             parentStructOrNS: elaborateParentSymbolFromCache(sr, {
               parentScope: func.parentScope,
               context: makeSubstitutionContext(),
-              currentFileScope: args.currentFileScope,
+              currentScope: args.currentScope,
             }),
             usageSite: func.sourceloc,
-            currentFileScope: args.currentFileScope,
+            currentScope: args.currentScope,
             elaboratedVariables: new Map(),
             context: makeSubstitutionContext(),
           });
@@ -1811,7 +1833,7 @@ export function elaborateGlobalSymbol(
           context: makeSubstitutionContext(),
           genericArgs: [],
           elaboratedVariables: new Map(),
-          currentFileScope: args.currentFileScope,
+          currentScope: args.currentScope,
           sourceloc: node.sourceloc,
         }),
       ];
@@ -1827,10 +1849,10 @@ export function elaborateGlobalSymbol(
         (node.type &&
           lookupAndElaborateDatatype(sr, {
             typeId: node.type,
-            startLookupInScopeForGenerics: args.currentFileScope,
-            startLookupInScopeForSymbol: args.currentFileScope,
+            startLookupInScopeForGenerics: args.currentScope,
+            startLookupInScopeForSymbol: args.currentScope,
             elaboratedVariables: new Map(),
-            currentFileScope: args.currentFileScope,
+            currentScope: args.currentScope,
             isInCFuncdecl: false,
             context: makeSubstitutionContext(),
           })) ||
@@ -1846,7 +1868,7 @@ export function elaborateGlobalSymbol(
         mutability: node.mutability,
         variableContext: EVariableContext.Global,
         parentStructOrNS: elaborateParentSymbolFromCache(sr, {
-          currentFileScope: args.currentFileScope,
+          currentScope: args.currentScope,
           parentScope: node.inScope,
           context: makeSubstitutionContext(),
         }),
@@ -1869,15 +1891,15 @@ export function elaborateGlobalSymbol(
       ];
       if (node.value) {
         [elaboratedValue, elaboratedValueId] = elaborateExpr(sr, node.value, {
-          scope: args.currentFileScope,
+          scope: args.currentScope,
           elaboratedVariables: new Map(),
           context: makeSubstitutionContext(),
-          currentFileScope: args.currentFileScope,
+          currentScope: args.currentScope,
         });
       }
 
       const [variableSymbolId] = elaborateGlobalSymbol(sr, node.variableSymbol, {
-        currentFileScope: args.currentFileScope,
+        currentScope: args.currentScope,
       });
       assert(variableSymbolId);
       const variableSymbol = sr.nodes.get(variableSymbolId);
@@ -1915,6 +1937,24 @@ export function elaborateGlobalSymbol(
       });
       sr.cInjections.push(directiveId);
       return [directiveId];
+    }
+
+    case Collect.ENode.UnitScope: {
+      for (const symbolId of node.symbols) {
+        elaborateGlobalSymbol(sr, symbolId, {
+          currentScope: nodeId,
+        });
+      }
+      return [];
+    }
+
+    case Collect.ENode.FileScope: {
+      for (const symbolId of node.symbols) {
+        elaborateGlobalSymbol(sr, symbolId, {
+          currentScope: nodeId,
+        });
+      }
+      return [];
     }
 
     case Collect.ENode.AliasTypeSymbol:
@@ -1958,27 +1998,17 @@ export function SemanticallyAnalyze(
 
   const moduleScope = cc.nodes.get(0 as Collect.Id);
   assert(moduleScope.variant === Collect.ENode.ModuleScope);
-  for (const unitId of moduleScope.units) {
-    const unit = cc.nodes.get(unitId);
-    assert(unit.variant === Collect.ENode.UnitScope);
-    for (const fileId of unit.files) {
-      const fileScope = cc.nodes.get(fileId);
-      assert(fileScope.variant === Collect.ENode.FileScope);
-      for (const symbolId of fileScope.symbols) {
-        elaborateGlobalSymbol(sr, symbolId, {
-          currentFileScope: fileId,
-        });
-      }
-    }
+  for (const symbolId of moduleScope.symbols) {
+    elaborateGlobalSymbol(sr, symbolId, {
+      currentScope: 0 as Collect.Id,
+    });
   }
 
   const mainGlobalScope = sr.elaboratedNamespaceSymbols.find((s) => {
     const symbol = sr.nodes.get(s.resultSymbol) as Semantic.NamespaceDatatypeSymbol;
-    return (
-      symbol.name === getModuleGlobalNamespaceName(moduleName, moduleVersion) &&
-      symbol.parentStructOrNS === null
-    );
+    return symbol.name === getModuleGlobalNamespaceName(moduleName, moduleVersion);
   });
+  console.log("TODO: Narrow this down so it's not just the name, because it might be nested");
   assert(mainGlobalScope);
   const mainNamespace = sr.nodes.get(mainGlobalScope.resultSymbol);
   assert(mainNamespace.variant === Semantic.ENode.NamespaceDatatype);
@@ -2040,11 +2070,17 @@ function printSymbol(sr: SemanticResult, symbolId: Semantic.Id, indent: number) 
 
     case Semantic.ENode.FunctionSymbol:
       if (symbol.scope) {
-        print(`Function ${symbol.name}: ${serializeDatatype(sr, symbol.type)} {`, indent);
+        print(
+          `Function ${getParentNames(sr, symbolId)}: ${serializeDatatype(sr, symbol.type)} {`,
+          indent
+        );
         printSymbol(sr, symbol.scope, indent + 2);
         print(`}`, indent);
       } else {
-        print(`Function ${symbol.name}: ${serializeDatatype(sr, symbol.type)};`, indent);
+        print(
+          `Function ${getParentNames(sr, symbolId)}: ${serializeDatatype(sr, symbol.type)};`,
+          indent
+        );
       }
       break;
 

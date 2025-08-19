@@ -113,7 +113,7 @@ export function elaborateParentSymbolFromCache(
   args: {
     parentScope: Collect.Id;
     context: SubstitutionContext;
-    currentFileScope: Collect.Id;
+    currentScope: Collect.Id;
   }
 ): Semantic.Id | null {
   let parentStructOrNS = null as Semantic.Id | null;
@@ -143,7 +143,7 @@ export function elaborateParentSymbolFromCache(
   } else if (parentScope.variant === Collect.ENode.NamespaceScope) {
     parentStructOrNS = elaborateNamespace(sr, parentScope.owningSymbol, {
       context: args.context,
-      currentFileScope: args.currentFileScope,
+      currentScope: args.currentScope,
     });
   }
   return parentStructOrNS;
@@ -155,7 +155,7 @@ export function instantiateAndElaborateStruct(
     definedStructTypeId: Collect.Id; // The defining struct datatype to be instantiated (e.g. struct Foo<T> {})
     genericArgs: Semantic.Id[];
     sourceloc: SourceLoc;
-    currentFileScope: Collect.Id;
+    currentScope: Collect.Id;
     elaboratedVariables: Map<Collect.Id, Semantic.Id>;
     context: SubstitutionContext;
   }
@@ -190,7 +190,7 @@ export function instantiateAndElaborateStruct(
     parentStructOrNS: elaborateParentSymbolFromCache(sr, {
       parentScope: definedStructType.parentScope,
       context: args.context,
-      currentFileScope: args.currentFileScope,
+      currentScope: args.currentScope,
     }),
     members: [],
     methods: [],
@@ -227,7 +227,7 @@ export function instantiateAndElaborateStruct(
           // its generics must be found from within the struct
           startLookupInScopeForSymbol: definedStructType.structScope,
           startLookupInScopeForGenerics: definedStructType.structScope,
-          currentFileScope: args.currentFileScope,
+          currentScope: args.currentScope,
           elaboratedVariables: args.elaboratedVariables,
           context: newContext,
           isInCFuncdecl: false,
@@ -257,7 +257,7 @@ export function instantiateAndElaborateStruct(
             genericArgs: [],
             context: newContext,
             usageSite: overloadedFunc.sourceloc,
-            currentFileScope: args.currentFileScope,
+            currentScope: args.currentScope,
             elaboratedVariables: args.elaboratedVariables,
             parentStructOrNS: structId,
           });
@@ -274,7 +274,7 @@ export function instantiateAndElaborateStruct(
           definedStructTypeId: symbolId,
           context: newContext,
           genericArgs: [],
-          currentFileScope: args.currentFileScope,
+          currentScope: args.currentScope,
           elaboratedVariables: args.elaboratedVariables,
           sourceloc: symbol.sourceloc,
         });
@@ -297,7 +297,7 @@ export function lookupAndElaborateDatatype(
     startLookupInScopeForSymbol: Collect.Id;
     startLookupInScopeForGenerics: Collect.Id;
     context: SubstitutionContext;
-    currentFileScope: Collect.Id;
+    currentScope: Collect.Id;
     elaboratedVariables: Map<Collect.Id, Semantic.Id>;
     isInCFuncdecl: boolean;
   }
@@ -317,7 +317,7 @@ export function lookupAndElaborateDatatype(
             startLookupInScopeForSymbol: args.startLookupInScopeForSymbol,
             startLookupInScopeForGenerics: args.startLookupInScopeForGenerics,
             context: args.context,
-            currentFileScope: args.currentFileScope,
+            currentScope: args.currentScope,
             elaboratedVariables: args.elaboratedVariables,
             isInCFuncdecl: args.isInCFuncdecl,
           })
@@ -328,7 +328,7 @@ export function lookupAndElaborateDatatype(
           startLookupInScopeForGenerics: args.startLookupInScopeForGenerics,
           context: args.context,
           elaboratedVariables: args.elaboratedVariables,
-          currentFileScope: args.currentFileScope,
+          currentScope: args.currentScope,
           isInCFuncdecl: args.isInCFuncdecl,
         }),
         vararg: type.vararg,
@@ -347,7 +347,7 @@ export function lookupAndElaborateDatatype(
           startLookupInScopeForSymbol: args.startLookupInScopeForSymbol,
           startLookupInScopeForGenerics: args.startLookupInScopeForGenerics,
           context: args.context,
-          currentFileScope: args.currentFileScope,
+          currentScope: args.currentScope,
           elaboratedVariables: args.elaboratedVariables,
           isInCFuncdecl: args.isInCFuncdecl,
         })
@@ -367,7 +367,7 @@ export function lookupAndElaborateDatatype(
           startLookupInScopeForGenerics: args.startLookupInScopeForGenerics,
           context: args.context,
           elaboratedVariables: args.elaboratedVariables,
-          currentFileScope: args.currentFileScope,
+          currentScope: args.currentScope,
           isInCFuncdecl: args.isInCFuncdecl,
         })
       );
@@ -384,7 +384,7 @@ export function lookupAndElaborateDatatype(
         startLookupInScopeForGenerics: args.startLookupInScopeForGenerics,
         context: args.context,
         elaboratedVariables: args.elaboratedVariables,
-        currentFileScope: args.currentFileScope,
+        currentScope: args.currentScope,
         isInCFuncdecl: args.isInCFuncdecl,
       });
     }
@@ -422,7 +422,7 @@ export function lookupAndElaborateDatatype(
           startLookupInScopeForGenerics: args.startLookupInScopeForGenerics,
           context: args.context,
           isInCFuncdecl: args.isInCFuncdecl,
-          currentFileScope: args.currentFileScope,
+          currentScope: args.currentScope,
           elaboratedVariables: args.elaboratedVariables,
         });
         return Semantic.addNode(sr, {
@@ -443,7 +443,7 @@ export function lookupAndElaborateDatatype(
         return lookupAndElaborateDatatype(sr, {
           typeId: foundId,
           context: args.context,
-          currentFileScope: args.currentFileScope,
+          currentScope: args.currentScope,
           elaboratedVariables: args.elaboratedVariables,
           isInCFuncdecl: false,
           startLookupInScopeForGenerics: args.startLookupInScopeForGenerics,
@@ -462,14 +462,14 @@ export function lookupAndElaborateDatatype(
             context: args.context,
             isInCFuncdecl: false,
             elaboratedVariables: args.elaboratedVariables,
-            currentFileScope: args.currentFileScope,
+            currentScope: args.currentScope,
           });
         });
         const structId = instantiateAndElaborateStruct(sr, {
           definedStructTypeId: foundId,
           genericArgs: generics,
           context: args.context,
-          currentFileScope: args.currentFileScope,
+          currentScope: args.currentScope,
           elaboratedVariables: args.elaboratedVariables,
           sourceloc: type.sourceloc,
         });
@@ -496,7 +496,7 @@ export function lookupAndElaborateDatatype(
             startLookupInScopeForSymbol: found.structScope,
             startLookupInScopeForGenerics: args.startLookupInScopeForGenerics,
             typeId: type.innerNested,
-            currentFileScope: args.currentFileScope,
+            currentScope: args.currentScope,
             elaboratedVariables: args.elaboratedVariables,
             isInCFuncdecl: false,
             context: mergeSubstitutionContext(cachedParentSubstitutions, args.context),
@@ -512,7 +512,7 @@ export function lookupAndElaborateDatatype(
           typeId: type.innerNested,
           startLookupInScopeForSymbol: found.namespaceScope,
           startLookupInScopeForGenerics: args.startLookupInScopeForGenerics,
-          currentFileScope: args.currentFileScope,
+          currentScope: args.currentScope,
           context: isolateSubstitutionContext(args.context),
           elaboratedVariables: args.elaboratedVariables,
           isInCFuncdecl: args.isInCFuncdecl,

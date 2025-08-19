@@ -26,7 +26,8 @@ import {
 import { Parser } from "./Parser/Parser";
 import {
   Collect,
-  CollectFileInUnit,
+  CollectFile,
+  ECollectionMode,
   makeCollectionContext,
   makeSymbol,
   PrettyPrintCollected,
@@ -45,7 +46,7 @@ const HAZE_CONFIG_FILE = "haze.toml";
 const HAZE_LIB_IMPORT_FILE = "import.hz";
 
 export function makeModulePrefix(config: ModuleConfig) {
-  return config.projectName + "." + config.projectVersion.replaceAll(".", "_");
+  return config.name + "." + config.version.replaceAll(".", "_");
 }
 
 async function parseConfig(startDir?: string) {
@@ -175,13 +176,13 @@ export class ProjectCompiler {
         moduleType: ModuleType.Executable,
         nostdlib: false,
         platform: "linux-x64",
-        projectName: basename(singleFilename),
-        projectVersion: "0.0.0",
+        name: basename(singleFilename),
+        version: "0.0.0",
         scripts: [],
         srcDirectory: dirname(singleFilename),
-        projectAuthors: undefined,
-        projectDescription: undefined,
-        projectLicense: undefined,
+        authors: undefined,
+        description: undefined,
+        license: undefined,
         compilerFlags: [],
       };
     }
@@ -202,7 +203,7 @@ export class ProjectCompiler {
       config,
       this.cache,
       this.globalBuildDir,
-      join(this.globalBuildDir, config.projectName)
+      join(this.globalBuildDir, config.name)
     );
 
     if (!mainModule.config.nostdlib) {
@@ -214,7 +215,7 @@ export class ProjectCompiler {
         stdlibConfig,
         this.cache,
         this.globalBuildDir,
-        join(this.globalBuildDir, stdlibConfig.projectName)
+        join(this.globalBuildDir, stdlibConfig.name)
       );
       if (!(await stdlibModule.build())) {
         return false;
@@ -235,7 +236,7 @@ export class ProjectCompiler {
           config,
           this.cache,
           this.globalBuildDir,
-          join(this.globalBuildDir, config.projectName)
+          join(this.globalBuildDir, config.name)
         );
         if (!(await depModule.build())) {
           return false;
@@ -265,10 +266,7 @@ export class ProjectCompiler {
         );
       }
 
-      const moduleExecutable = join(
-        join(this.globalBuildDir, config.projectName, "output"),
-        config.projectName
-      );
+      const moduleExecutable = join(join(this.globalBuildDir, config.name, "output"), config.name);
       child_process.execSync(`${moduleExecutable} ${args?.join(" ")}`, {
         stdio: "inherit",
       });
@@ -312,49 +310,60 @@ class ModuleCompiler {
     this.cc = makeCollectionContext(this.config);
   }
 
-  async collectFileInUnit(filepath: string, unit: Collect.Id) {
-    const fileText = await Bun.file(filepath).text();
-    const ast = Parser.parseTextToAST(this.config, fileText, filepath);
-    CollectFileInUnit(
-      this.cc,
-      ast,
-      unit,
-      filepath,
-      this.config.projectName,
-      this.config.projectVersion
-    );
-  }
-
   private makeUnit() {
     const [unit, unitId] = makeSymbol(this.cc, {
       variant: Collect.ENode.UnitScope,
       parentScope: 0 as Collect.Id,
-      files: [],
+      symbols: new Set(),
     });
     const moduleScope = this.cc.nodes.get(0 as Collect.Id);
     assert(moduleScope.variant === Collect.ENode.ModuleScope);
-    moduleScope.units.push(unitId);
+    moduleScope.symbols.add(unitId);
     return [unit, unitId] as const;
   }
 
-  async collectUnit(dirpath: string) {
-    const [unit, unitId] = this.makeUnit();
+  async collectFileAsRoot(filepath: string, collectionMode: ECollectionMode) {
+    const fileText = await Bun.file(filepath).text();
+    const ast = Parser.parseTextToAST(this.config, fileText, filepath);
+    CollectFile(
+      this.cc,
+      ast,
+      0 as Collect.Id,
+      filepath,
+      this.config.name,
+      this.config.version,
+      collectionMode
+    );
+  }
 
+  async collectDirectory(dirpath: string, collectionMode: ECollectionMode) {
     for (const file of readdirSync(dirpath)) {
       const fullPath = join(dirpath, file);
       const stats = statSync(fullPath);
       if (stats.isDirectory()) {
-        this.collectUnit(fullPath);
+        this.collectDirectory(fullPath, collectionMode);
       } else {
         if (extname(fullPath) == ".hz") {
-          await this.collectFileInUnit(fullPath, unitId);
+          const fileText = await Bun.file(fullPath).text();
+          const ast = Parser.parseTextToAST(this.config, fileText, fullPath);
+          CollectFile(
+            this.cc,
+            ast,
+            collectionMode === ECollectionMode.WrapIntoModuleNamespace
+              ? this.makeUnit()[1]
+              : (0 as Collect.Id),
+            fullPath,
+            this.config.name,
+            this.config.version,
+            collectionMode
+          );
         }
       }
     }
   }
 
   async addProjectSourceFiles() {
-    await this.collectUnit(this.config.srcDirectory);
+    await this.collectDirectory(this.config.srcDirectory, ECollectionMode.WrapIntoModuleNamespace);
   }
 
   async build() {
@@ -362,15 +371,15 @@ class ModuleCompiler {
       if (this.config.configFilePath) {
         if (
           !(await this.cache.hasModuleChanged(
-            this.config.projectName,
+            this.config.name,
             this.config.srcDirectory,
             this.config.configFilePath
           ))
         ) {
-          console.log(`Skipping module ${this.config.projectName}`);
+          console.log(`Skipping module ${this.config.name}`);
           return true;
         } else {
-          console.log(`Building module ${this.config.projectName}`);
+          console.log(`Building module ${this.config.name}`);
         }
       }
 
@@ -383,13 +392,13 @@ class ModuleCompiler {
       const sr = SemanticallyAnalyze(
         this.cc,
         this.config.moduleType === ModuleType.Library,
-        this.config.projectName,
-        this.config.projectVersion
+        this.config.name,
+        this.config.version
       );
       PrettyPrintAnalyzed(sr);
       const lowered = LowerModule(sr);
 
-      const name = this.config.projectName;
+      const name = this.config.name;
       const platform = this.config.platform;
       const moduleCFile = join(this.moduleBuildDir, `build/${name}-${platform}.c`);
       const moduleOFile = join(this.moduleBuildDir, `build/${name}-${platform}.o`);
@@ -397,10 +406,7 @@ class ModuleCompiler {
       const moduleExecutable = join(this.moduleBuildDir, `output/${name}`);
 
       const moduleMetadataFile = join(this.moduleBuildDir, "build/metadata.json");
-      const moduleOutputLib = join(
-        this.moduleBuildDir,
-        "output/" + this.config.projectName + ".hzlib"
-      );
+      const moduleOutputLib = join(this.moduleBuildDir, "output/" + this.config.name + ".hzlib");
       const importFilePath = join(this.moduleBuildDir, "build", HAZE_LIB_IMPORT_FILE);
 
       await mkdir(join(this.moduleBuildDir, "build/"), { recursive: true });
@@ -411,6 +417,7 @@ class ModuleCompiler {
 
       const compilerFlags = this.config.compilerFlags;
       compilerFlags.push("-Wno-parentheses-equality");
+      compilerFlags.push("-Wno-extra-tokens");
       if (this.config.moduleType === ModuleType.Executable) {
         const [libs, linkerFlags] = await this.loadDependencyBinaries();
         const allLinkerFlags = [...linkerFlags, ...this.config.linkerFlags];
@@ -439,8 +446,8 @@ class ModuleCompiler {
         const moduleMetadata: ModuleMetadata = {
           compilerVersion: version,
           fileformatVersion: 1,
-          name: this.config.projectName,
-          version: this.config.projectVersion,
+          name: this.config.name,
+          version: this.config.version,
           libs: [
             {
               filename: makerel(moduleAFile),
@@ -528,61 +535,29 @@ class ModuleCompiler {
 
   private async collectImports() {
     const deps = [...this.config.dependencies];
-    if (this.config.projectName !== HAZE_STDLIB_NAME && !this.config.nostdlib) {
+    if (this.config.name !== HAZE_STDLIB_NAME && !this.config.nostdlib) {
       deps.push({
         name: HAZE_STDLIB_NAME,
         path: HAZE_STDLIB_NAME,
       });
     }
 
-    // const globalScope = getScope(this.cc, this.cc.globalScope);
-
     for (const dep of this.config.dependencies) {
       const libpath = join(join(this.globalBuildDir, dep.name), "output", dep.name + ".hzlib");
       const metadata = await this.loadDependencyMetadata(libpath, dep.name);
 
-      // console.log(metadata.exportedDeclarations)
-      // const importedRoot = metadata.exportedDeclarations.find(
-      //   (d) => d.variant === "Collect.ScopeClass" && d.parentScope === undefined
-      // );
-      // assert(importedRoot && importedRoot.variant === "Collect.ScopeClass");
+      const tempdir = join(this.moduleBuildDir, "__deps", dep.name, "import");
+      await exec(`mkdir -p ${tempdir}`);
+      await exec(`tar -xzf ${libpath} -C ${tempdir} ${metadata.importFile}`);
 
-      // const processSymbol = (symbol: Collect.Scope | Collect.Symbol) => {
-      //   globalScope.defineSymbol(symbol);
-      //   if (symbol.variant)
-      // };
-
-      // for (const a of importedRoot.symbols) {
-      //   processScope(globalScope, importedRoot);
-      // }
-
-      // for (const decl of metadata.exportedDeclarations) {
-      //   if (decl.variant === "Collect.ScopeClass") {
-      //     const scope = Collect.Scope.rebuild(decl);
-      //     if (scope.parentScope === undefined) { // Don't import root
-      //       continue;
-      //     }
-      //     if (scope.parentScope === importedRoot.id) {
-      //       scope.parentScope = globalScope.id; // Redirect from the imported root to the actual root
-      //     }
-      //     this.cc.scopes.set(scope.id, scope);
-      //   }
-      //   else {
-      //     // console.log(decl)
-      //     if (decl.variant === "StructDefinition" || decl.variant === "FunctionDeclaration" || decl.variant === "FunctionDefinition") {
-      //       if (decl._collect.definedInNamespaceOrStruct === importedRoot.id) {
-      //         decl._collect.definedInNamespaceOrStruct = globalScope.id;
-      //       }
-      //     }
-      //     this.cc.symbols.set(decl.id, decl);
-      //   }
-      // }
-
-      // this.addSourceFromString(declarations.get(), libpath);
+      await this.collectDirectory(join(tempdir), ECollectionMode.ImportUnderRootDirectly);
     }
   }
 
   private async addInternalBuiltinSources() {
-    await this.collectUnit(join(getStdlibDirectory(), "internal"));
+    await this.collectDirectory(
+      join(getStdlibDirectory(), "internal"),
+      ECollectionMode.ImportUnderRootDirectly
+    );
   }
 }

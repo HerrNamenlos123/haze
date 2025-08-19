@@ -5,6 +5,7 @@ import {
   InternalError,
   type SourceLoc,
 } from "../shared/Errors";
+import { readFileSync } from "fs";
 import {
   EExternLanguage,
   type ASTBinaryExpr,
@@ -59,6 +60,7 @@ import {
 } from "../shared/AST";
 import { getModuleGlobalNamespaceName, type ExportData, type ModuleConfig } from "../shared/Config";
 import { serializeLiteralValue } from "../Semantic/Serialize";
+import { join } from "path";
 
 export type CollectionContext = {
   config: ModuleConfig;
@@ -80,7 +82,7 @@ export function makeCollectionContext(config: ModuleConfig): CollectionContext {
     nodes: new BrandedArray([
       {
         variant: Collect.ENode.ModuleScope,
-        units: [],
+        symbols: new Set(),
       },
     ]),
     blockScopes: new Set(),
@@ -153,25 +155,25 @@ export namespace Collect {
 
   export type ModuleScope = {
     variant: ENode.ModuleScope;
-    units: Collect.Id[];
+    symbols: Set<Collect.Id>;
   };
 
   export type UnitScope = {
     variant: ENode.UnitScope;
     parentScope: Collect.Id;
-    files: Collect.Id[];
+    symbols: Set<Collect.Id>;
   };
 
-  export type ExportScope = {
-    variant: ENode.ExportScope;
-    symbols: Collect.Id[];
-  };
+  // export type ExportScope = {
+  //   variant: ENode.ExportScope;
+  //   symbols: Collect.Id[];
+  // };
 
   export type FileScope = {
     variant: ENode.FileScope;
     filepath: string;
     parentScope: Collect.Id;
-    symbols: Collect.Id[];
+    symbols: Set<Collect.Id>;
   };
 
   export type FunctionScope = {
@@ -180,7 +182,7 @@ export namespace Collect {
     owningSymbol: Collect.Id;
     sourceloc: SourceLoc;
     blockScope: Collect.Id;
-    symbols: Collect.Id[];
+    symbols: Set<Collect.Id>;
   };
 
   export type StructScope = {
@@ -188,7 +190,7 @@ export namespace Collect {
     parentScope: Collect.Id;
     owningSymbol: Collect.Id;
     sourceloc: SourceLoc;
-    symbols: Collect.Id[];
+    symbols: Set<Collect.Id>;
   };
 
   export type NamespaceScope = {
@@ -196,7 +198,7 @@ export namespace Collect {
     parentScope: Collect.Id;
     owningSymbol: Collect.Id;
     sourceloc: SourceLoc;
-    symbols: Collect.Id[];
+    symbols: Set<Collect.Id>;
   };
 
   export type BlockScope = {
@@ -204,14 +206,13 @@ export namespace Collect {
     parentScope: Collect.Id;
     owningSymbol: Collect.Id;
     sourceloc: SourceLoc;
-    statements: Collect.Id[];
-    symbols: Collect.Id[];
+    statements: Set<Collect.Id>;
+    symbols: Set<Collect.Id>;
   };
 
   export type Scope =
     | ModuleScope
     | UnitScope
-    | ExportScope
     | FileScope
     | FunctionScope
     | StructScope
@@ -226,7 +227,7 @@ export namespace Collect {
     variant: ENode.FunctionOverloadGroup;
     parentScope: Collect.Id;
     name: string;
-    overloads: Collect.Id[];
+    overloads: Set<Collect.Id>;
   };
 
   export type Overloads = FunctionOverloadGroup;
@@ -347,12 +348,13 @@ export namespace Collect {
     noemit: boolean;
     sourceloc: SourceLoc;
     structScope: Collect.Id;
+    originalSourcecode: string;
   };
 
   export type NamespaceSharedInstance = {
     variant: ENode.NamespaceSharedInstance;
     fullyQualifiedName: string;
-    namespaceScopes: Collect.Id[];
+    namespaceScopes: Set<Collect.Id>;
   };
 
   export type NamespaceDefinitionSymbol = {
@@ -623,7 +625,7 @@ function makeOverloadGroupAvailable(cc: CollectionContext, parentScope: Collect.
   const [g, gId] = makeSymbol(cc, {
     variant: Collect.ENode.FunctionOverloadGroup,
     name: name,
-    overloads: [],
+    overloads: new Set(),
     parentScope: parentScope,
   });
   cc.overloadGroups.add(gId);
@@ -643,9 +645,9 @@ function makeBlockScope(
     variant: Collect.ENode.BlockScope,
     owningSymbol: parent.owningSymbol,
     parentScope: parentScope,
-    statements: [],
+    statements: new Set(),
     sourceloc: sourceloc,
-    symbols: [],
+    symbols: new Set(),
   });
   cc.blockScopes.add(scopeId);
   return scopeId;
@@ -662,7 +664,7 @@ function addStatement(
     ...statement,
     owningScope: parentScope,
   });
-  parent.statements.push(stId);
+  parent.statements.add(stId);
   return st;
 }
 
@@ -688,7 +690,7 @@ function defineGenericTypeParameter(
     owningSymbol: functionOrStructScope.owningSymbol,
     sourceloc: sourceloc,
   });
-  functionOrStructScope.symbols.push(id);
+  functionOrStructScope.symbols.add(id);
   return id;
 }
 
@@ -721,7 +723,7 @@ function defineVariableSymbol(
     ...variable,
     inScope: scope,
   });
-  sc.symbols.push(varSymId);
+  sc.symbols.add(varSymId);
   return [varsym, varSymId] as const;
 }
 
@@ -808,7 +810,7 @@ function collect(
         functionScope: null,
         originalSourcecode: item.originalSourcecode,
       });
-      overloadGroup.overloads.push(functionSymbolId);
+      overloadGroup.overloads.add(functionSymbolId);
 
       console.warn("TODO: Check if function is redefined with conflicting parameters");
 
@@ -819,7 +821,7 @@ function collect(
           parentScope: args.currentParentScope,
           sourceloc: item.sourceloc,
           blockScope: -1 as Collect.Id,
-          symbols: [],
+          symbols: new Set(),
         });
         functionSymbol.functionScope = functionScopeId;
 
@@ -879,7 +881,6 @@ function collect(
       }
 
       if (item.export) {
-        // ExportCollectedSymbol(cc, functionSymbolId);
         cc.exportedSymbols.exported.add(functionSymbolId);
       }
 
@@ -954,7 +955,8 @@ function collect(
       const parent = cc.nodes.get(args.currentParentScope);
       assert(
         parent.variant === Collect.ENode.FileScope ||
-          parent.variant === Collect.ENode.NamespaceScope
+          parent.variant === Collect.ENode.NamespaceScope ||
+          parent.variant === Collect.ENode.ModuleScope
       );
 
       let fullyQualifiedName = "";
@@ -969,18 +971,12 @@ function collect(
         undefined as undefined | Collect.NamespaceDefinitionSymbol,
         -1 as Collect.Id,
       ];
-      for (const id of cc.elaboratedNamespacesAndStructs) {
+      for (const id of parent.symbols) {
         const sym = cc.nodes.get(id);
-        if (
-          sym.variant === Collect.ENode.NamespaceDefinitionSymbol &&
-          sym.fullyQualifiedName === fullyQualifiedName
-        ) {
+        if (sym.variant === Collect.ENode.NamespaceDefinitionSymbol && sym.name === item.name) {
           [existingNamespace, existingNamespaceId] = [sym, id];
           break;
-        } else if (
-          sym.variant === Collect.ENode.StructDefinitionSymbol &&
-          sym.fullyQualifiedName === fullyQualifiedName
-        ) {
+        } else if (sym.variant === Collect.ENode.StructDefinitionSymbol && sym.name === item.name) {
           throw new CompilerError(
             `Symbol '${
               item.name
@@ -1011,7 +1007,7 @@ function collect(
           [sharedInstance, sharedInstanceId] = makeSymbol(cc, {
             variant: Collect.ENode.NamespaceSharedInstance,
             fullyQualifiedName: fullyQualifiedName,
-            namespaceScopes: [],
+            namespaceScopes: new Set(),
           });
         }
 
@@ -1032,11 +1028,11 @@ function collect(
           owningSymbol: existingNamespaceId,
           parentScope: args.currentParentScope,
           sourceloc: item.sourceloc,
-          symbols: [],
+          symbols: new Set(),
         });
         assert(sharedInstance);
         existingNamespace.namespaceScope = namespaceScopeId;
-        sharedInstance.namespaceScopes.push(namespaceScopeId);
+        sharedInstance.namespaceScopes.add(namespaceScopeId);
         cc.elaboratedNamespacesAndStructs.add(existingNamespaceId);
       }
 
@@ -1047,7 +1043,7 @@ function collect(
         const decl = collect(cc, s, {
           currentParentScope: existingNamespace.namespaceScope,
         });
-        namespaceScope.symbols.push(decl);
+        namespaceScope.symbols.add(decl);
       }
       return existingNamespaceId;
     }
@@ -1113,13 +1109,14 @@ function collect(
         structScope: -1 as Collect.Id,
         parentScope: args.currentParentScope,
         sourceloc: item.sourceloc,
+        originalSourcecode: item.originalSourcecode,
       });
       const [structScope, structScopeId] = makeSymbol<Collect.StructScope>(cc, {
         variant: Collect.ENode.StructScope,
         owningSymbol: structId,
         parentScope: args.currentParentScope,
         sourceloc: item.sourceloc,
-        symbols: [],
+        symbols: new Set(),
       });
       struct.structScope = structScopeId;
       cc.elaboratedNamespacesAndStructs.add(structId);
@@ -1133,7 +1130,7 @@ function collect(
         const decl = collect(cc, s, {
           currentParentScope: structScopeId,
         });
-        structScope.symbols.push(decl);
+        structScope.symbols.add(decl);
       }
 
       for (const m of item.members) {
@@ -1146,7 +1143,11 @@ function collect(
         const funcsym = collect(cc, m, {
           currentParentScope: structScopeId,
         });
-        structScope.symbols.push(funcsym);
+        structScope.symbols.add(funcsym);
+      }
+
+      if (item.export) {
+        cc.exportedSymbols.exported.add(structId);
       }
 
       return structId;
@@ -1281,7 +1282,7 @@ function collect(
               target: collect(cc, astStatement.datatype, { currentParentScope: blockScope }),
               sourceloc: astStatement.sourceloc,
             });
-            (cc.nodes.get(blockScope) as Collect.BlockScope).symbols.push(symbolId);
+            (cc.nodes.get(blockScope) as Collect.BlockScope).symbols.add(symbolId);
             break;
 
           case "VariableDefinitionStatement":
@@ -1544,9 +1545,40 @@ function collect(
     // =================================================================================================================
 
     case "ModuleImport": {
+      // return makeSymbol(cc, {
+      //   variant: Collect.ENode.ModuleImport,
+      //   alias: item.alias,
+      //   mode: item.mode,
+      //   name: item.name,
+      //   sourceloc: item.sourceloc,
+      // })[1];
+      const dependency = cc.config.dependencies.find((d) => d.name === item.name);
+      if (!dependency) {
+        throw new CompilerError(
+          `Cannot find import '${item.name}': No such module`,
+          item.sourceloc
+        );
+      }
+      const globalBuildDir = join(process.cwd(), "__haze__");
+      const metadataPath = join(
+        globalBuildDir,
+        cc.config.name,
+        "__deps",
+        dependency.name,
+        "metadata.json"
+      );
+      const metadata: ModuleConfig = JSON.parse(readFileSync(metadataPath, "utf8"));
+      const importedNamespace = getModuleGlobalNamespaceName(metadata.name, metadata.version);
       return makeSymbol(cc, {
-        variant: Collect.ENode.ModuleImport,
-        alias: item.alias,
+        variant: Collect.ENode.AliasTypeSymbol,
+        inScope: args.currentParentScope,
+        target: makeSymbol(cc, {
+          variant: Collect.ENode.NamedDatatype,
+          genericArgs: [],
+          innerNested: null,
+          name: importedNamespace,
+          sourceloc: null,
+        })[1],
         mode: item.mode,
         name: item.name,
         sourceloc: item.sourceloc,
@@ -1586,7 +1618,7 @@ function collect(
         target: collect(cc, item.datatype, { currentParentScope: args.currentParentScope }),
         sourceloc: item.sourceloc,
       });
-      (cc.nodes.get(args.currentParentScope) as Collect.BlockScope).symbols.push(aliasId);
+      (cc.nodes.get(args.currentParentScope) as Collect.BlockScope).symbols.add(aliasId);
       return symbolId;
     }
 
@@ -1595,55 +1627,74 @@ function collect(
   }
 }
 
-export function CollectFileInUnit(
+export enum ECollectionMode {
+  WrapIntoModuleNamespace,
+  ImportUnderRootDirectly,
+}
+
+export function CollectFile(
   cc: CollectionContext,
   ast: ASTRoot,
-  unitScope: Collect.Id,
+  parentScope: Collect.Id,
   filepath: string,
   moduleName: string,
-  moduleVersion: string
+  moduleVersion: string,
+  collectionMode: ECollectionMode
 ) {
-  const unit = cc.nodes.get(unitScope);
-  assert(unit.variant === Collect.ENode.UnitScope);
+  const parent = cc.nodes.get(parentScope);
+  assert(
+    parent.variant === Collect.ENode.UnitScope || parent.variant === Collect.ENode.ModuleScope
+  );
 
-  const [fileScope, fileScopeId] = makeSymbol<Collect.FileScope>(cc, {
-    variant: Collect.ENode.FileScope,
-    filepath: filepath,
-    parentScope: unitScope,
-    symbols: [],
-  });
-  unit.files.push(fileScopeId);
+  if (collectionMode === ECollectionMode.WrapIntoModuleNamespace) {
+    const [fileScope, fileScopeId] = makeSymbol<Collect.FileScope>(cc, {
+      variant: Collect.ENode.FileScope,
+      filepath: filepath,
+      parentScope: parentScope,
+      symbols: new Set(),
+    });
+    parent.symbols.add(fileScopeId);
 
-  const namespacedDeclarations: ASTGlobalDeclaration[] = [];
-  for (const decl of ast) {
-    if (
-      decl.variant === "CInjectDirective" ||
-      decl.variant === "ModuleImport" ||
-      decl.variant === "SymbolImport"
-    ) {
+    const namespacedDeclarations: ASTGlobalDeclaration[] = [];
+    for (const decl of ast) {
+      if (
+        decl.variant === "CInjectDirective" ||
+        decl.variant === "ModuleImport" ||
+        decl.variant === "SymbolImport"
+      ) {
+        const sym = collect(cc, decl, {
+          currentParentScope: fileScopeId,
+        });
+        fileScope.symbols.add(sym);
+      } else {
+        namespacedDeclarations.push(decl);
+      }
+    }
+
+    if (namespacedDeclarations.length > 0) {
+      const globalNamespaceId = collect(
+        cc,
+        {
+          variant: "NamespaceDefinition",
+          declarations: namespacedDeclarations,
+          export: true,
+          name: getModuleGlobalNamespaceName(moduleName, moduleVersion),
+          sourceloc: null,
+        },
+        {
+          currentParentScope: fileScopeId,
+        }
+      );
+      fileScope.symbols.add(globalNamespaceId);
+    }
+  } else if (collectionMode === ECollectionMode.ImportUnderRootDirectly) {
+    for (const decl of ast) {
       const sym = collect(cc, decl, {
-        currentParentScope: fileScopeId,
+        currentParentScope: parentScope,
       });
-      fileScope.symbols.push(sym);
-    } else {
-      namespacedDeclarations.push(decl);
+      parent.symbols.add(sym);
     }
   }
-
-  const globalNamespaceId = collect(
-    cc,
-    {
-      variant: "NamespaceDefinition",
-      declarations: namespacedDeclarations,
-      export: true,
-      name: getModuleGlobalNamespaceName(moduleName, moduleVersion),
-      sourceloc: null,
-    },
-    {
-      currentParentScope: fileScopeId,
-    }
-  );
-  fileScope.symbols.push(globalNamespaceId);
 }
 
 export function printCollectedDatatype(cc: CollectionContext, typeId: Collect.Id | null): string {
@@ -1770,20 +1821,16 @@ export function PrettyPrintCollected(cc: CollectionContext) {
     switch (symbol.variant) {
       case Collect.ENode.ModuleScope:
         print(`ModuleScope id=${symbolId}`);
-        cc.nodes.forEach((inner, i) => {
-          if (inner.variant === Collect.ENode.UnitScope && inner.parentScope === symbolId) {
-            printSymbol(i, indent + 2);
-          }
-        });
+        for (const id of symbol.symbols) {
+          printSymbol(id, indent + 2);
+        }
         break;
 
       case Collect.ENode.UnitScope:
         print(`- UnitScope id=${symbolId}`);
-        cc.nodes.forEach((inner, i) => {
-          if (inner.variant === Collect.ENode.FileScope && inner.parentScope === symbolId) {
-            printSymbol(i, indent + 4);
-          }
-        });
+        for (const id of symbol.symbols) {
+          printSymbol(id, indent + 2);
+        }
         break;
 
       case Collect.ENode.FileScope:

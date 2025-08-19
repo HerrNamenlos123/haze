@@ -646,6 +646,7 @@ class ASTTransformer extends HazeVisitor<any> {
       members: members,
       methods: methods,
       sourceloc: this.loc(ctx),
+      originalSourcecode: this.getSource(ctx),
     };
   };
 
