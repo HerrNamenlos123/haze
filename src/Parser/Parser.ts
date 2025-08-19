@@ -597,6 +597,13 @@ class ASTTransformer extends HazeVisitor<any> {
   visitStructMethod = (ctx: StructMethodContext): ASTFunctionDefinition => {
     const names = ctx.ID().map((c) => c.getText());
     const params = this.visitParams(ctx.params());
+
+    const name = names[0];
+    let methodType = EMethodType.Method;
+    if (name === "constructor") {
+      methodType = EMethodType.Constructor;
+    }
+
     return {
       variant: "FunctionDefinition",
       params: params.params,
@@ -604,7 +611,7 @@ class ASTTransformer extends HazeVisitor<any> {
       externLanguage: EExternLanguage.None,
       noemit: false,
       pub: false,
-      methodType: EMethodType.Method,
+      methodType: methodType,
       name: names[0],
       static: Boolean(ctx._static_),
       generics: names.slice(1).map((n) => ({
