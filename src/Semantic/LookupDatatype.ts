@@ -1,6 +1,6 @@
 import { EVariableContext, stringToPrimitive } from "../shared/common";
 import { assert, CompilerError, ImpossibleSituation, type SourceLoc } from "../shared/Errors";
-import { Collect } from "../SymbolCollection/SymbolCollection";
+import { Collect, funcSymHasParameterPack } from "../SymbolCollection/SymbolCollection";
 import {
   elaborateFunctionSymbol,
   elaborateNamespace,
@@ -11,6 +11,7 @@ import {
 } from "./Elaborate";
 import {
   asType,
+  isType,
   isTypeConcrete,
   makePrimitiveAvailable,
   Semantic,
@@ -297,11 +298,12 @@ export function instantiateAndElaborateStruct(
         symbol.overloads.forEach((overloadId) => {
           const overloadedFunc = sr.cc.nodes.get(overloadId);
           assert(overloadedFunc.variant === Collect.ENode.FunctionSymbol);
-          if (overloadedFunc.generics.length !== 0 /* || symbol.operatorOverloading */) {
+          if (overloadedFunc.generics.length !== 0 || funcSymHasParameterPack(sr.cc, overloadId)) {
             return;
           }
           const funcId = elaborateFunctionSymbol(sr, overloadId, {
             genericArgs: [],
+            paramPackTypes: [],
             context: newContext,
             usageSite: overloadedFunc.sourceloc,
             currentScope: args.currentScope,

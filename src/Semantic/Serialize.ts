@@ -49,6 +49,9 @@ export function serializeDatatype(sr: SemanticResult, datatypeId: Semantic.Id): 
     case Semantic.ENode.SliceDatatype:
       return `${serializeDatatype(sr, datatype.datatype)}[]`;
 
+    case Semantic.ENode.ParameterPackDatatypeSymbol:
+      return "...";
+
     default:
       throw new InternalError("Not handled: " + datatype.variant);
   }

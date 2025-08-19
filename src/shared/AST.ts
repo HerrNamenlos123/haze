@@ -217,6 +217,11 @@ export type ASTReferenceDatatype = {
   sourceloc: SourceLoc;
 };
 
+export type ASTParameterPackDatatype = {
+  variant: "ParameterPack";
+  sourceloc: SourceLoc;
+};
+
 export type ASTDatatype =
   | ASTNamedDatatype
   | ASTFunctionDatatype
@@ -224,6 +229,7 @@ export type ASTDatatype =
   | ASTPointerDatatype
   | ASTArrayDatatype
   | ASTSliceDatatype
+  | ASTParameterPackDatatype
   | ASTReferenceDatatype;
 
 export type ASTGlobalVariableDefinition = {

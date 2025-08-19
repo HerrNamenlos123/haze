@@ -44,65 +44,70 @@
 //     return 0;
 // }
 
-import glfw
+// import glfw
 
-__c__("#include <stdio.h>");
-extern "C" noemit printf(fmt: str, ...);
+// __c__("#include <stdio.h>");
+// extern "C" noemit printf(fmt: str, ...);
 
-foo(arr: int[3]) {
-    arr[1] = 4;
+struct Printer {
+    print(fmt: str, args: ...) {
+
+    }
 }
 
-struct Foo {}
-
 main(): int {
-    if not glfw.init() {
-        return 0;
-    }
 
-    const window = glfw.createWindow(1920, 1080, "Hello World!");
-    glfw.makeContextCurrent(window);
-    glfw.swapInterval(0);
+    const printer = Printer {};
 
-    let arr = [1, 2, 3];
-    foo(arr);
+    // printer.print();
+    // printer.print("Hello world: ");
+    printer.print("Hello world: ", 5, "Hi", 3.14);
 
-    let oldTime = glfw.getTime();
-
-    // const comptime TARGET = "a";
-
-    // if comptime (TARGET == "windows") {
-    //     printf("Windows!\n");
+    return 0;
+    // if not glfw.init() {
+    //     return 0;
     // }
-    // else if (TARGET == "linux") {
-    //     printf("Linux!\n");
+
+    // const window = glfw.createWindow(1920, 1080, "Hello World!");
+    // glfw.makeContextCurrent(window);
+    // glfw.swapInterval(0);
+
+    // let oldTime = glfw.getTime();
+
+    // // const comptime TARGET = "a";
+
+    // // if comptime (TARGET == "windows") {
+    // //     printf("Windows!\n");
+    // // }
+    // // else if (TARGET == "linux") {
+    // //     printf("Linux!\n");
+    // // }
+    // // else {
+    // //     printf("Unknown platform!\n");
+    // // }
+    // // return 0;
+
+    // let fps = 0.0;
+    // while not window.shouldClose() {
+    //     glfw.pollEvents();
+
+    //     let now = glfw.getTime();
+    //     let elapsed = now - oldTime;
+    //     oldTime = now;
+
+    //     if fps == 0.0 {
+    //         fps = 1.0 / elapsed;
+    //     }
+
+    //     let alpha = 0.001;
+    //     fps = fps * (1.0 - alpha) + 1.0 / elapsed * alpha;
+
+    //     printf("FPS: %f\n", fps);
+
+    //     window.swapBuffers();
     // }
-    // else {
-    //     printf("Unknown platform!\n");
-    // }
-    // return 0;
 
-    let fps = 0.0;
-    while not window.shouldClose() {
-        glfw.pollEvents();
-
-        let now = glfw.getTime();
-        let elapsed = now - oldTime;
-        oldTime = now;
-
-        if fps == 0.0 {
-            fps = 1.0 / elapsed;
-        }
-
-        let alpha = 0.001;
-        fps = fps * (1.0 - alpha) + 1.0 / elapsed * alpha;
-
-        printf("FPS: %f\n", fps);
-
-        window.swapBuffers();
-    }
-
-    glfw.terminate();
+    // glfw.terminate();
 
     return 0;
 }

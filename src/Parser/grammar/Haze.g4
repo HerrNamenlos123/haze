@@ -51,7 +51,7 @@ externLanguage: '"C"';
 
 functionDefinition: (export='export')? (extern='extern' externLang=externLanguage? pub='pub'? noemit='noemit'?)?  ID ('<' ID (',' ID)* '>')? '(' params ')' (':' datatype)? ('=>')? (funcbody | ';');
 lambda: '(' params ')' (':' datatype)? '=>' funcbody;
-param: ID ':' datatype;
+param: ID ':' (datatype | ellipsis);
 params: (param (',' param)* (',' ellipsis)?)? | ellipsis;
 ellipsis: '...';
 

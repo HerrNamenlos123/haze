@@ -121,6 +121,7 @@ import {
   ArrayDatatypeContext,
   ArrayLiteralContext,
   ArraySubscriptExprContext,
+  ParamContext,
 } from "./grammar/autogen/HazeParser";
 import {
   BaseErrorListener,
@@ -495,14 +496,22 @@ class ASTTransformer extends HazeVisitor<any> {
   };
 
   visitParams = (ctx: ParamsContext): { params: ASTParam[]; ellipsis: boolean } => {
-    const params = ctx.param().map(
-      (p) =>
-        ({
-          datatype: this.visit(p.datatype()),
-          name: p.ID().getText(),
-          sourceloc: this.loc(p),
-        } satisfies ASTParam)
-    );
+    const params = ctx.param().map((p) => {
+      let datatype: ASTDatatype;
+      if (p.datatype()) {
+        datatype = this.visit(p.datatype()!);
+      } else {
+        datatype = {
+          variant: "ParameterPack",
+          sourceloc: this.loc(ctx),
+        };
+      }
+      return {
+        datatype: datatype,
+        name: p.ID().getText(),
+        sourceloc: this.loc(p),
+      } satisfies ASTParam;
+    });
     return {
       params: params,
       ellipsis: Boolean(ctx.ellipsis()),

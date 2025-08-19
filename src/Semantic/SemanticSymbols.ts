@@ -46,6 +46,7 @@ export type SemanticResult = {
   elaboratedFuncdefSymbols: {
     originalSymbol: Collect.Id;
     generics: Semantic.Id[];
+    paramPackTypes: Semantic.Id[];
     substitutionContext: SubstitutionContext;
     resultSymbol: Semantic.Id;
   }[];
@@ -134,6 +135,7 @@ export namespace Semantic {
     PointerDatatype,
     ReferenceDatatype,
     CallableDatatype,
+    ParameterPackDatatypeSymbol,
     PrimitiveDatatype,
     GenericParameterDatatype,
     NamespaceDatatype,
@@ -185,6 +187,7 @@ export namespace Semantic {
     ENode.LiteralValueDatatype,
     ENode.ArrayDatatype,
     ENode.SliceDatatype,
+    ENode.ParameterPackDatatypeSymbol,
   ] as const;
 
   export const ExpressionEnums = [
@@ -266,6 +269,7 @@ export namespace Semantic {
       asTarget: Id;
     };
     parameterNames: string[];
+    parameterPack: boolean;
     extern: EExternLanguage;
     // collectedScope?: number;
     scope: Semantic.Id | null;
@@ -314,6 +318,11 @@ export namespace Semantic {
   export type ReferenceDatatypeSymbol = {
     variant: ENode.ReferenceDatatype;
     referee: Id;
+    concrete: boolean;
+  };
+
+  export type ParameterPackDatatypeSymbol = {
+    variant: ENode.ParameterPackDatatypeSymbol;
     concrete: boolean;
   };
 
@@ -373,6 +382,7 @@ export namespace Semantic {
     | ArrayDatatypeSymbol
     | SliceDatatypeSymbol
     | ReferenceDatatypeSymbol
+    | ParameterPackDatatypeSymbol
     | CallableDatatypeSymbol
     | LiteralValueDatatypeSymbol
     | PrimitiveDatatypeSymbol;

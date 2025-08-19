@@ -8,7 +8,11 @@ import {
 } from "../shared/common";
 import { getModuleGlobalNamespaceName } from "../shared/Config";
 import { assert, CompilerError, InternalError, type SourceLoc } from "../shared/Errors";
-import { Collect, type CollectionContext } from "../SymbolCollection/SymbolCollection";
+import {
+  Collect,
+  funcSymHasParameterPack,
+  type CollectionContext,
+} from "../SymbolCollection/SymbolCollection";
 import { Conversion } from "./Conversion";
 import { EvalCTFE, EvalCTFEBoolean } from "./CTFE";
 import {
@@ -238,6 +242,48 @@ export function mergeSubstitutionContext(
   };
 }
 
+function prepareParameterPackTypes(
+  sr: SemanticResult,
+  args: {
+    functionName: string;
+    requiredParameters: Collect.ParameterValue[];
+    givenArguments?: Semantic.Id[];
+    sourceloc: SourceLoc;
+  }
+) {
+  const parameterPackTypes: Semantic.Id[] = [];
+
+  const hasParameterPack = args.requiredParameters.some((p) => {
+    const t = sr.cc.nodes.get(p.type);
+    return t.variant === Collect.ENode.ParameterPack;
+  });
+  if (hasParameterPack) {
+    const numParametersWithoutPack = args.requiredParameters.length - 1;
+
+    if (args.givenArguments === undefined) {
+      throw new CompilerError(
+        `Function ${args.functionName} uses a Parameter Pack, but there is not enough context around the function access to determine the types it is going to be called with`,
+        args.sourceloc
+      );
+    }
+
+    if (args.givenArguments.length < numParametersWithoutPack) {
+      throw new CompilerError(
+        `Function ${args.functionName} requires at least ${numParametersWithoutPack} parameters, but ${args.givenArguments.length} are given`,
+        args.sourceloc
+      );
+    }
+
+    for (let i = numParametersWithoutPack; i < args.givenArguments.length; i++) {
+      const exprId = args.givenArguments[i];
+      const expr = sr.nodes.get(exprId);
+      assert(isExpression(expr));
+      parameterPackTypes.push(expr.type);
+    }
+  }
+  return parameterPackTypes;
+}
+
 function lookupSymbolInNamespaceOrStructScope(
   sr: SemanticResult,
   symbolId: Collect.Id,
@@ -247,6 +293,7 @@ function lookupSymbolInNamespaceOrStructScope(
     currentScope: Collect.Id;
     context: SubstitutionContext;
     elaboratedVariables: Map<Collect.Id, Semantic.Id>;
+    gonnaCallFunctionWithParameters?: Semantic.Id[];
     scope: Collect.Id;
   }
 ) {
@@ -279,9 +326,20 @@ function lookupSymbolInNamespaceOrStructScope(
   } else if (symbol.variant === Collect.ENode.FunctionOverloadGroup && symbol.name === args.name) {
     console.log("TODO: Do overload discrimination here");
     const overloadId = [...symbol.overloads][0];
+    const funcsym = sr.cc.nodes.get(overloadId);
+    assert(funcsym.variant === Collect.ENode.FunctionSymbol);
+
+    const paramPackTypes = prepareParameterPackTypes(sr, {
+      functionName: args.name,
+      requiredParameters: funcsym.parameters,
+      givenArguments: args.gonnaCallFunctionWithParameters,
+      sourceloc: args.expr.sourceloc,
+    });
+
     const functionSymbolId = elaborateFunctionSymbol(sr, overloadId, {
       currentScope: args.currentScope,
       elaboratedVariables: args.elaboratedVariables,
+      paramPackTypes: paramPackTypes,
       genericArgs: args.expr.genericArgs.map((g) => {
         return lookupAndElaborateDatatype(sr, {
           typeId: g,
@@ -324,6 +382,7 @@ function lookupAndElaborateNamespaceMemberAccess(
     currentScope: Collect.Id;
     context: SubstitutionContext;
     elaboratedVariables: Map<Collect.Id, Semantic.Id>;
+    gonnaCallFunctionWithParameters?: Semantic.Id[];
     scope: Collect.Id;
   }
 ) {
@@ -344,6 +403,7 @@ function lookupAndElaborateNamespaceMemberAccess(
         elaboratedVariables: args.elaboratedVariables,
         expr: args.expr,
         name: args.name,
+        gonnaCallFunctionWithParameters: args.gonnaCallFunctionWithParameters,
         scope: args.scope,
       });
       if (s) {
@@ -366,6 +426,7 @@ function lookupAndElaborateStaticStructAccess(
     currentScope: Collect.Id;
     context: SubstitutionContext;
     elaboratedVariables: Map<Collect.Id, Semantic.Id>;
+    gonnaCallFunctionWithParameters?: Semantic.Id[];
     scope: Collect.Id;
   }
 ) {
@@ -389,6 +450,7 @@ function lookupAndElaborateStaticStructAccess(
       expr: args.expr,
       name: args.name,
       scope: args.scope,
+      gonnaCallFunctionWithParameters: args.gonnaCallFunctionWithParameters,
     });
     if (s) {
       const symbol = sr.nodes.get(s[1]);
@@ -417,6 +479,7 @@ export function elaborateExpr(
     context: SubstitutionContext;
     currentScope: Collect.Id;
     elaboratedVariables: Map<Collect.Id, Semantic.Id>;
+    gonnaCallFunctionWithParameterValues?: Semantic.Id[];
   }
 ): [Semantic.Expression, Semantic.Id] {
   const expr = sr.cc.nodes.get(exprId);
@@ -505,14 +568,6 @@ export function elaborateExpr(
     // =================================================================================================================
 
     case Collect.ENode.ExprCallExpr: {
-      const [calledExpr, calledExprId] = elaborateExpr(sr, expr.calledExpr, {
-        context: args.context,
-        elaboratedVariables: args.elaboratedVariables,
-        currentScope: args.currentScope,
-        scope: args.scope,
-      });
-      const calledExprType = asType(sr.nodes.get(calledExpr.type));
-
       const callingArgs = expr.arguments.map(
         (a) =>
           elaborateExpr(sr, a, {
@@ -523,32 +578,48 @@ export function elaborateExpr(
           })[1]
       );
 
+      const [calledExpr, calledExprId] = elaborateExpr(sr, expr.calledExpr, {
+        context: args.context,
+        elaboratedVariables: args.elaboratedVariables,
+        currentScope: args.currentScope,
+        scope: args.scope,
+        gonnaCallFunctionWithParameterValues: callingArgs,
+      });
+      const calledExprType = asType(sr.nodes.get(calledExpr.type));
+
       const convertArgs = (
         givenArgs: Semantic.Id[],
         requiredTypes: Semantic.Id[],
         vararg: boolean
       ) => {
-        if (vararg) {
-          if (givenArgs.length < requiredTypes.length) {
+        const newRequiredTypes = requiredTypes.filter((t) => {
+          const tt = sr.nodes.get(t);
+          assert(isType(tt));
+          return tt.variant !== Semantic.ENode.ParameterPackDatatypeSymbol;
+        });
+        if (vararg || requiredTypes.length !== newRequiredTypes.length) {
+          if (givenArgs.length < newRequiredTypes.length) {
             throw new CompilerError(
-              `This call requires at least ${requiredTypes.length} arguments but only ${callingArgs.length} were given`,
+              `This call requires at least ${newRequiredTypes.length} arguments but only ${callingArgs.length} were given`,
               calledExpr.sourceloc
             );
           }
         } else {
-          if (givenArgs.length !== requiredTypes.length) {
+          if (givenArgs.length !== newRequiredTypes.length) {
             throw new CompilerError(
-              `This call requires ${requiredTypes.length} arguments but ${callingArgs.length} were given`,
+              `This call requires ${newRequiredTypes.length} arguments but ${callingArgs.length} were given`,
               calledExpr.sourceloc
             );
           }
         }
         return givenArgs.map((a, index) => {
-          if (index < requiredTypes.length) {
-            // console.log(
-            //   `Conversion: ${serializeDatatype(a.type)} -> ${serializeDatatype(requiredTypes[index])}`,
-            // );
-            return Conversion.MakeImplicitConversion(sr, a, requiredTypes[index], expr.sourceloc);
+          if (index < newRequiredTypes.length) {
+            return Conversion.MakeImplicitConversion(
+              sr,
+              a,
+              newRequiredTypes[index],
+              expr.sourceloc
+            );
           } else {
             return a;
           }
@@ -572,6 +643,7 @@ export function elaborateExpr(
       }
 
       if (calledExprType.variant === Semantic.ENode.FunctionDatatype) {
+        console.log("Calling function datatype with", callingArgs, calledExprType.parameters);
         return Semantic.addNode(sr, {
           variant: Semantic.ENode.ExprCallExpr,
           calledExpr: calledExprId,
@@ -723,9 +795,16 @@ export function elaborateExpr(
         });
       } else if (symbol.variant === Collect.ENode.FunctionOverloadGroup) {
         console.log("TODO: Implement function overload resolution here");
-        const chosenOverload = [...symbol.overloads][0];
-        const elaboratedSymbolId = elaborateFunctionSymbol(sr, chosenOverload, {
+        const chosenOverloadId = [...symbol.overloads][0];
+        const chosenOverload = sr.cc.nodes.get(chosenOverloadId);
+
+        const parameterPackTypes: Semantic.Id[] = [];
+        console.log(chosenOverload);
+        console.error("Todo: Parameter Pack");
+
+        const elaboratedSymbolId = elaborateFunctionSymbol(sr, chosenOverloadId, {
           elaboratedVariables: args.elaboratedVariables,
+          paramPackTypes: parameterPackTypes,
           genericArgs: expr.genericArgs.map((g) => {
             return lookupAndElaborateDatatype(sr, {
               typeId: g,
@@ -922,6 +1001,7 @@ export function elaborateExpr(
             elaboratedVariables: args.elaboratedVariables,
             scope: args.scope,
             name: expr.memberName,
+            gonnaCallFunctionWithParameters: args.gonnaCallFunctionWithParameterValues,
           });
         } else {
           return lookupAndElaborateStaticStructAccess(sr, objectId, {
@@ -931,6 +1011,7 @@ export function elaborateExpr(
             elaboratedVariables: args.elaboratedVariables,
             scope: args.scope,
             name: expr.memberName,
+            gonnaCallFunctionWithParameters: args.gonnaCallFunctionWithParameterValues,
           });
         }
       }
@@ -980,17 +1061,27 @@ export function elaborateExpr(
         const overloadGroup = sr.cc.nodes.get(overloadGroupId);
         assert(overloadGroup.variant === Collect.ENode.FunctionOverloadGroup);
         const collectedMethodId = [...overloadGroup.overloads][0];
+        const collectedMethod = sr.cc.nodes.get(collectedMethodId);
+        assert(collectedMethod.variant === Collect.ENode.FunctionSymbol);
 
         const elaboratedStructCache = sr.elaboratedStructDatatypes.find(
           (d) => d.resultSymbol === object.type
         );
         assert(elaboratedStructCache);
 
+        const parameterPackTypes = prepareParameterPackTypes(sr, {
+          functionName: overloadGroup.name,
+          requiredParameters: collectedMethod.parameters,
+          givenArguments: args.gonnaCallFunctionWithParameterValues,
+          sourceloc: expr.sourceloc,
+        });
+
         const elaboratedMethodId = elaborateFunctionSymbol(sr, collectedMethodId, {
           context: mergeSubstitutionContext(
             elaboratedStructCache.substitutionContext,
             args.context
           ),
+          paramPackTypes: parameterPackTypes,
           genericArgs: expr.genericArgs.map((g) => {
             return lookupAndElaborateDatatype(sr, {
               typeId: g,
@@ -1720,6 +1811,7 @@ export function elaborateFunctionSymbol(
     usageSite: SourceLoc;
     currentScope: Collect.Id;
     parentStructOrNS: Semantic.Id | null;
+    paramPackTypes: Semantic.Id[];
     elaboratedVariables: Map<Collect.Id, Semantic.Id>;
     context: SubstitutionContext;
   }
@@ -1728,6 +1820,8 @@ export function elaborateFunctionSymbol(
     if (
       s.generics.length === args.genericArgs.length &&
       s.generics.every((g, index) => g === args.genericArgs[index]) &&
+      s.paramPackTypes.length === args.paramPackTypes.length &&
+      s.paramPackTypes.every((g, index) => g === args.paramPackTypes[index]) &&
       s.originalSymbol === collectedFunctionSymbolId
     ) {
       return s.resultSymbol;
@@ -1763,28 +1857,62 @@ export function elaborateFunctionSymbol(
     startLookupInScopeForSymbol: func.functionScope || func.parentScope,
   });
 
+  if (func.vararg && func.extern !== EExternLanguage.Extern_C) {
+    throw new CompilerError(
+      `A C-Style Vararg parameter pack may only be used on extern "C" functions`,
+      func.sourceloc
+    );
+  }
+
+  let parameterPack = false;
   const parameterNames = func.parameters.map((p) => p.name);
-  const parameters = func.parameters.map((p) =>
-    lookupAndElaborateDatatype(sr, {
-      typeId: p.type,
-      context: substitutionContext,
-      currentScope: args.currentScope,
-      elaboratedVariables: args.elaboratedVariables,
-      isInCFuncdecl: false,
-      startLookupInScopeForGenerics: func.functionScope || func.parentScope,
-      startLookupInScopeForSymbol: func.functionScope || func.parentScope,
+  const parametersWithoutPack = func.parameters
+    .map((p, i) => {
+      const paramType = sr.cc.nodes.get(p.type);
+      if (paramType.variant === Collect.ENode.ParameterPack) {
+        if (i !== func.parameters.length - 1) {
+          throw new CompilerError(
+            `A Parameter Pack may only appear at the very end of the parameter list`,
+            func.sourceloc
+          );
+        }
+        if (func.extern !== EExternLanguage.None) {
+          throw new CompilerError(
+            `A Parameter Pack may not be used on an exported function`,
+            func.sourceloc
+          );
+        }
+        parameterPack = true;
+        parameterNames.pop();
+        return undefined;
+      }
+      return lookupAndElaborateDatatype(sr, {
+        typeId: p.type,
+        context: substitutionContext,
+        currentScope: args.currentScope,
+        elaboratedVariables: args.elaboratedVariables,
+        isInCFuncdecl: false,
+        startLookupInScopeForGenerics: func.functionScope || func.parentScope,
+        startLookupInScopeForSymbol: func.functionScope || func.parentScope,
+      });
     })
-  );
+    .filter((p) => Boolean(p))
+    .map((p) => p!);
+
+  const parametersWithPack = [...parametersWithoutPack, ...args.paramPackTypes];
+  for (let i = 0; i < args.paramPackTypes.length; i++) {
+    parameterNames.push(`__param_pack_${i}`);
+  }
 
   if (func.methodType === EMethodType.Method) {
     parameterNames.unshift("this");
     assert(args.parentStructOrNS);
     const thisReference = makeReferenceDatatypeAvailable(sr, args.parentStructOrNS);
-    parameters.unshift(thisReference);
+    parametersWithPack.unshift(thisReference);
   }
 
   const ftype = makeFunctionDatatypeAvailable(sr, {
-    parameters: parameters,
+    parameters: parametersWithPack,
     returnType: expectedReturnType,
     vararg: func.vararg,
   });
@@ -1795,26 +1923,12 @@ export function elaborateFunctionSymbol(
     export: func.export,
     generics: args.genericArgs,
     staticMethod: false,
+    parameterPack: parameterPack,
     methodOf: args.parentStructOrNS,
     methodType: func.methodType,
     parentStructOrNS: args.parentStructOrNS,
     noemit: func.noemit,
     extern: func.extern,
-    // operatorOverloading: func.operatorOverloading && {
-    //   asTarget: lookupAndElaborateDatatype(
-    //     sr,
-    //     (() => {
-    //       assert(args.usageInScope);
-    //       return {
-    //         type: args.sourceSymbol.operatorOverloading.asTarget,
-    //         startLookupInScope: args.usageInScope,
-    //         isInCFuncdecl: false,
-    //         context: substitutionContext,
-    //       };
-    //     })()
-    //   ),
-    //   operator: args.sourceSymbol.operatorOverloading.operator,
-    // },
     parameterNames: parameterNames,
     name: overloadGroup.name,
     sourceloc: func.sourceloc,
@@ -1827,6 +1941,7 @@ export function elaborateFunctionSymbol(
       generics: args.genericArgs,
       originalSymbol: collectedFunctionSymbolId,
       substitutionContext: substitutionContext,
+      paramPackTypes: args.paramPackTypes,
       resultSymbol: symbolId,
     });
 
@@ -2010,9 +2125,10 @@ export function elaborateGlobalSymbol(
       for (const id of node.overloads) {
         const func = sr.cc.nodes.get(id);
         assert(func.variant === Collect.ENode.FunctionSymbol);
-        if (func.generics.length === 0) {
+        if (func.generics.length === 0 && !funcSymHasParameterPack(sr.cc, id)) {
           const sId = elaborateFunctionSymbol(sr, id, {
             genericArgs: [],
+            paramPackTypes: [],
             parentStructOrNS: elaborateParentSymbolFromCache(sr, {
               parentScope: func.parentScope,
               context: makeSubstitutionContext(),

@@ -79,6 +79,15 @@ export type CollectionContext = {
   // exportCache: Map<Collect.Id, ImpExp.Id>;
 };
 
+export function funcSymHasParameterPack(cc: CollectionContext, id: Collect.Id) {
+  const funcsym = cc.nodes.get(id);
+  assert(funcsym.variant === Collect.ENode.FunctionSymbol);
+  return funcsym.parameters.some((p) => {
+    const pp = cc.nodes.get(p.type);
+    return pp.variant === Collect.ENode.ParameterPack;
+  });
+}
+
 export function makeCollectionContext(config: ModuleConfig): CollectionContext {
   const cc: CollectionContext = {
     config: config,
@@ -121,6 +130,7 @@ export namespace Collect {
     PointerDatatype,
     ArrayDatatype,
     SliceDatatype,
+    ParameterPack,
     StructDefinitionSymbol,
     NamespaceSharedInstance,
     NamespaceDefinitionSymbol,
@@ -243,17 +253,19 @@ export namespace Collect {
   /// ===                          Symbols                        ===
   /// ===============================================================
 
+  export type ParameterValue = {
+    name: string;
+    type: Collect.Id;
+    sourceloc: SourceLoc;
+  };
+
   export type FunctionSymbol = {
     variant: ENode.FunctionSymbol;
     parentScope: Collect.Id;
     overloadGroup: Collect.Id;
     generics: Collect.Id[];
     returnType: Collect.Id;
-    parameters: {
-      name: string;
-      type: Collect.Id;
-      sourceloc: SourceLoc;
-    }[];
+    parameters: ParameterValue[];
     vararg: boolean;
     export: boolean;
     pub: boolean;
@@ -358,6 +370,11 @@ export namespace Collect {
     sourceloc: SourceLoc;
   };
 
+  export type ParameterPack = {
+    variant: ENode.ParameterPack;
+    sourceloc: SourceLoc;
+  };
+
   export type StructDefinitionSymbol = {
     variant: ENode.StructDefinitionSymbol;
     fullyQualifiedName: string;
@@ -406,6 +423,7 @@ export namespace Collect {
     | ReferenceDatatype
     | ArrayDatatype
     | SliceDatatype
+    | ParameterPack
     | StructDefinitionSymbol
     | NamespaceDefinitionSymbol
     | NamespaceSharedInstance
@@ -906,6 +924,10 @@ function collect(
         }
 
         for (const p of parameters) {
+          const pType = cc.nodes.get(p.type);
+          if (pType.variant === Collect.ENode.ParameterPack) {
+            continue;
+          }
           defineVariableSymbol(
             cc,
             {
@@ -1423,6 +1445,16 @@ function collect(
     // =================================================================================================================
     // =================================================================================================================
 
+    case "ParameterPack":
+      return makeSymbol(cc, {
+        variant: Collect.ENode.ParameterPack,
+        sourceloc: item.sourceloc,
+      })[1];
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
     case "ParenthesisExpr": {
       return makeSymbol(cc, {
         variant: Collect.ENode.ParenthesisExpr,
@@ -1844,6 +1876,10 @@ export function printCollectedDatatype(cc: CollectionContext, typeId: Collect.Id
 
     case Collect.ENode.ArrayDatatype: {
       return `${printCollectedDatatype(cc, type.datatype)}[${type.length}]`;
+    }
+
+    case Collect.ENode.ParameterPack: {
+      return `...`;
     }
 
     default:
