@@ -1099,12 +1099,22 @@ function lowerBlockScope(lr: Lowered.Module, semanticScopeId: Semantic.Id): Lowe
   const blockScope = lr.sr.nodes.get(semanticScopeId);
   assert(blockScope.variant === Semantic.ENode.BlockScope);
 
-  const [scope, scopeId] = Lowered.addBlockScope<Lowered.BlockScope>(lr, {
-    statements: [],
-  });
+  const statements: Lowered.StatementId[] = [];
+
   for (const s of blockScope.statements) {
-    scope.statements.push(...lowerStatement(lr, s));
+    statements.push(...lowerStatement(lr, s));
   }
+
+  if (statements.length === 1) {
+    let st = lr.statementNodes.get(statements[0]);
+    if (st.variant === Lowered.ENode.BlockScopeStatement) {
+      return st.block;
+    }
+  }
+
+  const [scope, scopeId] = Lowered.addBlockScope<Lowered.BlockScope>(lr, {
+    statements: statements,
+  });
   return scopeId;
 }
 
