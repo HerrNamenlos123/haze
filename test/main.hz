@@ -51,5 +51,9 @@ extern "C" noemit printf(fmt: str, ...);
 
 main(): int {
     printf("Result: %ld\n", math.sqrt());
+
+    const result = math.test();
+    printf("Other: %f\n", result.get());
+
     return 0;
 }

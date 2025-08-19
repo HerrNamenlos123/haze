@@ -7,6 +7,10 @@ export struct Float {
     }
 }
 
+export test(): Float {
+    return Float { value: 4.2 };
+}
+
 export sqrt(): int {
     return 287;
 }
