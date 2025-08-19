@@ -62,7 +62,7 @@ exprAsFuncbody: expr;
 // Variables
 
 globalVariableDef
-    : (export='export')? (extern='extern' externLang=externLanguage?)? pub='pub'? variableMutabilitySpecifier ID (((':' datatype)? '=' expr) | (':' datatype)) ';'        #GlobalVariableDefinition
+    : (export='export')? (extern='extern' externLang=externLanguage?)? pub='pub'? variableMutabilitySpecifier comptime='comptime'? ID (((':' datatype)? '=' expr) | (':' datatype)) ';'        #GlobalVariableDefinition
     ;
 
 typeDef
@@ -162,8 +162,8 @@ statement
     : '__c__' '(' STRING_LITERAL ')' ';'                        #CInlineStatement
     | expr ';'                                                  #ExprStatement
     | 'return' expr? ';'                                        #ReturnStatement
-    | variableMutabilitySpecifier ID (((':' datatype)? '=' expr) | (':' datatype)) ';'       #VariableCreationStatement
-    | 'if' ifExpr=expr then=scope ('else' 'if' elseIfExpr+=expr elseIfThen+=scope)* ('else' elseBlock=scope)? #IfStatement
+    | variableMutabilitySpecifier comptime='comptime'? ID (((':' datatype)? '=' expr) | (':' datatype)) ';'       #VariableCreationStatement
+    | 'if' comptime='comptime'? ifExpr=expr then=scope ('else' 'if' elseIfExpr+=expr elseIfThen+=scope)* ('else' elseBlock=scope)? #IfStatement
     | 'while' expr scope                                        #WhileStatement
     | scope                                                     #ScopeStatement
     | typeDef                                                   #TypedefStatement

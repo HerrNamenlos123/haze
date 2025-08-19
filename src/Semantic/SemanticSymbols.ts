@@ -142,7 +142,7 @@ export namespace Semantic {
     IfStatement,
     VariableStatement,
     ExprStatement,
-    BlockStatement,
+    BlockScopeStatement,
     ReturnStatement,
     // Expressions
     ParenthesisExpr,
@@ -226,6 +226,8 @@ export namespace Semantic {
     variableContext: EVariableContext;
     parentStructOrNS: Semantic.Id | null;
     sourceloc: SourceLoc;
+    comptime: boolean;
+    comptimeValue: Semantic.Id | null;
     concrete: boolean;
   };
 
@@ -238,6 +240,7 @@ export namespace Semantic {
     extern: EExternLanguage;
     parentStructOrNS: Semantic.Id | null;
     sourceloc: SourceLoc;
+    comptime: boolean;
     concrete: boolean;
   };
 
@@ -537,6 +540,7 @@ export namespace Semantic {
     name: string;
     value: Id | null;
     mutability: EVariableMutability;
+    comptime: boolean;
     variableSymbol: Id;
     sourceloc: SourceLoc;
   };
@@ -547,8 +551,8 @@ export namespace Semantic {
     sourceloc: SourceLoc;
   };
 
-  export type BlockStatement = {
-    variant: ENode.BlockStatement;
+  export type BlockScopeStatement = {
+    variant: ENode.BlockScopeStatement;
     block: Id;
     sourceloc: SourceLoc;
   };
@@ -559,6 +563,7 @@ export namespace Semantic {
     | VariableStatement
     | IfStatement
     | WhileStatement
+    | BlockScopeStatement
     | ExprStatement;
 
   export type DummyNode = {

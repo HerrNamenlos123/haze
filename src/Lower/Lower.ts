@@ -62,6 +62,7 @@ export namespace Lowered {
     IfStatement,
     VariableStatement,
     ExprStatement,
+    BlockScopeStatement,
     BlockStatement,
     ReturnStatement,
     // Expressions
@@ -303,6 +304,7 @@ export namespace Lowered {
     | VariableStatement
     | IfStatement
     | WhileStatement
+    | BlockScopeStatement
     | ExprStatement;
 
   export type InlineCStatement = {
@@ -344,6 +346,12 @@ export namespace Lowered {
     variant: ENode.WhileStatement;
     condition: ExprId;
     then: BlockScopeId;
+    sourceloc: SourceLoc;
+  };
+
+  export type BlockScopeStatement = {
+    variant: ENode.BlockScopeStatement;
+    block: BlockScopeId;
     sourceloc: SourceLoc;
   };
 
@@ -966,6 +974,16 @@ function lowerStatement(lr: Lowered.Module, statementId: Semantic.Id): Lowered.S
         Lowered.addStatement<Lowered.InlineCStatement>(lr, {
           variant: Lowered.ENode.InlineCStatement,
           value: statement.value,
+          sourceloc: statement.sourceloc,
+        })[1],
+      ];
+    }
+
+    case Semantic.ENode.BlockScopeStatement: {
+      return [
+        Lowered.addStatement<Lowered.BlockScopeStatement>(lr, {
+          variant: Lowered.ENode.BlockScopeStatement,
+          block: lowerBlockScope(lr, statement.block),
           sourceloc: statement.sourceloc,
         })[1],
       ];

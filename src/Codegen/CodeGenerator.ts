@@ -426,6 +426,20 @@ class CodeGenerator {
         return { temp: tempWriter, out: outWriter };
       }
 
+      case Lowered.ENode.BlockScopeStatement: {
+        if (statement.sourceloc) {
+          outWriter.writeLine(
+            `#line ${statement.sourceloc.line} ${JSON.stringify(statement.sourceloc.filename)}`
+          );
+        }
+        outWriter.writeLine(`{`).pushIndent();
+        const scope = this.emitScope(statement.block);
+        tempWriter.write(scope.temp);
+        outWriter.write(scope.out);
+        outWriter.popIndent().writeLine("}");
+        return { temp: tempWriter, out: outWriter };
+      }
+
       case Lowered.ENode.IfStatement: {
         if (statement.sourceloc) {
           outWriter.writeLine(

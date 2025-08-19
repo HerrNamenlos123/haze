@@ -63,6 +63,7 @@ import {
 import { getModuleGlobalNamespaceName, type ExportData, type ModuleConfig } from "../shared/Config";
 import { serializeLiteralValue } from "../Semantic/Serialize";
 import { join } from "path";
+import { isAutoAccessorPropertyDeclaration } from "typescript";
 
 export type CollectionContext = {
   config: ModuleConfig;
@@ -263,6 +264,7 @@ export namespace Collect {
   export type VariableSymbol = {
     variant: ENode.VariableSymbol;
     name: string;
+    comptime: boolean;
     inScope: Collect.Id;
     type: Collect.Id | null;
     mutability: EVariableMutability;
@@ -281,6 +283,7 @@ export namespace Collect {
   export type GlobalVariableDefinition = {
     variant: ENode.GlobalVariableDefinition;
     variableSymbol: Collect.Id;
+    comptime: boolean;
     value: Collect.Id | null;
     sourceloc: SourceLoc;
   };
@@ -421,6 +424,7 @@ export namespace Collect {
   export type IfStatement = BaseStatement & {
     variant: ENode.IfStatement;
     condition: Collect.Id;
+    comptime: boolean;
     thenBlock: Collect.Id;
     elseif: {
       condition: Collect.Id;
@@ -438,6 +442,7 @@ export namespace Collect {
   export type VariableDefinitionStatement = BaseStatement & {
     variant: ENode.VariableDefinitionStatement;
     variableSymbol: Collect.Id;
+    comptime: boolean;
     value: Collect.Id | null;
   };
 
@@ -858,6 +863,7 @@ function collect(
             cc,
             {
               variant: Collect.ENode.VariableSymbol,
+              comptime: false,
               mutability: EVariableMutability.Mutable,
               name: "this",
               sourceloc: functionSymbol.sourceloc,
@@ -873,6 +879,7 @@ function collect(
             cc,
             {
               variant: Collect.ENode.VariableSymbol,
+              comptime: false,
               mutability: EVariableMutability.Immutable,
               name: p.name,
               sourceloc: p.sourceloc,
@@ -901,6 +908,7 @@ function collect(
         {
           variant: Collect.ENode.VariableSymbol,
           name: item.name,
+          comptime: false,
           mutability: EVariableMutability.Mutable,
           sourceloc: item.sourceloc,
           type: collect(cc, item.type, {
@@ -930,6 +938,7 @@ function collect(
         {
           variant: Collect.ENode.VariableSymbol,
           name: item.name,
+          comptime: item.comptime,
           type:
             (item.datatype &&
               collect(cc, item.datatype, { currentParentScope: args.currentParentScope })) ||
@@ -946,6 +955,7 @@ function collect(
           (item.expr && collect(cc, item.expr, { currentParentScope: args.currentParentScope })) ||
           null,
         variableSymbol: variableSymbolId,
+        comptime: item.comptime,
         sourceloc: item.sourceloc,
       });
       return globvarId;
@@ -1228,6 +1238,7 @@ function collect(
           case "IfStatement": {
             addStatement(cc, blockScope, {
               variant: Collect.ENode.IfStatement,
+              comptime: astStatement.comptime,
               condition: collect(cc, astStatement.condition, { currentParentScope: blockScope }),
               elseBlock:
                 (astStatement.else &&
@@ -1295,6 +1306,7 @@ function collect(
               {
                 variant: Collect.ENode.VariableSymbol,
                 name: astStatement.name,
+                comptime: astStatement.comptime,
                 type:
                   (astStatement.datatype &&
                     collect(cc, astStatement.datatype, { currentParentScope: blockScope })) ||
@@ -1312,9 +1324,22 @@ function collect(
                 (astStatement.expr &&
                   collect(cc, astStatement.expr, { currentParentScope: blockScope })) ||
                 null,
+              comptime: astStatement.comptime,
               variableSymbol: variableSymbolId,
             });
             break;
+
+          case "ScopeStatement": {
+            addStatement(cc, blockScope, {
+              variant: Collect.ENode.BlockScopeStatement,
+              blockscope: collect(cc, astStatement.scope, { currentParentScope: blockScope }),
+              sourceloc: astStatement.sourceloc,
+            });
+            break;
+          }
+
+          default:
+            assert(false, "" + (astStatement as any).variant);
         }
       }
       return blockScope;
@@ -2032,6 +2057,11 @@ export function PrettyPrintCollected(cc: CollectionContext) {
 
       case Collect.ENode.AliasTypeSymbol: {
         print(`alias ${symbol.name} = ${printCollectedDatatype(cc, symbol.target)};`);
+        break;
+      }
+
+      case Collect.ENode.BlockScopeStatement: {
+        printSymbol(symbol.blockscope, indent + 2);
         break;
       }
 

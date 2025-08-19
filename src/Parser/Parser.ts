@@ -561,6 +561,7 @@ class ASTTransformer extends HazeVisitor<any> {
       pub: Boolean(ctx._pub),
       export: Boolean(ctx._export_),
       extern: this.exlang(ctx),
+      comptime: Boolean(ctx._comptime),
       mutability: this.mutability(ctx),
       name: ctx.ID().getText(),
       sourceloc: this.loc(ctx),
@@ -696,6 +697,7 @@ class ASTTransformer extends HazeVisitor<any> {
     return {
       variant: "VariableDefinitionStatement",
       mutability: this.mutability(ctx),
+      comptime: Boolean(ctx._comptime),
       name: ctx.ID().getText(),
       sourceloc: this.loc(ctx),
       datatype: (ctx.datatype() && this.visit(ctx.datatype()!)) || undefined,
@@ -739,6 +741,7 @@ class ASTTransformer extends HazeVisitor<any> {
       then: this.visit(ctx._then),
       sourceloc: this.loc(ctx),
       elseIfs: elseIfs,
+      comptime: Boolean(ctx._comptime),
       else: elseBlock,
     };
   };

@@ -214,6 +214,7 @@ export type ASTDatatype =
 export type ASTGlobalVariableDefinition = {
   variant: "GlobalVariableDefinition";
   export: boolean;
+  comptime: boolean;
   pub: boolean;
   extern: EExternLanguage;
   mutability: EVariableMutability;
@@ -250,6 +251,7 @@ export type ASTReturnStatement = {
 export type ASTVariableDefinitionStatement = {
   variant: "VariableDefinitionStatement";
   mutability: EVariableMutability;
+  comptime: boolean;
   name: string;
   datatype?: ASTDatatype;
   expr?: ASTExpr;
@@ -261,6 +263,7 @@ export type ASTIfStatement = {
   variant: "IfStatement";
   condition: ASTExpr;
   then: ASTScope;
+  comptime: boolean;
   elseIfs: {
     condition: ASTExpr;
     then: ASTScope;

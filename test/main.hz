@@ -58,7 +58,20 @@ main(): int {
     glfw.makeContextCurrent(window);
     glfw.swapInterval(0);
 
+    const comptime TARGET = "a";
+
     let oldTime = glfw.getTime();
+
+    if comptime (TARGET == "windows") {
+        printf("Windows!\n");
+    }
+    else if (TARGET == "linux") {
+        printf("Linux!\n");
+    }
+    else {
+        printf("Unknown platform!\n");
+    }
+    return 0;
 
     let fps = 0.0;
     while not window.shouldClose() {

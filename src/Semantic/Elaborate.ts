@@ -10,6 +10,7 @@ import { getModuleGlobalNamespaceName } from "../shared/Config";
 import { assert, CompilerError, InternalError, type SourceLoc } from "../shared/Errors";
 import { Collect, type CollectionContext } from "../SymbolCollection/SymbolCollection";
 import { Conversion } from "./Conversion";
+import { EvalCTFE, EvalCTFEBoolean } from "./CTFE";
 import {
   makeFunctionDatatypeAvailable,
   lookupAndElaborateDatatype,
@@ -1196,6 +1197,30 @@ export function elaborateStatement(
     // =================================================================================================================
     // =================================================================================================================
 
+    case Collect.ENode.BlockScopeStatement: {
+      const [scope, scopeId] = Semantic.addNode(sr, {
+        variant: Semantic.ENode.BlockScope,
+        statements: [],
+      });
+      elaborateBlockScope(sr, {
+        targetScopeId: scopeId,
+        sourceScopeId: s.blockscope,
+        expectedReturnType: args.expectedReturnType,
+        currentScope: args.currentScope,
+        elaboratedVariables: args.elaboratedVariables,
+        context: args.context,
+      });
+      return Semantic.addNode(sr, {
+        variant: Semantic.ENode.BlockScopeStatement,
+        block: scopeId,
+        sourceloc: s.sourceloc,
+      })[1];
+    }
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
     case Collect.ENode.IfStatement: {
       const [condition, conditionId] = elaborateExpr(sr, s.condition, {
         context: args.context,
@@ -1203,68 +1228,149 @@ export function elaborateStatement(
         currentScope: args.currentScope,
         scope: s.owningScope,
       });
-      const [thenScope, thenScopeId] = Semantic.addNode(sr, {
-        variant: Semantic.ENode.BlockScope,
-        statements: [],
-      });
-      elaborateBlockScope(sr, {
-        targetScopeId: thenScopeId,
-        sourceScopeId: s.thenBlock,
-        expectedReturnType: args.expectedReturnType,
-        currentScope: args.currentScope,
-        elaboratedVariables: args.elaboratedVariables,
-        context: args.context,
-      });
-      const elseIfs = s.elseif.map((e) => {
-        const [innerThenScope, innerThenScopeId] = Semantic.addNode(sr, {
-          variant: Semantic.ENode.BlockScope,
-          statements: [],
-        });
-        elaborateBlockScope(sr, {
-          targetScopeId: innerThenScopeId,
-          sourceScopeId: e.thenBlock,
-          currentScope: args.currentScope,
-          expectedReturnType: args.expectedReturnType,
-          elaboratedVariables: args.elaboratedVariables,
-          context: args.context,
-        });
-        return {
-          condition: elaborateExpr(sr, e.condition, {
+      if (s.comptime) {
+        const conditionValue = EvalCTFEBoolean(sr, conditionId);
+        if (conditionValue) {
+          const [thenScope, thenScopeId] = Semantic.addNode(sr, {
+            variant: Semantic.ENode.BlockScope,
+            statements: [],
+          });
+          elaborateBlockScope(sr, {
+            targetScopeId: thenScopeId,
+            sourceScopeId: s.thenBlock,
+            expectedReturnType: args.expectedReturnType,
+            currentScope: args.currentScope,
+            elaboratedVariables: args.elaboratedVariables,
+            context: args.context,
+          });
+          return Semantic.addNode(sr, {
+            variant: Semantic.ENode.BlockScopeStatement,
+            block: thenScopeId,
+            sourceloc: s.sourceloc,
+          })[1];
+        }
+
+        for (const elif of s.elseif) {
+          const [condition, conditionId] = elaborateExpr(sr, elif.condition, {
             context: args.context,
             elaboratedVariables: args.elaboratedVariables,
-            scope: s.owningScope,
             currentScope: args.currentScope,
-          })[1],
-          then: innerThenScopeId,
-        };
-      });
+            scope: s.owningScope,
+          });
+          if (EvalCTFEBoolean(sr, conditionId)) {
+            const [thenScope, thenScopeId] = Semantic.addNode(sr, {
+              variant: Semantic.ENode.BlockScope,
+              statements: [],
+            });
+            elaborateBlockScope(sr, {
+              targetScopeId: thenScopeId,
+              sourceScopeId: elif.thenBlock,
+              expectedReturnType: args.expectedReturnType,
+              currentScope: args.currentScope,
+              elaboratedVariables: args.elaboratedVariables,
+              context: args.context,
+            });
+            return Semantic.addNode(sr, {
+              variant: Semantic.ENode.BlockScopeStatement,
+              block: thenScopeId,
+              sourceloc: s.sourceloc,
+            })[1];
+          }
+        }
 
-      let [elseScope, elseScopeId] = [
-        undefined as undefined | Semantic.BlockScope,
-        undefined as Semantic.Id | undefined,
-      ];
-      if (s.elseBlock) {
-        [elseScope, elseScopeId] = Semantic.addNode(sr, {
+        if (s.elseBlock) {
+          const [thenScope, thenScopeId] = Semantic.addNode(sr, {
+            variant: Semantic.ENode.BlockScope,
+            statements: [],
+          });
+          elaborateBlockScope(sr, {
+            targetScopeId: thenScopeId,
+            sourceScopeId: s.elseBlock,
+            expectedReturnType: args.expectedReturnType,
+            currentScope: args.currentScope,
+            elaboratedVariables: args.elaboratedVariables,
+            context: args.context,
+          });
+          return Semantic.addNode(sr, {
+            variant: Semantic.ENode.BlockScopeStatement,
+            block: thenScopeId,
+            sourceloc: s.sourceloc,
+          })[1];
+        }
+
+        // Nothing was true, emit empty scope statement
+        return Semantic.addNode(sr, {
+          variant: Semantic.ENode.BlockScopeStatement,
+          block: Semantic.addNode(sr, {
+            variant: Semantic.ENode.BlockScope,
+            statements: [],
+          })[1],
+          sourceloc: s.sourceloc,
+        })[1];
+      } else {
+        const [thenScope, thenScopeId] = Semantic.addNode(sr, {
           variant: Semantic.ENode.BlockScope,
           statements: [],
         });
         elaborateBlockScope(sr, {
-          targetScopeId: elseScopeId,
-          sourceScopeId: s.elseBlock,
+          targetScopeId: thenScopeId,
+          sourceScopeId: s.thenBlock,
           expectedReturnType: args.expectedReturnType,
           currentScope: args.currentScope,
           elaboratedVariables: args.elaboratedVariables,
           context: args.context,
         });
+        const elseIfs = s.elseif.map((e) => {
+          const [innerThenScope, innerThenScopeId] = Semantic.addNode(sr, {
+            variant: Semantic.ENode.BlockScope,
+            statements: [],
+          });
+          elaborateBlockScope(sr, {
+            targetScopeId: innerThenScopeId,
+            sourceScopeId: e.thenBlock,
+            currentScope: args.currentScope,
+            expectedReturnType: args.expectedReturnType,
+            elaboratedVariables: args.elaboratedVariables,
+            context: args.context,
+          });
+          return {
+            condition: elaborateExpr(sr, e.condition, {
+              context: args.context,
+              elaboratedVariables: args.elaboratedVariables,
+              scope: s.owningScope,
+              currentScope: args.currentScope,
+            })[1],
+            then: innerThenScopeId,
+          };
+        });
+
+        let [elseScope, elseScopeId] = [
+          undefined as undefined | Semantic.BlockScope,
+          undefined as Semantic.Id | undefined,
+        ];
+        if (s.elseBlock) {
+          [elseScope, elseScopeId] = Semantic.addNode(sr, {
+            variant: Semantic.ENode.BlockScope,
+            statements: [],
+          });
+          elaborateBlockScope(sr, {
+            targetScopeId: elseScopeId,
+            sourceScopeId: s.elseBlock,
+            expectedReturnType: args.expectedReturnType,
+            currentScope: args.currentScope,
+            elaboratedVariables: args.elaboratedVariables,
+            context: args.context,
+          });
+        }
+        return Semantic.addNode(sr, {
+          variant: Semantic.ENode.IfStatement,
+          condition: conditionId,
+          then: thenScopeId,
+          elseIfs: elseIfs,
+          else: elseScopeId,
+          sourceloc: s.sourceloc,
+        })[1];
       }
-      return Semantic.addNode(sr, {
-        variant: Semantic.ENode.IfStatement,
-        condition: conditionId,
-        then: thenScopeId,
-        elseIfs: elseIfs,
-        else: elseScopeId,
-        sourceloc: s.sourceloc,
-      })[1];
     }
 
     // =================================================================================================================
@@ -1373,9 +1479,15 @@ export function elaborateStatement(
       assert(variableSymbol.type);
       variableSymbol.concrete = isTypeConcrete(sr, variableSymbol.type);
 
+      if (variableSymbol.comptime) {
+        assert(valueId);
+        variableSymbol.comptimeValue = EvalCTFE(sr, valueId)[1];
+      }
+
       return Semantic.addNode(sr, {
         variant: Semantic.ENode.VariableStatement,
         mutability: variableSymbol.mutability,
+        comptime: collectedVariableSymbol.comptime,
         name: variableSymbol.name,
         variableSymbol: variableSymbolId,
         value:
@@ -1457,6 +1569,8 @@ function elaborateVariableSymbolInScope(
           currentScope: args.currentScope,
           parentScope: symbol.inScope,
         }),
+        comptime: symbol.comptime,
+        comptimeValue: null,
         variableContext: variableContext,
         type: type,
         concrete: false,
@@ -1653,6 +1767,8 @@ export function elaborateFunctionSymbol(
           mutability: collectedThisRef.mutability,
           name: collectedThisRef.name,
           type: thisRef,
+          comptime: false,
+          comptimeValue: null,
           concrete: isTypeConcrete(sr, thisRef),
           export: false,
           extern: EExternLanguage.None,
@@ -1863,6 +1979,8 @@ export function elaborateGlobalSymbol(
         type: type,
         export: false,
         extern: EExternLanguage.None,
+        comptime: node.comptime,
+        comptimeValue: null,
         name: node.name,
         memberOfStruct: null,
         mutability: node.mutability,
@@ -1911,11 +2029,17 @@ export function elaborateGlobalSymbol(
       assert(variableSymbol.type);
       assert(isTypeConcrete(sr, variableSymbol.type));
 
+      if (variableSymbol.comptime) {
+        assert(elaboratedValueId);
+        variableSymbol.comptimeValue = EvalCTFE(sr, elaboratedValueId)[1];
+      }
+
       const [s, sId] = Semantic.addNode(sr, {
         variant: Semantic.ENode.GlobalVariableDefinitionSymbol,
         export: variableSymbol.export,
         extern: variableSymbol.extern,
         name: variableSymbol.name,
+        comptime: variableSymbol.comptime,
         value: elaboratedValueId,
         sourceloc: node.sourceloc,
         variableSymbol: variableSymbolId,
@@ -2125,23 +2249,21 @@ function printSymbol(sr: SemanticResult, symbolId: Semantic.Id, indent: number) 
     }
 
     case Semantic.ENode.IfStatement:
-      print(`If ${serializeExpr(sr, symbol.condition)} {`, indent);
+      print(`If ${serializeExpr(sr, symbol.condition)}`, indent);
       printSymbol(sr, symbol.then, indent + 2);
       for (const elseif of symbol.elseIfs) {
-        print(`} else if ${serializeExpr(sr, elseif.condition)} {`, indent);
+        print(`else if ${serializeExpr(sr, elseif.condition)}`, indent);
         printSymbol(sr, elseif.then, indent + 2);
       }
       if (symbol.else) {
-        print(`} else {`, indent);
+        print(`else`, indent);
         printSymbol(sr, symbol.else, indent + 2);
       }
-      print(`}`, indent);
       break;
 
     case Semantic.ENode.WhileStatement:
-      print(`While ${serializeExpr(sr, symbol.condition)} {`, indent);
+      print(`While ${serializeExpr(sr, symbol.condition)}`, indent);
       printSymbol(sr, symbol.then, indent + 2);
-      print(`}`, indent);
       break;
 
     case Semantic.ENode.ExprStatement:
@@ -2149,9 +2271,15 @@ function printSymbol(sr: SemanticResult, symbolId: Semantic.Id, indent: number) 
       break;
 
     case Semantic.ENode.BlockScope:
+      print("Block {", indent);
       for (const sId of symbol.statements) {
         printSymbol(sr, sId, indent + 2);
       }
+      print("}", indent);
+      break;
+
+    case Semantic.ENode.BlockScopeStatement:
+      printSymbol(sr, symbol.block, indent + 2);
       break;
 
     default:
