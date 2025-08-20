@@ -33,15 +33,15 @@ import {
   PrettyPrintCollected,
   type CollectionContext,
 } from "./SymbolCollection/SymbolCollection";
-import { PrettyPrintAnalyzed, SemanticallyAnalyze } from "./Semantic/Elaborate";
+import { SemanticallyAnalyze } from "./Semantic/Elaborate";
 import { generateCode } from "./Codegen/CodeGenerator";
 import { LowerModule } from "./Lower/Lower";
-import { addEntity, createWorld } from "bitecs";
 import { ExportCollectedSymbols } from "./SymbolCollection/Export";
+
+export const HAZE_STDLIB_NAME = "haze-stdlib";
 
 const C_COMPILER = "clang";
 const ARCHIVE_TOOL = "ar";
-const HAZE_STDLIB_NAME = "haze-stdlib";
 const HAZE_CONFIG_FILE = "haze.toml";
 const HAZE_LIB_IMPORT_FILE = "import.hz";
 
@@ -363,7 +363,11 @@ class ModuleCompiler {
   }
 
   async addProjectSourceFiles() {
-    await this.collectDirectory(this.config.srcDirectory, ECollectionMode.WrapIntoModuleNamespace);
+    let mode = ECollectionMode.WrapIntoModuleNamespace;
+    if (this.config.name === HAZE_STDLIB_NAME) {
+      mode = ECollectionMode.ImportUnderRootDirectly;
+    }
+    await this.collectDirectory(this.config.srcDirectory, mode);
   }
 
   async build() {
@@ -395,7 +399,7 @@ class ModuleCompiler {
         this.config.name,
         this.config.version
       );
-      PrettyPrintAnalyzed(sr);
+      // PrettyPrintAnalyzed(sr);
       const lowered = LowerModule(sr);
 
       const name = this.config.name;
@@ -506,7 +510,16 @@ class ModuleCompiler {
   private async loadDependencyBinaries() {
     const libs: string[] = [];
     const linkerFlags: string[] = [];
-    for (const dep of this.config.dependencies || []) {
+
+    const deps = [...this.config.dependencies];
+    if (this.config.name !== HAZE_STDLIB_NAME && !this.config.nostdlib) {
+      deps.push({
+        name: HAZE_STDLIB_NAME,
+        path: HAZE_STDLIB_NAME,
+      });
+    }
+
+    for (const dep of deps) {
       const libpath = join(join(this.globalBuildDir, dep.name), "output", dep.name + ".hzlib");
       const metadata = await this.loadDependencyMetadata(libpath, dep.name);
 
@@ -542,7 +555,7 @@ class ModuleCompiler {
       });
     }
 
-    for (const dep of this.config.dependencies) {
+    for (const dep of deps) {
       const libpath = join(join(this.globalBuildDir, dep.name), "output", dep.name + ".hzlib");
       const metadata = await this.loadDependencyMetadata(libpath, dep.name);
 

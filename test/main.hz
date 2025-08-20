@@ -44,7 +44,9 @@
 //     return 0;
 // }
 
-// import glfw
+import math
+import glfw
+import gl
 
 __c__("#include <stdio.h>");
 extern "C" noemit printf(fmt: str, ...);
@@ -62,16 +64,16 @@ struct Vec3 {
 print(args: ...) {
     for comptime arg in args {
         if comptime typeof(arg) is int {
-            printf("%ld", arg);
+            printf("%ld ", arg);
         }
         else if typeof(arg) is str {
-            printf("%s", arg);
+            printf("%s ", arg);
         }
         else if typeof(arg) is real {
-            printf("%f", arg);
+            printf("%f ", arg);
         }
         else if typeof(arg) is Vec3 {
-            printf("(%f, %f, %f)", arg.x, arg.y, arg.z);
+            printf("(%f, %f, %f) ", arg.x, arg.y, arg.z);
         }
         else {
             static_assert(false, "Type not yet supported in print");
@@ -90,53 +92,42 @@ main(): int {
 
     const position = Vec3(5.0, 2.0, 4.0);
 
-    println("World position: ", position);
+    if not glfw.init() {
+        return 0;
+    }
 
-    return 0;
-    // if not glfw.init() {
-    //     return 0;
-    // }
+    const window = glfw.createWindow(1920, 1080, "Hello World!");
+    window.swapInterval(0);
+    gl.init(glfw.getProcAddress());
 
-    // const window = glfw.createWindow(1920, 1080, "Hello World!");
-    // glfw.makeContextCurrent(window);
-    // glfw.swapInterval(0);
+    gl.viewport(0, 0, 1920, 1080);
 
-    // let oldTime = glfw.getTime();
+    let oldTime = glfw.getTime();
 
-    // // const comptime TARGET = "a";
+    let fps = 0.0;
+    while not window.shouldClose() {
+        glfw.pollEvents();
 
-    // // if comptime (TARGET == "windows") {
-    // //     printf("Windows!\n");
-    // // }
-    // // else if (TARGET == "linux") {
-    // //     printf("Linux!\n");
-    // // }
-    // // else {
-    // //     printf("Unknown platform!\n");
-    // // }
-    // // return 0;
+        let now = glfw.getTime();
+        let elapsed = now - oldTime;
+        oldTime = now;
 
-    // let fps = 0.0;
-    // while not window.shouldClose() {
-    //     glfw.pollEvents();
+        gl.clearColor(Color((math.sin(oldTime * 10.0) + 1.0) / 2.0, 0.1, 0.1, 1.0));
+        gl.clear();
 
-    //     let now = glfw.getTime();
-    //     let elapsed = now - oldTime;
-    //     oldTime = now;
+        if fps == 0.0 {
+            fps = 1.0 / elapsed;
+        }
 
-    //     if fps == 0.0 {
-    //         fps = 1.0 / elapsed;
-    //     }
+        let alpha = 0.001;
+        fps = fps * (1.0 - alpha) + 1.0 / elapsed * alpha;
 
-    //     let alpha = 0.001;
-    //     fps = fps * (1.0 - alpha) + 1.0 / elapsed * alpha;
+        println("FPS:", fps);
 
-    //     printf("FPS: %f\n", fps);
+        window.swapBuffers();
+    }
 
-    //     window.swapBuffers();
-    // }
-
-    // glfw.terminate();
+    glfw.terminate();
 
     return 0;
 }

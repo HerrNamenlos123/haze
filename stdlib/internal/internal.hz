@@ -1,37 +1,3 @@
 
-// struct CString {
-// }
-
-// struct SharedPtr<T> {
-//   target: T*;
-
-//   get(): T& {
-//     return *this.target;
-//   }
-// }
-
-// struct Factory<T> {
-//   makeShared(size: u64): SharedPtr<T> {
-//     return SharedPtr<T> {
-//       target: malloc(size) as T*,
-//     };
-//   }
-// }
-
-// struct LogContext {
-//   trace: (fmt: str, ...) => none;
-//   info: (fmt: str, ...) => none;
-//   debug: (fmt: str, ...) => none;
-//   warn: (fmt: str, ...) => none;
-//   error: (fmt: str, ...) => none;
-// }
-
-// struct Context {
-//   log: LogContext;
-//   mem: MemContext;
-// };
-
-// struct MemContext {
-//   alloc: (size: u64) => none*;
-//   globalDefaultArena: none*;
-// }
+__c__("#include <assert.h>");
+extern "C" noemit assert(condition: bool);

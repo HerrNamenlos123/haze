@@ -60,7 +60,6 @@ import {
   type ASTArrayLiteralExpr,
   type ASTArraySubscriptExpr,
   type ASTForEachStatement,
-  type ASTBinaryTypeExpr,
 } from "../shared/AST";
 import {
   BinaryExprContext,

@@ -1131,6 +1131,7 @@ function collect(
       assert(
         parent.variant === Collect.ENode.FileScope ||
           parent.variant === Collect.ENode.NamespaceScope ||
+          parent.variant === Collect.ENode.ModuleScope ||
           parent.variant === Collect.ENode.StructScope
       );
 
@@ -1901,6 +1902,15 @@ export function printCollectedDatatype(cc: CollectionContext, typeId: Collect.Id
       return `...`;
     }
 
+    case Collect.ENode.FunctionDatatype: {
+      return `(${type.parameters
+        .map((p, i) => `param${i}: ${printCollectedDatatype(cc, p)}`)
+        .join(", ")}${type.vararg ? ", ..." : ""}) => ${printCollectedDatatype(
+        cc,
+        type.returnType
+      )}`;
+    }
+
     default:
       assert(false, type.variant.toString());
   }
@@ -2201,6 +2211,11 @@ export function PrettyPrintCollected(cc: CollectionContext) {
 
       case Collect.ENode.AliasTypeSymbol: {
         print(`alias ${symbol.name} = ${printCollectedDatatype(cc, symbol.target)};`);
+        break;
+      }
+
+      case Collect.ENode.InlineCStatement: {
+        print(`__c__(${JSON.stringify(symbol.value)})`);
         break;
       }
 

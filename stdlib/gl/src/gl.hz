@@ -1,0 +1,32 @@
+
+__c__("#include \"glad.h\"");
+__c__("#include \"glad.c\"");
+
+extern "C" noemit gladLoadGLLoader(proc: (name: str) => none*);
+
+export init(proc: (name: str) => none*) {
+    gladLoadGLLoader(proc);
+}
+
+extern "C" noemit glViewport(x: i32, y: i32, w: i32, h: i32);
+extern "C" noemit glClearColor(x: f32, y: f32, w: f32, h: f32);
+extern "C" noemit glClear(flags: i32);
+
+toI32(value: int): i32 {
+    assert(value >= -2147483648 and value <= 2147483647);
+    return value as i32;
+}
+
+export viewport(x: int, y: int, w: int, h: int) {
+    glViewport(toI32(x), toI32(y), toI32(w), toI32(h));
+}
+
+export clearColor(color: Color) {
+    glClearColor(color.r as f32, color.g as f32, color.b as f32, color.a as f32);
+}
+
+export clear() {
+    let flags = 0 as i32;
+    __c__("flags = GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT;");
+    glClear(flags);
+}

@@ -386,6 +386,7 @@ export namespace Lowered {
     mangledName: string;
     wasMangled: boolean;
     type: TypeId;
+    wasMonomorphized: boolean;
     parameterNames: string[];
     externLanguage: EExternLanguage;
     scope: BlockScopeId | null;
@@ -658,8 +659,7 @@ function lowerExpr(
         return Lowered.addExpr(lr, {
           variant: Lowered.ENode.SymbolValueExpr,
           prettyName: serializeNestedName(lr.sr, expr.symbol),
-          mangledName:
-            mangleNestedName(lr.sr, expr.symbol) + mangleParameterNames(lr.sr, expr.symbol),
+          mangledName: mangleNestedName(lr.sr, expr.symbol),
           wasMangled: symbol.extern !== EExternLanguage.Extern_C,
           type: lowerType(lr, symbol.type),
         });
@@ -1119,32 +1119,32 @@ function lowerBlockScope(lr: Lowered.Module, semanticScopeId: Semantic.Id): Lowe
   return scopeId;
 }
 
-export function mangleParameterNames(sr: SemanticResult, functionSymbolId: Semantic.Id) {
-  const functionSymbol = sr.nodes.get(functionSymbolId);
-  assert(functionSymbol.variant === Semantic.ENode.FunctionSymbol);
-  const semanticFtype = sr.nodes.get(functionSymbol.type);
-  assert(semanticFtype.variant === Semantic.ENode.FunctionDatatype);
+// export function mangleParameterNames(sr: SemanticResult, functionSymbolId: Semantic.Id) {
+//   const functionSymbol = sr.nodes.get(functionSymbolId);
+//   assert(functionSymbol.variant === Semantic.ENode.FunctionSymbol);
+//   const semanticFtype = sr.nodes.get(functionSymbol.type);
+//   assert(semanticFtype.variant === Semantic.ENode.FunctionDatatype);
 
-  if (functionSymbol.extern === EExternLanguage.Extern_C) {
-    return "";
-  }
+//   if (functionSymbol.extern === EExternLanguage.Extern_C) {
+//     return "";
+//   }
 
-  let parameterMangling = "";
-  for (const p of semanticFtype.parameters) {
-    const pp = sr.nodes.get(p);
-    if (pp.variant === Semantic.ENode.ParameterPackDatatypeSymbol) {
-      for (const ppp of pp.parameters) {
-        const pv = sr.nodes.get(ppp);
-        assert(pv.variant === Semantic.ENode.VariableSymbol);
-        assert(pv.type);
-        parameterMangling += mangleDatatype(sr, pv.type);
-      }
-    } else {
-      parameterMangling += mangleDatatype(sr, p);
-    }
-  }
-  return parameterMangling;
-}
+//   let parameterMangling = "";
+//   for (const p of semanticFtype.parameters) {
+//     const pp = sr.nodes.get(p);
+//     if (pp.variant === Semantic.ENode.ParameterPackDatatypeSymbol) {
+//       for (const ppp of pp.parameters) {
+//         const pv = sr.nodes.get(ppp);
+//         assert(pv.variant === Semantic.ENode.VariableSymbol);
+//         assert(pv.type);
+//         parameterMangling += mangleDatatype(sr, pv.type);
+//       }
+//     } else {
+//       parameterMangling += mangleDatatype(sr, p);
+//     }
+//   }
+//   return parameterMangling;
+// }
 
 function lower(lr: Lowered.Module, symbolId: Semantic.Id) {
   const symbol = lr.sr.nodes.get(symbolId);
@@ -1181,10 +1181,11 @@ function lower(lr: Lowered.Module, symbolId: Semantic.Id) {
       const [f, fId] = Lowered.addFunction<Lowered.FunctionSymbol>(lr, {
         variant: Lowered.ENode.FunctionSymbol,
         prettyName: serializeNestedName(lr.sr, symbolId),
-        mangledName: mangleNestedName(lr.sr, symbolId) + mangleParameterNames(lr.sr, symbolId),
+        mangledName: mangleNestedName(lr.sr, symbolId),
         parameterNames: parameterNames,
         wasMangled: symbol.extern !== EExternLanguage.Extern_C,
         type: ftype,
+        wasMonomorphized: symbol.isMonomorphized,
         scope: (symbol.scope && lowerBlockScope(lr, symbol.scope)) || null,
         sourceloc: symbol.sourceloc,
         externLanguage: symbol.extern,

@@ -1,3 +1,4 @@
+import { HAZE_STDLIB_NAME } from "../Module";
 import { EBinaryOperation, EExternLanguage, EVariableMutability } from "../shared/AST";
 import {
   BrandedArray,
@@ -325,6 +326,7 @@ function lookupSymbolInNamespaceOrStructScope(
     context: SubstitutionContext;
     elaboratedVariables: Map<Collect.Id, Semantic.Id>;
     gonnaCallFunctionWithParameters?: Semantic.Id[];
+    isMonomorphized: boolean;
     scope: Collect.Id;
   }
 ) {
@@ -383,6 +385,7 @@ function lookupSymbolInNamespaceOrStructScope(
         });
       }),
       context: args.context,
+      isMonomorphized: args.isMonomorphized,
       parentStructOrNS: elaborateParentSymbolFromCache(sr, {
         context: args.context,
         currentScope: args.currentScope,
@@ -414,6 +417,7 @@ function lookupAndElaborateNamespaceMemberAccess(
     context: SubstitutionContext;
     elaboratedVariables: Map<Collect.Id, Semantic.Id>;
     gonnaCallFunctionWithParameters?: Semantic.Id[];
+    isMonomorphized: boolean;
     scope: Collect.Id;
   }
 ) {
@@ -437,6 +441,7 @@ function lookupAndElaborateNamespaceMemberAccess(
         expr: args.expr,
         name: args.name,
         gonnaCallFunctionWithParameters: args.gonnaCallFunctionWithParameters,
+        isMonomorphized: args.isMonomorphized,
         scope: args.scope,
       });
       if (s) {
@@ -460,6 +465,7 @@ function lookupAndElaborateStaticStructAccess(
     context: SubstitutionContext;
     elaboratedVariables: Map<Collect.Id, Semantic.Id>;
     gonnaCallFunctionWithParameters?: Semantic.Id[];
+    isMonomorphized: boolean;
     scope: Collect.Id;
   }
 ) {
@@ -484,6 +490,7 @@ function lookupAndElaborateStaticStructAccess(
       elaboratedVariables: args.elaboratedVariables,
       expr: args.expr,
       name: args.name,
+      isMonomorphized: args.isMonomorphized,
       scope: args.scope,
       gonnaCallFunctionWithParameters: args.gonnaCallFunctionWithParameters,
     });
@@ -515,23 +522,26 @@ export function elaborateExpr(
     currentScope: Collect.Id;
     elaboratedVariables: Map<Collect.Id, Semantic.Id>;
     gonnaCallFunctionWithParameterValues?: Semantic.Id[];
+    isMonomorphized: boolean;
   }
 ): [Semantic.Expression, Semantic.Id] {
   const expr = sr.cc.nodes.get(exprId);
 
   switch (expr.variant) {
     case Collect.ENode.BinaryExpr: {
-      const [left, leftId] = elaborateExpr(sr, expr.left, {
+      let [left, leftId] = elaborateExpr(sr, expr.left, {
         context: args.context,
         elaboratedVariables: args.elaboratedVariables,
         currentScope: args.currentScope,
         scope: args.scope,
+        isMonomorphized: args.isMonomorphized,
       });
-      const [right, rightId] = elaborateExpr(sr, expr.right, {
+      let [right, rightId] = elaborateExpr(sr, expr.right, {
         context: args.context,
         elaboratedVariables: args.elaboratedVariables,
         currentScope: args.currentScope,
         scope: args.scope,
+        isMonomorphized: args.isMonomorphized,
       });
 
       if (
@@ -552,12 +562,31 @@ export function elaborateExpr(
         });
       }
 
+      let resultType = undefined as Semantic.Id | undefined;
+      if (
+        expr.operation === EBinaryOperation.BoolAnd ||
+        expr.operation === EBinaryOperation.BoolOr
+      ) {
+        const boolType = makePrimitiveAvailable(sr, EPrimitive.bool);
+        leftId = Conversion.MakeImplicitConversion(sr, leftId, boolType, left.sourceloc);
+        rightId = Conversion.MakeImplicitConversion(sr, rightId, boolType, right.sourceloc);
+        resultType = boolType;
+      } else {
+        resultType = Conversion.makeBinaryResultType(
+          sr,
+          leftId,
+          rightId,
+          expr.operation,
+          expr.sourceloc
+        );
+      }
+
       return Semantic.addNode(sr, {
         variant: Semantic.ENode.BinaryExpr,
         left: leftId,
         operation: expr.operation,
         right: rightId,
-        type: Conversion.makeBinaryResultType(sr, leftId, rightId, expr.operation, expr.sourceloc),
+        type: resultType,
         sourceloc: expr.sourceloc,
       });
     }
@@ -571,6 +600,7 @@ export function elaborateExpr(
         currentScope: args.currentScope,
         elaboratedVariables: args.elaboratedVariables,
         scope: args.scope,
+        isMonomorphized: args.isMonomorphized,
       });
 
       const type = getExprType(sr, eId);
@@ -606,6 +636,7 @@ export function elaborateExpr(
         elaboratedVariables: args.elaboratedVariables,
         currentScope: args.currentScope,
         context: args.context,
+        isMonomorphized: args.isMonomorphized,
       });
     }
 
@@ -621,6 +652,7 @@ export function elaborateExpr(
             currentScope: args.currentScope,
             elaboratedVariables: args.elaboratedVariables,
             context: args.context,
+            isMonomorphized: args.isMonomorphized,
           })[1]
       );
 
@@ -662,15 +694,17 @@ export function elaborateExpr(
               collectedExpr.sourceloc
             );
           }
-          const second = sr.nodes.get(callingArgs[1]);
-          if (
-            second.variant !== Semantic.ENode.LiteralExpr ||
-            second.literal.type !== EPrimitive.str
-          ) {
-            throw new CompilerError(
-              "The static_assert function requires the second parameter to be a string, or omitted",
-              collectedExpr.sourceloc
-            );
+          let second = undefined as Semantic.LiteralExpr | undefined;
+          if (callingArgs.length > 1) {
+            const s = sr.nodes.get(callingArgs[1]);
+            if (s.variant !== Semantic.ENode.LiteralExpr || s.literal.type !== EPrimitive.str) {
+              throw new CompilerError(
+                "The static_assert function requires the second parameter to be a string, or omitted",
+                collectedExpr.sourceloc
+              );
+            } else {
+              second = s;
+            }
           }
           const value = EvalCTFEBoolean(sr, callingArgs[0]);
           if (value) {
@@ -684,7 +718,7 @@ export function elaborateExpr(
               },
             });
           } else {
-            const stringValue = second.literal.value;
+            const stringValue = second?.literal.value;
             throw new CompilerError(
               `static_assert evaluated to false${stringValue ? ": " + stringValue : ""}`,
               expr.sourceloc
@@ -699,6 +733,7 @@ export function elaborateExpr(
         currentScope: args.currentScope,
         scope: args.scope,
         gonnaCallFunctionWithParameterValues: callingArgs,
+        isMonomorphized: args.isMonomorphized,
       });
       const calledExprType = asType(sr.nodes.get(calledExpr.type));
 
@@ -975,6 +1010,7 @@ export function elaborateExpr(
             currentScope: args.currentScope,
             parentScope: symbol.parentScope,
           }),
+          isMonomorphized: args.isMonomorphized,
         });
         assert(elaboratedSymbolId);
         const elaboratedSymbol = sr.nodes.get(elaboratedSymbolId);
@@ -1022,6 +1058,7 @@ export function elaborateExpr(
         currentScope: args.currentScope,
         elaboratedVariables: args.elaboratedVariables,
         scope: args.scope,
+        isMonomorphized: args.isMonomorphized,
       });
       return Semantic.addNode(sr, {
         variant: Semantic.ENode.PointerAddressOfExpr,
@@ -1041,6 +1078,7 @@ export function elaborateExpr(
         elaboratedVariables: args.elaboratedVariables,
         currentScope: args.currentScope,
         context: args.context,
+        isMonomorphized: args.isMonomorphized,
       });
       const exprType = asType(sr.nodes.get(_expr.type));
       if (exprType.variant !== Semantic.ENode.PointerDatatype) {
@@ -1078,6 +1116,7 @@ export function elaborateExpr(
           elaboratedVariables: args.elaboratedVariables,
           currentScope: args.currentScope,
           scope: args.scope,
+          isMonomorphized: args.isMonomorphized,
         })[1],
         sourceloc: expr.sourceloc,
       });
@@ -1093,6 +1132,7 @@ export function elaborateExpr(
         scope: args.scope,
         currentScope: args.currentScope,
         context: args.context,
+        isMonomorphized: args.isMonomorphized,
       });
       return Semantic.addNode(sr, {
         variant: Semantic.ENode.PostIncrExpr,
@@ -1113,6 +1153,7 @@ export function elaborateExpr(
         elaboratedVariables: args.elaboratedVariables,
         currentScope: args.currentScope,
         scope: args.scope,
+        isMonomorphized: args.isMonomorphized,
       });
       return Semantic.addNode(sr, {
         variant: Semantic.ENode.PreIncrExpr,
@@ -1133,6 +1174,7 @@ export function elaborateExpr(
         elaboratedVariables: args.elaboratedVariables,
         currentScope: args.currentScope,
         scope: args.scope,
+        isMonomorphized: args.isMonomorphized,
       });
       let objectType = asType(sr.nodes.get(object.type));
 
@@ -1149,6 +1191,7 @@ export function elaborateExpr(
             currentScope: args.currentScope,
             elaboratedVariables: args.elaboratedVariables,
             scope: args.scope,
+            isMonomorphized: args.isMonomorphized,
             name: expr.memberName,
             gonnaCallFunctionWithParameters: args.gonnaCallFunctionWithParameterValues,
           });
@@ -1159,6 +1202,7 @@ export function elaborateExpr(
             currentScope: args.currentScope,
             elaboratedVariables: args.elaboratedVariables,
             scope: args.scope,
+            isMonomorphized: args.isMonomorphized,
             name: expr.memberName,
             gonnaCallFunctionWithParameters: args.gonnaCallFunctionWithParameterValues,
           });
@@ -1246,6 +1290,7 @@ export function elaborateExpr(
           currentScope: args.currentScope,
           elaboratedVariables: args.elaboratedVariables,
           parentStructOrNS: object.type,
+          isMonomorphized: args.isMonomorphized,
         });
         assert(elaboratedMethodId);
         const elaboratedMethod = sr.nodes.get(elaboratedMethodId);
@@ -1291,12 +1336,14 @@ export function elaborateExpr(
         elaboratedVariables: args.elaboratedVariables,
         scope: args.scope,
         currentScope: args.currentScope,
+        isMonomorphized: args.isMonomorphized,
       });
       const [target, targetId] = elaborateExpr(sr, expr.expr, {
         context: args.context,
         elaboratedVariables: args.elaboratedVariables,
         currentScope: args.currentScope,
         scope: args.scope,
+        isMonomorphized: args.isMonomorphized,
       });
       return Semantic.addNode(sr, {
         variant: Semantic.ENode.ExprAssignmentExpr,
@@ -1318,6 +1365,7 @@ export function elaborateExpr(
           elaboratedVariables: args.elaboratedVariables,
           scope: args.scope,
           currentScope: args.currentScope,
+          isMonomorphized: args.isMonomorphized,
         })
       );
       let type = null as Semantic.Id | null;
@@ -1368,12 +1416,14 @@ export function elaborateExpr(
         elaboratedVariables: args.elaboratedVariables,
         scope: args.scope,
         currentScope: args.currentScope,
+        isMonomorphized: args.isMonomorphized,
       });
       const [index, indexId] = elaborateExpr(sr, expr.indices[0], {
         context: args.context,
         elaboratedVariables: args.elaboratedVariables,
         scope: args.scope,
         currentScope: args.currentScope,
+        isMonomorphized: args.isMonomorphized,
       });
 
       const valueType = sr.nodes.get(value.type);
@@ -1429,6 +1479,7 @@ export function elaborateExpr(
           elaboratedVariables: args.elaboratedVariables,
           currentScope: args.currentScope,
           scope: args.scope,
+          isMonomorphized: args.isMonomorphized,
         });
 
         const variableId = struct.members.find((mmId) => {
@@ -1508,6 +1559,7 @@ export function elaborateStatement(
     context: SubstitutionContext;
     elaboratedVariables: Map<Collect.Id, Semantic.Id>;
     currentScope: Collect.Id;
+    isMonomorphized: boolean;
   }
 ): Semantic.Id {
   const s = sr.cc.nodes.get(statementId);
@@ -1539,6 +1591,7 @@ export function elaborateStatement(
         expectedReturnType: args.expectedReturnType,
         currentScope: args.currentScope,
         elaboratedVariables: args.elaboratedVariables,
+        isMonomorphized: args.isMonomorphized,
         context: args.context,
       });
       return Semantic.addNode(sr, {
@@ -1558,6 +1611,7 @@ export function elaborateStatement(
         elaboratedVariables: args.elaboratedVariables,
         currentScope: args.currentScope,
         scope: s.owningScope,
+        isMonomorphized: args.isMonomorphized,
       });
       if (s.comptime) {
         const conditionValue = EvalCTFEBoolean(sr, conditionId);
@@ -1572,6 +1626,7 @@ export function elaborateStatement(
             expectedReturnType: args.expectedReturnType,
             currentScope: args.currentScope,
             elaboratedVariables: args.elaboratedVariables,
+            isMonomorphized: args.isMonomorphized,
             context: args.context,
           });
           return Semantic.addNode(sr, {
@@ -1587,6 +1642,7 @@ export function elaborateStatement(
             elaboratedVariables: args.elaboratedVariables,
             currentScope: args.currentScope,
             scope: s.owningScope,
+            isMonomorphized: args.isMonomorphized,
           });
           if (EvalCTFEBoolean(sr, conditionId)) {
             const [thenScope, thenScopeId] = Semantic.addNode(sr, {
@@ -1600,6 +1656,7 @@ export function elaborateStatement(
               currentScope: args.currentScope,
               elaboratedVariables: args.elaboratedVariables,
               context: args.context,
+              isMonomorphized: args.isMonomorphized,
             });
             return Semantic.addNode(sr, {
               variant: Semantic.ENode.BlockScopeStatement,
@@ -1620,6 +1677,7 @@ export function elaborateStatement(
             expectedReturnType: args.expectedReturnType,
             currentScope: args.currentScope,
             elaboratedVariables: args.elaboratedVariables,
+            isMonomorphized: args.isMonomorphized,
             context: args.context,
           });
           return Semantic.addNode(sr, {
@@ -1649,6 +1707,7 @@ export function elaborateStatement(
           expectedReturnType: args.expectedReturnType,
           currentScope: args.currentScope,
           elaboratedVariables: args.elaboratedVariables,
+          isMonomorphized: args.isMonomorphized,
           context: args.context,
         });
         const elseIfs = s.elseif.map((e) => {
@@ -1660,6 +1719,7 @@ export function elaborateStatement(
             targetScopeId: innerThenScopeId,
             sourceScopeId: e.thenBlock,
             currentScope: args.currentScope,
+            isMonomorphized: args.isMonomorphized,
             expectedReturnType: args.expectedReturnType,
             elaboratedVariables: args.elaboratedVariables,
             context: args.context,
@@ -1670,6 +1730,7 @@ export function elaborateStatement(
               elaboratedVariables: args.elaboratedVariables,
               scope: s.owningScope,
               currentScope: args.currentScope,
+              isMonomorphized: args.isMonomorphized,
             })[1],
             then: innerThenScopeId,
           };
@@ -1689,6 +1750,7 @@ export function elaborateStatement(
             sourceScopeId: s.elseBlock,
             expectedReturnType: args.expectedReturnType,
             currentScope: args.currentScope,
+            isMonomorphized: args.isMonomorphized,
             elaboratedVariables: args.elaboratedVariables,
             context: args.context,
           });
@@ -1714,6 +1776,7 @@ export function elaborateStatement(
         elaboratedVariables: args.elaboratedVariables,
         scope: s.owningScope,
         currentScope: args.currentScope,
+        isMonomorphized: args.isMonomorphized,
       });
       const [thenScope, thenScopeId] = Semantic.addNode(sr, {
         variant: Semantic.ENode.BlockScope,
@@ -1723,6 +1786,7 @@ export function elaborateStatement(
         targetScopeId: thenScopeId,
         sourceScopeId: s.block,
         elaboratedVariables: args.elaboratedVariables,
+        isMonomorphized: args.isMonomorphized,
         currentScope: args.currentScope,
         expectedReturnType: args.expectedReturnType,
         context: args.context,
@@ -1750,6 +1814,7 @@ export function elaborateStatement(
               elaboratedVariables: args.elaboratedVariables,
               scope: s.owningScope,
               currentScope: args.currentScope,
+              isMonomorphized: args.isMonomorphized,
             })[1],
             args.expectedReturnType,
             s.sourceloc
@@ -1775,6 +1840,7 @@ export function elaborateStatement(
           context: args.context,
           elaboratedVariables: args.elaboratedVariables,
           scope: s.owningScope,
+          isMonomorphized: args.isMonomorphized,
           currentScope: args.currentScope,
         })[1];
       const value = valueId && asExpression(sr.nodes.get(valueId));
@@ -1838,6 +1904,7 @@ export function elaborateStatement(
         expr: elaborateExpr(sr, s.expr, {
           scope: s.owningScope,
           context: args.context,
+          isMonomorphized: args.isMonomorphized,
           elaboratedVariables: args.elaboratedVariables,
           currentScope: args.currentScope,
         })[1],
@@ -1853,6 +1920,7 @@ export function elaborateStatement(
         const [value, valueId] = elaborateExpr(sr, s.value, {
           context: args.context,
           elaboratedVariables: args.elaboratedVariables,
+          isMonomorphized: args.isMonomorphized,
           scope: s.owningScope,
           currentScope: args.currentScope,
         });
@@ -1894,6 +1962,7 @@ export function elaborateStatement(
             sourceScopeId: s.body,
             expectedReturnType: args.expectedReturnType,
             currentScope: args.currentScope,
+            isMonomorphized: args.isMonomorphized,
             elaboratedVariables: args.elaboratedVariables,
             context: args.context,
           });
@@ -1932,6 +2001,7 @@ function elaborateVariableSymbolInScope(
   args: {
     currentScope: Collect.Id;
     elaboratedVariables: Map<Collect.Id, Semantic.Id>;
+    isMonomorphized: boolean;
     context: SubstitutionContext;
   }
 ) {
@@ -2005,6 +2075,7 @@ export function elaborateBlockScope(
     currentScope: Collect.Id;
     expectedReturnType: Semantic.Id;
     elaboratedVariables: Map<Collect.Id, Semantic.Id>;
+    isMonomorphized: boolean;
     context: SubstitutionContext;
   }
 ) {
@@ -2017,6 +2088,7 @@ export function elaborateBlockScope(
     elaborateVariableSymbolInScope(sr, sId, {
       elaboratedVariables: newElaboratedVariables,
       currentScope: args.currentScope,
+      isMonomorphized: args.isMonomorphized,
       context: args.context,
     });
   }
@@ -2027,6 +2099,7 @@ export function elaborateBlockScope(
       elaboratedVariables: newElaboratedVariables,
       currentScope: args.currentScope,
       context: args.context,
+      isMonomorphized: args.isMonomorphized,
     });
     const blockScope = sr.nodes.get(args.targetScopeId);
     assert(blockScope.variant === Semantic.ENode.BlockScope);
@@ -2044,6 +2117,7 @@ export function elaborateFunctionSymbol(
     parentStructOrNS: Semantic.Id | null;
     paramPackTypes: Semantic.Id[];
     elaboratedVariables: Map<Collect.Id, Semantic.Id>;
+    isMonomorphized: boolean;
     context: SubstitutionContext;
   }
 ): Semantic.Id {
@@ -2184,6 +2258,7 @@ export function elaborateFunctionSymbol(
     methodType: func.methodType,
     parentStructOrNS: args.parentStructOrNS,
     noemit: func.noemit,
+    isMonomorphized: parameterPack || func.generics.length > 0 || args.isMonomorphized,
     extern: func.extern,
     parameterNames: parameterNames,
     name: overloadGroup.name,
@@ -2248,6 +2323,7 @@ export function elaborateFunctionSymbol(
             elaboratedVariables: newElaboratedVariables,
             currentScope: args.currentScope,
             context: substitutionContext,
+            isMonomorphized: args.isMonomorphized,
           });
         }
       }
@@ -2258,6 +2334,7 @@ export function elaborateFunctionSymbol(
         sourceScopeId: functionScope.blockScope,
         expectedReturnType: expectedReturnType,
         elaboratedVariables: newElaboratedVariables,
+        isMonomorphized: symbol.isMonomorphized,
         currentScope: args.currentScope,
         context: substitutionContext,
       });
@@ -2391,6 +2468,7 @@ export function elaborateGlobalSymbol(
               context: makeSubstitutionContext(),
               currentScope: args.currentScope,
             }),
+            isMonomorphized: false,
             usageSite: func.sourceloc,
             currentScope: args.currentScope,
             elaboratedVariables: new Map(),
@@ -2476,6 +2554,7 @@ export function elaborateGlobalSymbol(
           scope: args.currentScope,
           elaboratedVariables: new Map(),
           context: makeSubstitutionContext(),
+          isMonomorphized: false,
           currentScope: args.currentScope,
         });
       }
@@ -2596,41 +2675,43 @@ export function SemanticallyAnalyze(
     });
   }
 
-  const mainGlobalScope = sr.elaboratedNamespaceSymbols.find((s) => {
-    const symbol = sr.nodes.get(s.resultSymbol) as Semantic.NamespaceDatatypeSymbol;
-    return symbol.name === getModuleGlobalNamespaceName(moduleName, moduleVersion);
-  });
-  console.log("TODO: Narrow this down so it's not just the name, because it might be nested");
-  assert(mainGlobalScope);
-  const mainNamespace = sr.nodes.get(mainGlobalScope.resultSymbol);
-  assert(mainNamespace.variant === Semantic.ENode.NamespaceDatatype);
-  const mainFunction = sr.elaboratedFuncdefSymbols.find((s) => {
-    const symbol = sr.nodes.get(s.resultSymbol) as Semantic.FunctionSymbol;
-    return symbol.name === "main" && symbol.parentStructOrNS === mainGlobalScope.resultSymbol;
-  });
-  if (!isLibrary) {
-    if (!mainFunction) {
-      throw new CompilerError("No main function is defined in global scope", null);
-    }
+  if (moduleName !== HAZE_STDLIB_NAME) {
+    const mainGlobalScope = sr.elaboratedNamespaceSymbols.find((s) => {
+      const symbol = sr.nodes.get(s.resultSymbol) as Semantic.NamespaceDatatypeSymbol;
+      return symbol.name === getModuleGlobalNamespaceName(moduleName, moduleVersion);
+    });
+    console.log("TODO: Narrow this down so it's not just the name, because it might be nested");
+    assert(mainGlobalScope);
+    const mainNamespace = sr.nodes.get(mainGlobalScope.resultSymbol);
+    assert(mainNamespace.variant === Semantic.ENode.NamespaceDatatype);
+    const mainFunction = sr.elaboratedFuncdefSymbols.find((s) => {
+      const symbol = sr.nodes.get(s.resultSymbol) as Semantic.FunctionSymbol;
+      return symbol.name === "main" && symbol.parentStructOrNS === mainGlobalScope.resultSymbol;
+    });
+    if (!isLibrary) {
+      if (!mainFunction) {
+        throw new CompilerError("No main function is defined in global scope", null);
+      }
 
-    const mainFunctionSymbol = sr.nodes.get(mainFunction.resultSymbol);
-    assert(mainFunctionSymbol.variant === Semantic.ENode.FunctionSymbol);
-    const mainFunctionType = sr.nodes.get(mainFunctionSymbol.type);
-    assert(mainFunctionType.variant === Semantic.ENode.FunctionDatatype);
-    const returnType = sr.nodes.get(mainFunctionType.returnType);
-    assert(isType(returnType));
-    if (
-      returnType.variant !== Semantic.ENode.PrimitiveDatatype ||
-      returnType.primitive !== EPrimitive.int
-    ) {
-      throw new CompilerError("Main function must return int", mainFunctionSymbol.sourceloc);
-    }
-  } else {
-    if (mainFunction) {
-      throw new CompilerError(
-        "main function is defined, but not allowed because module is built as library",
-        null
-      );
+      const mainFunctionSymbol = sr.nodes.get(mainFunction.resultSymbol);
+      assert(mainFunctionSymbol.variant === Semantic.ENode.FunctionSymbol);
+      const mainFunctionType = sr.nodes.get(mainFunctionSymbol.type);
+      assert(mainFunctionType.variant === Semantic.ENode.FunctionDatatype);
+      const returnType = sr.nodes.get(mainFunctionType.returnType);
+      assert(isType(returnType));
+      if (
+        returnType.variant !== Semantic.ENode.PrimitiveDatatype ||
+        returnType.primitive !== EPrimitive.int
+      ) {
+        throw new CompilerError("Main function must return int", mainFunctionSymbol.sourceloc);
+      }
+    } else {
+      if (mainFunction) {
+        throw new CompilerError(
+          "main function is defined, but not allowed because module is built as library",
+          null
+        );
+      }
     }
   }
 

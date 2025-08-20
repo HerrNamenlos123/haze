@@ -393,6 +393,22 @@ export namespace Conversion {
       from: EPrimitive.f32,
       to: [EPrimitive.f64],
     },
+    {
+      from: EPrimitive.f64,
+      to: [EPrimitive.real],
+    },
+    {
+      from: EPrimitive.real,
+      to: [EPrimitive.f64],
+    },
+    {
+      from: EPrimitive.int,
+      to: [EPrimitive.i64],
+    },
+    {
+      from: EPrimitive.i64,
+      to: [EPrimitive.int],
+    },
   ];
 
   export function IsImplicitConversionAvailable(
@@ -439,23 +455,23 @@ export namespace Conversion {
 
   export function MakeImplicitConversion(
     sr: SemanticResult,
-    fromId: Semantic.Id,
-    to: Semantic.Id,
+    fromExprId: Semantic.Id,
+    toTypeId: Semantic.Id,
     sourceloc: SourceLoc
   ) {
-    const from = sr.nodes.get(fromId);
+    const from = sr.nodes.get(fromExprId);
     assert(isExpression(from));
 
-    if (!IsImplicitConversionAvailable(sr, from.type, to)) {
+    if (!IsImplicitConversionAvailable(sr, from.type, toTypeId)) {
       throw new CompilerError(
         `No implicit lossless Conversion from '${serializeDatatype(
           sr,
           from.type
-        )}' to '${serializeDatatype(sr, to)}' available`,
+        )}' to '${serializeDatatype(sr, toTypeId)}' available`,
         sourceloc
       );
     }
-    return MakeExplicitConversion(sr, fromId, to, sourceloc);
+    return MakeExplicitConversion(sr, fromExprId, toTypeId, sourceloc);
   }
 
   export function MakeExplicitConversion(
@@ -594,10 +610,6 @@ export namespace Conversion {
     const leftType = getExprType(sr, a);
     const rightType = getExprType(sr, b);
 
-    if (leftType === rightType) {
-      return leftType;
-    }
-
     switch (operation) {
       case EBinaryOperation.Equal:
       case EBinaryOperation.Unequal:
@@ -606,6 +618,20 @@ export namespace Conversion {
       case EBinaryOperation.LessThan:
       case EBinaryOperation.GreaterThan:
         return makeComparisonResultType(sr, a, b, sourceloc);
+
+      case EBinaryOperation.Multiply:
+      case EBinaryOperation.Divide:
+      case EBinaryOperation.Modulo:
+      case EBinaryOperation.Add:
+      case EBinaryOperation.Subtract:
+        if (leftType === rightType) {
+          return leftType;
+        }
+        break;
+
+      case EBinaryOperation.BoolAnd:
+      case EBinaryOperation.BoolOr:
+        assert(false, "Should be handled outside");
     }
 
     throw new CompilerError(

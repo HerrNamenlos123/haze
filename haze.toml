@@ -6,7 +6,7 @@ license = "MIT"
 authors = []
 src = "test"
 type = "exe"
-std = "none"
+# std = "none"
 
 
 # [build]
@@ -23,8 +23,9 @@ test = "haze test"
 # warnings_as_errors = false
 
 [dependencies]
-# glfw = { path = "./glfw" }
-# math = { path = "./math" }
+glfw = { path = "./glfw" }
+math = { path = "./math" }
+gl = { path = "./gl" }
 # glfw = "glfw"
 # SDL = "SDL"
 

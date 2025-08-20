@@ -178,8 +178,16 @@ export function mangleNestedName(sr: SemanticResult, symbolId: Semantic.Id) {
     } else {
       for (const p of ftype.parameters) {
         const pp = sr.nodes.get(p);
-        if (pp.variant === Semantic.ENode.ParameterPackDatatypeSymbol) continue;
-        functionPart += mangleDatatype(sr, p);
+        if (pp.variant === Semantic.ENode.ParameterPackDatatypeSymbol) {
+          for (const ppp of pp.parameters) {
+            const pv = sr.nodes.get(ppp);
+            assert(pv.variant === Semantic.ENode.VariableSymbol);
+            assert(pv.type);
+            functionPart += mangleDatatype(sr, pv.type);
+          }
+        } else {
+          functionPart += mangleDatatype(sr, p);
+        }
       }
     }
   }

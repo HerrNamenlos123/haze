@@ -305,7 +305,11 @@ class CodeGenerator {
     const ftype = this.lr.typeNodes.get(symbol.type);
     assert(ftype.variant === Lowered.ENode.FunctionDatatype);
 
-    let signature =
+    let signature = "";
+    if (symbol.wasMonomorphized) {
+      signature += "static ";
+    }
+    signature +=
       this.mangle(this.lr.typeNodes.get(ftype.returnType)) + " " + this.mangle(symbol) + "(";
     signature += ftype.parameters
       .map((p, i) => `${this.mangle(this.lr.typeNodes.get(p))} ${symbol.parameterNames[i]}`)
@@ -750,8 +754,6 @@ class CodeGenerator {
           outWriter.write(
             `(${this.primitiveToC(expr.literal.type)})(${expr.literal.value ? "1" : "0"})`
           );
-        } else if (expr.literal.type === EPrimitive.none) {
-          assert(false, "Cannot codegen a none literal");
         } else {
           outWriter.write(
             `(${this.primitiveToC(expr.literal.type)})(${expr.literal.value.toString()})`

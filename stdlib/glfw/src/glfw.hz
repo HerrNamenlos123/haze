@@ -17,6 +17,7 @@ extern "C" glfwInitHint(hint: i32, value: i32);
 extern "C" glfwWindowHint(hint: i32, value: i32);
 extern "C" glfwGetTime(): f64;
 extern "C" glfwMakeContextCurrent(w: GLFWwindow*);
+extern "C" glfwGetProcAddress(procname: str): () => none;
 
 extern "C" strcmp(str1: str, str2: str): i32;
 extern "C" getenv(name: str): str;
@@ -41,7 +42,13 @@ export struct Window {
     }
 
     swapBuffers() {
+        glfwMakeContextCurrent(this.handle);
         glfwSwapBuffers(this.handle);
+    }
+
+    swapInterval(interval: int) {
+        glfwMakeContextCurrent(this.handle);
+        glfwSwapInterval(interval as i32);
     }
 }
 
@@ -67,18 +74,14 @@ export createWindow(width: int, height: int, title: str): Window {
     return Window { handle: handle };
 }
 
-export swapInterval(interval: int) {
-    glfwSwapInterval(interval as i32);
-}
-
-export makeContextCurrent(window: Window) {
-    glfwMakeContextCurrent(window.handle);
-}
-
 export pollEvents() {
     glfwPollEvents();
 }
 
 export getTime(): real {
     return glfwGetTime() as real;
+}
+
+export getProcAddress(): (name: str) => none* {
+    return glfwGetProcAddress as (name: str) => none*;
 }

@@ -1,4 +1,13 @@
 
-export sqrt(): real {
-    return 187.0;
+namespace C {
+    extern "C" sin(v: f64): f64;
+    extern "C" cos(v: f64): f64;
+}
+
+export sin(v: real): real {
+    return C.sin(v);
+}
+
+export cos(v: real): real {
+    return C.cos(v);
 }

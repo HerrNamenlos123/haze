@@ -1,0 +1,16 @@
+
+export struct Color {
+    r: real;
+    g: real;
+    b: real;
+    a: real;
+
+    constructor(r: real, g: real, b: real, a: real): Color {
+        return Color {
+            r: r,
+            g: g,
+            b: b,
+            a: a,
+        };
+    }
+}

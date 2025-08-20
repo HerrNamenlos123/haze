@@ -1,6 +1,6 @@
 import { EExternLanguage } from "../shared/AST";
 import { assert } from "../shared/Errors";
-import { Collect, type CollectionContext } from "./SymbolCollection";
+import { Collect, funcSymHasParameterPack, type CollectionContext } from "./SymbolCollection";
 
 function getNamespaces(
   cc: CollectionContext,
@@ -22,6 +22,10 @@ function getNamespaces(
     }
 
     case Collect.ENode.FileScope: {
+      return current;
+    }
+
+    case Collect.ENode.ModuleScope: {
       return current;
     }
 
@@ -60,6 +64,16 @@ function printType(cc: CollectionContext, typeId: Collect.Id): string {
       return `${printType(cc, type.referee)}*`;
     }
 
+    case Collect.ENode.ParameterPack: {
+      return "...";
+    }
+
+    case Collect.ENode.FunctionDatatype: {
+      return `(${type.parameters.map((p, i) => `param${i}: ${printType(cc, p)}`).join(", ")}${
+        type.vararg ? ", ..." : ""
+      }) => ${printType(cc, type.returnType)}`;
+    }
+
     default:
       assert(false, type.variant.toString());
   }
@@ -76,7 +90,7 @@ export function ExportCollectedSymbols(cc: CollectionContext) {
         for (const ns of namespaces.slice(0, -1)) {
           file += "namespace " + ns + " {\n";
         }
-        if (symbol.generics.length !== 0) {
+        if (symbol.generics.length !== 0 || funcSymHasParameterPack(cc, symbolId)) {
           // TODO: If the function is generic and has "export", then the "export" keyword should not appear
           // in the generated import code.
           file += symbol.originalSourcecode;

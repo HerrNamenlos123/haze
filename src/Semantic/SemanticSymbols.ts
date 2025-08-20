@@ -273,6 +273,7 @@ export namespace Semantic {
     parameterNames: string[];
     parameterPack: boolean;
     extern: EExternLanguage;
+    isMonomorphized: boolean;
     // collectedScope?: number;
     scope: Semantic.Id | null;
     export: boolean;
@@ -308,6 +309,7 @@ export namespace Semantic {
     parentStructOrNS: Id | null;
     sourceloc: SourceLoc;
     concrete: boolean;
+    isMonomorphized: boolean;
     collectedSymbol: Collect.Id;
     originalCollectedSymbol: Collect.Id;
   };
