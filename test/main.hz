@@ -92,7 +92,7 @@ main(): int {
 
     const position = Vec3(5.0, 2.0, 4.0);
 
-    if not glfw.init() {
+    if !glfw.init() {
         return 0;
     }
 
@@ -108,7 +108,7 @@ main(): int {
     let oldTime = glfw.getTime();
 
     let fps = 0.0;
-    while not window.shouldClose() {
+    while !window.shouldClose() {
         glfw.pollEvents();
 
         let now = glfw.getTime();

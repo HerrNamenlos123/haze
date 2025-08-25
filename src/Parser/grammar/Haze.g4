@@ -138,7 +138,7 @@ expr
     // Part 2: Right to left
     | <assoc=right> op=('++' | '--') expr                                           #PreIncrExpr
     | <assoc=right> op=('+' | '-') expr                                             #UnaryExpr
-    | <assoc=right> op=('not' | '!') expr /* and bitwise not */                     #UnaryExpr
+    | <assoc=right> op='!' expr /* and bitwise not */                             #UnaryExpr
     | <assoc=right> expr 'as' datatype                                              #ExplicitCastExpr
     | <assoc=right> '*' expr                                                        #PointerDereference
     | <assoc=right> '&' expr                                                        #PointerAddressOf
