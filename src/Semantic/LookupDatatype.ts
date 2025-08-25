@@ -529,7 +529,6 @@ export function lookupAndElaborateDatatype(
         })[1];
       }
 
-      console.log("Named dt ", type.name, sr.cc.nodes.get(type.innerNested)?.name);
       let foundResult = lookupSymbol(sr, type.name, {
         startLookupInScope: args.startLookupInScopeForSymbol,
         sourceloc: type.sourceloc,
