@@ -1550,14 +1550,6 @@ export function elaborateExpr(
         value: Semantic.Id;
       }[] = [];
       for (const m of expr.members) {
-        const [e, eId] = elaborateExpr(sr, m.value, {
-          context: args.context,
-          elaboratedVariables: args.elaboratedVariables,
-          currentScope: args.currentScope,
-          scope: args.scope,
-          isMonomorphized: args.isMonomorphized,
-        });
-
         const variableId = struct.members.find((mmId) => {
           const mm = sr.nodes.get(mmId);
           assert(mm.variant === Semantic.ENode.VariableSymbol);
@@ -1576,6 +1568,15 @@ export function elaborateExpr(
         if (assignedMembers.includes(m.name)) {
           throw new CompilerError(`Cannot assign member ${m.name} twice`, expr.sourceloc);
         }
+
+        const [e, eId] = elaborateExpr(sr, m.value, {
+          context: args.context,
+          elaboratedVariables: args.elaboratedVariables,
+          currentScope: args.currentScope,
+          scope: args.scope,
+          gonnaInstantiateStructWithType: variable.type || undefined,
+          isMonomorphized: args.isMonomorphized,
+        });
 
         if (e.type !== variable.type) {
           assert(variable.type);

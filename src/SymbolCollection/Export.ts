@@ -1,7 +1,13 @@
-import { serializeLiteralValue } from "../Semantic/Serialize";
+import { scaleRadial } from "d3";
+import { serializeDatatype, serializeLiteralValue } from "../Semantic/Serialize";
 import { EExternLanguage } from "../shared/AST";
 import { assert } from "../shared/Errors";
-import { Collect, funcSymHasParameterPack, type CollectionContext } from "./SymbolCollection";
+import {
+  Collect,
+  funcSymHasParameterPack,
+  printCollectedDatatype,
+  type CollectionContext,
+} from "./SymbolCollection";
 
 function getNamespaces(
   cc: CollectionContext,
@@ -85,6 +91,15 @@ export function ExportExpr(cc: CollectionContext, exprId: Collect.Id): string {
   switch (expr.variant) {
     case Collect.ENode.LiteralExpr: {
       return serializeLiteralValue(expr.literal);
+    }
+
+    case Collect.ENode.StructInstantiationExpr: {
+      let str = `${expr.structType ? printCollectedDatatype(cc, expr.structType) : ""} {`;
+      for (const m of expr.members) {
+        str += `${m.name}: ${ExportExpr(cc, m.value)}`;
+      }
+      str += "}";
+      return str;
     }
 
     default:

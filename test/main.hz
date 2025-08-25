@@ -97,7 +97,7 @@ main(): int {
     }
 
     const window = glfw.createWindow({ 
-        title: "Hello World!"
+        title: "Hello World!",
     });
 
     window.swapInterval(0);

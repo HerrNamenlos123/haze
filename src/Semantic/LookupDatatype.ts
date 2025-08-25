@@ -313,6 +313,7 @@ export function instantiateAndElaborateStruct(
               currentScope: definedStructType.structScope,
               elaboratedVariables: new Map(),
               isMonomorphized: struct.isMonomorphized,
+              gonnaInstantiateStructWithType: variable.type,
               scope: definedStructType.structScope,
             })[1],
           });
