@@ -381,6 +381,10 @@ export namespace Collect {
     fullyQualifiedName: string;
     parentScope: Collect.Id;
     generics: Collect.Id[];
+    defaultMemberValues: {
+      name: string;
+      value: Collect.Id;
+    }[];
     name: string;
     export: boolean;
     pub: boolean;
@@ -1177,6 +1181,7 @@ function collect(
         name: item.name,
         fullyQualifiedName: fullyQualifiedName,
         generics: [],
+        defaultMemberValues: [],
         export: item.export,
         extern: item.extern,
         pub: false,
@@ -1209,6 +1214,12 @@ function collect(
       }
 
       for (const m of item.members) {
+        if (m.defaultValue) {
+          struct.defaultMemberValues.push({
+            name: m.name,
+            value: collect(cc, m.defaultValue, { currentParentScope: structScopeId }),
+          });
+        }
         collect(cc, m, {
           currentParentScope: structScopeId,
         });
@@ -1917,11 +1928,11 @@ export function printCollectedDatatype(cc: CollectionContext, typeId: Collect.Id
 }
 
 export function PrettyPrintCollected(cc: CollectionContext) {
-  console.log("C Injections:");
+  console.info("C Injections:");
   // for (const i of cc.cInjections) {
-  //   console.log(" - " + i.code);
+  //   console.info(" - " + i.code);
   // }
-  console.log("\n");
+  console.info("\n");
 
   const printExpr = (exprId: Collect.Id): string => {
     const expr = cc.nodes.get(exprId);
@@ -2012,7 +2023,7 @@ export function PrettyPrintCollected(cc: CollectionContext) {
   const printSymbol = (symbolId: Collect.Id, indent: number) => {
     const symbol = cc.nodes.get(symbolId);
     const print = (str: string, _indent = 0) => {
-      console.log(`[${symbolId}]` + " ".repeat(indent + _indent) + str);
+      console.info(`[${symbolId}]` + " ".repeat(indent + _indent) + str);
     };
 
     switch (symbol.variant) {

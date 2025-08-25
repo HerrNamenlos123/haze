@@ -97,8 +97,6 @@ main(): int {
     }
 
     const window = glfw.createWindow(glfw.WindowConfig { 
-        width: 1080, 
-        height: 720, 
         title: "Hello World!"
     });
 

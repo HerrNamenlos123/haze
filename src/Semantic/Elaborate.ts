@@ -357,7 +357,7 @@ function lookupSymbolInNamespaceOrStructScope(
       sourceloc: args.expr.sourceloc,
     });
   } else if (symbol.variant === Collect.ENode.FunctionOverloadGroup && symbol.name === args.name) {
-    console.log("TODO: Do overload discrimination here");
+    console.info("TODO: Do overload discrimination here");
     const overloadId = [...symbol.overloads][0];
     const funcsym = sr.cc.nodes.get(overloadId);
     assert(funcsym.variant === Collect.ENode.FunctionSymbol);
@@ -402,7 +402,7 @@ function lookupSymbolInNamespaceOrStructScope(
       sourceloc: args.expr.sourceloc,
     });
   } else {
-    console.log("Warning: Item skipped in namespace access");
+    console.info("Warning: Item skipped in namespace access");
     return undefined;
   }
 }
@@ -976,7 +976,7 @@ export function elaborateExpr(
           sourceloc: expr.sourceloc,
         });
       } else if (symbol.variant === Collect.ENode.FunctionOverloadGroup) {
-        console.log("TODO: Implement function overload resolution here");
+        console.info("TODO: Implement function overload resolution here");
         const chosenOverloadId = [...symbol.overloads][0];
         const chosenOverload = sr.cc.nodes.get(chosenOverloadId);
         assert(chosenOverload.variant === Collect.ENode.FunctionSymbol);
@@ -1250,7 +1250,7 @@ export function elaborateExpr(
       });
 
       if (overloadGroupId) {
-        console.log("TODO: Fix overload resolution here ");
+        console.info("TODO: Fix overload resolution here ");
         const overloadGroup = sr.cc.nodes.get(overloadGroupId);
         assert(overloadGroup.variant === Collect.ENode.FunctionOverloadGroup);
         const collectedMethodId = [...overloadGroup.overloads][0];
@@ -1535,9 +1535,21 @@ export function elaborateExpr(
         );
       }
 
+      for (const m of remainingMembers) {
+        const defaultValue = struct.memberDefaultValues.find((v) => v.memberName === m);
+        if (defaultValue) {
+          remainingMembers = remainingMembers.filter((mm) => mm !== m);
+          assign.push({
+            name: m,
+            value: defaultValue.value,
+          });
+          assignedMembers.push(m);
+        }
+      }
+
       if (remainingMembers.length > 0) {
         throw new CompilerError(
-          `Members ${remainingMembers.join(", ")} were not assigned`,
+          `Members ${remainingMembers.join(", ")} were not assigned and no default value is known`,
           expr.sourceloc
         );
       }
@@ -2688,7 +2700,7 @@ export function SemanticallyAnalyze(
       const symbol = sr.nodes.get(s.resultSymbol) as Semantic.NamespaceDatatypeSymbol;
       return symbol.name === getModuleGlobalNamespaceName(moduleName, moduleVersion);
     });
-    console.log("TODO: Narrow this down so it's not just the name, because it might be nested");
+    console.info("TODO: Narrow this down so it's not just the name, because it might be nested");
     assert(mainGlobalScope);
     const mainNamespace = sr.nodes.get(mainGlobalScope.resultSymbol);
     assert(mainNamespace.variant === Semantic.ENode.NamespaceDatatype);
@@ -2730,7 +2742,7 @@ const gray = "\x1b[90m";
 const reset = "\x1b[0m";
 
 const print = (str: string, indent = 0, color = reset) => {
-  console.log(color + " ".repeat(indent) + str + reset);
+  console.info(color + " ".repeat(indent) + str + reset);
 };
 
 function printSymbol(sr: SemanticResult, symbolId: Semantic.Id, indent: number) {

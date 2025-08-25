@@ -68,7 +68,11 @@ export function serializeLiteralValue(value: LiteralValue) {
   } else if (value.type === EPrimitive.bool) {
     return `${value.value ? "true" : "false"}`;
   } else {
-    return `${primitiveToString(value.type)}(${value.value})`;
+    if (value.type === EPrimitive.int || value.type === EPrimitive.real) {
+      return `${value.value}`;
+    } else {
+      return `${primitiveToString(value.type)}(${value.value})`;
+    }
   }
 }
 

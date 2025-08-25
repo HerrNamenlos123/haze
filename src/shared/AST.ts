@@ -497,6 +497,7 @@ export type ASTStructMemberDefinition = {
   variant: "StructMember";
   name: string;
   type: ASTDatatype;
+  defaultValue: ASTExpr | null;
   sourceloc: SourceLoc;
 };
 

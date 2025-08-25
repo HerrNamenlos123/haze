@@ -105,9 +105,9 @@ genericLiteral
     ;
 
 structContent
-    : ID ':' datatype ';'                                                                   #StructMember
-    | static='static'? ID ('<' ID (',' ID)* '>')? '(' params ')' (':' datatype)? (funcbody | ';')  #StructMethod
-    | structDefinition                                                                      #NestedStructDefinition
+    : ID ':' datatype ('=' expr)? ';'                                                               #StructMember
+    | static='static'? ID ('<' ID (',' ID)* '>')? '(' params ')' (':' datatype)? (funcbody | ';')   #StructMethod
+    | structDefinition                                                                              #NestedStructDefinition
     ;
 
 structDefinition

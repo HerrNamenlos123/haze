@@ -589,6 +589,7 @@ class ASTTransformer extends HazeVisitor<any> {
       variant: "StructMember",
       name: ctx.ID().getText(),
       type: this.visit(ctx.datatype()),
+      defaultValue: ctx.expr() ? this.visit(ctx.expr()!) : null,
       sourceloc: this.loc(ctx),
     };
   };

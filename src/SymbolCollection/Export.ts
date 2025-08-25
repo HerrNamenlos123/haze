@@ -1,3 +1,4 @@
+import { serializeLiteralValue } from "../Semantic/Serialize";
 import { EExternLanguage } from "../shared/AST";
 import { assert } from "../shared/Errors";
 import { Collect, funcSymHasParameterPack, type CollectionContext } from "./SymbolCollection";
@@ -79,6 +80,18 @@ function printType(cc: CollectionContext, typeId: Collect.Id): string {
   }
 }
 
+export function ExportExpr(cc: CollectionContext, exprId: Collect.Id): string {
+  const expr = cc.nodes.get(exprId);
+  switch (expr.variant) {
+    case Collect.ENode.LiteralExpr: {
+      return serializeLiteralValue(expr.literal);
+    }
+
+    default:
+      assert(false, expr.variant.toString());
+  }
+}
+
 export function ExportCollectedSymbols(cc: CollectionContext) {
   let file = "";
 
@@ -140,22 +153,30 @@ export function ExportCollectedSymbols(cc: CollectionContext) {
           file += "struct " + namespaces[namespaces.length - 1] + " {\n";
           const structScope = cc.nodes.get(symbol.structScope);
           assert(structScope.variant === Collect.ENode.StructScope);
-          for (const symbolId of structScope.symbols) {
-            const symbol = cc.nodes.get(symbolId);
-            if (symbol.variant === Collect.ENode.VariableSymbol) {
-              assert(symbol.type);
-              file += `${symbol.name}: ${printType(cc, symbol.type)};\n`;
-            } else if (symbol.variant === Collect.ENode.FunctionOverloadGroup) {
-              for (const overloadId of symbol.overloads) {
+          for (const contentId of structScope.symbols) {
+            const content = cc.nodes.get(contentId);
+            if (content.variant === Collect.ENode.VariableSymbol) {
+              assert(content.type);
+              const defaultValue = symbol.defaultMemberValues.find((v) => v.name === content.name);
+              if (defaultValue) {
+                file += `${content.name}: ${printType(cc, content.type)} = ${ExportExpr(
+                  cc,
+                  defaultValue.value
+                )};\n`;
+              } else {
+                file += `${content.name}: ${printType(cc, content.type)};\n`;
+              }
+            } else if (content.variant === Collect.ENode.FunctionOverloadGroup) {
+              for (const overloadId of content.overloads) {
                 const method = cc.nodes.get(overloadId);
                 assert(method.variant === Collect.ENode.FunctionSymbol);
                 const parameters = method.parameters
                   .map((p, i) => `${p.name}: ${printType(cc, p.type)}`)
                   .join(", ");
-                file += `${symbol.name}(${parameters}): ${printType(cc, method.returnType)};\n`;
+                file += `${content.name}(${parameters}): ${printType(cc, method.returnType)};\n`;
               }
             } else {
-              assert(false, symbol.variant.toString());
+              assert(false, content.variant.toString());
             }
           }
           file += "}\n";

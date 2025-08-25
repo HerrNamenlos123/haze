@@ -24,9 +24,9 @@ import type { SubstitutionContext } from "./Elaborate";
 import { serializeDatatype } from "./Serialize";
 
 export function printSubstitutionContext(sr: SemanticResult, context: SubstitutionContext) {
-  console.log(`Substitutions: (${[...context.substitute.values()].length})`);
+  console.info(`Substitutions: (${[...context.substitute.values()].length})`);
   for (const [fromId, toId] of context.substitute) {
-    console.log(`${printCollectedDatatype(sr.cc, fromId)} -> ${serializeDatatype(sr, toId)}`);
+    console.info(`${printCollectedDatatype(sr.cc, fromId)} -> ${serializeDatatype(sr, toId)}`);
   }
 }
 
@@ -304,6 +304,10 @@ export namespace Semantic {
     generics: Semantic.Id[];
     extern: EExternLanguage;
     members: Semantic.Id[];
+    memberDefaultValues: {
+      memberName: string;
+      value: Semantic.Id;
+    }[];
     methods: Semantic.Id[];
     nestedStructs: Semantic.Id[];
     parentStructOrNS: Id | null;

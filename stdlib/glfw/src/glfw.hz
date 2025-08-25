@@ -104,8 +104,8 @@ export struct Window {
 
 export struct WindowConfig {
     title: str;
-    width: int;
-    height: int;
+    width: int = 1080;
+    height: int = 720;
 }
 
 export init(): bool {

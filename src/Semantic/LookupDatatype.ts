@@ -6,6 +6,7 @@ import {
   printCollectedDatatype,
 } from "../SymbolCollection/SymbolCollection";
 import {
+  elaborateExpr,
   elaborateFunctionSymbol,
   elaborateNamespace,
   isolateSubstitutionContext,
@@ -245,6 +246,7 @@ export function instantiateAndElaborateStruct(
     collectedSymbol: args.definedStructTypeId,
     isMonomorphized: definedStructType.generics.length > 0,
     members: [],
+    memberDefaultValues: [],
     methods: [],
     nestedStructs: [],
     sourceloc: definedStructType.sourceloc,
@@ -300,6 +302,21 @@ export function instantiateAndElaborateStruct(
           concrete: asType(sr.nodes.get(type)).concrete,
         });
         struct.members.push(variableId);
+        const defaultValue = definedStructType.defaultMemberValues.find(
+          (v) => v.name === symbol.name
+        );
+        if (defaultValue) {
+          struct.memberDefaultValues.push({
+            memberName: variable.name,
+            value: elaborateExpr(sr, defaultValue.value, {
+              context: args.context,
+              currentScope: definedStructType.structScope,
+              elaboratedVariables: new Map(),
+              isMonomorphized: struct.isMonomorphized,
+              scope: definedStructType.structScope,
+            })[1],
+          });
+        }
       } else if (symbol.variant === Collect.ENode.FunctionOverloadGroup) {
         symbol.overloads.forEach((overloadId) => {
           const overloadedFunc = sr.cc.nodes.get(overloadId);
@@ -473,7 +490,6 @@ export function lookupAndElaborateDatatype(
     // =================================================================================================================
 
     case Collect.ENode.AliasTypeSymbol: {
-      console.log("Alias: ", type.name);
       return lookupAndElaborateDatatype(sr, {
         typeId: type.target,
         startLookupInScopeForSymbol: args.startLookupInScopeForSymbol,
@@ -555,7 +571,6 @@ export function lookupAndElaborateDatatype(
         });
         if (type.innerNested) {
           const aliasedType = sr.nodes.get(aliasedTypeId);
-          console.log("GOT: ", aliasedType.variant);
           if (aliasedType.variant !== Semantic.ENode.NamespaceDatatype) {
             throw new CompilerError(
               `Type '${serializeDatatype(sr, aliasedTypeId)}' cannot be used as a namespace`,
