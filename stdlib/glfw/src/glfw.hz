@@ -53,7 +53,10 @@ export struct Window {
 }
 
 export init(): bool {
-    if (strcmp(getenv("XDG_CURRENT_DESKTOP"), "GNOME") == 0) {
+    const desktop = getenv("XDG_CURRENT_DESKTOP");
+    const valid = true;
+    __c__("valid = desktop != 0;");
+    if (valid and strcmp(desktop, "GNOME") == 0) {
         glfwInitHint(GLFW_PLATFORM, GLFW_PLATFORM_X11);
     }
     else {

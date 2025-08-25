@@ -96,7 +96,7 @@ main(): int {
         return 0;
     }
 
-    const window = glfw.createWindow(1920, 1080, "Hello World!");
+    const window = glfw.createWindow(1080, 720, "Hello World!");
     window.swapInterval(0);
     gl.init(glfw.getProcAddress());
 
