@@ -106,6 +106,7 @@ main(): int {
     gl.viewport(0, 0, 1920, 1080);
 
     let oldTime = glfw.getTime();
+    window.swapBuffers();
 
     let fps = 0.0;
     while !window.shouldClose() {
