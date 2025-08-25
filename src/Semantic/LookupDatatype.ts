@@ -1,6 +1,10 @@
 import { EVariableContext, stringToPrimitive } from "../shared/common";
 import { assert, CompilerError, type SourceLoc } from "../shared/Errors";
-import { Collect, funcSymHasParameterPack } from "../SymbolCollection/SymbolCollection";
+import {
+  Collect,
+  funcSymHasParameterPack,
+  printCollectedDatatype,
+} from "../SymbolCollection/SymbolCollection";
 import {
   elaborateFunctionSymbol,
   elaborateNamespace,
@@ -17,6 +21,7 @@ import {
   type SemanticResult,
 } from "./SemanticSymbols";
 import { EExternLanguage, EVariableMutability } from "../shared/AST";
+import { serializeDatatype } from "./Serialize";
 
 export function makeFunctionDatatypeAvailable(
   sr: SemanticResult,
@@ -468,6 +473,7 @@ export function lookupAndElaborateDatatype(
     // =================================================================================================================
 
     case Collect.ENode.AliasTypeSymbol: {
+      console.log("Alias: ", type.name);
       return lookupAndElaborateDatatype(sr, {
         typeId: type.target,
         startLookupInScopeForSymbol: args.startLookupInScopeForSymbol,
@@ -523,6 +529,7 @@ export function lookupAndElaborateDatatype(
         })[1];
       }
 
+      console.log("Named dt ", type.name, sr.cc.nodes.get(type.innerNested)?.name);
       let foundResult = lookupSymbol(sr, type.name, {
         startLookupInScope: args.startLookupInScopeForSymbol,
         sourceloc: type.sourceloc,
@@ -538,7 +545,7 @@ export function lookupAndElaborateDatatype(
       let found = sr.cc.nodes.get(foundId);
 
       if (found.variant === Collect.ENode.AliasTypeSymbol) {
-        return lookupAndElaborateDatatype(sr, {
+        const aliasedTypeId = lookupAndElaborateDatatype(sr, {
           typeId: foundId,
           context: args.context,
           currentScope: args.currentScope,
@@ -547,6 +554,28 @@ export function lookupAndElaborateDatatype(
           startLookupInScopeForGenerics: args.startLookupInScopeForGenerics,
           startLookupInScopeForSymbol: args.startLookupInScopeForSymbol,
         });
+        if (type.innerNested) {
+          const aliasedType = sr.nodes.get(aliasedTypeId);
+          console.log("GOT: ", aliasedType.variant);
+          if (aliasedType.variant !== Semantic.ENode.NamespaceDatatype) {
+            throw new CompilerError(
+              `Type '${serializeDatatype(sr, aliasedTypeId)}' cannot be used as a namespace`,
+              type.sourceloc
+            );
+          }
+          const collectedNamespace = sr.cc.nodes.get(aliasedType.collectedNamespace);
+          assert(collectedNamespace.variant === Collect.ENode.NamespaceDefinitionSymbol);
+          return lookupAndElaborateDatatype(sr, {
+            typeId: type.innerNested,
+            startLookupInScopeForSymbol: collectedNamespace.namespaceScope,
+            startLookupInScopeForGenerics: args.startLookupInScopeForGenerics,
+            currentScope: args.currentScope,
+            context: isolateSubstitutionContext(args.context),
+            elaboratedVariables: args.elaboratedVariables,
+            isInCFuncdecl: args.isInCFuncdecl,
+          });
+        }
+        return aliasedTypeId;
       }
 
       if (found.variant === Collect.ENode.StructDefinitionSymbol) {
@@ -604,7 +633,10 @@ export function lookupAndElaborateDatatype(
         }
       } else if (found.variant === Collect.ENode.NamespaceDefinitionSymbol) {
         if (!type.innerNested) {
-          throw new CompilerError(`Namespace cannot be used as a datatype here`, type.sourceloc);
+          return elaborateNamespace(sr, foundId, {
+            context: args.context,
+            currentScope: args.startLookupInScopeForSymbol,
+          });
         }
         return lookupAndElaborateDatatype(sr, {
           typeId: type.innerNested,

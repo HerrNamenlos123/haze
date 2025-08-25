@@ -1461,7 +1461,15 @@ export function elaborateExpr(
         context: args.context,
       });
       const struct = sr.nodes.get(structId);
-      assert(struct.variant === Semantic.ENode.StructDatatype);
+      if (struct.variant !== Semantic.ENode.StructDatatype) {
+        throw new CompilerError(
+          `Non-structural type '${serializeDatatype(
+            sr,
+            structId
+          )}' cannot be instantiated as a struct`,
+          expr.sourceloc
+        );
+      }
 
       let remainingMembers = struct.members.map((mId) => {
         const m = sr.nodes.get(mId);
