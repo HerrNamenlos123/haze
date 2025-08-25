@@ -384,7 +384,7 @@ export type ASTExprMemberAccess = {
 
 export type ASTStructInstantiationExpr = {
   variant: "StructInstantiationExpr";
-  datatype: ASTDatatype;
+  datatype: ASTDatatype | null;
   members: { name: string; value: ASTExpr }[];
   sourceloc: SourceLoc;
 };

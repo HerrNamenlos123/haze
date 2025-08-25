@@ -522,6 +522,7 @@ export function elaborateExpr(
     currentScope: Collect.Id;
     elaboratedVariables: Map<Collect.Id, Semantic.Id>;
     gonnaCallFunctionWithParameterValues?: Semantic.Id[];
+    gonnaInstantiateStructWithType?: Semantic.Id;
     isMonomorphized: boolean;
   }
 ): [Semantic.Expression, Semantic.Id] {
@@ -645,19 +646,18 @@ export function elaborateExpr(
     // =================================================================================================================
 
     case Collect.ENode.ExprCallExpr: {
-      const callingArgs = expr.arguments.map(
-        (a) =>
-          elaborateExpr(sr, a, {
-            scope: args.scope,
-            currentScope: args.currentScope,
-            elaboratedVariables: args.elaboratedVariables,
-            context: args.context,
-            isMonomorphized: args.isMonomorphized,
-          })[1]
-      );
-
       const collectedExpr = sr.cc.nodes.get(expr.calledExpr);
       if (collectedExpr.variant === Collect.ENode.SymbolValueExpr) {
+        const callingArguments = expr.arguments.map(
+          (a, i) =>
+            elaborateExpr(sr, a, {
+              scope: args.scope,
+              currentScope: args.currentScope,
+              elaboratedVariables: args.elaboratedVariables,
+              context: args.context,
+              isMonomorphized: args.isMonomorphized,
+            })[1]
+        );
         if (collectedExpr.name === "typeof") {
           if (collectedExpr.genericArgs.length !== 0) {
             throw new CompilerError(
@@ -665,13 +665,13 @@ export function elaborateExpr(
               collectedExpr.sourceloc
             );
           }
-          if (callingArgs.length !== 1) {
+          if (callingArguments.length !== 1) {
             throw new CompilerError(
               "The typeof function can only take exactly one parameter",
               collectedExpr.sourceloc
             );
           }
-          const value = sr.nodes.get(callingArgs[0]);
+          const value = sr.nodes.get(callingArguments[0]);
           assert(isExpression(value));
           return Semantic.addNode(sr, {
             variant: Semantic.ENode.DatatypeAsValueExpr,
@@ -688,15 +688,15 @@ export function elaborateExpr(
               collectedExpr.sourceloc
             );
           }
-          if (callingArgs.length < 1 || callingArgs.length > 2) {
+          if (callingArguments.length < 1 || callingArguments.length > 2) {
             throw new CompilerError(
               "The static_assert function can only take one or two parameters",
               collectedExpr.sourceloc
             );
           }
           let second = undefined as Semantic.LiteralExpr | undefined;
-          if (callingArgs.length > 1) {
-            const s = sr.nodes.get(callingArgs[1]);
+          if (callingArguments.length > 1) {
+            const s = sr.nodes.get(callingArguments[1]);
             if (s.variant !== Semantic.ENode.LiteralExpr || s.literal.type !== EPrimitive.str) {
               throw new CompilerError(
                 "The static_assert function requires the second parameter to be a string, or omitted",
@@ -706,7 +706,7 @@ export function elaborateExpr(
               second = s;
             }
           }
-          const value = EvalCTFEBoolean(sr, callingArgs[0]);
+          const value = EvalCTFEBoolean(sr, callingArguments[0]);
           if (value) {
             return Semantic.addNode(sr, {
               variant: Semantic.ENode.LiteralExpr,
@@ -727,12 +727,34 @@ export function elaborateExpr(
         }
       }
 
+      // If all arguments are known (i.e. no anonymous structs are in there), do it before knowing the function call
+      let allArgumentsConcrete = true;
+      let callingArguments = undefined as Semantic.Id[] | undefined;
+      for (const p of expr.arguments) {
+        const v = sr.cc.nodes.get(p);
+        if (v.variant === Collect.ENode.StructInstantiationExpr && v.structType === null) {
+          allArgumentsConcrete = false;
+        }
+      }
+      if (allArgumentsConcrete) {
+        callingArguments = expr.arguments.map(
+          (a, i) =>
+            elaborateExpr(sr, a, {
+              scope: args.scope,
+              currentScope: args.currentScope,
+              elaboratedVariables: args.elaboratedVariables,
+              context: args.context,
+              isMonomorphized: args.isMonomorphized,
+            })[1]
+        );
+      }
+
       const [calledExpr, calledExprId] = elaborateExpr(sr, expr.calledExpr, {
         context: args.context,
         elaboratedVariables: args.elaboratedVariables,
         currentScope: args.currentScope,
         scope: args.scope,
-        gonnaCallFunctionWithParameterValues: callingArgs,
+        gonnaCallFunctionWithParameterValues: callingArguments,
         isMonomorphized: args.isMonomorphized,
       });
       const calledExprType = asType(sr.nodes.get(calledExpr.type));
@@ -750,14 +772,14 @@ export function elaborateExpr(
         if (vararg || requiredTypes.length !== newRequiredTypes.length) {
           if (givenArgs.length < newRequiredTypes.length) {
             throw new CompilerError(
-              `This call requires at least ${newRequiredTypes.length} arguments but only ${callingArgs.length} were given`,
+              `This call requires at least ${newRequiredTypes.length} arguments but only ${givenArgs.length} were given`,
               calledExpr.sourceloc
             );
           }
         } else {
           if (givenArgs.length !== newRequiredTypes.length) {
             throw new CompilerError(
-              `This call requires ${newRequiredTypes.length} arguments but ${callingArgs.length} were given`,
+              `This call requires ${newRequiredTypes.length} arguments but ${givenArgs.length} were given`,
               calledExpr.sourceloc
             );
           }
@@ -776,6 +798,31 @@ export function elaborateExpr(
         });
       };
 
+      const getInferredCallingArguments = (
+        expectedParameterTypes: Semantic.Id[]
+      ): Semantic.Id[] => {
+        // If arguments were not known (i.e. had anonymous structs), do it now
+        if (callingArguments === undefined) {
+          return expr.arguments.map((a, i) => {
+            let structType = undefined as Semantic.Id | undefined;
+            if (i < expectedParameterTypes.length) {
+              structType = expectedParameterTypes[i];
+            }
+            assert(structType && isType(sr.nodes.get(structType)));
+            return elaborateExpr(sr, a, {
+              scope: args.scope,
+              currentScope: args.currentScope,
+              elaboratedVariables: args.elaboratedVariables,
+              context: args.context,
+              gonnaInstantiateStructWithType: structType,
+              isMonomorphized: args.isMonomorphized,
+            })[1];
+          });
+        } else {
+          return callingArguments;
+        }
+      };
+
       if (calledExprType.variant === Semantic.ENode.CallableDatatype) {
         const ftype = sr.nodes.get(calledExprType.functionType);
         assert(ftype.variant === Semantic.ENode.FunctionDatatype);
@@ -786,14 +833,22 @@ export function elaborateExpr(
         return Semantic.addNode(sr, {
           variant: Semantic.ENode.ExprCallExpr,
           calledExpr: calledExprId,
-          arguments: convertArgs(callingArgs, parametersWithoutThis, ftype.vararg),
+          arguments: convertArgs(
+            getInferredCallingArguments(parametersWithoutThis),
+            parametersWithoutThis,
+            ftype.vararg
+          ),
           type: ftype.returnType,
           sourceloc: expr.sourceloc,
         });
       }
 
       if (calledExprType.variant === Semantic.ENode.FunctionDatatype) {
-        const args = convertArgs(callingArgs, calledExprType.parameters, calledExprType.vararg);
+        const args = convertArgs(
+          getInferredCallingArguments(calledExprType.parameters),
+          calledExprType.parameters,
+          calledExprType.vararg
+        );
         return Semantic.addNode(sr, {
           variant: Semantic.ENode.ExprCallExpr,
           calledExpr: calledExprId,
@@ -831,7 +886,7 @@ export function elaborateExpr(
             sourceloc: expr.sourceloc,
           })[1],
           arguments: convertArgs(
-            callingArgs,
+            getInferredCallingArguments(constructorFunctype.parameters),
             constructorFunctype.parameters,
             constructorFunctype.vararg
           ),
@@ -1451,15 +1506,28 @@ export function elaborateExpr(
     // =================================================================================================================
 
     case Collect.ENode.StructInstantiationExpr: {
-      const structId = lookupAndElaborateDatatype(sr, {
-        typeId: expr.structType,
-        currentScope: args.currentScope,
-        elaboratedVariables: args.elaboratedVariables,
-        startLookupInScopeForGenerics: args.scope,
-        startLookupInScopeForSymbol: args.scope,
-        isInCFuncdecl: false,
-        context: args.context,
-      });
+      let structId = undefined as Semantic.Id | undefined;
+      if (expr.structType) {
+        structId = lookupAndElaborateDatatype(sr, {
+          typeId: expr.structType,
+          currentScope: args.currentScope,
+          elaboratedVariables: args.elaboratedVariables,
+          startLookupInScopeForGenerics: args.scope,
+          startLookupInScopeForSymbol: args.scope,
+          isInCFuncdecl: false,
+          context: args.context,
+        });
+      } else if (args.gonnaInstantiateStructWithType) {
+        structId = args.gonnaInstantiateStructWithType;
+      }
+
+      if (!structId) {
+        throw new CompilerError(
+          `This struct is anonymous and must be type-inferred, but there is not enough context to infer it`,
+          expr.sourceloc
+        );
+      }
+
       const struct = sr.nodes.get(structId);
       if (struct.variant !== Semantic.ENode.StructDatatype) {
         throw new CompilerError(

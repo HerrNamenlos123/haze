@@ -96,7 +96,7 @@ main(): int {
         return 0;
     }
 
-    const window = glfw.createWindow(glfw.WindowConfig { 
+    const window = glfw.createWindow({ 
         title: "Hello World!"
     });
 

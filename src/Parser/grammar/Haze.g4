@@ -131,9 +131,9 @@ expr
     // Part 1: Left to right
     | expr op=('++' | '--')                                                         #PostIncrExpr
     | expr '(' (expr (',' expr)*)? ')'                                              #ExprCallExpr
-    | value=expr '[' index+=expr (',' index+=expr)* ','? ']'                         #ArraySubscriptExpr
+    | value=expr '[' index+=expr (',' index+=expr)* ','? ']'                        #ArraySubscriptExpr
     | expr '.' ID ('<' genericLiteral (',' genericLiteral)* '>')?                   #ExprMemberAccess
-    | datatype '{' (ID ':' expr)? (',' (ID ':' expr))* ','? '}'                     #StructInstantiationExpr
+    | datatype? '{' (ID ':' expr)? (',' (ID ':' expr))* ','? '}'                    #StructInstantiationExpr
 
     // Part 2: Right to left
     | <assoc=right> op=('++' | '--') expr                                           #PreIncrExpr

@@ -892,7 +892,7 @@ class ASTTransformer extends HazeVisitor<any> {
     }
     return {
       variant: "StructInstantiationExpr",
-      datatype: this.visit(ctx.datatype()),
+      datatype: ctx.datatype() ? this.visit(ctx.datatype()!) : null,
       members: members,
       sourceloc: this.loc(ctx),
     };

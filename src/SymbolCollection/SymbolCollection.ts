@@ -570,7 +570,7 @@ export namespace Collect {
 
   export type StructInstantiationExpr = BaseExpr & {
     variant: ENode.StructInstantiationExpr;
-    structType: Collect.Id;
+    structType: Collect.Id | null;
     members: {
       name: string;
       value: Collect.Id;
@@ -1570,7 +1570,7 @@ function collect(
     case "StructInstantiationExpr":
       return makeSymbol(cc, {
         variant: Collect.ENode.StructInstantiationExpr,
-        structType: collect(cc, item.datatype, args),
+        structType: item.datatype ? collect(cc, item.datatype, args) : null,
         members: item.members.map((m) => ({
           name: m.name,
           value: collect(cc, m.value, args),
