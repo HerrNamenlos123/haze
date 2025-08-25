@@ -152,7 +152,7 @@ expr
     // | expr ('&') expr                                                            #BinaryExpr
     // | expr ('^') expr                                                            #BinaryExpr
     // | expr ('|') expr                                                            #BinaryExpr
-    | expr op+=('and'|'or') expr                                                    #BinaryExpr
+    | expr op+=('&&'|'||') expr                                                     #BinaryExpr
     // <- ternary
     | expr op=('='|'+='|'-='|'*='|'/='|'%=') expr                                   #ExprAssignmentExpr
 

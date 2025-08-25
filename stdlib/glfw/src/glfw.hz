@@ -5,20 +5,6 @@ __c__("#include <math.h>");
 export extern "C" struct GLFWwindow {};
 export extern "C" struct GLFWmonitor {};
 
-extern "C" glfwInit(): i32;
-extern "C" glfwTerminate(): none;
-extern "C" glfwCreateWindow(width: i32, height: i32, title: str, monitor: GLFWmonitor*, share: GLFWwindow*): GLFWwindow*;
-extern "C" glfwWindowShouldClose(w: GLFWwindow*): i32;
-extern "C" glfwSwapBuffers(w: GLFWwindow*);
-extern "C" glfwSwapInterval(flag: i32);
-extern "C" glfwMakeContextCurrent(w: GLFWwindow*);
-extern "C" glfwPollEvents();
-extern "C" glfwInitHint(hint: i32, value: i32);
-extern "C" glfwWindowHint(hint: i32, value: i32);
-extern "C" glfwGetTime(): f64;
-extern "C" glfwMakeContextCurrent(w: GLFWwindow*);
-extern "C" glfwGetProcAddress(procname: str): () => none;
-
 extern "C" strcmp(str1: str, str2: str): i32;
 extern "C" getenv(name: str): str;
 
@@ -30,25 +16,89 @@ const GLFW_CONTEXT_VERSION_MINOR: i32;
 const GLFW_OPENGL_PROFILE: i32;
 const GLFW_OPENGL_CORE_PROFILE: i32;
 
+namespace raw {
+    extern "C" glfwInit(): i32;
+    extern "C" glfwTerminate(): none;
+    extern "C" glfwCreateWindow(width: i32, height: i32, title: str, monitor: GLFWmonitor*, share: GLFWwindow*): GLFWwindow*;
+    extern "C" glfwWindowShouldClose(w: GLFWwindow*): i32;
+    extern "C" glfwSwapBuffers(w: GLFWwindow*);
+    extern "C" glfwSwapInterval(flag: i32);
+    extern "C" glfwMakeContextCurrent(w: GLFWwindow*);
+    extern "C" glfwPollEvents();
+    extern "C" glfwInitHint(hint: i32, value: i32);
+    extern "C" glfwWindowHint(hint: i32, value: i32);
+    extern "C" glfwGetTime(): f64;
+    extern "C" glfwMakeContextCurrent(w: GLFWwindow*);
+    extern "C" glfwGetProcAddress(procname: str): () => none;
+
+    export init(): bool {
+        return glfwInit() != 0;
+    }
+
+    export terminate(): none {
+        glfwTerminate();
+    }
+
+    export createWindow(width: i32, height: i32, title: str, monitor: GLFWmonitor*, share: GLFWwindow*): GLFWwindow* {
+        return glfwCreateWindow(width, height, title, monitor, share);
+    }
+
+    export windowShouldClose(w: GLFWwindow*): bool {
+        return glfwWindowShouldClose(w) != 0;
+    }
+
+    export swapBuffers(w: GLFWwindow*) {
+        glfwSwapBuffers(w);
+    }
+
+    export swapInterval(flags: i32) {
+        glfwSwapInterval(flags);
+    }
+
+    export makeContextCurrent(w: GLFWwindow*) {
+        glfwMakeContextCurrent(w);
+    }
+
+    export pollEvents() {
+        glfwPollEvents();
+    }
+
+    export initHint(hint: i32, value: i32) {
+        glfwInitHint(hint, value);
+    }
+
+    export windowHint(hint: i32, value: i32) {
+        glfwWindowHint(hint, value);
+    }
+
+    export getTime(): f64 {
+        return glfwGetTime() as f64;
+    }
+
+    export getProcAddress(procname: str): () => none {
+        return glfwGetProcAddress(procname);
+    }
+}
+
 export struct Window {
     handle: GLFWwindow*;
 
     makeContextCurrent() {
-        glfwMakeContextCurrent(this.handle);
+        raw.makeContextCurrent(this.handle);
     }
 
     shouldClose(): bool {
-        return glfwWindowShouldClose(this.handle) != 0;
+        return raw.windowShouldClose(this.handle);
     }
 
     swapBuffers() {
-        glfwMakeContextCurrent(this.handle);
-        glfwSwapBuffers(this.handle);
+        raw.makeContextCurrent(this.handle);
+        raw.swapBuffers(this.handle);
     }
 
     swapInterval(interval: int) {
-        glfwMakeContextCurrent(this.handle);
-        glfwSwapInterval(interval as i32);
+        raw.makeContextCurrent(this.handle);
+        raw.swapInterval(interval as i32);
     }
 }
 
@@ -56,35 +106,35 @@ export init(): bool {
     const desktop = getenv("XDG_CURRENT_DESKTOP");
     const valid = true;
     __c__("valid = desktop != 0;");
-    if (valid and strcmp(desktop, "GNOME") == 0) {
-        glfwInitHint(GLFW_PLATFORM, GLFW_PLATFORM_X11);
+    if (valid && strcmp(desktop, "GNOME") == 0) {
+        raw.initHint(GLFW_PLATFORM, GLFW_PLATFORM_X11);
     }
     else {
-        glfwInitHint(GLFW_PLATFORM, GLFW_ANY_PLATFORM);
+        raw.initHint(GLFW_PLATFORM, GLFW_ANY_PLATFORM);
     }
-    return glfwInit() != 0;
+    return raw.init();
 }
 
 export terminate() {
-    glfwTerminate();
+    raw.terminate();
 }
 
 export createWindow(width: int, height: int, title: str): Window {
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3 as i32);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3 as i32);
-    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-    const handle = glfwCreateWindow(width as i32, height as i32, title, 0 as GLFWmonitor*, 0 as GLFWwindow*);
+    raw.windowHint(GLFW_CONTEXT_VERSION_MAJOR, 3 as i32);
+    raw.windowHint(GLFW_CONTEXT_VERSION_MINOR, 3 as i32);
+    raw.windowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+    const handle = raw.createWindow(width as i32, height as i32, title, 0 as GLFWmonitor*, 0 as GLFWwindow*);
     return Window { handle: handle };
 }
 
 export pollEvents() {
-    glfwPollEvents();
+    raw.pollEvents();
 }
 
 export getTime(): real {
-    return glfwGetTime() as real;
+    return raw.getTime() as real;
 }
 
 export getProcAddress(): (name: str) => none* {
-    return glfwGetProcAddress as (name: str) => none*;
+    return raw.getProcAddress as (name: str) => none*;
 }
