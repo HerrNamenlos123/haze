@@ -1,3 +1,4 @@
+import { assign } from "lodash";
 import { HAZE_STDLIB_NAME } from "../Module";
 import { EBinaryOperation, EExternLanguage, EVariableMutability } from "../shared/AST";
 import {
@@ -31,6 +32,7 @@ import {
   asExpression,
   asType,
   getExprType,
+  IsExprDecisiveForOverloadResolution,
   isExpression,
   isType,
   isTypeConcrete,
@@ -279,7 +281,10 @@ function prepareParameterPackTypes(
   args: {
     functionName: string;
     requiredParameters: Collect.ParameterValue[];
-    givenArguments?: Semantic.Id[];
+    givenArguments?: {
+      index: number;
+      exprId: Semantic.Id;
+    }[];
     sourceloc: SourceLoc;
   }
 ) {
@@ -307,7 +312,7 @@ function prepareParameterPackTypes(
     }
 
     for (let i = numParametersWithoutPack; i < args.givenArguments.length; i++) {
-      const exprId = args.givenArguments[i];
+      const exprId = args.givenArguments[i].exprId;
       const expr = sr.nodes.get(exprId);
       assert(isExpression(expr));
       parameterPackTypes.push(expr.type);
@@ -325,7 +330,10 @@ function lookupSymbolInNamespaceOrStructScope(
     currentScope: Collect.Id;
     context: SubstitutionContext;
     elaboratedVariables: Map<Collect.Id, Semantic.Id>;
-    gonnaCallFunctionWithParameters?: Semantic.Id[];
+    gonnaCallFunctionWithParameters?: {
+      index: number;
+      exprId: Semantic.Id;
+    }[];
     isMonomorphized: boolean;
     scope: Collect.Id;
   }
@@ -416,7 +424,10 @@ function lookupAndElaborateNamespaceMemberAccess(
     currentScope: Collect.Id;
     context: SubstitutionContext;
     elaboratedVariables: Map<Collect.Id, Semantic.Id>;
-    gonnaCallFunctionWithParameters?: Semantic.Id[];
+    gonnaCallFunctionWithParameters?: {
+      index: number;
+      exprId: Semantic.Id;
+    }[];
     isMonomorphized: boolean;
     scope: Collect.Id;
   }
@@ -464,7 +475,10 @@ function lookupAndElaborateStaticStructAccess(
     currentScope: Collect.Id;
     context: SubstitutionContext;
     elaboratedVariables: Map<Collect.Id, Semantic.Id>;
-    gonnaCallFunctionWithParameters?: Semantic.Id[];
+    gonnaCallFunctionWithParameters?: {
+      index: number;
+      exprId: Semantic.Id;
+    }[];
     isMonomorphized: boolean;
     scope: Collect.Id;
   }
@@ -513,6 +527,56 @@ function lookupAndElaborateStaticStructAccess(
   );
 }
 
+export function ChooseFunctionOverload(
+  sr: SemanticResult,
+  overloadGroupId: Collect.Id,
+  calledWithArgs: { index: number; exprId: Semantic.Id }[],
+  args: {
+    context: SubstitutionContext;
+  }
+) {
+  const overloadGroup = sr.cc.nodes.get(overloadGroupId);
+  assert(overloadGroup.variant === Collect.ENode.FunctionOverloadGroup);
+
+  assert(
+    false,
+    "TODO FOR NEXT TIME: This elaboration system needs to be improved. For choosing an overload, i must elaborate the function parameters, but i can't really elaborate the entire function symbol since elaborating the function symbols requires things like generics and parameter packs, that i only know after i have chosen the overload and i can't do it in advance. But to elaborate the datatypes i need to duplicate a lot of elaboration here. So i need proper convenience functions that abstract the elaboration for functions and types in a way that i can simply use them and avoid all this code duplication. I need simple elaboration functions for functions and types, that don't require 12 parameters"
+  );
+
+  // First find exact matches
+  const exactMatches = [] as Semantic.FunctionSymbol[];
+  for (const overloadId of overloadGroup.overloads) {
+    const overload = sr.cc.nodes.get(overloadId);
+    assert(overload.variant === Collect.ENode.FunctionSymbol);
+
+    if (
+      overload.parameters.length !== calledWithArgs.length ||
+      funcSymHasParameterPack(sr.cc, overloadId)
+    )
+      continue;
+
+    let matches = true;
+    overload.parameters.forEach((p, i) => {
+      const requiredType = lookupAndElaborateDatatype(sr, {
+        typeId: p.type,
+        context: args.context,
+        currentScope: 0,
+      });
+      const passed = calledWithArgs.find((a) => a.index === i);
+      if (!passed) {
+        matches = false;
+        return;
+      }
+      const expression = sr.nodes.get(passed.exprId);
+      assert(isExpression(expression));
+      const type = sr.nodes.get(expression.type);
+      assert(isType(expression));
+      if (type !== p.type) {
+      }
+    });
+  }
+}
+
 export function elaborateExpr(
   sr: SemanticResult,
   exprId: Collect.Id,
@@ -521,7 +585,10 @@ export function elaborateExpr(
     context: SubstitutionContext;
     currentScope: Collect.Id;
     elaboratedVariables: Map<Collect.Id, Semantic.Id>;
-    gonnaCallFunctionWithParameterValues?: Semantic.Id[];
+    gonnaCallFunctionWithParameterValues?: {
+      index: number;
+      exprId: Semantic.Id;
+    }[];
     gonnaInstantiateStructWithType?: Semantic.Id;
     isMonomorphized: boolean;
   }
@@ -637,6 +704,8 @@ export function elaborateExpr(
         elaboratedVariables: args.elaboratedVariables,
         currentScope: args.currentScope,
         context: args.context,
+        gonnaCallFunctionWithParameterValues: args.gonnaCallFunctionWithParameterValues,
+        gonnaInstantiateStructWithType: args.gonnaInstantiateStructWithType,
         isMonomorphized: args.isMonomorphized,
       });
     }
@@ -648,17 +717,17 @@ export function elaborateExpr(
     case Collect.ENode.ExprCallExpr: {
       const collectedExpr = sr.cc.nodes.get(expr.calledExpr);
       if (collectedExpr.variant === Collect.ENode.SymbolValueExpr) {
-        const callingArguments = expr.arguments.map(
-          (a, i) =>
-            elaborateExpr(sr, a, {
-              scope: args.scope,
-              currentScope: args.currentScope,
-              elaboratedVariables: args.elaboratedVariables,
-              context: args.context,
-              isMonomorphized: args.isMonomorphized,
-            })[1]
-        );
         if (collectedExpr.name === "typeof") {
+          const callingArguments = expr.arguments.map(
+            (a, i) =>
+              elaborateExpr(sr, a, {
+                scope: args.scope,
+                currentScope: args.currentScope,
+                elaboratedVariables: args.elaboratedVariables,
+                context: args.context,
+                isMonomorphized: args.isMonomorphized,
+              })[1]
+          );
           if (collectedExpr.genericArgs.length !== 0) {
             throw new CompilerError(
               "The typeof function cannot take any type parameters",
@@ -682,6 +751,16 @@ export function elaborateExpr(
           });
         }
         if (collectedExpr.name === "static_assert") {
+          const callingArguments = expr.arguments.map(
+            (a, i) =>
+              elaborateExpr(sr, a, {
+                scope: args.scope,
+                currentScope: args.currentScope,
+                elaboratedVariables: args.elaboratedVariables,
+                context: args.context,
+                isMonomorphized: args.isMonomorphized,
+              })[1]
+          );
           if (collectedExpr.genericArgs.length !== 0) {
             throw new CompilerError(
               "The static_assert function cannot take any type parameters",
@@ -727,34 +806,32 @@ export function elaborateExpr(
         }
       }
 
-      // If all arguments are known (i.e. no anonymous structs are in there), do it before knowing the function call
-      let allArgumentsConcrete = true;
-      let callingArguments = undefined as Semantic.Id[] | undefined;
-      for (const p of expr.arguments) {
-        const v = sr.cc.nodes.get(p);
-        if (v.variant === Collect.ENode.StructInstantiationExpr && v.structType === null) {
-          allArgumentsConcrete = false;
-        }
-      }
-      if (allArgumentsConcrete) {
-        callingArguments = expr.arguments.map(
-          (a, i) =>
-            elaborateExpr(sr, a, {
+      let decisiveArguments = [] as {
+        index: number;
+        exprId: Semantic.Id;
+      }[];
+      expr.arguments.forEach((p, i) => {
+        if (IsExprDecisiveForOverloadResolution(sr, p)) {
+          decisiveArguments.push({
+            index: i,
+            exprId: elaborateExpr(sr, p, {
               scope: args.scope,
               currentScope: args.currentScope,
               elaboratedVariables: args.elaboratedVariables,
               context: args.context,
               isMonomorphized: args.isMonomorphized,
-            })[1]
-        );
-      }
+            })[1],
+          });
+        }
+      });
 
+      // Choose all arguments that can contribute to disambiguating an overloaded function call
       const [calledExpr, calledExprId] = elaborateExpr(sr, expr.calledExpr, {
         context: args.context,
         elaboratedVariables: args.elaboratedVariables,
         currentScope: args.currentScope,
         scope: args.scope,
-        gonnaCallFunctionWithParameterValues: callingArguments,
+        gonnaCallFunctionWithParameterValues: decisiveArguments,
         isMonomorphized: args.isMonomorphized,
       });
       const calledExprType = asType(sr.nodes.get(calledExpr.type));
@@ -798,12 +875,12 @@ export function elaborateExpr(
         });
       };
 
-      const getInferredCallingArguments = (
-        expectedParameterTypes: Semantic.Id[]
-      ): Semantic.Id[] => {
-        // If arguments were not known (i.e. had anonymous structs), do it now
-        if (callingArguments === undefined) {
-          return expr.arguments.map((a, i) => {
+      const getActualCallingArguments = (expectedParameterTypes: Semantic.Id[]): Semantic.Id[] => {
+        return expr.arguments.map((a, i) => {
+          const alreadyKnown = decisiveArguments.find((d) => d.index === i);
+          if (alreadyKnown) {
+            return alreadyKnown.exprId;
+          } else {
             let structType = undefined as Semantic.Id | undefined;
             if (i < expectedParameterTypes.length) {
               structType = expectedParameterTypes[i];
@@ -817,10 +894,8 @@ export function elaborateExpr(
               gonnaInstantiateStructWithType: structType,
               isMonomorphized: args.isMonomorphized,
             })[1];
-          });
-        } else {
-          return callingArguments;
-        }
+          }
+        });
       };
 
       if (calledExprType.variant === Semantic.ENode.CallableDatatype) {
@@ -834,7 +909,7 @@ export function elaborateExpr(
           variant: Semantic.ENode.ExprCallExpr,
           calledExpr: calledExprId,
           arguments: convertArgs(
-            getInferredCallingArguments(parametersWithoutThis),
+            getActualCallingArguments(parametersWithoutThis),
             parametersWithoutThis,
             ftype.vararg
           ),
@@ -845,7 +920,7 @@ export function elaborateExpr(
 
       if (calledExprType.variant === Semantic.ENode.FunctionDatatype) {
         const args = convertArgs(
-          getInferredCallingArguments(calledExprType.parameters),
+          getActualCallingArguments(calledExprType.parameters),
           calledExprType.parameters,
           calledExprType.vararg
         );
@@ -886,7 +961,7 @@ export function elaborateExpr(
             sourceloc: expr.sourceloc,
           })[1],
           arguments: convertArgs(
-            getInferredCallingArguments(constructorFunctype.parameters),
+            getActualCallingArguments(constructorFunctype.parameters),
             constructorFunctype.parameters,
             constructorFunctype.vararg
           ),
@@ -1032,6 +1107,10 @@ export function elaborateExpr(
         });
       } else if (symbol.variant === Collect.ENode.FunctionOverloadGroup) {
         console.info("TODO: Implement function overload resolution here");
+
+        console.log("Choose: ", symbol.name, args.gonnaCallFunctionWithParameterValues);
+        const ov = ChooseFunctionOverload(sr, symbolId, args.gonnaCallFunctionWithParameterValues);
+
         const chosenOverloadId = [...symbol.overloads][0];
         const chosenOverload = sr.cc.nodes.get(chosenOverloadId);
         assert(chosenOverload.variant === Collect.ENode.FunctionSymbol);
@@ -1523,7 +1602,7 @@ export function elaborateExpr(
 
       if (!structId) {
         throw new CompilerError(
-          `This struct is anonymous and must be type-inferred, but there is not enough context to infer it`,
+          `This struct is anonymous and must be type-inferred, but there is not enough context to infer it. Either it is not directly passed to something that expects a specific type, or it is being passed to an overloaded function.`,
           expr.sourceloc
         );
       }

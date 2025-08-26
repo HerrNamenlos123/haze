@@ -122,6 +122,23 @@ export function isTypeConcrete(sr: SemanticResult, id: Semantic.Id) {
   return symbol.concrete;
 }
 
+export function IsExprDecisiveForOverloadResolution(sr: SemanticResult, exprId: Collect.Id) {
+  const expr = sr.cc.nodes.get(exprId);
+
+  switch (expr.variant) {
+    case Collect.ENode.StructInstantiationExpr: {
+      return expr.structType !== null;
+    }
+
+    case Collect.ENode.ParenthesisExpr: {
+      return IsExprDecisiveForOverloadResolution(sr, expr.expr);
+    }
+
+    default:
+      return true;
+  }
+}
+
 export namespace Semantic {
   export type Id = Brand<number, "Semantic">;
   export const enum ENode {

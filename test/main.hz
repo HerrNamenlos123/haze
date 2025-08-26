@@ -51,15 +51,15 @@ import gl
 __c__("#include <stdio.h>");
 extern "C" noemit printf(fmt: str, ...);
 
-struct Vec3 {
-    x: real;
-    y: real;
-    z: real;
+// struct Vec3 {
+//     x: real;
+//     y: real;
+//     z: real;
 
-    constructor(x: real, y: real, z: real): Vec3 {
-        return Vec3{ x: x, y: y, z: z};
-    }
-}
+//     constructor(x: real, y: real, z: real): Vec3 {
+//         return Vec3{ x: x, y: y, z: z};
+//     }
+// }
 
 print(args: ...) {
     for comptime arg in args {
@@ -88,9 +88,30 @@ println(args: ...) {
     print("\n");
 }
 
+foo(v: int) {
+    println("Int Value: ", v);
+}
+
+foo(v: real) {
+    println("Real Value: ", v);
+}
+
+struct Bar {
+    value: int = 0;
+}
+
+bar(v: Bar) {}
+
+bar(v: Bar, a: int) {}
+
 main(): int {
 
-    const position = Vec3(5.0, 2.0, 4.0);
+    // const position = Vec3(5.0, 2.0, 4.0);
+
+    bar({}, 5);
+    // foo(0 as real);
+
+    return 0;
 
     if !glfw.init() {
         return 0;
