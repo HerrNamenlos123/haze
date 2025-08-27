@@ -364,7 +364,7 @@ export namespace Semantic {
 
   export type ParameterPackDatatypeSymbol = {
     variant: ENode.ParameterPackDatatypeSymbol;
-    parameters: Id[];
+    parameters: Id[] | null;
     concrete: boolean;
   };
 

@@ -10,7 +10,13 @@ import {
   stringToPrimitive,
 } from "../shared/common";
 import { getModuleGlobalNamespaceName } from "../shared/Config";
-import { assert, CompilerError, InternalError, type SourceLoc } from "../shared/Errors";
+import {
+  assert,
+  CompilerError,
+  formatSourceLoc,
+  InternalError,
+  type SourceLoc,
+} from "../shared/Errors";
 import {
   Collect,
   defineVariableSymbol,
@@ -306,7 +312,7 @@ function prepareParameterPackTypes(
     requiredParameters: Collect.ParameterValue[];
     givenArguments?: {
       index: number;
-      exprId: Semantic.Id;
+      exprId: Semantic.Id | null;
     }[];
     sourceloc: SourceLoc;
   }
@@ -336,6 +342,7 @@ function prepareParameterPackTypes(
 
     for (let i = numParametersWithoutPack; i < args.givenArguments.length; i++) {
       const exprId = args.givenArguments[i].exprId;
+      assert(exprId);
       const expr = sr.nodes.get(exprId);
       assert(isExpression(expr));
       parameterPackTypes.push(expr.type);
@@ -352,9 +359,9 @@ function lookupSymbolInNamespaceOrStructScope(
     expr: Collect.MemberAccessExpr;
     context: ElaborationContext;
     elaboratedVariables: Map<Collect.Id, Semantic.Id>;
-    gonnaCallFunctionWithParameters?: {
+    gonnaCallFunctionWithParameterValues?: {
       index: number;
-      exprId: Semantic.Id;
+      exprId: Semantic.Id | null;
     }[];
     isMonomorphized: boolean;
   }
@@ -387,21 +394,31 @@ function lookupSymbolInNamespaceOrStructScope(
     });
   } else if (symbol.variant === Collect.ENode.FunctionOverloadGroup && symbol.name === args.name) {
     // A method or a namespaced function
-    console.info("TODO: Do overload discrimination here");
-    const overloadId = [...symbol.overloads][0];
-    const funcsym = sr.cc.nodes.get(overloadId);
+
+    const chosenOverloadId = ChooseFunctionOverload(
+      sr,
+      symbolId,
+      args.gonnaCallFunctionWithParameterValues,
+      {
+        context: args.context,
+        elaboratedVariables: args.elaboratedVariables,
+        usageSourceLocation: args.expr.sourceloc,
+      }
+    );
+
+    const funcsym = sr.cc.nodes.get(chosenOverloadId);
     assert(funcsym.variant === Collect.ENode.FunctionSymbol);
 
     const paramPackTypes = prepareParameterPackTypes(sr, {
       functionName: args.name,
       requiredParameters: funcsym.parameters,
-      givenArguments: args.gonnaCallFunctionWithParameters,
+      givenArguments: args.gonnaCallFunctionWithParameterValues,
       sourceloc: args.expr.sourceloc,
     });
 
     const functionSymbolId = elaborateFunctionSymbolWithGenerics(
       sr,
-      elaborateFunctionSignature(sr, overloadId, { context: args.context }),
+      elaborateFunctionSignature(sr, chosenOverloadId, { context: args.context }),
       {
         elaboratedVariables: args.elaboratedVariables,
         paramPackTypes: paramPackTypes,
@@ -446,9 +463,9 @@ function lookupAndElaborateNamespaceMemberAccess(
     expr: Collect.MemberAccessExpr;
     context: ElaborationContext;
     elaboratedVariables: Map<Collect.Id, Semantic.Id>;
-    gonnaCallFunctionWithParameters?: {
+    gonnaCallFunctionWithParameterValues?: {
       index: number;
-      exprId: Semantic.Id;
+      exprId: Semantic.Id | null;
     }[];
     isMonomorphized: boolean;
   }
@@ -471,7 +488,7 @@ function lookupAndElaborateNamespaceMemberAccess(
         elaboratedVariables: args.elaboratedVariables,
         expr: args.expr,
         name: args.name,
-        gonnaCallFunctionWithParameters: args.gonnaCallFunctionWithParameters,
+        gonnaCallFunctionWithParameterValues: args.gonnaCallFunctionWithParameterValues,
         isMonomorphized: args.isMonomorphized,
       });
       if (s) {
@@ -493,9 +510,9 @@ function lookupAndElaborateStaticStructAccess(
     expr: Collect.MemberAccessExpr;
     context: ElaborationContext;
     elaboratedVariables: Map<Collect.Id, Semantic.Id>;
-    gonnaCallFunctionWithParameters?: {
+    gonnaCallFunctionWithParameterValues?: {
       index: number;
-      exprId: Semantic.Id;
+      exprId: Semantic.Id | null;
     }[];
     isMonomorphized: boolean;
   }
@@ -526,7 +543,7 @@ function lookupAndElaborateStaticStructAccess(
       expr: args.expr,
       name: args.name,
       isMonomorphized: args.isMonomorphized,
-      gonnaCallFunctionWithParameters: args.gonnaCallFunctionWithParameters,
+      gonnaCallFunctionWithParameterValues: args.gonnaCallFunctionWithParameterValues,
     });
     if (s) {
       const symbol = sr.nodes.get(s[1]);
@@ -594,7 +611,7 @@ export function elaborateFunctionSignature(
     originalFunction: functionSymbolId,
     parameters: functionSymbol.parameters.map((p) => {
       const type = lookupAndElaborateDatatype(sr, {
-        typeId: functionSymbol.returnType,
+        typeId: p.type,
         context: isolateSubstitutionContext(args.context, {
           currentScope: functionSymbol.functionScope || functionSymbol.parentScope,
           genericsScope: functionSymbol.functionScope || functionSymbol.parentScope,
@@ -624,51 +641,148 @@ export function elaborateFunctionSignature(
 export function ChooseFunctionOverload(
   sr: SemanticResult,
   overloadGroupId: Collect.Id,
-  calledWithArgs: { index: number; exprId: Semantic.Id }[],
+  calledWithArgs: { index: number; exprId: Semantic.Id | null }[] | undefined,
   args: {
     context: ElaborationContext;
+    elaboratedVariables: Map<Collect.Id, Semantic.Id>;
+    usageSourceLocation: SourceLoc;
   }
 ) {
   const overloadGroup = sr.cc.nodes.get(overloadGroupId);
   assert(overloadGroup.variant === Collect.ENode.FunctionOverloadGroup);
 
-  assert(
-    false,
-    "TODO FOR NEXT TIME: This elaboration system needs to be improved. For choosing an overload, i must elaborate the function parameters, but i can't really elaborate the entire function symbol since elaborating the function symbols requires things like generics and parameter packs, that i only know after i have chosen the overload and i can't do it in advance. But to elaborate the datatypes i need to duplicate a lot of elaboration here. So i need proper convenience functions that abstract the elaboration for functions and types in a way that i can simply use them and avoid all this code duplication. I need simple elaboration functions for functions and types, that don't require 12 parameters"
-  );
+  if (overloadGroup.overloads.size === 1) {
+    return [...overloadGroup.overloads][0];
+  }
 
-  // // First find exact matches
-  // const exactMatches = [] as Semantic.FunctionSymbol[];
-  // for (const overloadId of overloadGroup.overloads) {
-  //   const overload = sr.cc.nodes.get(overloadId);
-  //   assert(overload.variant === Collect.ENode.FunctionSymbol);
+  if (calledWithArgs === undefined) {
+    throw new CompilerError(
+      `Function '${overloadGroup.name}' is overloaded but not directly called, so there is not enough context to disambiguate the overload. Overloaded functions must be immediately called to disambiguate the call using the given arguments`,
+      args.usageSourceLocation
+    );
+  }
 
-  //   if (
-  //     overload.parameters.length !== calledWithArgs.length ||
-  //     funcSymHasParameterPack(sr.cc, overloadId)
-  //   )
-  //     continue;
+  // First find exact matches
+  const matchingSignatures = [] as {
+    matches: boolean;
+    signature: Semantic.Id;
+    reason: string | null;
+  }[];
+  for (const overloadId of overloadGroup.overloads) {
+    const overload = sr.cc.nodes.get(overloadId);
+    assert(overload.variant === Collect.ENode.FunctionSymbol);
 
-  //   let matches = true;
-  //   overload.parameters.forEach((p, i) => {
-  //     const requiredType = lookupAndElaborateDatatype(sr, {
-  //       typeId: p.type,
-  //       context: args.context,
-  //       currentScope: 0,
-  //     });
-  //     const passed = calledWithArgs.find((a) => a.index === i);
-  //     if (!passed) {
-  //       matches = false;
-  //       return;
-  //     }
-  //     const expression = sr.nodes.get(passed.exprId);
-  //     assert(isExpression(expression));
-  //     const type = sr.nodes.get(expression.type);
-  //     assert(isType(expression));
-  //     if (type !== p.type) {
-  //     }
-  //   });
-  // }
+    const signatureId = elaborateFunctionSignature(sr, overloadId, { context: args.context });
+    const signature = sr.nodes.get(signatureId);
+    assert(signature.variant === Semantic.ENode.FunctionSignature);
+
+    // if (signature.parameters.length !== calledWithArgs.length) {
+    //   exactCandidateSignatures.push({
+    //     matches: false,
+    //     signature: signatureId,
+    //     reason: `Expects ${signature.parameters.length} arguments instead of ${calledWithArgs.length}`,
+    //   });
+    //   continue;
+    // }
+
+    if (funcSymHasParameterPack(sr.cc, overloadId)) {
+      matchingSignatures.push({
+        matches: false,
+        signature: signatureId,
+        reason: `Contains a parameter pack (exact match not possible)`,
+      });
+      continue;
+    }
+
+    let maxArgIndex = 0;
+    for (const arg of calledWithArgs) {
+      if (arg.index > maxArgIndex) maxArgIndex = arg.index;
+    }
+
+    if (maxArgIndex >= signature.parameters.length) {
+      matchingSignatures.push({
+        matches: false,
+        signature: signatureId,
+        reason: `Too many parameters given`,
+      });
+      continue;
+    }
+
+    if (maxArgIndex < signature.parameters.length - 1) {
+      matchingSignatures.push({
+        matches: false,
+        signature: signatureId,
+        reason: `Not enough parameters given`,
+      });
+      continue;
+    }
+
+    let matches = true;
+    let reason = null as string | null;
+    signature.parameters.forEach((p, i) => {
+      const passed = calledWithArgs.find((a) => a.index === i);
+      if (!passed || !passed.exprId) {
+        // This parameter is not passed or is not concrete, so hope that the others are enough for a match
+        // matches = false;
+        // reason = `Parameter #${i + 1} does not have a concrete type`;
+        return;
+      }
+
+      const expression = sr.nodes.get(passed.exprId);
+      assert(isExpression(expression));
+      if (expression.type !== p.type) {
+        matches = false;
+        reason = `Parameter #${i + 1} has unrelated type: ${serializeDatatype(
+          sr,
+          expression.type
+        )} != ${serializeDatatype(sr, p.type)}`;
+        return;
+      }
+      // Else it fits
+    });
+
+    matchingSignatures.push({
+      matches: matches,
+      signature: signatureId,
+      reason: reason,
+    });
+  }
+
+  if (matchingSignatures.filter((s) => s.matches).length === 1) {
+    const signature = sr.nodes.get(matchingSignatures.find((s) => s.matches)!.signature);
+    assert(signature.variant === Semantic.ENode.FunctionSignature);
+    return signature.originalFunction;
+  }
+
+  if (matchingSignatures.filter((s) => s.matches).length === 0) {
+    let str = `No candidate for call to overloaded function '${overloadGroup.name}' matches arguments\n`;
+    for (const candidate of matchingSignatures) {
+      const signature = sr.nodes.get(candidate.signature);
+      assert(signature.variant === Semantic.ENode.FunctionSignature);
+      const originalFunction = sr.cc.nodes.get(signature.originalFunction);
+      assert(originalFunction.variant === Collect.ENode.FunctionSymbol);
+      str += `Candidate at ${
+        originalFunction.sourceloc ? formatSourceLoc(originalFunction.sourceloc) : "?"
+      }: ${serializeNestedName(sr, candidate.signature)} -> `;
+      assert(candidate.reason);
+      str += `Failed because: ${candidate.reason}\n`;
+    }
+    throw new CompilerError(str, args.usageSourceLocation);
+  } else {
+    let str = `Call to overloaded function '${overloadGroup.name}' is ambiguous: Multiple functions fit the criteria:\n`;
+    for (const candidate of matchingSignatures) {
+      if (!candidate.matches) continue;
+      const signature = sr.nodes.get(candidate.signature);
+      assert(signature.variant === Semantic.ENode.FunctionSignature);
+      const originalFunction = sr.cc.nodes.get(signature.originalFunction);
+      assert(originalFunction.variant === Collect.ENode.FunctionSymbol);
+      str += `Candidate at ${
+        originalFunction.sourceloc ? formatSourceLoc(originalFunction.sourceloc) : "?"
+      }: ${serializeNestedName(sr, candidate.signature)}\n`;
+    }
+    str += "You must use explicit struct initializations in order to disambiguate the call\n";
+    throw new CompilerError(str, args.usageSourceLocation);
+  }
 }
 
 export function elaborateExpr(
@@ -680,7 +794,7 @@ export function elaborateExpr(
     elaboratedVariables: Map<Collect.Id, Semantic.Id>;
     gonnaCallFunctionWithParameterValues?: {
       index: number;
-      exprId: Semantic.Id;
+      exprId: Semantic.Id | null;
     }[];
     gonnaInstantiateStructWithType?: Semantic.Id;
     isMonomorphized: boolean;
@@ -900,7 +1014,7 @@ export function elaborateExpr(
 
       let decisiveArguments = [] as {
         index: number;
-        exprId: Semantic.Id;
+        exprId: Semantic.Id | null;
       }[];
       expr.arguments.forEach((p, i) => {
         if (IsExprDecisiveForOverloadResolution(sr, p)) {
@@ -912,6 +1026,11 @@ export function elaborateExpr(
               scope: args.context.currentScope,
               isMonomorphized: args.isMonomorphized,
             })[1],
+          });
+        } else {
+          decisiveArguments.push({
+            index: i,
+            exprId: null,
           });
         }
       });
@@ -968,7 +1087,7 @@ export function elaborateExpr(
       const getActualCallingArguments = (expectedParameterTypes: Semantic.Id[]): Semantic.Id[] => {
         return expr.arguments.map((a, i) => {
           const alreadyKnown = decisiveArguments.find((d) => d.index === i);
-          if (alreadyKnown) {
+          if (alreadyKnown && alreadyKnown.exprId) {
             return alreadyKnown.exprId;
           } else {
             let structType = undefined as Semantic.Id | undefined;
@@ -1195,12 +1314,17 @@ export function elaborateExpr(
           sourceloc: expr.sourceloc,
         });
       } else if (symbol.variant === Collect.ENode.FunctionOverloadGroup) {
-        console.info("TODO: Implement function overload resolution here");
+        const chosenOverloadId = ChooseFunctionOverload(
+          sr,
+          symbolId,
+          args.gonnaCallFunctionWithParameterValues,
+          {
+            context: args.context,
+            elaboratedVariables: args.elaboratedVariables,
+            usageSourceLocation: expr.sourceloc,
+          }
+        );
 
-        // console.log("Choose: ", symbol.name, args.gonnaCallFunctionWithParameterValues);
-        // const ov = ChooseFunctionOverload(sr, symbolId, args.gonnaCallFunctionWithParameterValues);
-
-        const chosenOverloadId = [...symbol.overloads][0];
         const chosenOverload = sr.cc.nodes.get(chosenOverloadId);
         assert(chosenOverload.variant === Collect.ENode.FunctionSymbol);
 
@@ -1432,7 +1556,7 @@ export function elaborateExpr(
             elaboratedVariables: args.elaboratedVariables,
             isMonomorphized: args.isMonomorphized,
             name: expr.memberName,
-            gonnaCallFunctionWithParameters: args.gonnaCallFunctionWithParameterValues,
+            gonnaCallFunctionWithParameterValues: args.gonnaCallFunctionWithParameterValues,
           });
         } else {
           return lookupAndElaborateStaticStructAccess(sr, objectId, {
@@ -1441,7 +1565,7 @@ export function elaborateExpr(
             elaboratedVariables: args.elaboratedVariables,
             isMonomorphized: args.isMonomorphized,
             name: expr.memberName,
-            gonnaCallFunctionWithParameters: args.gonnaCallFunctionWithParameterValues,
+            gonnaCallFunctionWithParameterValues: args.gonnaCallFunctionWithParameterValues,
           });
         }
       }
@@ -1490,8 +1614,19 @@ export function elaborateExpr(
         console.info("TODO: Fix overload resolution here ");
         const overloadGroup = sr.cc.nodes.get(overloadGroupId);
         assert(overloadGroup.variant === Collect.ENode.FunctionOverloadGroup);
-        const collectedMethodId = [...overloadGroup.overloads][0];
-        const collectedMethod = sr.cc.nodes.get(collectedMethodId);
+
+        const chosenOverloadId = ChooseFunctionOverload(
+          sr,
+          overloadGroupId,
+          args.gonnaCallFunctionWithParameterValues,
+          {
+            context: args.context,
+            elaboratedVariables: args.elaboratedVariables,
+            usageSourceLocation: expr.sourceloc,
+          }
+        );
+
+        const collectedMethod = sr.cc.nodes.get(chosenOverloadId);
         assert(collectedMethod.variant === Collect.ENode.FunctionSymbol);
 
         const elaboratedStructCache = sr.elaboratedStructDatatypes.find(
@@ -1508,7 +1643,7 @@ export function elaborateExpr(
 
         const elaboratedMethodId = elaborateFunctionSymbolWithGenerics(
           sr,
-          elaborateFunctionSignature(sr, collectedMethodId, { context: args.context }),
+          elaborateFunctionSignature(sr, chosenOverloadId, { context: args.context }),
           {
             context: mergeSubstitutionContext(
               elaboratedStructCache.substitutionContext,
@@ -2201,6 +2336,8 @@ export function elaborateStatement(
           sr.syntheticScopeToVariableMap.set(s.body, new Map());
         }
         const syntheticMap = sr.syntheticScopeToVariableMap.get(s.body)!;
+
+        assert(comptimeExpr.parameters);
 
         const allScopes: Semantic.Id[] = [];
         for (let i = 0; i < comptimeExpr.parameters.length; i++) {

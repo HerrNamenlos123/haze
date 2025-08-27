@@ -1,3 +1,4 @@
+import { unchangedTextChangeRange } from "typescript";
 import {
   BinaryOperationToString,
   EExternLanguage,
@@ -6,6 +7,7 @@ import {
 } from "../shared/AST";
 import { EPrimitive, primitiveToString, type LiteralValue } from "../shared/common";
 import { assert, ImpossibleSituation, InternalError } from "../shared/Errors";
+import { Collect, printCollectedDatatype } from "../SymbolCollection/SymbolCollection";
 import { Semantic, type SemanticResult } from "./SemanticSymbols";
 
 export function serializeDatatype(sr: SemanticResult, datatypeId: Semantic.Id): string {
@@ -50,12 +52,16 @@ export function serializeDatatype(sr: SemanticResult, datatypeId: Semantic.Id): 
       return `${serializeDatatype(sr, datatype.datatype)}[]`;
 
     case Semantic.ENode.ParameterPackDatatypeSymbol:
-      return `Pack[${datatype.parameters.map((p) => {
-        const param = sr.nodes.get(p);
-        assert(param.variant === Semantic.ENode.VariableSymbol);
-        assert(param.type);
-        return `${param.name}: ${serializeDatatype(sr, param.type)}`;
-      })}]`;
+      if (datatype.parameters === null) {
+        return "...";
+      } else {
+        return `Pack[${datatype.parameters.map((p) => {
+          const param = sr.nodes.get(p);
+          assert(param.variant === Semantic.ENode.VariableSymbol);
+          assert(param.type);
+          return `${param.name}: ${serializeDatatype(sr, param.type)}`;
+        })}]`;
+      }
 
     default:
       throw new InternalError("Not handled: " + datatype.variant);
@@ -110,8 +116,19 @@ export function serializeNestedName(sr: SemanticResult, exprId: Semantic.Id): st
     return `${(expr.parentStructOrNS && getParentNames(sr, expr.parentStructOrNS) + ".") || ""}${
       expr.name
     }`;
-    // } else if (expr.methodOf) {
-    //   return `${getParentNames(sr, expr.methodOf)}.${expr.name}`;
+  } else if (expr.variant === Semantic.ENode.FunctionSignature) {
+    const func = sr.cc.nodes.get(expr.originalFunction);
+    assert(func.variant === Collect.ENode.FunctionSymbol);
+    let str = func.name;
+    if (expr.genericPlaceholders.length > 0) {
+      str +=
+        "<" + expr.genericPlaceholders.map((g) => `${serializeDatatype(sr, g)}`).join(", ") + ">";
+    }
+    str +=
+      "(" +
+      expr.parameters.map((g) => `${g.name}: ${serializeDatatype(sr, g.type)}`).join(", ") +
+      ")";
+    return str;
   } else if ("parentStructOrNS" in expr) {
     return `${(expr.parentStructOrNS && getParentNames(sr, expr.parentStructOrNS) + ".") || ""}${
       expr.name
@@ -183,6 +200,7 @@ export function mangleNestedName(sr: SemanticResult, symbolId: Semantic.Id) {
       for (const p of ftype.parameters) {
         const pp = sr.nodes.get(p);
         if (pp.variant === Semantic.ENode.ParameterPackDatatypeSymbol) {
+          assert(pp.parameters !== null, "Cannot mangle an unresolved parameter pack");
           for (const ppp of pp.parameters) {
             const pv = sr.nodes.get(ppp);
             assert(pv.variant === Semantic.ENode.VariableSymbol);
@@ -235,6 +253,7 @@ export function mangleDatatype(sr: SemanticResult, typeId: Semantic.Id): string 
       for (const p of type.parameters) {
         const pp = sr.nodes.get(p);
         if (pp.variant === Semantic.ENode.ParameterPackDatatypeSymbol) {
+          assert(pp.parameters !== null, "Cannot mangle an unresolved parameter pack");
           for (const packParam of pp.parameters) {
             const packParamS = sr.nodes.get(packParam);
             assert(packParamS.variant === Semantic.ENode.VariableSymbol);

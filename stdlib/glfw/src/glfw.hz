@@ -28,7 +28,7 @@ namespace raw {
     extern "C" glfwInitHint(hint: i32, value: i32);
     extern "C" glfwWindowHint(hint: i32, value: i32);
     extern "C" glfwGetTime(): f64;
-    extern "C" glfwMakeContextCurrent(w: GLFWwindow*);
+    // extern "C" glfwMakeContextCurrent(w: GLFWwindow*);
     extern "C" glfwGetProcAddress(procname: str): () => none;
 
     export init(): bool {
