@@ -1,4 +1,3 @@
-import { assign } from "lodash";
 import { HAZE_STDLIB_NAME } from "../Module";
 import { EBinaryOperation, EExternLanguage, EVariableMutability } from "../shared/AST";
 import {
