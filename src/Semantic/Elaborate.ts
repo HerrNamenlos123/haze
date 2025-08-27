@@ -38,6 +38,7 @@ import {
   isType,
   isTypeConcrete,
   makePrimitiveAvailable,
+  printSubstitutionContext,
   Semantic,
   type SemanticResult,
 } from "./SemanticSymbols";
@@ -360,6 +361,7 @@ function lookupSymbolInNamespaceOrStructScope(
 ) {
   const symbol = sr.cc.nodes.get(symbolId);
   if (symbol.variant === Collect.ENode.StructDefinitionSymbol && symbol.name === args.name) {
+    // A struct nested in a struct
     const instantiated = instantiateAndElaborateStructWithGenerics(sr, {
       definedStructTypeId: symbolId,
       elaboratedVariables: args.elaboratedVariables,
@@ -384,6 +386,7 @@ function lookupSymbolInNamespaceOrStructScope(
       sourceloc: args.expr.sourceloc,
     });
   } else if (symbol.variant === Collect.ENode.FunctionOverloadGroup && symbol.name === args.name) {
+    // A method or a namespaced function
     console.info("TODO: Do overload discrimination here");
     const overloadId = [...symbol.overloads][0];
     const funcsym = sr.cc.nodes.get(overloadId);
@@ -396,28 +399,32 @@ function lookupSymbolInNamespaceOrStructScope(
       sourceloc: args.expr.sourceloc,
     });
 
-    const functionSymbolId = elaborateFunctionSymbolWithGenerics(sr, overloadId, {
-      elaboratedVariables: args.elaboratedVariables,
-      paramPackTypes: paramPackTypes,
-      genericArgs: args.expr.genericArgs.map((g) => {
-        return lookupAndElaborateDatatype(sr, {
-          typeId: g,
-          elaboratedVariables: args.elaboratedVariables,
-          context: isolateSubstitutionContext(args.context, {
-            currentScope: args.context.currentScope,
-            genericsScope: args.context.currentScope,
-          }),
-          isInCFuncdecl: false,
-        });
-      }),
-      context: args.context,
-      isMonomorphized: args.isMonomorphized,
-      parentStructOrNS: elaborateParentSymbolFromCache(sr, {
+    const functionSymbolId = elaborateFunctionSymbolWithGenerics(
+      sr,
+      elaborateFunctionSignature(sr, overloadId, { context: args.context }),
+      {
+        elaboratedVariables: args.elaboratedVariables,
+        paramPackTypes: paramPackTypes,
+        genericArgs: args.expr.genericArgs.map((g) => {
+          return lookupAndElaborateDatatype(sr, {
+            typeId: g,
+            elaboratedVariables: args.elaboratedVariables,
+            context: isolateSubstitutionContext(args.context, {
+              currentScope: args.context.currentScope,
+              genericsScope: args.context.currentScope,
+            }),
+            isInCFuncdecl: false,
+          });
+        }),
         context: args.context,
-        parentScope: symbol.parentScope,
-      }),
-      usageSourceLocation: args.expr.sourceloc,
-    });
+        isMonomorphized: args.isMonomorphized,
+        parentStructOrNS: elaborateParentSymbolFromCache(sr, {
+          context: args.context,
+          parentScope: symbol.parentScope,
+        }),
+        usageSourceLocation: args.expr.sourceloc,
+      }
+    );
     const functionSymbol = sr.nodes.get(functionSymbolId);
     assert(functionSymbol.variant === Semantic.ENode.FunctionSymbol);
     return Semantic.addNode(sr, {
@@ -427,7 +434,6 @@ function lookupSymbolInNamespaceOrStructScope(
       sourceloc: args.expr.sourceloc,
     });
   } else {
-    console.info("Warning: Item skipped in namespace access");
     return undefined;
   }
 }
@@ -508,6 +514,8 @@ function lookupAndElaborateStaticStructAccess(
   });
   assert(elaboratedStructCache);
 
+  console.log("Lookup static struct: ", collectedStruct.name, args.name);
+  printSubstitutionContext(sr, elaboratedStructCache.substitutionContext);
   for (const symbolId of structScope.symbols) {
     const s = lookupSymbolInNamespaceOrStructScope(sr, symbolId, {
       context: mergeSubstitutionContext(elaboratedStructCache.substitutionContext, args.context, {
@@ -545,39 +553,72 @@ function lookupAndElaborateStaticStructAccess(
   );
 }
 
-export function elaborateFunctionSignature(sr: SemanticResult, functionSymbolId: Collect.Id) {
-  if (sr.elaboratedFunctionSignatures.has(functionSymbolId)) {
-    return sr.elaboratedFunctionSignatures.get(functionSymbolId)!;
+export function elaborateFunctionSignature(
+  sr: SemanticResult,
+  functionSymbolId: Collect.Id,
+  args: {
+    context: ElaborationContext;
   }
-
+) {
   const functionSymbol = sr.cc.nodes.get(functionSymbolId);
   assert(functionSymbol.variant === Collect.ENode.FunctionSymbol);
-  assert(functionSymbol.functionScope);
 
-  // const signature = Semantic.addNode(sr, {
-  //   variant: Semantic.ENode.FunctionSignature,
-  //   genericPlaceholders: functionSymbol.generics.map((gId) => {
-  //     const g = sr.cc.nodes.get(gId);
-  //     assert(g.variant === Collect.ENode.GenericTypeParameter);
-  //     return Semantic.addNode(sr, {
-  //       variant: Semantic.ENode.GenericParameterDatatype,
-  //       name: g.name,
-  //       collectedParameter: gId,
-  //       concrete: false,
-  //     })[1];
-  //   }),
-  //   originalFunction: functionSymbolId,
-  //   parameters: functionSymbol.parameters.map((p) => {}),
-  //   returnType: lookupAndElaborateDatatype(sr, {
-  //     typeId: functionSymbol.returnType,
-  //     context: makeElaborationContext(),
-  //     currentScope: functionSymbol.functionScope,
-  //     elaboratedVariables: new Map(),
-  //     isInCFuncdecl: functionSymbol.extern === EExternLanguage.Extern_C,
-  //     startLookupInScopeForGenerics: functionSymbol.functionScope,
-  //     startLookupInScopeForSymbol: functionSymbol.functionScope,
-  //   }),
-  // })[1];
+  const genericPlaceholders = functionSymbol.generics.map((gId) => {
+    const g = sr.cc.nodes.get(gId);
+    assert(g.variant === Collect.ENode.GenericTypeParameter);
+    return Semantic.addNode(sr, {
+      variant: Semantic.ENode.GenericParameterDatatype,
+      name: g.name,
+      collectedParameter: gId,
+      concrete: false,
+    })[1];
+  });
+
+  if (sr.elaboratedFunctionSignatures.has(functionSymbolId)) {
+    const signatures = sr.elaboratedFunctionSignatures.get(functionSymbolId)!;
+    for (const signatureId of signatures) {
+      const signature = sr.nodes.get(signatureId);
+      assert(signature.variant === Semantic.ENode.FunctionSignature);
+      if (
+        signature.genericPlaceholders.length === genericPlaceholders.length &&
+        signature.genericPlaceholders.every((g, i) => g === genericPlaceholders[i])
+      ) {
+        return signatureId;
+      }
+    }
+  }
+
+  const signature = Semantic.addNode(sr, {
+    variant: Semantic.ENode.FunctionSignature,
+    genericPlaceholders: genericPlaceholders,
+    originalFunction: functionSymbolId,
+    parameters: functionSymbol.parameters.map((p) => {
+      const type = lookupAndElaborateDatatype(sr, {
+        typeId: functionSymbol.returnType,
+        context: isolateSubstitutionContext(args.context, {
+          currentScope: functionSymbol.functionScope || functionSymbol.parentScope,
+          genericsScope: functionSymbol.functionScope || functionSymbol.parentScope,
+        }),
+        elaboratedVariables: new Map(),
+        isInCFuncdecl: functionSymbol.extern === EExternLanguage.Extern_C,
+      });
+      return {
+        name: p.name,
+        type: type,
+      };
+    }),
+    returnType: lookupAndElaborateDatatype(sr, {
+      typeId: functionSymbol.returnType,
+      context: isolateSubstitutionContext(args.context, {
+        currentScope: functionSymbol.functionScope || functionSymbol.parentScope,
+        genericsScope: functionSymbol.functionScope || functionSymbol.parentScope,
+      }),
+      elaboratedVariables: new Map(),
+      isInCFuncdecl: functionSymbol.extern === EExternLanguage.Extern_C,
+    }),
+  })[1];
+
+  return signature;
 }
 
 export function ChooseFunctionOverload(
@@ -1170,25 +1211,29 @@ export function elaborateExpr(
           sourceloc: expr.sourceloc,
         });
 
-        const elaboratedSymbolId = elaborateFunctionSymbolWithGenerics(sr, chosenOverloadId, {
-          elaboratedVariables: args.elaboratedVariables,
-          paramPackTypes: parameterPackTypes,
-          genericArgs: expr.genericArgs.map((g) => {
-            return lookupAndElaborateDatatype(sr, {
-              typeId: g,
-              context: args.context,
-              elaboratedVariables: args.elaboratedVariables,
-              isInCFuncdecl: false,
-            });
-          }),
-          usageSourceLocation: expr.sourceloc,
-          context: args.context,
-          parentStructOrNS: elaborateParentSymbolFromCache(sr, {
+        const elaboratedSymbolId = elaborateFunctionSymbolWithGenerics(
+          sr,
+          elaborateFunctionSignature(sr, chosenOverloadId, { context: args.context }),
+          {
+            elaboratedVariables: args.elaboratedVariables,
+            paramPackTypes: parameterPackTypes,
+            genericArgs: expr.genericArgs.map((g) => {
+              return lookupAndElaborateDatatype(sr, {
+                typeId: g,
+                context: args.context,
+                elaboratedVariables: args.elaboratedVariables,
+                isInCFuncdecl: false,
+              });
+            }),
+            usageSourceLocation: expr.sourceloc,
             context: args.context,
-            parentScope: symbol.parentScope,
-          }),
-          isMonomorphized: args.isMonomorphized,
-        });
+            parentStructOrNS: elaborateParentSymbolFromCache(sr, {
+              context: args.context,
+              parentScope: symbol.parentScope,
+            }),
+            isMonomorphized: args.isMonomorphized,
+          }
+        );
         assert(elaboratedSymbolId);
         const elaboratedSymbol = sr.nodes.get(elaboratedSymbolId);
         assert(elaboratedSymbol.variant === Semantic.ENode.FunctionSymbol);
@@ -1461,32 +1506,36 @@ export function elaborateExpr(
           sourceloc: expr.sourceloc,
         });
 
-        const elaboratedMethodId = elaborateFunctionSymbolWithGenerics(sr, collectedMethodId, {
-          context: mergeSubstitutionContext(
-            elaboratedStructCache.substitutionContext,
-            args.context,
-            {
-              currentScope: args.context.currentScope,
-              genericsScope: args.context.currentScope,
-            }
-          ),
-          paramPackTypes: parameterPackTypes,
-          genericArgs: expr.genericArgs.map((g) => {
-            return lookupAndElaborateDatatype(sr, {
-              typeId: g,
-              context: isolateSubstitutionContext(elaboratedStructCache.substitutionContext, {
+        const elaboratedMethodId = elaborateFunctionSymbolWithGenerics(
+          sr,
+          elaborateFunctionSignature(sr, collectedMethodId, { context: args.context }),
+          {
+            context: mergeSubstitutionContext(
+              elaboratedStructCache.substitutionContext,
+              args.context,
+              {
                 currentScope: args.context.currentScope,
                 genericsScope: args.context.currentScope,
-              }),
-              elaboratedVariables: args.elaboratedVariables,
-              isInCFuncdecl: false,
-            });
-          }),
-          usageSourceLocation: expr.sourceloc,
-          elaboratedVariables: args.elaboratedVariables,
-          parentStructOrNS: object.type,
-          isMonomorphized: args.isMonomorphized,
-        });
+              }
+            ),
+            paramPackTypes: parameterPackTypes,
+            genericArgs: expr.genericArgs.map((g) => {
+              return lookupAndElaborateDatatype(sr, {
+                typeId: g,
+                context: isolateSubstitutionContext(elaboratedStructCache.substitutionContext, {
+                  currentScope: args.context.currentScope,
+                  genericsScope: args.context.currentScope,
+                }),
+                elaboratedVariables: args.elaboratedVariables,
+                isInCFuncdecl: false,
+              });
+            }),
+            usageSourceLocation: expr.sourceloc,
+            elaboratedVariables: args.elaboratedVariables,
+            parentStructOrNS: object.type,
+            isMonomorphized: args.isMonomorphized,
+          }
+        );
         assert(elaboratedMethodId);
         const elaboratedMethod = sr.nodes.get(elaboratedMethodId);
         assert(elaboratedMethod.variant === Semantic.ENode.FunctionSymbol);
@@ -2312,7 +2361,7 @@ export function elaborateBlockScope(
 
 export function elaborateFunctionSymbolWithGenerics(
   sr: SemanticResult,
-  collectedFunctionSymbolId: Collect.Id,
+  functionSignatureId: Semantic.Id,
   args: {
     genericArgs: Semantic.Id[];
     usageSourceLocation: SourceLoc;
@@ -2323,7 +2372,9 @@ export function elaborateFunctionSymbolWithGenerics(
     context: ElaborationContext;
   }
 ) {
-  const func = sr.cc.nodes.get(collectedFunctionSymbolId);
+  const functionSignature = sr.nodes.get(functionSignatureId);
+  assert(functionSignature.variant === Semantic.ENode.FunctionSignature);
+  const func = sr.cc.nodes.get(functionSignature.originalFunction);
   assert(func.variant === Collect.ENode.FunctionSymbol);
 
   if (func.generics.length !== args.genericArgs.length) {
@@ -2335,7 +2386,8 @@ export function elaborateFunctionSymbolWithGenerics(
 
   if (
     !func.functionScope &&
-    (func.generics.length !== 0 || funcSymHasParameterPack(sr.cc, collectedFunctionSymbolId))
+    (func.generics.length !== 0 ||
+      funcSymHasParameterPack(sr.cc, functionSignature.originalFunction))
   ) {
     throw new CompilerError(
       `Non-Extern function '${func.name}' is generic or uses a parameter pack, but does not define a body. (Generic functions cannot be forward declared)`,
@@ -2343,7 +2395,10 @@ export function elaborateFunctionSymbolWithGenerics(
     );
   }
 
-  if (func.generics.length !== 0 || funcSymHasParameterPack(sr.cc, collectedFunctionSymbolId)) {
+  if (
+    func.generics.length !== 0 ||
+    funcSymHasParameterPack(sr.cc, functionSignature.originalFunction)
+  ) {
     assert(func.functionScope);
     args.context = isolateSubstitutionContext(args.context, {
       currentScope: args.context.currentScope,
@@ -2354,7 +2409,7 @@ export function elaborateFunctionSymbolWithGenerics(
     }
   }
 
-  return elaborateFunctionSymbol(sr, collectedFunctionSymbolId, {
+  return elaborateFunctionSymbol(sr, functionSignatureId, {
     context: args.context,
     elaboratedVariables: args.elaboratedVariables,
     isMonomorphized: args.isMonomorphized,
@@ -2365,7 +2420,7 @@ export function elaborateFunctionSymbolWithGenerics(
 
 export function elaborateFunctionSymbol(
   sr: SemanticResult,
-  collectedFunctionSymbolId: Collect.Id,
+  functionSignatureId: Semantic.Id,
   args: {
     parentStructOrNS: Semantic.Id | null;
     paramPackTypes: Semantic.Id[];
@@ -2374,7 +2429,10 @@ export function elaborateFunctionSymbol(
     context: ElaborationContext;
   }
 ): Semantic.Id {
-  const func = sr.cc.nodes.get(collectedFunctionSymbolId);
+  const functionSignature = sr.nodes.get(functionSignatureId);
+  assert(functionSignature.variant === Semantic.ENode.FunctionSignature);
+
+  const func = sr.cc.nodes.get(functionSignature.originalFunction);
   assert(func.variant === Collect.ENode.FunctionSymbol);
 
   // The way this works is that first we define all generic substitutions outside of the function in the context,
@@ -2393,7 +2451,7 @@ export function elaborateFunctionSymbol(
       s.generics.every((g, index) => g === genericArgs[index]) &&
       s.paramPackTypes.length === args.paramPackTypes.length &&
       s.paramPackTypes.every((g, index) => g === args.paramPackTypes[index]) &&
-      s.originalSymbol === collectedFunctionSymbolId
+      s.originalSymbol === functionSignature.originalFunction
     ) {
       return s.resultSymbol;
     }
@@ -2517,7 +2575,7 @@ export function elaborateFunctionSymbol(
   if (isTypeConcrete(sr, ftype)) {
     sr.elaboratedFuncdefSymbols.push({
       generics: genericArgs,
-      originalSymbol: collectedFunctionSymbolId,
+      originalSymbol: functionSignature.originalFunction,
       substitutionContext: args.context,
       paramPackTypes: args.paramPackTypes,
       resultSymbol: symbolId,
@@ -2705,7 +2763,8 @@ export function elaborateTopLevelSymbol(
         const func = sr.cc.nodes.get(id);
         assert(func.variant === Collect.ENode.FunctionSymbol);
         if (func.generics.length === 0 && !funcSymHasParameterPack(sr.cc, id)) {
-          const sId = elaborateFunctionSymbol(sr, id, {
+          const signature = elaborateFunctionSignature(sr, id, { context: args.context });
+          const sId = elaborateFunctionSymbol(sr, signature, {
             paramPackTypes: [],
             parentStructOrNS: elaborateParentSymbolFromCache(sr, {
               parentScope: func.parentScope,

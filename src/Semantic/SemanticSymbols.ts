@@ -37,7 +37,7 @@ export type SemanticResult = {
 
   overloadedOperators: Semantic.FunctionSymbol[];
 
-  elaboratedFunctionSignatures: Map<Collect.Id, Semantic.FunctionSignature[]>;
+  elaboratedFunctionSignatures: Map<Collect.Id, Semantic.Id[]>;
 
   elaboratedStructDatatypes: {
     originalSymbol: Collect.Id;

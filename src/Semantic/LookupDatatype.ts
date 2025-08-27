@@ -7,6 +7,7 @@ import {
 } from "../SymbolCollection/SymbolCollection";
 import {
   elaborateExpr,
+  elaborateFunctionSignature,
   elaborateFunctionSymbol,
   elaborateNamespace,
   isolateSubstitutionContext,
@@ -18,6 +19,7 @@ import {
   asType,
   isTypeConcrete,
   makePrimitiveAvailable,
+  printSubstitutionContext,
   Semantic,
   type SemanticResult,
 } from "./SemanticSymbols";
@@ -266,6 +268,9 @@ export function instantiateAndElaborateStruct(
     }
   }
 
+  console.log("Semantic: ", definedStructType.name);
+  printSubstitutionContext(sr, args.context);
+  console.log();
   const [struct, structId] = Semantic.addNode<Semantic.StructDatatypeSymbol>(sr, {
     variant: Semantic.ENode.StructDatatype,
     name: definedStructType.name,
@@ -351,7 +356,8 @@ export function instantiateAndElaborateStruct(
           if (overloadedFunc.generics.length !== 0 || funcSymHasParameterPack(sr.cc, overloadId)) {
             return;
           }
-          const funcId = elaborateFunctionSymbol(sr, overloadId, {
+          const signature = elaborateFunctionSignature(sr, overloadId, { context: args.context });
+          const funcId = elaborateFunctionSymbol(sr, signature, {
             paramPackTypes: [],
             context: args.context,
             isMonomorphized: struct.isMonomorphized,
