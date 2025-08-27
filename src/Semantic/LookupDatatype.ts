@@ -12,7 +12,7 @@ import {
   isolateSubstitutionContext,
   lookupSymbol,
   mergeSubstitutionContext,
-  type SubstitutionContext,
+  type ElaborationContext,
 } from "./Elaborate";
 import {
   asType,
@@ -163,8 +163,7 @@ export function elaborateParentSymbolFromCache(
   sr: SemanticResult,
   args: {
     parentScope: Collect.Id;
-    context: SubstitutionContext;
-    currentScope: Collect.Id;
+    context: ElaborationContext;
   }
 ): Semantic.Id | null {
   let parentStructOrNS = null as Semantic.Id | null;
@@ -194,7 +193,6 @@ export function elaborateParentSymbolFromCache(
   } else if (parentScope.variant === Collect.ENode.NamespaceScope) {
     parentStructOrNS = elaborateNamespace(sr, parentScope.owningSymbol, {
       context: args.context,
-      currentScope: args.currentScope,
     });
   }
   return parentStructOrNS;
@@ -206,9 +204,8 @@ export function instantiateAndElaborateStruct(
     definedStructTypeId: Collect.Id; // The defining struct datatype to be instantiated (e.g. struct Foo<T> {})
     genericArgs: Semantic.Id[];
     sourceloc: SourceLoc;
-    currentScope: Collect.Id;
     elaboratedVariables: Map<Collect.Id, Semantic.Id>;
-    context: SubstitutionContext;
+    context: ElaborationContext;
   }
 ) {
   const definedStructType = sr.cc.nodes.get(args.definedStructTypeId);
@@ -241,7 +238,6 @@ export function instantiateAndElaborateStruct(
     parentStructOrNS: elaborateParentSymbolFromCache(sr, {
       parentScope: definedStructType.parentScope,
       context: args.context,
-      currentScope: args.currentScope,
     }),
     collectedSymbol: args.definedStructTypeId,
     isMonomorphized: definedStructType.generics.length > 0,
@@ -255,7 +251,10 @@ export function instantiateAndElaborateStruct(
   });
 
   // New local substitution context
-  const newContext = isolateSubstitutionContext(args.context);
+  const newContext = isolateSubstitutionContext(args.context, {
+    currentScope: args.context.currentScope,
+    genericsScope: args.context.genericsScope,
+  });
   for (let i = 0; i < definedStructType.generics.length; i++) {
     newContext.substitute.set(definedStructType.generics[i], args.genericArgs[i]);
   }
@@ -279,11 +278,11 @@ export function instantiateAndElaborateStruct(
           typeId: symbol.type,
           // Start lookup in the struct itself, these are members, so both the type and
           // its generics must be found from within the struct
-          startLookupInScopeForSymbol: definedStructType.structScope,
-          startLookupInScopeForGenerics: definedStructType.structScope,
-          currentScope: args.currentScope,
           elaboratedVariables: args.elaboratedVariables,
-          context: newContext,
+          context: isolateSubstitutionContext(newContext, {
+            currentScope: definedStructType.structScope,
+            genericsScope: definedStructType.structScope,
+          }),
           isInCFuncdecl: false,
         });
         const [variable, variableId] = Semantic.addNode(sr, {
@@ -310,7 +309,6 @@ export function instantiateAndElaborateStruct(
             memberName: variable.name,
             value: elaborateExpr(sr, defaultValue.value, {
               context: args.context,
-              currentScope: definedStructType.structScope,
               elaboratedVariables: new Map(),
               isMonomorphized: struct.isMonomorphized,
               gonnaInstantiateStructWithType: variable.type,
@@ -326,12 +324,9 @@ export function instantiateAndElaborateStruct(
             return;
           }
           const funcId = elaborateFunctionSymbol(sr, overloadId, {
-            genericArgs: [],
             paramPackTypes: [],
             context: newContext,
-            usageSite: overloadedFunc.sourceloc,
             isMonomorphized: struct.isMonomorphized,
-            currentScope: args.currentScope,
             elaboratedVariables: args.elaboratedVariables,
             parentStructOrNS: structId,
           });
@@ -348,7 +343,6 @@ export function instantiateAndElaborateStruct(
           definedStructTypeId: symbolId,
           context: newContext,
           genericArgs: [],
-          currentScope: args.currentScope,
           elaboratedVariables: args.elaboratedVariables,
           sourceloc: symbol.sourceloc,
         });
@@ -368,10 +362,7 @@ export function lookupAndElaborateDatatype(
   sr: SemanticResult,
   args: {
     typeId: Collect.Id;
-    startLookupInScopeForSymbol: Collect.Id;
-    startLookupInScopeForGenerics: Collect.Id;
-    context: SubstitutionContext;
-    currentScope: Collect.Id;
+    context: ElaborationContext;
     elaboratedVariables: Map<Collect.Id, Semantic.Id>;
     isInCFuncdecl: boolean;
   }
@@ -388,21 +379,15 @@ export function lookupAndElaborateDatatype(
         parameters: type.parameters.map((p) =>
           lookupAndElaborateDatatype(sr, {
             typeId: p,
-            startLookupInScopeForSymbol: args.startLookupInScopeForSymbol,
-            startLookupInScopeForGenerics: args.startLookupInScopeForGenerics,
             context: args.context,
-            currentScope: args.currentScope,
             elaboratedVariables: args.elaboratedVariables,
             isInCFuncdecl: args.isInCFuncdecl,
           })
         ),
         returnType: lookupAndElaborateDatatype(sr, {
           typeId: type.returnType,
-          startLookupInScopeForSymbol: args.startLookupInScopeForSymbol,
-          startLookupInScopeForGenerics: args.startLookupInScopeForGenerics,
           context: args.context,
           elaboratedVariables: args.elaboratedVariables,
-          currentScope: args.currentScope,
           isInCFuncdecl: args.isInCFuncdecl,
         }),
         vararg: type.vararg,
@@ -418,10 +403,7 @@ export function lookupAndElaborateDatatype(
         sr,
         lookupAndElaborateDatatype(sr, {
           typeId: type.pointee,
-          startLookupInScopeForSymbol: args.startLookupInScopeForSymbol,
-          startLookupInScopeForGenerics: args.startLookupInScopeForGenerics,
           context: args.context,
-          currentScope: args.currentScope,
           elaboratedVariables: args.elaboratedVariables,
           isInCFuncdecl: args.isInCFuncdecl,
         })
@@ -437,10 +419,7 @@ export function lookupAndElaborateDatatype(
         sr,
         lookupAndElaborateDatatype(sr, {
           typeId: type.datatype,
-          startLookupInScopeForSymbol: args.startLookupInScopeForSymbol,
-          startLookupInScopeForGenerics: args.startLookupInScopeForGenerics,
           context: args.context,
-          currentScope: args.currentScope,
           elaboratedVariables: args.elaboratedVariables,
           isInCFuncdecl: args.isInCFuncdecl,
         }),
@@ -457,10 +436,7 @@ export function lookupAndElaborateDatatype(
         sr,
         lookupAndElaborateDatatype(sr, {
           typeId: type.datatype,
-          startLookupInScopeForSymbol: args.startLookupInScopeForSymbol,
-          startLookupInScopeForGenerics: args.startLookupInScopeForGenerics,
           context: args.context,
-          currentScope: args.currentScope,
           elaboratedVariables: args.elaboratedVariables,
           isInCFuncdecl: args.isInCFuncdecl,
         })
@@ -476,11 +452,8 @@ export function lookupAndElaborateDatatype(
         sr,
         lookupAndElaborateDatatype(sr, {
           typeId: type.referee,
-          startLookupInScopeForSymbol: args.startLookupInScopeForSymbol,
-          startLookupInScopeForGenerics: args.startLookupInScopeForGenerics,
           context: args.context,
           elaboratedVariables: args.elaboratedVariables,
-          currentScope: args.currentScope,
           isInCFuncdecl: args.isInCFuncdecl,
         })
       );
@@ -493,11 +466,8 @@ export function lookupAndElaborateDatatype(
     case Collect.ENode.AliasTypeSymbol: {
       return lookupAndElaborateDatatype(sr, {
         typeId: type.target,
-        startLookupInScopeForSymbol: args.startLookupInScopeForSymbol,
-        startLookupInScopeForGenerics: args.startLookupInScopeForGenerics,
         context: args.context,
         elaboratedVariables: args.elaboratedVariables,
-        currentScope: args.currentScope,
         isInCFuncdecl: args.isInCFuncdecl,
       });
     }
@@ -531,11 +501,8 @@ export function lookupAndElaborateDatatype(
         }
         const functype = lookupAndElaborateDatatype(sr, {
           typeId: type.genericArgs[0],
-          startLookupInScopeForSymbol: args.startLookupInScopeForSymbol,
-          startLookupInScopeForGenerics: args.startLookupInScopeForGenerics,
           context: args.context,
           isInCFuncdecl: args.isInCFuncdecl,
-          currentScope: args.currentScope,
           elaboratedVariables: args.elaboratedVariables,
         });
         return Semantic.addNode(sr, {
@@ -547,7 +514,7 @@ export function lookupAndElaborateDatatype(
       }
 
       let foundResult = lookupSymbol(sr, type.name, {
-        startLookupInScope: args.startLookupInScopeForSymbol,
+        startLookupInScope: args.context.currentScope,
         sourceloc: type.sourceloc,
       });
       if (foundResult.type === "semantic") {
@@ -564,11 +531,8 @@ export function lookupAndElaborateDatatype(
         const aliasedTypeId = lookupAndElaborateDatatype(sr, {
           typeId: foundId,
           context: args.context,
-          currentScope: args.currentScope,
           elaboratedVariables: args.elaboratedVariables,
           isInCFuncdecl: false,
-          startLookupInScopeForGenerics: args.startLookupInScopeForGenerics,
-          startLookupInScopeForSymbol: args.startLookupInScopeForSymbol,
         });
         if (type.innerNested) {
           const aliasedType = sr.nodes.get(aliasedTypeId);
@@ -582,10 +546,10 @@ export function lookupAndElaborateDatatype(
           assert(collectedNamespace.variant === Collect.ENode.NamespaceDefinitionSymbol);
           return lookupAndElaborateDatatype(sr, {
             typeId: type.innerNested,
-            startLookupInScopeForSymbol: collectedNamespace.namespaceScope,
-            startLookupInScopeForGenerics: args.startLookupInScopeForGenerics,
-            currentScope: args.currentScope,
-            context: isolateSubstitutionContext(args.context),
+            context: isolateSubstitutionContext(args.context, {
+              currentScope: collectedNamespace.namespaceScope,
+              genericsScope: args.context.genericsScope,
+            }),
             elaboratedVariables: args.elaboratedVariables,
             isInCFuncdecl: args.isInCFuncdecl,
           });
@@ -597,21 +561,18 @@ export function lookupAndElaborateDatatype(
         const generics = type.genericArgs.map((g) => {
           return lookupAndElaborateDatatype(sr, {
             typeId: g,
-            // This is intentionally generics twice, because in A<X>.B<Y>, Y must be resolved in the usage scope,
-            // not inside A<X>
-            startLookupInScopeForSymbol: args.startLookupInScopeForGenerics,
-            startLookupInScopeForGenerics: args.startLookupInScopeForGenerics,
-            context: args.context,
+            context: isolateSubstitutionContext(args.context, {
+              currentScope: args.context.genericsScope,
+              genericsScope: args.context.genericsScope,
+            }),
             isInCFuncdecl: false,
             elaboratedVariables: args.elaboratedVariables,
-            currentScope: args.currentScope,
           });
         });
         const structId = instantiateAndElaborateStruct(sr, {
           definedStructTypeId: foundId,
           genericArgs: generics,
           context: args.context,
-          currentScope: args.currentScope,
           elaboratedVariables: args.elaboratedVariables,
           sourceloc: type.sourceloc,
         });
@@ -622,7 +583,7 @@ export function lookupAndElaborateDatatype(
 
         if (type.innerNested) {
           // Here we need to merge the context from the parent into the child
-          let cachedParentSubstitutions = undefined as SubstitutionContext | undefined;
+          let cachedParentSubstitutions = undefined as ElaborationContext | undefined;
           for (const cache of sr.elaboratedStructDatatypes) {
             if (
               cache.originalSymbol === foundId &&
@@ -635,13 +596,13 @@ export function lookupAndElaborateDatatype(
           }
           assert(cachedParentSubstitutions);
           return lookupAndElaborateDatatype(sr, {
-            startLookupInScopeForSymbol: found.structScope,
-            startLookupInScopeForGenerics: args.startLookupInScopeForGenerics,
             typeId: type.innerNested,
-            currentScope: args.currentScope,
             elaboratedVariables: args.elaboratedVariables,
             isInCFuncdecl: false,
-            context: mergeSubstitutionContext(cachedParentSubstitutions, args.context),
+            context: mergeSubstitutionContext(cachedParentSubstitutions, args.context, {
+              currentScope: found.structScope,
+              genericsScope: args.context.genericsScope,
+            }),
           });
         } else {
           return structId;
@@ -650,15 +611,14 @@ export function lookupAndElaborateDatatype(
         if (!type.innerNested) {
           return elaborateNamespace(sr, foundId, {
             context: args.context,
-            currentScope: args.startLookupInScopeForSymbol,
           });
         }
         return lookupAndElaborateDatatype(sr, {
           typeId: type.innerNested,
-          startLookupInScopeForSymbol: found.namespaceScope,
-          startLookupInScopeForGenerics: args.startLookupInScopeForGenerics,
-          currentScope: args.currentScope,
-          context: isolateSubstitutionContext(args.context),
+          context: isolateSubstitutionContext(args.context, {
+            currentScope: found.namespaceScope,
+            genericsScope: args.context.genericsScope,
+          }),
           elaboratedVariables: args.elaboratedVariables,
           isInCFuncdecl: args.isInCFuncdecl,
         });
@@ -667,11 +627,10 @@ export function lookupAndElaborateDatatype(
         if (mappedTo) {
           return mappedTo;
         } else {
-          // This type is returned any time something cannot be substituted, with concrete=false
-          // TODO: This may be solved cleaner
           return Semantic.addNode(sr, {
             variant: Semantic.ENode.GenericParameterDatatype,
             name: found.name,
+            collectedParameter: foundId,
             concrete: false,
           })[1];
         }

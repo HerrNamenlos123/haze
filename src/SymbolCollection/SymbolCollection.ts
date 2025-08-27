@@ -265,6 +265,7 @@ export namespace Collect {
     parentScope: Collect.Id;
     overloadGroup: Collect.Id;
     generics: Collect.Id[];
+    name: string;
     returnType: Collect.Id;
     parameters: ParameterValue[];
     vararg: boolean;
@@ -863,6 +864,7 @@ function collect(
         export: item.export,
         extern: item.externLanguage,
         generics: [],
+        name: item.name,
         overloadGroup: overloadGroupId,
         parameters: parameters,
         parentScope: args.currentParentScope,

@@ -20,10 +20,10 @@ import {
   printCollectedDatatype,
   type CollectionContext,
 } from "../SymbolCollection/SymbolCollection";
-import type { SubstitutionContext } from "./Elaborate";
+import type { ElaborationContext } from "./Elaborate";
 import { serializeDatatype } from "./Serialize";
 
-export function printSubstitutionContext(sr: SemanticResult, context: SubstitutionContext) {
+export function printSubstitutionContext(sr: SemanticResult, context: ElaborationContext) {
   console.info(`Substitutions: (${[...context.substitute.values()].length})`);
   for (const [fromId, toId] of context.substitute) {
     console.info(`${printCollectedDatatype(sr.cc, fromId)} -> ${serializeDatatype(sr, toId)}`);
@@ -37,17 +37,19 @@ export type SemanticResult = {
 
   overloadedOperators: Semantic.FunctionSymbol[];
 
+  elaboratedFunctionSignatures: Map<Collect.Id, Semantic.FunctionSignature[]>;
+
   elaboratedStructDatatypes: {
     originalSymbol: Collect.Id;
     generics: Semantic.Id[];
-    substitutionContext: SubstitutionContext;
+    substitutionContext: ElaborationContext;
     resultSymbol: Semantic.Id;
   }[];
   elaboratedFuncdefSymbols: {
     originalSymbol: Collect.Id;
     generics: Semantic.Id[];
     paramPackTypes: Semantic.Id[];
-    substitutionContext: SubstitutionContext;
+    substitutionContext: ElaborationContext;
     resultSymbol: Semantic.Id;
   }[];
   elaboratedNamespaceSymbols: {
@@ -147,6 +149,8 @@ export namespace Semantic {
     VariableSymbol,
     GlobalVariableDefinitionSymbol,
     FunctionSymbol,
+    FunctionSignature,
+    StructSignature,
     // Datatypes
     FunctionDatatype,
     BlockScope,
@@ -276,6 +280,17 @@ export namespace Semantic {
     concrete: boolean;
   };
 
+  export type FunctionSignature = {
+    variant: ENode.FunctionSignature;
+    originalFunction: Collect.Id;
+    genericPlaceholders: Semantic.Id[];
+    parameters: {
+      name: string;
+      type: Semantic.Id;
+    }[];
+    returnType: Semantic.Id;
+  };
+
   export type FunctionSymbol = {
     variant: ENode.FunctionSymbol;
     staticMethod: boolean;
@@ -382,6 +397,7 @@ export namespace Semantic {
   export type GenericParameterDatatypeSymbol = {
     variant: ENode.GenericParameterDatatype;
     name: string;
+    collectedParameter: Collect.Id;
     concrete: boolean;
   };
 
@@ -419,6 +435,7 @@ export namespace Semantic {
     | CInjectDirective
     | VariableSymbol
     | GlobalVariableDefinitionSymbol
+    | FunctionSignature
     | FunctionSymbol;
 
   export type ExprMemberAccessExpr = {

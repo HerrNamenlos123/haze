@@ -251,28 +251,49 @@ export function lookupSymbol(
 //   }
 // }
 
-export type SubstitutionContext = {
+export type ElaborationContext = {
   substitute: Map<Collect.Id, Semantic.Id>;
+  currentScope: Collect.Id; // This is the scope in which we are elaborating and it changes (e.g. A<i32> when elaborating A<i32>.B)
+  genericsScope: Collect.Id; // This is the scope for generics which does not change (e.g. A<i32>.B<u8> => i32 and u8 are elaborated in the same scope)
 };
 
-export function makeSubstitutionContext(): SubstitutionContext {
+export function makeElaborationContext(args: {
+  currentScope: Collect.Id;
+  genericsScope: Collect.Id;
+}): ElaborationContext {
   return {
     substitute: new Map(),
+    currentScope: args.currentScope,
+    genericsScope: args.genericsScope,
   };
 }
 
-export function isolateSubstitutionContext(parent: SubstitutionContext): SubstitutionContext {
+export function isolateSubstitutionContext(
+  parent: ElaborationContext,
+  args: {
+    currentScope: Collect.Id;
+    genericsScope: Collect.Id;
+  }
+): ElaborationContext {
   return {
     substitute: new Map(parent.substitute),
+    currentScope: args.currentScope,
+    genericsScope: args.genericsScope,
   };
 }
 
 export function mergeSubstitutionContext(
-  a: SubstitutionContext,
-  b: SubstitutionContext
-): SubstitutionContext {
+  a: ElaborationContext,
+  b: ElaborationContext,
+  args: {
+    currentScope: Collect.Id;
+    genericsScope: Collect.Id;
+  }
+): ElaborationContext {
   return {
     substitute: new Map([...a.substitute, ...b.substitute]),
+    currentScope: args.currentScope,
+    genericsScope: args.genericsScope,
   };
 }
 
@@ -327,32 +348,29 @@ function lookupSymbolInNamespaceOrStructScope(
   args: {
     name: string;
     expr: Collect.MemberAccessExpr;
-    currentScope: Collect.Id;
-    context: SubstitutionContext;
+    context: ElaborationContext;
     elaboratedVariables: Map<Collect.Id, Semantic.Id>;
     gonnaCallFunctionWithParameters?: {
       index: number;
       exprId: Semantic.Id;
     }[];
     isMonomorphized: boolean;
-    scope: Collect.Id;
   }
 ) {
   const symbol = sr.cc.nodes.get(symbolId);
   if (symbol.variant === Collect.ENode.StructDefinitionSymbol && symbol.name === args.name) {
     const instantiated = instantiateAndElaborateStruct(sr, {
-      currentScope: args.currentScope,
       definedStructTypeId: symbolId,
       elaboratedVariables: args.elaboratedVariables,
       genericArgs: args.expr.genericArgs.map((g) => {
         return lookupAndElaborateDatatype(sr, {
           typeId: g,
-          currentScope: args.currentScope,
           elaboratedVariables: args.elaboratedVariables,
-          context: args.context,
+          context: isolateSubstitutionContext(args.context, {
+            currentScope: args.context.currentScope,
+            genericsScope: args.context.currentScope,
+          }),
           isInCFuncdecl: false,
-          startLookupInScopeForGenerics: args.scope,
-          startLookupInScopeForSymbol: args.scope,
         });
       }),
       context: args.context,
@@ -377,29 +395,27 @@ function lookupSymbolInNamespaceOrStructScope(
       sourceloc: args.expr.sourceloc,
     });
 
-    const functionSymbolId = elaborateFunctionSymbol(sr, overloadId, {
-      currentScope: args.currentScope,
+    const functionSymbolId = elaborateFunctionSymbolWithGenerics(sr, overloadId, {
       elaboratedVariables: args.elaboratedVariables,
       paramPackTypes: paramPackTypes,
       genericArgs: args.expr.genericArgs.map((g) => {
         return lookupAndElaborateDatatype(sr, {
           typeId: g,
-          currentScope: args.currentScope,
           elaboratedVariables: args.elaboratedVariables,
-          context: args.context,
+          context: isolateSubstitutionContext(args.context, {
+            currentScope: args.context.currentScope,
+            genericsScope: args.context.currentScope,
+          }),
           isInCFuncdecl: false,
-          startLookupInScopeForGenerics: args.scope,
-          startLookupInScopeForSymbol: args.scope,
         });
       }),
       context: args.context,
       isMonomorphized: args.isMonomorphized,
       parentStructOrNS: elaborateParentSymbolFromCache(sr, {
         context: args.context,
-        currentScope: args.currentScope,
         parentScope: symbol.parentScope,
       }),
-      usageSite: args.expr.sourceloc,
+      usageSourceLocation: args.expr.sourceloc,
     });
     const functionSymbol = sr.nodes.get(functionSymbolId);
     assert(functionSymbol.variant === Semantic.ENode.FunctionSymbol);
@@ -421,15 +437,13 @@ function lookupAndElaborateNamespaceMemberAccess(
   args: {
     name: string;
     expr: Collect.MemberAccessExpr;
-    currentScope: Collect.Id;
-    context: SubstitutionContext;
+    context: ElaborationContext;
     elaboratedVariables: Map<Collect.Id, Semantic.Id>;
     gonnaCallFunctionWithParameters?: {
       index: number;
       exprId: Semantic.Id;
     }[];
     isMonomorphized: boolean;
-    scope: Collect.Id;
   }
 ) {
   const namespace = sr.nodes.get(namespaceValueId);
@@ -447,13 +461,11 @@ function lookupAndElaborateNamespaceMemberAccess(
     for (const symbolId of scope.symbols) {
       const s = lookupSymbolInNamespaceOrStructScope(sr, symbolId, {
         context: args.context,
-        currentScope: args.currentScope,
         elaboratedVariables: args.elaboratedVariables,
         expr: args.expr,
         name: args.name,
         gonnaCallFunctionWithParameters: args.gonnaCallFunctionWithParameters,
         isMonomorphized: args.isMonomorphized,
-        scope: args.scope,
       });
       if (s) {
         return s;
@@ -472,15 +484,13 @@ function lookupAndElaborateStaticStructAccess(
   args: {
     name: string;
     expr: Collect.MemberAccessExpr;
-    currentScope: Collect.Id;
-    context: SubstitutionContext;
+    context: ElaborationContext;
     elaboratedVariables: Map<Collect.Id, Semantic.Id>;
     gonnaCallFunctionWithParameters?: {
       index: number;
       exprId: Semantic.Id;
     }[];
     isMonomorphized: boolean;
-    scope: Collect.Id;
   }
 ) {
   const namespaceOrStructValue = sr.nodes.get(namespaceOrStructValueId);
@@ -499,13 +509,14 @@ function lookupAndElaborateStaticStructAccess(
 
   for (const symbolId of structScope.symbols) {
     const s = lookupSymbolInNamespaceOrStructScope(sr, symbolId, {
-      context: mergeSubstitutionContext(elaboratedStructCache.substitutionContext, args.context),
-      currentScope: args.currentScope,
+      context: mergeSubstitutionContext(elaboratedStructCache.substitutionContext, args.context, {
+        currentScope: args.context.currentScope,
+        genericsScope: args.context.currentScope,
+      }),
       elaboratedVariables: args.elaboratedVariables,
       expr: args.expr,
       name: args.name,
       isMonomorphized: args.isMonomorphized,
-      scope: args.scope,
       gonnaCallFunctionWithParameters: args.gonnaCallFunctionWithParameters,
     });
     if (s) {
@@ -527,12 +538,47 @@ function lookupAndElaborateStaticStructAccess(
   );
 }
 
+export function elaborateFunctionSignature(sr: SemanticResult, functionSymbolId: Collect.Id) {
+  if (sr.elaboratedFunctionSignatures.has(functionSymbolId)) {
+    return sr.elaboratedFunctionSignatures.get(functionSymbolId)!;
+  }
+
+  const functionSymbol = sr.cc.nodes.get(functionSymbolId);
+  assert(functionSymbol.variant === Collect.ENode.FunctionSymbol);
+  assert(functionSymbol.functionScope);
+
+  // const signature = Semantic.addNode(sr, {
+  //   variant: Semantic.ENode.FunctionSignature,
+  //   genericPlaceholders: functionSymbol.generics.map((gId) => {
+  //     const g = sr.cc.nodes.get(gId);
+  //     assert(g.variant === Collect.ENode.GenericTypeParameter);
+  //     return Semantic.addNode(sr, {
+  //       variant: Semantic.ENode.GenericParameterDatatype,
+  //       name: g.name,
+  //       collectedParameter: gId,
+  //       concrete: false,
+  //     })[1];
+  //   }),
+  //   originalFunction: functionSymbolId,
+  //   parameters: functionSymbol.parameters.map((p) => {}),
+  //   returnType: lookupAndElaborateDatatype(sr, {
+  //     typeId: functionSymbol.returnType,
+  //     context: makeElaborationContext(),
+  //     currentScope: functionSymbol.functionScope,
+  //     elaboratedVariables: new Map(),
+  //     isInCFuncdecl: functionSymbol.extern === EExternLanguage.Extern_C,
+  //     startLookupInScopeForGenerics: functionSymbol.functionScope,
+  //     startLookupInScopeForSymbol: functionSymbol.functionScope,
+  //   }),
+  // })[1];
+}
+
 export function ChooseFunctionOverload(
   sr: SemanticResult,
   overloadGroupId: Collect.Id,
   calledWithArgs: { index: number; exprId: Semantic.Id }[],
   args: {
-    context: SubstitutionContext;
+    context: ElaborationContext;
   }
 ) {
   const overloadGroup = sr.cc.nodes.get(overloadGroupId);
@@ -543,47 +589,46 @@ export function ChooseFunctionOverload(
     "TODO FOR NEXT TIME: This elaboration system needs to be improved. For choosing an overload, i must elaborate the function parameters, but i can't really elaborate the entire function symbol since elaborating the function symbols requires things like generics and parameter packs, that i only know after i have chosen the overload and i can't do it in advance. But to elaborate the datatypes i need to duplicate a lot of elaboration here. So i need proper convenience functions that abstract the elaboration for functions and types in a way that i can simply use them and avoid all this code duplication. I need simple elaboration functions for functions and types, that don't require 12 parameters"
   );
 
-  // First find exact matches
-  const exactMatches = [] as Semantic.FunctionSymbol[];
-  for (const overloadId of overloadGroup.overloads) {
-    const overload = sr.cc.nodes.get(overloadId);
-    assert(overload.variant === Collect.ENode.FunctionSymbol);
+  // // First find exact matches
+  // const exactMatches = [] as Semantic.FunctionSymbol[];
+  // for (const overloadId of overloadGroup.overloads) {
+  //   const overload = sr.cc.nodes.get(overloadId);
+  //   assert(overload.variant === Collect.ENode.FunctionSymbol);
 
-    if (
-      overload.parameters.length !== calledWithArgs.length ||
-      funcSymHasParameterPack(sr.cc, overloadId)
-    )
-      continue;
+  //   if (
+  //     overload.parameters.length !== calledWithArgs.length ||
+  //     funcSymHasParameterPack(sr.cc, overloadId)
+  //   )
+  //     continue;
 
-    let matches = true;
-    overload.parameters.forEach((p, i) => {
-      const requiredType = lookupAndElaborateDatatype(sr, {
-        typeId: p.type,
-        context: args.context,
-        currentScope: 0,
-      });
-      const passed = calledWithArgs.find((a) => a.index === i);
-      if (!passed) {
-        matches = false;
-        return;
-      }
-      const expression = sr.nodes.get(passed.exprId);
-      assert(isExpression(expression));
-      const type = sr.nodes.get(expression.type);
-      assert(isType(expression));
-      if (type !== p.type) {
-      }
-    });
-  }
+  //   let matches = true;
+  //   overload.parameters.forEach((p, i) => {
+  //     const requiredType = lookupAndElaborateDatatype(sr, {
+  //       typeId: p.type,
+  //       context: args.context,
+  //       currentScope: 0,
+  //     });
+  //     const passed = calledWithArgs.find((a) => a.index === i);
+  //     if (!passed) {
+  //       matches = false;
+  //       return;
+  //     }
+  //     const expression = sr.nodes.get(passed.exprId);
+  //     assert(isExpression(expression));
+  //     const type = sr.nodes.get(expression.type);
+  //     assert(isType(expression));
+  //     if (type !== p.type) {
+  //     }
+  //   });
+  // }
 }
 
 export function elaborateExpr(
   sr: SemanticResult,
   exprId: Collect.Id,
   args: {
+    context: ElaborationContext;
     scope: Collect.Id;
-    context: SubstitutionContext;
-    currentScope: Collect.Id;
     elaboratedVariables: Map<Collect.Id, Semantic.Id>;
     gonnaCallFunctionWithParameterValues?: {
       index: number;
@@ -595,20 +640,23 @@ export function elaborateExpr(
 ): [Semantic.Expression, Semantic.Id] {
   const expr = sr.cc.nodes.get(exprId);
 
+  args.context = isolateSubstitutionContext(args.context, {
+    currentScope: args.scope,
+    genericsScope: args.scope,
+  });
+
   switch (expr.variant) {
     case Collect.ENode.BinaryExpr: {
       let [left, leftId] = elaborateExpr(sr, expr.left, {
         context: args.context,
+        scope: args.context.currentScope,
         elaboratedVariables: args.elaboratedVariables,
-        currentScope: args.currentScope,
-        scope: args.scope,
         isMonomorphized: args.isMonomorphized,
       });
       let [right, rightId] = elaborateExpr(sr, expr.right, {
         context: args.context,
+        scope: args.context.currentScope,
         elaboratedVariables: args.elaboratedVariables,
-        currentScope: args.currentScope,
-        scope: args.scope,
         isMonomorphized: args.isMonomorphized,
       });
 
@@ -665,9 +713,8 @@ export function elaborateExpr(
     case Collect.ENode.UnaryExpr: {
       const [e, eId] = elaborateExpr(sr, expr.expr, {
         context: args.context,
-        currentScope: args.currentScope,
+        scope: args.context.currentScope,
         elaboratedVariables: args.elaboratedVariables,
-        scope: args.scope,
         isMonomorphized: args.isMonomorphized,
       });
 
@@ -700,10 +747,9 @@ export function elaborateExpr(
 
     case Collect.ENode.ParenthesisExpr: {
       return elaborateExpr(sr, expr.expr, {
-        scope: args.scope,
         elaboratedVariables: args.elaboratedVariables,
-        currentScope: args.currentScope,
         context: args.context,
+        scope: args.context.currentScope,
         gonnaCallFunctionWithParameterValues: args.gonnaCallFunctionWithParameterValues,
         gonnaInstantiateStructWithType: args.gonnaInstantiateStructWithType,
         isMonomorphized: args.isMonomorphized,
@@ -721,10 +767,9 @@ export function elaborateExpr(
           const callingArguments = expr.arguments.map(
             (a, i) =>
               elaborateExpr(sr, a, {
-                scope: args.scope,
-                currentScope: args.currentScope,
                 elaboratedVariables: args.elaboratedVariables,
                 context: args.context,
+                scope: args.context.currentScope,
                 isMonomorphized: args.isMonomorphized,
               })[1]
           );
@@ -754,10 +799,9 @@ export function elaborateExpr(
           const callingArguments = expr.arguments.map(
             (a, i) =>
               elaborateExpr(sr, a, {
-                scope: args.scope,
-                currentScope: args.currentScope,
                 elaboratedVariables: args.elaboratedVariables,
                 context: args.context,
+                scope: args.context.currentScope,
                 isMonomorphized: args.isMonomorphized,
               })[1]
           );
@@ -815,10 +859,9 @@ export function elaborateExpr(
           decisiveArguments.push({
             index: i,
             exprId: elaborateExpr(sr, p, {
-              scope: args.scope,
-              currentScope: args.currentScope,
               elaboratedVariables: args.elaboratedVariables,
               context: args.context,
+              scope: args.context.currentScope,
               isMonomorphized: args.isMonomorphized,
             })[1],
           });
@@ -829,9 +872,8 @@ export function elaborateExpr(
       const [calledExpr, calledExprId] = elaborateExpr(sr, expr.calledExpr, {
         context: args.context,
         elaboratedVariables: args.elaboratedVariables,
-        currentScope: args.currentScope,
-        scope: args.scope,
         gonnaCallFunctionWithParameterValues: decisiveArguments,
+        scope: args.context.currentScope,
         isMonomorphized: args.isMonomorphized,
       });
       const calledExprType = asType(sr.nodes.get(calledExpr.type));
@@ -887,10 +929,9 @@ export function elaborateExpr(
             }
             assert(structType && isType(sr.nodes.get(structType)));
             return elaborateExpr(sr, a, {
-              scope: args.scope,
-              currentScope: args.currentScope,
               elaboratedVariables: args.elaboratedVariables,
               context: args.context,
+              scope: args.context.currentScope,
               gonnaInstantiateStructWithType: structType,
               isMonomorphized: args.isMonomorphized,
             })[1];
@@ -1017,8 +1058,9 @@ export function elaborateExpr(
         });
       }
 
+      // assert(false);
       let foundResult = lookupSymbol(sr, expr.name, {
-        startLookupInScope: args.scope,
+        startLookupInScope: args.context.currentScope,
         sourceloc: expr.sourceloc,
       });
 
@@ -1057,8 +1099,8 @@ export function elaborateExpr(
         let elaboratedSymbolId = undefined as Semantic.Id | undefined;
         if (symbol.variableContext === EVariableContext.Global) {
           // In case it's not elaborated yet, may happen
-          elaborateGlobalSymbol(sr, symbolId, {
-            currentScope: args.currentScope,
+          elaborateTopLevelSymbol(sr, symbolId, {
+            context: args.context,
           });
           elaboratedSymbolId = sr.elaboratedGlobalVariableSymbols.get(symbolId);
         } else {
@@ -1085,8 +1127,8 @@ export function elaborateExpr(
           assert(false);
         }
       } else if (symbol.variant === Collect.ENode.GlobalVariableDefinition) {
-        const [elaboratedSymbolId] = elaborateGlobalSymbol(sr, symbolId, {
-          currentScope: args.currentScope,
+        const [elaboratedSymbolId] = elaborateTopLevelSymbol(sr, symbolId, {
+          context: args.context,
         });
         assert(elaboratedSymbolId);
         const elaboratedSymbol = sr.nodes.get(elaboratedSymbolId);
@@ -1108,8 +1150,8 @@ export function elaborateExpr(
       } else if (symbol.variant === Collect.ENode.FunctionOverloadGroup) {
         console.info("TODO: Implement function overload resolution here");
 
-        console.log("Choose: ", symbol.name, args.gonnaCallFunctionWithParameterValues);
-        const ov = ChooseFunctionOverload(sr, symbolId, args.gonnaCallFunctionWithParameterValues);
+        // console.log("Choose: ", symbol.name, args.gonnaCallFunctionWithParameterValues);
+        // const ov = ChooseFunctionOverload(sr, symbolId, args.gonnaCallFunctionWithParameterValues);
 
         const chosenOverloadId = [...symbol.overloads][0];
         const chosenOverload = sr.cc.nodes.get(chosenOverloadId);
@@ -1122,26 +1164,21 @@ export function elaborateExpr(
           sourceloc: expr.sourceloc,
         });
 
-        const elaboratedSymbolId = elaborateFunctionSymbol(sr, chosenOverloadId, {
+        const elaboratedSymbolId = elaborateFunctionSymbolWithGenerics(sr, chosenOverloadId, {
           elaboratedVariables: args.elaboratedVariables,
           paramPackTypes: parameterPackTypes,
           genericArgs: expr.genericArgs.map((g) => {
             return lookupAndElaborateDatatype(sr, {
               typeId: g,
               context: args.context,
-              currentScope: args.currentScope,
               elaboratedVariables: args.elaboratedVariables,
               isInCFuncdecl: false,
-              startLookupInScopeForGenerics: args.scope,
-              startLookupInScopeForSymbol: args.scope,
             });
           }),
-          usageSite: expr.sourceloc,
+          usageSourceLocation: expr.sourceloc,
           context: args.context,
-          currentScope: args.currentScope,
           parentStructOrNS: elaborateParentSymbolFromCache(sr, {
             context: args.context,
-            currentScope: args.currentScope,
             parentScope: symbol.parentScope,
           }),
           isMonomorphized: args.isMonomorphized,
@@ -1160,8 +1197,8 @@ export function elaborateExpr(
         symbol.variant === Collect.ENode.NamespaceDefinitionSymbol
       ) {
         // This is for static function calls like Arena.create(); -> "Arena" is now a NamespaceValue
-        const [elaboratedSymbolId] = elaborateGlobalSymbol(sr, symbolId, {
-          currentScope: args.currentScope,
+        const [elaboratedSymbolId] = elaborateTopLevelSymbol(sr, symbolId, {
+          context: args.context,
         });
         assert(elaboratedSymbolId);
         const elaboratedSymbol = sr.nodes.get(elaboratedSymbolId);
@@ -1189,9 +1226,8 @@ export function elaborateExpr(
     case Collect.ENode.PointerAddressOfExpr: {
       const [_expr, exprId] = elaborateExpr(sr, expr.expr, {
         context: args.context,
-        currentScope: args.currentScope,
         elaboratedVariables: args.elaboratedVariables,
-        scope: args.scope,
+        scope: args.context.currentScope,
         isMonomorphized: args.isMonomorphized,
       });
       return Semantic.addNode(sr, {
@@ -1208,10 +1244,9 @@ export function elaborateExpr(
 
     case Collect.ENode.PointerDereferenceExpr: {
       const [_expr, _exprId] = elaborateExpr(sr, expr.expr, {
-        scope: args.scope,
         elaboratedVariables: args.elaboratedVariables,
-        currentScope: args.currentScope,
         context: args.context,
+        scope: args.context.currentScope,
         isMonomorphized: args.isMonomorphized,
       });
       const exprType = asType(sr.nodes.get(_expr.type));
@@ -1238,18 +1273,14 @@ export function elaborateExpr(
         variant: Semantic.ENode.ExplicitCastExpr,
         type: lookupAndElaborateDatatype(sr, {
           typeId: expr.targetType,
-          startLookupInScopeForGenerics: args.scope,
-          startLookupInScopeForSymbol: args.scope,
-          currentScope: args.currentScope,
           elaboratedVariables: args.elaboratedVariables,
           isInCFuncdecl: false,
           context: args.context,
         }),
         expr: elaborateExpr(sr, expr.expr, {
           context: args.context,
+          scope: args.context.currentScope,
           elaboratedVariables: args.elaboratedVariables,
-          currentScope: args.currentScope,
-          scope: args.scope,
           isMonomorphized: args.isMonomorphized,
         })[1],
         sourceloc: expr.sourceloc,
@@ -1263,8 +1294,7 @@ export function elaborateExpr(
     case Collect.ENode.PostIncrExpr: {
       const [e, eId] = elaborateExpr(sr, expr.expr, {
         elaboratedVariables: args.elaboratedVariables,
-        scope: args.scope,
-        currentScope: args.currentScope,
+        scope: args.context.currentScope,
         context: args.context,
         isMonomorphized: args.isMonomorphized,
       });
@@ -1285,8 +1315,7 @@ export function elaborateExpr(
       const [e, eId] = elaborateExpr(sr, expr.expr, {
         context: args.context,
         elaboratedVariables: args.elaboratedVariables,
-        currentScope: args.currentScope,
-        scope: args.scope,
+        scope: args.context.currentScope,
         isMonomorphized: args.isMonomorphized,
       });
       return Semantic.addNode(sr, {
@@ -1304,10 +1333,9 @@ export function elaborateExpr(
 
     case Collect.ENode.MemberAccessExpr: {
       const [object, objectId] = elaborateExpr(sr, expr.expr, {
+        scope: args.context.currentScope,
         context: args.context,
         elaboratedVariables: args.elaboratedVariables,
-        currentScope: args.currentScope,
-        scope: args.scope,
         isMonomorphized: args.isMonomorphized,
       });
       let objectType = asType(sr.nodes.get(object.type));
@@ -1322,9 +1350,7 @@ export function elaborateExpr(
           return lookupAndElaborateNamespaceMemberAccess(sr, objectId, {
             expr: expr,
             context: args.context,
-            currentScope: args.currentScope,
             elaboratedVariables: args.elaboratedVariables,
-            scope: args.scope,
             isMonomorphized: args.isMonomorphized,
             name: expr.memberName,
             gonnaCallFunctionWithParameters: args.gonnaCallFunctionWithParameterValues,
@@ -1333,9 +1359,7 @@ export function elaborateExpr(
           return lookupAndElaborateStaticStructAccess(sr, objectId, {
             expr: expr,
             context: args.context,
-            currentScope: args.currentScope,
             elaboratedVariables: args.elaboratedVariables,
-            scope: args.scope,
             isMonomorphized: args.isMonomorphized,
             name: expr.memberName,
             gonnaCallFunctionWithParameters: args.gonnaCallFunctionWithParameterValues,
@@ -1403,25 +1427,28 @@ export function elaborateExpr(
           sourceloc: expr.sourceloc,
         });
 
-        const elaboratedMethodId = elaborateFunctionSymbol(sr, collectedMethodId, {
+        const elaboratedMethodId = elaborateFunctionSymbolWithGenerics(sr, collectedMethodId, {
           context: mergeSubstitutionContext(
             elaboratedStructCache.substitutionContext,
-            args.context
+            args.context,
+            {
+              currentScope: args.context.currentScope,
+              genericsScope: args.context.currentScope,
+            }
           ),
           paramPackTypes: parameterPackTypes,
           genericArgs: expr.genericArgs.map((g) => {
             return lookupAndElaborateDatatype(sr, {
               typeId: g,
-              context: elaboratedStructCache.substitutionContext,
-              currentScope: args.currentScope,
+              context: isolateSubstitutionContext(elaboratedStructCache.substitutionContext, {
+                currentScope: args.context.currentScope,
+                genericsScope: args.context.currentScope,
+              }),
               elaboratedVariables: args.elaboratedVariables,
               isInCFuncdecl: false,
-              startLookupInScopeForGenerics: args.scope,
-              startLookupInScopeForSymbol: args.scope,
             });
           }),
-          usageSite: expr.sourceloc,
-          currentScope: args.currentScope,
+          usageSourceLocation: expr.sourceloc,
           elaboratedVariables: args.elaboratedVariables,
           parentStructOrNS: object.type,
           isMonomorphized: args.isMonomorphized,
@@ -1468,15 +1495,13 @@ export function elaborateExpr(
       const [value, valueId] = elaborateExpr(sr, expr.value, {
         context: args.context,
         elaboratedVariables: args.elaboratedVariables,
-        scope: args.scope,
-        currentScope: args.currentScope,
+        scope: args.context.currentScope,
         isMonomorphized: args.isMonomorphized,
       });
       const [target, targetId] = elaborateExpr(sr, expr.expr, {
         context: args.context,
         elaboratedVariables: args.elaboratedVariables,
-        currentScope: args.currentScope,
-        scope: args.scope,
+        scope: args.context.currentScope,
         isMonomorphized: args.isMonomorphized,
       });
       return Semantic.addNode(sr, {
@@ -1496,9 +1521,8 @@ export function elaborateExpr(
       const values = expr.values.map((v) =>
         elaborateExpr(sr, v, {
           context: args.context,
+          scope: args.context.currentScope,
           elaboratedVariables: args.elaboratedVariables,
-          scope: args.scope,
-          currentScope: args.currentScope,
           isMonomorphized: args.isMonomorphized,
         })
       );
@@ -1547,16 +1571,14 @@ export function elaborateExpr(
       }
       const [value, valueId] = elaborateExpr(sr, expr.expr, {
         context: args.context,
+        scope: args.context.currentScope,
         elaboratedVariables: args.elaboratedVariables,
-        scope: args.scope,
-        currentScope: args.currentScope,
         isMonomorphized: args.isMonomorphized,
       });
       const [index, indexId] = elaborateExpr(sr, expr.indices[0], {
         context: args.context,
         elaboratedVariables: args.elaboratedVariables,
-        scope: args.scope,
-        currentScope: args.currentScope,
+        scope: args.context.currentScope,
         isMonomorphized: args.isMonomorphized,
       });
 
@@ -1589,12 +1611,12 @@ export function elaborateExpr(
       if (expr.structType) {
         structId = lookupAndElaborateDatatype(sr, {
           typeId: expr.structType,
-          currentScope: args.currentScope,
           elaboratedVariables: args.elaboratedVariables,
-          startLookupInScopeForGenerics: args.scope,
-          startLookupInScopeForSymbol: args.scope,
           isInCFuncdecl: false,
-          context: args.context,
+          context: isolateSubstitutionContext(args.context, {
+            currentScope: args.context.currentScope,
+            genericsScope: args.context.currentScope,
+          }),
         });
       } else if (args.gonnaInstantiateStructWithType) {
         structId = args.gonnaInstantiateStructWithType;
@@ -1650,9 +1672,8 @@ export function elaborateExpr(
 
         const [e, eId] = elaborateExpr(sr, m.value, {
           context: args.context,
+          scope: args.context.currentScope,
           elaboratedVariables: args.elaboratedVariables,
-          currentScope: args.currentScope,
-          scope: args.scope,
           gonnaInstantiateStructWithType: variable.type || undefined,
           isMonomorphized: args.isMonomorphized,
         });
@@ -1724,9 +1745,8 @@ export function elaborateStatement(
   statementId: Collect.Id,
   args: {
     expectedReturnType: Semantic.Id;
-    context: SubstitutionContext;
+    context: ElaborationContext;
     elaboratedVariables: Map<Collect.Id, Semantic.Id>;
-    currentScope: Collect.Id;
     isMonomorphized: boolean;
   }
 ): Semantic.Id {
@@ -1757,10 +1777,12 @@ export function elaborateStatement(
         targetScopeId: scopeId,
         sourceScopeId: s.blockscope,
         expectedReturnType: args.expectedReturnType,
-        currentScope: args.currentScope,
         elaboratedVariables: args.elaboratedVariables,
         isMonomorphized: args.isMonomorphized,
-        context: args.context,
+        context: isolateSubstitutionContext(args.context, {
+          currentScope: s.owningScope,
+          genericsScope: s.owningScope,
+        }),
       });
       return Semantic.addNode(sr, {
         variant: Semantic.ENode.BlockScopeStatement,
@@ -1776,9 +1798,8 @@ export function elaborateStatement(
     case Collect.ENode.IfStatement: {
       const [condition, conditionId] = elaborateExpr(sr, s.condition, {
         context: args.context,
-        elaboratedVariables: args.elaboratedVariables,
-        currentScope: args.currentScope,
         scope: s.owningScope,
+        elaboratedVariables: args.elaboratedVariables,
         isMonomorphized: args.isMonomorphized,
       });
       if (s.comptime) {
@@ -1792,7 +1813,6 @@ export function elaborateStatement(
             targetScopeId: thenScopeId,
             sourceScopeId: s.thenBlock,
             expectedReturnType: args.expectedReturnType,
-            currentScope: args.currentScope,
             elaboratedVariables: args.elaboratedVariables,
             isMonomorphized: args.isMonomorphized,
             context: args.context,
@@ -1807,9 +1827,8 @@ export function elaborateStatement(
         for (const elif of s.elseif) {
           const [condition, conditionId] = elaborateExpr(sr, elif.condition, {
             context: args.context,
-            elaboratedVariables: args.elaboratedVariables,
-            currentScope: args.currentScope,
             scope: s.owningScope,
+            elaboratedVariables: args.elaboratedVariables,
             isMonomorphized: args.isMonomorphized,
           });
           if (EvalCTFEBoolean(sr, conditionId)) {
@@ -1821,7 +1840,6 @@ export function elaborateStatement(
               targetScopeId: thenScopeId,
               sourceScopeId: elif.thenBlock,
               expectedReturnType: args.expectedReturnType,
-              currentScope: args.currentScope,
               elaboratedVariables: args.elaboratedVariables,
               context: args.context,
               isMonomorphized: args.isMonomorphized,
@@ -1843,7 +1861,6 @@ export function elaborateStatement(
             targetScopeId: thenScopeId,
             sourceScopeId: s.elseBlock,
             expectedReturnType: args.expectedReturnType,
-            currentScope: args.currentScope,
             elaboratedVariables: args.elaboratedVariables,
             isMonomorphized: args.isMonomorphized,
             context: args.context,
@@ -1873,7 +1890,6 @@ export function elaborateStatement(
           targetScopeId: thenScopeId,
           sourceScopeId: s.thenBlock,
           expectedReturnType: args.expectedReturnType,
-          currentScope: args.currentScope,
           elaboratedVariables: args.elaboratedVariables,
           isMonomorphized: args.isMonomorphized,
           context: args.context,
@@ -1886,7 +1902,6 @@ export function elaborateStatement(
           elaborateBlockScope(sr, {
             targetScopeId: innerThenScopeId,
             sourceScopeId: e.thenBlock,
-            currentScope: args.currentScope,
             isMonomorphized: args.isMonomorphized,
             expectedReturnType: args.expectedReturnType,
             elaboratedVariables: args.elaboratedVariables,
@@ -1895,9 +1910,8 @@ export function elaborateStatement(
           return {
             condition: elaborateExpr(sr, e.condition, {
               context: args.context,
-              elaboratedVariables: args.elaboratedVariables,
               scope: s.owningScope,
-              currentScope: args.currentScope,
+              elaboratedVariables: args.elaboratedVariables,
               isMonomorphized: args.isMonomorphized,
             })[1],
             then: innerThenScopeId,
@@ -1917,7 +1931,6 @@ export function elaborateStatement(
             targetScopeId: elseScopeId,
             sourceScopeId: s.elseBlock,
             expectedReturnType: args.expectedReturnType,
-            currentScope: args.currentScope,
             isMonomorphized: args.isMonomorphized,
             elaboratedVariables: args.elaboratedVariables,
             context: args.context,
@@ -1941,9 +1954,8 @@ export function elaborateStatement(
     case Collect.ENode.WhileStatement: {
       const [condition, conditionId] = elaborateExpr(sr, s.condition, {
         context: args.context,
-        elaboratedVariables: args.elaboratedVariables,
         scope: s.owningScope,
-        currentScope: args.currentScope,
+        elaboratedVariables: args.elaboratedVariables,
         isMonomorphized: args.isMonomorphized,
       });
       const [thenScope, thenScopeId] = Semantic.addNode(sr, {
@@ -1955,7 +1967,6 @@ export function elaborateStatement(
         sourceScopeId: s.block,
         elaboratedVariables: args.elaboratedVariables,
         isMonomorphized: args.isMonomorphized,
-        currentScope: args.currentScope,
         expectedReturnType: args.expectedReturnType,
         context: args.context,
       });
@@ -1979,9 +1990,8 @@ export function elaborateStatement(
             sr,
             elaborateExpr(sr, s.expr, {
               context: args.context,
-              elaboratedVariables: args.elaboratedVariables,
               scope: s.owningScope,
-              currentScope: args.currentScope,
+              elaboratedVariables: args.elaboratedVariables,
               isMonomorphized: args.isMonomorphized,
             })[1],
             args.expectedReturnType,
@@ -2006,10 +2016,9 @@ export function elaborateStatement(
         s.value &&
         elaborateExpr(sr, s.value, {
           context: args.context,
-          elaboratedVariables: args.elaboratedVariables,
           scope: s.owningScope,
+          elaboratedVariables: args.elaboratedVariables,
           isMonomorphized: args.isMonomorphized,
-          currentScope: args.currentScope,
         })[1];
       const value = valueId && asExpression(sr.nodes.get(valueId));
 
@@ -2030,12 +2039,12 @@ export function elaborateStatement(
       if (collectedVariableSymbol.type) {
         variableSymbol.type = lookupAndElaborateDatatype(sr, {
           typeId: collectedVariableSymbol.type,
-          currentScope: args.currentScope,
           elaboratedVariables: args.elaboratedVariables,
-          startLookupInScopeForGenerics: s.owningScope,
-          startLookupInScopeForSymbol: s.owningScope,
           isInCFuncdecl: false,
-          context: args.context,
+          context: isolateSubstitutionContext(args.context, {
+            currentScope: s.owningScope,
+            genericsScope: s.owningScope,
+          }),
         });
         assert(variableSymbol.type);
       } else {
@@ -2070,11 +2079,10 @@ export function elaborateStatement(
       return Semantic.addNode(sr, {
         variant: Semantic.ENode.ExprStatement,
         expr: elaborateExpr(sr, s.expr, {
-          scope: s.owningScope,
           context: args.context,
+          scope: s.owningScope,
           isMonomorphized: args.isMonomorphized,
           elaboratedVariables: args.elaboratedVariables,
-          currentScope: args.currentScope,
         })[1],
         sourceloc: s.sourceloc,
       })[1];
@@ -2087,10 +2095,9 @@ export function elaborateStatement(
       if (s.comptime) {
         const [value, valueId] = elaborateExpr(sr, s.value, {
           context: args.context,
+          scope: s.owningScope,
           elaboratedVariables: args.elaboratedVariables,
           isMonomorphized: args.isMonomorphized,
-          scope: s.owningScope,
-          currentScope: args.currentScope,
         });
         const [comptimeValue, comptimeValueId] = EvalCTFE(sr, valueId);
         if (comptimeValue.variant !== Semantic.ENode.SymbolValueExpr) {
@@ -2129,7 +2136,6 @@ export function elaborateStatement(
             targetScopeId: thenScopeId,
             sourceScopeId: s.body,
             expectedReturnType: args.expectedReturnType,
-            currentScope: args.currentScope,
             isMonomorphized: args.isMonomorphized,
             elaboratedVariables: args.elaboratedVariables,
             context: args.context,
@@ -2167,10 +2173,9 @@ function elaborateVariableSymbolInScope(
   sr: SemanticResult,
   variableSymbolId: Collect.Id,
   args: {
-    currentScope: Collect.Id;
     elaboratedVariables: Map<Collect.Id, Semantic.Id>;
     isMonomorphized: boolean;
-    context: SubstitutionContext;
+    context: ElaborationContext;
   }
 ) {
   const symbol = sr.cc.nodes.get(variableSymbolId);
@@ -2190,12 +2195,12 @@ function elaborateVariableSymbolInScope(
         }
         type = lookupAndElaborateDatatype(sr, {
           typeId: symbol.type,
-          startLookupInScopeForGenerics: symbol.inScope,
-          startLookupInScopeForSymbol: symbol.inScope,
           isInCFuncdecl: false,
-          currentScope: args.currentScope,
           elaboratedVariables: args.elaboratedVariables,
-          context: args.context,
+          context: isolateSubstitutionContext(args.context, {
+            genericsScope: symbol.inScope,
+            currentScope: symbol.inScope,
+          }),
         });
       } else if (symbol.variableContext === EVariableContext.ThisReference) {
         if (args.elaboratedVariables.has(variableSymbolId)) {
@@ -2217,7 +2222,6 @@ function elaborateVariableSymbolInScope(
         memberOfStruct: null,
         parentStructOrNS: elaborateParentSymbolFromCache(sr, {
           context: args.context,
-          currentScope: args.currentScope,
           parentScope: symbol.inScope,
         }),
         comptime: symbol.comptime,
@@ -2240,11 +2244,10 @@ export function elaborateBlockScope(
   args: {
     sourceScopeId: Collect.Id;
     targetScopeId: Semantic.Id;
-    currentScope: Collect.Id;
     expectedReturnType: Semantic.Id;
     elaboratedVariables: Map<Collect.Id, Semantic.Id>;
     isMonomorphized: boolean;
-    context: SubstitutionContext;
+    context: ElaborationContext;
   }
 ) {
   const scope = sr.cc.nodes.get(args.sourceScopeId);
@@ -2255,7 +2258,6 @@ export function elaborateBlockScope(
   for (const sId of scope.symbols) {
     elaborateVariableSymbolInScope(sr, sId, {
       elaboratedVariables: newElaboratedVariables,
-      currentScope: args.currentScope,
       isMonomorphized: args.isMonomorphized,
       context: args.context,
     });
@@ -2265,7 +2267,6 @@ export function elaborateBlockScope(
     const statement = elaborateStatement(sr, sId, {
       expectedReturnType: args.expectedReturnType,
       elaboratedVariables: newElaboratedVariables,
-      currentScope: args.currentScope,
       context: args.context,
       isMonomorphized: args.isMonomorphized,
     });
@@ -2275,24 +2276,87 @@ export function elaborateBlockScope(
   }
 }
 
-export function elaborateFunctionSymbol(
+export function elaborateFunctionSymbolWithGenerics(
   sr: SemanticResult,
   collectedFunctionSymbolId: Collect.Id,
   args: {
     genericArgs: Semantic.Id[];
-    usageSite: SourceLoc;
-    currentScope: Collect.Id;
+    usageSourceLocation: SourceLoc;
     parentStructOrNS: Semantic.Id | null;
     paramPackTypes: Semantic.Id[];
     elaboratedVariables: Map<Collect.Id, Semantic.Id>;
     isMonomorphized: boolean;
-    context: SubstitutionContext;
+    context: ElaborationContext;
+  }
+) {
+  const func = sr.cc.nodes.get(collectedFunctionSymbolId);
+  assert(func.variant === Collect.ENode.FunctionSymbol);
+
+  if (func.generics.length !== args.genericArgs.length) {
+    throw new CompilerError(
+      `Function ${func.name} expects ${func.generics.length} type parameters but got ${args.genericArgs.length}`,
+      args.usageSourceLocation
+    );
+  }
+
+  if (
+    !func.functionScope &&
+    (func.generics.length !== 0 || funcSymHasParameterPack(sr.cc, collectedFunctionSymbolId))
+  ) {
+    throw new CompilerError(
+      `Non-Extern function '${func.name}' is generic or uses a parameter pack, but does not define a body. (Generic functions cannot be forward declared)`,
+      func.sourceloc
+    );
+  }
+
+  if (func.generics.length !== 0 || funcSymHasParameterPack(sr.cc, collectedFunctionSymbolId)) {
+    assert(func.functionScope);
+    args.context = isolateSubstitutionContext(args.context, {
+      currentScope: args.context.currentScope,
+      genericsScope: args.context.currentScope,
+    });
+    for (let i = 0; i < func.generics.length; i++) {
+      args.context.substitute.set(func.generics[i], args.genericArgs[i]);
+    }
+  }
+
+  return elaborateFunctionSymbol(sr, collectedFunctionSymbolId, {
+    context: args.context,
+    elaboratedVariables: args.elaboratedVariables,
+    isMonomorphized: args.isMonomorphized,
+    paramPackTypes: args.paramPackTypes,
+    parentStructOrNS: args.parentStructOrNS,
+  });
+}
+
+export function elaborateFunctionSymbol(
+  sr: SemanticResult,
+  collectedFunctionSymbolId: Collect.Id,
+  args: {
+    parentStructOrNS: Semantic.Id | null;
+    paramPackTypes: Semantic.Id[];
+    elaboratedVariables: Map<Collect.Id, Semantic.Id>;
+    isMonomorphized: boolean;
+    context: ElaborationContext;
   }
 ): Semantic.Id {
+  const func = sr.cc.nodes.get(collectedFunctionSymbolId);
+  assert(func.variant === Collect.ENode.FunctionSymbol);
+
+  // The way this works is that first we define all generic substitutions outside of the function in the context,
+  // and then we elaborate the function symbol here. For that, we get the raw generics and retrieve substitutions
+  // for all of them. All substitutions must be available. This means that the system works very well, because
+  // if we elaborate a generic function from itself recursively, we automatically get the correct substitution.
+  const genericArgs = func.generics.map((g) => {
+    const substitute = args.context.substitute.get(g);
+    assert(substitute);
+    return substitute;
+  });
+
   for (const s of sr.elaboratedFuncdefSymbols) {
     if (
-      s.generics.length === args.genericArgs.length &&
-      s.generics.every((g, index) => g === args.genericArgs[index]) &&
+      s.generics.length === genericArgs.length &&
+      s.generics.every((g, index) => g === genericArgs[index]) &&
       s.paramPackTypes.length === args.paramPackTypes.length &&
       s.paramPackTypes.every((g, index) => g === args.paramPackTypes[index]) &&
       s.originalSymbol === collectedFunctionSymbolId
@@ -2301,33 +2365,14 @@ export function elaborateFunctionSymbol(
     }
   }
 
-  const func = sr.cc.nodes.get(collectedFunctionSymbolId);
-  assert(func.variant === Collect.ENode.FunctionSymbol);
-
-  const overloadGroup = sr.cc.nodes.get(func.overloadGroup);
-  assert(overloadGroup.variant === Collect.ENode.FunctionOverloadGroup);
-
-  if (func.generics.length !== args.genericArgs.length) {
-    throw new CompilerError(
-      `Function ${overloadGroup.name} expects ${func.generics.length} type parameters but got ${args.genericArgs.length}`,
-      args.usageSite
-    );
-  }
-
-  // New local substitution context
-  const substitutionContext = isolateSubstitutionContext(args.context);
-  for (let i = 0; i < func.generics.length; i++) {
-    substitutionContext.substitute.set(func.generics[i], args.genericArgs[i]);
-  }
-
   const expectedReturnType = lookupAndElaborateDatatype(sr, {
     typeId: func.returnType,
-    context: substitutionContext,
-    currentScope: args.currentScope,
+    context: isolateSubstitutionContext(args.context, {
+      genericsScope: func.functionScope || func.parentScope,
+      currentScope: func.functionScope || func.parentScope,
+    }),
     elaboratedVariables: args.elaboratedVariables,
     isInCFuncdecl: false,
-    startLookupInScopeForGenerics: func.functionScope || func.parentScope,
-    startLookupInScopeForSymbol: func.functionScope || func.parentScope,
   });
 
   if (func.vararg && func.extern !== EExternLanguage.Extern_C) {
@@ -2391,12 +2436,12 @@ export function elaborateFunctionSymbol(
       }
       return lookupAndElaborateDatatype(sr, {
         typeId: p.type,
-        context: substitutionContext,
-        currentScope: args.currentScope,
+        context: isolateSubstitutionContext(args.context, {
+          genericsScope: func.functionScope || func.parentScope,
+          currentScope: func.functionScope || func.parentScope,
+        }),
         elaboratedVariables: args.elaboratedVariables,
         isInCFuncdecl: false,
-        startLookupInScopeForGenerics: func.functionScope || func.parentScope,
-        startLookupInScopeForSymbol: func.functionScope || func.parentScope,
       });
     })
     .filter((p) => Boolean(p))
@@ -2419,7 +2464,7 @@ export function elaborateFunctionSymbol(
     variant: Semantic.ENode.FunctionSymbol,
     type: ftype,
     export: func.export,
-    generics: args.genericArgs,
+    generics: genericArgs,
     staticMethod: false,
     parameterPack: parameterPack,
     methodOf: args.parentStructOrNS,
@@ -2429,7 +2474,7 @@ export function elaborateFunctionSymbol(
     isMonomorphized: parameterPack || func.generics.length > 0 || args.isMonomorphized,
     extern: func.extern,
     parameterNames: parameterNames,
-    name: overloadGroup.name,
+    name: func.name,
     sourceloc: func.sourceloc,
     scope: null,
     concrete: isTypeConcrete(sr, ftype),
@@ -2437,9 +2482,9 @@ export function elaborateFunctionSymbol(
 
   if (isTypeConcrete(sr, ftype)) {
     sr.elaboratedFuncdefSymbols.push({
-      generics: args.genericArgs,
+      generics: genericArgs,
       originalSymbol: collectedFunctionSymbolId,
-      substitutionContext: substitutionContext,
+      substitutionContext: args.context,
       paramPackTypes: args.paramPackTypes,
       resultSymbol: symbolId,
     });
@@ -2489,8 +2534,7 @@ export function elaborateFunctionSymbol(
         if (symbol.variant === Collect.ENode.VariableSymbol) {
           elaborateVariableSymbolInScope(sr, sId, {
             elaboratedVariables: newElaboratedVariables,
-            currentScope: args.currentScope,
-            context: substitutionContext,
+            context: args.context,
             isMonomorphized: args.isMonomorphized,
           });
         }
@@ -2503,8 +2547,7 @@ export function elaborateFunctionSymbol(
         expectedReturnType: expectedReturnType,
         elaboratedVariables: newElaboratedVariables,
         isMonomorphized: symbol.isMonomorphized,
-        currentScope: args.currentScope,
-        context: substitutionContext,
+        context: args.context,
       });
     }
   }
@@ -2516,8 +2559,7 @@ export function elaborateNamespace(
   sr: SemanticResult,
   namespaceId: Collect.Id,
   args: {
-    currentScope: Collect.Id;
-    context: SubstitutionContext;
+    context: ElaborationContext;
   }
 ): Semantic.Id {
   const namespace = sr.cc.nodes.get(namespaceId);
@@ -2548,7 +2590,6 @@ export function elaborateNamespace(
   if (parentScope.variant === Collect.ENode.NamespaceScope) {
     parentNamespace = elaborateNamespace(sr, parentScope.owningSymbol, {
       context: args.context,
-      currentScope: args.currentScope,
     });
   }
 
@@ -2569,8 +2610,11 @@ export function elaborateNamespace(
     const nsScope = sr.cc.nodes.get(scopeId);
     assert(nsScope.variant === Collect.ENode.NamespaceScope);
     for (const symbolId of nsScope.symbols) {
-      const sym = elaborateGlobalSymbol(sr, symbolId, {
-        currentScope: args.currentScope,
+      const sym = elaborateTopLevelSymbol(sr, symbolId, {
+        context: makeElaborationContext({
+          currentScope: scopeId,
+          genericsScope: scopeId,
+        }),
       });
       for (const s of sym) {
         ns.symbols.push(s);
@@ -2580,11 +2624,11 @@ export function elaborateNamespace(
   return nsId;
 }
 
-export function elaborateGlobalSymbol(
+export function elaborateTopLevelSymbol(
   sr: SemanticResult,
   nodeId: Collect.Id,
   args: {
-    currentScope: Collect.Id;
+    context: ElaborationContext;
   }
 ): Semantic.Id[] {
   const node = sr.cc.nodes.get(nodeId);
@@ -2616,8 +2660,7 @@ export function elaborateGlobalSymbol(
     case Collect.ENode.NamespaceDefinitionSymbol: {
       return [
         elaborateNamespace(sr, nodeId, {
-          currentScope: args.currentScope,
-          context: makeSubstitutionContext(),
+          context: args.context,
         }),
       ];
     }
@@ -2629,18 +2672,14 @@ export function elaborateGlobalSymbol(
         assert(func.variant === Collect.ENode.FunctionSymbol);
         if (func.generics.length === 0 && !funcSymHasParameterPack(sr.cc, id)) {
           const sId = elaborateFunctionSymbol(sr, id, {
-            genericArgs: [],
             paramPackTypes: [],
             parentStructOrNS: elaborateParentSymbolFromCache(sr, {
               parentScope: func.parentScope,
-              context: makeSubstitutionContext(),
-              currentScope: args.currentScope,
+              context: args.context,
             }),
             isMonomorphized: false,
-            usageSite: func.sourceloc,
-            currentScope: args.currentScope,
             elaboratedVariables: new Map(),
-            context: makeSubstitutionContext(),
+            context: args.context,
           });
           functionSymbols.push(sId);
         }
@@ -2656,10 +2695,9 @@ export function elaborateGlobalSymbol(
       return [
         instantiateAndElaborateStruct(sr, {
           definedStructTypeId: nodeId,
-          context: makeSubstitutionContext(),
+          context: args.context,
           genericArgs: [],
           elaboratedVariables: new Map(),
-          currentScope: args.currentScope,
           sourceloc: node.sourceloc,
         }),
       ];
@@ -2675,12 +2713,9 @@ export function elaborateGlobalSymbol(
         (node.type &&
           lookupAndElaborateDatatype(sr, {
             typeId: node.type,
-            startLookupInScopeForGenerics: args.currentScope,
-            startLookupInScopeForSymbol: args.currentScope,
             elaboratedVariables: new Map(),
-            currentScope: args.currentScope,
             isInCFuncdecl: false,
-            context: makeSubstitutionContext(),
+            context: args.context,
           })) ||
         null;
 
@@ -2696,9 +2731,8 @@ export function elaborateGlobalSymbol(
         mutability: node.mutability,
         variableContext: EVariableContext.Global,
         parentStructOrNS: elaborateParentSymbolFromCache(sr, {
-          currentScope: args.currentScope,
           parentScope: node.inScope,
-          context: makeSubstitutionContext(),
+          context: args.context,
         }),
         sourceloc: node.sourceloc,
         concrete: true,
@@ -2719,16 +2753,15 @@ export function elaborateGlobalSymbol(
       ];
       if (node.value) {
         [elaboratedValue, elaboratedValueId] = elaborateExpr(sr, node.value, {
-          scope: args.currentScope,
+          scope: args.context.currentScope,
           elaboratedVariables: new Map(),
-          context: makeSubstitutionContext(),
+          context: args.context,
           isMonomorphized: false,
-          currentScope: args.currentScope,
         });
       }
 
-      const [variableSymbolId] = elaborateGlobalSymbol(sr, node.variableSymbol, {
-        currentScope: args.currentScope,
+      const [variableSymbolId] = elaborateTopLevelSymbol(sr, node.variableSymbol, {
+        context: args.context,
       });
       assert(variableSymbolId);
       const variableSymbol = sr.nodes.get(variableSymbolId);
@@ -2776,8 +2809,11 @@ export function elaborateGlobalSymbol(
 
     case Collect.ENode.UnitScope: {
       for (const symbolId of node.symbols) {
-        elaborateGlobalSymbol(sr, symbolId, {
-          currentScope: nodeId,
+        elaborateTopLevelSymbol(sr, symbolId, {
+          context: makeElaborationContext({
+            currentScope: nodeId,
+            genericsScope: nodeId,
+          }),
         });
       }
       return [];
@@ -2785,8 +2821,11 @@ export function elaborateGlobalSymbol(
 
     case Collect.ENode.FileScope: {
       for (const symbolId of node.symbols) {
-        elaborateGlobalSymbol(sr, symbolId, {
-          currentScope: nodeId,
+        elaborateTopLevelSymbol(sr, symbolId, {
+          context: makeElaborationContext({
+            currentScope: nodeId,
+            genericsScope: nodeId,
+          }),
         });
       }
       return [];
@@ -2814,6 +2853,8 @@ export function SemanticallyAnalyze(
     overloadedOperators: [],
     cc: cc,
 
+    elaboratedFunctionSignatures: new Map(),
+
     elaboratedStructDatatypes: [],
     elaboratedFuncdefSymbols: [],
     elaboratedPrimitiveTypes: [],
@@ -2838,8 +2879,11 @@ export function SemanticallyAnalyze(
   const moduleScope = cc.nodes.get(0 as Collect.Id);
   assert(moduleScope.variant === Collect.ENode.ModuleScope);
   for (const symbolId of moduleScope.symbols) {
-    elaborateGlobalSymbol(sr, symbolId, {
-      currentScope: 0 as Collect.Id,
+    elaborateTopLevelSymbol(sr, symbolId, {
+      context: makeElaborationContext({
+        currentScope: 0 as Collect.Id,
+        genericsScope: 0 as Collect.Id,
+      }),
     });
   }
 

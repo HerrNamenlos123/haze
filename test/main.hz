@@ -108,7 +108,7 @@ main(): int {
 
     // const position = Vec3(5.0, 2.0, 4.0);
 
-    bar({}, 5);
+    // bar({}, 5);
     // foo(0 as real);
 
     return 0;
