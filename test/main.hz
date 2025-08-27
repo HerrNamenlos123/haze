@@ -104,7 +104,23 @@ bar(v: Bar) {}
 
 bar(v: Bar, a: int) {}
 
+struct Outer<T> {
+    struct Inner<U> {
+        t: T;
+        u: U;
+    }
+
+    static get<I>(): Inner<I> {
+        return Inner<I> {
+            t: 0 as T,
+            u: 0 as I,
+        };
+    }
+}
+
 main(): int {
+
+    const a = Outer<i32>.get<u8>();
 
     // const position = Vec3(5.0, 2.0, 4.0);
 

@@ -27,6 +27,7 @@ import {
   makeReferenceDatatypeAvailable,
   elaborateParentSymbolFromCache,
   makeArrayDatatypeAvailable,
+  instantiateAndElaborateStructWithGenerics,
 } from "./LookupDatatype";
 import {
   asExpression,
@@ -359,7 +360,7 @@ function lookupSymbolInNamespaceOrStructScope(
 ) {
   const symbol = sr.cc.nodes.get(symbolId);
   if (symbol.variant === Collect.ENode.StructDefinitionSymbol && symbol.name === args.name) {
-    const instantiated = instantiateAndElaborateStruct(sr, {
+    const instantiated = instantiateAndElaborateStructWithGenerics(sr, {
       definedStructTypeId: symbolId,
       elaboratedVariables: args.elaboratedVariables,
       genericArgs: args.expr.genericArgs.map((g) => {
@@ -521,10 +522,16 @@ function lookupAndElaborateStaticStructAccess(
     });
     if (s) {
       const symbol = sr.nodes.get(s[1]);
-      if (symbol.variant === Semantic.ENode.FunctionSymbol) {
-        if (!symbol.staticMethod) {
+      assert(symbol.variant === Semantic.ENode.SymbolValueExpr);
+      const sym = sr.nodes.get(symbol.symbol);
+
+      if (sym.variant === Semantic.ENode.FunctionSymbol) {
+        if (!sym.staticMethod) {
           throw new CompilerError(
-            `Method ${serializeNestedName(sr, s[1])} is not static but is used in a static context`,
+            `Method ${serializeNestedName(
+              sr,
+              symbol.symbol
+            )} is not static but is used in a static context`,
             args.expr.sourceloc
           );
         }
@@ -1058,7 +1065,6 @@ export function elaborateExpr(
         });
       }
 
-      // assert(false);
       let foundResult = lookupSymbol(sr, expr.name, {
         startLookupInScope: args.context.currentScope,
         sourceloc: expr.sourceloc,
@@ -1192,13 +1198,41 @@ export function elaborateExpr(
           type: elaboratedSymbol.type,
           sourceloc: expr.sourceloc,
         });
-      } else if (
-        symbol.variant === Collect.ENode.StructDefinitionSymbol ||
-        symbol.variant === Collect.ENode.NamespaceDefinitionSymbol
-      ) {
+      } else if (symbol.variant === Collect.ENode.NamespaceDefinitionSymbol) {
         // This is for static function calls like Arena.create(); -> "Arena" is now a NamespaceValue
         const [elaboratedSymbolId] = elaborateTopLevelSymbol(sr, symbolId, {
           context: args.context,
+        });
+        assert(elaboratedSymbolId);
+        const elaboratedSymbol = sr.nodes.get(elaboratedSymbolId);
+        assert(
+          elaboratedSymbol.variant === Semantic.ENode.NamespaceDatatype ||
+            elaboratedSymbol.variant === Semantic.ENode.StructDatatype
+        );
+        return Semantic.addNode(sr, {
+          variant: Semantic.ENode.DatatypeAsValueExpr,
+          type: elaboratedSymbolId,
+          sourceloc: expr.sourceloc,
+        });
+      } else if (symbol.variant === Collect.ENode.StructDefinitionSymbol) {
+        // This is for static function calls like Arena.create(); -> "Arena" is now a NamespaceValue
+        const genericArgs = expr.genericArgs.map((a) =>
+          lookupAndElaborateDatatype(sr, {
+            typeId: a,
+            context: isolateSubstitutionContext(args.context, {
+              currentScope: args.context.currentScope,
+              genericsScope: args.context.currentScope,
+            }),
+            elaboratedVariables: args.elaboratedVariables,
+            isInCFuncdecl: false,
+          })
+        );
+        const elaboratedSymbolId = instantiateAndElaborateStructWithGenerics(sr, {
+          definedStructTypeId: symbolId,
+          context: args.context,
+          genericArgs: genericArgs,
+          elaboratedVariables: args.elaboratedVariables,
+          sourceloc: expr.sourceloc,
         });
         assert(elaboratedSymbolId);
         const elaboratedSymbol = sr.nodes.get(elaboratedSymbolId);
@@ -2447,7 +2481,7 @@ export function elaborateFunctionSymbol(
     .filter((p) => Boolean(p))
     .map((p) => p!);
 
-  if (func.methodType === EMethodType.Method) {
+  if (func.methodType === EMethodType.Method && !func.staticMethod) {
     parameterNames.unshift("this");
     assert(args.parentStructOrNS);
     const thisReference = makeReferenceDatatypeAvailable(sr, args.parentStructOrNS);
@@ -2465,7 +2499,7 @@ export function elaborateFunctionSymbol(
     type: ftype,
     export: func.export,
     generics: genericArgs,
-    staticMethod: false,
+    staticMethod: func.staticMethod,
     parameterPack: parameterPack,
     methodOf: args.parentStructOrNS,
     methodType: func.methodType,
@@ -2693,7 +2727,7 @@ export function elaborateTopLevelSymbol(
         return [];
       }
       return [
-        instantiateAndElaborateStruct(sr, {
+        instantiateAndElaborateStructWithGenerics(sr, {
           definedStructTypeId: nodeId,
           context: args.context,
           genericArgs: [],

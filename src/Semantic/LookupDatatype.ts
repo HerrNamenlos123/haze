@@ -198,10 +198,10 @@ export function elaborateParentSymbolFromCache(
   return parentStructOrNS;
 }
 
-export function instantiateAndElaborateStruct(
+export function instantiateAndElaborateStructWithGenerics(
   sr: SemanticResult,
   args: {
-    definedStructTypeId: Collect.Id; // The defining struct datatype to be instantiated (e.g. struct Foo<T> {})
+    definedStructTypeId: Collect.Id;
     genericArgs: Semantic.Id[];
     sourceloc: SourceLoc;
     elaboratedVariables: Map<Collect.Id, Semantic.Id>;
@@ -211,17 +211,6 @@ export function instantiateAndElaborateStruct(
   const definedStructType = sr.cc.nodes.get(args.definedStructTypeId);
   assert(definedStructType.variant === Collect.ENode.StructDefinitionSymbol);
 
-  // If already existing, return cached to prevent loops
-  for (const s of sr.elaboratedStructDatatypes) {
-    if (
-      s.generics.length === args.genericArgs.length &&
-      s.generics.every((g, index) => g === args.genericArgs[index]) &&
-      s.originalSymbol === args.definedStructTypeId
-    ) {
-      return s.resultSymbol;
-    }
-  }
-
   if (definedStructType.generics.length !== args.genericArgs.length) {
     throw new CompilerError(
       `Type ${definedStructType.name} expects ${definedStructType.generics.length} type parameters but got ${args.genericArgs.length}`,
@@ -229,10 +218,58 @@ export function instantiateAndElaborateStruct(
     );
   }
 
+  if (definedStructType.generics.length !== 0) {
+    assert(definedStructType.structScope);
+    args.context = isolateSubstitutionContext(args.context, {
+      currentScope: args.context.currentScope,
+      genericsScope: args.context.currentScope,
+    });
+    for (let i = 0; i < definedStructType.generics.length; i++) {
+      args.context.substitute.set(definedStructType.generics[i], args.genericArgs[i]);
+    }
+  }
+
+  return instantiateAndElaborateStruct(sr, {
+    context: args.context,
+    definedStructTypeId: args.definedStructTypeId,
+    elaboratedVariables: args.elaboratedVariables,
+    sourceloc: args.sourceloc,
+  });
+}
+
+export function instantiateAndElaborateStruct(
+  sr: SemanticResult,
+  args: {
+    definedStructTypeId: Collect.Id; // The defining struct datatype to be instantiated (e.g. struct Foo<T> {})
+    sourceloc: SourceLoc;
+    elaboratedVariables: Map<Collect.Id, Semantic.Id>;
+    context: ElaborationContext;
+  }
+) {
+  const definedStructType = sr.cc.nodes.get(args.definedStructTypeId);
+  assert(definedStructType.variant === Collect.ENode.StructDefinitionSymbol);
+
+  const genericArgs = definedStructType.generics.map((g) => {
+    const substitute = args.context.substitute.get(g);
+    assert(substitute);
+    return substitute;
+  });
+
+  // If already existing, return cached to prevent loops
+  for (const s of sr.elaboratedStructDatatypes) {
+    if (
+      s.generics.length === genericArgs.length &&
+      s.generics.every((g, index) => g === genericArgs[index]) &&
+      s.originalSymbol === args.definedStructTypeId
+    ) {
+      return s.resultSymbol;
+    }
+  }
+
   const [struct, structId] = Semantic.addNode<Semantic.StructDatatypeSymbol>(sr, {
     variant: Semantic.ENode.StructDatatype,
     name: definedStructType.name,
-    generics: args.genericArgs,
+    generics: genericArgs,
     extern: definedStructType.extern,
     noemit: definedStructType.noemit,
     parentStructOrNS: elaborateParentSymbolFromCache(sr, {
@@ -246,24 +283,15 @@ export function instantiateAndElaborateStruct(
     methods: [],
     nestedStructs: [],
     sourceloc: definedStructType.sourceloc,
-    concrete: args.genericArgs.every((g) => isTypeConcrete(sr, g)),
+    concrete: genericArgs.every((g) => isTypeConcrete(sr, g)),
     originalCollectedSymbol: args.definedStructTypeId,
   });
 
-  // New local substitution context
-  const newContext = isolateSubstitutionContext(args.context, {
-    currentScope: args.context.currentScope,
-    genericsScope: args.context.genericsScope,
-  });
-  for (let i = 0; i < definedStructType.generics.length; i++) {
-    newContext.substitute.set(definedStructType.generics[i], args.genericArgs[i]);
-  }
-
   if (isTypeConcrete(sr, structId)) {
     sr.elaboratedStructDatatypes.push({
-      generics: args.genericArgs,
+      generics: genericArgs,
       originalSymbol: args.definedStructTypeId,
-      substitutionContext: newContext,
+      substitutionContext: args.context,
       resultSymbol: structId,
     });
 
@@ -279,7 +307,7 @@ export function instantiateAndElaborateStruct(
           // Start lookup in the struct itself, these are members, so both the type and
           // its generics must be found from within the struct
           elaboratedVariables: args.elaboratedVariables,
-          context: isolateSubstitutionContext(newContext, {
+          context: isolateSubstitutionContext(args.context, {
             currentScope: definedStructType.structScope,
             genericsScope: definedStructType.structScope,
           }),
@@ -325,7 +353,7 @@ export function instantiateAndElaborateStruct(
           }
           const funcId = elaborateFunctionSymbol(sr, overloadId, {
             paramPackTypes: [],
-            context: newContext,
+            context: args.context,
             isMonomorphized: struct.isMonomorphized,
             elaboratedVariables: args.elaboratedVariables,
             parentStructOrNS: structId,
@@ -339,9 +367,9 @@ export function instantiateAndElaborateStruct(
           return;
         }
         // If the nested struct is not generic, instantiate it without generics for early errors
-        const subStructId = instantiateAndElaborateStruct(sr, {
+        const subStructId = instantiateAndElaborateStructWithGenerics(sr, {
           definedStructTypeId: symbolId,
-          context: newContext,
+          context: args.context,
           genericArgs: [],
           elaboratedVariables: args.elaboratedVariables,
           sourceloc: symbol.sourceloc,
@@ -569,7 +597,7 @@ export function lookupAndElaborateDatatype(
             elaboratedVariables: args.elaboratedVariables,
           });
         });
-        const structId = instantiateAndElaborateStruct(sr, {
+        const structId = instantiateAndElaborateStructWithGenerics(sr, {
           definedStructTypeId: foundId,
           genericArgs: generics,
           context: args.context,

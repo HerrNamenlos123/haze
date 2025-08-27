@@ -263,6 +263,7 @@ export namespace Collect {
   export type FunctionSymbol = {
     variant: ENode.FunctionSymbol;
     parentScope: Collect.Id;
+    staticMethod: boolean;
     overloadGroup: Collect.Id;
     generics: Collect.Id[];
     name: string;
@@ -854,6 +855,13 @@ function collect(
         item.name
       );
 
+      if (item.static && item.methodType !== EMethodType.Method) {
+        throw new CompilerError(
+          `A function that is not a method cannot be marked as 'static'`,
+          item.sourceloc
+        );
+      }
+
       const parameters = item.params.map((p) => ({
         name: p.name,
         type: collect(cc, p.datatype, args),
@@ -865,6 +873,7 @@ function collect(
         extern: item.externLanguage,
         generics: [],
         name: item.name,
+        staticMethod: item.static,
         overloadGroup: overloadGroupId,
         parameters: parameters,
         parentScope: args.currentParentScope,
