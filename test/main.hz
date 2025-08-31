@@ -92,8 +92,11 @@ struct Foo {}
 
 main(): int {
 
-    println("TODO for next time: Implement casting like int(5). Implement it so that a function call checks if it's a primitive datatype expr, and replaces it with a CheckedCast node (make a new one), that casts a value to another type. If the value is a constant, do the (overflow safe) cast at compile time for constant folding. If not, keep the CheckedCast. In the CodeGenerator, implement the CheckedCast that a separate builtin function is generated for each CheckedCast node, that asserts the overflow at runtime and then casts the value using C syntax.");
-    return 0;
+    const a = 5 as int;
+
+    // println("TODO for next time: Implement casting like int(5). Implement it so that a function call checks if it's a primitive datatype expr, and replaces it with a CheckedCast node (make a new one), that casts a value to another type. If the value is a constant, do the (overflow safe) cast at compile time for constant folding. If not, keep the CheckedCast. In the CodeGenerator, implement the CheckedCast that a separate builtin function is generated for each CheckedCast node, that asserts the overflow at runtime and then casts the value using C syntax.");
+    println("TODO for next time: Casting is put on hold. int(5) is no longer planned, x as int is planned and it's only allowed if the compiler can ensure the value is in range. Otherwise an error is thrown and an if must be added that constrains the values. Use the 'provides' syntax from GPT. ");
+    // return 0;
 
     if !glfw.init() {
         return 0;

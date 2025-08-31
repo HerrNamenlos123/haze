@@ -133,7 +133,7 @@ export createWindow(config: WindowConfig): Window {
     raw.windowHint(GLFW_CONTEXT_VERSION_MAJOR, 3 as i32);
     raw.windowHint(GLFW_CONTEXT_VERSION_MINOR, 3 as i32);
     raw.windowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-    const handle = raw.createWindow(config.size.width as i32, config.size.height as i32, config.title, 0 as GLFWmonitor*, 0 as GLFWwindow*);
+    const handle = raw.createWindow(config.size.width as i32, config.size.height as i32, config.title, nullptr, nullptr);
     return Window { handle: handle };
 }
 
