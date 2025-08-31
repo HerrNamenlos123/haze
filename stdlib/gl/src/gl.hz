@@ -2,9 +2,9 @@
 __c__("#include \"glad.h\"");
 __c__("#include \"glad.c\"");
 
-extern "C" noemit gladLoadGLLoader(proc: (name: str) => none*);
+extern "C" noemit gladLoadGLLoader(proc: (name: str) => void*);
 
-export init(proc: (name: str) => none*) {
+export init(proc: (name: str) => void*) {
     gladLoadGLLoader(proc);
 }
 

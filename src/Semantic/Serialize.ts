@@ -76,6 +76,8 @@ export function serializeLiteralValue(value: LiteralValue) {
   } else {
     if (value.type === EPrimitive.int || value.type === EPrimitive.real) {
       return `${value.value}`;
+    } else if (value.type === EPrimitive.null) {
+      return `null`;
     } else {
       return `${primitiveToString(value.type)}(${value.value})`;
     }
@@ -297,6 +299,8 @@ export function mangleDatatype(sr: SemanticResult, typeId: Semantic.Id): string 
         // make it C-identifier-safe: base64 → base64url (replace +/ with _)
         base64 = base64.replace(/\+/g, "_").replace(/\//g, "_").replace(/=+$/, "");
         return `Ls${base64}E`;
+      } else if (type.literal.type === EPrimitive.null) {
+        return "nl";
       } else {
         if (Number.isInteger(type.literal.value)) {
           return type.literal.value < 0 ? `Lin${-type.literal.value}E` : `Li${type.literal.value}E`;

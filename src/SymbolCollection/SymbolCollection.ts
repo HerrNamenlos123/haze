@@ -887,7 +887,7 @@ function collect(
             variant: Collect.ENode.NamedDatatype,
             genericArgs: [],
             innerNested: null,
-            name: "none",
+            name: "void",
             sourceloc: null,
           })[1],
         sourceloc: item.sourceloc,
@@ -1985,7 +1985,9 @@ export function PrettyPrintCollected(cc: CollectionContext) {
       }
 
       case Collect.ENode.LiteralExpr: {
-        if (expr.literal.type !== EPrimitive.str) {
+        if (expr.literal.type === EPrimitive.null) {
+          return "null";
+        } else if (expr.literal.type !== EPrimitive.str) {
           return `${primitiveToString(expr.literal.type)}(${expr.literal.value})`;
         } else {
           return `${JSON.stringify(expr.literal.value)}`;

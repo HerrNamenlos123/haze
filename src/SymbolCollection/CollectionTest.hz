@@ -1,6 +1,6 @@
 inject "#include <stdio.h>";
 
-extern "C" printf(fmt: String, ...): none;
+extern "C" printf(fmt: String, ...): void;
 
 namespace Core.Math {
     export square(x: i32): i32 => {
@@ -23,7 +23,7 @@ namespace Core.Utils {
         }
     }
 
-    export foreach<T>(arr: Array<T>, callback: (item: T) => none): none => {
+    export foreach<T>(arr: Array<T>, callback: (item: T) => void): void => {
         let i: i32 = 0;
         while (i < arr.length) {
             // callback(arr[i]);

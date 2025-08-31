@@ -215,7 +215,11 @@ export namespace Conversion {
 
       case Semantic.ENode.LiteralValueDatatype:
         assert(bt.variant === Semantic.ENode.LiteralValueDatatype);
-        return at.literal.value === bt.literal.value && at.literal.type === bt.literal.type;
+        if (at.literal.type === EPrimitive.null) {
+          return at.literal.type === bt.literal.type;
+        } else {
+          return at.literal.type === bt.literal.type && at.literal.value === bt.literal.value;
+        }
 
       case Semantic.ENode.PointerDatatype:
         assert(bt.variant === Semantic.ENode.PointerDatatype);
@@ -413,18 +417,21 @@ export namespace Conversion {
 
   export function IsImplicitConversionAvailable(
     sr: SemanticResult,
-    fromId: Semantic.Id,
+    fromExprId: Semantic.Id,
     toId: Semantic.Id
   ) {
-    const from = sr.nodes.get(fromId);
+    const fromExpr = sr.nodes.get(fromExprId);
+    assert(isExpression(fromExpr));
+
+    const from = sr.nodes.get(fromExpr.type);
     const to = sr.nodes.get(toId);
 
-    if (IsStructurallyEquivalent(sr, fromId, toId)) {
+    if (IsStructurallyEquivalent(sr, fromExpr.type, toId)) {
       return true;
     }
 
     if (to.variant === Semantic.ENode.ReferenceDatatype) {
-      return IsStructurallyEquivalent(sr, fromId, to.referee);
+      return IsStructurallyEquivalent(sr, fromExprId, to.referee);
     }
     if (from.variant === Semantic.ENode.ReferenceDatatype) {
       return IsStructurallyEquivalent(sr, from.referee, toId);
@@ -443,11 +450,29 @@ export namespace Conversion {
       }
     }
 
+    if (
+      from.variant === Semantic.ENode.PointerDatatype &&
+      to.variant === Semantic.ENode.PointerDatatype
+    ) {
+      const pointee = sr.nodes.get(from.pointee);
+      if (
+        pointee.variant === Semantic.ENode.PrimitiveDatatype &&
+        pointee.primitive === EPrimitive.void
+      ) {
+        // If the target is any pointer, and the source is a void*, do the conversion
+        return true;
+      }
+    }
+
     return false;
   }
 
-  function IsExplicitConversionAvailable(sr: SemanticResult, from: Semantic.Id, to: Semantic.Id) {
-    if (IsImplicitConversionAvailable(sr, from, to)) {
+  function IsExplicitConversionAvailable(
+    sr: SemanticResult,
+    fromExprId: Semantic.Id,
+    to: Semantic.Id
+  ) {
+    if (IsImplicitConversionAvailable(sr, fromExprId, to)) {
       return true;
     }
     return false;
@@ -462,7 +487,7 @@ export namespace Conversion {
     const from = sr.nodes.get(fromExprId);
     assert(isExpression(from));
 
-    if (!IsImplicitConversionAvailable(sr, from.type, toTypeId)) {
+    if (!IsImplicitConversionAvailable(sr, fromExprId, toTypeId)) {
       throw new CompilerError(
         `No implicit lossless Conversion from '${serializeDatatype(
           sr,
@@ -498,7 +523,7 @@ export namespace Conversion {
       })[1];
     }
 
-    if (!IsExplicitConversionAvailable(sr, from.type, toId)) {
+    if (!IsExplicitConversionAvailable(sr, fromId, toId)) {
       throw new CompilerError(
         `No explicit Conversion from '${serializeDatatype(sr, from.type)}' to '${serializeDatatype(
           sr,
@@ -544,6 +569,24 @@ export namespace Conversion {
             })[1];
           }
         }
+      }
+    }
+
+    if (
+      fromType.variant === Semantic.ENode.PointerDatatype &&
+      to.variant === Semantic.ENode.PointerDatatype
+    ) {
+      const pointee = sr.nodes.get(fromType.pointee);
+      if (
+        pointee.variant === Semantic.ENode.PrimitiveDatatype &&
+        pointee.primitive === EPrimitive.void
+      ) {
+        return Semantic.addNode(sr, {
+          variant: Semantic.ENode.ExplicitCastExpr,
+          expr: fromId,
+          type: toId,
+          sourceloc: sourceloc,
+        })[1];
       }
     }
 

@@ -88,6 +88,8 @@ println(args: ...) {
     print("\n");
 }
 
+struct Foo {}
+
 main(): int {
 
     println("TODO for next time: Implement casting like int(5). Implement it so that a function call checks if it's a primitive datatype expr, and replaces it with a CheckedCast node (make a new one), that casts a value to another type. If the value is a constant, do the (overflow safe) cast at compile time for constant folding. If not, keep the CheckedCast. In the CodeGenerator, implement the CheckedCast that a separate builtin function is generated for each CheckedCast node, that asserts the overflow at runtime and then casts the value using C syntax.");

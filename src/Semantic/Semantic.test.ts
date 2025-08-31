@@ -98,7 +98,7 @@ const tests: StageTests<Collect.Scope, SemanticResult> = [
         const noneType: Semantic.PrimitiveDatatypeSymbol = {
           variant: "PrimitiveDatatype",
           concrete: true,
-          primitive: EPrimitive.none,
+          primitive: EPrimitive.void,
         };
 
         const getMethod: Semantic.FunctionSymbol = {

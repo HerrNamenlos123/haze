@@ -111,9 +111,16 @@ class CodeGenerator {
 
     for (const symbol of this.lr.sortedLoweredTypes) {
       if (symbol.variant === Lowered.ENode.PrimitiveDatatype) {
-        this.out.type_declarations.writeLine(
-          `typedef ${this.primitiveToC(symbol.primitive)} ${this.mangle(symbol)};`
-        );
+        if (symbol.primitive === EPrimitive.null) {
+          this.out.type_declarations.writeLine(
+            `typedef struct ${this.mangle(symbol)} ${this.mangle(symbol)};`
+          );
+          this.out.type_definitions.writeLine(`struct ${this.mangle(symbol)} {};`);
+        } else {
+          this.out.type_declarations.writeLine(
+            `typedef ${this.primitiveToC(symbol.primitive)} ${this.mangle(symbol)};`
+          );
+        }
       } else if (symbol.variant === Lowered.ENode.StructDatatype) {
         if (!symbol.noemit) {
           this.out.type_declarations.writeLine(
@@ -275,8 +282,10 @@ class CodeGenerator {
         return "int64_t";
       case EPrimitive.real:
         return "double";
-      case EPrimitive.none:
+      case EPrimitive.void:
         return "void";
+      case EPrimitive.null:
+        assert(false, "null should be handled specially");
       case EPrimitive.str:
         return "const char*";
     }
@@ -754,6 +763,8 @@ class CodeGenerator {
           outWriter.write(
             `(${this.primitiveToC(expr.literal.type)})(${expr.literal.value ? "1" : "0"})`
           );
+        } else if (expr.literal.type === EPrimitive.null) {
+          outWriter.write("(_H4null){}");
         } else {
           outWriter.write(
             `(${this.primitiveToC(expr.literal.type)})(${expr.literal.value.toString()})`

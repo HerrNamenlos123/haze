@@ -18,7 +18,7 @@ const GLFW_OPENGL_CORE_PROFILE: i32;
 
 namespace raw {
     extern "C" glfwInit(): i32;
-    extern "C" glfwTerminate(): none;
+    extern "C" glfwTerminate(): void;
     extern "C" glfwCreateWindow(width: i32, height: i32, title: str, monitor: GLFWmonitor*, share: GLFWwindow*): GLFWwindow*;
     extern "C" glfwWindowShouldClose(w: GLFWwindow*): i32;
     extern "C" glfwSwapBuffers(w: GLFWwindow*);
@@ -29,13 +29,13 @@ namespace raw {
     extern "C" glfwWindowHint(hint: i32, value: i32);
     extern "C" glfwGetTime(): f64;
     // extern "C" glfwMakeContextCurrent(w: GLFWwindow*);
-    extern "C" glfwGetProcAddress(procname: str): () => none;
+    extern "C" glfwGetProcAddress(procname: str): () => void;
 
     export init(): bool {
         return glfwInit() != 0;
     }
 
-    export terminate(): none {
+    export terminate(): void {
         glfwTerminate();
     }
 
@@ -75,7 +75,7 @@ namespace raw {
         return glfwGetTime() as f64;
     }
 
-    export getProcAddress(procname: str): () => none {
+    export getProcAddress(procname: str): () => void {
         return glfwGetProcAddress(procname);
     }
 }
@@ -145,6 +145,6 @@ export getTime(): real {
     return raw.getTime() as real;
 }
 
-export getProcAddress(): (name: str) => none* {
-    return raw.getProcAddress as (name: str) => none*;
+export getProcAddress(): (name: str) => void* {
+    return raw.getProcAddress as (name: str) => void*;
 }

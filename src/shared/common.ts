@@ -37,7 +37,8 @@ export class BrandedArray<I extends number, T> {
 }
 
 export enum EPrimitive {
-  none = 1,
+  void = 1,
+  null,
   bool,
   i8,
   i16,
@@ -66,6 +67,9 @@ export type LiteralValue =
   | {
       type: EPrimitive.bool;
       value: boolean;
+    }
+  | {
+      type: EPrimitive.null;
     }
   | {
       type: EPrimitive.str;
@@ -97,8 +101,10 @@ export enum EMethodType {
 
 export function primitiveToString(primitive: EPrimitive) {
   switch (primitive) {
-    case EPrimitive.none:
-      return "none";
+    case EPrimitive.void:
+      return "void";
+    case EPrimitive.null:
+      return "null";
     case EPrimitive.bool:
       return "bool";
     case EPrimitive.i8:
@@ -134,8 +140,10 @@ export function primitiveToString(primitive: EPrimitive) {
 
 export function stringToPrimitive(str: string) {
   switch (str) {
-    case "none":
-      return EPrimitive.none;
+    case "void":
+      return EPrimitive.void;
+    case "null":
+      return EPrimitive.null;
     case "bool":
       return EPrimitive.bool;
     case "i8":
@@ -168,17 +176,3 @@ export function stringToPrimitive(str: string) {
       return undefined;
   }
 }
-
-// export function assertScope(id: Collect.Scope | undefined) {
-//   if (!id) {
-//     throw new InternalError("Scope is undefined!", undefined, 1);
-//   }
-//   return id;
-// }
-
-// export function assertID<T>(id: T | undefined) {
-//   if (!id) {
-//     throw new InternalError("ID is undefined!");
-//   }
-//   return id;
-// }

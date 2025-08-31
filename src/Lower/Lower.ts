@@ -880,7 +880,7 @@ function lowerType(lr: Lowered.Module, typeId: Semantic.Id): Lowered.TypeId {
       for (const p of type.parameters) {
         const pp = lr.sr.nodes.get(p);
         if (pp.variant === Semantic.ENode.ParameterPackDatatypeSymbol) {
-          for (const packParam of pp.parameters) {
+          for (const packParam of pp.parameters || []) {
             const sym = lr.sr.nodes.get(packParam);
             assert(sym.variant === Semantic.ENode.VariableSymbol);
             assert(sym.type);
@@ -1169,7 +1169,7 @@ function lower(lr: Lowered.Module, symbolId: Semantic.Id) {
         const paramPack = lr.sr.nodes.get(paramPackId);
         assert(paramPack.variant === Semantic.ENode.ParameterPackDatatypeSymbol);
         parameterNames.pop();
-        for (const p of paramPack.parameters) {
+        for (const p of paramPack.parameters || []) {
           const pp = lr.sr.nodes.get(p);
           assert(pp.variant === Semantic.ENode.VariableSymbol);
           parameterNames.push(pp.name);
@@ -1333,7 +1333,10 @@ function serializeLoweredExpr(lr: Lowered.Module, exprId: Lowered.ExprId): strin
         exprType.variant === Lowered.ENode.PrimitiveDatatype &&
         exprType.primitive === EPrimitive.str
       ) {
+        assert(expr.literal.type === EPrimitive.str);
         return `${JSON.stringify(expr.literal.value)}`;
+      } else if (expr.literal.type === EPrimitive.null) {
+        return `null`;
       } else {
         return `${expr.literal.value}`;
       }

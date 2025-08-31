@@ -47,7 +47,13 @@ import {
   Semantic,
   type SemanticResult,
 } from "./SemanticSymbols";
-import { getParentNames, serializeDatatype, serializeExpr, serializeNestedName } from "./Serialize";
+import {
+  getParentNames,
+  serializeDatatype,
+  serializeExpr,
+  serializeLiteralValue,
+  serializeNestedName,
+} from "./Serialize";
 
 export function tryLookupSymbol(
   sr: SemanticResult,
@@ -1002,9 +1008,10 @@ export function elaborateExpr(
               },
             });
           } else {
-            const stringValue = second?.literal.value;
             throw new CompilerError(
-              `static_assert evaluated to false${stringValue ? ": " + stringValue : ""}`,
+              `static_assert evaluated to false${
+                second ? ": " + serializeLiteralValue(second?.literal) : ""
+              }`,
               expr.sourceloc
             );
           }
@@ -1212,6 +1219,17 @@ export function elaborateExpr(
         // });
       }
 
+      if (expr.name === "null") {
+        return Semantic.addNode(sr, {
+          variant: Semantic.ENode.LiteralExpr,
+          literal: {
+            type: EPrimitive.null,
+          },
+          sourceloc: expr.sourceloc,
+          type: makePrimitiveAvailable(sr, EPrimitive.null),
+        });
+      }
+
       const primitive = stringToPrimitive(expr.name);
       if (primitive) {
         if (expr.genericArgs.length > 0) {
@@ -1220,6 +1238,24 @@ export function elaborateExpr(
         return Semantic.addNode(sr, {
           variant: Semantic.ENode.DatatypeAsValueExpr,
           type: makePrimitiveAvailable(sr, primitive),
+          sourceloc: expr.sourceloc,
+        });
+      }
+
+      if (expr.name === "nullptr") {
+        return Semantic.addNode(sr, {
+          variant: Semantic.ENode.ExplicitCastExpr,
+          type: makePointerDatatypeAvailable(sr, makePrimitiveAvailable(sr, EPrimitive.void)),
+          expr: Semantic.addNode(sr, {
+            variant: Semantic.ENode.LiteralExpr,
+            literal: {
+              type: EPrimitive.int,
+              value: 0,
+              unit: null,
+            },
+            sourceloc: expr.sourceloc,
+            type: makePrimitiveAvailable(sr, EPrimitive.int),
+          })[1],
           sourceloc: expr.sourceloc,
         });
       }

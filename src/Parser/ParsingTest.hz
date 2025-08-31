@@ -1,8 +1,8 @@
 inject "#include <string.h>";
 
-extern "C" malloc(size: u64, ...): none;
-extern "C" printf(fmt: String, ...): none;
-export extern UI.ImGui.Begin(name: String): none;
+extern "C" malloc(size: u64, ...): void;
+extern "C" printf(fmt: String, ...): void;
+export extern UI.ImGui.Begin(name: String): void;
 
 let CONST_1: i64 = 42;
 let CONST_2: i64 = CONST_1 + 10;
@@ -36,8 +36,8 @@ bar<T>(bar: Foo<T, T>): Foo<T, T> => {
 
 namespace Outer.Inner {
     namespace Subspace {
-        extern malloc(size: u64): none;
-        export extern ImGui.Begin(name: String): none;
+        extern malloc(size: u64): void;
+        export extern ImGui.Begin(name: String): void;
 
         export struct Foo<T, U> {
             value: Box<T>;
@@ -129,12 +129,12 @@ namespace Outer.Inner {
 
 namespace A {
     namespace B {
-        foo(): none;
+        foo(): void;
     }
 }
 namespace A {
-    foo2(): none;
+    foo2(): void;
 }
 namespace A.B.C {
-    foo3(): none;
+    foo3(): void;
 }
