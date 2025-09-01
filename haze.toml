@@ -26,8 +26,7 @@ test = "haze test"
 glfw = { path = "./glfw" }
 math = { path = "./math" }
 gl = { path = "./gl" }
-# glfw = "glfw"
-# SDL = "SDL"
+glDraw = { path = "./glDraw" }
 
 [linker]
 flags = ["-lm", "-lglfw3"]

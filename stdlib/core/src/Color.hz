@@ -1,12 +1,12 @@
 
-export struct Color {
-    r: real;
-    g: real;
-    b: real;
-    a: real;
+export struct _Color<T> {
+    r: T;
+    g: T;
+    b: T;
+    a: T;
 
-    constructor(r: real, g: real, b: real, a: real): Color {
-        return Color {
+    constructor(r: T, g: T, b: T, a: T): _Color<T> {
+        return _Color<T> {
             r: r,
             g: g,
             b: b,
@@ -14,3 +14,8 @@ export struct Color {
         };
     }
 }
+
+export type Color = _Color<real>;
+export type Colori = _Color<int>;
+export type Coloru8 = _Color<u8>;
+export type Colorf = _Color<f32>;

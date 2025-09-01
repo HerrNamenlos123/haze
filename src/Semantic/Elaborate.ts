@@ -899,6 +899,7 @@ export function elaborateExpr(
         isMonomorphized: args.isMonomorphized,
         blockScope: args.blockScope,
       });
+      console.log("TODO: Implement runtime overflow checking for unary negating signed integers");
 
       const type = getExprType(sr, eId);
       return Semantic.addNode(sr, {
@@ -1319,20 +1320,18 @@ export function elaborateExpr(
 
       if (symbol.variant === Collect.ENode.AliasTypeSymbol) {
         const aliasScope = symbol.inScope;
-        symbolId = symbol.target;
-        symbol = sr.cc.nodes.get(symbolId);
 
-        if (symbol.variant === Collect.ENode.NamedDatatype) {
-          let foundResult = lookupSymbol(sr, symbol.name, {
-            startLookupInScope: aliasScope,
-            sourceloc: symbol.sourceloc,
-          });
-          if (foundResult.type === "semantic") {
-            return [asExpression(sr.nodes.get(foundResult.id)), foundResult.id];
-          }
-          symbolId = foundResult.id;
-          symbol = sr.cc.nodes.get(symbolId);
-        }
+        const newId = lookupAndElaborateDatatype(sr, {
+          typeId: symbol.target,
+          isInCFuncdecl: false,
+          elaboratedVariables: args.elaboratedVariables,
+          context: args.context,
+        });
+        return Semantic.addNode(sr, {
+          variant: Semantic.ENode.DatatypeAsValueExpr,
+          type: newId,
+          sourceloc: expr.sourceloc,
+        });
       }
 
       if (symbol.variant === Collect.ENode.VariableSymbol) {
@@ -1748,7 +1747,6 @@ export function elaborateExpr(
       });
 
       if (overloadGroupId) {
-        console.info("TODO: Fix overload resolution here ");
         const overloadGroup = sr.cc.nodes.get(overloadGroupId);
         assert(overloadGroup.variant === Collect.ENode.FunctionOverloadGroup);
 
@@ -1766,8 +1764,16 @@ export function elaborateExpr(
         const collectedMethod = sr.cc.nodes.get(chosenOverloadId);
         assert(collectedMethod.variant === Collect.ENode.FunctionSymbol);
 
+        let wasReference = false;
+        let objectTypeId = object.type;
+        const objectType = sr.nodes.get(objectTypeId);
+        if (objectType.variant === Semantic.ENode.ReferenceDatatype) {
+          objectTypeId = objectType.referee;
+          wasReference = true;
+        }
+
         const elaboratedStructCache = sr.elaboratedStructDatatypes.find(
-          (d) => d.resultSymbol === object.type
+          (d) => d.resultSymbol === objectTypeId
         );
         assert(elaboratedStructCache);
 
@@ -1828,7 +1834,9 @@ export function elaborateExpr(
           functionSymbol: elaboratedMethodId,
           type: Semantic.addNode(sr, {
             variant: Semantic.ENode.CallableDatatype,
-            thisExprType: makeReferenceDatatypeAvailable(sr, object.type),
+            thisExprType: wasReference
+              ? object.type
+              : makeReferenceDatatypeAvailable(sr, object.type),
             functionType: elaboratedMethod.type,
             concrete: isTypeConcrete(sr, elaboratedMethod.type),
           })[1],

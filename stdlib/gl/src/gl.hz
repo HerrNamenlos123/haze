@@ -22,6 +22,11 @@ toI32(value: int): i32 {
     }
 }
 
+export struct Vertex {
+    pos: Vec3f;
+    color: Colorf;
+}
+
 export viewport(x: int, y: int, w: int, h: int) {
     glViewport(toI32(x), toI32(y), toI32(w), toI32(h));
 }

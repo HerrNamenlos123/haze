@@ -1,0 +1,150 @@
+
+export struct _Vec2<T> {
+  x: T;
+  y: T;
+
+  constructor(x: T, y: T): _Vec2<T> {
+    return Vec2 {
+      x: x,
+      y: y,
+    };
+  }
+
+  neg(): _Vec2<T> {
+    return _Vec2<T>(-this.x, -this.y);
+  }
+
+  add(other: _Vec2<T>): _Vec2<T> {
+    return _Vec2<T>(this.x + other.x, this.y + other.y);
+  }
+
+  sub(other: _Vec2<T>): _Vec2<T> {
+    return _Vec2<T>(this.x - other.x, this.y - other.y);
+  }
+
+  mul(v: T): _Vec2<T> {
+    return _Vec2<T>(this.x * v, this.y * v);
+  }
+
+  div(v: T): _Vec2<T> {
+    return _Vec2<T>(this.x / v, this.y / v);
+  }
+
+  length(): T {
+    return Math.sqrt(Math.pow(this.x, 2.0) + Math.pow(this.y, 2.0)) as T;
+  }
+
+  normalize(): _Vec2<T> {
+    return this.div(this.length());
+  }
+
+  dot(other: _Vec2<T>): T {
+    return this.x * other.x + this.y * other.y;
+  }
+}
+
+export type Vec2 = _Vec2<real>;
+export type Vec2i = _Vec2<int>;
+export type Vec2f = _Vec2<f32>;
+
+export struct _Vec3<T> {
+  x: T;
+  y: T;
+  z: T;
+
+  constructor(x: T, y: T, z: T): _Vec3<T> {
+    return _Vec3<T> {
+      x: x,
+      y: y,
+      z: z,
+    };
+  }
+
+  neg(): _Vec3<T> {
+    return _Vec3<T>(-this.x, -this.y, -this.z);
+  }
+
+  add(other: _Vec3<T>): _Vec3<T> {
+    return _Vec3<T>(this.x + other.x, this.y + other.y, this.z + other.z);
+  }
+
+  sub(other: _Vec3<T>): _Vec3<T> {
+    return _Vec3<T>(this.x - other.x, this.y - other.y, this.z - other.z);
+  }
+
+  mul(v: T): _Vec3<T> {
+    return _Vec3<T>(this.x * v, this.y * v, this.z * v);
+  }
+
+  div(v: T): _Vec3<T> {
+    return _Vec3<T>(this.x / v, this.y / v, this.z / v);
+  }
+
+  length(): T {
+    return Math.sqrt(Math.pow(this.x, 2.0) + Math.pow(this.y, 2.0) + Math.pow(this.z, 2.0)) as T;
+  }
+
+  normalize(): _Vec3<T> {
+    return this.div(this.length());
+  }
+
+  dot(other: _Vec3<T>): T {
+    return this.x * other.x + this.y * other.y + this.z * other.z;
+  }
+}
+
+export type Vec3 = _Vec3<real>;
+export type Vec3i = _Vec3<int>;
+export type Vec3f = _Vec3<f32>;
+
+export struct _Vec4<T> {
+  x: T;
+  y: T;
+  z: T;
+  w: T;
+
+  constructor(x: T, y: T, z: T, w: T): _Vec4<T> {
+    return _Vec4<T> {
+      x: x,
+      y: y,
+      z: z,
+      w: w,
+    };
+  }
+
+  neg(): _Vec4<T> {
+    return _Vec4<T>(-this.x, -this.y, -this.z, -this.w);
+  }
+
+  add(other: _Vec4<T>): _Vec4<T> {
+    return _Vec4<T>(this.x + other.x, this.y + other.y, this.z + other.z, this.w + other.w);
+  }
+
+  sub(other: _Vec4<T>): _Vec4<T> {
+    return _Vec4<T>(this.x - other.x, this.y - other.y, this.z - other.z, this.w - other.w);
+  }
+
+  mul(v: T): _Vec4<T> {
+    return _Vec4<T>(this.x * v, this.y * v, this.z * v, this.w * v);
+  }
+
+  div(v: T): _Vec4<T> {
+    return _Vec4<T>(this.x / v, this.y / v, this.z / v, this.w / v);
+  }
+
+  length(): T {
+    return Math.sqrt(Math.pow(this.x, 2.0) + Math.pow(this.y, 2.0) + Math.pow(this.z, 2.0) + Math.pow(this.w, 2.0)) as T;
+  }
+
+  normalize(): _Vec4<T> {
+    return this.div(this.length());
+  }
+
+  dot(other: _Vec4<T>): T {
+    return this.x * other.x + this.y * other.y + this.z * other.z + this.w * other.w;
+  }
+}
+
+export type Vec4 = _Vec4<real>;
+export type Vec4i = _Vec4<int>;
+export type Vec4f = _Vec4<f32>;

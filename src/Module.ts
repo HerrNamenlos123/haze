@@ -391,7 +391,7 @@ class ModuleCompiler {
       await this.collectImports();
       await this.addProjectSourceFiles();
 
-      PrettyPrintCollected(this.cc);
+      // PrettyPrintCollected(this.cc);
 
       const sr = SemanticallyAnalyze(
         this.cc,

@@ -1799,6 +1799,9 @@ function collect(
         sourceloc: item.sourceloc,
       });
       (cc.nodes.get(args.currentParentScope) as Collect.BlockScope).symbols.add(aliasId);
+      if (item.export) {
+        cc.exportedSymbols.exported.add(aliasId);
+      }
       return symbolId;
     }
 

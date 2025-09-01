@@ -70,6 +70,8 @@ struct Point {
     y: int;
 }
 
+import glDraw
+
 main(): int {
 
     if !glfw.init() {

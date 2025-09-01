@@ -1,9 +1,6 @@
 import { EVariableContext, stringToPrimitive } from "../shared/common";
 import { assert, CompilerError, type SourceLoc } from "../shared/Errors";
-import {
-  Collect,
-  funcSymHasParameterPack,
-} from "../SymbolCollection/SymbolCollection";
+import { Collect, funcSymHasParameterPack } from "../SymbolCollection/SymbolCollection";
 import {
   elaborateExpr,
   elaborateFunctionSignature,
@@ -266,7 +263,6 @@ export function instantiateAndElaborateStruct(
     }
   }
 
-  console.log();
   const [struct, structId] = Semantic.addNode<Semantic.StructDatatypeSymbol>(sr, {
     variant: Semantic.ENode.StructDatatype,
     name: definedStructType.name,

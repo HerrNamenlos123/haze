@@ -160,9 +160,15 @@ export function ExportCollectedSymbols(cc: CollectionContext) {
           file += "namespace " + ns + " {\n";
         }
         if (symbol.generics.length !== 0) {
-          // TODO: If the function is generic and has "export", then the "export" keyword should not appear
-          // in the generated import code.
-          file += symbol.originalSourcecode;
+          // This is very ugly
+          let code = symbol.originalSourcecode;
+          if (code.startsWith(" export ")) {
+            code = code.replace(" export ", "");
+          }
+          if (code.startsWith("export ")) {
+            code = code.replace("export ", "");
+          }
+          file += code + "\n";
         } else {
           if (symbol.noemit) {
             file += "noemit ";
@@ -206,6 +212,11 @@ export function ExportCollectedSymbols(cc: CollectionContext) {
         for (const ns of namespaces.slice(0, -1)) {
           file += "}\n";
         }
+        break;
+      }
+
+      case Collect.ENode.AliasTypeSymbol: {
+        file += `type ${symbol.name} = ${printType(cc, symbol.target)};\n`;
         break;
       }
 

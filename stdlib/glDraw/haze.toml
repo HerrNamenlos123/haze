@@ -1,0 +1,12 @@
+name = "glDraw"
+version = "1.0.0"
+description = "A small experimental OpenGL Renderer library"
+license = "MIT"
+authors = ["HerrNamenlos123"]
+type = "lib"
+
+[dependencies]
+gl = { path = "./gl" }
+
+[linker]
+flags = ["-lm", "-lGL"]

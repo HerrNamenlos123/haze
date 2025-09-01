@@ -43,5 +43,3 @@ export println(args: ...) {
     }
     print("\n");
 }
-
-export foo() {}

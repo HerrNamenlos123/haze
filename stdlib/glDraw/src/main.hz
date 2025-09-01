@@ -1,0 +1,4 @@
+
+export init() {
+    println("InitjKA;");
+}

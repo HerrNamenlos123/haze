@@ -1,0 +1,39 @@
+
+namespace Math {
+
+    export extern "C" sqrt(v: real): real;
+    export extern "C" pow(a: real, b: real): real;
+    export extern "C" sin(v: real): real;
+    export extern "C" sinh(v: real): real;
+    export extern "C" cos(v: real): real;
+    export extern "C" cosh(v: real): real;
+    export extern "C" tan(v: real): real;
+    export extern "C" atan2(y: real, x: real): real;
+
+    export PI(): real {
+        const PI = 3.141592653589793;
+        return PI;
+    }
+
+    export radToDeg(v: real): real => {
+        return v / Math.PI() * 180.0;
+    }
+
+    export degToRad(v: real): real => {
+        return v * Math.PI() / 180.0;
+    }
+
+//   maxu64(a: u64, b: u64): u64 => {
+//     if a >= b {
+//       return a;
+//     }
+//     return b;
+//   }
+
+//   minu64(a: u64, b: u64): u64 => {
+//     if a <= b {
+//       return a;
+//     }
+//     return b;
+//   }
+}
