@@ -43,7 +43,6 @@ import {
   isType,
   isTypeConcrete,
   makePrimitiveAvailable,
-  printSubstitutionContext,
   Semantic,
   type SemanticResult,
 } from "./SemanticSymbols";
@@ -536,8 +535,6 @@ function lookupAndElaborateStaticStructAccess(
   });
   assert(elaboratedStructCache);
 
-  console.log("Lookup static struct: ", collectedStruct.name, args.name);
-  printSubstitutionContext(sr, elaboratedStructCache.substitutionContext);
   for (const symbolId of structScope.symbols) {
     const s = lookupSymbolInNamespaceOrStructScope(sr, symbolId, {
       context: mergeSubstitutionContext(elaboratedStructCache.substitutionContext, args.context, {
@@ -1876,6 +1873,7 @@ export function elaborateExpr(
         ),
         target: targetId,
         type: target.type,
+        operation: expr.operation,
         sourceloc: expr.sourceloc,
       });
     }
@@ -2126,13 +2124,13 @@ function applyBinaryExprConstraints(
   const symbolType = sr.nodes.get(symbol.type);
   if (
     symbolType.variant !== Semantic.ENode.PrimitiveDatatype ||
-    !Conversion.isInteger(sr, symbol.type)
+    !Conversion.isIntegerById(sr, symbol.type)
   ) {
     return;
   }
 
   if (
-    !Conversion.isInteger(sr, literalExpr.type) ||
+    !Conversion.isIntegerById(sr, literalExpr.type) ||
     (literalExpr.literal.type !== EPrimitive.i8 &&
       literalExpr.literal.type !== EPrimitive.i16 &&
       literalExpr.literal.type !== EPrimitive.i32 &&

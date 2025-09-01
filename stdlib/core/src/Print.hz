@@ -1,0 +1,47 @@
+
+__c__("#include <stdio.h>");
+
+namespace builtin {
+    export extern "C" noemit printf(fmt: str, ...);
+}
+
+export print(args: ...) {
+    for comptime arg in args {
+        if comptime typeof(arg) is int {
+            builtin.printf("%ld ", arg);
+        }
+        else if typeof(arg) is str {
+            builtin.printf("%s ", arg);
+        }
+        else if typeof(arg) is real {
+            builtin.printf("%f ", arg);
+        }
+        else if typeof(arg) is u8 || typeof(arg) is u16 || typeof(arg) is u32 {
+            builtin.printf("%u ", arg);
+        }
+        else if typeof(arg) is u64 {
+            builtin.printf("%lu ", arg);
+        }
+        else if typeof(arg) is i8 || typeof(arg) is i16 || typeof(arg) is i32 {
+            builtin.printf("%d ", arg);
+        }
+        else if typeof(arg) is i64 {
+            builtin.printf("%ld ", arg);
+        }
+        else if typeof(arg) is Vec3 {
+            builtin.printf("(%f, %f, %f) ", arg.x, arg.y, arg.z);
+        }
+        else {
+            static_assert(false, "Type not yet supported in print");
+        }
+    }
+}
+
+export println(args: ...) {
+    for comptime arg in args {
+        print(arg);
+    }
+    print("\n");
+}
+
+export foo() {}

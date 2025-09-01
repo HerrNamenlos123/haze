@@ -28,8 +28,8 @@ import { serializeDatatype } from "./Serialize";
 import { SERVFAIL } from "node:dns";
 
 export namespace Conversion {
-  export function isSignedInteger(type: Semantic.PrimitiveDatatypeSymbol): boolean {
-    switch (type.primitive) {
+  export function isSignedInteger(primitive: EPrimitive): boolean {
+    switch (primitive) {
       case EPrimitive.i8:
       case EPrimitive.i16:
       case EPrimitive.i32:
@@ -41,8 +41,8 @@ export namespace Conversion {
     }
   }
 
-  export function isUnsignedInteger(type: Semantic.PrimitiveDatatypeSymbol): boolean {
-    switch (type.primitive) {
+  export function isUnsignedInteger(primitive: EPrimitive): boolean {
+    switch (primitive) {
       case EPrimitive.u8:
       case EPrimitive.u16:
       case EPrimitive.u32:
@@ -164,10 +164,14 @@ export namespace Conversion {
     return type.primitive === EPrimitive.bool;
   }
 
-  export function isInteger(sr: SemanticResult, typeId: Semantic.Id): boolean {
+  export function isInteger(primitive: EPrimitive): boolean {
+    return isSignedInteger(primitive) || isUnsignedInteger(primitive);
+  }
+
+  export function isIntegerById(sr: SemanticResult, typeId: Semantic.Id): boolean {
     const type = sr.nodes.get(typeId);
     if (type.variant !== Semantic.ENode.PrimitiveDatatype) return false;
-    return isSignedInteger(type) || isUnsignedInteger(type);
+    return isInteger(type.primitive);
   }
 
   export function getIntegerBits(type: Semantic.PrimitiveDatatypeSymbol): number {
@@ -221,7 +225,7 @@ export namespace Conversion {
       let sizeB = getIntegerBits(b);
 
       // If one of the types is unsigned and larger in size, widen accordingly
-      if (isUnsignedInteger(a) && !isUnsignedInteger(b)) {
+      if (isUnsignedInteger(a.primitive) && !isUnsignedInteger(b.primitive)) {
         if (sizeA > sizeB) {
           return a; // Promote the unsigned type
         } else {
@@ -229,7 +233,7 @@ export namespace Conversion {
         }
       }
 
-      if (isUnsignedInteger(b) && !isUnsignedInteger(a)) {
+      if (isUnsignedInteger(b.primitive) && !isUnsignedInteger(a.primitive)) {
         if (sizeB > sizeA) {
           return b; // Promote the unsigned type
         } else {
@@ -246,8 +250,10 @@ export namespace Conversion {
     };
 
     if (a.primitive == b.primitive) return a;
-    if (isUnsignedInteger(a) && !isUnsignedInteger(b)) return widenInteger(a, b);
-    if (!isUnsignedInteger(a) && isUnsignedInteger(b)) return widenInteger(a, b);
+    if (isUnsignedInteger(a.primitive) && !isUnsignedInteger(b.primitive))
+      return widenInteger(a, b);
+    if (!isUnsignedInteger(a.primitive) && isUnsignedInteger(b.primitive))
+      return widenInteger(a, b);
     return getWiderInteger(a, b);
   }
 
@@ -562,13 +568,13 @@ export namespace Conversion {
     // }
 
     // Conversion between Integers
-    if (Conversion.isInteger(sr, from.type) && Conversion.isInteger(sr, toId)) {
+    if (Conversion.isIntegerById(sr, from.type) && Conversion.isIntegerById(sr, toId)) {
       const f = sr.nodes.get(from.type);
       assert(f.variant === Semantic.ENode.PrimitiveDatatype);
       const t = sr.nodes.get(toId);
       assert(t.variant === Semantic.ENode.PrimitiveDatatype);
-      const fromSigned = Conversion.isSignedInteger(f);
-      const toSigned = Conversion.isSignedInteger(t);
+      const fromSigned = Conversion.isSignedInteger(f.primitive);
+      const toSigned = Conversion.isSignedInteger(t.primitive);
       const fromBits = Conversion.getIntegerBits(f);
       const toBits = Conversion.getIntegerBits(t);
 

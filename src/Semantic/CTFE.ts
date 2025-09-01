@@ -73,6 +73,13 @@ export function CanEvaluateCTFE(sr: SemanticResult, exprId: Semantic.Id): boolea
           return CanEvaluateCTFE(sr, leftId) && CanEvaluateCTFE(sr, leftId);
         }
 
+        case EBinaryOperation.Add:
+        case EBinaryOperation.Subtract:
+        case EBinaryOperation.Multiply:
+        case EBinaryOperation.Divide:
+        case EBinaryOperation.Modulo:
+          return false;
+
         default:
           assert(false);
       }

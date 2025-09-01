@@ -1,5 +1,6 @@
 import { assert, type SourceLoc } from "../shared/Errors";
 import type {
+  EAssignmentOperation,
   EBinaryOperation,
   EExternLanguage,
   EIncrOperation,
@@ -496,6 +497,7 @@ export namespace Semantic {
     value: Id;
     target: Id;
     type: Id;
+    operation: EAssignmentOperation;
     sourceloc: SourceLoc;
   };
 

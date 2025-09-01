@@ -15,6 +15,7 @@ import {
 } from "../Semantic/Serialize";
 import {
   BinaryOperationToString,
+  EAssignmentOperation,
   EBinaryOperation,
   EExternLanguage,
   EIncrOperation,
@@ -798,12 +799,83 @@ function lowerExpr(
     }
 
     case Semantic.ENode.ExprAssignmentExpr: {
-      return Lowered.addExpr(lr, {
-        variant: Lowered.ENode.ExprAssignmentExpr,
-        target: lowerExpr(lr, expr.target, flattened)[1],
-        value: lowerExpr(lr, expr.value, flattened)[1],
-        type: lowerType(lr, expr.type),
-      });
+      const loweredTarget = lowerExpr(lr, expr.target, flattened)[1];
+      const loweredValue = lowerExpr(lr, expr.value, flattened)[1];
+      if (expr.operation === EAssignmentOperation.Assign) {
+        return Lowered.addExpr(lr, {
+          variant: Lowered.ENode.ExprAssignmentExpr,
+          target: loweredTarget,
+          value: loweredValue,
+          type: lowerType(lr, expr.type),
+        });
+      } else if (expr.operation === EAssignmentOperation.Add) {
+        return Lowered.addExpr(lr, {
+          variant: Lowered.ENode.ExprAssignmentExpr,
+          target: loweredTarget,
+          value: Lowered.addExpr(lr, {
+            variant: Lowered.ENode.BinaryExpr,
+            left: loweredTarget,
+            right: loweredValue,
+            operation: EBinaryOperation.Add,
+            type: lowerType(lr, expr.type),
+          })[1],
+          type: lowerType(lr, expr.type),
+        });
+      } else if (expr.operation === EAssignmentOperation.Subtract) {
+        return Lowered.addExpr(lr, {
+          variant: Lowered.ENode.ExprAssignmentExpr,
+          target: loweredTarget,
+          value: Lowered.addExpr(lr, {
+            variant: Lowered.ENode.BinaryExpr,
+            left: loweredTarget,
+            right: loweredValue,
+            operation: EBinaryOperation.Subtract,
+            type: lowerType(lr, expr.type),
+          })[1],
+          type: lowerType(lr, expr.type),
+        });
+      } else if (expr.operation === EAssignmentOperation.Multiply) {
+        return Lowered.addExpr(lr, {
+          variant: Lowered.ENode.ExprAssignmentExpr,
+          target: loweredTarget,
+          value: Lowered.addExpr(lr, {
+            variant: Lowered.ENode.BinaryExpr,
+            left: loweredTarget,
+            right: loweredValue,
+            operation: EBinaryOperation.Multiply,
+            type: lowerType(lr, expr.type),
+          })[1],
+          type: lowerType(lr, expr.type),
+        });
+      } else if (expr.operation === EAssignmentOperation.Divide) {
+        return Lowered.addExpr(lr, {
+          variant: Lowered.ENode.ExprAssignmentExpr,
+          target: loweredTarget,
+          value: Lowered.addExpr(lr, {
+            variant: Lowered.ENode.BinaryExpr,
+            left: loweredTarget,
+            right: loweredValue,
+            operation: EBinaryOperation.Divide,
+            type: lowerType(lr, expr.type),
+          })[1],
+          type: lowerType(lr, expr.type),
+        });
+      } else if (expr.operation === EAssignmentOperation.Modulo) {
+        return Lowered.addExpr(lr, {
+          variant: Lowered.ENode.ExprAssignmentExpr,
+          target: loweredTarget,
+          value: Lowered.addExpr(lr, {
+            variant: Lowered.ENode.BinaryExpr,
+            left: loweredTarget,
+            right: loweredValue,
+            operation: EBinaryOperation.Modulo,
+            type: lowerType(lr, expr.type),
+          })[1],
+          type: lowerType(lr, expr.type),
+        });
+      } else {
+        assert(false);
+      }
     }
 
     case Semantic.ENode.SizeofExpr: {

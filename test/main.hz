@@ -48,9 +48,6 @@ import math
 import glfw
 import gl
 
-__c__("#include <stdio.h>");
-extern "C" noemit printf(fmt: str, ...);
-
 struct Vec3 {
     x: real;
     y: real;
@@ -61,50 +58,11 @@ struct Vec3 {
     }
 }
 
-print(args: ...) {
-    for comptime arg in args {
-        if comptime typeof(arg) is int {
-            printf("%ld ", arg);
-        }
-        else if typeof(arg) is str {
-            printf("%s ", arg);
-        }
-        else if typeof(arg) is real {
-            printf("%f ", arg);
-        }
-        else if typeof(arg) is u8 || typeof(arg) is u16 || typeof(arg) is u32 {
-            printf("%u ", arg);
-        }
-        else if typeof(arg) is u64 {
-            printf("%lu ", arg);
-        }
-        else if typeof(arg) is i8 || typeof(arg) is i16 || typeof(arg) is i32 {
-            printf("%d ", arg);
-        }
-        else if typeof(arg) is i64 {
-            printf("%ld ", arg);
-        }
-        else if typeof(arg) is Vec3 {
-            printf("(%f, %f, %f) ", arg.x, arg.y, arg.z);
-        }
-        else {
-            static_assert(false, "Type not yet supported in print");
-        }
-    }
-}
-
-println(args: ...) {
-    for comptime arg in args {
-        print(arg);
-    }
-    print("\n");
-}
-
 struct Foo {}
 
 struct Vec2 {
-    x: int;
-    y: int;
+    x: int = 0;
+    y: int = 0;
 }
 
 struct Point {
@@ -115,10 +73,7 @@ struct Point {
 main(): int {
 
     // const a = 5 as Foo;
-
     // const point: Point = Vec2 { x: 0, y: 0 };
-
-    const a: u8 = 256;
 
     if !glfw.init() {
         return 0;
@@ -135,6 +90,8 @@ main(): int {
 
     let oldTime = glfw.getTime();
     window.swapBuffers();
+
+    let frameCounter: i16 = 0;
 
     let fps = 0.0;
     while !window.shouldClose() {
@@ -155,6 +112,7 @@ main(): int {
         fps = fps * (1.0 - alpha) + 1.0 / elapsed * alpha;
 
         println("FPS:", fps);
+        println("Count: ", frameCounter);
 
         window.swapBuffers();
     }

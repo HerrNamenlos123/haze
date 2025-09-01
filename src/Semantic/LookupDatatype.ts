@@ -3,7 +3,6 @@ import { assert, CompilerError, type SourceLoc } from "../shared/Errors";
 import {
   Collect,
   funcSymHasParameterPack,
-  printCollectedDatatype,
 } from "../SymbolCollection/SymbolCollection";
 import {
   elaborateExpr,
@@ -19,7 +18,6 @@ import {
   asType,
   isTypeConcrete,
   makePrimitiveAvailable,
-  printSubstitutionContext,
   Semantic,
   type SemanticResult,
 } from "./SemanticSymbols";
@@ -268,8 +266,6 @@ export function instantiateAndElaborateStruct(
     }
   }
 
-  console.log("Semantic: ", definedStructType.name);
-  printSubstitutionContext(sr, args.context);
   console.log();
   const [struct, structId] = Semantic.addNode<Semantic.StructDatatypeSymbol>(sr, {
     variant: Semantic.ENode.StructDatatype,

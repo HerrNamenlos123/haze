@@ -119,17 +119,23 @@ export function ExportCollectedSymbols(cc: CollectionContext) {
           file += "namespace " + ns + " {\n";
         }
         if (symbol.generics.length !== 0 || funcSymHasParameterPack(cc, symbolId)) {
-          // TODO: If the function is generic and has "export", then the "export" keyword should not appear
-          // in the generated import code.
-          file += symbol.originalSourcecode;
-        } else {
-          if (symbol.noemit) {
-            file += "noemit ";
+          // This is very ugly
+          let code = symbol.originalSourcecode;
+          if (code.startsWith(" export ")) {
+            code = code.replace(" export ", "");
           }
+          if (code.startsWith("export ")) {
+            code = code.replace("export ", "");
+          }
+          file += code + "\n";
+        } else {
           if (symbol.extern === EExternLanguage.Extern) {
             file += "extern ";
           } else if (symbol.extern === EExternLanguage.Extern_C) {
             file += 'extern "C" ';
+          }
+          if (symbol.noemit) {
+            file += "noemit ";
           }
           const overloadGroup = cc.nodes.get(symbol.overloadGroup);
           assert(overloadGroup.variant === Collect.ENode.FunctionOverloadGroup);
@@ -137,6 +143,7 @@ export function ExportCollectedSymbols(cc: CollectionContext) {
           file +=
             "(" +
             symbol.parameters.map((p, i) => `${p.name}: ${printType(cc, p.type)}`).join(", ") +
+            (symbol.vararg ? ", ..." : "") +
             "): " +
             printType(cc, symbol.returnType);
           file += ";\n";

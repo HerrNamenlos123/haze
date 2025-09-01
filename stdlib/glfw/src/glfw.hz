@@ -1,12 +1,13 @@
 
 __c__("#include <GLFW/glfw3.h>");
 __c__("#include <math.h>");
+__c__("#include <string.h>");
 
 export extern "C" struct GLFWwindow {};
 export extern "C" struct GLFWmonitor {};
 
-extern "C" strcmp(str1: str, str2: str): i32;
-extern "C" getenv(name: str): str;
+extern "C" noemit strcmp(str1: str, str2: str): i32;
+extern "C" noemit getenv(name: str): str;
 
 const GLFW_PLATFORM: i32;
 const GLFW_PLATFORM_X11: i32;

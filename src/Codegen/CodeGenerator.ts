@@ -1,4 +1,5 @@
 import { Lowered } from "../Lower/Lower";
+import { Conversion } from "../Semantic/Conversion";
 import {
   BinaryOperationToString,
   EBinaryOperation,
@@ -19,8 +20,14 @@ class CodeGenerator {
     type_definitions: new OutputWriter(),
     function_declarations: new OutputWriter(),
     function_definitions: new OutputWriter(),
+    builtin_declarations: new OutputWriter(),
+    builtin_definitions: new OutputWriter(),
     global_variables: new OutputWriter(),
   };
+
+  private arithmeticFunctionsCache = new Map<EBinaryOperation, Map<Lowered.TypeId, string>>();
+  private incrFunctionsCache = new Map<EIncrOperation, Map<Lowered.TypeId, string>>();
+  private trapFunctionCache: string | undefined;
 
   constructor(public config: ModuleConfig, public lr: Lowered.Module) {
     // const contextSymbol = this.module.globalScope.lookupSymbol(
@@ -84,6 +91,10 @@ class CodeGenerator {
     writer.write(this.out.function_declarations);
     writer.writeLine();
 
+    writer.write("\n\n// Arithmetic Function declaration section\n");
+    writer.write(this.out.builtin_declarations);
+    writer.writeLine();
+
     writer.write("\n\n// Global Variable section\n");
     writer.write(this.out.global_variables);
     writer.writeLine();
@@ -92,12 +103,18 @@ class CodeGenerator {
     writer.write(this.out.function_definitions);
     writer.writeLine();
 
+    writer.write("\n\n// Arithmetic Function definition section\n");
+    writer.write(this.out.builtin_definitions);
+    writer.writeLine();
+
     return writer.get();
   }
 
   generate() {
     this.includeHeader("stdint.h");
+    this.includeHeader("stdio.h");
     this.includeHeader("stdbool.h");
+    this.includeHeader("stdlib.h");
     this.includeHeader("limits.h");
 
     this.sortTypeDefinitions();
@@ -308,6 +325,191 @@ class CodeGenerator {
     } else {
       return datatypeOrSymbol.mangledName;
     }
+  }
+
+  makeTrapFunction() {
+    if (this.trapFunctionCache !== undefined) {
+      return this.trapFunctionCache;
+    }
+
+    const functionName = "___hz_builtin_trap";
+    this.out.builtin_declarations.writeLine(`__attribute__((noreturn, cold))`);
+    this.out.builtin_declarations.writeLine(
+      `static _Noreturn void ${functionName}(const char* msg);`
+    );
+    this.out.builtin_definitions.writeLine(`__attribute__((noreturn, cold))`);
+    this.out.builtin_definitions
+      .writeLine(`static _Noreturn void ${functionName}(const char* msg) {`)
+      .pushIndent();
+    this.out.builtin_definitions.writeLine(`fprintf(stderr, "Runtime error: %s\\n", msg);`);
+    this.out.builtin_definitions.writeLine(`abort();`);
+    this.out.builtin_definitions.popIndent().writeLine(`}`);
+    this.trapFunctionCache = functionName;
+    return functionName;
+  }
+
+  makeCheckedIncrArithmeticFunction(exprId: Lowered.ExprId, operation: EIncrOperation) {
+    const expr = this.lr.exprNodes.get(exprId);
+
+    let opStr = "";
+    switch (operation) {
+      case EIncrOperation.Incr:
+        opStr = "incr";
+        break;
+      case EIncrOperation.Decr:
+        opStr = "decr";
+        break;
+      default:
+        assert(false);
+    }
+
+    let innerMap = this.incrFunctionsCache.get(operation);
+    if (innerMap === undefined) {
+      this.incrFunctionsCache.set(operation, new Map());
+      innerMap = this.incrFunctionsCache.get(operation)!;
+    }
+
+    let functionName = innerMap.get(expr.type);
+    if (functionName !== undefined) {
+      return functionName;
+    }
+
+    const leftType = this.lr.typeNodes.get(expr.type);
+    const trapFunc = this.makeTrapFunction();
+
+    functionName = `___hz_builtin_${opStr}_${leftType.mangledName}`;
+
+    this.out.builtin_declarations.writeLine(
+      `static inline _H${leftType.mangledName} ${functionName}(_H${leftType.mangledName});`
+    );
+    this.out.builtin_definitions
+      .writeLine(
+        `static inline _H${leftType.mangledName} ${functionName}(_H${leftType.mangledName} value) {`
+      )
+      .pushIndent();
+    this.out.builtin_definitions.writeLine(`_H${leftType.mangledName} result;`);
+    this.out.builtin_definitions
+      .writeLine(
+        `if (__builtin_expect(__builtin_${
+          operation === EIncrOperation.Incr ? "add" : "sub"
+        }_overflow(value, 1, &result), 0)) {`
+      )
+      .pushIndent();
+    this.out.builtin_definitions.writeLine(
+      `${trapFunc}("Integer overflow in ${opStr} operation");`
+    );
+    this.out.builtin_definitions.popIndent().writeLine(`}`);
+    this.out.builtin_definitions.writeLine(`return result;`);
+    this.out.builtin_definitions.popIndent().writeLine("}");
+
+    innerMap.set(expr.type, functionName);
+    return functionName;
+  }
+
+  makeCheckedBinaryArithmeticFunction(
+    leftId: Lowered.ExprId,
+    rightId: Lowered.ExprId,
+    operation: EBinaryOperation
+  ) {
+    const left = this.lr.exprNodes.get(leftId);
+    const right = this.lr.exprNodes.get(rightId);
+
+    assert(left.type === right.type);
+
+    let opStr = "";
+    switch (operation) {
+      case EBinaryOperation.Add:
+        opStr = "add";
+        break;
+      case EBinaryOperation.Subtract:
+        opStr = "sub";
+        break;
+      case EBinaryOperation.Multiply:
+        opStr = "mul";
+        break;
+      case EBinaryOperation.Divide:
+        opStr = "div";
+        break;
+      case EBinaryOperation.Modulo:
+        opStr = "mod";
+        break;
+      default:
+        assert(false);
+    }
+
+    let innerMap = this.arithmeticFunctionsCache.get(operation);
+    if (innerMap === undefined) {
+      this.arithmeticFunctionsCache.set(operation, new Map());
+      innerMap = this.arithmeticFunctionsCache.get(operation)!;
+    }
+
+    let functionName = innerMap.get(right.type);
+    if (functionName !== undefined) {
+      return functionName;
+    }
+
+    const leftType = this.lr.typeNodes.get(left.type);
+    const rightType = this.lr.typeNodes.get(right.type);
+
+    const trapFunc = this.makeTrapFunction();
+
+    functionName = `___hz_builtin_${opStr}_${leftType.mangledName}${rightType.mangledName}`;
+
+    this.out.builtin_declarations.writeLine(
+      `_H${leftType.mangledName} ${functionName}(_H${leftType.mangledName}, _H${rightType.mangledName});`
+    );
+    this.out.builtin_definitions
+      .writeLine(
+        `_H${leftType.mangledName} ${functionName}(_H${leftType.mangledName} a, _H${rightType.mangledName} b) {`
+      )
+      .pushIndent();
+    if (operation === EBinaryOperation.Divide) {
+      this.out.builtin_definitions.writeLine(`if (b == 0) ${trapFunc}("Division by zero");`);
+      if (
+        leftType.variant === Lowered.ENode.PrimitiveDatatype &&
+        leftType.primitive === EPrimitive.i8
+      ) {
+        this.out.builtin_definitions.writeLine(
+          `if (a == INT8_MIN && b == -1) ${trapFunc}("Integer overflow in division");`
+        );
+      } else if (
+        leftType.variant === Lowered.ENode.PrimitiveDatatype &&
+        leftType.primitive === EPrimitive.i16
+      ) {
+        this.out.builtin_definitions.writeLine(
+          `if (a == INT16_MIN && b == -1) ${trapFunc}("Integer overflow in division");`
+        );
+      } else if (
+        leftType.variant === Lowered.ENode.PrimitiveDatatype &&
+        leftType.primitive === EPrimitive.i32
+      ) {
+        this.out.builtin_definitions.writeLine(
+          `if (a == INT32_MIN && b == -1) ${trapFunc}("Integer overflow in division");`
+        );
+      } else if (
+        leftType.variant === Lowered.ENode.PrimitiveDatatype &&
+        leftType.primitive === EPrimitive.i64
+      ) {
+        this.out.builtin_definitions.writeLine(
+          `if (a == INT64_MIN && b == -1) ${trapFunc}("Integer overflow in division");`
+        );
+      }
+      this.out.builtin_definitions.writeLine(`return a / b;`);
+    } else {
+      this.out.builtin_definitions.writeLine(`_H${leftType.mangledName} result;`);
+      this.out.builtin_definitions
+        .writeLine(`if (__builtin_expect(__builtin_${opStr}_overflow(a, b, &result), 0)) {`)
+        .pushIndent();
+      this.out.builtin_definitions.writeLine(
+        `${trapFunc}("Integer overflow in ${opStr} operation");`
+      );
+      this.out.builtin_definitions.popIndent().writeLine(`}`);
+      this.out.builtin_definitions.writeLine(`return result;`);
+    }
+    this.out.builtin_definitions.popIndent().writeLine("}");
+
+    innerMap.set(right.type, functionName);
+    return functionName;
   }
 
   emitFunction(symbolId: Lowered.FunctionId) {
@@ -571,18 +773,52 @@ class CodeGenerator {
       case Lowered.ENode.PreIncrExpr: {
         const exprWriter = this.emitExpr(expr.expr);
         tempWriter.write(exprWriter.temp);
-        outWriter.write(
-          "(" + (expr.operation === EIncrOperation.Incr ? "++" : "--") + exprWriter.out.get() + ")"
-        );
+
+        const e = this.lr.exprNodes.get(expr.expr);
+        const exprType = this.lr.typeNodes.get(e.type);
+        if (
+          exprType.variant === Lowered.ENode.PrimitiveDatatype &&
+          Conversion.isInteger(exprType.primitive)
+        ) {
+          const functionName = this.makeCheckedIncrArithmeticFunction(expr.expr, expr.operation);
+          outWriter.write(`(${exprWriter.out.get()} = ${functionName}(${exprWriter.out.get()}))`);
+        } else {
+          outWriter.write(
+            "(" +
+              (expr.operation === EIncrOperation.Incr ? "++" : "--") +
+              exprWriter.out.get() +
+              ")"
+          );
+        }
+
         return { out: outWriter, temp: tempWriter };
       }
 
       case Lowered.ENode.PostIncrExpr: {
         const exprWriter = this.emitExpr(expr.expr);
         tempWriter.write(exprWriter.temp);
-        outWriter.write(
-          "(" + exprWriter.out.get() + (expr.operation === EIncrOperation.Incr ? "++" : "--") + ")"
-        );
+
+        const e = this.lr.exprNodes.get(expr.expr);
+        const exprType = this.lr.typeNodes.get(e.type);
+        if (
+          exprType.variant === Lowered.ENode.PrimitiveDatatype &&
+          Conversion.isInteger(exprType.primitive)
+        ) {
+          const functionName = this.makeCheckedIncrArithmeticFunction(expr.expr, expr.operation);
+          outWriter.write(
+            `({ ${this.mangle(
+              exprType
+            )} __tmp = ${exprWriter.out.get()}; ${exprWriter.out.get()} = ${functionName}(${exprWriter.out.get()}); __tmp; })`
+          );
+        } else {
+          outWriter.write(
+            "(" +
+              (expr.operation === EIncrOperation.Incr ? "++" : "--") +
+              exprWriter.out.get() +
+              ")"
+          );
+        }
+
         return { out: outWriter, temp: tempWriter };
       }
 
@@ -614,15 +850,36 @@ class CodeGenerator {
             const rightWriter = this.emitExpr(expr.right);
             tempWriter.write(leftWriter.temp);
             tempWriter.write(rightWriter.temp);
-            outWriter.write(
-              "(" +
-                leftWriter.out.get() +
-                " " +
-                BinaryOperationToString(expr.operation) +
-                " " +
-                rightWriter.out.get() +
-                ")"
+
+            const left = this.lr.exprNodes.get(expr.left);
+            const leftType = this.lr.typeNodes.get(left.type);
+            const right = this.lr.exprNodes.get(expr.right);
+            const rightType = this.lr.typeNodes.get(right.type);
+            assert(
+              leftType.variant === Lowered.ENode.PrimitiveDatatype &&
+                rightType.variant === Lowered.ENode.PrimitiveDatatype &&
+                leftType.primitive === rightType.primitive
             );
+            if (Conversion.isInteger(leftType.primitive)) {
+              const functionName = this.makeCheckedBinaryArithmeticFunction(
+                expr.left,
+                expr.right,
+                expr.operation
+              );
+              outWriter.write(
+                functionName + "(" + leftWriter.out.get() + ", " + rightWriter.out.get() + ")"
+              );
+            } else {
+              outWriter.write(
+                "(" +
+                  leftWriter.out.get() +
+                  " " +
+                  BinaryOperationToString(expr.operation) +
+                  " " +
+                  rightWriter.out.get() +
+                  ")"
+              );
+            }
             break;
           }
 
