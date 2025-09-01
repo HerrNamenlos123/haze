@@ -72,9 +72,6 @@ struct Point {
 
 main(): int {
 
-    // const a = 5 as Foo;
-    // const point: Point = Vec2 { x: 0, y: 0 };
-
     if !glfw.init() {
         return 0;
     }
