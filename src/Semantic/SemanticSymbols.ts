@@ -52,6 +52,7 @@ export type SemanticResult = {
     paramPackTypes: Semantic.Id[];
     substitutionContext: ElaborationContext;
     resultSymbol: Semantic.Id;
+    parentStructOrNS: Semantic.Id | null;
   }[];
   elaboratedNamespaceSymbols: {
     originalSharedInstance: Collect.Id;

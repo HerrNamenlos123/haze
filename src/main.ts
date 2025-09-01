@@ -51,7 +51,7 @@ async function main() {
   const args = main_parser.parse_args();
 
   if (args.version) {
-    console.log(`Haze version ${version}`);
+    console.info(`Haze version ${version}`);
     process.exit(0);
   }
 
@@ -67,7 +67,7 @@ async function main() {
       }
     } catch (err) {
       if (err instanceof GeneralError) {
-        console.log(err.message);
+        console.info(err.message);
       } else {
         console.error(err);
       }

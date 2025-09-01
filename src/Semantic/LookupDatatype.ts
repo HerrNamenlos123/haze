@@ -19,7 +19,7 @@ import {
   type SemanticResult,
 } from "./SemanticSymbols";
 import { EExternLanguage, EVariableMutability } from "../shared/AST";
-import { serializeDatatype } from "./Serialize";
+import { serializeDatatype, serializeNestedName } from "./Serialize";
 
 export function makeFunctionDatatypeAvailable(
   sr: SemanticResult,

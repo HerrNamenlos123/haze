@@ -1,76 +1,8 @@
 
-// inject "#include <GLFW/glfw3.h>";
-// inject "#include <math.h>";
-
-// export extern "C" struct GLFWwindow {};
-// extern "C" struct GLFWmonitor {};
-
-// extern "C" glfwInit(): i32;
-// extern "C" glfwTerminate(): none;
-// extern "C" glfwCreateWindow(width: i32, height: i32, title: str, monitor: cstruct GLFWmonitor*, share: cstruct GLFWwindow*): cstruct GLFWwindow*;
-// extern "C" glfwWindowShouldClose(w: cstruct GLFWwindow*): i32;
-// extern "C" glfwSwapBuffers(w: cstruct GLFWwindow*);
-// extern "C" glfwSwapInterval(flag: i32);
-// extern "C" glfwMakeContextCurrent(w: cstruct GLFWwindow*);
-// extern "C" glfwPollEvents();
-// extern "C" glfwInitHint(hint: i32, value: i32);
-// extern "C" glfwWindowHint(hint: i32, value: i32);
-
-// extern "C" strcmp(str1: str, str2: str): i32;
-// extern "C" getenv(name: str): str;
-
-// const GLFW_PLATFORM: i32;
-// const GLFW_PLATFORM_X11: i32;
-// const GLFW_ANY_PLATFORM: i32;
-// const GLFW_CONTEXT_VERSION_MAJOR: i32;
-// const GLFW_CONTEXT_VERSION_MINOR: i32;
-// const GLFW_OPENGL_PROFILE: i32;
-// const GLFW_OPENGL_CORE_PROFILE: i32;
-
-// main(): i32 => {
-//     // const rootArena = Arena();
-//     if not glfw.init() { return -1; }
-
-//     const window = glfw.createWindow(720, 480, "Test");
-//     window.makeContextCurrent();
-//     glfw.swapInterval(1);
-
-//     while !window.shouldClose() {
-//         glfw.pollEvents();
-//         window.swapBuffers();
-//     }
-
-//     glfw.terminate();
-//     return 0;
-// }
-
 import math
+import glDraw
 import glfw
 import gl
-
-struct Vec3 {
-    x: real;
-    y: real;
-    z: real;
-
-    constructor(x: real, y: real, z: real): Vec3 {
-        return Vec3{ x: x, y: y, z: z};
-    }
-}
-
-struct Foo {}
-
-struct Vec2 {
-    x: int = 0;
-    y: int = 0;
-}
-
-struct Point {
-    x: int;
-    y: int;
-}
-
-import glDraw
 
 main(): int {
 

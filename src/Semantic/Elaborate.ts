@@ -1319,13 +1319,14 @@ export function elaborateExpr(
       let symbol = sr.cc.nodes.get(symbolId);
 
       if (symbol.variant === Collect.ENode.AliasTypeSymbol) {
-        const aliasScope = symbol.inScope;
-
         const newId = lookupAndElaborateDatatype(sr, {
           typeId: symbol.target,
           isInCFuncdecl: false,
           elaboratedVariables: args.elaboratedVariables,
-          context: args.context,
+          context: isolateSubstitutionContext(args.context, {
+            currentScope: symbol.inScope,
+            genericsScope: symbol.inScope,
+          }),
         });
         return Semantic.addNode(sr, {
           variant: Semantic.ENode.DatatypeAsValueExpr,
@@ -1810,7 +1811,7 @@ export function elaborateExpr(
             }),
             usageSourceLocation: expr.sourceloc,
             elaboratedVariables: args.elaboratedVariables,
-            parentStructOrNS: object.type,
+            parentStructOrNS: objectTypeId,
             isMonomorphized: args.isMonomorphized,
           }
         );
@@ -2872,7 +2873,8 @@ export function elaborateFunctionSymbol(
       s.generics.every((g, index) => g === genericArgs[index]) &&
       s.paramPackTypes.length === args.paramPackTypes.length &&
       s.paramPackTypes.every((g, index) => g === args.paramPackTypes[index]) &&
-      s.originalSymbol === functionSignature.originalFunction
+      s.originalSymbol === functionSignature.originalFunction &&
+      s.parentStructOrNS === args.parentStructOrNS
     ) {
       return s.resultSymbol;
     }
@@ -2963,8 +2965,8 @@ export function elaborateFunctionSymbol(
   if (func.methodType === EMethodType.Method && !func.staticMethod) {
     parameterNames.unshift("this");
     assert(args.parentStructOrNS);
-    const thisReference = makeReferenceDatatypeAvailable(sr, args.parentStructOrNS);
-    parameters.unshift(thisReference);
+    const parentType = sr.nodes.get(args.parentStructOrNS);
+    parameters.unshift(makeReferenceDatatypeAvailable(sr, args.parentStructOrNS));
   }
 
   const ftype = makeFunctionDatatypeAvailable(sr, {
@@ -2999,6 +3001,7 @@ export function elaborateFunctionSymbol(
       originalSymbol: functionSignature.originalFunction,
       substitutionContext: args.context,
       paramPackTypes: args.paramPackTypes,
+      parentStructOrNS: args.parentStructOrNS,
       resultSymbol: symbolId,
     });
 
@@ -3024,6 +3027,9 @@ export function elaborateFunctionSymbol(
         assert(collectedThisRef.variant === Collect.ENode.VariableSymbol);
 
         assert(symbol.methodOf);
+        if (sr.nodes.get(symbol.methodOf).variant === Semantic.ENode.ReferenceDatatype) {
+          assert(false);
+        }
         const thisRef = makeReferenceDatatypeAvailable(sr, symbol.methodOf);
         const [variable, variableId] = Semantic.addNode(sr, {
           variant: Semantic.ENode.VariableSymbol,
@@ -3409,12 +3415,9 @@ export function SemanticallyAnalyze(
       return symbol.name === getModuleGlobalNamespaceName(moduleName, moduleVersion);
     });
     console.info("TODO: Narrow this down so it's not just the name, because it might be nested");
-    assert(mainGlobalScope);
-    const mainNamespace = sr.nodes.get(mainGlobalScope.resultSymbol);
-    assert(mainNamespace.variant === Semantic.ENode.NamespaceDatatype);
     const mainFunction = sr.elaboratedFuncdefSymbols.find((s) => {
       const symbol = sr.nodes.get(s.resultSymbol) as Semantic.FunctionSymbol;
-      return symbol.name === "main" && symbol.parentStructOrNS === mainGlobalScope.resultSymbol;
+      return symbol.name === "main" && symbol.parentStructOrNS === mainGlobalScope?.resultSymbol;
     });
     if (!isLibrary) {
       if (!mainFunction) {
