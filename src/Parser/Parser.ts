@@ -369,7 +369,7 @@ class ASTTransformer extends HazeVisitor<any> {
   visitIntegerLiteral = (ctx: IntegerLiteralContext): LiteralValue => {
     return {
       type: EPrimitive.int,
-      value: Number(ctx.INTEGER_LITERAL().getText()),
+      value: BigInt(ctx.INTEGER_LITERAL().getText()),
       unit: null,
     };
   };
@@ -383,11 +383,11 @@ class ASTTransformer extends HazeVisitor<any> {
   };
 
   visitIntegerUnitLiteral = (ctx: IntegerUnitLiteralContext): LiteralValue => {
-    return this.makeUnitLiteral(ctx);
+    return this.makeIntegerUnitLiteral(ctx);
   };
 
   visitFloatUnitLiteral = (ctx: FloatUnitLiteralContext): LiteralValue => {
-    return this.makeUnitLiteral(ctx);
+    return this.makeFloatUnitLiteral(ctx);
   };
 
   visitStringConstant = (ctx: StringConstantContext): LiteralValue => {
@@ -404,16 +404,18 @@ class ASTTransformer extends HazeVisitor<any> {
     };
   };
 
-  makeUnitLiteral(ctx: IntegerUnitLiteralContext | FloatUnitLiteralContext): LiteralValue {
-    function parseUnit(input: string): [number, string] {
-      const match = input.match(/^(-?\d*\.?\d+)([a-zA-Z%]+)$/);
+  makeIntegerUnitLiteral(ctx: IntegerUnitLiteralContext): LiteralValue {
+    function parseUnitBigInt(input: string): [bigint, string] {
+      const match = input.match(/^(-?\d+)([a-zA-Z%]+)$/);
       if (!match) throw new Error(`Invalid format: "${input}"`);
-      return [parseFloat(match[1]), match[2]];
+
+      const value = BigInt(match[1]);
+      const unit = match[2];
+
+      return [value, unit];
     }
-    const [value, unit] =
-      ctx instanceof IntegerUnitLiteralContext
-        ? parseUnit(ctx.UNIT_INTEGER_LITERAL().getText())
-        : parseUnit(ctx.UNIT_FLOAT_LITERAL().getText());
+
+    const [value, unit] = parseUnitBigInt(ctx.UNIT_INTEGER_LITERAL().getText());
 
     let literalUnit: ELiteralUnit | null = null;
     switch (unit) {
@@ -454,7 +456,59 @@ class ASTTransformer extends HazeVisitor<any> {
 
     return {
       value: value,
-      type: ctx instanceof IntegerUnitLiteralContext ? EPrimitive.int : EPrimitive.real,
+      type: EPrimitive.int,
+      unit: literalUnit,
+    };
+  }
+
+  makeFloatUnitLiteral(ctx: FloatUnitLiteralContext): LiteralValue {
+    function parseUnit(input: string): [number, string] {
+      const match = input.match(/^(-?\d*\.?\d+)([a-zA-Z%]+)$/);
+      if (!match) throw new Error(`Invalid format: "${input}"`);
+      return [parseFloat(match[1]), match[2]];
+    }
+    const [value, unit] = parseUnit(ctx.UNIT_FLOAT_LITERAL().getText());
+
+    let literalUnit: ELiteralUnit | null = null;
+    switch (unit) {
+      case undefined:
+        break;
+
+      case "s":
+        literalUnit = ELiteralUnit.s;
+        break;
+
+      case "ms":
+        literalUnit = ELiteralUnit.ms;
+        break;
+
+      case "us":
+        literalUnit = ELiteralUnit.us;
+        break;
+
+      case "ns":
+        literalUnit = ELiteralUnit.ns;
+        break;
+
+      case "h":
+        literalUnit = ELiteralUnit.h;
+        break;
+
+      case "m":
+        literalUnit = ELiteralUnit.m;
+        break;
+
+      case "d":
+        literalUnit = ELiteralUnit.d;
+        break;
+
+      default:
+        throw new CompilerError(`The unit '${unit}' is not known to the compiler`, this.loc(ctx));
+    }
+
+    return {
+      value: value,
+      type: EPrimitive.real,
       unit: literalUnit,
     };
   }

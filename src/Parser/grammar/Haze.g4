@@ -138,7 +138,7 @@ expr
     // Part 2: Right to left
     | <assoc=right> op=('++' | '--') expr                                           #PreIncrExpr
     | <assoc=right> op=('+' | '-') expr                                             #UnaryExpr
-    | <assoc=right> op='!' expr /* and bitwise not */                             #UnaryExpr
+    | <assoc=right> op='!' expr /* and bitwise not */                               #UnaryExpr
     | <assoc=right> expr 'as' datatype                                              #ExplicitCastExpr
     | <assoc=right> '*' expr                                                        #PointerDereference
     | <assoc=right> '&' expr                                                        #PointerAddressOf
@@ -207,8 +207,8 @@ fragment HEX
     :   [0-9a-fA-F]
     ;
 
-fragment DEC_PART: DIGIT+;
-fragment FLOAT_PART: DIGIT+ '.' DIGIT*; // Handles 123., .456, 123.45
+fragment DEC_PART: '-'? DIGIT+;
+fragment FLOAT_PART: '-'? DIGIT+ '.' DIGIT*; // Handles 123., .456, 123.45
 fragment DIGIT: [0-9];
 
 // ╔═══════════════════════════════════════════════════════════════════════════════╗

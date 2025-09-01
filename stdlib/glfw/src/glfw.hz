@@ -97,8 +97,10 @@ export struct Window {
     }
 
     swapInterval(interval: int) {
-        raw.makeContextCurrent(this.handle);
-        raw.swapInterval(interval as i32);
+        if interval >= 0 && interval <= 10 {
+            raw.makeContextCurrent(this.handle);
+            raw.swapInterval(interval as i32);
+        }
     }
 }
 
@@ -133,7 +135,20 @@ export createWindow(config: WindowConfig): Window {
     raw.windowHint(GLFW_CONTEXT_VERSION_MAJOR, 3 as i32);
     raw.windowHint(GLFW_CONTEXT_VERSION_MINOR, 3 as i32);
     raw.windowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-    const handle = raw.createWindow(config.size.width as i32, config.size.height as i32, config.title, nullptr, nullptr);
+    const width = config.size.width;
+    const height = config.size.height;
+    const widthI32: i32 = 0;
+    const heightI32: i32 = 0;
+    if (width >= i32.min && width <= i32.max) {
+        widthI32 = width;
+    }
+    else {
+        assert(false);
+    }
+    if (height >= i32.min && height <= i32.max) {
+        heightI32 = height;
+    }
+    const handle = raw.createWindow(widthI32, heightI32, config.title, nullptr, nullptr);
     return Window { handle: handle };
 }
 
@@ -146,5 +161,8 @@ export getTime(): real {
 }
 
 export getProcAddress(): (name: str) => void* {
-    return raw.getProcAddress as (name: str) => void*;
+    const rawProc = raw.getProcAddress;
+    const castedProc: (name: str) => void*;
+    __c__("castedProc = (void*)rawProc;");
+    return castedProc;
 }

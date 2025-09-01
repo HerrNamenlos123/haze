@@ -98,6 +98,7 @@ class CodeGenerator {
   generate() {
     this.includeHeader("stdint.h");
     this.includeHeader("stdbool.h");
+    this.includeHeader("limits.h");
 
     this.sortTypeDefinitions();
 
@@ -755,6 +756,11 @@ class CodeGenerator {
       }
 
       case Lowered.ENode.LiteralExpr: {
+        function stringifyWithDecimal(num: number) {
+          const s = num.toString();
+          return s.includes(".") ? s : s + ".0";
+        }
+
         if (expr.literal.type === EPrimitive.str) {
           outWriter.write(
             `(${this.primitiveToC(expr.literal.type)})(${JSON.stringify(expr.literal.value)})`
@@ -765,10 +771,54 @@ class CodeGenerator {
           );
         } else if (expr.literal.type === EPrimitive.null) {
           outWriter.write("(_H4null){}");
-        } else {
+        } else if (expr.literal.type === EPrimitive.f32) {
           outWriter.write(
-            `(${this.primitiveToC(expr.literal.type)})(${expr.literal.value.toString()})`
+            `(${this.primitiveToC(expr.literal.type)})(${stringifyWithDecimal(
+              expr.literal.value
+            )}f)`
           );
+        } else if (expr.literal.type === EPrimitive.f64 || expr.literal.type === EPrimitive.real) {
+          outWriter.write(
+            `(${this.primitiveToC(expr.literal.type)})(${stringifyWithDecimal(expr.literal.value)})`
+          );
+        } else {
+          let postfix = "";
+          switch (expr.literal.type) {
+            case EPrimitive.i8:
+            case EPrimitive.i16:
+              postfix = "";
+              break;
+
+            case EPrimitive.i32:
+              postfix = "L";
+              break;
+
+            case EPrimitive.i64:
+            case EPrimitive.int:
+              postfix = "LL";
+              break;
+
+            case EPrimitive.u8:
+            case EPrimitive.u16:
+              postfix = "U";
+              break;
+
+            case EPrimitive.u32:
+              postfix = "UL";
+              break;
+
+            case EPrimitive.u64:
+              postfix = "ULL";
+              break;
+          }
+          let value = expr.literal.value.toString() + postfix;
+          if (expr.literal.value === -2147483648n) {
+            value = "INT_MIN";
+          }
+          if (expr.literal.value === -9223372036854775808n) {
+            value = "LLONG_MIN";
+          }
+          outWriter.write(`(${this.primitiveToC(expr.literal.type)})(${value})`);
         }
         return { out: outWriter, temp: tempWriter };
       }

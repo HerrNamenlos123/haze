@@ -51,15 +51,15 @@ import gl
 __c__("#include <stdio.h>");
 extern "C" noemit printf(fmt: str, ...);
 
-// struct Vec3 {
-//     x: real;
-//     y: real;
-//     z: real;
+struct Vec3 {
+    x: real;
+    y: real;
+    z: real;
 
-//     constructor(x: real, y: real, z: real): Vec3 {
-//         return Vec3{ x: x, y: y, z: z};
-//     }
-// }
+    constructor(x: real, y: real, z: real): Vec3 {
+        return Vec3{ x: x, y: y, z: z};
+    }
+}
 
 print(args: ...) {
     for comptime arg in args {
@@ -71,6 +71,18 @@ print(args: ...) {
         }
         else if typeof(arg) is real {
             printf("%f ", arg);
+        }
+        else if typeof(arg) is u8 || typeof(arg) is u16 || typeof(arg) is u32 {
+            printf("%u ", arg);
+        }
+        else if typeof(arg) is u64 {
+            printf("%lu ", arg);
+        }
+        else if typeof(arg) is i8 || typeof(arg) is i16 || typeof(arg) is i32 {
+            printf("%d ", arg);
+        }
+        else if typeof(arg) is i64 {
+            printf("%ld ", arg);
         }
         else if typeof(arg) is Vec3 {
             printf("(%f, %f, %f) ", arg.x, arg.y, arg.z);
@@ -90,13 +102,23 @@ println(args: ...) {
 
 struct Foo {}
 
+struct Vec2 {
+    x: int;
+    y: int;
+}
+
+struct Point {
+    x: int;
+    y: int;
+}
+
 main(): int {
 
-    const a = 5 as int;
+    // const a = 5 as Foo;
 
-    // println("TODO for next time: Implement casting like int(5). Implement it so that a function call checks if it's a primitive datatype expr, and replaces it with a CheckedCast node (make a new one), that casts a value to another type. If the value is a constant, do the (overflow safe) cast at compile time for constant folding. If not, keep the CheckedCast. In the CodeGenerator, implement the CheckedCast that a separate builtin function is generated for each CheckedCast node, that asserts the overflow at runtime and then casts the value using C syntax.");
-    println("TODO for next time: Casting is put on hold. int(5) is no longer planned, x as int is planned and it's only allowed if the compiler can ensure the value is in range. Otherwise an error is thrown and an if must be added that constrains the values. Use the 'provides' syntax from GPT. ");
-    // return 0;
+    // const point: Point = Vec2 { x: 0, y: 0 };
+
+    const a: u8 = 256;
 
     if !glfw.init() {
         return 0;

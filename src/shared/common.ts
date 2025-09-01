@@ -85,10 +85,12 @@ export type LiteralValue =
         | EPrimitive.u16
         | EPrimitive.u32
         | EPrimitive.u64
-        | EPrimitive.f32
-        | EPrimitive.f64
-        | EPrimitive.int
-        | EPrimitive.real;
+        | EPrimitive.int;
+      value: bigint;
+      unit: ELiteralUnit | null;
+    }
+  | {
+      type: EPrimitive.f32 | EPrimitive.f64 | EPrimitive.real;
       value: number;
       unit: ELiteralUnit | null;
     };

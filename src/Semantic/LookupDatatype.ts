@@ -346,6 +346,7 @@ export function instantiateAndElaborateStruct(
               isMonomorphized: struct.isMonomorphized,
               gonnaInstantiateStructWithType: variable.type,
               scope: definedStructType.structScope,
+              blockScope: null,
             })[1],
           });
         }

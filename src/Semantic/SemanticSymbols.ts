@@ -245,6 +245,21 @@ export namespace Semantic {
     return [n, id];
   }
 
+  export type Constraint = {
+    variableSymbol: Semantic.Id;
+    constraintValue:
+      | {
+          kind: "comparison";
+          operation: EBinaryOperation;
+          value: bigint;
+        }
+      | {
+          kind: "variant";
+          operation: "is" | "is not";
+          variantType: Semantic.Id;
+        };
+  };
+
   export type CInjectDirective = {
     variant: ENode.CInjectDirective;
     value: string;
@@ -319,6 +334,7 @@ export namespace Semantic {
   export type BlockScope = {
     variant: ENode.BlockScope;
     statements: Id[];
+    constraints: Constraint[];
   };
 
   export type FunctionDatatypeSymbol = {

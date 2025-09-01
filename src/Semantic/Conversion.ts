@@ -7,7 +7,7 @@ import {
   EUnaryOperation,
   UnaryOperationToString,
 } from "../shared/AST";
-import { EMethodType, EPrimitive } from "../shared/common";
+import { EMethodType, EPrimitive, primitiveToString } from "../shared/common";
 import {
   assert,
   CompilerError,
@@ -25,6 +25,7 @@ import {
   type SemanticResult,
 } from "./SemanticSymbols";
 import { serializeDatatype } from "./Serialize";
+import { SERVFAIL } from "node:dns";
 
 export namespace Conversion {
   export function isSignedInteger(type: Semantic.PrimitiveDatatypeSymbol): boolean {
@@ -33,6 +34,7 @@ export namespace Conversion {
       case EPrimitive.i16:
       case EPrimitive.i32:
       case EPrimitive.i64:
+      case EPrimitive.int:
         return true;
       default:
         return false;
@@ -49,6 +51,89 @@ export namespace Conversion {
       default:
         return false;
     }
+  }
+
+  export function getIntegerMinMax(primitive: EPrimitive): [bigint, bigint] {
+    switch (primitive) {
+      case EPrimitive.u8:
+        return [0n, 255n];
+      case EPrimitive.i8:
+        return [-128n, 127n];
+      case EPrimitive.u16:
+        return [0n, 65535n];
+      case EPrimitive.i16:
+        return [-32768n, 32767n];
+      case EPrimitive.u32:
+        return [0n, 4294967295n]; // 2^32 - 1
+      case EPrimitive.i32:
+        return [-2147483648n, 2147483647n]; // -2^31 .. 2^31-1
+      case EPrimitive.u64:
+        return [0n, 18446744073709551615n]; // 2^64 - 1
+      case EPrimitive.i64:
+      case EPrimitive.int:
+        return [-9223372036854775808n, 9223372036854775807n]; // -2^63 .. 2^63-1
+      default:
+        assert(false, `Unknown primitive type: ${primitiveToString(primitive)}`);
+    }
+  }
+
+  export function prettyRange(
+    min: bigint,
+    max: bigint,
+    type: Semantic.PrimitiveDatatypeSymbol
+  ): string {
+    const typeLimits = getIntegerMinMax(type.primitive);
+
+    function formatValue(value: bigint, exact: bigint, negPower = false): string {
+      if (value === exact) {
+        // print as power-of-two
+        const exponent = negPower
+          ? BigInt(Math.log2(Number(-value)))
+          : BigInt(Math.log2(Number(value + (negPower ? 0n : 1n))));
+        return negPower ? `-2^${exponent}` : `2^${exponent}-1`;
+      } else {
+        return value.toString();
+      }
+    }
+
+    let minStr: string;
+    let maxStr: string;
+
+    // check if min matches exact type min
+    minStr = (() => {
+      switch (type.primitive) {
+        case EPrimitive.i32:
+          return min === typeLimits[0] ? `-2^31` : min.toString();
+        case EPrimitive.u32:
+          return min === typeLimits[0] ? `0` : min.toString();
+        case EPrimitive.i64:
+        case EPrimitive.int:
+          return min === typeLimits[0] ? `-2^63` : min.toString();
+        case EPrimitive.u64:
+          return min === typeLimits[0] ? `0` : min.toString();
+        default:
+          return min.toString();
+      }
+    })();
+
+    // check if max matches exact type max
+    maxStr = (() => {
+      switch (type.primitive) {
+        case EPrimitive.i32:
+          return max === typeLimits[1] ? `2^31-1` : max.toString();
+        case EPrimitive.u32:
+          return max === typeLimits[1] ? `2^32-1` : max.toString();
+        case EPrimitive.i64:
+        case EPrimitive.int:
+          return max === typeLimits[1] ? `2^63-1` : max.toString();
+        case EPrimitive.u64:
+          return max === typeLimits[1] ? `2^64-1` : max.toString();
+        default:
+          return max.toString();
+      }
+    })();
+
+    return `[${minStr}, ${maxStr}]`;
   }
 
   export function isStruct(sr: SemanticResult, typeId: Semantic.Id): boolean {
@@ -98,6 +183,7 @@ export namespace Conversion {
         return 32;
       case EPrimitive.i64:
       case EPrimitive.u64:
+      case EPrimitive.int:
         return 64;
     }
     throw new InternalError("Requested getIntegerBits from a non-integer");
@@ -415,167 +501,256 @@ export namespace Conversion {
     },
   ];
 
-  export function IsImplicitConversionAvailable(
-    sr: SemanticResult,
-    fromExprId: Semantic.Id,
-    toId: Semantic.Id
-  ) {
-    const fromExpr = sr.nodes.get(fromExprId);
-    assert(isExpression(fromExpr));
-
-    const from = sr.nodes.get(fromExpr.type);
-    const to = sr.nodes.get(toId);
-
-    if (IsStructurallyEquivalent(sr, fromExpr.type, toId)) {
-      return true;
-    }
-
-    if (to.variant === Semantic.ENode.ReferenceDatatype) {
-      return IsStructurallyEquivalent(sr, fromExprId, to.referee);
-    }
-    if (from.variant === Semantic.ENode.ReferenceDatatype) {
-      return IsStructurallyEquivalent(sr, from.referee, toId);
-    }
-
-    if (
-      from.variant === Semantic.ENode.PrimitiveDatatype &&
-      to.variant === Semantic.ENode.PrimitiveDatatype
-    ) {
-      for (const conv of SafeImplicitPrimitiveConversionTable) {
-        if (conv.from === from.primitive) {
-          if (conv.to.includes(to.primitive)) {
-            return true;
-          }
-        }
-      }
-    }
-
-    if (
-      from.variant === Semantic.ENode.PointerDatatype &&
-      to.variant === Semantic.ENode.PointerDatatype
-    ) {
-      const pointee = sr.nodes.get(from.pointee);
-      if (
-        pointee.variant === Semantic.ENode.PrimitiveDatatype &&
-        pointee.primitive === EPrimitive.void
-      ) {
-        // If the target is any pointer, and the source is a void*, do the conversion
-        return true;
-      }
-    }
-
-    return false;
+  export enum Mode {
+    Implicit,
+    Explicit,
   }
 
-  function IsExplicitConversionAvailable(
+  export function MakeConversion(
     sr: SemanticResult,
     fromExprId: Semantic.Id,
-    to: Semantic.Id
-  ) {
-    if (IsImplicitConversionAvailable(sr, fromExprId, to)) {
-      return true;
-    }
-    return false;
-  }
-
-  export function MakeImplicitConversion(
-    sr: SemanticResult,
-    fromExprId: Semantic.Id,
-    toTypeId: Semantic.Id,
-    sourceloc: SourceLoc
+    toId: Semantic.Id,
+    constraints: Semantic.Constraint[],
+    sourceloc: SourceLoc,
+    mode: Mode
   ) {
     const from = sr.nodes.get(fromExprId);
     assert(isExpression(from));
-
-    if (!IsImplicitConversionAvailable(sr, fromExprId, toTypeId)) {
-      throw new CompilerError(
-        `No implicit lossless Conversion from '${serializeDatatype(
-          sr,
-          from.type
-        )}' to '${serializeDatatype(sr, toTypeId)}' available`,
-        sourceloc
-      );
-    }
-    return MakeExplicitConversion(sr, fromExprId, toTypeId, sourceloc);
-  }
-
-  export function MakeExplicitConversion(
-    sr: SemanticResult,
-    fromId: Semantic.Id,
-    toId: Semantic.Id,
-    sourceloc: SourceLoc
-  ) {
-    const from = sr.nodes.get(fromId);
-    assert(isExpression(from));
     const to = sr.nodes.get(toId);
-    // assert(isData(from));
 
     if (from.type === toId) {
-      return fromId;
+      return fromExprId;
     }
 
-    if (IsStructurallyEquivalent(sr, from.type, toId)) {
-      return Semantic.addNode(sr, {
-        variant: Semantic.ENode.ExplicitCastExpr,
-        expr: fromId,
-        type: toId,
-        sourceloc: sourceloc,
-      })[1];
-    }
-
-    if (!IsExplicitConversionAvailable(sr, fromId, toId)) {
-      throw new CompilerError(
-        `No explicit Conversion from '${serializeDatatype(sr, from.type)}' to '${serializeDatatype(
-          sr,
-          toId
-        )}' available`,
-        sourceloc
-      );
-    }
-
+    // Conversion from T to T&
     if (to.variant === Semantic.ENode.ReferenceDatatype) {
-      // Conversion from anything to a reference
       return Semantic.addNode(sr, {
         variant: Semantic.ENode.ExplicitCastExpr,
-        expr: fromId,
+        expr: fromExprId,
         type: toId,
         sourceloc: sourceloc,
       })[1];
     }
 
+    // Conversion from T& to T
     if (sr.nodes.get(from.type).variant === Semantic.ENode.ReferenceDatatype) {
-      // Conversion from a reference to whatever it references
       return Semantic.addNode(sr, {
         variant: Semantic.ENode.ExplicitCastExpr,
-        expr: fromId,
+        expr: fromExprId,
         type: toId,
         sourceloc: sourceloc,
       })[1];
     }
 
     const fromType = sr.nodes.get(from.type);
-    if (
-      fromType.variant === Semantic.ENode.PrimitiveDatatype &&
-      to.variant === Semantic.ENode.PrimitiveDatatype
-    ) {
-      for (const conv of SafeImplicitPrimitiveConversionTable) {
-        if (conv.from === fromType.primitive) {
-          if (conv.to.includes(to.primitive)) {
-            return Semantic.addNode(sr, {
-              variant: Semantic.ENode.ExplicitCastExpr,
-              expr: fromId,
-              type: toId,
-              sourceloc: sourceloc,
-            })[1];
+    // if (
+    //   fromType.variant === Semantic.ENode.PrimitiveDatatype &&
+    //   to.variant === Semantic.ENode.PrimitiveDatatype
+    // ) {
+    //   for (const conv of SafeImplicitPrimitiveConversionTable) {
+    //     if (conv.from === fromType.primitive) {
+    //       if (conv.to.includes(to.primitive)) {
+    //         return Semantic.addNode(sr, {
+    //           variant: Semantic.ENode.ExplicitCastExpr,
+    //           expr: fromExprId,
+    //           type: toId,
+    //           sourceloc: sourceloc,
+    //         })[1];
+    //       }
+    //     }
+    //   }
+    // }
+
+    // Conversion between Integers
+    if (Conversion.isInteger(sr, from.type) && Conversion.isInteger(sr, toId)) {
+      const f = sr.nodes.get(from.type);
+      assert(f.variant === Semantic.ENode.PrimitiveDatatype);
+      const t = sr.nodes.get(toId);
+      assert(t.variant === Semantic.ENode.PrimitiveDatatype);
+      const fromSigned = Conversion.isSignedInteger(f);
+      const toSigned = Conversion.isSignedInteger(t);
+      const fromBits = Conversion.getIntegerBits(f);
+      const toBits = Conversion.getIntegerBits(t);
+
+      if (fromSigned === toSigned && toBits >= fromBits) {
+        // Totally safe
+        return Semantic.addNode(sr, {
+          variant: Semantic.ENode.ExplicitCastExpr,
+          expr: fromExprId,
+          type: toId,
+          sourceloc: sourceloc,
+        })[1];
+      } else {
+        let [sourceMinValue, sourceMaxValue] = Conversion.getIntegerMinMax(f.primitive);
+        let [targetMinValue, targetMaxValue] = Conversion.getIntegerMinMax(t.primitive);
+
+        function applyLiteral(literal: Semantic.Id) {
+          const value = sr.nodes.get(literal);
+          assert(value.variant === Semantic.ENode.LiteralExpr);
+          assert(
+            value.literal.type === EPrimitive.u8 ||
+              value.literal.type === EPrimitive.u16 ||
+              value.literal.type === EPrimitive.u32 ||
+              value.literal.type === EPrimitive.u64 ||
+              value.literal.type === EPrimitive.i8 ||
+              value.literal.type === EPrimitive.i16 ||
+              value.literal.type === EPrimitive.i32 ||
+              value.literal.type === EPrimitive.i64 ||
+              value.literal.type === EPrimitive.int
+          );
+          if (value.literal.value > sourceMinValue) {
+            sourceMinValue = value.literal.value;
+          }
+          if (value.literal.value < sourceMaxValue) {
+            sourceMaxValue = value.literal.value;
           }
         }
+
+        if (from.variant === Semantic.ENode.LiteralExpr) {
+          applyLiteral(fromExprId);
+        } else if (from.variant === Semantic.ENode.SymbolValueExpr) {
+          const symbol = sr.nodes.get(from.symbol);
+          assert(symbol.variant === Semantic.ENode.VariableSymbol);
+          if (symbol.comptime && symbol.comptimeValue) {
+            applyLiteral(symbol.comptimeValue);
+          }
+        }
+
+        for (const constraint of constraints) {
+          if (from.variant !== Semantic.ENode.SymbolValueExpr) {
+            continue;
+          }
+
+          if (constraint.variableSymbol !== from.symbol) {
+            continue;
+          }
+
+          if (constraint.constraintValue.kind === "comparison") {
+            if (
+              constraint.constraintValue.operation === EBinaryOperation.GreaterEqual &&
+              constraint.constraintValue.value > sourceMinValue
+            ) {
+              sourceMinValue = constraint.constraintValue.value;
+            }
+            if (
+              constraint.constraintValue.operation === EBinaryOperation.GreaterThan &&
+              constraint.constraintValue.value + 1n > sourceMinValue
+            ) {
+              sourceMinValue = constraint.constraintValue.value + 1n;
+            }
+            if (
+              constraint.constraintValue.operation === EBinaryOperation.LessEqual &&
+              constraint.constraintValue.value < sourceMaxValue
+            ) {
+              sourceMaxValue = constraint.constraintValue.value;
+            }
+            if (
+              constraint.constraintValue.operation === EBinaryOperation.LessThan &&
+              constraint.constraintValue.value - 1n < sourceMaxValue
+            ) {
+              sourceMaxValue = constraint.constraintValue.value - 1n;
+            }
+          }
+        }
+
+        if (sourceMinValue >= targetMinValue && sourceMaxValue <= targetMaxValue) {
+          return Semantic.addNode(sr, {
+            variant: Semantic.ENode.ExplicitCastExpr,
+            expr: fromExprId,
+            type: toId,
+            sourceloc: sourceloc,
+          })[1];
+        }
+
+        let sourceRangeText = "";
+        if (sourceMaxValue !== sourceMinValue) {
+          sourceRangeText = `range ${Conversion.prettyRange(sourceMinValue, sourceMaxValue, f)}`;
+        } else {
+          sourceRangeText = `value ${sourceMinValue}`;
+        }
+
+        throw new CompilerError(
+          `No safe conversion from '${serializeDatatype(sr, from.type)}' to '${serializeDatatype(
+            sr,
+            toId
+          )}' is known: Target type has integer range ${Conversion.prettyRange(
+            targetMinValue,
+            targetMaxValue,
+            t
+          )}, but the source has ${sourceRangeText}. Add a conditional that constrains the integer range.`,
+          sourceloc
+        );
       }
+    }
+
+    // Conversions between floats
+    if (
+      (fromType.variant === Semantic.ENode.PrimitiveDatatype &&
+        fromType.primitive === EPrimitive.real &&
+        to.variant === Semantic.ENode.PrimitiveDatatype &&
+        to.primitive === EPrimitive.f64) ||
+      (fromType.variant === Semantic.ENode.PrimitiveDatatype &&
+        fromType.primitive === EPrimitive.f64 &&
+        to.variant === Semantic.ENode.PrimitiveDatatype &&
+        to.primitive === EPrimitive.real)
+    ) {
+      return Semantic.addNode(sr, {
+        variant: Semantic.ENode.ExplicitCastExpr,
+        expr: fromExprId,
+        type: toId,
+        sourceloc: sourceloc,
+      })[1];
+    }
+    if (
+      (fromType.variant === Semantic.ENode.PrimitiveDatatype &&
+        fromType.primitive === EPrimitive.f32 &&
+        to.variant === Semantic.ENode.PrimitiveDatatype &&
+        to.primitive === EPrimitive.f64) ||
+      (fromType.variant === Semantic.ENode.PrimitiveDatatype &&
+        fromType.primitive === EPrimitive.f32 &&
+        to.variant === Semantic.ENode.PrimitiveDatatype &&
+        to.primitive === EPrimitive.real)
+    ) {
+      return Semantic.addNode(sr, {
+        variant: Semantic.ENode.ExplicitCastExpr,
+        expr: fromExprId,
+        type: toId,
+        sourceloc: sourceloc,
+      })[1];
+    }
+
+    if (
+      (fromType.variant === Semantic.ENode.PrimitiveDatatype &&
+        fromType.primitive === EPrimitive.real &&
+        to.variant === Semantic.ENode.PrimitiveDatatype &&
+        to.primitive === EPrimitive.f32) ||
+      (fromType.variant === Semantic.ENode.PrimitiveDatatype &&
+        fromType.primitive === EPrimitive.f64 &&
+        to.variant === Semantic.ENode.PrimitiveDatatype &&
+        to.primitive === EPrimitive.f32)
+    ) {
+      if (mode !== Mode.Explicit) {
+        throw new CompilerError(
+          `Conversion from '${serializeDatatype(sr, from.type)}' to '${serializeDatatype(
+            sr,
+            toId
+          )}' is lossy. If wanted, cast explicitly using '... as ${serializeDatatype(sr, toId)}'`,
+          sourceloc
+        );
+      }
+      return Semantic.addNode(sr, {
+        variant: Semantic.ENode.ExplicitCastExpr,
+        expr: fromExprId,
+        type: toId,
+        sourceloc: sourceloc,
+      })[1];
     }
 
     if (
       fromType.variant === Semantic.ENode.PointerDatatype &&
       to.variant === Semantic.ENode.PointerDatatype
     ) {
+      // Conversion from void* to T*
       const pointee = sr.nodes.get(fromType.pointee);
       if (
         pointee.variant === Semantic.ENode.PrimitiveDatatype &&
@@ -583,14 +758,30 @@ export namespace Conversion {
       ) {
         return Semantic.addNode(sr, {
           variant: Semantic.ENode.ExplicitCastExpr,
-          expr: fromId,
+          expr: fromExprId,
           type: toId,
           sourceloc: sourceloc,
         })[1];
       }
     }
 
-    throw new ImpossibleSituation();
+    // Core conversions
+    if (IsStructurallyEquivalent(sr, from.type, toId)) {
+      return Semantic.addNode(sr, {
+        variant: Semantic.ENode.ExplicitCastExpr,
+        expr: fromExprId,
+        type: toId,
+        sourceloc: sourceloc,
+      })[1];
+    }
+
+    throw new CompilerError(
+      `No suitable conversion from '${serializeDatatype(sr, from.type)}' to '${serializeDatatype(
+        sr,
+        toId
+      )}' is known`,
+      sourceloc
+    );
   }
 
   export function makeComparisonResultType(

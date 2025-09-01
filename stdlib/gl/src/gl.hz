@@ -13,8 +13,13 @@ extern "C" noemit glClearColor(x: f32, y: f32, w: f32, h: f32);
 extern "C" noemit glClear(flags: i32);
 
 toI32(value: int): i32 {
-    assert(value >= -2147483648 && value <= 2147483647);
-    return value as i32;
+    // assert(value >= -2147483648 && value <= 2147483647);
+    if (value >= i32.min && value <= i32.max) {
+        return value as i32;
+    }
+    else {
+        assert(false);
+    }
 }
 
 export viewport(x: int, y: int, w: int, h: int) {
