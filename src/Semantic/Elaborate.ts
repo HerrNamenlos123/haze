@@ -921,6 +921,7 @@ export function elaborateExpr(
         expr.literal.type === EPrimitive.u16 ||
         expr.literal.type === EPrimitive.u32 ||
         expr.literal.type === EPrimitive.u64 ||
+        expr.literal.type === EPrimitive.usize ||
         expr.literal.type === EPrimitive.i8 ||
         expr.literal.type === EPrimitive.i16 ||
         expr.literal.type === EPrimitive.i32 ||
@@ -1244,27 +1245,6 @@ export function elaborateExpr(
     // =================================================================================================================
 
     case Collect.ENode.SymbolValueExpr: {
-      if (expr.name === "sizeof") {
-        assert(false, "Not implemented");
-        // if (expr.generics.length !== 1) {
-        //   throw new CompilerError(
-        //     `The sizeof<> Operator needs exactly 1 type argument`,
-        //     expr.sourceloc
-        //   );
-        // }
-        // return Semantic.addNode(sr, {
-        //   variant: Semantic.ENode.SizeofExpr,
-        //   datatype: lookupAndElaborateDatatype(sr, {
-        //     type: expr.generics[0],
-        //     startLookupInScope: args.scope.id,
-        //     isInCFuncdecl: false,
-        //     context: args.context,
-        //   }),
-        //   type: makePrimitiveAvailable(sr, EPrimitive.u64),
-        //   sourceloc: expr.sourceloc,
-        // });
-      }
-
       if (expr.name === "null") {
         return Semantic.addNode(sr, {
           variant: Semantic.ENode.LiteralExpr,
@@ -1664,6 +1644,7 @@ export function elaborateExpr(
             datatypeValue.primitive === EPrimitive.u16 ||
             datatypeValue.primitive === EPrimitive.u32 ||
             datatypeValue.primitive === EPrimitive.u64 ||
+            datatypeValue.primitive === EPrimitive.usize ||
             datatypeValue.primitive === EPrimitive.i8 ||
             datatypeValue.primitive === EPrimitive.i16 ||
             datatypeValue.primitive === EPrimitive.i32 ||
@@ -2056,20 +2037,19 @@ export function elaborateExpr(
           isMonomorphized: args.isMonomorphized,
         });
 
-        if (e.type !== variable.type) {
-          assert(variable.type);
-          throw new CompilerError(
-            `Member assignment ${m.name} has mismatching types: Cannot assign ${serializeDatatype(
-              sr,
-              e.type
-            )} to ${serializeDatatype(sr, variable.type)}`,
-            expr.sourceloc
-          );
-        }
+        assert(variable.type);
+        const convertedExprId = Conversion.MakeConversion(
+          sr,
+          eId,
+          variable.type,
+          args.blockScope?.constraints || [],
+          expr.sourceloc,
+          Conversion.Mode.Implicit
+        );
 
         remainingMembers = remainingMembers.filter((mm) => mm !== m.name);
         assign.push({
-          value: eId,
+          value: convertedExprId,
           name: m.name,
         });
         assignedMembers.push(m.name);
@@ -2145,6 +2125,7 @@ function applyBinaryExprConstraints(
       literalExpr.literal.type !== EPrimitive.i32 &&
       literalExpr.literal.type !== EPrimitive.i64 &&
       literalExpr.literal.type !== EPrimitive.int &&
+      literalExpr.literal.type !== EPrimitive.usize &&
       literalExpr.literal.type !== EPrimitive.u8 &&
       literalExpr.literal.type !== EPrimitive.u16 &&
       literalExpr.literal.type !== EPrimitive.u32 &&

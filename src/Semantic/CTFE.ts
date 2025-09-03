@@ -34,6 +34,7 @@ const TRIVIAL_LITERAL_COMPARISONS = [
   EPrimitive.i32,
   EPrimitive.i64,
   EPrimitive.int,
+  EPrimitive.usize,
   EPrimitive.null,
   EPrimitive.real,
   EPrimitive.bool,
@@ -122,23 +123,6 @@ export function EvalCTFE(
             left.variant === Semantic.ENode.LiteralExpr &&
             right.variant === Semantic.ENode.LiteralExpr
           ) {
-            const TRIVIAL_LITERAL_COMPARISONS = [
-              EPrimitive.str,
-              EPrimitive.f32,
-              EPrimitive.f64,
-              EPrimitive.u8,
-              EPrimitive.u16,
-              EPrimitive.u32,
-              EPrimitive.u64,
-              EPrimitive.i8,
-              EPrimitive.i16,
-              EPrimitive.i32,
-              EPrimitive.i64,
-              EPrimitive.int,
-              EPrimitive.null,
-              EPrimitive.real,
-              EPrimitive.bool,
-            ] as const;
             if (
               TRIVIAL_LITERAL_COMPARISONS.includes(left.literal.type) &&
               TRIVIAL_LITERAL_COMPARISONS.includes(right.literal.type) &&

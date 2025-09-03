@@ -487,8 +487,7 @@ export namespace Semantic {
 
   export type SizeofExpr = {
     variant: ENode.SizeofExpr;
-    datatype: Id | null;
-    value: Id | null;
+    valueExpr: Id;
     type: Id;
     sourceloc: SourceLoc;
   };

@@ -13,6 +13,13 @@ export enum EExternLanguage {
   Extern_C,
 }
 
+export enum EClonability {
+  Unknown,
+  Clonable,
+  NonClonableFromAttribute,
+  NonClonableFromMembers,
+}
+
 export enum EOperator {
   Add,
   Sub,
@@ -490,6 +497,7 @@ export type ASTFuncBody = ASTScope | ASTExprAsFuncbody;
 export type ASTCInjectDirective = {
   variant: "CInjectDirective";
   code: string;
+  export: boolean;
   sourceloc: SourceLoc;
 };
 
@@ -507,6 +515,7 @@ export type ASTStructDefinition = {
   extern: EExternLanguage;
   name: string;
   noemit: boolean;
+  clonability: EClonability;
   pub: boolean;
   generics: {
     name: string;

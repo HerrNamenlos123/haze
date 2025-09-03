@@ -1,5 +1,7 @@
 
-export clamp<T>(value: T, min: T, max: T) {
+extern "C" noemit sizeof(...): usize;
+
+export clamp<T>(value: T, min: T, max: T): T {
     if (value < min) {
         return min;
     }
@@ -8,5 +10,23 @@ export clamp<T>(value: T, min: T, max: T) {
     }
     else {
         return min;
+    }
+}
+
+export max<T>(a: T, b: T): T {
+    if (a > b) {
+        return a;
+    }
+    else {
+        return b;
+    }
+}
+
+export min<T>(a: T, b: T): T {
+    if (a < b) {
+        return a;
+    }
+    else {
+        return b;
     }
 }

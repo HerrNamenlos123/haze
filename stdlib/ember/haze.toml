@@ -1,0 +1,6 @@
+name = "ember"
+version = "1.0.0"
+description = "An experimental backend http server framework for Haze"
+license = "MIT"
+authors = ["HerrNamenlos123"]
+type = "lib"

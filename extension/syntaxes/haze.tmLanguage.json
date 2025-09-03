@@ -26,12 +26,8 @@
           "match": "\\b(extern|noemit|const|let|if|comptime|else|while|do|for|return|static|defer)\\b"
         },
         {
-          "name": "keyword.operator.new",
-          "match": "\\b(new|drop)\\b"
-        },
-        {
           "name": "keyword.struct",
-          "match": "\\b(struct)\\b"
+          "match": "\\b(struct|clonable|nonclonable)\\b"
         },
         {
           "match": "\\b(is|not)\\b",
@@ -206,7 +202,7 @@
       "patterns": [
         {
           "name": "support.type.primitive",
-          "match": "\\b(i8|i16|i32|i64|u8|u16|u32|u64|str|String|bool|int|real|complex|void|null)\\b"
+          "match": "\\b(i8|i16|i32|i64|usize|u8|u16|u32|u64|str|String|bool|int|real|complex|void|null)\\b"
         },
         {
           "name": "support.type.builtin",

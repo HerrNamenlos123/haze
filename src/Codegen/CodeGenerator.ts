@@ -72,6 +72,7 @@ class CodeGenerator {
     const writer = new OutputWriter();
 
     writer.writeLine("#define _POSIX_C_SOURCE 199309L\n");
+    writer.writeLine("#define _GNU_SOURCE\n");
 
     writer.write("// Include section\n");
     writer.write(this.out.includes);
@@ -300,6 +301,8 @@ class CodeGenerator {
         return "int64_t";
       case EPrimitive.real:
         return "double";
+      case EPrimitive.usize:
+        return "uint64_t";
       case EPrimitive.void:
         return "void";
       case EPrimitive.null:
@@ -967,17 +970,10 @@ class CodeGenerator {
       }
 
       case Lowered.ENode.SizeofExpr: {
-        if (expr.value) {
-          const e = this.emitExpr(expr.value);
-          tempWriter.write(e.temp);
-          outWriter.write("sizeof(" + e.out.get() + ")");
-          return { out: outWriter, temp: tempWriter };
-        } else {
-          assert(expr.datatype);
-          const datatype = this.lr.typeNodes.get(expr.datatype);
-          outWriter.write("sizeof(" + this.mangle(datatype) + ")");
-          return { out: outWriter, temp: tempWriter };
-        }
+        const e = this.emitExpr(expr.value);
+        tempWriter.write(e.temp);
+        outWriter.write("sizeof(" + e.out.get() + ")");
+        return { out: outWriter, temp: tempWriter };
       }
 
       case Lowered.ENode.ExprAssignmentExpr: {
@@ -1009,6 +1005,11 @@ class CodeGenerator {
         const index = this.emitExpr(expr.index);
         tempWriter.write(index.temp);
         outWriter.write(`(${e.out.get()}).data[${index.out.get()}]`);
+        return { out: outWriter, temp: tempWriter };
+      }
+
+      case Lowered.ENode.DatatypeAsValueExpr: {
+        outWriter.write(this.mangle(this.lr.typeNodes.get(expr.type)));
         return { out: outWriter, temp: tempWriter };
       }
 
@@ -1065,6 +1066,7 @@ class CodeGenerator {
               break;
 
             case EPrimitive.u64:
+            case EPrimitive.usize:
               postfix = "ULL";
               break;
           }
@@ -1079,6 +1081,7 @@ class CodeGenerator {
         }
         return { out: outWriter, temp: tempWriter };
       }
+
       // switch (expr.) {
       //   case "LiteralConstant":
       //     if (expr.constantSymbol.unit) {

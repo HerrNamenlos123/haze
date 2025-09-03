@@ -102,6 +102,14 @@ export function ExportExpr(cc: CollectionContext, exprId: Collect.Id): string {
       return str;
     }
 
+    case Collect.ENode.SymbolValueExpr: {
+      if (expr.genericArgs.length > 0) {
+        return expr.name + "<" + expr.genericArgs.map((g) => ExportExpr(cc, g)).join(", ") + ">";
+      } else {
+        return expr.name;
+      }
+    }
+
     default:
       assert(false, expr.variant.toString());
   }
@@ -170,13 +178,13 @@ export function ExportCollectedSymbols(cc: CollectionContext) {
           }
           file += code + "\n";
         } else {
-          if (symbol.noemit) {
-            file += "noemit ";
-          }
           if (symbol.extern === EExternLanguage.Extern) {
             file += "extern ";
           } else if (symbol.extern === EExternLanguage.Extern_C) {
             file += 'extern "C" ';
+          }
+          if (symbol.noemit) {
+            file += "noemit ";
           }
           file += "struct " + namespaces[namespaces.length - 1] + " {\n";
           const structScope = cc.nodes.get(symbol.structScope);
@@ -217,6 +225,11 @@ export function ExportCollectedSymbols(cc: CollectionContext) {
 
       case Collect.ENode.AliasTypeSymbol: {
         file += `type ${symbol.name} = ${printType(cc, symbol.target)};\n`;
+        break;
+      }
+
+      case Collect.ENode.CInjectDirective: {
+        file += `__c__("${symbol.value}");\n`;
         break;
       }
 

@@ -19,13 +19,13 @@ import {
   asType,
   getExprType,
   isExpression,
+  isType,
   isTypeConcrete,
   makePrimitiveAvailable,
   Semantic,
   type SemanticResult,
 } from "./SemanticSymbols";
 import { serializeDatatype } from "./Serialize";
-import { SERVFAIL } from "node:dns";
 
 export namespace Conversion {
   export function isSignedInteger(primitive: EPrimitive): boolean {
@@ -47,6 +47,7 @@ export namespace Conversion {
       case EPrimitive.u16:
       case EPrimitive.u32:
       case EPrimitive.u64:
+      case EPrimitive.usize:
         return true;
       default:
         return false;
@@ -68,6 +69,7 @@ export namespace Conversion {
       case EPrimitive.i32:
         return [-2147483648n, 2147483647n]; // -2^31 .. 2^31-1
       case EPrimitive.u64:
+      case EPrimitive.usize:
         return [0n, 18446744073709551615n]; // 2^64 - 1
       case EPrimitive.i64:
       case EPrimitive.int:
@@ -110,6 +112,7 @@ export namespace Conversion {
         case EPrimitive.int:
           return min === typeLimits[0] ? `-2^63` : min.toString();
         case EPrimitive.u64:
+        case EPrimitive.usize:
           return min === typeLimits[0] ? `0` : min.toString();
         default:
           return min.toString();
@@ -127,6 +130,7 @@ export namespace Conversion {
         case EPrimitive.int:
           return max === typeLimits[1] ? `2^63-1` : max.toString();
         case EPrimitive.u64:
+        case EPrimitive.usize:
           return max === typeLimits[1] ? `2^64-1` : max.toString();
         default:
           return max.toString();
@@ -187,6 +191,7 @@ export namespace Conversion {
         return 32;
       case EPrimitive.i64:
       case EPrimitive.u64:
+      case EPrimitive.usize:
       case EPrimitive.int:
         return 64;
     }
@@ -427,86 +432,6 @@ export namespace Conversion {
     }
   }
 
-  const SafeImplicitPrimitiveConversionTable = [
-    // Integer
-    {
-      from: EPrimitive.i8,
-      to: [EPrimitive.i16, EPrimitive.i32, EPrimitive.i64],
-    },
-    {
-      from: EPrimitive.i16,
-      to: [EPrimitive.i32, EPrimitive.i64],
-    },
-    {
-      from: EPrimitive.i32,
-      to: [EPrimitive.i64],
-    },
-    {
-      from: EPrimitive.u8,
-      to: [
-        EPrimitive.u16,
-        EPrimitive.u32,
-        EPrimitive.u64,
-        EPrimitive.i16,
-        EPrimitive.i32,
-        EPrimitive.i64,
-      ],
-    },
-    {
-      from: EPrimitive.u16,
-      to: [EPrimitive.i32, EPrimitive.i64, EPrimitive.u32, EPrimitive.u64],
-    },
-    {
-      from: EPrimitive.u32,
-      to: [EPrimitive.i64, EPrimitive.u64],
-    },
-    // Floats
-    {
-      from: EPrimitive.i8,
-      to: [EPrimitive.f32, EPrimitive.f64],
-    },
-    {
-      from: EPrimitive.u8,
-      to: [EPrimitive.f32, EPrimitive.f64],
-    },
-    {
-      from: EPrimitive.i16,
-      to: [EPrimitive.f32, EPrimitive.f64],
-    },
-    {
-      from: EPrimitive.u16,
-      to: [EPrimitive.f32, EPrimitive.f64],
-    },
-    {
-      from: EPrimitive.i32,
-      to: [EPrimitive.f64],
-    },
-    {
-      from: EPrimitive.u32,
-      to: [EPrimitive.f64],
-    },
-    {
-      from: EPrimitive.f32,
-      to: [EPrimitive.f64],
-    },
-    {
-      from: EPrimitive.f64,
-      to: [EPrimitive.real],
-    },
-    {
-      from: EPrimitive.real,
-      to: [EPrimitive.f64],
-    },
-    {
-      from: EPrimitive.int,
-      to: [EPrimitive.i64],
-    },
-    {
-      from: EPrimitive.i64,
-      to: [EPrimitive.int],
-    },
-  ];
-
   export enum Mode {
     Implicit,
     Explicit,
@@ -549,23 +474,6 @@ export namespace Conversion {
     }
 
     const fromType = sr.nodes.get(from.type);
-    // if (
-    //   fromType.variant === Semantic.ENode.PrimitiveDatatype &&
-    //   to.variant === Semantic.ENode.PrimitiveDatatype
-    // ) {
-    //   for (const conv of SafeImplicitPrimitiveConversionTable) {
-    //     if (conv.from === fromType.primitive) {
-    //       if (conv.to.includes(to.primitive)) {
-    //         return Semantic.addNode(sr, {
-    //           variant: Semantic.ENode.ExplicitCastExpr,
-    //           expr: fromExprId,
-    //           type: toId,
-    //           sourceloc: sourceloc,
-    //         })[1];
-    //       }
-    //     }
-    //   }
-    // }
 
     // Conversion between Integers
     if (Conversion.isIntegerById(sr, from.type) && Conversion.isIntegerById(sr, toId)) {
@@ -598,6 +506,7 @@ export namespace Conversion {
               value.literal.type === EPrimitive.u16 ||
               value.literal.type === EPrimitive.u32 ||
               value.literal.type === EPrimitive.u64 ||
+              value.literal.type === EPrimitive.usize ||
               value.literal.type === EPrimitive.i8 ||
               value.literal.type === EPrimitive.i16 ||
               value.literal.type === EPrimitive.i32 ||
@@ -756,11 +665,24 @@ export namespace Conversion {
       fromType.variant === Semantic.ENode.PointerDatatype &&
       to.variant === Semantic.ENode.PointerDatatype
     ) {
+      const frompointee = sr.nodes.get(fromType.pointee);
       // Conversion from void* to T*
-      const pointee = sr.nodes.get(fromType.pointee);
       if (
-        pointee.variant === Semantic.ENode.PrimitiveDatatype &&
-        pointee.primitive === EPrimitive.void
+        frompointee.variant === Semantic.ENode.PrimitiveDatatype &&
+        frompointee.primitive === EPrimitive.void
+      ) {
+        return Semantic.addNode(sr, {
+          variant: Semantic.ENode.ExplicitCastExpr,
+          expr: fromExprId,
+          type: toId,
+          sourceloc: sourceloc,
+        })[1];
+      }
+      // Conversion from T* to void*
+      const topointee = sr.nodes.get(to.pointee);
+      if (
+        topointee.variant === Semantic.ENode.PrimitiveDatatype &&
+        topointee.primitive === EPrimitive.void
       ) {
         return Semantic.addNode(sr, {
           variant: Semantic.ENode.ExplicitCastExpr,
@@ -796,8 +718,8 @@ export namespace Conversion {
     b: Semantic.Id,
     sourceloc: SourceLoc
   ): Semantic.Id {
-    const leftType = getExprType(sr, a);
-    const rightType = getExprType(sr, b);
+    const leftTypeId = getExprType(sr, a);
+    const rightTypeId = getExprType(sr, b);
 
     const comparisons = [
       {
@@ -815,7 +737,11 @@ export namespace Conversion {
           makePrimitiveAvailable(sr, EPrimitive.u16),
           makePrimitiveAvailable(sr, EPrimitive.u32),
           makePrimitiveAvailable(sr, EPrimitive.u64),
+          makePrimitiveAvailable(sr, EPrimitive.usize),
         ],
+      },
+      {
+        comparable: [makePrimitiveAvailable(sr, EPrimitive.null)],
       },
       {
         comparable: [
@@ -826,16 +752,28 @@ export namespace Conversion {
       },
     ];
     for (const c of comparisons) {
-      if (c.comparable.includes(leftType) && c.comparable.includes(rightType)) {
+      if (c.comparable.includes(leftTypeId) && c.comparable.includes(rightTypeId)) {
         return makePrimitiveAvailable(sr, EPrimitive.bool);
       }
+    }
+
+    const leftType = sr.nodes.get(leftTypeId);
+    assert(isType(leftType));
+    const rightType = sr.nodes.get(rightTypeId);
+    assert(isType(rightType));
+
+    if (
+      leftType.variant === Semantic.ENode.PointerDatatype &&
+      rightType.variant === Semantic.ENode.PointerDatatype
+    ) {
+      return makePrimitiveAvailable(sr, EPrimitive.bool);
     }
 
     throw new CompilerError(
       `No safe comparison is available between types '${serializeDatatype(
         sr,
-        leftType
-      )}' and '${serializeDatatype(sr, rightType)}'`,
+        leftTypeId
+      )}' and '${serializeDatatype(sr, rightTypeId)}'`,
       sourceloc
     );
   }
@@ -935,6 +873,10 @@ export namespace Conversion {
         from: makePrimitiveAvailable(sr, EPrimitive.real),
         to: makePrimitiveAvailable(sr, EPrimitive.real),
       },
+      {
+        from: makePrimitiveAvailable(sr, EPrimitive.usize),
+        to: makePrimitiveAvailable(sr, EPrimitive.usize),
+      },
     ],
     [EUnaryOperation.Minus]: [
       {
@@ -984,6 +926,10 @@ export namespace Conversion {
       {
         from: makePrimitiveAvailable(sr, EPrimitive.real),
         to: makePrimitiveAvailable(sr, EPrimitive.real),
+      },
+      {
+        from: makePrimitiveAvailable(sr, EPrimitive.usize),
+        to: makePrimitiveAvailable(sr, EPrimitive.usize),
       },
     ],
     [EUnaryOperation.Negate]: [
@@ -1039,6 +985,10 @@ export namespace Conversion {
         from: makePrimitiveAvailable(sr, EPrimitive.real),
         to: makePrimitiveAvailable(sr, EPrimitive.bool),
       },
+      {
+        from: makePrimitiveAvailable(sr, EPrimitive.usize),
+        to: makePrimitiveAvailable(sr, EPrimitive.bool),
+      },
     ],
   });
 
@@ -1062,47 +1012,5 @@ export namespace Conversion {
       )} operation is known for type '${serializeDatatype(sr, a)}'`,
       sourceloc
     );
-  }
-
-  export function makeAsOperator(
-    sr: SemanticResult,
-    targetType: Semantic.Id
-  ): Semantic.FunctionSymbol {
-    for (const f of sr.overloadedOperators) {
-      if (
-        f.name === "__operator_as" &&
-        f.operatorOverloading?.operator === EOperator.As &&
-        IsStructurallyEquivalent(sr, f.operatorOverloading.asTarget, targetType)
-      ) {
-        return f;
-      }
-    }
-    // const func = {
-    //   variant: Semantic.ENode.FunctionSymbol,
-    //   concrete: true,
-    //   export: false,
-    //   staticMethod: false,
-    //   extern: EExternLanguage.None,
-    //   methodType: EMethodType.NotAMethod,
-    //   name: "__operator_as",
-    //   generics: [],
-    //   parameterNames: [],
-    //   type: {
-    //     variant: "FunctionDatatype",
-    //     concrete: true,
-    //     parameters: [],
-    //     returnType: targetType,
-    //     vararg: false,
-    //   },
-    //   parentStructOrNS: null,
-    //   sourceloc: null,
-    //   operatorOverloading: {
-    //     operator: EOperator.As,
-    //     asTarget: targetType,
-    //   },
-    // } satisfies Semantic.FunctionSymbol;
-    // sr.overloadedOperators.push(func);
-    // return func;
-    assert(false);
   }
 }

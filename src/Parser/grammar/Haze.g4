@@ -43,7 +43,7 @@ namespaceDefinition
 
 // Directives
 
-cInjectDirective: '__c__' '(' STRING_LITERAL ')' ';';
+cInjectDirective: (export='export')? '__c__' '(' STRING_LITERAL ')' ';';
 
 // Functions
 
@@ -111,7 +111,7 @@ structContent
     ;
 
 structDefinition
-    : (export='export')? (extern='extern' externLang=externLanguage pub='pub'? noemit='noemit'?)? 'struct' ID ('<' ID (',' ID)* '>')? '{' (content+=structContent)* '}' (';')?
+    : (export='export')? (extern='extern' externLang=externLanguage)? pub='pub'? noemit='noemit'? 'struct' attributes+=('clonable' | 'nonclonable')* ID ('<' ID (',' ID)* '>')? '{' (content+=structContent)* '}' (';')?
     ;
 
 typeDefinition

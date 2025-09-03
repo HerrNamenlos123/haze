@@ -1,0 +1,67 @@
+
+extern "C" malloc(size: usize): void*;
+// extern "C" realloc(ptr: void*): void*;
+extern "C" free(ptr: void*): void;
+
+export struct ArenaChunk {
+    next: ArenaChunk*;
+    size: usize;
+    used: usize;
+    data: u8*;
+}
+
+export struct nonclonable Arena {
+    first: ArenaChunk*;
+    last: ArenaChunk*;
+
+    constructor(): Arena {
+        return Arena {
+            first: nullptr,
+            last: nullptr,
+        };
+    }
+
+    __newChunk(size: usize): ArenaChunk* {
+        let chunk_size = max<usize>(size, 4096); // default chunk size
+        let chunk_mem = malloc(sizeof(ArenaChunk) + chunk_size) as ArenaChunk*;
+        (*chunk_mem).next = nullptr;
+        (*chunk_mem).size = chunk_size;
+        (*chunk_mem).used = 0;
+        // Data is not accessed as it's now just the raw data
+        return chunk_mem;
+    }
+
+    __alloc(arena: Arena*, size: usize): u8* {
+        let last = (*arena).last;
+        if last != nullptr && ((*last).used + size <= (*last).size) {
+            // allocate from existing chunk
+            let ptr = (*last).data;
+            __c__("ptr += last->used;");
+            (*last).used += size;
+            return ptr;
+        }
+
+        // allocate a new chunk
+        let chunk = this.__newChunk(size);
+        if (*arena).first == nullptr {
+            (*arena).first = chunk;
+        } else {
+            (*(*arena).last).next = chunk;
+        }
+        (*arena).last = chunk;
+
+        (*chunk).used = size;
+        return (*chunk).data;
+    }
+
+    free() {
+        let chunk = this.first;
+        while chunk != nullptr {
+            let next = (*chunk).next;
+            free(chunk as void*);
+            chunk = next;
+        }
+        this.first = nullptr;
+        this.last = nullptr;
+    }
+}

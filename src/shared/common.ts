@@ -52,6 +52,7 @@ export enum EPrimitive {
   f64,
   int,
   real,
+  usize,
   str,
 }
 
@@ -85,6 +86,7 @@ export type LiteralValue =
         | EPrimitive.u16
         | EPrimitive.u32
         | EPrimitive.u64
+        | EPrimitive.usize
         | EPrimitive.int;
       value: bigint;
       unit: ELiteralUnit | null;
@@ -131,6 +133,8 @@ export function primitiveToString(primitive: EPrimitive) {
       return "int";
     case EPrimitive.real:
       return "real";
+    case EPrimitive.usize:
+      return "usize";
     case EPrimitive.f64:
       return "f64";
     case EPrimitive.str:
@@ -168,6 +172,8 @@ export function stringToPrimitive(str: string) {
       return EPrimitive.int;
     case "real":
       return EPrimitive.real;
+    case "usize":
+      return EPrimitive.usize;
     case "f32":
       return EPrimitive.f32;
     case "f64":

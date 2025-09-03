@@ -1,0 +1,23 @@
+
+__c__("#include <netinet/in.h>");
+__c__("#include <arpa/inet.h>");
+__c__("#include \"mongoose.h\"");
+__c__("#include \"mongoose.c\"");
+export __c__("typedef struct mg_mgr mg_mgr;");
+
+export namespace mongoose {
+    extern "C" mg_mgr_init(mgr: mg_mgr*): void;
+
+    export extern "C" noemit struct mg_mgr {}
+}
+
+// export struct Ember {
+//     mgr: mongoose.mg_mgr;
+// }
+
+// export init(): Ember {
+//     let ember = Ember { mgr: {} };
+//     mongoose.mg_mgr_init(&ember.mgr);
+
+//     return ember;
+// }

@@ -39,6 +39,7 @@ import {
   type ASTGlobalDeclaration,
   AssignmentOperationToString,
   IncrOperationToString,
+  EClonability,
 } from "../shared/AST";
 import {
   BrandedArray,
@@ -310,6 +311,7 @@ export namespace Collect {
   export type CInjectDirective = {
     variant: ENode.CInjectDirective;
     value: string;
+    export: boolean;
     sourceloc: SourceLoc;
   };
 
@@ -389,6 +391,7 @@ export namespace Collect {
     }[];
     name: string;
     export: boolean;
+    clonability: EClonability;
     pub: boolean;
     extern: EExternLanguage;
     noemit: boolean;
@@ -843,6 +846,9 @@ function collect(
     currentParentScope: Collect.Id;
   }
 ): Collect.Id {
+  if (item === null) {
+    assert(false);
+  }
   switch (item.variant) {
     // =================================================================================================================
     // =================================================================================================================
@@ -978,6 +984,9 @@ function collect(
     // =================================================================================================================
 
     case "StructMember": {
+      if (item.type === null) {
+        console.log(item);
+      }
       const [member, memberId] = defineVariableSymbol(
         cc,
         {
@@ -1196,6 +1205,7 @@ function collect(
         export: item.export,
         extern: item.extern,
         pub: false,
+        clonability: item.clonability,
         noemit: item.noemit,
         structScope: -1 as Collect.Id,
         parentScope: args.currentParentScope,
@@ -1230,6 +1240,9 @@ function collect(
             name: m.name,
             value: collect(cc, m.defaultValue, { currentParentScope: structScopeId }),
           });
+        }
+        if (m.type.variant === "PointerDatatype" && struct.clonability === EClonability.Unknown) {
+          struct.clonability = EClonability.NonClonableFromMembers;
         }
         collect(cc, m, {
           currentParentScope: structScopeId,
@@ -1294,11 +1307,16 @@ function collect(
     // =================================================================================================================
 
     case "CInjectDirective": {
-      return makeSymbol(cc, {
+      const symbol = makeSymbol(cc, {
         variant: Collect.ENode.CInjectDirective,
         value: item.code,
+        export: item.export,
         sourceloc: item.sourceloc,
       })[1];
+      if (item.export) {
+        cc.exportedSymbols.exported.add(symbol);
+      }
+      return symbol;
     }
 
     // =================================================================================================================
@@ -1942,12 +1960,6 @@ export function printCollectedDatatype(cc: CollectionContext, typeId: Collect.Id
 }
 
 export function PrettyPrintCollected(cc: CollectionContext) {
-  console.info("C Injections:");
-  // for (const i of cc.cInjections) {
-  //   console.info(" - " + i.code);
-  // }
-  console.info("\n");
-
   const printExpr = (exprId: Collect.Id): string => {
     const expr = cc.nodes.get(exprId);
     switch (expr.variant) {

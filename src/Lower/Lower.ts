@@ -77,6 +77,7 @@ export namespace Lowered {
     SymbolValueExpr,
     NamespaceOrStructValueExpr,
     SizeofExpr,
+    DatatypeAsValueExpr,
     ExplicitCastExpr,
     MemberAccessExpr,
     CallableExpr,
@@ -219,8 +220,12 @@ export namespace Lowered {
 
   export type SizeofExpr = {
     variant: ENode.SizeofExpr;
-    datatype: TypeId | null;
-    value: ExprId | null;
+    value: ExprId;
+    type: TypeId;
+  };
+
+  export type DatatypeAsValueExpr = {
+    variant: ENode.DatatypeAsValueExpr;
     type: TypeId;
   };
 
@@ -305,6 +310,7 @@ export namespace Lowered {
     | PointerDereferenceExpr
     | PointerAddressOfExpr
     | SizeofExpr
+    | DatatypeAsValueExpr
     | ExplicitCastExpr
     | ExprMemberAccessExpr
     | LiteralExpr
@@ -881,17 +887,16 @@ function lowerExpr(
     case Semantic.ENode.SizeofExpr: {
       return Lowered.addExpr(lr, {
         variant: Lowered.ENode.SizeofExpr,
-        datatype: expr.datatype && lowerType(lr, expr.datatype),
-        value: expr.value && lowerExpr(lr, expr.value, flattened)[1],
+        value: lowerExpr(lr, expr.valueExpr, flattened)[1],
         type: lowerType(lr, expr.type),
       });
     }
 
     case Semantic.ENode.DatatypeAsValueExpr: {
-      assert(
-        false,
-        "A Namespace Value cannot be lowered. This value should not have gotten through semantic analysis"
-      );
+      return Lowered.addExpr(lr, {
+        variant: Lowered.ENode.DatatypeAsValueExpr,
+        type: lowerType(lr, expr.type),
+      });
     }
 
     default:
@@ -1384,10 +1389,10 @@ function serializeLoweredExpr(lr: Lowered.Module, exprId: Lowered.ExprId): strin
     case Lowered.ENode.SymbolValueExpr:
       return expr.prettyName;
 
-    case Lowered.ENode.ArrayLiteralExpr:
-      return `(${printLoweredType(lr, expr.type)})[${expr.values
-        .map((v) => serializeLoweredExpr(lr, v))
-        .join(", ")}]`;
+    case Lowered.ENode.ArrayLiteralExpr: {
+      const t = lr.typeNodes.get(expr.type);
+      return `(${t.prettyName})[${expr.values.map((v) => serializeLoweredExpr(lr, v)).join(", ")}]`;
+    }
 
     case Lowered.ENode.ArraySubscriptExpr:
       return `(${serializeLoweredExpr(lr, expr.expr)})[${serializeLoweredExpr(lr, expr.index)}]`;
@@ -1397,6 +1402,11 @@ function serializeLoweredExpr(lr: Lowered.Module, exprId: Lowered.ExprId): strin
       return `${exprType.prettyName} { ${expr.memberAssigns
         .map((a) => `${a.name}: ${serializeLoweredExpr(lr, a.value)}`)
         .join(", ")} }`;
+    }
+
+    case Lowered.ENode.DatatypeAsValueExpr: {
+      const t = lr.typeNodes.get(expr.type);
+      return t.prettyName;
     }
 
     case Lowered.ENode.LiteralExpr: {
@@ -1433,13 +1443,7 @@ function serializeLoweredExpr(lr: Lowered.Module, exprId: Lowered.ExprId): strin
       return `${serializeLoweredExpr(lr, expr.target)} = ${serializeLoweredExpr(lr, expr.value)}`;
 
     case Lowered.ENode.SizeofExpr:
-      if (expr.value) {
-        return `sizeof(${serializeLoweredExpr(lr, expr.value)})`;
-      } else {
-        assert(expr.datatype);
-        const type = lr.typeNodes.get(expr.datatype);
-        return `sizeof<${type.prettyName}>`;
-      }
+      return `sizeof(${serializeLoweredExpr(lr, expr.value)})`;
   }
 }
 

@@ -27,6 +27,7 @@ glfw = { path = "./glfw" }
 math = { path = "./math" }
 gl = { path = "./gl" }
 glDraw = { path = "./glDraw" }
+ember = { path = "./ember" }
 
 [linker]
 flags = ["-lm", "-lglfw3"]
