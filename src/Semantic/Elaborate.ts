@@ -20,6 +20,7 @@ import {
   Collect,
   defineVariableSymbol,
   funcSymHasParameterPack,
+  printCollectedDatatype,
   type CollectionContext,
 } from "../SymbolCollection/SymbolCollection";
 import { Conversion } from "./Conversion";
@@ -1387,6 +1388,13 @@ export function elaborateExpr(
 
         const chosenOverload = sr.cc.nodes.get(chosenOverloadId);
         assert(chosenOverload.variant === Collect.ENode.FunctionSymbol);
+
+        if (chosenOverload.methodType === EMethodType.Method) {
+          throw new CompilerError(
+            `Function '${chosenOverload.name}' was accessed directly by name, but it is a method, which must be accessed through 'this.${chosenOverload.name}'`,
+            expr.sourceloc
+          );
+        }
 
         const parameterPackTypes = prepareParameterPackTypes(sr, {
           functionName: symbol.name,

@@ -11,6 +11,7 @@ import {
   mangleDatatype,
   mangleNestedName,
   serializeDatatype,
+  serializeExpr,
   serializeNestedName,
 } from "../Semantic/Serialize";
 import {
@@ -1263,11 +1264,13 @@ function lower(lr: Lowered.Module, symbolId: Semantic.Id) {
         wasMangled: symbol.extern !== EExternLanguage.Extern_C,
         type: ftype,
         wasMonomorphized: symbol.isMonomorphized,
-        scope: (symbol.scope && lowerBlockScope(lr, symbol.scope)) || null,
+        scope: null,
         sourceloc: symbol.sourceloc,
         externLanguage: symbol.extern,
       });
       lr.loweredFunctions.set(symbolId, fId);
+
+      f.scope = (symbol.scope && lowerBlockScope(lr, symbol.scope)) || null;
       break;
     }
 

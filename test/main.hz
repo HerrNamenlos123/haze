@@ -9,6 +9,7 @@ main(): int {
     println("TODO for next time: Implement copy semantics for arenas and implement Arenas. Arenas contain raw pointers and they cannot be lifetime checked, which means that cloning them is unsafe (use after free), therefore i must prevent Arenas (or any nonclonable type) from being cloned at compile time. Only references are allowed.");
 
     let arena = Arena();
+    let b = arena;
 
     return 0;
 
