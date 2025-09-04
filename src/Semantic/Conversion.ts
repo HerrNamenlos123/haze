@@ -2,6 +2,7 @@ import { scaleRadial } from "d3";
 import {
   BinaryOperationToString,
   EBinaryOperation,
+  EClonability,
   EExternLanguage,
   EOperator,
   EUnaryOperation,
@@ -447,6 +448,7 @@ export namespace Conversion {
   ) {
     const from = sr.nodes.get(fromExprId);
     assert(isExpression(from));
+    const fromType = sr.nodes.get(from.type);
     const to = sr.nodes.get(toId);
 
     if (from.type === toId) {
@@ -465,6 +467,33 @@ export namespace Conversion {
 
     // Conversion from T& to T
     if (sr.nodes.get(from.type).variant === Semantic.ENode.ReferenceDatatype) {
+      if (
+        fromType.variant === Semantic.ENode.ReferenceDatatype &&
+        to.variant === Semantic.ENode.StructDatatype &&
+        fromType.referee === toId
+      ) {
+        const fromTypeReferee = sr.nodes.get(fromType.referee);
+        assert(
+          isType(fromTypeReferee) && fromTypeReferee.variant === Semantic.ENode.StructDatatype
+        );
+        if (
+          fromTypeReferee.clonability === EClonability.NonClonableFromAttribute ||
+          fromTypeReferee.clonability === EClonability.NonClonableFromMembers
+        ) {
+          const msg =
+            to.clonability === EClonability.NonClonableFromAttribute
+              ? "marked as 'nonclonable'"
+              : "non-clonable because it contains raw pointers or other non-clonable structures";
+          throw new CompilerError(
+            `Conversion from '${serializeDatatype(sr, from.type)}' to '${serializeDatatype(
+              sr,
+              toId
+            )}' would create a copy of the struct, but the struct definition is ${msg}`,
+            sourceloc
+          );
+        }
+      }
+
       return Semantic.addNode(sr, {
         variant: Semantic.ENode.ExplicitCastExpr,
         expr: fromExprId,
@@ -472,8 +501,6 @@ export namespace Conversion {
         sourceloc: sourceloc,
       })[1];
     }
-
-    const fromType = sr.nodes.get(from.type);
 
     // Conversion between Integers
     if (Conversion.isIntegerById(sr, from.type) && Conversion.isIntegerById(sr, toId)) {

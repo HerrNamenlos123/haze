@@ -13,12 +13,13 @@ import {
 } from "./Elaborate";
 import {
   asType,
+  isType,
   isTypeConcrete,
   makePrimitiveAvailable,
   Semantic,
   type SemanticResult,
 } from "./SemanticSymbols";
-import { EExternLanguage, EVariableMutability } from "../shared/AST";
+import { EClonability, EExternLanguage, EVariableMutability } from "../shared/AST";
 import { serializeDatatype, serializeNestedName } from "./Serialize";
 
 export function makeFunctionDatatypeAvailable(
@@ -268,6 +269,7 @@ export function instantiateAndElaborateStruct(
     name: definedStructType.name,
     generics: genericArgs,
     extern: definedStructType.extern,
+    clonability: definedStructType.clonability,
     noemit: definedStructType.noemit,
     parentStructOrNS: elaborateParentSymbolFromCache(sr, {
       parentScope: definedStructType.parentScope,
@@ -299,7 +301,7 @@ export function instantiateAndElaborateStruct(
       const symbol = sr.cc.nodes.get(symbolId);
       if (symbol.variant === Collect.ENode.VariableSymbol) {
         assert(symbol.type);
-        const type = lookupAndElaborateDatatype(sr, {
+        const typeId = lookupAndElaborateDatatype(sr, {
           typeId: symbol.type,
           // Start lookup in the struct itself, these are members, so both the type and
           // its generics must be found from within the struct
@@ -310,6 +312,8 @@ export function instantiateAndElaborateStruct(
           }),
           isInCFuncdecl: false,
         });
+        const type = sr.nodes.get(typeId);
+        assert(isType(type));
         const [variable, variableId] = Semantic.addNode(sr, {
           variant: Semantic.ENode.VariableSymbol,
           name: symbol.name,
@@ -318,12 +322,12 @@ export function instantiateAndElaborateStruct(
           mutability: EVariableMutability.Mutable,
           sourceloc: symbol.sourceloc,
           memberOfStruct: structId,
-          type: type,
+          type: typeId,
           variableContext: EVariableContext.MemberOfStruct,
           parentStructOrNS: structId,
           comptime: false,
           comptimeValue: null,
-          concrete: asType(sr.nodes.get(type)).concrete,
+          concrete: asType(sr.nodes.get(typeId)).concrete,
         });
         struct.members.push(variableId);
         const defaultValue = definedStructType.defaultMemberValues.find(
@@ -341,6 +345,18 @@ export function instantiateAndElaborateStruct(
               blockScope: null,
             })[1],
           });
+        }
+        if (struct.clonability === EClonability.Unknown) {
+          if (type.variant === Semantic.ENode.PointerDatatype) {
+            struct.clonability = EClonability.NonClonableFromMembers;
+          }
+          if (
+            type.variant === Semantic.ENode.StructDatatype &&
+            (type.clonability === EClonability.NonClonableFromAttribute ||
+              type.clonability === EClonability.NonClonableFromMembers)
+          ) {
+            struct.clonability = EClonability.NonClonableFromMembers;
+          }
         }
       } else if (symbol.variant === Collect.ENode.FunctionOverloadGroup) {
         symbol.overloads.forEach((overloadId) => {

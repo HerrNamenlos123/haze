@@ -81,7 +81,7 @@ namespace raw {
     }
 }
 
-export struct Window {
+export struct clonable Window {
     handle: GLFWwindow*;
 
     makeContextCurrent() {
@@ -163,7 +163,7 @@ export getTime(): real {
 
 export getProcAddress(): (name: str) => void* {
     const rawProc = raw.getProcAddress;
-    const castedProc: (name: str) => void*;
+    const castedProc: (name: str) => void* = uninitialized;
     __c__("castedProc = (void*)rawProc;");
     return castedProc;
 }

@@ -2,6 +2,7 @@ import { assert, type SourceLoc } from "../shared/Errors";
 import type {
   EAssignmentOperation,
   EBinaryOperation,
+  EClonability,
   EExternLanguage,
   EIncrOperation,
   EOperator,
@@ -351,6 +352,7 @@ export namespace Semantic {
     variant: ENode.StructDatatype;
     name: string;
     noemit: boolean;
+    clonability: EClonability;
     generics: Semantic.Id[];
     extern: EExternLanguage;
     members: Semantic.Id[];

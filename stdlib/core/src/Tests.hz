@@ -52,8 +52,8 @@ namespace builtin {
         assert(div_assign_h == 3);
 
         // Chained assignments
-        let i: int;
-        let j: int;
+        let i: int = 0;
+        let j: int = 0;
         let chain = i = j = 10;
         assert(i == 10);
         assert(j == 10);

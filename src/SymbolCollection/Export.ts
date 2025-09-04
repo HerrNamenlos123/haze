@@ -1,6 +1,6 @@
 import { scaleRadial } from "d3";
 import { serializeDatatype, serializeLiteralValue } from "../Semantic/Serialize";
-import { EExternLanguage } from "../shared/AST";
+import { EClonability, EExternLanguage } from "../shared/AST";
 import { assert } from "../shared/Errors";
 import {
   Collect,
@@ -186,7 +186,13 @@ export function ExportCollectedSymbols(cc: CollectionContext) {
           if (symbol.noemit) {
             file += "noemit ";
           }
-          file += "struct " + namespaces[namespaces.length - 1] + " {\n";
+          file += "struct ";
+          if (symbol.clonability === EClonability.Clonable) {
+            file += "clonable ";
+          } else if (symbol.clonability === EClonability.NonClonableFromAttribute) {
+            file += "nonclonable ";
+          }
+          file += namespaces[namespaces.length - 1] + " {\n";
           const structScope = cc.nodes.get(symbol.structScope);
           assert(structScope.variant === Collect.ENode.StructScope);
           for (const contentId of structScope.symbols) {

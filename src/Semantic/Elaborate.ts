@@ -1,5 +1,10 @@
 import { HAZE_STDLIB_NAME } from "../Module";
-import { EBinaryOperation, EExternLanguage, EVariableMutability } from "../shared/AST";
+import {
+  EBinaryOperation,
+  EClonability,
+  EExternLanguage,
+  EVariableMutability,
+} from "../shared/AST";
 import {
   BrandedArray,
   EMethodType,
@@ -2482,15 +2487,31 @@ export function elaborateStatement(
     // =================================================================================================================
 
     case Collect.ENode.VariableDefinitionStatement: {
+      let uninitialized = false;
+      if (s.value) {
+        const value = sr.cc.nodes.get(s.value);
+        if (value.variant === Collect.ENode.SymbolValueExpr && value.name === "uninitialized") {
+          if (value.genericArgs.length !== 0) {
+            throw new CompilerError(
+              `The 'uninitialized' directive requires 0 type arguments`,
+              s.sourceloc
+            );
+          }
+          uninitialized = true;
+        }
+      }
+
       const valueId =
-        s.value &&
-        elaborateExpr(sr, s.value, {
-          context: args.context,
-          scope: s.owningScope,
-          elaboratedVariables: args.elaboratedVariables,
-          blockScope: args.blockScope,
-          isMonomorphized: args.isMonomorphized,
-        })[1];
+        (!uninitialized &&
+          s.value &&
+          elaborateExpr(sr, s.value, {
+            context: args.context,
+            scope: s.owningScope,
+            elaboratedVariables: args.elaboratedVariables,
+            blockScope: args.blockScope,
+            isMonomorphized: args.isMonomorphized,
+          })[1]) ||
+        undefined;
       const value = valueId && asExpression(sr.nodes.get(valueId));
 
       if (value?.variant === Semantic.ENode.DatatypeAsValueExpr) {
@@ -2506,6 +2527,13 @@ export function elaborateStatement(
       assert(variableSymbolId);
       const variableSymbol = sr.nodes.get(variableSymbolId);
       assert(variableSymbol.variant === Semantic.ENode.VariableSymbol);
+
+      if ((!valueId || !value) && !uninitialized) {
+        throw new CompilerError(
+          `Variable '${variableSymbol.name}' requires an initialization value`,
+          s.sourceloc
+        );
+      }
 
       if (collectedVariableSymbol.type) {
         variableSymbol.type = lookupAndElaborateDatatype(sr, {
@@ -2523,6 +2551,8 @@ export function elaborateStatement(
       }
       assert(variableSymbol.type);
       variableSymbol.concrete = isTypeConcrete(sr, variableSymbol.type);
+      const variableSymbolType = sr.nodes.get(variableSymbol.type);
+      assert(isType(variableSymbolType));
 
       if (valueId) {
         const canBeComptime = CanEvaluateCTFE(sr, valueId);
@@ -2536,6 +2566,29 @@ export function elaborateStatement(
         variableSymbol.comptimeValue = EvalCTFE(sr, valueId)[1];
       }
 
+      if (value) {
+        const valueType = sr.nodes.get(value.type);
+        assert(isType(valueType));
+        if (
+          variableSymbolType.variant === Semantic.ENode.StructDatatype &&
+          valueType.variant === Semantic.ENode.StructDatatype &&
+          (valueType.clonability === EClonability.NonClonableFromAttribute ||
+            valueType.clonability === EClonability.NonClonableFromMembers)
+        ) {
+          const msg =
+            valueType.clonability === EClonability.NonClonableFromAttribute
+              ? "marked as 'nonclonable'"
+              : "non-clonable because it contains raw pointers or other non-clonable structures";
+          throw new CompilerError(
+            `This assignment of type '${serializeDatatype(
+              sr,
+              value.type
+            )}' would create a copy of the struct, but the struct definition is ${msg}`,
+            s.sourceloc
+          );
+        }
+      }
+
       return Semantic.addNode(sr, {
         variant: Semantic.ENode.VariableStatement,
         mutability: variableSymbol.mutability,
@@ -2543,15 +2596,16 @@ export function elaborateStatement(
         name: variableSymbol.name,
         variableSymbol: variableSymbolId,
         value:
-          valueId &&
-          Conversion.MakeConversion(
-            sr,
-            valueId,
-            variableSymbol.type,
-            args.blockScope.constraints || [],
-            s.sourceloc,
-            Conversion.Mode.Implicit
-          ),
+          (valueId &&
+            Conversion.MakeConversion(
+              sr,
+              valueId,
+              variableSymbol.type,
+              args.blockScope.constraints || [],
+              s.sourceloc,
+              Conversion.Mode.Implicit
+            )) ||
+          null,
         sourceloc: s.sourceloc,
       })[1];
     }

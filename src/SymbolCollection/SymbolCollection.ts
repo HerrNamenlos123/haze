@@ -1241,9 +1241,6 @@ function collect(
             value: collect(cc, m.defaultValue, { currentParentScope: structScopeId }),
           });
         }
-        if (m.type.variant === "PointerDatatype" && struct.clonability === EClonability.Unknown) {
-          struct.clonability = EClonability.NonClonableFromMembers;
-        }
         collect(cc, m, {
           currentParentScope: structScopeId,
         });
