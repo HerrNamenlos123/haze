@@ -463,6 +463,7 @@ export namespace Semantic {
     expr: Id;
     memberName: string;
     type: Id;
+    isTemporary: boolean;
     sourceloc: SourceLoc;
   };
 
@@ -471,6 +472,7 @@ export namespace Semantic {
     thisExpr: Id;
     functionSymbol: Id;
     type: Id;
+    isTemporary: boolean;
     sourceloc: SourceLoc;
   };
 
@@ -478,12 +480,14 @@ export namespace Semantic {
     variant: ENode.SymbolValueExpr;
     symbol: Id;
     type: Id;
+    isTemporary: boolean;
     sourceloc: SourceLoc;
   };
 
   export type DatatypeAsValueExpr = {
     variant: ENode.DatatypeAsValueExpr;
     type: Id;
+    isTemporary: boolean;
     sourceloc: SourceLoc;
   };
 
@@ -491,6 +495,7 @@ export namespace Semantic {
     variant: ENode.SizeofExpr;
     valueExpr: Id;
     type: Id;
+    isTemporary: boolean;
     sourceloc: SourceLoc;
   };
 
@@ -500,6 +505,7 @@ export namespace Semantic {
     target: Id;
     type: Id;
     operation: EAssignmentOperation;
+    isTemporary: boolean;
     sourceloc: SourceLoc;
   };
 
@@ -507,6 +513,7 @@ export namespace Semantic {
     variant: ENode.PointerDereferenceExpr;
     expr: Id;
     type: Id;
+    isTemporary: boolean;
     sourceloc: SourceLoc;
   };
 
@@ -514,6 +521,7 @@ export namespace Semantic {
     variant: ENode.PointerAddressOfExpr;
     expr: Id;
     type: Id;
+    isTemporary: boolean;
     sourceloc: SourceLoc;
   };
 
@@ -521,6 +529,7 @@ export namespace Semantic {
     variant: ENode.ExplicitCastExpr;
     expr: Id;
     type: Id;
+    isTemporary: boolean;
     sourceloc: SourceLoc;
   };
 
@@ -530,6 +539,7 @@ export namespace Semantic {
     right: Id;
     operation: EBinaryOperation;
     type: Id;
+    isTemporary: boolean;
     sourceloc: SourceLoc;
   };
 
@@ -538,6 +548,7 @@ export namespace Semantic {
     expr: Id;
     operation: EUnaryOperation;
     type: Id;
+    isTemporary: boolean;
     sourceloc: SourceLoc;
   };
 
@@ -546,6 +557,7 @@ export namespace Semantic {
     expr: Id;
     operation: EIncrOperation;
     type: Id;
+    isTemporary: boolean;
     sourceloc: SourceLoc;
   };
 
@@ -554,6 +566,7 @@ export namespace Semantic {
     expr: Id;
     operation: EIncrOperation;
     type: Id;
+    isTemporary: boolean;
     sourceloc: SourceLoc;
   };
 
@@ -562,6 +575,7 @@ export namespace Semantic {
     calledExpr: Id;
     arguments: Id[];
     type: Id;
+    isTemporary: boolean;
     sourceloc: SourceLoc;
   };
 
@@ -572,6 +586,7 @@ export namespace Semantic {
       value: Id;
     }[];
     type: Id;
+    isTemporary: boolean;
     sourceloc: SourceLoc;
   };
 
@@ -579,6 +594,7 @@ export namespace Semantic {
     variant: ENode.LiteralExpr;
     literal: LiteralValue;
     type: Id;
+    isTemporary: boolean;
     sourceloc: SourceLoc;
   };
 
@@ -586,6 +602,7 @@ export namespace Semantic {
     variant: ENode.ArrayLiteralExpr;
     values: Id[];
     type: Id;
+    isTemporary: boolean;
     sourceloc: SourceLoc;
   };
 
@@ -594,6 +611,7 @@ export namespace Semantic {
     expr: Id;
     indices: Id[];
     type: Id;
+    isTemporary: boolean;
     sourceloc: SourceLoc;
   };
 

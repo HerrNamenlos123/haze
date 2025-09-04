@@ -81,7 +81,7 @@ namespace raw {
     }
 }
 
-export struct clonable Window {
+export struct Window {
     handle: GLFWwindow*;
 
     makeContextCurrent() {

@@ -692,12 +692,38 @@ function lowerExpr(
 
     case Semantic.ENode.ExplicitCastExpr: {
       const [loweredExpr, loweredExprId] = lowerExpr(lr, expr.expr, flattened);
-      const targetType = lowerType(lr, expr.type);
+      const targetTypeId = lowerType(lr, expr.type);
+      const exprType = lr.typeNodes.get(loweredExpr.type);
+      const targetType = lr.typeNodes.get(targetTypeId);
+
+      if (
+        exprType.variant === Lowered.ENode.StructDatatype &&
+        targetType.variant === Lowered.ENode.ReferenceDatatype &&
+        loweredExpr.type === targetType.referee
+      ) {
+        return Lowered.addExpr(lr, {
+          variant: Lowered.ENode.PointerAddressOfExpr,
+          expr: loweredExprId,
+          type: targetTypeId,
+        });
+      }
+
+      if (
+        exprType.variant === Lowered.ENode.ReferenceDatatype &&
+        targetType.variant === Lowered.ENode.StructDatatype &&
+        exprType.referee === targetTypeId
+      ) {
+        return Lowered.addExpr(lr, {
+          variant: Lowered.ENode.PointerDereferenceExpr,
+          expr: loweredExprId,
+          type: targetTypeId,
+        });
+      }
 
       return Lowered.addExpr(lr, {
         variant: Lowered.ENode.ExplicitCastExpr,
         expr: loweredExprId,
-        type: targetType,
+        type: targetTypeId,
       });
     }
 

@@ -80,6 +80,7 @@ export function tryLookupSymbol(
           variant: Semantic.ENode.SymbolValueExpr,
           symbol: symbolId,
           type: symbol.type,
+          isTemporary: false,
           sourceloc: args.sourceloc,
         })[1],
         type: "semantic",
@@ -397,9 +398,10 @@ function lookupSymbolInNamespaceOrStructScope(
       sourceloc: args.expr.sourceloc,
     });
     return Semantic.addNode(sr, {
-      variant: Semantic.ENode.SymbolValueExpr,
+      variant: Semantic.ENode.DatatypeAsValueExpr,
       symbol: instantiated,
       type: instantiated,
+      isTemporary: false,
       sourceloc: args.expr.sourceloc,
     });
   } else if (symbol.variant === Collect.ENode.FunctionOverloadGroup && symbol.name === args.name) {
@@ -458,6 +460,7 @@ function lookupSymbolInNamespaceOrStructScope(
       variant: Semantic.ENode.SymbolValueExpr,
       symbol: functionSymbolId,
       type: functionSymbol.type,
+      isTemporary: false,
       sourceloc: args.expr.sourceloc,
     });
   } else {
@@ -847,6 +850,7 @@ export function elaborateExpr(
             value: value,
           },
           sourceloc: expr.sourceloc,
+          isTemporary: true,
           type: makePrimitiveAvailable(sr, EPrimitive.bool),
         });
       }
@@ -890,6 +894,7 @@ export function elaborateExpr(
         operation: expr.operation,
         right: rightId,
         type: resultType,
+        isTemporary: true,
         sourceloc: expr.sourceloc,
       });
     }
@@ -913,6 +918,7 @@ export function elaborateExpr(
         expr: eId,
         operation: expr.operation,
         type: Conversion.makeUnaryResultType(sr, type, expr.operation, expr.sourceloc),
+        isTemporary: true,
         sourceloc: expr.sourceloc,
       });
     }
@@ -949,6 +955,7 @@ export function elaborateExpr(
         variant: Semantic.ENode.LiteralExpr,
         literal: expr.literal,
         sourceloc: expr.sourceloc,
+        isTemporary: true,
         type: makePrimitiveAvailable(sr, expr.literal.type),
       });
     }
@@ -1006,6 +1013,7 @@ export function elaborateExpr(
             elaboratedType: value.type,
             collectedType: null,
             sourceloc: collectedExpr.sourceloc,
+            isTemporary: false,
             type: value.type,
           });
         }
@@ -1054,6 +1062,7 @@ export function elaborateExpr(
                 type: EPrimitive.bool,
                 value: true,
               },
+              isTemporary: true,
             });
           } else {
             throw new CompilerError(
@@ -1180,6 +1189,7 @@ export function elaborateExpr(
             parametersWithoutThis,
             ftype.vararg
           ),
+          isTemporary: true,
           type: ftype.returnType,
           sourceloc: expr.sourceloc,
         });
@@ -1197,6 +1207,7 @@ export function elaborateExpr(
           arguments: args,
           type: calledExprType.returnType,
           sourceloc: expr.sourceloc,
+          isTemporary: true,
         });
       } else if (calledExprType.variant === Semantic.ENode.StructDatatype) {
         assert(
@@ -1226,6 +1237,7 @@ export function elaborateExpr(
             symbol: constructorId,
             type: constructor.type,
             sourceloc: expr.sourceloc,
+            isTemporary: false,
           })[1],
           arguments: convertArgs(
             getActualCallingArguments(constructorFunctype.parameters),
@@ -1233,6 +1245,7 @@ export function elaborateExpr(
             constructorFunctype.vararg
           ),
           type: constructorFunctype.returnType,
+          isTemporary: true,
           sourceloc: expr.sourceloc,
         });
       } else if (calledExprType.variant === Semantic.ENode.PrimitiveDatatype) {
@@ -1257,6 +1270,7 @@ export function elaborateExpr(
           literal: {
             type: EPrimitive.null,
           },
+          isTemporary: true,
           sourceloc: expr.sourceloc,
           type: makePrimitiveAvailable(sr, EPrimitive.null),
         });
@@ -1271,6 +1285,7 @@ export function elaborateExpr(
           variant: Semantic.ENode.DatatypeAsValueExpr,
           type: makePrimitiveAvailable(sr, primitive),
           sourceloc: expr.sourceloc,
+          isTemporary: false,
         });
       }
 
@@ -1287,8 +1302,10 @@ export function elaborateExpr(
             },
             sourceloc: expr.sourceloc,
             type: makePrimitiveAvailable(sr, EPrimitive.int),
+            isTemporary: true,
           })[1],
           sourceloc: expr.sourceloc,
+          isTemporary: true,
         });
       }
 
@@ -1318,6 +1335,7 @@ export function elaborateExpr(
           variant: Semantic.ENode.DatatypeAsValueExpr,
           type: newId,
           sourceloc: expr.sourceloc,
+          isTemporary: false,
         });
       }
 
@@ -1347,6 +1365,7 @@ export function elaborateExpr(
             symbol: elaboratedSymbolId,
             type: elaboratedSymbol.type,
             sourceloc: expr.sourceloc,
+            isTemporary: false,
           });
         } else if (elaboratedSymbol.variant === Semantic.ENode.ParameterPackDatatypeSymbol) {
           return Semantic.addNode(sr, {
@@ -1354,6 +1373,7 @@ export function elaborateExpr(
             symbol: elaboratedSymbolId,
             type: elaboratedSymbolId,
             sourceloc: expr.sourceloc,
+            isTemporary: false,
           });
         } else {
           assert(false);
@@ -1378,6 +1398,7 @@ export function elaborateExpr(
           symbol: elaboratedSymbolId,
           type: variableSymbol.type,
           sourceloc: expr.sourceloc,
+          isTemporary: false,
         });
       } else if (symbol.variant === Collect.ENode.FunctionOverloadGroup) {
         const chosenOverloadId = ChooseFunctionOverload(
@@ -1439,6 +1460,7 @@ export function elaborateExpr(
           symbol: elaboratedSymbolId,
           type: elaboratedSymbol.type,
           sourceloc: expr.sourceloc,
+          isTemporary: false,
         });
       } else if (symbol.variant === Collect.ENode.NamespaceDefinitionSymbol) {
         // This is for static function calls like Arena.create(); -> "Arena" is now a NamespaceValue
@@ -1455,6 +1477,7 @@ export function elaborateExpr(
           variant: Semantic.ENode.DatatypeAsValueExpr,
           type: elaboratedSymbolId,
           sourceloc: expr.sourceloc,
+          isTemporary: false,
         });
       } else if (symbol.variant === Collect.ENode.StructDefinitionSymbol) {
         // This is for static function calls like Arena.create(); -> "Arena" is now a NamespaceValue
@@ -1486,6 +1509,7 @@ export function elaborateExpr(
           variant: Semantic.ENode.DatatypeAsValueExpr,
           type: elaboratedSymbolId,
           sourceloc: expr.sourceloc,
+          isTemporary: false,
         });
       } else {
         throw new CompilerError(
@@ -1512,6 +1536,7 @@ export function elaborateExpr(
         type: makePointerDatatypeAvailable(sr, _expr.type),
         expr: exprId,
         sourceloc: expr.sourceloc,
+        isTemporary: true,
       });
     }
 
@@ -1539,6 +1564,7 @@ export function elaborateExpr(
         type: exprType.pointee,
         expr: _exprId,
         sourceloc: expr.sourceloc,
+        isTemporary: true,
       });
     }
 
@@ -1589,6 +1615,7 @@ export function elaborateExpr(
         expr: eId,
         operation: expr.operation,
         sourceloc: expr.sourceloc,
+        isTemporary: true,
       });
     }
 
@@ -1610,6 +1637,7 @@ export function elaborateExpr(
         expr: eId,
         operation: expr.operation,
         sourceloc: expr.sourceloc,
+        isTemporary: true,
       });
     }
 
@@ -1674,6 +1702,7 @@ export function elaborateExpr(
                 },
                 type: object.type,
                 sourceloc: expr.sourceloc,
+                isTemporary: true,
               });
             }
             if (expr.memberName === "max") {
@@ -1686,6 +1715,7 @@ export function elaborateExpr(
                 },
                 type: object.type,
                 sourceloc: expr.sourceloc,
+                isTemporary: true,
               });
             }
           }
@@ -1729,6 +1759,7 @@ export function elaborateExpr(
           memberName: expr.memberName,
           type: member.type,
           sourceloc: expr.sourceloc,
+          isTemporary: false,
         });
       }
 
@@ -1836,6 +1867,7 @@ export function elaborateExpr(
             concrete: isTypeConcrete(sr, elaboratedMethod.type),
           })[1],
           sourceloc: expr.sourceloc,
+          isTemporary: true,
         });
       }
 
@@ -1878,6 +1910,7 @@ export function elaborateExpr(
         type: target.type,
         operation: expr.operation,
         sourceloc: expr.sourceloc,
+        isTemporary: true,
       });
     }
 
@@ -1924,6 +1957,7 @@ export function elaborateExpr(
         values: values.map((v) => v[1]),
         type: makeArrayDatatypeAvailable(sr, type, values.length),
         sourceloc: expr.sourceloc,
+        isTemporary: true,
       });
     }
 
@@ -1970,6 +2004,7 @@ export function elaborateExpr(
         indices: [indexId],
         type: valueType.datatype,
         sourceloc: expr.sourceloc,
+        isTemporary: true,
       });
     }
 
@@ -2099,6 +2134,7 @@ export function elaborateExpr(
         assign: assign,
         type: structId,
         sourceloc: expr.sourceloc,
+        isTemporary: true,
       });
     }
 
@@ -2573,7 +2609,8 @@ export function elaborateStatement(
           variableSymbolType.variant === Semantic.ENode.StructDatatype &&
           valueType.variant === Semantic.ENode.StructDatatype &&
           (valueType.clonability === EClonability.NonClonableFromAttribute ||
-            valueType.clonability === EClonability.NonClonableFromMembers)
+            valueType.clonability === EClonability.NonClonableFromMembers) &&
+          !value.isTemporary
         ) {
           const msg =
             valueType.clonability === EClonability.NonClonableFromAttribute

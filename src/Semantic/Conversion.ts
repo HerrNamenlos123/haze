@@ -449,7 +449,25 @@ export namespace Conversion {
     const from = sr.nodes.get(fromExprId);
     assert(isExpression(from));
     const fromType = sr.nodes.get(from.type);
+    assert(isType(fromType));
     const to = sr.nodes.get(toId);
+
+    // Conversion of Struct to Struct
+    if (
+      fromType.variant === Semantic.ENode.StructDatatype &&
+      to.variant === Semantic.ENode.StructDatatype &&
+      from.type === toId &&
+      !from.isTemporary
+    ) {
+      const msg =
+        to.clonability === EClonability.NonClonableFromAttribute
+          ? "marked as 'nonclonable'"
+          : "non-clonable because it contains raw pointers or other non-clonable structures";
+      throw new CompilerError(
+        `Struct '${fromType.name}' is passed by value here, which would create a copy, but the struct definition is ${msg}`,
+        sourceloc
+      );
+    }
 
     if (from.type === toId) {
       return fromExprId;
@@ -462,6 +480,7 @@ export namespace Conversion {
         expr: fromExprId,
         type: toId,
         sourceloc: sourceloc,
+        isTemporary: from.isTemporary,
       })[1];
     }
 
@@ -499,6 +518,7 @@ export namespace Conversion {
         expr: fromExprId,
         type: toId,
         sourceloc: sourceloc,
+        isTemporary: from.isTemporary,
       })[1];
     }
 
@@ -520,6 +540,7 @@ export namespace Conversion {
           expr: fromExprId,
           type: toId,
           sourceloc: sourceloc,
+          isTemporary: from.isTemporary,
         })[1];
       } else {
         let [sourceMinValue, sourceMaxValue] = Conversion.getIntegerMinMax(f.primitive);
@@ -601,6 +622,7 @@ export namespace Conversion {
             expr: fromExprId,
             type: toId,
             sourceloc: sourceloc,
+            isTemporary: from.isTemporary,
           })[1];
         }
 
@@ -641,6 +663,7 @@ export namespace Conversion {
         expr: fromExprId,
         type: toId,
         sourceloc: sourceloc,
+        isTemporary: from.isTemporary,
       })[1];
     }
     if (
@@ -658,6 +681,7 @@ export namespace Conversion {
         expr: fromExprId,
         type: toId,
         sourceloc: sourceloc,
+        isTemporary: from.isTemporary,
       })[1];
     }
 
@@ -685,9 +709,20 @@ export namespace Conversion {
         expr: fromExprId,
         type: toId,
         sourceloc: sourceloc,
+        isTemporary: from.isTemporary,
       })[1];
     }
 
+    // if (
+    //   fromType.variant === Semantic.ENode.PrimitiveDatatype &&
+    //   to.variant === Semantic.ENode.PrimitiveDatatype &&
+    //   fromType.primitive === EPrimitive.int &&
+    //   to.primitive === EPrimitive.real
+    // ) {
+    // }
+    console.log("TODO: Implement conversion from int to real if value is known and is lossless");
+
+    // Pointer conversions
     if (
       fromType.variant === Semantic.ENode.PointerDatatype &&
       to.variant === Semantic.ENode.PointerDatatype
@@ -703,6 +738,7 @@ export namespace Conversion {
           expr: fromExprId,
           type: toId,
           sourceloc: sourceloc,
+          isTemporary: from.isTemporary,
         })[1];
       }
       // Conversion from T* to void*
@@ -716,6 +752,7 @@ export namespace Conversion {
           expr: fromExprId,
           type: toId,
           sourceloc: sourceloc,
+          isTemporary: from.isTemporary,
         })[1];
       }
     }
@@ -727,6 +764,7 @@ export namespace Conversion {
         expr: fromExprId,
         type: toId,
         sourceloc: sourceloc,
+        isTemporary: from.isTemporary,
       })[1];
     }
 
