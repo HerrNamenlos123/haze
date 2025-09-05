@@ -62,6 +62,7 @@ import {
   type ASTForEachStatement,
   EClonability,
   type ASTTypeLiteralExpr,
+  type ASTFStringExpr,
 } from "../shared/AST";
 import {
   BinaryExprContext,
@@ -125,6 +126,8 @@ import {
   ArraySubscriptExprContext,
   ForEachStatementContext,
   TypeLiteralExprContext,
+  InterpolationStringConstantContext,
+  FStringLiteralContext,
 } from "./grammar/autogen/HazeParser";
 import {
   BaseErrorListener,
@@ -1175,6 +1178,15 @@ class ASTTransformer extends HazeVisitor<any> {
     return {
       variant: "TypeLiteralExpr",
       datatype: this.visit(ctx.datatype()),
+      sourceloc: this.loc(ctx),
+    };
+  };
+
+  visitFStringLiteral = (ctx: FStringLiteralContext): ASTFStringExpr => {
+    console.log(ctx);
+    throw new Error();
+    return {
+      variant: "FStringExpr",
       sourceloc: this.loc(ctx),
     };
   };

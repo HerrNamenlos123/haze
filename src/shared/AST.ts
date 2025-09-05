@@ -362,6 +362,11 @@ export type ASTLiteralExpr = {
   sourceloc: SourceLoc;
 };
 
+export type ASTFStringExpr = {
+  variant: "FStringExpr";
+  sourceloc: SourceLoc;
+};
+
 export type ASTArrayLiteralExpr = {
   variant: "ArrayLiteralExpr";
   values: ASTExpr[];

@@ -8,16 +8,23 @@ foo(arena: Arena): Arena& {
     return arena;
 }
 
+struct Ref<T> {
+    ref: T&;
+}
+
 main(): int {
 
-    let arena = Arena();
-    let b: Arena& = arena;
+    let x = 5;
+    let a = f"Test: {x}";
 
-    let vec1 = arena.alloc<Vec3>({ x: 1.0, y: 2.0, z: 3.0 });
-    let vec2 = arena.alloc<Vec3>({ x: 4.0, y: 5.0, z: 6.0 });
+    // let arena = Arena();
+    // let b: Arena& = arena;
 
-    println("Vec 1: ", vec1);
-    println("Vec 2: ", vec2);
+    // let vec1 = arena.alloc<Vec3>({ x: 1.0, y: 2.0, z: 3.0 });
+    // let vec2 = arena.alloc<Vec3>({ x: 4.0, y: 5.0, z: 6.0 });
+
+    // println("Vec 1: ", vec1);
+    // println("Vec 2: ", vec2);
 
     return 0;
 
