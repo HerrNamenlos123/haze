@@ -17,6 +17,14 @@
     {
       "type": "lldb",
       "request": "launch",
+      "name": "Launch problem file",
+      "program": "${workspaceFolder}/test/c-test/problem",
+      "args": [],
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
       "name": "Launch libinput example",
       "program": "${workspaceFolder}/a.out",
       "args": [],

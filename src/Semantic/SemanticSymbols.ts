@@ -191,6 +191,7 @@ export namespace Semantic {
     PointerAddressOfExpr,
     PointerDereferenceExpr,
     ExprAssignmentExpr,
+    RefAssignmentExpr,
     StructInstantiationExpr,
     PreIncrExpr,
     PostIncrExpr,
@@ -231,6 +232,7 @@ export namespace Semantic {
     ENode.PointerAddressOfExpr,
     ENode.PointerDereferenceExpr,
     ENode.ExprAssignmentExpr,
+    ENode.RefAssignmentExpr,
     ENode.StructInstantiationExpr,
     ENode.PreIncrExpr,
     ENode.PostIncrExpr,
@@ -509,6 +511,16 @@ export namespace Semantic {
     sourceloc: SourceLoc;
   };
 
+  export type RefAssignmentExpr = {
+    variant: ENode.RefAssignmentExpr;
+    value: Id;
+    target: Id;
+    type: Id;
+    operation: "assign" | "reassign";
+    isTemporary: boolean;
+    sourceloc: SourceLoc;
+  };
+
   export type PointerDereferenceExpr = {
     variant: ENode.PointerDereferenceExpr;
     expr: Id;
@@ -621,6 +633,7 @@ export namespace Semantic {
     | DatatypeAsValueExpr
     | SizeofExpr
     | ExprAssignmentExpr
+    | RefAssignmentExpr
     | UnaryExpr
     | BinaryExpr
     | CallableExpr

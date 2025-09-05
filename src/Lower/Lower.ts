@@ -1,4 +1,7 @@
-import { makeReferenceDatatypeAvailable } from "../Semantic/LookupDatatype";
+import {
+  makePointerDatatypeAvailable,
+  makeReferenceDatatypeAvailable,
+} from "../Semantic/LookupDatatype";
 import {
   asExpression,
   asType,
@@ -918,6 +921,38 @@ function lowerExpr(
         value: lowerExpr(lr, expr.valueExpr, flattened)[1],
         type: lowerType(lr, expr.type),
       });
+    }
+
+    case Semantic.ENode.RefAssignmentExpr: {
+      const [ref, refId] = lowerExpr(lr, expr.target, flattened);
+      const target = asExpression(lr.sr.nodes.get(expr.target));
+      const targetType = asType(lr.sr.nodes.get(target.type));
+      assert(targetType.variant === Semantic.ENode.ReferenceDatatype);
+
+      const [value, valueId] = lowerExpr(lr, expr.value, flattened);
+      const valueType = lr.typeNodes.get(value.type);
+      const semanticValue = asExpression(lr.sr.nodes.get(expr.value));
+      if (expr.operation === "assign") {
+        assert(semanticValue.type === targetType.referee);
+        return Lowered.addExpr(lr, {
+          variant: Lowered.ENode.ExprAssignmentExpr,
+          type: lowerType(lr, expr.type),
+          target: Lowered.addExpr(lr, {
+            variant: Lowered.ENode.PointerDereferenceExpr,
+            expr: refId,
+            type: lowerType(lr, makePointerDatatypeAvailable(lr.sr, targetType.referee)),
+          })[1],
+          value: valueId,
+        });
+      } else {
+        assert(semanticValue.type === target.type);
+        return Lowered.addExpr(lr, {
+          variant: Lowered.ENode.ExprAssignmentExpr,
+          type: lowerType(lr, expr.type),
+          target: refId,
+          value: valueId,
+        });
+      }
     }
 
     case Semantic.ENode.DatatypeAsValueExpr: {

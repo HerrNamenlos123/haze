@@ -30,7 +30,7 @@ export struct nonclonable Arena {
         const ref: T& = uninitialized;
         const ptr = this.__alloc(sizeof(T));
         __c__("ref = (void*)ptr;");
-        ref = value;
+        assign(ref, value);
         return ref;
     }
 

@@ -479,6 +479,15 @@ export namespace Conversion {
 
     // Conversion from T to T&
     if (to.variant === Semantic.ENode.ReferenceDatatype) {
+      if (from.isTemporary) {
+        throw new CompilerError(
+          `This expression of type '${serializeDatatype(
+            sr,
+            from.type
+          )}' cannot be turned into a reference, because it is a temporary and not associated with a stable memory address. Store it in a variable to be able to reference it.`,
+          sourceloc
+        );
+      }
       return Semantic.addNode(sr, {
         variant: Semantic.ENode.ExplicitCastExpr,
         expr: fromExprId,

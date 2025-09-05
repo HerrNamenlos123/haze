@@ -1,5 +1,6 @@
 import { HAZE_STDLIB_NAME } from "../Module";
 import {
+  EAssignmentOperation,
   EBinaryOperation,
   EClonability,
   EExternLanguage,
@@ -1151,6 +1152,79 @@ export function elaborateExpr(
             valueExpr: callingArguments[0],
           });
         }
+        if (collectedExpr.name === "assign" || collectedExpr.name === "reassign") {
+          const callingArguments = expr.arguments.map(
+            (a, i) =>
+              elaborateExpr(sr, a, {
+                elaboratedVariables: args.elaboratedVariables,
+                context: args.context,
+                blockScope: args.blockScope,
+                scope: args.context.currentScope,
+                isMonomorphized: args.isMonomorphized,
+              })[1]
+          );
+          if (collectedExpr.genericArgs.length !== 0) {
+            throw new CompilerError(
+              "The builtin assign/reassign functions cannot take any type parameters",
+              collectedExpr.sourceloc
+            );
+          }
+          if (callingArguments.length !== 2) {
+            throw new CompilerError(
+              "The builtin assign/reassign functions require exactly two parameters",
+              collectedExpr.sourceloc
+            );
+          }
+          const ref = sr.nodes.get(callingArguments[0]);
+          assert(isExpression(ref));
+          const refType = sr.nodes.get(ref.type);
+          assert(isType(refType));
+          const value = sr.nodes.get(callingArguments[1]);
+          assert(isExpression(value));
+          if (refType.variant !== Semantic.ENode.ReferenceDatatype) {
+            throw new CompilerError(
+              `The builtin assign/reassign functions require the first parameter to be a reference`,
+              expr.sourceloc
+            );
+          }
+          if (collectedExpr.name === "assign") {
+            // Assigning the pointee
+            return Semantic.addNode(sr, {
+              variant: Semantic.ENode.RefAssignmentExpr,
+              sourceloc: collectedExpr.sourceloc,
+              isTemporary: false,
+              type: makePrimitiveAvailable(sr, EPrimitive.usize),
+              operation: "assign",
+              target: callingArguments[0],
+              value: Conversion.MakeConversion(
+                sr,
+                callingArguments[1],
+                refType.referee,
+                args.blockScope?.constraints || [],
+                expr.sourceloc,
+                Conversion.Mode.Implicit
+              ),
+            });
+          } else {
+            // Reassigning the reference
+            return Semantic.addNode(sr, {
+              variant: Semantic.ENode.RefAssignmentExpr,
+              sourceloc: collectedExpr.sourceloc,
+              isTemporary: false,
+              type: makePrimitiveAvailable(sr, EPrimitive.usize),
+              operation: "reassign",
+              target: callingArguments[0],
+              value: Conversion.MakeConversion(
+                sr,
+                callingArguments[1],
+                ref.type,
+                args.blockScope?.constraints || [],
+                expr.sourceloc,
+                Conversion.Mode.Implicit
+              ),
+            });
+          }
+        }
         if (collectedExpr.name === "static_assert") {
           const callingArguments = expr.arguments.map(
             (a, i) =>
@@ -2102,6 +2176,15 @@ export function elaborateExpr(
         blockScope: args.blockScope,
         isMonomorphized: args.isMonomorphized,
       });
+
+      const targetType = sr.nodes.get(target.type);
+      if (targetType.variant === Semantic.ENode.ReferenceDatatype) {
+        throw new CompilerError(
+          `Assigning values to references is not allowed, use builtin functions instead. To assign a new value to the place the reference points to, use 'assign(ref, ...)', to instead reassign the reference to point to a new location, use 'reassign(ref, ...)' intead.`,
+          expr.sourceloc
+        );
+      }
+
       return Semantic.addNode(sr, {
         variant: Semantic.ENode.ExprAssignmentExpr,
         value: Conversion.MakeConversion(
