@@ -15,13 +15,7 @@ main(): int {
     let arena = Arena();
     let b: Arena& = arena;
 
-    let a = Vec2 {x: 0.0, y: 0.0};
-    let c: Vec2& = a;
-    let d: Vec2 = c;
-
-    // foo(arena);
-    // foo(Arena());
-    // let b = arena;
+    let vec = arena.alloc(Vec3 {});
 
     return 0;
 
