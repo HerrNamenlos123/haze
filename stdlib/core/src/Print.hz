@@ -7,29 +7,38 @@ namespace builtin {
 
 export print(args: ...) {
     for comptime arg in args {
-        if comptime typeof(arg) is int {
-            builtin.printf("%ld ", arg);
+        if comptime typeof(arg) == int {
+            builtin.printf("%ld", arg);
         }
-        else if typeof(arg) is str {
-            builtin.printf("%s ", arg);
+        else if typeof(arg) == str {
+            builtin.printf("%s", arg);
         }
-        else if typeof(arg) is real {
-            builtin.printf("%f ", arg);
+        else if typeof(arg) == usize {
+            builtin.printf("%zu", arg);
         }
-        else if typeof(arg) is u8 || typeof(arg) is u16 || typeof(arg) is u32 {
-            builtin.printf("%u ", arg);
+        else if typeof(arg) == real {
+            builtin.printf("%f", arg);
         }
-        else if typeof(arg) is u64 {
-            builtin.printf("%lu ", arg);
+        else if typeof(arg) == u8 || typeof(arg) == u16 || typeof(arg) == u32 {
+            builtin.printf("%u", arg);
         }
-        else if typeof(arg) is i8 || typeof(arg) is i16 || typeof(arg) is i32 {
-            builtin.printf("%d ", arg);
+        else if typeof(arg) == u64 {
+            builtin.printf("%lu", arg);
         }
-        else if typeof(arg) is i64 {
-            builtin.printf("%ld ", arg);
+        else if typeof(arg) == i8 || typeof(arg) == i16 || typeof(arg) == i32 {
+            builtin.printf("%d", arg);
         }
-        else if typeof(arg) is Vec3 {
-            builtin.printf("(%f, %f, %f) ", arg.x, arg.y, arg.z);
+        else if typeof(arg) == i64 {
+            builtin.printf("%ld", arg);
+        }
+        else if typeof(arg) == Vec2 || typeof(arg) == type<Vec2&> {
+            builtin.printf("(%f, %f)", arg.x, arg.y);
+        }
+        else if typeof(arg) == Vec3 || typeof(arg) == type<Vec3&> {
+            builtin.printf("(%f, %f, %f)", arg.x, arg.y, arg.z);
+        }
+        else if typeof(arg) == Vec4 || typeof(arg) == type<Vec4&> {
+            builtin.printf("(%f, %f, %f, %f)", arg.x, arg.y, arg.z, arg.w);
         }
         else {
             static_assert(false, "Type not yet supported in print");
@@ -38,7 +47,12 @@ export print(args: ...) {
 }
 
 export println(args: ...) {
-    for comptime arg in args {
+    let first = true;
+    for comptime arg, i in args {
+        if !first {
+            print(" ");
+        }
+        first = false;
         print(arg);
     }
     print("\n");

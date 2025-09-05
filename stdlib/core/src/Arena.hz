@@ -1,16 +1,18 @@
 
+__c__("#include <memory.h>");
+
 namespace builtin {
-    extern "C" malloc(size: usize): void*;
-    extern "C" memset(ptr: void*, value: u8, count: usize): void*;
+    extern "C" noemit malloc(size: usize): void*;
+    extern "C" noemit memset(ptr: void*, value: u8, count: usize): void*;
     // extern "C" realloc(ptr: void*): void*;
-    extern "C" free(ptr: void*): void;
+    extern "C" noemit free(ptr: void*): void;
 }
 
 export struct ArenaChunk {
     next: ArenaChunk*;
     size: usize;
     used: usize;
-    data: u8*;
+    data: u8; // Taking a pointer to chunk.data gives the actual arena pointer
 }
 
 export struct nonclonable Arena {
@@ -24,6 +26,14 @@ export struct nonclonable Arena {
         };
     }
 
+    alloc<T>(value: T): T& {
+        const ref: T& = uninitialized;
+        const ptr = this.__alloc(sizeof(T));
+        __c__("ref = (void*)ptr;");
+        ref = value;
+        return ref;
+    }
+
     __newChunk(size: usize): ArenaChunk* {
         let chunk_size = max<usize>(size, 4096); // default chunk size
         let chunk_mem = builtin.malloc(sizeof(ArenaChunk) + chunk_size) as ArenaChunk*;
@@ -35,11 +45,11 @@ export struct nonclonable Arena {
         return chunk_mem;
     }
 
-    __alloc(arena: Arena*, size: usize): u8* {
-        let last = (*arena).last;
+    __alloc(size: usize): u8* {
+        let last = this.last;
         if last != nullptr && ((*last).used + size <= (*last).size) {
             // allocate from existing chunk
-            let ptr = (*last).data;
+            let ptr = &(*last).data;
             __c__("ptr += last->used;");
             (*last).used += size;
             return ptr;
@@ -47,15 +57,15 @@ export struct nonclonable Arena {
 
         // allocate a new chunk
         let chunk = this.__newChunk(size);
-        if (*arena).first == nullptr {
-            (*arena).first = chunk;
+        if this.first == nullptr {
+            this.first = chunk;
         } else {
-            (*(*arena).last).next = chunk;
+            (*this.last).next = chunk;
         }
-        (*arena).last = chunk;
+        this.last = chunk;
 
         (*chunk).used = size;
-        return (*chunk).data;
+        return &(*chunk).data;
     }
 
     free() {

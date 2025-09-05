@@ -22,7 +22,12 @@ async function main() {
     required: true,
   });
 
-  subparsers.add_parser("build", { help: "Build the project" });
+  const build_parser = subparsers.add_parser("build", { help: "Build the project" });
+  build_parser.add_argument("--no-sourceloc", {
+    action: "store_false",
+    dest: "sourceloc",
+    help: "Disable source location tracking",
+  });
 
   const get_parser = subparsers.add_parser("get", { help: "Download a file" });
   get_parser.add_argument("url", { help: "URL to download" });
@@ -35,9 +40,19 @@ async function main() {
     nargs: REMAINDER,
     help: "Arguments to pass to the running program",
   });
+  run_parser.add_argument("--no-sourceloc", {
+    action: "store_false",
+    dest: "sourceloc",
+    help: "Disable source location tracking",
+  });
 
   const exec_parser = subparsers.add_parser("exec", {
     help: "Run a single file immediately as a script",
+  });
+  exec_parser.add_argument("--no-sourceloc", {
+    action: "store_false",
+    dest: "sourceloc",
+    help: "Disable source location tracking",
   });
   exec_parser.add_argument("filename", {
     nargs: "?",
@@ -58,11 +73,11 @@ async function main() {
   if (args.command === "build" || args.command === "run" || args.command === "exec") {
     try {
       const project = new ProjectCompiler();
-      if (!(await project.build(args.filename))) {
+      if (!(await project.build(args.filename, args.sourceloc))) {
         process.exit(1);
       }
       if (args.command === "run" || args.command === "exec") {
-        const exitCode = await project.run(args.filename, args.args);
+        const exitCode = await project.run(args.filename, args.sourceloc, args.args);
         process.exit(exitCode);
       }
     } catch (err) {

@@ -302,7 +302,8 @@ export type ASTIfStatement = {
 
 export type ASTForEachStatement = {
   variant: "ForEachStatement";
-  variable: string;
+  loopVariable: string;
+  indexVariable: string | null;
   value: ASTExpr;
   comptime: boolean;
   body: ASTScope;
@@ -459,6 +460,12 @@ export type ASTSymbolValueExpr = {
   sourceloc: SourceLoc;
 };
 
+export type ASTTypeLiteralExpr = {
+  variant: "TypeLiteralExpr";
+  datatype: ASTDatatype;
+  sourceloc: SourceLoc;
+};
+
 export type ASTExpr =
   | ASTParenthesisExpr
   | ASTLambdaExpr
@@ -476,7 +483,8 @@ export type ASTExpr =
   | ASTArraySubscriptExpr
   | ASTBinaryExpr
   | ASTExprAssignmentExpr
-  | ASTSymbolValueExpr;
+  | ASTSymbolValueExpr
+  | ASTTypeLiteralExpr;
 
 export type ASTLambda = {
   variant: "Lambda";

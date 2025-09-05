@@ -212,10 +212,14 @@ export function ExportCollectedSymbols(cc: CollectionContext) {
               for (const overloadId of content.overloads) {
                 const method = cc.nodes.get(overloadId);
                 assert(method.variant === Collect.ENode.FunctionSymbol);
-                const parameters = method.parameters
-                  .map((p, i) => `${p.name}: ${printType(cc, p.type)}`)
-                  .join(", ");
-                file += `${content.name}(${parameters}): ${printType(cc, method.returnType)};\n`;
+                if (method.generics.length !== 0) {
+                  file += method.originalSourcecode + "\n";
+                } else {
+                  const parameters = method.parameters
+                    .map((p, i) => `${p.name}: ${printType(cc, p.type)}`)
+                    .join(", ");
+                  file += `${content.name}(${parameters}): ${printType(cc, method.returnType)};\n`;
+                }
               }
             } else {
               assert(false, content.variant.toString());

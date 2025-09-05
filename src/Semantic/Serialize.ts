@@ -329,7 +329,7 @@ export function serializeExpr(sr: SemanticResult, exprId: Semantic.Id): string {
       return `(${UnaryOperationToString(expr.operation)} ${serializeExpr(sr, expr.expr)})`;
 
     case Semantic.ENode.SizeofExpr:
-      return `sizeof<${expr.datatype ? serializeDatatype(sr, expr.datatype) : ""}>`;
+      return `sizeof(${serializeExpr(sr, expr.valueExpr)})`;
 
     case Semantic.ENode.ExplicitCastExpr:
       return `(${serializeExpr(sr, expr.expr)} as ${serializeDatatype(sr, expr.type)})`;

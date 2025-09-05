@@ -27,6 +27,7 @@ export type ModuleConfig = {
   linkerFlags: string[];
   compilerFlags: string[];
   platform: PlatformString;
+  includeSourceloc: boolean;
 };
 
 export type PlatformString = "linux-x64";
@@ -260,7 +261,7 @@ export class ConfigParser {
     return deps;
   }
 
-  async parseConfig(): Promise<ModuleConfig> {
+  async parseConfig(sourceloc?: boolean): Promise<ModuleConfig> {
     const content = await Bun.file(this.configPath).text();
     const toml = parse(content, { bigint: false });
 
@@ -283,6 +284,7 @@ export class ConfigParser {
       compilerFlags:
         (toml["compiler"] && this.getOptionalStringArray(toml["compiler"], "flags")) || [],
       platform: "linux-x64",
+      includeSourceloc: sourceloc ?? true,
     };
   }
 }

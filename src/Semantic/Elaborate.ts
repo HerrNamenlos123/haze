@@ -1120,6 +1120,37 @@ export function elaborateExpr(
             type: value.type,
           });
         }
+        if (collectedExpr.name === "sizeof") {
+          const callingArguments = expr.arguments.map(
+            (a, i) =>
+              elaborateExpr(sr, a, {
+                elaboratedVariables: args.elaboratedVariables,
+                context: args.context,
+                blockScope: args.blockScope,
+                scope: args.context.currentScope,
+                isMonomorphized: args.isMonomorphized,
+              })[1]
+          );
+          if (collectedExpr.genericArgs.length !== 0) {
+            throw new CompilerError(
+              "The sizeof function cannot take any type parameters",
+              collectedExpr.sourceloc
+            );
+          }
+          if (callingArguments.length !== 1) {
+            throw new CompilerError(
+              "The sizeof function can only take exactly one parameter",
+              collectedExpr.sourceloc
+            );
+          }
+          return Semantic.addNode(sr, {
+            variant: Semantic.ENode.SizeofExpr,
+            sourceloc: collectedExpr.sourceloc,
+            isTemporary: false,
+            type: makePrimitiveAvailable(sr, EPrimitive.usize),
+            valueExpr: callingArguments[0],
+          });
+        }
         if (collectedExpr.name === "static_assert") {
           const callingArguments = expr.arguments.map(
             (a, i) =>
@@ -1418,6 +1449,17 @@ export function elaborateExpr(
       });
 
       if (foundResult.type === "semantic") {
+        const found = sr.nodes.get(foundResult.id);
+        if (found.variant === Semantic.ENode.SymbolValueExpr) {
+          const variable = sr.nodes.get(found.symbol);
+          if (
+            variable.variant === Semantic.ENode.VariableSymbol &&
+            variable.comptime &&
+            variable.comptimeValue
+          ) {
+            return [asExpression(sr.nodes.get(variable.comptimeValue)), variable.comptimeValue];
+          }
+        }
         return [asExpression(sr.nodes.get(foundResult.id)), foundResult.id];
       }
 
@@ -1463,6 +1505,12 @@ export function elaborateExpr(
         const elaboratedSymbol = sr.nodes.get(elaboratedSymbolId);
         if (elaboratedSymbol.variant === Semantic.ENode.VariableSymbol) {
           assert(elaboratedSymbol.type);
+          if (elaboratedSymbol.comptime && elaboratedSymbol.comptimeValue) {
+            return [
+              asExpression(sr.nodes.get(elaboratedSymbol.comptimeValue)),
+              elaboratedSymbol.comptimeValue,
+            ];
+          }
           return Semantic.addNode(sr, {
             variant: Semantic.ENode.SymbolValueExpr,
             symbol: elaboratedSymbolId,
@@ -1495,6 +1543,12 @@ export function elaborateExpr(
             `A variable access cannot have a type parameter list`,
             expr.sourceloc
           );
+        }
+        if (variableSymbol.comptime && variableSymbol.comptimeValue) {
+          return [
+            asExpression(sr.nodes.get(variableSymbol.comptimeValue)),
+            variableSymbol.comptimeValue,
+          ];
         }
         return Semantic.addNode(sr, {
           variant: Semantic.ENode.SymbolValueExpr,
@@ -1614,6 +1668,29 @@ export function elaborateExpr(
           sourceloc: expr.sourceloc,
           isTemporary: false,
         });
+      } else if (symbol.variant === Collect.ENode.GenericTypeParameter) {
+        const mappedTo = args.context.substitute.get(symbolId);
+        if (mappedTo) {
+          return Semantic.addNode(sr, {
+            variant: Semantic.ENode.DatatypeAsValueExpr,
+            isTemporary: false,
+            type: mappedTo,
+            sourceloc: expr.sourceloc,
+          });
+        } else {
+          const [generic, genericId] = Semantic.addNode(sr, {
+            variant: Semantic.ENode.GenericParameterDatatype,
+            name: symbol.name,
+            collectedParameter: symbolId,
+            concrete: false,
+          });
+          return Semantic.addNode(sr, {
+            variant: Semantic.ENode.DatatypeAsValueExpr,
+            isTemporary: false,
+            type: genericId,
+            sourceloc: expr.sourceloc,
+          });
+        }
       } else {
         throw new CompilerError(
           `Symbol cannot be used as a value: Code ${symbol.variant}`,
@@ -2163,6 +2240,24 @@ export function elaborateExpr(
     // =================================================================================================================
     // =================================================================================================================
 
+    case Collect.ENode.TypeLiteralExpr: {
+      return Semantic.addNode(sr, {
+        variant: Semantic.ENode.DatatypeAsValueExpr,
+        isTemporary: false,
+        type: lookupAndElaborateDatatype(sr, {
+          typeId: expr.datatype,
+          context: args.context,
+          elaboratedVariables: args.elaboratedVariables,
+          isInCFuncdecl: false,
+        }),
+        sourceloc: expr.sourceloc,
+      });
+    }
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
     default:
       throw new InternalError("Unhandled variant: " + expr.variant);
   }
@@ -2630,13 +2725,6 @@ export function elaborateStatement(
       const variableSymbolType = sr.nodes.get(variableSymbol.type);
       assert(isType(variableSymbolType));
 
-      if (valueId) {
-        const canBeComptime = CanEvaluateCTFE(sr, valueId);
-        if (canBeComptime) {
-          variableSymbol.comptime = true;
-        }
-      }
-
       if (variableSymbol.comptime) {
         assert(valueId);
         variableSymbol.comptimeValue = EvalCTFE(sr, valueId)[1];
@@ -2739,6 +2827,26 @@ export function elaborateStatement(
 
         assert(comptimeExpr.parameters);
 
+        let loopIndex: undefined | Semantic.VariableSymbol = undefined;
+        let loopIndexId: undefined | Semantic.Id = undefined;
+        if (s.indexVariable) {
+          [loopIndex, loopIndexId] = Semantic.addNode(sr, {
+            variant: Semantic.ENode.VariableSymbol,
+            comptime: true,
+            comptimeValue: null,
+            concrete: true,
+            export: false,
+            extern: EExternLanguage.None,
+            memberOfStruct: null,
+            mutability: EVariableMutability.Immutable,
+            name: s.indexVariable,
+            parentStructOrNS: null,
+            sourceloc: s.sourceloc,
+            type: makePrimitiveAvailable(sr, EPrimitive.usize),
+            variableContext: EVariableContext.FunctionLocal,
+          } satisfies Semantic.VariableSymbol);
+        }
+
         const allScopes: Semantic.Id[] = [];
         for (let i = 0; i < comptimeExpr.parameters.length; i++) {
           const [thenScope, thenScopeId] = Semantic.addNode(sr, {
@@ -2752,7 +2860,22 @@ export function elaborateStatement(
           assert(paramValue.variant === Semantic.ENode.VariableSymbol);
           assert(paramValue.type);
 
-          syntheticMap.set(s.variable, semanticParamId);
+          syntheticMap.set(s.loopVariable, semanticParamId);
+          if (s.indexVariable) {
+            assert(loopIndexId && loopIndex);
+            loopIndex.comptimeValue = Semantic.addNode(sr, {
+              variant: Semantic.ENode.LiteralExpr,
+              isTemporary: true,
+              literal: {
+                type: EPrimitive.usize,
+                unit: null,
+                value: BigInt(i),
+              },
+              type: makePrimitiveAvailable(sr, EPrimitive.usize),
+              sourceloc: s.sourceloc,
+            })[1];
+            syntheticMap.set(s.indexVariable, loopIndexId);
+          }
           elaborateBlockScope(sr, {
             targetScopeId: thenScopeId,
             sourceScopeId: s.body,
@@ -2761,7 +2884,10 @@ export function elaborateStatement(
             elaboratedVariables: args.elaboratedVariables,
             context: args.context,
           });
-          syntheticMap.delete(s.variable);
+          if (s.indexVariable) {
+            syntheticMap.delete(s.indexVariable);
+          }
+          syntheticMap.delete(s.loopVariable);
 
           allScopes.push(
             Semantic.addNode(sr, {

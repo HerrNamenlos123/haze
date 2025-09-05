@@ -583,7 +583,7 @@ class CodeGenerator {
     const outWriter = new OutputWriter();
     switch (statement.variant) {
       case Lowered.ENode.ReturnStatement: {
-        if (statement.sourceloc) {
+        if (statement.sourceloc && this.lr.sr.cc.config.includeSourceloc) {
           outWriter.writeLine(
             `#line ${statement.sourceloc.line} ${JSON.stringify(statement.sourceloc.filename)}`
           );
@@ -599,7 +599,7 @@ class CodeGenerator {
       }
 
       case Lowered.ENode.VariableStatement: {
-        if (statement.sourceloc) {
+        if (statement.sourceloc && this.lr.sr.cc.config.includeSourceloc) {
           outWriter.writeLine(
             `#line ${statement.sourceloc.line} ${JSON.stringify(statement.sourceloc.filename)}`
           );
@@ -627,7 +627,7 @@ class CodeGenerator {
       }
 
       case Lowered.ENode.ExprStatement: {
-        if (statement.sourceloc) {
+        if (statement.sourceloc && this.lr.sr.cc.config.includeSourceloc) {
           outWriter.writeLine(
             `#line ${statement.sourceloc.line} ${JSON.stringify(statement.sourceloc.filename)}`
           );
@@ -639,7 +639,7 @@ class CodeGenerator {
       }
 
       case Lowered.ENode.InlineCStatement: {
-        if (statement.sourceloc) {
+        if (statement.sourceloc && this.lr.sr.cc.config.includeSourceloc) {
           outWriter.writeLine(
             `#line ${statement.sourceloc.line} ${JSON.stringify(statement.sourceloc.filename)}`
           );
@@ -649,7 +649,7 @@ class CodeGenerator {
       }
 
       case Lowered.ENode.WhileStatement: {
-        if (statement.sourceloc) {
+        if (statement.sourceloc && this.lr.sr.cc.config.includeSourceloc) {
           outWriter.writeLine(
             `#line ${statement.sourceloc.line} ${JSON.stringify(statement.sourceloc.filename)}`
           );
@@ -665,7 +665,7 @@ class CodeGenerator {
       }
 
       case Lowered.ENode.BlockScopeStatement: {
-        if (statement.sourceloc) {
+        if (statement.sourceloc && this.lr.sr.cc.config.includeSourceloc) {
           outWriter.writeLine(
             `#line ${statement.sourceloc.line} ${JSON.stringify(statement.sourceloc.filename)}`
           );
@@ -679,7 +679,7 @@ class CodeGenerator {
       }
 
       case Lowered.ENode.IfStatement: {
-        if (statement.sourceloc) {
+        if (statement.sourceloc && this.lr.sr.cc.config.includeSourceloc) {
           outWriter.writeLine(
             `#line ${statement.sourceloc.line} ${JSON.stringify(statement.sourceloc.filename)}`
           );

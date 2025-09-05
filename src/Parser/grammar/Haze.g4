@@ -123,6 +123,7 @@ typeDefinition
 expr
     // https://en.cppreference.com/w/c/language/operator_precedence
     : '(' expr ')'                                                                  #ParenthesisExpr
+    | 'type' '<' datatype '>'                                                       #TypeLiteralExpr
     // | '{' objectattribute? (',' objectattribute)* ','? '}'                       #AnonymousStructInstantiationExpr
     | lambda                                                                        #LambdaExpr
     | literal                                                                       #LiteralExpr
@@ -148,7 +149,7 @@ expr
     | expr op+=('+'|'-') expr                                                       #BinaryExpr
     // | expr ('<<'|'>>') expr                                                      #BinaryExpr
     | expr op+=('<'|'>'|'<='|'>=') expr                                             #BinaryExpr
-    | expr (op+='=='|op+='!='|op+='is'|(op+='is' op+='not')) expr                   #BinaryExpr
+    | expr (op+='=='|op+='!=') expr                                                 #BinaryExpr
     // | expr ('&') expr                                                            #BinaryExpr
     // | expr ('^') expr                                                            #BinaryExpr
     // | expr ('|') expr                                                            #BinaryExpr
@@ -167,7 +168,7 @@ statement
     | 'return' expr? ';'                                        #ReturnStatement
     | variableMutabilitySpecifier comptime='comptime'? ID (((':' datatype)? '=' expr) | (':' datatype)) ';'       #VariableCreationStatement
     | 'if' comptime='comptime'? ifExpr=expr then=scope ('else' 'if' elseIfExpr+=expr elseIfThen+=scope)* ('else' elseBlock=scope)? #IfStatement
-    | 'for' comptime='comptime'? ID 'in' expr scope             #ForEachStatement
+    | 'for' comptime='comptime'? ID (',' ID)? 'in' expr scope   #ForEachStatement
     | 'while' expr scope                                        #WhileStatement
     | scope                                                     #ScopeStatement
     | typeDef                                                   #TypedefStatement

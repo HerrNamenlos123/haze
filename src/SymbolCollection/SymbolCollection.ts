@@ -163,6 +163,7 @@ export namespace Collect {
     PostIncrExpr,
     ArraySubscriptExpr,
     ArrayLiteralExpr,
+    TypeLiteralExpr,
     // Specials
     ModuleImport,
     SymbolImport,
@@ -470,7 +471,8 @@ export namespace Collect {
 
   export type ForEachStatement = BaseStatement & {
     variant: ENode.ForEachStatement;
-    variable: string;
+    loopVariable: string;
+    indexVariable: string | null;
     value: Collect.Id;
     comptime: boolean;
     body: Collect.Id;
@@ -634,6 +636,11 @@ export namespace Collect {
     indices: Collect.Id[];
   };
 
+  export type TypeLiteralExpr = BaseExpr & {
+    variant: ENode.TypeLiteralExpr;
+    datatype: Collect.Id;
+  };
+
   export type Expressions =
     | ParenthesisExpr
     | BinaryExpr
@@ -648,6 +655,7 @@ export namespace Collect {
     | LiteralExpr
     | ArrayLiteralExpr
     | ArraySubscriptExpr
+    | TypeLiteralExpr
     | PreIncrExpr
     | PostIncrExpr
     | MemberAccessExpr;
@@ -1433,7 +1441,8 @@ function collect(
               value: collect(cc, astStatement.value, { currentParentScope: blockScope }),
               body: collect(cc, astStatement.body, { currentParentScope: blockScope }),
               comptime: astStatement.comptime,
-              variable: astStatement.variable,
+              loopVariable: astStatement.loopVariable,
+              indexVariable: astStatement.indexVariable,
               sourceloc: astStatement.sourceloc,
             });
             break;
@@ -1790,6 +1799,18 @@ function collect(
         symbols: item.symbols,
         mode: item.mode,
         name: item.name,
+        sourceloc: item.sourceloc,
+      })[1];
+    }
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
+    case "TypeLiteralExpr": {
+      return makeSymbol(cc, {
+        variant: Collect.ENode.TypeLiteralExpr,
+        datatype: collect(cc, item.datatype, { currentParentScope: args.currentParentScope }),
         sourceloc: item.sourceloc,
       })[1];
     }
@@ -2262,7 +2283,7 @@ export function PrettyPrintCollected(cc: CollectionContext) {
 
       case Collect.ENode.ForEachStatement: {
         print(
-          `for ${symbol.comptime ? "comptime " : ""}${symbol.variable} in ${printExpr(
+          `for ${symbol.comptime ? "comptime " : ""}${symbol.loopVariable} in ${printExpr(
             symbol.value
           )}`
         );

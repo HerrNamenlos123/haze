@@ -61,6 +61,7 @@ import {
   type ASTArraySubscriptExpr,
   type ASTForEachStatement,
   EClonability,
+  type ASTTypeLiteralExpr,
 } from "../shared/AST";
 import {
   BinaryExprContext,
@@ -123,6 +124,7 @@ import {
   ArrayLiteralContext,
   ArraySubscriptExprContext,
   ForEachStatementContext,
+  TypeLiteralExprContext,
 } from "./grammar/autogen/HazeParser";
 import {
   BaseErrorListener,
@@ -810,7 +812,8 @@ class ASTTransformer extends HazeVisitor<any> {
   visitForEachStatement = (ctx: ForEachStatementContext): ASTForEachStatement => {
     return {
       variant: "ForEachStatement",
-      variable: ctx.ID().getText(),
+      loopVariable: ctx.ID()[0].getText(),
+      indexVariable: ctx.ID().length > 1 ? ctx.ID()[1].getText() : null,
       value: this.visit(ctx.expr()),
       body: this.visit(ctx.scope()),
       sourceloc: this.loc(ctx),
@@ -1164,6 +1167,14 @@ class ASTTransformer extends HazeVisitor<any> {
       variant: "ArraySubscriptExpr",
       expr: this.visit(ctx._value),
       indices: ctx._index.map((i) => this.visit(i)),
+      sourceloc: this.loc(ctx),
+    };
+  };
+
+  visitTypeLiteralExpr = (ctx: TypeLiteralExprContext): ASTTypeLiteralExpr => {
+    return {
+      variant: "TypeLiteralExpr",
+      datatype: this.visit(ctx.datatype()),
       sourceloc: this.loc(ctx),
     };
   };

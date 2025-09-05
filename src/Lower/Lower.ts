@@ -204,6 +204,8 @@ export namespace Lowered {
     thisExpr: ExprId;
     functionPrettyName: string;
     functionMangledName: string;
+    functionType: TypeId;
+    wasMangled: boolean;
     type: TypeId;
   };
 
@@ -323,6 +325,7 @@ export namespace Lowered {
 
   export type BlockScope = {
     statements: StatementId[];
+    definesVariables: boolean;
   };
 
   export type Statement =
@@ -550,46 +553,50 @@ function lowerExpr(
           throw new InternalError("Not implemented");
         }
 
-        // Always store a Callable
-        const [calledValue, calledValueId] = storeInTempVarAndGet(
-          lr,
-          calledExpr.type,
-          calledExprId,
-          expr.sourceloc,
-          flattened
-        );
-
-        const type = lowerType(lr, expr.type);
-        const [callExpr, callExprId] = Lowered.addExpr<Lowered.ExprCallExpr>(lr, {
-          variant: Lowered.ENode.ExprCallExpr,
-          expr: Lowered.addExpr(lr, {
-            variant: Lowered.ENode.MemberAccessExpr,
-            memberName: "fn",
-            isReference: false,
-            type: calledExpr.type,
-            expr: calledValueId,
-          })[1],
-          arguments: [
-            Lowered.addExpr(lr, {
-              variant: Lowered.ENode.MemberAccessExpr,
-              expr: calledValueId,
-              isReference: false,
-              memberName: "thisPtr",
-              type: lr.exprNodes.get(thisExprId).type,
+        if (calledExpr.variant === Lowered.ENode.CallableExpr) {
+          // A method or lambda is immediately called
+          const type = lowerType(lr, expr.type);
+          const [callExpr, callExprId] = Lowered.addExpr<Lowered.ExprCallExpr>(lr, {
+            variant: Lowered.ENode.ExprCallExpr,
+            expr: Lowered.addExpr(lr, {
+              variant: Lowered.ENode.SymbolValueExpr,
+              mangledName: calledExpr.functionMangledName,
+              prettyName: calledExpr.functionPrettyName,
+              functionType: calledExpr.functionType,
+              type: calledExpr.type,
+              wasMangled: calledExpr.wasMangled,
             })[1],
-            ...expr.arguments.map((a) => lowerExpr(lr, a, flattened)[1]),
-          ],
-          type: type,
-        });
-        const callExprType = lr.typeNodes.get(callExpr.type);
-
-        if (
-          callExprType.variant === Lowered.ENode.StructDatatype ||
-          callExprType.variant === Lowered.ENode.CallableDatatype
-        ) {
-          const value = storeInTempVarAndGet(lr, type, callExprId, expr.sourceloc, flattened);
-          return value;
+            arguments: [
+              calledExpr.thisExpr,
+              ...expr.arguments.map((a) => lowerExpr(lr, a, flattened)[1]),
+            ],
+            type: type,
+          });
+          return [callExpr, callExprId];
         } else {
+          // The callable is from a variable with unknown origin
+          const type = lowerType(lr, expr.type);
+          const [callExpr, callExprId] = Lowered.addExpr<Lowered.ExprCallExpr>(lr, {
+            variant: Lowered.ENode.ExprCallExpr,
+            expr: Lowered.addExpr(lr, {
+              variant: Lowered.ENode.MemberAccessExpr,
+              memberName: "fn",
+              isReference: false,
+              type: calledExpr.type,
+              expr: calledExprId,
+            })[1],
+            arguments: [
+              Lowered.addExpr(lr, {
+                variant: Lowered.ENode.MemberAccessExpr,
+                expr: calledExprId,
+                isReference: false,
+                memberName: "thisPtr",
+                type: lr.exprNodes.get(thisExprId).type,
+              })[1],
+              ...expr.arguments.map((a) => lowerExpr(lr, a, flattened)[1]),
+            ],
+            type: type,
+          });
           return [callExpr, callExprId];
         }
       } else {
@@ -599,20 +606,7 @@ function lowerExpr(
           arguments: expr.arguments.map((a) => lowerExpr(lr, a, flattened)[1]),
           type: lowerType(lr, expr.type),
         });
-        const returnType = lr.typeNodes.get(calledExprType.returnType);
-        if (returnType.variant === Lowered.ENode.StructDatatype) {
-          // If the return value is a struct, store it in a temp var and reference it, to allow chaining of methods.
-          const [value, valueId] = storeInTempVarAndGet(
-            lr,
-            calledExprType.returnType,
-            exprCallId,
-            expr.sourceloc,
-            flattened
-          );
-          return [value, valueId];
-        } else {
-          return [exprCall, exprCallId];
-        }
+        return [exprCall, exprCallId];
       }
     }
 
@@ -809,25 +803,32 @@ function lowerExpr(
           lr,
           makeReferenceDatatypeAvailable(lr.sr, thisExpr.type)
         );
-        const [temp, tempId] = storeInTempVarAndGet(
-          lr,
-          lowerType(lr, thisExpr.type),
-          loweredThisExpression,
-          expr.sourceloc,
-          flattened
-        );
+        let tempId = loweredThisExpression;
+        if (thisExpr.isTemporary) {
+          tempId = storeInTempVarAndGet(
+            lr,
+            lowerType(lr, thisExpr.type),
+            loweredThisExpression,
+            expr.sourceloc,
+            flattened
+          )[1];
+        }
         loweredThisExpression = Lowered.addExpr(lr, {
           variant: Lowered.ENode.PointerAddressOfExpr,
           expr: tempId,
           type: structReferenceType,
         })[1];
       }
+      const functionSymbol = lr.sr.nodes.get(expr.functionSymbol);
+      assert(functionSymbol.variant === Semantic.ENode.FunctionSymbol);
       return Lowered.addExpr(lr, {
         variant: Lowered.ENode.CallableExpr,
         functionMangledName: mangleNestedName(lr.sr, expr.functionSymbol),
         functionPrettyName: serializeNestedName(lr.sr, expr.functionSymbol),
         thisExpr: loweredThisExpression,
         type: lowerType(lr, expr.type),
+        functionType: lowerType(lr, functionSymbol.type),
+        wasMangled: true,
       });
     }
 
@@ -1204,21 +1205,35 @@ function lowerBlockScope(lr: Lowered.Module, semanticScopeId: Semantic.Id): Lowe
   const blockScope = lr.sr.nodes.get(semanticScopeId);
   assert(blockScope.variant === Semantic.ENode.BlockScope);
 
+  let containsVariables = false;
   const statements: Lowered.StatementId[] = [];
 
   for (const s of blockScope.statements) {
+    const statement = lr.sr.nodes.get(s);
+    if (statement.variant === Semantic.ENode.VariableStatement) {
+      containsVariables = true;
+    }
+
     statements.push(...lowerStatement(lr, s));
   }
 
-  if (statements.length === 1) {
-    let st = lr.statementNodes.get(statements[0]);
-    if (st.variant === Lowered.ENode.BlockScopeStatement) {
-      return st.block;
+  // Flatten block scopes that don't define variables to remove redundant scopes and make code more readable
+  const flattenedStatements: Lowered.StatementId[] = [];
+  for (const s of statements) {
+    const statement = lr.statementNodes.get(s);
+    if (statement.variant === Lowered.ENode.BlockScopeStatement) {
+      const blockScope = lr.blockScopeNodes.get(statement.block);
+      if (!blockScope.definesVariables) {
+        flattenedStatements.push(...blockScope.statements);
+        continue;
+      }
     }
+    flattenedStatements.push(s);
   }
 
   const [scope, scopeId] = Lowered.addBlockScope<Lowered.BlockScope>(lr, {
-    statements: statements,
+    statements: flattenedStatements,
+    definesVariables: containsVariables,
   });
   return scopeId;
 }

@@ -459,7 +459,9 @@ export namespace Conversion {
       fromType.variant === Semantic.ENode.StructDatatype &&
       to.variant === Semantic.ENode.StructDatatype &&
       from.type === toId &&
-      !from.isTemporary
+      !from.isTemporary &&
+      (to.clonability === EClonability.NonClonableFromAttribute ||
+        to.clonability === EClonability.NonClonableFromMembers)
     ) {
       const msg =
         to.clonability === EClonability.NonClonableFromAttribute

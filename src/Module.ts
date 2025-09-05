@@ -49,10 +49,10 @@ export function makeModulePrefix(config: ModuleConfig) {
   return config.name + "." + config.version.replaceAll(".", "_");
 }
 
-async function parseConfig(startDir?: string) {
+async function parseConfig(startDir?: string, sourceloc?: boolean) {
   try {
     const parser = new ConfigParser(HAZE_CONFIG_FILE, startDir);
-    return await parser.parseConfig();
+    return await parser.parseConfig(sourceloc);
   } catch (e: unknown) {
     if (e instanceof GeneralError) {
       console.log(e.message);
@@ -164,10 +164,10 @@ export class ProjectCompiler {
 
   constructor() {}
 
-  async getConfig(singleFilename?: string) {
+  async getConfig(singleFilename?: string, sourceloc?: boolean) {
     let config: ModuleConfig | undefined;
     if (!singleFilename) {
-      config = await parseConfig();
+      config = await parseConfig(undefined, sourceloc);
     } else {
       config = {
         configFilePath: undefined,
@@ -184,13 +184,14 @@ export class ProjectCompiler {
         description: undefined,
         license: undefined,
         compilerFlags: [],
+        includeSourceloc: sourceloc ?? true,
       };
     }
     return config;
   }
 
-  async build(singleFilename?: string) {
-    const config = await this.getConfig(singleFilename);
+  async build(singleFilename?: string, sourceloc?: boolean) {
+    const config = await this.getConfig(singleFilename, sourceloc);
     if (!config) {
       return false;
     }
@@ -207,7 +208,7 @@ export class ProjectCompiler {
     );
 
     if (!mainModule.config.nostdlib) {
-      const stdlibConfig = await parseConfig(join(getStdlibDirectory(), "core"));
+      const stdlibConfig = await parseConfig(join(getStdlibDirectory(), "core"), sourceloc);
       if (!stdlibConfig) {
         return false;
       }
@@ -227,7 +228,7 @@ export class ProjectCompiler {
       for (const dep of deps) {
         const depdir = join(getStdlibDirectory(), dep.path);
 
-        const config = await parseConfig(depdir);
+        const config = await parseConfig(depdir, sourceloc);
         if (!config) {
           return false;
         }
@@ -253,9 +254,9 @@ export class ProjectCompiler {
     return true;
   }
 
-  async run(singleFilename?: string, args?: string[]): Promise<number> {
+  async run(singleFilename?: string, sourceloc?: boolean, args?: string[]): Promise<number> {
     try {
-      const config = await this.getConfig(singleFilename);
+      const config = await this.getConfig(singleFilename, sourceloc);
       if (!config) {
         return -1;
       }
