@@ -63,6 +63,8 @@ import {
   EClonability,
   type ASTTypeLiteralExpr,
   type ASTFStringExpr,
+  type ASTSliceDatatype,
+  type ASTArraySliceExpr,
 } from "../shared/AST";
 import {
   BinaryExprContext,
@@ -126,8 +128,9 @@ import {
   ArraySubscriptExprContext,
   ForEachStatementContext,
   TypeLiteralExprContext,
-  InterpolationStringConstantContext,
   FStringLiteralContext,
+  SliceDatatypeContext,
+  ArraySliceExprContext,
 } from "./grammar/autogen/HazeParser";
 import {
   BaseErrorListener,
@@ -932,6 +935,14 @@ class ASTTransformer extends HazeVisitor<any> {
     };
   };
 
+  visitSliceDatatype = (ctx: SliceDatatypeContext): ASTSliceDatatype => {
+    return {
+      variant: "SliceDatatype",
+      datatype: this.visit(ctx.datatype()),
+      sourceloc: this.loc(ctx),
+    };
+  };
+
   visitExprMemberAccess = (ctx: ExprMemberAccessContext): ASTExprMemberAccess => {
     const generics: (ASTDatatype | ASTLiteralExpr)[] = [];
     for (let i = 0; i < ctx.genericLiteral().length; i++) {
@@ -1174,6 +1185,20 @@ class ASTTransformer extends HazeVisitor<any> {
     };
   };
 
+  visitArraySliceExpr = (ctx: ArraySliceExprContext): ASTArraySliceExpr => {
+    assert(ctx._value);
+    assert(ctx._index);
+    return {
+      variant: "ArraySliceExpr",
+      expr: this.visit(ctx._value),
+      indices: ctx._index.map((i) => ({
+        start: i.expr()[0] ? this.visit(i.expr()[0]) : null,
+        end: i.expr()[1] ? this.visit(i.expr()[1]) : null,
+      })),
+      sourceloc: this.loc(ctx),
+    };
+  };
+
   visitTypeLiteralExpr = (ctx: TypeLiteralExprContext): ASTTypeLiteralExpr => {
     return {
       variant: "TypeLiteralExpr",
@@ -1183,10 +1208,44 @@ class ASTTransformer extends HazeVisitor<any> {
   };
 
   visitFStringLiteral = (ctx: FStringLiteralContext): ASTFStringExpr => {
-    console.log(ctx);
-    throw new Error();
+    const fragments = ctx
+      .interpolatedString()
+      .interpolatedStringFragment()
+      .map((g) => {
+        if (g.interpolatedStringExpression()) {
+          return {
+            type: "expr",
+            value: this.visit(g.interpolatedStringExpression()!.expr()),
+          } as const;
+        } else {
+          assert(g.FSTRING_GRAPHEME());
+          return {
+            type: "text",
+            value: g.FSTRING_GRAPHEME()!.getText(),
+          } as const;
+        }
+      });
+
+    const combinedFragments = [] as
+      | ({ type: "expr"; value: ASTExpr } | { type: "text"; value: string })[];
+
+    for (const fragment of fragments) {
+      if (fragment.type === "expr") {
+        combinedFragments.push(fragment);
+      } else {
+        const lastFragment =
+          combinedFragments.length > 0 ? combinedFragments[combinedFragments.length - 1] : null;
+        if (lastFragment && lastFragment.type === "text") {
+          lastFragment.value += fragment.value;
+        } else {
+          combinedFragments.push(fragment);
+        }
+      }
+    }
+
     return {
       variant: "FStringExpr",
+      fragments: combinedFragments,
       sourceloc: this.loc(ctx),
     };
   };

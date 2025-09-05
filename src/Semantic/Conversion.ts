@@ -535,6 +535,17 @@ export namespace Conversion {
       })[1];
     }
 
+    // Conversion from T[N] to T[]
+    // if (
+    //   fromType.variant === Semantic.ENode.ArrayDatatype &&
+    //   to.variant === Semantic.ENode.SliceDatatype &&
+    //   fromType.datatype === to.datatype
+    // ) {
+    //   return Semantic.addNode(sr, {
+    //     variant:
+    //   })
+    // }
+
     // Conversion between Integers
     if (Conversion.isIntegerById(sr, from.type) && Conversion.isIntegerById(sr, toId)) {
       const f = sr.nodes.get(from.type);

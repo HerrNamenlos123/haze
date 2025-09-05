@@ -197,6 +197,7 @@ export namespace Semantic {
     PostIncrExpr,
     ArrayLiteralExpr,
     ArraySubscriptExpr,
+    ArraySliceExpr,
     // Dummy
     Dummy,
   }
@@ -238,6 +239,7 @@ export namespace Semantic {
     ENode.PostIncrExpr,
     ENode.ArrayLiteralExpr,
     ENode.ArraySubscriptExpr,
+    ENode.ArraySliceExpr,
   ] as const;
 
   export function addNode<T extends Semantic.Node>(sr: SemanticResult, n: T): [T, Semantic.Id] {
@@ -627,6 +629,18 @@ export namespace Semantic {
     sourceloc: SourceLoc;
   };
 
+  export type ArraySliceExpr = {
+    variant: ENode.ArraySliceExpr;
+    expr: Id;
+    indices: {
+      start: Id | null;
+      end: Id | null;
+    }[];
+    type: Id;
+    isTemporary: boolean;
+    sourceloc: SourceLoc;
+  };
+
   export type Expression =
     | ExprMemberAccessExpr
     | SymbolValueExpr
@@ -646,7 +660,8 @@ export namespace Semantic {
     | StructInstantiationExpr
     | LiteralExpr
     | ArrayLiteralExpr
-    | ArraySubscriptExpr;
+    | ArraySubscriptExpr
+    | ArraySliceExpr;
 
   // =============================================
 

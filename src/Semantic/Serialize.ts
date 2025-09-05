@@ -392,10 +392,29 @@ export function serializeExpr(sr: SemanticResult, exprId: Semantic.Id): string {
     case Semantic.ENode.ArrayLiteralExpr:
       return `[${expr.values.map((v) => serializeExpr(sr, v)).join(", ")}]`;
 
-    case Semantic.ENode.ArraySubscriptExpr:
-      return `${serializeExpr(sr, expr.expr)}[${expr.indices
-        .map((i) => serializeExpr(sr, i))
-        .join(", ")}]`;
+    case Semantic.ENode.ArraySubscriptExpr: {
+      const indices: string[] = [];
+      for (const index of expr.indices) {
+        indices.push(serializeExpr(sr, index));
+      }
+      return `${serializeExpr(sr, expr.expr)}[${indices.join(", ")}]`;
+    }
+
+    case Semantic.ENode.ArraySliceExpr: {
+      const indices: string[] = [];
+      for (const index of expr.indices) {
+        if (index.start && index.end) {
+          indices.push(serializeExpr(sr, index.start) + ":" + serializeExpr(sr, index.end));
+        } else if (index.start) {
+          indices.push(serializeExpr(sr, index.start));
+        } else if (index.end) {
+          indices.push(serializeExpr(sr, index.end));
+        } else {
+          assert(false);
+        }
+      }
+      return `${serializeExpr(sr, expr.expr)}[${indices.join(", ")}]`;
+    }
 
     default:
       assert(false, expr.variant.toString());

@@ -171,7 +171,15 @@ class CodeGenerator {
         );
         this.out.type_definitions.popIndent().writeLine(`};`);
       } else if (symbol.variant === Lowered.ENode.SliceDatatype) {
-        assert(false);
+        this.out.type_declarations.writeLine(
+          `typedef struct ${this.mangle(symbol)} ${this.mangle(symbol)};`
+        );
+        this.out.type_definitions.writeLine(`struct ${this.mangle(symbol)} {`).pushIndent();
+        this.out.type_definitions.writeLine(
+          `${this.mangle(this.lr.typeNodes.get(symbol.datatype))}* data;`
+        );
+        this.out.type_definitions.writeLine(`uint64_t length;`);
+        this.out.type_definitions.popIndent().writeLine(`};`);
       } else if (symbol.variant === Lowered.ENode.FunctionDatatype) {
         this.out.type_definitions.writeLine(
           `typedef ${this.mangle(this.lr.typeNodes.get(symbol.returnType))} (*${this.mangle(
@@ -1005,6 +1013,29 @@ class CodeGenerator {
         const index = this.emitExpr(expr.index);
         tempWriter.write(index.temp);
         outWriter.write(`(${e.out.get()}).data[${index.out.get()}]`);
+        return { out: outWriter, temp: tempWriter };
+      }
+
+      case Lowered.ENode.ArraySliceExpr: {
+        const e = this.emitExpr(expr.expr);
+        const sliceType = this.lr.typeNodes.get(expr.type);
+        const arrayExpr = this.lr.exprNodes.get(expr.expr);
+        const arrayExprType = this.lr.typeNodes.get(arrayExpr.type);
+        assert(arrayExpr.variant !== Lowered.ENode.ArrayLiteralExpr);
+        assert(arrayExprType.variant === Lowered.ENode.ArrayDatatype);
+
+        tempWriter.write(e.temp);
+        const startIndex = this.emitExpr(expr.start);
+        const endIndex = this.emitExpr(expr.end);
+        tempWriter.write(startIndex.temp);
+        tempWriter.write(endIndex.temp);
+
+        const array = e.out.get();
+        outWriter.write(
+          `(${this.mangle(
+            sliceType
+          )}){ .data=(${array}).data + ${startIndex.out.get()}, .length=(${endIndex.out.get()} - ${startIndex.out.get()}) }`
+        );
         return { out: outWriter, temp: tempWriter };
       }
 

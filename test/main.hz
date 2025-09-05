@@ -1,8 +1,8 @@
 
-// import math
-// import glDraw
-// import glfw
-// import gl
+import math
+import glDraw
+import glfw
+import gl
 
 // foo(arena: Arena): Arena& {
 //     return arena;
@@ -15,7 +15,9 @@
 main(): int {
 
     let x = 5;
-    let a = f"Test: {Vec3 {}} other";
+
+    format(Arena(), 5);
+    // let a = f"Test: {Vec3 {}} other";
 
     // let arena = Arena();
     // let b: Arena& = arena;

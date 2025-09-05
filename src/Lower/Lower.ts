@@ -7,6 +7,7 @@ import {
   asType,
   isExpression,
   isType,
+  makePrimitiveAvailable,
   Semantic,
   type SemanticResult,
 } from "../Semantic/SemanticSymbols";
@@ -93,6 +94,7 @@ export namespace Lowered {
     PostIncrExpr,
     ArrayLiteralExpr,
     ArraySubscriptExpr,
+    ArraySliceExpr,
     // Dummy
     Dummy,
   }
@@ -306,6 +308,14 @@ export namespace Lowered {
     type: TypeId;
   };
 
+  export type ArraySliceExpr = {
+    variant: ENode.ArraySliceExpr;
+    expr: ExprId;
+    start: ExprId;
+    end: ExprId;
+    type: TypeId;
+  };
+
   export type Expression =
     | ExprCallExpr
     | BinaryExpr
@@ -324,6 +334,7 @@ export namespace Lowered {
     | PostIncrExpr
     | ArrayLiteralExpr
     | ArraySubscriptExpr
+    | ArraySliceExpr
     | SymbolValueExpr;
 
   export type BlockScope = {
@@ -790,6 +801,51 @@ function lowerExpr(
         variant: Lowered.ENode.ArraySubscriptExpr,
         expr: lowerExpr(lr, expr.expr, flattened)[1],
         index: lowerExpr(lr, expr.indices[0], flattened)[1],
+        type: lowerType(lr, expr.type),
+      });
+    }
+
+    case Semantic.ENode.ArraySliceExpr: {
+      assert(expr.indices.length === 1);
+      const arrayId = lowerExpr(lr, expr.expr, flattened)[1];
+      const semanticArray = asExpression(lr.sr.nodes.get(expr.expr));
+      const arrayType = asType(lr.sr.nodes.get(semanticArray.type));
+      assert(arrayType.variant === Semantic.ENode.ArrayDatatype);
+
+      const startIndex = expr.indices[0].start
+        ? lowerExpr(lr, expr.indices[0].start, flattened)[1]
+        : Lowered.addExpr(lr, {
+            variant: Lowered.ENode.LiteralExpr,
+            literal: {
+              type: EPrimitive.usize,
+              unit: null,
+              value: 0n,
+            },
+            type: lowerType(lr, makePrimitiveAvailable(lr.sr, EPrimitive.usize)),
+          })[1];
+      const endIndex = expr.indices[0].end
+        ? lowerExpr(lr, expr.indices[0].end, flattened)[1]
+        : Lowered.addExpr(lr, {
+            variant: Lowered.ENode.LiteralExpr,
+            literal: {
+              type: EPrimitive.usize,
+              unit: null,
+              value: BigInt(arrayType.length),
+            },
+            type: lowerType(lr, makePrimitiveAvailable(lr.sr, EPrimitive.usize)),
+          })[1];
+
+      let sliceExprId = arrayId;
+      const array = lr.exprNodes.get(arrayId);
+      if (array.variant === Lowered.ENode.ArrayLiteralExpr) {
+        sliceExprId = storeInTempVarAndGet(lr, array.type, arrayId, expr.sourceloc, flattened)[1];
+      }
+
+      return Lowered.addExpr(lr, {
+        variant: Lowered.ENode.ArraySliceExpr,
+        expr: sliceExprId,
+        start: startIndex,
+        end: endIndex,
         type: lowerType(lr, expr.type),
       });
     }
@@ -1475,6 +1531,12 @@ function serializeLoweredExpr(lr: Lowered.Module, exprId: Lowered.ExprId): strin
 
     case Lowered.ENode.ArraySubscriptExpr:
       return `(${serializeLoweredExpr(lr, expr.expr)})[${serializeLoweredExpr(lr, expr.index)}]`;
+
+    case Lowered.ENode.ArraySliceExpr:
+      return `(${serializeLoweredExpr(lr, expr.expr)})[${serializeLoweredExpr(
+        lr,
+        expr.start
+      )}:${serializeLoweredExpr(lr, expr.end)}]`;
 
     case Lowered.ENode.StructInstantiationExpr: {
       const exprType = lr.typeNodes.get(expr.type);

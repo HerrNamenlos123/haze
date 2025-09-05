@@ -5,6 +5,54 @@ namespace builtin {
     export extern "C" noemit printf(fmt: str, ...);
 }
 
+namespace fmt {
+    export struct FormatArgs {
+        formatSpecifier: str = "";
+    }
+
+    struct StringWriter {
+        buffer: u8*;
+        length: usize;
+
+        write(value: u8[]) {        
+            if this.buffer != nullptr {
+                __c__("memcpy(this->buffer + this->length, value.data, value.length);");
+                // for i in 0..value.len {
+                //     this.buffer[length + i] = value[i];
+                // }
+            }
+            this.length += value.length;
+        }
+
+        write(c: u8) {
+            if this.buffer != nullptr {
+                __c__("this->buffer[this->length] = c;");
+            }
+            this.length += 1;
+        }
+    }
+
+    format<T>(arena: Arena&, value: T, args: FormatArgs) {
+        const writer = StringWriter { buffer: null, length: 0 };
+        format_to(writer, value, args);       // pass 1: measure length
+        const str = arena.alloc<u8>(writer.length);  // allocate exact size
+        const writer2 = StringWriter { buffer: str, length: 0 };
+        format_to(writer2, value, args);      // pass 2: write actual bytes
+        return str;
+    }
+
+    format_to(writer: StringWriter&, value: i32) {
+        format_integer(writer, value as int);
+    }
+
+    format_integer(writer: StringWriter&, value: int) {
+        let buf = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]; // Space for int.max = 9223372036854775807
+        let a = [5][:];
+        let x = buf[:];
+        // writer.write(buf[:]);
+    }
+}
+
 export print(args: ...) {
     for comptime arg in args {
         if comptime typeof(arg) == int {

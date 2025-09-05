@@ -140,7 +140,7 @@ export function primitiveToString(primitive: EPrimitive) {
     case EPrimitive.str:
       return "str";
     default:
-      throw new InternalError("Unexpected datatype");
+      throw new InternalError("Unexpected datatype " + primitive);
   }
 }
 

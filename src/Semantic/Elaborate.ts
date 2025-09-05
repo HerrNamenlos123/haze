@@ -40,6 +40,7 @@ import {
   elaborateParentSymbolFromCache,
   makeArrayDatatypeAvailable,
   instantiateAndElaborateStructWithGenerics,
+  makeSliceDatatypeAvailable,
 } from "./LookupDatatype";
 import {
   asExpression,
@@ -2011,6 +2012,25 @@ export function elaborateExpr(
         );
       }
 
+      if (objectType.variant === Semantic.ENode.SliceDatatype) {
+        if (expr.memberName === "length") {
+          return Semantic.addNode(sr, {
+            variant: Semantic.ENode.MemberAccessExpr,
+            isTemporary: true,
+            sourceloc: expr.sourceloc,
+            type: makePrimitiveAvailable(sr, EPrimitive.usize),
+            expr: objectId,
+            memberName: "length",
+          });
+        }
+        throw new CompilerError(
+          `Datatype '${serializeDatatype(sr, object.type)}' does not have a member named '${
+            expr.memberName
+          }'`,
+          expr.sourceloc
+        );
+      }
+
       if (objectType.variant !== Semantic.ENode.StructDatatype) {
         throw new CompilerError(
           "Cannot access member of non-structural type " + serializeDatatype(sr, object.type),
@@ -2268,6 +2288,7 @@ export function elaborateExpr(
         isMonomorphized: args.isMonomorphized,
         blockScope: args.blockScope,
       });
+
       const [index, indexId] = elaborateExpr(sr, expr.indices[0], {
         context: args.context,
         elaboratedVariables: args.elaboratedVariables,
@@ -2275,6 +2296,13 @@ export function elaborateExpr(
         scope: args.context.currentScope,
         isMonomorphized: args.isMonomorphized,
       });
+      const indexType = asType(sr.nodes.get(index.type));
+      if (
+        indexType.variant !== Semantic.ENode.PrimitiveDatatype ||
+        !Conversion.isInteger(indexType.primitive)
+      ) {
+        throw new CompilerError(`Only integers can be used to index arrays`, expr.sourceloc);
+      }
 
       const valueType = sr.nodes.get(value.type);
       if (
@@ -2282,7 +2310,7 @@ export function elaborateExpr(
         valueType.variant !== Semantic.ENode.SliceDatatype
       ) {
         throw new CompilerError(
-          `Expression of type ${serializeExpr(sr, value.type)} cannot be subscripted`,
+          `Expression of type ${serializeDatatype(sr, value.type)} cannot be subscripted`,
           expr.sourceloc
         );
       }
@@ -2292,6 +2320,91 @@ export function elaborateExpr(
         expr: valueId,
         indices: [indexId],
         type: valueType.datatype,
+        sourceloc: expr.sourceloc,
+        isTemporary: true,
+      });
+    }
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
+    case Collect.ENode.ArraySliceExpr: {
+      if (expr.indices.length > 1) {
+        throw new CompilerError(
+          `Multidimensional array subscripting is not implemented yet`,
+          expr.sourceloc
+        );
+      }
+      const [value, valueId] = elaborateExpr(sr, expr.expr, {
+        context: args.context,
+        scope: args.context.currentScope,
+        elaboratedVariables: args.elaboratedVariables,
+        isMonomorphized: args.isMonomorphized,
+        blockScope: args.blockScope,
+      });
+
+      const indices: {
+        start: Semantic.Id | null;
+        end: Semantic.Id | null;
+      }[] = [
+        {
+          end: null,
+          start: null,
+        },
+      ];
+
+      if (expr.indices[0].start) {
+        const [startIndex, startIndexId] = elaborateExpr(sr, expr.indices[0].start, {
+          context: args.context,
+          elaboratedVariables: args.elaboratedVariables,
+          blockScope: args.blockScope,
+          scope: args.context.currentScope,
+          isMonomorphized: args.isMonomorphized,
+        });
+        indices[0].start = startIndexId;
+        const startIndexType = asType(sr.nodes.get(startIndex.type));
+        if (
+          startIndexType.variant !== Semantic.ENode.PrimitiveDatatype ||
+          !Conversion.isInteger(startIndexType.primitive)
+        ) {
+          throw new CompilerError(`Only integers can be used to index arrays`, expr.sourceloc);
+        }
+      }
+      if (expr.indices[0].end) {
+        const [endIndex, endIndexId] = elaborateExpr(sr, expr.indices[0].end, {
+          context: args.context,
+          elaboratedVariables: args.elaboratedVariables,
+          blockScope: args.blockScope,
+          scope: args.context.currentScope,
+          isMonomorphized: args.isMonomorphized,
+        });
+        indices[0].end = endIndexId;
+        const endIndexType = asType(sr.nodes.get(endIndex.type));
+        if (
+          endIndexType.variant !== Semantic.ENode.PrimitiveDatatype ||
+          !Conversion.isInteger(endIndexType.primitive)
+        ) {
+          throw new CompilerError(`Only integers can be used to index arrays`, expr.sourceloc);
+        }
+      }
+
+      const valueType = sr.nodes.get(value.type);
+      if (
+        valueType.variant !== Semantic.ENode.ArrayDatatype &&
+        valueType.variant !== Semantic.ENode.SliceDatatype
+      ) {
+        throw new CompilerError(
+          `Expression of type ${serializeDatatype(sr, value.type)} cannot be subscripted`,
+          expr.sourceloc
+        );
+      }
+
+      return Semantic.addNode(sr, {
+        variant: Semantic.ENode.ArraySliceExpr,
+        expr: valueId,
+        indices: indices,
+        type: makeSliceDatatypeAvailable(sr, valueType.datatype),
         sourceloc: expr.sourceloc,
         isTemporary: true,
       });

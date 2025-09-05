@@ -364,6 +364,7 @@ export type ASTLiteralExpr = {
 
 export type ASTFStringExpr = {
   variant: "FStringExpr";
+  fragments: ({ type: "expr"; value: ASTExpr } | { type: "text"; value: string })[];
   sourceloc: SourceLoc;
 };
 
@@ -442,6 +443,13 @@ export type ASTArraySubscriptExpr = {
   sourceloc: SourceLoc;
 };
 
+export type ASTArraySliceExpr = {
+  variant: "ArraySliceExpr";
+  expr: ASTExpr;
+  indices: { start: ASTExpr | null; end: ASTExpr | null }[];
+  sourceloc: SourceLoc;
+};
+
 export type ASTBinaryExpr = {
   variant: "BinaryExpr";
   a: ASTExpr;
@@ -486,6 +494,7 @@ export type ASTExpr =
   | ASTUnaryExpr
   | ASTExplicitCastExpr
   | ASTArraySubscriptExpr
+  | ASTArraySliceExpr
   | ASTBinaryExpr
   | ASTExprAssignmentExpr
   | ASTSymbolValueExpr

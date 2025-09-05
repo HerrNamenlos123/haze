@@ -88,8 +88,8 @@ literal
     | STRING_LITERAL                            #StringConstant
     ;
 
-interpolatedString: FSTRING_START (FSTRING_GRAPHEME | interpolatedStringExpression)* FSTRING_END;
-
+interpolatedString: FSTRING_START (interpolatedStringFragment)* FSTRING_END;
+interpolatedStringFragment: FSTRING_GRAPHEME | interpolatedStringExpression;
 interpolatedStringExpression: LCURLY expr RCURLY;
 
 datatype
@@ -126,6 +126,10 @@ typeDefinition
 
 // Expressions
 
+sliceIndex
+    : expr? COLON expr?
+    ;
+
 expr
     // https://en.cppreference.com/w/c/language/operator_precedence
     : LB expr RB                                                                    #ParenthesisExpr
@@ -138,7 +142,8 @@ expr
     // Part 1: Left to right
     | expr op=(PLUSPLUS | MINUSMINUS)                                               #PostIncrExpr
     | expr LB (expr (COMMA expr)*)? RB                                              #ExprCallExpr
-    | value=expr LBRACKET index+=expr (COMMA index+=expr)* COMMA? RBRACKET          #ArraySubscriptExpr
+    | value=expr LBRACKET (index+=expr) (COMMA index+=expr)* COMMA? RBRACKET        #ArraySubscriptExpr
+    | value=expr LBRACKET (index+=sliceIndex) (COMMA index+=sliceIndex)* COMMA? RBRACKET        #ArraySliceExpr
     | expr DOT ID (LANGLE genericLiteral (COMMA genericLiteral)* RANGLE)?           #ExprMemberAccess
 
     // Part 2: Right to left

@@ -150,6 +150,7 @@ export namespace Collect {
     ParenthesisExpr,
     BinaryExpr,
     LiteralExpr,
+    FStringExpr,
     UnaryExpr,
     ExprCallExpr,
     SymbolValueExpr,
@@ -162,6 +163,7 @@ export namespace Collect {
     PreIncrExpr,
     PostIncrExpr,
     ArraySubscriptExpr,
+    ArraySliceExpr,
     ArrayLiteralExpr,
     TypeLiteralExpr,
     // Specials
@@ -613,6 +615,12 @@ export namespace Collect {
     literal: LiteralValue;
   };
 
+  export type FStringExpr = BaseExpr & {
+    variant: ENode.FStringExpr;
+    fragments: ({ type: "expr"; value: Collect.Id } | { type: "text"; value: string })[];
+    literal: LiteralValue;
+  };
+
   export type PreIncrExpr = BaseExpr & {
     variant: ENode.PreIncrExpr;
     expr: Collect.Id;
@@ -636,6 +644,15 @@ export namespace Collect {
     indices: Collect.Id[];
   };
 
+  export type ArraySliceExpr = BaseExpr & {
+    variant: ENode.ArraySliceExpr;
+    expr: Collect.Id;
+    indices: {
+      start: Collect.Id | null;
+      end: Collect.Id | null;
+    }[];
+  };
+
   export type TypeLiteralExpr = BaseExpr & {
     variant: ENode.TypeLiteralExpr;
     datatype: Collect.Id;
@@ -655,6 +672,7 @@ export namespace Collect {
     | LiteralExpr
     | ArrayLiteralExpr
     | ArraySubscriptExpr
+    | ArraySliceExpr
     | TypeLiteralExpr
     | PreIncrExpr
     | PostIncrExpr
@@ -1748,6 +1766,21 @@ function collect(
     // =================================================================================================================
     // =================================================================================================================
 
+    case "ArraySliceExpr":
+      return makeSymbol(cc, {
+        variant: Collect.ENode.ArraySliceExpr,
+        expr: collect(cc, item.expr, args),
+        indices: item.indices.map((i) => ({
+          start: i.start ? collect(cc, i.start, args) : null,
+          end: i.end ? collect(cc, i.end, args) : null,
+        })),
+        sourceloc: item.sourceloc,
+      })[1];
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
     case "ModuleImport": {
       // return makeSymbol(cc, {
       //   variant: Collect.ENode.ModuleImport,
@@ -2054,7 +2087,27 @@ export function PrettyPrintCollected(cc: CollectionContext) {
       }
 
       case Collect.ENode.ArraySubscriptExpr: {
-        return `${printExpr(expr.expr)}[${expr.indices.map((i) => printExpr(i)).join(", ")}]`;
+        const indices: string[] = [];
+        for (const index of expr.indices) {
+          indices.push(printExpr(index));
+        }
+        return `${printExpr(expr.expr)}[${indices.join(", ")}]`;
+      }
+
+      case Collect.ENode.ArraySliceExpr: {
+        const indices: string[] = [];
+        for (const index of expr.indices) {
+          if (index.start && index.end) {
+            indices.push(printExpr(index.start) + ":" + printExpr(index.end));
+          } else if (index.start) {
+            indices.push(printExpr(index.start));
+          } else if (index.end) {
+            indices.push(printExpr(index.end));
+          } else {
+            assert(false);
+          }
+        }
+        return `${printExpr(expr.expr)}[${indices.join(", ")}]`;
       }
 
       case Collect.ENode.ArrayLiteralExpr: {
