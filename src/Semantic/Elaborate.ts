@@ -1911,6 +1911,32 @@ export function elaborateExpr(
         }
       }
 
+      if (objectType.variant === Semantic.ENode.ParameterPackDatatypeSymbol) {
+        if (expr.memberName === "length") {
+          if (objectType.parameters === null) {
+            throw new CompilerError(
+              `Parameter Pack is not substituted yet and does not have enough context to know its length`,
+              expr.sourceloc
+            );
+          }
+          return Semantic.addNode(sr, {
+            variant: Semantic.ENode.LiteralExpr,
+            isTemporary: true,
+            literal: {
+              type: EPrimitive.usize,
+              unit: null,
+              value: BigInt(objectType.parameters.length),
+            },
+            sourceloc: expr.sourceloc,
+            type: makePrimitiveAvailable(sr, EPrimitive.usize),
+          });
+        }
+        throw new CompilerError(
+          `Parameter Pack does not have a member named '${expr.memberName}'`,
+          expr.sourceloc
+        );
+      }
+
       if (objectType.variant !== Semantic.ENode.StructDatatype) {
         throw new CompilerError(
           "Cannot access member of non-structural type " + serializeDatatype(sr, object.type),

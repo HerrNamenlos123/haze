@@ -8,27 +8,19 @@ foo(arena: Arena): Arena& {
     return arena;
 }
 
-f(args: ...) {
-    for comptime arg, i in args {
-        print(i);
-    }
-}
-
 main(): int {
 
-    // let arena = Arena();
-    // let b: Arena& = arena;
+    let arena = Arena();
+    let b: Arena& = arena;
 
-    // let vec = arena.alloc<Vec3>({ x: 1.0, y: 2.0, z: 3.0 });
+    let vec = arena.alloc<Vec3>({ x: 1.0, y: 2.0, z: 3.0 });
 
-    // let v = Vec3 { x: 4.0, y: 5.0, z: 6.0 };
-    // println("Vec 1: ", vec);
-    // let vec2 = arena.alloc<Vec3>(v);
+    let v = Vec3 { x: 4.0, y: 5.0, z: 6.0 };
+    println("Vec 1: ", vec);
+    let vec2 = arena.alloc<Vec3>(v);
 
-    f(1, "test", -17, 8 as u8, Vec3(2.0, 3.0, 4.0));
-
-    // println("Vec 1: ", vec);
-    // println("Vec 2: ", vec2);
+    println("Vec 1: ", vec);
+    println("Vec 2: ", vec2);
 
     return 0;
 

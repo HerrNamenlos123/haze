@@ -13,6 +13,14 @@ export print(args: ...) {
         else if typeof(arg) == str {
             builtin.printf("%s", arg);
         }
+        else if typeof(arg) == bool {
+            if arg {
+                builtin.printf("true");
+            }
+            else {
+                builtin.printf("false");
+            }
+        }
         else if typeof(arg) == usize {
             builtin.printf("%zu", arg);
         }
@@ -47,13 +55,11 @@ export print(args: ...) {
 }
 
 export println(args: ...) {
-    let first = true;
     for comptime arg, i in args {
-        if !first {
+        print(arg);
+        if i != args.length - 1 as usize {
             print(" ");
         }
-        first = false;
-        print(arg);
     }
     print("\n");
 }
