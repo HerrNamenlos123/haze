@@ -18,6 +18,10 @@ STATIC: 'static';
 STRUCT: 'struct';
 NONCLONABLE: 'nonclonable';
 CLONABLE: 'clonable';
+
+// Tokens used in expressions
+TRUE: 'true';
+FALSE: 'false';
 TYPE: 'type';
 RETURN: 'return';
 IF: 'if';
@@ -26,15 +30,10 @@ IN: 'in';
 FOR: 'for';
 WHILE: 'while';
 COMPTIME: 'comptime';
-LET: 'let';
-CONST: 'const';
-MUT: 'mut';
-TRUE: 'true';
-FALSE: 'false';
-
+LET: 'let'; CONST: 'const'; MUT: 'mut';
 DOT: '.';
-LCURLY: '{';
-RCURLY: '}';
+LCURLY: '{' -> pushMode(DEFAULT_MODE);
+RCURLY: '}' -> popMode;
 LBRACKET: '[';
 RBRACKET: ']';
 LB: '(';
@@ -45,7 +44,6 @@ RANGLE: '>';
 EQUALS: '=';
 DOUBLEEQUALS: '==';
 NOTEQUALS: '!=';
-
 SEMI: ';';
 COLON: ':';
 COMMA: ',';
@@ -69,10 +67,6 @@ MULEQ: '*=';
 MINUSEQ: '-=';
 DIVEQ: '/=';
 MODEQ: '%=';
-
-STRING_LITERAL
-    : '"' (ESC | ~["\\])* '"'
-    ;
 
 UNIT_INTEGER_LITERAL: (DEC_PART) ('s' | 'ms' | 'us' | 'ns' | 'm' | 'h' | 'd');
 UNIT_FLOAT_LITERAL: (FLOAT_PART) ('s' | 'ms' | 'us' | 'ns' | 'm' | 'h' | 'd');
@@ -111,3 +105,25 @@ fragment DIGIT: [0-9];
 WS: [ \t\r\n]+ -> channel(HIDDEN);
 COMMENT: '//' ~[\r\n]* -> channel(HIDDEN); 
 BLOCK_COMMENT: '/*' .*? '*/' -> channel(HIDDEN);
+
+// ╔═══════════════════════════════════════════════════════════════════════════════╗
+// ║                     S T R I N G S   &   F - S T R I N G S                     ║
+// ╚═══════════════════════════════════════════════════════════════════════════════╝
+
+// ------------------------
+// Main mode (normal code)
+// ------------------------
+STRING_LITERAL: '"' (ESC | ~["\\])* '"' ;
+
+FSTRING_START: 'f"' -> pushMode(InterpolatedString);
+
+mode InterpolatedString;
+
+FSTRING_ESCAPE_OPENING_BRACES: '{{' -> type(FSTRING_GRAPHEME);
+FSTRING_ESCAPE_CLOSING_BRACES: '}}' -> type(FSTRING_GRAPHEME);
+FSTRING_ESCAPE_QUOTE: '\\"' -> type(FSTRING_GRAPHEME);
+FSTRING_EXPR_START: '{' -> type(LCURLY), pushMode(DEFAULT_MODE);
+FSTRING_END: '"' -> popMode;
+FSTRING_EXPR_END: '}' -> popMode;
+FSTRING_GRAPHEME: ~('{' | '"' | '\\');
+

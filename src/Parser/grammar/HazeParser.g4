@@ -84,8 +84,13 @@ literal
     | UNIT_FLOAT_LITERAL                        #FloatUnitLiteral
     | INTEGER_LITERAL                           #IntegerLiteral
     | FLOAT_LITERAL                             #FloatLiteral
+    | interpolatedString                        #FStringLiteral
     | STRING_LITERAL                            #StringConstant
     ;
+
+interpolatedString: FSTRING_START (FSTRING_GRAPHEME | interpolatedStringExpression)* FSTRING_END;
+
+interpolatedStringExpression: LCURLY expr RCURLY;
 
 datatype
     : datatypeFragment (DOT datatypeFragment)*                                  #NamedDatatype

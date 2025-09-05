@@ -1,21 +1,21 @@
 
-import math
-import glDraw
-import glfw
-import gl
+// import math
+// import glDraw
+// import glfw
+// import gl
 
-foo(arena: Arena): Arena& {
-    return arena;
-}
+// foo(arena: Arena): Arena& {
+//     return arena;
+// }
 
-struct Ref<T> {
-    ref: T&;
-}
+// struct Ref<T> {
+//     ref: T&;
+// }
 
 main(): int {
 
     let x = 5;
-    let a = f"Test: {x}";
+    let a = f"Test: {Vec3 {}} other";
 
     // let arena = Arena();
     // let b: Arena& = arena;
