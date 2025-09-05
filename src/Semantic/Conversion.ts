@@ -27,6 +27,8 @@ import {
   type SemanticResult,
 } from "./SemanticSymbols";
 import { serializeDatatype } from "./Serialize";
+import { elaborateExpr, makeElaborationContext, makeStructInstantiation } from "./Elaborate";
+import { Collect, makeSymbol } from "../SymbolCollection/SymbolCollection";
 
 export namespace Conversion {
   export function isSignedInteger(primitive: EPrimitive): boolean {
@@ -764,6 +766,128 @@ export namespace Conversion {
         sr,
         toId
       )}' is known`,
+      sourceloc
+    );
+  }
+
+  export function MakeDefaultValue(
+    sr: SemanticResult,
+    targetTypeId: Semantic.Id,
+    sourceloc: SourceLoc
+  ): Semantic.Id {
+    const targetType = sr.nodes.get(targetTypeId);
+    assert(isType(targetType));
+
+    if (targetType.variant === Semantic.ENode.PrimitiveDatatype) {
+      if (
+        targetType.primitive === EPrimitive.u8 ||
+        targetType.primitive === EPrimitive.u16 ||
+        targetType.primitive === EPrimitive.u32 ||
+        targetType.primitive === EPrimitive.u64 ||
+        targetType.primitive === EPrimitive.i8 ||
+        targetType.primitive === EPrimitive.i16 ||
+        targetType.primitive === EPrimitive.i32 ||
+        targetType.primitive === EPrimitive.i64 ||
+        targetType.primitive === EPrimitive.int
+      ) {
+        return Semantic.addNode(sr, {
+          variant: Semantic.ENode.LiteralExpr,
+          isTemporary: true,
+          literal: {
+            type: targetType.primitive,
+            unit: null,
+            value: 0n,
+          },
+          type: targetTypeId,
+          sourceloc: sourceloc,
+        } satisfies Semantic.LiteralExpr)[1];
+      } else if (
+        targetType.primitive === EPrimitive.f32 ||
+        targetType.primitive === EPrimitive.f64 ||
+        targetType.primitive === EPrimitive.real
+      ) {
+        return Semantic.addNode(sr, {
+          variant: Semantic.ENode.LiteralExpr,
+          isTemporary: true,
+          literal: {
+            type: targetType.primitive,
+            unit: null,
+            value: 0,
+          },
+          type: targetTypeId,
+          sourceloc: sourceloc,
+        } satisfies Semantic.LiteralExpr)[1];
+      } else if (targetType.primitive === EPrimitive.bool) {
+        return Semantic.addNode(sr, {
+          variant: Semantic.ENode.LiteralExpr,
+          isTemporary: true,
+          literal: {
+            type: EPrimitive.bool,
+            value: false,
+          },
+          type: targetTypeId,
+          sourceloc: sourceloc,
+        } satisfies Semantic.LiteralExpr)[1];
+      } else if (targetType.primitive === EPrimitive.null) {
+        return Semantic.addNode(sr, {
+          variant: Semantic.ENode.LiteralExpr,
+          isTemporary: true,
+          literal: {
+            type: EPrimitive.null,
+          },
+          type: targetTypeId,
+          sourceloc: sourceloc,
+        } satisfies Semantic.LiteralExpr)[1];
+      }
+    }
+
+    if (targetType.variant === Semantic.ENode.StructDatatype) {
+      function arraysAreEquivalent(a: string[], b: string[]): boolean {
+        const setA = new Set(a);
+        const setB = new Set(b);
+        if (setA.size !== setB.size) return false;
+        for (const x of setA) if (!setB.has(x)) return false;
+        return true;
+      }
+
+      const requiredMembers = targetType.members.map((m) => {
+        const mVar = sr.nodes.get(m);
+        assert(mVar.variant === Semantic.ENode.VariableSymbol);
+        return mVar.name;
+      });
+      const assignedMembers = targetType.memberDefaultValues.map((m) => m.memberName);
+
+      if (arraysAreEquivalent(requiredMembers, assignedMembers)) {
+        const collectedStruct = sr.cc.nodes.get(targetType.collectedSymbol);
+        assert(collectedStruct.variant === Collect.ENode.StructDefinitionSymbol);
+        // Make an empty struct instantiation and let it handle the default values, since we know they all exist.
+        return makeStructInstantiation(sr, targetTypeId, {
+          blockScope: null,
+          context: makeElaborationContext({
+            currentScope: collectedStruct.structScope,
+            genericsScope: collectedStruct.structScope,
+          }),
+          elaboratedVariables: new Map(),
+          isMonomorphized: false,
+          sourceloc: sourceloc,
+          memberValues: [],
+        })[1];
+      }
+
+      throw new CompilerError(
+        `Default value for type '${serializeDatatype(
+          sr,
+          targetTypeId
+        )}' is requested, but this struct has no default value because not all members specify a default value`,
+        sourceloc
+      );
+    }
+
+    throw new CompilerError(
+      `Default value for type '${serializeDatatype(
+        sr,
+        targetTypeId
+      )}' is requested, but no safe default value is known for that type`,
       sourceloc
     );
   }

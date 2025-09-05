@@ -581,6 +581,109 @@ function lookupAndElaborateStaticStructAccess(
   );
 }
 
+export function makeStructInstantiation(
+  sr: SemanticResult,
+  structId: Semantic.Id,
+  args: {
+    sourceloc: SourceLoc;
+    blockScope: Semantic.BlockScope | null;
+    elaboratedVariables: Map<Collect.Id, Semantic.Id>;
+    isMonomorphized: boolean;
+    memberValues: {
+      name: string;
+      value: Collect.Id;
+    }[];
+    context: ElaborationContext;
+  }
+): [Semantic.Expression, Semantic.Id] {
+  const struct = sr.nodes.get(structId);
+  assert(struct.variant === Semantic.ENode.StructDatatype);
+
+  let remainingMembers = struct.members.map((mId) => {
+    const m = sr.nodes.get(mId);
+    assert(m.variant === Semantic.ENode.VariableSymbol);
+    return m.name;
+  });
+  const assignedMembers: string[] = [];
+  const assign: {
+    name: string;
+    value: Semantic.Id;
+  }[] = [];
+  for (const m of args.memberValues) {
+    const variableId = struct.members.find((mmId) => {
+      const mm = sr.nodes.get(mmId);
+      assert(mm.variant === Semantic.ENode.VariableSymbol);
+      return mm.name === m.name;
+    });
+
+    if (!variableId) {
+      throw new CompilerError(
+        `${serializeDatatype(sr, structId)} does not have a member named '${m.name}'`,
+        args.sourceloc
+      );
+    }
+    const variable = sr.nodes.get(variableId);
+    assert(variable.variant === Semantic.ENode.VariableSymbol);
+
+    if (assignedMembers.includes(m.name)) {
+      throw new CompilerError(`Cannot assign member ${m.name} twice`, args.sourceloc);
+    }
+
+    const [e, eId] = elaborateExpr(sr, m.value, {
+      context: args.context,
+      scope: args.context.currentScope,
+      blockScope: args.blockScope,
+      elaboratedVariables: args.elaboratedVariables,
+      gonnaInstantiateStructWithType: variable.type || undefined,
+      isMonomorphized: args.isMonomorphized,
+    });
+
+    assert(variable.type);
+    const convertedExprId = Conversion.MakeConversion(
+      sr,
+      eId,
+      variable.type,
+      args.blockScope?.constraints || [],
+      args.sourceloc,
+      Conversion.Mode.Implicit
+    );
+
+    remainingMembers = remainingMembers.filter((mm) => mm !== m.name);
+    assign.push({
+      value: convertedExprId,
+      name: m.name,
+    });
+    assignedMembers.push(m.name);
+  }
+
+  for (const m of remainingMembers) {
+    const defaultValue = struct.memberDefaultValues.find((v) => v.memberName === m);
+    if (defaultValue) {
+      remainingMembers = remainingMembers.filter((mm) => mm !== m);
+      assign.push({
+        name: m,
+        value: defaultValue.value,
+      });
+      assignedMembers.push(m);
+    }
+  }
+
+  if (remainingMembers.length > 0) {
+    throw new CompilerError(
+      `Members ${remainingMembers.join(", ")} were not assigned and no default value is known`,
+      args.sourceloc
+    );
+  }
+
+  return Semantic.addNode(sr, {
+    variant: Semantic.ENode.StructInstantiationExpr,
+    assign: assign,
+    type: structId,
+    sourceloc: args.sourceloc,
+    isTemporary: true,
+  });
+}
+
 export function elaborateFunctionSignature(
   sr: SemanticResult,
   functionSymbolId: Collect.Id,
@@ -2046,95 +2149,13 @@ export function elaborateExpr(
         );
       }
 
-      let remainingMembers = struct.members.map((mId) => {
-        const m = sr.nodes.get(mId);
-        assert(m.variant === Semantic.ENode.VariableSymbol);
-        return m.name;
-      });
-      const assignedMembers: string[] = [];
-      const assign: {
-        name: string;
-        value: Semantic.Id;
-      }[] = [];
-      for (const m of expr.members) {
-        const variableId = struct.members.find((mmId) => {
-          const mm = sr.nodes.get(mmId);
-          assert(mm.variant === Semantic.ENode.VariableSymbol);
-          return mm.name === m.name;
-        });
-
-        if (!variableId) {
-          throw new CompilerError(
-            `${serializeDatatype(sr, structId)} does not have a member named '${m.name}'`,
-            expr.sourceloc
-          );
-        }
-        const variable = sr.nodes.get(variableId);
-        assert(variable.variant === Semantic.ENode.VariableSymbol);
-
-        if (assignedMembers.includes(m.name)) {
-          throw new CompilerError(`Cannot assign member ${m.name} twice`, expr.sourceloc);
-        }
-
-        const [e, eId] = elaborateExpr(sr, m.value, {
-          context: args.context,
-          scope: args.context.currentScope,
-          blockScope: args.blockScope,
-          elaboratedVariables: args.elaboratedVariables,
-          gonnaInstantiateStructWithType: variable.type || undefined,
-          isMonomorphized: args.isMonomorphized,
-        });
-
-        assert(variable.type);
-        const convertedExprId = Conversion.MakeConversion(
-          sr,
-          eId,
-          variable.type,
-          args.blockScope?.constraints || [],
-          expr.sourceloc,
-          Conversion.Mode.Implicit
-        );
-
-        remainingMembers = remainingMembers.filter((mm) => mm !== m.name);
-        assign.push({
-          value: convertedExprId,
-          name: m.name,
-        });
-        assignedMembers.push(m.name);
-      }
-
-      if (struct.name === "Result") {
-        // Special exception for standard library Result<> Type, until unions are implemented properly
-        remainingMembers = remainingMembers.filter(
-          (mm) => !["successValue", "errorValue"].includes(mm)
-        );
-      }
-
-      for (const m of remainingMembers) {
-        const defaultValue = struct.memberDefaultValues.find((v) => v.memberName === m);
-        if (defaultValue) {
-          remainingMembers = remainingMembers.filter((mm) => mm !== m);
-          assign.push({
-            name: m,
-            value: defaultValue.value,
-          });
-          assignedMembers.push(m);
-        }
-      }
-
-      if (remainingMembers.length > 0) {
-        throw new CompilerError(
-          `Members ${remainingMembers.join(", ")} were not assigned and no default value is known`,
-          expr.sourceloc
-        );
-      }
-
-      return Semantic.addNode(sr, {
-        variant: Semantic.ENode.StructInstantiationExpr,
-        assign: assign,
-        type: structId,
+      return makeStructInstantiation(sr, structId, {
+        blockScope: args.blockScope,
+        context: args.context,
+        elaboratedVariables: args.elaboratedVariables,
+        isMonomorphized: args.isMonomorphized,
         sourceloc: expr.sourceloc,
-        isTemporary: true,
+        memberValues: expr.members,
       });
     }
 
@@ -2537,39 +2558,12 @@ export function elaborateStatement(
         }
       }
 
-      const valueId =
-        (!uninitialized &&
-          s.value &&
-          elaborateExpr(sr, s.value, {
-            context: args.context,
-            scope: s.owningScope,
-            elaboratedVariables: args.elaboratedVariables,
-            blockScope: args.blockScope,
-            isMonomorphized: args.isMonomorphized,
-          })[1]) ||
-        undefined;
-      const value = valueId && asExpression(sr.nodes.get(valueId));
-
-      if (value?.variant === Semantic.ENode.DatatypeAsValueExpr) {
-        throw new CompilerError(
-          `A struct/namespace datatype cannot be written into a variable`,
-          value.sourceloc
-        );
-      }
-
       const collectedVariableSymbol = sr.cc.nodes.get(s.variableSymbol);
       assert(collectedVariableSymbol.variant === Collect.ENode.VariableSymbol);
       const variableSymbolId = args.elaboratedVariables.get(s.variableSymbol);
       assert(variableSymbolId);
       const variableSymbol = sr.nodes.get(variableSymbolId);
       assert(variableSymbol.variant === Semantic.ENode.VariableSymbol);
-
-      if ((!valueId || !value) && !uninitialized) {
-        throw new CompilerError(
-          `Variable '${variableSymbol.name}' requires an initialization value`,
-          s.sourceloc
-        );
-      }
 
       if (collectedVariableSymbol.type) {
         variableSymbol.type = lookupAndElaborateDatatype(sr, {
@@ -2582,7 +2576,53 @@ export function elaborateStatement(
           }),
         });
         assert(variableSymbol.type);
-      } else {
+      }
+
+      let valueId: Semantic.Id | undefined;
+      if (s.value) {
+        const sValue = sr.cc.nodes.get(s.value);
+        if (sValue.variant === Collect.ENode.SymbolValueExpr && sValue.name === "default") {
+          if (sValue.genericArgs.length !== 0) {
+            throw new CompilerError(`'default' initializer cannot take any generics`, s.sourceloc);
+          }
+          if (!variableSymbol.type) {
+            throw new CompilerError(
+              `Variable initializations with a 'default' initializer require an explicit datatype to be specified`,
+              s.sourceloc
+            );
+          }
+          valueId = Conversion.MakeDefaultValue(sr, variableSymbol.type, s.sourceloc);
+        } else {
+          valueId =
+            (!uninitialized &&
+              s.value &&
+              elaborateExpr(sr, s.value, {
+                context: args.context,
+                scope: s.owningScope,
+                elaboratedVariables: args.elaboratedVariables,
+                blockScope: args.blockScope,
+                isMonomorphized: args.isMonomorphized,
+              })[1]) ||
+            undefined;
+        }
+      }
+      const value = valueId && asExpression(sr.nodes.get(valueId));
+
+      if (value?.variant === Semantic.ENode.DatatypeAsValueExpr) {
+        throw new CompilerError(
+          `A struct/namespace datatype cannot be written into a variable`,
+          value.sourceloc
+        );
+      }
+
+      if ((!valueId || !value) && !uninitialized) {
+        throw new CompilerError(
+          `Variable '${variableSymbol.name}' requires an initialization value`,
+          s.sourceloc
+        );
+      }
+
+      if (!variableSymbol.type) {
         variableSymbol.type = value?.type || null;
       }
       assert(variableSymbol.type);
@@ -3232,26 +3272,6 @@ export function elaborateTopLevelSymbol(
   }
 ): Semantic.Id[] {
   const node = sr.cc.nodes.get(nodeId);
-  // const elaborateParentSymbol = (
-  //   symbol:
-  //     | ASTFunctionDefinition
-  //     | ASTNamespaceDefinition
-  //     | ASTGlobalVariableDefinition
-  //     | ASTStructDefinition
-  // ) => {
-  //   const parent =
-  //     (symbol._collect.definedInNamespaceOrStruct &&
-  //       elaborate(sr, {
-  //         sourceSymbol: getSymbol(sr.cc, symbol._collect.definedInNamespaceOrStruct),
-  //         context: args.context,
-  //       })) ||
-  //     null;
-  //   assert(
-  //     !parent || parent.variant === "StructDatatype" || parent.variant === "NamespaceDatatype"
-  //   );
-  //   return parent;
-  // };
-
   switch (node.variant) {
     // =================================================================================================================
     // =================================================================================================================
@@ -3352,15 +3372,6 @@ export function elaborateTopLevelSymbol(
         undefined as Semantic.Expression | undefined,
         null as Semantic.Id | null,
       ];
-      if (node.value) {
-        [elaboratedValue, elaboratedValueId] = elaborateExpr(sr, node.value, {
-          scope: args.context.currentScope,
-          elaboratedVariables: new Map(),
-          context: args.context,
-          blockScope: null,
-          isMonomorphized: false,
-        });
-      }
 
       const [variableSymbolId] = elaborateTopLevelSymbol(sr, node.variableSymbol, {
         context: args.context,
@@ -3374,6 +3385,28 @@ export function elaborateTopLevelSymbol(
       }
       assert(variableSymbol.type);
       assert(isTypeConcrete(sr, variableSymbol.type));
+
+      if (node.value) {
+        const value = sr.cc.nodes.get(node.value);
+        if (value.variant === Collect.ENode.SymbolValueExpr && value.name === "default") {
+          if (value.genericArgs.length !== 0) {
+            throw new CompilerError(
+              `'default' initializer cannot take any generics`,
+              node.sourceloc
+            );
+          }
+          elaboratedValueId = Conversion.MakeDefaultValue(sr, variableSymbol.type, node.sourceloc);
+          elaboratedValue = asExpression(sr.nodes.get(elaboratedValueId));
+        } else {
+          [elaboratedValue, elaboratedValueId] = elaborateExpr(sr, node.value, {
+            scope: args.context.currentScope,
+            elaboratedVariables: new Map(),
+            context: args.context,
+            blockScope: null,
+            isMonomorphized: false,
+          });
+        }
+      }
 
       if (variableSymbol.comptime) {
         assert(elaboratedValueId);

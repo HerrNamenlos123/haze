@@ -21,6 +21,7 @@ import {
 } from "./SemanticSymbols";
 import { EClonability, EExternLanguage, EVariableMutability } from "../shared/AST";
 import { serializeDatatype, serializeNestedName } from "./Serialize";
+import { Conversion } from "./Conversion";
 
 export function makeFunctionDatatypeAvailable(
   sr: SemanticResult,
@@ -334,16 +335,36 @@ export function instantiateAndElaborateStruct(
           (v) => v.name === symbol.name
         );
         if (defaultValue) {
-          struct.memberDefaultValues.push({
-            memberName: variable.name,
-            value: elaborateExpr(sr, defaultValue.value, {
+          const value = sr.cc.nodes.get(defaultValue.value);
+          let defaultExprId: Semantic.Id;
+          if (value.variant === Collect.ENode.SymbolValueExpr && value.name === "default") {
+            if (value.genericArgs.length !== 0) {
+              throw new CompilerError(
+                `'default' initializer cannot take any generics`,
+                symbol.sourceloc
+              );
+            }
+            defaultExprId = Conversion.MakeDefaultValue(sr, typeId, symbol.sourceloc);
+          } else {
+            defaultExprId = elaborateExpr(sr, defaultValue.value, {
               context: args.context,
               elaboratedVariables: new Map(),
               isMonomorphized: struct.isMonomorphized,
               gonnaInstantiateStructWithType: variable.type,
               scope: definedStructType.structScope,
               blockScope: null,
-            })[1],
+            })[1];
+          }
+          struct.memberDefaultValues.push({
+            memberName: variable.name,
+            value: Conversion.MakeConversion(
+              sr,
+              defaultExprId,
+              typeId,
+              [],
+              symbol.sourceloc,
+              Conversion.Mode.Implicit
+            ),
           });
         }
         if (struct.clonability === EClonability.Unknown) {

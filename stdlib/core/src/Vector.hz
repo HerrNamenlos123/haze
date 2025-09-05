@@ -1,7 +1,7 @@
 
 export struct _Vec2<T> {
-  x: T;
-  y: T;
+  x: T = default;
+  y: T = default;
 
   constructor(x: T, y: T): _Vec2<T> {
     return Vec2 {
@@ -48,9 +48,9 @@ export type Vec2i = _Vec2<int>;
 export type Vec2f = _Vec2<f32>;
 
 export struct _Vec3<T> {
-  x: T;
-  y: T;
-  z: T;
+  x: T = default;
+  y: T = default;
+  z: T = default;
 
   constructor(x: T, y: T, z: T): _Vec3<T> {
     return _Vec3<T> {
@@ -98,10 +98,10 @@ export type Vec3i = _Vec3<int>;
 export type Vec3f = _Vec3<f32>;
 
 export struct _Vec4<T> {
-  x: T;
-  y: T;
-  z: T;
-  w: T;
+  x: T = default;
+  y: T = default;
+  z: T = default;
+  w: T = default;
 
   constructor(x: T, y: T, z: T, w: T): _Vec4<T> {
     return _Vec4<T> {
