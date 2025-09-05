@@ -713,15 +713,6 @@ export namespace Conversion {
       })[1];
     }
 
-    // if (
-    //   fromType.variant === Semantic.ENode.PrimitiveDatatype &&
-    //   to.variant === Semantic.ENode.PrimitiveDatatype &&
-    //   fromType.primitive === EPrimitive.int &&
-    //   to.primitive === EPrimitive.real
-    // ) {
-    // }
-    console.log("TODO: Implement conversion from int to real if value is known and is lossless");
-
     // Pointer conversions
     if (
       fromType.variant === Semantic.ENode.PointerDatatype &&

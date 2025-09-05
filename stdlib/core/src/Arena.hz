@@ -1,6 +1,7 @@
 
-namespace C {
+namespace builtin {
     extern "C" malloc(size: usize): void*;
+    extern "C" memset(ptr: void*, value: u8, count: usize): void*;
     // extern "C" realloc(ptr: void*): void*;
     extern "C" free(ptr: void*): void;
 }
@@ -25,7 +26,8 @@ export struct nonclonable Arena {
 
     __newChunk(size: usize): ArenaChunk* {
         let chunk_size = max<usize>(size, 4096); // default chunk size
-        let chunk_mem = C.malloc(sizeof(ArenaChunk) + chunk_size) as ArenaChunk*;
+        let chunk_mem = builtin.malloc(sizeof(ArenaChunk) + chunk_size) as ArenaChunk*;
+        builtin.memset(chunk_mem, 0, chunk_size);
         (*chunk_mem).next = nullptr;
         (*chunk_mem).size = chunk_size;
         (*chunk_mem).used = 0;
@@ -60,7 +62,7 @@ export struct nonclonable Arena {
         let chunk = this.first;
         while chunk != nullptr {
             let next = (*chunk).next;
-            C.free(chunk as void*);
+            builtin.free(chunk as void*);
             chunk = next;
         }
         this.first = nullptr;
