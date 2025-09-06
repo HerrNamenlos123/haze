@@ -3,6 +3,7 @@ import { Conversion } from "../Semantic/Conversion";
 import {
   BinaryOperationToString,
   EBinaryOperation,
+  EDatatypeMutability,
   EIncrOperation,
   EUnaryOperation,
   UnaryOperationToString,
@@ -118,19 +119,26 @@ class CodeGenerator {
     this.includeHeader("stdlib.h");
     this.includeHeader("limits.h");
 
-    const sortedLoweredTypes: Lowered.TypeDef[] = [];
+    const sortedLoweredTypeDefs: (Lowered.TypeDef | Lowered.TypeUse)[] = [];
 
-    this.sortTypeDefinitions(sortedLoweredTypes);
+    this.sortTypeDefs(sortedLoweredTypeDefs);
 
     for (const decl of this.lr.cInjections) {
       this.out.cDecls.writeLine(decl);
     }
 
+    console.log([
+      ...this.lr.loweredTypeUses.values().map((v) => {
+        const a = this.lr.typeUseNodes.get(v);
+        return a;
+      }),
+    ]);
+
     for (const [id, symbol] of this.lr.loweredFunctions) {
       this.emitFunction(symbol);
     }
 
-    for (const symbol of sortedLoweredTypes) {
+    for (const symbol of sortedLoweredTypeDefs) {
       if (symbol.variant === Lowered.ENode.PrimitiveDatatype) {
         if (symbol.primitive === EPrimitive.c_str) {
           this.out.type_declarations.writeLine(`typedef const char* _H5c_str;`);
@@ -191,7 +199,7 @@ class CodeGenerator {
         this.out.type_definitions.writeLine(`uint64_t length;`);
         this.out.type_definitions.popIndent().writeLine(`};`);
       } else if (symbol.variant === Lowered.ENode.FunctionDatatype) {
-        this.out.type_definitions.writeLine(
+        this.out.type_declarations.writeLine(
           `typedef ${this.mangleTypeUse(symbol.returnType)} (*${this.mangleTypeDef(
             symbol
           )})(${symbol.parameters.map((p) => `${this.mangleTypeUse(p)}`).join(", ")});`
@@ -208,7 +216,15 @@ class CodeGenerator {
         }
         this.out.type_definitions.writeLine(`${this.mangleTypeDef(symbol.functionType)} fn;`);
         this.out.type_definitions.popIndent().writeLine(`};`).writeLine();
+      } else if (symbol.variant === Lowered.ENode.TypeUse) {
+        if (symbol.mutability !== EDatatypeMutability.Default) {
+          const constWord = symbol.mutability === EDatatypeMutability.Const ? "const " : "";
+          this.out.type_declarations.writeLine(
+            `typedef ${constWord}${this.mangleTypeDef(symbol.type)} ${this.mangleTypeUse(symbol)};`
+          );
+        }
       } else {
+        assert(false);
       }
     }
 
@@ -217,16 +233,14 @@ class CodeGenerator {
     }
   }
 
-  sortTypeDefinitions(sortedLoweredTypes: Lowered.TypeDef[]) {
-    const appliedTypes = new Set<Lowered.TypeDef>();
+  sortTypeDefs(sortedLoweredTypes: (Lowered.TypeDef | Lowered.TypeUse)[]) {
+    const appliedTypes = new Set<Lowered.TypeDef | Lowered.TypeUse>();
 
     // This function processes the type in the sense that it goes over all types that this type depends on,
     // and if there is a direct relationship, then that type is processed, which sorts it first.
     // This is required because C has a very strict requirement on ordering of struct definitions that depend on another
-    const processType = (typeId: Lowered.TypeDefId) => {
+    const processTypeDef = (typeId: Lowered.TypeDefId) => {
       const type = this.lr.typeDefNodes.get(typeId);
-
-      const conv = (a: Lowered.TypeUseId) => this.lr.typeUseNodes.get(a).type;
 
       if (appliedTypes.has(type)) {
         return;
@@ -235,13 +249,13 @@ class CodeGenerator {
       if (type.variant === Lowered.ENode.FunctionDatatype) {
         appliedTypes.add(type);
         for (const p of type.parameters) {
-          processType(conv(p));
+          processTypeUse(p);
         }
-        processType(conv(type.returnType));
+        processTypeUse(type.returnType);
         sortedLoweredTypes.push(type);
       } else if (type.variant === Lowered.ENode.CallableDatatype) {
         appliedTypes.add(type);
-        processType(type.functionType);
+        processTypeDef(type.functionType);
         sortedLoweredTypes.push(type);
       } else if (type.variant === Lowered.ENode.StructDatatype) {
         appliedTypes.add(type);
@@ -253,7 +267,7 @@ class CodeGenerator {
             typeDef.variant !== Lowered.ENode.PointerDatatype &&
             typeDef.variant !== Lowered.ENode.ReferenceDatatype
           ) {
-            processType(conv(m.type));
+            processTypeUse(m.type);
           }
         }
         sortedLoweredTypes.push(type);
@@ -262,31 +276,43 @@ class CodeGenerator {
         sortedLoweredTypes.push(type);
       } else if (type.variant === Lowered.ENode.PointerDatatype) {
         appliedTypes.add(type);
-        processType(conv(type.pointee));
+        processTypeUse(type.pointee);
         sortedLoweredTypes.push(type);
       } else if (type.variant === Lowered.ENode.ReferenceDatatype) {
         appliedTypes.add(type);
-        processType(conv(type.referee));
+        processTypeUse(type.referee);
         sortedLoweredTypes.push(type);
       } else if (type.variant === Lowered.ENode.LiteralValueDatatype) {
         appliedTypes.add(type);
         sortedLoweredTypes.push(type);
       } else if (type.variant === Lowered.ENode.ArrayDatatype) {
         appliedTypes.add(type);
-        processType(conv(type.datatype));
+        processTypeUse(type.datatype);
         sortedLoweredTypes.push(type);
       } else if (type.variant === Lowered.ENode.SliceDatatype) {
         appliedTypes.add(type);
-        processType(conv(type.datatype));
+        processTypeUse(type.datatype);
         sortedLoweredTypes.push(type);
       } else {
         assert(false);
       }
     };
 
-    // Now define all other types
+    const processTypeUse = (typeId: Lowered.TypeUseId) => {
+      const type = this.lr.typeUseNodes.get(typeId);
+      if (appliedTypes.has(type)) {
+        return;
+      }
+      appliedTypes.add(type);
+      processTypeDef(type.type);
+      sortedLoweredTypes.push(type);
+    };
+
     for (const [id, t] of this.lr.loweredTypeDefs) {
-      processType(t);
+      processTypeDef(t);
+    }
+    for (const [id, t] of this.lr.loweredTypeUses) {
+      processTypeUse(t);
     }
   }
 
@@ -332,21 +358,21 @@ class CodeGenerator {
   }
 
   mangleTypeDef(type: Lowered.TypeDef | Lowered.TypeDefId): string {
-    if (!("variant" in type)) {
+    if (typeof type !== "object") {
       type = this.lr.typeDefNodes.get(type);
     }
     return this.mangleName(type.name);
   }
 
   mangleTypeUse(type: Lowered.TypeUse | Lowered.TypeUseId): string {
-    if (!("type" in type)) {
+    if (typeof type !== "object") {
       type = this.lr.typeUseNodes.get(type);
     }
     return this.mangleName(type.name);
   }
 
   mangleFunctionSymbol(func: Lowered.FunctionSymbol | Lowered.FunctionId): string {
-    if (!("variant" in func)) {
+    if (typeof func !== "object") {
       func = this.lr.functionNodes.get(func);
     }
     return this.mangleName(func.name);
@@ -446,8 +472,6 @@ class CodeGenerator {
   ) {
     const left = this.lr.exprNodes.get(leftId);
     const right = this.lr.exprNodes.get(rightId);
-
-    assert(left.type === right.type);
 
     let opStr = "";
     switch (operation) {
@@ -621,7 +645,9 @@ class CodeGenerator {
       case Lowered.ENode.ReturnStatement: {
         if (statement.sourceloc && this.lr.sr.cc.config.includeSourceloc) {
           outWriter.writeLine(
-            `#line ${statement.sourceloc.line} ${JSON.stringify(statement.sourceloc.filename)}`
+            `#line ${statement.sourceloc.start.line} ${JSON.stringify(
+              statement.sourceloc.filename
+            )}`
           );
         }
         if (statement.expr) {
@@ -637,10 +663,12 @@ class CodeGenerator {
       case Lowered.ENode.VariableStatement: {
         if (statement.sourceloc && this.lr.sr.cc.config.includeSourceloc) {
           outWriter.writeLine(
-            `#line ${statement.sourceloc.line} ${JSON.stringify(statement.sourceloc.filename)}`
+            `#line ${statement.sourceloc.start.line} ${JSON.stringify(
+              statement.sourceloc.filename
+            )}`
           );
         }
-        outWriter.write(`${this.mangleTypeUse(statement.type)} ${statement.name}`);
+        outWriter.write(`${this.mangleTypeUse(statement.type)} ${this.mangleName(statement.name)}`);
 
         if (statement.value) {
           const exprWriter = this.emitExpr(statement.value);
@@ -664,7 +692,9 @@ class CodeGenerator {
       case Lowered.ENode.ExprStatement: {
         if (statement.sourceloc && this.lr.sr.cc.config.includeSourceloc) {
           outWriter.writeLine(
-            `#line ${statement.sourceloc.line} ${JSON.stringify(statement.sourceloc.filename)}`
+            `#line ${statement.sourceloc.start.line} ${JSON.stringify(
+              statement.sourceloc.filename
+            )}`
           );
         }
         const exprWriter = this.emitExpr(statement.expr);
@@ -676,7 +706,9 @@ class CodeGenerator {
       case Lowered.ENode.InlineCStatement: {
         if (statement.sourceloc && this.lr.sr.cc.config.includeSourceloc) {
           outWriter.writeLine(
-            `#line ${statement.sourceloc.line} ${JSON.stringify(statement.sourceloc.filename)}`
+            `#line ${statement.sourceloc.start.line} ${JSON.stringify(
+              statement.sourceloc.filename
+            )}`
           );
         }
         outWriter.writeLine(statement.value);
@@ -686,7 +718,9 @@ class CodeGenerator {
       case Lowered.ENode.WhileStatement: {
         if (statement.sourceloc && this.lr.sr.cc.config.includeSourceloc) {
           outWriter.writeLine(
-            `#line ${statement.sourceloc.line} ${JSON.stringify(statement.sourceloc.filename)}`
+            `#line ${statement.sourceloc.start.line} ${JSON.stringify(
+              statement.sourceloc.filename
+            )}`
           );
         }
         const exprWriter = this.emitExpr(statement.condition);
@@ -702,7 +736,9 @@ class CodeGenerator {
       case Lowered.ENode.BlockScopeStatement: {
         if (statement.sourceloc && this.lr.sr.cc.config.includeSourceloc) {
           outWriter.writeLine(
-            `#line ${statement.sourceloc.line} ${JSON.stringify(statement.sourceloc.filename)}`
+            `#line ${statement.sourceloc.start.line} ${JSON.stringify(
+              statement.sourceloc.filename
+            )}`
           );
         }
         outWriter.writeLine(`{`).pushIndent();
@@ -716,7 +752,9 @@ class CodeGenerator {
       case Lowered.ENode.IfStatement: {
         if (statement.sourceloc && this.lr.sr.cc.config.includeSourceloc) {
           outWriter.writeLine(
-            `#line ${statement.sourceloc.line} ${JSON.stringify(statement.sourceloc.filename)}`
+            `#line ${statement.sourceloc.start.line} ${JSON.stringify(
+              statement.sourceloc.filename
+            )}`
           );
         }
         const exprWriter = this.emitExpr(statement.condition);

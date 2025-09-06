@@ -1372,7 +1372,7 @@ export namespace Semantic {
 
       if (!variableId) {
         throw new CompilerError(
-          `${serializeTypeUseFromDef(sr, structId)} does not have a member named '${m.name}'`,
+          `${serializeTypeDef(sr, structId)} does not have a member named '${m.name}'`,
           args.sourceloc
         );
       }
@@ -4962,71 +4962,7 @@ export namespace Semantic {
 
   export function serializeTypeUse(sr: SemanticResult, datatypeId: Semantic.TypeUseId): string {
     const datatype = sr.typeUseNodes.get(datatypeId);
-    return serializeMutability(datatype.mutability) + serializeTypeUseFromDef(sr, datatype.type);
-  }
-
-  export function serializeTypeUseFromDef(
-    sr: SemanticResult,
-    datatypeId: Semantic.TypeDefId
-  ): string {
-    const datatype = sr.typeDefNodes.get(datatypeId);
-
-    switch (datatype.variant) {
-      case Semantic.ENode.PrimitiveDatatype:
-        return primitiveToString(datatype.primitive);
-
-      case Semantic.ENode.PointerDatatype:
-        return "*" + serializeTypeUse(sr, datatype.pointee);
-
-      case Semantic.ENode.ReferenceDatatype:
-        return "&" + serializeTypeUse(sr, datatype.referee);
-
-      case Semantic.ENode.GenericParameterDatatype:
-        return datatype.name;
-
-      case Semantic.ENode.StructDatatype:
-        return serializeFullDatatypeName(sr, datatypeId);
-
-      case Semantic.ENode.FunctionDatatype:
-        return `(${datatype.parameters.map((p) => serializeTypeUse(sr, p)).join(", ")}${
-          datatype.vararg ? ", ..." : ""
-        }) => ${serializeTypeUse(sr, datatype.returnType)}`;
-
-      case Semantic.ENode.CallableDatatype:
-        return `Callable<${serializeTypeUseFromDef(sr, datatype.functionType)}>(this=${
-          datatype.thisExprType ? serializeTypeUse(sr, datatype.thisExprType) : ""
-        })`;
-
-      case Semantic.ENode.NamespaceDatatype:
-        return serializeFullDatatypeName(sr, datatypeId);
-
-      case Semantic.ENode.LiteralValueDatatype:
-        return serializeLiteralValue(datatype.literal);
-
-      case Semantic.ENode.ArrayDatatype:
-        return `[${datatype.length}]${serializeTypeUse(sr, datatype.datatype)}`;
-
-      case Semantic.ENode.SliceDatatype:
-        return `${serializeMutability(datatype.datatype)}[]${serializeTypeUse(
-          sr,
-          datatype.datatype
-        )}`;
-
-      case Semantic.ENode.ParameterPackDatatype:
-        if (datatype.parameters === null) {
-          return "...";
-        } else {
-          return `Pack[${datatype.parameters.map((p) => {
-            const param = sr.symbolNodes.get(p);
-            assert(param.variant === Semantic.ENode.VariableSymbol);
-            assert(param.type);
-            return `${param.name}: ${serializeTypeUse(sr, param.type)}`;
-          })}]`;
-        }
-
-      default:
-        throw new InternalError("Not handled: ");
-    }
+    return serializeMutability(datatype.mutability) + serializeTypeDef(sr, datatype.type);
   }
 
   export function serializeLiteralValue(value: LiteralValue) {
@@ -5060,7 +4996,7 @@ export namespace Semantic {
     };
     if (type.variant === Semantic.ENode.StructDatatype && type.generics.length > 0) {
       current.pretty += `<${type.generics.map((g) => serializeTypeUse(sr, g)).join(", ")}>`;
-      current.mangled += `I${type.generics.map((g) => mangleTypeUse(sr, g)).join("")}E`;
+      current.mangled += `I${type.generics.map((g) => mangleTypeUse(sr, g).name).join("")}E`;
     }
 
     let fragments = [current];
@@ -5083,7 +5019,7 @@ export namespace Semantic {
     };
     if (symbol.variant === Semantic.ENode.FunctionSymbol && symbol.generics.length > 0) {
       current.pretty += `<${symbol.generics.map((g) => serializeTypeUse(sr, g)).join(", ")}>`;
-      current.mangled += `I${symbol.generics.map((g) => mangleTypeUse(sr, g)).join("")}E`;
+      current.mangled += `I${symbol.generics.map((g) => mangleTypeUse(sr, g).name).join("")}E`;
     }
 
     let fragments = [current];
@@ -5093,22 +5029,72 @@ export namespace Semantic {
     return fragments;
   }
 
-  export function serializeFullDatatypeName(sr: SemanticResult, typeId: Semantic.TypeDefId) {
-    const symbol = sr.typeDefNodes.get(typeId);
-    assert(
-      symbol.variant === Semantic.ENode.StructDatatype ||
-        symbol.variant === Semantic.ENode.NamespaceDatatype
-    );
+  export function serializeTypeDef(sr: SemanticResult, datatypeId: Semantic.TypeDefId): string {
+    const datatype = sr.typeDefNodes.get(datatypeId);
 
-    if (
-      symbol.variant === Semantic.ENode.StructDatatype &&
-      symbol.extern === EExternLanguage.Extern_C
-    ) {
-      return symbol.name;
+    switch (datatype.variant) {
+      case Semantic.ENode.PrimitiveDatatype:
+        return primitiveToString(datatype.primitive);
+
+      case Semantic.ENode.PointerDatatype:
+        return "*" + serializeTypeUse(sr, datatype.pointee);
+
+      case Semantic.ENode.ReferenceDatatype:
+        return "&" + serializeTypeUse(sr, datatype.referee);
+
+      case Semantic.ENode.GenericParameterDatatype:
+        return datatype.name;
+
+      case Semantic.ENode.StructDatatype:
+        if (datatype.extern === EExternLanguage.Extern_C) {
+          return datatype.name;
+        }
+        return getNamespaceChainFromDatatype(sr, datatypeId)
+          .map((n) => n.pretty)
+          .join(".");
+
+      case Semantic.ENode.FunctionDatatype:
+        return `(${datatype.parameters.map((p) => serializeTypeUse(sr, p)).join(", ")}${
+          datatype.vararg ? ", ..." : ""
+        }) => ${serializeTypeUse(sr, datatype.returnType)}`;
+
+      case Semantic.ENode.CallableDatatype:
+        return `Callable<${serializeTypeDef(sr, datatype.functionType)}>(this=${
+          datatype.thisExprType ? serializeTypeUse(sr, datatype.thisExprType) : ""
+        })`;
+
+      case Semantic.ENode.NamespaceDatatype:
+        return getNamespaceChainFromDatatype(sr, datatypeId)
+          .map((n) => n.pretty)
+          .join(".");
+
+      case Semantic.ENode.LiteralValueDatatype:
+        return serializeLiteralValue(datatype.literal);
+
+      case Semantic.ENode.ArrayDatatype:
+        return `[${datatype.length}]${serializeTypeUse(sr, datatype.datatype)}`;
+
+      case Semantic.ENode.SliceDatatype:
+        return `${serializeMutability(datatype.datatype)}[]${serializeTypeUse(
+          sr,
+          datatype.datatype
+        )}`;
+
+      case Semantic.ENode.ParameterPackDatatype:
+        if (datatype.parameters === null) {
+          return "...";
+        } else {
+          return `Pack[${datatype.parameters.map((p) => {
+            const param = sr.symbolNodes.get(p);
+            assert(param.variant === Semantic.ENode.VariableSymbol);
+            assert(param.type);
+            return `${param.name}: ${serializeTypeUse(sr, param.type)}`;
+          })}]`;
+        }
+
+      default:
+        throw new InternalError("Not handled: ");
     }
-
-    const names = getNamespaceChainFromDatatype(sr, typeId);
-    return names.map((n) => n.pretty).join(".");
   }
 
   export function serializeFullSymbolName(sr: SemanticResult, symbolId: Semantic.SymbolId) {
@@ -5140,15 +5126,25 @@ export namespace Semantic {
       };
     }
 
+    let functionParameterPart = "";
+    if (symbol.variant === Semantic.ENode.FunctionSymbol) {
+      const ftype = sr.typeDefNodes.get(symbol.type);
+      assert(ftype.variant === Semantic.ENode.FunctionDatatype);
+      functionParameterPart += ftype.parameters.map((p) => mangleTypeUse(sr, p).name).join("");
+      if (ftype.vararg) {
+        functionParameterPart += "V";
+      }
+    }
+
     const names = getNamespaceChainFromSymbol(sr, symbolId);
     if (names.length === 1) {
       return {
-        name: names[0].mangled,
+        name: names[0].mangled + functionParameterPart,
         wasMangled: true,
       };
     } else {
       return {
-        name: `N${names.map((n) => n.mangled).join("")}E`,
+        name: `N${names.map((n) => n.mangled).join("")}E` + functionParameterPart,
         wasMangled: true,
       };
     }
@@ -5169,7 +5165,7 @@ export namespace Semantic {
 
   export function makeNameSetTypeDef(sr: SemanticResult, typeDefId: Semantic.TypeDefId): NameSet {
     const mangled = mangleTypeDef(sr, typeDefId);
-    const pretty = serializeFullDatatypeName(sr, typeDefId);
+    const pretty = serializeTypeDef(sr, typeDefId);
     return {
       mangledName: mangled.name,
       prettyName: pretty,
@@ -5265,43 +5261,42 @@ export namespace Semantic {
               const packParamS = sr.symbolNodes.get(packParam);
               assert(packParamS.variant === Semantic.ENode.VariableSymbol);
               assert(packParamS.type);
-              params += mangleTypeUse(sr, packParamS.type);
+              params += mangleTypeUse(sr, packParamS.type).name;
             }
           } else {
-            params += mangleTypeUse(sr, p);
+            params += mangleTypeUse(sr, p).name;
           }
         }
         return {
-          name: "F" + params + "E" + mangleTypeUse(sr, type.returnType),
+          name: "F" + params + "E" + mangleTypeUse(sr, type.returnType).name,
           wasMangled: true,
         };
       }
 
       case Semantic.ENode.PointerDatatype: {
         return {
-          name: "P" + mangleTypeUse(sr, type.pointee),
+          name: "P" + mangleTypeUse(sr, type.pointee).name,
           wasMangled: true,
         };
       }
 
       case Semantic.ENode.ReferenceDatatype: {
         return {
-          name: "R" + mangleTypeUse(sr, type.referee),
+          name: "R" + mangleTypeUse(sr, type.referee).name,
           wasMangled: true,
         };
       }
 
       case Semantic.ENode.ArrayDatatype: {
-        const lengthStr = type.length.toString();
         return {
-          name: "A" + lengthStr + "_" + mangleTypeUse(sr, type.datatype),
+          name: "A" + type.length + "_" + mangleTypeUse(sr, type.datatype).name,
           wasMangled: true,
         };
       }
 
       case Semantic.ENode.SliceDatatype: {
         return {
-          name: "S" + mangleTypeUse(sr, type.datatype),
+          name: "S" + mangleTypeUse(sr, type.datatype).name,
           wasMangled: true,
         };
       }

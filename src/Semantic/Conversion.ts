@@ -970,10 +970,10 @@ export namespace Conversion {
     }
 
     throw new CompilerError(
-      `No safe comparison is available between types '${Semantic.serializeTypeUseFromDef(
+      `No safe comparison is available between types '${Semantic.serializeTypeDef(
         sr,
         leftTypeId
-      )}' and '${Semantic.serializeTypeUseFromDef(sr, rightTypeId)}'`,
+      )}' and '${Semantic.serializeTypeDef(sr, rightTypeId)}'`,
       sourceloc
     );
   }
@@ -1015,10 +1015,10 @@ export namespace Conversion {
     throw new CompilerError(
       `No safe ${BinaryOperationToString(
         operation
-      )} operation is known between types '${Semantic.serializeTypeUseFromDef(
+      )} operation is known between types '${Semantic.serializeTypeDef(
         sr,
         leftType
-      )}' and '${Semantic.serializeTypeUseFromDef(sr, rightType)}'`,
+      )}' and '${Semantic.serializeTypeDef(sr, rightType)}'`,
       sourceloc
     );
   }

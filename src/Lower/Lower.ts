@@ -53,6 +53,8 @@ export namespace Lowered {
     LiteralValueDatatype,
     ArrayDatatype,
     SliceDatatype,
+    // Type Use
+    TypeUse,
     // Statements
     InlineCStatement,
     WhileStatement,
@@ -423,6 +425,7 @@ export namespace Lowered {
   };
 
   export type TypeUse = {
+    variant: ENode.TypeUse;
     mutability: EDatatypeMutability;
     type: TypeDefId;
     name: NameSet;
@@ -1221,13 +1224,19 @@ function lowerTypeDef(lr: Lowered.Module, typeId: Semantic.TypeDefId): Lowered.T
 
 function lowerTypeUse(lr: Lowered.Module, typeId: Semantic.TypeUseId): Lowered.TypeUseId {
   const typeUse = lr.sr.typeUseNodes.get(typeId);
+  if (lr.loweredTypeUses.has(typeId)) {
+    return lr.loweredTypeUses.get(typeId)!;
+  }
 
-  return Lowered.addTypeUse(lr, {
+  const id = Lowered.addTypeUse(lr, {
+    variant: Lowered.ENode.TypeUse,
     mutability: typeUse.mutability,
     name: Semantic.makeNameSetTypeUse(lr.sr, typeId),
     sourceloc: typeUse.sourceloc,
     type: lowerTypeDef(lr, typeUse.type),
   })[1];
+  lr.loweredTypeUses.set(typeId, id);
+  return id;
 }
 
 function lowerStatement(

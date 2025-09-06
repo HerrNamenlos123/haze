@@ -1,4 +1,4 @@
-import { EVariableContext, stringToPrimitive } from "../shared/common";
+import { EVariableContext, primitiveToString, stringToPrimitive } from "../shared/common";
 import { assert, CompilerError, type SourceLoc } from "../shared/Errors";
 import { Collect, funcSymHasParameterPack } from "../SymbolCollection/SymbolCollection";
 import { isTypeConcrete, makePrimitiveAvailable, Semantic, type SemanticResult } from "./Elaborate";
@@ -131,7 +131,7 @@ export function makeTypeUse(
 ) {
   for (const id of sr.typeInstanceCache) {
     const type = sr.typeUseNodes.get(id);
-    if (type.mutability !== mutability && type.type !== typeId) {
+    if (type.mutability !== mutability || type.type !== typeId) {
       continue;
     }
     return [type, id] as const;
