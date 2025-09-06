@@ -503,7 +503,7 @@ export namespace Conversion {
             value: fromExpr.literal.value,
           },
           isTemporary: true,
-          type: makePrimitiveAvailable(sr, EPrimitive.c_str, EDatatypeMutability.Const),
+          type: makePrimitiveAvailable(sr, EPrimitive.c_str, EDatatypeMutability.Const, sourceloc),
           sourceloc: fromExpr.sourceloc,
         })[1];
       }
@@ -955,7 +955,7 @@ export namespace Conversion {
     ];
     for (const c of comparisons) {
       if (c.comparable.includes(leftTypeId) && c.comparable.includes(rightTypeId)) {
-        return makePrimitiveAvailable(sr, EPrimitive.bool, EDatatypeMutability.Const);
+        return makePrimitiveAvailable(sr, EPrimitive.bool, EDatatypeMutability.Const, sourceloc);
       }
     }
 
@@ -966,7 +966,7 @@ export namespace Conversion {
       leftType.variant === Semantic.ENode.PointerDatatype &&
       rightType.variant === Semantic.ENode.PointerDatatype
     ) {
-      return makePrimitiveAvailable(sr, EPrimitive.bool, EDatatypeMutability.Const);
+      return makePrimitiveAvailable(sr, EPrimitive.bool, EDatatypeMutability.Const, sourceloc);
     }
 
     throw new CompilerError(
@@ -1003,7 +1003,7 @@ export namespace Conversion {
       case EBinaryOperation.Add:
       case EBinaryOperation.Subtract:
         if (leftType === rightType) {
-          return makeTypeUse(sr, leftType, EDatatypeMutability.Const)[1];
+          return makeTypeUse(sr, leftType, EDatatypeMutability.Const, sourceloc)[1];
         }
         break;
 
@@ -1202,7 +1202,7 @@ export namespace Conversion {
 
     for (const op of ops) {
       if (op.from === sr.typeUseNodes.get(a).type) {
-        return makeTypeUse(sr, op.to, EDatatypeMutability.Const)[1];
+        return makeTypeUse(sr, op.to, EDatatypeMutability.Const, sourceloc)[1];
       }
     }
 

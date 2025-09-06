@@ -5,21 +5,37 @@ export enum ErrorType {
 
 export type SourceLocNotNull = {
   filename: string;
-  line: number;
-  column: number;
+  start: {
+    line: number;
+    column: number;
+  };
+  end?: {
+    line: number;
+    column: number;
+  };
 };
 
 export type SourceLoc = SourceLocNotNull | null;
 
 export function formatSourceLoc(loc: SourceLocNotNull) {
-  return `${loc.filename}:${loc.line}:${loc.column}`;
+  if (loc.end) {
+    if (loc.end.line === loc.start.line) {
+      return `${loc.filename}:${loc.start.line}:${loc.start.column + 1}-${loc.end.column + 1}`;
+    } else {
+      return `${loc.filename}:${loc.start.line}:${loc.start.column + 1}-${loc.end.line}:${
+        loc.end.column + 1
+      }`;
+    }
+  } else {
+    return `${loc.filename}:${loc.start.line}:${loc.start.column + 1}`;
+  }
 }
 
 function formatCompilerMessage(
   type: ErrorType,
   error: string,
   msg: string,
-  loc?: SourceLoc,
+  loc?: SourceLoc
 ): string {
   let text = "";
   if (loc) {
@@ -59,14 +75,18 @@ export function getCallerLocation(depth = 1): SourceLoc {
   const matches = frame.match(/at (?:(.+)\s+\()?(.+?):(\d+):(\d+)/);
   if (!matches) {
     return {
-      line: 0,
-      column: 0,
+      start: {
+        line: 0,
+        column: 0,
+      },
       filename: "Unknown",
     };
   }
   return {
-    line: parseInt(matches[3], 10),
-    column: parseInt(matches[4], 10),
+    start: {
+      line: parseInt(matches[3], 10),
+      column: parseInt(matches[4], 10),
+    },
     filename: matches[2],
   };
 }
@@ -86,10 +106,7 @@ export class InternalError extends Error {
 export class ImpossibleSituation extends Error {
   constructor() {
     super(
-      formatErrorMessage(
-        "Impossible situation, something fatal has happened",
-        getCallerLocation(2),
-      ),
+      formatErrorMessage("Impossible situation, something fatal has happened", getCallerLocation(2))
     );
   }
 }

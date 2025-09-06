@@ -163,7 +163,7 @@ export namespace Parser {
       msg: string,
       e: any
     ) {
-      printErrorMessage(msg, { filename: this.filename, line, column }, "SyntaxError");
+      printErrorMessage(msg, { filename: this.filename, start: { line, column } }, "SyntaxError");
     }
   }
 
@@ -225,8 +225,14 @@ class ASTTransformer extends HazeVisitor<any> {
   loc(ctx: ParserRuleContext): SourceLoc {
     return {
       filename: this.filename,
-      line: ctx.start?.line ?? 0,
-      column: ctx.start?.column ?? 0,
+      start: {
+        line: ctx.start?.line ?? 0,
+        column: ctx.start?.column ?? 0,
+      },
+      end: {
+        line: ctx.stop?.line ?? 0,
+        column: ctx.stop?.column ?? 0,
+      },
     };
   }
 

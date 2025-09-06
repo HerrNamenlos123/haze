@@ -1,9 +1,9 @@
 import { EBinaryOperation, EDatatypeMutability } from "../shared/AST";
 import { EPrimitive, primitiveToString } from "../shared/common";
-import { assert, CompilerError } from "../shared/Errors";
+import { assert, CompilerError, type SourceLoc } from "../shared/Errors";
 import { makePrimitiveAvailable, Semantic, type SemanticResult } from "./Elaborate";
 
-function makeBoolValue(sr: SemanticResult, value: boolean) {
+function makeBoolValue(sr: SemanticResult, value: boolean, sourceloc: SourceLoc) {
   return Semantic.addExpr(sr, {
     variant: Semantic.ENode.LiteralExpr,
     literal: {
@@ -11,7 +11,7 @@ function makeBoolValue(sr: SemanticResult, value: boolean) {
       value: value,
     },
     isTemporary: true,
-    type: makePrimitiveAvailable(sr, EPrimitive.bool, EDatatypeMutability.Const),
+    type: makePrimitiveAvailable(sr, EPrimitive.bool, EDatatypeMutability.Const, sourceloc),
     sourceloc: null,
   });
 }
@@ -128,9 +128,9 @@ export function EvalCTFE(
               left.literal.type === right.literal.type
             ) {
               if (left.literal.type === EPrimitive.null || right.literal.type === EPrimitive.null) {
-                return makeBoolValue(sr, true);
+                return makeBoolValue(sr, true, expr.sourceloc);
               }
-              return makeBoolValue(sr, left.literal.value === right.literal.value);
+              return makeBoolValue(sr, left.literal.value === right.literal.value, expr.sourceloc);
             }
             throw new CompilerError(
               `Cannot compare primitives ${primitiveToString(
@@ -151,13 +151,13 @@ export function EvalCTFE(
         case EBinaryOperation.BoolAnd: {
           const leftValue = EvalCTFEBoolean(sr, leftId);
           const rightValue = EvalCTFEBoolean(sr, rightId);
-          return makeBoolValue(sr, leftValue && rightValue);
+          return makeBoolValue(sr, leftValue && rightValue, expr.sourceloc);
         }
 
         case EBinaryOperation.BoolOr: {
           const leftValue = EvalCTFEBoolean(sr, leftId);
           const rightValue = EvalCTFEBoolean(sr, rightId);
-          return makeBoolValue(sr, leftValue || rightValue);
+          return makeBoolValue(sr, leftValue || rightValue, expr.sourceloc);
         }
 
         default:
