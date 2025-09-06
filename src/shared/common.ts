@@ -36,6 +36,12 @@ export class BrandedArray<I extends number, T> {
   }
 }
 
+export type NameSet = {
+  mangledName: string;
+  prettyName: string;
+  wasMangled: boolean;
+};
+
 export enum EPrimitive {
   void = 1,
   null,

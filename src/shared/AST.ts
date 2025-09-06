@@ -2,9 +2,15 @@ import { ImpossibleSituation, type SourceLoc } from "./Errors";
 import type { EMethodType, EVariableContext, LiteralValue } from "./common";
 
 export enum EVariableMutability {
-  Immutable, // Fully immutable
-  BindingImmutable, // Binding is immutable, but value inside is not (e.g. struct fields)
-  Mutable, // Fully mutable
+  Const,
+  Let,
+  Default,
+}
+
+export enum EDatatypeMutability {
+  Default,
+  Mut,
+  Const,
 }
 
 export enum EExternLanguage {
@@ -188,6 +194,7 @@ export type ASTNamedDatatype = {
   name: string;
   generics: (ASTDatatype | ASTLiteralExpr)[];
   nested?: ASTNamedDatatype;
+  mutability: EDatatypeMutability;
   sourceloc: SourceLoc;
 };
 
@@ -196,12 +203,14 @@ export type ASTFunctionDatatype = {
   params: ASTParam[];
   ellipsis: boolean;
   returnType: ASTDatatype;
+  mutability: EDatatypeMutability;
   sourceloc: SourceLoc;
 };
 
 export type ASTPointerDatatype = {
   variant: "PointerDatatype";
   pointee: ASTDatatype;
+  mutability: EDatatypeMutability;
   sourceloc: SourceLoc;
 };
 
@@ -209,18 +218,21 @@ export type ASTArrayDatatype = {
   variant: "ArrayDatatype";
   datatype: ASTDatatype;
   length: number;
+  mutability: EDatatypeMutability;
   sourceloc: SourceLoc;
 };
 
 export type ASTSliceDatatype = {
   variant: "SliceDatatype";
   datatype: ASTDatatype;
+  mutability: EDatatypeMutability;
   sourceloc: SourceLoc;
 };
 
 export type ASTReferenceDatatype = {
   variant: "ReferenceDatatype";
   referee: ASTDatatype;
+  mutability: EDatatypeMutability;
   sourceloc: SourceLoc;
 };
 
@@ -317,8 +329,8 @@ export type ASTWhileStatement = {
   sourceloc: SourceLoc;
 };
 
-export type ASTTypedefStatement = {
-  variant: "TypedefStatement";
+export type ASTTypeAliasStatement = {
+  variant: "TypeAliasStatement";
   name: string;
   datatype: ASTDatatype;
   export: boolean;
@@ -335,7 +347,7 @@ export type ASTStatement =
   | ASTReturnStatement
   | ASTVariableDefinitionStatement
   | ASTIfStatement
-  | ASTTypedefStatement
+  | ASTTypeAliasStatement
   | ASTWhileStatement;
 
 export type ASTScope = {
@@ -528,6 +540,7 @@ export type ASTStructMemberDefinition = {
   name: string;
   type: ASTDatatype;
   defaultValue: ASTExpr | null;
+  mutability: EVariableMutability;
   sourceloc: SourceLoc;
 };
 
@@ -583,7 +596,7 @@ export type ASTGlobalDeclaration =
   | ASTFunctionDefinition
   | ASTTypeDefinition
   | ASTNamespaceDefinition
-  | ASTTypedefStatement
+  | ASTTypeAliasStatement
   | ASTGlobalVariableDefinition;
 
 export type ASTTopLevelDeclaration =

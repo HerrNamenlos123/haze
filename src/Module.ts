@@ -33,10 +33,10 @@ import {
   PrettyPrintCollected,
   type CollectionContext,
 } from "./SymbolCollection/SymbolCollection";
-import { SemanticallyAnalyze } from "./Semantic/Elaborate";
 import { generateCode } from "./Codegen/CodeGenerator";
 import { LowerModule } from "./Lower/Lower";
 import { ExportCollectedSymbols } from "./SymbolCollection/Export";
+import { Semantic } from "./Semantic/Elaborate";
 
 export const HAZE_STDLIB_NAME = "haze-stdlib";
 
@@ -392,15 +392,15 @@ class ModuleCompiler {
       await this.collectImports();
       await this.addProjectSourceFiles();
 
-      // PrettyPrintCollected(this.cc);
+      PrettyPrintCollected(this.cc);
 
-      const sr = SemanticallyAnalyze(
+      const sr = Semantic.SemanticallyAnalyze(
         this.cc,
         this.config.moduleType === ModuleType.Library,
         this.config.name,
         this.config.version
       );
-      // PrettyPrintAnalyzed(sr);
+      // Semantic.PrettyPrintAnalyzed(sr);
       const lowered = LowerModule(sr);
 
       const name = this.config.name;

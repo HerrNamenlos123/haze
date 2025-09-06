@@ -8,19 +8,39 @@ import gl
 //     return arena;
 // }
 
+struct Foo {};
+
 // struct Ref<T> {
 //     ref: T&;
 // }
 
 main(): int {
 
-    let x = 5;
+    let foo = Foo {};
+    let newFoo = Foo {};
 
-    let arena = Arena();
-    const s = fmt.format<int>(arena, -7183, {});
+    let a: const &const int = uninitialized;
+    let b: mut &int = uninitialized;
+    let c: []int = uninitialized;
+    let d: const []const int = uninitialized;
+    let e: mut []&mut int = uninitialized;
 
-    print("Formatted: ");
-    println(s);
+    let x = 0;
+    let y: &int = x;
+    const z: &int = y;
+
+    // a = 5;
+
+    // let a: Foo& = foo;
+
+    // assign(a, newFoo);
+    // reassign(a, newFoo);
+
+    // let arena = Arena();
+    // const s = fmt.format<int>(arena, -7183, {});
+
+    // print("Formatted: ");
+    // println(s);
     // let a = f"Test: {Vec3 {}} other";
 
     // let arena = Arena();
@@ -33,6 +53,9 @@ main(): int {
     // println("Vec 2: ", vec2);
 
     return 0;
+
+    println("TODO: Fix the situation for negative literals. Parsing the minus is bad as it's punctiation dependent. It should be changed to parse as a Unary Expression with positive Literal, and in the symbol collection, Unary+Literal can be caught and converted into literal with negative value.");
+    println("TODO: All Increment operations and short-hand syntax should be expanded into proper full assignment expressions, and then compiled normally, makes everything much simpler, especially the overflow tracking.");
 
     if !glfw.init() {
         return 0;

@@ -11,7 +11,7 @@ namespace fmt {
     }
 
     export struct StringWriter {
-        buffer: u8* = nullptr;
+        buffer: *u8 = nullptr;
         length: usize = 0;
 
         write(value: str) {        
@@ -25,16 +25,16 @@ namespace fmt {
         }
     }
 
-    export format<T>(arena: Arena&, value: T, args: FormatArgs): str {
+    export format<T>(arena: &Arena, value: T, args: FormatArgs): str {
         const writer = StringWriter {};
-        format_to(writer as StringWriter&, value, args);
+        format_to(writer as &StringWriter, value, args);
         const string = arena.allocateRaw(writer.length);
         const writer2 = StringWriter { buffer: string };
-        format_to(writer2 as StringWriter&, value, args);
+        format_to(writer2 as &StringWriter, value, args);
         return str(writer2.buffer, writer2.length);
     }
 
-    export format_to(writer: StringWriter&, value: int, args: FormatArgs) {
+    export format_to(writer: &StringWriter, value: int, args: FormatArgs) {
         let v = value;
         if v < 0 {
             writer.write("-");
@@ -66,19 +66,19 @@ namespace fmt {
         return str(&ch, 1);
     }
 
-    export format_to(writer: StringWriter&, value: i8, args: FormatArgs) {
+    export format_to(writer: &StringWriter, value: i8, args: FormatArgs) {
         format_to(writer, value as int, args);
     }
 
-    export format_to(writer: StringWriter&, value: i16, args: FormatArgs) {
+    export format_to(writer: &StringWriter, value: i16, args: FormatArgs) {
         format_to(writer, value as int, args);
     }
 
-    export format_to(writer: StringWriter&, value: i32, args: FormatArgs) {
+    export format_to(writer: &StringWriter, value: i32, args: FormatArgs) {
         format_to(writer, value as int, args);
     }
 
-    export format_to(writer: StringWriter&, value: i64, args: FormatArgs) {
+    export format_to(writer: &StringWriter, value: i64, args: FormatArgs) {
         format_to(writer, value as int, args);
     }
 }
@@ -119,13 +119,13 @@ export print(args: ...) {
         else if typeof(arg) == i64 {
             builtin.printf("%ld", arg);
         }
-        else if typeof(arg) == Vec2 || typeof(arg) == type<Vec2&> {
+        else if typeof(arg) == Vec2 || typeof(arg) == type<&Vec2> {
             builtin.printf("(%f, %f)", arg.x, arg.y);
         }
-        else if typeof(arg) == Vec3 || typeof(arg) == type<Vec3&> {
+        else if typeof(arg) == Vec3 || typeof(arg) == type<&Vec3> {
             builtin.printf("(%f, %f, %f)", arg.x, arg.y, arg.z);
         }
-        else if typeof(arg) == Vec4 || typeof(arg) == type<Vec4&> {
+        else if typeof(arg) == Vec4 || typeof(arg) == type<&Vec4> {
             builtin.printf("(%f, %f, %f, %f)", arg.x, arg.y, arg.z, arg.w);
         }
         else {

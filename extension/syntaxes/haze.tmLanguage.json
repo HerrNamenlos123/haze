@@ -23,7 +23,7 @@
         },
         {
           "name": "keyword.control",
-          "match": "\\b(extern|noemit|const|let|if|comptime|else|while|do|for|return|static|defer)\\b"
+          "match": "\\b(extern|noemit|const|mut|let|if|comptime|else|while|do|for|return|static|defer)\\b"
         },
         {
           "name": "keyword.struct",

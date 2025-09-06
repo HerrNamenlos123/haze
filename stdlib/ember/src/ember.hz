@@ -6,7 +6,7 @@ __c__("#include \"mongoose.c\"");
 export __c__("typedef struct mg_mgr mg_mgr;");
 
 export namespace mongoose {
-    extern "C" mg_mgr_init(mgr: mg_mgr*): void;
+    extern "C" mg_mgr_init(mgr: *mg_mgr): void;
 
     export extern "C" noemit struct mg_mgr {}
 }

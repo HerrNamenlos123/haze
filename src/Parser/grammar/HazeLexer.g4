@@ -34,6 +34,8 @@ LET: 'let'; CONST: 'const'; MUT: 'mut';
 DOT: '.';
 LCURLY: '{' -> pushMode(DEFAULT_MODE);
 RCURLY: '}' -> popMode;
+LASTERISKBRACKET: '*[';
+LAMPERSANDBRACKET: '&[';
 LBRACKET: '[';
 RBRACKET: ']';
 LB: '(';

@@ -1,5 +1,4 @@
-import { scaleRadial } from "d3";
-import { serializeDatatype, serializeLiteralValue } from "../Semantic/Serialize";
+import { Semantic } from "../Semantic/Elaborate";
 import { EClonability, EExternLanguage } from "../shared/AST";
 import { assert } from "../shared/Errors";
 import {
@@ -64,19 +63,19 @@ function printType(cc: CollectionContext, typeId: Collect.Id): string {
     }
 
     case Collect.ENode.PointerDatatype: {
-      return `${printType(cc, type.pointee)}*`;
+      return `*${printType(cc, type.pointee)}`;
     }
 
     case Collect.ENode.ReferenceDatatype: {
-      return `${printType(cc, type.referee)}&`;
+      return `&${printType(cc, type.referee)}`;
     }
 
     case Collect.ENode.ArrayDatatype: {
-      return `${printType(cc, type.datatype)}[${type.length}]`;
+      return `[${type.length}]${printType(cc, type.datatype)}`;
     }
 
     case Collect.ENode.SliceDatatype: {
-      return `${printType(cc, type.datatype)}[]`;
+      return `[]${printType(cc, type.datatype)}`;
     }
 
     case Collect.ENode.ParameterPack: {
@@ -98,7 +97,7 @@ export function ExportExpr(cc: CollectionContext, exprId: Collect.Id): string {
   const expr = cc.nodes.get(exprId);
   switch (expr.variant) {
     case Collect.ENode.LiteralExpr: {
-      return serializeLiteralValue(expr.literal);
+      return Semantic.serializeLiteralValue(expr.literal);
     }
 
     case Collect.ENode.StructInstantiationExpr: {

@@ -69,7 +69,7 @@ const tests: StageTests<Collect.Scope, SemanticResult> = [
         assert(collectedMainFunction.variant === "FunctionDefinition");
         assert(collectedMainFunction.funcbody._collect.scope);
 
-        const structType: Semantic.StructDatatypeSymbol = {
+        const structType: Semantic.StructDatatype = {
           variant: "StructDatatype",
           concrete: true,
           extern: EExternLanguage.None,
@@ -90,12 +90,12 @@ const tests: StageTests<Collect.Scope, SemanticResult> = [
             return scope;
           })(),
         };
-        const thisReference: Semantic.ReferenceDatatypeSymbol = {
+        const thisReference: Semantic.ReferenceDatatype = {
           variant: "ReferenceDatatype",
           concrete: true,
           referee: structType,
         };
-        const noneType: Semantic.PrimitiveDatatypeSymbol = {
+        const noneType: Semantic.PrimitiveDatatype = {
           variant: "PrimitiveDatatype",
           concrete: true,
           primitive: EPrimitive.void,
@@ -215,7 +215,7 @@ const tests: StageTests<Collect.Scope, SemanticResult> = [
               collectedMainFunction.funcbody._collect.scope,
               semanticResult.globalNamespace.scope
             );
-            const callableType: Semantic.CallableDatatypeSymbol = {
+            const callableType: Semantic.CallableDatatype = {
               variant: "CallableDatatype",
               concrete: true,
               functionType: {

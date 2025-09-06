@@ -67,13 +67,12 @@ globalVariableDef
     ;
 
 typeDef
-    : (export=EXPORT)? (extern=EXTERN externLang=externLanguage?)? pub=PUB? TYPE ID EQUALS datatype SEMI?        #TypedefDirective
+    : (export=EXPORT)? (extern=EXTERN externLang=externLanguage?)? pub=PUB? TYPE ID EQUALS datatype SEMI?        #TypeAliasDirective
     ;
 
 variableMutabilitySpecifier
-    : LET                               #VariableBindingImmutable
-    | CONST                             #VariableImmutable
-    | LET MUT                           #VariableMutable
+    : LET                               #VariableLet
+    | CONST                             #VariableConst
     ;
 
 // Datatypes
@@ -92,13 +91,18 @@ interpolatedString: FSTRING_START (interpolatedStringFragment)* FSTRING_END;
 interpolatedStringFragment: FSTRING_GRAPHEME | interpolatedStringExpression;
 interpolatedStringExpression: LCURLY expr RCURLY;
 
-datatype
+datatypeImpl
     : datatypeFragment (DOT datatypeFragment)*                                  #NamedDatatype
-    | datatype MUL                                                              #PointerDatatype
-    | datatype SINGLEAND                                                        #ReferenceDatatype
-    | datatype LBRACKET n=INTEGER_LITERAL RBRACKET                              #ArrayDatatype
-    | datatype LBRACKET RBRACKET                                                #SliceDatatype
+    | LBRACKET n=INTEGER_LITERAL RBRACKET datatype                              #ArrayDatatype
+    | LBRACKET RBRACKET datatype                                                #SliceDatatype
+    | MUL datatype                                                              #PointerDatatype
+    | SINGLEAND datatype                                                        #ReferenceDatatype
     | LB params RB ARROW datatype                                               #FunctionDatatype
+    ;
+
+datatype
+    : (MUT | CONST)? datatypeImpl                                               #DatatypeWithMutability
+    | LB datatype RB                                                            #DatatypeInParenthesis
     ;
 
 datatypeFragment
@@ -111,7 +115,7 @@ genericLiteral
     ;
 
 structContent
-    : ID COLON datatype (EQUALS expr)? SEMI                                                                 #StructMember
+    : variableMutabilitySpecifier? ID COLON datatype (EQUALS expr)? SEMI                                    #StructMember
     | static=STATIC? ID (LANGLE ID (COMMA ID)* RANGLE)? LB params RB (COLON datatype)? (funcbody | SEMI)    #StructMethod
     | structDefinition                                                                                      #NestedStructDefinition
     ;
@@ -181,5 +185,5 @@ statement
     | FOR comptime=COMPTIME? ID (COMMA ID)? IN expr scope       #ForEachStatement
     | WHILE expr scope                                          #WhileStatement
     | scope                                                     #ScopeStatement
-    | typeDef                                                   #TypedefStatement
+    | typeDef                                                   #TypeAliasStatement
     ;

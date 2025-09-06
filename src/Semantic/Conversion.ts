@@ -1,34 +1,21 @@
-import { scaleRadial } from "d3";
 import {
   BinaryOperationToString,
   EBinaryOperation,
   EClonability,
-  EExternLanguage,
-  EOperator,
+  EDatatypeMutability,
   EUnaryOperation,
   UnaryOperationToString,
 } from "../shared/AST";
-import { EMethodType, EPrimitive, primitiveToString } from "../shared/common";
+import { EPrimitive, primitiveToString } from "../shared/common";
+import { assert, CompilerError, InternalError, type SourceLoc } from "../shared/Errors";
 import {
-  assert,
-  CompilerError,
-  ImpossibleSituation,
-  InternalError,
-  type SourceLoc,
-} from "../shared/Errors";
-import {
-  asType,
-  getExprType,
-  isExpression,
-  isType,
-  isTypeConcrete,
   makePrimitiveAvailable,
+  makeRawPrimitiveAvailable,
   Semantic,
   type SemanticResult,
-} from "./SemanticSymbols";
-import { serializeDatatype } from "./Serialize";
-import { elaborateExpr, makeElaborationContext, makeStructInstantiation } from "./Elaborate";
-import { Collect, makeSymbol } from "../SymbolCollection/SymbolCollection";
+} from "./Elaborate";
+import { Collect } from "../SymbolCollection/SymbolCollection";
+import { makeTypeUse } from "./LookupDatatype";
 
 export namespace Conversion {
   export function isSignedInteger(primitive: EPrimitive): boolean {
@@ -85,7 +72,7 @@ export namespace Conversion {
   export function prettyRange(
     min: bigint,
     max: bigint,
-    type: Semantic.PrimitiveDatatypeSymbol
+    type: Semantic.PrimitiveDatatypeDef
   ): string {
     const typeLimits = getIntegerMinMax(type.primitive);
 
@@ -143,30 +130,30 @@ export namespace Conversion {
     return `[${minStr}, ${maxStr}]`;
   }
 
-  export function isStruct(sr: SemanticResult, typeId: Semantic.Id): boolean {
-    const type = sr.nodes.get(typeId);
+  export function isStruct(sr: SemanticResult, typeId: Semantic.TypeDefId): boolean {
+    const type = sr.typeDefNodes.get(typeId);
     if (type.variant !== Semantic.ENode.StructDatatype) return false;
     return true;
   }
 
-  export function isF32(sr: SemanticResult, typeId: Semantic.Id): boolean {
-    const type = sr.nodes.get(typeId);
+  export function isF32(sr: SemanticResult, typeId: Semantic.TypeDefId): boolean {
+    const type = sr.typeDefNodes.get(typeId);
     if (type.variant !== Semantic.ENode.PrimitiveDatatype) return false;
     return type.primitive === EPrimitive.f32;
   }
 
-  export function isF64(sr: SemanticResult, typeId: Semantic.Id): boolean {
-    const type = sr.nodes.get(typeId);
+  export function isF64(sr: SemanticResult, typeId: Semantic.TypeDefId): boolean {
+    const type = sr.typeDefNodes.get(typeId);
     if (type.variant !== Semantic.ENode.PrimitiveDatatype) return false;
     return type.primitive === EPrimitive.f64;
   }
 
-  export function isFloat(sr: SemanticResult, typeId: Semantic.Id): boolean {
+  export function isFloat(sr: SemanticResult, typeId: Semantic.TypeDefId): boolean {
     return isF32(sr, typeId) || isF64(sr, typeId);
   }
 
-  export function isBoolean(sr: SemanticResult, typeId: Semantic.Id): boolean {
-    const type = sr.nodes.get(typeId);
+  export function isBoolean(sr: SemanticResult, typeId: Semantic.TypeDefId): boolean {
+    const type = sr.typeDefNodes.get(typeId);
     if (type.variant !== Semantic.ENode.PrimitiveDatatype) return false;
     return type.primitive === EPrimitive.bool;
   }
@@ -175,13 +162,13 @@ export namespace Conversion {
     return isSignedInteger(primitive) || isUnsignedInteger(primitive);
   }
 
-  export function isIntegerById(sr: SemanticResult, typeId: Semantic.Id): boolean {
-    const type = sr.nodes.get(typeId);
+  export function isIntegerById(sr: SemanticResult, typeId: Semantic.TypeDefId): boolean {
+    const type = sr.typeDefNodes.get(typeId);
     if (type.variant !== Semantic.ENode.PrimitiveDatatype) return false;
     return isInteger(type.primitive);
   }
 
-  export function getIntegerBits(type: Semantic.PrimitiveDatatypeSymbol): number {
+  export function getIntegerBits(type: Semantic.PrimitiveDatatypeDef): number {
     switch (type.primitive) {
       case EPrimitive.i8:
       case EPrimitive.u8:
@@ -201,89 +188,11 @@ export namespace Conversion {
     throw new InternalError("Requested getIntegerBits from a non-integer");
   }
 
-  function promoteInteger(
-    a: Semantic.PrimitiveDatatypeSymbol,
-    b: Semantic.PrimitiveDatatypeSymbol
-  ): Semantic.PrimitiveDatatypeSymbol {
-    if (
-      a.variant !== Semantic.ENode.PrimitiveDatatype ||
-      b.variant !== Semantic.ENode.PrimitiveDatatype
-    ) {
-      throw new InternalError("promoteInteger got non primitives");
-    }
-
-    const getWiderInteger = (
-      a: Semantic.PrimitiveDatatypeSymbol,
-      b: Semantic.PrimitiveDatatypeSymbol
-    ) => {
-      const aBits = getIntegerBits(a);
-      const bBits = getIntegerBits(b);
-      return aBits > bBits ? a : b;
-    };
-
-    const widenInteger = (
-      a: Semantic.PrimitiveDatatypeSymbol,
-      b: Semantic.PrimitiveDatatypeSymbol
-    ) => {
-      if (a.primitive == b.primitive) {
-        return a;
-      }
-
-      let sizeA = getIntegerBits(a);
-      let sizeB = getIntegerBits(b);
-
-      // If one of the types is unsigned and larger in size, widen accordingly
-      if (isUnsignedInteger(a.primitive) && !isUnsignedInteger(b.primitive)) {
-        if (sizeA > sizeB) {
-          return a; // Promote the unsigned type
-        } else {
-          return b; // Promote the signed type to the larger unsigned type
-        }
-      }
-
-      if (isUnsignedInteger(b.primitive) && !isUnsignedInteger(a.primitive)) {
-        if (sizeB > sizeA) {
-          return b; // Promote the unsigned type
-        } else {
-          return a; // Promote the signed type to the larger unsigned type
-        }
-      }
-
-      // Otherwise, promote to the larger type based on size
-      if (sizeA > sizeB) {
-        return a;
-      } else {
-        return b;
-      }
-    };
-
-    if (a.primitive == b.primitive) return a;
-    if (isUnsignedInteger(a.primitive) && !isUnsignedInteger(b.primitive))
-      return widenInteger(a, b);
-    if (!isUnsignedInteger(a.primitive) && isUnsignedInteger(b.primitive))
-      return widenInteger(a, b);
-    return getWiderInteger(a, b);
-  }
-
-  export function getIntegerBinaryResult(
-    sr: SemanticResult,
-    a: Semantic.Id,
-    b: Semantic.Id
-  ): Semantic.PrimitiveDatatypeSymbol {
-    const aa = sr.nodes.get(a);
-    const bb = sr.nodes.get(b);
-    assert(
-      aa.variant === Semantic.ENode.PrimitiveDatatype &&
-        bb.variant === Semantic.ENode.PrimitiveDatatype
-    );
-    return promoteInteger(aa, bb);
-  }
-
   export function IsStructurallyEquivalent(
     sr: SemanticResult,
-    a: Semantic.Id,
-    b: Semantic.Id,
-    seen: Map<Semantic.Id, Set<Semantic.Id>> = new Map()
+    a: Semantic.TypeDefId,
+    b: Semantic.TypeDefId,
+    seen: Map<Semantic.TypeDefId, Set<Semantic.TypeDefId>> = new Map()
   ): boolean {
     // Symmetric check: has this pair already been seen?
     if (seen.get(a)?.has(b) || seen.get(b)?.has(a)) {
@@ -294,7 +203,7 @@ export namespace Conversion {
     if (!seen.has(a)) seen.set(a, new Set());
     seen.get(a)!.add(b);
 
-    if (!isTypeConcrete(sr, a) || !isTypeConcrete(sr, b)) {
+    if (!sr.typeDefNodes.get(a).concrete || !sr.typeDefNodes.get(b).concrete) {
       throw new InternalError(
         "Cannot check structural equivalence of a non-concrete datatype",
         undefined,
@@ -302,8 +211,8 @@ export namespace Conversion {
       );
     }
 
-    const at = sr.nodes.get(a);
-    const bt = sr.nodes.get(b);
+    const at = sr.typeDefNodes.get(a);
+    const bt = sr.typeDefNodes.get(b);
 
     if (at.variant !== bt.variant) {
       return false;
@@ -321,56 +230,89 @@ export namespace Conversion {
           return at.literal.type === bt.literal.type && at.literal.value === bt.literal.value;
         }
 
-      case Semantic.ENode.PointerDatatype:
+      case Semantic.ENode.PointerDatatype: {
         assert(bt.variant === Semantic.ENode.PointerDatatype);
-        return IsStructurallyEquivalent(sr, at.pointee, bt.pointee, seen);
+        const aPointee = sr.typeUseNodes.get(at.pointee);
+        const bPointee = sr.typeUseNodes.get(bt.pointee);
+        return IsStructurallyEquivalent(sr, aPointee.type, bPointee.type, seen);
+      }
 
-      case Semantic.ENode.ReferenceDatatype:
+      case Semantic.ENode.ReferenceDatatype: {
         assert(bt.variant === Semantic.ENode.ReferenceDatatype);
-        return IsStructurallyEquivalent(sr, at.referee, bt.referee, seen);
+        const aReferee = sr.typeUseNodes.get(at.referee);
+        const bReferee = sr.typeUseNodes.get(bt.referee);
+        return IsStructurallyEquivalent(sr, aReferee.type, bReferee.type, seen);
+      }
 
-      case Semantic.ENode.ArrayDatatype:
+      case Semantic.ENode.ArrayDatatype: {
         assert(bt.variant === Semantic.ENode.ArrayDatatype);
-        return (
-          IsStructurallyEquivalent(sr, at.datatype, bt.datatype, seen) && at.length === bt.length
-        );
+        const a = sr.typeUseNodes.get(at.datatype);
+        const b = sr.typeUseNodes.get(bt.datatype);
+        return IsStructurallyEquivalent(sr, a.type, b.type, seen) && at.length === bt.length;
+      }
 
-      case Semantic.ENode.SliceDatatype:
+      case Semantic.ENode.SliceDatatype: {
         assert(bt.variant === Semantic.ENode.SliceDatatype);
-        return IsStructurallyEquivalent(sr, at.datatype, bt.datatype, seen);
+        const a = sr.typeUseNodes.get(at.datatype);
+        const b = sr.typeUseNodes.get(bt.datatype);
+        return IsStructurallyEquivalent(sr, a.type, b.type, seen);
+      }
 
-      case Semantic.ENode.FunctionDatatype:
+      case Semantic.ENode.FunctionDatatype: {
         assert(bt.variant === Semantic.ENode.FunctionDatatype);
+        const a = sr.typeUseNodes.get(at.returnType);
+        const b = sr.typeUseNodes.get(bt.returnType);
         return (
           at.vararg === bt.vararg &&
-          IsStructurallyEquivalent(sr, at.returnType, bt.returnType, seen) &&
+          IsStructurallyEquivalent(sr, a.type, b.type, seen) &&
           at.parameters.every((p, index) =>
-            IsStructurallyEquivalent(sr, p, bt.parameters[index], seen)
+            IsStructurallyEquivalent(
+              sr,
+              sr.typeUseNodes.get(p).type,
+              sr.typeUseNodes.get(bt.parameters[index]).type,
+              seen
+            )
           )
         );
+      }
 
-      case Semantic.ENode.CallableDatatype:
+      case Semantic.ENode.CallableDatatype: {
         assert(bt.variant === Semantic.ENode.CallableDatatype);
         if (Boolean(at.thisExprType) !== Boolean(bt.thisExprType)) return false;
         if (
           at.thisExprType &&
           bt.thisExprType &&
-          IsStructurallyEquivalent(sr, at.thisExprType, bt.thisExprType, seen)
+          IsStructurallyEquivalent(
+            sr,
+            sr.typeUseNodes.get(at.thisExprType).type,
+            sr.typeUseNodes.get(bt.thisExprType).type,
+            seen
+          )
         )
           return false;
         return IsStructurallyEquivalent(sr, at.functionType, bt.functionType, seen);
+      }
 
-      case Semantic.ENode.GenericParameterDatatype:
+      case Semantic.ENode.GenericParameterDatatype: {
         throw new InternalError("Cannot check structural equivalence of a generic parameter");
+      }
 
-      case Semantic.ENode.StructDatatype:
+      case Semantic.ENode.StructDatatype: {
         assert(bt.variant === Semantic.ENode.StructDatatype);
         if (at.generics.length !== bt.generics.length) {
           return false;
         }
 
         for (let i = 0; i < at.generics.length; i++) {
-          if (!IsStructurallyEquivalent(sr, at.generics[i], bt.generics[i], seen)) return false;
+          if (
+            !IsStructurallyEquivalent(
+              sr,
+              sr.typeUseNodes.get(at.generics[i]).type,
+              sr.typeUseNodes.get(bt.generics[i]).type,
+              seen
+            )
+          )
+            return false;
         }
 
         if (at.members.length !== bt.members.length) {
@@ -381,7 +323,7 @@ export namespace Conversion {
         const remainingMembersA = [
           ...new Set(
             at.members.map((mId) => {
-              const m = sr.nodes.get(mId);
+              const m = sr.symbolNodes.get(mId);
               assert(m.variant === Semantic.ENode.VariableSymbol);
               return m.name;
             })
@@ -391,7 +333,7 @@ export namespace Conversion {
         let remainingMembersB = [
           ...new Set(
             bt.members.map((mId) => {
-              const m = sr.nodes.get(mId);
+              const m = sr.symbolNodes.get(mId);
               assert(m.variant === Semantic.ENode.VariableSymbol);
               return m.name;
             })
@@ -408,27 +350,35 @@ export namespace Conversion {
           remainingMembersB = remainingMembersB.filter((k) => k !== m);
 
           const amId = at.members.find((mmId) => {
-            const mm = sr.nodes.get(mmId);
+            const mm = sr.symbolNodes.get(mmId);
             assert(mm.variant === Semantic.ENode.VariableSymbol);
             return mm.name;
           });
           const bmId = bt.members.find((mmId) => {
-            const mm = sr.nodes.get(mmId);
+            const mm = sr.symbolNodes.get(mmId);
             assert(mm.variant === Semantic.ENode.VariableSymbol);
             return mm.name;
           });
           assert(amId && bmId);
-          const am = sr.nodes.get(amId);
-          const bm = sr.nodes.get(bmId);
+          const am = sr.symbolNodes.get(amId);
+          const bm = sr.symbolNodes.get(bmId);
           assert(am.variant === Semantic.ENode.VariableSymbol);
           assert(bm.variant === Semantic.ENode.VariableSymbol);
           assert(am.type && bm.type);
-          if (!IsStructurallyEquivalent(sr, am.type, bm.type, seen)) {
+          if (
+            !IsStructurallyEquivalent(
+              sr,
+              sr.typeUseNodes.get(am.type).type,
+              sr.typeUseNodes.get(bm.type).type,
+              seen
+            )
+          ) {
             return false;
           }
         }
 
         return true;
+      }
 
       default:
         assert(false, "All cases handled");
@@ -442,24 +392,24 @@ export namespace Conversion {
 
   export function MakeConversion(
     sr: SemanticResult,
-    fromExprId: Semantic.Id,
-    toId: Semantic.Id,
+    fromExprId: Semantic.ExprId,
+    toId: Semantic.TypeUseId,
     constraints: Semantic.Constraint[],
     sourceloc: SourceLoc,
     mode: Mode
   ) {
-    const from = sr.nodes.get(fromExprId);
-    assert(isExpression(from));
-    const fromType = sr.nodes.get(from.type);
-    assert(isType(fromType));
-    const to = sr.nodes.get(toId);
+    const fromExpr = sr.exprNodes.get(fromExprId);
+    const fromTypeInstance = sr.typeUseNodes.get(fromExpr.type);
+    const fromType = sr.typeDefNodes.get(fromTypeInstance.type);
+    const toInstance = sr.typeUseNodes.get(toId);
+    const to = sr.typeDefNodes.get(toInstance.type);
 
     // Conversion of Struct to Struct
     if (
       fromType.variant === Semantic.ENode.StructDatatype &&
       to.variant === Semantic.ENode.StructDatatype &&
-      from.type === toId &&
-      !from.isTemporary &&
+      fromExpr.type === toId &&
+      !fromExpr.isTemporary &&
       (to.clonability === EClonability.NonClonableFromAttribute ||
         to.clonability === EClonability.NonClonableFromMembers)
     ) {
@@ -473,41 +423,40 @@ export namespace Conversion {
       );
     }
 
-    if (from.type === toId) {
+    if (fromExpr.type === toId) {
       return fromExprId;
     }
 
     // Conversion from T to T&
     if (to.variant === Semantic.ENode.ReferenceDatatype) {
-      if (from.isTemporary) {
+      if (fromExpr.isTemporary) {
         throw new CompilerError(
-          `This expression of type '${serializeDatatype(
+          `This expression of type '${Semantic.serializeTypeUse(
             sr,
-            from.type
+            fromExpr.type
           )}' cannot be turned into a reference, because it is a temporary and not associated with a stable memory address. Store it in a variable to be able to reference it.`,
           sourceloc
         );
       }
-      return Semantic.addNode(sr, {
+      return Semantic.addExpr(sr, {
         variant: Semantic.ENode.ExplicitCastExpr,
         expr: fromExprId,
         type: toId,
         sourceloc: sourceloc,
-        isTemporary: from.isTemporary,
+        isTemporary: fromExpr.isTemporary,
       })[1];
     }
 
     // Conversion from T& to T
-    if (sr.nodes.get(from.type).variant === Semantic.ENode.ReferenceDatatype) {
+    if (fromType.variant === Semantic.ENode.ReferenceDatatype) {
       if (
         fromType.variant === Semantic.ENode.ReferenceDatatype &&
         to.variant === Semantic.ENode.StructDatatype &&
         fromType.referee === toId
       ) {
-        const fromTypeReferee = sr.nodes.get(fromType.referee);
-        assert(
-          isType(fromTypeReferee) && fromTypeReferee.variant === Semantic.ENode.StructDatatype
-        );
+        const fromTypeRefereeInstance = sr.typeUseNodes.get(fromType.referee);
+        const fromTypeReferee = sr.typeDefNodes.get(fromTypeRefereeInstance.type);
+        assert(fromTypeReferee.variant === Semantic.ENode.StructDatatype);
         if (
           fromTypeReferee.clonability === EClonability.NonClonableFromAttribute ||
           fromTypeReferee.clonability === EClonability.NonClonableFromMembers
@@ -517,7 +466,10 @@ export namespace Conversion {
               ? "marked as 'nonclonable'"
               : "non-clonable because it contains raw pointers or other non-clonable structures";
           throw new CompilerError(
-            `Conversion from '${serializeDatatype(sr, from.type)}' to '${serializeDatatype(
+            `Conversion from '${Semantic.serializeTypeUse(
+              sr,
+              fromExpr.type
+            )}' to '${Semantic.serializeTypeUse(
               sr,
               toId
             )}' would create a copy of the struct, but the struct definition is ${msg}`,
@@ -526,12 +478,12 @@ export namespace Conversion {
         }
       }
 
-      return Semantic.addNode(sr, {
+      return Semantic.addExpr(sr, {
         variant: Semantic.ENode.ExplicitCastExpr,
         expr: fromExprId,
         type: toId,
         sourceloc: sourceloc,
-        isTemporary: from.isTemporary,
+        isTemporary: fromExpr.isTemporary,
       })[1];
     }
 
@@ -542,17 +494,17 @@ export namespace Conversion {
       fromType.primitive === EPrimitive.str &&
       to.primitive === EPrimitive.c_str
     ) {
-      if (from.variant === Semantic.ENode.LiteralExpr) {
-        assert(from.literal.type === EPrimitive.str);
-        return Semantic.addNode(sr, {
+      if (fromExpr.variant === Semantic.ENode.LiteralExpr) {
+        assert(fromExpr.literal.type === EPrimitive.str);
+        return Semantic.addExpr(sr, {
           variant: Semantic.ENode.LiteralExpr,
           literal: {
             type: EPrimitive.c_str,
-            value: from.literal.value,
+            value: fromExpr.literal.value,
           },
           isTemporary: true,
-          type: makePrimitiveAvailable(sr, EPrimitive.c_str),
-          sourceloc: from.sourceloc,
+          type: makePrimitiveAvailable(sr, EPrimitive.c_str, EDatatypeMutability.Const),
+          sourceloc: fromExpr.sourceloc,
         })[1];
       }
       throw new CompilerError(
@@ -573,10 +525,15 @@ export namespace Conversion {
     // }
 
     // Conversion between Integers
-    if (Conversion.isIntegerById(sr, from.type) && Conversion.isIntegerById(sr, toId)) {
-      const f = sr.nodes.get(from.type);
+    if (
+      Conversion.isIntegerById(sr, fromTypeInstance.type) &&
+      Conversion.isIntegerById(sr, toInstance.type)
+    ) {
+      const fi = sr.typeUseNodes.get(fromExpr.type);
+      const f = sr.typeDefNodes.get(fi.type);
       assert(f.variant === Semantic.ENode.PrimitiveDatatype);
-      const t = sr.nodes.get(toId);
+      const ti = sr.typeUseNodes.get(toId);
+      const t = sr.typeDefNodes.get(ti.type);
       assert(t.variant === Semantic.ENode.PrimitiveDatatype);
       const fromSigned = Conversion.isSignedInteger(f.primitive);
       const toSigned = Conversion.isSignedInteger(t.primitive);
@@ -585,19 +542,19 @@ export namespace Conversion {
 
       if (fromSigned === toSigned && toBits >= fromBits) {
         // Totally safe
-        return Semantic.addNode(sr, {
+        return Semantic.addExpr(sr, {
           variant: Semantic.ENode.ExplicitCastExpr,
           expr: fromExprId,
           type: toId,
           sourceloc: sourceloc,
-          isTemporary: from.isTemporary,
+          isTemporary: fromExpr.isTemporary,
         })[1];
       } else {
         let [sourceMinValue, sourceMaxValue] = Conversion.getIntegerMinMax(f.primitive);
         let [targetMinValue, targetMaxValue] = Conversion.getIntegerMinMax(t.primitive);
 
-        function applyLiteral(literal: Semantic.Id) {
-          const value = sr.nodes.get(literal);
+        function applyLiteral(literal: Semantic.ExprId) {
+          const value = sr.exprNodes.get(literal);
           assert(value.variant === Semantic.ENode.LiteralExpr);
           assert(
             value.literal.type === EPrimitive.u8 ||
@@ -619,10 +576,10 @@ export namespace Conversion {
           }
         }
 
-        if (from.variant === Semantic.ENode.LiteralExpr) {
+        if (fromExpr.variant === Semantic.ENode.LiteralExpr) {
           applyLiteral(fromExprId);
-        } else if (from.variant === Semantic.ENode.SymbolValueExpr) {
-          const symbol = sr.nodes.get(from.symbol);
+        } else if (fromExpr.variant === Semantic.ENode.SymbolValueExpr) {
+          const symbol = sr.symbolNodes.get(fromExpr.symbol);
           assert(symbol.variant === Semantic.ENode.VariableSymbol);
           if (symbol.comptime && symbol.comptimeValue) {
             applyLiteral(symbol.comptimeValue);
@@ -630,11 +587,11 @@ export namespace Conversion {
         }
 
         for (const constraint of constraints) {
-          if (from.variant !== Semantic.ENode.SymbolValueExpr) {
+          if (fromExpr.variant !== Semantic.ENode.SymbolValueExpr) {
             continue;
           }
 
-          if (constraint.variableSymbol !== from.symbol) {
+          if (constraint.variableSymbol !== fromExpr.symbol) {
             continue;
           }
 
@@ -667,12 +624,12 @@ export namespace Conversion {
         }
 
         if (sourceMinValue >= targetMinValue && sourceMaxValue <= targetMaxValue) {
-          return Semantic.addNode(sr, {
+          return Semantic.addExpr(sr, {
             variant: Semantic.ENode.ExplicitCastExpr,
             expr: fromExprId,
             type: toId,
             sourceloc: sourceloc,
-            isTemporary: from.isTemporary,
+            isTemporary: fromExpr.isTemporary,
           })[1];
         }
 
@@ -684,7 +641,10 @@ export namespace Conversion {
         }
 
         throw new CompilerError(
-          `No safe conversion from '${serializeDatatype(sr, from.type)}' to '${serializeDatatype(
+          `No safe conversion from '${Semantic.serializeTypeUse(
+            sr,
+            fromExpr.type
+          )}' to '${Semantic.serializeTypeUse(
             sr,
             toId
           )}' is known: Target type has integer range ${Conversion.prettyRange(
@@ -708,12 +668,12 @@ export namespace Conversion {
         to.variant === Semantic.ENode.PrimitiveDatatype &&
         to.primitive === EPrimitive.real)
     ) {
-      return Semantic.addNode(sr, {
+      return Semantic.addExpr(sr, {
         variant: Semantic.ENode.ExplicitCastExpr,
         expr: fromExprId,
         type: toId,
         sourceloc: sourceloc,
-        isTemporary: from.isTemporary,
+        isTemporary: fromExpr.isTemporary,
       })[1];
     }
     if (
@@ -726,12 +686,12 @@ export namespace Conversion {
         to.variant === Semantic.ENode.PrimitiveDatatype &&
         to.primitive === EPrimitive.real)
     ) {
-      return Semantic.addNode(sr, {
+      return Semantic.addExpr(sr, {
         variant: Semantic.ENode.ExplicitCastExpr,
         expr: fromExprId,
         type: toId,
         sourceloc: sourceloc,
-        isTemporary: from.isTemporary,
+        isTemporary: fromExpr.isTemporary,
       })[1];
     }
 
@@ -747,19 +707,25 @@ export namespace Conversion {
     ) {
       if (mode !== Mode.Explicit) {
         throw new CompilerError(
-          `Conversion from '${serializeDatatype(sr, from.type)}' to '${serializeDatatype(
+          `Conversion from '${Semantic.serializeTypeUse(
+            sr,
+            fromExpr.type
+          )}' to '${Semantic.serializeTypeUse(
             sr,
             toId
-          )}' is lossy. If wanted, cast explicitly using '... as ${serializeDatatype(sr, toId)}'`,
+          )}' is lossy. If wanted, cast explicitly using '... as ${Semantic.serializeTypeUse(
+            sr,
+            toId
+          )}'`,
           sourceloc
         );
       }
-      return Semantic.addNode(sr, {
+      return Semantic.addExpr(sr, {
         variant: Semantic.ENode.ExplicitCastExpr,
         expr: fromExprId,
         type: toId,
         sourceloc: sourceloc,
-        isTemporary: from.isTemporary,
+        isTemporary: fromExpr.isTemporary,
       })[1];
     }
 
@@ -768,63 +734,71 @@ export namespace Conversion {
       fromType.variant === Semantic.ENode.PointerDatatype &&
       to.variant === Semantic.ENode.PointerDatatype
     ) {
-      const frompointee = sr.nodes.get(fromType.pointee);
+      const frompointeeInstance = sr.typeUseNodes.get(fromType.pointee);
+      const frompointee = sr.typeDefNodes.get(frompointeeInstance.type);
       // Conversion from void* to T*
       if (
         frompointee.variant === Semantic.ENode.PrimitiveDatatype &&
         frompointee.primitive === EPrimitive.void
       ) {
-        return Semantic.addNode(sr, {
+        return Semantic.addExpr(sr, {
           variant: Semantic.ENode.ExplicitCastExpr,
           expr: fromExprId,
           type: toId,
           sourceloc: sourceloc,
-          isTemporary: from.isTemporary,
+          isTemporary: fromExpr.isTemporary,
         })[1];
       }
       // Conversion from T* to void*
-      const topointee = sr.nodes.get(to.pointee);
+      const topointeeInstance = sr.typeUseNodes.get(to.pointee);
+      const topointee = sr.typeDefNodes.get(topointeeInstance.type);
       if (
         topointee.variant === Semantic.ENode.PrimitiveDatatype &&
         topointee.primitive === EPrimitive.void
       ) {
-        return Semantic.addNode(sr, {
+        return Semantic.addExpr(sr, {
           variant: Semantic.ENode.ExplicitCastExpr,
           expr: fromExprId,
           type: toId,
           sourceloc: sourceloc,
-          isTemporary: from.isTemporary,
+          isTemporary: fromExpr.isTemporary,
         })[1];
       }
     }
 
     // Core conversions
-    if (IsStructurallyEquivalent(sr, from.type, toId)) {
-      return Semantic.addNode(sr, {
+    if (
+      IsStructurallyEquivalent(
+        sr,
+        sr.typeUseNodes.get(fromExpr.type).type,
+        sr.typeUseNodes.get(toId).type
+      )
+    ) {
+      return Semantic.addExpr(sr, {
         variant: Semantic.ENode.ExplicitCastExpr,
         expr: fromExprId,
         type: toId,
         sourceloc: sourceloc,
-        isTemporary: from.isTemporary,
+        isTemporary: fromExpr.isTemporary,
       })[1];
     }
 
     throw new CompilerError(
-      `No suitable conversion from '${serializeDatatype(sr, from.type)}' to '${serializeDatatype(
+      `No suitable conversion from '${Semantic.serializeTypeUse(
         sr,
-        toId
-      )}' is known`,
+        fromExpr.type
+      )}' to '${Semantic.serializeTypeUse(sr, toId)}' is known`,
       sourceloc
     );
   }
 
   export function MakeDefaultValue(
     sr: SemanticResult,
-    targetTypeId: Semantic.Id,
+    targetTypeId: Semantic.TypeUseId,
     sourceloc: SourceLoc
-  ): Semantic.Id {
-    const targetType = sr.nodes.get(targetTypeId);
-    assert(isType(targetType));
+  ): Semantic.ExprId {
+    const typeInstance = sr.typeUseNodes.get(targetTypeId);
+    const targetType = sr.typeDefNodes.get(typeInstance.type);
 
     if (targetType.variant === Semantic.ENode.PrimitiveDatatype) {
       if (
@@ -838,7 +812,7 @@ export namespace Conversion {
         targetType.primitive === EPrimitive.i64 ||
         targetType.primitive === EPrimitive.int
       ) {
-        return Semantic.addNode(sr, {
+        return Semantic.addExpr(sr, {
           variant: Semantic.ENode.LiteralExpr,
           isTemporary: true,
           literal: {
@@ -854,7 +828,7 @@ export namespace Conversion {
         targetType.primitive === EPrimitive.f64 ||
         targetType.primitive === EPrimitive.real
       ) {
-        return Semantic.addNode(sr, {
+        return Semantic.addExpr(sr, {
           variant: Semantic.ENode.LiteralExpr,
           isTemporary: true,
           literal: {
@@ -866,7 +840,7 @@ export namespace Conversion {
           sourceloc: sourceloc,
         } satisfies Semantic.LiteralExpr)[1];
       } else if (targetType.primitive === EPrimitive.bool) {
-        return Semantic.addNode(sr, {
+        return Semantic.addExpr(sr, {
           variant: Semantic.ENode.LiteralExpr,
           isTemporary: true,
           literal: {
@@ -877,7 +851,7 @@ export namespace Conversion {
           sourceloc: sourceloc,
         } satisfies Semantic.LiteralExpr)[1];
       } else if (targetType.primitive === EPrimitive.null) {
-        return Semantic.addNode(sr, {
+        return Semantic.addExpr(sr, {
           variant: Semantic.ENode.LiteralExpr,
           isTemporary: true,
           literal: {
@@ -899,7 +873,7 @@ export namespace Conversion {
       }
 
       const requiredMembers = targetType.members.map((m) => {
-        const mVar = sr.nodes.get(m);
+        const mVar = sr.symbolNodes.get(m);
         assert(mVar.variant === Semantic.ENode.VariableSymbol);
         return mVar.name;
       });
@@ -909,9 +883,9 @@ export namespace Conversion {
         const collectedStruct = sr.cc.nodes.get(targetType.collectedSymbol);
         assert(collectedStruct.variant === Collect.ENode.StructDefinitionSymbol);
         // Make an empty struct instantiation and let it handle the default values, since we know they all exist.
-        return makeStructInstantiation(sr, targetTypeId, {
+        return Semantic.makeStructInstantiation(sr, sr.typeUseNodes.get(targetTypeId).type, {
           blockScope: null,
-          context: makeElaborationContext({
+          context: Semantic.makeElaborationContext({
             currentScope: collectedStruct.structScope,
             genericsScope: collectedStruct.structScope,
           }),
@@ -923,7 +897,7 @@ export namespace Conversion {
       }
 
       throw new CompilerError(
-        `Default value for type '${serializeDatatype(
+        `Default value for type '${Semantic.serializeTypeUse(
           sr,
           targetTypeId
         )}' is requested, but this struct has no default value because not all members specify a default value`,
@@ -932,7 +906,7 @@ export namespace Conversion {
     }
 
     throw new CompilerError(
-      `Default value for type '${serializeDatatype(
+      `Default value for type '${Semantic.serializeTypeUse(
         sr,
         targetTypeId
       )}' is requested, but no safe default value is known for that type`,
@@ -942,79 +916,77 @@ export namespace Conversion {
 
   export function makeComparisonResultType(
     sr: SemanticResult,
-    a: Semantic.Id,
-    b: Semantic.Id,
+    a: Semantic.ExprId,
+    b: Semantic.ExprId,
     sourceloc: SourceLoc
-  ): Semantic.Id {
-    const leftTypeId = getExprType(sr, a);
-    const rightTypeId = getExprType(sr, b);
+  ): Semantic.TypeUseId {
+    const leftTypeId = sr.typeUseNodes.get(sr.exprNodes.get(a).type).type;
+    const rightTypeId = sr.typeUseNodes.get(sr.exprNodes.get(b).type).type;
 
     const comparisons = [
       {
         comparable: [
-          makePrimitiveAvailable(sr, EPrimitive.i8),
-          makePrimitiveAvailable(sr, EPrimitive.i16),
-          makePrimitiveAvailable(sr, EPrimitive.i32),
-          makePrimitiveAvailable(sr, EPrimitive.i64),
-          makePrimitiveAvailable(sr, EPrimitive.int),
+          makeRawPrimitiveAvailable(sr, EPrimitive.i8),
+          makeRawPrimitiveAvailable(sr, EPrimitive.i16),
+          makeRawPrimitiveAvailable(sr, EPrimitive.i32),
+          makeRawPrimitiveAvailable(sr, EPrimitive.i64),
+          makeRawPrimitiveAvailable(sr, EPrimitive.int),
         ],
       },
       {
         comparable: [
-          makePrimitiveAvailable(sr, EPrimitive.u8),
-          makePrimitiveAvailable(sr, EPrimitive.u16),
-          makePrimitiveAvailable(sr, EPrimitive.u32),
-          makePrimitiveAvailable(sr, EPrimitive.u64),
-          makePrimitiveAvailable(sr, EPrimitive.usize),
+          makeRawPrimitiveAvailable(sr, EPrimitive.u8),
+          makeRawPrimitiveAvailable(sr, EPrimitive.u16),
+          makeRawPrimitiveAvailable(sr, EPrimitive.u32),
+          makeRawPrimitiveAvailable(sr, EPrimitive.u64),
+          makeRawPrimitiveAvailable(sr, EPrimitive.usize),
         ],
       },
       {
-        comparable: [makePrimitiveAvailable(sr, EPrimitive.null)],
+        comparable: [makeRawPrimitiveAvailable(sr, EPrimitive.null)],
       },
       {
         comparable: [
-          makePrimitiveAvailable(sr, EPrimitive.f32),
-          makePrimitiveAvailable(sr, EPrimitive.f64),
-          makePrimitiveAvailable(sr, EPrimitive.real),
+          makeRawPrimitiveAvailable(sr, EPrimitive.f32),
+          makeRawPrimitiveAvailable(sr, EPrimitive.f64),
+          makeRawPrimitiveAvailable(sr, EPrimitive.real),
         ],
       },
     ];
     for (const c of comparisons) {
       if (c.comparable.includes(leftTypeId) && c.comparable.includes(rightTypeId)) {
-        return makePrimitiveAvailable(sr, EPrimitive.bool);
+        return makePrimitiveAvailable(sr, EPrimitive.bool, EDatatypeMutability.Const);
       }
     }
 
-    const leftType = sr.nodes.get(leftTypeId);
-    assert(isType(leftType));
-    const rightType = sr.nodes.get(rightTypeId);
-    assert(isType(rightType));
+    const leftType = sr.typeDefNodes.get(leftTypeId);
+    const rightType = sr.typeDefNodes.get(rightTypeId);
 
     if (
       leftType.variant === Semantic.ENode.PointerDatatype &&
       rightType.variant === Semantic.ENode.PointerDatatype
     ) {
-      return makePrimitiveAvailable(sr, EPrimitive.bool);
+      return makePrimitiveAvailable(sr, EPrimitive.bool, EDatatypeMutability.Const);
     }
 
     throw new CompilerError(
-      `No safe comparison is available between types '${serializeDatatype(
+      `No safe comparison is available between types '${Semantic.serializeTypeUseFromDef(
         sr,
         leftTypeId
-      )}' and '${serializeDatatype(sr, rightTypeId)}'`,
+      )}' and '${Semantic.serializeTypeUseFromDef(sr, rightTypeId)}'`,
       sourceloc
     );
   }
 
   export function makeBinaryResultType(
     sr: SemanticResult,
-    a: Semantic.Id,
-    b: Semantic.Id,
+    a: Semantic.ExprId,
+    b: Semantic.ExprId,
     operation: EBinaryOperation,
     sourceloc: SourceLoc
-  ): Semantic.Id {
-    const leftType = getExprType(sr, a);
-    const rightType = getExprType(sr, b);
+  ): Semantic.TypeUseId {
+    const leftType = sr.typeUseNodes.get(sr.exprNodes.get(a).type).type;
+    const rightType = sr.typeUseNodes.get(sr.exprNodes.get(b).type).type;
 
     switch (operation) {
       case EBinaryOperation.Equal:
@@ -1031,7 +1003,7 @@ export namespace Conversion {
       case EBinaryOperation.Add:
       case EBinaryOperation.Subtract:
         if (leftType === rightType) {
-          return leftType;
+          return makeTypeUse(sr, leftType, EDatatypeMutability.Const)[1];
         }
         break;
 
@@ -1043,10 +1015,10 @@ export namespace Conversion {
     throw new CompilerError(
       `No safe ${BinaryOperationToString(
         operation
-      )} operation is known between types '${serializeDatatype(
+      )} operation is known between types '${Semantic.serializeTypeUseFromDef(
         sr,
         leftType
-      )}' and '${serializeDatatype(sr, rightType)}'`,
+      )}' and '${Semantic.serializeTypeUseFromDef(sr, rightType)}'`,
       sourceloc
     );
   }
@@ -1054,190 +1026,190 @@ export namespace Conversion {
   const UnaryOperationResults = (sr: SemanticResult) => ({
     [EUnaryOperation.Plus]: [
       {
-        from: makePrimitiveAvailable(sr, EPrimitive.i8),
-        to: makePrimitiveAvailable(sr, EPrimitive.i8),
+        from: makeRawPrimitiveAvailable(sr, EPrimitive.i8),
+        to: makeRawPrimitiveAvailable(sr, EPrimitive.i8),
       },
       {
-        from: makePrimitiveAvailable(sr, EPrimitive.i16),
-        to: makePrimitiveAvailable(sr, EPrimitive.i16),
+        from: makeRawPrimitiveAvailable(sr, EPrimitive.i16),
+        to: makeRawPrimitiveAvailable(sr, EPrimitive.i16),
       },
       {
-        from: makePrimitiveAvailable(sr, EPrimitive.i32),
-        to: makePrimitiveAvailable(sr, EPrimitive.i32),
+        from: makeRawPrimitiveAvailable(sr, EPrimitive.i32),
+        to: makeRawPrimitiveAvailable(sr, EPrimitive.i32),
       },
       {
-        from: makePrimitiveAvailable(sr, EPrimitive.i64),
-        to: makePrimitiveAvailable(sr, EPrimitive.i64),
+        from: makeRawPrimitiveAvailable(sr, EPrimitive.i64),
+        to: makeRawPrimitiveAvailable(sr, EPrimitive.i64),
       },
       {
-        from: makePrimitiveAvailable(sr, EPrimitive.u8),
-        to: makePrimitiveAvailable(sr, EPrimitive.u8),
+        from: makeRawPrimitiveAvailable(sr, EPrimitive.u8),
+        to: makeRawPrimitiveAvailable(sr, EPrimitive.u8),
       },
       {
-        from: makePrimitiveAvailable(sr, EPrimitive.u16),
-        to: makePrimitiveAvailable(sr, EPrimitive.u16),
+        from: makeRawPrimitiveAvailable(sr, EPrimitive.u16),
+        to: makeRawPrimitiveAvailable(sr, EPrimitive.u16),
       },
       {
-        from: makePrimitiveAvailable(sr, EPrimitive.u32),
-        to: makePrimitiveAvailable(sr, EPrimitive.u32),
+        from: makeRawPrimitiveAvailable(sr, EPrimitive.u32),
+        to: makeRawPrimitiveAvailable(sr, EPrimitive.u32),
       },
       {
-        from: makePrimitiveAvailable(sr, EPrimitive.u64),
-        to: makePrimitiveAvailable(sr, EPrimitive.u64),
+        from: makeRawPrimitiveAvailable(sr, EPrimitive.u64),
+        to: makeRawPrimitiveAvailable(sr, EPrimitive.u64),
       },
       {
-        from: makePrimitiveAvailable(sr, EPrimitive.f32),
-        to: makePrimitiveAvailable(sr, EPrimitive.f32),
+        from: makeRawPrimitiveAvailable(sr, EPrimitive.f32),
+        to: makeRawPrimitiveAvailable(sr, EPrimitive.f32),
       },
       {
-        from: makePrimitiveAvailable(sr, EPrimitive.f64),
-        to: makePrimitiveAvailable(sr, EPrimitive.f64),
+        from: makeRawPrimitiveAvailable(sr, EPrimitive.f64),
+        to: makeRawPrimitiveAvailable(sr, EPrimitive.f64),
       },
       {
-        from: makePrimitiveAvailable(sr, EPrimitive.int),
-        to: makePrimitiveAvailable(sr, EPrimitive.int),
+        from: makeRawPrimitiveAvailable(sr, EPrimitive.int),
+        to: makeRawPrimitiveAvailable(sr, EPrimitive.int),
       },
       {
-        from: makePrimitiveAvailable(sr, EPrimitive.real),
-        to: makePrimitiveAvailable(sr, EPrimitive.real),
+        from: makeRawPrimitiveAvailable(sr, EPrimitive.real),
+        to: makeRawPrimitiveAvailable(sr, EPrimitive.real),
       },
       {
-        from: makePrimitiveAvailable(sr, EPrimitive.usize),
-        to: makePrimitiveAvailable(sr, EPrimitive.usize),
+        from: makeRawPrimitiveAvailable(sr, EPrimitive.usize),
+        to: makeRawPrimitiveAvailable(sr, EPrimitive.usize),
       },
     ],
     [EUnaryOperation.Minus]: [
       {
-        from: makePrimitiveAvailable(sr, EPrimitive.i8),
-        to: makePrimitiveAvailable(sr, EPrimitive.i8),
+        from: makeRawPrimitiveAvailable(sr, EPrimitive.i8),
+        to: makeRawPrimitiveAvailable(sr, EPrimitive.i8),
       },
       {
-        from: makePrimitiveAvailable(sr, EPrimitive.i16),
-        to: makePrimitiveAvailable(sr, EPrimitive.i16),
+        from: makeRawPrimitiveAvailable(sr, EPrimitive.i16),
+        to: makeRawPrimitiveAvailable(sr, EPrimitive.i16),
       },
       {
-        from: makePrimitiveAvailable(sr, EPrimitive.i32),
-        to: makePrimitiveAvailable(sr, EPrimitive.i32),
+        from: makeRawPrimitiveAvailable(sr, EPrimitive.i32),
+        to: makeRawPrimitiveAvailable(sr, EPrimitive.i32),
       },
       {
-        from: makePrimitiveAvailable(sr, EPrimitive.i64),
-        to: makePrimitiveAvailable(sr, EPrimitive.i64),
+        from: makeRawPrimitiveAvailable(sr, EPrimitive.i64),
+        to: makeRawPrimitiveAvailable(sr, EPrimitive.i64),
       },
       {
-        from: makePrimitiveAvailable(sr, EPrimitive.u8),
-        to: makePrimitiveAvailable(sr, EPrimitive.u8),
+        from: makeRawPrimitiveAvailable(sr, EPrimitive.u8),
+        to: makeRawPrimitiveAvailable(sr, EPrimitive.u8),
       },
       {
-        from: makePrimitiveAvailable(sr, EPrimitive.u16),
-        to: makePrimitiveAvailable(sr, EPrimitive.u16),
+        from: makeRawPrimitiveAvailable(sr, EPrimitive.u16),
+        to: makeRawPrimitiveAvailable(sr, EPrimitive.u16),
       },
       {
-        from: makePrimitiveAvailable(sr, EPrimitive.u32),
-        to: makePrimitiveAvailable(sr, EPrimitive.u32),
+        from: makeRawPrimitiveAvailable(sr, EPrimitive.u32),
+        to: makeRawPrimitiveAvailable(sr, EPrimitive.u32),
       },
       {
-        from: makePrimitiveAvailable(sr, EPrimitive.u64),
-        to: makePrimitiveAvailable(sr, EPrimitive.u64),
+        from: makeRawPrimitiveAvailable(sr, EPrimitive.u64),
+        to: makeRawPrimitiveAvailable(sr, EPrimitive.u64),
       },
       {
-        from: makePrimitiveAvailable(sr, EPrimitive.f32),
-        to: makePrimitiveAvailable(sr, EPrimitive.f32),
+        from: makeRawPrimitiveAvailable(sr, EPrimitive.f32),
+        to: makeRawPrimitiveAvailable(sr, EPrimitive.f32),
       },
       {
-        from: makePrimitiveAvailable(sr, EPrimitive.f64),
-        to: makePrimitiveAvailable(sr, EPrimitive.f64),
+        from: makeRawPrimitiveAvailable(sr, EPrimitive.f64),
+        to: makeRawPrimitiveAvailable(sr, EPrimitive.f64),
       },
       {
-        from: makePrimitiveAvailable(sr, EPrimitive.int),
-        to: makePrimitiveAvailable(sr, EPrimitive.int),
+        from: makeRawPrimitiveAvailable(sr, EPrimitive.int),
+        to: makeRawPrimitiveAvailable(sr, EPrimitive.int),
       },
       {
-        from: makePrimitiveAvailable(sr, EPrimitive.real),
-        to: makePrimitiveAvailable(sr, EPrimitive.real),
+        from: makeRawPrimitiveAvailable(sr, EPrimitive.real),
+        to: makeRawPrimitiveAvailable(sr, EPrimitive.real),
       },
       {
-        from: makePrimitiveAvailable(sr, EPrimitive.usize),
-        to: makePrimitiveAvailable(sr, EPrimitive.usize),
+        from: makeRawPrimitiveAvailable(sr, EPrimitive.usize),
+        to: makeRawPrimitiveAvailable(sr, EPrimitive.usize),
       },
     ],
     [EUnaryOperation.Negate]: [
       {
-        from: makePrimitiveAvailable(sr, EPrimitive.bool),
-        to: makePrimitiveAvailable(sr, EPrimitive.bool),
+        from: makeRawPrimitiveAvailable(sr, EPrimitive.bool),
+        to: makeRawPrimitiveAvailable(sr, EPrimitive.bool),
       },
       {
-        from: makePrimitiveAvailable(sr, EPrimitive.i8),
-        to: makePrimitiveAvailable(sr, EPrimitive.bool),
+        from: makeRawPrimitiveAvailable(sr, EPrimitive.i8),
+        to: makeRawPrimitiveAvailable(sr, EPrimitive.bool),
       },
       {
-        from: makePrimitiveAvailable(sr, EPrimitive.i16),
-        to: makePrimitiveAvailable(sr, EPrimitive.bool),
+        from: makeRawPrimitiveAvailable(sr, EPrimitive.i16),
+        to: makeRawPrimitiveAvailable(sr, EPrimitive.bool),
       },
       {
-        from: makePrimitiveAvailable(sr, EPrimitive.i32),
-        to: makePrimitiveAvailable(sr, EPrimitive.bool),
+        from: makeRawPrimitiveAvailable(sr, EPrimitive.i32),
+        to: makeRawPrimitiveAvailable(sr, EPrimitive.bool),
       },
       {
-        from: makePrimitiveAvailable(sr, EPrimitive.i64),
-        to: makePrimitiveAvailable(sr, EPrimitive.bool),
+        from: makeRawPrimitiveAvailable(sr, EPrimitive.i64),
+        to: makeRawPrimitiveAvailable(sr, EPrimitive.bool),
       },
       {
-        from: makePrimitiveAvailable(sr, EPrimitive.u8),
-        to: makePrimitiveAvailable(sr, EPrimitive.bool),
+        from: makeRawPrimitiveAvailable(sr, EPrimitive.u8),
+        to: makeRawPrimitiveAvailable(sr, EPrimitive.bool),
       },
       {
-        from: makePrimitiveAvailable(sr, EPrimitive.u16),
-        to: makePrimitiveAvailable(sr, EPrimitive.bool),
+        from: makeRawPrimitiveAvailable(sr, EPrimitive.u16),
+        to: makeRawPrimitiveAvailable(sr, EPrimitive.bool),
       },
       {
-        from: makePrimitiveAvailable(sr, EPrimitive.u32),
-        to: makePrimitiveAvailable(sr, EPrimitive.bool),
+        from: makeRawPrimitiveAvailable(sr, EPrimitive.u32),
+        to: makeRawPrimitiveAvailable(sr, EPrimitive.bool),
       },
       {
-        from: makePrimitiveAvailable(sr, EPrimitive.u64),
-        to: makePrimitiveAvailable(sr, EPrimitive.bool),
+        from: makeRawPrimitiveAvailable(sr, EPrimitive.u64),
+        to: makeRawPrimitiveAvailable(sr, EPrimitive.bool),
       },
       {
-        from: makePrimitiveAvailable(sr, EPrimitive.f32),
-        to: makePrimitiveAvailable(sr, EPrimitive.bool),
+        from: makeRawPrimitiveAvailable(sr, EPrimitive.f32),
+        to: makeRawPrimitiveAvailable(sr, EPrimitive.bool),
       },
       {
-        from: makePrimitiveAvailable(sr, EPrimitive.f64),
-        to: makePrimitiveAvailable(sr, EPrimitive.bool),
+        from: makeRawPrimitiveAvailable(sr, EPrimitive.f64),
+        to: makeRawPrimitiveAvailable(sr, EPrimitive.bool),
       },
       {
-        from: makePrimitiveAvailable(sr, EPrimitive.int),
-        to: makePrimitiveAvailable(sr, EPrimitive.bool),
+        from: makeRawPrimitiveAvailable(sr, EPrimitive.int),
+        to: makeRawPrimitiveAvailable(sr, EPrimitive.bool),
       },
       {
-        from: makePrimitiveAvailable(sr, EPrimitive.real),
-        to: makePrimitiveAvailable(sr, EPrimitive.bool),
+        from: makeRawPrimitiveAvailable(sr, EPrimitive.real),
+        to: makeRawPrimitiveAvailable(sr, EPrimitive.bool),
       },
       {
-        from: makePrimitiveAvailable(sr, EPrimitive.usize),
-        to: makePrimitiveAvailable(sr, EPrimitive.bool),
+        from: makeRawPrimitiveAvailable(sr, EPrimitive.usize),
+        to: makeRawPrimitiveAvailable(sr, EPrimitive.bool),
       },
     ],
   });
 
   export function makeUnaryResultType(
     sr: SemanticResult,
-    a: Semantic.Id,
+    a: Semantic.TypeUseId,
     operation: EUnaryOperation,
     sourceloc: SourceLoc
-  ): Semantic.Id {
+  ): Semantic.TypeUseId {
     const ops = UnaryOperationResults(sr)[operation];
 
     for (const op of ops) {
-      if (op.from === a) {
-        return op.to;
+      if (op.from === sr.typeUseNodes.get(a).type) {
+        return makeTypeUse(sr, op.to, EDatatypeMutability.Const)[1];
       }
     }
 
     throw new CompilerError(
       `No unary ${UnaryOperationToString(
         operation
-      )} operation is known for type '${serializeDatatype(sr, a)}'`,
+      )} operation is known for type '${Semantic.serializeTypeUse(sr, a)}'`,
       sourceloc
     );
   }

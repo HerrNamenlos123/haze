@@ -40,6 +40,7 @@ import {
   AssignmentOperationToString,
   IncrOperationToString,
   EClonability,
+  EVariableMutability,
 } from "../shared/AST";
 import {
   BrandedArray,
@@ -52,7 +53,7 @@ import {
 } from "../shared/common";
 
 import {
-  EVariableMutability,
+  EDatatypeMutability,
   type ASTCInjectDirective,
   type ASTExpr,
   type ASTStatement,
@@ -62,9 +63,8 @@ import {
   type EUnaryOperation,
 } from "../shared/AST";
 import { getModuleGlobalNamespaceName, type ExportData, type ModuleConfig } from "../shared/Config";
-import { serializeLiteralValue } from "../Semantic/Serialize";
 import { join } from "path";
-import { isAutoAccessorPropertyDeclaration } from "typescript";
+import { Semantic } from "../Semantic/Elaborate";
 
 export type CollectionContext = {
   config: ModuleConfig;
@@ -141,7 +141,7 @@ export namespace Collect {
     IfStatement,
     ForEachStatement,
     WhileStatement,
-    TypedefStatement,
+    TypeAliasStatement,
     ReturnStatement,
     InlineCStatement,
     BlockScopeStatement,
@@ -342,6 +342,7 @@ export namespace Collect {
     name: string;
     innerNested: Collect.Id | null;
     genericArgs: Collect.Id[];
+    mutability: EDatatypeMutability;
     sourceloc: SourceLoc;
   };
 
@@ -350,18 +351,21 @@ export namespace Collect {
     parameters: Collect.Id[];
     returnType: Collect.Id;
     vararg: boolean;
+    mutability: EDatatypeMutability;
     sourceloc: SourceLoc;
   };
 
   export type PointerDatatype = {
     variant: ENode.PointerDatatype;
     pointee: Collect.Id;
+    mutability: EDatatypeMutability;
     sourceloc: SourceLoc;
   };
 
   export type ReferenceDatatype = {
     variant: ENode.ReferenceDatatype;
     referee: Collect.Id;
+    mutability: EDatatypeMutability;
     sourceloc: SourceLoc;
   };
 
@@ -369,12 +373,14 @@ export namespace Collect {
     variant: ENode.ArrayDatatype;
     datatype: Collect.Id;
     length: number;
+    mutability: EDatatypeMutability;
     sourceloc: SourceLoc;
   };
 
   export type SliceDatatype = {
     variant: ENode.SliceDatatype;
     datatype: Collect.Id;
+    mutability: EDatatypeMutability;
     sourceloc: SourceLoc;
   };
 
@@ -506,7 +512,7 @@ export namespace Collect {
   };
 
   export type TypedefStatement = BaseStatement & {
-    variant: ENode.TypedefStatement;
+    variant: ENode.TypeAliasStatement;
     name: string;
     datatype: Collect.Id;
   };
@@ -920,6 +926,7 @@ function collect(
             genericArgs: [],
             innerNested: null,
             name: "void",
+            mutability: EDatatypeMutability.Default,
             sourceloc: null,
           })[1],
         sourceloc: item.sourceloc,
@@ -971,7 +978,7 @@ function collect(
             {
               variant: Collect.ENode.VariableSymbol,
               comptime: false,
-              mutability: EVariableMutability.Mutable,
+              mutability: EVariableMutability.Default,
               name: "this",
               sourceloc: functionSymbol.sourceloc,
               type: null,
@@ -987,7 +994,7 @@ function collect(
             {
               variant: Collect.ENode.VariableSymbol,
               comptime: false,
-              mutability: EVariableMutability.Immutable,
+              mutability: EVariableMutability.Default,
               name: p.name,
               sourceloc: p.sourceloc,
               type: p.type,
@@ -1019,7 +1026,7 @@ function collect(
           variant: Collect.ENode.VariableSymbol,
           name: item.name,
           comptime: false,
-          mutability: EVariableMutability.Mutable,
+          mutability: item.mutability,
           sourceloc: item.sourceloc,
           type: collect(cc, item.type, {
             currentParentScope: args.currentParentScope,
@@ -1296,7 +1303,7 @@ function collect(
         name: item.name,
         innerNested: (item.nested && collect(cc, item.nested, args)) || null,
         genericArgs: item.generics.map((g) => collect(cc, g, args)),
-        // referee: collect(cc, item.n, args),
+        mutability: item.mutability,
         sourceloc: item.sourceloc,
       })[1];
     }
@@ -1309,6 +1316,7 @@ function collect(
       return makeSymbol(cc, {
         variant: Collect.ENode.PointerDatatype,
         pointee: collect(cc, item.pointee, args),
+        mutability: item.mutability,
         sourceloc: item.sourceloc,
       })[1];
     }
@@ -1321,6 +1329,7 @@ function collect(
       return makeSymbol(cc, {
         variant: Collect.ENode.ReferenceDatatype,
         referee: collect(cc, item.referee, args),
+        mutability: item.mutability,
         sourceloc: item.sourceloc,
       })[1];
     }
@@ -1407,9 +1416,9 @@ function collect(
             });
             break;
 
-          case "TypedefStatement":
+          case "TypeAliasStatement":
             addStatement(cc, blockScope, {
-              variant: Collect.ENode.TypedefStatement,
+              variant: Collect.ENode.TypeAliasStatement,
               datatype: collect(cc, astStatement.datatype, { currentParentScope: blockScope }),
               name: astStatement.name,
               sourceloc: astStatement.sourceloc,
@@ -1500,6 +1509,7 @@ function collect(
         parameters: item.params.map((p) => collect(cc, p.datatype, args)),
         vararg: item.ellipsis,
         sourceloc: item.sourceloc,
+        mutability: item.mutability,
       })[1];
 
     // =================================================================================================================
@@ -1511,6 +1521,7 @@ function collect(
         variant: Collect.ENode.ArrayDatatype,
         datatype: collect(cc, item.datatype, args),
         length: item.length,
+        mutability: item.mutability,
         sourceloc: item.sourceloc,
       })[1];
 
@@ -1522,6 +1533,7 @@ function collect(
       return makeSymbol(cc, {
         variant: Collect.ENode.SliceDatatype,
         datatype: collect(cc, item.datatype, args),
+        mutability: item.mutability,
         sourceloc: item.sourceloc,
       })[1];
 
@@ -1814,6 +1826,7 @@ function collect(
           genericArgs: [],
           innerNested: null,
           name: importedNamespace,
+          mutability: EDatatypeMutability.Default,
           sourceloc: null,
         })[1],
         mode: item.mode,
@@ -1852,9 +1865,9 @@ function collect(
     // =================================================================================================================
     // =================================================================================================================
 
-    case "TypedefStatement": {
+    case "TypeAliasStatement": {
       const [symbol, symbolId] = makeSymbol(cc, {
-        variant: Collect.ENode.TypedefStatement,
+        variant: Collect.ENode.TypeAliasStatement,
         datatype: collect(cc, item.datatype, { currentParentScope: args.currentParentScope }),
         owningScope: args.currentParentScope,
         name: item.name,
@@ -1985,15 +1998,19 @@ export function printCollectedDatatype(cc: CollectionContext, typeId: Collect.Id
     }
 
     case Collect.ENode.LiteralExpr: {
-      return serializeLiteralValue(type.literal);
+      return Semantic.serializeLiteralValue(type.literal);
     }
 
     case Collect.ENode.ArrayDatatype: {
-      return `${printCollectedDatatype(cc, type.datatype)}[${type.length}]`;
+      return `[${type.length}]${printCollectedDatatype(cc, type.datatype)}`;
     }
 
     case Collect.ENode.ParameterPack: {
       return `...`;
+    }
+
+    case Collect.ENode.SliceDatatype: {
+      return `[]${printCollectedDatatype(cc, type.datatype)}`;
     }
 
     case Collect.ENode.FunctionDatatype: {
@@ -2112,6 +2129,18 @@ export function PrettyPrintCollected(cc: CollectionContext) {
 
       case Collect.ENode.ArrayLiteralExpr: {
         return `[${expr.values.map((v) => printExpr(v)).join(", ")}]`;
+      }
+
+      case Collect.ENode.PointerAddressOfExpr: {
+        return `&${printExpr(expr.expr)}`;
+      }
+
+      case Collect.ENode.PointerDereferenceExpr: {
+        return `*${printExpr(expr.expr)}`;
+      }
+
+      case Collect.ENode.TypeLiteralExpr: {
+        return `type<${printCollectedDatatype(cc, expr.datatype)}>`;
       }
 
       default:
@@ -2314,7 +2343,7 @@ export function PrettyPrintCollected(cc: CollectionContext) {
         break;
       }
 
-      case Collect.ENode.TypedefStatement: {
+      case Collect.ENode.TypeAliasStatement: {
         print(`type ${symbol.name} = ${printCollectedDatatype(cc, symbol.datatype)};`);
         break;
       }

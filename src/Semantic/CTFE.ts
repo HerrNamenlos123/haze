@@ -1,23 +1,17 @@
-import { EBinaryOperation } from "../shared/AST";
+import { EBinaryOperation, EDatatypeMutability } from "../shared/AST";
 import { EPrimitive, primitiveToString } from "../shared/common";
 import { assert, CompilerError } from "../shared/Errors";
-import {
-  isExpression,
-  makePrimitiveAvailable,
-  Semantic,
-  type SemanticResult,
-} from "./SemanticSymbols";
-import { serializeDatatype } from "./Serialize";
+import { makePrimitiveAvailable, Semantic, type SemanticResult } from "./Elaborate";
 
 function makeBoolValue(sr: SemanticResult, value: boolean) {
-  return Semantic.addNode(sr, {
+  return Semantic.addExpr(sr, {
     variant: Semantic.ENode.LiteralExpr,
     literal: {
       type: EPrimitive.bool,
       value: value,
     },
     isTemporary: true,
-    type: makePrimitiveAvailable(sr, EPrimitive.bool),
+    type: makePrimitiveAvailable(sr, EPrimitive.bool, EDatatypeMutability.Const),
     sourceloc: null,
   });
 }
@@ -42,8 +36,8 @@ const TRIVIAL_LITERAL_COMPARISONS = [
   EPrimitive.bool,
 ] as const;
 
-export function CanEvaluateCTFE(sr: SemanticResult, exprId: Semantic.Id): boolean {
-  const expr = sr.nodes.get(exprId);
+export function CanEvaluateCTFE(sr: SemanticResult, exprId: Semantic.ExprId): boolean {
+  const expr = sr.exprNodes.get(exprId);
   switch (expr.variant) {
     case Semantic.ENode.BinaryExpr: {
       if (!CanEvaluateCTFE(sr, expr.left) || !CanEvaluateCTFE(sr, expr.right)) {
@@ -89,10 +83,13 @@ export function CanEvaluateCTFE(sr: SemanticResult, exprId: Semantic.Id): boolea
     }
 
     case Semantic.ENode.SymbolValueExpr: {
-      const symbol = sr.nodes.get(expr.symbol);
+      const symbol = sr.symbolNodes.get(expr.symbol);
       if (symbol.variant === Semantic.ENode.VariableSymbol && symbol.comptime) {
         return true;
-      } else if (symbol.variant === Semantic.ENode.ParameterPackDatatypeSymbol) {
+      } else if (
+        symbol.variant === Semantic.ENode.TypeDefSymbol &&
+        sr.typeDefNodes.get(symbol.datatype).variant === Semantic.ENode.ParameterPackDatatype
+      ) {
         return true;
       }
       return false;
@@ -111,9 +108,9 @@ export function CanEvaluateCTFE(sr: SemanticResult, exprId: Semantic.Id): boolea
 
 export function EvalCTFE(
   sr: SemanticResult,
-  exprId: Semantic.Id
-): [Semantic.Expression, Semantic.Id] {
-  const expr = sr.nodes.get(exprId);
+  exprId: Semantic.ExprId
+): [Semantic.Expression, Semantic.ExprId] {
+  const expr = sr.exprNodes.get(exprId);
   switch (expr.variant) {
     case Semantic.ENode.BinaryExpr: {
       const [left, leftId] = EvalCTFE(sr, expr.left);
@@ -143,10 +140,10 @@ export function EvalCTFE(
             );
           } else {
             throw new CompilerError(
-              `Cannot compare expressions of types ${serializeDatatype(
+              `Cannot compare expressions of types ${Semantic.serializeTypeUse(
                 sr,
                 left.type
-              )} and ${serializeDatatype(sr, left.type)} at compile time`,
+              )} and ${Semantic.serializeTypeUse(sr, left.type)} at compile time`,
               "sourceloc" in expr ? expr.sourceloc : null
             );
           }
@@ -169,13 +166,15 @@ export function EvalCTFE(
     }
 
     case Semantic.ENode.SymbolValueExpr: {
-      const symbol = sr.nodes.get(expr.symbol);
+      const symbol = sr.symbolNodes.get(expr.symbol);
       if (symbol.variant === Semantic.ENode.VariableSymbol && symbol.comptime) {
         assert(symbol.comptimeValue);
-        const value = sr.nodes.get(symbol.comptimeValue);
-        assert(isExpression(value));
+        const value = sr.exprNodes.get(symbol.comptimeValue);
         return [value, symbol.comptimeValue];
-      } else if (symbol.variant === Semantic.ENode.ParameterPackDatatypeSymbol) {
+      } else if (
+        symbol.variant === Semantic.ENode.TypeDefSymbol &&
+        sr.typeDefNodes.get(symbol.datatype).variant === Semantic.ENode.ParameterPackDatatype
+      ) {
         return [expr, exprId];
       }
       break;
@@ -194,7 +193,7 @@ export function EvalCTFE(
   );
 }
 
-export function EvalCTFEBoolean(sr: SemanticResult, exprId: Semantic.Id) {
+export function EvalCTFEBoolean(sr: SemanticResult, exprId: Semantic.ExprId) {
   const [result, resultId] = EvalCTFE(sr, exprId);
   assert(result.variant === Semantic.ENode.LiteralExpr);
 

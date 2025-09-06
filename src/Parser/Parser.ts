@@ -52,10 +52,9 @@ import {
   type ASTVariableDefinitionStatement,
   type ASTWhileStatement,
   type ASTScopeStatement,
-  EVariableMutability,
   type ModuleImport,
   type SymbolImport,
-  type ASTTypedefStatement,
+  type ASTTypeAliasStatement,
   type ASTArrayDatatype,
   type ASTArrayLiteralExpr,
   type ASTArraySubscriptExpr,
@@ -65,6 +64,8 @@ import {
   type ASTFStringExpr,
   type ASTSliceDatatype,
   type ASTArraySliceExpr,
+  EDatatypeMutability,
+  EVariableMutability,
 } from "../shared/AST";
 import {
   BinaryExprContext,
@@ -110,9 +111,6 @@ import {
   UnaryExprContext,
   VariableCreationStatementContext,
   WhileStatementContext,
-  VariableMutableContext,
-  VariableImmutableContext,
-  VariableBindingImmutableContext,
   ScopeStatementContext,
   IntegerLiteralContext,
   FloatLiteralContext,
@@ -121,8 +119,6 @@ import {
   LiteralExprContext,
   FromImportStatementContext,
   ImportStatementContext,
-  TypedefStatementContext,
-  TypedefDirectiveContext,
   ArrayDatatypeContext,
   ArrayLiteralContext,
   ArraySubscriptExprContext,
@@ -131,6 +127,12 @@ import {
   FStringLiteralContext,
   SliceDatatypeContext,
   ArraySliceExprContext,
+  DatatypeInParenthesisContext,
+  DatatypeWithMutabilityContext,
+  TypeAliasDirectiveContext,
+  TypeAliasStatementContext,
+  VariableConstContext,
+  VariableLetContext,
 } from "./grammar/autogen/HazeParser";
 import {
   BaseErrorListener,
@@ -233,7 +235,7 @@ class ASTTransformer extends HazeVisitor<any> {
       | GlobalVariableDefinitionContext
       | FunctionDefinitionContext
       | StructDefinitionContext
-      | TypedefDirectiveContext
+      | TypeAliasDirectiveContext
   ): EExternLanguage {
     if (!Boolean(ctx._extern)) {
       return EExternLanguage.None;
@@ -245,16 +247,14 @@ class ASTTransformer extends HazeVisitor<any> {
   }
 
   mutability(
-    ctx: GlobalVariableDefinitionContext | VariableCreationStatementContext
+    ctx: GlobalVariableDefinitionContext | VariableCreationStatementContext | StructMemberContext
   ): EVariableMutability {
     if (!ctx.variableMutabilitySpecifier) {
-      throw new InternalError("Mutability field of variable is not available");
-    } else if (ctx.variableMutabilitySpecifier() instanceof VariableMutableContext) {
-      return EVariableMutability.Mutable;
-    } else if (ctx.variableMutabilitySpecifier() instanceof VariableImmutableContext) {
-      return EVariableMutability.Immutable;
-    } else if (ctx.variableMutabilitySpecifier() instanceof VariableBindingImmutableContext) {
-      return EVariableMutability.BindingImmutable;
+      return EVariableMutability.Default;
+    } else if (ctx.variableMutabilitySpecifier() instanceof VariableConstContext) {
+      return EVariableMutability.Const;
+    } else if (ctx.variableMutabilitySpecifier() instanceof VariableLetContext) {
+      return EVariableMutability.Let;
     }
     throw new InternalError("Mutability field of variable is neither let nor const");
   }
@@ -552,6 +552,7 @@ class ASTTransformer extends HazeVisitor<any> {
         name: fragment.name,
         sourceloc: fragment.sourceloc,
         generics: fragment.generics,
+        mutability: EDatatypeMutability.Default,
         nested: datatypes[datatypes.length - 1],
       });
     }
@@ -653,6 +654,9 @@ class ASTTransformer extends HazeVisitor<any> {
       variant: "StructMember",
       name: ctx.ID().getText(),
       type: this.visit(ctx.datatype()),
+      mutability: ctx.variableMutabilitySpecifier()
+        ? this.mutability(ctx)
+        : EVariableMutability.Default,
       defaultValue: ctx.expr() ? this.visit(ctx.expr()!) : null,
       sourceloc: this.loc(ctx),
     };
@@ -876,9 +880,9 @@ class ASTTransformer extends HazeVisitor<any> {
     };
   };
 
-  visitTypedefDirective = (ctx: TypedefDirectiveContext): ASTTypedefStatement => {
+  visitTypeAliasDirective = (ctx: TypeAliasDirectiveContext): ASTTypeAliasStatement => {
     return {
-      variant: "TypedefStatement",
+      variant: "TypeAliasStatement",
       datatype: this.visit(ctx.datatype()),
       export: Boolean(ctx._export_),
       extern: this.exlang(ctx),
@@ -888,7 +892,7 @@ class ASTTransformer extends HazeVisitor<any> {
     };
   };
 
-  visitTypedefStatement = (ctx: TypedefStatementContext): ASTTypedefStatement => {
+  visitTypeAliasStatement = (ctx: TypeAliasStatementContext): ASTTypeAliasStatement => {
     return this.visit(ctx.typeDef());
   };
 
@@ -939,6 +943,7 @@ class ASTTransformer extends HazeVisitor<any> {
     return {
       variant: "SliceDatatype",
       datatype: this.visit(ctx.datatype()),
+      mutability: EDatatypeMutability.Default,
       sourceloc: this.loc(ctx),
     };
   };
@@ -1054,10 +1059,48 @@ class ASTTransformer extends HazeVisitor<any> {
     };
   };
 
+  visitDatatypeWithMutability = (ctx: DatatypeWithMutabilityContext): ASTDatatype => {
+    const datatype: ASTDatatype = this.visit(ctx.datatypeImpl());
+    switch (datatype.variant) {
+      case "ArrayDatatype":
+      case "SliceDatatype":
+      case "PointerDatatype":
+      case "ReferenceDatatype":
+      case "NamedDatatype":
+      case "FunctionDatatype":
+        if (ctx.CONST()) {
+          datatype.mutability = EDatatypeMutability.Const;
+        }
+        if (ctx.MUT()) {
+          datatype.mutability = EDatatypeMutability.Mut;
+        }
+        break;
+
+      case "Deferred":
+      case "ParameterPack":
+        if (ctx.CONST() || ctx.MUT()) {
+          throw new CompilerError(
+            `A mutability specifier cannot appear on a '${datatype.variant}' datatype`,
+            this.loc(ctx)
+          );
+        }
+        break;
+
+      default:
+        assert(false);
+    }
+    return datatype;
+  };
+
+  visitDatatypeInParenthesis = (ctx: DatatypeInParenthesisContext): ASTDatatype => {
+    return this.visit(ctx.datatype());
+  };
+
   visitReferenceDatatype = (ctx: ReferenceDatatypeContext): ASTReferenceDatatype => {
     return {
       variant: "ReferenceDatatype",
       referee: this.visit(ctx.datatype()),
+      mutability: EDatatypeMutability.Default,
       sourceloc: this.loc(ctx),
     };
   };
@@ -1069,6 +1112,7 @@ class ASTTransformer extends HazeVisitor<any> {
       params: params.params,
       ellipsis: params.ellipsis,
       returnType: (ctx.datatype() && this.visit(ctx.datatype()!)) || undefined,
+      mutability: EDatatypeMutability.Default,
       sourceloc: this.loc(ctx),
     };
   };
@@ -1077,6 +1121,7 @@ class ASTTransformer extends HazeVisitor<any> {
     return {
       variant: "PointerDatatype",
       pointee: this.visit(ctx.datatype()),
+      mutability: EDatatypeMutability.Default,
       sourceloc: this.loc(ctx),
     };
   };
@@ -1162,6 +1207,7 @@ class ASTTransformer extends HazeVisitor<any> {
       variant: "ArrayDatatype",
       datatype: this.visit(ctx.datatype()),
       length: Number(ctx.INTEGER_LITERAL()?.getText()),
+      mutability: EDatatypeMutability.Default,
       sourceloc: this.loc(ctx),
     };
   };

@@ -1,38 +1,26 @@
 import { EVariableContext, stringToPrimitive } from "../shared/common";
 import { assert, CompilerError, type SourceLoc } from "../shared/Errors";
 import { Collect, funcSymHasParameterPack } from "../SymbolCollection/SymbolCollection";
+import { isTypeConcrete, makePrimitiveAvailable, Semantic, type SemanticResult } from "./Elaborate";
 import {
-  elaborateExpr,
-  elaborateFunctionSignature,
-  elaborateFunctionSymbol,
-  elaborateNamespace,
-  isolateSubstitutionContext,
-  lookupSymbol,
-  mergeSubstitutionContext,
-  type ElaborationContext,
-} from "./Elaborate";
-import {
-  asType,
-  isType,
-  isTypeConcrete,
-  makePrimitiveAvailable,
-  Semantic,
-  type SemanticResult,
-} from "./SemanticSymbols";
-import { EClonability, EExternLanguage, EVariableMutability } from "../shared/AST";
-import { serializeDatatype, serializeNestedName } from "./Serialize";
+  EClonability,
+  EExternLanguage,
+  EDatatypeMutability,
+  EVariableMutability,
+} from "../shared/AST";
 import { Conversion } from "./Conversion";
 
-export function makeFunctionDatatypeAvailable(
+export function makeRawFunctionDatatypeAvailable(
   sr: SemanticResult,
   args: {
-    parameters: Semantic.Id[];
-    returnType: Semantic.Id;
+    parameters: Semantic.TypeUseId[];
+    returnType: Semantic.TypeUseId;
     vararg: boolean;
+    sourceloc: SourceLoc;
   }
-): Semantic.Id {
+): Semantic.TypeDefId {
   for (const id of sr.functionTypeCache) {
-    const type = sr.nodes.get(id);
+    const type = sr.typeDefNodes.get(id);
     assert(type.variant === Semantic.ENode.FunctionDatatype);
     if (type.parameters.length !== args.parameters.length) {
       continue;
@@ -55,7 +43,7 @@ export function makeFunctionDatatypeAvailable(
   }
 
   // Nothing found
-  const [ftype, ftypeId] = Semantic.addNode(sr, {
+  const [ftype, ftypeId] = Semantic.addType(sr, {
     variant: Semantic.ENode.FunctionDatatype,
     parameters: args.parameters,
     returnType: args.returnType,
@@ -67,105 +55,157 @@ export function makeFunctionDatatypeAvailable(
   return ftypeId;
 }
 
+export function makeFunctionDatatypeAvailable(
+  sr: SemanticResult,
+  args: {
+    parameters: Semantic.TypeUseId[];
+    returnType: Semantic.TypeUseId;
+    vararg: boolean;
+    mutability: EDatatypeMutability;
+    sourceloc: SourceLoc;
+  }
+): Semantic.TypeUseId {
+  return makeTypeUse(
+    sr,
+    makeRawFunctionDatatypeAvailable(sr, args),
+    args.mutability,
+    args.sourceloc
+  )[1];
+}
+
 export function makePointerDatatypeAvailable(
   sr: SemanticResult,
-  pointee: Semantic.Id
-): Semantic.Id {
+  pointee: Semantic.TypeUseId,
+  mutability: EDatatypeMutability,
+  sourceloc: SourceLoc
+): Semantic.TypeUseId {
   for (const id of sr.pointerTypeCache) {
-    const type = sr.nodes.get(id);
+    const type = sr.typeDefNodes.get(id);
     assert(type.variant === Semantic.ENode.PointerDatatype);
     if (type.pointee !== pointee) {
       continue;
     }
-    return id;
+    return makeTypeUse(sr, id, mutability, sourceloc)[1];
   }
 
   // Nothing found
-  const [type, typeId] = Semantic.addNode(sr, {
+  const [type, typeId] = Semantic.addType(sr, {
     variant: Semantic.ENode.PointerDatatype,
     pointee: pointee,
     concrete: isTypeConcrete(sr, pointee),
   });
   sr.pointerTypeCache.push(typeId);
-  return typeId;
+  return makeTypeUse(sr, typeId, mutability, sourceloc)[1];
 }
 
 export function makeReferenceDatatypeAvailable(
   sr: SemanticResult,
-  referee: Semantic.Id
-): Semantic.Id {
+  referee: Semantic.TypeUseId,
+  mutability: EDatatypeMutability,
+  sourceloc: SourceLoc
+): Semantic.TypeUseId {
   for (const id of sr.referenceTypeCache) {
-    const type = sr.nodes.get(id);
+    const type = sr.typeDefNodes.get(id);
     assert(type.variant === Semantic.ENode.ReferenceDatatype);
     if (type.referee !== referee) {
       continue;
     }
-    return id;
+    return makeTypeUse(sr, id, mutability, sourceloc)[1];
   }
 
   // Nothing found
-  const [type, typeId] = Semantic.addNode(sr, {
+  const [type, typeId] = Semantic.addType(sr, {
     variant: Semantic.ENode.ReferenceDatatype,
     referee: referee,
     concrete: isTypeConcrete(sr, referee),
   });
   sr.referenceTypeCache.push(typeId);
-  return typeId;
+  return makeTypeUse(sr, typeId, mutability, sourceloc)[1];
+}
+
+export function makeTypeUse(
+  sr: SemanticResult,
+  typeId: Semantic.TypeDefId,
+  mutability: EDatatypeMutability,
+  sourceloc: SourceLoc
+) {
+  for (const id of sr.typeInstanceCache) {
+    const type = sr.typeUseNodes.get(id);
+    if (type.mutability !== mutability && type.type !== typeId) {
+      continue;
+    }
+    return [type, id] as const;
+  }
+
+  const instance = Semantic.addTypeInstance(sr, {
+    mutability: mutability,
+    type: typeId,
+    sourceloc: sourceloc,
+  });
+  sr.typeInstanceCache.push(instance[1]);
+  return instance;
 }
 
 export function makeArrayDatatypeAvailable(
   sr: SemanticResult,
-  datatype: Semantic.Id,
-  length: number
-): Semantic.Id {
+  datatype: Semantic.TypeUseId,
+  length: number,
+  mutability: EDatatypeMutability,
+  sourceloc: SourceLoc
+): Semantic.TypeUseId {
   for (const id of sr.arrayTypeCache) {
-    const type = sr.nodes.get(id);
+    const type = sr.typeDefNodes.get(id);
     assert(type.variant === Semantic.ENode.ArrayDatatype);
     if (type.datatype !== datatype || type.length !== length) {
       continue;
     }
-    return id;
+    return makeTypeUse(sr, id, mutability, sourceloc)[1];
   }
 
   // Nothing found
-  const [type, typeId] = Semantic.addNode(sr, {
+  const [type, typeId] = Semantic.addType(sr, {
     variant: Semantic.ENode.ArrayDatatype,
     datatype: datatype,
     length: length,
     concrete: isTypeConcrete(sr, datatype),
   });
   sr.arrayTypeCache.push(typeId);
-  return typeId;
+  return makeTypeUse(sr, typeId, mutability, sourceloc)[1];
 }
 
-export function makeSliceDatatypeAvailable(sr: SemanticResult, datatype: Semantic.Id): Semantic.Id {
+export function makeSliceDatatypeAvailable(
+  sr: SemanticResult,
+  datatype: Semantic.TypeUseId,
+  mutability: EDatatypeMutability,
+  sourceloc: SourceLoc
+): Semantic.TypeUseId {
   for (const id of sr.sliceTypeCache) {
-    const type = sr.nodes.get(id);
+    const type = sr.typeDefNodes.get(id);
     assert(type.variant === Semantic.ENode.SliceDatatype);
     if (type.datatype !== datatype) {
       continue;
     }
-    return id;
+    return makeTypeUse(sr, id, mutability, sourceloc)[1];
   }
 
   // Nothing found
-  const [type, typeId] = Semantic.addNode(sr, {
+  const [type, typeId] = Semantic.addType(sr, {
     variant: Semantic.ENode.SliceDatatype,
     datatype: datatype,
     concrete: isTypeConcrete(sr, datatype),
   });
   sr.sliceTypeCache.push(typeId);
-  return typeId;
+  return makeTypeUse(sr, typeId, mutability, sourceloc)[1];
 }
 
 export function elaborateParentSymbolFromCache(
   sr: SemanticResult,
   args: {
     parentScope: Collect.Id;
-    context: ElaborationContext;
+    context: Semantic.ElaborationContext;
   }
-): Semantic.Id | null {
-  let parentStructOrNS = null as Semantic.Id | null;
+): Semantic.TypeDefId | null {
+  let parentStructOrNS = null as Semantic.TypeDefId | null;
   const parentScope = sr.cc.nodes.get(args.parentScope);
   if (parentScope.variant === Collect.ENode.StructScope) {
     // This parenting works by elaborating the lexical parent on demand. If we somehow got into it, to access one
@@ -184,13 +224,13 @@ export function elaborateParentSymbolFromCache(
         cache.generics.length === parentGenericArgs.length &&
         cache.generics.every((g, i) => g === parentGenericArgs[i])
       ) {
-        parentStructOrNS = cache.resultSymbol;
+        parentStructOrNS = cache.result;
         break;
       }
     }
     assert(parentStructOrNS, "Parent struct not found in cache: Impossible");
   } else if (parentScope.variant === Collect.ENode.NamespaceScope) {
-    parentStructOrNS = elaborateNamespace(sr, parentScope.owningSymbol, {
+    parentStructOrNS = Semantic.elaborateNamespace(sr, parentScope.owningSymbol, {
       context: args.context,
     });
   }
@@ -201,10 +241,10 @@ export function instantiateAndElaborateStructWithGenerics(
   sr: SemanticResult,
   args: {
     definedStructTypeId: Collect.Id;
-    genericArgs: Semantic.Id[];
+    genericArgs: Semantic.TypeUseId[];
     sourceloc: SourceLoc;
-    elaboratedVariables: Map<Collect.Id, Semantic.Id>;
-    context: ElaborationContext;
+    elaboratedVariables: Map<Collect.Id, Semantic.SymbolId>;
+    context: Semantic.ElaborationContext;
   }
 ) {
   const definedStructType = sr.cc.nodes.get(args.definedStructTypeId);
@@ -219,7 +259,7 @@ export function instantiateAndElaborateStructWithGenerics(
 
   if (definedStructType.generics.length !== 0) {
     assert(definedStructType.structScope);
-    args.context = isolateSubstitutionContext(args.context, {
+    args.context = Semantic.isolateSubstitutionContext(args.context, {
       currentScope: args.context.currentScope,
       genericsScope: args.context.currentScope,
     });
@@ -241,8 +281,8 @@ export function instantiateAndElaborateStruct(
   args: {
     definedStructTypeId: Collect.Id; // The defining struct datatype to be instantiated (e.g. struct Foo<T> {})
     sourceloc: SourceLoc;
-    elaboratedVariables: Map<Collect.Id, Semantic.Id>;
-    context: ElaborationContext;
+    elaboratedVariables: Map<Collect.Id, Semantic.SymbolId>;
+    context: Semantic.ElaborationContext;
   }
 ) {
   const definedStructType = sr.cc.nodes.get(args.definedStructTypeId);
@@ -261,11 +301,11 @@ export function instantiateAndElaborateStruct(
       s.generics.every((g, index) => g === genericArgs[index]) &&
       s.originalSymbol === args.definedStructTypeId
     ) {
-      return s.resultSymbol;
+      return s.result;
     }
   }
 
-  const [struct, structId] = Semantic.addNode<Semantic.StructDatatypeSymbol>(sr, {
+  const [struct, structId] = Semantic.addType<Semantic.StructDatatypeDef>(sr, {
     variant: Semantic.ENode.StructDatatype,
     name: definedStructType.name,
     generics: genericArgs,
@@ -287,12 +327,16 @@ export function instantiateAndElaborateStruct(
     originalCollectedSymbol: args.definedStructTypeId,
   });
 
-  if (isTypeConcrete(sr, structId)) {
+  if (struct.concrete) {
     sr.elaboratedStructDatatypes.push({
       generics: genericArgs,
       originalSymbol: args.definedStructTypeId,
       substitutionContext: args.context,
-      resultSymbol: structId,
+      result: structId,
+      resultAsTypeDefSymbol: Semantic.addSymbol(sr, {
+        variant: Semantic.ENode.TypeDefSymbol,
+        datatype: structId,
+      })[1],
     });
 
     const structScope = sr.cc.nodes.get(definedStructType.structScope);
@@ -307,20 +351,20 @@ export function instantiateAndElaborateStruct(
           // Start lookup in the struct itself, these are members, so both the type and
           // its generics must be found from within the struct
           elaboratedVariables: args.elaboratedVariables,
-          context: isolateSubstitutionContext(args.context, {
+          context: Semantic.isolateSubstitutionContext(args.context, {
             currentScope: definedStructType.structScope,
             genericsScope: definedStructType.structScope,
           }),
           isInCFuncdecl: false,
         });
-        const type = sr.nodes.get(typeId);
-        assert(isType(type));
-        const [variable, variableId] = Semantic.addNode(sr, {
+        const typeInstance = sr.typeUseNodes.get(typeId);
+        const type = sr.typeDefNodes.get(typeInstance.type);
+        const [variable, variableId] = Semantic.addSymbol(sr, {
           variant: Semantic.ENode.VariableSymbol,
           name: symbol.name,
           export: false,
           extern: EExternLanguage.None,
-          mutability: EVariableMutability.Mutable,
+          mutability: EVariableMutability.Default,
           sourceloc: symbol.sourceloc,
           memberOfStruct: structId,
           type: typeId,
@@ -328,7 +372,7 @@ export function instantiateAndElaborateStruct(
           parentStructOrNS: structId,
           comptime: false,
           comptimeValue: null,
-          concrete: asType(sr.nodes.get(typeId)).concrete,
+          concrete: type.concrete,
         });
         struct.members.push(variableId);
         const defaultValue = definedStructType.defaultMemberValues.find(
@@ -336,7 +380,7 @@ export function instantiateAndElaborateStruct(
         );
         if (defaultValue) {
           const value = sr.cc.nodes.get(defaultValue.value);
-          let defaultExprId: Semantic.Id;
+          let defaultExprId: Semantic.ExprId;
           if (value.variant === Collect.ENode.SymbolValueExpr && value.name === "default") {
             if (value.genericArgs.length !== 0) {
               throw new CompilerError(
@@ -346,7 +390,7 @@ export function instantiateAndElaborateStruct(
             }
             defaultExprId = Conversion.MakeDefaultValue(sr, typeId, symbol.sourceloc);
           } else {
-            defaultExprId = elaborateExpr(sr, defaultValue.value, {
+            defaultExprId = Semantic.elaborateExpr(sr, defaultValue.value, {
               context: args.context,
               elaboratedVariables: new Map(),
               isMonomorphized: struct.isMonomorphized,
@@ -386,15 +430,17 @@ export function instantiateAndElaborateStruct(
           if (overloadedFunc.generics.length !== 0 || funcSymHasParameterPack(sr.cc, overloadId)) {
             return;
           }
-          const signature = elaborateFunctionSignature(sr, overloadId, { context: args.context });
-          const funcId = elaborateFunctionSymbol(sr, signature, {
+          const signature = Semantic.elaborateFunctionSignature(sr, overloadId, {
+            context: args.context,
+          });
+          const funcId = Semantic.elaborateFunctionSymbol(sr, signature, {
             paramPackTypes: [],
             context: args.context,
             isMonomorphized: struct.isMonomorphized,
             elaboratedVariables: args.elaboratedVariables,
             parentStructOrNS: structId,
           });
-          const func = sr.nodes.get(funcId);
+          const func = sr.symbolNodes.get(funcId);
           assert(funcId && func && func.variant === Semantic.ENode.FunctionSymbol);
           struct.methods.push(funcId);
         });
@@ -426,11 +472,11 @@ export function lookupAndElaborateDatatype(
   sr: SemanticResult,
   args: {
     typeId: Collect.Id;
-    context: ElaborationContext;
-    elaboratedVariables: Map<Collect.Id, Semantic.Id>;
+    context: Semantic.ElaborationContext;
+    elaboratedVariables: Map<Collect.Id, Semantic.SymbolId>;
     isInCFuncdecl: boolean;
   }
-): Semantic.Id {
+): Semantic.TypeUseId {
   const type = sr.cc.nodes.get(args.typeId);
 
   switch (type.variant) {
@@ -455,6 +501,8 @@ export function lookupAndElaborateDatatype(
           isInCFuncdecl: args.isInCFuncdecl,
         }),
         vararg: type.vararg,
+        mutability: type.mutability,
+        sourceloc: type.sourceloc,
       });
     }
 
@@ -470,7 +518,9 @@ export function lookupAndElaborateDatatype(
           context: args.context,
           elaboratedVariables: args.elaboratedVariables,
           isInCFuncdecl: args.isInCFuncdecl,
-        })
+        }),
+        type.mutability,
+        type.sourceloc
       );
     }
 
@@ -487,7 +537,9 @@ export function lookupAndElaborateDatatype(
           elaboratedVariables: args.elaboratedVariables,
           isInCFuncdecl: args.isInCFuncdecl,
         }),
-        type.length
+        type.length,
+        type.mutability,
+        type.sourceloc
       );
     }
 
@@ -503,7 +555,9 @@ export function lookupAndElaborateDatatype(
           context: args.context,
           elaboratedVariables: args.elaboratedVariables,
           isInCFuncdecl: args.isInCFuncdecl,
-        })
+        }),
+        type.mutability,
+        type.sourceloc
       );
     }
 
@@ -519,7 +573,9 @@ export function lookupAndElaborateDatatype(
           context: args.context,
           elaboratedVariables: args.elaboratedVariables,
           isInCFuncdecl: args.isInCFuncdecl,
-        })
+        }),
+        type.mutability,
+        type.sourceloc
       );
     }
 
@@ -546,7 +602,7 @@ export function lookupAndElaborateDatatype(
         if (type.genericArgs.length > 0) {
           throw new CompilerError(`Type ${type.name} is not generic`, type.sourceloc);
         }
-        return makePrimitiveAvailable(sr, primitive);
+        return makePrimitiveAvailable(sr, primitive, type.mutability, type.sourceloc);
       }
 
       if (type.name === "Callable") {
@@ -569,20 +625,25 @@ export function lookupAndElaborateDatatype(
           isInCFuncdecl: args.isInCFuncdecl,
           elaboratedVariables: args.elaboratedVariables,
         });
-        return Semantic.addNode(sr, {
-          variant: Semantic.ENode.CallableDatatype,
-          functionType: functype,
-          thisExprType: undefined,
-          concrete: isTypeConcrete(sr, functype),
-        })[1];
+        return makeTypeUse(
+          sr,
+          Semantic.addType(sr, {
+            variant: Semantic.ENode.CallableDatatype,
+            functionType: sr.typeUseNodes.get(functype).type,
+            thisExprType: undefined,
+            concrete: isTypeConcrete(sr, functype),
+          })[1],
+          type.mutability,
+          type.sourceloc
+        )[1];
       }
 
-      let foundResult = lookupSymbol(sr, type.name, {
+      let foundResult = Semantic.lookupSymbol(sr, type.name, {
         startLookupInScope: args.context.currentScope,
         sourceloc: type.sourceloc,
       });
       if (foundResult.type === "semantic") {
-        const e = sr.nodes.get(foundResult.id);
+        const e = sr.exprNodes.get(foundResult.id);
         if (e.variant === Semantic.ENode.DatatypeAsValueExpr) {
           return e.type;
         }
@@ -599,10 +660,13 @@ export function lookupAndElaborateDatatype(
           isInCFuncdecl: false,
         });
         if (type.innerNested) {
-          const aliasedType = sr.nodes.get(aliasedTypeId);
+          const aliasedType = sr.typeDefNodes.get(sr.typeUseNodes.get(aliasedTypeId).type);
           if (aliasedType.variant !== Semantic.ENode.NamespaceDatatype) {
             throw new CompilerError(
-              `Type '${serializeDatatype(sr, aliasedTypeId)}' cannot be used as a namespace`,
+              `Type '${Semantic.serializeTypeUse(
+                sr,
+                aliasedTypeId
+              )}' cannot be used as a namespace`,
               type.sourceloc
             );
           }
@@ -610,7 +674,7 @@ export function lookupAndElaborateDatatype(
           assert(collectedNamespace.variant === Collect.ENode.NamespaceDefinitionSymbol);
           return lookupAndElaborateDatatype(sr, {
             typeId: type.innerNested,
-            context: isolateSubstitutionContext(args.context, {
+            context: Semantic.isolateSubstitutionContext(args.context, {
               currentScope: collectedNamespace.namespaceScope,
               genericsScope: args.context.genericsScope,
             }),
@@ -625,7 +689,7 @@ export function lookupAndElaborateDatatype(
         const generics = type.genericArgs.map((g) => {
           return lookupAndElaborateDatatype(sr, {
             typeId: g,
-            context: isolateSubstitutionContext(args.context, {
+            context: Semantic.isolateSubstitutionContext(args.context, {
               currentScope: args.context.genericsScope,
               genericsScope: args.context.genericsScope,
             }),
@@ -640,14 +704,14 @@ export function lookupAndElaborateDatatype(
           elaboratedVariables: args.elaboratedVariables,
           sourceloc: type.sourceloc,
         });
-        const struct = sr.nodes.get(structId);
+        const struct = sr.typeDefNodes.get(structId);
         assert(struct.variant === Semantic.ENode.StructDatatype);
         const structScope = sr.cc.nodes.get(found.structScope);
         assert(structScope.variant === Collect.ENode.StructScope);
 
         if (type.innerNested) {
           // Here we need to merge the context from the parent into the child
-          let cachedParentSubstitutions = undefined as ElaborationContext | undefined;
+          let cachedParentSubstitutions = undefined as Semantic.ElaborationContext | undefined;
           for (const cache of sr.elaboratedStructDatatypes) {
             if (
               cache.originalSymbol === foundId &&
@@ -663,23 +727,28 @@ export function lookupAndElaborateDatatype(
             typeId: type.innerNested,
             elaboratedVariables: args.elaboratedVariables,
             isInCFuncdecl: false,
-            context: mergeSubstitutionContext(cachedParentSubstitutions, args.context, {
+            context: Semantic.mergeSubstitutionContext(cachedParentSubstitutions, args.context, {
               currentScope: found.structScope,
               genericsScope: args.context.genericsScope,
             }),
           });
         } else {
-          return structId;
+          return makeTypeUse(sr, structId, type.mutability, type.sourceloc)[1];
         }
       } else if (found.variant === Collect.ENode.NamespaceDefinitionSymbol) {
         if (!type.innerNested) {
-          return elaborateNamespace(sr, foundId, {
-            context: args.context,
-          });
+          return makeTypeUse(
+            sr,
+            Semantic.elaborateNamespace(sr, foundId, {
+              context: args.context,
+            }),
+            type.mutability,
+            type.sourceloc
+          )[1];
         }
         return lookupAndElaborateDatatype(sr, {
           typeId: type.innerNested,
-          context: isolateSubstitutionContext(args.context, {
+          context: Semantic.isolateSubstitutionContext(args.context, {
             currentScope: found.namespaceScope,
             genericsScope: args.context.genericsScope,
           }),
@@ -691,12 +760,17 @@ export function lookupAndElaborateDatatype(
         if (mappedTo) {
           return mappedTo;
         } else {
-          return Semantic.addNode(sr, {
-            variant: Semantic.ENode.GenericParameterDatatype,
-            name: found.name,
-            collectedParameter: foundId,
-            concrete: false,
-          })[1];
+          return makeTypeUse(
+            sr,
+            Semantic.addType(sr, {
+              variant: Semantic.ENode.GenericParameterDatatype,
+              name: found.name,
+              collectedParameter: foundId,
+              concrete: false,
+            })[1],
+            type.mutability,
+            type.sourceloc
+          )[1];
         }
       } else {
         throw new CompilerError(
@@ -707,20 +781,30 @@ export function lookupAndElaborateDatatype(
     }
 
     case Collect.ENode.LiteralExpr: {
-      return Semantic.addNode(sr, {
-        variant: Semantic.ENode.LiteralValueDatatype,
-        literal: type.literal,
-        concrete: true,
-        sourceloc: type.sourceloc,
-      })[1];
+      return makeTypeUse(
+        sr,
+        Semantic.addType(sr, {
+          variant: Semantic.ENode.LiteralValueDatatype,
+          literal: type.literal,
+          concrete: true,
+          sourceloc: type.sourceloc,
+        })[1],
+        EDatatypeMutability.Const,
+        type.sourceloc
+      )[1];
     }
 
     case Collect.ENode.ParameterPack: {
-      return Semantic.addNode(sr, {
-        variant: Semantic.ENode.ParameterPackDatatypeSymbol,
-        parameters: null,
-        concrete: true,
-      })[1];
+      return makeTypeUse(
+        sr,
+        Semantic.addType(sr, {
+          variant: Semantic.ENode.ParameterPackDatatype,
+          parameters: null,
+          concrete: true,
+        })[1],
+        EDatatypeMutability.Const,
+        type.sourceloc
+      )[1];
     }
 
     // =================================================================================================================

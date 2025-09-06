@@ -7,7 +7,7 @@ import {
   EUnaryOperation,
   UnaryOperationToString,
 } from "../shared/AST";
-import { EPrimitive, primitiveToString } from "../shared/common";
+import { EPrimitive, primitiveToString, type NameSet } from "../shared/common";
 import { getModuleGlobalNamespaceName, ModuleType, type ModuleConfig } from "../shared/Config";
 import { assert, InternalError, printWarningMessage } from "../shared/Errors";
 import { OutputWriter } from "./OutputWriter";
@@ -25,8 +25,8 @@ class CodeGenerator {
     global_variables: new OutputWriter(),
   };
 
-  private arithmeticFunctionsCache = new Map<EBinaryOperation, Map<Lowered.TypeId, string>>();
-  private incrFunctionsCache = new Map<EIncrOperation, Map<Lowered.TypeId, string>>();
+  private arithmeticFunctionsCache = new Map<EBinaryOperation, Map<Lowered.TypeUseId, string>>();
+  private incrFunctionsCache = new Map<EIncrOperation, Map<Lowered.TypeUseId, string>>();
   private trapFunctionCache: string | undefined;
 
   constructor(public config: ModuleConfig, public lr: Lowered.Module) {
@@ -118,7 +118,9 @@ class CodeGenerator {
     this.includeHeader("stdlib.h");
     this.includeHeader("limits.h");
 
-    this.sortTypeDefinitions();
+    const sortedLoweredTypes: Lowered.TypeDef[] = [];
+
+    this.sortTypeDefinitions(sortedLoweredTypes);
 
     for (const decl of this.lr.cInjections) {
       this.out.cDecls.writeLine(decl);
@@ -128,7 +130,7 @@ class CodeGenerator {
       this.emitFunction(symbol);
     }
 
-    for (const symbol of this.lr.sortedLoweredTypes) {
+    for (const symbol of sortedLoweredTypes) {
       if (symbol.variant === Lowered.ENode.PrimitiveDatatype) {
         if (symbol.primitive === EPrimitive.c_str) {
           this.out.type_declarations.writeLine(`typedef const char* _H5c_str;`);
@@ -140,75 +142,71 @@ class CodeGenerator {
           this.out.type_definitions.popIndent().writeLine(`};`);
         } else if (symbol.primitive === EPrimitive.null) {
           this.out.type_declarations.writeLine(
-            `typedef struct ${this.mangle(symbol)} ${this.mangle(symbol)};`
+            `typedef struct ${this.mangleTypeDef(symbol)} ${this.mangleTypeDef(symbol)};`
           );
-          this.out.type_definitions.writeLine(`struct ${this.mangle(symbol)} {};`);
+          this.out.type_definitions.writeLine(`struct ${this.mangleTypeDef(symbol)} {};`);
         } else {
           this.out.type_declarations.writeLine(
-            `typedef ${this.primitiveToC(symbol.primitive)} ${this.mangle(symbol)};`
+            `typedef ${this.primitiveToC(symbol.primitive)} ${this.mangleTypeDef(symbol)};`
           );
         }
       } else if (symbol.variant === Lowered.ENode.StructDatatype) {
         if (!symbol.noemit) {
           this.out.type_declarations.writeLine(
-            `typedef struct ${this.mangle(symbol)} ${this.mangle(symbol)};`
+            `typedef struct ${this.mangleTypeDef(symbol)} ${this.mangleTypeDef(symbol)};`
           );
-          this.out.type_definitions.writeLine(`struct ${this.mangle(symbol)} {`).pushIndent();
+          this.out.type_definitions
+            .writeLine(`struct ${this.mangleTypeDef(symbol)} {`)
+            .pushIndent();
           for (const member of symbol.members) {
             this.out.type_definitions.writeLine(
-              `${this.mangle(this.lr.typeNodes.get(member.type))} ${member.name};`
+              `${this.mangleTypeUse(member.type)} ${member.name};`
             );
           }
           this.out.type_definitions.popIndent().writeLine(`};`).writeLine();
         }
       } else if (symbol.variant === Lowered.ENode.PointerDatatype) {
         this.out.type_declarations.writeLine(
-          `typedef ${this.mangle(this.lr.typeNodes.get(symbol.pointee))}* ${this.mangle(symbol)};`
+          `typedef ${this.mangleTypeUse(symbol.pointee)}* ${this.mangleTypeDef(symbol)};`
         );
       } else if (symbol.variant === Lowered.ENode.ReferenceDatatype) {
         this.out.type_declarations.writeLine(
-          `typedef ${this.mangle(this.lr.typeNodes.get(symbol.referee))}* ${this.mangle(symbol)};`
+          `typedef ${this.mangleTypeUse(symbol.referee)}* ${this.mangleTypeDef(symbol)};`
         );
       } else if (symbol.variant === Lowered.ENode.ArrayDatatype) {
         this.out.type_declarations.writeLine(
-          `typedef struct ${this.mangle(symbol)} ${this.mangle(symbol)};`
+          `typedef struct ${this.mangleTypeDef(symbol)} ${this.mangleTypeDef(symbol)};`
         );
-        this.out.type_definitions.writeLine(`struct ${this.mangle(symbol)} {`).pushIndent();
+        this.out.type_definitions.writeLine(`struct ${this.mangleTypeDef(symbol)} {`).pushIndent();
         this.out.type_definitions.writeLine(
-          `${this.mangle(this.lr.typeNodes.get(symbol.datatype))} data[${symbol.length}];`
+          `${this.mangleTypeUse(symbol.datatype)} data[${symbol.length}];`
         );
         this.out.type_definitions.popIndent().writeLine(`};`);
       } else if (symbol.variant === Lowered.ENode.SliceDatatype) {
         this.out.type_declarations.writeLine(
-          `typedef struct ${this.mangle(symbol)} ${this.mangle(symbol)};`
+          `typedef struct ${this.mangleTypeDef(symbol)} ${this.mangleTypeDef(symbol)};`
         );
-        this.out.type_definitions.writeLine(`struct ${this.mangle(symbol)} {`).pushIndent();
-        this.out.type_definitions.writeLine(
-          `${this.mangle(this.lr.typeNodes.get(symbol.datatype))}* data;`
-        );
+        this.out.type_definitions.writeLine(`struct ${this.mangleTypeDef(symbol)} {`).pushIndent();
+        this.out.type_definitions.writeLine(`${this.mangleTypeUse(symbol.datatype)}* data;`);
         this.out.type_definitions.writeLine(`uint64_t length;`);
         this.out.type_definitions.popIndent().writeLine(`};`);
       } else if (symbol.variant === Lowered.ENode.FunctionDatatype) {
         this.out.type_definitions.writeLine(
-          `typedef ${this.mangle(this.lr.typeNodes.get(symbol.returnType))} (*${this.mangle(
+          `typedef ${this.mangleTypeUse(symbol.returnType)} (*${this.mangleTypeDef(
             symbol
-          )})(${symbol.parameters
-            .map((p) => `${this.mangle(this.lr.typeNodes.get(p))}`)
-            .join(", ")});`
+          )})(${symbol.parameters.map((p) => `${this.mangleTypeUse(p)}`).join(", ")});`
         );
       } else if (symbol.variant === Lowered.ENode.CallableDatatype) {
         this.out.type_declarations.writeLine(
-          `typedef struct ${this.mangle(symbol)} ${this.mangle(symbol)};`
+          `typedef struct ${this.mangleTypeDef(symbol)} ${this.mangleTypeDef(symbol)};`
         );
-        this.out.type_definitions.writeLine(`struct ${this.mangle(symbol)} {`).pushIndent();
+        this.out.type_definitions.writeLine(`struct ${this.mangleTypeDef(symbol)} {`).pushIndent();
         if (symbol.thisExprType) {
           this.out.type_definitions.writeLine(
-            `${this.mangle(this.lr.typeNodes.get(symbol.thisExprType))} thisPtr;`
+            `${this.mangleTypeUse(symbol.thisExprType)} thisPtr;`
           );
         }
-        this.out.type_definitions.writeLine(
-          `${this.mangle(this.lr.typeNodes.get(symbol.functionType))} fn;`
-        );
+        this.out.type_definitions.writeLine(`${this.mangleTypeDef(symbol.functionType)} fn;`);
         this.out.type_definitions.popIndent().writeLine(`};`).writeLine();
       } else {
       }
@@ -219,14 +217,16 @@ class CodeGenerator {
     }
   }
 
-  sortTypeDefinitions() {
-    const appliedTypes = new Set<Lowered.Datatype>();
+  sortTypeDefinitions(sortedLoweredTypes: Lowered.TypeDef[]) {
+    const appliedTypes = new Set<Lowered.TypeDef>();
 
     // This function processes the type in the sense that it goes over all types that this type depends on,
     // and if there is a direct relationship, then that type is processed, which sorts it first.
     // This is required because C has a very strict requirement on ordering of struct definitions that depend on another
-    const processType = (typeId: Lowered.TypeId) => {
-      const type = this.lr.typeNodes.get(typeId);
+    const processType = (typeId: Lowered.TypeDefId) => {
+      const type = this.lr.typeDefNodes.get(typeId);
+
+      const conv = (a: Lowered.TypeUseId) => this.lr.typeUseNodes.get(a).type;
 
       if (appliedTypes.has(type)) {
         return;
@@ -235,56 +235,57 @@ class CodeGenerator {
       if (type.variant === Lowered.ENode.FunctionDatatype) {
         appliedTypes.add(type);
         for (const p of type.parameters) {
-          processType(p);
+          processType(conv(p));
         }
-        processType(type.returnType);
-        this.lr.sortedLoweredTypes.push(type);
+        processType(conv(type.returnType));
+        sortedLoweredTypes.push(type);
       } else if (type.variant === Lowered.ENode.CallableDatatype) {
         appliedTypes.add(type);
         processType(type.functionType);
-        this.lr.sortedLoweredTypes.push(type);
+        sortedLoweredTypes.push(type);
       } else if (type.variant === Lowered.ENode.StructDatatype) {
         appliedTypes.add(type);
         for (const m of type.members) {
-          const type = this.lr.typeNodes.get(m.type);
+          const type = this.lr.typeUseNodes.get(m.type);
+          const typeDef = this.lr.typeDefNodes.get(type.type);
           // Pointer do not matter, only direct references are bad.
           if (
-            type.variant !== Lowered.ENode.PointerDatatype &&
-            type.variant !== Lowered.ENode.ReferenceDatatype
+            typeDef.variant !== Lowered.ENode.PointerDatatype &&
+            typeDef.variant !== Lowered.ENode.ReferenceDatatype
           ) {
-            processType(m.type);
+            processType(conv(m.type));
           }
         }
-        this.lr.sortedLoweredTypes.push(type);
+        sortedLoweredTypes.push(type);
       } else if (type.variant === Lowered.ENode.PrimitiveDatatype) {
         appliedTypes.add(type);
-        this.lr.sortedLoweredTypes.push(type);
+        sortedLoweredTypes.push(type);
       } else if (type.variant === Lowered.ENode.PointerDatatype) {
         appliedTypes.add(type);
-        processType(type.pointee);
-        this.lr.sortedLoweredTypes.push(type);
+        processType(conv(type.pointee));
+        sortedLoweredTypes.push(type);
       } else if (type.variant === Lowered.ENode.ReferenceDatatype) {
         appliedTypes.add(type);
-        processType(type.referee);
-        this.lr.sortedLoweredTypes.push(type);
+        processType(conv(type.referee));
+        sortedLoweredTypes.push(type);
       } else if (type.variant === Lowered.ENode.LiteralValueDatatype) {
         appliedTypes.add(type);
-        this.lr.sortedLoweredTypes.push(type);
+        sortedLoweredTypes.push(type);
       } else if (type.variant === Lowered.ENode.ArrayDatatype) {
         appliedTypes.add(type);
-        processType(type.datatype);
-        this.lr.sortedLoweredTypes.push(type);
+        processType(conv(type.datatype));
+        sortedLoweredTypes.push(type);
       } else if (type.variant === Lowered.ENode.SliceDatatype) {
         appliedTypes.add(type);
-        processType(type.datatype);
-        this.lr.sortedLoweredTypes.push(type);
+        processType(conv(type.datatype));
+        sortedLoweredTypes.push(type);
       } else {
         assert(false);
       }
     };
 
     // Now define all other types
-    for (const [id, t] of this.lr.loweredTypes) {
+    for (const [id, t] of this.lr.loweredTypeDefs) {
       processType(t);
     }
   }
@@ -330,21 +331,32 @@ class CodeGenerator {
     }
   }
 
-  mangle(
-    datatypeOrSymbol:
-      | Lowered.Datatype
-      | Lowered.FunctionSymbol
-      | Lowered.VariableStatement
-      | Lowered.SymbolValueExpr
-      | Lowered.CallableExpr
-  ): string {
-    if (datatypeOrSymbol.variant === Lowered.ENode.CallableExpr) {
-      return "_H" + datatypeOrSymbol.functionMangledName;
+  mangleTypeDef(type: Lowered.TypeDef | Lowered.TypeDefId): string {
+    if (!("variant" in type)) {
+      type = this.lr.typeDefNodes.get(type);
     }
-    if (datatypeOrSymbol.wasMangled) {
-      return "_H" + datatypeOrSymbol.mangledName;
+    return this.mangleName(type.name);
+  }
+
+  mangleTypeUse(type: Lowered.TypeUse | Lowered.TypeUseId): string {
+    if (!("type" in type)) {
+      type = this.lr.typeUseNodes.get(type);
+    }
+    return this.mangleName(type.name);
+  }
+
+  mangleFunctionSymbol(func: Lowered.FunctionSymbol | Lowered.FunctionId): string {
+    if (!("variant" in func)) {
+      func = this.lr.functionNodes.get(func);
+    }
+    return this.mangleName(func.name);
+  }
+
+  mangleName(name: NameSet): string {
+    if (name.wasMangled) {
+      return "_H" + name.mangledName;
     } else {
-      return datatypeOrSymbol.mangledName;
+      return name.mangledName;
     }
   }
 
@@ -395,20 +407,20 @@ class CodeGenerator {
       return functionName;
     }
 
-    const leftType = this.lr.typeNodes.get(expr.type);
+    const leftType = this.lr.typeUseNodes.get(expr.type);
     const trapFunc = this.makeTrapFunction();
 
-    functionName = `___hz_builtin_${opStr}_${leftType.mangledName}`;
+    functionName = `___hz_builtin_${opStr}_${leftType.name.mangledName}`;
 
     this.out.builtin_declarations.writeLine(
-      `static inline _H${leftType.mangledName} ${functionName}(_H${leftType.mangledName});`
+      `static inline _H${leftType.name.mangledName} ${functionName}(_H${leftType.name.mangledName});`
     );
     this.out.builtin_definitions
       .writeLine(
-        `static inline _H${leftType.mangledName} ${functionName}(_H${leftType.mangledName} value) {`
+        `static inline _H${leftType.name.mangledName} ${functionName}(_H${leftType.name.mangledName} value) {`
       )
       .pushIndent();
-    this.out.builtin_definitions.writeLine(`_H${leftType.mangledName} result;`);
+    this.out.builtin_definitions.writeLine(`_H${leftType.name.mangledName} result;`);
     this.out.builtin_definitions
       .writeLine(
         `if (__builtin_expect(__builtin_${
@@ -469,47 +481,49 @@ class CodeGenerator {
       return functionName;
     }
 
-    const leftType = this.lr.typeNodes.get(left.type);
-    const rightType = this.lr.typeNodes.get(right.type);
+    const leftType = this.lr.typeUseNodes.get(left.type);
+    const rightType = this.lr.typeUseNodes.get(right.type);
+    const leftTypeDef = this.lr.typeDefNodes.get(leftType.type);
+    const rightTypeDef = this.lr.typeDefNodes.get(rightType.type);
 
     const trapFunc = this.makeTrapFunction();
 
-    functionName = `___hz_builtin_${opStr}_${leftType.mangledName}${rightType.mangledName}`;
+    functionName = `___hz_builtin_${opStr}_${leftType.name.mangledName}${rightType.name.mangledName}`;
 
     this.out.builtin_declarations.writeLine(
-      `_H${leftType.mangledName} ${functionName}(_H${leftType.mangledName}, _H${rightType.mangledName});`
+      `_H${leftType.name.mangledName} ${functionName}(_H${leftType.name.mangledName}, _H${rightType.name.mangledName});`
     );
     this.out.builtin_definitions
       .writeLine(
-        `_H${leftType.mangledName} ${functionName}(_H${leftType.mangledName} a, _H${rightType.mangledName} b) {`
+        `_H${leftType.name.mangledName} ${functionName}(_H${leftType.name.mangledName} a, _H${rightType.name.mangledName} b) {`
       )
       .pushIndent();
     if (operation === EBinaryOperation.Divide || operation === EBinaryOperation.Modulo) {
       this.out.builtin_definitions.writeLine(`if (b == 0) ${trapFunc}("Division by zero");`);
       if (
-        leftType.variant === Lowered.ENode.PrimitiveDatatype &&
-        leftType.primitive === EPrimitive.i8
+        leftTypeDef.variant === Lowered.ENode.PrimitiveDatatype &&
+        leftTypeDef.primitive === EPrimitive.i8
       ) {
         this.out.builtin_definitions.writeLine(
           `if (a == INT8_MIN && b == -1) ${trapFunc}("Integer overflow in division");`
         );
       } else if (
-        leftType.variant === Lowered.ENode.PrimitiveDatatype &&
-        leftType.primitive === EPrimitive.i16
+        leftTypeDef.variant === Lowered.ENode.PrimitiveDatatype &&
+        leftTypeDef.primitive === EPrimitive.i16
       ) {
         this.out.builtin_definitions.writeLine(
           `if (a == INT16_MIN && b == -1) ${trapFunc}("Integer overflow in division");`
         );
       } else if (
-        leftType.variant === Lowered.ENode.PrimitiveDatatype &&
-        leftType.primitive === EPrimitive.i32
+        leftTypeDef.variant === Lowered.ENode.PrimitiveDatatype &&
+        leftTypeDef.primitive === EPrimitive.i32
       ) {
         this.out.builtin_definitions.writeLine(
           `if (a == INT32_MIN && b == -1) ${trapFunc}("Integer overflow in division");`
         );
       } else if (
-        leftType.variant === Lowered.ENode.PrimitiveDatatype &&
-        leftType.primitive === EPrimitive.i64
+        leftTypeDef.variant === Lowered.ENode.PrimitiveDatatype &&
+        leftTypeDef.primitive === EPrimitive.i64
       ) {
         this.out.builtin_definitions.writeLine(
           `if (a == INT64_MIN && b == -1) ${trapFunc}("Integer overflow in division");`
@@ -521,7 +535,7 @@ class CodeGenerator {
         this.out.builtin_definitions.writeLine(`return a / b;`);
       }
     } else {
-      this.out.builtin_definitions.writeLine(`_H${leftType.mangledName} result;`);
+      this.out.builtin_definitions.writeLine(`_H${leftType.name.mangledName} result;`);
       this.out.builtin_definitions
         .writeLine(`if (__builtin_expect(__builtin_${opStr}_overflow(a, b, &result), 0)) {`)
         .pushIndent();
@@ -539,7 +553,7 @@ class CodeGenerator {
 
   emitFunction(symbolId: Lowered.FunctionId) {
     const symbol = this.lr.functionNodes.get(symbolId);
-    const ftype = this.lr.typeNodes.get(symbol.type);
+    const ftype = this.lr.typeDefNodes.get(symbol.type);
     assert(ftype.variant === Lowered.ENode.FunctionDatatype);
 
     let signature = "";
@@ -547,9 +561,9 @@ class CodeGenerator {
       signature += "static ";
     }
     signature +=
-      this.mangle(this.lr.typeNodes.get(ftype.returnType)) + " " + this.mangle(symbol) + "(";
+      this.mangleTypeUse(ftype.returnType) + " " + this.mangleFunctionSymbol(symbol) + "(";
     signature += ftype.parameters
-      .map((p, i) => `${this.mangle(this.lr.typeNodes.get(p))} ${symbol.parameterNames[i]}`)
+      .map((p, i) => `${this.mangleTypeUse(p)} ${symbol.parameterNames[i]}`)
       .join(", ");
     if (ftype.vararg) {
       signature += ", ...";
@@ -626,19 +640,18 @@ class CodeGenerator {
             `#line ${statement.sourceloc.line} ${JSON.stringify(statement.sourceloc.filename)}`
           );
         }
-        outWriter.write(
-          `${this.mangle(this.lr.typeNodes.get(statement.type))} ${this.mangle(statement)}`
-        );
+        outWriter.write(`${this.mangleTypeUse(statement.type)} ${statement.name}`);
 
         if (statement.value) {
           const exprWriter = this.emitExpr(statement.value);
           tempWriter.write(exprWriter.temp);
           outWriter.writeLine(` = ${exprWriter.out.get()};`);
         } else {
-          const statementType = this.lr.typeNodes.get(statement.type);
+          const statementType = this.lr.typeUseNodes.get(statement.type);
+          const statementTypeDef = this.lr.typeDefNodes.get(statementType.type);
           if (
-            statementType.variant === Lowered.ENode.StructDatatype &&
-            statementType.members.length === 0
+            statementTypeDef.variant === Lowered.ENode.StructDatatype &&
+            statementTypeDef.members.length === 0
           ) {
             outWriter.writeLine(`;`);
           } else {
@@ -761,7 +774,7 @@ class CodeGenerator {
         return { out: outWriter, temp: tempWriter };
 
       case Lowered.ENode.StructInstantiationExpr: {
-        outWriter.writeLine(`((${this.mangle(this.lr.typeNodes.get(expr.type))}) { `).pushIndent();
+        outWriter.writeLine(`((${this.mangleTypeUse(expr.type)}) { `).pushIndent();
         for (const assign of expr.memberAssigns) {
           const exprWriter = this.emitExpr(assign.value);
           tempWriter.write(exprWriter.temp);
@@ -783,16 +796,14 @@ class CodeGenerator {
       }
 
       case Lowered.ENode.SymbolValueExpr: {
-        outWriter.write(this.mangle(expr));
+        outWriter.write(this.mangleName(expr.name));
         return { out: outWriter, temp: tempWriter };
       }
 
       case Lowered.ENode.ExplicitCastExpr:
         const exprWriter = this.emitExpr(expr.expr);
         tempWriter.write(exprWriter.temp);
-        outWriter.write(
-          `((${this.mangle(this.lr.typeNodes.get(expr.type))})${exprWriter.out.get()})`
-        );
+        outWriter.write(`((${this.mangleTypeUse(expr.type)})${exprWriter.out.get()})`);
         return { out: outWriter, temp: tempWriter };
 
       case Lowered.ENode.PreIncrExpr: {
@@ -800,10 +811,11 @@ class CodeGenerator {
         tempWriter.write(exprWriter.temp);
 
         const e = this.lr.exprNodes.get(expr.expr);
-        const exprType = this.lr.typeNodes.get(e.type);
+        const exprType = this.lr.typeUseNodes.get(e.type);
+        const exprTypeDef = this.lr.typeDefNodes.get(exprType.type);
         if (
-          exprType.variant === Lowered.ENode.PrimitiveDatatype &&
-          Conversion.isInteger(exprType.primitive)
+          exprTypeDef.variant === Lowered.ENode.PrimitiveDatatype &&
+          Conversion.isInteger(exprTypeDef.primitive)
         ) {
           const functionName = this.makeCheckedIncrArithmeticFunction(expr.expr, expr.operation);
           outWriter.write(`(${exprWriter.out.get()} = ${functionName}(${exprWriter.out.get()}))`);
@@ -824,14 +836,15 @@ class CodeGenerator {
         tempWriter.write(exprWriter.temp);
 
         const e = this.lr.exprNodes.get(expr.expr);
-        const exprType = this.lr.typeNodes.get(e.type);
+        const exprType = this.lr.typeUseNodes.get(e.type);
+        const exprTypeDef = this.lr.typeDefNodes.get(exprType.type);
         if (
-          exprType.variant === Lowered.ENode.PrimitiveDatatype &&
-          Conversion.isInteger(exprType.primitive)
+          exprTypeDef.variant === Lowered.ENode.PrimitiveDatatype &&
+          Conversion.isInteger(exprTypeDef.primitive)
         ) {
           const functionName = this.makeCheckedIncrArithmeticFunction(expr.expr, expr.operation);
           outWriter.write(
-            `({ ${this.mangle(
+            `({ ${this.mangleTypeUse(
               exprType
             )} __tmp = ${exprWriter.out.get()}; ${exprWriter.out.get()} = ${functionName}(${exprWriter.out.get()}); __tmp; })`
           );
@@ -877,15 +890,17 @@ class CodeGenerator {
             tempWriter.write(rightWriter.temp);
 
             const left = this.lr.exprNodes.get(expr.left);
-            const leftType = this.lr.typeNodes.get(left.type);
+            const leftType = this.lr.typeUseNodes.get(left.type);
+            const leftTypeDef = this.lr.typeDefNodes.get(leftType.type);
             const right = this.lr.exprNodes.get(expr.right);
-            const rightType = this.lr.typeNodes.get(right.type);
+            const rightType = this.lr.typeUseNodes.get(right.type);
+            const rightTypeDef = this.lr.typeDefNodes.get(rightType.type);
             assert(
-              leftType.variant === Lowered.ENode.PrimitiveDatatype &&
-                rightType.variant === Lowered.ENode.PrimitiveDatatype &&
-                leftType.primitive === rightType.primitive
+              leftTypeDef.variant === Lowered.ENode.PrimitiveDatatype &&
+                rightTypeDef.variant === Lowered.ENode.PrimitiveDatatype &&
+                leftTypeDef.primitive === rightTypeDef.primitive
             );
-            if (Conversion.isInteger(leftType.primitive)) {
+            if (Conversion.isInteger(leftTypeDef.primitive)) {
               const functionName = this.makeCheckedBinaryArithmeticFunction(
                 expr.left,
                 expr.right,
@@ -970,9 +985,9 @@ class CodeGenerator {
         const thisExpr = this.emitExpr(expr.thisExpr);
         tempWriter.write(thisExpr.temp);
         outWriter.write(
-          `((${this.mangle(
-            this.lr.typeNodes.get(expr.type)
-          )}) { .thisPtr = ${thisExpr.out.get()}, .fn = ${this.mangle(expr)} })`
+          `((${this.mangleTypeUse(
+            expr.type
+          )}) { .thisPtr = ${thisExpr.out.get()}, .fn = ${this.mangleName(expr.functionName)} })`
         );
         return { out: outWriter, temp: tempWriter };
       }
@@ -1014,9 +1029,7 @@ class CodeGenerator {
           return e.out;
         });
         outWriter.write(
-          `(${this.mangle(this.lr.typeNodes.get(expr.type))}){ .data = {${values
-            .map((v) => v.get())
-            .join(", ")}} }`
+          `(${this.mangleTypeUse(expr.type)}){ .data = {${values.map((v) => v.get()).join(", ")}} }`
         );
         return { out: outWriter, temp: tempWriter };
       }
@@ -1032,11 +1045,12 @@ class CodeGenerator {
 
       case Lowered.ENode.ArraySliceExpr: {
         const e = this.emitExpr(expr.expr);
-        const sliceType = this.lr.typeNodes.get(expr.type);
+        const sliceType = this.lr.typeUseNodes.get(expr.type);
         const arrayExpr = this.lr.exprNodes.get(expr.expr);
-        const arrayExprType = this.lr.typeNodes.get(arrayExpr.type);
+        const arrayExprType = this.lr.typeUseNodes.get(arrayExpr.type);
+        const arrayExprTypeDef = this.lr.typeDefNodes.get(arrayExprType.type);
         assert(arrayExpr.variant !== Lowered.ENode.ArrayLiteralExpr);
-        assert(arrayExprType.variant === Lowered.ENode.ArrayDatatype);
+        assert(arrayExprTypeDef.variant === Lowered.ENode.ArrayDatatype);
 
         tempWriter.write(e.temp);
         const startIndex = this.emitExpr(expr.start);
@@ -1046,7 +1060,7 @@ class CodeGenerator {
 
         const array = e.out.get();
         outWriter.write(
-          `(${this.mangle(
+          `(${this.mangleTypeUse(
             sliceType
           )}){ .data=(${array}).data + ${startIndex.out.get()}, .length=(${endIndex.out.get()} - ${startIndex.out.get()}) }`
         );
@@ -1054,7 +1068,7 @@ class CodeGenerator {
       }
 
       case Lowered.ENode.DatatypeAsValueExpr: {
-        outWriter.write(this.mangle(this.lr.typeNodes.get(expr.type)));
+        outWriter.write(this.mangleTypeUse(expr.type));
         return { out: outWriter, temp: tempWriter };
       }
 
