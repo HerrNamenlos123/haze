@@ -535,6 +535,32 @@ export namespace Conversion {
       })[1];
     }
 
+    // Conversion from str to c_str
+    if (
+      fromType.variant === Semantic.ENode.PrimitiveDatatype &&
+      to.variant === Semantic.ENode.PrimitiveDatatype &&
+      fromType.primitive === EPrimitive.str &&
+      to.primitive === EPrimitive.c_str
+    ) {
+      if (from.variant === Semantic.ENode.LiteralExpr) {
+        assert(from.literal.type === EPrimitive.str);
+        return Semantic.addNode(sr, {
+          variant: Semantic.ENode.LiteralExpr,
+          literal: {
+            type: EPrimitive.c_str,
+            value: from.literal.value,
+          },
+          isTemporary: true,
+          type: makePrimitiveAvailable(sr, EPrimitive.c_str),
+          sourceloc: from.sourceloc,
+        })[1];
+      }
+      throw new CompilerError(
+        `Conversion from str to c_str (const char*) is not possible because the value is not known at compile time, therefore no C string literal can be emitted that preserves null termination. For runtime strings, use str.c_str(arena).`,
+        sourceloc
+      );
+    }
+
     // Conversion from T[N] to T[]
     // if (
     //   fromType.variant === Semantic.ENode.ArrayDatatype &&

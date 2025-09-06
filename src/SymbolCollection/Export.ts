@@ -68,7 +68,15 @@ function printType(cc: CollectionContext, typeId: Collect.Id): string {
     }
 
     case Collect.ENode.ReferenceDatatype: {
-      return `${printType(cc, type.referee)}*`;
+      return `${printType(cc, type.referee)}&`;
+    }
+
+    case Collect.ENode.ArrayDatatype: {
+      return `${printType(cc, type.datatype)}[${type.length}]`;
+    }
+
+    case Collect.ENode.SliceDatatype: {
+      return `${printType(cc, type.datatype)}[]`;
     }
 
     case Collect.ENode.ParameterPack: {

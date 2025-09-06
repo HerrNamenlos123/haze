@@ -95,6 +95,7 @@ export namespace Lowered {
     ArrayLiteralExpr,
     ArraySubscriptExpr,
     ArraySliceExpr,
+    StringConstructExpr,
     // Dummy
     Dummy,
   }
@@ -316,6 +317,15 @@ export namespace Lowered {
     type: TypeId;
   };
 
+  export type StringConstructExpr = {
+    variant: ENode.StringConstructExpr;
+    value: {
+      data: ExprId;
+      length: ExprId;
+    };
+    type: TypeId;
+  };
+
   export type Expression =
     | ExprCallExpr
     | BinaryExpr
@@ -335,6 +345,7 @@ export namespace Lowered {
     | ArrayLiteralExpr
     | ArraySubscriptExpr
     | ArraySliceExpr
+    | StringConstructExpr
     | SymbolValueExpr;
 
   export type BlockScope = {
@@ -1011,6 +1022,17 @@ function lowerExpr(
       }
     }
 
+    case Semantic.ENode.StringConstructExpr: {
+      return Lowered.addExpr(lr, {
+        variant: Lowered.ENode.StringConstructExpr,
+        type: lowerType(lr, expr.type),
+        value: {
+          data: lowerExpr(lr, expr.value.data, flattened)[1],
+          length: lowerExpr(lr, expr.value.length, flattened)[1],
+        },
+      });
+    }
+
     case Semantic.ENode.DatatypeAsValueExpr: {
       return Lowered.addExpr(lr, {
         variant: Lowered.ENode.DatatypeAsValueExpr,
@@ -1524,6 +1546,12 @@ function serializeLoweredExpr(lr: Lowered.Module, exprId: Lowered.ExprId): strin
     case Lowered.ENode.SymbolValueExpr:
       return expr.prettyName;
 
+    case Lowered.ENode.StringConstructExpr:
+      return `str(${serializeLoweredExpr(lr, expr.value.data)}, ${serializeLoweredExpr(
+        lr,
+        expr.value.length
+      )})`;
+
     case Lowered.ENode.ArrayLiteralExpr: {
       const t = lr.typeNodes.get(expr.type);
       return `(${t.prettyName})[${expr.values.map((v) => serializeLoweredExpr(lr, v)).join(", ")}]`;
@@ -1557,6 +1585,8 @@ function serializeLoweredExpr(lr: Lowered.Module, exprId: Lowered.ExprId): strin
         exprType.primitive === EPrimitive.str
       ) {
         assert(expr.literal.type === EPrimitive.str);
+        return `${JSON.stringify(expr.literal.value)}`;
+      } else if (expr.literal.type === EPrimitive.c_str) {
         return `${JSON.stringify(expr.literal.value)}`;
       } else if (expr.literal.type === EPrimitive.null) {
         return `null`;

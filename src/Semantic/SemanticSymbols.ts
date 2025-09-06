@@ -98,6 +98,9 @@ export function makePrimitiveAvailable(sr: SemanticResult, primitive: EPrimitive
 }
 
 export function isExpression(node: Semantic.Node): node is Semantic.Expression {
+  if (node === undefined) {
+    assert(false);
+  }
   return ([...Semantic.ExpressionEnums] as number[]).includes(node.variant);
 }
 
@@ -198,6 +201,7 @@ export namespace Semantic {
     ArrayLiteralExpr,
     ArraySubscriptExpr,
     ArraySliceExpr,
+    StringConstructExpr,
     // Dummy
     Dummy,
   }
@@ -240,6 +244,7 @@ export namespace Semantic {
     ENode.ArrayLiteralExpr,
     ENode.ArraySubscriptExpr,
     ENode.ArraySliceExpr,
+    ENode.StringConstructExpr,
   ] as const;
 
   export function addNode<T extends Semantic.Node>(sr: SemanticResult, n: T): [T, Semantic.Id] {
@@ -641,6 +646,18 @@ export namespace Semantic {
     sourceloc: SourceLoc;
   };
 
+  export type StringConstructExpr = {
+    variant: ENode.StringConstructExpr;
+    value: {
+      variant: "data-length";
+      data: Id;
+      length: Id;
+    };
+    type: Id;
+    isTemporary: boolean;
+    sourceloc: SourceLoc;
+  };
+
   export type Expression =
     | ExprMemberAccessExpr
     | SymbolValueExpr
@@ -661,7 +678,8 @@ export namespace Semantic {
     | LiteralExpr
     | ArrayLiteralExpr
     | ArraySubscriptExpr
-    | ArraySliceExpr;
+    | ArraySliceExpr
+    | StringConstructExpr;
 
   // =============================================
 

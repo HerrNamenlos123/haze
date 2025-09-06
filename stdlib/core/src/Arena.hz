@@ -28,7 +28,7 @@ export struct nonclonable Arena {
 
     alloc<T>(value: T): T& {
         const ref: T& = uninitialized;
-        const ptr = this.__alloc(sizeof(T));
+        const ptr = this.allocateRaw(sizeof(T));
         __c__("ref = (void*)ptr;");
         assign(ref, value);
         return ref;
@@ -45,7 +45,7 @@ export struct nonclonable Arena {
         return chunk_mem;
     }
 
-    __alloc(size: usize): u8* {
+    allocateRaw(size: usize): u8* {
         let last = this.last;
         if last != nullptr && ((*last).used + size <= (*last).size) {
             // allocate from existing chunk

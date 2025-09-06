@@ -2053,7 +2053,7 @@ export function PrettyPrintCollected(cc: CollectionContext) {
       case Collect.ENode.LiteralExpr: {
         if (expr.literal.type === EPrimitive.null) {
           return "null";
-        } else if (expr.literal.type !== EPrimitive.str) {
+        } else if (expr.literal.type !== EPrimitive.str && expr.literal.type !== EPrimitive.c_str) {
           return `${primitiveToString(expr.literal.type)}(${expr.literal.value})`;
         } else {
           return `${JSON.stringify(expr.literal.value)}`;

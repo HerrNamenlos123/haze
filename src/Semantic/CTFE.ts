@@ -16,6 +16,7 @@ function makeBoolValue(sr: SemanticResult, value: boolean) {
       type: EPrimitive.bool,
       value: value,
     },
+    isTemporary: true,
     type: makePrimitiveAvailable(sr, EPrimitive.bool),
     sourceloc: null,
   });
@@ -23,6 +24,7 @@ function makeBoolValue(sr: SemanticResult, value: boolean) {
 
 const TRIVIAL_LITERAL_COMPARISONS = [
   EPrimitive.str,
+  EPrimitive.c_str,
   EPrimitive.f32,
   EPrimitive.f64,
   EPrimitive.u8,

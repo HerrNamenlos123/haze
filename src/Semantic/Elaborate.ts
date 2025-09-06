@@ -1252,7 +1252,10 @@ export function elaborateExpr(
           let second = undefined as Semantic.LiteralExpr | undefined;
           if (callingArguments.length > 1) {
             const s = sr.nodes.get(callingArguments[1]);
-            if (s.variant !== Semantic.ENode.LiteralExpr || s.literal.type !== EPrimitive.str) {
+            if (
+              s.variant !== Semantic.ENode.LiteralExpr ||
+              (s.literal.type !== EPrimitive.str && s.literal.type !== EPrimitive.c_str)
+            ) {
               throw new CompilerError(
                 "The static_assert function requires the second parameter to be a string, or omitted",
                 collectedExpr.sourceloc
@@ -1281,6 +1284,83 @@ export function elaborateExpr(
               expr.sourceloc
             );
           }
+        }
+
+        const primitive = stringToPrimitive(collectedExpr.name);
+        if (primitive) {
+          const callingArguments = expr.arguments.map(
+            (a, i) =>
+              elaborateExpr(sr, a, {
+                elaboratedVariables: args.elaboratedVariables,
+                context: args.context,
+                scope: args.context.currentScope,
+                blockScope: args.blockScope,
+                isMonomorphized: args.isMonomorphized,
+              })[1]
+          );
+          if (collectedExpr.genericArgs.length !== 0) {
+            throw new CompilerError(
+              "Primitive constructors cannot take any type parameters",
+              collectedExpr.sourceloc
+            );
+          }
+          if (primitive === EPrimitive.str) {
+            if (callingArguments.length < 1 || callingArguments.length > 2) {
+              throw new CompilerError(
+                "'str' constructor must take one or two parameters",
+                collectedExpr.sourceloc
+              );
+            }
+            const first = asExpression(sr.nodes.get(callingArguments[0]));
+            const firstType = asType(sr.nodes.get(first.type));
+            const second =
+              callingArguments.length > 1 ? asExpression(sr.nodes.get(callingArguments[1])) : null;
+            const secondType =
+              callingArguments.length > 1 && second ? asType(sr.nodes.get(second.type)) : null;
+            if (
+              firstType.variant === Semantic.ENode.PrimitiveDatatype &&
+              firstType.primitive === EPrimitive.str &&
+              callingArguments.length === 1
+            ) {
+              return [first, callingArguments[0]];
+            }
+            if (
+              callingArguments.length === 2 &&
+              second &&
+              secondType &&
+              firstType.variant === Semantic.ENode.PointerDatatype &&
+              firstType.pointee === makePrimitiveAvailable(sr, EPrimitive.u8) &&
+              secondType.variant === Semantic.ENode.PrimitiveDatatype &&
+              Conversion.isInteger(secondType.primitive)
+            ) {
+              return Semantic.addNode(sr, {
+                variant: Semantic.ENode.StringConstructExpr,
+                type: makePrimitiveAvailable(sr, EPrimitive.str),
+                value: {
+                  variant: "data-length",
+                  data: callingArguments[0],
+                  length: callingArguments[1],
+                },
+                isTemporary: true,
+                sourceloc: expr.sourceloc,
+              });
+            }
+            throw new CompilerError(
+              `Primitive ${primitiveToString(
+                primitive
+              )} constructor does not provide an overload that can take following types: (${callingArguments
+                .map((a) => {
+                  const arg = asExpression(sr.nodes.get(a));
+                  return serializeDatatype(sr, arg.type);
+                })
+                .join(", ")})`,
+              expr.sourceloc
+            );
+          }
+          throw new CompilerError(
+            `Primitive ${primitiveToString(primitive)} is not constructible`,
+            expr.sourceloc
+          );
         }
       }
 
@@ -2008,6 +2088,38 @@ export function elaborateExpr(
         }
         throw new CompilerError(
           `Parameter Pack does not have a member named '${expr.memberName}'`,
+          expr.sourceloc
+        );
+      }
+
+      if (
+        objectType.variant === Semantic.ENode.PrimitiveDatatype &&
+        objectType.primitive === EPrimitive.str
+      ) {
+        if (expr.memberName === "length") {
+          return Semantic.addNode(sr, {
+            variant: Semantic.ENode.MemberAccessExpr,
+            isTemporary: true,
+            sourceloc: expr.sourceloc,
+            type: makePrimitiveAvailable(sr, EPrimitive.usize),
+            expr: objectId,
+            memberName: "length",
+          });
+        }
+        if (expr.memberName === "data") {
+          return Semantic.addNode(sr, {
+            variant: Semantic.ENode.MemberAccessExpr,
+            isTemporary: true,
+            sourceloc: expr.sourceloc,
+            type: makePointerDatatypeAvailable(sr, makePrimitiveAvailable(sr, EPrimitive.u8)),
+            expr: objectId,
+            memberName: "data",
+          });
+        }
+        throw new CompilerError(
+          `Datatype '${serializeDatatype(sr, object.type)}' does not have a member named '${
+            expr.memberName
+          }'`,
           expr.sourceloc
         );
       }

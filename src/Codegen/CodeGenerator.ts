@@ -130,7 +130,15 @@ class CodeGenerator {
 
     for (const symbol of this.lr.sortedLoweredTypes) {
       if (symbol.variant === Lowered.ENode.PrimitiveDatatype) {
-        if (symbol.primitive === EPrimitive.null) {
+        if (symbol.primitive === EPrimitive.c_str) {
+          this.out.type_declarations.writeLine(`typedef const char* _H5c_str;`);
+        } else if (symbol.primitive === EPrimitive.str) {
+          this.out.type_declarations.writeLine(`typedef struct _H3str _H3str;`);
+          this.out.type_definitions.writeLine(`struct _H3str {`).pushIndent();
+          this.out.type_definitions.writeLine(`const char* data;`);
+          this.out.type_definitions.writeLine(`uint64_t length;`);
+          this.out.type_definitions.popIndent().writeLine(`};`);
+        } else if (symbol.primitive === EPrimitive.null) {
           this.out.type_declarations.writeLine(
             `typedef struct ${this.mangle(symbol)} ${this.mangle(symbol)};`
           );
@@ -316,6 +324,8 @@ class CodeGenerator {
       case EPrimitive.null:
         assert(false, "null should be handled specially");
       case EPrimitive.str:
+        return "_H3str";
+      case EPrimitive.c_str:
         return "const char*";
     }
   }
@@ -474,7 +484,7 @@ class CodeGenerator {
         `_H${leftType.mangledName} ${functionName}(_H${leftType.mangledName} a, _H${rightType.mangledName} b) {`
       )
       .pushIndent();
-    if (operation === EBinaryOperation.Divide) {
+    if (operation === EBinaryOperation.Divide || operation === EBinaryOperation.Modulo) {
       this.out.builtin_definitions.writeLine(`if (b == 0) ${trapFunc}("Division by zero");`);
       if (
         leftType.variant === Lowered.ENode.PrimitiveDatatype &&
@@ -505,7 +515,11 @@ class CodeGenerator {
           `if (a == INT64_MIN && b == -1) ${trapFunc}("Integer overflow in division");`
         );
       }
-      this.out.builtin_definitions.writeLine(`return a / b;`);
+      if (operation === EBinaryOperation.Modulo) {
+        this.out.builtin_definitions.writeLine(`return a % b;`);
+      } else {
+        this.out.builtin_definitions.writeLine(`return a / b;`);
+      }
     } else {
       this.out.builtin_definitions.writeLine(`_H${leftType.mangledName} result;`);
       this.out.builtin_definitions
@@ -1044,15 +1058,31 @@ class CodeGenerator {
         return { out: outWriter, temp: tempWriter };
       }
 
+      case Lowered.ENode.StringConstructExpr: {
+        const data = this.emitExpr(expr.value.data);
+        tempWriter.write(data.temp);
+
+        const length = this.emitExpr(expr.value.length);
+        tempWriter.write(length.temp);
+
+        outWriter.write(
+          `(_H3str){ .data=(const char*)${data.out.get()}, .length=${length.out.get()} }`
+        );
+        return { out: outWriter, temp: tempWriter };
+      }
+
       case Lowered.ENode.LiteralExpr: {
         function stringifyWithDecimal(num: number) {
           const s = num.toString();
           return s.includes(".") ? s : s + ".0";
         }
 
-        if (expr.literal.type === EPrimitive.str) {
+        if (expr.literal.type === EPrimitive.c_str) {
+          outWriter.write(`(_H5c_str)(${JSON.stringify(expr.literal.value)})`);
+        } else if (expr.literal.type === EPrimitive.str) {
+          const value = expr.literal.value;
           outWriter.write(
-            `(${this.primitiveToC(expr.literal.type)})(${JSON.stringify(expr.literal.value)})`
+            `(_H3str){ .data=(const char*)${JSON.stringify(value)}, .length=${value.length} }`
           );
         } else if (expr.literal.type === EPrimitive.bool) {
           outWriter.write(

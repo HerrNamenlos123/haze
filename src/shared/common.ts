@@ -54,6 +54,7 @@ export enum EPrimitive {
   real,
   usize,
   str,
+  c_str,
 }
 
 export enum EVariableContext {
@@ -73,7 +74,11 @@ export type LiteralValue =
       type: EPrimitive.null;
     }
   | {
-      type: EPrimitive.str;
+      type: EPrimitive.str | EPrimitive.c_str;
+      value: string;
+    }
+  | {
+      type: EPrimitive.c_str;
       value: string;
     }
   | {
@@ -139,6 +144,8 @@ export function primitiveToString(primitive: EPrimitive) {
       return "f64";
     case EPrimitive.str:
       return "str";
+    case EPrimitive.c_str:
+      return "c_str";
     default:
       throw new InternalError("Unexpected datatype " + primitive);
   }
@@ -178,6 +185,8 @@ export function stringToPrimitive(str: string) {
       return EPrimitive.f32;
     case "f64":
       return EPrimitive.f64;
+    case "c_str":
+      return EPrimitive.c_str;
     case "str":
       return EPrimitive.str;
     default:

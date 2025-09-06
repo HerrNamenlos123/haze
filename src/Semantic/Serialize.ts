@@ -71,6 +71,8 @@ export function serializeDatatype(sr: SemanticResult, datatypeId: Semantic.Id): 
 export function serializeLiteralValue(value: LiteralValue) {
   if (value.type === EPrimitive.str) {
     return `${JSON.stringify(value.value)}`;
+  } else if (value.type === EPrimitive.c_str) {
+    return `${JSON.stringify(value.value)}`;
   } else if (value.type === EPrimitive.bool) {
     return `${value.value ? "true" : "false"}`;
   } else {
@@ -291,19 +293,20 @@ export function mangleDatatype(sr: SemanticResult, typeId: Semantic.Id): string 
     }
 
     case Semantic.ENode.LiteralValueDatatype: {
-      if (type.literal.type === EPrimitive.bool) {
+      const literalType = type.literal.type;
+      if (literalType === EPrimitive.bool) {
         return `Lb${type.literal.value ? "1" : "0"}E`;
-      } else if (type.literal.type === EPrimitive.str) {
+      } else if (literalType === EPrimitive.str || literalType === EPrimitive.c_str) {
         const utf8 = new TextEncoder().encode(type.literal.value);
         let base64 = btoa(String.fromCharCode(...utf8));
         // make it C-identifier-safe: base64 → base64url (replace +/ with _)
         base64 = base64.replace(/\+/g, "_").replace(/\//g, "_").replace(/=+$/, "");
         return `Ls${base64}E`;
-      } else if (type.literal.type === EPrimitive.null) {
+      } else if (literalType === EPrimitive.null) {
         return "nl";
       } else {
-        if (Number.isInteger(type.literal.value)) {
-          return type.literal.value < 0 ? `Lin${-type.literal.value}E` : `Li${type.literal.value}E`;
+        if (Number.isInteger(literalType)) {
+          return literalType < 0 ? `Lin${-type.literal.value}E` : `Li${type.literal.value}E`;
         } else {
           const repr = type.literal.value.toString().replace("-", "n").replace(".", "_");
           return `Lf${repr}E`;

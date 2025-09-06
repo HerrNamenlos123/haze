@@ -16,7 +16,11 @@ main(): int {
 
     let x = 5;
 
-    format(Arena(), 5);
+    let arena = Arena();
+    const s = fmt.format<int>(arena, -7183, {});
+
+    print("Formatted: ");
+    println(s);
     // let a = f"Test: {Vec3 {}} other";
 
     // let arena = Arena();

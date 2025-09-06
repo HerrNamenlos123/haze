@@ -2,7 +2,7 @@
 __c__("#include <stdio.h>");
 
 namespace builtin {
-    export extern "C" noemit printf(fmt: str, ...);
+    export extern "C" noemit printf(fmt: c_str, ...);
 }
 
 namespace fmt {
@@ -10,11 +10,11 @@ namespace fmt {
         formatSpecifier: str = "";
     }
 
-    struct StringWriter {
-        buffer: u8*;
-        length: usize;
+    export struct StringWriter {
+        buffer: u8* = nullptr;
+        length: usize = 0;
 
-        write(value: u8[]) {        
+        write(value: str) {        
             if this.buffer != nullptr {
                 __c__("memcpy(this->buffer + this->length, value.data, value.length);");
                 // for i in 0..value.len {
@@ -23,33 +23,63 @@ namespace fmt {
             }
             this.length += value.length;
         }
+    }
 
-        write(c: u8) {
-            if this.buffer != nullptr {
-                __c__("this->buffer[this->length] = c;");
+    export format<T>(arena: Arena&, value: T, args: FormatArgs): str {
+        const writer = StringWriter {};
+        format_to(writer as StringWriter&, value, args);
+        const string = arena.allocateRaw(writer.length);
+        const writer2 = StringWriter { buffer: string };
+        format_to(writer2 as StringWriter&, value, args);
+        return str(writer2.buffer, writer2.length);
+    }
+
+    export format_to(writer: StringWriter&, value: int, args: FormatArgs) {
+        let v = value;
+        if v < 0 {
+            writer.write("-");
+            if v == -2147483648 {
+                writer.write("2147483648");
+                return;
             }
-            this.length += 1;
+            v = -v;
+        }
+
+        // Find highest divisor
+        let div = 1;
+        while v / div >= 10 {
+            div *= 10;
+        }
+
+        while div > 0 {
+            let digit = v / div;
+            writer.write(digitToStr(digit));
+            v %= div;
+            div /= 10;
         }
     }
 
-    format<T>(arena: Arena&, value: T, args: FormatArgs) {
-        const writer = StringWriter { buffer: null, length: 0 };
-        format_to(writer, value, args);       // pass 1: measure length
-        const str = arena.alloc<u8>(writer.length);  // allocate exact size
-        const writer2 = StringWriter { buffer: str, length: 0 };
-        format_to(writer2, value, args);      // pass 2: write actual bytes
-        return str;
+    digitToStr(digit: int): str {
+        assert(digit >= 0 && digit <= 9);
+        const ch: u8 = 0;
+        __c__("ch = '0' + digit;");
+        return str(&ch, 1);
     }
 
-    format_to(writer: StringWriter&, value: i32) {
-        format_integer(writer, value as int);
+    export format_to(writer: StringWriter&, value: i8, args: FormatArgs) {
+        format_to(writer, value as int, args);
     }
 
-    format_integer(writer: StringWriter&, value: int) {
-        let buf = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]; // Space for int.max = 9223372036854775807
-        let a = [5][:];
-        let x = buf[:];
-        // writer.write(buf[:]);
+    export format_to(writer: StringWriter&, value: i16, args: FormatArgs) {
+        format_to(writer, value as int, args);
+    }
+
+    export format_to(writer: StringWriter&, value: i32, args: FormatArgs) {
+        format_to(writer, value as int, args);
+    }
+
+    export format_to(writer: StringWriter&, value: i64, args: FormatArgs) {
+        format_to(writer, value as int, args);
     }
 }
 
@@ -59,7 +89,9 @@ export print(args: ...) {
             builtin.printf("%ld", arg);
         }
         else if typeof(arg) == str {
-            builtin.printf("%s", arg);
+            const s = arg;
+            __c__("fwrite(s.data, 1, s.length, stdout);");
+            // builtin.printf("%s", arg);
         }
         else if typeof(arg) == bool {
             if arg {

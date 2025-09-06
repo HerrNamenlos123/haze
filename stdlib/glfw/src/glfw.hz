@@ -6,8 +6,8 @@ __c__("#include <string.h>");
 export extern "C" struct GLFWwindow {};
 export extern "C" struct GLFWmonitor {};
 
-extern "C" noemit strcmp(str1: str, str2: str): i32;
-extern "C" noemit getenv(name: str): str;
+extern "C" noemit strcmp(str1: c_str, str2: c_str): i32;
+extern "C" noemit getenv(name: c_str): c_str;
 
 const GLFW_PLATFORM: i32;
 const GLFW_PLATFORM_X11: i32;
@@ -20,7 +20,7 @@ const GLFW_OPENGL_CORE_PROFILE: i32;
 namespace raw {
     extern "C" glfwInit(): i32;
     extern "C" glfwTerminate(): void;
-    extern "C" glfwCreateWindow(width: i32, height: i32, title: str, monitor: GLFWmonitor*, share: GLFWwindow*): GLFWwindow*;
+    extern "C" glfwCreateWindow(width: i32, height: i32, title: c_str, monitor: GLFWmonitor*, share: GLFWwindow*): GLFWwindow*;
     extern "C" glfwWindowShouldClose(w: GLFWwindow*): i32;
     extern "C" glfwSwapBuffers(w: GLFWwindow*);
     extern "C" glfwSwapInterval(flag: i32);
@@ -30,7 +30,7 @@ namespace raw {
     extern "C" glfwWindowHint(hint: i32, value: i32);
     extern "C" glfwGetTime(): f64;
     // extern "C" glfwMakeContextCurrent(w: GLFWwindow*);
-    extern "C" glfwGetProcAddress(procname: str): () => void;
+    extern "C" glfwGetProcAddress(procname: c_str): () => void;
 
     export init(): bool {
         return glfwInit() != 0;
@@ -40,7 +40,7 @@ namespace raw {
         glfwTerminate();
     }
 
-    export createWindow(width: i32, height: i32, title: str, monitor: GLFWmonitor*, share: GLFWwindow*): GLFWwindow* {
+    export createWindow(width: i32, height: i32, title: c_str, monitor: GLFWmonitor*, share: GLFWwindow*): GLFWwindow* {
         return glfwCreateWindow(width, height, title, monitor, share);
     }
 
@@ -76,7 +76,7 @@ namespace raw {
         return glfwGetTime() as f64;
     }
 
-    export getProcAddress(procname: str): () => void {
+    export getProcAddress(procname: c_str): () => void {
         return glfwGetProcAddress(procname);
     }
 }
@@ -111,7 +111,7 @@ export struct WindowSizeConfig {
 }
 
 export struct WindowConfig {
-    title: str;
+    title: c_str;
     size: WindowSizeConfig = {};
 }
 
@@ -161,9 +161,9 @@ export getTime(): real {
     return raw.getTime() as real;
 }
 
-export getProcAddress(): (name: str) => void* {
+export getProcAddress(): (name: c_str) => void* {
     const rawProc = raw.getProcAddress;
-    const castedProc: (name: str) => void* = uninitialized;
+    const castedProc: (name: c_str) => void* = uninitialized;
     __c__("castedProc = (void*)rawProc;");
     return castedProc;
 }
