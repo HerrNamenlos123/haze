@@ -3,14 +3,7 @@ import { version } from "../package.json";
 import { GeneralError } from "./shared/Errors";
 import { join } from "path";
 import path from "node:path";
-import { ProjectCompiler } from "./Module";
-
-async function getFile(url: string, outfile: string) {
-  const response = await fetch(url);
-  if (!response.ok) throw new Error(`Failed to fetch: ${response.statusText}`);
-  const buffer = await response.arrayBuffer();
-  await Bun.write(outfile, new Uint8Array(buffer));
-}
+import { getFile, ProjectCompiler } from "./Module";
 
 async function main() {
   const parser = new ArgumentParser({ add_help: false });

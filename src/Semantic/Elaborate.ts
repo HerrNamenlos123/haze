@@ -5131,6 +5131,9 @@ export namespace Semantic {
       const ftype = sr.typeDefNodes.get(symbol.type);
       assert(ftype.variant === Semantic.ENode.FunctionDatatype);
       functionParameterPart += ftype.parameters.map((p) => mangleTypeUse(sr, p).name).join("");
+      if (ftype.parameters.length == 0 && !ftype.vararg) {
+        functionParameterPart += "v";
+      }
       if (ftype.vararg) {
         functionParameterPart += "V";
       }

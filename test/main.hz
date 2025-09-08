@@ -1,8 +1,8 @@
 
-import math
-import glDraw
-import glfw
-import gl
+// import math
+// import glDraw
+// import glfw
+// import gl
 
 // foo(arena: Arena): Arena& {
 //     return arena;
@@ -16,18 +16,20 @@ struct Foo {};
 
 main(): int {
 
-    let foo = Foo {};
-    let newFoo = Foo {};
+    builtin.printf("Hello world!\n");
 
-    let a: const &const int = uninitialized;
-    let b: mut &int = uninitialized;
-    let c: []int = uninitialized;
-    let d: const []const int = uninitialized;
-    let e: mut []&mut int = uninitialized;
+    // let foo = Foo {};
+    // let newFoo = Foo {};
 
-    let x = 0;
-    let y: &int = x;
-    const z: &int = y;
+    // let a: const &const int = uninitialized;
+    // let b: mut &int = uninitialized;
+    // let c: []int = uninitialized;
+    // let d: const []const int = uninitialized;
+    // let e: mut []&mut int = uninitialized;
+
+    // let x = 0;
+    // let y: &int = x;
+    // const z: &int = y;
 
     // a = 5;
 
@@ -54,52 +56,52 @@ main(): int {
 
     return 0;
 
-    println("TODO: Fix the situation for negative literals. Parsing the minus is bad as it's punctiation dependent. It should be changed to parse as a Unary Expression with positive Literal, and in the symbol collection, Unary+Literal can be caught and converted into literal with negative value.");
-    println("TODO: All Increment operations and short-hand syntax should be expanded into proper full assignment expressions, and then compiled normally, makes everything much simpler, especially the overflow tracking.");
+    // println("TODO: Fix the situation for negative literals. Parsing the minus is bad as it's punctiation dependent. It should be changed to parse as a Unary Expression with positive Literal, and in the symbol collection, Unary+Literal can be caught and converted into literal with negative value.");
+    // println("TODO: All Increment operations and short-hand syntax should be expanded into proper full assignment expressions, and then compiled normally, makes everything much simpler, especially the overflow tracking.");
 
-    if !glfw.init() {
-        return 0;
-    }
+    // if !glfw.init() {
+    //     return 0;
+    // }
 
-    const window = glfw.createWindow({ 
-        title: "Hello World!",
-    });
+    // const window = glfw.createWindow({ 
+    //     title: "Hello World!",
+    // });
 
-    window.swapInterval(0);
-    gl.init(glfw.getProcAddress());
+    // window.swapInterval(0);
+    // gl.init(glfw.getProcAddress());
 
-    gl.viewport(0, 0, 1920, 1080);
+    // gl.viewport(0, 0, 1920, 1080);
 
-    let oldTime = glfw.getTime();
-    window.swapBuffers();
+    // let oldTime = glfw.getTime();
+    // window.swapBuffers();
 
-    let frameCounter: i16 = 0;
+    // let frameCounter: i16 = 0;
 
-    let fps = 0.0;
-    while !window.shouldClose() {
-        glfw.pollEvents();
+    // let fps = 0.0;
+    // while !window.shouldClose() {
+    //     glfw.pollEvents();
 
-        let now = glfw.getTime();
-        let elapsed = now - oldTime;
-        oldTime = now;
+    //     let now = glfw.getTime();
+    //     let elapsed = now - oldTime;
+    //     oldTime = now;
 
-        gl.clearColor(Color((math.sin(oldTime * 10.0) + 1.0) / 2.0, 0.1, 0.1, 1.0));
-        gl.clear();
+    //     gl.clearColor(Color((math.sin(oldTime * 10.0) + 1.0) / 2.0, 0.1, 0.1, 1.0));
+    //     gl.clear();
 
-        if fps == 0.0 {
-            fps = 1.0 / elapsed;
-        }
+    //     if fps == 0.0 {
+    //         fps = 1.0 / elapsed;
+    //     }
 
-        let alpha = 0.001;
-        fps = fps * (1.0 - alpha) + 1.0 / elapsed * alpha;
+    //     let alpha = 0.001;
+    //     fps = fps * (1.0 - alpha) + 1.0 / elapsed * alpha;
 
-        println("FPS:", fps);
-        println("Count: ", frameCounter);
+    //     println("FPS:", fps);
+    //     println("Count: ", frameCounter);
 
-        window.swapBuffers();
-    }
+    //     window.swapBuffers();
+    // }
 
-    glfw.terminate();
+    // glfw.terminate();
 
     return 0;
 }

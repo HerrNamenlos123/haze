@@ -46,17 +46,17 @@ namespace fmt {
         }
 
         // Find highest divisor
-        let div = 1;
-        while v / div >= 10 {
-            div *= 10;
-        }
+        // let div = 1;
+        // while v / div >= 10 {
+        //     div *= 10;
+        // }
 
-        while div > 0 {
-            let digit = v / div;
-            writer.write(digitToStr(digit));
-            v %= div;
-            div /= 10;
-        }
+        // while div > 0 {
+        //     let digit = v / div;
+        //     writer.write(digitToStr(digit));
+        //     v %= div;
+        //     div /= 10;
+        // }
     }
 
     digitToStr(digit: int): str {
