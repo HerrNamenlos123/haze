@@ -6,5 +6,8 @@ authors = ["HerrNamenlos123"]
 type = "lib"
 # src = "."
 
+[scripts]
+prebuild = "./build-linux.sh"
+
 [linker]
 flags = ["-lm", "-lglfw3", "-lGL", "-lpthread"]

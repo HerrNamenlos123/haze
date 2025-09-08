@@ -118,7 +118,7 @@ export struct WindowConfig {
 export init(): bool {
     const desktop = getenv("XDG_CURRENT_DESKTOP");
     const valid = true;
-    __c__("valid = desktop != 0;");
+    // __c__("valid = desktop != 0;");
     if (valid && strcmp(desktop, "GNOME") == 0) {
         raw.initHint(GLFW_PLATFORM, GLFW_PLATFORM_X11);
     }

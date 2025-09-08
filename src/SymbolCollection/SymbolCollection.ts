@@ -1017,9 +1017,6 @@ function collect(
     // =================================================================================================================
 
     case "StructMember": {
-      if (item.type === null) {
-        console.log(item);
-      }
       const [member, memberId] = defineVariableSymbol(
         cc,
         {

@@ -47,6 +47,7 @@ import { LowerModule } from "./Lower/Lower";
 import { ExportCollectedSymbols } from "./SymbolCollection/Export";
 import { Semantic } from "./Semantic/Elaborate";
 import { stdout } from "process";
+import { ParenthesisExprContext } from "./Parser/grammar/autogen/HazeParser";
 
 export const HAZE_DIR = os.homedir() + "/.haze/";
 export const HAZE_CACHE = HAZE_DIR + "cache/";
@@ -54,6 +55,7 @@ export const HAZE_TOOLCHAIN_INSTALLED_MARKER = HAZE_CACHE + "toolchain-installed
 export const HAZE_GLOBAL_DIR = HAZE_DIR + "global/";
 export const HAZE_TMP_DIR = HAZE_DIR + "tmp/";
 export const HAZE_MUSL_SYSROOT = HAZE_DIR + "sysroot/";
+export const HAZE_CMAKE_TOOLCHAIN = HAZE_DIR + "musl-toolchain.cmake";
 
 const LLVM_TOOLCHAIN_DOWNLOAD_URL =
   "https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-18.04.tar.xz";
@@ -279,6 +281,15 @@ export class ProjectCompiler {
     return config;
   }
 
+  setEnv(config: ModuleConfig) {
+    const env = process.env as any;
+    if (config.configFilePath) {
+      env.HAZE_PROJECT_DIR = dirname(config.configFilePath);
+    }
+    env.HAZE_SYSROOT = HAZE_MUSL_SYSROOT;
+    env.HAZE_CMAKE_TOOLCHAIN = HAZE_CMAKE_TOOLCHAIN;
+  }
+
   async build(singleFilename?: string, sourceloc?: boolean) {
     if (!(await this.setupToolchain())) {
       return false;
@@ -289,6 +300,7 @@ export class ProjectCompiler {
       return false;
     }
     this.globalBuildDir = join(process.cwd(), "__haze__");
+    this.setEnv(config);
 
     if (!singleFilename) {
       await this.cache.load(join(this.globalBuildDir, "cache.json"));
@@ -353,6 +365,7 @@ export class ProjectCompiler {
       if (!config) {
         return -1;
       }
+      this.setEnv(config);
 
       if (config?.moduleType === ModuleType.Library) {
         throw new GeneralError(
@@ -403,6 +416,7 @@ export class ProjectCompiler {
         finish: HAZE_CACHE + "/03-finish-marker",
         ncursesLib: HAZE_CACHE + "/ncurses-lib",
         musl: HAZE_CACHE + "/musl",
+        cmakeToolchain: HAZE_CACHE + "/cmake-toolchain",
       };
 
       // Step 1: Download
@@ -462,15 +476,55 @@ export class ProjectCompiler {
         console.info("Building libmusl sysroot... Done");
       }
 
+      if (!this.isStepDone(MARKERS.cmakeToolchain)) {
+        console.info("Writing CMake toolchain...");
+        mkdirSync(`${HAZE_TMP_DIR}/`, { recursive: true });
+        const toolchain = `
+set(CMAKE_SYSTEM_NAME Linux)
+set(CMAKE_C_COMPILER /home/me/.haze/global/bin/clang)
+set(CMAKE_CXX_COMPILER /home/me/.haze/global/bin/clang++)
+set(CMAKE_SYSROOT /home/me/.haze/sysroot)
+set(CMAKE_FIND_ROOT_PATH /home/me/.haze/sysroot)
+
+# Tell CMake to search only in sysroot
+set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
+set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
+set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
+
+
+set(CMAKE_C_FLAGS "--sysroot=/home/me/.haze/sysroot -static -fno-pie")
+set(CMAKE_EXE_LINKER_FLAGS "-nostdlib -L/home/me/.haze/sysroot/lib -L/home/me/.haze/global/lib/clang/18.1.8/lib/linux")
+
+set(THREADS_PREFER_PTHREAD_FLAG ON)
+set(CMAKE_THREAD_LIBS_INIT "-lpthread")  # musl ignores it for static linking
+set(THREADS_FOUND TRUE)`;
+        await Bun.write(`${HAZE_DIR}/musl-toolchain.cmake`, toolchain);
+        this.markStepDone(MARKERS.cmakeToolchain);
+        console.info("Writing CMake toolchain... Done");
+      }
+
       // throw new Error();
     });
   }
 }
 
-async function exec(str: string) {
+function exec(str: string) {
   try {
     child_process.execSync(str);
   } catch (e) {
+    throw new CmdFailed();
+  }
+}
+
+function execInherit(str: string, dir?: string) {
+  const result = Bun.spawnSync(["sh", "-c", str], {
+    stdout: "inherit",
+    stderr: "inherit",
+    cwd: dir,
+    env: process.env,
+  });
+
+  if (result.exitCode !== 0) {
     throw new CmdFailed();
   }
 }
@@ -564,11 +618,23 @@ class ModuleCompiler {
         }
       }
 
+      const env = process.env as any;
+      if (this.config.configFilePath) {
+        env.HAZE_MODULE_DIR = dirname(this.config.configFilePath);
+      }
+
+      if (this.config.configFilePath) {
+        const prebuildScript = this.config.scripts.find((s) => s.name === "prebuild");
+        if (prebuildScript) {
+          execInherit(prebuildScript.command, dirname(this.config.configFilePath));
+        }
+      }
+
       await this.addInternalBuiltinSources();
       await this.collectImports();
       await this.addProjectSourceFiles();
 
-      PrettyPrintCollected(this.cc);
+      // PrettyPrintCollected(this.cc);
 
       const sr = Semantic.SemanticallyAnalyze(
         this.cc,
@@ -597,6 +663,7 @@ class ModuleCompiler {
       await Bun.file(moduleCFile).write(code);
 
       const compilerFlags = this.config.compilerFlags;
+      const linkerFlags = this.config.linkerFlags;
       compilerFlags.push("-Wno-parentheses-equality");
       compilerFlags.push("-Wno-extra-tokens");
 
@@ -605,19 +672,19 @@ class ModuleCompiler {
       compilerFlags.push("-nostdlib");
       compilerFlags.push("-nostartfiles");
       compilerFlags.push(`-isystem ${HAZE_MUSL_SYSROOT}/include`);
-      compilerFlags.push(`-L${HAZE_MUSL_SYSROOT}/lib`);
+      linkerFlags.push(`-L${HAZE_MUSL_SYSROOT}/lib`);
       compilerFlags.push(`${HAZE_MUSL_SYSROOT}/lib/crt1.o`);
       compilerFlags.push(`${HAZE_MUSL_SYSROOT}/lib/crti.o`);
       compilerFlags.push(`${HAZE_MUSL_SYSROOT}/lib/crtn.o`);
-      compilerFlags.push(`-lc`);
+      linkerFlags.push(`-lc`);
 
       if (this.config.moduleType === ModuleType.Executable) {
-        const [libs, linkerFlags] = await this.loadDependencyBinaries();
-        const allLinkerFlags = [...linkerFlags, ...this.config.linkerFlags];
+        const [libs, dependencyLinkerFlags] = await this.loadDependencyBinaries();
+        const allLinkerFlags = [...linkerFlags, ...dependencyLinkerFlags];
         const cmd = `${C_COMPILER} -g ${moduleCFile} -o ${moduleExecutable} -I${
           this.config.srcDirectory
         } ${libs.join(" ")} ${compilerFlags.join(" ")} ${allLinkerFlags.join(" ")} -std=c11`;
-        console.log(cmd);
+        // console.log(cmd);
         await exec(cmd);
       } else {
         const cmd = `${C_COMPILER} -g ${moduleCFile} -c -o ${moduleOFile} -I${
