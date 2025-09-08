@@ -21,4 +21,4 @@ type = "lib"
 flags = ["-D_XOPEN_SOURCE=500"]
 
 [linker]
-flags = ["-lm", "-lGL", "-lpthread"]
+# flags = ["-lm", "-lGL", "-lpthread"]

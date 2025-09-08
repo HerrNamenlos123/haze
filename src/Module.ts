@@ -53,6 +53,7 @@ export const HAZE_CACHE = HAZE_DIR + "cache/";
 export const HAZE_TOOLCHAIN_INSTALLED_MARKER = HAZE_CACHE + "toolchain-installed.json";
 export const HAZE_GLOBAL_DIR = HAZE_DIR + "global/";
 export const HAZE_TMP_DIR = HAZE_DIR + "tmp/";
+export const HAZE_MUSL_SYSROOT = HAZE_DIR + "sysroot/";
 
 const LLVM_TOOLCHAIN_DOWNLOAD_URL =
   "https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-18.04.tar.xz";
@@ -400,12 +401,8 @@ export class ProjectCompiler {
         download: HAZE_CACHE + "/01-download-marker",
         extract: HAZE_CACHE + "/02-extract-marker",
         finish: HAZE_CACHE + "/03-finish-marker",
-        // ncursesDownload: HAZE_CACHE + "/ncurses-download-marker",
-        // ncursesExtract: HAZE_CACHE + "/ncurses-extract-marker",
-        // ncursesConfigure: HAZE_CACHE + "/ncurses-configure-marker",
-        // ncursesBuild: HAZE_CACHE + "/ncurses-build-marker",
-        // ncursesInstall: HAZE_CACHE + "/ncurses-install-marker",
         ncursesLib: HAZE_CACHE + "/ncurses-lib",
+        musl: HAZE_CACHE + "/musl",
       };
 
       // Step 1: Download
@@ -432,55 +429,6 @@ export class ProjectCompiler {
         console.info("Toolchain setup finished.");
       }
 
-      // if (!this.isStepDone(MARKERS.ncursesDownload)) {
-      //   console.info("Downloading ncurses source...");
-      //   await getFileWithProgress(
-      //     "https://ftp.gnu.org/pub/gnu/ncurses/ncurses-5.9.tar.gz",
-      //     HAZE_TMP_DIR + "ncurses.tar.gz"
-      //   );
-      //   this.markStepDone(MARKERS.ncursesDownload);
-      //   console.info("Downloading ncurses source... Done");
-      // }
-
-      // if (!this.isStepDone(MARKERS.ncursesExtract)) {
-      //   console.info("Extracting ncurses source...");
-      //   if (!existsSync(`${HAZE_TMP_DIR}/ncurses/src/`))
-      //     mkdirSync(`${HAZE_TMP_DIR}/ncurses/src/`, { recursive: true });
-      //   await exec(
-      //     `tar -xf ${
-      //       HAZE_TMP_DIR + "ncurses.tar.gz"
-      //     } -C ${HAZE_TMP_DIR}/ncurses/src/ --strip-components=1`
-      //   );
-      //   this.markStepDone(MARKERS.ncursesExtract);
-      //   console.info("Extracting ncurses source... Done");
-      // }
-
-      // if (!this.isStepDone(MARKERS.ncursesConfigure)) {
-      //   console.info("Configure ncurses...");
-      //   await exec(
-      //     `cd ${
-      //       HAZE_TMP_DIR + "/ncurses/src/"
-      //     } && ./configure --prefix=${HAZE_GLOBAL_DIR} --with-shared --with-termlib --with-xterm-kbs=DEL`
-      //   );
-      //   this.markStepDone(MARKERS.ncursesConfigure);
-      //   console.info("Configure ncurses... Done");
-      // }
-
-      // if (!this.isStepDone(MARKERS.ncursesBuild)) {
-      //   console.info("Building ncurses...");
-      //   await exec(`cd ${HAZE_TMP_DIR + "/ncurses/src/"} && make -j$(nproc)`);
-      //   this.markStepDone(MARKERS.ncursesBuild);
-      //   console.info("Building ncurses... Done");
-      // }
-
-      // if (!this.isStepDone(MARKERS.ncursesInstall)) {
-      //   console.info("Installing ncurses...");
-      //   await exec(`cd ${HAZE_TMP_DIR + "/ncurses/src/"} && make install`);
-      //   await exec(`cd ${HAZE_GLOBAL_DIR + "/lib"} && ln -s libtinfo.so.6 libtinfo.so.5`);
-      //   this.markStepDone(MARKERS.ncursesInstall);
-      //   console.info("Installing ncurses... Done");
-      // }
-
       if (!this.isStepDone(MARKERS.ncursesLib)) {
         console.info("Retrieving libtinfo.so.5...");
         mkdirSync(`${HAZE_TMP_DIR}/`, { recursive: true });
@@ -497,6 +445,21 @@ export class ProjectCompiler {
         );
         this.markStepDone(MARKERS.ncursesLib);
         console.info("Retrieving libtinfo.so.5... Done");
+      }
+
+      if (!this.isStepDone(MARKERS.musl)) {
+        console.info("Building libmusl sysroot...");
+        mkdirSync(`${HAZE_TMP_DIR}/`, { recursive: true });
+        await exec(`rm -f ${HAZE_TMP_DIR}musl-1.2.5.tar.gz*`);
+        await exec(`cd ${HAZE_TMP_DIR} && wget https://musl.libc.org/releases/musl-1.2.5.tar.gz`);
+        await exec(`cd ${HAZE_TMP_DIR} && tar -xzf musl-1.2.5.tar.gz`);
+        await exec(
+          `cd ${HAZE_TMP_DIR}/musl-1.2.5 && ./configure --prefix=$HOME/.haze/sysroot --disable-shared`
+        );
+        await exec(`cd ${HAZE_TMP_DIR}/musl-1.2.5 && make -j$(nproc)`);
+        await exec(`cd ${HAZE_TMP_DIR}/musl-1.2.5 && make install`);
+        this.markStepDone(MARKERS.musl);
+        console.info("Building libmusl sysroot... Done");
       }
 
       // throw new Error();
@@ -636,13 +599,25 @@ class ModuleCompiler {
       const compilerFlags = this.config.compilerFlags;
       compilerFlags.push("-Wno-parentheses-equality");
       compilerFlags.push("-Wno-extra-tokens");
+
+      // MUSL Sysroot Settings
+      compilerFlags.push("-static");
+      compilerFlags.push("-nostdlib");
+      compilerFlags.push("-nostartfiles");
+      compilerFlags.push(`-isystem ${HAZE_MUSL_SYSROOT}/include`);
+      compilerFlags.push(`-L${HAZE_MUSL_SYSROOT}/lib`);
+      compilerFlags.push(`${HAZE_MUSL_SYSROOT}/lib/crt1.o`);
+      compilerFlags.push(`${HAZE_MUSL_SYSROOT}/lib/crti.o`);
+      compilerFlags.push(`${HAZE_MUSL_SYSROOT}/lib/crtn.o`);
+      compilerFlags.push(`-lc`);
+
       if (this.config.moduleType === ModuleType.Executable) {
         const [libs, linkerFlags] = await this.loadDependencyBinaries();
         const allLinkerFlags = [...linkerFlags, ...this.config.linkerFlags];
         const cmd = `${C_COMPILER} -g ${moduleCFile} -o ${moduleExecutable} -I${
           this.config.srcDirectory
         } ${libs.join(" ")} ${compilerFlags.join(" ")} ${allLinkerFlags.join(" ")} -std=c11`;
-        // console.log(cmd);
+        console.log(cmd);
         await exec(cmd);
       } else {
         const cmd = `${C_COMPILER} -g ${moduleCFile} -c -o ${moduleOFile} -I${

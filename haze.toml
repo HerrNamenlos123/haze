@@ -30,4 +30,4 @@ test = "haze test"
 # ember = { path = "./ember" }
 
 [linker]
-flags = ["-lm", "-lglfw3"]
+# flags = ["-lm", "-lglfw3"]
