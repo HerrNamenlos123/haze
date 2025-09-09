@@ -24,10 +24,10 @@ test = "haze test"
 
 [dependencies]
 glfw = { path = "./glfw" }
-math = { path = "./math" }
-gl = { path = "./gl" }
-glDraw = { path = "./glDraw" }
-ember = { path = "./ember" }
+# math = { path = "./math" }
+# gl = { path = "./gl" }
+# glDraw = { path = "./glDraw" }
+# ember = { path = "./ember" }
 
 [linker]
-flags = ["-lm", "-lglfw3"]
+# flags = ["-lm", "-lglfw3"]

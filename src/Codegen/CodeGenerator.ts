@@ -8,7 +8,7 @@ import {
   EUnaryOperation,
   UnaryOperationToString,
 } from "../shared/AST";
-import { EPrimitive, primitiveToString, type NameSet } from "../shared/common";
+import { EPrimitive, type NameSet } from "../shared/common";
 import { getModuleGlobalNamespaceName, ModuleType, type ModuleConfig } from "../shared/Config";
 import { assert, InternalError, printWarningMessage } from "../shared/Errors";
 import { OutputWriter } from "./OutputWriter";
@@ -118,6 +118,7 @@ class CodeGenerator {
     this.includeHeader("stdbool.h");
     this.includeHeader("stdlib.h");
     this.includeHeader("limits.h");
+    this.includeHeader("string.h");
 
     const sortedLoweredTypeDefs: (Lowered.TypeDef | Lowered.TypeUse)[] = [];
 

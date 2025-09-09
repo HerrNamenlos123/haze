@@ -1,4 +1,5 @@
 import * as child_process from "child_process";
+import os from "os";
 import { mkdir } from "fs/promises";
 import {
   assert,
@@ -10,12 +11,20 @@ import {
   SyntaxError,
   UnreachableCode,
 } from "./shared/Errors";
-import { readdirSync, realpathSync, statSync } from "fs";
+import {
+  createWriteStream,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readdirSync,
+  realpathSync,
+  statSync,
+  writeFileSync,
+} from "fs";
 import { readdir, stat } from "fs/promises";
 import { basename, dirname, extname, join } from "path";
 import fs from "fs";
 import { version } from "../package.json";
-import { OutputWriter } from "./Codegen/OutputWriter";
 import {
   ConfigParser,
   ModuleType,
@@ -37,16 +46,72 @@ import { generateCode } from "./Codegen/CodeGenerator";
 import { LowerModule } from "./Lower/Lower";
 import { ExportCollectedSymbols } from "./SymbolCollection/Export";
 import { Semantic } from "./Semantic/Elaborate";
+import { stdout } from "process";
+import { ParenthesisExprContext } from "./Parser/grammar/autogen/HazeParser";
+
+export const HAZE_DIR = os.homedir() + "/.haze/";
+export const HAZE_CACHE = HAZE_DIR + "cache/";
+export const HAZE_TOOLCHAIN_INSTALLED_MARKER = HAZE_CACHE + "toolchain-installed.json";
+export const HAZE_GLOBAL_DIR = HAZE_DIR + "global/";
+export const HAZE_TMP_DIR = HAZE_DIR + "tmp/";
+export const HAZE_MUSL_SYSROOT = HAZE_DIR + "sysroot/";
+export const HAZE_CMAKE_TOOLCHAIN = HAZE_DIR + "musl-toolchain.cmake";
+
+const LLVM_TOOLCHAIN_DOWNLOAD_URL =
+  "https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-18.04.tar.xz";
 
 export const HAZE_STDLIB_NAME = "haze-stdlib";
 
-const C_COMPILER = "clang";
+const C_COMPILER = HAZE_GLOBAL_DIR + "bin/clang";
 const ARCHIVE_TOOL = "ar";
 const HAZE_CONFIG_FILE = "haze.toml";
 const HAZE_LIB_IMPORT_FILE = "import.hz";
 
 export function makeModulePrefix(config: ModuleConfig) {
   return config.name + "." + config.version.replaceAll(".", "_");
+}
+
+export async function getFile(url: string, outfile: string) {
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`Failed to fetch: ${response.statusText}`);
+  const buffer = await response.arrayBuffer();
+  await Bun.write(outfile, new Uint8Array(buffer));
+}
+
+export async function getFileWithProgress(url: string, outfile: string) {
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`Failed to fetch: ${response.statusText}`);
+
+  const total = Number(response.headers.get("content-length")) || 0;
+  const stream = response.body;
+  if (!stream) throw new Error("No response body");
+
+  const fileWriter = createWriteStream(outfile);
+  let downloaded = 0;
+
+  const reader = stream.getReader();
+
+  function renderProgress(downloaded: number, total: number) {
+    const width = 40;
+    const percent = total ? downloaded / total : 0;
+    const filled = Math.round(width * percent);
+    const empty = width - filled;
+    const bar = "█".repeat(filled) + "░".repeat(empty);
+    stdout.write(`\r[${bar}] ${(percent * 100).toFixed(1)}%`);
+  }
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (value) {
+      downloaded += value.length;
+      fileWriter.write(value);
+      renderProgress(downloaded, total);
+    }
+  }
+
+  fileWriter.end();
+  stdout.write("\n"); // move to next line after progress bar
 }
 
 async function parseConfig(startDir?: string, sourceloc?: boolean) {
@@ -73,6 +138,32 @@ function getStdlibDirectory() {
     return join(dirname(realHz), "stdlib/");
   } else {
     return join(__dirname, "../stdlib");
+  }
+}
+
+async function catchErrors(fn: () => Promise<void>) {
+  try {
+    await fn();
+    return true;
+  } catch (e) {
+    if (e instanceof GeneralError) {
+      console.error(e.message);
+    } else if (e instanceof InternalError) {
+      console.error(e.stack);
+      console.error(e.message);
+    } else if (e instanceof CompilerError) {
+      console.error(e.message);
+    } else if (e instanceof UnreachableCode) {
+      console.error(e.message);
+    } else if (e instanceof SyntaxError) {
+      return false;
+    } else if (e instanceof CmdFailed) {
+      console.error("Build failed");
+      return false;
+    } else {
+      console.error(e);
+    }
+    return false;
   }
 }
 
@@ -190,12 +281,26 @@ export class ProjectCompiler {
     return config;
   }
 
+  setEnv(config: ModuleConfig) {
+    const env = process.env as any;
+    if (config.configFilePath) {
+      env.HAZE_PROJECT_DIR = dirname(config.configFilePath);
+    }
+    env.HAZE_SYSROOT = HAZE_MUSL_SYSROOT;
+    env.HAZE_CMAKE_TOOLCHAIN = HAZE_CMAKE_TOOLCHAIN;
+  }
+
   async build(singleFilename?: string, sourceloc?: boolean) {
+    if (!(await this.setupToolchain())) {
+      return false;
+    }
+
     const config = await this.getConfig(singleFilename, sourceloc);
     if (!config) {
       return false;
     }
     this.globalBuildDir = join(process.cwd(), "__haze__");
+    this.setEnv(config);
 
     if (!singleFilename) {
       await this.cache.load(join(this.globalBuildDir, "cache.json"));
@@ -260,6 +365,7 @@ export class ProjectCompiler {
       if (!config) {
         return -1;
       }
+      this.setEnv(config);
 
       if (config?.moduleType === ModuleType.Library) {
         throw new GeneralError(
@@ -289,12 +395,136 @@ export class ProjectCompiler {
       return -1;
     }
   }
+
+  markStepDone(marker: string) {
+    writeFileSync(marker, "ok");
+  }
+
+  isStepDone(marker: string) {
+    return existsSync(marker);
+  }
+
+  async setupToolchain() {
+    return await catchErrors(async () => {
+      if (!existsSync(HAZE_CACHE)) mkdirSync(HAZE_CACHE, { recursive: true });
+      if (!existsSync(HAZE_TMP_DIR)) mkdirSync(HAZE_TMP_DIR, { recursive: true });
+      if (!existsSync(HAZE_GLOBAL_DIR)) mkdirSync(HAZE_GLOBAL_DIR, { recursive: true });
+
+      const MARKERS = {
+        download: HAZE_CACHE + "/01-download-marker",
+        extract: HAZE_CACHE + "/02-extract-marker",
+        finish: HAZE_CACHE + "/03-finish-marker",
+        ncursesLib: HAZE_CACHE + "/ncurses-lib",
+        musl: HAZE_CACHE + "/musl",
+        cmakeToolchain: HAZE_CACHE + "/cmake-toolchain",
+      };
+
+      // Step 1: Download
+      if (!this.isStepDone(MARKERS.download)) {
+        console.info("Downloading LLVM toolchain...");
+        await getFileWithProgress(LLVM_TOOLCHAIN_DOWNLOAD_URL, HAZE_TMP_DIR + "llvm.tar.xz");
+        this.markStepDone(MARKERS.download);
+        console.info("Downloading LLVM toolchain... Done");
+      }
+
+      // Step 2: Extract
+      if (!this.isStepDone(MARKERS.extract)) {
+        console.info("Extracting LLVM toolchain...");
+        await exec(
+          `tar -xf ${HAZE_TMP_DIR + "llvm.tar.xz"} -C ${HAZE_GLOBAL_DIR} --strip-components=1`
+        );
+        this.markStepDone(MARKERS.extract);
+        console.info("Extracting LLVM toolchain... Done");
+      }
+
+      // Step 3: Finish
+      if (!this.isStepDone(MARKERS.finish)) {
+        this.markStepDone(MARKERS.finish);
+        console.info("Toolchain setup finished.");
+      }
+
+      if (!this.isStepDone(MARKERS.ncursesLib)) {
+        console.info("Retrieving libtinfo.so.5...");
+        mkdirSync(`${HAZE_TMP_DIR}/`, { recursive: true });
+        await exec(`rm -f ${HAZE_TMP_DIR}libtinfo5_6.1-1ubuntu1_amd64.deb*`);
+        await exec(`rm -f ${HAZE_GLOBAL_DIR}/lib/libtinfo.so.5`);
+        await exec(
+          `cd ${HAZE_TMP_DIR} && wget http://archive.ubuntu.com/ubuntu/pool/main/n/ncurses/libtinfo5_6.1-1ubuntu1_amd64.deb`
+        );
+        await exec(
+          `dpkg-deb -x ${HAZE_TMP_DIR}/libtinfo5_6.1-1ubuntu1_amd64.deb ${HAZE_GLOBAL_DIR}`
+        );
+        await exec(
+          `cd ${HAZE_GLOBAL_DIR + "/lib"} && ln -s x86_64-linux-gnu/libtinfo.so.5 libtinfo.so.5`
+        );
+        this.markStepDone(MARKERS.ncursesLib);
+        console.info("Retrieving libtinfo.so.5... Done");
+      }
+
+      if (!this.isStepDone(MARKERS.musl)) {
+        console.info("Building libmusl sysroot...");
+        mkdirSync(`${HAZE_TMP_DIR}/`, { recursive: true });
+        await exec(`rm -f ${HAZE_TMP_DIR}musl-1.2.5.tar.gz*`);
+        await exec(`cd ${HAZE_TMP_DIR} && wget https://musl.libc.org/releases/musl-1.2.5.tar.gz`);
+        await exec(`cd ${HAZE_TMP_DIR} && tar -xzf musl-1.2.5.tar.gz`);
+        await exec(
+          `cd ${HAZE_TMP_DIR}/musl-1.2.5 && ./configure --prefix=$HOME/.haze/sysroot --disable-shared`
+        );
+        await exec(`cd ${HAZE_TMP_DIR}/musl-1.2.5 && make -j$(nproc)`);
+        await exec(`cd ${HAZE_TMP_DIR}/musl-1.2.5 && make install`);
+        this.markStepDone(MARKERS.musl);
+        console.info("Building libmusl sysroot... Done");
+      }
+
+      if (!this.isStepDone(MARKERS.cmakeToolchain)) {
+        console.info("Writing CMake toolchain...");
+        mkdirSync(`${HAZE_TMP_DIR}/`, { recursive: true });
+        const toolchain = `
+set(CMAKE_SYSTEM_NAME Linux)
+set(CMAKE_C_COMPILER /home/me/.haze/global/bin/clang)
+set(CMAKE_CXX_COMPILER /home/me/.haze/global/bin/clang++)
+set(CMAKE_SYSROOT /home/me/.haze/sysroot)
+set(CMAKE_FIND_ROOT_PATH /home/me/.haze/sysroot)
+
+# Tell CMake to search only in sysroot
+set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
+set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
+set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
+
+
+set(CMAKE_C_FLAGS "--sysroot=/home/me/.haze/sysroot -static -fno-pie")
+set(CMAKE_EXE_LINKER_FLAGS "-nostdlib -L/home/me/.haze/sysroot/lib -L/home/me/.haze/global/lib/clang/18.1.8/lib/linux")
+
+set(THREADS_PREFER_PTHREAD_FLAG ON)
+set(CMAKE_THREAD_LIBS_INIT "-lpthread")  # musl ignores it for static linking
+set(THREADS_FOUND TRUE)`;
+        await Bun.write(`${HAZE_DIR}/musl-toolchain.cmake`, toolchain);
+        this.markStepDone(MARKERS.cmakeToolchain);
+        console.info("Writing CMake toolchain... Done");
+      }
+
+      // throw new Error();
+    });
+  }
 }
 
-async function exec(str: string) {
+function exec(str: string) {
   try {
     child_process.execSync(str);
   } catch (e) {
+    throw new CmdFailed();
+  }
+}
+
+function execInherit(str: string, dir?: string) {
+  const result = Bun.spawnSync(["sh", "-c", str], {
+    stdout: "inherit",
+    stderr: "inherit",
+    cwd: dir,
+    env: process.env,
+  });
+
+  if (result.exitCode !== 0) {
     throw new CmdFailed();
   }
 }
@@ -372,7 +602,7 @@ class ModuleCompiler {
   }
 
   async build() {
-    try {
+    return await catchErrors(async () => {
       if (this.config.configFilePath) {
         if (
           !(await this.cache.hasModuleChanged(
@@ -382,9 +612,21 @@ class ModuleCompiler {
           ))
         ) {
           console.log(`Skipping module ${this.config.name}`);
-          return true;
+          return;
         } else {
           console.log(`Building module ${this.config.name}`);
+        }
+      }
+
+      const env = process.env as any;
+      if (this.config.configFilePath) {
+        env.HAZE_MODULE_DIR = dirname(this.config.configFilePath);
+      }
+
+      if (this.config.configFilePath) {
+        const prebuildScript = this.config.scripts.find((s) => s.name === "prebuild");
+        if (prebuildScript) {
+          execInherit(prebuildScript.command, dirname(this.config.configFilePath));
         }
       }
 
@@ -392,7 +634,7 @@ class ModuleCompiler {
       await this.collectImports();
       await this.addProjectSourceFiles();
 
-      PrettyPrintCollected(this.cc);
+      // PrettyPrintCollected(this.cc);
 
       const sr = Semantic.SemanticallyAnalyze(
         this.cc,
@@ -421,11 +663,24 @@ class ModuleCompiler {
       await Bun.file(moduleCFile).write(code);
 
       const compilerFlags = this.config.compilerFlags;
+      const linkerFlags = this.config.linkerFlags;
       compilerFlags.push("-Wno-parentheses-equality");
       compilerFlags.push("-Wno-extra-tokens");
+
+      // MUSL Sysroot Settings
+      compilerFlags.push("-static");
+      compilerFlags.push("-nostdlib");
+      compilerFlags.push("-nostartfiles");
+      compilerFlags.push(`-isystem ${HAZE_MUSL_SYSROOT}/include`);
+      linkerFlags.push(`-L${HAZE_MUSL_SYSROOT}/lib`);
+      compilerFlags.push(`${HAZE_MUSL_SYSROOT}/lib/crt1.o`);
+      compilerFlags.push(`${HAZE_MUSL_SYSROOT}/lib/crti.o`);
+      compilerFlags.push(`${HAZE_MUSL_SYSROOT}/lib/crtn.o`);
+      linkerFlags.push(`-lc`);
+
       if (this.config.moduleType === ModuleType.Executable) {
-        const [libs, linkerFlags] = await this.loadDependencyBinaries();
-        const allLinkerFlags = [...linkerFlags, ...this.config.linkerFlags];
+        const [libs, dependencyLinkerFlags] = await this.loadDependencyBinaries();
+        const allLinkerFlags = [...linkerFlags, ...dependencyLinkerFlags];
         const cmd = `${C_COMPILER} -g ${moduleCFile} -o ${moduleExecutable} -I${
           this.config.srcDirectory
         } ${libs.join(" ")} ${compilerFlags.join(" ")} ${allLinkerFlags.join(" ")} -std=c11`;
@@ -485,27 +740,7 @@ class ModuleCompiler {
         //   this.module.moduleConfig.configFilePath,
         // );
       }
-      return true;
-    } catch (e) {
-      if (e instanceof GeneralError) {
-        console.error(e.message);
-      } else if (e instanceof InternalError) {
-        console.error(e.stack);
-        console.error(e.message);
-      } else if (e instanceof CompilerError) {
-        console.error(e.message);
-      } else if (e instanceof UnreachableCode) {
-        console.error(e.message);
-      } else if (e instanceof SyntaxError) {
-        return false;
-      } else if (e instanceof CmdFailed) {
-        console.error("Build failed");
-        return false;
-      } else {
-        console.error(e);
-      }
-    }
-    return false;
+    });
   }
 
   private async loadDependencyBinaries() {
