@@ -127,13 +127,6 @@ class CodeGenerator {
       this.out.cDecls.writeLine(decl);
     }
 
-    console.log([
-      ...this.lr.loweredTypeUses.values().map((v) => {
-        const a = this.lr.typeUseNodes.get(v);
-        return a;
-      }),
-    ]);
-
     for (const [id, symbol] of this.lr.loweredFunctions) {
       this.emitFunction(symbol);
     }
@@ -841,7 +834,7 @@ class CodeGenerator {
       case Lowered.ENode.ExplicitCastExpr:
         const exprWriter = this.emitExpr(expr.expr);
         tempWriter.write(exprWriter.temp);
-        outWriter.write(`((${this.mangleTypeUse(expr.type)})${exprWriter.out.get()})`);
+        outWriter.write(`((${this.mangleTypeUse(expr.type)})(${exprWriter.out.get()}))`);
         return { out: outWriter, temp: tempWriter };
 
       case Lowered.ENode.PreIncrExpr: {
@@ -1056,7 +1049,7 @@ class CodeGenerator {
         const value = this.emitExpr(expr.value);
         tempWriter.write(target.temp);
         tempWriter.write(value.temp);
-        outWriter.write(target.out.get() + " = " + value.out.get());
+        outWriter.write("(" + target.out.get() + " = " + value.out.get() + ")");
         return { out: outWriter, temp: tempWriter };
       }
 

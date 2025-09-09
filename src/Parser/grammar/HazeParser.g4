@@ -169,7 +169,7 @@ expr
     // | expr ('|') expr                                                            #BinaryExpr
     | expr op+=(DOUBLEAND|DOUBLEOR) expr                                            #BinaryExpr
     // <- ternary
-    | expr op=(EQUALS|PLUSEQ|MINUSEQ|MULEQ|DIVEQ|MODEQ) expr                        #ExprAssignmentExpr
+    | <assoc=right> expr op=(EQUALS|PLUSEQ|MINUSEQ|MULEQ|DIVEQ|MODEQ) expr          #ExprAssignmentExpr
 
     | ID (LANGLE genericLiteral (COMMA genericLiteral)* RANGLE)?                    #SymbolValueExpr
     ;

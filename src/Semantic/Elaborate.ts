@@ -3026,13 +3026,29 @@ export namespace Semantic {
           }
           const member = sr.symbolNodes.get(memberId);
           assert(member.variant === Semantic.ENode.VariableSymbol && member.type);
-          return Semantic.addExpr(sr, {
+          const [memberAccess, memberAccessId] = Semantic.addExpr(sr, {
             variant: Semantic.ENode.MemberAccessExpr,
             expr: objectId,
             memberName: expr.memberName,
             type: member.type,
             sourceloc: expr.sourceloc,
             isTemporary: false,
+          });
+          // Promote the datatype because by default, every struct member is fully mutable.
+          console.log(
+            "TODO: This mutability promotion is only allowed if the struct itself (this) is mutable"
+          );
+          return Semantic.addExpr(sr, {
+            variant: Semantic.ENode.ExplicitCastExpr,
+            expr: memberAccessId,
+            isTemporary: true,
+            sourceloc: expr.sourceloc,
+            type: makeTypeUse(
+              sr,
+              sr.typeUseNodes.get(memberAccess.type).type,
+              EDatatypeMutability.Mut,
+              expr.sourceloc
+            )[1],
           });
         }
 
@@ -3935,14 +3951,34 @@ export namespace Semantic {
 
         if (!variableSymbol.type) {
           variableSymbol.type = value?.type || null;
+          if (variableSymbol.type && value) {
+            const variableSymbolType = sr.typeUseNodes.get(variableSymbol.type);
+            const variableSymbolTypeDef = sr.typeDefNodes.get(variableSymbolType.type);
+            if (variableSymbol.mutability === EVariableMutability.Const) {
+            } else {
+              // If a const T value is assigned to a let variable,
+              // a copy is made which makes the copied value fully mutable.
+              variableSymbol.type = makeTypeUse(
+                sr,
+                variableSymbolType.type,
+                EDatatypeMutability.Mut,
+                s.sourceloc
+              )[1];
+            }
+          }
         }
         assert(variableSymbol.type);
         variableSymbol.concrete = sr.typeDefNodes.get(
           sr.typeUseNodes.get(variableSymbol.type).type
         ).concrete;
-        const variableSymbolType = sr.typeDefNodes.get(
-          sr.typeUseNodes.get(variableSymbol.type).type
-        );
+        const variableSymbolType = sr.typeUseNodes.get(variableSymbol.type);
+        const variableSymbolTypeDef = sr.typeDefNodes.get(variableSymbolType.type);
+
+        if (variableSymbol.mutability === EVariableMutability.Const) {
+          // assert(false, "TODO");
+        } else {
+          // if (variableSymbol)
+        }
 
         if (variableSymbol.comptime) {
           assert(valueId);
@@ -3952,7 +3988,7 @@ export namespace Semantic {
         if (value) {
           const valueType = sr.typeDefNodes.get(sr.typeUseNodes.get(value.type).type);
           if (
-            variableSymbolType.variant === Semantic.ENode.StructDatatype &&
+            variableSymbolTypeDef.variant === Semantic.ENode.StructDatatype &&
             valueType.variant === Semantic.ENode.StructDatatype &&
             (valueType.clonability === EClonability.NonClonableFromAttribute ||
               valueType.clonability === EClonability.NonClonableFromMembers) &&
@@ -4405,7 +4441,7 @@ export namespace Semantic {
             parameters: args.paramPackTypes.map((t, i) => {
               const [variable, variableId] = Semantic.addSymbol(sr, {
                 variant: Semantic.ENode.VariableSymbol,
-                comptime: true,
+                comptime: false,
                 comptimeValue: null,
                 concrete: true,
                 name: `__param_pack_${i}`,
@@ -4418,11 +4454,26 @@ export namespace Semantic {
                 variableContext: EVariableContext.FunctionParameter,
                 sourceloc: func.sourceloc,
               });
-              args.elaboratedVariables.set(packVariable, variableId);
               return variableId;
             }),
             concrete: true,
           });
+          const [paramPackVariable, paramPackVariableId] = Semantic.addSymbol(sr, {
+            variant: Semantic.ENode.VariableSymbol,
+            comptime: false,
+            comptimeValue: null,
+            concrete: true,
+            name: `__param_pack`,
+            export: false,
+            extern: EExternLanguage.None,
+            memberOfStruct: null,
+            mutability: EVariableMutability.Default,
+            parentStructOrNS: null,
+            type: makeTypeUse(sr, paramPackId, EDatatypeMutability.Const, func.sourceloc)[1],
+            variableContext: EVariableContext.FunctionParameter,
+            sourceloc: func.sourceloc,
+          });
+          args.elaboratedVariables.set(packVariable, paramPackVariableId);
           return makeTypeUse(sr, paramPackId, EDatatypeMutability.Const, func.sourceloc)[1];
         }
         return lookupAndElaborateDatatype(sr, {
@@ -5131,6 +5182,9 @@ export namespace Semantic {
       const ftype = sr.typeDefNodes.get(symbol.type);
       assert(ftype.variant === Semantic.ENode.FunctionDatatype);
       functionParameterPart += ftype.parameters.map((p) => mangleTypeUse(sr, p).name).join("");
+      if (ftype.parameters.length === 0 && !ftype.vararg) {
+        functionParameterPart += "v";
+      }
       if (ftype.vararg) {
         functionParameterPart += "V";
       }
@@ -5188,13 +5242,15 @@ export namespace Semantic {
 
     const def = mangleTypeDef(sr, typeInstance.type);
 
-    if (typeInstance.mutability === EDatatypeMutability.Const) {
-      if (def.wasMangled) {
-        def.name = "c" + def.name;
-      }
-    } else if (typeInstance.mutability === EDatatypeMutability.Mut) {
-      if (def.wasMangled) {
-        def.name = "m" + def.name;
+    if (sr.typeDefNodes.get(typeInstance.type).variant !== Semantic.ENode.ParameterPackDatatype) {
+      if (typeInstance.mutability === EDatatypeMutability.Const) {
+        if (def.wasMangled) {
+          def.name = "c" + def.name;
+        }
+      } else if (typeInstance.mutability === EDatatypeMutability.Mut) {
+        if (def.wasMangled) {
+          def.name = "m" + def.name;
+        }
       }
     }
 
@@ -5302,7 +5358,17 @@ export namespace Semantic {
       }
 
       case Semantic.ENode.ParameterPackDatatype: {
-        assert(false, "A parameter pack may not be mangled");
+        assert(type.parameters !== null);
+        return {
+          name: type.parameters
+            .map((p) => {
+              const sym = sr.symbolNodes.get(p);
+              assert(sym.variant === Semantic.ENode.VariableSymbol && sym.type);
+              return mangleTypeUse(sr, sym.type).name;
+            })
+            .join(""),
+          wasMangled: true,
+        };
       }
 
       case Semantic.ENode.LiteralValueDatatype: {

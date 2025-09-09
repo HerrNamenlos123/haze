@@ -673,6 +673,7 @@ function lowerExpr(
           type: lowerTypeUse(lr, variableSymbol.type),
         });
       } else {
+        const a = lr.sr.symbolNodes.get(expr.symbol);
         lowerSymbol(lr, expr.symbol);
         return Lowered.addExpr(lr, {
           variant: Lowered.ENode.SymbolValueExpr,
@@ -708,6 +709,21 @@ function lowerExpr(
       const exprTypeDef = lr.typeDefNodes.get(exprType.type);
       const targetType = lr.typeUseNodes.get(targetTypeId);
       const targetTypeDef = lr.typeDefNodes.get(targetType.type);
+
+      if (loweredExpr.type === targetTypeId) {
+        return [lr.exprNodes.get(loweredExprId), loweredExprId];
+      }
+
+      // Do not cast if the cast doesn't actually do anything in the generated C, because
+      // doing it would cause the left side of assignments to be casted to the same time
+      // (because multiple haze types map to the same C type), and the C compiler rejects it.
+      if (targetTypeDef === exprTypeDef) {
+        const fromIsConst = exprType.mutability === EDatatypeMutability.Const;
+        const toIsConst = targetType.mutability === EDatatypeMutability.Const;
+        if (fromIsConst === toIsConst) {
+          return [lr.exprNodes.get(loweredExprId), loweredExprId];
+        }
+      }
 
       if (
         exprTypeDef.variant === Lowered.ENode.StructDatatype &&

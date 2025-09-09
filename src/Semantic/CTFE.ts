@@ -1,6 +1,7 @@
 import { EBinaryOperation, EDatatypeMutability } from "../shared/AST";
 import { EPrimitive, primitiveToString } from "../shared/common";
 import { assert, CompilerError, type SourceLoc } from "../shared/Errors";
+import { Conversion } from "./Conversion";
 import { makePrimitiveAvailable, Semantic, type SemanticResult } from "./Elaborate";
 
 function makeBoolValue(sr: SemanticResult, value: boolean, sourceloc: SourceLoc) {
@@ -118,6 +119,8 @@ export function EvalCTFE(
 
       switch (expr.operation) {
         case EBinaryOperation.Equal:
+        case EBinaryOperation.Unequal: {
+          const negate = expr.operation === EBinaryOperation.Unequal;
           if (
             left.variant === Semantic.ENode.LiteralExpr &&
             right.variant === Semantic.ENode.LiteralExpr
@@ -128,14 +131,20 @@ export function EvalCTFE(
               left.literal.type === right.literal.type
             ) {
               if (left.literal.type === EPrimitive.null || right.literal.type === EPrimitive.null) {
-                return makeBoolValue(sr, true, expr.sourceloc);
+                return makeBoolValue(sr, negate ? false : true, expr.sourceloc);
               }
-              return makeBoolValue(sr, left.literal.value === right.literal.value, expr.sourceloc);
+              return makeBoolValue(
+                sr,
+                negate
+                  ? left.literal.value !== right.literal.value
+                  : left.literal.value === right.literal.value,
+                expr.sourceloc
+              );
             }
             throw new CompilerError(
               `Cannot compare primitives ${primitiveToString(
                 left.literal.type
-              )} and ${primitiveToString(left.literal.type)} at compile time`,
+              )} and ${primitiveToString(right.literal.type)} at compile time`,
               "sourceloc" in expr ? expr.sourceloc : null
             );
           } else {
@@ -147,6 +156,7 @@ export function EvalCTFE(
               "sourceloc" in expr ? expr.sourceloc : null
             );
           }
+        }
 
         case EBinaryOperation.BoolAnd: {
           const leftValue = EvalCTFEBoolean(sr, leftId);
@@ -160,18 +170,104 @@ export function EvalCTFE(
           return makeBoolValue(sr, leftValue || rightValue, expr.sourceloc);
         }
 
+        case EBinaryOperation.Subtract: {
+          const leftValue = EvalCTFENumericValue(sr, leftId);
+          const rightValue = EvalCTFENumericValue(sr, rightId);
+          return Semantic.addExpr(sr, {
+            variant: Semantic.ENode.LiteralExpr,
+            isTemporary: true,
+            literal: {
+              type: EPrimitive.int,
+              unit: null,
+              value: leftValue - rightValue,
+            },
+            type: expr.type,
+            sourceloc: expr.sourceloc,
+          });
+        }
+
         default:
-          assert(false);
+          assert(false, expr.operation.toString());
       }
+    }
+
+    case Semantic.ENode.ExplicitCastExpr: {
+      const [value, valueId] = EvalCTFE(sr, expr.expr);
+
+      const targetType = sr.typeUseNodes.get(expr.type);
+      const targetTypeDef = sr.typeDefNodes.get(targetType.type);
+      if (value.variant === Semantic.ENode.LiteralExpr) {
+        if (
+          targetTypeDef.variant === Semantic.ENode.PrimitiveDatatype &&
+          (value.literal.type === EPrimitive.i8 ||
+            value.literal.type === EPrimitive.i16 ||
+            value.literal.type === EPrimitive.i32 ||
+            value.literal.type === EPrimitive.i64 ||
+            value.literal.type === EPrimitive.int ||
+            value.literal.type === EPrimitive.u8 ||
+            value.literal.type === EPrimitive.u16 ||
+            value.literal.type === EPrimitive.u32 ||
+            value.literal.type === EPrimitive.u64 ||
+            value.literal.type === EPrimitive.usize) &&
+          (targetTypeDef.primitive === EPrimitive.i8 ||
+            targetTypeDef.primitive === EPrimitive.i16 ||
+            targetTypeDef.primitive === EPrimitive.i32 ||
+            targetTypeDef.primitive === EPrimitive.i64 ||
+            targetTypeDef.primitive === EPrimitive.int ||
+            targetTypeDef.primitive === EPrimitive.u8 ||
+            targetTypeDef.primitive === EPrimitive.u16 ||
+            targetTypeDef.primitive === EPrimitive.u32 ||
+            targetTypeDef.primitive === EPrimitive.u64 ||
+            targetTypeDef.primitive === EPrimitive.usize)
+        ) {
+          const limit = Conversion.getIntegerMinMax(targetTypeDef.primitive);
+          const literalValue = value.literal.value;
+          if (literalValue < limit[0] || literalValue > limit[1]) {
+            throw new CompilerError(
+              `This expression evaluated to a value of ${literalValue}, which is outside of the valid integer range ${Conversion.prettyRange(
+                limit[0],
+                limit[1],
+                targetTypeDef.primitive
+              )} for type ${primitiveToString(targetTypeDef.primitive)}.`,
+              expr.sourceloc
+            );
+          }
+
+          return Semantic.addExpr(sr, {
+            variant: Semantic.ENode.LiteralExpr,
+            isTemporary: true,
+            literal: {
+              type: targetTypeDef.primitive,
+              unit: null,
+              value: literalValue,
+            },
+            type: expr.type,
+            sourceloc: expr.sourceloc,
+          });
+        }
+      }
+
+      break;
     }
 
     case Semantic.ENode.SymbolValueExpr: {
       const symbol = sr.symbolNodes.get(expr.symbol);
-      if (symbol.variant === Semantic.ENode.VariableSymbol && symbol.comptime) {
-        assert(symbol.comptimeValue);
-        const value = sr.exprNodes.get(symbol.comptimeValue);
-        return [value, symbol.comptimeValue];
-      } else if (
+
+      if (symbol.variant === Semantic.ENode.VariableSymbol) {
+        assert(symbol.type);
+        const symbolType = sr.typeUseNodes.get(symbol.type);
+        const symbolTypeDef = sr.typeDefNodes.get(symbolType.type);
+
+        if (symbolTypeDef.variant === Semantic.ENode.ParameterPackDatatype) {
+          return [expr, exprId];
+        } else if (symbol.comptime) {
+          assert(symbol.comptimeValue);
+          const value = sr.exprNodes.get(symbol.comptimeValue);
+          return [value, symbol.comptimeValue];
+        }
+      }
+
+      if (
         symbol.variant === Semantic.ENode.TypeDefSymbol &&
         sr.typeDefNodes.get(symbol.datatype).variant === Semantic.ENode.ParameterPackDatatype
       ) {
@@ -191,6 +287,28 @@ export function EvalCTFE(
     `This Expression cannot be evaluated at compile time`,
     "sourceloc" in expr ? expr.sourceloc : null
   );
+}
+
+export function EvalCTFENumericValue(sr: SemanticResult, exprId: Semantic.ExprId) {
+  const [result, resultId] = EvalCTFE(sr, exprId);
+  assert(result.variant === Semantic.ENode.LiteralExpr);
+
+  if (
+    result.literal.type === EPrimitive.u8 ||
+    result.literal.type === EPrimitive.u16 ||
+    result.literal.type === EPrimitive.u32 ||
+    result.literal.type === EPrimitive.u64 ||
+    result.literal.type === EPrimitive.usize ||
+    result.literal.type === EPrimitive.i8 ||
+    result.literal.type === EPrimitive.i16 ||
+    result.literal.type === EPrimitive.i32 ||
+    result.literal.type === EPrimitive.i64 ||
+    result.literal.type === EPrimitive.int
+  ) {
+    return result.literal.value;
+  } else {
+    throw new CompilerError(`This value cannot be evaluated as an integer`, result.sourceloc);
+  }
 }
 
 export function EvalCTFEBoolean(sr: SemanticResult, exprId: Semantic.ExprId) {

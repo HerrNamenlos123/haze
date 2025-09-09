@@ -69,12 +69,8 @@ export namespace Conversion {
     }
   }
 
-  export function prettyRange(
-    min: bigint,
-    max: bigint,
-    type: Semantic.PrimitiveDatatypeDef
-  ): string {
-    const typeLimits = getIntegerMinMax(type.primitive);
+  export function prettyRange(min: bigint, max: bigint, primitive: EPrimitive): string {
+    const typeLimits = getIntegerMinMax(primitive);
 
     function formatValue(value: bigint, exact: bigint, negPower = false): string {
       if (value === exact) {
@@ -93,7 +89,7 @@ export namespace Conversion {
 
     // check if min matches exact type min
     minStr = (() => {
-      switch (type.primitive) {
+      switch (primitive) {
         case EPrimitive.i32:
           return min === typeLimits[0] ? `-2^31` : min.toString();
         case EPrimitive.u32:
@@ -111,7 +107,7 @@ export namespace Conversion {
 
     // check if max matches exact type max
     maxStr = (() => {
-      switch (type.primitive) {
+      switch (primitive) {
         case EPrimitive.i32:
           return max === typeLimits[1] ? `2^31-1` : max.toString();
         case EPrimitive.u32:
@@ -635,7 +631,11 @@ export namespace Conversion {
 
         let sourceRangeText = "";
         if (sourceMaxValue !== sourceMinValue) {
-          sourceRangeText = `range ${Conversion.prettyRange(sourceMinValue, sourceMaxValue, f)}`;
+          sourceRangeText = `range ${Conversion.prettyRange(
+            sourceMinValue,
+            sourceMaxValue,
+            f.primitive
+          )}`;
         } else {
           sourceRangeText = `value ${sourceMinValue}`;
         }
@@ -650,7 +650,7 @@ export namespace Conversion {
           )}' is known: Target type has integer range ${Conversion.prettyRange(
             targetMinValue,
             targetMaxValue,
-            t
+            t.primitive
           )}, but the source has ${sourceRangeText}. Add a conditional that constrains the integer range.`,
           sourceloc
         );

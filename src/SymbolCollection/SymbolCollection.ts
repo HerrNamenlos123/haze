@@ -994,7 +994,7 @@ function collect(
             {
               variant: Collect.ENode.VariableSymbol,
               comptime: false,
-              mutability: EVariableMutability.Default,
+              mutability: EVariableMutability.Let,
               name: p.name,
               sourceloc: p.sourceloc,
               type: p.type,
