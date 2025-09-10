@@ -1,4 +1,5 @@
 import * as child_process from "child_process";
+import { $ } from "bun";
 import os from "os";
 import { mkdir } from "fs/promises";
 import {
@@ -49,20 +50,20 @@ import { Semantic } from "./Semantic/Elaborate";
 import { stdout } from "process";
 import { ParenthesisExprContext } from "./Parser/grammar/autogen/HazeParser";
 
-export const HAZE_DIR = os.homedir() + "/.haze/";
-export const HAZE_CACHE = HAZE_DIR + "cache/";
-export const HAZE_TOOLCHAIN_INSTALLED_MARKER = HAZE_CACHE + "toolchain-installed.json";
-export const HAZE_GLOBAL_DIR = HAZE_DIR + "global/";
-export const HAZE_TMP_DIR = HAZE_DIR + "tmp/";
-export const HAZE_MUSL_SYSROOT = HAZE_DIR + "sysroot/";
-export const HAZE_CMAKE_TOOLCHAIN = HAZE_DIR + "musl-toolchain.cmake";
+export const HAZE_DIR = os.homedir() + "/.haze";
+export const HAZE_CACHE = HAZE_DIR + "/cache";
+export const HAZE_TOOLCHAIN_INSTALLED_MARKER = HAZE_CACHE + "/toolchain-installed.json";
+export const HAZE_GLOBAL_DIR = HAZE_DIR + "/global";
+export const HAZE_TMP_DIR = HAZE_DIR + "/tmp";
+export const HAZE_MUSL_SYSROOT = HAZE_DIR + "/sysroot";
+export const HAZE_CMAKE_TOOLCHAIN = HAZE_DIR + "/musl-toolchain.cmake";
 
 const LLVM_TOOLCHAIN_DOWNLOAD_URL =
   "https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-18.04.tar.xz";
 
 export const HAZE_STDLIB_NAME = "haze-stdlib";
 
-const C_COMPILER = HAZE_GLOBAL_DIR + "bin/clang";
+const C_COMPILER = HAZE_GLOBAL_DIR + "/bin/clang";
 const ARCHIVE_TOOL = "ar";
 const HAZE_CONFIG_FILE = "haze.toml";
 const HAZE_LIB_IMPORT_FILE = "import.hz";
@@ -165,6 +166,24 @@ async function catchErrors(fn: () => Promise<void>) {
     }
     return false;
   }
+}
+
+async function commandExists(cmd: string) {
+  try {
+    await $`command -v ${cmd}`;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function detectPackageManager() {
+  if (await commandExists("apt-get")) return "debian";
+  if (await commandExists("dnf")) return "fedora";
+  if (await commandExists("yum")) return "rhel";
+  if (await commandExists("zypper")) return "suse";
+
+  return "unknown";
 }
 
 class Cache {
@@ -373,7 +392,7 @@ export class ProjectCompiler {
         );
       }
 
-      const moduleExecutable = join(join(this.globalBuildDir, config.name, "output"), config.name);
+      const moduleExecutable = join(join(this.globalBuildDir, config.name, "bin"), config.name);
       child_process.execSync(`${moduleExecutable} ${args?.join(" ")}`, {
         stdio: "inherit",
       });
@@ -422,7 +441,7 @@ export class ProjectCompiler {
       // Step 1: Download
       if (!this.isStepDone(MARKERS.download)) {
         console.info("Downloading LLVM toolchain...");
-        await getFileWithProgress(LLVM_TOOLCHAIN_DOWNLOAD_URL, HAZE_TMP_DIR + "llvm.tar.xz");
+        await getFileWithProgress(LLVM_TOOLCHAIN_DOWNLOAD_URL, HAZE_TMP_DIR + "/llvm.tar.xz");
         this.markStepDone(MARKERS.download);
         console.info("Downloading LLVM toolchain... Done");
       }
@@ -431,7 +450,7 @@ export class ProjectCompiler {
       if (!this.isStepDone(MARKERS.extract)) {
         console.info("Extracting LLVM toolchain...");
         await exec(
-          `tar -xf ${HAZE_TMP_DIR + "llvm.tar.xz"} -C ${HAZE_GLOBAL_DIR} --strip-components=1`
+          `tar -xf ${HAZE_TMP_DIR + "/llvm.tar.xz"} -C ${HAZE_GLOBAL_DIR} --strip-components=1`
         );
         this.markStepDone(MARKERS.extract);
         console.info("Extracting LLVM toolchain... Done");
@@ -446,17 +465,45 @@ export class ProjectCompiler {
       if (!this.isStepDone(MARKERS.ncursesLib)) {
         console.info("Retrieving libtinfo.so.5...");
         mkdirSync(`${HAZE_TMP_DIR}/`, { recursive: true });
-        await exec(`rm -f ${HAZE_TMP_DIR}libtinfo5_6.1-1ubuntu1_amd64.deb*`);
+        const packageManager = await detectPackageManager();
         await exec(`rm -f ${HAZE_GLOBAL_DIR}/lib/libtinfo.so.5`);
-        await exec(
-          `cd ${HAZE_TMP_DIR} && wget http://archive.ubuntu.com/ubuntu/pool/main/n/ncurses/libtinfo5_6.1-1ubuntu1_amd64.deb`
-        );
-        await exec(
-          `dpkg-deb -x ${HAZE_TMP_DIR}/libtinfo5_6.1-1ubuntu1_amd64.deb ${HAZE_GLOBAL_DIR}`
-        );
-        await exec(
-          `cd ${HAZE_GLOBAL_DIR + "/lib"} && ln -s x86_64-linux-gnu/libtinfo.so.5 libtinfo.so.5`
-        );
+        if (packageManager === "debian") {
+          await exec(`rm -f ${HAZE_TMP_DIR}/libtinfo5_6.1-1ubuntu1_amd64.deb*`);
+          await exec(
+            `cd ${HAZE_TMP_DIR} && wget http://archive.ubuntu.com/ubuntu/pool/main/n/ncurses/libtinfo5_6.1-1ubuntu1_amd64.deb`
+          );
+          await exec(
+            `dpkg-deb -x ${HAZE_TMP_DIR}/libtinfo5_6.1-1ubuntu1_amd64.deb ${HAZE_GLOBAL_DIR}`
+          );
+          await exec(
+            `cd ${HAZE_GLOBAL_DIR + "/lib"} && ln -s x86_64-linux-gnu/libtinfo.so.5 libtinfo.so.5`
+          );
+        } else if (packageManager === "fedora") {
+          // await exec(`rm -f ${HAZE_TMP_DIR}ncurses-compat-libs*`);
+          // await exec(
+          //   `cd ${HAZE_TMP_DIR} && dnf download ncurses-compat-libs-6.1-7.20210102.fc35.x86_64`
+          // );
+          // await exec(
+          //   `cd ${HAZE_TMP_DIR} && rpm2cpio ncurses-compat-libs-*.rpm | cpio -idmv -D ${HAZE_GLOBAL_DIR}`
+          // );
+          // await exec(
+          //   `cd ${HAZE_GLOBAL_DIR + "/lib"} && ln -s ../usr/lib/libtinfo.so.5 libtinfo.so.5`
+          // );
+          await exec(`rm -f ${HAZE_TMP_DIR}/libtinfo5_6.1-1ubuntu1_amd64.deb*`);
+          await exec(
+            `cd ${HAZE_TMP_DIR} && wget http://archive.ubuntu.com/ubuntu/pool/main/n/ncurses/libtinfo5_6.1-1ubuntu1_amd64.deb`
+          );
+          await exec(`cd ${HAZE_TMP_DIR} && ar x libtinfo5_6.1-1ubuntu1_amd64.deb`);
+          await exec(`cd ${HAZE_TMP_DIR} && tar -xf data.tar.xz -C ${HAZE_GLOBAL_DIR}`);
+          await exec(
+            `cd ${HAZE_GLOBAL_DIR + "/lib"} && ln -s x86_64-linux-gnu/libtinfo.so.5 libtinfo.so.5`
+          );
+        } else {
+          throw new CompilerError(
+            "This Distro/Package Manager is not supported yet, please report",
+            null
+          );
+        }
         this.markStepDone(MARKERS.ncursesLib);
         console.info("Retrieving libtinfo.so.5... Done");
       }
@@ -464,7 +511,7 @@ export class ProjectCompiler {
       if (!this.isStepDone(MARKERS.musl)) {
         console.info("Building libmusl sysroot...");
         mkdirSync(`${HAZE_TMP_DIR}/`, { recursive: true });
-        await exec(`rm -f ${HAZE_TMP_DIR}musl-1.2.5.tar.gz*`);
+        await exec(`rm -f ${HAZE_TMP_DIR}/musl-1.2.5.tar.gz*`);
         await exec(`cd ${HAZE_TMP_DIR} && wget https://musl.libc.org/releases/musl-1.2.5.tar.gz`);
         await exec(`cd ${HAZE_TMP_DIR} && tar -xzf musl-1.2.5.tar.gz`);
         await exec(
@@ -481,19 +528,25 @@ export class ProjectCompiler {
         mkdirSync(`${HAZE_TMP_DIR}/`, { recursive: true });
         const toolchain = `
 set(CMAKE_SYSTEM_NAME Linux)
-set(CMAKE_C_COMPILER /home/me/.haze/global/bin/clang)
-set(CMAKE_CXX_COMPILER /home/me/.haze/global/bin/clang++)
-set(CMAKE_SYSROOT /home/me/.haze/sysroot)
-set(CMAKE_FIND_ROOT_PATH /home/me/.haze/sysroot)
+set(CMAKE_C_COMPILER ${HAZE_GLOBAL_DIR}/bin/clang)
+set(CMAKE_CXX_COMPILER ${HAZE_GLOBAL_DIR}/bin/clang++)
+set(CMAKE_SYSROOT ${HAZE_MUSL_SYSROOT})
+set(CMAKE_FIND_ROOT_PATH ${HAZE_MUSL_SYSROOT})
 
 # Tell CMake to search only in sysroot
 set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
 set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
 set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
 
+set(CMAKE_C_FLAGS "-static -nostdlib -nostartfiles -isystem ${HAZE_MUSL_SYSROOT}/include -fno-pie \${CMAKE_C_FLAGS}")
+set(CMAKE_CXX_FLAGS "-static -nostdlib -nostartfiles -isystem ${HAZE_MUSL_SYSROOT}/include \${CMAKE_CXX_FLAGS}")
 
-set(CMAKE_C_FLAGS "--sysroot=/home/me/.haze/sysroot -static -fno-pie")
-set(CMAKE_EXE_LINKER_FLAGS "-nostdlib -L/home/me/.haze/sysroot/lib -L/home/me/.haze/global/lib/clang/18.1.8/lib/linux")
+set(CMAKE_C_LINK_EXECUTABLE
+   "<CMAKE_C_COMPILER> <FLAGS> <OBJECTS>  <LINK_LIBRARIES> ${HAZE_MUSL_SYSROOT}/lib/crt1.o ${HAZE_MUSL_SYSROOT}/lib/crti.o ${HAZE_MUSL_SYSROOT}/lib/crtn.o -lc "
+)
+set(CMAKE_CXX_LINK_EXECUTABLE
+   "<CMAKE_CXX_COMPILER> <FLAGS> <OBJECTS>  <LINK_LIBRARIES> ${HAZE_MUSL_SYSROOT}/lib/crt1.o ${HAZE_MUSL_SYSROOT}/lib/crti.o ${HAZE_MUSL_SYSROOT}/lib/crtn.o -lc "
+)
 
 set(THREADS_PREFER_PTHREAD_FLAG ON)
 set(CMAKE_THREAD_LIBS_INIT "-lpthread")  # musl ignores it for static linking
@@ -620,7 +673,9 @@ class ModuleCompiler {
 
       const env = process.env as any;
       if (this.config.configFilePath) {
-        env.HAZE_MODULE_DIR = dirname(this.config.configFilePath);
+        env.HAZE_MODULE_SOURCE_DIR = dirname(this.config.configFilePath);
+        env.HAZE_MODULE_BUILD_DIR = this.globalBuildDir + "/" + this.config.name + "/build";
+        env.HAZE_MODULE_BINARY_DIR = this.globalBuildDir + "/" + this.config.name + "/bin";
       }
 
       if (this.config.configFilePath) {
@@ -650,14 +705,14 @@ class ModuleCompiler {
       const moduleCFile = join(this.moduleBuildDir, `build/${name}-${platform}.c`);
       const moduleOFile = join(this.moduleBuildDir, `build/${name}-${platform}.o`);
       const moduleAFile = join(this.moduleBuildDir, `build/${name}-${platform}.a`);
-      const moduleExecutable = join(this.moduleBuildDir, `output/${name}`);
+      const moduleExecutable = join(this.moduleBuildDir, `bin/${name}`);
 
       const moduleMetadataFile = join(this.moduleBuildDir, "build/metadata.json");
-      const moduleOutputLib = join(this.moduleBuildDir, "output/" + this.config.name + ".hzlib");
+      const moduleOutputLib = join(this.moduleBuildDir, "bin/" + this.config.name + ".hzlib");
       const importFilePath = join(this.moduleBuildDir, "build", HAZE_LIB_IMPORT_FILE);
 
       await mkdir(join(this.moduleBuildDir, "build/"), { recursive: true });
-      await mkdir(join(this.moduleBuildDir, "output/"), { recursive: true });
+      await mkdir(join(this.moduleBuildDir, "bin/"), { recursive: true });
 
       const code = generateCode(this.config, lowered);
       await Bun.file(moduleCFile).write(code);
@@ -667,15 +722,20 @@ class ModuleCompiler {
       compilerFlags.push("-Wno-parentheses-equality");
       compilerFlags.push("-Wno-extra-tokens");
 
+      compilerFlags.push(`-I${this.moduleBuildDir}/bin/include`);
+      linkerFlags.push(`-L${this.moduleBuildDir}/bin/lib`);
+
       // MUSL Sysroot Settings
+      compilerFlags.push(`--sysroot=${HAZE_MUSL_SYSROOT}`);
+      linkerFlags.push(`--sysroot=${HAZE_MUSL_SYSROOT}`);
       compilerFlags.push("-static");
       compilerFlags.push("-nostdlib");
       compilerFlags.push("-nostartfiles");
       compilerFlags.push(`-isystem ${HAZE_MUSL_SYSROOT}/include`);
       linkerFlags.push(`-L${HAZE_MUSL_SYSROOT}/lib`);
-      compilerFlags.push(`${HAZE_MUSL_SYSROOT}/lib/crt1.o`);
-      compilerFlags.push(`${HAZE_MUSL_SYSROOT}/lib/crti.o`);
-      compilerFlags.push(`${HAZE_MUSL_SYSROOT}/lib/crtn.o`);
+      linkerFlags.push(`${HAZE_MUSL_SYSROOT}/lib/crt1.o`);
+      linkerFlags.push(`${HAZE_MUSL_SYSROOT}/lib/crti.o`);
+      linkerFlags.push(`${HAZE_MUSL_SYSROOT}/lib/crtn.o`);
       linkerFlags.push(`-lc`);
 
       if (this.config.moduleType === ModuleType.Executable) {
@@ -756,7 +816,7 @@ class ModuleCompiler {
     }
 
     for (const dep of deps) {
-      const libpath = join(join(this.globalBuildDir, dep.name), "output", dep.name + ".hzlib");
+      const libpath = join(join(this.globalBuildDir, dep.name), "bin", dep.name + ".hzlib");
       const metadata = await this.loadDependencyMetadata(libpath, dep.name);
 
       const lib = metadata.libs.find((l) => l.platform === this.config.platform);
@@ -792,7 +852,7 @@ class ModuleCompiler {
     }
 
     for (const dep of deps) {
-      const libpath = join(join(this.globalBuildDir, dep.name), "output", dep.name + ".hzlib");
+      const libpath = join(join(this.globalBuildDir, dep.name), "bin", dep.name + ".hzlib");
       const metadata = await this.loadDependencyMetadata(libpath, dep.name);
 
       const tempdir = join(this.moduleBuildDir, "__deps", dep.name, "import");
