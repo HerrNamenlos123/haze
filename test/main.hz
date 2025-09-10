@@ -8,7 +8,11 @@
 //     return arena;
 // }
 
-struct Foo {};
+struct Foo<T> 
+    requires LT(this.x) >= LT(this)
+{
+
+};
 
 // struct Ref<T> {
 //     ref: T&;

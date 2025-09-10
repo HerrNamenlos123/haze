@@ -2,7 +2,6 @@ import { HAZE_STDLIB_NAME } from "../Module";
 import {
   EAssignmentOperation,
   EBinaryOperation,
-  EClonability,
   EExternLanguage,
   EDatatypeMutability,
   EVariableMutability,
@@ -415,7 +414,6 @@ export namespace Semantic {
     variant: ENode.StructDatatype;
     name: string;
     noemit: boolean;
-    clonability: EClonability;
     generics: TypeUseId[];
     extern: EExternLanguage;
     members: Semantic.SymbolId[];

@@ -1,7 +1,6 @@
 import {
   BinaryOperationToString,
   EBinaryOperation,
-  EClonability,
   EDatatypeMutability,
   EUnaryOperation,
   UnaryOperationToString,
@@ -400,25 +399,6 @@ export namespace Conversion {
     const toInstance = sr.typeUseNodes.get(toId);
     const to = sr.typeDefNodes.get(toInstance.type);
 
-    // Conversion of Struct to Struct
-    if (
-      fromType.variant === Semantic.ENode.StructDatatype &&
-      to.variant === Semantic.ENode.StructDatatype &&
-      fromExpr.type === toId &&
-      !fromExpr.isTemporary &&
-      (to.clonability === EClonability.NonClonableFromAttribute ||
-        to.clonability === EClonability.NonClonableFromMembers)
-    ) {
-      const msg =
-        to.clonability === EClonability.NonClonableFromAttribute
-          ? "marked as 'nonclonable'"
-          : "non-clonable because it contains raw pointers or other non-clonable structures";
-      throw new CompilerError(
-        `Struct '${fromType.name}' is passed by value here, which would create a copy, but the struct definition is ${msg}`,
-        sourceloc
-      );
-    }
-
     if (fromExpr.type === toId) {
       return fromExprId;
     }
@@ -445,35 +425,6 @@ export namespace Conversion {
 
     // Conversion from T& to T
     if (fromType.variant === Semantic.ENode.ReferenceDatatype) {
-      if (
-        fromType.variant === Semantic.ENode.ReferenceDatatype &&
-        to.variant === Semantic.ENode.StructDatatype &&
-        fromType.referee === toId
-      ) {
-        const fromTypeRefereeInstance = sr.typeUseNodes.get(fromType.referee);
-        const fromTypeReferee = sr.typeDefNodes.get(fromTypeRefereeInstance.type);
-        assert(fromTypeReferee.variant === Semantic.ENode.StructDatatype);
-        if (
-          fromTypeReferee.clonability === EClonability.NonClonableFromAttribute ||
-          fromTypeReferee.clonability === EClonability.NonClonableFromMembers
-        ) {
-          const msg =
-            to.clonability === EClonability.NonClonableFromAttribute
-              ? "marked as 'nonclonable'"
-              : "non-clonable because it contains raw pointers or other non-clonable structures";
-          throw new CompilerError(
-            `Conversion from '${Semantic.serializeTypeUse(
-              sr,
-              fromExpr.type
-            )}' to '${Semantic.serializeTypeUse(
-              sr,
-              toId
-            )}' would create a copy of the struct, but the struct definition is ${msg}`,
-            sourceloc
-          );
-        }
-      }
-
       return Semantic.addExpr(sr, {
         variant: Semantic.ENode.ExplicitCastExpr,
         expr: fromExprId,

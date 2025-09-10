@@ -2,12 +2,7 @@ import { EVariableContext, primitiveToString, stringToPrimitive } from "../share
 import { assert, CompilerError, type SourceLoc } from "../shared/Errors";
 import { Collect, funcSymHasParameterPack } from "../SymbolCollection/SymbolCollection";
 import { isTypeConcrete, makePrimitiveAvailable, Semantic, type SemanticResult } from "./Elaborate";
-import {
-  EClonability,
-  EExternLanguage,
-  EDatatypeMutability,
-  EVariableMutability,
-} from "../shared/AST";
+import { EExternLanguage, EDatatypeMutability, EVariableMutability } from "../shared/AST";
 import { Conversion } from "./Conversion";
 
 export function makeRawFunctionDatatypeAvailable(
@@ -310,7 +305,6 @@ export function instantiateAndElaborateStruct(
     name: definedStructType.name,
     generics: genericArgs,
     extern: definedStructType.extern,
-    clonability: definedStructType.clonability,
     noemit: definedStructType.noemit,
     parentStructOrNS: elaborateParentSymbolFromCache(sr, {
       parentScope: definedStructType.parentScope,
@@ -410,18 +404,6 @@ export function instantiateAndElaborateStruct(
               Conversion.Mode.Implicit
             ),
           });
-        }
-        if (struct.clonability === EClonability.Unknown) {
-          if (type.variant === Semantic.ENode.NullableReferenceDatatype) {
-            struct.clonability = EClonability.NonClonableFromMembers;
-          }
-          if (
-            type.variant === Semantic.ENode.StructDatatype &&
-            (type.clonability === EClonability.NonClonableFromAttribute ||
-              type.clonability === EClonability.NonClonableFromMembers)
-          ) {
-            struct.clonability = EClonability.NonClonableFromMembers;
-          }
         }
       } else if (symbol.variant === Collect.ENode.FunctionOverloadGroup) {
         symbol.overloads.forEach((overloadId) => {

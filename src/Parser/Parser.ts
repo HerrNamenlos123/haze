@@ -58,7 +58,6 @@ import {
   type ASTArrayLiteralExpr,
   type ASTArraySubscriptExpr,
   type ASTForEachStatement,
-  EClonability,
   type ASTTypeLiteralExpr,
   type ASTFStringExpr,
   type ASTSliceDatatype,
@@ -728,35 +727,12 @@ class ASTTransformer extends HazeVisitor<any> {
       }
     }
 
-    const attributes = ctx._attributes.map((a) => a.text || "");
-    const uniqueAttributes = [...new Set(attributes)];
-
-    if (attributes.length !== uniqueAttributes.length) {
-      throw new CompilerError(`Struct definition contains duplicate attributes`, this.loc(ctx));
-    }
-
-    const clonable = attributes.includes("clonable");
-    const nonclonable = attributes.includes("nonclonable");
-
-    let clonability = EClonability.Unknown;
-    if (clonable && nonclonable) {
-      throw new CompilerError(
-        `Struct cannot be clonable and nonclonable at the same time`,
-        this.loc(ctx)
-      );
-    } else if (clonable) {
-      clonability = EClonability.Clonable;
-    } else if (nonclonable) {
-      clonability = EClonability.NonClonableFromAttribute;
-    }
-
     return {
       variant: "StructDefinition",
       export: Boolean(ctx._export_),
       pub: Boolean(ctx._pub),
       extern: this.exlang(ctx),
       name: name,
-      clonability: clonability,
       noemit: Boolean(ctx._noemit),
       generics: generics.map((p) => ({
         name: p,

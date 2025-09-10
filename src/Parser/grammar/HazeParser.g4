@@ -50,8 +50,8 @@ cInjectDirective: (export=EXPORT)? INLINEC LB STRING_LITERAL RB SEMI;
 
 externLanguage: EXTERNC;
 
-functionDefinition: (export=EXPORT)? (extern=EXTERN externLang=externLanguage? pub=PUB? noemit=NOEMIT?)?  ID (LANGLE ID (COMMA ID)* RANGLE)? LB params RB (COLON datatype)? (ARROW)? (funcbody | SEMI);
-lambda: LB params RB (COLON datatype)? ARROW funcbody;
+functionDefinition: (export=EXPORT)? (extern=EXTERN externLang=externLanguage? pub=PUB? noemit=NOEMIT?)?  ID (LANGLE ID (COMMA ID)* RANGLE)? LB params RB (COLON datatype)? requiresBlock? (ARROW)? (funcbody | SEMI);
+lambda: LB params RB (COLON datatype)? requiresBlock? ARROW funcbody;
 param: ID COLON (datatype | ellipsis);
 params: (param (COMMA param)* (COMMA ellipsis)?)? | ellipsis;
 ellipsis: ELLIPSIS;
@@ -97,7 +97,7 @@ datatypeImpl
     | LBRACKET RBRACKET datatype                                                #SliceDatatype
     | QUESTIONAMPERSAND datatype                                                #NullableReferenceDatatype
     | SINGLEAND datatype                                                        #ReferenceDatatype
-    | LB params RB ARROW datatype                                               #FunctionDatatype
+    | LB params RB ARROW datatype requiresBlock?                                #FunctionDatatype
     ;
 
 datatype
@@ -121,7 +121,7 @@ structContent
     ;
 
 structDefinition
-    : (export=EXPORT)? (extern=EXTERN externLang=externLanguage)? pub=PUB? noemit=NOEMIT? STRUCT attributes+=(CLONABLE | NONCLONABLE)* ID (LANGLE ID (COMMA ID)* RANGLE)? LCURLY (content+=structContent)* RCURLY (SEMI)?
+    : (export=EXPORT)? (extern=EXTERN externLang=externLanguage)? pub=PUB? noemit=NOEMIT? STRUCT ID (LANGLE ID (COMMA ID)* RANGLE)? requiresBlock? LCURLY (content+=structContent)* RCURLY (SEMI)?
     ;
 
 typeDefinition
@@ -132,6 +132,10 @@ typeDefinition
 
 sliceIndex
     : expr? COLON expr?
+    ;
+
+requiresBlock
+    : 'requires' expr (COMMA expr)*
     ;
 
 expr

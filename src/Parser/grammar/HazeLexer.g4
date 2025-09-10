@@ -18,8 +18,8 @@ STATIC: 'static';
 STRUCT: 'struct';
 NONCLONABLE: 'nonclonable';
 CLONABLE: 'clonable';
+REQUIRES: 'requires';
 
-// Tokens used in expressions
 TRUE: 'true';
 FALSE: 'false';
 TYPE: 'type';

@@ -39,7 +39,6 @@ import {
   type ASTGlobalDeclaration,
   AssignmentOperationToString,
   IncrOperationToString,
-  EClonability,
   EVariableMutability,
 } from "../shared/AST";
 import {
@@ -400,7 +399,6 @@ export namespace Collect {
     }[];
     name: string;
     export: boolean;
-    clonability: EClonability;
     pub: boolean;
     extern: EExternLanguage;
     noemit: boolean;
@@ -1235,7 +1233,6 @@ function collect(
         export: item.export,
         extern: item.extern,
         pub: false,
-        clonability: item.clonability,
         noemit: item.noemit,
         structScope: -1 as Collect.Id,
         parentScope: args.currentParentScope,

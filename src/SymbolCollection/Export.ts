@@ -1,5 +1,5 @@
 import { Semantic } from "../Semantic/Elaborate";
-import { EClonability, EExternLanguage } from "../shared/AST";
+import { EExternLanguage } from "../shared/AST";
 import { assert } from "../shared/Errors";
 import {
   Collect,
@@ -194,11 +194,6 @@ export function ExportCollectedSymbols(cc: CollectionContext) {
             file += "noemit ";
           }
           file += "struct ";
-          if (symbol.clonability === EClonability.Clonable) {
-            file += "clonable ";
-          } else if (symbol.clonability === EClonability.NonClonableFromAttribute) {
-            file += "nonclonable ";
-          }
           file += namespaces[namespaces.length - 1] + " {\n";
           const structScope = cc.nodes.get(symbol.structScope);
           assert(structScope.variant === Collect.ENode.StructScope);
