@@ -71,6 +71,7 @@ export type SemanticResult = {
   overloadedOperators: Semantic.FunctionSymbol[];
 
   elaboratedFunctionSignatures: Map<Collect.Id, Semantic.SymbolId[]>;
+  elaboratedFunctionSignaturesByName: Map<string, Semantic.SymbolId[]>;
 
   elaboratedStructDatatypes: {
     originalSymbol: Collect.Id;
@@ -364,6 +365,9 @@ export namespace Semantic {
     variant: ENode.FunctionSignature;
     originalFunction: Collect.Id;
     genericPlaceholders: Semantic.TypeDefId[];
+    name: string;
+    extern: EExternLanguage;
+    parentStructOrNS: TypeDefId | null;
     parameters: {
       name: string;
       type: TypeUseId;
@@ -1471,10 +1475,20 @@ export namespace Semantic {
       }
     }
 
-    const signature = Semantic.addSymbol(sr, {
+    const parent = elaborateParentSymbolFromCache(sr, {
+      context: args.context,
+      parentScope: functionSymbol.parentScope,
+    });
+
+    const cacheCodename = (parent ? serializeTypeDef(sr, parent) + "." : "") + functionSymbol.name;
+
+    const [signature, signatureId] = Semantic.addSymbol(sr, {
       variant: Semantic.ENode.FunctionSignature,
       genericPlaceholders: genericPlaceholders,
       originalFunction: functionSymbolId,
+      extern: functionSymbol.extern,
+      name: functionSymbol.name,
+      parentStructOrNS: parent,
       parameters: functionSymbol.parameters.map((p) => {
         const type = lookupAndElaborateDatatype(sr, {
           typeId: p.type,
@@ -1499,9 +1513,39 @@ export namespace Semantic {
         elaboratedVariables: new Map(),
         isInCFuncdecl: functionSymbol.extern === EExternLanguage.Extern_C,
       }),
-    })[1];
+    });
 
-    return signature;
+    for (const sigId of sr.elaboratedFunctionSignaturesByName.get(cacheCodename) || []) {
+      const sig = sr.symbolNodes.get(sigId);
+      assert(sig.variant === Semantic.ENode.FunctionSignature);
+      if (
+        sig.name === signature.name &&
+        sig.parentStructOrNS === signature.parentStructOrNS &&
+        sig.parameters.length === signature.parameters.length &&
+        sig.parameters.every((p, i) => signature.parameters[i].type === p.type)
+      ) {
+        const ori = sr.cc.nodes.get(sig.originalFunction);
+        assert(ori.variant === Collect.ENode.FunctionSymbol);
+        throw new CompilerError(
+          `A conflicting function with the same signature is already defined.${
+            ori.sourceloc ? " Existing definition at: " + formatSourceLoc(ori.sourceloc) : ""
+          }`,
+          functionSymbol.sourceloc
+        );
+      }
+    }
+
+    if (!sr.elaboratedFunctionSignatures.get(functionSymbolId)) {
+      sr.elaboratedFunctionSignatures.set(functionSymbolId, []);
+    }
+    sr.elaboratedFunctionSignatures.get(functionSymbolId)!.push(signatureId);
+
+    if (!sr.elaboratedFunctionSignaturesByName.get(cacheCodename)) {
+      sr.elaboratedFunctionSignaturesByName.set(cacheCodename, []);
+    }
+    sr.elaboratedFunctionSignaturesByName.get(cacheCodename)!.push(signatureId);
+
+    return signatureId;
   }
 
   export function ChooseFunctionOverload(
@@ -1538,7 +1582,9 @@ export namespace Semantic {
       const overload = sr.cc.nodes.get(overloadId);
       assert(overload.variant === Collect.ENode.FunctionSymbol);
 
-      const signatureId = elaborateFunctionSignature(sr, overloadId, { context: args.context });
+      const signatureId = elaborateFunctionSignature(sr, overloadId, {
+        context: args.context,
+      });
       const signature = sr.symbolNodes.get(signatureId);
       assert(signature.variant === Semantic.ENode.FunctionSignature);
 
@@ -2472,7 +2518,13 @@ export namespace Semantic {
           assert(elaboratedSymbolId, "Variable was not elaborated here: " + symbol.name);
           const elaboratedSymbol = sr.symbolNodes.get(elaboratedSymbolId);
           if (elaboratedSymbol.variant === Semantic.ENode.VariableSymbol) {
-            assert(elaboratedSymbol.type);
+            // assert(elaboratedSymbol.type);
+            if (!elaboratedSymbol.type) {
+              throw new CompilerError(
+                `Symbol '${elaboratedSymbol.name}' cannot be used before it's declared`,
+                expr.sourceloc
+              );
+            }
             if (elaboratedSymbol.comptime && elaboratedSymbol.comptimeValue) {
               return [
                 sr.exprNodes.get(elaboratedSymbol.comptimeValue),
@@ -3030,7 +3082,7 @@ export namespace Semantic {
           }
           const member = sr.symbolNodes.get(memberId);
           assert(member.variant === Semantic.ENode.VariableSymbol && member.type);
-          const [memberAccess, memberAccessId] = Semantic.addExpr(sr, {
+          return Semantic.addExpr(sr, {
             variant: Semantic.ENode.MemberAccessExpr,
             expr: objectId,
             memberName: expr.memberName,
@@ -3038,22 +3090,23 @@ export namespace Semantic {
             sourceloc: expr.sourceloc,
             isTemporary: false,
           });
-          // Promote the datatype because by default, every struct member is fully mutable.
-          console.log(
-            "TODO: This mutability promotion is only allowed if the struct itself (this) is mutable"
-          );
-          return Semantic.addExpr(sr, {
-            variant: Semantic.ENode.ExplicitCastExpr,
-            expr: memberAccessId,
-            isTemporary: true,
-            sourceloc: expr.sourceloc,
-            type: makeTypeUse(
-              sr,
-              sr.typeUseNodes.get(memberAccess.type).type,
-              EDatatypeMutability.Mut,
-              expr.sourceloc
-            )[1],
-          });
+          // console.log(Semantic.serializeTypeUse(sr, memberAccess.type));
+          // // Promote the datatype because by default, every struct member is fully mutable.
+          // console.log(
+          //   "TODO: This mutability promotion is only allowed if the struct itself (this) is mutable"
+          // );
+          // return Semantic.addExpr(sr, {
+          //   variant: Semantic.ENode.ExplicitCastExpr,
+          //   expr: memberAccessId,
+          //   isTemporary: true,
+          //   sourceloc: expr.sourceloc,
+          //   type: makeTypeUse(
+          //     sr,
+          //     sr.typeUseNodes.get(memberAccess.type).type,
+          //     EDatatypeMutability.Mut,
+          //     expr.sourceloc
+          //   )[1],
+          // });
         }
 
         const collectedStruct = sr.cc.nodes.get(objectType.originalCollectedSymbol);
@@ -4350,7 +4403,7 @@ export namespace Semantic {
       elaboratedVariables: args.elaboratedVariables,
       isMonomorphized: args.isMonomorphized,
       paramPackTypes: args.paramPackTypes,
-      parentStructOrNS: args.parentStructOrNS,
+      parentStructOrNS: functionSignature.parentStructOrNS,
     });
   }
 
@@ -4925,6 +4978,7 @@ export namespace Semantic {
       cc: cc,
 
       elaboratedFunctionSignatures: new Map(),
+      elaboratedFunctionSignaturesByName: new Map(),
 
       elaboratedStructDatatypes: [],
       elaboratedFuncdefSymbols: [],
@@ -5065,6 +5119,7 @@ export namespace Semantic {
     const symbol = sr.symbolNodes.get(symbolId);
     assert(
       symbol.variant === Semantic.ENode.FunctionSymbol ||
+        symbol.variant === Semantic.ENode.FunctionSignature ||
         symbol.variant === Semantic.ENode.GlobalVariableDefinitionSymbol
     );
 
@@ -5156,6 +5211,7 @@ export namespace Semantic {
     const symbol = sr.symbolNodes.get(symbolId);
     assert(
       symbol.variant === Semantic.ENode.FunctionSymbol ||
+        symbol.variant === Semantic.ENode.FunctionSignature ||
         symbol.variant === Semantic.ENode.GlobalVariableDefinitionSymbol
     );
 

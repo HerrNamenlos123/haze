@@ -20,11 +20,11 @@ const GLFW_OPENGL_CORE_PROFILE: i32;
 namespace raw {
     extern "C" glfwInit(): i32;
     extern "C" glfwTerminate(): void;
-    extern "C" glfwCreateWindow(width: i32, height: i32, title: c_str, monitor: *GLFWmonitor, share: *GLFWwindow): *GLFWwindow;
-    extern "C" glfwWindowShouldClose(w: *GLFWwindow): i32;
-    extern "C" glfwSwapBuffers(w: *GLFWwindow);
+    extern "C" glfwCreateWindow(width: i32, height: i32, title: c_str, monitor: ?&GLFWmonitor, share: ?&GLFWwindow): ?&GLFWwindow;
+    extern "C" glfwWindowShouldClose(w: &GLFWwindow): i32;
+    extern "C" glfwSwapBuffers(w: &GLFWwindow);
     extern "C" glfwSwapInterval(flag: i32);
-    extern "C" glfwMakeContextCurrent(w: *GLFWwindow);
+    extern "C" glfwMakeContextCurrent(w: &GLFWwindow);
     extern "C" glfwPollEvents();
     extern "C" glfwInitHint(hint: i32, value: i32);
     extern "C" glfwWindowHint(hint: i32, value: i32);
@@ -40,15 +40,15 @@ namespace raw {
         glfwTerminate();
     }
 
-    export createWindow(width: i32, height: i32, title: c_str, monitor: *GLFWmonitor, share: *GLFWwindow): *GLFWwindow {
+    export createWindow(width: i32, height: i32, title: c_str, monitor: ?&GLFWmonitor, share: ?&GLFWwindow): ?&GLFWwindow {
         return glfwCreateWindow(width, height, title, monitor, share);
     }
 
-    export windowShouldClose(w: *GLFWwindow): bool {
+    export windowShouldClose(w: &GLFWwindow): bool {
         return glfwWindowShouldClose(w) != 0;
     }
 
-    export swapBuffers(w: *GLFWwindow) {
+    export swapBuffers(w: &GLFWwindow) {
         glfwSwapBuffers(w);
     }
 
@@ -56,7 +56,7 @@ namespace raw {
         glfwSwapInterval(flags);
     }
 
-    export makeContextCurrent(w: *GLFWwindow) {
+    export makeContextCurrent(w: &GLFWwindow) {
         glfwMakeContextCurrent(w);
     }
 
@@ -82,7 +82,7 @@ namespace raw {
 }
 
 export struct Window {
-    handle: *GLFWwindow;
+    handle: &GLFWwindow;
 
     makeContextCurrent() {
         raw.makeContextCurrent(this.handle);
@@ -161,9 +161,9 @@ export getTime(): real {
     return raw.getTime() as real;
 }
 
-export getProcAddress(): (name: c_str) => *void {
+export getProcAddress(): (name: c_str) => ?&void {
     const rawProc = raw.getProcAddress;
-    const castedProc: (name: c_str) => *void = uninitialized;
+    const castedProc: (name: c_str) => ?&void = uninitialized;
     __c__("castedProc = (void*)rawProc;");
     return castedProc;
 }

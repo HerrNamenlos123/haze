@@ -933,8 +933,6 @@ function collect(
       });
       overloadGroup.overloads.add(functionSymbolId);
 
-      console.warn("TODO: Check if function is redefined with conflicting parameters");
-
       if (item.funcbody) {
         const [functionScope, functionScopeId] = makeSymbol(cc, {
           variant: Collect.ENode.FunctionScope,

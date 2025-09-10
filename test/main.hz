@@ -8,7 +8,7 @@
 //     return arena;
 // }
 
-struct Foo<T> 
+struct Foo
     requires LT(this.x) >= LT(this)
 {
 
@@ -23,7 +23,7 @@ main(): int {
     let foo = Foo {};
     let newFoo = Foo {};
 
-    let a: Foo& = foo;
+    let a: &Foo = foo;
 
     // assign(a, newFoo);
     // reassign(a, newFoo);

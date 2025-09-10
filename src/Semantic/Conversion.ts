@@ -415,7 +415,7 @@ export namespace Conversion {
         );
       }
       return Semantic.addExpr(sr, {
-        variant: Semantic.ENode.ExplicitCastExpr,
+        variant: Semantic.ENode.AddressOfExpr,
         expr: fromExprId,
         type: toId,
         sourceloc: sourceloc,
