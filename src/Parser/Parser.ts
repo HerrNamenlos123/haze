@@ -750,6 +750,7 @@ class ASTTransformer extends HazeVisitor<any> {
     return {
       variant: "Scope",
       sourceloc: this.loc(ctx),
+      unsafe: Boolean(ctx.UNSAFE()),
       statements: ctx.statement().map((s) => this.visit(s)),
     };
   };

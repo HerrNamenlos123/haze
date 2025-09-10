@@ -346,6 +346,7 @@ export type ASTStatement =
 export type ASTScope = {
   variant: "Scope";
   statements: ASTStatement[];
+  unsafe: boolean;
   sourceloc: SourceLoc;
 };
 

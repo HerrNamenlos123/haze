@@ -19,6 +19,7 @@ STRUCT: 'struct';
 NONCLONABLE: 'nonclonable';
 CLONABLE: 'clonable';
 REQUIRES: 'requires';
+UNSAFE: 'unsafe';
 
 TRUE: 'true';
 FALSE: 'false';

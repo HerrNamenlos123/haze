@@ -150,7 +150,14 @@ export createWindow(config: WindowConfig): Window {
         heightI32 = height;
     }
     const handle = raw.createWindow(widthI32, heightI32, config.title, nullptr, nullptr);
-    return Window { handle: handle };
+    // unsafe {
+    if (handle != nullptr) {
+        return Window { handle: handle };
+    }
+    // }
+    unsafe {
+        return Window { handle: handle };
+    }
 }
 
 export pollEvents() {

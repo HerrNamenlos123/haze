@@ -228,6 +228,7 @@ export namespace Collect {
     owningSymbol: Collect.Id;
     sourceloc: SourceLoc;
     statements: Set<Collect.Id>;
+    unsafe: boolean;
     symbols: Set<Collect.Id>;
   };
 
@@ -742,6 +743,7 @@ function makeOverloadGroupAvailable(cc: CollectionContext, parentScope: Collect.
 function makeBlockScope(
   cc: CollectionContext,
   parentScope: Collect.Id,
+  unsafe: boolean,
   sourceloc: SourceLoc
 ): Collect.Id {
   const parent = cc.nodes.get(parentScope);
@@ -754,6 +756,7 @@ function makeBlockScope(
     parentScope: parentScope,
     statements: new Set(),
     sourceloc: sourceloc,
+    unsafe: unsafe,
     symbols: new Set(),
   });
   cc.blockScopes.add(scopeId);
@@ -954,6 +957,7 @@ function collect(
                 expr: item.funcbody.expr,
               },
             ],
+            unsafe: false,
             sourceloc: item.sourceloc,
           };
         }
@@ -1348,7 +1352,7 @@ function collect(
     // =================================================================================================================
 
     case "Scope": {
-      const blockScope = makeBlockScope(cc, args.currentParentScope, item.sourceloc);
+      const blockScope = makeBlockScope(cc, args.currentParentScope, item.unsafe, item.sourceloc);
       for (const astStatement of item.statements) {
         switch (astStatement.variant) {
           case "ExprStatement": {

@@ -391,17 +391,19 @@ export function instantiateAndElaborateStruct(
               gonnaInstantiateStructWithType: variable.type,
               scope: definedStructType.structScope,
               blockScope: null,
+              unsafe: false,
             })[1];
           }
           struct.memberDefaultValues.push({
             memberName: variable.name,
-            value: Conversion.MakeConversion(
+            value: Conversion.MakeConversionOrThrow(
               sr,
               defaultExprId,
               typeId,
               [],
               symbol.sourceloc,
-              Conversion.Mode.Implicit
+              Conversion.Mode.Implicit,
+              false
             ),
           });
         }

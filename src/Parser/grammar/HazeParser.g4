@@ -57,7 +57,7 @@ params: (param (COMMA param)* (COMMA ellipsis)?)? | ellipsis;
 ellipsis: ELLIPSIS;
 
 funcbody: (scope | exprAsFuncbody);
-scope: LCURLY (statement)* RCURLY;
+scope: UNSAFE? LCURLY (statement)* RCURLY;
 exprAsFuncbody: expr;
 
 // Variables

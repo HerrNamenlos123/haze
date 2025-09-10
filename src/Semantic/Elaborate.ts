@@ -311,19 +311,21 @@ export namespace Semantic {
     return [n, id];
   }
 
+  export type ConstraintValue =
+    | {
+        kind: "comparison";
+        operation: EBinaryOperation;
+        value: Semantic.ExprId;
+      }
+    | {
+        kind: "variant";
+        operation: "is" | "is not";
+        variantType: Semantic.TypeUseId;
+      };
+
   export type Constraint = {
     variableSymbol: Semantic.SymbolId;
-    constraintValue:
-      | {
-          kind: "comparison";
-          operation: EBinaryOperation;
-          value: bigint;
-        }
-      | {
-          kind: "variant";
-          operation: "is" | "is not";
-          variantType: Semantic.TypeUseId;
-        };
+    constraintValue: ConstraintValue;
   };
 
   export type CInjectDirectiveSymbol = {
@@ -979,7 +981,6 @@ export namespace Semantic {
   //   } else {
   //     switch (symbol.variant) {
   //       case "FunctionDeclaration":
-  //         if (!symbol.export) return;
   //         sr.exportedCollectedSymbols.add(symbol);
   //         if (symbol._collect.definedInScope) {
   //           recursivelyExportCollectedSymbols(sr, getScope(sr.cc, symbol._collect.definedInScope));
@@ -1156,7 +1157,7 @@ export namespace Semantic {
     ) {
       // A method or a namespaced function
 
-      const chosenOverloadId = ChooseFunctionOverload(
+      const chosenOverloadId = FunctionOverloadChoose(
         sr,
         symbolId,
         args.gonnaCallFunctionWithParameterValues,
@@ -1350,6 +1351,7 @@ export namespace Semantic {
         value: Collect.Id;
       }[];
       context: ElaborationContext;
+      unsafe: boolean;
     }
   ): [Semantic.Expression, Semantic.ExprId] {
     const struct = sr.typeDefNodes.get(structId);
@@ -1392,16 +1394,18 @@ export namespace Semantic {
         elaboratedVariables: args.elaboratedVariables,
         gonnaInstantiateStructWithType: variable.type || undefined,
         isMonomorphized: args.isMonomorphized,
+        unsafe: args.unsafe,
       });
 
       assert(variable.type);
-      const convertedExprId = Conversion.MakeConversion(
+      const convertedExprId = Conversion.MakeConversionOrThrow(
         sr,
         eId,
         variable.type,
         args.blockScope?.constraints || [],
         args.sourceloc,
-        Conversion.Mode.Implicit
+        Conversion.Mode.Implicit,
+        args.unsafe
       );
 
       remainingMembers = remainingMembers.filter((mm) => mm !== m.name);
@@ -1548,7 +1552,7 @@ export namespace Semantic {
     return signatureId;
   }
 
-  export function ChooseFunctionOverload(
+  export function FunctionOverloadChoose(
     sr: SemanticResult,
     overloadGroupId: Collect.Id,
     calledWithArgs: { index: number; exprId: Semantic.ExprId | null }[] | undefined,
@@ -1710,6 +1714,7 @@ export namespace Semantic {
       gonnaInstantiateStructWithType?: Semantic.TypeUseId;
       blockScope: Semantic.BlockScope | null;
       isMonomorphized: boolean;
+      unsafe: boolean;
     }
   ): [Semantic.Expression, Semantic.ExprId] {
     const expr = sr.cc.nodes.get(exprId);
@@ -1727,6 +1732,7 @@ export namespace Semantic {
           elaboratedVariables: args.elaboratedVariables,
           blockScope: args.blockScope,
           isMonomorphized: args.isMonomorphized,
+          unsafe: args.unsafe,
         });
         let [right, rightId] = elaborateExpr(sr, expr.right, {
           context: args.context,
@@ -1734,6 +1740,7 @@ export namespace Semantic {
           blockScope: args.blockScope,
           elaboratedVariables: args.elaboratedVariables,
           isMonomorphized: args.isMonomorphized,
+          unsafe: args.unsafe,
         });
 
         if (
@@ -1771,21 +1778,23 @@ export namespace Semantic {
             EDatatypeMutability.Const,
             expr.sourceloc
           );
-          leftId = Conversion.MakeConversion(
+          leftId = Conversion.MakeConversionOrThrow(
             sr,
             leftId,
             boolType,
             args.blockScope?.constraints || [],
             right.sourceloc,
-            Conversion.Mode.Implicit
+            Conversion.Mode.Implicit,
+            args.unsafe
           );
-          rightId = Conversion.MakeConversion(
+          rightId = Conversion.MakeConversionOrThrow(
             sr,
             rightId,
             boolType,
             args.blockScope?.constraints || [],
             right.sourceloc,
-            Conversion.Mode.Implicit
+            Conversion.Mode.Implicit,
+            args.unsafe
           );
           resultType = boolType;
         } else {
@@ -1823,6 +1832,7 @@ export namespace Semantic {
           elaboratedVariables: args.elaboratedVariables,
           isMonomorphized: args.isMonomorphized,
           blockScope: args.blockScope,
+          unsafe: args.unsafe,
         });
         console.log("TODO: Implement runtime overflow checking for unary negating signed integers");
 
@@ -1891,6 +1901,7 @@ export namespace Semantic {
           gonnaInstantiateStructWithType: args.gonnaInstantiateStructWithType,
           blockScope: args.blockScope,
           isMonomorphized: args.isMonomorphized,
+          unsafe: args.unsafe,
         });
       }
 
@@ -1910,6 +1921,7 @@ export namespace Semantic {
                   blockScope: args.blockScope,
                   scope: args.context.currentScope,
                   isMonomorphized: args.isMonomorphized,
+                  unsafe: args.unsafe,
                 })[1]
             );
             if (collectedExpr.genericArgs.length !== 0) {
@@ -1942,6 +1954,7 @@ export namespace Semantic {
                   context: args.context,
                   blockScope: args.blockScope,
                   scope: args.context.currentScope,
+                  unsafe: args.unsafe,
                   isMonomorphized: args.isMonomorphized,
                 })[1]
             );
@@ -1978,6 +1991,7 @@ export namespace Semantic {
                   context: args.context,
                   blockScope: args.blockScope,
                   scope: args.context.currentScope,
+                  unsafe: args.unsafe,
                   isMonomorphized: args.isMonomorphized,
                 })[1]
             );
@@ -2016,13 +2030,14 @@ export namespace Semantic {
                 ),
                 operation: "assign",
                 target: callingArguments[0],
-                value: Conversion.MakeConversion(
+                value: Conversion.MakeConversionOrThrow(
                   sr,
                   callingArguments[1],
                   refType.referee,
                   args.blockScope?.constraints || [],
                   expr.sourceloc,
-                  Conversion.Mode.Implicit
+                  Conversion.Mode.Implicit,
+                  args.unsafe
                 ),
               });
             } else {
@@ -2039,13 +2054,14 @@ export namespace Semantic {
                 ),
                 operation: "reassign",
                 target: callingArguments[0],
-                value: Conversion.MakeConversion(
+                value: Conversion.MakeConversionOrThrow(
                   sr,
                   callingArguments[1],
                   ref.type,
                   args.blockScope?.constraints || [],
                   expr.sourceloc,
-                  Conversion.Mode.Implicit
+                  Conversion.Mode.Implicit,
+                  args.unsafe
                 ),
               });
             }
@@ -2057,6 +2073,7 @@ export namespace Semantic {
                   elaboratedVariables: args.elaboratedVariables,
                   context: args.context,
                   scope: args.context.currentScope,
+                  unsafe: args.unsafe,
                   blockScope: args.blockScope,
                   isMonomorphized: args.isMonomorphized,
                 })[1]
@@ -2088,7 +2105,7 @@ export namespace Semantic {
                 second = s;
               }
             }
-            const value = EvalCTFEBoolean(sr, callingArguments[0]);
+            const value = EvalCTFEBoolean(sr, callingArguments[0], expr.sourceloc);
             if (value) {
               return Semantic.addExpr(sr, {
                 variant: Semantic.ENode.LiteralExpr,
@@ -2123,6 +2140,7 @@ export namespace Semantic {
                   elaboratedVariables: args.elaboratedVariables,
                   context: args.context,
                   scope: args.context.currentScope,
+                  unsafe: args.unsafe,
                   blockScope: args.blockScope,
                   isMonomorphized: args.isMonomorphized,
                 })[1]
@@ -2212,6 +2230,7 @@ export namespace Semantic {
                 elaboratedVariables: args.elaboratedVariables,
                 context: args.context,
                 blockScope: args.blockScope,
+                unsafe: args.unsafe,
                 scope: args.context.currentScope,
                 isMonomorphized: args.isMonomorphized,
               })[1],
@@ -2230,6 +2249,7 @@ export namespace Semantic {
           elaboratedVariables: args.elaboratedVariables,
           gonnaCallFunctionWithParameterValues: decisiveArguments,
           blockScope: args.blockScope,
+          unsafe: args.unsafe,
           scope: args.context.currentScope,
           isMonomorphized: args.isMonomorphized,
         });
@@ -2261,13 +2281,14 @@ export namespace Semantic {
           }
           return givenArgs.map((a, index) => {
             if (index < newRequiredTypes.length) {
-              return Conversion.MakeConversion(
+              return Conversion.MakeConversionOrThrow(
                 sr,
                 a,
                 newRequiredTypes[index],
                 args.blockScope?.constraints || [],
                 expr.sourceloc,
-                Conversion.Mode.Implicit
+                Conversion.Mode.Implicit,
+                args.unsafe
               );
             } else {
               return a;
@@ -2294,6 +2315,7 @@ export namespace Semantic {
                 scope: args.context.currentScope,
                 gonnaInstantiateStructWithType: structType,
                 isMonomorphized: args.isMonomorphized,
+                unsafe: args.unsafe,
               })[1];
             }
           });
@@ -2584,7 +2606,7 @@ export namespace Semantic {
             isTemporary: false,
           });
         } else if (symbol.variant === Collect.ENode.FunctionOverloadGroup) {
-          const chosenOverloadId = ChooseFunctionOverload(
+          const chosenOverloadId = FunctionOverloadChoose(
             sr,
             symbolId,
             args.gonnaCallFunctionWithParameterValues,
@@ -2748,6 +2770,7 @@ export namespace Semantic {
           scope: args.context.currentScope,
           isMonomorphized: args.isMonomorphized,
           blockScope: args.blockScope,
+          unsafe: args.unsafe,
         });
         return Semantic.addExpr(sr, {
           variant: Semantic.ENode.AddressOfExpr,
@@ -2771,6 +2794,7 @@ export namespace Semantic {
         const [_expr, _exprId] = elaborateExpr(sr, expr.expr, {
           elaboratedVariables: args.elaboratedVariables,
           context: args.context,
+          unsafe: args.unsafe,
           blockScope: args.blockScope,
           scope: args.context.currentScope,
           isMonomorphized: args.isMonomorphized,
@@ -2803,6 +2827,7 @@ export namespace Semantic {
           context: args.context,
           scope: args.context.currentScope,
           blockScope: args.blockScope,
+          unsafe: args.unsafe,
           elaboratedVariables: args.elaboratedVariables,
           isMonomorphized: args.isMonomorphized,
         });
@@ -2812,13 +2837,14 @@ export namespace Semantic {
           isInCFuncdecl: false,
           context: args.context,
         });
-        const result = Conversion.MakeConversion(
+        const result = Conversion.MakeConversionOrThrow(
           sr,
           castedExprId,
           targetType,
           args.blockScope?.constraints || [],
           expr.sourceloc,
-          Conversion.Mode.Explicit
+          Conversion.Mode.Explicit,
+          args.unsafe
         );
         return [sr.exprNodes.get(result), result];
       }
@@ -2832,6 +2858,7 @@ export namespace Semantic {
           elaboratedVariables: args.elaboratedVariables,
           scope: args.context.currentScope,
           context: args.context,
+          unsafe: args.unsafe,
           blockScope: args.blockScope,
           isMonomorphized: args.isMonomorphized,
         });
@@ -2852,6 +2879,7 @@ export namespace Semantic {
       case Collect.ENode.PreIncrExpr: {
         const [e, eId] = elaborateExpr(sr, expr.expr, {
           context: args.context,
+          unsafe: args.unsafe,
           blockScope: args.blockScope,
           elaboratedVariables: args.elaboratedVariables,
           scope: args.context.currentScope,
@@ -2877,6 +2905,7 @@ export namespace Semantic {
           context: args.context,
           blockScope: args.blockScope,
           elaboratedVariables: args.elaboratedVariables,
+          unsafe: args.unsafe,
           isMonomorphized: args.isMonomorphized,
         });
         let objectType = sr.typeDefNodes.get(sr.typeUseNodes.get(object.type).type);
@@ -3122,7 +3151,7 @@ export namespace Semantic {
           const overloadGroup = sr.cc.nodes.get(overloadGroupId);
           assert(overloadGroup.variant === Collect.ENode.FunctionOverloadGroup);
 
-          const chosenOverloadId = ChooseFunctionOverload(
+          const chosenOverloadId = FunctionOverloadChoose(
             sr,
             overloadGroupId,
             args.gonnaCallFunctionWithParameterValues,
@@ -3244,6 +3273,7 @@ export namespace Semantic {
           elaboratedVariables: args.elaboratedVariables,
           scope: args.context.currentScope,
           isMonomorphized: args.isMonomorphized,
+          unsafe: args.unsafe,
         });
         const [target, targetId] = elaborateExpr(sr, expr.expr, {
           context: args.context,
@@ -3251,6 +3281,7 @@ export namespace Semantic {
           scope: args.context.currentScope,
           blockScope: args.blockScope,
           isMonomorphized: args.isMonomorphized,
+          unsafe: args.unsafe,
         });
 
         const targetType = sr.typeDefNodes.get(sr.typeUseNodes.get(target.type).type);
@@ -3263,13 +3294,14 @@ export namespace Semantic {
 
         return Semantic.addExpr(sr, {
           variant: Semantic.ENode.ExprAssignmentExpr,
-          value: Conversion.MakeConversion(
+          value: Conversion.MakeConversionOrThrow(
             sr,
             valueId,
             target.type,
             args.blockScope?.constraints || [],
             expr.sourceloc,
-            Conversion.Mode.Implicit
+            Conversion.Mode.Implicit,
+            args.unsafe
           ),
           target: targetId,
           type: target.type,
@@ -3290,6 +3322,7 @@ export namespace Semantic {
             context: args.context,
             scope: args.context.currentScope,
             elaboratedVariables: args.elaboratedVariables,
+            unsafe: args.unsafe,
             isMonomorphized: args.isMonomorphized,
           })
         );
@@ -3347,6 +3380,7 @@ export namespace Semantic {
           scope: args.context.currentScope,
           elaboratedVariables: args.elaboratedVariables,
           isMonomorphized: args.isMonomorphized,
+          unsafe: args.unsafe,
           blockScope: args.blockScope,
         });
 
@@ -3355,6 +3389,7 @@ export namespace Semantic {
           elaboratedVariables: args.elaboratedVariables,
           blockScope: args.blockScope,
           scope: args.context.currentScope,
+          unsafe: args.unsafe,
           isMonomorphized: args.isMonomorphized,
         });
         const indexType = sr.typeDefNodes.get(sr.typeUseNodes.get(index.type).type);
@@ -3402,6 +3437,7 @@ export namespace Semantic {
           scope: args.context.currentScope,
           elaboratedVariables: args.elaboratedVariables,
           isMonomorphized: args.isMonomorphized,
+          unsafe: args.unsafe,
           blockScope: args.blockScope,
         });
 
@@ -3421,6 +3457,7 @@ export namespace Semantic {
             elaboratedVariables: args.elaboratedVariables,
             blockScope: args.blockScope,
             scope: args.context.currentScope,
+            unsafe: args.unsafe,
             isMonomorphized: args.isMonomorphized,
           });
           indices[0].start = startIndexId;
@@ -3437,6 +3474,7 @@ export namespace Semantic {
             context: args.context,
             elaboratedVariables: args.elaboratedVariables,
             blockScope: args.blockScope,
+            unsafe: args.unsafe,
             scope: args.context.currentScope,
             isMonomorphized: args.isMonomorphized,
           });
@@ -3517,6 +3555,7 @@ export namespace Semantic {
         return makeStructInstantiation(sr, sr.typeUseNodes.get(structId).type, {
           blockScope: args.blockScope,
           context: args.context,
+          unsafe: args.unsafe,
           elaboratedVariables: args.elaboratedVariables,
           isMonomorphized: args.isMonomorphized,
           sourceloc: expr.sourceloc,
@@ -3554,35 +3593,31 @@ export namespace Semantic {
   function applyBinaryExprConstraints(
     sr: SemanticResult,
     constraints: Semantic.Constraint[],
-    symbolValueExpr: Semantic.SymbolValueExpr,
-    literalExpr: Semantic.LiteralExpr,
+    symbolValueExprId: Semantic.ExprId,
+    literalExprId: Semantic.ExprId,
     operation: EBinaryOperation
   ) {
+    const symbolValueExpr = sr.exprNodes.get(symbolValueExprId);
+    assert(symbolValueExpr.variant === Semantic.ENode.SymbolValueExpr);
+    const literalExpr = sr.exprNodes.get(literalExprId);
+    assert(literalExpr.variant === Semantic.ENode.LiteralExpr);
+
     const symbol = sr.symbolNodes.get(symbolValueExpr.symbol);
     if (symbol.variant !== Semantic.ENode.VariableSymbol || !symbol.type) {
       return;
     }
 
-    const symbolType = sr.typeDefNodes.get(sr.typeUseNodes.get(symbol.type).type);
     if (
-      symbolType.variant !== Semantic.ENode.PrimitiveDatatype ||
-      !Conversion.isIntegerById(sr, sr.typeUseNodes.get(symbol.type).type)
-    ) {
-      return;
-    }
-
-    if (
-      !Conversion.isIntegerById(sr, sr.typeUseNodes.get(literalExpr.type).type) ||
-      (literalExpr.literal.type !== EPrimitive.i8 &&
-        literalExpr.literal.type !== EPrimitive.i16 &&
-        literalExpr.literal.type !== EPrimitive.i32 &&
-        literalExpr.literal.type !== EPrimitive.i64 &&
-        literalExpr.literal.type !== EPrimitive.int &&
-        literalExpr.literal.type !== EPrimitive.usize &&
-        literalExpr.literal.type !== EPrimitive.u8 &&
-        literalExpr.literal.type !== EPrimitive.u16 &&
-        literalExpr.literal.type !== EPrimitive.u32 &&
-        literalExpr.literal.type !== EPrimitive.u64)
+      literalExpr.literal.type !== EPrimitive.i8 &&
+      literalExpr.literal.type !== EPrimitive.i16 &&
+      literalExpr.literal.type !== EPrimitive.i32 &&
+      literalExpr.literal.type !== EPrimitive.i64 &&
+      literalExpr.literal.type !== EPrimitive.int &&
+      literalExpr.literal.type !== EPrimitive.usize &&
+      literalExpr.literal.type !== EPrimitive.u8 &&
+      literalExpr.literal.type !== EPrimitive.u16 &&
+      literalExpr.literal.type !== EPrimitive.u32 &&
+      literalExpr.literal.type !== EPrimitive.u64
     ) {
       return;
     }
@@ -3598,7 +3633,7 @@ export namespace Semantic {
           constraintValue: {
             kind: "comparison",
             operation: operation,
-            value: literalExpr.literal.value,
+            value: literalExprId,
           },
           variableSymbol: symbolValueExpr.symbol,
         });
@@ -3619,16 +3654,28 @@ export namespace Semantic {
       } else {
         const leftExpr = sr.exprNodes.get(expr.left);
         const rightExpr = sr.exprNodes.get(expr.right);
-        if (
-          leftExpr.variant === Semantic.ENode.SymbolValueExpr &&
-          rightExpr.variant === Semantic.ENode.LiteralExpr
-        ) {
-          applyBinaryExprConstraints(sr, constraints, leftExpr, rightExpr, expr.operation);
-        } else if (
-          rightExpr.variant === Semantic.ENode.SymbolValueExpr &&
-          leftExpr.variant === Semantic.ENode.LiteralExpr
-        ) {
-          applyBinaryExprConstraints(sr, constraints, rightExpr, leftExpr, expr.operation);
+        if (leftExpr.variant === Semantic.ENode.SymbolValueExpr) {
+          const rightValue = EvalCTFE(sr, expr.right);
+          if (rightValue.ok) {
+            applyBinaryExprConstraints(
+              sr,
+              constraints,
+              expr.left,
+              rightValue.value[1],
+              expr.operation
+            );
+          }
+        } else if (rightExpr.variant === Semantic.ENode.SymbolValueExpr) {
+          const leftValue = EvalCTFE(sr, expr.left);
+          if (leftValue.ok) {
+            applyBinaryExprConstraints(
+              sr,
+              constraints,
+              expr.right,
+              leftValue.value[1],
+              expr.operation
+            );
+          }
         }
       }
     }
@@ -3644,6 +3691,7 @@ export namespace Semantic {
       isMonomorphized: boolean;
       blockScope: Semantic.BlockScope;
       parentConstraints: Semantic.Constraint[];
+      unsafe: boolean;
     }
   ): Semantic.StatementId {
     const s = sr.cc.nodes.get(statementId);
@@ -3665,9 +3713,12 @@ export namespace Semantic {
       // =================================================================================================================
 
       case Collect.ENode.BlockScopeStatement: {
+        const blockScope = sr.cc.nodes.get(s.blockscope);
+        assert(blockScope.variant === Collect.ENode.BlockScope);
         const [scope, scopeId] = Semantic.addBlockScope(sr, {
           variant: Semantic.ENode.BlockScope,
           statements: [],
+          unsafe: blockScope.unsafe,
           constraints: [...args.parentConstraints],
         });
         elaborateBlockScope(sr, {
@@ -3699,9 +3750,10 @@ export namespace Semantic {
           blockScope: args.blockScope,
           elaboratedVariables: args.elaboratedVariables,
           isMonomorphized: args.isMonomorphized,
+          unsafe: args.unsafe,
         });
         if (s.comptime) {
-          const conditionValue = EvalCTFEBoolean(sr, conditionId);
+          const conditionValue = EvalCTFEBoolean(sr, conditionId, s.sourceloc);
           if (conditionValue) {
             const [thenScope, thenScopeId] = Semantic.addBlockScope(sr, {
               variant: Semantic.ENode.BlockScope,
@@ -3730,8 +3782,9 @@ export namespace Semantic {
               blockScope: args.blockScope,
               elaboratedVariables: args.elaboratedVariables,
               isMonomorphized: args.isMonomorphized,
+              unsafe: args.unsafe,
             });
-            if (EvalCTFEBoolean(sr, conditionId)) {
+            if (EvalCTFEBoolean(sr, conditionId, s.sourceloc)) {
               const [thenScope, thenScopeId] = Semantic.addBlockScope(sr, {
                 variant: Semantic.ENode.BlockScope,
                 statements: [],
@@ -3781,6 +3834,7 @@ export namespace Semantic {
               variant: Semantic.ENode.BlockScope,
               statements: [],
               constraints: [...args.parentConstraints],
+              unsafe: args.unsafe,
             })[1],
             sourceloc: s.sourceloc,
           })[1];
@@ -3820,6 +3874,7 @@ export namespace Semantic {
                 scope: s.owningScope,
                 elaboratedVariables: args.elaboratedVariables,
                 isMonomorphized: args.isMonomorphized,
+                unsafe: args.unsafe,
               })[1],
               then: innerThenScopeId,
             };
@@ -3866,9 +3921,11 @@ export namespace Semantic {
           scope: s.owningScope,
           elaboratedVariables: args.elaboratedVariables,
           isMonomorphized: args.isMonomorphized,
+          unsafe: args.unsafe,
         });
         const [thenScope, thenScopeId] = Semantic.addBlockScope(sr, {
           variant: Semantic.ENode.BlockScope,
+          unsafe: args.unsafe,
           statements: [],
           constraints: [...args.parentConstraints],
         });
@@ -3896,19 +3953,21 @@ export namespace Semantic {
         if (s.expr) {
           return Semantic.addStatement(sr, {
             variant: Semantic.ENode.ReturnStatement,
-            expr: Conversion.MakeConversion(
+            expr: Conversion.MakeConversionOrThrow(
               sr,
               elaborateExpr(sr, s.expr, {
                 context: args.context,
                 scope: s.owningScope,
                 blockScope: args.blockScope,
                 elaboratedVariables: args.elaboratedVariables,
+                unsafe: args.unsafe,
                 isMonomorphized: args.isMonomorphized,
               })[1],
               args.expectedReturnType,
               args.blockScope.constraints || [],
               s.sourceloc,
-              Conversion.Mode.Implicit
+              Conversion.Mode.Implicit,
+              false
             ),
             sourceloc: s.sourceloc,
           })[1];
@@ -3985,6 +4044,7 @@ export namespace Semantic {
                   scope: s.owningScope,
                   elaboratedVariables: args.elaboratedVariables,
                   blockScope: args.blockScope,
+                  unsafe: args.unsafe,
                   isMonomorphized: args.isMonomorphized,
                 })[1]) ||
               undefined;
@@ -4039,7 +4099,9 @@ export namespace Semantic {
 
         if (variableSymbol.comptime) {
           assert(valueId);
-          variableSymbol.comptimeValue = EvalCTFE(sr, valueId)[1];
+          const r = EvalCTFE(sr, valueId);
+          if (!r.ok) throw new CompilerError(r.error, s.sourceloc);
+          variableSymbol.comptimeValue = r.value[1];
         }
 
         // if (value) {
@@ -4073,13 +4135,14 @@ export namespace Semantic {
           variableSymbol: variableSymbolId,
           value:
             (valueId &&
-              Conversion.MakeConversion(
+              Conversion.MakeConversionOrThrow(
                 sr,
                 valueId,
                 variableSymbol.type,
                 args.blockScope.constraints || [],
                 s.sourceloc,
-                Conversion.Mode.Implicit
+                Conversion.Mode.Implicit,
+                args.unsafe
               )) ||
             null,
           sourceloc: s.sourceloc,
@@ -4099,6 +4162,7 @@ export namespace Semantic {
             isMonomorphized: args.isMonomorphized,
             elaboratedVariables: args.elaboratedVariables,
             blockScope: args.blockScope,
+            unsafe: args.unsafe,
           })[1],
           sourceloc: s.sourceloc,
         })[1];
@@ -4115,8 +4179,11 @@ export namespace Semantic {
             elaboratedVariables: args.elaboratedVariables,
             isMonomorphized: args.isMonomorphized,
             blockScope: args.blockScope,
+            unsafe: args.unsafe,
           });
-          const [comptimeValue, comptimeValueId] = EvalCTFE(sr, valueId);
+          const r = EvalCTFE(sr, valueId);
+          if (!r.ok) throw new CompilerError(r.error, s.sourceloc);
+          const [comptimeValue, comptimeValueId] = r.value;
           if (comptimeValue.variant !== Semantic.ENode.SymbolValueExpr) {
             throw new CompilerError(
               `For each loop over something other than a parameter pack is not implemented yet`,
@@ -4168,6 +4235,7 @@ export namespace Semantic {
             const [thenScope, thenScopeId] = Semantic.addBlockScope(sr, {
               variant: Semantic.ENode.BlockScope,
               statements: [],
+              unsafe: args.unsafe,
               constraints: [...args.parentConstraints],
             });
 
@@ -4224,6 +4292,7 @@ export namespace Semantic {
             block: Semantic.addBlockScope(sr, {
               variant: Semantic.ENode.BlockScope,
               statements: allScopes,
+              unsafe: args.unsafe,
               constraints: [...args.parentConstraints],
             })[1],
             sourceloc: s.sourceloc,
@@ -4341,6 +4410,7 @@ export namespace Semantic {
         elaboratedVariables: newElaboratedVariables,
         context: args.context,
         blockScope: blockScope,
+        unsafe: scope.unsafe,
         isMonomorphized: args.isMonomorphized,
         parentConstraints: blockScope.constraints,
       });
@@ -4600,6 +4670,7 @@ export namespace Semantic {
         const [bodyScope, bodyScopeId] = Semantic.addBlockScope(sr, {
           variant: Semantic.ENode.BlockScope,
           statements: [],
+          unsafe: false,
           constraints: [],
         });
 
@@ -4893,13 +4964,16 @@ export namespace Semantic {
               context: args.context,
               blockScope: null,
               isMonomorphized: false,
+              unsafe: false,
             });
           }
         }
 
         if (variableSymbol.comptime) {
           assert(elaboratedValueId);
-          variableSymbol.comptimeValue = EvalCTFE(sr, elaboratedValueId)[1];
+          const r = EvalCTFE(sr, elaboratedValueId);
+          if (!r.ok) throw new CompilerError(r.error, node.sourceloc);
+          variableSymbol.comptimeValue = r.value[1];
         }
 
         const [s, sId] = Semantic.addSymbol(sr, {
@@ -5147,7 +5221,7 @@ export namespace Semantic {
         return primitiveToString(datatype.primitive);
 
       case Semantic.ENode.NullableReferenceDatatype:
-        return "*" + serializeTypeUse(sr, datatype.referee);
+        return "?&" + serializeTypeUse(sr, datatype.referee);
 
       case Semantic.ENode.ReferenceDatatype:
         return "&" + serializeTypeUse(sr, datatype.referee);
@@ -5480,7 +5554,7 @@ export namespace Semantic {
       case Semantic.ENode.BinaryExpr:
         return `(${serializeExpr(sr, expr.left)} ${BinaryOperationToString(
           expr.operation
-        )} ${serializeExpr(sr, expr.left)})`;
+        )} ${serializeExpr(sr, expr.right)})`;
 
       case Semantic.ENode.UnaryExpr:
         return `(${UnaryOperationToString(expr.operation)} ${serializeExpr(sr, expr.expr)})`;
