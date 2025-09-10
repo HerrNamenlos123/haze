@@ -508,53 +508,53 @@ export class ProjectCompiler {
         console.info("Retrieving libtinfo.so.5... Done");
       }
 
-      if (!this.isStepDone(MARKERS.musl)) {
-        console.info("Building libmusl sysroot...");
-        mkdirSync(`${HAZE_TMP_DIR}/`, { recursive: true });
-        await exec(`rm -f ${HAZE_TMP_DIR}/musl-1.2.5.tar.gz*`);
-        await exec(`cd ${HAZE_TMP_DIR} && wget https://musl.libc.org/releases/musl-1.2.5.tar.gz`);
-        await exec(`cd ${HAZE_TMP_DIR} && tar -xzf musl-1.2.5.tar.gz`);
-        await exec(
-          `cd ${HAZE_TMP_DIR}/musl-1.2.5 && ./configure --prefix=$HOME/.haze/sysroot --disable-shared`
-        );
-        await exec(`cd ${HAZE_TMP_DIR}/musl-1.2.5 && make -j$(nproc)`);
-        await exec(`cd ${HAZE_TMP_DIR}/musl-1.2.5 && make install`);
-        this.markStepDone(MARKERS.musl);
-        console.info("Building libmusl sysroot... Done");
-      }
+      //       if (!this.isStepDone(MARKERS.musl)) {
+      //         console.info("Building libmusl sysroot...");
+      //         mkdirSync(`${HAZE_TMP_DIR}/`, { recursive: true });
+      //         await exec(`rm -f ${HAZE_TMP_DIR}/musl-1.2.5.tar.gz*`);
+      //         await exec(`cd ${HAZE_TMP_DIR} && wget https://musl.libc.org/releases/musl-1.2.5.tar.gz`);
+      //         await exec(`cd ${HAZE_TMP_DIR} && tar -xzf musl-1.2.5.tar.gz`);
+      //         await exec(
+      //           `cd ${HAZE_TMP_DIR}/musl-1.2.5 && ./configure --prefix=$HOME/.haze/sysroot --disable-shared`
+      //         );
+      //         await exec(`cd ${HAZE_TMP_DIR}/musl-1.2.5 && make -j$(nproc)`);
+      //         await exec(`cd ${HAZE_TMP_DIR}/musl-1.2.5 && make install`);
+      //         this.markStepDone(MARKERS.musl);
+      //         console.info("Building libmusl sysroot... Done");
+      //       }
 
-      if (!this.isStepDone(MARKERS.cmakeToolchain)) {
-        console.info("Writing CMake toolchain...");
-        mkdirSync(`${HAZE_TMP_DIR}/`, { recursive: true });
-        const toolchain = `
-set(CMAKE_SYSTEM_NAME Linux)
-set(CMAKE_C_COMPILER ${HAZE_GLOBAL_DIR}/bin/clang)
-set(CMAKE_CXX_COMPILER ${HAZE_GLOBAL_DIR}/bin/clang++)
-set(CMAKE_SYSROOT ${HAZE_MUSL_SYSROOT})
-set(CMAKE_FIND_ROOT_PATH ${HAZE_MUSL_SYSROOT})
+      //       if (!this.isStepDone(MARKERS.cmakeToolchain)) {
+      //         console.info("Writing CMake toolchain...");
+      //         mkdirSync(`${HAZE_TMP_DIR}/`, { recursive: true });
+      //         const toolchain = `
+      // set(CMAKE_SYSTEM_NAME Linux)
+      // set(CMAKE_C_COMPILER ${HAZE_GLOBAL_DIR}/bin/clang)
+      // set(CMAKE_CXX_COMPILER ${HAZE_GLOBAL_DIR}/bin/clang++)
+      // set(CMAKE_SYSROOT ${HAZE_MUSL_SYSROOT})
+      // set(CMAKE_FIND_ROOT_PATH ${HAZE_MUSL_SYSROOT})
 
-# Tell CMake to search only in sysroot
-set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
-set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
-set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
+      // # Tell CMake to search only in sysroot
+      // set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
+      // set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
+      // set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
 
-set(CMAKE_C_FLAGS "-static -nostdlib -nostartfiles -isystem ${HAZE_MUSL_SYSROOT}/include -fno-pie \${CMAKE_C_FLAGS}")
-set(CMAKE_CXX_FLAGS "-static -nostdlib -nostartfiles -isystem ${HAZE_MUSL_SYSROOT}/include \${CMAKE_CXX_FLAGS}")
+      // set(CMAKE_C_FLAGS "-static -nostdlib -nostartfiles -isystem ${HAZE_MUSL_SYSROOT}/include -fno-pie \${CMAKE_C_FLAGS}")
+      // set(CMAKE_CXX_FLAGS "-static -nostdlib -nostartfiles -isystem ${HAZE_MUSL_SYSROOT}/include \${CMAKE_CXX_FLAGS}")
 
-set(CMAKE_C_LINK_EXECUTABLE
-   "<CMAKE_C_COMPILER> <FLAGS> <OBJECTS>  <LINK_LIBRARIES> ${HAZE_MUSL_SYSROOT}/lib/crt1.o ${HAZE_MUSL_SYSROOT}/lib/crti.o ${HAZE_MUSL_SYSROOT}/lib/crtn.o -lc "
-)
-set(CMAKE_CXX_LINK_EXECUTABLE
-   "<CMAKE_CXX_COMPILER> <FLAGS> <OBJECTS>  <LINK_LIBRARIES> ${HAZE_MUSL_SYSROOT}/lib/crt1.o ${HAZE_MUSL_SYSROOT}/lib/crti.o ${HAZE_MUSL_SYSROOT}/lib/crtn.o -lc "
-)
+      // set(CMAKE_C_LINK_EXECUTABLE
+      //    "<CMAKE_C_COMPILER> <FLAGS> <OBJECTS>  <LINK_LIBRARIES> ${HAZE_MUSL_SYSROOT}/lib/crt1.o ${HAZE_MUSL_SYSROOT}/lib/crti.o ${HAZE_MUSL_SYSROOT}/lib/crtn.o -lc "
+      // )
+      // set(CMAKE_CXX_LINK_EXECUTABLE
+      //    "<CMAKE_CXX_COMPILER> <FLAGS> <OBJECTS>  <LINK_LIBRARIES> ${HAZE_MUSL_SYSROOT}/lib/crt1.o ${HAZE_MUSL_SYSROOT}/lib/crti.o ${HAZE_MUSL_SYSROOT}/lib/crtn.o -lc "
+      // )
 
-set(THREADS_PREFER_PTHREAD_FLAG ON)
-set(CMAKE_THREAD_LIBS_INIT "-lpthread")  # musl ignores it for static linking
-set(THREADS_FOUND TRUE)`;
-        await Bun.write(`${HAZE_DIR}/musl-toolchain.cmake`, toolchain);
-        this.markStepDone(MARKERS.cmakeToolchain);
-        console.info("Writing CMake toolchain... Done");
-      }
+      // set(THREADS_PREFER_PTHREAD_FLAG ON)
+      // set(CMAKE_THREAD_LIBS_INIT "-lpthread")  # musl ignores it for static linking
+      // set(THREADS_FOUND TRUE)`;
+      //         await Bun.write(`${HAZE_DIR}/musl-toolchain.cmake`, toolchain);
+      //         this.markStepDone(MARKERS.cmakeToolchain);
+      //         console.info("Writing CMake toolchain... Done");
+      //       }
 
       // throw new Error();
     });
@@ -589,7 +589,7 @@ class ModuleCompiler {
     public config: ModuleConfig,
     public cache: Cache,
     public globalBuildDir: string,
-    public moduleBuildDir: string
+    public moduleDir: string
   ) {
     this.cc = makeCollectionContext(this.config);
   }
@@ -674,14 +674,14 @@ class ModuleCompiler {
       const env = process.env as any;
       if (this.config.configFilePath) {
         env.HAZE_MODULE_SOURCE_DIR = dirname(this.config.configFilePath);
-        env.HAZE_MODULE_BUILD_DIR = this.globalBuildDir + "/" + this.config.name + "/build";
-        env.HAZE_MODULE_BINARY_DIR = this.globalBuildDir + "/" + this.config.name + "/bin";
+        env.HAZE_MODULE_BUILD_DIR = this.moduleDir + "/build";
+        env.HAZE_MODULE_BINARY_DIR = this.moduleDir + "/bin";
       }
 
       if (this.config.configFilePath) {
         const prebuildScript = this.config.scripts.find((s) => s.name === "prebuild");
         if (prebuildScript) {
-          execInherit(prebuildScript.command, dirname(this.config.configFilePath));
+          execInherit(prebuildScript.command, this.moduleDir + "/build");
         }
       }
 
@@ -702,17 +702,17 @@ class ModuleCompiler {
 
       const name = this.config.name;
       const platform = this.config.platform;
-      const moduleCFile = join(this.moduleBuildDir, `build/${name}-${platform}.c`);
-      const moduleOFile = join(this.moduleBuildDir, `build/${name}-${platform}.o`);
-      const moduleAFile = join(this.moduleBuildDir, `build/${name}-${platform}.a`);
-      const moduleExecutable = join(this.moduleBuildDir, `bin/${name}`);
+      const moduleCFile = join(this.moduleDir, `build/${name}-${platform}.c`);
+      const moduleOFile = join(this.moduleDir, `build/${name}-${platform}.o`);
+      const moduleAFile = join(this.moduleDir, `build/${name}-${platform}.a`);
+      const moduleExecutable = join(this.moduleDir, `bin/${name}`);
 
-      const moduleMetadataFile = join(this.moduleBuildDir, "build/metadata.json");
-      const moduleOutputLib = join(this.moduleBuildDir, "bin/" + this.config.name + ".hzlib");
-      const importFilePath = join(this.moduleBuildDir, "build", HAZE_LIB_IMPORT_FILE);
+      const moduleMetadataFile = join(this.moduleDir, "build/metadata.json");
+      const moduleOutputLib = join(this.moduleDir, "bin/" + this.config.name + ".hzlib");
+      const importFilePath = join(this.moduleDir, "build", HAZE_LIB_IMPORT_FILE);
 
-      await mkdir(join(this.moduleBuildDir, "build/"), { recursive: true });
-      await mkdir(join(this.moduleBuildDir, "bin/"), { recursive: true });
+      await mkdir(join(this.moduleDir, "build/"), { recursive: true });
+      await mkdir(join(this.moduleDir, "bin/"), { recursive: true });
 
       const code = generateCode(this.config, lowered);
       await Bun.file(moduleCFile).write(code);
@@ -722,21 +722,21 @@ class ModuleCompiler {
       compilerFlags.push("-Wno-parentheses-equality");
       compilerFlags.push("-Wno-extra-tokens");
 
-      compilerFlags.push(`-I${this.moduleBuildDir}/bin/include`);
-      linkerFlags.push(`-L${this.moduleBuildDir}/bin/lib`);
+      compilerFlags.push(`-I${this.moduleDir}/bin/include`);
+      linkerFlags.push(`-L${this.moduleDir}/bin/lib`);
 
       // MUSL Sysroot Settings
-      compilerFlags.push(`--sysroot=${HAZE_MUSL_SYSROOT}`);
-      linkerFlags.push(`--sysroot=${HAZE_MUSL_SYSROOT}`);
-      compilerFlags.push("-static");
-      compilerFlags.push("-nostdlib");
-      compilerFlags.push("-nostartfiles");
-      compilerFlags.push(`-isystem ${HAZE_MUSL_SYSROOT}/include`);
-      linkerFlags.push(`-L${HAZE_MUSL_SYSROOT}/lib`);
-      linkerFlags.push(`${HAZE_MUSL_SYSROOT}/lib/crt1.o`);
-      linkerFlags.push(`${HAZE_MUSL_SYSROOT}/lib/crti.o`);
-      linkerFlags.push(`${HAZE_MUSL_SYSROOT}/lib/crtn.o`);
-      linkerFlags.push(`-lc`);
+      // compilerFlags.push(`--sysroot=${HAZE_MUSL_SYSROOT}`);
+      // linkerFlags.push(`--sysroot=${HAZE_MUSL_SYSROOT}`);
+      // compilerFlags.push("-static");
+      // compilerFlags.push("-nostdlib");
+      // compilerFlags.push("-nostartfiles");
+      // compilerFlags.push(`-isystem ${HAZE_MUSL_SYSROOT}/include`);
+      // linkerFlags.push(`-L${HAZE_MUSL_SYSROOT}/lib`);
+      // linkerFlags.push(`${HAZE_MUSL_SYSROOT}/lib/crt1.o`);
+      // linkerFlags.push(`${HAZE_MUSL_SYSROOT}/lib/crti.o`);
+      // linkerFlags.push(`${HAZE_MUSL_SYSROOT}/lib/crtn.o`);
+      // linkerFlags.push(`-lc`);
 
       if (this.config.moduleType === ModuleType.Executable) {
         const [libs, dependencyLinkerFlags] = await this.loadDependencyBinaries();
@@ -760,7 +760,7 @@ class ModuleCompiler {
         await exec(`${ARCHIVE_TOOL} r ${moduleAFile} ${moduleOFile} > /dev/null`);
 
         const makerel = (absolute: string) => {
-          return absolute.replace(this.moduleBuildDir + "/build/", "");
+          return absolute.replace(this.moduleDir + "/build/", "");
         };
 
         const moduleMetadata: ModuleMetadata = {
@@ -788,7 +788,7 @@ class ModuleCompiler {
         }
 
         await exec(
-          `tar -C ${this.moduleBuildDir}/build -cvzf ${moduleOutputLib} ${makerel(
+          `tar -C ${this.moduleDir}/build -cvzf ${moduleOutputLib} ${makerel(
             moduleAFile
           )} ${makerel(importFilePath)} ${makerel(moduleMetadataFile)} > /dev/null`
         );
@@ -824,7 +824,7 @@ class ModuleCompiler {
         throw new GeneralError(`Lib ${dep.name} does not provide platform ${this.config.platform}`);
       }
 
-      const tempdir = join(this.moduleBuildDir, "__deps", dep.name);
+      const tempdir = join(this.moduleDir, "__deps", dep.name);
       await exec(`mkdir -p ${tempdir}`);
       await exec(`tar -xzf ${libpath} -C ${tempdir} ${lib.filename}`);
 
@@ -836,7 +836,7 @@ class ModuleCompiler {
   }
 
   private async loadDependencyMetadata(libpath: string, libname: string) {
-    const tempdir = join(this.moduleBuildDir, "__deps", libname);
+    const tempdir = join(this.moduleDir, "__deps", libname);
     await exec(`mkdir -p ${tempdir}`);
     await exec(`tar -xzf ${libpath} -C ${tempdir} metadata.json`);
     return parseModuleMetadata(await Bun.file(join(tempdir, "metadata.json")).text());
@@ -855,7 +855,7 @@ class ModuleCompiler {
       const libpath = join(join(this.globalBuildDir, dep.name), "bin", dep.name + ".hzlib");
       const metadata = await this.loadDependencyMetadata(libpath, dep.name);
 
-      const tempdir = join(this.moduleBuildDir, "__deps", dep.name, "import");
+      const tempdir = join(this.moduleDir, "__deps", dep.name, "import");
       await exec(`mkdir -p ${tempdir}`);
       await exec(`tar -xzf ${libpath} -C ${tempdir} ${metadata.importFile}`);
 

@@ -2,12 +2,13 @@
 
 # rm -rf __haze__/glfw
 if [ ! -d "__haze__/glfw" ]; then
-    git clone https://github.com/glfw/glfw.git __haze__/glfw/src
+    git clone https://github.com/glfw/glfw.git glfw/src
 fi
-cd __haze__/glfw
+cd glfw
 
-# cmake -B build \
+# cmake -B build src \
 #     -DCMAKE_TOOLCHAIN_FILE=$HAZE_CMAKE_TOOLCHAIN   \
+#     -DCMAKE_INSTALL_PREFIX=$HAZE_MODULE_BINARY_DIR \
 #     -DBUILD_SHARED_LIBS=OFF   \
 #     -DCMAKE_POSITION_INDEPENDENT_CODE=OFF \
 #     -DX11_X11_INCLUDE_PATH=/usr/include   \
@@ -32,14 +33,22 @@ cd __haze__/glfw
 #     -DX11_Xext_INCLUDE_PATH=/usr/include \
 #     -DX11_Xshape_INCLUDE_PATH=/usr/include \
 
+# cmake -B build src \
+#     -DCMAKE_TOOLCHAIN_FILE=$HAZE_CMAKE_TOOLCHAIN   \
+#     -DCMAKE_INSTALL_PREFIX=$HAZE_MODULE_BINARY_DIR \
+#     -DBUILD_SHARED_LIBS=OFF   \
+#     -DGLFW_BUILD_X11=ON   \
+#     -DGLFW_BUILD_WAYLAND=OFF   \
+#     -DCMAKE_POSITION_INDEPENDENT_CODE=OFF \
+#     -DGLFW_USE_PTHREADS=ON   \
+
 cmake -B build src \
-    -DCMAKE_TOOLCHAIN_FILE=$HAZE_CMAKE_TOOLCHAIN   \
-    -DCMAKE_INSTALL_PREFIX=$HAZE_MODULE_BINARY_DIR \
     -DBUILD_SHARED_LIBS=OFF   \
-    -DGLFW_BUILD_X11=OFF   \
-    -DGLFW_BUILD_WAYLAND=OFF   \
+    -DCMAKE_INSTALL_PREFIX=$HAZE_MODULE_BINARY_DIR \
     -DCMAKE_POSITION_INDEPENDENT_CODE=OFF \
     -DGLFW_USE_PTHREADS=ON   \
+    -DGLFW_BUILD_EXAMPLES=OFF   \
+    -DGLFW_BUILD_TESTS=OFF   \
 
 # cmake --build build
 cmake --build build --target install
