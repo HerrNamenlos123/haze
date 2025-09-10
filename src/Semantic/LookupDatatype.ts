@@ -73,16 +73,16 @@ export function makeFunctionDatatypeAvailable(
   )[1];
 }
 
-export function makePointerDatatypeAvailable(
+export function makeNullableReferenceDatatypeAvailable(
   sr: SemanticResult,
-  pointee: Semantic.TypeUseId,
+  referee: Semantic.TypeUseId,
   mutability: EDatatypeMutability,
   sourceloc: SourceLoc
 ): Semantic.TypeUseId {
-  for (const id of sr.pointerTypeCache) {
+  for (const id of sr.nullRefTypeCache) {
     const type = sr.typeDefNodes.get(id);
-    assert(type.variant === Semantic.ENode.PointerDatatype);
-    if (type.pointee !== pointee) {
+    assert(type.variant === Semantic.ENode.NullableReferenceDatatype);
+    if (type.referee !== referee) {
       continue;
     }
     return makeTypeUse(sr, id, mutability, sourceloc)[1];
@@ -90,11 +90,11 @@ export function makePointerDatatypeAvailable(
 
   // Nothing found
   const [type, typeId] = Semantic.addType(sr, {
-    variant: Semantic.ENode.PointerDatatype,
-    pointee: pointee,
-    concrete: isTypeConcrete(sr, pointee),
+    variant: Semantic.ENode.NullableReferenceDatatype,
+    referee: referee,
+    concrete: isTypeConcrete(sr, referee),
   });
-  sr.pointerTypeCache.push(typeId);
+  sr.nullRefTypeCache.push(typeId);
   return makeTypeUse(sr, typeId, mutability, sourceloc)[1];
 }
 
@@ -412,7 +412,7 @@ export function instantiateAndElaborateStruct(
           });
         }
         if (struct.clonability === EClonability.Unknown) {
-          if (type.variant === Semantic.ENode.PointerDatatype) {
+          if (type.variant === Semantic.ENode.NullableReferenceDatatype) {
             struct.clonability = EClonability.NonClonableFromMembers;
           }
           if (
@@ -510,11 +510,11 @@ export function lookupAndElaborateDatatype(
     // =================================================================================================================
     // =================================================================================================================
 
-    case Collect.ENode.PointerDatatype: {
-      return makePointerDatatypeAvailable(
+    case Collect.ENode.NullableReferenceDatatype: {
+      return makeNullableReferenceDatatypeAvailable(
         sr,
         lookupAndElaborateDatatype(sr, {
-          typeId: type.pointee,
+          typeId: type.referee,
           context: args.context,
           elaboratedVariables: args.elaboratedVariables,
           isInCFuncdecl: args.isInCFuncdecl,

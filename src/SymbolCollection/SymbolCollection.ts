@@ -22,8 +22,8 @@ import {
   type ASTParenthesisExpr,
   type ASTPostIncrExpr,
   type ASTPreIncrExpr,
-  type ASTPointerAddressOfExpr,
-  type ASTPointerDereferenceExpr,
+  type ASTAddressOfExpr as ASTAddressOfExpr,
+  type ASTDereferenceExpr as ASTDereferenceExpr,
   type ASTRoot,
   type ASTScope,
   type ASTStructDefinition,
@@ -128,7 +128,7 @@ export namespace Collect {
     GlobalVariableDefinition,
     NamedDatatype,
     ReferenceDatatype,
-    PointerDatatype,
+    NullableReferenceDatatype,
     ArrayDatatype,
     SliceDatatype,
     ParameterPack,
@@ -156,8 +156,8 @@ export namespace Collect {
     SymbolValueExpr,
     ExplicitCastExpr,
     MemberAccessExpr,
-    PointerAddressOfExpr,
-    PointerDereferenceExpr,
+    AddressOfExpr,
+    DereferenceExpr,
     ExprAssignmentExpr,
     StructInstantiationExpr,
     PreIncrExpr,
@@ -355,9 +355,9 @@ export namespace Collect {
     sourceloc: SourceLoc;
   };
 
-  export type PointerDatatype = {
-    variant: ENode.PointerDatatype;
-    pointee: Collect.Id;
+  export type NullableReferenceDatatype = {
+    variant: ENode.NullableReferenceDatatype;
+    referee: Collect.Id;
     mutability: EDatatypeMutability;
     sourceloc: SourceLoc;
   };
@@ -438,7 +438,7 @@ export namespace Collect {
   export type Datatypes =
     | NamedDatatype
     | FunctionDatatype
-    | PointerDatatype
+    | NullableReferenceDatatype
     | ReferenceDatatype
     | ArrayDatatype
     | SliceDatatype
@@ -599,13 +599,13 @@ export namespace Collect {
     operation: EAssignmentOperation;
   };
 
-  export type PointerAddressOfExpr = BaseExpr & {
-    variant: ENode.PointerAddressOfExpr;
+  export type AddressOfExpr = BaseExpr & {
+    variant: ENode.AddressOfExpr;
     expr: Collect.Id;
   };
 
-  export type PointerDereferenceExpr = BaseExpr & {
-    variant: ENode.PointerDereferenceExpr;
+  export type DereferenceExpr = BaseExpr & {
+    variant: ENode.DereferenceExpr;
     expr: Collect.Id;
   };
 
@@ -673,8 +673,8 @@ export namespace Collect {
     | ExplicitCastExpr
     | StructInstantiationExpr
     | ExprAssignmentExpr
-    | PointerAddressOfExpr
-    | PointerDereferenceExpr
+    | AddressOfExpr
+    | DereferenceExpr
     | LiteralExpr
     | ArrayLiteralExpr
     | ArraySubscriptExpr
@@ -862,8 +862,8 @@ function collect(
     | ASTExprMemberAccess
     | ASTLambdaExpr
     | ASTPreIncrExpr
-    | ASTPointerAddressOfExpr
-    | ASTPointerDereferenceExpr
+    | ASTAddressOfExpr
+    | ASTDereferenceExpr
     | ASTPostIncrExpr
     | ASTStructInstantiationExpr
     | ASTExplicitCastExpr
@@ -1309,10 +1309,10 @@ function collect(
     // =================================================================================================================
     // =================================================================================================================
 
-    case "PointerDatatype": {
+    case "NullableReferenceDatatype": {
       return makeSymbol(cc, {
-        variant: Collect.ENode.PointerDatatype,
-        pointee: collect(cc, item.pointee, args),
+        variant: Collect.ENode.NullableReferenceDatatype,
+        referee: collect(cc, item.referee, args),
         mutability: item.mutability,
         sourceloc: item.sourceloc,
       })[1];
@@ -1705,9 +1705,9 @@ function collect(
     // =================================================================================================================
     // =================================================================================================================
 
-    case "PointerAddressOf":
+    case "AddressOfExpr":
       return makeSymbol(cc, {
-        variant: Collect.ENode.PointerAddressOfExpr,
+        variant: Collect.ENode.AddressOfExpr,
         expr: collect(cc, item.expr, args),
         sourceloc: item.sourceloc,
       })[1];
@@ -1716,9 +1716,9 @@ function collect(
     // =================================================================================================================
     // =================================================================================================================
 
-    case "PointerDereference":
+    case "DereferenceExpr":
       return makeSymbol(cc, {
-        variant: Collect.ENode.PointerDereferenceExpr,
+        variant: Collect.ENode.DereferenceExpr,
         expr: collect(cc, item.expr, args),
         sourceloc: item.sourceloc,
       })[1];
@@ -1982,8 +1982,8 @@ export function printCollectedDatatype(cc: CollectionContext, typeId: Collect.Id
       return str;
     }
 
-    case Collect.ENode.PointerDatatype: {
-      return `${printCollectedDatatype(cc, type.pointee)}*`;
+    case Collect.ENode.NullableReferenceDatatype: {
+      return `${printCollectedDatatype(cc, type.referee)}*`;
     }
 
     case Collect.ENode.ReferenceDatatype: {
@@ -2128,11 +2128,11 @@ export function PrettyPrintCollected(cc: CollectionContext) {
         return `[${expr.values.map((v) => printExpr(v)).join(", ")}]`;
       }
 
-      case Collect.ENode.PointerAddressOfExpr: {
+      case Collect.ENode.AddressOfExpr: {
         return `&${printExpr(expr.expr)}`;
       }
 
-      case Collect.ENode.PointerDereferenceExpr: {
+      case Collect.ENode.DereferenceExpr: {
         return `*${printExpr(expr.expr)}`;
       }
 

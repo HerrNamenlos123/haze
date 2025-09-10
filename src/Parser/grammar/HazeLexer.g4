@@ -59,6 +59,8 @@ DIV: '/';
 MOD: '%';
 ELLIPSIS: '...';
 SINGLEAND: '&';
+AMPERSANDQUESTION: '&?';
+QUESTIONAMPERSAND: '?&';
 SINGLEOR: '|';
 DOUBLEAND: '&&';
 DOUBLEOR: '||';

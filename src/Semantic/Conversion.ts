@@ -226,10 +226,10 @@ export namespace Conversion {
           return at.literal.type === bt.literal.type && at.literal.value === bt.literal.value;
         }
 
-      case Semantic.ENode.PointerDatatype: {
-        assert(bt.variant === Semantic.ENode.PointerDatatype);
-        const aPointee = sr.typeUseNodes.get(at.pointee);
-        const bPointee = sr.typeUseNodes.get(bt.pointee);
+      case Semantic.ENode.NullableReferenceDatatype: {
+        assert(bt.variant === Semantic.ENode.NullableReferenceDatatype);
+        const aPointee = sr.typeUseNodes.get(at.referee);
+        const bPointee = sr.typeUseNodes.get(bt.referee);
         return IsStructurallyEquivalent(sr, aPointee.type, bPointee.type, seen);
       }
 
@@ -731,10 +731,10 @@ export namespace Conversion {
 
     // Pointer conversions
     if (
-      fromType.variant === Semantic.ENode.PointerDatatype &&
-      to.variant === Semantic.ENode.PointerDatatype
+      fromType.variant === Semantic.ENode.NullableReferenceDatatype &&
+      to.variant === Semantic.ENode.NullableReferenceDatatype
     ) {
-      const frompointeeInstance = sr.typeUseNodes.get(fromType.pointee);
+      const frompointeeInstance = sr.typeUseNodes.get(fromType.referee);
       const frompointee = sr.typeDefNodes.get(frompointeeInstance.type);
       // Conversion from void* to T*
       if (
@@ -750,7 +750,7 @@ export namespace Conversion {
         })[1];
       }
       // Conversion from T* to void*
-      const topointeeInstance = sr.typeUseNodes.get(to.pointee);
+      const topointeeInstance = sr.typeUseNodes.get(to.referee);
       const topointee = sr.typeDefNodes.get(topointeeInstance.type);
       if (
         topointee.variant === Semantic.ENode.PrimitiveDatatype &&
@@ -963,8 +963,8 @@ export namespace Conversion {
     const rightType = sr.typeDefNodes.get(rightTypeId);
 
     if (
-      leftType.variant === Semantic.ENode.PointerDatatype &&
-      rightType.variant === Semantic.ENode.PointerDatatype
+      leftType.variant === Semantic.ENode.NullableReferenceDatatype &&
+      rightType.variant === Semantic.ENode.NullableReferenceDatatype
     ) {
       return makePrimitiveAvailable(sr, EPrimitive.bool, EDatatypeMutability.Const, sourceloc);
     }

@@ -37,7 +37,7 @@ import { Conversion } from "./Conversion";
 import { EvalCTFE, EvalCTFEBoolean } from "./CTFE";
 import {
   lookupAndElaborateDatatype,
-  makePointerDatatypeAvailable,
+  makeNullableReferenceDatatypeAvailable,
   makeReferenceDatatypeAvailable,
   elaborateParentSymbolFromCache,
   makeArrayDatatypeAvailable,
@@ -101,7 +101,7 @@ export type SemanticResult = {
 
   elaboratedPrimitiveTypes: Semantic.TypeDefId[];
   functionTypeCache: Semantic.TypeDefId[];
-  pointerTypeCache: Semantic.TypeDefId[];
+  nullRefTypeCache: Semantic.TypeDefId[];
   referenceTypeCache: Semantic.TypeDefId[];
   arrayTypeCache: Semantic.TypeDefId[];
   sliceTypeCache: Semantic.TypeDefId[];
@@ -188,7 +188,7 @@ export namespace Semantic {
     FunctionDatatype,
     BlockScope,
     StructDatatype,
-    PointerDatatype,
+    NullableReferenceDatatype,
     ReferenceDatatype,
     CallableDatatype,
     ParameterPackDatatype,
@@ -218,8 +218,8 @@ export namespace Semantic {
     ExplicitCastExpr,
     MemberAccessExpr,
     CallableExpr,
-    PointerAddressOfExpr,
-    PointerDereferenceExpr,
+    AddressOfExpr,
+    DereferenceExpr,
     ExprAssignmentExpr,
     RefAssignmentExpr,
     StructInstantiationExpr,
@@ -433,9 +433,9 @@ export namespace Semantic {
     originalCollectedSymbol: Collect.Id;
   };
 
-  export type PointerDatatypeDef = {
-    variant: ENode.PointerDatatype;
-    pointee: TypeUseId;
+  export type NullableReferenceDatatypeDef = {
+    variant: ENode.NullableReferenceDatatype;
+    referee: TypeUseId;
     concrete: boolean;
   };
 
@@ -505,7 +505,7 @@ export namespace Semantic {
     | NamespaceDatatypeDef
     | FunctionDatatypeDef
     | StructDatatypeDef
-    | PointerDatatypeDef
+    | NullableReferenceDatatypeDef
     | ArrayDatatypeDef
     | SliceDatatypeDef
     | ReferenceDatatypeDef
@@ -589,16 +589,16 @@ export namespace Semantic {
     sourceloc: SourceLoc;
   };
 
-  export type PointerDereferenceExpr = {
-    variant: ENode.PointerDereferenceExpr;
+  export type DereferenceExpr = {
+    variant: ENode.DereferenceExpr;
     expr: ExprId;
     type: TypeUseId;
     isTemporary: boolean;
     sourceloc: SourceLoc;
   };
 
-  export type PointerAddressOfExpr = {
-    variant: ENode.PointerAddressOfExpr;
+  export type AddressOfExpr = {
+    variant: ENode.AddressOfExpr;
     expr: ExprId;
     type: TypeUseId;
     isTemporary: boolean;
@@ -731,8 +731,8 @@ export namespace Semantic {
     | CallableExpr
     | PreIncrExpr
     | PostIncrExpr
-    | PointerAddressOfExpr
-    | PointerDereferenceExpr
+    | AddressOfExpr
+    | DereferenceExpr
     | ExplicitCastExpr
     | ExprCallExpr
     | StructInstantiationExpr
@@ -2115,8 +2115,8 @@ export namespace Semantic {
                 callingArguments.length === 2 &&
                 second &&
                 secondType &&
-                firstType.variant === Semantic.ENode.PointerDatatype &&
-                sr.typeUseNodes.get(firstType.pointee).type ===
+                firstType.variant === Semantic.ENode.NullableReferenceDatatype &&
+                sr.typeUseNodes.get(firstType.referee).type ===
                   makeRawPrimitiveAvailable(sr, EPrimitive.u8) &&
                 secondType.variant === Semantic.ENode.PrimitiveDatatype &&
                 Conversion.isInteger(secondType.primitive)
@@ -2334,8 +2334,11 @@ export namespace Semantic {
             `Expression of type ${primitiveToString(calledExprType.primitive)} is not callable`,
             expr.sourceloc
           );
-        } else if (calledExprType.variant === Semantic.ENode.PointerDatatype) {
-          throw new CompilerError(`Expression of type Pointer is not callable`, expr.sourceloc);
+        } else if (
+          calledExprType.variant === Semantic.ENode.NullableReferenceDatatype ||
+          calledExprType.variant === Semantic.ENode.ReferenceDatatype
+        ) {
+          throw new CompilerError(`Reference Expression is not callable`, expr.sourceloc);
         }
         assert(false && "All cases handled");
       }
@@ -2378,7 +2381,7 @@ export namespace Semantic {
         if (expr.name === "nullptr") {
           return Semantic.addExpr(sr, {
             variant: Semantic.ENode.ExplicitCastExpr,
-            type: makePointerDatatypeAvailable(
+            type: makeNullableReferenceDatatypeAvailable(
               sr,
               makePrimitiveAvailable(
                 sr,
@@ -2688,7 +2691,7 @@ export namespace Semantic {
       // =================================================================================================================
       // =================================================================================================================
 
-      case Collect.ENode.PointerAddressOfExpr: {
+      case Collect.ENode.AddressOfExpr: {
         const [_expr, exprId] = elaborateExpr(sr, expr.expr, {
           context: args.context,
           elaboratedVariables: args.elaboratedVariables,
@@ -2697,8 +2700,8 @@ export namespace Semantic {
           blockScope: args.blockScope,
         });
         return Semantic.addExpr(sr, {
-          variant: Semantic.ENode.PointerAddressOfExpr,
-          type: makePointerDatatypeAvailable(
+          variant: Semantic.ENode.AddressOfExpr,
+          type: makeNullableReferenceDatatypeAvailable(
             sr,
             _expr.type,
             EDatatypeMutability.Const,
@@ -2714,7 +2717,7 @@ export namespace Semantic {
       // =================================================================================================================
       // =================================================================================================================
 
-      case Collect.ENode.PointerDereferenceExpr: {
+      case Collect.ENode.DereferenceExpr: {
         const [_expr, _exprId] = elaborateExpr(sr, expr.expr, {
           elaboratedVariables: args.elaboratedVariables,
           context: args.context,
@@ -2723,15 +2726,18 @@ export namespace Semantic {
           isMonomorphized: args.isMonomorphized,
         });
         const exprType = sr.typeDefNodes.get(sr.typeUseNodes.get(_expr.type).type);
-        if (exprType.variant !== Semantic.ENode.PointerDatatype) {
+        if (
+          exprType.variant !== Semantic.ENode.NullableReferenceDatatype &&
+          exprType.variant !== Semantic.ENode.ReferenceDatatype
+        ) {
           throw new CompilerError(
-            `This expression is not a pointer and cannot be dereferenced`,
+            `This expression is not a reference and cannot be dereferenced`,
             expr.sourceloc
           );
         }
         return Semantic.addExpr(sr, {
-          variant: Semantic.ENode.PointerDereferenceExpr,
-          type: exprType.pointee,
+          variant: Semantic.ENode.DereferenceExpr,
+          type: exprType.referee,
           expr: _exprId,
           sourceloc: expr.sourceloc,
           isTemporary: true,
@@ -2957,7 +2963,7 @@ export namespace Semantic {
               variant: Semantic.ENode.MemberAccessExpr,
               isTemporary: true,
               sourceloc: expr.sourceloc,
-              type: makePointerDatatypeAvailable(
+              type: makeNullableReferenceDatatypeAvailable(
                 sr,
                 makePrimitiveAvailable(
                   sr,
@@ -3985,28 +3991,28 @@ export namespace Semantic {
           variableSymbol.comptimeValue = EvalCTFE(sr, valueId)[1];
         }
 
-        if (value) {
-          const valueType = sr.typeDefNodes.get(sr.typeUseNodes.get(value.type).type);
-          if (
-            variableSymbolTypeDef.variant === Semantic.ENode.StructDatatype &&
-            valueType.variant === Semantic.ENode.StructDatatype &&
-            (valueType.clonability === EClonability.NonClonableFromAttribute ||
-              valueType.clonability === EClonability.NonClonableFromMembers) &&
-            !value.isTemporary
-          ) {
-            const msg =
-              valueType.clonability === EClonability.NonClonableFromAttribute
-                ? "marked as 'nonclonable'"
-                : "non-clonable because it contains raw pointers or other non-clonable structures";
-            throw new CompilerError(
-              `This assignment of type '${serializeTypeUse(
-                sr,
-                value.type
-              )}' would create a copy of the struct, but the struct definition is ${msg}`,
-              s.sourceloc
-            );
-          }
-        }
+        // if (value) {
+        //   const valueType = sr.typeDefNodes.get(sr.typeUseNodes.get(value.type).type);
+        //   if (
+        //     variableSymbolTypeDef.variant === Semantic.ENode.StructDatatype &&
+        //     valueType.variant === Semantic.ENode.StructDatatype &&
+        //     (valueType.clonability === EClonability.NonClonableFromAttribute ||
+        //       valueType.clonability === EClonability.NonClonableFromMembers) &&
+        //     !value.isTemporary
+        //   ) {
+        //     const msg =
+        //       valueType.clonability === EClonability.NonClonableFromAttribute
+        //         ? "marked as 'nonclonable'"
+        //         : "non-clonable because it contains raw pointers or other non-clonable structures";
+        //     throw new CompilerError(
+        //       `This assignment of type '${serializeTypeUse(
+        //         sr,
+        //         value.type
+        //       )}' would create a copy of the struct, but the struct definition is ${msg}`,
+        //       s.sourceloc
+        //     );
+        //   }
+        // }
 
         return Semantic.addStatement(sr, {
           variant: Semantic.ENode.VariableStatement,
@@ -4928,7 +4934,7 @@ export namespace Semantic {
       elaboratedNamespaceSymbols: [],
       elaboratedGlobalVariableDefinitions: [],
       functionTypeCache: [],
-      pointerTypeCache: [],
+      nullRefTypeCache: [],
       referenceTypeCache: [],
       arrayTypeCache: [],
       sliceTypeCache: [],
@@ -5087,8 +5093,8 @@ export namespace Semantic {
       case Semantic.ENode.PrimitiveDatatype:
         return primitiveToString(datatype.primitive);
 
-      case Semantic.ENode.PointerDatatype:
-        return "*" + serializeTypeUse(sr, datatype.pointee);
+      case Semantic.ENode.NullableReferenceDatatype:
+        return "*" + serializeTypeUse(sr, datatype.referee);
 
       case Semantic.ENode.ReferenceDatatype:
         return "&" + serializeTypeUse(sr, datatype.referee);
@@ -5329,9 +5335,9 @@ export namespace Semantic {
         };
       }
 
-      case Semantic.ENode.PointerDatatype: {
+      case Semantic.ENode.NullableReferenceDatatype: {
         return {
-          name: "P" + mangleTypeUse(sr, type.pointee).name,
+          name: "P" + mangleTypeUse(sr, type.referee).name,
           wasMangled: true,
         };
       }
@@ -5474,10 +5480,10 @@ export namespace Semantic {
           expr.thisExpr
         )})`;
 
-      case Semantic.ENode.PointerAddressOfExpr:
+      case Semantic.ENode.AddressOfExpr:
         return `&${serializeExpr(sr, expr.expr)}`;
 
-      case Semantic.ENode.PointerDereferenceExpr:
+      case Semantic.ENode.DereferenceExpr:
         return `*${serializeExpr(sr, expr.expr)}`;
 
       case Semantic.ENode.ExprAssignmentExpr:

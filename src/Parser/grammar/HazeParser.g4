@@ -95,7 +95,7 @@ datatypeImpl
     : datatypeFragment (DOT datatypeFragment)*                                  #NamedDatatype
     | LBRACKET n=INTEGER_LITERAL RBRACKET datatype                              #ArrayDatatype
     | LBRACKET RBRACKET datatype                                                #SliceDatatype
-    | MUL datatype                                                              #PointerDatatype
+    | QUESTIONAMPERSAND datatype                                                #NullableReferenceDatatype
     | SINGLEAND datatype                                                        #ReferenceDatatype
     | LB params RB ARROW datatype                                               #FunctionDatatype
     ;
@@ -155,8 +155,8 @@ expr
     | <assoc=right> op=(PLUS | MINUS) expr                                          #UnaryExpr
     | <assoc=right> op=NOT expr /* and bitwise not */                               #UnaryExpr
     | <assoc=right> expr AS datatype                                                #ExplicitCastExpr
-    | <assoc=right> MUL expr                                                        #PointerDereference
-    | <assoc=right> SINGLEAND expr                                                  #PointerAddressOf
+    | <assoc=right> MUL expr                                                        #DereferenceExpr
+    | <assoc=right> SINGLEAND expr                                                  #AddressOfExpr
 
     // Part 3: Left to right
     | expr op+=(MUL|DIV|MOD) expr                                                   #BinaryExpr

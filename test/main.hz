@@ -16,24 +16,10 @@ struct Foo {};
 
 main(): int {
 
-    builtin.printf("Hello world!\n");
+    let foo = Foo {};
+    let newFoo = Foo {};
 
-    // let foo = Foo {};
-    // let newFoo = Foo {};
-
-    // let a: const &const int = uninitialized;
-    // let b: mut &int = uninitialized;
-    // let c: []int = uninitialized;
-    // let d: const []const int = uninitialized;
-    // let e: mut []&mut int = uninitialized;
-
-    // let x = 0;
-    // let y: &int = x;
-    // const z: &int = y;
-
-    // a = 5;
-
-    // let a: Foo& = foo;
+    let a: Foo& = foo;
 
     // assign(a, newFoo);
     // reassign(a, newFoo);

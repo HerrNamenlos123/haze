@@ -207,9 +207,9 @@ export type ASTFunctionDatatype = {
   sourceloc: SourceLoc;
 };
 
-export type ASTPointerDatatype = {
-  variant: "PointerDatatype";
-  pointee: ASTDatatype;
+export type ASTNullableReferenceDatatype = {
+  variant: "NullableReferenceDatatype";
+  referee: ASTDatatype;
   mutability: EDatatypeMutability;
   sourceloc: SourceLoc;
 };
@@ -245,7 +245,7 @@ export type ASTDatatype =
   | ASTNamedDatatype
   | ASTFunctionDatatype
   | ASTDeferredType
-  | ASTPointerDatatype
+  | ASTNullableReferenceDatatype
   | ASTArrayDatatype
   | ASTSliceDatatype
   | ASTParameterPackDatatype
@@ -436,14 +436,14 @@ export type ASTExplicitCastExpr = {
   sourceloc: SourceLoc;
 };
 
-export type ASTPointerAddressOfExpr = {
-  variant: "PointerAddressOf";
+export type ASTAddressOfExpr = {
+  variant: "AddressOfExpr";
   expr: ASTExpr;
   sourceloc: SourceLoc;
 };
 
-export type ASTPointerDereferenceExpr = {
-  variant: "PointerDereference";
+export type ASTDereferenceExpr = {
+  variant: "DereferenceExpr";
   expr: ASTExpr;
   sourceloc: SourceLoc;
 };
@@ -501,8 +501,8 @@ export type ASTExpr =
   | ASTExprMemberAccess
   | ASTStructInstantiationExpr
   | ASTPreIncrExpr
-  | ASTPointerAddressOfExpr
-  | ASTPointerDereferenceExpr
+  | ASTAddressOfExpr
+  | ASTDereferenceExpr
   | ASTUnaryExpr
   | ASTExplicitCastExpr
   | ASTArraySubscriptExpr

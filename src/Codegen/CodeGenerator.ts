@@ -167,9 +167,9 @@ class CodeGenerator {
           }
           this.out.type_definitions.popIndent().writeLine(`};`).writeLine();
         }
-      } else if (symbol.variant === Lowered.ENode.PointerDatatype) {
+      } else if (symbol.variant === Lowered.ENode.NullableReferenceDatatype) {
         this.out.type_declarations.writeLine(
-          `typedef ${this.mangleTypeUse(symbol.pointee)}* ${this.mangleTypeDef(symbol)};`
+          `typedef ${this.mangleTypeUse(symbol.referee)}* ${this.mangleTypeDef(symbol)};`
         );
       } else if (symbol.variant === Lowered.ENode.ReferenceDatatype) {
         this.out.type_declarations.writeLine(
@@ -256,9 +256,9 @@ class CodeGenerator {
         for (const m of type.members) {
           const type = this.lr.typeUseNodes.get(m.type);
           const typeDef = this.lr.typeDefNodes.get(type.type);
-          // Pointer do not matter, only direct references are bad.
+          // Pointer do not matter, only direct usages are bad.
           if (
-            typeDef.variant !== Lowered.ENode.PointerDatatype &&
+            typeDef.variant !== Lowered.ENode.NullableReferenceDatatype &&
             typeDef.variant !== Lowered.ENode.ReferenceDatatype
           ) {
             processTypeUse(m.type);
@@ -268,9 +268,9 @@ class CodeGenerator {
       } else if (type.variant === Lowered.ENode.PrimitiveDatatype) {
         appliedTypes.add(type);
         sortedLoweredTypes.push(type);
-      } else if (type.variant === Lowered.ENode.PointerDatatype) {
+      } else if (type.variant === Lowered.ENode.NullableReferenceDatatype) {
         appliedTypes.add(type);
-        processTypeUse(type.pointee);
+        processTypeUse(type.referee);
         sortedLoweredTypes.push(type);
       } else if (type.variant === Lowered.ENode.ReferenceDatatype) {
         appliedTypes.add(type);
@@ -1024,14 +1024,14 @@ class CodeGenerator {
         return { out: outWriter, temp: tempWriter };
       }
 
-      case Lowered.ENode.PointerAddressOfExpr: {
+      case Lowered.ENode.AddressOfExpr: {
         const e = this.emitExpr(expr.expr);
         tempWriter.write(e.temp);
         outWriter.write("&" + e.out.get());
         return { out: outWriter, temp: tempWriter };
       }
 
-      case Lowered.ENode.PointerDereferenceExpr: {
+      case Lowered.ENode.DereferenceExpr: {
         const e = this.emitExpr(expr.expr);
         tempWriter.write(e.temp);
         outWriter.write("*" + e.out.get());

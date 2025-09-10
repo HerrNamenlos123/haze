@@ -11,7 +11,7 @@ namespace fmt {
     }
 
     export struct StringWriter {
-        buffer: *u8 = nullptr;
+        buffer: ?&u8 = nullptr;
         length: usize = 0;
 
         write(value: str) {        

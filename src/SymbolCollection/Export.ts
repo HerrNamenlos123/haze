@@ -62,8 +62,8 @@ function printType(cc: CollectionContext, typeId: Collect.Id): string {
       return str;
     }
 
-    case Collect.ENode.PointerDatatype: {
-      return `*${printType(cc, type.pointee)}`;
+    case Collect.ENode.NullableReferenceDatatype: {
+      return `*${printType(cc, type.referee)}`;
     }
 
     case Collect.ENode.ReferenceDatatype: {

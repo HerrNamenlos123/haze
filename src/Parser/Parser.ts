@@ -37,9 +37,8 @@ import {
   type ASTParenthesisExpr,
   type ASTPostIncrExpr,
   type ASTPreIncrExpr,
-  type ASTPointerAddressOfExpr,
-  type ASTPointerDatatype,
-  type ASTPointerDereferenceExpr,
+  type ASTAddressOfExpr,
+  type ASTDereferenceExpr,
   type ASTReferenceDatatype,
   type ASTReturnStatement,
   type ASTRoot,
@@ -66,6 +65,7 @@ import {
   type ASTArraySliceExpr,
   EDatatypeMutability,
   EVariableMutability,
+  type ASTNullableReferenceDatatype,
 } from "../shared/AST";
 import {
   BinaryExprContext,
@@ -96,9 +96,6 @@ import {
   PostIncrExprContext,
   PreIncrExprContext,
   ProgContext,
-  PointerAddressOfContext,
-  PointerDatatypeContext,
-  PointerDereferenceContext,
   ReferenceDatatypeContext,
   ReturnStatementContext,
   ScopeContext,
@@ -133,6 +130,9 @@ import {
   TypeAliasStatementContext,
   VariableConstContext,
   VariableLetContext,
+  NullableReferenceDatatypeContext,
+  DereferenceExprContext,
+  AddressOfExprContext,
 } from "./grammar/autogen/HazeParser";
 import {
   BaseErrorListener,
@@ -968,17 +968,17 @@ class ASTTransformer extends HazeVisitor<any> {
     };
   };
 
-  visitPointerDereference = (ctx: PointerDereferenceContext): ASTPointerDereferenceExpr => {
+  visitDereferenceExpr = (ctx: DereferenceExprContext): ASTDereferenceExpr => {
     return {
-      variant: "PointerDereference",
+      variant: "DereferenceExpr",
       expr: this.visit(ctx.expr()),
       sourceloc: this.loc(ctx),
     };
   };
 
-  visitPointerAddressOf = (ctx: PointerAddressOfContext): ASTPointerAddressOfExpr => {
+  visitAddressOfExpr = (ctx: AddressOfExprContext): ASTAddressOfExpr => {
     return {
-      variant: "PointerAddressOf",
+      variant: "AddressOfExpr",
       expr: this.visit(ctx.expr()),
       sourceloc: this.loc(ctx),
     };
@@ -1070,7 +1070,7 @@ class ASTTransformer extends HazeVisitor<any> {
     switch (datatype.variant) {
       case "ArrayDatatype":
       case "SliceDatatype":
-      case "PointerDatatype":
+      case "NullableReferenceDatatype":
       case "ReferenceDatatype":
       case "NamedDatatype":
       case "FunctionDatatype":
@@ -1123,10 +1123,12 @@ class ASTTransformer extends HazeVisitor<any> {
     };
   };
 
-  visitPointerDatatype = (ctx: PointerDatatypeContext): ASTPointerDatatype => {
+  visitNullableReferenceDatatype = (
+    ctx: NullableReferenceDatatypeContext
+  ): ASTNullableReferenceDatatype => {
     return {
-      variant: "PointerDatatype",
-      pointee: this.visit(ctx.datatype()),
+      variant: "NullableReferenceDatatype",
+      referee: this.visit(ctx.datatype()),
       mutability: EDatatypeMutability.Default,
       sourceloc: this.loc(ctx),
     };
