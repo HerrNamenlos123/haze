@@ -208,6 +208,7 @@ export namespace Semantic {
     ReturnStatement,
     // Expressions
     ParenthesisExpr,
+    UnsafeExpr,
     BinaryExpr,
     LiteralExpr,
     UnaryExpr,
@@ -588,7 +589,7 @@ export namespace Semantic {
     value: ExprId;
     target: ExprId;
     type: TypeUseId;
-    operation: "assign" | "reassign";
+    operation: "assign" | "rebind";
     isTemporary: boolean;
     sourceloc: SourceLoc;
   };
@@ -1909,6 +1910,23 @@ export namespace Semantic {
       // =================================================================================================================
       // =================================================================================================================
 
+      case Collect.ENode.UnsafeExpr: {
+        return elaborateExpr(sr, expr.expr, {
+          elaboratedVariables: args.elaboratedVariables,
+          context: args.context,
+          scope: args.context.currentScope,
+          gonnaCallFunctionWithParameterValues: args.gonnaCallFunctionWithParameterValues,
+          gonnaInstantiateStructWithType: args.gonnaInstantiateStructWithType,
+          blockScope: args.blockScope,
+          isMonomorphized: args.isMonomorphized,
+          unsafe: true,
+        });
+      }
+
+      // =================================================================================================================
+      // =================================================================================================================
+      // =================================================================================================================
+
       case Collect.ENode.ExprCallExpr: {
         const collectedExpr = sr.cc.nodes.get(expr.calledExpr);
         if (collectedExpr.variant === Collect.ENode.SymbolValueExpr) {
@@ -1983,7 +2001,7 @@ export namespace Semantic {
               valueExpr: callingArguments[0],
             });
           }
-          if (collectedExpr.name === "assign" || collectedExpr.name === "reassign") {
+          if (collectedExpr.name === "assign" || collectedExpr.name === "rebind") {
             const callingArguments = expr.arguments.map(
               (a, i) =>
                 elaborateExpr(sr, a, {
@@ -1997,13 +2015,13 @@ export namespace Semantic {
             );
             if (collectedExpr.genericArgs.length !== 0) {
               throw new CompilerError(
-                "The builtin assign/reassign functions cannot take any type parameters",
+                "The builtin assign/rebind functions cannot take any type parameters",
                 collectedExpr.sourceloc
               );
             }
             if (callingArguments.length !== 2) {
               throw new CompilerError(
-                "The builtin assign/reassign functions require exactly two parameters",
+                "The builtin assign/rebind functions require exactly two parameters",
                 collectedExpr.sourceloc
               );
             }
@@ -2012,7 +2030,7 @@ export namespace Semantic {
             const value = sr.exprNodes.get(callingArguments[1]);
             if (refType.variant !== Semantic.ENode.ReferenceDatatype) {
               throw new CompilerError(
-                `The builtin assign/reassign functions require the first parameter to be a reference`,
+                `The builtin assign/rebind functions require the first parameter to be a reference`,
                 expr.sourceloc
               );
             }
@@ -2041,7 +2059,7 @@ export namespace Semantic {
                 ),
               });
             } else {
-              // Reassigning the reference
+              // Rebinding the reference
               return Semantic.addExpr(sr, {
                 variant: Semantic.ENode.RefAssignmentExpr,
                 sourceloc: collectedExpr.sourceloc,
@@ -2052,7 +2070,7 @@ export namespace Semantic {
                   EDatatypeMutability.Const,
                   expr.sourceloc
                 ),
-                operation: "reassign",
+                operation: "rebind",
                 target: callingArguments[0],
                 value: Conversion.MakeConversionOrThrow(
                   sr,
@@ -2910,7 +2928,10 @@ export namespace Semantic {
         });
         let objectType = sr.typeDefNodes.get(sr.typeUseNodes.get(object.type).type);
 
-        if (objectType.variant === Semantic.ENode.ReferenceDatatype) {
+        while (
+          objectType.variant === Semantic.ENode.ReferenceDatatype ||
+          objectType.variant === Semantic.ENode.NullableReferenceDatatype
+        ) {
           objectType = sr.typeDefNodes.get(sr.typeUseNodes.get(objectType.referee).type);
         }
 
@@ -3287,7 +3308,7 @@ export namespace Semantic {
         const targetType = sr.typeDefNodes.get(sr.typeUseNodes.get(target.type).type);
         if (targetType.variant === Semantic.ENode.ReferenceDatatype) {
           throw new CompilerError(
-            `Assigning values to references is not allowed, use builtin functions instead. To assign a new value to the place the reference points to, use 'assign(ref, ...)', to instead reassign the reference to point to a new location, use 'reassign(ref, ...)' intead.`,
+            `Assigning values to references is not allowed, use builtin functions instead. To assign a new value to the place the reference points to, use 'assign(ref, ...)', to instead rebind the reference to point to a new location, use 'rebind(ref, ...)' intead.`,
             expr.sourceloc
           );
         }

@@ -65,6 +65,7 @@ import {
   EDatatypeMutability,
   EVariableMutability,
   type ASTNullableReferenceDatatype,
+  type ASTUnsafeExpr,
 } from "../shared/AST";
 import {
   BinaryExprContext,
@@ -132,6 +133,7 @@ import {
   NullableReferenceDatatypeContext,
   DereferenceExprContext,
   AddressOfExprContext,
+  UnsafeExprContext,
 } from "./grammar/autogen/HazeParser";
 import {
   BaseErrorListener,
@@ -1226,6 +1228,14 @@ class ASTTransformer extends HazeVisitor<any> {
         start: i.expr()[0] ? this.visit(i.expr()[0]) : null,
         end: i.expr()[1] ? this.visit(i.expr()[1]) : null,
       })),
+      sourceloc: this.loc(ctx),
+    };
+  };
+
+  visitUnsafeExpr = (ctx: UnsafeExprContext): ASTUnsafeExpr => {
+    return {
+      variant: "UnsafeExpr",
+      expr: this.visit(ctx.expr()),
       sourceloc: this.loc(ctx),
     };
   };

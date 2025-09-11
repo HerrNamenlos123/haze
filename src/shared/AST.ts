@@ -356,6 +356,12 @@ export type ASTParenthesisExpr = {
   sourceloc: SourceLoc;
 };
 
+export type ASTUnsafeExpr = {
+  variant: "UnsafeExpr";
+  expr: ASTExpr;
+  sourceloc: SourceLoc;
+};
+
 export type ASTLambdaExpr = {
   variant: "LambdaExpr";
   lambda: ASTLambda;
@@ -487,6 +493,7 @@ export type ASTTypeLiteralExpr = {
 
 export type ASTExpr =
   | ASTParenthesisExpr
+  | ASTUnsafeExpr
   | ASTLambdaExpr
   | ASTArrayLiteralExpr
   | ASTLiteralExpr

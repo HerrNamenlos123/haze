@@ -14,7 +14,7 @@ import {
   type SemanticResult,
 } from "./Elaborate";
 import { Collect } from "../SymbolCollection/SymbolCollection";
-import { makeTypeUse } from "./LookupDatatype";
+import { makeReferenceDatatypeAvailable, makeTypeUse } from "./LookupDatatype";
 import { constant } from "lodash";
 import { EvalCTFE, EvalCTFENumericValue, getLiteralIntegerValue } from "./CTFE";
 import type { getEffectiveConstraintOfTypeParameter } from "typescript";
@@ -711,12 +711,16 @@ export namespace Conversion {
     if (fromRefDepth > toRefDepth) {
       // Recursive conversion e.g. const &T -> T or const &mut &T -> mut &T
       // -> Type qualifier on the reference does not matter: Just take inner
+      assert(
+        fromType.variant === Semantic.ENode.ReferenceDatatype ||
+          fromType.variant === Semantic.ENode.NullableReferenceDatatype
+      );
       return MakeConversion(
         sr,
         Semantic.addExpr(sr, {
           variant: Semantic.ENode.DereferenceExpr,
           expr: fromExprId,
-          type: toId,
+          type: fromType.referee,
           sourceloc: sourceloc,
           isTemporary: fromExpr.isTemporary,
         })[1],
@@ -728,7 +732,9 @@ export namespace Conversion {
       );
     } else if (fromRefDepth < toRefDepth) {
       // Recursive conversion e.g. const T -> &T or mut &T -> const &mut &T
-      // Is possible when qualifiers match. Allowed: mut -> default and const -> default
+      // Example: from = const int
+      //          to   = mut &const int
+      // Is possible when qualifiers match.
       const fromMutable = fromTypeInstance.mutability === EDatatypeMutability.Mut;
       const fromStable = fromTypeInstance.mutability === EDatatypeMutability.Const;
       const toMutable = toInstance.mutability === EDatatypeMutability.Mut;
@@ -739,12 +745,23 @@ export namespace Conversion {
           sourceloc
         );
       }
+      if (fromExpr.isTemporary) {
+        throw new CompilerError(
+          `This expression of type '${fromTypeText}' cannot be turned into a reference, because it is a temporary and not associated with a stable memory address. Store it in a variable to be able to reference it.`,
+          sourceloc
+        );
+      }
       return MakeConversion(
         sr,
         Semantic.addExpr(sr, {
           variant: Semantic.ENode.AddressOfExpr,
           expr: fromExprId,
-          type: toId,
+          type: makeReferenceDatatypeAvailable(
+            sr,
+            fromExpr.type,
+            EDatatypeMutability.Const,
+            sourceloc
+          ),
           sourceloc: sourceloc,
           isTemporary: fromExpr.isTemporary,
         })[1],
@@ -787,14 +804,19 @@ export namespace Conversion {
           source.constrainFromConstraints(constraints, fromExprId);
           const pointerValueIsZero = !source.canHaveValue(0n);
 
-          if (pointerValueIsZero && !unsafe) {
+          if (pointerValueIsZero && !(unsafe && mode === Mode.Explicit)) {
             throw new CompilerError(
               `Conversion from ${fromTypeText} to ${toTypeText} is prohibited, because type-changing reference conversions of non-null references are unsafe, and the source cannot be proven from context to be null.`,
               sourceloc
             );
           }
 
-          if (fromNullable && !toNullable && !pointerValueIsZero && !unsafe) {
+          if (
+            fromNullable &&
+            !toNullable &&
+            !pointerValueIsZero &&
+            !(unsafe && mode === Mode.Explicit)
+          ) {
             throw new CompilerError(
               `Conversion from ${fromTypeText} to ${toTypeText} is prohibited, because the source is a nullable reference, which cannot be proven from context to be null.`,
               sourceloc
@@ -812,6 +834,7 @@ export namespace Conversion {
           );
         }
 
+        // Conversion T <-> &T
         if (fromReferee.variant === toReferee.variant) {
           const fromMutable = fromRefereeInstance.mutability === EDatatypeMutability.Mut;
           const fromStable = fromRefereeInstance.mutability === EDatatypeMutability.Const;
@@ -852,7 +875,10 @@ export namespace Conversion {
             `No suitable Conversion known from '${fromTypeText}' to '${toTypeText}': Referee types are unrelated: '${Semantic.serializeTypeUse(
               sr,
               fromType.referee
-            )}' != '${Semantic.serializeTypeUse(sr, to.referee)}'`,
+            )}' != '${Semantic.serializeTypeUse(
+              sr,
+              to.referee
+            )}'. To force conversion, use unsafe expressions and convert to &void first`,
             sourceloc
           );
         }

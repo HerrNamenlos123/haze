@@ -462,10 +462,12 @@ class CodeGenerator {
   makeCheckedBinaryArithmeticFunction(
     leftId: Lowered.ExprId,
     rightId: Lowered.ExprId,
+    plainResultTypeId: Lowered.TypeDefId,
     operation: EBinaryOperation
   ) {
     const left = this.lr.exprNodes.get(leftId);
     const right = this.lr.exprNodes.get(rightId);
+    const plainResultType = this.lr.typeDefNodes.get(plainResultTypeId);
 
     let opStr = "";
     switch (operation) {
@@ -553,7 +555,7 @@ class CodeGenerator {
         this.out.builtin_definitions.writeLine(`return a / b;`);
       }
     } else {
-      this.out.builtin_definitions.writeLine(`_H${leftType.name.mangledName} result;`);
+      this.out.builtin_definitions.writeLine(`_H${plainResultType.name.mangledName} result;`);
       this.out.builtin_definitions
         .writeLine(`if (__builtin_expect(__builtin_${opStr}_overflow(a, b, &result), 0)) {`)
         .pushIndent();
@@ -936,6 +938,7 @@ class CodeGenerator {
               const functionName = this.makeCheckedBinaryArithmeticFunction(
                 expr.left,
                 expr.right,
+                expr.plainResultType,
                 expr.operation
               );
               outWriter.write(

@@ -1,80 +1,82 @@
 
-// __c__("#include <memory.h>");
+__c__("#include <memory.h>");
 
-// namespace builtin {
-//     extern "C" noemit malloc(size: usize): *void;
-//     extern "C" noemit memset(ptr: *void, value: u8, count: usize): *void;
-//     extern "C" noemit free(ptr: *void): void;
-// }
+namespace builtin {
+    extern "C" noemit malloc(size: usize): ?&void;
+    extern "C" noemit memset(ptr: &void, value: u8, count: usize): ?&void;
+    extern "C" noemit free(ptr: &void): void;
+}
 
-// export struct ArenaChunk {
-//     next: *ArenaChunk;
-//     size: usize;
-//     used: usize;
-//     data: u8; // Taking a pointer to chunk.data gives the actual arena pointer
-// }
+export struct ArenaChunk {
+    next: ?&ArenaChunk;
+    size: usize;
+    used: usize;
+    data: u8; // Taking a pointer to chunk.data gives the actual arena pointer
+}
 
-// export struct nonclonable Arena {
-//     first: *ArenaChunk;
-//     last: *ArenaChunk;
+export struct Arena {
+    first: ?&ArenaChunk;
+    last: ?&ArenaChunk;
 
-//     constructor(): Arena {
-//         return Arena {
-//             first: nullptr,
-//             last: nullptr,
-//         };
-//     }
+    constructor(): Arena {
+        return Arena {
+            first: nullptr,
+            last: nullptr,
+        };
+    }
 
-//     alloc<T>(value: T): &T {
-//         const ref: &T = uninitialized;
-//         const ptr = this.allocateRaw(sizeof(T));
-//         __c__("ref = (void*)ptr;");
-//         assign(ref, value);
-//         return ref;
-//     }
+    alloc<T>(value: T): &T {
+        const ref = unsafe(this.allocateRaw(sizeof(T)) as &void as &T);
+        assign(ref, value);
+        return ref;
+    }
 
-//     __newChunk(size: usize): *ArenaChunk {
-//         let chunk_size = max<usize>(size, 4096); // default chunk size
-//         let chunk_mem = builtin.malloc(sizeof(ArenaChunk) + chunk_size) as *ArenaChunk;
-//         builtin.memset(chunk_mem, 0, chunk_size);
-//         (*chunk_mem).next = nullptr;
-//         (*chunk_mem).size = chunk_size;
-//         (*chunk_mem).used = 0;
-//         // Data is not accessed as it's now just the raw data
-//         return chunk_mem;
-//     }
+    __newChunk(size: usize): &ArenaChunk {
+        let chunk_size = max<usize>(size, 4096); // default chunk size
+        let chunk_mem: &ArenaChunk = uninitialized;
+        unsafe {
+            rebind(chunk_mem, builtin.malloc(sizeof(ArenaChunk) + chunk_size) as &ArenaChunk);
+            builtin.memset(chunk_mem as &void, 0, chunk_size);
+        }
+        chunk_mem.next = nullptr;
+        chunk_mem.size = chunk_size;
+        chunk_mem.used = 0;
+        return chunk_mem;
+    }
 
-//     allocateRaw(size: usize): *u8 {
-//         let last = this.last;
-//         if last != nullptr && ((*last).used + size <= (*last).size) {
-//             // allocate from existing chunk
-//             let ptr = &(*last).data;
-//             // __c__("ptr += last->used;");
-//             (*last).used += size;
-//             return ptr;
-//         }
+    allocateRaw(size: usize): &u8 {
+        let last = this.last;
+        if last != nullptr && (last.used + size <= last.size) {
+            // allocate from existing chunk
+            let ptr = &last.data;
+            // __c__("ptr += last->used;");
+            last.used += size;
+            return ptr;
+        }
 
-//         // allocate a new chunk
-//         let chunk = this.__newChunk(size);
-//         if this.first == nullptr {
-//             this.first = chunk;
-//         } else {
-//             (*this.last).next = chunk;
-//         }
-//         this.last = chunk;
+        // allocate a new chunk
+        let chunk = this.__newChunk(size);
+        if this.first == nullptr {
+            this.first = chunk;
+        } else {
+            this.last.next = chunk;
+        }
+        this.last = chunk;
 
-//         (*chunk).used = size;
-//         return &(*chunk).data;
-//     }
+        chunk.used = size;
+        return &chunk.data;
+    }
 
-//     free() {
-//         let chunk = this.first;
-//         while chunk != nullptr {
-//             let next = (*chunk).next;
-//             builtin.free(chunk as *void);
-//             chunk = next;
-//         }
-//         this.first = nullptr;
-//         this.last = nullptr;
-//     }
-// }
+    free() {
+        let chunk = this.first;
+        while chunk != nullptr {
+            let next = chunk.next;
+            unsafe {
+                builtin.free(chunk as &void);
+            }
+            chunk = next;
+        }
+        this.first = nullptr;
+        this.last = nullptr;
+    }
+}

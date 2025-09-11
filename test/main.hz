@@ -20,16 +20,15 @@ struct Foo
 
 main(): int {
 
-    let foo = Foo {};
+    let foo: const Foo = Foo {};
     let newFoo = Foo {};
 
-    let a: &Foo = foo;
-
     // assign(a, newFoo);
-    // reassign(a, newFoo);
+    // rebind(a, newFoo);
 
-    // let arena = Arena();
-    // const s = fmt.format<int>(arena, -7183, {});
+    let arena = Arena();
+    const s = fmt.format<int>(arena, -7183, {});
+    const foos = arena.alloc<Foo>({});
 
     // print("Formatted: ");
     // println(s);

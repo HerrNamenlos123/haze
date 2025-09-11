@@ -147,6 +147,7 @@ export namespace Collect {
     VariableDefinitionStatement,
     FunctionDatatype,
     ParenthesisExpr,
+    UnsafeExpr,
     BinaryExpr,
     LiteralExpr,
     FStringExpr,
@@ -551,6 +552,11 @@ export namespace Collect {
     expr: Collect.Id;
   };
 
+  export type UnsafeExpr = BaseExpr & {
+    variant: ENode.UnsafeExpr;
+    expr: Collect.Id;
+  };
+
   export type BinaryExpr = BaseExpr & {
     variant: ENode.BinaryExpr;
     left: Collect.Id;
@@ -665,6 +671,7 @@ export namespace Collect {
 
   export type Expressions =
     | ParenthesisExpr
+    | UnsafeExpr
     | BinaryExpr
     | UnaryExpr
     | SymbolValueExpr
@@ -1550,6 +1557,18 @@ function collect(
     case "ParenthesisExpr": {
       return makeSymbol(cc, {
         variant: Collect.ENode.ParenthesisExpr,
+        expr: collect(cc, item.expr, args),
+        sourceloc: item.sourceloc,
+      })[1];
+    }
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
+    case "UnsafeExpr": {
+      return makeSymbol(cc, {
+        variant: Collect.ENode.UnsafeExpr,
         expr: collect(cc, item.expr, args),
         sourceloc: item.sourceloc,
       })[1];

@@ -150,6 +150,7 @@ expr
     // Part 1: Left to right
     | expr op=(PLUSPLUS | MINUSMINUS)                                               #PostIncrExpr
     | expr LB (expr (COMMA expr)*)? RB                                              #ExprCallExpr
+    | UNSAFE LB expr RB                                                             #UnsafeExpr
     | value=expr LBRACKET (index+=expr) (COMMA index+=expr)* COMMA? RBRACKET        #ArraySubscriptExpr
     | value=expr LBRACKET (index+=sliceIndex) (COMMA index+=sliceIndex)* COMMA? RBRACKET        #ArraySliceExpr
     | expr DOT ID (LANGLE genericLiteral (COMMA genericLiteral)* RANGLE)?           #ExprMemberAccess

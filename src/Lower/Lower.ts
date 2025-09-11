@@ -191,6 +191,7 @@ export namespace Lowered {
     left: ExprId;
     operation: EBinaryOperation;
     right: ExprId;
+    plainResultType: TypeDefId;
     type: TypeUseId;
   };
 
@@ -623,12 +624,15 @@ function lowerExpr(
     }
 
     case Semantic.ENode.BinaryExpr: {
+      const typeId = lowerTypeUse(lr, expr.type);
+      const type = lr.typeUseNodes.get(typeId);
       return Lowered.addExpr(lr, {
         variant: Lowered.ENode.BinaryExpr,
         left: lowerExpr(lr, expr.left, flattened)[1],
         right: lowerExpr(lr, expr.right, flattened)[1],
         operation: expr.operation,
-        type: lowerTypeUse(lr, expr.type),
+        type: typeId,
+        plainResultType: type.type,
       });
     }
 
@@ -764,7 +768,9 @@ function lowerExpr(
       return Lowered.addExpr(lr, {
         variant: Lowered.ENode.MemberAccessExpr,
         expr: lowerExpr(lr, expr.expr, flattened)[1],
-        isReference: accessedExprType.variant === Semantic.ENode.ReferenceDatatype,
+        isReference:
+          accessedExprType.variant === Semantic.ENode.ReferenceDatatype ||
+          accessedExprType.variant === Semantic.ENode.NullableReferenceDatatype,
         memberName: expr.memberName,
         type: lowerTypeUse(lr, expr.type),
       });
@@ -945,6 +951,8 @@ function lowerExpr(
           type: lowerTypeUse(lr, expr.type),
         });
       } else if (expr.operation === EAssignmentOperation.Add) {
+        const typeId = lowerTypeUse(lr, expr.type);
+        const type = lr.typeUseNodes.get(typeId);
         return Lowered.addExpr(lr, {
           variant: Lowered.ENode.ExprAssignmentExpr,
           target: loweredTarget,
@@ -953,11 +961,14 @@ function lowerExpr(
             left: loweredTarget,
             right: loweredValue,
             operation: EBinaryOperation.Add,
-            type: lowerTypeUse(lr, expr.type),
+            type: typeId,
+            plainResultType: type.type,
           })[1],
           type: lowerTypeUse(lr, expr.type),
         });
       } else if (expr.operation === EAssignmentOperation.Subtract) {
+        const typeId = lowerTypeUse(lr, expr.type);
+        const type = lr.typeUseNodes.get(typeId);
         return Lowered.addExpr(lr, {
           variant: Lowered.ENode.ExprAssignmentExpr,
           target: loweredTarget,
@@ -966,11 +977,14 @@ function lowerExpr(
             left: loweredTarget,
             right: loweredValue,
             operation: EBinaryOperation.Subtract,
-            type: lowerTypeUse(lr, expr.type),
+            type: typeId,
+            plainResultType: type.type,
           })[1],
           type: lowerTypeUse(lr, expr.type),
         });
       } else if (expr.operation === EAssignmentOperation.Multiply) {
+        const typeId = lowerTypeUse(lr, expr.type);
+        const type = lr.typeUseNodes.get(typeId);
         return Lowered.addExpr(lr, {
           variant: Lowered.ENode.ExprAssignmentExpr,
           target: loweredTarget,
@@ -979,11 +993,14 @@ function lowerExpr(
             left: loweredTarget,
             right: loweredValue,
             operation: EBinaryOperation.Multiply,
-            type: lowerTypeUse(lr, expr.type),
+            type: typeId,
+            plainResultType: type.type,
           })[1],
           type: lowerTypeUse(lr, expr.type),
         });
       } else if (expr.operation === EAssignmentOperation.Divide) {
+        const typeId = lowerTypeUse(lr, expr.type);
+        const type = lr.typeUseNodes.get(typeId);
         return Lowered.addExpr(lr, {
           variant: Lowered.ENode.ExprAssignmentExpr,
           target: loweredTarget,
@@ -992,11 +1009,14 @@ function lowerExpr(
             left: loweredTarget,
             right: loweredValue,
             operation: EBinaryOperation.Divide,
-            type: lowerTypeUse(lr, expr.type),
+            type: typeId,
+            plainResultType: type.type,
           })[1],
           type: lowerTypeUse(lr, expr.type),
         });
       } else if (expr.operation === EAssignmentOperation.Modulo) {
+        const typeId = lowerTypeUse(lr, expr.type);
+        const type = lr.typeUseNodes.get(typeId);
         return Lowered.addExpr(lr, {
           variant: Lowered.ENode.ExprAssignmentExpr,
           target: loweredTarget,
@@ -1005,7 +1025,8 @@ function lowerExpr(
             left: loweredTarget,
             right: loweredValue,
             operation: EBinaryOperation.Modulo,
-            type: lowerTypeUse(lr, expr.type),
+            type: typeId,
+            plainResultType: type.type,
           })[1],
           type: lowerTypeUse(lr, expr.type),
         });
