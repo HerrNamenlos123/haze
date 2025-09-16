@@ -20,6 +20,9 @@ NONCLONABLE: 'nonclonable';
 CLONABLE: 'clonable';
 REQUIRES: 'requires';
 UNSAFE: 'unsafe';
+DO: 'do';
+YIELD: 'yield';
+EMIT: 'emit';
 
 TRUE: 'true';
 FALSE: 'false';

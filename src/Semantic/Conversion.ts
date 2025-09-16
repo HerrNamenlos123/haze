@@ -1259,7 +1259,7 @@ export namespace Conversion {
 
       if (arraysAreEquivalent(requiredMembers, assignedMembers)) {
         const collectedStruct = sr.cc.nodes.get(targetType.collectedSymbol);
-        assert(collectedStruct.variant === Collect.ENode.StructDefinitionSymbol);
+        assert(collectedStruct.variant === Collect.ENode.StructTypeDef);
         // Make an empty struct instantiation and let it handle the default values, since we know they all exist.
         return Semantic.makeStructInstantiation(sr, sr.typeUseNodes.get(targetTypeId).type, {
           blockScope: null,

@@ -158,7 +158,7 @@ export type ASTFunctionDefinition = {
   externLanguage: EExternLanguage;
   operatorOverloading?: {
     operator: EOperator;
-    asTarget: ASTDatatype;
+    asTarget: ASTTypeUse;
   };
   generics: {
     name: string;
@@ -169,7 +169,7 @@ export type ASTFunctionDefinition = {
   static: boolean;
   params: ASTParam[];
   ellipsis: boolean;
-  returnType?: ASTDatatype;
+  returnType?: ASTTypeUse;
   methodType: EMethodType;
   funcbody?: ASTFuncBody;
   sourceloc: SourceLoc;
@@ -178,14 +178,14 @@ export type ASTFunctionDefinition = {
 
 export type ASTParam = {
   name: string;
-  datatype: ASTDatatype;
+  datatype: ASTTypeUse;
   sourceloc: SourceLoc;
 };
 
 export type ASTNamedDatatype = {
   variant: "NamedDatatype";
   name: string;
-  generics: (ASTDatatype | ASTLiteralExpr)[];
+  generics: (ASTTypeUse | ASTLiteralExpr)[];
   nested?: ASTNamedDatatype;
   mutability: EDatatypeMutability;
   sourceloc: SourceLoc;
@@ -195,21 +195,21 @@ export type ASTFunctionDatatype = {
   variant: "FunctionDatatype";
   params: ASTParam[];
   ellipsis: boolean;
-  returnType: ASTDatatype;
+  returnType: ASTTypeUse;
   mutability: EDatatypeMutability;
   sourceloc: SourceLoc;
 };
 
 export type ASTNullableReferenceDatatype = {
   variant: "NullableReferenceDatatype";
-  referee: ASTDatatype;
+  referee: ASTTypeUse;
   mutability: EDatatypeMutability;
   sourceloc: SourceLoc;
 };
 
 export type ASTArrayDatatype = {
   variant: "ArrayDatatype";
-  datatype: ASTDatatype;
+  datatype: ASTTypeUse;
   length: number;
   mutability: EDatatypeMutability;
   sourceloc: SourceLoc;
@@ -217,14 +217,14 @@ export type ASTArrayDatatype = {
 
 export type ASTSliceDatatype = {
   variant: "SliceDatatype";
-  datatype: ASTDatatype;
+  datatype: ASTTypeUse;
   mutability: EDatatypeMutability;
   sourceloc: SourceLoc;
 };
 
 export type ASTReferenceDatatype = {
   variant: "ReferenceDatatype";
-  referee: ASTDatatype;
+  referee: ASTTypeUse;
   mutability: EDatatypeMutability;
   sourceloc: SourceLoc;
 };
@@ -234,7 +234,7 @@ export type ASTParameterPackDatatype = {
   sourceloc: SourceLoc;
 };
 
-export type ASTDatatype =
+export type ASTTypeUse =
   | ASTNamedDatatype
   | ASTFunctionDatatype
   | ASTDeferredType
@@ -252,7 +252,7 @@ export type ASTGlobalVariableDefinition = {
   extern: EExternLanguage;
   mutability: EVariableMutability;
   name: string;
-  datatype?: ASTDatatype;
+  datatype?: ASTTypeUse;
   expr?: ASTExpr;
   sourceloc: SourceLoc;
 };
@@ -263,8 +263,8 @@ export type ASTInlineCStatement = {
   sourceloc: SourceLoc;
 };
 
-export type ASTScopeStatement = {
-  variant: "ScopeStatement";
+export type ASTBlockScopeExpr = {
+  variant: "BlockScopeExpr";
   scope: ASTScope;
   sourceloc: SourceLoc;
 };
@@ -286,7 +286,7 @@ export type ASTVariableDefinitionStatement = {
   mutability: EVariableMutability;
   comptime: boolean;
   name: string;
-  datatype?: ASTDatatype;
+  datatype?: ASTTypeUse;
   expr?: ASTExpr;
   variableContext: EVariableContext;
   sourceloc: SourceLoc;
@@ -322,10 +322,10 @@ export type ASTWhileStatement = {
   sourceloc: SourceLoc;
 };
 
-export type ASTTypeAliasStatement = {
-  variant: "TypeAliasStatement";
+export type ASTTypeAlias = {
+  variant: "TypeAlias";
   name: string;
-  datatype: ASTDatatype;
+  datatype: ASTTypeUse;
   export: boolean;
   pub: boolean;
   extern: EExternLanguage;
@@ -334,30 +334,24 @@ export type ASTTypeAliasStatement = {
 
 export type ASTStatement =
   | ASTInlineCStatement
-  | ASTScopeStatement
   | ASTExprStatement
   | ASTForEachStatement
   | ASTReturnStatement
   | ASTVariableDefinitionStatement
   | ASTIfStatement
-  | ASTTypeAliasStatement
+  | ASTTypeAlias
   | ASTWhileStatement;
 
 export type ASTScope = {
   variant: "Scope";
   statements: ASTStatement[];
+  emittedExpr: ASTExpr | null;
   unsafe: boolean;
   sourceloc: SourceLoc;
 };
 
 export type ASTParenthesisExpr = {
   variant: "ParenthesisExpr";
-  expr: ASTExpr;
-  sourceloc: SourceLoc;
-};
-
-export type ASTUnsafeExpr = {
-  variant: "UnsafeExpr";
   expr: ASTExpr;
   sourceloc: SourceLoc;
 };
@@ -404,13 +398,13 @@ export type ASTExprMemberAccess = {
   variant: "ExprMemberAccess";
   expr: ASTExpr;
   member: string;
-  generics: (ASTDatatype | ASTLiteralExpr)[];
+  generics: (ASTTypeUse | ASTLiteralExpr)[];
   sourceloc: SourceLoc;
 };
 
 export type ASTStructInstantiationExpr = {
   variant: "StructInstantiationExpr";
-  datatype: ASTDatatype | null;
+  datatype: ASTTypeUse | null;
   members: { name: string; value: ASTExpr }[];
   sourceloc: SourceLoc;
 };
@@ -432,7 +426,7 @@ export type ASTUnaryExpr = {
 export type ASTExplicitCastExpr = {
   variant: "ExplicitCastExpr";
   expr: ASTExpr;
-  castedTo: ASTDatatype;
+  castedTo: ASTTypeUse;
   sourceloc: SourceLoc;
 };
 
@@ -481,19 +475,19 @@ export type ASTExprAssignmentExpr = {
 export type ASTSymbolValueExpr = {
   variant: "SymbolValueExpr";
   name: string;
-  generics: (ASTDatatype | ASTLiteralExpr)[];
+  generics: (ASTTypeUse | ASTLiteralExpr)[];
   sourceloc: SourceLoc;
 };
 
 export type ASTTypeLiteralExpr = {
   variant: "TypeLiteralExpr";
-  datatype: ASTDatatype;
+  datatype: ASTTypeUse;
   sourceloc: SourceLoc;
 };
 
 export type ASTExpr =
   | ASTParenthesisExpr
-  | ASTUnsafeExpr
+  | ASTBlockScopeExpr
   | ASTLambdaExpr
   | ASTArrayLiteralExpr
   | ASTLiteralExpr
@@ -517,7 +511,7 @@ export type ASTLambda = {
   variant: "Lambda";
   params: ASTParam[];
   ellipsis: boolean;
-  returnType?: ASTDatatype;
+  returnType?: ASTTypeUse;
   funcbody: ASTFuncBody;
   sourceloc: SourceLoc;
 };
@@ -539,7 +533,7 @@ export type ASTCInjectDirective = {
 export type ASTStructMemberDefinition = {
   variant: "StructMember";
   name: string;
-  type: ASTDatatype;
+  type: ASTTypeUse;
   defaultValue: ASTExpr | null;
   mutability: EVariableMutability;
   sourceloc: SourceLoc;
@@ -563,17 +557,17 @@ export type ASTStructDefinition = {
   originalSourcecode: string;
 };
 
-export type ASTTypeDefinition = ASTStructDefinition;
+export type ASTTypeDef = ASTStructDefinition | ASTNamespaceDefinition | ASTTypeAlias;
 
 export type ASTNamespaceDefinition = {
   variant: "NamespaceDefinition";
   export: boolean;
   name: string;
-  declarations: ASTGlobalDeclaration[];
+  declarations: ASTSymbolDefinition[];
   sourceloc: SourceLoc;
 };
 
-export type ModuleImport = {
+export type ASTModuleImport = {
   variant: "ModuleImport";
   mode: "path" | "module";
   name: string;
@@ -581,7 +575,7 @@ export type ModuleImport = {
   sourceloc: SourceLoc;
 };
 
-export type SymbolImport = {
+export type ASTSymbolImport = {
   variant: "SymbolImport";
   mode: "path" | "module";
   name: string;
@@ -592,17 +586,17 @@ export type SymbolImport = {
   sourceloc: SourceLoc;
 };
 
-export type ASTGlobalDeclaration =
+export type ASTSymbolDefinition =
   | ASTFunctionDefinition
-  | ASTTypeDefinition
+  | ASTTypeDef
   | ASTNamespaceDefinition
-  | ASTTypeAliasStatement
+  | ASTTypeAlias
   | ASTGlobalVariableDefinition;
 
 export type ASTTopLevelDeclaration =
   | ASTCInjectDirective
-  | ModuleImport
-  | SymbolImport
-  | ASTGlobalDeclaration;
+  | ASTModuleImport
+  | ASTSymbolImport
+  | ASTSymbolDefinition;
 
 export type ASTRoot = ASTTopLevelDeclaration[];

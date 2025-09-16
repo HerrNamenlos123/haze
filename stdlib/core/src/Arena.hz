@@ -26,18 +26,17 @@ export struct Arena {
     }
 
     alloc<T>(value: T): &T {
-        const ref = unsafe(this.allocateRaw(sizeof(T)) as &void as &T);
-        assign(ref, value);
+        const ref = do unsafe { emit this.allocateRaw(sizeof(T)) as &void as &T; };
+        // assign(ref, value);
         return ref;
     }
 
     __newChunk(size: usize): &ArenaChunk {
         let chunk_size = max<usize>(size, 4096); // default chunk size
-        let chunk_mem: &ArenaChunk = uninitialized;
-        unsafe {
-            rebind(chunk_mem, builtin.malloc(sizeof(ArenaChunk) + chunk_size) as &ArenaChunk);
-            builtin.memset(chunk_mem as &void, 0, chunk_size);
-        }
+        let chunk_mem: &ArenaChunk = do unsafe {
+            emit builtin.malloc(sizeof(ArenaChunk) + chunk_size) as &ArenaChunk;
+        };
+        builtin.memset(chunk_mem as &void, 0, chunk_size);
         chunk_mem.next = nullptr;
         chunk_mem.size = chunk_size;
         chunk_mem.used = 0;
@@ -71,9 +70,9 @@ export struct Arena {
         let chunk = this.first;
         while chunk != nullptr {
             let next = chunk.next;
-            unsafe {
+            do unsafe {
                 builtin.free(chunk as &void);
-            }
+            };
             chunk = next;
         }
         this.first = nullptr;

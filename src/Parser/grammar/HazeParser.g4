@@ -56,8 +56,9 @@ param: ID COLON (datatype | ellipsis);
 params: (param (COMMA param)* (COMMA ellipsis)?)? | ellipsis;
 ellipsis: ELLIPSIS;
 
-funcbody: (scope | exprAsFuncbody);
-scope: UNSAFE? LCURLY (statement)* RCURLY;
+funcbody: (rawScope | exprAsFuncbody);
+rawScope: LCURLY (statement)* RCURLY;
+doScope: DO UNSAFE? LCURLY (statement)* (EMIT expr SEMI)? RCURLY;
 exprAsFuncbody: expr;
 
 // Variables
@@ -141,6 +142,7 @@ requiresBlock
 expr
     // https://en.cppreference.com/w/c/language/operator_precedence
     : LB expr RB                                                                    #ParenthesisExpr
+    | doScope                                                                       #BlockScopeExpr
     | TYPE LANGLE datatype RANGLE                                                   #TypeLiteralExpr
     | lambda                                                                        #LambdaExpr
     | literal                                                                       #LiteralExpr
@@ -150,7 +152,6 @@ expr
     // Part 1: Left to right
     | expr op=(PLUSPLUS | MINUSMINUS)                                               #PostIncrExpr
     | expr LB (expr (COMMA expr)*)? RB                                              #ExprCallExpr
-    | UNSAFE LB expr RB                                                             #UnsafeExpr
     | value=expr LBRACKET (index+=expr) (COMMA index+=expr)* COMMA? RBRACKET        #ArraySubscriptExpr
     | value=expr LBRACKET (index+=sliceIndex) (COMMA index+=sliceIndex)* COMMA? RBRACKET        #ArraySliceExpr
     | expr DOT ID (LANGLE genericLiteral (COMMA genericLiteral)* RANGLE)?           #ExprMemberAccess
@@ -186,9 +187,8 @@ statement
     | expr SEMI                                                 #ExprStatement
     | RETURN expr? SEMI                                         #ReturnStatement
     | variableMutabilitySpecifier comptime=COMPTIME? ID (((COLON datatype)? EQUALS expr) | (COLON datatype)) SEMI       #VariableCreationStatement
-    | IF comptime=COMPTIME? ifExpr=expr then=scope (ELSE IF elseIfExpr+=expr elseIfThen+=scope)* (ELSE elseBlock=scope)? #IfStatement
-    | FOR comptime=COMPTIME? ID (COMMA ID)? IN expr scope       #ForEachStatement
-    | WHILE expr scope                                          #WhileStatement
-    | scope                                                     #ScopeStatement
+    | IF comptime=COMPTIME? ifExpr=expr then=rawScope (ELSE IF elseIfExpr+=expr elseIfThen+=rawScope)* (ELSE elseBlock=rawScope)? #IfStatement
+    | FOR comptime=COMPTIME? ID (COMMA ID)? IN expr rawScope       #ForEachStatement
+    | WHILE expr rawScope                                          #WhileStatement
     | typeDef                                                   #TypeAliasStatement
     ;

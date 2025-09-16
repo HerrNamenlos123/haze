@@ -17,13 +17,13 @@ function getNamespaces(
   switch (symbol.variant) {
     case Collect.ENode.FunctionSymbol: {
       const overloadGroup = cc.nodes.get(symbol.overloadGroup);
-      assert(overloadGroup.variant === Collect.ENode.FunctionOverloadGroup);
+      assert(overloadGroup.variant === Collect.ENode.FunctionOverloadGroupSymbol);
       return getNamespaces(cc, symbol.parentScope, [overloadGroup.name, ...current]);
     }
 
     case Collect.ENode.NamespaceScope: {
       const namespace = cc.nodes.get(symbol.owningSymbol);
-      assert(namespace.variant === Collect.ENode.NamespaceDefinitionSymbol);
+      assert(namespace.variant === Collect.ENode.NamespaceTypeDef);
       return getNamespaces(cc, symbol.parentScope, [namespace.name, ...current]);
     }
 
@@ -39,7 +39,7 @@ function getNamespaces(
       return getNamespaces(cc, symbol.owningSymbol, current);
     }
 
-    case Collect.ENode.StructDefinitionSymbol: {
+    case Collect.ENode.StructTypeDef: {
       return getNamespaces(cc, symbol.parentScope, [symbol.name, ...current]);
     }
 
@@ -153,7 +153,7 @@ export function ExportCollectedSymbols(cc: CollectionContext) {
             file += "noemit ";
           }
           const overloadGroup = cc.nodes.get(symbol.overloadGroup);
-          assert(overloadGroup.variant === Collect.ENode.FunctionOverloadGroup);
+          assert(overloadGroup.variant === Collect.ENode.FunctionOverloadGroupSymbol);
           file += namespaces[namespaces.length - 1];
           file +=
             "(" +
@@ -169,7 +169,7 @@ export function ExportCollectedSymbols(cc: CollectionContext) {
         break;
       }
 
-      case Collect.ENode.StructDefinitionSymbol: {
+      case Collect.ENode.StructTypeDef: {
         const namespaces = getNamespaces(cc, symbolId);
         for (const ns of namespaces.slice(0, -1)) {
           file += "namespace " + ns + " {\n";
@@ -210,7 +210,7 @@ export function ExportCollectedSymbols(cc: CollectionContext) {
               } else {
                 file += `${content.name}: ${printType(cc, content.type)};\n`;
               }
-            } else if (content.variant === Collect.ENode.FunctionOverloadGroup) {
+            } else if (content.variant === Collect.ENode.FunctionOverloadGroupSymbol) {
               for (const overloadId of content.overloads) {
                 const method = cc.nodes.get(overloadId);
                 assert(method.variant === Collect.ENode.FunctionSymbol);
@@ -235,7 +235,7 @@ export function ExportCollectedSymbols(cc: CollectionContext) {
         break;
       }
 
-      case Collect.ENode.AliasTypeSymbol: {
+      case Collect.ENode.TypeDefAlias: {
         file += `type ${symbol.name} = ${printType(cc, symbol.target)};\n`;
         break;
       }

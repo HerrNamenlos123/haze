@@ -1364,7 +1364,7 @@ function lowerStatement(
       ];
     }
 
-    case Semantic.ENode.BlockScopeStatement: {
+    case Semantic.ENode.BlockScopeExpr: {
       return [
         Lowered.addStatement<Lowered.BlockScopeStatement>(lr, {
           variant: Lowered.ENode.BlockScopeStatement,

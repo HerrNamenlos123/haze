@@ -39,7 +39,6 @@ import {
   CollectFile,
   ECollectionMode,
   makeCollectionContext,
-  makeSymbol,
   PrettyPrintCollected,
   type CollectionContext,
 } from "./SymbolCollection/SymbolCollection";
@@ -595,14 +594,15 @@ class ModuleCompiler {
   }
 
   private makeUnit() {
-    const [unit, unitId] = makeSymbol(this.cc, {
+    const [unit, unitId] = Collect.makeScope(this.cc, {
       variant: Collect.ENode.UnitScope,
-      parentScope: 0 as Collect.Id,
+      parentScope: this.cc.moduleScopeId,
       symbols: new Set(),
+      scopes: new Set(),
     });
-    const moduleScope = this.cc.nodes.get(0 as Collect.Id);
+    const moduleScope = this.cc.scopeNodes.get(this.cc.moduleScopeId);
     assert(moduleScope.variant === Collect.ENode.ModuleScope);
-    moduleScope.symbols.add(unitId);
+    moduleScope.scopes.add(unitId);
     return [unit, unitId] as const;
   }
 
@@ -612,7 +612,7 @@ class ModuleCompiler {
     CollectFile(
       this.cc,
       ast,
-      0 as Collect.Id,
+      this.cc.moduleScopeId,
       filepath,
       this.config.name,
       this.config.version,
@@ -635,7 +635,7 @@ class ModuleCompiler {
             ast,
             collectionMode === ECollectionMode.WrapIntoModuleNamespace
               ? this.makeUnit()[1]
-              : (0 as Collect.Id),
+              : this.cc.moduleScopeId,
             fullPath,
             this.config.name,
             this.config.version,
@@ -689,7 +689,7 @@ class ModuleCompiler {
       await this.collectImports();
       await this.addProjectSourceFiles();
 
-      // PrettyPrintCollected(this.cc);
+      PrettyPrintCollected(this.cc);
 
       const sr = Semantic.SemanticallyAnalyze(
         this.cc,
