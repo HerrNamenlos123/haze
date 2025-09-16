@@ -15,6 +15,7 @@ import {
   EPrimitive,
   EVariableContext,
   primitiveToString,
+  pushBrandedNode,
   stringToPrimitive,
   type NameSet,
 } from "../shared/common";
@@ -234,82 +235,28 @@ export namespace Semantic {
     Dummy,
   }
 
-  export function addBlockScope<T extends Semantic.BlockScope>(
-    sr: SemanticResult,
-    n: T
-  ): [T, Semantic.BlockScopeId] {
-    if (sr.blockScopeNodes.length === 0) {
-      // Push a dummy because it causes issues when the id is zero, so zero is not a valid id.
-      sr.blockScopeNodes.push(undefined as any);
-    }
-    const id = sr.blockScopeNodes.length as Semantic.BlockScopeId;
-    sr.blockScopeNodes.push(n);
-    return [n, id];
+  export function addBlockScope<T extends Semantic.BlockScope>(sr: SemanticResult, n: T) {
+    return pushBrandedNode(sr.blockScopeNodes, n);
   }
 
-  export function addTypeInstance<T extends Semantic.TypeUse>(
-    sr: SemanticResult,
-    n: T
-  ): [T, Semantic.TypeUseId] {
-    if (sr.typeUseNodes.length === 0) {
-      // Push a dummy because it causes issues when the id is zero, so zero is not a valid id.
-      sr.typeUseNodes.push(undefined as any);
-    }
-    const id = sr.typeUseNodes.length as Semantic.TypeUseId;
-    sr.typeUseNodes.push(n);
-    return [n, id];
+  export function addTypeInstance<T extends Semantic.TypeUse>(sr: SemanticResult, n: T) {
+    return pushBrandedNode(sr.typeUseNodes, n);
   }
 
-  export function addStatement<T extends Semantic.Statement>(
-    sr: SemanticResult,
-    n: T
-  ): [T, Semantic.StatementId] {
-    if (sr.statementNodes.length === 0) {
-      // Push a dummy because it causes issues when the id is zero, so zero is not a valid id.
-      sr.statementNodes.push(undefined as any);
-    }
-    const id = sr.statementNodes.length as Semantic.StatementId;
-    sr.statementNodes.push(n);
-    return [n, id];
+  export function addStatement<T extends Semantic.Statement>(sr: SemanticResult, n: T) {
+    return pushBrandedNode(sr.statementNodes, n);
   }
 
-  export function addType<T extends Semantic.TypeDef>(
-    sr: SemanticResult,
-    n: T
-  ): [T, Semantic.TypeDefId] {
-    if (sr.typeDefNodes.length === 0) {
-      // Push a dummy because it causes issues when the id is zero, so zero is not a valid id.
-      sr.typeDefNodes.push(undefined as any);
-    }
-    const id = sr.typeDefNodes.length as Semantic.TypeDefId;
-    sr.typeDefNodes.push(n);
-    return [n, id];
+  export function addType<T extends Semantic.TypeDef>(sr: SemanticResult, n: T) {
+    return pushBrandedNode(sr.typeDefNodes, n);
   }
 
-  export function addSymbol<T extends Semantic.Symbol>(
-    sr: SemanticResult,
-    n: T
-  ): [T, Semantic.SymbolId] {
-    if (sr.symbolNodes.length === 0) {
-      // Push a dummy because it causes issues when the id is zero, so zero is not a valid id.
-      sr.symbolNodes.push(undefined as any);
-    }
-    const id = sr.symbolNodes.length as Semantic.SymbolId;
-    sr.symbolNodes.push(n);
-    return [n, id];
+  export function addSymbol<T extends Semantic.Symbol>(sr: SemanticResult, n: T) {
+    return pushBrandedNode(sr.symbolNodes, n);
   }
 
-  export function addExpr<T extends Semantic.Expression>(
-    sr: SemanticResult,
-    n: T
-  ): [T, Semantic.ExprId] {
-    if (sr.exprNodes.length === 0) {
-      // Push a dummy because it causes issues when the id is zero, so zero is not a valid id.
-      sr.exprNodes.push(undefined as any);
-    }
-    const id = sr.exprNodes.length as Semantic.ExprId;
-    sr.exprNodes.push(n);
-    return [n, id];
+  export function addExpr<T extends Semantic.Expression>(sr: SemanticResult, n: T) {
+    return pushBrandedNode(sr.exprNodes, n);
   }
 
   export type ConstraintValue =

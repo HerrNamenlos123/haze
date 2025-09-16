@@ -36,6 +36,16 @@ export class BrandedArray<I extends number, T> {
   }
 }
 
+export function pushBrandedNode<I extends number, U>(array: BrandedArray<I, U>, value: U): [U, I] {
+  if (array.length === 0) {
+    // Push a dummy because it causes issues when the id is zero, so zero is not a valid id.
+    array.push(undefined as any);
+  }
+  const id = array.length as I;
+  array.push(value);
+  return [value, id];
+}
+
 export type NameSet = {
   mangledName: string;
   prettyName: string;
