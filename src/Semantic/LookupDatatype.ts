@@ -10,7 +10,13 @@ import {
   funcSymHasParameterPack,
   printCollectedExpr,
 } from "../SymbolCollection/SymbolCollection";
-import { isTypeConcrete, makePrimitiveAvailable, Semantic, type SemanticResult } from "./Elaborate";
+import {
+  isTypeConcrete,
+  isTypeExprConcrete,
+  makePrimitiveAvailable,
+  Semantic,
+  type SemanticResult,
+} from "./Elaborate";
 import { EExternLanguage, EDatatypeMutability, EVariableMutability } from "../shared/AST";
 import { Conversion } from "./Conversion";
 
@@ -251,7 +257,7 @@ export function instantiateAndElaborateStructWithGenerics(
   sr: SemanticResult,
   args: {
     definedStructTypeId: Collect.TypeDefId;
-    genericArgs: Semantic.TypeUseId[];
+    genericArgs: Semantic.ExprId[];
     sourceloc: SourceLoc;
     context: Semantic.ElaborationContext;
   }
@@ -322,13 +328,12 @@ export function instantiateAndElaborateStruct(
       parentScope: definedStructType.parentScope,
       context: args.context,
     }),
-    isMonomorphized: definedStructType.generics.length > 0,
     members: [],
     memberDefaultValues: [],
     methods: [],
     nestedStructs: [],
     sourceloc: definedStructType.sourceloc,
-    concrete: genericArgs.every((g) => isTypeConcrete(sr, g)),
+    concrete: genericArgs.every((g) => isTypeExprConcrete(sr, g)),
     originalCollectedSymbol: args.definedStructTypeId,
   });
 
@@ -402,10 +407,9 @@ export function instantiateAndElaborateStruct(
                 EDatatypeMutability.Default,
                 definedStructType.sourceloc
               ),
-              isMonomorphized: struct.isMonomorphized,
               gonnaInstantiateStructWithType: variable.type,
               scope: definedStructType.structScope,
-              blockScope: null,
+              constraints: [],
               unsafe: false,
             })[1];
           }
@@ -435,7 +439,6 @@ export function instantiateAndElaborateStruct(
           const funcId = Semantic.elaborateFunctionSymbol(sr, signature, {
             paramPackTypes: [],
             context: args.context,
-            isMonomorphized: struct.isMonomorphized,
             parentStructOrNS: structId,
           });
           const func = sr.symbolNodes.get(funcId);
@@ -662,7 +665,18 @@ export function lookupAndElaborateDatatype(
       if (found.variant === Collect.ENode.GenericTypeParameterSymbol) {
         const mappedTo = args.context.substitute.get(foundId);
         if (mappedTo) {
-          return mappedTo;
+          const mapped = sr.exprNodes.get(mappedTo);
+          if (mapped.variant === Semantic.ENode.DatatypeAsValueExpr) {
+            return mapped.type;
+          } else {
+            throw new CompilerError(
+              `Generic placeholder '${type.name}' resolves to value '${Semantic.serializeExpr(
+                sr,
+                mappedTo
+              )}', which cannot be used as a datatype`,
+              type.sourceloc
+            );
+          }
         } else {
           return makeTypeUse(
             sr,
@@ -710,19 +724,26 @@ export function lookupAndElaborateDatatype(
         } else if (typedef.variant === Collect.ENode.StructTypeDef) {
           const generics = type.genericArgs.map((g) => {
             return Semantic.expressionAsGenericArg(sr, g, {
-              blockScope: args.blockScope,
               context: args.context,
+              constraints: [],
+              expectedReturnType: makePrimitiveAvailable(
+                sr,
+                EPrimitive.void,
+                EDatatypeMutability.Default,
+                type.sourceloc
+              ),
+              unsafe: false,
             });
           });
           const structId = instantiateAndElaborateStructWithGenerics(sr, {
-            definedStructTypeId: foundId,
+            definedStructTypeId: found.typeDef,
             genericArgs: generics,
             context: args.context,
             sourceloc: type.sourceloc,
           });
           const struct = sr.typeDefNodes.get(structId);
           assert(struct.variant === Semantic.ENode.StructDatatype);
-          const structScope = sr.cc.scopeNodes.get(found.structScope);
+          const structScope = sr.cc.scopeNodes.get(typedef.structScope);
           assert(structScope.variant === Collect.ENode.StructScope);
 
           if (type.innerNested) {
@@ -730,7 +751,7 @@ export function lookupAndElaborateDatatype(
             let cachedParentSubstitutions = undefined as Semantic.ElaborationContext | undefined;
             for (const cache of sr.elaboratedStructDatatypes) {
               if (
-                cache.originalSymbol === foundId &&
+                cache.originalSymbol === found.typeDef &&
                 cache.generics.length === generics.length &&
                 cache.generics.every((g, i) => g === generics[i])
               ) {
@@ -743,18 +764,18 @@ export function lookupAndElaborateDatatype(
               typeId: type.innerNested,
               isInCFuncdecl: false,
               context: Semantic.mergeSubstitutionContext(cachedParentSubstitutions, args.context, {
-                currentScope: found.structScope,
+                currentScope: typedef.structScope,
                 genericsScope: args.context.genericsScope,
               }),
             });
           } else {
             return makeTypeUse(sr, structId, type.mutability, type.sourceloc)[1];
           }
-        } else if (found.variant === Collect.ENode.NamespaceTypeDef) {
+        } else if (typedef.variant === Collect.ENode.NamespaceTypeDef) {
           if (!type.innerNested) {
             return makeTypeUse(
               sr,
-              Semantic.elaborateNamespace(sr, foundId, {
+              Semantic.elaborateNamespace(sr, found.typeDef, {
                 context: args.context,
               }),
               type.mutability,
@@ -764,32 +785,17 @@ export function lookupAndElaborateDatatype(
           return lookupAndElaborateDatatype(sr, {
             typeId: type.innerNested,
             context: Semantic.isolateElaborationContext(args.context, {
-              currentScope: found.namespaceScope,
+              currentScope: typedef.namespaceScope,
               genericsScope: args.context.genericsScope,
             }),
             isInCFuncdecl: args.isInCFuncdecl,
           });
         }
-      } else {
-        throw new CompilerError(
-          `Symbol '${type.name}' cannot be used as a datatype here`,
-          type.sourceloc
-        );
       }
-    }
-
-    case Collect.ENode.LiteralExpr: {
-      return makeTypeUse(
-        sr,
-        Semantic.addType(sr, {
-          variant: Semantic.ENode.LiteralValueDatatype,
-          literal: type.literal,
-          concrete: true,
-          sourceloc: type.sourceloc,
-        })[1],
-        EDatatypeMutability.Const,
+      throw new CompilerError(
+        `Symbol '${type.name}' cannot be used as a datatype here`,
         type.sourceloc
-      )[1];
+      );
     }
 
     case Collect.ENode.ParameterPack: {

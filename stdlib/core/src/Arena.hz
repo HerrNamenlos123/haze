@@ -36,7 +36,9 @@ export struct Arena {
         let chunk_mem: &ArenaChunk = do unsafe {
             emit builtin.malloc(sizeof(ArenaChunk) + chunk_size) as &ArenaChunk;
         };
-        builtin.memset(chunk_mem as &void, 0, chunk_size);
+        do unsafe {
+            builtin.memset(chunk_mem as &void, 0, chunk_size);
+        }
         chunk_mem.next = nullptr;
         chunk_mem.size = chunk_size;
         chunk_mem.used = 0;

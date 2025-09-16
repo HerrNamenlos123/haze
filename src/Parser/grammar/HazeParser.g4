@@ -183,9 +183,9 @@ expr
 // Statements & Conditionals
 
 statement
-    : INLINEC LB STRING_LITERAL RB SEMI                         #CInlineStatement
-    | expr SEMI                                                 #ExprStatement
-    | RETURN expr? SEMI                                         #ReturnStatement
+    : INLINEC LB STRING_LITERAL RB SEMI?                         #CInlineStatement
+    | expr SEMI?                                                #ExprStatement
+    | RETURN expr? SEMI?                                         #ReturnStatement
     | variableMutabilitySpecifier comptime=COMPTIME? ID (((COLON datatype)? EQUALS expr) | (COLON datatype)) SEMI       #VariableCreationStatement
     | IF comptime=COMPTIME? ifExpr=expr then=rawScope (ELSE IF elseIfExpr+=expr elseIfThen+=rawScope)* (ELSE elseBlock=rawScope)? #IfStatement
     | FOR comptime=COMPTIME? ID (COMMA ID)? IN expr rawScope       #ForEachStatement
