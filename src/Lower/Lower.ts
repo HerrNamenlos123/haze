@@ -1766,8 +1766,10 @@ export function LowerModule(sr: SemanticResult): Lowered.Module {
     loweredGlobalVariables: new Map(),
   };
 
-  for (const symbol of sr.elaboratedFuncdefSymbols) {
-    lowerSymbol(lr, symbol.result);
+  for (const [key, entries] of sr.elaboratedFuncdefSymbols) {
+    for (const entry of entries) {
+      lowerSymbol(lr, entry.result);
+    }
   }
   for (const symbol of sr.elaboratedStructDatatypes) {
     lowerSymbol(lr, symbol.resultAsTypeDefSymbol);

@@ -67,10 +67,6 @@ const ARCHIVE_TOOL = "ar";
 const HAZE_CONFIG_FILE = "haze.toml";
 const HAZE_LIB_IMPORT_FILE = "import.hz";
 
-export function makeModulePrefix(config: ModuleConfig) {
-  return config.name + "." + config.version.replaceAll(".", "_");
-}
-
 export async function getFile(url: string, outfile: string) {
   const response = await fetch(url);
   if (!response.ok) throw new Error(`Failed to fetch: ${response.statusText}`);

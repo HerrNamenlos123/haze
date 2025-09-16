@@ -60,6 +60,76 @@ export function printSubstitutionContext(sr: SemanticResult, context: Semantic.E
   }
 }
 
+type FuncDef = {
+  canonicalizedGenerics: string[];
+  paramPackTypes: Semantic.TypeUseId[];
+  substitutionContext: Semantic.ElaborationContext;
+  result: Semantic.SymbolId;
+  parentStructOrNS: Semantic.TypeDefId | null;
+};
+type FuncDefCache = Map<Collect.SymbolId, FuncDef[]>;
+
+function getFromFuncDefCache(
+  sr: SemanticResult,
+  symbolId: Collect.SymbolId,
+  args: {
+    genericArgs: Semantic.ExprId[];
+    paramPackTypes: Semantic.TypeUseId[];
+    parentStructOrNS: Semantic.TypeDefId | null;
+  }
+) {
+  const entries = sr.elaboratedFuncdefSymbols.get(symbolId);
+  if (entries === undefined) return;
+
+  const canonicalizedGenerics = args.genericArgs.map((g) =>
+    Semantic.canonicalizeGenericExpr(sr, g)
+  );
+
+  for (const entry of entries) {
+    if (
+      entry.parentStructOrNS === args.parentStructOrNS &&
+      entry.canonicalizedGenerics.length === canonicalizedGenerics.length &&
+      entry.canonicalizedGenerics.every((g, index) => g === canonicalizedGenerics[index]) &&
+      entry.paramPackTypes.length === args.paramPackTypes.length &&
+      entry.paramPackTypes.every((g, index) => g === args.paramPackTypes[index])
+    ) {
+      return entry.result;
+    }
+  }
+
+  return;
+}
+
+function insertIntoFuncDefCache(
+  sr: SemanticResult,
+  symbolId: Collect.SymbolId,
+  args: {
+    genericArgs: Semantic.ExprId[];
+    paramPackTypes: Semantic.TypeUseId[];
+    substitutionContext: Semantic.ElaborationContext;
+    result: Semantic.SymbolId;
+    parentStructOrNS: Semantic.TypeDefId | null;
+  }
+) {
+  const canonicalizedGenerics = args.genericArgs.map((g) =>
+    Semantic.canonicalizeGenericExpr(sr, g)
+  );
+
+  let entries = sr.elaboratedFuncdefSymbols.get(symbolId);
+  if (!entries) {
+    sr.elaboratedFuncdefSymbols.set(symbolId, []);
+    entries = sr.elaboratedFuncdefSymbols.get(symbolId)!;
+  }
+
+  entries.push({
+    canonicalizedGenerics: canonicalizedGenerics,
+    paramPackTypes: args.paramPackTypes,
+    parentStructOrNS: args.parentStructOrNS,
+    result: args.result,
+    substitutionContext: args.substitutionContext,
+  });
+}
+
 export type SemanticResult = {
   cc: CollectionContext;
 
@@ -82,14 +152,7 @@ export type SemanticResult = {
     result: Semantic.TypeDefId;
     resultAsTypeDefSymbol: Semantic.SymbolId;
   }[];
-  elaboratedFuncdefSymbols: {
-    originalSymbol: Collect.SymbolId;
-    canonicalizedGenerics: string[];
-    paramPackTypes: Semantic.TypeUseId[];
-    substitutionContext: Semantic.ElaborationContext;
-    result: Semantic.SymbolId;
-    parentStructOrNS: Semantic.TypeDefId | null;
-  }[];
+  elaboratedFuncdefSymbols: FuncDefCache;
   elaboratedNamespaceSymbols: {
     originalSharedInstance: Collect.NSSharedInstanceId;
     result: Semantic.TypeDefId;
@@ -114,6 +177,7 @@ export type SemanticResult = {
   exportedCollectedSymbols: Set<number>;
 
   cInjections: Semantic.SymbolId[];
+  globalMainFunction: Semantic.SymbolId | null;
 };
 
 export function makeRawPrimitiveAvailable(
@@ -4578,31 +4642,14 @@ export namespace Semantic {
       return substitute;
     });
 
-    const genericArgsCanonicalized = genericArgs.map((g) =>
-      Semantic.canonicalizeGenericExpr(sr, g)
-    );
-
-    console.log(
-      "Elaborating function symbol",
-      func.name,
-      genericArgs.map((g) => serializeExpr(sr, g))
-    );
-
-    for (const s of sr.elaboratedFuncdefSymbols) {
-      if (
-        s.canonicalizedGenerics.length === genericArgs.length &&
-        s.canonicalizedGenerics.every((g, index) => g === genericArgsCanonicalized[index]) &&
-        s.paramPackTypes.length === args.paramPackTypes.length &&
-        s.paramPackTypes.every((g, index) => g === args.paramPackTypes[index]) &&
-        s.originalSymbol === functionSignature.originalFunction &&
-        s.parentStructOrNS === args.parentStructOrNS
-      ) {
-        console.log("found in cache");
-        return s.result;
-      }
+    const existing = getFromFuncDefCache(sr, functionSignature.originalFunction, {
+      genericArgs: genericArgs,
+      paramPackTypes: args.paramPackTypes,
+      parentStructOrNS: args.parentStructOrNS,
+    });
+    if (existing) {
+      return existing;
     }
-
-    console.log("Not found, remaking");
 
     const expectedReturnType = lookupAndElaborateDatatype(sr, {
       typeId: func.returnType,
@@ -4735,13 +4782,12 @@ export namespace Semantic {
     });
 
     if (symbol.concrete) {
-      sr.elaboratedFuncdefSymbols.push({
-        canonicalizedGenerics: genericArgsCanonicalized,
-        originalSymbol: functionSignature.originalFunction,
-        substitutionContext: newContext,
+      insertIntoFuncDefCache(sr, functionSignature.originalFunction, {
+        genericArgs: genericArgs,
         paramPackTypes: args.paramPackTypes,
         parentStructOrNS: args.parentStructOrNS,
         result: symbolId,
+        substitutionContext: newContext,
       });
 
       if (func.functionScope) {
@@ -4808,6 +4854,31 @@ export namespace Semantic {
           expectedReturnType: expectedReturnType,
           context: newContext,
         });
+
+        if (func.name === "main" && args.parentStructOrNS) {
+          const modulePrefix = getModuleGlobalNamespaceName(
+            sr.cc.config.name,
+            sr.cc.config.version
+          );
+          const parent = sr.typeDefNodes.get(args.parentStructOrNS);
+          if ("name" in parent && parent.name === modulePrefix) {
+            if (sr.globalMainFunction !== null) {
+              const existing = sr.symbolNodes.get(sr.globalMainFunction);
+              assert(existing.variant === Semantic.ENode.FunctionSymbol);
+              if (existing.sourceloc) {
+                throw new CompilerError(
+                  `Multiply defined main function: Previous definition at ${formatSourceLoc(
+                    existing.sourceloc
+                  )}`,
+                  func.sourceloc
+                );
+              } else {
+                throw new CompilerError(`Multiply defined main function`, func.sourceloc);
+              }
+            }
+            sr.globalMainFunction = symbolId;
+          }
+        }
       }
     }
 
@@ -5160,7 +5231,7 @@ export namespace Semantic {
       elaboratedFunctionSignaturesByName: new Map(),
 
       elaboratedStructDatatypes: [],
-      elaboratedFuncdefSymbols: [],
+      elaboratedFuncdefSymbols: new Map(),
       elaboratedPrimitiveTypes: [],
       elaboratedNamespaceSymbols: [],
       elaboratedGlobalVariableDefinitions: [],
@@ -5184,6 +5255,7 @@ export namespace Semantic {
       elaboratedGlobalVariableSymbols: new Map(),
 
       cInjections: [],
+      globalMainFunction: null,
     };
 
     elaborateTopLevelScope(sr, cc.moduleScopeId, {
@@ -5194,21 +5266,12 @@ export namespace Semantic {
     });
 
     if (moduleName !== HAZE_STDLIB_NAME) {
-      const mainGlobalScope = sr.elaboratedNamespaceSymbols.find((s) => {
-        const symbol = sr.typeDefNodes.get(s.result) as Semantic.NamespaceDatatypeDef;
-        return symbol.name === getModuleGlobalNamespaceName(moduleName, moduleVersion);
-      });
-      console.info("TODO: Narrow this down so it's not just the name, because it might be nested");
-      const mainFunction = sr.elaboratedFuncdefSymbols.find((s) => {
-        const symbol = sr.symbolNodes.get(s.result) as Semantic.FunctionSymbol;
-        return symbol.name === "main" && symbol.parentStructOrNS === mainGlobalScope?.result;
-      });
       if (!isLibrary) {
-        if (!mainFunction) {
+        if (!sr.globalMainFunction) {
           throw new CompilerError("No main function is defined in global scope", null);
         }
 
-        const mainFunctionSymbol = sr.symbolNodes.get(mainFunction.result);
+        const mainFunctionSymbol = sr.symbolNodes.get(sr.globalMainFunction);
         assert(mainFunctionSymbol.variant === Semantic.ENode.FunctionSymbol);
         const mainFunctionType = sr.typeDefNodes.get(mainFunctionSymbol.type);
         assert(mainFunctionType.variant === Semantic.ENode.FunctionDatatype);
@@ -5222,7 +5285,7 @@ export namespace Semantic {
           throw new CompilerError("Main function must return int", mainFunctionSymbol.sourceloc);
         }
       } else {
-        if (mainFunction) {
+        if (sr.globalMainFunction) {
           throw new CompilerError(
             "main function is defined, but not allowed because module is built as library",
             null
