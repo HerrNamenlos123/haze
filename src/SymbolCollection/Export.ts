@@ -71,7 +71,21 @@ function printType(cc: CollectionContext, typeId: Collect.TypeUseId): string {
     case Collect.ENode.NamedDatatype: {
       let str = type.name;
       if (type.genericArgs.length !== 0) {
-        str += "<" + type.genericArgs.map((g) => printCollectedExpr(cc, g)).join(", ") + ">";
+        str +=
+          "<" +
+          type.genericArgs
+            .map((g) => {
+              const expr = cc.exprNodes.get(g);
+              if (expr.variant === Collect.ENode.TypeLiteralExpr) {
+                return printCollectedDatatype(cc, expr.datatype);
+              } else if (expr.variant === Collect.ENode.LiteralExpr) {
+                return Semantic.serializeLiteralValue(expr.literal);
+              } else {
+                assert(false);
+              }
+            })
+            .join(", ") +
+          ">";
       }
       if (type.innerNested) {
         str += "." + printType(cc, type.innerNested);

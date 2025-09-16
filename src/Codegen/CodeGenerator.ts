@@ -574,9 +574,9 @@ class CodeGenerator {
     assert(ftype.variant === Lowered.ENode.FunctionDatatype);
 
     let signature = "";
-    // if (symbol.wasMonomorphized) {
-    //   signature += "static ";
-    // }
+    if (symbol.isLibraryLocal) {
+      signature += "static ";
+    }
     signature +=
       this.mangleTypeUse(ftype.returnType) + " " + this.mangleFunctionSymbol(symbol) + "(";
     signature += ftype.parameters

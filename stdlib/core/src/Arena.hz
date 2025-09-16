@@ -34,7 +34,6 @@ export struct Arena {
     __newChunk(size: usize): &ArenaChunk {
         let chunk_size = max<usize>(size, 4096); // default chunk size
         let chunk_mem: &ArenaChunk = do unsafe {
-            print("Hello world");
             emit builtin.malloc(sizeof(ArenaChunk) + chunk_size) as &ArenaChunk;
         };
         do unsafe {

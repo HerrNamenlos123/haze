@@ -1017,10 +1017,16 @@ function collectTypeDef(
       for (const s of item.declarations) {
         const namespaceScope = cc.scopeNodes.get(existingNamespace.namespaceScope);
         assert(namespaceScope.variant === Collect.ENode.NamespaceScope);
-        const decl = collectSymbol(cc, s, {
-          currentParentScope: existingNamespace.namespaceScope,
-        });
-        namespaceScope.symbols.add(decl);
+        if (s.variant === "GlobalVariableDefinition") {
+          collectGlobalDirective(cc, s, {
+            currentParentScope: existingNamespace.namespaceScope,
+          });
+        } else {
+          const decl = collectSymbol(cc, s, {
+            currentParentScope: existingNamespace.namespaceScope,
+          });
+          namespaceScope.symbols.add(decl);
+        }
       }
       return namespaceSymbolId;
     }

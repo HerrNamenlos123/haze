@@ -155,7 +155,7 @@ export createWindow(config: WindowConfig): Window {
         return Window { handle: handle };
     }
     // }
-    unsafe {
+    do unsafe {
         return Window { handle: handle };
     }
 }
@@ -170,7 +170,9 @@ export getTime(): real {
 
 export getProcAddress(): (name: c_str) => ?&void {
     const rawProc = raw.getProcAddress;
-    const castedProc: (name: c_str) => ?&void = uninitialized;
-    __c__("castedProc = (void*)rawProc;");
-    return castedProc;
+    do unsafe {
+        const castedProc: (name: c_str) => ?&void = uninitialized;
+        __c__("castedProc = (void*)rawProc;");
+        return castedProc;
+    }
 }

@@ -420,6 +420,7 @@ export namespace Lowered {
     type: TypeDefId;
     parameterNames: string[];
     externLanguage: EExternLanguage;
+    isLibraryLocal: boolean;
     scope: BlockScopeId | null;
     sourceloc: SourceLoc;
   };
@@ -1463,12 +1464,20 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
         }
       }
 
+      const monomorphized = Semantic.isSymbolMonomorphized(lr.sr, symbolId);
+      const exported = Semantic.isSymbolExported(lr.sr, symbolId);
+
       // Normal function
       const [f, fId] = Lowered.addFunction<Lowered.FunctionSymbol>(lr, {
         variant: Lowered.ENode.FunctionSymbol,
         name: Semantic.makeNameSetSymbol(lr.sr, symbolId),
         parameterNames: parameterNames,
         type: lowerTypeDef(lr, symbol.type),
+        isLibraryLocal:
+          monomorphized &&
+          !exported &&
+          symbol.extern !== EExternLanguage.Extern_C &&
+          symbol.scope !== null,
         scope: null,
         sourceloc: symbol.sourceloc,
         externLanguage: symbol.extern,
