@@ -50,7 +50,6 @@ export namespace Lowered {
     PrimitiveDatatype,
     GenericParameterDatatype,
     NamespaceDatatype,
-    LiteralValueDatatype,
     ArrayDatatype,
     SliceDatatype,
     // Type Use
@@ -61,8 +60,7 @@ export namespace Lowered {
     IfStatement,
     VariableStatement,
     ExprStatement,
-    BlockScopeStatement,
-    BlockStatement,
+    BlockScopeExpr,
     ReturnStatement,
     // Expressions
     ParenthesisExpr,
@@ -326,6 +324,13 @@ export namespace Lowered {
     type: TypeUseId;
   };
 
+  export type BlockScopeExpr = {
+    variant: ENode.BlockScopeExpr;
+    block: BlockScopeId;
+    type: TypeUseId;
+    sourceloc: SourceLoc;
+  };
+
   export type Expression =
     | ExprCallExpr
     | BinaryExpr
@@ -345,12 +350,14 @@ export namespace Lowered {
     | ArrayLiteralExpr
     | ArraySubscriptExpr
     | ArraySliceExpr
+    | BlockScopeExpr
     | StringConstructExpr
     | SymbolValueExpr;
 
   export type BlockScope = {
     statements: StatementId[];
     definesVariables: boolean;
+    emittedExpr: ExprId | null;
   };
 
   export type Statement =
@@ -359,7 +366,6 @@ export namespace Lowered {
     | VariableStatement
     | IfStatement
     | WhileStatement
-    | BlockScopeStatement
     | ExprStatement;
 
   export type InlineCStatement = {
@@ -402,12 +408,6 @@ export namespace Lowered {
     sourceloc: SourceLoc;
   };
 
-  export type BlockScopeStatement = {
-    variant: ENode.BlockScopeStatement;
-    block: BlockScopeId;
-    sourceloc: SourceLoc;
-  };
-
   export type ExprStatement = {
     variant: ENode.ExprStatement;
     expr: ExprId;
@@ -418,7 +418,6 @@ export namespace Lowered {
     variant: ENode.FunctionSymbol;
     name: NameSet;
     type: TypeDefId;
-    wasMonomorphized: boolean;
     parameterNames: string[];
     externLanguage: EExternLanguage;
     scope: BlockScopeId | null;
@@ -441,8 +440,7 @@ export namespace Lowered {
     | ReferenceDatatypeDef
     | NullableReferenceDatatypeDef
     | ArrayDatatypeDef
-    | SliceDatatypeDef
-    | LiteralValueDatatypeDef;
+    | SliceDatatypeDef;
 
   export type NullableReferenceDatatypeDef = {
     variant: ENode.NullableReferenceDatatype;
@@ -473,7 +471,6 @@ export namespace Lowered {
     variant: ENode.StructDatatype;
     noemit: boolean;
     name: NameSet;
-    generics: TypeUseId[];
     members: {
       name: string;
       type: TypeUseId;
@@ -486,12 +483,6 @@ export namespace Lowered {
     parameters: TypeUseId[];
     returnType: TypeUseId;
     vararg: boolean;
-  };
-
-  export type LiteralValueDatatypeDef = {
-    variant: ENode.LiteralValueDatatype;
-    name: NameSet;
-    literal: LiteralValue;
   };
 
   export type ArrayDatatypeDef = {
@@ -1043,6 +1034,15 @@ function lowerExpr(
       });
     }
 
+    case Semantic.ENode.BlockScopeExpr: {
+      return Lowered.addExpr<Lowered.BlockScopeExpr>(lr, {
+        variant: Lowered.ENode.BlockScopeExpr,
+        block: lowerBlockScope(lr, expr.block),
+        type: lowerTypeUse(lr, expr.type),
+        sourceloc: expr.sourceloc,
+      });
+    }
+
     case Semantic.ENode.RefAssignmentExpr: {
       const [ref, refId] = lowerExpr(lr, expr.target, flattened);
       const target = lr.sr.exprNodes.get(expr.target);
@@ -1117,7 +1117,6 @@ function lowerTypeDef(lr: Lowered.Module, typeId: Semantic.TypeDefId): Lowered.T
         variant: Lowered.ENode.StructDatatype,
         noemit: type.noemit,
         name: Semantic.makeNameSetTypeDef(lr.sr, typeId),
-        generics: type.generics.map((id) => lowerTypeUse(lr, id)),
         members: [],
       });
       lr.loweredTypeDefs.set(typeId, pId);
@@ -1211,18 +1210,6 @@ function lowerTypeDef(lr: Lowered.Module, typeId: Semantic.TypeDefId): Lowered.T
         thisExprType: (type.thisExprType && lowerTypeUse(lr, type.thisExprType)) || null,
         functionType: ftypeId,
         name: Semantic.makeNameSetTypeDef(lr.sr, typeId),
-      });
-      lr.loweredTypeDefs.set(typeId, pId);
-      return pId;
-    }
-  } else if (type.variant === Semantic.ENode.LiteralValueDatatype) {
-    if (lr.loweredTypeDefs.has(typeId)) {
-      return lr.loweredTypeDefs.get(typeId)!;
-    } else {
-      const [p, pId] = Lowered.addTypeDef<Lowered.LiteralValueDatatypeDef>(lr, {
-        variant: Lowered.ENode.LiteralValueDatatype,
-        name: Semantic.makeNameSetTypeDef(lr.sr, typeId),
-        literal: type.literal,
       });
       lr.loweredTypeDefs.set(typeId, pId);
       return pId;
@@ -1364,16 +1351,6 @@ function lowerStatement(
       ];
     }
 
-    case Semantic.ENode.BlockScopeExpr: {
-      return [
-        Lowered.addStatement<Lowered.BlockScopeStatement>(lr, {
-          variant: Lowered.ENode.BlockScopeStatement,
-          block: lowerBlockScope(lr, statement.block),
-          sourceloc: statement.sourceloc,
-        })[1],
-      ];
-    }
-
     default:
       throw new InternalError("Unhandled case: ");
   }
@@ -1398,15 +1375,22 @@ function lowerBlockScope(
     statements.push(...lowerStatement(lr, s));
   }
 
+  const emitted = blockScope.emittedExpr
+    ? lowerExpr(lr, blockScope.emittedExpr, statements)[1]
+    : null;
+
   // Flatten block scopes that don't define variables to remove redundant scopes and make code more readable
   const flattenedStatements: Lowered.StatementId[] = [];
   for (const s of statements) {
     const statement = lr.statementNodes.get(s);
-    if (statement.variant === Lowered.ENode.BlockScopeStatement) {
-      const blockScope = lr.blockScopeNodes.get(statement.block);
-      if (!blockScope.definesVariables) {
-        flattenedStatements.push(...blockScope.statements);
-        continue;
+    if (statement.variant === Lowered.ENode.ExprStatement) {
+      const expr = lr.exprNodes.get(statement.expr);
+      if (expr.variant === Lowered.ENode.BlockScopeExpr) {
+        const blockScope = lr.blockScopeNodes.get(expr.block);
+        if (!blockScope.definesVariables && blockScope.emittedExpr === null) {
+          flattenedStatements.push(...blockScope.statements);
+          continue;
+        }
       }
     }
     flattenedStatements.push(s);
@@ -1415,6 +1399,7 @@ function lowerBlockScope(
   const [scope, scopeId] = Lowered.addBlockScope<Lowered.BlockScope>(lr, {
     statements: flattenedStatements,
     definesVariables: containsVariables,
+    emittedExpr: emitted,
   });
   return scopeId;
 }
@@ -1484,7 +1469,6 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
         name: Semantic.makeNameSetSymbol(lr.sr, symbolId),
         parameterNames: parameterNames,
         type: lowerTypeDef(lr, symbol.type),
-        wasMonomorphized: symbol.isMonomorphized,
         scope: null,
         sourceloc: symbol.sourceloc,
         externLanguage: symbol.extern,
@@ -1503,13 +1487,6 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
         case Semantic.ENode.StructDatatype: {
           if (datatype.noemit) {
             return undefined;
-          }
-          for (const gId of datatype.generics) {
-            const gt = lr.sr.typeUseNodes.get(gId);
-            const g = lr.sr.typeDefNodes.get(gt.type);
-            if (g.variant === Semantic.ENode.GenericParameterDatatype) {
-              return undefined;
-            }
           }
           lowerTypeDef(lr, datatypeId);
           break;
@@ -1599,6 +1576,9 @@ function serializeLoweredExpr(lr: Lowered.Module, exprId: Lowered.ExprId): strin
 
     case Lowered.ENode.SymbolValueExpr:
       return expr.name.prettyName;
+
+    case Lowered.ENode.BlockScopeExpr:
+      return `{ ... }`;
 
     case Lowered.ENode.StringConstructExpr:
       return `str(${serializeLoweredExpr(lr, expr.value.data)}, ${serializeLoweredExpr(

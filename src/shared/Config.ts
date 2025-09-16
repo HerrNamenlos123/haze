@@ -47,7 +47,7 @@ export type ModuleLibMetadata = {
 // };
 
 export type ExportData = {
-  exported: Set<Collect.Id>;
+  exported: Set<Collect.SymbolId>;
 };
 
 export type ModuleMetadata = {

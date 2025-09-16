@@ -15,6 +15,10 @@ export class BrandedArray<I extends number, T> {
     return this.data[index as unknown as number]; // cast to number for indexing
   }
 
+  getAll(): T[] {
+    return this.data;
+  }
+
   set(index: I, value: T): void {
     this.data[index as unknown as number] = value;
   }

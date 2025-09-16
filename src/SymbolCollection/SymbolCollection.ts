@@ -86,7 +86,6 @@ export type CollectionContext = {
   elaboratedNamespacesAndStructs: Set<Collect.TypeDefId>;
 
   exportedSymbols: ExportData;
-  // exportCache: Map<Collect.Id, ImpExp.Id>;
 };
 
 export function funcSymHasParameterPack(cc: CollectionContext, id: Collect.SymbolId) {
@@ -113,7 +112,6 @@ export function makeCollectionContext(config: ModuleConfig): CollectionContext {
 
     blockScopes: new Set(),
     overloadGroups: new Set(),
-    sharedNamespaceInstances: new Set(),
     exportedSymbols: {
       exported: new Set(),
     },
@@ -969,15 +967,12 @@ function collectTypeDef(
           undefined as undefined | Collect.NamespaceSharedInstance,
           -1 as Collect.NSSharedInstanceId,
         ];
-        for (const id of cc.sharedNamespaceInstances) {
-          const ni = cc.nsSharedInstances.get(id);
-          assert(ni.variant === Collect.ENode.NamespaceSharedInstance);
-          if (ni.fullyQualifiedName === fullyQualifiedName) {
-            sharedInstance = ni;
-            sharedInstanceId = id;
-            break;
+        cc.nsSharedInstances.getAll().forEach((instance, id) => {
+          if (instance.fullyQualifiedName === fullyQualifiedName) {
+            sharedInstance = instance;
+            sharedInstanceId = id as Collect.NSSharedInstanceId;
           }
-        }
+        });
 
         if (sharedInstanceId === -1) {
           [sharedInstance, sharedInstanceId] = Collect.makeNSSharedInstance(cc, {
@@ -1147,7 +1142,7 @@ function collectTypeDef(
       }
 
       if (item.export) {
-        cc.exportedSymbols.exported.add(structId);
+        cc.exportedSymbols.exported.add(structSymbolId);
       }
 
       return structSymbolId;
@@ -1541,7 +1536,7 @@ function collectGlobalDirective(
       });
       cc.scopeNodes.get(args.currentParentScope).symbols.add(symbolId);
       if (item.export) {
-        cc.exportedSymbols.exported.add(aliasId);
+        cc.exportedSymbols.exported.add(symbolId);
       }
       return;
     }

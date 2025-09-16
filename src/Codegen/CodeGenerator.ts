@@ -276,9 +276,6 @@ class CodeGenerator {
         appliedTypes.add(type);
         processTypeUse(type.referee);
         sortedLoweredTypes.push(type);
-      } else if (type.variant === Lowered.ENode.LiteralValueDatatype) {
-        appliedTypes.add(type);
-        sortedLoweredTypes.push(type);
       } else if (type.variant === Lowered.ENode.ArrayDatatype) {
         appliedTypes.add(type);
         processTypeUse(type.datatype);
@@ -577,9 +574,9 @@ class CodeGenerator {
     assert(ftype.variant === Lowered.ENode.FunctionDatatype);
 
     let signature = "";
-    if (symbol.wasMonomorphized) {
-      signature += "static ";
-    }
+    // if (symbol.wasMonomorphized) {
+    //   signature += "static ";
+    // }
     signature +=
       this.mangleTypeUse(ftype.returnType) + " " + this.mangleFunctionSymbol(symbol) + "(";
     signature += ftype.parameters
@@ -729,22 +726,6 @@ class CodeGenerator {
         return { temp: tempWriter, out: outWriter };
       }
 
-      case Lowered.ENode.BlockScopeStatement: {
-        if (statement.sourceloc && this.lr.sr.cc.config.includeSourceloc) {
-          outWriter.writeLine(
-            `#line ${statement.sourceloc.start.line} ${JSON.stringify(
-              statement.sourceloc.filename
-            )}`
-          );
-        }
-        outWriter.writeLine(`{`).pushIndent();
-        const scope = this.emitScope(statement.block);
-        tempWriter.write(scope.temp);
-        outWriter.write(scope.out);
-        outWriter.popIndent().writeLine("}");
-        return { temp: tempWriter, out: outWriter };
-      }
-
       case Lowered.ENode.IfStatement: {
         if (statement.sourceloc && this.lr.sr.cc.config.includeSourceloc) {
           outWriter.writeLine(
@@ -832,6 +813,28 @@ class CodeGenerator {
       case Lowered.ENode.SymbolValueExpr: {
         outWriter.write(this.mangleName(expr.name));
         return { out: outWriter, temp: tempWriter };
+      }
+
+      case Lowered.ENode.BlockScopeExpr: {
+        const block = this.lr.blockScopeNodes.get(expr.block);
+        if (block.emittedExpr) {
+          outWriter.writeLine(`({`).pushIndent();
+          const scope = this.emitScope(expr.block);
+          tempWriter.write(scope.temp);
+          outWriter.write(scope.out);
+          const emitted = this.emitExpr(block.emittedExpr);
+          outWriter
+            .writeLine(emitted.out.get() + ";")
+            .popIndent()
+            .writeLine("})");
+        } else {
+          outWriter.writeLine(`{`).pushIndent();
+          const scope = this.emitScope(expr.block);
+          tempWriter.write(scope.temp);
+          outWriter.write(scope.out);
+          outWriter.popIndent().writeLine("}");
+        }
+        return { temp: tempWriter, out: outWriter };
       }
 
       case Lowered.ENode.ExplicitCastExpr:
