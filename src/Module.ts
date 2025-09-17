@@ -1,6 +1,8 @@
 import * as child_process from "child_process";
 import { $ } from "bun";
 import os from "os";
+import { Glob } from "bun";
+import path from "path";
 import { mkdir } from "fs/promises";
 import {
   assert,
@@ -47,7 +49,6 @@ import { LowerModule } from "./Lower/Lower";
 import { ExportCollectedSymbols } from "./SymbolCollection/Export";
 import { Semantic } from "./Semantic/Elaborate";
 import { stdout } from "process";
-import { ParenthesisExprContext } from "./Parser/grammar/autogen/HazeParser";
 
 export const HAZE_DIR = os.homedir() + "/.haze";
 export const HAZE_CACHE = HAZE_DIR + "/cache";
@@ -179,6 +180,49 @@ async function detectPackageManager() {
   if (await commandExists("zypper")) return "suse";
 
   return "unknown";
+}
+
+type FileWatcherCache = Record<string, number>;
+const FILE_WATCHER_FILENAME = "watcher.cache.json";
+function loadCache(globalBuildDir: string): FileWatcherCache {
+  try {
+    return JSON.parse(fs.readFileSync(globalBuildDir + "/" + FILE_WATCHER_FILENAME, "utf8"));
+  } catch {
+    return {};
+  }
+}
+
+function saveCache(cache: FileWatcherCache, globalBuildDir: string) {
+  fs.writeFileSync(globalBuildDir + "/" + FILE_WATCHER_FILENAME, JSON.stringify(cache), "utf8");
+}
+
+export function checkForChanges(
+  globs: string[],
+  globalBuildDir: string,
+  workingDir: string
+): string[] {
+  const cache = loadCache(globalBuildDir);
+  const changed: string[] = [];
+
+  for (const pattern of globs) {
+    const glob = new Glob(pattern);
+    for (const file of glob.scanSync(workingDir)) {
+      const fullPath = path.join(workingDir, file);
+      const stat = fs.statSync(fullPath);
+      const mtime = stat.mtimeMs;
+
+      if (!cache[fullPath] || cache[fullPath] < mtime) {
+        changed.push(fullPath);
+        cache[fullPath] = mtime;
+      }
+    }
+  }
+
+  if (changed.length > 0) {
+    saveCache(cache, globalBuildDir);
+  }
+
+  return changed;
 }
 
 class Cache {
@@ -667,17 +711,33 @@ class ModuleCompiler {
         }
       }
 
+      const MODULE_SOURCE_DIR = this.config.configFilePath
+        ? dirname(this.config.configFilePath)
+        : process.cwd();
+
       const env = process.env as any;
-      if (this.config.configFilePath) {
-        env.HAZE_MODULE_SOURCE_DIR = dirname(this.config.configFilePath);
-        env.HAZE_MODULE_BUILD_DIR = this.moduleDir + "/build";
-        env.HAZE_MODULE_BINARY_DIR = this.moduleDir + "/bin";
-      }
+      env.HAZE_MODULE_SOURCE_DIR = MODULE_SOURCE_DIR;
+      env.HAZE_MODULE_BUILD_DIR = this.moduleDir + "/build";
+      env.HAZE_MODULE_BINARY_DIR = this.moduleDir + "/bin";
 
       if (this.config.configFilePath) {
         const prebuildScript = this.config.scripts.find((s) => s.name === "prebuild");
         if (prebuildScript) {
-          execInherit(prebuildScript.command, this.moduleDir + "/build");
+          const exec = () => execInherit(prebuildScript.command, this.moduleDir + "/build");
+          if (prebuildScript.depends === null) {
+            exec();
+          } else {
+            const changed = checkForChanges(
+              prebuildScript.depends,
+              this.globalBuildDir,
+              MODULE_SOURCE_DIR
+            );
+            if (changed.length > 0) {
+              exec();
+            } else {
+              console.log(`Skipping prebuild step for '${this.config.name}': No changes detected`);
+            }
+          }
         }
       }
 
