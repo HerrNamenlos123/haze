@@ -11,6 +11,8 @@ import {
   printCollectedExpr,
 } from "../SymbolCollection/SymbolCollection";
 import {
+  getFromStructDefCache,
+  insertIntoStructDefCache,
   isTypeConcrete,
   isTypeExprConcrete,
   makePrimitiveAvailable,
@@ -230,13 +232,17 @@ export function elaborateParentSymbolFromCache(
       assert(subst);
       return subst;
     });
-    for (const cache of sr.elaboratedStructDatatypes) {
-      const parentOwning = sr.cc.symbolNodes.get(parentScope.owningSymbol);
+
+    const parentOwning = sr.cc.symbolNodes.get(parentScope.owningSymbol);
+    assert(parentOwning.variant === Collect.ENode.TypeDefSymbol);
+    const entries = sr.elaboratedStructDatatypes.get(parentOwning.typeDef);
+
+    for (const cache of entries || []) {
       if (
-        parentOwning.variant === Collect.ENode.TypeDefSymbol &&
-        cache.originalSymbol === parentOwning.typeDef &&
-        cache.generics.length === parentGenericArgs.length &&
-        cache.generics.every((g, i) => g === parentGenericArgs[i])
+        cache.canonicalizedGenerics.length === parentGenericArgs.length &&
+        cache.canonicalizedGenerics.every(
+          (g, i) => g === Semantic.canonicalizeGenericExpr(sr, parentGenericArgs[i])
+        )
       ) {
         parentStructOrNS = cache.result;
         break;
@@ -307,15 +313,18 @@ export function instantiateAndElaborateStruct(
     return substitute;
   });
 
+  const parentStructOrNS = elaborateParentSymbolFromCache(sr, {
+    parentScope: definedStructType.parentScope,
+    context: args.context,
+  });
+
   // If already existing, return cached to prevent loops
-  for (const s of sr.elaboratedStructDatatypes) {
-    if (
-      s.generics.length === genericArgs.length &&
-      s.generics.every((g, index) => g === genericArgs[index]) &&
-      s.originalSymbol === args.definedStructTypeId
-    ) {
-      return s.result;
-    }
+  const existing = getFromStructDefCache(sr, args.definedStructTypeId, {
+    genericArgs: genericArgs,
+    parentStructOrNS: parentStructOrNS,
+  });
+  if (existing) {
+    return existing;
   }
 
   const [struct, structId] = Semantic.addType<Semantic.StructDatatypeDef>(sr, {
@@ -324,10 +333,7 @@ export function instantiateAndElaborateStruct(
     generics: genericArgs,
     extern: definedStructType.extern,
     noemit: definedStructType.noemit,
-    parentStructOrNS: elaborateParentSymbolFromCache(sr, {
-      parentScope: definedStructType.parentScope,
-      context: args.context,
-    }),
+    parentStructOrNS: parentStructOrNS,
     members: [],
     memberDefaultValues: [],
     methods: [],
@@ -338,15 +344,15 @@ export function instantiateAndElaborateStruct(
   });
 
   if (struct.concrete) {
-    sr.elaboratedStructDatatypes.push({
-      generics: genericArgs,
-      originalSymbol: args.definedStructTypeId,
-      substitutionContext: args.context,
+    insertIntoStructDefCache(sr, args.definedStructTypeId, {
+      genericArgs: genericArgs,
+      parentStructOrNS: parentStructOrNS,
       result: structId,
       resultAsTypeDefSymbol: Semantic.addSymbol(sr, {
         variant: Semantic.ENode.TypeDefSymbol,
         datatype: structId,
       })[1],
+      substitutionContext: args.context,
     });
 
     const structScope = sr.cc.scopeNodes.get(definedStructType.structScope);
@@ -749,11 +755,14 @@ export function lookupAndElaborateDatatype(
           if (type.innerNested) {
             // Here we need to merge the context from the parent into the child
             let cachedParentSubstitutions = undefined as Semantic.ElaborationContext | undefined;
-            for (const cache of sr.elaboratedStructDatatypes) {
+            const entry = sr.elaboratedStructDatatypes.get(found.typeDef);
+
+            for (const cache of entry || []) {
               if (
-                cache.originalSymbol === found.typeDef &&
-                cache.generics.length === generics.length &&
-                cache.generics.every((g, i) => g === generics[i])
+                cache.canonicalizedGenerics.length === generics.length &&
+                cache.canonicalizedGenerics.every(
+                  (g, i) => g === Semantic.canonicalizeGenericExpr(sr, generics[i])
+                )
               ) {
                 cachedParentSubstitutions = cache.substitutionContext;
                 break;

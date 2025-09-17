@@ -1553,7 +1553,7 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
 }
 
 const print = (str: string, indent = 0) => {
-  console.log(" ".repeat(indent) + str);
+  console.info(" ".repeat(indent) + str);
 };
 
 function serializeLoweredExpr(lr: Lowered.Module, exprId: Lowered.ExprId): string {
@@ -1771,8 +1771,10 @@ export function LowerModule(sr: SemanticResult): Lowered.Module {
       lowerSymbol(lr, entry.result);
     }
   }
-  for (const symbol of sr.elaboratedStructDatatypes) {
-    lowerSymbol(lr, symbol.resultAsTypeDefSymbol);
+  for (const [key, entries] of sr.elaboratedStructDatatypes) {
+    for (const entry of entries) {
+      lowerSymbol(lr, entry.resultAsTypeDefSymbol);
+    }
   }
   for (const symbol of sr.elaboratedGlobalVariableDefinitions) {
     lowerSymbol(lr, symbol.result);

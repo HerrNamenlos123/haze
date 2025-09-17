@@ -130,6 +130,73 @@ function insertIntoFuncDefCache(
   });
 }
 
+type StructDef = {
+  canonicalizedGenerics: string[];
+  substitutionContext: Semantic.ElaborationContext;
+  parentStructOrNS: Semantic.TypeDefId | null;
+  result: Semantic.TypeDefId;
+  resultAsTypeDefSymbol: Semantic.SymbolId;
+};
+type StructDefCache = Map<Collect.TypeDefId, StructDef[]>;
+
+export function getFromStructDefCache(
+  sr: SemanticResult,
+  symbolId: Collect.TypeDefId,
+  args: {
+    genericArgs: Semantic.ExprId[];
+    parentStructOrNS: Semantic.TypeDefId | null;
+  }
+) {
+  const entries = sr.elaboratedStructDatatypes.get(symbolId);
+  if (entries === undefined) return;
+
+  const canonicalizedGenerics = args.genericArgs.map((g) =>
+    Semantic.canonicalizeGenericExpr(sr, g)
+  );
+
+  for (const entry of entries) {
+    if (
+      entry.parentStructOrNS === args.parentStructOrNS &&
+      entry.canonicalizedGenerics.length === canonicalizedGenerics.length &&
+      entry.canonicalizedGenerics.every((g, index) => g === canonicalizedGenerics[index])
+    ) {
+      return entry.result;
+    }
+  }
+
+  return;
+}
+
+export function insertIntoStructDefCache(
+  sr: SemanticResult,
+  symbolId: Collect.TypeDefId,
+  args: {
+    genericArgs: Semantic.ExprId[];
+    substitutionContext: Semantic.ElaborationContext;
+    result: Semantic.TypeDefId;
+    resultAsTypeDefSymbol: Semantic.SymbolId;
+    parentStructOrNS: Semantic.TypeDefId | null;
+  }
+) {
+  const canonicalizedGenerics = args.genericArgs.map((g) =>
+    Semantic.canonicalizeGenericExpr(sr, g)
+  );
+
+  let entries = sr.elaboratedStructDatatypes.get(symbolId);
+  if (!entries) {
+    sr.elaboratedStructDatatypes.set(symbolId, []);
+    entries = sr.elaboratedStructDatatypes.get(symbolId)!;
+  }
+
+  entries.push({
+    canonicalizedGenerics: canonicalizedGenerics,
+    parentStructOrNS: args.parentStructOrNS,
+    result: args.result,
+    substitutionContext: args.substitutionContext,
+    resultAsTypeDefSymbol: args.resultAsTypeDefSymbol,
+  });
+}
+
 export type SemanticResult = {
   cc: CollectionContext;
 
@@ -145,13 +212,7 @@ export type SemanticResult = {
   elaboratedFunctionSignatures: Map<Collect.SymbolId, Semantic.SymbolId[]>;
   elaboratedFunctionSignaturesByName: Map<string, Semantic.SymbolId[]>;
 
-  elaboratedStructDatatypes: {
-    originalSymbol: Collect.TypeDefId;
-    generics: Semantic.ExprId[];
-    substitutionContext: Semantic.ElaborationContext;
-    result: Semantic.TypeDefId;
-    resultAsTypeDefSymbol: Semantic.SymbolId;
-  }[];
+  elaboratedStructDatatypes: StructDefCache;
   elaboratedFuncdefSymbols: FuncDefCache;
   elaboratedNamespaceSymbols: {
     originalSharedInstance: Collect.NSSharedInstanceId;
@@ -986,6 +1047,9 @@ export namespace Semantic {
       case Collect.ENode.BlockScope:
       case Collect.ENode.StructScope:
       case Collect.ENode.FunctionScope: {
+        // if (Math.random() < 0.001) {
+        //   assert(false);
+        // }
         const found = lookupDirect(scope.symbols);
         if (found) {
           return {
@@ -1386,9 +1450,16 @@ export namespace Semantic {
     const structScope = sr.cc.scopeNodes.get(collectedStruct.structScope);
     assert(structScope.variant === Collect.ENode.StructScope);
 
-    const elaboratedStructCache = sr.elaboratedStructDatatypes.find((d) => {
-      return d.result === sr.typeUseNodes.get(namespaceOrStructValue.type).type;
-    });
+    const typedef = sr.typeUseNodes.get(namespaceOrStructValue.type).type;
+
+    let elaboratedStructCache = null as StructDef | null;
+    for (const [key, cache] of sr.elaboratedStructDatatypes) {
+      for (const entry of cache) {
+        if (entry.result === typedef) {
+          elaboratedStructCache = entry;
+        }
+      }
+    }
     assert(elaboratedStructCache);
 
     for (const symbolId of structScope.symbols) {
@@ -3248,9 +3319,15 @@ export namespace Semantic {
             wasReference = true;
           }
 
-          const elaboratedStructCache = sr.elaboratedStructDatatypes.find(
-            (d) => d.result === sr.typeUseNodes.get(objectTypeId).type
-          );
+          const typedef = sr.typeUseNodes.get(objectTypeId).type;
+          let elaboratedStructCache = null as StructDef | null;
+          for (const [key, cache] of sr.elaboratedStructDatatypes) {
+            for (const entry of cache) {
+              if (entry.result === typedef) {
+                elaboratedStructCache = entry;
+              }
+            }
+          }
           assert(elaboratedStructCache);
 
           const parameterPackTypes = prepareParameterPackTypes(sr, {
@@ -5230,7 +5307,7 @@ export namespace Semantic {
       elaboratedFunctionSignatures: new Map(),
       elaboratedFunctionSignaturesByName: new Map(),
 
-      elaboratedStructDatatypes: [],
+      elaboratedStructDatatypes: new Map(),
       elaboratedFuncdefSymbols: new Map(),
       elaboratedPrimitiveTypes: [],
       elaboratedNamespaceSymbols: [],

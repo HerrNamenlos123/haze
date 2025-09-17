@@ -33,6 +33,7 @@ main(): int {
     const foo1 = arena.alloc<Foo>({ x: 1, y: 2, z: 3});
     const foo2 = arena.alloc<Foo>({ x: 4, y: 5, z: 6});
     const foo3 = arena.alloc<Foo>({ x: 7, y: 8, z: 9});
+    println(s);
     arena.free();
 
     // print("Formatted: ");

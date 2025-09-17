@@ -244,14 +244,6 @@ export namespace Conversion {
         assert(bt.variant === Semantic.ENode.PrimitiveDatatype);
         return at.primitive === bt.primitive;
 
-      case Semantic.ENode.LiteralValueDatatype:
-        assert(bt.variant === Semantic.ENode.LiteralValueDatatype);
-        if (at.literal.type === EPrimitive.null) {
-          return at.literal.type === bt.literal.type;
-        } else {
-          return at.literal.type === bt.literal.type && at.literal.value === bt.literal.value;
-        }
-
       case Semantic.ENode.NullableReferenceDatatype: {
         assert(bt.variant === Semantic.ENode.NullableReferenceDatatype);
         const aPointee = sr.typeUseNodes.get(at.referee);
@@ -329,8 +321,8 @@ export namespace Conversion {
           if (
             !IsStructurallyEquivalent(
               sr,
-              sr.typeUseNodes.get(at.generics[i]).type,
-              sr.typeUseNodes.get(bt.generics[i]).type,
+              sr.typeUseNodes.get(sr.exprNodes.get(at.generics[i]).type).type,
+              sr.typeUseNodes.get(sr.exprNodes.get(bt.generics[i]).type).type,
               seen
             )
           )
@@ -1258,17 +1250,21 @@ export namespace Conversion {
       const assignedMembers = targetType.memberDefaultValues.map((m) => m.memberName);
 
       if (arraysAreEquivalent(requiredMembers, assignedMembers)) {
-        const collectedStruct = sr.cc.nodes.get(targetType.collectedSymbol);
+        const collectedStruct = sr.cc.typeDefNodes.get(targetType.originalCollectedSymbol);
         assert(collectedStruct.variant === Collect.ENode.StructTypeDef);
         // Make an empty struct instantiation and let it handle the default values, since we know they all exist.
         return Semantic.makeStructInstantiation(sr, sr.typeUseNodes.get(targetTypeId).type, {
-          blockScope: null,
           context: Semantic.makeElaborationContext({
             currentScope: collectedStruct.structScope,
             genericsScope: collectedStruct.structScope,
           }),
-          elaboratedVariables: new Map(),
-          isMonomorphized: false,
+          constraints: [],
+          expectedReturnType: makePrimitiveAvailable(
+            sr,
+            EPrimitive.void,
+            EDatatypeMutability.Default,
+            sourceloc
+          ),
           sourceloc: sourceloc,
           memberValues: [],
           unsafe: false,

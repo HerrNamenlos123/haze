@@ -27,7 +27,7 @@ export struct Arena {
 
     alloc<T>(value: T): &T {
         const ref = do unsafe { emit this.allocateRaw(sizeof(T)) as &void as &T; };
-        // assign(ref, value);
+        assign(ref, value);
         return ref;
     }
 
@@ -50,7 +50,7 @@ export struct Arena {
         if last != nullptr && (last.used + size <= last.size) {
             // allocate from existing chunk
             let ptr = &last.data;
-            // __c__("ptr += last->used;");
+            __c__("ptr += last->used;");
             last.used += size;
             return ptr;
         }
