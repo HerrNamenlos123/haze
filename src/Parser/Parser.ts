@@ -142,7 +142,7 @@ import {
   TerminalNode,
 } from "antlr4ng";
 import { HazeLexer } from "./grammar/autogen/HazeLexer";
-import { HazeVisitor } from "./grammar/autogen/HazeVisitor";
+import { HazeParserVisitor } from "./grammar/autogen/HazeParserVisitor";
 import { EMethodType, EPrimitive, EVariableContext, type LiteralValue } from "../shared/common";
 import type { ModuleConfig } from "../shared/Config";
 
@@ -217,7 +217,7 @@ export namespace Parser {
   }
 }
 
-class ASTTransformer extends HazeVisitor<any> {
+class ASTTransformer extends HazeParserVisitor<any> {
   constructor(public config: ModuleConfig, public filename: string) {
     super();
   }
