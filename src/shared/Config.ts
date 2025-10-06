@@ -4,6 +4,7 @@ import { parse } from "@ltd/j-toml";
 
 import { GeneralError } from "./Errors";
 import type { Collect } from "../SymbolCollection/SymbolCollection";
+import { getCurrentPlatform } from "../Module";
 
 export enum ModuleType {
   Library,
@@ -30,7 +31,7 @@ export type ModuleConfig = {
   includeSourceloc: boolean;
 };
 
-export type PlatformString = "linux-x64";
+export type PlatformString = "linux-x64" | "windows-x64";
 
 export type ModuleLibMetadata = {
   platform: PlatformString;
@@ -118,7 +119,10 @@ export function parseModuleMetadata(metadata: string): ModuleMetadata {
       }
       libs.push({
         filename: getString(obj["filename"]),
-        platform: getStringAnyOf<"linux-x64">(obj["platform"], ["linux-x64"]),
+        platform: getStringAnyOf<"linux-x64" | "windows-x64">(obj["platform"], [
+          "linux-x64",
+          "windows-x64",
+        ]),
         type: getStringAnyOf<"static" | "shared">(obj["type"], ["static", "shared"]),
       });
     }
@@ -320,7 +324,7 @@ export class ConfigParser {
       linkerFlags: (toml["linker"] && this.getOptionalStringArray(toml["linker"], "flags")) || [],
       compilerFlags:
         (toml["compiler"] && this.getOptionalStringArray(toml["compiler"], "flags")) || [],
-      platform: "linux-x64",
+      platform: getCurrentPlatform(),
       includeSourceloc: sourceloc ?? true,
     };
   }

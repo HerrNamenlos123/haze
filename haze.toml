@@ -25,7 +25,7 @@ test = "haze test"
 [dependencies]
 glfw = { path = "./glfw" }
 # math = { path = "./math" }
-# gl = { path = "./gl" }
+gl = { path = "./gl" }
 # glDraw = { path = "./glDraw" }
 # ember = { path = "./ember" }
 

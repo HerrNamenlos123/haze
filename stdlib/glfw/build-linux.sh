@@ -1,7 +1,7 @@
 #!/bin/sh
 
 # rm -rf __haze__/glfw
-if [ ! -d "__haze__/glfw" ]; then
+if [ ! -d "glfw" ]; then
     git clone https://github.com/glfw/glfw.git glfw/src
 fi
 cd glfw
@@ -43,12 +43,12 @@ cd glfw
 #     -DGLFW_USE_PTHREADS=ON   \
 
 cmake -B build src \
-    -DBUILD_SHARED_LIBS=OFF   \
-    -DCMAKE_INSTALL_PREFIX=$HAZE_MODULE_BINARY_DIR \
-    -DCMAKE_POSITION_INDEPENDENT_CODE=OFF \
-    -DGLFW_USE_PTHREADS=ON   \
-    -DGLFW_BUILD_EXAMPLES=OFF   \
-    -DGLFW_BUILD_TESTS=OFF   \
+-DBUILD_SHARED_LIBS=OFF   \
+-DCMAKE_INSTALL_PREFIX=$HAZE_MODULE_BINARY_DIR \
+-DCMAKE_POSITION_INDEPENDENT_CODE=OFF \
+-DGLFW_USE_PTHREADS=ON   \
+-DGLFW_BUILD_EXAMPLES=OFF   \
+-DGLFW_BUILD_TESTS=OFF   \
 
 # cmake --build build
 cmake --build build --target install

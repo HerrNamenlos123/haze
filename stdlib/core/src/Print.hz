@@ -86,7 +86,7 @@ namespace fmt {
 export print(args: ...) {
     for comptime arg in args {
         if comptime typeof(arg) == int {
-            builtin.printf("%ld", arg);
+            builtin.printf("%lld", arg);
         }
         else if typeof(arg) == str {
             const s = arg;
@@ -117,7 +117,7 @@ export print(args: ...) {
             builtin.printf("%d", arg);
         }
         else if typeof(arg) == i64 {
-            builtin.printf("%ld", arg);
+            builtin.printf("%lld", arg);
         }
         else if typeof(arg) == Vec2 || typeof(arg) == type<&Vec2> {
             builtin.printf("(%f, %f)", arg.x, arg.y);

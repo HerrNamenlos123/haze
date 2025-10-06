@@ -24,11 +24,14 @@
     "@types/lodash": "^4.17.16",
     "antlr4ng": "^3.0.16",
     "antlr4ng-cli": "^2.0.0",
+    "archiver": "^7.0.1",
     "argparse": "^2.0.1",
     "bun": "^1.2.2",
     "cross-env": "^7.0.3",
     "d3": "^7.9.0",
-    "deep-equal": "^2.2.3"
+    "deep-equal": "^2.2.3",
+    "gunzip-maybe": "^1.4.2",
+    "tar": "^7.5.1"
   },
   "devDependencies": {
     "@mermaid-js/mermaid-cli": "^11.4.2",

@@ -39,7 +39,7 @@ function formatCompilerMessage(
 ): string {
   let text = "";
   if (loc) {
-    text += `[${formatSourceLoc(loc)}]: `;
+    text += `${formatSourceLoc(loc)}: `;
   }
   if (type === ErrorType.Error) {
     text += `\x1b[31m${error}\x1b[0m: ${msg}`;
