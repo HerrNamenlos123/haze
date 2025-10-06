@@ -57,8 +57,19 @@ export const HAZE_TMP_DIR = HAZE_DIR + "tmp/";
 export const HAZE_MUSL_SYSROOT = HAZE_DIR + "sysroot/";
 export const HAZE_CMAKE_TOOLCHAIN = HAZE_DIR + "musl-toolchain.cmake";
 
-const LLVM_TOOLCHAIN_DOWNLOAD_URL =
-  "https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-18.04.tar.xz";
+let LLVM_TOOLCHAIN_DOWNLOAD_URL: string;
+if (process.platform === "win32") {
+  LLVM_TOOLCHAIN_DOWNLOAD_URL =
+    "https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/clang+llvm-18.1.8-x86_64-pc-windows-msvc.tar.xz";
+} else if (process.platform === "linux") {
+  LLVM_TOOLCHAIN_DOWNLOAD_URL =
+    "https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-18.04.tar.xz";
+} else if (process.platform === "darwin") {
+  console.log("Running on macOS");
+  throw new Error("MacOS not supported yet");
+} else {
+  throw new Error("Platform not supported yet: " + process.platform);
+}
 
 export const HAZE_STDLIB_NAME = "haze-stdlib";
 
