@@ -18,7 +18,7 @@ export type ModuleConfig = {
   description?: string;
   license?: string;
   authors?: string[];
-  scripts: { name: string; command: string }[];
+  scripts: { name: string; command: string; depends: string[] | null }[];
   srcDirectory: string;
   nostdlib: boolean;
   moduleType: ModuleType;
@@ -47,7 +47,7 @@ export type ModuleLibMetadata = {
 // };
 
 export type ExportData = {
-  exported: Set<Collect.Id>;
+  exported: Set<Collect.SymbolId>;
 };
 
 export type ModuleMetadata = {
@@ -216,18 +216,55 @@ export class ConfigParser {
   }
 
   getScripts(toml: any) {
-    const scripts = [] as { name: string; command: string }[];
+    const scripts = [] as { name: string; command: string; depends: string[] | null }[];
     if (toml["scripts"]) {
       for (const [name, cmd] of Object.entries(toml["scripts"])) {
-        if (typeof cmd !== "string") {
+        if (typeof cmd === "string") {
+          scripts.push({
+            name: name,
+            command: cmd,
+            depends: null,
+          });
+        } else if (typeof cmd === "object" && cmd !== null) {
+          if (!("command" in cmd)) {
+            throw new GeneralError(
+              `Script '${name}' in file ${this.configPath} requires a 'command' attribute`
+            );
+          }
+          if (typeof cmd.command !== "string") {
+            throw new GeneralError(
+              `Script '${name}' in file ${this.configPath} requires the 'command' attribute to be a string`
+            );
+          }
+          let depends = null as string[] | null;
+          if ("depends" in cmd) {
+            if (typeof cmd.depends === "string") {
+              depends = [cmd.depends];
+            } else if (Array.isArray(cmd.depends)) {
+              depends = cmd.depends.map((a) => {
+                if (typeof a !== "string") {
+                  throw new GeneralError(
+                    `Script '${name}' in file ${this.configPath} requires all 'depends' globs to be strings`
+                  );
+                }
+                return a;
+              });
+            } else {
+              throw new GeneralError(
+                `Script '${name}' in file ${this.configPath} requires a 'command' attribute`
+              );
+            }
+          }
+          scripts.push({
+            name: name,
+            command: cmd.command,
+            depends: depends,
+          });
+        } else {
           throw new GeneralError(
-            `Script '${name}' in file ${this.configPath} must be of type string`
+            `Script '${name}' in file ${this.configPath} has unsupported type`
           );
         }
-        scripts.push({
-          name: name,
-          command: cmd,
-        });
       }
     }
     return scripts;

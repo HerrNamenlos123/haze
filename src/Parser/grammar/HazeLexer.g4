@@ -18,8 +18,12 @@ STATIC: 'static';
 STRUCT: 'struct';
 NONCLONABLE: 'nonclonable';
 CLONABLE: 'clonable';
+REQUIRES: 'requires';
+UNSAFE: 'unsafe';
+DO: 'do';
+YIELD: 'yield';
+EMIT: 'emit';
 
-// Tokens used in expressions
 TRUE: 'true';
 FALSE: 'false';
 TYPE: 'type';
@@ -59,6 +63,8 @@ DIV: '/';
 MOD: '%';
 ELLIPSIS: '...';
 SINGLEAND: '&';
+AMPERSANDQUESTION: '&?';
+QUESTIONAMPERSAND: '?&';
 SINGLEOR: '|';
 DOUBLEAND: '&&';
 DOUBLEOR: '||';

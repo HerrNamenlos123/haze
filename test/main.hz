@@ -8,7 +8,13 @@
 //     return arena;
 // }
 
-struct Foo {};
+struct Foo
+    requires LT(this.x) >= LT(this)
+{
+    x: int = 0;
+    y: int = 0;
+    z: int = 0;
+};
 
 // struct Ref<T> {
 //     ref: T&;
@@ -16,30 +22,19 @@ struct Foo {};
 
 main(): int {
 
-    builtin.printf("Hello world!\n");
-
-    // let foo = Foo {};
-    // let newFoo = Foo {};
-
-    // let a: const &const int = uninitialized;
-    // let b: mut &int = uninitialized;
-    // let c: []int = uninitialized;
-    // let d: const []const int = uninitialized;
-    // let e: mut []&mut int = uninitialized;
-
-    // let x = 0;
-    // let y: &int = x;
-    // const z: &int = y;
-
-    // a = 5;
-
-    // let a: Foo& = foo;
+    let foo: const Foo = Foo {};
+    let newFoo = Foo {};
 
     // assign(a, newFoo);
-    // reassign(a, newFoo);
+    // rebind(a, newFoo);
 
-    // let arena = Arena();
-    // const s = fmt.format<int>(arena, -7183, {});
+    let arena = Arena();
+    const s = fmt.format<int>(arena, -7183, {});
+    const foo1 = arena.alloc<Foo>({ x: 1, y: 2, z: 3});
+    const foo2 = arena.alloc<Foo>({ x: 4, y: 5, z: 6});
+    const foo3 = arena.alloc<Foo>({ x: 7, y: 8, z: 9});
+    println(s);
+    arena.free();
 
     // print("Formatted: ");
     // println(s);
@@ -56,8 +51,10 @@ main(): int {
 
     return 0;
 
-    // println("TODO: Fix the situation for negative literals. Parsing the minus is bad as it's punctiation dependent. It should be changed to parse as a Unary Expression with positive Literal, and in the symbol collection, Unary+Literal can be caught and converted into literal with negative value.");
-    // println("TODO: All Increment operations and short-hand syntax should be expanded into proper full assignment expressions, and then compiled normally, makes everything much simpler, especially the overflow tracking.");
+    println("TODO: Fix the situation for negative literals. Parsing the minus is bad as it's punctiation dependent. It should be changed to parse as a Unary Expression with positive Literal, and in the symbol collection, Unary+Literal can be caught and converted into literal with negative value.");
+    println("TODO: All Increment operations and short-hand syntax should be expanded into proper full assignment expressions, and then compiled normally, makes everything much simpler, especially the overflow tracking.");
+    println("Idea for later: (from Prime Reacts: The Flaws of Inheritance): I should implement interfaces as a way to make a contract about generic types, and to make the interfaces very powerful, interfaces should be able to define members and methods, as well as default implementations of methods that is used if the struct does not provide that function, and it is allowed as long as the default implementation of the interface method only uses other methods of the interface. This makes it very powerful and a complete replacement for polymorphism.");
+    println("Idea: Implement scopes/do blocks/whatever, and like in Swift make the ability to label them, and then 'break foo' can be used to break out of that scope, which is awesome because it greatly simplifies the common issue of having 2 nested loops and wanting to break out of the outer one.")
 
     // if !glfw.init() {
     //     return 0;

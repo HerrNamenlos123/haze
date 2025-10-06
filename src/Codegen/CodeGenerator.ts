@@ -167,9 +167,9 @@ class CodeGenerator {
           }
           this.out.type_definitions.popIndent().writeLine(`};`).writeLine();
         }
-      } else if (symbol.variant === Lowered.ENode.PointerDatatype) {
+      } else if (symbol.variant === Lowered.ENode.NullableReferenceDatatype) {
         this.out.type_declarations.writeLine(
-          `typedef ${this.mangleTypeUse(symbol.pointee)}* ${this.mangleTypeDef(symbol)};`
+          `typedef ${this.mangleTypeUse(symbol.referee)}* ${this.mangleTypeDef(symbol)};`
         );
       } else if (symbol.variant === Lowered.ENode.ReferenceDatatype) {
         this.out.type_declarations.writeLine(
@@ -256,9 +256,9 @@ class CodeGenerator {
         for (const m of type.members) {
           const type = this.lr.typeUseNodes.get(m.type);
           const typeDef = this.lr.typeDefNodes.get(type.type);
-          // Pointer do not matter, only direct references are bad.
+          // Pointer do not matter, only direct usages are bad.
           if (
-            typeDef.variant !== Lowered.ENode.PointerDatatype &&
+            typeDef.variant !== Lowered.ENode.NullableReferenceDatatype &&
             typeDef.variant !== Lowered.ENode.ReferenceDatatype
           ) {
             processTypeUse(m.type);
@@ -268,16 +268,13 @@ class CodeGenerator {
       } else if (type.variant === Lowered.ENode.PrimitiveDatatype) {
         appliedTypes.add(type);
         sortedLoweredTypes.push(type);
-      } else if (type.variant === Lowered.ENode.PointerDatatype) {
+      } else if (type.variant === Lowered.ENode.NullableReferenceDatatype) {
         appliedTypes.add(type);
-        processTypeUse(type.pointee);
+        processTypeUse(type.referee);
         sortedLoweredTypes.push(type);
       } else if (type.variant === Lowered.ENode.ReferenceDatatype) {
         appliedTypes.add(type);
         processTypeUse(type.referee);
-        sortedLoweredTypes.push(type);
-      } else if (type.variant === Lowered.ENode.LiteralValueDatatype) {
-        appliedTypes.add(type);
         sortedLoweredTypes.push(type);
       } else if (type.variant === Lowered.ENode.ArrayDatatype) {
         appliedTypes.add(type);
@@ -462,10 +459,12 @@ class CodeGenerator {
   makeCheckedBinaryArithmeticFunction(
     leftId: Lowered.ExprId,
     rightId: Lowered.ExprId,
+    plainResultTypeId: Lowered.TypeDefId,
     operation: EBinaryOperation
   ) {
     const left = this.lr.exprNodes.get(leftId);
     const right = this.lr.exprNodes.get(rightId);
+    const plainResultType = this.lr.typeDefNodes.get(plainResultTypeId);
 
     let opStr = "";
     switch (operation) {
@@ -553,7 +552,7 @@ class CodeGenerator {
         this.out.builtin_definitions.writeLine(`return a / b;`);
       }
     } else {
-      this.out.builtin_definitions.writeLine(`_H${leftType.name.mangledName} result;`);
+      this.out.builtin_definitions.writeLine(`_H${plainResultType.name.mangledName} result;`);
       this.out.builtin_definitions
         .writeLine(`if (__builtin_expect(__builtin_${opStr}_overflow(a, b, &result), 0)) {`)
         .pushIndent();
@@ -575,7 +574,7 @@ class CodeGenerator {
     assert(ftype.variant === Lowered.ENode.FunctionDatatype);
 
     let signature = "";
-    if (symbol.wasMonomorphized) {
+    if (symbol.isLibraryLocal) {
       signature += "static ";
     }
     signature +=
@@ -727,22 +726,6 @@ class CodeGenerator {
         return { temp: tempWriter, out: outWriter };
       }
 
-      case Lowered.ENode.BlockScopeStatement: {
-        if (statement.sourceloc && this.lr.sr.cc.config.includeSourceloc) {
-          outWriter.writeLine(
-            `#line ${statement.sourceloc.start.line} ${JSON.stringify(
-              statement.sourceloc.filename
-            )}`
-          );
-        }
-        outWriter.writeLine(`{`).pushIndent();
-        const scope = this.emitScope(statement.block);
-        tempWriter.write(scope.temp);
-        outWriter.write(scope.out);
-        outWriter.popIndent().writeLine("}");
-        return { temp: tempWriter, out: outWriter };
-      }
-
       case Lowered.ENode.IfStatement: {
         if (statement.sourceloc && this.lr.sr.cc.config.includeSourceloc) {
           outWriter.writeLine(
@@ -832,10 +815,32 @@ class CodeGenerator {
         return { out: outWriter, temp: tempWriter };
       }
 
+      case Lowered.ENode.BlockScopeExpr: {
+        const block = this.lr.blockScopeNodes.get(expr.block);
+        if (block.emittedExpr) {
+          outWriter.writeLine(`({`).pushIndent();
+          const scope = this.emitScope(expr.block);
+          tempWriter.write(scope.temp);
+          outWriter.write(scope.out);
+          const emitted = this.emitExpr(block.emittedExpr);
+          outWriter
+            .writeLine(emitted.out.get() + ";")
+            .popIndent()
+            .writeLine("})");
+        } else {
+          outWriter.writeLine(`{`).pushIndent();
+          const scope = this.emitScope(expr.block);
+          tempWriter.write(scope.temp);
+          outWriter.write(scope.out);
+          outWriter.popIndent().writeLine("}");
+        }
+        return { temp: tempWriter, out: outWriter };
+      }
+
       case Lowered.ENode.ExplicitCastExpr:
         const exprWriter = this.emitExpr(expr.expr);
         tempWriter.write(exprWriter.temp);
-        outWriter.write(`((${this.mangleTypeUse(expr.type)})${exprWriter.out.get()})`);
+        outWriter.write(`((${this.mangleTypeUse(expr.type)})(${exprWriter.out.get()}))`);
         return { out: outWriter, temp: tempWriter };
 
       case Lowered.ENode.PreIncrExpr: {
@@ -936,6 +941,7 @@ class CodeGenerator {
               const functionName = this.makeCheckedBinaryArithmeticFunction(
                 expr.left,
                 expr.right,
+                expr.plainResultType,
                 expr.operation
               );
               outWriter.write(
@@ -1024,14 +1030,14 @@ class CodeGenerator {
         return { out: outWriter, temp: tempWriter };
       }
 
-      case Lowered.ENode.PointerAddressOfExpr: {
+      case Lowered.ENode.AddressOfExpr: {
         const e = this.emitExpr(expr.expr);
         tempWriter.write(e.temp);
         outWriter.write("&" + e.out.get());
         return { out: outWriter, temp: tempWriter };
       }
 
-      case Lowered.ENode.PointerDereferenceExpr: {
+      case Lowered.ENode.DereferenceExpr: {
         const e = this.emitExpr(expr.expr);
         tempWriter.write(e.temp);
         outWriter.write("*" + e.out.get());
@@ -1050,7 +1056,7 @@ class CodeGenerator {
         const value = this.emitExpr(expr.value);
         tempWriter.write(target.temp);
         tempWriter.write(value.temp);
-        outWriter.write(target.out.get() + " = " + value.out.get());
+        outWriter.write("(" + target.out.get() + " = " + value.out.get() + ")");
         return { out: outWriter, temp: tempWriter };
       }
 

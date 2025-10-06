@@ -7,7 +7,7 @@ type = "lib"
 # src = "."
 
 [scripts]
-prebuild = "./build-linux.sh"
+prebuild = { command = "$HAZE_MODULE_SOURCE_DIR/build-linux.sh", depends = "./**/*" }
 
 [linker]
 flags = ["-lm", "-lglfw3", "-lGL", "-lpthread"]

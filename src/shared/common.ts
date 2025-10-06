@@ -15,6 +15,10 @@ export class BrandedArray<I extends number, T> {
     return this.data[index as unknown as number]; // cast to number for indexing
   }
 
+  getAll(): T[] {
+    return this.data;
+  }
+
   set(index: I, value: T): void {
     this.data[index as unknown as number] = value;
   }
@@ -34,6 +38,16 @@ export class BrandedArray<I extends number, T> {
       callback(this.data[i], i as unknown as I);
     }
   }
+}
+
+export function pushBrandedNode<I extends number, U>(array: BrandedArray<I, U>, value: U): [U, I] {
+  if (array.length === 0) {
+    // Push a dummy because it causes issues when the id is zero, so zero is not a valid id.
+    array.push(undefined as any);
+  }
+  const id = array.length as I;
+  array.push(value);
+  return [value, id];
 }
 
 export type NameSet = {

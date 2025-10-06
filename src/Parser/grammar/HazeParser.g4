@@ -50,14 +50,15 @@ cInjectDirective: (export=EXPORT)? INLINEC LB STRING_LITERAL RB SEMI;
 
 externLanguage: EXTERNC;
 
-functionDefinition: (export=EXPORT)? (extern=EXTERN externLang=externLanguage? pub=PUB? noemit=NOEMIT?)?  ID (LANGLE ID (COMMA ID)* RANGLE)? LB params RB (COLON datatype)? (ARROW)? (funcbody | SEMI);
-lambda: LB params RB (COLON datatype)? ARROW funcbody;
+functionDefinition: (export=EXPORT)? (extern=EXTERN externLang=externLanguage? pub=PUB? noemit=NOEMIT?)?  ID (LANGLE ID (COMMA ID)* RANGLE)? LB params RB (COLON datatype)? requiresBlock? (ARROW)? (funcbody | SEMI);
+lambda: LB params RB (COLON datatype)? requiresBlock? ARROW funcbody;
 param: ID COLON (datatype | ellipsis);
 params: (param (COMMA param)* (COMMA ellipsis)?)? | ellipsis;
 ellipsis: ELLIPSIS;
 
-funcbody: (scope | exprAsFuncbody);
-scope: LCURLY (statement)* RCURLY;
+funcbody: (rawScope | exprAsFuncbody);
+rawScope: LCURLY (statement)* RCURLY;
+doScope: DO UNSAFE? LCURLY (statement)* (EMIT expr SEMI)? RCURLY;
 exprAsFuncbody: expr;
 
 // Variables
@@ -95,9 +96,9 @@ datatypeImpl
     : datatypeFragment (DOT datatypeFragment)*                                  #NamedDatatype
     | LBRACKET n=INTEGER_LITERAL RBRACKET datatype                              #ArrayDatatype
     | LBRACKET RBRACKET datatype                                                #SliceDatatype
-    | MUL datatype                                                              #PointerDatatype
+    | QUESTIONAMPERSAND datatype                                                #NullableReferenceDatatype
     | SINGLEAND datatype                                                        #ReferenceDatatype
-    | LB params RB ARROW datatype                                               #FunctionDatatype
+    | LB params RB ARROW datatype requiresBlock?                                #FunctionDatatype
     ;
 
 datatype
@@ -121,7 +122,7 @@ structContent
     ;
 
 structDefinition
-    : (export=EXPORT)? (extern=EXTERN externLang=externLanguage)? pub=PUB? noemit=NOEMIT? STRUCT attributes+=(CLONABLE | NONCLONABLE)* ID (LANGLE ID (COMMA ID)* RANGLE)? LCURLY (content+=structContent)* RCURLY (SEMI)?
+    : (export=EXPORT)? (extern=EXTERN externLang=externLanguage)? pub=PUB? noemit=NOEMIT? STRUCT ID (LANGLE ID (COMMA ID)* RANGLE)? requiresBlock? LCURLY (content+=structContent)* RCURLY (SEMI)?
     ;
 
 typeDefinition
@@ -134,9 +135,14 @@ sliceIndex
     : expr? COLON expr?
     ;
 
+requiresBlock
+    : 'requires' expr (COMMA expr)*
+    ;
+
 expr
     // https://en.cppreference.com/w/c/language/operator_precedence
     : LB expr RB                                                                    #ParenthesisExpr
+    | doScope                                                                       #BlockScopeExpr
     | TYPE LANGLE datatype RANGLE                                                   #TypeLiteralExpr
     | lambda                                                                        #LambdaExpr
     | literal                                                                       #LiteralExpr
@@ -155,8 +161,8 @@ expr
     | <assoc=right> op=(PLUS | MINUS) expr                                          #UnaryExpr
     | <assoc=right> op=NOT expr /* and bitwise not */                               #UnaryExpr
     | <assoc=right> expr AS datatype                                                #ExplicitCastExpr
-    | <assoc=right> MUL expr                                                        #PointerDereference
-    | <assoc=right> SINGLEAND expr                                                  #PointerAddressOf
+    | <assoc=right> MUL expr                                                        #DereferenceExpr
+    | <assoc=right> SINGLEAND expr                                                  #AddressOfExpr
 
     // Part 3: Left to right
     | expr op+=(MUL|DIV|MOD) expr                                                   #BinaryExpr
@@ -169,7 +175,7 @@ expr
     // | expr ('|') expr                                                            #BinaryExpr
     | expr op+=(DOUBLEAND|DOUBLEOR) expr                                            #BinaryExpr
     // <- ternary
-    | expr op=(EQUALS|PLUSEQ|MINUSEQ|MULEQ|DIVEQ|MODEQ) expr                        #ExprAssignmentExpr
+    | <assoc=right> expr op=(EQUALS|PLUSEQ|MINUSEQ|MULEQ|DIVEQ|MODEQ) expr          #ExprAssignmentExpr
 
     | ID (LANGLE genericLiteral (COMMA genericLiteral)* RANGLE)?                    #SymbolValueExpr
     ;
@@ -177,13 +183,12 @@ expr
 // Statements & Conditionals
 
 statement
-    : INLINEC LB STRING_LITERAL RB SEMI                         #CInlineStatement
-    | expr SEMI                                                 #ExprStatement
-    | RETURN expr? SEMI                                         #ReturnStatement
+    : INLINEC LB STRING_LITERAL RB SEMI?                         #CInlineStatement
+    | expr SEMI?                                                #ExprStatement
+    | RETURN expr? SEMI?                                         #ReturnStatement
     | variableMutabilitySpecifier comptime=COMPTIME? ID (((COLON datatype)? EQUALS expr) | (COLON datatype)) SEMI       #VariableCreationStatement
-    | IF comptime=COMPTIME? ifExpr=expr then=scope (ELSE IF elseIfExpr+=expr elseIfThen+=scope)* (ELSE elseBlock=scope)? #IfStatement
-    | FOR comptime=COMPTIME? ID (COMMA ID)? IN expr scope       #ForEachStatement
-    | WHILE expr scope                                          #WhileStatement
-    | scope                                                     #ScopeStatement
+    | IF comptime=COMPTIME? ifExpr=expr then=rawScope (ELSE IF elseIfExpr+=expr elseIfThen+=rawScope)* (ELSE elseBlock=rawScope)? #IfStatement
+    | FOR comptime=COMPTIME? ID (COMMA ID)? IN expr rawScope       #ForEachStatement
+    | WHILE expr rawScope                                          #WhileStatement
     | typeDef                                                   #TypeAliasStatement
     ;
