@@ -6,10 +6,17 @@ authors = ["HerrNamenlos123"]
 type = "lib"
 # src = "."
 
-[scripts]
-# prebuild = { command = "$HAZE_MODULE_SOURCE_DIR/build-linux.sh", depends = "./**/*" }
+[scripts.linux]
+prebuild = { command = "$HAZE_MODULE_SOURCE_DIR/build-linux.sh", depends = "./**/*" }
+
+[scripts.win32]
 prebuild = { command = "\"%HAZE_MODULE_SOURCE_DIR%/build-win.bat\"", depends = "./**/*" }
 
 [linker]
-# flags = ["-lm", "-lglfw3", "-lGL", "-lpthread"]
 flags = ["-lglfw3"]
+
+[linker.linux]
+flags = ["-lm", "-lGL", "-lpthread"]
+
+[linker.win32]
+flags = ["-luser32", "-lgdi32", "-lshell32"]

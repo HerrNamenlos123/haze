@@ -85,7 +85,8 @@ export struct _Vec3<T> {
   }
 
   normalize(): _Vec3<T> {
-    return this.div(this.length());
+    const a = this.div(this.length());
+    return _Vec3<T>(a.x, a.y, a.z);
   }
 
   dot(other: _Vec3<T>): T {

@@ -34,6 +34,7 @@ import {
   parseModuleMetadata,
   type ModuleConfig,
   type ModuleMetadata,
+  type ScriptDef,
 } from "./shared/Config";
 import { Parser } from "./Parser/Parser";
 import {
@@ -41,7 +42,6 @@ import {
   CollectFile,
   ECollectionMode,
   makeCollectionContext,
-  PrettyPrintCollected,
   type CollectionContext,
 } from "./SymbolCollection/SymbolCollection";
 import { generateCode } from "./Codegen/CodeGenerator";
@@ -49,8 +49,7 @@ import { LowerModule } from "./Lower/Lower";
 import { ExportCollectedSymbols } from "./SymbolCollection/Export";
 import { Semantic } from "./Semantic/Elaborate";
 import { stdout } from "process";
-import * as tar from "tar";
-import { spawn, spawnSync } from "child_process";
+import { spawnSync } from "child_process";
 import archiver from "archiver";
 import tarFs from "tar-fs";
 import gunzip from "gunzip-maybe";
@@ -69,7 +68,7 @@ async function createTarGz(cwd: string, files: string[], outPath: string) {
 
   return new Promise<void>((resolve, reject) => {
     output.on("close", () => {
-      console.log(`Archive created: ${archive.pointer()} bytes`);
+      // console.log(`Archive created: ${archive.pointer()} bytes`);
       resolve();
     });
 
@@ -108,7 +107,6 @@ if (process.platform === "win32") {
 } else if (process.platform === "linux") {
   PLATFORM = Platform.Linux;
 } else if (process.platform === "darwin") {
-  console.log("Running on macOS");
   throw new Error("MacOS not supported yet");
 } else {
   throw new Error("Platform not supported yet: " + process.platform);
@@ -412,18 +410,30 @@ export class ProjectCompiler {
       config = {
         configFilePath: undefined,
         dependencies: [],
-        linkerFlags: [],
+        linkerFlags: {
+          any: [],
+          linux: [],
+          win32: [],
+        },
         moduleType: ModuleType.Executable,
         nostdlib: false,
         platform: getCurrentPlatform(),
         name: basename(singleFilename),
         version: "0.0.0",
-        scripts: [],
+        scripts: {
+          any: [],
+          linux: [],
+          win32: [],
+        },
         srcDirectory: dirname(singleFilename),
         authors: undefined,
         description: undefined,
         license: undefined,
-        compilerFlags: [],
+        compilerFlags: {
+          any: [],
+          linux: [],
+          win32: [],
+        },
         includeSourceloc: sourceloc ?? true,
       };
     }
@@ -844,32 +854,36 @@ class ModuleCompiler {
       env.CXX = HAZE_CXX_COMPILER;
 
       if (this.config.configFilePath) {
-        const prebuildScript = this.config.scripts.find((s) => s.name === "prebuild");
-        if (prebuildScript) {
-          const exec = () => execInherit(prebuildScript.command, this.moduleDir + "/build");
-          if (prebuildScript.depends === null) {
-            await exec();
+        const runPrebuildScript = async (script: ScriptDef) => {
+          const exec = () => execInherit(script.command, this.moduleDir + "/build");
+
+          if (script.depends === null) {
+            exec();
           } else {
-            const changed = checkForChanges(
-              prebuildScript.depends,
-              this.globalBuildDir,
-              MODULE_SOURCE_DIR
-            );
+            const changed = checkForChanges(script.depends, this.globalBuildDir, MODULE_SOURCE_DIR);
             if (changed.length > 0) {
               try {
-                await exec();
+                exec();
               } catch (e) {
-                invalidateChangeCache(
-                  prebuildScript.depends,
-                  this.globalBuildDir,
-                  MODULE_SOURCE_DIR
-                );
+                invalidateChangeCache(script.depends, this.globalBuildDir, MODULE_SOURCE_DIR);
                 throw e;
               }
             } else {
               console.log(`Skipping prebuild step for '${this.config.name}': No changes detected`);
             }
           }
+        };
+
+        const prebuildScript = this.config.scripts.any.find((s) => s.name === "prebuild");
+        if (prebuildScript) await runPrebuildScript(prebuildScript);
+
+        if (PLATFORM === Platform.Win32) {
+          const prebuildScript = this.config.scripts.win32.find((s) => s.name === "prebuild");
+          if (prebuildScript) await runPrebuildScript(prebuildScript);
+        }
+        if (PLATFORM === Platform.Linux) {
+          const prebuildScript = this.config.scripts.linux.find((s) => s.name === "prebuild");
+          if (prebuildScript) await runPrebuildScript(prebuildScript);
         }
       }
 
@@ -908,16 +922,16 @@ class ModuleCompiler {
 
       const compilerFlags = this.config.compilerFlags;
       const linkerFlags = this.config.linkerFlags;
-      compilerFlags.push("-Wno-parentheses-equality");
-      compilerFlags.push("-Wno-extra-tokens");
+      compilerFlags.any.push("-Wno-parentheses-equality");
+      compilerFlags.any.push("-Wno-extra-tokens");
 
-      compilerFlags.push(`-I"${this.moduleDir}/bin/include"`);
-      linkerFlags.push(`-L"${this.moduleDir}/bin/lib"`);
+      compilerFlags.any.push(`-I"${this.moduleDir}/bin/include"`);
+      linkerFlags.any.push(`-L"${this.moduleDir}/bin/lib"`);
 
-      if (PLATFORM === Platform.Win32) {
-        compilerFlags.push(`-D_CRT_SECURE_NO_WARNINGS`);
-        linkerFlags.push(`-fuse-ld=lld`);
-      }
+      compilerFlags.win32.push(`-D_CRT_SECURE_NO_WARNINGS`);
+      linkerFlags.win32.push(`-fuse-ld=lld`);
+
+      compilerFlags.linux.push("-fPIC");
 
       // MUSL Sysroot Settings
       // compilerFlags.push(`--sysroot=${HAZE_MUSL_SYSROOT}`);
@@ -932,23 +946,40 @@ class ModuleCompiler {
       // linkerFlags.push(`${HAZE_MUSL_SYSROOT}/lib/crtn.o`);
       // linkerFlags.push(`-lc`);
 
+      const allCompilerFlags = [...compilerFlags.any];
+      if (PLATFORM === Platform.Win32) {
+        allCompilerFlags.push(...compilerFlags.win32);
+      }
+      if (PLATFORM === Platform.Linux) {
+        allCompilerFlags.push(...compilerFlags.linux);
+      }
+
       if (this.config.moduleType === ModuleType.Executable) {
         const [libs, dependencyLinkerFlags] = await this.loadDependencyBinaries();
-        const allLinkerFlags = [...linkerFlags, ...dependencyLinkerFlags];
+
+        linkerFlags.any.push(...dependencyLinkerFlags.any);
+        linkerFlags.win32.push(...dependencyLinkerFlags.win32);
+        linkerFlags.linux.push(...dependencyLinkerFlags.linux);
+
+        const allLinkerFlags = [...linkerFlags.any];
+        if (PLATFORM === Platform.Win32) {
+          allLinkerFlags.push(...linkerFlags.win32);
+        }
+        if (PLATFORM === Platform.Linux) {
+          allLinkerFlags.push(...linkerFlags.linux);
+        }
+
         const cmd = `"${HAZE_C_COMPILER}" -g "${moduleCFile}" -o "${moduleExecutable}" -I"${
           this.config.srcDirectory
-        }" ${libs.map((l) => `"${l}"`).join(" ")} ${compilerFlags.join(" ")} ${allLinkerFlags.join(
+        }" ${libs.map((l) => `"${l}"`).join(" ")} ${allCompilerFlags.join(
           " "
-        )} -std=c11`;
+        )} ${allLinkerFlags.join(" ")} -std=c11`;
         // console.log(cmd);
         await exec(cmd);
       } else {
-        if (PLATFORM === Platform.Linux) {
-          compilerFlags.push("-fPIC");
-        }
         const cmd = `"${HAZE_C_COMPILER}" -g "${moduleCFile}" -c -o "${moduleOFile}" -I"${
           this.config.srcDirectory
-        }" ${compilerFlags.join(" ")} -std=c11`;
+        }" ${allCompilerFlags.join(" ")} -std=c11`;
         // console.log(cmd);
         await exec(cmd);
 
@@ -959,7 +990,7 @@ class ModuleCompiler {
         if (PLATFORM === Platform.Linux) {
           await exec(`"${ARCHIVE_TOOL}" r "${moduleAFile}" "${moduleOFile}" > /dev/null`);
         } else {
-          await exec(`"${ARCHIVE_TOOL}" r "${moduleAFile}" "${moduleOFile}"`);
+          await exec(`"${ARCHIVE_TOOL}" r "${moduleAFile}" "${moduleOFile}" > NUL 2>&1`);
         }
 
         const makerel = (absolute: string) => {
@@ -992,14 +1023,6 @@ class ModuleCompiler {
           fs.unlinkSync(moduleOutputLib);
         }
 
-        // await tar.c(
-        //   {
-        //     gzip: true,
-        //     cwd: `${this.moduleDir}/build`,
-        //     file: moduleOutputLib,
-        //   },
-        //   [makerel(moduleAFile), makerel(importFilePath), makerel(moduleMetadataFile)]
-        // );
         await createTarGz(
           `${this.moduleDir}/build`,
           [makerel(moduleAFile), makerel(importFilePath), makerel(moduleMetadataFile)],
@@ -1018,7 +1041,11 @@ class ModuleCompiler {
 
   private async loadDependencyBinaries() {
     const libs: string[] = [];
-    const linkerFlags: string[] = [];
+    const linkerFlags = {
+      any: [] as string[],
+      win32: [] as string[],
+      linux: [] as string[],
+    };
 
     const deps = [...this.config.dependencies];
     if (this.config.name !== HAZE_STDLIB_NAME && !this.config.nostdlib) {
@@ -1040,7 +1067,9 @@ class ModuleCompiler {
       const tempdir = join(this.moduleDir, "__deps", dep.name);
       const archiveFile = join(tempdir, lib.filename);
       libs.push(archiveFile);
-      linkerFlags.push(...metadata.linkerFlags);
+      linkerFlags.any.push(...metadata.linkerFlags.any);
+      linkerFlags.win32.push(...metadata.linkerFlags.win32);
+      linkerFlags.linux.push(...metadata.linkerFlags.linux);
     }
     return [libs, linkerFlags] as const;
   }
