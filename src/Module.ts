@@ -655,8 +655,8 @@ export class ProjectCompiler {
 
       if (!this.isStepDone(MARKERS.winSDK) && PLATFORM === Platform.Win32) {
         console.info("Installing Windows SDK...");
-        exec(
-          `winget install "Visual Studio Community 2022"  --override "--add Microsoft.VisualStudio.Workload.NativeDesktop  Microsoft.VisualStudio.ComponentGroup.WindowsAppSDK.Cpp"  -s msstore`
+        execInherit(
+          `powershell -NoLogo -NoProfile -Command \\"if (-not (winget list --name 'Visual Studio Community 2022' | Select-String 'Visual Studio Community 2022')) { winget install 'Visual Studio Community 2022' --override '--add Microsoft.VisualStudio.Workload.NativeDesktop Microsoft.VisualStudio.ComponentGroup.WindowsAppSDK.Cpp' -s msstore } else { Write-Host 'Visual Studio already installed.' }\\"`
         );
         this.markStepDone(MARKERS.winSDK);
         console.info("Installing Windows SDK... Done");
@@ -664,7 +664,9 @@ export class ProjectCompiler {
 
       if (!this.isStepDone(MARKERS.winNinja) && PLATFORM === Platform.Win32) {
         console.info("Installing Ninja Build System...");
-        exec(`winget install Ninja-build.Ninja`);
+        execInherit(
+          `powershell -NoLogo -NoProfile -Command "if (-not (winget list --id 'Ninja-build.Ninja' | Select-String 'Ninja-build.Ninja')) { winget install 'Ninja-build.Ninja' } else { Write-Host 'Ninja already installed.'; exit 0 }"`
+        );
         this.markStepDone(MARKERS.winNinja);
         console.info("Installing Ninja Build System... Done");
       }
@@ -732,7 +734,7 @@ function exec(str: string) {
 
 function execInherit(str: string, dir?: string) {
   let shell = PLATFORM === Platform.Win32 ? "C:\\Windows\\System32\\cmd.exe" : "/bin/sh";
-  const args = PLATFORM === Platform.Win32 ? ["/d", "/s", "/c", `"${str}"`] : ["-c", `"${str}"`];
+  const args = PLATFORM === Platform.Win32 ? ["/d", "/s", "/c", `${str}`] : ["-c", `"${str}"`];
 
   if (dir) {
     fs.mkdirSync(dir, {
