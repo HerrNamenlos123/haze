@@ -45,7 +45,7 @@ export type ModuleConfig = {
   includeSourceloc: boolean;
 };
 
-export type PlatformString = "linux-x64" | "windows-x64";
+export type PlatformString = "linux-x64" | "win32-x64";
 
 export type ModuleLibMetadata = {
   platform: PlatformString;
@@ -137,10 +137,7 @@ export function parseModuleMetadata(metadata: string): ModuleMetadata {
       }
       libs.push({
         filename: getString(obj["filename"]),
-        platform: getStringAnyOf<"linux-x64" | "windows-x64">(obj["platform"], [
-          "linux-x64",
-          "windows-x64",
-        ]),
+        platform: getStringAnyOf<PlatformString>(obj["platform"], ["linux-x64", "win32-x64"]),
         type: getStringAnyOf<"static" | "shared">(obj["type"], ["static", "shared"]),
       });
     }

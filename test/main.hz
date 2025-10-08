@@ -49,7 +49,7 @@ main(): int {
     // println("Vec 1: ", vec1);
     // println("Vec 2: ", vec2);
 
-    // return 0;
+    return 0;
 
     println("TODO: Fix the situation for negative literals. Parsing the minus is bad as it's punctiation dependent. It should be changed to parse as a Unary Expression with positive Literal, and in the symbol collection, Unary+Literal can be caught and converted into literal with negative value.");
     println("TODO: All Increment operations and short-hand syntax should be expanded into proper full assignment expressions, and then compiled normally, makes everything much simpler, especially the overflow tracking.");

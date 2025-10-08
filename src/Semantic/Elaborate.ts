@@ -3088,12 +3088,13 @@ export namespace Semantic {
             });
           }
           if (expr.memberName === "mangled") {
+            const name = mangleFullTypeUse(sr, object.type);
             return Semantic.addExpr(sr, {
               variant: Semantic.ENode.LiteralExpr,
               literal: {
                 type: EPrimitive.str,
                 unit: null,
-                value: "_H" + mangleFullTypeUse(sr, object.type),
+                value: name.wasMangled ? "_H" + name.name : name.name,
               },
               type: makePrimitiveAvailable(
                 sr,
@@ -5459,6 +5460,7 @@ export namespace Semantic {
         {
           pretty: serializeTypeDef(sr, typeId),
           mangled: mangle.name,
+          wasMangled: mangle.wasMangled,
           isMonomorphized: false,
           isExported: false,
         },
@@ -5468,6 +5470,7 @@ export namespace Semantic {
     let current = {
       pretty: type.name,
       mangled: type.name.length + type.name,
+      wasMangled: true,
       isMonomorphized: false,
       isExported: false,
     };
@@ -5657,13 +5660,17 @@ export namespace Semantic {
     const type = sr.typeUseNodes.get(typeUseId);
 
     const names = getNamespaceChainFromDatatype(sr, type.type);
-    return (
-      mangleTypeUse(sr, typeUseId).name +
-      names
-        .slice(1)
-        .map((n) => n.pretty)
-        .join("")
-    );
+
+    const use = mangleTypeUse(sr, typeUseId);
+    return {
+      name:
+        use.name +
+        names
+          .slice(1)
+          .map((n) => n.pretty)
+          .join(""),
+      wasMangled: use.wasMangled || names.slice(1).some((n) => n.wasMangled),
+    };
   }
 
   export function mangleSymbol(sr: SemanticResult, symbolId: Semantic.SymbolId) {

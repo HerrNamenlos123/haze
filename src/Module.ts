@@ -392,7 +392,7 @@ export function getCurrentPlatform() {
   if (PLATFORM === Platform.Linux) {
     return "linux-x64";
   } else {
-    return "windows-x64";
+    return "win32-x64";
   }
 }
 
@@ -1103,9 +1103,8 @@ class ModuleCompiler {
   }
 
   private async addInternalBuiltinSources() {
-    await this.collectDirectory(
-      join(getStdlibDirectory(), "internal"),
-      ECollectionMode.ImportUnderRootDirectly
-    );
+    const internalDir = join(getStdlibDirectory(), "internal");
+    await this.collectDirectory(internalDir, ECollectionMode.ImportUnderRootDirectly);
+    this.config.compilerFlags.any.push(`-I"${internalDir}"`);
   }
 }
