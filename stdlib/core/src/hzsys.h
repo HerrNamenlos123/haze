@@ -2,11 +2,12 @@
 #ifndef HZSYS_H
 #define HZSYS_H
 
-#include <stdlib.h>
+void *hzsys_malloc_zeroed(size_t size);
+void hzsys_free(void *ptr);
 
-#include "hzsys_internal.h"
+void hzsys_memzero(void *target, size_t size);
 
-void* hzsys_malloc();
-void hzsys_free(void* ptr);
+#include "hzsys_arena.h"
+#include "hzsys_runtime.h"
 
 #endif // HZSYS_H

@@ -117,11 +117,13 @@ class CodeGenerator {
   }
 
   generate() {
+    this.includeHeader("stdlib.h");
     this.includeHeader("stdint.h");
+    this.includeHeader("stdbool.h");
     this.includeHeader("stdio.h");
     this.includeHeader("limits.h");
     this.includeHeader("string.h");
-    this.includeHeader("hzsys_internal.h", true);
+    this.includeHeader("hzsys.h", true);
 
     const sortedLoweredTypeDefs: (Lowered.TypeDef | Lowered.TypeUse)[] = [];
 

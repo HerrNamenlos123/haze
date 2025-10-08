@@ -1103,8 +1103,10 @@ class ModuleCompiler {
   }
 
   private async addInternalBuiltinSources() {
-    const internalDir = join(getStdlibDirectory(), "internal");
-    await this.collectDirectory(internalDir, ECollectionMode.ImportUnderRootDirectly);
-    this.config.compilerFlags.any.push(`-I"${internalDir}"`);
+    await this.collectDirectory(
+      join(getStdlibDirectory(), "internal"),
+      ECollectionMode.ImportUnderRootDirectly
+    );
+    this.config.compilerFlags.any.push(`-I"${join(getStdlibDirectory(), "core", "src")}"`);
   }
 }
