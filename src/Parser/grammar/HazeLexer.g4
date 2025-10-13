@@ -23,6 +23,7 @@ UNSAFE: 'unsafe';
 DO: 'do';
 YIELD: 'yield';
 EMIT: 'emit';
+SOURCE_LOCATION_DIRECTIVE: '#source';
 
 TRUE: 'true';
 FALSE: 'false';
@@ -102,8 +103,8 @@ fragment HEX
     :   [0-9a-fA-F]
     ;
 
-fragment DEC_PART: '-'? DIGIT+;
-fragment FLOAT_PART: '-'? DIGIT+ '.' DIGIT*; // Handles 123., .456, 123.45
+fragment DEC_PART: DIGIT+;
+fragment FLOAT_PART: DIGIT+ '.' DIGIT*; // Handles 123., .456, 123.45
 fragment DIGIT: [0-9];
 
 // ╔═══════════════════════════════════════════════════════════════════════════════╗

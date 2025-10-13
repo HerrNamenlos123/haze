@@ -3,11 +3,11 @@ __c__("#include <GLFW/glfw3.h>");
 __c__("#include <math.h>");
 __c__("#include <string.h>");
 
-export extern "C" struct GLFWwindow {};
-export extern "C" struct GLFWmonitor {};
+export extern C struct GLFWwindow {};
+export extern C struct GLFWmonitor {};
 
-extern "C" noemit strcmp(str1: c_str, str2: c_str): i32;
-extern "C" noemit getenv(name: c_str): c_str;
+extern C noemit strcmp(str1: c_str, str2: c_str): i32;
+extern C noemit getenv(name: c_str): c_str;
 
 const GLFW_PLATFORM: i32;
 const GLFW_PLATFORM_X11: i32;
@@ -18,20 +18,20 @@ const GLFW_OPENGL_PROFILE: i32;
 const GLFW_OPENGL_CORE_PROFILE: i32;
 
 namespace raw {
-    extern "C" glfwInit(): i32;
-    extern "C" glfwTerminate(): void;
-    extern "C" glfwCreateWindow(width: i32, height: i32, title: c_str, monitor: ?&GLFWmonitor, share: ?&GLFWwindow): ?&GLFWwindow;
-    extern "C" glfwWindowShouldClose(w: &GLFWwindow): i32;
-    extern "C" glfwSetWindowShouldClose(w: &GLFWwindow, value: i32);
-    extern "C" glfwSwapBuffers(w: &GLFWwindow);
-    extern "C" glfwSwapInterval(flag: i32);
-    extern "C" glfwMakeContextCurrent(w: &GLFWwindow);
-    extern "C" glfwPollEvents();
-    extern "C" glfwInitHint(hint: i32, value: i32);
-    extern "C" glfwWindowHint(hint: i32, value: i32);
-    extern "C" glfwGetTime(): f64;
-    // extern "C" glfwMakeContextCurrent(w: GLFWwindow*);
-    extern "C" glfwGetProcAddress(procname: c_str): () => void;
+    extern C glfwInit(): i32;
+    extern C glfwTerminate(): void;
+    extern C glfwCreateWindow(width: i32, height: i32, title: c_str, monitor: ?&GLFWmonitor, share: ?&GLFWwindow): ?&GLFWwindow;
+    extern C glfwWindowShouldClose(w: &GLFWwindow): i32;
+    extern C glfwSetWindowShouldClose(w: &GLFWwindow, value: i32);
+    extern C glfwSwapBuffers(w: &GLFWwindow);
+    extern C glfwSwapInterval(flag: i32);
+    extern C glfwMakeContextCurrent(w: &GLFWwindow);
+    extern C glfwPollEvents();
+    extern C glfwInitHint(hint: i32, value: i32);
+    extern C glfwWindowHint(hint: i32, value: i32);
+    extern C glfwGetTime(): f64;
+    // extern C glfwMakeContextCurrent(w: GLFWwindow*);
+    extern C glfwGetProcAddress(procname: c_str): () => void;
 
     export init(): bool {
         return glfwInit() != 0;

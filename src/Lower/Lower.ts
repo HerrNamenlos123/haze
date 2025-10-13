@@ -71,6 +71,7 @@ export namespace Lowered {
     SymbolValueExpr,
     NamespaceOrStructValueExpr,
     SizeofExpr,
+    AlignofExpr,
     DatatypeAsValueExpr,
     ExplicitCastExpr,
     MemberAccessExpr,
@@ -233,6 +234,12 @@ export namespace Lowered {
     type: TypeUseId;
   };
 
+  export type AlignofExpr = {
+    variant: ENode.AlignofExpr;
+    value: ExprId;
+    type: TypeUseId;
+  };
+
   export type DatatypeAsValueExpr = {
     variant: ENode.DatatypeAsValueExpr;
     type: TypeUseId;
@@ -341,6 +348,7 @@ export namespace Lowered {
     | DereferenceExpr
     | AddressOfExpr
     | SizeofExpr
+    | AlignofExpr
     | DatatypeAsValueExpr
     | ExplicitCastExpr
     | ExprMemberAccessExpr
@@ -1035,6 +1043,14 @@ function lowerExpr(
       });
     }
 
+    case Semantic.ENode.AlignofExpr: {
+      return Lowered.addExpr(lr, {
+        variant: Lowered.ENode.AlignofExpr,
+        value: lowerExpr(lr, expr.valueExpr, flattened)[1],
+        type: lowerTypeUse(lr, expr.type),
+      });
+    }
+
     case Semantic.ENode.BlockScopeExpr: {
       return Lowered.addExpr<Lowered.BlockScopeExpr>(lr, {
         variant: Lowered.ENode.BlockScopeExpr,
@@ -1658,6 +1674,9 @@ function serializeLoweredExpr(lr: Lowered.Module, exprId: Lowered.ExprId): strin
 
     case Lowered.ENode.SizeofExpr:
       return `sizeof(${serializeLoweredExpr(lr, expr.value)})`;
+
+    case Lowered.ENode.AlignofExpr:
+      return `alignof(${serializeLoweredExpr(lr, expr.value)})`;
   }
 }
 

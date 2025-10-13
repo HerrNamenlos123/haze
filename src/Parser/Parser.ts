@@ -133,6 +133,10 @@ import {
   BlockScopeExprContext,
   DoScopeContext,
   RawScopeContext,
+  SourceLocationPrefixRuleContext,
+  GlobalDeclarationWithSourceContext,
+  GlobalDeclarationContext,
+  TopLevelDeclarationsContext,
 } from "./grammar/autogen/HazeParser";
 import {
   BaseErrorListener,
@@ -222,7 +226,13 @@ class ASTTransformer extends HazeParserVisitor<any> {
     super();
   }
 
+  sourcelocOverride: SourceLoc[] = [];
+
   loc(ctx: ParserRuleContext): SourceLoc {
+    if (this.sourcelocOverride.length > 0) {
+      return this.sourcelocOverride[this.sourcelocOverride.length - 1];
+    }
+
     return {
       filename: this.filename,
       start: {
@@ -363,14 +373,22 @@ class ASTTransformer extends HazeParserVisitor<any> {
   }
 
   visitProg = (ctx: ProgContext): ASTRoot => {
-    return ctx.children
+    const result = ctx.children
       .map((c) => {
         if (c instanceof TerminalNode && c.getText() === "<EOF>") {
           return;
         }
-        return this.visit(c);
+        const result = this.visit(c);
+        return result;
       })
-      .filter((c) => !!c);
+      .filter((c) => !!c)
+      .flat();
+    return result;
+  };
+
+  visitTopLevelDeclarations = (ctx: TopLevelDeclarationsContext) => {
+    const children = ctx.children.map((c) => this.visit(c)).flat();
+    return children;
   };
 
   visitCInjectDirective = (ctx: CInjectDirectiveContext): ASTCInjectDirective => {
@@ -1178,13 +1196,26 @@ class ASTTransformer extends HazeParserVisitor<any> {
     }
   };
 
+  visitGlobalDeclaration = (ctx: GlobalDeclarationContext) => {
+    const results = [];
+    for (const child of ctx.children ?? []) {
+      const result = this.visit(child);
+      if (result !== undefined && result !== null) results.push(result);
+    }
+    const flat = results.flat();
+    return flat;
+  };
+
   visitNamespaceDefinition = (ctx: NamespaceDefinitionContext): ASTNamespaceDefinition => {
     const names = ctx.ID().map((c) => c.getText());
     const namesReversed = names.reverse();
 
     let currentNamespace: ASTNamespaceDefinition = {
       variant: "NamespaceDefinition",
-      declarations: ctx.globalDeclaration().map((g) => this.visit(g)),
+      declarations: ctx
+        .globalDeclaration()
+        .map((g) => this.visit(g))
+        .flat(),
       export: Boolean(ctx._export_),
       name: namesReversed[0],
       sourceloc: this.loc(ctx),
@@ -1295,5 +1326,59 @@ class ASTTransformer extends HazeParserVisitor<any> {
       fragments: combinedFragments,
       sourceloc: this.loc(ctx),
     };
+  };
+
+  visitSourceLocationPrefixRule = (ctx: SourceLocationPrefixRuleContext): SourceLoc => {
+    const filename = JSON.parse(ctx.STRING_LITERAL().getText());
+
+    const ints = ctx.INTEGER_LITERAL().map((int) => parseInt(int.getText()));
+    if (ints.length === 2) {
+      return {
+        filename: filename,
+        start: {
+          line: ints[0],
+          column: ints[1],
+        },
+      };
+    } else if (ints.length === 3) {
+      return {
+        filename: filename,
+        start: {
+          line: ints[0],
+          column: ints[1],
+        },
+        end: {
+          line: ints[0],
+          column: ints[2],
+        },
+      };
+    } else if (ints.length === 4) {
+      return {
+        filename: filename,
+        start: {
+          line: ints[0],
+          column: ints[1],
+        },
+        end: {
+          line: ints[2],
+          column: ints[3],
+        },
+      };
+    } else {
+      throw new CompilerError(`Unexpected number of integers`, this.loc(ctx));
+    }
+  };
+
+  visitGlobalDeclarationWithSource = (ctx: GlobalDeclarationWithSourceContext): any => {
+    const sourceloc = this.visitSourceLocationPrefixRule(ctx.sourceLocationPrefixRule());
+
+    this.sourcelocOverride.push(sourceloc);
+    const decls = ctx
+      .globalDeclaration()
+      .map((g) => this.visit(g))
+      .flat();
+    this.sourcelocOverride.pop();
+
+    return decls;
   };
 }

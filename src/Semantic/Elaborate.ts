@@ -357,6 +357,7 @@ export namespace Semantic {
     SymbolValueExpr,
     DatatypeAsValueExpr,
     SizeofExpr,
+    AlignofExpr,
     ExplicitCastExpr,
     MemberAccessExpr,
     CallableExpr,
@@ -660,6 +661,14 @@ export namespace Semantic {
     sourceloc: SourceLoc;
   };
 
+  export type AlignofExpr = {
+    variant: ENode.AlignofExpr;
+    valueExpr: ExprId;
+    type: TypeUseId;
+    isTemporary: boolean;
+    sourceloc: SourceLoc;
+  };
+
   export type ExprAssignmentExpr = {
     variant: ENode.ExprAssignmentExpr;
     value: ExprId;
@@ -823,6 +832,7 @@ export namespace Semantic {
     | SymbolValueExpr
     | DatatypeAsValueExpr
     | SizeofExpr
+    | AlignofExpr
     | BlockScopeExpr
     | ExprAssignmentExpr
     | RefAssignmentExpr
@@ -2119,6 +2129,42 @@ export namespace Semantic {
             }
             return Semantic.addExpr(sr, {
               variant: Semantic.ENode.SizeofExpr,
+              sourceloc: collectedExpr.sourceloc,
+              isTemporary: false,
+              type: makePrimitiveAvailable(
+                sr,
+                EPrimitive.usize,
+                EDatatypeMutability.Const,
+                expr.sourceloc
+              ),
+              valueExpr: callingArguments[0],
+            });
+          }
+          if (collectedExpr.name === "alignof") {
+            const callingArguments = expr.arguments.map(
+              (a, i) =>
+                elaborateExpr(sr, a, {
+                  context: args.context,
+                  constraints: args.constraints,
+                  scope: args.context.currentScope,
+                  unsafe: args.unsafe,
+                  expectedReturnType: args.expectedReturnType,
+                })[1]
+            );
+            if (collectedExpr.genericArgs.length !== 0) {
+              throw new CompilerError(
+                "The alignof function cannot take any type parameters",
+                collectedExpr.sourceloc
+              );
+            }
+            if (callingArguments.length !== 1) {
+              throw new CompilerError(
+                "The alignof function can only take exactly one parameter",
+                collectedExpr.sourceloc
+              );
+            }
+            return Semantic.addExpr(sr, {
+              variant: Semantic.ENode.AlignofExpr,
               sourceloc: collectedExpr.sourceloc,
               isTemporary: false,
               type: makePrimitiveAvailable(
@@ -5940,6 +5986,9 @@ export namespace Semantic {
 
       case Semantic.ENode.SizeofExpr:
         return `sizeof(${serializeExpr(sr, expr.valueExpr)})`;
+
+      case Semantic.ENode.AlignofExpr:
+        return `alignof(${serializeExpr(sr, expr.valueExpr)})`;
 
       case Semantic.ENode.ExplicitCastExpr:
         return `(${serializeExpr(sr, expr.expr)} as ${serializeTypeUse(sr, expr.type)})`;

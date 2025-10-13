@@ -28,10 +28,12 @@ namespace fmt {
     export format<T>(arena: &Arena, value: T, args: FormatArgs): str {
         const writer = StringWriter {};
         format_to(writer as &StringWriter, value, args);
-        const string = arena.allocateRaw(writer.length);
-        const writer2 = StringWriter { buffer: string };
-        format_to(writer2 as &StringWriter, value, args);
-        return str(writer2.buffer, writer2.length);
+        do unsafe {
+            const string = arena.allocRaw(writer.length, 1) as ?&u8;
+            const writer2 = StringWriter { buffer: string };
+            format_to(writer2 as &StringWriter, value, args);
+            return str(writer2.buffer, writer2.length);
+        }
     }
 
     export format_to(writer: &StringWriter, value: int, args: FormatArgs) {

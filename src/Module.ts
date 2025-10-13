@@ -42,6 +42,7 @@ import {
   CollectFile,
   ECollectionMode,
   makeCollectionContext,
+  PrettyPrintCollected,
   type CollectionContext,
 } from "./SymbolCollection/SymbolCollection";
 import { generateCode } from "./Codegen/CodeGenerator";

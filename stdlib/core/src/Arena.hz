@@ -1,5 +1,5 @@
 
-extern C noemit struct hzsys_arena_t {}
+export extern C noemit struct hzsys_arena_t {};
 
 extern C noemit hzsys_arena_create(chunk_size: usize): ?&hzsys_arena_t;
 extern C noemit hzsys_arena_cleanup_and_free(arena: ?&hzsys_arena_t): void;
@@ -28,6 +28,10 @@ export struct Arena {
         const ptr = hzsys_arena_allocate(this.arenaImpl, sizeof(T), alignof(T));
         assign(ptr, value);
         return ptr;
+    }
+
+    allocRaw(size: usize, alignment: usize): ?&void {
+        return hzsys_arena_allocate(this.arenaImpl, size, alignment);
     }
 
     free() {

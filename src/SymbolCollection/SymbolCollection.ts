@@ -2078,7 +2078,6 @@ function collectExpr(
     // }
 
     default:
-      console.log(item);
       assert(false, "All cases handled " + item.variant);
   }
 }

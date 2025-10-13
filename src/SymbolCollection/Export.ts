@@ -1,6 +1,6 @@
 import { Semantic } from "../Semantic/Elaborate";
 import { EExternLanguage } from "../shared/AST";
-import { assert } from "../shared/Errors";
+import { assert, formatSourceLoc } from "../shared/Errors";
 import {
   Collect,
   funcSymHasParameterPack,
@@ -160,6 +160,9 @@ export function ExportCollectedSymbols(cc: CollectionContext) {
     const symbol = cc.symbolNodes.get(symbolId);
     switch (symbol.variant) {
       case Collect.ENode.FunctionSymbol: {
+        if (symbol.sourceloc) {
+          file += `#source ${formatSourceLoc(symbol.sourceloc)} {\n`;
+        }
         const namespaces = getNamespacesFromSymbol(cc, symbolId);
         for (const ns of namespaces.slice(0, -1)) {
           file += "namespace " + ns + " {\n";
@@ -178,7 +181,7 @@ export function ExportCollectedSymbols(cc: CollectionContext) {
           if (symbol.extern === EExternLanguage.Extern) {
             file += "extern ";
           } else if (symbol.extern === EExternLanguage.Extern_C) {
-            file += 'extern "C" ';
+            file += "extern C ";
           }
           if (symbol.noemit) {
             file += "noemit ";
@@ -197,11 +200,17 @@ export function ExportCollectedSymbols(cc: CollectionContext) {
         for (const ns of namespaces.slice(0, -1)) {
           file += "}\n";
         }
+        if (symbol.sourceloc) {
+          file += `}\n`;
+        }
         break;
       }
 
       case Collect.ENode.TypeDefSymbol: {
         const typedef = cc.typeDefNodes.get(symbol.typeDef);
+        if (typedef.sourceloc) {
+          file += `#source ${formatSourceLoc(typedef.sourceloc)} {\n`;
+        }
         switch (typedef.variant) {
           case Collect.ENode.StructTypeDef: {
             const namespaces = getNamespacesFromSymbol(cc, symbolId);
@@ -222,7 +231,7 @@ export function ExportCollectedSymbols(cc: CollectionContext) {
               if (typedef.extern === EExternLanguage.Extern) {
                 file += "extern ";
               } else if (typedef.extern === EExternLanguage.Extern_C) {
-                file += 'extern "C" ';
+                file += "extern C ";
               }
               if (typedef.noemit) {
                 file += "noemit ";
@@ -281,11 +290,20 @@ export function ExportCollectedSymbols(cc: CollectionContext) {
           default:
             assert(false);
         }
+        if (typedef.sourceloc) {
+          file += `}\n`;
+        }
         break;
       }
 
       case Collect.ENode.CInjectDirective: {
+        if (symbol.sourceloc) {
+          file += `#source ${formatSourceLoc(symbol.sourceloc)} {\n`;
+        }
         file += `__c__("${symbol.value}");\n`;
+        if (symbol.sourceloc) {
+          file += `}\n`;
+        }
         break;
       }
 

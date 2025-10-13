@@ -10,11 +10,9 @@ options { tokenVocab=HazeLexer; }
 // ║                           P A R S E R   R U L E S                             ║
 // ╚═══════════════════════════════════════════════════════════════════════════════╝
 
-prog: topLevelDeclaration* EOF;
-topLevelDeclaration
-    : cInjectDirective
-    | globalDeclaration
-    | importStatements
+prog: topLevelDeclarations EOF;
+topLevelDeclarations
+    : (cInjectDirective | importStatements | globalDeclaration)*
     ;
 
 // Imports
@@ -30,12 +28,25 @@ importAs
 
 // Namespaces
 
+sourceLocationPrefixRule
+    : SOURCE_LOCATION_DIRECTIVE STRING_LITERAL COLON INTEGER_LITERAL (
+        (COLON INTEGER_LITERAL) | 
+        (COLON INTEGER_LITERAL MINUS INTEGER_LITERAL) | 
+        (COLON INTEGER_LITERAL MINUS INTEGER_LITERAL COLON INTEGER_LITERAL)
+    )?
+    ;
+
+globalDeclarationWithSource
+    : sourceLocationPrefixRule LCURLY globalDeclaration* RCURLY
+    ;
+
 globalDeclaration
     : functionDefinition
-    | typeDefinition
-    | namespaceDefinition
-    | globalVariableDef
-    | typeDef
+    | typeDefinition 
+    | namespaceDefinition 
+    | globalVariableDef 
+    | typeDef 
+    | globalDeclarationWithSource
     ;
 
 namespaceDefinition

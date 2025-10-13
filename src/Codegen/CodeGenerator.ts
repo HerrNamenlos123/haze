@@ -1056,6 +1056,13 @@ class CodeGenerator {
         return { out: outWriter, temp: tempWriter };
       }
 
+      case Lowered.ENode.AlignofExpr: {
+        const e = this.emitExpr(expr.value);
+        tempWriter.write(e.temp);
+        outWriter.write("alignof(" + e.out.get() + ")");
+        return { out: outWriter, temp: tempWriter };
+      }
+
       case Lowered.ENode.ExprAssignmentExpr: {
         const target = this.emitExpr(expr.target);
         const value = this.emitExpr(expr.value);
