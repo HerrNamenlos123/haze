@@ -1,14 +1,14 @@
 
 namespace Math {
 
-    export extern "C" sqrt(v: real): real;
-    export extern "C" pow(a: real, b: real): real;
-    export extern "C" sin(v: real): real;
-    export extern "C" sinh(v: real): real;
-    export extern "C" cos(v: real): real;
-    export extern "C" cosh(v: real): real;
-    export extern "C" tan(v: real): real;
-    export extern "C" atan2(y: real, x: real): real;
+    export extern C sqrt(v: real): real;
+    export extern C pow(a: real, b: real): real;
+    export extern C sin(v: real): real;
+    export extern C sinh(v: real): real;
+    export extern C cos(v: real): real;
+    export extern C cosh(v: real): real;
+    export extern C tan(v: real): real;
+    export extern C atan2(y: real, x: real): real;
 
     export PI(): real {
         const PI = 3.141592653589793;

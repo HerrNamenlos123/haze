@@ -12,7 +12,7 @@ NAMESPACE: 'namespace';
 PUB: 'pub';
 NOEMIT: 'noemit';
 INLINEC: '__c__';
-EXTERNC: '"C"';
+EXTERNC: 'C';
 EXTERN: 'extern';
 STATIC: 'static';
 STRUCT: 'struct';

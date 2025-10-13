@@ -1,5 +1,5 @@
 
-extern "C" noemit sizeof(...): usize;
+extern C noemit sizeof(...): usize;
 
 export clamp<T>(value: T, min: T, max: T): T {
     if (value < min) {

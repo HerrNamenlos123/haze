@@ -1,79 +1,36 @@
 
-extern "C" noemit hzsys_malloc_zeroed(size: usize): ?&void;
-extern "C" noemit hzsys_free(ptr: &void): void;
-extern "C" noemit hzsys_memzero(ptr: &void, count: usize): ?&void;
+extern C noemit struct hzsys_arena_t {}
 
-export struct ArenaChunk {
-    next: ?&ArenaChunk;
-    size: usize;
-    used: usize;
-    data: u8; // Taking a pointer to chunk.data gives the actual arena pointer
-}
+extern C noemit hzsys_arena_create(chunk_size: usize): ?&hzsys_arena_t;
+extern C noemit hzsys_arena_cleanup_and_free(arena: ?&hzsys_arena_t): void;
+
+extern C noemit hzsys_arena_allocate(arena: ?&hzsys_arena_t, size: usize, alignment: usize): ?&void;
+
+extern C noemit hzsys_arena_create_and_attach_subarena(arena: ?&hzsys_arena_t): ?&hzsys_arena_t;
+extern C noemit hzsys_attach_subarena(arena: ?&hzsys_arena_t, subarena: ?&hzsys_arena_t): void;
+extern C noemit hzsys_detach_subarena(arena: ?&hzsys_arena_t): void;
+
+extern C noemit hzsys_arena_register_cleanup_action(arena: ?&hzsys_arena_t, action: (actiondata: ?&void) => void, actiondata: ?&void): usize;
+extern C noemit hzsys_arena_deregister_cleanup_action(arena: ?&hzsys_arena_t, actionId: usize): void;
+
+const DEFAULT_CHUNK_SIZE = 1024;
 
 export struct Arena {
-    first: ?&ArenaChunk;
-    last: ?&ArenaChunk;
+    arenaImpl: ?&hzsys_arena_t;
 
     constructor(): Arena {
         return Arena {
-            first: nullptr,
-            last: nullptr,
+            arenaImpl: hzsys_arena_create(DEFAULT_CHUNK_SIZE),
         };
     }
 
     alloc<T>(value: T): &T {
-        const ref = do unsafe { emit this.allocateRaw(sizeof(T)) as &void as &T; };
-        assign(ref, value);
-        return ref;
-    }
-
-    __newChunk(size: usize): &ArenaChunk {
-        let chunk_size = max<usize>(size, 4096); // default chunk size
-        let chunk_mem: &ArenaChunk = do unsafe {
-            emit hzsys_malloc_zeroed(sizeof(ArenaChunk) + chunk_size) as &ArenaChunk;
-        };
-        do unsafe {
-            hzsys_memzero(chunk_mem as &void, chunk_size);
-        }
-        chunk_mem.next = nullptr;
-        chunk_mem.size = chunk_size;
-        chunk_mem.used = 0;
-        return chunk_mem;
-    }
-
-    allocateRaw(size: usize): &u8 {
-        let last = this.last;
-        if last != nullptr && (last.used + size <= last.size) {
-            // allocate from existing chunk
-            let ptr = &last.data;
-            __c__("ptr += last->used;");
-            last.used += size;
-            return ptr;
-        }
-
-        // allocate a new chunk
-        let chunk = this.__newChunk(size);
-        if this.first == nullptr {
-            this.first = chunk;
-        } else {
-            this.last.next = chunk;
-        }
-        this.last = chunk;
-
-        chunk.used = size;
-        return &chunk.data;
+        const ptr = hzsys_arena_allocate(this.arenaImpl, sizeof(T), alignof(T));
+        assign(ptr, value);
+        return ptr;
     }
 
     free() {
-        let chunk = this.first;
-        while chunk != nullptr {
-            let next = chunk.next;
-            do unsafe {
-                hzsys_free(chunk as &void);
-            };
-            chunk = next;
-        }
-        this.first = nullptr;
-        this.last = nullptr;
+        hzsys_arena_cleanup_and_free(this.arenaImpl);
     }
 }

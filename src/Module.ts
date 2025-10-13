@@ -929,6 +929,7 @@ class ModuleCompiler {
 
       compilerFlags.any.push(`-I"${this.moduleDir}/bin/include"`);
       linkerFlags.any.push(`-L"${this.moduleDir}/bin/lib"`);
+      linkerFlags.any.push(`-L"${this.moduleDir}/bin/lib64"`);
 
       compilerFlags.win32.push(`-D_CRT_SECURE_NO_WARNINGS`);
       linkerFlags.win32.push(`-fuse-ld=lld`);

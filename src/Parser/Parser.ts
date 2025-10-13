@@ -245,7 +245,7 @@ class ASTTransformer extends HazeParserVisitor<any> {
   ): EExternLanguage {
     if (!Boolean(ctx._extern)) {
       return EExternLanguage.None;
-    } else if (ctx._externLang?.getText() === '"C"') {
+    } else if (ctx._externLang?.getText() === "C") {
       return EExternLanguage.Extern_C;
     } else {
       return EExternLanguage.Extern;

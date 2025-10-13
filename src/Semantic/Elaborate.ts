@@ -2723,31 +2723,6 @@ export namespace Semantic {
           } else {
             assert(false);
           }
-          // } else if (symbol.variant === Collect.ENode.GlobalVariableDefinition) {
-          //   const [elaboratedSymbolId] = elaborateTopLevelSymbol(sr, symbolId, {
-          //     context: args.context,
-          //   });
-          //   assert(elaboratedSymbolId);
-          //   const elaboratedSymbol = sr.symbolNodes.get(elaboratedSymbolId);
-          //   assert(elaboratedSymbol.variant === Semantic.ENode.GlobalVariableDefinitionSymbol);
-          //   const variableSymbol = sr.symbolNodes.get(elaboratedSymbol.variableSymbol);
-          //   assert(variableSymbol.variant === Semantic.ENode.VariableSymbol && variableSymbol.type);
-          //   if (expr.genericArgs.length !== 0) {
-          //     throw new CompilerError(
-          //       `A variable access cannot have a type parameter list`,
-          //       expr.sourceloc
-          //     );
-          //   }
-          //   if (variableSymbol.comptime && variableSymbol.comptimeValue) {
-          //     return [sr.exprNodes.get(variableSymbol.comptimeValue), variableSymbol.comptimeValue];
-          //   }
-          //   return Semantic.addExpr(sr, {
-          //     variant: Semantic.ENode.SymbolValueExpr,
-          //     symbol: elaboratedSymbolId,
-          //     type: variableSymbol.type,
-          //     sourceloc: expr.sourceloc,
-          //     isTemporary: false,
-          //   });
         } else if (symbol.variant === Collect.ENode.FunctionOverloadGroupSymbol) {
           const chosenOverloadId = FunctionOverloadChoose(
             sr,
@@ -5167,7 +5142,7 @@ export namespace Semantic {
           return [sr.elaboratedGlobalVariableSymbols.get(nodeId)!];
         }
 
-        const type =
+        let type =
           (node.type &&
             lookupAndElaborateDatatype(sr, {
               typeId: node.type,
@@ -5176,13 +5151,37 @@ export namespace Semantic {
             })) ||
           null;
 
-        const variableId = Semantic.addSymbol(sr, {
+        let comptimeValue: ExprId | null = null;
+        if (type === null) {
+          if (!node.globalValueInitializer) {
+            throw new CompilerError(
+              `A global constant is by definition immutable and is always required to be initialized with a value that can be evaluated at compile time.`,
+              node.sourceloc
+            );
+          }
+          const [expr, exprId] = elaborateExpr(sr, node.globalValueInitializer, {
+            expectedReturnType: makePrimitiveAvailable(
+              sr,
+              EPrimitive.void,
+              EDatatypeMutability.Const,
+              node.sourceloc
+            ),
+            context: args.context,
+            constraints: [],
+            unsafe: false,
+            scope: node.inScope,
+          });
+          type = expr.type;
+          comptimeValue = exprId;
+        }
+
+        const [variable, variableId] = Semantic.addSymbol(sr, {
           variant: Semantic.ENode.VariableSymbol,
           type: type,
           export: false,
           extern: EExternLanguage.None,
-          comptime: node.comptime,
-          comptimeValue: null,
+          comptime: node.comptime || Boolean(comptimeValue),
+          comptimeValue: comptimeValue,
           name: node.name,
           memberOfStruct: null,
           mutability: node.mutability,
@@ -5193,8 +5192,9 @@ export namespace Semantic {
           }),
           sourceloc: node.sourceloc,
           concrete: true,
-        })[1];
+        });
         sr.elaboratedGlobalVariableSymbols.set(nodeId, variableId);
+
         return [variableId];
       }
 

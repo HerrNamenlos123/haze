@@ -2147,6 +2147,7 @@ export function CollectFile(
       if (
         decl.variant === "CInjectDirective" ||
         decl.variant === "ModuleImport" ||
+        decl.variant === "GlobalVariableDefinition" ||
         decl.variant === "TypeAlias" ||
         decl.variant === "SymbolImport"
       ) {
