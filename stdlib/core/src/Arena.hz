@@ -1,11 +1,7 @@
 
-__c__("#include <memory.h>");
-
-namespace builtin {
-    extern "C" noemit malloc(size: usize): ?&void;
-    extern "C" noemit memset(ptr: &void, value: u8, count: usize): ?&void;
-    extern "C" noemit free(ptr: &void): void;
-}
+extern "C" noemit hzsys_malloc_zeroed(size: usize): ?&void;
+extern "C" noemit hzsys_free(ptr: &void): void;
+extern "C" noemit hzsys_memzero(ptr: &void, count: usize): ?&void;
 
 export struct ArenaChunk {
     next: ?&ArenaChunk;
@@ -34,10 +30,10 @@ export struct Arena {
     __newChunk(size: usize): &ArenaChunk {
         let chunk_size = max<usize>(size, 4096); // default chunk size
         let chunk_mem: &ArenaChunk = do unsafe {
-            emit builtin.malloc(sizeof(ArenaChunk) + chunk_size) as &ArenaChunk;
+            emit hzsys_malloc_zeroed(sizeof(ArenaChunk) + chunk_size) as &ArenaChunk;
         };
         do unsafe {
-            builtin.memset(chunk_mem as &void, 0, chunk_size);
+            hzsys_memzero(chunk_mem as &void, chunk_size);
         }
         chunk_mem.next = nullptr;
         chunk_mem.size = chunk_size;
@@ -73,7 +69,7 @@ export struct Arena {
         while chunk != nullptr {
             let next = chunk.next;
             do unsafe {
-                builtin.free(chunk as &void);
+                hzsys_free(chunk as &void);
             };
             chunk = next;
         }

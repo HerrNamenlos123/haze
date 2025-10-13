@@ -1321,6 +1321,9 @@ export namespace Conversion {
         comparable: [makeRawPrimitiveAvailable(sr, EPrimitive.null)],
       },
       {
+        comparable: [makeRawPrimitiveAvailable(sr, EPrimitive.bool)],
+      },
+      {
         comparable: [
           makeRawPrimitiveAvailable(sr, EPrimitive.f32),
           makeRawPrimitiveAvailable(sr, EPrimitive.f64),

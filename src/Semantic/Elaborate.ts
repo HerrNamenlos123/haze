@@ -2268,10 +2268,12 @@ export namespace Semantic {
                 isTemporary: true,
               });
             } else {
+              let str = second ? serializeLiteralValue(second?.literal) : undefined;
+              if (second && second.literal.type === EPrimitive.str) {
+                str = second.literal.value; // Bypass and don't escape it to make message look better
+              }
               throw new CompilerError(
-                `static_assert evaluated to false${
-                  second ? ": " + serializeLiteralValue(second?.literal) : ""
-                }`,
+                `static_assert evaluated to false${str ? ": " + str : ""}`,
                 expr.sourceloc
               );
             }
@@ -3066,6 +3068,45 @@ export namespace Semantic {
         if (object.variant === Semantic.ENode.DatatypeAsValueExpr) {
           const datatypeValueInstance = sr.typeUseNodes.get(object.type);
           const datatypeValue = sr.typeDefNodes.get(datatypeValueInstance.type);
+
+          if (expr.memberName === "name") {
+            return Semantic.addExpr(sr, {
+              variant: Semantic.ENode.LiteralExpr,
+              literal: {
+                type: EPrimitive.str,
+                unit: null,
+                value: serializeFullTypeUse(sr, object.type),
+              },
+              type: makePrimitiveAvailable(
+                sr,
+                EPrimitive.str,
+                EDatatypeMutability.Const,
+                expr.sourceloc
+              ),
+              sourceloc: expr.sourceloc,
+              isTemporary: true,
+            });
+          }
+          if (expr.memberName === "mangled") {
+            const name = mangleFullTypeUse(sr, object.type);
+            return Semantic.addExpr(sr, {
+              variant: Semantic.ENode.LiteralExpr,
+              literal: {
+                type: EPrimitive.str,
+                unit: null,
+                value: name.wasMangled ? "_H" + name.name : name.name,
+              },
+              type: makePrimitiveAvailable(
+                sr,
+                EPrimitive.str,
+                EDatatypeMutability.Const,
+                expr.sourceloc
+              ),
+              sourceloc: expr.sourceloc,
+              isTemporary: true,
+            });
+          }
+
           if (datatypeValue.variant === Semantic.ENode.NamespaceDatatype) {
             return lookupAndElaborateNamespaceMemberAccess(sr, objectId, {
               expr: expr,
@@ -5409,14 +5450,27 @@ export namespace Semantic {
 
   export function getNamespaceChainFromDatatype(sr: SemanticResult, typeId: Semantic.TypeDefId) {
     const type = sr.typeDefNodes.get(typeId);
-    assert(
-      type.variant === Semantic.ENode.StructDatatype ||
-        type.variant === Semantic.ENode.NamespaceDatatype
-    );
+
+    if (
+      type.variant !== Semantic.ENode.StructDatatype &&
+      type.variant !== Semantic.ENode.NamespaceDatatype
+    ) {
+      const mangle = mangleTypeDef(sr, typeId);
+      return [
+        {
+          pretty: serializeTypeDef(sr, typeId),
+          mangled: mangle.name,
+          wasMangled: mangle.wasMangled,
+          isMonomorphized: false,
+          isExported: false,
+        },
+      ];
+    }
 
     let current = {
       pretty: type.name,
       mangled: type.name.length + type.name,
+      wasMangled: true,
       isMonomorphized: false,
       isExported: false,
     };
@@ -5427,9 +5481,9 @@ export namespace Semantic {
         .map((g) => {
           const expr = sr.exprNodes.get(g);
           if (expr.variant === Semantic.ENode.DatatypeAsValueExpr) {
-            mangleTypeUse(sr, expr.type).name;
+            return mangleTypeUse(sr, expr.type).name;
           } else if (expr.variant === Semantic.ENode.LiteralExpr) {
-            mangleLiteralValue(sr, g).name;
+            return mangleLiteralValue(sr, g).name;
           } else {
             assert(false);
           }
@@ -5579,6 +5633,13 @@ export namespace Semantic {
     return names.some((n) => n.isMonomorphized);
   }
 
+  export function serializeFullTypeUse(sr: SemanticResult, typeUseId: Semantic.TypeUseId) {
+    const type = sr.typeUseNodes.get(typeUseId);
+
+    const names = getNamespaceChainFromDatatype(sr, type.type);
+    return serializeMutability(type.mutability) + names.map((n) => n.pretty).join(".");
+  }
+
   export function serializeFullSymbolName(sr: SemanticResult, symbolId: Semantic.SymbolId) {
     const symbol = sr.symbolNodes.get(symbolId);
     assert(
@@ -5593,6 +5654,23 @@ export namespace Semantic {
 
     const names = getNamespaceChainFromSymbol(sr, symbolId);
     return names.map((n) => n.pretty).join(".");
+  }
+
+  export function mangleFullTypeUse(sr: SemanticResult, typeUseId: Semantic.TypeUseId) {
+    const type = sr.typeUseNodes.get(typeUseId);
+
+    const names = getNamespaceChainFromDatatype(sr, type.type);
+
+    const use = mangleTypeUse(sr, typeUseId);
+    return {
+      name:
+        use.name +
+        names
+          .slice(1)
+          .map((n) => n.pretty)
+          .join(""),
+      wasMangled: use.wasMangled || names.slice(1).some((n) => n.wasMangled),
+    };
   }
 
   export function mangleSymbol(sr: SemanticResult, symbolId: Semantic.SymbolId) {

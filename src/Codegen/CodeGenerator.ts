@@ -8,7 +8,7 @@ import {
   EUnaryOperation,
   UnaryOperationToString,
 } from "../shared/AST";
-import { EPrimitive, type NameSet } from "../shared/common";
+import { EPrimitive, primitiveToString, type NameSet } from "../shared/common";
 import { getModuleGlobalNamespaceName, ModuleType, type ModuleConfig } from "../shared/Config";
 import { assert, InternalError, printWarningMessage } from "../shared/Errors";
 import { OutputWriter } from "./OutputWriter";
@@ -65,8 +65,12 @@ class CodeGenerator {
     }
   }
 
-  includeHeader(filename: string) {
-    this.out.includes.writeLine(`#include <${filename}>`);
+  includeHeader(filename: string, quotes?: boolean) {
+    if (quotes) {
+      this.out.includes.writeLine(`#include "${filename}"`);
+    } else {
+      this.out.includes.writeLine(`#include <${filename}>`);
+    }
   }
 
   writeString() {
@@ -113,12 +117,13 @@ class CodeGenerator {
   }
 
   generate() {
-    this.includeHeader("stdint.h");
-    this.includeHeader("stdio.h");
-    this.includeHeader("stdbool.h");
     this.includeHeader("stdlib.h");
+    this.includeHeader("stdint.h");
+    this.includeHeader("stdbool.h");
+    this.includeHeader("stdio.h");
     this.includeHeader("limits.h");
     this.includeHeader("string.h");
+    this.includeHeader("hzsys.h", true);
 
     const sortedLoweredTypeDefs: (Lowered.TypeDef | Lowered.TypeUse)[] = [];
 

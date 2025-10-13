@@ -22,6 +22,7 @@ namespace raw {
     extern "C" glfwTerminate(): void;
     extern "C" glfwCreateWindow(width: i32, height: i32, title: c_str, monitor: ?&GLFWmonitor, share: ?&GLFWwindow): ?&GLFWwindow;
     extern "C" glfwWindowShouldClose(w: &GLFWwindow): i32;
+    extern "C" glfwSetWindowShouldClose(w: &GLFWwindow, value: i32);
     extern "C" glfwSwapBuffers(w: &GLFWwindow);
     extern "C" glfwSwapInterval(flag: i32);
     extern "C" glfwMakeContextCurrent(w: &GLFWwindow);
@@ -46,6 +47,15 @@ namespace raw {
 
     export windowShouldClose(w: &GLFWwindow): bool {
         return glfwWindowShouldClose(w) != 0;
+    }
+
+    export setWindowShouldClose(w: &GLFWwindow, value: bool) {
+        if value == true {
+            glfwSetWindowShouldClose(w, 1);
+        }
+        else {
+            glfwSetWindowShouldClose(w, 0);
+        }
     }
 
     export swapBuffers(w: &GLFWwindow) {
@@ -90,6 +100,10 @@ export struct Window {
 
     shouldClose(): bool {
         return raw.windowShouldClose(this.handle);
+    }
+
+    close() {
+        raw.setWindowShouldClose(this.handle, true);
     }
 
     swapBuffers() {

@@ -34,6 +34,7 @@ import {
   parseModuleMetadata,
   type ModuleConfig,
   type ModuleMetadata,
+  type ScriptDef,
 } from "./shared/Config";
 import { Parser } from "./Parser/Parser";
 import {
@@ -41,7 +42,6 @@ import {
   CollectFile,
   ECollectionMode,
   makeCollectionContext,
-  PrettyPrintCollected,
   type CollectionContext,
 } from "./SymbolCollection/SymbolCollection";
 import { generateCode } from "./Codegen/CodeGenerator";
@@ -49,6 +49,10 @@ import { LowerModule } from "./Lower/Lower";
 import { ExportCollectedSymbols } from "./SymbolCollection/Export";
 import { Semantic } from "./Semantic/Elaborate";
 import { stdout } from "process";
+import { spawnSync } from "child_process";
+import archiver from "archiver";
+import tarFs from "tar-fs";
+import gunzip from "gunzip-maybe";
 
 export const HAZE_DIR = os.homedir() + "/.haze";
 export const HAZE_CACHE = HAZE_DIR + "/cache";
@@ -58,13 +62,70 @@ export const HAZE_TMP_DIR = HAZE_DIR + "/tmp";
 export const HAZE_MUSL_SYSROOT = HAZE_DIR + "/sysroot";
 export const HAZE_CMAKE_TOOLCHAIN = HAZE_DIR + "/musl-toolchain.cmake";
 
-const LLVM_TOOLCHAIN_DOWNLOAD_URL =
-  "https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-18.04.tar.xz";
+async function createTarGz(cwd: string, files: string[], outPath: string) {
+  const output = fs.createWriteStream(outPath);
+  const archive = archiver("tar", { gzip: true });
+
+  return new Promise<void>((resolve, reject) => {
+    output.on("close", () => {
+      // console.log(`Archive created: ${archive.pointer()} bytes`);
+      resolve();
+    });
+
+    archive.on("error", (err) => reject(err));
+
+    archive.pipe(output);
+
+    // Add each file relative to cwd
+    files.forEach((file) => {
+      const fullPath = path.join(cwd, file);
+      archive.file(fullPath, { name: file });
+    });
+
+    archive.finalize();
+  });
+}
+
+async function extractTarGz(archivePath: string, destDir: string) {
+  return new Promise<void>((resolve, reject) => {
+    fs.createReadStream(archivePath)
+      .pipe(gunzip())
+      .pipe(tarFs.extract(destDir, {}))
+      .on("finish", resolve)
+      .on("error", reject);
+  });
+}
+
+enum Platform {
+  Win32,
+  Linux,
+}
+
+let PLATFORM: Platform;
+if (process.platform === "win32") {
+  PLATFORM = Platform.Win32;
+} else if (process.platform === "linux") {
+  PLATFORM = Platform.Linux;
+} else if (process.platform === "darwin") {
+  throw new Error("MacOS not supported yet");
+} else {
+  throw new Error("Platform not supported yet: " + process.platform);
+}
+
+let LLVM_TOOLCHAIN_DOWNLOAD_URL: string;
+if (PLATFORM === Platform.Win32) {
+  LLVM_TOOLCHAIN_DOWNLOAD_URL =
+    "https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/clang+llvm-18.1.8-x86_64-pc-windows-msvc.tar.xz";
+} else {
+  LLVM_TOOLCHAIN_DOWNLOAD_URL =
+    "https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-18.04.tar.xz";
+}
 
 export const HAZE_STDLIB_NAME = "haze-stdlib";
 
-const C_COMPILER = HAZE_GLOBAL_DIR + "/bin/clang";
-const ARCHIVE_TOOL = "ar";
+const HAZE_C_COMPILER = HAZE_GLOBAL_DIR + "/bin/clang";
+const HAZE_CXX_COMPILER = HAZE_GLOBAL_DIR + "/bin/clang++";
+const ARCHIVE_TOOL = PLATFORM === Platform.Linux ? "ar" : HAZE_GLOBAL_DIR + "/bin/llvm-ar.exe";
 const HAZE_CONFIG_FILE = "haze.toml";
 const HAZE_LIB_IMPORT_FILE = "import.hz";
 
@@ -196,6 +257,26 @@ function saveCache(cache: FileWatcherCache, globalBuildDir: string) {
   fs.writeFileSync(globalBuildDir + "/" + FILE_WATCHER_FILENAME, JSON.stringify(cache), "utf8");
 }
 
+export function invalidateChangeCache(
+  globs: string[],
+  globalBuildDir: string,
+  workingDir: string
+): string[] {
+  const cache = loadCache(globalBuildDir);
+  const changed: string[] = [];
+
+  for (const pattern of globs) {
+    const glob = new Glob(pattern);
+    for (const file of glob.scanSync(workingDir)) {
+      const fullPath = path.join(workingDir, file);
+      delete cache[fullPath];
+    }
+  }
+
+  saveCache(cache, globalBuildDir);
+  return changed;
+}
+
 export function checkForChanges(
   globs: string[],
   globalBuildDir: string,
@@ -307,6 +388,14 @@ class Cache {
   }
 }
 
+export function getCurrentPlatform() {
+  if (PLATFORM === Platform.Linux) {
+    return "linux-x64";
+  } else {
+    return "win32-x64";
+  }
+}
+
 export class ProjectCompiler {
   cache: Cache = new Cache();
   globalBuildDir: string = "";
@@ -321,18 +410,30 @@ export class ProjectCompiler {
       config = {
         configFilePath: undefined,
         dependencies: [],
-        linkerFlags: [],
+        linkerFlags: {
+          any: [],
+          linux: [],
+          win32: [],
+        },
         moduleType: ModuleType.Executable,
         nostdlib: false,
-        platform: "linux-x64",
+        platform: getCurrentPlatform(),
         name: basename(singleFilename),
         version: "0.0.0",
-        scripts: [],
+        scripts: {
+          any: [],
+          linux: [],
+          win32: [],
+        },
         srcDirectory: dirname(singleFilename),
         authors: undefined,
         description: undefined,
         license: undefined,
-        compilerFlags: [],
+        compilerFlags: {
+          any: [],
+          linux: [],
+          win32: [],
+        },
         includeSourceloc: sourceloc ?? true,
       };
     }
@@ -431,8 +532,11 @@ export class ProjectCompiler {
         );
       }
 
-      const moduleExecutable = join(join(this.globalBuildDir, config.name, "bin"), config.name);
-      child_process.execSync(`${moduleExecutable} ${args?.join(" ")}`, {
+      let moduleExecutable = join(join(this.globalBuildDir, config.name, "bin"), config.name);
+      if (PLATFORM === Platform.Win32) {
+        moduleExecutable += ".exe";
+      }
+      child_process.execSync(`"${moduleExecutable}" ${args?.join(" ")}`, {
         stdio: "inherit",
       });
       return 0;
@@ -474,6 +578,8 @@ export class ProjectCompiler {
         finish: HAZE_CACHE + "/03-finish-marker",
         ncursesLib: HAZE_CACHE + "/ncurses-lib",
         musl: HAZE_CACHE + "/musl",
+        winSDK: HAZE_CACHE + "/win-sdk",
+        winNinja: HAZE_CACHE + "/win-ninja",
         cmakeToolchain: HAZE_CACHE + "/cmake-toolchain",
       };
 
@@ -489,7 +595,7 @@ export class ProjectCompiler {
       if (!this.isStepDone(MARKERS.extract)) {
         console.info("Extracting LLVM toolchain...");
         await exec(
-          `tar -xf ${HAZE_TMP_DIR + "/llvm.tar.xz"} -C ${HAZE_GLOBAL_DIR} --strip-components=1`
+          `tar -xf "${HAZE_TMP_DIR + "/llvm.tar.xz"}" -C "${HAZE_GLOBAL_DIR}" --strip-components=1`
         );
         this.markStepDone(MARKERS.extract);
         console.info("Extracting LLVM toolchain... Done");
@@ -501,7 +607,7 @@ export class ProjectCompiler {
         console.info("Toolchain setup finished.");
       }
 
-      if (!this.isStepDone(MARKERS.ncursesLib)) {
+      if (!this.isStepDone(MARKERS.ncursesLib) && PLATFORM === Platform.Linux) {
         console.info("Retrieving libtinfo.so.5...");
         mkdirSync(`${HAZE_TMP_DIR}/`, { recursive: true });
         const packageManager = await detectPackageManager();
@@ -545,6 +651,24 @@ export class ProjectCompiler {
         }
         this.markStepDone(MARKERS.ncursesLib);
         console.info("Retrieving libtinfo.so.5... Done");
+      }
+
+      if (!this.isStepDone(MARKERS.winSDK) && PLATFORM === Platform.Win32) {
+        console.info("Installing Windows SDK...");
+        execInherit(
+          `powershell -NoLogo -NoProfile -Command \\"if (-not (winget list --name 'Visual Studio Community 2022' | Select-String 'Visual Studio Community 2022')) { winget install 'Visual Studio Community 2022' --override '--add Microsoft.VisualStudio.Workload.NativeDesktop Microsoft.VisualStudio.ComponentGroup.WindowsAppSDK.Cpp' -s msstore } else { Write-Host 'Visual Studio already installed.' }\\"`
+        );
+        this.markStepDone(MARKERS.winSDK);
+        console.info("Installing Windows SDK... Done");
+      }
+
+      if (!this.isStepDone(MARKERS.winNinja) && PLATFORM === Platform.Win32) {
+        console.info("Installing Ninja Build System...");
+        execInherit(
+          `powershell -NoLogo -NoProfile -Command "if (-not (winget list --id 'Ninja-build.Ninja' | Select-String 'Ninja-build.Ninja')) { winget install 'Ninja-build.Ninja' } else { Write-Host 'Ninja already installed.'; exit 0 }"`
+        );
+        this.markStepDone(MARKERS.winNinja);
+        console.info("Installing Ninja Build System... Done");
       }
 
       //       if (!this.isStepDone(MARKERS.musl)) {
@@ -609,14 +733,23 @@ function exec(str: string) {
 }
 
 function execInherit(str: string, dir?: string) {
-  const result = Bun.spawnSync(["sh", "-c", str], {
-    stdout: "inherit",
-    stderr: "inherit",
-    cwd: dir,
+  let shell = PLATFORM === Platform.Win32 ? "C:\\Windows\\System32\\cmd.exe" : "/bin/sh";
+  const args = PLATFORM === Platform.Win32 ? ["/d", "/s", "/c", `${str}`] : ["-c", `"${str}"`];
+
+  if (dir) {
+    fs.mkdirSync(dir, {
+      recursive: true,
+    });
+  }
+  const proc = spawnSync(shell, [...args], {
+    cwd: dir ?? ".",
     env: process.env,
+    stdio: "inherit",
+    shell: true, // <- important: lets it use the real shell
   });
 
-  if (result.exitCode !== 0) {
+  const code = proc.status;
+  if (code !== 0) {
     throw new CmdFailed();
   }
 }
@@ -719,25 +852,40 @@ class ModuleCompiler {
       env.HAZE_MODULE_SOURCE_DIR = MODULE_SOURCE_DIR;
       env.HAZE_MODULE_BUILD_DIR = this.moduleDir + "/build";
       env.HAZE_MODULE_BINARY_DIR = this.moduleDir + "/bin";
+      env.CC = HAZE_C_COMPILER;
+      env.CXX = HAZE_CXX_COMPILER;
 
       if (this.config.configFilePath) {
-        const prebuildScript = this.config.scripts.find((s) => s.name === "prebuild");
-        if (prebuildScript) {
-          const exec = () => execInherit(prebuildScript.command, this.moduleDir + "/build");
-          if (prebuildScript.depends === null) {
+        const runPrebuildScript = async (script: ScriptDef) => {
+          const exec = () => execInherit(script.command, this.moduleDir + "/build");
+
+          if (script.depends === null) {
             exec();
           } else {
-            const changed = checkForChanges(
-              prebuildScript.depends,
-              this.globalBuildDir,
-              MODULE_SOURCE_DIR
-            );
+            const changed = checkForChanges(script.depends, this.globalBuildDir, MODULE_SOURCE_DIR);
             if (changed.length > 0) {
-              exec();
+              try {
+                exec();
+              } catch (e) {
+                invalidateChangeCache(script.depends, this.globalBuildDir, MODULE_SOURCE_DIR);
+                throw e;
+              }
             } else {
               console.log(`Skipping prebuild step for '${this.config.name}': No changes detected`);
             }
           }
+        };
+
+        const prebuildScript = this.config.scripts.any.find((s) => s.name === "prebuild");
+        if (prebuildScript) await runPrebuildScript(prebuildScript);
+
+        if (PLATFORM === Platform.Win32) {
+          const prebuildScript = this.config.scripts.win32.find((s) => s.name === "prebuild");
+          if (prebuildScript) await runPrebuildScript(prebuildScript);
+        }
+        if (PLATFORM === Platform.Linux) {
+          const prebuildScript = this.config.scripts.linux.find((s) => s.name === "prebuild");
+          if (prebuildScript) await runPrebuildScript(prebuildScript);
         }
       }
 
@@ -761,7 +909,8 @@ class ModuleCompiler {
       const moduleCFile = join(this.moduleDir, `build/${name}-${platform}.c`);
       const moduleOFile = join(this.moduleDir, `build/${name}-${platform}.o`);
       const moduleAFile = join(this.moduleDir, `build/${name}-${platform}.a`);
-      const moduleExecutable = join(this.moduleDir, `bin/${name}`);
+      const moduleExecutable =
+        join(this.moduleDir, `bin/${name}`) + (PLATFORM === Platform.Win32 ? ".exe" : "");
 
       const moduleMetadataFile = join(this.moduleDir, "build/metadata.json");
       const moduleOutputLib = join(this.moduleDir, "bin/" + this.config.name + ".hzlib");
@@ -775,11 +924,16 @@ class ModuleCompiler {
 
       const compilerFlags = this.config.compilerFlags;
       const linkerFlags = this.config.linkerFlags;
-      compilerFlags.push("-Wno-parentheses-equality");
-      compilerFlags.push("-Wno-extra-tokens");
+      compilerFlags.any.push("-Wno-parentheses-equality");
+      compilerFlags.any.push("-Wno-extra-tokens");
 
-      compilerFlags.push(`-I${this.moduleDir}/bin/include`);
-      linkerFlags.push(`-L${this.moduleDir}/bin/lib`);
+      compilerFlags.any.push(`-I"${this.moduleDir}/bin/include"`);
+      linkerFlags.any.push(`-L"${this.moduleDir}/bin/lib"`);
+
+      compilerFlags.win32.push(`-D_CRT_SECURE_NO_WARNINGS`);
+      linkerFlags.win32.push(`-fuse-ld=lld`);
+
+      compilerFlags.linux.push("-fPIC");
 
       // MUSL Sysroot Settings
       // compilerFlags.push(`--sysroot=${HAZE_MUSL_SYSROOT}`);
@@ -794,18 +948,40 @@ class ModuleCompiler {
       // linkerFlags.push(`${HAZE_MUSL_SYSROOT}/lib/crtn.o`);
       // linkerFlags.push(`-lc`);
 
+      const allCompilerFlags = [...compilerFlags.any];
+      if (PLATFORM === Platform.Win32) {
+        allCompilerFlags.push(...compilerFlags.win32);
+      }
+      if (PLATFORM === Platform.Linux) {
+        allCompilerFlags.push(...compilerFlags.linux);
+      }
+
       if (this.config.moduleType === ModuleType.Executable) {
         const [libs, dependencyLinkerFlags] = await this.loadDependencyBinaries();
-        const allLinkerFlags = [...linkerFlags, ...dependencyLinkerFlags];
-        const cmd = `${C_COMPILER} -g ${moduleCFile} -o ${moduleExecutable} -I${
+
+        linkerFlags.any.push(...dependencyLinkerFlags.any);
+        linkerFlags.win32.push(...dependencyLinkerFlags.win32);
+        linkerFlags.linux.push(...dependencyLinkerFlags.linux);
+
+        const allLinkerFlags = [...linkerFlags.any];
+        if (PLATFORM === Platform.Win32) {
+          allLinkerFlags.push(...linkerFlags.win32);
+        }
+        if (PLATFORM === Platform.Linux) {
+          allLinkerFlags.push(...linkerFlags.linux);
+        }
+
+        const cmd = `"${HAZE_C_COMPILER}" -g "${moduleCFile}" -o "${moduleExecutable}" -I"${
           this.config.srcDirectory
-        } ${libs.join(" ")} ${compilerFlags.join(" ")} ${allLinkerFlags.join(" ")} -std=c11`;
+        }" ${libs.map((l) => `"${l}"`).join(" ")} ${allCompilerFlags.join(
+          " "
+        )} ${allLinkerFlags.join(" ")} -std=c11`;
         // console.log(cmd);
         await exec(cmd);
       } else {
-        const cmd = `${C_COMPILER} -g ${moduleCFile} -c -o ${moduleOFile} -I${
+        const cmd = `"${HAZE_C_COMPILER}" -g "${moduleCFile}" -c -o "${moduleOFile}" -I"${
           this.config.srcDirectory
-        } ${compilerFlags.join(" ")} -fPIC -std=c11`;
+        }" ${allCompilerFlags.join(" ")} -std=c11`;
         // console.log(cmd);
         await exec(cmd);
 
@@ -813,10 +989,16 @@ class ModuleCompiler {
         //   await exec(`rm ${moduleAFile}`);
         // }
 
-        await exec(`${ARCHIVE_TOOL} r ${moduleAFile} ${moduleOFile} > /dev/null`);
+        if (PLATFORM === Platform.Linux) {
+          await exec(`"${ARCHIVE_TOOL}" r "${moduleAFile}" "${moduleOFile}" > /dev/null`);
+        } else {
+          await exec(`"${ARCHIVE_TOOL}" r "${moduleAFile}" "${moduleOFile}" > NUL 2>&1`);
+        }
 
         const makerel = (absolute: string) => {
-          return absolute.replace(this.moduleDir + "/build/", "");
+          return absolute
+            .replaceAll("\\", "/")
+            .replace(this.moduleDir.replaceAll("\\", "/") + "/build/", "");
         };
 
         const moduleMetadata: ModuleMetadata = {
@@ -840,13 +1022,13 @@ class ModuleCompiler {
         await Bun.write(importFilePath, importFile);
 
         if (fs.existsSync(moduleOutputLib)) {
-          await exec(`rm ${moduleOutputLib}`);
+          fs.unlinkSync(moduleOutputLib);
         }
 
-        await exec(
-          `tar -C ${this.moduleDir}/build -cvzf ${moduleOutputLib} ${makerel(
-            moduleAFile
-          )} ${makerel(importFilePath)} ${makerel(moduleMetadataFile)} > /dev/null`
+        await createTarGz(
+          `${this.moduleDir}/build`,
+          [makerel(moduleAFile), makerel(importFilePath), makerel(moduleMetadataFile)],
+          moduleOutputLib
         );
       }
       if (this.config.configFilePath) {
@@ -861,7 +1043,11 @@ class ModuleCompiler {
 
   private async loadDependencyBinaries() {
     const libs: string[] = [];
-    const linkerFlags: string[] = [];
+    const linkerFlags = {
+      any: [] as string[],
+      win32: [] as string[],
+      linux: [] as string[],
+    };
 
     const deps = [...this.config.dependencies];
     if (this.config.name !== HAZE_STDLIB_NAME && !this.config.nostdlib) {
@@ -881,20 +1067,19 @@ class ModuleCompiler {
       }
 
       const tempdir = join(this.moduleDir, "__deps", dep.name);
-      await exec(`mkdir -p ${tempdir}`);
-      await exec(`tar -xzf ${libpath} -C ${tempdir} ${lib.filename}`);
-
       const archiveFile = join(tempdir, lib.filename);
       libs.push(archiveFile);
-      linkerFlags.push(...metadata.linkerFlags);
+      linkerFlags.any.push(...metadata.linkerFlags.any);
+      linkerFlags.win32.push(...metadata.linkerFlags.win32);
+      linkerFlags.linux.push(...metadata.linkerFlags.linux);
     }
-    return [libs, linkerFlags];
+    return [libs, linkerFlags] as const;
   }
 
   private async loadDependencyMetadata(libpath: string, libname: string) {
     const tempdir = join(this.moduleDir, "__deps", libname);
-    await exec(`mkdir -p ${tempdir}`);
-    await exec(`tar -xzf ${libpath} -C ${tempdir} metadata.json`);
+    fs.mkdirSync(tempdir, { recursive: true });
+    await extractTarGz(libpath, tempdir);
     return parseModuleMetadata(await Bun.file(join(tempdir, "metadata.json")).text());
   }
 
@@ -910,12 +1095,10 @@ class ModuleCompiler {
     for (const dep of deps) {
       const libpath = join(join(this.globalBuildDir, dep.name), "bin", dep.name + ".hzlib");
       const metadata = await this.loadDependencyMetadata(libpath, dep.name);
-
-      const tempdir = join(this.moduleDir, "__deps", dep.name, "import");
-      await exec(`mkdir -p ${tempdir}`);
-      await exec(`tar -xzf ${libpath} -C ${tempdir} ${metadata.importFile}`);
-
-      await this.collectDirectory(join(tempdir), ECollectionMode.ImportUnderRootDirectly);
+      await this.collectDirectory(
+        join(this.moduleDir, "__deps", dep.name),
+        ECollectionMode.ImportUnderRootDirectly
+      );
     }
   }
 
@@ -924,5 +1107,6 @@ class ModuleCompiler {
       join(getStdlibDirectory(), "internal"),
       ECollectionMode.ImportUnderRootDirectly
     );
+    this.config.compilerFlags.any.push(`-I"${join(getStdlibDirectory(), "core", "src")}"`);
   }
 }

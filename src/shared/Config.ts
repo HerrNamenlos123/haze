@@ -4,6 +4,7 @@ import { parse } from "@ltd/j-toml";
 
 import { GeneralError } from "./Errors";
 import type { Collect } from "../SymbolCollection/SymbolCollection";
+import { getCurrentPlatform } from "../Module";
 
 export enum ModuleType {
   Library,
@@ -12,25 +13,39 @@ export enum ModuleType {
 
 export type ModuleDependency = { name: string; path: string };
 
+export type ScriptDef = { name: string; command: string; depends: string[] | null };
+
 export type ModuleConfig = {
   name: string;
   version: string;
   description?: string;
   license?: string;
   authors?: string[];
-  scripts: { name: string; command: string; depends: string[] | null }[];
+  scripts: {
+    any: ScriptDef[];
+    win32: ScriptDef[];
+    linux: ScriptDef[];
+  };
   srcDirectory: string;
   nostdlib: boolean;
   moduleType: ModuleType;
   configFilePath?: string;
   dependencies: ModuleDependency[];
-  linkerFlags: string[];
-  compilerFlags: string[];
+  linkerFlags: {
+    any: string[];
+    win32: string[];
+    linux: string[];
+  };
+  compilerFlags: {
+    any: string[];
+    win32: string[];
+    linux: string[];
+  };
   platform: PlatformString;
   includeSourceloc: boolean;
 };
 
-export type PlatformString = "linux-x64";
+export type PlatformString = "linux-x64" | "win32-x64";
 
 export type ModuleLibMetadata = {
   platform: PlatformString;
@@ -56,7 +71,11 @@ export type ModuleMetadata = {
   name: string;
   version: string;
   libs: ModuleLibMetadata[];
-  linkerFlags: string[];
+  linkerFlags: {
+    any: string[];
+    win32: string[];
+    linux: string[];
+  };
   importFile: "import.hz";
 };
 
@@ -118,7 +137,7 @@ export function parseModuleMetadata(metadata: string): ModuleMetadata {
       }
       libs.push({
         filename: getString(obj["filename"]),
-        platform: getStringAnyOf<"linux-x64">(obj["platform"], ["linux-x64"]),
+        platform: getStringAnyOf<PlatformString>(obj["platform"], ["linux-x64", "win32-x64"]),
         type: getStringAnyOf<"static" | "shared">(obj["type"], ["static", "shared"]),
       });
     }
@@ -131,7 +150,11 @@ export function parseModuleMetadata(metadata: string): ModuleMetadata {
     name: getString(obj["name"]),
     version: getString(obj["version"]),
     libs: getLibs(obj["libs"]),
-    linkerFlags: getStringArray(obj["linkerFlags"]),
+    linkerFlags: {
+      any: getStringArray(obj["linkerFlags"]["any"]),
+      win32: getStringArray(obj["linkerFlags"]["win32"]),
+      linux: getStringArray(obj["linkerFlags"]["linux"]),
+    },
     importFile: "import.hz",
   };
 }
@@ -215,10 +238,11 @@ export class ConfigParser {
     return undefined;
   }
 
-  getScripts(toml: any) {
+  getScripts(scriptInput: any) {
     const scripts = [] as { name: string; command: string; depends: string[] | null }[];
-    if (toml["scripts"]) {
-      for (const [name, cmd] of Object.entries(toml["scripts"])) {
+    if (scriptInput) {
+      for (const [name, cmd] of Object.entries(scriptInput)) {
+        if (name === "linux" || name === "win32") continue;
         if (typeof cmd === "string") {
           scripts.push({
             name: name,
@@ -305,23 +329,52 @@ export class ConfigParser {
     const type = this.getOptionalStringAnyOf(toml, "type", ["lib", "exe"]);
     const moduleType = type === "exe" ? ModuleType.Executable : ModuleType.Library;
 
-    return {
+    const config: ModuleConfig = {
       name: this.getString(toml, "name"),
       version: this.getString(toml, "version"),
       authors: this.getOptionalStringArray(toml, "authors"),
       description: this.getOptionalString(toml, "description"),
       license: this.getOptionalString(toml, "license"),
-      scripts: this.getScripts(toml),
+      scripts: {
+        any: this.getScripts(toml["scripts"]),
+        win32:
+          ((toml as any)?.scripts?.win32 && this.getScripts((toml as any)["scripts"]?.win32)) || [],
+        linux:
+          ((toml as any)?.scripts?.linux && this.getScripts((toml as any)["scripts"]?.linux)) || [],
+      },
       dependencies: this.getDependencies(toml),
       srcDirectory: join(dirname(this.configPath), this.getOptionalString(toml, "src") || "src"),
       configFilePath: this.configPath,
       moduleType: moduleType,
       nostdlib: this.getOptionalStringAnyOf(toml, "std", ["none"]) === "none",
-      linkerFlags: (toml["linker"] && this.getOptionalStringArray(toml["linker"], "flags")) || [],
-      compilerFlags:
-        (toml["compiler"] && this.getOptionalStringArray(toml["compiler"], "flags")) || [],
-      platform: "linux-x64",
+      linkerFlags: {
+        any: [],
+        win32: [],
+        linux: [],
+      },
+      compilerFlags: {
+        any: [],
+        win32: [],
+        linux: [],
+      },
+      platform: getCurrentPlatform(),
       includeSourceloc: sourceloc ?? true,
     };
+
+    const linker = toml["linker"] as any;
+    config.linkerFlags = {
+      any: (linker && this.getOptionalStringArray(linker, "flags")) || [],
+      win32: (linker?.win32 && this.getOptionalStringArray(linker.win32, "flags")) || [],
+      linux: (linker?.linux && this.getOptionalStringArray(linker.linux, "flags")) || [],
+    };
+
+    const compiler = toml["compiler"] as any;
+    config.compilerFlags = {
+      any: (compiler && this.getOptionalStringArray(compiler, "flags")) || [],
+      win32: (compiler?.win32 && this.getOptionalStringArray(compiler?.win32, "flags")) || [],
+      linux: (compiler?.linux && this.getOptionalStringArray(compiler?.linux, "flags")) || [],
+    };
+
+    return config;
   }
 }
