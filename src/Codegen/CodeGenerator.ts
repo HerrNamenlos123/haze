@@ -120,6 +120,7 @@ class CodeGenerator {
     this.includeHeader("stdlib.h");
     this.includeHeader("stdint.h");
     this.includeHeader("stdbool.h");
+    this.includeHeader("stdalign.h");
     this.includeHeader("stdio.h");
     this.includeHeader("limits.h");
     this.includeHeader("string.h");
