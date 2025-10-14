@@ -65,12 +65,12 @@ class CodeGenerator {
     }
   }
 
-  includeHeader(filename: string, quotes?: boolean) {
-    if (quotes) {
-      this.out.includes.writeLine(`#include "${filename}"`);
-    } else {
-      this.out.includes.writeLine(`#include <${filename}>`);
-    }
+  includeSystemHeader(filename: string) {
+    this.out.includes.writeLine(`#include <${filename}>`);
+  }
+
+  includeLocalHeader(filename: string) {
+    this.out.includes.writeLine(`#include "${filename}"`);
   }
 
   writeString() {
@@ -117,14 +117,14 @@ class CodeGenerator {
   }
 
   generate() {
-    this.includeHeader("stdlib.h");
-    this.includeHeader("stdint.h");
-    this.includeHeader("stdbool.h");
-    this.includeHeader("stdalign.h");
-    this.includeHeader("stdio.h");
-    this.includeHeader("limits.h");
-    this.includeHeader("string.h");
-    this.includeHeader("hzsys.h", true);
+    this.includeSystemHeader("stdlib.h");
+    this.includeSystemHeader("stdint.h");
+    this.includeSystemHeader("stdbool.h");
+    this.includeSystemHeader("stdalign.h");
+    this.includeSystemHeader("stdio.h");
+    this.includeSystemHeader("limits.h");
+    this.includeSystemHeader("string.h");
+    this.includeLocalHeader("hzsys.h");
 
     const sortedLoweredTypeDefs: (Lowered.TypeDef | Lowered.TypeUse)[] = [];
 
