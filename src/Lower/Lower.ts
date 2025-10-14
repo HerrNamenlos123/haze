@@ -1,9 +1,5 @@
 import { makePrimitiveAvailable, Semantic, type SemanticResult } from "../Semantic/Elaborate";
-import {
-  makeNullableReferenceDatatypeAvailable,
-  makeReferenceDatatypeAvailable,
-  makeTypeUse,
-} from "../Semantic/LookupDatatype";
+import { makeTypeUse } from "../Semantic/LookupDatatype";
 import {
   BinaryOperationToString,
   EAssignmentOperation,
@@ -255,7 +251,7 @@ export namespace Lowered {
     variant: ENode.MemberAccessExpr;
     expr: ExprId;
     memberName: string;
-    isReference: boolean;
+    requiresDeref: boolean;
     type: TypeUseId;
   };
 
@@ -594,7 +590,7 @@ function lowerExpr(
             expr: Lowered.addExpr(lr, {
               variant: Lowered.ENode.MemberAccessExpr,
               memberName: "fn",
-              isReference: false,
+              requiresDeref: false,
               type: calledExpr.type,
               expr: calledExprId,
             })[1],
@@ -602,7 +598,7 @@ function lowerExpr(
               Lowered.addExpr(lr, {
                 variant: Lowered.ENode.MemberAccessExpr,
                 expr: calledExprId,
-                isReference: false,
+                requiresDeref: false,
                 memberName: "thisPtr",
                 type: lr.exprNodes.get(thisExprId).type,
               })[1],
@@ -684,7 +680,7 @@ function lowerExpr(
           name: Semantic.makeNameSetSymbol(lr.sr, expr.symbol),
           type: lowerTypeUse(
             lr,
-            makeTypeUse(lr.sr, symbol.type, EDatatypeMutability.Const, expr.sourceloc)[1]
+            makeTypeUse(lr.sr, symbol.type, EDatatypeMutability.Const, false, expr.sourceloc)[1]
           ),
         });
       }
@@ -762,15 +758,15 @@ function lowerExpr(
 
     case Semantic.ENode.MemberAccessExpr: {
       const accessedExpr = lr.sr.exprNodes.get(expr.expr);
-      const accessedExprType = lr.sr.typeDefNodes.get(
-        lr.sr.typeUseNodes.get(accessedExpr.type).type
-      );
+      const accessedExprTypeUse = lr.sr.typeUseNodes.get(accessedExpr.type);
+      const accessedExprTypeDef = lr.sr.typeDefNodes.get(accessedExprTypeUse.type);
+
       return Lowered.addExpr(lr, {
         variant: Lowered.ENode.MemberAccessExpr,
         expr: lowerExpr(lr, expr.expr, flattened)[1],
-        isReference:
-          accessedExprType.variant === Semantic.ENode.ReferenceDatatype ||
-          accessedExprType.variant === Semantic.ENode.NullableReferenceDatatype,
+        requiresDeref:
+          accessedExprTypeDef.variant === Semantic.ENode.StructDatatype &&
+          accessedExprTypeUse.inline,
         memberName: expr.memberName,
         type: lowerTypeUse(lr, expr.type),
       });
@@ -837,7 +833,7 @@ function lowerExpr(
       const arrayId = lowerExpr(lr, expr.expr, flattened)[1];
       const semanticArray = lr.sr.exprNodes.get(expr.expr);
       const arrayType = lr.sr.typeDefNodes.get(lr.sr.typeUseNodes.get(semanticArray.type).type);
-      assert(arrayType.variant === Semantic.ENode.StackArrayDatatype);
+      assert(arrayType.variant === Semantic.ENode.FixedArrayDatatype);
 
       const startIndex = expr.indices[0].start
         ? lowerExpr(lr, expr.indices[0].start, flattened)[1]
@@ -899,33 +895,24 @@ function lowerExpr(
       const thisExprType = lr.sr.typeDefNodes.get(lr.sr.typeUseNodes.get(thisExpr.type).type);
 
       let loweredThisExpression = lowerExpr(lr, expr.thisExpr, flattened)[1];
-      if (thisExprType.variant !== Semantic.ENode.ReferenceDatatype) {
-        assert(thisExprType.variant === Semantic.ENode.StructDatatype);
-        const structReferenceType = lowerTypeUse(
+      assert(thisExprType.variant === Semantic.ENode.StructDatatype);
+      const structReferenceType = lowerTypeUse(lr, thisExpr.type);
+      let tempId = loweredThisExpression;
+      if (thisExpr.isTemporary) {
+        tempId = storeInTempVarAndGet(
           lr,
-          makeReferenceDatatypeAvailable(
-            lr.sr,
-            thisExpr.type,
-            EDatatypeMutability.Const,
-            expr.sourceloc
-          )
-        );
-        let tempId = loweredThisExpression;
-        if (thisExpr.isTemporary) {
-          tempId = storeInTempVarAndGet(
-            lr,
-            lowerTypeUse(lr, thisExpr.type),
-            loweredThisExpression,
-            expr.sourceloc,
-            flattened
-          )[1];
-        }
-        loweredThisExpression = Lowered.addExpr(lr, {
-          variant: Lowered.ENode.AddressOfExpr,
-          expr: tempId,
-          type: structReferenceType,
-        })[1];
+          lowerTypeUse(lr, thisExpr.type),
+          loweredThisExpression,
+          expr.sourceloc,
+          flattened
+        )[1];
       }
+      loweredThisExpression = Lowered.addExpr(lr, {
+        variant: Lowered.ENode.AddressOfExpr,
+        expr: tempId,
+        type: structReferenceType,
+      })[1];
+
       const functionSymbol = lr.sr.symbolNodes.get(expr.functionSymbol);
       assert(functionSymbol.variant === Semantic.ENode.FunctionSymbol);
       return Lowered.addExpr(lr, {
@@ -935,7 +922,13 @@ function lowerExpr(
         type: lowerTypeUse(lr, expr.type),
         functionType: lowerTypeUse(
           lr,
-          makeTypeUse(lr.sr, functionSymbol.type, EDatatypeMutability.Const, expr.sourceloc)[1]
+          makeTypeUse(
+            lr.sr,
+            functionSymbol.type,
+            EDatatypeMutability.Const,
+            false,
+            expr.sourceloc
+          )[1]
         ),
       });
     }
@@ -1060,45 +1053,44 @@ function lowerExpr(
       });
     }
 
-    case Semantic.ENode.RefAssignmentExpr: {
-      const [ref, refId] = lowerExpr(lr, expr.target, flattened);
-      const target = lr.sr.exprNodes.get(expr.target);
-      const targetType = lr.sr.typeDefNodes.get(lr.sr.typeUseNodes.get(target.type).type);
-      assert(targetType.variant === Semantic.ENode.ReferenceDatatype);
+    // case Semantic.ENode.RefAssignmentExpr: {
+    //   const [ref, refId] = lowerExpr(lr, expr.target, flattened);
+    //   const target = lr.sr.exprNodes.get(expr.target);
+    //   const targetType = lr.sr.typeDefNodes.get(lr.sr.typeUseNodes.get(target.type).type);
 
-      const [value, valueId] = lowerExpr(lr, expr.value, flattened);
-      const valueType = lr.typeUseNodes.get(value.type);
-      const semanticValue = lr.sr.exprNodes.get(expr.value);
-      if (expr.operation === "assign") {
-        assert(semanticValue.type === targetType.referee);
-        return Lowered.addExpr(lr, {
-          variant: Lowered.ENode.ExprAssignmentExpr,
-          type: lowerTypeUse(lr, expr.type),
-          target: Lowered.addExpr(lr, {
-            variant: Lowered.ENode.DereferenceExpr,
-            expr: refId,
-            type: lowerTypeUse(
-              lr,
-              makeNullableReferenceDatatypeAvailable(
-                lr.sr,
-                targetType.referee,
-                EDatatypeMutability.Const,
-                expr.sourceloc
-              )
-            ),
-          })[1],
-          value: valueId,
-        });
-      } else {
-        assert(semanticValue.type === target.type);
-        return Lowered.addExpr(lr, {
-          variant: Lowered.ENode.ExprAssignmentExpr,
-          type: lowerTypeUse(lr, expr.type),
-          target: refId,
-          value: valueId,
-        });
-      }
-    }
+    //   const [value, valueId] = lowerExpr(lr, expr.value, flattened);
+    //   const valueType = lr.typeUseNodes.get(value.type);
+    //   const semanticValue = lr.sr.exprNodes.get(expr.value);
+    //   if (expr.operation === "assign") {
+    //     assert(semanticValue.type === targetType.referee);
+    //     return Lowered.addExpr(lr, {
+    //       variant: Lowered.ENode.ExprAssignmentExpr,
+    //       type: lowerTypeUse(lr, expr.type),
+    //       target: Lowered.addExpr(lr, {
+    //         variant: Lowered.ENode.DereferenceExpr,
+    //         expr: refId,
+    //         type: lowerTypeUse(
+    //           lr,
+    //           makeNullableReferenceDatatypeAvailable(
+    //             lr.sr,
+    //             targetType.referee,
+    //             EDatatypeMutability.Const,
+    //             expr.sourceloc
+    //           )
+    //         ),
+    //       })[1],
+    //       value: valueId,
+    //     });
+    //   } else {
+    //     assert(semanticValue.type === target.type);
+    //     return Lowered.addExpr(lr, {
+    //       variant: Lowered.ENode.ExprAssignmentExpr,
+    //       type: lowerTypeUse(lr, expr.type),
+    //       target: refId,
+    //       value: valueId,
+    //     });
+    //   }
+    // }
 
     case Semantic.ENode.StringConstructExpr: {
       return Lowered.addExpr(lr, {
@@ -1191,30 +1183,6 @@ function lowerTypeDef(lr: Lowered.Module, typeId: Semantic.TypeDefId): Lowered.T
       lr.loweredTypeDefs.set(typeId, pId);
       return pId;
     }
-  } else if (type.variant === Semantic.ENode.NullableReferenceDatatype) {
-    if (lr.loweredTypeDefs.has(typeId)) {
-      return lr.loweredTypeDefs.get(typeId)!;
-    } else {
-      const [p, pId] = Lowered.addTypeDef<Lowered.NullableReferenceDatatypeDef>(lr, {
-        variant: Lowered.ENode.NullableReferenceDatatype,
-        referee: lowerTypeUse(lr, type.referee),
-        name: Semantic.makeNameSetTypeDef(lr.sr, typeId),
-      });
-      lr.loweredTypeDefs.set(typeId, pId);
-      return pId;
-    }
-  } else if (type.variant === Semantic.ENode.ReferenceDatatype) {
-    if (lr.loweredTypeDefs.has(typeId)) {
-      return lr.loweredTypeDefs.get(typeId)!;
-    } else {
-      const [p, pId] = Lowered.addTypeDef<Lowered.ReferenceDatatypeDef>(lr, {
-        variant: Lowered.ENode.ReferenceDatatype,
-        referee: lowerTypeUse(lr, type.referee),
-        name: Semantic.makeNameSetTypeDef(lr.sr, typeId),
-      });
-      lr.loweredTypeDefs.set(typeId, pId);
-      return pId;
-    }
   } else if (type.variant === Semantic.ENode.CallableDatatype) {
     if (lr.loweredTypeDefs.has(typeId)) {
       return lr.loweredTypeDefs.get(typeId)!;
@@ -1231,7 +1199,7 @@ function lowerTypeDef(lr: Lowered.Module, typeId: Semantic.TypeDefId): Lowered.T
       lr.loweredTypeDefs.set(typeId, pId);
       return pId;
     }
-  } else if (type.variant === Semantic.ENode.StackArrayDatatype) {
+  } else if (type.variant === Semantic.ENode.FixedArrayDatatype) {
     if (lr.loweredTypeDefs.has(typeId)) {
       return lr.loweredTypeDefs.get(typeId)!;
     } else {
@@ -1519,9 +1487,7 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
 
         case Semantic.ENode.PrimitiveDatatype:
         case Semantic.ENode.FunctionDatatype:
-        case Semantic.ENode.NullableReferenceDatatype:
-        case Semantic.ENode.CallableDatatype:
-        case Semantic.ENode.ReferenceDatatype: {
+        case Semantic.ENode.CallableDatatype: {
           lowerTypeDef(lr, datatypeId);
           break;
         }

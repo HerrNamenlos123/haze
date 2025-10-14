@@ -50,6 +50,7 @@ ARROW: '=>';
 LANGLE: '<';
 RANGLE: '>';
 EQUALS: '=';
+COLONEQUALS: ':=';
 DOUBLEEQUALS: '==';
 NOTEQUALS: '!=';
 SEMI: ';';

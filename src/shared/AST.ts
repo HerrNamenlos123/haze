@@ -140,6 +140,7 @@ export function BinaryOperationToString(op: EBinaryOperation): string {
 
 export enum EAssignmentOperation {
   Assign,
+  AssignRefTarget,
   Add,
   Subtract,
   Multiply,
@@ -205,6 +206,7 @@ export type ASTStackArrayDatatype = {
   variant: "StackArrayDatatype";
   datatype: ASTTypeUse;
   length: number;
+  inline: boolean;
   mutability: EDatatypeMutability;
   sourceloc: SourceLoc;
 };
@@ -415,18 +417,6 @@ export type ASTExplicitCastExpr = {
   sourceloc: SourceLoc;
 };
 
-export type ASTAddressOfExpr = {
-  variant: "AddressOfExpr";
-  expr: ASTExpr;
-  sourceloc: SourceLoc;
-};
-
-export type ASTDereferenceExpr = {
-  variant: "DereferenceExpr";
-  expr: ASTExpr;
-  sourceloc: SourceLoc;
-};
-
 export type ASTArraySubscriptExpr = {
   variant: "ArraySubscriptExpr";
   expr: ASTExpr;
@@ -481,8 +471,6 @@ export type ASTExpr =
   | ASTExprMemberAccess
   | ASTStructInstantiationExpr
   | ASTPreIncrExpr
-  | ASTAddressOfExpr
-  | ASTDereferenceExpr
   | ASTUnaryExpr
   | ASTExplicitCastExpr
   | ASTArraySubscriptExpr

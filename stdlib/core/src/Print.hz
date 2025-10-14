@@ -6,83 +6,83 @@ namespace builtin {
 }
 
 namespace fmt {
-    export struct FormatArgs {
-        formatSpecifier: str = "";
-    }
+    // export struct FormatArgs {
+    //     formatSpecifier: str = "";
+    // }
 
-    export struct StringWriter {
-        buffer: ?&u8 = nullptr;
-        length: usize = 0;
+    // export struct StringWriter {
+    //     buffer: u8 = nullptr;
+    //     length: usize = 0;
 
-        write(value: str) {        
-            if this.buffer != nullptr {
-                __c__("memcpy(this->buffer + this->length, value.data, value.length);");
-                // for i in 0..value.len {
-                //     this.buffer[length + i] = value[i];
-                // }
-            }
-            this.length += value.length;
-        }
-    }
+    //     write(value: str) {        
+    //         if this.buffer != nullptr {
+    //             __c__("memcpy(this->buffer + this->length, value.data, value.length);");
+    //             // for i in 0..value.len {
+    //             //     this.buffer[length + i] = value[i];
+    //             // }
+    //         }
+    //         this.length += value.length;
+    //     }
+    // }
 
-    export format<T>(arena: &Arena, value: T, args: FormatArgs): str {
-        const writer = StringWriter {};
-        format_to(writer as &StringWriter, value, args);
-        do unsafe {
-            const string = arena.allocRaw(writer.length, 1) as ?&u8;
-            const writer2 = StringWriter { buffer: string };
-            format_to(writer2 as &StringWriter, value, args);
-            return str(writer2.buffer, writer2.length);
-        }
-    }
+    // export format<T>(arena: &Arena, value: T, args: FormatArgs): str {
+    //     const writer = StringWriter {};
+    //     format_to(writer as &StringWriter, value, args);
+    //     do unsafe {
+    //         const string = arena.allocRaw(writer.length, 1) as ?&u8;
+    //         const writer2 = StringWriter { buffer: string };
+    //         format_to(writer2 as &StringWriter, value, args);
+    //         return str(writer2.buffer, writer2.length);
+    //     }
+    // }
 
-    export format_to(writer: &StringWriter, value: int, args: FormatArgs) {
-        let v = value;
-        if v < 0 {
-            writer.write("-");
-            if v == -2147483648 {
-                writer.write("2147483648");
-                return;
-            }
-            v = -v;
-        }
+    // export format_to(writer: &StringWriter, value: int, args: FormatArgs) {
+    //     let v = value;
+    //     if v < 0 {
+    //         writer.write("-");
+    //         if v == -2147483648 {
+    //             writer.write("2147483648");
+    //             return;
+    //         }
+    //         v = -v;
+    //     }
 
-        // Find highest divisor
-        // let div = 1;
-        // while v / div >= 10 {
-        //     div *= 10;
-        // }
+    //     // Find highest divisor
+    //     // let div = 1;
+    //     // while v / div >= 10 {
+    //     //     div *= 10;
+    //     // }
 
-        // while div > 0 {
-        //     let digit = v / div;
-        //     writer.write(digitToStr(digit));
-        //     v %= div;
-        //     div /= 10;
-        // }
-    }
+    //     // while div > 0 {
+    //     //     let digit = v / div;
+    //     //     writer.write(digitToStr(digit));
+    //     //     v %= div;
+    //     //     div /= 10;
+    //     // }
+    // }
 
-    digitToStr(digit: int): str {
-        assert(digit >= 0 && digit <= 9);
-        const ch: u8 = 0;
-        __c__("ch = '0' + digit;");
-        return str(&ch, 1);
-    }
+    // digitToStr(digit: int): str {
+    //     assert(digit >= 0 && digit <= 9);
+    //     const ch: u8 = 0;
+    //     __c__("ch = '0' + digit;");
+    //     return str(&ch, 1);
+    // }
 
-    export format_to(writer: &StringWriter, value: i8, args: FormatArgs) {
-        format_to(writer, value as int, args);
-    }
+    // export format_to(writer: &StringWriter, value: i8, args: FormatArgs) {
+    //     format_to(writer, value as int, args);
+    // }
 
-    export format_to(writer: &StringWriter, value: i16, args: FormatArgs) {
-        format_to(writer, value as int, args);
-    }
+    // export format_to(writer: &StringWriter, value: i16, args: FormatArgs) {
+    //     format_to(writer, value as int, args);
+    // }
 
-    export format_to(writer: &StringWriter, value: i32, args: FormatArgs) {
-        format_to(writer, value as int, args);
-    }
+    // export format_to(writer: &StringWriter, value: i32, args: FormatArgs) {
+    //     format_to(writer, value as int, args);
+    // }
 
-    export format_to(writer: &StringWriter, value: i64, args: FormatArgs) {
-        format_to(writer, value as int, args);
-    }
+    // export format_to(writer: &StringWriter, value: i64, args: FormatArgs) {
+    //     format_to(writer, value as int, args);
+    // }
 }
 
 export print(args: ...) {
@@ -121,13 +121,13 @@ export print(args: ...) {
         else if typeof(arg) == type<i64> {
             builtin.printf("%lld", arg);
         }
-        else if typeof(arg) == type<Vec2> || typeof(arg) == type<&Vec2> {
+        else if typeof(arg) == type<Vec2> || typeof(arg) == type<Vec2> {
             builtin.printf("(%f, %f)", arg.x, arg.y);
         }
-        else if typeof(arg) == type<Vec3> || typeof(arg) == type<&Vec3> {
+        else if typeof(arg) == type<Vec3> || typeof(arg) == type<Vec3> {
             builtin.printf("(%f, %f, %f)", arg.x, arg.y, arg.z);
         }
-        else if typeof(arg) == type<Vec4> || typeof(arg) == type<&Vec4> {
+        else if typeof(arg) == type<Vec4> || typeof(arg) == type<Vec4> {
             builtin.printf("(%f, %f, %f, %f)", arg.x, arg.y, arg.z, arg.w);
         }
         else {

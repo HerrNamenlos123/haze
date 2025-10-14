@@ -124,7 +124,12 @@ class CodeGenerator {
     this.includeSystemHeader("stdio.h");
     this.includeSystemHeader("limits.h");
     this.includeSystemHeader("string.h");
-    this.includeLocalHeader("hzsys.h");
+
+    if (this.config.hzsysLocation) {
+      this.includeLocalHeader(this.config.hzsysLocation + "/hzsys.h");
+    } else {
+      this.includeLocalHeader("hzsys.h");
+    }
 
     const sortedLoweredTypeDefs: (Lowered.TypeDef | Lowered.TypeUse)[] = [];
 
@@ -808,7 +813,7 @@ class CodeGenerator {
       case Lowered.ENode.MemberAccessExpr: {
         const exprWriter = this.emitExpr(expr.expr);
         tempWriter.write(exprWriter.temp);
-        if (expr.isReference) {
+        if (expr.requiresDeref) {
           outWriter.write("(" + exprWriter.out.get() + ")->" + expr.memberName);
         } else {
           outWriter.write("(" + exprWriter.out.get() + ")." + expr.memberName);

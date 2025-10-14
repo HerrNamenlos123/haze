@@ -22,8 +22,6 @@ import {
   type ASTParenthesisExpr,
   type ASTPostIncrExpr,
   type ASTPreIncrExpr,
-  type ASTAddressOfExpr as ASTAddressOfExpr,
-  type ASTDereferenceExpr as ASTDereferenceExpr,
   type ASTRoot,
   type ASTScope,
   type ASTStructDefinition,
@@ -150,8 +148,6 @@ export namespace Collect {
     TypeDefSymbol,
     TypeDefAlias,
     NamedDatatype,
-    ReferenceDatatype,
-    NullableReferenceDatatype,
     StackArrayDatatype,
     DynamicArrayDatatype,
     ParameterPack,
@@ -179,8 +175,6 @@ export namespace Collect {
     SymbolValueExpr,
     ExplicitCastExpr,
     MemberAccessExpr,
-    AddressOfExpr,
-    DereferenceExpr,
     ExprAssignmentExpr,
     StructInstantiationExpr,
     PreIncrExpr,
@@ -396,6 +390,7 @@ export namespace Collect {
   export type NamedDatatype = {
     variant: ENode.NamedDatatype;
     name: string;
+    inline: boolean;
     innerNested: Collect.TypeUseId | null;
     genericArgs: Collect.ExprId[];
     mutability: EDatatypeMutability;
@@ -411,29 +406,16 @@ export namespace Collect {
     sourceloc: SourceLoc;
   };
 
-  export type NullableReferenceDatatype = {
-    variant: ENode.NullableReferenceDatatype;
-    referee: Collect.TypeUseId;
-    mutability: EDatatypeMutability;
-    sourceloc: SourceLoc;
-  };
-
-  export type ReferenceDatatype = {
-    variant: ENode.ReferenceDatatype;
-    referee: Collect.TypeUseId;
-    mutability: EDatatypeMutability;
-    sourceloc: SourceLoc;
-  };
-
-  export type ArrayDatatype = {
+  export type StackArrayDatatype = {
     variant: ENode.StackArrayDatatype;
     datatype: Collect.TypeUseId;
     length: number;
+    inline: boolean;
     mutability: EDatatypeMutability;
     sourceloc: SourceLoc;
   };
 
-  export type SliceDatatype = {
+  export type DynamicArrayDatatype = {
     variant: ENode.DynamicArrayDatatype;
     datatype: Collect.TypeUseId;
     mutability: EDatatypeMutability;
@@ -448,10 +430,8 @@ export namespace Collect {
   export type TypeUse =
     | NamedDatatype
     | FunctionDatatype
-    | NullableReferenceDatatype
-    | ReferenceDatatype
-    | ArrayDatatype
-    | SliceDatatype
+    | StackArrayDatatype
+    | DynamicArrayDatatype
     | ParameterPack;
 
   /// ===============================================================
@@ -595,16 +575,6 @@ export namespace Collect {
     operation: EAssignmentOperation;
   };
 
-  export type AddressOfExpr = BaseExpr & {
-    variant: ENode.AddressOfExpr;
-    expr: Collect.ExprId;
-  };
-
-  export type DereferenceExpr = BaseExpr & {
-    variant: ENode.DereferenceExpr;
-    expr: Collect.ExprId;
-  };
-
   export type MemberAccessExpr = BaseExpr & {
     variant: ENode.MemberAccessExpr;
     expr: Collect.ExprId;
@@ -670,8 +640,6 @@ export namespace Collect {
     | ExplicitCastExpr
     | StructInstantiationExpr
     | ExprAssignmentExpr
-    | AddressOfExpr
-    | DereferenceExpr
     | LiteralExpr
     | ArrayLiteralExpr
     | ArraySubscriptExpr
@@ -1178,6 +1146,7 @@ function collectTypeUse(
       return Collect.makeTypeUse(cc, {
         variant: Collect.ENode.NamedDatatype,
         name: item.name,
+        inline: item.inline,
         innerNested: (item.nested && collectTypeUse(cc, item.nested, args)) || null,
         genericArgs: item.generics.map((g) => {
           if (g.variant === "LiteralExpr") {
@@ -1218,6 +1187,7 @@ function collectTypeUse(
         variant: Collect.ENode.StackArrayDatatype,
         datatype: collectTypeUse(cc, item.datatype, args),
         length: item.length,
+        inline: item.inline,
         mutability: item.mutability,
         sourceloc: item.sourceloc,
       })[1];
@@ -1305,6 +1275,7 @@ function collectSymbol(
           (item.returnType && collectTypeUse(cc, item.returnType, args)) ||
           Collect.makeTypeUse(cc, {
             variant: Collect.ENode.NamedDatatype,
+            inline: true,
             genericArgs: [],
             innerNested: null,
             name: "void",
@@ -1556,6 +1527,7 @@ function collectGlobalDirective(
         target: Collect.makeTypeUse(cc, {
           variant: Collect.ENode.NamedDatatype,
           genericArgs: [],
+          inline: false,
           innerNested: null,
           name: importedNamespace,
           mutability: EDatatypeMutability.Default,
@@ -1759,8 +1731,6 @@ function collectExpr(
     | ASTExprMemberAccess
     | ASTLambdaExpr
     | ASTPreIncrExpr
-    | ASTAddressOfExpr
-    | ASTDereferenceExpr
     | ASTPostIncrExpr
     | ASTStructInstantiationExpr
     | ASTExplicitCastExpr
@@ -1935,28 +1905,6 @@ function collectExpr(
         variant: Collect.ENode.ExplicitCastExpr,
         expr: collectExpr(cc, item.expr, args),
         targetType: collectTypeUse(cc, item.castedTo, args),
-        sourceloc: item.sourceloc,
-      })[1];
-
-    // =================================================================================================================
-    // =================================================================================================================
-    // =================================================================================================================
-
-    case "AddressOfExpr":
-      return Collect.makeExpr(cc, {
-        variant: Collect.ENode.AddressOfExpr,
-        expr: collectExpr(cc, item.expr, args),
-        sourceloc: item.sourceloc,
-      })[1];
-
-    // =================================================================================================================
-    // =================================================================================================================
-    // =================================================================================================================
-
-    case "DereferenceExpr":
-      return Collect.makeExpr(cc, {
-        variant: Collect.ENode.DereferenceExpr,
-        expr: collectExpr(cc, item.expr, args),
         sourceloc: item.sourceloc,
       })[1];
 
@@ -2164,14 +2112,6 @@ export function printCollectedDatatype(
       return str;
     }
 
-    case Collect.ENode.NullableReferenceDatatype: {
-      return `${printCollectedDatatype(cc, type.referee)}*`;
-    }
-
-    case Collect.ENode.ReferenceDatatype: {
-      return `${printCollectedDatatype(cc, type.referee)}&`;
-    }
-
     case Collect.ENode.StackArrayDatatype: {
       return `[${type.length}]${printCollectedDatatype(cc, type.datatype)}`;
     }
@@ -2313,14 +2253,6 @@ export const printCollectedExpr = (cc: CollectionContext, exprId: Collect.ExprId
 
     case Collect.ENode.ArrayLiteralExpr: {
       return `[${expr.values.map((v) => printCollectedExpr(cc, v)).join(", ")}]`;
-    }
-
-    case Collect.ENode.AddressOfExpr: {
-      return `&${printCollectedExpr(cc, expr.expr)}`;
-    }
-
-    case Collect.ENode.DereferenceExpr: {
-      return `*${printCollectedExpr(cc, expr.expr)}`;
     }
 
     case Collect.ENode.TypeLiteralExpr: {

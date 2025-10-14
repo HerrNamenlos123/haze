@@ -37,8 +37,6 @@ import {
   type ASTParenthesisExpr,
   type ASTPostIncrExpr,
   type ASTPreIncrExpr,
-  type ASTAddressOfExpr,
-  type ASTDereferenceExpr,
   type ASTReturnStatement,
   type ASTRoot,
   type ASTScope,
@@ -122,8 +120,6 @@ import {
   TypeAliasStatementContext,
   VariableConstContext,
   VariableLetContext,
-  DereferenceExprContext,
-  AddressOfExprContext,
   BlockScopeExprContext,
   DoScopeContext,
   RawScopeContext,
@@ -307,6 +303,8 @@ class ASTTransformer extends HazeParserVisitor<any> {
     }
     if (ctx._op.text === "=") {
       return EAssignmentOperation.Assign;
+    } else if (ctx._op.text === ":=") {
+      return EAssignmentOperation.AssignRefTarget;
     } else if (ctx._op.text === "+=") {
       return EAssignmentOperation.Add;
     } else if (ctx._op.text === "-=") {
@@ -976,22 +974,6 @@ class ASTTransformer extends HazeParserVisitor<any> {
     };
   };
 
-  visitDereferenceExpr = (ctx: DereferenceExprContext): ASTDereferenceExpr => {
-    return {
-      variant: "DereferenceExpr",
-      expr: this.visit(ctx.expr()),
-      sourceloc: this.loc(ctx),
-    };
-  };
-
-  visitAddressOfExpr = (ctx: AddressOfExprContext): ASTAddressOfExpr => {
-    return {
-      variant: "AddressOfExpr",
-      expr: this.visit(ctx.expr()),
-      sourceloc: this.loc(ctx),
-    };
-  };
-
   visitStructInstantiationExpr = (
     ctx: StructInstantiationExprContext
   ): ASTStructInstantiationExpr => {
@@ -1077,6 +1059,7 @@ class ASTTransformer extends HazeParserVisitor<any> {
     const datatype: ASTTypeUse = this.visit(ctx.datatypeImpl());
     switch (datatype.variant) {
       case "NamedDatatype":
+      case "StackArrayDatatype":
         if (ctx.INLINE()) {
           datatype.inline = true;
         }
@@ -1088,7 +1071,6 @@ class ASTTransformer extends HazeParserVisitor<any> {
         }
         break;
 
-      case "StackArrayDatatype":
       case "DynamicArrayDatatype":
       case "FunctionDatatype":
         if (ctx.CONST()) {
@@ -1226,6 +1208,7 @@ class ASTTransformer extends HazeParserVisitor<any> {
       datatype: this.visit(ctx.datatype()),
       length: Number(ctx.INTEGER_LITERAL()?.getText()),
       mutability: EDatatypeMutability.Default,
+      inline: false,
       sourceloc: this.loc(ctx),
     };
   };

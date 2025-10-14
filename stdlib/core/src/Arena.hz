@@ -1,22 +1,30 @@
 
 export extern C noemit struct hzsys_arena_t {};
 
-export extern C noemit hzsys_arena_create(chunk_size: usize): ?&hzsys_arena_t;
-export extern C noemit hzsys_arena_cleanup_and_free(arena: ?&hzsys_arena_t): void;
+export extern C noemit hzsys_arena_create(chunk_size: usize): hzsys_arena_t;
+export extern C noemit hzsys_arena_cleanup_and_free(arena: hzsys_arena_t): void;
 
-export extern C noemit hzsys_arena_allocate(arena: ?&hzsys_arena_t, size: usize, alignment: usize): &void;
+export extern C noemit hzsys_arena_allocate(arena: hzsys_arena_t, size: usize, alignment: usize): void;
 
-export extern C noemit hzsys_arena_create_and_attach_subarena(arena: ?&hzsys_arena_t): ?&hzsys_arena_t;
-export extern C noemit hzsys_attach_subarena(arena: ?&hzsys_arena_t, subarena: ?&hzsys_arena_t): void;
-export extern C noemit hzsys_detach_subarena(arena: ?&hzsys_arena_t): void;
+namespace hzsys {
+    arena_allocate<T>(arena: hzsys_arena_t, size: usize, alignment: usize): T {
+        do unsafe {
+            return hzsys_arena_allocate(arena, size, alignment) as T;
+        }
+    }
+}
 
-export extern C noemit hzsys_arena_register_cleanup_action(arena: ?&hzsys_arena_t, action: (actiondata: ?&void) => void, actiondata: ?&void): usize;
-export extern C noemit hzsys_arena_deregister_cleanup_action(arena: ?&hzsys_arena_t, actionId: usize): void;
+export extern C noemit hzsys_arena_create_and_attach_subarena(arena: hzsys_arena_t): hzsys_arena_t;
+export extern C noemit hzsys_attach_subarena(arena: hzsys_arena_t, subarena: hzsys_arena_t): void;
+export extern C noemit hzsys_detach_subarena(arena: hzsys_arena_t): void;
+
+export extern C noemit hzsys_arena_register_cleanup_action(arena: hzsys_arena_t, action: (actiondata: void) => void, actiondata: void): usize;
+export extern C noemit hzsys_arena_deregister_cleanup_action(arena: hzsys_arena_t, actionId: usize): void;
 
 const DEFAULT_CHUNK_SIZE = 1024;
 
 export struct Arena {
-    arenaImpl: ?&hzsys_arena_t;
+    arenaImpl: hzsys_arena_t;
 
     constructor(): Arena {
         return Arena {
@@ -24,17 +32,17 @@ export struct Arena {
         };
     }
 
-    alloc<T>(value: T): &T {
+    alloc<T>(value: T): T {
         do unsafe {
-            const ptr = hzsys_arena_allocate(this.arenaImpl, sizeof(T), alignof(T)) as &T;
-            assign(ptr, value);
+            const ptr = hzsys.arena_allocate<T>(this.arenaImpl, sizeof(T), alignof(T));
+            ptr := value;
             return ptr;
         }
     }
 
-    allocRaw(size: usize, alignment: usize): &void {
-        return hzsys_arena_allocate(this.arenaImpl, size, alignment);
-    }
+    // allocRaw(size: usize, alignment: usize): void {
+    //     return hzsys_arena_allocate(this.arenaImpl, size, alignment);
+    // }
 
     free() {
         hzsys_arena_cleanup_and_free(this.arenaImpl);

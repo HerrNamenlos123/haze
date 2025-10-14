@@ -81,64 +81,16 @@ export function makeFunctionDatatypeAvailable(
     sr,
     makeRawFunctionDatatypeAvailable(sr, args),
     args.mutability,
+    false,
     args.sourceloc
   )[1];
-}
-
-export function makeNullableReferenceDatatypeAvailable(
-  sr: SemanticResult,
-  referee: Semantic.TypeUseId,
-  mutability: EDatatypeMutability,
-  sourceloc: SourceLoc
-): Semantic.TypeUseId {
-  for (const id of sr.nullRefTypeCache) {
-    const type = sr.typeDefNodes.get(id);
-    assert(type.variant === Semantic.ENode.NullableReferenceDatatype);
-    if (type.referee !== referee) {
-      continue;
-    }
-    return makeTypeUse(sr, id, mutability, sourceloc)[1];
-  }
-
-  // Nothing found
-  const [type, typeId] = Semantic.addType(sr, {
-    variant: Semantic.ENode.NullableReferenceDatatype,
-    referee: referee,
-    concrete: isTypeConcrete(sr, referee),
-  });
-  sr.nullRefTypeCache.push(typeId);
-  return makeTypeUse(sr, typeId, mutability, sourceloc)[1];
-}
-
-export function makeReferenceDatatypeAvailable(
-  sr: SemanticResult,
-  referee: Semantic.TypeUseId,
-  mutability: EDatatypeMutability,
-  sourceloc: SourceLoc
-): Semantic.TypeUseId {
-  for (const id of sr.referenceTypeCache) {
-    const type = sr.typeDefNodes.get(id);
-    assert(type.variant === Semantic.ENode.ReferenceDatatype);
-    if (type.referee !== referee) {
-      continue;
-    }
-    return makeTypeUse(sr, id, mutability, sourceloc)[1];
-  }
-
-  // Nothing found
-  const [type, typeId] = Semantic.addType(sr, {
-    variant: Semantic.ENode.ReferenceDatatype,
-    referee: referee,
-    concrete: isTypeConcrete(sr, referee),
-  });
-  sr.referenceTypeCache.push(typeId);
-  return makeTypeUse(sr, typeId, mutability, sourceloc)[1];
 }
 
 export function makeTypeUse(
   sr: SemanticResult,
   typeId: Semantic.TypeDefId,
   mutability: EDatatypeMutability,
+  inline: boolean,
   sourceloc: SourceLoc
 ) {
   for (const id of sr.typeInstanceCache) {
@@ -151,6 +103,7 @@ export function makeTypeUse(
 
   const instance = Semantic.addTypeInstance(sr, {
     mutability: mutability,
+    inline: inline,
     type: typeId,
     sourceloc: sourceloc,
   });
@@ -158,56 +111,58 @@ export function makeTypeUse(
   return instance;
 }
 
-export function makeArrayDatatypeAvailable(
+export function makeStackArrayDatatypeAvailable(
   sr: SemanticResult,
   datatype: Semantic.TypeUseId,
   length: number,
   mutability: EDatatypeMutability,
+  inline: boolean,
   sourceloc: SourceLoc
 ): Semantic.TypeUseId {
-  for (const id of sr.arrayTypeCache) {
+  for (const id of sr.fixedArrayTypeCache) {
     const type = sr.typeDefNodes.get(id);
-    assert(type.variant === Semantic.ENode.ArrayDatatype);
+    assert(type.variant === Semantic.ENode.FixedArrayDatatype);
     if (type.datatype !== datatype || type.length !== length) {
       continue;
     }
-    return makeTypeUse(sr, id, mutability, sourceloc)[1];
+    return makeTypeUse(sr, id, mutability, inline, sourceloc)[1];
   }
 
   // Nothing found
   const [type, typeId] = Semantic.addType(sr, {
-    variant: Semantic.ENode.ArrayDatatype,
+    variant: Semantic.ENode.FixedArrayDatatype,
     datatype: datatype,
     length: length,
     concrete: isTypeConcrete(sr, datatype),
   });
-  sr.arrayTypeCache.push(typeId);
-  return makeTypeUse(sr, typeId, mutability, sourceloc)[1];
+  sr.fixedArrayTypeCache.push(typeId);
+  return makeTypeUse(sr, typeId, mutability, inline, sourceloc)[1];
 }
 
-export function makeSliceDatatypeAvailable(
+export function makeDynamicArrayDatatypeAvailable(
   sr: SemanticResult,
   datatype: Semantic.TypeUseId,
   mutability: EDatatypeMutability,
+  inline: boolean,
   sourceloc: SourceLoc
 ): Semantic.TypeUseId {
-  for (const id of sr.sliceTypeCache) {
+  for (const id of sr.dynamicArrayTypeCache) {
     const type = sr.typeDefNodes.get(id);
-    assert(type.variant === Semantic.ENode.SliceDatatype);
+    assert(type.variant === Semantic.ENode.DynamicArrayDatatype);
     if (type.datatype !== datatype) {
       continue;
     }
-    return makeTypeUse(sr, id, mutability, sourceloc)[1];
+    return makeTypeUse(sr, id, mutability, inline, sourceloc)[1];
   }
 
   // Nothing found
   const [type, typeId] = Semantic.addType(sr, {
-    variant: Semantic.ENode.SliceDatatype,
+    variant: Semantic.ENode.DynamicArrayDatatype,
     datatype: datatype,
     concrete: isTypeConcrete(sr, datatype),
   });
-  sr.sliceTypeCache.push(typeId);
-  return makeTypeUse(sr, typeId, mutability, sourceloc)[1];
+  sr.dynamicArrayTypeCache.push(typeId);
+  return makeTypeUse(sr, typeId, mutability, inline, sourceloc)[1];
 }
 
 export function elaborateParentSymbolFromCache(
@@ -516,25 +471,8 @@ export function lookupAndElaborateDatatype(
     // =================================================================================================================
     // =================================================================================================================
 
-    case Collect.ENode.NullableReferenceDatatype: {
-      return makeNullableReferenceDatatypeAvailable(
-        sr,
-        lookupAndElaborateDatatype(sr, {
-          typeId: type.referee,
-          context: args.context,
-          isInCFuncdecl: args.isInCFuncdecl,
-        }),
-        type.mutability,
-        type.sourceloc
-      );
-    }
-
-    // =================================================================================================================
-    // =================================================================================================================
-    // =================================================================================================================
-
     case Collect.ENode.StackArrayDatatype: {
-      return makeArrayDatatypeAvailable(
+      return makeStackArrayDatatypeAvailable(
         sr,
         lookupAndElaborateDatatype(sr, {
           typeId: type.datatype,
@@ -543,6 +481,7 @@ export function lookupAndElaborateDatatype(
         }),
         type.length,
         type.mutability,
+        type.inline,
         type.sourceloc
       );
     }
@@ -552,7 +491,7 @@ export function lookupAndElaborateDatatype(
     // =================================================================================================================
 
     case Collect.ENode.DynamicArrayDatatype: {
-      return makeSliceDatatypeAvailable(
+      return makeDynamicArrayDatatypeAvailable(
         sr,
         lookupAndElaborateDatatype(sr, {
           typeId: type.datatype,
@@ -560,23 +499,7 @@ export function lookupAndElaborateDatatype(
           isInCFuncdecl: args.isInCFuncdecl,
         }),
         type.mutability,
-        type.sourceloc
-      );
-    }
-
-    // =================================================================================================================
-    // =================================================================================================================
-    // =================================================================================================================
-
-    case Collect.ENode.ReferenceDatatype: {
-      return makeReferenceDatatypeAvailable(
-        sr,
-        lookupAndElaborateDatatype(sr, {
-          typeId: type.referee,
-          context: args.context,
-          isInCFuncdecl: args.isInCFuncdecl,
-        }),
-        type.mutability,
+        false,
         type.sourceloc
       );
     }
@@ -650,6 +573,7 @@ export function lookupAndElaborateDatatype(
             concrete: isTypeConcrete(sr, functype),
           })[1],
           type.mutability,
+          false,
           type.sourceloc
         )[1];
       }
@@ -693,6 +617,7 @@ export function lookupAndElaborateDatatype(
               concrete: false,
             })[1],
             type.mutability,
+            false,
             type.sourceloc
           )[1];
         }
@@ -778,7 +703,7 @@ export function lookupAndElaborateDatatype(
               }),
             });
           } else {
-            return makeTypeUse(sr, structId, type.mutability, type.sourceloc)[1];
+            return makeTypeUse(sr, structId, type.mutability, type.inline, type.sourceloc)[1];
           }
         } else if (typedef.variant === Collect.ENode.NamespaceTypeDef) {
           if (!type.innerNested) {
@@ -788,6 +713,7 @@ export function lookupAndElaborateDatatype(
                 context: args.context,
               }),
               type.mutability,
+              type.inline,
               type.sourceloc
             )[1];
           }
@@ -816,6 +742,7 @@ export function lookupAndElaborateDatatype(
           concrete: true,
         })[1],
         EDatatypeMutability.Const,
+        false,
         type.sourceloc
       )[1];
     }

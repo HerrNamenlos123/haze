@@ -38,12 +38,10 @@ import { Conversion } from "./Conversion";
 import { EvalCTFE, EvalCTFEBoolean } from "./CTFE";
 import {
   lookupAndElaborateDatatype,
-  makeNullableReferenceDatatypeAvailable,
-  makeReferenceDatatypeAvailable,
   elaborateParentSymbolFromCache,
-  makeArrayDatatypeAvailable,
+  makeStackArrayDatatypeAvailable,
   instantiateAndElaborateStructWithGenerics,
-  makeSliceDatatypeAvailable,
+  makeDynamicArrayDatatypeAvailable,
   makeTypeUse,
   makeRawFunctionDatatypeAvailable,
 } from "./LookupDatatype";
@@ -227,10 +225,8 @@ export type SemanticResult = {
 
   elaboratedPrimitiveTypes: Semantic.TypeDefId[];
   functionTypeCache: Semantic.TypeDefId[];
-  nullRefTypeCache: Semantic.TypeDefId[];
-  referenceTypeCache: Semantic.TypeDefId[];
-  arrayTypeCache: Semantic.TypeDefId[];
-  sliceTypeCache: Semantic.TypeDefId[];
+  fixedArrayTypeCache: Semantic.TypeDefId[];
+  dynamicArrayTypeCache: Semantic.TypeDefId[];
   typeInstanceCache: Semantic.TypeUseId[];
 
   syntheticScopeToVariableMap: Map<Collect.ScopeId, Map<string, Semantic.SymbolId>>;
@@ -267,7 +263,7 @@ export function makePrimitiveAvailable(
   mutability: EDatatypeMutability,
   sourceloc: SourceLoc
 ): Semantic.TypeUseId {
-  return makeTypeUse(sr, makeRawPrimitiveAvailable(sr, primitive), mutability, sourceloc)[1];
+  return makeTypeUse(sr, makeRawPrimitiveAvailable(sr, primitive), mutability, true, sourceloc)[1];
 }
 
 export function isTypeExprConcrete(sr: SemanticResult, id: Semantic.ExprId) {
@@ -330,15 +326,13 @@ export namespace Semantic {
     FunctionDatatype,
     BlockScope,
     StructDatatype,
-    NullableReferenceDatatype,
-    ReferenceDatatype,
     CallableDatatype,
     ParameterPackDatatype,
     PrimitiveDatatype,
     GenericParameterDatatype,
     NamespaceDatatype,
-    ArrayDatatype,
-    SliceDatatype,
+    FixedArrayDatatype,
+    DynamicArrayDatatype,
     // Statements
     InlineCStatement,
     WhileStatement,
@@ -364,7 +358,6 @@ export namespace Semantic {
     AddressOfExpr,
     DereferenceExpr,
     ExprAssignmentExpr,
-    RefAssignmentExpr,
     StructInstantiationExpr,
     PreIncrExpr,
     PostIncrExpr,
@@ -533,18 +526,6 @@ export namespace Semantic {
     originalCollectedSymbol: Collect.TypeDefId;
   };
 
-  export type NullableReferenceDatatypeDef = {
-    variant: ENode.NullableReferenceDatatype;
-    referee: TypeUseId;
-    concrete: boolean;
-  };
-
-  export type ReferenceDatatypeDef = {
-    variant: ENode.ReferenceDatatype;
-    referee: TypeUseId;
-    concrete: boolean;
-  };
-
   export type ParameterPackDatatypeDef = {
     variant: ENode.ParameterPackDatatype;
     parameters: Semantic.SymbolId[] | null;
@@ -564,15 +545,15 @@ export namespace Semantic {
     concrete: boolean;
   };
 
-  export type ArrayDatatypeDef = {
-    variant: ENode.ArrayDatatype;
+  export type FixedArrayDatatypeDef = {
+    variant: ENode.FixedArrayDatatype;
     datatype: TypeUseId;
     length: number;
     concrete: boolean;
   };
 
-  export type SliceDatatypeDef = {
-    variant: ENode.SliceDatatype;
+  export type DynamicArrayDatatypeDef = {
+    variant: ENode.DynamicArrayDatatype;
     datatype: TypeUseId;
     concrete: boolean;
   };
@@ -598,10 +579,8 @@ export namespace Semantic {
     | NamespaceDatatypeDef
     | FunctionDatatypeDef
     | StructDatatypeDef
-    | NullableReferenceDatatypeDef
-    | ArrayDatatypeDef
-    | SliceDatatypeDef
-    | ReferenceDatatypeDef
+    | FixedArrayDatatypeDef
+    | DynamicArrayDatatypeDef
     | ParameterPackDatatypeDef
     | CallableDatatypeDef
     | PrimitiveDatatypeDef;
@@ -609,6 +588,7 @@ export namespace Semantic {
   export type TypeUse = {
     type: TypeDefId;
     mutability: EDatatypeMutability;
+    inline: boolean;
     sourceloc: SourceLoc;
   };
 
@@ -675,16 +655,6 @@ export namespace Semantic {
     target: ExprId;
     type: TypeUseId;
     operation: EAssignmentOperation;
-    isTemporary: boolean;
-    sourceloc: SourceLoc;
-  };
-
-  export type RefAssignmentExpr = {
-    variant: ENode.RefAssignmentExpr;
-    value: ExprId;
-    target: ExprId;
-    type: TypeUseId;
-    operation: "assign" | "rebind";
     isTemporary: boolean;
     sourceloc: SourceLoc;
   };
@@ -835,7 +805,6 @@ export namespace Semantic {
     | AlignofExpr
     | BlockScopeExpr
     | ExprAssignmentExpr
-    | RefAssignmentExpr
     | UnaryExpr
     | BinaryExpr
     | CallableExpr
@@ -1316,7 +1285,13 @@ export namespace Semantic {
       return Semantic.addExpr(sr, {
         variant: Semantic.ENode.DatatypeAsValueExpr,
         symbol: instantiated,
-        type: makeTypeUse(sr, instantiated, EDatatypeMutability.Default, args.expr.sourceloc)[1],
+        type: makeTypeUse(
+          sr,
+          instantiated,
+          EDatatypeMutability.Default,
+          false,
+          args.expr.sourceloc
+        )[1],
         isTemporary: false,
         sourceloc: args.expr.sourceloc,
       });
@@ -1381,6 +1356,7 @@ export namespace Semantic {
           sr,
           functionSymbol.type,
           EDatatypeMutability.Const,
+          false,
           args.expr.sourceloc
         )[1],
         isTemporary: false,
@@ -1605,7 +1581,7 @@ export namespace Semantic {
     return Semantic.addExpr(sr, {
       variant: Semantic.ENode.StructInstantiationExpr,
       assign: assign,
-      type: makeTypeUse(sr, structId, EDatatypeMutability.Const, args.sourceloc)[1],
+      type: makeTypeUse(sr, structId, EDatatypeMutability.Const, false, args.sourceloc)[1],
       sourceloc: args.sourceloc,
       isTemporary: true,
     });
@@ -2176,88 +2152,88 @@ export namespace Semantic {
               valueExpr: callingArguments[0],
             });
           }
-          if (collectedExpr.name === "assign" || collectedExpr.name === "rebind") {
-            const callingArguments = expr.arguments.map(
-              (a, i) =>
-                elaborateExpr(sr, a, {
-                  context: args.context,
-                  constraints: args.constraints,
-                  scope: args.context.currentScope,
-                  unsafe: args.unsafe,
-                  expectedReturnType: args.expectedReturnType,
-                })[1]
-            );
-            if (collectedExpr.genericArgs.length !== 0) {
-              throw new CompilerError(
-                "The builtin assign/rebind functions cannot take any type parameters",
-                collectedExpr.sourceloc
-              );
-            }
-            if (callingArguments.length !== 2) {
-              throw new CompilerError(
-                "The builtin assign/rebind functions require exactly two parameters",
-                collectedExpr.sourceloc
-              );
-            }
-            const ref = sr.exprNodes.get(callingArguments[0]);
-            const refType = sr.typeDefNodes.get(sr.typeUseNodes.get(ref.type).type);
-            const value = sr.exprNodes.get(callingArguments[1]);
-            if (refType.variant !== Semantic.ENode.ReferenceDatatype) {
-              throw new CompilerError(
-                `The builtin assign/rebind functions require the first parameter to be a reference`,
-                expr.sourceloc
-              );
-            }
-            if (collectedExpr.name === "assign") {
-              // Assigning the pointee
-              return Semantic.addExpr(sr, {
-                variant: Semantic.ENode.RefAssignmentExpr,
-                sourceloc: collectedExpr.sourceloc,
-                isTemporary: false,
-                type: makePrimitiveAvailable(
-                  sr,
-                  EPrimitive.void,
-                  EDatatypeMutability.Const,
-                  expr.sourceloc
-                ),
-                operation: "assign",
-                target: callingArguments[0],
-                value: Conversion.MakeConversionOrThrow(
-                  sr,
-                  callingArguments[1],
-                  refType.referee,
-                  args.constraints,
-                  expr.sourceloc,
-                  Conversion.Mode.Implicit,
-                  args.unsafe
-                ),
-              });
-            } else {
-              // Rebinding the reference
-              return Semantic.addExpr(sr, {
-                variant: Semantic.ENode.RefAssignmentExpr,
-                sourceloc: collectedExpr.sourceloc,
-                isTemporary: false,
-                type: makePrimitiveAvailable(
-                  sr,
-                  EPrimitive.void,
-                  EDatatypeMutability.Const,
-                  expr.sourceloc
-                ),
-                operation: "rebind",
-                target: callingArguments[0],
-                value: Conversion.MakeConversionOrThrow(
-                  sr,
-                  callingArguments[1],
-                  ref.type,
-                  args.constraints,
-                  expr.sourceloc,
-                  Conversion.Mode.Implicit,
-                  args.unsafe
-                ),
-              });
-            }
-          }
+          // if (collectedExpr.name === "assign" || collectedExpr.name === "rebind") {
+          //   const callingArguments = expr.arguments.map(
+          //     (a, i) =>
+          //       elaborateExpr(sr, a, {
+          //         context: args.context,
+          //         constraints: args.constraints,
+          //         scope: args.context.currentScope,
+          //         unsafe: args.unsafe,
+          //         expectedReturnType: args.expectedReturnType,
+          //       })[1]
+          //   );
+          //   if (collectedExpr.genericArgs.length !== 0) {
+          //     throw new CompilerError(
+          //       "The builtin assign/rebind functions cannot take any type parameters",
+          //       collectedExpr.sourceloc
+          //     );
+          //   }
+          //   if (callingArguments.length !== 2) {
+          //     throw new CompilerError(
+          //       "The builtin assign/rebind functions require exactly two parameters",
+          //       collectedExpr.sourceloc
+          //     );
+          //   }
+          //   const ref = sr.exprNodes.get(callingArguments[0]);
+          //   const refType = sr.typeDefNodes.get(sr.typeUseNodes.get(ref.type).type);
+          //   const value = sr.exprNodes.get(callingArguments[1]);
+          //   if (refType.variant !== Semantic.ENode.ReferenceDatatype) {
+          //     throw new CompilerError(
+          //       `The builtin assign/rebind functions require the first parameter to be a reference`,
+          //       expr.sourceloc
+          //     );
+          //   }
+          //   if (collectedExpr.name === "assign") {
+          //     // Assigning the pointee
+          //     return Semantic.addExpr(sr, {
+          //       variant: Semantic.ENode.RefAssignmentExpr,
+          //       sourceloc: collectedExpr.sourceloc,
+          //       isTemporary: false,
+          //       type: makePrimitiveAvailable(
+          //         sr,
+          //         EPrimitive.void,
+          //         EDatatypeMutability.Const,
+          //         expr.sourceloc
+          //       ),
+          //       operation: "assign",
+          //       target: callingArguments[0],
+          //       value: Conversion.MakeConversionOrThrow(
+          //         sr,
+          //         callingArguments[1],
+          //         refType.referee,
+          //         args.constraints,
+          //         expr.sourceloc,
+          //         Conversion.Mode.Implicit,
+          //         args.unsafe
+          //       ),
+          //     });
+          //   } else {
+          //     // Rebinding the reference
+          //     return Semantic.addExpr(sr, {
+          //       variant: Semantic.ENode.RefAssignmentExpr,
+          //       sourceloc: collectedExpr.sourceloc,
+          //       isTemporary: false,
+          //       type: makePrimitiveAvailable(
+          //         sr,
+          //         EPrimitive.void,
+          //         EDatatypeMutability.Const,
+          //         expr.sourceloc
+          //       ),
+          //       operation: "rebind",
+          //       target: callingArguments[0],
+          //       value: Conversion.MakeConversionOrThrow(
+          //         sr,
+          //         callingArguments[1],
+          //         ref.type,
+          //         args.constraints,
+          //         expr.sourceloc,
+          //         Conversion.Mode.Implicit,
+          //         args.unsafe
+          //       ),
+          //     });
+          //   }
+          // }
           if (collectedExpr.name === "static_assert") {
             const callingArguments = expr.arguments.map(
               (a, i) =>
@@ -2365,33 +2341,33 @@ export namespace Semantic {
               ) {
                 return [first, callingArguments[0]];
               }
-              if (
-                callingArguments.length === 2 &&
-                second &&
-                secondType &&
-                firstType.variant === Semantic.ENode.NullableReferenceDatatype &&
-                sr.typeUseNodes.get(firstType.referee).type ===
-                  makeRawPrimitiveAvailable(sr, EPrimitive.u8) &&
-                secondType.variant === Semantic.ENode.PrimitiveDatatype &&
-                Conversion.isInteger(secondType.primitive)
-              ) {
-                return Semantic.addExpr(sr, {
-                  variant: Semantic.ENode.StringConstructExpr,
-                  type: makePrimitiveAvailable(
-                    sr,
-                    EPrimitive.str,
-                    EDatatypeMutability.Const,
-                    expr.sourceloc
-                  ),
-                  value: {
-                    variant: "data-length",
-                    data: callingArguments[0],
-                    length: callingArguments[1],
-                  },
-                  isTemporary: true,
-                  sourceloc: expr.sourceloc,
-                });
-              }
+              // if (
+              //   callingArguments.length === 2 &&
+              //   second &&
+              //   secondType &&
+              //   firstType.variant === Semantic.ENode.NullableReferenceDatatype &&
+              //   sr.typeUseNodes.get(firstType.referee).type ===
+              //     makeRawPrimitiveAvailable(sr, EPrimitive.u8) &&
+              //   secondType.variant === Semantic.ENode.PrimitiveDatatype &&
+              //   Conversion.isInteger(secondType.primitive)
+              // ) {
+              //   return Semantic.addExpr(sr, {
+              //     variant: Semantic.ENode.StringConstructExpr,
+              //     type: makePrimitiveAvailable(
+              //       sr,
+              //       EPrimitive.str,
+              //       EDatatypeMutability.Const,
+              //       expr.sourceloc
+              //     ),
+              //     value: {
+              //       variant: "data-length",
+              //       data: callingArguments[0],
+              //       length: callingArguments[1],
+              //     },
+              //     isTemporary: true,
+              //     sourceloc: expr.sourceloc,
+              //   });
+              // }
               throw new CompilerError(
                 `Primitive ${primitiveToString(
                   primitive
@@ -2569,7 +2545,13 @@ export namespace Semantic {
             calledExpr: Semantic.addExpr(sr, {
               variant: Semantic.ENode.SymbolValueExpr,
               symbol: constructorId,
-              type: makeTypeUse(sr, constructor.type, EDatatypeMutability.Const, expr.sourceloc)[1],
+              type: makeTypeUse(
+                sr,
+                constructor.type,
+                EDatatypeMutability.Const,
+                false,
+                expr.sourceloc
+              )[1],
               sourceloc: expr.sourceloc,
               isTemporary: false,
             })[1],
@@ -2587,11 +2569,6 @@ export namespace Semantic {
             `Expression of type ${primitiveToString(calledExprType.primitive)} is not callable`,
             expr.sourceloc
           );
-        } else if (
-          calledExprType.variant === Semantic.ENode.NullableReferenceDatatype ||
-          calledExprType.variant === Semantic.ENode.ReferenceDatatype
-        ) {
-          throw new CompilerError(`Reference Expression is not callable`, expr.sourceloc);
         }
         assert(false && "All cases handled");
       }
@@ -2628,41 +2605,6 @@ export namespace Semantic {
             type: makePrimitiveAvailable(sr, primitive, EDatatypeMutability.Const, expr.sourceloc),
             sourceloc: expr.sourceloc,
             isTemporary: false,
-          });
-        }
-
-        if (expr.name === "nullptr") {
-          return Semantic.addExpr(sr, {
-            variant: Semantic.ENode.ExplicitCastExpr,
-            type: makeNullableReferenceDatatypeAvailable(
-              sr,
-              makePrimitiveAvailable(
-                sr,
-                EPrimitive.void,
-                EDatatypeMutability.Const,
-                expr.sourceloc
-              ),
-              EDatatypeMutability.Const,
-              expr.sourceloc
-            ),
-            expr: Semantic.addExpr(sr, {
-              variant: Semantic.ENode.LiteralExpr,
-              literal: {
-                type: EPrimitive.int,
-                value: 0n,
-                unit: null,
-              },
-              sourceloc: expr.sourceloc,
-              type: makePrimitiveAvailable(
-                sr,
-                EPrimitive.int,
-                EDatatypeMutability.Const,
-                expr.sourceloc
-              ),
-              isTemporary: true,
-            })[1],
-            sourceloc: expr.sourceloc,
-            isTemporary: true,
           });
         }
 
@@ -2761,6 +2703,7 @@ export namespace Semantic {
                 sr,
                 elaboratedSymbol.datatype,
                 EDatatypeMutability.Const,
+                false,
                 expr.sourceloc
               )[1],
               sourceloc: expr.sourceloc,
@@ -2833,6 +2776,7 @@ export namespace Semantic {
               sr,
               elaboratedSymbol.type,
               EDatatypeMutability.Const,
+              false,
               expr.sourceloc
             )[1],
             sourceloc: expr.sourceloc,
@@ -2859,6 +2803,7 @@ export namespace Semantic {
                 sr,
                 elaboratedSymbol.datatype,
                 EDatatypeMutability.Const,
+                false,
                 expr.sourceloc
               )[1],
               sourceloc: expr.sourceloc,
@@ -2897,6 +2842,7 @@ export namespace Semantic {
                 sr,
                 elaboratedSymbolId,
                 EDatatypeMutability.Const,
+                false,
                 expr.sourceloc
               )[1],
               sourceloc: expr.sourceloc,
@@ -2924,7 +2870,7 @@ export namespace Semantic {
             return Semantic.addExpr(sr, {
               variant: Semantic.ENode.DatatypeAsValueExpr,
               isTemporary: false,
-              type: makeTypeUse(sr, genericId, EDatatypeMutability.Const, expr.sourceloc)[1],
+              type: makeTypeUse(sr, genericId, EDatatypeMutability.Const, false, expr.sourceloc)[1],
               sourceloc: expr.sourceloc,
             });
           }
@@ -2933,63 +2879,6 @@ export namespace Semantic {
           `Symbol cannot be used as a value: Code ${symbol.variant}`,
           expr.sourceloc
         );
-      }
-
-      // =================================================================================================================
-      // =================================================================================================================
-      // =================================================================================================================
-
-      case Collect.ENode.AddressOfExpr: {
-        const [_expr, exprId] = elaborateExpr(sr, expr.expr, {
-          context: args.context,
-          scope: args.context.currentScope,
-          constraints: args.constraints,
-          expectedReturnType: args.expectedReturnType,
-          unsafe: args.unsafe,
-        });
-        return Semantic.addExpr(sr, {
-          variant: Semantic.ENode.AddressOfExpr,
-          type: makeNullableReferenceDatatypeAvailable(
-            sr,
-            _expr.type,
-            EDatatypeMutability.Const,
-            expr.sourceloc
-          ),
-          expr: exprId,
-          sourceloc: expr.sourceloc,
-          isTemporary: true,
-        });
-      }
-
-      // =================================================================================================================
-      // =================================================================================================================
-      // =================================================================================================================
-
-      case Collect.ENode.DereferenceExpr: {
-        const [_expr, _exprId] = elaborateExpr(sr, expr.expr, {
-          context: args.context,
-          unsafe: args.unsafe,
-          constraints: args.constraints,
-          scope: args.context.currentScope,
-          expectedReturnType: args.expectedReturnType,
-        });
-        const exprType = sr.typeDefNodes.get(sr.typeUseNodes.get(_expr.type).type);
-        if (
-          exprType.variant !== Semantic.ENode.NullableReferenceDatatype &&
-          exprType.variant !== Semantic.ENode.ReferenceDatatype
-        ) {
-          throw new CompilerError(
-            `This expression is not a reference and cannot be dereferenced`,
-            expr.sourceloc
-          );
-        }
-        return Semantic.addExpr(sr, {
-          variant: Semantic.ENode.DereferenceExpr,
-          type: exprType.referee,
-          expr: _exprId,
-          sourceloc: expr.sourceloc,
-          isTemporary: true,
-        });
       }
 
       // =================================================================================================================
@@ -3078,13 +2967,6 @@ export namespace Semantic {
           expectedReturnType: args.expectedReturnType,
         });
         let objectType = sr.typeDefNodes.get(sr.typeUseNodes.get(object.type).type);
-
-        while (
-          objectType.variant === Semantic.ENode.ReferenceDatatype ||
-          objectType.variant === Semantic.ENode.NullableReferenceDatatype
-        ) {
-          objectType = sr.typeDefNodes.get(sr.typeUseNodes.get(objectType.referee).type);
-        }
 
         if (object.variant === Semantic.ENode.DatatypeAsValueExpr) {
           const datatypeValueInstance = sr.typeUseNodes.get(object.type);
@@ -3244,26 +3126,27 @@ export namespace Semantic {
               memberName: "length",
             });
           }
-          if (expr.memberName === "data") {
-            return Semantic.addExpr(sr, {
-              variant: Semantic.ENode.MemberAccessExpr,
-              isTemporary: true,
-              sourceloc: expr.sourceloc,
-              type: makeNullableReferenceDatatypeAvailable(
-                sr,
-                makePrimitiveAvailable(
-                  sr,
-                  EPrimitive.u8,
-                  EDatatypeMutability.Const,
-                  expr.sourceloc
-                ),
-                EDatatypeMutability.Const,
-                expr.sourceloc
-              ),
-              expr: objectId,
-              memberName: "data",
-            });
-          }
+          // TODO: Turn this into a slice [N]u8
+          // if (expr.memberName === "data") {
+          //   return Semantic.addExpr(sr, {
+          //     variant: Semantic.ENode.MemberAccessExpr,
+          //     isTemporary: true,
+          //     sourceloc: expr.sourceloc,
+          //     type: makeNullableReferenceDatatypeAvailable(
+          //       sr,
+          //       makePrimitiveAvailable(
+          //         sr,
+          //         EPrimitive.u8,
+          //         EDatatypeMutability.Const,
+          //         expr.sourceloc
+          //       ),
+          //       EDatatypeMutability.Const,
+          //       expr.sourceloc
+          //     ),
+          //     expr: objectId,
+          //     memberName: "data",
+          //   });
+          // }
           throw new CompilerError(
             `Datatype '${serializeTypeUse(sr, object.type)}' does not have a member named '${
               expr.memberName
@@ -3272,7 +3155,7 @@ export namespace Semantic {
           );
         }
 
-        if (objectType.variant === Semantic.ENode.SliceDatatype) {
+        if (objectType.variant === Semantic.ENode.DynamicArrayDatatype) {
           if (expr.memberName === "length") {
             return Semantic.addExpr(sr, {
               variant: Semantic.ENode.MemberAccessExpr,
@@ -3376,10 +3259,6 @@ export namespace Semantic {
           let wasReference = false;
           let objectTypeId = object.type;
           const objectType = sr.typeDefNodes.get(sr.typeUseNodes.get(objectTypeId).type);
-          if (objectType.variant === Semantic.ENode.ReferenceDatatype) {
-            objectTypeId = objectType.referee;
-            wasReference = true;
-          }
 
           const typedef = sr.typeUseNodes.get(objectTypeId).type;
           let elaboratedStructCache = null as StructDef | null;
@@ -3451,18 +3330,21 @@ export namespace Semantic {
               sr,
               Semantic.addType(sr, {
                 variant: Semantic.ENode.CallableDatatype,
-                thisExprType: wasReference
-                  ? object.type
-                  : makeReferenceDatatypeAvailable(
-                      sr,
-                      object.type,
-                      EDatatypeMutability.Const,
-                      expr.sourceloc
-                    ),
+                thisExprType: object.type,
+                // TODO: Fix
+                // thisExprType: wasReference
+                //   ? object.type
+                //   : makeReferenceDatatypeAvailable(
+                //       sr,
+                //       object.type,
+                //       EDatatypeMutability.Const,
+                //       expr.sourceloc
+                //     ),
                 functionType: elaboratedMethod.type,
                 concrete: sr.typeDefNodes.get(elaboratedMethod.type).concrete,
               })[1],
               EDatatypeMutability.Const,
+              false,
               expr.sourceloc
             )[1],
             sourceloc: expr.sourceloc,
@@ -3495,14 +3377,6 @@ export namespace Semantic {
           unsafe: args.unsafe,
           expectedReturnType: args.expectedReturnType,
         });
-
-        const targetType = sr.typeDefNodes.get(sr.typeUseNodes.get(target.type).type);
-        if (targetType.variant === Semantic.ENode.ReferenceDatatype) {
-          throw new CompilerError(
-            `Assigning values to references is not allowed, use builtin functions instead. To assign a new value to the place the reference points to, use 'assign(ref, ...)', to instead rebind the reference to point to a new location, use 'rebind(ref, ...)' intead.`,
-            expr.sourceloc
-          );
-        }
 
         return Semantic.addExpr(sr, {
           variant: Semantic.ENode.ExprAssignmentExpr,
@@ -3563,11 +3437,12 @@ export namespace Semantic {
         return Semantic.addExpr(sr, {
           variant: Semantic.ENode.ArrayLiteralExpr,
           values: values.map((v) => v[1]),
-          type: makeArrayDatatypeAvailable(
+          type: makeStackArrayDatatypeAvailable(
             sr,
             type,
             values.length,
             EDatatypeMutability.Const,
+            false,
             expr.sourceloc
           ),
           sourceloc: expr.sourceloc,
@@ -3611,8 +3486,8 @@ export namespace Semantic {
 
         const valueType = sr.typeDefNodes.get(sr.typeUseNodes.get(value.type).type);
         if (
-          valueType.variant !== Semantic.ENode.ArrayDatatype &&
-          valueType.variant !== Semantic.ENode.SliceDatatype
+          valueType.variant !== Semantic.ENode.FixedArrayDatatype &&
+          valueType.variant !== Semantic.ENode.DynamicArrayDatatype
         ) {
           throw new CompilerError(
             `Expression of type ${serializeTypeUse(sr, value.type)} cannot be subscripted`,
@@ -3696,8 +3571,8 @@ export namespace Semantic {
 
         const valueType = sr.typeDefNodes.get(sr.typeUseNodes.get(value.type).type);
         if (
-          valueType.variant !== Semantic.ENode.ArrayDatatype &&
-          valueType.variant !== Semantic.ENode.SliceDatatype
+          valueType.variant !== Semantic.ENode.FixedArrayDatatype &&
+          valueType.variant !== Semantic.ENode.DynamicArrayDatatype
         ) {
           throw new CompilerError(
             `Expression of type ${serializeTypeUse(sr, value.type)} cannot be subscripted`,
@@ -3709,10 +3584,11 @@ export namespace Semantic {
           variant: Semantic.ENode.ArraySliceExpr,
           expr: valueId,
           indices: indices,
-          type: makeSliceDatatypeAvailable(
+          type: makeDynamicArrayDatatypeAvailable(
             sr,
             valueType.datatype,
             EDatatypeMutability.Const,
+            false,
             expr.sourceloc
           ),
           sourceloc: expr.sourceloc,
@@ -4327,6 +4203,7 @@ export namespace Semantic {
                 sr,
                 variableSymbolType.type,
                 EDatatypeMutability.Mut,
+                false,
                 s.sourceloc
               )[1];
             }
@@ -4865,12 +4742,12 @@ export namespace Semantic {
             memberOfStruct: null,
             mutability: EVariableMutability.Default,
             parentStructOrNS: null,
-            type: makeTypeUse(sr, paramPackId, EDatatypeMutability.Const, func.sourceloc)[1],
+            type: makeTypeUse(sr, paramPackId, EDatatypeMutability.Const, false, func.sourceloc)[1],
             variableContext: EVariableContext.FunctionParameter,
             sourceloc: func.sourceloc,
           });
           newContext.elaboratedVariables.set(packVariable, paramPackVariableId);
-          return makeTypeUse(sr, paramPackId, EDatatypeMutability.Const, func.sourceloc)[1];
+          return makeTypeUse(sr, paramPackId, EDatatypeMutability.Const, false, func.sourceloc)[1];
         }
         return lookupAndElaborateDatatype(sr, {
           typeId: p.type,
@@ -4885,12 +4762,7 @@ export namespace Semantic {
       parameterNames.unshift("this");
       assert(args.parentStructOrNS);
       parameters.unshift(
-        makeReferenceDatatypeAvailable(
-          sr,
-          makeTypeUse(sr, args.parentStructOrNS, EDatatypeMutability.Mut, func.sourceloc)[1],
-          EDatatypeMutability.Const,
-          func.sourceloc
-        )
+        makeTypeUse(sr, args.parentStructOrNS, EDatatypeMutability.Mut, false, func.sourceloc)[1]
       );
     }
 
@@ -4950,15 +4822,13 @@ export namespace Semantic {
           assert(collectedThisRef.variant === Collect.ENode.VariableSymbol);
 
           assert(symbol.methodOf);
-          if (sr.typeDefNodes.get(symbol.methodOf).variant === Semantic.ENode.ReferenceDatatype) {
-            assert(false);
-          }
-          const thisRef = makeReferenceDatatypeAvailable(
+          const thisRef = makeTypeUse(
             sr,
-            makeTypeUse(sr, symbol.methodOf, EDatatypeMutability.Mut, func.sourceloc)[1],
-            EDatatypeMutability.Const,
+            symbol.methodOf,
+            EDatatypeMutability.Mut,
+            false,
             func.sourceloc
-          );
+          )[1];
           const [variable, variableId] = Semantic.addSymbol(sr, {
             variant: Semantic.ENode.VariableSymbol,
             memberOfStruct: symbol.methodOf,
@@ -5400,10 +5270,8 @@ export namespace Semantic {
       elaboratedNamespaceSymbols: [],
       elaboratedGlobalVariableDefinitions: [],
       functionTypeCache: [],
-      nullRefTypeCache: [],
-      referenceTypeCache: [],
-      arrayTypeCache: [],
-      sliceTypeCache: [],
+      fixedArrayTypeCache: [],
+      dynamicArrayTypeCache: [],
       typeInstanceCache: [],
 
       blockScopeNodes: new BrandedArray<Semantic.BlockScopeId, Semantic.BlockScope>([]),
@@ -5589,12 +5457,6 @@ export namespace Semantic {
       case Semantic.ENode.PrimitiveDatatype:
         return primitiveToString(datatype.primitive);
 
-      case Semantic.ENode.NullableReferenceDatatype:
-        return "?&" + serializeTypeUse(sr, datatype.referee);
-
-      case Semantic.ENode.ReferenceDatatype:
-        return "&" + serializeTypeUse(sr, datatype.referee);
-
       case Semantic.ENode.GenericParameterDatatype:
         return datatype.name;
 
@@ -5621,10 +5483,10 @@ export namespace Semantic {
           .map((n) => n.pretty)
           .join(".");
 
-      case Semantic.ENode.ArrayDatatype:
+      case Semantic.ENode.FixedArrayDatatype:
         return `[${datatype.length}]${serializeTypeUse(sr, datatype.datatype)}`;
 
-      case Semantic.ENode.SliceDatatype:
+      case Semantic.ENode.DynamicArrayDatatype:
         return `${serializeMutability(datatype.datatype)}[]${serializeTypeUse(
           sr,
           datatype.datatype
@@ -5885,28 +5747,14 @@ export namespace Semantic {
         };
       }
 
-      case Semantic.ENode.NullableReferenceDatatype: {
-        return {
-          name: "P" + mangleTypeUse(sr, type.referee).name,
-          wasMangled: true,
-        };
-      }
-
-      case Semantic.ENode.ReferenceDatatype: {
-        return {
-          name: "R" + mangleTypeUse(sr, type.referee).name,
-          wasMangled: true,
-        };
-      }
-
-      case Semantic.ENode.ArrayDatatype: {
+      case Semantic.ENode.FixedArrayDatatype: {
         return {
           name: "A" + type.length + "_" + mangleTypeUse(sr, type.datatype).name,
           wasMangled: true,
         };
       }
 
-      case Semantic.ENode.SliceDatatype: {
+      case Semantic.ENode.DynamicArrayDatatype: {
         return {
           name: "S" + mangleTypeUse(sr, type.datatype).name,
           wasMangled: true,

@@ -172,8 +172,8 @@ expr
     | <assoc=right> op=(PLUS | MINUS) expr                                          #UnaryExpr
     | <assoc=right> op=NOT expr /* and bitwise not */                               #UnaryExpr
     | <assoc=right> expr AS datatype                                                #ExplicitCastExpr
-    | <assoc=right> MUL expr                                                        #DereferenceExpr
-    | <assoc=right> SINGLEAND expr                                                  #AddressOfExpr
+    // | <assoc=right> MUL expr                                                        #DereferenceExpr
+    // | <assoc=right> SINGLEAND expr                                                  #AddressOfExpr
 
     // Part 3: Left to right
     | expr op+=(MUL|DIV|MOD) expr                                                   #BinaryExpr
@@ -186,7 +186,7 @@ expr
     // | expr ('|') expr                                                            #BinaryExpr
     | expr op+=(DOUBLEAND|DOUBLEOR) expr                                            #BinaryExpr
     // <- ternary
-    | <assoc=right> expr op=(EQUALS|PLUSEQ|MINUSEQ|MULEQ|DIVEQ|MODEQ) expr          #ExprAssignmentExpr
+    | <assoc=right> expr op=(EQUALS|COLONEQUALS|PLUSEQ|MINUSEQ|MULEQ|DIVEQ|MODEQ) expr     #ExprAssignmentExpr
 
     | ID (LANGLE genericLiteral (COMMA genericLiteral)* RANGLE)?                    #SymbolValueExpr
     ;

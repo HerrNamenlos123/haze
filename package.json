@@ -20,8 +20,11 @@
   "license": "ISC",
   "dependencies": {
     "@ltd/j-toml": "^1.38.0",
+    "@types/archiver": "^6.0.3",
     "@types/argparse": "^2.0.17",
+    "@types/gunzip-maybe": "^1.4.2",
     "@types/lodash": "^4.17.16",
+    "@types/tar-fs": "^2.0.4",
     "antlr4ng": "^3.0.16",
     "antlr4ng-cli": "^2.0.0",
     "archiver": "^7.0.1",

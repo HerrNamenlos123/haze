@@ -435,6 +435,7 @@ export class ProjectCompiler {
           linux: [],
           win32: [],
         },
+        hzsysLocation: null,
         includeSourceloc: sourceloc ?? true,
       };
     }
@@ -1109,6 +1110,7 @@ class ModuleCompiler {
       join(getStdlibDirectory(), "internal"),
       ECollectionMode.ImportUnderRootDirectly
     );
-    this.config.compilerFlags.any.push(`-I"${join(getStdlibDirectory(), "core", "src")}"`);
+    this.config.hzsysLocation = join(getStdlibDirectory(), "core", "src");
+    this.config.compilerFlags.any.push(`-I"${this.config.hzsysLocation}"`);
   }
 }

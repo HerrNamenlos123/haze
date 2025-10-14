@@ -41,6 +41,7 @@ export type ModuleConfig = {
     win32: string[];
     linux: string[];
   };
+  hzsysLocation: string | null;
   platform: PlatformString;
   includeSourceloc: boolean;
 };
@@ -357,6 +358,7 @@ export class ConfigParser {
         win32: [],
         linux: [],
       },
+      hzsysLocation: null,
       platform: getCurrentPlatform(),
       includeSourceloc: sourceloc ?? true,
     };
