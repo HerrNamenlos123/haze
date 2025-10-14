@@ -152,8 +152,8 @@ export namespace Collect {
     NamedDatatype,
     ReferenceDatatype,
     NullableReferenceDatatype,
-    ArrayDatatype,
-    SliceDatatype,
+    StackArrayDatatype,
+    DynamicArrayDatatype,
     ParameterPack,
     StructTypeDef,
     NamespaceSharedInstance,
@@ -426,7 +426,7 @@ export namespace Collect {
   };
 
   export type ArrayDatatype = {
-    variant: ENode.ArrayDatatype;
+    variant: ENode.StackArrayDatatype;
     datatype: Collect.TypeUseId;
     length: number;
     mutability: EDatatypeMutability;
@@ -434,7 +434,7 @@ export namespace Collect {
   };
 
   export type SliceDatatype = {
-    variant: ENode.SliceDatatype;
+    variant: ENode.DynamicArrayDatatype;
     datatype: Collect.TypeUseId;
     mutability: EDatatypeMutability;
     sourceloc: SourceLoc;
@@ -1199,32 +1199,6 @@ function collectTypeUse(
     // =================================================================================================================
     // =================================================================================================================
 
-    case "NullableReferenceDatatype": {
-      return Collect.makeTypeUse(cc, {
-        variant: Collect.ENode.NullableReferenceDatatype,
-        referee: collectTypeUse(cc, item.referee, args),
-        mutability: item.mutability,
-        sourceloc: item.sourceloc,
-      })[1];
-    }
-
-    // =================================================================================================================
-    // =================================================================================================================
-    // =================================================================================================================
-
-    case "ReferenceDatatype": {
-      return Collect.makeTypeUse(cc, {
-        variant: Collect.ENode.ReferenceDatatype,
-        referee: collectTypeUse(cc, item.referee, args),
-        mutability: item.mutability,
-        sourceloc: item.sourceloc,
-      })[1];
-    }
-
-    // =================================================================================================================
-    // =================================================================================================================
-    // =================================================================================================================
-
     case "FunctionDatatype":
       return Collect.makeTypeUse(cc, {
         variant: Collect.ENode.FunctionDatatype,
@@ -1239,9 +1213,9 @@ function collectTypeUse(
     // =================================================================================================================
     // =================================================================================================================
 
-    case "ArrayDatatype":
+    case "StackArrayDatatype":
       return Collect.makeTypeUse(cc, {
-        variant: Collect.ENode.ArrayDatatype,
+        variant: Collect.ENode.StackArrayDatatype,
         datatype: collectTypeUse(cc, item.datatype, args),
         length: item.length,
         mutability: item.mutability,
@@ -1252,9 +1226,9 @@ function collectTypeUse(
     // =================================================================================================================
     // =================================================================================================================
 
-    case "SliceDatatype":
+    case "DynamicArrayDatatype":
       return Collect.makeTypeUse(cc, {
-        variant: Collect.ENode.SliceDatatype,
+        variant: Collect.ENode.DynamicArrayDatatype,
         datatype: collectTypeUse(cc, item.datatype, args),
         mutability: item.mutability,
         sourceloc: item.sourceloc,
@@ -2198,7 +2172,7 @@ export function printCollectedDatatype(
       return `${printCollectedDatatype(cc, type.referee)}&`;
     }
 
-    case Collect.ENode.ArrayDatatype: {
+    case Collect.ENode.StackArrayDatatype: {
       return `[${type.length}]${printCollectedDatatype(cc, type.datatype)}`;
     }
 
@@ -2206,7 +2180,7 @@ export function printCollectedDatatype(
       return `...`;
     }
 
-    case Collect.ENode.SliceDatatype: {
+    case Collect.ENode.DynamicArrayDatatype: {
       return `[]${printCollectedDatatype(cc, type.datatype)}`;
     }
 

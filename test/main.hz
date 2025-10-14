@@ -20,10 +20,16 @@ struct Foo
 //     ref: T&;
 // }
 
+// foo(arr: Slice<int>, other: Iter<const Foo>) {
+
+// }
+
 main(): int {
 
     let foo: const Foo = Foo {};
     let newFoo = Foo {};
+
+    // let array: mut []u8 = [];
 
     // assign(a, newFoo);
     // rebind(a, newFoo);

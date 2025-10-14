@@ -23,6 +23,7 @@ UNSAFE: 'unsafe';
 DO: 'do';
 YIELD: 'yield';
 EMIT: 'emit';
+INLINE: 'inline';
 SOURCE_LOCATION_DIRECTIVE: '#source';
 
 TRUE: 'true';

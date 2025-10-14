@@ -187,6 +187,7 @@ export type ASTNamedDatatype = {
   name: string;
   generics: (ASTTypeUse | ASTLiteralExpr)[];
   nested?: ASTNamedDatatype;
+  inline: boolean;
   mutability: EDatatypeMutability;
   sourceloc: SourceLoc;
 };
@@ -200,31 +201,17 @@ export type ASTFunctionDatatype = {
   sourceloc: SourceLoc;
 };
 
-export type ASTNullableReferenceDatatype = {
-  variant: "NullableReferenceDatatype";
-  referee: ASTTypeUse;
-  mutability: EDatatypeMutability;
-  sourceloc: SourceLoc;
-};
-
-export type ASTArrayDatatype = {
-  variant: "ArrayDatatype";
+export type ASTStackArrayDatatype = {
+  variant: "StackArrayDatatype";
   datatype: ASTTypeUse;
   length: number;
   mutability: EDatatypeMutability;
   sourceloc: SourceLoc;
 };
 
-export type ASTSliceDatatype = {
-  variant: "SliceDatatype";
+export type ASTDynamicArrayDatatype = {
+  variant: "DynamicArrayDatatype";
   datatype: ASTTypeUse;
-  mutability: EDatatypeMutability;
-  sourceloc: SourceLoc;
-};
-
-export type ASTReferenceDatatype = {
-  variant: "ReferenceDatatype";
-  referee: ASTTypeUse;
   mutability: EDatatypeMutability;
   sourceloc: SourceLoc;
 };
@@ -238,11 +225,9 @@ export type ASTTypeUse =
   | ASTNamedDatatype
   | ASTFunctionDatatype
   | ASTDeferredType
-  | ASTNullableReferenceDatatype
-  | ASTArrayDatatype
-  | ASTSliceDatatype
-  | ASTParameterPackDatatype
-  | ASTReferenceDatatype;
+  | ASTStackArrayDatatype
+  | ASTDynamicArrayDatatype
+  | ASTParameterPackDatatype;
 
 export type ASTGlobalVariableDefinition = {
   variant: "GlobalVariableDefinition";

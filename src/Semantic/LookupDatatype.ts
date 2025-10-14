@@ -533,7 +533,7 @@ export function lookupAndElaborateDatatype(
     // =================================================================================================================
     // =================================================================================================================
 
-    case Collect.ENode.ArrayDatatype: {
+    case Collect.ENode.StackArrayDatatype: {
       return makeArrayDatatypeAvailable(
         sr,
         lookupAndElaborateDatatype(sr, {
@@ -551,7 +551,7 @@ export function lookupAndElaborateDatatype(
     // =================================================================================================================
     // =================================================================================================================
 
-    case Collect.ENode.SliceDatatype: {
+    case Collect.ENode.DynamicArrayDatatype: {
       return makeSliceDatatypeAvailable(
         sr,
         lookupAndElaborateDatatype(sr, {

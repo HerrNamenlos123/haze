@@ -258,15 +258,15 @@ export namespace Conversion {
         return IsStructurallyEquivalent(sr, aReferee.type, bReferee.type, seen);
       }
 
-      case Semantic.ENode.ArrayDatatype: {
-        assert(bt.variant === Semantic.ENode.ArrayDatatype);
+      case Semantic.ENode.StackArrayDatatype: {
+        assert(bt.variant === Semantic.ENode.StackArrayDatatype);
         const a = sr.typeUseNodes.get(at.datatype);
         const b = sr.typeUseNodes.get(bt.datatype);
         return IsStructurallyEquivalent(sr, a.type, b.type, seen) && at.length === bt.length;
       }
 
-      case Semantic.ENode.SliceDatatype: {
-        assert(bt.variant === Semantic.ENode.SliceDatatype);
+      case Semantic.ENode.DynamicArrayDatatype: {
+        assert(bt.variant === Semantic.ENode.DynamicArrayDatatype);
         const a = sr.typeUseNodes.get(at.datatype);
         const b = sr.typeUseNodes.get(bt.datatype);
         return IsStructurallyEquivalent(sr, a.type, b.type, seen);

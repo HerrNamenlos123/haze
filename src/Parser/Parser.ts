@@ -39,7 +39,6 @@ import {
   type ASTPreIncrExpr,
   type ASTAddressOfExpr,
   type ASTDereferenceExpr,
-  type ASTReferenceDatatype,
   type ASTReturnStatement,
   type ASTRoot,
   type ASTScope,
@@ -54,17 +53,16 @@ import {
   type ASTModuleImport,
   type ASTSymbolImport,
   type ASTTypeAlias,
-  type ASTArrayDatatype,
+  type ASTStackArrayDatatype,
   type ASTArrayLiteralExpr,
   type ASTArraySubscriptExpr,
   type ASTForEachStatement,
   type ASTTypeLiteralExpr,
   type ASTFStringExpr,
-  type ASTSliceDatatype,
+  type ASTDynamicArrayDatatype,
   type ASTArraySliceExpr,
   EDatatypeMutability,
   EVariableMutability,
-  type ASTNullableReferenceDatatype,
 } from "../shared/AST";
 import {
   BinaryExprContext,
@@ -95,7 +93,6 @@ import {
   PostIncrExprContext,
   PreIncrExprContext,
   ProgContext,
-  ReferenceDatatypeContext,
   ReturnStatementContext,
   StringConstantContext,
   StructDefinitionContext,
@@ -113,13 +110,11 @@ import {
   LiteralExprContext,
   FromImportStatementContext,
   ImportStatementContext,
-  ArrayDatatypeContext,
   ArrayLiteralContext,
   ArraySubscriptExprContext,
   ForEachStatementContext,
   TypeLiteralExprContext,
   FStringLiteralContext,
-  SliceDatatypeContext,
   ArraySliceExprContext,
   DatatypeInParenthesisContext,
   DatatypeWithMutabilityContext,
@@ -127,7 +122,6 @@ import {
   TypeAliasStatementContext,
   VariableConstContext,
   VariableLetContext,
-  NullableReferenceDatatypeContext,
   DereferenceExprContext,
   AddressOfExprContext,
   BlockScopeExprContext,
@@ -137,6 +131,8 @@ import {
   GlobalDeclarationWithSourceContext,
   GlobalDeclarationContext,
   TopLevelDeclarationsContext,
+  DynamicArrayDatatypeContext,
+  StackArrayDatatypeContext,
 } from "./grammar/autogen/HazeParser";
 import {
   BaseErrorListener,
@@ -576,6 +572,7 @@ class ASTTransformer extends HazeParserVisitor<any> {
         name: fragment.name,
         sourceloc: fragment.sourceloc,
         generics: fragment.generics,
+        inline: false,
         mutability: EDatatypeMutability.Default,
         nested: datatypes[datatypes.length - 1],
       });
@@ -956,9 +953,9 @@ class ASTTransformer extends HazeParserVisitor<any> {
     };
   };
 
-  visitSliceDatatype = (ctx: SliceDatatypeContext): ASTSliceDatatype => {
+  visitDynamicArrayDatatype = (ctx: DynamicArrayDatatypeContext): ASTDynamicArrayDatatype => {
     return {
-      variant: "SliceDatatype",
+      variant: "DynamicArrayDatatype",
       datatype: this.visit(ctx.datatype()),
       mutability: EDatatypeMutability.Default,
       sourceloc: this.loc(ctx),
@@ -1079,11 +1076,20 @@ class ASTTransformer extends HazeParserVisitor<any> {
   visitDatatypeWithMutability = (ctx: DatatypeWithMutabilityContext): ASTTypeUse => {
     const datatype: ASTTypeUse = this.visit(ctx.datatypeImpl());
     switch (datatype.variant) {
-      case "ArrayDatatype":
-      case "SliceDatatype":
-      case "NullableReferenceDatatype":
-      case "ReferenceDatatype":
       case "NamedDatatype":
+        if (ctx.INLINE()) {
+          datatype.inline = true;
+        }
+        if (ctx.CONST()) {
+          datatype.mutability = EDatatypeMutability.Const;
+        }
+        if (ctx.MUT()) {
+          datatype.mutability = EDatatypeMutability.Mut;
+        }
+        break;
+
+      case "StackArrayDatatype":
+      case "DynamicArrayDatatype":
       case "FunctionDatatype":
         if (ctx.CONST()) {
           datatype.mutability = EDatatypeMutability.Const;
@@ -1113,15 +1119,6 @@ class ASTTransformer extends HazeParserVisitor<any> {
     return this.visit(ctx.datatype());
   };
 
-  visitReferenceDatatype = (ctx: ReferenceDatatypeContext): ASTReferenceDatatype => {
-    return {
-      variant: "ReferenceDatatype",
-      referee: this.visit(ctx.datatype()),
-      mutability: EDatatypeMutability.Default,
-      sourceloc: this.loc(ctx),
-    };
-  };
-
   visitFunctionDatatype = (ctx: FunctionDatatypeContext): ASTFunctionDatatype => {
     const params = this.visitParams(ctx.params());
     return {
@@ -1129,17 +1126,6 @@ class ASTTransformer extends HazeParserVisitor<any> {
       params: params.params,
       ellipsis: params.ellipsis,
       returnType: (ctx.datatype() && this.visit(ctx.datatype()!)) || undefined,
-      mutability: EDatatypeMutability.Default,
-      sourceloc: this.loc(ctx),
-    };
-  };
-
-  visitNullableReferenceDatatype = (
-    ctx: NullableReferenceDatatypeContext
-  ): ASTNullableReferenceDatatype => {
-    return {
-      variant: "NullableReferenceDatatype",
-      referee: this.visit(ctx.datatype()),
       mutability: EDatatypeMutability.Default,
       sourceloc: this.loc(ctx),
     };
@@ -1234,9 +1220,9 @@ class ASTTransformer extends HazeParserVisitor<any> {
     return currentNamespace;
   };
 
-  visitArrayDatatype = (ctx: ArrayDatatypeContext): ASTArrayDatatype => {
+  visitStackArrayDatatype = (ctx: StackArrayDatatypeContext): ASTStackArrayDatatype => {
     return {
-      variant: "ArrayDatatype",
+      variant: "StackArrayDatatype",
       datatype: this.visit(ctx.datatype()),
       length: Number(ctx.INTEGER_LITERAL()?.getText()),
       mutability: EDatatypeMutability.Default,

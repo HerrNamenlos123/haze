@@ -105,15 +105,15 @@ interpolatedStringExpression: LCURLY expr RCURLY;
 
 datatypeImpl
     : datatypeFragment (DOT datatypeFragment)*                                  #NamedDatatype
-    | LBRACKET n=INTEGER_LITERAL RBRACKET datatype                              #ArrayDatatype
-    | LBRACKET RBRACKET datatype                                                #SliceDatatype
-    | QUESTIONAMPERSAND datatype                                                #NullableReferenceDatatype
-    | SINGLEAND datatype                                                        #ReferenceDatatype
+    | LBRACKET n=INTEGER_LITERAL RBRACKET datatype                              #StackArrayDatatype
+    | LBRACKET RBRACKET datatype                                                #DynamicArrayDatatype
+    // | QUESTIONAMPERSAND datatype                                                #NullableReferenceDatatype
+    // | SINGLEAND datatype                                                        #ReferenceDatatype
     | LB params RB ARROW datatype requiresBlock?                                #FunctionDatatype
     ;
 
 datatype
-    : (MUT | CONST)? datatypeImpl                                               #DatatypeWithMutability
+    : (MUT | CONST)? (INLINE)? datatypeImpl                                     #DatatypeWithMutability
     | LB datatype RB                                                            #DatatypeInParenthesis
     ;
 

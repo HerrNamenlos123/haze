@@ -837,7 +837,7 @@ function lowerExpr(
       const arrayId = lowerExpr(lr, expr.expr, flattened)[1];
       const semanticArray = lr.sr.exprNodes.get(expr.expr);
       const arrayType = lr.sr.typeDefNodes.get(lr.sr.typeUseNodes.get(semanticArray.type).type);
-      assert(arrayType.variant === Semantic.ENode.ArrayDatatype);
+      assert(arrayType.variant === Semantic.ENode.StackArrayDatatype);
 
       const startIndex = expr.indices[0].start
         ? lowerExpr(lr, expr.indices[0].start, flattened)[1]
@@ -1231,7 +1231,7 @@ function lowerTypeDef(lr: Lowered.Module, typeId: Semantic.TypeDefId): Lowered.T
       lr.loweredTypeDefs.set(typeId, pId);
       return pId;
     }
-  } else if (type.variant === Semantic.ENode.ArrayDatatype) {
+  } else if (type.variant === Semantic.ENode.StackArrayDatatype) {
     if (lr.loweredTypeDefs.has(typeId)) {
       return lr.loweredTypeDefs.get(typeId)!;
     } else {
@@ -1244,7 +1244,7 @@ function lowerTypeDef(lr: Lowered.Module, typeId: Semantic.TypeDefId): Lowered.T
       lr.loweredTypeDefs.set(typeId, pId);
       return pId;
     }
-  } else if (type.variant === Semantic.ENode.SliceDatatype) {
+  } else if (type.variant === Semantic.ENode.DynamicArrayDatatype) {
     if (lr.loweredTypeDefs.has(typeId)) {
       return lr.loweredTypeDefs.get(typeId)!;
     } else {

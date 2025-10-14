@@ -101,11 +101,11 @@ function printType(cc: CollectionContext, typeId: Collect.TypeUseId): string {
       return `&${printType(cc, type.referee)}`;
     }
 
-    case Collect.ENode.ArrayDatatype: {
+    case Collect.ENode.StackArrayDatatype: {
       return `[${type.length}]${printType(cc, type.datatype)}`;
     }
 
-    case Collect.ENode.SliceDatatype: {
+    case Collect.ENode.DynamicArrayDatatype: {
       return `[]${printType(cc, type.datatype)}`;
     }
 
