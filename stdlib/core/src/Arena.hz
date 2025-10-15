@@ -1,5 +1,5 @@
 
-export extern C noemit struct hzsys_arena_t {};
+export noemit struct hzsys_arena_t {};
 
 export extern C noemit hzsys_arena_create(chunk_size: usize): hzsys_arena_t;
 export extern C noemit hzsys_arena_cleanup_and_free(arena: hzsys_arena_t): void;

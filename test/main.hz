@@ -26,8 +26,8 @@ struct Foo
 
 main(): int {
 
-    let foo: const Foo = Foo {};
-    let newFoo = Foo {};
+    let foo = Foo {};
+    let inlineFoo = inline Foo {};
 
     // let array: mut []u8 = [];
 
