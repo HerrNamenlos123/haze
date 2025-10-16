@@ -1858,6 +1858,28 @@ export namespace Semantic {
   ): [Semantic.Expression, Semantic.ExprId] {
     const expr = sr.cc.exprNodes.get(exprId);
 
+    const elaborateSubExpr = (subExprId: Collect.ExprId) => {
+      return elaborateExpr(sr, subExprId, {
+        context: args.context,
+        scope: args.context.currentScope,
+        constraints: args.constraints,
+        unsafe: args.unsafe,
+        expectedReturnType: args.expectedReturnType,
+      });
+    };
+
+    const elaborateSubExprAndAllowInference = (subExprId: Collect.ExprId) => {
+      return elaborateExpr(sr, subExprId, {
+        context: args.context,
+        scope: args.context.currentScope,
+        gonnaCallFunctionWithParameterValues: args.gonnaCallFunctionWithParameterValues,
+        gonnaInstantiateStructWithType: args.gonnaInstantiateStructWithType,
+        constraints: args.constraints,
+        unsafe: args.unsafe,
+        expectedReturnType: args.expectedReturnType,
+      });
+    };
+
     args.context = isolateElaborationContext(args.context, {
       currentScope: args.scope,
       genericsScope: args.scope,
@@ -1865,20 +1887,8 @@ export namespace Semantic {
 
     switch (expr.variant) {
       case Collect.ENode.BinaryExpr: {
-        let [left, leftId] = elaborateExpr(sr, expr.left, {
-          context: args.context,
-          scope: args.context.currentScope,
-          constraints: args.constraints,
-          unsafe: args.unsafe,
-          expectedReturnType: args.expectedReturnType,
-        });
-        let [right, rightId] = elaborateExpr(sr, expr.right, {
-          context: args.context,
-          scope: args.context.currentScope,
-          constraints: args.constraints,
-          unsafe: args.unsafe,
-          expectedReturnType: args.expectedReturnType,
-        });
+        let [left, leftId] = elaborateSubExpr(expr.left);
+        let [right, rightId] = elaborateSubExpr(expr.left);
 
         if (
           (expr.operation === EBinaryOperation.Equal ||
@@ -1963,13 +1973,7 @@ export namespace Semantic {
       // =================================================================================================================
       // =================================================================================================================
       case Collect.ENode.UnaryExpr: {
-        const [e, eId] = elaborateExpr(sr, expr.expr, {
-          context: args.context,
-          scope: args.context.currentScope,
-          constraints: args.constraints,
-          unsafe: args.unsafe,
-          expectedReturnType: args.expectedReturnType,
-        });
+        const [e, eId] = elaborateSubExpr(expr.expr);
         console.log("TODO: Implement runtime overflow checking for unary negating signed integers");
 
         return Semantic.addExpr(sr, {
@@ -2029,15 +2033,7 @@ export namespace Semantic {
       // =================================================================================================================
 
       case Collect.ENode.ParenthesisExpr: {
-        return elaborateExpr(sr, expr.expr, {
-          context: args.context,
-          scope: args.context.currentScope,
-          gonnaCallFunctionWithParameterValues: args.gonnaCallFunctionWithParameterValues,
-          gonnaInstantiateStructWithType: args.gonnaInstantiateStructWithType,
-          constraints: args.constraints,
-          expectedReturnType: args.expectedReturnType,
-          unsafe: args.unsafe,
-        });
+        return elaborateSubExprAndAllowInference(expr.expr);
       }
 
       // =================================================================================================================
@@ -2048,16 +2044,7 @@ export namespace Semantic {
         const collectedExpr = sr.cc.exprNodes.get(expr.calledExpr);
         if (collectedExpr.variant === Collect.ENode.SymbolValueExpr) {
           if (collectedExpr.name === "typeof") {
-            const callingArguments = expr.arguments.map(
-              (a, i) =>
-                elaborateExpr(sr, a, {
-                  context: args.context,
-                  constraints: args.constraints,
-                  scope: args.context.currentScope,
-                  unsafe: args.unsafe,
-                  expectedReturnType: args.expectedReturnType,
-                })[1]
-            );
+            const callingArguments = expr.arguments.map((a, i) => elaborateSubExpr(a)[1]);
             if (collectedExpr.genericArgs.length !== 0) {
               throw new CompilerError(
                 "The typeof function cannot take any type parameters",
@@ -2081,16 +2068,7 @@ export namespace Semantic {
             });
           }
           if (collectedExpr.name === "sizeof") {
-            const callingArguments = expr.arguments.map(
-              (a, i) =>
-                elaborateExpr(sr, a, {
-                  context: args.context,
-                  constraints: args.constraints,
-                  scope: args.context.currentScope,
-                  unsafe: args.unsafe,
-                  expectedReturnType: args.expectedReturnType,
-                })[1]
-            );
+            const callingArguments = expr.arguments.map((a, i) => elaborateSubExpr(a)[1]);
             if (collectedExpr.genericArgs.length !== 0) {
               throw new CompilerError(
                 "The sizeof function cannot take any type parameters",
@@ -2117,16 +2095,7 @@ export namespace Semantic {
             });
           }
           if (collectedExpr.name === "alignof") {
-            const callingArguments = expr.arguments.map(
-              (a, i) =>
-                elaborateExpr(sr, a, {
-                  context: args.context,
-                  constraints: args.constraints,
-                  scope: args.context.currentScope,
-                  unsafe: args.unsafe,
-                  expectedReturnType: args.expectedReturnType,
-                })[1]
-            );
+            const callingArguments = expr.arguments.map((a, i) => elaborateSubExpr(a)[1]);
             if (collectedExpr.genericArgs.length !== 0) {
               throw new CompilerError(
                 "The alignof function cannot take any type parameters",
@@ -2152,99 +2121,8 @@ export namespace Semantic {
               valueExpr: callingArguments[0],
             });
           }
-          // if (collectedExpr.name === "assign" || collectedExpr.name === "rebind") {
-          //   const callingArguments = expr.arguments.map(
-          //     (a, i) =>
-          //       elaborateExpr(sr, a, {
-          //         context: args.context,
-          //         constraints: args.constraints,
-          //         scope: args.context.currentScope,
-          //         unsafe: args.unsafe,
-          //         expectedReturnType: args.expectedReturnType,
-          //       })[1]
-          //   );
-          //   if (collectedExpr.genericArgs.length !== 0) {
-          //     throw new CompilerError(
-          //       "The builtin assign/rebind functions cannot take any type parameters",
-          //       collectedExpr.sourceloc
-          //     );
-          //   }
-          //   if (callingArguments.length !== 2) {
-          //     throw new CompilerError(
-          //       "The builtin assign/rebind functions require exactly two parameters",
-          //       collectedExpr.sourceloc
-          //     );
-          //   }
-          //   const ref = sr.exprNodes.get(callingArguments[0]);
-          //   const refType = sr.typeDefNodes.get(sr.typeUseNodes.get(ref.type).type);
-          //   const value = sr.exprNodes.get(callingArguments[1]);
-          //   if (refType.variant !== Semantic.ENode.ReferenceDatatype) {
-          //     throw new CompilerError(
-          //       `The builtin assign/rebind functions require the first parameter to be a reference`,
-          //       expr.sourceloc
-          //     );
-          //   }
-          //   if (collectedExpr.name === "assign") {
-          //     // Assigning the pointee
-          //     return Semantic.addExpr(sr, {
-          //       variant: Semantic.ENode.RefAssignmentExpr,
-          //       sourceloc: collectedExpr.sourceloc,
-          //       isTemporary: false,
-          //       type: makePrimitiveAvailable(
-          //         sr,
-          //         EPrimitive.void,
-          //         EDatatypeMutability.Const,
-          //         expr.sourceloc
-          //       ),
-          //       operation: "assign",
-          //       target: callingArguments[0],
-          //       value: Conversion.MakeConversionOrThrow(
-          //         sr,
-          //         callingArguments[1],
-          //         refType.referee,
-          //         args.constraints,
-          //         expr.sourceloc,
-          //         Conversion.Mode.Implicit,
-          //         args.unsafe
-          //       ),
-          //     });
-          //   } else {
-          //     // Rebinding the reference
-          //     return Semantic.addExpr(sr, {
-          //       variant: Semantic.ENode.RefAssignmentExpr,
-          //       sourceloc: collectedExpr.sourceloc,
-          //       isTemporary: false,
-          //       type: makePrimitiveAvailable(
-          //         sr,
-          //         EPrimitive.void,
-          //         EDatatypeMutability.Const,
-          //         expr.sourceloc
-          //       ),
-          //       operation: "rebind",
-          //       target: callingArguments[0],
-          //       value: Conversion.MakeConversionOrThrow(
-          //         sr,
-          //         callingArguments[1],
-          //         ref.type,
-          //         args.constraints,
-          //         expr.sourceloc,
-          //         Conversion.Mode.Implicit,
-          //         args.unsafe
-          //       ),
-          //     });
-          //   }
-          // }
           if (collectedExpr.name === "static_assert") {
-            const callingArguments = expr.arguments.map(
-              (a, i) =>
-                elaborateExpr(sr, a, {
-                  context: args.context,
-                  scope: args.context.currentScope,
-                  unsafe: args.unsafe,
-                  constraints: args.constraints,
-                  expectedReturnType: args.expectedReturnType,
-                })[1]
-            );
+            const callingArguments = expr.arguments.map((a, i) => elaborateSubExpr(a)[1]);
             if (collectedExpr.genericArgs.length !== 0) {
               throw new CompilerError(
                 "The static_assert function cannot take any type parameters",
@@ -2303,16 +2181,7 @@ export namespace Semantic {
 
           const primitive = stringToPrimitive(collectedExpr.name);
           if (primitive) {
-            const callingArguments = expr.arguments.map(
-              (a, i) =>
-                elaborateExpr(sr, a, {
-                  context: args.context,
-                  scope: args.context.currentScope,
-                  unsafe: args.unsafe,
-                  constraints: args.constraints,
-                  expectedReturnType: args.expectedReturnType,
-                })[1]
-            );
+            const callingArguments = expr.arguments.map((a, i) => elaborateSubExpr(a)[1]);
             if (collectedExpr.genericArgs.length !== 0) {
               throw new CompilerError(
                 "Primitive constructors cannot take any type parameters",
@@ -2394,13 +2263,7 @@ export namespace Semantic {
           if (IsExprDecisiveForOverloadResolution(sr, p)) {
             decisiveArguments.push({
               index: i,
-              exprId: elaborateExpr(sr, p, {
-                context: args.context,
-                constraints: args.constraints,
-                unsafe: args.unsafe,
-                scope: args.context.currentScope,
-                expectedReturnType: args.expectedReturnType,
-              })[1],
+              exprId: elaborateSubExpr(p)[1],
             });
           } else {
             decisiveArguments.push({
@@ -2886,13 +2749,7 @@ export namespace Semantic {
       // =================================================================================================================
 
       case Collect.ENode.ExplicitCastExpr: {
-        const [castedExpr, castedExprId] = elaborateExpr(sr, expr.expr, {
-          context: args.context,
-          scope: args.context.currentScope,
-          expectedReturnType: args.expectedReturnType,
-          constraints: args.constraints,
-          unsafe: args.unsafe,
-        });
+        const [castedExpr, castedExprId] = elaborateSubExpr(expr.expr);
         const targetType = lookupAndElaborateDatatype(sr, {
           typeId: expr.targetType,
           isInCFuncdecl: false,
@@ -2915,13 +2772,7 @@ export namespace Semantic {
       // =================================================================================================================
 
       case Collect.ENode.PostIncrExpr: {
-        const [e, eId] = elaborateExpr(sr, expr.expr, {
-          scope: args.context.currentScope,
-          context: args.context,
-          unsafe: args.unsafe,
-          constraints: args.constraints,
-          expectedReturnType: args.expectedReturnType,
-        });
+        const [e, eId] = elaborateSubExpr(expr.expr);
         return Semantic.addExpr(sr, {
           variant: Semantic.ENode.PostIncrExpr,
           type: e.type,
@@ -2937,13 +2788,7 @@ export namespace Semantic {
       // =================================================================================================================
 
       case Collect.ENode.PreIncrExpr: {
-        const [e, eId] = elaborateExpr(sr, expr.expr, {
-          context: args.context,
-          unsafe: args.unsafe,
-          constraints: args.constraints,
-          expectedReturnType: args.expectedReturnType,
-          scope: args.context.currentScope,
-        });
+        const [e, eId] = elaborateSubExpr(expr.expr);
         return Semantic.addExpr(sr, {
           variant: Semantic.ENode.PreIncrExpr,
           type: e.type,
@@ -2959,13 +2804,7 @@ export namespace Semantic {
       // =================================================================================================================
 
       case Collect.ENode.MemberAccessExpr: {
-        const [object, objectId] = elaborateExpr(sr, expr.expr, {
-          scope: args.context.currentScope,
-          context: args.context,
-          constraints: args.constraints,
-          unsafe: args.unsafe,
-          expectedReturnType: args.expectedReturnType,
-        });
+        const [object, objectId] = elaborateSubExpr(expr.expr);
         let objectType = sr.typeDefNodes.get(sr.typeUseNodes.get(object.type).type);
 
         if (object.variant === Semantic.ENode.DatatypeAsValueExpr) {
@@ -3363,20 +3202,8 @@ export namespace Semantic {
       // =================================================================================================================
 
       case Collect.ENode.ExprAssignmentExpr: {
-        const [value, valueId] = elaborateExpr(sr, expr.value, {
-          context: args.context,
-          constraints: args.constraints,
-          scope: args.context.currentScope,
-          expectedReturnType: args.expectedReturnType,
-          unsafe: args.unsafe,
-        });
-        const [target, targetId] = elaborateExpr(sr, expr.expr, {
-          context: args.context,
-          scope: args.context.currentScope,
-          constraints: args.constraints,
-          unsafe: args.unsafe,
-          expectedReturnType: args.expectedReturnType,
-        });
+        const [value, valueId] = elaborateSubExpr(expr.value);
+        const [target, targetId] = elaborateSubExpr(expr.expr);
 
         return Semantic.addExpr(sr, {
           variant: Semantic.ENode.ExprAssignmentExpr,
@@ -3402,15 +3229,7 @@ export namespace Semantic {
       // =================================================================================================================
 
       case Collect.ENode.ArrayLiteralExpr: {
-        const values = expr.values.map((v) =>
-          elaborateExpr(sr, v, {
-            constraints: args.constraints,
-            context: args.context,
-            scope: args.context.currentScope,
-            expectedReturnType: args.expectedReturnType,
-            unsafe: args.unsafe,
-          })
-        );
+        const values = expr.values.map((v) => elaborateSubExpr(v));
         let type = null as Semantic.TypeUseId | null;
         for (let i = 0; i < values.length; i++) {
           const [value, valueId] = values[i];
@@ -3461,21 +3280,8 @@ export namespace Semantic {
             expr.sourceloc
           );
         }
-        const [value, valueId] = elaborateExpr(sr, expr.expr, {
-          context: args.context,
-          scope: args.context.currentScope,
-          unsafe: args.unsafe,
-          expectedReturnType: args.expectedReturnType,
-          constraints: args.constraints,
-        });
-
-        const [index, indexId] = elaborateExpr(sr, expr.indices[0], {
-          context: args.context,
-          constraints: args.constraints,
-          scope: args.context.currentScope,
-          unsafe: args.unsafe,
-          expectedReturnType: args.expectedReturnType,
-        });
+        const [value, valueId] = elaborateSubExpr(expr.expr);
+        const [index, indexId] = elaborateSubExpr(expr.indices[0]);
         const indexType = sr.typeDefNodes.get(sr.typeUseNodes.get(index.type).type);
         if (
           indexType.variant !== Semantic.ENode.PrimitiveDatatype ||
@@ -3516,13 +3322,7 @@ export namespace Semantic {
             expr.sourceloc
           );
         }
-        const [value, valueId] = elaborateExpr(sr, expr.expr, {
-          context: args.context,
-          scope: args.context.currentScope,
-          expectedReturnType: args.expectedReturnType,
-          unsafe: args.unsafe,
-          constraints: args.constraints,
-        });
+        const [value, valueId] = elaborateSubExpr(expr.expr);
 
         const indices: {
           start: Semantic.ExprId | null;
@@ -3535,13 +3335,7 @@ export namespace Semantic {
         ];
 
         if (expr.indices[0].start) {
-          const [startIndex, startIndexId] = elaborateExpr(sr, expr.indices[0].start, {
-            context: args.context,
-            constraints: args.constraints,
-            expectedReturnType: args.expectedReturnType,
-            scope: args.context.currentScope,
-            unsafe: args.unsafe,
-          });
+          const [startIndex, startIndexId] = elaborateSubExpr(expr.indices[0].start);
           indices[0].start = startIndexId;
           const startIndexType = sr.typeDefNodes.get(sr.typeUseNodes.get(startIndex.type).type);
           if (
@@ -3552,13 +3346,7 @@ export namespace Semantic {
           }
         }
         if (expr.indices[0].end) {
-          const [endIndex, endIndexId] = elaborateExpr(sr, expr.indices[0].end, {
-            context: args.context,
-            constraints: args.constraints,
-            unsafe: args.unsafe,
-            expectedReturnType: args.expectedReturnType,
-            scope: args.context.currentScope,
-          });
+          const [endIndex, endIndexId] = elaborateSubExpr(expr.indices[0].end);
           indices[0].end = endIndexId;
           const endIndexType = sr.typeDefNodes.get(sr.typeUseNodes.get(endIndex.type).type);
           if (
@@ -3816,6 +3604,16 @@ export namespace Semantic {
   ): Semantic.StatementId {
     const s = sr.cc.statementNodes.get(statementId);
 
+    const elaborateSubExpr = (subExprId: Collect.ExprId) => {
+      return elaborateExpr(sr, subExprId, {
+        context: args.context,
+        scope: s.owningScope,
+        constraints: args.constraints,
+        expectedReturnType: args.expectedReturnType,
+        unsafe: args.unsafe,
+      });
+    };
+
     switch (s.variant) {
       // =================================================================================================================
       // =================================================================================================================
@@ -3833,13 +3631,7 @@ export namespace Semantic {
       // =================================================================================================================
 
       case Collect.ENode.IfStatement: {
-        const [condition, conditionId] = elaborateExpr(sr, s.condition, {
-          context: args.context,
-          scope: s.owningScope,
-          constraints: args.constraints,
-          expectedReturnType: args.expectedReturnType,
-          unsafe: args.unsafe,
-        });
+        const [condition, conditionId] = elaborateSubExpr(s.condition);
         if (s.comptime) {
           const conditionValue = EvalCTFEBoolean(sr, conditionId, s.sourceloc);
           if (conditionValue) {
@@ -3874,13 +3666,7 @@ export namespace Semantic {
           }
 
           for (const elif of s.elseif) {
-            const [condition, conditionId] = elaborateExpr(sr, elif.condition, {
-              context: args.context,
-              scope: s.owningScope,
-              constraints: args.constraints,
-              expectedReturnType: args.expectedReturnType,
-              unsafe: args.unsafe,
-            });
+            const [condition, conditionId] = elaborateSubExpr(elif.condition);
             if (EvalCTFEBoolean(sr, conditionId, s.sourceloc)) {
               const [thenScope, thenScopeId] = Semantic.addBlockScope(sr, {
                 variant: Semantic.ENode.BlockScope,
@@ -3994,13 +3780,7 @@ export namespace Semantic {
               context: args.context,
             });
             return {
-              condition: elaborateExpr(sr, e.condition, {
-                context: args.context,
-                constraints: args.constraints,
-                scope: s.owningScope,
-                expectedReturnType: args.expectedReturnType,
-                unsafe: args.unsafe,
-              })[1],
+              condition: elaborateSubExpr(e.condition)[1],
               then: innerThenScopeId,
             };
           });
@@ -4039,13 +3819,7 @@ export namespace Semantic {
       // =================================================================================================================
 
       case Collect.ENode.WhileStatement: {
-        const [condition, conditionId] = elaborateExpr(sr, s.condition, {
-          constraints: args.constraints,
-          context: args.context,
-          scope: s.owningScope,
-          expectedReturnType: args.expectedReturnType,
-          unsafe: args.unsafe,
-        });
+        const [condition, conditionId] = elaborateSubExpr(s.condition);
         const [thenScope, thenScopeId] = Semantic.addBlockScope(sr, {
           variant: Semantic.ENode.BlockScope,
           emittedExpr: null,
@@ -4076,13 +3850,7 @@ export namespace Semantic {
             variant: Semantic.ENode.ReturnStatement,
             expr: Conversion.MakeConversionOrThrow(
               sr,
-              elaborateExpr(sr, s.expr, {
-                context: args.context,
-                scope: s.owningScope,
-                constraints: args.constraints,
-                unsafe: args.unsafe,
-                expectedReturnType: args.expectedReturnType,
-              })[1],
+              elaborateSubExpr(s.expr)[1],
               args.expectedReturnType,
               args.constraints,
               s.sourceloc,
@@ -4161,17 +3929,7 @@ export namespace Semantic {
             }
             valueId = Conversion.MakeDefaultValue(sr, variableSymbol.type, s.sourceloc);
           } else {
-            valueId =
-              (!uninitialized &&
-                s.value &&
-                elaborateExpr(sr, s.value, {
-                  context: args.context,
-                  scope: s.owningScope,
-                  constraints: args.constraints,
-                  expectedReturnType: args.expectedReturnType,
-                  unsafe: args.unsafe,
-                })[1]) ||
-              undefined;
+            valueId = (!uninitialized && s.value && elaborateSubExpr(s.value)[1]) || undefined;
           }
         }
         const value = valueId && sr.exprNodes.get(valueId);
@@ -4281,13 +4039,7 @@ export namespace Semantic {
       case Collect.ENode.ExprStatement:
         return Semantic.addStatement(sr, {
           variant: Semantic.ENode.ExprStatement,
-          expr: elaborateExpr(sr, s.expr, {
-            context: args.context,
-            scope: s.owningScope,
-            expectedReturnType: args.expectedReturnType,
-            constraints: args.constraints,
-            unsafe: args.unsafe,
-          })[1],
+          expr: elaborateSubExpr(s.expr)[1],
           sourceloc: s.sourceloc,
         })[1];
 
@@ -4297,13 +4049,7 @@ export namespace Semantic {
 
       case Collect.ENode.ForEachStatement: {
         if (s.comptime) {
-          const [value, valueId] = elaborateExpr(sr, s.value, {
-            context: args.context,
-            scope: s.owningScope,
-            constraints: args.constraints,
-            unsafe: args.unsafe,
-            expectedReturnType: args.expectedReturnType,
-          });
+          const [value, valueId] = elaborateSubExpr(s.value);
           const r = EvalCTFE(sr, valueId);
           if (!r.ok) throw new CompilerError(r.error, s.sourceloc);
           const [comptimeValue, comptimeValueId] = r.value;
