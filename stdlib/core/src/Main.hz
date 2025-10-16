@@ -7,4 +7,7 @@ foo() {
     const foo1 = Foo {}
     const foo2 = inline Foo {}
     const foo3: Foo = foo1;
+
+    let i = 0;
+    i += 3;
 }

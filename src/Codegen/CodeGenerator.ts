@@ -1071,7 +1071,11 @@ class CodeGenerator {
         const value = this.emitExpr(expr.value);
         tempWriter.write(target.temp);
         tempWriter.write(value.temp);
-        outWriter.write("(" + target.out.get() + " = " + value.out.get() + ")");
+        if (expr.assignRefTarget) {
+          outWriter.write("(*" + target.out.get() + " = " + value.out.get() + ")");
+        } else {
+          outWriter.write("(" + target.out.get() + " = " + value.out.get() + ")");
+        }
         return { out: outWriter, temp: tempWriter };
       }
 
