@@ -2271,7 +2271,7 @@ export const printCollectedScope = (
 ) => {
   const scope = cc.scopeNodes.get(scopeId);
   const print = (str: string, _indent = 0) => {
-    console.info(`[${scopeId}]` + " ".repeat(indent + _indent) + str);
+    console.info(`Scope[${scopeId}]` + " ".repeat(indent + _indent) + str);
   };
 
   switch (scope.variant) {
@@ -2348,7 +2348,7 @@ export const printCollectedStatement = (
 ) => {
   const statement = cc.statementNodes.get(statementId);
   const print = (str: string, _indent = 0) => {
-    console.info(`[${statementId}]` + " ".repeat(indent + _indent) + str);
+    console.info(`Statement[${statementId}]` + " ".repeat(indent + _indent) + str);
   };
 
   switch (statement.variant) {
@@ -2381,7 +2381,7 @@ export const printCollectedStatement = (
     }
 
     case Collect.ENode.WhileStatement: {
-      print(`While (${printCollectedExpr(cc, statement.condition)})`);
+      print(`while (${printCollectedExpr(cc, statement.condition)})`);
       printCollectedScope(cc, statement.block, indent + 2);
       break;
     }
@@ -2422,7 +2422,7 @@ export const printCollectedSymbol = (
 ) => {
   const symbol = cc.symbolNodes.get(symbolId);
   const print = (str: string, _indent = 0) => {
-    console.info(`[${symbolId}]` + " ".repeat(indent + _indent) + str);
+    console.info(`Symbol[${symbolId}]` + " ".repeat(indent + _indent) + str);
   };
 
   switch (symbol.variant) {
@@ -2440,7 +2440,7 @@ export const printCollectedSymbol = (
       break;
 
     case Collect.ENode.FunctionOverloadGroupSymbol:
-      print(`- Overload ${symbol.name}`);
+      print(`- ${symbol.name}()`);
       for (const id of symbol.overloads) {
         printCollectedSymbol(cc, id, indent + 4);
       }
@@ -2454,7 +2454,7 @@ export const printCollectedSymbol = (
           .join(", ") +
         ") => " +
         printCollectedDatatype(cc, symbol.returnType);
-      print(`- Function ${ftype}`);
+      print(`- ${ftype}`);
       if (symbol.functionScope) {
         printCollectedScope(cc, symbol.functionScope, indent + 4);
       }
@@ -2465,13 +2465,13 @@ export const printCollectedSymbol = (
       const typedef = cc.typeDefNodes.get(symbol.typeDef);
       switch (typedef.variant) {
         case Collect.ENode.StructTypeDef: {
-          print(`- Struct ${typedef.name}`);
+          print(`- struct ${typedef.name}`);
           printCollectedScope(cc, typedef.structScope, indent + 4);
           break;
         }
 
         case Collect.ENode.NamespaceTypeDef: {
-          print(`- Namespace ${typedef.name}`);
+          print(`- namespace ${typedef.name}`);
           printCollectedScope(cc, typedef.namespaceScope, indent + 4);
           break;
         }

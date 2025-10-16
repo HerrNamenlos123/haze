@@ -90,6 +90,8 @@ export function AssignmentOperationToString(op: EAssignmentOperation): string {
   switch (op) {
     case EAssignmentOperation.Assign:
       return "=";
+    case EAssignmentOperation.AssignRefTarget:
+      return ":=";
     case EAssignmentOperation.Divide:
       return "/=";
     case EAssignmentOperation.Modulo:

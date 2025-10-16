@@ -143,3 +143,13 @@ export function assert(condition: unknown, message = "Assertion failed"): assert
     throw new InternalError(message, undefined, 1);
   }
 }
+
+export function assertCompilerError(
+  condition: unknown,
+  message: string,
+  sourceloc: SourceLoc
+): asserts condition {
+  if (!condition) {
+    throw new CompilerError(message, sourceloc);
+  }
+}

@@ -95,7 +95,7 @@ export function makeTypeUse(
 ) {
   for (const id of sr.typeInstanceCache) {
     const type = sr.typeUseNodes.get(id);
-    if (type.mutability !== mutability || type.type !== typeId) {
+    if (type.mutability !== mutability || type.type !== typeId || type.inline !== inline) {
       continue;
     }
     return [type, id] as const;

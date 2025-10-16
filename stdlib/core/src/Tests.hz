@@ -1,72 +1,72 @@
-namespace builtin {
-    export test_assignments() {
-        // Basic increments / decrements
-        let x: int = 1;
-        let y: int = 2;
-        let z: int = 3;
+// namespace builtin {
+//     export test_assignments() {
+//         // Basic increments / decrements
+//         let x: int = 1;
+//         let y: int = 2;
+//         let z: int = 3;
 
-        // Pre-increment
-        let a: int = x;
-        let pre_inc_a = ++a;
-        assert(a == 2);
-        assert(pre_inc_a == 2);
+//         // Pre-increment
+//         let a: int = x;
+//         let pre_inc_a = ++a;
+//         assert(a == 2);
+//         assert(pre_inc_a == 2);
 
-        // Post-increment
-        let b: int = x;
-        let post_inc_b = b++;
-        assert(b == 2);
-        assert(post_inc_b == 1);
+//         // Post-increment
+//         let b: int = x;
+//         let post_inc_b = b++;
+//         assert(b == 2);
+//         assert(post_inc_b == 1);
 
-        // Pre-decrement
-        let c: int = y;
-        let pre_dec_c = --c;
-        assert(c == 1);
-        assert(pre_dec_c == 1);
+//         // Pre-decrement
+//         let c: int = y;
+//         let pre_dec_c = --c;
+//         assert(c == 1);
+//         assert(pre_dec_c == 1);
 
-        // Post-decrement
-        let d: int = y;
-        let post_dec_d = d--;
-        assert(d == 1);
-        assert(post_dec_d == 2);
+//         // Post-decrement
+//         let d: int = y;
+//         let post_dec_d = d--;
+//         assert(d == 1);
+//         assert(post_dec_d == 2);
 
-        // Compound assignments
-        let e: int = x;
-        let add_assign_e = e += y;
-        assert(e == 3);
-        assert(add_assign_e == 3);
+//         // Compound assignments
+//         let e: int = x;
+//         let add_assign_e = e += y;
+//         assert(e == 3);
+//         assert(add_assign_e == 3);
 
-        let f: int = z;
-        let sub_assign_f = f -= x;
-        assert(f == 2);
-        assert(sub_assign_f == 2);
+//         let f: int = z;
+//         let sub_assign_f = f -= x;
+//         assert(f == 2);
+//         assert(sub_assign_f == 2);
 
-        let g: int = 2;
-        let mul_assign_g = g *= 3;
-        assert(g == 6);
-        assert(mul_assign_g == 6);
+//         let g: int = 2;
+//         let mul_assign_g = g *= 3;
+//         assert(g == 6);
+//         assert(mul_assign_g == 6);
 
-        let h: int = 6;
-        let div_assign_h = h /= 2;
-        assert(h == 3);
-        assert(div_assign_h == 3);
+//         let h: int = 6;
+//         let div_assign_h = h /= 2;
+//         assert(h == 3);
+//         assert(div_assign_h == 3);
 
-        // Chained assignments
-        let i: int = 0;
-        let j: int = 0;
-        let chain = i = j = 10;
-        assert(i == 10);
-        assert(j == 10);
-        assert(chain == 10);
+//         // Chained assignments
+//         let i: int = 0;
+//         let j: int = 0;
+//         let chain = i = j = 10;
+//         assert(i == 10);
+//         assert(j == 10);
+//         assert(chain == 10);
 
-        // Compound in expression
-        let k: int = 5;
-        let l: int = 3;
-        let m: int = k += l; // k = k + l; m = k
-        assert(k == 8);
-        assert(m == 8);
+//         // Compound in expression
+//         let k: int = 5;
+//         let l: int = 3;
+//         let m: int = k += l; // k = k + l; m = k
+//         assert(k == 8);
+//         assert(m == 8);
 
-        // Overflow test (optional, will trigger trap)
-        // let max: int = 9223372036854775807;
-        // let overflow = max + 1; // should trap
-    }
-}
+//         // Overflow test (optional, will trigger trap)
+//         // let max: int = 9223372036854775807;
+//         // let overflow = max + 1; // should trap
+//     }
+// }

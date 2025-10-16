@@ -1,2 +1,10 @@
 
 __c__("#include \"hzsys_main.c\"");
+
+struct Foo {}
+
+foo() {
+    const foo1 = Foo {}
+    const foo2 = inline Foo {}
+    const foo3: Foo = foo1;
+}

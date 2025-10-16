@@ -55,13 +55,13 @@ namespaceDefinition
 
 // Directives
 
-cInjectDirective: (export=EXPORT)? INLINEC LB STRING_LITERAL RB SEMI;
+cInjectDirective: (export=EXPORT)? INLINEC LB STRING_LITERAL RB SEMI?;
 
 // Functions
 
 externLanguage: EXTERNC;
 
-functionDefinition: (export=EXPORT)? (extern=EXTERN externLang=externLanguage? pub=PUB? noemit=NOEMIT?)?  ID (LANGLE ID (COMMA ID)* RANGLE)? LB params RB (COLON datatype)? requiresBlock? (ARROW)? (funcbody | SEMI);
+functionDefinition: (export=EXPORT)? (extern=EXTERN externLang=externLanguage? pub=PUB? noemit=NOEMIT?)?  ID (LANGLE ID (COMMA ID)* RANGLE)? LB params RB (COLON datatype)? requiresBlock? (ARROW)? (funcbody | SEMI?);
 lambda: LB params RB (COLON datatype)? requiresBlock? ARROW funcbody;
 param: ID COLON (datatype | ellipsis);
 params: (param (COMMA param)* (COMMA ellipsis)?)? | ellipsis;
@@ -69,13 +69,13 @@ ellipsis: ELLIPSIS;
 
 funcbody: (rawScope | exprAsFuncbody);
 rawScope: LCURLY (statement)* RCURLY;
-doScope: DO UNSAFE? LCURLY (statement)* (EMIT expr SEMI)? RCURLY;
+doScope: DO UNSAFE? LCURLY (statement)* (EMIT expr SEMI?)? RCURLY;
 exprAsFuncbody: expr;
 
 // Variables
 
 globalVariableDef
-    : (export=EXPORT)? (extern=EXTERN externLang=externLanguage?)? pub=PUB? variableMutabilitySpecifier comptime=COMPTIME? ID (((COLON datatype)? EQUALS expr) | (COLON datatype)) SEMI        #GlobalVariableDefinition
+    : (export=EXPORT)? (extern=EXTERN externLang=externLanguage?)? pub=PUB? variableMutabilitySpecifier comptime=COMPTIME? ID (((COLON datatype)? EQUALS expr) | (COLON datatype)) SEMI?        #GlobalVariableDefinition
     ;
 
 typeDef
@@ -127,8 +127,8 @@ genericLiteral
     ;
 
 structContent
-    : variableMutabilitySpecifier? ID COLON datatype (EQUALS expr)? SEMI                                    #StructMember
-    | static=STATIC? ID (LANGLE ID (COMMA ID)* RANGLE)? LB params RB (COLON datatype)? (funcbody | SEMI)    #StructMethod
+    : variableMutabilitySpecifier? ID COLON datatype (EQUALS expr)? SEMI?                                    #StructMember
+    | static=STATIC? ID (LANGLE ID (COMMA ID)* RANGLE)? LB params RB (COLON datatype)? (funcbody | SEMI?)    #StructMethod
     | structDefinition                                                                                      #NestedStructDefinition
     ;
 
@@ -197,7 +197,7 @@ statement
     : INLINEC LB STRING_LITERAL RB SEMI?                         #CInlineStatement
     | expr SEMI?                                                #ExprStatement
     | RETURN expr? SEMI?                                         #ReturnStatement
-    | variableMutabilitySpecifier comptime=COMPTIME? ID (((COLON datatype)? EQUALS expr) | (COLON datatype)) SEMI       #VariableCreationStatement
+    | variableMutabilitySpecifier comptime=COMPTIME? ID (((COLON datatype)? EQUALS expr) | (COLON datatype)) SEMI?       #VariableCreationStatement
     | IF comptime=COMPTIME? ifExpr=expr then=rawScope (ELSE IF elseIfExpr+=expr elseIfThen+=rawScope)* (ELSE elseBlock=rawScope)? #IfStatement
     | FOR comptime=COMPTIME? ID (COMMA ID)? IN expr rawScope       #ForEachStatement
     | WHILE expr rawScope                                          #WhileStatement

@@ -178,11 +178,7 @@ class CodeGenerator {
           }
           this.out.type_definitions.popIndent().writeLine(`};`).writeLine();
         }
-      } else if (symbol.variant === Lowered.ENode.NullableReferenceDatatype) {
-        this.out.type_declarations.writeLine(
-          `typedef ${this.mangleTypeUse(symbol.referee)}* ${this.mangleTypeDef(symbol)};`
-        );
-      } else if (symbol.variant === Lowered.ENode.ReferenceDatatype) {
+      } else if (symbol.variant === Lowered.ENode.PointerDatatype) {
         this.out.type_declarations.writeLine(
           `typedef ${this.mangleTypeUse(symbol.referee)}* ${this.mangleTypeDef(symbol)};`
         );
@@ -222,11 +218,16 @@ class CodeGenerator {
         this.out.type_definitions.writeLine(`${this.mangleTypeDef(symbol.functionType)} fn;`);
         this.out.type_definitions.popIndent().writeLine(`};`).writeLine();
       } else if (symbol.variant === Lowered.ENode.TypeUse) {
-        if (symbol.mutability !== EDatatypeMutability.Default) {
-          const constWord = symbol.mutability === EDatatypeMutability.Const ? "const " : "";
-          this.out.type_declarations.writeLine(
-            `typedef ${constWord}${this.mangleTypeDef(symbol.type)} ${this.mangleTypeUse(symbol)};`
-          );
+        if (symbol.mutability !== EDatatypeMutability.Default || symbol.pointer) {
+          if (symbol.pointer) {
+            this.out.type_declarations.writeLine(
+              `typedef ${this.mangleTypeDef(symbol.type)}* ${this.mangleTypeUse(symbol)};`
+            );
+          } else {
+            this.out.type_declarations.writeLine(
+              `typedef ${this.mangleTypeDef(symbol.type)} ${this.mangleTypeUse(symbol)};`
+            );
+          }
         }
       } else {
         assert(false);
@@ -268,10 +269,7 @@ class CodeGenerator {
           const type = this.lr.typeUseNodes.get(m.type);
           const typeDef = this.lr.typeDefNodes.get(type.type);
           // Pointer do not matter, only direct usages are bad.
-          if (
-            typeDef.variant !== Lowered.ENode.NullableReferenceDatatype &&
-            typeDef.variant !== Lowered.ENode.ReferenceDatatype
-          ) {
+          if (typeDef.variant !== Lowered.ENode.PointerDatatype) {
             processTypeUse(m.type);
           }
         }
@@ -279,11 +277,7 @@ class CodeGenerator {
       } else if (type.variant === Lowered.ENode.PrimitiveDatatype) {
         appliedTypes.add(type);
         sortedLoweredTypes.push(type);
-      } else if (type.variant === Lowered.ENode.NullableReferenceDatatype) {
-        appliedTypes.add(type);
-        processTypeUse(type.referee);
-        sortedLoweredTypes.push(type);
-      } else if (type.variant === Lowered.ENode.ReferenceDatatype) {
+      } else if (type.variant === Lowered.ENode.PointerDatatype) {
         appliedTypes.add(type);
         processTypeUse(type.referee);
         sortedLoweredTypes.push(type);
@@ -315,6 +309,9 @@ class CodeGenerator {
     }
     for (const [id, t] of this.lr.loweredTypeUses) {
       processTypeUse(t);
+    }
+    for (const [id, t] of this.lr.loweredPointers) {
+      processTypeDef(t);
     }
   }
 
