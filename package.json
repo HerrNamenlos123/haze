@@ -39,7 +39,7 @@
     "@mermaid-js/mermaid-cli": "^11.4.2",
     "@types/bun": "latest",
     "@types/deep-equal": "^1.0.4",
-    "mermaid": "^11.4.1"
+    "mermaid": "^11.10.0"
   },
   "peerDependencies": {
     "typescript": "^5.0.0"
