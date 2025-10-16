@@ -1,9 +1,16 @@
 import {
+  makeArenaTypeDefAvailable,
+  makeArenaTypeUseAvailable,
   makePrimitiveAvailable,
   makeVoidType,
   Semantic,
   type SemanticResult,
 } from "../Semantic/Elaborate";
+import {
+  makeFunctionDatatypeAvailable,
+  makeRawFunctionDatatypeAvailable,
+  makeTypeUse,
+} from "../Semantic/LookupDatatype";
 import {
   BinaryOperationToString,
   EAssignmentOperation,
@@ -25,6 +32,7 @@ import {
 } from "../shared/common";
 import { assert, InternalError, type SourceLoc } from "../shared/Errors";
 import { makeTempName } from "../shared/store";
+import { Collect } from "../SymbolCollection/SymbolCollection";
 
 export namespace Lowered {
   export type FunctionId = Brand<number, "LoweredFunction">;
@@ -508,9 +516,12 @@ const storeInTempVarAndGet = (
   type: Lowered.TypeUseId,
   value: Lowered.ExprId,
   sourceloc: SourceLoc,
-  flattened: Lowered.StatementId[]
+  flattened: Lowered.StatementId[],
+  varname?: string
 ): [Lowered.Expression, Lowered.ExprId] => {
-  const varname = makeTempName();
+  if (varname === undefined) {
+    varname = makeTempName();
+  }
   flattened.push(
     Lowered.addStatement(lr, {
       variant: Lowered.ENode.VariableStatement,
@@ -713,7 +724,7 @@ function lowerExpr(
         return Lowered.addExpr(lr, {
           variant: Lowered.ENode.SymbolValueExpr,
           name: Semantic.makeNameSetSymbol(lr.sr, expr.symbol),
-          type: makeTypeUse(lr, lowerTypeDef(lr, symbol.type), false)[1],
+          type: makeLowerTypeUse(lr, lowerTypeDef(lr, symbol.type), false)[1],
         });
       }
     }
@@ -796,9 +807,10 @@ function lowerExpr(
       return Lowered.addExpr(lr, {
         variant: Lowered.ENode.MemberAccessExpr,
         expr: lowerExpr(lr, expr.expr, flattened)[1],
-        requiresDeref:
+        requiresDeref: !(
           accessedExprTypeDef.variant === Semantic.ENode.StructDatatype &&
-          accessedExprTypeUse.inline,
+          accessedExprTypeUse.inline
+        ),
         memberName: expr.memberName,
         type: lowerTypeUse(lr, expr.type),
       });
@@ -820,7 +832,7 @@ function lowerExpr(
       if (structTypeUse.pointer) {
         const [structExpr, structExprId] = Lowered.addExpr(lr, {
           variant: Lowered.ENode.StructInstantiationExpr,
-          type: makeTypeUse(lr, lowerTypeDef(lr, semanticTypeUse.type), true)[1],
+          type: makeLowerTypeUse(lr, lowerTypeDef(lr, semanticTypeUse.type), true)[1],
           memberAssigns: expr.assign.map((a) => ({
             name: a.name,
             value: lowerExpr(lr, a.value, flattened)[1],
@@ -830,18 +842,18 @@ function lowerExpr(
         const [arena, arenaId] = Lowered.addExpr(lr, {
           variant: Lowered.ENode.SymbolValueExpr,
           name: {
-            mangledName: "arena",
-            prettyName: "arena",
+            mangledName: "__hz_local_arena",
+            prettyName: "__hz_local_arena",
             wasMangled: false,
           },
-          type: makeTypeUse(lr, makeVoidPointerType(lr), false)[1],
+          type: makeLowerTypeUse(lr, makeVoidPointerType(lr), false)[1],
         });
 
         const sizeof = Lowered.addExpr(lr, {
           variant: Lowered.ENode.SizeofExpr,
           value: Lowered.addExpr(lr, {
             variant: Lowered.ENode.DatatypeAsValueExpr,
-            type: makeTypeUse(lr, structTypeUse.type, false)[1],
+            type: makeLowerTypeUse(lr, structTypeUse.type, false)[1],
           })[1],
           type: lowerTypeUse(
             lr,
@@ -858,7 +870,7 @@ function lowerExpr(
           variant: Lowered.ENode.AlignofExpr,
           value: Lowered.addExpr(lr, {
             variant: Lowered.ENode.DatatypeAsValueExpr,
-            type: makeTypeUse(lr, structTypeUse.type, false)[1],
+            type: makeLowerTypeUse(lr, structTypeUse.type, false)[1],
           })[1],
           type: lowerTypeUse(
             lr,
@@ -876,8 +888,18 @@ function lowerExpr(
           expr: makeIntrinsicCall(
             lr,
             "hzsys_arena_allocate",
-            [arenaId, sizeof[1], alignof[1]],
-            makeTypeUse(lr, makeVoidPointerType(lr), true)[1]
+            [
+              Lowered.addExpr(lr, {
+                variant: Lowered.ENode.MemberAccessExpr,
+                memberName: "arenaImpl",
+                expr: arenaId,
+                requiresDeref: true,
+                type: lowerTypeUse(lr, makeArenaTypeUseAvailable(lr.sr)),
+              })[1],
+              sizeof[1],
+              alignof[1],
+            ],
+            makeLowerTypeUse(lr, makeVoidPointerType(lr), true)[1]
           )[1],
           type: structType,
         });
@@ -1057,7 +1079,7 @@ function lowerExpr(
         functionName: Semantic.makeNameSetSymbol(lr.sr, expr.functionSymbol),
         thisExpr: loweredThisExpression,
         type: lowerTypeUse(lr, expr.type),
-        functionType: makeTypeUse(lr, lowerTypeDef(lr, functionSymbol.type), false)[1],
+        functionType: makeLowerTypeUse(lr, lowerTypeDef(lr, functionSymbol.type), false)[1],
       });
     }
 
@@ -1184,7 +1206,7 @@ function lowerExpr(
     case Semantic.ENode.BlockScopeExpr: {
       return Lowered.addExpr<Lowered.BlockScopeExpr>(lr, {
         variant: Lowered.ENode.BlockScopeExpr,
-        block: lowerBlockScope(lr, expr.block),
+        block: lowerBlockScope(lr, expr.block, false),
         type: lowerTypeUse(lr, expr.type),
         sourceloc: expr.sourceloc,
       });
@@ -1232,7 +1254,7 @@ function makeVoidPointerType(lr: Lowered.Module) {
   return newVoidId;
 }
 
-function makeTypeUse(lr: Lowered.Module, typeDefId: Lowered.TypeDefId, pointer: boolean) {
+function makeLowerTypeUse(lr: Lowered.Module, typeDefId: Lowered.TypeDefId, pointer: boolean) {
   const typeDef = lr.typeDefNodes.get(typeDefId);
   return Lowered.addTypeUse(lr, {
     variant: Lowered.ENode.TypeUse,
@@ -1432,14 +1454,14 @@ function lowerStatement(
       const [s, sId] = Lowered.addStatement<Lowered.Statement>(lr, {
         variant: Lowered.ENode.IfStatement,
         condition: lowerExpr(lr, statement.condition, flattened)[1],
-        then: lowerBlockScope(lr, statement.then),
+        then: lowerBlockScope(lr, statement.then, false),
         elseIfs: statement.elseIfs.map((e) => {
           return {
             condition: lowerExpr(lr, e.condition, flattened)[1],
-            then: lowerBlockScope(lr, e.then),
+            then: lowerBlockScope(lr, e.then, false),
           };
         }),
-        else: statement.else && lowerBlockScope(lr, statement.else),
+        else: statement.else && lowerBlockScope(lr, statement.else, false),
         sourceloc: statement.sourceloc,
       });
       return [...flattened, sId];
@@ -1450,7 +1472,7 @@ function lowerStatement(
       const [s, sId] = Lowered.addStatement<Lowered.Statement>(lr, {
         variant: Lowered.ENode.WhileStatement,
         condition: lowerExpr(lr, statement.condition, flattened)[1],
-        then: lowerBlockScope(lr, statement.then),
+        then: lowerBlockScope(lr, statement.then, false),
         sourceloc: statement.sourceloc,
       });
       return [...flattened, sId];
@@ -1495,13 +1517,85 @@ function lowerStatement(
 
 function lowerBlockScope(
   lr: Lowered.Module,
-  semanticScopeId: Semantic.BlockScopeId
+  semanticScopeId: Semantic.BlockScopeId,
+  createLocalArena: boolean
 ): Lowered.BlockScopeId {
   const blockScope = lr.sr.blockScopeNodes.get(semanticScopeId);
   assert(blockScope.variant === Semantic.ENode.BlockScope);
 
   let containsVariables = false;
   const statements: Lowered.StatementId[] = [];
+
+  const loweredArenaType = lowerTypeUse(lr, makeArenaTypeUseAvailable(lr.sr));
+  const loweredArenaInlineType = lowerTypeUse(lr, makeArenaTypeUseAvailable(lr.sr, true));
+  if (createLocalArena) {
+    const [arenaImpl, arenaImplId] = Lowered.addExpr(lr, {
+      variant: Lowered.ENode.ExprCallExpr,
+      arguments: [
+        Lowered.addExpr(lr, {
+          variant: Lowered.ENode.MemberAccessExpr,
+          memberName: "arenaImpl",
+          expr: Lowered.addExpr(lr, {
+            variant: Lowered.ENode.SymbolValueExpr,
+            name: {
+              mangledName: "__hz_parent_arena",
+              prettyName: "__hz_parent_arena",
+              wasMangled: false,
+            },
+            type: lowerTypeUse(lr, makeArenaTypeUseAvailable(lr.sr)),
+          })[1],
+          requiresDeref: true,
+          type: lowerTypeUse(lr, makeArenaTypeUseAvailable(lr.sr)),
+        })[1],
+      ],
+      expr: Lowered.addExpr(lr, {
+        variant: Lowered.ENode.SymbolValueExpr,
+        name: {
+          mangledName: "hzsys_arena_create_and_attach_subarena",
+          prettyName: "hzsys_arena_create_and_attach_subarena",
+          wasMangled: false,
+        },
+        type: makeLowerTypeUse(
+          lr,
+          lowerTypeDef(
+            lr,
+            makeRawFunctionDatatypeAvailable(lr.sr, {
+              parameters: [makeArenaTypeUseAvailable(lr.sr)],
+              returnType: makeArenaTypeUseAvailable(lr.sr),
+              vararg: false,
+              sourceloc: null,
+            })
+          ),
+          false
+        )[1],
+      })[1],
+      type: lowerTypeUse(lr, makeArenaTypeUseAvailable(lr.sr)),
+    });
+
+    const [arena, arenaId] = Lowered.addExpr(lr, {
+      variant: Lowered.ENode.AddressOfExpr,
+      expr: Lowered.addExpr(lr, {
+        variant: Lowered.ENode.StructInstantiationExpr,
+        type: loweredArenaInlineType,
+        memberAssigns: [
+          {
+            name: "arenaImpl",
+            value: arenaImplId,
+          },
+        ],
+      })[1],
+      type: loweredArenaType,
+    });
+
+    const [variable, variableId] = storeInTempVarAndGet(
+      lr,
+      lowerTypeUse(lr, makeArenaTypeUseAvailable(lr.sr)),
+      arenaId,
+      null,
+      statements,
+      "__hz_local_arena"
+    );
+  }
 
   for (const s of blockScope.statements) {
     const statement = lr.sr.statementNodes.get(s);
@@ -1515,6 +1609,53 @@ function lowerBlockScope(
   const emitted = blockScope.emittedExpr
     ? lowerExpr(lr, blockScope.emittedExpr, statements)[1]
     : null;
+
+  if (createLocalArena) {
+    const [destroy, destroyId] = makeIntrinsicCall(
+      lr,
+      "hzsys_detach_and_destroy_subarena",
+      [
+        Lowered.addExpr(lr, {
+          variant: Lowered.ENode.MemberAccessExpr,
+          memberName: "arenaImpl",
+          expr: Lowered.addExpr(lr, {
+            variant: Lowered.ENode.SymbolValueExpr,
+            name: {
+              mangledName: "__hz_parent_arena",
+              prettyName: "__hz_parent_arena",
+              wasMangled: false,
+            },
+            type: loweredArenaType,
+          })[1],
+          requiresDeref: true,
+          type: lowerTypeUse(lr, makeArenaTypeUseAvailable(lr.sr)),
+        })[1],
+        Lowered.addExpr(lr, {
+          variant: Lowered.ENode.MemberAccessExpr,
+          memberName: "arenaImpl",
+          expr: Lowered.addExpr(lr, {
+            variant: Lowered.ENode.SymbolValueExpr,
+            name: {
+              mangledName: "__hz_local_arena",
+              prettyName: "__hz_local_arena",
+              wasMangled: false,
+            },
+            type: loweredArenaType,
+          })[1],
+          requiresDeref: true,
+          type: lowerTypeUse(lr, makeArenaTypeUseAvailable(lr.sr)),
+        })[1],
+      ],
+      lowerTypeUse(lr, makeVoidType(lr.sr))
+    );
+    statements.push(
+      Lowered.addStatement(lr, {
+        variant: Lowered.ENode.ExprStatement,
+        expr: destroyId,
+        sourceloc: null,
+      })[1]
+    );
+  }
 
   // Flatten block scopes that don't define variables to remove redundant scopes and make code more readable
   const flattenedStatements: Lowered.StatementId[] = [];
@@ -1600,6 +1741,23 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
         }
       }
 
+      const originalFuncType = lr.sr.typeDefNodes.get(symbol.type);
+      assert(originalFuncType.variant === Semantic.ENode.FunctionDatatype);
+      const newParameters = [...originalFuncType.parameters];
+
+      const arenaType = makeArenaTypeUseAvailable(lr.sr);
+      parameterNames.unshift("__hz_return_arena");
+      newParameters.unshift(arenaType);
+      parameterNames.unshift("__hz_parent_arena");
+      newParameters.unshift(arenaType);
+
+      const newFuncType = makeRawFunctionDatatypeAvailable(lr.sr, {
+        parameters: newParameters,
+        returnType: originalFuncType.returnType,
+        sourceloc: symbol.sourceloc,
+        vararg: false,
+      });
+
       const monomorphized = Semantic.isSymbolMonomorphized(lr.sr, symbolId);
       const exported = Semantic.isSymbolExported(lr.sr, symbolId);
 
@@ -1608,7 +1766,7 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
         variant: Lowered.ENode.FunctionSymbol,
         name: Semantic.makeNameSetSymbol(lr.sr, symbolId),
         parameterNames: parameterNames,
-        type: lowerTypeDef(lr, symbol.type),
+        type: lowerTypeDef(lr, newFuncType),
         isLibraryLocal:
           monomorphized &&
           !exported &&
@@ -1620,7 +1778,7 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
       });
       lr.loweredFunctions.set(symbolId, fId);
 
-      f.scope = (symbol.scope && lowerBlockScope(lr, symbol.scope)) || null;
+      f.scope = (symbol.scope && lowerBlockScope(lr, symbol.scope, true)) || null;
       break;
     }
 
@@ -1929,7 +2087,7 @@ export function LowerModule(sr: SemanticResult): Lowered.Module {
     lr.cInjections.push(injection.value);
   }
 
-  PrettyPrintLowered(lr);
+  // PrettyPrintLowered(lr);
   // RenderCollectedSymbolTree(lr);
 
   return lr;

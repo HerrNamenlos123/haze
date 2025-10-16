@@ -258,6 +258,33 @@ export function makeRawPrimitiveAvailable(
   return sId;
 }
 
+export function makeArenaTypeDefAvailable(sr: SemanticResult) {
+  const arenaCollectSymbolId = Semantic.lookupSymbolByName(sr, "Arena", null);
+  const arenaCollectSymbol = sr.cc.symbolNodes.get(arenaCollectSymbolId);
+  assert(arenaCollectSymbol.variant === Collect.ENode.TypeDefSymbol);
+  const arenaSymbolId = Semantic.elaborateTypeDefSymbol(sr, arenaCollectSymbol.typeDef, {
+    context: Semantic.makeElaborationContext({
+      currentScope: sr.cc.moduleScopeId,
+      genericsScope: sr.cc.moduleScopeId,
+    }),
+  });
+  assert(arenaSymbolId.length === 1);
+  const elaboratedArenaSymbol = sr.symbolNodes.get(arenaSymbolId[0]);
+  assert(elaboratedArenaSymbol.variant === Semantic.ENode.TypeDefSymbol);
+
+  return elaboratedArenaSymbol.datatype;
+}
+
+export function makeArenaTypeUseAvailable(sr: SemanticResult, inline = false) {
+  return makeTypeUse(
+    sr,
+    makeArenaTypeDefAvailable(sr),
+    EDatatypeMutability.Default,
+    inline,
+    null
+  )[1];
+}
+
 export function makeVoidType(sr: SemanticResult) {
   return makePrimitiveAvailable(sr, EPrimitive.void, EDatatypeMutability.Default, null);
 }
@@ -1092,6 +1119,42 @@ export namespace Semantic {
     const found = tryLookupSymbol(sr, name, args);
     if (found) return found;
     throw new CompilerError(`Symbol '${name}' was not declared in this scope`, args.sourceloc);
+  }
+
+  export function lookupSymbolByName(sr: SemanticResult, symbolPath: string, sourceloc: SourceLoc) {
+    const names = symbolPath.split(".");
+
+    assert(names.length === 1, "namespaces not supported yet");
+
+    // First find the first top level symbol
+    const moduleScope = sr.cc.scopeNodes.get(sr.cc.moduleScopeId) as Collect.ModuleScope;
+
+    // Find globally in root (stdlib)
+    const symbol = tryLookupSymbol(sr, names[0], {
+      startLookupInScope: sr.cc.moduleScopeId,
+      sourceloc: sourceloc,
+    });
+
+    if (symbol) {
+      if (symbol.type === "collect") {
+        return symbol.id;
+      } else {
+        assert(false, "Expected to find symbol but found Semantic expression");
+      }
+    }
+    assert(false, "Symbol not found");
+
+    // console.log(moduleScope);
+    // for (const unitId of moduleScope.scopes) {
+    //   const unitScope = sr.cc.scopeNodes.get(unitId) as Collect.UnitScope;
+    //   console.log(unitScope);
+    // }
+
+    // for (const name of names) {
+    //   tryLookupSymbol(sr, name, {
+    //     startLookupInScope: currentScope,
+    //   });
+    // }
   }
 
   // export function recursivelyExportCollectedSymbols(

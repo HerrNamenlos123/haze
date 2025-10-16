@@ -218,16 +218,14 @@ class CodeGenerator {
         this.out.type_definitions.writeLine(`${this.mangleTypeDef(symbol.functionType)} fn;`);
         this.out.type_definitions.popIndent().writeLine(`};`).writeLine();
       } else if (symbol.variant === Lowered.ENode.TypeUse) {
-        if (symbol.mutability !== EDatatypeMutability.Default || symbol.pointer) {
-          if (symbol.pointer) {
-            this.out.type_declarations.writeLine(
-              `typedef ${this.mangleTypeDef(symbol.type)}* ${this.mangleTypeUse(symbol)};`
-            );
-          } else {
-            this.out.type_declarations.writeLine(
-              `typedef ${this.mangleTypeDef(symbol.type)} ${this.mangleTypeUse(symbol)};`
-            );
-          }
+        if (symbol.pointer) {
+          this.out.type_declarations.writeLine(
+            `typedef ${this.mangleTypeDef(symbol.type)}* ${this.mangleTypeUse(symbol)};`
+          );
+        } else {
+          this.out.type_declarations.writeLine(
+            `typedef ${this.mangleTypeDef(symbol.type)} ${this.mangleTypeUse(symbol)};`
+          );
         }
       } else {
         assert(false);

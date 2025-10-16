@@ -23,28 +23,28 @@ export extern C noemit hzsys_arena_deregister_cleanup_action(arena: hzsys_arena_
 
 const DEFAULT_CHUNK_SIZE = 1024;
 
-// export struct Arena {
-//     arenaImpl: hzsys_arena_t;
+export struct Arena {
+    arenaImpl: hzsys_arena_t;
 
-//     constructor(): Arena {
-//         return Arena {
-//             arenaImpl: hzsys_arena_create(DEFAULT_CHUNK_SIZE),
-//         };
-//     }
+    constructor(): Arena {
+        return Arena {
+            arenaImpl: hzsys_arena_create(DEFAULT_CHUNK_SIZE),
+        };
+    }
 
-//     alloc<T>(value: T): T {
-//         do unsafe {
-//             const ptr = hzsys.arena_allocate<T>(this.arenaImpl, sizeof(T), alignof(T));
-//             ptr := value;
-//             return ptr;
-//         }
-//     }
+    alloc<T>(value: T): T {
+        do unsafe {
+            const ptr = hzsys.arena_allocate<T>(this.arenaImpl, sizeof(T), alignof(T));
+            ptr := value;
+            return ptr;
+        }
+    }
 
-//     // allocRaw(size: usize, alignment: usize): void {
-//     //     return hzsys_arena_allocate(this.arenaImpl, size, alignment);
-//     // }
+    // allocRaw(size: usize, alignment: usize): void {
+    //     return hzsys_arena_allocate(this.arenaImpl, size, alignment);
+    // }
 
-//     free() {
-//         hzsys_arena_cleanup_and_free(this.arenaImpl);
-//     }
-// }
+    free() {
+        hzsys_arena_cleanup_and_free(this.arenaImpl);
+    }
+}

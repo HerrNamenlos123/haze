@@ -777,6 +777,7 @@ class ModuleCompiler {
     });
     const moduleScope = this.cc.scopeNodes.get(this.cc.moduleScopeId);
     assert(moduleScope.variant === Collect.ENode.ModuleScope);
+    console.log("AS UNIT");
     moduleScope.scopes.add(unitId);
     return [unit, unitId] as const;
   }
@@ -784,6 +785,7 @@ class ModuleCompiler {
   async collectFileAsRoot(filepath: string, collectionMode: ECollectionMode) {
     const fileText = await Bun.file(filepath).text();
     const ast = Parser.parseTextToAST(this.config, fileText, filepath);
+    console.log("AS ROOT");
     CollectFile(
       this.cc,
       ast,
@@ -895,7 +897,7 @@ class ModuleCompiler {
       await this.collectImports();
       await this.addProjectSourceFiles();
 
-      PrettyPrintCollected(this.cc);
+      // PrettyPrintCollected(this.cc);
 
       const sr = Semantic.SemanticallyAnalyze(
         this.cc,

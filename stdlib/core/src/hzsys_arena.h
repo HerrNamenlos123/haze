@@ -41,7 +41,9 @@ void *hzsys_arena_allocate(hzsys_arena_t *arena, size_t size, size_t alignment);
 
 hzsys_arena_t *hzsys_arena_create_and_attach_subarena(hzsys_arena_t *arena);
 void hzsys_attach_subarena(hzsys_arena_t *arena, hzsys_arena_t *subarena);
-void hzsys_detach_subarena(hzsys_arena_t *arena);
+void hzsys_detach_subarena(hzsys_arena_t *arena, hzsys_arena_t *subarena);
+void hzsys_detach_and_destroy_subarena(hzsys_arena_t *arena,
+                                       hzsys_arena_t *subarena);
 
 size_t hzsys_arena_register_cleanup_action(hzsys_arena_t *arena,
                                            void (*action)(void *actiondata),
