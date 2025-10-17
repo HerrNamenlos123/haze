@@ -1,6 +1,4 @@
 import {
-  makeArenaTypeDefAvailable,
-  makeArenaTypeUseAvailable,
   makePrimitiveAvailable,
   makeVoidType,
   Semantic,

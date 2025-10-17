@@ -133,7 +133,7 @@ export namespace Collect {
   export type StatementId = Brand<number, "CollectStatement">;
   export type ScopeId = Brand<number, "CollectScope">;
 
-  export const enum ENode {
+  export enum ENode {
     ModuleScope,
     UnitScope,
     FileScope,

@@ -646,7 +646,7 @@ export namespace Conversion {
     constraints: Semantic.Constraint[],
     sourceloc: SourceLoc,
     mode: Mode,
-    unsafe: boolean
+    unsafe?: boolean
   ) {
     const c = MakeConversion(sr, fromExprId, toId, constraints, sourceloc, mode, unsafe);
     if (c.ok) {
@@ -662,7 +662,7 @@ export namespace Conversion {
     constraints: Semantic.Constraint[],
     sourceloc: SourceLoc,
     mode: Mode,
-    unsafe: boolean
+    unsafe?: boolean
   ): { ok: true; expr: Semantic.ExprId } | { ok: false; error: string } {
     const fromExpr = sr.exprNodes.get(fromExprId);
     const fromTypeInstance = sr.typeUseNodes.get(fromExpr.type);
