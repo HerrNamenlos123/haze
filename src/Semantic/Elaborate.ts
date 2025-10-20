@@ -1342,18 +1342,15 @@ export class SemanticElaborator {
           if (sym.variant === Collect.ENode.VariableSymbol) {
             this.elaborateVariableSymbolInScope(sId);
           } else if (sym.variant === Collect.ENode.TypeDefSymbol) {
-            const symbols = this.elaborateTypeDefSymbol(this.sr, sym.typeDef, {
-              context: newContext,
-            });
+            const symbols = this.typeDefSymbol(sym);
           } else {
             assert(false);
           }
         }
 
         for (const sId of scope.statements) {
-          const statement = this.elaborateStatement(sr, sId, {
-            expectedReturnType: args.expectedReturnType,
-            context: newContext,
+          const statement = this.elaborateStatement(sId, {
+            gonnaInstantiateStructWithType: this.expectedReturnType,
             unsafe: scope.unsafe,
           });
           blockScope.statements.push(statement);
@@ -2531,6 +2528,671 @@ export class SemanticElaborator {
       );
     } else {
       assert(false, datatypeValue.variant.toString());
+    }
+  }
+
+  elaborateStatement(statementId: Collect.StatementId, inference: Inference): Semantic.StatementId {
+    const s = this.sr.cc.statementNodes.get(statementId);
+
+    switch (s.variant) {
+      // =================================================================================================================
+      // =================================================================================================================
+      // =================================================================================================================
+
+      case Collect.ENode.InlineCStatement:
+        return Semantic.addStatement(this.sr, {
+          variant: Semantic.ENode.InlineCStatement,
+          value: s.value,
+          sourceloc: s.sourceloc,
+        })[1];
+
+      // =================================================================================================================
+      // =================================================================================================================
+      // =================================================================================================================
+
+      case Collect.ENode.IfStatement: {
+        const [condition, conditionId] = this.expr(s.condition, undefined);
+        if (s.comptime) {
+          const conditionValue = EvalCTFEBoolean(this.sr, conditionId, s.sourceloc);
+          if (conditionValue) {
+            const [thenScope, thenScopeId] = Semantic.addBlockScope(this.sr, {
+              variant: Semantic.ENode.BlockScope,
+              statements: [],
+              emittedExpr: null,
+              constraints: [...this.currentContext.constraints],
+            });
+            this.elaborateBlockScope(
+              {
+                targetScopeId: thenScopeId,
+                sourceScopeId: s.thenBlock,
+              },
+              undefined
+            );
+            return Semantic.addStatement(this.sr, {
+              variant: Semantic.ENode.ExprStatement,
+              expr: Semantic.addExpr(this.sr, {
+                variant: Semantic.ENode.BlockScopeExpr,
+                block: thenScopeId,
+                isTemporary: true,
+                type: this.sr.b.voidType(),
+                sourceloc: s.sourceloc,
+              })[1],
+              sourceloc: s.sourceloc,
+            })[1];
+          }
+
+          for (const elif of s.elseif) {
+            const [condition, conditionId] = this.expr(elif.condition, undefined);
+            if (EvalCTFEBoolean(this.sr, conditionId, s.sourceloc)) {
+              const [thenScope, thenScopeId] = Semantic.addBlockScope(this.sr, {
+                variant: Semantic.ENode.BlockScope,
+                statements: [],
+                emittedExpr: null,
+                constraints: [...this.currentContext.constraints],
+              });
+              this.elaborateBlockScope(
+                {
+                  targetScopeId: thenScopeId,
+                  sourceScopeId: elif.thenBlock,
+                },
+                undefined
+              );
+              return Semantic.addStatement(this.sr, {
+                variant: Semantic.ENode.ExprStatement,
+                expr: Semantic.addExpr(this.sr, {
+                  variant: Semantic.ENode.BlockScopeExpr,
+                  block: thenScopeId,
+                  isTemporary: true,
+                  type: this.sr.b.voidType(),
+                  sourceloc: s.sourceloc,
+                })[1],
+                sourceloc: s.sourceloc,
+              })[1];
+            }
+          }
+
+          if (s.elseBlock) {
+            const [thenScope, thenScopeId] = Semantic.addBlockScope(this.sr, {
+              variant: Semantic.ENode.BlockScope,
+              emittedExpr: null,
+              statements: [],
+              constraints: [...this.currentContext.constraints],
+            });
+            this.elaborateBlockScope(
+              {
+                targetScopeId: thenScopeId,
+                sourceScopeId: s.elseBlock,
+              },
+              undefined
+            );
+            return Semantic.addStatement(this.sr, {
+              variant: Semantic.ENode.ExprStatement,
+              expr: Semantic.addExpr(this.sr, {
+                variant: Semantic.ENode.BlockScopeExpr,
+                block: thenScopeId,
+                isTemporary: true,
+                type: this.sr.b.voidType(),
+                sourceloc: s.sourceloc,
+              })[1],
+              sourceloc: s.sourceloc,
+            })[1];
+          }
+
+          // Nothing was true, emit empty scope statement
+          return Semantic.addStatement(this.sr, {
+            variant: Semantic.ENode.ExprStatement,
+            expr: Semantic.addExpr(this.sr, {
+              variant: Semantic.ENode.BlockScopeExpr,
+              block: Semantic.addBlockScope(this.sr, {
+                variant: Semantic.ENode.BlockScope,
+                statements: [],
+                emittedExpr: null,
+                constraints: [...this.currentContext.constraints],
+              })[1],
+              isTemporary: true,
+              type: this.sr.b.voidType(),
+              sourceloc: s.sourceloc,
+            })[1],
+            sourceloc: s.sourceloc,
+          })[1];
+        } else {
+          const [thenScope, thenScopeId] = Semantic.addBlockScope(this.sr, {
+            variant: Semantic.ENode.BlockScope,
+            statements: [],
+            emittedExpr: null,
+            constraints: [...this.currentContext.constraints],
+          });
+          this.buildConstraints(thenScope.constraints, conditionId);
+          this.elaborateBlockScope(
+            {
+              targetScopeId: thenScopeId,
+              sourceScopeId: s.thenBlock,
+            },
+            undefined
+          );
+          const elseIfs = s.elseif.map((e) => {
+            const [innerThenScope, innerThenScopeId] = Semantic.addBlockScope(this.sr, {
+              variant: Semantic.ENode.BlockScope,
+              statements: [],
+              emittedExpr: null,
+              constraints: [...this.currentContext.constraints],
+            });
+            this.elaborateBlockScope(
+              {
+                targetScopeId: innerThenScopeId,
+                sourceScopeId: e.thenBlock,
+              },
+              undefined
+            );
+            return {
+              condition: this.expr(e.condition, undefined)[1],
+              then: innerThenScopeId,
+            };
+          });
+
+          let [elseScope, elseScopeId] = [
+            undefined as undefined | Semantic.BlockScope,
+            undefined as Semantic.BlockScopeId | undefined,
+          ];
+          if (s.elseBlock) {
+            [elseScope, elseScopeId] = Semantic.addBlockScope(this.sr, {
+              variant: Semantic.ENode.BlockScope,
+              statements: [],
+              emittedExpr: null,
+              constraints: [...this.currentContext.constraints],
+            });
+            this.elaborateBlockScope(
+              {
+                targetScopeId: elseScopeId,
+                sourceScopeId: s.elseBlock,
+              },
+              undefined
+            );
+          }
+          return Semantic.addStatement(this.sr, {
+            variant: Semantic.ENode.IfStatement,
+            condition: conditionId,
+            then: thenScopeId,
+            elseIfs: elseIfs,
+            else: elseScopeId,
+            sourceloc: s.sourceloc,
+          })[1];
+        }
+      }
+
+      // =================================================================================================================
+      // =================================================================================================================
+      // =================================================================================================================
+
+      case Collect.ENode.WhileStatement: {
+        const [condition, conditionId] = this.expr(s.condition, undefined);
+        const [thenScope, thenScopeId] = Semantic.addBlockScope(this.sr, {
+          variant: Semantic.ENode.BlockScope,
+          emittedExpr: null,
+          statements: [],
+          constraints: [...this.currentContext.constraints],
+        });
+        this.elaborateBlockScope(
+          {
+            targetScopeId: thenScopeId,
+            sourceScopeId: s.block,
+          },
+          undefined
+        );
+        return Semantic.addStatement(this.sr, {
+          variant: Semantic.ENode.WhileStatement,
+          condition: conditionId,
+          then: thenScopeId,
+          sourceloc: s.sourceloc,
+        })[1];
+      }
+
+      // =================================================================================================================
+      // =================================================================================================================
+      // =================================================================================================================
+
+      case Collect.ENode.ReturnStatement: {
+        if (s.expr) {
+          if (!this.expectedReturnType) {
+            throw new CompilerError(
+              `Cannot return in this context, it's not in a function context`,
+              s.sourceloc
+            );
+          }
+          return Semantic.addStatement(this.sr, {
+            variant: Semantic.ENode.ReturnStatement,
+            expr: Conversion.MakeConversionOrThrow(
+              this.sr,
+              this.expr(s.expr, {
+                gonnaInstantiateStructWithType: this.expectedReturnType,
+              })[1],
+              this.expectedReturnType,
+              this.currentContext.constraints,
+              s.sourceloc,
+              Conversion.Mode.Implicit,
+              false
+            ),
+            sourceloc: s.sourceloc,
+          })[1];
+        } else {
+          return Semantic.addStatement(this.sr, {
+            variant: Semantic.ENode.ReturnStatement,
+            sourceloc: s.sourceloc,
+          })[1];
+        }
+      }
+
+      // =================================================================================================================
+      // =================================================================================================================
+      // =================================================================================================================
+
+      case Collect.ENode.VariableDefinitionStatement: {
+        let uninitialized = false;
+        if (s.value) {
+          const value = this.sr.cc.exprNodes.get(s.value);
+          if (value.variant === Collect.ENode.SymbolValueExpr && value.name === "uninitialized") {
+            if (value.genericArgs.length !== 0) {
+              throw new CompilerError(
+                `The 'uninitialized' directive requires 0 type arguments`,
+                s.sourceloc
+              );
+            }
+            if (!inference?.unsafe) {
+              throw new CompilerError(
+                `The 'uninitialized' directive may only appear in an explicit unsafe block`,
+                s.sourceloc
+              );
+            }
+            uninitialized = true;
+          }
+        }
+
+        const collectedVariableSymbol = this.sr.cc.symbolNodes.get(s.variableSymbol);
+        assert(collectedVariableSymbol.variant === Collect.ENode.VariableSymbol);
+        const variableSymbolId = this.currentContext.elaboratedVariables.get(s.variableSymbol);
+        assert(variableSymbolId);
+        const variableSymbol = this.sr.symbolNodes.get(variableSymbolId);
+        assert(variableSymbol.variant === Semantic.ENode.VariableSymbol);
+
+        if (collectedVariableSymbol.type) {
+          variableSymbol.type = this.withContext(
+            {
+              context: Semantic.isolateElaborationContext(this.currentContext, {
+                currentScope: s.owningScope,
+                genericsScope: s.owningScope,
+                constraints: this.currentContext.constraints,
+              }),
+            },
+            () => this.lookupAndElaborateDatatype(collectedVariableSymbol.type!)
+          );
+          assert(variableSymbol.type);
+        }
+
+        let valueId: Semantic.ExprId | undefined;
+        if (s.value) {
+          const sValue = this.sr.cc.exprNodes.get(s.value);
+          if (sValue.variant === Collect.ENode.SymbolValueExpr && sValue.name === "default") {
+            if (sValue.genericArgs.length !== 0) {
+              throw new CompilerError(
+                `'default' initializer cannot take any generics`,
+                s.sourceloc
+              );
+            }
+            if (!variableSymbol.type) {
+              throw new CompilerError(
+                `Variable initializations with a 'default' initializer require an explicit datatype to be specified`,
+                s.sourceloc
+              );
+            }
+            valueId = Conversion.MakeDefaultValue(this.sr, variableSymbol.type, s.sourceloc);
+          } else {
+            valueId =
+              (!uninitialized &&
+                s.value &&
+                this.expr(s.value, {
+                  gonnaInstantiateStructWithType: variableSymbol.type ?? undefined,
+                })[1]) ||
+              undefined;
+          }
+        }
+        const value = valueId && this.sr.exprNodes.get(valueId);
+
+        if (value?.variant === Semantic.ENode.DatatypeAsValueExpr) {
+          throw new CompilerError(
+            `A struct/namespace datatype cannot be written into a variable`,
+            value.sourceloc
+          );
+        }
+
+        if ((!valueId || !value) && !uninitialized) {
+          throw new CompilerError(
+            `Variable '${variableSymbol.name}' requires an initialization value`,
+            s.sourceloc
+          );
+        }
+
+        if (!variableSymbol.type) {
+          variableSymbol.type = value?.type || null;
+          if (variableSymbol.type && value) {
+            const variableSymbolType = this.sr.typeUseNodes.get(variableSymbol.type);
+            const variableSymbolTypeDef = this.sr.typeDefNodes.get(variableSymbolType.type);
+            if (variableSymbol.mutability === EVariableMutability.Const) {
+            } else {
+              // If a const T value is assigned to a let variable,
+              // a copy is made which makes the copied value fully mutable.
+              variableSymbol.type = makeTypeUse(
+                this.sr,
+                variableSymbolType.type,
+                EDatatypeMutability.Mut,
+                false,
+                s.sourceloc
+              )[1];
+            }
+          }
+        }
+        assert(variableSymbol.type);
+        variableSymbol.concrete = this.sr.typeDefNodes.get(
+          this.sr.typeUseNodes.get(variableSymbol.type).type
+        ).concrete;
+        const variableSymbolType = this.sr.typeUseNodes.get(variableSymbol.type);
+        const variableSymbolTypeDef = this.sr.typeDefNodes.get(variableSymbolType.type);
+
+        if (variableSymbol.mutability === EVariableMutability.Const) {
+          // assert(false, "TODO");
+        } else {
+          // if (variableSymbol)
+        }
+
+        if (variableSymbol.comptime) {
+          assert(valueId);
+          const r = EvalCTFE(this.sr, valueId);
+          if (!r.ok) throw new CompilerError(r.error, s.sourceloc);
+          variableSymbol.comptimeValue = r.value[1];
+        }
+
+        // if (value) {
+        //   const valueType = sr.typeDefNodes.get(sr.typeUseNodes.get(value.type).type);
+        //   if (
+        //     variableSymbolTypeDef.variant === Semantic.ENode.StructDatatype &&
+        //     valueType.variant === Semantic.ENode.StructDatatype &&
+        //     (valueType.clonability === EClonability.NonClonableFromAttribute ||
+        //       valueType.clonability === EClonability.NonClonableFromMembers) &&
+        //     !value.isTemporary
+        //   ) {
+        //     const msg =
+        //       valueType.clonability === EClonability.NonClonableFromAttribute
+        //         ? "marked as 'nonclonable'"
+        //         : "non-clonable because it contains raw pointers or other non-clonable structures";
+        //     throw new CompilerError(
+        //       `This assignment of type '${serializeTypeUse(
+        //         sr,
+        //         value.type
+        //       )}' would create a copy of the struct, but the struct definition is ${msg}`,
+        //       s.sourceloc
+        //     );
+        //   }
+        // }
+
+        return Semantic.addStatement(this.sr, {
+          variant: Semantic.ENode.VariableStatement,
+          mutability: variableSymbol.mutability,
+          comptime: collectedVariableSymbol.comptime,
+          name: variableSymbol.name,
+          variableSymbol: variableSymbolId,
+          value:
+            (valueId &&
+              Conversion.MakeConversionOrThrow(
+                this.sr,
+                valueId,
+                variableSymbol.type,
+                this.currentContext.constraints,
+                s.sourceloc,
+                Conversion.Mode.Implicit,
+                inference?.unsafe
+              )) ||
+            null,
+          sourceloc: s.sourceloc,
+        })[1];
+      }
+
+      // =================================================================================================================
+      // =================================================================================================================
+      // =================================================================================================================
+
+      case Collect.ENode.ExprStatement:
+        return Semantic.addStatement(this.sr, {
+          variant: Semantic.ENode.ExprStatement,
+          expr: this.expr(s.expr, undefined)[1],
+          sourceloc: s.sourceloc,
+        })[1];
+
+      // =================================================================================================================
+      // =================================================================================================================
+      // =================================================================================================================
+
+      case Collect.ENode.ForEachStatement: {
+        if (s.comptime) {
+          const [value, valueId] = this.expr(s.value, undefined);
+          const r = EvalCTFE(this.sr, valueId);
+          if (!r.ok) throw new CompilerError(r.error, s.sourceloc);
+          const [comptimeValue, comptimeValueId] = r.value;
+          if (comptimeValue.variant !== Semantic.ENode.SymbolValueExpr) {
+            throw new CompilerError(
+              `For each loop over something other than a parameter pack is not implemented yet`,
+              s.sourceloc
+            );
+          }
+          const comptimeExpr = this.sr.typeDefNodes.get(
+            this.sr.typeUseNodes.get(comptimeValue.type).type
+          );
+          if (comptimeExpr.variant !== Semantic.ENode.ParameterPackDatatype) {
+            throw new CompilerError(
+              `For each loop over something other than a parameter pack is not implemented yet`,
+              s.sourceloc
+            );
+          }
+
+          if (!this.sr.syntheticScopeToVariableMap.has(s.body)) {
+            this.sr.syntheticScopeToVariableMap.set(s.body, new Map());
+          }
+          const syntheticMap = this.sr.syntheticScopeToVariableMap.get(s.body)!;
+
+          assert(comptimeExpr.parameters);
+
+          let loopIndex: undefined | Semantic.VariableSymbol = undefined;
+          let loopIndexId: undefined | Semantic.SymbolId = undefined;
+          if (s.indexVariable) {
+            [loopIndex, loopIndexId] = Semantic.addSymbol(this.sr, {
+              variant: Semantic.ENode.VariableSymbol,
+              comptime: true,
+              comptimeValue: null,
+              concrete: true,
+              export: false,
+              extern: EExternLanguage.None,
+              memberOfStruct: null,
+              mutability: EVariableMutability.Const,
+              name: s.indexVariable,
+              parentStructOrNS: null,
+              sourceloc: s.sourceloc,
+              type: makePrimitiveAvailable(
+                this.sr,
+                EPrimitive.usize,
+                EDatatypeMutability.Const,
+                s.sourceloc
+              ),
+              variableContext: EVariableContext.FunctionLocal,
+            } satisfies Semantic.VariableSymbol);
+          }
+
+          const allScopes: Semantic.StatementId[] = [];
+          for (let i = 0; i < comptimeExpr.parameters.length; i++) {
+            const [thenScope, thenScopeId] = Semantic.addBlockScope(this.sr, {
+              variant: Semantic.ENode.BlockScope,
+              statements: [],
+              emittedExpr: null,
+              constraints: [...this.currentContext.constraints],
+            });
+
+            const semanticParamId = comptimeExpr.parameters[i];
+            const paramValue = this.sr.symbolNodes.get(semanticParamId);
+            assert(paramValue.variant === Semantic.ENode.VariableSymbol);
+            assert(paramValue.type);
+
+            syntheticMap.set(s.loopVariable, semanticParamId);
+            if (s.indexVariable) {
+              assert(loopIndexId && loopIndex);
+              loopIndex.comptimeValue = Semantic.addExpr(this.sr, {
+                variant: Semantic.ENode.LiteralExpr,
+                isTemporary: true,
+                literal: {
+                  type: EPrimitive.usize,
+                  unit: null,
+                  value: BigInt(i),
+                },
+                type: makePrimitiveAvailable(
+                  this.sr,
+                  EPrimitive.usize,
+                  EDatatypeMutability.Const,
+                  s.sourceloc
+                ),
+                sourceloc: s.sourceloc,
+              })[1];
+              syntheticMap.set(s.indexVariable, loopIndexId);
+            }
+            this.elaborateBlockScope(
+              {
+                targetScopeId: thenScopeId,
+                sourceScopeId: s.body,
+              },
+              undefined
+            );
+            if (s.indexVariable) {
+              syntheticMap.delete(s.indexVariable);
+            }
+            syntheticMap.delete(s.loopVariable);
+
+            allScopes.push(
+              Semantic.addStatement(this.sr, {
+                variant: Semantic.ENode.ExprStatement,
+                expr: Semantic.addExpr(this.sr, {
+                  variant: Semantic.ENode.BlockScopeExpr,
+                  block: thenScopeId,
+                  sourceloc: s.sourceloc,
+                  isTemporary: true,
+                  type: this.sr.b.voidType(),
+                })[1],
+                sourceloc: s.sourceloc,
+              })[1]
+            );
+          }
+
+          return Semantic.addStatement(this.sr, {
+            variant: Semantic.ENode.ExprStatement,
+            expr: Semantic.addExpr(this.sr, {
+              variant: Semantic.ENode.BlockScopeExpr,
+              block: Semantic.addBlockScope(this.sr, {
+                variant: Semantic.ENode.BlockScope,
+                statements: allScopes,
+                emittedExpr: null,
+                constraints: [...this.currentContext.constraints],
+              })[1],
+              sourceloc: s.sourceloc,
+              isTemporary: true,
+              type: this.sr.b.voidType(),
+            })[1],
+            sourceloc: s.sourceloc,
+          })[1];
+        } else {
+          assert(false, "Non-comptime for each not implemented yet");
+        }
+      }
+
+      default:
+        assert(false);
+    }
+  }
+
+  applyBinaryExprConstraints(
+    constraints: Semantic.Constraint[],
+    symbolValueExprId: Semantic.ExprId,
+    literalExprId: Semantic.ExprId,
+    operation: EBinaryOperation
+  ) {
+    const symbolValueExpr = this.sr.exprNodes.get(symbolValueExprId);
+    assert(symbolValueExpr.variant === Semantic.ENode.SymbolValueExpr);
+    const literalExpr = this.sr.exprNodes.get(literalExprId);
+    assert(literalExpr.variant === Semantic.ENode.LiteralExpr);
+
+    const symbol = this.sr.symbolNodes.get(symbolValueExpr.symbol);
+    if (symbol.variant !== Semantic.ENode.VariableSymbol || !symbol.type) {
+      return;
+    }
+
+    if (
+      literalExpr.literal.type !== EPrimitive.i8 &&
+      literalExpr.literal.type !== EPrimitive.i16 &&
+      literalExpr.literal.type !== EPrimitive.i32 &&
+      literalExpr.literal.type !== EPrimitive.i64 &&
+      literalExpr.literal.type !== EPrimitive.int &&
+      literalExpr.literal.type !== EPrimitive.usize &&
+      literalExpr.literal.type !== EPrimitive.u8 &&
+      literalExpr.literal.type !== EPrimitive.u16 &&
+      literalExpr.literal.type !== EPrimitive.u32 &&
+      literalExpr.literal.type !== EPrimitive.u64
+    ) {
+      return;
+    }
+
+    switch (operation) {
+      case EBinaryOperation.Equal:
+      case EBinaryOperation.Unequal:
+      case EBinaryOperation.GreaterEqual:
+      case EBinaryOperation.GreaterThan:
+      case EBinaryOperation.LessEqual:
+      case EBinaryOperation.LessThan:
+        constraints.push({
+          constraintValue: {
+            kind: "comparison",
+            operation: operation,
+            value: literalExprId,
+          },
+          variableSymbol: symbolValueExpr.symbol,
+        });
+    }
+  }
+
+  buildConstraints(constraints: Semantic.Constraint[], exprId: Semantic.ExprId) {
+    const expr = this.sr.exprNodes.get(exprId);
+
+    if (expr.variant === Semantic.ENode.BinaryExpr) {
+      if (expr.operation === EBinaryOperation.BoolAnd) {
+        this.buildConstraints(constraints, expr.left);
+        this.buildConstraints(constraints, expr.right);
+      } else {
+        const leftExpr = this.sr.exprNodes.get(expr.left);
+        const rightExpr = this.sr.exprNodes.get(expr.right);
+        if (leftExpr.variant === Semantic.ENode.SymbolValueExpr) {
+          const rightValue = EvalCTFE(this.sr, expr.right);
+          if (rightValue.ok) {
+            this.applyBinaryExprConstraints(
+              constraints,
+              expr.left,
+              rightValue.value[1],
+              expr.operation
+            );
+          }
+        } else if (rightExpr.variant === Semantic.ENode.SymbolValueExpr) {
+          const leftValue = EvalCTFE(this.sr, expr.left);
+          if (leftValue.ok) {
+            this.applyBinaryExprConstraints(
+              constraints,
+              expr.right,
+              leftValue.value[1],
+              expr.operation
+            );
+          }
+        }
+      }
     }
   }
 
@@ -5371,676 +6033,6 @@ export namespace Semantic {
 
       default:
         throw new InternalError("Unhandled variant: " + (expr as any).variant);
-    }
-  }
-
-  function applyBinaryExprConstraints(
-    sr: SemanticResult,
-    constraints: Semantic.Constraint[],
-    symbolValueExprId: Semantic.ExprId,
-    literalExprId: Semantic.ExprId,
-    operation: EBinaryOperation
-  ) {
-    const symbolValueExpr = sr.exprNodes.get(symbolValueExprId);
-    assert(symbolValueExpr.variant === Semantic.ENode.SymbolValueExpr);
-    const literalExpr = sr.exprNodes.get(literalExprId);
-    assert(literalExpr.variant === Semantic.ENode.LiteralExpr);
-
-    const symbol = sr.symbolNodes.get(symbolValueExpr.symbol);
-    if (symbol.variant !== Semantic.ENode.VariableSymbol || !symbol.type) {
-      return;
-    }
-
-    if (
-      literalExpr.literal.type !== EPrimitive.i8 &&
-      literalExpr.literal.type !== EPrimitive.i16 &&
-      literalExpr.literal.type !== EPrimitive.i32 &&
-      literalExpr.literal.type !== EPrimitive.i64 &&
-      literalExpr.literal.type !== EPrimitive.int &&
-      literalExpr.literal.type !== EPrimitive.usize &&
-      literalExpr.literal.type !== EPrimitive.u8 &&
-      literalExpr.literal.type !== EPrimitive.u16 &&
-      literalExpr.literal.type !== EPrimitive.u32 &&
-      literalExpr.literal.type !== EPrimitive.u64
-    ) {
-      return;
-    }
-
-    switch (operation) {
-      case EBinaryOperation.Equal:
-      case EBinaryOperation.Unequal:
-      case EBinaryOperation.GreaterEqual:
-      case EBinaryOperation.GreaterThan:
-      case EBinaryOperation.LessEqual:
-      case EBinaryOperation.LessThan:
-        constraints.push({
-          constraintValue: {
-            kind: "comparison",
-            operation: operation,
-            value: literalExprId,
-          },
-          variableSymbol: symbolValueExpr.symbol,
-        });
-    }
-  }
-
-  function buildConstraints(
-    sr: SemanticResult,
-    constraints: Semantic.Constraint[],
-    exprId: Semantic.ExprId
-  ) {
-    const expr = sr.exprNodes.get(exprId);
-
-    if (expr.variant === Semantic.ENode.BinaryExpr) {
-      if (expr.operation === EBinaryOperation.BoolAnd) {
-        buildConstraints(sr, constraints, expr.left);
-        buildConstraints(sr, constraints, expr.right);
-      } else {
-        const leftExpr = sr.exprNodes.get(expr.left);
-        const rightExpr = sr.exprNodes.get(expr.right);
-        if (leftExpr.variant === Semantic.ENode.SymbolValueExpr) {
-          const rightValue = EvalCTFE(sr, expr.right);
-          if (rightValue.ok) {
-            applyBinaryExprConstraints(
-              sr,
-              constraints,
-              expr.left,
-              rightValue.value[1],
-              expr.operation
-            );
-          }
-        } else if (rightExpr.variant === Semantic.ENode.SymbolValueExpr) {
-          const leftValue = EvalCTFE(sr, expr.left);
-          if (leftValue.ok) {
-            applyBinaryExprConstraints(
-              sr,
-              constraints,
-              expr.right,
-              leftValue.value[1],
-              expr.operation
-            );
-          }
-        }
-      }
-    }
-  }
-
-  export function elaborateStatement(
-    sr: SemanticResult,
-    statementId: Collect.StatementId,
-    args: {
-      expectedReturnType?: Semantic.TypeUseId;
-      context: ElaborationContext;
-      unsafe: boolean;
-    }
-  ): Semantic.StatementId {
-    const s = sr.cc.statementNodes.get(statementId);
-
-    const elaborateSubExpr = (subExprId: Collect.ExprId) => {
-      return elaborateExpr(sr, subExprId, {
-        context: args.context,
-        scope: s.owningScope,
-        expectedReturnType: args.expectedReturnType,
-        unsafe: args.unsafe,
-      });
-    };
-
-    switch (s.variant) {
-      // =================================================================================================================
-      // =================================================================================================================
-      // =================================================================================================================
-
-      case Collect.ENode.InlineCStatement:
-        return Semantic.addStatement(sr, {
-          variant: Semantic.ENode.InlineCStatement,
-          value: s.value,
-          sourceloc: s.sourceloc,
-        })[1];
-
-      // =================================================================================================================
-      // =================================================================================================================
-      // =================================================================================================================
-
-      case Collect.ENode.IfStatement: {
-        const [condition, conditionId] = elaborateSubExpr(s.condition);
-        if (s.comptime) {
-          const conditionValue = EvalCTFEBoolean(sr, conditionId, s.sourceloc);
-          if (conditionValue) {
-            const [thenScope, thenScopeId] = Semantic.addBlockScope(sr, {
-              variant: Semantic.ENode.BlockScope,
-              statements: [],
-              emittedExpr: null,
-              constraints: [...args.context.constraints],
-            });
-            elaborateBlockScope(sr, {
-              targetScopeId: thenScopeId,
-              sourceScopeId: s.thenBlock,
-              expectedReturnType: args.expectedReturnType,
-              context: args.context,
-            });
-            return Semantic.addStatement(sr, {
-              variant: Semantic.ENode.ExprStatement,
-              expr: Semantic.addExpr(sr, {
-                variant: Semantic.ENode.BlockScopeExpr,
-                block: thenScopeId,
-                isTemporary: true,
-                type: makeVoidType(sr),
-                sourceloc: s.sourceloc,
-              })[1],
-              sourceloc: s.sourceloc,
-            })[1];
-          }
-
-          for (const elif of s.elseif) {
-            const [condition, conditionId] = elaborateSubExpr(elif.condition);
-            if (EvalCTFEBoolean(sr, conditionId, s.sourceloc)) {
-              const [thenScope, thenScopeId] = Semantic.addBlockScope(sr, {
-                variant: Semantic.ENode.BlockScope,
-                statements: [],
-                emittedExpr: null,
-                constraints: [...args.context.constraints],
-              });
-              elaborateBlockScope(sr, {
-                targetScopeId: thenScopeId,
-                sourceScopeId: elif.thenBlock,
-                expectedReturnType: args.expectedReturnType,
-                context: args.context,
-              });
-              return Semantic.addStatement(sr, {
-                variant: Semantic.ENode.ExprStatement,
-                expr: Semantic.addExpr(sr, {
-                  variant: Semantic.ENode.BlockScopeExpr,
-                  block: thenScopeId,
-                  isTemporary: true,
-                  type: makeVoidType(sr),
-                  sourceloc: s.sourceloc,
-                })[1],
-                sourceloc: s.sourceloc,
-              })[1];
-            }
-          }
-
-          if (s.elseBlock) {
-            const [thenScope, thenScopeId] = Semantic.addBlockScope(sr, {
-              variant: Semantic.ENode.BlockScope,
-              emittedExpr: null,
-              statements: [],
-              constraints: [...args.context.constraints],
-            });
-            elaborateBlockScope(sr, {
-              targetScopeId: thenScopeId,
-              sourceScopeId: s.elseBlock,
-              expectedReturnType: args.expectedReturnType,
-              context: args.context,
-            });
-            return Semantic.addStatement(sr, {
-              variant: Semantic.ENode.ExprStatement,
-              expr: Semantic.addExpr(sr, {
-                variant: Semantic.ENode.BlockScopeExpr,
-                block: thenScopeId,
-                isTemporary: true,
-                type: makeVoidType(sr),
-                sourceloc: s.sourceloc,
-              })[1],
-              sourceloc: s.sourceloc,
-            })[1];
-          }
-
-          // Nothing was true, emit empty scope statement
-          return Semantic.addStatement(sr, {
-            variant: Semantic.ENode.ExprStatement,
-            expr: Semantic.addExpr(sr, {
-              variant: Semantic.ENode.BlockScopeExpr,
-              block: Semantic.addBlockScope(sr, {
-                variant: Semantic.ENode.BlockScope,
-                statements: [],
-                emittedExpr: null,
-                constraints: [...args.context.constraints],
-              })[1],
-              isTemporary: true,
-              type: makeVoidType(sr),
-              sourceloc: s.sourceloc,
-            })[1],
-            sourceloc: s.sourceloc,
-          })[1];
-        } else {
-          const [thenScope, thenScopeId] = Semantic.addBlockScope(sr, {
-            variant: Semantic.ENode.BlockScope,
-            statements: [],
-            emittedExpr: null,
-            constraints: [...args.context.constraints],
-          });
-          buildConstraints(sr, thenScope.constraints, conditionId);
-          elaborateBlockScope(sr, {
-            targetScopeId: thenScopeId,
-            sourceScopeId: s.thenBlock,
-            expectedReturnType: args.expectedReturnType,
-            context: args.context,
-          });
-          const elseIfs = s.elseif.map((e) => {
-            const [innerThenScope, innerThenScopeId] = Semantic.addBlockScope(sr, {
-              variant: Semantic.ENode.BlockScope,
-              statements: [],
-              emittedExpr: null,
-              constraints: [...args.context.constraints],
-            });
-            elaborateBlockScope(sr, {
-              targetScopeId: innerThenScopeId,
-              sourceScopeId: e.thenBlock,
-              expectedReturnType: args.expectedReturnType,
-              context: args.context,
-            });
-            return {
-              condition: elaborateSubExpr(e.condition)[1],
-              then: innerThenScopeId,
-            };
-          });
-
-          let [elseScope, elseScopeId] = [
-            undefined as undefined | Semantic.BlockScope,
-            undefined as Semantic.BlockScopeId | undefined,
-          ];
-          if (s.elseBlock) {
-            [elseScope, elseScopeId] = Semantic.addBlockScope(sr, {
-              variant: Semantic.ENode.BlockScope,
-              statements: [],
-              emittedExpr: null,
-              constraints: [...args.context.constraints],
-            });
-            elaborateBlockScope(sr, {
-              targetScopeId: elseScopeId,
-              sourceScopeId: s.elseBlock,
-              expectedReturnType: args.expectedReturnType,
-              context: args.context,
-            });
-          }
-          return Semantic.addStatement(sr, {
-            variant: Semantic.ENode.IfStatement,
-            condition: conditionId,
-            then: thenScopeId,
-            elseIfs: elseIfs,
-            else: elseScopeId,
-            sourceloc: s.sourceloc,
-          })[1];
-        }
-      }
-
-      // =================================================================================================================
-      // =================================================================================================================
-      // =================================================================================================================
-
-      case Collect.ENode.WhileStatement: {
-        const [condition, conditionId] = elaborateSubExpr(s.condition);
-        const [thenScope, thenScopeId] = Semantic.addBlockScope(sr, {
-          variant: Semantic.ENode.BlockScope,
-          emittedExpr: null,
-          statements: [],
-          constraints: [...args.context.constraints],
-        });
-        elaborateBlockScope(sr, {
-          targetScopeId: thenScopeId,
-          sourceScopeId: s.block,
-          expectedReturnType: args.expectedReturnType,
-          context: args.context,
-        });
-        return Semantic.addStatement(sr, {
-          variant: Semantic.ENode.WhileStatement,
-          condition: conditionId,
-          then: thenScopeId,
-          sourceloc: s.sourceloc,
-        })[1];
-      }
-
-      // =================================================================================================================
-      // =================================================================================================================
-      // =================================================================================================================
-
-      case Collect.ENode.ReturnStatement: {
-        if (s.expr) {
-          if (!args.expectedReturnType) {
-            throw new CompilerError(
-              `Cannot return in this context, it's not in a function context`,
-              s.sourceloc
-            );
-          }
-          return Semantic.addStatement(sr, {
-            variant: Semantic.ENode.ReturnStatement,
-            expr: Conversion.MakeConversionOrThrow(
-              sr,
-              elaborateSubExpr(s.expr)[1],
-              args.expectedReturnType,
-              args.context.constraints,
-              s.sourceloc,
-              Conversion.Mode.Implicit,
-              false
-            ),
-            sourceloc: s.sourceloc,
-          })[1];
-        } else {
-          return Semantic.addStatement(sr, {
-            variant: Semantic.ENode.ReturnStatement,
-            sourceloc: s.sourceloc,
-          })[1];
-        }
-      }
-
-      // =================================================================================================================
-      // =================================================================================================================
-      // =================================================================================================================
-
-      case Collect.ENode.VariableDefinitionStatement: {
-        let uninitialized = false;
-        if (s.value) {
-          const value = sr.cc.exprNodes.get(s.value);
-          if (value.variant === Collect.ENode.SymbolValueExpr && value.name === "uninitialized") {
-            if (value.genericArgs.length !== 0) {
-              throw new CompilerError(
-                `The 'uninitialized' directive requires 0 type arguments`,
-                s.sourceloc
-              );
-            }
-            if (!args.unsafe) {
-              throw new CompilerError(
-                `The 'uninitialized' directive may only appear in an explicit unsafe block`,
-                s.sourceloc
-              );
-            }
-            uninitialized = true;
-          }
-        }
-
-        const collectedVariableSymbol = sr.cc.symbolNodes.get(s.variableSymbol);
-        assert(collectedVariableSymbol.variant === Collect.ENode.VariableSymbol);
-        const variableSymbolId = args.context.elaboratedVariables.get(s.variableSymbol);
-        assert(variableSymbolId);
-        const variableSymbol = sr.symbolNodes.get(variableSymbolId);
-        assert(variableSymbol.variant === Semantic.ENode.VariableSymbol);
-
-        if (collectedVariableSymbol.type) {
-          variableSymbol.type = lookupAndElaborateDatatype(sr, {
-            typeId: collectedVariableSymbol.type,
-            isInCFuncdecl: false,
-            context: isolateElaborationContext(args.context, {
-              currentScope: s.owningScope,
-              genericsScope: s.owningScope,
-              constraints: args.context.constraints,
-            }),
-          });
-          assert(variableSymbol.type);
-        }
-
-        let valueId: Semantic.ExprId | undefined;
-        if (s.value) {
-          const sValue = sr.cc.exprNodes.get(s.value);
-          if (sValue.variant === Collect.ENode.SymbolValueExpr && sValue.name === "default") {
-            if (sValue.genericArgs.length !== 0) {
-              throw new CompilerError(
-                `'default' initializer cannot take any generics`,
-                s.sourceloc
-              );
-            }
-            if (!variableSymbol.type) {
-              throw new CompilerError(
-                `Variable initializations with a 'default' initializer require an explicit datatype to be specified`,
-                s.sourceloc
-              );
-            }
-            valueId = Conversion.MakeDefaultValue(sr, variableSymbol.type, s.sourceloc);
-          } else {
-            valueId = (!uninitialized && s.value && elaborateSubExpr(s.value)[1]) || undefined;
-          }
-        }
-        const value = valueId && sr.exprNodes.get(valueId);
-
-        if (value?.variant === Semantic.ENode.DatatypeAsValueExpr) {
-          throw new CompilerError(
-            `A struct/namespace datatype cannot be written into a variable`,
-            value.sourceloc
-          );
-        }
-
-        if ((!valueId || !value) && !uninitialized) {
-          throw new CompilerError(
-            `Variable '${variableSymbol.name}' requires an initialization value`,
-            s.sourceloc
-          );
-        }
-
-        if (!variableSymbol.type) {
-          variableSymbol.type = value?.type || null;
-          if (variableSymbol.type && value) {
-            const variableSymbolType = sr.typeUseNodes.get(variableSymbol.type);
-            const variableSymbolTypeDef = sr.typeDefNodes.get(variableSymbolType.type);
-            if (variableSymbol.mutability === EVariableMutability.Const) {
-            } else {
-              // If a const T value is assigned to a let variable,
-              // a copy is made which makes the copied value fully mutable.
-              variableSymbol.type = makeTypeUse(
-                sr,
-                variableSymbolType.type,
-                EDatatypeMutability.Mut,
-                false,
-                s.sourceloc
-              )[1];
-            }
-          }
-        }
-        assert(variableSymbol.type);
-        variableSymbol.concrete = sr.typeDefNodes.get(
-          sr.typeUseNodes.get(variableSymbol.type).type
-        ).concrete;
-        const variableSymbolType = sr.typeUseNodes.get(variableSymbol.type);
-        const variableSymbolTypeDef = sr.typeDefNodes.get(variableSymbolType.type);
-
-        if (variableSymbol.mutability === EVariableMutability.Const) {
-          // assert(false, "TODO");
-        } else {
-          // if (variableSymbol)
-        }
-
-        if (variableSymbol.comptime) {
-          assert(valueId);
-          const r = EvalCTFE(sr, valueId);
-          if (!r.ok) throw new CompilerError(r.error, s.sourceloc);
-          variableSymbol.comptimeValue = r.value[1];
-        }
-
-        // if (value) {
-        //   const valueType = sr.typeDefNodes.get(sr.typeUseNodes.get(value.type).type);
-        //   if (
-        //     variableSymbolTypeDef.variant === Semantic.ENode.StructDatatype &&
-        //     valueType.variant === Semantic.ENode.StructDatatype &&
-        //     (valueType.clonability === EClonability.NonClonableFromAttribute ||
-        //       valueType.clonability === EClonability.NonClonableFromMembers) &&
-        //     !value.isTemporary
-        //   ) {
-        //     const msg =
-        //       valueType.clonability === EClonability.NonClonableFromAttribute
-        //         ? "marked as 'nonclonable'"
-        //         : "non-clonable because it contains raw pointers or other non-clonable structures";
-        //     throw new CompilerError(
-        //       `This assignment of type '${serializeTypeUse(
-        //         sr,
-        //         value.type
-        //       )}' would create a copy of the struct, but the struct definition is ${msg}`,
-        //       s.sourceloc
-        //     );
-        //   }
-        // }
-
-        return Semantic.addStatement(sr, {
-          variant: Semantic.ENode.VariableStatement,
-          mutability: variableSymbol.mutability,
-          comptime: collectedVariableSymbol.comptime,
-          name: variableSymbol.name,
-          variableSymbol: variableSymbolId,
-          value:
-            (valueId &&
-              Conversion.MakeConversionOrThrow(
-                sr,
-                valueId,
-                variableSymbol.type,
-                args.context.constraints,
-                s.sourceloc,
-                Conversion.Mode.Implicit,
-                args.unsafe
-              )) ||
-            null,
-          sourceloc: s.sourceloc,
-        })[1];
-      }
-
-      // =================================================================================================================
-      // =================================================================================================================
-      // =================================================================================================================
-
-      case Collect.ENode.ExprStatement:
-        return Semantic.addStatement(sr, {
-          variant: Semantic.ENode.ExprStatement,
-          expr: elaborateSubExpr(s.expr)[1],
-          sourceloc: s.sourceloc,
-        })[1];
-
-      // =================================================================================================================
-      // =================================================================================================================
-      // =================================================================================================================
-
-      case Collect.ENode.ForEachStatement: {
-        if (s.comptime) {
-          const [value, valueId] = elaborateSubExpr(s.value);
-          const r = EvalCTFE(sr, valueId);
-          if (!r.ok) throw new CompilerError(r.error, s.sourceloc);
-          const [comptimeValue, comptimeValueId] = r.value;
-          if (comptimeValue.variant !== Semantic.ENode.SymbolValueExpr) {
-            throw new CompilerError(
-              `For each loop over something other than a parameter pack is not implemented yet`,
-              s.sourceloc
-            );
-          }
-          const comptimeExpr = sr.typeDefNodes.get(sr.typeUseNodes.get(comptimeValue.type).type);
-          if (comptimeExpr.variant !== Semantic.ENode.ParameterPackDatatype) {
-            throw new CompilerError(
-              `For each loop over something other than a parameter pack is not implemented yet`,
-              s.sourceloc
-            );
-          }
-
-          if (!sr.syntheticScopeToVariableMap.has(s.body)) {
-            sr.syntheticScopeToVariableMap.set(s.body, new Map());
-          }
-          const syntheticMap = sr.syntheticScopeToVariableMap.get(s.body)!;
-
-          assert(comptimeExpr.parameters);
-
-          let loopIndex: undefined | Semantic.VariableSymbol = undefined;
-          let loopIndexId: undefined | Semantic.SymbolId = undefined;
-          if (s.indexVariable) {
-            [loopIndex, loopIndexId] = Semantic.addSymbol(sr, {
-              variant: Semantic.ENode.VariableSymbol,
-              comptime: true,
-              comptimeValue: null,
-              concrete: true,
-              export: false,
-              extern: EExternLanguage.None,
-              memberOfStruct: null,
-              mutability: EVariableMutability.Const,
-              name: s.indexVariable,
-              parentStructOrNS: null,
-              sourceloc: s.sourceloc,
-              type: makePrimitiveAvailable(
-                sr,
-                EPrimitive.usize,
-                EDatatypeMutability.Const,
-                s.sourceloc
-              ),
-              variableContext: EVariableContext.FunctionLocal,
-            } satisfies Semantic.VariableSymbol);
-          }
-
-          const allScopes: Semantic.StatementId[] = [];
-          for (let i = 0; i < comptimeExpr.parameters.length; i++) {
-            const [thenScope, thenScopeId] = Semantic.addBlockScope(sr, {
-              variant: Semantic.ENode.BlockScope,
-              statements: [],
-              emittedExpr: null,
-              constraints: [...args.context.constraints],
-            });
-
-            const semanticParamId = comptimeExpr.parameters[i];
-            const paramValue = sr.symbolNodes.get(semanticParamId);
-            assert(paramValue.variant === Semantic.ENode.VariableSymbol);
-            assert(paramValue.type);
-
-            syntheticMap.set(s.loopVariable, semanticParamId);
-            if (s.indexVariable) {
-              assert(loopIndexId && loopIndex);
-              loopIndex.comptimeValue = Semantic.addExpr(sr, {
-                variant: Semantic.ENode.LiteralExpr,
-                isTemporary: true,
-                literal: {
-                  type: EPrimitive.usize,
-                  unit: null,
-                  value: BigInt(i),
-                },
-                type: makePrimitiveAvailable(
-                  sr,
-                  EPrimitive.usize,
-                  EDatatypeMutability.Const,
-                  s.sourceloc
-                ),
-                sourceloc: s.sourceloc,
-              })[1];
-              syntheticMap.set(s.indexVariable, loopIndexId);
-            }
-            elaborateBlockScope(sr, {
-              targetScopeId: thenScopeId,
-              sourceScopeId: s.body,
-              expectedReturnType: args.expectedReturnType,
-              context: args.context,
-            });
-            if (s.indexVariable) {
-              syntheticMap.delete(s.indexVariable);
-            }
-            syntheticMap.delete(s.loopVariable);
-
-            allScopes.push(
-              Semantic.addStatement(sr, {
-                variant: Semantic.ENode.ExprStatement,
-                expr: Semantic.addExpr(sr, {
-                  variant: Semantic.ENode.BlockScopeExpr,
-                  block: thenScopeId,
-                  sourceloc: s.sourceloc,
-                  isTemporary: true,
-                  type: makeVoidType(sr),
-                })[1],
-                sourceloc: s.sourceloc,
-              })[1]
-            );
-          }
-
-          return Semantic.addStatement(sr, {
-            variant: Semantic.ENode.ExprStatement,
-            expr: Semantic.addExpr(sr, {
-              variant: Semantic.ENode.BlockScopeExpr,
-              block: Semantic.addBlockScope(sr, {
-                variant: Semantic.ENode.BlockScope,
-                statements: allScopes,
-                emittedExpr: null,
-                constraints: [...args.context.constraints],
-              })[1],
-              sourceloc: s.sourceloc,
-              isTemporary: true,
-              type: makeVoidType(sr),
-            })[1],
-            sourceloc: s.sourceloc,
-          })[1];
-        } else {
-          assert(false, "Non-comptime for each not implemented yet");
-        }
-      }
-
-      default:
-        assert(false);
     }
   }
 
