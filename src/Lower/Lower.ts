@@ -577,6 +577,8 @@ function makeIntrinsicCall(
         type: functypeId,
       })[1],
     })[1],
+    takesParentArena: false,
+    takesReturnArena: false,
     type: returnType,
   });
 }
@@ -597,6 +599,34 @@ function lowerExpr(
         calledExprTypeDef.variant === Lowered.ENode.FunctionDatatype ||
           calledExprTypeDef.variant === Lowered.ENode.CallableDatatype
       );
+
+      const arenaArgs: Lowered.ExprId[] = [];
+      if (expr.takesParentArena) {
+        arenaArgs.push(
+          Lowered.addExpr(lr, {
+            variant: Lowered.ENode.SymbolValueExpr,
+            name: {
+              mangledName: "__hz_parent_arena",
+              prettyName: "__hz_parent_arena",
+              wasMangled: false,
+            },
+            type: makeLowerTypeUse(lr, makeVoidPointerType(lr), false)[1],
+          })[1]
+        );
+      }
+      if (expr.takesReturnArena) {
+        arenaArgs.push(
+          Lowered.addExpr(lr, {
+            variant: Lowered.ENode.SymbolValueExpr,
+            name: {
+              mangledName: "__hz_return_arena",
+              prettyName: "__hz_return_arena",
+              wasMangled: false,
+            },
+            type: makeLowerTypeUse(lr, makeVoidPointerType(lr), false)[1],
+          })[1]
+        );
+      }
 
       if (calledExprTypeDef.variant === Lowered.ENode.CallableDatatype) {
         let thisExprId: Lowered.ExprId;
@@ -620,6 +650,7 @@ function lowerExpr(
               type: calledExpr.type,
             })[1],
             arguments: [
+              ...arenaArgs,
               calledExpr.thisExpr,
               ...expr.arguments.map((a) => lowerExpr(lr, a, flattened)[1]),
             ],
@@ -639,6 +670,7 @@ function lowerExpr(
               expr: calledExprId,
             })[1],
             arguments: [
+              ...arenaArgs,
               Lowered.addExpr(lr, {
                 variant: Lowered.ENode.MemberAccessExpr,
                 expr: calledExprId,
@@ -656,7 +688,7 @@ function lowerExpr(
         const [exprCall, exprCallId] = Lowered.addExpr<Lowered.ExprCallExpr>(lr, {
           variant: Lowered.ENode.ExprCallExpr,
           expr: calledExprId,
-          arguments: expr.arguments.map((a) => lowerExpr(lr, a, flattened)[1]),
+          arguments: [...arenaArgs, ...expr.arguments.map((a) => lowerExpr(lr, a, flattened)[1])],
           type: lowerTypeUse(lr, expr.type),
         });
         return [exprCall, exprCallId];
@@ -892,7 +924,16 @@ function lowerExpr(
                 memberName: "arenaImpl",
                 expr: arenaId,
                 requiresDeref: true,
-                type: lowerTypeUse(lr, makeArenaTypeUseAvailable(lr.sr)),
+                type: lowerTypeUse(
+                  lr,
+                  makeTypeUse(
+                    lr.sr,
+                    lr.sr.e.arenaTypeDef(),
+                    EDatatypeMutability.Default,
+                    false,
+                    null
+                  )[1]
+                ),
               })[1],
               sizeof[1],
               alignof[1],
@@ -1524,8 +1565,8 @@ function lowerBlockScope(
   let containsVariables = false;
   const statements: Lowered.StatementId[] = [];
 
-  const loweredArenaType = lowerTypeUse(lr, makeArenaTypeUseAvailable(lr.sr));
-  const loweredArenaInlineType = lowerTypeUse(lr, makeArenaTypeUseAvailable(lr.sr, true));
+  const loweredArenaType = lowerTypeUse(lr, lr.sr.e.arenaTypeUse(false, null)[1]);
+  const loweredArenaInlineType = lowerTypeUse(lr, lr.sr.e.arenaTypeUse(true, null)[1]);
   if (createLocalArena) {
     const [arenaImpl, arenaImplId] = Lowered.addExpr(lr, {
       variant: Lowered.ENode.ExprCallExpr,
@@ -1540,10 +1581,10 @@ function lowerBlockScope(
               prettyName: "__hz_parent_arena",
               wasMangled: false,
             },
-            type: lowerTypeUse(lr, makeArenaTypeUseAvailable(lr.sr)),
+            type: loweredArenaType,
           })[1],
           requiresDeref: true,
-          type: lowerTypeUse(lr, makeArenaTypeUseAvailable(lr.sr)),
+          type: loweredArenaType,
         })[1],
       ],
       expr: Lowered.addExpr(lr, {
@@ -1558,8 +1599,8 @@ function lowerBlockScope(
           lowerTypeDef(
             lr,
             makeRawFunctionDatatypeAvailable(lr.sr, {
-              parameters: [makeArenaTypeUseAvailable(lr.sr)],
-              returnType: makeArenaTypeUseAvailable(lr.sr),
+              parameters: [lr.sr.e.arenaTypeUse(false, null)[1]],
+              returnType: lr.sr.e.arenaTypeUse(false, null)[1],
               vararg: false,
               sourceloc: null,
             })
@@ -1567,7 +1608,9 @@ function lowerBlockScope(
           false
         )[1],
       })[1],
-      type: lowerTypeUse(lr, makeArenaTypeUseAvailable(lr.sr)),
+      takesParentArena: true,
+      takesReturnArena: true,
+      type: loweredArenaType,
     });
 
     const [arena, arenaId] = Lowered.addExpr(lr, {
@@ -1587,7 +1630,7 @@ function lowerBlockScope(
 
     const [variable, variableId] = storeInTempVarAndGet(
       lr,
-      lowerTypeUse(lr, makeArenaTypeUseAvailable(lr.sr)),
+      loweredArenaType,
       arenaId,
       null,
       statements,
@@ -1626,7 +1669,7 @@ function lowerBlockScope(
             type: loweredArenaType,
           })[1],
           requiresDeref: true,
-          type: lowerTypeUse(lr, makeArenaTypeUseAvailable(lr.sr)),
+          type: loweredArenaType,
         })[1],
         Lowered.addExpr(lr, {
           variant: Lowered.ENode.MemberAccessExpr,
@@ -1641,7 +1684,7 @@ function lowerBlockScope(
             type: loweredArenaType,
           })[1],
           requiresDeref: true,
-          type: lowerTypeUse(lr, makeArenaTypeUseAvailable(lr.sr)),
+          type: loweredArenaType,
         })[1],
       ],
       lowerTypeUse(lr, makeVoidType(lr.sr))
@@ -1743,7 +1786,7 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
       assert(originalFuncType.variant === Semantic.ENode.FunctionDatatype);
       const newParameters = [...originalFuncType.parameters];
 
-      const arenaType = makeArenaTypeUseAvailable(lr.sr);
+      const arenaType = lr.sr.e.arenaTypeUse(false, null)[1];
       parameterNames.unshift("__hz_return_arena");
       newParameters.unshift(arenaType);
       parameterNames.unshift("__hz_parent_arena");

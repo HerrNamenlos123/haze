@@ -183,38 +183,6 @@ export function EvalCTFE(
             })
           );
         }
-
-        if (
-          targetTypeDef.variant === Semantic.ENode.ReferenceDatatype ||
-          targetTypeDef.variant === Semantic.ENode.NullableReferenceDatatype
-        ) {
-          const refereeInst = sr.typeUseNodes.get(targetTypeDef.referee);
-          const referee = sr.typeDefNodes.get(refereeInst.type);
-          if (
-            referee.variant === Semantic.ENode.PrimitiveDatatype &&
-            referee.primitive === EPrimitive.void
-          ) {
-            // The expression is something casted to &void
-            if (integerLiteralValue) {
-              if (integerLiteralValue[0] === 0n) {
-                // Expression is 0 casted to &void
-                return ok(
-                  Semantic.addExpr(sr, {
-                    variant: Semantic.ENode.LiteralExpr,
-                    isTemporary: true,
-                    literal: {
-                      type: integerLiteralValue[1],
-                      unit: null,
-                      value: 0n,
-                    },
-                    type: expr.type,
-                    sourceloc: expr.sourceloc,
-                  })
-                );
-              }
-            }
-          }
-        }
       }
 
       break;

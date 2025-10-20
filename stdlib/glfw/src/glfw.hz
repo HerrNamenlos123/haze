@@ -20,12 +20,12 @@ const GLFW_OPENGL_CORE_PROFILE: i32;
 namespace raw {
     extern C glfwInit(): i32;
     extern C glfwTerminate(): void;
-    extern C glfwCreateWindow(width: i32, height: i32, title: c_str, monitor: ?&GLFWmonitor, share: ?&GLFWwindow): ?&GLFWwindow;
-    extern C glfwWindowShouldClose(w: &GLFWwindow): i32;
-    extern C glfwSetWindowShouldClose(w: &GLFWwindow, value: i32);
-    extern C glfwSwapBuffers(w: &GLFWwindow);
+    extern C glfwCreateWindow(width: i32, height: i32, title: c_str, monitor?: GLFWmonitor, share?: GLFWwindow): GLFWwindow;
+    extern C glfwWindowShouldClose(w: GLFWwindow): i32;
+    extern C glfwSetWindowShouldClose(w: GLFWwindow, value: i32);
+    extern C glfwSwapBuffers(w: GLFWwindow);
     extern C glfwSwapInterval(flag: i32);
-    extern C glfwMakeContextCurrent(w: &GLFWwindow);
+    extern C glfwMakeContextCurrent(w: GLFWwindow);
     extern C glfwPollEvents();
     extern C glfwInitHint(hint: i32, value: i32);
     extern C glfwWindowHint(hint: i32, value: i32);
@@ -41,15 +41,15 @@ namespace raw {
         glfwTerminate();
     }
 
-    export createWindow(width: i32, height: i32, title: c_str, monitor: ?&GLFWmonitor, share: ?&GLFWwindow): ?&GLFWwindow {
+    export createWindow(width: i32, height: i32, title: c_str, monitor: GLFWmonitor, share: GLFWwindow): GLFWwindow {
         return glfwCreateWindow(width, height, title, monitor, share);
     }
 
-    export windowShouldClose(w: &GLFWwindow): bool {
+    export windowShouldClose(w: GLFWwindow): bool {
         return glfwWindowShouldClose(w) != 0;
     }
 
-    export setWindowShouldClose(w: &GLFWwindow, value: bool) {
+    export setWindowShouldClose(w: GLFWwindow, value: bool) {
         if value == true {
             glfwSetWindowShouldClose(w, 1);
         }
@@ -58,7 +58,7 @@ namespace raw {
         }
     }
 
-    export swapBuffers(w: &GLFWwindow) {
+    export swapBuffers(w: GLFWwindow) {
         glfwSwapBuffers(w);
     }
 
@@ -66,7 +66,7 @@ namespace raw {
         glfwSwapInterval(flags);
     }
 
-    export makeContextCurrent(w: &GLFWwindow) {
+    export makeContextCurrent(w: GLFWwindow) {
         glfwMakeContextCurrent(w);
     }
 
@@ -92,7 +92,7 @@ namespace raw {
 }
 
 export struct Window {
-    handle: &GLFWwindow;
+    handle: GLFWwindow;
 
     makeContextCurrent() {
         raw.makeContextCurrent(this.handle);
@@ -163,7 +163,7 @@ export createWindow(config: WindowConfig): Window {
     if (height >= i32.min && height <= i32.max) {
         heightI32 = height;
     }
-    const handle = raw.createWindow(widthI32, heightI32, config.title, nullptr, nullptr);
+    const handle = raw.createWindow(widthI32, heightI32, config.title, 0 as GLFWwindow, 0 as GLFWmonitor);
     // unsafe {
     if (handle != nullptr) {
         return Window { handle: handle };
@@ -182,10 +182,10 @@ export getTime(): real {
     return raw.getTime() as real;
 }
 
-export getProcAddress(): (name: c_str) => ?&void {
+export getProcAddress(): (name: c_str) => void {
     const rawProc = raw.getProcAddress;
     do unsafe {
-        const castedProc: (name: c_str) => ?&void = uninitialized;
+        const castedProc: (name: c_str) => void = uninitialized;
         __c__("castedProc = (void*)rawProc;");
         return castedProc;
     }
