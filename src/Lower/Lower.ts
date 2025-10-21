@@ -4,11 +4,7 @@ import {
   Semantic,
   type SemanticResult,
 } from "../Semantic/Elaborate";
-import {
-  makeFunctionDatatypeAvailable,
-  makeRawFunctionDatatypeAvailable,
-  makeTypeUse,
-} from "../Semantic/LookupDatatype";
+import { makeRawFunctionDatatypeAvailable, makeTypeUse } from "../Semantic/LookupDatatype";
 import {
   BinaryOperationToString,
   EAssignmentOperation,
@@ -57,6 +53,7 @@ export namespace Lowered {
     NamespaceDatatype,
     ArrayDatatype,
     SliceDatatype,
+    UnionDatatype,
     // Type Use
     TypeUse,
     // Statements
@@ -79,6 +76,7 @@ export namespace Lowered {
     AlignofExpr,
     DatatypeAsValueExpr,
     ExplicitCastExpr,
+    UnionCastExpr,
     MemberAccessExpr,
     CallableExpr,
     AddressOfExpr,
@@ -257,6 +255,13 @@ export namespace Lowered {
     type: TypeUseId;
   };
 
+  export type UnionCastExpr = {
+    variant: ENode.UnionCastExpr;
+    expr: ExprId;
+    optimizeExprToNullptr: boolean;
+    type: TypeUseId;
+  };
+
   export type ExprMemberAccessExpr = {
     variant: ENode.MemberAccessExpr;
     expr: ExprId;
@@ -358,6 +363,7 @@ export namespace Lowered {
     | AlignofExpr
     | DatatypeAsValueExpr
     | ExplicitCastExpr
+    | UnionCastExpr
     | ExprMemberAccessExpr
     | LiteralExpr
     | PreIncrExpr
@@ -456,7 +462,8 @@ export namespace Lowered {
     | FunctionDatatypeDef
     | PointerDatatypeDef
     | ArrayDatatypeDef
-    | SliceDatatypeDef;
+    | SliceDatatypeDef
+    | UnionDatatypeDef;
 
   export type PointerDatatypeDef = {
     variant: ENode.PointerDatatype;
@@ -505,6 +512,13 @@ export namespace Lowered {
   export type SliceDatatypeDef = {
     variant: ENode.SliceDatatype;
     datatype: TypeUseId;
+    name: NameSet;
+  };
+
+  export type UnionDatatypeDef = {
+    variant: ENode.UnionDatatype;
+    members: TypeUseId[];
+    optimizeAsRawPointer: TypeUseId | null;
     name: NameSet;
   };
 }
@@ -1269,8 +1283,37 @@ function lowerExpr(
       });
     }
 
+    case Semantic.ENode.UnionCastExpr: {
+      const unionType = lr.sr.typeDefNodes.get(lr.sr.typeUseNodes.get(expr.type).type);
+      assert(unionType.variant === Semantic.ENode.UnionDatatype);
+
+      const loweredUnionId = lowerTypeUse(lr, expr.type);
+      const loweredUnion = lr.typeDefNodes.get(lr.typeUseNodes.get(loweredUnionId).type);
+      assert(loweredUnion.variant === Lowered.ENode.UnionDatatype);
+
+      let optimizeExprToNullptr = false;
+      if (loweredUnion.optimizeAsRawPointer) {
+        const exprTypeDef = lr.sr.typeDefNodes.get(
+          lr.sr.typeUseNodes.get(lr.sr.exprNodes.get(expr.expr).type).type
+        );
+        if (
+          exprTypeDef.variant === Semantic.ENode.PrimitiveDatatype &&
+          exprTypeDef.primitive === EPrimitive.none
+        ) {
+          optimizeExprToNullptr = true;
+        }
+      }
+
+      return Lowered.addExpr(lr, {
+        variant: Lowered.ENode.UnionCastExpr,
+        expr: lowerExpr(lr, expr.expr, flattened)[1],
+        optimizeExprToNullptr: optimizeExprToNullptr,
+        type: loweredUnionId,
+      });
+    }
+
     default:
-      assert(false, "All cases handled");
+      assert(false, "All cases handled " + Semantic.ENode[(expr as any).variant]);
   }
 }
 
@@ -1409,6 +1452,39 @@ function lowerTypeDef(lr: Lowered.Module, typeId: Semantic.TypeDefId): Lowered.T
       const [p, pId] = Lowered.addTypeDef<Lowered.SliceDatatypeDef>(lr, {
         variant: Lowered.ENode.SliceDatatype,
         datatype: lowerTypeUse(lr, type.datatype),
+        name: Semantic.makeNameSetTypeDef(lr.sr, typeId),
+      });
+      lr.loweredTypeDefs.set(typeId, pId);
+      return pId;
+    }
+  } else if (type.variant === Semantic.ENode.UnionDatatype) {
+    if (lr.loweredTypeDefs.has(typeId)) {
+      return lr.loweredTypeDefs.get(typeId)!;
+    } else {
+      let optimizeAsRawPointer: Lowered.TypeUseId | null = null;
+      if (type.members.length === 2) {
+        const def1 = lr.sr.typeDefNodes.get(lr.sr.typeUseNodes.get(type.members[0]).type);
+        const def2 = lr.sr.typeDefNodes.get(lr.sr.typeUseNodes.get(type.members[1]).type);
+        if (
+          def1.variant === Semantic.ENode.StructDatatype &&
+          def2.variant === Semantic.ENode.PrimitiveDatatype &&
+          def2.primitive === EPrimitive.none
+        ) {
+          optimizeAsRawPointer = lowerTypeUse(lr, type.members[0]);
+        }
+        if (
+          def2.variant === Semantic.ENode.StructDatatype &&
+          def1.variant === Semantic.ENode.PrimitiveDatatype &&
+          def1.primitive === EPrimitive.none
+        ) {
+          optimizeAsRawPointer = lowerTypeUse(lr, type.members[1]);
+        }
+      }
+
+      const [p, pId] = Lowered.addTypeDef<Lowered.UnionDatatypeDef>(lr, {
+        variant: Lowered.ENode.UnionDatatype,
+        members: type.members.map((m) => lowerTypeUse(lr, m)),
+        optimizeAsRawPointer: optimizeAsRawPointer,
         name: Semantic.makeNameSetTypeDef(lr.sr, typeId),
       });
       lr.loweredTypeDefs.set(typeId, pId);
@@ -1966,6 +2042,8 @@ function serializeLoweredExpr(lr: Lowered.Module, exprId: Lowered.ExprId): strin
         return `${JSON.stringify(expr.literal.value)}`;
       } else if (expr.literal.type === EPrimitive.null) {
         return `null`;
+      } else if (expr.literal.type === EPrimitive.none) {
+        return `none`;
       } else {
         return `${expr.literal.value}`;
       }

@@ -61,6 +61,7 @@ import {
   type ASTArraySliceExpr,
   EDatatypeMutability,
   EVariableMutability,
+  type ASTUnionDatatype,
 } from "../shared/AST";
 import {
   BinaryExprContext,
@@ -129,6 +130,7 @@ import {
   TopLevelDeclarationsContext,
   DynamicArrayDatatypeContext,
   StackArrayDatatypeContext,
+  UnionDatatypeContext,
 } from "./grammar/autogen/HazeParser";
 import {
   BaseErrorListener,
@@ -561,6 +563,20 @@ class ASTTransformer extends HazeParserVisitor<any> {
     };
   };
 
+  visitUnionDatatype = (ctx: UnionDatatypeContext): ASTUnionDatatype => {
+    const members = ctx.baseDatatype().map((d) => this.visit(d));
+
+    if (members.length === 1) {
+      return members[0];
+    }
+
+    return {
+      variant: "UnionDatatype",
+      members: members,
+      sourceloc: this.loc(ctx),
+    };
+  };
+
   visitNamedDatatype = (ctx: NamedDatatypeContext): ASTNamedDatatype => {
     const fragments = ctx.datatypeFragment().map((c) => this.visitDatatypeFragment(c));
     const datatypes: ASTNamedDatatype[] = [];
@@ -592,6 +608,7 @@ class ASTTransformer extends HazeParserVisitor<any> {
       return {
         datatype: datatype,
         name: p.ID().getText(),
+        optional: Boolean(p.QUESTIONMARK()),
         sourceloc: this.loc(p),
       } satisfies ASTParam;
     });
@@ -1089,6 +1106,9 @@ class ASTTransformer extends HazeParserVisitor<any> {
             this.loc(ctx)
           );
         }
+        break;
+
+      case "UnionDatatype":
         break;
 
       default:

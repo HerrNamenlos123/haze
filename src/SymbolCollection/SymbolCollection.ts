@@ -150,6 +150,7 @@ export namespace Collect {
     NamedDatatype,
     StackArrayDatatype,
     DynamicArrayDatatype,
+    UnionDatatype,
     ParameterPack,
     StructTypeDef,
     NamespaceSharedInstance,
@@ -264,6 +265,7 @@ export namespace Collect {
   export type ParameterValue = {
     name: string;
     type: Collect.TypeUseId;
+    optional: boolean;
     sourceloc: SourceLoc;
   };
 
@@ -422,6 +424,12 @@ export namespace Collect {
     sourceloc: SourceLoc;
   };
 
+  export type UnionDatatype = {
+    variant: ENode.UnionDatatype;
+    members: Collect.TypeUseId[];
+    sourceloc: SourceLoc;
+  };
+
   export type ParameterPack = {
     variant: ENode.ParameterPack;
     sourceloc: SourceLoc;
@@ -432,6 +440,7 @@ export namespace Collect {
     | FunctionDatatype
     | StackArrayDatatype
     | DynamicArrayDatatype
+    | UnionDatatype
     | ParameterPack;
 
   /// ===============================================================
@@ -1218,9 +1227,30 @@ function collectTypeUse(
     // =================================================================================================================
     // =================================================================================================================
 
+    case "UnionDatatype":
+      return Collect.makeTypeUse(cc, {
+        variant: Collect.ENode.UnionDatatype,
+        members: item.members.map((m) => collectTypeUse(cc, m, args)),
+        sourceloc: item.sourceloc,
+      })[1];
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
     default:
       assert(false, "All cases handled " + item.variant);
   }
+}
+
+function collectTypeUnion(
+  cc: CollectionContext,
+  item: ASTTypeUse,
+  args: {
+    currentParentScope: Collect.ScopeId;
+  }
+) {
+  return Collect.makeTypeDef;
 }
 
 function collectSymbol(
@@ -1255,6 +1285,7 @@ function collectSymbol(
       const parameters = item.params.map((p) => ({
         name: p.name,
         type: collectTypeUse(cc, p.datatype, args),
+        optional: p.optional,
         sourceloc: p.sourceloc,
       }));
       const [functionSymbol, functionSymbolId] = Collect.makeSymbol<Collect.FunctionSymbol>(cc, {

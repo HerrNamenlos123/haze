@@ -20,7 +20,7 @@ const GLFW_OPENGL_CORE_PROFILE: i32;
 namespace raw {
     extern C glfwInit(): i32;
     extern C glfwTerminate(): void;
-    extern C glfwCreateWindow(width: i32, height: i32, title: c_str, monitor?: GLFWmonitor, share?: GLFWwindow): GLFWwindow;
+    extern C glfwCreateWindow(width: i32, height: i32, title: c_str, monitor: GLFWmonitor | none, share: GLFWwindow | none): GLFWwindow | none;
     extern C glfwWindowShouldClose(w: GLFWwindow): i32;
     extern C glfwSetWindowShouldClose(w: GLFWwindow, value: i32);
     extern C glfwSwapBuffers(w: GLFWwindow);
@@ -41,7 +41,7 @@ namespace raw {
         glfwTerminate();
     }
 
-    export createWindow(width: i32, height: i32, title: c_str, monitor: GLFWmonitor, share: GLFWwindow): GLFWwindow {
+    export createWindow(width: i32, height: i32, title: c_str, monitor: GLFWmonitor | none, share: GLFWwindow | none): GLFWwindow | none {
         return glfwCreateWindow(width, height, title, monitor, share);
     }
 
@@ -146,7 +146,7 @@ export terminate() {
     raw.terminate();
 }
 
-export createWindow(config: WindowConfig): Window {
+export createWindow(config: WindowConfig): Window | none {
     raw.windowHint(GLFW_CONTEXT_VERSION_MAJOR, 3 as i32);
     raw.windowHint(GLFW_CONTEXT_VERSION_MINOR, 3 as i32);
     raw.windowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
@@ -163,15 +163,11 @@ export createWindow(config: WindowConfig): Window {
     if (height >= i32.min && height <= i32.max) {
         heightI32 = height;
     }
-    const handle = raw.createWindow(widthI32, heightI32, config.title, 0 as GLFWwindow, 0 as GLFWmonitor);
-    // unsafe {
-    if (handle != nullptr) {
+    const handle = raw.createWindow(widthI32, heightI32, config.title, none, none);
+    if (handle) {
         return Window { handle: handle };
     }
-    // }
-    do unsafe {
-        return Window { handle: handle };
-    }
+    return none;
 }
 
 export pollEvents() {

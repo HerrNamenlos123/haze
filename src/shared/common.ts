@@ -59,6 +59,7 @@ export type NameSet = {
 export enum EPrimitive {
   void = 1,
   null,
+  none,
   bool,
   i8,
   i16,
@@ -92,6 +93,9 @@ export type LiteralValue =
     }
   | {
       type: EPrimitive.null;
+    }
+  | {
+      type: EPrimitive.none;
     }
   | {
       type: EPrimitive.str | EPrimitive.c_str;
@@ -134,6 +138,8 @@ export function primitiveToString(primitive: EPrimitive) {
       return "void";
     case EPrimitive.null:
       return "null";
+    case EPrimitive.none:
+      return "none";
     case EPrimitive.bool:
       return "bool";
     case EPrimitive.i8:
@@ -177,6 +183,8 @@ export function stringToPrimitive(str: string) {
       return EPrimitive.void;
     case "null":
       return EPrimitive.null;
+    case "none":
+      return EPrimitive.none;
     case "bool":
       return EPrimitive.bool;
     case "i8":

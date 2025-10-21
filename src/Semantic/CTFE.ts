@@ -87,6 +87,9 @@ export function EvalCTFE(
               if (left.literal.type === EPrimitive.null || right.literal.type === EPrimitive.null) {
                 return ok(makeBoolValue(sr, negate ? false : true, expr.sourceloc));
               }
+              if (left.literal.type === EPrimitive.none || right.literal.type === EPrimitive.none) {
+                return ok(makeBoolValue(sr, negate ? false : true, expr.sourceloc));
+              }
               return ok(
                 makeBoolValue(
                   sr,

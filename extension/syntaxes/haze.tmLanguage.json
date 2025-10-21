@@ -195,6 +195,7 @@
         { "match": "\\b(true)\\b", "name": "constant.language.boolean.true.ts" },
         { "match": "\\b(false)\\b", "name": "constant.language.boolean.false.ts" },
         { "match": "\\b(null)\\b", "name": "constant.language.boolean.false.ts" },
+        { "match": "\\b(none)\\b", "name": "constant.language.boolean.false.ts" },
         { "match": "\\b(nullptr)\\b", "name": "constant.language.boolean.false.ts" }
       ]
     },
@@ -202,7 +203,7 @@
       "patterns": [
         {
           "name": "support.type.primitive",
-          "match": "\\b(i8|i16|i32|i64|usize|u8|u16|u32|u64|str|String|bool|int|real|complex|void|null)\\b"
+          "match": "\\b(i8|i16|i32|i64|usize|u8|u16|u32|u64|str|String|bool|int|real|complex|void|null|none)\\b"
         },
         {
           "name": "support.type.builtin",

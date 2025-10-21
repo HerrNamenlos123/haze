@@ -63,7 +63,7 @@ externLanguage: EXTERNC;
 
 functionDefinition: (export=EXPORT)? (extern=EXTERN externLang=externLanguage? pub=PUB? noemit=NOEMIT?)?  ID (LANGLE ID (COMMA ID)* RANGLE)? LB params RB (COLON datatype)? requiresBlock? (ARROW)? (funcbody | SEMI?);
 lambda: LB params RB (COLON datatype)? requiresBlock? ARROW funcbody;
-param: ID COLON (datatype | ellipsis);
+param: ID QUESTIONMARK? COLON (datatype | ellipsis);
 params: (param (COMMA param)* (COMMA ellipsis)?)? | ellipsis;
 ellipsis: ELLIPSIS;
 
@@ -107,14 +107,16 @@ datatypeImpl
     : datatypeFragment (DOT datatypeFragment)*                                  #NamedDatatype
     | LBRACKET n=INTEGER_LITERAL RBRACKET datatype                              #StackArrayDatatype
     | LBRACKET RBRACKET datatype                                                #DynamicArrayDatatype
-    // | QUESTIONAMPERSAND datatype                                                #NullableReferenceDatatype
-    // | SINGLEAND datatype                                                        #ReferenceDatatype
     | LB params RB ARROW datatype requiresBlock?                                #FunctionDatatype
     ;
 
-datatype
+baseDatatype
     : (MUT | CONST)? (INLINE)? datatypeImpl                                     #DatatypeWithMutability
     | LB datatype RB                                                            #DatatypeInParenthesis
+    ;
+
+datatype
+    : baseDatatype (SINGLEOR baseDatatype)*                                     #UnionDatatype
     ;
 
 datatypeFragment

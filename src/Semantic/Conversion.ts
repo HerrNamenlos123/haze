@@ -273,6 +273,16 @@ export namespace Conversion {
         );
       }
 
+      case Semantic.ENode.UnionDatatype: {
+        assert(bt.variant === Semantic.ENode.UnionDatatype);
+        if (
+          at.members.length === bt.members.length &&
+          at.members.every((a, i) => a === bt.members[i])
+        )
+          return true;
+        return false;
+      }
+
       case Semantic.ENode.CallableDatatype: {
         assert(bt.variant === Semantic.ENode.CallableDatatype);
         if (Boolean(at.thisExprType) !== Boolean(bt.thisExprType)) return false;
@@ -378,7 +388,7 @@ export namespace Conversion {
       }
 
       default:
-        assert(false, "All cases handled");
+        assert(false, "All cases handled: " + Semantic.ENode[at.variant]);
     }
   }
 
@@ -924,6 +934,27 @@ export namespace Conversion {
           isTemporary: fromExpr.isTemporary,
         })[1]
       );
+    }
+
+    // Union Conversions
+    if (to.variant === Semantic.ENode.UnionDatatype) {
+      const unionTypeDefs = to.members.map((typeUseId) => {
+        const typeUse = sr.typeUseNodes.get(typeUseId);
+        return typeUse.type;
+      });
+
+      // TODO: Respect mutability and constness here
+      if (unionTypeDefs.includes(fromTypeInstance.type)) {
+        return ok(
+          Semantic.addExpr(sr, {
+            variant: Semantic.ENode.UnionCastExpr,
+            expr: fromExprId,
+            type: toId,
+            sourceloc: sourceloc,
+            isTemporary: fromExpr.isTemporary,
+          })[1]
+        );
+      }
     }
 
     throw new CompilerError(

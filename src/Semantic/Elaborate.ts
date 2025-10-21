@@ -2308,6 +2308,21 @@ export class SemanticElaborator {
         )[1];
       }
 
+      case Collect.ENode.UnionDatatype: {
+        const members = type.members.map((m) => this.lookupAndElaborateDatatype(m));
+        return makeTypeUse(
+          this.sr,
+          Semantic.addType(this.sr, {
+            variant: Semantic.ENode.UnionDatatype,
+            members: members,
+            concrete: !members.some((m) => !isTypeConcrete(this.sr, m)),
+          })[1],
+          EDatatypeMutability.Const,
+          false,
+          type.sourceloc
+        )[1];
+      }
+
       // =================================================================================================================
       // =================================================================================================================
       // =================================================================================================================
@@ -3012,6 +3027,7 @@ export class SemanticElaborator {
                 currentScope: this.currentContext.currentScope,
                 genericsScope: this.currentContext.genericsScope,
               }),
+              expectedReturnType: this.expectedReturnType,
             },
             () => {
               this.elaborateBlockScope(
@@ -3611,6 +3627,22 @@ export class SemanticElaborator {
         type: makePrimitiveAvailable(
           this.sr,
           EPrimitive.null,
+          EDatatypeMutability.Const,
+          symbolValue.sourceloc
+        ),
+      });
+    }
+    if (symbolValue.name === "none") {
+      return Semantic.addExpr(this.sr, {
+        variant: Semantic.ENode.LiteralExpr,
+        literal: {
+          type: EPrimitive.none,
+        },
+        isTemporary: true,
+        sourceloc: symbolValue.sourceloc,
+        type: makePrimitiveAvailable(
+          this.sr,
+          EPrimitive.none,
           EDatatypeMutability.Const,
           symbolValue.sourceloc
         ),
@@ -4364,6 +4396,13 @@ export class SemanticBuilder {
   voidType() {
     return this.primitiveType(EPrimitive.void, null);
   }
+
+  doesUnionContain(unionId: Semantic.TypeUseId, typeId: Semantic.TypeUseId) {
+    const union = this.sr.typeDefNodes.get(this.sr.typeUseNodes.get(unionId).type);
+    assert(union.variant === Semantic.ENode.UnionDatatype);
+
+    return union.members.some((m) => m === typeId);
+  }
 }
 
 export function printSubstitutionContext(sr: SemanticResult, context: Semantic.ElaborationContext) {
@@ -4637,7 +4676,7 @@ export namespace Semantic {
   export type TypeDefId = Brand<number, "SemanticTypeDef">;
   export type TypeUseId = Brand<number, "SemanticTypeUse">;
 
-  export const enum ENode {
+  export enum ENode {
     CInjectDirectiveSymbol,
     // Symbols
     VariableSymbol,
@@ -4657,6 +4696,7 @@ export namespace Semantic {
     NamespaceDatatype,
     FixedArrayDatatype,
     DynamicArrayDatatype,
+    UnionDatatype,
     // Statements
     InlineCStatement,
     WhileStatement,
@@ -4677,6 +4717,7 @@ export namespace Semantic {
     SizeofExpr,
     AlignofExpr,
     ExplicitCastExpr,
+    UnionCastExpr,
     MemberAccessExpr,
     CallableExpr,
     AddressOfExpr,
@@ -4882,6 +4923,12 @@ export namespace Semantic {
     concrete: boolean;
   };
 
+  export type UnionDatatypeDef = {
+    variant: ENode.UnionDatatype;
+    members: TypeUseId[];
+    concrete: boolean;
+  };
+
   export type GenericParameterDatatypeDef = {
     variant: ENode.GenericParameterDatatype;
     name: string;
@@ -4906,6 +4953,7 @@ export namespace Semantic {
     | FixedArrayDatatypeDef
     | DynamicArrayDatatypeDef
     | ParameterPackDatatypeDef
+    | UnionDatatypeDef
     | CallableDatatypeDef
     | PrimitiveDatatypeDef;
 
@@ -5001,6 +5049,14 @@ export namespace Semantic {
 
   export type ExplicitCastExpr = {
     variant: ENode.ExplicitCastExpr;
+    expr: ExprId;
+    type: TypeUseId;
+    isTemporary: boolean;
+    sourceloc: SourceLoc;
+  };
+
+  export type UnionCastExpr = {
+    variant: ENode.UnionCastExpr;
     expr: ExprId;
     type: TypeUseId;
     isTemporary: boolean;
@@ -5139,6 +5195,7 @@ export namespace Semantic {
     | AddressOfExpr
     | DereferenceExpr
     | ExplicitCastExpr
+    | UnionCastExpr
     | ExprCallExpr
     | StructInstantiationExpr
     | LiteralExpr
@@ -5210,6 +5267,8 @@ export namespace Semantic {
     } else if (expr.variant === Semantic.ENode.LiteralExpr) {
       if (expr.literal.type === EPrimitive.null) {
         return "null";
+      } else if (expr.literal.type === EPrimitive.none) {
+        return "none";
       } else {
         return primitiveToString(expr.literal.type) + "_" + expr.literal.value.toString();
       }
@@ -5651,6 +5710,8 @@ export namespace Semantic {
         return `${value.value}`;
       } else if (value.type === EPrimitive.null) {
         return `null`;
+      } else if (value.type === EPrimitive.none) {
+        return `none`;
       } else {
         return `${primitiveToString(value.type)}(${value.value})`;
       }
@@ -5786,6 +5847,9 @@ export namespace Semantic {
           sr,
           datatype.datatype
         )}`;
+
+      case Semantic.ENode.UnionDatatype:
+        return datatype.members.map((m) => serializeTypeUse(sr, m)).join(" | ");
 
       case Semantic.ENode.ParameterPackDatatype:
         if (datatype.parameters === null) {
@@ -6064,6 +6128,17 @@ export namespace Semantic {
         };
       }
 
+      case Semantic.ENode.UnionDatatype: {
+        return {
+          name:
+            "U" +
+            type.members.length.toString() +
+            "_" +
+            type.members.map((m) => mangleTypeUse(sr, m).name).join("_"),
+          wasMangled: true,
+        };
+      }
+
       case Semantic.ENode.ParameterPackDatatype: {
         assert(type.parameters !== null);
         return {
@@ -6104,7 +6179,12 @@ export namespace Semantic {
       };
     } else if (literalType === EPrimitive.null) {
       return {
-        name: "nl",
+        name: "4null",
+        wasMangled: true,
+      };
+    } else if (literalType === EPrimitive.none) {
+      return {
+        name: "4none",
         wasMangled: true,
       };
     } else {

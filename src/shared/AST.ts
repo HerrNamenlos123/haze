@@ -182,6 +182,7 @@ export type ASTFunctionDefinition = {
 export type ASTParam = {
   name: string;
   datatype: ASTTypeUse;
+  optional: boolean;
   sourceloc: SourceLoc;
 };
 
@@ -192,6 +193,12 @@ export type ASTNamedDatatype = {
   nested?: ASTNamedDatatype;
   inline: boolean;
   mutability: EDatatypeMutability;
+  sourceloc: SourceLoc;
+};
+
+export type ASTUnionDatatype = {
+  variant: "UnionDatatype";
+  members: ASTTypeUse[];
   sourceloc: SourceLoc;
 };
 
@@ -226,6 +233,7 @@ export type ASTParameterPackDatatype = {
 };
 
 export type ASTTypeUse =
+  | ASTUnionDatatype
   | ASTNamedDatatype
   | ASTFunctionDatatype
   | ASTDeferredType

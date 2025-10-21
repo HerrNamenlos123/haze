@@ -158,6 +158,11 @@ class CodeGenerator {
             `typedef struct ${this.mangleTypeDef(symbol)} ${this.mangleTypeDef(symbol)};`
           );
           this.out.type_definitions.writeLine(`struct ${this.mangleTypeDef(symbol)} {};`);
+        } else if (symbol.primitive === EPrimitive.none) {
+          this.out.type_declarations.writeLine(
+            `typedef struct ${this.mangleTypeDef(symbol)} ${this.mangleTypeDef(symbol)};`
+          );
+          this.out.type_definitions.writeLine(`struct ${this.mangleTypeDef(symbol)} {};`);
         } else {
           this.out.type_declarations.writeLine(
             `typedef ${this.primitiveToC(symbol.primitive)} ${this.mangleTypeDef(symbol)};`
@@ -182,6 +187,28 @@ class CodeGenerator {
         this.out.type_declarations.writeLine(
           `typedef ${this.mangleTypeUse(symbol.referee)}* ${this.mangleTypeDef(symbol)};`
         );
+      } else if (symbol.variant === Lowered.ENode.UnionDatatype) {
+        if (symbol.optimizeAsRawPointer) {
+          this.out.type_declarations.writeLine(
+            `typedef ${this.mangleTypeUse(symbol.optimizeAsRawPointer)} ${this.mangleTypeDef(
+              symbol
+            )};`
+          );
+        } else {
+          this.out.type_declarations.writeLine(
+            `typedef struct ${this.mangleTypeDef(symbol)} ${this.mangleTypeDef(symbol)};`
+          );
+          this.out.type_definitions
+            .writeLine(`struct ${this.mangleTypeDef(symbol)} {`)
+            .pushIndent();
+          this.out.type_definitions.writeLine(`uint8_t tag;`);
+          this.out.type_definitions.writeLine(`union {`).pushIndent();
+          symbol.members.forEach((m, i) => {
+            this.out.type_definitions.writeLine(`${this.mangleTypeUse(m)} as_index_${i};`);
+          });
+          this.out.type_definitions.popIndent().writeLine(`};`);
+          this.out.type_definitions.popIndent().writeLine(`};`);
+        }
       } else if (symbol.variant === Lowered.ENode.ArrayDatatype) {
         this.out.type_declarations.writeLine(
           `typedef struct ${this.mangleTypeDef(symbol)} ${this.mangleTypeDef(symbol)};`
@@ -286,6 +313,12 @@ class CodeGenerator {
       } else if (type.variant === Lowered.ENode.SliceDatatype) {
         appliedTypes.add(type);
         processTypeUse(type.datatype);
+        sortedLoweredTypes.push(type);
+      } else if (type.variant === Lowered.ENode.UnionDatatype) {
+        appliedTypes.add(type);
+        for (const m of type.members) {
+          processTypeUse(m);
+        }
         sortedLoweredTypes.push(type);
       } else {
         assert(false);
@@ -843,11 +876,44 @@ class CodeGenerator {
         return { temp: tempWriter, out: outWriter };
       }
 
-      case Lowered.ENode.ExplicitCastExpr:
+      case Lowered.ENode.ExplicitCastExpr: {
         const exprWriter = this.emitExpr(expr.expr);
         tempWriter.write(exprWriter.temp);
         outWriter.write(`((${this.mangleTypeUse(expr.type)})(${exprWriter.out.get()}))`);
         return { out: outWriter, temp: tempWriter };
+      }
+
+      case Lowered.ENode.UnionCastExpr: {
+        const exprWriter = this.emitExpr(expr.expr);
+        tempWriter.write(exprWriter.temp);
+        const typeUse = this.lr.typeUseNodes.get(expr.type);
+        const union = this.lr.typeDefNodes.get(typeUse.type);
+        assert(union.variant === Lowered.ENode.UnionDatatype);
+
+        // TODO: Respect mutability and constness
+        const exprTypeDef = this.lr.typeUseNodes.get(this.lr.exprNodes.get(expr.expr).type).type;
+        const unionMembers = union.members.map((m) => this.lr.typeUseNodes.get(m).type);
+
+        const index = unionMembers.findIndex((m) => m === exprTypeDef);
+        assert(index !== -1);
+
+        if (union.optimizeAsRawPointer) {
+          if (expr.optimizeExprToNullptr) {
+            outWriter.write(`((${this.mangleTypeUse(expr.type)})(0))`);
+          } else {
+            outWriter.write(
+              `((${this.mangleTypeUse(expr.type)})(${this.emitExpr(expr.expr).out.get()}))`
+            );
+          }
+        } else {
+          outWriter.write(
+            `((${this.mangleTypeUse(
+              expr.type
+            )}) { .tag = ${index}, .as_index_${index} = ${this.emitExpr(expr.expr).out.get()} })`
+          );
+        }
+        return { out: outWriter, temp: tempWriter };
+      }
 
       case Lowered.ENode.PreIncrExpr: {
         const exprWriter = this.emitExpr(expr.expr);
@@ -1159,6 +1225,8 @@ class CodeGenerator {
           );
         } else if (expr.literal.type === EPrimitive.null) {
           outWriter.write("(_H4null){}");
+        } else if (expr.literal.type === EPrimitive.none) {
+          outWriter.write("(_H4none){}");
         } else if (expr.literal.type === EPrimitive.f32) {
           outWriter.write(
             `(${this.primitiveToC(expr.literal.type)})(${stringifyWithDecimal(
@@ -1297,7 +1365,7 @@ class CodeGenerator {
       // }
 
       default:
-        assert(false && "All cases handled");
+        assert(false, "All cases handled: " + Lowered.ENode[(expr as any).variant]);
     }
   }
 
