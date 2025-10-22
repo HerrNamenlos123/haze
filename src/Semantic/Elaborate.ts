@@ -31,6 +31,7 @@ import {
 import {
   Collect,
   funcSymHasParameterPack,
+  printCollectedDatatype,
   printCollectedExpr,
   printCollectedSymbol,
   type CollectionContext,
@@ -1752,269 +1753,282 @@ export class SemanticElaborator {
       constraints: this.currentContext.constraints,
     });
 
-    // The way this works is that first we define all generic substitutions outside of the function in the context,
-    // and then we elaborate the function symbol here. For that, we get the raw generics and retrieve substitutions
-    // for all of them. All substitutions must be available. This means that the system works very well, because
-    // if we elaborate a generic function from itself recursively, we automatically get the correct substitution.
-    const genericArgs = func.generics.map((g) => {
-      const substitute = newContext.substitute.get(g);
-      assert(substitute);
-      return substitute;
-    });
+    return this.withContext(
+      {
+        context: newContext,
+      },
+      () => {
+        // The way this works is that first we define all generic substitutions outside of the function in the context,
+        // and then we elaborate the function symbol here. For that, we get the raw generics and retrieve substitutions
+        // for all of them. All substitutions must be available. This means that the system works very well, because
+        // if we elaborate a generic function from itself recursively, we automatically get the correct substitution.
+        const genericArgs = func.generics.map((g) => {
+          const substitute = newContext.substitute.get(g);
+          assert(substitute);
+          return substitute;
+        });
 
-    const existing = getFromFuncDefCache(this.sr, functionSignature.originalFunction, {
-      genericArgs: genericArgs,
-      paramPackTypes: paramPackTypes,
-      parentStructOrNS: parentStructOrNS,
-    });
-    if (existing) {
-      return existing;
-    }
+        const existing = getFromFuncDefCache(this.sr, functionSignature.originalFunction, {
+          genericArgs: genericArgs,
+          paramPackTypes: paramPackTypes,
+          parentStructOrNS: parentStructOrNS,
+        });
+        if (existing) {
+          return existing;
+        }
 
-    const expectedReturnType = this.lookupAndElaborateDatatype(func.returnType);
+        const expectedReturnType = this.lookupAndElaborateDatatype(func.returnType);
 
-    if (func.vararg && func.extern !== EExternLanguage.Extern_C) {
-      throw new CompilerError(
-        `A C-Style Vararg parameter pack may only be used on extern "C" functions`,
-        func.sourceloc
-      );
-    }
+        if (func.vararg && func.extern !== EExternLanguage.Extern_C) {
+          throw new CompilerError(
+            `A C-Style Vararg parameter pack may only be used on extern "C" functions`,
+            func.sourceloc
+          );
+        }
 
-    let parameterPack = false;
-    const parameterNames = func.parameters.map((p) => p.name);
-    const parameters = func.parameters
-      .map((p, i) => {
-        const paramType = this.sr.cc.typeUseNodes.get(p.type);
-        if (paramType.variant === Collect.ENode.ParameterPack) {
-          if (i !== func.parameters.length - 1) {
-            throw new CompilerError(
-              `A Parameter Pack may only appear at the very end of the parameter list`,
-              func.sourceloc
-            );
-          }
-          if (func.extern !== EExternLanguage.None) {
-            throw new CompilerError(
-              `A Parameter Pack may not be used on an exported function`,
-              func.sourceloc
-            );
-          }
-          parameterPack = true;
+        let parameterPack = false;
+        const parameterNames = func.parameters.map((p) => p.name);
+        const parameters = func.parameters
+          .map((p, i) => {
+            const paramType = this.sr.cc.typeUseNodes.get(p.type);
+            if (paramType.variant === Collect.ENode.ParameterPack) {
+              if (i !== func.parameters.length - 1) {
+                throw new CompilerError(
+                  `A Parameter Pack may only appear at the very end of the parameter list`,
+                  func.sourceloc
+                );
+              }
+              if (func.extern !== EExternLanguage.None) {
+                throw new CompilerError(
+                  `A Parameter Pack may not be used on an exported function`,
+                  func.sourceloc
+                );
+              }
+              parameterPack = true;
 
-          assert(func.functionScope);
-          const functionScope = this.sr.cc.scopeNodes.get(func.functionScope);
-          assert(functionScope.variant === Collect.ENode.FunctionScope);
-          const packVariable = [...functionScope.symbols].find((s) => {
-            const sym = this.sr.cc.symbolNodes.get(s);
-            return sym.variant === Collect.ENode.VariableSymbol && sym.name === p.name;
-          });
-          assert(packVariable);
+              assert(func.functionScope);
+              const functionScope = this.sr.cc.scopeNodes.get(func.functionScope);
+              assert(functionScope.variant === Collect.ENode.FunctionScope);
+              const packVariable = [...functionScope.symbols].find((s) => {
+                const sym = this.sr.cc.symbolNodes.get(s);
+                return sym.variant === Collect.ENode.VariableSymbol && sym.name === p.name;
+              });
+              assert(packVariable);
 
-          const [paramPack, paramPackId] = Semantic.addType(this.sr, {
-            variant: Semantic.ENode.ParameterPackDatatype,
-            parameters: paramPackTypes.map((t, i) => {
-              const [variable, variableId] = Semantic.addSymbol(this.sr, {
+              const [paramPack, paramPackId] = Semantic.addType(this.sr, {
+                variant: Semantic.ENode.ParameterPackDatatype,
+                parameters: paramPackTypes.map((t, i) => {
+                  const [variable, variableId] = Semantic.addSymbol(this.sr, {
+                    variant: Semantic.ENode.VariableSymbol,
+                    comptime: false,
+                    comptimeValue: null,
+                    concrete: true,
+                    name: `__param_pack_${i}`,
+                    export: false,
+                    extern: EExternLanguage.None,
+                    memberOfStruct: null,
+                    mutability: EVariableMutability.Default,
+                    parentStructOrNS: null,
+                    type: t,
+                    variableContext: EVariableContext.FunctionParameter,
+                    sourceloc: func.sourceloc,
+                  });
+                  return variableId;
+                }),
+                concrete: true,
+              });
+              const [paramPackVariable, paramPackVariableId] = Semantic.addSymbol(this.sr, {
                 variant: Semantic.ENode.VariableSymbol,
                 comptime: false,
                 comptimeValue: null,
                 concrete: true,
-                name: `__param_pack_${i}`,
+                name: `__param_pack`,
                 export: false,
                 extern: EExternLanguage.None,
                 memberOfStruct: null,
                 mutability: EVariableMutability.Default,
                 parentStructOrNS: null,
-                type: t,
+                type: makeTypeUse(
+                  this.sr,
+                  paramPackId,
+                  EDatatypeMutability.Const,
+                  false,
+                  func.sourceloc
+                )[1],
                 variableContext: EVariableContext.FunctionParameter,
                 sourceloc: func.sourceloc,
               });
-              return variableId;
-            }),
-            concrete: true,
-          });
-          const [paramPackVariable, paramPackVariableId] = Semantic.addSymbol(this.sr, {
-            variant: Semantic.ENode.VariableSymbol,
-            comptime: false,
-            comptimeValue: null,
-            concrete: true,
-            name: `__param_pack`,
-            export: false,
-            extern: EExternLanguage.None,
-            memberOfStruct: null,
-            mutability: EVariableMutability.Default,
-            parentStructOrNS: null,
-            type: makeTypeUse(
+              newContext.elaboratedVariables.set(packVariable, paramPackVariableId);
+              return makeTypeUse(
+                this.sr,
+                paramPackId,
+                EDatatypeMutability.Const,
+                false,
+                func.sourceloc
+              )[1];
+            }
+            return this.lookupAndElaborateDatatype(p.type);
+          })
+          .filter((p) => Boolean(p))
+          .map((p) => p!);
+
+        if (func.methodType === EMethodType.Method && !func.staticMethod) {
+          parameterNames.unshift("this");
+          assert(parentStructOrNS);
+          parameters.unshift(
+            makeTypeUse(
               this.sr,
-              paramPackId,
-              EDatatypeMutability.Const,
+              parentStructOrNS,
+              EDatatypeMutability.Mut,
               false,
               func.sourceloc
-            )[1],
-            variableContext: EVariableContext.FunctionParameter,
-            sourceloc: func.sourceloc,
-          });
-          newContext.elaboratedVariables.set(packVariable, paramPackVariableId);
-          return makeTypeUse(
-            this.sr,
-            paramPackId,
-            EDatatypeMutability.Const,
-            false,
-            func.sourceloc
-          )[1];
+            )[1]
+          );
         }
-        return this.lookupAndElaborateDatatype(p.type);
-      })
-      .filter((p) => Boolean(p))
-      .map((p) => p!);
 
-    if (func.methodType === EMethodType.Method && !func.staticMethod) {
-      parameterNames.unshift("this");
-      assert(parentStructOrNS);
-      parameters.unshift(
-        makeTypeUse(this.sr, parentStructOrNS, EDatatypeMutability.Mut, false, func.sourceloc)[1]
-      );
-    }
-
-    const ftype = makeRawFunctionDatatypeAvailable(this.sr, {
-      parameters: parameters,
-      returnType: expectedReturnType,
-      vararg: func.vararg,
-      sourceloc: func.sourceloc,
-    });
-
-    let [symbol, symbolId] = Semantic.addSymbol<Semantic.FunctionSymbol>(this.sr, {
-      variant: Semantic.ENode.FunctionSymbol,
-      type: ftype,
-      export: func.export,
-      generics: genericArgs,
-      staticMethod: func.staticMethod,
-      parameterPack: parameterPack,
-      methodOf: parentStructOrNS,
-      methodType: func.methodType,
-      parentStructOrNS: parentStructOrNS,
-      noemit: func.noemit,
-      extern: func.extern,
-      parameterNames: parameterNames,
-      name: func.name,
-      sourceloc: func.sourceloc,
-      scope: null,
-      concrete: this.sr.typeDefNodes.get(ftype).concrete,
-    });
-
-    if (symbol.concrete) {
-      insertIntoFuncDefCache(this.sr, functionSignature.originalFunction, {
-        genericArgs: genericArgs,
-        paramPackTypes: paramPackTypes,
-        parentStructOrNS: parentStructOrNS,
-        result: symbolId,
-        substitutionContext: newContext,
-      });
-
-      if (func.functionScope) {
-        const [bodyScope, bodyScopeId] = Semantic.addBlockScope(this.sr, {
-          variant: Semantic.ENode.BlockScope,
-          statements: [],
-          emittedExpr: null,
-          constraints: [],
+        const ftype = makeRawFunctionDatatypeAvailable(this.sr, {
+          parameters: parameters,
+          returnType: expectedReturnType,
+          vararg: func.vararg,
+          sourceloc: func.sourceloc,
         });
 
-        const functionScope = this.sr.cc.scopeNodes.get(func.functionScope);
-        assert(functionScope.variant === Collect.ENode.FunctionScope);
+        let [symbol, symbolId] = Semantic.addSymbol<Semantic.FunctionSymbol>(this.sr, {
+          variant: Semantic.ENode.FunctionSymbol,
+          type: ftype,
+          export: func.export,
+          generics: genericArgs,
+          staticMethod: func.staticMethod,
+          parameterPack: parameterPack,
+          methodOf: parentStructOrNS,
+          methodType: func.methodType,
+          parentStructOrNS: parentStructOrNS,
+          noemit: func.noemit,
+          extern: func.extern,
+          parameterNames: parameterNames,
+          name: func.name,
+          sourceloc: func.sourceloc,
+          scope: null,
+          concrete: this.sr.typeDefNodes.get(ftype).concrete,
+        });
 
-        if (symbol.methodType === EMethodType.Method) {
-          const collectedThisRefId = [...functionScope.symbols].find((sId) => {
-            const sym = this.sr.cc.symbolNodes.get(sId);
-            return sym.variant === Collect.ENode.VariableSymbol && sym.name === "this";
+        if (symbol.concrete) {
+          insertIntoFuncDefCache(this.sr, functionSignature.originalFunction, {
+            genericArgs: genericArgs,
+            paramPackTypes: paramPackTypes,
+            parentStructOrNS: parentStructOrNS,
+            result: symbolId,
+            substitutionContext: newContext,
           });
-          assert(collectedThisRefId);
-          const collectedThisRef = this.sr.cc.symbolNodes.get(collectedThisRefId);
-          assert(collectedThisRef.variant === Collect.ENode.VariableSymbol);
 
-          assert(symbol.methodOf);
-          const thisRef = makeTypeUse(
-            this.sr,
-            symbol.methodOf,
-            EDatatypeMutability.Mut,
-            false,
-            func.sourceloc
-          )[1];
-          const [variable, variableId] = Semantic.addSymbol(this.sr, {
-            variant: Semantic.ENode.VariableSymbol,
-            memberOfStruct: symbol.methodOf,
-            mutability: EVariableMutability.Default,
-            name: collectedThisRef.name,
-            type: thisRef,
-            comptime: false,
-            comptimeValue: null,
-            concrete: isTypeConcrete(this.sr, thisRef),
-            export: false,
-            extern: EExternLanguage.None,
-            parentStructOrNS: symbol.parentStructOrNS,
-            sourceloc: symbol.sourceloc,
-            variableContext: EVariableContext.FunctionParameter,
-          });
-          newContext.elaboratedVariables.set(collectedThisRefId, variableId);
-        }
+          if (func.functionScope) {
+            const [bodyScope, bodyScopeId] = Semantic.addBlockScope(this.sr, {
+              variant: Semantic.ENode.BlockScope,
+              statements: [],
+              emittedExpr: null,
+              constraints: [],
+            });
 
-        for (const sId of functionScope.symbols) {
-          const symbol = this.sr.cc.symbolNodes.get(sId);
-          if (symbol.variant === Collect.ENode.VariableSymbol) {
+            const functionScope = this.sr.cc.scopeNodes.get(func.functionScope);
+            assert(functionScope.variant === Collect.ENode.FunctionScope);
+
+            if (symbol.methodType === EMethodType.Method) {
+              const collectedThisRefId = [...functionScope.symbols].find((sId) => {
+                const sym = this.sr.cc.symbolNodes.get(sId);
+                return sym.variant === Collect.ENode.VariableSymbol && sym.name === "this";
+              });
+              assert(collectedThisRefId);
+              const collectedThisRef = this.sr.cc.symbolNodes.get(collectedThisRefId);
+              assert(collectedThisRef.variant === Collect.ENode.VariableSymbol);
+
+              assert(symbol.methodOf);
+              const thisRef = makeTypeUse(
+                this.sr,
+                symbol.methodOf,
+                EDatatypeMutability.Mut,
+                false,
+                func.sourceloc
+              )[1];
+              const [variable, variableId] = Semantic.addSymbol(this.sr, {
+                variant: Semantic.ENode.VariableSymbol,
+                memberOfStruct: symbol.methodOf,
+                mutability: EVariableMutability.Default,
+                name: collectedThisRef.name,
+                type: thisRef,
+                comptime: false,
+                comptimeValue: null,
+                concrete: isTypeConcrete(this.sr, thisRef),
+                export: false,
+                extern: EExternLanguage.None,
+                parentStructOrNS: symbol.parentStructOrNS,
+                sourceloc: symbol.sourceloc,
+                variableContext: EVariableContext.FunctionParameter,
+              });
+              newContext.elaboratedVariables.set(collectedThisRefId, variableId);
+            }
+
+            for (const sId of functionScope.symbols) {
+              const symbol = this.sr.cc.symbolNodes.get(sId);
+              if (symbol.variant === Collect.ENode.VariableSymbol) {
+                this.withContext(
+                  {
+                    context: newContext,
+                    expectedReturnType: expectedReturnType,
+                  },
+                  () => {
+                    this.elaborateVariableSymbolInScope(sId);
+                  }
+                );
+              }
+            }
+
+            symbol.scope = bodyScopeId;
             this.withContext(
               {
                 context: newContext,
                 expectedReturnType: expectedReturnType,
               },
               () => {
-                this.elaborateVariableSymbolInScope(sId);
+                this.elaborateBlockScope(
+                  {
+                    sourceScopeId: functionScope.blockScope,
+                    targetScopeId: bodyScopeId,
+                  },
+                  undefined
+                );
               }
             );
-          }
-        }
 
-        symbol.scope = bodyScopeId;
-        this.withContext(
-          {
-            context: newContext,
-            expectedReturnType: expectedReturnType,
-          },
-          () => {
-            this.elaborateBlockScope(
-              {
-                sourceScopeId: functionScope.blockScope,
-                targetScopeId: bodyScopeId,
-              },
-              undefined
-            );
-          }
-        );
-
-        if (func.name === "main" && parentStructOrNS) {
-          const modulePrefix = getModuleGlobalNamespaceName(
-            this.sr.cc.config.name,
-            this.sr.cc.config.version
-          );
-          const parent = this.sr.typeDefNodes.get(parentStructOrNS);
-          if ("name" in parent && parent.name === modulePrefix) {
-            if (this.sr.globalMainFunction !== null) {
-              const existing = this.sr.symbolNodes.get(this.sr.globalMainFunction);
-              assert(existing.variant === Semantic.ENode.FunctionSymbol);
-              if (existing.sourceloc) {
-                throw new CompilerError(
-                  `Multiply defined main function: Previous definition at ${formatSourceLoc(
-                    existing.sourceloc
-                  )}`,
-                  func.sourceloc
-                );
-              } else {
-                throw new CompilerError(`Multiply defined main function`, func.sourceloc);
+            if (func.name === "main" && parentStructOrNS) {
+              const modulePrefix = getModuleGlobalNamespaceName(
+                this.sr.cc.config.name,
+                this.sr.cc.config.version
+              );
+              const parent = this.sr.typeDefNodes.get(parentStructOrNS);
+              if ("name" in parent && parent.name === modulePrefix) {
+                if (this.sr.globalMainFunction !== null) {
+                  const existing = this.sr.symbolNodes.get(this.sr.globalMainFunction);
+                  assert(existing.variant === Semantic.ENode.FunctionSymbol);
+                  if (existing.sourceloc) {
+                    throw new CompilerError(
+                      `Multiply defined main function: Previous definition at ${formatSourceLoc(
+                        existing.sourceloc
+                      )}`,
+                      func.sourceloc
+                    );
+                  } else {
+                    throw new CompilerError(`Multiply defined main function`, func.sourceloc);
+                  }
+                }
+                this.sr.globalMainFunction = symbolId;
               }
             }
-            this.sr.globalMainFunction = symbolId;
           }
         }
-      }
-    }
 
-    return symbolId;
+        return symbolId;
+      }
+    );
   }
 
   lookupAndElaborateDatatype(typeId: Collect.TypeUseId): Semantic.TypeUseId {
@@ -4454,9 +4468,8 @@ export class SemanticBuilder {
 export function printSubstitutionContext(sr: SemanticResult, context: Semantic.ElaborationContext) {
   console.info(`Substitutions: (${[...context.substitute.values()].length})`);
   for (const [fromId, toId] of context.substitute) {
-    console.info(
-      `${printCollectedSymbol(sr.cc, fromId, 0)} -> ${Semantic.serializeExpr(sr, toId)}`
-    );
+    printCollectedSymbol(sr.cc, fromId, 0, false);
+    console.info(` -> ${Semantic.serializeExpr(sr, toId)}`);
   }
 }
 

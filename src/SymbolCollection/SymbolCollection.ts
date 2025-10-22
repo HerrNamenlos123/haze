@@ -2155,6 +2155,10 @@ export function printCollectedDatatype(
       return `[]${printCollectedDatatype(cc, type.datatype)}`;
     }
 
+    case Collect.ENode.UnionDatatype: {
+      return "(" + type.members.map((m) => printCollectedDatatype(cc, m)).join(" | ") + ")";
+    }
+
     case Collect.ENode.FunctionDatatype: {
       return `(${type.parameters
         .map((p, i) => `param${i}: ${printCollectedDatatype(cc, p)}`)
@@ -2220,6 +2224,8 @@ export const printCollectedExpr = (cc: CollectionContext, exprId: Collect.ExprId
     case Collect.ENode.LiteralExpr: {
       if (expr.literal.type === EPrimitive.null) {
         return "null";
+      } else if (expr.literal.type === EPrimitive.none) {
+        return "none";
       } else if (expr.literal.type !== EPrimitive.str && expr.literal.type !== EPrimitive.c_str) {
         return `${primitiveToString(expr.literal.type)}(${expr.literal.value})`;
       } else {
@@ -2449,11 +2455,17 @@ export const printCollectedStatement = (
 export const printCollectedSymbol = (
   cc: CollectionContext,
   symbolId: Collect.SymbolId,
-  indent: number
+  indent: number,
+  newline: boolean = true
 ) => {
   const symbol = cc.symbolNodes.get(symbolId);
   const print = (str: string, _indent = 0) => {
-    console.info(`Symbol[${symbolId}]` + " ".repeat(indent + _indent) + str);
+    const msg = `Symbol[${symbolId}]` + " ".repeat(indent + _indent) + str;
+    if (newline) {
+      console.info(msg);
+    } else {
+      process.stdout.write(msg);
+    }
   };
 
   switch (symbol.variant) {
