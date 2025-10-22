@@ -48,6 +48,7 @@ import {
 
 import type { EIncrOperation, EUnaryOperation } from "../shared/AST";
 import { type Brand, type LiteralValue } from "../shared/common";
+import { semver } from "bun";
 
 type Inference =
   | undefined
@@ -832,14 +833,8 @@ export class SemanticElaborator {
       }
       const member = this.sr.symbolNodes.get(memberId);
       assert(member.variant === Semantic.ENode.VariableSymbol && member.type);
-      return Semantic.addExpr(this.sr, {
-        variant: Semantic.ENode.MemberAccessExpr,
-        expr: objectId,
-        memberName: memberAccess.memberName,
-        type: member.type,
-        sourceloc: memberAccess.sourceloc,
-        isTemporary: false,
-      });
+
+      return this.sr.b.memberAccess(objectId, memberAccess.memberName, memberAccess.sourceloc);
       // console.log(Semantic.serializeTypeUse(sr, memberAccess.type));
       // // Promote the datatype because by default, every struct member is fully mutable.
       // console.log(
@@ -1159,13 +1154,7 @@ export class SemanticElaborator {
       // }
 
       case Collect.ENode.CInjectDirective: {
-        const [directive, directiveId] = Semantic.addSymbol(this.sr, {
-          variant: Semantic.ENode.CInjectDirectiveSymbol,
-          value: symbol.value,
-          sourceloc: symbol.sourceloc,
-        });
-        this.sr.cInjections.push(directiveId);
-        return [directiveId];
+        return [this.sr.b.cInject(symbol.value, symbol.sourceloc)];
       }
 
       default:
@@ -2318,32 +2307,14 @@ export class SemanticElaborator {
       }
 
       case Collect.ENode.ParameterPack: {
-        return makeTypeUse(
-          this.sr,
-          Semantic.addType(this.sr, {
-            variant: Semantic.ENode.ParameterPackDatatype,
-            parameters: null,
-            concrete: true,
-          })[1],
-          EDatatypeMutability.Const,
-          false,
-          type.sourceloc
-        )[1];
+        return this.sr.b.paramPackTypeUse(EDatatypeMutability.Default, type.sourceloc);
       }
 
       case Collect.ENode.UnionDatatype: {
-        const members = type.members.map((m) => this.lookupAndElaborateDatatype(m));
-        return makeTypeUse(
-          this.sr,
-          Semantic.addType(this.sr, {
-            variant: Semantic.ENode.UnionDatatype,
-            members: members,
-            concrete: !members.some((m) => !isTypeConcrete(this.sr, m)),
-          })[1],
-          EDatatypeMutability.Const,
-          false,
+        return this.sr.b.unionTypeUse(
+          type.members.map((m) => this.lookupAndElaborateDatatype(m)),
           type.sourceloc
-        )[1];
+        );
       }
 
       // =================================================================================================================
@@ -2356,26 +2327,14 @@ export class SemanticElaborator {
   }
 
   assignmentExpr(assignment: Collect.ExprAssignmentExpr, inference: Inference) {
-    const [value, valueId] = this.expr(assignment.value, inference);
-    const [target, targetId] = this.expr(assignment.expr, inference);
-
-    return Semantic.addExpr(this.sr, {
-      variant: Semantic.ENode.ExprAssignmentExpr,
-      value: Conversion.MakeConversionOrThrow(
-        this.sr,
-        valueId,
-        target.type,
-        this.currentContext.constraints,
-        assignment.sourceloc,
-        Conversion.Mode.Implicit,
-        inference?.unsafe
-      ),
-      target: targetId,
-      type: target.type,
-      operation: assignment.operation,
-      sourceloc: assignment.sourceloc,
-      isTemporary: true,
-    });
+    return this.sr.b.assignment(
+      this.expr(assignment.expr, inference)[1],
+      assignment.operation,
+      this.expr(assignment.value, inference)[1],
+      this.currentContext.constraints,
+      assignment.sourceloc,
+      inference
+    );
   }
 
   elaborateParentSymbolFromCache(parentScopeId: Collect.ScopeId): Semantic.TypeDefId | null {
@@ -2541,19 +2500,7 @@ export class SemanticElaborator {
         memberAccessExpr.genericArgs.map((g) => this.expressionAsGenericArg(g)),
         memberAccessExpr.sourceloc
       );
-      return Semantic.addExpr(this.sr, {
-        variant: Semantic.ENode.DatatypeAsValueExpr,
-        symbol: instantiated,
-        type: makeTypeUse(
-          this.sr,
-          instantiated,
-          EDatatypeMutability.Default,
-          false,
-          memberAccessExpr.sourceloc
-        )[1],
-        isTemporary: false,
-        sourceloc: memberAccessExpr.sourceloc,
-      });
+      return this.sr.b.datatypeDefAsValue(instantiated, memberAccessExpr.sourceloc);
     } else if (
       symbol.variant === Collect.ENode.FunctionOverloadGroupSymbol &&
       symbol.name === name
@@ -2585,19 +2532,7 @@ export class SemanticElaborator {
       );
       const functionSymbol = this.sr.symbolNodes.get(functionSymbolId);
       assert(functionSymbol.variant === Semantic.ENode.FunctionSymbol);
-      return Semantic.addExpr(this.sr, {
-        variant: Semantic.ENode.SymbolValueExpr,
-        symbol: functionSymbolId,
-        type: makeTypeUse(
-          this.sr,
-          functionSymbol.type,
-          EDatatypeMutability.Const,
-          false,
-          memberAccessExpr.sourceloc
-        )[1],
-        isTemporary: false,
-        sourceloc: memberAccessExpr.sourceloc,
-      });
+      return this.sr.b.symbolValue(functionSymbolId, memberAccessExpr.sourceloc);
     } else {
       return undefined;
     }
@@ -2792,20 +2727,17 @@ export class SemanticElaborator {
       }
     }
 
-    if (remainingMembers.length > 0) {
-      throw new CompilerError(
-        `Members ${remainingMembers.join(", ")} were not assigned and no default value is known`,
-        sourceloc
-      );
-    }
+    assertCompilerError(
+      remainingMembers.length === 0,
+      `Members ${remainingMembers.join(", ")} were not assigned and no default value is known`,
+      sourceloc
+    );
 
-    return Semantic.addExpr(this.sr, {
-      variant: Semantic.ENode.StructInstantiationExpr,
-      assign: assign,
-      type: makeTypeUse(this.sr, structId, EDatatypeMutability.Const, inline, sourceloc)[1],
-      sourceloc: sourceloc,
-      isTemporary: true,
-    });
+    return this.sr.b.structLiteral(
+      makeTypeUse(this.sr, structId, EDatatypeMutability.Const, inline, sourceloc)[1],
+      assign,
+      sourceloc
+    );
   }
 
   elaborateDatatypeMemberAccess(
@@ -2819,41 +2751,17 @@ export class SemanticElaborator {
     const datatypeValue = sr.typeDefNodes.get(datatypeValueInstance.type);
 
     if (memberAccessExpr.memberName === "name") {
-      return Semantic.addExpr(sr, {
-        variant: Semantic.ENode.LiteralExpr,
-        literal: {
-          type: EPrimitive.str,
-          unit: null,
-          value: Semantic.serializeFullTypeUse(sr, typeUseId),
-        },
-        type: makePrimitiveAvailable(
-          sr,
-          EPrimitive.str,
-          EDatatypeMutability.Const,
-          memberAccessExpr.sourceloc
-        ),
-        sourceloc: memberAccessExpr.sourceloc,
-        isTemporary: true,
-      });
+      return this.sr.b.literal(
+        Semantic.serializeFullTypeUse(sr, typeUseId),
+        memberAccessExpr.sourceloc
+      );
     }
     if (memberAccessExpr.memberName === "mangled") {
       const name = Semantic.mangleFullTypeUse(sr, typeUseId);
-      return Semantic.addExpr(sr, {
-        variant: Semantic.ENode.LiteralExpr,
-        literal: {
-          type: EPrimitive.str,
-          unit: null,
-          value: name.wasMangled ? "_H" + name.name : name.name,
-        },
-        type: makePrimitiveAvailable(
-          sr,
-          EPrimitive.str,
-          EDatatypeMutability.Const,
-          memberAccessExpr.sourceloc
-        ),
-        sourceloc: memberAccessExpr.sourceloc,
-        isTemporary: true,
-      });
+      return this.sr.b.literal(
+        name.wasMangled ? "_H" + name.name : name.name,
+        memberAccessExpr.sourceloc
+      );
     }
 
     if (datatypeValue.variant === Semantic.ENode.NamespaceDatatype) {
@@ -2884,19 +2792,16 @@ export class SemanticElaborator {
         datatypeValue.primitive === EPrimitive.int
       ) {
         if (memberAccessExpr.memberName === "max" || memberAccessExpr.memberName === "min") {
-          return Semantic.addExpr(sr, {
-            variant: Semantic.ENode.LiteralExpr,
-            literal: {
+          return this.sr.b.literalValue(
+            {
               type: datatypeValue.primitive,
               unit: null,
               value: Conversion.getIntegerMinMax(datatypeValue.primitive)[
                 memberAccessExpr.memberName === "min" ? 0 : 1
               ],
             },
-            type: typeUseId,
-            sourceloc: memberAccessExpr.sourceloc,
-            isTemporary: true,
-          });
+            memberAccessExpr.sourceloc
+          );
         }
       }
 
@@ -4238,12 +4143,10 @@ export class SemanticElaborator {
   }
 
   typeLiteral(literal: Collect.TypeLiteralExpr) {
-    return Semantic.addExpr(this.sr, {
-      variant: Semantic.ENode.DatatypeAsValueExpr,
-      isTemporary: false,
-      type: this.lookupAndElaborateDatatype(literal.datatype),
-      sourceloc: literal.sourceloc,
-    });
+    return this.sr.b.datatypeUseAsValue(
+      this.lookupAndElaborateDatatype(literal.datatype),
+      literal.sourceloc
+    );
   }
 
   expressionAsGenericArg(collectExprId: Collect.ExprId) {
@@ -4427,6 +4330,48 @@ export class SemanticBuilder {
     }
   }
 
+  datatypeDefAsValue(type: Semantic.TypeDefId, sourceloc: SourceLoc) {
+    return Semantic.addExpr(this.sr, {
+      variant: Semantic.ENode.DatatypeAsValueExpr,
+      symbol: type,
+      type: makeTypeUse(this.sr, type, EDatatypeMutability.Default, false, sourceloc)[1],
+      isTemporary: false,
+      sourceloc: sourceloc,
+    });
+  }
+
+  datatypeUseAsValue(type: Semantic.TypeUseId, sourceloc: SourceLoc) {
+    return Semantic.addExpr(this.sr, {
+      variant: Semantic.ENode.DatatypeAsValueExpr,
+      symbol: type,
+      type: type,
+      isTemporary: false,
+      sourceloc: sourceloc,
+    });
+  }
+
+  symbolValue(symbolId: Semantic.SymbolId, sourceloc: SourceLoc) {
+    const symbol = this.sr.symbolNodes.get(symbolId);
+    if (symbol.variant === Semantic.ENode.FunctionSymbol) {
+      return Semantic.addExpr(this.sr, {
+        variant: Semantic.ENode.SymbolValueExpr,
+        symbol: symbolId,
+        type: makeTypeUse(this.sr, symbol.type, EDatatypeMutability.Default, false, sourceloc)[1],
+        isTemporary: false,
+        sourceloc: sourceloc,
+      });
+    } else if (symbol.variant === Semantic.ENode.VariableSymbol) {
+      assert(symbol.type);
+      return Semantic.addExpr(this.sr, {
+        variant: Semantic.ENode.SymbolValueExpr,
+        symbol: symbolId,
+        type: symbol.type,
+        isTemporary: false,
+        sourceloc: sourceloc,
+      });
+    }
+  }
+
   variableSymbol(
     name: string,
     type: Semantic.TypeUseId,
@@ -4460,6 +4405,86 @@ export class SemanticBuilder {
     });
   }
 
+  cInject(value: string, sourceloc: SourceLoc) {
+    const [directive, directiveId] = Semantic.addSymbol(this.sr, {
+      variant: Semantic.ENode.CInjectDirectiveSymbol,
+      value: value,
+      sourceloc: sourceloc,
+    });
+    this.sr.cInjections.push(directiveId);
+    return directiveId;
+  }
+
+  assignment(
+    targetId: Semantic.ExprId,
+    operation: EAssignmentOperation,
+    valueId: Semantic.ExprId,
+    constraints: Semantic.Constraint[],
+    sourceloc: SourceLoc,
+    inference: Inference
+  ) {
+    const target = this.sr.exprNodes.get(targetId);
+    return Semantic.addExpr(this.sr, {
+      variant: Semantic.ENode.ExprAssignmentExpr,
+      value: Conversion.MakeConversionOrThrow(
+        this.sr,
+        valueId,
+        target.type,
+        constraints,
+        sourceloc,
+        Conversion.Mode.Implicit,
+        inference?.unsafe
+      ),
+      target: targetId,
+      type: target.type,
+      operation: operation,
+      sourceloc: sourceloc,
+      isTemporary: true,
+    });
+  }
+
+  memberAccess(exprId: Semantic.ExprId, name: string, sourceloc: SourceLoc) {
+    const expr = this.sr.exprNodes.get(exprId);
+    const exprType = this.sr.typeDefNodes.get(this.sr.typeUseNodes.get(expr.type).type);
+    assert(exprType.variant === Semantic.ENode.StructDatatype);
+
+    let memberType: Semantic.TypeUseId | null = null;
+    for (const m of exprType.members) {
+      const symbol = this.sr.symbolNodes.get(m);
+      if (symbol.variant === Semantic.ENode.VariableSymbol && symbol.name === name) {
+        memberType = symbol.type;
+        break;
+      }
+    }
+    assert(memberType);
+
+    return Semantic.addExpr(this.sr, {
+      variant: Semantic.ENode.MemberAccessExpr,
+      expr: exprId,
+      memberName: name,
+      type: memberType,
+      sourceloc: sourceloc,
+      isTemporary: false,
+    });
+  }
+
+  structLiteral(
+    structType: Semantic.TypeUseId,
+    assign: {
+      name: string;
+      value: Semantic.ExprId;
+    }[],
+    sourceloc: SourceLoc
+  ) {
+    return Semantic.addExpr(this.sr, {
+      variant: Semantic.ENode.StructInstantiationExpr,
+      assign: assign,
+      type: structType,
+      sourceloc: sourceloc,
+      isTemporary: true,
+    });
+  }
+
   namespaceType(
     name: string,
     parentStructOrNS: Semantic.TypeDefId | null,
@@ -4475,12 +4500,52 @@ export class SemanticBuilder {
     });
   }
 
+  paramPackTypeUse(mutability: EDatatypeMutability, sourceloc: SourceLoc) {
+    return makeTypeUse(
+      this.sr,
+      Semantic.addType(this.sr, {
+        variant: Semantic.ENode.ParameterPackDatatype,
+        parameters: null,
+        concrete: true,
+      })[1],
+      mutability,
+      false,
+      sourceloc
+    )[1];
+  }
+
+  paramPackTypeDef() {
+    return Semantic.addType(this.sr, {
+      variant: Semantic.ENode.ParameterPackDatatype,
+      parameters: null,
+      concrete: true,
+    })[1];
+  }
+
+  unionTypeUse(members: Semantic.TypeUseId[], sourceloc: SourceLoc) {
+    return makeTypeUse(
+      this.sr,
+      Semantic.addType(this.sr, {
+        variant: Semantic.ENode.UnionDatatype,
+        members: members,
+        concrete: !members.some((m) => !isTypeConcrete(this.sr, m)),
+      })[1],
+      EDatatypeMutability.Const,
+      false,
+      sourceloc
+    )[1];
+  }
+
   primitiveType(primitive: EPrimitive, sourceloc: SourceLoc): Semantic.TypeUseId {
     return makePrimitiveAvailable(this.sr, primitive, EDatatypeMutability.Const, sourceloc);
   }
 
   boolType() {
     return this.primitiveType(EPrimitive.bool, null);
+  }
+
+  strType() {
+    return this.primitiveType(EPrimitive.str, null);
   }
 
   voidType() {
