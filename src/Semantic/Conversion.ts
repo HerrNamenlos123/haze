@@ -729,12 +729,12 @@ export namespace Conversion {
       return ok(fromExprId);
     }
 
-    // Conversion from str to c_str
+    // Conversion from str to cstr
     if (
       fromType.variant === Semantic.ENode.PrimitiveDatatype &&
       to.variant === Semantic.ENode.PrimitiveDatatype &&
       fromType.primitive === EPrimitive.str &&
-      to.primitive === EPrimitive.c_str
+      to.primitive === EPrimitive.cstr
     ) {
       if (fromExpr.variant === Semantic.ENode.LiteralExpr) {
         assert(fromExpr.literal.type === EPrimitive.str);
@@ -742,22 +742,17 @@ export namespace Conversion {
           Semantic.addExpr(sr, {
             variant: Semantic.ENode.LiteralExpr,
             literal: {
-              type: EPrimitive.c_str,
+              type: EPrimitive.cstr,
               value: fromExpr.literal.value,
             },
             isTemporary: true,
-            type: makePrimitiveAvailable(
-              sr,
-              EPrimitive.c_str,
-              EDatatypeMutability.Const,
-              sourceloc
-            ),
+            type: makePrimitiveAvailable(sr, EPrimitive.cstr, EDatatypeMutability.Const, sourceloc),
             sourceloc: fromExpr.sourceloc,
           })[1]
         );
       }
       throw new CompilerError(
-        `Conversion from str to c_str (const char*) is not possible because the value is not known at compile time, therefore no C string literal can be emitted that preserves null termination. For runtime strings, use str.c_str(arena).`,
+        `Conversion from str to cstr (const char*) is not possible because the value is not known at compile time, therefore no C string literal can be emitted that preserves null termination. For runtime strings, use str.cstr(arena).`,
         sourceloc
       );
     }

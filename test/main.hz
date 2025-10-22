@@ -34,13 +34,13 @@ main(): int {
     // assign(a, newFoo);
     // rebind(a, newFoo);
 
-    let arena = Arena();
-    const s = fmt.format<int>(arena, -7183, {});
-    const foo1 = arena.alloc<Foo>({ x: 1, y: 2, z: 3});
-    const foo2 = arena.alloc<Foo>({ x: 4, y: 5, z: 6});
-    const foo3 = arena.alloc<Foo>({ x: 7, y: 8, z: 9});
+    // let arena = Arena();
+    // const s = fmt.format<int>(arena, -7183, {});
+    // const foo1 = arena.alloc<Foo>({ x: 1, y: 2, z: 3});
+    // const foo2 = arena.alloc<Foo>({ x: 4, y: 5, z: 6});
+    // const foo3 = arena.alloc<Foo>({ x: 7, y: 8, z: 9});
     // println(s);
-    arena.free();
+    // arena.free();
 
     // print("Formatted: ");
     // println(s);
@@ -70,41 +70,43 @@ main(): int {
         title: "Hello World!",
     });
 
-    window.swapInterval(0);
-    gl.init(glfw.getProcAddress());
+    if window {
+        window.swapInterval(0);
+        gl.init(glfw.getProcAddress());
 
-    gl.viewport(0, 0, 1920, 1080);
+        gl.viewport(0, 0, 1920, 1080);
 
-    let oldTime = glfw.getTime();
-    window.swapBuffers();
+        let oldTime = glfw.getTime();
+        window.swapBuffers();
 
-    let frameCounter: i16 = 0;
+        let frameCounter: i16 = 0;
 
-    let fps = 0.0;
-    while !window.shouldClose() {
-        glfw.pollEvents();
+        let fps = 0.0;
+        while !window.shouldClose() {
+            glfw.pollEvents();
 
-        let now = glfw.getTime();
-        let elapsed = now - oldTime;
-        oldTime = now;
+            let now = glfw.getTime();
+            let elapsed = now - oldTime;
+            oldTime = now;
 
-        gl.clearColor(Color((math.sin(oldTime * 10.0) + 1.0) / 2.0, 0.1, 0.1, 1.0));
-        gl.clear();
+            gl.clearColor(Color((math.sin(oldTime * 10.0) + 1.0) / 2.0, 0.1, 0.1, 1.0));
+            gl.clear();
 
-        if fps == 0.0 {
-            fps = 1.0 / elapsed;
+            if fps == 0.0 {
+                fps = 1.0 / elapsed;
+            }
+
+            let alpha = 0.001;
+            fps = fps * (1.0 - alpha) + 1.0 / elapsed * alpha;
+
+            println("FPS:", fps);
+            println("Count: ", frameCounter);
+
+            window.swapBuffers();
         }
 
-        let alpha = 0.001;
-        fps = fps * (1.0 - alpha) + 1.0 / elapsed * alpha;
-
-        println("FPS:", fps);
-        println("Count: ", frameCounter);
-
-        window.swapBuffers();
+        glfw.terminate();
     }
-
-    glfw.terminate();
 
     return 0;
 }

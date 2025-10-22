@@ -485,7 +485,7 @@ export class ProjectCompiler {
         this.globalBuildDir,
         join(this.globalBuildDir, stdlibConfig.name)
       );
-      if (!(await stdlibModule.build())) {
+      if (!(await stdlibModule.build(false))) {
         return false;
       }
     }
@@ -506,13 +506,13 @@ export class ProjectCompiler {
           this.globalBuildDir,
           join(this.globalBuildDir, config.name)
         );
-        if (!(await depModule.build())) {
+        if (!(await depModule.build(false))) {
           return false;
         }
       }
     }
 
-    if (!(await mainModule.build())) {
+    if (!(await mainModule.build(true))) {
       return false;
     }
     if (!singleFilename) {
@@ -778,7 +778,6 @@ class ModuleCompiler {
     });
     const moduleScope = this.cc.scopeNodes.get(this.cc.moduleScopeId);
     assert(moduleScope.variant === Collect.ENode.ModuleScope);
-    console.log("AS UNIT");
     moduleScope.scopes.add(unitId);
     return [unit, unitId] as const;
   }
@@ -786,7 +785,6 @@ class ModuleCompiler {
   async collectFileAsRoot(filepath: string, collectionMode: ECollectionMode) {
     const fileText = await Bun.file(filepath).text();
     const ast = Parser.parseTextToAST(this.config, fileText, filepath);
-    console.log("AS ROOT");
     CollectFile(
       this.cc,
       ast,
@@ -832,7 +830,7 @@ class ModuleCompiler {
     await this.collectDirectory(this.config.srcDirectory, mode);
   }
 
-  async build() {
+  async build(isTopLevelModule: boolean) {
     return await catchErrors(async () => {
       if (this.config.configFilePath) {
         if (
@@ -962,7 +960,51 @@ class ModuleCompiler {
         allCompilerFlags.push(...compilerFlags.linux);
       }
 
-      const compileCommands: CompileCommands = [];
+      const compileCommands: CompileCommands = await this.loadDependencyCompileCommands();
+      const writeCompileCommands = async () => {
+        if (isTopLevelModule) {
+          // If Top Level, remove all previous dirty hacks and write one clean entry.
+
+          const addedFiles = new Set<string>();
+          const cleanedCommands: CompileCommands = [];
+          for (const c of compileCommands) {
+            if (!addedFiles.has(c.file)) {
+              addedFiles.add(c.file);
+              cleanedCommands.push(c);
+            }
+          }
+
+          await Bun.file(`${this.globalBuildDir}/compile_commands.json`).write(
+            JSON.stringify(cleanedCommands, null, 2)
+          );
+        } else {
+          // Not top level module, so do a best effort of appending currently known commands, to at least get partial compile commands.
+
+          const addedFiles = new Set<string>();
+          let currentCommands: CompileCommands;
+          let cleanedCommands: CompileCommands = [];
+          try {
+            currentCommands = await Bun.file(`${this.globalBuildDir}/compile_commands.json`).json();
+            for (const c of currentCommands) {
+              if (!addedFiles.has(c.file)) {
+                addedFiles.add(c.file);
+                cleanedCommands.push(c);
+              }
+            }
+          } catch (e) {}
+
+          for (const c of compileCommands) {
+            if (!addedFiles.has(c.file)) {
+              addedFiles.add(c.file);
+              cleanedCommands.push(c);
+            }
+          }
+
+          await Bun.file(`${this.globalBuildDir}/compile_commands.json`).write(
+            JSON.stringify(cleanedCommands, null, 2)
+          );
+        }
+      };
 
       if (this.config.moduleType === ModuleType.Executable) {
         const [libs, dependencyLinkerFlags] = await this.loadDependencyBinaries();
@@ -992,6 +1034,7 @@ class ModuleCompiler {
           command: cmd,
           output: moduleExecutable,
         });
+        await writeCompileCommands();
 
         await exec(cmd);
       } else {
@@ -1004,8 +1047,9 @@ class ModuleCompiler {
           directory: cwd(),
           file: moduleCFile,
           command: cmd,
-          output: moduleExecutable,
+          output: moduleOFile,
         });
+        await writeCompileCommands();
 
         await exec(cmd);
 
@@ -1063,12 +1107,12 @@ class ModuleCompiler {
         //   this.module.moduleConfig.configFilePath,
         // );
       }
-
-      console.log("Module finished compiling ", this.config.name);
     });
   }
 
   private async loadDependencyBinaries() {
+    const metadata = await this.loadDependenciesMetadata();
+
     const libs: string[] = [];
     const linkerFlags = {
       any: [] as string[],
@@ -1076,6 +1120,37 @@ class ModuleCompiler {
       linux: [] as string[],
     };
 
+    metadata.forEach((meta) => {
+      const lib = meta.libs.find((l) => l.platform === this.config.platform);
+      if (!lib) {
+        throw new GeneralError(
+          `Lib ${meta.name} does not provide platform ${this.config.platform}`
+        );
+      }
+
+      const tempdir = join(this.moduleDir, "__deps", meta.name);
+      const archiveFile = join(tempdir, lib.filename);
+      libs.push(archiveFile);
+      linkerFlags.any.push(...meta.linkerFlags.any);
+      linkerFlags.win32.push(...meta.linkerFlags.win32);
+      linkerFlags.linux.push(...meta.linkerFlags.linux);
+    });
+
+    return [libs, linkerFlags] as const;
+  }
+
+  private async loadDependencyCompileCommands() {
+    const metadata = await this.loadDependenciesMetadata();
+    return (
+      metadata
+        .map((meta) => {
+          return meta.compileCommands;
+        })
+        .flat() ?? []
+    );
+  }
+
+  private async loadDependenciesMetadata() {
     const deps = [...this.config.dependencies];
     if (this.config.name !== HAZE_STDLIB_NAME && !this.config.nostdlib) {
       deps.push({
@@ -1084,26 +1159,16 @@ class ModuleCompiler {
       });
     }
 
-    for (const dep of deps) {
-      const libpath = join(join(this.globalBuildDir, dep.name), "bin", dep.name + ".hzlib");
-      const metadata = await this.loadDependencyMetadata(libpath, dep.name);
-
-      const lib = metadata.libs.find((l) => l.platform === this.config.platform);
-      if (!lib) {
-        throw new GeneralError(`Lib ${dep.name} does not provide platform ${this.config.platform}`);
-      }
-
-      const tempdir = join(this.moduleDir, "__deps", dep.name);
-      const archiveFile = join(tempdir, lib.filename);
-      libs.push(archiveFile);
-      linkerFlags.any.push(...metadata.linkerFlags.any);
-      linkerFlags.win32.push(...metadata.linkerFlags.win32);
-      linkerFlags.linux.push(...metadata.linkerFlags.linux);
-    }
-    return [libs, linkerFlags] as const;
+    return await Promise.all(
+      deps.map(async (dep) => {
+        const libpath = join(join(this.globalBuildDir, dep.name), "bin", dep.name + ".hzlib");
+        const metadata = await this.loadSingleDependencyMetadata(libpath, dep.name);
+        return metadata;
+      })
+    );
   }
 
-  private async loadDependencyMetadata(libpath: string, libname: string) {
+  private async loadSingleDependencyMetadata(libpath: string, libname: string) {
     const tempdir = join(this.moduleDir, "__deps", libname);
     fs.mkdirSync(tempdir, { recursive: true });
     await extractTarGz(libpath, tempdir);
@@ -1121,7 +1186,7 @@ class ModuleCompiler {
 
     for (const dep of deps) {
       const libpath = join(join(this.globalBuildDir, dep.name), "bin", dep.name + ".hzlib");
-      const metadata = await this.loadDependencyMetadata(libpath, dep.name);
+      const metadata = await this.loadSingleDependencyMetadata(libpath, dep.name);
       await this.collectDirectory(
         join(this.moduleDir, "__deps", dep.name),
         ECollectionMode.ImportUnderRootDirectly

@@ -124,6 +124,7 @@ class CodeGenerator {
     this.includeSystemHeader("stdio.h");
     this.includeSystemHeader("limits.h");
     this.includeSystemHeader("string.h");
+    this.includeSystemHeader("math.h");
 
     if (this.config.hzsysLocation) {
       this.includeLocalHeader(this.config.hzsysLocation + "/hzsys.h");
@@ -145,8 +146,10 @@ class CodeGenerator {
 
     for (const symbol of sortedLoweredTypeDefs) {
       if (symbol.variant === Lowered.ENode.PrimitiveDatatype) {
-        if (symbol.primitive === EPrimitive.c_str) {
-          this.out.type_declarations.writeLine(`typedef const char* _H5c_str;`);
+        if (symbol.primitive === EPrimitive.cstr) {
+          this.out.type_declarations.writeLine(`typedef const char* _H4cstr;`);
+        } else if (symbol.primitive === EPrimitive.cptr) {
+          this.out.type_declarations.writeLine(`typedef void* _H4cptr;`);
         } else if (symbol.primitive === EPrimitive.str) {
           this.out.type_declarations.writeLine(`typedef struct _H3str _H3str;`);
           this.out.type_definitions.writeLine(`struct _H3str {`).pushIndent();
@@ -382,8 +385,10 @@ class CodeGenerator {
         assert(false, "null should be handled specially");
       case EPrimitive.str:
         return "_H3str";
-      case EPrimitive.c_str:
+      case EPrimitive.cstr:
         return "const char*";
+      case EPrimitive.cptr:
+        return "void*";
     }
   }
 
@@ -1226,8 +1231,8 @@ class CodeGenerator {
           return s.includes(".") ? s : s + ".0";
         }
 
-        if (expr.literal.type === EPrimitive.c_str) {
-          outWriter.write(`(_H5c_str)(${JSON.stringify(expr.literal.value)})`);
+        if (expr.literal.type === EPrimitive.cstr) {
+          outWriter.write(`(_H4cstr)(${JSON.stringify(expr.literal.value)})`);
         } else if (expr.literal.type === EPrimitive.str) {
           const value = expr.literal.value;
           outWriter.write(

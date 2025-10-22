@@ -2226,7 +2226,7 @@ export const printCollectedExpr = (cc: CollectionContext, exprId: Collect.ExprId
         return "null";
       } else if (expr.literal.type === EPrimitive.none) {
         return "none";
-      } else if (expr.literal.type !== EPrimitive.str && expr.literal.type !== EPrimitive.c_str) {
+      } else if (expr.literal.type !== EPrimitive.str && expr.literal.type !== EPrimitive.cstr) {
         return `${primitiveToString(expr.literal.type)}(${expr.literal.value})`;
       } else {
         return `${JSON.stringify(expr.literal.value)}`;

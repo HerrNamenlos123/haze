@@ -64,7 +64,7 @@ export type ModuleLibMetadata = {
 
 export type CompileCommands = CompileCommandEntry[];
 
-export interface CompileCommandEntry {
+export type CompileCommandEntry = {
   /**
    * The working directory where the compilation command is executed.
    * Usually the project root or the directory containing the source file.
@@ -96,7 +96,7 @@ export interface CompileCommandEntry {
    * from the source name.
    */
   output?: string;
-}
+};
 
 export type ExportData = {
   exported: Set<Collect.SymbolId>;
@@ -193,6 +193,7 @@ export function parseModuleMetadata(metadata: string): ModuleMetadata {
       win32: getStringArray(obj["linkerFlags"]["win32"]),
       linux: getStringArray(obj["linkerFlags"]["linux"]),
     },
+    compileCommands: obj["compileCommands"],
     importFile: "import.hz",
   };
 }

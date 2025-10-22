@@ -154,215 +154,216 @@ export class SemanticElaborator {
     inference: Inference
   ): [Semantic.Expression, Semantic.ExprId] {
     const collectedExpr = this.sr.cc.exprNodes.get(callExpr.calledExpr);
-    // if (collectedExpr.variant === Collect.ENode.SymbolValueExpr) {
-    //   if (collectedExpr.name === "typeof") {
-    //     const callingArguments = expr.arguments.map((a, i) => elaborateSubExpr(a)[1]);
-    //     if (collectedExpr.genericArgs.length !== 0) {
-    //       throw new CompilerError(
-    //         "The typeof function cannot take any type parameters",
-    //         collectedExpr.sourceloc
-    //       );
-    //     }
-    //     if (callingArguments.length !== 1) {
-    //       throw new CompilerError(
-    //         "The typeof function can only take exactly one parameter",
-    //         collectedExpr.sourceloc
-    //       );
-    //     }
-    //     const value = sr.exprNodes.get(callingArguments[0]);
-    //     return Semantic.addExpr(sr, {
-    //       variant: Semantic.ENode.DatatypeAsValueExpr,
-    //       elaboratedType: value.type,
-    //       collectedType: null,
-    //       sourceloc: collectedExpr.sourceloc,
-    //       isTemporary: false,
-    //       type: value.type,
-    //     });
-    //   }
-    //   if (collectedExpr.name === "sizeof") {
-    //     const callingArguments = expr.arguments.map((a) => elaborateSubExpr(a)[1]);
-    //     if (collectedExpr.genericArgs.length !== 0) {
-    //       throw new CompilerError(
-    //         "The sizeof function cannot take any type parameters",
-    //         collectedExpr.sourceloc
-    //       );
-    //     }
-    //     if (callingArguments.length !== 1) {
-    //       throw new CompilerError(
-    //         "The sizeof function can only take exactly one parameter",
-    //         collectedExpr.sourceloc
-    //       );
-    //     }
-    //     return Semantic.addExpr(sr, {
-    //       variant: Semantic.ENode.SizeofExpr,
-    //       sourceloc: collectedExpr.sourceloc,
-    //       isTemporary: false,
-    //       type: makePrimitiveAvailable(
-    //         sr,
-    //         EPrimitive.usize,
-    //         EDatatypeMutability.Const,
-    //         expr.sourceloc
-    //       ),
-    //       valueExpr: callingArguments[0],
-    //     });
-    //   }
-    //   if (collectedExpr.name === "alignof") {
-    //     const callingArguments = expr.arguments.map((a, i) => elaborateSubExpr(a)[1]);
-    //     if (collectedExpr.genericArgs.length !== 0) {
-    //       throw new CompilerError(
-    //         "The alignof function cannot take any type parameters",
-    //         collectedExpr.sourceloc
-    //       );
-    //     }
-    //     if (callingArguments.length !== 1) {
-    //       throw new CompilerError(
-    //         "The alignof function can only take exactly one parameter",
-    //         collectedExpr.sourceloc
-    //       );
-    //     }
-    //     return Semantic.addExpr(sr, {
-    //       variant: Semantic.ENode.AlignofExpr,
-    //       sourceloc: collectedExpr.sourceloc,
-    //       isTemporary: false,
-    //       type: makePrimitiveAvailable(
-    //         sr,
-    //         EPrimitive.usize,
-    //         EDatatypeMutability.Const,
-    //         expr.sourceloc
-    //       ),
-    //       valueExpr: callingArguments[0],
-    //     });
-    //   }
-    //   if (collectedExpr.name === "static_assert") {
-    //     const callingArguments = expr.arguments.map((a, i) => elaborateSubExpr(a)[1]);
-    //     if (collectedExpr.genericArgs.length !== 0) {
-    //       throw new CompilerError(
-    //         "The static_assert function cannot take any type parameters",
-    //         collectedExpr.sourceloc
-    //       );
-    //     }
-    //     if (callingArguments.length < 1 || callingArguments.length > 2) {
-    //       throw new CompilerError(
-    //         "The static_assert function can only take one or two parameters",
-    //         collectedExpr.sourceloc
-    //       );
-    //     }
-    //     let second = undefined as Semantic.LiteralExpr | undefined;
-    //     if (callingArguments.length > 1) {
-    //       const s = sr.exprNodes.get(callingArguments[1]);
-    //       if (
-    //         s.variant !== Semantic.ENode.LiteralExpr ||
-    //         (s.literal.type !== EPrimitive.str && s.literal.type !== EPrimitive.c_str)
-    //       ) {
-    //         throw new CompilerError(
-    //           "The static_assert function requires the second parameter to be a string, or omitted",
-    //           collectedExpr.sourceloc
-    //         );
-    //       } else {
-    //         second = s;
-    //       }
-    //     }
-    //     const value = EvalCTFEBoolean(sr, callingArguments[0], expr.sourceloc);
-    //     if (value) {
-    //       return Semantic.addExpr(sr, {
-    //         variant: Semantic.ENode.LiteralExpr,
-    //         sourceloc: collectedExpr.sourceloc,
-    //         type: makePrimitiveAvailable(
-    //           sr,
-    //           EPrimitive.bool,
-    //           EDatatypeMutability.Const,
-    //           expr.sourceloc
-    //         ),
-    //         literal: {
-    //           type: EPrimitive.bool,
-    //           value: true,
-    //         },
-    //         isTemporary: true,
-    //       });
-    //     } else {
-    //       let str = second ? serializeLiteralValue(second?.literal) : undefined;
-    //       if (second && second.literal.type === EPrimitive.str) {
-    //         str = second.literal.value; // Bypass and don't escape it to make message look better
-    //       }
-    //       throw new CompilerError(
-    //         `static_assert evaluated to false${str ? ": " + str : ""}`,
-    //         expr.sourceloc
-    //       );
-    //     }
-    //   }
+    if (collectedExpr.variant === Collect.ENode.SymbolValueExpr) {
+      if (collectedExpr.name === "typeof") {
+        const callingArguments = callExpr.arguments.map((a, i) => this.expr(a, undefined)[1]);
+        if (collectedExpr.genericArgs.length !== 0) {
+          throw new CompilerError(
+            "The typeof function cannot take any type parameters",
+            collectedExpr.sourceloc
+          );
+        }
+        if (callingArguments.length !== 1) {
+          throw new CompilerError(
+            "The typeof function can only take exactly one parameter",
+            collectedExpr.sourceloc
+          );
+        }
+        const value = this.sr.exprNodes.get(callingArguments[0]);
+        return Semantic.addExpr(this.sr, {
+          variant: Semantic.ENode.DatatypeAsValueExpr,
+          elaboratedType: value.type,
+          collectedType: null,
+          sourceloc: collectedExpr.sourceloc,
+          isTemporary: false,
+          type: value.type,
+        });
+      }
+      if (collectedExpr.name === "sizeof") {
+        const callingArguments = callExpr.arguments.map((a) => this.expr(a, undefined)[1]);
+        if (collectedExpr.genericArgs.length !== 0) {
+          throw new CompilerError(
+            "The sizeof function cannot take any type parameters",
+            collectedExpr.sourceloc
+          );
+        }
+        if (callingArguments.length !== 1) {
+          throw new CompilerError(
+            "The sizeof function can only take exactly one parameter",
+            collectedExpr.sourceloc
+          );
+        }
+        return Semantic.addExpr(this.sr, {
+          variant: Semantic.ENode.SizeofExpr,
+          sourceloc: collectedExpr.sourceloc,
+          isTemporary: false,
+          type: makePrimitiveAvailable(
+            this.sr,
+            EPrimitive.usize,
+            EDatatypeMutability.Const,
+            callExpr.sourceloc
+          ),
+          valueExpr: callingArguments[0],
+        });
+      }
+      if (collectedExpr.name === "alignof") {
+        const callingArguments = callExpr.arguments.map((a, i) => this.expr(a, undefined)[1]);
+        if (collectedExpr.genericArgs.length !== 0) {
+          throw new CompilerError(
+            "The alignof function cannot take any type parameters",
+            collectedExpr.sourceloc
+          );
+        }
+        if (callingArguments.length !== 1) {
+          throw new CompilerError(
+            "The alignof function can only take exactly one parameter",
+            collectedExpr.sourceloc
+          );
+        }
+        return Semantic.addExpr(this.sr, {
+          variant: Semantic.ENode.AlignofExpr,
+          sourceloc: collectedExpr.sourceloc,
+          isTemporary: false,
+          type: makePrimitiveAvailable(
+            this.sr,
+            EPrimitive.usize,
+            EDatatypeMutability.Const,
+            callExpr.sourceloc
+          ),
+          valueExpr: callingArguments[0],
+        });
+      }
+      if (collectedExpr.name === "static_assert") {
+        const callingArguments = callExpr.arguments.map((a, i) => this.expr(a, undefined)[1]);
+        if (collectedExpr.genericArgs.length !== 0) {
+          throw new CompilerError(
+            "The static_assert function cannot take any type parameters",
+            collectedExpr.sourceloc
+          );
+        }
+        if (callingArguments.length < 1 || callingArguments.length > 2) {
+          throw new CompilerError(
+            "The static_assert function can only take one or two parameters",
+            collectedExpr.sourceloc
+          );
+        }
+        let second = undefined as Semantic.LiteralExpr | undefined;
+        if (callingArguments.length > 1) {
+          const s = this.sr.exprNodes.get(callingArguments[1]);
+          if (
+            s.variant !== Semantic.ENode.LiteralExpr ||
+            (s.literal.type !== EPrimitive.str && s.literal.type !== EPrimitive.cstr)
+          ) {
+            throw new CompilerError(
+              "The static_assert function requires the second parameter to be a string, or omitted",
+              collectedExpr.sourceloc
+            );
+          } else {
+            second = s;
+          }
+        }
+        const value = EvalCTFEBoolean(this.sr, callingArguments[0], callExpr.sourceloc);
+        if (value) {
+          return Semantic.addExpr(this.sr, {
+            variant: Semantic.ENode.LiteralExpr,
+            sourceloc: collectedExpr.sourceloc,
+            type: makePrimitiveAvailable(
+              this.sr,
+              EPrimitive.bool,
+              EDatatypeMutability.Const,
+              callExpr.sourceloc
+            ),
+            literal: {
+              type: EPrimitive.bool,
+              value: true,
+            },
+            isTemporary: true,
+          });
+        } else {
+          let str = second ? Semantic.serializeLiteralValue(second?.literal) : undefined;
+          if (second && second.literal.type === EPrimitive.str) {
+            str = second.literal.value; // Bypass and don't escape it to make message look better
+          }
+          throw new CompilerError(
+            `static_assert evaluated to false${str ? ": " + str : ""}`,
+            callExpr.sourceloc
+          );
+        }
+      }
 
-    //   const primitive = stringToPrimitive(collectedExpr.name);
-    //   if (primitive) {
-    //     const callingArguments = expr.arguments.map((a, i) => elaborateSubExpr(a)[1]);
-    //     assertCompilerError(
-    //       collectedExpr.genericArgs.length === 0,
-    //       "Primitive constructors cannot take any type parameters",
-    //       collectedExpr.sourceloc
-    //     );
-    //     if (primitive === EPrimitive.str) {
-    //       assertCompilerError(
-    //         callingArguments.length >= 1 && callingArguments.length <= 2,
-    //         "'str' constructor must take one or two parameters",
-    //         collectedExpr.sourceloc
-    //       );
-    //       const first = sr.exprNodes.get(callingArguments[0]);
-    //       const firstType = sr.typeDefNodes.get(sr.typeUseNodes.get(first.type).type);
-    //       const second = callingArguments.length > 1 ? sr.exprNodes.get(callingArguments[1]) : null;
-    //       const secondType =
-    //         callingArguments.length > 1 && second
-    //           ? sr.typeDefNodes.get(sr.typeUseNodes.get(second.type).type)
-    //           : null;
-    //       if (
-    //         firstType.variant === Semantic.ENode.PrimitiveDatatype &&
-    //         firstType.primitive === EPrimitive.str &&
-    //         callingArguments.length === 1
-    //       ) {
-    //         return [first, callingArguments[0]];
-    //       }
-    //       // if (
-    //       //   callingArguments.length === 2 &&
-    //       //   second &&
-    //       //   secondType &&
-    //       //   firstType.variant === Semantic.ENode.NullableReferenceDatatype &&
-    //       //   sr.typeUseNodes.get(firstType.referee).type ===
-    //       //     makeRawPrimitiveAvailable(sr, EPrimitive.u8) &&
-    //       //   secondType.variant === Semantic.ENode.PrimitiveDatatype &&
-    //       //   Conversion.isInteger(secondType.primitive)
-    //       // ) {
-    //       //   return Semantic.addExpr(sr, {
-    //       //     variant: Semantic.ENode.StringConstructExpr,
-    //       //     type: makePrimitiveAvailable(
-    //       //       sr,
-    //       //       EPrimitive.str,
-    //       //       EDatatypeMutability.Const,
-    //       //       expr.sourceloc
-    //       //     ),
-    //       //     value: {
-    //       //       variant: "data-length",
-    //       //       data: callingArguments[0],
-    //       //       length: callingArguments[1],
-    //       //     },
-    //       //     isTemporary: true,
-    //       //     sourceloc: expr.sourceloc,
-    //       //   });
-    //       // }
-    //       throw new CompilerError(
-    //         `Primitive ${primitiveToString(
-    //           primitive
-    //         )} constructor does not provide an overload that can take following types: (${callingArguments
-    //           .map((a) => {
-    //             return serializeTypeUse(sr, sr.exprNodes.get(a).type);
-    //           })
-    //           .join(", ")})`,
-    //         expr.sourceloc
-    //       );
-    //     }
-    //     throw new CompilerError(
-    //       `Primitive ${primitiveToString(primitive)} is not constructible`,
-    //       expr.sourceloc
-    //     );
-    //   }
-    // }
+      const primitive = stringToPrimitive(collectedExpr.name);
+      if (primitive) {
+        const callingArguments = callExpr.arguments.map((a, i) => this.expr(a, undefined)[1]);
+        assertCompilerError(
+          collectedExpr.genericArgs.length === 0,
+          "Primitive constructors cannot take any type parameters",
+          collectedExpr.sourceloc
+        );
+        if (primitive === EPrimitive.str) {
+          assertCompilerError(
+            callingArguments.length >= 1 && callingArguments.length <= 2,
+            "'str' constructor must take one or two parameters",
+            collectedExpr.sourceloc
+          );
+          const first = this.sr.exprNodes.get(callingArguments[0]);
+          const firstType = this.sr.typeDefNodes.get(this.sr.typeUseNodes.get(first.type).type);
+          const second =
+            callingArguments.length > 1 ? this.sr.exprNodes.get(callingArguments[1]) : null;
+          const secondType =
+            callingArguments.length > 1 && second
+              ? this.sr.typeDefNodes.get(this.sr.typeUseNodes.get(second.type).type)
+              : null;
+          if (
+            firstType.variant === Semantic.ENode.PrimitiveDatatype &&
+            firstType.primitive === EPrimitive.str &&
+            callingArguments.length === 1
+          ) {
+            return [first, callingArguments[0]];
+          }
+          // if (
+          //   callingArguments.length === 2 &&
+          //   second &&
+          //   secondType &&
+          //   firstType.variant === Semantic.ENode.NullableReferenceDatatype &&
+          //   sr.typeUseNodes.get(firstType.referee).type ===
+          //     makeRawPrimitiveAvailable(sr, EPrimitive.u8) &&
+          //   secondType.variant === Semantic.ENode.PrimitiveDatatype &&
+          //   Conversion.isInteger(secondType.primitive)
+          // ) {
+          //   return Semantic.addExpr(sr, {
+          //     variant: Semantic.ENode.StringConstructExpr,
+          //     type: makePrimitiveAvailable(
+          //       sr,
+          //       EPrimitive.str,
+          //       EDatatypeMutability.Const,
+          //       expr.sourceloc
+          //     ),
+          //     value: {
+          //       variant: "data-length",
+          //       data: callingArguments[0],
+          //       length: callingArguments[1],
+          //     },
+          //     isTemporary: true,
+          //     sourceloc: expr.sourceloc,
+          //   });
+          // }
+          throw new CompilerError(
+            `Primitive ${primitiveToString(
+              primitive
+            )} constructor does not provide an overload that can take following types: (${callingArguments
+              .map((a) => {
+                return Semantic.serializeTypeUse(this.sr, this.sr.exprNodes.get(a).type);
+              })
+              .join(", ")})`,
+            callExpr.sourceloc
+          );
+        }
+        throw new CompilerError(
+          `Primitive ${primitiveToString(primitive)} is not constructible`,
+          callExpr.sourceloc
+        );
+      }
+    }
 
     let decisiveArguments = [] as {
       index: number;
@@ -3797,6 +3798,12 @@ export class SemanticElaborator {
             elaboratedSymbol.comptimeValue,
           ];
         }
+
+        // console.log(elaboratedSymbol.name);
+        // if (elaboratedSymbol) {
+
+        // }
+
         return Semantic.addExpr(this.sr, {
           variant: Semantic.ENode.SymbolValueExpr,
           symbol: elaboratedSymbolId,
@@ -4293,8 +4300,11 @@ export class SemanticBuilder {
     const expr = this.sr.exprNodes.get(exprId);
     const ftypeUse = this.sr.typeUseNodes.get(expr.type);
     const ftypeDef = this.sr.typeDefNodes.get(ftypeUse.type);
-    assert(ftypeDef.variant === Semantic.ENode.FunctionDatatype);
 
+    assert(
+      ftypeDef.variant === Semantic.ENode.FunctionDatatype ||
+        ftypeDef.variant === Semantic.ENode.CallableDatatype
+    );
     let extern = false;
     if (expr.variant === Semantic.ENode.SymbolValueExpr) {
       const symbol = this.sr.symbolNodes.get(expr.symbol);
@@ -4305,12 +4315,21 @@ export class SemanticBuilder {
       }
     }
 
+    let returnType: Semantic.TypeUseId | null = null;
+    if (ftypeDef.variant === Semantic.ENode.FunctionDatatype) {
+      returnType = ftypeDef.returnType;
+    } else {
+      const functype = this.sr.typeDefNodes.get(ftypeDef.functionType);
+      assert(functype.variant === Semantic.ENode.FunctionDatatype);
+      returnType = functype.returnType;
+    }
+
     return Semantic.addExpr(this.sr, {
       variant: Semantic.ENode.ExprCallExpr,
       calledExpr: exprId,
       arguments: callArguments,
       isTemporary: true,
-      type: ftypeDef.returnType,
+      type: returnType,
       takesParentArena: !extern,
       takesReturnArena: !extern,
       sourceloc: sourceloc,
@@ -5772,7 +5791,7 @@ export namespace Semantic {
   export function serializeLiteralValue(value: LiteralValue) {
     if (value.type === EPrimitive.str) {
       return `${JSON.stringify(value.value)}`;
-    } else if (value.type === EPrimitive.c_str) {
+    } else if (value.type === EPrimitive.cstr) {
       return `${JSON.stringify(value.value)}`;
     } else if (value.type === EPrimitive.bool) {
       return `${value.value ? "true" : "false"}`;
@@ -6239,7 +6258,7 @@ export namespace Semantic {
         name: `Lb${literal.value ? "1" : "0"}E`,
         wasMangled: true,
       };
-    } else if (literalType === EPrimitive.str || literalType === EPrimitive.c_str) {
+    } else if (literalType === EPrimitive.str || literalType === EPrimitive.cstr) {
       const utf8 = new TextEncoder().encode(literal.value);
       let base64 = btoa(String.fromCharCode(...utf8));
       // make it C-identifier-safe: base64 → base64url (replace +/ with _)

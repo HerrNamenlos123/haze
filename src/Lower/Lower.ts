@@ -2122,7 +2122,7 @@ function serializeLoweredExpr(lr: Lowered.Module, exprId: Lowered.ExprId): strin
       if (type.variant === Lowered.ENode.PrimitiveDatatype && type.primitive === EPrimitive.str) {
         assert(expr.literal.type === EPrimitive.str);
         return `${JSON.stringify(expr.literal.value)}`;
-      } else if (expr.literal.type === EPrimitive.c_str) {
+      } else if (expr.literal.type === EPrimitive.cstr) {
         return `${JSON.stringify(expr.literal.value)}`;
       } else if (expr.literal.type === EPrimitive.null) {
         return `null`;
