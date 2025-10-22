@@ -10,7 +10,7 @@ export extern C noemit hzsys_arena_create_and_attach_subarena(arena: hzsys_arena
 export extern C noemit hzsys_attach_subarena(arena: hzsys_arena_t, subarena: hzsys_arena_t): void;
 export extern C noemit hzsys_detach_subarena(arena: hzsys_arena_t): void;
 
-export extern C noemit hzsys_arena_register_cleanup_action(arena: hzsys_arena_t, action: (actiondata: void) => void, actiondata: void): usize;
+export extern C noemit hzsys_arena_register_cleanup_action(arena: hzsys_arena_t, action: (actiondata: void) => cptr, actiondata: cptr): usize;
 export extern C noemit hzsys_arena_deregister_cleanup_action(arena: hzsys_arena_t, actionId: usize): void;
 
 const DEFAULT_CHUNK_SIZE = 1024;
