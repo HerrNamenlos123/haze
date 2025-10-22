@@ -86,6 +86,18 @@ export class SemanticElaborator {
     return result;
   }
 
+  getExpr(id: Semantic.ExprId) {
+    return this.sr.exprNodes.get(id);
+  }
+
+  getTypeUse(id: Semantic.TypeUseId) {
+    return this.sr.typeUseNodes.get(id);
+  }
+
+  getTypeDef(id: Semantic.TypeDefId) {
+    return this.sr.typeDefNodes.get(id);
+  }
+
   binaryExpr(binaryExpr: Collect.BinaryExpr, inference: Inference) {
     let [left, leftId] = this.expr(binaryExpr.left, inference);
     let [right, rightId] = this.expr(binaryExpr.right, inference);
@@ -150,6 +162,37 @@ export class SemanticElaborator {
     );
   }
 
+  exprs(exprs: Collect.ExprId[]) {
+    return exprs.map((a) => this.expr(a, undefined)[1]);
+  }
+
+  assertNoGenericArgs(expr: Collect.SymbolValueExpr, functionName: string) {
+    if (expr.genericArgs.length !== 0) {
+      throw new CompilerError(
+        `The ${functionName} function cannot take any type parameters`,
+        expr.sourceloc
+      );
+    }
+  }
+
+  assertParameterN(expr: Collect.ExprCallExpr, n: number | [number, number], functionName: string) {
+    if (Array.isArray(n)) {
+      if (expr.arguments.length < n[0] || expr.arguments.length > n[1]) {
+        throw new CompilerError(
+          `The ${functionName} function must take between ${n[0]} and ${n[1]} parameters`,
+          expr.sourceloc
+        );
+      }
+    } else {
+      if (expr.arguments.length !== n) {
+        throw new CompilerError(
+          `The ${functionName} function must take exactly ${n} parameter(s)`,
+          expr.sourceloc
+        );
+      }
+    }
+  }
+
   callExpr(
     callExpr: Collect.ExprCallExpr,
     inference: Inference
@@ -157,100 +200,30 @@ export class SemanticElaborator {
     const collectedExpr = this.sr.cc.exprNodes.get(callExpr.calledExpr);
     if (collectedExpr.variant === Collect.ENode.SymbolValueExpr) {
       if (collectedExpr.name === "typeof") {
-        const callingArguments = callExpr.arguments.map((a, i) => this.expr(a, undefined)[1]);
-        if (collectedExpr.genericArgs.length !== 0) {
-          throw new CompilerError(
-            "The typeof function cannot take any type parameters",
-            collectedExpr.sourceloc
-          );
-        }
-        if (callingArguments.length !== 1) {
-          throw new CompilerError(
-            "The typeof function can only take exactly one parameter",
-            collectedExpr.sourceloc
-          );
-        }
-        const value = this.sr.exprNodes.get(callingArguments[0]);
-        return Semantic.addExpr(this.sr, {
-          variant: Semantic.ENode.DatatypeAsValueExpr,
-          elaboratedType: value.type,
-          collectedType: null,
-          sourceloc: collectedExpr.sourceloc,
-          isTemporary: false,
-          type: value.type,
-        });
+        this.assertNoGenericArgs(collectedExpr, "typeof");
+        this.assertParameterN(callExpr, 1, "typeof");
+        return this.sr.b.datatypeUseAsValue(
+          this.sr.exprNodes.get(this.expr(callExpr.arguments[0], undefined)[1]).type,
+          collectedExpr.sourceloc
+        );
       }
       if (collectedExpr.name === "sizeof") {
-        const callingArguments = callExpr.arguments.map((a) => this.expr(a, undefined)[1]);
-        if (collectedExpr.genericArgs.length !== 0) {
-          throw new CompilerError(
-            "The sizeof function cannot take any type parameters",
-            collectedExpr.sourceloc
-          );
-        }
-        if (callingArguments.length !== 1) {
-          throw new CompilerError(
-            "The sizeof function can only take exactly one parameter",
-            collectedExpr.sourceloc
-          );
-        }
-        return Semantic.addExpr(this.sr, {
-          variant: Semantic.ENode.SizeofExpr,
-          sourceloc: collectedExpr.sourceloc,
-          isTemporary: false,
-          type: makePrimitiveAvailable(
-            this.sr,
-            EPrimitive.usize,
-            EDatatypeMutability.Const,
-            callExpr.sourceloc
-          ),
-          valueExpr: callingArguments[0],
-        });
+        this.assertNoGenericArgs(collectedExpr, "sizeof");
+        this.assertParameterN(callExpr, 1, "sizeof");
+        this.sr.b.sizeof(this.expr(callExpr.arguments[0], undefined)[1]);
       }
       if (collectedExpr.name === "alignof") {
-        const callingArguments = callExpr.arguments.map((a, i) => this.expr(a, undefined)[1]);
-        if (collectedExpr.genericArgs.length !== 0) {
-          throw new CompilerError(
-            "The alignof function cannot take any type parameters",
-            collectedExpr.sourceloc
-          );
-        }
-        if (callingArguments.length !== 1) {
-          throw new CompilerError(
-            "The alignof function can only take exactly one parameter",
-            collectedExpr.sourceloc
-          );
-        }
-        return Semantic.addExpr(this.sr, {
-          variant: Semantic.ENode.AlignofExpr,
-          sourceloc: collectedExpr.sourceloc,
-          isTemporary: false,
-          type: makePrimitiveAvailable(
-            this.sr,
-            EPrimitive.usize,
-            EDatatypeMutability.Const,
-            callExpr.sourceloc
-          ),
-          valueExpr: callingArguments[0],
-        });
+        this.assertNoGenericArgs(collectedExpr, "alignof");
+        this.assertParameterN(callExpr, 1, "alignof");
+        this.sr.b.alignof(this.expr(callExpr.arguments[0], undefined)[1]);
       }
       if (collectedExpr.name === "static_assert") {
-        const callingArguments = callExpr.arguments.map((a, i) => this.expr(a, undefined)[1]);
-        if (collectedExpr.genericArgs.length !== 0) {
-          throw new CompilerError(
-            "The static_assert function cannot take any type parameters",
-            collectedExpr.sourceloc
-          );
-        }
-        if (callingArguments.length < 1 || callingArguments.length > 2) {
-          throw new CompilerError(
-            "The static_assert function can only take one or two parameters",
-            collectedExpr.sourceloc
-          );
-        }
+        this.assertNoGenericArgs(collectedExpr, "static_assert");
+        this.assertParameterN(callExpr, [1, 2], "static_assert");
+
         let second = undefined as Semantic.LiteralExpr | undefined;
-        if (callingArguments.length > 1) {
-          const s = this.sr.exprNodes.get(callingArguments[1]);
+        if (callExpr.arguments.length > 1) {
+          const s = this.getExpr(this.expr(callExpr.arguments[1], undefined)[1]);
           if (
             s.variant !== Semantic.ENode.LiteralExpr ||
             (s.literal.type !== EPrimitive.str && s.literal.type !== EPrimitive.cstr)
@@ -263,23 +236,13 @@ export class SemanticElaborator {
             second = s;
           }
         }
-        const value = EvalCTFEBoolean(this.sr, callingArguments[0], callExpr.sourceloc);
+        const value = EvalCTFEBoolean(
+          this.sr,
+          this.expr(callExpr.arguments[0], undefined)[1],
+          callExpr.sourceloc
+        );
         if (value) {
-          return Semantic.addExpr(this.sr, {
-            variant: Semantic.ENode.LiteralExpr,
-            sourceloc: collectedExpr.sourceloc,
-            type: makePrimitiveAvailable(
-              this.sr,
-              EPrimitive.bool,
-              EDatatypeMutability.Const,
-              callExpr.sourceloc
-            ),
-            literal: {
-              type: EPrimitive.bool,
-              value: true,
-            },
-            isTemporary: true,
-          });
+          return this.sr.b.literal(true, collectedExpr.sourceloc);
         } else {
           let str = second ? Semantic.serializeLiteralValue(second?.literal) : undefined;
           if (second && second.literal.type === EPrimitive.str) {
@@ -294,7 +257,7 @@ export class SemanticElaborator {
 
       const primitive = stringToPrimitive(collectedExpr.name);
       if (primitive) {
-        const callingArguments = callExpr.arguments.map((a, i) => this.expr(a, undefined)[1]);
+        const callingArguments = callExpr.arguments.map((a) => this.expr(a, undefined)[1]);
         assertCompilerError(
           collectedExpr.genericArgs.length === 0,
           "Primitive constructors cannot take any type parameters",
@@ -306,13 +269,12 @@ export class SemanticElaborator {
             "'str' constructor must take one or two parameters",
             collectedExpr.sourceloc
           );
-          const first = this.sr.exprNodes.get(callingArguments[0]);
-          const firstType = this.sr.typeDefNodes.get(this.sr.typeUseNodes.get(first.type).type);
-          const second =
-            callingArguments.length > 1 ? this.sr.exprNodes.get(callingArguments[1]) : null;
+          const first = this.getExpr(callingArguments[0]);
+          const firstType = this.getTypeDef(this.sr.typeUseNodes.get(first.type).type);
+          const second = callingArguments.length > 1 ? this.getExpr(callingArguments[1]) : null;
           const secondType =
             callingArguments.length > 1 && second
-              ? this.sr.typeDefNodes.get(this.sr.typeUseNodes.get(second.type).type)
+              ? this.getTypeDef(this.getTypeUse(second.type).type)
               : null;
           if (
             firstType.variant === Semantic.ENode.PrimitiveDatatype &&
@@ -389,7 +351,7 @@ export class SemanticElaborator {
       gonnaCallFunctionWithParameterValues: decisiveArguments,
       unsafe: inference?.unsafe,
     });
-    const calledExprType = this.sr.typeDefNodes.get(this.sr.typeUseNodes.get(calledExpr.type).type);
+    const calledExprType = this.getTypeDef(this.getTypeUse(calledExpr.type).type);
 
     const convertArgs = (
       givenArgs: Semantic.ExprId[],
@@ -397,7 +359,7 @@ export class SemanticElaborator {
       vararg: boolean
     ) => {
       const newRequiredTypes = requiredTypes.filter((t) => {
-        const tt = this.sr.typeDefNodes.get(this.sr.typeUseNodes.get(t).type);
+        const tt = this.getTypeDef(this.getTypeUse(t).type);
         return tt.variant !== Semantic.ENode.ParameterPackDatatype;
       });
       if (vararg || requiredTypes.length !== newRequiredTypes.length) {
@@ -495,41 +457,24 @@ export class SemanticElaborator {
       const constructor = this.sr.symbolNodes.get(constructorId);
       assert(constructor.variant === Semantic.ENode.FunctionSymbol);
 
-      const constructorFunctype = this.sr.typeDefNodes.get(constructor.type);
+      const constructorFunctype = this.getTypeDef(constructor.type);
       assert(constructorFunctype.variant === Semantic.ENode.FunctionDatatype);
-      return Semantic.addExpr(this.sr, {
-        variant: Semantic.ENode.ExprCallExpr,
-        calledExpr: Semantic.addExpr(this.sr, {
-          variant: Semantic.ENode.SymbolValueExpr,
-          symbol: constructorId,
-          type: makeTypeUse(
-            this.sr,
-            constructor.type,
-            EDatatypeMutability.Const,
-            false,
-            callExpr.sourceloc
-          )[1],
-          sourceloc: callExpr.sourceloc,
-          isTemporary: false,
-        })[1],
-        arguments: convertArgs(
+      return this.sr.b.callExpr(
+        this.sr.b.symbolValue(constructorId, callExpr.sourceloc)[1],
+        convertArgs(
           getActualCallingArguments(constructorFunctype.parameters),
           constructorFunctype.parameters,
           constructorFunctype.vararg
         ),
-        type: constructorFunctype.returnType,
-        isTemporary: true,
-        takesParentArena: true,
-        takesReturnArena: true,
-        sourceloc: callExpr.sourceloc,
-      });
+        callExpr.sourceloc
+      );
     } else if (calledExprType.variant === Semantic.ENode.PrimitiveDatatype) {
       throw new CompilerError(
         `Expression of type ${primitiveToString(calledExprType.primitive)} is not callable`,
         callExpr.sourceloc
       );
     }
-    assert(false && "All cases handled");
+    assert(false, "All cases handled ");
   }
 
   unaryExpr(unaryExpr: Collect.UnaryExpr) {
@@ -741,19 +686,13 @@ export class SemanticElaborator {
       objectType.primitive === EPrimitive.str
     ) {
       if (memberAccess.memberName === "length") {
-        return Semantic.addExpr(this.sr, {
-          variant: Semantic.ENode.MemberAccessExpr,
-          isTemporary: true,
-          sourceloc: memberAccess.sourceloc,
-          type: makePrimitiveAvailable(
-            this.sr,
-            EPrimitive.usize,
-            EDatatypeMutability.Const,
-            memberAccess.sourceloc
-          ),
-          expr: objectId,
-          memberName: "length",
-        });
+        return this.sr.b.memberAccessRaw(
+          objectId,
+          "length",
+          this.sr.b.usizeType(),
+          true,
+          memberAccess.sourceloc
+        );
       }
       // TODO: Turn this into a slice [N]u8
       // if (expr.memberName === "data") {
@@ -787,19 +726,13 @@ export class SemanticElaborator {
 
     if (objectType.variant === Semantic.ENode.DynamicArrayDatatype) {
       if (memberAccess.memberName === "length") {
-        return Semantic.addExpr(this.sr, {
-          variant: Semantic.ENode.MemberAccessExpr,
-          isTemporary: true,
-          sourceloc: memberAccess.sourceloc,
-          type: makePrimitiveAvailable(
-            this.sr,
-            EPrimitive.usize,
-            EDatatypeMutability.Const,
-            memberAccess.sourceloc
-          ),
-          expr: objectId,
-          memberName: "length",
-        });
+        return this.sr.b.memberAccessRaw(
+          objectId,
+          "length",
+          this.sr.b.usizeType(),
+          true,
+          memberAccess.sourceloc
+        );
       }
       throw new CompilerError(
         `Datatype '${Semantic.serializeTypeUse(
@@ -835,23 +768,6 @@ export class SemanticElaborator {
       assert(member.variant === Semantic.ENode.VariableSymbol && member.type);
 
       return this.sr.b.memberAccess(objectId, memberAccess.memberName, memberAccess.sourceloc);
-      // console.log(Semantic.serializeTypeUse(sr, memberAccess.type));
-      // // Promote the datatype because by default, every struct member is fully mutable.
-      // console.log(
-      //   "TODO: This mutability promotion is only allowed if the struct itself (this) is mutable"
-      // );
-      // return Semantic.addExpr(sr, {
-      //   variant: Semantic.ENode.ExplicitCastExpr,
-      //   expr: memberAccessId,
-      //   isTemporary: true,
-      //   sourceloc: expr.sourceloc,
-      //   type: makeTypeUse(
-      //     sr,
-      //     sr.typeUseNodes.get(memberAccess.type).type,
-      //     EDatatypeMutability.Mut,
-      //     expr.sourceloc
-      //   )[1],
-      // });
     }
 
     const collectedStruct = this.sr.cc.typeDefNodes.get(objectType.originalCollectedSymbol);
@@ -879,7 +795,6 @@ export class SemanticElaborator {
       const collectedMethod = this.sr.cc.symbolNodes.get(chosenOverloadId);
       assert(collectedMethod.variant === Collect.ENode.FunctionSymbol);
 
-      let wasReference = false;
       let objectTypeId = object.type;
       const objectType = this.sr.typeDefNodes.get(this.sr.typeUseNodes.get(objectTypeId).type);
 
@@ -4350,6 +4265,28 @@ export class SemanticBuilder {
     });
   }
 
+  sizeof(valueExprId: Semantic.ExprId) {
+    const valueExpr = this.sr.exprNodes.get(valueExprId);
+    return Semantic.addExpr(this.sr, {
+      variant: Semantic.ENode.SizeofExpr,
+      valueExpr: valueExprId,
+      type: this.usizeType(),
+      isTemporary: false,
+      sourceloc: valueExpr.sourceloc,
+    });
+  }
+
+  alignof(valueExprId: Semantic.ExprId) {
+    const valueExpr = this.sr.exprNodes.get(valueExprId);
+    return Semantic.addExpr(this.sr, {
+      variant: Semantic.ENode.AlignofExpr,
+      valueExpr: valueExprId,
+      type: this.usizeType(),
+      isTemporary: false,
+      sourceloc: valueExpr.sourceloc,
+    });
+  }
+
   symbolValue(symbolId: Semantic.SymbolId, sourceloc: SourceLoc) {
     const symbol = this.sr.symbolNodes.get(symbolId);
     if (symbol.variant === Semantic.ENode.FunctionSymbol) {
@@ -4369,6 +4306,8 @@ export class SemanticBuilder {
         isTemporary: false,
         sourceloc: sourceloc,
       });
+    } else {
+      assert(false);
     }
   }
 
@@ -4443,6 +4382,23 @@ export class SemanticBuilder {
     });
   }
 
+  memberAccessRaw(
+    exprId: Semantic.ExprId,
+    name: string,
+    memberType: Semantic.TypeUseId,
+    temporary: boolean,
+    sourceloc: SourceLoc
+  ) {
+    return Semantic.addExpr(this.sr, {
+      variant: Semantic.ENode.MemberAccessExpr,
+      expr: exprId,
+      memberName: name,
+      type: memberType,
+      sourceloc: sourceloc,
+      isTemporary: temporary,
+    });
+  }
+
   memberAccess(exprId: Semantic.ExprId, name: string, sourceloc: SourceLoc) {
     const expr = this.sr.exprNodes.get(exprId);
     const exprType = this.sr.typeDefNodes.get(this.sr.typeUseNodes.get(expr.type).type);
@@ -4458,14 +4414,7 @@ export class SemanticBuilder {
     }
     assert(memberType);
 
-    return Semantic.addExpr(this.sr, {
-      variant: Semantic.ENode.MemberAccessExpr,
-      expr: exprId,
-      memberName: name,
-      type: memberType,
-      sourceloc: sourceloc,
-      isTemporary: false,
-    });
+    return this.memberAccessRaw(exprId, name, memberType, false, sourceloc);
   }
 
   structLiteral(
@@ -4550,6 +4499,10 @@ export class SemanticBuilder {
 
   voidType() {
     return this.primitiveType(EPrimitive.void, null);
+  }
+
+  usizeType() {
+    return this.primitiveType(EPrimitive.usize, null);
   }
 
   nullTypeDef() {
@@ -5555,9 +5508,6 @@ export namespace Semantic {
       case Collect.ENode.BlockScope:
       case Collect.ENode.StructScope:
       case Collect.ENode.FunctionScope: {
-        // if (Math.random() < 0.001) {
-        //   assert(false);
-        // }
         const found = lookupDirect(scope.symbols);
         if (found) {
           return {
@@ -5640,75 +5590,7 @@ export namespace Semantic {
       }
     }
     assert(false, "Symbol not found");
-
-    // console.log(moduleScope);
-    // for (const unitId of moduleScope.scopes) {
-    //   const unitScope = sr.cc.scopeNodes.get(unitId) as Collect.UnitScope;
-    //   console.log(unitScope);
-    // }
-
-    // for (const name of names) {
-    //   tryLookupSymbol(sr, name, {
-    //     startLookupInScope: currentScope,
-    //   });
-    // }
   }
-
-  // export function recursivelyExportCollectedSymbols(
-  //   sr: SemanticResult,
-  //   symbol: Collect.Node | Collect.Scope
-  // ) {
-  //   if (sr.exportedCollectedSymbols.has(symbol)) {
-  //     return; // Prevent recursion
-  //   }
-
-  //   if (symbol instanceof Collect.Scope) {
-  //     sr.exportedCollectedSymbols.add(symbol);
-  //     if (symbol.parentScope) {
-  //       recursivelyExportCollectedSymbols(sr, getScope(sr.cc, symbol.parentScope));
-  //     }
-  //     for (const s of symbol.symbols) {
-  //       recursivelyExportCollectedSymbols(sr, getSymbol(sr.cc, s));
-  //     }
-  //   } else {
-  //     switch (symbol.variant) {
-  //       case "FunctionDeclaration":
-  //         sr.exportedCollectedSymbols.add(symbol);
-  //         if (symbol._collect.definedInScope) {
-  //           recursivelyExportCollectedSymbols(sr, getScope(sr.cc, symbol._collect.definedInScope));
-  //         }
-  //         break;
-
-  //       case "FunctionDefinition":
-  //         if (!symbol.export) return;
-  //         sr.exportedCollectedSymbols.add(symbol);
-  //         if (symbol._collect.definedInScope) {
-  //           recursivelyExportCollectedSymbols(sr, getScope(sr.cc, symbol._collect.definedInScope));
-  //         }
-  //         break;
-
-  //       case "NamespaceDefinition":
-  //         for (const d of symbol.declarations) {
-  //           recursivelyExportCollectedSymbols(sr, d);
-  //         }
-  //         break;
-
-  //       case "GenericParameter":
-  //       case "StructMethod":
-  //       case "VariableDefinitionStatement":
-  //         assert(false, "TBD");
-
-  //       case "GlobalVariableDefinition":
-  //       case "StructDefinition":
-  //         if (!symbol.export) return;
-  //         sr.exportedCollectedSymbols.add(symbol);
-  //         if (symbol._collect.definedInScope) {
-  //           recursivelyExportCollectedSymbols(sr, getScope(sr.cc, symbol._collect.definedInScope));
-  //         }
-  //         break;
-  //     }
-  //   }
-  // }
 
   export type ElaborationContext = {
     substitute: Map<Collect.SymbolId, Semantic.ExprId>;
