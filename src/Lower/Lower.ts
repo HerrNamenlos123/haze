@@ -1114,7 +1114,8 @@ function lowerExpr(
     case Semantic.ENode.CallableExpr: {
       lowerSymbol(lr, expr.functionSymbol);
       const thisExpr = lr.sr.exprNodes.get(expr.thisExpr);
-      const thisExprType = lr.sr.typeDefNodes.get(lr.sr.typeUseNodes.get(thisExpr.type).type);
+      const thisExprTypeUse = lr.sr.typeUseNodes.get(thisExpr.type);
+      const thisExprType = lr.sr.typeDefNodes.get(thisExprTypeUse.type);
 
       let loweredThisExpression = lowerExpr(lr, expr.thisExpr, flattened)[1];
       assert(thisExprType.variant === Semantic.ENode.StructDatatype);
@@ -1129,11 +1130,16 @@ function lowerExpr(
           flattened
         )[1];
       }
-      loweredThisExpression = Lowered.addExpr(lr, {
-        variant: Lowered.ENode.AddressOfExpr,
-        expr: tempId,
-        type: structPointerType,
-      })[1];
+
+      if (thisExprTypeUse.inline) {
+        loweredThisExpression = Lowered.addExpr(lr, {
+          variant: Lowered.ENode.AddressOfExpr,
+          expr: tempId,
+          type: structPointerType,
+        })[1];
+      } else {
+        loweredThisExpression = tempId;
+      }
 
       const functionSymbol = lr.sr.symbolNodes.get(expr.functionSymbol);
       assert(functionSymbol.variant === Semantic.ENode.FunctionSymbol);
@@ -1701,6 +1707,15 @@ function lowerBlockScope(
             type: loweredArenaType,
           })[1],
           requiresDeref: true,
+          type: loweredArenaType,
+        })[1],
+        Lowered.addExpr(lr, {
+          variant: Lowered.ENode.SymbolValueExpr,
+          name: {
+            mangledName: "HZSYS_DEFAULT_ARENA_CHUNK_SIZE",
+            prettyName: "HZSYS_DEFAULT_ARENA_CHUNK_SIZE",
+            wasMangled: false,
+          },
           type: loweredArenaType,
         })[1],
       ],

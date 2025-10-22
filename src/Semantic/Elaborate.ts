@@ -3266,6 +3266,7 @@ export class SemanticElaborator {
 
         if (!variableSymbol.type) {
           variableSymbol.type = value?.type || null;
+
           if (variableSymbol.type && value) {
             const variableSymbolType = this.sr.typeUseNodes.get(variableSymbol.type);
             const variableSymbolTypeDef = this.sr.typeDefNodes.get(variableSymbolType.type);
@@ -3277,7 +3278,7 @@ export class SemanticElaborator {
                 this.sr,
                 variableSymbolType.type,
                 EDatatypeMutability.Mut,
-                false,
+                variableSymbolType.inline,
                 s.sourceloc
               )[1];
             }
@@ -3799,18 +3800,36 @@ export class SemanticElaborator {
           ];
         }
 
-        // console.log(elaboratedSymbol.name);
-        // if (elaboratedSymbol) {
-
-        // }
-
-        return Semantic.addExpr(this.sr, {
+        const [symbolValueExpr, symbolValueExprId] = Semantic.addExpr(this.sr, {
           variant: Semantic.ENode.SymbolValueExpr,
           symbol: elaboratedSymbolId,
           type: elaboratedSymbol.type,
           sourceloc: symbolValue.sourceloc,
           isTemporary: false,
         });
+
+        const type = this.sr.typeDefNodes.get(this.sr.typeUseNodes.get(elaboratedSymbol.type).type);
+        if (type.variant === Semantic.ENode.UnionDatatype) {
+          const narrowing = Conversion.typeNarrowing(this.sr);
+          narrowing.addVariants(type.members);
+          narrowing.constrainFromConstraints(this.currentContext.constraints, symbolValueExprId);
+
+          if (narrowing.possibleVariants.size === 1) {
+            const index = type.members.findIndex((m) => m === [...narrowing.possibleVariants][0]);
+            assert(index !== -1);
+
+            return Semantic.addExpr(this.sr, {
+              variant: Semantic.ENode.UnionToValueCastExpr,
+              expr: symbolValueExprId,
+              index: index,
+              isTemporary: true,
+              sourceloc: symbolValue.sourceloc,
+              type: [...narrowing.possibleVariants][0],
+            });
+          }
+        }
+
+        return [symbolValueExpr, symbolValueExprId] as const;
       } else if (
         elaboratedSymbol.variant === Semantic.ENode.TypeDefSymbol &&
         this.sr.typeDefNodes.get(elaboratedSymbol.datatype).variant ===

@@ -621,7 +621,7 @@ export namespace Conversion {
     return values;
   }
 
-  function typeNarrowing(sr: SemanticResult) {
+  export function typeNarrowing(sr: SemanticResult) {
     return {
       possibleVariants: new Set<Semantic.TypeUseId>(),
 
