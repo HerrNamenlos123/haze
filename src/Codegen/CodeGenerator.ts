@@ -649,8 +649,7 @@ class CodeGenerator {
     for (const statementId of scope.statements) {
       const statement = this.lr.statementNodes.get(statementId);
       if (returned) {
-        printWarningMessage(`Dead code detected and stripped`, statement.sourceloc);
-        break;
+        assert(false, "Dead code should have been stripped in lowering phase");
       }
 
       if (statement.variant === Lowered.ENode.ReturnStatement) {

@@ -24,7 +24,7 @@ import {
   type LiteralValue,
   type NameSet,
 } from "../shared/common";
-import { assert, InternalError, type SourceLoc } from "../shared/Errors";
+import { assert, InternalError, printWarningMessage, type SourceLoc } from "../shared/Errors";
 import { makeTempName } from "../shared/store";
 import { Collect } from "../SymbolCollection/SymbolCollection";
 
@@ -1755,13 +1755,29 @@ function lowerBlockScope(
     );
   }
 
+  // undefined = no return, null = return nothing, expr = return expr
+  let returnedExpr: Lowered.ExprId | null | undefined = undefined;
+
   for (const s of blockScope.statements) {
     const statement = lr.sr.statementNodes.get(s);
     if (statement.variant === Semantic.ENode.VariableStatement) {
       containsVariables = true;
     }
 
-    statements.push(...lowerStatement(lr, s));
+    for (const statementId of lowerStatement(lr, s)) {
+      const innerStatement = lr.statementNodes.get(statementId);
+
+      if (innerStatement.variant === Lowered.ENode.ReturnStatement) {
+        if (!returnedExpr) {
+          returnedExpr = innerStatement.expr;
+        } else {
+          printWarningMessage(`Dead code detected and stripped`, innerStatement.sourceloc);
+        }
+        continue;
+      }
+
+      statements.push(statementId);
+    }
   }
 
   const emitted = blockScope.emittedExpr
@@ -1810,6 +1826,16 @@ function lowerBlockScope(
       Lowered.addStatement(lr, {
         variant: Lowered.ENode.ExprStatement,
         expr: destroyId,
+        sourceloc: null,
+      })[1]
+    );
+  }
+
+  if (returnedExpr !== undefined) {
+    statements.push(
+      Lowered.addStatement(lr, {
+        variant: Lowered.ENode.ReturnStatement,
+        expr: returnedExpr,
         sourceloc: null,
       })[1]
     );
