@@ -86,7 +86,7 @@ namespace raw {
         return glfwGetTime() as f64;
     }
 
-    export getProcAddress(procname: c_str): () => void {
+    export extern C glfw_getProcAddress(procname: c_str): () => void {
         return glfwGetProcAddress(procname);
     }
 }
@@ -179,7 +179,7 @@ export getTime(): real {
 }
 
 export getProcAddress(): (name: c_str) => void {
-    const rawProc = raw.getProcAddress;
+    const rawProc = raw.glfw_getProcAddress;
     do unsafe {
         const castedProc: (name: c_str) => void = uninitialized;
         __c__("castedProc = (void*)rawProc;");

@@ -32,6 +32,7 @@ import {
   ConfigParser,
   ModuleType,
   parseModuleMetadata,
+  type CompileCommands,
   type ModuleConfig,
   type ModuleMetadata,
   type ScriptDef,
@@ -49,7 +50,7 @@ import { generateCode } from "./Codegen/CodeGenerator";
 import { LowerModule } from "./Lower/Lower";
 import { ExportCollectedSymbols } from "./SymbolCollection/Export";
 import { Semantic } from "./Semantic/Elaborate";
-import { stdout } from "process";
+import { cwd, stdout } from "process";
 import { spawnSync } from "child_process";
 import archiver from "archiver";
 import tarFs from "tar-fs";
@@ -961,6 +962,8 @@ class ModuleCompiler {
         allCompilerFlags.push(...compilerFlags.linux);
       }
 
+      const compileCommands: CompileCommands = [];
+
       if (this.config.moduleType === ModuleType.Executable) {
         const [libs, dependencyLinkerFlags] = await this.loadDependencyBinaries();
 
@@ -982,12 +985,28 @@ class ModuleCompiler {
           " "
         )} ${allLinkerFlags.join(" ")} -std=c11`;
         // console.log(cmd);
+
+        compileCommands.push({
+          directory: cwd(),
+          file: moduleCFile,
+          command: cmd,
+          output: moduleExecutable,
+        });
+
         await exec(cmd);
       } else {
         const cmd = `"${HAZE_C_COMPILER}" -g "${moduleCFile}" -c -o "${moduleOFile}" -I"${
           this.config.srcDirectory
         }" ${allCompilerFlags.join(" ")} -std=c11`;
         // console.log(cmd);
+
+        compileCommands.push({
+          directory: cwd(),
+          file: moduleCFile,
+          command: cmd,
+          output: moduleExecutable,
+        });
+
         await exec(cmd);
 
         // if (fs.existsSync(moduleAFile)) {
@@ -1019,6 +1038,7 @@ class ModuleCompiler {
             },
           ],
           linkerFlags: this.config.linkerFlags,
+          compileCommands: compileCommands,
           importFile: HAZE_LIB_IMPORT_FILE,
         };
         await Bun.write(moduleMetadataFile, JSON.stringify(moduleMetadata, undefined, 2));
@@ -1043,6 +1063,8 @@ class ModuleCompiler {
         //   this.module.moduleConfig.configFilePath,
         // );
       }
+
+      console.log("Module finished compiling ", this.config.name);
     });
   }
 

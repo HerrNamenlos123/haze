@@ -93,14 +93,6 @@ function printType(cc: CollectionContext, typeId: Collect.TypeUseId): string {
       return str;
     }
 
-    case Collect.ENode.NullableReferenceDatatype: {
-      return `?&${printType(cc, type.referee)}`;
-    }
-
-    case Collect.ENode.ReferenceDatatype: {
-      return `&${printType(cc, type.referee)}`;
-    }
-
     case Collect.ENode.StackArrayDatatype: {
       return `[${type.length}]${printType(cc, type.datatype)}`;
     }
@@ -111,6 +103,10 @@ function printType(cc: CollectionContext, typeId: Collect.TypeUseId): string {
 
     case Collect.ENode.ParameterPack: {
       return "...";
+    }
+
+    case Collect.ENode.UnionDatatype: {
+      return "(" + type.members.map((m) => printType(cc, m)).join(" | ") + ")";
     }
 
     case Collect.ENode.FunctionDatatype: {

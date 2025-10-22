@@ -603,6 +603,12 @@ export class SemanticElaborator {
       case Collect.ENode.BlockScopeExpr:
         return this.blockScopeExpr(expr, inference);
 
+      case Collect.ENode.LiteralExpr:
+        return this.literalExpr(expr);
+
+      case Collect.ENode.TypeLiteralExpr:
+        return this.typeLiteral(expr);
+
       default:
         assert(false, "All cases handled: " + Collect.ENode[expr.variant]);
     }

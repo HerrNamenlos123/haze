@@ -62,6 +62,42 @@ export type ModuleLibMetadata = {
 //   nodes: Collect.Node[];
 // };
 
+export type CompileCommands = CompileCommandEntry[];
+
+export interface CompileCommandEntry {
+  /**
+   * The working directory where the compilation command is executed.
+   * Usually the project root or the directory containing the source file.
+   */
+  directory: string;
+
+  /**
+   * The full compiler invocation used to compile this file.
+   * It may include compiler, flags, defines, include paths, etc.
+   * Example: "clang -std=c17 -Iinclude -c out/main.c"
+   */
+  command?: string;
+
+  /**
+   * Alternative to `command`, introduced by some tools (like Ninja/CMake)
+   * for better structured command data. Only one of `command` or
+   * `arguments` is required.
+   */
+  arguments?: string[];
+
+  /**
+   * The absolute or relative path to the source file.
+   * clangd resolves it relative to `directory` if not absolute.
+   */
+  file: string;
+
+  /**
+   * Optional. Some tools add this when the output object file path differs
+   * from the source name.
+   */
+  output?: string;
+}
+
 export type ExportData = {
   exported: Set<Collect.SymbolId>;
 };
@@ -77,6 +113,7 @@ export type ModuleMetadata = {
     win32: string[];
     linux: string[];
   };
+  compileCommands: CompileCommands;
   importFile: "import.hz";
 };
 

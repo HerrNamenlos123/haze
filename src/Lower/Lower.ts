@@ -1938,7 +1938,10 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
       });
       lr.loweredFunctions.set(symbolId, fId);
 
-      f.scope = (symbol.scope && lowerBlockScope(lr, symbol.scope, true)) || null;
+      f.scope =
+        (symbol.scope &&
+          lowerBlockScope(lr, symbol.scope, symbol.extern !== EExternLanguage.Extern_C)) ||
+        null;
       break;
     }
 
