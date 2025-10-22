@@ -883,7 +883,7 @@ class CodeGenerator {
         return { out: outWriter, temp: tempWriter };
       }
 
-      case Lowered.ENode.UnionCastExpr: {
+      case Lowered.ENode.ValueToUnionCastExpr: {
         const exprWriter = this.emitExpr(expr.expr);
         tempWriter.write(exprWriter.temp);
         const typeUse = this.lr.typeUseNodes.get(expr.type);
@@ -911,6 +911,21 @@ class CodeGenerator {
               expr.type
             )}) { .tag = ${index}, .as_index_${index} = ${this.emitExpr(expr.expr).out.get()} })`
           );
+        }
+        return { out: outWriter, temp: tempWriter };
+      }
+
+      case Lowered.ENode.UnionToValueCastExpr: {
+        const exprWriter = this.emitExpr(expr.expr);
+        tempWriter.write(exprWriter.temp);
+        const typeUse = this.lr.typeUseNodes.get(expr.type);
+        const union = this.lr.typeDefNodes.get(typeUse.type);
+        assert(union.variant === Lowered.ENode.UnionDatatype);
+
+        if (union.optimizeAsRawPointer) {
+          outWriter.write(`(${this.emitExpr(expr.expr).out.get()})`);
+        } else {
+          outWriter.write(`((${this.emitExpr(expr.expr).out.get()}).as_index_${expr.index})`);
         }
         return { out: outWriter, temp: tempWriter };
       }

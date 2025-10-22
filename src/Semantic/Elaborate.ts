@@ -600,6 +600,9 @@ export class SemanticElaborator {
       case Collect.ENode.ParenthesisExpr:
         return this.parenthesisExpr(expr, inference);
 
+      case Collect.ENode.BlockScopeExpr:
+        return this.blockScopeExpr(expr, inference);
+
       default:
         assert(false, "All cases handled: " + Collect.ENode[expr.variant]);
     }
@@ -2208,7 +2211,6 @@ export class SemanticElaborator {
               return this.withContext(
                 {
                   context: this.currentContext,
-                  expectedReturnType: this.sr.b.voidType(),
                 },
                 () => this.expressionAsGenericArg(g)
               );
@@ -3533,6 +3535,8 @@ export class SemanticElaborator {
 
   buildConstraints(constraints: Semantic.Constraint[], exprId: Semantic.ExprId) {
     const expr = this.sr.exprNodes.get(exprId);
+    const exprTypeUse = this.sr.typeUseNodes.get(expr.type);
+    const exprTypeDef = this.sr.typeDefNodes.get(exprTypeUse.type);
 
     if (expr.variant === Semantic.ENode.BinaryExpr) {
       if (expr.operation === EBinaryOperation.BoolAnd) {
@@ -3562,6 +3566,33 @@ export class SemanticElaborator {
             );
           }
         }
+      }
+    }
+
+    if (
+      expr.variant === Semantic.ENode.SymbolValueExpr &&
+      exprTypeDef.variant === Semantic.ENode.UnionDatatype
+    ) {
+      const memberDefs = exprTypeDef.members.map((m) => this.sr.typeUseNodes.get(m).type);
+      if (memberDefs.includes(this.sr.b.nullTypeDef())) {
+        constraints.push({
+          constraintValue: {
+            kind: "union",
+            operation: "isNot",
+            typeDef: this.sr.b.nullTypeDef(),
+          },
+          variableSymbol: expr.symbol,
+        });
+      }
+      if (memberDefs.includes(this.sr.b.noneTypeDef())) {
+        constraints.push({
+          constraintValue: {
+            kind: "union",
+            operation: "isNot",
+            typeDef: this.sr.b.noneTypeDef(),
+          },
+          variableSymbol: expr.symbol,
+        });
       }
     }
   }
@@ -4133,6 +4164,7 @@ export class SemanticElaborator {
           genericsScope: blockScopeExpr.scope,
           constraints: this.currentContext.constraints,
         }),
+        expectedReturnType: this.expectedReturnType,
       },
       () => {
         this.elaborateBlockScope(
@@ -4395,6 +4427,14 @@ export class SemanticBuilder {
 
   voidType() {
     return this.primitiveType(EPrimitive.void, null);
+  }
+
+  nullTypeDef() {
+    return makeRawPrimitiveAvailable(this.sr, EPrimitive.null);
+  }
+
+  noneTypeDef() {
+    return makeRawPrimitiveAvailable(this.sr, EPrimitive.none);
   }
 
   doesUnionContain(unionId: Semantic.TypeUseId, typeId: Semantic.TypeUseId) {
@@ -4717,7 +4757,8 @@ export namespace Semantic {
     SizeofExpr,
     AlignofExpr,
     ExplicitCastExpr,
-    UnionCastExpr,
+    ValueToUnionCastExpr,
+    UnionToValueCastExpr,
     MemberAccessExpr,
     CallableExpr,
     AddressOfExpr,
@@ -4774,9 +4815,10 @@ export namespace Semantic {
         value: Semantic.ExprId;
       }
     | {
-        kind: "variant";
-        operation: "is" | "is not";
-        variantType: Semantic.TypeUseId;
+        kind: "union";
+        operation: "is" | "isNot";
+        typeUse?: Semantic.TypeUseId;
+        typeDef?: Semantic.TypeDefId;
       };
 
   export type Constraint = {
@@ -5055,10 +5097,19 @@ export namespace Semantic {
     sourceloc: SourceLoc;
   };
 
-  export type UnionCastExpr = {
-    variant: ENode.UnionCastExpr;
+  export type ValueToUnionCastExpr = {
+    variant: ENode.ValueToUnionCastExpr;
     expr: ExprId;
     type: TypeUseId;
+    isTemporary: boolean;
+    sourceloc: SourceLoc;
+  };
+
+  export type UnionToValueCastExpr = {
+    variant: ENode.UnionToValueCastExpr;
+    expr: ExprId;
+    type: TypeUseId;
+    index: number;
     isTemporary: boolean;
     sourceloc: SourceLoc;
   };
@@ -5195,7 +5246,8 @@ export namespace Semantic {
     | AddressOfExpr
     | DereferenceExpr
     | ExplicitCastExpr
-    | UnionCastExpr
+    | ValueToUnionCastExpr
+    | UnionToValueCastExpr
     | ExprCallExpr
     | StructInstantiationExpr
     | LiteralExpr

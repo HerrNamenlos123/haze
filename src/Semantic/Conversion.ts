@@ -392,29 +392,6 @@ export namespace Conversion {
     }
   }
 
-  function mutabilityLevel(mutability: EDatatypeMutability) {
-    switch (mutability) {
-      case EDatatypeMutability.Const:
-        return 1;
-      case EDatatypeMutability.Default:
-        return 2;
-      case EDatatypeMutability.Mut:
-        return 3;
-    }
-  }
-
-  function getReferenceDepth(sr: SemanticResult, typeId: Semantic.TypeUseId): number {
-    const typeInstance = sr.typeUseNodes.get(typeId);
-    // const type = sr.typeDefNodes.get(typeInstance.type);
-    // if (
-    //   type.variant === Semantic.ENode.ReferenceDatatype ||
-    //   type.variant === Semantic.ENode.NullableReferenceDatatype
-    // ) {
-    //   return 1 + getReferenceDepth(sr, type.referee);
-    // }
-    return 0;
-  }
-
   type ValueRange = {
     max: bigint | undefined;
     min: bigint | undefined;
@@ -642,6 +619,69 @@ export namespace Conversion {
     };
 
     return values;
+  }
+
+  function typeNarrowing(sr: SemanticResult) {
+    return {
+      possibleVariants: new Set<Semantic.TypeUseId>(),
+
+      addVariants(members: Semantic.TypeUseId[]) {
+        for (const m of members) {
+          this.possibleVariants.add(m);
+        }
+      },
+
+      constrainFromConstraints(constraints: Semantic.Constraint[], fromExprId: Semantic.ExprId) {
+        const fromExpr = sr.exprNodes.get(fromExprId);
+        if (fromExpr.variant !== Semantic.ENode.SymbolValueExpr) return;
+
+        for (const c of constraints) {
+          if (c.variableSymbol !== fromExpr.symbol) continue;
+          this.constrainFromConstraint(c.constraintValue);
+        }
+      },
+
+      constrainFromConstraint(cv: Semantic.ConstraintValue) {
+        if (cv.kind === "union") {
+          if (cv.operation === "is") {
+            // Keep only this variant
+            const oldMembers = new Set(this.possibleVariants);
+            if (cv.typeUse || cv.typeDef) {
+              this.possibleVariants.clear();
+            }
+
+            if (cv.typeUse) {
+              this.possibleVariants.add(cv.typeUse);
+            }
+            if (cv.typeDef) {
+              oldMembers.forEach((m) => {
+                const typeDef = sr.typeUseNodes.get(m).type;
+                if (typeDef === cv.typeDef) {
+                  this.possibleVariants.add(m);
+                }
+              });
+            }
+          } else if (cv.operation === "isNot") {
+            // Exclude this variant
+            if (cv.typeUse) {
+              this.possibleVariants.delete(cv.typeUse);
+            }
+            if (cv.typeDef) {
+              const remove = new Set<Semantic.TypeUseId>();
+              this.possibleVariants.forEach((m) => {
+                const typeDef = sr.typeUseNodes.get(m).type;
+                if (typeDef === cv.typeDef) {
+                  remove.add(m);
+                }
+              });
+              for (const r of remove) {
+                this.possibleVariants.delete(r);
+              }
+            }
+          }
+        }
+      },
+    };
   }
 
   export enum Mode {
@@ -936,7 +976,7 @@ export namespace Conversion {
       );
     }
 
-    // Union Conversions
+    // Union Conversions: Value to Union (simple)
     if (to.variant === Semantic.ENode.UnionDatatype) {
       const unionTypeDefs = to.members.map((typeUseId) => {
         const typeUse = sr.typeUseNodes.get(typeUseId);
@@ -947,13 +987,43 @@ export namespace Conversion {
       if (unionTypeDefs.includes(fromTypeInstance.type)) {
         return ok(
           Semantic.addExpr(sr, {
-            variant: Semantic.ENode.UnionCastExpr,
+            variant: Semantic.ENode.ValueToUnionCastExpr,
             expr: fromExprId,
             type: toId,
             sourceloc: sourceloc,
             isTemporary: fromExpr.isTemporary,
           })[1]
         );
+      }
+    }
+
+    // Union Conversions: Union to Value (complex)
+    if (fromType.variant === Semantic.ENode.UnionDatatype) {
+      const members = typeNarrowing(sr);
+      members.addVariants(fromType.members);
+      members.constrainFromConstraints(constraints, fromExprId);
+
+      const memberDefs = [...members.possibleVariants].map((m) => sr.typeUseNodes.get(m).type);
+
+      // TODO: Respect constness and mutability
+      if (memberDefs.length === 1) {
+        const index = fromType.members.findIndex(
+          (m) => sr.typeUseNodes.get(m).type === memberDefs[0]
+        );
+        assert(index !== -1);
+
+        if (memberDefs[0] === toInstance.type) {
+          return ok(
+            Semantic.addExpr(sr, {
+              variant: Semantic.ENode.UnionToValueCastExpr,
+              expr: fromExprId,
+              type: toId,
+              index: index,
+              sourceloc: sourceloc,
+              isTemporary: fromExpr.isTemporary,
+            })[1]
+          );
+        }
       }
     }
 

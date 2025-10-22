@@ -76,7 +76,8 @@ export namespace Lowered {
     AlignofExpr,
     DatatypeAsValueExpr,
     ExplicitCastExpr,
-    UnionCastExpr,
+    ValueToUnionCastExpr,
+    UnionToValueCastExpr,
     MemberAccessExpr,
     CallableExpr,
     AddressOfExpr,
@@ -255,9 +256,17 @@ export namespace Lowered {
     type: TypeUseId;
   };
 
-  export type UnionCastExpr = {
-    variant: ENode.UnionCastExpr;
+  export type ValueToUnionCastExpr = {
+    variant: ENode.ValueToUnionCastExpr;
     expr: ExprId;
+    optimizeExprToNullptr: boolean;
+    type: TypeUseId;
+  };
+
+  export type UnionToValueCastExpr = {
+    variant: ENode.UnionToValueCastExpr;
+    expr: ExprId;
+    index: number;
     optimizeExprToNullptr: boolean;
     type: TypeUseId;
   };
@@ -363,7 +372,8 @@ export namespace Lowered {
     | AlignofExpr
     | DatatypeAsValueExpr
     | ExplicitCastExpr
-    | UnionCastExpr
+    | ValueToUnionCastExpr
+    | UnionToValueCastExpr
     | ExprMemberAccessExpr
     | LiteralExpr
     | PreIncrExpr
@@ -1283,9 +1293,9 @@ function lowerExpr(
       });
     }
 
-    case Semantic.ENode.UnionCastExpr: {
-      const unionType = lr.sr.typeDefNodes.get(lr.sr.typeUseNodes.get(expr.type).type);
-      assert(unionType.variant === Semantic.ENode.UnionDatatype);
+    case Semantic.ENode.ValueToUnionCastExpr: {
+      const exprType = lr.sr.typeDefNodes.get(lr.sr.typeUseNodes.get(expr.type).type);
+      assert(exprType.variant === Semantic.ENode.UnionDatatype);
 
       const loweredUnionId = lowerTypeUse(lr, expr.type);
       const loweredUnion = lr.typeDefNodes.get(lr.typeUseNodes.get(loweredUnionId).type);
@@ -1305,9 +1315,40 @@ function lowerExpr(
       }
 
       return Lowered.addExpr(lr, {
-        variant: Lowered.ENode.UnionCastExpr,
+        variant: Lowered.ENode.ValueToUnionCastExpr,
         expr: lowerExpr(lr, expr.expr, flattened)[1],
         optimizeExprToNullptr: optimizeExprToNullptr,
+        type: loweredUnionId,
+      });
+    }
+
+    case Semantic.ENode.UnionToValueCastExpr: {
+      const sourceExpr = lr.sr.exprNodes.get(expr.expr);
+      const sourceType = lr.sr.typeDefNodes.get(lr.sr.typeUseNodes.get(sourceExpr.type).type);
+      assert(sourceType.variant === Semantic.ENode.UnionDatatype);
+
+      const loweredUnionId = lowerTypeUse(lr, sourceExpr.type);
+      const loweredUnion = lr.typeDefNodes.get(lr.typeUseNodes.get(loweredUnionId).type);
+      assert(loweredUnion.variant === Lowered.ENode.UnionDatatype);
+
+      let optimizeExprToNullptr = false;
+      if (loweredUnion.optimizeAsRawPointer) {
+        const exprTypeDef = lr.sr.typeDefNodes.get(
+          lr.sr.typeUseNodes.get(lr.sr.exprNodes.get(expr.expr).type).type
+        );
+        if (
+          exprTypeDef.variant === Semantic.ENode.PrimitiveDatatype &&
+          exprTypeDef.primitive === EPrimitive.none
+        ) {
+          optimizeExprToNullptr = true;
+        }
+      }
+
+      return Lowered.addExpr(lr, {
+        variant: Lowered.ENode.UnionToValueCastExpr,
+        expr: lowerExpr(lr, expr.expr, flattened)[1],
+        optimizeExprToNullptr: optimizeExprToNullptr,
+        index: expr.index,
         type: loweredUnionId,
       });
     }
@@ -1862,11 +1903,13 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
       assert(originalFuncType.variant === Semantic.ENode.FunctionDatatype);
       const newParameters = [...originalFuncType.parameters];
 
-      const arenaType = lr.sr.e.arenaTypeUse(false, null)[1];
-      parameterNames.unshift("__hz_return_arena");
-      newParameters.unshift(arenaType);
-      parameterNames.unshift("__hz_parent_arena");
-      newParameters.unshift(arenaType);
+      if (symbol.extern !== EExternLanguage.Extern_C) {
+        const arenaType = lr.sr.e.arenaTypeUse(false, null)[1];
+        parameterNames.unshift("__hz_return_arena");
+        newParameters.unshift(arenaType);
+        parameterNames.unshift("__hz_parent_arena");
+        newParameters.unshift(arenaType);
+      }
 
       const newFuncType = makeRawFunctionDatatypeAvailable(lr.sr, {
         parameters: newParameters,
@@ -1976,6 +2019,18 @@ function serializeLoweredExpr(lr: Lowered.Module, exprId: Lowered.ExprId): strin
 
     case Lowered.ENode.UnaryExpr:
       return `(${UnaryOperationToString(expr.operation)}${serializeLoweredExpr(lr, expr.expr)})`;
+
+    case Lowered.ENode.UnionToValueCastExpr:
+      return `(${lr.typeUseNodes.get(expr.type).name.prettyName})${serializeLoweredExpr(
+        lr,
+        expr.expr
+      )}`;
+
+    case Lowered.ENode.ValueToUnionCastExpr:
+      return `(${lr.typeUseNodes.get(expr.type).name.prettyName})${serializeLoweredExpr(
+        lr,
+        expr.expr
+      )}`;
 
     case Lowered.ENode.ExplicitCastExpr:
       const exprType = lr.typeUseNodes.get(expr.type);
