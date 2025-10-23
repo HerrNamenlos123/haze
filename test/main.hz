@@ -38,6 +38,14 @@ fooz(): Bar {
 
 main(): int {
 
+    let a = 9223372036854775807;
+    let b = -a;
+    println(a, "->", b);
+
+    let c = -9223372036854775808;
+    let d = -c;
+    println(c, "->", d);
+
     println("TODO: Look at fooz(). Escape analysis works, now test it a bit and then implement the arena selection based on the escape analysis, and to track which functions even need arenas, etc.");
 
     // let array: mut []u8 = [];
@@ -68,7 +76,6 @@ main(): int {
 
     return 0;
 
-    println("TODO: Fix the situation for negative literals. Parsing the minus is bad as it's punctiation dependent. It should be changed to parse as a Unary Expression with positive Literal, and in the symbol collection, Unary+Literal can be caught and converted into literal with negative value.");
     println("TODO: All Increment operations and short-hand syntax should be expanded into proper full assignment expressions, and then compiled normally, makes everything much simpler, especially the overflow tracking.");
     println("Idea for later: (from Prime Reacts: The Flaws of Inheritance): I should implement interfaces as a way to make a contract about generic types, and to make the interfaces very powerful, interfaces should be able to define members and methods, as well as default implementations of methods that is used if the struct does not provide that function, and it is allowed as long as the default implementation of the interface method only uses other methods of the interface. This makes it very powerful and a complete replacement for polymorphism.");
     println("Idea: Implement scopes/do blocks/whatever, and like in Swift make the ability to label them, and then 'break foo' can be used to break out of that scope, which is awesome because it greatly simplifies the common issue of having 2 nested loops and wanting to break out of the outer one.")

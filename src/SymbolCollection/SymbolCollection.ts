@@ -54,13 +54,13 @@ import {
 
 import {
   EDatatypeMutability,
+  EUnaryOperation,
   type ASTCInjectDirective,
   type ASTExpr,
   type ASTStatement,
   type EAssignmentOperation,
   type EBinaryOperation,
   type EIncrOperation,
-  type EUnaryOperation,
 } from "../shared/AST";
 import { getModuleGlobalNamespaceName, type ExportData, type ModuleConfig } from "../shared/Config";
 import { join } from "path";
@@ -1873,6 +1873,19 @@ function collectExpr(
     // =================================================================================================================
 
     case "UnaryExpr":
+      // Here, we do a small canonicalization: If we encounter Unary-Negative + Positive Integer Literal, we turn it
+      // into just an Integer Literal and make the value negative. This allows for much cleaner elaboration and compile-
+      // time evaluation, and it also solves the well known C-quirk with -(2^63-1) underflowing to 0 instead of LONG_MIN
+
+      if (
+        item.operation === EUnaryOperation.Minus &&
+        item.expr.variant === "LiteralExpr" &&
+        item.expr.literal.type === EPrimitive.int
+      ) {
+        item.expr.literal.value = -item.expr.literal.value; // This is the raw pure-tree AST, so we can safely mutate it
+        return collectExpr(cc, item.expr, args);
+      }
+
       return Collect.makeExpr(cc, {
         variant: Collect.ENode.UnaryExpr,
         expr: collectExpr(cc, item.expr, args),

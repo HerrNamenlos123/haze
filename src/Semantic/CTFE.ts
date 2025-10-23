@@ -53,7 +53,8 @@ export function EvalCTFE(
             const rightInteger = getLiteralIntegerValue(right.literal);
 
             if (leftInteger && rightInteger) {
-              return ok(sr.b.literal(leftInteger[0] === rightInteger[0], expr.sourceloc));
+              const equal = leftInteger[0] === rightInteger[0];
+              return ok(sr.b.literal(negate ? !equal : equal, expr.sourceloc));
             }
 
             if (left.literal.type === right.literal.type) {
@@ -63,14 +64,8 @@ export function EvalCTFE(
               if (left.literal.type === EPrimitive.none || right.literal.type === EPrimitive.none) {
                 return ok(sr.b.literal(negate ? false : true, expr.sourceloc));
               }
-              return ok(
-                sr.b.literal(
-                  negate
-                    ? left.literal.value !== right.literal.value
-                    : left.literal.value === right.literal.value,
-                  expr.sourceloc
-                )
-              );
+              const equal = left.literal.value === right.literal.value;
+              return ok(sr.b.literal(negate ? !equal : equal, expr.sourceloc));
             }
             return err(
               `Cannot compare primitives ${primitiveToString(
