@@ -1321,7 +1321,8 @@ class ASTTransformer extends HazeParserVisitor<any> {
     const filename = JSON.parse(ctx.STRING_LITERAL().getText());
 
     const ints = ctx.INTEGER_LITERAL().map((int) => parseInt(int.getText()));
-    if (ints.length === 2) {
+    const float = ctx.FLOAT_LITERAL() ? ctx.FLOAT_LITERAL()!.getText() : null;
+    if (ints.length === 2 && float === null) {
       return {
         filename: filename,
         start: {
@@ -1341,7 +1342,8 @@ class ASTTransformer extends HazeParserVisitor<any> {
           column: ints[2],
         },
       };
-    } else if (ints.length === 4) {
+    } else if (ints.length === 2 && float !== null) {
+      const end = float.split(".");
       return {
         filename: filename,
         start: {
@@ -1349,8 +1351,8 @@ class ASTTransformer extends HazeParserVisitor<any> {
           column: ints[1],
         },
         end: {
-          line: ints[2],
-          column: ints[3],
+          line: parseInt(end[0]),
+          column: parseInt(end[1]),
         },
       };
     } else {

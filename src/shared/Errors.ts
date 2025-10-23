@@ -22,7 +22,7 @@ export function formatSourceLoc(loc: SourceLocNotNull) {
     if (loc.end.line === loc.start.line) {
       return `"${loc.filename}":${loc.start.line}:${loc.start.column + 1}-${loc.end.column + 1}`;
     } else {
-      return `"${loc.filename}":${loc.start.line}:${loc.start.column + 1}-${loc.end.line}:${
+      return `"${loc.filename}":${loc.start.line}:${loc.start.column + 1}-${loc.end.line}.${
         loc.end.column + 1
       }`;
     }

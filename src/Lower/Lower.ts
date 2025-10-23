@@ -1772,6 +1772,8 @@ function lowerBlockScope(
 
   // undefined = no return, null = return nothing, expr = return expr
   let returnedExpr: Lowered.ExprId | null | undefined = undefined;
+  let firstStrippedStatement = null as SourceLoc | null;
+  let lastStrippedStatement = null as SourceLoc | null;
 
   for (const s of blockScope.statements) {
     const statement = lr.sr.statementNodes.get(s);
@@ -1782,17 +1784,30 @@ function lowerBlockScope(
     for (const statementId of lowerStatement(lr, s)) {
       const innerStatement = lr.statementNodes.get(statementId);
 
-      if (innerStatement.variant === Lowered.ENode.ReturnStatement) {
-        if (!returnedExpr) {
-          returnedExpr = innerStatement.expr;
-        } else {
-          printWarningMessage(`Dead code detected and stripped`, innerStatement.sourceloc);
+      if (innerStatement.variant === Lowered.ENode.ReturnStatement && !returnedExpr) {
+        returnedExpr = innerStatement.expr;
+        continue;
+      }
+
+      if (returnedExpr) {
+        if (!firstStrippedStatement) {
+          firstStrippedStatement = innerStatement.sourceloc;
         }
+        lastStrippedStatement = innerStatement.sourceloc;
         continue;
       }
 
       statements.push(statementId);
     }
+  }
+
+  if (firstStrippedStatement && lastStrippedStatement) {
+    const location: SourceLoc = {
+      filename: firstStrippedStatement.filename,
+      start: firstStrippedStatement.start,
+      end: lastStrippedStatement.end,
+    };
+    printWarningMessage(`Dead code detected and stripped`, location);
   }
 
   const emitted = blockScope.emittedExpr
