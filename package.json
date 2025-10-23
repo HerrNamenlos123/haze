@@ -8,6 +8,8 @@
   },
   "scripts": {
     "dev": "npx cross-env NODE_ENV=development bun run src/main.ts",
+    "perf": "npx cross-env NODE_ENV=development bun --perf run src/main.ts",
+    "inspect": "npx cross-env NODE_ENV=development bun --inspect run src/main.ts",
     "build": "npx cross-env NODE_ENV=production bun build --production --compile ./src/main.ts --outfile dist/haze && bun run copylib && bun link",
     "copylib": "mkdir -p ./dist/stdlib && cp -r ./stdlib/* ./dist/stdlib",
     "generate-parser": "cd src/Parser/grammar && npx antlr4ng-cli -Dlanguage=TypeScript -visitor HazeLexer.g4 HazeParser.g4 -o autogen && cd ../../..",

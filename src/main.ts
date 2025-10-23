@@ -5,7 +5,7 @@ import { join } from "path";
 import path from "node:path";
 import { getFile, ProjectCompiler } from "./Module";
 
-async function main() {
+async function main(): Promise<number> {
   const parser = new ArgumentParser({ add_help: false });
   parser.add_argument("--version", { action: "version", version: "1.0.0" });
 
@@ -60,18 +60,18 @@ async function main() {
 
   if (args.version) {
     console.info(`Haze version ${version}`);
-    process.exit(0);
+    return 0;
   }
 
   if (args.command === "build" || args.command === "run" || args.command === "exec") {
     try {
       const project = new ProjectCompiler();
       if (!(await project.build(args.filename, args.sourceloc))) {
-        process.exit(1);
+        return 1;
       }
       if (args.command === "run" || args.command === "exec") {
         const exitCode = await project.run(args.filename, args.sourceloc, args.args);
-        process.exit(exitCode);
+        return exitCode;
       }
     } catch (err) {
       if (err instanceof GeneralError) {
@@ -79,7 +79,7 @@ async function main() {
       } else {
         console.error(err);
       }
-      process.exit(1);
+      return 1;
     }
   } else {
     if (args.command === "wget") {
@@ -91,7 +91,13 @@ async function main() {
     }
   }
 
-  process.exit(0);
+  return 0;
 }
 
-await main();
+if (false) {
+  process.exit(await main());
+} else {
+  setInterval(() => {
+    main();
+  }, 15000);
+}
