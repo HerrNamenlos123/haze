@@ -15,7 +15,7 @@
     "generate-parser": "cd src/Parser/grammar && npx antlr4ng-cli -Dlanguage=TypeScript -visitor HazeLexer.g4 HazeParser.g4 -o autogen && cd ../../..",
     "postinstall": "bun run generate-parser",
     "test": "bun run src/all.test.ts",
-    "node": "node scripts/build.js && node dist/bundle.js"
+    "node": "node scripts/build.js && node --inspect dist/bundle.js"
   },
   "bin": {
     "haze": "dist/haze"
