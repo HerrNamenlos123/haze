@@ -38,6 +38,8 @@ fooz(): Bar {
 
 main(): int {
 
+    println("TODO: Look at fooz(). Escape analysis works, now test it a bit and then implement the arena selection based on the escape analysis, and to track which functions even need arenas, etc.");
+
     // let array: mut []u8 = [];
 
     // assign(a, newFoo);
