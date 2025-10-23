@@ -64,6 +64,7 @@ type Inference =
 export class SemanticElaborator {
   currentContext: Semantic.ElaborationContext;
   expectedReturnType?: Semantic.TypeUseId;
+  functionReturnsInstanceIds?: Set<Semantic.InstanceId>;
 
   constructor(public sr: SemanticResult, currentContext: Semantic.ElaborationContext) {
     this.currentContext = currentContext;
@@ -73,6 +74,7 @@ export class SemanticElaborator {
     args: {
       context: Semantic.ElaborationContext;
       expectedReturnType?: Semantic.TypeUseId;
+      functionReturnsInstanceIds?: Set<Semantic.InstanceId>;
     },
     fn: () => T
   ): T {
@@ -80,7 +82,12 @@ export class SemanticElaborator {
     this.currentContext = args.context;
     const oldReturn = this.expectedReturnType;
     this.expectedReturnType = args.expectedReturnType;
+    const oldReturnIds = this.functionReturnsInstanceIds;
+    this.functionReturnsInstanceIds = args.functionReturnsInstanceIds;
+
     const result = fn();
+
+    this.functionReturnsInstanceIds = oldReturnIds;
     this.expectedReturnType = oldReturn;
     this.currentContext = oldContext;
     return result;
@@ -1566,6 +1573,7 @@ export class SemanticElaborator {
       {
         context: newContext,
         expectedReturnType: this.expectedReturnType,
+        functionReturnsInstanceIds: this.functionReturnsInstanceIds,
       },
       () => {
         for (const sId of scope.symbols) {
@@ -1838,6 +1846,8 @@ export class SemanticElaborator {
           parameterNames: parameterNames,
           name: func.name,
           sourceloc: func.sourceloc,
+          returnsInstanceIds: new Set(),
+          instanceDepsSnapshot: this.sr.e.currentContext.instanceDeps,
           scope: null,
           concrete: this.sr.typeDefNodes.get(ftype).concrete,
         });
@@ -1917,6 +1927,7 @@ export class SemanticElaborator {
               {
                 context: newContext,
                 expectedReturnType: expectedReturnType,
+                functionReturnsInstanceIds: symbol.returnsInstanceIds,
               },
               () => {
                 this.elaborateBlockScope(
@@ -2931,6 +2942,7 @@ export class SemanticElaborator {
                 instanceDeps: this.currentContext.instanceDeps,
               }),
               expectedReturnType: this.expectedReturnType,
+              functionReturnsInstanceIds: this.functionReturnsInstanceIds,
             },
             () => {
               this.elaborateBlockScope(
@@ -3031,19 +3043,25 @@ export class SemanticElaborator {
               s.sourceloc
             );
           }
+          const eId = Conversion.MakeConversionOrThrow(
+            this.sr,
+            this.expr(s.expr, {
+              gonnaInstantiateStructWithType: this.expectedReturnType,
+            })[1],
+            this.expectedReturnType,
+            this.currentContext.constraints,
+            s.sourceloc,
+            Conversion.Mode.Implicit,
+            false
+          );
+
+          const expression = this.sr.exprNodes.get(eId);
+          assert(this.functionReturnsInstanceIds);
+          expression.instanceIds.forEach((i) => this.functionReturnsInstanceIds!.add(i));
+
           return Semantic.addStatement(this.sr, {
             variant: Semantic.ENode.ReturnStatement,
-            expr: Conversion.MakeConversionOrThrow(
-              this.sr,
-              this.expr(s.expr, {
-                gonnaInstantiateStructWithType: this.expectedReturnType,
-              })[1],
-              this.expectedReturnType,
-              this.currentContext.constraints,
-              s.sourceloc,
-              Conversion.Mode.Implicit,
-              false
-            ),
+            expr: eId,
             sourceloc: s.sourceloc,
           })[1];
         } else {
@@ -3187,6 +3205,10 @@ export class SemanticElaborator {
           const r = EvalCTFE(this.sr, valueId);
           if (!r.ok) throw new CompilerError(r.error, s.sourceloc);
           variableSymbol.comptimeValue = r.value[1];
+        }
+
+        if (value) {
+          Semantic.addSymbolDeps(this.sr.e.currentContext, variableSymbolId, value.instanceIds);
         }
 
         // if (value) {
@@ -4019,6 +4041,7 @@ export class SemanticElaborator {
           instanceDeps: this.currentContext.instanceDeps,
         }),
         expectedReturnType: this.expectedReturnType,
+        functionReturnsInstanceIds: this.functionReturnsInstanceIds,
       },
       () => {
         this.elaborateBlockScope(
@@ -4300,7 +4323,7 @@ export class SemanticBuilder {
       assert(symbol.type);
       return Semantic.addExpr(this.sr, {
         variant: Semantic.ENode.SymbolValueExpr,
-        instanceIds: Semantic.getSymbolDeps(this.sr.e.currentContext, symbolId),
+        instanceIds: Semantic.getSymbolDeps(this.sr.e.currentContext.instanceDeps, symbolId),
         symbol: symbolId,
         type: symbol.type,
         isTemporary: false,
@@ -4380,7 +4403,7 @@ export class SemanticBuilder {
         assert(member);
         for (const inst of lhs.instanceIds) {
           Semantic.addStructMemberInstanceDeps(
-            this.sr.e.currentContext,
+            this.sr.e.currentContext.instanceDeps,
             inst,
             member,
             dependencies
@@ -4477,9 +4500,11 @@ export class SemanticBuilder {
     const dependsOn = new Set<Semantic.InstanceId>();
     for (const inst of expr.instanceIds) {
       // Get ONLY the dependencies of the specific struct member being accessed
-      Semantic.getStructMemberInstanceDeps(this.sr.e.currentContext, inst, member).forEach((d) =>
-        dependsOn.add(d)
-      );
+      Semantic.getStructMemberInstanceDeps(
+        this.sr.e.currentContext.instanceDeps,
+        inst,
+        member
+      ).forEach((d) => dependsOn.add(d));
     }
 
     return Semantic.addExpr(this.sr, {
@@ -4541,7 +4566,7 @@ export class SemanticBuilder {
 
       const value = this.sr.e.getExpr(a.value);
       Semantic.addStructMemberInstanceDeps(
-        this.sr.e.currentContext,
+        this.sr.e.currentContext.instanceDeps,
         e[0].instanceIds[0],
         member,
         value.instanceIds
@@ -5081,6 +5106,8 @@ export namespace Semantic {
     extern: EExternLanguage;
     scope: Semantic.BlockScopeId | null;
     export: boolean;
+    returnsInstanceIds: Set<Semantic.InstanceId>;
+    instanceDepsSnapshot: InstanceDeps;
     methodType: EMethodType;
     methodOf: TypeDefId | null;
     sourceloc: SourceLoc;
@@ -5729,12 +5756,33 @@ export namespace Semantic {
     assert(false, "Symbol not found");
   }
 
-  export function getSymbolDeps(context: ElaborationContext, symbolId: Semantic.SymbolId) {
-    let map = context.instanceDeps.symbolDependsOn.get(symbolId);
+  export function getInstanceDepsGraph(deps: InstanceDeps, instanceIds: Set<Semantic.InstanceId>) {
+    const instances = new Set<Semantic.InstanceId>();
+
+    const processInstance = (inst: Semantic.InstanceId) => {
+      if (instances.has(inst)) {
+        return;
+      }
+
+      instances.add(inst);
+      getInstanceDeps(deps, inst).forEach((d) => {
+        processInstance(d);
+      });
+      getAllStructMemberInstanceDeps(deps, inst).forEach((d) => {
+        processInstance(d);
+      });
+    };
+
+    instanceIds.forEach((d) => {
+      processInstance(d);
+    });
+    return instances;
+  }
+
+  export function getSymbolDeps(deps: InstanceDeps, symbolId: Semantic.SymbolId) {
+    let map = deps.symbolDependsOn.get(symbolId);
     if (!map) {
-      const set = new Set<Semantic.InstanceId>();
-      context.instanceDeps.symbolDependsOn.set(symbolId, set);
-      map = set;
+      return [];
     }
 
     return [...map];
@@ -5762,27 +5810,25 @@ export namespace Semantic {
     }
   }
 
-  export function getInstanceDeps(context: ElaborationContext, instanceId: Semantic.InstanceId) {
-    let map = context.instanceDeps.instanceDependsOn.get(instanceId);
+  export function getInstanceDeps(deps: InstanceDeps, instanceId: Semantic.InstanceId) {
+    let map = deps.instanceDependsOn.get(instanceId);
     if (!map) {
-      const set = new Set<Semantic.InstanceId>();
-      context.instanceDeps.instanceDependsOn.set(instanceId, set);
-      map = set;
+      return [];
     }
 
     return [...map];
   }
 
   export function addInstanceDeps(
-    context: ElaborationContext,
+    deps: InstanceDeps,
     instanceId: Semantic.InstanceId,
     dependency: Semantic.InstanceId | Semantic.InstanceId[]
   ) {
-    let map = context.instanceDeps.instanceDependsOn.get(instanceId);
+    let map = deps.instanceDependsOn.get(instanceId);
 
     if (!map) {
       const set = new Set<Semantic.InstanceId>();
-      context.instanceDeps.instanceDependsOn.set(instanceId, set);
+      deps.instanceDependsOn.set(instanceId, set);
       map = set;
     }
 
@@ -5795,15 +5841,32 @@ export namespace Semantic {
     }
   }
 
+  export function getAllStructMemberInstanceDeps(
+    deps: InstanceDeps,
+    instanceId: Semantic.InstanceId
+  ) {
+    let innerMap = deps.structMembersDependOn.get(instanceId);
+    if (!innerMap) {
+      return new Set<Semantic.InstanceId>();
+    }
+
+    const all = new Set<Semantic.InstanceId>();
+    innerMap.forEach((e, k) => {
+      e.forEach((i) => {
+        all.add(i);
+      });
+    });
+    return all;
+  }
+
   export function getStructMemberInstanceDeps(
-    context: ElaborationContext,
+    deps: InstanceDeps,
     instanceId: Semantic.InstanceId,
     member: Semantic.SymbolId
   ) {
-    let innerMap = context.instanceDeps.structMembersDependOn.get(instanceId);
+    let innerMap = deps.structMembersDependOn.get(instanceId);
     if (!innerMap) {
-      innerMap = new Map<Semantic.SymbolId, Set<Semantic.InstanceId>>();
-      context.instanceDeps.structMembersDependOn.set(instanceId, innerMap);
+      return new Set<Semantic.InstanceId>();
     }
 
     let set = innerMap.get(member);
@@ -5816,15 +5879,15 @@ export namespace Semantic {
   }
 
   export function addStructMemberInstanceDeps(
-    context: ElaborationContext,
+    deps: InstanceDeps,
     instanceId: Semantic.InstanceId,
     member: Semantic.SymbolId,
     dependency: Semantic.InstanceId | Semantic.InstanceId[]
   ) {
-    let innerMap = context.instanceDeps.structMembersDependOn.get(instanceId);
+    let innerMap = deps.structMembersDependOn.get(instanceId);
     if (!innerMap) {
       innerMap = new Map<Semantic.SymbolId, Set<Semantic.InstanceId>>();
-      context.instanceDeps.structMembersDependOn.set(instanceId, innerMap);
+      deps.structMembersDependOn.set(instanceId, innerMap);
     }
 
     let set = innerMap.get(member);

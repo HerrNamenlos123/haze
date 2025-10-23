@@ -32,8 +32,8 @@ struct Foo {
 
 fooz(): Bar {
     const foo = Foo { bar: Bar {} }
-    foo.bar = Bar {};
-    return foo.bar;
+    foo.bar = Bar {}
+    return foo.bar
 }
 
 main(): int {

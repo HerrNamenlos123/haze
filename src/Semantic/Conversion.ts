@@ -739,16 +739,13 @@ export namespace Conversion {
       if (fromExpr.variant === Semantic.ENode.LiteralExpr) {
         assert(fromExpr.literal.type === EPrimitive.str);
         return ok(
-          Semantic.addExpr(sr, {
-            variant: Semantic.ENode.LiteralExpr,
-            literal: {
+          sr.b.literalValue(
+            {
               type: EPrimitive.cstr,
               value: fromExpr.literal.value,
             },
-            isTemporary: true,
-            type: makePrimitiveAvailable(sr, EPrimitive.cstr, EDatatypeMutability.Const, sourceloc),
-            sourceloc: fromExpr.sourceloc,
-          })[1]
+            fromExpr.sourceloc
+          )[1]
         );
       }
       throw new CompilerError(
@@ -789,6 +786,7 @@ export namespace Conversion {
         return ok(
           Semantic.addExpr(sr, {
             variant: Semantic.ENode.ExplicitCastExpr,
+            instanceIds: fromExpr.instanceIds,
             expr: fromExprId,
             type: toId,
             sourceloc: sourceloc,
@@ -805,6 +803,7 @@ export namespace Conversion {
           return ok(
             Semantic.addExpr(sr, {
               variant: Semantic.ENode.ExplicitCastExpr,
+              instanceIds: fromExpr.instanceIds,
               expr: fromExprId,
               type: toId,
               sourceloc: sourceloc,
@@ -851,6 +850,7 @@ export namespace Conversion {
       return ok(
         Semantic.addExpr(sr, {
           variant: Semantic.ENode.ExplicitCastExpr,
+          instanceIds: fromExpr.instanceIds,
           expr: fromExprId,
           type: toId,
           sourceloc: sourceloc,
@@ -871,6 +871,7 @@ export namespace Conversion {
       return ok(
         Semantic.addExpr(sr, {
           variant: Semantic.ENode.ExplicitCastExpr,
+          instanceIds: fromExpr.instanceIds,
           expr: fromExprId,
           type: toId,
           sourceloc: sourceloc,
@@ -907,6 +908,7 @@ export namespace Conversion {
       return ok(
         Semantic.addExpr(sr, {
           variant: Semantic.ENode.ExplicitCastExpr,
+          instanceIds: fromExpr.instanceIds,
           expr: fromExprId,
           type: toId,
           sourceloc: sourceloc,
@@ -963,6 +965,7 @@ export namespace Conversion {
       return ok(
         Semantic.addExpr(sr, {
           variant: Semantic.ENode.ExplicitCastExpr,
+          instanceIds: fromExpr.instanceIds,
           expr: fromExprId,
           type: toId,
           sourceloc: sourceloc,
@@ -984,6 +987,7 @@ export namespace Conversion {
           Semantic.addExpr(sr, {
             variant: Semantic.ENode.ValueToUnionCastExpr,
             expr: fromExprId,
+            instanceIds: fromExpr.instanceIds,
             type: toId,
             sourceloc: sourceloc,
             isTemporary: fromExpr.isTemporary,
@@ -1011,6 +1015,7 @@ export namespace Conversion {
           return ok(
             Semantic.addExpr(sr, {
               variant: Semantic.ENode.UnionToValueCastExpr,
+              instanceIds: fromExpr.instanceIds,
               expr: fromExprId,
               type: toId,
               index: index,
@@ -1051,54 +1056,43 @@ export namespace Conversion {
         targetType.primitive === EPrimitive.i64 ||
         targetType.primitive === EPrimitive.int
       ) {
-        return Semantic.addExpr(sr, {
-          variant: Semantic.ENode.LiteralExpr,
-          isTemporary: true,
-          literal: {
+        return sr.b.literalValue(
+          {
             type: targetType.primitive,
             unit: null,
             value: 0n,
           },
-          type: targetTypeId,
-          sourceloc: sourceloc,
-        } satisfies Semantic.LiteralExpr)[1];
+          sourceloc
+        )[1];
       } else if (
         targetType.primitive === EPrimitive.f32 ||
         targetType.primitive === EPrimitive.f64 ||
         targetType.primitive === EPrimitive.real
       ) {
-        return Semantic.addExpr(sr, {
-          variant: Semantic.ENode.LiteralExpr,
-          isTemporary: true,
-          literal: {
+        return sr.b.literalValue(
+          {
             type: targetType.primitive,
             unit: null,
             value: 0,
           },
-          type: targetTypeId,
-          sourceloc: sourceloc,
-        } satisfies Semantic.LiteralExpr)[1];
+          sourceloc
+        )[1];
       } else if (targetType.primitive === EPrimitive.bool) {
-        return Semantic.addExpr(sr, {
-          variant: Semantic.ENode.LiteralExpr,
-          isTemporary: true,
-          literal: {
-            type: EPrimitive.bool,
-            value: false,
-          },
-          type: targetTypeId,
-          sourceloc: sourceloc,
-        } satisfies Semantic.LiteralExpr)[1];
+        return sr.b.literal(false, sourceloc)[1];
       } else if (targetType.primitive === EPrimitive.null) {
-        return Semantic.addExpr(sr, {
-          variant: Semantic.ENode.LiteralExpr,
-          isTemporary: true,
-          literal: {
+        return sr.b.literalValue(
+          {
             type: EPrimitive.null,
           },
-          type: targetTypeId,
-          sourceloc: sourceloc,
-        } satisfies Semantic.LiteralExpr)[1];
+          sourceloc
+        )[1];
+      } else if (targetType.primitive === EPrimitive.none) {
+        return sr.b.literalValue(
+          {
+            type: EPrimitive.none,
+          },
+          sourceloc
+        )[1];
       }
     }
 

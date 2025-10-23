@@ -1962,6 +1962,16 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
       const monomorphized = Semantic.isSymbolMonomorphized(lr.sr, symbolId);
       const exported = Semantic.isSymbolExported(lr.sr, symbolId);
 
+      // Escape analysis
+      if (symbol.name === "fooz") {
+        console.log(symbol.name);
+        const instances = Semantic.getInstanceDepsGraph(
+          symbol.instanceDepsSnapshot,
+          symbol.returnsInstanceIds
+        );
+        console.log("Instances", instances);
+      }
+
       // Normal function
       const [f, fId] = Lowered.addFunction<Lowered.FunctionSymbol>(lr, {
         variant: Lowered.ENode.FunctionSymbol,
