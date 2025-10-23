@@ -438,10 +438,10 @@ class CodeGenerator {
     );
     this.out.builtin_definitions.writeLine(`__attribute__((noreturn, cold))`);
     this.out.builtin_definitions
-      .writeLine(`static _Noreturn void ${functionName}(const char* msg) {`)
+      .writeLine(`static inline _Noreturn void ${functionName}(const char* msg) {`)
       .pushIndent();
     this.out.builtin_definitions.writeLine(`fprintf(stderr, "Runtime error: %s\\n", msg);`);
-    this.out.builtin_definitions.writeLine(`abort();`);
+    this.out.builtin_definitions.writeLine(`__builtin_trap();`);
     this.out.builtin_definitions.popIndent().writeLine(`}`);
     this.trapFunctionCache = functionName;
     return functionName;
@@ -557,11 +557,11 @@ class CodeGenerator {
     functionName = `___hz_builtin_${opStr}_${leftType.name.mangledName}${rightType.name.mangledName}`;
 
     this.out.builtin_declarations.writeLine(
-      `_H${leftType.name.mangledName} ${functionName}(_H${leftType.name.mangledName}, _H${rightType.name.mangledName});`
+      `static inline _H${leftType.name.mangledName} ${functionName}(_H${leftType.name.mangledName}, _H${rightType.name.mangledName});`
     );
     this.out.builtin_definitions
       .writeLine(
-        `_H${leftType.name.mangledName} ${functionName}(_H${leftType.name.mangledName} a, _H${rightType.name.mangledName} b) {`
+        `static inline _H${leftType.name.mangledName} ${functionName}(_H${leftType.name.mangledName} a, _H${rightType.name.mangledName} b) {`
       )
       .pushIndent();
     if (operation === EBinaryOperation.Divide || operation === EBinaryOperation.Modulo) {

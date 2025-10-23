@@ -5,7 +5,7 @@ import { writeFile, readFile } from "fs/promises";
 
 import { GeneralError } from "./Errors";
 import type { Collect } from "../SymbolCollection/SymbolCollection";
-import { getCurrentPlatform } from "../Module";
+import { getCurrentPlatform, type ModulePrintInfo } from "../Module";
 
 export enum ModuleType {
   Library,
@@ -18,6 +18,7 @@ export type ScriptDef = { name: string; command: string; depends: string[] | nul
 
 export type ModuleConfig = {
   name: string;
+  printerModule?: ModulePrintInfo;
   version: string;
   description?: string;
   license?: string;

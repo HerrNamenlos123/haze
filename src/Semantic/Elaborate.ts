@@ -46,7 +46,7 @@ import {
   makeFunctionDatatypeAvailable,
 } from "./LookupDatatype";
 
-import type { EIncrOperation, EUnaryOperation } from "../shared/AST";
+import { EUnaryOperation, type EIncrOperation } from "../shared/AST";
 import { type Brand, type LiteralValue } from "../shared/common";
 
 type Inference =
@@ -483,10 +483,81 @@ export class SemanticElaborator {
     assert(false, "All cases handled ");
   }
 
-  unaryExpr(unaryExpr: Collect.UnaryExpr) {
+  unaryExpr(unaryExpr: Collect.UnaryExpr): [Semantic.Expression, Semantic.ExprId] {
     const [e, eId] = this.sr.e.expr(unaryExpr.expr, undefined);
-    console.log("TODO: Implement runtime overflow checking for unary negating signed integers");
-    return this.sr.b.unaryExpr(eId, unaryExpr.operation, unaryExpr.sourceloc);
+
+    if (unaryExpr.operation === EUnaryOperation.Plus) {
+      return [e, eId]; // Plus does nothing.
+    } else if (unaryExpr.operation === EUnaryOperation.Minus) {
+      const resultType = Conversion.makeUnaryResultType(
+        this.sr,
+        e.type,
+        unaryExpr.operation,
+        unaryExpr.sourceloc
+      );
+      const resultTypeDef = this.sr.typeDefNodes.get(this.sr.typeUseNodes.get(resultType).type);
+      assert(resultTypeDef.variant === Semantic.ENode.PrimitiveDatatype);
+
+      // Here we replace the unary minus (as in "-x") with a normal subtraction (as in "(0 - x)"), because it's clearer
+      // and gives us free runtime overflow checking through the existing arithmetic traps
+      if (
+        resultTypeDef.primitive === EPrimitive.i8 ||
+        resultTypeDef.primitive === EPrimitive.i16 ||
+        resultTypeDef.primitive === EPrimitive.i32 ||
+        resultTypeDef.primitive === EPrimitive.i64 ||
+        resultTypeDef.primitive === EPrimitive.u8 ||
+        resultTypeDef.primitive === EPrimitive.u16 ||
+        resultTypeDef.primitive === EPrimitive.u32 ||
+        resultTypeDef.primitive === EPrimitive.u64 ||
+        resultTypeDef.primitive === EPrimitive.int ||
+        resultTypeDef.primitive === EPrimitive.usize
+      ) {
+        return this.sr.b.binaryExpr(
+          this.sr.b.literalValue(
+            {
+              type: resultTypeDef.primitive,
+              unit: null,
+              value: 0n,
+            },
+            unaryExpr.sourceloc
+          )[1],
+          eId,
+          EBinaryOperation.Subtract,
+          resultType,
+          unaryExpr.sourceloc
+        );
+      } else if (
+        resultTypeDef.primitive === EPrimitive.f32 ||
+        resultTypeDef.primitive === EPrimitive.f64 ||
+        resultTypeDef.primitive === EPrimitive.real
+      ) {
+        return this.sr.b.binaryExpr(
+          this.sr.b.literalValue(
+            {
+              type: resultTypeDef.primitive,
+              unit: null,
+              value: 0,
+            },
+            unaryExpr.sourceloc
+          )[1],
+          eId,
+          EBinaryOperation.Subtract,
+          resultType,
+          unaryExpr.sourceloc
+        );
+      } else {
+        assert(false);
+      }
+    } else if (unaryExpr.operation === EUnaryOperation.Negate) {
+      return this.sr.b.unaryExpr(
+        eId,
+        unaryExpr.operation,
+        Conversion.makeUnaryResultType(this.sr, e.type, unaryExpr.operation, unaryExpr.sourceloc),
+        unaryExpr.sourceloc
+      );
+    } else {
+      assert(false);
+    }
   }
 
   literalExpr(literalExpr: Collect.LiteralExpr) {
@@ -4186,14 +4257,19 @@ export class SemanticBuilder {
     });
   }
 
-  unaryExpr(exprId: Semantic.ExprId, operation: EUnaryOperation, sourceloc: SourceLoc) {
+  unaryExpr(
+    exprId: Semantic.ExprId,
+    operation: EUnaryOperation,
+    resultType: Semantic.TypeUseId,
+    sourceloc: SourceLoc
+  ) {
     const expr = this.sr.exprNodes.get(exprId);
     return Semantic.addExpr(this.sr, {
       variant: Semantic.ENode.UnaryExpr,
       instanceIds: [],
       expr: exprId,
       operation: operation,
-      type: Conversion.makeUnaryResultType(this.sr, expr.type, operation, sourceloc),
+      type: resultType,
       isTemporary: true,
       sourceloc: sourceloc,
     });

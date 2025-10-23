@@ -38,14 +38,6 @@ fooz(): Bar {
 
 main(): int {
 
-    let a = 9223372036854775807;
-    let b = -a;
-    println(a, "->", b);
-
-    let c = -9223372036854775808;
-    let d = -c;
-    println(c, "->", d);
-
     println("TODO: Look at fooz(). Escape analysis works, now test it a bit and then implement the arena selection based on the escape analysis, and to track which functions even need arenas, etc.");
 
     // let array: mut []u8 = [];

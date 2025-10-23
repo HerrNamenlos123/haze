@@ -58,6 +58,149 @@ import fg from "fast-glob";
 import { writeFile, readFile } from "fs/promises";
 import which from "which";
 
+import { MultiBar, Presets, SingleBar } from "cli-progress";
+import chalk from "chalk";
+import { sleep } from "./main";
+
+export enum EModulePrintCompilerPhase {
+  Parsing,
+  Collecting,
+  Analyzing,
+  Lowering,
+  Generating,
+  CCompiling,
+  Done,
+}
+
+export type ModulePrintInfo = {
+  name: string;
+  phase: EModulePrintCompilerPhase;
+  startTime: Date;
+  endTime?: Date;
+  bar?: SingleBar;
+  printer: CLIPrinter;
+};
+
+export class CLIPrinter {
+  modules: ModulePrintInfo[] = [];
+  multibar: MultiBar;
+  updateInterval: NodeJS.Timeout | null = null;
+
+  static spinnerIndex = 0; // synchronized
+
+  static SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
+
+  constructor() {
+    this.multibar = new MultiBar(
+      {
+        clearOnComplete: false,
+        hideCursor: true,
+        format: (options, params, payload) => {
+          return this.createCustomFormat(payload.module, payload.spinnerIndex);
+        },
+      },
+      Presets.shades_classic
+    );
+  }
+
+  createCustomFormat(module: ModulePrintInfo, spinnerIndex: number) {
+    const index = this.modules.findIndex((m) => m === module);
+    const indexStr = chalk.gray(`[${index + 1}/${this.modules.length}]`);
+    const actionStr = chalk.greenBright("Compiling");
+    const nameStr = chalk.white(module.name.padEnd(14));
+    const timeStr = chalk.gray(`${Date.now() - module.startTime.getTime()}ms`.padStart(7));
+    const DONE_GLYPH = chalk.green("✔");
+
+    let phaseBlock;
+
+    if (module.endTime) {
+      const doneText = `Done     ${DONE_GLYPH}`;
+      phaseBlock = `[${doneText}]`;
+    } else {
+      // State: ACTIVE (Spinning)
+      let text = "";
+      switch (module.phase) {
+        case EModulePrintCompilerPhase.Parsing:
+          text = "Parsing      ";
+          break;
+        case EModulePrintCompilerPhase.Collecting:
+          text = "Collecting   ";
+          break;
+        case EModulePrintCompilerPhase.Analyzing:
+          text = "Analyzing    ";
+          break;
+        case EModulePrintCompilerPhase.Lowering:
+          text = "Lowering     ";
+          break;
+        case EModulePrintCompilerPhase.Generating:
+          text = "Generating C ";
+          break;
+        case EModulePrintCompilerPhase.CCompiling:
+          text = "Compiling C  ";
+          break;
+      }
+      phaseBlock = `[${chalk.cyan(text)}${chalk.cyan(CLIPrinter.SPINNER[spinnerIndex])}]`;
+    }
+
+    console.log("format");
+    return `${indexStr} ${actionStr} ${nameStr} ${phaseBlock} ${timeStr}`;
+  }
+
+  log(message: string) {
+    this.multibar.log(message + "\n");
+  }
+
+  loop() {
+    CLIPrinter.spinnerIndex = (CLIPrinter.spinnerIndex + 1) % CLIPrinter.SPINNER.length;
+
+    this.modules.forEach((m) => {
+      // Update the bar using the custom payload and the new time
+      m.bar?.update(0, {
+        module: m,
+        spinnerIndex: CLIPrinter.spinnerIndex,
+      });
+    });
+  }
+
+  start() {
+    if (this.updateInterval) return;
+
+    this.modules.forEach((m) => {
+      if (m.bar) return;
+      // The total value doesn't matter much since we are manually controlling the output,
+      // but we set it up anyway.
+      const total = 0; // Dont understand what total is
+      m.bar = this.multibar.create(
+        total,
+        0,
+        {
+          module: m, // Attach the module state to the bar payload
+          spinnerIndex: 0,
+        },
+        {}
+      );
+    });
+
+    console.log("Starting");
+
+    this.loop();
+    this.updateInterval = setInterval(() => {
+      this.loop();
+    }, 50);
+  }
+
+  stopAndFinishAll() {
+    if (this.updateInterval) {
+      clearInterval(this.updateInterval);
+      this.updateInterval = null;
+
+      // this.loop();
+      this.multibar.stop();
+      console.log("Stopping");
+    }
+  }
+}
+
 export const HAZE_DIR = os.homedir() + "/.haze";
 export const HAZE_CACHE = HAZE_DIR + "/cache";
 export const HAZE_TOOLCHAIN_INSTALLED_MARKER = HAZE_CACHE + "/toolchain-installed.json";
@@ -72,7 +215,6 @@ async function createTarGz(cwd: string, files: string[], outPath: string) {
 
   return new Promise<void>((resolve, reject) => {
     output.on("close", () => {
-      // console.log(`Archive created: ${archive.pointer()} bytes`);
       resolve();
     });
 
@@ -487,9 +629,20 @@ export class ProjectCompiler {
         this.globalBuildDir,
         join(this.globalBuildDir, stdlibConfig.name)
       );
+
+      const c = new CLIPrinter();
+      c.modules.push({
+        name: stdlibModule.config.name,
+        phase: EModulePrintCompilerPhase.Analyzing,
+        startTime: new Date(),
+        printer: c,
+      });
+      stdlibModule.config.printerModule = c.modules[c.modules.length - 1];
+      c.start();
       if (!(await stdlibModule.build(false))) {
         return false;
       }
+      c.stopAndFinishAll();
     }
 
     if (!singleFilename) {
@@ -508,15 +661,39 @@ export class ProjectCompiler {
           this.globalBuildDir,
           join(this.globalBuildDir, config.name)
         );
+
+        const c = new CLIPrinter();
+        c.modules.push({
+          name: depModule.config.name,
+          phase: EModulePrintCompilerPhase.Analyzing,
+          startTime: new Date(),
+          printer: c,
+        });
+        depModule.config.printerModule = c.modules[c.modules.length - 1];
+        c.start();
         if (!(await depModule.build(false))) {
           return false;
         }
+        c.stopAndFinishAll();
       }
     }
+
+    const c = new CLIPrinter();
+    c.modules.push({
+      name: mainModule.config.name,
+      phase: EModulePrintCompilerPhase.Analyzing,
+      startTime: new Date(),
+      printer: c,
+    });
+    mainModule.config.printerModule = c.modules[c.modules.length - 1];
+    c.start();
 
     if (!(await mainModule.build(true))) {
       return false;
     }
+
+    c.stopAndFinishAll();
+
     if (!singleFilename) {
       await this.cache.save();
     }
@@ -834,6 +1011,11 @@ class ModuleCompiler {
 
   async build(isTopLevelModule: boolean) {
     return await catchErrors(async () => {
+      const log = (msg: string) => {
+        assert(this.config.printerModule);
+        this.config.printerModule.printer.log(msg);
+      };
+
       if (this.config.configFilePath) {
         if (
           !(await this.cache.hasModuleChanged(
@@ -941,6 +1123,8 @@ class ModuleCompiler {
 
       compilerFlags.linux.push("-fPIC");
 
+      // await sleep(500);
+
       // MUSL Sysroot Settings
       // compilerFlags.push(`--sysroot=${HAZE_MUSL_SYSROOT}`);
       // linkerFlags.push(`--sysroot=${HAZE_MUSL_SYSROOT}`);
@@ -1032,7 +1216,7 @@ class ModuleCompiler {
         }" ${libs.map((l) => `"${l}"`).join(" ")} ${allCompilerFlags.join(
           " "
         )} ${allLinkerFlags.join(" ")} -std=c11`;
-        // console.log(cmd);
+        // log(cmd);
 
         compileCommands.push({
           directory: cwd(),
@@ -1047,7 +1231,7 @@ class ModuleCompiler {
         const cmd = `"${HAZE_C_COMPILER}" -g "${moduleCFile}" -c -o "${moduleOFile}" -I"${
           this.config.srcDirectory
         }" ${allCompilerFlags.join(" ")} -std=c11`;
-        // console.log(cmd);
+        // log(cmd);
 
         compileCommands.push({
           directory: cwd(),
