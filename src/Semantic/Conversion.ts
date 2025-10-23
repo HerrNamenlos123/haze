@@ -1116,22 +1116,21 @@ export namespace Conversion {
         const collectedStruct = sr.cc.typeDefNodes.get(targetType.originalCollectedSymbol);
         assert(collectedStruct.variant === Collect.ENode.StructTypeDef);
         // Make an empty struct instantiation and let it handle the default values, since we know they all exist.
-        return Semantic.makeStructInstantiation(sr, sr.typeUseNodes.get(targetTypeId).type, {
-          context: Semantic.makeElaborationContext({
-            currentScope: collectedStruct.structScope,
-            genericsScope: collectedStruct.structScope,
-          }),
-          constraints: [],
-          expectedReturnType: makePrimitiveAvailable(
-            sr,
-            EPrimitive.void,
-            EDatatypeMutability.Default,
-            sourceloc
-          ),
-          sourceloc: sourceloc,
-          memberValues: [],
-          unsafe: false,
-        })[1];
+        // return sr.e.makeStructInstantiation(sr.typeUseNodes.get(targetTypeId).type, [], {
+        //   context: Semantic.makeElaborationContext({
+        //     currentScope: collectedStruct.structScope,
+        //     genericsScope: collectedStruct.structScope,
+        //   }),
+        //   constraints: [],
+        //   expectedReturnType: makePrimitiveAvailable(
+        //     sr,
+        //     EPrimitive.void,
+        //     EDatatypeMutability.Default,
+        //     sourceloc
+        //   ),
+        //   sourceloc: sourceloc,
+        //   unsafe: false,
+        // })[1];
       }
 
       throw new CompilerError(

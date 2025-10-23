@@ -48,7 +48,6 @@ import {
 
 import type { EIncrOperation, EUnaryOperation } from "../shared/AST";
 import { type Brand, type LiteralValue } from "../shared/common";
-import { semver } from "bun";
 
 type Inference =
   | undefined

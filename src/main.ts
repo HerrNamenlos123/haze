@@ -1,9 +1,11 @@
 import { ArgumentParser, REMAINDER } from "argparse";
-import { version } from "../package.json";
 import { GeneralError } from "./shared/Errors";
 import { join } from "path";
 import path from "node:path";
 import { getFile, ProjectCompiler } from "./Module";
+
+import pkg from "../package.json" assert { type: "json" };
+const version = pkg.version;
 
 async function main(): Promise<number> {
   const parser = new ArgumentParser({ add_help: false });
@@ -94,8 +96,10 @@ async function main(): Promise<number> {
   return 0;
 }
 
-if (false) {
-  process.exit(await main());
+if (true) {
+  main().then((exitCode) => {
+    process.exit(exitCode);
+  });
 } else {
   setInterval(() => {
     main();

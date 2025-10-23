@@ -1,7 +1,5 @@
 import * as child_process from "child_process";
-import { $ } from "bun";
 import os from "os";
-import { Glob } from "bun";
 import path from "path";
 import { mkdir } from "fs/promises";
 import {
@@ -55,6 +53,10 @@ import { spawnSync } from "child_process";
 import archiver from "archiver";
 import tarFs from "tar-fs";
 import gunzip from "gunzip-maybe";
+import { spawn } from "child_process";
+import fg from "fast-glob";
+import { writeFile, readFile } from "fs/promises";
+import which from "which";
 
 export const HAZE_DIR = os.homedir() + "/.haze";
 export const HAZE_CACHE = HAZE_DIR + "/cache";
@@ -135,7 +137,7 @@ export async function getFile(url: string, outfile: string) {
   const response = await fetch(url);
   if (!response.ok) throw new Error(`Failed to fetch: ${response.statusText}`);
   const buffer = await response.arrayBuffer();
-  await Bun.write(outfile, new Uint8Array(buffer));
+  await writeFile(outfile, new Uint8Array(buffer));
 }
 
 export async function getFileWithProgress(url: string, outfile: string) {
@@ -188,10 +190,12 @@ async function parseConfig(startDir?: string, sourceloc?: boolean) {
   }
 }
 
-function getStdlibDirectory() {
-  if (process.env.NODE_ENV === "production") {
-    const whichHz = Bun.which("haze");
-    if (!whichHz) {
+async function getStdlibDirectory() {
+  if (process.env["NODE_ENV"] === "production") {
+    let whichHz = null as string | null;
+    try {
+      whichHz = await which("haze");
+    } catch {
       throw new GeneralError("Compiler not found in path");
     }
     const realHz = realpathSync(whichHz);
@@ -228,12 +232,10 @@ async function catchErrors(fn: () => Promise<void>) {
 }
 
 async function commandExists(cmd: string) {
-  try {
-    await $`command -v ${cmd}`;
-    return true;
-  } catch {
-    return false;
-  }
+  return new Promise<boolean>((resolve) => {
+    const child = spawn("command", ["-v", cmd]);
+    child.on("close", (code) => resolve(code === 0));
+  });
 }
 
 async function detectPackageManager() {
@@ -268,8 +270,8 @@ export function invalidateChangeCache(
   const changed: string[] = [];
 
   for (const pattern of globs) {
-    const glob = new Glob(pattern);
-    for (const file of glob.scanSync(workingDir)) {
+    const files = fg.sync(pattern, { cwd: workingDir, dot: true });
+    for (const file of files) {
       const fullPath = path.join(workingDir, file);
       delete cache[fullPath];
     }
@@ -288,8 +290,8 @@ export function checkForChanges(
   const changed: string[] = [];
 
   for (const pattern of globs) {
-    const glob = new Glob(pattern);
-    for (const file of glob.scanSync(workingDir)) {
+    const files = fg.sync(pattern, { cwd: workingDir, dot: true });
+    for (const file of files) {
       const fullPath = path.join(workingDir, file);
       const stat = fs.statSync(fullPath);
       const mtime = stat.mtimeMs;
@@ -344,7 +346,7 @@ class Cache {
     this.filename = filename;
 
     if (fs.existsSync(filename)) {
-      const file = await Bun.file(filename).text();
+      const file = await readFile(filename, "utf-8");
       this.data = JSON.parse(file);
     }
   }
@@ -353,7 +355,7 @@ class Cache {
     if (!this.filename) {
       throw new ImpossibleSituation();
     } else {
-      await Bun.write(this.filename, JSON.stringify(this.data, undefined, 2));
+      await writeFile(this.filename, JSON.stringify(this.data, undefined, 2));
     }
   }
 
@@ -475,7 +477,7 @@ export class ProjectCompiler {
     );
 
     if (!mainModule.config.nostdlib) {
-      const stdlibConfig = await parseConfig(join(getStdlibDirectory(), "core"), sourceloc);
+      const stdlibConfig = await parseConfig(join(await getStdlibDirectory(), "core"), sourceloc);
       if (!stdlibConfig) {
         return false;
       }
@@ -493,7 +495,7 @@ export class ProjectCompiler {
     if (!singleFilename) {
       const deps = mainModule.config.dependencies;
       for (const dep of deps) {
-        const depdir = join(getStdlibDirectory(), dep.path);
+        const depdir = join(await getStdlibDirectory(), dep.path);
 
         const config = await parseConfig(depdir, sourceloc);
         if (!config) {
@@ -783,7 +785,7 @@ class ModuleCompiler {
   }
 
   async collectFileAsRoot(filepath: string, collectionMode: ECollectionMode) {
-    const fileText = await Bun.file(filepath).text();
+    const fileText = await readFile(filepath, "utf-8");
     const ast = Parser.parseTextToAST(this.config, fileText, filepath);
     CollectFile(
       this.cc,
@@ -804,7 +806,7 @@ class ModuleCompiler {
         this.collectDirectory(fullPath, collectionMode);
       } else {
         if (extname(fullPath) == ".hz") {
-          const fileText = await Bun.file(fullPath).text();
+          const fileText = await readFile(fullPath, "utf-8");
           const ast = Parser.parseTextToAST(this.config, fileText, fullPath);
           CollectFile(
             this.cc,
@@ -923,7 +925,7 @@ class ModuleCompiler {
       await mkdir(join(this.moduleDir, "bin/"), { recursive: true });
 
       const code = generateCode(this.config, lowered);
-      await Bun.file(moduleCFile).write(code);
+      await writeFile(moduleCFile, code);
 
       const compilerFlags = this.config.compilerFlags;
       const linkerFlags = this.config.linkerFlags;
@@ -974,7 +976,8 @@ class ModuleCompiler {
             }
           }
 
-          await Bun.file(`${this.globalBuildDir}/compile_commands.json`).write(
+          await writeFile(
+            `${this.globalBuildDir}/compile_commands.json`,
             JSON.stringify(cleanedCommands, null, 2)
           );
         } else {
@@ -984,7 +987,9 @@ class ModuleCompiler {
           let currentCommands: CompileCommands;
           let cleanedCommands: CompileCommands = [];
           try {
-            currentCommands = await Bun.file(`${this.globalBuildDir}/compile_commands.json`).json();
+            currentCommands = JSON.parse(
+              await readFile(`${this.globalBuildDir}/compile_commands.json`, "utf-8")
+            );
             for (const c of currentCommands) {
               if (!addedFiles.has(c.file)) {
                 addedFiles.add(c.file);
@@ -1000,7 +1005,8 @@ class ModuleCompiler {
             }
           }
 
-          await Bun.file(`${this.globalBuildDir}/compile_commands.json`).write(
+          await writeFile(
+            `${this.globalBuildDir}/compile_commands.json`,
             JSON.stringify(cleanedCommands, null, 2)
           );
         }
@@ -1085,10 +1091,10 @@ class ModuleCompiler {
           compileCommands: compileCommands,
           importFile: HAZE_LIB_IMPORT_FILE,
         };
-        await Bun.write(moduleMetadataFile, JSON.stringify(moduleMetadata, undefined, 2));
+        await writeFile(moduleMetadataFile, JSON.stringify(moduleMetadata, undefined, 2));
 
         const importFile = ExportCollectedSymbols(this.cc);
-        await Bun.write(importFilePath, importFile);
+        await writeFile(importFilePath, importFile);
 
         if (fs.existsSync(moduleOutputLib)) {
           fs.unlinkSync(moduleOutputLib);
@@ -1172,7 +1178,7 @@ class ModuleCompiler {
     const tempdir = join(this.moduleDir, "__deps", libname);
     fs.mkdirSync(tempdir, { recursive: true });
     await extractTarGz(libpath, tempdir);
-    return parseModuleMetadata(await Bun.file(join(tempdir, "metadata.json")).text());
+    return parseModuleMetadata(await readFile(join(tempdir, "metadata.json"), "utf-8"));
   }
 
   private async collectImports() {
@@ -1196,10 +1202,10 @@ class ModuleCompiler {
 
   private async addInternalBuiltinSources() {
     await this.collectDirectory(
-      join(getStdlibDirectory(), "internal"),
+      join(await getStdlibDirectory(), "internal"),
       ECollectionMode.ImportUnderRootDirectly
     );
-    this.config.hzsysLocation = join(getStdlibDirectory(), "core", "src");
+    this.config.hzsysLocation = join(await getStdlibDirectory(), "core", "src");
     this.config.compilerFlags.any.push(`-I"${this.config.hzsysLocation}"`);
   }
 }

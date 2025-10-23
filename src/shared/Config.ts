@@ -1,6 +1,7 @@
 import { dirname, join } from "path";
 import { existsSync } from "fs";
 import { parse } from "@ltd/j-toml";
+import { writeFile, readFile } from "fs/promises";
 
 import { GeneralError } from "./Errors";
 import type { Collect } from "../SymbolCollection/SymbolCollection";
@@ -362,7 +363,7 @@ export class ConfigParser {
   }
 
   async parseConfig(sourceloc?: boolean): Promise<ModuleConfig> {
-    const content = await Bun.file(this.configPath).text();
+    const content = await readFile(this.configPath, "utf-8");
     const toml = parse(content, { bigint: false });
 
     const type = this.getOptionalStringAnyOf(toml, "type", ["lib", "exe"]);

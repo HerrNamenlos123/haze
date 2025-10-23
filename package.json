@@ -14,7 +14,8 @@
     "copylib": "mkdir -p ./dist/stdlib && cp -r ./stdlib/* ./dist/stdlib",
     "generate-parser": "cd src/Parser/grammar && npx antlr4ng-cli -Dlanguage=TypeScript -visitor HazeLexer.g4 HazeParser.g4 -o autogen && cd ../../..",
     "postinstall": "bun run generate-parser",
-    "test": "bun run src/all.test.ts"
+    "test": "bun run src/all.test.ts",
+    "node": "node scripts/build.js && node dist/bundle.js"
   },
   "bin": {
     "haze": "dist/haze"
@@ -32,16 +33,20 @@
     "antlr4ng-cli": "^2.0.0",
     "archiver": "^7.0.1",
     "argparse": "^2.0.1",
-    "bun": "^1.2.2",
     "cross-env": "^7.0.3",
     "deep-equal": "^2.2.3",
-    "gunzip-maybe": "^1.4.2"
+    "fast-glob": "^3.3.3",
+    "gunzip-maybe": "^1.4.2",
+    "which": "^5.0.0"
   },
   "devDependencies": {
     "@mermaid-js/mermaid-cli": "^11.4.2",
-    "@types/bun": "latest",
     "@types/deep-equal": "^1.0.4",
-    "mermaid": "^11.4.1"
+    "@types/which": "^3.0.4",
+    "esbuild": "^0.25.11",
+    "mermaid": "^11.4.1",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.3"
   },
   "peerDependencies": {
     "typescript": "^5.0.0"

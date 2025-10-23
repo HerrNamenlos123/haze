@@ -6,6 +6,7 @@ import {
   SyntaxError,
   type SourceLoc,
 } from "../shared/Errors";
+import { writeFile, readFile } from "fs/promises";
 import {
   EAssignmentOperation,
   EBinaryOperation,
@@ -166,8 +167,7 @@ export namespace Parser {
   }
 
   async function parseFile(filename: string) {
-    const file = Bun.file(filename);
-    const text = await file.text();
+    const text = await readFile(filename, "utf-8");
     return parse(text, filename);
   }
 

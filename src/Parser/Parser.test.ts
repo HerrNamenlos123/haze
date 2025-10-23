@@ -1,3 +1,4 @@
+import type { ModuleConfig } from "../shared/Config";
 import { runStageTests, type StageTest, type StageTests } from "../Testing/Testing";
 import { Parser } from "./Parser";
 
@@ -138,8 +139,9 @@ const tests: StageTests<string, any> = [
 ];
 
 export async function runParseTests() {
+  const config: ModuleConfig = {} as any;
   const parseFunction = (input: string) => {
-    return Parser.parseTextToAST(input, "src/Parser/Parser.test.ts");
+    return Parser.parseTextToAST(config, input, "src/Parser/Parser.test.ts");
   };
   await runStageTests("Parser", parseFunction, tests);
 }

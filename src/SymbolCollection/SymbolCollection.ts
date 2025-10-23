@@ -2221,18 +2221,6 @@ export const printCollectedExpr = (cc: CollectionContext, exprId: Collect.ExprId
       );
     }
 
-    case Collect.ENode.LiteralExpr: {
-      if (expr.literal.type === EPrimitive.null) {
-        return "null";
-      } else if (expr.literal.type === EPrimitive.none) {
-        return "none";
-      } else if (expr.literal.type !== EPrimitive.str && expr.literal.type !== EPrimitive.cstr) {
-        return `${primitiveToString(expr.literal.type)}(${expr.literal.value})`;
-      } else {
-        return `${JSON.stringify(expr.literal.value)}`;
-      }
-    }
-
     case Collect.ENode.ExplicitCastExpr: {
       return `${printCollectedExpr(cc, expr.expr)} as ${printCollectedDatatype(
         cc,
@@ -2543,10 +2531,6 @@ export const printCollectedSymbol = (
     //   }
     //   break;
     // }
-
-    case Collect.ENode.GenericTypeParameterSymbol: {
-      return `${symbol.name} [${symbolId}]`;
-    }
 
     // case Collect.ENode.SymbolImport: {
     //   let symbols: string[] = [];

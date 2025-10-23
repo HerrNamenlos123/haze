@@ -1,35 +1,8 @@
-import { EBinaryOperation, EDatatypeMutability } from "../shared/AST";
+import { EBinaryOperation } from "../shared/AST";
 import { EPrimitive, primitiveToString, type LiteralValue } from "../shared/common";
 import { assert, CompilerError, type SourceLoc } from "../shared/Errors";
 import { Conversion } from "./Conversion";
-import { makePrimitiveAvailable, Semantic, type SemanticResult } from "./Elaborate";
-
-function makeBoolValue(sr: SemanticResult, value: boolean, sourceloc: SourceLoc) {
-  return Semantic.addExpr(sr, {
-    variant: Semantic.ENode.LiteralExpr,
-    literal: {
-      type: EPrimitive.bool,
-      value: value,
-    },
-    isTemporary: true,
-    type: makePrimitiveAvailable(sr, EPrimitive.bool, EDatatypeMutability.Const, sourceloc),
-    sourceloc: null,
-  });
-}
-
-function makeIntValue(sr: SemanticResult, value: bigint, sourceloc: SourceLoc) {
-  return Semantic.addExpr(sr, {
-    variant: Semantic.ENode.LiteralExpr,
-    literal: {
-      type: EPrimitive.int,
-      unit: null,
-      value: value,
-    },
-    isTemporary: true,
-    type: makePrimitiveAvailable(sr, EPrimitive.int, EDatatypeMutability.Const, sourceloc),
-    sourceloc: null,
-  });
-}
+import { Semantic, type SemanticResult } from "./Elaborate";
 
 export const getLiteralIntegerValue = (literalValue: LiteralValue) => {
   if (
@@ -80,19 +53,18 @@ export function EvalCTFE(
             const rightInteger = getLiteralIntegerValue(right.literal);
 
             if (leftInteger && rightInteger) {
-              return ok(makeBoolValue(sr, leftInteger[0] === rightInteger[0], expr.sourceloc));
+              return ok(sr.b.literal(leftInteger[0] === rightInteger[0], expr.sourceloc));
             }
 
             if (left.literal.type === right.literal.type) {
               if (left.literal.type === EPrimitive.null || right.literal.type === EPrimitive.null) {
-                return ok(makeBoolValue(sr, negate ? false : true, expr.sourceloc));
+                return ok(sr.b.literal(negate ? false : true, expr.sourceloc));
               }
               if (left.literal.type === EPrimitive.none || right.literal.type === EPrimitive.none) {
-                return ok(makeBoolValue(sr, negate ? false : true, expr.sourceloc));
+                return ok(sr.b.literal(negate ? false : true, expr.sourceloc));
               }
               return ok(
-                makeBoolValue(
-                  sr,
+                sr.b.literal(
                   negate
                     ? left.literal.value !== right.literal.value
                     : left.literal.value === right.literal.value,
@@ -118,31 +90,19 @@ export function EvalCTFE(
         case EBinaryOperation.BoolAnd: {
           const leftValue = EvalCTFEBoolean(sr, leftId, expr.sourceloc);
           const rightValue = EvalCTFEBoolean(sr, rightId, expr.sourceloc);
-          return ok(makeBoolValue(sr, leftValue && rightValue, expr.sourceloc));
+          return ok(sr.b.literal(leftValue && rightValue, expr.sourceloc));
         }
 
         case EBinaryOperation.BoolOr: {
           const leftValue = EvalCTFEBoolean(sr, leftId, expr.sourceloc);
           const rightValue = EvalCTFEBoolean(sr, rightId, expr.sourceloc);
-          return ok(makeBoolValue(sr, leftValue || rightValue, expr.sourceloc));
+          return ok(sr.b.literal(leftValue || rightValue, expr.sourceloc));
         }
 
         case EBinaryOperation.Subtract: {
           const leftValue = EvalCTFENumericValue(sr, leftId, expr.sourceloc);
           const rightValue = EvalCTFENumericValue(sr, rightId, expr.sourceloc);
-          return ok(
-            Semantic.addExpr(sr, {
-              variant: Semantic.ENode.LiteralExpr,
-              isTemporary: true,
-              literal: {
-                type: EPrimitive.int,
-                unit: null,
-                value: leftValue - rightValue,
-              },
-              type: expr.type,
-              sourceloc: expr.sourceloc,
-            })
-          );
+          return ok(sr.b.literal(leftValue - rightValue, expr.sourceloc));
         }
 
         default:
@@ -173,17 +133,14 @@ export function EvalCTFE(
           }
 
           return ok(
-            Semantic.addExpr(sr, {
-              variant: Semantic.ENode.LiteralExpr,
-              isTemporary: true,
-              literal: {
+            sr.b.literalValue(
+              {
                 type: integerLiteralValue[1],
                 unit: null,
                 value: literalValue,
               },
-              type: expr.type,
-              sourceloc: expr.sourceloc,
-            })
+              expr.sourceloc
+            )
           );
         }
       }
