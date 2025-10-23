@@ -32,10 +32,6 @@ export struct Arena {
         }
     }
 
-    // allocRaw(size: usize, alignment: usize): void {
-    //     return hzsys_arena_allocate(this.arenaImpl, size, alignment);
-    // }
-
     free() {
         hzsys_arena_cleanup_and_free(this.arenaImpl);
     }

@@ -8,13 +8,13 @@ import gl
 //     return arena;
 // }
 
-struct Foo
-    requires LT(this.x) >= LT(this)
-{
-    x: int = 0;
-    y: int = 0;
-    z: int = 0;
-};
+// struct Foo
+//     requires LT(this.x) >= LT(this)
+// {
+//     x: int = 0;
+//     y: int = 0;
+//     z: int = 0;
+// };
 
 // struct Ref<T> {
 //     ref: T&;
@@ -24,10 +24,19 @@ struct Foo
 
 // }
 
-main(): int {
+struct Bar {};
 
-    let foo = Foo {};
-    let inlineFoo = inline Foo {};
+struct Foo {
+    bar: Bar;
+}
+
+fooz(): Bar {
+    const foo = Foo { bar: Bar {} }
+    foo.bar = Bar {};
+    return foo.bar;
+}
+
+main(): int {
 
     // let array: mut []u8 = [];
 

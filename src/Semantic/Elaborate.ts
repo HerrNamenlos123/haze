@@ -626,6 +626,11 @@ export class SemanticElaborator {
               currentScope: scopeId,
               genericsScope: scopeId,
               constraints: this.currentContext.constraints,
+              instanceDeps: {
+                instanceDependsOn: new Map(),
+                structMembersDependOn: new Map(),
+                symbolDependsOn: new Map(),
+              },
             }),
           },
           () => {
@@ -658,22 +663,14 @@ export class SemanticElaborator {
             memberAccess.sourceloc
           );
         }
-        return Semantic.addExpr(this.sr, {
-          variant: Semantic.ENode.LiteralExpr,
-          isTemporary: true,
-          literal: {
+        return this.sr.b.literalValue(
+          {
             type: EPrimitive.usize,
             unit: null,
             value: BigInt(objectType.parameters.length),
           },
-          sourceloc: memberAccess.sourceloc,
-          type: makePrimitiveAvailable(
-            this.sr,
-            EPrimitive.usize,
-            EDatatypeMutability.Const,
-            memberAccess.sourceloc
-          ),
-        });
+          memberAccess.sourceloc
+        );
       }
       throw new CompilerError(
         `Parameter Pack does not have a member named '${memberAccess.memberName}'`,
@@ -824,6 +821,11 @@ export class SemanticElaborator {
             {
               currentScope: this.currentContext.currentScope,
               genericsScope: this.currentContext.currentScope,
+              instanceDeps: {
+                instanceDependsOn: new Map(),
+                structMembersDependOn: new Map(),
+                symbolDependsOn: new Map(),
+              },
             }
           ),
         },
@@ -852,6 +854,7 @@ export class SemanticElaborator {
 
       return Semantic.addExpr(this.sr, {
         variant: Semantic.ENode.CallableExpr,
+        instanceIds: [],
         thisExpr: objectId,
         functionSymbol: elaboratedMethodId,
         type: makeTypeUse(
@@ -1100,6 +1103,11 @@ export class SemanticElaborator {
         currentScope: context.currentScope,
         genericsScope: context.currentScope,
         constraints: context.constraints,
+        instanceDeps: {
+          instanceDependsOn: new Map(),
+          structMembersDependOn: new Map(),
+          symbolDependsOn: new Map(),
+        },
       });
       for (let i = 0; i < definedStructType.generics.length; i++) {
         context.substitute.set(definedStructType.generics[i], genericArgs[i]);
@@ -1182,6 +1190,11 @@ export class SemanticElaborator {
                 currentScope: definedStructType.structScope,
                 genericsScope: definedStructType.structScope,
                 constraints: [],
+                instanceDeps: {
+                  instanceDependsOn: new Map(),
+                  structMembersDependOn: new Map(),
+                  symbolDependsOn: new Map(),
+                },
               }),
             },
             () => {
@@ -1302,6 +1315,7 @@ export class SemanticElaborator {
                 genericsScope: symbol.inScope,
                 currentScope: symbol.inScope,
                 constraints: this.currentContext.constraints,
+                instanceDeps: this.currentContext.instanceDeps,
               }),
               expectedReturnType: this.expectedReturnType,
             },
@@ -1545,6 +1559,7 @@ export class SemanticElaborator {
       currentScope: args.sourceScopeId,
       genericsScope: args.sourceScopeId,
       constraints: blockScope.constraints,
+      instanceDeps: this.currentContext.instanceDeps,
     });
 
     this.withContext(
@@ -1620,6 +1635,11 @@ export class SemanticElaborator {
         currentScope: context.currentScope,
         genericsScope: context.currentScope,
         constraints: context.constraints,
+        instanceDeps: {
+          instanceDependsOn: new Map(),
+          structMembersDependOn: new Map(),
+          symbolDependsOn: new Map(),
+        },
       });
       for (let i = 0; i < func.generics.length; i++) {
         context.substitute.set(func.generics[i], genericArgs[i]);
@@ -1656,6 +1676,11 @@ export class SemanticElaborator {
       genericsScope: func.functionScope || func.parentScope,
       currentScope: func.functionScope || func.parentScope,
       constraints: this.currentContext.constraints,
+      instanceDeps: {
+        instanceDependsOn: new Map(),
+        structMembersDependOn: new Map(),
+        symbolDependsOn: new Map(),
+      },
     });
 
     return this.withContext(
@@ -2123,6 +2148,11 @@ export class SemanticElaborator {
                     currentScope: collectedNamespace.namespaceScope,
                     genericsScope: this.currentContext.genericsScope,
                     constraints: [],
+                    instanceDeps: {
+                      instanceDependsOn: new Map(),
+                      structMembersDependOn: new Map(),
+                      symbolDependsOn: new Map(),
+                    },
                   }),
                 },
                 () => {
@@ -2175,6 +2205,11 @@ export class SemanticElaborator {
                     {
                       currentScope: typedef.structScope,
                       genericsScope: this.currentContext.genericsScope,
+                      instanceDeps: {
+                        instanceDependsOn: new Map(),
+                        structMembersDependOn: new Map(),
+                        symbolDependsOn: new Map(),
+                      },
                     }
                   ),
                 },
@@ -2207,6 +2242,11 @@ export class SemanticElaborator {
                   currentScope: typedef.namespaceScope,
                   genericsScope: this.currentContext.genericsScope,
                   constraints: this.currentContext.constraints,
+                  instanceDeps: {
+                    instanceDependsOn: new Map(),
+                    structMembersDependOn: new Map(),
+                    symbolDependsOn: new Map(),
+                  },
                 }),
               },
               () => {
@@ -2341,6 +2381,11 @@ export class SemanticElaborator {
               currentScope: functionSymbol.functionScope || functionSymbol.parentScope,
               genericsScope: functionSymbol.functionScope || functionSymbol.parentScope,
               constraints: [],
+              instanceDeps: {
+                instanceDependsOn: new Map(),
+                structMembersDependOn: new Map(),
+                symbolDependsOn: new Map(),
+              },
             }),
           },
           () => this.lookupAndElaborateDatatype(p.type)
@@ -2356,6 +2401,11 @@ export class SemanticElaborator {
             currentScope: functionSymbol.functionScope || functionSymbol.parentScope,
             genericsScope: functionSymbol.functionScope || functionSymbol.parentScope,
             constraints: [],
+            instanceDeps: {
+              instanceDependsOn: new Map(),
+              structMembersDependOn: new Map(),
+              symbolDependsOn: new Map(),
+            },
           }),
         },
         () => this.lookupAndElaborateDatatype(functionSymbol.returnType)
@@ -2531,6 +2581,11 @@ export class SemanticElaborator {
             {
               currentScope: this.currentContext.currentScope,
               genericsScope: this.currentContext.currentScope,
+              instanceDeps: {
+                instanceDependsOn: new Map(),
+                structMembersDependOn: new Map(),
+                symbolDependsOn: new Map(),
+              },
             }
           ),
         },
@@ -2772,6 +2827,7 @@ export class SemanticElaborator {
               variant: Semantic.ENode.ExprStatement,
               expr: Semantic.addExpr(this.sr, {
                 variant: Semantic.ENode.BlockScopeExpr,
+                instanceIds: [],
                 block: thenScopeId,
                 isTemporary: true,
                 type: this.sr.b.voidType(),
@@ -2801,6 +2857,7 @@ export class SemanticElaborator {
                 variant: Semantic.ENode.ExprStatement,
                 expr: Semantic.addExpr(this.sr, {
                   variant: Semantic.ENode.BlockScopeExpr,
+                  instanceIds: [],
                   block: thenScopeId,
                   isTemporary: true,
                   type: this.sr.b.voidType(),
@@ -2829,6 +2886,7 @@ export class SemanticElaborator {
               variant: Semantic.ENode.ExprStatement,
               expr: Semantic.addExpr(this.sr, {
                 variant: Semantic.ENode.BlockScopeExpr,
+                instanceIds: [],
                 block: thenScopeId,
                 isTemporary: true,
                 type: this.sr.b.voidType(),
@@ -2843,6 +2901,7 @@ export class SemanticElaborator {
             variant: Semantic.ENode.ExprStatement,
             expr: Semantic.addExpr(this.sr, {
               variant: Semantic.ENode.BlockScopeExpr,
+              instanceIds: [],
               block: Semantic.addBlockScope(this.sr, {
                 variant: Semantic.ENode.BlockScope,
                 statements: [],
@@ -2869,6 +2928,7 @@ export class SemanticElaborator {
                 constraints: thenScope.constraints,
                 currentScope: this.currentContext.currentScope,
                 genericsScope: this.currentContext.genericsScope,
+                instanceDeps: this.currentContext.instanceDeps,
               }),
               expectedReturnType: this.expectedReturnType,
             },
@@ -3033,6 +3093,11 @@ export class SemanticElaborator {
                 currentScope: s.owningScope,
                 genericsScope: s.owningScope,
                 constraints: this.currentContext.constraints,
+                instanceDeps: {
+                  instanceDependsOn: new Map(),
+                  structMembersDependOn: new Map(),
+                  symbolDependsOn: new Map(),
+                },
               }),
               expectedReturnType: this.expectedReturnType,
             },
@@ -3255,22 +3320,14 @@ export class SemanticElaborator {
             syntheticMap.set(s.loopVariable, semanticParamId);
             if (s.indexVariable) {
               assert(loopIndexId && loopIndex);
-              loopIndex.comptimeValue = Semantic.addExpr(this.sr, {
-                variant: Semantic.ENode.LiteralExpr,
-                isTemporary: true,
-                literal: {
+              loopIndex.comptimeValue = this.sr.b.literalValue(
+                {
                   type: EPrimitive.usize,
                   unit: null,
                   value: BigInt(i),
                 },
-                type: makePrimitiveAvailable(
-                  this.sr,
-                  EPrimitive.usize,
-                  EDatatypeMutability.Const,
-                  s.sourceloc
-                ),
-                sourceloc: s.sourceloc,
-              })[1];
+                s.sourceloc
+              )[1];
               syntheticMap.set(s.indexVariable, loopIndexId);
             }
             this.elaborateBlockScope(
@@ -3290,6 +3347,7 @@ export class SemanticElaborator {
                 variant: Semantic.ENode.ExprStatement,
                 expr: Semantic.addExpr(this.sr, {
                   variant: Semantic.ENode.BlockScopeExpr,
+                  instanceIds: [],
                   block: thenScopeId,
                   sourceloc: s.sourceloc,
                   isTemporary: true,
@@ -3304,6 +3362,7 @@ export class SemanticElaborator {
             variant: Semantic.ENode.ExprStatement,
             expr: Semantic.addExpr(this.sr, {
               variant: Semantic.ENode.BlockScopeExpr,
+              instanceIds: [],
               block: Semantic.addBlockScope(this.sr, {
                 variant: Semantic.ENode.BlockScope,
                 statements: allScopes,
@@ -3448,6 +3507,11 @@ export class SemanticElaborator {
             currentScope: this.currentContext.currentScope,
             genericsScope: this.currentContext.currentScope,
             constraints: this.currentContext.constraints,
+            instanceDeps: {
+              instanceDependsOn: new Map(),
+              structMembersDependOn: new Map(),
+              symbolDependsOn: new Map(),
+            },
           }),
         },
         () => this.lookupAndElaborateDatatype(structInst.structType!)
@@ -3490,36 +3554,20 @@ export class SemanticElaborator {
     inference: Inference
   ): [Semantic.Expression, Semantic.ExprId] {
     if (symbolValue.name === "null") {
-      return Semantic.addExpr(this.sr, {
-        variant: Semantic.ENode.LiteralExpr,
-        literal: {
+      return this.sr.b.literalValue(
+        {
           type: EPrimitive.null,
         },
-        isTemporary: true,
-        sourceloc: symbolValue.sourceloc,
-        type: makePrimitiveAvailable(
-          this.sr,
-          EPrimitive.null,
-          EDatatypeMutability.Const,
-          symbolValue.sourceloc
-        ),
-      });
+        symbolValue.sourceloc
+      );
     }
     if (symbolValue.name === "none") {
-      return Semantic.addExpr(this.sr, {
-        variant: Semantic.ENode.LiteralExpr,
-        literal: {
+      return this.sr.b.literalValue(
+        {
           type: EPrimitive.none,
         },
-        isTemporary: true,
-        sourceloc: symbolValue.sourceloc,
-        type: makePrimitiveAvailable(
-          this.sr,
-          EPrimitive.none,
-          EDatatypeMutability.Const,
-          symbolValue.sourceloc
-        ),
-      });
+        symbolValue.sourceloc
+      );
     }
 
     const primitive = stringToPrimitive(symbolValue.name);
@@ -3527,17 +3575,10 @@ export class SemanticElaborator {
       if (symbolValue.genericArgs.length > 0) {
         throw new CompilerError(`Type ${symbolValue.name} is not generic`, symbolValue.sourceloc);
       }
-      return Semantic.addExpr(this.sr, {
-        variant: Semantic.ENode.DatatypeAsValueExpr,
-        type: makePrimitiveAvailable(
-          this.sr,
-          primitive,
-          EDatatypeMutability.Const,
-          symbolValue.sourceloc
-        ),
-        sourceloc: symbolValue.sourceloc,
-        isTemporary: false,
-      });
+      return this.sr.b.datatypeUseAsValue(
+        this.sr.b.primitiveType(primitive, symbolValue.sourceloc),
+        symbolValue.sourceloc
+      );
     }
 
     let foundResult = Semantic.lookupSymbol(this.sr, symbolValue.name, {
@@ -3573,6 +3614,11 @@ export class SemanticElaborator {
             currentScope: symbol.inScope,
             genericsScope: symbol.inScope,
             constraints: this.currentContext.constraints,
+            instanceDeps: {
+              instanceDependsOn: new Map(),
+              structMembersDependOn: new Map(),
+              symbolDependsOn: new Map(),
+            },
           }),
         },
         () =>
@@ -3580,12 +3626,7 @@ export class SemanticElaborator {
             (this.sr.cc.typeDefNodes.get(symbol.typeDef) as Collect.TypeDefAlias).target
           )
       );
-      return Semantic.addExpr(this.sr, {
-        variant: Semantic.ENode.DatatypeAsValueExpr,
-        type: newId,
-        sourceloc: symbolValue.sourceloc,
-        isTemporary: false,
-      });
+      return this.sr.b.datatypeUseAsValue(newId, symbolValue.sourceloc);
     }
 
     if (symbol.variant === Collect.ENode.VariableSymbol) {
@@ -3620,13 +3661,10 @@ export class SemanticElaborator {
           ];
         }
 
-        const [symbolValueExpr, symbolValueExprId] = Semantic.addExpr(this.sr, {
-          variant: Semantic.ENode.SymbolValueExpr,
-          symbol: elaboratedSymbolId,
-          type: elaboratedSymbol.type,
-          sourceloc: symbolValue.sourceloc,
-          isTemporary: false,
-        });
+        const [symbolValueExpr, symbolValueExprId] = this.sr.b.symbolValue(
+          elaboratedSymbolId,
+          symbolValue.sourceloc
+        );
 
         const type = this.sr.typeDefNodes.get(this.sr.typeUseNodes.get(elaboratedSymbol.type).type);
         if (type.variant === Semantic.ENode.UnionDatatype) {
@@ -3640,6 +3678,7 @@ export class SemanticElaborator {
 
             return Semantic.addExpr(this.sr, {
               variant: Semantic.ENode.UnionToValueCastExpr,
+              instanceIds: [],
               expr: symbolValueExprId,
               index: index,
               isTemporary: true,
@@ -3655,19 +3694,7 @@ export class SemanticElaborator {
         this.sr.typeDefNodes.get(elaboratedSymbol.datatype).variant ===
           Semantic.ENode.ParameterPackDatatype
       ) {
-        return Semantic.addExpr(this.sr, {
-          variant: Semantic.ENode.SymbolValueExpr,
-          symbol: elaboratedSymbolId,
-          type: makeTypeUse(
-            this.sr,
-            elaboratedSymbol.datatype,
-            EDatatypeMutability.Const,
-            false,
-            symbolValue.sourceloc
-          )[1],
-          sourceloc: symbolValue.sourceloc,
-          isTemporary: false,
-        });
+        return this.sr.b.symbolValue(elaboratedSymbolId, symbolValue.sourceloc);
       } else {
         assert(false);
       }
@@ -3705,19 +3732,7 @@ export class SemanticElaborator {
       assert(elaboratedSymbolId);
       const elaboratedSymbol = this.sr.symbolNodes.get(elaboratedSymbolId);
       assert(elaboratedSymbol.variant === Semantic.ENode.FunctionSymbol);
-      return Semantic.addExpr(this.sr, {
-        variant: Semantic.ENode.SymbolValueExpr,
-        symbol: elaboratedSymbolId,
-        type: makeTypeUse(
-          this.sr,
-          elaboratedSymbol.type,
-          EDatatypeMutability.Const,
-          false,
-          symbolValue.sourceloc
-        )[1],
-        sourceloc: symbolValue.sourceloc,
-        isTemporary: false,
-      });
+      return this.sr.b.symbolValue(elaboratedSymbolId, symbolValue.sourceloc);
     } else if (symbol.variant === Collect.ENode.TypeDefSymbol) {
       const typedef = this.sr.cc.typeDefNodes.get(symbol.typeDef);
       if (typedef.variant === Collect.ENode.NamespaceTypeDef) {
@@ -3731,18 +3746,7 @@ export class SemanticElaborator {
           type.variant === Semantic.ENode.NamespaceDatatype ||
             type.variant === Semantic.ENode.StructDatatype
         );
-        return Semantic.addExpr(this.sr, {
-          variant: Semantic.ENode.DatatypeAsValueExpr,
-          type: makeTypeUse(
-            this.sr,
-            elaboratedSymbol.datatype,
-            EDatatypeMutability.Const,
-            false,
-            symbolValue.sourceloc
-          )[1],
-          sourceloc: symbolValue.sourceloc,
-          isTemporary: false,
-        });
+        return this.sr.b.datatypeDefAsValue(elaboratedSymbol.datatype, symbolValue.sourceloc);
       } else if (typedef.variant === Collect.ENode.StructTypeDef) {
         // This is for static function calls like Arena.create(); -> "Arena" is now a NamespaceValue
         const genericArgs = symbolValue.genericArgs.map((g) => this.expressionAsGenericArg(g));
@@ -3757,18 +3761,7 @@ export class SemanticElaborator {
           elaboratedSymbol.variant === Semantic.ENode.NamespaceDatatype ||
             elaboratedSymbol.variant === Semantic.ENode.StructDatatype
         );
-        return Semantic.addExpr(this.sr, {
-          variant: Semantic.ENode.DatatypeAsValueExpr,
-          type: makeTypeUse(
-            this.sr,
-            elaboratedSymbolId,
-            EDatatypeMutability.Const,
-            false,
-            symbolValue.sourceloc
-          )[1],
-          sourceloc: symbolValue.sourceloc,
-          isTemporary: false,
-        });
+        return this.sr.b.datatypeDefAsValue(elaboratedSymbolId, symbolValue.sourceloc);
       }
     } else if (symbol.variant === Collect.ENode.GenericTypeParameterSymbol) {
       const mappedToId = this.currentContext.substitute.get(symbolId);
@@ -3788,18 +3781,7 @@ export class SemanticElaborator {
           collectedParameter: symbolId,
           concrete: false,
         });
-        return Semantic.addExpr(this.sr, {
-          variant: Semantic.ENode.DatatypeAsValueExpr,
-          isTemporary: false,
-          type: makeTypeUse(
-            this.sr,
-            genericId,
-            EDatatypeMutability.Const,
-            false,
-            symbolValue.sourceloc
-          )[1],
-          sourceloc: symbolValue.sourceloc,
-        });
+        return this.sr.b.datatypeDefAsValue(genericId, symbolValue.sourceloc);
       }
     }
     throw new CompilerError(
@@ -3838,6 +3820,7 @@ export class SemanticElaborator {
     assert(type);
     return Semantic.addExpr(this.sr, {
       variant: Semantic.ENode.ArrayLiteralExpr,
+      instanceIds: [],
       values: values.map((v) => v[1]),
       type: makeStackArrayDatatypeAvailable(
         this.sr,
@@ -3888,6 +3871,7 @@ export class SemanticElaborator {
 
     return Semantic.addExpr(this.sr, {
       variant: Semantic.ENode.ArraySubscriptExpr,
+      instanceIds: [],
       expr: valueId,
       indices: [indexId],
       type: valueType.datatype,
@@ -3920,6 +3904,7 @@ export class SemanticElaborator {
     const [e, eId] = this.expr(postIncr.expr, undefined);
     return Semantic.addExpr(this.sr, {
       variant: Semantic.ENode.PostIncrExpr,
+      instanceIds: [],
       type: e.type,
       expr: eId,
       operation: postIncr.operation,
@@ -3932,6 +3917,7 @@ export class SemanticElaborator {
     const [e, eId] = this.expr(preIncr.expr, undefined);
     return Semantic.addExpr(this.sr, {
       variant: Semantic.ENode.PreIncrExpr,
+      instanceIds: [],
       type: e.type,
       expr: eId,
       operation: preIncr.operation,
@@ -4000,6 +3986,7 @@ export class SemanticElaborator {
 
     return Semantic.addExpr(this.sr, {
       variant: Semantic.ENode.ArraySliceExpr,
+      instanceIds: [],
       expr: valueId,
       indices: indices,
       type: makeDynamicArrayDatatypeAvailable(
@@ -4029,6 +4016,7 @@ export class SemanticElaborator {
           currentScope: blockScopeExpr.scope,
           genericsScope: blockScopeExpr.scope,
           constraints: this.currentContext.constraints,
+          instanceDeps: this.currentContext.instanceDeps,
         }),
         expectedReturnType: this.expectedReturnType,
       },
@@ -4050,6 +4038,7 @@ export class SemanticElaborator {
     }
     return Semantic.addExpr(this.sr, {
       variant: Semantic.ENode.BlockScopeExpr,
+      instanceIds: [],
       block: scopeId,
       isTemporary: true,
       type: resultType || makeVoidType(this.sr),
@@ -4124,6 +4113,7 @@ export class SemanticBuilder {
   ) {
     return Semantic.addExpr(this.sr, {
       variant: Semantic.ENode.BinaryExpr,
+      instanceIds: [],
       left: left,
       operation: operation,
       right: right,
@@ -4163,6 +4153,7 @@ export class SemanticBuilder {
 
     return Semantic.addExpr(this.sr, {
       variant: Semantic.ENode.ExprCallExpr,
+      instanceIds: [],
       calledExpr: exprId,
       arguments: callArguments,
       isTemporary: true,
@@ -4177,6 +4168,7 @@ export class SemanticBuilder {
     const expr = this.sr.exprNodes.get(exprId);
     return Semantic.addExpr(this.sr, {
       variant: Semantic.ENode.UnaryExpr,
+      instanceIds: [],
       expr: exprId,
       operation: operation,
       type: Conversion.makeUnaryResultType(this.sr, expr.type, operation, sourceloc),
@@ -4198,6 +4190,7 @@ export class SemanticBuilder {
   literalValue(literal: LiteralValue, sourceloc: SourceLoc) {
     return Semantic.addExpr(this.sr, {
       variant: Semantic.ENode.LiteralExpr,
+      instanceIds: [],
       literal: literal,
       sourceloc: sourceloc,
       isTemporary: true,
@@ -4248,6 +4241,7 @@ export class SemanticBuilder {
   datatypeDefAsValue(type: Semantic.TypeDefId, sourceloc: SourceLoc) {
     return Semantic.addExpr(this.sr, {
       variant: Semantic.ENode.DatatypeAsValueExpr,
+      instanceIds: [],
       symbol: type,
       type: makeTypeUse(this.sr, type, EDatatypeMutability.Default, false, sourceloc)[1],
       isTemporary: false,
@@ -4258,6 +4252,7 @@ export class SemanticBuilder {
   datatypeUseAsValue(type: Semantic.TypeUseId, sourceloc: SourceLoc) {
     return Semantic.addExpr(this.sr, {
       variant: Semantic.ENode.DatatypeAsValueExpr,
+      instanceIds: [],
       symbol: type,
       type: type,
       isTemporary: false,
@@ -4269,6 +4264,7 @@ export class SemanticBuilder {
     const valueExpr = this.sr.exprNodes.get(valueExprId);
     return Semantic.addExpr(this.sr, {
       variant: Semantic.ENode.SizeofExpr,
+      instanceIds: [],
       valueExpr: valueExprId,
       type: this.usizeType(),
       isTemporary: false,
@@ -4280,6 +4276,7 @@ export class SemanticBuilder {
     const valueExpr = this.sr.exprNodes.get(valueExprId);
     return Semantic.addExpr(this.sr, {
       variant: Semantic.ENode.AlignofExpr,
+      instanceIds: [],
       valueExpr: valueExprId,
       type: this.usizeType(),
       isTemporary: false,
@@ -4290,8 +4287,10 @@ export class SemanticBuilder {
   symbolValue(symbolId: Semantic.SymbolId, sourceloc: SourceLoc) {
     const symbol = this.sr.symbolNodes.get(symbolId);
     if (symbol.variant === Semantic.ENode.FunctionSymbol) {
+      // Currently dependencies don't go across function borders at all
       return Semantic.addExpr(this.sr, {
         variant: Semantic.ENode.SymbolValueExpr,
+        instanceIds: [],
         symbol: symbolId,
         type: makeTypeUse(this.sr, symbol.type, EDatatypeMutability.Default, false, sourceloc)[1],
         isTemporary: false,
@@ -4301,6 +4300,7 @@ export class SemanticBuilder {
       assert(symbol.type);
       return Semantic.addExpr(this.sr, {
         variant: Semantic.ENode.SymbolValueExpr,
+        instanceIds: Semantic.getSymbolDeps(this.sr.e.currentContext, symbolId),
         symbol: symbolId,
         type: symbol.type,
         isTemporary: false,
@@ -4333,6 +4333,7 @@ export class SemanticBuilder {
       variableContext: EVariableContext.Global,
       parentStructOrNS: parentStructOrNS,
       sourceloc: sourceloc,
+      dependsOn: new Set(),
       concrete: true,
     });
   }
@@ -4345,13 +4346,76 @@ export class SemanticBuilder {
   }
 
   cInject(value: string, sourceloc: SourceLoc) {
-    const [directive, directiveId] = Semantic.addSymbol(this.sr, {
+    const [_, directiveId] = Semantic.addSymbol(this.sr, {
       variant: Semantic.ENode.CInjectDirectiveSymbol,
       value: value,
       sourceloc: sourceloc,
     });
     this.sr.cInjections.push(directiveId);
     return directiveId;
+  }
+
+  updateLHSDependencies(lhsId: Semantic.ExprId, dependencies: Semantic.InstanceId[]): void {
+    const lhs = this.sr.exprNodes.get(lhsId);
+    switch (lhs.variant) {
+      case Semantic.ENode.ArraySubscriptExpr: {
+        assert(false, "Array subscript not implemented correctly yet");
+      }
+
+      case Semantic.ENode.SymbolValueExpr: {
+        Semantic.addSymbolDeps(this.sr.e.currentContext, lhs.symbol, dependencies);
+        break;
+      }
+
+      case Semantic.ENode.MemberAccessExpr: {
+        const struct = this.sr.e.getTypeDef(
+          this.sr.e.getTypeUse(this.sr.e.getExpr(lhs.expr).type).type
+        );
+        assert(struct.variant === Semantic.ENode.StructDatatype);
+
+        const member = struct.members.find((m) => {
+          const mem = this.sr.symbolNodes.get(m);
+          return mem.variant === Semantic.ENode.VariableSymbol && mem.name === lhs.memberName;
+        });
+        assert(member);
+        for (const inst of lhs.instanceIds) {
+          Semantic.addStructMemberInstanceDeps(
+            this.sr.e.currentContext,
+            inst,
+            member,
+            dependencies
+          );
+        }
+        break;
+      }
+
+      case Semantic.ENode.StructInstantiationExpr:
+      case Semantic.ENode.ValueToUnionCastExpr:
+      case Semantic.ENode.UnionToValueCastExpr:
+      case Semantic.ENode.StringConstructExpr:
+      case Semantic.ENode.PostIncrExpr:
+      case Semantic.ENode.PreIncrExpr:
+      case Semantic.ENode.LiteralExpr:
+      case Semantic.ENode.UnaryExpr:
+      case Semantic.ENode.ExplicitCastExpr:
+      case Semantic.ENode.ExprAssignmentExpr:
+      case Semantic.ENode.DereferenceExpr:
+      case Semantic.ENode.DatatypeAsValueExpr:
+      case Semantic.ENode.CallableExpr:
+      case Semantic.ENode.BlockScopeExpr:
+      case Semantic.ENode.BinaryExpr:
+      case Semantic.ENode.ArraySliceExpr:
+      case Semantic.ENode.ArrayLiteralExpr:
+      case Semantic.ENode.SizeofExpr:
+      case Semantic.ENode.AlignofExpr:
+      case Semantic.ENode.AddressOfExpr:
+      case Semantic.ENode.ExprCallExpr: {
+        throw new CompilerError(`This expression is not a valid LHS`, lhs.sourceloc);
+      }
+
+      default:
+        assert(false, (lhs as any).variant.toString());
+    }
   }
 
   assignment(
@@ -4363,8 +4427,15 @@ export class SemanticBuilder {
     inference: Inference
   ) {
     const target = this.sr.exprNodes.get(targetId);
+    const value = this.sr.exprNodes.get(valueId);
+
+    // An assignment like let d = (a = b) makes a now dependent on b, as well as the result on b
+    // I don't think the result would ever depend on a, right? ... right??    .....    .....   right????
+    this.updateLHSDependencies(targetId, value.instanceIds);
+
     return Semantic.addExpr(this.sr, {
       variant: Semantic.ENode.ExprAssignmentExpr,
+      instanceIds: [...value.instanceIds],
       value: Conversion.MakeConversionOrThrow(
         this.sr,
         valueId,
@@ -4389,8 +4460,31 @@ export class SemanticBuilder {
     temporary: boolean,
     sourceloc: SourceLoc
   ) {
+    const expr = this.sr.e.getExpr(exprId);
+
+    const struct = this.sr.e.getTypeDef(this.sr.e.getTypeUse(expr.type).type);
+    assert(struct.variant === Semantic.ENode.StructDatatype);
+
+    const member = struct.members.find((m) => {
+      const mem = this.sr.symbolNodes.get(m);
+      return mem.variant === Semantic.ENode.VariableSymbol && mem.name === name;
+    });
+    assert(member);
+
+    const memberSym = this.sr.symbolNodes.get(member);
+    assert(memberSym.variant === Semantic.ENode.VariableSymbol);
+
+    const dependsOn = new Set<Semantic.InstanceId>();
+    for (const inst of expr.instanceIds) {
+      // Get ONLY the dependencies of the specific struct member being accessed
+      Semantic.getStructMemberInstanceDeps(this.sr.e.currentContext, inst, member).forEach((d) =>
+        dependsOn.add(d)
+      );
+    }
+
     return Semantic.addExpr(this.sr, {
       variant: Semantic.ENode.MemberAccessExpr,
+      instanceIds: [...dependsOn],
       expr: exprId,
       memberName: name,
       type: memberType,
@@ -4418,20 +4512,43 @@ export class SemanticBuilder {
   }
 
   structLiteral(
-    structType: Semantic.TypeUseId,
+    structTypeId: Semantic.TypeUseId,
     assign: {
       name: string;
       value: Semantic.ExprId;
     }[],
     sourceloc: SourceLoc
   ) {
-    return Semantic.addExpr(this.sr, {
+    const structTypeUse = this.sr.typeUseNodes.get(structTypeId);
+    const structType = this.sr.typeDefNodes.get(structTypeUse.type);
+    assert(structType.variant === Semantic.ENode.StructDatatype);
+
+    const e = Semantic.addExpr<Semantic.StructInstantiationExpr>(this.sr, {
       variant: Semantic.ENode.StructInstantiationExpr,
+      instanceIds: [Semantic.makeInstanceId(this.sr)],
       assign: assign,
-      type: structType,
+      type: structTypeId,
       sourceloc: sourceloc,
       isTemporary: true,
     });
+
+    for (const a of assign) {
+      const member = structType.members.find((m) => {
+        const varsym = this.sr.symbolNodes.get(m);
+        return varsym.variant === Semantic.ENode.VariableSymbol && varsym.name === a.name;
+      });
+      assert(member);
+
+      const value = this.sr.e.getExpr(a.value);
+      Semantic.addStructMemberInstanceDeps(
+        this.sr.e.currentContext,
+        e[0].instanceIds[0],
+        member,
+        value.instanceIds
+      );
+    }
+
+    return e;
   }
 
   namespaceType(
@@ -4672,6 +4789,8 @@ export type SemanticResult = {
   e: SemanticElaborator; // "e" = "Elaborator"
   b: SemanticBuilder; // "b" = "Builder"
 
+  nextInstanceId: Semantic.InstanceId;
+
   blockScopeNodes: BrandedArray<Semantic.BlockScopeId, Semantic.BlockScope>;
   symbolNodes: BrandedArray<Semantic.SymbolId, Semantic.Symbol>;
   exprNodes: BrandedArray<Semantic.ExprId, Semantic.Expression>;
@@ -4790,6 +4909,7 @@ export namespace Semantic {
   export type BlockScopeId = Brand<number, "SemanticBlockScope">;
   export type TypeDefId = Brand<number, "SemanticTypeDef">;
   export type TypeUseId = Brand<number, "SemanticTypeUse">;
+  export type InstanceId = Brand<number, "SemanticInstance">;
 
   export enum ENode {
     CInjectDirectiveSymbol,
@@ -4822,7 +4942,6 @@ export namespace Semantic {
     ReturnStatement,
     // Expressions
     ParenthesisExpr,
-    UnsafeExpr,
     BinaryExpr,
     LiteralExpr,
     UnaryExpr,
@@ -5091,6 +5210,7 @@ export namespace Semantic {
 
   export type ExprMemberAccessExpr = {
     variant: ENode.MemberAccessExpr;
+    instanceIds: InstanceId[];
     expr: ExprId;
     memberName: string;
     type: TypeUseId;
@@ -5100,6 +5220,7 @@ export namespace Semantic {
 
   export type CallableExpr = {
     variant: ENode.CallableExpr;
+    instanceIds: InstanceId[];
     thisExpr: ExprId;
     functionSymbol: SymbolId;
     type: TypeUseId;
@@ -5109,6 +5230,7 @@ export namespace Semantic {
 
   export type SymbolValueExpr = {
     variant: ENode.SymbolValueExpr;
+    instanceIds: InstanceId[];
     symbol: SymbolId;
     type: TypeUseId;
     isTemporary: boolean;
@@ -5117,6 +5239,7 @@ export namespace Semantic {
 
   export type DatatypeAsValueExpr = {
     variant: ENode.DatatypeAsValueExpr;
+    instanceIds: InstanceId[];
     type: TypeUseId;
     isTemporary: boolean;
     sourceloc: SourceLoc;
@@ -5124,6 +5247,7 @@ export namespace Semantic {
 
   export type SizeofExpr = {
     variant: ENode.SizeofExpr;
+    instanceIds: InstanceId[];
     valueExpr: ExprId;
     type: TypeUseId;
     isTemporary: boolean;
@@ -5132,6 +5256,7 @@ export namespace Semantic {
 
   export type AlignofExpr = {
     variant: ENode.AlignofExpr;
+    instanceIds: InstanceId[];
     valueExpr: ExprId;
     type: TypeUseId;
     isTemporary: boolean;
@@ -5140,6 +5265,7 @@ export namespace Semantic {
 
   export type ExprAssignmentExpr = {
     variant: ENode.ExprAssignmentExpr;
+    instanceIds: InstanceId[];
     value: ExprId;
     target: ExprId;
     type: TypeUseId;
@@ -5150,6 +5276,7 @@ export namespace Semantic {
 
   export type DereferenceExpr = {
     variant: ENode.DereferenceExpr;
+    instanceIds: InstanceId[];
     expr: ExprId;
     type: TypeUseId;
     isTemporary: boolean;
@@ -5158,6 +5285,7 @@ export namespace Semantic {
 
   export type AddressOfExpr = {
     variant: ENode.AddressOfExpr;
+    instanceIds: InstanceId[];
     expr: ExprId;
     type: TypeUseId;
     isTemporary: boolean;
@@ -5166,6 +5294,7 @@ export namespace Semantic {
 
   export type ExplicitCastExpr = {
     variant: ENode.ExplicitCastExpr;
+    instanceIds: InstanceId[];
     expr: ExprId;
     type: TypeUseId;
     isTemporary: boolean;
@@ -5174,6 +5303,7 @@ export namespace Semantic {
 
   export type ValueToUnionCastExpr = {
     variant: ENode.ValueToUnionCastExpr;
+    instanceIds: InstanceId[];
     expr: ExprId;
     type: TypeUseId;
     isTemporary: boolean;
@@ -5182,6 +5312,7 @@ export namespace Semantic {
 
   export type UnionToValueCastExpr = {
     variant: ENode.UnionToValueCastExpr;
+    instanceIds: InstanceId[];
     expr: ExprId;
     type: TypeUseId;
     index: number;
@@ -5191,6 +5322,7 @@ export namespace Semantic {
 
   export type BinaryExpr = {
     variant: ENode.BinaryExpr;
+    instanceIds: InstanceId[];
     left: ExprId;
     right: ExprId;
     operation: EBinaryOperation;
@@ -5201,6 +5333,7 @@ export namespace Semantic {
 
   export type UnaryExpr = {
     variant: ENode.UnaryExpr;
+    instanceIds: InstanceId[];
     expr: ExprId;
     operation: EUnaryOperation;
     type: TypeUseId;
@@ -5210,6 +5343,7 @@ export namespace Semantic {
 
   export type PostIncrExpr = {
     variant: ENode.PostIncrExpr;
+    instanceIds: InstanceId[];
     expr: ExprId;
     operation: EIncrOperation;
     type: TypeUseId;
@@ -5219,6 +5353,7 @@ export namespace Semantic {
 
   export type PreIncrExpr = {
     variant: ENode.PreIncrExpr;
+    instanceIds: InstanceId[];
     expr: ExprId;
     operation: EIncrOperation;
     type: TypeUseId;
@@ -5228,6 +5363,7 @@ export namespace Semantic {
 
   export type ExprCallExpr = {
     variant: ENode.ExprCallExpr;
+    instanceIds: InstanceId[];
     calledExpr: ExprId;
     arguments: ExprId[];
     type: TypeUseId;
@@ -5239,6 +5375,7 @@ export namespace Semantic {
 
   export type StructInstantiationExpr = {
     variant: ENode.StructInstantiationExpr;
+    instanceIds: InstanceId[];
     assign: {
       name: string;
       value: ExprId;
@@ -5250,6 +5387,7 @@ export namespace Semantic {
 
   export type LiteralExpr = {
     variant: ENode.LiteralExpr;
+    instanceIds: InstanceId[];
     literal: LiteralValue;
     type: TypeUseId;
     isTemporary: boolean;
@@ -5258,6 +5396,7 @@ export namespace Semantic {
 
   export type ArrayLiteralExpr = {
     variant: ENode.ArrayLiteralExpr;
+    instanceIds: InstanceId[];
     values: ExprId[];
     type: TypeUseId;
     isTemporary: boolean;
@@ -5266,6 +5405,7 @@ export namespace Semantic {
 
   export type ArraySubscriptExpr = {
     variant: ENode.ArraySubscriptExpr;
+    instanceIds: InstanceId[];
     expr: ExprId;
     indices: ExprId[];
     type: TypeUseId;
@@ -5275,6 +5415,7 @@ export namespace Semantic {
 
   export type ArraySliceExpr = {
     variant: ENode.ArraySliceExpr;
+    instanceIds: InstanceId[];
     expr: ExprId;
     indices: {
       start: ExprId | null;
@@ -5287,6 +5428,7 @@ export namespace Semantic {
 
   export type StringConstructExpr = {
     variant: ENode.StringConstructExpr;
+    instanceIds: InstanceId[];
     value: {
       variant: "data-length";
       data: ExprId;
@@ -5299,6 +5441,7 @@ export namespace Semantic {
 
   export type BlockScopeExpr = {
     variant: ENode.BlockScopeExpr;
+    instanceIds: InstanceId[];
     block: BlockScopeId;
     type: TypeUseId;
     isTemporary: boolean;
@@ -5426,13 +5569,7 @@ export namespace Semantic {
         assert(symbol.variant === Semantic.ENode.VariableSymbol);
         assert(symbol.type);
         return {
-          id: Semantic.addExpr(sr, {
-            variant: Semantic.ENode.SymbolValueExpr,
-            symbol: symbolId,
-            type: symbol.type,
-            isTemporary: false,
-            sourceloc: args.sourceloc,
-          })[1],
+          id: sr.b.symbolValue(symbolId, args.sourceloc)[1],
           type: "semantic",
         };
       }
@@ -5592,11 +5729,134 @@ export namespace Semantic {
     assert(false, "Symbol not found");
   }
 
+  export function getSymbolDeps(context: ElaborationContext, symbolId: Semantic.SymbolId) {
+    let map = context.instanceDeps.symbolDependsOn.get(symbolId);
+    if (!map) {
+      const set = new Set<Semantic.InstanceId>();
+      context.instanceDeps.symbolDependsOn.set(symbolId, set);
+      map = set;
+    }
+
+    return [...map];
+  }
+
+  export function addSymbolDeps(
+    context: ElaborationContext,
+    symbolId: Semantic.SymbolId,
+    dependency: Semantic.InstanceId | Semantic.InstanceId[]
+  ) {
+    let map = context.instanceDeps.symbolDependsOn.get(symbolId);
+
+    if (!map) {
+      const set = new Set<Semantic.InstanceId>();
+      context.instanceDeps.symbolDependsOn.set(symbolId, set);
+      map = set;
+    }
+
+    if (Array.isArray(dependency)) {
+      for (const d of dependency) {
+        map.add(d);
+      }
+    } else {
+      map.add(dependency);
+    }
+  }
+
+  export function getInstanceDeps(context: ElaborationContext, instanceId: Semantic.InstanceId) {
+    let map = context.instanceDeps.instanceDependsOn.get(instanceId);
+    if (!map) {
+      const set = new Set<Semantic.InstanceId>();
+      context.instanceDeps.instanceDependsOn.set(instanceId, set);
+      map = set;
+    }
+
+    return [...map];
+  }
+
+  export function addInstanceDeps(
+    context: ElaborationContext,
+    instanceId: Semantic.InstanceId,
+    dependency: Semantic.InstanceId | Semantic.InstanceId[]
+  ) {
+    let map = context.instanceDeps.instanceDependsOn.get(instanceId);
+
+    if (!map) {
+      const set = new Set<Semantic.InstanceId>();
+      context.instanceDeps.instanceDependsOn.set(instanceId, set);
+      map = set;
+    }
+
+    if (Array.isArray(dependency)) {
+      for (const d of dependency) {
+        map.add(d);
+      }
+    } else {
+      map.add(dependency);
+    }
+  }
+
+  export function getStructMemberInstanceDeps(
+    context: ElaborationContext,
+    instanceId: Semantic.InstanceId,
+    member: Semantic.SymbolId
+  ) {
+    let innerMap = context.instanceDeps.structMembersDependOn.get(instanceId);
+    if (!innerMap) {
+      innerMap = new Map<Semantic.SymbolId, Set<Semantic.InstanceId>>();
+      context.instanceDeps.structMembersDependOn.set(instanceId, innerMap);
+    }
+
+    let set = innerMap.get(member);
+    if (!set) {
+      set = new Set<Semantic.InstanceId>();
+      innerMap.set(member, set);
+    }
+
+    return [...set];
+  }
+
+  export function addStructMemberInstanceDeps(
+    context: ElaborationContext,
+    instanceId: Semantic.InstanceId,
+    member: Semantic.SymbolId,
+    dependency: Semantic.InstanceId | Semantic.InstanceId[]
+  ) {
+    let innerMap = context.instanceDeps.structMembersDependOn.get(instanceId);
+    if (!innerMap) {
+      innerMap = new Map<Semantic.SymbolId, Set<Semantic.InstanceId>>();
+      context.instanceDeps.structMembersDependOn.set(instanceId, innerMap);
+    }
+
+    let set = innerMap.get(member);
+    if (!set) {
+      set = new Set<Semantic.InstanceId>();
+      innerMap.set(member, set);
+    }
+
+    if (Array.isArray(dependency)) {
+      for (const d of dependency) {
+        set.add(d);
+      }
+    } else {
+      set.add(dependency);
+    }
+  }
+
+  export type InstanceDeps = {
+    instanceDependsOn: Map<Semantic.InstanceId, Set<Semantic.InstanceId>>;
+    structMembersDependOn: Map<
+      Semantic.InstanceId,
+      Map<Semantic.SymbolId, Set<Semantic.InstanceId>>
+    >;
+    symbolDependsOn: Map<Semantic.SymbolId, Set<Semantic.InstanceId>>;
+  };
+
   export type ElaborationContext = {
     substitute: Map<Collect.SymbolId, Semantic.ExprId>;
     currentScope: Collect.ScopeId; // This is the scope in which we are elaborating and it changes (e.g. A<i32> when elaborating A<i32>.B)
     genericsScope: Collect.ScopeId; // This is the scope for generics which does not change (e.g. A<i32>.B<u8> => i32 and u8 are elaborated in the same scope)
     constraints: Constraint[];
+    instanceDeps: InstanceDeps;
 
     elaboratedVariables: Map<Collect.SymbolId, Semantic.SymbolId>;
   };
@@ -5611,6 +5871,11 @@ export namespace Semantic {
       constraints: args.constraints,
       currentScope: args.currentScope,
       genericsScope: args.genericsScope,
+      instanceDeps: {
+        instanceDependsOn: new Map(),
+        structMembersDependOn: new Map(),
+        symbolDependsOn: new Map(),
+      },
       elaboratedVariables: new Map(),
     };
   }
@@ -5621,6 +5886,7 @@ export namespace Semantic {
       currentScope: Collect.ScopeId;
       genericsScope: Collect.ScopeId;
       constraints: Constraint[];
+      instanceDeps: InstanceDeps;
     }
   ): ElaborationContext {
     return {
@@ -5628,6 +5894,7 @@ export namespace Semantic {
       constraints: [...args.constraints],
       currentScope: args.currentScope,
       genericsScope: args.genericsScope,
+      instanceDeps: args.instanceDeps,
 
       elaboratedVariables: new Map(parent.elaboratedVariables),
     };
@@ -5639,6 +5906,7 @@ export namespace Semantic {
     args: {
       currentScope: Collect.ScopeId;
       genericsScope: Collect.ScopeId;
+      instanceDeps: InstanceDeps;
     }
   ): ElaborationContext {
     return {
@@ -5646,8 +5914,13 @@ export namespace Semantic {
       constraints: [...a.constraints, ...b.constraints],
       currentScope: args.currentScope,
       genericsScope: args.genericsScope,
+      instanceDeps: args.instanceDeps,
       elaboratedVariables: new Map([...a.elaboratedVariables, ...b.elaboratedVariables]),
     };
+  }
+
+  export function makeInstanceId(sr: SemanticResult) {
+    return sr.nextInstanceId++ as Semantic.InstanceId;
   }
 
   export function SemanticallyAnalyze(
@@ -5662,6 +5935,8 @@ export namespace Semantic {
 
       e: undefined as any,
       b: undefined as any,
+
+      nextInstanceId: 1 as Semantic.InstanceId,
 
       elaboratedFunctionSignatures: new Map(),
       elaboratedFunctionSignaturesByName: new Map(),
