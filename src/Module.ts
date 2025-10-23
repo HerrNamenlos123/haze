@@ -163,41 +163,37 @@ export class CLIPrinter {
   }
 
   start() {
-    if (this.updateInterval) return;
-
-    this.modules.forEach((m) => {
-      if (m.bar) return;
-      // The total value doesn't matter much since we are manually controlling the output,
-      // but we set it up anyway.
-      const total = 0; // Dont understand what total is
-      m.bar = this.multibar.create(
-        total,
-        0,
-        {
-          module: m, // Attach the module state to the bar payload
-          spinnerIndex: 0,
-        },
-        {}
-      );
-    });
-
-    console.log("Starting");
-
-    this.loop();
-    this.updateInterval = setInterval(() => {
-      this.loop();
-    }, 50);
+    // if (this.updateInterval) return;
+    // this.modules.forEach((m) => {
+    //   if (m.bar) return;
+    //   // The total value doesn't matter much since we are manually controlling the output,
+    //   // but we set it up anyway.
+    //   const total = 0; // Dont understand what total is
+    //   m.bar = this.multibar.create(
+    //     total,
+    //     0,
+    //     {
+    //       module: m, // Attach the module state to the bar payload
+    //       spinnerIndex: 0,
+    //     },
+    //     {}
+    //   );
+    // });
+    // console.log("Starting");
+    // this.loop();
+    // this.updateInterval = setInterval(() => {
+    //   this.loop();
+    // }, 50);
   }
 
   stopAndFinishAll() {
-    if (this.updateInterval) {
-      clearInterval(this.updateInterval);
-      this.updateInterval = null;
-
-      // this.loop();
-      this.multibar.stop();
-      console.log("Stopping");
-    }
+    // if (this.updateInterval) {
+    //   clearInterval(this.updateInterval);
+    //   this.updateInterval = null;
+    //   // this.loop();
+    //   this.multibar.stop();
+    //   console.log("Stopping");
+    // }
   }
 }
 
