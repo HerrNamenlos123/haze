@@ -62,7 +62,7 @@ type Inference =
 
 export class SemanticElaborator {
   currentContext: Semantic.ElaborationContext;
-  expectedReturnType?: Semantic.TypeUseId;
+  inFunction?: Semantic.SymbolId;
   functionReturnsInstanceIds?: Set<Semantic.InstanceId>;
 
   constructor(public sr: SemanticResult, currentContext: Semantic.ElaborationContext) {
@@ -72,24 +72,36 @@ export class SemanticElaborator {
   withContext<T>(
     args: {
       context: Semantic.ElaborationContext;
-      expectedReturnType?: Semantic.TypeUseId;
+      inFunction?: Semantic.SymbolId;
       functionReturnsInstanceIds?: Set<Semantic.InstanceId>;
     },
     fn: () => T
   ): T {
     const oldContext = this.currentContext;
     this.currentContext = args.context;
-    const oldReturn = this.expectedReturnType;
-    this.expectedReturnType = args.expectedReturnType;
+    const oldReturn = this.inFunction;
+    this.inFunction = args.inFunction;
     const oldReturnIds = this.functionReturnsInstanceIds;
     this.functionReturnsInstanceIds = args.functionReturnsInstanceIds;
 
     const result = fn();
 
     this.functionReturnsInstanceIds = oldReturnIds;
-    this.expectedReturnType = oldReturn;
+    this.inFunction = oldReturn;
     this.currentContext = oldContext;
     return result;
+  }
+
+  getFunctionSymbolReturnType(id: Semantic.SymbolId) {
+    const sym = this.getSymbol(id);
+    assert(sym.variant === Semantic.ENode.FunctionSymbol);
+    const type = this.getTypeDef(sym.type);
+    assert(type.variant === Semantic.ENode.FunctionDatatype);
+    return type.returnType;
+  }
+
+  getSymbol(id: Semantic.SymbolId) {
+    return this.sr.symbolNodes.get(id);
   }
 
   getExpr(id: Semantic.ExprId) {
@@ -1394,7 +1406,7 @@ export class SemanticElaborator {
                 constraints: this.currentContext.constraints,
                 instanceDeps: this.currentContext.instanceDeps,
               }),
-              expectedReturnType: this.expectedReturnType,
+              inFunction: this.inFunction,
             },
             () => this.lookupAndElaborateDatatype(symbol.type!)
           );
@@ -1642,7 +1654,7 @@ export class SemanticElaborator {
     this.withContext(
       {
         context: newContext,
-        expectedReturnType: this.expectedReturnType,
+        inFunction: this.inFunction,
         functionReturnsInstanceIds: this.functionReturnsInstanceIds,
       },
       () => {
@@ -1658,8 +1670,9 @@ export class SemanticElaborator {
         }
 
         for (const sId of scope.statements) {
+          assert(this.inFunction);
           const statement = this.elaborateStatement(sId, {
-            gonnaInstantiateStructWithType: this.expectedReturnType,
+            gonnaInstantiateStructWithType: this.getFunctionSymbolReturnType(this.inFunction),
             unsafe: scope.unsafe,
           });
           blockScope.statements.push(statement);
@@ -1727,7 +1740,6 @@ export class SemanticElaborator {
     return this.withContext(
       {
         context: context,
-        expectedReturnType: functionSignature.returnType,
       },
       () => {
         return this.elaborateFunctionSymbol(
@@ -1898,6 +1910,7 @@ export class SemanticElaborator {
           parameters: parameters,
           returnType: expectedReturnType,
           vararg: func.vararg,
+          takesReturnArena: false,
           sourceloc: func.sourceloc,
         });
 
@@ -1983,7 +1996,7 @@ export class SemanticElaborator {
                 this.withContext(
                   {
                     context: newContext,
-                    expectedReturnType: expectedReturnType,
+                    inFunction: symbolId,
                   },
                   () => {
                     this.elaborateVariableSymbolInScope(sId);
@@ -1996,7 +2009,7 @@ export class SemanticElaborator {
             this.withContext(
               {
                 context: newContext,
-                expectedReturnType: expectedReturnType,
+                inFunction: symbolId,
                 functionReturnsInstanceIds: symbol.returnsInstanceIds,
               },
               () => {
@@ -2035,6 +2048,21 @@ export class SemanticElaborator {
               }
             }
           }
+
+          Semantic.getInstanceDepsGraph(
+            symbol.instanceDepsSnapshot,
+            symbol.returnsInstanceIds
+          ).forEach((d) => symbol.returnsInstanceIds.add(d));
+
+          if (symbol.returnsInstanceIds) {
+            symbol.type = makeRawFunctionDatatypeAvailable(this.sr, {
+              parameters: parameters,
+              returnType: expectedReturnType,
+              vararg: func.vararg,
+              takesReturnArena: true,
+              sourceloc: func.sourceloc,
+            });
+          }
         }
 
         return symbolId;
@@ -2056,6 +2084,7 @@ export class SemanticElaborator {
           returnType: this.lookupAndElaborateDatatype(type.returnType),
           vararg: type.vararg,
           mutability: type.mutability,
+          takesReturnArena: false,
           sourceloc: type.sourceloc,
         });
       }
@@ -2704,7 +2733,6 @@ export class SemanticElaborator {
       value: Collect.ExprId;
     }[],
     inline: boolean,
-    expectedReturnType: Semantic.TypeUseId | undefined,
     sourceloc: SourceLoc,
     inference: Inference
   ): [Semantic.Expression, Semantic.ExprId] {
@@ -2787,6 +2815,7 @@ export class SemanticElaborator {
     return this.sr.b.structLiteral(
       makeTypeUse(this.sr, structId, EDatatypeMutability.Const, inline, sourceloc)[1],
       assign,
+      this.inFunction,
       sourceloc
     );
   }
@@ -3011,7 +3040,7 @@ export class SemanticElaborator {
                 genericsScope: this.currentContext.genericsScope,
                 instanceDeps: this.currentContext.instanceDeps,
               }),
-              expectedReturnType: this.expectedReturnType,
+              inFunction: this.inFunction,
               functionReturnsInstanceIds: this.functionReturnsInstanceIds,
             },
             () => {
@@ -3107,18 +3136,19 @@ export class SemanticElaborator {
 
       case Collect.ENode.ReturnStatement: {
         if (s.expr) {
-          if (!this.expectedReturnType) {
+          if (!this.inFunction) {
             throw new CompilerError(
               `Cannot return in this context, it's not in a function context`,
               s.sourceloc
             );
           }
+          const returnType = this.getFunctionSymbolReturnType(this.inFunction);
           const eId = Conversion.MakeConversionOrThrow(
             this.sr,
             this.expr(s.expr, {
-              gonnaInstantiateStructWithType: this.expectedReturnType,
+              gonnaInstantiateStructWithType: returnType,
             })[1],
-            this.expectedReturnType,
+            returnType,
             this.currentContext.constraints,
             s.sourceloc,
             Conversion.Mode.Implicit,
@@ -3187,7 +3217,7 @@ export class SemanticElaborator {
                   symbolDependsOn: new Map(),
                 },
               }),
-              expectedReturnType: this.expectedReturnType,
+              inFunction: this.inFunction,
             },
             () => this.lookupAndElaborateDatatype(collectedVariableSymbol.type!)
           );
@@ -3635,7 +3665,6 @@ export class SemanticElaborator {
       structTypeUse.type,
       structInst.members,
       structTypeUse.inline,
-      this.expectedReturnType,
       structInst.sourceloc,
       inference
     );
@@ -4110,7 +4139,7 @@ export class SemanticElaborator {
           constraints: this.currentContext.constraints,
           instanceDeps: this.currentContext.instanceDeps,
         }),
-        expectedReturnType: this.expectedReturnType,
+        inFunction: this.inFunction,
         functionReturnsInstanceIds: this.functionReturnsInstanceIds,
       },
       () => {
@@ -4226,11 +4255,15 @@ export class SemanticBuilder {
         ftypeDef.variant === Semantic.ENode.CallableDatatype
     );
     let extern = false;
+    let requiresReturnArena = false;
     if (expr.variant === Semantic.ENode.SymbolValueExpr) {
       const symbol = this.sr.symbolNodes.get(expr.symbol);
       if (symbol.variant === Semantic.ENode.FunctionSymbol) {
         if (symbol.extern) {
           extern = true;
+        }
+        if (symbol.returnsInstanceIds.size > 0) {
+          requiresReturnArena = true;
         }
       }
     }
@@ -4251,8 +4284,7 @@ export class SemanticBuilder {
       arguments: callArguments,
       isTemporary: true,
       type: returnType,
-      takesParentArena: !extern,
-      takesReturnArena: !extern,
+      takesReturnArena: !extern && requiresReturnArena,
       sourceloc: sourceloc,
     });
   }
@@ -4617,6 +4649,7 @@ export class SemanticBuilder {
       name: string;
       value: Semantic.ExprId;
     }[],
+    inFunction: Semantic.SymbolId | undefined,
     sourceloc: SourceLoc
   ) {
     const structTypeUse = this.sr.typeUseNodes.get(structTypeId);
@@ -4628,6 +4661,7 @@ export class SemanticBuilder {
       instanceIds: [Semantic.makeInstanceId(this.sr)],
       assign: assign,
       type: structTypeId,
+      inFunction: inFunction,
       sourceloc: sourceloc,
       isTemporary: true,
     });
@@ -5207,6 +5241,7 @@ export namespace Semantic {
     parameters: TypeUseId[];
     returnType: TypeUseId;
     vararg: boolean;
+    takesReturnArena: boolean;
     concrete: boolean;
   };
 
@@ -5470,7 +5505,6 @@ export namespace Semantic {
     arguments: ExprId[];
     type: TypeUseId;
     isTemporary: boolean;
-    takesParentArena: boolean;
     takesReturnArena: boolean;
     sourceloc: SourceLoc;
   };
@@ -5483,6 +5517,7 @@ export namespace Semantic {
       value: ExprId;
     }[];
     type: TypeUseId;
+    inFunction?: SymbolId;
     isTemporary: boolean;
     sourceloc: SourceLoc;
   };

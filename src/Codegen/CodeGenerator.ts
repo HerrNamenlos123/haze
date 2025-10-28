@@ -59,10 +59,7 @@ class CodeGenerator {
       // );
       const ns = getModuleGlobalNamespaceName(config.name, config.version);
       this.out.function_definitions
-        .writeLine(
-          `_Hp5Arena parent_arena = &((_Hi5Arena) { .arenaImpl = hzsys_arena_create(HZSYS_DEFAULT_ARENA_CHUNK_SIZE) });`
-        )
-        .writeLine(`int __hz_result = _HN${ns.length}${ns}4mainEv(parent_arena, parent_arena);`)
+        .writeLine(`int __hz_result = _HN${ns.length}${ns}4mainEv();`)
         .writeLine(`hzsys_arena_cleanup_and_free(parent_arena->arenaImpl);`)
         .writeLine(`return __hz_result;`)
         .popIndent()

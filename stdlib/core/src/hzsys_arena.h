@@ -6,6 +6,20 @@
 
 #define HZSYS_DEFAULT_ARENA_CHUNK_SIZE 1024
 
+#define HZSYS_ALLOC_STRUCT(arena, struct_t, struct_ptr_t, value)                                                       \
+  ({                                                                                                                   \
+    struct_ptr_t tmp = hzsys_arena_allocate((arena)->arenaImpl, sizeof(struct_t), alignof(struct_t));                  \
+    *tmp = value;                                                                                                      \
+    tmp;                                                                                                               \
+  })
+
+#define HZSYS_MAKE_LOCAL_ARENA()                                                                                       \
+  &((_Hi5Arena) {                                                                                                      \
+      .arenaImpl = hzsys_arena_create(HZSYS_DEFAULT_ARENA_CHUNK_SIZE),                                                 \
+  })
+
+#define HZSYS_DESTROY_LOCAL_ARENA(arena) hzsys_arena_cleanup_and_free((arena)->arenaImpl)
+
 typedef struct hzsys_arena_chunk_t {
   struct hzsys_arena_chunk_t* next_chunk;
   size_t capacity;

@@ -601,7 +601,6 @@ function makeIntrinsicCall(
         type: functypeId,
       })[1],
     })[1],
-    takesParentArena: false,
     takesReturnArena: false,
     type: returnType,
   });
@@ -625,19 +624,6 @@ function lowerExpr(
       );
 
       const arenaArgs: Lowered.ExprId[] = [];
-      if (expr.takesParentArena) {
-        arenaArgs.push(
-          Lowered.addExpr(lr, {
-            variant: Lowered.ENode.SymbolValueExpr,
-            name: {
-              mangledName: "__hz_parent_arena",
-              prettyName: "__hz_parent_arena",
-              wasMangled: false,
-            },
-            type: makeLowerTypeUse(lr, makeVoidPointerType(lr), false)[1],
-          })[1]
-        );
-      }
       if (expr.takesReturnArena) {
         arenaArgs.push(
           Lowered.addExpr(lr, {
@@ -893,115 +879,109 @@ function lowerExpr(
           })),
         });
 
+        let returns = false;
+        if (expr.inFunction) {
+          const funcsym = lr.sr.symbolNodes.get(expr.inFunction);
+          assert(funcsym.variant === Semantic.ENode.FunctionSymbol);
+          if (expr.instanceIds.some((id) => funcsym.returnsInstanceIds.has(id))) {
+            returns = true;
+          }
+        }
+
+        const name = returns ? "__hz_return_arena" : "__hz_local_arena";
         const [arena, arenaId] = Lowered.addExpr(lr, {
           variant: Lowered.ENode.SymbolValueExpr,
           name: {
-            mangledName: "__hz_local_arena",
-            prettyName: "__hz_local_arena",
+            mangledName: name,
+            prettyName: name,
             wasMangled: false,
           },
           type: makeLowerTypeUse(lr, makeVoidPointerType(lr), false)[1],
         });
 
-        const sizeof = Lowered.addExpr(lr, {
-          variant: Lowered.ENode.SizeofExpr,
-          value: Lowered.addExpr(lr, {
-            variant: Lowered.ENode.DatatypeAsValueExpr,
-            type: makeLowerTypeUse(lr, structTypeUse.type, false)[1],
-          })[1],
-          type: lowerTypeUse(
-            lr,
-            makePrimitiveAvailable(
-              lr.sr,
-              EPrimitive.usize,
-              EDatatypeMutability.Default,
-              expr.sourceloc
-            )
-          ),
-        });
+        const structTypeExprId = Lowered.addExpr(lr, {
+          variant: Lowered.ENode.DatatypeAsValueExpr,
+          type: makeLowerTypeUse(lr, structTypeUse.type, false)[1],
+        })[1];
 
-        const alignof = Lowered.addExpr(lr, {
-          variant: Lowered.ENode.AlignofExpr,
-          value: Lowered.addExpr(lr, {
-            variant: Lowered.ENode.DatatypeAsValueExpr,
-            type: makeLowerTypeUse(lr, structTypeUse.type, false)[1],
-          })[1],
-          type: lowerTypeUse(
-            lr,
-            makePrimitiveAvailable(
-              lr.sr,
-              EPrimitive.usize,
-              EDatatypeMutability.Default,
-              expr.sourceloc
-            )
-          ),
-        });
-
-        const [result, resultId] = Lowered.addExpr(lr, {
-          variant: Lowered.ENode.ExplicitCastExpr,
-          expr: makeIntrinsicCall(
-            lr,
-            "hzsys_arena_allocate",
-            [
-              Lowered.addExpr(lr, {
-                variant: Lowered.ENode.MemberAccessExpr,
-                memberName: "arenaImpl",
-                expr: arenaId,
-                requiresDeref: true,
-                type: lowerTypeUse(
-                  lr,
-                  makeTypeUse(
-                    lr.sr,
-                    lr.sr.e.arenaTypeDef(),
-                    EDatatypeMutability.Default,
-                    false,
-                    null
-                  )[1]
-                ),
-              })[1],
-              sizeof[1],
-              alignof[1],
-            ],
-            makeLowerTypeUse(lr, makeVoidPointerType(lr), true)[1]
-          )[1],
+        const structPtrTypeExprId = Lowered.addExpr(lr, {
+          variant: Lowered.ENode.DatatypeAsValueExpr,
           type: structType,
-        });
+        })[1];
 
-        const statements: Lowered.StatementId[] = [];
-        const [structVar, structVarId] = storeInTempVarAndGet(
+        const [result, resultId] = makeIntrinsicCall(
           lr,
-          structType,
-          resultId,
-          expr.sourceloc,
-          statements
+          "HZSYS_ALLOC_STRUCT",
+          [arenaId, structTypeExprId, structPtrTypeExprId, structExprId],
+          structType
         );
 
-        statements.push(
-          Lowered.addStatement(lr, {
-            variant: Lowered.ENode.ExprStatement,
-            expr: Lowered.addExpr(lr, {
-              variant: Lowered.ENode.ExprAssignmentExpr,
-              target: structVarId,
-              type: structType,
-              assignRefTarget: true,
-              value: structExprId,
-            })[1],
-            sourceloc: expr.sourceloc,
-          })[1]
-        );
+        // const [result, resultId] = Lowered.addExpr(lr, {
+        //   variant: Lowered.ENode.ExplicitCastExpr,
+        //   expr: makeIntrinsicCall(
+        //     lr,
+        //     "hzsys_arena_allocate",
+        //     [
+        //       Lowered.addExpr(lr, {
+        //         variant: Lowered.ENode.MemberAccessExpr,
+        //         memberName: "arenaImpl",
+        //         expr: arenaId,
+        //         requiresDeref: true,
+        //         type: lowerTypeUse(
+        //           lr,
+        //           makeTypeUse(
+        //             lr.sr,
+        //             lr.sr.e.arenaTypeDef(),
+        //             EDatatypeMutability.Default,
+        //             false,
+        //             null
+        //           )[1]
+        //         ),
+        //       })[1],
+        //       sizeof[1],
+        //       alignof[1],
+        //     ],
+        //     makeLowerTypeUse(lr, makeVoidPointerType(lr), true)[1]
+        //   )[1],
+        //   type: structType,
+        // });
 
-        const [blockScope, blockScopeId] = Lowered.addBlockScope<Lowered.BlockScope>(lr, {
-          statements: statements,
-          definesVariables: true,
-          emittedExpr: structVarId,
-        });
+        // const statements: Lowered.StatementId[] = [];
+        // const [structVar, structVarId] = storeInTempVarAndGet(
+        //   lr,
+        //   structType,
+        //   resultId,
+        //   expr.sourceloc,
+        //   statements
+        // );
 
-        return Lowered.addExpr(lr, {
-          variant: Lowered.ENode.BlockScopeExpr,
-          block: blockScopeId,
-          sourceloc: expr.sourceloc,
-          type: structType,
-        });
+        // statements.push(
+        //   Lowered.addStatement(lr, {
+        //     variant: Lowered.ENode.ExprStatement,
+        //     expr: Lowered.addExpr(lr, {
+        //       variant: Lowered.ENode.ExprAssignmentExpr,
+        //       target: structVarId,
+        //       type: structType,
+        //       assignRefTarget: true,
+        //       value: structExprId,
+        //     })[1],
+        //     sourceloc: expr.sourceloc,
+        //   })[1]
+        // );
+
+        // const [blockScope, blockScopeId] = Lowered.addBlockScope<Lowered.BlockScope>(lr, {
+        //   statements: statements,
+        //   definesVariables: true,
+        //   emittedExpr: structVarId,
+        // });
+
+        return [result, resultId];
+        // return Lowered.addExpr(lr, {
+        //   variant: Lowered.ENode.BlockScopeExpr,
+        //   block: blockScopeId,
+        //   sourceloc: expr.sourceloc,
+        //   type: structType,
+        // });
       } else {
         return Lowered.addExpr(lr, {
           variant: Lowered.ENode.StructInstantiationExpr,
@@ -1695,21 +1675,6 @@ function lowerBlockScope(
       variant: Lowered.ENode.ExprCallExpr,
       arguments: [
         Lowered.addExpr(lr, {
-          variant: Lowered.ENode.MemberAccessExpr,
-          memberName: "arenaImpl",
-          expr: Lowered.addExpr(lr, {
-            variant: Lowered.ENode.SymbolValueExpr,
-            name: {
-              mangledName: "__hz_parent_arena",
-              prettyName: "__hz_parent_arena",
-              wasMangled: false,
-            },
-            type: loweredArenaType,
-          })[1],
-          requiresDeref: true,
-          type: loweredArenaType,
-        })[1],
-        Lowered.addExpr(lr, {
           variant: Lowered.ENode.SymbolValueExpr,
           name: {
             mangledName: "HZSYS_DEFAULT_ARENA_CHUNK_SIZE",
@@ -1740,30 +1705,14 @@ function lowerBlockScope(
           false
         )[1],
       })[1],
-      takesParentArena: true,
       takesReturnArena: true,
       type: loweredArenaType,
     });
 
-    const [arena, arenaId] = Lowered.addExpr(lr, {
-      variant: Lowered.ENode.AddressOfExpr,
-      expr: Lowered.addExpr(lr, {
-        variant: Lowered.ENode.StructInstantiationExpr,
-        type: loweredArenaInlineType,
-        memberAssigns: [
-          {
-            name: "arenaImpl",
-            value: arenaImplId,
-          },
-        ],
-      })[1],
-      type: loweredArenaType,
-    });
-
-    const [variable, variableId] = storeInTempVarAndGet(
+    storeInTempVarAndGet(
       lr,
       loweredArenaType,
-      arenaId,
+      makeIntrinsicCall(lr, "HZSYS_MAKE_LOCAL_ARENA", [], loweredArenaType)[1],
       null,
       statements,
       "__hz_local_arena"
@@ -1785,7 +1734,17 @@ function lowerBlockScope(
       const innerStatement = lr.statementNodes.get(statementId);
 
       if (innerStatement.variant === Lowered.ENode.ReturnStatement && !returnedExpr) {
-        returnedExpr = innerStatement.expr;
+        if (innerStatement.expr) {
+          returnedExpr = storeInTempVarAndGet(
+            lr,
+            lr.exprNodes.get(innerStatement.expr).type,
+            innerStatement.expr,
+            innerStatement.sourceloc,
+            statements
+          )[1];
+        } else {
+          returnedExpr = null;
+        }
         continue;
       }
 
@@ -1817,36 +1776,15 @@ function lowerBlockScope(
   if (createLocalArena) {
     const [destroy, destroyId] = makeIntrinsicCall(
       lr,
-      "hzsys_detach_and_destroy_subarena",
+      "HZSYS_DESTROY_LOCAL_ARENA",
       [
         Lowered.addExpr(lr, {
-          variant: Lowered.ENode.MemberAccessExpr,
-          memberName: "arenaImpl",
-          expr: Lowered.addExpr(lr, {
-            variant: Lowered.ENode.SymbolValueExpr,
-            name: {
-              mangledName: "__hz_parent_arena",
-              prettyName: "__hz_parent_arena",
-              wasMangled: false,
-            },
-            type: loweredArenaType,
-          })[1],
-          requiresDeref: true,
-          type: loweredArenaType,
-        })[1],
-        Lowered.addExpr(lr, {
-          variant: Lowered.ENode.MemberAccessExpr,
-          memberName: "arenaImpl",
-          expr: Lowered.addExpr(lr, {
-            variant: Lowered.ENode.SymbolValueExpr,
-            name: {
-              mangledName: "__hz_local_arena",
-              prettyName: "__hz_local_arena",
-              wasMangled: false,
-            },
-            type: loweredArenaType,
-          })[1],
-          requiresDeref: true,
+          variant: Lowered.ENode.SymbolValueExpr,
+          name: {
+            mangledName: "__hz_local_arena",
+            prettyName: "__hz_local_arena",
+            wasMangled: false,
+          },
           type: loweredArenaType,
         })[1],
       ],
@@ -1961,10 +1899,10 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
 
       if (symbol.extern !== EExternLanguage.Extern_C) {
         const arenaType = lr.sr.e.arenaTypeUse(false, null)[1];
-        parameterNames.unshift("__hz_return_arena");
-        newParameters.unshift(arenaType);
-        parameterNames.unshift("__hz_parent_arena");
-        newParameters.unshift(arenaType);
+        if (symbol.returnsInstanceIds.size > 0) {
+          parameterNames.unshift("__hz_return_arena");
+          newParameters.unshift(arenaType);
+        }
       }
 
       const newFuncType = makeRawFunctionDatatypeAvailable(lr.sr, {
@@ -1980,11 +1918,7 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
       // Escape analysis
       if (symbol.name === "fooz") {
         console.log(symbol.name);
-        const instances = Semantic.getInstanceDepsGraph(
-          symbol.instanceDepsSnapshot,
-          symbol.returnsInstanceIds
-        );
-        console.log("Instances", instances);
+        console.log("Instances", symbol.returnsInstanceIds);
       }
 
       // Normal function

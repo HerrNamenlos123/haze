@@ -28,6 +28,7 @@ export function makeRawFunctionDatatypeAvailable(
     parameters: Semantic.TypeUseId[];
     returnType: Semantic.TypeUseId;
     vararg: boolean;
+    takesReturnArena: boolean;
     sourceloc: SourceLoc;
   }
 ): Semantic.TypeDefId {
@@ -60,6 +61,7 @@ export function makeRawFunctionDatatypeAvailable(
     parameters: args.parameters,
     returnType: args.returnType,
     vararg: args.vararg,
+    takesReturnArena: args.takesReturnArena,
     concrete:
       args.parameters.every((p) => isTypeConcrete(sr, p)) && isTypeConcrete(sr, args.returnType),
   });
@@ -74,6 +76,7 @@ export function makeFunctionDatatypeAvailable(
     returnType: Semantic.TypeUseId;
     vararg: boolean;
     mutability: EDatatypeMutability;
+    takesReturnArena: boolean;
     sourceloc: SourceLoc;
   }
 ): Semantic.TypeUseId {

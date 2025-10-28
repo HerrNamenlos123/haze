@@ -25,19 +25,23 @@ import gl
 // }
 
 struct Bar {};
+struct Baz {};
 
 struct Foo {
     bar: Bar;
+    baz: Baz;
 }
 
 fooz(): Bar {
-    const foo = Foo { bar: Bar {} }
-    foo.bar = Bar {}
-    return foo.bar
+    const foo = Foo { bar: Bar {}, baz: {} };
+    foo.bar = Bar {};
+    // __c__("a");
+    return foo.bar;
 }
 
 main(): int {
 
+    println("TODO for next time: Refactor type system: Need some way to have partial, non-canonical types for functions, that mutate as we go along, and when function is done, can be replaced with a canonical version. But everything that depends on it, must change too. So need some sort of non-canonical type indirection. Absolutely need a way to do this for allocation inference, and then return type inference works automatically too. When done, function types need full support for requires block, allocation and lifetime constraints etc, and then that info in the function type can be used to actually call the function in lowering.");
     println("TODO: Look at fooz(). Escape analysis works, now test it a bit and then implement the arena selection based on the escape analysis, and to track which functions even need arenas, etc.");
 
     // let array: mut []u8 = [];
