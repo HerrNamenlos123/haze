@@ -32,6 +32,51 @@ struct Foo {
     baz: Baz;
 }
 
+struct Node {
+    name: str;
+    left: Node | none;
+    right: Node | none;
+}
+
+makeNode(name: str) {
+    return Node { name: name };
+}
+
+buildTree(tree: mut Node) {
+    tree.left = makeNode("Left");
+    tree.right = makeNode("Right");
+}
+
+printTree(tree: Node, indent = 0): void {
+    fmt.println(f"Node: {tree.name}");
+    fmt.println(f"  left: ");
+    printTree(tree.left, indent + 4);
+    fmt.println(f"  right: ");
+    printTree(tree.right, indent + 4);
+}
+
+tree() {
+    let tree = makeNode("Root");
+    buildTree(tree);
+    printTree(tree);
+}
+
+makeNodeRaw(arena: Arena, name: str) :: noalloc {
+    return Node { name: name } in arena;
+}
+
+bar() {
+    let makeNodeFunc: () => Node | none = makeNode;
+
+    const node = makeNodeFunc("Test");
+
+    let ar = fn.localArena;
+    const other = makeNodeFunc("Other") in ar;
+
+    let makeNodeRawFunc: () => Node | none :: noalloc = makeNodeRaw;
+    const other2 = makeNodeRawFunc(fn.returnArena, "other2");
+}
+
 fooz(): Bar {
     const foo = Foo { bar: Bar {}, baz: {} };
     foo.bar = Bar {};
