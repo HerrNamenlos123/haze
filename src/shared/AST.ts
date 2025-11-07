@@ -154,6 +154,11 @@ export type ASTDeferredType = {
   variant: "Deferred";
 };
 
+export type ASTFunctionRequiresBlock = {
+  noalloc: boolean;
+  final: boolean;
+};
+
 export type ASTFunctionDefinition = {
   variant: "FunctionDefinition";
   export: boolean;
@@ -167,6 +172,7 @@ export type ASTFunctionDefinition = {
     name: string;
     sourceloc: SourceLoc;
   }[];
+  requires: ASTFunctionRequiresBlock;
   name: string;
   noemit: boolean;
   static: boolean;
@@ -207,6 +213,7 @@ export type ASTFunctionDatatype = {
   params: ASTParam[];
   ellipsis: boolean;
   returnType: ASTTypeUse;
+  requires: ASTFunctionRequiresBlock;
   mutability: EDatatypeMutability;
   sourceloc: SourceLoc;
 };
@@ -388,6 +395,7 @@ export type ASTExprCallExpr = {
   variant: "ExprCallExpr";
   calledExpr: ASTExpr;
   arguments: ASTExpr[];
+  inArena: ASTExpr | null;
   sourceloc: SourceLoc;
 };
 
@@ -403,6 +411,7 @@ export type ASTStructInstantiationExpr = {
   variant: "StructInstantiationExpr";
   datatype: ASTTypeUse | null;
   members: { name: string; value: ASTExpr }[];
+  inArena: ASTExpr | null;
   sourceloc: SourceLoc;
 };
 

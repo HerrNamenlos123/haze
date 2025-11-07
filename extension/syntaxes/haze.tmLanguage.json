@@ -27,7 +27,7 @@
         },
         {
           "name": "keyword.struct",
-          "match": "\\b(struct|clonable|nonclonable)\\b"
+          "match": "\\b(struct|clonable|nonclonable|in|noalloc)\\b"
         },
         {
           "match": "\\b(is|not)\\b",

@@ -18,13 +18,44 @@ const DEFAULT_CHUNK_SIZE = 1024;
 export struct Arena {
     arenaImpl: hzsys_arena_t;
 
-    constructor(): Arena {
+    constructor() {
         return Arena {
             arenaImpl: hzsys_arena_create(DEFAULT_CHUNK_SIZE),
         };
     }
+    
+    struct F {
+        bar: real;
+    }
 
-    alloc<T>(value: T): T {
+    a() {
+        return F { bar: 0.0 };
+    }
+
+    b() {
+        return F { bar: 0.0 };
+    }
+
+    foob() {
+        const aa = this.a();
+        const bb = this.b();
+        return bb;
+    }
+
+    fooc() {
+        const cc = this.foob();
+    }
+
+    food() {
+        this.fooc();
+    }
+
+    fooe(arena: Arena) {
+        const aa = this.a() in arena;
+        const f = F { bar: 0.0 } in arena;
+    }
+
+    alloc<T>(value: T) {
         do unsafe {
             const ptr = hzsys_arena_allocate<T>(this.arenaImpl, sizeof(T), alignof(T));
             ptr := value;

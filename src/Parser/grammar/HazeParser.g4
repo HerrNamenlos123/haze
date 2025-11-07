@@ -129,8 +129,9 @@ genericLiteral
     ;
 
 structContent
-    : variableMutabilitySpecifier? ID COLON datatype (EQUALS expr)? SEMI?                                    #StructMember
-    | static=STATIC? ID (LANGLE ID (COMMA ID)* RANGLE)? LB params RB (COLON datatype)? (funcbody | SEMI?)    #StructMethod
+    : sourceLocationPrefixRule LCURLY structContent* RCURLY                                                 #StructContentWithSourceloc
+    | variableMutabilitySpecifier? ID COLON datatype (EQUALS expr)? SEMI?                                    #StructMember
+    | static=STATIC? ID (LANGLE ID (COMMA ID)* RANGLE)? LB params RB (COLON datatype)? requiresBlock? (funcbody | SEMI?)    #StructMethod
     | structDefinition                                                                                      #NestedStructDefinition
     ;
 
@@ -148,8 +149,14 @@ sliceIndex
     : expr? COLON expr?
     ;
 
+requiresPart
+    : expr              #RequiresExpr
+    | NOALLOC           #RequiresNoalloc
+    | FINAL             #RequiresFinal
+    ;
+
 requiresBlock
-    : 'requires' expr (COMMA expr)*
+    : DOUBLECOLON requiresPart (COMMA requiresPart)*
     ;
 
 expr
@@ -160,11 +167,11 @@ expr
     | lambda                                                                        #LambdaExpr
     | literal                                                                       #LiteralExpr
     | LBRACKET expr? (COMMA expr)* COMMA? RBRACKET                                  #ArrayLiteral
-    | datatype? LCURLY (ID COLON expr)? (COMMA (ID COLON expr))* COMMA? RCURLY      #StructInstantiationExpr
+    | datatype? LCURLY (ID COLON valueExpr+=expr)? (COMMA (ID COLON valueExpr+=expr))* COMMA? RCURLY (IN arenaExpr=expr)?      #StructInstantiationExpr
 
     // Part 1: Left to right
     | expr op=(PLUSPLUS | MINUSMINUS)                                               #PostIncrExpr
-    | expr LB (expr (COMMA expr)*)? RB                                              #ExprCallExpr
+    | callExpr=expr LB (argExpr+=expr (COMMA argExpr+=expr)*)? RB (IN arenaExpr=expr)?                         #ExprCallExpr
     | value=expr LBRACKET (index+=expr) (COMMA index+=expr)* COMMA? RBRACKET        #ArraySubscriptExpr
     | value=expr LBRACKET (index+=sliceIndex) (COMMA index+=sliceIndex)* COMMA? RBRACKET        #ArraySliceExpr
     | expr DOT ID (LANGLE genericLiteral (COMMA genericLiteral)* RANGLE)?           #ExprMemberAccess

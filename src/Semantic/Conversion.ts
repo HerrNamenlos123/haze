@@ -257,11 +257,12 @@ export namespace Conversion {
 
       case Semantic.ENode.FunctionDatatype: {
         assert(bt.variant === Semantic.ENode.FunctionDatatype);
-        const a = sr.typeUseNodes.get(at.returnType);
-        const b = sr.typeUseNodes.get(bt.returnType);
+        const aa = sr.typeUseNodes.get(at.returnType);
+        const bb = sr.typeUseNodes.get(bt.returnType);
         return (
           at.vararg === bt.vararg &&
-          IsStructurallyEquivalent(sr, a.type, b.type, seen) &&
+          IsStructurallyEquivalent(sr, aa.type, bb.type, seen) &&
+          at.parameters.length === bt.parameters.length &&
           at.parameters.every((p, index) =>
             IsStructurallyEquivalent(
               sr,

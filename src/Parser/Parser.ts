@@ -6,7 +6,7 @@ import {
   SyntaxError,
   type SourceLoc,
 } from "../shared/Errors";
-import { writeFile, readFile } from "fs/promises";
+import { readFile } from "fs/promises";
 import {
   EAssignmentOperation,
   EBinaryOperation,
@@ -63,6 +63,7 @@ import {
   EDatatypeMutability,
   EVariableMutability,
   type ASTUnionDatatype,
+  type ASTFunctionRequiresBlock,
 } from "../shared/AST";
 import {
   BinaryExprContext,
@@ -132,6 +133,10 @@ import {
   DynamicArrayDatatypeContext,
   StackArrayDatatypeContext,
   UnionDatatypeContext,
+  RequiresBlockContext,
+  RequiresFinalContext,
+  RequiresNoallocContext,
+  StructContentWithSourcelocContext,
 } from "./grammar/autogen/HazeParser";
 import {
   BaseErrorListener,
@@ -366,6 +371,19 @@ class ASTTransformer extends HazeParserVisitor<any> {
     const stopIdx = ctx.stop?.stop ?? ctx.start.start;
     const originalText = ctx.start.inputStream.getTextFromRange(startIdx, stopIdx);
     return originalText;
+  }
+
+  requires(
+    ctx: FunctionDefinitionContext | StructMethodContext | FunctionDatatypeContext
+  ): ASTFunctionRequiresBlock {
+    if (ctx.requiresBlock()) {
+      return this.visit(ctx.requiresBlock()!);
+    } else {
+      return {
+        final: false,
+        noalloc: false,
+      };
+    }
   }
 
   visitProg = (ctx: ProgContext): ASTRoot => {
@@ -625,6 +643,22 @@ class ASTTransformer extends HazeParserVisitor<any> {
     };
   };
 
+  visitRequiresBlock = (ctx: RequiresBlockContext): ASTFunctionRequiresBlock => {
+    const block: ASTFunctionRequiresBlock = {
+      final: false,
+      noalloc: false,
+    };
+    for (const part of ctx.requiresPart()) {
+      if (part instanceof RequiresFinalContext) {
+        block.final = true;
+      }
+      if (part instanceof RequiresNoallocContext) {
+        block.noalloc = true;
+      }
+    }
+    return block;
+  };
+
   visitFunctionDefinition = (ctx: FunctionDefinitionContext): ASTFunctionDefinition => {
     const names = ctx.ID().map((c) => c.getText());
     const params = this.visitParams(ctx.params());
@@ -644,6 +678,7 @@ class ASTTransformer extends HazeParserVisitor<any> {
         name: p,
         sourceloc: this.loc(ctx), // TODO: Find a better sourceloc from the actual token, not the function
       })),
+      requires: this.requires(ctx),
       static: false,
       methodType: EMethodType.None,
       name: names[0],
@@ -685,20 +720,22 @@ class ASTTransformer extends HazeParserVisitor<any> {
     };
   };
 
-  visitStructMember = (ctx: StructMemberContext): ASTStructMemberDefinition => {
-    return {
-      variant: "StructMember",
-      name: ctx.ID().getText(),
-      type: this.visit(ctx.datatype()),
-      mutability: ctx.variableMutabilitySpecifier()
-        ? this.mutability(ctx)
-        : EVariableMutability.Default,
-      defaultValue: ctx.expr() ? this.visit(ctx.expr()!) : null,
-      sourceloc: this.loc(ctx),
-    };
+  visitStructMember = (ctx: StructMemberContext): ASTStructMemberDefinition[] => {
+    return [
+      {
+        variant: "StructMember",
+        name: ctx.ID().getText(),
+        type: this.visit(ctx.datatype()),
+        mutability: ctx.variableMutabilitySpecifier()
+          ? this.mutability(ctx)
+          : EVariableMutability.Default,
+        defaultValue: ctx.expr() ? this.visit(ctx.expr()!) : null,
+        sourceloc: this.loc(ctx),
+      },
+    ];
   };
 
-  visitStructMethod = (ctx: StructMethodContext): ASTFunctionDefinition => {
+  visitStructMethod = (ctx: StructMethodContext): ASTFunctionDefinition[] => {
     const names = ctx.ID().map((c) => c.getText());
     const params = this.visitParams(ctx.params());
 
@@ -708,31 +745,34 @@ class ASTTransformer extends HazeParserVisitor<any> {
       methodType = EMethodType.Constructor;
     }
 
-    return {
-      variant: "FunctionDefinition",
-      params: params.params,
-      export: false,
-      externLanguage: EExternLanguage.None,
-      noemit: false,
-      pub: false,
-      methodType: methodType,
-      name: names[0],
-      static: Boolean(ctx._static_),
-      generics: names.slice(1).map((n) => ({
-        name: n,
-        sourceloc: this.loc(ctx), // TODO: Find a better sourceloc from the actual token, not the function
-      })),
-      ellipsis: params.ellipsis,
-      operatorOverloading: undefined,
-      returnType: (ctx.datatype() && this.visit(ctx.datatype()!)) || undefined,
-      funcbody: (ctx.funcbody() && this.visit(ctx.funcbody()!)) || undefined,
-      sourceloc: this.loc(ctx),
-      originalSourcecode: this.getSource(ctx),
-    };
+    return [
+      {
+        variant: "FunctionDefinition",
+        params: params.params,
+        export: false,
+        externLanguage: EExternLanguage.None,
+        noemit: false,
+        pub: false,
+        methodType: methodType,
+        name: names[0],
+        static: Boolean(ctx._static_),
+        generics: names.slice(1).map((n) => ({
+          name: n,
+          sourceloc: this.loc(ctx), // TODO: Find a better sourceloc from the actual token, not the function
+        })),
+        requires: this.requires(ctx),
+        ellipsis: params.ellipsis,
+        operatorOverloading: undefined,
+        returnType: (ctx.datatype() && this.visit(ctx.datatype()!)) || undefined,
+        funcbody: (ctx.funcbody() && this.visit(ctx.funcbody()!)) || undefined,
+        sourceloc: this.loc(ctx),
+        originalSourcecode: this.getSource(ctx),
+      },
+    ];
   };
 
-  visitNestedStructDefinition = (ctx: NestedStructDefinitionContext): ASTStructDefinition => {
-    return this.visit(ctx.structDefinition());
+  visitNestedStructDefinition = (ctx: NestedStructDefinitionContext): ASTStructDefinition[] => {
+    return [this.visit(ctx.structDefinition())];
   };
 
   visitStructDefinition = (ctx: StructDefinitionContext): ASTStructDefinition => {
@@ -746,8 +786,10 @@ class ASTTransformer extends HazeParserVisitor<any> {
     const methods: ASTFunctionDefinition[] = [];
     const declarations: ASTStructDefinition[] = [];
 
-    for (const c of content) {
-      if (c.variant === "StructMember") {
+    const processContent = (c: any) => {
+      if (Array.isArray(c)) {
+        c.forEach((cc) => processContent(cc));
+      } else if (c.variant === "StructMember") {
         members.push(c);
       } else if (c.variant === "FunctionDefinition") {
         methods.push(c);
@@ -756,6 +798,10 @@ class ASTTransformer extends HazeParserVisitor<any> {
       } else {
         throw new InternalError("Struct content was neither member nor method");
       }
+    };
+
+    for (const c of content) {
+      processContent(c);
     }
 
     return {
@@ -959,11 +1005,13 @@ class ASTTransformer extends HazeParserVisitor<any> {
   };
 
   visitExprCallExpr = (ctx: ExprCallExprContext): ASTExprCallExpr => {
-    const exprs = ctx.expr().map((e) => this.visit(e));
+    const exprs = ctx._argExpr.map((e) => this.visit(e));
+    assert(ctx._callExpr);
     return {
       variant: "ExprCallExpr",
-      calledExpr: exprs[0],
-      arguments: exprs.slice(1),
+      calledExpr: this.visit(ctx._callExpr),
+      arguments: exprs,
+      inArena: ctx._arenaExpr ? this.visit(ctx._arenaExpr) : null,
       sourceloc: this.loc(ctx),
     };
   };
@@ -994,20 +1042,21 @@ class ASTTransformer extends HazeParserVisitor<any> {
   visitStructInstantiationExpr = (
     ctx: StructInstantiationExprContext
   ): ASTStructInstantiationExpr => {
-    if (ctx.ID().length !== ctx.expr().length) {
+    if (ctx.ID().length !== ctx._valueExpr.length) {
       throw new InternalError("Inconsistent size");
     }
     const members: { name: string; value: ASTExpr }[] = [];
     for (let i = 0; i < ctx.ID().length; i++) {
       members.push({
         name: ctx.ID()[i].getText(),
-        value: this.visit(ctx.expr()[i]),
+        value: this.visit(ctx._valueExpr[i]),
       });
     }
     return {
       variant: "StructInstantiationExpr",
       datatype: ctx.datatype() ? this.visit(ctx.datatype()!) : null,
       members: members,
+      inArena: ctx._arenaExpr ? this.visit(ctx._arenaExpr) : null,
       sourceloc: this.loc(ctx),
     };
   };
@@ -1128,6 +1177,7 @@ class ASTTransformer extends HazeParserVisitor<any> {
       params: params.params,
       ellipsis: params.ellipsis,
       returnType: (ctx.datatype() && this.visit(ctx.datatype()!)) || undefined,
+      requires: this.requires(ctx),
       mutability: EDatatypeMutability.Default,
       sourceloc: this.loc(ctx),
     };
@@ -1371,5 +1421,15 @@ class ASTTransformer extends HazeParserVisitor<any> {
     this.sourcelocOverride.pop();
 
     return decls;
+  };
+
+  visitStructContentWithSourceloc = (ctx: StructContentWithSourcelocContext) => {
+    const sourceloc = this.visitSourceLocationPrefixRule(ctx.sourceLocationPrefixRule());
+
+    this.sourcelocOverride.push(sourceloc);
+    const content = ctx.structContent().map((c) => this.visit(c));
+    this.sourcelocOverride.pop();
+
+    return content;
   };
 }

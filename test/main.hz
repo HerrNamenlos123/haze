@@ -39,41 +39,47 @@ struct Node {
 }
 
 makeNode(name: str) {
-    return Node { name: name };
+    return Node { name: name, left: none, right: none };
 }
 
-buildTree(tree: mut Node) {
-    tree.left = makeNode("Left");
-    tree.right = makeNode("Right");
+buildTree(arena: Arena, tree: mut Node) {
+    tree.left = makeNode("Left") in arena;
+    tree.right = makeNode("Right") in arena;
 }
 
-printTree(tree: Node, indent = 0): void {
-    fmt.println(f"Node: {tree.name}");
-    fmt.println(f"  left: ");
-    printTree(tree.left, indent + 4);
-    fmt.println(f"  right: ");
-    printTree(tree.right, indent + 4);
+printTree(tree: Node, indent: int): void :: final, noalloc {
+    fmt.println("Node: {tree.name}");
+    fmt.println("  left: ");
+    const left = tree.left;
+    const right = tree.right;
+    if left {
+        printTree(left, indent + 4);
+    }
+    fmt.println("  right: ");
+    if right {
+        printTree(right, indent + 4);
+    }
 }
 
 tree() {
     let tree = makeNode("Root");
-    buildTree(tree);
-    printTree(tree);
+    buildTree(fn.localArena, tree);
+    printTree(tree, 0);
 }
 
-makeNodeRaw(arena: Arena, name: str) :: noalloc {
-    return Node { name: name } in arena;
+makeNodeRaw(arena: Arena, name: str) {
+    return Node { name: name, left: none, right: none } in arena;
 }
 
 bar() {
-    let makeNodeFunc: () => Node | none = makeNode;
+    let makeNodeFunc: (name: str) => Node = makeNode;
 
     const node = makeNodeFunc("Test");
 
     let ar = fn.localArena;
     const other = makeNodeFunc("Other") in ar;
 
-    let makeNodeRawFunc: () => Node | none :: noalloc = makeNodeRaw;
+    let makeNodeRawFunc: (arena: Arena, name: str) => Node :: noalloc = makeNodeRaw;
     const other2 = makeNodeRawFunc(fn.returnArena, "other2");
 }
 
@@ -86,8 +92,8 @@ fooz(): Bar {
 
 main(): int {
 
-    println("TODO for next time: Refactor type system: Need some way to have partial, non-canonical types for functions, that mutate as we go along, and when function is done, can be replaced with a canonical version. But everything that depends on it, must change too. So need some sort of non-canonical type indirection. Absolutely need a way to do this for allocation inference, and then return type inference works automatically too. When done, function types need full support for requires block, allocation and lifetime constraints etc, and then that info in the function type can be used to actually call the function in lowering.");
-    println("TODO: Look at fooz(). Escape analysis works, now test it a bit and then implement the arena selection based on the escape analysis, and to track which functions even need arenas, etc.");
+    fmt.println("TODO for next time: Refactor type system: Need some way to have partial, non-canonical types for functions, that mutate as we go along, and when function is done, can be replaced with a canonical version. But everything that depends on it, must change too. So need some sort of non-canonical type indirection. Absolutely need a way to do this for allocation inference, and then return type inference works automatically too. When done, function types need full support for requires block, allocation and lifetime constraints etc, and then that info in the function type can be used to actually call the function in lowering.");
+    fmt.println("TODO: Look at fooz(). Escape analysis works, now test it a bit and then implement the arena selection based on the escape analysis, and to track which functions even need arenas, etc.");
 
     // let array: mut []u8 = [];
 
@@ -117,9 +123,9 @@ main(): int {
 
     return 0;
 
-    println("TODO: All Increment operations and short-hand syntax should be expanded into proper full assignment expressions, and then compiled normally, makes everything much simpler, especially the overflow tracking.");
-    println("Idea for later: (from Prime Reacts: The Flaws of Inheritance): I should implement interfaces as a way to make a contract about generic types, and to make the interfaces very powerful, interfaces should be able to define members and methods, as well as default implementations of methods that is used if the struct does not provide that function, and it is allowed as long as the default implementation of the interface method only uses other methods of the interface. This makes it very powerful and a complete replacement for polymorphism.");
-    println("Idea: Implement scopes/do blocks/whatever, and like in Swift make the ability to label them, and then 'break foo' can be used to break out of that scope, which is awesome because it greatly simplifies the common issue of having 2 nested loops and wanting to break out of the outer one.")
+    fmt.println("TODO: All Increment operations and short-hand syntax should be expanded into proper full assignment expressions, and then compiled normally, makes everything much simpler, especially the overflow tracking.");
+    fmt.println("Idea for later: (from Prime Reacts: The Flaws of Inheritance): I should implement interfaces as a way to make a contract about generic types, and to make the interfaces very powerful, interfaces should be able to define members and methods, as well as default implementations of methods that is used if the struct does not provide that function, and it is allowed as long as the default implementation of the interface method only uses other methods of the interface. This makes it very powerful and a complete replacement for polymorphism.");
+    fmt.println("Idea: Implement scopes/do blocks/whatever, and like in Swift make the ability to label them, and then 'break foo' can be used to break out of that scope, which is awesome because it greatly simplifies the common issue of having 2 nested loops and wanting to break out of the outer one.")
 
     if !glfw.init() {
         return 0;
@@ -158,8 +164,8 @@ main(): int {
             let alpha = 0.001;
             fps = fps * (1.0 - alpha) + 1.0 / elapsed * alpha;
 
-            println("FPS:", fps);
-            println("Count: ", frameCounter);
+            fmt.println("FPS:", fps);
+            fmt.println("Count: ", frameCounter);
 
             window.swapBuffers();
         }

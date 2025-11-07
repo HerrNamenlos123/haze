@@ -24,6 +24,8 @@ DO: 'do';
 YIELD: 'yield';
 EMIT: 'emit';
 INLINE: 'inline';
+NOALLOC: 'noalloc';
+FINAL: 'final';
 SOURCE_LOCATION_DIRECTIVE: '#source';
 
 TRUE: 'true';
@@ -54,6 +56,7 @@ COLONEQUALS: ':=';
 DOUBLEEQUALS: '==';
 NOTEQUALS: '!=';
 SEMI: ';';
+DOUBLECOLON: '::';
 COLON: ':';
 COMMA: ',';
 PLUS: '+';

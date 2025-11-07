@@ -1,26 +1,45 @@
-import {
-  EPrimitive,
-  EVariableContext,
-  primitiveToString,
-  stringToPrimitive,
-} from "../shared/common";
-import { assert, CompilerError, type SourceLoc } from "../shared/Errors";
-import {
-  Collect,
-  funcSymHasParameterPack,
-  printCollectedExpr,
-} from "../SymbolCollection/SymbolCollection";
-import {
-  getFromStructDefCache,
-  insertIntoStructDefCache,
-  isTypeConcrete,
-  isTypeExprConcrete,
-  makePrimitiveAvailable,
-  Semantic,
-  type SemanticResult,
-} from "./Elaborate";
-import { EExternLanguage, EDatatypeMutability, EVariableMutability } from "../shared/AST";
-import { Conversion } from "./Conversion";
+import { assert, type SourceLoc } from "../shared/Errors";
+import { isTypeConcrete, Semantic, type SemanticResult } from "./Elaborate";
+import { EDatatypeMutability } from "../shared/AST";
+
+export function makeDeferredFunctionDatatypeAvailable(
+  sr: SemanticResult,
+  args: {
+    parameters: Semantic.TypeUseId[];
+    vararg: boolean;
+    sourceloc: SourceLoc;
+  }
+): Semantic.TypeDefId {
+  for (const id of sr.deferredFunctionTypeCache) {
+    const type = sr.typeDefNodes.get(id);
+    assert(type.variant === Semantic.ENode.DeferredFunctionDatatype);
+    if (type.parameters.length !== args.parameters.length) {
+      continue;
+    }
+    let wrong = false;
+    for (let i = 0; i < args.parameters.length; i++) {
+      if (type.parameters[i] !== args.parameters[i]) {
+        wrong = true;
+        break;
+      }
+    }
+    if (wrong) continue;
+    if (type.vararg !== args.vararg) continue;
+
+    // Everything matches
+    return id;
+  }
+
+  // Nothing found
+  const [ftype, ftypeId] = Semantic.addType(sr, {
+    variant: Semantic.ENode.DeferredFunctionDatatype,
+    parameters: args.parameters,
+    vararg: args.vararg,
+    concrete: args.parameters.every((p) => isTypeConcrete(sr, p)),
+  });
+  sr.deferredFunctionTypeCache.push(ftypeId);
+  return ftypeId;
+}
 
 export function makeRawFunctionDatatypeAvailable(
   sr: SemanticResult,
@@ -28,7 +47,7 @@ export function makeRawFunctionDatatypeAvailable(
     parameters: Semantic.TypeUseId[];
     returnType: Semantic.TypeUseId;
     vararg: boolean;
-    takesReturnArena: boolean;
+    requires: Semantic.FunctionRequireBlock;
     sourceloc: SourceLoc;
   }
 ): Semantic.TypeDefId {
@@ -50,6 +69,8 @@ export function makeRawFunctionDatatypeAvailable(
       continue;
     }
     if (type.vararg !== args.vararg) continue;
+    if (type.requires.final !== args.requires.final) continue;
+    if (type.requires.noalloc !== args.requires.noalloc) continue;
 
     // Everything matches
     return id;
@@ -61,7 +82,7 @@ export function makeRawFunctionDatatypeAvailable(
     parameters: args.parameters,
     returnType: args.returnType,
     vararg: args.vararg,
-    takesReturnArena: args.takesReturnArena,
+    requires: args.requires,
     concrete:
       args.parameters.every((p) => isTypeConcrete(sr, p)) && isTypeConcrete(sr, args.returnType),
   });
@@ -76,7 +97,7 @@ export function makeFunctionDatatypeAvailable(
     returnType: Semantic.TypeUseId;
     vararg: boolean;
     mutability: EDatatypeMutability;
-    takesReturnArena: boolean;
+    requires: Semantic.FunctionRequireBlock;
     sourceloc: SourceLoc;
   }
 ): Semantic.TypeUseId {

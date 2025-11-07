@@ -276,7 +276,8 @@ export namespace Collect {
     overloadGroup: Collect.SymbolId;
     generics: Collect.SymbolId[];
     name: string;
-    returnType: Collect.TypeUseId;
+    requires: FunctionRequiresBlock;
+    returnType: Collect.TypeUseId | null;
     parameters: ParameterValue[];
     vararg: boolean;
     export: boolean;
@@ -399,11 +400,17 @@ export namespace Collect {
     sourceloc: SourceLoc;
   };
 
+  export type FunctionRequiresBlock = {
+    noalloc: boolean;
+    final: boolean;
+  };
+
   export type FunctionDatatype = {
     variant: ENode.FunctionDatatype;
     parameters: Collect.TypeUseId[];
     returnType: Collect.TypeUseId;
     vararg: boolean;
+    requires: FunctionRequiresBlock;
     mutability: EDatatypeMutability;
     sourceloc: SourceLoc;
   };
@@ -553,6 +560,7 @@ export namespace Collect {
   export type ExprCallExpr = BaseExpr & {
     variant: ENode.ExprCallExpr;
     calledExpr: Collect.ExprId;
+    inArena: Collect.ExprId | null;
     arguments: Collect.ExprId[];
   };
 
@@ -575,6 +583,7 @@ export namespace Collect {
       name: string;
       value: Collect.ExprId;
     }[];
+    inArena: Collect.ExprId | null;
   };
 
   export type ExprAssignmentExpr = BaseExpr & {
@@ -1183,6 +1192,10 @@ function collectTypeUse(
         returnType: collectTypeUse(cc, item.returnType, args),
         parameters: item.params.map((p) => collectTypeUse(cc, p.datatype, args)),
         vararg: item.ellipsis,
+        requires: {
+          final: item.requires.final,
+          noalloc: item.requires.noalloc,
+        },
         sourceloc: item.sourceloc,
         mutability: item.mutability,
       })[1];
@@ -1300,19 +1313,13 @@ function collectSymbol(
         parentScope: args.currentParentScope,
         methodType: item.methodType,
         pub: item.pub,
+        requires: {
+          final: item.requires.final,
+          noalloc: item.requires.noalloc,
+        },
         noemit: item.noemit,
         vararg: item.ellipsis,
-        returnType:
-          (item.returnType && collectTypeUse(cc, item.returnType, args)) ||
-          Collect.makeTypeUse(cc, {
-            variant: Collect.ENode.NamedDatatype,
-            inline: true,
-            genericArgs: [],
-            innerNested: null,
-            name: "void",
-            mutability: EDatatypeMutability.Default,
-            sourceloc: null,
-          })[1],
+        returnType: (item.returnType && collectTypeUse(cc, item.returnType, args)) || null,
         sourceloc: item.sourceloc,
         functionScope: null,
         originalSourcecode: item.originalSourcecode,
@@ -1865,6 +1872,7 @@ function collectExpr(
           name: m.name,
           value: collectExpr(cc, m.value, args),
         })),
+        inArena: item.inArena ? collectExpr(cc, item.inArena, args) : null,
         sourceloc: item.sourceloc,
       })[1];
 
@@ -1974,6 +1982,7 @@ function collectExpr(
         variant: Collect.ENode.ExprCallExpr,
         calledExpr: collectExpr(cc, item.calledExpr, args),
         arguments: item.arguments.map((a) => collectExpr(cc, a, args)),
+        inArena: item.inArena ? collectExpr(cc, item.inArena, args) : null,
         sourceloc: item.sourceloc,
       })[1];
 

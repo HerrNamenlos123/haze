@@ -83,66 +83,66 @@ namespace fmt {
     // export format_to(writer: &StringWriter, value: i64, args: FormatArgs) {
     //     format_to(writer, value as int, args);
     // }
-}
 
-export print(args: ...) {
-    for comptime arg in args {
-        if comptime typeof(arg) == int || typeof(arg) == type<mut int> {
-            builtin.printf("%lld", arg);
-        }
-        else if typeof(arg) == str {
-            const s = arg;
-            __c__("fwrite(s.data, 1, s.length, stdout);");
-            // builtin.printf("%s", arg);
-        }
-        else if typeof(arg) == bool {
-            if arg {
-                builtin.printf("true");
+    export print(args: ...) {
+        for comptime arg in args {
+            if comptime typeof(arg) == int || typeof(arg) == type<mut int> {
+                builtin.printf("%lld", arg);
+            }
+            else if typeof(arg) == str {
+                const s = arg;
+                __c__("fwrite(s.data, 1, s.length, stdout);");
+                // builtin.printf("%s", arg);
+            }
+            else if typeof(arg) == bool {
+                if arg {
+                    builtin.printf("true");
+                }
+                else {
+                    builtin.printf("false");
+                }
+            }
+            else if typeof(arg) == type<usize> {
+                builtin.printf("%zu", arg);
+            }
+            else if typeof(arg) == type<real> || typeof(arg) == type<mut real> {
+                builtin.printf("%f", arg);
+            }
+            else if typeof(arg) == type<u8> || typeof(arg) == type<u16> || typeof(arg) == type<u32> {
+                builtin.printf("%u", arg);
+            }
+            else if typeof(arg) == type<u64> {
+                builtin.printf("%lu", arg);
+            }
+            else if typeof(arg) == type<i8> || typeof(arg) == type<i16> || typeof(arg) == type<i32> {
+                builtin.printf("%d", arg);
+            }
+            else if typeof(arg) == type<i64> {
+                builtin.printf("%lld", arg);
+            }
+            else if typeof(arg) == type<Vec2> || typeof(arg) == type<Vec2> {
+                builtin.printf("(%f, %f)", arg.x, arg.y);
+            }
+            else if typeof(arg) == type<Vec3> || typeof(arg) == type<Vec3> {
+                builtin.printf("(%f, %f, %f)", arg.x, arg.y, arg.z);
+            }
+            else if typeof(arg) == type<Vec4> || typeof(arg) == type<Vec4> {
+                builtin.printf("(%f, %f, %f, %f)", arg.x, arg.y, arg.z, arg.w);
             }
             else {
-                builtin.printf("false");
+                static_assert(false, typeof(arg).name);
+                static_assert(false, "Type not yet supported in print");
             }
         }
-        else if typeof(arg) == type<usize> {
-            builtin.printf("%zu", arg);
-        }
-        else if typeof(arg) == type<real> || typeof(arg) == type<mut real> {
-            builtin.printf("%f", arg);
-        }
-        else if typeof(arg) == type<u8> || typeof(arg) == type<u16> || typeof(arg) == type<u32> {
-            builtin.printf("%u", arg);
-        }
-        else if typeof(arg) == type<u64> {
-            builtin.printf("%lu", arg);
-        }
-        else if typeof(arg) == type<i8> || typeof(arg) == type<i16> || typeof(arg) == type<i32> {
-            builtin.printf("%d", arg);
-        }
-        else if typeof(arg) == type<i64> {
-            builtin.printf("%lld", arg);
-        }
-        else if typeof(arg) == type<Vec2> || typeof(arg) == type<Vec2> {
-            builtin.printf("(%f, %f)", arg.x, arg.y);
-        }
-        else if typeof(arg) == type<Vec3> || typeof(arg) == type<Vec3> {
-            builtin.printf("(%f, %f, %f)", arg.x, arg.y, arg.z);
-        }
-        else if typeof(arg) == type<Vec4> || typeof(arg) == type<Vec4> {
-            builtin.printf("(%f, %f, %f, %f)", arg.x, arg.y, arg.z, arg.w);
-        }
-        else {
-            static_assert(false, typeof(arg).name);
-            static_assert(false, "Type not yet supported in print");
-        }
     }
-}
 
-export println(args: ...) {
-    for comptime arg, i in args {
-        print(arg);
-        if comptime i != args.length - 1 as usize {
-            print(" ");
+    export println(args: ...) {
+        for comptime arg, i in args {
+            print(arg);
+            if comptime i != args.length - 1 as usize {
+                print(" ");
+            }
         }
+        print("\n");
     }
-    print("\n");
 }
