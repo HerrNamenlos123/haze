@@ -151,7 +151,7 @@ sliceIndex
 
 requiresPart
     : expr              #RequiresExpr
-    | NOALLOC           #RequiresNoalloc
+    | AUTODEST          #RequiresAutodest
     | FINAL             #RequiresFinal
     ;
 

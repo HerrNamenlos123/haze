@@ -24,7 +24,7 @@ DO: 'do';
 YIELD: 'yield';
 EMIT: 'emit';
 INLINE: 'inline';
-NOALLOC: 'noalloc';
+AUTODEST: 'autodest';
 FINAL: 'final';
 SOURCE_LOCATION_DIRECTIVE: '#source';
 
