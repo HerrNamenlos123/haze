@@ -401,7 +401,7 @@ export namespace Collect {
   };
 
   export type FunctionRequiresBlock = {
-    noalloc: boolean;
+    autodest: boolean;
     final: boolean;
   };
 
@@ -1194,7 +1194,7 @@ function collectTypeUse(
         vararg: item.ellipsis,
         requires: {
           final: item.requires.final,
-          noalloc: item.requires.noalloc,
+          autodest: item.requires.autodest,
         },
         sourceloc: item.sourceloc,
         mutability: item.mutability,
@@ -1315,7 +1315,7 @@ function collectSymbol(
         pub: item.pub,
         requires: {
           final: item.requires.final,
-          noalloc: item.requires.noalloc,
+          autodest: item.requires.autodest,
         },
         noemit: item.noemit,
         vararg: item.ellipsis,

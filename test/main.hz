@@ -72,14 +72,14 @@ makeNodeRaw(arena: Arena, name: str) {
 }
 
 bar() {
-    let makeNodeFunc: (name: str) => Node = makeNode;
+    let makeNodeFunc: (name: str) => Node :: final, autodest = makeNode;
 
     const node = makeNodeFunc("Test");
 
     let ar = fn.localArena;
     const other = makeNodeFunc("Other") in ar;
 
-    let makeNodeRawFunc: (arena: Arena, name: str) => Node :: noalloc = makeNodeRaw;
+    let makeNodeRawFunc: (arena: Arena, name: str) => Node = makeNodeRaw;
     const other2 = makeNodeRawFunc(fn.returnArena, "other2");
 }
 

@@ -70,7 +70,7 @@ export function makeRawFunctionDatatypeAvailable(
     }
     if (type.vararg !== args.vararg) continue;
     if (type.requires.final !== args.requires.final) continue;
-    if (type.requires.noalloc !== args.requires.noalloc) continue;
+    if (type.requires.autodest !== args.requires.autodest) continue;
 
     // Everything matches
     return id;

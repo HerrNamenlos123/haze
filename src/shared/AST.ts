@@ -155,7 +155,7 @@ export type ASTDeferredType = {
 };
 
 export type ASTFunctionRequiresBlock = {
-  noalloc: boolean;
+  autodest: boolean;
   final: boolean;
 };
 

@@ -135,8 +135,8 @@ import {
   UnionDatatypeContext,
   RequiresBlockContext,
   RequiresFinalContext,
-  RequiresNoallocContext,
   StructContentWithSourcelocContext,
+  RequiresAutodestContext,
 } from "./grammar/autogen/HazeParser";
 import {
   BaseErrorListener,
@@ -381,7 +381,7 @@ class ASTTransformer extends HazeParserVisitor<any> {
     } else {
       return {
         final: false,
-        noalloc: false,
+        autodest: false,
       };
     }
   }
@@ -646,14 +646,14 @@ class ASTTransformer extends HazeParserVisitor<any> {
   visitRequiresBlock = (ctx: RequiresBlockContext): ASTFunctionRequiresBlock => {
     const block: ASTFunctionRequiresBlock = {
       final: false,
-      noalloc: false,
+      autodest: false,
     };
     for (const part of ctx.requiresPart()) {
       if (part instanceof RequiresFinalContext) {
         block.final = true;
       }
-      if (part instanceof RequiresNoallocContext) {
-        block.noalloc = true;
+      if (part instanceof RequiresAutodestContext) {
+        block.autodest = true;
       }
     }
     return block;

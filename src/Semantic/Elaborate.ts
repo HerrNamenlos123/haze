@@ -2174,12 +2174,13 @@ export class SemanticElaborator {
                 );
               }
             }
+
             symbol.type = makeRawFunctionDatatypeAvailable(this.sr, {
               parameters: parameters,
               returnType: inferredReturnType,
               vararg: func.vararg,
               requires: {
-                noalloc: symbol.returnsInstanceIds.size === 0 && !symbol.explicitReturnArena,
+                autodest: symbol.returnsInstanceIds.size > 0 || symbol.explicitReturnArena,
                 final: true,
               },
               sourceloc: func.sourceloc,
@@ -2207,7 +2208,7 @@ export class SemanticElaborator {
           vararg: type.vararg,
           mutability: type.mutability,
           requires: {
-            noalloc: type.requires.noalloc,
+            autodest: type.requires.autodest,
             final: type.requires.final,
           },
           sourceloc: type.sourceloc,
@@ -4408,13 +4409,13 @@ export class SemanticBuilder {
 
     let producesAllocation = false;
     if (ftypeDef.variant === Semantic.ENode.FunctionDatatype) {
-      if (!ftypeDef.requires.noalloc) {
+      if (ftypeDef.requires.autodest) {
         producesAllocation = true;
       }
     } else if (ftypeDef.variant === Semantic.ENode.CallableDatatype) {
       const callableFunctype = this.sr.typeDefNodes.get(ftypeDef.functionType);
       assert(callableFunctype.variant === Semantic.ENode.FunctionDatatype);
-      if (!callableFunctype.requires.noalloc) {
+      if (callableFunctype.requires.autodest) {
         producesAllocation = true;
       }
     }
@@ -5428,7 +5429,7 @@ export namespace Semantic {
   };
 
   export type FunctionRequireBlock = {
-    noalloc: boolean;
+    autodest: boolean;
     final: boolean;
   };
 
@@ -6809,7 +6810,7 @@ export namespace Semantic {
 
       case Semantic.ENode.FunctionDatatype: {
         let params = "";
-        if (!type.requires.noalloc) {
+        if (type.requires.autodest) {
           params += mangleTypeUse(sr, sr.e.arenaTypeUse(false, null)[1]).name;
         }
         for (const p of type.parameters) {

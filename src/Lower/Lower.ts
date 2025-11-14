@@ -509,7 +509,7 @@ export namespace Lowered {
     name: NameSet;
     parameters: TypeUseId[];
     returnType: TypeUseId;
-    noalloc: boolean;
+    autodest: boolean;
     vararg: boolean;
   };
 
@@ -585,7 +585,7 @@ function makeIntrinsicCall(
       mangledName: functionName,
       wasMangled: false,
     },
-    noalloc: true,
+    autodest: false,
     vararg: false,
   });
   return Lowered.addExpr(lr, {
@@ -1443,7 +1443,7 @@ function lowerTypeDef(lr: Lowered.Module, typeId: Semantic.TypeDefId): Lowered.T
       const parameters: Lowered.TypeUseId[] = [];
 
       const arenaType = lr.sr.e.arenaTypeUse(false, null)[1];
-      if (!type.requires.noalloc) {
+      if (type.requires.autodest) {
         parameters.push(lowerTypeUse(lr, arenaType));
       }
 
@@ -1465,7 +1465,7 @@ function lowerTypeDef(lr: Lowered.Module, typeId: Semantic.TypeDefId): Lowered.T
         variant: Lowered.ENode.FunctionDatatype,
         parameters: parameters,
         returnType: lowerTypeUse(lr, type.returnType),
-        noalloc: type.requires.noalloc,
+        autodest: type.requires.autodest,
         name: Semantic.makeNameSetTypeDef(lr.sr, typeId),
         vararg: type.vararg,
       });
@@ -1732,7 +1732,7 @@ function lowerBlockScope(
               vararg: false,
               requires: {
                 final: true,
-                noalloc: true,
+                autodest: false,
               },
               sourceloc: null,
             })
@@ -1933,7 +1933,7 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
       const newParameters = [...originalFuncType.parameters];
 
       const arenaType = lr.sr.e.arenaTypeUse(false, null)[1];
-      if (!originalFuncType.requires.noalloc) {
+      if (originalFuncType.requires.autodest) {
         // This is so that function declarations take an additional parameter (NOT the passing)
         parameterNames.unshift("__hz_return_arena");
         newParameters.unshift(arenaType);
@@ -1945,7 +1945,7 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
         sourceloc: symbol.sourceloc,
         requires: {
           final: originalFuncType.requires.final,
-          noalloc: originalFuncType.requires.noalloc,
+          autodest: originalFuncType.requires.autodest,
         },
         vararg: false,
       });
