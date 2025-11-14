@@ -3999,6 +3999,15 @@ export class SemanticElaborator {
       assert(elaboratedSymbolId);
       const elaboratedSymbol = this.sr.symbolNodes.get(elaboratedSymbolId);
       assert(elaboratedSymbol.variant === Semantic.ENode.FunctionSymbol);
+
+      const elaboratedFunctionType = this.sr.typeDefNodes.get(elaboratedSymbol.type);
+      if (elaboratedFunctionType.variant === Semantic.ENode.DeferredFunctionDatatype) {
+        throw new CompilerError(
+          `This function is not fully elaborated yet. If it is part of a recursive call chain, it requires an explicit return type and a " :: final" annotation.`,
+          symbolValue.sourceloc
+        );
+      }
+
       return this.sr.b.symbolValue(elaboratedSymbolId, symbolValue.sourceloc);
     } else if (symbol.variant === Collect.ENode.TypeDefSymbol) {
       const typedef = this.sr.cc.typeDefNodes.get(symbol.typeDef);
