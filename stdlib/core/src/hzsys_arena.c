@@ -1,9 +1,7 @@
 
 #include "hzsys_arena.h"
-#include "hzsys.h"
-#include <stdalign.h>
-#include <stdint.h>
-#include <stdlib.h>
+#include "hzsys_memory.h"
+#include "hzsys_runtime.h"
 #include <threads.h>
 
 #undef max
@@ -15,7 +13,7 @@ hzsys_arena_t* hzsys_arena_create(size_t initial_chunk_size)
 {
   hzsys_arena_t* arena = (hzsys_arena_t*)hzsys_malloc_zeroed(initial_chunk_size);
   if (!arena) {
-    hzsys_panic("Arena control structure allocation failed");
+    hzsys_panic("System Out Of Memory: Arena control structure allocation failed");
   }
   return arena;
 }
@@ -25,7 +23,7 @@ static hzsys_arena_chunk_t* hzsys_arena_create_chunk(size_t chunk_size)
   size_t alloc_size = sizeof(hzsys_arena_chunk_t) + chunk_size;
   hzsys_arena_chunk_t* chunk = (hzsys_arena_chunk_t*)hzsys_malloc_zeroed(alloc_size);
   if (chunk == 0) {
-    hzsys_panic("Arena chunk allocation of size %llu failed", alloc_size);
+    hzsys_panic("System Out Of Memory: Arena chunk allocation of size %llu failed", alloc_size);
   }
   chunk->capacity = chunk_size;
   return chunk;
