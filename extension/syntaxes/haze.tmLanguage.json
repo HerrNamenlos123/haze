@@ -203,7 +203,7 @@
       "patterns": [
         {
           "name": "support.type.primitive",
-          "match": "\\b(i8|i16|i32|i64|usize|u8|u16|u32|u64|str|String|bool|int|real|complex|void|null|none)\\b"
+          "match": "\\b(i8|i16|i32|i64|usize|u8|u16|u32|u64|str|cstr|ccstr|bool|int|real|complex|void|null|none)\\b"
         },
         {
           "name": "support.type.builtin",

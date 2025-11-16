@@ -152,6 +152,7 @@ sliceIndex
 requiresPart
     // : expr               #RequiresExpr
     : AUTODEST              #RequiresAutodest
+    | NORETURN              #RequiresNoreturn
     | FINAL                 #RequiresFinal
     | LB requiresPart RB    #RequiresInParens
     ;

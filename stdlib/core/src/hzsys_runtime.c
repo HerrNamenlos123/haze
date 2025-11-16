@@ -4,7 +4,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-void hzsys_panic(const char *fmt, ...) {
+_Noreturn void hzsys_panic(const char* fmt, ...)
+{
   va_list args;
   va_start(args, fmt);
   fprintf(stderr, "[FATAL] Thread panicked: ");

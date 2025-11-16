@@ -157,6 +157,7 @@ export type ASTDeferredType = {
 export type ASTFunctionRequiresBlock = {
   autodest: boolean;
   final: boolean;
+  noreturn: boolean;
 };
 
 export type ASTFunctionDefinition = {

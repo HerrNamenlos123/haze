@@ -403,6 +403,7 @@ export namespace Collect {
   export type FunctionRequiresBlock = {
     autodest: boolean;
     final: boolean;
+    noreturn: boolean;
   };
 
   export type FunctionDatatype = {
@@ -1195,6 +1196,7 @@ function collectTypeUse(
         requires: {
           final: item.requires.final,
           autodest: item.requires.autodest,
+          noreturn: item.requires.noreturn,
         },
         sourceloc: item.sourceloc,
         mutability: item.mutability,
@@ -1316,6 +1318,7 @@ function collectSymbol(
         requires: {
           final: item.requires.final,
           autodest: item.requires.autodest,
+          noreturn: item.requires.noreturn,
         },
         noemit: item.noemit,
         vararg: item.ellipsis,

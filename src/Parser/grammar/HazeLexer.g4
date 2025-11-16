@@ -25,6 +25,7 @@ YIELD: 'yield';
 EMIT: 'emit';
 INLINE: 'inline';
 AUTODEST: 'autodest';
+NORETURN: 'noreturn';
 FINAL: 'final';
 SOURCE_LOCATION_DIRECTIVE: '#source';
 

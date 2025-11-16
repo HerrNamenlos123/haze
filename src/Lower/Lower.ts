@@ -452,6 +452,7 @@ export namespace Lowered {
     parameterNames: string[];
     externLanguage: EExternLanguage;
     isLibraryLocal: boolean;
+    noreturn: boolean;
     scope: BlockScopeId | null;
     sourceloc: SourceLoc;
   };
@@ -1733,6 +1734,7 @@ function lowerBlockScope(
               requires: {
                 final: true,
                 autodest: false,
+                noreturn: false,
               },
               sourceloc: null,
             })
@@ -1946,6 +1948,7 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
         requires: {
           final: originalFuncType.requires.final,
           autodest: originalFuncType.requires.autodest,
+          noreturn: originalFuncType.requires.noreturn,
         },
         vararg: false,
       });
@@ -1959,6 +1962,7 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
         name: Semantic.makeNameSetSymbol(lr.sr, symbolId),
         parameterNames: parameterNames,
         type: lowerTypeDef(lr, newFuncType),
+        noreturn: originalFuncType.requires.noreturn,
         isLibraryLocal:
           monomorphized &&
           !exported &&

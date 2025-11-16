@@ -1,0 +1,8 @@
+
+extern C noemit hzsys_panic(msg: ccstr, ...) :: final;
+
+namespace sys {
+    panic(msg: ccstr) :: noreturn {
+        hzsys_panic(msg);
+    }
+}

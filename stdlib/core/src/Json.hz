@@ -1,7 +1,7 @@
 
 extern C noemit struct cJSON {};
 
-extern C parse(arena: hzsys_arena_t, data: str, error: hzsys_str_ref_t): cJSON;
+extern C hzsys_json_parse(arena: hzsys_arena_t, data: str, error: hzsys_str_ref_t): cJSON | none;
 extern C hzsys_json_create_string(arena: hzsys_arena_t, data: str): cJSON;
 extern C hzsys_json_create_object(arena: hzsys_arena_t): cJSON;
 
@@ -25,7 +25,40 @@ extern C hzsys_json_get_array_item(arena: hzsys_arena_t, json: cJSON, index: usi
 extern C hzsys_json_print_unformatted(arena: hzsys_arena_t, json: cJSON): str;
 extern C hzsys_json_print(arena: hzsys_arena_t, json: cJSON): str;
 
-// struct Json {
+struct JsonValue {
+    arena: Arena;
+    data: cJSON;
+
+    struct Proxy {
+        json: JsonValue;
+        attribute: str;
+    }
+}
+
+namespace JSON {
+    parse(data: str) {
+        return parseWithArena(fn.returnArena, data);
+    }
+
+    parseWithArena(arena: Arena, data: str) {
+        let error = hzsys_str_ref_t { data: "" };
+
+        const cjson = hzsys_json_parse(arena.arenaImpl, data, error);
+        if cjson {
+            return JsonValue {
+                arena: arena,
+                data: cjson,
+            } in arena;
+        }
+        else {
+            sys.panic("JSON parsing failed!");
+        }
+    }
+}
+
+foobar() {
+    const json = JSON.parse("{}");
+}
 
 // //   enum struct ErrorCode {
 // //     ParseSyntaxError,

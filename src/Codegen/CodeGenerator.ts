@@ -405,6 +405,11 @@ class CodeGenerator {
     if (symbol.isLibraryLocal) {
       signature += "static ";
     }
+
+    if (symbol.noreturn) {
+      signature += "_Noreturn ";
+    }
+
     signature +=
       this.mangleTypeUse(ftype.returnType) + " " + this.mangleFunctionSymbol(symbol) + "(";
     signature += ftype.parameters

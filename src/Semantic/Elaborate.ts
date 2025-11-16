@@ -2182,8 +2182,12 @@ export class SemanticElaborator {
               returnType: inferredReturnType,
               vararg: func.vararg,
               requires: {
-                autodest: symbol.returnsInstanceIds.size > 0 || symbol.explicitReturnArena,
+                autodest:
+                  symbol.returnsInstanceIds.size > 0 ||
+                  symbol.explicitReturnArena ||
+                  func.requires.autodest,
                 final: true,
+                noreturn: func.requires.noreturn,
               },
               sourceloc: func.sourceloc,
             });
@@ -2212,6 +2216,7 @@ export class SemanticElaborator {
           requires: {
             autodest: type.requires.autodest,
             final: type.requires.final,
+            noreturn: type.requires.noreturn,
           },
           sourceloc: type.sourceloc,
         });
@@ -5442,6 +5447,7 @@ export namespace Semantic {
   export type FunctionRequireBlock = {
     autodest: boolean;
     final: boolean;
+    noreturn: boolean;
   };
 
   export type FunctionDatatypeDef = {
