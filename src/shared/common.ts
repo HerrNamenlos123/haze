@@ -76,6 +76,7 @@ export enum EPrimitive {
   usize,
   str,
   cstr,
+  ccstr,
   cptr,
 }
 
@@ -99,11 +100,7 @@ export type LiteralValue =
       type: EPrimitive.none;
     }
   | {
-      type: EPrimitive.str | EPrimitive.cstr;
-      value: string;
-    }
-  | {
-      type: EPrimitive.cstr;
+      type: EPrimitive.str | EPrimitive.cstr | EPrimitive.ccstr;
       value: string;
     }
   | {
@@ -173,6 +170,8 @@ export function primitiveToString(primitive: EPrimitive) {
       return "str";
     case EPrimitive.cstr:
       return "cstr";
+    case EPrimitive.ccstr:
+      return "ccstr";
     case EPrimitive.cptr:
       return "cptr";
     default:
@@ -220,6 +219,8 @@ export function stringToPrimitive(str: string) {
       return EPrimitive.cptr;
     case "cstr":
       return EPrimitive.cstr;
+    case "ccstr":
+      return EPrimitive.ccstr;
     case "str":
       return EPrimitive.str;
     default:

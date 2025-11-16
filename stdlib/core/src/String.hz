@@ -1,0 +1,4 @@
+
+extern C noemit struct hzsys_str_ref_t {
+    data: str;
+};

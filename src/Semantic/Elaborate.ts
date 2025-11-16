@@ -261,7 +261,9 @@ export class SemanticElaborator {
           const s = this.getExpr(this.expr(callExpr.arguments[1], undefined)[1]);
           if (
             s.variant !== Semantic.ENode.LiteralExpr ||
-            (s.literal.type !== EPrimitive.str && s.literal.type !== EPrimitive.cstr)
+            (s.literal.type !== EPrimitive.str &&
+              s.literal.type !== EPrimitive.cstr &&
+              s.literal.type !== EPrimitive.ccstr)
           ) {
             throw new CompilerError(
               "The static_assert function requires the second parameter to be a string, or omitted",
@@ -6422,7 +6424,7 @@ export namespace Semantic {
   export function serializeLiteralValue(value: LiteralValue) {
     if (value.type === EPrimitive.str) {
       return `${JSON.stringify(value.value)}`;
-    } else if (value.type === EPrimitive.cstr) {
+    } else if (value.type === EPrimitive.cstr || value.type === EPrimitive.ccstr) {
       return `${JSON.stringify(value.value)}`;
     } else if (value.type === EPrimitive.bool) {
       return `${value.value ? "true" : "false"}`;
@@ -6751,16 +6753,19 @@ export namespace Semantic {
       } else {
         def.name = "p" + def.name;
       }
+      def.wasMangled = true;
     }
 
     if (sr.typeDefNodes.get(typeInstance.type).variant !== Semantic.ENode.ParameterPackDatatype) {
       if (typeInstance.mutability === EDatatypeMutability.Const) {
         if (def.wasMangled) {
           def.name = "c" + def.name;
+          def.wasMangled = true;
         }
       } else if (typeInstance.mutability === EDatatypeMutability.Mut) {
         if (def.wasMangled) {
           def.name = "m" + def.name;
+          def.wasMangled = true;
         }
       }
     }
@@ -6810,10 +6815,9 @@ export namespace Semantic {
       }
 
       case Semantic.ENode.PrimitiveDatatype: {
-        const name = primitiveToString(type.primitive);
         return {
-          name: name.length + name,
-          wasMangled: true,
+          name: "hzsys_" + primitiveToString(type.primitive) + "_t",
+          wasMangled: false,
         };
       }
 
@@ -6897,7 +6901,11 @@ export namespace Semantic {
         name: `Lb${literal.value ? "1" : "0"}E`,
         wasMangled: true,
       };
-    } else if (literalType === EPrimitive.str || literalType === EPrimitive.cstr) {
+    } else if (
+      literalType === EPrimitive.str ||
+      literalType === EPrimitive.cstr ||
+      literalType === EPrimitive.ccstr
+    ) {
       const utf8 = new TextEncoder().encode(literal.value);
       let base64 = btoa(String.fromCharCode(...utf8));
       // make it C-identifier-safe: base64 → base64url (replace +/ with _)

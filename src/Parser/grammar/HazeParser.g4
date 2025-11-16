@@ -150,9 +150,10 @@ sliceIndex
     ;
 
 requiresPart
-    : expr              #RequiresExpr
-    | AUTODEST          #RequiresAutodest
-    | FINAL             #RequiresFinal
+    // : expr               #RequiresExpr
+    : AUTODEST              #RequiresAutodest
+    | FINAL                 #RequiresFinal
+    | LB requiresPart RB    #RequiresInParens
     ;
 
 requiresBlock

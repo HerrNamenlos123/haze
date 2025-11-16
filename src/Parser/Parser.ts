@@ -137,6 +137,7 @@ import {
   RequiresFinalContext,
   StructContentWithSourcelocContext,
   RequiresAutodestContext,
+  RequiresInParensContext,
 } from "./grammar/autogen/HazeParser";
 import {
   BaseErrorListener,
@@ -641,6 +642,10 @@ class ASTTransformer extends HazeParserVisitor<any> {
       variant: "ExprAsFuncBody",
       expr: this.visit(ctx.expr()),
     };
+  };
+
+  visitRequiresInParens = (ctx: RequiresInParensContext) => {
+    return this.visit(ctx.requiresPart());
   };
 
   visitRequiresBlock = (ctx: RequiresBlockContext): ASTFunctionRequiresBlock => {

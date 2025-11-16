@@ -26,10 +26,6 @@ class CodeGenerator {
     global_variables: new OutputWriter(),
   };
 
-  private arithmeticFunctionsCache = new Map<EBinaryOperation, Map<Lowered.TypeUseId, string>>();
-  private incrFunctionsCache = new Map<EIncrOperation, Map<Lowered.TypeUseId, string>>();
-  private trapFunctionCache: string | undefined;
-
   constructor(public config: ModuleConfig, public lr: Lowered.Module) {
     // const contextSymbol = this.module.globalScope.lookupSymbol(
     //   "Context",
@@ -148,31 +144,7 @@ class CodeGenerator {
 
     for (const symbol of sortedLoweredTypeDefs) {
       if (symbol.variant === Lowered.ENode.PrimitiveDatatype) {
-        if (symbol.primitive === EPrimitive.cstr) {
-          this.out.type_declarations.writeLine(`typedef const char* _H4cstr;`);
-        } else if (symbol.primitive === EPrimitive.cptr) {
-          this.out.type_declarations.writeLine(`typedef void* _H4cptr;`);
-        } else if (symbol.primitive === EPrimitive.str) {
-          this.out.type_declarations.writeLine(`typedef struct _H3str _H3str;`);
-          this.out.type_definitions.writeLine(`struct _H3str {`).pushIndent();
-          this.out.type_definitions.writeLine(`const char* data;`);
-          this.out.type_definitions.writeLine(`uint64_t length;`);
-          this.out.type_definitions.popIndent().writeLine(`};`);
-        } else if (symbol.primitive === EPrimitive.null) {
-          this.out.type_declarations.writeLine(
-            `typedef struct ${this.mangleTypeDef(symbol)} ${this.mangleTypeDef(symbol)};`
-          );
-          this.out.type_definitions.writeLine(`struct ${this.mangleTypeDef(symbol)} {};`);
-        } else if (symbol.primitive === EPrimitive.none) {
-          this.out.type_declarations.writeLine(
-            `typedef struct ${this.mangleTypeDef(symbol)} ${this.mangleTypeDef(symbol)};`
-          );
-          this.out.type_definitions.writeLine(`struct ${this.mangleTypeDef(symbol)} {};`);
-        } else {
-          this.out.type_declarations.writeLine(
-            `typedef ${this.primitiveToC(symbol.primitive)} ${this.mangleTypeDef(symbol)};`
-          );
-        }
+        // All primitives are handled in hzsys
       } else if (symbol.variant === Lowered.ENode.StructDatatype) {
         if (!symbol.noemit) {
           this.out.type_declarations.writeLine(
@@ -255,9 +227,11 @@ class CodeGenerator {
             `typedef ${this.mangleTypeDef(symbol.type)}* ${this.mangleTypeUse(symbol)};`
           );
         } else {
-          this.out.type_declarations.writeLine(
-            `typedef ${this.mangleTypeDef(symbol.type)} ${this.mangleTypeUse(symbol)};`
-          );
+          const a = this.mangleTypeDef(symbol.type);
+          const b = this.mangleTypeUse(symbol);
+          if (a !== b) {
+            this.out.type_declarations.writeLine(`typedef ${a} ${b};`);
+          }
         }
       } else {
         assert(false);
@@ -352,46 +326,8 @@ class CodeGenerator {
   }
 
   primitiveToC(primitive: EPrimitive) {
-    switch (primitive) {
-      case EPrimitive.bool:
-        return "bool";
-      case EPrimitive.f32:
-        return "float";
-      case EPrimitive.f64:
-        return "double";
-      case EPrimitive.i16:
-        return "int16_t";
-      case EPrimitive.i32:
-        return "int32_t";
-      case EPrimitive.i64:
-        return "int64_t";
-      case EPrimitive.i8:
-        return "int8_t";
-      case EPrimitive.u16:
-        return "uint16_t";
-      case EPrimitive.u32:
-        return "uint32_t";
-      case EPrimitive.u64:
-        return "uint64_t";
-      case EPrimitive.u8:
-        return "uint8_t";
-      case EPrimitive.int:
-        return "int64_t";
-      case EPrimitive.real:
-        return "double";
-      case EPrimitive.usize:
-        return "uint64_t";
-      case EPrimitive.void:
-        return "void";
-      case EPrimitive.null:
-        assert(false, "null should be handled specially");
-      case EPrimitive.str:
-        return "_H3str";
-      case EPrimitive.cstr:
-        return "const char*";
-      case EPrimitive.cptr:
-        return "void*";
-    }
+    assert(primitive !== EPrimitive.null, "null should be handled specially");
+    return "hzsys_" + primitiveToString(primitive) + "_t";
   }
 
   mangleTypeDef(type: Lowered.TypeDef | Lowered.TypeDefId): string {
@@ -421,85 +357,6 @@ class CodeGenerator {
     } else {
       return name.mangledName;
     }
-  }
-
-  makeTrapFunction() {
-    if (this.trapFunctionCache !== undefined) {
-      return this.trapFunctionCache;
-    }
-
-    const functionName = "___hz_builtin_trap";
-    this.out.builtin_declarations.writeLine(`__attribute__((noreturn, cold))`);
-    this.out.builtin_declarations.writeLine(
-      `static _Noreturn void ${functionName}(const char* msg);`
-    );
-    this.out.builtin_definitions.writeLine(`__attribute__((noreturn, cold))`);
-    this.out.builtin_definitions
-      .writeLine(`static inline _Noreturn void ${functionName}(const char* msg) {`)
-      .pushIndent();
-    this.out.builtin_definitions.writeLine(`fprintf(stderr, "Runtime error: %s\\n", msg);`);
-    this.out.builtin_definitions.writeLine(`__builtin_trap();`);
-    this.out.builtin_definitions.popIndent().writeLine(`}`);
-    this.trapFunctionCache = functionName;
-    return functionName;
-  }
-
-  makeCheckedIncrArithmeticFunction(exprId: Lowered.ExprId, operation: EIncrOperation) {
-    const expr = this.lr.exprNodes.get(exprId);
-
-    let opStr = "";
-    switch (operation) {
-      case EIncrOperation.Incr:
-        opStr = "incr";
-        break;
-      case EIncrOperation.Decr:
-        opStr = "decr";
-        break;
-      default:
-        assert(false);
-    }
-
-    let innerMap = this.incrFunctionsCache.get(operation);
-    if (innerMap === undefined) {
-      this.incrFunctionsCache.set(operation, new Map());
-      innerMap = this.incrFunctionsCache.get(operation)!;
-    }
-
-    let functionName = innerMap.get(expr.type);
-    if (functionName !== undefined) {
-      return functionName;
-    }
-
-    const leftType = this.lr.typeUseNodes.get(expr.type);
-    const trapFunc = this.makeTrapFunction();
-
-    functionName = `___hz_builtin_${opStr}_${leftType.name.mangledName}`;
-
-    this.out.builtin_declarations.writeLine(
-      `static inline _H${leftType.name.mangledName} ${functionName}(_H${leftType.name.mangledName});`
-    );
-    this.out.builtin_definitions
-      .writeLine(
-        `static inline _H${leftType.name.mangledName} ${functionName}(_H${leftType.name.mangledName} value) {`
-      )
-      .pushIndent();
-    this.out.builtin_definitions.writeLine(`_H${leftType.name.mangledName} result;`);
-    this.out.builtin_definitions
-      .writeLine(
-        `if (__builtin_expect(__builtin_${
-          operation === EIncrOperation.Incr ? "add" : "sub"
-        }_overflow(value, 1, &result), 0)) {`
-      )
-      .pushIndent();
-    this.out.builtin_definitions.writeLine(
-      `${trapFunc}("Integer overflow in ${opStr} operation");`
-    );
-    this.out.builtin_definitions.popIndent().writeLine(`}`);
-    this.out.builtin_definitions.writeLine(`return result;`);
-    this.out.builtin_definitions.popIndent().writeLine("}");
-
-    innerMap.set(expr.type, functionName);
-    return functionName;
   }
 
   makeCheckedBinaryArithmeticFunction(
@@ -533,85 +390,10 @@ class CodeGenerator {
         assert(false);
     }
 
-    let innerMap = this.arithmeticFunctionsCache.get(operation);
-    if (innerMap === undefined) {
-      this.arithmeticFunctionsCache.set(operation, new Map());
-      innerMap = this.arithmeticFunctionsCache.get(operation)!;
-    }
-
-    let functionName = innerMap.get(right.type);
-    if (functionName !== undefined) {
-      return functionName;
-    }
-
     const leftType = this.lr.typeUseNodes.get(left.type);
     const rightType = this.lr.typeUseNodes.get(right.type);
-    const leftTypeDef = this.lr.typeDefNodes.get(leftType.type);
-    const rightTypeDef = this.lr.typeDefNodes.get(rightType.type);
 
-    const trapFunc = this.makeTrapFunction();
-
-    functionName = `___hz_builtin_${opStr}_${leftType.name.mangledName}${rightType.name.mangledName}`;
-
-    this.out.builtin_declarations.writeLine(
-      `static inline _H${leftType.name.mangledName} ${functionName}(_H${leftType.name.mangledName}, _H${rightType.name.mangledName});`
-    );
-    this.out.builtin_definitions
-      .writeLine(
-        `static inline _H${leftType.name.mangledName} ${functionName}(_H${leftType.name.mangledName} a, _H${rightType.name.mangledName} b) {`
-      )
-      .pushIndent();
-    if (operation === EBinaryOperation.Divide || operation === EBinaryOperation.Modulo) {
-      this.out.builtin_definitions.writeLine(`if (b == 0) ${trapFunc}("Division by zero");`);
-      if (
-        leftTypeDef.variant === Lowered.ENode.PrimitiveDatatype &&
-        leftTypeDef.primitive === EPrimitive.i8
-      ) {
-        this.out.builtin_definitions.writeLine(
-          `if (a == INT8_MIN && b == -1) ${trapFunc}("Integer overflow in division");`
-        );
-      } else if (
-        leftTypeDef.variant === Lowered.ENode.PrimitiveDatatype &&
-        leftTypeDef.primitive === EPrimitive.i16
-      ) {
-        this.out.builtin_definitions.writeLine(
-          `if (a == INT16_MIN && b == -1) ${trapFunc}("Integer overflow in division");`
-        );
-      } else if (
-        leftTypeDef.variant === Lowered.ENode.PrimitiveDatatype &&
-        leftTypeDef.primitive === EPrimitive.i32
-      ) {
-        this.out.builtin_definitions.writeLine(
-          `if (a == INT32_MIN && b == -1) ${trapFunc}("Integer overflow in division");`
-        );
-      } else if (
-        leftTypeDef.variant === Lowered.ENode.PrimitiveDatatype &&
-        leftTypeDef.primitive === EPrimitive.i64
-      ) {
-        this.out.builtin_definitions.writeLine(
-          `if (a == INT64_MIN && b == -1) ${trapFunc}("Integer overflow in division");`
-        );
-      }
-      if (operation === EBinaryOperation.Modulo) {
-        this.out.builtin_definitions.writeLine(`return a % b;`);
-      } else {
-        this.out.builtin_definitions.writeLine(`return a / b;`);
-      }
-    } else {
-      this.out.builtin_definitions.writeLine(`_H${plainResultType.name.mangledName} result;`);
-      this.out.builtin_definitions
-        .writeLine(`if (__builtin_expect(__builtin_${opStr}_overflow(a, b, &result), 0)) {`)
-        .pushIndent();
-      this.out.builtin_definitions.writeLine(
-        `${trapFunc}("Integer overflow in ${opStr} operation");`
-      );
-      this.out.builtin_definitions.popIndent().writeLine(`}`);
-      this.out.builtin_definitions.writeLine(`return result;`);
-    }
-    this.out.builtin_definitions.popIndent().writeLine("}");
-
-    innerMap.set(right.type, functionName);
-    return functionName;
+    return `hzsys_arithmetic_${opStr}_${this.mangleName(leftType.name)}`;
   }
 
   emitFunction(symbolId: Lowered.FunctionId) {
@@ -947,8 +729,9 @@ class CodeGenerator {
           exprTypeDef.variant === Lowered.ENode.PrimitiveDatatype &&
           Conversion.isInteger(exprTypeDef.primitive)
         ) {
-          const functionName = this.makeCheckedIncrArithmeticFunction(expr.expr, expr.operation);
-          outWriter.write(`(${exprWriter.out.get()} = ${functionName}(${exprWriter.out.get()}))`);
+          assert(false, "Incr/Decr operations should be converted to plain operations");
+          // const functionName = this.makeCheckedBinaryArithmeticFunction(expr.expr, expr.operation);
+          // outWriter.write(`(${exprWriter.out.get()} = ${functionName}(${exprWriter.out.get()}))`);
         } else {
           outWriter.write(
             "(" +
@@ -972,12 +755,13 @@ class CodeGenerator {
           exprTypeDef.variant === Lowered.ENode.PrimitiveDatatype &&
           Conversion.isInteger(exprTypeDef.primitive)
         ) {
-          const functionName = this.makeCheckedIncrArithmeticFunction(expr.expr, expr.operation);
-          outWriter.write(
-            `({ ${this.mangleTypeUse(
-              exprType
-            )} __tmp = ${exprWriter.out.get()}; ${exprWriter.out.get()} = ${functionName}(${exprWriter.out.get()}); __tmp; })`
-          );
+          assert(false, "Incr/Decr operations should be converted to plain operations");
+          // const functionName = this.makeCheckedIncrArithmeticFunction(expr.expr, expr.operation);
+          // outWriter.write(
+          //   `({ ${this.mangleTypeUse(
+          //     exprType
+          //   )} __tmp = ${exprWriter.out.get()}; ${exprWriter.out.get()} = ${functionName}(${exprWriter.out.get()}); __tmp; })`
+          // );
         } else {
           outWriter.write(
             "(" +
@@ -1222,7 +1006,7 @@ class CodeGenerator {
         tempWriter.write(length.temp);
 
         outWriter.write(
-          `(_H3str){ .data=(const char*)${data.out.get()}, .length=${length.out.get()} }`
+          `(hzsys_str_t){ .data=(hzsys_ccstr_t)${data.out.get()}, .length=${length.out.get()} }`
         );
         return { out: outWriter, temp: tempWriter };
       }
@@ -1234,11 +1018,13 @@ class CodeGenerator {
         }
 
         if (expr.literal.type === EPrimitive.cstr) {
-          outWriter.write(`(_H4cstr)(${JSON.stringify(expr.literal.value)})`);
+          outWriter.write(`(hzsys_cstr_t)(${JSON.stringify(expr.literal.value)})`);
+        } else if (expr.literal.type === EPrimitive.ccstr) {
+          outWriter.write(`(hzsys_ccstr_t)(${JSON.stringify(expr.literal.value)})`);
         } else if (expr.literal.type === EPrimitive.str) {
           const value = expr.literal.value;
           outWriter.write(
-            `(_H3str){ .data=(const char*)${JSON.stringify(value)}, .length=${value.length} }`
+            `(hzsys_str_t){ .data=(const char*)${JSON.stringify(value)}, .length=${value.length} }`
           );
         } else if (expr.literal.type === EPrimitive.bool) {
           outWriter.write(

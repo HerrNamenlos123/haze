@@ -2141,6 +2141,8 @@ function serializeLoweredExpr(lr: Lowered.Module, exprId: Lowered.ExprId): strin
         return `${JSON.stringify(expr.literal.value)}`;
       } else if (expr.literal.type === EPrimitive.cstr) {
         return `${JSON.stringify(expr.literal.value)}`;
+      } else if (expr.literal.type === EPrimitive.ccstr) {
+        return `${JSON.stringify(expr.literal.value)}`;
       } else if (expr.literal.type === EPrimitive.null) {
         return `null`;
       } else if (expr.literal.type === EPrimitive.none) {

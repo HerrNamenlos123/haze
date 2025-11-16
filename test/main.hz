@@ -47,7 +47,7 @@ buildTree(arena: Arena, tree: mut Node) {
     tree.right = makeNode("Right") in arena;
 }
 
-printTree(tree: Node, indent: int): void :: final, noalloc {
+printTree(tree: Node, indent: int): void :: final {
     fmt.println("Node: {tree.name}");
     fmt.println("  left: ");
     const left = tree.left;
