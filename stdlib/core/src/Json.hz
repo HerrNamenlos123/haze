@@ -103,6 +103,7 @@ namespace JSON {
 export foobar() {
     const json = JSON.parse("{\"name\":\"Alice\",\"age\":25,\"active\":true,\"numbers\":[1,2,3],\"nested\":{\"x\":10,\"y\":\"hello\"},\"msg\":\"Hello\\nWorld!\"}");
 
+    // const a = json["naΩme"].to<str>();
     const a = json["name"].to<str>();
     const b = json["age"].to<real>();
     fmt.println("Parsed:", a, b);
