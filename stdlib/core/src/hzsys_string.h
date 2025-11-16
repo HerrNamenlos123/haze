@@ -17,9 +17,9 @@ typedef struct hzsys_str_ref_t {
   hzsys_str_t data;
 } hzsys_str_ref_t;
 
-hzsys_cstr_t hzsys_cstr_from_str(hzsys_arena_t* arena, hzsys_str_t str);
+hzsys_cstr_t hzsys_cstr_from_str(hzsys_arena_t* arena, hzsys_str_t data);
 
-hzsys_str_t hzsys_str_from_cstr_ref(hzsys_cstr_t str);
-hzsys_str_t hzsys_str_from_cstr_dup(hzsys_arena_t* arena, hzsys_cstr_t str);
+hzsys_str_t hzsys_str_from_cstr_ref(hzsys_cstr_t data);
+hzsys_str_t hzsys_str_from_cstr_dup(hzsys_arena_t* arena, hzsys_cstr_t data);
 
 #endif // HZSYS_STRING_H

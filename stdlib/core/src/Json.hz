@@ -18,7 +18,7 @@ extern C hzsys_json_is_null(json: cJSON): bool;
 extern C hzsys_json_get_string_value(arena: hzsys_arena_t, json: cJSON): hzsys_str_ref_t | none;
 extern C hzsys_json_get_number_value(arena: hzsys_arena_t, json: cJSON): real;
 
-extern C hzsys_json_get_object_item(arena: hzsys_arena_t, json: cJSON, name: str): cJSON;
+extern C hzsys_json_get_object_item(arena: hzsys_arena_t, json: cJSON, name: str): cJSON | none;
 extern C hzsys_json_get_array_size(arena: hzsys_arena_t, json: cJSON): usize;
 extern C hzsys_json_get_array_item(arena: hzsys_arena_t, json: cJSON, index: usize): cJSON;
 
@@ -32,7 +32,51 @@ struct JsonValue {
     struct Proxy {
         json: JsonValue;
         attribute: str;
+
+        to<T>() {
+            if comptime T == type<str> {
+                const obj = hzsys_json_get_object_item(this.json.arena.arenaImpl, this.json.data, this.attribute);
+                if obj {
+                    const value = hzsys_json_get_string_value(this.json.arena.arenaImpl, obj);
+                    if value {
+                        return value.data;
+                    }
+                    sys.panic("JSON value is not of type String");
+                }
+                sys.panic("JSON object does not have attribute");
+            } 
+            else if T == type<real> {
+                const obj = hzsys_json_get_object_item(this.json.arena.arenaImpl, this.json.data, this.attribute);
+                if obj {
+                    const value = hzsys_json_get_number_value(this.json.arena.arenaImpl, obj);
+                    return value;
+                }
+                sys.panic("JSON object does not have attribute");
+            }
+            else {
+                static_assert(false, "Type not supported");
+            }
+        }
     }
+
+    operator[](index: int): Proxy {
+        return {
+            json: this,
+            attribute: "test",
+        };
+    }
+
+    operator[](index: str): Proxy {
+        return {
+            json: this,
+            attribute: index,
+        };
+    }
+
+    // operator as() {
+    //     return 0 as i32;
+    // }
+
 }
 
 namespace JSON {
@@ -56,8 +100,13 @@ namespace JSON {
     }
 }
 
-foobar() {
-    const json = JSON.parse("{}");
+export foobar() {
+    const json = JSON.parse("{\"name\":\"Alice\",\"age\":25,\"active\":true,\"numbers\":[1,2,3],\"nested\":{\"x\":10,\"y\":\"hello\"},\"msg\":\"Hello\\nWorld!\"}");
+
+    const a = json["name"].to<str>();
+    const b = json["age"].to<real>();
+    fmt.println("Parsed:", a, b);
+    // const b = json[187];
 }
 
 // //   enum struct ErrorCode {

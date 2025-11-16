@@ -8,6 +8,9 @@
 
 _Noreturn void hzsys_panic(const char* fmt, ...);
 
+void hzsys_assert(hzsys_bool_t condition);
+void hzsys_assert_msg(hzsys_bool_t condition, hzsys_str_t message);
+
 // This function is cold, static and inline to make sure it is DUPLICATED in every translation unit and not referenced
 // from outside, to make sure it can be inlined.
 

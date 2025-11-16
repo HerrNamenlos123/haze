@@ -29,6 +29,14 @@ NORETURN: 'noreturn';
 FINAL: 'final';
 SOURCE_LOCATION_DIRECTIVE: '#source';
 
+OPERATORSUBSCRIPT: 'operator[]';
+OPERATORPLUS: 'operator+';
+OPERATORMINUS: 'operator-';
+OPERATORMUL: 'operator*';
+OPERATORDIV: 'operator/';
+OPERATORMOD: 'operator%';
+OPERATORAS: 'operator as';
+
 TRUE: 'true';
 FALSE: 'false';
 TYPE: 'type';

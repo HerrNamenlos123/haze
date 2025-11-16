@@ -21,8 +21,6 @@ class CodeGenerator {
     type_definitions: new OutputWriter(),
     function_declarations: new OutputWriter(),
     function_definitions: new OutputWriter(),
-    builtin_declarations: new OutputWriter(),
-    builtin_definitions: new OutputWriter(),
     global_variables: new OutputWriter(),
   };
 
@@ -95,20 +93,12 @@ class CodeGenerator {
     writer.write(this.out.function_declarations);
     writer.writeLine();
 
-    writer.write("\n\n// Arithmetic Function declaration section\n");
-    writer.write(this.out.builtin_declarations);
-    writer.writeLine();
-
     writer.write("\n\n// Global Variable section\n");
     writer.write(this.out.global_variables);
     writer.writeLine();
 
     writer.write("\n\n// Function definition section\n");
     writer.write(this.out.function_definitions);
-    writer.writeLine();
-
-    writer.write("\n\n// Arithmetic Function definition section\n");
-    writer.write(this.out.builtin_definitions);
     writer.writeLine();
 
     return writer.get();
@@ -393,7 +383,7 @@ class CodeGenerator {
     const leftType = this.lr.typeUseNodes.get(left.type);
     const rightType = this.lr.typeUseNodes.get(right.type);
 
-    return `hzsys_arithmetic_${opStr}_${this.mangleName(leftType.name)}`;
+    return `hzsys_arithmetic_${opStr}_${this.mangleName(plainResultType.name)}`;
   }
 
   emitFunction(symbolId: Lowered.FunctionId) {
@@ -1029,7 +1019,9 @@ class CodeGenerator {
         } else if (expr.literal.type === EPrimitive.str) {
           const value = expr.literal.value;
           outWriter.write(
-            `(hzsys_str_t){ .data=(const char*)${JSON.stringify(value)}, .length=${value.length} }`
+            `(hzsys_str_t){ .data=(hzsys_ccstr_t)${JSON.stringify(value)}, .length=${
+              value.length
+            } }`
           );
         } else if (expr.literal.type === EPrimitive.bool) {
           outWriter.write(

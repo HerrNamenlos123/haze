@@ -1964,10 +1964,8 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
         type: lowerTypeDef(lr, newFuncType),
         noreturn: originalFuncType.requires.noreturn,
         isLibraryLocal:
-          monomorphized &&
-          !exported &&
-          symbol.extern !== EExternLanguage.Extern_C &&
-          symbol.scope !== null,
+          monomorphized ||
+          (!exported && symbol.extern !== EExternLanguage.Extern_C && symbol.scope !== null),
         scope: null,
         sourceloc: symbol.sourceloc,
         externLanguage: symbol.extern,

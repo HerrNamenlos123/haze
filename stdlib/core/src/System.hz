@@ -2,7 +2,18 @@
 extern C noemit hzsys_panic(msg: ccstr, ...) :: final;
 
 namespace sys {
-    panic(msg: ccstr) :: noreturn {
+    export panic(msg: ccstr) :: noreturn {
         hzsys_panic(msg);
     }
+}
+
+extern C noemit hzsys_assert(condition: bool);
+extern C noemit hzsys_assert_msg(condition: bool, msg: str);
+
+export assert(condition: bool) {
+    hzsys_assert(condition);
+}
+
+export assert(condition: bool, msg: str)  {
+    hzsys_assert_msg(condition, msg);
 }

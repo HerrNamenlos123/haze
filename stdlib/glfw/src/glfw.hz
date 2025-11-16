@@ -158,7 +158,7 @@ export createWindow(config: WindowConfig): Window | none {
         widthI32 = width;
     }
     else {
-        assert(false);
+        assert(false, "FAIL");
     }
     if (height >= i32.min && height <= i32.max) {
         heightI32 = height;

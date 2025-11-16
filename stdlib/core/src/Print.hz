@@ -94,6 +94,11 @@ namespace fmt {
                 __c__("fwrite(s.data, 1, s.length, stdout);");
                 // builtin.printf("%s", arg);
             }
+            else if typeof(arg) == type<str> {
+                const s = arg;
+                __c__("fwrite(s.data, 1, s.length, stdout);");
+                // builtin.printf("%s", arg);
+            }
             else if typeof(arg) == bool {
                 if arg {
                     builtin.printf("true");

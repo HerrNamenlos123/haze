@@ -41,6 +41,7 @@ import {
   type ASTBlockScopeExpr,
   type ASTTypeDef,
   type ASTTypeAlias,
+  EOverloadedOperator,
 } from "../shared/AST";
 import {
   BrandedArray,
@@ -274,6 +275,7 @@ export namespace Collect {
     parentScope: Collect.ScopeId;
     staticMethod: boolean;
     overloadGroup: Collect.SymbolId;
+    overloadedOperator?: EOverloadedOperator;
     generics: Collect.SymbolId[];
     name: string;
     requires: FunctionRequiresBlock;
@@ -313,6 +315,7 @@ export namespace Collect {
     variant: ENode.FunctionOverloadGroupSymbol;
     parentScope: Collect.ScopeId;
     name: string;
+    overloadedOperator?: EOverloadedOperator;
     overloads: Set<Collect.SymbolId>;
   };
 
@@ -775,12 +778,17 @@ export namespace Collect {
 function makeOverloadGroupAvailable(
   cc: CollectionContext,
   parentScope: Collect.ScopeId,
-  name: string
+  name: string,
+  overloadedOperator: EOverloadedOperator | undefined
 ) {
   for (const group of cc.overloadGroups) {
     const og = cc.symbolNodes.get(group);
     assert(og.variant === Collect.ENode.FunctionOverloadGroupSymbol);
-    if (og.parentScope === parentScope && og.name === name) {
+    if (
+      og.parentScope === parentScope &&
+      og.name === name &&
+      og.overloadedOperator === overloadedOperator
+    ) {
       return [og, group] as const;
     }
   }
@@ -788,6 +796,7 @@ function makeOverloadGroupAvailable(
     variant: Collect.ENode.FunctionOverloadGroupSymbol,
     name: name,
     overloads: new Set(),
+    overloadedOperator: overloadedOperator,
     parentScope: parentScope,
   });
   cc.overloadGroups.add(gId);
@@ -1287,7 +1296,8 @@ function collectSymbol(
       const [overloadGroup, overloadGroupId] = makeOverloadGroupAvailable(
         cc,
         args.currentParentScope,
-        item.name
+        item.name,
+        item.operatorOverloading?.operator
       );
 
       if (item.static && item.methodType !== EMethodType.Method) {
@@ -1314,6 +1324,7 @@ function collectSymbol(
         parameters: parameters,
         parentScope: args.currentParentScope,
         methodType: item.methodType,
+        overloadedOperator: item.operatorOverloading?.operator,
         pub: item.pub,
         requires: {
           final: item.requires.final,

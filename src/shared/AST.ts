@@ -19,10 +19,14 @@ export enum EExternLanguage {
   Extern_C,
 }
 
-export enum EOperator {
+export enum EOverloadedOperator {
   Add,
   Sub,
-  As,
+  Mul,
+  Div,
+  Mod,
+  Subscript,
+  Cast,
 }
 
 export enum ELiteralUnit {
@@ -160,15 +164,29 @@ export type ASTFunctionRequiresBlock = {
   noreturn: boolean;
 };
 
+export type ASTFunctionOverloading =
+  | {
+      operator:
+        | EOverloadedOperator.Add
+        | EOverloadedOperator.Sub
+        | EOverloadedOperator.Mul
+        | EOverloadedOperator.Div
+        | EOverloadedOperator.Mod;
+    }
+  | {
+      operator: EOverloadedOperator.Cast;
+      // castTarget: ASTTypeUse;
+    }
+  | {
+      operator: EOverloadedOperator.Subscript;
+    };
+
 export type ASTFunctionDefinition = {
   variant: "FunctionDefinition";
   export: boolean;
   pub: boolean;
   externLanguage: EExternLanguage;
-  operatorOverloading?: {
-    operator: EOperator;
-    asTarget: ASTTypeUse;
-  };
+  operatorOverloading?: ASTFunctionOverloading;
   generics: {
     name: string;
     sourceloc: SourceLoc;

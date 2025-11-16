@@ -1,3 +1,0 @@
-
-__c__("#include <assert.h>");
-extern C noemit assert(condition: bool);

@@ -8,6 +8,7 @@ import {
   BinaryOperationToString,
   UnaryOperationToString,
   IncrOperationToString,
+  EOverloadedOperator,
 } from "../shared/AST";
 import {
   BrandedArray,
@@ -681,6 +682,9 @@ export class SemanticElaborator {
 
       case Collect.ENode.TypeLiteralExpr:
         return this.typeLiteral(expr);
+
+      case Collect.ENode.ArraySubscriptExpr:
+        return this.arraySubscript(expr);
 
       default:
         assert(false, "All cases handled: " + Collect.ENode[expr.variant]);
@@ -1666,7 +1670,8 @@ export class SemanticElaborator {
         }
 
         const expression = this.sr.exprNodes.get(passed.exprId);
-        if (expression.type !== p.type) {
+        console.info("TODO: Overload resolution must respect mutability");
+        if (this.sr.e.getTypeUse(expression.type).type !== this.sr.e.getTypeUse(p.type).type) {
           matches = false;
           reason = `Parameter #${i + 1} has unrelated type: ${Semantic.serializeTypeUse(
             this.sr,
@@ -2029,6 +2034,7 @@ export class SemanticElaborator {
           parentStructOrNS: parentStructOrNS,
           explicitLocalArena: false,
           explicitReturnArena: false,
+          overloadedOperator: func.overloadedOperator,
           noemit: func.noemit,
           extern: func.extern,
           parameterNames: parameterNames,
@@ -2663,6 +2669,8 @@ export class SemanticElaborator {
       if (
         sig.name === signature.name &&
         sig.parentStructOrNS === signature.parentStructOrNS &&
+        sig.genericPlaceholders.length === signature.genericPlaceholders.length &&
+        sig.genericPlaceholders.every((p, i) => signature.genericPlaceholders[i] === p) &&
         sig.parameters.length === signature.parameters.length &&
         sig.parameters.every((p, i) => signature.parameters[i].type === p.type)
       ) {
@@ -4126,41 +4134,148 @@ export class SemanticElaborator {
       );
     }
     const [value, valueId] = this.expr(arraySubscript.expr, undefined);
+
     const [index, indexId] = this.expr(arraySubscript.indices[0], undefined);
     const indexType = this.sr.typeDefNodes.get(this.sr.typeUseNodes.get(index.type).type);
-    if (
-      indexType.variant !== Semantic.ENode.PrimitiveDatatype ||
-      !Conversion.isInteger(indexType.primitive)
-    ) {
-      throw new CompilerError(
-        `Only integers can be used to index arrays`,
-        arraySubscript.sourceloc
-      );
-    }
 
+    const exprTypeUse = this.sr.e.getTypeUse(value.type);
+    const exprType = this.sr.e.getTypeDef(exprTypeUse.type);
     const valueType = this.sr.typeDefNodes.get(this.sr.typeUseNodes.get(value.type).type);
     if (
-      valueType.variant !== Semantic.ENode.FixedArrayDatatype &&
-      valueType.variant !== Semantic.ENode.DynamicArrayDatatype
+      exprType.variant === Semantic.ENode.FixedArrayDatatype ||
+      exprType.variant === Semantic.ENode.DynamicArrayDatatype
     ) {
+      if (
+        indexType.variant !== Semantic.ENode.PrimitiveDatatype ||
+        !Conversion.isInteger(indexType.primitive)
+      ) {
+        throw new CompilerError(
+          `Only integers can be used to index arrays`,
+          arraySubscript.sourceloc
+        );
+      }
+
+      if (
+        valueType.variant !== Semantic.ENode.FixedArrayDatatype &&
+        valueType.variant !== Semantic.ENode.DynamicArrayDatatype
+      ) {
+        throw new CompilerError(
+          `Expression of type ${Semantic.serializeTypeUse(
+            this.sr,
+            value.type
+          )} cannot be subscripted`,
+          arraySubscript.sourceloc
+        );
+      }
+
+      return Semantic.addExpr(this.sr, {
+        variant: Semantic.ENode.ArraySubscriptExpr,
+        instanceIds: [],
+        expr: valueId,
+        indices: [indexId],
+        type: valueType.datatype,
+        sourceloc: arraySubscript.sourceloc,
+        isTemporary: true,
+      });
+    } else if (exprType.variant === Semantic.ENode.StructDatatype) {
+      const overloads = new Set<Semantic.SymbolId>();
+
+      for (const mId of exprType.methods) {
+        const method = this.sr.e.getSymbol(mId);
+        assert(method.variant === Semantic.ENode.FunctionSymbol);
+
+        if (method.overloadedOperator === EOverloadedOperator.Subscript) {
+          overloads.add(mId);
+        }
+      }
+
+      // First try to find exact match
+      let exactMatchId = undefined as Semantic.SymbolId | undefined;
+      for (const mId of overloads) {
+        const method = this.sr.e.getSymbol(mId);
+        assert(method.variant === Semantic.ENode.FunctionSymbol);
+
+        const ftype = this.sr.e.getTypeDef(method.type);
+        assert(ftype.variant === Semantic.ENode.FunctionDatatype);
+
+        if (ftype.parameters.length !== 2) continue;
+        if (
+          this.sr.e.getTypeUse(ftype.parameters[1]).type !== this.sr.e.getTypeUse(index.type).type
+        ) {
+          continue;
+        }
+
+        // Exact match found
+        if (exactMatchId !== undefined) {
+          throw new CompilerError(`Operator access is ambiguous`, value.sourceloc);
+        }
+        exactMatchId = mId;
+      }
+      if (exactMatchId) {
+        const method = this.sr.e.getSymbol(exactMatchId);
+        assert(method.variant === Semantic.ENode.FunctionSymbol);
+
+        const ftype = this.sr.e.getTypeDef(method.type);
+        assert(ftype.variant === Semantic.ENode.FunctionDatatype);
+
+        const instanceIds: Semantic.InstanceId[] = [];
+        if (ftype.requires.autodest) {
+          instanceIds.push(Semantic.makeInstanceId(this.sr));
+        }
+
+        assert(this.inFunction);
+        const functionSymbol = this.sr.e.getSymbol(this.inFunction);
+        assert(functionSymbol.variant === Semantic.ENode.FunctionSymbol);
+        instanceIds.forEach((i) => functionSymbol.createsInstanceIds.add(i));
+
+        return Semantic.addExpr(this.sr, {
+          variant: Semantic.ENode.ExprCallExpr,
+          instanceIds: instanceIds,
+          arguments: [indexId],
+          calledExpr: Semantic.addExpr(this.sr, {
+            variant: Semantic.ENode.CallableExpr,
+            functionSymbol: exactMatchId,
+            instanceIds: [],
+            isTemporary: true,
+            sourceloc: arraySubscript.sourceloc,
+            thisExpr: valueId,
+            type: makeTypeUse(
+              this.sr,
+              Semantic.addType(this.sr, {
+                variant: Semantic.ENode.CallableDatatype,
+                thisExprType: value.type,
+                functionType: method.type,
+                concrete: true,
+              })[1],
+              EDatatypeMutability.Const,
+              false,
+              arraySubscript.sourceloc
+            )[1],
+          })[1],
+          inArena: null,
+          producesAllocation: ftype.requires.autodest,
+          type: ftype.returnType,
+          sourceloc: arraySubscript.sourceloc,
+          isTemporary: true,
+        });
+      }
+
       throw new CompilerError(
-        `Expression of type ${Semantic.serializeTypeUse(
+        `No exact overloaded operator in type '${Semantic.serializeTypeUse(
           this.sr,
           value.type
-        )} cannot be subscripted`,
-        arraySubscript.sourceloc
+        )}' for index type '${Semantic.serializeTypeUse(this.sr, index.type)}' is available`,
+        value.sourceloc
+      );
+    } else {
+      throw new CompilerError(
+        `Expression of type '${Semantic.serializeFullTypeUse(
+          this.sr,
+          value.type
+        )}' cannot be subscripted`,
+        value.sourceloc
       );
     }
-
-    return Semantic.addExpr(this.sr, {
-      variant: Semantic.ENode.ArraySubscriptExpr,
-      instanceIds: [],
-      expr: valueId,
-      indices: [indexId],
-      type: valueType.datatype,
-      sourceloc: arraySubscript.sourceloc,
-      isTemporary: true,
-    });
   }
 
   parenthesisExpr(parenthesisExpr: Collect.ParenthesisExpr, inference: Inference) {
@@ -5416,6 +5531,7 @@ export namespace Semantic {
     parameterPack: boolean;
     extern: EExternLanguage;
     scope: Semantic.BlockScopeId | null;
+    overloadedOperator?: EOverloadedOperator;
     export: boolean;
     createsInstanceIds: Set<Semantic.InstanceId>;
     returnsInstanceIds: Set<Semantic.InstanceId>;
@@ -6764,15 +6880,11 @@ export namespace Semantic {
 
     if (sr.typeDefNodes.get(typeInstance.type).variant !== Semantic.ENode.ParameterPackDatatype) {
       if (typeInstance.mutability === EDatatypeMutability.Const) {
-        if (def.wasMangled) {
-          def.name = "c" + def.name;
-          def.wasMangled = true;
-        }
+        def.name = "c" + def.name;
+        def.wasMangled = true;
       } else if (typeInstance.mutability === EDatatypeMutability.Mut) {
-        if (def.wasMangled) {
-          def.name = "m" + def.name;
-          def.wasMangled = true;
-        }
+        def.name = "m" + def.name;
+        def.wasMangled = true;
       }
     }
 

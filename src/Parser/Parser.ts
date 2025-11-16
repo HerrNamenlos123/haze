@@ -64,6 +64,8 @@ import {
   EVariableMutability,
   type ASTUnionDatatype,
   type ASTFunctionRequiresBlock,
+  type ASTFunctionOverloading,
+  EOverloadedOperator,
 } from "../shared/AST";
 import {
   BinaryExprContext,
@@ -747,13 +749,53 @@ class ASTTransformer extends HazeParserVisitor<any> {
   };
 
   visitStructMethod = (ctx: StructMethodContext): ASTFunctionDefinition[] => {
-    const names = ctx.ID().map((c) => c.getText());
+    const genericNames = ctx._generic.map((c) => {
+      assert(c.text);
+      return c.text;
+    });
     const params = this.visitParams(ctx.params());
 
-    const name = names[0];
+    assert(ctx._name?.text);
+    let name = ctx._name.text;
     let methodType = EMethodType.Method;
+    let operatorOverloading: ASTFunctionOverloading | undefined = undefined;
     if (name === "constructor") {
       methodType = EMethodType.Constructor;
+    } else if (name === "operator+") {
+      operatorOverloading = {
+        operator: EOverloadedOperator.Add,
+      };
+      name = "__operator_add";
+    } else if (name === "operator-") {
+      operatorOverloading = {
+        operator: EOverloadedOperator.Sub,
+      };
+      name = "__operator_sub";
+    } else if (name === "operator*") {
+      operatorOverloading = {
+        operator: EOverloadedOperator.Mul,
+      };
+      name = "__operator_mul";
+    } else if (name === "operator/") {
+      operatorOverloading = {
+        operator: EOverloadedOperator.Div,
+      };
+      name = "__operator_div";
+    } else if (name === "operator%") {
+      operatorOverloading = {
+        operator: EOverloadedOperator.Mod,
+      };
+      name = "__operator_mod";
+    } else if (name === "operator as") {
+      operatorOverloading = {
+        operator: EOverloadedOperator.Cast,
+      };
+      name = "__operator_cast";
+    } else if (name === "operator[]") {
+      operatorOverloading = {
+        operator: EOverloadedOperator.Subscript,
+      };
+      name = "__operator_subscript";
     }
 
     return [
@@ -765,15 +807,15 @@ class ASTTransformer extends HazeParserVisitor<any> {
         noemit: false,
         pub: false,
         methodType: methodType,
-        name: names[0],
+        name: name,
         static: Boolean(ctx._static_),
-        generics: names.slice(1).map((n) => ({
+        generics: genericNames.map((n) => ({
           name: n,
           sourceloc: this.loc(ctx), // TODO: Find a better sourceloc from the actual token, not the function
         })),
         requires: this.requires(ctx),
         ellipsis: params.ellipsis,
-        operatorOverloading: undefined,
+        operatorOverloading: operatorOverloading,
         returnType: (ctx.datatype() && this.visit(ctx.datatype()!)) || undefined,
         funcbody: (ctx.funcbody() && this.visit(ctx.funcbody()!)) || undefined,
         sourceloc: this.loc(ctx),
