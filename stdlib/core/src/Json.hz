@@ -117,6 +117,10 @@ struct JsonValue {
 
 export type Result<T, E> = union { Ok: T, Err: E, }
 
+foo(): Result<str, str> {
+    const a = try bar();
+}
+
 namespace JSON {
     parse(data: str) {
         return parseWithArena(fn.returnArena, data);
