@@ -22,8 +22,22 @@ extern C hzsys_json_get_object_item(arena: hzsys_arena_t, json: cJSON, name: str
 extern C hzsys_json_get_array_size(arena: hzsys_arena_t, json: cJSON): usize;
 extern C hzsys_json_get_array_item(arena: hzsys_arena_t, json: cJSON, index: usize): cJSON;
 
+extern C hzsys_json_add_item_to_object(arena: hzsys_arena_t, object: cJSON, name: str, item: cJSON): bool;
+
 extern C hzsys_json_print_unformatted(arena: hzsys_arena_t, json: cJSON): str;
 extern C hzsys_json_print(arena: hzsys_arena_t, json: cJSON): str;
+
+struct A {
+    outer: int;
+
+    struct B {
+        a: A;
+
+        method() {
+            return this.a.outer;
+        }
+    }
+}
 
 struct JsonValue {
     arena: Arena;
@@ -55,6 +69,28 @@ struct JsonValue {
             }
             else {
                 static_assert(false, "Type not supported");
+            }
+        }
+
+        operator[](index: str): Proxy {
+            // String access to a proxy, so the parent must be an object
+            if hzsys_json_object_has_attribute(this.json.data, this.attribute) {
+                // Already exists, check type
+                if !hzsys_json_is_object(this.json.data) {
+                    sys.panic("JSON was expected to be an object");
+                }
+
+                const obj = hzsys_json_get_object_item(this.json.arena.arenaImpl, this.json.data, this.attribute);
+                if obj {
+                    return { json: { arena: this.json.arena, data: obj }, attribute: index };
+                }
+                sys.panic("JSON object does not have attribute");
+            }
+            else {
+                // Does not exist yet, create
+                const newObj = hzsys_json_create_object(this.json.arena.arenaImpl);
+                hzsys_json_add_item_to_object(this.json.arena.arenaImpl, this.json.data, this.attribute, newObj);
+                return { json: { arena: this.json.arena, data: newObj }, attribute: index };
             }
         }
     }
@@ -106,7 +142,8 @@ export foobar() {
     // const a = json["naΩme"].to<str>();
     const a = json["name"].to<str>();
     const b = json["age"].to<real>();
-    fmt.println("Parsed:", a, b);
+    const c = json["nested"]["y"].to<str>();
+    fmt.println("Parsed:", a, b, c);
     // const b = json[187];
 }
 

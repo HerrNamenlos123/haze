@@ -27,6 +27,8 @@ cJSON* hzsys_json_get_object_item(hzsys_arena_t* arena, cJSON* json, hzsys_str_t
 hzsys_usize_t hzsys_json_get_array_size(hzsys_arena_t* arena, cJSON* json);
 cJSON* hzsys_json_get_array_item(hzsys_arena_t* arena, cJSON* json, hzsys_usize_t index);
 
+hzsys_bool_t hzsys_json_add_item_to_object(hzsys_arena_t* arena, cJSON* object, hzsys_str_t name, cJSON* item);
+
 hzsys_str_t hzsys_json_print_unformatted(hzsys_arena_t* arena, cJSON* json);
 hzsys_str_t hzsys_json_print(hzsys_arena_t* arena, cJSON* json);
 

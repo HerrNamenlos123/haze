@@ -1363,110 +1363,139 @@ export class SemanticElaborator {
       const structScope = this.sr.cc.scopeNodes.get(definedStructType.structScope);
       assert(structScope.variant === Collect.ENode.StructScope);
 
+      const elaborateMember = (symbol: Collect.VariableSymbol) => {
+        assert(symbol.type);
+        const typeId = this.withContext(
+          {
+            context: Semantic.isolateElaborationContext(this.currentContext, {
+              // Start lookup in the struct itself, these are members, so both the type and
+              // its generics must be found from within the struct
+              currentScope: definedStructType.structScope,
+              genericsScope: definedStructType.structScope,
+              constraints: [],
+              instanceDeps: {
+                instanceDependsOn: new Map(),
+                structMembersDependOn: new Map(),
+                symbolDependsOn: new Map(),
+              },
+            }),
+          },
+          () => {
+            return this.lookupAndElaborateDatatype(symbol.type!);
+          }
+        );
+        const typeInstance = this.sr.typeUseNodes.get(typeId);
+        const type = this.sr.typeDefNodes.get(typeInstance.type);
+        const [variable, variableId] = Semantic.addSymbol(this.sr, {
+          variant: Semantic.ENode.VariableSymbol,
+          name: symbol.name,
+          export: false,
+          extern: EExternLanguage.None,
+          mutability: EVariableMutability.Default,
+          sourceloc: symbol.sourceloc,
+          memberOfStruct: structId,
+          type: typeId,
+          variableContext: EVariableContext.MemberOfStruct,
+          parentStructOrNS: structId,
+          comptime: false,
+          comptimeValue: null,
+          concrete: type.concrete,
+        });
+        struct.members.push(variableId);
+        const defaultValue = definedStructType.defaultMemberValues.find(
+          (v) => v.name === symbol.name
+        );
+        if (defaultValue) {
+          const value = this.sr.cc.exprNodes.get(defaultValue.value);
+          let defaultExprId: Semantic.ExprId;
+          if (value.variant === Collect.ENode.SymbolValueExpr && value.name === "default") {
+            if (value.genericArgs.length !== 0) {
+              throw new CompilerError(
+                `'default' initializer cannot take any generics`,
+                symbol.sourceloc
+              );
+            }
+            defaultExprId = Conversion.MakeDefaultValue(this.sr, typeId, symbol.sourceloc);
+          } else {
+            defaultExprId = this.expr(defaultValue.value, {
+              gonnaInstantiateStructWithType: variable.type,
+              unsafe: false,
+            })[1];
+          }
+          struct.memberDefaultValues.push({
+            memberName: variable.name,
+            value: Conversion.MakeConversionOrThrow(
+              this.sr,
+              defaultExprId,
+              typeId,
+              [],
+              symbol.sourceloc,
+              Conversion.Mode.Implicit,
+              false
+            ),
+          });
+        }
+      };
+
+      const elaborateMethod = (symbol: Collect.FunctionOverloadGroupSymbol) => {
+        symbol.overloads.forEach((overloadId) => {
+          const overloadedFunc = this.sr.cc.symbolNodes.get(overloadId);
+          assert(overloadedFunc.variant === Collect.ENode.FunctionSymbol);
+          if (
+            overloadedFunc.generics.length !== 0 ||
+            funcSymHasParameterPack(this.sr.cc, overloadId)
+          ) {
+            return;
+          }
+          const signature = this.elaborateFunctionSignature(overloadId);
+          const funcId = this.elaborateFunctionSymbol(signature, structId, []);
+          const func = this.sr.symbolNodes.get(funcId);
+          assert(funcId && func && func.variant === Semantic.ENode.FunctionSymbol);
+          struct.methods.push(funcId);
+        });
+      };
+
+      const elaborateTypedef = (symbol: Collect.TypeDefSymbol) => {
+        const def = this.sr.cc.typeDefNodes.get(symbol.typeDef);
+        if (def.variant === Collect.ENode.StructTypeDef) {
+          if (def.generics.length !== 0) {
+            return;
+          }
+          // If the nested struct is not generic, instantiate it without generics for early errors
+          const subStructId = this.instantiateAndElaborateStructWithGenerics(
+            symbol.typeDef,
+            [],
+            def.sourceloc
+          );
+          struct.nestedStructs.push(subStructId);
+        }
+      };
+
+      // FIRST elaborate types and members
       structScope.symbols.forEach((symbolId) => {
         const symbol = this.sr.cc.symbolNodes.get(symbolId);
         if (symbol.variant === Collect.ENode.VariableSymbol) {
-          assert(symbol.type);
-          const typeId = this.withContext(
-            {
-              context: Semantic.isolateElaborationContext(this.currentContext, {
-                // Start lookup in the struct itself, these are members, so both the type and
-                // its generics must be found from within the struct
-                currentScope: definedStructType.structScope,
-                genericsScope: definedStructType.structScope,
-                constraints: [],
-                instanceDeps: {
-                  instanceDependsOn: new Map(),
-                  structMembersDependOn: new Map(),
-                  symbolDependsOn: new Map(),
-                },
-              }),
-            },
-            () => {
-              return this.lookupAndElaborateDatatype(symbol.type!);
-            }
-          );
-          const typeInstance = this.sr.typeUseNodes.get(typeId);
-          const type = this.sr.typeDefNodes.get(typeInstance.type);
-          const [variable, variableId] = Semantic.addSymbol(this.sr, {
-            variant: Semantic.ENode.VariableSymbol,
-            name: symbol.name,
-            export: false,
-            extern: EExternLanguage.None,
-            mutability: EVariableMutability.Default,
-            sourceloc: symbol.sourceloc,
-            memberOfStruct: structId,
-            type: typeId,
-            variableContext: EVariableContext.MemberOfStruct,
-            parentStructOrNS: structId,
-            comptime: false,
-            comptimeValue: null,
-            concrete: type.concrete,
-          });
-          struct.members.push(variableId);
-          const defaultValue = definedStructType.defaultMemberValues.find(
-            (v) => v.name === symbol.name
-          );
-          if (defaultValue) {
-            const value = this.sr.cc.exprNodes.get(defaultValue.value);
-            let defaultExprId: Semantic.ExprId;
-            if (value.variant === Collect.ENode.SymbolValueExpr && value.name === "default") {
-              if (value.genericArgs.length !== 0) {
-                throw new CompilerError(
-                  `'default' initializer cannot take any generics`,
-                  symbol.sourceloc
-                );
-              }
-              defaultExprId = Conversion.MakeDefaultValue(this.sr, typeId, symbol.sourceloc);
-            } else {
-              defaultExprId = this.expr(defaultValue.value, {
-                gonnaInstantiateStructWithType: variable.type,
-                unsafe: false,
-              })[1];
-            }
-            struct.memberDefaultValues.push({
-              memberName: variable.name,
-              value: Conversion.MakeConversionOrThrow(
-                this.sr,
-                defaultExprId,
-                typeId,
-                [],
-                symbol.sourceloc,
-                Conversion.Mode.Implicit,
-                false
-              ),
-            });
-          }
+          elaborateMember(symbol);
         } else if (symbol.variant === Collect.ENode.FunctionOverloadGroupSymbol) {
-          symbol.overloads.forEach((overloadId) => {
-            const overloadedFunc = this.sr.cc.symbolNodes.get(overloadId);
-            assert(overloadedFunc.variant === Collect.ENode.FunctionSymbol);
-            if (
-              overloadedFunc.generics.length !== 0 ||
-              funcSymHasParameterPack(this.sr.cc, overloadId)
-            ) {
-              return;
-            }
-            const signature = this.elaborateFunctionSignature(overloadId);
-            const funcId = this.elaborateFunctionSymbol(signature, structId, []);
-            const func = this.sr.symbolNodes.get(funcId);
-            assert(funcId && func && func.variant === Semantic.ENode.FunctionSymbol);
-            struct.methods.push(funcId);
-          });
+          // Do not do functions yet, they may refer to members
         } else if (symbol.variant === Collect.ENode.TypeDefSymbol) {
-          const def = this.sr.cc.typeDefNodes.get(symbol.typeDef);
-          if (def.variant === Collect.ENode.StructTypeDef) {
-            if (def.generics.length !== 0) {
-              return;
-            }
-            // If the nested struct is not generic, instantiate it without generics for early errors
-            const subStructId = this.instantiateAndElaborateStructWithGenerics(
-              symbol.typeDef,
-              [],
-              def.sourceloc
-            );
-            struct.nestedStructs.push(subStructId);
-          }
+          // Do not do typedefs including sub-structs yet, they may refer to members
+        } else if (symbol.variant === Collect.ENode.GenericTypeParameterSymbol) {
+          // Skip this, don't elaborate, it's only used for resolving and instantiation
+        } else {
+          assert(false, "unexpected type: " + symbol.variant);
+        }
+      });
+
+      // NOW elaborate methods (as they may refer to members of the parent)
+      structScope.symbols.forEach((symbolId) => {
+        const symbol = this.sr.cc.symbolNodes.get(symbolId);
+        if (symbol.variant === Collect.ENode.VariableSymbol) {
+          // already done
+        } else if (symbol.variant === Collect.ENode.FunctionOverloadGroupSymbol) {
+          elaborateMethod(symbol);
+        } else if (symbol.variant === Collect.ENode.TypeDefSymbol) {
+          elaborateTypedef(symbol);
         } else if (symbol.variant === Collect.ENode.GenericTypeParameterSymbol) {
           // Skip this, don't elaborate, it's only used for resolving and instantiation
         } else {

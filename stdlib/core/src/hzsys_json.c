@@ -94,6 +94,11 @@ cJSON* hzsys_json_get_array_item(hzsys_arena_t* arena, cJSON* json, size_t index
   return cJSON_GetArrayItem(json, index);
 }
 
+hzsys_bool_t hzsys_json_add_item_to_object(hzsys_arena_t* arena, cJSON* object, hzsys_str_t name, cJSON* item)
+{
+  return cJSON_AddItemToObject(object, hzsys_cstr_from_str(arena, name), item);
+}
+
 hzsys_str_t hzsys_json_print_unformatted(hzsys_arena_t* arena, cJSON* json)
 {
   hzsys_json_use_arena(arena);

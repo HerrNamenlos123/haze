@@ -13,6 +13,58 @@ import { getModuleGlobalNamespaceName, ModuleType, type ModuleConfig } from "../
 import { assert, InternalError, printWarningMessage } from "../shared/Errors";
 import { OutputWriter } from "./OutputWriter";
 
+function escapeStringForC(str: string): [string, number] {
+  let escaped = "";
+  let byteLength = 0;
+
+  for (const char of str) {
+    const code = char.codePointAt(0);
+    if (code === undefined) continue;
+
+    switch (char) {
+      case '"':
+        escaped += '\\"';
+        byteLength += 1;
+        break;
+      case "\\":
+        escaped += "\\\\";
+        byteLength += 1;
+        break;
+      case "\n":
+        escaped += "\\n";
+        byteLength += 1;
+        break;
+      case "\r":
+        escaped += "\\r";
+        byteLength += 1;
+        break;
+      case "\t":
+        escaped += "\\t";
+        byteLength += 1;
+        break;
+      case "\0":
+        escaped += "\\0";
+        byteLength += 1;
+        break;
+      default:
+        if (code >= 0x20 && code <= 0x7e) {
+          // Printable ASCII
+          escaped += char;
+          byteLength += 1;
+        } else if (code <= 0xffff) {
+          escaped += `\\u${code.toString(16).padStart(4, "0")}`;
+          byteLength += Buffer.from(char).length;
+        } else {
+          // code > 0xffff, surrogate pair
+          escaped += `\\U${code.toString(16).padStart(8, "0")}`;
+          byteLength += Buffer.from(char).length;
+        }
+    }
+  }
+
+  return [escaped, byteLength];
+}
+
 class CodeGenerator {
   private out = {
     includes: new OutputWriter(),
@@ -1017,12 +1069,8 @@ class CodeGenerator {
         } else if (expr.literal.type === EPrimitive.ccstr) {
           outWriter.write(`(hzsys_ccstr_t)(${JSON.stringify(expr.literal.value)})`);
         } else if (expr.literal.type === EPrimitive.str) {
-          const value = expr.literal.value;
-          outWriter.write(
-            `(hzsys_str_t){ .data=(hzsys_ccstr_t)${JSON.stringify(value)}, .length=${
-              value.length
-            } }`
-          );
+          const [value, length] = escapeStringForC(expr.literal.value);
+          outWriter.write(`(hzsys_str_t){ .data="${value}", .length=${length} }`);
         } else if (expr.literal.type === EPrimitive.bool) {
           outWriter.write(
             `(${this.primitiveToC(expr.literal.type)})(${expr.literal.value ? "1" : "0"})`
