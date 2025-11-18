@@ -1,9 +1,9 @@
 
-extern C noemit struct hzsys_str_ref_t {
+extern C noemit struct hzstd_str_ref_t {
     data: str;
 };
 
-extern C hzsys_cstr_from_str(arena: hzsys_arena_t, data: str): cstr;
+extern C hzstd_cstr_from_str(arena: hzstd_arena_t, data: str): cstr;
 
-extern C hzsys_str_from_cstr_ref(data: cstr): str;
-extern C hzsys_str_from_cstr_dup(arena: hzsys_arena_t, data: cstr): str;
+extern C hzstd_str_from_cstr_ref(data: cstr): str;
+extern C hzstd_str_from_cstr_dup(arena: hzstd_arena_t, data: cstr): str;

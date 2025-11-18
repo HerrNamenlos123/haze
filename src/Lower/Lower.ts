@@ -934,7 +934,7 @@ function lowerExpr(
 
         const [result, resultId] = makeIntrinsicCall(
           lr,
-          "HZSYS_ALLOC_STRUCT",
+          "HZSTD_ALLOC_STRUCT",
           [arenaId, structTypeExprId, structPtrTypeExprId, structExprId],
           structType
         );
@@ -943,7 +943,7 @@ function lowerExpr(
         //   variant: Lowered.ENode.ExplicitCastExpr,
         //   expr: makeIntrinsicCall(
         //     lr,
-        //     "hzsys_arena_allocate",
+        //     "hzstd_arena_allocate",
         //     [
         //       Lowered.addExpr(lr, {
         //         variant: Lowered.ENode.MemberAccessExpr,
@@ -1709,8 +1709,8 @@ function lowerBlockScope(
         Lowered.addExpr(lr, {
           variant: Lowered.ENode.SymbolValueExpr,
           name: {
-            mangledName: "HZSYS_DEFAULT_ARENA_CHUNK_SIZE",
-            prettyName: "HZSYS_DEFAULT_ARENA_CHUNK_SIZE",
+            mangledName: "HZSTD_DEFAULT_ARENA_CHUNK_SIZE",
+            prettyName: "HZSTD_DEFAULT_ARENA_CHUNK_SIZE",
             wasMangled: false,
           },
           type: loweredArenaType,
@@ -1719,8 +1719,8 @@ function lowerBlockScope(
       expr: Lowered.addExpr(lr, {
         variant: Lowered.ENode.SymbolValueExpr,
         name: {
-          mangledName: "hzsys_arena_create_and_attach_subarena",
-          prettyName: "hzsys_arena_create_and_attach_subarena",
+          mangledName: "hzstd_arena_create_and_attach_subarena",
+          prettyName: "hzstd_arena_create_and_attach_subarena",
           wasMangled: false,
         },
         type: makeLowerTypeUse(
@@ -1749,7 +1749,7 @@ function lowerBlockScope(
     storeInTempVarAndGet(
       lr,
       loweredArenaType,
-      makeIntrinsicCall(lr, "HZSYS_MAKE_LOCAL_ARENA", [], loweredArenaType)[1],
+      makeIntrinsicCall(lr, "HZSTD_MAKE_LOCAL_ARENA", [], loweredArenaType)[1],
       null,
       statements,
       "__hz_local_arena"
@@ -1813,7 +1813,7 @@ function lowerBlockScope(
   if (createLocalArena) {
     const [destroy, destroyId] = makeIntrinsicCall(
       lr,
-      "HZSYS_DESTROY_LOCAL_ARENA",
+      "HZSTD_DESTROY_LOCAL_ARENA",
       [
         Lowered.addExpr(lr, {
           variant: Lowered.ENode.SymbolValueExpr,

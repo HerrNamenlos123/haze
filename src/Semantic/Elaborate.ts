@@ -6963,7 +6963,7 @@ export namespace Semantic {
 
       case Semantic.ENode.PrimitiveDatatype: {
         return {
-          name: "hzsys_" + primitiveToString(type.primitive) + "_t",
+          name: "hzstd_" + primitiveToString(type.primitive) + "_t",
           wasMangled: false,
         };
       }

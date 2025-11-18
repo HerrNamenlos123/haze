@@ -1,31 +1,31 @@
 
 extern C noemit struct cJSON {};
 
-extern C hzsys_json_parse(arena: hzsys_arena_t, data: str, error: hzsys_str_ref_t): cJSON | none;
-extern C hzsys_json_create_string(arena: hzsys_arena_t, data: str): cJSON;
-extern C hzsys_json_create_object(arena: hzsys_arena_t): cJSON;
+extern C hzstd_json_parse(arena: hzstd_arena_t, data: str, error: hzstd_str_ref_t): cJSON | none;
+extern C hzstd_json_create_string(arena: hzstd_arena_t, data: str): cJSON;
+extern C hzstd_json_create_object(arena: hzstd_arena_t): cJSON;
 
-extern C hzsys_json_object_has_attribute(json: cJSON, name: str): bool;
-extern C hzsys_json_is_string(json: cJSON): bool;
-extern C hzsys_json_is_object(json: cJSON): bool;
-extern C hzsys_json_is_bool(json: cJSON): bool;
-extern C hzsys_json_is_true(json: cJSON): bool;
-extern C hzsys_json_is_false(json: cJSON): bool;
-extern C hzsys_json_is_number(json: cJSON): bool;
-extern C hzsys_json_is_array(json: cJSON): bool;
-extern C hzsys_json_is_null(json: cJSON): bool;
+extern C hzstd_json_object_has_attribute(json: cJSON, name: str): bool;
+extern C hzstd_json_is_string(json: cJSON): bool;
+extern C hzstd_json_is_object(json: cJSON): bool;
+extern C hzstd_json_is_bool(json: cJSON): bool;
+extern C hzstd_json_is_true(json: cJSON): bool;
+extern C hzstd_json_is_false(json: cJSON): bool;
+extern C hzstd_json_is_number(json: cJSON): bool;
+extern C hzstd_json_is_array(json: cJSON): bool;
+extern C hzstd_json_is_null(json: cJSON): bool;
 
-extern C hzsys_json_get_string_value(arena: hzsys_arena_t, json: cJSON): hzsys_str_ref_t | none;
-extern C hzsys_json_get_number_value(arena: hzsys_arena_t, json: cJSON): real;
+extern C hzstd_json_get_string_value(arena: hzstd_arena_t, json: cJSON): hzstd_str_ref_t | none;
+extern C hzstd_json_get_number_value(arena: hzstd_arena_t, json: cJSON): real;
 
-extern C hzsys_json_get_object_item(arena: hzsys_arena_t, json: cJSON, name: str): cJSON | none;
-extern C hzsys_json_get_array_size(arena: hzsys_arena_t, json: cJSON): usize;
-extern C hzsys_json_get_array_item(arena: hzsys_arena_t, json: cJSON, index: usize): cJSON;
+extern C hzstd_json_get_object_item(arena: hzstd_arena_t, json: cJSON, name: str): cJSON | none;
+extern C hzstd_json_get_array_size(arena: hzstd_arena_t, json: cJSON): usize;
+extern C hzstd_json_get_array_item(arena: hzstd_arena_t, json: cJSON, index: usize): cJSON;
 
-extern C hzsys_json_add_item_to_object(arena: hzsys_arena_t, object: cJSON, name: str, item: cJSON): bool;
+extern C hzstd_json_add_item_to_object(arena: hzstd_arena_t, object: cJSON, name: str, item: cJSON): bool;
 
-extern C hzsys_json_print_unformatted(arena: hzsys_arena_t, json: cJSON): str;
-extern C hzsys_json_print(arena: hzsys_arena_t, json: cJSON): str;
+extern C hzstd_json_print_unformatted(arena: hzstd_arena_t, json: cJSON): str;
+extern C hzstd_json_print(arena: hzstd_arena_t, json: cJSON): str;
 
 struct A {
     outer: int;
@@ -49,9 +49,9 @@ struct JsonValue {
 
         to<T>() {
             if comptime T == type<str> {
-                const obj = hzsys_json_get_object_item(this.json.arena.arenaImpl, this.json.data, this.attribute);
+                const obj = hzstd_json_get_object_item(this.json.arena.arenaImpl, this.json.data, this.attribute);
                 if obj {
-                    const value = hzsys_json_get_string_value(this.json.arena.arenaImpl, obj);
+                    const value = hzstd_json_get_string_value(this.json.arena.arenaImpl, obj);
                     if value {
                         return value.data;
                     }
@@ -60,9 +60,9 @@ struct JsonValue {
                 sys.panic("JSON object does not have attribute");
             } 
             else if T == type<real> {
-                const obj = hzsys_json_get_object_item(this.json.arena.arenaImpl, this.json.data, this.attribute);
+                const obj = hzstd_json_get_object_item(this.json.arena.arenaImpl, this.json.data, this.attribute);
                 if obj {
-                    const value = hzsys_json_get_number_value(this.json.arena.arenaImpl, obj);
+                    const value = hzstd_json_get_number_value(this.json.arena.arenaImpl, obj);
                     return value;
                 }
                 sys.panic("JSON object does not have attribute");
@@ -74,13 +74,13 @@ struct JsonValue {
 
         operator[](index: str): Proxy {
             // String access to a proxy, so the parent must be an object
-            if hzsys_json_object_has_attribute(this.json.data, this.attribute) {
+            if hzstd_json_object_has_attribute(this.json.data, this.attribute) {
                 // Already exists, check type
-                if !hzsys_json_is_object(this.json.data) {
+                if !hzstd_json_is_object(this.json.data) {
                     sys.panic("JSON was expected to be an object");
                 }
 
-                const obj = hzsys_json_get_object_item(this.json.arena.arenaImpl, this.json.data, this.attribute);
+                const obj = hzstd_json_get_object_item(this.json.arena.arenaImpl, this.json.data, this.attribute);
                 if obj {
                     return { json: { arena: this.json.arena, data: obj }, attribute: index };
                 }
@@ -88,8 +88,8 @@ struct JsonValue {
             }
             else {
                 // Does not exist yet, create
-                const newObj = hzsys_json_create_object(this.json.arena.arenaImpl);
-                hzsys_json_add_item_to_object(this.json.arena.arenaImpl, this.json.data, this.attribute, newObj);
+                const newObj = hzstd_json_create_object(this.json.arena.arenaImpl);
+                hzstd_json_add_item_to_object(this.json.arena.arenaImpl, this.json.data, this.attribute, newObj);
                 return { json: { arena: this.json.arena, data: newObj }, attribute: index };
             }
         }
@@ -121,9 +121,9 @@ namespace JSON {
     }
 
     parseWithArena(arena: Arena, data: str) {
-        let error = hzsys_str_ref_t { data: "" };
+        let error = hzstd_str_ref_t { data: "" };
 
-        const cjson = hzsys_json_parse(arena.arenaImpl, data, error);
+        const cjson = hzstd_json_parse(arena.arenaImpl, data, error);
         if cjson {
             return JsonValue {
                 arena: arena,

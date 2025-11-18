@@ -106,7 +106,7 @@ class CodeGenerator {
       const ns = getModuleGlobalNamespaceName(config.name, config.version);
       this.out.function_definitions
         .writeLine(`int __hz_result = _HN${ns.length}${ns}4mainEv();`)
-        // .writeLine(`hzsys_arena_cleanup_and_free(parent_arena->arenaImpl);`)
+        // .writeLine(`hzstd_arena_cleanup_and_free(parent_arena->arenaImpl);`)
         .writeLine(`return __hz_result;`)
         .popIndent()
         .writeLine("}");
@@ -166,10 +166,10 @@ class CodeGenerator {
     this.includeSystemHeader("string.h");
     this.includeSystemHeader("math.h");
 
-    if (this.config.hzsysLocation) {
-      this.includeLocalHeader(this.config.hzsysLocation + "/hzsys.h");
+    if (this.config.hzstdLocation) {
+      this.includeLocalHeader(this.config.hzstdLocation + "/hzstd.h");
     } else {
-      this.includeLocalHeader("hzsys.h");
+      this.includeLocalHeader("hzstd.h");
     }
 
     const sortedLoweredTypeDefs: (Lowered.TypeDef | Lowered.TypeUse)[] = [];
@@ -186,7 +186,7 @@ class CodeGenerator {
 
     for (const symbol of sortedLoweredTypeDefs) {
       if (symbol.variant === Lowered.ENode.PrimitiveDatatype) {
-        // All primitives are handled in hzsys
+        // All primitives are handled in hzstd
       } else if (symbol.variant === Lowered.ENode.StructDatatype) {
         if (!symbol.noemit) {
           this.out.type_declarations.writeLine(
@@ -369,7 +369,7 @@ class CodeGenerator {
 
   primitiveToC(primitive: EPrimitive) {
     assert(primitive !== EPrimitive.null, "null should be handled specially");
-    return "hzsys_" + primitiveToString(primitive) + "_t";
+    return "hzstd_" + primitiveToString(primitive) + "_t";
   }
 
   mangleTypeDef(type: Lowered.TypeDef | Lowered.TypeDefId): string {
@@ -435,7 +435,7 @@ class CodeGenerator {
     const leftType = this.lr.typeUseNodes.get(left.type);
     const rightType = this.lr.typeUseNodes.get(right.type);
 
-    return `hzsys_arithmetic_${opStr}_${this.mangleName(plainResultType.name)}`;
+    return `hzstd_arithmetic_${opStr}_${this.mangleName(plainResultType.name)}`;
   }
 
   emitFunction(symbolId: Lowered.FunctionId) {
@@ -1053,7 +1053,7 @@ class CodeGenerator {
         tempWriter.write(length.temp);
 
         outWriter.write(
-          `(hzsys_str_t){ .data=(hzsys_ccstr_t)${data.out.get()}, .length=${length.out.get()} }`
+          `(hzstd_str_t){ .data=(hzstd_ccstr_t)${data.out.get()}, .length=${length.out.get()} }`
         );
         return { out: outWriter, temp: tempWriter };
       }
@@ -1065,12 +1065,12 @@ class CodeGenerator {
         }
 
         if (expr.literal.type === EPrimitive.cstr) {
-          outWriter.write(`(hzsys_cstr_t)(${JSON.stringify(expr.literal.value)})`);
+          outWriter.write(`(hzstd_cstr_t)(${JSON.stringify(expr.literal.value)})`);
         } else if (expr.literal.type === EPrimitive.ccstr) {
-          outWriter.write(`(hzsys_ccstr_t)(${JSON.stringify(expr.literal.value)})`);
+          outWriter.write(`(hzstd_ccstr_t)(${JSON.stringify(expr.literal.value)})`);
         } else if (expr.literal.type === EPrimitive.str) {
           const [value, length] = escapeStringForC(expr.literal.value);
-          outWriter.write(`(hzsys_str_t){ .data="${value}", .length=${length} }`);
+          outWriter.write(`(hzstd_str_t){ .data="${value}", .length=${length} }`);
         } else if (expr.literal.type === EPrimitive.bool) {
           outWriter.write(
             `(${this.primitiveToC(expr.literal.type)})(${expr.literal.value ? "1" : "0"})`
