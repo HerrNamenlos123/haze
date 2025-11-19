@@ -62,11 +62,12 @@ import {
   type ASTArraySliceExpr,
   EDatatypeMutability,
   EVariableMutability,
-  type ASTUnionDatatype,
+  type ASTUntaggedUnionDatatype,
   type ASTFunctionRequiresBlock,
   type ASTFunctionOverloading,
   EOverloadedOperator,
   type ASTExprIsTypeExpr,
+  type ASTTaggedUnionDatatype,
 } from "../shared/AST";
 import {
   BinaryExprContext,
@@ -135,7 +136,6 @@ import {
   TopLevelDeclarationsContext,
   DynamicArrayDatatypeContext,
   StackArrayDatatypeContext,
-  UnionDatatypeContext,
   RequiresBlockContext,
   RequiresFinalContext,
   StructContentWithSourcelocContext,
@@ -143,6 +143,8 @@ import {
   RequiresInParensContext,
   RequiresNoreturnContext,
   ExprIsTypeExprContext,
+  UntaggedUnionDatatypeContext,
+  TaggedUnionDatatypeContext,
 } from "./grammar/autogen/HazeParser";
 import {
   BaseErrorListener,
@@ -588,15 +590,28 @@ class ASTTransformer extends HazeParserVisitor<any> {
     };
   };
 
-  visitUnionDatatype = (ctx: UnionDatatypeContext): ASTUnionDatatype => {
+  visitUntaggedUnionDatatype = (ctx: UntaggedUnionDatatypeContext): ASTUntaggedUnionDatatype => {
     const members = ctx.baseDatatype().map((d) => this.visit(d));
 
+    // This is every normal variable: A union with only one variant
     if (members.length === 1) {
       return members[0];
     }
 
     return {
-      variant: "UnionDatatype",
+      variant: "UntaggedUnionDatatype",
+      members: members,
+      sourceloc: this.loc(ctx),
+    };
+  };
+
+  visitTaggedUnionDatatype = (ctx: TaggedUnionDatatypeContext): ASTTaggedUnionDatatype => {
+    const members = ctx.baseDatatype().map((d, index) => ({
+      tag: ctx.ID()[index].getText(),
+      type: this.visit(d),
+    }));
+    return {
+      variant: "TaggedUnionDatatype",
       members: members,
       sourceloc: this.loc(ctx),
     };
@@ -1219,7 +1234,10 @@ class ASTTransformer extends HazeParserVisitor<any> {
         }
         break;
 
-      case "UnionDatatype":
+      case "UntaggedUnionDatatype":
+        break;
+
+      case "TaggedUnionDatatype":
         break;
 
       default:

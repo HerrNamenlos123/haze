@@ -210,7 +210,10 @@ class CodeGenerator {
         this.out.type_declarations.writeLine(
           `typedef ${this.mangleTypeUse(symbol.referee)}* ${this.mangleTypeDef(symbol)};`
         );
-      } else if (symbol.variant === Lowered.ENode.UnionDatatype) {
+      } else if (
+        symbol.variant === Lowered.ENode.UntaggedUnionDatatype ||
+        symbol.variant === Lowered.ENode.TaggedUnionDatatype
+      ) {
         if (symbol.optimizeAsRawPointer) {
           this.out.type_declarations.writeLine(
             `typedef ${this.mangleTypeUse(symbol.optimizeAsRawPointer)} ${this.mangleTypeDef(
@@ -226,11 +229,15 @@ class CodeGenerator {
             .pushIndent();
           this.out.type_definitions.writeLine(`uint8_t tag;`);
           this.out.type_definitions.writeLine(`union {`).pushIndent();
-          symbol.members.forEach((m, i) => {
+          const members =
+            symbol.variant === Lowered.ENode.UntaggedUnionDatatype
+              ? symbol.members
+              : symbol.members.map((m) => m.type);
+          members.forEach((m, i) => {
             this.out.type_definitions.writeLine(`${this.mangleTypeUse(m)} as_tag_${i};`);
           });
           this.out.type_definitions.writeLine(`char as_bytes[sizeof(union{`).pushIndent();
-          symbol.members.forEach((m, i) => {
+          members.forEach((m, i) => {
             this.out.type_definitions.writeLine(`${this.mangleTypeUse(m)} as_tag_${i};`);
           });
           this.out.type_definitions.popIndent().writeLine(`})];`);
@@ -354,10 +361,16 @@ class CodeGenerator {
         appliedTypes.add(type);
         processTypeUse(type.datatype);
         sortedLoweredTypes.push(type);
-      } else if (type.variant === Lowered.ENode.UnionDatatype) {
+      } else if (type.variant === Lowered.ENode.UntaggedUnionDatatype) {
         appliedTypes.add(type);
         for (const m of type.members) {
           processTypeUse(m);
+        }
+        sortedLoweredTypes.push(type);
+      } else if (type.variant === Lowered.ENode.TaggedUnionDatatype) {
+        appliedTypes.add(type);
+        for (const m of type.members) {
+          processTypeUse(m.type);
         }
         sortedLoweredTypes.push(type);
       } else {
@@ -742,7 +755,10 @@ class CodeGenerator {
         tempWriter.write(exprWriter.temp);
         const typeUse = this.lr.typeUseNodes.get(expr.type);
         const union = this.lr.typeDefNodes.get(typeUse.type);
-        assert(union.variant === Lowered.ENode.UnionDatatype);
+        assert(
+          union.variant === Lowered.ENode.UntaggedUnionDatatype ||
+            union.variant === Lowered.ENode.TaggedUnionDatatype
+        );
 
         if (union.optimizeAsRawPointer) {
           if (expr.optimizeExprToNullptr) {
@@ -767,7 +783,7 @@ class CodeGenerator {
         tempWriter.write(exprWriter.temp);
         const typeUse = this.lr.typeUseNodes.get(this.lr.exprNodes.get(expr.expr).type);
         const union = this.lr.typeDefNodes.get(typeUse.type);
-        assert(union.variant === Lowered.ENode.UnionDatatype);
+        assert(union.variant === Lowered.ENode.UntaggedUnionDatatype);
 
         if (union.optimizeAsRawPointer) {
           outWriter.write(`(${this.emitExpr(expr.expr).out.get()})`);
@@ -782,7 +798,7 @@ class CodeGenerator {
         tempWriter.write(exprWriter.temp);
         const typeUse = this.lr.typeUseNodes.get(expr.type);
         const union = this.lr.typeDefNodes.get(typeUse.type);
-        assert(union.variant === Lowered.ENode.UnionDatatype);
+        assert(union.variant === Lowered.ENode.UntaggedUnionDatatype);
 
         if (union.optimizeAsRawPointer) {
           assert(false, "not implemented yet");
@@ -809,7 +825,7 @@ class CodeGenerator {
         tempWriter.write(exprWriter.temp);
         const typeUse = this.lr.typeUseNodes.get(expr.type);
         const union = this.lr.typeDefNodes.get(typeUse.type);
-        assert(union.variant === Lowered.ENode.UnionDatatype);
+        assert(union.variant === Lowered.ENode.UntaggedUnionDatatype);
 
         if (union.optimizeAsRawPointer) {
           assert(false, "Union Tag Checking with null pointer optimization is not implemented yet");

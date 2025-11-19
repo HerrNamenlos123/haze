@@ -221,9 +221,18 @@ export type ASTNamedDatatype = {
   sourceloc: SourceLoc;
 };
 
-export type ASTUnionDatatype = {
-  variant: "UnionDatatype";
+export type ASTUntaggedUnionDatatype = {
+  variant: "UntaggedUnionDatatype";
   members: ASTTypeUse[];
+  sourceloc: SourceLoc;
+};
+
+export type ASTTaggedUnionDatatype = {
+  variant: "TaggedUnionDatatype";
+  members: {
+    tag: string;
+    type: ASTTypeUse;
+  }[];
   sourceloc: SourceLoc;
 };
 
@@ -259,7 +268,8 @@ export type ASTParameterPackDatatype = {
 };
 
 export type ASTTypeUse =
-  | ASTUnionDatatype
+  | ASTUntaggedUnionDatatype
+  | ASTTaggedUnionDatatype
   | ASTNamedDatatype
   | ASTFunctionDatatype
   | ASTDeferredType

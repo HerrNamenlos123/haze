@@ -152,7 +152,8 @@ export namespace Collect {
     NamedDatatype,
     StackArrayDatatype,
     DynamicArrayDatatype,
-    UnionDatatype,
+    UntaggedUnionDatatype,
+    TaggedUnionDatatype,
     ParameterPack,
     StructTypeDef,
     NamespaceSharedInstance,
@@ -437,9 +438,18 @@ export namespace Collect {
     sourceloc: SourceLoc;
   };
 
-  export type UnionDatatype = {
-    variant: ENode.UnionDatatype;
+  export type UntaggedUnionDatatype = {
+    variant: ENode.UntaggedUnionDatatype;
     members: Collect.TypeUseId[];
+    sourceloc: SourceLoc;
+  };
+
+  export type TaggedUnionDatatype = {
+    variant: ENode.TaggedUnionDatatype;
+    members: {
+      tag: string;
+      type: Collect.TypeUseId;
+    }[];
     sourceloc: SourceLoc;
   };
 
@@ -453,7 +463,8 @@ export namespace Collect {
     | FunctionDatatype
     | StackArrayDatatype
     | DynamicArrayDatatype
-    | UnionDatatype
+    | UntaggedUnionDatatype
+    | TaggedUnionDatatype
     | ParameterPack;
 
   /// ===============================================================
@@ -1260,10 +1271,24 @@ function collectTypeUse(
     // =================================================================================================================
     // =================================================================================================================
 
-    case "UnionDatatype":
+    case "UntaggedUnionDatatype":
       return Collect.makeTypeUse(cc, {
-        variant: Collect.ENode.UnionDatatype,
+        variant: Collect.ENode.UntaggedUnionDatatype,
         members: item.members.map((m) => collectTypeUse(cc, m, args)),
+        sourceloc: item.sourceloc,
+      })[1];
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
+    case "TaggedUnionDatatype":
+      return Collect.makeTypeUse(cc, {
+        variant: Collect.ENode.TaggedUnionDatatype,
+        members: item.members.map((m) => ({
+          tag: m.tag,
+          type: collectTypeUse(cc, m.type, args),
+        })),
         sourceloc: item.sourceloc,
       })[1];
 
@@ -2204,7 +2229,7 @@ export function printCollectedDatatype(
       return `[]${printCollectedDatatype(cc, type.datatype)}`;
     }
 
-    case Collect.ENode.UnionDatatype: {
+    case Collect.ENode.UntaggedUnionDatatype: {
       return "(" + type.members.map((m) => printCollectedDatatype(cc, m)).join(" | ") + ")";
     }
 

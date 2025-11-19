@@ -28,6 +28,7 @@ INLINE: 'inline';
 AUTODEST: 'autodest';
 NORETURN: 'noreturn';
 FINAL: 'final';
+UNION: 'union';
 SOURCE_LOCATION_DIRECTIVE: '#source';
 
 OPERATORSUBSCRIPT: 'operator[]';

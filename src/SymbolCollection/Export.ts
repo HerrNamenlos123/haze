@@ -105,8 +105,14 @@ function printType(cc: CollectionContext, typeId: Collect.TypeUseId): string {
       return "...";
     }
 
-    case Collect.ENode.UnionDatatype: {
+    case Collect.ENode.UntaggedUnionDatatype: {
       return "(" + type.members.map((m) => printType(cc, m)).join(" | ") + ")";
+    }
+
+    case Collect.ENode.TaggedUnionDatatype: {
+      return (
+        "union { " + type.members.map((m) => `${m.tag}: ${printType(cc, m.type)}`).join(",") + " }"
+      );
     }
 
     case Collect.ENode.FunctionDatatype: {
@@ -116,7 +122,7 @@ function printType(cc: CollectionContext, typeId: Collect.TypeUseId): string {
     }
 
     default:
-      assert(false, (type as any).variant.toString());
+      assert(false, Collect.ENode[(type as any).variant]);
   }
 }
 

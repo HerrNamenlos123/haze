@@ -53,7 +53,8 @@ export namespace Lowered {
     NamespaceDatatype,
     ArrayDatatype,
     SliceDatatype,
-    UnionDatatype,
+    UntaggedUnionDatatype,
+    TaggedUnionDatatype,
     // Type Use
     TypeUse,
     // Statements
@@ -505,7 +506,8 @@ export namespace Lowered {
     | PointerDatatypeDef
     | ArrayDatatypeDef
     | SliceDatatypeDef
-    | UnionDatatypeDef;
+    | UntaggedUnionDatatypeDef
+    | TaggedUnionDatatypeDef;
 
   export type PointerDatatypeDef = {
     variant: ENode.PointerDatatype;
@@ -558,9 +560,19 @@ export namespace Lowered {
     name: NameSet;
   };
 
-  export type UnionDatatypeDef = {
-    variant: ENode.UnionDatatype;
+  export type UntaggedUnionDatatypeDef = {
+    variant: ENode.UntaggedUnionDatatype;
     members: TypeUseId[];
+    optimizeAsRawPointer: TypeUseId | null;
+    name: NameSet;
+  };
+
+  export type TaggedUnionDatatypeDef = {
+    variant: ENode.TaggedUnionDatatype;
+    members: {
+      tag: string;
+      type: TypeUseId;
+    }[];
     optimizeAsRawPointer: TypeUseId | null;
     name: NameSet;
   };
@@ -1335,11 +1347,17 @@ function lowerExpr(
 
     case Semantic.ENode.ValueToUnionCastExpr: {
       const exprType = lr.sr.typeDefNodes.get(lr.sr.typeUseNodes.get(expr.type).type);
-      assert(exprType.variant === Semantic.ENode.UnionDatatype);
+      assert(
+        exprType.variant === Semantic.ENode.UntaggedUnionDatatype ||
+          exprType.variant === Semantic.ENode.TaggedUnionDatatype
+      );
 
       const loweredUnionId = lowerTypeUse(lr, expr.type);
       const loweredUnion = lr.typeDefNodes.get(lr.typeUseNodes.get(loweredUnionId).type);
-      assert(loweredUnion.variant === Lowered.ENode.UnionDatatype);
+      assert(
+        loweredUnion.variant === Lowered.ENode.UntaggedUnionDatatype ||
+          loweredUnion.variant === Lowered.ENode.TaggedUnionDatatype
+      );
 
       let optimizeExprToNullptr = false;
       if (loweredUnion.optimizeAsRawPointer) {
@@ -1366,11 +1384,11 @@ function lowerExpr(
     case Semantic.ENode.UnionToValueCastExpr: {
       const sourceExpr = lr.sr.exprNodes.get(expr.expr);
       const sourceType = lr.sr.typeDefNodes.get(lr.sr.typeUseNodes.get(sourceExpr.type).type);
-      assert(sourceType.variant === Semantic.ENode.UnionDatatype);
+      assert(sourceType.variant === Semantic.ENode.UntaggedUnionDatatype);
 
       const loweredUnionId = lowerTypeUse(lr, sourceExpr.type);
       const loweredUnion = lr.typeDefNodes.get(lr.typeUseNodes.get(loweredUnionId).type);
-      assert(loweredUnion.variant === Lowered.ENode.UnionDatatype);
+      assert(loweredUnion.variant === Lowered.ENode.UntaggedUnionDatatype);
 
       let optimizeExprToNullptr = false;
       if (loweredUnion.optimizeAsRawPointer) {
@@ -1395,19 +1413,19 @@ function lowerExpr(
     case Semantic.ENode.UnionToUnionCastExpr: {
       const sourceExpr = lr.sr.exprNodes.get(expr.expr);
       const sourceType = lr.sr.typeDefNodes.get(lr.sr.typeUseNodes.get(sourceExpr.type).type);
-      assert(sourceType.variant === Semantic.ENode.UnionDatatype);
+      assert(sourceType.variant === Semantic.ENode.UntaggedUnionDatatype);
 
       const loweredSourceUnionId = lowerTypeUse(lr, sourceExpr.type);
       const loweredSourceUnion = lr.typeDefNodes.get(
         lr.typeUseNodes.get(loweredSourceUnionId).type
       );
-      assert(loweredSourceUnion.variant === Lowered.ENode.UnionDatatype);
+      assert(loweredSourceUnion.variant === Lowered.ENode.UntaggedUnionDatatype);
 
       const loweredTargetUnionId = lowerTypeUse(lr, expr.type);
       const loweredTargetUnion = lr.typeDefNodes.get(
         lr.typeUseNodes.get(loweredTargetUnionId).type
       );
-      assert(loweredTargetUnion.variant === Lowered.ENode.UnionDatatype);
+      assert(loweredTargetUnion.variant === Lowered.ENode.UntaggedUnionDatatype);
 
       let optimizeExprToNullptr = false;
       if (loweredSourceUnion.optimizeAsRawPointer || loweredTargetUnion.optimizeAsRawPointer) {
@@ -1458,11 +1476,11 @@ function lowerExpr(
     case Semantic.ENode.UnionTagCheckExpr: {
       const sourceExpr = lr.sr.exprNodes.get(expr.expr);
       const sourceType = lr.sr.typeDefNodes.get(lr.sr.typeUseNodes.get(sourceExpr.type).type);
-      assert(sourceType.variant === Semantic.ENode.UnionDatatype);
+      assert(sourceType.variant === Semantic.ENode.UntaggedUnionDatatype);
 
       const loweredUnionId = lowerTypeUse(lr, sourceExpr.type);
       const loweredUnion = lr.typeDefNodes.get(lr.typeUseNodes.get(loweredUnionId).type);
-      assert(loweredUnion.variant === Lowered.ENode.UnionDatatype);
+      assert(loweredUnion.variant === Lowered.ENode.UntaggedUnionDatatype);
 
       const comparisonType = lowerTypeUse(lr, expr.comparisonType);
 
@@ -1644,7 +1662,7 @@ function lowerTypeDef(lr: Lowered.Module, typeId: Semantic.TypeDefId): Lowered.T
       lr.loweredTypeDefs.set(typeId, pId);
       return pId;
     }
-  } else if (type.variant === Semantic.ENode.UnionDatatype) {
+  } else if (type.variant === Semantic.ENode.UntaggedUnionDatatype) {
     if (lr.loweredTypeDefs.has(typeId)) {
       return lr.loweredTypeDefs.get(typeId)!;
     } else {
@@ -1674,7 +1692,7 @@ function lowerTypeDef(lr: Lowered.Module, typeId: Semantic.TypeDefId): Lowered.T
       // Do another cache lookup for deduplication
       for (const [id, unionId] of lr.loweredTypeDefs) {
         const union = lr.typeDefNodes.get(unionId);
-        if (union.variant === Lowered.ENode.UnionDatatype) {
+        if (union.variant === Lowered.ENode.UntaggedUnionDatatype) {
           if (
             union.optimizeAsRawPointer === optimizeAsRawPointer &&
             union.members.length === canonicalMembers.length &&
@@ -1685,10 +1703,41 @@ function lowerTypeDef(lr: Lowered.Module, typeId: Semantic.TypeDefId): Lowered.T
         }
       }
 
-      const [p, pId] = Lowered.addTypeDef<Lowered.UnionDatatypeDef>(lr, {
-        variant: Lowered.ENode.UnionDatatype,
+      const [p, pId] = Lowered.addTypeDef<Lowered.UntaggedUnionDatatypeDef>(lr, {
+        variant: Lowered.ENode.UntaggedUnionDatatype,
         members: canonicalMembers,
         optimizeAsRawPointer: optimizeAsRawPointer,
+        name: Semantic.makeNameSetTypeDef(lr.sr, typeId),
+      });
+      lr.loweredTypeDefs.set(typeId, pId);
+      return pId;
+    }
+  } else if (type.variant === Semantic.ENode.TaggedUnionDatatype) {
+    if (lr.loweredTypeDefs.has(typeId)) {
+      return lr.loweredTypeDefs.get(typeId)!;
+    } else {
+      const members = type.members.map((m) => ({
+        tag: m.tag,
+        type: lowerTypeUse(lr, m.type),
+      }));
+
+      // Do another cache lookup for deduplication
+      for (const [id, unionId] of lr.loweredTypeDefs) {
+        const union = lr.typeDefNodes.get(unionId);
+        if (union.variant === Lowered.ENode.TaggedUnionDatatype) {
+          if (
+            union.members.length === members.length &&
+            union.members.every((m, i) => m.tag === members[i].tag && m.type === members[i].type)
+          ) {
+            return unionId;
+          }
+        }
+      }
+
+      const [p, pId] = Lowered.addTypeDef<Lowered.TaggedUnionDatatypeDef>(lr, {
+        variant: Lowered.ENode.TaggedUnionDatatype,
+        members: members,
+        optimizeAsRawPointer: null,
         name: Semantic.makeNameSetTypeDef(lr.sr, typeId),
       });
       lr.loweredTypeDefs.set(typeId, pId);

@@ -525,9 +525,33 @@ export class SemanticElaborator {
         inArena,
         callExpr.sourceloc
       );
+    } else if (calledExprType.variant === Semantic.ENode.UnionTagRefDatatype) {
+      assert(calledExpr.variant === Semantic.ENode.UnionTagReferenceExpr);
+      const union = this.sr.typeDefNodes.get(calledExpr.unionType);
+      const tagname = calledExpr.tag;
+      assert(union.variant === Semantic.ENode.TaggedUnionDatatype);
+      const index = union.members.findIndex((m) => m.tag === tagname);
+      assert(index !== -1);
+      const typeOfTag = union.members[index].type;
+
+      return Semantic.addExpr(this.sr, {
+        variant: Semantic.ENode.ValueToUnionCastExpr,
+        expr: convertArgs(getActualCallingArguments([typeOfTag]), [typeOfTag], false)[0],
+        instanceIds: [],
+        isTemporary: true,
+        index: index,
+        sourceloc: callExpr.sourceloc,
+        type: makeTypeUse(
+          this.sr,
+          calledExpr.unionType,
+          EDatatypeMutability.Default,
+          false,
+          calledExpr.sourceloc
+        )[1],
+      });
     } else if (calledExprType.variant === Semantic.ENode.PrimitiveDatatype) {
       throw new CompilerError(
-        `Expression of type ${primitiveToString(calledExprType.primitive)} is not callable`,
+        `Expression of type ${Semantic.serializeTypeUse(this.sr, calledExpr.type)} is not callable`,
         callExpr.sourceloc
       );
     }
@@ -2227,7 +2251,7 @@ export class SemanticElaborator {
               } else if (symbol.returnedDatatypes.size === 1) {
                 inferredReturnType = [...symbol.returnedDatatypes][0];
               } else {
-                inferredReturnType = this.sr.b.unionTypeUse(
+                inferredReturnType = this.sr.b.untaggedUnionTypeUse(
                   [...symbol.returnedDatatypes],
                   symbol.sourceloc
                 );
@@ -2590,9 +2614,17 @@ export class SemanticElaborator {
         return this.sr.b.paramPackTypeUse(EDatatypeMutability.Default, type.sourceloc);
       }
 
-      case Collect.ENode.UnionDatatype: {
+      case Collect.ENode.UntaggedUnionDatatype: {
         const rawMembers = type.members.map((m) => this.lookupAndElaborateDatatype(m));
-        return this.sr.b.unionTypeUse(rawMembers, type.sourceloc);
+        return this.sr.b.untaggedUnionTypeUse(rawMembers, type.sourceloc);
+      }
+
+      case Collect.ENode.TaggedUnionDatatype: {
+        const rawMembers = type.members.map((m) => ({
+          tag: m.tag,
+          type: this.lookupAndElaborateDatatype(m.type),
+        }));
+        return this.sr.b.taggedUnionTypeUse(rawMembers, type.sourceloc);
       }
 
       // =================================================================================================================
@@ -3103,16 +3135,38 @@ export class SemanticElaborator {
           );
         }
       }
-
-      throw new CompilerError(
-        `Datatype ${Semantic.serializeTypeUse(sr, typeUseId)} does not have a member named '${
-          memberAccessExpr.memberName
-        }'`,
-        memberAccessExpr.sourceloc
-      );
-    } else {
-      assert(false, datatypeValue.variant.toString());
+    } else if (datatypeValue.variant === Semantic.ENode.TaggedUnionDatatype) {
+      if (!datatypeValue.members.find((m) => m.tag === memberAccessExpr.memberName)) {
+        throw new CompilerError(
+          `Type ${Semantic.serializeTypeUse(sr, typeUseId)} does not have a tag named '${
+            memberAccessExpr.memberName
+          }'`,
+          memberAccessExpr.sourceloc
+        );
+      }
+      return Semantic.addExpr(this.sr, {
+        variant: Semantic.ENode.UnionTagReferenceExpr,
+        instanceIds: [],
+        isTemporary: true,
+        tag: memberAccessExpr.memberName,
+        unionType: datatypeValueInstance.type,
+        type: makeTypeUse(
+          this.sr,
+          this.sr.b.unionTagRefTypeDef(),
+          EDatatypeMutability.Default,
+          false,
+          memberAccessExpr.sourceloc
+        )[1],
+        sourceloc: memberAccessExpr.sourceloc,
+      });
     }
+
+    throw new CompilerError(
+      `Datatype ${Semantic.serializeTypeUse(sr, typeUseId)} does not have a member named '${
+        memberAccessExpr.memberName
+      }'`,
+      memberAccessExpr.sourceloc
+    );
   }
 
   elaborateStatement(statementId: Collect.StatementId, inference: Inference): Semantic.StatementId {
@@ -3499,18 +3553,15 @@ export class SemanticElaborator {
         }
         const value = valueId && this.sr.exprNodes.get(valueId);
 
-        if (value?.variant === Semantic.ENode.DatatypeAsValueExpr) {
-          throw new CompilerError(
-            `A struct/namespace datatype cannot be written into a variable`,
-            value.sourceloc
-          );
-        }
-
         if ((!valueId || !value) && !uninitialized) {
           throw new CompilerError(
             `Variable '${variableSymbol.name}' requires an initialization value`,
             s.sourceloc
           );
+        }
+
+        if (value?.variant === Semantic.ENode.DatatypeAsValueExpr) {
+          throw new CompilerError(`A variable cannot be assigned a datatype`, value.sourceloc);
         }
 
         if (!variableSymbol.type) {
@@ -3546,6 +3597,16 @@ export class SemanticElaborator {
         ) {
           throw new CompilerError(
             `A variable cannot be assigned a 'void' value`,
+            value?.sourceloc || s.sourceloc
+          );
+        }
+
+        if (variableSymbolTypeDef.variant === Semantic.ENode.UnionTagRefDatatype) {
+          throw new CompilerError(
+            `A variable cannot be assigned a value of type ${Semantic.serializeTypeDef(
+              this.sr,
+              variableSymbolType.type
+            )}`,
             value?.sourceloc || s.sourceloc
           );
         }
@@ -3865,7 +3926,7 @@ export class SemanticElaborator {
 
     if (
       expr.variant === Semantic.ENode.SymbolValueExpr &&
-      exprTypeDef.variant === Semantic.ENode.UnionDatatype
+      exprTypeDef.variant === Semantic.ENode.UntaggedUnionDatatype
     ) {
       const memberDefs = exprTypeDef.members.map((m) => this.sr.typeUseNodes.get(m).type);
       if (memberDefs.includes(this.sr.b.nullTypeDef())) {
@@ -4060,7 +4121,7 @@ export class SemanticElaborator {
         );
 
         const type = this.sr.typeDefNodes.get(this.sr.typeUseNodes.get(elaboratedSymbol.type).type);
-        if (type.variant === Semantic.ENode.UnionDatatype) {
+        if (type.variant === Semantic.ENode.UntaggedUnionDatatype) {
           const narrowing = Conversion.typeNarrowing(this.sr);
           narrowing.addVariants(type.members);
           narrowing.constrainFromConstraints(this.currentContext.constraints, symbolValueExprId);
@@ -4247,7 +4308,7 @@ export class SemanticElaborator {
     const sourceExprTypeUse = this.getTypeUse(sourceExpr.type);
     const sourceExprTypeDef = this.getTypeDef(sourceExprTypeUse.type);
 
-    if (sourceExprTypeDef.variant === Semantic.ENode.UnionDatatype) {
+    if (sourceExprTypeDef.variant === Semantic.ENode.UntaggedUnionDatatype) {
       if (!sourceExprTypeDef.members.includes(comparisonType)) {
         throw new CompilerError(
           `This comparison is always false, as '${Semantic.serializeTypeUse(
@@ -5192,14 +5253,14 @@ export class SemanticBuilder {
     })[1];
   }
 
-  unionTypeUse(members: Semantic.TypeUseId[], sourceloc: SourceLoc) {
+  untaggedUnionTypeUse(members: Semantic.TypeUseId[], sourceloc: SourceLoc) {
     const canonicalMemberSet = new Set<Semantic.TypeUseId>();
 
     const processMember = (mId: Semantic.TypeUseId) => {
       const mUse = this.sr.e.getTypeUse(mId);
       const mDef = this.sr.e.getTypeDef(mUse.type);
 
-      if (mDef.variant === Semantic.ENode.UnionDatatype) {
+      if (mDef.variant === Semantic.ENode.UntaggedUnionDatatype) {
         for (const i of mDef.members) {
           processMember(i);
         }
@@ -5282,9 +5343,23 @@ export class SemanticBuilder {
     return makeTypeUse(
       this.sr,
       Semantic.addType(this.sr, {
-        variant: Semantic.ENode.UnionDatatype,
+        variant: Semantic.ENode.UntaggedUnionDatatype,
         members: canonicalMembers,
         concrete: !members.some((m) => !isTypeConcrete(this.sr, m)),
+      })[1],
+      EDatatypeMutability.Const,
+      false,
+      sourceloc
+    )[1];
+  }
+
+  taggedUnionTypeUse(members: { tag: string; type: Semantic.TypeUseId }[], sourceloc: SourceLoc) {
+    return makeTypeUse(
+      this.sr,
+      Semantic.addType(this.sr, {
+        variant: Semantic.ENode.TaggedUnionDatatype,
+        members: members,
+        concrete: !members.some((m) => !isTypeConcrete(this.sr, m.type)),
       })[1],
       EDatatypeMutability.Const,
       false,
@@ -5320,9 +5395,16 @@ export class SemanticBuilder {
     return makeRawPrimitiveAvailable(this.sr, EPrimitive.none);
   }
 
+  unionTagRefTypeDef() {
+    return Semantic.addType(this.sr, {
+      variant: Semantic.ENode.UnionTagRefDatatype,
+      concrete: true,
+    })[1];
+  }
+
   doesUnionContain(unionId: Semantic.TypeUseId, typeId: Semantic.TypeUseId) {
     const union = this.sr.typeDefNodes.get(this.sr.typeUseNodes.get(unionId).type);
-    assert(union.variant === Semantic.ENode.UnionDatatype);
+    assert(union.variant === Semantic.ENode.UntaggedUnionDatatype);
 
     return union.members.some((m) => m === typeId);
   }
@@ -5624,7 +5706,9 @@ export namespace Semantic {
     NamespaceDatatype,
     FixedArrayDatatype,
     DynamicArrayDatatype,
-    UnionDatatype,
+    UntaggedUnionDatatype,
+    TaggedUnionDatatype,
+    UnionTagRefDatatype,
     // Statements
     InlineCStatement,
     WhileStatement,
@@ -5641,6 +5725,7 @@ export namespace Semantic {
     ExprCallExpr,
     SymbolValueExpr,
     DatatypeAsValueExpr,
+    UnionTagReferenceExpr,
     SizeofExpr,
     AlignofExpr,
     ExplicitCastExpr,
@@ -5878,9 +5963,23 @@ export namespace Semantic {
     concrete: boolean;
   };
 
-  export type UnionDatatypeDef = {
-    variant: ENode.UnionDatatype;
+  export type UntaggedUnionDatatypeDef = {
+    variant: ENode.UntaggedUnionDatatype;
     members: TypeUseId[];
+    concrete: boolean;
+  };
+
+  export type TaggedUnionDatatypeDef = {
+    variant: ENode.TaggedUnionDatatype;
+    members: {
+      tag: string;
+      type: TypeUseId;
+    }[];
+    concrete: boolean;
+  };
+
+  export type UnionTagRefDatatypeDef = {
+    variant: ENode.UnionTagRefDatatype;
     concrete: boolean;
   };
 
@@ -5909,9 +6008,11 @@ export namespace Semantic {
     | FixedArrayDatatypeDef
     | DynamicArrayDatatypeDef
     | ParameterPackDatatypeDef
-    | UnionDatatypeDef
+    | UntaggedUnionDatatypeDef
+    | TaggedUnionDatatypeDef
     | CallableDatatypeDef
-    | PrimitiveDatatypeDef;
+    | PrimitiveDatatypeDef
+    | UnionTagRefDatatypeDef;
 
   export type TypeUse = {
     type: TypeDefId;
@@ -5960,6 +6061,16 @@ export namespace Semantic {
   export type DatatypeAsValueExpr = {
     variant: ENode.DatatypeAsValueExpr;
     instanceIds: InstanceId[];
+    type: TypeUseId;
+    isTemporary: boolean;
+    sourceloc: SourceLoc;
+  };
+
+  export type UnionTagReferenceExpr = {
+    variant: ENode.UnionTagReferenceExpr;
+    instanceIds: InstanceId[];
+    unionType: TypeDefId;
+    tag: string;
     type: TypeUseId;
     isTemporary: boolean;
     sourceloc: SourceLoc;
@@ -6194,6 +6305,7 @@ export namespace Semantic {
     | ExprMemberAccessExpr
     | SymbolValueExpr
     | DatatypeAsValueExpr
+    | UnionTagReferenceExpr
     | SizeofExpr
     | AlignofExpr
     | BlockScopeExpr
@@ -6965,9 +7077,20 @@ export namespace Semantic {
           datatype.datatype
         )}`;
 
-      case Semantic.ENode.UnionDatatype: {
-        const canonicalMembers = 0;
+      case Semantic.ENode.UntaggedUnionDatatype: {
         return datatype.members.map((m) => serializeTypeUse(sr, m)).join(" | ");
+      }
+
+      case Semantic.ENode.TaggedUnionDatatype: {
+        return (
+          "union { " +
+          datatype.members.map((m) => `${m.tag}: ${serializeTypeUse(sr, m.type)}`).join(", ") +
+          " }"
+        );
+      }
+
+      case Semantic.ENode.UnionTagRefDatatype: {
+        return "<union-tag>";
       }
 
       case Semantic.ENode.ParameterPackDatatype:
@@ -7248,13 +7371,24 @@ export namespace Semantic {
         };
       }
 
-      case Semantic.ENode.UnionDatatype: {
+      case Semantic.ENode.UntaggedUnionDatatype: {
         return {
           name:
             "U" +
             type.members.length.toString() +
             "_" +
             type.members.map((m) => mangleTypeUse(sr, m).name).join("_"),
+          wasMangled: true,
+        };
+      }
+
+      case Semantic.ENode.TaggedUnionDatatype: {
+        return {
+          name:
+            "tU" +
+            type.members.length.toString() +
+            "_" +
+            type.members.map((m) => `${m.tag}${mangleTypeUse(sr, m.type).name}`).join("_"),
           wasMangled: true,
         };
       }

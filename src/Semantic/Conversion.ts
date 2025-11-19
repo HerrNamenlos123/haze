@@ -274,11 +274,21 @@ export namespace Conversion {
         );
       }
 
-      case Semantic.ENode.UnionDatatype: {
-        assert(bt.variant === Semantic.ENode.UnionDatatype);
+      case Semantic.ENode.UntaggedUnionDatatype: {
+        assert(bt.variant === Semantic.ENode.UntaggedUnionDatatype);
         if (
           at.members.length === bt.members.length &&
           at.members.every((a, i) => a === bt.members[i])
+        )
+          return true;
+        return false;
+      }
+
+      case Semantic.ENode.TaggedUnionDatatype: {
+        assert(bt.variant === Semantic.ENode.TaggedUnionDatatype);
+        if (
+          at.members.length === bt.members.length &&
+          at.members.every((a, i) => a.tag === bt.members[i].tag && a.type === bt.members[i].type)
         )
           return true;
         return false;
@@ -976,7 +986,7 @@ export namespace Conversion {
     }
 
     // Union Conversions: Value to Union (simple)
-    if (to.variant === Semantic.ENode.UnionDatatype) {
+    if (to.variant === Semantic.ENode.UntaggedUnionDatatype) {
       const matching = to.members.findIndex((m) => {
         // Check Direct match
         if (m === fromExpr.type) {
@@ -1017,8 +1027,8 @@ export namespace Conversion {
 
     // Union to Union conversion
     if (
-      fromType.variant === Semantic.ENode.UnionDatatype &&
-      to.variant === Semantic.ENode.UnionDatatype
+      fromType.variant === Semantic.ENode.UntaggedUnionDatatype &&
+      to.variant === Semantic.ENode.UntaggedUnionDatatype
     ) {
       const membersFrom = typeNarrowing(sr);
       membersFrom.addVariants(fromType.members);
@@ -1043,7 +1053,7 @@ export namespace Conversion {
     }
 
     // Union Conversions: Union to Value (complex)
-    if (fromType.variant === Semantic.ENode.UnionDatatype) {
+    if (fromType.variant === Semantic.ENode.UntaggedUnionDatatype) {
       const members = typeNarrowing(sr);
       members.addVariants(fromType.members);
       members.constrainFromConstraints(constraints, fromExprId);
