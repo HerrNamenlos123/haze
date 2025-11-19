@@ -359,6 +359,10 @@ export type ASTTypeAlias = {
   variant: "TypeAlias";
   name: string;
   datatype: ASTTypeUse;
+  generics: {
+    name: string;
+    sourceloc: SourceLoc;
+  }[];
   export: boolean;
   pub: boolean;
   extern: EExternLanguage;

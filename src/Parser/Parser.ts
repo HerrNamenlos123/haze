@@ -1024,13 +1024,25 @@ class ASTTransformer extends HazeParserVisitor<any> {
   };
 
   visitTypeAliasDirective = (ctx: TypeAliasDirectiveContext): ASTTypeAlias => {
+    assert(ctx._name !== null && ctx._name !== undefined);
+    assert(ctx._name.text);
+
+    const generics = ctx
+      .ID()
+      .slice(1)
+      .map((g) => g.getText());
+
     return {
       variant: "TypeAlias",
       datatype: this.visit(ctx.datatype()),
       export: Boolean(ctx._export_),
       extern: this.exlang(ctx),
+      generics: generics.map((p) => ({
+        name: p,
+        sourceloc: this.loc(ctx), // TODO: Find a better sourceloc from the actual token, not the function
+      })),
       pub: Boolean(ctx._pub),
-      name: ctx.ID().getText(),
+      name: ctx._name.text,
       sourceloc: this.loc(ctx),
     };
   };

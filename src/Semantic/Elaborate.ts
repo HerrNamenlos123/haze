@@ -2473,43 +2473,84 @@ export class SemanticElaborator {
         } else if (found.variant === Collect.ENode.TypeDefSymbol) {
           const typedef = this.sr.cc.typeDefNodes.get(found.typeDef);
           if (typedef.variant === Collect.ENode.TypeDefAlias) {
-            const aliasedTypeId = this.lookupAndElaborateDatatype(typedef.target);
-            if (type.innerNested) {
-              const aliasedType = this.sr.typeDefNodes.get(
-                this.sr.typeUseNodes.get(aliasedTypeId).type
-              );
-              if (aliasedType.variant !== Semantic.ENode.NamespaceDatatype) {
-                throw new CompilerError(
-                  `Type '${Semantic.serializeTypeUse(
-                    this.sr,
-                    aliasedTypeId
-                  )}' cannot be used as a namespace`,
-                  type.sourceloc
-                );
-              }
-              const collectedNamespace = this.sr.cc.typeDefNodes.get(
-                aliasedType.collectedNamespace
-              );
-              assert(collectedNamespace.variant === Collect.ENode.NamespaceTypeDef);
+            const generics = type.genericArgs.map((g) => {
               return this.withContext(
                 {
-                  context: Semantic.isolateElaborationContext(this.currentContext, {
-                    currentScope: collectedNamespace.namespaceScope,
-                    genericsScope: this.currentContext.genericsScope,
-                    constraints: [],
-                    instanceDeps: {
-                      instanceDependsOn: new Map(),
-                      structMembersDependOn: new Map(),
-                      symbolDependsOn: new Map(),
-                    },
-                  }),
+                  context: this.currentContext,
                 },
-                () => {
-                  return this.lookupAndElaborateDatatype(type.innerNested!);
-                }
+                () => this.expressionAsGenericArg(g)
+              );
+            });
+
+            if (typedef.generics.length !== generics.length) {
+              throw new CompilerError(
+                `Type ${typedef.name} expects ${typedef.generics.length} type parameters but got ${generics.length}`,
+                typedef.sourceloc
               );
             }
-            return aliasedTypeId;
+            let context = this.currentContext;
+            if (typedef.generics.length !== 0) {
+              assert(typedef.genericScope);
+              context = Semantic.isolateElaborationContext(context, {
+                currentScope: typedef.genericScope,
+                genericsScope: context.currentScope,
+                constraints: context.constraints,
+                instanceDeps: {
+                  instanceDependsOn: new Map(),
+                  structMembersDependOn: new Map(),
+                  symbolDependsOn: new Map(),
+                },
+              });
+              for (let i = 0; i < typedef.generics.length; i++) {
+                context.substitute.set(typedef.generics[i], generics[i]);
+              }
+            }
+
+            return this.withContext(
+              {
+                context: context,
+                inFunction: this.inFunction,
+              },
+              () => {
+                const aliasedTypeId = this.lookupAndElaborateDatatype(typedef.target);
+                if (type.innerNested) {
+                  const aliasedType = this.sr.typeDefNodes.get(
+                    this.sr.typeUseNodes.get(aliasedTypeId).type
+                  );
+                  if (aliasedType.variant !== Semantic.ENode.NamespaceDatatype) {
+                    throw new CompilerError(
+                      `Type '${Semantic.serializeTypeUse(
+                        this.sr,
+                        aliasedTypeId
+                      )}' cannot be used as a namespace`,
+                      type.sourceloc
+                    );
+                  }
+                  const collectedNamespace = this.sr.cc.typeDefNodes.get(
+                    aliasedType.collectedNamespace
+                  );
+                  assert(collectedNamespace.variant === Collect.ENode.NamespaceTypeDef);
+                  return this.withContext(
+                    {
+                      context: Semantic.isolateElaborationContext(this.currentContext, {
+                        currentScope: collectedNamespace.namespaceScope,
+                        genericsScope: this.currentContext.genericsScope,
+                        constraints: [],
+                        instanceDeps: {
+                          instanceDependsOn: new Map(),
+                          structMembersDependOn: new Map(),
+                          symbolDependsOn: new Map(),
+                        },
+                      }),
+                    },
+                    () => {
+                      return this.lookupAndElaborateDatatype(type.innerNested!);
+                    }
+                  );
+                }
+                return aliasedTypeId;
+              }
+            );
           } else if (typedef.variant === Collect.ENode.StructTypeDef) {
             const generics = type.genericArgs.map((g) => {
               return this.withContext(
@@ -2519,6 +2560,7 @@ export class SemanticElaborator {
                 () => this.expressionAsGenericArg(g)
               );
             });
+
             const structId = this.instantiateAndElaborateStructWithGenerics(
               found.typeDef,
               generics,
@@ -2969,6 +3011,9 @@ export class SemanticElaborator {
         return s;
       }
     }
+
+    // if () {}
+
     throw new CompilerError(
       `Struct '${collectedStruct.name}' does not define any declarations named '${memberAccessExpr.memberName}'`,
       memberAccessExpr.sourceloc
@@ -3094,6 +3139,8 @@ export class SemanticElaborator {
         memberAccessExpr.sourceloc
       );
     }
+
+    console.warn("TODO: The Datatype Member Access and Struct Member Access can be combined");
 
     if (datatypeValue.variant === Semantic.ENode.NamespaceDatatype) {
       return this.lookupAndElaborateNamespaceMemberAccess(
@@ -4062,25 +4109,65 @@ export class SemanticElaborator {
       symbol.variant === Collect.ENode.TypeDefSymbol &&
       this.sr.cc.typeDefNodes.get(symbol.typeDef).variant === Collect.ENode.TypeDefAlias
     ) {
+      const alias = this.sr.cc.typeDefNodes.get(symbol.typeDef);
+      assert(alias.variant === Collect.ENode.TypeDefAlias);
+
+      const generics = symbolValue.genericArgs.map((g) => {
+        return this.withContext(
+          {
+            context: this.currentContext,
+          },
+          () => this.expressionAsGenericArg(g)
+        );
+      });
+
+      if (alias.generics.length !== generics.length) {
+        throw new CompilerError(
+          `Type ${alias.name} expects ${alias.generics.length} type parameters but got ${generics.length}`,
+          alias.sourceloc
+        );
+      }
+      let context = Semantic.isolateElaborationContext(this.currentContext, {
+        currentScope: alias.genericScope,
+        genericsScope: symbol.inScope,
+        constraints: this.currentContext.constraints,
+        instanceDeps: {
+          instanceDependsOn: new Map(),
+          structMembersDependOn: new Map(),
+          symbolDependsOn: new Map(),
+        },
+      });
+
+      if (alias.generics.length !== 0) {
+        assert(alias.genericScope);
+        context = Semantic.isolateElaborationContext(context, {
+          currentScope: alias.genericScope,
+          genericsScope: context.currentScope,
+          constraints: context.constraints,
+          instanceDeps: {
+            instanceDependsOn: new Map(),
+            structMembersDependOn: new Map(),
+            symbolDependsOn: new Map(),
+          },
+        });
+        for (let i = 0; i < alias.generics.length; i++) {
+          context.substitute.set(alias.generics[i], generics[i]);
+        }
+      }
+
       const newId = this.withContext(
         {
-          context: Semantic.isolateElaborationContext(this.currentContext, {
-            currentScope: symbol.inScope,
-            genericsScope: symbol.inScope,
-            constraints: this.currentContext.constraints,
-            instanceDeps: {
-              instanceDependsOn: new Map(),
-              structMembersDependOn: new Map(),
-              symbolDependsOn: new Map(),
-            },
-          }),
+          context: context,
+          inFunction: this.inFunction,
         },
-        () =>
-          this.lookupAndElaborateDatatype(
+        () => {
+          return this.lookupAndElaborateDatatype(
             (this.sr.cc.typeDefNodes.get(symbol.typeDef) as Collect.TypeDefAlias).target
-          )
+          );
+        }
       );
-      return this.sr.b.datatypeUseAsValue(newId, symbolValue.sourceloc);
+      const result = this.sr.b.datatypeUseAsValue(newId, symbolValue.sourceloc);
+      return result;
     }
 
     if (symbol.variant === Collect.ENode.VariableSymbol) {
@@ -6499,6 +6586,7 @@ export namespace Semantic {
       case Collect.ENode.UnitScope:
       case Collect.ENode.FileScope:
       case Collect.ENode.BlockScope:
+      case Collect.ENode.TypeAliasScope:
       case Collect.ENode.StructScope:
       case Collect.ENode.FunctionScope: {
         const found = lookupDirect(scope.symbols);

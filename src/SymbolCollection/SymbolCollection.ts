@@ -142,6 +142,7 @@ export namespace Collect {
     ExportScope,
     FunctionScope,
     StructScope,
+    TypeAliasScope,
     NamespaceScope,
     BlockScope,
     FunctionOverloadGroupSymbol,
@@ -234,6 +235,14 @@ export namespace Collect {
     symbols: Set<Collect.SymbolId>;
   };
 
+  export type TypeAliasScope = {
+    variant: ENode.TypeAliasScope;
+    parentScope: Collect.ScopeId;
+    owningSymbol: Collect.SymbolId;
+    sourceloc: SourceLoc;
+    symbols: Set<Collect.SymbolId>;
+  };
+
   export type NamespaceScope = {
     variant: ENode.NamespaceScope;
     parentScope: Collect.ScopeId;
@@ -260,6 +269,7 @@ export namespace Collect {
     | FunctionScope
     | StructScope
     | NamespaceScope
+    | TypeAliasScope
     | BlockScope;
 
   /// ===============================================================
@@ -348,6 +358,8 @@ export namespace Collect {
     variant: ENode.TypeDefAlias;
     name: string;
     inScope: Collect.ScopeId;
+    generics: Collect.SymbolId[];
+    genericScope: Collect.ScopeId;
     target: Collect.TypeUseId;
     sourceloc: SourceLoc;
   };
@@ -871,7 +883,8 @@ function defineGenericTypeParameter(
   const functionScope = cc.scopeNodes.get(functionScopeId);
   assert(
     functionScope.variant === Collect.ENode.FunctionScope ||
-      functionScope.variant === Collect.ENode.StructScope
+      functionScope.variant === Collect.ENode.StructScope ||
+      functionScope.variant === Collect.ENode.TypeAliasScope
   );
   const owner = cc.symbolNodes.get(functionScope.owningSymbol);
   assert(
@@ -1557,11 +1570,21 @@ function collectGlobalDirective(
     // =================================================================================================================
 
     case "TypeAlias": {
-      const [alias, aliasId] = Collect.makeTypeDef(cc, {
+      const [genericsScope, genericsScopeId] = Collect.makeScope<Collect.TypeAliasScope>(cc, {
+        variant: Collect.ENode.TypeAliasScope,
+        owningSymbol: -1 as Collect.SymbolId,
+        parentScope: args.currentParentScope,
+        sourceloc: item.sourceloc,
+        symbols: new Set(),
+      });
+
+      const [alias, aliasId] = Collect.makeTypeDef<Collect.TypeDefAlias>(cc, {
         variant: Collect.ENode.TypeDefAlias,
         inScope: args.currentParentScope,
         name: item.name,
-        target: collectTypeUse(cc, item.datatype, { currentParentScope: args.currentParentScope }),
+        generics: [],
+        genericScope: genericsScopeId,
+        target: collectTypeUse(cc, item.datatype, { currentParentScope: genericsScopeId }),
         sourceloc: item.sourceloc,
       });
       const [symbol, symbolId] = Collect.makeSymbol(cc, {
@@ -1570,10 +1593,17 @@ function collectGlobalDirective(
         name: item.name,
         typeDef: aliasId,
       });
+      genericsScope.owningSymbol = symbolId;
       cc.scopeNodes.get(args.currentParentScope).symbols.add(symbolId);
       if (item.export) {
         cc.exportedSymbols.exported.add(symbolId);
       }
+
+      for (const g of item.generics) {
+        const generic = defineGenericTypeParameter(cc, g.name, genericsScopeId, g.sourceloc);
+        alias.generics.push(generic);
+      }
+
       return;
     }
 
@@ -1606,7 +1636,7 @@ function collectGlobalDirective(
       );
       const metadata: ModuleConfig = JSON.parse(readFileSync(metadataPath, "utf8"));
       const importedNamespace = getModuleGlobalNamespaceName(metadata.name, metadata.version);
-      const [alias, aliasId] = Collect.makeTypeDef(cc, {
+      const [alias, aliasId] = Collect.makeTypeDef<Collect.TypeDefAlias>(cc, {
         variant: Collect.ENode.TypeDefAlias,
         inScope: args.currentParentScope,
         target: Collect.makeTypeUse(cc, {
@@ -1618,7 +1648,9 @@ function collectGlobalDirective(
           mutability: EDatatypeMutability.Default,
           sourceloc: null,
         })[1],
-        mode: item.mode,
+        // mode: item.mode,
+        generics: [],
+        genericScope: -1 as Collect.ScopeId,
         name: item.name,
         sourceloc: item.sourceloc,
       });
@@ -1630,6 +1662,16 @@ function collectGlobalDirective(
       });
       const scope = cc.scopeNodes.get(args.currentParentScope);
       scope.symbols.add(symbolId);
+
+      const [structScope, structScopeId] = Collect.makeScope<Collect.TypeAliasScope>(cc, {
+        variant: Collect.ENode.TypeAliasScope,
+        owningSymbol: symbolId,
+        parentScope: args.currentParentScope,
+        sourceloc: item.sourceloc,
+        symbols: new Set(),
+      });
+      alias.genericScope = structScopeId;
+
       return;
     }
 
@@ -1731,6 +1773,8 @@ function collectScope(
           variant: Collect.ENode.TypeDefAlias,
           inScope: blockScopeId,
           name: astStatement.name,
+          generics: [],
+          genericScope: -1 as Collect.ScopeId,
           target: collectTypeUse(cc, astStatement.datatype, { currentParentScope: blockScopeId }),
           sourceloc: astStatement.sourceloc,
         });
@@ -1741,6 +1785,16 @@ function collectScope(
           name: astStatement.name,
         });
         (cc.scopeNodes.get(blockScopeId) as Collect.BlockScope).symbols.add(symbolId);
+
+        const [structScope, structScopeId] = Collect.makeScope<Collect.TypeAliasScope>(cc, {
+          variant: Collect.ENode.TypeAliasScope,
+          owningSymbol: symbolId,
+          parentScope: args.currentParentScope,
+          sourceloc: item.sourceloc,
+          symbols: new Set(),
+        });
+        typeDef.genericScope = structScopeId;
+
         break;
 
       case "VariableDefinitionStatement":

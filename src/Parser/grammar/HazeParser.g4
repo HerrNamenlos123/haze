@@ -79,7 +79,7 @@ globalVariableDef
     ;
 
 typeDef
-    : (export=EXPORT)? (extern=EXTERN externLang=externLanguage?)? pub=PUB? TYPE ID EQUALS datatype SEMI?        #TypeAliasDirective
+    : (export=EXPORT)? (extern=EXTERN externLang=externLanguage?)? pub=PUB? TYPE name=ID (LANGLE generic+=ID (COMMA generic+=ID)* RANGLE)? EQUALS datatype SEMI?        #TypeAliasDirective
     ;
 
 variableMutabilitySpecifier

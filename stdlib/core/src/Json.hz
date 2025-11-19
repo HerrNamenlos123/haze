@@ -115,7 +115,7 @@ struct JsonValue {
 
 }
 
-export type Result = union { Ok: Foo, Err: str, }
+export type Result<T, E> = union { Ok: T, Err: E, }
 
 // foo(): Result<str, str> {
 //     const a = try bar();
@@ -123,17 +123,17 @@ export type Result = union { Ok: Foo, Err: str, }
 
 extern foobar1(): Foo | str;
 
-foobar2(): Result {
+foobar2(): Result<Foo, str> {
     // const a1 = try foobar1();
     const a2 = do {
         const tempvar = foobar1();
         if tempvar is str { 
-            return Result.Err(tempvar); 
+            return Result<Foo, str>.Err(tempvar); 
         }
         tempvar;
     };
 
-    return Result.Ok({});
+    return Result<Foo, str>.Ok({});
 }
 
 namespace JSON {
