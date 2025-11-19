@@ -27,17 +27,9 @@ extern C hzstd_json_add_item_to_object(arena: hzstd_arena_t, object: cJSON, name
 extern C hzstd_json_print_unformatted(arena: hzstd_arena_t, json: cJSON): str;
 extern C hzstd_json_print(arena: hzstd_arena_t, json: cJSON): str;
 
-struct A {
-    outer: int;
-
-    struct B {
-        a: A;
-
-        method() {
-            return this.a.outer;
-        }
-    }
-}
+struct JsonError {
+    error: str;
+};
 
 struct JsonValue {
     arena: Arena;
@@ -115,56 +107,45 @@ struct JsonValue {
 
 }
 
-export type Result<T, E> = union { Ok: T, Err: E, }
-export type Test = union { Oks: int, Errs: str }
-
-// foo(): Result<str, str> {
-//     const a = try bar();
-// }
-
-extern foobar1(): Result<Foo, str>;
-
-foobar2(): Result<f32, str> {
-    const a1 = try foobar1();
-    // return Result<int, str>.Ok(187);
-    return Result<f32, str>.Err("");
-}
-
-foobar3() {
-    // foobar2() + 5;
-}
-
 namespace JSON {
-    parse(data: str) {
-        return parseWithArena(fn.returnArena, data);
+    parse(data: str): Result<JsonValue, JsonError> {
+        return parseIntoArena(fn.returnArena, data);
     }
 
-    parseWithArena(arena: Arena, data: str) {
+    parseIntoArena(arena: Arena, data: str): Result<JsonValue, JsonError> {
         let error = hzstd_str_ref_t { data: "" };
-
         const cjson = hzstd_json_parse(arena.arenaImpl, data, error);
         if cjson {
-            return JsonValue {
+            return Result<JsonValue, JsonError>.Ok(JsonValue {
                 arena: arena,
                 data: cjson,
-            } in arena;
+            } in arena);
         }
-        else {
-            sys.panic("JSON parsing failed!");
-        }
+        return Result<JsonValue, JsonError>.Err({ error: error.data });
     }
 }
 
-export foobar() {
-    const json = JSON.parse("{\"name\":\"Alice\",\"age\":25,\"active\":true,\"numbers\":[1,2,3],\"nested\":{\"x\":10,\"y\":\"hello\"},\"msg\":\"Hello\\nWorld!\"}");
+foobar2(): Result<null, JsonError> {
+    const json = try JSON.parse("{\"name\":\"Alice\",\"age\":25,\"active\":true,\"numbers\":[1,2,3],\"nested\":{\"x\":10,\"y\":\"hello\"},\"msg\":\"Hello\\nWorld!\"}");
 
-    // const a = json["naΩme"].to<str>();
     const a = json["name"].to<str>();
     const b = json["age"].to<real>();
     const c = json["nested"]["y"].to<str>();
     fmt.println("Parsed:", a, b, c);
     // const b = json[187];
+    return Result<null, JsonError>.Ok(null);
 }
+
+export foobar() {
+    const result = foobar2();
+    if result is JsonError {
+        fmt.println("Error:", result.error);
+    }
+    else {
+        fmt.println("Success!");
+    }
+}
+
 
 // //   enum struct ErrorCode {
 // //     ParseSyntaxError,
