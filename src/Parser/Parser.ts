@@ -68,6 +68,7 @@ import {
   EOverloadedOperator,
   type ASTExprIsTypeExpr,
   type ASTTaggedUnionDatatype,
+  type ASTTryExpr,
 } from "../shared/AST";
 import {
   BinaryExprContext,
@@ -145,6 +146,7 @@ import {
   ExprIsTypeExprContext,
   UntaggedUnionDatatypeContext,
   TaggedUnionDatatypeContext,
+  TryExprContext,
 } from "./grammar/autogen/HazeParser";
 import {
   BaseErrorListener,
@@ -1054,6 +1056,14 @@ class ASTTransformer extends HazeParserVisitor<any> {
   visitParenthesisExpr = (ctx: ParenthesisExprContext): ASTParenthesisExpr => {
     return {
       variant: "ParenthesisExpr",
+      expr: this.visit(ctx.expr()),
+      sourceloc: this.loc(ctx),
+    };
+  };
+
+  visitTryExpr = (ctx: TryExprContext): ASTTryExpr => {
+    return {
+      variant: "TryExpr",
       expr: this.visit(ctx.expr()),
       sourceloc: this.loc(ctx),
     };

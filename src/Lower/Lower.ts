@@ -1,3 +1,4 @@
+import { Conversion } from "../Semantic/Conversion";
 import {
   makePrimitiveAvailable,
   makeVoidType,
@@ -13,6 +14,7 @@ import {
   EExternLanguage,
   EIncrOperation,
   EUnaryOperation,
+  EVariableMutability,
   IncrOperationToString,
   UnaryOperationToString,
 } from "../shared/AST";
@@ -1384,11 +1386,17 @@ function lowerExpr(
     case Semantic.ENode.UnionToValueCastExpr: {
       const sourceExpr = lr.sr.exprNodes.get(expr.expr);
       const sourceType = lr.sr.typeDefNodes.get(lr.sr.typeUseNodes.get(sourceExpr.type).type);
-      assert(sourceType.variant === Semantic.ENode.UntaggedUnionDatatype);
+      assert(
+        sourceType.variant === Semantic.ENode.UntaggedUnionDatatype ||
+          sourceType.variant === Semantic.ENode.TaggedUnionDatatype
+      );
 
       const loweredUnionId = lowerTypeUse(lr, sourceExpr.type);
       const loweredUnion = lr.typeDefNodes.get(lr.typeUseNodes.get(loweredUnionId).type);
-      assert(loweredUnion.variant === Lowered.ENode.UntaggedUnionDatatype);
+      assert(
+        loweredUnion.variant === Lowered.ENode.UntaggedUnionDatatype ||
+          loweredUnion.variant === Lowered.ENode.TaggedUnionDatatype
+      );
 
       let optimizeExprToNullptr = false;
       if (loweredUnion.optimizeAsRawPointer) {
@@ -1476,11 +1484,17 @@ function lowerExpr(
     case Semantic.ENode.UnionTagCheckExpr: {
       const sourceExpr = lr.sr.exprNodes.get(expr.expr);
       const sourceType = lr.sr.typeDefNodes.get(lr.sr.typeUseNodes.get(sourceExpr.type).type);
-      assert(sourceType.variant === Semantic.ENode.UntaggedUnionDatatype);
+      assert(
+        sourceType.variant === Semantic.ENode.UntaggedUnionDatatype ||
+          sourceType.variant === Semantic.ENode.TaggedUnionDatatype
+      );
 
       const loweredUnionId = lowerTypeUse(lr, sourceExpr.type);
       const loweredUnion = lr.typeDefNodes.get(lr.typeUseNodes.get(loweredUnionId).type);
-      assert(loweredUnion.variant === Lowered.ENode.UntaggedUnionDatatype);
+      assert(
+        loweredUnion.variant === Lowered.ENode.UntaggedUnionDatatype ||
+          loweredUnion.variant === Lowered.ENode.TaggedUnionDatatype
+      );
 
       const comparisonType = lowerTypeUse(lr, expr.comparisonType);
 
@@ -1497,7 +1511,11 @@ function lowerExpr(
         // }
       } else {
         // canonicalizeUnionMembers(lr, loweredUnion);
-        tag = loweredUnion.members.findIndex((m) => m === comparisonType);
+        const unionMembers =
+          loweredUnion.variant === Lowered.ENode.UntaggedUnionDatatype
+            ? loweredUnion.members
+            : loweredUnion.members.map((m) => m.type);
+        tag = unionMembers.findIndex((m) => m === comparisonType);
         assert(tag !== -1);
       }
 

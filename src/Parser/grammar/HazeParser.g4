@@ -180,6 +180,7 @@ expr
     | expr DOT ID (LANGLE genericLiteral (COMMA genericLiteral)* RANGLE)?           #ExprMemberAccess
 
     // Part 2: Right to left
+    | <assoc=right> TRY expr                                                        #TryExpr
     | <assoc=right> op=(MINUSMINUS | PLUSPLUS) expr                                 #PreIncrExpr
     | <assoc=right> op=(PLUS | MINUS) expr                                          #UnaryExpr
     | <assoc=right> op=NOT expr /* and bitwise not */                               #UnaryExpr

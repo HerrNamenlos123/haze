@@ -171,6 +171,7 @@ export namespace Collect {
     VariableDefinitionStatement,
     FunctionDatatype,
     ParenthesisExpr,
+    TryExpr,
     UnsafeExpr,
     BinaryExpr,
     LiteralExpr,
@@ -568,6 +569,11 @@ export namespace Collect {
     expr: Collect.ExprId;
   };
 
+  export type TryExpr = BaseExpr & {
+    variant: ENode.TryExpr;
+    expr: Collect.ExprId;
+  };
+
   export type BlockScopeExpr = BaseExpr & {
     variant: ENode.BlockScopeExpr;
     scope: Collect.ScopeId;
@@ -685,6 +691,7 @@ export namespace Collect {
 
   export type Expressions =
     | ParenthesisExpr
+    | TryExpr
     | BlockScopeExpr
     | BinaryExpr
     | UnaryExpr
@@ -1895,6 +1902,18 @@ function collectExpr(
     case "ParenthesisExpr": {
       return Collect.makeExpr(cc, {
         variant: Collect.ENode.ParenthesisExpr,
+        expr: collectExpr(cc, item.expr, args),
+        sourceloc: item.sourceloc,
+      })[1];
+    }
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
+    case "TryExpr": {
+      return Collect.makeExpr(cc, {
+        variant: Collect.ENode.TryExpr,
         expr: collectExpr(cc, item.expr, args),
         sourceloc: item.sourceloc,
       })[1];

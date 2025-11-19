@@ -732,13 +732,13 @@ class CodeGenerator {
           outWriter
             .writeLine(emitted.out.get() + ";")
             .popIndent()
-            .writeLine("})");
+            .write("})");
         } else {
-          outWriter.writeLine(`{`).pushIndent();
+          outWriter.writeLine(`({`).pushIndent();
           const scope = this.emitScope(expr.block);
           tempWriter.write(scope.temp);
           outWriter.write(scope.out);
-          outWriter.popIndent().writeLine("}");
+          outWriter.popIndent().write("})");
         }
         return { temp: tempWriter, out: outWriter };
       }
@@ -783,7 +783,10 @@ class CodeGenerator {
         tempWriter.write(exprWriter.temp);
         const typeUse = this.lr.typeUseNodes.get(this.lr.exprNodes.get(expr.expr).type);
         const union = this.lr.typeDefNodes.get(typeUse.type);
-        assert(union.variant === Lowered.ENode.UntaggedUnionDatatype);
+        assert(
+          union.variant === Lowered.ENode.UntaggedUnionDatatype ||
+            union.variant === Lowered.ENode.TaggedUnionDatatype
+        );
 
         if (union.optimizeAsRawPointer) {
           outWriter.write(`(${this.emitExpr(expr.expr).out.get()})`);
@@ -798,7 +801,10 @@ class CodeGenerator {
         tempWriter.write(exprWriter.temp);
         const typeUse = this.lr.typeUseNodes.get(expr.type);
         const union = this.lr.typeDefNodes.get(typeUse.type);
-        assert(union.variant === Lowered.ENode.UntaggedUnionDatatype);
+        assert(
+          union.variant === Lowered.ENode.UntaggedUnionDatatype ||
+            union.variant === Lowered.ENode.TaggedUnionDatatype
+        );
 
         if (union.optimizeAsRawPointer) {
           assert(false, "not implemented yet");
@@ -823,9 +829,12 @@ class CodeGenerator {
       case Lowered.ENode.UnionTagCheckExpr: {
         const exprWriter = this.emitExpr(expr.expr);
         tempWriter.write(exprWriter.temp);
-        const typeUse = this.lr.typeUseNodes.get(expr.type);
+        const typeUse = this.lr.typeUseNodes.get(this.lr.exprNodes.get(expr.expr).type);
         const union = this.lr.typeDefNodes.get(typeUse.type);
-        assert(union.variant === Lowered.ENode.UntaggedUnionDatatype);
+        assert(
+          union.variant === Lowered.ENode.UntaggedUnionDatatype ||
+            union.variant === Lowered.ENode.TaggedUnionDatatype
+        );
 
         if (union.optimizeAsRawPointer) {
           assert(false, "Union Tag Checking with null pointer optimization is not implemented yet");

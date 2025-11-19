@@ -996,13 +996,51 @@ export namespace Conversion {
         // Check match with implicit mutability change
         if (
           fromTypeInstance.mutability === EDatatypeMutability.Const &&
-          toInstance.mutability === EDatatypeMutability.Default
+          sr.typeUseNodes.get(m).mutability === EDatatypeMutability.Default
         ) {
           return true;
         }
         if (
           fromTypeInstance.mutability === EDatatypeMutability.Mut &&
-          toInstance.mutability === EDatatypeMutability.Default
+          sr.typeUseNodes.get(m).mutability === EDatatypeMutability.Default
+        ) {
+          return true;
+        }
+
+        return false;
+      });
+
+      if (matching != -1) {
+        return ok(
+          Semantic.addExpr(sr, {
+            variant: Semantic.ENode.ValueToUnionCastExpr,
+            expr: fromExprId,
+            instanceIds: fromExpr.instanceIds,
+            type: toId,
+            index: matching,
+            sourceloc: sourceloc,
+            isTemporary: fromExpr.isTemporary,
+          })[1]
+        );
+      }
+    }
+    if (to.variant === Semantic.ENode.TaggedUnionDatatype) {
+      const matching = to.members.findIndex((m) => {
+        // Check Direct match
+        if (m.type === fromExpr.type) {
+          return true;
+        }
+
+        // Check match with implicit mutability change
+        if (
+          fromTypeInstance.mutability === EDatatypeMutability.Const &&
+          sr.typeUseNodes.get(m.type).mutability === EDatatypeMutability.Default
+        ) {
+          return true;
+        }
+        if (
+          fromTypeInstance.mutability === EDatatypeMutability.Mut &&
+          sr.typeUseNodes.get(m.type).mutability === EDatatypeMutability.Default
         ) {
           return true;
         }
@@ -1027,15 +1065,25 @@ export namespace Conversion {
 
     // Union to Union conversion
     if (
-      fromType.variant === Semantic.ENode.UntaggedUnionDatatype &&
-      to.variant === Semantic.ENode.UntaggedUnionDatatype
+      (fromType.variant === Semantic.ENode.UntaggedUnionDatatype &&
+        to.variant === Semantic.ENode.UntaggedUnionDatatype) ||
+      (fromType.variant === Semantic.ENode.TaggedUnionDatatype &&
+        to.variant === Semantic.ENode.TaggedUnionDatatype)
     ) {
+      const fromUnionMembers =
+        fromType.variant === Semantic.ENode.UntaggedUnionDatatype
+          ? fromType.members
+          : fromType.members.map((m) => m.type);
       const membersFrom = typeNarrowing(sr);
-      membersFrom.addVariants(fromType.members);
+      membersFrom.addVariants(fromUnionMembers);
       membersFrom.constrainFromConstraints(constraints, fromExprId);
 
+      const toUnionMembers =
+        to.variant === Semantic.ENode.UntaggedUnionDatatype
+          ? to.members
+          : to.members.map((m) => m.type);
       const membersTo = typeNarrowing(sr);
-      membersTo.addVariants(to.members);
+      membersTo.addVariants(toUnionMembers);
       membersTo.constrainFromConstraints(constraints, fromExprId);
 
       if ([...membersFrom.possibleVariants].every((v) => membersTo.possibleVariants.has(v))) {
@@ -1053,13 +1101,21 @@ export namespace Conversion {
     }
 
     // Union Conversions: Union to Value (complex)
-    if (fromType.variant === Semantic.ENode.UntaggedUnionDatatype) {
+    if (
+      fromType.variant === Semantic.ENode.UntaggedUnionDatatype ||
+      fromType.variant === Semantic.ENode.TaggedUnionDatatype
+    ) {
+      const unionMembers =
+        fromType.variant === Semantic.ENode.UntaggedUnionDatatype
+          ? fromType.members
+          : fromType.members.map((m) => m.type);
+
       const members = typeNarrowing(sr);
-      members.addVariants(fromType.members);
+      members.addVariants(unionMembers);
       members.constrainFromConstraints(constraints, fromExprId);
 
       if (members.possibleVariants.size === 1 && [...members.possibleVariants][0] === toId) {
-        const tag = fromType.members.findIndex((m) => m === [...members.possibleVariants][0]);
+        const tag = unionMembers.findIndex((m) => m === [...members.possibleVariants][0]);
         assert(tag !== -1);
 
         return ok(

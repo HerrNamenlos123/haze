@@ -29,6 +29,7 @@ AUTODEST: 'autodest';
 NORETURN: 'noreturn';
 FINAL: 'final';
 UNION: 'union';
+TRY: 'try';
 SOURCE_LOCATION_DIRECTIVE: '#source';
 
 OPERATORSUBSCRIPT: 'operator[]';

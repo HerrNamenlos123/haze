@@ -51,6 +51,7 @@ import { EUnaryOperation, type EIncrOperation } from "../shared/AST";
 import { type Brand, type LiteralValue } from "../shared/common";
 import { getJSDocOverrideTagNoCache } from "typescript";
 import { printStatement } from "../Lower/Lower";
+import { makeTempName } from "../shared/store";
 
 type Inference =
   | undefined
@@ -714,6 +715,9 @@ export class SemanticElaborator {
 
       case Collect.ENode.ExprIsTypeExpr:
         return this.exprIsType(expr, inference);
+
+      case Collect.ENode.TryExpr:
+        return this.tryExpr(expr, inference);
 
       default:
         assert(false, "All cases handled: " + Collect.ENode[expr.variant]);
@@ -4386,6 +4390,156 @@ export class SemanticElaborator {
     });
   }
 
+  tryExpr(tryExpr: Collect.TryExpr, inference: Inference) {
+    const [rightExpr, rightExprId] = this.expr(tryExpr.expr, inference);
+
+    const typeUse = this.sr.typeUseNodes.get(rightExpr.type);
+    const typeDef = this.sr.typeDefNodes.get(typeUse.type);
+
+    if (typeDef.variant !== Semantic.ENode.TaggedUnionDatatype) {
+      throw new CompilerError(
+        `The 'try'-operator can only be used on expressions with a tagged union type`,
+        tryExpr.sourceloc
+      );
+    }
+
+    const okTag = typeDef.members.find((m) => m.tag === "Ok");
+    const errTag = typeDef.members.find((m) => m.tag === "Err");
+
+    if (!okTag || !errTag) {
+      throw new CompilerError(
+        `The 'try'-operator can only be used on tagged union types that provide both a Ok and a Err tag.`,
+        tryExpr.sourceloc
+      );
+    }
+
+    const okIndex = typeDef.members.findIndex((m) => m.tag === "Ok");
+    const errIndex = typeDef.members.findIndex((m) => m.tag === "Err");
+
+    assert(this.inFunction);
+    const functionSymbol = this.sr.symbolNodes.get(this.inFunction);
+    assert(functionSymbol.variant === Semantic.ENode.FunctionSymbol);
+    const functionType = this.sr.typeDefNodes.get(functionSymbol.type);
+    assert(
+      functionType.variant === Semantic.ENode.FunctionDatatype ||
+        functionType.variant === Semantic.ENode.DeferredFunctionDatatype
+    );
+
+    const [tempVariable, tempVariableId] = Semantic.addSymbol(this.sr, {
+      variant: Semantic.ENode.VariableSymbol,
+      comptime: false,
+      comptimeValue: null,
+      concrete: false,
+      export: false,
+      extern: EExternLanguage.None,
+      memberOfStruct: null,
+      mutability: EVariableMutability.Default,
+      name: makeTempName(),
+      sourceloc: tryExpr.sourceloc,
+      parentStructOrNS: null,
+      type: rightExpr.type,
+      variableContext: EVariableContext.FunctionLocal,
+    });
+
+    const returnResult = () => {
+      const errValue = Semantic.addExpr(this.sr, {
+        variant: Semantic.ENode.UnionToValueCastExpr,
+        expr: symbolValue(),
+        instanceIds: [],
+        sourceloc: tryExpr.sourceloc,
+        isTemporary: true,
+        tag: errIndex,
+        type: errTag.type,
+      })[1];
+      if (functionType.variant === Semantic.ENode.FunctionDatatype) {
+        return Conversion.MakeConversionOrThrow(
+          this.sr,
+          errValue,
+          errTag.type,
+          [],
+          tryExpr.sourceloc,
+          Conversion.Mode.Implicit,
+          false
+        );
+      } else {
+        return errValue;
+      }
+    };
+
+    const symbolValue = () =>
+      Semantic.addExpr(this.sr, {
+        variant: Semantic.ENode.SymbolValueExpr,
+        instanceIds: [],
+        symbol: tempVariableId,
+        isTemporary: true,
+        sourceloc: tryExpr.sourceloc,
+        type: rightExpr.type,
+      })[1];
+
+    const returnStatement = () => {
+      const statementId = Semantic.addStatement(this.sr, {
+        variant: Semantic.ENode.ReturnStatement,
+        expr: returnResult(),
+        sourceloc: tryExpr.sourceloc,
+      })[1];
+      functionSymbol.returnStatements.add(statementId);
+      rightExpr.instanceIds.forEach((id) => functionSymbol.returnsInstanceIds.add(id));
+      functionSymbol.returnedDatatypes.add(errTag.type);
+      return statementId;
+    };
+
+    return Semantic.addExpr(this.sr, {
+      variant: Semantic.ENode.BlockScopeExpr,
+      block: Semantic.addBlockScope(this.sr, {
+        variant: Semantic.ENode.BlockScope,
+        constraints: [],
+        emittedExpr: Semantic.addExpr(this.sr, {
+          variant: Semantic.ENode.UnionToValueCastExpr,
+          expr: symbolValue(),
+          instanceIds: [],
+          isTemporary: true,
+          sourceloc: tryExpr.sourceloc,
+          tag: okIndex,
+          type: okTag.type,
+        })[1],
+        statements: [
+          Semantic.addStatement(this.sr, {
+            variant: Semantic.ENode.VariableStatement,
+            name: tempVariable.name,
+            comptime: false,
+            sourceloc: tryExpr.sourceloc,
+            value: rightExprId,
+            variableSymbol: tempVariableId,
+          })[1],
+          Semantic.addStatement(this.sr, {
+            variant: Semantic.ENode.IfStatement,
+            condition: Semantic.addExpr(this.sr, {
+              variant: Semantic.ENode.UnionTagCheckExpr,
+              expr: rightExprId,
+              instanceIds: [],
+              isTemporary: true,
+              sourceloc: tryExpr.sourceloc,
+              type: this.sr.b.boolType(),
+              comparisonType: errTag.type,
+            })[1],
+            elseIfs: [],
+            sourceloc: tryExpr.sourceloc,
+            then: Semantic.addBlockScope(this.sr, {
+              variant: Semantic.ENode.BlockScope,
+              constraints: [],
+              emittedExpr: null,
+              statements: [returnStatement()],
+            })[1],
+          })[1],
+        ],
+      })[1],
+      instanceIds: [],
+      isTemporary: true,
+      sourceloc: tryExpr.sourceloc,
+      type: okTag.type,
+    });
+  }
+
   exprIsType(exprIsType: Collect.ExprIsTypeExpr, inference: Inference) {
     const comparisonType = this.lookupAndElaborateDatatype(exprIsType.comparisonType);
     const [sourceExpr, sourceExprId] = this.expr(exprIsType.expr, {
@@ -4395,8 +4549,15 @@ export class SemanticElaborator {
     const sourceExprTypeUse = this.getTypeUse(sourceExpr.type);
     const sourceExprTypeDef = this.getTypeDef(sourceExprTypeUse.type);
 
-    if (sourceExprTypeDef.variant === Semantic.ENode.UntaggedUnionDatatype) {
-      if (!sourceExprTypeDef.members.includes(comparisonType)) {
+    if (
+      sourceExprTypeDef.variant === Semantic.ENode.UntaggedUnionDatatype ||
+      sourceExprTypeDef.variant === Semantic.ENode.TaggedUnionDatatype
+    ) {
+      const memberTypes =
+        sourceExprTypeDef.variant === Semantic.ENode.UntaggedUnionDatatype
+          ? sourceExprTypeDef.members
+          : sourceExprTypeDef.members.map((m) => m.type);
+      if (!memberTypes.includes(comparisonType)) {
         throw new CompilerError(
           `This comparison is always false, as '${Semantic.serializeTypeUse(
             this.sr,
@@ -5806,6 +5967,7 @@ export namespace Semantic {
     ReturnStatement,
     // Expressions
     ParenthesisExpr,
+    TryExpr,
     BinaryExpr,
     LiteralExpr,
     UnaryExpr,
@@ -6258,6 +6420,20 @@ export namespace Semantic {
     sourceloc: SourceLoc;
   };
 
+  export type TryExpr = {
+    variant: ENode.TryExpr;
+    instanceIds: InstanceId[];
+    expr: ExprId;
+    type: TypeUseId;
+    okTagIndex: number;
+    okTagType: TypeUseId;
+    errTagIndex: number;
+    errTagType: TypeUseId;
+    returnedType: TypeUseId;
+    isTemporary: boolean;
+    sourceloc: SourceLoc;
+  };
+
   export type BinaryExpr = {
     variant: ENode.BinaryExpr;
     instanceIds: InstanceId[];
@@ -6409,6 +6585,8 @@ export namespace Semantic {
     | UnionToValueCastExpr
     | UnionToUnionCastExpr
     | UnionTagCheckExpr
+    | TryExpr
+    | TryExpr
     | ExprCallExpr
     | StructInstantiationExpr
     | LiteralExpr
