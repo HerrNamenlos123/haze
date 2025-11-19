@@ -117,22 +117,51 @@ export function makeTypeUse(
   inline: boolean,
   sourceloc: SourceLoc
 ) {
-  for (const id of sr.typeInstanceCache) {
-    const type = sr.typeUseNodes.get(id);
-    if (type.mutability !== mutability || type.type !== typeId || type.inline !== inline) {
-      continue;
-    }
-    return [type, id] as const;
-  }
+  const type = sr.typeDefNodes.get(typeId);
+  if (
+    type.variant === Semantic.ENode.StructDatatype ||
+    type.variant === Semantic.ENode.FixedArrayDatatype ||
+    type.variant === Semantic.ENode.DynamicArrayDatatype
+  ) {
+    for (const id of sr.typeInstanceCache) {
+      const typeUse = sr.typeUseNodes.get(id);
+      if (
+        typeUse.mutability !== mutability ||
+        typeUse.type !== typeId ||
+        typeUse.inline !== inline
+      ) {
+        continue;
+      }
 
-  const instance = Semantic.addTypeInstance(sr, {
-    mutability: mutability,
-    inline: inline,
-    type: typeId,
-    sourceloc: sourceloc,
-  });
-  sr.typeInstanceCache.push(instance[1]);
-  return instance;
+      return [typeUse, id] as const;
+    }
+
+    const instance = Semantic.addTypeInstance(sr, {
+      mutability: mutability,
+      inline: inline,
+      type: typeId,
+      sourceloc: sourceloc,
+    });
+    sr.typeInstanceCache.push(instance[1]);
+    return instance;
+  } else {
+    for (const id of sr.typeInstanceCache) {
+      const typeUse = sr.typeUseNodes.get(id);
+      if (typeUse.type !== typeId) {
+        continue;
+      }
+      return [typeUse, id] as const;
+    }
+
+    const instance = Semantic.addTypeInstance(sr, {
+      mutability: EDatatypeMutability.Default,
+      inline: false,
+      type: typeId,
+      sourceloc: sourceloc,
+    });
+    sr.typeInstanceCache.push(instance[1]);
+    return instance;
+  }
 }
 
 export function makeStackArrayDatatypeAvailable(

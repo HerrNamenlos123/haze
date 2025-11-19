@@ -78,6 +78,7 @@ export namespace Lowered {
     ExplicitCastExpr,
     ValueToUnionCastExpr,
     UnionToValueCastExpr,
+    UnionToUnionCastExpr,
     UnionTagCheckExpr,
     MemberAccessExpr,
     CallableExpr,
@@ -95,6 +96,12 @@ export namespace Lowered {
     Dummy,
   }
 
+  export type TagMapping = {
+    from: Lowered.TypeUseId;
+    to: Lowered.TypeUseId;
+    mapping: Map<number, number>;
+  };
+
   export type Module = {
     sr: SemanticResult;
 
@@ -111,6 +118,8 @@ export namespace Lowered {
     loweredFunctions: Map<Semantic.SymbolId, Lowered.FunctionId>;
     loweredPointers: Map<Lowered.TypeUseId, Lowered.TypeDefId>;
     loweredGlobalVariables: Map<Semantic.SymbolId, Lowered.StatementId[]>;
+
+    loweredUnionMappings: TagMapping[];
   };
 
   export function addTypeUse<T extends Lowered.TypeUse>(
@@ -261,6 +270,7 @@ export namespace Lowered {
     variant: ENode.ValueToUnionCastExpr;
     expr: ExprId;
     optimizeExprToNullptr: boolean;
+    index: number;
     type: TypeUseId;
   };
 
@@ -268,6 +278,14 @@ export namespace Lowered {
     variant: ENode.UnionToValueCastExpr;
     expr: ExprId;
     index: number;
+    optimizeExprToNullptr: boolean;
+    type: TypeUseId;
+  };
+
+  export type UnionToUnionCastExpr = {
+    variant: ENode.UnionToUnionCastExpr;
+    expr: ExprId;
+    tagMapping: TagMapping;
     optimizeExprToNullptr: boolean;
     type: TypeUseId;
   };
@@ -385,6 +403,7 @@ export namespace Lowered {
     | ExplicitCastExpr
     | ValueToUnionCastExpr
     | UnionToValueCastExpr
+    | UnionToUnionCastExpr
     | UnionTagCheckExpr
     | ExprMemberAccessExpr
     | LiteralExpr
@@ -1339,6 +1358,7 @@ function lowerExpr(
         variant: Lowered.ENode.ValueToUnionCastExpr,
         expr: lowerExpr(lr, expr.expr, flattened, instanceInfo)[1],
         optimizeExprToNullptr: optimizeExprToNullptr,
+        index: expr.index,
         type: loweredUnionId,
       });
     }
@@ -1367,8 +1387,71 @@ function lowerExpr(
         variant: Lowered.ENode.UnionToValueCastExpr,
         expr: lowerExpr(lr, expr.expr, flattened, instanceInfo)[1],
         optimizeExprToNullptr: optimizeExprToNullptr,
-        index: expr.index,
-        type: loweredUnionId,
+        index: expr.tag,
+        type: lowerTypeUse(lr, expr.type),
+      });
+    }
+
+    case Semantic.ENode.UnionToUnionCastExpr: {
+      const sourceExpr = lr.sr.exprNodes.get(expr.expr);
+      const sourceType = lr.sr.typeDefNodes.get(lr.sr.typeUseNodes.get(sourceExpr.type).type);
+      assert(sourceType.variant === Semantic.ENode.UnionDatatype);
+
+      const loweredSourceUnionId = lowerTypeUse(lr, sourceExpr.type);
+      const loweredSourceUnion = lr.typeDefNodes.get(
+        lr.typeUseNodes.get(loweredSourceUnionId).type
+      );
+      assert(loweredSourceUnion.variant === Lowered.ENode.UnionDatatype);
+
+      const loweredTargetUnionId = lowerTypeUse(lr, expr.type);
+      const loweredTargetUnion = lr.typeDefNodes.get(
+        lr.typeUseNodes.get(loweredTargetUnionId).type
+      );
+      assert(loweredTargetUnion.variant === Lowered.ENode.UnionDatatype);
+
+      let optimizeExprToNullptr = false;
+      if (loweredSourceUnion.optimizeAsRawPointer || loweredTargetUnion.optimizeAsRawPointer) {
+        assert(
+          false,
+          "Union to Union conversion if one is nullptr optimized is not implemented yet"
+        );
+      }
+
+      const mappingUniqueKey = loweredSourceUnionId + "_to_" + loweredTargetUnionId;
+
+      let mapping = lr.loweredUnionMappings.find((m) => {
+        return m.from === loweredSourceUnionId && m.to === loweredTargetUnionId;
+      });
+
+      if (!mapping) {
+        mapping = {
+          from: loweredSourceUnionId,
+          to: loweredTargetUnionId,
+          mapping: new Map(),
+        };
+        lr.loweredUnionMappings.push(mapping);
+
+        // Fill new entry
+        loweredSourceUnion.members.forEach((source, sourceIndex) => {
+          const targetIndex = loweredTargetUnion.members.findIndex((m) => m === source);
+          assert(targetIndex !== -1);
+          mapping!.mapping.set(sourceIndex, targetIndex);
+        });
+      } else {
+        // Verify existing entry
+        loweredSourceUnion.members.forEach((source, sourceIndex) => {
+          const targetIndex = loweredTargetUnion.members.findIndex((m) => m === source);
+          assert(targetIndex !== -1);
+          assert(mapping!.mapping.get(source) === targetIndex);
+        });
+      }
+
+      return Lowered.addExpr(lr, {
+        variant: Lowered.ENode.UnionToUnionCastExpr,
+        expr: lowerExpr(lr, expr.expr, flattened, instanceInfo)[1],
+        optimizeExprToNullptr: optimizeExprToNullptr,
+        tagMapping: mapping,
+        type: loweredTargetUnionId,
       });
     }
 
@@ -1602,7 +1685,6 @@ function lowerTypeDef(lr: Lowered.Module, typeId: Semantic.TypeDefId): Lowered.T
         }
       }
 
-      console.warn("TODO: Implement full canonicalization of union pretty and mangled name");
       const [p, pId] = Lowered.addTypeDef<Lowered.UnionDatatypeDef>(lr, {
         variant: Lowered.ENode.UnionDatatype,
         members: canonicalMembers,
@@ -1729,7 +1811,6 @@ function lowerStatement(
     case Semantic.ENode.ReturnStatement: {
       const flattened: Lowered.StatementId[] = [];
       let value = statement.expr ? lowerExpr(lr, statement.expr, flattened, instanceInfo)[1] : null;
-
       const [s, sId] = Lowered.addStatement<Lowered.Statement>(lr, {
         variant: Lowered.ENode.ReturnStatement,
         expr: value,
@@ -2145,6 +2226,11 @@ function serializeLoweredExpr(lr: Lowered.Module, exprId: Lowered.ExprId): strin
         expr.expr
       )}`;
 
+    case Lowered.ENode.UnionToUnionCastExpr:
+      return `(${serializeLoweredExpr(lr, expr.expr)} as ${
+        lr.typeUseNodes.get(expr.type).name.prettyName
+      })`;
+
     case Lowered.ENode.UnionTagCheckExpr:
       return `((${serializeLoweredExpr(lr, expr.expr)}) is union tag ${expr.tag})`;
 
@@ -2353,6 +2439,8 @@ export function LowerModule(sr: SemanticResult): Lowered.Module {
     loweredFunctions: new Map(),
     loweredPointers: new Map(),
     loweredGlobalVariables: new Map(),
+
+    loweredUnionMappings: [],
   };
 
   for (const [key, entries] of sr.elaboratedFuncdefSymbols) {

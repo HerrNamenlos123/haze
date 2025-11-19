@@ -977,18 +977,63 @@ export namespace Conversion {
 
     // Union Conversions: Value to Union (simple)
     if (to.variant === Semantic.ENode.UnionDatatype) {
-      const unionTypeDefs = to.members.map((typeUseId) => {
-        const typeUse = sr.typeUseNodes.get(typeUseId);
-        return typeUse.type;
+      const matching = to.members.findIndex((m) => {
+        // Check Direct match
+        if (m === fromExpr.type) {
+          return true;
+        }
+
+        // Check match with implicit mutability change
+        if (
+          fromTypeInstance.mutability === EDatatypeMutability.Const &&
+          toInstance.mutability === EDatatypeMutability.Default
+        ) {
+          return true;
+        }
+        if (
+          fromTypeInstance.mutability === EDatatypeMutability.Mut &&
+          toInstance.mutability === EDatatypeMutability.Default
+        ) {
+          return true;
+        }
+
+        return false;
       });
 
-      // TODO: Respect mutability and constness here
-      if (unionTypeDefs.includes(fromTypeInstance.type)) {
+      if (matching != -1) {
         return ok(
           Semantic.addExpr(sr, {
             variant: Semantic.ENode.ValueToUnionCastExpr,
             expr: fromExprId,
             instanceIds: fromExpr.instanceIds,
+            type: toId,
+            index: matching,
+            sourceloc: sourceloc,
+            isTemporary: fromExpr.isTemporary,
+          })[1]
+        );
+      }
+    }
+
+    // Union to Union conversion
+    if (
+      fromType.variant === Semantic.ENode.UnionDatatype &&
+      to.variant === Semantic.ENode.UnionDatatype
+    ) {
+      const membersFrom = typeNarrowing(sr);
+      membersFrom.addVariants(fromType.members);
+      membersFrom.constrainFromConstraints(constraints, fromExprId);
+
+      const membersTo = typeNarrowing(sr);
+      membersTo.addVariants(to.members);
+      membersTo.constrainFromConstraints(constraints, fromExprId);
+
+      if ([...membersFrom.possibleVariants].every((v) => membersTo.possibleVariants.has(v))) {
+        return ok(
+          Semantic.addExpr(sr, {
+            variant: Semantic.ENode.UnionToUnionCastExpr,
+            instanceIds: fromExpr.instanceIds,
+            expr: fromExprId,
             type: toId,
             sourceloc: sourceloc,
             isTemporary: fromExpr.isTemporary,
@@ -1003,28 +1048,21 @@ export namespace Conversion {
       members.addVariants(fromType.members);
       members.constrainFromConstraints(constraints, fromExprId);
 
-      const memberDefs = [...members.possibleVariants].map((m) => sr.typeUseNodes.get(m).type);
+      if (members.possibleVariants.size === 1 && [...members.possibleVariants][0] === toId) {
+        const tag = fromType.members.findIndex((m) => m === [...members.possibleVariants][0]);
+        assert(tag !== -1);
 
-      // TODO: Respect constness and mutability
-      if (memberDefs.length === 1) {
-        const index = fromType.members.findIndex(
-          (m) => sr.typeUseNodes.get(m).type === memberDefs[0]
+        return ok(
+          Semantic.addExpr(sr, {
+            variant: Semantic.ENode.UnionToValueCastExpr,
+            instanceIds: fromExpr.instanceIds,
+            expr: fromExprId,
+            type: toId,
+            tag: tag,
+            sourceloc: sourceloc,
+            isTemporary: fromExpr.isTemporary,
+          })[1]
         );
-        assert(index !== -1);
-
-        if (memberDefs[0] === toInstance.type) {
-          return ok(
-            Semantic.addExpr(sr, {
-              variant: Semantic.ENode.UnionToValueCastExpr,
-              instanceIds: fromExpr.instanceIds,
-              expr: fromExprId,
-              type: toId,
-              index: index,
-              sourceloc: sourceloc,
-              isTemporary: fromExpr.isTemporary,
-            })[1]
-          );
-        }
       }
     }
 

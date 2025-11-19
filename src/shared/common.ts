@@ -56,28 +56,29 @@ export type NameSet = {
   wasMangled: boolean;
 };
 
+// This order is the order in which unions are canonicalized, so be careful
 export enum EPrimitive {
-  void = 1,
-  null,
-  none,
-  bool,
-  i8,
-  i16,
-  i32,
-  i64,
-  u8,
-  u16,
-  u32,
-  u64,
-  f32,
-  f64,
-  int,
-  real,
-  usize,
-  str,
+  str = 1, // Start at 1 to avoid issues with 'if (primitive)'
   cstr,
   ccstr,
   cptr,
+  int,
+  i64,
+  i32,
+  i16,
+  i8,
+  usize,
+  u64,
+  u32,
+  u16,
+  u8,
+  real,
+  f64,
+  f32,
+  bool,
+  null,
+  none,
+  void,
 }
 
 export enum EVariableContext {

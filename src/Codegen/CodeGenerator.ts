@@ -13,6 +13,10 @@ import { getModuleGlobalNamespaceName, ModuleType, type ModuleConfig } from "../
 import { assert, InternalError, printWarningMessage } from "../shared/Errors";
 import { OutputWriter } from "./OutputWriter";
 
+function makeUnionMappingName(from: Lowered.TypeUseId, to: Lowered.TypeUseId) {
+  return `_H_Union_Mapping_${from}_to_${to}_`;
+}
+
 function escapeStringForC(str: string): [string, number] {
   let escaped = "";
   let byteLength = 0;
@@ -223,8 +227,13 @@ class CodeGenerator {
           this.out.type_definitions.writeLine(`uint8_t tag;`);
           this.out.type_definitions.writeLine(`union {`).pushIndent();
           symbol.members.forEach((m, i) => {
-            this.out.type_definitions.writeLine(`${this.mangleTypeUse(m)} as_index_${i};`);
+            this.out.type_definitions.writeLine(`${this.mangleTypeUse(m)} as_tag_${i};`);
           });
+          this.out.type_definitions.writeLine(`char as_bytes[sizeof(union{`).pushIndent();
+          symbol.members.forEach((m, i) => {
+            this.out.type_definitions.writeLine(`${this.mangleTypeUse(m)} as_tag_${i};`);
+          });
+          this.out.type_definitions.popIndent().writeLine(`})];`);
           this.out.type_definitions.popIndent().writeLine(`};`);
           this.out.type_definitions.popIndent().writeLine(`};`);
         }
@@ -282,6 +291,16 @@ class CodeGenerator {
 
     for (const [id, symbol] of this.lr.loweredGlobalVariables) {
       // TODO
+    }
+
+    for (const mapping of this.lr.loweredUnionMappings) {
+      this.out.type_declarations
+        .writeLine(`static const uint8_t ${makeUnionMappingName(mapping.from, mapping.to)}[] = {`)
+        .pushIndent();
+      for (const [from, to] of mapping.mapping) {
+        this.out.type_declarations.writeLine(`[${from}] = ${to},`);
+      }
+      this.out.type_declarations.popIndent().writeLine(`};`);
     }
   }
 
@@ -725,13 +744,6 @@ class CodeGenerator {
         const union = this.lr.typeDefNodes.get(typeUse.type);
         assert(union.variant === Lowered.ENode.UnionDatatype);
 
-        // TODO: Respect mutability and constness
-        const exprTypeDef = this.lr.typeUseNodes.get(this.lr.exprNodes.get(expr.expr).type).type;
-        const unionMembers = union.members.map((m) => this.lr.typeUseNodes.get(m).type);
-
-        const index = unionMembers.findIndex((m) => m === exprTypeDef);
-        assert(index !== -1);
-
         if (union.optimizeAsRawPointer) {
           if (expr.optimizeExprToNullptr) {
             outWriter.write(`((${this.mangleTypeUse(expr.type)})(0))`);
@@ -742,9 +754,9 @@ class CodeGenerator {
           }
         } else {
           outWriter.write(
-            `((${this.mangleTypeUse(
-              expr.type
-            )}) { .tag = ${index}, .as_index_${index} = ${this.emitExpr(expr.expr).out.get()} })`
+            `((${this.mangleTypeUse(expr.type)}) { .tag = ${expr.index}, .as_tag_${
+              expr.index
+            } = ${this.emitExpr(expr.expr).out.get()} })`
           );
         }
         return { out: outWriter, temp: tempWriter };
@@ -753,14 +765,41 @@ class CodeGenerator {
       case Lowered.ENode.UnionToValueCastExpr: {
         const exprWriter = this.emitExpr(expr.expr);
         tempWriter.write(exprWriter.temp);
-        const typeUse = this.lr.typeUseNodes.get(expr.type);
+        const typeUse = this.lr.typeUseNodes.get(this.lr.exprNodes.get(expr.expr).type);
         const union = this.lr.typeDefNodes.get(typeUse.type);
         assert(union.variant === Lowered.ENode.UnionDatatype);
 
         if (union.optimizeAsRawPointer) {
           outWriter.write(`(${this.emitExpr(expr.expr).out.get()})`);
         } else {
-          outWriter.write(`((${this.emitExpr(expr.expr).out.get()}).as_index_${expr.index})`);
+          outWriter.write(`((${this.emitExpr(expr.expr).out.get()}).as_tag_${expr.index})`);
+        }
+        return { out: outWriter, temp: tempWriter };
+      }
+
+      case Lowered.ENode.UnionToUnionCastExpr: {
+        const exprWriter = this.emitExpr(expr.expr);
+        tempWriter.write(exprWriter.temp);
+        const typeUse = this.lr.typeUseNodes.get(expr.type);
+        const union = this.lr.typeDefNodes.get(typeUse.type);
+        assert(union.variant === Lowered.ENode.UnionDatatype);
+
+        if (union.optimizeAsRawPointer) {
+          assert(false, "not implemented yet");
+        } else {
+          const sourceUnionExpr = this.lr.exprNodes.get(expr.expr);
+          const sourceUnionExprType = this.lr.typeDefNodes.get(
+            this.lr.typeUseNodes.get(sourceUnionExpr.type).type
+          );
+
+          outWriter.write(
+            `({ ${this.mangleName(sourceUnionExprType.name)} source = ${this.emitExpr(
+              expr.expr
+            ).out.get()}; ${this.mangleName(union.name)} target = { .tag = ${makeUnionMappingName(
+              expr.tagMapping.from,
+              expr.tagMapping.to
+            )}[source.tag] }; memcpy(&target.as_bytes, &source.as_bytes, sizeof(source.as_bytes)); target; })`
+          );
         }
         return { out: outWriter, temp: tempWriter };
       }

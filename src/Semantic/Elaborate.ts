@@ -296,7 +296,7 @@ export class SemanticElaborator {
       }
 
       const primitive = stringToPrimitive(collectedExpr.name);
-      if (primitive) {
+      if (primitive !== undefined) {
         const callingArguments = callExpr.arguments.map((a) => this.expr(a, undefined)[1]);
         assertCompilerError(
           collectedExpr.genericArgs.length === 0,
@@ -2092,6 +2092,7 @@ export class SemanticElaborator {
           sourceloc: func.sourceloc,
           createsInstanceIds: new Set(),
           explicitArenaInstanceIds: new Set(),
+          returnStatements: new Set(),
           returnsInstanceIds: new Set(),
           instanceDepsSnapshot: this.sr.e.currentContext.instanceDeps,
           scope: null,
@@ -2247,6 +2248,31 @@ export class SemanticElaborator {
               },
               sourceloc: func.sourceloc,
             });
+
+            // Now the return type has been fixed, so we have to go over all return statements now
+            // and insert implicit type conversions to the return type in order to convert between unions implicitly.
+            // Important if: 'Foo' and 'str' is returned, then the return type is 'Foo | str', so in each
+            // return statement, 'Foo' must be implicitly converted to 'Foo | str'.
+            for (const sId of symbol.returnStatements) {
+              const statement = this.sr.statementNodes.get(sId);
+              if (
+                statement.variant === Semantic.ENode.ReturnStatement &&
+                statement.expr !== undefined
+              ) {
+                const returnedExpr = this.getExpr(statement.expr);
+                if (returnedExpr.type !== inferredReturnType) {
+                  statement.expr = Conversion.MakeConversionOrThrow(
+                    this.sr,
+                    statement.expr,
+                    inferredReturnType,
+                    [],
+                    statement.sourceloc,
+                    Conversion.Mode.Implicit,
+                    false
+                  );
+                }
+              }
+            }
           }
         }
 
@@ -2565,10 +2591,8 @@ export class SemanticElaborator {
       }
 
       case Collect.ENode.UnionDatatype: {
-        return this.sr.b.unionTypeUse(
-          type.members.map((m) => this.lookupAndElaborateDatatype(m)),
-          type.sourceloc
-        );
+        const rawMembers = type.members.map((m) => this.lookupAndElaborateDatatype(m));
+        return this.sr.b.unionTypeUse(rawMembers, type.sourceloc);
       }
 
       // =================================================================================================================
@@ -3337,18 +3361,19 @@ export class SemanticElaborator {
       // =================================================================================================================
 
       case Collect.ENode.ReturnStatement: {
-        if (s.expr) {
-          if (!this.inFunction) {
-            throw new CompilerError(
-              `Cannot return in this context, it's not in a function context`,
-              s.sourceloc
-            );
-          }
+        if (!this.inFunction) {
+          throw new CompilerError(
+            `Cannot return in this context, it's not in a function context`,
+            s.sourceloc
+          );
+        }
 
+        const functionSymbol = this.getSymbol(this.inFunction);
+        assert(functionSymbol.variant === Semantic.ENode.FunctionSymbol);
+
+        if (s.expr) {
           let eId: Semantic.ExprId;
 
-          const functionSymbol = this.getSymbol(this.inFunction);
-          assert(functionSymbol.variant === Semantic.ENode.FunctionSymbol);
           const returnType = functionSymbol.annotatedReturnType;
           if (returnType) {
             // The function return type is explicit, so do proper conversions
@@ -3376,16 +3401,20 @@ export class SemanticElaborator {
           assert(this.functionReturnsInstanceIds);
           expression.instanceIds.forEach((i) => this.functionReturnsInstanceIds!.add(i));
 
-          return Semantic.addStatement(this.sr, {
+          const resultId = Semantic.addStatement(this.sr, {
             variant: Semantic.ENode.ReturnStatement,
             expr: eId,
             sourceloc: s.sourceloc,
           })[1];
+          functionSymbol.returnStatements.add(resultId);
+          return resultId;
         } else {
-          return Semantic.addStatement(this.sr, {
+          const resultId = Semantic.addStatement(this.sr, {
             variant: Semantic.ENode.ReturnStatement,
             sourceloc: s.sourceloc,
           })[1];
+          functionSymbol.returnStatements.add(resultId);
+          return resultId;
         }
       }
 
@@ -3820,6 +3849,20 @@ export class SemanticElaborator {
       }
     }
 
+    if (expr.variant === Semantic.ENode.UnionTagCheckExpr) {
+      const unionExpr = this.getExpr(expr.expr);
+      if (unionExpr.variant === Semantic.ENode.SymbolValueExpr) {
+        constraints.push({
+          constraintValue: {
+            kind: "union",
+            operation: "is",
+            typeDef: this.getTypeUse(expr.comparisonType).type,
+          },
+          variableSymbol: unionExpr.symbol,
+        });
+      }
+    }
+
     if (
       expr.variant === Semantic.ENode.SymbolValueExpr &&
       exprTypeDef.variant === Semantic.ENode.UnionDatatype
@@ -4023,18 +4066,19 @@ export class SemanticElaborator {
           narrowing.constrainFromConstraints(this.currentContext.constraints, symbolValueExprId);
 
           if (narrowing.possibleVariants.size === 1) {
-            const index = type.members.findIndex((m) => m === [...narrowing.possibleVariants][0]);
-            assert(index !== -1);
+            const tag = type.members.findIndex((m) => m === [...narrowing.possibleVariants][0]);
+            assert(tag !== -1);
 
-            return Semantic.addExpr(this.sr, {
+            const [result, resultId] = Semantic.addExpr(this.sr, {
               variant: Semantic.ENode.UnionToValueCastExpr,
               instanceIds: [],
               expr: symbolValueExprId,
-              index: index,
+              tag: tag,
               isTemporary: true,
               sourceloc: symbolValue.sourceloc,
               type: [...narrowing.possibleVariants][0],
             });
+            return [result, resultId] as const;
           }
         }
 
@@ -5149,11 +5193,97 @@ export class SemanticBuilder {
   }
 
   unionTypeUse(members: Semantic.TypeUseId[], sourceloc: SourceLoc) {
+    const canonicalMemberSet = new Set<Semantic.TypeUseId>();
+
+    const processMember = (mId: Semantic.TypeUseId) => {
+      const mUse = this.sr.e.getTypeUse(mId);
+      const mDef = this.sr.e.getTypeDef(mUse.type);
+
+      if (mDef.variant === Semantic.ENode.UnionDatatype) {
+        for (const i of mDef.members) {
+          processMember(i);
+        }
+      } else {
+        canonicalMemberSet.add(mId);
+      }
+    };
+
+    for (const mId of members) {
+      processMember(mId);
+    }
+
+    const canonicalMembers = [...canonicalMemberSet];
+    canonicalMembers.sort((a, b) => {
+      const aUse = this.sr.e.getTypeUse(a);
+      const bUse = this.sr.e.getTypeUse(b);
+      const aDef = this.sr.e.getTypeDef(aUse.type);
+      const bDef = this.sr.e.getTypeDef(bUse.type);
+
+      const getVariantRank = (typeDef: Semantic.TypeDef) => {
+        switch (typeDef.variant) {
+          case Semantic.ENode.StructDatatype:
+            return 1;
+          case Semantic.ENode.FixedArrayDatatype:
+            return 2;
+          case Semantic.ENode.DynamicArrayDatatype:
+            return 3;
+          case Semantic.ENode.CallableDatatype:
+            return 4;
+          case Semantic.ENode.FunctionDatatype:
+            return 5;
+          case Semantic.ENode.PrimitiveDatatype:
+            return 6;
+          default:
+            return 99; // Handle unknown/other variants last
+        }
+      };
+
+      const rankA = getVariantRank(aDef);
+      const rankB = getVariantRank(bDef);
+
+      if (rankA !== rankB) {
+        return rankA - rankB; // Ascending rank (lower rank comes first)
+      }
+
+      const getStructRank = (typeUse: Semantic.TypeUse, typeDef: Semantic.TypeDef) => {
+        if (typeDef.variant !== Semantic.ENode.StructDatatype) {
+          return 0;
+        }
+        if (typeUse.inline) {
+          return 2;
+        } else {
+          return 1;
+        }
+      };
+      const structRankA = getStructRank(aUse, aDef);
+      const structRankB = getStructRank(bUse, bDef);
+      if (structRankA !== structRankB) {
+        return structRankA - structRankB; // Ascending rank (lower rank comes first)
+      }
+
+      if (
+        aDef.variant === Semantic.ENode.StructDatatype &&
+        bDef.variant === Semantic.ENode.StructDatatype &&
+        aDef.name !== bDef.name
+      ) {
+        return aDef.name.localeCompare(bDef.name);
+      }
+
+      if (
+        aDef.variant === Semantic.ENode.PrimitiveDatatype &&
+        bDef.variant === Semantic.ENode.PrimitiveDatatype
+      ) {
+        return aDef.primitive - bDef.primitive;
+      }
+
+      return a - b;
+    });
+
     return makeTypeUse(
       this.sr,
       Semantic.addType(this.sr, {
         variant: Semantic.ENode.UnionDatatype,
-        members: members,
+        members: canonicalMembers,
         concrete: !members.some((m) => !isTypeConcrete(this.sr, m)),
       })[1],
       EDatatypeMutability.Const,
@@ -5516,6 +5646,7 @@ export namespace Semantic {
     ExplicitCastExpr,
     ValueToUnionCastExpr,
     UnionToValueCastExpr,
+    UnionToUnionCastExpr,
     UnionTagCheckExpr,
     MemberAccessExpr,
     CallableExpr,
@@ -5648,6 +5779,7 @@ export namespace Semantic {
     export: boolean;
     createsInstanceIds: Set<Semantic.InstanceId>;
     returnsInstanceIds: Set<Semantic.InstanceId>;
+    returnStatements: Set<Semantic.StatementId>;
     explicitArenaInstanceIds: Set<Semantic.InstanceId>;
     explicitLocalArena: boolean;
     explicitReturnArena: boolean;
@@ -5894,6 +6026,7 @@ export namespace Semantic {
     instanceIds: InstanceId[];
     expr: ExprId;
     type: TypeUseId;
+    index: number;
     isTemporary: boolean;
     sourceloc: SourceLoc;
   };
@@ -5903,7 +6036,16 @@ export namespace Semantic {
     instanceIds: InstanceId[];
     expr: ExprId;
     type: TypeUseId;
-    index: number;
+    tag: number;
+    isTemporary: boolean;
+    sourceloc: SourceLoc;
+  };
+
+  export type UnionToUnionCastExpr = {
+    variant: ENode.UnionToUnionCastExpr;
+    instanceIds: InstanceId[];
+    expr: ExprId;
+    type: TypeUseId;
     isTemporary: boolean;
     sourceloc: SourceLoc;
   };
@@ -6066,6 +6208,7 @@ export namespace Semantic {
     | ExplicitCastExpr
     | ValueToUnionCastExpr
     | UnionToValueCastExpr
+    | UnionToUnionCastExpr
     | UnionTagCheckExpr
     | ExprCallExpr
     | StructInstantiationExpr
@@ -7192,6 +7335,14 @@ export namespace Semantic {
         return `(${serializeExpr(sr, expr.left)} ${BinaryOperationToString(
           expr.operation
         )} ${serializeExpr(sr, expr.right)})`;
+
+      case Semantic.ENode.UnionToValueCastExpr: {
+        return `(${serializeExpr(sr, expr.expr)} as tag ${expr.tag})`;
+      }
+
+      case Semantic.ENode.UnionToUnionCastExpr: {
+        return `(${serializeExpr(sr, expr.expr)} as union ${serializeTypeUse(sr, expr.type)})`;
+      }
 
       case Semantic.ENode.UnaryExpr:
         return `(${UnaryOperationToString(expr.operation)} ${serializeExpr(sr, expr.expr)})`;
