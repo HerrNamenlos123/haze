@@ -124,11 +124,11 @@ struct JsonValue {
 extern foobar1(): Foo | str;
 
 foobar2(): str {
-    const a1 = try foobar1();
+    // const a1 = try foobar1();
     const a2 = do {
         const __temp = foobar1();
-        if typeof(__temp) == type<str> { 
-            return __temp as str; 
+        if __temp is str { 
+            return __temp; 
         }
         __temp;
     };

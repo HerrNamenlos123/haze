@@ -368,7 +368,6 @@ export type ASTStatement =
 export type ASTScope = {
   variant: "Scope";
   statements: ASTStatement[];
-  emittedExpr: ASTExpr | null;
   unsafe: boolean;
   sourceloc: SourceLoc;
 };
@@ -455,6 +454,13 @@ export type ASTExplicitCastExpr = {
   sourceloc: SourceLoc;
 };
 
+export type ASTExprIsTypeExpr = {
+  variant: "ExprIsTypeExpr";
+  expr: ASTExpr;
+  comparisonType: ASTTypeUse;
+  sourceloc: SourceLoc;
+};
+
 export type ASTArraySubscriptExpr = {
   variant: "ArraySubscriptExpr";
   expr: ASTExpr;
@@ -511,6 +517,7 @@ export type ASTExpr =
   | ASTPreIncrExpr
   | ASTUnaryExpr
   | ASTExplicitCastExpr
+  | ASTExprIsTypeExpr
   | ASTArraySubscriptExpr
   | ASTArraySliceExpr
   | ASTBinaryExpr

@@ -7,6 +7,7 @@ lexer grammar HazeLexer;
 IMPORT: 'import';
 EXPORT: 'export';
 AS: 'as';
+IS: 'is';
 FROM: 'from';
 NAMESPACE: 'namespace';
 PUB: 'pub';

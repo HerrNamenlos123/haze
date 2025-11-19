@@ -49,6 +49,8 @@ import {
 
 import { EUnaryOperation, type EIncrOperation } from "../shared/AST";
 import { type Brand, type LiteralValue } from "../shared/common";
+import { getJSDocOverrideTagNoCache } from "typescript";
+import { printStatement } from "../Lower/Lower";
 
 type Inference =
   | undefined
@@ -685,6 +687,9 @@ export class SemanticElaborator {
 
       case Collect.ENode.ArraySubscriptExpr:
         return this.arraySubscript(expr);
+
+      case Collect.ENode.ExprIsTypeExpr:
+        return this.exprIsType(expr, inference);
 
       default:
         assert(false, "All cases handled: " + Collect.ENode[expr.variant]);
@@ -1762,6 +1767,7 @@ export class SemanticElaborator {
       sourceScopeId: Collect.ScopeId;
       targetScopeId: Semantic.BlockScopeId;
     },
+    lastExprIsEmit: boolean,
     inference: Inference
   ) {
     const scope = this.sr.cc.scopeNodes.get(args.sourceScopeId);
@@ -1795,18 +1801,32 @@ export class SemanticElaborator {
           }
         }
 
-        for (const sId of scope.statements) {
+        const statements = [...scope.statements];
+        statements.forEach((sId, index) => {
           assert(this.inFunction);
-          const statement = this.elaborateStatement(sId, {
-            gonnaInstantiateStructWithType: this.getFunctionSymbolReturnType(this.inFunction),
+
+          let gonnaInstantiateStructWithType: Semantic.TypeUseId | undefined;
+
+          if (this.sr.cc.statementNodes.get(sId).variant === Collect.ENode.ReturnStatement) {
+            gonnaInstantiateStructWithType = this.getFunctionSymbolReturnType(this.inFunction);
+          }
+
+          const statementId = this.elaborateStatement(sId, {
+            gonnaInstantiateStructWithType: gonnaInstantiateStructWithType,
             unsafe: scope.unsafe,
           });
-          blockScope.statements.push(statement);
-        }
+          const statement = this.sr.statementNodes.get(statementId);
 
-        if (scope.emittedExpr) {
-          blockScope.emittedExpr = this.expr(scope.emittedExpr, inference)[1];
-        }
+          if (
+            lastExprIsEmit &&
+            statement.variant === Semantic.ENode.ExprStatement &&
+            index === statements.length - 1
+          ) {
+            blockScope.emittedExpr = statement.expr;
+          } else {
+            blockScope.statements.push(statementId);
+          }
+        });
       }
     );
   }
@@ -2161,6 +2181,7 @@ export class SemanticElaborator {
                     sourceScopeId: functionScope.blockScope,
                     targetScopeId: bodyScopeId,
                   },
+                  false,
                   undefined
                 );
               }
@@ -3105,6 +3126,7 @@ export class SemanticElaborator {
                 targetScopeId: thenScopeId,
                 sourceScopeId: s.thenBlock,
               },
+              false,
               undefined
             );
             return Semantic.addStatement(this.sr, {
@@ -3135,6 +3157,7 @@ export class SemanticElaborator {
                   targetScopeId: thenScopeId,
                   sourceScopeId: elif.thenBlock,
                 },
+                false,
                 undefined
               );
               return Semantic.addStatement(this.sr, {
@@ -3164,6 +3187,7 @@ export class SemanticElaborator {
                 targetScopeId: thenScopeId,
                 sourceScopeId: s.elseBlock,
               },
+              false,
               undefined
             );
             return Semantic.addStatement(this.sr, {
@@ -3223,6 +3247,7 @@ export class SemanticElaborator {
                   targetScopeId: thenScopeId,
                   sourceScopeId: s.thenBlock,
                 },
+                false,
                 undefined
               );
               const elseIfs = s.elseif.map((e) => {
@@ -3237,6 +3262,7 @@ export class SemanticElaborator {
                     targetScopeId: innerThenScopeId,
                     sourceScopeId: e.thenBlock,
                   },
+                  false,
                   undefined
                 );
                 return {
@@ -3261,6 +3287,7 @@ export class SemanticElaborator {
                     targetScopeId: elseScopeId,
                     sourceScopeId: s.elseBlock,
                   },
+                  false,
                   undefined
                 );
               }
@@ -3294,6 +3321,7 @@ export class SemanticElaborator {
             targetScopeId: thenScopeId,
             sourceScopeId: s.block,
           },
+          false,
           undefined
         );
         return Semantic.addStatement(this.sr, {
@@ -3483,6 +3511,16 @@ export class SemanticElaborator {
         const variableSymbolType = this.sr.typeUseNodes.get(variableSymbol.type);
         const variableSymbolTypeDef = this.sr.typeDefNodes.get(variableSymbolType.type);
 
+        if (
+          variableSymbolTypeDef.variant === Semantic.ENode.PrimitiveDatatype &&
+          variableSymbolTypeDef.primitive === EPrimitive.void
+        ) {
+          throw new CompilerError(
+            `A variable cannot be assigned a 'void' value`,
+            value?.sourceloc || s.sourceloc
+          );
+        }
+
         if (variableSymbol.mutability === EVariableMutability.Const) {
           // assert(false, "TODO");
         } else {
@@ -3646,6 +3684,7 @@ export class SemanticElaborator {
                 targetScopeId: thenScopeId,
                 sourceScopeId: s.body,
               },
+              false,
               undefined
             );
             if (s.indexVariable) {
@@ -4155,6 +4194,49 @@ export class SemanticElaborator {
     });
   }
 
+  exprIsType(exprIsType: Collect.ExprIsTypeExpr, inference: Inference) {
+    const comparisonType = this.lookupAndElaborateDatatype(exprIsType.comparisonType);
+    const [sourceExpr, sourceExprId] = this.expr(exprIsType.expr, {
+      unsafe: inference?.unsafe,
+    });
+
+    const sourceExprTypeUse = this.getTypeUse(sourceExpr.type);
+    const sourceExprTypeDef = this.getTypeDef(sourceExprTypeUse.type);
+
+    if (sourceExprTypeDef.variant === Semantic.ENode.UnionDatatype) {
+      if (!sourceExprTypeDef.members.includes(comparisonType)) {
+        throw new CompilerError(
+          `This comparison is always false, as '${Semantic.serializeTypeUse(
+            this.sr,
+            comparisonType
+          )}' is not a member of the union '${Semantic.serializeTypeUse(
+            this.sr,
+            sourceExpr.type
+          )}'.`,
+          exprIsType.sourceloc
+        );
+      }
+
+      return Semantic.addExpr(this.sr, {
+        variant: Semantic.ENode.UnionTagCheckExpr,
+        instanceIds: [],
+        expr: sourceExprId,
+        type: this.sr.b.boolType(),
+        comparisonType: comparisonType,
+        sourceloc: exprIsType.sourceloc,
+        isTemporary: true,
+      });
+    } else {
+      throw new CompilerError(
+        `This comparison is invalid, as the 'is' operator can only be meaningfully applied to union types, which '${Semantic.serializeTypeUse(
+          this.sr,
+          sourceExpr.type
+        )}' is not.`,
+        exprIsType.sourceloc
+      );
+    }
+  }
+
   arraySubscript(arraySubscript: Collect.ArraySubscriptExpr) {
     if (arraySubscript.indices.length > 1) {
       throw new CompilerError(
@@ -4454,6 +4536,7 @@ export class SemanticElaborator {
             targetScopeId: scopeId,
             sourceScopeId: blockScopeExpr.scope,
           },
+          true,
           inference
         );
       }
@@ -5433,6 +5516,7 @@ export namespace Semantic {
     ExplicitCastExpr,
     ValueToUnionCastExpr,
     UnionToValueCastExpr,
+    UnionTagCheckExpr,
     MemberAccessExpr,
     CallableExpr,
     AddressOfExpr,
@@ -5824,6 +5908,16 @@ export namespace Semantic {
     sourceloc: SourceLoc;
   };
 
+  export type UnionTagCheckExpr = {
+    variant: ENode.UnionTagCheckExpr;
+    instanceIds: InstanceId[];
+    expr: ExprId;
+    type: TypeUseId;
+    comparisonType: TypeUseId;
+    isTemporary: boolean;
+    sourceloc: SourceLoc;
+  };
+
   export type BinaryExpr = {
     variant: ENode.BinaryExpr;
     instanceIds: InstanceId[];
@@ -5972,6 +6066,7 @@ export namespace Semantic {
     | ExplicitCastExpr
     | ValueToUnionCastExpr
     | UnionToValueCastExpr
+    | UnionTagCheckExpr
     | ExprCallExpr
     | StructInstantiationExpr
     | LiteralExpr
@@ -6727,8 +6822,10 @@ export namespace Semantic {
           datatype.datatype
         )}`;
 
-      case Semantic.ENode.UnionDatatype:
+      case Semantic.ENode.UnionDatatype: {
+        const canonicalMembers = 0;
         return datatype.members.map((m) => serializeTypeUse(sr, m)).join(" | ");
+      }
 
       case Semantic.ENode.ParameterPackDatatype:
         if (datatype.parameters === null) {
@@ -7151,6 +7248,10 @@ export namespace Semantic {
           expr.thisExpr
         )})`;
 
+      case Semantic.ENode.BlockScopeExpr: {
+        return `do { ... }`;
+      }
+
       case Semantic.ENode.AddressOfExpr:
         return `&${serializeExpr(sr, expr.expr)}`;
 
@@ -7202,7 +7303,7 @@ export namespace Semantic {
       }
 
       default:
-        assert(false, expr.variant.toString());
+        assert(false, Semantic.ENode[expr.variant]);
     }
   }
 }

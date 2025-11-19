@@ -66,6 +66,7 @@ import {
   type ASTFunctionRequiresBlock,
   type ASTFunctionOverloading,
   EOverloadedOperator,
+  type ASTExprIsTypeExpr,
 } from "../shared/AST";
 import {
   BinaryExprContext,
@@ -141,6 +142,7 @@ import {
   RequiresAutodestContext,
   RequiresInParensContext,
   RequiresNoreturnContext,
+  ExprIsTypeExprContext,
 } from "./grammar/autogen/HazeParser";
 import {
   BaseErrorListener,
@@ -881,7 +883,6 @@ class ASTTransformer extends HazeParserVisitor<any> {
       variant: "Scope",
       sourceloc: this.loc(ctx),
       unsafe: false,
-      emittedExpr: null,
       statements: ctx.statement().map((s) => this.visit(s)),
     };
   };
@@ -892,7 +893,6 @@ class ASTTransformer extends HazeParserVisitor<any> {
       scope: {
         variant: "Scope",
         unsafe: Boolean(ctx.UNSAFE()),
-        emittedExpr: ctx.expr() ? this.visit(ctx.expr()!) : null,
         statements: ctx.statement().map((s) => this.visit(s)),
         sourceloc: this.loc(ctx),
       },
@@ -1128,6 +1128,15 @@ class ASTTransformer extends HazeParserVisitor<any> {
       variant: "UnaryExpr",
       expr: this.visit(ctx.expr()),
       operation: this.unaryop(ctx),
+      sourceloc: this.loc(ctx),
+    };
+  };
+
+  visitExprIsTypeExpr = (ctx: ExprIsTypeExprContext): ASTExprIsTypeExpr => {
+    return {
+      variant: "ExprIsTypeExpr",
+      comparisonType: this.visit(ctx.datatype()),
+      expr: this.visit(ctx.expr()),
       sourceloc: this.loc(ctx),
     };
   };

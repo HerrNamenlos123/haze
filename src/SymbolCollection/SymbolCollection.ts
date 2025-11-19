@@ -42,6 +42,7 @@ import {
   type ASTTypeDef,
   type ASTTypeAlias,
   EOverloadedOperator,
+  type ASTExprIsTypeExpr,
 } from "../shared/AST";
 import {
   BrandedArray,
@@ -176,6 +177,7 @@ export namespace Collect {
     ExprCallExpr,
     SymbolValueExpr,
     ExplicitCastExpr,
+    ExprIsTypeExpr,
     MemberAccessExpr,
     ExprAssignmentExpr,
     StructInstantiationExpr,
@@ -580,6 +582,12 @@ export namespace Collect {
     targetType: Collect.TypeUseId;
   };
 
+  export type ExprIsTypeExpr = BaseExpr & {
+    variant: ENode.ExprIsTypeExpr;
+    expr: Collect.ExprId;
+    comparisonType: Collect.TypeUseId;
+  };
+
   export type StructInstantiationExpr = BaseExpr & {
     variant: ENode.StructInstantiationExpr;
     structType: Collect.TypeUseId | null;
@@ -660,6 +668,7 @@ export namespace Collect {
     | SymbolValueExpr
     | ExprCallExpr
     | ExplicitCastExpr
+    | ExprIsTypeExpr
     | StructInstantiationExpr
     | ExprAssignmentExpr
     | LiteralExpr
@@ -1362,7 +1371,6 @@ function collectSymbol(
               },
             ],
             unsafe: false,
-            emittedExpr: null,
             sourceloc: item.sourceloc,
           };
         }
@@ -1758,14 +1766,6 @@ function collectScope(
     }
   }
 
-  if (item.emittedExpr) {
-    const blockScope = cc.scopeNodes.get(blockScopeId);
-    assert(blockScope.variant === Collect.ENode.BlockScope);
-    blockScope.emittedExpr = collectExpr(cc, item.emittedExpr, {
-      currentParentScope: blockScopeId,
-    });
-  }
-
   return blockScopeId;
 }
 
@@ -1786,6 +1786,7 @@ function collectExpr(
     | ASTPostIncrExpr
     | ASTStructInstantiationExpr
     | ASTExplicitCastExpr
+    | ASTExprIsTypeExpr
     | ASTBinaryExpr
     | ASTSymbolValueExpr,
   args: {
@@ -1959,6 +1960,18 @@ function collectExpr(
             })[1];
           }
         }),
+        sourceloc: item.sourceloc,
+      })[1];
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
+    case "ExprIsTypeExpr":
+      return Collect.makeExpr(cc, {
+        variant: Collect.ENode.ExprIsTypeExpr,
+        expr: collectExpr(cc, item.expr, args),
+        comparisonType: collectTypeUse(cc, item.comparisonType, args),
         sourceloc: item.sourceloc,
       })[1];
 

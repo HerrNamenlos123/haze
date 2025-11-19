@@ -78,6 +78,7 @@ export namespace Lowered {
     ExplicitCastExpr,
     ValueToUnionCastExpr,
     UnionToValueCastExpr,
+    UnionTagCheckExpr,
     MemberAccessExpr,
     CallableExpr,
     AddressOfExpr,
@@ -271,6 +272,16 @@ export namespace Lowered {
     type: TypeUseId;
   };
 
+  export type UnionTagCheckExpr = {
+    variant: ENode.UnionTagCheckExpr;
+    expr: ExprId;
+    tag: number;
+    optimizeExprToNullptr: {
+      isNullPtrCheckInverted: boolean;
+    } | null;
+    type: TypeUseId;
+  };
+
   export type ExprMemberAccessExpr = {
     variant: ENode.MemberAccessExpr;
     expr: ExprId;
@@ -374,6 +385,7 @@ export namespace Lowered {
     | ExplicitCastExpr
     | ValueToUnionCastExpr
     | UnionToValueCastExpr
+    | UnionTagCheckExpr
     | ExprMemberAccessExpr
     | LiteralExpr
     | PreIncrExpr
@@ -1342,9 +1354,7 @@ function lowerExpr(
 
       let optimizeExprToNullptr = false;
       if (loweredUnion.optimizeAsRawPointer) {
-        const exprTypeDef = lr.sr.typeDefNodes.get(
-          lr.sr.typeUseNodes.get(lr.sr.exprNodes.get(expr.expr).type).type
-        );
+        const exprTypeDef = lr.sr.typeDefNodes.get(lr.sr.typeUseNodes.get(sourceExpr.type).type);
         if (
           exprTypeDef.variant === Semantic.ENode.PrimitiveDatatype &&
           exprTypeDef.primitive === EPrimitive.none
@@ -1358,6 +1368,43 @@ function lowerExpr(
         expr: lowerExpr(lr, expr.expr, flattened, instanceInfo)[1],
         optimizeExprToNullptr: optimizeExprToNullptr,
         index: expr.index,
+        type: loweredUnionId,
+      });
+    }
+
+    case Semantic.ENode.UnionTagCheckExpr: {
+      const sourceExpr = lr.sr.exprNodes.get(expr.expr);
+      const sourceType = lr.sr.typeDefNodes.get(lr.sr.typeUseNodes.get(sourceExpr.type).type);
+      assert(sourceType.variant === Semantic.ENode.UnionDatatype);
+
+      const loweredUnionId = lowerTypeUse(lr, sourceExpr.type);
+      const loweredUnion = lr.typeDefNodes.get(lr.typeUseNodes.get(loweredUnionId).type);
+      assert(loweredUnion.variant === Lowered.ENode.UnionDatatype);
+
+      const comparisonType = lowerTypeUse(lr, expr.comparisonType);
+
+      let optimizeExprToNullptr = false;
+      let tag = 0;
+      if (loweredUnion.optimizeAsRawPointer) {
+        assert(false, "not implemented yet");
+        // const exprTypeDef = lr.sr.typeDefNodes.get(lr.sr.typeUseNodes.get(sourceExpr.type).type);
+        // if (
+        //   exprTypeDef.variant === Semantic.ENode.PrimitiveDatatype &&
+        //   exprTypeDef.primitive === EPrimitive.none
+        // ) {
+        //   optimizeExprToNullptr = true;
+        // }
+      } else {
+        // canonicalizeUnionMembers(lr, loweredUnion);
+        tag = loweredUnion.members.findIndex((m) => m === comparisonType);
+        assert(tag !== -1);
+      }
+
+      return Lowered.addExpr(lr, {
+        variant: Lowered.ENode.UnionTagCheckExpr,
+        expr: lowerExpr(lr, expr.expr, flattened, instanceInfo)[1],
+        optimizeExprToNullptr: optimizeExprToNullptr ? { isNullPtrCheckInverted: false } : null,
+        tag: tag,
         type: loweredUnionId,
       });
     }
@@ -1520,27 +1567,45 @@ function lowerTypeDef(lr: Lowered.Module, typeId: Semantic.TypeDefId): Lowered.T
     } else {
       let optimizeAsRawPointer: Lowered.TypeUseId | null = null;
       if (type.members.length === 2) {
+        // Is optimized if either 'Foo | null' or 'Foo | none'. 'Foo | null | none' can NOT be optimized (length != 2)
         const def1 = lr.sr.typeDefNodes.get(lr.sr.typeUseNodes.get(type.members[0]).type);
         const def2 = lr.sr.typeDefNodes.get(lr.sr.typeUseNodes.get(type.members[1]).type);
         if (
           def1.variant === Semantic.ENode.StructDatatype &&
           def2.variant === Semantic.ENode.PrimitiveDatatype &&
-          def2.primitive === EPrimitive.none
+          (def2.primitive === EPrimitive.none || def2.primitive === EPrimitive.null)
         ) {
           optimizeAsRawPointer = lowerTypeUse(lr, type.members[0]);
         }
         if (
           def2.variant === Semantic.ENode.StructDatatype &&
           def1.variant === Semantic.ENode.PrimitiveDatatype &&
-          def1.primitive === EPrimitive.none
+          (def1.primitive === EPrimitive.none || def1.primitive === EPrimitive.null)
         ) {
           optimizeAsRawPointer = lowerTypeUse(lr, type.members[1]);
         }
       }
 
+      const canonicalMembers = type.members.map((m) => lowerTypeUse(lr, m));
+
+      // Do another cache lookup for deduplication
+      for (const [id, unionId] of lr.loweredTypeDefs) {
+        const union = lr.typeDefNodes.get(unionId);
+        if (union.variant === Lowered.ENode.UnionDatatype) {
+          if (
+            union.optimizeAsRawPointer === optimizeAsRawPointer &&
+            union.members.length === canonicalMembers.length &&
+            union.members.every((m, i) => m === canonicalMembers[i])
+          ) {
+            return unionId;
+          }
+        }
+      }
+
+      console.warn("TODO: Implement full canonicalization of union pretty and mangled name");
       const [p, pId] = Lowered.addTypeDef<Lowered.UnionDatatypeDef>(lr, {
         variant: Lowered.ENode.UnionDatatype,
-        members: type.members.map((m) => lowerTypeUse(lr, m)),
+        members: canonicalMembers,
         optimizeAsRawPointer: optimizeAsRawPointer,
         name: Semantic.makeNameSetTypeDef(lr.sr, typeId),
       });
@@ -2079,6 +2144,9 @@ function serializeLoweredExpr(lr: Lowered.Module, exprId: Lowered.ExprId): strin
         lr,
         expr.expr
       )}`;
+
+    case Lowered.ENode.UnionTagCheckExpr:
+      return `((${serializeLoweredExpr(lr, expr.expr)}) is union tag ${expr.tag})`;
 
     case Lowered.ENode.ExplicitCastExpr:
       const exprType = lr.typeUseNodes.get(expr.type);

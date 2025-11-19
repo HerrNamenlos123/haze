@@ -69,7 +69,7 @@ ellipsis: ELLIPSIS;
 
 funcbody: (rawScope | exprAsFuncbody);
 rawScope: LCURLY (statement)* RCURLY;
-doScope: DO UNSAFE? LCURLY (statement)* (EMIT expr SEMI?)? RCURLY;
+doScope: DO UNSAFE? LCURLY (statement)* RCURLY;
 exprAsFuncbody: expr;
 
 // Variables
@@ -183,6 +183,7 @@ expr
     | <assoc=right> op=(PLUS | MINUS) expr                                          #UnaryExpr
     | <assoc=right> op=NOT expr /* and bitwise not */                               #UnaryExpr
     | <assoc=right> expr AS datatype                                                #ExplicitCastExpr
+    | <assoc=right> expr IS datatype                                                #ExprIsTypeExpr
     // | <assoc=right> MUL expr                                                        #DereferenceExpr
     // | <assoc=right> SINGLEAND expr                                                  #AddressOfExpr
 

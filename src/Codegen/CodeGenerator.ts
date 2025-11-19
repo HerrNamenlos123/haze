@@ -765,6 +765,22 @@ class CodeGenerator {
         return { out: outWriter, temp: tempWriter };
       }
 
+      case Lowered.ENode.UnionTagCheckExpr: {
+        const exprWriter = this.emitExpr(expr.expr);
+        tempWriter.write(exprWriter.temp);
+        const typeUse = this.lr.typeUseNodes.get(expr.type);
+        const union = this.lr.typeDefNodes.get(typeUse.type);
+        assert(union.variant === Lowered.ENode.UnionDatatype);
+
+        if (union.optimizeAsRawPointer) {
+          assert(false, "Union Tag Checking with null pointer optimization is not implemented yet");
+          // outWriter.write(`(${this.emitExpr(expr.expr).out.get()})`);
+        } else {
+          outWriter.write(`((${this.emitExpr(expr.expr).out.get()}).tag == ${expr.tag})`);
+        }
+        return { out: outWriter, temp: tempWriter };
+      }
+
       case Lowered.ENode.PreIncrExpr: {
         const exprWriter = this.emitExpr(expr.expr);
         tempWriter.write(exprWriter.temp);
