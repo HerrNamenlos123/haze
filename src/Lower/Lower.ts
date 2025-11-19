@@ -1916,7 +1916,11 @@ function lowerBlockScope(
     for (const statementId of lowerStatement(lr, s, instanceInfo)) {
       const innerStatement = lr.statementNodes.get(statementId);
 
-      if (innerStatement.variant === Lowered.ENode.ReturnStatement && !returnedExpr) {
+      if (
+        createLocalArena &&
+        innerStatement.variant === Lowered.ENode.ReturnStatement &&
+        !returnedExpr
+      ) {
         if (innerStatement.expr) {
           returnedExpr = storeInTempVarAndGet(
             lr,
