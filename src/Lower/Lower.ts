@@ -296,10 +296,9 @@ export namespace Lowered {
   export type UnionTagCheckExpr = {
     variant: ENode.UnionTagCheckExpr;
     expr: ExprId;
-    tag: number;
-    optimizeExprToNullptr: {
-      isNullPtrCheckInverted: boolean;
-    } | null;
+    tags: number[];
+    optimizeExprToNullptr: boolean;
+    invertCheck: boolean;
     type: TypeUseId;
   };
 
@@ -1496,36 +1495,62 @@ function lowerExpr(
           loweredUnion.variant === Lowered.ENode.TaggedUnionDatatype
       );
 
-      const comparisonType = lowerTypeUse(lr, expr.comparisonType);
+      const comparisonTypes = expr.comparisonTypesAnd.map((comparisonType) =>
+        lowerTypeUse(lr, comparisonType)
+      );
 
-      let optimizeExprToNullptr = false;
-      let tag = 0;
       if (loweredUnion.optimizeAsRawPointer) {
-        assert(false, "not implemented yet");
-        // const exprTypeDef = lr.sr.typeDefNodes.get(lr.sr.typeUseNodes.get(sourceExpr.type).type);
-        // if (
-        //   exprTypeDef.variant === Semantic.ENode.PrimitiveDatatype &&
-        //   exprTypeDef.primitive === EPrimitive.none
-        // ) {
-        //   optimizeExprToNullptr = true;
-        // }
+        assert(comparisonTypes.length === 1);
+
+        // Whether the user wanted to invert it
+        let invertCheck = expr.invertCheck;
+
+        const compTypeUse = lr.typeUseNodes.get(comparisonTypes[0]);
+        const compType = lr.typeDefNodes.get(compTypeUse.type);
+        if (
+          compType.variant === Lowered.ENode.PrimitiveDatatype &&
+          (compType.primitive === EPrimitive.null || compType.primitive === EPrimitive.none)
+        ) {
+          // But -> If the user wrote: Foo | none -> NOT none we must rewrite it into IS Foo
+          // So:
+          // If Foo is referenced (as in IS Foo or IS NOT Foo), then its ok
+          // But if none is referenced (as in IS none or IS NOT none) then we must invert it
+          // Since the code generation is simple and always refers to Foo, the actual value
+          invertCheck = !invertCheck;
+        }
+
+        // An optimized pointer check is always truish (NOT null)
+        // Therefore -> the condition may need to be inverted twice
+        return Lowered.addExpr(lr, {
+          variant: Lowered.ENode.UnionTagCheckExpr,
+          expr: lowerExpr(lr, expr.expr, flattened, instanceInfo)[1],
+          optimizeExprToNullptr: !!loweredUnion.optimizeAsRawPointer,
+          invertCheck: expr.invertCheck,
+          tags: [],
+          type: loweredUnionId,
+        });
       } else {
-        // canonicalizeUnionMembers(lr, loweredUnion);
         const unionMembers =
           loweredUnion.variant === Lowered.ENode.UntaggedUnionDatatype
             ? loweredUnion.members
             : loweredUnion.members.map((m) => m.type);
-        tag = unionMembers.findIndex((m) => m === comparisonType);
-        assert(tag !== -1);
-      }
 
-      return Lowered.addExpr(lr, {
-        variant: Lowered.ENode.UnionTagCheckExpr,
-        expr: lowerExpr(lr, expr.expr, flattened, instanceInfo)[1],
-        optimizeExprToNullptr: optimizeExprToNullptr ? { isNullPtrCheckInverted: false } : null,
-        tag: tag,
-        type: loweredUnionId,
-      });
+        let tags: number[] = [];
+        comparisonTypes.forEach((t) => {
+          const tag = unionMembers.findIndex((m) => m === t);
+          assert(tag !== -1);
+          tags.push(tag);
+        });
+
+        return Lowered.addExpr(lr, {
+          variant: Lowered.ENode.UnionTagCheckExpr,
+          expr: lowerExpr(lr, expr.expr, flattened, instanceInfo)[1],
+          optimizeExprToNullptr: !!loweredUnion.optimizeAsRawPointer,
+          invertCheck: expr.invertCheck,
+          tags: tags,
+          type: loweredUnionId,
+        });
+      }
     }
 
     default:
@@ -2303,7 +2328,7 @@ function serializeLoweredExpr(lr: Lowered.Module, exprId: Lowered.ExprId): strin
       })`;
 
     case Lowered.ENode.UnionTagCheckExpr:
-      return `((${serializeLoweredExpr(lr, expr.expr)}) is union tag ${expr.tag})`;
+      return `((${serializeLoweredExpr(lr, expr.expr)}) is union tags [${expr.tags}])`;
 
     case Lowered.ENode.ExplicitCastExpr:
       const exprType = lr.typeUseNodes.get(expr.type);

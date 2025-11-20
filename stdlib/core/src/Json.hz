@@ -125,7 +125,7 @@ namespace JSON {
     }
 }
 
-foobar2(): Result<null, JsonError> {
+foobar2(): Result<Foo, JsonError> {
     const data = "{\"name\":\"Alice\",\"age\":25,\"active\":true,\"numbers\":[1,2,3],\"nested\":{\"x\":10,\"y\":\"hello\"},\"msg\":\"Hello\\nWorld!\"}";
     const json = JSON.parse(data)?!;
 
@@ -134,13 +134,13 @@ foobar2(): Result<null, JsonError> {
     const c = json["nested"]["y"].to<str>();
     fmt.println("Parsed:", a, b, c);
     // const b = json[187];
-    return Result<null, JsonError>.Ok(null);
+    return Result<Foo, JsonError>.Ok({});
 }
 
 export foobar() {
     const result = foobar2();
-    if result is JsonError {
-        // fmt.println("Error:", result.error);
+    if !result {
+        fmt.println("Error:", result.error);
     }
     else {
         fmt.println("Success!");

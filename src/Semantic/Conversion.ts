@@ -707,7 +707,7 @@ export namespace Conversion {
     constraints: Semantic.Constraint[],
     sourceloc: SourceLoc,
     mode: Mode,
-    unsafe?: boolean
+    unsafe: boolean
   ) {
     const c = MakeConversion(sr, fromExprId, toId, constraints, sourceloc, mode, unsafe);
     if (c.ok) {
@@ -928,43 +928,6 @@ export namespace Conversion {
       );
     }
 
-    // Pointer conversions
-    // if (
-    //   fromType.variant === Semantic.ENode.NullableReferenceDatatype &&
-    //   to.variant === Semantic.ENode.NullableReferenceDatatype
-    // ) {
-    //   const frompointeeInstance = sr.typeUseNodes.get(fromType.referee);
-    //   const frompointee = sr.typeDefNodes.get(frompointeeInstance.type);
-    //   // Conversion from void* to T*
-    //   if (
-    //     frompointee.variant === Semantic.ENode.PrimitiveDatatype &&
-    //     frompointee.primitive === EPrimitive.void
-    //   ) {
-    //     return Semantic.addExpr(sr, {
-    //       variant: Semantic.ENode.ExplicitCastExpr,
-    //       expr: fromExprId,
-    //       type: toId,
-    //       sourceloc: sourceloc,
-    //       isTemporary: fromExpr.isTemporary,
-    //     })[1];
-    //   }
-    //   // Conversion from T* to void*
-    //   const topointeeInstance = sr.typeUseNodes.get(to.referee);
-    //   const topointee = sr.typeDefNodes.get(topointeeInstance.type);
-    //   if (
-    //     topointee.variant === Semantic.ENode.PrimitiveDatatype &&
-    //     topointee.primitive === EPrimitive.void
-    //   ) {
-    //     return Semantic.addExpr(sr, {
-    //       variant: Semantic.ENode.ExplicitCastExpr,
-    //       expr: fromExprId,
-    //       type: toId,
-    //       sourceloc: sourceloc,
-    //       isTemporary: fromExpr.isTemporary,
-    //     })[1];
-    //   }
-    // }
-
     // Core conversions
     if (
       IsStructurallyEquivalent(
@@ -1129,6 +1092,75 @@ export namespace Conversion {
             isTemporary: fromExpr.isTemporary,
           })[1]
         );
+      }
+
+      // Union to bool
+      if (to.variant === Semantic.ENode.PrimitiveDatatype && to.primitive === EPrimitive.bool) {
+        // Result check
+        if (fromType.variant === Semantic.ENode.TaggedUnionDatatype) {
+          const okTag = fromType.members.find((m) => m.tag === "Ok");
+          const errTag = fromType.members.find((m) => m.tag === "Err");
+          if (okTag && errTag) {
+            // It's a result type
+            return ok(
+              Semantic.addExpr(sr, {
+                variant: Semantic.ENode.UnionTagCheckExpr,
+                comparisonTypesAnd: [okTag.type],
+                expr: fromExprId,
+                sourceloc: sourceloc,
+                invertCheck: false,
+                isTemporary: true,
+                instanceIds: [],
+                type: toId,
+              })[1]
+            );
+          }
+        }
+
+        // Existence check (Only for untagged unions, otherwise Result<null,none> completely breaks everything)
+        if (fromType.variant === Semantic.ENode.UntaggedUnionDatatype) {
+          let types: Semantic.TypeUseId[] = [];
+          for (const mId of members.possibleVariants) {
+            const mUse = sr.typeUseNodes.get(mId);
+            const mDef = sr.typeDefNodes.get(mUse.type);
+
+            if (
+              mDef.variant === Semantic.ENode.PrimitiveDatatype &&
+              mDef.primitive === EPrimitive.null
+            ) {
+              types.push(mId);
+            }
+            if (
+              mDef.variant === Semantic.ENode.PrimitiveDatatype &&
+              mDef.primitive === EPrimitive.none
+            ) {
+              types.push(mId);
+            }
+          }
+
+          if (types.length === 0) {
+            throw new CompilerError(
+              `Type '${Semantic.serializeTypeUse(
+                sr,
+                fromExpr.type
+              )}' is not implicitly convertible to bool: Union does not contain a null- or none-Variant.`,
+              sourceloc
+            );
+          }
+
+          return ok(
+            Semantic.addExpr(sr, {
+              variant: Semantic.ENode.UnionTagCheckExpr,
+              comparisonTypesAnd: types,
+              expr: fromExprId,
+              sourceloc: sourceloc,
+              invertCheck: true,
+              isTemporary: true,
+              instanceIds: [],
+              type: toId,
+            })[1]
+          );
+        }
       }
     }
 

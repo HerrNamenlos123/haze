@@ -152,7 +152,7 @@ export class SemanticElaborator {
         this.currentContext.constraints,
         left.sourceloc,
         Conversion.Mode.Implicit,
-        inference?.unsafe
+        inference?.unsafe || false
       );
       rightId = Conversion.MakeConversionOrThrow(
         this.sr,
@@ -161,7 +161,7 @@ export class SemanticElaborator {
         this.currentContext.constraints,
         right.sourceloc,
         Conversion.Mode.Implicit,
-        inference?.unsafe
+        inference?.unsafe || false
       );
       resultType = this.sr.b.boolType();
     } else {
@@ -425,7 +425,7 @@ export class SemanticElaborator {
             this.currentContext.constraints,
             callExpr.sourceloc,
             Conversion.Mode.Implicit,
-            inference?.unsafe
+            inference?.unsafe || false
           );
         } else {
           return a;
@@ -625,6 +625,26 @@ export class SemanticElaborator {
         assert(false);
       }
     } else if (unaryExpr.operation === EUnaryOperation.Negate) {
+      // Union negation
+      const aUse = this.sr.typeUseNodes.get(e.type);
+      const aDef = this.sr.typeDefNodes.get(aUse.type);
+      if (aDef.variant === Semantic.ENode.TaggedUnionDatatype) {
+        const okTag = aDef.members.find((m) => m.tag === "Ok");
+        const errTag = aDef.members.find((m) => m.tag === "Err");
+        if (okTag && errTag) {
+          return Semantic.addExpr(this.sr, {
+            variant: Semantic.ENode.UnionTagCheckExpr,
+            expr: eId,
+            instanceIds: [],
+            comparisonTypesAnd: [errTag.type],
+            invertCheck: false,
+            isTemporary: true,
+            sourceloc: e.sourceloc,
+            type: this.sr.b.boolType(),
+          });
+        }
+      }
+
       return this.sr.b.unaryExpr(
         eId,
         unaryExpr.operation,
@@ -3082,7 +3102,7 @@ export class SemanticElaborator {
         this.currentContext.constraints,
         sourceloc,
         Conversion.Mode.Implicit,
-        inference?.unsafe
+        inference?.unsafe || false
       );
 
       remainingMembers = remainingMembers.filter((mm) => mm !== m.name);
@@ -3352,12 +3372,25 @@ export class SemanticElaborator {
             sourceloc: s.sourceloc,
           })[1];
         } else {
+          // Non-comptime
           const [thenScope, thenScopeId] = Semantic.addBlockScope(this.sr, {
             variant: Semantic.ENode.BlockScope,
             statements: [],
             emittedExpr: null,
             constraints: [...this.currentContext.constraints],
           });
+
+          // Before applying constraints
+          const boolCondition = Conversion.MakeConversionOrThrow(
+            this.sr,
+            conditionId,
+            this.sr.b.boolType(),
+            this.currentContext.constraints,
+            s.sourceloc,
+            Conversion.Mode.Implicit,
+            false
+          );
+
           this.buildConstraints(thenScope.constraints, conditionId);
           return this.withContext(
             {
@@ -3420,9 +3453,10 @@ export class SemanticElaborator {
                   undefined
                 );
               }
+
               return Semantic.addStatement(this.sr, {
                 variant: Semantic.ENode.IfStatement,
-                condition: conditionId,
+                condition: boolCondition,
                 then: thenScopeId,
                 elseIfs: elseIfs,
                 else: elseScopeId,
@@ -3717,7 +3751,7 @@ export class SemanticElaborator {
                 this.currentContext.constraints,
                 s.sourceloc,
                 Conversion.Mode.Implicit,
-                inference?.unsafe
+                inference?.unsafe || false
               )) ||
             null,
           sourceloc: s.sourceloc,
@@ -3964,14 +3998,16 @@ export class SemanticElaborator {
     if (expr.variant === Semantic.ENode.UnionTagCheckExpr) {
       const unionExpr = this.getExpr(expr.expr);
       if (unionExpr.variant === Semantic.ENode.SymbolValueExpr) {
-        constraints.push({
-          constraintValue: {
-            kind: "union",
-            operation: "is",
-            typeDef: this.getTypeUse(expr.comparisonType).type,
-          },
-          variableSymbol: unionExpr.symbol,
-        });
+        for (const comparisonType of expr.comparisonTypesAnd) {
+          constraints.push({
+            constraintValue: {
+              kind: "union",
+              operation: "is",
+              typeDef: this.getTypeUse(comparisonType).type,
+            },
+            variableSymbol: unionExpr.symbol,
+          });
+        }
       }
     }
 
@@ -3996,6 +4032,24 @@ export class SemanticElaborator {
             kind: "union",
             operation: "isNot",
             typeDef: this.sr.b.noneTypeDef(),
+          },
+          variableSymbol: expr.symbol,
+        });
+      }
+    }
+
+    if (
+      expr.variant === Semantic.ENode.SymbolValueExpr &&
+      exprTypeDef.variant === Semantic.ENode.TaggedUnionDatatype
+    ) {
+      const okTag = exprTypeDef.members.find((m) => m.tag === "Ok");
+      const errTag = exprTypeDef.members.find((m) => m.tag === "Err");
+      if (okTag && errTag) {
+        constraints.push({
+          constraintValue: {
+            kind: "union",
+            operation: "is",
+            typeDef: this.sr.typeUseNodes.get(okTag.type).type,
           },
           variableSymbol: expr.symbol,
         });
@@ -4212,13 +4266,21 @@ export class SemanticElaborator {
         );
 
         const type = this.sr.typeDefNodes.get(this.sr.typeUseNodes.get(elaboratedSymbol.type).type);
-        if (type.variant === Semantic.ENode.UntaggedUnionDatatype) {
+        if (
+          type.variant === Semantic.ENode.UntaggedUnionDatatype ||
+          type.variant === Semantic.ENode.TaggedUnionDatatype
+        ) {
+          const members =
+            type.variant === Semantic.ENode.UntaggedUnionDatatype
+              ? type.members
+              : type.members.map((m) => m.type);
+
           const narrowing = Conversion.typeNarrowing(this.sr);
-          narrowing.addVariants(type.members);
+          narrowing.addVariants(members);
           narrowing.constrainFromConstraints(this.currentContext.constraints, symbolValueExprId);
 
           if (narrowing.possibleVariants.size === 1) {
-            const tag = type.members.findIndex((m) => m === [...narrowing.possibleVariants][0]);
+            const tag = members.findIndex((m) => m === [...narrowing.possibleVariants][0]);
             assert(tag !== -1);
 
             const [result, resultId] = Semantic.addExpr(this.sr, {
@@ -4520,7 +4582,8 @@ export class SemanticElaborator {
               isTemporary: true,
               sourceloc: errPropExpr.sourceloc,
               type: this.sr.b.boolType(),
-              comparisonType: errTag.type,
+              invertCheck: false,
+              comparisonTypesAnd: [errTag.type],
             })[1],
             elseIfs: [],
             sourceloc: errPropExpr.sourceloc,
@@ -4575,8 +4638,9 @@ export class SemanticElaborator {
         instanceIds: [],
         expr: sourceExprId,
         type: this.sr.b.boolType(),
-        comparisonType: comparisonType,
+        comparisonTypesAnd: [comparisonType],
         sourceloc: exprIsType.sourceloc,
+        invertCheck: false,
         isTemporary: true,
       });
     } else {
@@ -4757,7 +4821,7 @@ export class SemanticElaborator {
       this.currentContext.constraints,
       castExpr.sourceloc,
       Conversion.Mode.Explicit,
-      inference?.unsafe
+      inference?.unsafe || false
     );
     return [this.sr.exprNodes.get(result), result];
   }
@@ -5069,16 +5133,6 @@ export class SemanticBuilder {
     });
   }
 
-  // symbolValue(symbolId: SymbolValue) {
-  //   return Semantic.addExpr(this.sr, {
-  //     variant: Semantic.ENode.SymbolValueExpr,
-  //     // symbol: sym,
-  //     // type: Conversion.makeUnaryResultType(this.sr, expr.type, operation, sourceloc),
-  //     // isTemporary: true,
-  //     sourceloc: sourceloc,
-  //   });
-  // }
-
   literalValue(literal: LiteralValue, sourceloc: SourceLoc) {
     return Semantic.addExpr(this.sr, {
       variant: Semantic.ENode.LiteralExpr,
@@ -5335,7 +5389,7 @@ export class SemanticBuilder {
         constraints,
         sourceloc,
         Conversion.Mode.Implicit,
-        inference?.unsafe
+        inference?.unsafe || false
       ),
       target: targetId,
       type: target.type,
@@ -6415,7 +6469,8 @@ export namespace Semantic {
     instanceIds: InstanceId[];
     expr: ExprId;
     type: TypeUseId;
-    comparisonType: TypeUseId;
+    comparisonTypesAnd: TypeUseId[];
+    invertCheck: boolean;
     isTemporary: boolean;
     sourceloc: SourceLoc;
   };

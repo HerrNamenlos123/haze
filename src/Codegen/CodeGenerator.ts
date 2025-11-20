@@ -836,11 +836,25 @@ class CodeGenerator {
             union.variant === Lowered.ENode.TaggedUnionDatatype
         );
 
+        let operator = expr.invertCheck ? "!=" : "==";
         if (union.optimizeAsRawPointer) {
-          assert(false, "Union Tag Checking with null pointer optimization is not implemented yet");
-          // outWriter.write(`(${this.emitExpr(expr.expr).out.get()})`);
+          assert(expr.optimizeExprToNullptr);
+          outWriter.write(`((${this.emitExpr(expr.expr).out.get()}) ${operator} NULL)`);
         } else {
-          outWriter.write(`((${this.emitExpr(expr.expr).out.get()}).tag == ${expr.tag})`);
+          if (expr.tags.length === 1) {
+            outWriter.write(
+              `((${this.emitExpr(expr.expr).out.get()}).tag ${operator} ${expr.tags[0]})`
+            );
+          } else {
+            const exprType = this.lr.typeUseNodes.get(expr.type);
+            outWriter.write(
+              `({ ${this.mangleName(exprType.name)} __value = ${this.emitExpr(
+                expr.expr
+              ).out.get()}; ${expr.tags
+                .map((t) => `value.tag ${operator} ${t}`)
+                .join(expr.invertCheck ? "&&" : "||")};)`
+            );
+          }
         }
         return { out: outWriter, temp: tempWriter };
       }
