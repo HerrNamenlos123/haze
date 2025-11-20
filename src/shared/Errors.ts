@@ -20,14 +20,16 @@ export type SourceLoc = SourceLocNotNull | null;
 export function formatSourceLoc(loc: SourceLocNotNull) {
   if (loc.end) {
     if (loc.end.line === loc.start.line) {
-      return `"${loc.filename}":${loc.start.line}:${loc.start.column + 1}-${loc.end.column + 1}`;
-    } else {
-      return `"${loc.filename}":${loc.start.line}:${loc.start.column + 1}-${loc.end.line}.${
+      return `${JSON.stringify(loc.filename)}:${loc.start.line}:${loc.start.column + 1}-${
         loc.end.column + 1
       }`;
+    } else {
+      return `${JSON.stringify(loc.filename)}:${loc.start.line}:${loc.start.column + 1}-${
+        loc.end.line
+      }.${loc.end.column + 1}`;
     }
   } else {
-    return `"${loc.filename}":${loc.start.line}:${loc.start.column + 1}`;
+    return `${JSON.stringify(loc.filename)}:${loc.start.line}:${loc.start.column + 1}`;
   }
 }
 

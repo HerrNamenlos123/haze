@@ -10,7 +10,7 @@ type = "lib"
 prebuild = { command = "$HAZE_MODULE_SOURCE_DIR/build-linux.sh", depends = "./**/*" }
 
 [scripts.win32]
-prebuild = { command = "\"%HAZE_MODULE_SOURCE_DIR%/build-win.bat\"", depends = "./**/*" }
+prebuild = { command = "call \"%HAZE_MODULE_SOURCE_DIR%/build-win.bat\"", depends = "./**/*" }
 
 [linker]
 flags = ["-lglfw3"]

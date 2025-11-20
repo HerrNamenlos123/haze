@@ -7,6 +7,18 @@
     }
   ],
   "repository": {
+    "operators": {
+      "patterns": [
+        {
+          "name": "keyword.operator.optional-chaining.haze",
+          "match": "\\?\\."
+        },
+        {
+          "name": "keyword.operator.result-propagation.haze",
+          "match": "\\?!"
+        }
+      ]
+    },
     "keywords": {
       "patterns": [
         {
@@ -225,7 +237,8 @@
         { "include": "#datatypes" },
         { "include": "#variables" },
         { "include": "#functions" },
-        { "include": "#structs" }
+        { "include": "#structs" },
+        { "include": "#operators" }
       ]
     }
   },

@@ -919,7 +919,7 @@ function execInherit(str: string, dir?: string) {
       recursive: true,
     });
   }
-  const proc = spawnSync(shell, [...args], {
+  const proc = spawnSync(`${shell} ${args.join(" ")}`, {
     cwd: dir ?? ".",
     env: process.env,
     stdio: "inherit",

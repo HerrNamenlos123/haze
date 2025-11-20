@@ -126,7 +126,8 @@ namespace JSON {
 }
 
 foobar2(): Result<null, JsonError> {
-    const json = try JSON.parse("{\"name\":\"Alice\",\"age\":25,\"active\":true,\"numbers\":[1,2,3],\"nested\":{\"x\":10,\"y\":\"hello\"},\"msg\":\"Hello\\nWorld!\"}");
+    const data = "{\"name\":\"Alice\",\"age\":25,\"active\":true,\"numbers\":[1,2,3],\"nested\":{\"x\":10,\"y\":\"hello\"},\"msg\":\"Hello\\nWorld!\"}";
+    const json = JSON.parse(data)?!;
 
     const a = json["name"].to<str>();
     const b = json["age"].to<real>();
@@ -139,7 +140,7 @@ foobar2(): Result<null, JsonError> {
 export foobar() {
     const result = foobar2();
     if result is JsonError {
-        fmt.println("Error:", result.error);
+        // fmt.println("Error:", result.error);
     }
     else {
         fmt.println("Success!");

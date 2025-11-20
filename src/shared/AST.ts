@@ -392,8 +392,8 @@ export type ASTParenthesisExpr = {
   sourceloc: SourceLoc;
 };
 
-export type ASTTryExpr = {
-  variant: "TryExpr";
+export type ASTErrorPropagationExpr = {
+  variant: "ErrorPropagationExpr";
   expr: ASTExpr;
   sourceloc: SourceLoc;
 };
@@ -526,7 +526,7 @@ export type ASTTypeLiteralExpr = {
 
 export type ASTExpr =
   | ASTParenthesisExpr
-  | ASTTryExpr
+  | ASTErrorPropagationExpr
   | ASTBlockScopeExpr
   | ASTLambdaExpr
   | ASTArrayLiteralExpr

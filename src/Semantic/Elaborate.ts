@@ -716,8 +716,8 @@ export class SemanticElaborator {
       case Collect.ENode.ExprIsTypeExpr:
         return this.exprIsType(expr, inference);
 
-      case Collect.ENode.TryExpr:
-        return this.tryExpr(expr, inference);
+      case Collect.ENode.ErrorPropagationExpr:
+        return this.errorPropagationExpr(expr, inference);
 
       default:
         assert(false, "All cases handled: " + Collect.ENode[expr.variant]);
@@ -4390,8 +4390,8 @@ export class SemanticElaborator {
     });
   }
 
-  tryExpr(tryExpr: Collect.TryExpr, inference: Inference) {
-    const [rightExpr, rightExprId] = this.expr(tryExpr.expr, inference);
+  errorPropagationExpr(errPropExpr: Collect.ErrorPropagationExpr, inference: Inference) {
+    const [rightExpr, rightExprId] = this.expr(errPropExpr.expr, inference);
 
     const typeUse = this.sr.typeUseNodes.get(rightExpr.type);
     const typeDef = this.sr.typeDefNodes.get(typeUse.type);
@@ -4399,7 +4399,7 @@ export class SemanticElaborator {
     if (typeDef.variant !== Semantic.ENode.TaggedUnionDatatype) {
       throw new CompilerError(
         `The 'try'-operator can only be used on expressions with a tagged union type`,
-        tryExpr.sourceloc
+        errPropExpr.sourceloc
       );
     }
 
@@ -4409,7 +4409,7 @@ export class SemanticElaborator {
     if (!okTag || !errTag) {
       throw new CompilerError(
         `The 'try'-operator can only be used on tagged union types that provide both a Ok and a Err tag.`,
-        tryExpr.sourceloc
+        errPropExpr.sourceloc
       );
     }
 
@@ -4435,7 +4435,7 @@ export class SemanticElaborator {
       memberOfStruct: null,
       mutability: EVariableMutability.Default,
       name: makeTempName(),
-      sourceloc: tryExpr.sourceloc,
+      sourceloc: errPropExpr.sourceloc,
       parentStructOrNS: null,
       type: rightExpr.type,
       variableContext: EVariableContext.FunctionLocal,
@@ -4446,7 +4446,7 @@ export class SemanticElaborator {
         variant: Semantic.ENode.UnionToValueCastExpr,
         expr: symbolValue(),
         instanceIds: [],
-        sourceloc: tryExpr.sourceloc,
+        sourceloc: errPropExpr.sourceloc,
         isTemporary: true,
         tag: errIndex,
         type: errTag.type,
@@ -4457,7 +4457,7 @@ export class SemanticElaborator {
           errValue,
           errTag.type,
           [],
-          tryExpr.sourceloc,
+          errPropExpr.sourceloc,
           Conversion.Mode.Implicit,
           false
         );
@@ -4472,7 +4472,7 @@ export class SemanticElaborator {
         instanceIds: [],
         symbol: tempVariableId,
         isTemporary: true,
-        sourceloc: tryExpr.sourceloc,
+        sourceloc: errPropExpr.sourceloc,
         type: rightExpr.type,
       })[1];
 
@@ -4480,7 +4480,7 @@ export class SemanticElaborator {
       const statementId = Semantic.addStatement(this.sr, {
         variant: Semantic.ENode.ReturnStatement,
         expr: returnResult(),
-        sourceloc: tryExpr.sourceloc,
+        sourceloc: errPropExpr.sourceloc,
       })[1];
       functionSymbol.returnStatements.add(statementId);
       rightExpr.instanceIds.forEach((id) => functionSymbol.returnsInstanceIds.add(id));
@@ -4498,7 +4498,7 @@ export class SemanticElaborator {
           expr: symbolValue(),
           instanceIds: [],
           isTemporary: true,
-          sourceloc: tryExpr.sourceloc,
+          sourceloc: errPropExpr.sourceloc,
           tag: okIndex,
           type: okTag.type,
         })[1],
@@ -4507,7 +4507,7 @@ export class SemanticElaborator {
             variant: Semantic.ENode.VariableStatement,
             name: tempVariable.name,
             comptime: false,
-            sourceloc: tryExpr.sourceloc,
+            sourceloc: errPropExpr.sourceloc,
             value: rightExprId,
             variableSymbol: tempVariableId,
           })[1],
@@ -4518,12 +4518,12 @@ export class SemanticElaborator {
               expr: rightExprId,
               instanceIds: [],
               isTemporary: true,
-              sourceloc: tryExpr.sourceloc,
+              sourceloc: errPropExpr.sourceloc,
               type: this.sr.b.boolType(),
               comparisonType: errTag.type,
             })[1],
             elseIfs: [],
-            sourceloc: tryExpr.sourceloc,
+            sourceloc: errPropExpr.sourceloc,
             then: Semantic.addBlockScope(this.sr, {
               variant: Semantic.ENode.BlockScope,
               constraints: [],
@@ -4535,7 +4535,7 @@ export class SemanticElaborator {
       })[1],
       instanceIds: [],
       isTemporary: true,
-      sourceloc: tryExpr.sourceloc,
+      sourceloc: errPropExpr.sourceloc,
       type: okTag.type,
     });
   }
@@ -5967,7 +5967,7 @@ export namespace Semantic {
     ReturnStatement,
     // Expressions
     ParenthesisExpr,
-    TryExpr,
+    ErrorPropagationExpr,
     BinaryExpr,
     LiteralExpr,
     UnaryExpr,
@@ -6420,8 +6420,8 @@ export namespace Semantic {
     sourceloc: SourceLoc;
   };
 
-  export type TryExpr = {
-    variant: ENode.TryExpr;
+  export type ErrorPropagationExpr = {
+    variant: ENode.ErrorPropagationExpr;
     instanceIds: InstanceId[];
     expr: ExprId;
     type: TypeUseId;
@@ -6585,8 +6585,8 @@ export namespace Semantic {
     | UnionToValueCastExpr
     | UnionToUnionCastExpr
     | UnionTagCheckExpr
-    | TryExpr
-    | TryExpr
+    | ErrorPropagationExpr
+    | ErrorPropagationExpr
     | ExprCallExpr
     | StructInstantiationExpr
     | LiteralExpr

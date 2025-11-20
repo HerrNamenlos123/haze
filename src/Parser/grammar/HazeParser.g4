@@ -177,10 +177,10 @@ expr
     | callExpr=expr LB (argExpr+=expr (COMMA argExpr+=expr)*)? RB (IN arenaExpr=expr)?                         #ExprCallExpr
     | value=expr LBRACKET (index+=expr) (COMMA index+=expr)* COMMA? RBRACKET        #ArraySubscriptExpr
     | value=expr LBRACKET (index+=sliceIndex) (COMMA index+=sliceIndex)* COMMA? RBRACKET        #ArraySliceExpr
-    | expr DOT ID (LANGLE genericLiteral (COMMA genericLiteral)* RANGLE)?           #ExprMemberAccess
+    | expr (DOT || QUESTIONDOT) ID (LANGLE genericLiteral (COMMA genericLiteral)* RANGLE)?           #ExprMemberAccess
+    | expr QUESTIONEXCL                                                             #PostfixResultPropagationExpr
 
     // Part 2: Right to left
-    | <assoc=right> TRY expr                                                        #TryExpr
     | <assoc=right> op=(MINUSMINUS | PLUSPLUS) expr                                 #PreIncrExpr
     | <assoc=right> op=(PLUS | MINUS) expr                                          #UnaryExpr
     | <assoc=right> op=NOT expr /* and bitwise not */                               #UnaryExpr

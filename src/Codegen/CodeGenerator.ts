@@ -1156,9 +1156,9 @@ class CodeGenerator {
             `(${this.primitiveToC(expr.literal.type)})(${expr.literal.value ? "1" : "0"})`
           );
         } else if (expr.literal.type === EPrimitive.null) {
-          outWriter.write("(_H4null){}");
+          outWriter.write("(hzstd_null_t){}");
         } else if (expr.literal.type === EPrimitive.none) {
-          outWriter.write("(_H4none){}");
+          outWriter.write("(hzstd_none_t){}");
         } else if (expr.literal.type === EPrimitive.f32) {
           outWriter.write(
             `(${this.primitiveToC(expr.literal.type)})(${stringifyWithDecimal(

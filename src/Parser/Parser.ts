@@ -68,7 +68,7 @@ import {
   EOverloadedOperator,
   type ASTExprIsTypeExpr,
   type ASTTaggedUnionDatatype,
-  type ASTTryExpr,
+  type ASTErrorPropagationExpr,
 } from "../shared/AST";
 import {
   BinaryExprContext,
@@ -146,7 +146,7 @@ import {
   ExprIsTypeExprContext,
   UntaggedUnionDatatypeContext,
   TaggedUnionDatatypeContext,
-  TryExprContext,
+  PostfixResultPropagationExprContext,
 } from "./grammar/autogen/HazeParser";
 import {
   BaseErrorListener,
@@ -1061,9 +1061,11 @@ class ASTTransformer extends HazeParserVisitor<any> {
     };
   };
 
-  visitTryExpr = (ctx: TryExprContext): ASTTryExpr => {
+  visitPostfixResultPropagationExpr = (
+    ctx: PostfixResultPropagationExprContext
+  ): ASTErrorPropagationExpr => {
     return {
-      variant: "TryExpr",
+      variant: "ErrorPropagationExpr",
       expr: this.visit(ctx.expr()),
       sourceloc: this.loc(ctx),
     };
