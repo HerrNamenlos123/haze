@@ -68,27 +68,46 @@ export namespace Conversion {
     }
   }
 
-  export function prettyRanges(ranges: ValueRange[], primitive?: EPrimitive): string {
-    return ranges.map((r) => prettyRange(r.min, r.max, primitive)).join(" u ");
+  export function getFloatMinMaxSafeIntegerRange(primitive: EPrimitive): [bigint, bigint] {
+    // Constants derived from IEEE 754 standard:
+    // f32 (Single Precision): 23 fraction bits + 1 hidden bit = 24 effective mantissa bits
+    const F32_SAFE_BITS = 24;
+    // f64 (Double Precision): 52 fraction bits + 1 hidden bit = 53 effective mantissa bits
+    const F64_SAFE_BITS = 53;
+
+    switch (primitive) {
+      case EPrimitive.f32: {
+        // The maximum safe integer is 2^24.
+        const maxSafe = 2n ** BigInt(F32_SAFE_BITS);
+        // The range is [-maxSafe, +maxSafe].
+        return [maxSafe * -1n, maxSafe];
+      }
+      case EPrimitive.f64:
+      case EPrimitive.real: {
+        // The maximum safe integer is 2^53.
+        const maxSafe = 2n ** BigInt(F64_SAFE_BITS);
+        // The range is [-maxSafe, +maxSafe].
+        return [maxSafe * -1n, maxSafe];
+      }
+      default:
+        assert(false, `Unknown primitive type: ${primitiveToString(primitive)}`);
+    }
+  }
+
+  export function prettyRanges(
+    ranges: ValueRange[],
+    primitive: EPrimitive,
+    mode: "float" | "integer"
+  ): string {
+    return ranges.map((r) => prettyRange(r.min, r.max, primitive, mode)).join(" u ");
   }
 
   export function prettyRange(
     min: bigint | undefined,
     max: bigint | undefined,
-    primitive?: EPrimitive
+    primitive: EPrimitive,
+    mode: "float" | "integer"
   ): string {
-    function formatValue(value: bigint, exact: bigint, negPower = false): string {
-      if (value === exact) {
-        // print as power-of-two
-        const exponent = negPower
-          ? BigInt(Math.log2(Number(-value)))
-          : BigInt(Math.log2(Number(value + (negPower ? 0n : 1n))));
-        return negPower ? `-2^${exponent}` : `2^${exponent}-1`;
-      } else {
-        return value.toString();
-      }
-    }
-
     let minStr: string;
     let maxStr: string;
 
@@ -100,20 +119,33 @@ export namespace Conversion {
         return "-∞";
       }
       if (primitive) {
-        const typeLimits = getIntegerMinMax(primitive);
-        switch (primitive) {
-          case EPrimitive.i32:
-            return min === typeLimits[0] ? `-2^31` : min.toString();
-          case EPrimitive.u32:
-            return min === typeLimits[0] ? `0` : min.toString();
-          case EPrimitive.i64:
-          case EPrimitive.int:
-            return min === typeLimits[0] ? `-2^63` : min.toString();
-          case EPrimitive.u64:
-          case EPrimitive.usize:
-            return min === typeLimits[0] ? `0` : min.toString();
-          default:
-            return min.toString();
+        if (mode === "integer") {
+          const typeLimits = getIntegerMinMax(primitive);
+          switch (primitive) {
+            case EPrimitive.i32:
+              return min === typeLimits[0] ? `-2^31` : min.toString();
+            case EPrimitive.u32:
+              return min === typeLimits[0] ? `0` : min.toString();
+            case EPrimitive.i64:
+            case EPrimitive.int:
+              return min === typeLimits[0] ? `-2^63` : min.toString();
+            case EPrimitive.u64:
+            case EPrimitive.usize:
+              return min === typeLimits[0] ? `0` : min.toString();
+            default:
+              return min.toString();
+          }
+        } else {
+          const typeLimits = getFloatMinMaxSafeIntegerRange(primitive);
+          switch (primitive) {
+            case EPrimitive.real:
+            case EPrimitive.f64:
+              return min === typeLimits[0] ? `-2^53` : min.toString();
+            case EPrimitive.f32:
+              return min === typeLimits[0] ? `-2^24` : min.toString();
+            default:
+              assert(false);
+          }
         }
       }
       return min.toString();
@@ -127,20 +159,33 @@ export namespace Conversion {
         return "+∞";
       }
       if (primitive) {
-        const typeLimits = getIntegerMinMax(primitive);
-        switch (primitive) {
-          case EPrimitive.i32:
-            return max === typeLimits[1] ? `2^31-1` : max.toString();
-          case EPrimitive.u32:
-            return max === typeLimits[1] ? `2^32-1` : max.toString();
-          case EPrimitive.i64:
-          case EPrimitive.int:
-            return max === typeLimits[1] ? `2^63-1` : max.toString();
-          case EPrimitive.u64:
-          case EPrimitive.usize:
-            return max === typeLimits[1] ? `2^64-1` : max.toString();
-          default:
-            return max.toString();
+        if (mode === "integer") {
+          const typeLimits = getIntegerMinMax(primitive);
+          switch (primitive) {
+            case EPrimitive.i32:
+              return max === typeLimits[1] ? `2^31-1` : max.toString();
+            case EPrimitive.u32:
+              return max === typeLimits[1] ? `2^32-1` : max.toString();
+            case EPrimitive.i64:
+            case EPrimitive.int:
+              return max === typeLimits[1] ? `2^63-1` : max.toString();
+            case EPrimitive.u64:
+            case EPrimitive.usize:
+              return max === typeLimits[1] ? `2^64-1` : max.toString();
+            default:
+              return max.toString();
+          }
+        } else {
+          const typeLimits = getFloatMinMaxSafeIntegerRange(primitive);
+          switch (primitive) {
+            case EPrimitive.f64:
+            case EPrimitive.real:
+              return max === typeLimits[1] ? `2^53` : max.toString();
+            case EPrimitive.f32:
+              return max === typeLimits[1] ? `2^24` : max.toString();
+            default:
+              assert(false);
+          }
         }
       }
       return max.toString();
@@ -167,8 +212,14 @@ export namespace Conversion {
     return type.primitive === EPrimitive.f64;
   }
 
+  export function isReal(sr: SemanticResult, typeId: Semantic.TypeDefId): boolean {
+    const type = sr.typeDefNodes.get(typeId);
+    if (type.variant !== Semantic.ENode.PrimitiveDatatype) return false;
+    return type.primitive === EPrimitive.real;
+  }
+
   export function isFloat(sr: SemanticResult, typeId: Semantic.TypeDefId): boolean {
-    return isF32(sr, typeId) || isF64(sr, typeId);
+    return isF32(sr, typeId) || isF64(sr, typeId) || isReal(sr, typeId);
   }
 
   export function isBoolean(sr: SemanticResult, typeId: Semantic.TypeDefId): boolean {
@@ -826,7 +877,11 @@ export namespace Conversion {
         let sourceRangeText = "";
         if (!source.isExact()) {
           const ranges = source.ranges;
-          sourceRangeText = `range ${Conversion.prettyRanges(source.ranges, f.primitive)}`;
+          sourceRangeText = `range ${Conversion.prettyRanges(
+            source.ranges,
+            f.primitive,
+            "integer"
+          )}`;
         } else {
           sourceRangeText = `value ${source.isExact()!}`;
         }
@@ -840,11 +895,125 @@ export namespace Conversion {
             toId
           )}' is known: Target type has integer range ${Conversion.prettyRange(
             ...Conversion.getIntegerMinMax(t.primitive),
-            t.primitive
+            t.primitive,
+            "integer"
           )}, but the source has ${sourceRangeText}. Add a conditional that constrains the integer range.`,
           sourceloc
         );
       }
+    }
+
+    // Conversions between Integer and float
+    if (
+      Conversion.isIntegerById(sr, fromTypeInstance.type) &&
+      Conversion.isFloat(sr, toInstance.type)
+    ) {
+      const fi = sr.typeUseNodes.get(fromExpr.type);
+      const f = sr.typeDefNodes.get(fi.type);
+      assert(f.variant === Semantic.ENode.PrimitiveDatatype);
+      const ti = sr.typeUseNodes.get(toId);
+      const t = sr.typeDefNodes.get(ti.type);
+      assert(t.variant === Semantic.ENode.PrimitiveDatatype);
+      const floatSafeIntegerRange = Conversion.getFloatMinMaxSafeIntegerRange(t.primitive);
+
+      const source = valueNarrowing(sr);
+      source.addRange(...Conversion.getIntegerMinMax(f.primitive));
+      source.constrainExactFromExprIfPossible(fromExprId);
+      source.constrainFromConstraints(constraints, fromExprId);
+
+      if (source.isWithinRange(...floatSafeIntegerRange)) {
+        return ok(
+          Semantic.addExpr(sr, {
+            variant: Semantic.ENode.ExplicitCastExpr,
+            instanceIds: fromExpr.instanceIds,
+            expr: fromExprId,
+            type: toId,
+            sourceloc: sourceloc,
+            isTemporary: fromExpr.isTemporary,
+          })[1]
+        );
+      }
+
+      let sourceRangeText = "";
+      if (!source.isExact()) {
+        sourceRangeText = `range ${Conversion.prettyRanges(source.ranges, f.primitive, "float")}`;
+      } else {
+        sourceRangeText = `value ${source.isExact()!}`;
+      }
+
+      throw new CompilerError(
+        `No lossless conversion from '${Semantic.serializeTypeUse(
+          sr,
+          fromExpr.type
+        )}' to '${Semantic.serializeTypeUse(
+          sr,
+          toId
+        )}' is possible: Floating point target type has safe integer range ${Conversion.prettyRange(
+          ...floatSafeIntegerRange,
+          t.primitive,
+          "float"
+        )}, but the source has ${sourceRangeText}. Add a conditional that constrains the integer range.`,
+        sourceloc
+      );
+    }
+    if (
+      Conversion.isFloat(sr, fromTypeInstance.type) &&
+      Conversion.isIntegerById(sr, toInstance.type)
+    ) {
+      const fi = sr.typeUseNodes.get(fromExpr.type);
+      const f = sr.typeDefNodes.get(fi.type);
+      assert(f.variant === Semantic.ENode.PrimitiveDatatype);
+      const ti = sr.typeUseNodes.get(toId);
+      const t = sr.typeDefNodes.get(ti.type);
+      assert(t.variant === Semantic.ENode.PrimitiveDatatype);
+
+      // Here, check if the floating point value is known to be an exact integer value, and if the integer value fits
+      // const source = valueNarrowing(sr);
+      // source.addRange(...Conversion.getFloatMinMaxSafeIntegerRange(f.primitive));
+      // source.constrainExactFromExprIfPossible(fromExprId);
+      // source.constrainFromConstraints(constraints, fromExprId);
+
+      throw new CompilerError(
+        `Conversions from Integers to Floating points are not implemented yet, as it requires value narrowing on floating point numbers instead of bigint...`,
+        sourceloc
+      );
+
+      // console.log("AAA");
+
+      // if (source.isWithinRange(...Conversion.getIntegerMinMax(t.primitive))) {
+      //   return ok(
+      //     Semantic.addExpr(sr, {
+      //       variant: Semantic.ENode.ExplicitCastExpr,
+      //       instanceIds: fromExpr.instanceIds,
+      //       expr: fromExprId,
+      //       type: toId,
+      //       sourceloc: sourceloc,
+      //       isTemporary: fromExpr.isTemporary,
+      //     })[1]
+      //   );
+      // }
+
+      // let sourceRangeText = "";
+      // if (!source.isExact()) {
+      //   sourceRangeText = `range ${Conversion.prettyRanges(source.ranges, f.primitive)}`;
+      // } else {
+      //   sourceRangeText = `value ${source.isExact()!}`;
+      // }
+
+      // throw new CompilerError(
+      //   `No lossless conversion from '${Semantic.serializeTypeUse(
+      //     sr,
+      //     fromExpr.type
+      //   )}' to '${Semantic.serializeTypeUse(
+      //     sr,
+      //     toId
+      //   )}' is possible: Floating point target type has safe integer range ${Conversion.prettyRange(
+      //     ...floatSafeIntegerRange,
+      //     t.primitive,
+      //     "float"
+      //   )}, but the source has ${sourceRangeText}. Add a conditional that constrains the integer range.`,
+      //   sourceloc
+      // );
     }
 
     // Conversions between floats

@@ -137,6 +137,18 @@ foobar2(): Result<Foo, JsonError> {
     return Result<Foo, JsonError>.Ok({});
 }
 
+createcJSONExample() {
+    const resolutionNumbers = [
+        Vec2(1280, 720),
+        Vec2(1920, 1080),
+        Vec2(3840, 2160),
+    ];
+    fmt.println(resolutionNumbers.length);
+    fmt.println(resolutionNumbers[0].x);
+
+    for a in resolutionNumbers {}
+}
+
 export foobar() {
     const result = foobar2();
     if !result {

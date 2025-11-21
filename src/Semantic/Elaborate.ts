@@ -739,6 +739,9 @@ export class SemanticElaborator {
       case Collect.ENode.ErrorPropagationExpr:
         return this.errorPropagationExpr(expr, inference);
 
+      case Collect.ENode.ArrayLiteralExpr:
+        return this.arrayLiteral(expr);
+
       default:
         assert(false, "All cases handled: " + Collect.ENode[expr.variant]);
     }
@@ -966,6 +969,25 @@ export class SemanticElaborator {
           "length",
           this.sr.b.usizeType(),
           true,
+          memberAccess.sourceloc
+        );
+      }
+      throw new CompilerError(
+        `Datatype '${Semantic.serializeTypeUse(
+          this.sr,
+          object.type
+        )}' does not have a member named '${memberAccess.memberName}'`,
+        memberAccess.sourceloc
+      );
+    }
+    if (objectType.variant === Semantic.ENode.FixedArrayDatatype) {
+      if (memberAccess.memberName === "length") {
+        return this.sr.b.literalValue(
+          {
+            type: EPrimitive.usize,
+            unit: null,
+            value: objectType.length,
+          },
           memberAccess.sourceloc
         );
       }
@@ -6256,7 +6278,7 @@ export namespace Semantic {
   export type FixedArrayDatatypeDef = {
     variant: ENode.FixedArrayDatatype;
     datatype: TypeUseId;
-    length: number;
+    length: bigint;
     concrete: boolean;
   };
 
