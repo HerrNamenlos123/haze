@@ -25,6 +25,8 @@ export enum EOverloadedOperator {
   Mul,
   Div,
   Mod,
+  Rebind,
+  Assign,
   Subscript,
   Cast,
 }
@@ -92,9 +94,9 @@ export function UnaryOperationToString(op: EUnaryOperation): string {
 
 export function AssignmentOperationToString(op: EAssignmentOperation): string {
   switch (op) {
-    case EAssignmentOperation.Assign:
+    case EAssignmentOperation.Rebind:
       return "=";
-    case EAssignmentOperation.AssignRefTarget:
+    case EAssignmentOperation.Assign:
       return ":=";
     case EAssignmentOperation.Divide:
       return "/=";
@@ -145,8 +147,8 @@ export function BinaryOperationToString(op: EBinaryOperation): string {
 }
 
 export enum EAssignmentOperation {
+  Rebind,
   Assign,
-  AssignRefTarget,
   Add,
   Subtract,
   Multiply,
@@ -179,6 +181,12 @@ export type ASTFunctionOverloading =
     }
   | {
       operator: EOverloadedOperator.Subscript;
+    }
+  | {
+      operator: EOverloadedOperator.Assign;
+    }
+  | {
+      operator: EOverloadedOperator.Rebind;
     };
 
 export type ASTFunctionDefinition = {

@@ -1,8 +1,8 @@
 
+#include "hzstd_json.h"
 #include "cJSON.h"
 #include "hzstd_arena.h"
 #include "hzstd_common.h"
-#include "hzstd_json.h"
 #include "hzstd_string.h"
 
 static thread_local hzstd_arena_t* hzstd_json_current_arena;
@@ -43,10 +43,22 @@ cJSON* hzstd_json_create_string(hzstd_arena_t* arena, hzstd_str_t data)
   return json;
 }
 
+cJSON* hzstd_json_create_number(hzstd_arena_t* arena, hzstd_real_t data)
+{
+  hzstd_json_use_arena(arena);
+  return cJSON_CreateNumber(data);
+}
+
 cJSON* hzstd_json_create_object(hzstd_arena_t* arena)
 {
   hzstd_json_use_arena(arena);
   return cJSON_CreateObject();
+}
+
+cJSON* hzstd_json_create_array(hzstd_arena_t* arena)
+{
+  hzstd_json_use_arena(arena);
+  return cJSON_CreateArray();
 }
 
 hzstd_bool_t hzstd_json_object_has_attribute(cJSON* json, hzstd_str_t name)
@@ -97,6 +109,11 @@ cJSON* hzstd_json_get_array_item(hzstd_arena_t* arena, cJSON* json, size_t index
 hzstd_bool_t hzstd_json_add_item_to_object(hzstd_arena_t* arena, cJSON* object, hzstd_str_t name, cJSON* item)
 {
   return cJSON_AddItemToObject(object, hzstd_cstr_from_str(arena, name), item);
+}
+
+hzstd_bool_t hzstd_json_add_item_to_array(hzstd_arena_t* arena, cJSON* object, cJSON* item)
+{
+  return cJSON_AddItemToArray(object, item);
 }
 
 hzstd_str_t hzstd_json_print_unformatted(hzstd_arena_t* arena, cJSON* json)

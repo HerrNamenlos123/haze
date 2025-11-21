@@ -3,7 +3,9 @@ extern C noemit struct cJSON {};
 
 extern C hzstd_json_parse(arena: hzstd_arena_t, data: str, error: hzstd_str_ref_t): cJSON | none;
 extern C hzstd_json_create_string(arena: hzstd_arena_t, data: str): cJSON;
+extern C hzstd_json_create_number(arena: hzstd_arena_t, data: real): cJSON;
 extern C hzstd_json_create_object(arena: hzstd_arena_t): cJSON;
+extern C hzstd_json_create_array(arena: hzstd_arena_t): cJSON;
 
 extern C hzstd_json_object_has_attribute(json: cJSON, name: str): bool;
 extern C hzstd_json_is_string(json: cJSON): bool;
@@ -23,6 +25,7 @@ extern C hzstd_json_get_array_size(arena: hzstd_arena_t, json: cJSON): usize;
 extern C hzstd_json_get_array_item(arena: hzstd_arena_t, json: cJSON, index: usize): cJSON;
 
 extern C hzstd_json_add_item_to_object(arena: hzstd_arena_t, object: cJSON, name: str, item: cJSON): bool;
+extern C hzstd_json_add_item_to_array(arena: hzstd_arena_t, object: cJSON, item: cJSON): bool;
 
 extern C hzstd_json_print_unformatted(arena: hzstd_arena_t, json: cJSON): str;
 extern C hzstd_json_print(arena: hzstd_arena_t, json: cJSON): str;
@@ -85,6 +88,38 @@ struct JsonValue {
                 return { json: { arena: this.json.arena, data: newObj }, attribute: index };
             }
         }
+
+        operator:=(value: str): void {
+            const item = hzstd_json_create_string(this.json.arena.arenaImpl, value);
+            const success = hzstd_json_add_item_to_object(this.json.arena.arenaImpl, this.json.data, this.attribute, item);
+            assert(success);
+        }
+
+        operator:=(value: real): void {
+            const item = hzstd_json_create_number(this.json.arena.arenaImpl, value);
+            const success = hzstd_json_add_item_to_object(this.json.arena.arenaImpl, this.json.data, this.attribute, item);
+            assert(success);
+        }
+
+        operator:=(value: JsonValue): void {
+            const success = hzstd_json_add_item_to_object(this.json.arena.arenaImpl, this.json.data, this.attribute, value.data);
+            assert(success);
+        }
+
+        push(value: JsonValue): void {
+            if hzstd_json_object_has_attribute(this.json.data, this.attribute) {
+                const obj = hzstd_json_get_object_item(this.json.arena.arenaImpl, this.json.data, this.attribute);
+                if obj {
+                    assert(hzstd_json_is_array(obj));
+                    hzstd_json_add_item_to_array(this.json.arena.arenaImpl, obj, value.data);
+                    return;
+                }
+                sys.panic("JSON object does not have attribute");
+            }
+            else {
+                sys.panic("JSON attribute to push into does not exist");
+            }
+        }
     }
 
     operator[](index: int): Proxy {
@@ -101,13 +136,22 @@ struct JsonValue {
         };
     }
 
-    // operator as() {
-    //     return 0 as i32;
-    // }
+    struct PrintOptions {
+        pretty: bool = false;
+    }
+
+    print(options: PrintOptions) {
+        if (options.pretty) {
+            return hzstd_json_print(this.arena.arenaImpl, this.data);
+        }
+        else {
+            return hzstd_json_print_unformatted(this.arena.arenaImpl, this.data);
+        }
+    }
 
 }
 
-namespace JSON {
+namespace json {
     parse(data: str): Result<JsonValue, JsonError> {
         return parseIntoArena(fn.returnArena, data);
     }
@@ -123,15 +167,25 @@ namespace JSON {
         }
         return Result<JsonValue, JsonError>.Err({ error: error.data });
     }
+
+    object(): JsonValue {
+        const obj = hzstd_json_create_object(fn.returnArena.arenaImpl);
+        return { arena: fn.returnArena, data: obj };
+    }
+
+    array(): JsonValue {
+        const obj = hzstd_json_create_array(fn.returnArena.arenaImpl);
+        return { arena: fn.returnArena, data: obj };
+    }
 }
 
 foobar2(): Result<Foo, JsonError> {
     const data = "{\"name\":\"Alice\",\"age\":25,\"active\":true,\"numbers\":[1,2,3],\"nested\":{\"x\":10,\"y\":\"hello\"},\"msg\":\"Hello\\nWorld!\"}";
-    const json = JSON.parse(data)?!;
+    const j = json.parse(data)?!;
 
-    const a = json["name"].to<str>();
-    const b = json["age"].to<real>();
-    const c = json["nested"]["y"].to<str>();
+    const a = j["name"].to<str>();
+    const b = j["age"].to<real>();
+    const c = j["nested"]["y"].to<str>();
     fmt.println("Parsed:", a, b, c);
     // const b = json[187];
     return Result<Foo, JsonError>.Ok({});
@@ -143,10 +197,29 @@ createcJSONExample() {
         Vec2(1920, 1080),
         Vec2(3840, 2160),
     ];
-    fmt.println(resolutionNumbers.length);
-    fmt.println(resolutionNumbers[0].x);
 
-    for a in resolutionNumbers {}
+    const value = json.object();
+    value["name"] := "Awesome 4K";
+
+    value["resolutions"] := json.array();
+
+    let i = 0;
+    while i < resolutionNumbers.length as int {
+        const res = resolutionNumbers[i];
+
+        value["resolutions"].push(do {
+            const v = json.object();
+            v["width"] := res.x;
+            v["height"] := res.y;
+            v;
+        });
+
+        i = i + 1;
+    }
+
+    fmt.println("RESULT: ", value.print({
+        pretty: true
+    }));
 }
 
 export foobar() {
@@ -157,6 +230,7 @@ export foobar() {
     else {
         fmt.println("Success!");
     }
+    createcJSONExample();
 }
 
 

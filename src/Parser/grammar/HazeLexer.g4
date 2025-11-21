@@ -33,6 +33,8 @@ TRY: 'try';
 SOURCE_LOCATION_DIRECTIVE: '#source';
 
 OPERATORSUBSCRIPT: 'operator[]';
+OPERATORREBIND: 'operator=';
+OPERATORASSIGN: 'operator:=';
 OPERATORPLUS: 'operator+';
 OPERATORMINUS: 'operator-';
 OPERATORMUL: 'operator*';

@@ -742,6 +742,12 @@ export class SemanticElaborator {
       case Collect.ENode.ArrayLiteralExpr:
         return this.arrayLiteral(expr);
 
+      case Collect.ENode.PreIncrExpr:
+        return this.preIncr(expr);
+
+      case Collect.ENode.PostIncrExpr:
+        return this.postIncr(expr);
+
       default:
         assert(false, "All cases handled: " + Collect.ENode[expr.variant]);
     }
@@ -2725,6 +2731,98 @@ export class SemanticElaborator {
   }
 
   assignmentExpr(assignment: Collect.ExprAssignmentExpr, inference: Inference) {
+    const [targetExpr, targetExprId] = this.expr(assignment.expr, inference);
+    const [valueExpr, valueExprId] = this.expr(assignment.value, inference);
+
+    const lhsTypeUse = this.sr.typeUseNodes.get(targetExpr.type);
+    const lhsType = this.sr.typeDefNodes.get(lhsTypeUse.type);
+
+    if (
+      assignment.operation === EAssignmentOperation.Assign &&
+      lhsType.variant === Semantic.ENode.StructDatatype
+    ) {
+      // Try to find exact overload
+      let exactMatchId: Semantic.SymbolId | undefined;
+      lhsType.methods.forEach((m) => {
+        const method = this.sr.symbolNodes.get(m);
+        assert(method.variant === Semantic.ENode.FunctionSymbol);
+
+        if (method.overloadedOperator !== EOverloadedOperator.Assign) return;
+
+        const ftype = this.sr.e.getTypeDef(method.type);
+        assert(ftype.variant === Semantic.ENode.FunctionDatatype);
+
+        if (ftype.parameters.length !== 2) return;
+        if (
+          this.sr.e.getTypeUse(ftype.parameters[1]).type !==
+          this.sr.e.getTypeUse(valueExpr.type).type
+        )
+          return;
+
+        if (exactMatchId !== undefined) {
+          throw new CompilerError(`Operator access is ambiguous`, assignment.sourceloc);
+        }
+        exactMatchId = m;
+      });
+
+      if (exactMatchId) {
+        const method = this.sr.e.getSymbol(exactMatchId);
+        assert(method.variant === Semantic.ENode.FunctionSymbol);
+
+        const ftype = this.sr.e.getTypeDef(method.type);
+        assert(ftype.variant === Semantic.ENode.FunctionDatatype);
+
+        const instanceIds: Semantic.InstanceId[] = [];
+        if (ftype.requires.autodest) {
+          instanceIds.push(Semantic.makeInstanceId(this.sr));
+        }
+
+        assert(this.sr.e.inFunction);
+        const functionSymbol = this.sr.e.getSymbol(this.sr.e.inFunction);
+        assert(functionSymbol.variant === Semantic.ENode.FunctionSymbol);
+        instanceIds.forEach((i) => functionSymbol.createsInstanceIds.add(i));
+
+        return Semantic.addExpr(this.sr, {
+          variant: Semantic.ENode.ExprCallExpr,
+          instanceIds: instanceIds,
+          arguments: [valueExprId],
+          calledExpr: Semantic.addExpr(this.sr, {
+            variant: Semantic.ENode.CallableExpr,
+            functionSymbol: exactMatchId,
+            instanceIds: [],
+            isTemporary: true,
+            sourceloc: assignment.sourceloc,
+            thisExpr: targetExprId,
+            type: makeTypeUse(
+              this.sr,
+              Semantic.addType(this.sr, {
+                variant: Semantic.ENode.CallableDatatype,
+                thisExprType: targetExpr.type,
+                functionType: method.type,
+                concrete: true,
+              })[1],
+              EDatatypeMutability.Const,
+              false,
+              assignment.sourceloc
+            )[1],
+          })[1],
+          inArena: null,
+          producesAllocation: ftype.requires.autodest,
+          type: ftype.returnType,
+          sourceloc: assignment.sourceloc,
+          isTemporary: true,
+        });
+      }
+
+      throw new CompilerError(
+        `Expression of type '${Semantic.serializeTypeUse(
+          this.sr,
+          targetExpr.type
+        )}' is not a valid LHS, no matching assignment operator overload exists`,
+        assignment.sourceloc
+      );
+    }
+
     return this.sr.b.assignment(
       this.expr(assignment.expr, inference)[1],
       assignment.operation,

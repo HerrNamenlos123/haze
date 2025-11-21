@@ -552,7 +552,7 @@ export namespace Lowered {
     variant: ENode.ArrayDatatype;
     datatype: TypeUseId;
     name: NameSet;
-    length: number;
+    length: bigint;
   };
 
   export type SliceDatatypeDef = {
@@ -1203,14 +1203,14 @@ function lowerExpr(
       const loweredTarget = lowerExpr(lr, expr.target, flattened, instanceInfo)[1];
       const loweredValue = lowerExpr(lr, expr.value, flattened, instanceInfo)[1];
       if (
-        expr.operation === EAssignmentOperation.Assign ||
-        expr.operation === EAssignmentOperation.AssignRefTarget
+        expr.operation === EAssignmentOperation.Rebind ||
+        expr.operation === EAssignmentOperation.Assign
       ) {
         return Lowered.addExpr(lr, {
           variant: Lowered.ENode.ExprAssignmentExpr,
           target: loweredTarget,
           value: loweredValue,
-          assignRefTarget: expr.operation === EAssignmentOperation.AssignRefTarget,
+          assignRefTarget: expr.operation === EAssignmentOperation.Assign,
           type: lowerTypeUse(lr, expr.type),
         });
       } else if (expr.operation === EAssignmentOperation.Add) {

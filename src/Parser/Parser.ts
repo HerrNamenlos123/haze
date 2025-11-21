@@ -319,9 +319,9 @@ class ASTTransformer extends HazeParserVisitor<any> {
       throw new InternalError("Operator missing");
     }
     if (ctx._op.text === "=") {
-      return EAssignmentOperation.Assign;
+      return EAssignmentOperation.Rebind;
     } else if (ctx._op.text === ":=") {
-      return EAssignmentOperation.AssignRefTarget;
+      return EAssignmentOperation.Assign;
     } else if (ctx._op.text === "+=") {
       return EAssignmentOperation.Add;
     } else if (ctx._op.text === "-=") {
@@ -805,6 +805,16 @@ class ASTTransformer extends HazeParserVisitor<any> {
         operator: EOverloadedOperator.Mod,
       };
       name = "__operator_mod";
+    } else if (name === "operator=") {
+      operatorOverloading = {
+        operator: EOverloadedOperator.Rebind,
+      };
+      name = "__operator_assign";
+    } else if (name === "operator:=") {
+      operatorOverloading = {
+        operator: EOverloadedOperator.Assign,
+      };
+      name = "__operator_assign";
     } else if (name === "operator as") {
       operatorOverloading = {
         operator: EOverloadedOperator.Cast,
