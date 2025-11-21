@@ -30,168 +30,168 @@ extern C hzstd_json_add_item_to_array(arena: hzstd_arena_t, object: cJSON, item:
 extern C hzstd_json_print_unformatted(arena: hzstd_arena_t, json: cJSON): str;
 extern C hzstd_json_print(arena: hzstd_arena_t, json: cJSON): str;
 
-struct JsonError {
-    error: str;
-};
-
-struct JsonValue {
-    arena: Arena;
-    data: cJSON;
-
-    struct Proxy {
-        json: JsonValue;
-        attribute: str;
-
-        to<T>() {
-            if comptime T == type<str> {
-                const obj = hzstd_json_get_object_item(this.json.arena.arenaImpl, this.json.data, this.attribute);
-                if obj {
-                    const value = hzstd_json_get_string_value(this.json.arena.arenaImpl, obj);
-                    if value {
-                        return value.data;
-                    }
-                    sys.panic("JSON value is not of type String");
-                }
-                sys.panic("JSON object does not have attribute");
-            } 
-            else if T == type<real> {
-                const obj = hzstd_json_get_object_item(this.json.arena.arenaImpl, this.json.data, this.attribute);
-                if obj {
-                    const value = hzstd_json_get_number_value(this.json.arena.arenaImpl, obj);
-                    return value;
-                }
-                sys.panic("JSON object does not have attribute");
-            }
-            else {
-                static_assert(false, "Type not supported");
-            }
-        }
-
-        operator[](index: str): Proxy {
-            // String access to a proxy, so the parent must be an object
-            if hzstd_json_object_has_attribute(this.json.data, this.attribute) {
-                // Already exists, check type
-                if !hzstd_json_is_object(this.json.data) {
-                    sys.panic("JSON was expected to be an object");
-                }
-
-                const obj = hzstd_json_get_object_item(this.json.arena.arenaImpl, this.json.data, this.attribute);
-                if obj {
-                    return { json: { arena: this.json.arena, data: obj }, attribute: index };
-                }
-                sys.panic("JSON object does not have attribute");
-            }
-            else {
-                // Does not exist yet, create
-                const newObj = hzstd_json_create_object(this.json.arena.arenaImpl);
-                hzstd_json_add_item_to_object(this.json.arena.arenaImpl, this.json.data, this.attribute, newObj);
-                return { json: { arena: this.json.arena, data: newObj }, attribute: index };
-            }
-        }
-
-        operator:=(value: str): void {
-            const item = hzstd_json_create_string(this.json.arena.arenaImpl, value);
-            const success = hzstd_json_add_item_to_object(this.json.arena.arenaImpl, this.json.data, this.attribute, item);
-            assert(success);
-        }
-
-        operator:=(value: real): void {
-            const item = hzstd_json_create_number(this.json.arena.arenaImpl, value);
-            const success = hzstd_json_add_item_to_object(this.json.arena.arenaImpl, this.json.data, this.attribute, item);
-            assert(success);
-        }
-
-        operator:=(value: JsonValue): void {
-            const success = hzstd_json_add_item_to_object(this.json.arena.arenaImpl, this.json.data, this.attribute, value.data);
-            assert(success);
-        }
-
-        push(value: JsonValue): void {
-            if hzstd_json_object_has_attribute(this.json.data, this.attribute) {
-                const obj = hzstd_json_get_object_item(this.json.arena.arenaImpl, this.json.data, this.attribute);
-                if obj {
-                    assert(hzstd_json_is_array(obj));
-                    hzstd_json_add_item_to_array(this.json.arena.arenaImpl, obj, value.data);
-                    return;
-                }
-                sys.panic("JSON object does not have attribute");
-            }
-            else {
-                sys.panic("JSON attribute to push into does not exist");
-            }
-        }
-    }
-
-    operator[](index: int): Proxy {
-        return {
-            json: this,
-            attribute: "test",
-        };
-    }
-
-    operator[](index: str): Proxy {
-        return {
-            json: this,
-            attribute: index,
-        };
-    }
-
-    struct PrintOptions {
-        pretty: bool = false;
-    }
-
-    print(options: PrintOptions) {
-        if (options.pretty) {
-            return hzstd_json_print(this.arena.arenaImpl, this.data);
-        }
-        else {
-            return hzstd_json_print_unformatted(this.arena.arenaImpl, this.data);
-        }
-    }
-
-}
-
 namespace json {
-    parse(data: str): Result<JsonValue, JsonError> {
+    struct Error {
+        error: str;
+    };
+
+    struct Value {
+        arena: Arena;
+        data: cJSON;
+
+        struct Proxy {
+            json: Value;
+            attribute: str;
+
+            to<T>() {
+                if comptime T == type<str> {
+                    const obj = hzstd_json_get_object_item(this.json.arena.arenaImpl, this.json.data, this.attribute);
+                    if obj {
+                        const value = hzstd_json_get_string_value(this.json.arena.arenaImpl, obj);
+                        if value {
+                            return value.data;
+                        }
+                        sys.panic("JSON value is not of type String");
+                    }
+                    sys.panic("JSON object does not have attribute");
+                } 
+                else if T == type<real> {
+                    const obj = hzstd_json_get_object_item(this.json.arena.arenaImpl, this.json.data, this.attribute);
+                    if obj {
+                        const value = hzstd_json_get_number_value(this.json.arena.arenaImpl, obj);
+                        return value;
+                    }
+                    sys.panic("JSON object does not have attribute");
+                }
+                else {
+                    static_assert(false, "Type not supported");
+                }
+            }
+
+            operator[](index: str): Result<Proxy, Error> {
+                // String access to a proxy, so the parent must be an object
+                if hzstd_json_object_has_attribute(this.json.data, this.attribute) {
+                    // Already exists, check type
+                    if !hzstd_json_is_object(this.json.data) {
+                        sys.panic("JSON was expected to be an object");
+                    }
+
+                    const obj = hzstd_json_get_object_item(this.json.arena.arenaImpl, this.json.data, this.attribute);
+                    if obj {
+                        return Result<Proxy, Error>.Ok({ json: { arena: this.json.arena, data: obj }, attribute: index });
+                    }
+                    sys.panic("JSON object does not have attribute");
+                }
+                else {
+                    // Does not exist yet, create
+                    const newObj = hzstd_json_create_object(this.json.arena.arenaImpl);
+                    hzstd_json_add_item_to_object(this.json.arena.arenaImpl, this.json.data, this.attribute, newObj);
+                    return Result<Proxy, Error>.Ok({ json: { arena: this.json.arena, data: newObj }, attribute: index });
+                }
+            }
+
+            operator:=(value: str): void {
+                const item = hzstd_json_create_string(this.json.arena.arenaImpl, value);
+                const success = hzstd_json_add_item_to_object(this.json.arena.arenaImpl, this.json.data, this.attribute, item);
+                assert(success);
+            }
+
+            operator:=(value: real): void {
+                const item = hzstd_json_create_number(this.json.arena.arenaImpl, value);
+                const success = hzstd_json_add_item_to_object(this.json.arena.arenaImpl, this.json.data, this.attribute, item);
+                assert(success);
+            }
+
+            operator:=(value: Value): void {
+                const success = hzstd_json_add_item_to_object(this.json.arena.arenaImpl, this.json.data, this.attribute, value.data);
+                assert(success);
+            }
+
+            push(value: Value): void {
+                if hzstd_json_object_has_attribute(this.json.data, this.attribute) {
+                    const obj = hzstd_json_get_object_item(this.json.arena.arenaImpl, this.json.data, this.attribute);
+                    if obj {
+                        assert(hzstd_json_is_array(obj));
+                        hzstd_json_add_item_to_array(this.json.arena.arenaImpl, obj, value.data);
+                        return;
+                    }
+                    sys.panic("JSON object does not have attribute");
+                }
+                else {
+                    sys.panic("JSON attribute to push into does not exist");
+                }
+            }
+        }
+
+        operator[](index: int): Result<Proxy, Error> {
+            return Result<Proxy, Error>.Ok({
+                json: this,
+                attribute: "test",
+            });
+        }
+
+        operator[](index: str): Result<Proxy, Error> {
+            return Result<Proxy, Error>.Ok({
+                json: this,
+                attribute: index,
+            });
+        }
+
+        struct PrintOptions {
+            pretty: bool = false;
+        }
+
+        print(options: PrintOptions) {
+            if (options.pretty) {
+                return hzstd_json_print(this.arena.arenaImpl, this.data);
+            }
+            else {
+                return hzstd_json_print_unformatted(this.arena.arenaImpl, this.data);
+            }
+        }
+
+    }
+
+    parse(data: str): Result<Value, Error> {
         return parseIntoArena(fn.returnArena, data);
     }
 
-    parseIntoArena(arena: Arena, data: str): Result<JsonValue, JsonError> {
+    parseIntoArena(arena: Arena, data: str): Result<Value, Error> {
         let error = hzstd_str_ref_t { data: "" };
         const cjson = hzstd_json_parse(arena.arenaImpl, data, error);
         if cjson {
-            return Result<JsonValue, JsonError>.Ok(JsonValue {
+            return Result<Value, Error>.Ok({
                 arena: arena,
                 data: cjson,
             } in arena);
         }
-        return Result<JsonValue, JsonError>.Err({ error: error.data });
+        return Result<Value, Error>.Err({ error: error.data });
     }
 
-    object(): JsonValue {
+    object(): Value {
         const obj = hzstd_json_create_object(fn.returnArena.arenaImpl);
         return { arena: fn.returnArena, data: obj };
     }
 
-    array(): JsonValue {
+    array(): Value {
         const obj = hzstd_json_create_array(fn.returnArena.arenaImpl);
         return { arena: fn.returnArena, data: obj };
     }
 }
 
-foobar2(): Result<Foo, JsonError> {
+foobar2(): Result<Foo, json.Error> {
     const data = "{\"name\":\"Alice\",\"age\":25,\"active\":true,\"numbers\":[1,2,3],\"nested\":{\"x\":10,\"y\":\"hello\"},\"msg\":\"Hello\\nWorld!\"}";
     const j = json.parse(data)?!;
 
-    const a = j["name"].to<str>();
-    const b = j["age"].to<real>();
-    const c = j["nested"]["y"].to<str>();
+    const a = j["name"]?!.to<str>();
+    const b = j["age"]?!.to<real>();
+    const c = j["nested"]?!["y"]?!.to<str>();
     fmt.println("Parsed:", a, b, c);
     // const b = json[187];
-    return Result<Foo, JsonError>.Ok({});
+    return Result<Foo, json.Error>.Ok({});
 }
 
-createcJSONExample() {
+createcJSONExample(): Result<Foo, json.Error> {
     const resolutionNumbers = [
         Vec2(1280, 720),
         Vec2(1920, 1080),
@@ -199,18 +199,18 @@ createcJSONExample() {
     ];
 
     const value = json.object();
-    value["name"] := "Awesome 4K";
+    value["name"]?! := "Awesome 4K";
 
-    value["resolutions"] := json.array();
+    value["resolutions"]?! := json.array();
 
     let i = 0;
     while i < resolutionNumbers.length as int {
         const res = resolutionNumbers[i];
 
-        value["resolutions"].push(do {
+        value["resolutions"]?!.push(do {
             const v = json.object();
-            v["width"] := res.x;
-            v["height"] := res.y;
+            v["width"]?! := res.x;
+            v["height"]?! := res.y;
             v;
         });
 
@@ -220,6 +220,8 @@ createcJSONExample() {
     fmt.println("RESULT: ", value.print({
         pretty: true
     }));
+
+    return Result<Foo, json.Error>.Ok({});
 }
 
 export foobar() {

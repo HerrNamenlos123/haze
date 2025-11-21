@@ -1146,9 +1146,10 @@ class CodeGenerator {
         const length = this.emitExpr(expr.value.length);
         tempWriter.write(length.temp);
 
-        outWriter.write(
-          `(hzstd_str_t){ .data=(hzstd_ccstr_t)${data.out.get()}, .length=${length.out.get()} }`
-        );
+        // outWriter.write(
+        //   `(hzstd_str_t){ .data=(hzstd_ccstr_t)${data.out.get()}, .length=${length.out.get()} }`
+        // );
+        outWriter.write(`HZSTD_STRING(${data.out.get()}, ${length.out.get()})`);
         return { out: outWriter, temp: tempWriter };
       }
 
@@ -1164,7 +1165,7 @@ class CodeGenerator {
           outWriter.write(`(hzstd_ccstr_t)(${JSON.stringify(expr.literal.value)})`);
         } else if (expr.literal.type === EPrimitive.str) {
           const [value, length] = escapeStringForC(expr.literal.value);
-          outWriter.write(`(hzstd_str_t){ .data="${value}", .length=${length} }`);
+          outWriter.write(`HZSTD_STRING("${value}", ${length})`);
         } else if (expr.literal.type === EPrimitive.bool) {
           outWriter.write(
             `(${this.primitiveToC(expr.literal.type)})(${expr.literal.value ? "1" : "0"})`

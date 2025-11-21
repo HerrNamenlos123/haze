@@ -5,13 +5,20 @@
       "label": "Build test program",
       "type": "shell",
       "command": "~/.bun/bin/bun",
-      "args": ["run", "dev", "build"],
-      // "args": ["run", "dev", "build", "--no-sourceloc"],
+      // "args": ["run", "dev", "build"],
+      "args": [
+        "run",
+        "dev",
+        "build",
+        "--no-sourceloc"
+      ],
       "group": {
         "kind": "build",
         "isDefault": true
       },
-      "problemMatcher": ["$gcc"]
+      "problemMatcher": [
+        "$gcc"
+      ]
     }
   ]
 }

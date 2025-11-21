@@ -10,6 +10,8 @@ typedef struct hzstd_str_t {
   uint64_t length;
 } hzstd_str_t;
 
+#define HZSTD_STRING(str, len) ((hzstd_str_t) { .data = str, .length = len })
+
 // The purpose of this struct is to wrap a hzstd_str in an object which can be passed around by reference.
 // To be used if you actually want a 'hzstd_str*' for an out-parameter.
 // Hint: 'hzstd_str*' cannot be used directly since hzstd_str is not a normal object but mapped to the 'str' primitive.

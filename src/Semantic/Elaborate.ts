@@ -535,10 +535,18 @@ export class SemanticElaborator {
       assert(index !== -1);
       const typeOfTag = union.members[index].type;
 
+      const args = getActualCallingArguments([typeOfTag]);
+
+      const instanceIds = new Set<Semantic.InstanceId>();
+      for (const a of args) {
+        const e = this.sr.e.getExpr(a);
+        e.instanceIds.forEach((i) => instanceIds.add(i));
+      }
+
       return Semantic.addExpr(this.sr, {
         variant: Semantic.ENode.ValueToUnionCastExpr,
-        expr: convertArgs(getActualCallingArguments([typeOfTag]), [typeOfTag], false)[0],
-        instanceIds: [],
+        expr: convertArgs(args, [typeOfTag], false)[0],
+        instanceIds: [...instanceIds],
         isTemporary: true,
         index: index,
         sourceloc: callExpr.sourceloc,
@@ -3335,6 +3343,7 @@ export class SemanticElaborator {
           memberAccessExpr.sourceloc
         );
       }
+
       return Semantic.addExpr(this.sr, {
         variant: Semantic.ENode.UnionTagReferenceExpr,
         instanceIds: [],
