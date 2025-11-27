@@ -15,7 +15,7 @@ extern C parse(source: str) {
 main() {
     type LexerNode = IntegerNode | IdentifierNode;
     // parse();
-    const result = File.read("stdlib/core/src/String.hz");
+    const result = fs.read("stdlib/core/src/String.hz");
     if result {
         fmt.println("Content: ", result);
     }
