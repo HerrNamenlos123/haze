@@ -1,0 +1,4 @@
+CompileFlags:
+  CompilationDatabase: "__haze__/compile_commands.json"
+
+NonexistentField: true

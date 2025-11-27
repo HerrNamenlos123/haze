@@ -1,0 +1,26 @@
+
+struct IntegerNode {
+
+}
+
+struct IdentifierNode {
+
+}
+
+
+extern C parse(source: str) {
+
+}
+
+main() {
+    type LexerNode = IntegerNode | IdentifierNode;
+    // parse();
+    const result = File.read("stdlib/core/src/String.hz");
+    if result {
+        fmt.println("Content: ", result);
+    }
+    else {
+        fmt.println("Failed");
+    }
+    return 0;
+}

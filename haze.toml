@@ -4,7 +4,8 @@ version = "0.1.0"
 description = "A sample Haze project"
 license = "MIT"
 authors = []
-src = "test"
+# src = "test"
+src = "compiler/haze-parser/src"
 type = "exe"
 # std = "none"
 
@@ -23,9 +24,9 @@ test = "haze test"
 # warnings_as_errors = false
 
 [dependencies]
-glfw = { path = "./glfw" }
-math = { path = "./math" }
-gl = { path = "./gl" }
+# glfw = { path = "./glfw" }
+# math = { path = "./math" }
+# gl = { path = "./gl" }
 # glDraw = { path = "./glDraw" }
 # ember = { path = "./ember" }
 

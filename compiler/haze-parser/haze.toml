@@ -1,0 +1,7 @@
+
+name = "haze-parser"
+version = "0.0.0"
+description = "A WIP Haze Parser written in Haze"
+license = "MIT"
+authors = []
+type = "exe"

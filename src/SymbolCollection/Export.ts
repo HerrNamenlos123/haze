@@ -183,6 +183,7 @@ export function ExportSymbol(
         }
         file += code + "\n";
       } else {
+        // console.log(symbol.name, symbol);
         if (symbol.extern === EExternLanguage.Extern) {
           file += "extern ";
         } else if (symbol.extern === EExternLanguage.Extern_C) {
@@ -200,6 +201,13 @@ export function ExportSymbol(
           (symbol.vararg ? ", ..." : "") +
           ")" +
           (symbol.returnType ? ": " + printType(cc, symbol.returnType) : " ");
+        file += " :: final";
+        if (symbol.requires.autodest) {
+          file += ", autodest";
+        }
+        if (symbol.requires.noreturn) {
+          file += ", noreturn";
+        }
         file += ";\n";
       }
       for (const ns of namespaces.slice(0, -1)) {
@@ -273,10 +281,15 @@ export function ExportSymbol(
                       .map((p, i) => `${p.name}: ${printType(cc, p.type)}`)
                       .join(", ");
                     if (method.returnType) {
-                      file += `${content.name}(${parameters}): ${printType(
-                        cc,
-                        method.returnType
-                      )};\n`;
+                      file += `${content.name}(${parameters}): ${printType(cc, method.returnType)}`;
+                      file += " :: final";
+                      if (method.requires.autodest) {
+                        file += ", autodest";
+                      }
+                      if (method.requires.noreturn) {
+                        file += ", noreturn";
+                      }
+                      file += `;\n`;
                     } else {
                       file += `${content.name}(${parameters});\n`;
                     }
@@ -299,7 +312,17 @@ export function ExportSymbol(
         }
 
         case Collect.ENode.TypeDefAlias: {
-          file += `type ${symbol.name} = ${printType(cc, typedef.target)};\n`;
+          const generics =
+            typedef.generics.length > 0
+              ? `<${typedef.generics
+                  .map((g) => {
+                    const sym = cc.symbolNodes.get(g);
+                    assert(sym.variant === Collect.ENode.GenericTypeParameterSymbol);
+                    return sym.name;
+                  })
+                  .join(", ")}>`
+              : "";
+          file += `type ${symbol.name}${generics} = ${printType(cc, typedef.target)};\n`;
           break;
         }
         default:

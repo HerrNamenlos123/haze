@@ -1,7 +1,7 @@
 
 export extern C noemit struct hzstd_arena_t {};
 
-export extern C noemit hzstd_arena_create(chunk_size: usize): hzstd_arena_t;
+export extern C noemit hzstd_arena_create(): hzstd_arena_t;
 export extern C noemit hzstd_arena_cleanup_and_free(arena: hzstd_arena_t): void;
 
 export extern C noemit hzstd_arena_allocate(arena: hzstd_arena_t, size: usize, alignment: usize): cptr;
@@ -13,14 +13,14 @@ export extern C noemit hzstd_detach_subarena(arena: hzstd_arena_t): void;
 export extern C noemit hzstd_arena_register_cleanup_action(arena: hzstd_arena_t, action: (actiondata: void) => cptr, actiondata: cptr): usize;
 export extern C noemit hzstd_arena_deregister_cleanup_action(arena: hzstd_arena_t, actionId: usize): void;
 
-const DEFAULT_CHUNK_SIZE = 1024;
+// const DEFAULT_CHUNK_SIZE = 1024;
 
 export struct Arena {
     arenaImpl: hzstd_arena_t;
 
     constructor() {
         return Arena {
-            arenaImpl: hzstd_arena_create(DEFAULT_CHUNK_SIZE),
+            arenaImpl: hzstd_arena_create(),
         };
     }
     

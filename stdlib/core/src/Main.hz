@@ -1,5 +1,5 @@
 
-__c__("#include \"hzstd_main.c\"");
+__c__("#include \"hzstd/hzstd_main.c\"");
 
 struct Foo {}
 

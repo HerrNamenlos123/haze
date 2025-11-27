@@ -2,13 +2,13 @@
 #ifndef HZSTD_COMMON_H
 #define HZSTD_COMMON_H
 
+#include <assert.h>
 #include <stdalign.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
 
-// This type is used, which internally converts values to always be 0 or 1, so it avoids the issue
-// of multiple bool values being inequal even though all of them are considered true.
-typedef _Bool hzstd_bool_t;
+typedef bool hzstd_bool_t;
 
 typedef int8_t hzstd_i8_t;
 typedef int16_t hzstd_i16_t;
@@ -26,9 +26,9 @@ typedef double hzstd_f64_t;
 typedef double hzstd_real_t;
 
 typedef void hzstd_void_t;
-typedef void* hzstd_cptr_t;
-typedef char* hzstd_cstr_t;
-typedef const char* hzstd_ccstr_t;
+typedef void *hzstd_cptr_t;
+typedef char *hzstd_cstr_t;
+typedef const char *hzstd_ccstr_t;
 
 typedef struct hzstd_null_t {
 } hzstd_null_t;

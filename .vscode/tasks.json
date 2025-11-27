@@ -4,7 +4,9 @@
     {
       "label": "Build test program",
       "type": "shell",
-      "command": "~/.bun/bin/bun",
+      "command": "bun",
+      // "command": "~/.bun/bin/bun",
+      // "command": "%USERPROFILE%/.bun/bin/bun",
       // "args": ["run", "dev", "build"],
       "args": [
         "run",

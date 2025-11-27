@@ -171,7 +171,7 @@ class CodeGenerator {
     this.includeSystemHeader("math.h");
 
     if (this.config.hzstdLocation) {
-      this.includeLocalHeader(this.config.hzstdLocation + "/hzstd.h");
+      this.includeLocalHeader(this.config.hzstdLocation + "/hzstd/hzstd.h");
     } else {
       this.includeLocalHeader("hzstd.h");
     }

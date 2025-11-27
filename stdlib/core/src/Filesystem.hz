@@ -1,0 +1,21 @@
+
+// extern C struct hzstd_fs_error_t {};
+extern C struct hzstd_file_t {};
+
+extern C hzstd_read_file_text(arena: hzstd_arena_t, path: str, outputBuffer: hzstd_str_ref_t): i32;
+
+// struct File {
+//     rawFile: hzstd_file_t;
+// }
+
+export namespace File {
+    export read(path: str): Result<str, i32> :: final, autodest {
+        const output = hzstd_str_ref_t { data: "" } in fn.localArena;
+        const result = hzstd_read_file_text(fn.returnArena.arenaImpl, path, output);
+        if result == 0 {
+            return Result<str, i32>.Ok(output.data);
+        }
+
+        return Result<str, i32>.Err(result);
+    }
+}
