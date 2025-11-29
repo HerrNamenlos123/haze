@@ -1141,7 +1141,7 @@ export function lowerExpr(
         : Lowered.addExpr(lr, {
             variant: Lowered.ENode.LiteralExpr,
             literal: {
-              // type: EPrimitive.usize,
+              type: EPrimitive.usize,
               unit: null,
               value: BigInt(arrayType.length),
             },

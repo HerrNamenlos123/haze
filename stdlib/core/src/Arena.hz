@@ -38,12 +38,12 @@ export struct Arena {
 }
 
 enum MyEnum {
-    FirstValue,
-    SecondValue,
+    FirstValue = 3,
+    SecondValue = 1,
     ThirdValue,
-    FourthValue
+    FourthValue,
 }
 
 fooz() {
-    const a = MyEnum.FirstValue;
+    const a: MyEnum = MyEnum.FirstValue;
 }

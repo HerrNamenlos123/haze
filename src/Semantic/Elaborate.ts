@@ -970,6 +970,10 @@ export class SemanticElaborator {
             }
             usedValues.add(valueResult.literal.value);
           } else {
+            while (usedValues.has(nextValue)) {
+              nextValue++;
+            }
+
             const v = nextValue++;
             enumType.values.push({
               name: value.name,
@@ -5505,7 +5509,13 @@ export class SemanticBuilder {
         literal: literal,
         sourceloc: sourceloc,
         isTemporary: true,
-        type: enumType.type,
+        type: makeTypeUse(
+          this.sr,
+          literal.enumType,
+          EDatatypeMutability.Default,
+          false,
+          sourceloc
+        )[1],
       });
     } else {
       return Semantic.addExpr(this.sr, {
