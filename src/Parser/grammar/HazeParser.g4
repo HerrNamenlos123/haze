@@ -141,7 +141,7 @@ enumContent
     ;
 
 enumDefinition
-    : (export=EXPORT)? (extern=EXTERN externLang=externLanguage)? pub=PUB? noemit=NOEMIT? ENUM BITFLAG? UNSCOPED? ID requiresBlock? LCURLY ((content+=enumContent COMMA)+ (content+=enumContent COMMA?)?)? RCURLY (SEMI)?
+    : (export=EXPORT)? (extern=EXTERN externLang=externLanguage)? pub=PUB? noemit=NOEMIT? ENUM BITFLAG? UNSCOPED? ID requiresBlock? LCURLY (((content+=enumContent COMMA)+ (content+=enumContent COMMA?)?) | (content+=enumContent COMMA?))? RCURLY (SEMI)?
     ;
 
 structDefinition

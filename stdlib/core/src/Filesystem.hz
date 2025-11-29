@@ -1,21 +1,36 @@
 
-// extern C struct hzstd_fs_error_t {};
 extern C struct hzstd_file_t {};
 
-extern C hzstd_read_file_text(arena: hzstd_arena_t, path: str, outputBuffer: hzstd_str_ref_t): i32;
+extern C noemit enum hzstd_fs_error_t {
+    hzstd_fs_error_none = 0,
+    hzstd_fs_error_no_such_file_or_directory,
+    hzstd_fs_error_failed,
+};
+
+export enum FSError {
+    None,
+    NoSuchFileOrDirectory,
+    Other,
+}
+
+extern C hzstd_read_file_text(arena: hzstd_arena_t, path: str, outputBuffer: hzstd_str_ref_t): hzstd_fs_error_t;
 
 // struct File {
 //     rawFile: hzstd_file_t;
 // }
 
 export namespace fs {
-    export read(path: str): Result<str, i32> :: final, autodest {
+    export read(path: str): Result<str, FSError> :: final, autodest {
         const output = hzstd_str_ref_t { data: "" } in fn.localArena;
         const result = hzstd_read_file_text(fn.returnArena.arenaImpl, path, output);
-        if result == 0 {
-            return Result<str, i32>.Ok(output.data);
+        if result == hzstd_fs_error_t.hzstd_fs_error_none {
+            return Result<str, FSError>.Ok(output.data);
         }
 
-        return Result<str, i32>.Err(result);
+        if result == hzstd_fs_error_t.hzstd_fs_error_no_such_file_or_directory {
+            return Result<str, FSError>.Err(FSError.NoSuchFileOrDirectory);
+        }
+
+        return Result<str, FSError>.Err(FSError.Other);
     }
 }

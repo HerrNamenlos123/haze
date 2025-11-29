@@ -8201,6 +8201,12 @@ export namespace Semantic {
       }
 
       case Semantic.ENode.EnumDatatype: {
+        if (type.extern === EExternLanguage.Extern_C) {
+          return {
+            name: type.name,
+            wasMangled: false,
+          };
+        }
         return {
           name: type.parentStructOrNS
             ? mangleTypeDef(sr, type.parentStructOrNS).name
@@ -8265,10 +8271,17 @@ export namespace Semantic {
       const enumType = sr.typeDefNodes.get(literal.enumType);
       assert(enumType.variant === Semantic.ENode.EnumDatatype && enumType.parentStructOrNS);
       const parent = mangleTypeDef(sr, enumType.parentStructOrNS);
-      return {
-        name: parent.name + literal.valueName.length + literal.valueName,
-        wasMangled: true,
-      };
+      if (parent.wasMangled) {
+        return {
+          name: parent.name + literal.valueName.length + literal.valueName,
+          wasMangled: true,
+        };
+      } else {
+        return {
+          name: literal.valueName,
+          wasMangled: false,
+        };
+      }
     } else {
       if (Number.isInteger(literalType)) {
         return {

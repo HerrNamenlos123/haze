@@ -1508,6 +1508,15 @@ export namespace Conversion {
     const leftType = sr.typeDefNodes.get(leftTypeId);
     const rightType = sr.typeDefNodes.get(rightTypeId);
 
+    if (
+      leftType.variant === Semantic.ENode.EnumDatatype &&
+      rightType.variant === Semantic.ENode.EnumDatatype
+    ) {
+      if (leftTypeId === rightTypeId) {
+        return makePrimitiveAvailable(sr, EPrimitive.bool, EDatatypeMutability.Const, sourceloc);
+      }
+    }
+
     throw new CompilerError(
       `No safe comparison is available between types '${Semantic.serializeTypeDef(
         sr,

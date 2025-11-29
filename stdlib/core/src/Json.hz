@@ -1,629 +1,629 @@
 
-// extern C noemit struct cJSON {};
+extern C noemit struct cJSON {};
 
-// extern C hzstd_json_parse(arena: hzstd_arena_t, data: str, error: hzstd_str_ref_t): cJSON | none;
-// extern C hzstd_json_create_string(arena: hzstd_arena_t, data: str): cJSON;
-// extern C hzstd_json_create_number(arena: hzstd_arena_t, data: real): cJSON;
-// extern C hzstd_json_create_object(arena: hzstd_arena_t): cJSON;
-// extern C hzstd_json_create_array(arena: hzstd_arena_t): cJSON;
+extern C hzstd_json_parse(arena: hzstd_arena_t, data: str, error: hzstd_str_ref_t): cJSON | none;
+extern C hzstd_json_create_string(arena: hzstd_arena_t, data: str): cJSON;
+extern C hzstd_json_create_number(arena: hzstd_arena_t, data: real): cJSON;
+extern C hzstd_json_create_object(arena: hzstd_arena_t): cJSON;
+extern C hzstd_json_create_array(arena: hzstd_arena_t): cJSON;
 
-// extern C hzstd_json_object_has_attribute(json: cJSON, name: str): bool;
-// extern C hzstd_json_is_string(json: cJSON): bool;
-// extern C hzstd_json_is_object(json: cJSON): bool;
-// extern C hzstd_json_is_bool(json: cJSON): bool;
-// extern C hzstd_json_is_true(json: cJSON): bool;
-// extern C hzstd_json_is_false(json: cJSON): bool;
-// extern C hzstd_json_is_number(json: cJSON): bool;
-// extern C hzstd_json_is_array(json: cJSON): bool;
-// extern C hzstd_json_is_null(json: cJSON): bool;
+extern C hzstd_json_object_has_attribute(json: cJSON, name: str): bool;
+extern C hzstd_json_is_string(json: cJSON): bool;
+extern C hzstd_json_is_object(json: cJSON): bool;
+extern C hzstd_json_is_bool(json: cJSON): bool;
+extern C hzstd_json_is_true(json: cJSON): bool;
+extern C hzstd_json_is_false(json: cJSON): bool;
+extern C hzstd_json_is_number(json: cJSON): bool;
+extern C hzstd_json_is_array(json: cJSON): bool;
+extern C hzstd_json_is_null(json: cJSON): bool;
 
-// extern C hzstd_json_get_string_value(arena: hzstd_arena_t, json: cJSON): hzstd_str_ref_t | none;
-// extern C hzstd_json_get_number_value(arena: hzstd_arena_t, json: cJSON): real;
+extern C hzstd_json_get_string_value(arena: hzstd_arena_t, json: cJSON): hzstd_str_ref_t | none;
+extern C hzstd_json_get_number_value(arena: hzstd_arena_t, json: cJSON): real;
 
-// extern C hzstd_json_get_object_item(arena: hzstd_arena_t, json: cJSON, name: str): cJSON | none;
-// extern C hzstd_json_get_array_size(arena: hzstd_arena_t, json: cJSON): usize;
-// extern C hzstd_json_get_array_item(arena: hzstd_arena_t, json: cJSON, index: usize): cJSON;
+extern C hzstd_json_get_object_item(arena: hzstd_arena_t, json: cJSON, name: str): cJSON | none;
+extern C hzstd_json_get_array_size(arena: hzstd_arena_t, json: cJSON): usize;
+extern C hzstd_json_get_array_item(arena: hzstd_arena_t, json: cJSON, index: usize): cJSON;
 
-// extern C hzstd_json_add_item_to_object(arena: hzstd_arena_t, object: cJSON, name: str, item: cJSON): bool;
-// extern C hzstd_json_add_item_to_array(arena: hzstd_arena_t, object: cJSON, item: cJSON): bool;
+extern C hzstd_json_add_item_to_object(arena: hzstd_arena_t, object: cJSON, name: str, item: cJSON): bool;
+extern C hzstd_json_add_item_to_array(arena: hzstd_arena_t, object: cJSON, item: cJSON): bool;
 
-// extern C hzstd_json_print_unformatted(arena: hzstd_arena_t, json: cJSON): str;
-// extern C hzstd_json_print(arena: hzstd_arena_t, json: cJSON): str;
+extern C hzstd_json_print_unformatted(arena: hzstd_arena_t, json: cJSON): str;
+extern C hzstd_json_print(arena: hzstd_arena_t, json: cJSON): str;
 
 
-// namespace json {
+namespace json {
+    struct Error {
+        error: str;
+    };
+
+    struct Value {
+        arena: Arena;
+        data: cJSON;
+
+        struct Proxy {
+            json: Value;
+            attribute: str;
+
+            to<T>() {
+                if comptime T == type<str> {
+                    const obj = hzstd_json_get_object_item(this.json.arena.arenaImpl, this.json.data, this.attribute);
+                    if obj {
+                        const value = hzstd_json_get_string_value(this.json.arena.arenaImpl, obj);
+                        if value {
+                            return value.data;
+                        }
+                        sys.panic("JSON value is not of type String");
+                    }
+                    sys.panic("JSON object does not have attribute");
+                } 
+                else if T == type<real> {
+                    const obj = hzstd_json_get_object_item(this.json.arena.arenaImpl, this.json.data, this.attribute);
+                    if obj {
+                        const value = hzstd_json_get_number_value(this.json.arena.arenaImpl, obj);
+                        return value;
+                    }
+                    sys.panic("JSON object does not have attribute");
+                }
+                else {
+                    static_assert(false, "Type not supported");
+                }
+            }
+
+            operator[](index: str): Result<Proxy, Error> {
+                // String access to a proxy, so the parent must be an object
+                if hzstd_json_object_has_attribute(this.json.data, this.attribute) {
+                    // Already exists, check type
+                    if !hzstd_json_is_object(this.json.data) {
+                        sys.panic("JSON was expected to be an object");
+                    }
+
+                    const obj = hzstd_json_get_object_item(this.json.arena.arenaImpl, this.json.data, this.attribute);
+                    if obj {
+                        return Result<Proxy, Error>.Ok({ json: { arena: this.json.arena, data: obj }, attribute: index });
+                    }
+                    sys.panic("JSON object does not have attribute");
+                }
+                else {
+                    // Does not exist yet, create
+                    const newObj = hzstd_json_create_object(this.json.arena.arenaImpl);
+                    hzstd_json_add_item_to_object(this.json.arena.arenaImpl, this.json.data, this.attribute, newObj);
+                    return Result<Proxy, Error>.Ok({ json: { arena: this.json.arena, data: newObj }, attribute: index });
+                }
+            }
+
+            operator:=(value: str): void {
+                const item = hzstd_json_create_string(this.json.arena.arenaImpl, value);
+                const success = hzstd_json_add_item_to_object(this.json.arena.arenaImpl, this.json.data, this.attribute, item);
+                assert(success);
+            }
+
+            operator:=(value: real): void {
+                const item = hzstd_json_create_number(this.json.arena.arenaImpl, value);
+                const success = hzstd_json_add_item_to_object(this.json.arena.arenaImpl, this.json.data, this.attribute, item);
+                assert(success);
+            }
+
+            operator:=(value: Value): void {
+                const success = hzstd_json_add_item_to_object(this.json.arena.arenaImpl, this.json.data, this.attribute, value.data);
+                assert(success);
+            }
+
+            push(value: Value): void {
+                if hzstd_json_object_has_attribute(this.json.data, this.attribute) {
+                    const obj = hzstd_json_get_object_item(this.json.arena.arenaImpl, this.json.data, this.attribute);
+                    if obj {
+                        assert(hzstd_json_is_array(obj));
+                        hzstd_json_add_item_to_array(this.json.arena.arenaImpl, obj, value.data);
+                        return;
+                    }
+                    sys.panic("JSON object does not have attribute");
+                }
+                else {
+                    sys.panic("JSON attribute to push into does not exist");
+                }
+            }
+        }
+
+        operator[](index: int): Result<Proxy, Error> {
+            return Result<Proxy, Error>.Ok({
+                json: this,
+                attribute: "test",
+            });
+        }
+
+        operator[](index: str): Result<Proxy, Error> {
+            return Result<Proxy, Error>.Ok({
+                json: this,
+                attribute: index,
+            });
+        }
+
+        struct PrintOptions {
+            pretty: bool = false;
+        }
+
+        print(options: PrintOptions) {
+            if (options.pretty) {
+                return hzstd_json_print(this.arena.arenaImpl, this.data);
+            }
+            else {
+                return hzstd_json_print_unformatted(this.arena.arenaImpl, this.data);
+            }
+        }
+
+    }
+
+    parse(data: str): Result<Value, Error> {
+        return parseIntoArena(fn.returnArena, data);
+    }
+
+    parseIntoArena(arena: Arena, data: str): Result<Value, Error> {
+        let error = hzstd_str_ref_t { data: "" };
+        const cjson = hzstd_json_parse(arena.arenaImpl, data, error);
+        if cjson {
+            return Result<Value, Error>.Ok({
+                arena: arena,
+                data: cjson,
+            } in arena);
+        }
+        return Result<Value, Error>.Err({ error: error.data });
+    }
+
+    object(): Value {
+        const obj = hzstd_json_create_object(fn.returnArena.arenaImpl);
+        return { arena: fn.returnArena, data: obj };
+    }
+
+    array(): Value {
+        const obj = hzstd_json_create_array(fn.returnArena.arenaImpl);
+        return { arena: fn.returnArena, data: obj };
+    }
+}
+
+foobar2(): Result<Foo, json.Error> {
+    const data = "{\"name\":\"Alice\",\"age\":25,\"active\":true,\"numbers\":[1,2,3],\"nested\":{\"x\":10,\"y\":\"hello\"},\"msg\":\"Hello\\nWorld!\"}";
+    const j = json.parse(data)?!;
+
+    const a = j["name"]?!.to<str>();
+    const b = j["age"]?!.to<real>();
+    const c = j["nested"]?!["y"]?!.to<str>();
+    fmt.println("Parsed:", a, b, c);
+    // const b = json[187];
+    return Result<Foo, json.Error>.Ok({});
+}
+
+createcJSONExample(): Result<Foo, json.Error> {
+    const resolutionNumbers = [
+        Vec2(1280, 720),
+        Vec2(1920, 1080),
+        Vec2(3840, 2160),
+    ];
+
+    const value = json.object();
+    value["name"]?! := "Awesome 4K";
+
+    value["resolutions"]?! := json.array();
+
+    let i = 0;
+    while i < resolutionNumbers.length as int {
+        const res = resolutionNumbers[i];
+
+        value["resolutions"]?!.push(do {
+            const v = json.object();
+            v["width"]?! := res.x;
+            v["height"]?! := res.y;
+            v;
+        });
+
+        i = i + 1;
+    }
+
+    fmt.println("RESULT: ", value.print({
+        pretty: true
+    }));
+
+    return Result<Foo, json.Error>.Ok({});
+}
+
+export foobar() {
+    const result = foobar2();
+    if !result {
+        fmt.println("Error:", result.error);
+    }
+    else {
+        fmt.println("Success!");
+    }
+    createcJSONExample();
+}
+
+
+// //   enum struct ErrorCode {
+// //     ParseSyntaxError,
+// //     FieldNotFound,
+// //     UnexpectedFieldType,
+// //   };
+
 //     struct Error {
-//         error: str;
+//         // ErrorCode code;
+//         code: i32;
+//         message: str;
 //     };
 
-//     struct Value {
-//         arena: Arena;
-//         data: cJSON;
+//     struct JsonProxy {
+//         parent: Json;
+//         fieldName: str;
 
-//         struct Proxy {
-//             json: Value;
-//             attribute: str;
+//         // JsonProxy& operator=(const double& value)
+//         // {
+//         //     useArena(parent.arena);
+//         //     cJSON_AddNumberToObject(parent.cjson, __fieldName, value);
+//         //     return *this;
+//         // }
 
-//             to<T>() {
-//                 if comptime T == type<str> {
-//                     const obj = hzstd_json_get_object_item(this.json.arena.arenaImpl, this.json.data, this.attribute);
-//                     if obj {
-//                         const value = hzstd_json_get_string_value(this.json.arena.arenaImpl, obj);
-//                         if value {
-//                             return value.data;
-//                         }
-//                         sys.panic("JSON value is not of type String");
-//                     }
-//                     sys.panic("JSON object does not have attribute");
-//                 } 
-//                 else if T == type<real> {
-//                     const obj = hzstd_json_get_object_item(this.json.arena.arenaImpl, this.json.data, this.attribute);
-//                     if obj {
-//                         const value = hzstd_json_get_number_value(this.json.arena.arenaImpl, obj);
-//                         return value;
-//                     }
-//                     sys.panic("JSON object does not have attribute");
-//                 }
-//                 else {
-//                     static_assert(false, "Type not supported");
-//                 }
-//             }
+//         // JsonProxy& operator=(const i64& value)
+//         // {
+//         //     useArena(__parent.arena);
+//         //     cJSON_AddNumberToObject(parent.cjson, __fieldName, value);
+//         //     return *this;
+//         // }
 
-//             operator[](index: str): Result<Proxy, Error> {
-//                 // String access to a proxy, so the parent must be an object
-//                 if hzstd_json_object_has_attribute(this.json.data, this.attribute) {
-//                     // Already exists, check type
-//                     if !hzstd_json_is_object(this.json.data) {
-//                         sys.panic("JSON was expected to be an object");
-//                     }
+//         // JsonProxy& operator=(const int& value)
+//         // {
+//         //     useArena(__parent.arena);
+//         //     cJSON_AddNumberToObject(parent.cjson, __fieldName, value);
+//         //     return *this;
+//         // }
 
-//                     const obj = hzstd_json_get_object_item(this.json.arena.arenaImpl, this.json.data, this.attribute);
-//                     if obj {
-//                         return Result<Proxy, Error>.Ok({ json: { arena: this.json.arena, data: obj }, attribute: index });
-//                     }
-//                     sys.panic("JSON object does not have attribute");
-//                 }
-//                 else {
-//                     // Does not exist yet, create
-//                     const newObj = hzstd_json_create_object(this.json.arena.arenaImpl);
-//                     hzstd_json_add_item_to_object(this.json.arena.arenaImpl, this.json.data, this.attribute, newObj);
-//                     return Result<Proxy, Error>.Ok({ json: { arena: this.json.arena, data: newObj }, attribute: index });
-//                 }
-//             }
+//         // JsonProxy& operator=(const bool& value)
+//         // {
+//         //     useArena(__parent.arena);
+//         //     cJSON_AddBoolToObject(__parent.cjson, __fieldName, value);
+//         //     return *this;
+//         // }
 
-//             operator:=(value: str): void {
-//                 const item = hzstd_json_create_string(this.json.arena.arenaImpl, value);
-//                 const success = hzstd_json_add_item_to_object(this.json.arena.arenaImpl, this.json.data, this.attribute, item);
-//                 assert(success);
-//             }
+//         // JsonProxy& operator=(const char* value)
+//         // {
+//         //     useArena(__parent.arena);
+//         //     cJSON_AddStringToObject(__parent.cjson, __fieldName, value);
+//         //     return *this;
+//         // }
 
-//             operator:=(value: real): void {
-//                 const item = hzstd_json_create_number(this.json.arena.arenaImpl, value);
-//                 const success = hzstd_json_add_item_to_object(this.json.arena.arenaImpl, this.json.data, this.attribute, item);
-//                 assert(success);
-//             }
+//         // JsonProxy& operator=(const String& value)
+//         // {
+//         //     useArena(__parent.arena);
+//         //     cJSON_AddStringToObject(__parent.cjson, __fieldName, value.c_str(__parent.arena));
+//         //     return *this;
+//         // }
 
-//             operator:=(value: Value): void {
-//                 const success = hzstd_json_add_item_to_object(this.json.arena.arenaImpl, this.json.data, this.attribute, value.data);
-//                 assert(success);
-//             }
+//         // JsonProxy& operator=(const Null& value)
+//         // {
+//         //     useArena(__parent.arena);
+//         //     cJSON_AddNullToObject(__parent.cjson, __fieldName);
+//         //     return *this;
+//         // }
 
-//             push(value: Value): void {
-//                 if hzstd_json_object_has_attribute(this.json.data, this.attribute) {
-//                     const obj = hzstd_json_get_object_item(this.json.arena.arenaImpl, this.json.data, this.attribute);
-//                     if obj {
-//                         assert(hzstd_json_is_array(obj));
-//                         hzstd_json_add_item_to_array(this.json.arena.arenaImpl, obj, value.data);
-//                         return;
-//                     }
-//                     sys.panic("JSON object does not have attribute");
-//                 }
-//                 else {
-//                     sys.panic("JSON attribute to push into does not exist");
-//                 }
-//             }
+//         // JsonProxy& operator=(List<Json> value)
+//         // {
+//         //     useArena(__parent.arena);
+//         //     cJSON* array = cJSON_AddArrayToObject(__parent.cjson, __fieldName);
+//         //     for (auto elem : value) {
+//         //     cJSON_AddItemToArray(array, elem.cjson);
+//         //     }
+//         //     return *this;
+//         // }
+
+//         // JsonProxy operator[](const char* name)
+//         // {
+//         //     useArena(__parent.arena);
+//         //     auto obj = __parent[__fieldName].object();
+//         //     if (!obj) {
+//         //     auto inner = cJSON_AddObjectToObject(__parent.cjson, __fieldName);
+//         //     return Json(__parent.arena, inner,
+//         //         __parent.instancePath.length == 0
+//         //             ? __fieldName
+//         //             : format(__parent.arena, "{}.{}", __parent.instancePath, __fieldName))[name];
+//         //     }
+//         //     return obj.unwrap()[name];
+//         // }
+
+//         // operator Json()
+//         // {
+//         //     return __parent;
+//         // }
+
+//         as<T>(): Result<T, Error>
+//         {
+//             return try(parent.at(fieldName)).as<T>();
 //         }
 
-//         operator[](index: int): Result<Proxy, Error> {
-//             return Result<Proxy, Error>.Ok({
-//                 json: this,
-//                 attribute: "test",
-//             });
+//         at(name: str): Result<Json, Error>
+//         {
+//             return try(parent.at(fieldName)).at(name);
 //         }
 
-//         operator[](index: str): Result<Proxy, Error> {
-//             return Result<Proxy, Error>.Ok({
-//                 json: this,
-//                 attribute: index,
-//             });
+//         array(): Result<List<Json>, Error>
+//         {
+//             return try(parent.at(fieldName)).array();
 //         }
 
-//         struct PrintOptions {
-//             pretty: bool = false;
+//         object(): Result<Json, Error>
+//         {
+//             return try(parent.at(fieldName)).object();
 //         }
 
-//         print(options: PrintOptions) {
-//             if (options.pretty) {
-//                 return hzstd_json_print(this.arena.arenaImpl, this.data);
+//         isString(): bool
+//         {
+//             const field = parent.at(fieldName);
+//             if (!field) {
+//                 return false;
 //             }
-//             else {
-//                 return hzstd_json_print_unformatted(this.arena.arenaImpl, this.data);
-//             }
+//             return field.unwrap().isString();
 //         }
 
+//         isNumber(): bool
+//         {
+//             const field = parent.at(fieldName);
+//             if (!field) {
+//                 return false;
+//             }
+//             return field.unwrap().isNumber();
+//         }
+
+//         isBoolean(): bool
+//         {
+//             const field = parent.at(fieldName);
+//             if (!field) {
+//                 return false;
+//             }
+//             return field.unwrap().isBoolean();
+//         }
+
+//         isObject(): bool
+//         {
+//             const field = parent.at(fieldName);
+//             if (!field) {
+//                 return false;
+//             }
+//             return field.unwrap().isObject();
+//         }
+
+//         isArray(): bool
+//         {
+//             const field = parent.at(fieldName);
+//             if (!field) {
+//                 return false;
+//             }
+//             return field.unwrap().isArray();
+//         }
+
+//         isNull(): bool
+//         {
+//             const field = parent.at(fieldName);
+//             if (!field) {
+//                 return false;
+//             }
+//             return field.unwrap().isNull();
+//         }
+//     };
+
+//     Json(Ref<Arena> arena, cJSON* cjson, String instancePath)
+//         : arena(arena)
+//         , cjson(cjson)
+//         , instancePath(instancePath)
+//     {
+//         useArena(arena);
 //     }
 
-//     parse(data: str): Result<Value, Error> {
-//         return parseIntoArena(fn.returnArena, data);
+//     static Json string(Ref<Arena> arena, String str)
+//     {
+//         useArena(arena);
+//         cJSON* json = cJSON_CreateString(str.c_str(arena));
+//         return Json(arena, json, "");
 //     }
 
-//     parseIntoArena(arena: Arena, data: str): Result<Value, Error> {
-//         let error = hzstd_str_ref_t { data: "" };
-//         const cjson = hzstd_json_parse(arena.arenaImpl, data, error);
-//         if cjson {
-//             return Result<Value, Error>.Ok({
-//                 arena: arena,
-//                 data: cjson,
-//             } in arena);
+//     static Result<Json, Error> parse(Ref<Arena> arena, String content)
+//     {
+//         useArena(arena);
+//         auto cjson = cJSON_ParseWithLength(content.data, content.length);
+//         if (!cjson) {
+//         return makeParseError(arena, String::clone(arena, cJSON_GetErrorPtr()));
 //         }
-//         return Result<Value, Error>.Err({ error: error.data });
+
+//         return Json(arena, cjson, "");
 //     }
 
-//     object(): Value {
-//         const obj = hzstd_json_create_object(fn.returnArena.arenaImpl);
-//         return { arena: fn.returnArena, data: obj };
+//     static Json create(Ref<Arena> arena)
+//     {
+//         useArena(arena);
+//         auto json = Json(arena, cJSON_CreateObject(), "");
+//         return json;
 //     }
 
-//     array(): Value {
-//         const obj = hzstd_json_create_array(fn.returnArena.arenaImpl);
-//         return { arena: fn.returnArena, data: obj };
+//     bool has(const char* name)
+//     {
+//         useArena(arena);
+//         return cJSON_HasObjectItem(cjson, name);
 //     }
+
+//     cJSON* getRaw()
+//     {
+//         return cjson;
+//     }
+
+//     String getItemType()
+//     {
+//         useArena(arena);
+//         if (cJSON_IsObject(cjson)) {
+//         return "object";
+//         } else if (cJSON_IsArray(cjson)) {
+//         return "array";
+//         } else if (cJSON_IsNumber(cjson)) {
+//         return "number";
+//         } else if (cJSON_IsBool(cjson)) {
+//         return "boolean";
+//         } else if (cJSON_IsString(cjson)) {
+//         return "string";
+//         } else if (cJSON_IsNull(cjson)) {
+//         return "null";
+//         } else {
+//         return "none";
+//         }
+//     }
+
+//     Result<Json, Error> object()
+//     {
+//         useArena(arena);
+//         if (!cJSON_IsObject(cjson)) {
+//         return Error {
+//             .code = ErrorCode::UnexpectedFieldType,
+//             .message
+//             = format(arena, "Property '{}' was expected to be an object, but is type {}", instancePath, getItemType()),
+//         };
+//         }
+
+//         return Json(arena, cjson, instancePath);
+//     }
+
+//     Error makeFieldNotFoundError(String name)
+//     {
+//         return Error {
+//         .code = ErrorCode::FieldNotFound,
+//         .message = format(arena, "Property '{}' not found",
+//             instancePath.length == 0 ? name : format(arena, "{}.{}", instancePath, name)),
+//         };
+//     }
+
+//     Error makeUnexpectedFieldTypeError(String expected)
+//     {
+//         return Error {
+//         .code = ErrorCode::UnexpectedFieldType,
+//         .message = format(arena, "Property '{}' must be {} but is {}", instancePath, expected, getItemType()),
+//         };
+//     }
+
+//     static Error makeParseError(Ref<Arena> arena, String message)
+//     {
+//         return Error {
+//         .code = ErrorCode::ParseSyntaxError,
+//         .message = format(arena, "JSON document failed to parse: {}", message),
+//         };
+//     }
+
+//     bool isString()
+//     {
+//         useArena(arena);
+//         return cJSON_IsString(cjson);
+//     }
+
+//     bool isNumber()
+//     {
+//         useArena(arena);
+//         return cJSON_IsNumber(cjson);
+//     }
+
+//     bool isBoolean()
+//     {
+//         useArena(arena);
+//         return cJSON_IsBool(cjson);
+//     }
+
+//     bool isObject()
+//     {
+//         useArena(arena);
+//         return cJSON_IsObject(cjson);
+//     }
+
+//     bool isArray()
+//     {
+//         useArena(arena);
+//         return cJSON_IsArray(cjson);
+//     }
+
+//     bool isNull()
+//     {
+//         useArena(arena);
+//         return cJSON_IsNull(cjson);
+//     }
+
+//     template <typename T> Result<T, Error> as()
+//     {
+//         useArena(arena);
+//         if constexpr (is_same_v<T, String>) {
+//         auto string = cJSON_GetStringValue(cjson);
+//         if (!string) {
+//             return makeUnexpectedFieldTypeError("string");
+//         }
+//         return Result<String, Error>::ok(String::clone(arena, string));
+//         } else if constexpr (is_same_v<T, bool>) {
+//         if (!cJSON_IsBool(cjson)) {
+//             return makeUnexpectedFieldTypeError("boolean");
+//         }
+//         return Result<bool, Error>::ok(cJSON_IsTrue(cjson) != 0);
+//         } else if constexpr (is_same_v<T, real>) {
+//         auto number = cJSON_GetNumberValue(cjson);
+//         if (isnan(number)) {
+//             return makeUnexpectedFieldTypeError("number");
+//         }
+//         return Result<real, Error>::ok(number);
+//         } else if constexpr (is_same_v<T, int>) {
+//         auto num = as<real>();
+//         if (!num) {
+//             return num.error();
+//         }
+//         return Result<int, Error>::ok(static_cast<int>(*num));
+//         } else {
+//         static_assert(false, "No matching implementation for .as<T>() for the given type");
+//         }
+//     }
+
+//     Result<Json, Error> at(const char* name)
+//     {
+//         useArena(arena);
+//         auto item = cJSON_GetObjectItem(cjson, name);
+//         if (!item) {
+//         return makeFieldNotFoundError(name);
+//         }
+//         return Json(arena, item, instancePath.length == 0 ? name : format(arena, "{}.{}", instancePath, name));
+//     }
+
+//     JsonProxy operator[](const char* name);
+
+//     Result<List<Json>, Error> array()
+//     {
+//         useArena(arena);
+//         if (!cJSON_IsArray(cjson)) {
+//         return makeUnexpectedFieldTypeError("array");
+//         }
+//         auto len = cJSON_GetArraySize(cjson);
+//         List<Json> results { arena };
+//         for (size_t i = 0; i < len; i++) {
+//         auto arrayItem = cJSON_GetArrayItem(cjson, i);
+//         results.push(Json(arena, arrayItem, format(arena, "{}[{}]", instancePath, i)));
+//         }
+//         return results;
+//     }
+
+//     String prettyPrint()
+//     {
+//         return String::view(cJSON_Print(cjson));
+//     }
+
+//     String print()
+//     {
+//         return String::view(cJSON_PrintUnformatted(cjson));
+//     }
+
+//     private:
+//     Ref<Arena> arena;
+//     cJSON* cjson;
+//     String instancePath;
+// };
+
+// inline Json::JsonProxy Json::operator[](const char* name)
+// {
+//   useArena(arena);
+//   return JsonProxy {
+//     .__parent = *this,
+//     .__fieldName = name,
+//   };
 // }
-
-// foobar2(): Result<Foo, json.Error> {
-//     const data = "{\"name\":\"Alice\",\"age\":25,\"active\":true,\"numbers\":[1,2,3],\"nested\":{\"x\":10,\"y\":\"hello\"},\"msg\":\"Hello\\nWorld!\"}";
-//     const j = json.parse(data)?!;
-
-//     const a = j["name"]?!.to<str>();
-//     const b = j["age"]?!.to<real>();
-//     const c = j["nested"]?!["y"]?!.to<str>();
-//     fmt.println("Parsed:", a, b, c);
-//     // const b = json[187];
-//     return Result<Foo, json.Error>.Ok({});
-// }
-
-// createcJSONExample(): Result<Foo, json.Error> {
-//     const resolutionNumbers = [
-//         Vec2(1280, 720),
-//         Vec2(1920, 1080),
-//         Vec2(3840, 2160),
-//     ];
-
-//     const value = json.object();
-//     value["name"]?! := "Awesome 4K";
-
-//     value["resolutions"]?! := json.array();
-
-//     let i = 0;
-//     while i < resolutionNumbers.length as int {
-//         const res = resolutionNumbers[i];
-
-//         value["resolutions"]?!.push(do {
-//             const v = json.object();
-//             v["width"]?! := res.x;
-//             v["height"]?! := res.y;
-//             v;
-//         });
-
-//         i = i + 1;
-//     }
-
-//     fmt.println("RESULT: ", value.print({
-//         pretty: true
-//     }));
-
-//     return Result<Foo, json.Error>.Ok({});
-// }
-
-// export foobar() {
-//     const result = foobar2();
-//     if !result {
-//         fmt.println("Error:", result.error);
-//     }
-//     else {
-//         fmt.println("Success!");
-//     }
-//     createcJSONExample();
-// }
-
-
-// // //   enum struct ErrorCode {
-// // //     ParseSyntaxError,
-// // //     FieldNotFound,
-// // //     UnexpectedFieldType,
-// // //   };
-
-// //     struct Error {
-// //         // ErrorCode code;
-// //         code: i32;
-// //         message: str;
-// //     };
-
-// //     struct JsonProxy {
-// //         parent: Json;
-// //         fieldName: str;
-
-// //         // JsonProxy& operator=(const double& value)
-// //         // {
-// //         //     useArena(parent.arena);
-// //         //     cJSON_AddNumberToObject(parent.cjson, __fieldName, value);
-// //         //     return *this;
-// //         // }
-
-// //         // JsonProxy& operator=(const i64& value)
-// //         // {
-// //         //     useArena(__parent.arena);
-// //         //     cJSON_AddNumberToObject(parent.cjson, __fieldName, value);
-// //         //     return *this;
-// //         // }
-
-// //         // JsonProxy& operator=(const int& value)
-// //         // {
-// //         //     useArena(__parent.arena);
-// //         //     cJSON_AddNumberToObject(parent.cjson, __fieldName, value);
-// //         //     return *this;
-// //         // }
-
-// //         // JsonProxy& operator=(const bool& value)
-// //         // {
-// //         //     useArena(__parent.arena);
-// //         //     cJSON_AddBoolToObject(__parent.cjson, __fieldName, value);
-// //         //     return *this;
-// //         // }
-
-// //         // JsonProxy& operator=(const char* value)
-// //         // {
-// //         //     useArena(__parent.arena);
-// //         //     cJSON_AddStringToObject(__parent.cjson, __fieldName, value);
-// //         //     return *this;
-// //         // }
-
-// //         // JsonProxy& operator=(const String& value)
-// //         // {
-// //         //     useArena(__parent.arena);
-// //         //     cJSON_AddStringToObject(__parent.cjson, __fieldName, value.c_str(__parent.arena));
-// //         //     return *this;
-// //         // }
-
-// //         // JsonProxy& operator=(const Null& value)
-// //         // {
-// //         //     useArena(__parent.arena);
-// //         //     cJSON_AddNullToObject(__parent.cjson, __fieldName);
-// //         //     return *this;
-// //         // }
-
-// //         // JsonProxy& operator=(List<Json> value)
-// //         // {
-// //         //     useArena(__parent.arena);
-// //         //     cJSON* array = cJSON_AddArrayToObject(__parent.cjson, __fieldName);
-// //         //     for (auto elem : value) {
-// //         //     cJSON_AddItemToArray(array, elem.cjson);
-// //         //     }
-// //         //     return *this;
-// //         // }
-
-// //         // JsonProxy operator[](const char* name)
-// //         // {
-// //         //     useArena(__parent.arena);
-// //         //     auto obj = __parent[__fieldName].object();
-// //         //     if (!obj) {
-// //         //     auto inner = cJSON_AddObjectToObject(__parent.cjson, __fieldName);
-// //         //     return Json(__parent.arena, inner,
-// //         //         __parent.instancePath.length == 0
-// //         //             ? __fieldName
-// //         //             : format(__parent.arena, "{}.{}", __parent.instancePath, __fieldName))[name];
-// //         //     }
-// //         //     return obj.unwrap()[name];
-// //         // }
-
-// //         // operator Json()
-// //         // {
-// //         //     return __parent;
-// //         // }
-
-// //         as<T>(): Result<T, Error>
-// //         {
-// //             return try(parent.at(fieldName)).as<T>();
-// //         }
-
-// //         at(name: str): Result<Json, Error>
-// //         {
-// //             return try(parent.at(fieldName)).at(name);
-// //         }
-
-// //         array(): Result<List<Json>, Error>
-// //         {
-// //             return try(parent.at(fieldName)).array();
-// //         }
-
-// //         object(): Result<Json, Error>
-// //         {
-// //             return try(parent.at(fieldName)).object();
-// //         }
-
-// //         isString(): bool
-// //         {
-// //             const field = parent.at(fieldName);
-// //             if (!field) {
-// //                 return false;
-// //             }
-// //             return field.unwrap().isString();
-// //         }
-
-// //         isNumber(): bool
-// //         {
-// //             const field = parent.at(fieldName);
-// //             if (!field) {
-// //                 return false;
-// //             }
-// //             return field.unwrap().isNumber();
-// //         }
-
-// //         isBoolean(): bool
-// //         {
-// //             const field = parent.at(fieldName);
-// //             if (!field) {
-// //                 return false;
-// //             }
-// //             return field.unwrap().isBoolean();
-// //         }
-
-// //         isObject(): bool
-// //         {
-// //             const field = parent.at(fieldName);
-// //             if (!field) {
-// //                 return false;
-// //             }
-// //             return field.unwrap().isObject();
-// //         }
-
-// //         isArray(): bool
-// //         {
-// //             const field = parent.at(fieldName);
-// //             if (!field) {
-// //                 return false;
-// //             }
-// //             return field.unwrap().isArray();
-// //         }
-
-// //         isNull(): bool
-// //         {
-// //             const field = parent.at(fieldName);
-// //             if (!field) {
-// //                 return false;
-// //             }
-// //             return field.unwrap().isNull();
-// //         }
-// //     };
-
-// //     Json(Ref<Arena> arena, cJSON* cjson, String instancePath)
-// //         : arena(arena)
-// //         , cjson(cjson)
-// //         , instancePath(instancePath)
-// //     {
-// //         useArena(arena);
-// //     }
-
-// //     static Json string(Ref<Arena> arena, String str)
-// //     {
-// //         useArena(arena);
-// //         cJSON* json = cJSON_CreateString(str.c_str(arena));
-// //         return Json(arena, json, "");
-// //     }
-
-// //     static Result<Json, Error> parse(Ref<Arena> arena, String content)
-// //     {
-// //         useArena(arena);
-// //         auto cjson = cJSON_ParseWithLength(content.data, content.length);
-// //         if (!cjson) {
-// //         return makeParseError(arena, String::clone(arena, cJSON_GetErrorPtr()));
-// //         }
-
-// //         return Json(arena, cjson, "");
-// //     }
-
-// //     static Json create(Ref<Arena> arena)
-// //     {
-// //         useArena(arena);
-// //         auto json = Json(arena, cJSON_CreateObject(), "");
-// //         return json;
-// //     }
-
-// //     bool has(const char* name)
-// //     {
-// //         useArena(arena);
-// //         return cJSON_HasObjectItem(cjson, name);
-// //     }
-
-// //     cJSON* getRaw()
-// //     {
-// //         return cjson;
-// //     }
-
-// //     String getItemType()
-// //     {
-// //         useArena(arena);
-// //         if (cJSON_IsObject(cjson)) {
-// //         return "object";
-// //         } else if (cJSON_IsArray(cjson)) {
-// //         return "array";
-// //         } else if (cJSON_IsNumber(cjson)) {
-// //         return "number";
-// //         } else if (cJSON_IsBool(cjson)) {
-// //         return "boolean";
-// //         } else if (cJSON_IsString(cjson)) {
-// //         return "string";
-// //         } else if (cJSON_IsNull(cjson)) {
-// //         return "null";
-// //         } else {
-// //         return "none";
-// //         }
-// //     }
-
-// //     Result<Json, Error> object()
-// //     {
-// //         useArena(arena);
-// //         if (!cJSON_IsObject(cjson)) {
-// //         return Error {
-// //             .code = ErrorCode::UnexpectedFieldType,
-// //             .message
-// //             = format(arena, "Property '{}' was expected to be an object, but is type {}", instancePath, getItemType()),
-// //         };
-// //         }
-
-// //         return Json(arena, cjson, instancePath);
-// //     }
-
-// //     Error makeFieldNotFoundError(String name)
-// //     {
-// //         return Error {
-// //         .code = ErrorCode::FieldNotFound,
-// //         .message = format(arena, "Property '{}' not found",
-// //             instancePath.length == 0 ? name : format(arena, "{}.{}", instancePath, name)),
-// //         };
-// //     }
-
-// //     Error makeUnexpectedFieldTypeError(String expected)
-// //     {
-// //         return Error {
-// //         .code = ErrorCode::UnexpectedFieldType,
-// //         .message = format(arena, "Property '{}' must be {} but is {}", instancePath, expected, getItemType()),
-// //         };
-// //     }
-
-// //     static Error makeParseError(Ref<Arena> arena, String message)
-// //     {
-// //         return Error {
-// //         .code = ErrorCode::ParseSyntaxError,
-// //         .message = format(arena, "JSON document failed to parse: {}", message),
-// //         };
-// //     }
-
-// //     bool isString()
-// //     {
-// //         useArena(arena);
-// //         return cJSON_IsString(cjson);
-// //     }
-
-// //     bool isNumber()
-// //     {
-// //         useArena(arena);
-// //         return cJSON_IsNumber(cjson);
-// //     }
-
-// //     bool isBoolean()
-// //     {
-// //         useArena(arena);
-// //         return cJSON_IsBool(cjson);
-// //     }
-
-// //     bool isObject()
-// //     {
-// //         useArena(arena);
-// //         return cJSON_IsObject(cjson);
-// //     }
-
-// //     bool isArray()
-// //     {
-// //         useArena(arena);
-// //         return cJSON_IsArray(cjson);
-// //     }
-
-// //     bool isNull()
-// //     {
-// //         useArena(arena);
-// //         return cJSON_IsNull(cjson);
-// //     }
-
-// //     template <typename T> Result<T, Error> as()
-// //     {
-// //         useArena(arena);
-// //         if constexpr (is_same_v<T, String>) {
-// //         auto string = cJSON_GetStringValue(cjson);
-// //         if (!string) {
-// //             return makeUnexpectedFieldTypeError("string");
-// //         }
-// //         return Result<String, Error>::ok(String::clone(arena, string));
-// //         } else if constexpr (is_same_v<T, bool>) {
-// //         if (!cJSON_IsBool(cjson)) {
-// //             return makeUnexpectedFieldTypeError("boolean");
-// //         }
-// //         return Result<bool, Error>::ok(cJSON_IsTrue(cjson) != 0);
-// //         } else if constexpr (is_same_v<T, real>) {
-// //         auto number = cJSON_GetNumberValue(cjson);
-// //         if (isnan(number)) {
-// //             return makeUnexpectedFieldTypeError("number");
-// //         }
-// //         return Result<real, Error>::ok(number);
-// //         } else if constexpr (is_same_v<T, int>) {
-// //         auto num = as<real>();
-// //         if (!num) {
-// //             return num.error();
-// //         }
-// //         return Result<int, Error>::ok(static_cast<int>(*num));
-// //         } else {
-// //         static_assert(false, "No matching implementation for .as<T>() for the given type");
-// //         }
-// //     }
-
-// //     Result<Json, Error> at(const char* name)
-// //     {
-// //         useArena(arena);
-// //         auto item = cJSON_GetObjectItem(cjson, name);
-// //         if (!item) {
-// //         return makeFieldNotFoundError(name);
-// //         }
-// //         return Json(arena, item, instancePath.length == 0 ? name : format(arena, "{}.{}", instancePath, name));
-// //     }
-
-// //     JsonProxy operator[](const char* name);
-
-// //     Result<List<Json>, Error> array()
-// //     {
-// //         useArena(arena);
-// //         if (!cJSON_IsArray(cjson)) {
-// //         return makeUnexpectedFieldTypeError("array");
-// //         }
-// //         auto len = cJSON_GetArraySize(cjson);
-// //         List<Json> results { arena };
-// //         for (size_t i = 0; i < len; i++) {
-// //         auto arrayItem = cJSON_GetArrayItem(cjson, i);
-// //         results.push(Json(arena, arrayItem, format(arena, "{}[{}]", instancePath, i)));
-// //         }
-// //         return results;
-// //     }
-
-// //     String prettyPrint()
-// //     {
-// //         return String::view(cJSON_Print(cjson));
-// //     }
-
-// //     String print()
-// //     {
-// //         return String::view(cJSON_PrintUnformatted(cjson));
-// //     }
-
-// //     private:
-// //     Ref<Arena> arena;
-// //     cJSON* cjson;
-// //     String instancePath;
-// // };
-
-// // inline Json::JsonProxy Json::operator[](const char* name)
-// // {
-// //   useArena(arena);
-// //   return JsonProxy {
-// //     .__parent = *this,
-// //     .__fieldName = name,
-// //   };
-// // }

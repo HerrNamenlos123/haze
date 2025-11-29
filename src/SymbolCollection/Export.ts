@@ -79,7 +79,7 @@ function printType(cc: CollectionContext, typeId: Collect.TypeUseId): string {
               if (expr.variant === Collect.ENode.TypeLiteralExpr) {
                 return printCollectedDatatype(cc, expr.datatype);
               } else if (expr.variant === Collect.ENode.LiteralExpr) {
-                return Semantic.serializeLiteralValue(expr.literal);
+                return Semantic.serializeLiteralValue(cc.sr, expr.literal);
               } else {
                 assert(false);
               }
@@ -130,7 +130,7 @@ export function ExportExpr(cc: CollectionContext, exprId: Collect.ExprId): strin
   const expr = cc.exprNodes.get(exprId);
   switch (expr.variant) {
     case Collect.ENode.LiteralExpr: {
-      return Semantic.serializeLiteralValue(expr.literal);
+      return Semantic.serializeLiteralValue(cc.sr, expr.literal);
     }
 
     case Collect.ENode.StructInstantiationExpr: {
@@ -325,6 +325,24 @@ export function ExportSymbol(
           file += `type ${symbol.name}${generics} = ${printType(cc, typedef.target)};\n`;
           break;
         }
+
+        case Collect.ENode.EnumTypeDef: {
+          file += "enum ";
+          if (typedef.noemit) {
+            file += "noemit ";
+          }
+          file += typedef.name + " {\n";
+          for (const value of typedef.values) {
+            if (value.value) {
+              file += `${value.name} = ${printCollectedExpr(cc, value.value)},`;
+            } else {
+              file += `${value.name},`;
+            }
+          }
+          file += "}\n";
+          break;
+        }
+
         default:
           assert(false);
       }

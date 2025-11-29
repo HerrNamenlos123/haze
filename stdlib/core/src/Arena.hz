@@ -36,14 +36,3 @@ export struct Arena {
         hzstd_arena_cleanup_and_free(this.arenaImpl);
     }
 }
-
-enum MyEnum {
-    FirstValue = 3,
-    SecondValue = 1,
-    ThirdValue,
-    FourthValue,
-}
-
-fooz() {
-    const a: MyEnum = MyEnum.FirstValue;
-}

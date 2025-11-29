@@ -4,6 +4,7 @@
 
 #include "hzstd_arena.h"
 #include "hzstd_arithmetic.h"
+#include "hzstd_filesystem.h"
 #include "hzstd_json.h"
 #include "hzstd_memory.h"
 #include "hzstd_runtime.h"

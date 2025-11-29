@@ -588,6 +588,7 @@ export namespace Lowered {
       value: ExprId;
     }[];
     type: TypeUseId;
+    noemit: boolean;
     name: NameSet;
   };
 }
@@ -1811,13 +1812,17 @@ export function lowerTypeDef(lr: Lowered.Module, typeId: Semantic.TypeDefId): Lo
           originalName: m.name,
           loweredName: {
             prettyName: enumName.prettyName + "." + m.name,
-            mangledName: enumName.mangledName + "_" + m.name,
-            wasMangled: true,
+            mangledName:
+              type.extern === EExternLanguage.Extern_C
+                ? m.name
+                : enumName.mangledName + "_" + m.name,
+            wasMangled: type.extern !== EExternLanguage.Extern_C,
           },
           value: lowerExpr(lr, m.valueExpr, flattened, {
             returnedInstanceIds: new Set(),
           })[1],
         })),
+        noemit: type.noemit,
         type: lowerTypeUse(lr, type.type),
         name: enumName,
       });

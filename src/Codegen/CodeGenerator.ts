@@ -293,13 +293,15 @@ class CodeGenerator {
           }
         }
       } else if (symbol.variant === Lowered.ENode.EnumDatatype) {
-        this.out.type_declarations.writeLine(`typedef enum {`).pushIndent();
-        for (const value of symbol.values) {
-          this.out.type_declarations.writeLine(
-            `${this.mangleName(value.loweredName)} = ${this.emitExpr(value.value).out.get()},`
-          );
+        if (!symbol.noemit) {
+          this.out.type_declarations.writeLine(`typedef enum {`).pushIndent();
+          for (const value of symbol.values) {
+            this.out.type_declarations.writeLine(
+              `${this.mangleName(value.loweredName)} = ${this.emitExpr(value.value).out.get()},`
+            );
+          }
+          this.out.type_declarations.popIndent().writeLine(`} ${this.mangleName(symbol.name)} ;`);
         }
-        this.out.type_declarations.popIndent().writeLine(`} ${this.mangleName(symbol.name)} ;`);
       } else {
         assert(false);
       }
