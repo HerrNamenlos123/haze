@@ -1,5 +1,6 @@
-import { Lowered } from "../Lower/Lower";
+import { Lowered, lowerExpr, lowerTypeDef } from "../Lower/Lower";
 import { Conversion } from "../Semantic/Conversion";
+import { Semantic } from "../Semantic/Elaborate";
 import {
   BinaryOperationToString,
   EBinaryOperation,
@@ -291,6 +292,14 @@ class CodeGenerator {
             this.out.type_declarations.writeLine(`typedef ${a} ${b};`);
           }
         }
+      } else if (symbol.variant === Lowered.ENode.EnumDatatype) {
+        this.out.type_declarations.writeLine(`typedef enum {`).pushIndent();
+        for (const value of symbol.values) {
+          this.out.type_declarations.writeLine(
+            `${this.mangleName(value.loweredName)} = ${this.emitExpr(value.value).out.get()},`
+          );
+        }
+        this.out.type_declarations.popIndent().writeLine(`} ${this.mangleName(symbol.name)} ;`);
       } else {
         assert(false);
       }
@@ -372,6 +381,10 @@ class CodeGenerator {
         for (const m of type.members) {
           processTypeUse(m.type);
         }
+        sortedLoweredTypes.push(type);
+      } else if (type.variant === Lowered.ENode.EnumDatatype) {
+        appliedTypes.add(type);
+        processTypeUse(type.type);
         sortedLoweredTypes.push(type);
       } else {
         assert(false);
@@ -1184,6 +1197,16 @@ class CodeGenerator {
           outWriter.write(
             `(${this.primitiveToC(expr.literal.type)})(${stringifyWithDecimal(expr.literal.value)})`
           );
+        } else if (expr.literal.type === "enum") {
+          const enumTypeId = lowerTypeDef(this.lr, expr.literal.enumType);
+          const enumType = this.lr.typeDefNodes.get(enumTypeId);
+          assert(enumType.variant === Lowered.ENode.EnumDatatype);
+          const value = enumType.values.find((v) => {
+            assert(expr.literal.type === "enum");
+            return v.originalName === expr.literal.valueName;
+          });
+          assert(value);
+          outWriter.write(`(${this.emitExpr(value.value).out.get()})`);
         } else {
           let postfix = "";
           switch (expr.literal.type) {

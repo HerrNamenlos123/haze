@@ -29,6 +29,9 @@ AUTODEST: 'autodest';
 NORETURN: 'noreturn';
 FINAL: 'final';
 UNION: 'union';
+ENUM: 'enum';
+BITFLAG: 'bitflag';
+UNSCOPED: 'unscoped';
 TRY: 'try';
 SOURCE_LOCATION_DIRECTIVE: '#source';
 

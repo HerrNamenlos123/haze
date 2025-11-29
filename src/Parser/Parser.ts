@@ -69,6 +69,8 @@ import {
   type ASTExprIsTypeExpr,
   type ASTTaggedUnionDatatype,
   type ASTErrorPropagationExpr,
+  type ASTEnumDefinition,
+  type ASTEnumValueDefinition,
 } from "../shared/AST";
 import {
   BinaryExprContext,
@@ -147,6 +149,8 @@ import {
   UntaggedUnionDatatypeContext,
   TaggedUnionDatatypeContext,
   PostfixResultPropagationExprContext,
+  EnumContentContext,
+  EnumDefinitionContext,
 } from "./grammar/autogen/HazeParser";
 import {
   BaseErrorListener,
@@ -261,6 +265,7 @@ class ASTTransformer extends HazeParserVisitor<any> {
       | FunctionDefinitionContext
       | StructDefinitionContext
       | TypeAliasDirectiveContext
+      | EnumDefinitionContext
   ): EExternLanguage {
     if (!Boolean(ctx._extern)) {
       return EExternLanguage.None;
@@ -851,6 +856,29 @@ class ASTTransformer extends HazeParserVisitor<any> {
         originalSourcecode: this.getSource(ctx),
       },
     ];
+  };
+
+  visitEnumContent = (ctx: EnumContentContext): ASTEnumValueDefinition => {
+    return {
+      variant: "EnumValue",
+      name: ctx.ID().getText(),
+      value: ctx.expr() ? this.visit(ctx.expr()!) : null,
+      sourceloc: this.loc(ctx),
+    };
+  };
+
+  visitEnumDefinition = (ctx: EnumDefinitionContext): ASTEnumDefinition => {
+    return {
+      variant: "EnumDefinition",
+      export: Boolean(ctx._export_),
+      pub: Boolean(ctx._pub),
+      extern: this.exlang(ctx),
+      name: ctx.ID().getText(),
+      noemit: Boolean(ctx._noemit),
+      values: ctx._content.map((c) => this.visit(c)),
+      sourceloc: this.loc(ctx),
+      originalSourcecode: this.getSource(ctx),
+    };
   };
 
   visitNestedStructDefinition = (ctx: NestedStructDefinitionContext): ASTStructDefinition[] => {

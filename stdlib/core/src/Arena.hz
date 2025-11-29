@@ -24,37 +24,6 @@ export struct Arena {
         };
     }
     
-    struct F {
-        bar: real;
-    }
-
-    a() {
-        return F { bar: 0.0 };
-    }
-
-    b() {
-        return F { bar: 0.0 };
-    }
-
-    foob() {
-        const aa = this.a();
-        const bb = this.b();
-        return bb;
-    }
-
-    fooc() {
-        const cc = this.foob();
-    }
-
-    food() {
-        this.fooc();
-    }
-
-    fooe(arena: Arena) {
-        const aa = this.a() in arena;
-        const f = F { bar: 0.0 } in arena;
-    }
-
     alloc<T>(value: T) {
         do unsafe {
             const ptr = hzstd_arena_allocate<T>(this.arenaImpl, sizeof(T), alignof(T));
@@ -66,4 +35,15 @@ export struct Arena {
     free() {
         hzstd_arena_cleanup_and_free(this.arenaImpl);
     }
+}
+
+enum MyEnum {
+    FirstValue,
+    SecondValue,
+    ThirdValue,
+    FourthValue
+}
+
+fooz() {
+    const a = MyEnum.FirstValue;
 }

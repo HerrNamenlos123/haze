@@ -57,6 +57,7 @@ export namespace Lowered {
     SliceDatatype,
     UntaggedUnionDatatype,
     TaggedUnionDatatype,
+    EnumDatatype,
     // Type Use
     TypeUse,
     // Statements
@@ -508,7 +509,8 @@ export namespace Lowered {
     | ArrayDatatypeDef
     | SliceDatatypeDef
     | UntaggedUnionDatatypeDef
-    | TaggedUnionDatatypeDef;
+    | TaggedUnionDatatypeDef
+    | EnumDatatypeDef;
 
   export type PointerDatatypeDef = {
     variant: ENode.PointerDatatype;
@@ -575,6 +577,17 @@ export namespace Lowered {
       type: TypeUseId;
     }[];
     optimizeAsRawPointer: TypeUseId | null;
+    name: NameSet;
+  };
+
+  export type EnumDatatypeDef = {
+    variant: ENode.EnumDatatype;
+    values: {
+      originalName: string;
+      loweredName: NameSet;
+      value: ExprId;
+    }[];
+    type: TypeUseId;
     name: NameSet;
   };
 }
@@ -657,7 +670,7 @@ type InstanceInfo = {
   returnedInstanceIds: Set<Semantic.InstanceId>;
 };
 
-function lowerExpr(
+export function lowerExpr(
   lr: Lowered.Module,
   exprId: Semantic.ExprId,
   flattened: Lowered.StatementId[],
@@ -1128,7 +1141,7 @@ function lowerExpr(
         : Lowered.addExpr(lr, {
             variant: Lowered.ENode.LiteralExpr,
             literal: {
-              type: EPrimitive.usize,
+              // type: EPrimitive.usize,
               unit: null,
               value: BigInt(arrayType.length),
             },
@@ -1589,7 +1602,7 @@ function makeLowerTypeUse(lr: Lowered.Module, typeDefId: Lowered.TypeDefId, poin
   });
 }
 
-function lowerTypeDef(lr: Lowered.Module, typeId: Semantic.TypeDefId): Lowered.TypeDefId {
+export function lowerTypeDef(lr: Lowered.Module, typeId: Semantic.TypeDefId): Lowered.TypeDefId {
   const type = lr.sr.typeDefNodes.get(typeId);
 
   if (type.variant === Semantic.ENode.StructDatatype) {
@@ -1784,6 +1797,32 @@ function lowerTypeDef(lr: Lowered.Module, typeId: Semantic.TypeDefId): Lowered.T
         name: Semantic.makeNameSetTypeDef(lr.sr, typeId),
       });
       lr.loweredTypeDefs.set(typeId, pId);
+      return pId;
+    }
+  } else if (type.variant === Semantic.ENode.EnumDatatype) {
+    if (lr.loweredTypeDefs.has(typeId)) {
+      return lr.loweredTypeDefs.get(typeId)!;
+    } else {
+      const enumName = Semantic.makeNameSetTypeDef(lr.sr, typeId);
+      const flattened: Lowered.StatementId[] = [];
+      const [p, pId] = Lowered.addTypeDef<Lowered.EnumDatatypeDef>(lr, {
+        variant: Lowered.ENode.EnumDatatype,
+        values: type.values.map((m) => ({
+          originalName: m.name,
+          loweredName: {
+            prettyName: enumName.prettyName + "." + m.name,
+            mangledName: enumName.mangledName + "_" + m.name,
+            wasMangled: true,
+          },
+          value: lowerExpr(lr, m.valueExpr, flattened, {
+            returnedInstanceIds: new Set(),
+          })[1],
+        })),
+        type: lowerTypeUse(lr, type.type),
+        name: enumName,
+      });
+      lr.loweredTypeDefs.set(typeId, pId);
+      assert(flattened.length === 0);
       return pId;
     }
   } else if (type.variant === Semantic.ENode.ParameterPackDatatype) {
@@ -2233,6 +2272,7 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
       const datatype = lr.sr.typeDefNodes.get(datatypeId);
 
       switch (datatype.variant) {
+        case Semantic.ENode.EnumDatatype:
         case Semantic.ENode.StructDatatype: {
           if (datatype.noemit) {
             return undefined;
@@ -2399,6 +2439,8 @@ function serializeLoweredExpr(lr: Lowered.Module, exprId: Lowered.ExprId): strin
         return `null`;
       } else if (expr.literal.type === EPrimitive.none) {
         return `none`;
+      } else if (expr.literal.type === "enum") {
+        return `Enum Literal`;
       } else {
         return `${expr.literal.value}`;
       }
@@ -2545,6 +2587,11 @@ export function LowerModule(sr: SemanticResult): Lowered.Module {
     }
   }
   for (const [key, entries] of sr.elaboratedStructDatatypes) {
+    for (const entry of entries) {
+      lowerSymbol(lr, entry.resultAsTypeDefSymbol);
+    }
+  }
+  for (const [key, entries] of sr.elaboratedEnumSymbols) {
     for (const entry of entries) {
       lowerSymbol(lr, entry.resultAsTypeDefSymbol);
     }

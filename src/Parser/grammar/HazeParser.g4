@@ -136,12 +136,21 @@ structContent
     | structDefinition                                                                                      #NestedStructDefinition
     ;
 
+enumContent
+    : ID (EQUALS expr)?
+    ;
+
+enumDefinition
+    : (export=EXPORT)? (extern=EXTERN externLang=externLanguage)? pub=PUB? noemit=NOEMIT? ENUM BITFLAG? UNSCOPED? ID requiresBlock? LCURLY ((content+=enumContent COMMA)+ (content+=enumContent COMMA?)?)? RCURLY (SEMI)?
+    ;
+
 structDefinition
     : (export=EXPORT)? (extern=EXTERN externLang=externLanguage)? pub=PUB? noemit=NOEMIT? STRUCT ID (LANGLE ID (COMMA ID)* RANGLE)? requiresBlock? LCURLY (content+=structContent)* RCURLY (SEMI)?
     ;
 
 typeDefinition
     : structDefinition
+    | enumDefinition
     ;
 
 // Expressions

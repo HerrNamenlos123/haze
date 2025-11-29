@@ -1,3 +1,5 @@
+import type { Lowered } from "../Lower/Lower";
+import type { Semantic } from "../Semantic/Elaborate";
 import type { ELiteralUnit } from "./AST";
 import { InternalError } from "./Errors";
 
@@ -123,6 +125,11 @@ export type LiteralValue =
       type: EPrimitive.f32 | EPrimitive.f64 | EPrimitive.real;
       value: number;
       unit: ELiteralUnit | null;
+    }
+  | {
+      type: "enum";
+      enumType: Semantic.TypeDefId;
+      valueName: string;
     };
 
 export enum EMethodType {

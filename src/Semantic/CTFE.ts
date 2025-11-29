@@ -22,6 +22,14 @@ export const getLiteralIntegerValue = (literalValue: LiteralValue) => {
   return undefined;
 };
 
+export function EvalCTFEOrFail(sr: SemanticResult, exprId: Semantic.ExprId, sourceloc: SourceLoc) {
+  const valueResult = EvalCTFE(sr, exprId);
+  if (!valueResult.ok) {
+    throw new CompilerError(valueResult.error, sourceloc);
+  }
+  return valueResult.value;
+}
+
 export function EvalCTFE(
   sr: SemanticResult,
   exprId: Semantic.ExprId
@@ -58,19 +66,35 @@ export function EvalCTFE(
             }
 
             if (left.literal.type === right.literal.type) {
-              if (left.literal.type === EPrimitive.null || right.literal.type === EPrimitive.null) {
+              if (left.literal.type === EPrimitive.null) {
+                assert(right.literal.type === EPrimitive.null);
                 return ok(sr.b.literal(negate ? false : true, expr.sourceloc));
               }
-              if (left.literal.type === EPrimitive.none || right.literal.type === EPrimitive.none) {
+              if (left.literal.type === EPrimitive.none) {
+                assert(right.literal.type === EPrimitive.none);
                 return ok(sr.b.literal(negate ? false : true, expr.sourceloc));
               }
+              if (left.literal.type === "enum") {
+                assert(right.literal.type === "enum");
+                const equal =
+                  left.literal.enumType === right.literal.enumType &&
+                  left.literal.valueName === right.literal.valueName;
+                return ok(sr.b.literal(negate ? !equal : equal, expr.sourceloc));
+              }
+              assert(
+                right.literal.type !== EPrimitive.null &&
+                  right.literal.type !== EPrimitive.none &&
+                  right.literal.type !== "enum"
+              );
               const equal = left.literal.value === right.literal.value;
               return ok(sr.b.literal(negate ? !equal : equal, expr.sourceloc));
             }
+
             return err(
-              `Cannot compare primitives ${primitiveToString(
-                left.literal.type
-              )} and ${primitiveToString(right.literal.type)} at compile time`
+              `Cannot compare values of type ${Semantic.serializeLiteralType(
+                sr,
+                left.literal
+              )} and ${Semantic.serializeLiteralType(sr, right.literal)} at compile time`
             );
           } else {
             return err(
@@ -122,7 +146,8 @@ export function EvalCTFE(
               `This expression evaluated to a value of ${literalValue}, which is outside of the valid integer range ${Conversion.prettyRange(
                 limit[0],
                 limit[1],
-                targetTypeDef.primitive
+                targetTypeDef.primitive,
+                "integer"
               )} for type ${primitiveToString(targetTypeDef.primitive)}.`
             );
           }
@@ -219,9 +244,9 @@ export function EvalCTFEBoolean(sr: SemanticResult, exprId: Semantic.ExprId, sou
     return result.literal.value;
   } else {
     throw new CompilerError(
-      `A primitive ${primitiveToString(
-        result.literal.type
-      )} value cannot be tested for truthiness, use explicit comparisons.`,
+      `A ${
+        result.literal.type === "enum" ? `Enum Literal` : primitiveToString(result.literal.type)
+      } value cannot be tested for truthiness, use explicit comparisons.`,
       result.sourceloc
     );
   }

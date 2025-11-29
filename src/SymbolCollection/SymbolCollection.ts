@@ -43,6 +43,7 @@ import {
   type ASTTypeAlias,
   EOverloadedOperator,
   type ASTExprIsTypeExpr,
+  type ASTEnumValueDefinition,
 } from "../shared/AST";
 import {
   BrandedArray,
@@ -142,7 +143,7 @@ export namespace Collect {
     ExportScope,
     FunctionScope,
     StructScope,
-    TypeAliasScope,
+    TypeDefScope,
     NamespaceScope,
     BlockScope,
     FunctionOverloadGroupSymbol,
@@ -156,6 +157,7 @@ export namespace Collect {
     UntaggedUnionDatatype,
     TaggedUnionDatatype,
     ParameterPack,
+    EnumTypeDef,
     StructTypeDef,
     NamespaceSharedInstance,
     NamespaceTypeDef,
@@ -236,8 +238,8 @@ export namespace Collect {
     symbols: Set<Collect.SymbolId>;
   };
 
-  export type TypeAliasScope = {
-    variant: ENode.TypeAliasScope;
+  export type TypeDefScope = {
+    variant: ENode.TypeDefScope;
     parentScope: Collect.ScopeId;
     owningSymbol: Collect.SymbolId;
     sourceloc: SourceLoc;
@@ -270,7 +272,7 @@ export namespace Collect {
     | FunctionScope
     | StructScope
     | NamespaceScope
-    | TypeAliasScope
+    | TypeDefScope
     | BlockScope;
 
   /// ===============================================================
@@ -365,6 +367,26 @@ export namespace Collect {
     sourceloc: SourceLoc;
   };
 
+  export type EnumValue = {
+    name: string;
+    value: Collect.ExprId | null;
+    sourceloc: SourceLoc;
+  };
+
+  export type EnumTypeDef = {
+    variant: ENode.EnumTypeDef;
+    parentScope: Collect.ScopeId;
+    name: string;
+    export: boolean;
+    pub: boolean;
+    extern: EExternLanguage;
+    values: EnumValue[];
+    noemit: boolean;
+    sourceloc: SourceLoc;
+    structScope: Collect.ScopeId;
+    originalSourcecode: string;
+  };
+
   export type StructTypeDef = {
     variant: ENode.StructTypeDef;
     fullyQualifiedName: string;
@@ -397,7 +419,7 @@ export namespace Collect {
     namespaceScope: Collect.ScopeId;
   };
 
-  export type TypeDef = TypeDefAlias | StructTypeDef | NamespaceTypeDef;
+  export type TypeDef = TypeDefAlias | StructTypeDef | NamespaceTypeDef | EnumTypeDef;
 
   export type NamespaceSharedInstance = {
     variant: ENode.NamespaceSharedInstance;
@@ -891,7 +913,7 @@ function defineGenericTypeParameter(
   assert(
     functionScope.variant === Collect.ENode.FunctionScope ||
       functionScope.variant === Collect.ENode.StructScope ||
-      functionScope.variant === Collect.ENode.TypeAliasScope
+      functionScope.variant === Collect.ENode.TypeDefScope
   );
   const owner = cc.symbolNodes.get(functionScope.owningSymbol);
   assert(
@@ -1190,6 +1212,73 @@ function collectTypeDef(
       return structSymbolId;
     }
 
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
+    case "EnumDefinition": {
+      const parent = cc.scopeNodes.get(args.currentParentScope);
+      assert(
+        parent.variant === Collect.ENode.FileScope ||
+          parent.variant === Collect.ENode.NamespaceScope ||
+          parent.variant === Collect.ENode.ModuleScope ||
+          parent.variant === Collect.ENode.StructScope
+      );
+
+      const [enumType, enumTypeId] = Collect.makeTypeDef<Collect.EnumTypeDef>(cc, {
+        variant: Collect.ENode.EnumTypeDef,
+        name: item.name,
+        export: item.export,
+        extern: item.extern,
+        pub: false,
+        noemit: item.noemit,
+        values: [],
+        structScope: -1 as Collect.ScopeId,
+        parentScope: args.currentParentScope,
+        sourceloc: item.sourceloc,
+        originalSourcecode: item.originalSourcecode,
+      });
+      const [typedefSymbol, typedefSymbolId] = Collect.makeSymbol<Collect.TypeDefSymbol>(cc, {
+        variant: Collect.ENode.TypeDefSymbol,
+        inScope: args.currentParentScope,
+        name: item.name,
+        typeDef: enumTypeId,
+      });
+      const [structScope, structScopeId] = Collect.makeScope<Collect.TypeDefScope>(cc, {
+        variant: Collect.ENode.TypeDefScope,
+        owningSymbol: typedefSymbolId,
+        parentScope: args.currentParentScope,
+        sourceloc: item.sourceloc,
+        symbols: new Set(),
+      });
+      enumType.structScope = structScopeId;
+
+      for (const m of item.values) {
+        if (m.value) {
+          enumType.values.push({
+            name: m.name,
+            value: collectExpr(cc, m.value, { currentParentScope: structScopeId }),
+            sourceloc: m.sourceloc,
+          });
+        } else {
+          enumType.values.push({
+            name: m.name,
+            value: null,
+            sourceloc: m.sourceloc,
+          });
+        }
+        collectSymbol(cc, m, {
+          currentParentScope: structScopeId,
+        });
+      }
+
+      if (item.export) {
+        cc.exportedSymbols.exported.add(typedefSymbolId);
+      }
+
+      return typedefSymbolId;
+    }
+
     default:
       assert(false, "All cases handled " + item.variant);
   }
@@ -1333,7 +1422,11 @@ function collectTypeUnion(
 
 function collectSymbol(
   cc: CollectionContext,
-  item: ASTFunctionDefinition | ASTStructMemberDefinition | ASTSymbolDefinition,
+  item:
+    | ASTFunctionDefinition
+    | ASTStructMemberDefinition
+    | ASTSymbolDefinition
+    | ASTEnumValueDefinition,
   args: {
     currentParentScope: Collect.ScopeId;
   }
@@ -1476,6 +1569,7 @@ function collectSymbol(
     // =================================================================================================================
     // =================================================================================================================
 
+    case "EnumDefinition":
     case "TypeAlias":
     case "NamespaceDefinition":
     case "StructDefinition": {
@@ -1498,6 +1592,37 @@ function collectSymbol(
           type: collectTypeUse(cc, item.type, {
             currentParentScope: args.currentParentScope,
           }),
+          globalValueInitializer: null,
+          variableContext: EVariableContext.MemberOfStruct,
+        },
+        args.currentParentScope
+      );
+      return memberId;
+    }
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
+    case "EnumValue": {
+      const [member, memberId] = defineVariableSymbol(
+        cc,
+        {
+          variant: Collect.ENode.VariableSymbol,
+          name: item.name,
+          comptime: false,
+          mutability: EVariableMutability.Const,
+          sourceloc: item.sourceloc,
+          // This type is a placeholder and will later be replaced during elaboration
+          type: Collect.makeTypeUse(cc, {
+            variant: Collect.ENode.NamedDatatype,
+            genericArgs: [],
+            inline: false,
+            innerNested: null,
+            mutability: EDatatypeMutability.Default,
+            name: "void",
+            sourceloc: item.sourceloc,
+          })[1],
           globalValueInitializer: null,
           variableContext: EVariableContext.MemberOfStruct,
         },
@@ -1577,8 +1702,8 @@ function collectGlobalDirective(
     // =================================================================================================================
 
     case "TypeAlias": {
-      const [genericsScope, genericsScopeId] = Collect.makeScope<Collect.TypeAliasScope>(cc, {
-        variant: Collect.ENode.TypeAliasScope,
+      const [genericsScope, genericsScopeId] = Collect.makeScope<Collect.TypeDefScope>(cc, {
+        variant: Collect.ENode.TypeDefScope,
         owningSymbol: -1 as Collect.SymbolId,
         parentScope: args.currentParentScope,
         sourceloc: item.sourceloc,
@@ -1670,8 +1795,8 @@ function collectGlobalDirective(
       const scope = cc.scopeNodes.get(args.currentParentScope);
       scope.symbols.add(symbolId);
 
-      const [structScope, structScopeId] = Collect.makeScope<Collect.TypeAliasScope>(cc, {
-        variant: Collect.ENode.TypeAliasScope,
+      const [structScope, structScopeId] = Collect.makeScope<Collect.TypeDefScope>(cc, {
+        variant: Collect.ENode.TypeDefScope,
         owningSymbol: symbolId,
         parentScope: args.currentParentScope,
         sourceloc: item.sourceloc,
@@ -1793,8 +1918,8 @@ function collectScope(
         });
         (cc.scopeNodes.get(blockScopeId) as Collect.BlockScope).symbols.add(symbolId);
 
-        const [structScope, structScopeId] = Collect.makeScope<Collect.TypeAliasScope>(cc, {
-          variant: Collect.ENode.TypeAliasScope,
+        const [structScope, structScopeId] = Collect.makeScope<Collect.TypeDefScope>(cc, {
+          variant: Collect.ENode.TypeDefScope,
           owningSymbol: symbolId,
           parentScope: args.currentParentScope,
           sourceloc: item.sourceloc,

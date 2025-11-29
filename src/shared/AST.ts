@@ -586,6 +586,25 @@ export type ASTStructMemberDefinition = {
   sourceloc: SourceLoc;
 };
 
+export type ASTEnumValueDefinition = {
+  variant: "EnumValue";
+  name: string;
+  value: ASTExpr | null;
+  sourceloc: SourceLoc;
+};
+
+export type ASTEnumDefinition = {
+  variant: "EnumDefinition";
+  export: boolean;
+  extern: EExternLanguage;
+  name: string;
+  noemit: boolean;
+  pub: boolean;
+  values: ASTEnumValueDefinition[];
+  sourceloc: SourceLoc;
+  originalSourcecode: string;
+};
+
 export type ASTStructDefinition = {
   variant: "StructDefinition";
   export: boolean;
@@ -604,7 +623,11 @@ export type ASTStructDefinition = {
   originalSourcecode: string;
 };
 
-export type ASTTypeDef = ASTStructDefinition | ASTNamespaceDefinition | ASTTypeAlias;
+export type ASTTypeDef =
+  | ASTStructDefinition
+  | ASTNamespaceDefinition
+  | ASTTypeAlias
+  | ASTEnumDefinition;
 
 export type ASTNamespaceDefinition = {
   variant: "NamespaceDefinition";

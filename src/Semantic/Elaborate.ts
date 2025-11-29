@@ -37,7 +37,7 @@ import {
   type CollectionContext,
 } from "../SymbolCollection/SymbolCollection";
 import { Conversion } from "./Conversion";
-import { EvalCTFE, EvalCTFEBoolean } from "./CTFE";
+import { EvalCTFE, EvalCTFEBoolean, EvalCTFEOrFail } from "./CTFE";
 import {
   makeStackArrayDatatypeAvailable,
   makeDynamicArrayDatatypeAvailable,
@@ -49,7 +49,7 @@ import {
 
 import { EUnaryOperation, type EIncrOperation } from "../shared/AST";
 import { type Brand, type LiteralValue } from "../shared/common";
-import { getJSDocOverrideTagNoCache } from "typescript";
+import { getJSDocOverrideTagNoCache, SymbolFlags } from "typescript";
 import { printStatement } from "../Lower/Lower";
 import { makeTempName } from "../shared/store";
 
@@ -285,7 +285,7 @@ export class SemanticElaborator {
         if (value) {
           return this.sr.b.literal(true, collectedExpr.sourceloc);
         } else {
-          let str = second ? Semantic.serializeLiteralValue(second?.literal) : undefined;
+          let str = second ? Semantic.serializeLiteralValue(this.sr, second?.literal) : undefined;
           if (second && second.literal.type === EPrimitive.str) {
             str = second.literal.value; // Bypass and don't escape it to make message look better
           }
@@ -691,7 +691,10 @@ export class SemanticElaborator {
     return this.sr.b.literalValue(literalExpr.literal, literalExpr.sourceloc);
   }
 
-  expr(exprId: Collect.ExprId, inference: Inference): [Semantic.Expression, Semantic.ExprId] {
+  expr(
+    exprId: Collect.ExprId,
+    inference: Inference
+  ): readonly [Semantic.Expression, Semantic.ExprId] {
     const expr = this.sr.cc.exprNodes.get(exprId);
 
     let result: Semantic.Expression;
@@ -844,7 +847,213 @@ export class SemanticElaborator {
     return nsId;
   }
 
-  memberAccess(memberAccess: Collect.MemberAccessExpr, inference: Inference) {
+  enum(enumId: Collect.TypeDefId) {
+    const enumValue = this.sr.cc.typeDefNodes.get(enumId);
+    assert(enumValue.variant === Collect.ENode.EnumTypeDef);
+
+    let parentNamespace = null as Semantic.TypeDefId | null;
+    const parentScope = this.sr.cc.scopeNodes.get(enumValue.parentScope);
+    if (parentScope.variant === Collect.ENode.NamespaceScope) {
+      const namespaceSymbol = this.sr.cc.symbolNodes.get(parentScope.owningSymbol);
+      assert(namespaceSymbol.variant === Collect.ENode.TypeDefSymbol);
+      parentNamespace = this.namespace(namespaceSymbol.typeDef);
+    }
+
+    const found = getFromEnumDefCache(this.sr, enumId, {
+      parentStructOrNS: parentNamespace,
+    });
+    if (found) {
+      return found;
+    }
+
+    const [enumType, enumTypeId] = Semantic.addType<Semantic.EnumDatatypeDef>(this.sr, {
+      variant: Semantic.ENode.EnumDatatype,
+      concrete: true,
+      extern: enumValue.extern,
+      name: enumValue.name,
+      noemit: enumValue.noemit,
+      originalCollectedSymbol: enumId,
+      parentStructOrNS: parentNamespace,
+      sourceloc: enumValue.sourceloc,
+      values: [],
+      type: -1 as Semantic.TypeUseId,
+    });
+    const [enumSymbol, enumSymbolId] = this.sr.b.typeDefSymbol(enumTypeId);
+
+    insertIntoEnumDefCache(this.sr, enumId, {
+      substitutionContext: this.currentContext,
+      parentStructOrNS: parentNamespace,
+      result: enumTypeId,
+      resultAsTypeDefSymbol: enumSymbolId,
+    });
+
+    const getEnumType = () => {
+      if (enumValue.values[0].value) {
+        const [valueResult, valueResultId] = EvalCTFEOrFail(
+          this.sr,
+          this.expr(enumValue.values[0].value, undefined)[1],
+          enumValue.values[0].sourceloc
+        );
+        assert(valueResult.variant === Semantic.ENode.LiteralExpr);
+
+        if (valueResult.literal.type === EPrimitive.int) {
+          return ["int", this.sr.b.intType()] as const;
+        } else if (
+          valueResult.literal.type === EPrimitive.str ||
+          valueResult.literal.type === EPrimitive.cstr ||
+          valueResult.literal.type === EPrimitive.ccstr
+        ) {
+          return ["str", this.sr.b.strType()] as const;
+        } else {
+          throw new CompilerError(
+            `Enum values can only be of type string or integer, not '${Semantic.serializeLiteralType(
+              this.sr,
+              valueResult.literal
+            )}'`,
+            enumValue.values[0].sourceloc
+          );
+        }
+      } else {
+        return ["int", this.sr.b.intType()] as const;
+      }
+    };
+
+    if (enumValue.values.length > 0) {
+      const [enumDatatype, enumDatatypeId] = getEnumType();
+
+      // Save type in enum so elaboration can immediately access it
+      enumType.type = enumDatatypeId;
+
+      if (enumDatatype === "int") {
+        let nextValue = 0n;
+        const usedValues = new Set<bigint>();
+        for (const value of enumValue.values) {
+          if (value.value) {
+            const [valueResult, valueResultId] = EvalCTFEOrFail(
+              this.sr,
+              this.expr(value.value, undefined)[1],
+              enumValue.values[0].sourceloc
+            );
+            assert(valueResult.variant === Semantic.ENode.LiteralExpr);
+
+            if (valueResult.type !== enumDatatypeId) {
+              throw new CompilerError(
+                `This enum cannot have values with mixed datatypes '${Semantic.serializeTypeUse(
+                  this.sr,
+                  valueResult.type
+                )}' and '${Semantic.serializeTypeUse(this.sr, enumDatatypeId)}'`,
+                value.sourceloc
+              );
+            }
+            assert(valueResult.literal.type === EPrimitive.int);
+            nextValue = valueResult.literal.value + 1n;
+
+            enumType.values.push({
+              name: value.name,
+              type: enumDatatypeId,
+              valueExpr: this.sr.b.literal(valueResult.literal.value, value.sourceloc)[1],
+              literalExpr: this.sr.b.literalValue(
+                {
+                  type: "enum",
+                  enumType: enumTypeId,
+                  valueName: value.name,
+                },
+                value.sourceloc
+              )[1],
+            });
+
+            if (usedValues.has(valueResult.literal.value)) {
+              throw new CompilerError(
+                `Multiple fields with value ${valueResult.literal.value} not allowed`,
+                value.sourceloc
+              );
+            }
+            usedValues.add(valueResult.literal.value);
+          } else {
+            const v = nextValue++;
+            enumType.values.push({
+              name: value.name,
+              type: enumDatatypeId,
+              valueExpr: this.sr.b.literal(v, value.sourceloc)[1],
+              literalExpr: this.sr.b.literalValue(
+                {
+                  type: "enum",
+                  enumType: enumTypeId,
+                  valueName: value.name,
+                },
+                value.sourceloc
+              )[1],
+            });
+
+            if (usedValues.has(v)) {
+              throw new CompilerError(
+                `Multiple fields with value ${v} not allowed`,
+                value.sourceloc
+              );
+            }
+            usedValues.add(v);
+          }
+        }
+      } else {
+        const usedValues = new Set<string>();
+        for (const value of enumValue.values) {
+          if (value.value) {
+            const [valueResult, valueResultId] = EvalCTFEOrFail(
+              this.sr,
+              this.expr(value.value, undefined)[1],
+              enumValue.values[0].sourceloc
+            );
+            assert(valueResult.variant === Semantic.ENode.LiteralExpr);
+
+            if (valueResult.type !== enumDatatypeId) {
+              throw new CompilerError(
+                `This enum cannot have values with mixed datatypes '${Semantic.serializeTypeUse(
+                  this.sr,
+                  valueResult.type
+                )}' and '${Semantic.serializeTypeUse(this.sr, enumDatatypeId)}'`,
+                value.sourceloc
+              );
+            }
+            assert(valueResult.literal.type === EPrimitive.str);
+
+            enumType.values.push({
+              name: value.name,
+              type: enumDatatypeId,
+              valueExpr: this.sr.b.literal(valueResult.literal.value, value.sourceloc)[1],
+              literalExpr: this.sr.b.literalValue(
+                {
+                  type: "enum",
+                  enumType: enumTypeId,
+                  valueName: value.name,
+                },
+                value.sourceloc
+              )[1],
+            });
+
+            if (usedValues.has(valueResult.literal.value)) {
+              throw new CompilerError(
+                `Multiple fields with value "${valueResult.literal.value}" not allowed`,
+                value.sourceloc
+              );
+            }
+            usedValues.add(valueResult.literal.value);
+          } else {
+            throw new CompilerError(
+              `An enum with string values requires all values to be defined`,
+              value.sourceloc
+            );
+          }
+        }
+      }
+    }
+
+    return enumTypeId;
+  }
+
+  memberAccess(
+    memberAccess: Collect.MemberAccessExpr,
+    inference: Inference
+  ): readonly [Semantic.Expression, Semantic.ExprId] {
     const collectedObjectExpr = this.sr.cc.exprNodes.get(memberAccess.expr);
     if (
       collectedObjectExpr.variant === Collect.ENode.SymbolValueExpr &&
@@ -1188,6 +1397,10 @@ export class SemanticElaborator {
           ];
         }
         return [];
+      }
+
+      case Collect.ENode.EnumTypeDef: {
+        return [this.sr.b.typeDefSymbol(this.sr.e.enum(typeDefSymbol.typeDef))[1]];
       }
 
       default:
@@ -2704,6 +2917,14 @@ export class SemanticElaborator {
                 return this.lookupAndElaborateDatatype(type.innerNested!);
               }
             );
+          } else if (typedef.variant === Collect.ENode.EnumTypeDef) {
+            return makeTypeUse(
+              this.sr,
+              this.enum(found.typeDef),
+              type.mutability,
+              type.inline,
+              type.sourceloc
+            )[1];
           }
         }
         throw new CompilerError(
@@ -3359,6 +3580,16 @@ export class SemanticElaborator {
         )[1],
         sourceloc: memberAccessExpr.sourceloc,
       });
+    } else if (datatypeValue.variant === Semantic.ENode.EnumDatatype) {
+      if (memberAccessExpr.genericArgs.length !== 0) {
+        throw new CompilerError(`Enums do not take generic arguments`, memberAccessExpr.sourceloc);
+      }
+
+      for (const value of datatypeValue.values) {
+        if (value.name === memberAccessExpr.memberName) {
+          return [sr.exprNodes.get(value.literalExpr), value.literalExpr] as const;
+        }
+      }
     }
 
     throw new CompilerError(
@@ -4508,6 +4739,8 @@ export class SemanticElaborator {
             elaboratedSymbol.variant === Semantic.ENode.StructDatatype
         );
         return this.sr.b.datatypeDefAsValue(elaboratedSymbolId, symbolValue.sourceloc);
+      } else if (typedef.variant === Collect.ENode.EnumTypeDef) {
+        return this.sr.b.datatypeDefAsValue(this.enum(symbol.typeDef), symbolValue.sourceloc);
       }
     } else if (symbol.variant === Collect.ENode.GenericTypeParameterSymbol) {
       const mappedToId = this.currentContext.substitute.get(symbolId);
@@ -5263,14 +5496,27 @@ export class SemanticBuilder {
   }
 
   literalValue(literal: LiteralValue, sourceloc: SourceLoc) {
-    return Semantic.addExpr(this.sr, {
-      variant: Semantic.ENode.LiteralExpr,
-      instanceIds: [],
-      literal: literal,
-      sourceloc: sourceloc,
-      isTemporary: true,
-      type: makePrimitiveAvailable(this.sr, literal.type, EDatatypeMutability.Const, sourceloc),
-    });
+    if (literal.type === "enum") {
+      const enumType = this.sr.typeDefNodes.get(literal.enumType);
+      assert(enumType.variant === Semantic.ENode.EnumDatatype);
+      return Semantic.addExpr(this.sr, {
+        variant: Semantic.ENode.LiteralExpr,
+        instanceIds: [],
+        literal: literal,
+        sourceloc: sourceloc,
+        isTemporary: true,
+        type: enumType.type,
+      });
+    } else {
+      return Semantic.addExpr(this.sr, {
+        variant: Semantic.ENode.LiteralExpr,
+        instanceIds: [],
+        literal: literal,
+        sourceloc: sourceloc,
+        isTemporary: true,
+        type: makePrimitiveAvailable(this.sr, literal.type, EDatatypeMutability.Const, sourceloc),
+      });
+    }
   }
 
   literal(value: boolean | number | bigint | string, sourceloc: SourceLoc) {
@@ -5802,6 +6048,10 @@ export class SemanticBuilder {
     return makePrimitiveAvailable(this.sr, primitive, EDatatypeMutability.Const, sourceloc);
   }
 
+  intType() {
+    return this.primitiveType(EPrimitive.int, null);
+  }
+
   boolType() {
     return this.primitiveType(EPrimitive.bool, null);
   }
@@ -5986,6 +6236,57 @@ export function insertIntoStructDefCache(
   });
 }
 
+type EnumDef = {
+  substitutionContext: Semantic.ElaborationContext;
+  parentStructOrNS: Semantic.TypeDefId | null;
+  result: Semantic.TypeDefId;
+  resultAsTypeDefSymbol: Semantic.SymbolId;
+};
+type EnumDefCache = Map<Collect.TypeDefId, EnumDef[]>;
+
+export function getFromEnumDefCache(
+  sr: SemanticResult,
+  symbolId: Collect.TypeDefId,
+  args: {
+    parentStructOrNS: Semantic.TypeDefId | null;
+  }
+) {
+  const entries = sr.elaboratedEnumSymbols.get(symbolId);
+  if (entries === undefined) return;
+
+  for (const entry of entries) {
+    if (entry.parentStructOrNS === args.parentStructOrNS) {
+      return entry.result;
+    }
+  }
+
+  return;
+}
+
+export function insertIntoEnumDefCache(
+  sr: SemanticResult,
+  symbolId: Collect.TypeDefId,
+  args: {
+    substitutionContext: Semantic.ElaborationContext;
+    result: Semantic.TypeDefId;
+    resultAsTypeDefSymbol: Semantic.SymbolId;
+    parentStructOrNS: Semantic.TypeDefId | null;
+  }
+) {
+  let entries = sr.elaboratedEnumSymbols.get(symbolId);
+  if (!entries) {
+    sr.elaboratedEnumSymbols.set(symbolId, []);
+    entries = sr.elaboratedEnumSymbols.get(symbolId)!;
+  }
+
+  entries.push({
+    parentStructOrNS: args.parentStructOrNS,
+    result: args.result,
+    substitutionContext: args.substitutionContext,
+    resultAsTypeDefSymbol: args.resultAsTypeDefSymbol,
+  });
+}
+
 export type SemanticResult = {
   cc: CollectionContext;
 
@@ -6012,6 +6313,7 @@ export type SemanticResult = {
     originalSharedInstance: Collect.NSSharedInstanceId;
     result: Semantic.TypeDefId;
   }[];
+  elaboratedEnumSymbols: EnumDefCache;
   elaboratedGlobalVariableDefinitions: {
     originalSymbol: Collect.SymbolId;
     result: Semantic.SymbolId;
@@ -6129,6 +6431,7 @@ export namespace Semantic {
     FunctionDatatype,
     DeferredFunctionDatatype,
     BlockScope,
+    EnumDatatype,
     StructDatatype,
     CallableDatatype,
     ParameterPackDatatype,
@@ -6344,6 +6647,26 @@ export namespace Semantic {
     concrete: boolean;
   };
 
+  export type EnumValue = {
+    name: string;
+    type: TypeUseId;
+    valueExpr: ExprId; // This is the actual integer value, used for code generation (e.g. 0 or "red")
+    literalExpr: ExprId; // This is the high level literal, used for further elaboration (e.g. Color.Red)
+  };
+
+  export type EnumDatatypeDef = {
+    variant: ENode.EnumDatatype;
+    name: string;
+    noemit: boolean;
+    extern: EExternLanguage;
+    values: EnumValue[];
+    parentStructOrNS: TypeDefId | null;
+    sourceloc: SourceLoc;
+    type: TypeUseId;
+    concrete: boolean;
+    originalCollectedSymbol: Collect.TypeDefId;
+  };
+
   export type StructDatatypeDef = {
     variant: ENode.StructDatatype;
     name: string;
@@ -6437,6 +6760,7 @@ export namespace Semantic {
     | DeferredFunctionDatatypeDef
     | FunctionDatatypeDef
     | StructDatatypeDef
+    | EnumDatatypeDef
     | FixedArrayDatatypeDef
     | DynamicArrayDatatypeDef
     | ParameterPackDatatypeDef
@@ -6844,6 +7168,8 @@ export namespace Semantic {
         return "null";
       } else if (expr.literal.type === EPrimitive.none) {
         return "none";
+      } else if (expr.literal.type === "enum") {
+        return expr.literal.enumType.toString() + "|" + expr.literal.valueName;
       } else {
         return primitiveToString(expr.literal.type) + "_" + expr.literal.value.toString();
       }
@@ -6908,6 +7234,8 @@ export namespace Semantic {
             }
           } else if (typedef.variant === Collect.ENode.TypeDefAlias && typedef.name === name) {
             return id;
+          } else if (typedef.variant === Collect.ENode.EnumTypeDef && typedef.name === name) {
+            return id;
           }
         } else if (s.variant === Collect.ENode.GenericTypeParameterSymbol && s.name === name) {
           return id;
@@ -6948,7 +7276,7 @@ export namespace Semantic {
       case Collect.ENode.UnitScope:
       case Collect.ENode.FileScope:
       case Collect.ENode.BlockScope:
-      case Collect.ENode.TypeAliasScope:
+      case Collect.ENode.TypeDefScope:
       case Collect.ENode.StructScope:
       case Collect.ENode.FunctionScope: {
         const found = lookupDirect(scope.symbols);
@@ -7285,6 +7613,7 @@ export namespace Semantic {
 
       elaboratedStructDatatypes: new Map(),
       elaboratedFuncdefSymbols: new Map(),
+      elaboratedEnumSymbols: new Map(),
       elaboratedPrimitiveTypes: [],
       elaboratedNamespaceSymbols: [],
       elaboratedGlobalVariableDefinitions: [],
@@ -7372,7 +7701,18 @@ export namespace Semantic {
     );
   }
 
-  export function serializeLiteralValue(value: LiteralValue) {
+  export function serializeLiteralType(sr: SemanticResult, value: LiteralValue) {
+    if (value.type === "enum") {
+      const enumType = sr.typeDefNodes.get(value.enumType);
+      assert(enumType.variant === Semantic.ENode.EnumDatatype && enumType.parentStructOrNS);
+      const parent = Semantic.getNamespaceChainFromDatatype(sr, enumType.parentStructOrNS);
+      return `${parent.map((p) => p.pretty).join(".")}.${value.valueName}`;
+    } else {
+      return primitiveToString(value.type);
+    }
+  }
+
+  export function serializeLiteralValue(sr: SemanticResult, value: LiteralValue) {
     if (value.type === EPrimitive.str) {
       return `${JSON.stringify(value.value)}`;
     } else if (value.type === EPrimitive.cstr || value.type === EPrimitive.ccstr) {
@@ -7386,6 +7726,11 @@ export namespace Semantic {
         return `null`;
       } else if (value.type === EPrimitive.none) {
         return `none`;
+      } else if (value.type === "enum") {
+        const enumType = sr.typeDefNodes.get(value.enumType);
+        assert(enumType.variant === Semantic.ENode.EnumDatatype && enumType.parentStructOrNS);
+        const parent = Semantic.getNamespaceChainFromDatatype(sr, enumType.parentStructOrNS);
+        return `${parent.map((p) => p.pretty).join(".")}.${value.valueName}`;
       } else {
         return `${primitiveToString(value.type)}(${value.value})`;
       }
@@ -7397,6 +7742,7 @@ export namespace Semantic {
 
     if (
       type.variant !== Semantic.ENode.StructDatatype &&
+      type.variant !== Semantic.ENode.EnumDatatype &&
       type.variant !== Semantic.ENode.NamespaceDatatype
     ) {
       const mangle = mangleTypeDef(sr, typeId);
@@ -7490,6 +7836,7 @@ export namespace Semantic {
       case Semantic.ENode.GenericParameterDatatype:
         return datatype.name;
 
+      case Semantic.ENode.EnumDatatype:
       case Semantic.ENode.StructDatatype:
         if (datatype.extern === EExternLanguage.Extern_C) {
           return datatype.name;
@@ -7843,6 +8190,15 @@ export namespace Semantic {
         };
       }
 
+      case Semantic.ENode.EnumDatatype: {
+        return {
+          name: type.parentStructOrNS
+            ? mangleTypeDef(sr, type.parentStructOrNS).name
+            : "" + type.name.length + type.name,
+          wasMangled: true,
+        };
+      }
+
       case Semantic.ENode.ParameterPackDatatype: {
         assert(type.parameters !== null);
         return {
@@ -7893,6 +8249,14 @@ export namespace Semantic {
     } else if (literalType === EPrimitive.none) {
       return {
         name: "4none",
+        wasMangled: true,
+      };
+    } else if (literalType === "enum") {
+      const enumType = sr.typeDefNodes.get(literal.enumType);
+      assert(enumType.variant === Semantic.ENode.EnumDatatype && enumType.parentStructOrNS);
+      const parent = mangleTypeDef(sr, enumType.parentStructOrNS);
+      return {
+        name: parent.name + literal.valueName.length + literal.valueName,
         wasMangled: true,
       };
     } else {
@@ -7971,7 +8335,7 @@ export namespace Semantic {
           .join(", ")} }`;
 
       case Semantic.ENode.LiteralExpr: {
-        return serializeLiteralValue(expr.literal);
+        return serializeLiteralValue(sr, expr.literal);
       }
 
       case Semantic.ENode.MemberAccessExpr:
