@@ -86,7 +86,7 @@ export type CollectionContext = {
   blockScopes: Set<Collect.ScopeId>;
   elaboratedNamespacesAndStructs: Set<Collect.TypeDefId>;
 
-  exportedSymbols: ExportData;
+  exportedGenericSymbols: Set<Collect.SymbolId>;
 };
 
 export function funcSymHasParameterPack(cc: CollectionContext, id: Collect.SymbolId) {
@@ -113,9 +113,7 @@ export function makeCollectionContext(config: ModuleConfig): CollectionContext {
 
     blockScopes: new Set(),
     overloadGroups: new Set(),
-    exportedSymbols: {
-      exported: new Set(),
-    },
+    exportedGenericSymbols: new Set<Collect.SymbolId>(),
     elaboratedNamespacesAndStructs: new Set(),
   };
   const [scope, moduleScopeId] = Collect.makeScope(cc, {
@@ -1205,8 +1203,8 @@ function collectTypeDef(
         structScope.symbols.add(funcsym);
       }
 
-      if (item.export) {
-        cc.exportedSymbols.exported.add(structSymbolId);
+      if (item.export && item.generics.length > 0) {
+        cc.exportedGenericSymbols.add(structSymbolId);
       }
 
       return structSymbolId;
@@ -1272,9 +1270,9 @@ function collectTypeDef(
         });
       }
 
-      if (item.export) {
-        cc.exportedSymbols.exported.add(typedefSymbolId);
-      }
+      // if (item.export) {
+      //   cc.exportedSymbols.exported.add(typedefSymbolId);
+      // }
 
       return typedefSymbolId;
     }
@@ -1558,8 +1556,11 @@ function collectSymbol(
         }
       }
 
-      if (item.export) {
-        cc.exportedSymbols.exported.add(functionSymbolId);
+      if (
+        item.export &&
+        (item.generics.length > 0 || funcSymHasParameterPack(cc, functionSymbolId))
+      ) {
+        cc.exportedGenericSymbols.add(functionSymbolId);
       }
 
       return overloadGroupId;
@@ -1664,9 +1665,9 @@ function collectGlobalDirective(
         sourceloc: item.sourceloc,
       })[1];
       cc.scopeNodes.get(args.currentParentScope).symbols.add(symbolId);
-      if (item.export) {
-        cc.exportedSymbols.exported.add(symbolId);
-      }
+      // if (item.export) {
+      //   cc.exportedSymbols.exported.add(symbolId);
+      // }
       return;
     }
 
@@ -1727,9 +1728,9 @@ function collectGlobalDirective(
       });
       genericsScope.owningSymbol = symbolId;
       cc.scopeNodes.get(args.currentParentScope).symbols.add(symbolId);
-      if (item.export) {
-        cc.exportedSymbols.exported.add(symbolId);
-      }
+      // if (item.export) {
+      //   cc.exportedSymbols.exported.add(symbolId);
+      // }
 
       for (const g of item.generics) {
         const generic = defineGenericTypeParameter(cc, g.name, genericsScopeId, g.sourceloc);
@@ -2458,7 +2459,8 @@ export const printCollectedExpr = (cc: CollectionContext, exprId: Collect.ExprId
     }
 
     case Collect.ENode.LiteralExpr: {
-      return Semantic.serializeLiteralValue(expr.literal);
+      return "literal";
+      // return Semantic.serializeLiteralValue(cc, expr.literal);
     }
 
     case Collect.ENode.BinaryExpr: {

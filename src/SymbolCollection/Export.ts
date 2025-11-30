@@ -1,13 +1,206 @@
-import { Semantic } from "../Semantic/Elaborate";
+import { Semantic, type SemanticResult } from "../Semantic/Elaborate";
 import { EExternLanguage } from "../shared/AST";
 import { assert, formatSourceLoc } from "../shared/Errors";
-import {
-  Collect,
-  funcSymHasParameterPack,
-  printCollectedDatatype,
-  printCollectedExpr,
-  type CollectionContext,
-} from "./SymbolCollection";
+import { Collect, funcSymHasParameterPack, type CollectionContext } from "./SymbolCollection";
+
+export function ExportTypeDef(
+  sr: SemanticResult,
+  typedefId: Semantic.TypeDefId,
+  nested: boolean
+): string {
+  let file = "";
+  const typedef = sr.typeDefNodes.get(typedefId);
+  switch (typedef.variant) {
+    case Semantic.ENode.StructDatatype: {
+      const namespaces = Semantic.getNamespaceChainFromDatatype(sr, typedefId);
+      if (!nested) {
+        for (const ns of namespaces.slice(0, -1)) {
+          file += "namespace " + ns.pretty + " {\n";
+        }
+      }
+      assert(typedef.generics.length === 0);
+      if (typedef.extern === EExternLanguage.Extern) {
+        file += "extern ";
+      } else if (typedef.extern === EExternLanguage.Extern_C) {
+        file += "extern C ";
+      }
+      if (typedef.noemit) {
+        file += "noemit ";
+      }
+      file += "struct ";
+      file += namespaces[namespaces.length - 1].pretty + " {\n";
+      for (const member of typedef.members) {
+        const content = sr.symbolNodes.get(member);
+        assert(content.variant === Semantic.ENode.VariableSymbol);
+        const defaultValue = typedef.memberDefaultValues.find((v) => v.memberName === content.name);
+        assert(content.type);
+        if (defaultValue) {
+          file += `${content.name}: ${Semantic.serializeTypeUse(
+            sr,
+            content.type
+          )} = ${Semantic.serializeExpr(sr, defaultValue.value)};\n`;
+        } else {
+          file += `${content.name}: ${Semantic.serializeTypeUse(sr, content.type)};\n`;
+        }
+      }
+      for (const methodId of typedef.methods) {
+        const method = sr.symbolNodes.get(methodId);
+        assert(method.variant === Semantic.ENode.FunctionSymbol);
+        if (method.generics.length !== 0) {
+          const originalFunc = sr.cc.symbolNodes.get(method.originalCollectedFunction);
+          assert(originalFunc.variant === Collect.ENode.FunctionSymbol);
+          file += originalFunc.originalSourcecode + "\n";
+        } else {
+          const functype = sr.typeDefNodes.get(method.type);
+          assert(functype.variant === Semantic.ENode.FunctionDatatype);
+          const parameters = functype.parameters
+            .slice(1, 0)
+            .map((p, i) => `${method.parameterNames[i]}: ${Semantic.serializeTypeUse(sr, p)}`)
+            .join(", ");
+          if (functype.returnType) {
+            file += `${method.name}(${parameters}): ${Semantic.serializeTypeUse(
+              sr,
+              functype.returnType
+            )}`;
+            file += " :: final";
+            if (functype.requires.autodest) {
+              file += ", autodest";
+            }
+            if (functype.requires.noreturn) {
+              file += ", noreturn";
+            }
+            file += `;\n`;
+          } else {
+            file += `${method.name}(${parameters});\n`;
+          }
+        }
+      }
+      for (const inner of typedef.nestedStructs) {
+        file += ExportTypeDef(sr, inner, true) + "\n\n";
+      }
+      file += "}\n";
+      if (!nested) {
+        for (const ns of namespaces.slice(0, -1)) {
+          file += "}\n";
+        }
+      }
+      break;
+    }
+
+    // case Semantic.ENode.TypeDefSymbol: {
+    //   const generics =
+    //     typedef.generics.length > 0
+    //       ? `<${typedef.generics
+    //           .map((g) => {
+    //             const sym = cc.symbolNodes.get(g);
+    //             assert(sym.variant === Collect.ENode.GenericTypeParameterSymbol);
+    //             return sym.name;
+    //           })
+    //           .join(", ")}>`
+    //       : "";
+    //   file += `type ${symbol.name}${generics} = ${printType(cc, typedef.target)};\n`;
+    //   break;
+    // }
+
+    case Semantic.ENode.EnumDatatype: {
+      file += "enum ";
+      if (typedef.noemit) {
+        file += "noemit ";
+      }
+      file += typedef.name + " {\n";
+      for (const value of typedef.values) {
+        file += `${value.name} = ${Semantic.serializeExpr(sr, value.valueExpr)},\n`;
+      }
+      file += "}\n";
+      break;
+    }
+
+    default:
+      assert(false);
+  }
+  return file;
+}
+
+export function ExportSymbol(
+  sr: SemanticResult,
+  symbolId: Semantic.SymbolId,
+  nested: boolean
+): string {
+  let file = "";
+
+  const symbol = sr.symbolNodes.get(symbolId);
+  switch (symbol.variant) {
+    case Semantic.ENode.FunctionSymbol: {
+      if (symbol.sourceloc) {
+        file += `#source ${formatSourceLoc(symbol.sourceloc)} {\n`;
+      }
+      const namespaces = Semantic.getNamespaceChainFromSymbol(sr, symbolId);
+      for (const ns of namespaces.slice(0, -1)) {
+        file += "namespace " + ns.pretty + " {\n";
+      }
+      assert(
+        symbol.generics.length === 0 &&
+          !funcSymHasParameterPack(sr.cc, symbol.originalCollectedFunction)
+      );
+      const functype = sr.typeDefNodes.get(symbol.type);
+      assert(functype.variant === Semantic.ENode.FunctionDatatype);
+      // console.log(symbol.name, symbol);
+      if (symbol.extern === EExternLanguage.Extern) {
+        file += "extern ";
+      } else if (symbol.extern === EExternLanguage.Extern_C) {
+        file += "extern C ";
+      }
+      if (symbol.noemit) {
+        file += "noemit ";
+      }
+      file += symbol.name;
+      file +=
+        "(" +
+        functype.parameters
+          .map((p, i) => `${symbol.parameterNames[i]}: ${Semantic.serializeTypeUse(sr, p)}`)
+          .join(", ") +
+        (functype.vararg ? ", ..." : "") +
+        ")" +
+        (functype.returnType ? ": " + Semantic.serializeTypeUse(sr, functype.returnType) : " ");
+      file += " :: final";
+      if (functype.requires.autodest) {
+        file += ", autodest";
+      }
+      if (functype.requires.noreturn) {
+        file += ", noreturn";
+      }
+      file += ";\n";
+      for (const ns of namespaces.slice(0, -1)) {
+        file += "}\n";
+      }
+      if (symbol.sourceloc) {
+        file += `}\n`;
+      }
+      break;
+    }
+
+    case Semantic.ENode.TypeDefSymbol: {
+      file += ExportTypeDef(sr, symbol.datatype, nested);
+      break;
+    }
+
+    case Semantic.ENode.CInjectDirectiveSymbol: {
+      if (symbol.sourceloc) {
+        file += `#source ${formatSourceLoc(symbol.sourceloc)} {\n`;
+      }
+      file += `__c__("${symbol.value}");\n`;
+      if (symbol.sourceloc) {
+        file += `}\n`;
+      }
+      break;
+    }
+
+    default:
+      assert(false, symbol.variant.toString());
+  }
+
+  return file;
+}
 
 function getNamespacesFromScope(
   cc: CollectionContext,
@@ -65,116 +258,37 @@ function getNamespacesFromSymbol(
   }
 }
 
-function printType(cc: CollectionContext, typeId: Collect.TypeUseId): string {
-  const type = cc.typeUseNodes.get(typeId);
-  switch (type.variant) {
-    case Collect.ENode.NamedDatatype: {
-      let str = type.name;
-      if (type.genericArgs.length !== 0) {
-        str +=
-          "<" +
-          type.genericArgs
-            .map((g) => {
-              const expr = cc.exprNodes.get(g);
-              if (expr.variant === Collect.ENode.TypeLiteralExpr) {
-                return printCollectedDatatype(cc, expr.datatype);
-              } else if (expr.variant === Collect.ENode.LiteralExpr) {
-                return Semantic.serializeLiteralValue(cc.sr, expr.literal);
-              } else {
-                assert(false);
-              }
-            })
-            .join(", ") +
-          ">";
-      }
-      if (type.innerNested) {
-        str += "." + printType(cc, type.innerNested);
-      }
-      return str;
-    }
-
-    case Collect.ENode.StackArrayDatatype: {
-      return `[${type.length}]${printType(cc, type.datatype)}`;
-    }
-
-    case Collect.ENode.DynamicArrayDatatype: {
-      return `[]${printType(cc, type.datatype)}`;
-    }
-
-    case Collect.ENode.ParameterPack: {
-      return "...";
-    }
-
-    case Collect.ENode.UntaggedUnionDatatype: {
-      return "(" + type.members.map((m) => printType(cc, m)).join(" | ") + ")";
-    }
-
-    case Collect.ENode.TaggedUnionDatatype: {
-      return (
-        "union { " + type.members.map((m) => `${m.tag}: ${printType(cc, m.type)}`).join(",") + " }"
-      );
-    }
-
-    case Collect.ENode.FunctionDatatype: {
-      return `(${type.parameters.map((p, i) => `param${i}: ${printType(cc, p)}`).join(", ")}${
-        type.vararg ? ", ..." : ""
-      }) => ${printType(cc, type.returnType)}`;
-    }
-
-    default:
-      assert(false, Collect.ENode[(type as any).variant]);
-  }
-}
-
-export function ExportExpr(cc: CollectionContext, exprId: Collect.ExprId): string {
-  const expr = cc.exprNodes.get(exprId);
-  switch (expr.variant) {
-    case Collect.ENode.LiteralExpr: {
-      return Semantic.serializeLiteralValue(cc.sr, expr.literal);
-    }
-
-    case Collect.ENode.StructInstantiationExpr: {
-      let str = `${expr.structType ? printCollectedDatatype(cc, expr.structType) : ""} {`;
-      for (const m of expr.members) {
-        str += `${m.name}: ${ExportExpr(cc, m.value)}`;
-      }
-      str += "}";
-      return str;
-    }
-
-    case Collect.ENode.SymbolValueExpr: {
-      if (expr.genericArgs.length > 0) {
-        return expr.name + "<" + expr.genericArgs.map((g) => ExportExpr(cc, g)).join(", ") + ">";
-      } else {
-        return expr.name;
-      }
-    }
-
-    default:
-      assert(false, expr.variant.toString());
-  }
-}
-
-export function ExportSymbol(
-  cc: CollectionContext,
-  symbolId: Collect.SymbolId,
-  nested = false
-): string {
+export function ExportCollectedSymbols(sr: SemanticResult) {
   let file = "";
 
-  const symbol = cc.symbolNodes.get(symbolId);
-  switch (symbol.variant) {
-    case Collect.ENode.FunctionSymbol: {
-      if (symbol.sourceloc) {
-        file += `#source ${formatSourceLoc(symbol.sourceloc)} {\n`;
+  for (const symbolId of sr.exportedSymbols) {
+    file += ExportSymbol(sr, symbolId, false);
+  }
+
+  for (const symbolId of sr.cc.exportedGenericSymbols) {
+    const symbol = sr.cc.symbolNodes.get(symbolId);
+
+    // if (symbol.sourceloc) {
+    //   file += `#source ${formatSourceLoc(symbol.sourceloc)} {\n`;
+    // }
+    const namespaces = getNamespacesFromSymbol(sr.cc, symbolId);
+    for (const ns of namespaces.slice(0, -1)) {
+      file += "namespace " + ns + " {\n";
+    }
+
+    if (symbol.variant === Collect.ENode.FunctionSymbol) {
+      let code = symbol.originalSourcecode;
+      if (code.startsWith(" export ")) {
+        code = code.replace(" export ", "");
       }
-      const namespaces = getNamespacesFromSymbol(cc, symbolId);
-      for (const ns of namespaces.slice(0, -1)) {
-        file += "namespace " + ns + " {\n";
+      if (code.startsWith("export ")) {
+        code = code.replace("export ", "");
       }
-      if (symbol.generics.length !== 0 || funcSymHasParameterPack(cc, symbolId)) {
-        // This is very ugly
-        let code = symbol.originalSourcecode;
+      file += code + "\n";
+    } else if (symbol.variant === Collect.ENode.TypeDefSymbol) {
+      const typedef = sr.cc.typeDefNodes.get(symbol.typeDef);
+      if (typedef.variant === Collect.ENode.StructTypeDef) {
+        let code = typedef.originalSourcecode;
         if (code.startsWith(" export ")) {
           code = code.replace(" export ", "");
         }
@@ -183,198 +297,15 @@ export function ExportSymbol(
         }
         file += code + "\n";
       } else {
-        // console.log(symbol.name, symbol);
-        if (symbol.extern === EExternLanguage.Extern) {
-          file += "extern ";
-        } else if (symbol.extern === EExternLanguage.Extern_C) {
-          file += "extern C ";
-        }
-        if (symbol.noemit) {
-          file += "noemit ";
-        }
-        const overloadGroup = cc.symbolNodes.get(symbol.overloadGroup);
-        assert(overloadGroup.variant === Collect.ENode.FunctionOverloadGroupSymbol);
-        file += namespaces[namespaces.length - 1];
-        file +=
-          "(" +
-          symbol.parameters.map((p, i) => `${p.name}: ${printType(cc, p.type)}`).join(", ") +
-          (symbol.vararg ? ", ..." : "") +
-          ")" +
-          (symbol.returnType ? ": " + printType(cc, symbol.returnType) : " ");
-        file += " :: final";
-        if (symbol.requires.autodest) {
-          file += ", autodest";
-        }
-        if (symbol.requires.noreturn) {
-          file += ", noreturn";
-        }
-        file += ";\n";
+        assert(false);
       }
-      for (const ns of namespaces.slice(0, -1)) {
-        file += "}\n";
-      }
-      if (symbol.sourceloc) {
-        file += `}\n`;
-      }
-      break;
+    } else {
+      assert(false);
     }
 
-    case Collect.ENode.TypeDefSymbol: {
-      const typedef = cc.typeDefNodes.get(symbol.typeDef);
-      if (typedef.sourceloc) {
-        file += `#source ${formatSourceLoc(typedef.sourceloc)} {\n`;
-      }
-      switch (typedef.variant) {
-        case Collect.ENode.StructTypeDef: {
-          const namespaces = getNamespacesFromSymbol(cc, symbolId);
-          if (!nested) {
-            for (const ns of namespaces.slice(0, -1)) {
-              file += "namespace " + ns + " {\n";
-            }
-          }
-          if (typedef.generics.length !== 0) {
-            // This is very ugly
-            let code = typedef.originalSourcecode;
-            if (code.startsWith(" export ")) {
-              code = code.replace(" export ", "");
-            }
-            if (code.startsWith("export ")) {
-              code = code.replace("export ", "");
-            }
-            file += code + "\n";
-          } else {
-            if (typedef.extern === EExternLanguage.Extern) {
-              file += "extern ";
-            } else if (typedef.extern === EExternLanguage.Extern_C) {
-              file += "extern C ";
-            }
-            if (typedef.noemit) {
-              file += "noemit ";
-            }
-            file += "struct ";
-            file += namespaces[namespaces.length - 1] + " {\n";
-            const structScope = cc.scopeNodes.get(typedef.structScope);
-            assert(structScope.variant === Collect.ENode.StructScope);
-            for (const contentId of structScope.symbols) {
-              const content = cc.symbolNodes.get(contentId);
-              if (content.variant === Collect.ENode.VariableSymbol) {
-                assert(content.type);
-                const defaultValue = typedef.defaultMemberValues.find(
-                  (v) => v.name === content.name
-                );
-                if (defaultValue) {
-                  file += `${content.name}: ${printType(cc, content.type)} = ${ExportExpr(
-                    cc,
-                    defaultValue.value
-                  )};\n`;
-                } else {
-                  file += `${content.name}: ${printType(cc, content.type)};\n`;
-                }
-              } else if (content.variant === Collect.ENode.FunctionOverloadGroupSymbol) {
-                for (const overloadId of content.overloads) {
-                  const method = cc.symbolNodes.get(overloadId);
-                  assert(method.variant === Collect.ENode.FunctionSymbol);
-                  if (method.generics.length !== 0) {
-                    file += method.originalSourcecode + "\n";
-                  } else {
-                    const parameters = method.parameters
-                      .map((p, i) => `${p.name}: ${printType(cc, p.type)}`)
-                      .join(", ");
-                    if (method.returnType) {
-                      file += `${content.name}(${parameters}): ${printType(cc, method.returnType)}`;
-                      file += " :: final";
-                      if (method.requires.autodest) {
-                        file += ", autodest";
-                      }
-                      if (method.requires.noreturn) {
-                        file += ", noreturn";
-                      }
-                      file += `;\n`;
-                    } else {
-                      file += `${content.name}(${parameters});\n`;
-                    }
-                  }
-                }
-              } else if (content.variant === Collect.ENode.TypeDefSymbol) {
-                file += ExportSymbol(cc, contentId, true) + "\n\n";
-              } else {
-                assert(false, content.variant.toString());
-              }
-            }
-            file += "}\n";
-          }
-          if (!nested) {
-            for (const ns of namespaces.slice(0, -1)) {
-              file += "}\n";
-            }
-          }
-          break;
-        }
-
-        case Collect.ENode.TypeDefAlias: {
-          const generics =
-            typedef.generics.length > 0
-              ? `<${typedef.generics
-                  .map((g) => {
-                    const sym = cc.symbolNodes.get(g);
-                    assert(sym.variant === Collect.ENode.GenericTypeParameterSymbol);
-                    return sym.name;
-                  })
-                  .join(", ")}>`
-              : "";
-          file += `type ${symbol.name}${generics} = ${printType(cc, typedef.target)};\n`;
-          break;
-        }
-
-        case Collect.ENode.EnumTypeDef: {
-          file += "enum ";
-          if (typedef.noemit) {
-            file += "noemit ";
-          }
-          file += typedef.name + " {\n";
-          for (const value of typedef.values) {
-            if (value.value) {
-              file += `${value.name} = ${printCollectedExpr(cc, value.value)},`;
-            } else {
-              file += `${value.name},`;
-            }
-          }
-          file += "}\n";
-          break;
-        }
-
-        default:
-          assert(false);
-      }
-      if (typedef.sourceloc) {
-        file += `}\n`;
-      }
-      break;
+    for (const ns of namespaces.slice(0, -1)) {
+      file += "}\n";
     }
-
-    case Collect.ENode.CInjectDirective: {
-      if (symbol.sourceloc) {
-        file += `#source ${formatSourceLoc(symbol.sourceloc)} {\n`;
-      }
-      file += `__c__("${symbol.value}");\n`;
-      if (symbol.sourceloc) {
-        file += `}\n`;
-      }
-      break;
-    }
-
-    default:
-      assert(false, symbol.variant.toString());
-  }
-
-  return file;
-}
-
-export function ExportCollectedSymbols(cc: CollectionContext) {
-  let file = "";
-
-  for (const symbolId of cc.exportedSymbols.exported) {
-    file += ExportSymbol(cc, symbolId);
   }
 
   return file;

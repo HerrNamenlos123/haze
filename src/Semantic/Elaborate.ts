@@ -887,6 +887,10 @@ export class SemanticElaborator {
       resultAsTypeDefSymbol: enumSymbolId,
     });
 
+    if (enumValue.export) {
+      this.sr.exportedSymbols.add(enumSymbolId);
+    }
+
     const getEnumType = () => {
       if (enumValue.values[0].value) {
         const [valueResult, valueResultId] = EvalCTFEOrFail(
@@ -1563,7 +1567,7 @@ export class SemanticElaborator {
       // }
 
       case Collect.ENode.CInjectDirective: {
-        return [this.sr.b.cInject(symbol.value, symbol.sourceloc)];
+        return [this.sr.b.cInject(symbol.value, symbol.export, symbol.sourceloc)];
       }
 
       default:
@@ -1665,6 +1669,11 @@ export class SemanticElaborator {
         })[1],
         substitutionContext: this.currentContext,
       });
+
+      if (definedStructType.export && struct.generics.length === 0) {
+        const [_, id] = this.sr.b.typeDefSymbol(structId);
+        this.sr.exportedSymbols.add(id);
+      }
 
       const structScope = this.sr.cc.scopeNodes.get(definedStructType.structScope);
       assert(structScope.variant === Collect.ENode.StructScope);
@@ -2398,6 +2407,7 @@ export class SemanticElaborator {
           instanceDepsSnapshot: this.sr.e.currentContext.instanceDeps,
           scope: null,
           concrete: this.sr.typeDefNodes.get(ftype).concrete,
+          originalCollectedFunction: functionSignature.originalFunction,
         });
 
         if (symbol.concrete) {
@@ -2573,6 +2583,14 @@ export class SemanticElaborator {
                   );
                 }
               }
+            }
+
+            if (
+              symbol.export &&
+              symbol.generics.length === 0 &&
+              !funcSymHasParameterPack(this.sr.cc, symbol.originalCollectedFunction)
+            ) {
+              this.sr.exportedSymbols.add(symbolId);
             }
           }
         }
@@ -5676,13 +5694,16 @@ export class SemanticBuilder {
     });
   }
 
-  cInject(value: string, sourceloc: SourceLoc) {
+  cInject(value: string, _export: boolean, sourceloc: SourceLoc) {
     const [_, directiveId] = Semantic.addSymbol(this.sr, {
       variant: Semantic.ENode.CInjectDirectiveSymbol,
       value: value,
       sourceloc: sourceloc,
     });
     this.sr.cInjections.push(directiveId);
+    if (_export) {
+      this.sr.exportedSymbols.add(directiveId);
+    }
     return directiveId;
   }
 
@@ -6342,6 +6363,8 @@ export type SemanticResult = {
 
   exportedCollectedSymbols: Set<number>;
 
+  exportedSymbols: Set<Semantic.SymbolId>;
+
   cInjections: Semantic.SymbolId[];
   globalMainFunction: Semantic.SymbolId | null;
 };
@@ -6620,6 +6643,7 @@ export namespace Semantic {
     methodOf: TypeDefId | null;
     sourceloc: SourceLoc;
     parentStructOrNS: TypeDefId | null;
+    originalCollectedFunction: Collect.SymbolId;
     concrete: boolean;
   };
 
@@ -7647,6 +7671,8 @@ export namespace Semantic {
 
       cInjections: [],
       globalMainFunction: null,
+
+      exportedSymbols: new Set(),
     };
 
     const context = makeElaborationContext({
@@ -7856,9 +7882,12 @@ export namespace Semantic {
           .join(".");
 
       case Semantic.ENode.FunctionDatatype:
-        return `(${datatype.parameters.map((p) => serializeTypeUse(sr, p)).join(", ")}${
-          datatype.vararg ? ", ..." : ""
-        }) => ${serializeTypeUse(sr, datatype.returnType)}`;
+        return `(${datatype.parameters
+          .map((p, i) => `arg_${i}: ${serializeTypeUse(sr, p)}`)
+          .join(", ")}${datatype.vararg ? ", ..." : ""}) => ${serializeTypeUse(
+          sr,
+          datatype.returnType
+        )}`;
 
       case Semantic.ENode.DeferredFunctionDatatype:
         return `(${datatype.parameters.map((p) => serializeTypeUse(sr, p)).join(", ")}${

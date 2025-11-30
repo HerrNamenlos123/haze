@@ -46,7 +46,7 @@ import {
 } from "./SymbolCollection/SymbolCollection";
 import { generateCode } from "./Codegen/CodeGenerator";
 import { LowerModule } from "./Lower/Lower";
-import { ExportCollectedSymbols } from "./SymbolCollection/Export";
+import { ExportCollectedSymbols as ExportSymbols } from "./SymbolCollection/Export";
 import { Semantic } from "./Semantic/Elaborate";
 import { cwd, stdout } from "process";
 import { spawnSync } from "child_process";
@@ -1273,7 +1273,7 @@ class ModuleCompiler {
         };
         await writeFile(moduleMetadataFile, JSON.stringify(moduleMetadata, undefined, 2));
 
-        const importFile = ExportCollectedSymbols(this.cc);
+        const importFile = ExportSymbols(sr);
         await writeFile(importFilePath, importFile);
 
         if (fs.existsSync(moduleOutputLib)) {
