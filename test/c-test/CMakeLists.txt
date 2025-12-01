@@ -4,7 +4,7 @@ project(unwind_test C)
 set(CMAKE_C_STANDARD 11)
 
 # Add your source file
-add_executable(unwind_test main.c)
+add_executable(unwind_test new-main-thread.c)
 
 # Find and link libunwind
 find_library(UNWIND_LIB unwind REQUIRED)
