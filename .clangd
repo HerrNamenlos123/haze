@@ -1,4 +1,5 @@
 CompileFlags:
   CompilationDatabase: "__haze__/compile_commands.json"
-
-NonexistentField: true
+  Add: [
+    "-I/home/fzachs/.haze/global",
+  ]

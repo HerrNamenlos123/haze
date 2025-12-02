@@ -12,10 +12,29 @@ extern C parse(source: str) {
 
 }
 
+y(d: int) :: final {
+    x (d + 1);
+}
+
+x(d: int) :: final {
+    y(d + 1);
+}
+
+a() {
+    x(0);
+}
+
 bar() :: final {
-    const b = 1;
-    test();
+    const c = 1;
+    // const r = 1;
+    // const e = 1;
+    // const w = 1;
+    // const q = 1;
+    // const i = 1;
+    // const s = 1;
+    // a();
     // __c__("int* a = 0; int b = *a;");
+    // test();
 }
 
 test() {
