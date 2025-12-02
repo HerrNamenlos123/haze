@@ -12,8 +12,17 @@ extern C parse(source: str) {
 
 }
 
+bar() {
+    __c__("int* a = 0; int b = *a;");
+}
+
+test() {
+    bar();
+}
+
 main() {
     type LexerNode = IntegerNode | IdentifierNode;
+    test();
     // parse();
     const result = fs.read("stdlib/core/src/String.hz");
     if result {

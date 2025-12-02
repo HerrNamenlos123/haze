@@ -1,13 +1,12 @@
-#include <libunwind-x86_64.h>
-#include <stdatomic.h>
 #define UNW_LOCAL_ONLY
 
 #define _GNU_SOURCE
+#include "libunwind.h"
 #include <dlfcn.h>
 #include <errno.h>
-#include <libunwind.h>
 #include <pthread.h>
 #include <signal.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -45,7 +44,7 @@ void* panicUnwindThread(void* _)
   sem_wait(&panic_sem);
 
   unw_cursor_t cursor;
-  unw_init_local2(&cursor, &global_crash_context, UNW_INIT_SIGNAL_FRAME);
+  unw_init_local(&cursor, &global_crash_context);
   unw_word_t pc, sp;
   do {
     unw_get_reg(&cursor, UNW_REG_IP, &pc);
@@ -71,8 +70,8 @@ void d(int dd)
 
 void crash()
 {
-  // int* ptr = 0;
-  // int a = *ptr;
+  int* ptr = 0;
+  int a = *ptr;
   d(0);
 }
 
@@ -81,11 +80,13 @@ void panicHandler(int sig, siginfo_t* si, void* ucontext)
   printf("PANIC\n");
   int expected = 0;
   if (atomic_compare_exchange_strong(&unwind_in_progress, &expected, 1)) {
+    printf("1\n");
     // This thread claims the global context
     memcpy(&global_crash_context, ucontext, sizeof(global_crash_context));
     sem_post(&panic_sem); // wake the panic thread
   }
   else {
+    printf("2\n");
     // Another thread is already unwinding
     sem_wait(&infinite_block_sem);
   }

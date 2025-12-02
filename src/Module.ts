@@ -1111,13 +1111,17 @@ class ModuleCompiler {
       const linkerFlags = this.config.linkerFlags;
       compilerFlags.any.push("-Wno-parentheses-equality");
       compilerFlags.any.push("-Wno-extra-tokens");
-      compilerFlags.any.push("-nostdlib");
-      compilerFlags.any.push("-nodefaultlibs");
+      // compilerFlags.any.push("-nostdlib");
+      // compilerFlags.any.push("-nodefaultlibs");
 
       compilerFlags.any.push(`-I"${this.moduleDir}/bin/include"`);
       compilerFlags.any.push(`-I"${this.config.srcDirectory}/../include"`);
+      compilerFlags.any.push(`-I"${HAZE_GLOBAL_DIR}/include"`);
+      compilerFlags.any.push(`-fno-omit-frame-pointer`);
       linkerFlags.any.push(`-L"${this.moduleDir}/bin/lib"`);
       linkerFlags.any.push(`-L"${this.moduleDir}/bin/lib64"`);
+
+      linkerFlags.any.push(`"${HAZE_GLOBAL_DIR}/lib/x86_64-unknown-linux-gnu/libunwind.a"`);
 
       compilerFlags.win32.push(`-D_CRT_SECURE_NO_WARNINGS`);
       linkerFlags.win32.push(`-fuse-ld=lld`);

@@ -4,9 +4,9 @@
 
 #include "hzstd_arena.h"
 #include "hzstd_string.h"
+#include <../../global/include/libunwind.h>
 #include <assert.h>
 #include <dlfcn.h>
-#include <libunwind.h>
 #include <pthread.h>
 #include <semaphore.h>
 #include <signal.h>
@@ -85,7 +85,7 @@ static void* hzstd_panic_handler_thread(void* _)
   sem_wait(&panic_sem); // Wait until a panic arrives
 
   unw_cursor_t cursor;
-  unw_init_local2(&cursor, &global_crash_context, UNW_INIT_SIGNAL_FRAME);
+  unw_init_local(&cursor, &global_crash_context);
   unw_word_t pc, sp;
   do {
     unw_get_reg(&cursor, UNW_REG_IP, &pc);
@@ -99,6 +99,15 @@ static void* hzstd_panic_handler_thread(void* _)
   } while (unw_step(&cursor) > 0);
   exit(0);
 }
+
+void foo2()
+{
+  printf("Crashing\n");
+  int* a = 0;
+  int b = *a;
+}
+
+void foo1() { foo2(); }
 
 void hzstd_setup_panic_handler()
 {
@@ -133,4 +142,6 @@ void hzstd_setup_panic_handler()
   if (sigaction(SIGSEGV, &sa, NULL) != 0) {
     hzstd_panic("Failed to register the panic handler (SIGSEGV)");
   }
+
+  foo1();
 }

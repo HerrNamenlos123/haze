@@ -9,6 +9,13 @@ add_executable(unwind_test new-main-thread-clean.c)
 # Find and link libunwind
 # find_library(UNWIND_LIB unwind REQUIRED)
 
-target_link_libraries(unwind_test PUBLIC unwind-x86_64)
+# target_include_directories(unwind_test PUBLIC "/home/fzachs/.haze/global/include/")
+# target_link_directories(unwind_test PUBLIC "/home/fzachs/.haze/global/lib/")
+target_link_libraries(unwind_test PUBLIC unwind)
+target_link_libraries(unwind_test PUBLIC "/home/fzachs/.haze/global/lib/x86_64-unknown-linux-gnu/libunwind.a")
 target_compile_options(unwind_test PRIVATE -fno-omit-frame-pointer)
+# target_link_options(unwind_test PRIVATE )
+
+
+# target_link_directories(unwind_test PUBLIC "/home/fzachs/.haze/global/lib/")
 # target_link_options(unwind_test PRIVATE -rdynamic)
