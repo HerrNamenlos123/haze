@@ -94,6 +94,7 @@ class CodeGenerator {
       this.out.function_definitions
         .writeLine("int32_t main(int argc, const char* argv[]) {")
         .pushIndent();
+      this.out.function_definitions.writeLine("hzstd_setup_panic_handler();");
       //   // .writeLine(
       //   //   `${generateUsageCode(this.module.getBuiltinType("Context"), this.module)} ctx = {};`,
       //   // )

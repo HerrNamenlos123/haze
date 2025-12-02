@@ -261,6 +261,8 @@ if (PLATFORM === Platform.Win32) {
 } else {
   LLVM_TOOLCHAIN_DOWNLOAD_URL =
     "https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-18.04.tar.xz";
+  // LLVM_TOOLCHAIN_DOWNLOAD_URL =
+  //   "https://github.com/llvm/llvm-project/releases/download/llvmorg-20.1.7/LLVM-20.1.7-Linux-X64.tar.xz";
 }
 
 export const HAZE_STDLIB_NAME = "haze-stdlib";
@@ -1109,8 +1111,11 @@ class ModuleCompiler {
       const linkerFlags = this.config.linkerFlags;
       compilerFlags.any.push("-Wno-parentheses-equality");
       compilerFlags.any.push("-Wno-extra-tokens");
+      compilerFlags.any.push("-nostdlib");
+      compilerFlags.any.push("-nodefaultlibs");
 
       compilerFlags.any.push(`-I"${this.moduleDir}/bin/include"`);
+      compilerFlags.any.push(`-I"${this.config.srcDirectory}/../include"`);
       linkerFlags.any.push(`-L"${this.moduleDir}/bin/lib"`);
       linkerFlags.any.push(`-L"${this.moduleDir}/bin/lib64"`);
 
@@ -1213,6 +1218,7 @@ class ModuleCompiler {
           " "
         )} ${allLinkerFlags.join(" ")} -std=c11`;
         // log(cmd);
+        console.log(cmd);
 
         compileCommands.push({
           directory: cwd(),
@@ -1228,6 +1234,7 @@ class ModuleCompiler {
           this.config.srcDirectory
         }" ${allCompilerFlags.join(" ")} -std=c11`;
         // log(cmd);
+        // console.log(cmd);
 
         compileCommands.push({
           directory: cwd(),

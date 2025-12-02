@@ -26,9 +26,9 @@ typedef double hzstd_f64_t;
 typedef double hzstd_real_t;
 
 typedef void hzstd_void_t;
-typedef void *hzstd_cptr_t;
-typedef char *hzstd_cstr_t;
-typedef const char *hzstd_ccstr_t;
+typedef void* hzstd_cptr_t;
+typedef char* hzstd_cstr_t;
+typedef const char* hzstd_ccstr_t;
 
 typedef struct hzstd_null_t {
 } hzstd_null_t;

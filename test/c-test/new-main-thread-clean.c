@@ -1,3 +1,5 @@
+#include <libunwind-x86_64.h>
+#include <stdatomic.h>
 #define UNW_LOCAL_ONLY
 
 #define _GNU_SOURCE
@@ -24,9 +26,13 @@
 #include <dlfcn.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <unwind.h>
 
 #include <semaphore.h>
+
+static unw_context_t global_crash_context;
+static atomic_int unwind_in_progress = 0;
+static sem_t panic_sem;
+static sem_t infinite_block_sem;
 
 static void fatal_perror(const char* msg)
 {
@@ -34,10 +40,12 @@ static void fatal_perror(const char* msg)
   _exit(127);
 }
 
-void* thread_func(void* ucontext)
+void* panicUnwindThread(void* _)
 {
+  sem_wait(&panic_sem);
+
   unw_cursor_t cursor;
-  unw_init_local2(&cursor, ucontext, UNW_INIT_SIGNAL_FRAME);
+  unw_init_local2(&cursor, &global_crash_context, UNW_INIT_SIGNAL_FRAME);
   unw_word_t pc, sp;
   do {
     unw_get_reg(&cursor, UNW_REG_IP, &pc);
@@ -52,17 +60,35 @@ void* thread_func(void* ucontext)
   exit(0);
 }
 
-void WORKING_HANDLER(int sig, siginfo_t* si, void* ucontext)
+void d(int dd)
 {
-  pthread_t worker;
-  if (pthread_create(&worker, NULL, thread_func, ucontext) != 0) {
-    fatal_perror("pthread_create");
+  volatile char buf[1024];
+  if (dd % 100 == 0) {
+    printf("Depth: %d\n", dd);
   }
+  d(dd + 1);
+}
 
-  sem_t sem;
-  sem_init(&sem, 0, 0);
-  sem_wait(&sem); // Block indefinitely without burning CPU
-  return;
+void crash()
+{
+  // int* ptr = 0;
+  // int a = *ptr;
+  d(0);
+}
+
+void panicHandler(int sig, siginfo_t* si, void* ucontext)
+{
+  printf("PANIC\n");
+  int expected = 0;
+  if (atomic_compare_exchange_strong(&unwind_in_progress, &expected, 1)) {
+    // This thread claims the global context
+    memcpy(&global_crash_context, ucontext, sizeof(global_crash_context));
+    sem_post(&panic_sem); // wake the panic thread
+  }
+  else {
+    // Another thread is already unwinding
+    sem_wait(&infinite_block_sem);
+  }
 }
 
 void setup()
@@ -80,7 +106,7 @@ void setup()
 
   struct sigaction sa;
   memset(&sa, 0, sizeof(sa));
-  sa.sa_sigaction = WORKING_HANDLER;
+  sa.sa_sigaction = panicHandler;
   sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
   sigemptyset(&sa.sa_mask);
   if (sigaction(SIGSEGV, &sa, NULL) != 0) {
@@ -88,14 +114,13 @@ void setup()
   }
 }
 
-void crash()
-{
-  int* ptr = 0;
-  int a = *ptr;
-}
-
 int main(int argc, char** argv, char** envp)
 {
+  sem_init(&infinite_block_sem, 0, 0);
+
+  pthread_t worker;
+  pthread_create(&worker, NULL, panicUnwindThread, NULL);
+
   setup();
   crash();
   return 0;

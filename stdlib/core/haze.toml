@@ -18,7 +18,8 @@ type = "lib"
 # warnings_as_errors = false
 
 [compiler]
-flags = ["-D_XOPEN_SOURCE=500"]
+flags = ["-D_XOPEN_SOURCE=500", "-H"]
 
 [linker]
 # flags = ["-lm", "-lGL", "-lpthread"]
+flags = ["-lunwind", "-ldl", "-lc"]
