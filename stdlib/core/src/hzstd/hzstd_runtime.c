@@ -4,7 +4,10 @@
 
 #include "hzstd_arena.h"
 #include "hzstd_string.h"
-#include <../../global/include/libunwind.h>
+
+// Critically make sure the libunwind header we manually built is used and not the system header or LLVM header
+#include "haze-libunwind/include/libunwind.h"
+
 #include <assert.h>
 #include <dlfcn.h>
 #include <pthread.h>
@@ -100,15 +103,6 @@ static void* hzstd_panic_handler_thread(void* _)
   exit(0);
 }
 
-void foo2()
-{
-  printf("Crashing\n");
-  int* a = 0;
-  int b = *a;
-}
-
-void foo1() { foo2(); }
-
 void hzstd_setup_panic_handler()
 {
   static thread_local char altstack_buf[8192];
@@ -142,6 +136,4 @@ void hzstd_setup_panic_handler()
   if (sigaction(SIGSEGV, &sa, NULL) != 0) {
     hzstd_panic("Failed to register the panic handler (SIGSEGV)");
   }
-
-  foo1();
 }

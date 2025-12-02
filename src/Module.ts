@@ -760,6 +760,7 @@ export class ProjectCompiler {
         musl: HAZE_CACHE + "/musl",
         winSDK: HAZE_CACHE + "/win-sdk",
         winNinja: HAZE_CACHE + "/win-ninja",
+        libunwind: HAZE_CACHE + "/libunwind",
         cmakeToolchain: HAZE_CACHE + "/cmake-toolchain",
       };
 
@@ -898,6 +899,27 @@ export class ProjectCompiler {
       //         this.markStepDone(MARKERS.cmakeToolchain);
       //         console.info("Writing CMake toolchain... Done");
       //       }
+
+      if (!this.isStepDone(MARKERS.libunwind) && PLATFORM === Platform.Linux) {
+        const builddir = `${HAZE_TMP_DIR}/libunwind-builddir`;
+        const outdir = `${HAZE_GLOBAL_DIR}/haze-libunwind`;
+        const commitHash = "812a5305ff097c864d2786b577d2ca0bda76827f";
+        console.info("Retrieving and building libunwind...");
+        execInherit(`rm -rf ${builddir}`);
+        execInherit(`rm -rf ${outdir}`);
+        execInherit(`mkdir -p ${builddir}`);
+        execInherit(
+          `git clone https://github.com/libunwind/libunwind.git ${builddir} && cd ${builddir} && git checkout ${commitHash}`
+        );
+        execInherit(`cd ${builddir} && autoreconf -i`);
+        execInherit(
+          `cd ${builddir} && CFLAGS="-fPIC" CXXFLAGS="-fPIC" ./configure --prefix=${outdir} -disable-tests -disable-shared`
+        );
+        execInherit(`cd ${builddir} && make -j`);
+        execInherit(`cd ${builddir} && make install`);
+        this.markStepDone(MARKERS.libunwind);
+        console.info("Retrieving and building libunwind... Done");
+      }
 
       // throw new Error();
     });
@@ -1121,7 +1143,9 @@ class ModuleCompiler {
       linkerFlags.any.push(`-L"${this.moduleDir}/bin/lib"`);
       linkerFlags.any.push(`-L"${this.moduleDir}/bin/lib64"`);
 
-      linkerFlags.any.push(`"${HAZE_GLOBAL_DIR}/lib/x86_64-unknown-linux-gnu/libunwind.a"`);
+      compilerFlags.any.push(`-I"${HAZE_GLOBAL_DIR}"`);
+      linkerFlags.any.push(`"${HAZE_GLOBAL_DIR}/haze-libunwind/lib/libunwind.a"`);
+      linkerFlags.any.push(`-llzma`);
 
       compilerFlags.win32.push(`-D_CRT_SECURE_NO_WARNINGS`);
       linkerFlags.win32.push(`-fuse-ld=lld`);
@@ -1222,7 +1246,7 @@ class ModuleCompiler {
           " "
         )} ${allLinkerFlags.join(" ")} -std=c11`;
         // log(cmd);
-        console.log(cmd);
+        // console.log(cmd);
 
         compileCommands.push({
           directory: cwd(),

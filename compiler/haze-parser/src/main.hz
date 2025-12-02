@@ -12,11 +12,14 @@ extern C parse(source: str) {
 
 }
 
-bar() {
-    __c__("int* a = 0; int b = *a;");
+bar() :: final {
+    const b = 1;
+    test();
+    // __c__("int* a = 0; int b = *a;");
 }
 
 test() {
+    const a = 0;
     bar();
 }
 
