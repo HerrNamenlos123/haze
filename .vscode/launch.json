@@ -18,7 +18,7 @@
       "type": "lldb",
       "request": "launch",
       "name": "Launch c-test",
-      "program": "${workspaceFolder}/test/c-test/build/unwind_test",
+      "program": "${workspaceFolder}/test/c-test/win/build/Debug/unwind_test.exe",
       "args": [
         "recurse"
       ],
