@@ -1150,6 +1150,9 @@ class ModuleCompiler {
       compilerFlags.win32.push(`-D_CRT_SECURE_NO_WARNINGS`);
       linkerFlags.win32.push(`-fuse-ld=lld`);
 
+      compilerFlags.win32.push("-DHZSTD_PLATFORM_WIN32");
+      compilerFlags.linux.push("-DHZSTD_PLATFORM_LINUX");
+
       compilerFlags.linux.push("-fPIC");
 
       // await sleep(500);

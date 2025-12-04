@@ -16,48 +16,50 @@
 void recurse(int x) {
   volatile char buf[1024 * 10];
   int *a = 0;
-  // if (x == 5) {
-  //   int b = *a;
-  // }
+  if (x == 12) {
+    int b = *a;
+  }
   if ((x % 5) == 0)
     printf("Depth: %d\n", x);
   recurse(x + 1);
 }
 
-HANDLE hEvent;
 HANDLE hWatchdogStartEvent;
 HANDLE hWatchdogReady;
 
-DWORD WINAPI RescueCleanupRoutine(EXCEPTION_POINTERS *ExceptionInfo) {
-  HANDLE hProcess = GetCurrentProcess();
+CONTEXT crashedContextRecord;
 
-  printf("Running cleanup on rescue stack.\n");
-  fflush(stdout);
+// VEH handlers absolutely suck on Windows for detecting stack overflows,
+// because they always run on the same stack as the crashed thread, which means
+// the handler would crash again since the stack is already overflowed.
+// There is no way to use an alternate stack and any attempt to manually
+// change the stack, also involves the stack and AAAARRRGGGHHHH!!!
+// So fuck it, Windows Support for stack traces is limited to non-stack-overflow
+// access violations, during a stack overflow accept the fact that it crashes.
+LONG WINAPI VectoredHandler(PEXCEPTION_POINTERS ExceptionInfo) {
+  if (ExceptionInfo->ExceptionRecord->ExceptionCode ==
+      EXCEPTION_ACCESS_VIOLATION) {
+    // During an access violation, we assume that the stack is still intact, so
+    // we can call normal functions. But to be sure, we still use the watchdog
+    // thread like on linux.
 
-  SetEvent(hWatchdogStartEvent);
+    // Deep-copy the entire context since it seems like it is actually bound
+    // to the actual registers and it changes with every function call.
+    memcpy(&crashedContextRecord, ExceptionInfo->ContextRecord,
+           sizeof(CONTEXT));
 
-  printf("Started watchdog, waiting\n");
-  fflush(stdout);
+    SetEvent(hWatchdogStartEvent);
 
-  WaitForSingleObject(hEvent, INFINITE);
+    WaitForSingleObject(hBlockForever, INFINITE);
 
-  printf("Cleanup complete. Terminating process.\n");
+    // To be sure
+    TerminateProcess(GetCurrentProcess(), 1);
 
-  fflush(stdout);
-  TerminateProcess(hProcess, 1);
+    return EXCEPTION_CONTINUE_EXECUTION;
+  }
 
-  return 0;
+  return EXCEPTION_CONTINUE_SEARCH;
 }
-#define RESCUE_STACK_SIZE (16 * 1024)
-
-char g_RescueStack[RESCUE_STACK_SIZE];
-CONTEXT *g_ContextRecord;
-CONTEXT g_ContextRecord2;
-DWORD64 g_RBP;
-DWORD64 g_RIP;
-DWORD64 g_RSP;
-
-extern LONG WINAPI VectoredHandler(PEXCEPTION_POINTERS ExceptionInfo);
 
 DWORD WINAPI WatchdogThread(LPVOID lpParam) {
   SetEvent(hWatchdogReady);
@@ -68,13 +70,7 @@ DWORD WINAPI WatchdogThread(LPVOID lpParam) {
   printf("Watchdog activated. Performing stack walk...\n");
   fflush(stdout);
 
-  // 2. Set the necessary flags for StackWalk64 to function correctly
-  g_ContextRecord->ContextFlags = CONTEXT_INTEGER | CONTEXT_CONTROL;
-
-  // Restore all required registers from the point when the exception appeared
-  g_ContextRecord->Rip = g_RIP;
-  g_ContextRecord->Rbp = g_RBP;
-  g_ContextRecord->Rsp = g_RSP;
+  crashedContextRecord.ContextFlags = CONTEXT_INTEGER | CONTEXT_CONTROL;
 
   STACKFRAME64 stackFrame;
   memset(&stackFrame, 0, sizeof(stackFrame));
@@ -83,16 +79,16 @@ DWORD WINAPI WatchdogThread(LPVOID lpParam) {
 #error Only 64-bit is supported
 #elif _M_X64 // 64-bit x64 architecture
   // Set the initial Program Counter (Instruction Pointer)
-  stackFrame.AddrPC.Offset = g_ContextRecord->Rip;
+  stackFrame.AddrPC.Offset = crashedContextRecord.Rip;
   stackFrame.AddrPC.Mode = AddrModeFlat;
 
   // Set the initial Frame Pointer
   // Note: Rbp may not be reliable in optimized x64 code. Rsp is essential.
-  stackFrame.AddrFrame.Offset = g_ContextRecord->Rbp;
+  stackFrame.AddrFrame.Offset = crashedContextRecord.Rbp;
   stackFrame.AddrFrame.Mode = AddrModeFlat;
 
   // Set the initial Stack Pointer
-  stackFrame.AddrStack.Offset = g_ContextRecord->Rsp;
+  stackFrame.AddrStack.Offset = crashedContextRecord.Rsp;
   stackFrame.AddrStack.Mode = AddrModeFlat;
 
   // Machine Type for StackWalk64
@@ -106,7 +102,7 @@ DWORD WINAPI WatchdogThread(LPVOID lpParam) {
   // STACKFRAME64 stackFrame = ... // The initialized structure from Step 3
 
   while (StackWalk64(machineType, hProcess, hThread, &stackFrame,
-                     &g_ContextRecord, NULL, SymFunctionTableAccess64,
+                     &crashedContextRecord, NULL, SymFunctionTableAccess64,
                      SymGetModuleBase64, NULL)) {
     // Process the stack frame (e.g., resolve and print the symbol/address)
 
@@ -163,12 +159,12 @@ int main() {
 
   printf("Starting...\n");
 
-  hEvent = CreateEvent(NULL,  // default security
-                       FALSE, // auto-reset event
-                       FALSE, // initial state = nonsignaled
-                       NULL   // no name
+  hBlockForever = CreateEvent(NULL,  // default security
+                              FALSE, // auto-reset event
+                              FALSE, // initial state = nonsignaled
+                              NULL   // no name
   );
-  if (hEvent == NULL) {
+  if (hBlockForever == NULL) {
     printf("CreateEvent failed (%lu)\n", GetLastError());
     return 1;
   }

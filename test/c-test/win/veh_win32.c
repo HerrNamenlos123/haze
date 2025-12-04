@@ -15,45 +15,18 @@
 // -fno-omit-frame-pointer, to get the best possible results when unwinding the
 // stack for a stack trace.
 
-#include <windows.h>
+// #include <windows.h>
 
-#include <stdint.h>
-#include <stdio.h>
+// #include <stdint.h>
+// #include <stdio.h>
 
-#define RESCUE_STACK_SIZE (16 * 1024)
-extern char g_RescueStack[RESCUE_STACK_SIZE];
-extern CONTEXT *g_ContextRecord;
-extern CONTEXT g_ContextRecord2;
+// #define RESCUE_STACK_SIZE (16 * 1024)
+// extern char g_RescueStack[RESCUE_STACK_SIZE];
+// extern CONTEXT *g_ContextRecord;
+// extern CONTEXT g_ContextRecord2;
 
-extern DWORD64 g_RBP;
-extern DWORD64 g_RIP;
-extern DWORD64 g_RSP;
+// extern DWORD64 g_RBP;
+// extern DWORD64 g_RIP;
+// extern DWORD64 g_RSP;
 
-DWORD WINAPI RescueCleanupRoutine(EXCEPTION_POINTERS *ExceptionInfo);
-
-LONG WINAPI VectoredHandler(PEXCEPTION_POINTERS ExceptionInfo) {
-  // This function CANNOT use the stack in any way (no frame pointer, no local
-  // variables, no function calls)
-
-  if (ExceptionInfo->ExceptionRecord->ExceptionCode ==
-      EXCEPTION_STACK_OVERFLOW) {
-
-    memcpy(&g_ContextRecord2, ExceptionInfo->ContextRecord, sizeof(CONTEXT));
-    g_ContextRecord = &g_ContextRecord2;
-    g_RBP = ExceptionInfo->ContextRecord->Rbp;
-    g_RIP = ExceptionInfo->ContextRecord->Rip;
-    // New instruction pointer after code continues to run after VEH handler
-    ExceptionInfo->ContextRecord->Rip = (DWORD64)RescueCleanupRoutine;
-    // New alternate, 16-byte aligned stack pointer (stack grows down, back to
-    // front in buffer)
-    g_RSP = ExceptionInfo->ContextRecord->Rsp;
-    ExceptionInfo->ContextRecord->Rsp =
-        (((DWORD64)(g_RescueStack + RESCUE_STACK_SIZE)) / 16) * 16;
-    // First parameter to function call
-    ExceptionInfo->ContextRecord->Rcx = (DWORD64)ExceptionInfo;
-
-    return EXCEPTION_CONTINUE_EXECUTION;
-  }
-
-  return EXCEPTION_CONTINUE_SEARCH;
-}
+// DWORD WINAPI RescueCleanupRoutine(EXCEPTION_POINTERS *ExceptionInfo);
