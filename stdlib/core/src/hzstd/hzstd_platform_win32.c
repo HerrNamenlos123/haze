@@ -124,7 +124,7 @@ LONG WINAPI VectoredHandler(PEXCEPTION_POINTERS ExceptionInfo)
 //     if (!pushed) {
 //       // Now retrieve the name, it's a new one
 //       int maxNameLength = 256;
-//       hzstd_str_t name = HZSTD_STRING(
+//       hzstd_str_t name = HZSTD_STRING_LEN(
 //           hzstd_arena_allocate(arena, maxNameLength, alignof(char)), 0);
 
 //       unw_word_t offset;

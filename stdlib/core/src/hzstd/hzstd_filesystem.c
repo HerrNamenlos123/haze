@@ -4,12 +4,12 @@
 #include "hzstd_string.h"
 #include <stdio.h>
 
-hzstd_fs_error_t hzstd_read_file_text(hzstd_arena_t *arena, hzstd_str_t path,
-                                      hzstd_str_ref_t *outputBuffer) {
-  hzstd_arena_t *scratchArena = hzstd_arena_create();
-  char *nullTermPath = hzstd_cstr_from_str(scratchArena, path);
+hzstd_fs_error_t hzstd_read_file_text(hzstd_arena_t* arena, hzstd_str_t path, hzstd_str_ref_t* outputBuffer)
+{
+  hzstd_arena_t* scratchArena = hzstd_arena_create();
+  char* nullTermPath = hzstd_cstr_from_str(scratchArena, path);
 
-  FILE *f = fopen(nullTermPath, "r");
+  FILE* f = fopen(nullTermPath, "r");
   if (!f) {
     hzstd_arena_cleanup_and_free(scratchArena);
     return hzstd_fs_error_no_such_file_or_directory;
@@ -31,7 +31,7 @@ hzstd_fs_error_t hzstd_read_file_text(hzstd_arena_t *arena, hzstd_str_t path,
     return hzstd_fs_error_none;
   }
 
-  char *buffer = hzstd_arena_allocate(arena, size, alignof(char));
+  char* buffer = hzstd_arena_allocate(arena, size, alignof(char));
   if (!buffer) {
     fclose(f);
     hzstd_arena_cleanup_and_free(scratchArena);
@@ -58,7 +58,7 @@ hzstd_fs_error_t hzstd_read_file_text(hzstd_arena_t *arena, hzstd_str_t path,
 
   fclose(f);
 
-  outputBuffer->data = (hzstd_str_t){.data = buffer, .length = totalRead};
+  outputBuffer->data = (hzstd_str_t) { .data = buffer, .length = totalRead };
   hzstd_arena_cleanup_and_free(scratchArena);
   return hzstd_fs_error_none;
 }

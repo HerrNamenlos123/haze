@@ -2187,13 +2187,19 @@ function lowerBlockScope(
         !returnedExpr
       ) {
         if (innerStatement.expr) {
-          returnedExpr = storeInTempVarAndGet(
-            lr,
-            lr.exprNodes.get(innerStatement.expr).type,
-            innerStatement.expr,
-            innerStatement.sourceloc,
-            statements
-          )[1];
+          // Only store in extra variable if necessary
+          const thisReturnedExpression = lr.exprNodes.get(innerStatement.expr);
+          if (thisReturnedExpression.variant === Lowered.ENode.SymbolValueExpr) {
+            returnedExpr = innerStatement.expr;
+          } else {
+            returnedExpr = storeInTempVarAndGet(
+              lr,
+              lr.exprNodes.get(innerStatement.expr).type,
+              innerStatement.expr,
+              innerStatement.sourceloc,
+              statements
+            )[1];
+          }
         } else {
           returnedExpr = null;
         }

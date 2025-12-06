@@ -5836,26 +5836,35 @@ export class SemanticBuilder {
   ) {
     const expr = this.sr.e.getExpr(exprId);
 
-    const struct = this.sr.e.getTypeDef(this.sr.e.getTypeUse(expr.type).type);
-    assert(struct.variant === Semantic.ENode.StructDatatype);
-
-    const member = struct.members.find((m) => {
-      const mem = this.sr.symbolNodes.get(m);
-      return mem.variant === Semantic.ENode.VariableSymbol && mem.name === name;
-    });
-    assert(member);
-
-    const memberSym = this.sr.symbolNodes.get(member);
-    assert(memberSym.variant === Semantic.ENode.VariableSymbol);
+    const typeDef = this.sr.e.getTypeDef(this.sr.e.getTypeUse(expr.type).type);
 
     const dependsOn = new Set<Semantic.InstanceId>();
-    for (const inst of expr.instanceIds) {
-      // Get ONLY the dependencies of the specific struct member being accessed
-      Semantic.getStructMemberInstanceDeps(
-        this.sr.e.currentContext.instanceDeps,
-        inst,
-        member
-      ).forEach((d) => dependsOn.add(d));
+    if (typeDef.variant === Semantic.ENode.StructDatatype) {
+      const member = typeDef.members.find((m) => {
+        const mem = this.sr.symbolNodes.get(m);
+        return mem.variant === Semantic.ENode.VariableSymbol && mem.name === name;
+      });
+      assert(member);
+
+      const memberSym = this.sr.symbolNodes.get(member);
+      assert(memberSym.variant === Semantic.ENode.VariableSymbol);
+
+      for (const inst of expr.instanceIds) {
+        // Get ONLY the dependencies of the specific struct member being accessed
+        Semantic.getStructMemberInstanceDeps(
+          this.sr.e.currentContext.instanceDeps,
+          inst,
+          member
+        ).forEach((d) => dependsOn.add(d));
+      }
+    } else if (
+      typeDef.variant === Semantic.ENode.PrimitiveDatatype &&
+      typeDef.primitive === EPrimitive.str &&
+      name === "length"
+    ) {
+    } else if (typeDef.variant === Semantic.ENode.DynamicArrayDatatype && name === "length") {
+    } else {
+      assert(false);
     }
 
     return Semantic.addExpr(this.sr, {

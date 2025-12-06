@@ -20,12 +20,14 @@ typedef struct {
   hzstd_str_t name;
 } hzstd_unwind_frame_t;
 
+_Noreturn void hzstd_panic_with_stacktrace(hzstd_str_t msg, hzstd_int_t skip_n_frames);
+
 bool hzstd_create_semaphore(hzstd_semaphore_t* semaphore);
 bool hzstd_trigger_semaphore(hzstd_semaphore_t* semaphore);
 void hzstd_wait_for_semaphore(hzstd_semaphore_t* semaphore);
 
 void hzstd_initialize_platform();
-void hzstd_block_thread_forever();
+_Noreturn void hzstd_block_thread_forever();
 void hzstd_setup_panic_handler();
 
 #endif // HZSTD_PLATFORM_H

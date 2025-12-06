@@ -5,6 +5,10 @@
 
 #include "hzstd_arena.h"
 
+#include <assert.h>
+#include <stdalign.h>
+#include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 #define HZSTD_DEFAULT_DYNAMIC_ARRAY_CAPACITY 4
@@ -21,6 +25,21 @@
   HZSTD_DYNAMIC_ARRAY_CREATE_RAW((arena)->arenaImpl, arrayType, elementType, minInitialCapacity)
 
 #define HZSTD_DYNAMIC_ARRAY_PUSH(array, elem) hzstd_dynamic_array_push(array, &elem)
+
+#define HZSTD_DYNAMIC_ARRAY_GET(_array, elementType, _index)                                                           \
+  ({                                                                                                                   \
+    hzstd_dynamic_array_t* array = _array;                                                                             \
+    hzstd_int_t index = _index;                                                                                        \
+    elementType value;                                                                                                 \
+    hzstd_dynamic_array_result_t result = hzstd_dynamic_array_get(array, index, &value);                               \
+    if (result == hzstd_dynamic_array_result_out_of_bounds) {                                                          \
+      HZSTD_PANIC_FMT("array index out of range [%ld] with length %lu", index, hzstd_dynamic_array_size(array));       \
+    }                                                                                                                  \
+    if (result != hzstd_dynamic_array_result_ok) {                                                                     \
+      hzstd_unreachable();                                                                                             \
+    }                                                                                                                  \
+    value;                                                                                                             \
+  })
 
 typedef struct {
   hzstd_arena_t* arena;

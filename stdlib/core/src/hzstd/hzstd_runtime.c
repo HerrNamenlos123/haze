@@ -11,17 +11,22 @@
 #include <stdarg.h>
 #include <stdio.h>
 
-_Noreturn void hzstd_panic(const char* fmt, ...)
-{
-  va_list args;
-  va_start(args, fmt);
-  fprintf(stderr, "[FATAL] Thread panicked: ");
-  vfprintf(stderr, fmt, args);
-  fprintf(stderr, "\n");
-  va_end(args);
+hzstd_str_t stacktrace_hidden_functions[] = {
+  // This is a list of all functions of all platforms, that are supposed to be grey in a stacktrace,
+  // as they are platform given and NOT part of the user's code, so they are less relevant for the user.
+  HZSTD_STRING_FROM_CSTR("_start"),
+  HZSTD_STRING_FROM_CSTR("__libc_start_main"),
+  HZSTD_STRING_FROM_CSTR("__libc_start_call_main"),
+  HZSTD_STRING_FROM_CSTR("main"),
+};
 
-  fflush(stderr);
-  abort();
+_Noreturn void hzstd_panic(hzstd_ccstr_t msg) { hzstd_panic_with_stacktrace(HZSTD_STRING_FROM_CSTR(msg), 2); }
+_Noreturn void hzstd_panic_str(hzstd_str_t msg) { hzstd_panic_with_stacktrace(msg, 2); }
+
+_Noreturn void hzstd_unreachable()
+{
+  hzstd_panic_with_stacktrace(HZSTD_STRING_FROM_CSTR("Fatal internal runtime error: Unreachable code path was reached"),
+                              2);
 }
 
 void hzstd_assert(hzstd_bool_t condition)
@@ -37,7 +42,7 @@ void hzstd_assert_msg_cstr(hzstd_bool_t condition, hzstd_cstr_t message)
   // TODO: Implement source location passing in haze to show actual location
   // here, plus a call stack
   if (!condition) {
-    hzstd_panic("Assertion failed: %s\n", message);
+    hzstd_panic("Assertion failed: <message not implemented>\n");
   }
   // assert(condition);
   // __assert_fail("condition", __FILE__, __LINE__, __PRETTY_FUNCTION__);
@@ -50,17 +55,31 @@ void hzstd_assert_msg(hzstd_bool_t condition, hzstd_str_t message)
   if (!condition) {
     hzstd_arena_t* scratchArena = hzstd_arena_create();
     char* msg = hzstd_cstr_from_str(scratchArena, message);
-    hzstd_panic("Assertion failed: %s\n", msg);
+    hzstd_panic("Assertion failed: <message not implemented>\n");
   }
   // assert(condition);
   // __assert_fail("condition", __FILE__, __LINE__, __PRETTY_FUNCTION__);
 }
 
-void hzstd_print_stacktrace(hzstd_arena_t* arena, hzstd_dynamic_array_t* frames)
+static bool is_functioncall_hidden(hzstd_str_t name)
+{
+  bool hidden = false;
+  for (size_t i = 0; i < sizeof(stacktrace_hidden_functions) / sizeof(stacktrace_hidden_functions[0]); i++) {
+    if (name.length == stacktrace_hidden_functions[i].length) {
+      if (memcmp(name.data, stacktrace_hidden_functions[i].data, name.length) == 0) {
+        hidden = true;
+        break;
+      }
+    }
+  }
+  return hidden;
+}
+
+void hzstd_print_stacktrace(hzstd_arena_t* arena, hzstd_dynamic_array_t* frames, hzstd_int_t skip_n_frames)
 {
   size_t n = hzstd_dynamic_array_size(frames);
 
-  for (size_t i = 0; i < n;) {
+  for (size_t i = skip_n_frames; i < n;) {
     hzstd_unwind_frame_t* framePtr;
     hzstd_dynamic_array_get(frames, i, &framePtr);
 
@@ -121,21 +140,44 @@ void hzstd_print_stacktrace(hzstd_arena_t* arena, hzstd_dynamic_array_t* frames)
 
     // Case 1: No cycle detected → print a single frame and move on
     if (detectedLen == 0) {
-      printf("#%zu: ", n - i);
-      fwrite(framePtr->name.data, 1, framePtr->name.length, stdout);
-      printf("\n");
+      fprintf(stderr, "\x1b[90m    [%zu]: \x1b[0m", i - skip_n_frames);
+
+      bool hidden = is_functioncall_hidden(framePtr->name);
+      if (hidden) {
+        fprintf(stderr, "\x1b[90m");
+      }
+
+      fwrite(framePtr->name.data, 1, framePtr->name.length, stderr);
+
+      if (hidden) {
+        fprintf(stderr, "\x1b[0m");
+      }
+
+      fprintf(stderr, "\n");
       i++;
       continue;
     }
 
     // Case 2: Cycle detected → print compressed
-    printf("Cycle of length %zu repeated %zu times:\n", detectedLen, repeatCount);
+    fprintf(stderr, "Cycle of length %zu repeated %zu times:\n", detectedLen, repeatCount);
     for (size_t k = 0; k < detectedLen; k++) {
       hzstd_unwind_frame_t* fr;
       hzstd_dynamic_array_get(frames, i + k, &fr);
-      printf("    %s\n", fr->name.data);
+
+      bool hidden = is_functioncall_hidden(fr->name);
+      if (hidden) {
+        fprintf(stderr, "\x1b[90m");
+      }
+
+      fprintf(stderr, "    %s\n", fr->name.data);
+
+      if (hidden) {
+        fprintf(stderr, "\x1b[0m");
+      }
     }
 
     i += detectedLen * repeatCount;
   }
+
+  fprintf(stderr, "\n");
 }

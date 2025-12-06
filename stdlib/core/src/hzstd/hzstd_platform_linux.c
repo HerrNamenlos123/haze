@@ -2,6 +2,7 @@
 // This file is conditionally imported in hzstd_main.c depending on platform!
 
 #include "hzstd_platform_linux.h"
+#include "hzstd_string.h"
 #define UNW_LOCAL_ONLY
 
 // Critically make sure the libunwind header we manually built is used and not
@@ -26,7 +27,11 @@ static hzstd_semaphore_t infinite_block_event;
 
 void hzstd_initialize_platform() { assert(hzstd_create_semaphore(&infinite_block_event)); }
 
-void hzstd_block_thread_forever() { hzstd_wait_for_semaphore(&infinite_block_event); }
+_Noreturn void hzstd_block_thread_forever()
+{
+  hzstd_wait_for_semaphore(&infinite_block_event);
+  assert(false);
+}
 
 bool hzstd_create_semaphore(hzstd_semaphore_t* semaphore)
 {
@@ -41,19 +46,52 @@ void hzstd_wait_for_semaphore(hzstd_semaphore_t* semaphore) { sem_wait(&semaphor
 static hzstd_semaphore_t panic_handler_thread_ready;
 static hzstd_semaphore_t panic_handler_thread_wakeup;
 
-static siginfo_t global_crash_siginfo;
-static unw_context_t global_crash_context;
-static atomic_int unwind_in_progress = 0;
-static hzstd_semaphore_t panic_handler_trigger;
+static hzstd_str_t panic_reason = HZSTD_STRING_FROM_CSTR("Unknown reason");
+static unw_context_t panic_context;
+static hzstd_int_t panic_skip_n_frames = 0;
+static atomic_int panic_in_progress = 0;
+static hzstd_semaphore_t panic_trigger;
+
+_Noreturn void hzstd_panic_with_stacktrace(hzstd_str_t msg, hzstd_int_t skip_n_frames)
+{
+  unw_getcontext(&panic_context);
+  panic_reason = msg;
+  panic_skip_n_frames = skip_n_frames;
+  hzstd_trigger_semaphore(&panic_trigger);
+  hzstd_block_thread_forever();
+}
 
 static void hzstd_panic_handler(int sig, siginfo_t* si, void* ucontext)
 {
   int expected = 0;
-  if (atomic_compare_exchange_strong(&unwind_in_progress, &expected, 1)) {
+  if (atomic_compare_exchange_strong(&panic_in_progress, &expected, 1)) {
     // This thread claims the global context
-    memcpy(&global_crash_context, ucontext, sizeof(global_crash_context));
-    memcpy(&global_crash_siginfo, si, sizeof(global_crash_siginfo));
-    hzstd_trigger_semaphore(&panic_handler_trigger);
+    memcpy(&panic_context, ucontext, sizeof(panic_context));
+
+    switch (si->si_code) {
+    case SEGV_MAPERR:
+      panic_reason = HZSTD_STRING_FROM_CSTR(
+          "Segmentation Fault: Address not mapped (invalid pointer, nullptr, unmapped memory)");
+      break;
+
+    case SEGV_ACCERR:
+      panic_reason = HZSTD_STRING_FROM_CSTR("Segmentation Fault: Access Violation (invalid access to memory page)");
+      break;
+
+    case SEGV_BNDERR:
+      panic_reason = HZSTD_STRING_FROM_CSTR("Segmentation Fault: Bounds Check Error");
+      break;
+
+    case SEGV_PKUERR:
+      panic_reason = HZSTD_STRING_FROM_CSTR("Segmentation Fault: Protection Key Failure");
+      break;
+
+    default:
+      panic_reason = HZSTD_STRING_FROM_CSTR("Segmentation Fault: Unknown Code");
+      break;
+    }
+
+    hzstd_trigger_semaphore(&panic_trigger);
     hzstd_block_thread_forever();
   }
   else {
@@ -64,14 +102,14 @@ static void hzstd_panic_handler(int sig, siginfo_t* si, void* ucontext)
 
 static void* hzstd_panic_handler_thread(void* _)
 {
-  hzstd_wait_for_semaphore(&panic_handler_trigger);
+  hzstd_wait_for_semaphore(&panic_trigger);
 
   hzstd_arena_t* arena = hzstd_arena_create();
 
   // First do a dry run to find the number of frames
   size_t numberOfFrames = 0;
   unw_cursor_t cursor;
-  unw_init_local2(&cursor, &global_crash_context, UNW_INIT_SIGNAL_FRAME);
+  unw_init_local2(&cursor, &panic_context, UNW_INIT_SIGNAL_FRAME);
   do {
     numberOfFrames++;
   } while (unw_step(&cursor) > 0);
@@ -79,7 +117,7 @@ static void* hzstd_panic_handler_thread(void* _)
   // Now do the actual work
   size_t nextId = 1;
   hzstd_dynamic_array_t* frameArray = hzstd_dynamic_array_create(arena, sizeof(hzstd_unwind_frame_t*), numberOfFrames);
-  unw_init_local2(&cursor, &global_crash_context, UNW_INIT_SIGNAL_FRAME);
+  unw_init_local2(&cursor, &panic_context, UNW_INIT_SIGNAL_FRAME);
   do {
     unw_word_t pc;
     unw_get_reg(&cursor, UNW_REG_IP, &pc);
@@ -124,36 +162,17 @@ static void* hzstd_panic_handler_thread(void* _)
 
   } while (unw_step(&cursor) > 0);
 
-  const char* message = "Unknown reason";
-  switch (global_crash_siginfo.si_code) {
+  fprintf(stderr, "\e[0;31m[FATAL] Thread panicked: ");
+  fwrite(panic_reason.data, panic_reason.length, 1, stderr);
+  fprintf(stderr, "\n\e[0m\e[1;37mStack trace: \n\n\e[0m");
+  hzstd_print_stacktrace(arena, frameArray, panic_skip_n_frames);
 
-  case SEGV_MAPERR:
-    message = "Address not mapped (invalid pointer, nullptr, unmapped memory)";
-    break;
-
-  case SEGV_ACCERR:
-    message = "Access Violation (invalid access to memory page)";
-    break;
-
-  case SEGV_BNDERR:
-    message = "Bounds Check Error";
-    break;
-
-  case SEGV_PKUERR:
-    message = "Protection Key Failure";
-    break;
-
-  default:
-    break;
-  }
-
-  printf("Thread panicked with a segmentation fault: %s\n", message);
-  printf("Stack trace: \n");
-  hzstd_print_stacktrace(arena, frameArray);
+  fflush(stdout);
+  fflush(stderr);
 
   hzstd_dynamic_array_destroy(frameArray);
   hzstd_arena_cleanup_and_free(arena);
-  exit(0);
+  abort();
 }
 
 void hzstd_setup_panic_handler()
@@ -171,7 +190,7 @@ void hzstd_setup_panic_handler()
   // page, the signal handler can still execute code using its own alternative
   // stack.
 
-  assert(hzstd_create_semaphore(&panic_handler_trigger));
+  assert(hzstd_create_semaphore(&panic_trigger));
 
   pthread_t worker;
   pthread_create(&worker, NULL, hzstd_panic_handler_thread, NULL);

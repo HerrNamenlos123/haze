@@ -111,9 +111,9 @@ class CodeGenerator {
       // );
       const ns = getModuleGlobalNamespaceName(config.name, config.version);
       this.out.function_definitions
-        .writeLine(`int __hz_result = _HN${ns.length}${ns}4mainEv();`)
+        .writeLine(`return _HN${ns.length}${ns}4mainEv();`)
         // .writeLine(`hzstd_arena_cleanup_and_free(parent_arena->arenaImpl);`)
-        .writeLine(`return __hz_result;`)
+        // .writeLine(`return __hz_result;`)
         .popIndent()
         .writeLine("}\n");
     }
@@ -205,6 +205,9 @@ class CodeGenerator {
             this.out.type_definitions.writeLine(
               `${this.mangleTypeUse(member.type)} ${member.name};`
             );
+          }
+          if (symbol.members.length === 0) {
+            this.out.type_definitions.writeLine(`hzstd_u8_t dummy;`);
           }
           this.out.type_definitions.popIndent().writeLine(`};`).writeLine();
         }
@@ -731,11 +734,32 @@ class CodeGenerator {
       case Lowered.ENode.MemberAccessExpr: {
         const exprWriter = this.emitExpr(expr.expr);
         tempWriter.write(exprWriter.temp);
-        if (expr.requiresDeref) {
-          outWriter.write("(" + exprWriter.out.get() + ")->" + expr.memberName);
-        } else {
+
+        const e = this.lr.exprNodes.get(expr.expr);
+        const eTypeUse = this.lr.typeUseNodes.get(e.type);
+        const eTypeDef = this.lr.typeDefNodes.get(eTypeUse.type);
+
+        if (eTypeDef.variant === Lowered.ENode.StructDatatype) {
+          if (expr.requiresDeref) {
+            outWriter.write("(" + exprWriter.out.get() + ")->" + expr.memberName);
+          } else {
+            outWriter.write("(" + exprWriter.out.get() + ")." + expr.memberName);
+          }
+        } else if (
+          eTypeDef.variant === Lowered.ENode.PrimitiveDatatype &&
+          eTypeDef.primitive === EPrimitive.str &&
+          expr.memberName === "length"
+        ) {
           outWriter.write("(" + exprWriter.out.get() + ")." + expr.memberName);
+        } else if (
+          eTypeDef.variant === Lowered.ENode.DynamicArrayDatatype &&
+          expr.memberName === "length"
+        ) {
+          outWriter.write("hzstd_dynamic_array_size(" + exprWriter.out.get() + ")");
+        } else {
+          assert(false);
         }
+
         return { out: outWriter, temp: tempWriter };
       }
 
@@ -1140,9 +1164,41 @@ class CodeGenerator {
         const e = this.emitExpr(expr.expr);
         tempWriter.write(e.temp);
         const index = this.emitExpr(expr.index);
-        tempWriter.write(index.temp);
-        outWriter.write(`(${e.out.get()}).data[${index.out.get()}]`);
-        return { out: outWriter, temp: tempWriter };
+
+        const typeUse = this.lr.typeUseNodes.get(this.lr.exprNodes.get(expr.expr).type);
+        const typeDef = this.lr.typeDefNodes.get(typeUse.type);
+        assert(
+          typeDef.variant === Lowered.ENode.FixedArrayDatatype ||
+            typeDef.variant === Lowered.ENode.DynamicArrayDatatype
+        );
+
+        const elementType = this.lr.typeUseNodes.get(typeDef.datatype);
+
+        if (typeDef.variant === Lowered.ENode.FixedArrayDatatype) {
+          const indexExpr = this.lr.exprNodes.get(expr.index);
+          const indexTypeUse = this.lr.typeUseNodes.get(indexExpr.type);
+          tempWriter.write(index.temp);
+          outWriter.write(
+            `({ ${this.mangleName(typeUse.name)} _array = ${e.out.get()}; ${this.mangleName(
+              indexTypeUse.name
+            )} _index = ${index.out.get()}; if (_index < 0 || _index >= ${
+              typeDef.length
+            }) { HZSTD_PANIC_FMT("array index out of range [%ld] with length %d", _index, ${
+              typeDef.length
+            }); } _array.data[_index]; })`
+          );
+          return { out: outWriter, temp: tempWriter };
+        } else if (typeDef.variant === Lowered.ENode.DynamicArrayDatatype) {
+          tempWriter.write(index.temp);
+          outWriter.write(
+            `HZSTD_DYNAMIC_ARRAY_GET(${e.out.get()}, ${this.mangleName(
+              elementType.name
+            )}, ${index.out.get()})`
+          );
+          return { out: outWriter, temp: tempWriter };
+        } else {
+          assert(false);
+        }
       }
 
       case Lowered.ENode.ArraySliceExpr: {

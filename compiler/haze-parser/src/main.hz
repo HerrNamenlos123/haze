@@ -10,13 +10,13 @@ struct IdentifierNode {
 array() {
     const staticArray = [3]u8{ 1, 2, 3 };
     const dynamicArray = []u8{ 1, 2, 3 };
-    const c = IntegerNode {};
-    const d = inline IntegerNode {};
+    // const c = IntegerNode {};
+    // const d = inline IntegerNode {};
     // const b = []u8 {};
     // const a: []u8 = []u8 {1, 2, 3};
     // a.push(4);
-    // fmt.println("Element: ", a[1]);
-    return dynamicArray;
+    fmt.println("Element: ", dynamicArray.length);
+    // return ;
 }
 
 extern C parse(source: str) {

@@ -11,6 +11,7 @@ typedef struct hzstd_str_t {
 } hzstd_str_t;
 
 #define HZSTD_STRING(str, len) ((hzstd_str_t) { .data = str, .length = len })
+#define HZSTD_STRING_FROM_CSTR(str) ((hzstd_str_t) { .data = str, .length = strlen(str) })
 
 // The purpose of this struct is to wrap a hzstd_str in an object which can be
 // passed around by reference. To be used if you actually want a 'hzstd_str*'
