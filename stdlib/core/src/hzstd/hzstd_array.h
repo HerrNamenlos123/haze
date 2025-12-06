@@ -6,6 +6,7 @@
 #include "hzstd_arena.h"
 
 #include <assert.h>
+#include <inttypes.h>
 #include <stdalign.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -27,18 +28,27 @@
 #define HZSTD_DYNAMIC_ARRAY_PUSH(array, elem) hzstd_dynamic_array_push(array, &elem)
 
 #define HZSTD_DYNAMIC_ARRAY_GET(_array, elementType, _index)                                                           \
-  ({                                                                                                                   \
+  *({                                                                                                                  \
     hzstd_dynamic_array_t* array = _array;                                                                             \
     hzstd_int_t index = _index;                                                                                        \
-    elementType value;                                                                                                 \
-    hzstd_dynamic_array_result_t result = hzstd_dynamic_array_get(array, index, &value);                               \
+    void* ptr;                                                                                                         \
+    hzstd_dynamic_array_result_t result = hzstd_dynamic_array_get_addr(array, index, &ptr);                            \
     if (result == hzstd_dynamic_array_result_out_of_bounds) {                                                          \
       HZSTD_PANIC_FMT("array index out of range [%ld] with length %lu", index, hzstd_dynamic_array_size(array));       \
     }                                                                                                                  \
     if (result != hzstd_dynamic_array_result_ok) {                                                                     \
       hzstd_unreachable();                                                                                             \
     }                                                                                                                  \
-    value;                                                                                                             \
+    (elementType*)(ptr);                                                                                               \
+  })
+
+#define HZSTD_ARRAY_GET(array, _index, length)                                                                         \
+  *({                                                                                                                  \
+    hzstd_int_t index = _index;                                                                                        \
+    if (index < 0 || index >= (hzstd_int_t)length) {                                                                   \
+      HZSTD_PANIC_FMT("array index out of range [%" PRId64 "] with length %" PRId64, index, (hzstd_int_t)length);      \
+    }                                                                                                                  \
+    &(array).data[index];                                                                                              \
   })
 
 typedef struct {
@@ -94,6 +104,18 @@ hzstd_dynamic_array_get(const hzstd_dynamic_array_t* da, size_t index, void* out
   }
   const uint8_t* src = (const uint8_t*)da->buffer + (index * da->elem_size);
   memcpy(out_elem, src, da->elem_size);
+  return hzstd_dynamic_array_result_ok;
+}
+
+/* get addr: returns pure pointer to element at index through out_elem_ptr */
+static inline hzstd_dynamic_array_result_t
+hzstd_dynamic_array_get_addr(const hzstd_dynamic_array_t* da, size_t index, void** out_elem_ptr)
+{
+  assert(da != NULL && out_elem_ptr != NULL);
+  if (index >= da->size) {
+    return hzstd_dynamic_array_result_out_of_bounds;
+  }
+  *out_elem_ptr = (void*)((const uint8_t*)da->buffer + (index * da->elem_size));
   return hzstd_dynamic_array_result_ok;
 }
 

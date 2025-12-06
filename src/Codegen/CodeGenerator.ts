@@ -688,7 +688,9 @@ class CodeGenerator {
 
         outWriter
           .writeLine(
-            `for (${initStatements[0]} ${loopCondition?.out.get()}; ${loopIncrement?.out.get()}) {`
+            `for (${initStatements[0] ?? ""} ${loopCondition ? loopCondition.out.get() : ""}; ${
+              loopIncrement ? "(void)(" + loopIncrement.out.get() + ")" : ""
+            }) {`
           )
           .pushIndent();
 
@@ -965,62 +967,6 @@ class CodeGenerator {
         return { out: outWriter, temp: tempWriter };
       }
 
-      case Lowered.ENode.PreIncrExpr: {
-        const exprWriter = this.emitExpr(expr.expr);
-        tempWriter.write(exprWriter.temp);
-
-        const e = this.lr.exprNodes.get(expr.expr);
-        const exprType = this.lr.typeUseNodes.get(e.type);
-        const exprTypeDef = this.lr.typeDefNodes.get(exprType.type);
-        if (
-          exprTypeDef.variant === Lowered.ENode.PrimitiveDatatype &&
-          Conversion.isInteger(exprTypeDef.primitive)
-        ) {
-          assert(false, "Incr/Decr operations should be converted to plain operations");
-          // const functionName = this.makeCheckedBinaryArithmeticFunction(expr.expr, expr.operation);
-          // outWriter.write(`(${exprWriter.out.get()} = ${functionName}(${exprWriter.out.get()}))`);
-        } else {
-          outWriter.write(
-            "(" +
-              (expr.operation === EIncrOperation.Incr ? "++" : "--") +
-              exprWriter.out.get() +
-              ")"
-          );
-        }
-
-        return { out: outWriter, temp: tempWriter };
-      }
-
-      case Lowered.ENode.PostIncrExpr: {
-        const exprWriter = this.emitExpr(expr.expr);
-        tempWriter.write(exprWriter.temp);
-
-        const e = this.lr.exprNodes.get(expr.expr);
-        const exprType = this.lr.typeUseNodes.get(e.type);
-        const exprTypeDef = this.lr.typeDefNodes.get(exprType.type);
-        if (
-          exprTypeDef.variant === Lowered.ENode.PrimitiveDatatype &&
-          Conversion.isInteger(exprTypeDef.primitive)
-        ) {
-          assert(false, "Incr/Decr operations should be converted to plain operations");
-          // const functionName = this.makeCheckedIncrArithmeticFunction(expr.expr, expr.operation);
-          // outWriter.write(
-          //   `({ ${this.mangleTypeUse(
-          //     exprType
-          //   )} __tmp = ${exprWriter.out.get()}; ${exprWriter.out.get()} = ${functionName}(${exprWriter.out.get()}); __tmp; })`
-          // );
-        } else {
-          outWriter.write(
-            "(" +
-              (expr.operation === EIncrOperation.Incr ? "++" : "--") +
-              exprWriter.out.get() +
-              ")"
-          );
-        }
-
-        return { out: outWriter, temp: tempWriter };
-      }
-
       case Lowered.ENode.UnaryExpr:
         switch (expr.operation) {
           case EUnaryOperation.Minus:
@@ -1187,11 +1133,27 @@ class CodeGenerator {
         const value = this.emitExpr(expr.value);
         tempWriter.write(target.temp);
         tempWriter.write(value.temp);
-        if (expr.assignRefTarget) {
-          outWriter.write("(*" + target.out.get() + " = " + value.out.get() + ")");
-        } else {
+
+        const targetExpr = this.lr.exprNodes.get(expr.target);
+        const typeUse = this.lr.typeUseNodes.get(targetExpr.type);
+        const typeDef = this.lr.typeDefNodes.get(typeUse.type);
+
+        if (typeDef.variant === Lowered.ENode.PrimitiveDatatype) {
           outWriter.write("(" + target.out.get() + " = " + value.out.get() + ")");
+        } else if (
+          typeDef.variant === Lowered.ENode.StructDatatype ||
+          typeDef.variant === Lowered.ENode.DynamicArrayDatatype
+        ) {
+          if (expr.assignRefTarget) {
+            outWriter.write("(*" + target.out.get() + " = " + value.out.get() + ")");
+          } else {
+            outWriter.write("(" + target.out.get() + " = " + value.out.get() + ")");
+          }
+        } else {
+          console.log(targetExpr, typeUse, typeDef);
+          assert(false);
         }
+
         return { out: outWriter, temp: tempWriter };
       }
 
@@ -1234,18 +1196,8 @@ class CodeGenerator {
         const elementType = this.lr.typeUseNodes.get(typeDef.datatype);
 
         if (typeDef.variant === Lowered.ENode.FixedArrayDatatype) {
-          const indexExpr = this.lr.exprNodes.get(expr.index);
-          const indexTypeUse = this.lr.typeUseNodes.get(indexExpr.type);
           tempWriter.write(index.temp);
-          outWriter.write(
-            `({ ${this.mangleName(typeUse.name)} _array = ${e.out.get()}; ${this.mangleName(
-              indexTypeUse.name
-            )} _index = ${index.out.get()}; if (_index < 0 || _index >= ${
-              typeDef.length
-            }) { HZSTD_PANIC_FMT("array index out of range [%ld] with length %d", _index, ${
-              typeDef.length
-            }); } _array.data[_index]; })`
-          );
+          outWriter.write(`HZSTD_ARRAY_GET(${e.out.get()}, ${index.out.get()}, ${typeDef.length})`);
           return { out: outWriter, temp: tempWriter };
         } else if (typeDef.variant === Lowered.ENode.DynamicArrayDatatype) {
           tempWriter.write(index.temp);

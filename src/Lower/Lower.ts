@@ -93,8 +93,6 @@ export namespace Lowered {
     DereferenceExpr,
     ExprAssignmentExpr,
     StructLiteralExpr,
-    PreIncrExpr,
-    PostIncrExpr,
     ArrayLiteralExpr,
     ArraySubscriptExpr,
     ArraySliceExpr,
@@ -326,25 +324,11 @@ export namespace Lowered {
     type: TypeUseId;
   };
 
-  export type PostIncrExpr = {
-    variant: ENode.PostIncrExpr;
-    expr: ExprId;
-    operation: EIncrOperation;
-    type: TypeUseId;
-  };
-
   export type ExprAssignmentExpr = {
     variant: ENode.ExprAssignmentExpr;
     value: ExprId;
     target: ExprId;
     assignRefTarget: boolean;
-    type: TypeUseId;
-  };
-
-  export type PreIncrExpr = {
-    variant: ENode.PreIncrExpr;
-    expr: ExprId;
-    operation: EIncrOperation;
     type: TypeUseId;
   };
 
@@ -413,8 +397,6 @@ export namespace Lowered {
     | UnionTagCheckExpr
     | ExprMemberAccessExpr
     | LiteralExpr
-    | PreIncrExpr
-    | PostIncrExpr
     | ArrayLiteralExpr
     | ArraySubscriptExpr
     | ArraySliceExpr
@@ -1096,19 +1078,100 @@ export function lowerExpr(
     }
 
     case Semantic.ENode.PostIncrExpr: {
+      const [e, eId] = lowerExpr(lr, expr.expr, flattened, instanceInfo);
+
+      const statements: Lowered.StatementId[] = [];
+      const [tempvar, tempvarId] = storeInTempVarAndGet(
+        lr,
+        e.type,
+        eId,
+        expr.sourceloc,
+        statements
+      );
+
+      statements.push(
+        Lowered.addStatement(lr, {
+          variant: Lowered.ENode.ExprStatement,
+          expr: Lowered.addExpr(lr, {
+            variant: Lowered.ENode.ExprAssignmentExpr,
+            target: eId,
+            assignRefTarget: false,
+            type: e.type,
+            value: Lowered.addExpr(lr, {
+              variant: Lowered.ENode.BinaryExpr,
+              left: eId,
+              operation:
+                expr.operation === EIncrOperation.Incr
+                  ? EBinaryOperation.Add
+                  : EBinaryOperation.Subtract,
+              plainResultType: lr.typeUseNodes.get(e.type).type,
+              right: lowerExpr(
+                lr,
+                lr.sr.b.literal(1n, expr.sourceloc)[1],
+                statements,
+                instanceInfo
+              )[1],
+              type: e.type,
+            })[1],
+          })[1],
+          sourceloc: expr.sourceloc,
+        })[1]
+      );
+
       return Lowered.addExpr(lr, {
-        variant: Lowered.ENode.PostIncrExpr,
-        expr: lowerExpr(lr, expr.expr, flattened, instanceInfo)[1],
-        operation: expr.operation,
+        variant: Lowered.ENode.BlockScopeExpr,
+        block: Lowered.addBlockScope(lr, {
+          definesVariables: true,
+          statements: statements,
+          emittedExpr: tempvarId,
+        })[1],
+        sourceloc: expr.sourceloc,
         type: lowerTypeUse(lr, expr.type),
       });
     }
 
     case Semantic.ENode.PreIncrExpr: {
+      const [e, eId] = lowerExpr(lr, expr.expr, flattened, instanceInfo);
+
+      const statements: Lowered.StatementId[] = [];
+
+      statements.push(
+        Lowered.addStatement(lr, {
+          variant: Lowered.ENode.ExprStatement,
+          expr: Lowered.addExpr(lr, {
+            variant: Lowered.ENode.ExprAssignmentExpr,
+            target: eId,
+            assignRefTarget: false,
+            type: e.type,
+            value: Lowered.addExpr(lr, {
+              variant: Lowered.ENode.BinaryExpr,
+              left: eId,
+              operation:
+                expr.operation === EIncrOperation.Incr
+                  ? EBinaryOperation.Add
+                  : EBinaryOperation.Subtract,
+              plainResultType: lr.typeUseNodes.get(e.type).type,
+              right: lowerExpr(
+                lr,
+                lr.sr.b.literal(1n, expr.sourceloc)[1],
+                statements,
+                instanceInfo
+              )[1],
+              type: e.type,
+            })[1],
+          })[1],
+          sourceloc: expr.sourceloc,
+        })[1]
+      );
+
       return Lowered.addExpr(lr, {
-        variant: Lowered.ENode.PreIncrExpr,
-        expr: lowerExpr(lr, expr.expr, flattened, instanceInfo)[1],
-        operation: expr.operation,
+        variant: Lowered.ENode.BlockScopeExpr,
+        block: Lowered.addBlockScope(lr, {
+          definesVariables: true,
+          statements: statements,
+          emittedExpr: eId,
+        })[1],
+        sourceloc: expr.sourceloc,
         type: lowerTypeUse(lr, expr.type),
       });
     }
@@ -2570,12 +2633,6 @@ function serializeLoweredExpr(lr: Lowered.Module, exprId: Lowered.ExprId): strin
       return `((${serializeLoweredExpr(lr, expr.expr)})(${expr.arguments
         .map((a) => serializeLoweredExpr(lr, a))
         .join(", ")}))`;
-
-    case Lowered.ENode.PostIncrExpr:
-      return `((${serializeLoweredExpr(lr, expr.expr)})${IncrOperationToString(expr.operation)})`;
-
-    case Lowered.ENode.PreIncrExpr:
-      return `(${IncrOperationToString(expr.operation)}(${serializeLoweredExpr(lr, expr.expr)}))`;
 
     case Lowered.ENode.SymbolValueExpr:
       return expr.name.prettyName;

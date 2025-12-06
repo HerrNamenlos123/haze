@@ -5232,7 +5232,7 @@ export class SemanticElaborator {
           indices: [indexId],
           type: valueType.datatype,
           sourceloc: arraySubscript.sourceloc,
-          isTemporary: true,
+          isTemporary: false,
         });
       } else if (exprType.variant === Semantic.ENode.StructDatatype) {
         const overloads = new Set<Semantic.SymbolId>();
@@ -5782,7 +5782,10 @@ export class SemanticBuilder {
     const lhs = this.sr.exprNodes.get(lhsId);
     switch (lhs.variant) {
       case Semantic.ENode.ArraySubscriptExpr: {
-        assert(false, "Array subscript not implemented correctly yet");
+        lhs.instanceIds.forEach((id) =>
+          Semantic.addInstanceDeps(this.sr.e.currentContext.instanceDeps, id, dependencies)
+        );
+        break;
       }
 
       case Semantic.ENode.SymbolValueExpr: {
@@ -5851,6 +5854,13 @@ export class SemanticBuilder {
   ) {
     const target = this.sr.exprNodes.get(targetId);
     const value = this.sr.exprNodes.get(valueId);
+
+    if (target.isTemporary) {
+      throw new CompilerError(
+        `Cannot assign to a temporary of type ${Semantic.serializeTypeUse(this.sr, target.type)}`,
+        sourceloc
+      );
+    }
 
     // An assignment like let d = (a = b) makes a now dependent on b, as well as the result on b
     // I don't think the result would ever depend on a, right? ... right??    .....    .....   right????
