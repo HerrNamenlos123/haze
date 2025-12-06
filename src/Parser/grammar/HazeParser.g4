@@ -219,13 +219,18 @@ expr
 
 // Statements & Conditionals
 
+variableCreation
+    : variableMutabilitySpecifier comptime=COMPTIME? ID (((COLON datatype)? EQUALS expr) | (COLON datatype)) SEMI? #VariableCreationStatementRule
+    ;
+
 statement
-    : INLINEC LB STRING_LITERAL RB SEMI?                         #CInlineStatement
-    | expr SEMI?                                                #ExprStatement
-    | RETURN expr? SEMI?                                         #ReturnStatement
-    | variableMutabilitySpecifier comptime=COMPTIME? ID (((COLON datatype)? EQUALS expr) | (COLON datatype)) SEMI?       #VariableCreationStatement
+    : INLINEC LB STRING_LITERAL RB SEMI?                                            #CInlineStatement
+    | expr SEMI?                                                                    #ExprStatement
+    | RETURN expr? SEMI?                                                            #ReturnStatement
+    | variableCreation                                                              #VariableCreationStatement
     | IF comptime=COMPTIME? ifExpr=expr then=rawScope (ELSE IF elseIfExpr+=expr elseIfThen+=rawScope)* (ELSE elseBlock=rawScope)? #IfStatement
-    | FOR comptime=COMPTIME? ID (COMMA ID)? IN expr rawScope       #ForEachStatement
-    | WHILE expr rawScope                                          #WhileStatement
-    | typeDef                                                   #TypeAliasStatement
+    | FOR comptime=COMPTIME? ID (COMMA ID)? IN expr rawScope                        #ForEachStatement
+    | FOR comptime=COMPTIME? LB statement? SEMI condition=expr? SEMI incr=expr? RB rawScope #ForStatement
+    | WHILE expr rawScope                                                           #WhileStatement
+    | typeDef                                                                       #TypeAliasStatement
     ;

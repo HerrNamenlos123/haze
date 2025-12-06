@@ -15,8 +15,10 @@ array() {
     // const b = []u8 {};
     // const a: []u8 = []u8 {1, 2, 3};
     // a.push(4);
-    fmt.println("Element: ", dynamicArray.length);
-    // return ;
+    for (let i = 0; i < dynamicArray.length; i += 1) {
+        fmt.println("Element: ", dynamicArray[i]);
+    }
+    dynamicArray;
 }
 
 extern C parse(source: str) {

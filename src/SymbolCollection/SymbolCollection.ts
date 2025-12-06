@@ -163,6 +163,7 @@ export namespace Collect {
     CInjectDirective,
     ExprStatement,
     IfStatement,
+    ForStatement,
     ForEachStatement,
     WhileStatement,
     ReturnStatement,
@@ -522,6 +523,15 @@ export namespace Collect {
     expr: Collect.ExprId | null;
   };
 
+  export type ForStatement = BaseStatement & {
+    variant: ENode.ForStatement;
+    initStatement: Collect.StatementId | null;
+    loopCondition: Collect.ExprId | null;
+    loopIncrement: Collect.ExprId | null;
+    comptime: boolean;
+    body: Collect.ScopeId;
+  };
+
   export type ForEachStatement = BaseStatement & {
     variant: ENode.ForEachStatement;
     loopVariable: string;
@@ -561,6 +571,7 @@ export namespace Collect {
     | InlineCStatement
     | ReturnStatement
     | IfStatement
+    | ForStatement
     | ForEachStatement
     | WhileStatement
     | VariableDefinitionStatement;
@@ -570,6 +581,7 @@ export namespace Collect {
     | Omit<InlineCStatement, "owningScope">
     | Omit<ReturnStatement, "owningScope">
     | Omit<IfStatement, "owningScope">
+    | Omit<ForStatement, "owningScope">
     | Omit<ForEachStatement, "owningScope">
     | Omit<WhileStatement, "owningScope">
     | Omit<VariableDefinitionStatement, "owningScope">;
@@ -1955,6 +1967,62 @@ function collectScope(
         });
         break;
 
+      case "ForStatement": {
+        // Simulate the entire for loop being wrapped in a scope, for the init condition (let i = 0;)
+        let forScopeId = makeBlockScope(cc, blockScopeId, false, item.sourceloc);
+        let explicitInitStatement: Collect.StatementId | null = null;
+        if (astStatement.initStatement) {
+          forScopeId = collectScope(
+            cc,
+            {
+              variant: "Scope",
+              unsafe: false,
+              statements: [astStatement.initStatement],
+              sourceloc: item.sourceloc,
+            },
+            {
+              currentParentScope: blockScopeId,
+            }
+          );
+
+          // Now extract the statement from the scope. It's important that it's in there such that symbol lookup works,
+          // but for the further elaboration we can also extract it and access directly while also being in the scope.
+          const scope = cc.scopeNodes.get(forScopeId);
+          assert(scope.variant === Collect.ENode.BlockScope);
+          assert(scope.statements.size === 1);
+          explicitInitStatement = [...scope.statements][0];
+        }
+
+        addStatement(cc, blockScopeId, {
+          variant: Collect.ENode.ExprStatement,
+          expr: Collect.makeExpr(cc, {
+            variant: Collect.ENode.BlockScopeExpr,
+            scope: forScopeId,
+            sourceloc: astStatement.sourceloc,
+          })[1],
+          sourceloc: astStatement.sourceloc,
+        });
+
+        addStatement(cc, forScopeId, {
+          variant: Collect.ENode.ForStatement,
+          comptime: astStatement.comptime,
+          loopCondition: astStatement.loopCondition
+            ? collectExpr(cc, astStatement.loopCondition, {
+                currentParentScope: forScopeId,
+              })
+            : null,
+          loopIncrement: astStatement.loopIncrement
+            ? collectExpr(cc, astStatement.loopIncrement, {
+                currentParentScope: forScopeId,
+              })
+            : null,
+          initStatement: explicitInitStatement,
+          body: collectScope(cc, astStatement.body, { currentParentScope: forScopeId }),
+          sourceloc: astStatement.sourceloc,
+        });
+        break;
+      }
+
       case "ForEachStatement": {
         addStatement(cc, blockScopeId, {
           variant: Collect.ENode.ForEachStatement,
@@ -2414,6 +2482,18 @@ export function printCollectedDatatype(
       return "(" + type.members.map((m) => printCollectedDatatype(cc, m)).join(" | ") + ")";
     }
 
+    case Collect.ENode.TaggedUnionDatatype: {
+      return (
+        "union {" +
+        type.members
+          .map((m) => {
+            return `${m.tag}: ${printCollectedDatatype(cc, m.type)}`;
+          })
+          .join("; ") +
+        "}"
+      );
+    }
+
     case Collect.ENode.FunctionDatatype: {
       return `(${type.parameters
         .map((p, i) => `param${i}: ${printCollectedDatatype(cc, p)}`)
@@ -2538,6 +2618,10 @@ export const printCollectedExpr = (cc: CollectionContext, exprId: Collect.ExprId
 
     case Collect.ENode.TypeLiteralExpr: {
       return `type<${printCollectedDatatype(cc, expr.datatype)}>`;
+    }
+
+    case Collect.ENode.ErrorPropagationExpr: {
+      return `${printCollectedExpr(cc, expr.expr)}?!`;
     }
 
     default:
@@ -2765,6 +2849,19 @@ export const printCollectedSymbol = (
 
         case Collect.ENode.TypeDefAlias: {
           print(`type ${typedef.name} = ${printCollectedDatatype(cc, typedef.target)};`);
+          break;
+        }
+
+        case Collect.ENode.EnumTypeDef: {
+          print(`enum ${typedef.name} {`);
+          for (const value of typedef.values) {
+            if (value.value) {
+              print(`${value.name} = ${printCollectedExpr(cc, value.value)}`, indent + 2);
+            } else {
+              print(`${value.name}`, indent + 2);
+            }
+          }
+          print(`}`);
           break;
         }
 

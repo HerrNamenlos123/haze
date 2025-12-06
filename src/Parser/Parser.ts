@@ -71,6 +71,7 @@ import {
   type ASTEnumValueDefinition,
   type ASTAggregateLiteralElement,
   type ASTSubscriptIndexExpr,
+  type ASTForStatement,
 } from "../shared/AST";
 import {
   BinaryExprContext,
@@ -152,6 +153,8 @@ import {
   AggregateLiteralElementContext,
   SubscriptSingleExprContext,
   SubscriptSliceExprContext,
+  VariableCreationStatementRuleContext,
+  ForStatementContext,
 } from "./grammar/autogen/HazeParser";
 import {
   BaseErrorListener,
@@ -278,7 +281,10 @@ class ASTTransformer extends HazeParserVisitor<any> {
   }
 
   mutability(
-    ctx: GlobalVariableDefinitionContext | VariableCreationStatementContext | StructMemberContext
+    ctx:
+      | GlobalVariableDefinitionContext
+      | VariableCreationStatementRuleContext
+      | StructMemberContext
   ): EVariableMutability {
     if (!ctx.variableMutabilitySpecifier) {
       return EVariableMutability.Default;
@@ -988,8 +994,8 @@ class ASTTransformer extends HazeParserVisitor<any> {
     };
   };
 
-  visitVariableCreationStatement = (
-    ctx: VariableCreationStatementContext
+  visitVariableCreationStatementRule = (
+    ctx: VariableCreationStatementRuleContext
   ): ASTVariableDefinitionStatement => {
     return {
       variant: "VariableDefinitionStatement",
@@ -1003,12 +1009,30 @@ class ASTTransformer extends HazeParserVisitor<any> {
     };
   };
 
+  visitVariableCreationStatement = (
+    ctx: VariableCreationStatementContext
+  ): ASTVariableDefinitionStatement => {
+    return this.visit(ctx.variableCreation());
+  };
+
   visitForEachStatement = (ctx: ForEachStatementContext): ASTForEachStatement => {
     return {
       variant: "ForEachStatement",
       loopVariable: ctx.ID()[0].getText(),
       indexVariable: ctx.ID().length > 1 ? ctx.ID()[1].getText() : null,
       value: this.visit(ctx.expr()),
+      body: this.visit(ctx.rawScope()),
+      sourceloc: this.loc(ctx),
+      comptime: Boolean(ctx._comptime),
+    };
+  };
+
+  visitForStatement = (ctx: ForStatementContext): ASTForStatement => {
+    return {
+      variant: "ForStatement",
+      initStatement: ctx.statement() ? this.visit(ctx.statement()!) : null,
+      loopCondition: ctx._condition ? this.visit(ctx._condition) : null,
+      loopIncrement: ctx._incr ? this.visit(ctx._incr) : null,
       body: this.visit(ctx.rawScope()),
       sourceloc: this.loc(ctx),
       comptime: Boolean(ctx._comptime),

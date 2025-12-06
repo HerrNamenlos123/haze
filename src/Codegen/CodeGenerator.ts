@@ -165,6 +165,7 @@ class CodeGenerator {
   generate() {
     this.includeSystemHeader("stdlib.h");
     this.includeSystemHeader("stdint.h");
+    this.includeSystemHeader("inttypes.h");
     this.includeSystemHeader("stdbool.h");
     this.includeSystemHeader("stdalign.h");
     this.includeSystemHeader("stdio.h");
@@ -558,7 +559,10 @@ class CodeGenerator {
     return { temp: tempWriter, out: outWriter };
   }
 
-  emitStatement(statementId: Lowered.StatementId): {
+  emitStatement(
+    statementId: Lowered.StatementId,
+    noSourceloc = false
+  ): {
     temp: OutputWriter;
     out: OutputWriter;
   } {
@@ -568,7 +572,7 @@ class CodeGenerator {
     const outWriter = new OutputWriter();
     switch (statement.variant) {
       case Lowered.ENode.ReturnStatement: {
-        if (statement.sourceloc && this.lr.sr.cc.config.includeSourceloc) {
+        if (statement.sourceloc && this.lr.sr.cc.config.includeSourceloc && !noSourceloc) {
           outWriter.writeLine(
             `#line ${statement.sourceloc.start.line} ${JSON.stringify(
               statement.sourceloc.filename
@@ -586,7 +590,7 @@ class CodeGenerator {
       }
 
       case Lowered.ENode.VariableStatement: {
-        if (statement.sourceloc && this.lr.sr.cc.config.includeSourceloc) {
+        if (statement.sourceloc && this.lr.sr.cc.config.includeSourceloc && !noSourceloc) {
           outWriter.writeLine(
             `#line ${statement.sourceloc.start.line} ${JSON.stringify(
               statement.sourceloc.filename
@@ -615,21 +619,34 @@ class CodeGenerator {
       }
 
       case Lowered.ENode.ExprStatement: {
-        if (statement.sourceloc && this.lr.sr.cc.config.includeSourceloc) {
+        if (statement.sourceloc && this.lr.sr.cc.config.includeSourceloc && !noSourceloc) {
           outWriter.writeLine(
             `#line ${statement.sourceloc.start.line} ${JSON.stringify(
               statement.sourceloc.filename
             )}`
           );
         }
+
+        const statementExpr = this.lr.exprNodes.get(statement.expr);
+        const statementExprTypeUse = this.lr.typeUseNodes.get(statementExpr.type);
+        const statementExprTypeDef = this.lr.typeDefNodes.get(statementExprTypeUse.type);
+        const isVoid =
+          statementExprTypeDef.variant === Lowered.ENode.PrimitiveDatatype &&
+          statementExprTypeDef.primitive === EPrimitive.void;
+
         const exprWriter = this.emitExpr(statement.expr);
         tempWriter.write(exprWriter.temp);
-        outWriter.writeLine(`(void)(${exprWriter.out.get()});`);
+
+        if (isVoid) {
+          outWriter.writeLine(`${exprWriter.out.get()};`);
+        } else {
+          outWriter.writeLine(`(void)(${exprWriter.out.get()});`);
+        }
         return { temp: tempWriter, out: outWriter };
       }
 
       case Lowered.ENode.InlineCStatement: {
-        if (statement.sourceloc && this.lr.sr.cc.config.includeSourceloc) {
+        if (statement.sourceloc && this.lr.sr.cc.config.includeSourceloc && !noSourceloc) {
           outWriter.writeLine(
             `#line ${statement.sourceloc.start.line} ${JSON.stringify(
               statement.sourceloc.filename
@@ -640,8 +657,50 @@ class CodeGenerator {
         return { temp: tempWriter, out: outWriter };
       }
 
+      case Lowered.ENode.ForStatement: {
+        if (statement.sourceloc && this.lr.sr.cc.config.includeSourceloc && !noSourceloc) {
+          outWriter.writeLine(
+            `#line ${statement.sourceloc.start.line} ${JSON.stringify(
+              statement.sourceloc.filename
+            )}`
+          );
+        }
+
+        const loopCondition = statement.loopCondition
+          ? this.emitExpr(statement.loopCondition)
+          : null;
+        if (loopCondition) tempWriter.write(loopCondition.temp);
+
+        const loopIncrement = statement.loopIncrement
+          ? this.emitExpr(statement.loopIncrement)
+          : null;
+        if (loopIncrement) tempWriter.write(loopIncrement.temp);
+
+        const initStatements = statement.initStatements.map((s) => {
+          const a = this.emitStatement(s, true);
+          tempWriter.write(a.temp);
+          return a.out.get();
+        });
+        assert(
+          initStatements.length === 1,
+          "The init statement in a for loop cannot be so complex that it requires multiple statements in C"
+        );
+
+        outWriter
+          .writeLine(
+            `for (${initStatements[0]} ${loopCondition?.out.get()}; ${loopIncrement?.out.get()}) {`
+          )
+          .pushIndent();
+
+        const scope = this.emitScope(statement.body);
+        tempWriter.write(scope.temp);
+        outWriter.write(scope.out);
+        outWriter.popIndent().writeLine("}");
+        return { temp: tempWriter, out: outWriter };
+      }
+
       case Lowered.ENode.WhileStatement: {
-        if (statement.sourceloc && this.lr.sr.cc.config.includeSourceloc) {
+        if (statement.sourceloc && this.lr.sr.cc.config.includeSourceloc && !noSourceloc) {
           outWriter.writeLine(
             `#line ${statement.sourceloc.start.line} ${JSON.stringify(
               statement.sourceloc.filename
@@ -659,7 +718,7 @@ class CodeGenerator {
       }
 
       case Lowered.ENode.IfStatement: {
-        if (statement.sourceloc && this.lr.sr.cc.config.includeSourceloc) {
+        if (statement.sourceloc && this.lr.sr.cc.config.includeSourceloc && !noSourceloc) {
           outWriter.writeLine(
             `#line ${statement.sourceloc.start.line} ${JSON.stringify(
               statement.sourceloc.filename

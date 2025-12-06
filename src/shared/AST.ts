@@ -346,6 +346,16 @@ export type ASTIfStatement = {
   sourceloc: SourceLoc;
 };
 
+export type ASTForStatement = {
+  variant: "ForStatement";
+  initStatement: ASTStatement | null;
+  loopCondition: ASTExpr | null;
+  loopIncrement: ASTExpr | null;
+  comptime: boolean;
+  body: ASTScope;
+  sourceloc: SourceLoc;
+};
+
 export type ASTForEachStatement = {
   variant: "ForEachStatement";
   loopVariable: string;
@@ -380,6 +390,7 @@ export type ASTTypeAlias = {
 export type ASTStatement =
   | ASTInlineCStatement
   | ASTExprStatement
+  | ASTForStatement
   | ASTForEachStatement
   | ASTReturnStatement
   | ASTVariableDefinitionStatement

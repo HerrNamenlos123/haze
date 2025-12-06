@@ -66,6 +66,7 @@ export namespace Lowered {
     InlineCStatement,
     WhileStatement,
     IfStatement,
+    ForStatement,
     VariableStatement,
     ExprStatement,
     BlockScopeExpr,
@@ -432,6 +433,7 @@ export namespace Lowered {
     | ReturnStatement
     | VariableStatement
     | IfStatement
+    | ForStatement
     | WhileStatement
     | ExprStatement;
 
@@ -465,6 +467,15 @@ export namespace Lowered {
       then: BlockScopeId;
     }[];
     else?: BlockScopeId;
+    sourceloc: SourceLoc;
+  };
+
+  export type ForStatement = {
+    variant: ENode.ForStatement;
+    initStatements: StatementId[];
+    loopCondition: ExprId | null;
+    loopIncrement: ExprId | null;
+    body: BlockScopeId;
     sourceloc: SourceLoc;
   };
 
@@ -2052,6 +2063,25 @@ function lowerStatement(
       return [...flattened, sId];
     }
 
+    case Semantic.ENode.ForStatement: {
+      const flattened: Lowered.StatementId[] = [];
+      const [s, sId] = Lowered.addStatement<Lowered.ForStatement>(lr, {
+        variant: Lowered.ENode.ForStatement,
+        initStatements: statement.initStatement
+          ? lowerStatement(lr, statement.initStatement, instanceInfo)
+          : [],
+        loopCondition: statement.loopCondition
+          ? lowerExpr(lr, statement.loopCondition, flattened, instanceInfo)[1]
+          : null,
+        loopIncrement: statement.loopIncrement
+          ? lowerExpr(lr, statement.loopIncrement, flattened, instanceInfo)[1]
+          : null,
+        body: lowerBlockScope(lr, statement.body, false, instanceInfo),
+        sourceloc: statement.sourceloc,
+      });
+      return [...flattened, sId];
+    }
+
     case Semantic.ENode.WhileStatement: {
       const flattened: Lowered.StatementId[] = [];
       const [s, sId] = Lowered.addStatement<Lowered.Statement>(lr, {
@@ -2107,6 +2137,28 @@ function lowerBlockScope(
 ): Lowered.BlockScopeId {
   const blockScope = lr.sr.blockScopeNodes.get(semanticScopeId);
   assert(blockScope.variant === Semantic.ENode.BlockScope);
+
+  if (
+    blockScope.emittedExpr === null &&
+    blockScope.statements.length === 2 &&
+    lr.sr.statementNodes.get(blockScope.statements[1]).variant === Semantic.ENode.ForStatement
+  ) {
+    // If this is a block scope of the form
+    // ({
+    //   <some-statement>
+    //   for (<some-statement>; <>; <>) {}
+    // })
+    // Then it is the scope, that was used for the for loop. It was used for elaboration and type checking.
+    // Then we must remove this scope and only lower the for loop itself, because we no longer need the
+    // duplicated <some-statement>.
+    // Since we can't directly return a statement instead of a block scope, we return an empty scope
+    // and let the optimization logic remove the scope because it's redundant.
+    return Lowered.addBlockScope(lr, {
+      definesVariables: false,
+      emittedExpr: null,
+      statements: lowerStatement(lr, blockScope.statements[1], instanceInfo),
+    })[1];
+  }
 
   let containsVariables = false;
   const statements: Lowered.StatementId[] = [];

@@ -1134,7 +1134,7 @@ export class SemanticElaborator {
         }
         return this.sr.b.literalValue(
           {
-            type: EPrimitive.usize,
+            type: EPrimitive.int,
             unit: null,
             value: BigInt(objectType.parameters.length),
           },
@@ -1155,7 +1155,7 @@ export class SemanticElaborator {
         return this.sr.b.memberAccessRaw(
           objectId,
           "length",
-          this.sr.b.usizeType(),
+          this.sr.b.intType(),
           true,
           memberAccess.sourceloc
         );
@@ -1195,7 +1195,7 @@ export class SemanticElaborator {
         return this.sr.b.memberAccessRaw(
           objectId,
           "length",
-          this.sr.b.usizeType(),
+          this.sr.b.intType(),
           true,
           memberAccess.sourceloc
         );
@@ -1212,7 +1212,7 @@ export class SemanticElaborator {
       if (memberAccess.memberName === "length") {
         return this.sr.b.literalValue(
           {
-            type: EPrimitive.usize,
+            type: EPrimitive.int,
             unit: null,
             value: objectType.length,
           },
@@ -4210,6 +4210,55 @@ export class SemanticElaborator {
       // =================================================================================================================
       // =================================================================================================================
 
+      case Collect.ENode.ForStatement: {
+        if (s.comptime) {
+          assert(false, "Comptime for loops are not implemented yet (comptime for-each is)");
+        }
+
+        const initStatement = s.initStatement ? this.elaborateStatement(s.initStatement, {}) : null;
+        const loopCondition = s.loopCondition
+          ? Conversion.MakeConversionOrThrow(
+              this.sr,
+              this.expr(s.loopCondition, {})[1],
+              this.sr.b.boolType(),
+              [...this.currentContext.constraints],
+              s.sourceloc,
+              Conversion.Mode.Implicit,
+              false
+            )
+          : null;
+        const loopIncrement = s.loopIncrement ? this.expr(s.loopIncrement, {})[1] : null;
+
+        const [body, bodyId] = Semantic.addBlockScope(this.sr, {
+          variant: Semantic.ENode.BlockScope,
+          statements: [],
+          emittedExpr: null,
+          constraints: [...this.currentContext.constraints],
+        });
+
+        this.elaborateBlockScope(
+          {
+            sourceScopeId: s.body,
+            targetScopeId: bodyId,
+          },
+          false,
+          {}
+        );
+
+        return Semantic.addStatement(this.sr, {
+          variant: Semantic.ENode.ForStatement,
+          body: bodyId,
+          initStatement: initStatement,
+          loopCondition: loopCondition,
+          loopIncrement: loopIncrement,
+          sourceloc: s.sourceloc,
+        })[1];
+      }
+
+      // =================================================================================================================
+      // =================================================================================================================
+      // =================================================================================================================
+
       case Collect.ENode.ForEachStatement: {
         if (s.comptime) {
           const [value, valueId] = this.expr(s.value, undefined);
@@ -4256,7 +4305,7 @@ export class SemanticElaborator {
               sourceloc: s.sourceloc,
               type: makePrimitiveAvailable(
                 this.sr,
-                EPrimitive.usize,
+                EPrimitive.int,
                 EDatatypeMutability.Const,
                 s.sourceloc
               ),
@@ -4283,7 +4332,7 @@ export class SemanticElaborator {
               assert(loopIndexId && loopIndex);
               loopIndex.comptimeValue = this.sr.b.literalValue(
                 {
-                  type: EPrimitive.usize,
+                  type: EPrimitive.int,
                   unit: null,
                   value: BigInt(i),
                 },
@@ -5637,7 +5686,7 @@ export class SemanticBuilder {
       variant: Semantic.ENode.SizeofExpr,
       instanceIds: [],
       valueExpr: valueExprId,
-      type: this.usizeType(),
+      type: this.intType(),
       isTemporary: false,
       sourceloc: valueExpr.sourceloc,
     });
@@ -5649,7 +5698,7 @@ export class SemanticBuilder {
       variant: Semantic.ENode.AlignofExpr,
       instanceIds: [],
       valueExpr: valueExprId,
-      type: this.usizeType(),
+      type: this.intType(),
       isTemporary: false,
       sourceloc: valueExpr.sourceloc,
     });
@@ -5862,7 +5911,9 @@ export class SemanticBuilder {
       typeDef.primitive === EPrimitive.str &&
       name === "length"
     ) {
+      // No work required
     } else if (typeDef.variant === Semantic.ENode.DynamicArrayDatatype && name === "length") {
+      // No work required
     } else {
       assert(false);
     }
@@ -6555,6 +6606,7 @@ export namespace Semantic {
     InlineCStatement,
     WhileStatement,
     IfStatement,
+    ForStatement,
     VariableStatement,
     ExprStatement,
     BlockScopeExpr,
@@ -7247,6 +7299,15 @@ export namespace Semantic {
     sourceloc: SourceLoc;
   };
 
+  export type ForStatement = {
+    variant: ENode.ForStatement;
+    initStatement: StatementId | null;
+    loopCondition: ExprId | null;
+    loopIncrement: ExprId | null;
+    body: BlockScopeId;
+    sourceloc: SourceLoc;
+  };
+
   export type WhileStatement = {
     variant: ENode.WhileStatement;
     condition: ExprId;
@@ -7274,6 +7335,7 @@ export namespace Semantic {
     | ReturnStatement
     | VariableStatement
     | IfStatement
+    | ForStatement
     | WhileStatement
     | ExprStatement;
 
