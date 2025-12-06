@@ -36,4 +36,6 @@ typedef struct hzstd_null_t {
 typedef struct hzstd_none_t {
 } hzstd_none_t;
 
+#define HZSTD_MAX(a, b) ((a) > (b) ? (a) : (b))
+
 #endif // HZSTD_COMMON_H

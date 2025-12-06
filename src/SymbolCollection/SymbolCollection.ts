@@ -25,7 +25,7 @@ import {
   type ASTRoot,
   type ASTScope,
   type ASTStructDefinition,
-  type ASTStructInstantiationExpr,
+  type ASTAggregateLiteralExpr,
   type ASTSymbolValueExpr,
   type ASTUnaryExpr,
   BinaryOperationToString,
@@ -183,12 +183,10 @@ export namespace Collect {
     ExprIsTypeExpr,
     MemberAccessExpr,
     ExprAssignmentExpr,
-    StructInstantiationExpr,
+    AggregateLiteralExpr,
     PreIncrExpr,
     PostIncrExpr,
     ArraySubscriptExpr,
-    ArraySliceExpr,
-    ArrayLiteralExpr,
     TypeLiteralExpr,
     // Specials
     ModuleImport,
@@ -637,13 +635,15 @@ export namespace Collect {
     comparisonType: Collect.TypeUseId;
   };
 
-  export type StructInstantiationExpr = BaseExpr & {
-    variant: ENode.StructInstantiationExpr;
+  export type AggregateLiteralElement = {
+    key: string | null;
+    value: Collect.ExprId;
+  };
+
+  export type AggregateLiteralExpr = BaseExpr & {
+    variant: ENode.AggregateLiteralExpr;
     structType: Collect.TypeUseId | null;
-    members: {
-      name: string;
-      value: Collect.ExprId;
-    }[];
+    elements: AggregateLiteralElement[];
     inArena: Collect.ExprId | null;
   };
 
@@ -684,24 +684,21 @@ export namespace Collect {
     operation: EIncrOperation;
   };
 
-  export type ArrayLiteralExpr = BaseExpr & {
-    variant: ENode.ArrayLiteralExpr;
-    values: Collect.ExprId[];
-  };
+  export type ArraySubscriptIndexExpr =
+    | {
+        type: "index";
+        value: Collect.ExprId;
+      }
+    | {
+        type: "slice";
+        start: Collect.ExprId | null;
+        end: Collect.ExprId | null;
+      };
 
   export type ArraySubscriptExpr = BaseExpr & {
     variant: ENode.ArraySubscriptExpr;
     expr: Collect.ExprId;
-    indices: Collect.ExprId[];
-  };
-
-  export type ArraySliceExpr = BaseExpr & {
-    variant: ENode.ArraySliceExpr;
-    expr: Collect.ExprId;
-    indices: {
-      start: Collect.ExprId | null;
-      end: Collect.ExprId | null;
-    }[];
+    indices: ArraySubscriptIndexExpr[];
   };
 
   export type TypeLiteralExpr = BaseExpr & {
@@ -719,12 +716,10 @@ export namespace Collect {
     | ExprCallExpr
     | ExplicitCastExpr
     | ExprIsTypeExpr
-    | StructInstantiationExpr
+    | AggregateLiteralExpr
     | ExprAssignmentExpr
     | LiteralExpr
-    | ArrayLiteralExpr
     | ArraySubscriptExpr
-    | ArraySliceExpr
     | TypeLiteralExpr
     | PreIncrExpr
     | PostIncrExpr
@@ -1996,7 +1991,7 @@ function collectExpr(
     | ASTLambdaExpr
     | ASTPreIncrExpr
     | ASTPostIncrExpr
-    | ASTStructInstantiationExpr
+    | ASTAggregateLiteralExpr
     | ASTExplicitCastExpr
     | ASTExprIsTypeExpr
     | ASTBinaryExpr
@@ -2103,12 +2098,12 @@ function collectExpr(
     // =================================================================================================================
     // =================================================================================================================
 
-    case "StructInstantiationExpr":
+    case "AggregateLiteralExpr":
       return Collect.makeExpr(cc, {
-        variant: Collect.ENode.StructInstantiationExpr,
+        variant: Collect.ENode.AggregateLiteralExpr,
         structType: item.datatype ? collectTypeUse(cc, item.datatype, args) : null,
-        members: item.members.map((m) => ({
-          name: m.name,
+        elements: item.elements.map((m) => ({
+          key: m.key,
           value: collectExpr(cc, m.value, args),
         })),
         inArena: item.inArena ? collectExpr(cc, item.inArena, args) : null,
@@ -2241,37 +2236,24 @@ function collectExpr(
     // =================================================================================================================
     // =================================================================================================================
 
-    case "ArrayLiteralExpr":
-      return Collect.makeExpr(cc, {
-        variant: Collect.ENode.ArrayLiteralExpr,
-        values: item.values.map((v) => collectExpr(cc, v, args)),
-        sourceloc: item.sourceloc,
-      })[1];
-
-    // =================================================================================================================
-    // =================================================================================================================
-    // =================================================================================================================
-
     case "ArraySubscriptExpr":
       return Collect.makeExpr(cc, {
         variant: Collect.ENode.ArraySubscriptExpr,
         expr: collectExpr(cc, item.expr, args),
-        indices: item.indices.map((i) => collectExpr(cc, i, args)),
-        sourceloc: item.sourceloc,
-      })[1];
-
-    // =================================================================================================================
-    // =================================================================================================================
-    // =================================================================================================================
-
-    case "ArraySliceExpr":
-      return Collect.makeExpr(cc, {
-        variant: Collect.ENode.ArraySliceExpr,
-        expr: collectExpr(cc, item.expr, args),
-        indices: item.indices.map((i) => ({
-          start: i.start ? collectExpr(cc, i.start, args) : null,
-          end: i.end ? collectExpr(cc, i.end, args) : null,
-        })),
+        indices: item.indices.map((i) => {
+          if (i.type === "index") {
+            return {
+              type: "index",
+              value: collectExpr(cc, i.value, args),
+            };
+          } else {
+            return {
+              type: "slice",
+              start: i.start ? collectExpr(cc, i.start, args) : null,
+              end: i.end ? collectExpr(cc, i.end, args) : null,
+            };
+          }
+        }),
         sourceloc: item.sourceloc,
       })[1];
 
@@ -2487,10 +2469,18 @@ export const printCollectedExpr = (cc: CollectionContext, exprId: Collect.ExprId
       return str;
     }
 
-    case Collect.ENode.StructInstantiationExpr: {
+    case Collect.ENode.AggregateLiteralExpr: {
       return (
         `${printCollectedDatatype(cc, expr.structType)} {` +
-        expr.members.map((a) => `${a.name}: ${printCollectedExpr(cc, a.value)}`).join(", ") +
+        expr.elements
+          .map((a) => {
+            if (a.key) {
+              return `${a.key}: ${printCollectedExpr(cc, a.value)}`;
+            } else {
+              return `${printCollectedExpr(cc, a.value)}`;
+            }
+          })
+          .join(", ") +
         "}"
       );
     }
@@ -2527,31 +2517,23 @@ export const printCollectedExpr = (cc: CollectionContext, exprId: Collect.ExprId
     case Collect.ENode.ArraySubscriptExpr: {
       const indices: string[] = [];
       for (const index of expr.indices) {
-        indices.push(printCollectedExpr(cc, index));
-      }
-      return `${printCollectedExpr(cc, expr.expr)}[${indices.join(", ")}]`;
-    }
-
-    case Collect.ENode.ArraySliceExpr: {
-      const indices: string[] = [];
-      for (const index of expr.indices) {
-        if (index.start && index.end) {
-          indices.push(
-            printCollectedExpr(cc, index.start) + ":" + printCollectedExpr(cc, index.end)
-          );
-        } else if (index.start) {
-          indices.push(printCollectedExpr(cc, index.start));
-        } else if (index.end) {
-          indices.push(printCollectedExpr(cc, index.end));
+        if (index.type === "index") {
+          indices.push(printCollectedExpr(cc, index.value));
         } else {
-          assert(false);
+          if (index.start && index.end) {
+            indices.push(
+              printCollectedExpr(cc, index.start) + ":" + printCollectedExpr(cc, index.end)
+            );
+          } else if (index.start) {
+            indices.push(printCollectedExpr(cc, index.start) + ":");
+          } else if (index.end) {
+            indices.push(":" + printCollectedExpr(cc, index.end));
+          } else {
+            assert(false);
+          }
         }
       }
       return `${printCollectedExpr(cc, expr.expr)}[${indices.join(", ")}]`;
-    }
-
-    case Collect.ENode.ArrayLiteralExpr: {
-      return `[${expr.values.map((v) => printCollectedExpr(cc, v)).join(", ")}]`;
     }
 
     case Collect.ENode.TypeLiteralExpr: {

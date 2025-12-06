@@ -207,3 +207,8 @@ hzstd_dynamic_array_result_t hzstd_dynamic_array_resize(hzstd_dynamic_array_t* d
   da->size = new_size;
   return hzstd_dynamic_array_result_ok;
 }
+
+void hzstd_dynamic_array_destroy_cleanup_action(void* data)
+{
+  hzstd_dynamic_array_destroy((hzstd_dynamic_array_t*)data);
+}

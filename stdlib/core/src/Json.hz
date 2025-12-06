@@ -193,11 +193,11 @@ foobar2(): Result<Foo, json.Error> {
 }
 
 createcJSONExample(): Result<Foo, json.Error> {
-    const resolutionNumbers = [
+    const resolutionNumbers = [3]Vec2 {
         Vec2(1280, 720),
         Vec2(1920, 1080),
         Vec2(3840, 2160),
-    ];
+    };
 
     const value = json.object();
     value["name"]?! := "Awesome 4K";

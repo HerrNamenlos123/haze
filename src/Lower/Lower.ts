@@ -1,3 +1,4 @@
+import { inline } from "@ltd/j-toml";
 import { Conversion } from "../Semantic/Conversion";
 import {
   makePrimitiveAvailable,
@@ -53,7 +54,8 @@ export namespace Lowered {
     PrimitiveDatatype,
     GenericParameterDatatype,
     NamespaceDatatype,
-    ArrayDatatype,
+    FixedArrayDatatype,
+    DynamicArrayDatatype,
     SliceDatatype,
     UntaggedUnionDatatype,
     TaggedUnionDatatype,
@@ -89,7 +91,7 @@ export namespace Lowered {
     AddressOfExpr,
     DereferenceExpr,
     ExprAssignmentExpr,
-    StructInstantiationExpr,
+    StructLiteralExpr,
     PreIncrExpr,
     PostIncrExpr,
     ArrayLiteralExpr,
@@ -346,7 +348,7 @@ export namespace Lowered {
   };
 
   export type StructInstantiationExpr = {
-    variant: ENode.StructInstantiationExpr;
+    variant: ENode.StructLiteralExpr;
     type: TypeUseId;
     memberAssigns: {
       name: string;
@@ -506,8 +508,9 @@ export namespace Lowered {
     | PrimitiveDatatypeDef
     | FunctionDatatypeDef
     | PointerDatatypeDef
-    | ArrayDatatypeDef
-    | SliceDatatypeDef
+    | FixedArrayDatatypeDef
+    | DynamicArrayDatatype
+    | SliceDatatype
     | UntaggedUnionDatatypeDef
     | TaggedUnionDatatypeDef
     | EnumDatatypeDef;
@@ -550,14 +553,20 @@ export namespace Lowered {
     vararg: boolean;
   };
 
-  export type ArrayDatatypeDef = {
-    variant: ENode.ArrayDatatype;
+  export type FixedArrayDatatypeDef = {
+    variant: ENode.FixedArrayDatatype;
     datatype: TypeUseId;
     name: NameSet;
     length: bigint;
   };
 
-  export type SliceDatatypeDef = {
+  export type DynamicArrayDatatype = {
+    variant: ENode.DynamicArrayDatatype;
+    datatype: TypeUseId;
+    name: NameSet;
+  };
+
+  export type SliceDatatype = {
     variant: ENode.SliceDatatype;
     datatype: TypeUseId;
     name: NameSet;
@@ -940,14 +949,14 @@ export function lowerExpr(
       });
     }
 
-    case Semantic.ENode.StructInstantiationExpr: {
+    case Semantic.ENode.StructLiteralExpr: {
       const structType = lowerTypeUse(lr, expr.type);
       const semanticTypeUse = lr.sr.typeUseNodes.get(expr.type);
 
       const structTypeUse = lr.typeUseNodes.get(structType);
       if (structTypeUse.pointer) {
         const [structExpr, structExprId] = Lowered.addExpr(lr, {
-          variant: Lowered.ENode.StructInstantiationExpr,
+          variant: Lowered.ENode.StructLiteralExpr,
           type: makeLowerTypeUse(lr, lowerTypeDef(lr, semanticTypeUse.type), true)[1],
           memberAssigns: expr.assign.map((a) => ({
             name: a.name,
@@ -1065,7 +1074,7 @@ export function lowerExpr(
         // });
       } else {
         return Lowered.addExpr(lr, {
-          variant: Lowered.ENode.StructInstantiationExpr,
+          variant: Lowered.ENode.StructLiteralExpr,
           type: structType,
           memberAssigns: expr.assign.map((a) => ({
             name: a.name,
@@ -1094,11 +1103,116 @@ export function lowerExpr(
     }
 
     case Semantic.ENode.ArrayLiteralExpr: {
-      return Lowered.addExpr(lr, {
-        variant: Lowered.ENode.ArrayLiteralExpr,
-        values: expr.values.map((v) => lowerExpr(lr, v, flattened, instanceInfo)[1]),
-        type: lowerTypeUse(lr, expr.type),
-      });
+      const typeUse = lr.sr.typeUseNodes.get(expr.type);
+      const typeDef = lr.sr.typeDefNodes.get(typeUse.type);
+      if (typeDef.variant === Semantic.ENode.FixedArrayDatatype) {
+        return Lowered.addExpr(lr, {
+          variant: Lowered.ENode.ArrayLiteralExpr,
+          values: expr.elements.map((v) => lowerExpr(lr, v, flattened, instanceInfo)[1]),
+          type: lowerTypeUse(lr, expr.type),
+        });
+      } else if (typeDef.variant === Semantic.ENode.DynamicArrayDatatype) {
+        const elements = expr.elements.map((v) => lowerExpr(lr, v, flattened, instanceInfo)[1]);
+        const rawType = lr.sr.typeUseNodes.get(expr.type).type;
+        const arrayType = lowerTypeUse(
+          lr,
+          makeTypeUse(lr.sr, rawType, EDatatypeMutability.Default, false, expr.sourceloc)[1]
+        );
+        const elementType = lowerTypeUse(lr, typeDef.datatype);
+
+        let returns = false;
+        if (expr.inFunction) {
+          const funcsym = lr.sr.symbolNodes.get(expr.inFunction);
+          assert(funcsym.variant === Semantic.ENode.FunctionSymbol);
+          if (expr.instanceIds.some((id) => funcsym.returnsInstanceIds.has(id))) {
+            returns = true;
+          }
+        }
+
+        let arenaId: Lowered.ExprId;
+        if (expr.inArena) {
+          arenaId = lowerExpr(lr, expr.inArena, flattened, instanceInfo)[1];
+        } else {
+          const name = returns ? "__hz_return_arena" : "__hz_local_arena";
+          arenaId = Lowered.addExpr(lr, {
+            variant: Lowered.ENode.SymbolValueExpr,
+            name: {
+              mangledName: name,
+              prettyName: name,
+              wasMangled: false,
+            },
+            type: makeLowerTypeUse(lr, makeVoidPointerType(lr), false)[1],
+          })[1];
+        }
+
+        const lengthExpr = lowerExpr(
+          lr,
+          lr.sr.b.literal(BigInt(elements.length), expr.sourceloc)[1],
+          flattened,
+          instanceInfo
+        );
+
+        const statements: Lowered.StatementId[] = [];
+        const tempVar = storeInTempVarAndGet(
+          lr,
+          arrayType,
+          makeIntrinsicCall(
+            lr,
+            "HZSTD_DYNAMIC_ARRAY_CREATE",
+            [
+              arenaId,
+              Lowered.addExpr(lr, {
+                variant: Lowered.ENode.DatatypeAsValueExpr,
+                type: arrayType,
+              })[1],
+              Lowered.addExpr(lr, {
+                variant: Lowered.ENode.DatatypeAsValueExpr,
+                type: elementType,
+              })[1],
+              lengthExpr[1],
+            ],
+            arrayType
+          )[1],
+          expr.sourceloc,
+          statements
+        );
+
+        const voidType = lowerTypeUse(lr, lr.sr.b.voidType());
+        for (const element of elements) {
+          const variable = storeInTempVarAndGet(
+            lr,
+            elementType,
+            element,
+            expr.sourceloc,
+            statements
+          )[1];
+          const call = makeIntrinsicCall(
+            lr,
+            "HZSTD_DYNAMIC_ARRAY_PUSH",
+            [tempVar[1], variable],
+            voidType
+          )[1];
+          statements.push(
+            Lowered.addStatement(lr, {
+              variant: Lowered.ENode.ExprStatement,
+              expr: call,
+              sourceloc: expr.sourceloc,
+            })[1]
+          );
+        }
+
+        return Lowered.addExpr(lr, {
+          variant: Lowered.ENode.BlockScopeExpr,
+          block: Lowered.addBlockScope(lr, {
+            definesVariables: true,
+            statements: statements,
+            emittedExpr: tempVar[1],
+          })[1],
+          sourceloc: expr.sourceloc,
+          type: arrayType,
+        });
+      }
+      assert(false);
     }
 
     case Semantic.ENode.ArraySubscriptExpr: {
@@ -1698,8 +1812,8 @@ export function lowerTypeDef(lr: Lowered.Module, typeId: Semantic.TypeDefId): Lo
     if (lr.loweredTypeDefs.has(typeId)) {
       return lr.loweredTypeDefs.get(typeId)!;
     } else {
-      const [p, pId] = Lowered.addTypeDef<Lowered.ArrayDatatypeDef>(lr, {
-        variant: Lowered.ENode.ArrayDatatype,
+      const [p, pId] = Lowered.addTypeDef<Lowered.FixedArrayDatatypeDef>(lr, {
+        variant: Lowered.ENode.FixedArrayDatatype,
         datatype: lowerTypeUse(lr, type.datatype),
         name: Semantic.makeNameSetTypeDef(lr.sr, typeId),
         length: type.length,
@@ -1711,7 +1825,19 @@ export function lowerTypeDef(lr: Lowered.Module, typeId: Semantic.TypeDefId): Lo
     if (lr.loweredTypeDefs.has(typeId)) {
       return lr.loweredTypeDefs.get(typeId)!;
     } else {
-      const [p, pId] = Lowered.addTypeDef<Lowered.SliceDatatypeDef>(lr, {
+      const [p, pId] = Lowered.addTypeDef<Lowered.DynamicArrayDatatype>(lr, {
+        variant: Lowered.ENode.DynamicArrayDatatype,
+        datatype: lowerTypeUse(lr, type.datatype),
+        name: Semantic.makeNameSetTypeDef(lr.sr, typeId),
+      });
+      lr.loweredTypeDefs.set(typeId, pId);
+      return pId;
+    }
+  } else if (type.variant === Semantic.ENode.SliceDatatype) {
+    if (lr.loweredTypeDefs.has(typeId)) {
+      return lr.loweredTypeDefs.get(typeId)!;
+    } else {
+      const [p, pId] = Lowered.addTypeDef<Lowered.SliceDatatype>(lr, {
         variant: Lowered.ENode.SliceDatatype,
         datatype: lowerTypeUse(lr, type.datatype),
         name: Semantic.makeNameSetTypeDef(lr.sr, typeId),
@@ -1868,7 +1994,10 @@ function lowerTypeUse(lr: Lowered.Module, typeId: Semantic.TypeUseId): Lowered.T
     variant: Lowered.ENode.TypeUse,
     mutability: typeUse.mutability,
     name: Semantic.makeNameSetTypeUse(lr.sr, typeId),
-    pointer: !typeUse.inline && typeDef.variant === Semantic.ENode.StructDatatype,
+    pointer:
+      !typeUse.inline &&
+      (typeDef.variant === Semantic.ENode.StructDatatype ||
+        typeDef.variant === Semantic.ENode.DynamicArrayDatatype),
     sourceloc: typeUse.sourceloc,
     type: lowerTypeDef(lr, typeUse.type),
   })[1];
@@ -2418,7 +2547,7 @@ function serializeLoweredExpr(lr: Lowered.Module, exprId: Lowered.ExprId): strin
         expr.start
       )}:${serializeLoweredExpr(lr, expr.end)}]`;
 
-    case Lowered.ENode.StructInstantiationExpr: {
+    case Lowered.ENode.StructLiteralExpr: {
       const exprType = lr.typeUseNodes.get(expr.type);
       return `${exprType.name.prettyName} { ${expr.memberAssigns
         .map((a) => `${a.name}: ${serializeLoweredExpr(lr, a.value)}`)

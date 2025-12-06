@@ -115,7 +115,7 @@ class CodeGenerator {
         // .writeLine(`hzstd_arena_cleanup_and_free(parent_arena->arenaImpl);`)
         .writeLine(`return __hz_result;`)
         .popIndent()
-        .writeLine("}");
+        .writeLine("}\n");
     }
   }
 
@@ -246,7 +246,7 @@ class CodeGenerator {
           this.out.type_definitions.popIndent().writeLine(`};`);
           this.out.type_definitions.popIndent().writeLine(`};`);
         }
-      } else if (symbol.variant === Lowered.ENode.ArrayDatatype) {
+      } else if (symbol.variant === Lowered.ENode.FixedArrayDatatype) {
         this.out.type_declarations.writeLine(
           `typedef struct ${this.mangleTypeDef(symbol)} ${this.mangleTypeDef(symbol)};`
         );
@@ -255,6 +255,13 @@ class CodeGenerator {
           `${this.mangleTypeUse(symbol.datatype)} data[${symbol.length}];`
         );
         this.out.type_definitions.popIndent().writeLine(`};`);
+      } else if (symbol.variant === Lowered.ENode.DynamicArrayDatatype) {
+        this.out.type_declarations.writeLine(
+          `typedef hzstd_dynamic_array_t ${this.mangleTypeDef(symbol)};`
+        );
+        // this.out.type_definitions.writeLine(`struct ${this.mangleTypeDef(symbol)} {`).pushIndent();
+        // this.out.type_definitions.writeLine(`hzstd_dynamic_array_t data;`);
+        // this.out.type_definitions.popIndent().writeLine(`};`);
       } else if (symbol.variant === Lowered.ENode.SliceDatatype) {
         this.out.type_declarations.writeLine(
           `typedef struct ${this.mangleTypeDef(symbol)} ${this.mangleTypeDef(symbol)};`
@@ -365,11 +372,11 @@ class CodeGenerator {
         appliedTypes.add(type);
         processTypeUse(type.referee);
         sortedLoweredTypes.push(type);
-      } else if (type.variant === Lowered.ENode.ArrayDatatype) {
+      } else if (type.variant === Lowered.ENode.FixedArrayDatatype) {
         appliedTypes.add(type);
         processTypeUse(type.datatype);
         sortedLoweredTypes.push(type);
-      } else if (type.variant === Lowered.ENode.SliceDatatype) {
+      } else if (type.variant === Lowered.ENode.DynamicArrayDatatype) {
         appliedTypes.add(type);
         processTypeUse(type.datatype);
         sortedLoweredTypes.push(type);
@@ -710,7 +717,7 @@ class CodeGenerator {
 
         return { out: outWriter, temp: tempWriter };
 
-      case Lowered.ENode.StructInstantiationExpr: {
+      case Lowered.ENode.StructLiteralExpr: {
         outWriter.writeLine(`((${this.mangleTypeUse(expr.type)}) { `).pushIndent();
         for (const assign of expr.memberAssigns) {
           const exprWriter = this.emitExpr(assign.value);
@@ -1111,9 +1118,21 @@ class CodeGenerator {
           tempWriter.write(e.temp);
           return e.out;
         });
-        outWriter.write(
-          `(${this.mangleTypeUse(expr.type)}){ .data = {${values.map((v) => v.get()).join(", ")}} }`
-        );
+
+        const typeUse = this.lr.typeUseNodes.get(expr.type);
+        const typeDef = this.lr.typeDefNodes.get(typeUse.type);
+        if (typeDef.variant === Lowered.ENode.FixedArrayDatatype) {
+          outWriter.write(
+            `(${this.mangleTypeUse(expr.type)}){ .data = {${values
+              .map((v) => v.get())
+              .join(", ")}} }`
+          );
+        } else if (typeDef.variant === Lowered.ENode.DynamicArrayDatatype) {
+          assert(false, "should have been transpiled away");
+        } else {
+          assert(false);
+        }
+
         return { out: outWriter, temp: tempWriter };
       }
 
@@ -1133,7 +1152,7 @@ class CodeGenerator {
         const arrayExprType = this.lr.typeUseNodes.get(arrayExpr.type);
         const arrayExprTypeDef = this.lr.typeDefNodes.get(arrayExprType.type);
         assert(arrayExpr.variant !== Lowered.ENode.ArrayLiteralExpr);
-        assert(arrayExprTypeDef.variant === Lowered.ENode.ArrayDatatype);
+        assert(arrayExprTypeDef.variant === Lowered.ENode.FixedArrayDatatype);
 
         tempWriter.write(e.temp);
         const startIndex = this.emitExpr(expr.start);

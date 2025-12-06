@@ -714,7 +714,7 @@ export class SemanticElaborator {
       case Collect.ENode.LiteralExpr:
         return this.literalExpr(expr);
 
-      case Collect.ENode.StructInstantiationExpr:
+      case Collect.ENode.AggregateLiteralExpr:
         return this.structInstantiation(expr, inference);
 
       case Collect.ENode.SymbolValueExpr:
@@ -750,9 +750,6 @@ export class SemanticElaborator {
       case Collect.ENode.ErrorPropagationExpr:
         return this.errorPropagationExpr(expr, inference);
 
-      case Collect.ENode.ArrayLiteralExpr:
-        return this.arrayLiteral(expr);
-
       case Collect.ENode.PreIncrExpr:
         return this.preIncr(expr);
 
@@ -760,7 +757,7 @@ export class SemanticElaborator {
         return this.postIncr(expr);
 
       default:
-        assert(false, "All cases handled: " + Collect.ENode[expr.variant]);
+        assert(false, "All cases handled: " + Collect.ENode[(expr as any).variant]);
     }
 
     return [result, resultId];
@@ -3415,18 +3412,71 @@ export class SemanticElaborator {
     );
   }
 
-  makeStructInstantiation(
-    structId: Semantic.TypeDefId,
-    memberValues: {
-      name: string;
-      value: Collect.ExprId;
-    }[],
+  makeArrayLiteral(
+    arrayId: Semantic.TypeDefId,
+    elements: Collect.AggregateLiteralElement[],
     inline: boolean,
     inArena: Semantic.ExprId | null,
     sourceloc: SourceLoc,
     inference: Inference
   ): [Semantic.Expression, Semantic.ExprId] {
-    const struct = this.sr.typeDefNodes.get(structId);
+    const array = this.sr.typeDefNodes.get(arrayId);
+    assert(
+      array.variant === Semantic.ENode.FixedArrayDatatype ||
+        array.variant === Semantic.ENode.DynamicArrayDatatype
+    );
+
+    const values: Semantic.ExprId[] = [];
+    for (const m of elements) {
+      if (m.key) {
+        throw new CompilerError(
+          `An array literal requires all elements to be plain values and not 'key: value'-pairs.`,
+          sourceloc
+        );
+      }
+
+      const exprId = Conversion.MakeConversionOrThrow(
+        this.sr,
+        this.expr(m.value, {
+          gonnaInstantiateStructWithType: array.datatype,
+        })[1],
+        array.datatype,
+        this.currentContext.constraints,
+        sourceloc,
+        Conversion.Mode.Implicit,
+        false
+      );
+
+      values.push(exprId);
+    }
+
+    if (array.variant === Semantic.ENode.FixedArrayDatatype) {
+      if (BigInt(array.length) !== BigInt(values.length)) {
+        throw new CompilerError(
+          `Array datatype requires ${array.length} elements, but ${values.length} are given`,
+          sourceloc
+        );
+      }
+    }
+
+    return this.sr.b.arrayLiteral(
+      makeTypeUse(this.sr, arrayId, EDatatypeMutability.Const, inline, sourceloc)[1],
+      values,
+      this.inFunction,
+      inArena,
+      sourceloc
+    );
+  }
+
+  makeStructLiteral(
+    typeId: Semantic.TypeDefId,
+    elements: Collect.AggregateLiteralElement[],
+    inline: boolean,
+    inArena: Semantic.ExprId | null,
+    sourceloc: SourceLoc,
+    inference: Inference
+  ): [Semantic.Expression, Semantic.ExprId] {
+    const struct = this.sr.typeDefNodes.get(typeId);
     assert(struct.variant === Semantic.ENode.StructDatatype);
 
     let remainingMembers = struct.members.map((mId) => {
@@ -3439,26 +3489,31 @@ export class SemanticElaborator {
       name: string;
       value: Semantic.ExprId;
     }[] = [];
-    for (const m of memberValues) {
+    for (const m of elements) {
+      if (!m.key) {
+        throw new CompilerError(
+          `A struct literal requires all elements to be 'key: value'-pairs. Direct symbols and spreading objects is not implemented yet.`,
+          sourceloc
+        );
+      }
+
       const variableId = struct.members.find((mmId) => {
         const mm = this.sr.symbolNodes.get(mmId);
         assert(mm.variant === Semantic.ENode.VariableSymbol);
-        return mm.name === m.name;
+        return mm.name === m.key;
       });
 
       if (!variableId) {
         throw new CompilerError(
-          `${Semantic.serializeTypeDef(this.sr, structId)} does not have a member named '${
-            m.name
-          }'`,
+          `${Semantic.serializeTypeDef(this.sr, typeId)} does not have a member named '${m.key}'`,
           sourceloc
         );
       }
       const variable = this.sr.symbolNodes.get(variableId);
       assert(variable.variant === Semantic.ENode.VariableSymbol);
 
-      if (assignedMembers.includes(m.name)) {
-        throw new CompilerError(`Cannot assign member ${m.name} twice`, sourceloc);
+      if (assignedMembers.includes(m.key)) {
+        throw new CompilerError(`Cannot assign member ${m.key} twice`, sourceloc);
       }
 
       const [e, eId] = this.expr(m.value, {
@@ -3476,12 +3531,12 @@ export class SemanticElaborator {
         inference?.unsafe || false
       );
 
-      remainingMembers = remainingMembers.filter((mm) => mm !== m.name);
+      remainingMembers = remainingMembers.filter((mm) => mm !== m.key);
       assign.push({
         value: convertedExprId,
-        name: m.name,
+        name: m.key,
       });
-      assignedMembers.push(m.name);
+      assignedMembers.push(m.key);
     }
 
     for (const m of remainingMembers) {
@@ -3503,7 +3558,7 @@ export class SemanticElaborator {
     );
 
     return this.sr.b.structLiteral(
-      makeTypeUse(this.sr, structId, EDatatypeMutability.Const, inline, sourceloc)[1],
+      makeTypeUse(this.sr, typeId, EDatatypeMutability.Const, inline, sourceloc)[1],
       assign,
       this.inFunction,
       inArena,
@@ -4439,7 +4494,7 @@ export class SemanticElaborator {
     }
   }
 
-  structInstantiation(structInst: Collect.StructInstantiationExpr, inference: Inference) {
+  structInstantiation(structInst: Collect.AggregateLiteralExpr, inference: Inference) {
     let structId = undefined as Semantic.TypeUseId | undefined;
     if (structInst.structType) {
       structId = this.withContext(
@@ -4469,25 +4524,38 @@ export class SemanticElaborator {
     }
 
     const struct = this.sr.typeDefNodes.get(this.sr.typeUseNodes.get(structId).type);
-    if (struct.variant !== Semantic.ENode.StructDatatype) {
+    if (struct.variant === Semantic.ENode.StructDatatype) {
+      const structTypeUse = this.sr.typeUseNodes.get(structId);
+      return this.makeStructLiteral(
+        structTypeUse.type,
+        structInst.elements,
+        structTypeUse.inline,
+        structInst.inArena ? this.expr(structInst.inArena, undefined)[1] : null,
+        structInst.sourceloc,
+        inference
+      );
+    } else if (
+      struct.variant === Semantic.ENode.FixedArrayDatatype ||
+      struct.variant === Semantic.ENode.DynamicArrayDatatype
+    ) {
+      const structTypeUse = this.sr.typeUseNodes.get(structId);
+      return this.makeArrayLiteral(
+        structTypeUse.type,
+        structInst.elements,
+        structTypeUse.inline,
+        structInst.inArena ? this.expr(structInst.inArena, undefined)[1] : null,
+        structInst.sourceloc,
+        inference
+      );
+    } else {
       throw new CompilerError(
-        `Non-structural type '${Semantic.serializeTypeUse(
+        `Type '${Semantic.serializeTypeUse(
           this.sr,
           structId
-        )}' cannot be instantiated as a struct`,
+        )}' is not a valid type for an aggregate literal`,
         structInst.sourceloc
       );
     }
-
-    const structTypeUse = this.sr.typeUseNodes.get(structId);
-    return this.makeStructInstantiation(
-      structTypeUse.type,
-      structInst.members,
-      structTypeUse.inline,
-      structInst.inArena ? this.expr(structInst.inArena, undefined)[1] : null,
-      structInst.sourceloc,
-      inference
-    );
   }
 
   symbolValue(
@@ -4791,51 +4859,6 @@ export class SemanticElaborator {
     );
   }
 
-  arrayLiteral(arrayLiteral: Collect.ArrayLiteralExpr) {
-    const values = arrayLiteral.values.map((v) => this.expr(v, undefined));
-    let type = null as Semantic.TypeUseId | null;
-    for (let i = 0; i < values.length; i++) {
-      const [value, valueId] = values[i];
-      if (type === null) {
-        type = value.type;
-      }
-      if (type !== value.type) {
-        throw new CompilerError(
-          `Array type mismatch: Value #${i + 1} has type ${Semantic.serializeTypeUse(
-            this.sr,
-            value.type
-          )}, but ${Semantic.serializeTypeUse(
-            this.sr,
-            type
-          )} was expected. Cannot deduce array type from multiple different value types.`,
-          arrayLiteral.sourceloc
-        );
-      }
-    }
-    if (values.length === 0) {
-      throw new CompilerError(
-        `Array literal must contain at least one value`,
-        arrayLiteral.sourceloc
-      );
-    }
-    assert(type);
-    return Semantic.addExpr(this.sr, {
-      variant: Semantic.ENode.ArrayLiteralExpr,
-      instanceIds: [],
-      values: values.map((v) => v[1]),
-      type: makeStackArrayDatatypeAvailable(
-        this.sr,
-        type,
-        values.length,
-        EDatatypeMutability.Const,
-        false,
-        arrayLiteral.sourceloc
-      ),
-      sourceloc: arrayLiteral.sourceloc,
-      isTemporary: true,
-    });
-  }
-
   errorPropagationExpr(errPropExpr: Collect.ErrorPropagationExpr, inference: Inference) {
     const [rightExpr, rightExprId] = this.expr(errPropExpr.expr, inference);
 
@@ -5047,26 +5070,50 @@ export class SemanticElaborator {
     }
     const [value, valueId] = this.expr(arraySubscript.expr, undefined);
 
-    const [index, indexId] = this.expr(arraySubscript.indices[0], undefined);
-    const indexType = this.sr.typeDefNodes.get(this.sr.typeUseNodes.get(index.type).type);
+    const rawIndex = arraySubscript.indices[0];
+    if (rawIndex.type === "slice") {
+      const indices: {
+        start: Semantic.ExprId | null;
+        end: Semantic.ExprId | null;
+      }[] = [
+        {
+          end: null,
+          start: null,
+        },
+      ];
 
-    const exprTypeUse = this.sr.e.getTypeUse(value.type);
-    const exprType = this.sr.e.getTypeDef(exprTypeUse.type);
-    const valueType = this.sr.typeDefNodes.get(this.sr.typeUseNodes.get(value.type).type);
-    if (
-      exprType.variant === Semantic.ENode.FixedArrayDatatype ||
-      exprType.variant === Semantic.ENode.DynamicArrayDatatype
-    ) {
-      if (
-        indexType.variant !== Semantic.ENode.PrimitiveDatatype ||
-        !Conversion.isInteger(indexType.primitive)
-      ) {
-        throw new CompilerError(
-          `Only integers can be used to index arrays`,
-          arraySubscript.sourceloc
+      if (rawIndex.start) {
+        const [startIndex, startIndexId] = this.expr(rawIndex.start, undefined);
+        indices[0].start = startIndexId;
+        const startIndexType = this.sr.typeDefNodes.get(
+          this.sr.typeUseNodes.get(startIndex.type).type
         );
+        if (
+          startIndexType.variant !== Semantic.ENode.PrimitiveDatatype ||
+          !Conversion.isInteger(startIndexType.primitive)
+        ) {
+          throw new CompilerError(
+            `Only integers can be used to index arrays`,
+            arraySubscript.sourceloc
+          );
+        }
+      }
+      if (rawIndex.end) {
+        const [endIndex, endIndexId] = this.expr(rawIndex.end, undefined);
+        indices[0].end = endIndexId;
+        const endIndexType = this.sr.typeDefNodes.get(this.sr.typeUseNodes.get(endIndex.type).type);
+        if (
+          endIndexType.variant !== Semantic.ENode.PrimitiveDatatype ||
+          !Conversion.isInteger(endIndexType.primitive)
+        ) {
+          throw new CompilerError(
+            `Only integers can be used to index arrays`,
+            arraySubscript.sourceloc
+          );
+        }
       }
 
+      const valueType = this.sr.typeDefNodes.get(this.sr.typeUseNodes.get(value.type).type);
       if (
         valueType.variant !== Semantic.ENode.FixedArrayDatatype &&
         valueType.variant !== Semantic.ENode.DynamicArrayDatatype
@@ -5081,112 +5128,162 @@ export class SemanticElaborator {
       }
 
       return Semantic.addExpr(this.sr, {
-        variant: Semantic.ENode.ArraySubscriptExpr,
+        variant: Semantic.ENode.ArraySliceExpr,
         instanceIds: [],
         expr: valueId,
-        indices: [indexId],
-        type: valueType.datatype,
+        indices: indices,
+        type: makeDynamicArrayDatatypeAvailable(
+          this.sr,
+          valueType.datatype,
+          EDatatypeMutability.Const,
+          false,
+          arraySubscript.sourceloc
+        ),
         sourceloc: arraySubscript.sourceloc,
         isTemporary: true,
       });
-    } else if (exprType.variant === Semantic.ENode.StructDatatype) {
-      const overloads = new Set<Semantic.SymbolId>();
+    } else {
+      const [index, indexId] = this.expr(rawIndex.value, undefined);
+      const indexType = this.sr.typeDefNodes.get(this.sr.typeUseNodes.get(index.type).type);
 
-      for (const mId of exprType.methods) {
-        const method = this.sr.e.getSymbol(mId);
-        assert(method.variant === Semantic.ENode.FunctionSymbol);
-
-        if (method.overloadedOperator === EOverloadedOperator.Subscript) {
-          overloads.add(mId);
-        }
-      }
-
-      // First try to find exact match
-      let exactMatchId = undefined as Semantic.SymbolId | undefined;
-      for (const mId of overloads) {
-        const method = this.sr.e.getSymbol(mId);
-        assert(method.variant === Semantic.ENode.FunctionSymbol);
-
-        const ftype = this.sr.e.getTypeDef(method.type);
-        assert(ftype.variant === Semantic.ENode.FunctionDatatype);
-
-        if (ftype.parameters.length !== 2) continue;
+      const exprTypeUse = this.sr.e.getTypeUse(value.type);
+      const exprType = this.sr.e.getTypeDef(exprTypeUse.type);
+      const valueType = this.sr.typeDefNodes.get(this.sr.typeUseNodes.get(value.type).type);
+      if (
+        exprType.variant === Semantic.ENode.FixedArrayDatatype ||
+        exprType.variant === Semantic.ENode.DynamicArrayDatatype
+      ) {
         if (
-          this.sr.e.getTypeUse(ftype.parameters[1]).type !== this.sr.e.getTypeUse(index.type).type
+          indexType.variant !== Semantic.ENode.PrimitiveDatatype ||
+          !Conversion.isInteger(indexType.primitive)
         ) {
-          continue;
+          throw new CompilerError(
+            `Only integers can be used to index arrays`,
+            arraySubscript.sourceloc
+          );
         }
 
-        // Exact match found
-        if (exactMatchId !== undefined) {
-          throw new CompilerError(`Operator access is ambiguous`, value.sourceloc);
+        if (
+          valueType.variant !== Semantic.ENode.FixedArrayDatatype &&
+          valueType.variant !== Semantic.ENode.DynamicArrayDatatype
+        ) {
+          throw new CompilerError(
+            `Expression of type ${Semantic.serializeTypeUse(
+              this.sr,
+              value.type
+            )} cannot be subscripted`,
+            arraySubscript.sourceloc
+          );
         }
-        exactMatchId = mId;
-      }
-      if (exactMatchId) {
-        const method = this.sr.e.getSymbol(exactMatchId);
-        assert(method.variant === Semantic.ENode.FunctionSymbol);
-
-        const ftype = this.sr.e.getTypeDef(method.type);
-        assert(ftype.variant === Semantic.ENode.FunctionDatatype);
-
-        const instanceIds: Semantic.InstanceId[] = [];
-        if (ftype.requires.autodest) {
-          instanceIds.push(Semantic.makeInstanceId(this.sr));
-        }
-
-        assert(this.inFunction);
-        const functionSymbol = this.sr.e.getSymbol(this.inFunction);
-        assert(functionSymbol.variant === Semantic.ENode.FunctionSymbol);
-        instanceIds.forEach((i) => functionSymbol.createsInstanceIds.add(i));
 
         return Semantic.addExpr(this.sr, {
-          variant: Semantic.ENode.ExprCallExpr,
-          instanceIds: instanceIds,
-          arguments: [indexId],
-          calledExpr: Semantic.addExpr(this.sr, {
-            variant: Semantic.ENode.CallableExpr,
-            functionSymbol: exactMatchId,
-            instanceIds: [],
-            isTemporary: true,
-            sourceloc: arraySubscript.sourceloc,
-            thisExpr: valueId,
-            type: makeTypeUse(
-              this.sr,
-              Semantic.addType(this.sr, {
-                variant: Semantic.ENode.CallableDatatype,
-                thisExprType: value.type,
-                functionType: method.type,
-                concrete: true,
-              })[1],
-              EDatatypeMutability.Const,
-              false,
-              arraySubscript.sourceloc
-            )[1],
-          })[1],
-          inArena: null,
-          producesAllocation: ftype.requires.autodest,
-          type: ftype.returnType,
+          variant: Semantic.ENode.ArraySubscriptExpr,
+          instanceIds: [],
+          expr: valueId,
+          indices: [indexId],
+          type: valueType.datatype,
           sourceloc: arraySubscript.sourceloc,
           isTemporary: true,
         });
-      }
+      } else if (exprType.variant === Semantic.ENode.StructDatatype) {
+        const overloads = new Set<Semantic.SymbolId>();
 
-      throw new CompilerError(
-        `No exact overloaded operator in type '${Semantic.serializeTypeUse(
-          this.sr,
-          value.type
-        )}' for index type '${Semantic.serializeTypeUse(this.sr, index.type)}' is available`,
-        value.sourceloc
-      );
-    } else {
-      throw new CompilerError(
-        `Expression of type '${Semantic.serializeFullTypeUse(
-          this.sr,
-          value.type
-        )}' cannot be subscripted`,
-        value.sourceloc
-      );
+        for (const mId of exprType.methods) {
+          const method = this.sr.e.getSymbol(mId);
+          assert(method.variant === Semantic.ENode.FunctionSymbol);
+
+          if (method.overloadedOperator === EOverloadedOperator.Subscript) {
+            overloads.add(mId);
+          }
+        }
+
+        // First try to find exact match
+        let exactMatchId = undefined as Semantic.SymbolId | undefined;
+        for (const mId of overloads) {
+          const method = this.sr.e.getSymbol(mId);
+          assert(method.variant === Semantic.ENode.FunctionSymbol);
+
+          const ftype = this.sr.e.getTypeDef(method.type);
+          assert(ftype.variant === Semantic.ENode.FunctionDatatype);
+
+          if (ftype.parameters.length !== 2) continue;
+          if (
+            this.sr.e.getTypeUse(ftype.parameters[1]).type !== this.sr.e.getTypeUse(index.type).type
+          ) {
+            continue;
+          }
+
+          // Exact match found
+          if (exactMatchId !== undefined) {
+            throw new CompilerError(`Operator access is ambiguous`, value.sourceloc);
+          }
+          exactMatchId = mId;
+        }
+        if (exactMatchId) {
+          const method = this.sr.e.getSymbol(exactMatchId);
+          assert(method.variant === Semantic.ENode.FunctionSymbol);
+
+          const ftype = this.sr.e.getTypeDef(method.type);
+          assert(ftype.variant === Semantic.ENode.FunctionDatatype);
+
+          const instanceIds: Semantic.InstanceId[] = [];
+          if (ftype.requires.autodest) {
+            instanceIds.push(Semantic.makeInstanceId(this.sr));
+          }
+
+          assert(this.inFunction);
+          const functionSymbol = this.sr.e.getSymbol(this.inFunction);
+          assert(functionSymbol.variant === Semantic.ENode.FunctionSymbol);
+          instanceIds.forEach((i) => functionSymbol.createsInstanceIds.add(i));
+
+          return Semantic.addExpr(this.sr, {
+            variant: Semantic.ENode.ExprCallExpr,
+            instanceIds: instanceIds,
+            arguments: [indexId],
+            calledExpr: Semantic.addExpr(this.sr, {
+              variant: Semantic.ENode.CallableExpr,
+              functionSymbol: exactMatchId,
+              instanceIds: [],
+              isTemporary: true,
+              sourceloc: arraySubscript.sourceloc,
+              thisExpr: valueId,
+              type: makeTypeUse(
+                this.sr,
+                Semantic.addType(this.sr, {
+                  variant: Semantic.ENode.CallableDatatype,
+                  thisExprType: value.type,
+                  functionType: method.type,
+                  concrete: true,
+                })[1],
+                EDatatypeMutability.Const,
+                false,
+                arraySubscript.sourceloc
+              )[1],
+            })[1],
+            inArena: null,
+            producesAllocation: ftype.requires.autodest,
+            type: ftype.returnType,
+            sourceloc: arraySubscript.sourceloc,
+            isTemporary: true,
+          });
+        }
+
+        throw new CompilerError(
+          `No exact overloaded operator in type '${Semantic.serializeTypeUse(
+            this.sr,
+            value.type
+          )}' for index type '${Semantic.serializeTypeUse(this.sr, index.type)}' is available`,
+          value.sourceloc
+        );
+      } else {
+        throw new CompilerError(
+          `Expression of type '${Semantic.serializeFullTypeUse(
+            this.sr,
+            value.type
+          )}' cannot be subscripted`,
+          value.sourceloc
+        );
+      }
     }
   }
 
@@ -5232,81 +5329,6 @@ export class SemanticElaborator {
       expr: eId,
       operation: preIncr.operation,
       sourceloc: preIncr.sourceloc,
-      isTemporary: true,
-    });
-  }
-
-  arraySlice(arraySlice: Collect.ArraySliceExpr) {
-    if (arraySlice.indices.length > 1) {
-      throw new CompilerError(
-        `Multidimensional array subscripting is not implemented yet`,
-        arraySlice.sourceloc
-      );
-    }
-    const [value, valueId] = this.expr(arraySlice.expr, undefined);
-
-    const indices: {
-      start: Semantic.ExprId | null;
-      end: Semantic.ExprId | null;
-    }[] = [
-      {
-        end: null,
-        start: null,
-      },
-    ];
-
-    if (arraySlice.indices[0].start) {
-      const [startIndex, startIndexId] = this.expr(arraySlice.indices[0].start, undefined);
-      indices[0].start = startIndexId;
-      const startIndexType = this.sr.typeDefNodes.get(
-        this.sr.typeUseNodes.get(startIndex.type).type
-      );
-      if (
-        startIndexType.variant !== Semantic.ENode.PrimitiveDatatype ||
-        !Conversion.isInteger(startIndexType.primitive)
-      ) {
-        throw new CompilerError(`Only integers can be used to index arrays`, arraySlice.sourceloc);
-      }
-    }
-    if (arraySlice.indices[0].end) {
-      const [endIndex, endIndexId] = this.expr(arraySlice.indices[0].end, undefined);
-      indices[0].end = endIndexId;
-      const endIndexType = this.sr.typeDefNodes.get(this.sr.typeUseNodes.get(endIndex.type).type);
-      if (
-        endIndexType.variant !== Semantic.ENode.PrimitiveDatatype ||
-        !Conversion.isInteger(endIndexType.primitive)
-      ) {
-        throw new CompilerError(`Only integers can be used to index arrays`, arraySlice.sourceloc);
-      }
-    }
-
-    const valueType = this.sr.typeDefNodes.get(this.sr.typeUseNodes.get(value.type).type);
-    if (
-      valueType.variant !== Semantic.ENode.FixedArrayDatatype &&
-      valueType.variant !== Semantic.ENode.DynamicArrayDatatype
-    ) {
-      throw new CompilerError(
-        `Expression of type ${Semantic.serializeTypeUse(
-          this.sr,
-          value.type
-        )} cannot be subscripted`,
-        arraySlice.sourceloc
-      );
-    }
-
-    return Semantic.addExpr(this.sr, {
-      variant: Semantic.ENode.ArraySliceExpr,
-      instanceIds: [],
-      expr: valueId,
-      indices: indices,
-      type: makeDynamicArrayDatatypeAvailable(
-        this.sr,
-        valueType.datatype,
-        EDatatypeMutability.Const,
-        false,
-        arraySlice.sourceloc
-      ),
-      sourceloc: arraySlice.sourceloc,
       isTemporary: true,
     });
   }
@@ -5741,7 +5763,7 @@ export class SemanticBuilder {
         break;
       }
 
-      case Semantic.ENode.StructInstantiationExpr:
+      case Semantic.ENode.StructLiteralExpr:
       case Semantic.ENode.ValueToUnionCastExpr:
       case Semantic.ENode.UnionToValueCastExpr:
       case Semantic.ENode.StringConstructExpr:
@@ -5865,6 +5887,49 @@ export class SemanticBuilder {
     return this.memberAccessRaw(exprId, name, memberType, false, sourceloc);
   }
 
+  arrayLiteral(
+    arrayTypeId: Semantic.TypeUseId,
+    elements: Semantic.ExprId[],
+    inFunction: Semantic.SymbolId | undefined,
+    inArena: Semantic.ExprId | null,
+    sourceloc: SourceLoc
+  ) {
+    const structTypeUse = this.sr.typeUseNodes.get(arrayTypeId);
+    const structType = this.sr.typeDefNodes.get(structTypeUse.type);
+    assert(
+      structType.variant === Semantic.ENode.FixedArrayDatatype ||
+        structType.variant === Semantic.ENode.DynamicArrayDatatype
+    );
+
+    const e = Semantic.addExpr<Semantic.ArrayLiteralExpr>(this.sr, {
+      variant: Semantic.ENode.ArrayLiteralExpr,
+      instanceIds: [Semantic.makeInstanceId(this.sr)],
+      elements: elements,
+      type: arrayTypeId,
+      inFunction: inFunction,
+      inArena: inArena,
+      sourceloc: sourceloc,
+      isTemporary: true,
+    });
+
+    if (inArena) {
+      this.sr.e.assertExprArenaType(inArena, sourceloc);
+    }
+
+    if (inFunction) {
+      // Structs as struct default values are not inside functions
+      console.warn("TODO: Arrays as default values also need arena integration");
+      const functionSymbol = this.sr.e.getSymbol(inFunction);
+      assert(functionSymbol.variant === Semantic.ENode.FunctionSymbol);
+      e[0].instanceIds.forEach((i) => functionSymbol.createsInstanceIds.add(i));
+      if (inArena) {
+        e[0].instanceIds.forEach((i) => functionSymbol.explicitArenaInstanceIds.add(i));
+      }
+    }
+
+    return e;
+  }
+
   structLiteral(
     structTypeId: Semantic.TypeUseId,
     assign: {
@@ -5879,8 +5944,8 @@ export class SemanticBuilder {
     const structType = this.sr.typeDefNodes.get(structTypeUse.type);
     assert(structType.variant === Semantic.ENode.StructDatatype);
 
-    const e = Semantic.addExpr<Semantic.StructInstantiationExpr>(this.sr, {
-      variant: Semantic.ENode.StructInstantiationExpr,
+    const e = Semantic.addExpr<Semantic.StructLiteralExpr>(this.sr, {
+      variant: Semantic.ENode.StructLiteralExpr,
       instanceIds: [Semantic.makeInstanceId(this.sr)],
       assign: assign,
       type: structTypeId,
@@ -6429,7 +6494,7 @@ export function IsExprDecisiveForOverloadResolution(sr: SemanticResult, exprId: 
   const expr = sr.cc.exprNodes.get(exprId);
 
   switch (expr.variant) {
-    case Collect.ENode.StructInstantiationExpr: {
+    case Collect.ENode.AggregateLiteralExpr: {
       return expr.structType !== null;
     }
 
@@ -6473,6 +6538,7 @@ export namespace Semantic {
     NamespaceDatatype,
     FixedArrayDatatype,
     DynamicArrayDatatype,
+    SliceDatatype,
     UntaggedUnionDatatype,
     TaggedUnionDatatype,
     UnionTagRefDatatype,
@@ -6506,7 +6572,7 @@ export namespace Semantic {
     AddressOfExpr,
     DereferenceExpr,
     ExprAssignmentExpr,
-    StructInstantiationExpr,
+    StructLiteralExpr,
     PreIncrExpr,
     PostIncrExpr,
     ArrayLiteralExpr,
@@ -6752,6 +6818,12 @@ export namespace Semantic {
     concrete: boolean;
   };
 
+  export type SliceDatatypeDef = {
+    variant: ENode.SliceDatatype;
+    datatype: TypeUseId;
+    concrete: boolean;
+  };
+
   export type UntaggedUnionDatatypeDef = {
     variant: ENode.UntaggedUnionDatatype;
     members: TypeUseId[];
@@ -6797,6 +6869,7 @@ export namespace Semantic {
     | EnumDatatypeDef
     | FixedArrayDatatypeDef
     | DynamicArrayDatatypeDef
+    | SliceDatatypeDef
     | ParameterPackDatatypeDef
     | UntaggedUnionDatatypeDef
     | TaggedUnionDatatypeDef
@@ -7029,8 +7102,8 @@ export namespace Semantic {
     sourceloc: SourceLoc;
   };
 
-  export type StructInstantiationExpr = {
-    variant: ENode.StructInstantiationExpr;
+  export type StructLiteralExpr = {
+    variant: ENode.StructLiteralExpr;
     instanceIds: InstanceId[];
     assign: {
       name: string;
@@ -7055,8 +7128,10 @@ export namespace Semantic {
   export type ArrayLiteralExpr = {
     variant: ENode.ArrayLiteralExpr;
     instanceIds: InstanceId[];
-    values: ExprId[];
+    elements: ExprId[];
     type: TypeUseId;
+    inFunction?: SymbolId;
+    inArena: ExprId | null;
     isTemporary: boolean;
     sourceloc: SourceLoc;
   };
@@ -7130,7 +7205,7 @@ export namespace Semantic {
     | ErrorPropagationExpr
     | ErrorPropagationExpr
     | ExprCallExpr
-    | StructInstantiationExpr
+    | StructLiteralExpr
     | LiteralExpr
     | ArrayLiteralExpr
     | ArraySubscriptExpr
@@ -8097,7 +8172,10 @@ export namespace Semantic {
 
     const def = mangleTypeDef(sr, typeInstance.type);
 
-    if (sr.typeDefNodes.get(typeInstance.type).variant === Semantic.ENode.StructDatatype) {
+    if (
+      sr.typeDefNodes.get(typeInstance.type).variant === Semantic.ENode.StructDatatype ||
+      sr.typeDefNodes.get(typeInstance.type).variant === Semantic.ENode.DynamicArrayDatatype
+    ) {
       if (typeInstance.inline) {
         def.name = "i" + def.name;
       } else {
@@ -8202,6 +8280,13 @@ export namespace Semantic {
 
       case Semantic.ENode.DynamicArrayDatatype: {
         return {
+          name: "D" + mangleTypeUse(sr, type.datatype).name,
+          wasMangled: true,
+        };
+      }
+
+      case Semantic.ENode.SliceDatatype: {
+        return {
           name: "S" + mangleTypeUse(sr, type.datatype).name,
           wasMangled: true,
         };
@@ -8221,7 +8306,7 @@ export namespace Semantic {
       case Semantic.ENode.TaggedUnionDatatype: {
         return {
           name:
-            "tU" +
+            "T" +
             type.members.length.toString() +
             "_" +
             type.members.map((m) => `${m.tag}${mangleTypeUse(sr, m.type).name}`).join("_"),
@@ -8381,7 +8466,7 @@ export namespace Semantic {
         throw new InternalError("Symbol not supported: " + symbol.variant);
       }
 
-      case Semantic.ENode.StructInstantiationExpr:
+      case Semantic.ENode.StructLiteralExpr:
         return `${serializeTypeUse(sr, expr.type)} { ${expr.assign
           .map((a) => `${a.name}: ${serializeExpr(sr, a.value)}`)
           .join(", ")} }`;
@@ -8416,7 +8501,7 @@ export namespace Semantic {
         return `${serializeTypeUse(sr, expr.type)}`;
 
       case Semantic.ENode.ArrayLiteralExpr:
-        return `[${expr.values.map((v) => serializeExpr(sr, v)).join(", ")}]`;
+        return `[${expr.elements.map((v) => serializeExpr(sr, v)).join(", ")}]`;
 
       case Semantic.ENode.ArraySubscriptExpr: {
         const indices: string[] = [];

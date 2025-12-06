@@ -155,8 +155,9 @@ typeDefinition
 
 // Expressions
 
-sliceIndex
-    : expr? COLON expr?
+subscriptExpr
+    : expr                  #SubscriptSingleExpr
+    | start=expr? COLON end=expr?     #SubscriptSliceExpr
     ;
 
 requiresPart
@@ -171,6 +172,10 @@ requiresBlock
     : DOUBLECOLON requiresPart (COMMA requiresPart)*
     ;
 
+aggregateLiteralElement
+    : (key=ID COLON)? value=expr
+    ;
+
 expr
     // https://en.cppreference.com/w/c/language/operator_precedence
     : LB expr RB                                                                    #ParenthesisExpr
@@ -178,15 +183,13 @@ expr
     | TYPE LANGLE datatype RANGLE                                                   #TypeLiteralExpr
     | lambda                                                                        #LambdaExpr
     | literal                                                                       #LiteralExpr
-    | LBRACKET expr? (COMMA expr)* COMMA? RBRACKET                                  #ArrayLiteral
-    | datatype? LCURLY (ID COLON valueExpr+=expr)? (COMMA (ID COLON valueExpr+=expr))* COMMA? RCURLY (IN arenaExpr=expr)?      #StructInstantiationExpr
+    | datatype? LCURLY aggregateLiteralElement? (COMMA aggregateLiteralElement)* COMMA? RCURLY (IN arenaExpr=expr)?      #AggregateLiteralExpr
 
     // Part 1: Left to right
     | expr op=(PLUSPLUS | MINUSMINUS)                                               #PostIncrExpr
-    | callExpr=expr LB (argExpr+=expr (COMMA argExpr+=expr)*)? RB (IN arenaExpr=expr)?                         #ExprCallExpr
-    | value=expr LBRACKET (index+=expr) (COMMA index+=expr)* COMMA? RBRACKET        #ArraySubscriptExpr
-    | value=expr LBRACKET (index+=sliceIndex) (COMMA index+=sliceIndex)* COMMA? RBRACKET        #ArraySliceExpr
-    | expr (DOT || QUESTIONDOT) ID (LANGLE genericLiteral (COMMA genericLiteral)* RANGLE)?           #ExprMemberAccess
+    | callExpr=expr LB (argExpr+=expr (COMMA argExpr+=expr)*)? RB (IN arenaExpr=expr)?                  #ExprCallExpr
+    | value=expr LBRACKET (index+=subscriptExpr) (COMMA index+=subscriptExpr)* COMMA? RBRACKET          #ArraySubscriptExpr
+    | expr (DOT | QUESTIONDOT) ID (LANGLE genericLiteral (COMMA genericLiteral)* RANGLE)?              #ExprMemberAccess
     | expr QUESTIONEXCL                                                             #PostfixResultPropagationExpr
 
     // Part 2: Right to left
@@ -195,8 +198,8 @@ expr
     | <assoc=right> op=NOT expr /* and bitwise not */                               #UnaryExpr
     | <assoc=right> expr AS datatype                                                #ExplicitCastExpr
     | <assoc=right> expr IS datatype                                                #ExprIsTypeExpr
-    // | <assoc=right> MUL expr                                                        #DereferenceExpr
-    // | <assoc=right> SINGLEAND expr                                                  #AddressOfExpr
+    // | <assoc=right> MUL expr                                                     #DereferenceExpr
+    // | <assoc=right> SINGLEAND expr                                               #AddressOfExpr
 
     // Part 3: Left to right
     | expr op+=(MUL|DIV|MOD) expr                                                   #BinaryExpr

@@ -42,7 +42,7 @@ import {
   type ASTRoot,
   type ASTScope,
   type ASTStructDefinition,
-  type ASTStructInstantiationExpr,
+  type ASTAggregateLiteralExpr,
   type ASTStructMemberDefinition,
   type ASTSymbolValueExpr,
   type ASTUnaryExpr,
@@ -53,13 +53,11 @@ import {
   type ASTSymbolImport,
   type ASTTypeAlias,
   type ASTStackArrayDatatype,
-  type ASTArrayLiteralExpr,
   type ASTArraySubscriptExpr,
   type ASTForEachStatement,
   type ASTTypeLiteralExpr,
   type ASTFStringExpr,
   type ASTDynamicArrayDatatype,
-  type ASTArraySliceExpr,
   EDatatypeMutability,
   EVariableMutability,
   type ASTUntaggedUnionDatatype,
@@ -71,6 +69,8 @@ import {
   type ASTErrorPropagationExpr,
   type ASTEnumDefinition,
   type ASTEnumValueDefinition,
+  type ASTAggregateLiteralElement,
+  type ASTSubscriptIndexExpr,
 } from "../shared/AST";
 import {
   BinaryExprContext,
@@ -104,7 +104,6 @@ import {
   ReturnStatementContext,
   StringConstantContext,
   StructDefinitionContext,
-  StructInstantiationExprContext,
   StructMemberContext,
   StructMethodContext,
   SymbolValueExprContext,
@@ -118,12 +117,10 @@ import {
   LiteralExprContext,
   FromImportStatementContext,
   ImportStatementContext,
-  ArrayLiteralContext,
   ArraySubscriptExprContext,
   ForEachStatementContext,
   TypeLiteralExprContext,
   FStringLiteralContext,
-  ArraySliceExprContext,
   DatatypeInParenthesisContext,
   DatatypeWithMutabilityContext,
   TypeAliasDirectiveContext,
@@ -151,6 +148,10 @@ import {
   PostfixResultPropagationExprContext,
   EnumContentContext,
   EnumDefinitionContext,
+  AggregateLiteralExprContext,
+  AggregateLiteralElementContext,
+  SubscriptSingleExprContext,
+  SubscriptSliceExprContext,
 } from "./grammar/autogen/HazeParser";
 import {
   BaseErrorListener,
@@ -1169,23 +1170,23 @@ class ASTTransformer extends HazeParserVisitor<any> {
     };
   };
 
-  visitStructInstantiationExpr = (
-    ctx: StructInstantiationExprContext
-  ): ASTStructInstantiationExpr => {
-    if (ctx.ID().length !== ctx._valueExpr.length) {
-      throw new InternalError("Inconsistent size");
-    }
-    const members: { name: string; value: ASTExpr }[] = [];
-    for (let i = 0; i < ctx.ID().length; i++) {
-      members.push({
-        name: ctx.ID()[i].getText(),
-        value: this.visit(ctx._valueExpr[i]),
-      });
-    }
+  visitAggregateLiteralElement = (
+    ctx: AggregateLiteralElementContext
+  ): ASTAggregateLiteralElement => {
     return {
-      variant: "StructInstantiationExpr",
+      key: ctx.ID() ? ctx.ID()!.getText() : null,
+      value: this.visit(ctx.expr()),
+    };
+  };
+
+  visitAggregateLiteralExpr = (ctx: AggregateLiteralExprContext): ASTAggregateLiteralExpr => {
+    const elements: ASTAggregateLiteralElement[] = ctx
+      .aggregateLiteralElement()
+      .map((c) => this.visit(c));
+    return {
+      variant: "AggregateLiteralExpr",
       datatype: ctx.datatype() ? this.visit(ctx.datatype()!) : null,
-      members: members,
+      elements: elements,
       inArena: ctx._arenaExpr ? this.visit(ctx._arenaExpr) : null,
       sourceloc: this.loc(ctx),
     };
@@ -1425,11 +1426,18 @@ class ASTTransformer extends HazeParserVisitor<any> {
     };
   };
 
-  visitArrayLiteral = (ctx: ArrayLiteralContext): ASTArrayLiteralExpr => {
+  visitSubscriptSingleExpr = (ctx: SubscriptSingleExprContext): ASTSubscriptIndexExpr => {
     return {
-      variant: "ArrayLiteralExpr",
-      values: ctx.expr().map((e) => this.visit(e)),
-      sourceloc: this.loc(ctx),
+      type: "index",
+      value: this.visit(ctx.expr()),
+    };
+  };
+
+  visitSubscriptSliceExpr = (ctx: SubscriptSliceExprContext): ASTSubscriptIndexExpr => {
+    return {
+      type: "slice",
+      start: ctx._start ? this.visit(ctx._start) : null,
+      end: ctx._end ? this.visit(ctx._end) : null,
     };
   };
 
@@ -1440,20 +1448,6 @@ class ASTTransformer extends HazeParserVisitor<any> {
       variant: "ArraySubscriptExpr",
       expr: this.visit(ctx._value),
       indices: ctx._index.map((i) => this.visit(i)),
-      sourceloc: this.loc(ctx),
-    };
-  };
-
-  visitArraySliceExpr = (ctx: ArraySliceExprContext): ASTArraySliceExpr => {
-    assert(ctx._value);
-    assert(ctx._index);
-    return {
-      variant: "ArraySliceExpr",
-      expr: this.visit(ctx._value),
-      indices: ctx._index.map((i) => ({
-        start: i.expr()[0] ? this.visit(i.expr()[0]) : null,
-        end: i.expr()[1] ? this.visit(i.expr()[1]) : null,
-      })),
       sourceloc: this.loc(ctx),
     };
   };

@@ -1,11 +1,26 @@
 #ifndef HZSTD_ARRAY_H
 #define HZSTD_ARRAY_H
 
-#include "hzstd_common.h"
+#include <stdlib.h>
 
 #include "hzstd_arena.h"
 
 #include <string.h>
+
+#define HZSTD_DEFAULT_DYNAMIC_ARRAY_CAPACITY 4
+
+#define HZSTD_DYNAMIC_ARRAY_CREATE_RAW(arena, arrayType, elementType, minInitialCapacity)                              \
+  ({                                                                                                                   \
+    arrayType tempArray = hzstd_dynamic_array_create(                                                                  \
+        arena, sizeof(elementType), HZSTD_MAX(minInitialCapacity, HZSTD_DEFAULT_DYNAMIC_ARRAY_CAPACITY));              \
+    hzstd_arena_register_cleanup_action(arena, hzstd_dynamic_array_destroy_cleanup_action, tempArray);                 \
+    tempArray;                                                                                                         \
+  });
+
+#define HZSTD_DYNAMIC_ARRAY_CREATE(arena, arrayType, elementType, minInitialCapacity)                                  \
+  HZSTD_DYNAMIC_ARRAY_CREATE_RAW((arena)->arenaImpl, arrayType, elementType, minInitialCapacity)
+
+#define HZSTD_DYNAMIC_ARRAY_PUSH(array, elem) hzstd_dynamic_array_push(array, &elem)
 
 typedef struct {
   hzstd_arena_t* arena;
@@ -103,5 +118,7 @@ static inline void hzstd_dynamic_array_destroy(hzstd_dynamic_array_t* da)
   }
   da->size = 0;
 }
+
+void hzstd_dynamic_array_destroy_cleanup_action(void* data);
 
 #endif // HZSTD_ARRAY_H

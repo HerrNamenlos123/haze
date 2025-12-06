@@ -424,12 +424,6 @@ export type ASTFStringExpr = {
   sourceloc: SourceLoc;
 };
 
-export type ASTArrayLiteralExpr = {
-  variant: "ArrayLiteralExpr";
-  values: ASTExpr[];
-  sourceloc: SourceLoc;
-};
-
 export type ASTPostIncrExpr = {
   variant: "PostIncrExpr";
   expr: ASTExpr;
@@ -453,10 +447,15 @@ export type ASTExprMemberAccess = {
   sourceloc: SourceLoc;
 };
 
-export type ASTStructInstantiationExpr = {
-  variant: "StructInstantiationExpr";
+export type ASTAggregateLiteralElement = {
+  key: string | null;
+  value: ASTExpr;
+};
+
+export type ASTAggregateLiteralExpr = {
+  variant: "AggregateLiteralExpr";
   datatype: ASTTypeUse | null;
-  members: { name: string; value: ASTExpr }[];
+  elements: ASTAggregateLiteralElement[];
   inArena: ASTExpr | null;
   sourceloc: SourceLoc;
 };
@@ -489,17 +488,21 @@ export type ASTExprIsTypeExpr = {
   sourceloc: SourceLoc;
 };
 
+export type ASTSubscriptIndexExpr =
+  | {
+      type: "slice";
+      start: ASTExpr | null;
+      end: ASTExpr | null;
+    }
+  | {
+      type: "index";
+      value: ASTExpr;
+    };
+
 export type ASTArraySubscriptExpr = {
   variant: "ArraySubscriptExpr";
   expr: ASTExpr;
-  indices: ASTExpr[];
-  sourceloc: SourceLoc;
-};
-
-export type ASTArraySliceExpr = {
-  variant: "ArraySliceExpr";
-  expr: ASTExpr;
-  indices: { start: ASTExpr | null; end: ASTExpr | null }[];
+  indices: ASTSubscriptIndexExpr[];
   sourceloc: SourceLoc;
 };
 
@@ -537,18 +540,16 @@ export type ASTExpr =
   | ASTErrorPropagationExpr
   | ASTBlockScopeExpr
   | ASTLambdaExpr
-  | ASTArrayLiteralExpr
   | ASTLiteralExpr
   | ASTPostIncrExpr
   | ASTExprCallExpr
   | ASTExprMemberAccess
-  | ASTStructInstantiationExpr
+  | ASTAggregateLiteralExpr
   | ASTPreIncrExpr
   | ASTUnaryExpr
   | ASTExplicitCastExpr
   | ASTExprIsTypeExpr
   | ASTArraySubscriptExpr
-  | ASTArraySliceExpr
   | ASTBinaryExpr
   | ASTExprAssignmentExpr
   | ASTSymbolValueExpr
