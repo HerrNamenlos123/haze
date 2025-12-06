@@ -21,19 +21,16 @@
 
 static hzstd_semaphore_t infinite_block_event;
 
-void hzstd_initialize_platform() {
-  assert(hzstd_create_semaphore(&infinite_block_event));
-}
+void hzstd_initialize_platform() { assert(hzstd_create_semaphore(&infinite_block_event)); }
 
-void hzstd_block_thread_forever() {
-  hzstd_wait_for_semaphore(infinite_block_event);
-}
+void hzstd_block_thread_forever() { hzstd_wait_for_semaphore(infinite_block_event); }
 
-bool hzstd_create_semaphore(hzstd_semaphore_t *semaphore) {
-  semaphore->handle = CreateEvent(NULL,  // default security
+bool hzstd_create_semaphore(hzstd_semaphore_t* semaphore)
+{
+  semaphore->handle = CreateEvent(NULL, // default security
                                   FALSE, // auto-reset event
                                   FALSE, // initial state = nonsignaled
-                                  NULL   // no name
+                                  NULL // no name
   );
   if (semaphore->handle == NULL) {
     hzstd_panic("CreateEvent failed (%lu)\n", GetLastError());
@@ -41,13 +38,9 @@ bool hzstd_create_semaphore(hzstd_semaphore_t *semaphore) {
   return true;
 }
 
-bool hzstd_trigger_semaphore(hzstd_semaphore_t semaphore) {
-  return SetEvent(semaphore.handle);
-}
+bool hzstd_trigger_semaphore(hzstd_semaphore_t* semaphore) { return SetEvent(semaphore->handle); }
 
-void hzstd_wait_for_semaphore(hzstd_semaphore_t semaphore) {
-  WaitForSingleObject(semaphore.handle, INFINITE);
-}
+void hzstd_wait_for_semaphore(hzstd_semaphore_t* semaphore) { WaitForSingleObject(semaphore->handle, INFINITE); }
 
 static hzstd_semaphore_t panic_handler_thread_ready;
 static hzstd_semaphore_t panic_handler_thread_wakeup;
@@ -61,9 +54,9 @@ static atomic_int unwind_in_progress = 0;
 // change the stack, also involves the stack and AAAARRRGGGHHHH!!!
 // So fuck it, Windows Support for stack traces is limited to non-stack-overflow
 // access violations, during a stack overflow accept the fact that it crashes.
-LONG WINAPI VectoredHandler(PEXCEPTION_POINTERS ExceptionInfo) {
-  if (ExceptionInfo->ExceptionRecord->ExceptionCode ==
-      EXCEPTION_ACCESS_VIOLATION) {
+LONG WINAPI VectoredHandler(PEXCEPTION_POINTERS ExceptionInfo)
+{
+  if (ExceptionInfo->ExceptionRecord->ExceptionCode == EXCEPTION_ACCESS_VIOLATION) {
     // During an access violation, we assume that the stack is still intact, so
     // we can call normal functions. But to be sure, we still use the watchdog
     // thread like on linux.
@@ -73,16 +66,16 @@ LONG WINAPI VectoredHandler(PEXCEPTION_POINTERS ExceptionInfo) {
     int expected = 0;
     if (atomic_compare_exchange_strong(&unwind_in_progress, &expected, 1)) {
       // This thread claims the global context
-      memcpy(&crashed_context_record, ExceptionInfo->ContextRecord,
-             sizeof(CONTEXT));
+      memcpy(&crashed_context_record, ExceptionInfo->ContextRecord, sizeof(CONTEXT));
       hzstd_trigger_semaphore(panic_handler_thread_wakeup);
       hzstd_block_thread_forever();
-    } else {
+    }
+    else {
       // Another thread is already unwinding
       hzstd_block_thread_forever();
     }
 
-    return EXCEPTION_CONTINUE_EXECUTION;
+    return EXCEPTION_EXECUTE;
   }
 
   return EXCEPTION_CONTINUE_SEARCH;

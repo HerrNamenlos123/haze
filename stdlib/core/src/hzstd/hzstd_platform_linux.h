@@ -3,6 +3,8 @@
 
 #include "hzstd_common.h"
 
+#include <semaphore.h>
+
 typedef struct {
   sem_t handle;
 } hzstd_semaphore_t;

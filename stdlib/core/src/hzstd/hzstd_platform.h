@@ -20,9 +20,9 @@ typedef struct {
   hzstd_str_t name;
 } hzstd_unwind_frame_t;
 
-bool hzstd_create_semaphore(hzstd_semaphore_t *semaphore);
-bool hzstd_trigger_semaphore(hzstd_semaphore_t semaphore);
-void hzstd_wait_for_semaphore(hzstd_semaphore_t semaphore);
+bool hzstd_create_semaphore(hzstd_semaphore_t* semaphore);
+bool hzstd_trigger_semaphore(hzstd_semaphore_t* semaphore);
+void hzstd_wait_for_semaphore(hzstd_semaphore_t* semaphore);
 
 void hzstd_initialize_platform();
 void hzstd_block_thread_forever();
