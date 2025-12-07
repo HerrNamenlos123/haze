@@ -956,7 +956,7 @@ function execInherit(str: string, dir?: string) {
   }
 }
 
-class ModuleCompiler {
+export class ModuleCompiler {
   cc: CollectionContext;
 
   constructor(
@@ -1019,6 +1019,19 @@ class ModuleCompiler {
         }
       }
     }
+  }
+
+  collectImmediate(sourceCode: string, fullPath = "internal") {
+    const ast = Parser.parseTextToAST(this.config, sourceCode, fullPath);
+    CollectFile(
+      this.cc,
+      ast,
+      this.cc.moduleScopeId,
+      fullPath,
+      this.config.name,
+      this.config.version,
+      ECollectionMode.ImportUnderRootDirectly
+    );
   }
 
   async addProjectSourceFiles() {
@@ -1103,6 +1116,7 @@ class ModuleCompiler {
       // PrettyPrintCollected(this.cc);
 
       const sr = Semantic.SemanticallyAnalyze(
+        this,
         this.cc,
         this.config.moduleType === ModuleType.Library,
         this.config.name,

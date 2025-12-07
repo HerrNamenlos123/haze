@@ -1367,7 +1367,11 @@ export function lowerExpr(
       const thisExprType = lr.sr.typeDefNodes.get(thisExprTypeUse.type);
 
       let loweredThisExpression = lowerExpr(lr, expr.thisExpr, flattened, instanceInfo)[1];
-      assert(thisExprType.variant === Semantic.ENode.StructDatatype);
+      assert(
+        thisExprType.variant === Semantic.ENode.StructDatatype ||
+          thisExprType.variant === Semantic.ENode.DynamicArrayDatatype ||
+          thisExprType.variant === Semantic.ENode.FixedArrayDatatype
+      );
       const structPointerType = lowerTypeUse(lr, thisExpr.type);
       let tempId = loweredThisExpression;
       if (thisExpr.isTemporary) {

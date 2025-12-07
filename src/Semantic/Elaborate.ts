@@ -1,4 +1,4 @@
-import { HAZE_STDLIB_NAME } from "../Module";
+import { HAZE_STDLIB_NAME, ModuleCompiler } from "../Module";
 import {
   EAssignmentOperation,
   EBinaryOperation,
@@ -31,6 +31,7 @@ import {
 } from "../shared/Errors";
 import {
   Collect,
+  CollectFile,
   funcSymHasParameterPack,
   printCollectedExpr,
   printCollectedSymbol,
@@ -1116,7 +1117,8 @@ export class SemanticElaborator {
     }
 
     const [object, objectId] = this.expr(memberAccess.expr, inference);
-    let objectType = this.sr.typeDefNodes.get(this.sr.typeUseNodes.get(object.type).type);
+    let objectTypeUse = this.sr.typeUseNodes.get(object.type);
+    let objectType = this.sr.typeDefNodes.get(objectTypeUse.type);
 
     if (object.variant === Semantic.ENode.DatatypeAsValueExpr) {
       return this.elaborateDatatypeMemberAccess(this.sr, objectId, object.type, memberAccess, {
@@ -1199,6 +1201,136 @@ export class SemanticElaborator {
           true,
           memberAccess.sourceloc
         );
+      }
+      if (memberAccess.memberName === "push") {
+        const funcname = `__hz_dynamic_array_push_${
+          Semantic.mangleTypeUse(this.sr, objectType.datatype).name
+        }`;
+
+        let [func, funcId] = [null, null] as [
+          Semantic.FunctionSymbol | null,
+          Semantic.SymbolId | null
+        ];
+        if (this.sr.syntheticFunctions.has(funcname)) {
+          funcId = this.sr.syntheticFunctions.get(funcname)!;
+          assert(funcId);
+          const sym = this.sr.symbolNodes.get(funcId);
+          assert(sym.variant === Semantic.ENode.FunctionSymbol);
+          func = sym;
+        } else {
+          const functionType = makeRawFunctionDatatypeAvailable(this.sr, {
+            parameters: [object.type, objectType.datatype],
+            returnType: this.sr.b.voidType(),
+            requires: {
+              autodest: false,
+              final: true,
+              noreturn: false,
+            },
+            sourceloc: memberAccess.sourceloc,
+            vararg: false,
+          });
+
+          const code = `__c__("HZSTD_ARRAY_PUSH(this, ${
+            Semantic.mangleTypeUse(this.sr, objectType.datatype).name
+          }, element);");`;
+
+          [func, funcId] = this.sr.b.syntheticFunction({
+            functionTypeId: functionType,
+            parameterNames: ["this", "element"],
+            funcname: funcname,
+            bodySourceCode: code,
+            sourceloc: memberAccess.sourceloc,
+          });
+          this.sr.syntheticFunctions.set(funcname, funcId);
+        }
+
+        assert(func && funcId);
+
+        return Semantic.addExpr(this.sr, {
+          variant: Semantic.ENode.CallableExpr,
+          functionSymbol: funcId,
+          instanceIds: [],
+          isTemporary: true,
+          sourceloc: memberAccess.sourceloc,
+          thisExpr: objectId,
+          type: makeTypeUse(
+            this.sr,
+            Semantic.addType(this.sr, {
+              variant: Semantic.ENode.CallableDatatype,
+              concrete: true,
+              functionType: func.type,
+              thisExprType: object.type,
+            })[1],
+            EDatatypeMutability.Default,
+            false,
+            memberAccess.sourceloc
+          )[1],
+        });
+      }
+      if (memberAccess.memberName === "pop") {
+        const funcname = `__hz_dynamic_array_pop_${
+          Semantic.mangleTypeUse(this.sr, objectType.datatype).name
+        }`;
+
+        let [func, funcId] = [null, null] as [
+          Semantic.FunctionSymbol | null,
+          Semantic.SymbolId | null
+        ];
+        if (this.sr.syntheticFunctions.has(funcname)) {
+          funcId = this.sr.syntheticFunctions.get(funcname)!;
+          assert(funcId);
+          const sym = this.sr.symbolNodes.get(funcId);
+          assert(sym.variant === Semantic.ENode.FunctionSymbol);
+          func = sym;
+        } else {
+          const functionType = makeRawFunctionDatatypeAvailable(this.sr, {
+            parameters: [object.type],
+            returnType: objectType.datatype,
+            requires: {
+              autodest: false,
+              final: true,
+              noreturn: false,
+            },
+            sourceloc: memberAccess.sourceloc,
+            vararg: false,
+          });
+
+          const code = `__c__("return HZSTD_ARRAY_POP(this, ${
+            Semantic.mangleTypeUse(this.sr, objectType.datatype).name
+          });");`;
+
+          [func, funcId] = this.sr.b.syntheticFunction({
+            functionTypeId: functionType,
+            parameterNames: ["this"],
+            funcname: funcname,
+            bodySourceCode: code,
+            sourceloc: memberAccess.sourceloc,
+          });
+          this.sr.syntheticFunctions.set(funcname, funcId);
+        }
+
+        assert(func && funcId);
+
+        return Semantic.addExpr(this.sr, {
+          variant: Semantic.ENode.CallableExpr,
+          functionSymbol: funcId,
+          instanceIds: [],
+          isTemporary: true,
+          sourceloc: memberAccess.sourceloc,
+          thisExpr: objectId,
+          type: makeTypeUse(
+            this.sr,
+            Semantic.addType(this.sr, {
+              variant: Semantic.ENode.CallableDatatype,
+              concrete: true,
+              functionType: func.type,
+              thisExprType: object.type,
+            })[1],
+            EDatatypeMutability.Default,
+            false,
+            memberAccess.sourceloc
+          )[1],
+        });
       }
       throw new CompilerError(
         `Datatype '${Semantic.serializeTypeUse(
@@ -5886,6 +6018,42 @@ export class SemanticBuilder {
     });
   }
 
+  syntheticFunction(args: {
+    functionTypeId: Semantic.TypeDefId;
+    parameterNames: string[];
+    funcname: string;
+    bodySourceCode: string;
+    sourceloc: SourceLoc;
+  }): [Semantic.FunctionSymbol, Semantic.SymbolId] {
+    const fType = this.sr.typeDefNodes.get(args.functionTypeId);
+    assert(fType.variant === Semantic.ENode.FunctionDatatype);
+    assert(args.parameterNames.length === fType.parameters.length);
+
+    const fullSource = `${args.funcname}(${fType.parameters
+      .map((p, i) => `${args.parameterNames[i]}: ${Semantic.serializeTypeUse(this.sr, p)}`)
+      .join(", ")}): ${Semantic.serializeTypeUse(this.sr, fType.returnType)} { \n${
+      args.bodySourceCode
+    } \n}`;
+
+    this.sr.moduleCompiler.collectImmediate(fullSource);
+
+    const [e, eId] = this.sr.e.expr(
+      Collect.makeExpr(this.sr.cc, {
+        variant: Collect.ENode.SymbolValueExpr,
+        genericArgs: [],
+        name: args.funcname,
+        sourceloc: args.sourceloc,
+      })[1],
+      {}
+    );
+
+    assert(e.variant === Semantic.ENode.SymbolValueExpr);
+    const symbol = this.sr.symbolNodes.get(e.symbol);
+    assert(symbol.variant === Semantic.ENode.FunctionSymbol);
+
+    return [symbol, e.symbol];
+  }
+
   memberAccessRaw(
     exprId: Semantic.ExprId,
     name: string,
@@ -6456,6 +6624,8 @@ export function insertIntoEnumDefCache(
 export type SemanticResult = {
   cc: CollectionContext;
 
+  moduleCompiler: ModuleCompiler;
+
   e: SemanticElaborator; // "e" = "Elaborator"
   b: SemanticBuilder; // "b" = "Builder"
 
@@ -6493,6 +6663,8 @@ export type SemanticResult = {
   fixedArrayTypeCache: Semantic.TypeDefId[];
   dynamicArrayTypeCache: Semantic.TypeDefId[];
   typeInstanceCache: Semantic.TypeUseId[];
+
+  syntheticFunctions: Map<string, Semantic.SymbolId>;
 
   syntheticScopeToVariableMap: Map<Collect.ScopeId, Map<string, Semantic.SymbolId>>;
 
@@ -7784,6 +7956,7 @@ export namespace Semantic {
   }
 
   export function SemanticallyAnalyze(
+    moduleCompiler: ModuleCompiler,
     cc: CollectionContext,
     isLibrary: boolean,
     moduleName: string,
@@ -7791,6 +7964,8 @@ export namespace Semantic {
   ) {
     const sr: SemanticResult = {
       overloadedOperators: [],
+
+      moduleCompiler: moduleCompiler,
       cc: cc,
 
       e: undefined as any,
@@ -7812,6 +7987,8 @@ export namespace Semantic {
       fixedArrayTypeCache: [],
       dynamicArrayTypeCache: [],
       typeInstanceCache: [],
+
+      syntheticFunctions: new Map(),
 
       blockScopeNodes: new BrandedArray<Semantic.BlockScopeId, Semantic.BlockScope>([]),
       symbolNodes: new BrandedArray<Semantic.SymbolId, Semantic.Symbol>([]),

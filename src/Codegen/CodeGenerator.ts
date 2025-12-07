@@ -813,6 +813,11 @@ class CodeGenerator {
         ) {
           outWriter.write("(" + exprWriter.out.get() + ")." + expr.memberName);
         } else if (
+          eTypeDef.variant === Lowered.ENode.CallableDatatype &&
+          (expr.memberName === "thisPtr" || expr.memberName === "fn")
+        ) {
+          outWriter.write("(" + exprWriter.out.get() + ")." + expr.memberName);
+        } else if (
           eTypeDef.variant === Lowered.ENode.DynamicArrayDatatype &&
           expr.memberName === "length"
         ) {

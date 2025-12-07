@@ -9,7 +9,7 @@
 #define HZSTD_PANIC_FMT(fmt, ...)                                                                                      \
   {                                                                                                                    \
     char buf[1024];                                                                                                    \
-    snprintf(buf, sizeof(buf), fmt, __VA_ARGS__);                                                                      \
+    snprintf(buf, sizeof(buf), fmt __VA_OPT__(, ) __VA_ARGS__);                                                        \
     hzstd_panic_str(HZSTD_STRING_FROM_CSTR(buf));                                                                      \
   }
 

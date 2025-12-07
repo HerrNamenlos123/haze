@@ -18,15 +18,6 @@ array() {
     for (let i = 0; i < staticArray.length; i++) {
         fmt.println("Element: ", staticArray[i]);
     }
-
-    staticArray[1] = 3;
-    dynamicArray[1] = 5;
-
-    // dynamicArray.push(42);
-
-    for (let i = 0; i < dynamicArray.length; i++) {
-        fmt.println("Element: ", dynamicArray[i]);
-    }
 }
 
 extern C parse(source: str) {
