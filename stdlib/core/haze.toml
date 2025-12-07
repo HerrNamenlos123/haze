@@ -20,6 +20,11 @@ type = "lib"
 [compiler]
 flags = ["-D_XOPEN_SOURCE=500"]
 
+[linker.linux]
+flags = ["-ldl", "-lc"]
+
+[linker.win32]
+flags = ["-ldbghelp"]
+
 [linker]
 # flags = ["-lm", "-lGL", "-lpthread"]
-flags = ["-ldl", "-lc"]

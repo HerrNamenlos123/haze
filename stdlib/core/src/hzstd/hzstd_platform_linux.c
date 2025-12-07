@@ -25,26 +25,27 @@
 
 static hzstd_semaphore_t infinite_block_event;
 
-void hzstd_initialize_platform() { assert(hzstd_create_semaphore(&infinite_block_event)); }
-
-_Noreturn void hzstd_block_thread_forever()
-{
-  hzstd_wait_for_semaphore(&infinite_block_event);
-  assert(false);
+void hzstd_initialize_platform() {
+  assert(hzstd_create_semaphore(&infinite_block_event));
 }
 
-bool hzstd_create_semaphore(hzstd_semaphore_t* semaphore)
-{
+_Noreturn void hzstd_block_thread_forever() {
+  hzstd_wait_for_semaphore(&infinite_block_event);
+  abort();
+}
+
+bool hzstd_create_semaphore(hzstd_semaphore_t *semaphore) {
   assert(sem_init(&semaphore->handle, 0, 0) == 0);
   return true;
 }
 
-bool hzstd_trigger_semaphore(hzstd_semaphore_t* semaphore) { return sem_post(&semaphore->handle); }
+bool hzstd_trigger_semaphore(hzstd_semaphore_t *semaphore) {
+  return sem_post(&semaphore->handle);
+}
 
-void hzstd_wait_for_semaphore(hzstd_semaphore_t* semaphore) { sem_wait(&semaphore->handle); }
-
-static hzstd_semaphore_t panic_handler_thread_ready;
-static hzstd_semaphore_t panic_handler_thread_wakeup;
+void hzstd_wait_for_semaphore(hzstd_semaphore_t *semaphore) {
+  sem_wait(&semaphore->handle);
+}
 
 static hzstd_str_t panic_reason = HZSTD_STRING_FROM_CSTR("Unknown reason");
 static unw_context_t panic_context;
@@ -52,8 +53,8 @@ static hzstd_int_t panic_skip_n_frames = 0;
 static atomic_int panic_in_progress = 0;
 static hzstd_semaphore_t panic_trigger;
 
-_Noreturn void hzstd_panic_with_stacktrace(hzstd_str_t msg, hzstd_int_t skip_n_frames)
-{
+_Noreturn void hzstd_panic_with_stacktrace(hzstd_str_t msg,
+                                           hzstd_int_t skip_n_frames) {
   unw_getcontext(&panic_context);
   panic_reason = msg;
   panic_skip_n_frames = skip_n_frames;
@@ -61,8 +62,7 @@ _Noreturn void hzstd_panic_with_stacktrace(hzstd_str_t msg, hzstd_int_t skip_n_f
   hzstd_block_thread_forever();
 }
 
-static void hzstd_panic_handler(int sig, siginfo_t* si, void* ucontext)
-{
+static void hzstd_panic_handler(int sig, siginfo_t *si, void *ucontext) {
   int expected = 0;
   if (atomic_compare_exchange_strong(&panic_in_progress, &expected, 1)) {
     // This thread claims the global context
@@ -70,20 +70,25 @@ static void hzstd_panic_handler(int sig, siginfo_t* si, void* ucontext)
 
     switch (si->si_code) {
     case SEGV_MAPERR:
-      panic_reason = HZSTD_STRING_FROM_CSTR(
-          "Segmentation Fault: Address not mapped (invalid pointer, nullptr, unmapped memory)");
+      panic_reason =
+          HZSTD_STRING_FROM_CSTR("Segmentation Fault: Address not mapped "
+                                 "(invalid pointer, nullptr, unmapped memory)");
       break;
 
     case SEGV_ACCERR:
-      panic_reason = HZSTD_STRING_FROM_CSTR("Segmentation Fault: Access Violation (invalid access to memory page)");
+      panic_reason =
+          HZSTD_STRING_FROM_CSTR("Segmentation Fault: Access Violation "
+                                 "(invalid access to memory page)");
       break;
 
     case SEGV_BNDERR:
-      panic_reason = HZSTD_STRING_FROM_CSTR("Segmentation Fault: Bounds Check Error");
+      panic_reason =
+          HZSTD_STRING_FROM_CSTR("Segmentation Fault: Bounds Check Error");
       break;
 
     case SEGV_PKUERR:
-      panic_reason = HZSTD_STRING_FROM_CSTR("Segmentation Fault: Protection Key Failure");
+      panic_reason =
+          HZSTD_STRING_FROM_CSTR("Segmentation Fault: Protection Key Failure");
       break;
 
     default:
@@ -93,18 +98,16 @@ static void hzstd_panic_handler(int sig, siginfo_t* si, void* ucontext)
 
     hzstd_trigger_semaphore(&panic_trigger);
     hzstd_block_thread_forever();
-  }
-  else {
+  } else {
     // Another thread is already unwinding
     hzstd_block_thread_forever();
   }
 }
 
-static void* hzstd_panic_handler_thread(void* _)
-{
+static void *hzstd_panic_handler_thread(void *_) {
   hzstd_wait_for_semaphore(&panic_trigger);
 
-  hzstd_arena_t* arena = hzstd_arena_create();
+  hzstd_arena_t *arena = hzstd_arena_create();
 
   // First do a dry run to find the number of frames
   size_t numberOfFrames = 0;
@@ -116,7 +119,8 @@ static void* hzstd_panic_handler_thread(void* _)
 
   // Now do the actual work
   size_t nextId = 1;
-  hzstd_dynamic_array_t* frameArray = hzstd_dynamic_array_create(arena, sizeof(hzstd_unwind_frame_t*), numberOfFrames);
+  hzstd_dynamic_array_t *frameArray = hzstd_dynamic_array_create(
+      arena, sizeof(hzstd_unwind_frame_t *), numberOfFrames);
   unw_init_local2(&cursor, &panic_context, UNW_INIT_SIGNAL_FRAME);
   do {
     unw_word_t pc;
@@ -126,12 +130,14 @@ static void* hzstd_panic_handler_thread(void* _)
     // recursion, it is likely that they repeat)
     bool pushed = false;
     for (size_t i = 0; i < hzstd_dynamic_array_size(frameArray); i++) {
-      hzstd_unwind_frame_t* framePtr;
-      assert(hzstd_dynamic_array_get(frameArray, i, &framePtr) == hzstd_dynamic_array_result_ok);
+      hzstd_unwind_frame_t *framePtr;
+      assert(hzstd_dynamic_array_get(frameArray, i, &framePtr) ==
+             hzstd_dynamic_array_result_ok);
       if (framePtr->instructionPointer == (hzstd_cptr_t)pc) {
         // Frame with same function found, push new frame but reuse the function
         // name (retrieving name is slow)
-        assert(hzstd_dynamic_array_push(frameArray, &framePtr) == hzstd_dynamic_array_result_ok);
+        assert(hzstd_dynamic_array_push(frameArray, &framePtr) ==
+               hzstd_dynamic_array_result_ok);
         pushed = true;
         break;
       }
@@ -139,25 +145,28 @@ static void* hzstd_panic_handler_thread(void* _)
 
     if (!pushed) {
       // Now retrieve the name, it's a new one
-      int maxNameLength = 256;
-      hzstd_str_t name = HZSTD_STRING(hzstd_arena_allocate(arena, maxNameLength, alignof(char)), 0);
+      int maxNameLength = 4096;
+      hzstd_str_t name = HZSTD_STRING(
+          hzstd_arena_allocate(arena, maxNameLength, alignof(char)), 0);
 
       unw_word_t offset;
-      if (unw_get_proc_name(&cursor, (char*)name.data, maxNameLength, &offset) == 0) {
+      if (unw_get_proc_name(&cursor, (char *)name.data, maxNameLength,
+                            &offset) == 0) {
         name.length = strlen(name.data);
       }
 
       // Doesn't work inline in HZSTD_ALLOC_STRUCT_RAW
-      hzstd_unwind_frame_t frameStruct = (hzstd_unwind_frame_t) {
-        .id = nextId++,
-        .instructionPointer = (void*)pc,
-        .name = name,
+      hzstd_unwind_frame_t frameStruct = (hzstd_unwind_frame_t){
+          .id = nextId++,
+          .instructionPointer = (void *)pc,
+          .name = name,
       };
 
-      hzstd_unwind_frame_t* framePtr
-          = HZSTD_ALLOC_STRUCT_RAW(arena, hzstd_unwind_frame_t, hzstd_unwind_frame_t*, frameStruct);
+      hzstd_unwind_frame_t *framePtr = HZSTD_ALLOC_STRUCT_RAW(
+          arena, hzstd_unwind_frame_t, hzstd_unwind_frame_t *, frameStruct);
 
-      assert(hzstd_dynamic_array_push(frameArray, &framePtr) == hzstd_dynamic_array_result_ok);
+      assert(hzstd_dynamic_array_push(frameArray, &framePtr) ==
+             hzstd_dynamic_array_result_ok);
     }
 
   } while (unw_step(&cursor) > 0);
@@ -175,8 +184,7 @@ static void* hzstd_panic_handler_thread(void* _)
   abort();
 }
 
-void hzstd_setup_panic_handler()
-{
+void hzstd_setup_panic_handler() {
   static thread_local char altstack_buf[8192];
   // This function registers a signal handler for the SIGSEGV signal (segfault).
   // The signal gets its own alternative stack (altstack), required to make the

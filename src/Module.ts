@@ -1158,8 +1158,8 @@ export class ModuleCompiler {
       linkerFlags.any.push(`-L"${this.moduleDir}/bin/lib64"`);
 
       compilerFlags.any.push(`-I"${HAZE_GLOBAL_DIR}"`);
-      linkerFlags.any.push(`"${HAZE_GLOBAL_DIR}/haze-libunwind/lib/libunwind.a"`);
-      linkerFlags.any.push(`-llzma`);
+      linkerFlags.linux.push(`"${HAZE_GLOBAL_DIR}/haze-libunwind/lib/libunwind.a"`);
+      linkerFlags.linux.push(`-llzma`);
 
       compilerFlags.win32.push(`-D_CRT_SECURE_NO_WARNINGS`);
       linkerFlags.win32.push(`-fuse-ld=lld`);

@@ -12,33 +12,41 @@
 #include <stdio.h>
 
 hzstd_str_t stacktrace_hidden_functions[] = {
-  // This is a list of all functions of all platforms, that are supposed to be grey in a stacktrace,
-  // as they are platform given and NOT part of the user's code, so they are less relevant for the user.
-  HZSTD_STRING_FROM_CSTR("_start"),
-  HZSTD_STRING_FROM_CSTR("__libc_start_main"),
-  HZSTD_STRING_FROM_CSTR("__libc_start_call_main"),
-  HZSTD_STRING_FROM_CSTR("main"),
+    // This is a list of all functions of all platforms, that are supposed to be
+    // grey in a stacktrace,
+    // as they are platform given and NOT part of the user's code, so they are
+    // less relevant for the user.
+    HZSTD_STRING_FROM_CSTR("_start"),
+    HZSTD_STRING_FROM_CSTR("__libc_start_main"),
+    HZSTD_STRING_FROM_CSTR("__libc_start_call_main"),
+    HZSTD_STRING_FROM_CSTR("main"),
+    HZSTD_STRING_FROM_CSTR("__scrt_common_main_seh"),
+    HZSTD_STRING_FROM_CSTR("BaseThreadInitThunk"),
+    HZSTD_STRING_FROM_CSTR("RtlUserThreadStart"),
 };
 
-_Noreturn void hzstd_panic(hzstd_ccstr_t msg) { hzstd_panic_with_stacktrace(HZSTD_STRING_FROM_CSTR(msg), 2); }
-_Noreturn void hzstd_panic_str(hzstd_str_t msg) { hzstd_panic_with_stacktrace(msg, 2); }
-
-_Noreturn void hzstd_unreachable()
-{
-  hzstd_panic_with_stacktrace(HZSTD_STRING_FROM_CSTR("Fatal internal runtime error: Unreachable code path was reached"),
-                              2);
+_Noreturn void hzstd_panic(hzstd_ccstr_t msg) {
+  hzstd_panic_with_stacktrace(HZSTD_STRING_FROM_CSTR(msg), 2);
+}
+_Noreturn void hzstd_panic_str(hzstd_str_t msg) {
+  hzstd_panic_with_stacktrace(msg, 2);
 }
 
-void hzstd_assert(hzstd_bool_t condition)
-{
+_Noreturn void hzstd_unreachable() {
+  hzstd_panic_with_stacktrace(
+      HZSTD_STRING_FROM_CSTR(
+          "Fatal internal runtime error: Unreachable code path was reached"),
+      2);
+}
+
+void hzstd_assert(hzstd_bool_t condition) {
   // TODO: Implement source location passing in haze to show actual location
   // here, plus a call stack
   assert(condition);
   // __assert_fail("condition", __FILE__, __LINE__, __PRETTY_FUNCTION__);
 }
 
-void hzstd_assert_msg_cstr(hzstd_bool_t condition, hzstd_cstr_t message)
-{
+void hzstd_assert_msg_cstr(hzstd_bool_t condition, hzstd_cstr_t message) {
   // TODO: Implement source location passing in haze to show actual location
   // here, plus a call stack
   if (!condition) {
@@ -48,25 +56,26 @@ void hzstd_assert_msg_cstr(hzstd_bool_t condition, hzstd_cstr_t message)
   // __assert_fail("condition", __FILE__, __LINE__, __PRETTY_FUNCTION__);
 }
 
-void hzstd_assert_msg(hzstd_bool_t condition, hzstd_str_t message)
-{
+void hzstd_assert_msg(hzstd_bool_t condition, hzstd_str_t message) {
   // TODO: Implement source location passing in haze to show actual location
   // here, plus a call stack
   if (!condition) {
-    hzstd_arena_t* scratchArena = hzstd_arena_create();
-    char* msg = hzstd_cstr_from_str(scratchArena, message);
+    hzstd_arena_t *scratchArena = hzstd_arena_create();
+    char *msg = hzstd_cstr_from_str(scratchArena, message);
     hzstd_panic("Assertion failed: <message not implemented>\n");
   }
   // assert(condition);
   // __assert_fail("condition", __FILE__, __LINE__, __PRETTY_FUNCTION__);
 }
 
-static bool is_functioncall_hidden(hzstd_str_t name)
-{
+static bool is_functioncall_hidden(hzstd_str_t name) {
   bool hidden = false;
-  for (size_t i = 0; i < sizeof(stacktrace_hidden_functions) / sizeof(stacktrace_hidden_functions[0]); i++) {
+  for (size_t i = 0; i < sizeof(stacktrace_hidden_functions) /
+                             sizeof(stacktrace_hidden_functions[0]);
+       i++) {
     if (name.length == stacktrace_hidden_functions[i].length) {
-      if (memcmp(name.data, stacktrace_hidden_functions[i].data, name.length) == 0) {
+      if (memcmp(name.data, stacktrace_hidden_functions[i].data, name.length) ==
+          0) {
         hidden = true;
         break;
       }
@@ -75,12 +84,12 @@ static bool is_functioncall_hidden(hzstd_str_t name)
   return hidden;
 }
 
-void hzstd_print_stacktrace(hzstd_arena_t* arena, hzstd_dynamic_array_t* frames, hzstd_int_t skip_n_frames)
-{
+void hzstd_print_stacktrace(hzstd_arena_t *arena, hzstd_dynamic_array_t *frames,
+                            hzstd_int_t skip_n_frames) {
   size_t n = hzstd_dynamic_array_size(frames);
 
   for (size_t i = skip_n_frames; i < n;) {
-    hzstd_unwind_frame_t* framePtr;
+    hzstd_unwind_frame_t *framePtr;
     hzstd_dynamic_array_get(frames, i, &framePtr);
 
     // Try to find a cycle starting at i
@@ -159,9 +168,10 @@ void hzstd_print_stacktrace(hzstd_arena_t* arena, hzstd_dynamic_array_t* frames,
     }
 
     // Case 2: Cycle detected → print compressed
-    fprintf(stderr, "Cycle of length %zu repeated %zu times:\n", detectedLen, repeatCount);
+    fprintf(stderr, "Cycle of length %zu repeated %zu times:\n", detectedLen,
+            repeatCount);
     for (size_t k = 0; k < detectedLen; k++) {
-      hzstd_unwind_frame_t* fr;
+      hzstd_unwind_frame_t *fr;
       hzstd_dynamic_array_get(frames, i + k, &fr);
 
       bool hidden = is_functioncall_hidden(fr->name);
