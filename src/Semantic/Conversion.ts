@@ -787,6 +787,16 @@ export namespace Conversion {
 
     const ok = (v: Semantic.ExprId) => ({ ok: true as const, expr: v });
 
+    // Every conversion whatsoever consumes a unique value (even if it doesn't change the type)
+    if (fromTypeInstance.unique && fromExpr.variant === Semantic.ENode.SymbolValueExpr) {
+      const symbol = sr.symbolNodes.get(fromExpr.symbol);
+      if (symbol.variant === Semantic.ENode.VariableSymbol) {
+        symbol.consumed = true;
+      }
+      // AFTER being consumed, unique can be cast away
+    }
+
+    // naive return, it's the same type so remove the cast
     if (fromExpr.type === toId) {
       return ok(fromExprId);
     }
@@ -1097,25 +1107,82 @@ export namespace Conversion {
       );
     }
 
-    // Core conversions
-    if (
-      IsStructurallyEquivalent(
-        sr,
-        sr.typeUseNodes.get(fromExpr.type).type,
-        sr.typeUseNodes.get(toId).type
-      )
-    ) {
-      return ok(
-        Semantic.addExpr(sr, {
-          variant: Semantic.ENode.ExplicitCastExpr,
-          instanceIds: fromExpr.instanceIds,
-          expr: fromExprId,
-          type: toId,
-          sourceloc: sourceloc,
-          isTemporary: fromExpr.isTemporary,
-        })[1]
-      );
+    // Mutability conversions
+    if (fromTypeInstance.type === toInstance.type) {
+      // Same type but different mutability
+      if (fromTypeInstance.inline === toInstance.inline) {
+        // Unique can only go away or stay equal but it can't be gained
+        if (toInstance.unique && !fromTypeInstance.unique) {
+          throw new CompilerError(
+            `Cannot convert '${fromTypeText}' to '${toTypeText}' as the unique-constraint is violated. Since the source value is non-unique, multiple references to the same data may exist.`,
+            sourceloc
+          );
+        }
+
+        if (
+          (fromTypeInstance.mutability === EDatatypeMutability.Mut ||
+            fromTypeInstance.mutability === EDatatypeMutability.Const) &&
+          toInstance.mutability === EDatatypeMutability.Default
+        ) {
+          return ok(
+            Semantic.addExpr(sr, {
+              variant: Semantic.ENode.ExplicitCastExpr,
+              instanceIds: fromExpr.instanceIds,
+              expr: fromExprId,
+              type: toId,
+              sourceloc: sourceloc,
+              isTemporary: fromExpr.isTemporary,
+            })[1]
+          );
+        }
+
+        // If it is a direct literal, allow conversions from anything to const, or if the source is unique
+        if (
+          (fromExpr.variant === Semantic.ENode.StructLiteralExpr ||
+            fromExpr.variant === Semantic.ENode.ArrayLiteralExpr ||
+            fromTypeInstance.unique) &&
+          toInstance.mutability === EDatatypeMutability.Const
+        ) {
+          return ok(
+            Semantic.addExpr(sr, {
+              variant: Semantic.ENode.ExplicitCastExpr,
+              instanceIds: fromExpr.instanceIds,
+              expr: fromExprId,
+              type: toId,
+              sourceloc: sourceloc,
+              isTemporary: fromExpr.isTemporary,
+            })[1]
+          );
+        }
+
+        if (toInstance.mutability === EDatatypeMutability.Const) {
+          throw new CompilerError(
+            `This value cannot be converted to 'const' since it is not unique and we cannot guarantee that there may remain another non-const reference, which is disallowed.`,
+            sourceloc
+          );
+        }
+      }
     }
+
+    // Core conversions
+    // if (
+    //   IsStructurallyEquivalent(
+    //     sr,
+    //     sr.typeUseNodes.get(fromExpr.type).type,
+    //     sr.typeUseNodes.get(toId).type
+    //   )
+    // ) {
+    //   return ok(
+    //     Semantic.addExpr(sr, {
+    //       variant: Semantic.ENode.ExplicitCastExpr,
+    //       instanceIds: fromExpr.instanceIds,
+    //       expr: fromExprId,
+    //       type: toId,
+    //       sourceloc: sourceloc,
+    //       isTemporary: fromExpr.isTemporary,
+    //     })[1]
+    //   );
+    // }
 
     // Union Conversions: Value to Union (simple)
     if (to.variant === Semantic.ENode.UntaggedUnionDatatype) {
@@ -1551,7 +1618,7 @@ export namespace Conversion {
       case EBinaryOperation.Add:
       case EBinaryOperation.Subtract:
         if (leftType === rightType) {
-          return makeTypeUse(sr, leftType, EDatatypeMutability.Const, false, sourceloc)[1];
+          return makeTypeUse(sr, leftType, EDatatypeMutability.Const, false, false, sourceloc)[1];
         }
         break;
 
@@ -1750,7 +1817,7 @@ export namespace Conversion {
 
     for (const op of ops) {
       if (op.from === sr.typeUseNodes.get(a).type) {
-        return makeTypeUse(sr, op.to, EDatatypeMutability.Const, false, sourceloc)[1];
+        return makeTypeUse(sr, op.to, EDatatypeMutability.Const, false, false, sourceloc)[1];
       }
     }
 

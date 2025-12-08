@@ -6,16 +6,16 @@ namespace builtin {
 }
 
 namespace fmt {
-    // export struct FormatArgs {
-    //     formatSpecifier: str = "";
-    // }
+    export struct FormatArgs {
+        formatSpecifier: str = "";
+    }
 
     // export struct StringWriter {
-    //     buffer: u8 = nullptr;
-    //     length: usize = 0;
+    //     buffer: u8 = 0;
+    //     length: int = 0;
 
     //     write(value: str) {        
-    //         if this.buffer != nullptr {
+    //         if this.buffer != 0 as u8 {
     //             __c__("memcpy(this->buffer + this->length, value.data, value.length);");
     //             // for i in 0..value.len {
     //             //     this.buffer[length + i] = value[i];
@@ -25,18 +25,18 @@ namespace fmt {
     //     }
     // }
 
-    // export format<T>(arena: &Arena, value: T, args: FormatArgs): str {
-    //     const writer = StringWriter {};
-    //     format_to(writer as &StringWriter, value, args);
-    //     do unsafe {
-    //         const string = arena.allocRaw(writer.length, 1) as ?&u8;
-    //         const writer2 = StringWriter { buffer: string };
-    //         format_to(writer2 as &StringWriter, value, args);
-    //         return str(writer2.buffer, writer2.length);
-    //     }
-    // }
+    export format<T>(arena: Arena, value: T, args: FormatArgs): str {
+        // const writer = StringWriter {};
+        // format_to(writer, value, args);
+        // do unsafe {
+        //     const string = arena.allocRaw(writer.length, 1);
+        //     const writer2 = StringWriter { buffer: string };
+        //     format_to(writer2 as &StringWriter, value, args);
+        //     return str(writer2.buffer, writer2.length);
+        // }
+    }
 
-    // export format_to(writer: &StringWriter, value: int, args: FormatArgs) {
+    // export format_to(writer: StringWriter, value: int, args: FormatArgs) {
     //     let v = value;
     //     if v < 0 {
     //         writer.write("-");
@@ -65,22 +65,22 @@ namespace fmt {
     //     assert(digit >= 0 && digit <= 9);
     //     const ch: u8 = 0;
     //     __c__("ch = '0' + digit;");
-    //     return str(&ch, 1);
+    //     return str(ch, 1);
     // }
 
-    // export format_to(writer: &StringWriter, value: i8, args: FormatArgs) {
+    // export format_to(writer: StringWriter, value: i8, args: FormatArgs) {
     //     format_to(writer, value as int, args);
     // }
 
-    // export format_to(writer: &StringWriter, value: i16, args: FormatArgs) {
+    // export format_to(writer: StringWriter, value: i16, args: FormatArgs) {
     //     format_to(writer, value as int, args);
     // }
 
-    // export format_to(writer: &StringWriter, value: i32, args: FormatArgs) {
+    // export format_to(writer: StringWriter, value: i32, args: FormatArgs) {
     //     format_to(writer, value as int, args);
     // }
 
-    // export format_to(writer: &StringWriter, value: i64, args: FormatArgs) {
+    // export format_to(writer: StringWriter, value: i64, args: FormatArgs) {
     //     format_to(writer, value as int, args);
     // }
 

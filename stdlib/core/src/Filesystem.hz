@@ -21,7 +21,7 @@ extern C hzstd_read_file_text(arena: hzstd_arena_t, path: str, outputBuffer: hzs
 
 export namespace fs {
     export read(path: str): Result<str, FSError> {
-        const output = hzstd_str_ref_t { data: "" } in fn.localArena;
+        let output = hzstd_str_ref_t { data: "" } in fn.localArena;
         const result = hzstd_read_file_text(fn.returnArena.arenaImpl, path, output);
         if result == hzstd_fs_error_t.hzstd_fs_error_none {
             return Result<str, FSError>.Ok(output.data);

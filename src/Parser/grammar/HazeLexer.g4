@@ -55,7 +55,7 @@ IN: 'in';
 FOR: 'for';
 WHILE: 'while';
 COMPTIME: 'comptime';
-LET: 'let'; CONST: 'const'; MUT: 'mut';
+LET: 'let'; CONST: 'const'; MUT: 'mut'; UNIQUE: 'unique';
 DOT: '.';
 LCURLY: '{' -> pushMode(DEFAULT_MODE);
 RCURLY: '}' -> popMode;

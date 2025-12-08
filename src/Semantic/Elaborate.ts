@@ -27,6 +27,7 @@ import {
   CompilerError,
   formatSourceLoc,
   InternalError,
+  printWarningMessage,
   type SourceLoc,
 } from "../shared/Errors";
 import {
@@ -556,6 +557,7 @@ export class SemanticElaborator {
           calledExpr.unionType,
           EDatatypeMutability.Default,
           false,
+          false,
           calledExpr.sourceloc
         )[1],
       });
@@ -692,6 +694,49 @@ export class SemanticElaborator {
     return this.sr.b.literalValue(literalExpr.literal, literalExpr.sourceloc);
   }
 
+  fstring(fstring: Collect.FStringExpr) {
+    const fragments = fstring.fragments.map((f) => {
+      if (f.type === "text") {
+        return {
+          type: "text",
+          value: this.sr.b.literal(f.value, fstring.sourceloc)[1],
+        } as const;
+      } else {
+        return {
+          type: "expr",
+          value: this.expr(f.value, {})[1],
+        } as const;
+      }
+    });
+
+    const inArena = fstring.inArena ? this.expr(fstring.inArena, {})[1] : null;
+
+    if (inArena) {
+      this.sr.e.assertExprArenaType(inArena, fstring.sourceloc);
+    }
+
+    const e = Semantic.addExpr(this.sr, {
+      variant: Semantic.ENode.FStringExpr,
+      fragments: fragments,
+      instanceIds: [Semantic.makeInstanceId(this.sr)],
+      isTemporary: true,
+      inArena: inArena,
+      inFunction: this.inFunction,
+      sourceloc: fstring.sourceloc,
+      type: this.sr.b.strType(),
+    });
+
+    if (this.inFunction) {
+      const functionSymbol = this.sr.e.getSymbol(this.inFunction);
+      assert(functionSymbol.variant === Semantic.ENode.FunctionSymbol);
+      e[0].instanceIds.forEach((i) => functionSymbol.createsInstanceIds.add(i));
+      if (inArena) {
+        e[0].instanceIds.forEach((i) => functionSymbol.explicitArenaInstanceIds.add(i));
+      }
+    }
+    return e;
+  }
+
   expr(
     exprId: Collect.ExprId,
     inference: Inference
@@ -714,6 +759,9 @@ export class SemanticElaborator {
 
       case Collect.ENode.LiteralExpr:
         return this.literalExpr(expr);
+
+      case Collect.ENode.FStringExpr:
+        return this.fstring(expr);
 
       case Collect.ENode.AggregateLiteralExpr:
         return this.structInstantiation(expr, inference);
@@ -1073,6 +1121,7 @@ export class SemanticElaborator {
           concrete: true,
           export: false,
           extern: EExternLanguage.None,
+          consumed: false,
           memberOfStruct: null,
           mutability: EVariableMutability.Default,
           name: "__hz_local_arena",
@@ -1098,6 +1147,7 @@ export class SemanticElaborator {
           memberOfStruct: null,
           mutability: EVariableMutability.Default,
           name: "__hz_return_arena",
+          consumed: false,
           parentStructOrNS: null,
           sourceloc: memberAccess.sourceloc,
           type: this.arenaTypeUse(false, memberAccess.sourceloc)[1],
@@ -1263,6 +1313,7 @@ export class SemanticElaborator {
             })[1],
             EDatatypeMutability.Default,
             false,
+            false,
             memberAccess.sourceloc
           )[1],
         });
@@ -1327,6 +1378,7 @@ export class SemanticElaborator {
               thisExprType: object.type,
             })[1],
             EDatatypeMutability.Default,
+            false,
             false,
             memberAccess.sourceloc
           )[1],
@@ -1495,6 +1547,7 @@ export class SemanticElaborator {
             concrete: this.sr.typeDefNodes.get(elaboratedMethod.type).concrete,
           })[1],
           EDatatypeMutability.Const,
+          false,
           false,
           memberAccess.sourceloc
         )[1],
@@ -1839,6 +1892,7 @@ export class SemanticElaborator {
           sourceloc: symbol.sourceloc,
           memberOfStruct: structId,
           type: typeId,
+          consumed: false,
           variableContext: EVariableContext.MemberOfStruct,
           parentStructOrNS: structId,
           comptime: false,
@@ -2001,6 +2055,7 @@ export class SemanticElaborator {
           comptime: symbol.comptime,
           comptimeValue: null,
           variableContext: variableContext,
+          consumed: false,
           type: type,
           concrete: false,
         });
@@ -2143,7 +2198,6 @@ export class SemanticElaborator {
         }
 
         const expression = this.sr.exprNodes.get(passed.exprId);
-        console.info("TODO: Overload resolution must respect mutability");
         if (this.sr.e.getTypeUse(expression.type).type !== this.sr.e.getTypeUse(p.type).type) {
           matches = false;
           reason = `Parameter #${i + 1} has unrelated type: ${Semantic.serializeTypeUse(
@@ -2161,6 +2215,7 @@ export class SemanticElaborator {
         reason: reason,
       });
     }
+    console.info("TODO: Overload resolution must respect mutability");
 
     if (matchingSignatures.filter((s) => s.matches).length === 1) {
       const signature = this.sr.symbolNodes.get(
@@ -2436,6 +2491,7 @@ export class SemanticElaborator {
                     mutability: EVariableMutability.Default,
                     parentStructOrNS: null,
                     type: t,
+                    consumed: false,
                     variableContext: EVariableContext.FunctionParameter,
                     sourceloc: func.sourceloc,
                   });
@@ -2447,6 +2503,7 @@ export class SemanticElaborator {
                 variant: Semantic.ENode.VariableSymbol,
                 comptime: false,
                 comptimeValue: null,
+                consumed: false,
                 concrete: true,
                 name: `__param_pack`,
                 export: false,
@@ -2459,6 +2516,7 @@ export class SemanticElaborator {
                   paramPackId,
                   EDatatypeMutability.Const,
                   false,
+                  false,
                   func.sourceloc
                 )[1],
                 variableContext: EVariableContext.FunctionParameter,
@@ -2469,6 +2527,7 @@ export class SemanticElaborator {
                 this.sr,
                 paramPackId,
                 EDatatypeMutability.Const,
+                false,
                 false,
                 func.sourceloc
               )[1];
@@ -2486,6 +2545,7 @@ export class SemanticElaborator {
               this.sr,
               parentStructOrNS,
               EDatatypeMutability.Mut,
+              false,
               false,
               func.sourceloc
             )[1]
@@ -2574,6 +2634,7 @@ export class SemanticElaborator {
                 symbol.methodOf,
                 EDatatypeMutability.Mut,
                 false,
+                false,
                 func.sourceloc
               )[1];
               const [variable, variableId] = Semantic.addSymbol(this.sr, {
@@ -2588,6 +2649,7 @@ export class SemanticElaborator {
                 export: false,
                 extern: EExternLanguage.None,
                 parentStructOrNS: symbol.parentStructOrNS,
+                consumed: false,
                 sourceloc: symbol.sourceloc,
                 variableContext: EVariableContext.FunctionParameter,
               });
@@ -2763,6 +2825,7 @@ export class SemanticElaborator {
           type.length,
           type.mutability,
           type.inline,
+          type.unique,
           type.sourceloc
         );
       }
@@ -2777,6 +2840,7 @@ export class SemanticElaborator {
           this.lookupAndElaborateDatatype(type.datatype),
           type.mutability,
           false,
+          type.unique,
           type.sourceloc
         );
       }
@@ -2847,6 +2911,7 @@ export class SemanticElaborator {
             })[1],
             type.mutability,
             false,
+            false,
             type.sourceloc
           )[1];
         }
@@ -2890,6 +2955,7 @@ export class SemanticElaborator {
                 concrete: false,
               })[1],
               type.mutability,
+              false,
               false,
               type.sourceloc
             )[1];
@@ -3038,6 +3104,7 @@ export class SemanticElaborator {
                 structId,
                 type.mutability,
                 type.inline,
+                type.unique,
                 type.sourceloc
               )[1];
             }
@@ -3048,6 +3115,7 @@ export class SemanticElaborator {
                 this.namespace(found.typeDef),
                 type.mutability,
                 type.inline,
+                type.unique,
                 type.sourceloc
               )[1];
             }
@@ -3074,6 +3142,7 @@ export class SemanticElaborator {
               this.enum(found.typeDef),
               type.mutability,
               type.inline,
+              type.unique,
               type.sourceloc
             )[1];
           }
@@ -3182,6 +3251,7 @@ export class SemanticElaborator {
                 concrete: true,
               })[1],
               EDatatypeMutability.Const,
+              false,
               false,
               assignment.sourceloc
             )[1],
@@ -3545,14 +3615,14 @@ export class SemanticElaborator {
   }
 
   makeArrayLiteral(
-    arrayId: Semantic.TypeDefId,
+    arrayTypeUseId: Semantic.TypeUseId,
     elements: Collect.AggregateLiteralElement[],
-    inline: boolean,
     inArena: Semantic.ExprId | null,
     sourceloc: SourceLoc,
     inference: Inference
   ): [Semantic.Expression, Semantic.ExprId] {
-    const array = this.sr.typeDefNodes.get(arrayId);
+    const arrayUse = this.sr.typeUseNodes.get(arrayTypeUseId);
+    const array = this.sr.typeDefNodes.get(arrayUse.type);
     assert(
       array.variant === Semantic.ENode.FixedArrayDatatype ||
         array.variant === Semantic.ENode.DynamicArrayDatatype
@@ -3591,8 +3661,20 @@ export class SemanticElaborator {
       }
     }
 
+    let mutability = arrayUse.mutability;
+    if (mutability === EDatatypeMutability.Default) {
+      mutability = EDatatypeMutability.Mut;
+    }
+
     return this.sr.b.arrayLiteral(
-      makeTypeUse(this.sr, arrayId, EDatatypeMutability.Const, inline, sourceloc)[1],
+      makeTypeUse(
+        this.sr,
+        arrayUse.type,
+        mutability,
+        arrayUse.inline,
+        arrayUse.unique,
+        sourceloc
+      )[1],
       values,
       this.inFunction,
       inArena,
@@ -3601,14 +3683,14 @@ export class SemanticElaborator {
   }
 
   makeStructLiteral(
-    typeId: Semantic.TypeDefId,
+    typeUseId: Semantic.TypeUseId,
     elements: Collect.AggregateLiteralElement[],
-    inline: boolean,
     inArena: Semantic.ExprId | null,
     sourceloc: SourceLoc,
     inference: Inference
   ): [Semantic.Expression, Semantic.ExprId] {
-    const struct = this.sr.typeDefNodes.get(typeId);
+    const structUse = this.sr.typeUseNodes.get(typeUseId);
+    const struct = this.sr.typeDefNodes.get(structUse.type);
     assert(struct.variant === Semantic.ENode.StructDatatype);
 
     let remainingMembers = struct.members.map((mId) => {
@@ -3637,7 +3719,9 @@ export class SemanticElaborator {
 
       if (!variableId) {
         throw new CompilerError(
-          `${Semantic.serializeTypeDef(this.sr, typeId)} does not have a member named '${m.key}'`,
+          `${Semantic.serializeTypeDef(this.sr, structUse.type)} does not have a member named '${
+            m.key
+          }'`,
           sourceloc
         );
       }
@@ -3689,8 +3773,20 @@ export class SemanticElaborator {
       sourceloc
     );
 
+    let mutability = structUse.mutability;
+    if (mutability === EDatatypeMutability.Default) {
+      mutability = EDatatypeMutability.Mut;
+    }
+
     return this.sr.b.structLiteral(
-      makeTypeUse(this.sr, typeId, EDatatypeMutability.Const, inline, sourceloc)[1],
+      makeTypeUse(
+        this.sr,
+        structUse.type,
+        mutability,
+        structUse.inline,
+        structUse.unique,
+        sourceloc
+      )[1],
       assign,
       this.inFunction,
       inArena,
@@ -3784,6 +3880,7 @@ export class SemanticElaborator {
           this.sr,
           this.sr.b.unionTagRefTypeDef(),
           EDatatypeMutability.Default,
+          false,
           false,
           memberAccessExpr.sourceloc
         )[1],
@@ -4178,6 +4275,19 @@ export class SemanticElaborator {
           assert(variableSymbol.type);
         }
 
+        if (variableSymbol.type) {
+          const typeUse = this.sr.typeUseNodes.get(variableSymbol.type);
+          if (
+            variableSymbol.mutability === EVariableMutability.Const &&
+            typeUse.mutability === EDatatypeMutability.Mut
+          ) {
+            printWarningMessage(
+              `This 'mut' modifier will be overruled by the 'const' declaration and have no effect`,
+              s.sourceloc
+            );
+          }
+        }
+
         let valueId: Semantic.ExprId | undefined;
         if (s.value) {
           const sValue = this.sr.cc.exprNodes.get(s.value);
@@ -4207,6 +4317,19 @@ export class SemanticElaborator {
         }
         const value = valueId && this.sr.exprNodes.get(valueId);
 
+        // Consume the value if it's unique-constrained
+        if (value) {
+          if (value.variant === Semantic.ENode.SymbolValueExpr) {
+            const typeUse = this.sr.typeUseNodes.get(value.type);
+            if (typeUse.unique) {
+              const symbol = this.sr.symbolNodes.get(value.symbol);
+              if (symbol.variant === Semantic.ENode.VariableSymbol) {
+                symbol.consumed = true;
+              }
+            }
+          }
+        }
+
         if ((!valueId || !value) && !uninitialized) {
           throw new CompilerError(
             `Variable '${variableSymbol.name}' requires an initialization value`,
@@ -4221,24 +4344,42 @@ export class SemanticElaborator {
         if (!variableSymbol.type) {
           variableSymbol.type = value?.type || null;
 
-          if (variableSymbol.type && value) {
-            const variableSymbolType = this.sr.typeUseNodes.get(variableSymbol.type);
-            const variableSymbolTypeDef = this.sr.typeDefNodes.get(variableSymbolType.type);
-            if (variableSymbol.mutability === EVariableMutability.Const) {
-            } else {
-              // If a const T value is assigned to a let variable,
-              // a copy is made which makes the copied value fully mutable.
-              variableSymbol.type = makeTypeUse(
-                this.sr,
-                variableSymbolType.type,
-                EDatatypeMutability.Mut,
-                variableSymbolType.inline,
-                s.sourceloc
-              )[1];
-            }
-          }
+          // if (variableSymbol.type && value) {
+          //   const variableSymbolType = this.sr.typeUseNodes.get(variableSymbol.type);
+          //   const variableSymbolTypeDef = this.sr.typeDefNodes.get(variableSymbolType.type);
+          //   if (variableSymbol.mutability === EVariableMutability.Const) {
+          //   } else {
+          // THIS IS WRONG ISN'T IT???? REFERENCES????
+          //     // If a const T value is assigned to a let variable,
+          //     // a copy is made which makes the copied value fully mutable.
+          //     variableSymbol.type = makeTypeUse(
+          //       this.sr,
+          //       variableSymbolType.type,
+          //       EDatatypeMutability.Mut,
+          //       variableSymbolType.inline,
+          //       variableSymbolType.unique,
+          //       s.sourceloc
+          //     )[1];
+          //   }
+          // }
         }
         assert(variableSymbol.type);
+
+        // Now change the mutability of the variable
+        if (variableSymbol.mutability === EVariableMutability.Const) {
+          const typeUse = this.sr.typeUseNodes.get(variableSymbol.type);
+          if (typeUse.mutability !== EDatatypeMutability.Const) {
+            variableSymbol.type = makeTypeUse(
+              this.sr,
+              typeUse.type,
+              EDatatypeMutability.Const,
+              typeUse.inline,
+              typeUse.unique,
+              s.sourceloc
+            )[1];
+          }
+        }
+
         variableSymbol.concrete = this.sr.typeDefNodes.get(
           this.sr.typeUseNodes.get(variableSymbol.type).type
         ).concrete;
@@ -4442,6 +4583,7 @@ export class SemanticElaborator {
                 s.sourceloc
               ),
               variableContext: EVariableContext.FunctionLocal,
+              consumed: false,
             } satisfies Semantic.VariableSymbol);
           }
 
@@ -4706,11 +4848,9 @@ export class SemanticElaborator {
 
     const struct = this.sr.typeDefNodes.get(this.sr.typeUseNodes.get(structId).type);
     if (struct.variant === Semantic.ENode.StructDatatype) {
-      const structTypeUse = this.sr.typeUseNodes.get(structId);
       return this.makeStructLiteral(
-        structTypeUse.type,
+        structId,
         structInst.elements,
-        structTypeUse.inline,
         structInst.inArena ? this.expr(structInst.inArena, undefined)[1] : null,
         structInst.sourceloc,
         inference
@@ -4719,11 +4859,9 @@ export class SemanticElaborator {
       struct.variant === Semantic.ENode.FixedArrayDatatype ||
       struct.variant === Semantic.ENode.DynamicArrayDatatype
     ) {
-      const structTypeUse = this.sr.typeUseNodes.get(structId);
       return this.makeArrayLiteral(
-        structTypeUse.type,
+        structId,
         structInst.elements,
-        structTypeUse.inline,
         structInst.inArena ? this.expr(structInst.inArena, undefined)[1] : null,
         structInst.sourceloc,
         inference
@@ -5088,6 +5226,7 @@ export class SemanticElaborator {
       sourceloc: errPropExpr.sourceloc,
       parentStructOrNS: null,
       type: rightExpr.type,
+      consumed: false,
       variableContext: EVariableContext.FunctionLocal,
     });
 
@@ -5318,6 +5457,7 @@ export class SemanticElaborator {
           valueType.datatype,
           EDatatypeMutability.Const,
           false,
+          false,
           arraySubscript.sourceloc
         ),
         sourceloc: arraySubscript.sourceloc,
@@ -5437,6 +5577,7 @@ export class SemanticElaborator {
                   concrete: true,
                 })[1],
                 EDatatypeMutability.Const,
+                false,
                 false,
                 arraySubscript.sourceloc
               )[1],
@@ -5611,6 +5752,7 @@ export class SemanticElaborator {
       this.arenaTypeDef(),
       EDatatypeMutability.Default,
       inline,
+      false,
       sourceloc
     );
   }
@@ -5735,6 +5877,7 @@ export class SemanticBuilder {
           literal.enumType,
           EDatatypeMutability.Default,
           false,
+          false,
           sourceloc
         )[1],
       });
@@ -5795,7 +5938,7 @@ export class SemanticBuilder {
       variant: Semantic.ENode.DatatypeAsValueExpr,
       instanceIds: [],
       symbol: type,
-      type: makeTypeUse(this.sr, type, EDatatypeMutability.Default, false, sourceloc)[1],
+      type: makeTypeUse(this.sr, type, EDatatypeMutability.Default, false, false, sourceloc)[1],
       isTemporary: false,
       sourceloc: sourceloc,
     });
@@ -5844,12 +5987,33 @@ export class SemanticBuilder {
         variant: Semantic.ENode.SymbolValueExpr,
         instanceIds: [],
         symbol: symbolId,
-        type: makeTypeUse(this.sr, symbol.type, EDatatypeMutability.Default, false, sourceloc)[1],
+        type: makeTypeUse(
+          this.sr,
+          symbol.type,
+          EDatatypeMutability.Default,
+          false,
+          false,
+          sourceloc
+        )[1],
         isTemporary: false,
         sourceloc: sourceloc,
       });
     } else if (symbol.variant === Semantic.ENode.VariableSymbol) {
       assert(symbol.type);
+      const typeUse = this.sr.typeUseNodes.get(symbol.type);
+
+      if (typeUse.unique) {
+        if (symbol.consumed) {
+          throw new CompilerError(
+            `Variable '${symbol.name}' is of type '${Semantic.serializeTypeUse(
+              this.sr,
+              symbol.type
+            )}' and it has already been consumed, so it cannot be accessed here. Another reference may have been created, which would violate the unique-constraint that only ONE reference to a given value exists globally.`,
+            sourceloc
+          );
+        }
+      }
+
       return Semantic.addExpr(this.sr, {
         variant: Semantic.ENode.SymbolValueExpr,
         instanceIds: Semantic.getSymbolDeps(this.sr.e.currentContext.instanceDeps, symbolId),
@@ -5885,6 +6049,7 @@ export class SemanticBuilder {
       variableContext: EVariableContext.Global,
       parentStructOrNS: parentStructOrNS,
       sourceloc: sourceloc,
+      consumed: false,
       dependsOn: new Set(),
       concrete: true,
     });
@@ -6252,6 +6417,7 @@ export class SemanticBuilder {
       })[1],
       mutability,
       false,
+      false,
       sourceloc
     )[1];
   }
@@ -6360,6 +6526,7 @@ export class SemanticBuilder {
       })[1],
       EDatatypeMutability.Const,
       false,
+      false,
       sourceloc
     )[1];
   }
@@ -6373,6 +6540,7 @@ export class SemanticBuilder {
         concrete: !members.some((m) => !isTypeConcrete(this.sr, m.type)),
       })[1],
       EDatatypeMutability.Const,
+      false,
       false,
       sourceloc
     )[1];
@@ -6707,7 +6875,14 @@ export function makePrimitiveAvailable(
   mutability: EDatatypeMutability,
   sourceloc: SourceLoc
 ): Semantic.TypeUseId {
-  return makeTypeUse(sr, makeRawPrimitiveAvailable(sr, primitive), mutability, false, sourceloc)[1];
+  return makeTypeUse(
+    sr,
+    makeRawPrimitiveAvailable(sr, primitive),
+    mutability,
+    false,
+    false,
+    sourceloc
+  )[1];
 }
 
 export function isTypeExprConcrete(sr: SemanticResult, id: Semantic.ExprId) {
@@ -6798,6 +6973,7 @@ export namespace Semantic {
     ErrorPropagationExpr,
     BinaryExpr,
     LiteralExpr,
+    FStringExpr,
     UnaryExpr,
     ExprCallExpr,
     SymbolValueExpr,
@@ -6893,6 +7069,7 @@ export namespace Semantic {
     extern: EExternLanguage;
     variableContext: EVariableContext;
     parentStructOrNS: TypeDefId | null;
+    consumed: boolean;
     sourceloc: SourceLoc;
     comptime: boolean;
     comptimeValue: ExprId | null;
@@ -7124,6 +7301,7 @@ export namespace Semantic {
     type: TypeDefId;
     mutability: EDatatypeMutability;
     inline: boolean;
+    unique: boolean;
     sourceloc: SourceLoc;
   };
 
@@ -7368,6 +7546,17 @@ export namespace Semantic {
     sourceloc: SourceLoc;
   };
 
+  export type FStringExpr = {
+    variant: ENode.FStringExpr;
+    instanceIds: InstanceId[];
+    fragments: ({ type: "expr"; value: ExprId } | { type: "text"; value: ExprId })[];
+    type: TypeUseId;
+    inFunction?: SymbolId;
+    inArena: ExprId | null;
+    isTemporary: boolean;
+    sourceloc: SourceLoc;
+  };
+
   export type ArrayLiteralExpr = {
     variant: ENode.ArrayLiteralExpr;
     instanceIds: InstanceId[];
@@ -7449,6 +7638,7 @@ export namespace Semantic {
     | ErrorPropagationExpr
     | ExprCallExpr
     | StructLiteralExpr
+    | FStringExpr
     | LiteralExpr
     | ArrayLiteralExpr
     | ArraySubscriptExpr
@@ -8051,23 +8241,27 @@ export namespace Semantic {
     return sr;
   }
 
-  export function serializeMutability(m: EDatatypeMutability) {
-    if (m === EDatatypeMutability.Const) {
-      return "const ";
-    } else if (m === EDatatypeMutability.Mut) {
-      return "mut ";
-    } else {
-      return "";
+  export function serializeMutability(typeUse: TypeUse) {
+    let s = "";
+    if (typeUse.unique) {
+      s += "unique ";
     }
+    if (typeUse.inline) {
+      s += "inline ";
+    }
+
+    if (typeUse.mutability === EDatatypeMutability.Const) {
+      s += "const ";
+    } else if (typeUse.mutability === EDatatypeMutability.Mut) {
+      s += "mut ";
+    }
+
+    return s;
   }
 
   export function serializeTypeUse(sr: SemanticResult, datatypeId: Semantic.TypeUseId): string {
     const datatype = sr.typeUseNodes.get(datatypeId);
-    return (
-      serializeMutability(datatype.mutability) +
-      (datatype.inline ? "inline " : "") +
-      serializeTypeDef(sr, datatype.type)
-    );
+    return serializeMutability(datatype) + serializeTypeDef(sr, datatype.type);
   }
 
   export function serializeLiteralType(sr: SemanticResult, value: LiteralValue) {
@@ -8241,7 +8435,7 @@ export namespace Semantic {
         return `[${datatype.length}]${serializeTypeUse(sr, datatype.datatype)}`;
 
       case Semantic.ENode.DynamicArrayDatatype:
-        return `${serializeMutability(datatype.datatype)}[]${serializeTypeUse(
+        return `${serializeMutability(sr.typeUseNodes.get(datatype.datatype))}[]${serializeTypeUse(
           sr,
           datatype.datatype
         )}`;
@@ -8315,7 +8509,7 @@ export namespace Semantic {
     const type = sr.typeUseNodes.get(typeUseId);
 
     const names = getNamespaceChainFromDatatype(sr, type.type);
-    return serializeMutability(type.mutability) + names.map((n) => n.pretty).join(".");
+    return serializeMutability(type) + names.map((n) => n.pretty).join(".");
   }
 
   export function serializeFullSymbolName(sr: SemanticResult, symbolId: Semantic.SymbolId) {

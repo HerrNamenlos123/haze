@@ -225,6 +225,7 @@ export type ASTNamedDatatype = {
   generics: (ASTTypeUse | ASTLiteralExpr)[];
   nested?: ASTNamedDatatype;
   inline: boolean;
+  unique: boolean;
   mutability: EDatatypeMutability;
   sourceloc: SourceLoc;
 };
@@ -257,8 +258,9 @@ export type ASTFunctionDatatype = {
 export type ASTStackArrayDatatype = {
   variant: "StackArrayDatatype";
   datatype: ASTTypeUse;
-  length: number;
+  length: bigint;
   inline: boolean;
+  unique: boolean;
   mutability: EDatatypeMutability;
   sourceloc: SourceLoc;
 };
@@ -267,6 +269,7 @@ export type ASTDynamicArrayDatatype = {
   variant: "DynamicArrayDatatype";
   datatype: ASTTypeUse;
   mutability: EDatatypeMutability;
+  unique: boolean;
   sourceloc: SourceLoc;
 };
 
@@ -432,6 +435,7 @@ export type ASTLiteralExpr = {
 export type ASTFStringExpr = {
   variant: "FStringExpr";
   fragments: ({ type: "expr"; value: ASTExpr } | { type: "text"; value: string })[];
+  inArena: ASTExpr | null;
   sourceloc: SourceLoc;
 };
 
@@ -552,6 +556,7 @@ export type ASTExpr =
   | ASTBlockScopeExpr
   | ASTLambdaExpr
   | ASTLiteralExpr
+  | ASTFStringExpr
   | ASTPostIncrExpr
   | ASTExprCallExpr
   | ASTExprMemberAccess

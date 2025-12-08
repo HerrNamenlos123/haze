@@ -432,6 +432,7 @@ export namespace Collect {
     variant: ENode.NamedDatatype;
     name: string;
     inline: boolean;
+    unique: boolean;
     innerNested: Collect.TypeUseId | null;
     genericArgs: Collect.ExprId[];
     mutability: EDatatypeMutability;
@@ -457,8 +458,9 @@ export namespace Collect {
   export type StackArrayDatatype = {
     variant: ENode.StackArrayDatatype;
     datatype: Collect.TypeUseId;
-    length: number;
+    length: bigint;
     inline: boolean;
+    unique: boolean;
     mutability: EDatatypeMutability;
     sourceloc: SourceLoc;
   };
@@ -466,6 +468,7 @@ export namespace Collect {
   export type DynamicArrayDatatype = {
     variant: ENode.DynamicArrayDatatype;
     datatype: Collect.TypeUseId;
+    unique: boolean;
     mutability: EDatatypeMutability;
     sourceloc: SourceLoc;
   };
@@ -681,7 +684,7 @@ export namespace Collect {
   export type FStringExpr = BaseExpr & {
     variant: ENode.FStringExpr;
     fragments: ({ type: "expr"; value: Collect.ExprId } | { type: "text"; value: string })[];
-    literal: LiteralValue;
+    inArena: Collect.ExprId | null;
   };
 
   export type PreIncrExpr = BaseExpr & {
@@ -731,6 +734,7 @@ export namespace Collect {
     | AggregateLiteralExpr
     | ExprAssignmentExpr
     | LiteralExpr
+    | FStringExpr
     | ArraySubscriptExpr
     | TypeLiteralExpr
     | PreIncrExpr
@@ -1309,6 +1313,7 @@ function collectTypeUse(
         variant: Collect.ENode.NamedDatatype,
         name: item.name,
         inline: item.inline,
+        unique: item.unique,
         innerNested: (item.nested && collectTypeUse(cc, item.nested, args)) || null,
         genericArgs: item.generics.map((g) => {
           if (g.variant === "LiteralExpr") {
@@ -1355,6 +1360,7 @@ function collectTypeUse(
         datatype: collectTypeUse(cc, item.datatype, args),
         length: item.length,
         inline: item.inline,
+        unique: item.unique,
         mutability: item.mutability,
         sourceloc: item.sourceloc,
       })[1];
@@ -1367,6 +1373,7 @@ function collectTypeUse(
       return Collect.makeTypeUse(cc, {
         variant: Collect.ENode.DynamicArrayDatatype,
         datatype: collectTypeUse(cc, item.datatype, args),
+        unique: item.unique,
         mutability: item.mutability,
         sourceloc: item.sourceloc,
       })[1];
@@ -1626,6 +1633,7 @@ function collectSymbol(
             variant: Collect.ENode.NamedDatatype,
             genericArgs: [],
             inline: false,
+            unique: false,
             innerNested: null,
             mutability: EDatatypeMutability.Default,
             name: "void",
@@ -1783,6 +1791,7 @@ function collectGlobalDirective(
           variant: Collect.ENode.NamedDatatype,
           genericArgs: [],
           inline: false,
+          unique: false,
           innerNested: null,
           name: importedNamespace,
           mutability: EDatatypeMutability.Default,
@@ -2130,6 +2139,32 @@ function collectExpr(
       return Collect.makeExpr(cc, {
         variant: Collect.ENode.LiteralExpr,
         literal: item.literal,
+        sourceloc: item.sourceloc,
+      })[1];
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
+    case "FStringExpr":
+      return Collect.makeExpr(cc, {
+        variant: Collect.ENode.FStringExpr,
+        fragments: item.fragments.map((f) => {
+          if (f.type === "text") {
+            return {
+              type: "text",
+              value: f.value,
+            };
+          } else {
+            return {
+              type: "expr",
+              value: collectExpr(cc, f.value, {
+                currentParentScope: args.currentParentScope,
+              }),
+            };
+          }
+        }),
+        inArena: item.inArena ? collectExpr(cc, item.inArena, args) : null,
         sourceloc: item.sourceloc,
       })[1];
 

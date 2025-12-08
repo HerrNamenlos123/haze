@@ -121,7 +121,6 @@ import {
   ArraySubscriptExprContext,
   ForEachStatementContext,
   TypeLiteralExprContext,
-  FStringLiteralContext,
   DatatypeInParenthesisContext,
   DatatypeWithMutabilityContext,
   TypeAliasDirectiveContext,
@@ -155,6 +154,7 @@ import {
   SubscriptSliceExprContext,
   VariableCreationStatementRuleContext,
   ForStatementContext,
+  FStringLiteralExprContext,
 } from "./grammar/autogen/HazeParser";
 import {
   BaseErrorListener,
@@ -641,6 +641,7 @@ class ASTTransformer extends HazeParserVisitor<any> {
         sourceloc: fragment.sourceloc,
         generics: fragment.generics,
         inline: false,
+        unique: false,
         mutability: EDatatypeMutability.Default,
         nested: datatypes[datatypes.length - 1],
       });
@@ -1176,6 +1177,7 @@ class ASTTransformer extends HazeParserVisitor<any> {
       variant: "DynamicArrayDatatype",
       datatype: this.visit(ctx.datatype()),
       mutability: EDatatypeMutability.Default,
+      unique: false,
       sourceloc: this.loc(ctx),
     };
   };
@@ -1288,10 +1290,33 @@ class ASTTransformer extends HazeParserVisitor<any> {
   visitDatatypeWithMutability = (ctx: DatatypeWithMutabilityContext): ASTTypeUse => {
     const datatype: ASTTypeUse = this.visit(ctx.datatypeImpl());
     switch (datatype.variant) {
-      case "NamedDatatype":
       case "StackArrayDatatype":
         if (ctx.INLINE()) {
+          throw new CompilerError(
+            `The 'inline' modifier cannot be applied to a static array type (static arrays are always inline)`,
+            this.loc(ctx)
+          );
+        }
+        if (ctx.UNIQUE()) {
+          datatype.unique = true;
+        }
+        if (ctx.CONST()) {
+          datatype.mutability = EDatatypeMutability.Const;
+        }
+        if (ctx.MUT()) {
+          throw new CompilerError(
+            `The 'mut' modifier cannot be applied to a static array type`,
+            this.loc(ctx)
+          );
+        }
+        break;
+
+      case "NamedDatatype":
+        if (ctx.INLINE()) {
           datatype.inline = true;
+        }
+        if (ctx.UNIQUE()) {
+          datatype.unique = true;
         }
         if (ctx.CONST()) {
           datatype.mutability = EDatatypeMutability.Const;
@@ -1302,29 +1327,60 @@ class ASTTransformer extends HazeParserVisitor<any> {
         break;
 
       case "DynamicArrayDatatype":
-      case "FunctionDatatype":
+        if (ctx.INLINE()) {
+          throw new CompilerError(
+            `The 'inline' modifier cannot be applied to a dynamic array type`,
+            this.loc(ctx)
+          );
+        }
         if (ctx.CONST()) {
           datatype.mutability = EDatatypeMutability.Const;
         }
         if (ctx.MUT()) {
           datatype.mutability = EDatatypeMutability.Mut;
         }
+        if (ctx.UNIQUE()) {
+          datatype.unique = true;
+        }
         break;
 
-      case "Deferred":
-      case "ParameterPack":
-        if (ctx.CONST() || ctx.MUT()) {
+      case "UntaggedUnionDatatype":
+      case "TaggedUnionDatatype":
+      case "FunctionDatatype":
+        if (ctx.INLINE()) {
           throw new CompilerError(
-            `A mutability specifier cannot appear on a '${datatype.variant}' datatype`,
+            `The 'inline' modifier cannot be applied to a function datatype`,
+            this.loc(ctx)
+          );
+        }
+        if (ctx.UNIQUE()) {
+          throw new CompilerError(
+            `The 'unique' modifier cannot be applied to a function datatype`,
+            this.loc(ctx)
+          );
+        }
+        if (ctx.CONST()) {
+          throw new CompilerError(
+            `The 'const' modifier cannot be applied to a function datatype`,
+            this.loc(ctx)
+          );
+        }
+        if (ctx.MUT()) {
+          throw new CompilerError(
+            `The 'mut' modifier cannot be applied to a function datatype`,
             this.loc(ctx)
           );
         }
         break;
 
-      case "UntaggedUnionDatatype":
-        break;
-
-      case "TaggedUnionDatatype":
+      case "Deferred":
+      case "ParameterPack":
+        if (ctx.CONST() || ctx.MUT() || ctx.UNIQUE() || ctx.INLINE()) {
+          throw new CompilerError(
+            `A mutability specifier cannot appear on a '${datatype.variant}' datatype`,
+            this.loc(ctx)
+          );
+        }
         break;
 
       default:
@@ -1440,11 +1496,14 @@ class ASTTransformer extends HazeParserVisitor<any> {
   };
 
   visitStackArrayDatatype = (ctx: StackArrayDatatypeContext): ASTStackArrayDatatype => {
+    const number = ctx.INTEGER_LITERAL()?.getText();
+    assert(BigInt(number).toString() === number);
     return {
       variant: "StackArrayDatatype",
       datatype: this.visit(ctx.datatype()),
-      length: Number(ctx.INTEGER_LITERAL()?.getText()),
+      length: BigInt(number),
       mutability: EDatatypeMutability.Default,
+      unique: false,
       inline: false,
       sourceloc: this.loc(ctx),
     };
@@ -1484,7 +1543,7 @@ class ASTTransformer extends HazeParserVisitor<any> {
     };
   };
 
-  visitFStringLiteral = (ctx: FStringLiteralContext): ASTFStringExpr => {
+  visitFStringLiteralExpr = (ctx: FStringLiteralExprContext): ASTFStringExpr => {
     const fragments = ctx
       .interpolatedString()
       .interpolatedStringFragment()
@@ -1523,6 +1582,9 @@ class ASTTransformer extends HazeParserVisitor<any> {
     return {
       variant: "FStringExpr",
       fragments: combinedFragments,
+      inArena: ctx.interpolatedString()._arenaExpr
+        ? this.visit(ctx.interpolatedString()._arenaExpr!)
+        : null,
       sourceloc: this.loc(ctx),
     };
   };

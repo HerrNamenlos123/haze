@@ -1509,6 +1509,23 @@ export function lowerExpr(
       }
     }
 
+    case Semantic.ENode.FStringExpr: {
+      const statements: Lowered.StatementId[] = [];
+
+      // makeIntrinsicCall("HZSTD")
+
+      return Lowered.addExpr(lr, {
+        variant: Lowered.ENode.BlockScopeExpr,
+        block: Lowered.addBlockScope(lr, {
+          definesVariables: true,
+          emittedExpr: null,
+          statements: statements,
+        })[1],
+        sourceloc: expr.sourceloc,
+        type: lowerTypeUse(lr, expr.type),
+      });
+    }
+
     case Semantic.ENode.SizeofExpr: {
       return Lowered.addExpr(lr, {
         variant: Lowered.ENode.SizeofExpr,
@@ -1626,19 +1643,28 @@ export function lowerExpr(
     case Semantic.ENode.UnionToUnionCastExpr: {
       const sourceExpr = lr.sr.exprNodes.get(expr.expr);
       const sourceType = lr.sr.typeDefNodes.get(lr.sr.typeUseNodes.get(sourceExpr.type).type);
-      assert(sourceType.variant === Semantic.ENode.UntaggedUnionDatatype);
+      assert(
+        sourceType.variant === Semantic.ENode.UntaggedUnionDatatype ||
+          sourceType.variant === Semantic.ENode.TaggedUnionDatatype
+      );
 
       const loweredSourceUnionId = lowerTypeUse(lr, sourceExpr.type);
       const loweredSourceUnion = lr.typeDefNodes.get(
         lr.typeUseNodes.get(loweredSourceUnionId).type
       );
-      assert(loweredSourceUnion.variant === Lowered.ENode.UntaggedUnionDatatype);
+      assert(
+        loweredSourceUnion.variant === Lowered.ENode.UntaggedUnionDatatype ||
+          loweredSourceUnion.variant === Lowered.ENode.TaggedUnionDatatype
+      );
 
       const loweredTargetUnionId = lowerTypeUse(lr, expr.type);
       const loweredTargetUnion = lr.typeDefNodes.get(
         lr.typeUseNodes.get(loweredTargetUnionId).type
       );
-      assert(loweredTargetUnion.variant === Lowered.ENode.UntaggedUnionDatatype);
+      assert(
+        loweredTargetUnion.variant === Lowered.ENode.UntaggedUnionDatatype ||
+          loweredTargetUnion.variant === Lowered.ENode.TaggedUnionDatatype
+      );
 
       let optimizeExprToNullptr = false;
       if (loweredSourceUnion.optimizeAsRawPointer || loweredTargetUnion.optimizeAsRawPointer) {
@@ -1673,7 +1699,7 @@ export function lowerExpr(
         loweredSourceUnion.members.forEach((source, sourceIndex) => {
           const targetIndex = loweredTargetUnion.members.findIndex((m) => m === source);
           assert(targetIndex !== -1);
-          assert(mapping!.mapping.get(source) === targetIndex);
+          assert(mapping!.mapping.get(sourceIndex) === targetIndex);
         });
       }
 

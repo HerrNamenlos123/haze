@@ -95,11 +95,10 @@ literal
     | UNIT_FLOAT_LITERAL                        #FloatUnitLiteral
     | INTEGER_LITERAL                           #IntegerLiteral
     | FLOAT_LITERAL                             #FloatLiteral
-    | interpolatedString                        #FStringLiteral
     | STRING_LITERAL                            #StringConstant
     ;
 
-interpolatedString: FSTRING_START (interpolatedStringFragment)* FSTRING_END;
+interpolatedString: FSTRING_START (interpolatedStringFragment)* FSTRING_END (IN arenaExpr=expr)?;
 interpolatedStringFragment: FSTRING_GRAPHEME | interpolatedStringExpression;
 interpolatedStringExpression: LCURLY expr RCURLY;
 
@@ -111,7 +110,7 @@ datatypeImpl
     ;
 
 baseDatatype
-    : (MUT | CONST)? (INLINE)? datatypeImpl                                     #DatatypeWithMutability
+    : (MUT | CONST | UNIQUE)? (INLINE)? datatypeImpl                            #DatatypeWithMutability
     | LB datatype RB                                                            #DatatypeInParenthesis
     ;
 
@@ -183,6 +182,7 @@ expr
     | TYPE LANGLE datatype RANGLE                                                   #TypeLiteralExpr
     | lambda                                                                        #LambdaExpr
     | literal                                                                       #LiteralExpr
+    | interpolatedString                                                            #FStringLiteralExpr
     | datatype? LCURLY aggregateLiteralElement? (COMMA aggregateLiteralElement)* COMMA? RCURLY (IN arenaExpr=expr)?      #AggregateLiteralExpr
 
     // Part 1: Left to right
