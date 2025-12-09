@@ -31,7 +31,7 @@ array() {
     let foo = unique Foo {};
     foo.bar;
     const f = foo;
-    const result = foo.bar;
+    // const result = foo.bar;
 }
 
 extern C parse(source: str) {
@@ -44,6 +44,7 @@ extern C parse(source: str) {
     }
 
     array();
+    foo();
     // const arr = array();
 }
 

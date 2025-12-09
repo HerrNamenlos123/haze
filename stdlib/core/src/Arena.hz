@@ -36,3 +36,62 @@ export struct Arena {
         hzstd_arena_cleanup_and_free(this.arenaImpl);
     }
 }
+
+export struct MemoryBuffer {
+    // TODO: Introduce a way to prevent a struct from being made using a literal and only using its constructor instead.
+    length: int;
+    __data: u8; // This is the first byte of the data, the remaining data comes after it but Haze can't express it.
+
+    constructor(length: int) {
+        do unsafe {
+            let arena = fn.returnArena;
+
+            const buffer: MemoryBuffer = uninitialized;
+            __c__("buffer = hzstd_arena_allocate(arena->arenaImpl, sizeof(hzstd_int_t) + length, alignof(hzstd_int_t));");
+            // We trust the arena that everything is zeroed
+            buffer.length = length;
+
+            return buffer;
+        }
+    }
+
+    operator[](index: int): u8 {
+        if (index < 0 || index >= this.length) {
+            sys.panic("Out of bounds access in MemoryBuffer");
+        }
+
+        let result: u8 = 0;
+        __c__("result = (&this->__data)[index];");
+        return result;
+    }
+
+    write(data: str, index: int) {
+        if (index < 0 || index + data.length - 1 >= this.length) {
+            sys.panic("Out of bounds access in MemoryBuffer");
+        }
+
+        __c__("memcpy(&this->__data + index, data.data, data.length);");
+    }
+
+    toString(): str {
+        let result = "";
+        __c__("result = HZSTD_STRING((const char*)&this->__data, this->length);");
+        return result;
+    }
+}
+
+export foo() {
+    const a = MemoryBuffer(20);
+    for (let i = 0; i < a.length; i++) {
+        fmt.println("[", i, "] = ", a[i]);
+    }
+    a.write("Hello", 0);
+    a.write(" ", 5);
+    a.write("World!", 6);
+    for (let i = 0; i < a.length; i++) {
+        fmt.println("[", i, "] = ", a[i]);
+    }
+
+    fmt.println("\nResult: ", a.toString());
+    fmt.println("WARNING: operator[] needs a way to do references, so you can assign to it");
+}

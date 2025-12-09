@@ -1,9 +1,9 @@
 
-extern C noemit hzstd_panic(msg: ccstr, ...) :: final;
+extern C noemit hzstd_panic_n(msg: ccstr, skip: int) :: final;
 
 namespace sys {
     export panic(msg: ccstr) :: noreturn {
-        hzstd_panic(msg);
+        hzstd_panic_n(msg, 1);
     }
 }
 

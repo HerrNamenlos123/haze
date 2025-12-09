@@ -32,6 +32,13 @@ _Noreturn void hzstd_panic_str(hzstd_str_t msg) {
   hzstd_panic_with_stacktrace(msg, 2);
 }
 
+_Noreturn void hzstd_panic_n(hzstd_ccstr_t msg, int skip_n_frames) {
+  hzstd_panic_with_stacktrace(HZSTD_STRING_FROM_CSTR(msg), 2 + skip_n_frames);
+}
+_Noreturn void hzstd_panic_str_n(hzstd_str_t msg, int skip_n_frames) {
+  hzstd_panic_with_stacktrace(msg, 2 + skip_n_frames);
+}
+
 _Noreturn void hzstd_unreachable() {
   hzstd_panic_with_stacktrace(
       HZSTD_STRING_FROM_CSTR(

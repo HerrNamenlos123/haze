@@ -1,15 +1,2 @@
 
 __c__("#include \"hzstd/hzstd_main.c\"");
-
-struct Foo {}
-
-foo() {
-    const foo1 = Foo {}
-    const foo2 = inline Foo {}
-    const foo3: Foo = foo1;
-
-    let a: Foo | none = none;
-
-    let i = 0;
-    i += 3;
-}
