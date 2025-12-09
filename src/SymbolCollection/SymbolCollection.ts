@@ -299,6 +299,8 @@ export namespace Collect {
     pub: boolean;
     noemit: boolean;
     methodType: EMethodType;
+    methodIsUnique: boolean;
+    methodCanMutate: boolean;
     extern: EExternLanguage;
     sourceloc: SourceLoc;
     functionScope: Collect.ScopeId | null;
@@ -1493,6 +1495,8 @@ function collectSymbol(
         noemit: item.noemit,
         vararg: item.ellipsis,
         returnType: (item.returnType && collectTypeUse(cc, item.returnType, args)) || null,
+        methodIsUnique: item.methodIsUnique,
+        methodCanMutate: item.methodCanMutate,
         sourceloc: item.sourceloc,
         functionScope: null,
         originalSourcecode: item.originalSourcecode,

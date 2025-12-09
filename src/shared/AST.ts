@@ -207,6 +207,8 @@ export type ASTFunctionDefinition = {
   ellipsis: boolean;
   returnType?: ASTTypeUse;
   methodType: EMethodType;
+  methodIsUnique: boolean;
+  methodCanMutate: boolean;
   funcbody?: ASTFuncBody;
   sourceloc: SourceLoc;
   originalSourcecode: string;

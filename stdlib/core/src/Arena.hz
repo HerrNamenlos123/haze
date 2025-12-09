@@ -71,9 +71,10 @@ export struct MemoryBuffer {
         }
 
         __c__("memcpy(&this->__data + index, data.data, data.length);");
+        length = 0;
     }
 
-    toString(): str {
+    unique toString(): str {
         let result = "";
         __c__("result = HZSTD_STRING((const char*)&this->__data, this->length);");
         return result;

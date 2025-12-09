@@ -2586,6 +2586,8 @@ export class SemanticElaborator {
           noemit: func.noemit,
           extern: func.extern,
           parameterNames: parameterNames,
+          methodIsUnique: func.methodIsUnique,
+          methodCanMutate: func.methodCanMutate,
           returnedDatatypes: new Set(),
           name: func.name,
           sourceloc: func.sourceloc,
@@ -7112,6 +7114,8 @@ export namespace Semantic {
     generics: Semantic.ExprId[];
     parameterNames: string[];
     parameterPack: boolean;
+    methodIsUnique: boolean;
+    methodCanMutate: boolean;
     extern: EExternLanguage;
     scope: Semantic.BlockScopeId | null;
     overloadedOperator?: EOverloadedOperator;

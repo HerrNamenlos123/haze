@@ -727,6 +727,8 @@ class ASTTransformer extends HazeParserVisitor<any> {
       static: false,
       methodType: EMethodType.None,
       name: names[0],
+      methodIsUnique: false,
+      methodCanMutate: false,
       operatorOverloading: undefined,
       ellipsis: params.ellipsis,
       funcbody: (ctx.funcbody() && this.visit(ctx.funcbody()!)) || undefined,
@@ -849,6 +851,8 @@ class ASTTransformer extends HazeParserVisitor<any> {
         noemit: false,
         pub: false,
         methodType: methodType,
+        methodIsUnique: Boolean(ctx.UNIQUE()),
+        methodCanMutate: Boolean(ctx.MUT()),
         name: name,
         static: Boolean(ctx._static_),
         generics: genericNames.map((n) => ({
