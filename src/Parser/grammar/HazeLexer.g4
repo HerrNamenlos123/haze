@@ -33,6 +33,8 @@ ENUM: 'enum';
 BITFLAG: 'bitflag';
 UNSCOPED: 'unscoped';
 TRY: 'try';
+OPAQUE: 'opaque';
+PLAIN: 'plain';
 SOURCE_LOCATION_DIRECTIVE: '#source';
 
 OPERATORSUBSCRIPT: 'operator[]';

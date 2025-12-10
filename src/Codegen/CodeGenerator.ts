@@ -920,7 +920,8 @@ class CodeGenerator {
         );
 
         if (union.optimizeAsRawPointer) {
-          assert(false, "not implemented yet");
+          // TODO: This is not finally implemented, it is only a quick fix
+          outWriter.write(this.emitExpr(expr.expr).out.get());
         } else {
           const sourceUnionExpr = this.lr.exprNodes.get(expr.expr);
           const sourceUnionExprType = this.lr.typeDefNodes.get(

@@ -208,7 +208,7 @@ export type ASTFunctionDefinition = {
   returnType?: ASTTypeUse;
   methodType: EMethodType;
   methodIsUnique: boolean;
-  methodCanMutate: boolean;
+  methodRequiredMutability: EDatatypeMutability.Const | EDatatypeMutability.Mut | null;
   funcbody?: ASTFuncBody;
   sourceloc: SourceLoc;
   originalSourcecode: string;
@@ -630,6 +630,8 @@ export type ASTStructDefinition = {
   extern: EExternLanguage;
   name: string;
   noemit: boolean;
+  opaque: boolean;
+  plain: boolean;
   pub: boolean;
   generics: {
     name: string;

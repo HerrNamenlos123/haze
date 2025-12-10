@@ -5,68 +5,99 @@ namespace builtin {
     export extern C noemit printf(fmt: ccstr, ...);
 }
 
+export foo() {
+    let a = MemoryBuffer(20);
+    a.write("Hello", 0);
+    a.write(" ", 5);
+    a.write("World!", 6);
+    const b = a;
+
+    fmt.println("\nResult: ", b.toString());
+    fmt.format();
+}
+
 namespace fmt {
     export struct FormatArgs {
         formatSpecifier: str = "";
     }
 
-    // export struct StringWriter {
-    //     buffer: u8 = 0;
-    //     length: int = 0;
+    export opaque struct StringWriter {
+        buffer: MemoryBuffer | none;
+        written: int = 0;
 
-    //     write(value: str) {        
-    //         if this.buffer != 0 as u8 {
-    //             __c__("memcpy(this->buffer + this->length, value.data, value.length);");
-    //             // for i in 0..value.len {
-    //             //     this.buffer[length + i] = value[i];
-    //             // }
-    //         }
-    //         this.length += value.length;
-    //     }
-    // }
+        constructor(buffer?: MemoryBuffer) {
+            return unique StringWriter {
+                buffer: buffer,
+            };
+        }
 
-    export format<T>(arena: Arena, value: T, args: FormatArgs): str {
-        // const writer = StringWriter {};
-        // format_to(writer, value, args);
-        // do unsafe {
-        //     const string = arena.allocRaw(writer.length, 1);
-        //     const writer2 = StringWriter { buffer: string };
-        //     format_to(writer2 as &StringWriter, value, args);
-        //     return str(writer2.buffer, writer2.length);
-        // }
+        mut write(value: str) {        
+            if this.buffer {
+                // __c__("memcpy(this->buffer + this->length, value.data, value.length);");
+                // for i in 0..value.len {
+                //     this.buffer[length + i] = value[i];
+                // }
+            }
+            this.written += value.length;
+        }
+
+        const toString() {
+            const buffer = this.buffer;
+            if (buffer) {
+                const cBuffer = buffer;
+                return cBuffer.toString();
+            }
+            else {
+                return "";
+            }
+        }
     }
 
-    // export format_to(writer: StringWriter, value: int, args: FormatArgs) {
-    //     let v = value;
-    //     if v < 0 {
-    //         writer.write("-");
-    //         if v == -2147483648 {
-    //             writer.write("2147483648");
-    //             return;
-    //         }
-    //         v = -v;
-    //     }
+    format() {
+        let writer = StringWriter(none);
+        let writer2 = format_to(writer, 187, {});
+        const written = writer2.written;
 
-    //     // Find highest divisor
-    //     // let div = 1;
-    //     // while v / div >= 10 {
-    //     //     div *= 10;
-    //     // }
+        let writer3 = StringWriter(MemoryBuffer(written));
+        let writer4 = format_to(writer3, 187, {});
+        const immutableWriter = writer4;
+        fmt.println("Formatted: ", immutableWriter.toString());
+    }
 
-    //     // while div > 0 {
-    //     //     let digit = v / div;
-    //     //     writer.write(digitToStr(digit));
-    //     //     v %= div;
-    //     //     div /= 10;
-    //     // }
-    // }
+    export format_to(writer: unique mut StringWriter, value: int, args: FormatArgs) {
+        let v = value;
+        if v < 0 {
+            writer.write("-");
+            if v == -2147483648 {
+                writer.write("2147483648");
+                return;
+            }
+            v = -v;
+        }
 
-    // digitToStr(digit: int): str {
-    //     assert(digit >= 0 && digit <= 9);
-    //     const ch: u8 = 0;
-    //     __c__("ch = '0' + digit;");
-    //     return str(ch, 1);
-    // }
+        // Find highest divisor
+        let div = 1;
+        while v / div >= 10 {
+            div *= 10;
+        }
+
+        while div > 0 {
+            let digit = v / div;
+            writer.write(digitToStr(digit));
+            v %= div;
+            div /= 10;
+        }
+
+        return writer;
+    }
+
+    digitToStr(digit: int): str {
+        assert(digit >= 0 && digit <= 9);
+        let result: str = "";
+        __c__("static const char* digits[] = { \"0\", \"1\", \"2\", \"3\", \"4\", \"5\", \"6\", \"7\", \"8\", \"9\" };");
+        __c__("result = HZSTD_STRING(digits[digit - '0'], 1);");
+        return result;
+    }
 
     // export format_to(writer: StringWriter, value: i8, args: FormatArgs) {
     //     format_to(writer, value as int, args);
@@ -86,8 +117,8 @@ namespace fmt {
 
     export print(args: ...) {
         for comptime arg in args {
-            const value = arg;
             if comptime typeof(arg) == int || typeof(arg) == type<mut int> {
+                const value = arg;
                 // builtin.printf("%lld", arg);
                 __c__("printf(\"%\"PRId64, value);");
             }
@@ -116,15 +147,19 @@ namespace fmt {
                 builtin.printf("%f", arg);
             }
             else if typeof(arg) == type<u8> || typeof(arg) == type<u16> || typeof(arg) == type<u32> {
+                const value = arg;
                 __c__("printf(\"%\"PRIu8, value);");
             }
             else if typeof(arg) == type<u64> {
+                const value = arg;
                 __c__("printf(\"%\"PRIu64, value);");
             }
             else if typeof(arg) == type<i8> || typeof(arg) == type<i16> || typeof(arg) == type<i32> {
+                const value = arg;
                 __c__("printf(\"%\"PRId8, value);");
             }
             else if typeof(arg) == type<i64> {
+                const value = arg;
                 __c__("printf(\"%\"PRId64, value);");
             }
             else if typeof(arg) == type<Vec2> || typeof(arg) == type<Vec2> {

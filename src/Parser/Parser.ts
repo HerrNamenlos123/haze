@@ -728,7 +728,7 @@ class ASTTransformer extends HazeParserVisitor<any> {
       methodType: EMethodType.None,
       name: names[0],
       methodIsUnique: false,
-      methodCanMutate: false,
+      methodRequiredMutability: null,
       operatorOverloading: undefined,
       ellipsis: params.ellipsis,
       funcbody: (ctx.funcbody() && this.visit(ctx.funcbody()!)) || undefined,
@@ -842,6 +842,13 @@ class ASTTransformer extends HazeParserVisitor<any> {
       name = "__operator_subscript";
     }
 
+    let methodRequiredMutability: EDatatypeMutability.Mut | EDatatypeMutability.Const | null = null;
+    if (ctx.MUT()) {
+      methodRequiredMutability = EDatatypeMutability.Mut;
+    } else if (ctx.CONST()) {
+      methodRequiredMutability = EDatatypeMutability.Const;
+    }
+
     return [
       {
         variant: "FunctionDefinition",
@@ -852,7 +859,7 @@ class ASTTransformer extends HazeParserVisitor<any> {
         pub: false,
         methodType: methodType,
         methodIsUnique: Boolean(ctx.UNIQUE()),
-        methodCanMutate: Boolean(ctx.MUT()),
+        methodRequiredMutability: methodRequiredMutability,
         name: name,
         static: Boolean(ctx._static_),
         generics: genericNames.map((n) => ({
@@ -931,6 +938,8 @@ class ASTTransformer extends HazeParserVisitor<any> {
       export: Boolean(ctx._export_),
       pub: Boolean(ctx._pub),
       extern: this.exlang(ctx),
+      opaque: Boolean(ctx.OPAQUE()),
+      plain: Boolean(ctx.PLAIN()),
       name: name,
       noemit: Boolean(ctx._noemit),
       generics: generics.map((p) => ({

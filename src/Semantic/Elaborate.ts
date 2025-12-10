@@ -499,7 +499,7 @@ export class SemanticElaborator {
         callExpr.sourceloc
       );
     } else if (calledExprType.variant === Semantic.ENode.StructDatatype) {
-      const original = this.sr.cc.typeDefNodes.get(calledExprType.originalCollectedSymbol);
+      const original = this.sr.cc.typeDefNodes.get(calledExprType.originalCollectedDefinition);
       assert(original.variant === Collect.ENode.StructTypeDef);
       const constructorId = [...calledExprType.methods].find((methodId) => {
         const method = this.sr.symbolNodes.get(methodId);
@@ -1439,10 +1439,10 @@ export class SemanticElaborator {
       return this.sr.b.memberAccess(objectId, memberAccess.memberName, memberAccess.sourceloc);
     }
 
-    const collectedStruct = this.sr.cc.typeDefNodes.get(objectType.originalCollectedSymbol);
+    const collectedStruct = this.sr.cc.typeDefNodes.get(objectType.originalCollectedDefinition);
     assert(collectedStruct.variant === Collect.ENode.StructTypeDef);
-    const structScope = this.sr.cc.scopeNodes.get(collectedStruct.structScope);
-    assert(structScope.variant === Collect.ENode.StructScope);
+    const structScope = this.sr.cc.scopeNodes.get(collectedStruct.lexicalScope);
+    assert(structScope.variant === Collect.ENode.StructLexicalScope);
     const overloadGroupId = [...structScope.symbols].find((mId) => {
       const m = this.sr.cc.symbolNodes.get(mId);
       return (
@@ -1465,7 +1465,7 @@ export class SemanticElaborator {
       assert(collectedMethod.variant === Collect.ENode.FunctionSymbol);
 
       let objectTypeId = object.type;
-      const objectType = this.sr.typeDefNodes.get(this.sr.typeUseNodes.get(objectTypeId).type);
+      // const objectType = this.sr.typeDefNodes.get(this.sr.typeUseNodes.get(objectTypeId).type);
 
       const typedef = this.sr.typeUseNodes.get(objectTypeId).type;
       let elaboratedStructCache = null as StructDef | null;
@@ -1520,6 +1520,42 @@ export class SemanticElaborator {
             this.sr,
             elaboratedMethodId
           )} is static but is called through an object`,
+          memberAccess.sourceloc
+        );
+      }
+
+      if (
+        objectTypeUse.mutability !== EDatatypeMutability.Mut &&
+        elaboratedMethod.methodRequiredMutability === EDatatypeMutability.Mut
+      ) {
+        throw new CompilerError(
+          `Method ${Semantic.serializeFullSymbolName(
+            this.sr,
+            elaboratedMethodId
+          )} can mutate the object but is not called on an object that is mutable. Is it called on a const object?`,
+          memberAccess.sourceloc
+        );
+      }
+
+      if (
+        objectTypeUse.mutability !== EDatatypeMutability.Const &&
+        elaboratedMethod.methodRequiredMutability === EDatatypeMutability.Const
+      ) {
+        throw new CompilerError(
+          `Method ${Semantic.serializeFullSymbolName(
+            this.sr,
+            elaboratedMethodId
+          )} requires the object it is called on to be const (fully immutable).`,
+          memberAccess.sourceloc
+        );
+      }
+
+      if (!objectTypeUse.unique && elaboratedMethod.methodIsUnique) {
+        throw new CompilerError(
+          `Method ${Semantic.serializeFullSymbolName(
+            this.sr,
+            elaboratedMethodId
+          )} is marked as unique, but is not called on a `,
           memberAccess.sourceloc
         );
       }
@@ -1775,7 +1811,7 @@ export class SemanticElaborator {
     let context = this.currentContext;
 
     if (definedStructType.generics.length !== 0) {
-      assert(definedStructType.structScope);
+      assert(definedStructType.lexicalScope);
       context = Semantic.isolateElaborationContext(context, {
         currentScope: context.currentScope,
         genericsScope: context.currentScope,
@@ -1830,6 +1866,8 @@ export class SemanticElaborator {
       generics: genericArgs,
       extern: definedStructType.extern,
       noemit: definedStructType.noemit,
+      opaque: definedStructType.opaque,
+      plain: definedStructType.plain,
       parentStructOrNS: parentStructOrNS,
       members: [],
       memberDefaultValues: [],
@@ -1837,7 +1875,8 @@ export class SemanticElaborator {
       nestedStructs: [],
       sourceloc: definedStructType.sourceloc,
       concrete: genericArgs.every((g) => isTypeExprConcrete(this.sr, g)),
-      originalCollectedSymbol: definedStructTypeId,
+      originalCollectedDefinition: definedStructTypeId,
+      originalCollectedSymbol: definedStructType.collectedTypeDefSymbol,
     });
 
     if (struct.concrete) {
@@ -1857,8 +1896,10 @@ export class SemanticElaborator {
         this.sr.exportedSymbols.add(id);
       }
 
-      const structScope = this.sr.cc.scopeNodes.get(definedStructType.structScope);
-      assert(structScope.variant === Collect.ENode.StructScope);
+      const lexicalScope = this.sr.cc.scopeNodes.get(definedStructType.lexicalScope);
+      assert(lexicalScope.variant === Collect.ENode.StructLexicalScope);
+      const fieldScope = this.sr.cc.scopeNodes.get(definedStructType.fieldScope);
+      assert(fieldScope.variant === Collect.ENode.StructFieldScope);
 
       const elaborateMember = (symbol: Collect.VariableSymbol) => {
         assert(symbol.type);
@@ -1867,8 +1908,8 @@ export class SemanticElaborator {
             context: Semantic.isolateElaborationContext(this.currentContext, {
               // Start lookup in the struct itself, these are members, so both the type and
               // its generics must be found from within the struct
-              currentScope: definedStructType.structScope,
-              genericsScope: definedStructType.structScope,
+              currentScope: definedStructType.lexicalScope,
+              genericsScope: definedStructType.lexicalScope,
               constraints: [],
               instanceDeps: {
                 instanceDependsOn: new Map(),
@@ -1970,7 +2011,7 @@ export class SemanticElaborator {
       };
 
       // FIRST elaborate types and members
-      structScope.symbols.forEach((symbolId) => {
+      [...fieldScope.symbols, ...lexicalScope.symbols].forEach((symbolId) => {
         const symbol = this.sr.cc.symbolNodes.get(symbolId);
         if (symbol.variant === Collect.ENode.VariableSymbol) {
           elaborateMember(symbol);
@@ -1986,7 +2027,7 @@ export class SemanticElaborator {
       });
 
       // NOW elaborate methods (as they may refer to members of the parent)
-      structScope.symbols.forEach((symbolId) => {
+      [...fieldScope.symbols, ...lexicalScope.symbols].forEach((symbolId) => {
         const symbol = this.sr.cc.symbolNodes.get(symbolId);
         if (symbol.variant === Collect.ENode.VariableSymbol) {
           // already done
@@ -2587,7 +2628,7 @@ export class SemanticElaborator {
           extern: func.extern,
           parameterNames: parameterNames,
           methodIsUnique: func.methodIsUnique,
-          methodCanMutate: func.methodCanMutate,
+          methodRequiredMutability: func.methodRequiredMutability,
           returnedDatatypes: new Set(),
           name: func.name,
           sourceloc: func.sourceloc,
@@ -3060,8 +3101,8 @@ export class SemanticElaborator {
             );
             const struct = this.sr.typeDefNodes.get(structId);
             assert(struct.variant === Semantic.ENode.StructDatatype);
-            const structScope = this.sr.cc.scopeNodes.get(typedef.structScope);
-            assert(structScope.variant === Collect.ENode.StructScope);
+            const structScope = this.sr.cc.scopeNodes.get(typedef.lexicalScope);
+            assert(structScope.variant === Collect.ENode.StructLexicalScope);
 
             if (type.innerNested) {
               // Here we need to merge the context from the parent into the child
@@ -3086,7 +3127,7 @@ export class SemanticElaborator {
                     cachedParentSubstitutions,
                     this.currentContext,
                     {
-                      currentScope: typedef.structScope,
+                      currentScope: typedef.lexicalScope,
                       genericsScope: this.currentContext.genericsScope,
                       instanceDeps: {
                         instanceDependsOn: new Map(),
@@ -3288,7 +3329,7 @@ export class SemanticElaborator {
   elaborateParentSymbolFromCache(parentScopeId: Collect.ScopeId): Semantic.TypeDefId | null {
     let parentStructOrNS = null as Semantic.TypeDefId | null;
     const parentScope = this.sr.cc.scopeNodes.get(parentScopeId);
-    if (parentScope.variant === Collect.ENode.StructScope) {
+    if (parentScope.variant === Collect.ENode.StructLexicalScope) {
       // This parenting works by elaborating the lexical parent on demand. If we somehow got into it, to access one
       // of its children, then we must have the substitution context from the parent, and it must also be cached.
       // So we take the lexical parent, substitute all generics, and then use the cache to get the finished parent.
@@ -3552,10 +3593,10 @@ export class SemanticElaborator {
       this.sr.typeUseNodes.get(namespaceOrStructValue.type).type
     );
     assert(semanticStruct.variant === Semantic.ENode.StructDatatype);
-    const collectedStruct = this.sr.cc.typeDefNodes.get(semanticStruct.originalCollectedSymbol);
+    const collectedStruct = this.sr.cc.typeDefNodes.get(semanticStruct.originalCollectedDefinition);
     assert(collectedStruct.variant === Collect.ENode.StructTypeDef);
-    const structScope = this.sr.cc.scopeNodes.get(collectedStruct.structScope);
-    assert(structScope.variant === Collect.ENode.StructScope);
+    const structScope = this.sr.cc.scopeNodes.get(collectedStruct.lexicalScope);
+    assert(structScope.variant === Collect.ENode.StructLexicalScope);
 
     const typedef = this.sr.typeUseNodes.get(namespaceOrStructValue.type).type;
 
@@ -3694,6 +3735,40 @@ export class SemanticElaborator {
     const structUse = this.sr.typeUseNodes.get(typeUseId);
     const struct = this.sr.typeDefNodes.get(structUse.type);
     assert(struct.variant === Semantic.ENode.StructDatatype);
+
+    if (struct.opaque) {
+      const originalSymbol = this.sr.cc.typeDefNodes.get(struct.originalCollectedDefinition);
+      assert(originalSymbol.variant === Collect.ENode.StructTypeDef);
+
+      let scopeId = this.currentContext.currentScope;
+      let correctStruct = false;
+      while (true) {
+        let scope = this.sr.cc.scopeNodes.get(scopeId);
+        if (
+          scope.variant !== Collect.ENode.BlockScope &&
+          scope.variant !== Collect.ENode.FunctionScope &&
+          scope.variant !== Collect.ENode.StructLexicalScope
+        ) {
+          break;
+        }
+
+        if (scope.owningSymbol === originalSymbol.collectedTypeDefSymbol) {
+          correctStruct = true;
+          break;
+        }
+        scopeId = scope.parentScope;
+      }
+
+      if (!correctStruct) {
+        throw new CompilerError(
+          `Struct '${Semantic.serializeTypeDef(
+            this.sr,
+            structUse.type
+          )}' is marked as 'opaque' and therefore no struct literals are allowed outside of its own definition. Did you mean to call a constructor instead?`,
+          sourceloc
+        );
+      }
+    }
 
     let remainingMembers = struct.members.map((mId) => {
       const m = this.sr.symbolNodes.get(mId);
@@ -7115,7 +7190,7 @@ export namespace Semantic {
     parameterNames: string[];
     parameterPack: boolean;
     methodIsUnique: boolean;
-    methodCanMutate: boolean;
+    methodRequiredMutability: EDatatypeMutability.Const | EDatatypeMutability.Mut | null;
     extern: EExternLanguage;
     scope: Semantic.BlockScopeId | null;
     overloadedOperator?: EOverloadedOperator;
@@ -7196,6 +7271,8 @@ export namespace Semantic {
     name: string;
     noemit: boolean;
     generics: ExprId[];
+    opaque: boolean;
+    plain: boolean;
     extern: EExternLanguage;
     members: Semantic.SymbolId[];
     memberDefaultValues: {
@@ -7207,7 +7284,8 @@ export namespace Semantic {
     parentStructOrNS: TypeDefId | null;
     sourceloc: SourceLoc;
     concrete: boolean;
-    originalCollectedSymbol: Collect.TypeDefId;
+    originalCollectedDefinition: Collect.TypeDefId;
+    originalCollectedSymbol: Collect.SymbolId;
   };
 
   export type ParameterPackDatatypeDef = {
@@ -7833,7 +7911,7 @@ export namespace Semantic {
       case Collect.ENode.FileScope:
       case Collect.ENode.BlockScope:
       case Collect.ENode.TypeDefScope:
-      case Collect.ENode.StructScope:
+      case Collect.ENode.StructLexicalScope:
       case Collect.ENode.FunctionScope: {
         const found = lookupDirect(scope.symbols);
         if (found) {
@@ -8877,12 +8955,16 @@ export namespace Semantic {
           expr.operation
         )} ${serializeExpr(sr, expr.right)})`;
 
+      case Semantic.ENode.ValueToUnionCastExpr: {
+        return `(${serializeExpr(sr, expr.expr)} as (${serializeTypeUse(sr, expr.type)}))`;
+      }
+
       case Semantic.ENode.UnionToValueCastExpr: {
         return `(${serializeExpr(sr, expr.expr)} as tag ${expr.tag})`;
       }
 
       case Semantic.ENode.UnionToUnionCastExpr: {
-        return `(${serializeExpr(sr, expr.expr)} as union ${serializeTypeUse(sr, expr.type)})`;
+        return `(${serializeExpr(sr, expr.expr)} as (${serializeTypeUse(sr, expr.type)}))`;
       }
 
       case Semantic.ENode.UnaryExpr:

@@ -110,7 +110,7 @@ datatypeImpl
     ;
 
 baseDatatype
-    : (MUT | CONST | UNIQUE)? (INLINE)? datatypeImpl                            #DatatypeWithMutability
+    : UNIQUE? (MUT | CONST)? (INLINE)? datatypeImpl                             #DatatypeWithMutability
     | LB datatype RB                                                            #DatatypeInParenthesis
     ;
 
@@ -131,7 +131,7 @@ genericLiteral
 structContent
     : sourceLocationPrefixRule LCURLY structContent* RCURLY                                                 #StructContentWithSourceloc
     | variableMutabilitySpecifier? ID COLON datatype (EQUALS expr)? SEMI?                                    #StructMember
-    | static=STATIC? unique=UNIQUE? mutable=MUT? name=(ID | OPERATORASSIGN | OPERATORREBIND | OPERATORPLUS | OPERATORMINUS | OPERATORMUL | OPERATORDIV | OPERATORMOD | OPERATORSUBSCRIPT | OPERATORAS) (LANGLE generic+=ID (COMMA generic+=ID)* RANGLE)? LB params RB (COLON datatype)? requiresBlock? (funcbody | SEMI?)    #StructMethod
+    | static=STATIC? unique=UNIQUE? mutability=(MUT | CONST)? name=(ID | OPERATORASSIGN | OPERATORREBIND | OPERATORPLUS | OPERATORMINUS | OPERATORMUL | OPERATORDIV | OPERATORMOD | OPERATORSUBSCRIPT | OPERATORAS) (LANGLE generic+=ID (COMMA generic+=ID)* RANGLE)? LB params RB (COLON datatype)? requiresBlock? (funcbody | SEMI?)    #StructMethod
     | structDefinition                                                                                      #NestedStructDefinition
     ;
 
@@ -144,7 +144,7 @@ enumDefinition
     ;
 
 structDefinition
-    : (export=EXPORT)? (extern=EXTERN externLang=externLanguage)? pub=PUB? noemit=NOEMIT? STRUCT ID (LANGLE ID (COMMA ID)* RANGLE)? requiresBlock? LCURLY (content+=structContent)* RCURLY (SEMI)?
+    : (export=EXPORT)? (extern=EXTERN externLang=externLanguage)? pub=PUB? noemit=NOEMIT? OPAQUE? PLAIN? STRUCT ID (LANGLE ID (COMMA ID)* RANGLE)? requiresBlock? LCURLY (content+=structContent)* RCURLY (SEMI)?
     ;
 
 typeDefinition

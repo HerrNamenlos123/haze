@@ -140,7 +140,8 @@ export namespace Collect {
     FileScope,
     ExportScope,
     FunctionScope,
-    StructScope,
+    StructLexicalScope,
+    StructFieldScope,
     TypeDefScope,
     NamespaceScope,
     BlockScope,
@@ -227,8 +228,16 @@ export namespace Collect {
     symbols: Set<Collect.SymbolId>;
   };
 
-  export type StructScope = {
-    variant: ENode.StructScope;
+  export type StructFieldScope = {
+    variant: ENode.StructFieldScope;
+    parentScope: Collect.ScopeId;
+    owningSymbol: Collect.SymbolId;
+    sourceloc: SourceLoc;
+    symbols: Set<Collect.SymbolId>;
+  };
+
+  export type StructLexicalScope = {
+    variant: ENode.StructLexicalScope;
     parentScope: Collect.ScopeId;
     owningSymbol: Collect.SymbolId;
     sourceloc: SourceLoc;
@@ -267,7 +276,8 @@ export namespace Collect {
     | UnitScope
     | FileScope
     | FunctionScope
-    | StructScope
+    | StructFieldScope
+    | StructLexicalScope
     | NamespaceScope
     | TypeDefScope
     | BlockScope;
@@ -300,7 +310,7 @@ export namespace Collect {
     noemit: boolean;
     methodType: EMethodType;
     methodIsUnique: boolean;
-    methodCanMutate: boolean;
+    methodRequiredMutability: EDatatypeMutability.Const | EDatatypeMutability.Mut | null;
     extern: EExternLanguage;
     sourceloc: SourceLoc;
     functionScope: Collect.ScopeId | null;
@@ -397,12 +407,16 @@ export namespace Collect {
     }[];
     name: string;
     export: boolean;
+    opaque: boolean;
+    plain: boolean;
     pub: boolean;
     extern: EExternLanguage;
     noemit: boolean;
     sourceloc: SourceLoc;
-    structScope: Collect.ScopeId;
+    lexicalScope: Collect.ScopeId; // The lexical scope contains methods and it is the normal scope hierarchy
+    fieldScope: Collect.ScopeId; // The field scope contains only member variables and is NOT part of normal hierarchy
     originalSourcecode: string;
+    collectedTypeDefSymbol: Collect.SymbolId;
   };
 
   export type NamespaceTypeDef = {
@@ -923,7 +937,7 @@ function defineGenericTypeParameter(
   const functionScope = cc.scopeNodes.get(functionScopeId);
   assert(
     functionScope.variant === Collect.ENode.FunctionScope ||
-      functionScope.variant === Collect.ENode.StructScope ||
+      functionScope.variant === Collect.ENode.StructLexicalScope ||
       functionScope.variant === Collect.ENode.TypeDefScope
   );
   const owner = cc.symbolNodes.get(functionScope.owningSymbol);
@@ -1110,7 +1124,7 @@ function collectTypeDef(
         parent.variant === Collect.ENode.FileScope ||
           parent.variant === Collect.ENode.NamespaceScope ||
           parent.variant === Collect.ENode.ModuleScope ||
-          parent.variant === Collect.ENode.StructScope
+          parent.variant === Collect.ENode.StructLexicalScope
       );
 
       let fullyQualifiedName = "";
@@ -1120,7 +1134,7 @@ function collectTypeDef(
         const nsTd = cc.typeDefNodes.get(ns.typeDef);
         assert(nsTd.variant === Collect.ENode.NamespaceTypeDef);
         fullyQualifiedName += nsTd.fullyQualifiedName + ".";
-      } else if (parent.variant === Collect.ENode.StructScope) {
+      } else if (parent.variant === Collect.ENode.StructLexicalScope) {
         const ns = cc.symbolNodes.get(parent.owningSymbol);
         assert(ns.variant === Collect.ENode.TypeDefSymbol);
         const nsTd = cc.typeDefNodes.get(ns.typeDef);
@@ -1162,12 +1176,16 @@ function collectTypeDef(
         defaultMemberValues: [],
         export: item.export,
         extern: item.extern,
+        opaque: item.opaque,
+        plain: item.plain,
         pub: false,
         noemit: item.noemit,
-        structScope: -1 as Collect.ScopeId,
+        lexicalScope: -1 as Collect.ScopeId,
+        fieldScope: -1 as Collect.ScopeId,
         parentScope: args.currentParentScope,
         sourceloc: item.sourceloc,
         originalSourcecode: item.originalSourcecode,
+        collectedTypeDefSymbol: -1 as Collect.SymbolId,
       });
       const [structSymbol, structSymbolId] = Collect.makeSymbol<Collect.TypeDefSymbol>(cc, {
         variant: Collect.ENode.TypeDefSymbol,
@@ -1175,45 +1193,54 @@ function collectTypeDef(
         name: item.name,
         typeDef: structId,
       });
-      const [structScope, structScopeId] = Collect.makeScope<Collect.StructScope>(cc, {
-        variant: Collect.ENode.StructScope,
+      struct.collectedTypeDefSymbol = structSymbolId;
+      const [lexicalScope, lexicalScopeId] = Collect.makeScope<Collect.StructLexicalScope>(cc, {
+        variant: Collect.ENode.StructLexicalScope,
         owningSymbol: structSymbolId,
         parentScope: args.currentParentScope,
         sourceloc: item.sourceloc,
         symbols: new Set(),
       });
-      struct.structScope = structScopeId;
+      struct.lexicalScope = lexicalScopeId;
+      const [fieldScope, fieldScopeId] = Collect.makeScope<Collect.StructFieldScope>(cc, {
+        variant: Collect.ENode.StructFieldScope,
+        owningSymbol: structSymbolId,
+        parentScope: args.currentParentScope,
+        sourceloc: item.sourceloc,
+        symbols: new Set(),
+      });
+      struct.fieldScope = fieldScopeId;
       cc.elaboratedNamespacesAndStructs.add(structId);
 
       for (const g of item.generics) {
-        const generic = defineGenericTypeParameter(cc, g.name, structScopeId, g.sourceloc);
+        const generic = defineGenericTypeParameter(cc, g.name, lexicalScopeId, g.sourceloc);
         struct.generics.push(generic);
       }
 
       for (const s of item.nestedStructs) {
         const decl = collectTypeDef(cc, s, {
-          currentParentScope: structScopeId,
+          currentParentScope: lexicalScopeId,
         });
-        structScope.symbols.add(decl);
+        lexicalScope.symbols.add(decl);
       }
 
       for (const m of item.members) {
         if (m.defaultValue) {
           struct.defaultMemberValues.push({
             name: m.name,
-            value: collectExpr(cc, m.defaultValue, { currentParentScope: structScopeId }),
+            value: collectExpr(cc, m.defaultValue, { currentParentScope: fieldScopeId }),
           });
         }
         collectSymbol(cc, m, {
-          currentParentScope: structScopeId,
+          currentParentScope: fieldScopeId,
         });
       }
 
       for (const m of item.methods) {
         const funcsym = collectSymbol(cc, m, {
-          currentParentScope: structScopeId,
+          currentParentScope: lexicalScopeId,
         });
-        structScope.symbols.add(funcsym);
+        lexicalScope.symbols.add(funcsym);
       }
 
       if (item.export && item.generics.length > 0) {
@@ -1233,7 +1260,7 @@ function collectTypeDef(
         parent.variant === Collect.ENode.FileScope ||
           parent.variant === Collect.ENode.NamespaceScope ||
           parent.variant === Collect.ENode.ModuleScope ||
-          parent.variant === Collect.ENode.StructScope
+          parent.variant === Collect.ENode.StructLexicalScope
       );
 
       const [enumType, enumTypeId] = Collect.makeTypeDef<Collect.EnumTypeDef>(cc, {
@@ -1468,12 +1495,33 @@ function collectSymbol(
         );
       }
 
-      const parameters = item.params.map((p) => ({
-        name: p.name,
-        type: collectTypeUse(cc, p.datatype, args),
-        optional: p.optional,
-        sourceloc: p.sourceloc,
-      }));
+      const parameters = item.params.map((p) => {
+        let datatype: ASTTypeUse = p.datatype;
+        if (p.optional) {
+          datatype = {
+            variant: "UntaggedUnionDatatype",
+            members: [
+              datatype,
+              {
+                variant: "NamedDatatype",
+                name: "none",
+                generics: [],
+                inline: false,
+                mutability: EDatatypeMutability.Default,
+                sourceloc: p.sourceloc,
+                unique: false,
+              },
+            ],
+            sourceloc: p.sourceloc,
+          };
+        }
+        return {
+          name: p.name,
+          type: collectTypeUse(cc, datatype, args),
+          optional: p.optional,
+          sourceloc: p.sourceloc,
+        };
+      });
       const [functionSymbol, functionSymbolId] = Collect.makeSymbol<Collect.FunctionSymbol>(cc, {
         variant: Collect.ENode.FunctionSymbol,
         export: item.export,
@@ -1496,7 +1544,7 @@ function collectSymbol(
         vararg: item.ellipsis,
         returnType: (item.returnType && collectTypeUse(cc, item.returnType, args)) || null,
         methodIsUnique: item.methodIsUnique,
-        methodCanMutate: item.methodCanMutate,
+        methodRequiredMutability: item.methodRequiredMutability,
         sourceloc: item.sourceloc,
         functionScope: null,
         originalSourcecode: item.originalSourcecode,
@@ -2700,7 +2748,7 @@ export const printCollectedScope = (
       }
       break;
 
-    case Collect.ENode.StructScope: {
+    case Collect.ENode.StructLexicalScope: {
       print(`{`);
       for (const id of scope.symbols) {
         printCollectedSymbol(cc, id, indent + 2);
@@ -2876,7 +2924,7 @@ export const printCollectedSymbol = (
       switch (typedef.variant) {
         case Collect.ENode.StructTypeDef: {
           print(`- struct ${typedef.name}`);
-          printCollectedScope(cc, typedef.structScope, indent + 4);
+          printCollectedScope(cc, typedef.lexicalScope, indent + 4);
           break;
         }
 

@@ -27,6 +27,12 @@ export function ExportTypeDef(
       if (typedef.noemit) {
         file += "noemit ";
       }
+      if (typedef.opaque) {
+        file += "opaque ";
+      }
+      if (typedef.plain) {
+        file += "plain ";
+      }
       file += "struct ";
       file += namespaces[namespaces.length - 1].pretty + " {\n";
       for (const member of typedef.members) {
@@ -225,7 +231,7 @@ function getNamespacesFromScope(
       return current;
     }
 
-    case Collect.ENode.StructScope: {
+    case Collect.ENode.StructLexicalScope: {
       return getNamespacesFromSymbol(cc, scope.owningSymbol, current);
     }
 

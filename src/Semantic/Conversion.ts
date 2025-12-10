@@ -1119,6 +1119,19 @@ export namespace Conversion {
           );
         }
 
+        if (fromTypeInstance.mutability === toInstance.mutability) {
+          return ok(
+            Semantic.addExpr(sr, {
+              variant: Semantic.ENode.ExplicitCastExpr,
+              instanceIds: fromExpr.instanceIds,
+              expr: fromExprId,
+              type: toId,
+              sourceloc: sourceloc,
+              isTemporary: fromExpr.isTemporary,
+            })[1]
+          );
+        }
+
         if (
           (fromTypeInstance.mutability === EDatatypeMutability.Mut ||
             fromTypeInstance.mutability === EDatatypeMutability.Const) &&
@@ -1486,7 +1499,7 @@ export namespace Conversion {
       const assignedMembers = targetType.memberDefaultValues.map((m) => m.memberName);
 
       if (arraysAreEquivalent(requiredMembers, assignedMembers)) {
-        const collectedStruct = sr.cc.typeDefNodes.get(targetType.originalCollectedSymbol);
+        const collectedStruct = sr.cc.typeDefNodes.get(targetType.originalCollectedDefinition);
         assert(collectedStruct.variant === Collect.ENode.StructTypeDef);
         // Make an empty struct instantiation and let it handle the default values, since we know they all exist.
         // return sr.e.makeStructInstantiation(sr.typeUseNodes.get(targetTypeId).type, [], {

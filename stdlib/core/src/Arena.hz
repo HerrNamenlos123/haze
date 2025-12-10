@@ -37,7 +37,7 @@ export struct Arena {
     }
 }
 
-export struct MemoryBuffer {
+export opaque struct MemoryBuffer {
     // TODO: Introduce a way to prevent a struct from being made using a literal and only using its constructor instead.
     length: int;
     __data: u8; // This is the first byte of the data, the remaining data comes after it but Haze can't express it.
@@ -46,7 +46,12 @@ export struct MemoryBuffer {
         do unsafe {
             let arena = fn.returnArena;
 
-            const buffer: MemoryBuffer = uninitialized;
+            let a = MemoryBuffer {
+                length: 0,
+                __data: 0,
+            };
+
+            let buffer: unique mut MemoryBuffer = uninitialized;
             __c__("buffer = hzstd_arena_allocate(arena->arenaImpl, sizeof(hzstd_int_t) + length, alignof(hzstd_int_t));");
             // We trust the arena that everything is zeroed
             buffer.length = length;
@@ -55,7 +60,18 @@ export struct MemoryBuffer {
         }
     }
 
-    operator[](index: int): u8 {
+    operator[](index: int): ByteRef {
+        if (index < 0 || index >= this.length) {
+            sys.panic("Out of bounds access in MemoryBuffer");
+        }
+
+        return {
+            buffer: this,
+            index: index,
+        };
+    }
+
+    getAt(index: int): u8 {
         if (index < 0 || index >= this.length) {
             sys.panic("Out of bounds access in MemoryBuffer");
         }
@@ -65,34 +81,40 @@ export struct MemoryBuffer {
         return result;
     }
 
-    write(data: str, index: int) {
+    setAt(index: int, value: u8) {
+        if (index < 0 || index >= this.length) {
+            sys.panic("Out of bounds access in MemoryBuffer");
+        }
+
+        __c__("(&this->__data)[index] = value;");
+    }
+
+    mut write(data: str, index: int) {
         if (index < 0 || index + data.length - 1 >= this.length) {
             sys.panic("Out of bounds access in MemoryBuffer");
         }
 
         __c__("memcpy(&this->__data + index, data.data, data.length);");
-        length = 0;
     }
 
-    unique toString(): str {
+    const toString(): str {
         let result = "";
-        __c__("result = HZSTD_STRING((const char*)&this->__data, this->length);");
+        if (this.length > 0) {
+            __c__("result = HZSTD_STRING((const char*)&this->__data, this->length);");
+        }
         return result;
     }
-}
 
-export foo() {
-    const a = MemoryBuffer(20);
-    for (let i = 0; i < a.length; i++) {
-        fmt.println("[", i, "] = ", a[i]);
-    }
-    a.write("Hello", 0);
-    a.write(" ", 5);
-    a.write("World!", 6);
-    for (let i = 0; i < a.length; i++) {
-        fmt.println("[", i, "] = ", a[i]);
-    }
+    struct ByteRef {
+        buffer: MemoryBuffer;
+        index: int;
 
-    fmt.println("\nResult: ", a.toString());
-    fmt.println("WARNING: operator[] needs a way to do references, so you can assign to it");
+        get(): u8 {
+            return this.buffer.getAt(this.index);
+        }
+
+        operator:=(value: u8) {
+            this.buffer.setAt(this.index, value);
+        }
+    }
 }

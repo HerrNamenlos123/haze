@@ -1668,10 +1668,33 @@ export function lowerExpr(
 
       let optimizeExprToNullptr = false;
       if (loweredSourceUnion.optimizeAsRawPointer || loweredTargetUnion.optimizeAsRawPointer) {
-        assert(
-          false,
-          "Union to Union conversion if one is nullptr optimized is not implemented yet"
-        );
+        let isFine = false;
+        // This is not a true ultimate solution, it just checks if the union actually remains the same,
+        // and if so, allows the direct conversion. This takes care of 90% of common cases.
+        if (
+          loweredSourceUnion.members.length === loweredTargetUnion.members.length &&
+          loweredSourceUnion.members.every((m, i) => {
+            if (typeof m === "number" && typeof loweredTargetUnion.members[i] === "number") {
+              return m === loweredTargetUnion.members[i];
+            } else if (typeof m !== "number" && typeof loweredTargetUnion.members[i] !== "number") {
+              return (
+                m.tag === loweredTargetUnion.members[i].tag &&
+                m.type === loweredTargetUnion.members[i].type
+              );
+            }
+            return false;
+          }) &&
+          loweredSourceUnion.optimizeAsRawPointer === loweredTargetUnion.optimizeAsRawPointer
+        ) {
+          isFine = true;
+        }
+
+        if (!isFine) {
+          assert(
+            false,
+            "Union to Union conversion if one is nullptr optimized is not implemented yet (properly)"
+          );
+        }
       }
 
       const mappingUniqueKey = loweredSourceUnionId + "_to_" + loweredTargetUnionId;
