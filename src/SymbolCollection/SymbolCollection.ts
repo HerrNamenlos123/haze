@@ -456,8 +456,9 @@ export namespace Collect {
   };
 
   export type FunctionRequiresBlock = {
-    autodest: boolean;
+    autoret: boolean;
     final: boolean;
+    pure: boolean;
     noreturn: boolean;
   };
 
@@ -1372,7 +1373,8 @@ function collectTypeUse(
         vararg: item.ellipsis,
         requires: {
           final: item.requires.final,
-          autodest: item.requires.autodest,
+          pure: item.requires.pure,
+          autoret: item.requires.autoret,
           noreturn: item.requires.noreturn,
         },
         sourceloc: item.sourceloc,
@@ -1537,7 +1539,8 @@ function collectSymbol(
         pub: item.pub,
         requires: {
           final: item.requires.final,
-          autodest: item.requires.autodest,
+          pure: item.requires.pure,
+          autoret: item.requires.autoret,
           noreturn: item.requires.noreturn,
         },
         noemit: item.noemit,

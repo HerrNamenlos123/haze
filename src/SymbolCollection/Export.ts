@@ -69,8 +69,11 @@ export function ExportTypeDef(
               functype.returnType
             )}`;
             file += " :: final";
-            if (functype.requires.autodest) {
-              file += ", autodest";
+            if (functype.requires.autoret) {
+              file += ", autoret";
+            }
+            if (functype.requires.pure) {
+              file += ", pure";
             }
             if (functype.requires.noreturn) {
               file += ", noreturn";
@@ -169,8 +172,11 @@ export function ExportSymbol(
         ")" +
         (functype.returnType ? ": " + Semantic.serializeTypeUse(sr, functype.returnType) : " ");
       file += " :: final";
-      if (functype.requires.autodest) {
-        file += ", autodest";
+      if (functype.requires.autoret) {
+        file += ", autoret";
+      }
+      if (functype.requires.pure) {
+        file += ", pure";
       }
       if (functype.requires.noreturn) {
         file += ", noreturn";

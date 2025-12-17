@@ -72,7 +72,7 @@ makeNodeRaw(arena: Arena, name: str) {
 }
 
 bar() {
-    let makeNodeFunc: (name: str) => Node :: final, autodest = makeNode;
+    let makeNodeFunc: (name: str) => Node :: final, autoret = makeNode;
 
     const node = makeNodeFunc("Test");
 
@@ -95,9 +95,9 @@ main(): int {
     foobar();
     return 0;
 
-    fmt.println("TODO: Huge Issue: Exporting goes through SymbolCollection (and not elaboration), thus metadata like autoreturn is not available when a function is exported, because it is not elaborated yet. This effectively means autodest is unusable for exported functions if not manually annotated.")
+    fmt.println("TODO: Huge Issue: Exporting goes through SymbolCollection (and not elaboration), thus metadata like autoreturn is not available when a function is exported, because it is not elaborated yet. This effectively means autoret is unusable for exported functions if not manually annotated.")
 
-    fmt.println("TODO: Fix that autodest arenas don't work across modules yet");
+    fmt.println("TODO: Fix that autoret arenas don't work across modules yet");
     fmt.println("TODO: Fix returns, if function returns in one path but not all, it must either create an error or automatically return none");
     fmt.println("TODO: for next time: Refactor type system: Need some way to have partial, non-canonical types for functions, that mutate as we go along, and when function is done, can be replaced with a canonical version. But everything that depends on it, must change too. So need some sort of non-canonical type indirection. Absolutely need a way to do this for allocation inference, and then return type inference works automatically too. When done, function types need full support for requires block, allocation and lifetime constraints etc, and then that info in the function type can be used to actually call the function in lowering.");
     fmt.println("TODO: Look at fooz(). Escape analysis works, now test it a bit and then implement the arena selection based on the escape analysis, and to track which functions even need arenas, etc.");

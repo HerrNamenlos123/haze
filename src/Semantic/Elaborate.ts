@@ -1272,8 +1272,9 @@ export class SemanticElaborator {
             parameters: [object.type, objectType.datatype],
             returnType: this.sr.b.voidType(),
             requires: {
-              autodest: false,
+              autoret: false,
               final: true,
+              pure: false,
               noreturn: false,
             },
             sourceloc: memberAccess.sourceloc,
@@ -1338,8 +1339,9 @@ export class SemanticElaborator {
             parameters: [object.type],
             returnType: objectType.datatype,
             requires: {
-              autodest: false,
+              autoret: false,
               final: true,
+              pure: false,
               noreturn: false,
             },
             sourceloc: memberAccess.sourceloc,
@@ -2610,6 +2612,13 @@ export class SemanticElaborator {
           });
         }
 
+        if (!func.functionScope && !func.requires.final) {
+          throw new CompilerError(
+            `Function '${func.name}' does not have a body, so nothing can be inferred by the compiler. Therefore it requires manual constraints as well as a ':: final' annotation to fix the constraints.`,
+            func.sourceloc
+          );
+        }
+
         let [symbol, symbolId] = Semantic.addSymbol<Semantic.FunctionSymbol>(this.sr, {
           variant: Semantic.ENode.FunctionSymbol,
           type: ftype,
@@ -2636,6 +2645,7 @@ export class SemanticElaborator {
           explicitArenaInstanceIds: new Set(),
           returnStatements: new Set(),
           returnsInstanceIds: new Set(),
+          isImpure: false,
           instanceDepsSnapshot: this.sr.e.currentContext.instanceDeps,
           scope: null,
           concrete: this.sr.typeDefNodes.get(ftype).concrete,
@@ -2650,6 +2660,45 @@ export class SemanticElaborator {
             result: symbolId,
             substitutionContext: newContext,
           });
+
+          if (!func.requires.final) {
+            const funcType = this.sr.typeDefNodes.get(ftype);
+            assert(funcType.variant === Semantic.ENode.DeferredFunctionDatatype);
+            for (const paramId of funcType.parameters) {
+              const paramUse = this.sr.typeUseNodes.get(paramId);
+              const paramType = this.sr.typeDefNodes.get(paramUse.type);
+
+              if (
+                (paramType.variant === Semantic.ENode.StructDatatype &&
+                  !paramUse.inline &&
+                  paramUse.mutability === EDatatypeMutability.Mut) ||
+                (paramType.variant === Semantic.ENode.DynamicArrayDatatype &&
+                  paramUse.mutability === EDatatypeMutability.Mut) ||
+                (paramType.variant === Semantic.ENode.UntaggedUnionDatatype &&
+                  paramType.members.some((m) => {
+                    const typeUse = this.sr.typeUseNodes.get(m);
+                    const typeDef = this.sr.typeDefNodes.get(typeUse.type);
+                    return (
+                      (typeDef.variant === Semantic.ENode.StructDatatype ||
+                        typeDef.variant === Semantic.ENode.DynamicArrayDatatype) &&
+                      typeUse.mutability === EDatatypeMutability.Mut
+                    );
+                  })) ||
+                (paramType.variant === Semantic.ENode.TaggedUnionDatatype &&
+                  paramType.members.some((m) => {
+                    const typeUse = this.sr.typeUseNodes.get(m.type);
+                    const typeDef = this.sr.typeDefNodes.get(typeUse.type);
+                    return (
+                      (typeDef.variant === Semantic.ENode.StructDatatype ||
+                        typeDef.variant === Semantic.ENode.DynamicArrayDatatype) &&
+                      typeUse.mutability === EDatatypeMutability.Mut
+                    );
+                  }))
+              ) {
+                symbol.isImpure = true;
+              }
+            }
+          }
 
           if (func.functionScope) {
             const [bodyScope, bodyScopeId] = Semantic.addBlockScope(this.sr, {
@@ -2779,16 +2828,47 @@ export class SemanticElaborator {
               }
             }
 
+            // If anything is returned that is a reference, like an object or an array, then it must be considered impure,
+            // even if the return type is not mutable, because objects are required to have "identity" and multiple calls
+            // cannot be collapsed into a single one because otherwise two different objects would have the same identity.
+            const returnUse = this.sr.typeUseNodes.get(inferredReturnType);
+            const returnDef = this.sr.typeDefNodes.get(returnUse.type);
+            if (
+              returnDef.variant === Semantic.ENode.StructDatatype ||
+              returnDef.variant === Semantic.ENode.DynamicArrayDatatype ||
+              (returnDef.variant === Semantic.ENode.UntaggedUnionDatatype &&
+                returnDef.members.some((m) => {
+                  const typeUse = this.sr.typeUseNodes.get(m);
+                  const typeDef = this.sr.typeDefNodes.get(typeUse.type);
+                  return (
+                    typeDef.variant === Semantic.ENode.StructDatatype ||
+                    typeDef.variant === Semantic.ENode.DynamicArrayDatatype
+                  );
+                })) ||
+              (returnDef.variant === Semantic.ENode.TaggedUnionDatatype &&
+                returnDef.members.some((m) => {
+                  const typeUse = this.sr.typeUseNodes.get(m.type);
+                  const typeDef = this.sr.typeDefNodes.get(typeUse.type);
+                  return (
+                    typeDef.variant === Semantic.ENode.StructDatatype ||
+                    typeDef.variant === Semantic.ENode.DynamicArrayDatatype
+                  );
+                }))
+            ) {
+              symbol.isImpure = true;
+            }
+
             symbol.type = makeRawFunctionDatatypeAvailable(this.sr, {
               parameters: parameters,
               returnType: inferredReturnType,
               vararg: func.vararg,
               requires: {
-                autodest:
+                autoret:
                   symbol.returnsInstanceIds.size > 0 ||
                   symbol.explicitReturnArena ||
-                  func.requires.autodest,
+                  func.requires.autoret,
                 final: true,
+                pure: func.requires.pure || (!func.requires.final && !symbol.isImpure),
                 noreturn: func.requires.noreturn,
               },
               sourceloc: func.sourceloc,
@@ -2849,8 +2929,9 @@ export class SemanticElaborator {
           vararg: type.vararg,
           mutability: type.mutability,
           requires: {
-            autodest: type.requires.autodest,
+            autoret: type.requires.autoret,
             final: type.requires.final,
+            pure: type.requires.pure,
             noreturn: type.requires.noreturn,
           },
           sourceloc: type.sourceloc,
@@ -3265,7 +3346,7 @@ export class SemanticElaborator {
         assert(ftype.variant === Semantic.ENode.FunctionDatatype);
 
         const instanceIds: Semantic.InstanceId[] = [];
-        if (ftype.requires.autodest) {
+        if (ftype.requires.autoret) {
           instanceIds.push(Semantic.makeInstanceId(this.sr));
         }
 
@@ -3300,7 +3381,7 @@ export class SemanticElaborator {
             )[1],
           })[1],
           inArena: null,
-          producesAllocation: ftype.requires.autodest,
+          producesAllocation: ftype.requires.autoret,
           type: ftype.returnType,
           sourceloc: assignment.sourceloc,
           isTemporary: true,
@@ -5625,7 +5706,7 @@ export class SemanticElaborator {
           assert(ftype.variant === Semantic.ENode.FunctionDatatype);
 
           const instanceIds: Semantic.InstanceId[] = [];
-          if (ftype.requires.autodest) {
+          if (ftype.requires.autoret) {
             instanceIds.push(Semantic.makeInstanceId(this.sr));
           }
 
@@ -5660,7 +5741,7 @@ export class SemanticElaborator {
               )[1],
             })[1],
             inArena: null,
-            producesAllocation: ftype.requires.autodest,
+            producesAllocation: ftype.requires.autoret,
             type: ftype.returnType,
             sourceloc: arraySubscript.sourceloc,
             isTemporary: true,
@@ -5875,24 +5956,15 @@ export class SemanticBuilder {
 
     let producesAllocation = false;
     if (ftypeDef.variant === Semantic.ENode.FunctionDatatype) {
-      if (ftypeDef.requires.autodest) {
+      if (ftypeDef.requires.autoret) {
         producesAllocation = true;
       }
     } else if (ftypeDef.variant === Semantic.ENode.CallableDatatype) {
       const callableFunctype = this.sr.typeDefNodes.get(ftypeDef.functionType);
       assert(callableFunctype.variant === Semantic.ENode.FunctionDatatype);
-      if (callableFunctype.requires.autodest) {
+      if (callableFunctype.requires.autoret) {
         producesAllocation = true;
       }
-    }
-
-    let returnType: Semantic.TypeUseId | null = null;
-    if (ftypeDef.variant === Semantic.ENode.FunctionDatatype) {
-      returnType = ftypeDef.returnType;
-    } else {
-      const functype = this.sr.typeDefNodes.get(ftypeDef.functionType);
-      assert(functype.variant === Semantic.ENode.FunctionDatatype);
-      returnType = functype.returnType;
     }
 
     const instanceIds: Semantic.InstanceId[] = [];
@@ -5906,6 +5978,21 @@ export class SemanticBuilder {
 
     if (inArena) {
       instanceIds.forEach((i) => functionSymbol.explicitArenaInstanceIds.add(i));
+    }
+
+    let returnType: Semantic.TypeUseId | null = null;
+    if (ftypeDef.variant === Semantic.ENode.FunctionDatatype) {
+      returnType = ftypeDef.returnType;
+      if (!ftypeDef.requires.pure) {
+        functionSymbol.isImpure = true;
+      }
+    } else {
+      const functype = this.sr.typeDefNodes.get(ftypeDef.functionType);
+      assert(functype.variant === Semantic.ENode.FunctionDatatype);
+      returnType = functype.returnType;
+      if (!functype.requires.pure) {
+        functionSymbol.isImpure = true;
+      }
     }
 
     return Semantic.addExpr(this.sr, {
@@ -7201,6 +7288,7 @@ export namespace Semantic {
     explicitArenaInstanceIds: Set<Semantic.InstanceId>;
     explicitLocalArena: boolean;
     explicitReturnArena: boolean;
+    isImpure: boolean;
     returnedDatatypes: Set<Semantic.TypeUseId>;
     instanceDepsSnapshot: InstanceDeps;
     annotatedReturnType: Semantic.TypeUseId | null;
@@ -7225,8 +7313,9 @@ export namespace Semantic {
   };
 
   export type FunctionRequireBlock = {
-    autodest: boolean;
+    autoret: boolean;
     final: boolean;
+    pure: boolean;
     noreturn: boolean;
   };
 
@@ -8781,7 +8870,7 @@ export namespace Semantic {
 
       case Semantic.ENode.FunctionDatatype: {
         let params = "";
-        if (type.requires.autodest) {
+        if (type.requires.autoret) {
           params += mangleTypeUse(sr, sr.e.arenaTypeUse(false, null)[1]).name;
         }
         for (const p of type.parameters) {

@@ -139,7 +139,6 @@ import {
   RequiresBlockContext,
   RequiresFinalContext,
   StructContentWithSourcelocContext,
-  RequiresAutodestContext,
   RequiresInParensContext,
   RequiresNoreturnContext,
   ExprIsTypeExprContext,
@@ -155,6 +154,8 @@ import {
   VariableCreationStatementRuleContext,
   ForStatementContext,
   FStringLiteralExprContext,
+  RequiresPureContext,
+  RequiresAutoretContext,
 } from "./grammar/autogen/HazeParser";
 import {
   BaseErrorListener,
@@ -403,8 +404,9 @@ class ASTTransformer extends HazeParserVisitor<any> {
     } else {
       return {
         final: false,
-        autodest: false,
+        autoret: false,
         noreturn: false,
+        pure: false,
       };
     }
   }
@@ -687,15 +689,19 @@ class ASTTransformer extends HazeParserVisitor<any> {
   visitRequiresBlock = (ctx: RequiresBlockContext): ASTFunctionRequiresBlock => {
     const block: ASTFunctionRequiresBlock = {
       final: false,
-      autodest: false,
+      pure: false,
+      autoret: false,
       noreturn: false,
     };
     for (const part of ctx.requiresPart()) {
       if (part instanceof RequiresFinalContext) {
         block.final = true;
       }
-      if (part instanceof RequiresAutodestContext) {
-        block.autodest = true;
+      if (part instanceof RequiresPureContext) {
+        block.pure = true;
+      }
+      if (part instanceof RequiresAutoretContext) {
+        block.autoret = true;
       }
       if (part instanceof RequiresNoreturnContext) {
         block.noreturn = true;

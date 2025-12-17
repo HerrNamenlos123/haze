@@ -25,7 +25,7 @@ DO: 'do';
 YIELD: 'yield';
 EMIT: 'emit';
 INLINE: 'inline';
-AUTODEST: 'autodest';
+AUTORET: 'autoret';
 NORETURN: 'noreturn';
 FINAL: 'final';
 UNION: 'union';
@@ -35,6 +35,7 @@ UNSCOPED: 'unscoped';
 TRY: 'try';
 OPAQUE: 'opaque';
 PLAIN: 'plain';
+PURE: 'pure';
 SOURCE_LOCATION_DIRECTIVE: '#source';
 
 OPERATORSUBSCRIPT: 'operator[]';

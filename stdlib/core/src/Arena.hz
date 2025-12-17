@@ -1,17 +1,17 @@
 
 export extern C noemit struct hzstd_arena_t {};
 
-export extern C noemit hzstd_arena_create(): hzstd_arena_t;
-export extern C noemit hzstd_arena_cleanup_and_free(arena: hzstd_arena_t): void;
+export extern C noemit hzstd_arena_create(): hzstd_arena_t :: final;
+export extern C noemit hzstd_arena_cleanup_and_free(arena: hzstd_arena_t): void :: final;
 
-export extern C noemit hzstd_arena_allocate(arena: hzstd_arena_t, size: usize, alignment: usize): cptr;
+export extern C noemit hzstd_arena_allocate(arena: hzstd_arena_t, size: usize, alignment: usize): cptr :: final;
 
-export extern C noemit hzstd_arena_create_and_attach_subarena(arena: hzstd_arena_t): hzstd_arena_t;
-export extern C noemit hzstd_attach_subarena(arena: hzstd_arena_t, subarena: hzstd_arena_t): void;
-export extern C noemit hzstd_detach_subarena(arena: hzstd_arena_t): void;
+export extern C noemit hzstd_arena_create_and_attach_subarena(arena: hzstd_arena_t): hzstd_arena_t :: final;
+export extern C noemit hzstd_attach_subarena(arena: hzstd_arena_t, subarena: hzstd_arena_t): void :: final;
+export extern C noemit hzstd_detach_subarena(arena: hzstd_arena_t): void :: final;
 
-export extern C noemit hzstd_arena_register_cleanup_action(arena: hzstd_arena_t, action: (actiondata: void) => cptr, actiondata: cptr): usize;
-export extern C noemit hzstd_arena_deregister_cleanup_action(arena: hzstd_arena_t, actionId: usize): void;
+export extern C noemit hzstd_arena_register_cleanup_action(arena: hzstd_arena_t, action: (actiondata: void) => cptr, actiondata: cptr): usize :: final;
+export extern C noemit hzstd_arena_deregister_cleanup_action(arena: hzstd_arena_t, actionId: usize): void :: final;
 
 // const DEFAULT_CHUNK_SIZE = 1024;
 

@@ -1,25 +1,25 @@
 
 namespace Math {
 
-    export extern C noemit sqrt(v: real): real;
-    export extern C noemit pow(a: real, b: real): real;
-    export extern C noemit sin(v: real): real;
-    export extern C noemit sinh(v: real): real;
-    export extern C noemit cos(v: real): real;
-    export extern C noemit cosh(v: real): real;
-    export extern C noemit tan(v: real): real;
-    export extern C noemit atan2(y: real, x: real): real;
+    export extern C noemit sqrt(v: real): real :: final;
+    export extern C noemit pow(a: real, b: real): real :: final;
+    export extern C noemit sin(v: real): real :: final;
+    export extern C noemit sinh(v: real): real :: final;
+    export extern C noemit cos(v: real): real :: final;
+    export extern C noemit cosh(v: real): real :: final;
+    export extern C noemit tan(v: real): real :: final;
+    export extern C noemit atan2(y: real, x: real): real :: final;
 
     export PI(): real {
         const PI = 3.141592653589793;
         return PI;
     }
 
-    export radToDeg(v: real): real => {
+    export radToDeg(v: real): real {
         return v / Math.PI() * 180.0;
     }
 
-    export degToRad(v: real): real => {
+    export degToRad(v: real): real {
         return v * Math.PI() / 180.0;
     }
 

@@ -13,7 +13,7 @@ export enum FSError {
     Other,
 }
 
-extern C hzstd_read_file_text(arena: hzstd_arena_t, path: str, outputBuffer: hzstd_str_ref_t): hzstd_fs_error_t;
+extern C hzstd_read_file_text(arena: hzstd_arena_t, path: str, outputBuffer: hzstd_str_ref_t): hzstd_fs_error_t :: final;
 
 // struct File {
 //     rawFile: hzstd_file_t;

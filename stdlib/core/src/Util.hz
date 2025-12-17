@@ -1,5 +1,5 @@
 
-extern C noemit sizeof(...): usize;
+extern C noemit sizeof(...): usize :: final;
 
 export type Result<T, E> = union { Ok: T, Err: E, }
 

@@ -161,9 +161,10 @@ subscriptExpr
 
 requiresPart
     // : expr               #RequiresExpr
-    : AUTODEST              #RequiresAutodest
+    : AUTORET               #RequiresAutoret
     | NORETURN              #RequiresNoreturn
     | FINAL                 #RequiresFinal
+    | PURE                  #RequiresPure
     | LB requiresPart RB    #RequiresInParens
     ;
 

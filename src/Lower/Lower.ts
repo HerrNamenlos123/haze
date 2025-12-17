@@ -542,7 +542,7 @@ export namespace Lowered {
     name: NameSet;
     parameters: TypeUseId[];
     returnType: TypeUseId;
-    autodest: boolean;
+    autoret: boolean;
     vararg: boolean;
   };
 
@@ -646,7 +646,7 @@ function makeIntrinsicCall(
       mangledName: functionName,
       wasMangled: false,
     },
-    autodest: false,
+    autoret: false,
     vararg: false,
   });
   return Lowered.addExpr(lr, {
@@ -1190,7 +1190,7 @@ export function lowerExpr(
         const rawType = lr.sr.typeUseNodes.get(expr.type).type;
         const arrayType = lowerTypeUse(
           lr,
-          makeTypeUse(lr.sr, rawType, EDatatypeMutability.Default, false, expr.sourceloc)[1]
+          makeTypeUse(lr.sr, rawType, EDatatypeMutability.Default, false, false, expr.sourceloc)[1]
         );
         const elementType = lowerTypeUse(lr, typeDef.datatype);
 
@@ -1890,7 +1890,7 @@ export function lowerTypeDef(lr: Lowered.Module, typeId: Semantic.TypeDefId): Lo
       const parameters: Lowered.TypeUseId[] = [];
 
       const arenaType = lr.sr.e.arenaTypeUse(false, null)[1];
-      if (type.requires.autodest) {
+      if (type.requires.autoret) {
         parameters.push(lowerTypeUse(lr, arenaType));
       }
 
@@ -1912,7 +1912,7 @@ export function lowerTypeDef(lr: Lowered.Module, typeId: Semantic.TypeDefId): Lo
         variant: Lowered.ENode.FunctionDatatype,
         parameters: parameters,
         returnType: lowerTypeUse(lr, type.returnType),
-        autodest: type.requires.autodest,
+        autoret: type.requires.autoret,
         name: Semantic.makeNameSetTypeDef(lr.sr, typeId),
         vararg: type.vararg,
       });
@@ -2312,7 +2312,8 @@ function lowerBlockScope(
               vararg: false,
               requires: {
                 final: true,
-                autodest: false,
+                autoret: false,
+                pure: false,
                 noreturn: false,
               },
               sourceloc: null,
@@ -2524,7 +2525,7 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
       const newParameters = [...originalFuncType.parameters];
 
       const arenaType = lr.sr.e.arenaTypeUse(false, null)[1];
-      if (originalFuncType.requires.autodest) {
+      if (originalFuncType.requires.autoret) {
         // This is so that function declarations take an additional parameter (NOT the passing)
         parameterNames.unshift("__hz_return_arena");
         newParameters.unshift(arenaType);
@@ -2536,7 +2537,8 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
         sourceloc: symbol.sourceloc,
         requires: {
           final: originalFuncType.requires.final,
-          autodest: originalFuncType.requires.autodest,
+          pure: originalFuncType.requires.pure,
+          autoret: originalFuncType.requires.autoret,
           noreturn: originalFuncType.requires.noreturn,
         },
         vararg: false,

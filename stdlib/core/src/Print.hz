@@ -2,7 +2,19 @@
 __c__("#include <stdio.h>");
 
 namespace builtin {
-    export extern C noemit printf(fmt: ccstr, ...);
+    export extern C noemit printf(fmt: ccstr, ...) :: final;
+}
+
+export struct F {
+    bar: int;
+}
+
+export fooza(f: mut F | null) {
+    // builtin.printf("Hi");
+    return 0;
+    // return F {
+    //     bar: 0
+    // };
 }
 
 export foo() {
@@ -44,8 +56,9 @@ namespace fmt {
         const toString() {
             const buffer = this.buffer;
             if (buffer) {
-                const cBuffer = buffer;
-                return cBuffer.toString();
+                // const cBuffer = buffer;
+                // return cBuffer.toString();
+                return "";
             }
             else {
                 return "";
@@ -54,14 +67,14 @@ namespace fmt {
     }
 
     format() {
-        let writer = StringWriter(none);
-        let writer2 = format_to(writer, 187, {});
-        const written = writer2.written;
+        // let writer = StringWriter(none);
+        // format_to(writer, 187, {});
+        // const written = writer.written;
 
-        let writer3 = StringWriter(MemoryBuffer(written));
-        let writer4 = format_to(writer3, 187, {});
-        const immutableWriter = writer4;
-        fmt.println("Formatted: ", immutableWriter.toString());
+        // let writer3 = StringWriter(MemoryBuffer(written));
+        // format_to(writer3, 187, {});
+        // const immutableWriter = writer3;
+        // fmt.println("Formatted: ", immutableWriter.toString());
     }
 
     export format_to(writer: unique mut StringWriter, value: int, args: FormatArgs) {
@@ -87,8 +100,6 @@ namespace fmt {
             v %= div;
             div /= 10;
         }
-
-        return writer;
     }
 
     digitToStr(digit: int): str {

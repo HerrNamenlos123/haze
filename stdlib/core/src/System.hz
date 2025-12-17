@@ -7,8 +7,8 @@ namespace sys {
     }
 }
 
-extern C noemit hzstd_assert(condition: bool);
-extern C noemit hzstd_assert_msg(condition: bool, msg: str);
+extern C noemit hzstd_assert(condition: bool) :: final;
+extern C noemit hzstd_assert_msg(condition: bool, msg: str) :: final;
 
 export assert(condition: bool) {
     hzstd_assert(condition);
