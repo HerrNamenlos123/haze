@@ -1,18 +1,18 @@
 
 #include "hzstd_string.h"
-#include "hzstd_arena.h"
+#include "hzstd_memory.h"
 #include <string.h>
 
-hzstd_cstr_t hzstd_cstr_from_str(hzstd_arena_t* arena, hzstd_str_t data)
+hzstd_cstr_t hzstd_cstr_from_str(hzstd_allocator_t allocator, hzstd_str_t data)
 {
   if (data.length > 0) {
-    hzstd_cstr_t buffer = hzstd_arena_allocate(arena, data.length + 1, alignof(char));
+    hzstd_cstr_t buffer = hzstd_allocate(allocator, data.length + 1);
     memcpy(buffer, data.data, data.length);
     buffer[data.length] = '\0';
     return buffer;
   }
   else {
-    hzstd_cstr_t buffer = hzstd_arena_allocate(arena, 1, alignof(char));
+    hzstd_cstr_t buffer = hzstd_allocate(allocator, 1);
     buffer[0] = '\0';
     return buffer;
   }
@@ -26,7 +26,7 @@ hzstd_str_t hzstd_str_from_cstr_ref(hzstd_cstr_t data)
   };
 }
 
-hzstd_str_t hzstd_str_from_cstr_dup(hzstd_arena_t* arena, hzstd_cstr_t data)
+hzstd_str_t hzstd_str_from_cstr_dup(hzstd_allocator_t allocator, hzstd_cstr_t data)
 {
   size_t length = strlen(data);
 
@@ -34,7 +34,7 @@ hzstd_str_t hzstd_str_from_cstr_dup(hzstd_arena_t* arena, hzstd_cstr_t data)
     return (hzstd_str_t) { .length = 0, .data = 0 };
   }
   else {
-    char* buffer = hzstd_arena_allocate(arena, length, alignof(char));
+    char* buffer = hzstd_allocate(allocator, length);
     memcpy(buffer, data, length);
     return (hzstd_str_t) {
       .data = buffer,

@@ -208,7 +208,6 @@ export type ASTFunctionDefinition = {
   ellipsis: boolean;
   returnType?: ASTTypeUse;
   methodType: EMethodType;
-  methodIsUnique: boolean;
   methodRequiredMutability: EDatatypeMutability.Const | EDatatypeMutability.Mut | null;
   funcbody?: ASTFuncBody;
   sourceloc: SourceLoc;
@@ -228,7 +227,6 @@ export type ASTNamedDatatype = {
   generics: (ASTTypeUse | ASTLiteralExpr)[];
   nested?: ASTNamedDatatype;
   inline: boolean;
-  unique: boolean;
   mutability: EDatatypeMutability;
   sourceloc: SourceLoc;
 };
@@ -263,7 +261,6 @@ export type ASTStackArrayDatatype = {
   datatype: ASTTypeUse;
   length: bigint;
   inline: boolean;
-  unique: boolean;
   mutability: EDatatypeMutability;
   sourceloc: SourceLoc;
 };
@@ -272,7 +269,6 @@ export type ASTDynamicArrayDatatype = {
   variant: "DynamicArrayDatatype";
   datatype: ASTTypeUse;
   mutability: EDatatypeMutability;
-  unique: boolean;
   sourceloc: SourceLoc;
 };
 
@@ -438,7 +434,7 @@ export type ASTLiteralExpr = {
 export type ASTFStringExpr = {
   variant: "FStringExpr";
   fragments: ({ type: "expr"; value: ASTExpr } | { type: "text"; value: string })[];
-  inArena: ASTExpr | null;
+  allocator: ASTExpr | null;
   sourceloc: SourceLoc;
 };
 
@@ -453,7 +449,7 @@ export type ASTExprCallExpr = {
   variant: "ExprCallExpr";
   calledExpr: ASTExpr;
   arguments: ASTExpr[];
-  inArena: ASTExpr | null;
+  allocator: ASTExpr | null;
   sourceloc: SourceLoc;
 };
 
@@ -474,7 +470,7 @@ export type ASTAggregateLiteralExpr = {
   variant: "AggregateLiteralExpr";
   datatype: ASTTypeUse | null;
   elements: ASTAggregateLiteralElement[];
-  inArena: ASTExpr | null;
+  allocator: ASTExpr | null;
   sourceloc: SourceLoc;
 };
 

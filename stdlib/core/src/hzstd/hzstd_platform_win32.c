@@ -12,6 +12,7 @@
 #include <stdint.h>
 #include <winnt.h>
 
+#include "hzstd_memory.h"
 #include "hzstd_platform.h"
 #include "hzstd_runtime.h"
 #include "hzstd_string.h"
@@ -25,35 +26,30 @@
 
 static hzstd_semaphore_t infinite_block_event;
 
-void hzstd_initialize_platform() {
-  assert(hzstd_create_semaphore(&infinite_block_event));
-}
+void hzstd_initialize_platform() { assert(hzstd_create_semaphore(&infinite_block_event)); }
 
-_Noreturn void hzstd_block_thread_forever() {
+_Noreturn void hzstd_block_thread_forever()
+{
   hzstd_wait_for_semaphore(&infinite_block_event);
   abort();
 }
 
-bool hzstd_create_semaphore(hzstd_semaphore_t *semaphore) {
-  semaphore->handle = CreateEvent(NULL,  // default security
+bool hzstd_create_semaphore(hzstd_semaphore_t* semaphore)
+{
+  semaphore->handle = CreateEvent(NULL, // default security
                                   FALSE, // auto-reset event
                                   FALSE, // initial state = nonsignaled
-                                  NULL   // no name
+                                  NULL // no name
   );
   if (semaphore->handle == NULL) {
-    HZSTD_PANIC_FMT("hzstd_create_semaphore: CreateEvent failed (%lu)\n",
-                    GetLastError());
+    HZSTD_PANIC_FMT("hzstd_create_semaphore: CreateEvent failed (%lu)\n", GetLastError());
   }
   return true;
 }
 
-bool hzstd_trigger_semaphore(hzstd_semaphore_t *semaphore) {
-  return SetEvent(semaphore->handle);
-}
+bool hzstd_trigger_semaphore(hzstd_semaphore_t* semaphore) { return SetEvent(semaphore->handle); }
 
-void hzstd_wait_for_semaphore(hzstd_semaphore_t *semaphore) {
-  WaitForSingleObject(semaphore->handle, INFINITE);
-}
+void hzstd_wait_for_semaphore(hzstd_semaphore_t* semaphore) { WaitForSingleObject(semaphore->handle, INFINITE); }
 
 static hzstd_str_t panic_reason = HZSTD_STRING_FROM_CSTR("Unknown reason");
 static CONTEXT panic_context;
@@ -61,8 +57,8 @@ static hzstd_int_t panic_skip_n_frames = 0;
 static atomic_int panic_in_progress = 0;
 static hzstd_semaphore_t panic_trigger;
 
-_Noreturn void hzstd_panic_with_stacktrace(hzstd_str_t msg,
-                                           hzstd_int_t skip_n_frames) {
+_Noreturn void hzstd_panic_with_stacktrace(hzstd_str_t msg, hzstd_int_t skip_n_frames)
+{
   RtlCaptureContext(&panic_context);
   panic_reason = msg;
   panic_skip_n_frames = skip_n_frames;
@@ -77,9 +73,9 @@ _Noreturn void hzstd_panic_with_stacktrace(hzstd_str_t msg,
 // change the stack, also involves the stack and AAAARRRGGGHHHH!!!
 // So fuck it, Windows Support for stack traces is limited to non-stack-overflow
 // access violations, during a stack overflow accept the fact that it crashes.
-LONG WINAPI VectoredHandler(PEXCEPTION_POINTERS ExceptionInfo) {
-  if (ExceptionInfo->ExceptionRecord->ExceptionCode ==
-      EXCEPTION_ACCESS_VIOLATION) {
+LONG WINAPI VectoredHandler(PEXCEPTION_POINTERS ExceptionInfo)
+{
+  if (ExceptionInfo->ExceptionRecord->ExceptionCode == EXCEPTION_ACCESS_VIOLATION) {
     // During an access violation, we assume that the stack is still intact, so
     // we can call normal functions. But to be sure, we still use the watchdog
     // thread like on linux.
@@ -98,23 +94,19 @@ LONG WINAPI VectoredHandler(PEXCEPTION_POINTERS ExceptionInfo) {
         ULONG_PTR type = rec->ExceptionInformation[0];
         ULONG_PTR addr = rec->ExceptionInformation[1];
 
-        const char *typeStr = (type == 0)   ? "Read"
-                              : (type == 1) ? "Write"
-                              : (type == 8) ? "Execute"
-                                            : "Unknown";
+        const char* typeStr = (type == 0) ? "Read" : (type == 1) ? "Write" : (type == 8) ? "Execute" : "Unknown";
 
         if (type == 0) {
-          panic_reason = HZSTD_STRING_FROM_CSTR(
-              "Segmentation Fault: Read Access Violation ");
-        } else if (type == 1) {
-          panic_reason = HZSTD_STRING_FROM_CSTR(
-              "Segmentation Fault: Write Access Violation ");
-        } else if (type == 8) {
-          panic_reason = HZSTD_STRING_FROM_CSTR(
-              "Segmentation Fault: Execute Access Violation ");
-        } else {
-          panic_reason = HZSTD_STRING_FROM_CSTR(
-              "Segmentation Fault: Access Violation of unknown type");
+          panic_reason = HZSTD_STRING_FROM_CSTR("Segmentation Fault: Read Access Violation ");
+        }
+        else if (type == 1) {
+          panic_reason = HZSTD_STRING_FROM_CSTR("Segmentation Fault: Write Access Violation ");
+        }
+        else if (type == 8) {
+          panic_reason = HZSTD_STRING_FROM_CSTR("Segmentation Fault: Execute Access Violation ");
+        }
+        else {
+          panic_reason = HZSTD_STRING_FROM_CSTR("Segmentation Fault: Access Violation of unknown type");
         }
         break;
       }
@@ -157,7 +149,8 @@ LONG WINAPI VectoredHandler(PEXCEPTION_POINTERS ExceptionInfo) {
 
       hzstd_trigger_semaphore(&panic_trigger);
       hzstd_block_thread_forever();
-    } else {
+    }
+    else {
       // Another thread is already unwinding
       hzstd_block_thread_forever();
     }
@@ -168,13 +161,13 @@ LONG WINAPI VectoredHandler(PEXCEPTION_POINTERS ExceptionInfo) {
   return EXCEPTION_CONTINUE_SEARCH;
 }
 
-static DWORD WINAPI hzstd_panic_handler_thread(LPVOID _) {
+static DWORD WINAPI hzstd_panic_handler_thread(LPVOID _)
+{
   hzstd_wait_for_semaphore(&panic_trigger);
 
-  BOOL success = SymInitialize(
-      GetCurrentProcess(), // Process handle
-      NULL, // Search Path (NULL uses default: local path + environment)
-      TRUE  // InvadeProcess: load module list for the current process
+  BOOL success = SymInitialize(GetCurrentProcess(), // Process handle
+                               NULL, // Search Path (NULL uses default: local path + environment)
+                               TRUE // InvadeProcess: load module list for the current process
   );
 
   if (!success) {
@@ -185,7 +178,7 @@ static DWORD WINAPI hzstd_panic_handler_thread(LPVOID _) {
             "able to provide function names. No debug info available.\n");
   }
 
-  hzstd_arena_t *arena = hzstd_arena_create();
+  hzstd_allocator_t allocator = hzstd_make_arena_allocator();
 
   panic_context.ContextFlags = CONTEXT_INTEGER | CONTEXT_CONTROL;
 
@@ -225,9 +218,15 @@ static DWORD WINAPI hzstd_panic_handler_thread(LPVOID _) {
 
   // First do a dry run to find the number of frames
   size_t numberOfFrames = 0;
-  while (StackWalk64(machineType, hProcess, hThread, &stackFrame,
-                     &panic_context, NULL, SymFunctionTableAccess64,
-                     SymGetModuleBase64, NULL)) {
+  while (StackWalk64(machineType,
+                     hProcess,
+                     hThread,
+                     &stackFrame,
+                     &panic_context,
+                     NULL,
+                     SymFunctionTableAccess64,
+                     SymGetModuleBase64,
+                     NULL)) {
     numberOfFrames++;
     if (stackFrame.AddrPC.Offset == 0) {
       break;
@@ -236,25 +235,28 @@ static DWORD WINAPI hzstd_panic_handler_thread(LPVOID _) {
 
   // Now do the actual work
   size_t nextId = 1;
-  hzstd_dynamic_array_t *frameArray = hzstd_dynamic_array_create(
-      arena, sizeof(hzstd_unwind_frame_t *), numberOfFrames);
-  while (StackWalk64(machineType, hProcess, hThread, &stackFrame2,
-                     &panicContext2, NULL, SymFunctionTableAccess64,
-                     SymGetModuleBase64, NULL)) {
+  hzstd_dynamic_array_t* frameArray
+      = hzstd_dynamic_array_create(allocator, sizeof(hzstd_unwind_frame_t*), numberOfFrames);
+  while (StackWalk64(machineType,
+                     hProcess,
+                     hThread,
+                     &stackFrame2,
+                     &panicContext2,
+                     NULL,
+                     SymFunctionTableAccess64,
+                     SymGetModuleBase64,
+                     NULL)) {
 
     // Find existing frame (if we have a very high number of frames due to
     // recursion, it is likely that they repeat)
     bool pushed = false;
     for (size_t i = 0; i < hzstd_dynamic_array_size(frameArray); i++) {
-      hzstd_unwind_frame_t *framePtr;
-      assert(hzstd_dynamic_array_get(frameArray, i, &framePtr) ==
-             hzstd_dynamic_array_result_ok);
-      if (framePtr->instructionPointer ==
-          (hzstd_cptr_t)stackFrame2.AddrPC.Offset) {
+      hzstd_unwind_frame_t* framePtr;
+      assert(hzstd_dynamic_array_get(frameArray, i, &framePtr) == hzstd_dynamic_array_result_ok);
+      if (framePtr->instructionPointer == (hzstd_cptr_t)stackFrame2.AddrPC.Offset) {
         // Frame with same function found, push new frame but reuse the function
         // name (retrieving name is slow)
-        assert(hzstd_dynamic_array_push(frameArray, &framePtr) ==
-               hzstd_dynamic_array_result_ok);
+        assert(hzstd_dynamic_array_push(frameArray, &framePtr) == hzstd_dynamic_array_result_ok);
         pushed = true;
         break;
       }
@@ -269,10 +271,10 @@ static DWORD WINAPI hzstd_panic_handler_thread(LPVOID _) {
       PSYMBOL_INFO pSymbol = (PSYMBOL_INFO)symbolBuffer;
       pSymbol->SizeOfStruct = sizeof(SYMBOL_INFO);
       pSymbol->MaxNameLen = MAX_SYM_NAME;
-      if (SymFromAddr(GetCurrentProcess(),       // Process handle
+      if (SymFromAddr(GetCurrentProcess(), // Process handle
                       stackFrame2.AddrPC.Offset, // Address to resolve
                       &displacement, // Stores offset from symbol base address
-                      pSymbol))      // The initialized symbol structure
+                      pSymbol)) // The initialized symbol structure
       {
         size_t nameLength = strlen(pSymbol->Name);
         // stackFrame2.AddrPC.Offset is the IP
@@ -280,17 +282,15 @@ static DWORD WINAPI hzstd_panic_handler_thread(LPVOID _) {
       }
 
       // Doesn't work inline in HZSTD_ALLOC_STRUCT_RAW
-      hzstd_unwind_frame_t frameStruct = (hzstd_unwind_frame_t){
-          .id = nextId++,
-          .instructionPointer = (void *)stackFrame2.AddrPC.Offset,
-          .name = name,
+      hzstd_unwind_frame_t frameStruct = (hzstd_unwind_frame_t) {
+        .id = nextId++,
+        .instructionPointer = (void*)stackFrame2.AddrPC.Offset,
+        .name = name,
       };
 
-      hzstd_unwind_frame_t *framePtr = HZSTD_ALLOC_STRUCT_RAW(
-          arena, hzstd_unwind_frame_t, hzstd_unwind_frame_t *, frameStruct);
+      hzstd_unwind_frame_t* framePtr = HZSTD_ALLOC_STRUCT(allocator, hzstd_unwind_frame_t, frameStruct);
 
-      assert(hzstd_dynamic_array_push(frameArray, &framePtr) ==
-             hzstd_dynamic_array_result_ok);
+      assert(hzstd_dynamic_array_push(frameArray, &framePtr) == hzstd_dynamic_array_result_ok);
     }
 
     if (stackFrame2.AddrPC.Offset == 0) {
@@ -302,22 +302,22 @@ static DWORD WINAPI hzstd_panic_handler_thread(LPVOID _) {
   fprintf(stderr, "\e[0;31m[FATAL] Thread panicked: ");
   fwrite(panic_reason.data, panic_reason.length, 1, stderr);
   fprintf(stderr, "\n\e[0m\e[1;37mStack trace: \n\n\e[0m");
-  hzstd_print_stacktrace(arena, frameArray, panic_skip_n_frames);
+  hzstd_print_stacktrace(frameArray, panic_skip_n_frames);
 
   fflush(stdout);
   fflush(stderr);
 
-  hzstd_dynamic_array_destroy(frameArray);
-  hzstd_arena_cleanup_and_free(arena);
   abort();
 }
 
-void test() {
-  int *a = NULL;
+void test()
+{
+  int* a = NULL;
   int b = *a;
 }
 
-void hzstd_setup_panic_handler() {
+void hzstd_setup_panic_handler()
+{
   static thread_local char altstack_buf[8192];
   // This function registers a signal handler for the SIGSEGV signal (segfault).
   // The signal gets its own alternative stack (altstack), required to make the
@@ -344,8 +344,7 @@ void hzstd_setup_panic_handler() {
 
   assert(hzstd_create_semaphore(&panic_trigger));
 
-  HANDLE hWatchdog =
-      CreateThread(NULL, 0, hzstd_panic_handler_thread, NULL, 0, NULL);
+  HANDLE hWatchdog = CreateThread(NULL, 0, hzstd_panic_handler_thread, NULL, 0, NULL);
 
   PVOID Handle = AddVectoredExceptionHandler(1, VectoredHandler);
   if (Handle == NULL) {

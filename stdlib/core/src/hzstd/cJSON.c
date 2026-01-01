@@ -124,6 +124,23 @@ CJSON_PUBLIC(const char*) cJSON_Version(void)
   return version;
 }
 
+int strcmp_len(const unsigned char* a, size_t a_len, const unsigned char* b, size_t b_len)
+{
+  size_t min_len = a_len < b_len ? a_len : b_len;
+  int r = memcmp(a, b, min_len);
+  if (r != 0) {
+    return r;
+  }
+  /* prefixes equal, shorter string is "less" */
+  if (a_len < b_len) {
+    return -1;
+  }
+  if (a_len > b_len) {
+    return 1;
+  }
+  return 0;
+}
+
 /* Case insensitive string comparison, doesn't consider two NULL pointers equal though */
 static int case_insensitive_strcmp(const unsigned char* string1, const unsigned char* string2)
 {
@@ -142,6 +159,36 @@ static int case_insensitive_strcmp(const unsigned char* string1, const unsigned 
   }
 
   return tolower(*string1) - tolower(*string2);
+}
+
+int case_insensitive_strcmp_len(const unsigned char* s1, size_t len1, const unsigned char* s2, size_t len2)
+{
+  if (s1 == s2 && len1 == len2) {
+    return 0;
+  }
+  if (!s1 || !s2) {
+    return 1;
+  }
+
+  size_t min_len = len1 < len2 ? len1 : len2;
+
+  for (size_t i = 0; i < min_len; i++) {
+    unsigned char c1 = (unsigned char)tolower(s1[i]);
+    unsigned char c2 = (unsigned char)tolower(s2[i]);
+
+    if (c1 != c2) {
+      return (int)c1 - (int)c2;
+    }
+  }
+
+  /* prefixes equal → shorter string is smaller */
+  if (len1 < len2) {
+    return -1;
+  }
+  if (len1 > len2) {
+    return 1;
+  }
+  return 0;
 }
 
 typedef struct internal_hooks {
@@ -1742,9 +1789,52 @@ static cJSON* get_object_item(const cJSON* const object, const char* const name,
   return current_element;
 }
 
+static cJSON*
+get_object_item_len(const cJSON* const object, const char* const name, size_t name_len, const cJSON_bool case_sensitive)
+{
+  cJSON* current_element = NULL;
+
+  if ((object == NULL) || (name == NULL)) {
+    return NULL;
+  }
+
+  current_element = object->child;
+  if (case_sensitive) {
+    while ((current_element != NULL) && (current_element->string != NULL)
+           && (strcmp_len((const unsigned char*)name,
+                          name_len,
+                          (const unsigned char*)current_element->string,
+                          strlen(current_element->string))
+               != 0)) {
+      current_element = current_element->next;
+    }
+  }
+  else {
+    while ((current_element != NULL)
+           && (case_insensitive_strcmp_len((const unsigned char*)name,
+                                           name_len,
+                                           (const unsigned char*)(current_element->string),
+                                           strlen(current_element->string))
+               != 0)) {
+      current_element = current_element->next;
+    }
+  }
+
+  if ((current_element == NULL) || (current_element->string == NULL)) {
+    return NULL;
+  }
+
+  return current_element;
+}
+
 CJSON_PUBLIC(cJSON*) cJSON_GetObjectItem(const cJSON* const object, const char* const string)
 {
   return get_object_item(object, string, false);
+}
+
+CJSON_PUBLIC(cJSON*) cJSON_GetObjectItemLen(const cJSON* const object, const char* const string, size_t string_len)
+{
+  return get_object_item_len(object, string, string_len, false);
 }
 
 CJSON_PUBLIC(cJSON*) cJSON_GetObjectItemCaseSensitive(const cJSON* const object, const char* const string)
@@ -1752,9 +1842,20 @@ CJSON_PUBLIC(cJSON*) cJSON_GetObjectItemCaseSensitive(const cJSON* const object,
   return get_object_item(object, string, true);
 }
 
+CJSON_PUBLIC(cJSON*)
+cJSON_GetObjectItemCaseSensitiveLen(const cJSON* const object, const char* const string, size_t string_len)
+{
+  return get_object_item_len(object, string, string_len, true);
+}
+
 CJSON_PUBLIC(cJSON_bool) cJSON_HasObjectItem(const cJSON* object, const char* string)
 {
   return cJSON_GetObjectItem(object, string) ? 1 : 0;
+}
+
+CJSON_PUBLIC(cJSON_bool) cJSON_HasObjectItemLen(const cJSON* object, const char* string, size_t string_len)
+{
+  return cJSON_GetObjectItemLen(object, string, string_len) ? 1 : 0;
 }
 
 /* Utility for array list handling. */

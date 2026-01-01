@@ -220,14 +220,14 @@ export class SemanticElaborator {
     }
   }
 
-  assertExprArenaType(arenaExpr: Semantic.ExprId, sourceloc: SourceLoc) {
-    const realArenaType = this.arenaTypeDef();
-    const arenaType = this.getTypeUse(this.getExpr(arenaExpr).type);
-    if (arenaType.type !== realArenaType) {
+  assertExprAllocatorType(allocatorExpr: Semantic.ExprId, sourceloc: SourceLoc) {
+    const realAllocatorType = this.allocatorTypeDef();
+    const allocatorType = this.getTypeUse(this.getExpr(allocatorExpr).type);
+    if (allocatorType.type !== realAllocatorType) {
       throw new CompilerError(
-        `The 'in' operator requires the right expression to be an arena. Arena != ${Semantic.serializeTypeDef(
+        `The 'with' operator requires the right expression to be of type 'Allocator' (aka 'inline hzstd_allocator_t'). Has: ${Semantic.serializeTypeDef(
           this.sr,
-          arenaType.type
+          allocatorType.type
         )}`,
         sourceloc
       );
@@ -394,7 +394,8 @@ export class SemanticElaborator {
       gonnaCallFunctionWithParameterValues: decisiveArguments,
       unsafe: inference?.unsafe,
     });
-    const calledExprType = this.getTypeDef(this.getTypeUse(calledExpr.type).type);
+    const calledExprTypeUse = this.getTypeUse(calledExpr.type);
+    const calledExprType = this.getTypeDef(calledExprTypeUse.type);
 
     const convertArgs = (
       givenArgs: Semantic.ExprId[],
@@ -455,11 +456,6 @@ export class SemanticElaborator {
       });
     };
 
-    const inArena = callExpr.inArena ? this.expr(callExpr.inArena, undefined)[1] : null;
-    if (inArena) {
-      this.assertExprArenaType(inArena, callExpr.sourceloc);
-    }
-
     assert(this.inFunction);
     if (calledExprType.variant === Semantic.ENode.CallableDatatype) {
       const ftype = this.sr.typeDefNodes.get(calledExprType.functionType);
@@ -476,7 +472,6 @@ export class SemanticElaborator {
           ftype.vararg
         ),
         this.inFunction,
-        inArena,
         callExpr.sourceloc
       );
     }
@@ -495,37 +490,91 @@ export class SemanticElaborator {
           calledExprType.vararg
         ),
         this.inFunction,
-        inArena,
         callExpr.sourceloc
       );
     } else if (calledExprType.variant === Semantic.ENode.StructDatatype) {
       const original = this.sr.cc.typeDefNodes.get(calledExprType.originalCollectedDefinition);
       assert(original.variant === Collect.ENode.StructTypeDef);
-      const constructorId = [...calledExprType.methods].find((methodId) => {
-        const method = this.sr.symbolNodes.get(methodId);
-        assert(method.variant === Semantic.ENode.FunctionSymbol);
-        return method.name === "constructor";
+
+      const structScope = this.sr.cc.scopeNodes.get(original.lexicalScope);
+      assert(structScope.variant === Collect.ENode.StructLexicalScope);
+
+      const constructorOverloadGroupId = [...structScope.symbols].find((mId) => {
+        const m = this.sr.cc.symbolNodes.get(mId);
+        return m.variant === Collect.ENode.FunctionOverloadGroupSymbol && m.name === "constructor";
       });
-      if (!constructorId) {
+      if (!constructorOverloadGroupId) {
         throw new CompilerError(
           `Struct ${calledExprType.name} is called, but it does not provide a constructor`,
           callExpr.sourceloc
         );
       }
-      const constructor = this.sr.symbolNodes.get(constructorId);
-      assert(constructor.variant === Semantic.ENode.FunctionSymbol);
 
-      const constructorFunctype = this.getTypeDef(constructor.type);
+      const constructorId = this.FunctionOverloadChoose(
+        constructorOverloadGroupId,
+        decisiveArguments,
+        callExpr.sourceloc
+      );
+
+      const collectedMethod = this.sr.cc.symbolNodes.get(constructorId);
+      assert(collectedMethod.variant === Collect.ENode.FunctionSymbol);
+
+      let elaboratedStructCache = null as StructDef | null;
+      for (const [key, cache] of this.sr.elaboratedStructDatatypes) {
+        for (const entry of cache) {
+          if (entry.result === calledExprTypeUse.type) {
+            elaboratedStructCache = entry;
+          }
+        }
+      }
+      assert(elaboratedStructCache);
+
+      const parameterPackTypes = this.prepareParameterPackTypes(
+        "constructor",
+        collectedMethod.parameters,
+        inference?.gonnaCallFunctionWithParameterValues,
+        callExpr.sourceloc
+      );
+
+      const elaboratedMethodId = this.withContext(
+        {
+          context: Semantic.mergeSubstitutionContext(
+            elaboratedStructCache.substitutionContext,
+            this.currentContext,
+            {
+              currentScope: this.currentContext.currentScope,
+              genericsScope: this.currentContext.currentScope,
+              instanceDeps: {
+                instanceDependsOn: new Map(),
+                structMembersDependOn: new Map(),
+                symbolDependsOn: new Map(),
+              },
+            }
+          ),
+        },
+        () =>
+          this.elaborateFunctionSymbolWithGenerics(
+            this.elaborateFunctionSignature(constructorId),
+            [],
+            callExpr.sourceloc,
+            calledExprTypeUse.type,
+            parameterPackTypes
+          )
+      );
+      assert(elaboratedMethodId);
+      const elaboratedMethod = this.sr.symbolNodes.get(elaboratedMethodId);
+      assert(elaboratedMethod.variant === Semantic.ENode.FunctionSymbol);
+
+      const constructorFunctype = this.getTypeDef(elaboratedMethod.type);
       assert(constructorFunctype.variant === Semantic.ENode.FunctionDatatype);
       return this.sr.b.callExpr(
-        this.sr.b.symbolValue(constructorId, callExpr.sourceloc)[1],
+        this.sr.b.symbolValue(elaboratedMethodId, callExpr.sourceloc)[1],
         convertArgs(
           getActualCallingArguments(constructorFunctype.parameters),
           constructorFunctype.parameters,
           constructorFunctype.vararg
         ),
         this.inFunction,
-        inArena,
         callExpr.sourceloc
       );
     } else if (calledExprType.variant === Semantic.ENode.UnionTagRefDatatype) {
@@ -556,7 +605,6 @@ export class SemanticElaborator {
           this.sr,
           calledExpr.unionType,
           EDatatypeMutability.Default,
-          false,
           false,
           calledExpr.sourceloc
         )[1],
@@ -709,10 +757,9 @@ export class SemanticElaborator {
       }
     });
 
-    const inArena = fstring.inArena ? this.expr(fstring.inArena, {})[1] : null;
-
-    if (inArena) {
-      this.sr.e.assertExprArenaType(inArena, fstring.sourceloc);
+    const allocator = fstring.allocator ? this.expr(fstring.allocator, {})[1] : null;
+    if (allocator) {
+      this.sr.e.assertExprAllocatorType(allocator, fstring.sourceloc);
     }
 
     const e = Semantic.addExpr(this.sr, {
@@ -720,7 +767,7 @@ export class SemanticElaborator {
       fragments: fragments,
       instanceIds: [Semantic.makeInstanceId(this.sr)],
       isTemporary: true,
-      inArena: inArena,
+      allocator: allocator,
       inFunction: this.inFunction,
       sourceloc: fstring.sourceloc,
       type: this.sr.b.strType(),
@@ -730,9 +777,6 @@ export class SemanticElaborator {
       const functionSymbol = this.sr.e.getSymbol(this.inFunction);
       assert(functionSymbol.variant === Semantic.ENode.FunctionSymbol);
       e[0].instanceIds.forEach((i) => functionSymbol.createsInstanceIds.add(i));
-      if (inArena) {
-        e[0].instanceIds.forEach((i) => functionSymbol.explicitArenaInstanceIds.add(i));
-      }
     }
     return e;
   }
@@ -1113,53 +1157,6 @@ export class SemanticElaborator {
       collectedObjectExpr.variant === Collect.ENode.SymbolValueExpr &&
       collectedObjectExpr.name === "fn"
     ) {
-      if (memberAccess.memberName === "localArena") {
-        const [localArena, localArenaId] = Semantic.addSymbol(this.sr, {
-          variant: Semantic.ENode.VariableSymbol,
-          comptime: false,
-          comptimeValue: null,
-          concrete: true,
-          export: false,
-          extern: EExternLanguage.None,
-          consumed: false,
-          memberOfStruct: null,
-          mutability: EVariableMutability.Default,
-          name: "__hz_local_arena",
-          parentStructOrNS: null,
-          sourceloc: memberAccess.sourceloc,
-          type: this.arenaTypeUse(false, memberAccess.sourceloc)[1],
-          variableContext: EVariableContext.FunctionLocal,
-        });
-        if (this.inFunction) {
-          const functionSymbol = this.getSymbol(this.inFunction);
-          assert(functionSymbol.variant === Semantic.ENode.FunctionSymbol);
-          functionSymbol.explicitLocalArena = true;
-        }
-        return this.sr.b.symbolValue(localArenaId, memberAccess.sourceloc);
-      } else if (memberAccess.memberName === "returnArena") {
-        const [localArena, localArenaId] = Semantic.addSymbol(this.sr, {
-          variant: Semantic.ENode.VariableSymbol,
-          comptime: false,
-          comptimeValue: null,
-          concrete: true,
-          export: false,
-          extern: EExternLanguage.None,
-          memberOfStruct: null,
-          mutability: EVariableMutability.Default,
-          name: "__hz_return_arena",
-          consumed: false,
-          parentStructOrNS: null,
-          sourceloc: memberAccess.sourceloc,
-          type: this.arenaTypeUse(false, memberAccess.sourceloc)[1],
-          variableContext: EVariableContext.FunctionLocal,
-        });
-        if (this.inFunction) {
-          const functionSymbol = this.getSymbol(this.inFunction);
-          assert(functionSymbol.variant === Semantic.ENode.FunctionSymbol);
-          functionSymbol.explicitReturnArena = true;
-        }
-        return this.sr.b.symbolValue(localArenaId, memberAccess.sourceloc);
-      }
       throw new CompilerError(
         `'fn' intrinsic object does not have a member named '${memberAccess.memberName}'`,
         memberAccess.sourceloc
@@ -1272,7 +1269,6 @@ export class SemanticElaborator {
             parameters: [object.type, objectType.datatype],
             returnType: this.sr.b.voidType(),
             requires: {
-              autoret: false,
               final: true,
               pure: false,
               noreturn: false,
@@ -1314,7 +1310,6 @@ export class SemanticElaborator {
             })[1],
             EDatatypeMutability.Default,
             false,
-            false,
             memberAccess.sourceloc
           )[1],
         });
@@ -1339,7 +1334,6 @@ export class SemanticElaborator {
             parameters: [object.type],
             returnType: objectType.datatype,
             requires: {
-              autoret: false,
               final: true,
               pure: false,
               noreturn: false,
@@ -1380,7 +1374,6 @@ export class SemanticElaborator {
               thisExprType: object.type,
             })[1],
             EDatatypeMutability.Default,
-            false,
             false,
             memberAccess.sourceloc
           )[1],
@@ -1552,16 +1545,6 @@ export class SemanticElaborator {
         );
       }
 
-      if (!objectTypeUse.unique && elaboratedMethod.methodIsUnique) {
-        throw new CompilerError(
-          `Method ${Semantic.serializeFullSymbolName(
-            this.sr,
-            elaboratedMethodId
-          )} is marked as unique, but is not called on a `,
-          memberAccess.sourceloc
-        );
-      }
-
       return Semantic.addExpr(this.sr, {
         variant: Semantic.ENode.CallableExpr,
         instanceIds: [],
@@ -1585,7 +1568,6 @@ export class SemanticElaborator {
             concrete: this.sr.typeDefNodes.get(elaboratedMethod.type).concrete,
           })[1],
           EDatatypeMutability.Const,
-          false,
           false,
           memberAccess.sourceloc
         )[1],
@@ -2559,7 +2541,6 @@ export class SemanticElaborator {
                   paramPackId,
                   EDatatypeMutability.Const,
                   false,
-                  false,
                   func.sourceloc
                 )[1],
                 variableContext: EVariableContext.FunctionParameter,
@@ -2570,7 +2551,6 @@ export class SemanticElaborator {
                 this.sr,
                 paramPackId,
                 EDatatypeMutability.Const,
-                false,
                 false,
                 func.sourceloc
               )[1];
@@ -2587,8 +2567,7 @@ export class SemanticElaborator {
             makeTypeUse(
               this.sr,
               parentStructOrNS,
-              EDatatypeMutability.Mut,
-              false,
+              func.methodRequiredMutability ?? EDatatypeMutability.Default,
               false,
               func.sourceloc
             )[1]
@@ -2630,19 +2609,15 @@ export class SemanticElaborator {
           methodOf: parentStructOrNS,
           methodType: func.methodType,
           parentStructOrNS: parentStructOrNS,
-          explicitLocalArena: false,
-          explicitReturnArena: false,
           overloadedOperator: func.overloadedOperator,
           noemit: func.noemit,
           extern: func.extern,
           parameterNames: parameterNames,
-          methodIsUnique: func.methodIsUnique,
           methodRequiredMutability: func.methodRequiredMutability,
           returnedDatatypes: new Set(),
           name: func.name,
           sourceloc: func.sourceloc,
           createsInstanceIds: new Set(),
-          explicitArenaInstanceIds: new Set(),
           returnStatements: new Set(),
           returnsInstanceIds: new Set(),
           isImpure: false,
@@ -2724,8 +2699,7 @@ export class SemanticElaborator {
               const thisRef = makeTypeUse(
                 this.sr,
                 symbol.methodOf,
-                EDatatypeMutability.Mut,
-                false,
+                symbol.methodRequiredMutability ?? EDatatypeMutability.Default,
                 false,
                 func.sourceloc
               )[1];
@@ -2863,10 +2837,6 @@ export class SemanticElaborator {
               returnType: inferredReturnType,
               vararg: func.vararg,
               requires: {
-                autoret:
-                  symbol.returnsInstanceIds.size > 0 ||
-                  symbol.explicitReturnArena ||
-                  func.requires.autoret,
                 final: true,
                 pure: func.requires.pure || (!func.requires.final && !symbol.isImpure),
                 noreturn: func.requires.noreturn,
@@ -2929,7 +2899,6 @@ export class SemanticElaborator {
           vararg: type.vararg,
           mutability: type.mutability,
           requires: {
-            autoret: type.requires.autoret,
             final: type.requires.final,
             pure: type.requires.pure,
             noreturn: type.requires.noreturn,
@@ -2949,7 +2918,6 @@ export class SemanticElaborator {
           type.length,
           type.mutability,
           type.inline,
-          type.unique,
           type.sourceloc
         );
       }
@@ -2964,7 +2932,6 @@ export class SemanticElaborator {
           this.lookupAndElaborateDatatype(type.datatype),
           type.mutability,
           false,
-          type.unique,
           type.sourceloc
         );
       }
@@ -3035,7 +3002,6 @@ export class SemanticElaborator {
             })[1],
             type.mutability,
             false,
-            false,
             type.sourceloc
           )[1];
         }
@@ -3079,7 +3045,6 @@ export class SemanticElaborator {
                 concrete: false,
               })[1],
               type.mutability,
-              false,
               false,
               type.sourceloc
             )[1];
@@ -3228,7 +3193,6 @@ export class SemanticElaborator {
                 structId,
                 type.mutability,
                 type.inline,
-                type.unique,
                 type.sourceloc
               )[1];
             }
@@ -3239,7 +3203,6 @@ export class SemanticElaborator {
                 this.namespace(found.typeDef),
                 type.mutability,
                 type.inline,
-                type.unique,
                 type.sourceloc
               )[1];
             }
@@ -3266,7 +3229,6 @@ export class SemanticElaborator {
               this.enum(found.typeDef),
               type.mutability,
               type.inline,
-              type.unique,
               type.sourceloc
             )[1];
           }
@@ -3346,9 +3308,6 @@ export class SemanticElaborator {
         assert(ftype.variant === Semantic.ENode.FunctionDatatype);
 
         const instanceIds: Semantic.InstanceId[] = [];
-        if (ftype.requires.autoret) {
-          instanceIds.push(Semantic.makeInstanceId(this.sr));
-        }
 
         assert(this.sr.e.inFunction);
         const functionSymbol = this.sr.e.getSymbol(this.sr.e.inFunction);
@@ -3376,12 +3335,9 @@ export class SemanticElaborator {
               })[1],
               EDatatypeMutability.Const,
               false,
-              false,
               assignment.sourceloc
             )[1],
           })[1],
-          inArena: null,
-          producesAllocation: ftype.requires.autoret,
           type: ftype.returnType,
           sourceloc: assignment.sourceloc,
           isTemporary: true,
@@ -3730,8 +3686,6 @@ export class SemanticElaborator {
       }
     }
 
-    // if () {}
-
     throw new CompilerError(
       `Struct '${collectedStruct.name}' does not define any declarations named '${memberAccessExpr.memberName}'`,
       memberAccessExpr.sourceloc
@@ -3741,7 +3695,7 @@ export class SemanticElaborator {
   makeArrayLiteral(
     arrayTypeUseId: Semantic.TypeUseId,
     elements: Collect.AggregateLiteralElement[],
-    inArena: Semantic.ExprId | null,
+    allocator: Semantic.ExprId | null,
     sourceloc: SourceLoc,
     inference: Inference
   ): [Semantic.Expression, Semantic.ExprId] {
@@ -3791,17 +3745,10 @@ export class SemanticElaborator {
     }
 
     return this.sr.b.arrayLiteral(
-      makeTypeUse(
-        this.sr,
-        arrayUse.type,
-        mutability,
-        arrayUse.inline,
-        arrayUse.unique,
-        sourceloc
-      )[1],
+      makeTypeUse(this.sr, arrayUse.type, mutability, arrayUse.inline, sourceloc)[1],
       values,
       this.inFunction,
-      inArena,
+      allocator,
       sourceloc
     );
   }
@@ -3809,7 +3756,7 @@ export class SemanticElaborator {
   makeStructLiteral(
     typeUseId: Semantic.TypeUseId,
     elements: Collect.AggregateLiteralElement[],
-    inArena: Semantic.ExprId | null,
+    allocator: Semantic.ExprId | null,
     sourceloc: SourceLoc,
     inference: Inference
   ): [Semantic.Expression, Semantic.ExprId] {
@@ -3937,17 +3884,10 @@ export class SemanticElaborator {
     }
 
     return this.sr.b.structLiteral(
-      makeTypeUse(
-        this.sr,
-        structUse.type,
-        mutability,
-        structUse.inline,
-        structUse.unique,
-        sourceloc
-      )[1],
+      makeTypeUse(this.sr, structUse.type, mutability, structUse.inline, sourceloc)[1],
       assign,
       this.inFunction,
-      inArena,
+      allocator,
       sourceloc
     );
   }
@@ -4038,7 +3978,6 @@ export class SemanticElaborator {
           this.sr,
           this.sr.b.unionTagRefTypeDef(),
           EDatatypeMutability.Default,
-          false,
           false,
           memberAccessExpr.sourceloc
         )[1],
@@ -4469,24 +4408,12 @@ export class SemanticElaborator {
                 s.value &&
                 this.expr(s.value, {
                   gonnaInstantiateStructWithType: variableSymbol.type ?? undefined,
+                  unsafe: inference?.unsafe,
                 })[1]) ||
               undefined;
           }
         }
         const value = valueId && this.sr.exprNodes.get(valueId);
-
-        // Consume the value if it's unique-constrained
-        if (value) {
-          if (value.variant === Semantic.ENode.SymbolValueExpr) {
-            const typeUse = this.sr.typeUseNodes.get(value.type);
-            if (typeUse.unique) {
-              const symbol = this.sr.symbolNodes.get(value.symbol);
-              if (symbol.variant === Semantic.ENode.VariableSymbol) {
-                symbol.consumed = true;
-              }
-            }
-          }
-        }
 
         if ((!valueId || !value) && !uninitialized) {
           throw new CompilerError(
@@ -4532,7 +4459,6 @@ export class SemanticElaborator {
               typeUse.type,
               EDatatypeMutability.Const,
               typeUse.inline,
-              typeUse.unique,
               s.sourceloc
             )[1];
           }
@@ -4741,7 +4667,6 @@ export class SemanticElaborator {
                 s.sourceloc
               ),
               variableContext: EVariableContext.FunctionLocal,
-              consumed: false,
             } satisfies Semantic.VariableSymbol);
           }
 
@@ -5009,7 +4934,7 @@ export class SemanticElaborator {
       return this.makeStructLiteral(
         structId,
         structInst.elements,
-        structInst.inArena ? this.expr(structInst.inArena, undefined)[1] : null,
+        structInst.allocator ? this.expr(structInst.allocator, undefined)[1] : null,
         structInst.sourceloc,
         inference
       );
@@ -5020,7 +4945,7 @@ export class SemanticElaborator {
       return this.makeArrayLiteral(
         structId,
         structInst.elements,
-        structInst.inArena ? this.expr(structInst.inArena, undefined)[1] : null,
+        structInst.allocator ? this.expr(structInst.allocator, undefined)[1] : null,
         structInst.sourceloc,
         inference
       );
@@ -5615,7 +5540,6 @@ export class SemanticElaborator {
           valueType.datatype,
           EDatatypeMutability.Const,
           false,
-          false,
           arraySubscript.sourceloc
         ),
         sourceloc: arraySubscript.sourceloc,
@@ -5706,9 +5630,6 @@ export class SemanticElaborator {
           assert(ftype.variant === Semantic.ENode.FunctionDatatype);
 
           const instanceIds: Semantic.InstanceId[] = [];
-          if (ftype.requires.autoret) {
-            instanceIds.push(Semantic.makeInstanceId(this.sr));
-          }
 
           assert(this.inFunction);
           const functionSymbol = this.sr.e.getSymbol(this.inFunction);
@@ -5736,12 +5657,9 @@ export class SemanticElaborator {
                 })[1],
                 EDatatypeMutability.Const,
                 false,
-                false,
                 arraySubscript.sourceloc
               )[1],
             })[1],
-            inArena: null,
-            producesAllocation: ftype.requires.autoret,
             type: ftype.returnType,
             sourceloc: arraySubscript.sourceloc,
             isTemporary: true,
@@ -5881,11 +5799,15 @@ export class SemanticElaborator {
     }
   }
 
-  arenaTypeDef() {
-    const arenaCollectSymbolId = Semantic.lookupSymbolByName(this.sr, "Arena", null);
-    const arenaCollectSymbol = this.sr.cc.symbolNodes.get(arenaCollectSymbolId);
-    assert(arenaCollectSymbol.variant === Collect.ENode.TypeDefSymbol);
-    const arenaSymbolId = this.withContext(
+  allocatorTypeDef() {
+    const allocatorCollectSymbolId = Semantic.lookupSymbolByName(
+      this.sr,
+      "hzstd_allocator_t",
+      null
+    );
+    const allocatorCollectSymbol = this.sr.cc.symbolNodes.get(allocatorCollectSymbolId);
+    assert(allocatorCollectSymbol.variant === Collect.ENode.TypeDefSymbol);
+    const allocatorSymbolId = this.withContext(
       {
         context: Semantic.makeElaborationContext({
           currentScope: this.sr.cc.moduleScopeId,
@@ -5894,23 +5816,22 @@ export class SemanticElaborator {
         }),
       },
       () => {
-        return this.typeDefSymbol(arenaCollectSymbol);
+        return this.typeDefSymbol(allocatorCollectSymbol);
       }
     );
-    assert(arenaSymbolId.length === 1);
-    const elaboratedArenaSymbol = this.sr.symbolNodes.get(arenaSymbolId[0]);
-    assert(elaboratedArenaSymbol.variant === Semantic.ENode.TypeDefSymbol);
+    assert(allocatorSymbolId.length === 1);
+    const elaboratedAllocatorSymbol = this.sr.symbolNodes.get(allocatorSymbolId[0]);
+    assert(elaboratedAllocatorSymbol.variant === Semantic.ENode.TypeDefSymbol);
 
-    return elaboratedArenaSymbol.datatype;
+    return elaboratedAllocatorSymbol.datatype;
   }
 
-  arenaTypeUse(inline: boolean, sourceloc: SourceLoc) {
+  allocatorTypeUse(sourceloc: SourceLoc) {
     return makeTypeUse(
       this.sr,
-      this.arenaTypeDef(),
+      this.allocatorTypeDef(),
       EDatatypeMutability.Default,
-      inline,
-      false,
+      true,
       sourceloc
     );
   }
@@ -5942,7 +5863,6 @@ export class SemanticBuilder {
     exprId: Semantic.ExprId,
     callArguments: Semantic.ExprId[],
     inFunction: Semantic.SymbolId,
-    inArena: Semantic.ExprId | null,
     sourceloc: SourceLoc
   ) {
     const expr = this.sr.exprNodes.get(exprId);
@@ -5954,31 +5874,14 @@ export class SemanticBuilder {
         ftypeDef.variant === Semantic.ENode.CallableDatatype
     );
 
-    let producesAllocation = false;
-    if (ftypeDef.variant === Semantic.ENode.FunctionDatatype) {
-      if (ftypeDef.requires.autoret) {
-        producesAllocation = true;
-      }
-    } else if (ftypeDef.variant === Semantic.ENode.CallableDatatype) {
-      const callableFunctype = this.sr.typeDefNodes.get(ftypeDef.functionType);
-      assert(callableFunctype.variant === Semantic.ENode.FunctionDatatype);
-      if (callableFunctype.requires.autoret) {
-        producesAllocation = true;
-      }
-    }
-
     const instanceIds: Semantic.InstanceId[] = [];
-    if (producesAllocation) {
-      instanceIds.push(Semantic.makeInstanceId(this.sr));
-    }
+    // if (producesAllocation) {
+    //   instanceIds.push(Semantic.makeInstanceId(this.sr));
+    // }
 
     const functionSymbol = this.sr.e.getSymbol(inFunction);
     assert(functionSymbol.variant === Semantic.ENode.FunctionSymbol);
     instanceIds.forEach((i) => functionSymbol.createsInstanceIds.add(i));
-
-    if (inArena) {
-      instanceIds.forEach((i) => functionSymbol.explicitArenaInstanceIds.add(i));
-    }
 
     let returnType: Semantic.TypeUseId | null = null;
     if (ftypeDef.variant === Semantic.ENode.FunctionDatatype) {
@@ -6001,9 +5904,7 @@ export class SemanticBuilder {
       calledExpr: exprId,
       arguments: callArguments,
       isTemporary: true,
-      inArena: inArena,
       type: returnType,
-      producesAllocation: producesAllocation,
       sourceloc: sourceloc,
     });
   }
@@ -6040,7 +5941,6 @@ export class SemanticBuilder {
           this.sr,
           literal.enumType,
           EDatatypeMutability.Default,
-          false,
           false,
           sourceloc
         )[1],
@@ -6102,7 +6002,7 @@ export class SemanticBuilder {
       variant: Semantic.ENode.DatatypeAsValueExpr,
       instanceIds: [],
       symbol: type,
-      type: makeTypeUse(this.sr, type, EDatatypeMutability.Default, false, false, sourceloc)[1],
+      type: makeTypeUse(this.sr, type, EDatatypeMutability.Default, false, sourceloc)[1],
       isTemporary: false,
       sourceloc: sourceloc,
     });
@@ -6151,32 +6051,13 @@ export class SemanticBuilder {
         variant: Semantic.ENode.SymbolValueExpr,
         instanceIds: [],
         symbol: symbolId,
-        type: makeTypeUse(
-          this.sr,
-          symbol.type,
-          EDatatypeMutability.Default,
-          false,
-          false,
-          sourceloc
-        )[1],
+        type: makeTypeUse(this.sr, symbol.type, EDatatypeMutability.Default, false, sourceloc)[1],
         isTemporary: false,
         sourceloc: sourceloc,
       });
     } else if (symbol.variant === Semantic.ENode.VariableSymbol) {
       assert(symbol.type);
       const typeUse = this.sr.typeUseNodes.get(symbol.type);
-
-      if (typeUse.unique) {
-        if (symbol.consumed) {
-          throw new CompilerError(
-            `Variable '${symbol.name}' is of type '${Semantic.serializeTypeUse(
-              this.sr,
-              symbol.type
-            )}' and it has already been consumed, so it cannot be accessed here. Another reference may have been created, which would violate the unique-constraint that only ONE reference to a given value exists globally.`,
-            sourceloc
-          );
-        }
-      }
 
       return Semantic.addExpr(this.sr, {
         variant: Semantic.ENode.SymbolValueExpr,
@@ -6458,7 +6339,7 @@ export class SemanticBuilder {
     arrayTypeId: Semantic.TypeUseId,
     elements: Semantic.ExprId[],
     inFunction: Semantic.SymbolId | undefined,
-    inArena: Semantic.ExprId | null,
+    allocator: Semantic.ExprId | null,
     sourceloc: SourceLoc
   ) {
     const structTypeUse = this.sr.typeUseNodes.get(arrayTypeId);
@@ -6474,24 +6355,20 @@ export class SemanticBuilder {
       elements: elements,
       type: arrayTypeId,
       inFunction: inFunction,
-      inArena: inArena,
+      allocator: allocator,
       sourceloc: sourceloc,
       isTemporary: true,
     });
 
-    if (inArena) {
-      this.sr.e.assertExprArenaType(inArena, sourceloc);
+    if (allocator) {
+      this.sr.e.assertExprAllocatorType(allocator, sourceloc);
     }
 
     if (inFunction) {
       // Structs as struct default values are not inside functions
-      console.warn("TODO: Arrays as default values also need arena integration");
       const functionSymbol = this.sr.e.getSymbol(inFunction);
       assert(functionSymbol.variant === Semantic.ENode.FunctionSymbol);
       e[0].instanceIds.forEach((i) => functionSymbol.createsInstanceIds.add(i));
-      if (inArena) {
-        e[0].instanceIds.forEach((i) => functionSymbol.explicitArenaInstanceIds.add(i));
-      }
     }
 
     return e;
@@ -6504,7 +6381,7 @@ export class SemanticBuilder {
       value: Semantic.ExprId;
     }[],
     inFunction: Semantic.SymbolId | undefined,
-    inArena: Semantic.ExprId | null,
+    allocator: Semantic.ExprId | null,
     sourceloc: SourceLoc
   ) {
     const structTypeUse = this.sr.typeUseNodes.get(structTypeId);
@@ -6517,24 +6394,20 @@ export class SemanticBuilder {
       assign: assign,
       type: structTypeId,
       inFunction: inFunction,
-      inArena: inArena,
+      allocator: allocator,
       sourceloc: sourceloc,
       isTemporary: true,
     });
 
-    if (inArena) {
-      this.sr.e.assertExprArenaType(inArena, sourceloc);
+    if (allocator) {
+      this.sr.e.assertExprAllocatorType(allocator, sourceloc);
     }
 
     if (inFunction) {
       // Structs as struct default values are not inside functions
-      console.warn("TODO: Structs as default values also need arena integration");
       const functionSymbol = this.sr.e.getSymbol(inFunction);
       assert(functionSymbol.variant === Semantic.ENode.FunctionSymbol);
       e[0].instanceIds.forEach((i) => functionSymbol.createsInstanceIds.add(i));
-      if (inArena) {
-        e[0].instanceIds.forEach((i) => functionSymbol.explicitArenaInstanceIds.add(i));
-      }
     }
 
     for (const a of assign) {
@@ -6580,7 +6453,6 @@ export class SemanticBuilder {
         concrete: true,
       })[1],
       mutability,
-      false,
       false,
       sourceloc
     )[1];
@@ -6690,7 +6562,6 @@ export class SemanticBuilder {
       })[1],
       EDatatypeMutability.Const,
       false,
-      false,
       sourceloc
     )[1];
   }
@@ -6704,7 +6575,6 @@ export class SemanticBuilder {
         concrete: !members.some((m) => !isTypeConcrete(this.sr, m.type)),
       })[1],
       EDatatypeMutability.Const,
-      false,
       false,
       sourceloc
     )[1];
@@ -7039,14 +6909,7 @@ export function makePrimitiveAvailable(
   mutability: EDatatypeMutability,
   sourceloc: SourceLoc
 ): Semantic.TypeUseId {
-  return makeTypeUse(
-    sr,
-    makeRawPrimitiveAvailable(sr, primitive),
-    mutability,
-    false,
-    false,
-    sourceloc
-  )[1];
+  return makeTypeUse(sr, makeRawPrimitiveAvailable(sr, primitive), mutability, false, sourceloc)[1];
 }
 
 export function isTypeExprConcrete(sr: SemanticResult, id: Semantic.ExprId) {
@@ -7233,7 +7096,6 @@ export namespace Semantic {
     extern: EExternLanguage;
     variableContext: EVariableContext;
     parentStructOrNS: TypeDefId | null;
-    consumed: boolean;
     sourceloc: SourceLoc;
     comptime: boolean;
     comptimeValue: ExprId | null;
@@ -7276,7 +7138,6 @@ export namespace Semantic {
     generics: Semantic.ExprId[];
     parameterNames: string[];
     parameterPack: boolean;
-    methodIsUnique: boolean;
     methodRequiredMutability: EDatatypeMutability.Const | EDatatypeMutability.Mut | null;
     extern: EExternLanguage;
     scope: Semantic.BlockScopeId | null;
@@ -7285,9 +7146,6 @@ export namespace Semantic {
     createsInstanceIds: Set<Semantic.InstanceId>;
     returnsInstanceIds: Set<Semantic.InstanceId>;
     returnStatements: Set<Semantic.StatementId>;
-    explicitArenaInstanceIds: Set<Semantic.InstanceId>;
-    explicitLocalArena: boolean;
-    explicitReturnArena: boolean;
     isImpure: boolean;
     returnedDatatypes: Set<Semantic.TypeUseId>;
     instanceDepsSnapshot: InstanceDeps;
@@ -7313,7 +7171,6 @@ export namespace Semantic {
   };
 
   export type FunctionRequireBlock = {
-    autoret: boolean;
     final: boolean;
     pure: boolean;
     noreturn: boolean;
@@ -7472,7 +7329,6 @@ export namespace Semantic {
     type: TypeDefId;
     mutability: EDatatypeMutability;
     inline: boolean;
-    unique: boolean;
     sourceloc: SourceLoc;
   };
 
@@ -7689,8 +7545,6 @@ export namespace Semantic {
     arguments: ExprId[];
     type: TypeUseId;
     isTemporary: boolean;
-    inArena: ExprId | null;
-    producesAllocation: boolean;
     sourceloc: SourceLoc;
   };
 
@@ -7703,7 +7557,7 @@ export namespace Semantic {
     }[];
     type: TypeUseId;
     inFunction?: SymbolId;
-    inArena: ExprId | null;
+    allocator: ExprId | null;
     isTemporary: boolean;
     sourceloc: SourceLoc;
   };
@@ -7723,7 +7577,7 @@ export namespace Semantic {
     fragments: ({ type: "expr"; value: ExprId } | { type: "text"; value: ExprId })[];
     type: TypeUseId;
     inFunction?: SymbolId;
-    inArena: ExprId | null;
+    allocator: ExprId | null;
     isTemporary: boolean;
     sourceloc: SourceLoc;
   };
@@ -7734,7 +7588,7 @@ export namespace Semantic {
     elements: ExprId[];
     type: TypeUseId;
     inFunction?: SymbolId;
-    inArena: ExprId | null;
+    allocator: ExprId | null;
     isTemporary: boolean;
     sourceloc: SourceLoc;
   };
@@ -8414,9 +8268,6 @@ export namespace Semantic {
 
   export function serializeMutability(typeUse: TypeUse) {
     let s = "";
-    if (typeUse.unique) {
-      s += "unique ";
-    }
     if (typeUse.inline) {
       s += "inline ";
     }
@@ -8870,9 +8721,6 @@ export namespace Semantic {
 
       case Semantic.ENode.FunctionDatatype: {
         let params = "";
-        if (type.requires.autoret) {
-          params += mangleTypeUse(sr, sr.e.arenaTypeUse(false, null)[1]).name;
-        }
         for (const p of type.parameters) {
           const ppt = sr.typeUseNodes.get(p);
           const pp = sr.typeDefNodes.get(ppt.type);

@@ -28,9 +28,11 @@ array() {
     // fmt.println(f"My Result: ${var}!")
     // const myVariable = f"";
     // fmt.println(f"Hello World!")
-    let foo = unique Foo {};
+    let foo = Foo {};
     foo.bar;
-    const f = foo;
+    do unsafe {
+        const f = foo as const Foo;
+    }
     // const result = foo.bar;
 }
 

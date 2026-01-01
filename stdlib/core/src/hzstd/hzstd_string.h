@@ -2,8 +2,8 @@
 #ifndef HZSTD_STRING_H
 #define HZSTD_STRING_H
 
-#include "hzstd_arena.h"
 #include "hzstd_common.h"
+#include "hzstd_memory.h"
 
 typedef struct hzstd_str_t {
   const char* data;
@@ -21,9 +21,9 @@ typedef struct {
   hzstd_str_t data;
 } hzstd_str_ref_t;
 
-hzstd_cstr_t hzstd_cstr_from_str(hzstd_arena_t* arena, hzstd_str_t data);
+hzstd_cstr_t hzstd_cstr_from_str(hzstd_allocator_t allocator, hzstd_str_t data);
 
 hzstd_str_t hzstd_str_from_cstr_ref(hzstd_cstr_t data);
-hzstd_str_t hzstd_str_from_cstr_dup(hzstd_arena_t* arena, hzstd_cstr_t data);
+hzstd_str_t hzstd_str_from_cstr_dup(hzstd_allocator_t allocator, hzstd_cstr_t data);
 
 #endif // HZSTD_STRING_H

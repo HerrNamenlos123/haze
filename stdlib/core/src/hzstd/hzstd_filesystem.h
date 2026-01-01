@@ -16,7 +16,6 @@ typedef enum {
 //   FILE *file;
 // } hzstd_file_t;
 
-hzstd_fs_error_t hzstd_read_file_text(hzstd_arena_t *arena, hzstd_str_t path,
-                                      hzstd_str_ref_t *outputBuffer);
+hzstd_fs_error_t hzstd_read_file_text(hzstd_allocator_t allocator, hzstd_str_t path, hzstd_str_ref_t* outputBuffer);
 
 #endif // HZSTD_FILESYSTEM_H

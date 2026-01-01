@@ -13,16 +13,20 @@ export enum FSError {
     Other,
 }
 
-extern C hzstd_read_file_text(arena: hzstd_arena_t, path: str, outputBuffer: hzstd_str_ref_t): hzstd_fs_error_t :: final;
+extern C hzstd_read_file_text(allocator: Allocator, path: str, outputBuffer: hzstd_str_ref_t): hzstd_fs_error_t :: final;
 
 // struct File {
 //     rawFile: hzstd_file_t;
 // }
 
 export namespace fs {
-    export read(path: str): Result<str, FSError> {
-        let output = hzstd_str_ref_t { data: "" } in fn.localArena;
-        const result = hzstd_read_file_text(fn.returnArena.arenaImpl, path, output);
+    export read(path: str) {
+        return read(Alloc.heap(), path);
+    }
+
+    export read(allocator: Allocator, path: str): Result<str, FSError> {
+        let output = hzstd_str_ref_t { data: "" } with allocator;
+        const result = hzstd_read_file_text(allocator, path, output);
         if result == hzstd_fs_error_t.hzstd_fs_error_none {
             return Result<str, FSError>.Ok(output.data);
         }

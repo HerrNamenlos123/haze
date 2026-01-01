@@ -70,7 +70,6 @@ export function makeRawFunctionDatatypeAvailable(
     }
     if (type.vararg !== args.vararg) continue;
     if (type.requires.final !== args.requires.final) continue;
-    if (type.requires.autoret !== args.requires.autoret) continue;
     if (type.requires.pure !== args.requires.pure) continue;
 
     // Everything matches
@@ -107,7 +106,6 @@ export function makeFunctionDatatypeAvailable(
     makeRawFunctionDatatypeAvailable(sr, args),
     args.mutability,
     false,
-    false,
     args.sourceloc
   )[1];
 }
@@ -117,7 +115,6 @@ export function makeTypeUse(
   typeId: Semantic.TypeDefId,
   mutability: EDatatypeMutability,
   inline: boolean,
-  unique: boolean,
   sourceloc: SourceLoc
 ) {
   const type = sr.typeDefNodes.get(typeId);
@@ -131,8 +128,7 @@ export function makeTypeUse(
       if (
         typeUse.mutability !== mutability ||
         typeUse.type !== typeId ||
-        typeUse.inline !== inline ||
-        typeUse.unique !== unique
+        typeUse.inline !== inline
       ) {
         continue;
       }
@@ -144,7 +140,6 @@ export function makeTypeUse(
       mutability: mutability,
       inline: inline,
       type: typeId,
-      unique: unique,
       sourceloc: sourceloc,
     });
     sr.typeInstanceCache.push(instance[1]);
@@ -162,7 +157,6 @@ export function makeTypeUse(
       mutability: EDatatypeMutability.Default,
       inline: false,
       type: typeId,
-      unique: false,
       sourceloc: sourceloc,
     });
     sr.typeInstanceCache.push(instance[1]);
@@ -176,7 +170,6 @@ export function makeStackArrayDatatypeAvailable(
   length: bigint,
   mutability: EDatatypeMutability,
   inline: boolean,
-  unique: boolean,
   sourceloc: SourceLoc
 ): Semantic.TypeUseId {
   for (const id of sr.fixedArrayTypeCache) {
@@ -185,7 +178,7 @@ export function makeStackArrayDatatypeAvailable(
     if (type.datatype !== datatype || type.length !== length) {
       continue;
     }
-    return makeTypeUse(sr, id, mutability, inline, unique, sourceloc)[1];
+    return makeTypeUse(sr, id, mutability, inline, sourceloc)[1];
   }
 
   // Nothing found
@@ -196,7 +189,7 @@ export function makeStackArrayDatatypeAvailable(
     concrete: isTypeConcrete(sr, datatype),
   });
   sr.fixedArrayTypeCache.push(typeId);
-  return makeTypeUse(sr, typeId, mutability, inline, unique, sourceloc)[1];
+  return makeTypeUse(sr, typeId, mutability, inline, sourceloc)[1];
 }
 
 export function makeDynamicArrayDatatypeAvailable(
@@ -204,7 +197,6 @@ export function makeDynamicArrayDatatypeAvailable(
   datatype: Semantic.TypeUseId,
   mutability: EDatatypeMutability,
   inline: boolean,
-  unique: boolean,
   sourceloc: SourceLoc
 ): Semantic.TypeUseId {
   for (const id of sr.dynamicArrayTypeCache) {
@@ -213,7 +205,7 @@ export function makeDynamicArrayDatatypeAvailable(
     if (type.datatype !== datatype) {
       continue;
     }
-    return makeTypeUse(sr, id, mutability, inline, unique, sourceloc)[1];
+    return makeTypeUse(sr, id, mutability, inline, sourceloc)[1];
   }
 
   // Nothing found
@@ -223,5 +215,5 @@ export function makeDynamicArrayDatatypeAvailable(
     concrete: isTypeConcrete(sr, datatype),
   });
   sr.dynamicArrayTypeCache.push(typeId);
-  return makeTypeUse(sr, typeId, mutability, inline, unique, sourceloc)[1];
+  return makeTypeUse(sr, typeId, mutability, inline, sourceloc)[1];
 }

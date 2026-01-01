@@ -1,0 +1,134 @@
+
+export extern C noemit struct hzstd_allocator_t {};
+export type Allocator = inline hzstd_allocator_t;
+
+export extern C hzstd_make_heap_allocator(): Allocator :: final;
+export extern C hzstd_make_arena_allocator(): Allocator :: final;
+
+export namespace Alloc {
+    heap() {
+        return hzstd_make_heap_allocator();
+    }
+
+    arena() {
+        return hzstd_make_arena_allocator();
+    }
+}
+
+export opaque struct MemoryBuffer {
+    committed: bool;
+    length: int;
+    // The actual data comes here but Haze can't express it, we use ptr + sizeof(MemoryBuffer) for correct alignment.
+
+    constructor(allocator: Allocator, length: int) {
+        do unsafe {
+            const structSize = sizeof(type<inline MemoryBuffer>);
+            let buffer: mut MemoryBuffer = uninitialized;
+            __c__("buffer = hzstd_allocate(allocator, structSize + length);");
+            buffer.length = length;
+            buffer.committed = false;
+            buffer.writeZero(0, length);
+            return buffer;
+        }
+    }
+
+    constructor(length: int) {
+        do unsafe {
+            const structSize = sizeof(type<inline MemoryBuffer>);
+            let buffer: mut MemoryBuffer = uninitialized;
+            __c__("buffer = hzstd_allocate(hzstd_make_heap_allocator(), structSize + length);");
+            buffer.length = length;
+            buffer.committed = false;
+            buffer.writeZero(0, length);
+            return buffer;
+        }
+    }
+
+    operator[](index: int): ByteRef {
+        if (index < 0 || index >= this.length) {
+            sys.panic("Out of bounds access in MemoryBuffer");
+        }
+
+        return {
+            buffer: this,
+            index: index,
+        };
+    }
+
+    getAt(index: int): u8 {
+        if (index < 0 || index >= this.length) {
+            sys.panic("Out of bounds access in MemoryBuffer");
+        }
+
+        let result: u8 = 0;
+        const structSize = sizeof(type<inline MemoryBuffer>);
+        __c__("result = ((hzstd_u8_t*)this + structSize)[index];");
+        return result;
+    }
+
+    commit() {
+        this.committed = true;
+    }
+
+    assertNotCommitted() {
+        if (this.committed) {
+            sys.panic("A mutation was attempted on a MemoryBuffer that was already committed. Mutation is no longer allowed, it is now deeply immutable.");
+        }
+    }
+
+    setAt(index: int, value: u8) {
+        if (index < 0 || index >= this.length) {
+            sys.panic("Out of bounds access in MemoryBuffer");
+        }
+
+        this.assertNotCommitted();
+        const structSize = sizeof(type<inline MemoryBuffer>);
+        __c__("((hzstd_u8_t*)this + structSize)[index] = value;");
+    }
+
+    mut write(index: int, data: str) {
+        if (index < 0 || index + data.length - 1 >= this.length) {
+            sys.panic("Out of bounds access in MemoryBuffer");
+        }
+
+        this.assertNotCommitted();
+        const structSize = sizeof(type<inline MemoryBuffer>);
+        __c__("memcpy((hzstd_u8_t*)this + structSize + index, data.data, data.length);");
+    }
+
+    mut writeZero(startIndex: int, length: int) {
+        if (startIndex < 0 || startIndex + length - 1 >= this.length) {
+            sys.panic("Out of bounds access in MemoryBuffer");
+        }
+
+        this.assertNotCommitted();
+        const structSize = sizeof(type<inline MemoryBuffer>);
+        __c__("memset((hzstd_u8_t*)this + structSize + startIndex, 0, length);");
+    }
+
+    toString(): str {
+        if (!this.committed) {
+            sys.panic("Attempted to call .toString() on a MemoryBuffer that was not committed yet. Call .commit() to ensure deep immutability and enable string slices");
+        }
+
+        let result = "";
+        if (this.length > 0) {
+            const structSize = sizeof(type<inline MemoryBuffer>);
+            __c__("result = HZSTD_STRING((const char*)((hzstd_u8_t*)this + structSize), this->length);");
+        }
+        return result;
+    }
+
+    struct ByteRef {
+        buffer: MemoryBuffer;
+        index: int;
+
+        get(): u8 {
+            return this.buffer.getAt(this.index);
+        }
+
+        operator:=(value: u8) {
+            this.buffer.setAt(this.index, value);
+        }
+    }
+}

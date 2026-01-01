@@ -762,6 +762,7 @@ export class ProjectCompiler {
         winNinja: HAZE_CACHE + "/win-ninja",
         libunwind: HAZE_CACHE + "/libunwind",
         cmakeToolchain: HAZE_CACHE + "/cmake-toolchain",
+        bdwgc: HAZE_CACHE + "/bdgwc",
       };
 
       // Step 1: Download
@@ -919,6 +920,28 @@ export class ProjectCompiler {
         execInherit(`cd ${builddir} && make install`);
         this.markStepDone(MARKERS.libunwind);
         console.info("Retrieving and building libunwind... Done");
+      }
+
+      if (!this.isStepDone(MARKERS.bdwgc)) {
+        const builddir = `${HAZE_TMP_DIR}/bdwgc-builddir`;
+        const outdir = `${HAZE_GLOBAL_DIR}/haze-bdwgc`;
+        // Using the latest commit from master at the time of copying, since the latest release
+        // (although it was only a few months ago), seems to be very different
+        const commitHash = "6d018a1f241a9d892e67f25cac1b5b119ae60a88";
+        console.info("Retrieving and building bdwgc...");
+        execInherit(`rm -rf ${builddir}`);
+        execInherit(`rm -rf ${outdir}`);
+        execInherit(`mkdir -p ${builddir}`);
+        execInherit(
+          `git clone https://github.com/bdwgc/bdwgc.git ${builddir} && cd ${builddir} && git checkout ${commitHash}`
+        );
+        execInherit(
+          `cd ${builddir} && cmake . -B build -DCMAKE_BUILD_TYPE=Debug -DGC_BUILD_SHARED_LIBS=OFF -DCMAKE_INSTALL_PREFIX=${outdir} -DCMAKE_POSITION_INDEPENDENT_CODE=ON`
+        );
+        execInherit(`cd ${builddir} && cmake --build build -j`);
+        execInherit(`cd ${builddir} && cmake --build build --target=install`);
+        this.markStepDone(MARKERS.bdwgc);
+        console.info("Retrieving and building bdwgc... Done");
       }
 
       // throw new Error();
@@ -1160,6 +1183,9 @@ export class ModuleCompiler {
       compilerFlags.any.push(`-I"${HAZE_GLOBAL_DIR}"`);
       linkerFlags.linux.push(`"${HAZE_GLOBAL_DIR}/haze-libunwind/lib/libunwind.a"`);
       linkerFlags.linux.push(`-llzma`);
+
+      compilerFlags.any.push(`-I"${HAZE_GLOBAL_DIR}/haze-bdwgc/include"`);
+      linkerFlags.any.push(`"${HAZE_GLOBAL_DIR}/haze-bdwgc/lib64/libgc.a"`);
 
       compilerFlags.win32.push(`-D_CRT_SECURE_NO_WARNINGS`);
       linkerFlags.win32.push(`-fuse-ld=lld`);

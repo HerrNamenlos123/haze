@@ -2,7 +2,6 @@
 #ifndef HZSTD_H
 #define HZSTD_H
 
-#include "hzstd_arena.h"
 #include "hzstd_arithmetic.h"
 #include "hzstd_filesystem.h"
 #include "hzstd_json.h"

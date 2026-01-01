@@ -60,8 +60,8 @@ export function ExportTypeDef(
           const functype = sr.typeDefNodes.get(method.type);
           assert(functype.variant === Semantic.ENode.FunctionDatatype);
           const parameters = functype.parameters
-            .slice(1, 0)
-            .map((p, i) => `${method.parameterNames[i]}: ${Semantic.serializeTypeUse(sr, p)}`)
+            .slice(1, undefined)
+            .map((p, i) => `${method.parameterNames[i + 1]}: ${Semantic.serializeTypeUse(sr, p)}`)
             .join(", ");
           if (functype.returnType) {
             file += `${method.name}(${parameters}): ${Semantic.serializeTypeUse(
@@ -69,9 +69,6 @@ export function ExportTypeDef(
               functype.returnType
             )}`;
             file += " :: final";
-            if (functype.requires.autoret) {
-              file += ", autoret";
-            }
             if (functype.requires.pure) {
               file += ", pure";
             }
@@ -172,9 +169,6 @@ export function ExportSymbol(
         ")" +
         (functype.returnType ? ": " + Semantic.serializeTypeUse(sr, functype.returnType) : " ");
       file += " :: final";
-      if (functype.requires.autoret) {
-        file += ", autoret";
-      }
       if (functype.requires.pure) {
         file += ", pure";
       }

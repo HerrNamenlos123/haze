@@ -1,7 +1,6 @@
 
 #include "hzstd.h"
 
-#include "hzstd_arena.c"
 #include "hzstd_array.c"
 #include "hzstd_filesystem.c"
 #include "hzstd_json.c"
@@ -17,7 +16,9 @@
 #error Unsupported platform for Haze stdlib, compiler defines are not set correctly
 #endif
 
-void hzstd_initialize() {
+void hzstd_initialize()
+{
+  hzstd_init_gc();
   hzstd_initialize_platform();
   hzstd_setup_panic_handler();
 }

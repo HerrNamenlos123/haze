@@ -309,7 +309,6 @@ export namespace Collect {
     pub: boolean;
     noemit: boolean;
     methodType: EMethodType;
-    methodIsUnique: boolean;
     methodRequiredMutability: EDatatypeMutability.Const | EDatatypeMutability.Mut | null;
     extern: EExternLanguage;
     sourceloc: SourceLoc;
@@ -448,7 +447,6 @@ export namespace Collect {
     variant: ENode.NamedDatatype;
     name: string;
     inline: boolean;
-    unique: boolean;
     innerNested: Collect.TypeUseId | null;
     genericArgs: Collect.ExprId[];
     mutability: EDatatypeMutability;
@@ -477,7 +475,6 @@ export namespace Collect {
     datatype: Collect.TypeUseId;
     length: bigint;
     inline: boolean;
-    unique: boolean;
     mutability: EDatatypeMutability;
     sourceloc: SourceLoc;
   };
@@ -485,7 +482,6 @@ export namespace Collect {
   export type DynamicArrayDatatype = {
     variant: ENode.DynamicArrayDatatype;
     datatype: Collect.TypeUseId;
-    unique: boolean;
     mutability: EDatatypeMutability;
     sourceloc: SourceLoc;
   };
@@ -645,7 +641,6 @@ export namespace Collect {
   export type ExprCallExpr = BaseExpr & {
     variant: ENode.ExprCallExpr;
     calledExpr: Collect.ExprId;
-    inArena: Collect.ExprId | null;
     arguments: Collect.ExprId[];
   };
 
@@ -676,7 +671,7 @@ export namespace Collect {
     variant: ENode.AggregateLiteralExpr;
     structType: Collect.TypeUseId | null;
     elements: AggregateLiteralElement[];
-    inArena: Collect.ExprId | null;
+    allocator: Collect.ExprId | null;
   };
 
   export type ExprAssignmentExpr = BaseExpr & {
@@ -701,7 +696,7 @@ export namespace Collect {
   export type FStringExpr = BaseExpr & {
     variant: ENode.FStringExpr;
     fragments: ({ type: "expr"; value: Collect.ExprId } | { type: "text"; value: string })[];
-    inArena: Collect.ExprId | null;
+    allocator: Collect.ExprId | null;
   };
 
   export type PreIncrExpr = BaseExpr & {
@@ -1343,7 +1338,6 @@ function collectTypeUse(
         variant: Collect.ENode.NamedDatatype,
         name: item.name,
         inline: item.inline,
-        unique: item.unique,
         innerNested: (item.nested && collectTypeUse(cc, item.nested, args)) || null,
         genericArgs: item.generics.map((g) => {
           if (g.variant === "LiteralExpr") {
@@ -1391,7 +1385,6 @@ function collectTypeUse(
         datatype: collectTypeUse(cc, item.datatype, args),
         length: item.length,
         inline: item.inline,
-        unique: item.unique,
         mutability: item.mutability,
         sourceloc: item.sourceloc,
       })[1];
@@ -1404,7 +1397,6 @@ function collectTypeUse(
       return Collect.makeTypeUse(cc, {
         variant: Collect.ENode.DynamicArrayDatatype,
         datatype: collectTypeUse(cc, item.datatype, args),
-        unique: item.unique,
         mutability: item.mutability,
         sourceloc: item.sourceloc,
       })[1];
@@ -1511,7 +1503,6 @@ function collectSymbol(
                 inline: false,
                 mutability: EDatatypeMutability.Default,
                 sourceloc: p.sourceloc,
-                unique: false,
               },
             ],
             sourceloc: p.sourceloc,
@@ -1546,7 +1537,6 @@ function collectSymbol(
         noemit: item.noemit,
         vararg: item.ellipsis,
         returnType: (item.returnType && collectTypeUse(cc, item.returnType, args)) || null,
-        methodIsUnique: item.methodIsUnique,
         methodRequiredMutability: item.methodRequiredMutability,
         sourceloc: item.sourceloc,
         functionScope: null,
@@ -1688,7 +1678,6 @@ function collectSymbol(
             variant: Collect.ENode.NamedDatatype,
             genericArgs: [],
             inline: false,
-            unique: false,
             innerNested: null,
             mutability: EDatatypeMutability.Default,
             name: "void",
@@ -1846,7 +1835,6 @@ function collectGlobalDirective(
           variant: Collect.ENode.NamedDatatype,
           genericArgs: [],
           inline: false,
-          unique: false,
           innerNested: null,
           name: importedNamespace,
           mutability: EDatatypeMutability.Default,
@@ -2219,7 +2207,7 @@ function collectExpr(
             };
           }
         }),
-        inArena: item.inArena ? collectExpr(cc, item.inArena, args) : null,
+        allocator: item.allocator ? collectExpr(cc, item.allocator, args) : null,
         sourceloc: item.sourceloc,
       })[1];
 
@@ -2264,7 +2252,7 @@ function collectExpr(
           key: m.key,
           value: collectExpr(cc, m.value, args),
         })),
-        inArena: item.inArena ? collectExpr(cc, item.inArena, args) : null,
+        allocator: item.allocator ? collectExpr(cc, item.allocator, args) : null,
         sourceloc: item.sourceloc,
       })[1];
 
@@ -2386,7 +2374,7 @@ function collectExpr(
         variant: Collect.ENode.ExprCallExpr,
         calledExpr: collectExpr(cc, item.calledExpr, args),
         arguments: item.arguments.map((a) => collectExpr(cc, a, args)),
-        inArena: item.inArena ? collectExpr(cc, item.inArena, args) : null,
+        allocator: item.allocator ? collectExpr(cc, item.allocator, args) : null,
         sourceloc: item.sourceloc,
       })[1];
 

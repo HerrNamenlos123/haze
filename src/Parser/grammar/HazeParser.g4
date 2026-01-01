@@ -98,7 +98,7 @@ literal
     | STRING_LITERAL                            #StringConstant
     ;
 
-interpolatedString: FSTRING_START (interpolatedStringFragment)* FSTRING_END (IN arenaExpr=expr)?;
+interpolatedString: FSTRING_START (interpolatedStringFragment)* FSTRING_END (WITH allocatorExpr=expr)?;
 interpolatedStringFragment: FSTRING_GRAPHEME | interpolatedStringExpression;
 interpolatedStringExpression: LCURLY expr RCURLY;
 
@@ -110,7 +110,7 @@ datatypeImpl
     ;
 
 baseDatatype
-    : UNIQUE? (MUT | CONST)? (INLINE)? datatypeImpl                             #DatatypeWithMutability
+    : (MUT | CONST)? (INLINE)? datatypeImpl                                     #DatatypeWithMutability
     | LB datatype RB                                                            #DatatypeInParenthesis
     ;
 
@@ -131,7 +131,7 @@ genericLiteral
 structContent
     : sourceLocationPrefixRule LCURLY structContent* RCURLY                                                 #StructContentWithSourceloc
     | variableMutabilitySpecifier? ID COLON datatype (EQUALS expr)? SEMI?                                    #StructMember
-    | static=STATIC? unique=UNIQUE? mutability=(MUT | CONST)? name=(ID | OPERATORASSIGN | OPERATORREBIND | OPERATORPLUS | OPERATORMINUS | OPERATORMUL | OPERATORDIV | OPERATORMOD | OPERATORSUBSCRIPT | OPERATORAS) (LANGLE generic+=ID (COMMA generic+=ID)* RANGLE)? LB params RB (COLON datatype)? requiresBlock? (funcbody | SEMI?)    #StructMethod
+    | static=STATIC? mutability=(MUT | CONST)? name=(ID | OPERATORASSIGN | OPERATORREBIND | OPERATORPLUS | OPERATORMINUS | OPERATORMUL | OPERATORDIV | OPERATORMOD | OPERATORSUBSCRIPT | OPERATORAS) (LANGLE generic+=ID (COMMA generic+=ID)* RANGLE)? LB params RB (COLON datatype)? requiresBlock? (funcbody | SEMI?)    #StructMethod
     | structDefinition                                                                                      #NestedStructDefinition
     ;
 
@@ -184,11 +184,11 @@ expr
     | lambda                                                                        #LambdaExpr
     | literal                                                                       #LiteralExpr
     | interpolatedString                                                            #FStringLiteralExpr
-    | datatype? LCURLY aggregateLiteralElement? (COMMA aggregateLiteralElement)* COMMA? RCURLY (IN arenaExpr=expr)?      #AggregateLiteralExpr
+    | datatype? LCURLY aggregateLiteralElement? (COMMA aggregateLiteralElement)* COMMA? RCURLY (WITH allocatorExpr=expr)?      #AggregateLiteralExpr
 
     // Part 1: Left to right
     | expr op=(PLUSPLUS | MINUSMINUS)                                               #PostIncrExpr
-    | callExpr=expr LB (argExpr+=expr (COMMA argExpr+=expr)*)? RB (IN arenaExpr=expr)?                  #ExprCallExpr
+    | callExpr=expr LB (argExpr+=expr (COMMA argExpr+=expr)*)? RB (WITH allocatorExpr=expr)?                  #ExprCallExpr
     | value=expr LBRACKET (index+=subscriptExpr) (COMMA index+=subscriptExpr)* COMMA? RBRACKET          #ArraySubscriptExpr
     | expr (DOT | QUESTIONDOT) ID (LANGLE genericLiteral (COMMA genericLiteral)* RANGLE)?              #ExprMemberAccess
     | expr QUESTIONEXCL                                                             #PostfixResultPropagationExpr

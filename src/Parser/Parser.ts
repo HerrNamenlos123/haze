@@ -643,7 +643,6 @@ class ASTTransformer extends HazeParserVisitor<any> {
         sourceloc: fragment.sourceloc,
         generics: fragment.generics,
         inline: false,
-        unique: false,
         mutability: EDatatypeMutability.Default,
         nested: datatypes[datatypes.length - 1],
       });
@@ -733,7 +732,6 @@ class ASTTransformer extends HazeParserVisitor<any> {
       static: false,
       methodType: EMethodType.None,
       name: names[0],
-      methodIsUnique: false,
       methodRequiredMutability: null,
       operatorOverloading: undefined,
       ellipsis: params.ellipsis,
@@ -864,7 +862,6 @@ class ASTTransformer extends HazeParserVisitor<any> {
         noemit: false,
         pub: false,
         methodType: methodType,
-        methodIsUnique: Boolean(ctx.UNIQUE()),
         methodRequiredMutability: methodRequiredMutability,
         name: name,
         static: Boolean(ctx._static_),
@@ -1186,7 +1183,7 @@ class ASTTransformer extends HazeParserVisitor<any> {
       variant: "ExprCallExpr",
       calledExpr: this.visit(ctx._callExpr),
       arguments: exprs,
-      inArena: ctx._arenaExpr ? this.visit(ctx._arenaExpr) : null,
+      allocator: ctx._allocatorExpr ? this.visit(ctx._allocatorExpr) : null,
       sourceloc: this.loc(ctx),
     };
   };
@@ -1196,7 +1193,6 @@ class ASTTransformer extends HazeParserVisitor<any> {
       variant: "DynamicArrayDatatype",
       datatype: this.visit(ctx.datatype()),
       mutability: EDatatypeMutability.Default,
-      unique: false,
       sourceloc: this.loc(ctx),
     };
   };
@@ -1232,7 +1228,7 @@ class ASTTransformer extends HazeParserVisitor<any> {
       variant: "AggregateLiteralExpr",
       datatype: ctx.datatype() ? this.visit(ctx.datatype()!) : null,
       elements: elements,
-      inArena: ctx._arenaExpr ? this.visit(ctx._arenaExpr) : null,
+      allocator: ctx._allocatorExpr ? this.visit(ctx._allocatorExpr) : null,
       sourceloc: this.loc(ctx),
     };
   };
@@ -1316,9 +1312,6 @@ class ASTTransformer extends HazeParserVisitor<any> {
             this.loc(ctx)
           );
         }
-        if (ctx.UNIQUE()) {
-          datatype.unique = true;
-        }
         if (ctx.CONST()) {
           datatype.mutability = EDatatypeMutability.Const;
         }
@@ -1333,9 +1326,6 @@ class ASTTransformer extends HazeParserVisitor<any> {
       case "NamedDatatype":
         if (ctx.INLINE()) {
           datatype.inline = true;
-        }
-        if (ctx.UNIQUE()) {
-          datatype.unique = true;
         }
         if (ctx.CONST()) {
           datatype.mutability = EDatatypeMutability.Const;
@@ -1358,9 +1348,6 @@ class ASTTransformer extends HazeParserVisitor<any> {
         if (ctx.MUT()) {
           datatype.mutability = EDatatypeMutability.Mut;
         }
-        if (ctx.UNIQUE()) {
-          datatype.unique = true;
-        }
         break;
 
       case "UntaggedUnionDatatype":
@@ -1369,12 +1356,6 @@ class ASTTransformer extends HazeParserVisitor<any> {
         if (ctx.INLINE()) {
           throw new CompilerError(
             `The 'inline' modifier cannot be applied to a function datatype`,
-            this.loc(ctx)
-          );
-        }
-        if (ctx.UNIQUE()) {
-          throw new CompilerError(
-            `The 'unique' modifier cannot be applied to a function datatype`,
             this.loc(ctx)
           );
         }
@@ -1394,7 +1375,7 @@ class ASTTransformer extends HazeParserVisitor<any> {
 
       case "Deferred":
       case "ParameterPack":
-        if (ctx.CONST() || ctx.MUT() || ctx.UNIQUE() || ctx.INLINE()) {
+        if (ctx.CONST() || ctx.MUT() || ctx.INLINE()) {
           throw new CompilerError(
             `A mutability specifier cannot appear on a '${datatype.variant}' datatype`,
             this.loc(ctx)
@@ -1522,7 +1503,6 @@ class ASTTransformer extends HazeParserVisitor<any> {
       datatype: this.visit(ctx.datatype()),
       length: BigInt(number),
       mutability: EDatatypeMutability.Default,
-      unique: false,
       inline: false,
       sourceloc: this.loc(ctx),
     };
@@ -1601,8 +1581,8 @@ class ASTTransformer extends HazeParserVisitor<any> {
     return {
       variant: "FStringExpr",
       fragments: combinedFragments,
-      inArena: ctx.interpolatedString()._arenaExpr
-        ? this.visit(ctx.interpolatedString()._arenaExpr!)
+      allocator: ctx.interpolatedString()._allocatorExpr
+        ? this.visit(ctx.interpolatedString()._allocatorExpr!)
         : null,
       sourceloc: this.loc(ctx),
     };
