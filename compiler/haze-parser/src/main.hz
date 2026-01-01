@@ -20,9 +20,8 @@ extern C parse(source: str) {
         fmt.println("Failed");
     }
 
-    let alloc = Alloc.arena();
-
     let x = 4;
+    foobar();
     // const r = f"Hello {x + 4} world" with alloc;
     // fmt.println("Result: ", r);
 }
