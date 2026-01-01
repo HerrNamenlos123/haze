@@ -1,64 +1,141 @@
 
-struct IntegerNode {
+enum ETokenType {
+    Identifier,
+    Integer,
+    Float,
+    String,
 
+    LParen, RParen,
+    LBrace, RBrace,
+    Comma, Dot, Semicolon,
+    Plus, Minus, Asterisk, Slash, Percent,
+    Equals,
+
+    EqualsEquals,
+    BangEquals,
+
+    Let,
+    If,
+    Else,
+    While,
+    For,
+    Return,
+
+    EOF,
 }
 
-struct IdentifierNode {
-
+struct IntegerToken {
+    value: int;
 }
 
-struct Foo {
-    bar: int = 0;
+struct IdentifierToken {
+    name: str;
+}
+
+type Token = IntegerToken | IdentifierToken;
+
+stringify(token: Token) {
+    // if token is IntegerToken {
+    //     return f"IntegerToken(\"{token.value}\")";
+    // }
+    // if token is IdentifierToken {
+    //     return f"IdentifierToken(\"{token.name}\")";
+    // }
+    return "";
+}
+
+struct Lexer {
+    src: str;
+    cursor: int = 0;
+
+    peek() {
+        if this.cursor >= this.src.length { return null; }
+        return this.src[this.cursor];
+    }
+
+    advance() {
+        let chr = this.peek();
+        if chr { this.cursor++; }
+        return chr;
+    }
+
+    nextToken(): Token | null {
+        // skip whitespace
+        let b = this.peek()
+        if b is null { return null; }
+
+        while b && ascii.isWhitespace(b) {
+            this.advance();
+            b = this.peek();
+        }
+
+        b = this.peek();
+
+        if b {
+            if ascii.isDigit(b) {
+                return this.parseInteger();
+            }
+
+            if ascii.isAlpha(b) {
+                return this.parseIdentifier();
+            }
+        }
+
+        sys.panic("unexpected character");
+    }
+
+    parseInteger(): Token {
+        let start = this.cursor;
+        let value: int = 0;
+
+        let b = this.peek();
+        while b && ascii.isDigit(b) {
+            value = value * 10 + (b - b"0") as int;
+            this.advance();
+            b = this.peek();
+        }
+
+        return IntegerToken {
+            value: value
+        };
+    }
+
+    parseIdentifier(): Token {
+        let start = this.cursor;
+
+        let b = this.peek()
+        while b && (ascii.isAlpha(b) || ascii.isDigit(b) || b == b"_") {
+            this.advance();
+            b = this.peek();
+        }
+
+        let name = this.src.substr(start, this.cursor);
+
+        return IdentifierToken {
+            name: name
+        };
+    }
 }
 
 extern C parse(source: str) {
     const result = fs.read(source);
     if result {
-        fmt.println("Content: ", result);
+        let lexer = Lexer {
+            src: result,
+        };
+
+        let tok = lexer.nextToken()
+        while tok {
+            fmt.println(stringify(tok));
+            tok = lexer.nextToken()
+        }
     }
     else {
         fmt.println("Failed");
     }
-
-    let x = 4;
-    foobar();
-    // const r = f"Hello {x + 4} world" with alloc;
-    // fmt.println("Result: ", r);
-}
-
-y(d: int) :: final {
-    x (d + 1);
-}
-
-x(d: int) :: final {
-    y(d + 1);
-}
-
-a() {
-    x(0);
-}
-
-bar() :: final {
-    const c = 1;
-    // const r = 1;
-    // const e = 1;
-    // const w = 1;
-    // const q = 1;
-    // const i = 1;
-    // const s = 1;
-    // a();
-    // __c__("int* a = 0; int b = *a;");
-    // test();
-}
-
-test() {
-    const a = 0;
-    bar();
 }
 
 main() {
-    type LexerNode = IntegerNode | IdentifierNode;
-    test();
     parse("stdlib/core/src/String.hz");
     return 0;
 }

@@ -464,9 +464,21 @@ class ASTTransformer extends HazeParserVisitor<any> {
   };
 
   visitStringConstant = (ctx: StringConstantContext): LiteralValue => {
+    let text = ctx.STRING_LITERAL().getText();
+
+    let prefix: "b" | null = null;
+    if (text.startsWith('b"')) {
+      text = text.slice(1, undefined);
+      prefix = "b";
+    } else if (text.startsWith('"')) {
+    } else {
+      assert(false);
+    }
+
     return {
       type: EPrimitive.str,
-      value: JSON.parse(ctx.STRING_LITERAL().getText()),
+      prefix: prefix,
+      value: JSON.parse(text),
     };
   };
 

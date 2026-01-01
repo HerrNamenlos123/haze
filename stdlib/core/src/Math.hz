@@ -1,14 +1,16 @@
 
-namespace Math {
+namespace ffi {
+    extern C noemit sqrt(v: real): real :: final;
+    extern C noemit pow(a: real, b: real): real :: final;
+    extern C noemit sin(v: real): real :: final;
+    extern C noemit sinh(v: real): real :: final;
+    extern C noemit cos(v: real): real :: final;
+    extern C noemit cosh(v: real): real :: final;
+    extern C noemit tan(v: real): real :: final;
+    extern C noemit atan2(y: real, x: real): real :: final;
+}
 
-    export extern C noemit sqrt(v: real): real :: final;
-    export extern C noemit pow(a: real, b: real): real :: final;
-    export extern C noemit sin(v: real): real :: final;
-    export extern C noemit sinh(v: real): real :: final;
-    export extern C noemit cos(v: real): real :: final;
-    export extern C noemit cosh(v: real): real :: final;
-    export extern C noemit tan(v: real): real :: final;
-    export extern C noemit atan2(y: real, x: real): real :: final;
+export namespace Math {
 
     export PI(): real {
         const PI = 3.141592653589793;
@@ -21,6 +23,38 @@ namespace Math {
 
     export degToRad(v: real): real {
         return v * Math.PI() / 180.0;
+    }
+
+    export sqrt(v: real) {
+        return ffi.sqrt(v);
+    }
+
+    export pow(a: real, b: real) {
+        return ffi.pow(a, b);
+    }
+
+    export sin(v: real) {
+        return ffi.sin(v);
+    }
+
+    export sinh(v: real) {
+        return ffi.sinh(v);
+    }
+
+    export cos(v: real) {
+        return ffi.cos(v);
+    }
+
+    export cosh(v: real) {
+        return ffi.cosh(v);
+    }
+
+    export tan(v: real) {
+        return ffi.tan(v);
+    }
+
+    export atan2(a: real, b: real) {
+        return ffi.atan2(a, b);
     }
 
 //   maxu64(a: u64, b: u64): u64 => {

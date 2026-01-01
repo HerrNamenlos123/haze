@@ -815,6 +815,7 @@ export namespace Conversion {
           sr.b.literalValue(
             {
               type: to.primitive,
+              prefix: null,
               value: fromExpr.literal.value,
             },
             fromExpr.sourceloc
@@ -1208,6 +1209,10 @@ export namespace Conversion {
         // Check Direct match
         if (m === fromExpr.type) {
           return true;
+        }
+
+        if (sr.typeUseNodes.get(m).type !== sr.typeUseNodes.get(fromExpr.type).type) {
+          return false;
         }
 
         // Check match with implicit mutability change

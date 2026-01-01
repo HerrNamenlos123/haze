@@ -21,7 +21,7 @@ type = "lib"
 flags = ["-D_XOPEN_SOURCE=500"]
 
 [linker.linux]
-flags = ["-ldl", "-lc"]
+flags = ["-ldl", "-lc", "-lm"]
 
 [linker.win32]
 flags = ["-ldbghelp"]

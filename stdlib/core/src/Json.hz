@@ -195,35 +195,35 @@ foobar2(): Result<Foo, json.Error> {
     return Result<Foo, json.Error>.Ok({});
 }
 
-createcJSONExample(): Result<Foo, json.Error> {
-    const resolutionNumbers = [3]Vec2 {
-        Vec2(1280, 720),
-        Vec2(1920, 1080),
-        Vec2(3840, 2160),
-    };
+// createcJSONExample(): Result<Foo, json.Error> {
+//     const resolutionNumbers = [3]Vec2 {
+//         Vec2(1280, 720),
+//         Vec2(1920, 1080),
+//         Vec2(3840, 2160),
+//     };
 
-    let value = json.object();
-    value["name"]?! := "Awesome 4K";
+//     let value = json.object();
+//     value["name"]?! := "Awesome 4K";
 
-    value["resolutions"]?! := json.array();
+//     value["resolutions"]?! := json.array();
 
-    for (let i = 0; i < resolutionNumbers.length; i++) {
-        let res = resolutionNumbers[i];
+//     for (let i = 0; i < resolutionNumbers.length; i++) {
+//         let res = resolutionNumbers[i];
 
-        value["resolutions"]?!.push(do {
-            let v = json.object();
-            v["width"]?! := res.x;
-            v["height"]?! := res.y;
-            v;
-        });
-    }
+//         value["resolutions"]?!.push(do {
+//             let v = json.object();
+//             v["width"]?! := res.x;
+//             v["height"]?! := res.y;
+//             v;
+//         });
+//     }
 
-    fmt.println("RESULT: ", value.print({
-        pretty: true
-    }));
+//     fmt.println("RESULT: ", value.print({
+//         pretty: true
+//     }));
 
-    return Result<Foo, json.Error>.Ok({});
-}
+//     return Result<Foo, json.Error>.Ok({});
+// }
 
 export foobar() {
     let result = foobar2();
@@ -233,5 +233,5 @@ export foobar() {
     else {
         fmt.println("Success!");
     }
-    createcJSONExample();
+    // createcJSONExample();
 }

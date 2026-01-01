@@ -104,6 +104,7 @@ export type LiteralValue =
     }
   | {
       type: EPrimitive.str | EPrimitive.cstr | EPrimitive.ccstr;
+      prefix: "b" | null;
       value: string;
     }
   | {

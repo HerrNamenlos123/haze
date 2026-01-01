@@ -1,0 +1,14 @@
+export namespace ascii {
+
+    export isDigit(b: u8) { 
+        return b >= b"0" && b <= b"9"; 
+    }
+
+    export isAlpha(b: u8) { 
+        return (b >= b"a" && b <= b"z") || (b >= b"A" && b <= b"Z"); 
+    }
+
+    export isWhitespace(b: u8) { 
+        return b == b" " || b == b"\n" || b == b"\t" || b == b"\r"; 
+    }
+}

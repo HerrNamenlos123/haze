@@ -13,7 +13,6 @@ NAMESPACE: 'namespace';
 PUB: 'pub';
 NOEMIT: 'noemit';
 INLINEC: '__c__';
-EXTERNC: 'C';
 EXTERN: 'extern';
 STATIC: 'static';
 STRUCT: 'struct';
@@ -151,7 +150,7 @@ BLOCK_COMMENT: '/*' .*? '*/' -> channel(HIDDEN);
 // ------------------------
 // Main mode (normal code)
 // ------------------------
-STRING_LITERAL: '"' (ESC | ~["\\])* '"' ;
+STRING_LITERAL: ('"' | 'b"') (ESC | ~["\\])* '"' ;
 
 FSTRING_START: 'f"' -> pushMode(InterpolatedString);
 

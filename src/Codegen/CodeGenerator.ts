@@ -1158,6 +1158,15 @@ class CodeGenerator {
           } else {
             outWriter.write("(" + target.out.get() + " = " + value.out.get() + ")");
           }
+        } else if (
+          typeDef.variant === Lowered.ENode.UntaggedUnionDatatype ||
+          typeDef.variant === Lowered.ENode.TaggedUnionDatatype
+        ) {
+          if (expr.assignRefTarget) {
+            outWriter.write("(*" + target.out.get() + " = " + value.out.get() + ")");
+          } else {
+            outWriter.write("(" + target.out.get() + " = " + value.out.get() + ")");
+          }
         } else {
           console.log(targetExpr, typeUse, typeDef);
           assert(false);
@@ -1187,6 +1196,23 @@ class CodeGenerator {
           assert(false);
         }
 
+        return { out: outWriter, temp: tempWriter };
+      }
+
+      case Lowered.ENode.StringSubscriptExpr: {
+        const e = this.emitExpr(expr.expr);
+        tempWriter.write(e.temp);
+        const index = this.emitExpr(expr.index);
+
+        const typeUse = this.lr.typeUseNodes.get(this.lr.exprNodes.get(expr.expr).type);
+        const typeDef = this.lr.typeDefNodes.get(typeUse.type);
+        assert(
+          typeDef.variant === Lowered.ENode.PrimitiveDatatype &&
+            typeDef.primitive === EPrimitive.str
+        );
+
+        tempWriter.write(index.temp);
+        outWriter.write(`HZSTD_STRING_GET_BYTE(${e.out.get()}, ${index.out.get()})`);
         return { out: outWriter, temp: tempWriter };
       }
 

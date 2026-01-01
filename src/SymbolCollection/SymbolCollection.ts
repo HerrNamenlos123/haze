@@ -67,7 +67,8 @@ import {
 } from "../shared/AST";
 import { getModuleGlobalNamespaceName, type ExportData, type ModuleConfig } from "../shared/Config";
 import { join } from "path";
-import { Semantic } from "../Semantic/Elaborate";
+
+const RESERVED_METHOD_NAMES = ["toString", "clone", "freezeClone"];
 
 export type CollectionContext = {
   config: ModuleConfig;
@@ -1313,8 +1314,12 @@ function collectTypeDef(
       return typedefSymbolId;
     }
 
+    case "TypeAlias": {
+      return collectGlobalDirective(cc, item, { currentParentScope: args.currentParentScope });
+    }
+
     default:
-      assert(false, "All cases handled " + item.variant);
+      assert(false, "All cases handled " + (item as any).variant);
   }
 }
 
@@ -1487,6 +1492,15 @@ function collectSymbol(
           `A function that is not a method cannot be marked as 'static'`,
           item.sourceloc
         );
+      }
+
+      if (item.methodType === EMethodType.Method) {
+        if (RESERVED_METHOD_NAMES.includes(item.name)) {
+          throw new CompilerError(
+            `'${item.name}' is a reserved name, it cannot be used in userland.`,
+            item.sourceloc
+          );
+        }
       }
 
       const parameters = item.params.map((p) => {
@@ -1727,7 +1741,7 @@ function collectGlobalDirective(
       // if (item.export) {
       //   cc.exportedSymbols.exported.add(symbolId);
       // }
-      return;
+      return symbolId;
     }
 
     // =================================================================================================================
@@ -1754,7 +1768,7 @@ function collectGlobalDirective(
         },
         args.currentParentScope
       );
-      return;
+      return variableSymbolId;
     }
 
     // =================================================================================================================
@@ -1796,7 +1810,7 @@ function collectGlobalDirective(
         alias.generics.push(generic);
       }
 
-      return;
+      return symbolId;
     }
 
     // =================================================================================================================
@@ -1864,7 +1878,7 @@ function collectGlobalDirective(
       });
       alias.genericScope = structScopeId;
 
-      return;
+      return symbolId;
     }
 
     // =================================================================================================================

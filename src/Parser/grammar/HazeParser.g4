@@ -59,7 +59,7 @@ cInjectDirective: (export=EXPORT)? INLINEC LB STRING_LITERAL RB SEMI?;
 
 // Functions
 
-externLanguage: EXTERNC;
+externLanguage: ID;
 
 functionDefinition: (export=EXPORT)? (extern=EXTERN externLang=externLanguage? pub=PUB? noemit=NOEMIT?)? ID (LANGLE ID (COMMA ID)* RANGLE)? LB params RB (COLON datatype)? requiresBlock? (ARROW)? (funcbody | SEMI?);
 lambda: LB params RB (COLON datatype)? requiresBlock? ARROW funcbody;

@@ -96,6 +96,7 @@ export namespace Lowered {
     ArrayLiteralExpr,
     ArraySubscriptExpr,
     ArraySliceExpr,
+    StringSubscriptExpr,
     StringConstructExpr,
     // Dummy
     Dummy,
@@ -362,6 +363,13 @@ export namespace Lowered {
     type: TypeUseId;
   };
 
+  export type StringSubscriptExpr = {
+    variant: ENode.StringSubscriptExpr;
+    expr: ExprId;
+    index: ExprId;
+    type: TypeUseId;
+  };
+
   export type StringConstructExpr = {
     variant: ENode.StringConstructExpr;
     value: {
@@ -401,6 +409,7 @@ export namespace Lowered {
     | ArraySubscriptExpr
     | ArraySliceExpr
     | BlockScopeExpr
+    | StringSubscriptExpr
     | StringConstructExpr
     | SymbolValueExpr;
 
@@ -1244,6 +1253,15 @@ export function lowerExpr(
       assert(false);
     }
 
+    case Semantic.ENode.StringSubscriptExpr: {
+      return Lowered.addExpr(lr, {
+        variant: Lowered.ENode.StringSubscriptExpr,
+        expr: lowerExpr(lr, expr.expr, flattened, instanceInfo)[1],
+        index: lowerExpr(lr, expr.index, flattened, instanceInfo)[1],
+        type: lowerTypeUse(lr, expr.type),
+      });
+    }
+
     case Semantic.ENode.ArraySubscriptExpr: {
       assert(expr.indices.length === 1);
       return Lowered.addExpr(lr, {
@@ -1319,14 +1337,8 @@ export function lowerExpr(
       lowerSymbol(lr, expr.functionSymbol);
       const thisExpr = lr.sr.exprNodes.get(expr.thisExpr);
       const thisExprTypeUse = lr.sr.typeUseNodes.get(thisExpr.type);
-      const thisExprType = lr.sr.typeDefNodes.get(thisExprTypeUse.type);
 
       let loweredThisExpression = lowerExpr(lr, expr.thisExpr, flattened, instanceInfo)[1];
-      assert(
-        thisExprType.variant === Semantic.ENode.StructDatatype ||
-          thisExprType.variant === Semantic.ENode.DynamicArrayDatatype ||
-          thisExprType.variant === Semantic.ENode.FixedArrayDatatype
-      );
       const structPointerType = lowerTypeUse(lr, thisExpr.type);
       let tempId = loweredThisExpression;
       if (thisExpr.isTemporary) {
@@ -2215,6 +2227,8 @@ function lowerBlockScope(
   let firstStrippedStatement = null as SourceLoc | null;
   let lastStrippedStatement = null as SourceLoc | null;
 
+  const usesDefer = false;
+
   for (const s of blockScope.statements) {
     const statement = lr.sr.statementNodes.get(s);
     if (statement.variant === Semantic.ENode.VariableStatement) {
@@ -2238,7 +2252,7 @@ function lowerBlockScope(
         if (innerStatement.expr) {
           // Only store in extra variable if necessary
           const thisReturnedExpression = lr.exprNodes.get(innerStatement.expr);
-          if (thisReturnedExpression.variant === Lowered.ENode.SymbolValueExpr) {
+          if (thisReturnedExpression.variant === Lowered.ENode.SymbolValueExpr || !usesDefer) {
             returnedExpr = innerStatement.expr;
           } else {
             returnedExpr = storeInTempVarAndGet(
@@ -2543,6 +2557,9 @@ function serializeLoweredExpr(lr: Lowered.Module, exprId: Lowered.ExprId): strin
         .map((v) => serializeLoweredExpr(lr, v))
         .join(", ")}]`;
     }
+
+    case Lowered.ENode.StringSubscriptExpr:
+      return `(${serializeLoweredExpr(lr, expr.expr)})[${serializeLoweredExpr(lr, expr.index)}]`;
 
     case Lowered.ENode.ArraySubscriptExpr:
       return `(${serializeLoweredExpr(lr, expr.expr)})[${serializeLoweredExpr(lr, expr.index)}]`;
