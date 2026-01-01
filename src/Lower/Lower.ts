@@ -1464,23 +1464,6 @@ export function lowerExpr(
       }
     }
 
-    case Semantic.ENode.FStringExpr: {
-      const statements: Lowered.StatementId[] = [];
-
-      // makeIntrinsicCall("HZSTD")
-
-      return Lowered.addExpr(lr, {
-        variant: Lowered.ENode.BlockScopeExpr,
-        block: Lowered.addBlockScope(lr, {
-          definesVariables: true,
-          emittedExpr: null,
-          statements: statements,
-        })[1],
-        sourceloc: expr.sourceloc,
-        type: lowerTypeUse(lr, expr.type),
-      });
-    }
-
     case Semantic.ENode.SizeofExpr: {
       return Lowered.addExpr(lr, {
         variant: Lowered.ENode.SizeofExpr,

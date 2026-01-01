@@ -194,6 +194,16 @@ export namespace Conversion {
     return `${minSymbol}${minStr}, ${maxStr}${maxSymbol}`;
   }
 
+  export function isString(sr: SemanticResult, typeId: Semantic.TypeDefId): boolean {
+    const type = sr.typeDefNodes.get(typeId);
+    if (type.variant !== Semantic.ENode.PrimitiveDatatype) return false;
+    return (
+      type.primitive === EPrimitive.str ||
+      type.primitive === EPrimitive.cstr ||
+      type.primitive === EPrimitive.ccstr
+    );
+  }
+
   export function isStruct(sr: SemanticResult, typeId: Semantic.TypeDefId): boolean {
     const type = sr.typeDefNodes.get(typeId);
     if (type.variant !== Semantic.ENode.StructDatatype) return false;
@@ -1608,8 +1618,8 @@ export namespace Conversion {
     operation: EBinaryOperation,
     sourceloc: SourceLoc
   ): Semantic.TypeUseId {
-    const leftType = sr.typeUseNodes.get(sr.exprNodes.get(a).type).type;
-    const rightType = sr.typeUseNodes.get(sr.exprNodes.get(b).type).type;
+    const leftTypeId = sr.typeUseNodes.get(sr.exprNodes.get(a).type).type;
+    const rightTypeId = sr.typeUseNodes.get(sr.exprNodes.get(b).type).type;
 
     switch (operation) {
       case EBinaryOperation.Equal:
@@ -1625,8 +1635,11 @@ export namespace Conversion {
       case EBinaryOperation.Modulo:
       case EBinaryOperation.Add:
       case EBinaryOperation.Subtract:
-        if (leftType === rightType) {
-          return makeTypeUse(sr, leftType, EDatatypeMutability.Const, false, sourceloc)[1];
+        if (
+          leftTypeId === rightTypeId &&
+          (isIntegerById(sr, leftTypeId) || isFloat(sr, leftTypeId))
+        ) {
+          return makeTypeUse(sr, leftTypeId, EDatatypeMutability.Const, false, sourceloc)[1];
         }
         break;
 
@@ -1640,8 +1653,8 @@ export namespace Conversion {
         operation
       )} operation is known between types '${Semantic.serializeTypeDef(
         sr,
-        leftType
-      )}' and '${Semantic.serializeTypeDef(sr, rightType)}'`,
+        leftTypeId
+      )}' and '${Semantic.serializeTypeDef(sr, rightTypeId)}'`,
       sourceloc
     );
   }

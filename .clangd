@@ -1,5 +1,5 @@
 CompileFlags:
   CompilationDatabase: "__haze__/compile_commands.json"
   Add: [
-    "-I/home/fzachs/.haze/global", "-DHZSTD_PLATFORM_LINUX"
+    "-I/home/fzachs/.haze/global", "-DHZSTD_PLATFORM_LINUX", "-Wno-parentheses-equality"
   ]

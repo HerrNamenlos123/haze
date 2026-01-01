@@ -5,28 +5,6 @@ namespace builtin {
     export extern C noemit printf(fmt: ccstr, ...) :: final;
 }
 
-export struct F {
-    bar: int;
-}
-
-export fooza(f: mut F | null) {
-    // builtin.printf("Hi");
-    return 0;
-    // return F {
-    //     bar: 0
-    // };
-}
-
-export foo() {
-    let a = MemoryBuffer(20);
-    a.write(0, "Hello");
-    a.write(5, " ");
-    a.write(6, "World!");
-    a.commit();
-    fmt.println("\nResult: ", a.toString());
-    fmt.format();
-}
-
 namespace fmt {
     export struct FormatArgs {
         formatSpecifier: str = "";
@@ -68,13 +46,36 @@ namespace fmt {
         }
     }
 
-    format() {
+    export format(values: ...) {
         let reader = StringWriter(none);
-        format_to(reader, 187, {});
+        for comptime value, i in values {
+            format_to(reader, value, {});
+        }
         let writer = StringWriter(MemoryBuffer(reader.written));
-        format_to(writer, 187, {});
+        for comptime value, i in values {
+            format_to(writer, value, {});
+        }
         writer.commit();
-        fmt.println("Formatted: ", writer.toString());
+        return writer.toString();
+    }
+
+    // export foo(allocator: Allocator, values: ...) {
+    //     for comptime value, i in values {
+    //         let a = value;
+    //     }
+    // }
+
+    export formatWithAllocator(allocator: Allocator, values: ...) {
+        let reader = StringWriter(none);
+        for comptime value, i in values {
+            format_to(reader, value, {});
+        }
+        let writer = StringWriter(MemoryBuffer(allocator, reader.written));
+        for comptime value, i in values {
+            format_to(writer, value, {});
+        }
+        writer.commit();
+        return writer.toString();
     }
 
     export format_to(writer: mut StringWriter, value: int, args: FormatArgs) {
@@ -102,7 +103,7 @@ namespace fmt {
         }
     }
 
-    digitToStr(digit: int): str {
+    export digitToStr(digit: int): str {
         assert(digit >= 0 && digit <= 9);
         let result: str = "";
         __c__("static const char* digits[] = { \"0\", \"1\", \"2\", \"3\", \"4\", \"5\", \"6\", \"7\", \"8\", \"9\" };");
@@ -110,21 +111,25 @@ namespace fmt {
         return result;
     }
 
-    // export format_to(writer: StringWriter, value: i8, args: FormatArgs) {
-    //     format_to(writer, value as int, args);
-    // }
+    export format_to(writer: mut StringWriter, value: i8, args: FormatArgs) {
+        format_to(writer, value as int, args);
+    }
 
-    // export format_to(writer: StringWriter, value: i16, args: FormatArgs) {
-    //     format_to(writer, value as int, args);
-    // }
+    export format_to(writer: mut StringWriter, value: i16, args: FormatArgs) {
+        format_to(writer, value as int, args);
+    }
 
-    // export format_to(writer: StringWriter, value: i32, args: FormatArgs) {
-    //     format_to(writer, value as int, args);
-    // }
+    export format_to(writer: mut StringWriter, value: i32, args: FormatArgs) {
+        format_to(writer, value as int, args);
+    }
 
-    // export format_to(writer: StringWriter, value: i64, args: FormatArgs) {
-    //     format_to(writer, value as int, args);
-    // }
+    export format_to(writer: mut StringWriter, value: i64, args: FormatArgs) {
+        format_to(writer, value as int, args);
+    }
+
+    export format_to(writer: mut StringWriter, value: str, args: FormatArgs) {
+        writer.write(value);
+    }
 
     export print(args: ...) {
         for comptime arg in args {

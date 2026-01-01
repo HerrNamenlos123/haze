@@ -6,11 +6,11 @@ export extern C hzstd_make_heap_allocator(): Allocator :: final;
 export extern C hzstd_make_arena_allocator(): Allocator :: final;
 
 export namespace Alloc {
-    heap() {
+    export heap() {
         return hzstd_make_heap_allocator();
     }
 
-    arena() {
+    export arena() {
         return hzstd_make_arena_allocator();
     }
 }

@@ -1,7 +1,23 @@
 import { Semantic, type SemanticResult } from "../Semantic/Elaborate";
 import { EExternLanguage } from "../shared/AST";
+import { EMethodType } from "../shared/common";
 import { assert, formatSourceLoc } from "../shared/Errors";
-import { Collect, funcSymHasParameterPack, type CollectionContext } from "./SymbolCollection";
+import {
+  Collect,
+  funcSymHasParameterPack,
+  printCollectedDatatype,
+  type CollectionContext,
+} from "./SymbolCollection";
+
+export function ExportCollectedTypeDefAlias(
+  sr: SemanticResult,
+  typedefId: Collect.TypeDefId,
+  nested: boolean
+) {
+  const typedef = sr.cc.typeDefNodes.get(typedefId);
+  assert(typedef.variant === Collect.ENode.TypeDefAlias);
+  return "type " + typedef.name + " = " + printCollectedDatatype(sr.cc, typedef.target) + ";\n";
+}
 
 export function ExportTypeDef(
   sr: SemanticResult,
@@ -59,8 +75,11 @@ export function ExportTypeDef(
         } else {
           const functype = sr.typeDefNodes.get(method.type);
           assert(functype.variant === Semantic.ENode.FunctionDatatype);
-          const parameters = functype.parameters
-            .slice(1, undefined)
+          let rawParams = functype.parameters;
+          if (!method.staticMethod && method.methodType !== EMethodType.Constructor) {
+            rawParams = rawParams.slice(1, undefined);
+          }
+          const parameters = rawParams
             .map((p, i) => `${method.parameterNames[i + 1]}: ${Semantic.serializeTypeUse(sr, p)}`)
             .join(", ");
           if (functype.returnType) {
@@ -269,6 +288,10 @@ export function ExportCollectedSymbols(sr: SemanticResult) {
 
   for (const symbolId of sr.exportedSymbols) {
     file += ExportSymbol(sr, symbolId, false);
+  }
+
+  for (const id of sr.exportedTypeAliases) {
+    file += ExportCollectedTypeDefAlias(sr, id, false);
   }
 
   for (const symbolId of sr.cc.exportedGenericSymbols) {

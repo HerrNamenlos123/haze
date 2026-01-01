@@ -11,31 +11,6 @@ struct Foo {
     bar: int = 0;
 }
 
-fo(f: Foo) {}
-
-array() {
-    const staticArray = [3]u8{ 1, 2, 3 };
-    const dynamicArray = []u8{ 1, 2, 3 };
-    // const c = IntegerNode {};
-    // const d = inline IntegerNode {};
-    // const b = []u8 {};
-    // const a: []u8 = []u8 {1, 2, 3};
-    // a.push(4);
-    for (let i = 0; i < staticArray.length; i++) {
-        fmt.println("Element: ", staticArray[i]);
-    }
-    // const var = "187";
-    // fmt.println(f"My Result: ${var}!")
-    // const myVariable = f"";
-    // fmt.println(f"Hello World!")
-    let foo = Foo {};
-    foo.bar;
-    do unsafe {
-        const f = foo as const Foo;
-    }
-    // const result = foo.bar;
-}
-
 extern C parse(source: str) {
     const result = fs.read(source);
     if result {
@@ -45,9 +20,11 @@ extern C parse(source: str) {
         fmt.println("Failed");
     }
 
-    array();
-    foo();
-    // const arr = array();
+    let alloc = Alloc.arena();
+
+    let x = 4;
+    // const r = f"Hello {x + 4} world" with alloc;
+    // fmt.println("Result: ", r);
 }
 
 y(d: int) :: final {

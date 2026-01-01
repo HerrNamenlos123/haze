@@ -2541,7 +2541,18 @@ export function printCollectedDatatype(
           (n.innerNested && (cc.typeUseNodes.get(n.innerNested) as Collect.NamedDatatype)) || null;
         assert(n === null || n.variant === Collect.ENode.NamedDatatype);
       }
-      return str;
+
+      let s = "";
+      if (type.inline) {
+        s += "inline ";
+      }
+      if (type.mutability === EDatatypeMutability.Const) {
+        s += "const ";
+      }
+      if (type.mutability === EDatatypeMutability.Mut) {
+        s += "mut ";
+      }
+      return s + str;
     }
 
     case Collect.ENode.StackArrayDatatype: {
@@ -2567,7 +2578,7 @@ export function printCollectedDatatype(
           .map((m) => {
             return `${m.tag}: ${printCollectedDatatype(cc, m.type)}`;
           })
-          .join("; ") +
+          .join(", ") +
         "}"
       );
     }
@@ -2695,7 +2706,7 @@ export const printCollectedExpr = (cc: CollectionContext, exprId: Collect.ExprId
     }
 
     case Collect.ENode.TypeLiteralExpr: {
-      return `type<${printCollectedDatatype(cc, expr.datatype)}>`;
+      return `${printCollectedDatatype(cc, expr.datatype)}`;
     }
 
     case Collect.ENode.ErrorPropagationExpr: {
