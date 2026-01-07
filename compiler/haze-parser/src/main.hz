@@ -60,36 +60,29 @@ struct Lexer {
     }
 
     nextToken(): Token | null {
-        // skip whitespace
-        let b = this.peek()
-        if b is null { return null; }
-
-        while b && ascii.isWhitespace(b) {
+        while let b = this.peek() if ascii.isWhitespace(b) {
             this.advance();
-            b = this.peek();
         }
 
-        b = this.peek();
-
+        let b = this.peek()
         if b {
             if ascii.isDigit(b) {
                 return this.parseInteger();
             }
-
             if ascii.isAlpha(b) {
                 return this.parseIdentifier();
             }
+            sys.panic("unexpected character");
         }
 
-        sys.panic("unexpected character");
+        return null;
     }
 
     parseInteger(): Token {
         let start = this.cursor;
         let value: int = 0;
 
-        let b = this.peek();
-        while b && ascii.isDigit(b) {
+        while let b = this.peek() if ascii.isDigit(b) {
             value = value * 10 + (b - b"0") as int;
             this.advance();
             b = this.peek();
@@ -103,8 +96,7 @@ struct Lexer {
     parseIdentifier(): Token {
         let start = this.cursor;
 
-        let b = this.peek()
-        while b && (ascii.isAlpha(b) || ascii.isDigit(b) || b == b"_") {
+        while let b = this.peek() if ascii.isAlpha(b) || ascii.isDigit(b) || b == b"_" {
             this.advance();
             b = this.peek();
         }
@@ -124,9 +116,8 @@ extern C parse(source: str) {
             src: result,
         };
 
-        let tok = lexer.nextToken()
-        while tok {
-            fmt.println(stringify(tok));
+        while let tok = lexer.nextToken() {
+            // fmt.println(stringify(tok));
             tok = lexer.nextToken()
         }
     }

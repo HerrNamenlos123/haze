@@ -54,6 +54,7 @@ import { type Brand, type LiteralValue } from "../shared/common";
 import { getJSDocOverrideTagNoCache, SymbolFlags } from "typescript";
 import { printStatement } from "../Lower/Lower";
 import { makeTempName } from "../shared/store";
+import { CONNREFUSED } from "dns";
 
 type Inference =
   | undefined
@@ -4549,10 +4550,145 @@ export class SemanticElaborator {
       // =================================================================================================================
 
       case Collect.ENode.WhileStatement: {
-        const [condition, conditionId] = this.expr(s.condition, undefined);
+        let resultingConditionId: Semantic.ExprId | null = null;
+
+        // throw new Error(
+        //   "TODO: FIX: The evaluation does not work correctly because we have an ugly mix of semantic and collected stuff. We only know the collected scope of the while loop, but need the semantic scope for the condition type. It is a bit of a mess. Fix it."
+        // );
 
         const constraints = [...this.currentContext.constraints];
-        this.buildConstraints(constraints, conditionId);
+        if (s.letScopeId) {
+          const scope = this.sr.cc.scopeNodes.get(s.letScopeId);
+          assert(scope.variant === Collect.ENode.BlockScope);
+          assert(scope.statements.length === 2);
+          const letStatement = this.sr.cc.statementNodes.get(scope.statements[0]);
+          assert(letStatement.variant === Collect.ENode.VariableDefinitionStatement);
+
+          // If the let syntax is used, then the letScope contains the variable (as in let ID = <expr>)
+          // and s.condition contains the if-guard if available
+
+          assert(letStatement.value);
+          const sym = this.sr.cc.symbolNodes.get(letStatement.variableSymbol);
+          assert(sym.variant === Collect.ENode.VariableSymbol);
+          const varType = this.expr(letStatement.value, undefined)[0].type;
+          const variableSymbolExpr = this.expr(
+            Collect.makeExpr(this.sr.cc, {
+              variant: Collect.ENode.SymbolValueExpr,
+              genericArgs: [],
+              name: sym.name,
+              sourceloc: s.sourceloc,
+            })[1],
+            undefined
+          )[1];
+
+          const variableAsBoolResult = Conversion.MakeConversion(
+            this.sr,
+            variableSymbolExpr,
+            this.sr.b.boolType(),
+            this.currentContext.constraints,
+            s.sourceloc,
+            Conversion.Mode.Implicit,
+            false
+          );
+
+          // If the variable itself is convertible to bool, we do not need a guard.
+          // If it is not convertible to bool, we absolutely need a guard.
+
+          if (variableAsBoolResult.ok) {
+            assert(letStatement.value);
+            this.buildConstraints(constraints, variableAsBoolResult.expr);
+            const conditionFromLet = Semantic.addExpr(this.sr, {
+              variant: Semantic.ENode.BlockScopeExpr,
+              block: Semantic.addBlockScope(this.sr, {
+                variant: Semantic.ENode.BlockScope,
+                constraints: this.currentContext.constraints,
+                emittedExpr: variableAsBoolResult.expr,
+                statements: [
+                  Semantic.addStatement(this.sr, {
+                    variant: Semantic.ENode.ExprStatement,
+                    expr: Semantic.addExpr(this.sr, {
+                      variant: Semantic.ENode.ExprAssignmentExpr,
+                      instanceIds: [],
+                      isTemporary: true,
+                      operation: EAssignmentOperation.Rebind,
+                      target: variableSymbolExpr,
+                      type: varType,
+                      value: this.expr(letStatement.value!, undefined)[1],
+                      sourceloc: s.sourceloc,
+                    })[1],
+                    sourceloc: s.sourceloc,
+                  })[1],
+                ],
+              })[1],
+              instanceIds: [],
+              isTemporary: true,
+              sourceloc: s.sourceloc,
+              type: this.sr.b.boolType(),
+            })[1];
+
+            if (s.condition) {
+              // Variable is convertible to bool and we have guard, combine both
+              resultingConditionId = this.withContext(
+                {
+                  context: Semantic.isolateElaborationContext(this.currentContext, {
+                    constraints: constraints,
+                    currentScope: this.currentContext.currentScope,
+                    genericsScope: this.currentContext.genericsScope,
+                    instanceDeps: this.currentContext.instanceDeps,
+                  }),
+                  functionReturnsInstanceIds: this.functionReturnsInstanceIds,
+                  inFunction: this.inFunction,
+                },
+                () =>
+                  this.sr.b.binaryExpr(
+                    conditionFromLet,
+                    Conversion.MakeConversionOrThrow(
+                      this.sr,
+                      this.expr(s.condition!, undefined)[1],
+                      this.sr.b.boolType(),
+                      this.currentContext.constraints,
+                      s.sourceloc,
+                      Conversion.Mode.Implicit,
+                      false
+                    ),
+                    EBinaryOperation.BoolAnd,
+                    this.sr.b.boolType(),
+                    s.sourceloc
+                  )[1]
+              );
+            } else {
+              // Variable is convertible to bool but no guard, only use value
+              resultingConditionId = conditionFromLet;
+            }
+          } else {
+            if (s.condition) {
+              // Variable is NOT convertible to bool but we have a guard, use only guard: Keep as-is
+              resultingConditionId = this.expr(s.condition, undefined)[1];
+              this.buildConstraints(constraints, resultingConditionId);
+            } else {
+              // Variable is neither convertible to bool nor we have a guard, error
+              throw new CompilerError(
+                `The type of the 'while let' expression is not implicitly convertible to bool, therefore a 'while let ... if ...'-guard is required.`,
+                s.sourceloc
+              );
+            }
+          }
+        } else {
+          assert(s.condition);
+          resultingConditionId = this.expr(s.condition, undefined)[1];
+          this.buildConstraints(constraints, resultingConditionId);
+        }
+
+        assert(resultingConditionId);
+        const boolCondition = Conversion.MakeConversionOrThrow(
+          this.sr,
+          resultingConditionId,
+          this.sr.b.boolType(),
+          this.currentContext.constraints,
+          s.sourceloc,
+          Conversion.Mode.Implicit,
+          false
+        );
 
         const [thenScope, thenScopeId] = Semantic.addBlockScope(this.sr, {
           variant: Semantic.ENode.BlockScope,
@@ -4586,7 +4722,8 @@ export class SemanticElaborator {
 
         return Semantic.addStatement(this.sr, {
           variant: Semantic.ENode.WhileStatement,
-          condition: conditionId,
+          isLetBinding: Boolean(s.letScopeId),
+          condition: boolCondition,
           then: thenScopeId,
           sourceloc: s.sourceloc,
         })[1];
@@ -8168,6 +8305,7 @@ export namespace Semantic {
 
   export type WhileStatement = {
     variant: ENode.WhileStatement;
+    isLetBinding: boolean;
     condition: ExprId;
     then: BlockScopeId;
     sourceloc: SourceLoc;
@@ -9428,6 +9566,10 @@ export namespace Semantic {
 
       case Semantic.ENode.UnionToValueCastExpr: {
         return `(${serializeExpr(sr, expr.expr)} as tag ${expr.tag})`;
+      }
+
+      case Semantic.ENode.UnionTagCheckExpr: {
+        return `(${serializeExpr(sr, expr.expr)} tag check TBD...)`;
       }
 
       case Semantic.ENode.UnionToUnionCastExpr: {

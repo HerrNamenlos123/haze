@@ -156,6 +156,7 @@ import {
   FStringLiteralExprContext,
   RequiresPureContext,
   RequiresAutoretContext,
+  WhileLetStatementContext,
 } from "./grammar/autogen/HazeParser";
 import {
   BaseErrorListener,
@@ -1111,7 +1112,24 @@ class ASTTransformer extends HazeParserVisitor<any> {
   visitWhileStatement = (ctx: WhileStatementContext): ASTWhileStatement => {
     return {
       variant: "WhileStatement",
+      letCondition: null,
       condition: this.visit(ctx.expr()),
+      body: this.visit(ctx.rawScope()),
+      sourceloc: this.loc(ctx),
+    };
+  };
+
+  visitWhileLetStatement = (ctx: WhileLetStatementContext): ASTWhileStatement => {
+    const exprs = ctx.expr();
+    assert(exprs.length >= 1 && exprs.length <= 2);
+    return {
+      variant: "WhileStatement",
+      letCondition: {
+        name: ctx.ID().getText(),
+        type: ctx.datatype() ? this.visit(ctx.datatype()!) : null,
+        expr: this.visit(exprs[0]),
+      },
+      condition: exprs.length === 2 ? this.visit(exprs[1]) : null,
       body: this.visit(ctx.rawScope()),
       sourceloc: this.loc(ctx),
     };

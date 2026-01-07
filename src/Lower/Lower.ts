@@ -2197,6 +2197,20 @@ function lowerBlockScope(
   const blockScope = lr.sr.blockScopeNodes.get(semanticScopeId);
   assert(blockScope.variant === Semantic.ENode.BlockScope);
 
+  // If the scope contains a while loop with a let binding, we have to remove the value from initialization (was too hard in collection and elaboration)
+  if (blockScope.statements.length === 2) {
+    const first = lr.sr.statementNodes.get(blockScope.statements[0]);
+    const second = lr.sr.statementNodes.get(blockScope.statements[1]);
+    if (
+      first.variant === Semantic.ENode.VariableStatement &&
+      second.variant === Semantic.ENode.WhileStatement &&
+      second.isLetBinding
+    ) {
+      // Yes it is one, strip it now
+      first.value = null;
+    }
+  }
+
   if (
     blockScope.emittedExpr === null &&
     blockScope.statements.length === 2 &&

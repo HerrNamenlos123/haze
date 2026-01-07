@@ -56,13 +56,13 @@ import {
 } from "../shared/common";
 
 import {
+  EAssignmentOperation,
+  EBinaryOperation,
   EDatatypeMutability,
   EUnaryOperation,
   type ASTCInjectDirective,
   type ASTExpr,
   type ASTStatement,
-  type EAssignmentOperation,
-  type EBinaryOperation,
   type EIncrOperation,
 } from "../shared/AST";
 import { getModuleGlobalNamespaceName, type ExportData, type ModuleConfig } from "../shared/Config";
@@ -266,7 +266,7 @@ export namespace Collect {
     parentScope: Collect.ScopeId;
     owningSymbol: Collect.SymbolId;
     sourceloc: SourceLoc;
-    statements: Set<Collect.StatementId>;
+    statements: Collect.StatementId[];
     unsafe: boolean;
     emittedExpr: Collect.ExprId | null;
     symbols: Set<Collect.SymbolId>;
@@ -572,7 +572,8 @@ export namespace Collect {
 
   export type WhileStatement = BaseStatement & {
     variant: ENode.WhileStatement;
-    condition: Collect.ExprId;
+    letScopeId: Collect.ScopeId | null;
+    condition: Collect.ExprId | null;
     block: Collect.ScopeId;
   };
 
@@ -900,7 +901,7 @@ function makeBlockScope(
     variant: Collect.ENode.BlockScope,
     owningSymbol: parent.owningSymbol,
     parentScope: parentScope,
-    statements: new Set(),
+    statements: [],
     sourceloc: sourceloc,
     unsafe: unsafe,
     emittedExpr: null,
@@ -921,7 +922,7 @@ function addStatement(
     ...statement,
     owningScope: parentScope,
   });
-  parent.statements.add(stId);
+  parent.statements.push(stId);
   return st;
 }
 
@@ -1964,12 +1965,90 @@ function collectScope(
         break;
 
       case "WhileStatement":
-        addStatement(cc, blockScopeId, {
+        // Simulate the entire while loop being wrapped in a scope, for the let condition (while let x = 1 && x)
+        // Then it is rewritten to { let x = uninitialized; while x = 1 && x {} }, so the elaboration phase no longer
+        // knows about the let while feature, it just does its thing
+        let letScopeId: Collect.ScopeId = blockScopeId;
+
+        if (astStatement.letCondition) {
+          letScopeId = collectScope(
+            cc,
+            {
+              variant: "Scope",
+              unsafe: true,
+              statements: [
+                {
+                  variant: "VariableDefinitionStatement",
+                  name: astStatement.letCondition.name,
+                  comptime: false,
+                  mutability: EVariableMutability.Let,
+                  sourceloc: astStatement.sourceloc,
+                  variableContext: EVariableContext.FunctionLocal,
+                  datatype: astStatement.letCondition.type ?? undefined,
+                  expr: astStatement.letCondition.expr,
+                },
+              ],
+              sourceloc: item.sourceloc,
+            },
+            {
+              currentParentScope: blockScopeId,
+            }
+          );
+          addStatement(cc, blockScopeId, {
+            variant: Collect.ENode.ExprStatement,
+            expr: Collect.makeExpr(cc, {
+              variant: Collect.ENode.BlockScopeExpr,
+              scope: letScopeId,
+              sourceloc: astStatement.sourceloc,
+            })[1],
+            sourceloc: astStatement.sourceloc,
+          });
+
+          // condition = {
+          //   variant: "BlockScopeExpr",
+          //   scope: {
+          //     variant: "Scope",
+          //     sourceloc: condition.sourceloc,
+          //     statements: [
+          //       {
+          //         variant: "ExprStatement",
+          //         expr: {
+          //           variant: "ExprAssignmentExpr",
+          //           operation: EAssignmentOperation.Assign,
+          //           target: {
+          //             variant: "SymbolValueExpr",
+          //             generics: [],
+          //             name: astStatement.letCondition.name,
+          //             sourceloc: condition.sourceloc,
+          //           },
+          //           value: astStatement.letCondition.expr,
+          //           sourceloc: condition.sourceloc,
+          //         },
+          //         sourceloc: condition.sourceloc,
+          //       },
+          //       {
+          //         variant: "ExprStatement",
+          //         expr: condition,
+          //         sourceloc: condition.sourceloc,
+          //       },
+          //     ],
+          //     unsafe: false,
+          //   },
+          //   sourceloc: condition.sourceloc,
+          // };
+        }
+
+        addStatement(cc, letScopeId, {
           variant: Collect.ENode.WhileStatement,
-          condition: collectExpr(cc, astStatement.condition, {
-            currentParentScope: blockScopeId,
+          letScopeId: letScopeId !== blockScopeId ? letScopeId : null,
+          condition: astStatement.condition
+            ? collectExpr(cc, astStatement.condition, {
+                currentParentScope: letScopeId,
+              })
+            : null,
+          block: collectScope(cc, astStatement.body, {
+            currentParentScope: letScopeId,
           }),
-          block: collectScope(cc, astStatement.body, { currentParentScope: blockScopeId }),
           sourceloc: astStatement.sourceloc,
         });
         break;
@@ -2055,7 +2134,7 @@ function collectScope(
           // but for the further elaboration we can also extract it and access directly while also being in the scope.
           const scope = cc.scopeNodes.get(forScopeId);
           assert(scope.variant === Collect.ENode.BlockScope);
-          assert(scope.statements.size === 1);
+          assert(scope.statements.length === 1);
           explicitInitStatement = [...scope.statements][0];
         }
 
@@ -2849,7 +2928,7 @@ export const printCollectedStatement = (
     }
 
     case Collect.ENode.WhileStatement: {
-      print(`while (${printCollectedExpr(cc, statement.condition)})`);
+      print(`while (${statement.condition ? printCollectedExpr(cc, statement.condition) : "TBD"})`);
       printCollectedScope(cc, statement.block, indent + 2);
       break;
     }

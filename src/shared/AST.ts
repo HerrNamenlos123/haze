@@ -370,7 +370,12 @@ export type ASTForEachStatement = {
 
 export type ASTWhileStatement = {
   variant: "WhileStatement";
-  condition: ASTExpr;
+  letCondition: {
+    name: string;
+    type: ASTTypeUse | null;
+    expr: ASTExpr;
+  } | null;
+  condition: ASTExpr | null;
   body: ASTScope;
   sourceloc: SourceLoc;
 };

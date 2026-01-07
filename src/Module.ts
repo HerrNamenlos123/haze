@@ -19,6 +19,8 @@ import {
   openSync,
   readdirSync,
   realpathSync,
+  rmdirSync,
+  rmSync,
   statSync,
   writeFileSync,
 } from "fs";
@@ -752,6 +754,9 @@ export class ProjectCompiler {
       if (!existsSync(HAZE_TMP_DIR)) mkdirSync(HAZE_TMP_DIR, { recursive: true });
       if (!existsSync(HAZE_GLOBAL_DIR)) mkdirSync(HAZE_GLOBAL_DIR, { recursive: true });
 
+      process.env["CC"] = HAZE_C_COMPILER;
+      process.env["CXX"] = HAZE_CXX_COMPILER;
+
       const MARKERS = {
         download: HAZE_CACHE + "/01-download-marker",
         extract: HAZE_CACHE + "/02-extract-marker",
@@ -763,6 +768,7 @@ export class ProjectCompiler {
         libunwind: HAZE_CACHE + "/libunwind",
         cmakeToolchain: HAZE_CACHE + "/cmake-toolchain",
         bdwgc: HAZE_CACHE + "/bdgwc",
+        bdwgcLibatomic: HAZE_CACHE + "/bdgwc-libatomic",
       };
 
       // Step 1: Download
@@ -925,26 +931,27 @@ export class ProjectCompiler {
       if (!this.isStepDone(MARKERS.bdwgc)) {
         const builddir = `${HAZE_TMP_DIR}/bdwgc-builddir`;
         const outdir = `${HAZE_GLOBAL_DIR}/haze-bdwgc`;
-        // Using the latest commit from master at the time of copying, since the latest release
-        // (although it was only a few months ago), seems to be very different
-        const commitHash = "6d018a1f241a9d892e67f25cac1b5b119ae60a88";
+        const commitHash = "6d018a1f241a9d892e67f25cac1b5b119ae60a88"; // Latest release
         console.info("Retrieving and building bdwgc...");
-        execInherit(`rm -rf ${builddir}`);
-        execInherit(`rm -rf ${outdir}`);
-        execInherit(`mkdir -p ${builddir}`);
+        if (existsSync(builddir)) {
+          rmSync(builddir, { recursive: true, force: true });
+        }
+        if (existsSync(outdir)) {
+          rmSync(outdir, { recursive: true, force: true });
+        }
+        mkdirSync(builddir);
         execInherit(
-          `git clone https://github.com/bdwgc/bdwgc.git ${builddir} && cd ${builddir} && git checkout ${commitHash}`
+          `git clone https://github.com/bdwgc/bdwgc.git "${builddir}" && cd "${builddir}" && git checkout ${commitHash}`
         );
         execInherit(
-          `cd ${builddir} && cmake . -B build -DCMAKE_BUILD_TYPE=Debug -DGC_BUILD_SHARED_LIBS=OFF -DCMAKE_INSTALL_PREFIX=${outdir} -DCMAKE_POSITION_INDEPENDENT_CODE=ON`
+          `cmake . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DGC_BUILD_SHARED_LIBS=OFF -DCMAKE_INSTALL_PREFIX="${outdir}" -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DBUILD_TESTING=OFF`,
+          builddir
         );
-        execInherit(`cd ${builddir} && cmake --build build -j`);
-        execInherit(`cd ${builddir} && cmake --build build --target=install`);
+        execInherit(`cmake --build build -j`, builddir);
+        execInherit(`cmake --build build --target=install`, builddir);
         this.markStepDone(MARKERS.bdwgc);
         console.info("Retrieving and building bdwgc... Done");
       }
-
-      // throw new Error();
     });
   }
 }
@@ -966,7 +973,8 @@ function execInherit(str: string, dir?: string) {
       recursive: true,
     });
   }
-  const proc = spawnSync(`${shell} ${args.join(" ")}`, {
+  const cmd = `${shell} ${args.join(" ")}`;
+  const proc = spawnSync(cmd, {
     cwd: dir ?? ".",
     env: process.env,
     stdio: "inherit",
@@ -1185,7 +1193,8 @@ export class ModuleCompiler {
       linkerFlags.linux.push(`-llzma`);
 
       compilerFlags.any.push(`-I"${HAZE_GLOBAL_DIR}/haze-bdwgc/include"`);
-      linkerFlags.any.push(`"${HAZE_GLOBAL_DIR}/haze-bdwgc/lib64/libgc.a"`);
+      linkerFlags.linux.push(`"${HAZE_GLOBAL_DIR}/haze-bdwgc/lib64/libgc.a"`);
+      linkerFlags.win32.push(`"${HAZE_GLOBAL_DIR}/haze-bdwgc/lib/gc.lib"`);
 
       compilerFlags.win32.push(`-D_CRT_SECURE_NO_WARNINGS`);
       linkerFlags.win32.push(`-fuse-ld=lld`);
