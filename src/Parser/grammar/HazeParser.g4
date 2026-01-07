@@ -233,6 +233,6 @@ statement
     | FOR comptime=COMPTIME? ID (COMMA ID)? IN expr rawScope                        #ForEachStatement
     | FOR comptime=COMPTIME? LB statement? SEMI condition=expr? SEMI incr=expr? RB rawScope #ForStatement
     | WHILE expr rawScope                                                           #WhileStatement
-    | WHILE LET ID (COLON datatype)? EQUALS expr (IF expr)? rawScope                #WhileLetStatement
+    | WHILE LET ID (COLON datatype)? EQUALS expr (SEMI expr)? rawScope              #WhileLetStatement
     | typeDef                                                                       #TypeAliasStatement
     ;
