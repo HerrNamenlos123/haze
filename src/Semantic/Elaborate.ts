@@ -3159,14 +3159,14 @@ export class SemanticElaborator {
                 }
               }
             }
+          }
 
-            if (
-              symbol.export &&
-              symbol.generics.length === 0 &&
-              !funcSymHasParameterPack(this.sr.cc, symbol.originalCollectedFunction)
-            ) {
-              this.sr.exportedSymbols.add(symbolId);
-            }
+          if (
+            symbol.export &&
+            symbol.generics.length === 0 &&
+            !funcSymHasParameterPack(this.sr.cc, symbol.originalCollectedFunction)
+          ) {
+            this.sr.exportedSymbols.add(symbolId);
           }
         }
 
@@ -3743,6 +3743,8 @@ export class SemanticElaborator {
       })[1];
     });
 
+    const parent = this.elaborateParentSymbolFromCache(functionSymbol.parentScope);
+
     if (this.sr.elaboratedFunctionSignatures.has(functionSymbolId)) {
       const signatures = this.sr.elaboratedFunctionSignatures.get(functionSymbolId)!;
       for (const signatureId of signatures) {
@@ -3750,14 +3752,13 @@ export class SemanticElaborator {
         assert(signature.variant === Semantic.ENode.FunctionSignature);
         if (
           signature.genericPlaceholders.length === genericPlaceholders.length &&
-          signature.genericPlaceholders.every((g, i) => g === genericPlaceholders[i])
+          signature.genericPlaceholders.every((g, i) => g === genericPlaceholders[i]) &&
+          signature.parentStructOrNS === parent
         ) {
           return signatureId;
         }
       }
     }
-
-    const parent = this.elaborateParentSymbolFromCache(functionSymbol.parentScope);
 
     const cacheCodename =
       (parent ? Semantic.serializeTypeDef(this.sr, parent) + "." : "") + functionSymbol.name;
@@ -3887,12 +3888,17 @@ export class SemanticElaborator {
         memberAccessExpr.sourceloc
       );
 
+      const functionSignatureId = this.elaborateFunctionSignature(chosenOverloadId);
+      const functionSignature = this.sr.symbolNodes.get(functionSignatureId);
+      assert(functionSignature.variant === Semantic.ENode.FunctionSignature);
+
       const functionSymbolId = this.elaborateFunctionSymbolWithGenerics(
-        this.elaborateFunctionSignature(chosenOverloadId),
+        functionSignatureId,
         memberAccessExpr.genericArgs.map((g) => this.expressionAsGenericArg(g)),
         memberAccessExpr.sourceloc,
         paramPackTypes
       );
+
       const functionSymbol = this.sr.symbolNodes.get(functionSymbolId);
       assert(functionSymbol.variant === Semantic.ENode.FunctionSymbol);
       return this.sr.b.symbolValue(functionSymbolId, memberAccessExpr.sourceloc);

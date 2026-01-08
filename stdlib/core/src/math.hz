@@ -10,19 +10,19 @@ namespace ffi {
     extern C noemit atan2(y: real, x: real): real :: final;
 }
 
-export namespace Math {
+export namespace math {
 
-    export PI(): real {
-        const PI = 3.141592653589793;
-        return PI;
+    export pi(): real {
+        const pi = 3.141592653589793;
+        return pi;
     }
 
     export radToDeg(v: real): real {
-        return v / Math.PI() * 180.0;
+        return v / math.pi() * 180.0;
     }
 
     export degToRad(v: real): real {
-        return v * Math.PI() / 180.0;
+        return v * math.pi() / 180.0;
     }
 
     export sqrt(v: real) {

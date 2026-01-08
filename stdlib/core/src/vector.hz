@@ -31,7 +31,7 @@ export struct _Vec2<T> {
   }
 
   length(): T {
-    return Math.sqrt(Math.pow(this.x, 2.0) + Math.pow(this.y, 2.0)) as T;
+    return math.sqrt(math.pow(this.x, 2.0) + math.pow(this.y, 2.0)) as T;
   }
 
   normalize(): _Vec2<T> {
@@ -81,7 +81,7 @@ export struct _Vec3<T> {
   }
 
   length(): T {
-    return Math.sqrt(Math.pow(this.x, 2.0) + Math.pow(this.y, 2.0) + Math.pow(this.z, 2.0)) as T;
+    return math.sqrt(math.pow(this.x, 2.0) + math.pow(this.y, 2.0) + math.pow(this.z, 2.0)) as T;
   }
 
   normalize(): _Vec3<T> {
@@ -134,7 +134,7 @@ export struct _Vec4<T> {
   }
 
   length(): T {
-    return Math.sqrt(Math.pow(this.x, 2.0) + Math.pow(this.y, 2.0) + Math.pow(this.z, 2.0) + Math.pow(this.w, 2.0)) as T;
+    return math.sqrt(math.pow(this.x, 2.0) + math.pow(this.y, 2.0) + math.pow(this.z, 2.0) + math.pow(this.w, 2.0)) as T;
   }
 
   normalize(): _Vec4<T> {

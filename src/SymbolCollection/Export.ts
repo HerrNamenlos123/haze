@@ -83,10 +83,10 @@ export function ExportTypeDef(
             .map((p, i) => `${method.parameterNames[i + 1]}: ${Semantic.serializeTypeUse(sr, p)}`)
             .join(", ");
           if (functype.returnType) {
-            file += `${method.name}(${parameters}): ${Semantic.serializeTypeUse(
+            file += `${method.name}(${parameters}): (${Semantic.serializeTypeUse(
               sr,
               functype.returnType
-            )}`;
+            )})`;
             file += " :: final";
             if (functype.requires.pure) {
               file += ", pure";
@@ -186,7 +186,9 @@ export function ExportSymbol(
           .join(", ") +
         (functype.vararg ? ", ..." : "") +
         ")" +
-        (functype.returnType ? ": " + Semantic.serializeTypeUse(sr, functype.returnType) : " ");
+        (functype.returnType
+          ? ": (" + Semantic.serializeTypeUse(sr, functype.returnType) + ")"
+          : " ");
       file += " :: final";
       if (functype.requires.pure) {
         file += ", pure";

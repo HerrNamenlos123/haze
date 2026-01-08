@@ -1,9 +1,9 @@
 
 export struct _Color<T> {
-    r: T;
-    g: T;
-    b: T;
-    a: T;
+    r: T = default;
+    g: T = default;
+    b: T = default;
+    a: T = default;
 
     constructor(r: T, g: T, b: T, a: T): _Color<T> {
         return _Color<T> {

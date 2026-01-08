@@ -6,8 +6,8 @@ __c__("#include <string.h>");
 export extern C struct GLFWwindow {};
 export extern C struct GLFWmonitor {};
 
-extern C noemit strcmp(str1: ccstr, str2: ccstr): i32;
-extern C noemit getenv(name: ccstr): ccstr;
+extern C noemit strcmp(str1: ccstr, str2: ccstr): i32 :: final;
+extern C noemit getenv(name: ccstr): ccstr :: final;
 
 const GLFW_PLATFORM: i32;
 const GLFW_PLATFORM_X11: i32;
@@ -18,20 +18,20 @@ const GLFW_OPENGL_PROFILE: i32;
 const GLFW_OPENGL_CORE_PROFILE: i32;
 
 namespace raw {
-    extern C glfwInit(): i32;
-    extern C glfwTerminate(): void;
-    extern C glfwCreateWindow(width: i32, height: i32, title: ccstr, monitor: GLFWmonitor | none, share: GLFWwindow | none): GLFWwindow | none;
-    extern C glfwWindowShouldClose(w: GLFWwindow): i32;
-    extern C glfwSetWindowShouldClose(w: GLFWwindow, value: i32);
-    extern C glfwSwapBuffers(w: GLFWwindow);
-    extern C glfwSwapInterval(flag: i32);
-    extern C glfwMakeContextCurrent(w: GLFWwindow);
-    extern C glfwPollEvents();
-    extern C glfwInitHint(hint: i32, value: i32);
-    extern C glfwWindowHint(hint: i32, value: i32);
-    extern C glfwGetTime(): f64;
+    extern C glfwInit(): i32 :: final;
+    extern C glfwTerminate(): void :: final;
+    extern C glfwCreateWindow(width: i32, height: i32, title: ccstr, monitor?: GLFWmonitor, share?: GLFWwindow): GLFWwindow | none :: final;
+    extern C glfwWindowShouldClose(w: GLFWwindow): i32 :: final;
+    extern C glfwSetWindowShouldClose(w: GLFWwindow, value: i32) :: final;
+    extern C glfwSwapBuffers(w: GLFWwindow) :: final;
+    extern C glfwSwapInterval(flag: i32) :: final;
+    extern C glfwMakeContextCurrent(w: GLFWwindow) :: final;
+    extern C glfwPollEvents() :: final;
+    extern C glfwInitHint(hint: i32, value: i32) :: final;
+    extern C glfwWindowHint(hint: i32, value: i32) :: final;
+    extern C glfwGetTime(): f64 :: final;
     // extern C glfwMakeContextCurrent(w: GLFWwindow*);
-    extern C glfwGetProcAddress(procname: ccstr): () => void;
+    extern C glfwGetProcAddress(procname: ccstr): (() => void) :: final;
 
     export init(): bool {
         return glfwInit() != 0;
@@ -41,7 +41,7 @@ namespace raw {
         glfwTerminate();
     }
 
-    export createWindow(width: i32, height: i32, title: ccstr, monitor: GLFWmonitor | none, share: GLFWwindow | none): GLFWwindow | none {
+    export createWindow(width: i32, height: i32, title: ccstr, monitor?: GLFWmonitor, share?: GLFWwindow): GLFWwindow | none {
         return glfwCreateWindow(width, height, title, monitor, share);
     }
 

@@ -1,7 +1,7 @@
 
 namespace builtin {
-    extern C sin(v: f64): f64;
-    extern C cos(v: f64): f64;
+    extern C sin(v: f64): f64 :: final;
+    extern C cos(v: f64): f64 :: final;
 }
 
 export sin(v: real): real {
