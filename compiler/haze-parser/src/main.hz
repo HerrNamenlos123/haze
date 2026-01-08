@@ -35,12 +35,12 @@ struct IdentifierToken {
 type Token = IntegerToken | IdentifierToken;
 
 stringify(token: Token) {
-    // if token is IntegerToken {
-    //     return f"IntegerToken(\"{token.value}\")";
-    // }
-    // if token is IdentifierToken {
-    //     return f"IdentifierToken(\"{token.name}\")";
-    // }
+    if token is IntegerToken {
+        return f"IntegerToken(\"{token.value}\")";
+    }
+    else if token is IdentifierToken {
+        return f"IdentifierToken(\"{token.name}\")";
+    }
     return "";
 }
 

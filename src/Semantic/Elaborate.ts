@@ -4526,6 +4526,7 @@ export class SemanticElaborator {
           // Non-comptime
           let resultingConditionId: Semantic.ExprId | null = null;
           const constraints = [...this.currentContext.constraints];
+          const elseConstraints = [...this.currentContext.constraints];
           if (s.letScopeId) {
             const scope = this.sr.cc.scopeNodes.get(s.letScopeId);
             assert(scope.variant === Collect.ENode.BlockScope);
@@ -4565,6 +4566,7 @@ export class SemanticElaborator {
             if (variableAsBoolResult.ok) {
               assert(letStatement.value);
               this.buildConstraints(constraints, variableAsBoolResult.expr);
+              this.buildConstraints(elseConstraints, variableAsBoolResult.expr, { inverse: true });
               const conditionFromLet = Semantic.addExpr(this.sr, {
                 variant: Semantic.ENode.BlockScopeExpr,
                 block: Semantic.addBlockScope(this.sr, {
@@ -4633,6 +4635,7 @@ export class SemanticElaborator {
                 // Variable is NOT convertible to bool but we have a guard, use only guard: Keep as-is
                 resultingConditionId = this.expr(s.condition, undefined)[1];
                 this.buildConstraints(constraints, resultingConditionId);
+                this.buildConstraints(elseConstraints, resultingConditionId, { inverse: true });
               } else {
                 // Variable is neither convertible to bool nor we have a guard, error
                 throw new CompilerError(
@@ -4645,6 +4648,7 @@ export class SemanticElaborator {
             assert(s.condition);
             resultingConditionId = this.expr(s.condition, undefined)[1];
             this.buildConstraints(constraints, resultingConditionId);
+            this.buildConstraints(elseConstraints, resultingConditionId, { inverse: true });
           }
 
           // Before applying constraints
@@ -4664,7 +4668,7 @@ export class SemanticElaborator {
             emittedExpr: null,
             constraints: constraints,
           });
-          return this.withContext(
+          this.withContext(
             {
               context: Semantic.isolateElaborationContext(this.currentContext, {
                 constraints: constraints,
@@ -4684,13 +4688,44 @@ export class SemanticElaborator {
                 false,
                 undefined
               );
-              const elseIfs = s.elseif.map((e) => {
-                const [innerThenScope, innerThenScopeId] = Semantic.addBlockScope(this.sr, {
-                  variant: Semantic.ENode.BlockScope,
-                  statements: [],
-                  emittedExpr: null,
-                  constraints: [...this.currentContext.constraints],
-                });
+            }
+          );
+
+          const elseIfs = s.elseif.map((e) => {
+            assert(e.condition);
+            const conditionExpr = this.expr(e.condition, undefined)[1];
+            const innerConstraints = [...this.currentContext.constraints];
+            this.buildConstraints(innerConstraints, conditionExpr);
+            this.buildConstraints(elseConstraints, conditionExpr, { inverse: true });
+
+            const boolCondition = Conversion.MakeConversionOrThrow(
+              this.sr,
+              conditionExpr,
+              this.sr.b.boolType(),
+              this.currentContext.constraints,
+              s.sourceloc,
+              Conversion.Mode.Implicit,
+              false
+            );
+
+            const [innerThenScope, innerThenScopeId] = Semantic.addBlockScope(this.sr, {
+              variant: Semantic.ENode.BlockScope,
+              statements: [],
+              emittedExpr: null,
+              constraints: innerConstraints,
+            });
+            this.withContext(
+              {
+                context: Semantic.isolateElaborationContext(this.currentContext, {
+                  constraints: innerConstraints,
+                  currentScope: this.currentContext.currentScope,
+                  genericsScope: this.currentContext.genericsScope,
+                  instanceDeps: this.currentContext.instanceDeps,
+                }),
+                inFunction: this.inFunction,
+                functionReturnsInstanceIds: this.functionReturnsInstanceIds,
+              },
+              () => {
                 this.elaborateBlockScope(
                   {
                     targetScopeId: innerThenScopeId,
@@ -4699,56 +4734,59 @@ export class SemanticElaborator {
                   false,
                   undefined
                 );
+              }
+            );
 
-                assert(e.condition);
-                const boolCondition = Conversion.MakeConversionOrThrow(
-                  this.sr,
-                  this.expr(e.condition, undefined)[1],
-                  this.sr.b.boolType(),
-                  this.currentContext.constraints,
-                  s.sourceloc,
-                  Conversion.Mode.Implicit,
-                  false
-                );
+            return {
+              condition: boolCondition,
+              then: innerThenScopeId,
+            };
+          });
 
-                return {
-                  condition: boolCondition,
-                  then: innerThenScopeId,
-                };
-              });
-
-              let [elseScope, elseScopeId] = [
-                undefined as undefined | Semantic.BlockScope,
-                undefined as Semantic.BlockScopeId | undefined,
-              ];
-              if (s.elseBlock) {
-                [elseScope, elseScopeId] = Semantic.addBlockScope(this.sr, {
-                  variant: Semantic.ENode.BlockScope,
-                  statements: [],
-                  emittedExpr: null,
-                  constraints: [...this.currentContext.constraints],
-                });
+          let [elseScope, elseScopeId] = [
+            undefined as undefined | Semantic.BlockScope,
+            undefined as Semantic.BlockScopeId | undefined,
+          ];
+          if (s.elseBlock) {
+            [elseScope, elseScopeId] = Semantic.addBlockScope(this.sr, {
+              variant: Semantic.ENode.BlockScope,
+              statements: [],
+              emittedExpr: null,
+              constraints: elseConstraints,
+            });
+            this.withContext(
+              {
+                context: Semantic.isolateElaborationContext(this.currentContext, {
+                  constraints: elseConstraints,
+                  currentScope: this.currentContext.currentScope,
+                  genericsScope: this.currentContext.genericsScope,
+                  instanceDeps: this.currentContext.instanceDeps,
+                }),
+                inFunction: this.inFunction,
+                functionReturnsInstanceIds: this.functionReturnsInstanceIds,
+              },
+              () => {
                 this.elaborateBlockScope(
                   {
-                    targetScopeId: elseScopeId,
-                    sourceScopeId: s.elseBlock,
+                    targetScopeId: elseScopeId!,
+                    sourceScopeId: s.elseBlock!,
                   },
                   false,
                   undefined
                 );
               }
+            );
+          }
 
-              return Semantic.addStatement(this.sr, {
-                variant: Semantic.ENode.IfStatement,
-                isLetBinding: Boolean(s.letScopeId),
-                condition: boolCondition,
-                then: thenScopeId,
-                elseIfs: elseIfs,
-                else: elseScopeId,
-                sourceloc: s.sourceloc,
-              })[1];
-            }
-          );
+          return Semantic.addStatement(this.sr, {
+            variant: Semantic.ENode.IfStatement,
+            isLetBinding: Boolean(s.letScopeId),
+            condition: boolCondition,
+            then: thenScopeId,
+            elseIfs: elseIfs,
+            else: elseScopeId,
+            sourceloc: s.sourceloc,
+          })[1];
         }
       }
 
@@ -5430,7 +5468,8 @@ export class SemanticElaborator {
     constraints: Semantic.Constraint[],
     symbolValueExprId: Semantic.ExprId,
     literalExprId: Semantic.ExprId,
-    operation: EBinaryOperation
+    operation: EBinaryOperation,
+    args?: { inverse?: boolean }
   ) {
     const symbolValueExpr = this.sr.exprNodes.get(symbolValueExprId);
     assert(symbolValueExpr.variant === Semantic.ENode.SymbolValueExpr);
@@ -5457,6 +5496,25 @@ export class SemanticElaborator {
       return;
     }
 
+    const invertBinaryOperation = (op: EBinaryOperation) => {
+      switch (op) {
+        case EBinaryOperation.Equal:
+          return EBinaryOperation.Unequal;
+        case EBinaryOperation.Unequal:
+          return EBinaryOperation.Equal;
+        case EBinaryOperation.GreaterEqual:
+          return EBinaryOperation.LessThan;
+        case EBinaryOperation.GreaterThan:
+          return EBinaryOperation.LessEqual;
+        case EBinaryOperation.LessEqual:
+          return EBinaryOperation.GreaterThan;
+        case EBinaryOperation.LessThan:
+          return EBinaryOperation.GreaterEqual;
+        default:
+          assert(false);
+      }
+    };
+
     switch (operation) {
       case EBinaryOperation.Equal:
       case EBinaryOperation.Unequal:
@@ -5467,7 +5525,7 @@ export class SemanticElaborator {
         constraints.push({
           constraintValue: {
             kind: "comparison",
-            operation: operation,
+            operation: args?.inverse ? invertBinaryOperation(operation) : operation,
             value: literalExprId,
           },
           variableSymbol: symbolValueExpr.symbol,
@@ -5475,15 +5533,19 @@ export class SemanticElaborator {
     }
   }
 
-  buildConstraints(constraints: Semantic.Constraint[], exprId: Semantic.ExprId) {
+  buildConstraints(
+    constraints: Semantic.Constraint[],
+    exprId: Semantic.ExprId,
+    args?: { inverse?: boolean }
+  ) {
     const expr = this.sr.exprNodes.get(exprId);
     const exprTypeUse = this.sr.typeUseNodes.get(expr.type);
     const exprTypeDef = this.sr.typeDefNodes.get(exprTypeUse.type);
 
     if (expr.variant === Semantic.ENode.BinaryExpr) {
       if (expr.operation === EBinaryOperation.BoolAnd) {
-        this.buildConstraints(constraints, expr.left);
-        this.buildConstraints(constraints, expr.right);
+        this.buildConstraints(constraints, expr.left, args);
+        this.buildConstraints(constraints, expr.right, args);
       } else {
         const leftExpr = this.sr.exprNodes.get(expr.left);
         const rightExpr = this.sr.exprNodes.get(expr.right);
@@ -5515,10 +5577,14 @@ export class SemanticElaborator {
       const unionExpr = this.getExpr(expr.expr);
       if (unionExpr.variant === Semantic.ENode.SymbolValueExpr) {
         for (const comparisonType of expr.comparisonTypesAnd) {
+          let invert = expr.invertCheck;
+          if (args?.inverse) {
+            invert = !invert;
+          }
           constraints.push({
             constraintValue: {
               kind: "union",
-              operation: expr.invertCheck ? "isNot" : "is",
+              operation: invert ? "isNot" : "is",
               typeDef: this.getTypeUse(comparisonType).type,
             },
             variableSymbol: unionExpr.symbol,
@@ -5533,20 +5599,22 @@ export class SemanticElaborator {
     ) {
       const memberDefs = exprTypeDef.members.map((m) => this.sr.typeUseNodes.get(m).type);
       if (memberDefs.includes(this.sr.b.nullTypeDef())) {
+        let invert = args?.inverse || false;
         constraints.push({
           constraintValue: {
             kind: "union",
-            operation: "isNot",
+            operation: invert ? "is" : "isNot",
             typeDef: this.sr.b.nullTypeDef(),
           },
           variableSymbol: expr.symbol,
         });
       }
       if (memberDefs.includes(this.sr.b.noneTypeDef())) {
+        let invert = args?.inverse || false;
         constraints.push({
           constraintValue: {
             kind: "union",
-            operation: "isNot",
+            operation: invert ? "is" : "isNot",
             typeDef: this.sr.b.noneTypeDef(),
           },
           variableSymbol: expr.symbol,
@@ -5558,13 +5626,14 @@ export class SemanticElaborator {
       expr.variant === Semantic.ENode.SymbolValueExpr &&
       exprTypeDef.variant === Semantic.ENode.TaggedUnionDatatype
     ) {
+      let invert = args?.inverse || false;
       const okTag = exprTypeDef.members.find((m) => m.tag === "Ok");
       const errTag = exprTypeDef.members.find((m) => m.tag === "Err");
       if (okTag && errTag) {
         constraints.push({
           constraintValue: {
             kind: "union",
-            operation: "is",
+            operation: invert ? "isNot" : "is",
             typeDef: this.sr.typeUseNodes.get(okTag.type).type,
           },
           variableSymbol: expr.symbol,
