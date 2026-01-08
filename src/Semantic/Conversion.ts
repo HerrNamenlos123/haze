@@ -1315,6 +1315,7 @@ export namespace Conversion {
             instanceIds: fromExpr.instanceIds,
             expr: fromExprId,
             type: toId,
+            canBeUnwrappedForLHS: false,
             sourceloc: sourceloc,
             isTemporary: fromExpr.isTemporary,
           })[1]
@@ -1335,23 +1336,6 @@ export namespace Conversion {
       const members = typeNarrowing(sr);
       members.addVariants(unionMembers);
       members.constrainFromConstraints(constraints, fromExprId);
-
-      if (members.possibleVariants.size === 1 && [...members.possibleVariants][0] === toId) {
-        const tag = unionMembers.findIndex((m) => m === [...members.possibleVariants][0]);
-        assert(tag !== -1);
-
-        return ok(
-          Semantic.addExpr(sr, {
-            variant: Semantic.ENode.UnionToValueCastExpr,
-            instanceIds: fromExpr.instanceIds,
-            expr: fromExprId,
-            type: toId,
-            tag: tag,
-            sourceloc: sourceloc,
-            isTemporary: fromExpr.isTemporary,
-          })[1]
-        );
-      }
 
       // Union to bool
       if (to.variant === Semantic.ENode.PrimitiveDatatype && to.primitive === EPrimitive.bool) {
@@ -1420,6 +1404,89 @@ export namespace Conversion {
             })[1]
           );
         }
+      }
+
+      if (members.possibleVariants.size === 1 && [...members.possibleVariants][0] === toId) {
+        const tag = unionMembers.findIndex((m) => m === [...members.possibleVariants][0]);
+        assert(tag !== -1);
+
+        return ok(
+          Semantic.addExpr(sr, {
+            variant: Semantic.ENode.UnionToValueCastExpr,
+            instanceIds: fromExpr.instanceIds,
+            expr: fromExprId,
+            type: toId,
+            tag: tag,
+            canBeUnwrappedForLHS: false,
+            sourceloc: sourceloc,
+            isTemporary: fromExpr.isTemporary,
+          })[1]
+        );
+      }
+
+      // Union to Union (e.g. A | B | null to A | B)
+      if (members.possibleVariants.size === unionMembers.length && unionMembers.length > 1) {
+        let missing = false;
+        for (const member of unionMembers) {
+          if (members.possibleVariants.has(member)) {
+            missing = true;
+            break;
+          }
+        }
+
+        if (!missing) {
+          // Fine, it is either the same union or one with the same members in a different order
+          return ok(
+            Semantic.addExpr(sr, {
+              variant: Semantic.ENode.UnionToUnionCastExpr,
+              instanceIds: fromExpr.instanceIds,
+              expr: fromExprId,
+              type: toId,
+              canBeUnwrappedForLHS: false,
+              sourceloc: sourceloc,
+              isTemporary: fromExpr.isTemporary,
+            })[1]
+          );
+        }
+      }
+
+      if (
+        members.possibleVariants.size < unionMembers.length &&
+        members.possibleVariants.size > 1
+      ) {
+        // Validity check: First apply narrowing to know the actual source type.
+        // Then: only if all members match exactly, is it valid.
+        // Exception: IFF the source is NOT a mutable reference, extension is valid (e.g. const A to A | B)
+
+        // First the check for narrowing
+        let allFound = true;
+        for (const member of members.possibleVariants) {
+          if (!unionMembers.find((m) => m === member)) {
+            allFound = false;
+          }
+        }
+        for (const member of unionMembers) {
+          if (!members.possibleVariants.has(member)) {
+            allFound = false;
+          }
+        }
+
+        if (allFound) {
+          // Union matches exactly after narrowing
+          return ok(
+            Semantic.addExpr(sr, {
+              variant: Semantic.ENode.UnionToUnionCastExpr,
+              instanceIds: fromExpr.instanceIds,
+              expr: fromExprId,
+              type: toId,
+              canBeUnwrappedForLHS: false,
+              sourceloc: sourceloc,
+              isTemporary: fromExpr.isTemporary,
+            })[1]
+          );
+        }
+
+        // Union does not match exactly, but may be extended
       }
     }
 

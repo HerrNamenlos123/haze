@@ -64,8 +64,7 @@ struct Lexer {
             this.advance();
         }
 
-        let b = this.peek()
-        if b {
+        if let b = this.peek() {
             if ascii.isDigit(b) {
                 return this.parseInteger();
             }
@@ -116,10 +115,10 @@ extern C parse(source: str) {
             src: result,
         };
 
-        fmt.println("TODO for next time: Fix the union lowering error below, and implement while let for if statements. Then, think about some graphical application for SDL.")
+        // fmt.println("TODO for next time: Fix the union lowering error below, and implement while let for if statements. Then, think about some graphical application for SDL.")
 
         while let tok = lexer.nextToken() {
-            // fmt.println(stringify(tok));
+            fmt.println(stringify(tok));
             tok = lexer.nextToken()
         }
     }

@@ -337,11 +337,21 @@ export type ASTVariableDefinitionStatement = {
 
 export type ASTIfStatement = {
   variant: "IfStatement";
-  condition: ASTExpr;
+  condition: ASTExpr | null;
+  letCondition: {
+    name: string;
+    type: ASTTypeUse | null;
+    expr: ASTExpr;
+  } | null;
   then: ASTScope;
   comptime: boolean;
   elseIfs: {
-    condition: ASTExpr;
+    condition: ASTExpr | null;
+    letCondition: {
+      name: string;
+      type: ASTTypeUse | null;
+      expr: ASTExpr;
+    } | null;
     then: ASTScope;
   }[];
   else?: ASTScope;

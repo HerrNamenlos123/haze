@@ -2382,103 +2382,169 @@ export class SemanticElaborator {
       );
     }
 
-    // First find exact matches
-    const matchingSignatures = [] as {
-      matches: boolean;
-      signature: Semantic.SymbolId;
-      reason: string | null;
-    }[];
-    for (const overloadId of overloadGroup.overloads) {
-      const overload = this.sr.cc.symbolNodes.get(overloadId);
-      assert(overload.variant === Collect.ENode.FunctionSymbol);
+    const matchSignatures = (exact: boolean) => {
+      const matchingSignatures = [] as {
+        matches: boolean;
+        signature: Semantic.SymbolId;
+        reason: string | null;
+      }[];
+      for (const overloadId of overloadGroup.overloads) {
+        const overload = this.sr.cc.symbolNodes.get(overloadId);
+        assert(overload.variant === Collect.ENode.FunctionSymbol);
 
-      const signatureId = this.elaborateFunctionSignature(overloadId);
-      const signature = this.sr.symbolNodes.get(signatureId);
-      assert(signature.variant === Semantic.ENode.FunctionSignature);
+        const signatureId = this.elaborateFunctionSignature(overloadId);
+        const signature = this.sr.symbolNodes.get(signatureId);
+        assert(signature.variant === Semantic.ENode.FunctionSignature);
 
-      // if (signature.parameters.length !== calledWithArgs.length) {
-      //   exactCandidateSignatures.push({
-      //     matches: false,
-      //     signature: signatureId,
-      //     reason: `Expects ${signature.parameters.length} arguments instead of ${calledWithArgs.length}`,
-      //   });
-      //   continue;
-      // }
+        // if (signature.parameters.length !== calledWithArgs.length) {
+        //   exactCandidateSignatures.push({
+        //     matches: false,
+        //     signature: signatureId,
+        //     reason: `Expects ${signature.parameters.length} arguments instead of ${calledWithArgs.length}`,
+        //   });
+        //   continue;
+        // }
 
-      if (funcSymHasParameterPack(this.sr.cc, overloadId)) {
-        matchingSignatures.push({
-          matches: false,
-          signature: signatureId,
-          reason: `Contains a parameter pack (exact match not possible)`,
-        });
-        continue;
-      }
-
-      let maxArgIndex = 0;
-      for (const arg of calledWithArgs) {
-        if (arg.index > maxArgIndex) maxArgIndex = arg.index;
-      }
-
-      if (maxArgIndex >= signature.parameters.length) {
-        matchingSignatures.push({
-          matches: false,
-          signature: signatureId,
-          reason: `Too many parameters given`,
-        });
-        continue;
-      }
-
-      if (maxArgIndex < signature.parameters.length - 1) {
-        matchingSignatures.push({
-          matches: false,
-          signature: signatureId,
-          reason: `Not enough parameters given`,
-        });
-        continue;
-      }
-
-      let matches = true;
-      let reason = null as string | null;
-      signature.parameters.forEach((p, i) => {
-        const passed = calledWithArgs.find((a) => a.index === i);
-        if (!passed || !passed.exprId) {
-          // This parameter is not passed or is not concrete, so hope that the others are enough for a match
-          // matches = false;
-          // reason = `Parameter #${i + 1} does not have a concrete type`;
-          return;
+        if (funcSymHasParameterPack(this.sr.cc, overloadId)) {
+          matchingSignatures.push({
+            matches: false,
+            signature: signatureId,
+            reason: `Contains a parameter pack (exact match not possible)`,
+          });
+          continue;
         }
 
-        const expression = this.sr.exprNodes.get(passed.exprId);
-        if (this.sr.e.getTypeUse(expression.type).type !== this.sr.e.getTypeUse(p.type).type) {
-          matches = false;
-          reason = `Parameter #${i + 1} has unrelated type: ${Semantic.serializeTypeUse(
-            this.sr,
-            expression.type
-          )} != ${Semantic.serializeTypeUse(this.sr, p.type)}`;
-          return;
+        let maxArgIndex = 0;
+        for (const arg of calledWithArgs) {
+          if (arg.index > maxArgIndex) maxArgIndex = arg.index;
         }
-        // Else it fits
-      });
 
-      matchingSignatures.push({
-        matches: matches,
-        signature: signatureId,
-        reason: reason,
-      });
-    }
-    console.info("TODO: Overload resolution must respect mutability");
+        if (maxArgIndex >= signature.parameters.length) {
+          matchingSignatures.push({
+            matches: false,
+            signature: signatureId,
+            reason: `Too many parameters given`,
+          });
+          continue;
+        }
 
-    if (matchingSignatures.filter((s) => s.matches).length === 1) {
+        if (maxArgIndex < signature.parameters.length - 1) {
+          matchingSignatures.push({
+            matches: false,
+            signature: signatureId,
+            reason: `Not enough parameters given`,
+          });
+          continue;
+        }
+
+        let matches = true;
+        let reason = null as string | null;
+        signature.parameters.forEach((signatureParam, i) => {
+          const passed = calledWithArgs.find((a) => a.index === i);
+          if (!passed || !passed.exprId) {
+            // This parameter is not passed or is not concrete, so hope that the others are enough for a match
+            // matches = false;
+            // reason = `Parameter #${i + 1} does not have a concrete type`;
+            return;
+          }
+
+          const actuallyGivenexpression = this.sr.exprNodes.get(passed.exprId);
+          const aUse = this.sr.e.getTypeUse(actuallyGivenexpression.type);
+          const bUse = this.sr.e.getTypeUse(signatureParam.type);
+          if (aUse.type !== bUse.type) {
+            matches = false;
+            reason = `Parameter #${i + 1} has unrelated type: ${Semantic.serializeTypeUse(
+              this.sr,
+              actuallyGivenexpression.type
+            )} != ${Semantic.serializeTypeUse(this.sr, signatureParam.type)}`;
+            return;
+          }
+
+          if (aUse.inline !== bUse.inline) {
+            matches = false;
+            reason = `Parameter #${
+              i + 1
+            } has mismatching 'inline' attribute: ${Semantic.serializeTypeUse(
+              this.sr,
+              actuallyGivenexpression.type
+            )} != ${Semantic.serializeTypeUse(this.sr, signatureParam.type)}`;
+            return;
+          }
+
+          if (exact) {
+            if (aUse.mutability !== bUse.mutability) {
+              matches = false;
+              reason = `Parameter #${i + 1} has mismatching mutability: ${Semantic.serializeTypeUse(
+                this.sr,
+                actuallyGivenexpression.type
+              )} != ${Semantic.serializeTypeUse(this.sr, signatureParam.type)}`;
+              return;
+            }
+          } else {
+            if (
+              aUse.mutability !== EDatatypeMutability.Mut &&
+              bUse.mutability === EDatatypeMutability.Mut
+            ) {
+              matches = false;
+              reason = `Parameter #${
+                i + 1
+              } cannot implicitly make non-mutable datatype mutable: ${Semantic.serializeTypeUse(
+                this.sr,
+                actuallyGivenexpression.type
+              )} != ${Semantic.serializeTypeUse(this.sr, signatureParam.type)}`;
+              return;
+            }
+
+            if (
+              aUse.mutability !== EDatatypeMutability.Const &&
+              bUse.mutability === EDatatypeMutability.Const
+            ) {
+              matches = false;
+              reason = `Parameter #${
+                i + 1
+              } cannot implicitly make non-const datatype const: ${Semantic.serializeTypeUse(
+                this.sr,
+                actuallyGivenexpression.type
+              )} != ${Semantic.serializeTypeUse(this.sr, signatureParam.type)}`;
+              return;
+            }
+          }
+          // Else it fits
+        });
+
+        matchingSignatures.push({
+          matches: matches,
+          signature: signatureId,
+          reason: reason,
+        });
+      }
+
+      return matchingSignatures;
+    };
+
+    const exactMatchingSignatures = matchSignatures(true);
+    if (exactMatchingSignatures.filter((s) => s.matches).length === 1) {
       const signature = this.sr.symbolNodes.get(
-        matchingSignatures.find((s) => s.matches)!.signature
+        exactMatchingSignatures.find((s) => s.matches)!.signature
       );
       assert(signature.variant === Semantic.ENode.FunctionSignature);
       return signature.originalFunction;
     }
 
-    if (matchingSignatures.filter((s) => s.matches).length === 0) {
+    // There cannot ever ever be more than 1 exact matches, if that is possible, it is a language design ambiguity
+    assert(exactMatchingSignatures.filter((s) => s.matches).length === 0);
+
+    const nonExactMatchingSignatures = matchSignatures(false);
+    if (nonExactMatchingSignatures.filter((s) => s.matches).length === 1) {
+      const signature = this.sr.symbolNodes.get(
+        nonExactMatchingSignatures.find((s) => s.matches)!.signature
+      );
+      assert(signature.variant === Semantic.ENode.FunctionSignature);
+      return signature.originalFunction;
+    }
+    if (nonExactMatchingSignatures.filter((s) => s.matches).length === 0) {
       let str = `No candidate for call to overloaded function '${overloadGroup.name}' matches arguments\n`;
-      for (const candidate of matchingSignatures) {
+      for (const candidate of nonExactMatchingSignatures) {
         const signature = this.sr.symbolNodes.get(candidate.signature);
         assert(signature.variant === Semantic.ENode.FunctionSignature);
         const originalFunction = this.sr.cc.symbolNodes.get(signature.originalFunction);
@@ -2492,7 +2558,7 @@ export class SemanticElaborator {
       throw new CompilerError(str, usageSourceLocation);
     } else {
       let str = `Call to overloaded function '${overloadGroup.name}' is ambiguous: Multiple functions fit the criteria:\n`;
-      for (const candidate of matchingSignatures) {
+      for (const candidate of nonExactMatchingSignatures) {
         if (!candidate.matches) continue;
         const signature = this.sr.symbolNodes.get(candidate.signature);
         assert(signature.variant === Semantic.ENode.FunctionSignature);
@@ -4173,8 +4239,6 @@ export class SemanticElaborator {
       );
     }
 
-    console.warn("TODO: The Datatype Member Access and Struct Member Access can be combined");
-
     if (datatypeValue.variant === Semantic.ENode.NamespaceDatatype) {
       return this.lookupAndElaborateNamespaceMemberAccess(
         datatypeAsValueExprId,
@@ -4338,8 +4402,11 @@ export class SemanticElaborator {
       // =================================================================================================================
 
       case Collect.ENode.IfStatement: {
-        const [condition, conditionId] = this.expr(s.condition, undefined);
         if (s.comptime) {
+          if (!s.condition) {
+            throw new CompilerError(`Comptime 'if let' statements not supported yet`, s.sourceloc);
+          }
+          const [condition, conditionId] = this.expr(s.condition, undefined);
           const conditionValue = EvalCTFEBoolean(this.sr, conditionId, s.sourceloc);
           if (conditionValue) {
             const [thenScope, thenScopeId] = Semantic.addBlockScope(this.sr, {
@@ -4371,6 +4438,12 @@ export class SemanticElaborator {
           }
 
           for (const elif of s.elseif) {
+            if (!elif.condition) {
+              throw new CompilerError(
+                `Comptime 'if let' statements not supported yet`,
+                s.sourceloc
+              );
+            }
             const [condition, conditionId] = this.expr(elif.condition, undefined);
             if (EvalCTFEBoolean(this.sr, conditionId, s.sourceloc)) {
               const [thenScope, thenScopeId] = Semantic.addBlockScope(this.sr, {
@@ -4451,17 +4524,133 @@ export class SemanticElaborator {
           })[1];
         } else {
           // Non-comptime
-          const [thenScope, thenScopeId] = Semantic.addBlockScope(this.sr, {
-            variant: Semantic.ENode.BlockScope,
-            statements: [],
-            emittedExpr: null,
-            constraints: [...this.currentContext.constraints],
-          });
+          let resultingConditionId: Semantic.ExprId | null = null;
+          const constraints = [...this.currentContext.constraints];
+          if (s.letScopeId) {
+            const scope = this.sr.cc.scopeNodes.get(s.letScopeId);
+            assert(scope.variant === Collect.ENode.BlockScope);
+            assert(scope.statements.length === 2);
+            const letStatement = this.sr.cc.statementNodes.get(scope.statements[0]);
+            assert(letStatement.variant === Collect.ENode.VariableDefinitionStatement);
+
+            // If the let syntax is used, then the letScope contains the variable (as in let ID = <expr>)
+            // and s.condition contains the if-guard if available
+
+            assert(letStatement.value);
+            const sym = this.sr.cc.symbolNodes.get(letStatement.variableSymbol);
+            assert(sym.variant === Collect.ENode.VariableSymbol);
+            const varType = this.expr(letStatement.value, undefined)[0].type;
+            const [variableSymbolExpr, variableSymbolExprId] = this.expr(
+              Collect.makeExpr(this.sr.cc, {
+                variant: Collect.ENode.SymbolValueExpr,
+                genericArgs: [],
+                name: sym.name,
+                sourceloc: s.sourceloc,
+              })[1],
+              undefined
+            );
+            const variableAsBoolResult = Conversion.MakeConversion(
+              this.sr,
+              variableSymbolExprId,
+              this.sr.b.boolType(),
+              this.currentContext.constraints,
+              s.sourceloc,
+              Conversion.Mode.Implicit,
+              false
+            );
+
+            // If the variable itself is convertible to bool, we do not need a guard.
+            // If it is not convertible to bool, we absolutely need a guard.
+
+            if (variableAsBoolResult.ok) {
+              assert(letStatement.value);
+              this.buildConstraints(constraints, variableAsBoolResult.expr);
+              const conditionFromLet = Semantic.addExpr(this.sr, {
+                variant: Semantic.ENode.BlockScopeExpr,
+                block: Semantic.addBlockScope(this.sr, {
+                  variant: Semantic.ENode.BlockScope,
+                  constraints: this.currentContext.constraints,
+                  emittedExpr: variableAsBoolResult.expr,
+                  statements: [
+                    Semantic.addStatement(this.sr, {
+                      variant: Semantic.ENode.ExprStatement,
+                      expr: Semantic.addExpr(this.sr, {
+                        variant: Semantic.ENode.ExprAssignmentExpr,
+                        instanceIds: [],
+                        isTemporary: true,
+                        operation: EAssignmentOperation.Rebind,
+                        target: variableSymbolExprId,
+                        type: varType,
+                        value: this.expr(letStatement.value!, undefined)[1],
+                        sourceloc: s.sourceloc,
+                      })[1],
+                      sourceloc: s.sourceloc,
+                    })[1],
+                  ],
+                })[1],
+                instanceIds: [],
+                isTemporary: true,
+                sourceloc: s.sourceloc,
+                type: this.sr.b.boolType(),
+              })[1];
+
+              if (s.condition) {
+                // Variable is convertible to bool and we have guard, combine both
+                resultingConditionId = this.withContext(
+                  {
+                    context: Semantic.isolateElaborationContext(this.currentContext, {
+                      constraints: constraints,
+                      currentScope: this.currentContext.currentScope,
+                      genericsScope: this.currentContext.genericsScope,
+                      instanceDeps: this.currentContext.instanceDeps,
+                    }),
+                    functionReturnsInstanceIds: this.functionReturnsInstanceIds,
+                    inFunction: this.inFunction,
+                  },
+                  () =>
+                    this.sr.b.binaryExpr(
+                      conditionFromLet,
+                      Conversion.MakeConversionOrThrow(
+                        this.sr,
+                        this.expr(s.condition!, undefined)[1],
+                        this.sr.b.boolType(),
+                        this.currentContext.constraints,
+                        s.sourceloc,
+                        Conversion.Mode.Implicit,
+                        false
+                      ),
+                      EBinaryOperation.BoolAnd,
+                      this.sr.b.boolType(),
+                      s.sourceloc
+                    )[1]
+                );
+              } else {
+                // Variable is convertible to bool but no guard, only use value
+                resultingConditionId = conditionFromLet;
+              }
+            } else {
+              if (s.condition) {
+                // Variable is NOT convertible to bool but we have a guard, use only guard: Keep as-is
+                resultingConditionId = this.expr(s.condition, undefined)[1];
+                this.buildConstraints(constraints, resultingConditionId);
+              } else {
+                // Variable is neither convertible to bool nor we have a guard, error
+                throw new CompilerError(
+                  `The type of the 'while let' expression is not implicitly convertible to bool, therefore a 'while let ... if ...'-guard is required.`,
+                  s.sourceloc
+                );
+              }
+            }
+          } else {
+            assert(s.condition);
+            resultingConditionId = this.expr(s.condition, undefined)[1];
+            this.buildConstraints(constraints, resultingConditionId);
+          }
 
           // Before applying constraints
           const boolCondition = Conversion.MakeConversionOrThrow(
             this.sr,
-            conditionId,
+            resultingConditionId,
             this.sr.b.boolType(),
             this.currentContext.constraints,
             s.sourceloc,
@@ -4469,11 +4658,16 @@ export class SemanticElaborator {
             false
           );
 
-          this.buildConstraints(thenScope.constraints, conditionId);
+          const [thenScope, thenScopeId] = Semantic.addBlockScope(this.sr, {
+            variant: Semantic.ENode.BlockScope,
+            statements: [],
+            emittedExpr: null,
+            constraints: constraints,
+          });
           return this.withContext(
             {
               context: Semantic.isolateElaborationContext(this.currentContext, {
-                constraints: thenScope.constraints,
+                constraints: constraints,
                 currentScope: this.currentContext.currentScope,
                 genericsScope: this.currentContext.genericsScope,
                 instanceDeps: this.currentContext.instanceDeps,
@@ -4505,8 +4699,20 @@ export class SemanticElaborator {
                   false,
                   undefined
                 );
+
+                assert(e.condition);
+                const boolCondition = Conversion.MakeConversionOrThrow(
+                  this.sr,
+                  this.expr(e.condition, undefined)[1],
+                  this.sr.b.boolType(),
+                  this.currentContext.constraints,
+                  s.sourceloc,
+                  Conversion.Mode.Implicit,
+                  false
+                );
+
                 return {
-                  condition: this.expr(e.condition, undefined)[1],
+                  condition: boolCondition,
                   then: innerThenScopeId,
                 };
               });
@@ -4534,6 +4740,7 @@ export class SemanticElaborator {
 
               return Semantic.addStatement(this.sr, {
                 variant: Semantic.ENode.IfStatement,
+                isLetBinding: Boolean(s.letScopeId),
                 condition: boolCondition,
                 then: thenScopeId,
                 elseIfs: elseIfs,
@@ -4552,10 +4759,6 @@ export class SemanticElaborator {
       case Collect.ENode.WhileStatement: {
         let resultingConditionId: Semantic.ExprId | null = null;
 
-        // throw new Error(
-        //   "TODO: FIX: The evaluation does not work correctly because we have an ugly mix of semantic and collected stuff. We only know the collected scope of the while loop, but need the semantic scope for the condition type. It is a bit of a mess. Fix it."
-        // );
-
         const constraints = [...this.currentContext.constraints];
         if (s.letScopeId) {
           const scope = this.sr.cc.scopeNodes.get(s.letScopeId);
@@ -4571,7 +4774,7 @@ export class SemanticElaborator {
           const sym = this.sr.cc.symbolNodes.get(letStatement.variableSymbol);
           assert(sym.variant === Collect.ENode.VariableSymbol);
           const varType = this.expr(letStatement.value, undefined)[0].type;
-          const variableSymbolExpr = this.expr(
+          const [variableSymbolExpr, variableSymbolExprId] = this.expr(
             Collect.makeExpr(this.sr.cc, {
               variant: Collect.ENode.SymbolValueExpr,
               genericArgs: [],
@@ -4579,11 +4782,10 @@ export class SemanticElaborator {
               sourceloc: s.sourceloc,
             })[1],
             undefined
-          )[1];
-
+          );
           const variableAsBoolResult = Conversion.MakeConversion(
             this.sr,
-            variableSymbolExpr,
+            variableSymbolExprId,
             this.sr.b.boolType(),
             this.currentContext.constraints,
             s.sourceloc,
@@ -4611,7 +4813,7 @@ export class SemanticElaborator {
                       instanceIds: [],
                       isTemporary: true,
                       operation: EAssignmentOperation.Rebind,
-                      target: variableSymbolExpr,
+                      target: variableSymbolExprId,
                       type: varType,
                       value: this.expr(letStatement.value!, undefined)[1],
                       sourceloc: s.sourceloc,
@@ -5602,7 +5804,9 @@ export class SemanticElaborator {
           narrowing.addVariants(members);
           narrowing.constrainFromConstraints(this.currentContext.constraints, symbolValueExprId);
 
+          assert(narrowing.possibleVariants.size <= members.length);
           if (narrowing.possibleVariants.size === 1) {
+            // Only one value remains: Union to Value
             const tag = members.findIndex((m) => m === [...narrowing.possibleVariants][0]);
             assert(tag !== -1);
 
@@ -5612,10 +5816,30 @@ export class SemanticElaborator {
               expr: symbolValueExprId,
               tag: tag,
               isTemporary: false,
+              canBeUnwrappedForLHS: true,
               sourceloc: symbolValue.sourceloc,
               type: [...narrowing.possibleVariants][0],
             });
             return [result, resultId] as const;
+          } else if (narrowing.possibleVariants.size !== members.length) {
+            // If multiple values remain but they are not equal: Union to Union (e.g. A | B | null to A | B)
+
+            // We do not need type checking since the source is the same union and narrowing can only remove members
+            // Not like in Conversion, there we actually need it
+            const newUnion = this.sr.b.untaggedUnionTypeUse(
+              [...narrowing.possibleVariants],
+              symbolValue.sourceloc
+            );
+
+            return Semantic.addExpr(this.sr, {
+              variant: Semantic.ENode.UnionToUnionCastExpr,
+              instanceIds: [],
+              expr: symbolValueExprId,
+              canBeUnwrappedForLHS: true,
+              isTemporary: false,
+              sourceloc: symbolValue.sourceloc,
+              type: newUnion,
+            });
           }
         }
 
@@ -5790,6 +6014,7 @@ export class SemanticElaborator {
         instanceIds: [],
         sourceloc: errPropExpr.sourceloc,
         isTemporary: true,
+        canBeUnwrappedForLHS: false,
         tag: errIndex,
         type: errTag.type,
       })[1];
@@ -5840,6 +6065,7 @@ export class SemanticElaborator {
           expr: symbolValue(),
           instanceIds: [],
           isTemporary: true,
+          canBeUnwrappedForLHS: false,
           sourceloc: errPropExpr.sourceloc,
           tag: okIndex,
           type: okTag.type,
@@ -5855,6 +6081,7 @@ export class SemanticElaborator {
           })[1],
           Semantic.addStatement(this.sr, {
             variant: Semantic.ENode.IfStatement,
+            isLetBinding: false,
             condition: Semantic.addExpr(this.sr, {
               variant: Semantic.ENode.UnionTagCheckExpr,
               expr: rightExprId,
@@ -6726,7 +6953,18 @@ export class SemanticBuilder {
       // This is a special case for value narrowing and here, it is the easiest to fix, although not very nice
       case Semantic.ENode.UnionToValueCastExpr: {
         const unionExpr = this.sr.exprNodes.get(lhs.expr);
-        if (unionExpr.variant !== Semantic.ENode.SymbolValueExpr) {
+        if (unionExpr.variant !== Semantic.ENode.SymbolValueExpr || !lhs.canBeUnwrappedForLHS) {
+          throw new CompilerError(`This expression is not a valid LHS`, lhs.sourceloc);
+        }
+
+        Semantic.addSymbolDeps(this.sr.e.currentContext, unionExpr.symbol, dependencies);
+        break;
+      }
+
+      // This is a special case for value narrowing and here, it is the easiest to fix, although not very nice
+      case Semantic.ENode.UnionToUnionCastExpr: {
+        const unionExpr = this.sr.exprNodes.get(lhs.expr);
+        if (unionExpr.variant !== Semantic.ENode.SymbolValueExpr || !lhs.canBeUnwrappedForLHS) {
           throw new CompilerError(`This expression is not a valid LHS`, lhs.sourceloc);
         }
 
@@ -6736,6 +6974,7 @@ export class SemanticBuilder {
 
       case Semantic.ENode.StructLiteralExpr:
       case Semantic.ENode.ValueToUnionCastExpr:
+      case Semantic.ENode.UnionToUnionCastExpr:
       case Semantic.ENode.StringConstructExpr:
       case Semantic.ENode.PostIncrExpr:
       case Semantic.ENode.PreIncrExpr:
@@ -6753,12 +6992,10 @@ export class SemanticBuilder {
       case Semantic.ENode.SizeofExpr:
       case Semantic.ENode.AlignofExpr:
       case Semantic.ENode.AddressOfExpr:
-      case Semantic.ENode.ExprCallExpr: {
-        throw new CompilerError(`This expression is not a valid LHS`, lhs.sourceloc);
-      }
-
+      case Semantic.ENode.ExprCallExpr:
       default:
-        assert(false, (lhs as any).variant.toString());
+        throw new CompilerError(`This expression is not a valid LHS`, lhs.sourceloc);
+      // assert(false, (lhs as any).variant.toString());
     }
   }
 
@@ -6770,8 +7007,16 @@ export class SemanticBuilder {
     sourceloc: SourceLoc,
     inference: Inference
   ) {
-    const target = this.sr.exprNodes.get(targetId);
+    let target = this.sr.exprNodes.get(targetId);
     const value = this.sr.exprNodes.get(valueId);
+
+    if (
+      (target.variant === Semantic.ENode.UnionToValueCastExpr && target.canBeUnwrappedForLHS) ||
+      (target.variant === Semantic.ENode.UnionToUnionCastExpr && target.canBeUnwrappedForLHS)
+    ) {
+      targetId = target.expr;
+      target = this.sr.exprNodes.get(target.expr);
+    }
 
     if (target.isTemporary) {
       throw new CompilerError(
@@ -8057,6 +8302,7 @@ export namespace Semantic {
     instanceIds: InstanceId[];
     expr: ExprId;
     type: TypeUseId;
+    canBeUnwrappedForLHS: boolean; // This is if the cast originates from a constrained symbol value access
     tag: number;
     isTemporary: boolean;
     sourceloc: SourceLoc;
@@ -8067,6 +8313,7 @@ export namespace Semantic {
     instanceIds: InstanceId[];
     expr: ExprId;
     type: TypeUseId;
+    canBeUnwrappedForLHS: boolean; // This is if the cast originates from a constrained symbol value access
     isTemporary: boolean;
     sourceloc: SourceLoc;
   };
@@ -8284,6 +8531,7 @@ export namespace Semantic {
 
   export type IfStatement = {
     variant: ENode.IfStatement;
+    isLetBinding: boolean;
     condition: ExprId;
     then: BlockScopeId;
     elseIfs: {

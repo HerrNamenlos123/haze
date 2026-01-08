@@ -184,16 +184,16 @@ namespace json {
 
 struct Foo {};
 
-foobar2(): Result<Foo, json.Error> {
-    const data = "{\"name\":\"Alice\",\"age\":25,\"active\":true,\"numbers\":[1,2,3],\"nested\":{\"x\":10,\"y\":\"hello\"},\"msg\":\"Hello\\nWorld!\"}";
-    let j = json.parse(data)?!;
+// foobar2(): Result<Foo, json.Error> {
+//     const data = "{\"name\":\"Alice\",\"age\":25,\"active\":true,\"numbers\":[1,2,3],\"nested\":{\"x\":10,\"y\":\"hello\"},\"msg\":\"Hello\\nWorld!\"}";
+//     let j = json.parse(data)?!;
 
-    let a = j["name"]?!.to<str>();
-    let b = j["age"]?!.to<real>();
-    let c = j["nested"]?!["y"]?!.to<str>();
-    fmt.println("Parsed:", a, b, c);
-    return Result<Foo, json.Error>.Ok({});
-}
+//     let a = j["name"]?!.to<str>();
+//     let b = j["age"]?!.to<real>();
+//     let c = j["nested"]?!["y"]?!.to<str>();
+//     fmt.println("Parsed:", a, b, c);
+//     return Result<Foo, json.Error>.Ok({});
+// }
 
 // createcJSONExample(): Result<Foo, json.Error> {
 //     const resolutionNumbers = [3]Vec2 {
@@ -225,13 +225,13 @@ foobar2(): Result<Foo, json.Error> {
 //     return Result<Foo, json.Error>.Ok({});
 // }
 
-export foobar() {
-    let result = foobar2();
-    if !result {
-        fmt.println("Error:", result.error);
-    }
-    else {
-        fmt.println("Success!");
-    }
-    // createcJSONExample();
-}
+// export foobar() {
+//     let result = foobar2();
+//     if !result {
+//         fmt.println("Error:", result.error);
+//     }
+//     else {
+//         fmt.println("Success!");
+//     }
+//     // createcJSONExample();
+// }

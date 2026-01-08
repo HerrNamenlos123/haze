@@ -30,6 +30,7 @@ import {
 import { assert, InternalError, printWarningMessage, type SourceLoc } from "../shared/Errors";
 import { makeTempName } from "../shared/store";
 import { Collect, printCollectedDatatype } from "../SymbolCollection/SymbolCollection";
+import { stat } from "node:fs";
 
 export namespace Lowered {
   export type FunctionId = Brand<number, "LoweredFunction">;
@@ -636,6 +637,30 @@ const storeInTempVarAndGet = (
       wasMangled: false,
     },
     type: type,
+  });
+};
+
+const lowerExprAndWrapFlattenedStatements = (
+  lr: Lowered.Module,
+  exprId: Semantic.ExprId,
+  instanceInfo: InstanceInfo
+) => {
+  const flattenedStatements: Lowered.StatementId[] = [];
+  const [e, eId] = lowerExpr(lr, exprId, flattenedStatements, instanceInfo);
+
+  if (flattenedStatements.length === 0) {
+    return [e, eId] as const;
+  }
+
+  return Lowered.addExpr(lr, {
+    variant: Lowered.ENode.BlockScopeExpr,
+    sourceloc: lr.sr.exprNodes.get(exprId).sourceloc,
+    block: Lowered.addBlockScope(lr, {
+      definesVariables: true,
+      emittedExpr: eId,
+      statements: flattenedStatements,
+    })[1],
+    type: e.type,
   });
 };
 
@@ -1540,7 +1565,7 @@ export function lowerExpr(
         );
         if (
           exprTypeDef.variant === Semantic.ENode.PrimitiveDatatype &&
-          exprTypeDef.primitive === EPrimitive.none
+          (exprTypeDef.primitive === EPrimitive.none || exprTypeDef.primitive === EPrimitive.null)
         ) {
           optimizeExprToNullptr = true;
         }
@@ -1647,11 +1672,13 @@ export function lowerExpr(
         }
       }
 
-      const mappingUniqueKey = loweredSourceUnionId + "_to_" + loweredTargetUnionId;
-
       let mapping = lr.loweredUnionMappings.find((m) => {
         return m.from === loweredSourceUnionId && m.to === loweredTargetUnionId;
       });
+
+      // Both unions may have different values (due to either narrowing or expansion)
+      // And since it is a conversion mapping, only the overlapping ones need to be mapped.
+      // Therefore, only the members that appear in BOTH unions are mapped, the others are ignored.
 
       if (!mapping) {
         mapping = {
@@ -1664,15 +1691,17 @@ export function lowerExpr(
         // Fill new entry
         loweredSourceUnion.members.forEach((source, sourceIndex) => {
           const targetIndex = loweredTargetUnion.members.findIndex((m) => m === source);
-          assert(targetIndex !== -1);
-          mapping!.mapping.set(sourceIndex, targetIndex);
+          if (targetIndex) {
+            mapping!.mapping.set(sourceIndex, targetIndex);
+          }
         });
       } else {
         // Verify existing entry
         loweredSourceUnion.members.forEach((source, sourceIndex) => {
           const targetIndex = loweredTargetUnion.members.findIndex((m) => m === source);
-          assert(targetIndex !== -1);
-          assert(mapping!.mapping.get(sourceIndex) === targetIndex);
+          if (targetIndex) {
+            assert(mapping!.mapping.get(sourceIndex) === targetIndex);
+          }
         });
       }
 
@@ -2105,52 +2134,48 @@ function lowerStatement(
     }
 
     case Semantic.ENode.IfStatement: {
-      const flattened: Lowered.StatementId[] = [];
-      console.log("TODO: Lowered statement ordering may be wrong (see elseif's)");
       const [s, sId] = Lowered.addStatement<Lowered.Statement>(lr, {
         variant: Lowered.ENode.IfStatement,
-        condition: lowerExpr(lr, statement.condition, flattened, instanceInfo)[1],
+        condition: lowerExprAndWrapFlattenedStatements(lr, statement.condition, instanceInfo)[1],
         then: lowerBlockScope(lr, statement.then, instanceInfo),
         elseIfs: statement.elseIfs.map((e) => {
           return {
-            condition: lowerExpr(lr, e.condition, flattened, instanceInfo)[1],
+            condition: lowerExprAndWrapFlattenedStatements(lr, e.condition, instanceInfo)[1],
             then: lowerBlockScope(lr, e.then, instanceInfo),
           };
         }),
         else: statement.else && lowerBlockScope(lr, statement.else, instanceInfo),
         sourceloc: statement.sourceloc,
       });
-      return [...flattened, sId];
+      return [sId];
     }
 
     case Semantic.ENode.ForStatement: {
-      const flattened: Lowered.StatementId[] = [];
       const [s, sId] = Lowered.addStatement<Lowered.ForStatement>(lr, {
         variant: Lowered.ENode.ForStatement,
         initStatements: statement.initStatement
           ? lowerStatement(lr, statement.initStatement, instanceInfo)
           : [],
         loopCondition: statement.loopCondition
-          ? lowerExpr(lr, statement.loopCondition, flattened, instanceInfo)[1]
+          ? lowerExprAndWrapFlattenedStatements(lr, statement.loopCondition, instanceInfo)[1]
           : null,
         loopIncrement: statement.loopIncrement
-          ? lowerExpr(lr, statement.loopIncrement, flattened, instanceInfo)[1]
+          ? lowerExprAndWrapFlattenedStatements(lr, statement.loopIncrement, instanceInfo)[1]
           : null,
         body: lowerBlockScope(lr, statement.body, instanceInfo),
         sourceloc: statement.sourceloc,
       });
-      return [...flattened, sId];
+      return [sId];
     }
 
     case Semantic.ENode.WhileStatement: {
-      const flattened: Lowered.StatementId[] = [];
       const [s, sId] = Lowered.addStatement<Lowered.Statement>(lr, {
         variant: Lowered.ENode.WhileStatement,
-        condition: lowerExpr(lr, statement.condition, flattened, instanceInfo)[1],
+        condition: lowerExprAndWrapFlattenedStatements(lr, statement.condition, instanceInfo)[1],
         then: lowerBlockScope(lr, statement.then, instanceInfo),
         sourceloc: statement.sourceloc,
       });
-      return [...flattened, sId];
+      return [sId];
     }
 
     case Semantic.ENode.ExprStatement: {
@@ -2204,6 +2229,20 @@ function lowerBlockScope(
     if (
       first.variant === Semantic.ENode.VariableStatement &&
       second.variant === Semantic.ENode.WhileStatement &&
+      second.isLetBinding
+    ) {
+      // Yes it is one, strip it now
+      first.value = null;
+    }
+  }
+
+  // If the scope contains an if statement with a let binding, we have to remove the value from initialization (was too hard in collection and elaboration)
+  if (blockScope.statements.length === 2) {
+    const first = lr.sr.statementNodes.get(blockScope.statements[0]);
+    const second = lr.sr.statementNodes.get(blockScope.statements[1]);
+    if (
+      first.variant === Semantic.ENode.VariableStatement &&
+      second.variant === Semantic.ENode.IfStatement &&
       second.isLetBinding
     ) {
       // Yes it is one, strip it now

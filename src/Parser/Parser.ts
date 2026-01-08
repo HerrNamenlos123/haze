@@ -157,6 +157,8 @@ import {
   RequiresPureContext,
   RequiresAutoretContext,
   WhileLetStatementContext,
+  IfStatementConditionContext,
+  IfLetStatementConditionContext,
 } from "./grammar/autogen/HazeParser";
 import {
   BaseErrorListener,
@@ -169,6 +171,19 @@ import { HazeLexer } from "./grammar/autogen/HazeLexer";
 import { HazeParserVisitor } from "./grammar/autogen/HazeParserVisitor";
 import { EMethodType, EPrimitive, EVariableContext, type LiteralValue } from "../shared/common";
 import type { ModuleConfig } from "../shared/Config";
+
+type IfStatementCondition =
+  | {
+      type: "expr";
+      expr: ASTExpr;
+    }
+  | {
+      type: "let";
+      name: string;
+      datatype: ASTTypeUse | null;
+      letExpr: ASTExpr;
+      guardExpr: ASTExpr | null;
+    };
 
 export namespace Parser {
   class HazeErrorListener extends BaseErrorListener {
@@ -1069,26 +1084,64 @@ class ASTTransformer extends HazeParserVisitor<any> {
     };
   };
 
+  visitIfStatementCondition = (ctx: IfStatementConditionContext): IfStatementCondition => {
+    return {
+      type: "expr",
+      expr: this.visit(ctx.expr()),
+    };
+  };
+
+  visitIfLetStatementCondition = (ctx: IfLetStatementConditionContext): IfStatementCondition => {
+    assert(ctx._letExpr);
+    return {
+      type: "let",
+      name: ctx.ID().getText(),
+      datatype: ctx.datatype() ? this.visit(ctx.datatype()!) : null,
+      letExpr: this.visit(ctx._letExpr),
+      guardExpr: ctx._guardExpr ? this.visit(ctx._guardExpr) : null,
+    };
+  };
+
   visitIfStatement = (ctx: IfStatementContext): ASTIfStatement => {
-    if (!ctx._ifExpr) {
-      throw new InternalError("if expression is missing");
-    }
     if (!ctx._then) {
       throw new InternalError("then scope is missing");
     }
 
+    const transformCondition = (cond: IfStatementCondition) => {
+      if (cond.type === "let") {
+        return {
+          condition: cond.guardExpr,
+          letCondition: {
+            name: cond.name,
+            type: cond.datatype,
+            expr: cond.letExpr,
+          },
+        };
+      } else {
+        return {
+          condition: cond.expr,
+          letCondition: null,
+        };
+      }
+    };
+
     let elseIfs: {
-      condition: ASTExpr;
+      condition: ASTExpr | null;
+      letCondition: {
+        name: string;
+        type: ASTTypeUse | null;
+        expr: ASTExpr;
+      } | null;
       then: ASTScope;
     }[] = [];
 
-    if (ctx._elseIfExpr.length !== ctx._elseIfThen.length) {
+    if (ctx._elseIfCondition.length !== ctx._elseIfThen.length) {
       throw new InternalError("inconsistent length");
     }
 
-    for (let i = 0; i < ctx._elseIfExpr.length; i++) {
+    for (let i = 0; i < ctx._elseIfCondition.length; i++) {
       elseIfs.push({
-        condition: this.visit(ctx._elseIfExpr[i]),
+        ...transformCondition(this.visit(ctx._elseIfCondition[i])),
         then: this.visit(ctx._elseIfThen[i]),
       });
     }
@@ -1098,9 +1151,10 @@ class ASTTransformer extends HazeParserVisitor<any> {
       elseBlock = this.visit(ctx._elseBlock);
     }
 
+    assert(ctx._ifCondition);
     return {
       variant: "IfStatement",
-      condition: this.visit(ctx._ifExpr),
+      ...transformCondition(this.visit(ctx._ifCondition)),
       then: this.visit(ctx._then),
       sourceloc: this.loc(ctx),
       elseIfs: elseIfs,

@@ -67,6 +67,7 @@ import {
 } from "../shared/AST";
 import { getModuleGlobalNamespaceName, type ExportData, type ModuleConfig } from "../shared/Config";
 import { join } from "path";
+import { wrap } from "lodash";
 
 const RESERVED_METHOD_NAMES = ["toString", "clone", "freezeClone"];
 
@@ -560,11 +561,12 @@ export namespace Collect {
 
   export type IfStatement = BaseStatement & {
     variant: ENode.IfStatement;
-    condition: Collect.ExprId;
+    condition: Collect.ExprId | null;
+    letScopeId: Collect.ScopeId | null;
     comptime: boolean;
     thenBlock: Collect.ScopeId;
     elseif: {
-      condition: Collect.ExprId;
+      condition: Collect.ExprId | null;
       thenBlock: Collect.ScopeId;
     }[];
     elseBlock: Collect.ScopeId | null;
@@ -1924,21 +1926,75 @@ function collectScope(
       }
 
       case "IfStatement": {
-        addStatement(cc, blockScopeId, {
+        let conditionLetScopeId: Collect.ScopeId = blockScopeId;
+        if (astStatement.letCondition) {
+          conditionLetScopeId = collectScope(
+            cc,
+            {
+              variant: "Scope",
+              unsafe: true,
+              statements: [
+                {
+                  variant: "VariableDefinitionStatement",
+                  name: astStatement.letCondition.name,
+                  comptime: false,
+                  mutability: EVariableMutability.Let,
+                  sourceloc: astStatement.sourceloc,
+                  variableContext: EVariableContext.FunctionLocal,
+                  datatype: astStatement.letCondition.type ?? undefined,
+                  expr: astStatement.letCondition.expr,
+                },
+              ],
+              sourceloc: item.sourceloc,
+            },
+            {
+              currentParentScope: blockScopeId,
+            }
+          );
+          addStatement(cc, blockScopeId, {
+            variant: Collect.ENode.ExprStatement,
+            expr: Collect.makeExpr(cc, {
+              variant: Collect.ENode.BlockScopeExpr,
+              scope: conditionLetScopeId,
+              sourceloc: astStatement.sourceloc,
+            })[1],
+            sourceloc: astStatement.sourceloc,
+          });
+        }
+
+        addStatement(cc, conditionLetScopeId, {
           variant: Collect.ENode.IfStatement,
           comptime: astStatement.comptime,
-          condition: collectExpr(cc, astStatement.condition, {
-            currentParentScope: blockScopeId,
+          letScopeId: conditionLetScopeId !== blockScopeId ? conditionLetScopeId : null,
+          condition: astStatement.condition
+            ? collectExpr(cc, astStatement.condition, {
+                currentParentScope: conditionLetScopeId,
+              })
+            : null,
+          thenBlock: collectScope(cc, astStatement.then, {
+            currentParentScope: conditionLetScopeId,
           }),
           elseBlock:
             (astStatement.else &&
-              collectScope(cc, astStatement.else, { currentParentScope: blockScopeId })) ||
+              collectScope(cc, astStatement.else, { currentParentScope: conditionLetScopeId })) ||
             null,
-          thenBlock: collectScope(cc, astStatement.then, { currentParentScope: blockScopeId }),
-          elseif: astStatement.elseIfs.map((e) => ({
-            condition: collectExpr(cc, e.condition, { currentParentScope: blockScopeId }),
-            thenBlock: collectScope(cc, e.then, { currentParentScope: blockScopeId }),
-          })),
+          elseif: astStatement.elseIfs.map((e) => {
+            if (e.letCondition) {
+              throw new CompilerError(
+                `'if let' bindings in else-if branches are not supported yet`,
+                item.sourceloc
+              );
+            }
+
+            return {
+              condition: e.condition
+                ? collectExpr(cc, e.condition, {
+                    currentParentScope: conditionLetScopeId,
+                  })
+                : null,
+              thenBlock: collectScope(cc, e.then, { currentParentScope: conditionLetScopeId }),
+            };
+          }),
           sourceloc: astStatement.sourceloc,
         });
         break;
@@ -1965,9 +2021,8 @@ function collectScope(
         break;
 
       case "WhileStatement":
-        // Simulate the entire while loop being wrapped in a scope, for the let condition (while let x = 1 && x)
-        // Then it is rewritten to { let x = uninitialized; while x = 1 && x {} }, so the elaboration phase no longer
-        // knows about the let while feature, it just does its thing
+        // Simulate the entire while loop being wrapped in a scope, for the let condition (while let x = <expr> && x)
+        // Then it is rewritten to { let x = <expr>; while x = <expr> && x {} }. (not exactly true though...)
         let letScopeId: Collect.ScopeId = blockScopeId;
 
         if (astStatement.letCondition) {
@@ -2003,39 +2058,6 @@ function collectScope(
             })[1],
             sourceloc: astStatement.sourceloc,
           });
-
-          // condition = {
-          //   variant: "BlockScopeExpr",
-          //   scope: {
-          //     variant: "Scope",
-          //     sourceloc: condition.sourceloc,
-          //     statements: [
-          //       {
-          //         variant: "ExprStatement",
-          //         expr: {
-          //           variant: "ExprAssignmentExpr",
-          //           operation: EAssignmentOperation.Assign,
-          //           target: {
-          //             variant: "SymbolValueExpr",
-          //             generics: [],
-          //             name: astStatement.letCondition.name,
-          //             sourceloc: condition.sourceloc,
-          //           },
-          //           value: astStatement.letCondition.expr,
-          //           sourceloc: condition.sourceloc,
-          //         },
-          //         sourceloc: condition.sourceloc,
-          //       },
-          //       {
-          //         variant: "ExprStatement",
-          //         expr: condition,
-          //         sourceloc: condition.sourceloc,
-          //       },
-          //     ],
-          //     unsafe: false,
-          //   },
-          //   sourceloc: condition.sourceloc,
-          // };
         }
 
         addStatement(cc, letScopeId, {
@@ -2914,10 +2936,10 @@ export const printCollectedStatement = (
     }
 
     case Collect.ENode.IfStatement: {
-      print(`If (${printCollectedExpr(cc, statement.condition)})`);
+      print(`If (${statement.condition ? printCollectedExpr(cc, statement.condition) : "TBD"})`);
       printCollectedScope(cc, statement.thenBlock, indent + 2);
       for (const elif of statement.elseif) {
-        print(`ElseIf (${printCollectedExpr(cc, elif.condition)})`);
+        print(`ElseIf (${elif.condition ? printCollectedExpr(cc, elif.condition) : "TBD"})`);
         printCollectedScope(cc, elif.thenBlock, indent + 2);
       }
       if (statement.elseBlock) {
