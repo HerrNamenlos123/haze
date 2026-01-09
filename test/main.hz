@@ -1,60 +1,101 @@
 
 import math
-// import glDraw
 import glfw
 import gl
+import wgpu
+import glfw_wgpu
+
+export extern C wgpu_init(glfwWindow: cptr) :: final;
+export extern C wgpu_start(glfwWindow: cptr) :: final;
+export extern C wgpu_end(glfwWindow: cptr) :: final;
 
 main(): int {
-
-    fmt.println("TODO: Fix returns, if function returns in one path but not all, it must either create an error or automatically return none");
-    fmt.println("Idea for later: (from Prime Reacts: The Flaws of Inheritance): I should implement interfaces as a way to make a contract about generic types, and to make the interfaces very powerful, interfaces should be able to define members and methods, as well as default implementations of methods that is used if the struct does not provide that function, and it is allowed as long as the default implementation of the interface method only uses other methods of the interface. This makes it very powerful and a complete replacement for polymorphism.");
-    fmt.println("Idea: Implement scopes/do blocks/whatever, and like in Swift make the ability to label them, and then 'break foo' can be used to break out of that scope, which is awesome because it greatly simplifies the common issue of having 2 nested loops and wanting to break out of the outer one.")
 
     if !glfw.init() {
         return 0;
     }
 
     const window = glfw.createWindow({ 
-        title: "Hello World!",
+        title: "WebGPU Example",
+        noApi: true,
     });
 
     if window {
-        window.swapInterval(0);
-        gl.init(glfw.getProcAddress());
+        let instance = wgpu.createInstance();
+        fmt.println("before", typeof(instance).name);
+        if instance {
+            fmt.println("in", typeof(instance).name);
+        }
+        fmt.println("after", typeof(instance).name);
+        // wgpu.init(window.handle);
+        // gl.init(window.getProcAddress());
+        // gl.viewport(0, 0, 1920, 1080);
 
-        gl.viewport(0, 0, 1920, 1080);
-
-        let oldTime = glfw.getTime();
-        window.swapBuffers();
-
-        let frameCounter: i16 = 0;
-
-        let fps = 0.0;
         while !window.shouldClose() {
             glfw.pollEvents();
+            // wgpu.wgpu_start(window.handle);
 
-            let now = glfw.getTime();
-            let elapsed = now - oldTime;
-            oldTime = now;
-
-            gl.clearColor(Color((math.sin(oldTime * 10.0) + 1.0) / 2.0, 0.1, 0.1, 1.0));
-            gl.clear();
-
-            if fps == 0.0 {
-                fps = 1.0 / elapsed;
-            }
-
-            let alpha = 0.001;
-            fps = fps * (1.0 - alpha) + 1.0 / elapsed * alpha;
-
-            fmt.println("FPS:", fps);
-            fmt.println("Count: ", frameCounter);
-
-            window.swapBuffers();
+            // gl.clearColor(Color((math.sin(glfw.getTime() * 10.0) + 1.0) / 2.0, 0.1, 0.1, 1.0));
+            // gl.clear();
+            // wgpu.wgpu_end(window.handle);
+            // window.swapBuffers();
         }
 
+        window.destroy();
         glfw.terminate();
     }
 
     return 0;
+
+//     fmt.println("TODO: Fix returns, if function returns in one path but not all, it must either create an error or automatically return none");
+//     fmt.println("Idea for later: (from Prime Reacts: The Flaws of Inheritance): I should implement interfaces as a way to make a contract about generic types, and to make the interfaces very powerful, interfaces should be able to define members and methods, as well as default implementations of methods that is used if the struct does not provide that function, and it is allowed as long as the default implementation of the interface method only uses other methods of the interface. This makes it very powerful and a complete replacement for polymorphism.");
+//     fmt.println("Idea: Implement scopes/do blocks/whatever, and like in Swift make the ability to label them, and then 'break foo' can be used to break out of that scope, which is awesome because it greatly simplifies the common issue of having 2 nested loops and wanting to break out of the outer one.")
+
+//     if !glfw.init() {
+//         return 0;
+//     }
+
+//     const window = glfw.createWindow({ 
+//         title: "Hello World!",
+//     });
+
+//     if window {
+//         window.swapInterval(0);
+//         gl.init(glfw.getProcAddress());
+
+//         gl.viewport(0, 0, 1920, 1080);
+
+//         let oldTime = glfw.getTime();
+//         window.swapBuffers();
+
+//         let frameCounter: i16 = 0;
+
+//         let fps = 0.0;
+//         while !window.shouldClose() {
+//             glfw.pollEvents();
+
+//             let now = glfw.getTime();
+//             let elapsed = now - oldTime;
+//             oldTime = now;
+
+//             gl.clearColor(Color((math.sin(oldTime * 10.0) + 1.0) / 2.0, 0.1, 0.1, 1.0));
+//             gl.clear();
+
+//             if fps == 0.0 {
+//                 fps = 1.0 / elapsed;
+//             }
+
+//             let alpha = 0.001;
+//             fps = fps * (1.0 - alpha) + 1.0 / elapsed * alpha;
+
+//             fmt.println("FPS:", fps);
+//             fmt.println("Count: ", frameCounter);
+
+//             window.swapBuffers();
+//         }
+
+//         glfw.terminate();
+//     }
+
+//     return 0;
 }

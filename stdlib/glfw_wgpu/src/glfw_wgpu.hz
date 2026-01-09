@@ -1,0 +1,13 @@
+import glfw
+import wgpu
+
+__c__("#include \"glfw3webgpu.h\"");
+__c__("#include \"glfw3webgpu.c\"");
+
+namespace ffi {
+    extern C noemit glfwCreateWindowWGPUSurface(instance: wgpu.ffi.WGPUInstanceImpl, w: glfw.ffi.GLFWwindow): wgpu.ffi.WGPUSurfaceImpl :: final;
+}
+
+createWindowWGPUSurface(instance: wgpu.Instance, window: glfw.Window) {
+    return ffi.glfwCreateWindowWGPUSurface(instance.handle, window.handle);
+}

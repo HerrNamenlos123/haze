@@ -12,9 +12,98 @@ export enum ModuleType {
   Executable,
 }
 
+export enum Platform {
+  Win32,
+  Linux,
+}
+
+export let PLATFORM: Platform;
+if (process.platform === "win32") {
+  PLATFORM = Platform.Win32;
+} else if (process.platform === "linux") {
+  PLATFORM = Platform.Linux;
+} else if (process.platform === "darwin") {
+  throw new Error("MacOS not supported yet");
+} else {
+  throw new Error("Platform not supported yet: " + process.platform);
+}
+
 export type ModuleDependency = { name: string; path: string };
 
 export type ScriptDef = { name: string; command: string; depends: string[] | null };
+
+export class PlatformStrings {
+  private all = new Set<string>();
+  private win32 = new Set<string>();
+  private linux = new Set<string>();
+
+  constructor(values?: { all: string[]; win32: string[]; linux: string[] }) {
+    if (values) {
+      this.all = new Set(values.all);
+      this.win32 = new Set(values.win32);
+      this.linux = new Set(values.linux);
+    }
+  }
+
+  combineForPlatform() {
+    const result = this.getAll();
+    if (PLATFORM === Platform.Win32) {
+      result.push(...this.win32);
+    }
+    if (PLATFORM === Platform.Linux) {
+      result.push(...this.linux);
+    }
+    return result;
+  }
+
+  getAll() {
+    return [...this.all];
+  }
+
+  getWin32() {
+    return [...this.win32];
+  }
+
+  getLinux() {
+    return [...this.linux];
+  }
+
+  merge(strings: PlatformStrings) {
+    this.addAll(strings.getAll());
+    this.addWin32(strings.getWin32());
+    this.addLinux(strings.getLinux());
+  }
+
+  addAll(flag: string | string[]) {
+    if (Array.isArray(flag)) {
+      for (const f of flag) {
+        this.all.add(f);
+      }
+    } else {
+      this.all.add(flag);
+    }
+  }
+
+  addWin32(flag: string | string[]) {
+    if (Array.isArray(flag)) {
+      for (const f of flag) {
+        this.win32.add(f);
+      }
+    } else {
+      this.win32.add(flag);
+    }
+  }
+
+  addLinux(flag: string | string[]) {
+    if (Array.isArray(flag)) {
+      for (const f of flag) {
+        this.linux.add(f);
+      }
+    } else {
+      this.linux.add(flag);
+    }
+  }
+}
 
 export type ModuleConfig = {
   name: string;
@@ -33,16 +122,9 @@ export type ModuleConfig = {
   moduleType: ModuleType;
   configFilePath?: string;
   dependencies: ModuleDependency[];
-  linkerFlags: {
-    any: string[];
-    win32: string[];
-    linux: string[];
-  };
-  compilerFlags: {
-    any: string[];
-    win32: string[];
-    linux: string[];
-  };
+  linkerFlags: PlatformStrings;
+  compilerFlags: PlatformStrings;
+  includeDirs: PlatformStrings;
   hzstdLocation: string | null;
   platform: PlatformString;
   includeSourceloc: boolean;
@@ -110,13 +192,24 @@ export type ModuleMetadata = {
   name: string;
   version: string;
   libs: ModuleLibMetadata[];
-  linkerFlags: {
-    any: string[];
-    win32: string[];
-    linux: string[];
-  };
+  includeDirs: PlatformStrings;
+  linkerFlags: PlatformStrings;
   compileCommands: CompileCommands;
   importFile: "import.hz";
+};
+
+const getStringArray = (v: any) => {
+  if (!Array.isArray(v)) {
+    throw new GeneralError(
+      "Inconsistent module config: Expected string array instead of '" + v + "'"
+    );
+  }
+  for (const s of v) {
+    if (typeof s !== "string") {
+      throw new GeneralError("Inconsistent module config: Expected string instead of '" + s + "'");
+    }
+  }
+  return v as string[];
 };
 
 export function parseModuleMetadata(metadata: string): ModuleMetadata {
@@ -138,22 +231,6 @@ export function parseModuleMetadata(metadata: string): ModuleMetadata {
     }
     return v as T;
   }
-
-  const getStringArray = (v: any) => {
-    if (!Array.isArray(v)) {
-      throw new GeneralError(
-        "Inconsistent module config: Expected string array instead of '" + v + "'"
-      );
-    }
-    for (const s of v) {
-      if (typeof s !== "string") {
-        throw new GeneralError(
-          "Inconsistent module config: Expected string instead of '" + s + "'"
-        );
-      }
-    }
-    return v as string[];
-  };
 
   const getNumber = (v: any) => {
     if (typeof v !== "number") {
@@ -190,11 +267,16 @@ export function parseModuleMetadata(metadata: string): ModuleMetadata {
     name: getString(obj["name"]),
     version: getString(obj["version"]),
     libs: getLibs(obj["libs"]),
-    linkerFlags: {
-      any: getStringArray(obj["linkerFlags"]["any"]),
+    includeDirs: new PlatformStrings({
+      all: getStringArray(obj["includeDirs"]["all"]),
+      win32: getStringArray(obj["includeDirs"]["win32"]),
+      linux: getStringArray(obj["includeDirs"]["linux"]),
+    }),
+    linkerFlags: new PlatformStrings({
+      all: getStringArray(obj["linkerFlags"]["all"]),
       win32: getStringArray(obj["linkerFlags"]["win32"]),
       linux: getStringArray(obj["linkerFlags"]["linux"]),
-    },
+    }),
     compileCommands: obj["compileCommands"],
     importFile: "import.hz",
   };
@@ -388,34 +470,43 @@ export class ConfigParser {
       configFilePath: this.configPath,
       moduleType: moduleType,
       nostdlib: this.getOptionalStringAnyOf(toml, "std", ["none"]) === "none",
-      linkerFlags: {
-        any: [],
+      linkerFlags: new PlatformStrings({
+        all: [],
         win32: [],
         linux: [],
-      },
-      compilerFlags: {
-        any: [],
+      }),
+      compilerFlags: new PlatformStrings({
+        all: [],
         win32: [],
         linux: [],
-      },
+      }),
+      includeDirs: new PlatformStrings({
+        all: [],
+        win32: [],
+        linux: [],
+      }),
       hzstdLocation: null,
       platform: getCurrentPlatform(),
       includeSourceloc: sourceloc ?? true,
     };
 
     const linker = toml["linker"] as any;
-    config.linkerFlags = {
-      any: (linker && this.getOptionalStringArray(linker, "flags")) || [],
-      win32: (linker?.win32 && this.getOptionalStringArray(linker.win32, "flags")) || [],
-      linux: (linker?.linux && this.getOptionalStringArray(linker.linux, "flags")) || [],
-    };
+    config.linkerFlags.addAll((linker && this.getOptionalStringArray(linker, "flags")) || []);
+    config.linkerFlags.addWin32(
+      (linker?.win32 && this.getOptionalStringArray(linker.win32, "flags")) || []
+    );
+    config.linkerFlags.addLinux(
+      (linker?.linux && this.getOptionalStringArray(linker.linux, "flags")) || []
+    );
 
     const compiler = toml["compiler"] as any;
-    config.compilerFlags = {
-      any: (compiler && this.getOptionalStringArray(compiler, "flags")) || [],
-      win32: (compiler?.win32 && this.getOptionalStringArray(compiler?.win32, "flags")) || [],
-      linux: (compiler?.linux && this.getOptionalStringArray(compiler?.linux, "flags")) || [],
-    };
+    config.compilerFlags.addAll((compiler && this.getOptionalStringArray(compiler, "flags")) || []);
+    config.compilerFlags.addWin32(
+      (compiler?.win32 && this.getOptionalStringArray(compiler.win32, "flags")) || []
+    );
+    config.compilerFlags.addLinux(
+      (compiler?.linux && this.getOptionalStringArray(compiler.linux, "flags")) || []
+    );
 
     return config;
   }

@@ -1,0 +1,10 @@
+name = "glfw_wgpu"
+version = "1.0.0"
+description = "WebGPU Integration for GLFW"
+license = "MIT"
+authors = ["HerrNamenlos123"]
+type = "lib"
+
+[dependencies]
+glfw = { path = "./glfw" }
+wgpu = { path = "./wgpu" }

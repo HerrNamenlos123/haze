@@ -130,7 +130,7 @@ class CodeGenerator {
   writeString() {
     const writer = new OutputWriter();
 
-    writer.writeLine("// clang-format off\n\n");
+    // writer.writeLine("// clang-format off\n\n");
     writer.writeLine("#define _POSIX_C_SOURCE 199309L\n");
     writer.writeLine("#define _GNU_SOURCE\n");
 
@@ -160,7 +160,7 @@ class CodeGenerator {
     writer.write(this.out.function_definitions);
     writer.writeLine();
 
-    writer.writeLine("// clang-format on");
+    // writer.writeLine("// clang-format on");
 
     return writer.get();
   }

@@ -57,12 +57,12 @@ export function ExportTypeDef(
         const defaultValue = typedef.memberDefaultValues.find((v) => v.memberName === content.name);
         assert(content.type);
         if (defaultValue) {
-          file += `${content.name}: ${Semantic.serializeTypeUse(
+          file += `${content.name}: ${Semantic.serializeFullTypeUse(
             sr,
             content.type
           )} = ${Semantic.serializeExpr(sr, defaultValue.value)};\n`;
         } else {
-          file += `${content.name}: ${Semantic.serializeTypeUse(sr, content.type)};\n`;
+          file += `${content.name}: ${Semantic.serializeFullTypeUse(sr, content.type)};\n`;
         }
       }
       for (const methodId of typedef.methods) {
@@ -80,10 +80,12 @@ export function ExportTypeDef(
             rawParams = rawParams.slice(1, undefined);
           }
           const parameters = rawParams
-            .map((p, i) => `${method.parameterNames[i + 1]}: ${Semantic.serializeTypeUse(sr, p)}`)
+            .map(
+              (p, i) => `${method.parameterNames[i + 1]}: ${Semantic.serializeFullTypeUse(sr, p)}`
+            )
             .join(", ");
           if (functype.returnType) {
-            file += `${method.name}(${parameters}): (${Semantic.serializeTypeUse(
+            file += `${method.name}(${parameters}): (${Semantic.serializeFullTypeUse(
               sr,
               functype.returnType
             )})`;
@@ -182,12 +184,12 @@ export function ExportSymbol(
       file +=
         "(" +
         functype.parameters
-          .map((p, i) => `${symbol.parameterNames[i]}: ${Semantic.serializeTypeUse(sr, p)}`)
+          .map((p, i) => `${symbol.parameterNames[i]}: ${Semantic.serializeFullTypeUse(sr, p)}`)
           .join(", ") +
         (functype.vararg ? ", ..." : "") +
         ")" +
         (functype.returnType
-          ? ": (" + Semantic.serializeTypeUse(sr, functype.returnType) + ")"
+          ? ": (" + Semantic.serializeFullTypeUse(sr, functype.returnType) + ")"
           : " ");
       file += " :: final";
       if (functype.requires.pure) {

@@ -27,6 +27,8 @@ test = "haze test"
 glfw = { path = "./glfw" }
 math = { path = "./math" }
 gl = { path = "./gl" }
+wgpu = { path = "./wgpu" }
+glfw_wgpu = { path = "./glfw_wgpu" }
 # gl = { path = "./gl" }
 # glDraw = { path = "./glDraw" }
 # ember = { path = "./ember" }

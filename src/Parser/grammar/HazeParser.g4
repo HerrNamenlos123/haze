@@ -12,7 +12,7 @@ options { tokenVocab=HazeLexer; }
 
 prog: topLevelDeclarations EOF;
 topLevelDeclarations
-    : (cInjectDirective | importStatements | globalDeclaration)*
+    : (importStatements | globalDeclaration)*
     ;
 
 // Imports
@@ -47,6 +47,12 @@ globalDeclaration
     | globalVariableDef 
     | typeDef 
     | globalDeclarationWithSource
+    // The cInjectDirective must be here in global and cannot be part of topLevel directly, because
+    // MANY declarations start with an optional "export" and it is ambiguous for ANTLR.
+    // If "export __c__" is used, it would eagerly commit to globalDeclaration because it matches more tokens,
+    // no longer matches cInjectDirective and fails.
+    // So ig we have to live with the case that cInject can now live in namespaces
+    | cInjectDirective
     ;
 
 namespaceDefinition

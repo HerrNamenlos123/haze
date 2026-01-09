@@ -839,6 +839,25 @@ export namespace Conversion {
     //   })
     // }
 
+    // From object reference to cptr
+    if (
+      fromType.variant === Semantic.ENode.StructDatatype &&
+      !fromTypeInstance.inline &&
+      to.variant === Semantic.ENode.PrimitiveDatatype &&
+      to.primitive === EPrimitive.cptr
+    ) {
+      return ok(
+        Semantic.addExpr(sr, {
+          variant: Semantic.ENode.ExplicitCastExpr,
+          instanceIds: fromExpr.instanceIds,
+          expr: fromExprId,
+          type: toId,
+          sourceloc: sourceloc,
+          isTemporary: fromExpr.isTemporary,
+        })[1]
+      );
+    }
+
     // Conversion between Integers
     if (
       Conversion.isIntegerById(sr, fromTypeInstance.type) &&
@@ -1579,21 +1598,7 @@ export namespace Conversion {
         const collectedStruct = sr.cc.typeDefNodes.get(targetType.originalCollectedDefinition);
         assert(collectedStruct.variant === Collect.ENode.StructTypeDef);
         // Make an empty struct instantiation and let it handle the default values, since we know they all exist.
-        // return sr.e.makeStructInstantiation(sr.typeUseNodes.get(targetTypeId).type, [], {
-        //   context: Semantic.makeElaborationContext({
-        //     currentScope: collectedStruct.structScope,
-        //     genericsScope: collectedStruct.structScope,
-        //   }),
-        //   constraints: [],
-        //   expectedReturnType: makePrimitiveAvailable(
-        //     sr,
-        //     EPrimitive.void,
-        //     EDatatypeMutability.Default,
-        //     sourceloc
-        //   ),
-        //   sourceloc: sourceloc,
-        //   unsafe: false,
-        // })[1];
+        return sr.b.structLiteral(targetTypeId, [], sr.e.inFunction, null, sourceloc)[1];
       }
 
       throw new CompilerError(

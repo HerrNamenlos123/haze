@@ -1,10 +1,9 @@
-name = "glfw"
+name = "wgpu"
 version = "1.0.0"
-description = "GLFW support for Haze"
+description = "WebGPU Bindings for Haze (Native + Web)"
 license = "MIT"
 authors = ["HerrNamenlos123"]
 type = "lib"
-# src = "."
 
 [scripts.linux]
 prebuild = { command = "$HAZE_MODULE_SOURCE_DIR/build-linux.sh", depends = "./**/*" }
@@ -12,17 +11,8 @@ prebuild = { command = "$HAZE_MODULE_SOURCE_DIR/build-linux.sh", depends = "./**
 [scripts.win32]
 prebuild = { command = "call \"%HAZE_MODULE_SOURCE_DIR%/build-win.bat\"", depends = "./**/*" }
 
-[compiler.linux]
-flags = ["-D_GLFW_X11", "-D_GLFW_WAYLAND"]
-
-[compiler.win32]
-flags = ["-D_GLFW_WIN32"]
-
 [linker]
-flags = ["-lglfw3"]
+flags = ["-lwgpu_native"]
 
-[linker.linux]
-flags = ["-lm", "-lGL", "-lpthread"]
-
-[linker.win32]
-flags = ["-luser32", "-lgdi32", "-lshell32"]
+[dependencies]
+glfw = { path = "./glfw" }

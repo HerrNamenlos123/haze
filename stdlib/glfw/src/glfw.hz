@@ -1,10 +1,8 @@
 
+__c__("#define GLFW_INCLUDE_NONE");
 __c__("#include <GLFW/glfw3.h>");
 __c__("#include <math.h>");
 __c__("#include <string.h>");
-
-export extern C struct GLFWwindow {};
-export extern C struct GLFWmonitor {};
 
 extern C noemit strcmp(str1: ccstr, str2: ccstr): i32 :: final;
 extern C noemit getenv(name: ccstr): ccstr :: final;
@@ -16,11 +14,17 @@ const GLFW_CONTEXT_VERSION_MAJOR: i32;
 const GLFW_CONTEXT_VERSION_MINOR: i32;
 const GLFW_OPENGL_PROFILE: i32;
 const GLFW_OPENGL_CORE_PROFILE: i32;
+const GLFW_CLIENT_API: i32;
+const GLFW_NO_API: i32;
 
-namespace raw {
+namespace ffi {
+    export extern C struct GLFWwindow {};
+    export extern C struct GLFWmonitor {};
+
     extern C glfwInit(): i32 :: final;
     extern C glfwTerminate(): void :: final;
     extern C glfwCreateWindow(width: i32, height: i32, title: ccstr, monitor?: GLFWmonitor, share?: GLFWwindow): GLFWwindow | none :: final;
+    extern C glfwDestroyWindow(w: GLFWwindow) :: final;
     extern C glfwWindowShouldClose(w: GLFWwindow): i32 :: final;
     extern C glfwSetWindowShouldClose(w: GLFWwindow, value: i32) :: final;
     extern C glfwSwapBuffers(w: GLFWwindow) :: final;
@@ -32,6 +36,12 @@ namespace raw {
     extern C glfwGetTime(): f64 :: final;
     // extern C glfwMakeContextCurrent(w: GLFWwindow*);
     extern C glfwGetProcAddress(procname: ccstr): (() => void) :: final;
+
+    // extern C glfwCreateWindowWGPUSurface(instance: inline WGPUInstance, w: GLFWwindow): inline WGPUSurface :: final;
+
+    // export extern C glfwCreateWindowWGPUSurface_impl(instance: inline WGPUInstance, w: GLFWwindow) {
+    //     return glfwCreateWindowWGPUSurface(instance, w);
+    // }
 
     export init(): bool {
         return glfwInit() != 0;
@@ -66,6 +76,10 @@ namespace raw {
         glfwSwapInterval(flags);
     }
 
+    export destroyWindow(w: GLFWwindow) {
+        glfwDestroyWindow(w);
+    }
+
     export makeContextCurrent(w: GLFWwindow) {
         glfwMakeContextCurrent(w);
     }
@@ -92,29 +106,47 @@ namespace raw {
 }
 
 export struct Window {
-    handle: GLFWwindow;
+    handle: ffi.GLFWwindow;
 
     makeContextCurrent() {
-        raw.makeContextCurrent(this.handle);
+        ffi.makeContextCurrent(this.handle);
     }
 
     shouldClose(): bool {
-        return raw.windowShouldClose(this.handle);
+        return ffi.windowShouldClose(this.handle);
     }
 
     close() {
-        raw.setWindowShouldClose(this.handle, true);
+        ffi.setWindowShouldClose(this.handle, true);
+    }
+
+    destroy() {
+        ffi.destroyWindow(this.handle);
     }
 
     swapBuffers() {
-        raw.makeContextCurrent(this.handle);
-        raw.swapBuffers(this.handle);
+        ffi.makeContextCurrent(this.handle);
+        ffi.swapBuffers(this.handle);
     }
 
     swapInterval(interval: int) {
         if interval >= 0 && interval <= 10 {
-            raw.makeContextCurrent(this.handle);
-            raw.swapInterval(interval as i32);
+            ffi.makeContextCurrent(this.handle);
+            ffi.swapInterval(interval as i32);
+        }
+    }
+
+    getProcAddress(): (name: ccstr) => cptr {
+        // This makeContextCurrent() is important because getProcAddress is usually immediately passed to
+        // gl.init, which then takes the GL context. It is important that the two are linked.
+        // We just need to hope someone doesn't call getProcAddress and then do something else instead of gl.init()
+        this.makeContextCurrent(); 
+
+        do unsafe {
+            const rawProc = ffi.glfw_getProcAddress;
+            const castedProc: (name: ccstr) => cptr = uninitialized;
+            __c__("castedProc = (void*)rawProc;");
+            return castedProc;
         }
     }
 }
@@ -127,6 +159,7 @@ export struct WindowSizeConfig {
 export struct WindowConfig {
     title: ccstr;
     size: WindowSizeConfig = {};
+    noApi: bool = false; // This prevents graphics context creation, which is required for Vulkan
 }
 
 export init(): bool {
@@ -134,22 +167,27 @@ export init(): bool {
     let valid = true;
     __c__("valid = desktop != 0;");
     if (valid && strcmp(desktop, "GNOME") == 0) {
-        raw.initHint(GLFW_PLATFORM, GLFW_PLATFORM_X11);
+        ffi.initHint(GLFW_PLATFORM, GLFW_PLATFORM_X11);
     }
     else {
-        raw.initHint(GLFW_PLATFORM, GLFW_ANY_PLATFORM);
+        ffi.initHint(GLFW_PLATFORM, GLFW_ANY_PLATFORM);
     }
-    return raw.init();
+    return ffi.init();
 }
 
 export terminate() {
-    raw.terminate();
+    ffi.terminate();
 }
 
 export createWindow(config: WindowConfig): Window | none {
-    raw.windowHint(GLFW_CONTEXT_VERSION_MAJOR, 3 as i32);
-    raw.windowHint(GLFW_CONTEXT_VERSION_MINOR, 3 as i32);
-    raw.windowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+    ffi.windowHint(GLFW_CONTEXT_VERSION_MAJOR, 3 as i32);
+    ffi.windowHint(GLFW_CONTEXT_VERSION_MINOR, 3 as i32);
+    ffi.windowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+
+    if (config.noApi) {
+        ffi.windowHint(GLFW_CLIENT_API, GLFW_NO_API);
+    }
+
     const width = config.size.width;
     const height = config.size.height;
     const widthI32: i32 = 0;
@@ -163,7 +201,7 @@ export createWindow(config: WindowConfig): Window | none {
     if (height >= i32.min && height <= i32.max) {
         heightI32 = height;
     }
-    const handle = raw.createWindow(widthI32, heightI32, config.title, none, none);
+    const handle = ffi.createWindow(widthI32, heightI32, config.title, none, none);
     if handle {
         return Window { handle: handle };
     }
@@ -171,18 +209,9 @@ export createWindow(config: WindowConfig): Window | none {
 }
 
 export pollEvents() {
-    raw.pollEvents();
+    ffi.pollEvents();
 }
 
 export getTime(): real {
-    return raw.getTime() as real;
-}
-
-export getProcAddress(): (name: ccstr) => cptr {
-    do unsafe {
-        const rawProc = raw.glfw_getProcAddress;
-        const castedProc: (name: ccstr) => cptr = uninitialized;
-        __c__("castedProc = (void*)rawProc;");
-        return castedProc;
-    }
+    return ffi.getTime() as real;
 }

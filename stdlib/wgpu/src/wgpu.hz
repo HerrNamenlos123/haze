@@ -1,0 +1,70 @@
+
+__c__("#include \"wgpu.h\"");
+// __c__("#include \"wgpu.c\"");
+
+export __c__("typedef struct WGPUSurfaceImpl WGPUSurfaceImpl;");
+export __c__("typedef struct WGPUInstanceImpl WGPUInstanceImpl;");
+
+namespace ffi {
+    // We use the WGPU*Impl types since they are all consistently mapped to struct pointers,
+    // therefore we can immediately work with them as references.
+    // If we used the non-impl version, then they would be typedef-ed to pointers, 
+    // but Haze does not know that, so Haze would get very weird value semantics, that are not even necessary.
+    export extern C noemit struct WGPUSurfaceImpl {};
+    export extern C noemit struct WGPUInstanceImpl {};
+
+    export extern C noemit struct WGPUInstanceDescriptor {
+        nextInChain: WGPUChainedStruct | none = none;
+        features: inline WGPUInstanceCapabilities = default;
+    };
+
+    export extern C noemit struct WGPUInstanceCapabilities {
+        nextInChain: WGPUChainedStructOut | none = none;
+        timedWaitAnyEnable: u32 = 0;
+        timedWaitAnyMaxCount: usize = 0;
+    };
+
+    export extern C noemit struct WGPUChainedStruct {
+        next: WGPUChainedStruct | none = none;
+        sType: int = 0; // Enum
+    };
+
+    export extern C noemit struct WGPUChainedStructOut {
+        next: WGPUChainedStructOut | none = none;
+        sType: int = 0; // Enum
+    };
+
+    extern C noemit wgpuCreateInstance(instanceDesc: WGPUInstanceDescriptor): WGPUInstanceImpl | none :: final;
+}
+
+export struct Surface {
+    handle: ffi.WGPUSurfaceImpl;
+}
+
+export struct Instance {
+    handle: ffi.WGPUInstanceImpl;
+}
+
+export createInstance() { 
+  let instance_desc = ffi.WGPUInstanceDescriptor {};
+  let instance = ffi.wgpuCreateInstance(instance_desc);
+  if instance {
+    return Instance {
+        handle: instance,
+    };
+  }
+  else {
+    return none;
+  }
+}
+
+// export extern C noemit wgpu_init(glfwWindow: cptr) :: final;
+// export extern C noemit wgpu_start(glfwWindow: cptr) :: final;
+// export extern C noemit wgpu_end(glfwWindow: cptr) :: final;
+
+//   WGPUInstanceDescriptor instance_desc = { 0 };
+//   g_instance = wgpuCreateInstance(&instance_desc);
+//   if (!g_instance) {
+//     fprintf(stderr, "Failed to create instance\n");
+//     return;
+//   }

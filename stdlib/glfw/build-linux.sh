@@ -1,4 +1,5 @@
 #!/bin/sh
+set -e
 
 # rm -rf __haze__/glfw
 if [ ! -d "glfw" ]; then
