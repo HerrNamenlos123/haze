@@ -6,6 +6,7 @@ import {
   Collect,
   funcSymHasParameterPack,
   printCollectedDatatype,
+  printCollectedExpr,
   type CollectionContext,
 } from "./SymbolCollection";
 
@@ -16,7 +17,20 @@ export function ExportCollectedTypeDefAlias(
 ) {
   const typedef = sr.cc.typeDefNodes.get(typedefId);
   assert(typedef.variant === Collect.ENode.TypeDefAlias);
-  return "type " + typedef.name + " = " + printCollectedDatatype(sr.cc, typedef.target) + ";\n";
+  const generics = typedef.generics.map((g) => {
+    const symbol = sr.cc.symbolNodes.get(g);
+    assert(symbol.variant === Collect.ENode.GenericTypeParameterSymbol);
+    return symbol.name;
+  });
+  const genericsString = generics.length > 0 ? `<${generics.join(", ")}>` : "";
+  return (
+    "type " +
+    typedef.name +
+    genericsString +
+    " = " +
+    printCollectedDatatype(sr.cc, typedef.target) +
+    ";\n"
+  );
 }
 
 export function ExportTypeDef(
@@ -95,6 +109,12 @@ export function ExportTypeDef(
             }
             if (functype.requires.noreturn) {
               file += ", noreturn";
+            }
+            if (functype.requires.noreturnIf) {
+              file += `, noreturn_if(${printCollectedExpr(
+                sr.cc,
+                functype.requires.noreturnIf.expr
+              )})`;
             }
             file += `;\n`;
           } else {
@@ -197,6 +217,9 @@ export function ExportSymbol(
       }
       if (functype.requires.noreturn) {
         file += ", noreturn";
+      }
+      if (functype.requires.noreturnIf) {
+        file += `, noreturn_if(${printCollectedExpr(sr.cc, functype.requires.noreturnIf.expr)})`;
       }
       file += ";\n";
       for (const ns of namespaces.slice(0, -1)) {

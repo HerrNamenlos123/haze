@@ -10,10 +10,15 @@ namespace sys {
 extern C noemit hzstd_assert(condition: bool) :: final;
 extern C noemit hzstd_assert_msg(condition: bool, msg: str) :: final;
 
-export assert(condition: bool) {
-    hzstd_assert(condition);
-}
+// export assert(condition: bool) {
+//     hzstd_assert(condition);
+// }
 
-export assert(condition: bool, msg: str)  {
-    hzstd_assert_msg(condition, msg);
+export assert(condition: bool, msg?: str) :: noreturn_if(!condition) {
+    if (msg) {
+        hzstd_assert_msg(condition, msg);
+    }
+    else {
+        hzstd_assert(condition);
+    }
 }

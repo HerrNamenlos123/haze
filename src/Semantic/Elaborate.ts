@@ -55,6 +55,7 @@ import { getJSDocOverrideTagNoCache, SymbolFlags } from "typescript";
 import { printStatement } from "../Lower/Lower";
 import { makeTempName } from "../shared/store";
 import { CONNREFUSED } from "dns";
+import { ConsoleErrorListener } from "antlr4ng";
 
 type Inference =
   | undefined
@@ -569,16 +570,102 @@ export class SemanticElaborator {
         callExpr.sourceloc
       );
     } else if (calledExprType.variant === Semantic.ENode.FunctionDatatype) {
-      return this.sr.b.callExpr(
-        calledExprId,
-        convertArgs(
-          getActualCallingArguments(calledExprType.parameters),
-          calledExprType.parameters,
-          calledExprType.vararg
-        ),
-        this.inFunction,
-        callExpr.sourceloc
+      let [resolvedFunction, resolvedFunctionId] = [
+        null as Semantic.FunctionSymbol | null,
+        null as Semantic.SymbolId | null,
+      ];
+      if (calledExpr.variant === Semantic.ENode.SymbolValueExpr) {
+        const symbol = this.sr.symbolNodes.get(calledExpr.symbol);
+        assert(symbol.variant === Semantic.ENode.FunctionSymbol);
+        resolvedFunction = symbol;
+        resolvedFunctionId = calledExpr.symbol;
+      }
+
+      const actualArgs = convertArgs(
+        getActualCallingArguments(calledExprType.parameters),
+        calledExprType.parameters,
+        calledExprType.vararg
       );
+
+      // This is the handling for noreturn_if assertions like assert()
+      if (resolvedFunction && resolvedFunctionId && calledExprType.requires.noreturnIf) {
+        const noReturnIf = calledExprType.requires.noreturnIf;
+        let [e, eId] = [this.sr.cc.exprNodes.get(noReturnIf.expr), noReturnIf.expr];
+
+        let negateCondition = false;
+        const unwrapParenthesis = () => {
+          if (e.variant === Collect.ENode.ParenthesisExpr) {
+            eId = e.expr;
+            e = this.sr.cc.exprNodes.get(eId);
+          }
+        };
+
+        unwrapParenthesis();
+        if (e.variant === Collect.ENode.UnaryExpr && e.operation === EUnaryOperation.Negate) {
+          negateCondition = !negateCondition;
+          eId = e.expr;
+          e = this.sr.cc.exprNodes.get(eId);
+          unwrapParenthesis();
+        }
+
+        if (e.variant === Collect.ENode.SymbolValueExpr && e.genericArgs.length === 0) {
+          const name = e.name;
+          const paramIndex = resolvedFunction.parameterNames.findIndex((p) => p === name);
+          if (paramIndex === -1) {
+            throw new CompilerError(
+              `The condition accesses a symbol ('${name}') which is not a parameter of the function. For now, only parameters may be accessed in conditions.`,
+              e.sourceloc
+            );
+          }
+
+          assert(paramIndex >= 0 && paramIndex < actualArgs.length);
+          const passedArgId = actualArgs[paramIndex];
+
+          assert(paramIndex >= 0 && paramIndex < calledExprType.parameters.length);
+          const param = calledExprType.parameters[paramIndex];
+          const paramTypeUse = this.sr.typeUseNodes.get(param);
+          const paramTypeDef = this.sr.typeDefNodes.get(paramTypeUse.type);
+
+          if (
+            paramTypeDef.variant !== Semantic.ENode.PrimitiveDatatype ||
+            paramTypeDef.primitive !== EPrimitive.bool
+          ) {
+            throw new CompilerError(
+              `Currently, noreturn_if() conditions are only allowed to access bool parameters, other types are not implemented yet`,
+              e.sourceloc
+            );
+          }
+
+          const result = EvalCTFE(this.sr, passedArgId);
+          if (result.ok) {
+            if (
+              result.value[0].variant === Semantic.ENode.LiteralExpr &&
+              result.value[0].literal.type === EPrimitive.bool
+            ) {
+              // The condition is already known at compile time, skip the condition
+              // This is where assert(false) turns into noreturn
+              // If condition is true, just ignore all constraints
+              if (!result.value[0].literal.value) {
+                this.currentContext.scopeNoReturn.add(this.currentContext.currentScope);
+              }
+            }
+          } else {
+            // The condition is not known at compile time, build normal constraints
+
+            // This is the actual point where constraints like assert() are applied to the remaining scope
+            this.buildConstraints(this.currentContext.constraints, passedArgId, {
+              inverse: !negateCondition,
+            });
+          }
+        }
+      }
+
+      // This is the handling for if -> noreturn
+      if (calledExprType.requires.noreturn) {
+        this.currentContext.scopeNoReturn.add(this.currentContext.currentScope);
+      }
+
+      return this.sr.b.callExpr(calledExprId, actualArgs, this.inFunction, callExpr.sourceloc);
     } else if (calledExprType.variant === Semantic.ENode.StructDatatype) {
       const original = this.sr.cc.typeDefNodes.get(calledExprType.originalCollectedDefinition);
       assert(original.variant === Collect.ENode.StructTypeDef);
@@ -704,8 +791,31 @@ export class SemanticElaborator {
     assert(false, "All cases handled " + Semantic.ENode[calledExprType.variant]);
   }
 
-  unaryExpr(unaryExpr: Collect.UnaryExpr): [Semantic.Expression, Semantic.ExprId] {
+  unaryExpr(
+    unaryExpr: Collect.UnaryExpr,
+    inference: Inference
+  ): [Semantic.Expression, Semantic.ExprId] {
     const [e, eId] = this.sr.e.expr(unaryExpr.expr, undefined);
+
+    if (unaryExpr.operation === EUnaryOperation.Negate) {
+      const boolResult = Conversion.MakeConversion(
+        this.sr,
+        eId,
+        this.sr.b.boolType(),
+        this.currentContext.constraints,
+        unaryExpr.sourceloc,
+        Conversion.Mode.Implicit,
+        inference?.unsafe
+      );
+      if (boolResult.ok) {
+        return this.sr.b.unaryExpr(
+          boolResult.expr,
+          EUnaryOperation.Negate,
+          this.sr.b.boolType(),
+          unaryExpr.sourceloc
+        );
+      }
+    }
 
     if (unaryExpr.operation === EUnaryOperation.Plus) {
       return [e, eId]; // Plus does nothing.
@@ -889,7 +999,7 @@ export class SemanticElaborator {
         return this.callExpr(expr, inference);
 
       case Collect.ENode.UnaryExpr:
-        return this.unaryExpr(expr);
+        return this.unaryExpr(expr, inference);
 
       case Collect.ENode.LiteralExpr:
         return this.literalExpr(expr);
@@ -1291,6 +1401,7 @@ export class SemanticElaborator {
             final: true,
             pure: false,
             noreturn: false,
+            noreturnIf: null,
           },
           sourceloc: memberAccess.sourceloc,
           vararg: false,
@@ -1393,6 +1504,7 @@ export class SemanticElaborator {
               final: true,
               pure: false,
               noreturn: false,
+              noreturnIf: null,
             },
             sourceloc: memberAccess.sourceloc,
             vararg: false,
@@ -1497,6 +1609,7 @@ export class SemanticElaborator {
               final: true,
               pure: false,
               noreturn: false,
+              noreturnIf: null,
             },
             sourceloc: memberAccess.sourceloc,
             vararg: false,
@@ -1562,6 +1675,7 @@ export class SemanticElaborator {
               final: true,
               pure: false,
               noreturn: false,
+              noreturnIf: null,
             },
             sourceloc: memberAccess.sourceloc,
             vararg: false,
@@ -2594,6 +2708,8 @@ export class SemanticElaborator {
       instanceDeps: this.currentContext.instanceDeps,
     });
 
+    let noReturn = false;
+    let noReturnConstraints = [] as Semantic.Constraint[];
     this.withContext(
       {
         context: newContext,
@@ -2620,6 +2736,7 @@ export class SemanticElaborator {
 
           if (this.sr.cc.statementNodes.get(sId).variant === Collect.ENode.ReturnStatement) {
             gonnaInstantiateStructWithType = this.getFunctionSymbolReturnType(this.inFunction);
+            this.currentContext.scopeNoReturn.add(this.currentContext.currentScope);
           }
 
           const statementId = this.elaborateStatement(sId, {
@@ -2638,8 +2755,24 @@ export class SemanticElaborator {
             blockScope.statements.push(statementId);
           }
         });
+
+        if (this.currentContext.scopeNoReturn.has(args.sourceScopeId)) {
+          noReturn = true;
+          noReturnConstraints = this.currentContext.scopeNoReturnConstraints;
+        }
       }
     );
+
+    if (noReturn) {
+      this.currentContext.scopeNoReturn.add(args.sourceScopeId);
+    }
+    // if (noReturnConstraints.length > 0) {
+    //   this.currentContext.constraints.push(...noReturnConstraints);
+    // }
+
+    return {
+      noReturn: noReturn,
+    };
   }
 
   elaborateFunctionSymbolWithGenerics(
@@ -2877,7 +3010,12 @@ export class SemanticElaborator {
             parameters: parameters,
             returnType: returnType,
             vararg: func.vararg,
-            requires: func.requires,
+            requires: {
+              final: func.requires.final,
+              noreturn: func.requires.noreturn,
+              pure: func.requires.pure,
+              noreturnIf: func.requires.noreturnIf,
+            },
             sourceloc: func.sourceloc,
           });
         }
@@ -3131,6 +3269,7 @@ export class SemanticElaborator {
                 final: true,
                 pure: func.requires.pure || (!func.requires.final && !symbol.isImpure),
                 noreturn: func.requires.noreturn,
+                noreturnIf: func.requires.noreturnIf,
               },
               sourceloc: func.sourceloc,
             });
@@ -3193,6 +3332,7 @@ export class SemanticElaborator {
             final: type.requires.final,
             pure: type.requires.pure,
             noreturn: type.requires.noreturn,
+            noreturnIf: type.requires.noreturnIf,
           },
           sourceloc: type.sourceloc,
         });
@@ -4308,6 +4448,7 @@ export class SemanticElaborator {
                 final: true,
                 pure: false,
                 noreturn: false,
+                noreturnIf: null,
               },
               sourceloc: memberAccessExpr.sourceloc,
               vararg: false,
@@ -4674,7 +4815,7 @@ export class SemanticElaborator {
             emittedExpr: null,
             constraints: constraints,
           });
-          this.withContext(
+          const result = this.withContext(
             {
               context: Semantic.isolateElaborationContext(this.currentContext, {
                 constraints: constraints,
@@ -4686,7 +4827,7 @@ export class SemanticElaborator {
               functionReturnsInstanceIds: this.functionReturnsInstanceIds,
             },
             () => {
-              this.elaborateBlockScope(
+              return this.elaborateBlockScope(
                 {
                   targetScopeId: thenScopeId,
                   sourceScopeId: s.thenBlock,
@@ -4696,6 +4837,13 @@ export class SemanticElaborator {
               );
             }
           );
+
+          // If the body of if does not return, then the inverse of the condition applies to the body after the if
+          if (result.noReturn) {
+            this.buildConstraints(this.currentContext.constraints, resultingConditionId, {
+              inverse: true,
+            });
+          }
 
           const elseIfs = s.elseif.map((e) => {
             assert(e.condition);
@@ -4802,6 +4950,14 @@ export class SemanticElaborator {
 
       case Collect.ENode.WhileStatement: {
         let resultingConditionId: Semantic.ExprId | null = null;
+
+        // console.log("While statement: ", this.currentContext.constraints, s.sourceloc);
+        // if (this.currentContext.constraints.length === 1) {
+        //   const constraint = this.currentContext.constraints[0];
+        //   const variable = this.sr.symbolNodes.get(constraint.variableSymbol);
+        //   assert(variable.variant === Semantic.ENode.VariableSymbol);
+        //   console.log(variable.name);
+        // }
 
         const constraints = [...this.currentContext.constraints];
         if (s.letScopeId) {
@@ -5548,10 +5704,20 @@ export class SemanticElaborator {
     const exprTypeUse = this.sr.typeUseNodes.get(expr.type);
     const exprTypeDef = this.sr.typeDefNodes.get(exprTypeUse.type);
 
+    if (expr.variant === Semantic.ENode.UnaryExpr) {
+      if (expr.operation === EUnaryOperation.Negate) {
+        this.buildConstraints(constraints, expr.expr, {
+          inverse: !args?.inverse,
+        });
+        return;
+      }
+    }
+
     if (expr.variant === Semantic.ENode.BinaryExpr) {
       if (expr.operation === EBinaryOperation.BoolAnd) {
         this.buildConstraints(constraints, expr.left, args);
         this.buildConstraints(constraints, expr.right, args);
+        return;
       } else {
         const leftExpr = this.sr.exprNodes.get(expr.left);
         const rightExpr = this.sr.exprNodes.get(expr.right);
@@ -5577,6 +5743,7 @@ export class SemanticElaborator {
           }
         }
       }
+      return;
     }
 
     if (expr.variant === Semantic.ENode.UnionTagCheckExpr) {
@@ -5813,6 +5980,7 @@ export class SemanticElaborator {
         }
       }
 
+      this.currentContext.currentScope;
       const newId = this.withContext(
         {
           context: context,
@@ -8090,6 +8258,9 @@ export namespace Semantic {
     final: boolean;
     pure: boolean;
     noreturn: boolean;
+    noreturnIf: {
+      expr: Collect.ExprId;
+    } | null;
   };
 
   export type FunctionDatatypeDef = {
@@ -9060,6 +9231,8 @@ export namespace Semantic {
     instanceDeps: InstanceDeps;
 
     elaboratedVariables: Map<Collect.SymbolId, Semantic.SymbolId>;
+    scopeNoReturn: Set<Collect.ScopeId>;
+    scopeNoReturnConstraints: Constraint[];
   };
 
   export function makeElaborationContext(args: {
@@ -9077,6 +9250,8 @@ export namespace Semantic {
         structMembersDependOn: new Map(),
         symbolDependsOn: new Map(),
       },
+      scopeNoReturn: new Set(),
+      scopeNoReturnConstraints: [],
       elaboratedVariables: new Map(),
     };
   }
@@ -9097,6 +9272,8 @@ export namespace Semantic {
       genericsScope: args.genericsScope,
       instanceDeps: args.instanceDeps,
 
+      scopeNoReturn: new Set(parent.scopeNoReturn),
+      scopeNoReturnConstraints: [...args.constraints],
       elaboratedVariables: new Map(parent.elaboratedVariables),
     };
   }
@@ -9116,6 +9293,8 @@ export namespace Semantic {
       currentScope: args.currentScope,
       genericsScope: args.genericsScope,
       instanceDeps: args.instanceDeps,
+      scopeNoReturn: new Set([...a.scopeNoReturn, ...b.scopeNoReturn]),
+      scopeNoReturnConstraints: [...a.constraints, ...b.constraints],
       elaboratedVariables: new Map([...a.elaboratedVariables, ...b.elaboratedVariables]),
     };
   }

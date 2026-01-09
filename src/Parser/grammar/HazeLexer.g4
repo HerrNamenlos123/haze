@@ -26,6 +26,7 @@ EMIT: 'emit';
 INLINE: 'inline';
 AUTORET: 'autoret';
 NORETURN: 'noreturn';
+NORETURNIF: 'noreturn_if';
 WITH: 'with';
 FINAL: 'final';
 UNION: 'union';

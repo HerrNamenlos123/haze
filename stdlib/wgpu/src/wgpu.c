@@ -60,12 +60,14 @@ static void device_request_callback(WGPURequestDeviceStatus status,
 void wgpu_init(GLFWwindow* window)
 {
   // Create instance
-  WGPUInstanceDescriptor instance_desc = { 0 };
-  g_instance = wgpuCreateInstance(&instance_desc);
-  if (!g_instance) {
-    fprintf(stderr, "Failed to create instance\n");
-    return;
-  }
+  // WGPUInstanceDescriptor instance_desc = { 0 };
+  // g_instance = wgpuCreateInstance(&instance_desc);
+  // if (!g_instance) {
+  //   fprintf(stderr, "Failed to create instance\n");
+  //   return;
+  // }
+
+  // << We are here
 
   // Create surface from GLFW window
   g_surface = glfwCreateWindowWGPUSurface(g_instance, window);

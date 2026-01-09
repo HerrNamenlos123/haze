@@ -80,7 +80,7 @@ namespace fmt {
 
 
     export digitToStr(digit: int): str {
-        assert(digit >= 0 && digit <= 9);
+        assert(digit >= 0 && digit <= 9, none);
         let result: str = "";
         __c__("static const char* digits[] = { \"0\", \"1\", \"2\", \"3\", \"4\", \"5\", \"6\", \"7\", \"8\", \"9\" };");
         __c__("result = HZSTD_STRING(digits[digit], 1);");
@@ -199,7 +199,7 @@ namespace fmt {
                 writer.write(digitToStr(digit));
             }
             else {
-                assert(false);
+                assert(false, none);
             }
             v %= div;
             div /= 10;

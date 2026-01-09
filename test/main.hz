@@ -19,31 +19,33 @@ main(): int {
         title: "WebGPU Example",
         noApi: true,
     });
-
-    if window {
-        let instance = wgpu.createInstance();
-        fmt.println("before", typeof(instance).name);
-        if instance {
-            fmt.println("in", typeof(instance).name);
-        }
-        fmt.println("after", typeof(instance).name);
-        // wgpu.init(window.handle);
-        // gl.init(window.getProcAddress());
-        // gl.viewport(0, 0, 1920, 1080);
-
-        while !window.shouldClose() {
-            glfw.pollEvents();
-            // wgpu.wgpu_start(window.handle);
-
-            // gl.clearColor(Color((math.sin(glfw.getTime() * 10.0) + 1.0) / 2.0, 0.1, 0.1, 1.0));
-            // gl.clear();
-            // wgpu.wgpu_end(window.handle);
-            // window.swapBuffers();
-        }
-
-        window.destroy();
-        glfw.terminate();
+    if !window {
+        fmt.println("Window creation failed");
+        return 0;
     }
+
+    let instance = wgpu.createInstance();
+    if !instance {
+        fmt.println("WGPU instance could not be created");
+        return 0;
+    }
+
+    // wgpu.init(window.handle);
+    // gl.init(window.getProcAddress());
+    // gl.viewport(0, 0, 1920, 1080);
+
+    while !window.shouldClose() {
+        glfw.pollEvents();
+        // wgpu.wgpu_start(window.handle);
+
+        // gl.clearColor(Color((math.sin(glfw.getTime() * 10.0) + 1.0) / 2.0, 0.1, 0.1, 1.0));
+        // gl.clear();
+        // wgpu.wgpu_end(window.handle);
+        // window.swapBuffers();
+    }
+
+    window.destroy();
+    glfw.terminate();
 
     return 0;
 

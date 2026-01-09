@@ -179,7 +179,7 @@ export terminate() {
     ffi.terminate();
 }
 
-export createWindow(config: WindowConfig): Window | none {
+export createWindow(config: WindowConfig): Result<Window, none> {
     ffi.windowHint(GLFW_CONTEXT_VERSION_MAJOR, 3 as i32);
     ffi.windowHint(GLFW_CONTEXT_VERSION_MINOR, 3 as i32);
     ffi.windowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
@@ -190,22 +190,16 @@ export createWindow(config: WindowConfig): Window | none {
 
     const width = config.size.width;
     const height = config.size.height;
-    const widthI32: i32 = 0;
-    const heightI32: i32 = 0;
-    if (width >= i32.min && width <= i32.max) {
-        widthI32 = width;
+    assert(width >= i32.min && width <= i32.max, none);
+    assert(height >= i32.min && height <= i32.max, none);
+    const handle = ffi.createWindow(width, height, config.title, none, none);
+    if !handle {
+        return Result<Window, none>.Err(none);
     }
-    else {
-        assert(false, "FAIL");
-    }
-    if (height >= i32.min && height <= i32.max) {
-        heightI32 = height;
-    }
-    const handle = ffi.createWindow(widthI32, heightI32, config.title, none, none);
-    if handle {
-        return Window { handle: handle };
-    }
-    return none;
+
+    return Result<Window, none>.Ok(
+        Window { handle: handle }
+    );
 }
 
 export pollEvents() {

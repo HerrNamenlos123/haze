@@ -167,11 +167,12 @@ subscriptExpr
 
 requiresPart
     // : expr               #RequiresExpr
-    : AUTORET               #RequiresAutoret
-    | NORETURN              #RequiresNoreturn
-    | FINAL                 #RequiresFinal
-    | PURE                  #RequiresPure
-    | LB requiresPart RB    #RequiresInParens
+    : AUTORET                               #RequiresAutoret
+    | NORETURN                              #RequiresNoreturn
+    | NORETURNIF LB expr RB                 #RequiresNoreturnIf
+    | FINAL                                 #RequiresFinal
+    | PURE                                  #RequiresPure
+    | LB requiresPart RB                    #RequiresInParens
     ;
 
 requiresBlock

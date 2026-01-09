@@ -460,6 +460,9 @@ export namespace Collect {
     final: boolean;
     pure: boolean;
     noreturn: boolean;
+    noreturnIf: {
+      expr: Collect.ExprId;
+    } | null;
   };
 
   export type FunctionDatatype = {
@@ -1378,6 +1381,11 @@ function collectTypeUse(
           pure: item.requires.pure,
           autoret: item.requires.autoret,
           noreturn: item.requires.noreturn,
+          noreturnIf: item.requires.noreturnIf
+            ? {
+                expr: collectExpr(cc, item.requires.noreturnIf.expr, args),
+              }
+            : null,
         },
         sourceloc: item.sourceloc,
         mutability: item.mutability,
@@ -1550,6 +1558,11 @@ function collectSymbol(
           pure: item.requires.pure,
           autoret: item.requires.autoret,
           noreturn: item.requires.noreturn,
+          noreturnIf: item.requires.noreturnIf
+            ? {
+                expr: collectExpr(cc, item.requires.noreturnIf.expr, args),
+              }
+            : null,
         },
         noemit: item.noemit,
         vararg: item.ellipsis,

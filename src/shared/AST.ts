@@ -165,6 +165,9 @@ export type ASTFunctionRequiresBlock = {
   final: boolean;
   pure: boolean;
   noreturn: boolean;
+  noreturnIf: {
+    expr: ASTExpr;
+  } | null;
 };
 
 export type ASTFunctionOverloading =

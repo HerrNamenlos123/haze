@@ -159,6 +159,7 @@ import {
   WhileLetStatementContext,
   IfStatementConditionContext,
   IfLetStatementConditionContext,
+  RequiresNoreturnIfContext,
 } from "./grammar/autogen/HazeParser";
 import {
   BaseErrorListener,
@@ -422,6 +423,7 @@ class ASTTransformer extends HazeParserVisitor<any> {
         final: false,
         autoret: false,
         noreturn: false,
+        noreturnIf: null,
         pure: false,
       };
     }
@@ -719,6 +721,7 @@ class ASTTransformer extends HazeParserVisitor<any> {
       pure: false,
       autoret: false,
       noreturn: false,
+      noreturnIf: null,
     };
     for (const part of ctx.requiresPart()) {
       if (part instanceof RequiresFinalContext) {
@@ -732,6 +735,11 @@ class ASTTransformer extends HazeParserVisitor<any> {
       }
       if (part instanceof RequiresNoreturnContext) {
         block.noreturn = true;
+      }
+      if (part instanceof RequiresNoreturnIfContext) {
+        block.noreturnIf = {
+          expr: this.visit(part.expr()),
+        };
       }
     }
     return block;
