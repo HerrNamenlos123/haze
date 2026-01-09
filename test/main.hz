@@ -9,6 +9,7 @@ import glfw_wgpu
 main(): int {
 
     fmt.println("TODO: Find out why surface does not work (maybe the GLFW defines are gone again?). Then continue implementing wgpu interface");
+    fmt.println("Yes: Defines are gone. Implement a public interface for define propagation across modules");
 
     if !glfw.init() {
         return 0;
