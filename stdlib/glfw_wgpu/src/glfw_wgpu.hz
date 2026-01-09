@@ -5,9 +5,15 @@ __c__("#include \"glfw3webgpu.h\"");
 __c__("#include \"glfw3webgpu.c\"");
 
 namespace ffi {
-    extern C noemit glfwCreateWindowWGPUSurface(instance: wgpu.ffi.WGPUInstanceImpl, w: glfw.ffi.GLFWwindow): wgpu.ffi.WGPUSurfaceImpl :: final;
+    extern C noemit glfwCreateWindowWGPUSurface(instance: wgpu.ffi.WGPUInstanceImpl, w: glfw.ffi.GLFWwindow): wgpu.ffi.WGPUSurfaceImpl | none :: final;
 }
 
-createWindowWGPUSurface(instance: wgpu.Instance, window: glfw.Window) {
-    return ffi.glfwCreateWindowWGPUSurface(instance.handle, window.handle);
+export createWindowWGPUSurface(instance: wgpu.Instance, window: glfw.Window): Result<wgpu.Surface, none> {
+    let surface = ffi.glfwCreateWindowWGPUSurface(instance.handle, window.handle);
+    if (!surface) {
+        return Result<wgpu.Surface, none>.Err(none);
+    }
+    return wgpu.Surface {
+        handle: surface,
+    };
 }

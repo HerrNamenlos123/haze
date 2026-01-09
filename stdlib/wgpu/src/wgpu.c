@@ -6,7 +6,7 @@
 typedef struct GLFWwindow GLFWwindow;
 
 void glfwGetFramebufferSize(GLFWwindow* window, int* width, int* height);
-// WGPUSurface glfwCreateWindowWGPUSurface(WGPUInstance instance, GLFWwindow* window);
+WGPUSurface glfwCreateWindowWGPUSurface(WGPUInstance instance, GLFWwindow* window);
 
 // Global WebGPU state
 static WGPUInstance g_instance = NULL;
@@ -60,22 +60,22 @@ static void device_request_callback(WGPURequestDeviceStatus status,
 void wgpu_init(GLFWwindow* window)
 {
   // Create instance
-  // WGPUInstanceDescriptor instance_desc = { 0 };
-  // g_instance = wgpuCreateInstance(&instance_desc);
-  // if (!g_instance) {
-  //   fprintf(stderr, "Failed to create instance\n");
-  //   return;
-  // }
+  WGPUInstanceDescriptor instance_desc = { 0 };
+  g_instance = wgpuCreateInstance(&instance_desc);
+  if (!g_instance) {
+    fprintf(stderr, "Failed to create instance\n");
+    return;
+  }
 
   // << We are here
 
   // Create surface from GLFW window
   g_surface = glfwCreateWindowWGPUSurface(g_instance, window);
-  // if (!g_surface) {
-  //   fprintf(stderr, "Failed to create surface\n");
-  //   return;
-  // }
-  // printf("surface = %p\n", g_surface);
+  if (!g_surface) {
+    fprintf(stderr, "Failed to create surface\n");
+    return;
+  }
+  printf("surface = %p\n", g_surface);
 
   // Request adapter asynchronously
   WGPURequestAdapterOptions adapter_opts = {

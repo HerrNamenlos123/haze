@@ -1,9 +1,13 @@
 
 __c__("#include \"wgpu.h\"");
-// __c__("#include \"wgpu.c\"");
+__c__("#include \"wgpu.c\"");
 
 export __c__("typedef struct WGPUSurfaceImpl WGPUSurfaceImpl;");
 export __c__("typedef struct WGPUInstanceImpl WGPUInstanceImpl;");
+
+export extern C noemit wgpu_init(glfwWindow: cptr) :: final;
+export extern C noemit wgpu_start(glfwWindow: cptr) :: final;
+export extern C noemit wgpu_end(glfwWindow: cptr) :: final;
 
 namespace ffi {
     // We use the WGPU*Impl types since they are all consistently mapped to struct pointers,
@@ -56,6 +60,10 @@ export createInstance() {
   else {
     return none;
   }
+}
+
+export init(handle: cptr) {
+    wgpu_init(handle);
 }
 
 // export extern C noemit wgpu_init(glfwWindow: cptr) :: final;

@@ -5,11 +5,10 @@ import gl
 import wgpu
 import glfw_wgpu
 
-export extern C wgpu_init(glfwWindow: cptr) :: final;
-export extern C wgpu_start(glfwWindow: cptr) :: final;
-export extern C wgpu_end(glfwWindow: cptr) :: final;
 
 main(): int {
+
+    fmt.println("TODO: Find out why surface does not work (maybe the GLFW defines are gone again?). Then continue implementing wgpu interface");
 
     if !glfw.init() {
         return 0;
@@ -23,14 +22,20 @@ main(): int {
         fmt.println("Window creation failed");
         return 0;
     }
-
-    let instance = wgpu.createInstance();
-    if !instance {
-        fmt.println("WGPU instance could not be created");
-        return 0;
-    }
-
     // wgpu.init(window.handle);
+
+    // let instance = wgpu.createInstance();
+    // if !instance {
+    //     fmt.println("WGPU instance could not be created");
+    //     return 0;
+    // }
+
+    // let surface = glfw_wgpu.createWindowWGPUSurface(instance, window);
+    // if !surface {
+    //     fmt.println("Failed to create WGPU GLFW surface");
+    //     return 0;
+    // }
+
     // gl.init(window.getProcAddress());
     // gl.viewport(0, 0, 1920, 1080);
 
