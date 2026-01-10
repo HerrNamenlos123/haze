@@ -108,8 +108,12 @@ MODEQ: '%=';
 
 UNIT_INTEGER_LITERAL: (DEC_PART) ('s' | 'ms' | 'us' | 'ns' | 'm' | 'h' | 'd');
 UNIT_FLOAT_LITERAL: (FLOAT_PART) ('s' | 'ms' | 'us' | 'ns' | 'm' | 'h' | 'd');
-INTEGER_LITERAL: (DEC_PART);
 FLOAT_LITERAL: (FLOAT_PART);
+
+INTEGER_LITERAL: (DEC_PART);
+HEX_INTEGER_LITERAL
+    : '0' [xX] HEX_DIGIT+
+    ;
 
 ID: [a-zA-Z_][a-zA-Z_0-9]*;
 
@@ -135,6 +139,8 @@ fragment HEX
 fragment DEC_PART: DIGIT+;
 fragment FLOAT_PART: DIGIT+ '.' DIGIT*; // Handles 123., .456, 123.45
 fragment DIGIT: [0-9];
+fragment HEX_DIGIT: [0-9a-fA-F];
+
 
 // ╔═══════════════════════════════════════════════════════════════════════════════╗
 // ║                  W H I T E S P A C E   &   C O M M E N T S                    ║

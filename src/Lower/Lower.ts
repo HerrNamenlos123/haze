@@ -2445,6 +2445,7 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
           final: originalFuncType.requires.final,
           pure: originalFuncType.requires.pure,
           noreturn: originalFuncType.requires.noreturn,
+          noreturnIf: originalFuncType.requires.noreturnIf,
         },
         vararg: false,
       });

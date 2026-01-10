@@ -862,6 +862,25 @@ class CodeGenerator {
       case Lowered.ENode.ExplicitCastExpr: {
         const exprWriter = this.emitExpr(expr.expr);
         tempWriter.write(exprWriter.temp);
+
+        const typeUse = this.lr.typeUseNodes.get(expr.type);
+        const type = this.lr.typeDefNodes.get(typeUse.type);
+        if (
+          type.variant === Lowered.ENode.PrimitiveDatatype &&
+          type.primitive === EPrimitive.cptr
+        ) {
+          const sourceExpr = this.lr.exprNodes.get(expr.expr);
+          const exprTypeUse = this.lr.typeUseNodes.get(sourceExpr.type);
+          const exprType = this.lr.typeDefNodes.get(exprTypeUse.type);
+          if (
+            exprType.variant === Lowered.ENode.PrimitiveDatatype &&
+            exprType.primitive === EPrimitive.none
+          ) {
+            outWriter.write(`((${this.mangleTypeUse(expr.type)})NULL)`);
+            return { out: outWriter, temp: tempWriter };
+          }
+        }
+
         outWriter.write(`((${this.mangleTypeUse(expr.type)})(${exprWriter.out.get()}))`);
         return { out: outWriter, temp: tempWriter };
       }

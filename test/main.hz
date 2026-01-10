@@ -5,6 +5,25 @@ import gl
 import wgpu
 import glfw_wgpu
 
+extern C const WGPURequestAdapterStatus_Success: wgpu.ffi.WGPURequestAdapterStatus;
+
+let adapter = none as wgpu.ffi.WGPUAdapterImpl | none;
+
+adapterRequestCallback(status: wgpu.ffi.WGPURequestAdapterStatus,
+                                      adapter: wgpu.ffi.WGPUAdapterImpl,
+                                     message: inline wgpu.ffi.WGPUStringView,
+                                     userdata1: cptr,
+                                     userdata2: cptr): void {
+  if (status == WGPURequestAdapterStatus_Success) {
+    adapter = adapter;
+    // g_adapter_ready = true;
+    fmt.println("Adapter request successful");
+  }
+  else {
+    fmt.println("Adapter request failed");
+    // g_adapter_ready = true;
+  }
+}
 
 main(): int {
 
@@ -34,6 +53,14 @@ main(): int {
         return 0;
     }
 
+    let adapterOpts = wgpu.ffi.WGPURequestAdapterOptions {
+        compatibleSurface: surface.handle,
+    };
+    let adapterCallback = inline wgpu.ffi.WGPURequestAdapterCallbackInfo {
+        callback: adapterRequestCallback,
+    };
+    instance.requestAdapter(adapterOpts, adapterCallback);
+
     // gl.init(window.getProcAddress());
     // gl.viewport(0, 0, 1920, 1080);
 
@@ -51,6 +78,8 @@ main(): int {
     glfw.terminate();
 
     return 0;
+
+    // fmt.println("TODO: Implement a proper platform configuration system. Currently there is an interface.compiler.defines feature to define transitive macros, but this is not the solution, it is only a workaround. We rather want a real, proper configuration system where we can e.g. differentiate between x11 and wayland platform configurations and compile for one of them.");
 
 //     fmt.println("TODO: Fix returns, if function returns in one path but not all, it must either create an error or automatically return none");
 //     fmt.println("Idea for later: (from Prime Reacts: The Flaws of Inheritance): I should implement interfaces as a way to make a contract about generic types, and to make the interfaces very powerful, interfaces should be able to define members and methods, as well as default implementations of methods that is used if the struct does not provide that function, and it is allowed as long as the default implementation of the interface method only uses other methods of the interface. This makes it very powerful and a complete replacement for polymorphism.");

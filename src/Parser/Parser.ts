@@ -160,6 +160,7 @@ import {
   IfStatementConditionContext,
   IfLetStatementConditionContext,
   RequiresNoreturnIfContext,
+  HexIntegerLiteralContext,
 } from "./grammar/autogen/HazeParser";
 import {
   BaseErrorListener,
@@ -461,6 +462,14 @@ class ASTTransformer extends HazeParserVisitor<any> {
     return {
       type: EPrimitive.int,
       value: BigInt(ctx.INTEGER_LITERAL().getText()),
+      unit: null,
+    };
+  };
+
+  visitHexIntegerLiteral = (ctx: HexIntegerLiteralContext): LiteralValue => {
+    return {
+      type: EPrimitive.int,
+      value: BigInt(ctx.HEX_INTEGER_LITERAL().getText()),
       unit: null,
     };
   };
@@ -1309,6 +1318,7 @@ class ASTTransformer extends HazeParserVisitor<any> {
     return {
       key: ctx.ID() ? ctx.ID()!.getText() : null,
       value: this.visit(ctx.expr()),
+      sourceloc: this.loc(ctx),
     };
   };
 
@@ -1587,13 +1597,33 @@ class ASTTransformer extends HazeParserVisitor<any> {
     return currentNamespace;
   };
 
+  integerFromDecimalOrHex(ctx: {
+    INTEGER_LITERAL: () => TerminalNode | null;
+    HEX_INTEGER_LITERAL: () => TerminalNode | null;
+  }) {
+    let value = 0n;
+    if (ctx.INTEGER_LITERAL()) {
+      const number = ctx.INTEGER_LITERAL()!.getText();
+      value = BigInt(number);
+      // Make sure the value is 100% correct
+      assert(value.toString() === number);
+    } else if (ctx.HEX_INTEGER_LITERAL()) {
+      const number = ctx.HEX_INTEGER_LITERAL()!.getText();
+      value = BigInt(number);
+      // Make sure the value is 100% correct
+      const normalized = number.toLowerCase();
+      assert(value.toString(16) === normalized.slice(2));
+    } else {
+      assert(false);
+    }
+    return value;
+  }
+
   visitStackArrayDatatype = (ctx: StackArrayDatatypeContext): ASTStackArrayDatatype => {
-    const number = ctx.INTEGER_LITERAL()?.getText();
-    assert(BigInt(number).toString() === number);
     return {
       variant: "StackArrayDatatype",
       datatype: this.visit(ctx.datatype()),
-      length: BigInt(number),
+      length: this.integerFromDecimalOrHex(ctx),
       mutability: EDatatypeMutability.Default,
       inline: false,
       sourceloc: this.loc(ctx),

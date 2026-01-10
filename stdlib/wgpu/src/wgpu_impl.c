@@ -31,6 +31,7 @@ static void adapter_request_callback(WGPURequestAdapterStatus status,
   if (status == WGPURequestAdapterStatus_Success) {
     g_adapter = adapter;
     g_adapter_ready = true;
+    WGPUChainedStruct a;
     printf("Adapter request successful\n");
   }
   else {
@@ -60,22 +61,22 @@ static void device_request_callback(WGPURequestDeviceStatus status,
 void wgpu_init(GLFWwindow* window)
 {
   // Create instance
-  WGPUInstanceDescriptor instance_desc = { 0 };
-  g_instance = wgpuCreateInstance(&instance_desc);
-  if (!g_instance) {
-    fprintf(stderr, "Failed to create instance\n");
-    return;
-  }
-
-  // << We are here
+  // WGPUInstanceDescriptor instance_desc = { 0 };
+  // g_instance = wgpuCreateInstance(&instance_desc);
+  // if (!g_instance) {
+  //   fprintf(stderr, "Failed to create instance\n");
+  //   return;
+  // }
 
   // Create surface from GLFW window
-  g_surface = glfwCreateWindowWGPUSurface(g_instance, window);
-  if (!g_surface) {
-    fprintf(stderr, "Failed to create surface\n");
-    return;
-  }
-  printf("surface = %p\n", g_surface);
+  // g_surface = glfwCreateWindowWGPUSurface(g_instance, window);
+  // if (!g_surface) {
+  //   fprintf(stderr, "Failed to create surface\n");
+  //   return;
+  // }
+  // printf("surface = %p\n", g_surface);
+
+  // << We are here
 
   // Request adapter asynchronously
   WGPURequestAdapterOptions adapter_opts = {

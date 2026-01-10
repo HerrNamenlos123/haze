@@ -828,6 +828,26 @@ export namespace Conversion {
       );
     }
 
+    // Error message for inline/non-inline objects
+    if (
+      fromType.variant === Semantic.ENode.StructDatatype &&
+      to.variant === Semantic.ENode.StructDatatype &&
+      fromTypeInstance.type === toInstance.type
+    ) {
+      if (fromTypeInstance.inline && !toInstance.inline) {
+        throw new CompilerError(
+          `Reference conversions from inline to non-inline are not implemented yet, make sure you are consistent with inline structs. Cannot convert ${fromTypeText} to ${toTypeText}`,
+          sourceloc
+        );
+      }
+      if (!fromTypeInstance.inline && toInstance.inline) {
+        throw new CompilerError(
+          `Reference conversions from non-inline to inline are not implemented yet, make sure you are consistent with inline structs. Cannot convert ${fromTypeText} to ${toTypeText}`,
+          sourceloc
+        );
+      }
+    }
+
     // Conversion from T[N] to T[]
     // if (
     //   fromType.variant === Semantic.ENode.ArrayDatatype &&
@@ -838,6 +858,25 @@ export namespace Conversion {
     //     variant:
     //   })
     // }
+
+    // From none to cptr (represents nullptr)
+    if (
+      fromType.variant === Semantic.ENode.PrimitiveDatatype &&
+      fromType.primitive === EPrimitive.none &&
+      to.variant === Semantic.ENode.PrimitiveDatatype &&
+      to.primitive === EPrimitive.cptr
+    ) {
+      return ok(
+        Semantic.addExpr(sr, {
+          variant: Semantic.ENode.ExplicitCastExpr,
+          instanceIds: fromExpr.instanceIds,
+          expr: fromExprId,
+          type: toId,
+          sourceloc: sourceloc,
+          isTemporary: fromExpr.isTemporary,
+        })[1]
+      );
+    }
 
     // From object reference to cptr
     if (
@@ -856,6 +895,55 @@ export namespace Conversion {
           isTemporary: fromExpr.isTemporary,
         })[1]
       );
+    }
+
+    // Function conversions
+    if (
+      fromType.variant === Semantic.ENode.FunctionDatatype &&
+      to.variant === Semantic.ENode.FunctionDatatype
+    ) {
+      if (!to.requires.final) {
+        throw new CompilerError(
+          `Cannot use a non-final function datatype as a conversion target`,
+          sourceloc
+        );
+      }
+
+      if (!fromType.requires.final) {
+        throw new CompilerError(
+          `Cannot convert a non-final function datatype, that is not fully elaborated yet. Remember to manually mark functions as final if they are extern or participate in recursion.`,
+          sourceloc
+        );
+      }
+
+      if (!fromType.requires.pure && to.requires.pure) {
+        throw new CompilerError(
+          `Passing an impure function to a value that requires it to be pure. This is not safe as the caller may assume no side effects which the given function could have.`,
+          sourceloc
+        );
+      }
+
+      if (
+        fromType.concrete &&
+        to.concrete &&
+        fromType.vararg === to.vararg &&
+        fromType.requires.noreturn === to.requires.noreturn &&
+        fromType.requires.noreturnIf?.expr === to.requires.noreturnIf?.expr &&
+        fromType.returnType === to.returnType &&
+        fromType.parameters.length === to.parameters.length &&
+        fromType.parameters.every((p, i) => to.parameters[i] === p)
+      ) {
+        return ok(
+          Semantic.addExpr(sr, {
+            variant: Semantic.ENode.ExplicitCastExpr,
+            instanceIds: fromExpr.instanceIds,
+            expr: fromExprId,
+            type: toId,
+            sourceloc: sourceloc,
+            isTemporary: fromExpr.isTemporary,
+          })[1]
+        );
+      }
     }
 
     // Conversion between Integers

@@ -71,12 +71,12 @@ export function ExportTypeDef(
         const defaultValue = typedef.memberDefaultValues.find((v) => v.memberName === content.name);
         assert(content.type);
         if (defaultValue) {
-          file += `${content.name}: ${Semantic.serializeFullTypeUse(
+          file += `${content.name}: ${Semantic.serializeTypeUse(
             sr,
             content.type
           )} = ${Semantic.serializeExpr(sr, defaultValue.value)};\n`;
         } else {
-          file += `${content.name}: ${Semantic.serializeFullTypeUse(sr, content.type)};\n`;
+          file += `${content.name}: ${Semantic.serializeTypeUse(sr, content.type)};\n`;
         }
       }
       for (const methodId of typedef.methods) {
@@ -94,12 +94,10 @@ export function ExportTypeDef(
             rawParams = rawParams.slice(1, undefined);
           }
           const parameters = rawParams
-            .map(
-              (p, i) => `${method.parameterNames[i + 1]}: ${Semantic.serializeFullTypeUse(sr, p)}`
-            )
+            .map((p, i) => `${method.parameterNames[i + 1]}: ${Semantic.serializeTypeUse(sr, p)}`)
             .join(", ");
           if (functype.returnType) {
-            file += `${method.name}(${parameters}): (${Semantic.serializeFullTypeUse(
+            file += `${method.name}(${parameters}): (${Semantic.serializeTypeUse(
               sr,
               functype.returnType
             )})`;
@@ -150,10 +148,15 @@ export function ExportTypeDef(
     // }
 
     case Semantic.ENode.EnumDatatype: {
-      file += "enum ";
+      if (typedef.extern === EExternLanguage.Extern) {
+        file += "extern ";
+      } else if (typedef.extern === EExternLanguage.Extern_C) {
+        file += "extern C ";
+      }
       if (typedef.noemit) {
         file += "noemit ";
       }
+      file += "enum ";
       file += typedef.name + " {\n";
       for (const value of typedef.values) {
         file += `${value.name} = ${Semantic.serializeExpr(sr, value.valueExpr)},\n`;
@@ -204,12 +207,12 @@ export function ExportSymbol(
       file +=
         "(" +
         functype.parameters
-          .map((p, i) => `${symbol.parameterNames[i]}: ${Semantic.serializeFullTypeUse(sr, p)}`)
+          .map((p, i) => `${symbol.parameterNames[i]}: ${Semantic.serializeTypeUse(sr, p)}`)
           .join(", ") +
         (functype.vararg ? ", ..." : "") +
         ")" +
         (functype.returnType
-          ? ": (" + Semantic.serializeFullTypeUse(sr, functype.returnType) + ")"
+          ? ": (" + Semantic.serializeTypeUse(sr, functype.returnType) + ")"
           : " ");
       file += " :: final";
       if (functype.requires.pure) {
@@ -240,7 +243,7 @@ export function ExportSymbol(
       if (symbol.sourceloc) {
         file += `#source ${formatSourceLoc(symbol.sourceloc)} {\n`;
       }
-      file += `__c__("${symbol.value}");\n`;
+      file += `__c__(${JSON.stringify(symbol.value)});\n`;
       if (symbol.sourceloc) {
         file += `}\n`;
       }

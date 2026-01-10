@@ -1,9 +1,10 @@
 
-__c__("#include \"wgpu.h\"");
-__c__("#include \"wgpu.c\"");
+export __c__("#include \"wgpu.h\"");
+__c__("#include \"wgpu_impl.c\"");
 
 export __c__("typedef struct WGPUSurfaceImpl WGPUSurfaceImpl;");
 export __c__("typedef struct WGPUInstanceImpl WGPUInstanceImpl;");
+export __c__("typedef struct WGPUAdapterImpl WGPUAdapterImpl;");
 
 export extern C noemit wgpu_init(glfwWindow: cptr) :: final;
 export extern C noemit wgpu_start(glfwWindow: cptr) :: final;
@@ -16,6 +17,21 @@ namespace ffi {
     // but Haze does not know that, so Haze would get very weird value semantics, that are not even necessary.
     export extern C noemit struct WGPUSurfaceImpl {};
     export extern C noemit struct WGPUInstanceImpl {};
+    export extern C noemit struct WGPUAdapterImpl {};
+
+    export extern C noemit enum WGPURequestAdapterStatus {
+        WGPURequestAdapterStatus_Success = 0x00000001,
+        WGPURequestAdapterStatus_InstanceDropped = 0x00000002,
+        WGPURequestAdapterStatus_Unavailable = 0x00000003,
+        WGPURequestAdapterStatus_Error = 0x00000004,
+        WGPURequestAdapterStatus_Unknown = 0x00000005,
+        WGPURequestAdapterStatus_Force32 = 0x7FFFFFFF
+    };
+
+    export extern C noemit struct WGPUStringView {
+        data: cptr;
+        length: usize;
+    };
 
     export extern C noemit struct WGPUInstanceDescriptor {
         nextInChain: WGPUChainedStruct | none = none;
@@ -39,6 +55,35 @@ namespace ffi {
     };
 
     extern C noemit wgpuCreateInstance(instanceDesc: WGPUInstanceDescriptor): WGPUInstanceImpl | none :: final;
+
+    export extern C noemit struct WGPURequestAdapterOptions {
+        nextInChain: WGPUChainedStruct | none = none;
+        featureLevel: int = 0; // enum WGPUFeatureLevel
+        powerPreference: int = 0; // enum WGPUPowerPreference
+        forceFallbackAdapter: u32 = 0;
+        backendType: int = 0; // enum WGPUBackendType
+        compatibleSurface: WGPUSurfaceImpl | none = none;
+    };
+
+    type WGPURequestAdapterCallback = (status: WGPURequestAdapterStatus, adapter: WGPUAdapterImpl, message: inline WGPUStringView, userdata1: cptr, userdata1: cptr) => void :: final;
+
+    export extern C noemit struct WGPURequestAdapterCallbackInfo {
+        nextInChain: WGPUChainedStruct | none = none;
+        mode: int = 0; // enum WGPUCallbackMode
+        callback: WGPURequestAdapterCallback;
+        userdata1: cptr = none;
+        userdata2: cptr = none;
+    };
+
+    extern C noemit struct WGPUFuture {
+        id: u64;
+    };
+
+    extern C noemit wgpuInstanceRequestAdapter(instance: WGPUInstanceImpl, options: WGPURequestAdapterOptions | none, callbackInfo: inline WGPURequestAdapterCallbackInfo): inline WGPUFuture :: final;
+}
+
+export struct Future {
+    id: u64;
 }
 
 export struct Surface {
@@ -47,6 +92,12 @@ export struct Surface {
 
 export struct Instance {
     handle: ffi.WGPUInstanceImpl;
+
+    requestAdapter(adapterOpts: ffi.WGPURequestAdapterOptions | none, callbackInfo: inline ffi.WGPURequestAdapterCallbackInfo) {
+        return const Future {
+            id: ffi.wgpuInstanceRequestAdapter(this.handle, adapterOpts, callbackInfo).id,
+        };
+    }
 }
 
 export createInstance() { 

@@ -482,6 +482,7 @@ export type ASTExprMemberAccess = {
 export type ASTAggregateLiteralElement = {
   key: string | null;
   value: ASTExpr;
+  sourceloc: SourceLoc;
 };
 
 export type ASTAggregateLiteralExpr = {

@@ -100,6 +100,7 @@ literal
     | UNIT_INTEGER_LITERAL                      #IntegerUnitLiteral
     | UNIT_FLOAT_LITERAL                        #FloatUnitLiteral
     | INTEGER_LITERAL                           #IntegerLiteral
+    | HEX_INTEGER_LITERAL                       #HexIntegerLiteral
     | FLOAT_LITERAL                             #FloatLiteral
     | STRING_LITERAL                            #StringConstant
     ;
@@ -110,7 +111,7 @@ interpolatedStringExpression: LCURLY expr RCURLY;
 
 datatypeImpl
     : datatypeFragment (DOT datatypeFragment)*                                  #NamedDatatype
-    | LBRACKET n=INTEGER_LITERAL RBRACKET datatype                              #StackArrayDatatype
+    | LBRACKET n=(INTEGER_LITERAL | HEX_INTEGER_LITERAL) RBRACKET datatype      #StackArrayDatatype
     | LBRACKET RBRACKET datatype                                                #DynamicArrayDatatype
     | LB params RB ARROW datatype requiresBlock?                                #FunctionDatatype
     ;

@@ -53,7 +53,7 @@ import { EUnaryOperation, type EIncrOperation } from "../shared/AST";
 import { type Brand, type LiteralValue } from "../shared/common";
 import { getJSDocOverrideTagNoCache, SymbolFlags } from "typescript";
 import { printStatement } from "../Lower/Lower";
-import { makeTempName } from "../shared/store";
+import { makeTempId, makeTempName } from "../shared/store";
 import { CONNREFUSED } from "dns";
 import { ConsoleErrorListener } from "antlr4ng";
 
@@ -1350,6 +1350,14 @@ export class SemanticElaborator {
           }
         }
       }
+    } else {
+      enumType.type = this.sr.b.intType();
+      enumType.values.push({
+        type: this.sr.b.intType(),
+        name: `__HZ_DUMMY_ENUM_VALUE_${makeTempId()}`,
+        literalExpr: this.sr.b.literal(0n, enumValue.sourceloc)[1],
+        valueExpr: this.sr.b.literal(0n, enumValue.sourceloc)[1], // Not supposed to be accessed
+      });
     }
 
     return enumTypeId;
@@ -3323,7 +3331,7 @@ export class SemanticElaborator {
       // =================================================================================================================
 
       case Collect.ENode.FunctionDatatype: {
-        return makeFunctionDatatypeAvailable(this.sr, {
+        const result = makeFunctionDatatypeAvailable(this.sr, {
           parameters: type.parameters.map((p) => this.lookupAndElaborateDatatype(p)),
           returnType: this.lookupAndElaborateDatatype(type.returnType),
           vararg: type.vararg,
@@ -3336,6 +3344,7 @@ export class SemanticElaborator {
           },
           sourceloc: type.sourceloc,
         });
+        return result;
       }
 
       // =================================================================================================================
@@ -4316,7 +4325,7 @@ export class SemanticElaborator {
         eId,
         variable.type,
         this.currentContext.constraints,
-        sourceloc,
+        m.sourceloc,
         Conversion.Mode.Implicit,
         inference?.unsafe || false
       );
@@ -4373,7 +4382,7 @@ export class SemanticElaborator {
 
     if (memberAccessExpr.memberName === "name") {
       return this.sr.b.literal(
-        Semantic.serializeFullTypeUse(sr, typeUseId),
+        Semantic.serializeTypeUse(sr, typeUseId),
         memberAccessExpr.sourceloc
       );
     }
@@ -6636,7 +6645,7 @@ export class SemanticElaborator {
         );
       } else {
         throw new CompilerError(
-          `Expression of type '${Semantic.serializeFullTypeUse(
+          `Expression of type '${Semantic.serializeTypeUse(
             this.sr,
             value.type
           )}' cannot be subscripted`,
@@ -9417,7 +9426,8 @@ export namespace Semantic {
 
   export function serializeTypeUse(sr: SemanticResult, datatypeId: Semantic.TypeUseId): string {
     const datatype = sr.typeUseNodes.get(datatypeId);
-    return serializeMutability(datatype) + serializeTypeDef(sr, datatype.type);
+    const names = getNamespaceChainFromDatatype(sr, datatype.type);
+    return serializeMutability(datatype) + names.map((n) => n.pretty).join(".");
   }
 
   export function serializeLiteralType(sr: SemanticResult, value: LiteralValue) {
@@ -9585,13 +9595,29 @@ export namespace Semantic {
           .map((n) => n.pretty)
           .join(".");
 
-      case Semantic.ENode.FunctionDatatype:
+      case Semantic.ENode.FunctionDatatype: {
+        let blocks = [] as string[];
+        if (datatype.requires.final) {
+          blocks.push("final");
+        }
+        if (datatype.requires.noreturn) {
+          blocks.push("noreturn");
+        }
+        if (datatype.requires.pure) {
+          blocks.push("pure");
+        }
+        if (datatype.requires.noreturnIf) {
+          blocks.push(
+            `noreturn_if(${printCollectedExpr(sr.cc, datatype.requires.noreturnIf.expr)})`
+          );
+        }
         return `(${datatype.parameters
           .map((p, i) => `arg_${i}: ${serializeTypeUse(sr, p)}`)
-          .join(", ")}${datatype.vararg ? ", ..." : ""}) => ${serializeTypeUse(
+          .join(", ")}${datatype.vararg ? ", ..." : ""}) => (${serializeTypeUse(
           sr,
           datatype.returnType
-        )}`;
+        )}) ${blocks.length > 0 ? ":: " + blocks.join(", ") : ""}`;
+      }
 
       case Semantic.ENode.DeferredFunctionDatatype:
         return `(${datatype.parameters.map((p) => serializeTypeUse(sr, p)).join(", ")}${
@@ -9680,13 +9706,6 @@ export namespace Semantic {
 
     const names = getNamespaceChainFromSymbol(sr, symbolId);
     return names.some((n) => n.isMonomorphized);
-  }
-
-  export function serializeFullTypeUse(sr: SemanticResult, typeUseId: Semantic.TypeUseId) {
-    const type = sr.typeUseNodes.get(typeUseId);
-
-    const names = getNamespaceChainFromDatatype(sr, type.type);
-    return serializeMutability(type) + names.map((n) => n.pretty).join(".");
   }
 
   export function serializeFullSymbolName(sr: SemanticResult, symbolId: Semantic.SymbolId) {

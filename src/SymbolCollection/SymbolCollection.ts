@@ -672,6 +672,7 @@ export namespace Collect {
   export type AggregateLiteralElement = {
     key: string | null;
     value: Collect.ExprId;
+    sourceloc: SourceLoc;
   };
 
   export type AggregateLiteralExpr = BaseExpr & {
@@ -2379,6 +2380,7 @@ function collectExpr(
         elements: item.elements.map((m) => ({
           key: m.key,
           value: collectExpr(cc, m.value, args),
+          sourceloc: m.sourceloc,
         })),
         allocator: item.allocator ? collectExpr(cc, item.allocator, args) : null,
         sourceloc: item.sourceloc,
