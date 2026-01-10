@@ -7,7 +7,8 @@ import glfw_wgpu
 
 extern C const WGPURequestAdapterStatus_Success: wgpu.ffi.WGPURequestAdapterStatus;
 
-let adapter = none as wgpu.ffi.WGPUAdapterImpl | none;
+let g_adapter = none as wgpu.ffi.WGPUAdapterImpl | none;
+let g_adapterReady = false;
 
 adapterRequestCallback(status: wgpu.ffi.WGPURequestAdapterStatus,
                                       adapter: wgpu.ffi.WGPUAdapterImpl,
@@ -15,13 +16,13 @@ adapterRequestCallback(status: wgpu.ffi.WGPURequestAdapterStatus,
                                      userdata1: cptr,
                                      userdata2: cptr): void {
   if (status == WGPURequestAdapterStatus_Success) {
-    adapter = adapter;
-    // g_adapter_ready = true;
+    g_adapter = adapter;
+    g_adapterReady = true;
     fmt.println("Adapter request successful");
   }
   else {
+    g_adapterReady = true;
     fmt.println("Adapter request failed");
-    // g_adapter_ready = true;
   }
 }
 
@@ -60,6 +61,20 @@ main(): int {
         callback: adapterRequestCallback,
     };
     instance.requestAdapter(adapterOpts, adapterCallback);
+
+    let timeout = 1000;
+    while !g_adapterReady && timeout > 0 {
+        for (let i = 0; i < 10000; i++) {
+        }
+        timeout--;
+    }
+
+    if (!g_adapter) {
+        fmt.println("Failed to get adapter after timeout");
+        return 0;
+    }
+
+    fmt.println("Done!");
 
     // gl.init(window.getProcAddress());
     // gl.viewport(0, 0, 1920, 1080);

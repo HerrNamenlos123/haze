@@ -22,23 +22,22 @@ static bool g_adapter_ready = false;
 static bool g_device_ready = false;
 
 // Adapter callback
-static void adapter_request_callback(WGPURequestAdapterStatus status,
-                                     WGPUAdapter adapter,
-                                     WGPUStringView message,
-                                     void* user_data,
-                                     void* reserved1)
-{
-  if (status == WGPURequestAdapterStatus_Success) {
-    g_adapter = adapter;
-    g_adapter_ready = true;
-    WGPUChainedStruct a;
-    printf("Adapter request successful\n");
-  }
-  else {
-    fprintf(stderr, "Adapter request failed\n");
-    g_adapter_ready = true;
-  }
-}
+// static void adapter_request_callback(WGPURequestAdapterStatus status,
+//                                      WGPUAdapter adapter,
+//                                      WGPUStringView message,
+//                                      void* user_data,
+//                                      void* reserved1)
+// {
+//   if (status == WGPURequestAdapterStatus_Success) {
+//     g_adapter = adapter;
+//     g_adapter_ready = true;
+//     printf("Adapter request successful\n");
+//   }
+//   else {
+//     fprintf(stderr, "Adapter request failed\n");
+//     g_adapter_ready = true;
+//   }
+// }
 
 // Device callback
 static void device_request_callback(WGPURequestDeviceStatus status,
@@ -76,31 +75,30 @@ void wgpu_init(GLFWwindow* window)
   // }
   // printf("surface = %p\n", g_surface);
 
-  // << We are here
-
   // Request adapter asynchronously
-  WGPURequestAdapterOptions adapter_opts = {
-    .compatibleSurface = g_surface,
-  };
-  WGPURequestAdapterCallbackInfo adapter_callback = {
-    .callback = adapter_request_callback,
-  };
-  wgpuInstanceRequestAdapter(g_instance, &adapter_opts, adapter_callback);
+  // WGPURequestAdapterOptions adapter_opts = {
+  //   .compatibleSurface = g_surface,
+  // };
+  // WGPURequestAdapterCallbackInfo adapter_callback = {
+  //   .callback = adapter_request_callback,
+  // };
+  // wgpuInstanceRequestAdapter(g_instance, &adapter_opts, adapter_callback);
 
-  // Wait for adapter to be ready
-  int timeout = 1000; // 1 second timeout (1000 * 1ms)
-  while (!g_adapter_ready && timeout > 0) {
-    // Simple busy loop with minimal sleep
-    for (int i = 0; i < 10000; i++) {
-      // Spin
-    }
-    timeout--;
-  }
+  // // Wait for adapter to be ready
+  // int timeout = 1000; // 1 second timeout (1000 * 1ms)
+  // while (!g_adapter_ready && timeout > 0) {
+  //   // Simple busy loop with minimal sleep
+  //   for (int i = 0; i < 10000; i++) {
+  //     // Spin
+  //   }
+  //   timeout--;
+  // }
 
-  if (!g_adapter) {
-    fprintf(stderr, "Failed to get adapter after timeout\n");
-    return;
-  }
+  // if (!g_adapter) {
+  //   fprintf(stderr, "Failed to get adapter after timeout\n");
+  //   return;
+  // }
+  // << We are here
 
   // Request device asynchronously
   WGPUDeviceDescriptor device_desc = { 0 };
@@ -110,7 +108,7 @@ void wgpu_init(GLFWwindow* window)
   wgpuAdapterRequestDevice(g_adapter, &device_desc, device_callback);
 
   // Wait for device to be ready
-  timeout = 1000; // 1 second timeout
+  int timeout = 1000; // 1 second timeout
   while (!g_device_ready && timeout > 0) {
     // Simple busy loop with minimal sleep
     for (int i = 0; i < 10000; i++) {

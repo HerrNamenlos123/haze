@@ -1993,6 +1993,7 @@ export class SemanticElaborator {
       (variableSymbol.type && this.lookupAndElaborateDatatype(variableSymbol.type)) || null;
 
     let comptimeValue: Semantic.ExprId | null = null;
+    let global = false;
     if (type === null) {
       if (!variableSymbol.globalValueInitializer) {
         throw new CompilerError(
@@ -2002,19 +2003,37 @@ export class SemanticElaborator {
       }
       const [expr, exprId] = this.sr.e.expr(variableSymbol.globalValueInitializer, undefined);
       type = expr.type;
+      global = true;
       comptimeValue = exprId;
     }
 
     const [variable, variableId] = this.sr.b.variableSymbol(
       variableSymbol.name,
       type,
-      variableSymbol.comptime || Boolean(comptimeValue),
+      variableSymbol.comptime,
       comptimeValue,
       variableSymbol.mutability,
       this.elaborateParentSymbolFromCache(variableSymbol.inScope),
       variableSymbol.sourceloc
     );
     this.sr.elaboratedGlobalVariableSymbols.set(variableSymbolId, variableId);
+
+    if (global) {
+      assert(variable.comptimeValue);
+      const [defSym, defSymId] = Semantic.addSymbol(this.sr, {
+        variant: Semantic.ENode.GlobalVariableDefinitionSymbol,
+        comptime: variable.comptime,
+        concrete: variable.concrete,
+        export: variable.export,
+        extern: variable.extern,
+        name: variable.name,
+        parentStructOrNS: variable.parentStructOrNS,
+        sourceloc: variable.sourceloc,
+        value: variable.comptimeValue,
+        variableSymbol: variableId,
+      });
+      this.sr.elaboratedGlobalVariableDefinitionSymbols.add(defSymId);
+    }
 
     return [variableId];
   }
@@ -2028,92 +2047,15 @@ export class SemanticElaborator {
       case Collect.ENode.FunctionOverloadGroupSymbol:
         return this.functionOverloadGroup(symbol);
 
-      case Collect.ENode.VariableSymbol:
-        return this.variableSymbol(symbol, symbolId);
+      case Collect.ENode.VariableSymbol: {
+        const ids = this.variableSymbol(symbol, symbolId);
+        assert(ids.length === 1);
+        const globalVarId = ids[0];
+        const globalVar = this.sr.symbolNodes.get(globalVarId);
+        assert(globalVar.variant === Semantic.ENode.VariableSymbol);
 
-      // case Collect.ENode.GlobalVariableDefinition: {
-      //   for (const s of sr.elaboratedGlobalVariableDefinitions) {
-      //     if (s.originalSymbol === nodeId) {
-      //       return [s.result];
-      //     }
-      //   }
-      //   let [elaboratedValue, elaboratedValueId] = [
-      //     undefined as Semantic.Expression | undefined,
-      //     null as Semantic.ExprId | null,
-      //   ];
-
-      //   const [variableSymbolId] = elaborateTopLevelSymbol(sr, node.variableSymbol, {
-      //     context: args.context,
-      //   });
-      //   assert(variableSymbolId);
-      //   const variableSymbol = sr.symbolNodes.get(variableSymbolId);
-      //   assert(variableSymbol.variant === Semantic.ENode.VariableSymbol);
-
-      //   if (!variableSymbol.type && elaboratedValue) {
-      //     variableSymbol.type = elaboratedValue.type;
-      //   }
-      //   assert(variableSymbol.type);
-      //   assert(isTypeConcrete(sr, variableSymbol.type));
-
-      //   if (node.value) {
-      //     const value = sr.cc.nodes.get(node.value);
-      //     if (value.variant === Collect.ENode.SymbolValueExpr && value.name === "default") {
-      //       if (value.genericArgs.length !== 0) {
-      //         throw new CompilerError(
-      //           `'default' initializer cannot take any generics`,
-      //           node.sourceloc
-      //         );
-      //       }
-      //       elaboratedValueId = Conversion.MakeDefaultValue(
-      //         sr,
-      //         variableSymbol.type,
-      //         node.sourceloc
-      //       );
-      //       assert(elaboratedValueId);
-      //       elaboratedValue = sr.exprNodes.get(elaboratedValueId);
-      //     } else {
-      //       [elaboratedValue, elaboratedValueId] = elaborateExpr(sr, node.value, {
-      //         scope: args.context.currentScope,
-      //         elaboratedVariables: new Map(),
-      //         context: args.context,
-      //         blockScope: null,
-      //         isMonomorphized: false,
-      //         expectedReturnType: makePrimitiveAvailable(
-      //           sr,
-      //           EPrimitive.void,
-      //           EDatatypeMutability.Default,
-      //           node.sourceloc
-      //         ),
-      //         unsafe: false,
-      //       });
-      //     }
-      //   }
-
-      //   if (variableSymbol.comptime) {
-      //     assert(elaboratedValueId);
-      //     const r = EvalCTFE(sr, elaboratedValueId);
-      //     if (!r.ok) throw new CompilerError(r.error, node.sourceloc);
-      //     variableSymbol.comptimeValue = r.value[1];
-      //   }
-
-      //   const [s, sId] = Semantic.addSymbol(sr, {
-      //     variant: Semantic.ENode.GlobalVariableDefinitionSymbol,
-      //     export: variableSymbol.export,
-      //     extern: variableSymbol.extern,
-      //     name: variableSymbol.name,
-      //     comptime: variableSymbol.comptime,
-      //     value: elaboratedValueId,
-      //     sourceloc: node.sourceloc,
-      //     variableSymbol: variableSymbolId,
-      //     parentStructOrNS: variableSymbol.parentStructOrNS,
-      //     concrete: true,
-      //   });
-      //   sr.elaboratedGlobalVariableDefinitions.push({
-      //     originalSymbol: nodeId,
-      //     result: sId,
-      //   });
-      //   return [sId];
-      // }
+        return [globalVarId];
+      }
 
       case Collect.ENode.CInjectDirective: {
         return [this.sr.b.cInject(symbol.value, symbol.export, symbol.sourceloc)];
@@ -2717,7 +2659,6 @@ export class SemanticElaborator {
     });
 
     let noReturn = false;
-    let noReturnConstraints = [] as Semantic.Constraint[];
     this.withContext(
       {
         context: newContext,
@@ -2766,7 +2707,6 @@ export class SemanticElaborator {
 
         if (this.currentContext.scopeNoReturn.has(args.sourceScopeId)) {
           noReturn = true;
-          noReturnConstraints = this.currentContext.scopeNoReturnConstraints;
         }
       }
     );
@@ -2774,9 +2714,6 @@ export class SemanticElaborator {
     if (noReturn) {
       this.currentContext.scopeNoReturn.add(args.sourceScopeId);
     }
-    // if (noReturnConstraints.length > 0) {
-    //   this.currentContext.constraints.push(...noReturnConstraints);
-    // }
 
     return {
       noReturn: noReturn,
@@ -7944,10 +7881,11 @@ export type SemanticResult = {
     result: Semantic.TypeDefId;
   }[];
   elaboratedEnumSymbols: EnumDefCache;
-  elaboratedGlobalVariableDefinitions: {
-    originalSymbol: Collect.SymbolId;
-    result: Semantic.SymbolId;
-  }[];
+
+  // Those are GlobalVariableDefinitionSymbols
+  elaboratedGlobalVariableDefinitionSymbols: Set<Semantic.SymbolId>;
+
+  // Those are VariableSymbols
   elaboratedGlobalVariableSymbols: Map<Collect.SymbolId, Semantic.SymbolId>;
   // Function-local variable symbols are cached per function call because they are separate for each generic instance.
 
@@ -9338,7 +9276,7 @@ export namespace Semantic {
       elaboratedEnumSymbols: new Map(),
       elaboratedPrimitiveTypes: [],
       elaboratedNamespaceSymbols: [],
-      elaboratedGlobalVariableDefinitions: [],
+      elaboratedGlobalVariableDefinitionSymbols: new Set(),
       functionTypeCache: [],
       deferredFunctionTypeCache: [],
       fixedArrayTypeCache: [],
@@ -9542,6 +9480,7 @@ export namespace Semantic {
     const symbol = sr.symbolNodes.get(symbolId);
     assert(
       symbol.variant === Semantic.ENode.FunctionSymbol ||
+        symbol.variant === Semantic.ENode.VariableSymbol ||
         symbol.variant === Semantic.ENode.FunctionSignature ||
         symbol.variant === Semantic.ENode.GlobalVariableDefinitionSymbol
     );
@@ -9745,6 +9684,7 @@ export namespace Semantic {
     const symbol = sr.symbolNodes.get(symbolId);
     assert(
       symbol.variant === Semantic.ENode.FunctionSymbol ||
+        symbol.variant === Semantic.ENode.VariableSymbol ||
         symbol.variant === Semantic.ENode.GlobalVariableDefinitionSymbol
     );
 

@@ -124,7 +124,7 @@ export namespace Lowered {
     loweredTypeUses: Map<Semantic.TypeUseId, Lowered.TypeUseId>;
     loweredFunctions: Map<Semantic.SymbolId, Lowered.FunctionId>;
     loweredPointers: Map<Lowered.TypeUseId, Lowered.TypeDefId>;
-    loweredGlobalVariables: Map<Semantic.SymbolId, Lowered.StatementId[]>;
+    loweredGlobalVariables: Lowered.StatementId[];
 
     loweredUnionMappings: TagMapping[];
   };
@@ -815,35 +815,42 @@ export function lowerExpr(
       const symbol = lr.sr.symbolNodes.get(expr.symbol);
       assert(
         symbol.variant === Semantic.ENode.VariableSymbol ||
-          symbol.variant === Semantic.ENode.GlobalVariableDefinitionSymbol ||
           symbol.variant === Semantic.ENode.FunctionSymbol
       );
+
       if (symbol.variant === Semantic.ENode.VariableSymbol) {
         assert(symbol.type);
+
+        const globalVariableStatementId = [...lr.sr.elaboratedGlobalVariableDefinitionSymbols].find(
+          (d) => {
+            const symbol = lr.sr.symbolNodes.get(d);
+            assert(symbol.variant === Semantic.ENode.GlobalVariableDefinitionSymbol);
+            return symbol.variableSymbol === expr.symbol;
+          }
+        );
+
+        let prettyName = symbol.name;
+        let mangledName = symbol.name;
+        let wasMangled = false;
+        if (globalVariableStatementId) {
+          const globalVariableStatement = lr.sr.symbolNodes.get(globalVariableStatementId);
+          assert(globalVariableStatement.variant === Semantic.ENode.GlobalVariableDefinitionSymbol);
+          globalVariableStatement.name;
+          const mangled = Semantic.mangleSymbol(lr.sr, expr.symbol);
+          mangledName = mangled.name;
+          wasMangled = mangled.wasMangled;
+        }
+
         return Lowered.addExpr(lr, {
           variant: Lowered.ENode.SymbolValueExpr,
           name: {
-            prettyName: symbol.name,
-            mangledName: symbol.name,
-            wasMangled: false,
+            prettyName: prettyName,
+            mangledName: mangledName,
+            wasMangled: wasMangled,
           },
           type: lowerTypeUse(lr, symbol.type),
         });
-      } else if (symbol.variant === Semantic.ENode.GlobalVariableDefinitionSymbol) {
-        const variableSymbol = lr.sr.symbolNodes.get(symbol.variableSymbol);
-        assert(variableSymbol.variant === Semantic.ENode.VariableSymbol);
-        assert(variableSymbol.type);
-        return Lowered.addExpr(lr, {
-          variant: Lowered.ENode.SymbolValueExpr,
-          name: {
-            prettyName: symbol.name,
-            mangledName: symbol.name,
-            wasMangled: false,
-          },
-          type: lowerTypeUse(lr, variableSymbol.type),
-        });
       } else {
-        const a = lr.sr.symbolNodes.get(expr.symbol);
         lowerSymbol(lr, expr.symbol);
         return Lowered.addExpr(lr, {
           variant: Lowered.ENode.SymbolValueExpr,
@@ -2539,7 +2546,11 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
           })[1],
         sourceloc: symbol.sourceloc,
       });
-      lr.loweredGlobalVariables.set(symbolId, [...flattened, pId]);
+      assert(
+        flattened.length === 0,
+        "Global variables cannot take multi line expressions, rewrite it as scope expression"
+      );
+      lr.loweredGlobalVariables.push(pId);
       return;
     }
 
@@ -2787,7 +2798,7 @@ export function LowerModule(sr: SemanticResult): Lowered.Module {
     loweredTypeDefs: new Map(),
     loweredFunctions: new Map(),
     loweredPointers: new Map(),
-    loweredGlobalVariables: new Map(),
+    loweredGlobalVariables: [],
 
     loweredUnionMappings: [],
   };
@@ -2807,8 +2818,8 @@ export function LowerModule(sr: SemanticResult): Lowered.Module {
       lowerSymbol(lr, entry.resultAsTypeDefSymbol);
     }
   }
-  for (const symbol of sr.elaboratedGlobalVariableDefinitions) {
-    lowerSymbol(lr, symbol.result);
+  for (const symbol of sr.elaboratedGlobalVariableDefinitionSymbols) {
+    lowerSymbol(lr, symbol);
   }
 
   for (const primitive of sr.elaboratedPrimitiveTypes) {

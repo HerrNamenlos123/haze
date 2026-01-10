@@ -322,8 +322,20 @@ class CodeGenerator {
       }
     }
 
-    for (const [id, symbol] of this.lr.loweredGlobalVariables) {
-      // TODO
+    for (const statementId of this.lr.loweredGlobalVariables) {
+      const statement = this.lr.statementNodes.get(statementId);
+      assert(statement.variant === Lowered.ENode.VariableStatement);
+      if (statement.value) {
+        this.out.global_variables.writeLine(
+          `${this.mangleTypeUse(statement.type)} ${this.mangleName(
+            statement.name
+          )} = ${this.emitExpr(statement.value).out.get()};`
+        );
+      } else {
+        this.out.global_variables.writeLine(
+          `${this.mangleTypeUse(statement.type)} ${this.mangleName(statement.name)} = {0};`
+        );
+      }
     }
 
     for (const mapping of this.lr.loweredUnionMappings) {
