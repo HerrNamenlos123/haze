@@ -5,6 +5,7 @@ __c__("#include \"wgpu_impl.c\"");
 export __c__("typedef struct WGPUSurfaceImpl WGPUSurfaceImpl;");
 export __c__("typedef struct WGPUInstanceImpl WGPUInstanceImpl;");
 export __c__("typedef struct WGPUAdapterImpl WGPUAdapterImpl;");
+export __c__("typedef struct WGPUAdapterImpl WGPUDeviceImpl;");
 
 export extern C noemit wgpu_init(glfwWindow: cptr) :: final;
 export extern C noemit wgpu_start(glfwWindow: cptr) :: final;
@@ -18,6 +19,7 @@ namespace ffi {
     export extern C noemit struct WGPUSurfaceImpl {};
     export extern C noemit struct WGPUInstanceImpl {};
     export extern C noemit struct WGPUAdapterImpl {};
+    export extern C noemit struct WGPUDeviceImpl {};
 
     export extern C noemit enum WGPURequestAdapterStatus {
         WGPURequestAdapterStatus_Success = 0x00000001,
@@ -28,6 +30,51 @@ namespace ffi {
         WGPURequestAdapterStatus_Force32 = 0x7FFFFFFF
     };
 
+    export extern C noemit enum WGPUFeatureName {
+        WGPUFeatureName_Undefined = 0x00000000,
+        WGPUFeatureName_DepthClipControl = 0x00000001,
+        WGPUFeatureName_Depth32FloatStencil8 = 0x00000002,
+        WGPUFeatureName_TimestampQuery = 0x00000003,
+        WGPUFeatureName_TextureCompressionBC = 0x00000004,
+        WGPUFeatureName_TextureCompressionBCSliced3D = 0x00000005,
+        WGPUFeatureName_TextureCompressionETC2 = 0x00000006,
+        WGPUFeatureName_TextureCompressionASTC = 0x00000007,
+        WGPUFeatureName_TextureCompressionASTCSliced3D = 0x00000008,
+        WGPUFeatureName_IndirectFirstInstance = 0x00000009,
+        WGPUFeatureName_ShaderF16 = 0x0000000A,
+        WGPUFeatureName_RG11B10UfloatRenderable = 0x0000000B,
+        WGPUFeatureName_BGRA8UnormStorage = 0x0000000C,
+        WGPUFeatureName_Float32Filterable = 0x0000000D,
+        WGPUFeatureName_Float32Blendable = 0x0000000E,
+        WGPUFeatureName_ClipDistances = 0x0000000F,
+        WGPUFeatureName_DualSourceBlending = 0x00000010,
+        WGPUFeatureName_Force32 = 0x7FFFFFFF
+    };
+
+    export extern C noemit enum WGPUErrorType {
+        WGPUErrorType_NoError = 0x00000001,
+        WGPUErrorType_Validation = 0x00000002,
+        WGPUErrorType_OutOfMemory = 0x00000003,
+        WGPUErrorType_Internal = 0x00000004,
+        WGPUErrorType_Unknown = 0x00000005,
+        WGPUErrorType_Force32 = 0x7FFFFFFF
+    };
+
+    export extern C noemit enum WGPUCallbackMode {
+        WGPUCallbackMode_WaitAnyOnly = 0x00000001,
+        WGPUCallbackMode_AllowProcessEvents = 0x00000002,
+        WGPUCallbackMode_AllowSpontaneous = 0x00000003,
+        WGPUCallbackMode_Force32 = 0x7FFFFFFF
+    };
+
+    export extern C noemit enum WGPUDeviceLostReason {
+        WGPUDeviceLostReason_Unknown = 0x00000001,
+        WGPUDeviceLostReason_Destroyed = 0x00000002,
+        WGPUDeviceLostReason_InstanceDropped = 0x00000003,
+        WGPUDeviceLostReason_FailedCreation = 0x00000004,
+        WGPUDeviceLostReason_Force32 = 0x7FFFFFFF
+    };
+
     export extern C noemit struct WGPUStringView {
         data: cptr;
         length: usize;
@@ -36,6 +83,76 @@ namespace ffi {
     export extern C noemit struct WGPUInstanceDescriptor {
         nextInChain: WGPUChainedStruct | none = none;
         features: inline WGPUInstanceCapabilities = default;
+    };
+
+    export extern C noemit struct WGPUQueueDescriptor {
+        nextInChain: WGPUChainedStruct | none = none;
+        label: inline WGPUStringView;
+    };
+
+    export extern C type WGPUDeviceLostCallback = (device: WGPUDeviceImpl | none, reason: inline WGPUDeviceLostReason, message: inline WGPUStringView, userdata1: cptr, userdata2: cptr) => void :: final;
+
+    export extern C noemit struct WGPUDeviceLostCallbackInfo {
+        nextInChain: WGPUChainedStruct | none = none;
+        mode: WGPUCallbackMode;
+        callback: WGPUDeviceLostCallback;
+        userdata1: cptr = none;
+        userdata2: cptr = none;
+    };
+
+    export extern C type WGPUUncapturedErrorCallback = (device: WGPUDeviceImpl | none, _type: WGPUErrorType, message: inline WGPUStringView, userdata1: cptr, userdata2: cptr) => void :: final;
+
+    export extern C noemit struct WGPUUncapturedErrorCallbackInfo {
+        nextInChain: WGPUChainedStruct | none = none;
+        callback: WGPUUncapturedErrorCallback;
+        userdata1: cptr = none;
+        userdata2: cptr = none;
+    };
+
+    export extern C noemit struct WGPULimits {
+        nextInChain: WGPUChainedStructOut | none = none;
+        maxTextureDimension1D: u32;
+        maxTextureDimension2D: u32;
+        maxTextureDimension3D: u32;
+        maxTextureArrayLayers: u32;
+        maxBindGroups: u32;
+        maxBindGroupsPlusVertexBuffers: u32;
+        maxBindingsPerBindGroup: u32;
+        maxDynamicUniformBuffersPerPipelineLayout: u32;
+        maxDynamicStorageBuffersPerPipelineLayout: u32;
+        maxSampledTexturesPerShaderStage: u32;
+        maxSamplersPerShaderStage: u32;
+        maxStorageBuffersPerShaderStage: u32;
+        maxStorageTexturesPerShaderStage: u32;
+        maxUniformBuffersPerShaderStage: u32;
+        maxUniformBufferBindingSize: u64;
+        maxStorageBufferBindingSize: u64;
+        minUniformBufferOffsetAlignment: u32;
+        minStorageBufferOffsetAlignment: u32;
+        maxVertexBuffers: u32;
+        maxBufferSize: u64;
+        maxVertexAttributes: u32;
+        maxVertexBufferArrayStride: u32;
+        maxInterStageShaderVariables: u32;
+        maxColorAttachments: u32;
+        maxColorAttachmentBytesPerSample: u32;
+        maxComputeWorkgroupStorageSize: u32;
+        maxComputeInvocationsPerWorkgroup: u32;
+        maxComputeWorkgroupSizeX: u32;
+        maxComputeWorkgroupSizeY: u32;
+        maxComputeWorkgroupSizeZ: u32;
+        maxComputeWorkgroupsPerDimension: u32;
+    };
+
+    export extern C noemit struct WGPUDeviceDescriptor {
+        nextInChain: WGPUChainedStruct | none = none;
+        label: inline WGPUStringView;
+        requiredFeatureCount: usize;
+        requiredFeatures: WGPUFeatureName;
+        requiredLimits: WGPULimits | none;
+        defaultQueue: inline WGPUQueueDescriptor;
+        deviceLostCallbackInfo: inline WGPUDeviceLostCallbackInfo;
+        uncapturedErrorCallbackInfo: inline WGPUUncapturedErrorCallbackInfo;
     };
 
     export extern C noemit struct WGPUInstanceCapabilities {

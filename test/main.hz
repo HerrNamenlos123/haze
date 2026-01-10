@@ -74,7 +74,26 @@ main(): int {
         return 0;
     }
 
-    fmt.println("Done!");
+//   WGPUDeviceDescriptor device_desc = { 0 };
+//   WGPURequestDeviceCallbackInfo device_callback = {
+//     callback = device_request_callback,
+//   };
+//   wgpuAdapterRequestDevice(g_adapter, &device_desc, device_callback);
+
+//   // Wait for device to be ready
+//   int timeout = 1000; // 1 second timeout
+//   while (!g_device_ready && timeout > 0) {
+//     // Simple busy loop with minimal sleep
+//     for (int i = 0; i < 10000; i++) {
+//       // Spin
+//     }
+//     timeout--;
+//   }
+
+//   if (!g_device) {
+//     fprintf(stderr, "Failed to get device after timeout\n");
+//     return;
+//   }
 
     // gl.init(window.getProcAddress());
     // gl.viewport(0, 0, 1920, 1080);
