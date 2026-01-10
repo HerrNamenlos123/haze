@@ -569,6 +569,8 @@ export class ProjectCompiler {
         license: undefined,
         compilerFlags: new PlatformStrings(),
         includeDirs: new PlatformStrings(),
+        macros: new PlatformStrings(),
+        interfaceMacros: new PlatformStrings(),
         hzstdLocation: null,
         includeSourceloc: sourceloc ?? true,
       };
@@ -1165,6 +1167,7 @@ export class ModuleCompiler {
       const compilerFlags = this.config.compilerFlags;
       const linkerFlags = this.config.linkerFlags;
       const includeDirs = this.config.includeDirs;
+      const interfaceMacros = this.config.interfaceMacros;
       compilerFlags.addAll("-Wno-parentheses-equality");
       compilerFlags.addAll("-Wno-extra-tokens");
 
@@ -1249,15 +1252,23 @@ export class ModuleCompiler {
       includeDirs.addAll(this.config.srcDirectory);
       compilerFlags.addAll("-std=c11");
 
-      const [archives, dependencyLinkerFlags, dependencyIncludeDirs] =
+      const [archives, dependencyLinkerFlags, dependencyIncludeDirs, dependencyInterfaceMacros] =
         await this.loadDependencyBinaries();
 
       linkerFlags.merge(dependencyLinkerFlags);
       includeDirs.merge(dependencyIncludeDirs);
+      interfaceMacros.merge(dependencyInterfaceMacros);
 
       if (this.config.moduleType === ModuleType.Executable) {
         compilerFlags.addAll(archives.map((l) => `"${l}"`));
       }
+
+      compilerFlags.addAll(this.config.macros.getAll().map((dir) => `-D${dir}`));
+      compilerFlags.addLinux(this.config.macros.getLinux().map((dir) => `-D${dir}`));
+      compilerFlags.addWin32(this.config.macros.getWin32().map((dir) => `-D${dir}`));
+      compilerFlags.addAll(interfaceMacros.getAll().map((dir) => `-D${dir}`));
+      compilerFlags.addLinux(interfaceMacros.getLinux().map((dir) => `-D${dir}`));
+      compilerFlags.addWin32(interfaceMacros.getWin32().map((dir) => `-D${dir}`));
 
       compilerFlags.addAll(includeDirs.getAll().map((dir) => `-I"${dir}"`));
       compilerFlags.addLinux(includeDirs.getLinux().map((dir) => `-I"${dir}"`));
@@ -1335,6 +1346,7 @@ export class ModuleCompiler {
           ],
           linkerFlags: this.config.linkerFlags,
           includeDirs: includeDirs,
+          interfaceMacros: interfaceMacros,
           compileCommands: compileCommands,
           importFile: HAZE_LIB_IMPORT_FILE,
         };
@@ -1349,6 +1361,11 @@ export class ModuleCompiler {
             all: moduleMetadata.includeDirs.getAll(),
             linux: moduleMetadata.includeDirs.getLinux(),
             win32: moduleMetadata.includeDirs.getWin32(),
+          },
+          interfaceMacros: {
+            all: moduleMetadata.interfaceMacros.getAll(),
+            linux: moduleMetadata.interfaceMacros.getLinux(),
+            win32: moduleMetadata.interfaceMacros.getWin32(),
           },
         };
         await writeFile(moduleMetadataFile, JSON.stringify(moduleMetadataSerialized, undefined, 2));
@@ -1382,6 +1399,7 @@ export class ModuleCompiler {
     const archives: string[] = [];
     const linkerFlags = new PlatformStrings();
     const includeDirs = new PlatformStrings();
+    const interfaceMacros = new PlatformStrings();
 
     metadata.forEach((meta) => {
       const lib = meta.libs.find((l) => l.platform === this.config.platform);
@@ -1396,9 +1414,10 @@ export class ModuleCompiler {
       archives.push(archiveFile);
       linkerFlags.merge(meta.linkerFlags);
       includeDirs.merge(meta.includeDirs);
+      interfaceMacros.merge(meta.interfaceMacros);
     });
 
-    return [archives, linkerFlags, includeDirs] as const;
+    return [archives, linkerFlags, includeDirs, interfaceMacros] as const;
   }
 
   private async loadDependencyCompileCommands() {

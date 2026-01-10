@@ -124,6 +124,8 @@ export type ModuleConfig = {
   dependencies: ModuleDependency[];
   linkerFlags: PlatformStrings;
   compilerFlags: PlatformStrings;
+  macros: PlatformStrings;
+  interfaceMacros: PlatformStrings;
   includeDirs: PlatformStrings;
   hzstdLocation: string | null;
   platform: PlatformString;
@@ -193,6 +195,7 @@ export type ModuleMetadata = {
   version: string;
   libs: ModuleLibMetadata[];
   includeDirs: PlatformStrings;
+  interfaceMacros: PlatformStrings;
   linkerFlags: PlatformStrings;
   compileCommands: CompileCommands;
   importFile: "import.hz";
@@ -276,6 +279,11 @@ export function parseModuleMetadata(metadata: string): ModuleMetadata {
       all: getStringArray(obj["linkerFlags"]["all"]),
       win32: getStringArray(obj["linkerFlags"]["win32"]),
       linux: getStringArray(obj["linkerFlags"]["linux"]),
+    }),
+    interfaceMacros: new PlatformStrings({
+      all: getStringArray(obj["interfaceMacros"]["all"]),
+      win32: getStringArray(obj["interfaceMacros"]["win32"]),
+      linux: getStringArray(obj["interfaceMacros"]["linux"]),
     }),
     compileCommands: obj["compileCommands"],
     importFile: "import.hz",
@@ -480,6 +488,16 @@ export class ConfigParser {
         win32: [],
         linux: [],
       }),
+      macros: new PlatformStrings({
+        all: [],
+        win32: [],
+        linux: [],
+      }),
+      interfaceMacros: new PlatformStrings({
+        all: [],
+        win32: [],
+        linux: [],
+      }),
       includeDirs: new PlatformStrings({
         all: [],
         win32: [],
@@ -507,6 +525,28 @@ export class ConfigParser {
     config.compilerFlags.addLinux(
       (compiler?.linux && this.getOptionalStringArray(compiler.linux, "flags")) || []
     );
+
+    config.macros.addAll((compiler && this.getOptionalStringArray(compiler, "defines")) || []);
+    config.macros.addWin32(
+      (compiler?.win32 && this.getOptionalStringArray(compiler.win32, "defines")) || []
+    );
+    config.macros.addLinux(
+      (compiler?.linux && this.getOptionalStringArray(compiler.linux, "defines")) || []
+    );
+
+    const _interface = toml["interface"] as any;
+    if (_interface) {
+      const compiler = _interface["compiler"] as any;
+      config.interfaceMacros.addAll(
+        (compiler && this.getOptionalStringArray(compiler, "defines")) || []
+      );
+      config.interfaceMacros.addWin32(
+        (compiler?.win32 && this.getOptionalStringArray(compiler.win32, "defines")) || []
+      );
+      config.interfaceMacros.addLinux(
+        (compiler?.linux && this.getOptionalStringArray(compiler.linux, "defines")) || []
+      );
+    }
 
     return config;
   }

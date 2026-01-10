@@ -12,11 +12,11 @@ prebuild = { command = "$HAZE_MODULE_SOURCE_DIR/build-linux.sh", depends = "./**
 [scripts.win32]
 prebuild = { command = "call \"%HAZE_MODULE_SOURCE_DIR%/build-win.bat\"", depends = "./**/*" }
 
-[compiler.linux]
-flags = ["-D_GLFW_X11", "-D_GLFW_WAYLAND"]
+[interface.compiler.linux]
+defines = ["_GLFW_X11", "_GLFW_WAYLAND"]
 
-[compiler.win32]
-flags = ["-D_GLFW_WIN32"]
+[interface.compiler.win32]
+defines = ["_GLFW_WIN32"]
 
 [linker]
 flags = ["-lglfw3"]
