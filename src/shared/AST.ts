@@ -635,6 +635,8 @@ export type ASTEnumDefinition = {
   name: string;
   noemit: boolean;
   pub: boolean;
+  bitflag: boolean;
+  unscoped: boolean;
   values: ASTEnumValueDefinition[];
   sourceloc: SourceLoc;
   originalSourcecode: string;

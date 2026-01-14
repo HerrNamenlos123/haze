@@ -939,6 +939,8 @@ class ASTTransformer extends HazeParserVisitor<any> {
       variant: "EnumDefinition",
       export: Boolean(ctx._export_),
       pub: Boolean(ctx._pub),
+      bitflag: Boolean(ctx.BITFLAG()),
+      unscoped: Boolean(ctx.UNSCOPED()),
       extern: this.exlang(ctx),
       name: ctx.ID().getText(),
       noemit: Boolean(ctx._noemit),

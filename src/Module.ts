@@ -789,6 +789,7 @@ export class ProjectCompiler {
       }
       child_process.execSync(`"${moduleExecutable}" ${args?.join(" ")}`, {
         stdio: "inherit",
+        env: process.env,
       });
       return 0;
     } catch (e: any) {
@@ -1354,7 +1355,7 @@ export class ModuleCompiler {
 
     assert(this.currentModuleRootDir);
     console.log(`>> Running generator ${gen.name}...`);
-    const sourceloc = true;
+    const sourceloc = this.config.includeSourceloc;
     const project = new ProjectCompiler();
     if (!(await project.build(join(this.currentModuleRootDir, gen.exec), sourceloc))) {
       throw new GeneralError(`Build of generator step ${gen.name} failed`);

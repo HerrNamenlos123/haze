@@ -3,6 +3,7 @@
 #define HZSTD_H
 
 #include "hzstd_arithmetic.h"
+#include "hzstd_env.h"
 #include "hzstd_filesystem.h"
 #include "hzstd_json.h"
 #include "hzstd_memory.h"

@@ -1,0 +1,113 @@
+
+namespace ffi {
+    // extern C struct hzstd_file_t {};
+
+    extern C noemit enum unscoped hzstd_fs_error_code_t {
+        hzstd_fs_error_code_none = 0,
+
+        hzstd_fs_error_code_not_found, // path does not exist
+        hzstd_fs_error_code_not_a_file, // exists but not a regular file
+        hzstd_fs_error_code_not_a_directory, // exists but not a regular file
+        hzstd_fs_error_code_permission_denied,
+        hzstd_fs_error_code_invalid_path, // malformed path, invalid characters, etc.
+        hzstd_fs_error_code_name_too_long,
+        hzstd_fs_error_code_io_error, // generic read/write failure
+        hzstd_fs_error_code_out_of_memory,
+    };
+
+    extern C noemit struct hzstd_fs_error_t {
+        code: hzstd_fs_error_code_t;
+        message: str;
+    };
+
+    extern C hzstd_read_file_text(allocator: Allocator, path: str, outputBuffer: hzstd_str_ref_t): inline hzstd_fs_error_t :: final;
+
+    extern C hzstd_mkdir_recursive(path: str): inline hzstd_fs_error_t :: final;
+
+    extern C noemit struct hzstd_fs_exists_result_t {
+        exists: bool;
+        error: inline hzstd_fs_error_t;
+    };
+
+    extern C noemit hzstd_fs_exists(path: str): inline hzstd_fs_exists_result_t :: final;
+}
+
+export namespace fs {
+    export enum Error {
+        None = 0,
+
+        NotFound,
+        NotAFile,
+        NotADirectory,
+        PermissionDenied,
+        InvalidPath,
+        NameTooLong,
+        IOError,
+        OutOfMemory,
+    }
+
+    mapErrorEnum(error: ffi.hzstd_fs_error_code_t): Error {
+        if error == ffi.hzstd_fs_error_code_none {
+            return Error.None;
+        }
+        else if error == ffi.hzstd_fs_error_code_not_found {
+            return Error.NotFound;
+        }
+        else if error == ffi.hzstd_fs_error_code_not_a_file {
+            return Error.NotAFile;
+        }
+        else if error == ffi.hzstd_fs_error_code_not_a_directory {
+            return Error.NotADirectory;
+        }
+        else if error == ffi.hzstd_fs_error_code_permission_denied {
+            return Error.PermissionDenied;
+        }
+        else if error == ffi.hzstd_fs_error_code_invalid_path {
+            return Error.InvalidPath;
+        }
+        else if error == ffi.hzstd_fs_error_code_name_too_long {
+            return Error.NameTooLong;
+        }
+        else if error == ffi.hzstd_fs_error_code_io_error {
+            return Error.IOError;
+        }
+        else if error == ffi.hzstd_fs_error_code_out_of_memory {
+            return Error.OutOfMemory;
+        }
+
+        // If this ever triggers, C and Haze enums are out of sync.
+        sys.panic("libc haze mappings out of sync");
+    }
+
+
+    export read(path: str) {
+        return read(Alloc.heap(), path);
+    }
+
+    export read(allocator: Allocator, path: str): Result<str, Error> {
+        let output = hzstd_str_ref_t { data: "" } with allocator;
+        let result = ffi.hzstd_read_file_text(allocator, path, output);
+        if result.code == ffi.hzstd_fs_error_code_none {
+            return Result<str, Error>.Ok(output.data);
+        }
+        else {
+            return Result<str, Error>.Err(mapErrorEnum(result.code));
+        }
+    }
+
+    export exists(path: str): Result<bool, Error> {
+        let result = ffi.hzstd_fs_exists(path);
+        if result.error.code == ffi.hzstd_fs_error_code_none {
+            return Result<bool, Error>.Ok(result.exists);
+        }
+        return Result<bool, Error>.Err(mapErrorEnum(result.error.code));
+    }
+
+    export createDirectory(path: str): Result<none, Error> {
+        let result = ffi.hzstd_mkdir_recursive(path);
+        if result.code == ffi.hzstd_fs_error_code_none {
+            return Result<none, Error>.Ok(none);
+        }
+        return Result<none, Error>.Err(mapErrorEnum(result.code));
+    }
+}

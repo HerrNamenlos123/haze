@@ -1,7 +1,7 @@
 
 __c__("#include <stdio.h>");
 
-namespace builtin {
+namespace ffi {
     export extern C noemit printf(fmt: ccstr, ...) :: final;
 }
 
@@ -91,32 +91,37 @@ namespace fmt {
         for comptime arg in args {
             if comptime typeof(arg) == int || typeof(arg) == type<mut int> {
                 const value = arg;
-                // builtin.printf("%lld", arg);
+                // ffi.printf("%lld", arg);
                 __c__("printf(\"%\"PRId64, value);");
+            }
+            else if typeof(arg) == cstr || typeof(arg) == ccstr {
+                const s = arg;
+                __c__("printf(\"%s\", s);");
+                // ffi.printf("%s", arg);
             }
             else if typeof(arg) == str {
                 const s = arg;
                 __c__("fwrite(s.data, 1, s.length, stdout);");
-                // builtin.printf("%s", arg);
+                // ffi.printf("%s", arg);
             }
             else if typeof(arg) == type<str> {
                 const s = arg;
                 __c__("fwrite(s.data, 1, s.length, stdout);");
-                // builtin.printf("%s", arg);
+                // ffi.printf("%s", arg);
             }
             else if typeof(arg) == bool {
                 if arg {
-                    builtin.printf("true");
+                    ffi.printf("true");
                 }
                 else {
-                    builtin.printf("false");
+                    ffi.printf("false");
                 }
             }
             else if typeof(arg) == type<usize> {
-                builtin.printf("%zu", arg);
+                ffi.printf("%zu", arg);
             }
             else if typeof(arg) == type<real> || typeof(arg) == type<mut real> {
-                builtin.printf("%f", arg);
+                ffi.printf("%f", arg);
             }
             else if typeof(arg) == type<u8> || typeof(arg) == type<u16> || typeof(arg) == type<u32> {
                 const value = arg;
@@ -135,13 +140,16 @@ namespace fmt {
                 __c__("printf(\"%\"PRId64, value);");
             }
             else if typeof(arg) == type<Vec2> || typeof(arg) == type<Vec2> {
-                builtin.printf("(%f, %f)", arg.x, arg.y);
+                ffi.printf("(%f, %f)", arg.x, arg.y);
             }
             else if typeof(arg) == type<Vec3> || typeof(arg) == type<Vec3> {
-                builtin.printf("(%f, %f, %f)", arg.x, arg.y, arg.z);
+                ffi.printf("(%f, %f, %f)", arg.x, arg.y, arg.z);
             }
             else if typeof(arg) == type<Vec4> || typeof(arg) == type<Vec4> {
-                builtin.printf("(%f, %f, %f, %f)", arg.x, arg.y, arg.z, arg.w);
+                ffi.printf("(%f, %f, %f, %f)", arg.x, arg.y, arg.z, arg.w);
+            }
+            else if typeof(arg) == type<fs.Error> {
+                ffi.printf("%d", arg);
             }
             else {
                 static_assert(false, "Type '" + typeof(arg).name + "' is not supported in fmt.print");

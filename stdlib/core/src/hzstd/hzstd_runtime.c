@@ -10,6 +10,16 @@
 #include <stdarg.h>
 #include <stdio.h>
 
+hzstd_str_t hzstd_errno_to_str(int err)
+{
+  const char* msg = strerror(err);
+  if (!msg) {
+    return HZSTD_STRING("", 0);
+  }
+
+  return hzstd_str_from_cstr_dup(hzstd_make_heap_allocator(), (char*)msg);
+}
+
 hzstd_str_t stacktrace_hidden_functions[] = {
   // This is a list of all functions of all platforms, that are supposed to be
   // grey in a stacktrace,

@@ -1,0 +1,78 @@
+
+namespace process {
+
+  extern C noemit struct hzstd_process_result_t {
+    exit_code: i32 = -1;
+    stdout_data: cstr = "";
+    stderr_data: cstr = "";
+  };
+
+  extern C noemit hzstd_spawn_process(exe: str,
+                        argv: cptr, // hzstd_str_t[]
+                        argc: usize,
+                        envp: cptr, // hzstd_str_t[], may be NULL → inherit
+                        envc: usize,
+                        cwd: cptr, // hzstd_str_t*, may be NULL
+                        inherit_stdio: bool,
+                        out: hzstd_process_result_t): int :: final;
+
+  export struct Options {
+    env: []str = {};
+    cwd: str | none = none;
+    inherit_stdio: bool = false;
+  }
+
+  export run(exe: str, args: []str, options?: Options): Result<none, int> {
+    // TODO: The c function expects env variables like ["CC=asdf", "CXX=asdfasdf"]. The stdlib API
+    // should have an interface like env: { CC: "asdf", CXX: "asdfasdf" }. Need to find a way
+    // to allow this kind of syntax, possibly with templates and anonymous structs.
+
+    let rawArgs = []str {
+      exe
+    };
+    for (let i = 0; i < args.length; i++) {
+      rawArgs.push(args[i]);
+    }
+
+    let argv: cptr = none;
+    let envp: cptr = none;
+    let cwdValue = "";
+    let cwd: cptr = none;
+    let inherit_stdio = false;
+    let envc = 0;
+    __c__("argv = rawArgs->buffer;");
+
+    if options {
+      if options.env.length > 0 {
+        let envArray = options.env;
+        __c__("envp = envArray->buffer;");
+        envc = options.env.length;
+      }
+      inherit_stdio = options.inherit_stdio;
+      let _cwd = options.cwd;
+      if _cwd {
+        cwdValue = _cwd;
+        __c__("cwd = &cwdValue;");
+      }
+    }
+
+    let argsLength = rawArgs.length;
+    assert(argsLength >= 0, none);
+
+    let envCount = envc;
+    assert(envCount >= 0, none);
+
+    let out = hzstd_process_result_t {};
+    let result = hzstd_spawn_process(exe, argv, argsLength, envp, envCount, cwd, inherit_stdio, out);
+    if result != 0 {
+      return Result<none, int>.Err(out.exit_code);
+    } 
+
+    if out.exit_code != 0 {
+      return Result<none, int>.Err(out.exit_code);
+    } 
+
+    return Result<none, int>.Ok(none);
+  }
+
+}

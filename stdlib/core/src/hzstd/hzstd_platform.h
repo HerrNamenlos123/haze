@@ -30,4 +30,19 @@ void hzstd_initialize_platform();
 _Noreturn void hzstd_block_thread_forever();
 void hzstd_setup_panic_handler();
 
+typedef struct {
+  int exit_code;
+  char* stdout_data;
+  char* stderr_data;
+} hzstd_process_result_t;
+
+int hzstd_spawn_process(hzstd_str_t exe,
+                        hzstd_str_t* argv,
+                        size_t argc,
+                        hzstd_str_t* envp, // may be NULL → inherit
+                        size_t envc,
+                        hzstd_str_t* cwd, // may be NULL
+                        bool inherit_stdio,
+                        hzstd_process_result_t* out);
+
 #endif // HZSTD_PLATFORM_H

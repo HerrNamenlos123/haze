@@ -2,6 +2,7 @@
 #include "hzstd.h"
 
 #include "hzstd_array.c"
+#include "hzstd_env.c"
 #include "hzstd_filesystem.c"
 #include "hzstd_json.c"
 #include "hzstd_memory.c"

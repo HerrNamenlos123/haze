@@ -488,6 +488,7 @@ export class SemanticElaborator {
     const convertArgs = (
       givenArgs: Semantic.ExprId[],
       requiredTypes: Semantic.TypeUseId[],
+      sourceloc: SourceLoc[],
       vararg: boolean
     ) => {
       const newRequiredTypes = requiredTypes.filter((t) => {
@@ -507,6 +508,7 @@ export class SemanticElaborator {
           calledExpr.sourceloc
         );
       }
+      assert(sourceloc.length === givenArgs.length);
       return givenArgs.map((a, index) => {
         if (index < newRequiredTypes.length) {
           return Conversion.MakeConversionOrThrow(
@@ -514,7 +516,7 @@ export class SemanticElaborator {
             a,
             newRequiredTypes[index],
             this.currentContext.constraints,
-            callExpr.sourceloc,
+            sourceloc[index],
             Conversion.Mode.Implicit,
             inference?.unsafe || false
           );
@@ -544,6 +546,8 @@ export class SemanticElaborator {
       });
     };
 
+    const argumentSourcelocs = callExpr.arguments.map((a) => this.sr.cc.exprNodes.get(a).sourceloc);
+
     assert(this.inFunction);
     if (calledExprType.variant === Semantic.ENode.CallableDatatype) {
       const ftype = this.sr.typeDefNodes.get(calledExprType.functionType);
@@ -557,6 +561,7 @@ export class SemanticElaborator {
         convertArgs(
           getActualCallingArguments(parametersWithoutThis),
           parametersWithoutThis,
+          argumentSourcelocs,
           ftype.vararg
         ),
         this.inFunction,
@@ -584,6 +589,7 @@ export class SemanticElaborator {
       const actualArgs = convertArgs(
         getActualCallingArguments(calledExprType.parameters),
         calledExprType.parameters,
+        argumentSourcelocs,
         calledExprType.vararg
       );
 
@@ -745,6 +751,7 @@ export class SemanticElaborator {
         convertArgs(
           getActualCallingArguments(constructorFunctype.parameters),
           constructorFunctype.parameters,
+          argumentSourcelocs,
           constructorFunctype.vararg
         ),
         this.inFunction,
@@ -769,7 +776,7 @@ export class SemanticElaborator {
 
       return Semantic.addExpr(this.sr, {
         variant: Semantic.ENode.ValueToUnionCastExpr,
-        expr: convertArgs(args, [typeOfTag], false)[0],
+        expr: convertArgs(args, [typeOfTag], argumentSourcelocs, false)[0],
         instanceIds: [...instanceIds],
         isTemporary: true,
         index: index,
@@ -3938,6 +3945,19 @@ export class SemanticElaborator {
     inference: Inference
   ) {
     const symbol = this.sr.cc.symbolNodes.get(symbolId);
+    if (symbol.variant === Collect.ENode.TypeDefSymbol) {
+      const typedef = this.sr.cc.typeDefNodes.get(symbol.typeDef);
+      if (typedef.variant === Collect.ENode.EnumTypeDef && typedef.unscoped) {
+        const semanticTypedef = this.sr.typeDefNodes.get(this.enum(symbol.typeDef));
+        assert(semanticTypedef.variant === Semantic.ENode.EnumDatatype);
+        for (const e of semanticTypedef.values) {
+          if (e.name === name) {
+            return [this.sr.exprNodes.get(e.valueExpr), e.literalExpr] as const;
+          }
+        }
+      }
+    }
+
     if (
       symbol.variant === Collect.ENode.TypeDefSymbol &&
       symbol.name === name &&
@@ -4027,6 +4047,7 @@ export class SemanticElaborator {
         }
       }
     }
+
     throw new CompilerError(
       `Namespace '${collectedNamespace.name}' does not define any declarations named '${memberAccessExpr.memberName}'`,
       memberAccessExpr.sourceloc
@@ -10108,8 +10129,11 @@ export namespace Semantic {
       case Semantic.ENode.DatatypeAsValueExpr:
         return `${serializeTypeUse(sr, expr.type)}`;
 
-      case Semantic.ENode.ArrayLiteralExpr:
-        return `[${expr.elements.map((v) => serializeExpr(sr, v)).join(", ")}]`;
+      case Semantic.ENode.ArrayLiteralExpr: {
+        return `(${Semantic.serializeTypeUse(sr, expr.type)} {${expr.elements
+          .map((v) => serializeExpr(sr, v))
+          .join(", ")}})`;
+      }
 
       case Semantic.ENode.ArraySubscriptExpr: {
         const indices: string[] = [];

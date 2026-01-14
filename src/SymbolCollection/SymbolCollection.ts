@@ -389,6 +389,8 @@ export namespace Collect {
     name: string;
     export: boolean;
     pub: boolean;
+    bitflag: boolean;
+    unscoped: boolean;
     extern: EExternLanguage;
     values: EnumValue[];
     noemit: boolean;
@@ -1274,6 +1276,8 @@ function collectTypeDef(
         extern: item.extern,
         pub: false,
         noemit: item.noemit,
+        bitflag: item.bitflag,
+        unscoped: item.unscoped,
         values: [],
         structScope: -1 as Collect.ScopeId,
         parentScope: args.currentParentScope,

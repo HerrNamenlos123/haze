@@ -6,6 +6,8 @@
 #include "hzstd_string.h"
 #include <stdio.h>
 
+hzstd_str_t hzstd_errno_to_str(int err);
+
 #define HZSTD_PANIC_FMT(fmt, ...)                                                                                      \
   {                                                                                                                    \
     char buf[1024];                                                                                                    \

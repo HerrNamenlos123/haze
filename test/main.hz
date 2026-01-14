@@ -28,6 +28,15 @@ adapterRequestCallback(status: wgpu.ffi.WGPURequestAdapterStatus,
 
 main(): int {
 
+    // let a = fs.exists("my/very/test");
+    // if !a {
+    //     fmt.println("exists", a);
+    // }
+    // else {
+    //     fmt.println("RESULT", a);
+    // }
+    // return 0;
+
     if !glfw.init() {
         return 0;
     }
