@@ -1,5 +1,5 @@
 import { ArgumentParser, REMAINDER } from "argparse";
-import { GeneralError } from "./shared/Errors";
+import { GeneralError, SilentError } from "./shared/Errors";
 import { join } from "path";
 import path from "node:path";
 import { getFile, ProjectCompiler } from "./Module";
@@ -65,8 +65,8 @@ async function main(): Promise<number> {
     return 0;
   }
 
-  if (args.command === "build" || args.command === "run" || args.command === "exec") {
-    try {
+  try {
+    if (args.command === "build" || args.command === "run" || args.command === "exec") {
       const project = new ProjectCompiler();
       if (!(await project.build(args.filename, args.sourceloc))) {
         return 1;
@@ -75,22 +75,23 @@ async function main(): Promise<number> {
         const exitCode = await project.run(args.filename, args.sourceloc, args.args);
         return exitCode;
       }
-    } catch (err) {
-      if (err instanceof GeneralError) {
-        console.info(err.message);
-      } else {
-        console.error(err);
-      }
-      return 1;
-    }
-  } else {
-    if (args.command === "wget") {
-      if (path.isAbsolute(args.filename)) {
-        await getFile(args.url, args.filename);
-      } else {
-        await getFile(args.url, join(process.cwd(), args.filename));
+    } else {
+      if (args.command === "wget") {
+        if (path.isAbsolute(args.filename)) {
+          await getFile(args.url, args.filename);
+        } else {
+          await getFile(args.url, join(process.cwd(), args.filename));
+        }
       }
     }
+  } catch (err) {
+    if (err instanceof GeneralError) {
+      console.info(err.message);
+    } else if (err instanceof SilentError) {
+    } else {
+      console.error(err);
+    }
+    return 1;
   }
 
   return 0;

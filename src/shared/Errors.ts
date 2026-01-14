@@ -131,6 +131,12 @@ export class CmdFailed extends Error {
   }
 }
 
+export class SilentError extends Error {
+  constructor() {
+    super();
+  }
+}
+
 export class GeneralError extends Error {
   text: string;
 

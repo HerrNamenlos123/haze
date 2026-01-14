@@ -5,11 +5,31 @@ license = "MIT"
 authors = ["HerrNamenlos123"]
 type = "lib"
 
-[scripts.linux]
-prebuild = { command = "$HAZE_MODULE_SOURCE_DIR/build-linux.sh", depends = "./**/*" }
+# [scripts.linux]
+# prebuild = { command = "$HAZE_MODULE_SOURCE_DIR/build-linux.sh", depends = "./**/*" }
 
-[scripts.win32]
-prebuild = { command = "call \"%HAZE_MODULE_SOURCE_DIR%/build-win.bat\"", depends = "./**/*" }
+# [scripts.win32]
+# prebuild = { command = "call \"%HAZE_MODULE_SOURCE_DIR%/build-win.bat\"", depends = "./**/*" }
+
+[generator.wgpu-build]
+exec = "scripts/build-wgpu.hz"
+inputs = []
+outputs = [
+    { module="this", dir="bin", path="include/webgpu.h" },
+    { module="this", dir="bin", path="include/wgpu.h" },
+    # { module="this", dir="bin", path="lib/libwgpu_native.a" } 
+    # { module="this", artifact="wgpu_native" }
+]
+
+[generator.wgpu-bindings]
+exec = "scripts/gen-bindings.hz"
+inputs = [
+    { module="this", dir="bin", path="include/webgpu.h" },
+    { module="this", dir="bin", path="include/wgpu.h" },
+]
+outputs = [
+    { module="this", dir="bin", path="autogen/wgpu-bindings.hz" }
+]
 
 [linker]
 flags = ["-lwgpu_native"]

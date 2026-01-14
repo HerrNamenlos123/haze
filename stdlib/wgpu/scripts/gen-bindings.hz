@@ -1,0 +1,5 @@
+
+main(): int {
+    fmt.println("Hello world from the bindings generator!");
+    return 0;
+}

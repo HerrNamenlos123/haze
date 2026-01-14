@@ -3,9 +3,10 @@ import { existsSync } from "fs";
 import { parse } from "@ltd/j-toml";
 import { writeFile, readFile } from "fs/promises";
 
-import { GeneralError } from "./Errors";
+import { CompilerError, GeneralError } from "./Errors";
 import type { Collect } from "../SymbolCollection/SymbolCollection";
 import { getCurrentPlatform, type ModulePrintInfo } from "../Module";
+import assert from "assert";
 
 export enum ModuleType {
   Library,
@@ -105,6 +106,42 @@ export class PlatformStrings {
   }
 }
 
+export enum EModuleFileDir {
+  BinaryDir = "bin",
+  SourceDir = "src",
+  ModuleRootDir = "root",
+}
+
+export type GeneratorFile =
+  | {
+      type: "module-file";
+      module: string;
+      dir: EModuleFileDir;
+      path: string;
+    }
+  | {
+      type: "placeholder";
+    };
+
+export type GeneratorConfig = {
+  name: string;
+} & (
+  | {
+      type: "exec";
+      exec: string;
+      inputs: GeneratorFile[];
+      outputs: GeneratorFile[];
+    }
+  | {
+      type: "placeholder";
+    }
+);
+
+export type GeneratorGraphNode = {
+  config: GeneratorConfig;
+  dependsOn: string[];
+};
+
 export type ModuleConfig = {
   name: string;
   printerModule?: ModulePrintInfo;
@@ -130,6 +167,7 @@ export type ModuleConfig = {
   hzstdLocation: string | null;
   platform: PlatformString;
   includeSourceloc: boolean;
+  generators: GeneratorConfig[];
 };
 
 export type PlatformString = "linux-x64" | "win32-x64";
@@ -506,6 +544,7 @@ export class ConfigParser {
       hzstdLocation: null,
       platform: getCurrentPlatform(),
       includeSourceloc: sourceloc ?? true,
+      generators: [],
     };
 
     const linker = toml["linker"] as any;
@@ -546,6 +585,96 @@ export class ConfigParser {
       config.interfaceMacros.addLinux(
         (compiler?.linux && this.getOptionalStringArray(compiler.linux, "defines")) || []
       );
+    }
+
+    const generators = toml["generator"] as any;
+    if (generators) {
+      for (const [key, _value] of Object.entries(generators)) {
+        if (typeof _value !== "object" || _value === null) {
+          throw new GeneralError(`Generator '${key}' is expected to be an object`);
+        }
+        const value = _value as Record<string, unknown>;
+        if (!value["exec"]) {
+          throw new GeneralError(`Generator '${key}' is expected to have an 'exec' attribute`);
+        }
+        const generator: GeneratorConfig = {
+          name: key,
+          exec: value["exec"] as string,
+          inputs: [],
+          outputs: [],
+          type: "exec",
+        };
+
+        if (!value["inputs"] || !Array.isArray(value["inputs"])) {
+          throw new GeneralError(
+            `Generator '${key}' is expected to be an 'inputs' attribute with an array value`
+          );
+        }
+        if (!value["outputs"] || !Array.isArray(value["outputs"])) {
+          throw new GeneralError(
+            `Generator '${key}' is expected to be an 'inputs' attribute with an array value`
+          );
+        }
+
+        const parseFile = (type: "input" | "output", file: any) => {
+          if (file["module"]) {
+            if (typeof file["module"] !== "string") {
+              throw new GeneralError(
+                `Generator '${key}' defines an invalid ${type}: 'module' property is expected to be a string`
+              );
+            }
+            if (typeof file["path"] !== "string") {
+              throw new GeneralError(
+                `Generator '${key}' defines an invalid ${type}: 'path' property is expected to be a string`
+              );
+            }
+            if (typeof file["dir"] !== "string") {
+              throw new GeneralError(
+                `Generator '${key}' defines an invalid ${type}: 'module' property is expected to be a string`
+              );
+            }
+            const dirStr = file["dir"] as string;
+            let dir: EModuleFileDir | null = null;
+            switch (dirStr) {
+              case "bin":
+                dir = EModuleFileDir.BinaryDir;
+                break;
+              case "src":
+                dir = EModuleFileDir.SourceDir;
+                break;
+              case "root":
+                dir = EModuleFileDir.ModuleRootDir;
+                break;
+              default:
+                throw new GeneralError(
+                  `Generator '${key}' defines an invalid ${type}: 'dir' property can only be: ["bin", "root", "src"]`
+                );
+            }
+            const f: GeneratorFile = {
+              module: file["module"] as string,
+              dir: dir,
+              type: "module-file",
+              path: file["path"] as string,
+            };
+            return f;
+          } else {
+            throw new GeneralError(
+              `Generator '${key}' defines an invalid input: Only module-directories are supported yet`
+            );
+          }
+        };
+
+        generator.type = "exec";
+        assert(generator.type === "exec");
+        for (const input of Object.values(value["inputs"])) {
+          generator.inputs.push(parseFile("input", input));
+        }
+        for (const output of Object.values(value["outputs"])) {
+          generator.outputs.push(parseFile("output", output));
+        }
+
+        config.generators.push(generator);
+      }
     }
 
     return config;

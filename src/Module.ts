@@ -9,6 +9,7 @@ import {
   GeneralError,
   ImpossibleSituation,
   InternalError,
+  SilentError,
   SyntaxError,
   UnreachableCode,
 } from "./shared/Errors";
@@ -30,12 +31,16 @@ import fs from "fs";
 import { version } from "../package.json";
 import {
   ConfigParser,
+  EModuleFileDir,
   ModuleType,
   parseModuleMetadata,
   Platform,
   PLATFORM,
   PlatformStrings,
   type CompileCommands,
+  type GeneratorConfig,
+  type GeneratorFile,
+  type GeneratorGraphNode,
   type ModuleConfig,
   type ModuleMetadata,
   type ScriptDef,
@@ -315,17 +320,8 @@ export async function getFileWithProgress(url: string, outfile: string) {
 }
 
 async function parseConfig(startDir?: string, sourceloc?: boolean) {
-  try {
-    const parser = new ConfigParser(HAZE_CONFIG_FILE, startDir);
-    return await parser.parseConfig(sourceloc);
-  } catch (e: unknown) {
-    if (e instanceof GeneralError) {
-      console.log(e.message);
-    } else {
-      console.error(e);
-    }
-    return;
-  }
+  const parser = new ConfigParser(HAZE_CONFIG_FILE, startDir);
+  return await parser.parseConfig(sourceloc);
 }
 
 async function getStdlibDirectory() {
@@ -377,10 +373,10 @@ async function commandExists(cmd: string) {
 }
 
 async function detectPackageManager() {
-  if (await commandExists("apt-get")) return "debian";
   if (await commandExists("dnf")) return "fedora";
   if (await commandExists("yum")) return "rhel";
   if (await commandExists("zypper")) return "suse";
+  if (await commandExists("apt-get")) return "debian";
 
   return "unknown";
 }
@@ -530,6 +526,87 @@ class Cache {
   }
 }
 
+export type FileStamp = {
+  mtimeMs: number;
+};
+
+export class FileChangeCache {
+  private cacheFile: string;
+  private data: Record<string, FileStamp> = {};
+  private dirty = false;
+
+  constructor(cacheFile: string) {
+    this.cacheFile = cacheFile;
+  }
+
+  /* ------------------ lifecycle ------------------ */
+
+  load(): void {
+    if (!fs.existsSync(this.cacheFile)) {
+      this.data = {};
+      return;
+    }
+
+    const raw = fs.readFileSync(this.cacheFile, "utf8");
+    this.data = JSON.parse(raw);
+  }
+
+  save(): void {
+    if (!this.dirty) return;
+
+    fs.mkdirSync(path.dirname(this.cacheFile), { recursive: true });
+    fs.writeFileSync(this.cacheFile, JSON.stringify(this.data, null, 2));
+    this.dirty = false;
+  }
+
+  /* ------------------ primitives ------------------ */
+
+  hasFileChanged(file: string): boolean {
+    const abs = path.resolve(file);
+
+    if (!fs.existsSync(abs)) {
+      // missing file always counts as changed
+      return true;
+    }
+
+    const stat = fs.statSync(abs);
+    const prev = this.data[abs];
+
+    return !prev || prev.mtimeMs < stat.mtimeMs;
+  }
+
+  updateFile(file: string): void {
+    const abs = path.resolve(file);
+
+    if (!fs.existsSync(abs)) {
+      delete this.data[abs];
+      this.dirty = true;
+      return;
+    }
+
+    const stat = fs.statSync(abs);
+    this.data[abs] = { mtimeMs: stat.mtimeMs };
+    this.dirty = true;
+  }
+
+  /* ------------------ batch helpers ------------------ */
+
+  haveAnyFilesChanged(files: string[]): boolean {
+    for (const file of files) {
+      if (this.hasFileChanged(file)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  updateFiles(files: string[]): void {
+    for (const file of files) {
+      this.updateFile(file);
+    }
+  }
+}
+
 export function getCurrentPlatform() {
   if (PLATFORM === Platform.Linux) {
     return "linux-x64";
@@ -556,7 +633,7 @@ export class ProjectCompiler {
         moduleType: ModuleType.Executable,
         nostdlib: false,
         platform: getCurrentPlatform(),
-        name: basename(singleFilename),
+        name: "haze",
         version: "0.0.0",
         scripts: {
           any: [],
@@ -573,6 +650,7 @@ export class ProjectCompiler {
         interfaceMacros: new PlatformStrings(),
         hzstdLocation: null,
         includeSourceloc: sourceloc ?? true,
+        generators: [],
       };
     }
     return config;
@@ -954,6 +1032,25 @@ function exec(str: string) {
   }
 }
 
+function execSync(cmd: string, args: string[], dir?: string) {
+  if (dir) {
+    fs.mkdirSync(dir, {
+      recursive: true,
+    });
+  }
+  const proc = spawnSync(cmd, args, {
+    cwd: dir ?? ".",
+    env: process.env,
+    stdio: "inherit",
+    shell: true, // <- important: lets it use the real shell
+  });
+
+  const code = proc.status;
+  if (code !== 0) {
+    throw new CmdFailed();
+  }
+}
+
 function execInherit(str: string, dir?: string) {
   let shell = PLATFORM === Platform.Win32 ? "C:\\Windows\\System32\\cmd.exe" : "/bin/sh";
   const args = PLATFORM === Platform.Win32 ? ["/d", "/s", "/c", `${str}`] : ["-c", `"${str}"`];
@@ -979,6 +1076,7 @@ function execInherit(str: string, dir?: string) {
 
 export class ModuleCompiler {
   cc: CollectionContext;
+  currentModuleRootDir: string | null = null;
 
   constructor(
     public config: ModuleConfig,
@@ -1063,6 +1161,220 @@ export class ModuleCompiler {
     await this.collectDirectory(this.config.srcDirectory, mode);
   }
 
+  generatorFileKey(file: GeneratorFile): string {
+    if (file.type !== "module-file") {
+      throw new Error("Cannot key placeholder generator file");
+    }
+
+    const normalizedPath = file.path.replace(/\\/g, "/");
+    return `${file.module}::${file.dir}::${normalizedPath}`;
+  }
+
+  topoLayers(graph: Map<string, GeneratorGraphNode>): GeneratorGraphNode[][] {
+    const inDegree = new Map<string, number>();
+    const dependents = new Map<string, string[]>();
+
+    // init
+    for (const [name] of graph) {
+      inDegree.set(name, 0);
+      dependents.set(name, []);
+    }
+
+    // build inDegree + dependents
+    for (const [name, node] of graph) {
+      for (const dep of node.dependsOn) {
+        inDegree.set(name, inDegree.get(name)! + 1);
+        dependents.get(dep)!.push(name);
+      }
+    }
+
+    const layers: GeneratorGraphNode[][] = [];
+    let ready: string[] = [];
+
+    for (const [name, degree] of inDegree) {
+      if (degree === 0) ready.push(name);
+    }
+
+    let processed = 0;
+
+    while (ready.length > 0) {
+      const layer: GeneratorGraphNode[] = ready.map((n) => graph.get(n)!);
+      layers.push(layer);
+      processed += layer.length;
+
+      const nextReady: string[] = [];
+
+      for (const name of ready) {
+        for (const dep of dependents.get(name)!) {
+          const d = inDegree.get(dep)! - 1;
+          inDegree.set(dep, d);
+          if (d === 0) {
+            nextReady.push(dep);
+          }
+        }
+      }
+
+      ready = nextReady;
+    }
+
+    if (processed !== graph.size) {
+      throw new GeneralError("Generator dependency cycle detected");
+    }
+
+    return layers;
+  }
+
+  async runAllGenerators() {
+    // Build a graph of all generators, indexed by name, so they can cross-refer to each other as dependents
+    const generatorGraph = new Map<string, GeneratorGraphNode>();
+    for (const gen of this.config.generators) {
+      if (gen.type !== "exec") continue;
+
+      generatorGraph.set(gen.name, {
+        config: gen,
+        dependsOn: [],
+      });
+    }
+
+    // Build a hashed index of output files (unique across all generators), so we can infer dependencies
+    const outputIndex = new Map<string, string>(); // key → generator name
+    for (const node of generatorGraph.values()) {
+      const gen = node.config;
+
+      if (gen.type !== "exec") continue;
+
+      for (const out of gen.outputs) {
+        if (out.type !== "module-file") continue;
+
+        const key = this.generatorFileKey(out);
+
+        if (outputIndex.has(key)) {
+          throw new GeneralError(
+            `Output file '${out.path}' is produced by both ` +
+              `'${outputIndex.get(key)}' and '${gen.name}'`
+          );
+        }
+
+        outputIndex.set(key, gen.name);
+      }
+    }
+
+    // Now use the output file index to infer which generator depends on which other generators
+    for (const node of generatorGraph.values()) {
+      const gen = node.config;
+
+      if (gen.type !== "exec") continue;
+
+      for (const input of gen.inputs) {
+        if (input.type !== "module-file") continue;
+
+        const key = this.generatorFileKey(input);
+        const producer = outputIndex.get(key);
+
+        if (!producer) continue; // input comes from filesystem or other module
+
+        if (producer === gen.name) {
+          throw new GeneralError(
+            `Generator '${gen.name}' lists its own output '${input.path}' as input`
+          );
+        }
+
+        node.dependsOn.push(producer);
+      }
+    }
+
+    // Validate that all dependencies exist
+    for (const node of generatorGraph.values()) {
+      for (const dep of node.dependsOn) {
+        if (!generatorGraph.has(dep)) {
+          throw new GeneralError(
+            `Generator '${node.config.name}' depends on unknown generator '${dep}'`
+          );
+        }
+      }
+    }
+
+    // Finally, topologically sort the generators in the correct order they need to be executed, batched
+    const executionOrder = this.topoLayers(generatorGraph);
+
+    const cache = new FileChangeCache(path.join(this.globalBuildDir, "generator.cache.json"));
+    cache.load();
+
+    // And now actually run all of them (if required)
+    for (const batch of executionOrder) {
+      const toRun = [];
+
+      // Decision phase: What generators to run now? (based on cache)
+      cache.load();
+      for (const gen of batch) {
+        if (gen.config.type !== "exec") throw new Error("Not implemented");
+        const inputPaths = gen.config.inputs.map((i) => this.resolveGeneratorFile(i));
+        const outputPaths = gen.config.outputs.map((i) => this.resolveGeneratorFile(i));
+
+        if (cache.haveAnyFilesChanged([...inputPaths, ...outputPaths])) {
+          toRun.push({ gen, inputPaths, outputPaths });
+        }
+      }
+
+      // Execution phase: Run generators (NO CACHE ACCESS)
+      await Promise.all(toRun.map((item) => this.executeGenerator(item.gen.config)));
+
+      // Commit phase: Batch is done and write result into cache
+      for (const item of toRun) {
+        cache.updateFiles([...item.inputPaths, ...item.outputPaths]);
+      }
+      cache.save();
+    }
+  }
+
+  resolveGeneratorFile(file: GeneratorFile) {
+    if (file.type !== "module-file") throw new Error("Not implemented");
+
+    let dir = "";
+    switch (file.dir) {
+      case EModuleFileDir.BinaryDir:
+        dir = this.getModuleBuildDir(file.module);
+        break;
+      case EModuleFileDir.SourceDir:
+        assert(false);
+      case EModuleFileDir.ModuleRootDir:
+        assert(false);
+      default:
+        assert(false);
+    }
+
+    if (file.path.startsWith("/")) {
+      throw new GeneralError("File paths are not supposed to have a leading slash");
+    }
+    return join(dir, file.path);
+  }
+
+  async executeGenerator(gen: GeneratorConfig) {
+    if (gen.type !== "exec") throw new Error("Not implemented");
+
+    assert(this.currentModuleRootDir);
+    console.log(`>> Running generator ${gen.name}...`);
+    const sourceloc = true;
+    const project = new ProjectCompiler();
+    if (!(await project.build(join(this.currentModuleRootDir, gen.exec), sourceloc))) {
+      throw new GeneralError(`Build of generator step ${gen.name} failed`);
+    }
+    const exitCode = await project.run(gen.exec, sourceloc, []);
+    if (exitCode !== 0) {
+      throw new GeneralError(`Generator step ${gen.name} failed with exit code ${gen.exec}`);
+    }
+
+    console.log(`>> Running generator ${gen.name}... Done`);
+  }
+
+  getModuleBinaryDir(moduleName: string) {
+    return join(this.globalBuildDir, moduleName, "bin");
+  }
+
+  getModuleBuildDir(moduleName: string) {
+    return join(this.globalBuildDir, moduleName, "build");
+  }
+
   async build(isTopLevelModule: boolean) {
     return await catchErrors(async () => {
       const log = (msg: string) => {
@@ -1085,12 +1397,12 @@ export class ModuleCompiler {
         }
       }
 
-      const MODULE_SOURCE_DIR = this.config.configFilePath
+      this.currentModuleRootDir = this.config.configFilePath
         ? dirname(this.config.configFilePath)
         : process.cwd();
 
       const env = process.env as any;
-      env.HAZE_MODULE_SOURCE_DIR = MODULE_SOURCE_DIR;
+      env.HAZE_MODULE_SOURCE_DIR = this.currentModuleRootDir;
       env.HAZE_MODULE_BUILD_DIR = this.moduleDir + "/build";
       env.HAZE_MODULE_BINARY_DIR = this.moduleDir + "/bin";
       env.CC = HAZE_C_COMPILER;
@@ -1098,17 +1410,26 @@ export class ModuleCompiler {
 
       if (this.config.configFilePath) {
         const runPrebuildScript = async (script: ScriptDef) => {
+          assert(this.currentModuleRootDir);
           const exec = () => execInherit(script.command, this.moduleDir + "/build");
 
           if (script.depends === null) {
             exec();
           } else {
-            const changed = checkForChanges(script.depends, this.globalBuildDir, MODULE_SOURCE_DIR);
+            const changed = checkForChanges(
+              script.depends,
+              this.globalBuildDir,
+              this.currentModuleRootDir
+            );
             if (changed.length > 0) {
               try {
                 exec();
               } catch (e) {
-                invalidateChangeCache(script.depends, this.globalBuildDir, MODULE_SOURCE_DIR);
+                invalidateChangeCache(
+                  script.depends,
+                  this.globalBuildDir,
+                  this.currentModuleRootDir
+                );
                 throw e;
               }
             } else {
@@ -1129,6 +1450,8 @@ export class ModuleCompiler {
           if (prebuildScript) await runPrebuildScript(prebuildScript);
         }
       }
+
+      await this.runAllGenerators();
 
       await this.addInternalBuiltinSources();
       await this.collectImports();
