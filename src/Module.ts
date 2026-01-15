@@ -919,6 +919,7 @@ export class ProjectCompiler {
         console.info("Installing Windows SDK... Done");
       }
 
+      console.log("PLATFORM", PLATFORM);
       if (!this.isStepDone(MARKERS.winNinja) && PLATFORM === Platform.Win32) {
         console.info("Installing Ninja Build System...");
         execInherit(
