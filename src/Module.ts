@@ -835,6 +835,7 @@ export class ProjectCompiler {
         musl: HAZE_CACHE + "/musl",
         winSDK: HAZE_CACHE + "/win-sdk",
         winNinja: HAZE_CACHE + "/win-ninja",
+        linuxNinja: HAZE_CACHE + "/linux-ninja",
         libunwind: HAZE_CACHE + "/libunwind",
         cmakeToolchain: HAZE_CACHE + "/cmake-toolchain",
         bdwgc: HAZE_CACHE + "/bdgwc",
@@ -919,13 +920,30 @@ export class ProjectCompiler {
         console.info("Installing Windows SDK... Done");
       }
 
-      console.log("PLATFORM", PLATFORM);
       if (!this.isStepDone(MARKERS.winNinja) && PLATFORM === Platform.Win32) {
         console.info("Installing Ninja Build System...");
         execInherit(
           `powershell -NoLogo -NoProfile -Command "if (-not (winget list --id 'Ninja-build.Ninja' | Select-String 'Ninja-build.Ninja')) { winget install 'Ninja-build.Ninja' } else { Write-Host 'Ninja already installed.'; exit 0 }"`
         );
         this.markStepDone(MARKERS.winNinja);
+        console.info("Installing Ninja Build System... Done");
+      }
+
+      if (!this.isStepDone(MARKERS.linuxNinja) && PLATFORM === Platform.Linux) {
+        console.info("Installing Ninja Build System...");
+        switch (await detectPackageManager()) {
+          case "debian":
+            execInherit(`sudo apt-get update && sudo apt-get install ninja`);
+            break;
+
+          case "fedora":
+            execInherit(`sudo dnf install ninja`);
+            break;
+
+          default:
+            assert(false);
+        }
+        this.markStepDone(MARKERS.linuxNinja);
         console.info("Installing Ninja Build System... Done");
       }
 
