@@ -367,7 +367,7 @@ async function catchErrors(fn: () => Promise<void>) {
 
 async function commandExists(cmd: string) {
   return new Promise<boolean>((resolve) => {
-    const child = spawn("command", ["-v", cmd]);
+    const child = spawn("command", ["-v", cmd], { shell: true });
     child.on("close", (code) => resolve(code === 0));
   });
 }
