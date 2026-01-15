@@ -291,6 +291,38 @@ static inline char *read_all_fd_gc(int fd) {
   return buf;
 }
 
+static inline void process_set_error_message(hzstd_process_result_t *out,
+                                             int err) {
+  if (!out)
+    return;
+
+  char buf[256]; // temporary buffer
+  const char *msg = NULL;
+
+#if defined(__GLIBC__) && defined(_GNU_SOURCE)
+  // GNU-specific strerror_r returns char* directly
+  msg = strerror_r(err, buf, sizeof(buf));
+#else
+  // XSI-compliant strerror_r writes to buf and returns int
+  if (strerror_r(err, buf, sizeof(buf)) == 0) {
+    msg = buf;
+  } else {
+    msg = "Unknown error";
+  }
+#endif
+
+  if (msg) {
+    size_t len = strlen(msg);
+    // GC-allocate the message
+    char *gc_msg = hzstd_allocate(hzstd_make_heap_allocator(), len + 1);
+    if (gc_msg) {
+      memcpy(gc_msg, msg, len);
+      gc_msg[len] = '\0';
+      out->stderr_data = gc_msg;
+    }
+  }
+}
+
 // Linux GC-safe process spawn (hybrid: GC for outputs only)
 int hzstd_spawn_process(hzstd_str_t exe, hzstd_str_t *argv, size_t argc,
                         hzstd_str_t *envp, size_t envc, hzstd_str_t *cwd,
