@@ -12,6 +12,8 @@
 #include <stdint.h>
 #include <winnt.h>
 
+#include "hzstd/hzstd_memory.h"
+#include "hzstd/hzstd_string.h"
 #include "hzstd_memory.h"
 #include "hzstd_platform.h"
 #include "hzstd_runtime.h"
@@ -353,4 +355,227 @@ void hzstd_setup_panic_handler() {
             "Handler (VEH). Segmentation faults will not be caught.\n");
     return;
   }
+}
+
+// PROCESS CONTROL =============================================================
+
+// GC-safe string duplication
+static inline char *hzstd_strdup_gc(const char *src) {
+  size_t len = strlen(src);
+  char *buf = hzstd_allocate(hzstd_make_heap_allocator(), len + 1);
+  if (!buf)
+    return NULL;
+  memcpy(buf, src, len);
+  buf[len] = '\0';
+  return buf;
+}
+
+// Convert array of hzstd_str_t → GC-allocated C string array
+static inline char **process_str_array_to_cstrv(hzstd_str_t *arr,
+                                                size_t count) {
+  hzstd_allocator_t allocator = hzstd_make_heap_allocator();
+  char **out = hzstd_allocate(allocator, sizeof(char *) * (count + 1));
+  if (!out)
+    return NULL;
+
+  for (size_t i = 0; i < count; ++i) {
+    out[i] = hzstd_cstr_from_str(allocator, arr[i]);
+    if (!out[i])
+      return NULL;
+  }
+
+  out[count] = NULL;
+  return out;
+}
+
+// GC-safe quoting of a single Windows command-line argument
+static inline char *hzstd_quote_windows_arg(const char *arg) {
+  size_t len = strlen(arg);
+  bool need_quotes = false;
+  for (size_t i = 0; i < len; ++i) {
+    if (arg[i] == ' ' || arg[i] == '\t') {
+      need_quotes = true;
+      break;
+    }
+  }
+  if (!need_quotes)
+    return hzstd_strdup_gc(arg);
+
+  size_t cap = len * 2 + 3;
+  char *out = hzstd_allocate(hzstd_make_heap_allocator(), cap);
+  char *dst = out;
+  *dst++ = '"';
+  size_t bs_count = 0;
+  for (size_t i = 0; i < len; ++i) {
+    if (arg[i] == '\\') {
+      bs_count++;
+    } else if (arg[i] == '"') {
+      for (size_t j = 0; j < bs_count * 2 + 1; ++j)
+        *dst++ = '\\';
+      *dst++ = '"';
+      bs_count = 0;
+    } else {
+      for (size_t j = 0; j < bs_count; ++j)
+        *dst++ = '\\';
+      bs_count = 0;
+      *dst++ = arg[i];
+    }
+  }
+  for (size_t j = 0; j < bs_count * 2; ++j)
+    *dst++ = '\\';
+  *dst++ = '"';
+  *dst = '\0';
+  return out;
+}
+
+// Append one GC string to another, returning the new GC string
+static inline char *hzstd_append_gc(hzstd_allocator_t allocator, char *dst,
+                                    const char *src) {
+  size_t dst_len = dst ? strlen(dst) : 0;
+  size_t src_len = strlen(src);
+  char *buf = hzstd_allocate(allocator, dst_len + src_len + 2);
+  if (!buf)
+    return NULL;
+  if (dst_len)
+    memcpy(buf, dst, dst_len);
+  memcpy(buf + dst_len, src, src_len);
+  buf[dst_len + src_len] = '\0';
+  return buf;
+}
+
+// Read all from HANDLE into GC-allocated buffer
+static inline char *read_all_handle(HANDLE h) {
+  DWORD chunk = 4096;
+  size_t cap = chunk;
+  size_t len = 0;
+  char *buf = hzstd_allocate(hzstd_make_heap_allocator(), cap + 1);
+  if (!buf)
+    return NULL;
+
+  for (;;) {
+    if (len + chunk > cap) {
+      cap *= 2;
+      char *new_buf = hzstd_allocate(hzstd_make_heap_allocator(), cap + 1);
+      if (!new_buf)
+        return NULL;
+      memcpy(new_buf, buf, len);
+      buf = new_buf;
+    }
+
+    DWORD read_bytes = 0;
+    if (!ReadFile(h, buf + len, (DWORD)(cap - len), &read_bytes, NULL))
+      break;
+    if (read_bytes == 0)
+      break;
+    len += read_bytes;
+  }
+
+  buf[len] = '\0';
+  return buf;
+}
+
+// Set error message in process result using GC allocation
+static inline void process_set_error_message(hzstd_process_result_t *out,
+                                             DWORD err) {
+  LPSTR msg = NULL;
+  DWORD size = FormatMessageA(
+      FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM |
+          FORMAT_MESSAGE_IGNORE_INSERTS,
+      NULL, err, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT), (LPSTR)&msg, 0,
+      NULL);
+
+  if (size > 0 && msg) {
+    out->stderr_data = hzstd_allocate(hzstd_make_heap_allocator(), size + 1);
+    if (out->stderr_data) {
+      memcpy(out->stderr_data, msg, size);
+      out->stderr_data[size] = '\0';
+    }
+    LocalFree(msg);
+  }
+}
+
+// Windows GC-compatible process spawn
+int hzstd_spawn_process(hzstd_str_t exe, hzstd_str_t *argv, size_t argc,
+                        hzstd_str_t *envp, size_t envc, hzstd_str_t *cwd,
+                        bool inherit_stdio, hzstd_process_result_t *out) {
+  out->exit_code = -1;
+  out->stdout_data = NULL;
+  out->stderr_data = NULL;
+
+  hzstd_allocator_t allocator = hzstd_make_heap_allocator();
+  char *exe_c = hzstd_cstr_from_str(allocator, exe);
+  if (!exe_c)
+    return ENOMEM;
+
+  char **argv_c = process_str_array_to_cstrv(argv, argc);
+  if (!argv_c)
+    return ENOMEM;
+
+  // Build command line safely
+  char *cmdline = hzstd_quote_windows_arg(exe_c);
+  for (size_t i = 0; i < argc; ++i) {
+    char *quoted = hzstd_quote_windows_arg(argv_c[i]);
+    char *new_cmd = hzstd_append_gc(allocator, cmdline, " ");
+    new_cmd = hzstd_append_gc(allocator, new_cmd, quoted);
+    cmdline = new_cmd;
+  }
+
+  char *cwd_c = NULL;
+  if (cwd)
+    cwd_c = hzstd_cstr_from_str(allocator, *cwd);
+
+  SECURITY_ATTRIBUTES sa = {sizeof(sa), NULL, TRUE};
+  HANDLE stdout_read = NULL, stdout_write = NULL;
+  HANDLE stderr_read = NULL, stderr_write = NULL;
+
+  if (!inherit_stdio) {
+    if (!CreatePipe(&stdout_read, &stdout_write, &sa, 0) ||
+        !CreatePipe(&stderr_read, &stderr_write, &sa, 0)) {
+      DWORD err = GetLastError();
+      process_set_error_message(out, err);
+      return err;
+    }
+    SetHandleInformation(stdout_read, HANDLE_FLAG_INHERIT, 0);
+    SetHandleInformation(stderr_read, HANDLE_FLAG_INHERIT, 0);
+  }
+
+  STARTUPINFOA si = {0};
+  si.cb = sizeof(si);
+  if (!inherit_stdio) {
+    si.hStdOutput = stdout_write;
+    si.hStdError = stderr_write;
+    si.dwFlags |= STARTF_USESTDHANDLES;
+  }
+
+  PROCESS_INFORMATION pi = {0};
+
+  if (!CreateProcessA(exe_c, cmdline, NULL, NULL, TRUE, 0, NULL,
+                      cwd_c ? cwd_c : NULL, &si, &pi)) {
+    DWORD err = GetLastError();
+    process_set_error_message(out, err);
+    return err;
+  }
+
+  if (!inherit_stdio) {
+    CloseHandle(stdout_write);
+    CloseHandle(stderr_write);
+  }
+
+  WaitForSingleObject(pi.hProcess, INFINITE);
+
+  DWORD exit_code = 0;
+  GetExitCodeProcess(pi.hProcess, &exit_code);
+  out->exit_code = (int)exit_code;
+
+  if (!inherit_stdio) {
+    out->stdout_data = read_all_handle(stdout_read);
+    out->stderr_data = read_all_handle(stderr_read);
+    CloseHandle(stdout_read);
+    CloseHandle(stderr_read);
+  }
+
+  CloseHandle(pi.hProcess);
+  CloseHandle(pi.hThread);
+
+  return 0;
 }

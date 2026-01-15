@@ -27,20 +27,13 @@ namespace process {
     // should have an interface like env: { CC: "asdf", CXX: "asdfasdf" }. Need to find a way
     // to allow this kind of syntax, possibly with templates and anonymous structs.
 
-    let rawArgs = []str {
-      exe
-    };
-    for (let i = 0; i < args.length; i++) {
-      rawArgs.push(args[i]);
-    }
-
     let argv: cptr = none;
     let envp: cptr = none;
     let cwdValue = "";
     let cwd: cptr = none;
     let inherit_stdio = false;
     let envc = 0;
-    __c__("argv = rawArgs->buffer;");
+    __c__("argv = args->buffer;");
 
     if options {
       if options.env.length > 0 {
@@ -56,7 +49,7 @@ namespace process {
       }
     }
 
-    let argsLength = rawArgs.length;
+    let argsLength = args.length;
     assert(argsLength >= 0, none);
 
     let envCount = envc;
@@ -64,6 +57,7 @@ namespace process {
 
     let out = hzstd_process_result_t {};
     let result = hzstd_spawn_process(exe, argv, argsLength, envp, envCount, cwd, inherit_stdio, out);
+    fmt.println("OUTPUT: ", out.exit_code, out.stdout_data, out.stderr_data);
     if result != 0 {
       return Result<none, int>.Err(out.exit_code);
     } 

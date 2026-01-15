@@ -17,15 +17,12 @@ main(): int {
     }
     fmt.println(exists, repoPath);
     if !exists {
-        if !fs.createDirectory(repoPath) {
-            fmt.println("Failed to create directory");
-            return 1;
-        }
-        const result = process.run("git", { "clone", "https://github.com/gfx-rs/wgpu-native.git", repoPath }, process.Options {
+        const result = process.run("git.exe", { "clone", "https://github.com/gfx-rs/wgpu-native.git", repoPath }, process.Options {
+        // const result = process.run("C:\\Users\\Florian Zachs\\AppData\\Local\\Programs\\Git\\cmd\\git.exe", { "clone", "https://github.com/gfx-rs/wgpu-native.git", repoPath }, process.Options {
             inherit_stdio: true,
         });
         if !result {
-            fmt.println("Failed to clone repo");
+            fmt.println("Failed to clone repo", result);
             return 1;
         }
     }

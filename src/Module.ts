@@ -1513,8 +1513,8 @@ export class ModuleCompiler {
       compilerFlags.addWin32(`-D_CRT_SECURE_NO_WARNINGS`);
       linkerFlags.addWin32(`-fuse-ld=lld`);
 
-      compilerFlags.addWin32("-DHZSTD_PLATFORM_WIN32");
-      compilerFlags.addLinux("-DHZSTD_PLATFORM_LINUX");
+      compilerFlags.addWin32("-DHAZE_PLATFORM_WIN32");
+      compilerFlags.addLinux("-DHAZE_PLATFORM_LINUX");
 
       compilerFlags.addLinux("-fPIC");
 
