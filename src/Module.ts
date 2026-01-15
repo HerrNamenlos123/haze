@@ -1526,7 +1526,9 @@ export class ModuleCompiler {
       linkerFlags.addLinux(`-llzma`);
 
       includeDirs.addAll(`${HAZE_GLOBAL_DIR}/haze-bdwgc/include`);
-      linkerFlags.addLinux(`"${HAZE_GLOBAL_DIR}/haze-bdwgc/lib64/libgc.a"`);
+      linkerFlags.addLinux(`-L"${HAZE_GLOBAL_DIR}/haze-bdwgc/lib64/"`);
+      linkerFlags.addLinux(`-L"${HAZE_GLOBAL_DIR}/haze-bdwgc/lib/"`);
+      linkerFlags.addLinux(`-lgc`);
       linkerFlags.addWin32(`"${HAZE_GLOBAL_DIR}/haze-bdwgc/lib/gc.lib"`);
 
       compilerFlags.addWin32(`-D_CRT_SECURE_NO_WARNINGS`);
