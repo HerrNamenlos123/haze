@@ -1,0 +1,35 @@
+
+namespace ffi {
+    extern C noemit enum unscoped hzstd_platform_runtime_t {
+        hzstd_platform_runtime_linux,
+        hzstd_platform_runtime_win32,
+    };
+
+    extern C noemit hzstd_platform_runtime(): hzstd_platform_runtime_t :: final;
+}
+
+namespace platform {
+    export enum unscoped Platform {
+        Linux,
+        Win32,
+    }
+
+    export current() {
+        let platform = ffi.hzstd_platform_runtime();
+        if platform == ffi.hzstd_platform_runtime_linux {
+            return Platform.Linux;
+        }
+        else if platform == ffi.hzstd_platform_runtime_win32 {
+            return Platform.Win32;
+        }
+        sys.panic("Unknown platform");
+    }
+
+    export isLinux() {
+        return current() == Platform.Linux;
+    }
+
+    export isWin32() {
+        return current() == Platform.Win32;
+    }
+}

@@ -57,7 +57,6 @@ namespace process {
 
     let out = hzstd_process_result_t {};
     let result = hzstd_spawn_process(exe, argv, argsLength, envp, envCount, cwd, inherit_stdio, out);
-    fmt.println("OUTPUT: ", out.exit_code, out.stdout_data, out.stderr_data);
     if result != 0 {
       return Result<none, int>.Err(out.exit_code);
     } 

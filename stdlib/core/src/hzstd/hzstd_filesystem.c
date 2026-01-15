@@ -1,5 +1,7 @@
 
 #include "hzstd_filesystem.h"
+#include "hzstd/hzstd_memory.h"
+#include "hzstd/hzstd_string.h"
 #include "hzstd_memory.h"
 #include "hzstd_string.h"
 
@@ -57,6 +59,31 @@ static hzstd_fs_error_code_t hzstd_fs_error_from_errno(int err) {
     return hzstd_fs_error_code_io_error;
   }
 }
+
+#if defined(HAZE_PLATFORM_WIN32)
+static hzstd_fs_error_code_t hzstd_fs_error_from_windows_error(DWORD err) {
+  switch (err) {
+  case ERROR_FILE_NOT_FOUND:
+  case ERROR_PATH_NOT_FOUND:
+    return hzstd_fs_error_code_not_found;
+
+  case ERROR_ACCESS_DENIED:
+    return hzstd_fs_error_code_permission_denied;
+
+  case ERROR_FILE_EXISTS:
+    return hzstd_fs_error_code_already_exists;
+
+  case ERROR_INVALID_NAME:
+    return hzstd_fs_error_code_invalid_path;
+
+  case ERROR_FILENAME_EXCED_RANGE:
+    return hzstd_fs_error_code_name_too_long;
+
+  default:
+    return hzstd_fs_error_code_io_error;
+  }
+}
+#endif
 
 hzstd_fs_error_t hzstd_read_file_text(hzstd_allocator_t allocator,
                                       hzstd_str_t path,
@@ -308,4 +335,265 @@ hzstd_fs_exists_result_t hzstd_fs_exists(hzstd_str_t path) {
   };
 
   return result;
+}
+
+// --- Helper: allocate GC string from static or system message ---
+static inline hzstd_str_t hzstd_fs_strdup_msg(char *msg) {
+  return msg ? hzstd_cstr_dup(msg) : hzstd_cstr_dup("");
+}
+
+static inline hzstd_str_t hzstd_fs_windows_error(DWORD err) {
+  LPSTR msg = NULL;
+  DWORD size = FormatMessageA(
+      FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM |
+          FORMAT_MESSAGE_IGNORE_INSERTS,
+      NULL, err, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT), (LPSTR)&msg, 0,
+      NULL);
+  if (size == 0 || !msg)
+    return hzstd_cstr_dup("Unknown error");
+  hzstd_str_t out = hzstd_cstr_dup(msg);
+  LocalFree(msg);
+  return out;
+}
+
+// --- Helper: get parent directory from a path ---
+static hzstd_str_t hzstd_fs_parent_dir(const char *path) {
+  size_t len = strlen(path);
+  if (len == 0)
+    return (hzstd_str_t){.data = (char *)".", .length = 1};
+
+  // Find last separator
+  int last_sep = -1;
+  for (int i = (int)len - 1; i >= 0; i--) {
+    if (path[i] == '/' || path[i] == '\\') {
+      last_sep = i;
+      break;
+    }
+  }
+
+  if (last_sep <= 0)
+    return (hzstd_str_t){.data = (char *)".", .length = 1};
+
+  return (hzstd_str_t){.data = (char *)path, .length = (size_t)last_sep};
+}
+
+// --- Copy single file ---
+static hzstd_fs_error_t
+hzstd_fs_copy_file_internal(const char *src, const char *dst,
+                            const hzstd_fs_copy_options_t *opts) {
+  struct STAT st;
+  if (STAT(src, &st) != 0) {
+#if defined(HAZE_PLATFORM_LINUX)
+    return (hzstd_fs_error_t){.code = hzstd_fs_error_from_errno(errno),
+                              .message = hzstd_fs_strdup_msg(strerror(errno))};
+#elif defined(HAZE_PLATFORM_WIN32)
+    DWORD err = GetLastError();
+    return (hzstd_fs_error_t){.code = hzstd_fs_error_from_windows_error(err),
+                              .message = hzstd_fs_windows_error(err)};
+#endif
+  }
+
+  // Create parent directory, not the file path itself
+  hzstd_str_t parent = hzstd_fs_parent_dir(dst);
+  hzstd_mkdir_recursive(parent);
+
+#if defined(HAZE_PLATFORM_LINUX)
+  if (!opts->overwrite) {
+    struct STAT dst_st;
+    if (STAT(dst, &dst_st) == 0) {
+      return (hzstd_fs_error_t){.code = hzstd_fs_error_code_exists,
+                                .message =
+                                    hzstd_cstr_dup("destination exists")};
+    }
+  }
+
+  int fd_src = open(src, O_RDONLY);
+  if (fd_src < 0)
+    return (hzstd_fs_error_t){.code = hzstd_fs_error_from_errno(errno),
+                              .message = hzstd_fs_strdup_msg(strerror(errno))};
+
+  int fd_dst = open(dst, O_WRONLY | O_CREAT | O_TRUNC, st.st_mode & 0777);
+  if (fd_dst < 0) {
+    close(fd_src);
+    return (hzstd_fs_error_t){.code = hzstd_fs_error_from_errno(errno),
+                              .message = hzstd_fs_strdup_msg(strerror(errno))};
+  }
+
+  char buf[8192];
+  ssize_t r;
+  while ((r = read(fd_src, buf, sizeof(buf))) > 0) {
+    ssize_t w = write(fd_dst, buf, r);
+    if (w != r) {
+      close(fd_src);
+      close(fd_dst);
+      return (hzstd_fs_error_t){.code = hzstd_fs_error_from_errno(errno),
+                                .message =
+                                    hzstd_fs_strdup_msg(strerror(errno))};
+    }
+  }
+
+  close(fd_src);
+  close(fd_dst);
+  if (r < 0)
+    return (hzstd_fs_error_t){.code = hzstd_fs_error_from_errno(errno),
+                              .message = hzstd_fs_strdup_msg(strerror(errno))};
+
+#elif defined(HAZE_PLATFORM_WIN32)
+  BOOL fail_if_exists = !opts->overwrite;
+  if (!CopyFileA(src, dst, fail_if_exists)) {
+    DWORD err = GetLastError();
+    return (hzstd_fs_error_t){.code = hzstd_fs_error_from_windows_error(err),
+                              .message = hzstd_fs_windows_error(err)};
+  }
+#endif
+
+  return (hzstd_fs_error_t){.code = hzstd_fs_error_code_none};
+}
+
+// --- Recursive directory copy ---
+static hzstd_fs_error_t
+hzstd_fs_copy_dir_internal(const char *src, const char *dst,
+                           const hzstd_fs_copy_options_t *opts) {
+  hzstd_mkdir_recursive((hzstd_str_t){.data = dst, .length = strlen(dst)});
+
+#if defined(HAZE_PLATFORM_LINUX)
+  DIR *dir = opendir(src);
+  if (!dir)
+    return (hzstd_fs_error_t){.code = hzstd_fs_error_from_errno(errno),
+                              .message = hzstd_fs_strdup_msg(strerror(errno))};
+
+  struct dirent *entry;
+  while ((entry = readdir(dir))) {
+    if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
+      continue;
+
+    char src_path[HAZE_MAX_PATH_LENGTH];
+    char dst_path[HAZE_MAX_PATH_LENGTH];
+    snprintf(src_path, sizeof(src_path), "%s/%s", src, entry->d_name);
+    snprintf(dst_path, sizeof(dst_path), "%s/%s", dst, entry->d_name);
+
+    struct STAT st;
+    if (STAT(src_path, &st) != 0) {
+      if (opts->skip_errors)
+        continue;
+      closedir(dir);
+      return (hzstd_fs_error_t){.code = hzstd_fs_error_from_errno(errno),
+                                .message =
+                                    hzstd_fs_strdup_msg(strerror(errno))};
+    }
+
+    hzstd_fs_error_t err;
+    if (IS_DIR(st.st_mode)) {
+      err = hzstd_fs_copy_dir_internal(src_path, dst_path, opts);
+    } else {
+      err = hzstd_fs_copy_file_internal(src_path, dst_path, opts);
+    }
+
+    if (err.code != hzstd_fs_error_code_none && !opts->skip_errors) {
+      closedir(dir);
+      return err;
+    }
+  }
+  closedir(dir);
+
+#elif defined(HAZE_PLATFORM_WIN32)
+  WIN32_FIND_DATAA ffd;
+  char search_path[HAZE_MAX_PATH_LENGTH];
+  snprintf(search_path, sizeof(search_path), "%s\\*", src);
+  HANDLE hFind = FindFirstFileA(search_path, &ffd);
+  if (hFind == INVALID_HANDLE_VALUE) {
+    DWORD err = GetLastError();
+    return (hzstd_fs_error_t){.code = hzstd_fs_error_from_windows_error(err),
+                              .message = hzstd_fs_windows_error(err)};
+  }
+
+  do {
+    if (strcmp(ffd.cFileName, ".") == 0 || strcmp(ffd.cFileName, "..") == 0)
+      continue;
+
+    char src_path[HAZE_MAX_PATH_LENGTH];
+    char dst_path[HAZE_MAX_PATH_LENGTH];
+    snprintf(src_path, sizeof(src_path), "%s\\%s", src, ffd.cFileName);
+    snprintf(dst_path, sizeof(dst_path), "%s\\%s", dst, ffd.cFileName);
+
+    hzstd_fs_error_t err;
+    if (ffd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+      err = hzstd_fs_copy_dir_internal(src_path, dst_path, opts);
+    } else {
+      err = hzstd_fs_copy_file_internal(src_path, dst_path, opts);
+    }
+
+    if (err.code != hzstd_fs_error_code_none && !opts->skip_errors) {
+      FindClose(hFind);
+      return err;
+    }
+  } while (FindNextFileA(hFind, &ffd) != 0);
+  FindClose(hFind);
+#endif
+
+  return (hzstd_fs_error_t){.code = hzstd_fs_error_code_none};
+}
+
+// --- Public API ---
+hzstd_fs_error_t hzstd_fs_copy_file(hzstd_str_t src, hzstd_str_t dst,
+                                    const hzstd_fs_copy_options_t *opts) {
+  return hzstd_fs_copy_file_internal(src.data, dst.data, opts);
+}
+
+hzstd_fs_error_t hzstd_fs_copy_dir(hzstd_str_t src, hzstd_str_t dst,
+                                   const hzstd_fs_copy_options_t *opts) {
+  return hzstd_fs_copy_dir_internal(src.data, dst.data, opts);
+}
+
+hzstd_fs_error_t hzstd_fs_copy(hzstd_str_t src, hzstd_str_t dst,
+                               const hzstd_fs_copy_options_t *opts) {
+  struct STAT st;
+  if (STAT(src.data, &st) != 0) {
+#if defined(HAZE_PLATFORM_LINUX)
+    return (hzstd_fs_error_t){.code = hzstd_fs_error_from_errno(errno),
+                              .message = hzstd_fs_strdup_msg(strerror(errno))};
+#elif defined(HAZE_PLATFORM_WIN32)
+    DWORD err = GetLastError();
+    return (hzstd_fs_error_t){.code = hzstd_fs_error_from_windows_error(err),
+                              .message = hzstd_fs_windows_error(err)};
+#endif
+  }
+
+  if (IS_DIR(st.st_mode))
+    return hzstd_fs_copy_dir_internal(src.data, dst.data, opts);
+  else
+    return hzstd_fs_copy_file_internal(src.data, dst.data, opts);
+}
+
+hzstd_fs_error_t hzstd_fs_move(hzstd_str_t src, hzstd_str_t dst,
+                               const hzstd_fs_copy_options_t *opts) {
+  hzstd_fs_error_t err = hzstd_fs_copy(src, dst, opts);
+  if (err.code != hzstd_fs_error_code_none)
+    return err;
+
+#if defined(HAZE_PLATFORM_LINUX)
+  struct STAT st;
+  if (STAT(src.data, &st) != 0)
+    return (hzstd_fs_error_t){.code = hzstd_fs_error_from_errno(errno),
+                              .message = hzstd_fs_strdup_msg(strerror(errno))};
+
+  if (IS_DIR(st.st_mode)) {
+    if (rmdir(src.data) != 0)
+      return (hzstd_fs_error_t){.code = hzstd_fs_error_from_errno(errno),
+                                .message =
+                                    hzstd_fs_strdup_msg(strerror(errno))};
+  } else {
+    if (unlink(src.data) != 0)
+      return (hzstd_fs_error_t){.code = hzstd_fs_error_from_errno(errno),
+                                .message =
+                                    hzstd_fs_strdup_msg(strerror(errno))};
+  }
+#elif defined(HAZE_PLATFORM_WIN32)
+  if (IS_DIR(GetFileAttributesA(src.data)))
+    RemoveDirectoryA(src.data);
+  else
+    DeleteFileA(src.data);
+#endif
+
+  return (hzstd_fs_error_t){.code = hzstd_fs_error_code_none};
 }

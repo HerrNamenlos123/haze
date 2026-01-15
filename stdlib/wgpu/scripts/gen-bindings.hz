@@ -1,31 +1,4 @@
 
 main(): int {
-    fmt.println("Hello world from the bindings generator!");
-
-    let binaryDir = env.get("HAZE_MODULE_BINARY_DIR");
-    if !binaryDir {
-        fmt.println(f"HAZE_MODULE_BINARY_DIR not defined");
-        return 1;
-    }
-
-    let repoPath = f"{binaryDir}/wgpu-native";
-
-    let exists = fs.exists(repoPath);
-    if !exists {
-        fmt.println("Failed to check if repo exists");
-        return 1;
-    }
-    fmt.println(exists, repoPath);
-    if !exists {
-        const result = process.run("git.exe", { "clone", "https://github.com/gfx-rs/wgpu-native.git", repoPath }, process.Options {
-        // const result = process.run("C:\\Users\\Florian Zachs\\AppData\\Local\\Programs\\Git\\cmd\\git.exe", { "clone", "https://github.com/gfx-rs/wgpu-native.git", repoPath }, process.Options {
-            inherit_stdio: true,
-        });
-        if !result {
-            fmt.println("Failed to clone repo", result);
-            return 1;
-        }
-    }
-
     return 0;
 }

@@ -9,6 +9,7 @@ namespace ffi {
         hzstd_fs_error_code_not_a_file, // exists but not a regular file
         hzstd_fs_error_code_not_a_directory, // exists but not a regular file
         hzstd_fs_error_code_permission_denied,
+        hzstd_fs_error_code_already_exists,
         hzstd_fs_error_code_invalid_path, // malformed path, invalid characters, etc.
         hzstd_fs_error_code_name_too_long,
         hzstd_fs_error_code_io_error, // generic read/write failure
@@ -30,6 +31,29 @@ namespace ffi {
     };
 
     extern C noemit hzstd_fs_exists(path: str): inline hzstd_fs_exists_result_t :: final;
+
+    extern C noemit struct hzstd_fs_copy_options_t {
+        overwrite: bool;
+        follow_symlinks: bool;
+        skip_errors: bool;
+    };
+
+    // Copy a file or directory (recursive if needed) to a destination.
+    // Automatically creates parent directories. Overwrite, symlink, and error
+    // behavior controlled via options.
+    extern C noemit hzstd_fs_copy(src: str, dst: str, options: hzstd_fs_copy_options_t): inline hzstd_fs_error_t :: final;
+
+    // Copy a single file to a destination. Parent directories are created
+    // automatically. Fails if src is not a file.
+    extern C noemit hzstd_fs_copy_file(src: str, dst: str, options: hzstd_fs_copy_options_t): inline hzstd_fs_error_t :: final;
+
+    // Copy a directory recursively to a destination. Parent directories are created
+    // automatically. All files and subdirectories are copied according to options.
+    extern C noemit hzstd_fs_copy_dir(src: str, dst: str, options: hzstd_fs_copy_options_t): inline hzstd_fs_error_t :: final;
+
+    // Optional: move a file or directory (copy + delete original). Behaves like
+    // hzstd_fs_copy.
+    extern C noemit hzstd_fs_move(src: str, dst: str, options: hzstd_fs_copy_options_t): inline hzstd_fs_error_t :: final;
 }
 
 export namespace fs {
@@ -40,6 +64,7 @@ export namespace fs {
         NotAFile,
         NotADirectory,
         PermissionDenied,
+        AlreadyExists,
         InvalidPath,
         NameTooLong,
         IOError,
@@ -61,6 +86,9 @@ export namespace fs {
         }
         else if error == ffi.hzstd_fs_error_code_permission_denied {
             return Error.PermissionDenied;
+        }
+        else if error == ffi.hzstd_fs_error_code_already_exists {
+            return Error.AlreadyExists;
         }
         else if error == ffi.hzstd_fs_error_code_invalid_path {
             return Error.InvalidPath;
@@ -109,5 +137,68 @@ export namespace fs {
             return Result<none, Error>.Ok(none);
         }
         return Result<none, Error>.Err(mapErrorEnum(result.code));
+    }
+
+    export struct CopyOptions {
+        overwrite: bool = false;
+        followSymlinks: bool = false;
+        skipErrors: bool = false;
+    };
+
+    // Copy a file or directory (recursive if needed) to a destination.
+    // Automatically creates parent directories. Overwrite, symlink, and error
+    // behavior controlled via options.
+    export copy(src: str, dst: str, options: CopyOptions): Result<none, Error> {
+        let result = ffi.hzstd_fs_copy(src, dst, {
+            overwrite: options.overwrite,
+            follow_symlinks: options.followSymlinks,
+            skip_errors: options.skipErrors,
+        });
+        if result.code != ffi.hzstd_fs_error_code_none {
+            return Result<none, Error>.Err(mapErrorEnum(result.code));
+        }
+        return Result<none, Error>.Ok(none);
+    }
+
+    // Copy a single file to a destination. Parent directories are created
+    // automatically. Fails if src is not a file.
+    export copyFile(src: str, dst: str, options: CopyOptions): Result<none, Error> {
+        let result = ffi.hzstd_fs_copy_file(src, dst, {
+            overwrite: options.overwrite,
+            follow_symlinks: options.followSymlinks,
+            skip_errors: options.skipErrors,
+        });
+        if result.code != ffi.hzstd_fs_error_code_none {
+            return Result<none, Error>.Err(mapErrorEnum(result.code));
+        }
+        return Result<none, Error>.Ok(none);
+    }
+
+    // Copy a directory recursively to a destination. Parent directories are created
+    // automatically. All files and subdirectories are copied according to options.
+    export copyDirectory(src: str, dst: str, options: CopyOptions): Result<none, Error> {
+        let result = ffi.hzstd_fs_copy_dir(src, dst, {
+            overwrite: options.overwrite,
+            follow_symlinks: options.followSymlinks,
+            skip_errors: options.skipErrors,
+        });
+        if result.code != ffi.hzstd_fs_error_code_none {
+            return Result<none, Error>.Err(mapErrorEnum(result.code));
+        }
+        return Result<none, Error>.Ok(none);
+    }
+
+    // Optional: move a file or directory (copy + delete original). Behaves like
+    // hzstd_fs_copy.
+    export move(src: str, dst: str, options: CopyOptions): Result<none, Error> {
+        let result = ffi.hzstd_fs_move(src, dst, {
+            overwrite: options.overwrite,
+            follow_symlinks: options.followSymlinks,
+            skip_errors: options.skipErrors,
+        });
+        if result.code != ffi.hzstd_fs_error_code_none {
+            return Result<none, Error>.Err(mapErrorEnum(result.code));
+        }
+        return Result<none, Error>.Ok(none);
     }
 }

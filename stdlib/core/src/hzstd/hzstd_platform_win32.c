@@ -549,7 +549,7 @@ int hzstd_spawn_process(hzstd_str_t exe, hzstd_str_t *argv, size_t argc,
 
   PROCESS_INFORMATION pi = {0};
 
-  if (!CreateProcessA(exe_c, cmdline, NULL, NULL, TRUE, 0, NULL,
+  if (!CreateProcessA(NULL, cmdline, NULL, NULL, TRUE, 0, NULL,
                       cwd_c ? cwd_c : NULL, &si, &pi)) {
     DWORD err = GetLastError();
     process_set_error_message(out, err);

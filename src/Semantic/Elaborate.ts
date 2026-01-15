@@ -7135,6 +7135,9 @@ export class SemanticBuilder {
 
       case Semantic.ENode.SymbolValueExpr: {
         Semantic.addSymbolDeps(this.sr.e.currentContext, lhs.symbol, dependencies);
+        this.sr.e.currentContext.constraints = this.sr.e.currentContext.constraints.filter((c) => {
+          return c.variableSymbol !== lhs.symbol;
+        });
         break;
       }
 

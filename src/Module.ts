@@ -100,6 +100,37 @@ function copyFile(source: string, targetFolder: string) {
   fs.copyFileSync(source, targetFolder);
 }
 
+/**
+ * Temporarily sets environment variables for an async callback.
+ *
+ * @param vars - object mapping env var names to values
+ * @param fn - async callback to run with the temporary environment
+ * @returns the value returned by fn
+ */
+export async function withEnv<T>(vars: Record<string, string>, fn: () => Promise<T>): Promise<T> {
+  const oldValues: Record<string, string | undefined> = {};
+
+  // Save old values and set new ones
+  for (const key of Object.keys(vars)) {
+    oldValues[key] = process.env[key];
+    process.env[key] = vars[key];
+  }
+
+  try {
+    return await fn();
+  } finally {
+    // Restore original values
+    for (const key of Object.keys(vars)) {
+      const old = oldValues[key];
+      if (old === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = old;
+      }
+    }
+  }
+}
+
 export class CLIPrinter {
   modules: ModulePrintInfo[] = [];
   multibar: MultiBar;
@@ -161,7 +192,6 @@ export class CLIPrinter {
       phaseBlock = `[${chalk.cyan(text)}${chalk.cyan(CLIPrinter.SPINNER[spinnerIndex])}]`;
     }
 
-    console.log("format");
     return `${indexStr} ${actionStr} ${nameStr} ${phaseBlock} ${timeStr}`;
   }
 
@@ -581,6 +611,7 @@ export class FileChangeCache {
     if (!fs.existsSync(abs)) {
       delete this.data[abs];
       this.dirty = true;
+      console.log("del");
       return;
     }
 
@@ -640,7 +671,10 @@ export class ProjectCompiler {
           linux: [],
           win32: [],
         },
-        srcDirectory: dirname(singleFilename),
+        source: {
+          type: "single-file",
+          filepath: singleFilename,
+        },
         authors: undefined,
         description: undefined,
         license: undefined,
@@ -1134,27 +1168,31 @@ export class ModuleCompiler {
     );
   }
 
+  async collectFile(filepath: string, collectionMode: ECollectionMode) {
+    const fileText = await readFile(filepath, "utf-8");
+    const ast = Parser.parseTextToAST(this.config, fileText, filepath);
+    CollectFile(
+      this.cc,
+      ast,
+      collectionMode === ECollectionMode.WrapIntoModuleNamespace
+        ? this.makeUnit()[1]
+        : this.cc.moduleScopeId,
+      filepath,
+      this.config.name,
+      this.config.version,
+      collectionMode
+    );
+  }
+
   async collectDirectory(dirpath: string, collectionMode: ECollectionMode) {
     for (const file of readdirSync(dirpath)) {
       const fullPath = join(dirpath, file);
       const stats = statSync(fullPath);
       if (stats.isDirectory()) {
-        this.collectDirectory(fullPath, collectionMode);
+        await this.collectDirectory(fullPath, collectionMode);
       } else {
         if (extname(fullPath) == ".hz") {
-          const fileText = await readFile(fullPath, "utf-8");
-          const ast = Parser.parseTextToAST(this.config, fileText, fullPath);
-          CollectFile(
-            this.cc,
-            ast,
-            collectionMode === ECollectionMode.WrapIntoModuleNamespace
-              ? this.makeUnit()[1]
-              : this.cc.moduleScopeId,
-            fullPath,
-            this.config.name,
-            this.config.version,
-            collectionMode
-          );
+          await this.collectFile(fullPath, collectionMode);
         }
       }
     }
@@ -1178,7 +1216,12 @@ export class ModuleCompiler {
     if (this.config.name === HAZE_STDLIB_NAME) {
       mode = ECollectionMode.ImportUnderRootDirectly;
     }
-    await this.collectDirectory(this.config.srcDirectory, mode);
+
+    if (this.config.source.type === "src-dir") {
+      await this.collectDirectory(this.config.source.dirpath, mode);
+    } else {
+      await this.collectFile(this.config.source.filepath, mode);
+    }
   }
 
   generatorFileKey(file: GeneratorFile): string {
@@ -1331,7 +1374,13 @@ export class ModuleCompiler {
         const inputPaths = gen.config.inputs.map((i) => this.resolveGeneratorFile(i));
         const outputPaths = gen.config.outputs.map((i) => this.resolveGeneratorFile(i));
 
-        if (cache.haveAnyFilesChanged([...inputPaths, ...outputPaths])) {
+        if (
+          cache.haveAnyFilesChanged([
+            this.resolveExec(gen.config.exec),
+            ...inputPaths,
+            ...outputPaths,
+          ])
+        ) {
           toRun.push({ gen, inputPaths, outputPaths });
         }
       }
@@ -1341,19 +1390,34 @@ export class ModuleCompiler {
 
       // Commit phase: Batch is done and write result into cache
       for (const item of toRun) {
-        cache.updateFiles([...item.inputPaths, ...item.outputPaths]);
+        assert(item.gen.config.type === "exec");
+        cache.updateFiles([
+          this.resolveExec(item.gen.config.exec),
+          ...item.inputPaths,
+          ...item.outputPaths,
+        ]);
       }
       cache.save();
     }
   }
 
+  resolveExec(exec: string) {
+    assert(this.currentModuleRootDir);
+    return join(this.currentModuleRootDir, exec);
+  }
+
   resolveGeneratorFile(file: GeneratorFile) {
     if (file.type !== "module-file") throw new Error("Not implemented");
+
+    let moduleName = file.module;
+    if (moduleName === "this") {
+      moduleName = this.config.name;
+    }
 
     let dir = "";
     switch (file.dir) {
       case EModuleFileDir.BinaryDir:
-        dir = this.getModuleBuildDir(file.module);
+        dir = this.getModuleBinaryDir(moduleName);
         break;
       case EModuleFileDir.SourceDir:
         assert(false);
@@ -1376,12 +1440,31 @@ export class ModuleCompiler {
     console.log(`>> Running generator ${gen.name}...`);
     const sourceloc = this.config.includeSourceloc;
     const project = new ProjectCompiler();
-    if (!(await project.build(join(this.currentModuleRootDir, gen.exec), sourceloc))) {
+    if (!(await project.build(this.resolveExec(gen.exec), sourceloc))) {
       throw new GeneralError(`Build of generator step ${gen.name} failed`);
     }
-    const exitCode = await project.run(gen.exec, sourceloc, []);
-    if (exitCode !== 0) {
-      throw new GeneralError(`Generator step ${gen.name} failed with exit code ${gen.exec}`);
+
+    await withEnv(
+      {
+        HAZE_MODULE_SOURCE_DIR: this.currentModuleRootDir,
+        HAZE_MODULE_BUILD_DIR: this.moduleDir + "/build",
+        HAZE_MODULE_BINARY_DIR: this.moduleDir + "/bin",
+      },
+      async () => {
+        const exitCode = await project.run(this.resolveExec(gen.exec), sourceloc, []);
+        if (exitCode !== 0) {
+          throw new GeneralError(`Generator step ${gen.name} failed with exit code ${exitCode}`);
+        }
+      }
+    );
+
+    for (const file of gen.outputs) {
+      const path = this.resolveGeneratorFile(file);
+      if (!existsSync(path)) {
+        throw new GeneralError(
+          `Generator step ${gen.name} claims to generate file '${path}', but it was not generated`
+        );
+      }
     }
 
     console.log(`>> Running generator ${gen.name}... Done`);
@@ -1402,20 +1485,21 @@ export class ModuleCompiler {
         this.config.printerModule.printer.log(msg);
       };
 
-      if (this.config.configFilePath) {
-        if (
-          !(await this.cache.hasModuleChanged(
-            this.config.name,
-            this.config.srcDirectory,
-            this.config.configFilePath
-          ))
-        ) {
-          console.log(`Skipping module ${this.config.name}`);
-          return;
-        } else {
-          console.log(`Building module ${this.config.name}`);
-        }
-      }
+      // if (this.config.configFilePath) {
+      //   if (
+      //     !(await this.cache.hasModuleChanged(
+      //       this.config.name,
+      //       this.config.source,
+      //       this.config.configFilePath
+      //     ))
+      //   ) {
+      //     console.log(`Skipping module ${this.config.name}`);
+      //     return;
+      //   } else {
+      //     console.log(`Building module ${this.config.name}`);
+      //   }
+      // }
+      console.log(`Building module ${this.config.name}`);
 
       this.currentModuleRootDir = this.config.configFilePath
         ? dirname(this.config.configFilePath)
@@ -1515,7 +1599,7 @@ export class ModuleCompiler {
       compilerFlags.addAll("-Wno-extra-tokens");
 
       includeDirs.addAll(`${this.moduleDir}/bin/include`);
-      includeDirs.addAll(`${this.config.srcDirectory}/../include`);
+      includeDirs.addAll(`${this.config.source}/../include`);
       includeDirs.addAll(`${HAZE_GLOBAL_DIR}/include`);
       compilerFlags.addAll(`-fno-omit-frame-pointer`);
       linkerFlags.addAll(`-L"${this.moduleDir}/bin/lib"`);
@@ -1594,7 +1678,12 @@ export class ModuleCompiler {
         compilerFlags.addAll("-g");
       }
 
-      includeDirs.addAll(this.config.srcDirectory);
+      if (this.config.source.type === "src-dir") {
+        includeDirs.addAll(this.config.source.dirpath);
+      } else {
+        includeDirs.addAll(dirname(this.config.source.filepath));
+      }
+
       compilerFlags.addAll("-std=c11");
 
       const [archives, dependencyLinkerFlags, dependencyIncludeDirs, dependencyInterfaceMacros] =

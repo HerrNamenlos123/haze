@@ -154,7 +154,7 @@ export type ModuleConfig = {
     win32: ScriptDef[];
     linux: ScriptDef[];
   };
-  srcDirectory: string;
+  source: { type: "src-dir"; dirpath: string } | { type: "single-file"; filepath: string };
   nostdlib: boolean;
   moduleType: ModuleType;
   configFilePath?: string;
@@ -512,7 +512,10 @@ export class ConfigParser {
           ((toml as any)?.scripts?.linux && this.getScripts((toml as any)["scripts"]?.linux)) || [],
       },
       dependencies: this.getDependencies(toml),
-      srcDirectory: join(dirname(this.configPath), this.getOptionalString(toml, "src") || "src"),
+      source: {
+        type: "src-dir",
+        dirpath: join(dirname(this.configPath), this.getOptionalString(toml, "src") || "src"),
+      },
       configFilePath: this.configPath,
       moduleType: moduleType,
       nostdlib: this.getOptionalStringAnyOf(toml, "std", ["none"]) === "none",

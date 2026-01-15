@@ -14,6 +14,21 @@
 #error Unsupported platform for Haze stdlib, compiler defines are not set correctly
 #endif
 
+typedef enum {
+  hzstd_platform_runtime_linux,
+  hzstd_platform_runtime_win32,
+} hzstd_platform_runtime_t;
+
+static inline hzstd_platform_runtime_t hzstd_platform_runtime(void) {
+#if defined(HAZE_PLATFORM_WIN32)
+  return hzstd_platform_runtime_win32;
+#elif defined(HAZE_PLATFORM_LINUX)
+  return hzstd_platform_runtime_linux;
+#else
+#error Unsupported platform
+#endif
+}
+
 typedef struct {
   size_t id;
   hzstd_cptr_t instructionPointer;
