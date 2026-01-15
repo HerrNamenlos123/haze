@@ -933,11 +933,11 @@ export class ProjectCompiler {
         console.info("Installing Ninja Build System...");
         switch (await detectPackageManager()) {
           case "debian":
-            execInherit(`sudo apt-get update && sudo apt-get install ninja`);
+            execInherit(`sudo apt-get update && sudo apt-get install ninja-build`);
             break;
 
           case "fedora":
-            execInherit(`sudo dnf install ninja`);
+            execInherit(`sudo dnf install ninja-build`);
             break;
 
           default:
