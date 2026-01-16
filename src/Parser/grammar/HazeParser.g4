@@ -168,8 +168,7 @@ subscriptExpr
 
 requiresPart
     // : expr               #RequiresExpr
-    : AUTORET                               #RequiresAutoret
-    | NORETURN                              #RequiresNoreturn
+    : NORETURN                              #RequiresNoreturn
     | NORETURNIF LB expr RB                 #RequiresNoreturnIf
     | FINAL                                 #RequiresFinal
     | PURE                                  #RequiresPure
@@ -220,7 +219,12 @@ expr
     // | expr ('^') expr                                                            #BinaryExpr
     // | expr ('|') expr                                                            #BinaryExpr
     | expr op+=(DOUBLEAND|DOUBLEOR) expr                                            #BinaryExpr
+    
+    // Ternary-like control expressions
     // <- ternary
+    | ATTEMPT rawScope ELSE (ID)? rawScope                                          #AttemptExpr
+
+    // Assignment
     | <assoc=right> expr op=(EQUALS|COLONEQUALS|PLUSEQ|MINUSEQ|MULEQ|DIVEQ|MODEQ) expr     #ExprAssignmentExpr
 
     | ID (LANGLE genericLiteral (COMMA genericLiteral)* RANGLE)?                    #SymbolValueExpr

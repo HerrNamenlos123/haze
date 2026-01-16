@@ -24,7 +24,7 @@ DO: 'do';
 YIELD: 'yield';
 EMIT: 'emit';
 INLINE: 'inline';
-AUTORET: 'autoret';
+ATTEMPT: 'attempt';
 NORETURN: 'noreturn';
 NORETURNIF: 'noreturn_if';
 WITH: 'with';

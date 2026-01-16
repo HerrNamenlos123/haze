@@ -768,6 +768,30 @@ class CodeGenerator {
         return { temp: tempWriter, out: outWriter };
       }
 
+      case Lowered.ENode.LabelJumpStatement: {
+        if (statement.sourceloc && this.lr.sr.cc.config.includeSourceloc && !noSourceloc) {
+          outWriter.writeLine(
+            `#line ${statement.sourceloc.start.line} ${JSON.stringify(
+              statement.sourceloc.filename
+            )}`
+          );
+        }
+        outWriter.writeLine(`goto ${statement.labelName};`).pushIndent();
+        return { temp: tempWriter, out: outWriter };
+      }
+
+      case Lowered.ENode.LabelDefinitionStatement: {
+        if (statement.sourceloc && this.lr.sr.cc.config.includeSourceloc && !noSourceloc) {
+          outWriter.writeLine(
+            `#line ${statement.sourceloc.start.line} ${JSON.stringify(
+              statement.sourceloc.filename
+            )}`
+          );
+        }
+        outWriter.writeLine(`${statement.labelName}:`).pushIndent();
+        return { temp: tempWriter, out: outWriter };
+      }
+
       default:
         throw new InternalError(`Unknown statement type: `);
     }

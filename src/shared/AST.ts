@@ -161,7 +161,6 @@ export type ASTDeferredType = {
 };
 
 export type ASTFunctionRequiresBlock = {
-  autoret: boolean;
   final: boolean;
   pure: boolean;
   noreturn: boolean;
@@ -443,6 +442,14 @@ export type ASTLambdaExpr = {
   sourceloc: SourceLoc;
 };
 
+export type ASTAttemptExpr = {
+  variant: "AttemptExpr";
+  attemptScope: ASTScope;
+  elseScope: ASTScope;
+  elseVar: string | null;
+  sourceloc: SourceLoc;
+};
+
 export type ASTLiteralExpr = {
   variant: "LiteralExpr";
   literal: LiteralValue;
@@ -573,6 +580,7 @@ export type ASTExpr =
   | ASTErrorPropagationExpr
   | ASTBlockScopeExpr
   | ASTLambdaExpr
+  | ASTAttemptExpr
   | ASTLiteralExpr
   | ASTFStringExpr
   | ASTPostIncrExpr

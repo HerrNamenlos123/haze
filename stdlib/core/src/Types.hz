@@ -1,2 +1,0 @@
-
-export extern C type hzstd_u8_t = u8;

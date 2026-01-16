@@ -23,7 +23,7 @@ main(): int {
         }
     }
 
-    let result = process.run("git", { "checkout", "768f15f6ace8e4ec8e8720d5732b29e0b34250a8" }, process.Options {
+    let result = process.run("git", { "-c", "advice.detachedHead=false", "checkout", "768f15f6ace8e4ec8e8720d5732b29e0b34250a8" }, process.Options {
         inherit_stdio: true,
         cwd: repoPath,
     });

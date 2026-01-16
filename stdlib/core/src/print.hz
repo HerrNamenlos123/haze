@@ -151,6 +151,12 @@ namespace fmt {
             else if typeof(arg) == type<fs.Error> {
                 ffi.printf("%d", arg);
             }
+            else if typeof(arg) == type<null> {
+                ffi.printf("null");
+            }
+            else if typeof(arg) == type<none> {
+                ffi.printf("none");
+            }
             else {
                 static_assert(false, "Type '" + typeof(arg).name + "' is not supported in fmt.print");
             }

@@ -70,7 +70,8 @@ type Inference =
 
 export class SemanticElaborator {
   currentContext: Semantic.ElaborationContext;
-  inFunction?: Semantic.SymbolId;
+  inFunction: Semantic.SymbolId | null = null;
+  inAttemptExpr: Semantic.ExprId | null = null;
   functionReturnsInstanceIds?: Set<Semantic.InstanceId>;
 
   constructor(public sr: SemanticResult, currentContext: Semantic.ElaborationContext) {
@@ -80,13 +81,16 @@ export class SemanticElaborator {
   withContext<T>(
     args: {
       context: Semantic.ElaborationContext;
-      inFunction?: Semantic.SymbolId;
+      inFunction: Semantic.SymbolId | null;
+      inAttemptExpr: Semantic.ExprId | null;
       functionReturnsInstanceIds?: Set<Semantic.InstanceId>;
     },
     fn: () => T
   ): T {
     const oldContext = this.currentContext;
     this.currentContext = args.context;
+    const oldAttempt = this.inAttemptExpr;
+    this.inAttemptExpr = args.inAttemptExpr;
     const oldReturn = this.inFunction;
     this.inFunction = args.inFunction;
     const oldReturnIds = this.functionReturnsInstanceIds;
@@ -96,6 +100,7 @@ export class SemanticElaborator {
 
     this.functionReturnsInstanceIds = oldReturnIds;
     this.inFunction = oldReturn;
+    this.inAttemptExpr = oldAttempt;
     this.currentContext = oldContext;
     return result;
   }
@@ -147,6 +152,7 @@ export class SemanticElaborator {
           }),
           functionReturnsInstanceIds: this.functionReturnsInstanceIds,
           inFunction: this.inFunction,
+          inAttemptExpr: this.inAttemptExpr,
         },
         () => {
           [right, rightId] = this.expr(binaryExpr.right, inference);
@@ -731,6 +737,8 @@ export class SemanticElaborator {
               },
             }
           ),
+          inFunction: null,
+          inAttemptExpr: null,
         },
         () =>
           this.elaborateFunctionSymbolWithGenerics(
@@ -1056,6 +1064,9 @@ export class SemanticElaborator {
       case Collect.ENode.PostIncrExpr:
         return this.postIncr(expr);
 
+      case Collect.ENode.AttemptExpr:
+        return this.attemptExpr(expr, inference);
+
       default:
         assert(false, "All cases handled: " + Collect.ENode[(expr as any).variant]);
     }
@@ -1137,6 +1148,8 @@ export class SemanticElaborator {
                 symbolDependsOn: new Map(),
               },
             }),
+            inAttemptExpr: null,
+            inFunction: null,
           },
           () => {
             const sym = this.sr.e.topLevelSymbol(symbolId);
@@ -1849,6 +1862,8 @@ export class SemanticElaborator {
               },
             }
           ),
+          inAttemptExpr: null,
+          inFunction: null,
         },
         () =>
           this.elaborateFunctionSymbolWithGenerics(
@@ -2110,6 +2125,8 @@ export class SemanticElaborator {
     return this.withContext(
       {
         context: context,
+        inAttemptExpr: null,
+        inFunction: null,
       },
       () => {
         return this.instantiateAndElaborateStruct(definedStructTypeId);
@@ -2198,6 +2215,8 @@ export class SemanticElaborator {
                 symbolDependsOn: new Map(),
               },
             }),
+            inAttemptExpr: null,
+            inFunction: null,
           },
           () => {
             return this.lookupAndElaborateDatatype(symbol.type!);
@@ -2333,6 +2352,12 @@ export class SemanticElaborator {
       case Collect.ENode.VariableSymbol: {
         let variableContext = EVariableContext.FunctionLocal;
         let type: Semantic.TypeUseId | null = null;
+
+        const typeOverride = this.currentContext.elaborationTypeOverride.get(variableSymbolId);
+        if (typeOverride) {
+          type = typeOverride;
+        }
+
         if (symbol.variableContext === EVariableContext.FunctionParameter) {
           variableContext = EVariableContext.FunctionParameter;
           if (!symbol.type) {
@@ -2352,6 +2377,7 @@ export class SemanticElaborator {
                 instanceDeps: this.currentContext.instanceDeps,
               }),
               inFunction: this.inFunction,
+              inAttemptExpr: this.inAttemptExpr,
             },
             () => this.lookupAndElaborateDatatype(symbol.type!)
           );
@@ -2671,6 +2697,7 @@ export class SemanticElaborator {
         context: newContext,
         inFunction: this.inFunction,
         functionReturnsInstanceIds: this.functionReturnsInstanceIds,
+        inAttemptExpr: this.inAttemptExpr,
       },
       () => {
         for (const sId of scope.symbols) {
@@ -2701,6 +2728,15 @@ export class SemanticElaborator {
           });
           const statement = this.sr.statementNodes.get(statementId);
 
+          if (statement.variant === Semantic.ENode.ExprStatement) {
+            const expr = this.sr.exprNodes.get(statement.expr);
+            if (expr.variant === Semantic.ENode.BlockScopeExpr) {
+              if (expr.noreturn) {
+                this.currentContext.scopeNoReturn.add(this.currentContext.currentScope);
+              }
+            }
+          }
+
           if (
             lastExprIsEmit &&
             statement.variant === Semantic.ENode.ExprStatement &&
@@ -2712,6 +2748,10 @@ export class SemanticElaborator {
           }
         });
 
+        // NOTE
+        // the noReturn attribute has to be solved via the currentContext Set and not just via returned noReturn flags,
+        // because expressions have to set it and we cannot return flags from every expression.
+        // It may look weirdly complicated in just this function but it is required because of expressions.
         if (this.currentContext.scopeNoReturn.has(args.sourceScopeId)) {
           noReturn = true;
         }
@@ -2781,6 +2821,8 @@ export class SemanticElaborator {
     return this.withContext(
       {
         context: context,
+        inAttemptExpr: null,
+        inFunction: null,
       },
       () => {
         return this.elaborateFunctionSymbol(
@@ -2817,6 +2859,8 @@ export class SemanticElaborator {
     return this.withContext(
       {
         context: newContext,
+        inAttemptExpr: null,
+        inFunction: null,
       },
       () => {
         // The way this works is that first we define all generic substitutions outside of the function in the context,
@@ -3057,15 +3101,16 @@ export class SemanticElaborator {
           }
 
           if (func.functionScope) {
+            const functionScope = this.sr.cc.scopeNodes.get(func.functionScope);
+            assert(functionScope.variant === Collect.ENode.FunctionScope);
+
             const [bodyScope, bodyScopeId] = Semantic.addBlockScope(this.sr, {
               variant: Semantic.ENode.BlockScope,
               statements: [],
               emittedExpr: null,
               constraints: [],
+              sourceloc: functionScope.sourceloc,
             });
-
-            const functionScope = this.sr.cc.scopeNodes.get(func.functionScope);
-            assert(functionScope.variant === Collect.ENode.FunctionScope);
 
             if (symbol.methodType === EMethodType.Method) {
               const collectedThisRefId = [...functionScope.symbols].find((sId) => {
@@ -3110,6 +3155,7 @@ export class SemanticElaborator {
                   {
                     context: newContext,
                     inFunction: symbolId,
+                    inAttemptExpr: null,
                   },
                   () => {
                     this.elaborateVariableSymbolInScope(sId);
@@ -3124,6 +3170,7 @@ export class SemanticElaborator {
                 context: newContext,
                 inFunction: symbolId,
                 functionReturnsInstanceIds: symbol.returnsInstanceIds,
+                inAttemptExpr: null,
               },
               () => {
                 this.elaborateBlockScope(
@@ -3440,6 +3487,8 @@ export class SemanticElaborator {
               return this.withContext(
                 {
                   context: this.currentContext,
+                  inAttemptExpr: null,
+                  inFunction: null,
                 },
                 () => this.expressionAsGenericArg(g)
               );
@@ -3473,6 +3522,7 @@ export class SemanticElaborator {
               {
                 context: context,
                 inFunction: this.inFunction,
+                inAttemptExpr: this.inAttemptExpr,
               },
               () => {
                 const aliasedTypeId = this.lookupAndElaborateDatatype(typedef.target);
@@ -3505,6 +3555,8 @@ export class SemanticElaborator {
                           symbolDependsOn: new Map(),
                         },
                       }),
+                      inAttemptExpr: null,
+                      inFunction: null,
                     },
                     () => {
                       // Use the outermost modifiers and ignore the inner ones
@@ -3528,6 +3580,8 @@ export class SemanticElaborator {
               return this.withContext(
                 {
                   context: this.currentContext,
+                  inAttemptExpr: null,
+                  inFunction: null,
                 },
                 () => this.expressionAsGenericArg(g)
               );
@@ -3575,6 +3629,8 @@ export class SemanticElaborator {
                       },
                     }
                   ),
+                  inAttemptExpr: null,
+                  inFunction: null,
                 },
                 () => {
                   // Use the outermost modifiers and ignore the inner ones
@@ -3620,6 +3676,8 @@ export class SemanticElaborator {
                     symbolDependsOn: new Map(),
                   },
                 }),
+                inAttemptExpr: null,
+                inFunction: null,
               },
               () => {
                 // Use the outermost modifiers and ignore the inner ones
@@ -3876,6 +3934,8 @@ export class SemanticElaborator {
                 symbolDependsOn: new Map(),
               },
             }),
+            inAttemptExpr: null,
+            inFunction: null,
           },
           () => this.lookupAndElaborateDatatype(p.type)
         );
@@ -3898,6 +3958,8 @@ export class SemanticElaborator {
                 symbolDependsOn: new Map(),
               },
             }),
+            inAttemptExpr: null,
+            inFunction: null,
           },
           () => this.lookupAndElaborateDatatype(functionSymbol.returnType!)
         ),
@@ -4099,6 +4161,8 @@ export class SemanticElaborator {
               },
             }
           ),
+          inAttemptExpr: null,
+          inFunction: null,
         },
         () => this.lookupSymbolInNamespaceOrStructScope(symbolId, name, memberAccessExpr, inference)
       );
@@ -4528,8 +4592,9 @@ export class SemanticElaborator {
               statements: [],
               emittedExpr: null,
               constraints: [...this.currentContext.constraints],
+              sourceloc: s.sourceloc,
             });
-            this.elaborateBlockScope(
+            const result = this.elaborateBlockScope(
               {
                 targetScopeId: thenScopeId,
                 sourceScopeId: s.thenBlock,
@@ -4544,6 +4609,7 @@ export class SemanticElaborator {
                 instanceIds: [],
                 block: thenScopeId,
                 isTemporary: true,
+                noreturn: result.noReturn,
                 type: this.sr.b.voidType(),
                 sourceloc: s.sourceloc,
               })[1],
@@ -4564,9 +4630,10 @@ export class SemanticElaborator {
                 variant: Semantic.ENode.BlockScope,
                 statements: [],
                 emittedExpr: null,
+                sourceloc: s.sourceloc,
                 constraints: [...this.currentContext.constraints],
               });
-              this.elaborateBlockScope(
+              const result = this.elaborateBlockScope(
                 {
                   targetScopeId: thenScopeId,
                   sourceScopeId: elif.thenBlock,
@@ -4581,6 +4648,7 @@ export class SemanticElaborator {
                   instanceIds: [],
                   block: thenScopeId,
                   isTemporary: true,
+                  noreturn: result.noReturn,
                   type: this.sr.b.voidType(),
                   sourceloc: s.sourceloc,
                 })[1],
@@ -4593,10 +4661,11 @@ export class SemanticElaborator {
             const [thenScope, thenScopeId] = Semantic.addBlockScope(this.sr, {
               variant: Semantic.ENode.BlockScope,
               emittedExpr: null,
+              sourceloc: s.sourceloc,
               statements: [],
               constraints: [...this.currentContext.constraints],
             });
-            this.elaborateBlockScope(
+            const result = this.elaborateBlockScope(
               {
                 targetScopeId: thenScopeId,
                 sourceScopeId: s.elseBlock,
@@ -4611,6 +4680,7 @@ export class SemanticElaborator {
                 instanceIds: [],
                 block: thenScopeId,
                 isTemporary: true,
+                noreturn: result.noReturn,
                 type: this.sr.b.voidType(),
                 sourceloc: s.sourceloc,
               })[1],
@@ -4629,8 +4699,10 @@ export class SemanticElaborator {
                 statements: [],
                 emittedExpr: null,
                 constraints: [...this.currentContext.constraints],
+                sourceloc: s.sourceloc,
               })[1],
               isTemporary: true,
+              noreturn: false,
               type: this.sr.b.voidType(),
               sourceloc: s.sourceloc,
             })[1],
@@ -4703,8 +4775,10 @@ export class SemanticElaborator {
                       sourceloc: s.sourceloc,
                     })[1],
                   ],
+                  sourceloc: s.sourceloc,
                 })[1],
                 instanceIds: [],
+                noreturn: false,
                 isTemporary: true,
                 sourceloc: s.sourceloc,
                 type: this.sr.b.boolType(),
@@ -4722,6 +4796,7 @@ export class SemanticElaborator {
                     }),
                     functionReturnsInstanceIds: this.functionReturnsInstanceIds,
                     inFunction: this.inFunction,
+                    inAttemptExpr: this.inAttemptExpr,
                   },
                   () =>
                     this.sr.b.binaryExpr(
@@ -4781,6 +4856,7 @@ export class SemanticElaborator {
             statements: [],
             emittedExpr: null,
             constraints: constraints,
+            sourceloc: s.sourceloc,
           });
           const result = this.withContext(
             {
@@ -4791,6 +4867,7 @@ export class SemanticElaborator {
                 instanceDeps: this.currentContext.instanceDeps,
               }),
               inFunction: this.inFunction,
+              inAttemptExpr: this.inAttemptExpr,
               functionReturnsInstanceIds: this.functionReturnsInstanceIds,
             },
             () => {
@@ -4833,6 +4910,7 @@ export class SemanticElaborator {
               variant: Semantic.ENode.BlockScope,
               statements: [],
               emittedExpr: null,
+              sourceloc: s.sourceloc,
               constraints: innerConstraints,
             });
             this.withContext(
@@ -4844,6 +4922,7 @@ export class SemanticElaborator {
                   instanceDeps: this.currentContext.instanceDeps,
                 }),
                 inFunction: this.inFunction,
+                inAttemptExpr: this.inAttemptExpr,
                 functionReturnsInstanceIds: this.functionReturnsInstanceIds,
               },
               () => {
@@ -4874,6 +4953,7 @@ export class SemanticElaborator {
               statements: [],
               emittedExpr: null,
               constraints: elseConstraints,
+              sourceloc: s.sourceloc,
             });
             this.withContext(
               {
@@ -4884,6 +4964,7 @@ export class SemanticElaborator {
                   instanceDeps: this.currentContext.instanceDeps,
                 }),
                 inFunction: this.inFunction,
+                inAttemptExpr: this.inAttemptExpr,
                 functionReturnsInstanceIds: this.functionReturnsInstanceIds,
               },
               () => {
@@ -4988,8 +5069,10 @@ export class SemanticElaborator {
                     sourceloc: s.sourceloc,
                   })[1],
                 ],
+                sourceloc: s.sourceloc,
               })[1],
               instanceIds: [],
+              noreturn: false,
               isTemporary: true,
               sourceloc: s.sourceloc,
               type: this.sr.b.boolType(),
@@ -5007,6 +5090,7 @@ export class SemanticElaborator {
                   }),
                   functionReturnsInstanceIds: this.functionReturnsInstanceIds,
                   inFunction: this.inFunction,
+                  inAttemptExpr: this.inAttemptExpr,
                 },
                 () =>
                   this.sr.b.binaryExpr(
@@ -5064,6 +5148,7 @@ export class SemanticElaborator {
           emittedExpr: null,
           statements: [],
           constraints: constraints,
+          sourceloc: s.sourceloc,
         });
 
         this.withContext(
@@ -5076,6 +5161,7 @@ export class SemanticElaborator {
             }),
             functionReturnsInstanceIds: this.functionReturnsInstanceIds,
             inFunction: this.inFunction,
+            inAttemptExpr: this.inAttemptExpr,
           },
           () => {
             this.elaborateBlockScope(
@@ -5206,6 +5292,7 @@ export class SemanticElaborator {
                 },
               }),
               inFunction: this.inFunction,
+              inAttemptExpr: this.inAttemptExpr,
             },
             () => this.lookupAndElaborateDatatype(collectedVariableSymbol.type!)
           );
@@ -5431,6 +5518,7 @@ export class SemanticElaborator {
           statements: [],
           emittedExpr: null,
           constraints: [...this.currentContext.constraints],
+          sourceloc: s.sourceloc,
         });
 
         this.elaborateBlockScope(
@@ -5517,6 +5605,7 @@ export class SemanticElaborator {
               statements: [],
               emittedExpr: null,
               constraints: [...this.currentContext.constraints],
+              sourceloc: s.sourceloc,
             });
 
             const semanticParamId = comptimeExpr.parameters[i];
@@ -5537,7 +5626,7 @@ export class SemanticElaborator {
               )[1];
               syntheticMap.set(s.indexVariable, loopIndexId);
             }
-            this.elaborateBlockScope(
+            const thenScopeResult = this.elaborateBlockScope(
               {
                 targetScopeId: thenScopeId,
                 sourceScopeId: s.body,
@@ -5557,6 +5646,7 @@ export class SemanticElaborator {
                   variant: Semantic.ENode.BlockScopeExpr,
                   instanceIds: [],
                   block: thenScopeId,
+                  noreturn: thenScopeResult.noReturn,
                   sourceloc: s.sourceloc,
                   isTemporary: true,
                   type: this.sr.b.voidType(),
@@ -5576,8 +5666,18 @@ export class SemanticElaborator {
                 statements: allScopes,
                 emittedExpr: null,
                 constraints: [...this.currentContext.constraints],
+                sourceloc: s.sourceloc,
               })[1],
               sourceloc: s.sourceloc,
+              // If all generated scopes of the comptime for-each loop - that is - every single iteration - does
+              // not return, then the entire for loop is marked as no-return
+              noreturn: allScopes.every((s) => {
+                const statement = this.sr.statementNodes.get(s);
+                assert(statement.variant === Semantic.ENode.ExprStatement);
+                const expr = this.sr.exprNodes.get(statement.expr);
+                assert(expr.variant === Semantic.ENode.BlockScopeExpr);
+                return expr.noreturn;
+              }),
               isTemporary: true,
               type: this.sr.b.voidType(),
             })[1],
@@ -5797,6 +5897,8 @@ export class SemanticElaborator {
               symbolDependsOn: new Map(),
             },
           }),
+          inAttemptExpr: null,
+          inFunction: null,
         },
         () => this.lookupAndElaborateDatatype(structInst.structType!)
       );
@@ -5908,6 +6010,8 @@ export class SemanticElaborator {
         return this.withContext(
           {
             context: this.currentContext,
+            inAttemptExpr: null,
+            inFunction: null,
           },
           () => this.expressionAsGenericArg(g)
         );
@@ -5952,6 +6056,7 @@ export class SemanticElaborator {
         {
           context: context,
           inFunction: this.inFunction,
+          inAttemptExpr: this.inAttemptExpr,
         },
         () => {
           return this.lookupAndElaborateDatatype(
@@ -6173,7 +6278,7 @@ export class SemanticElaborator {
 
     if (typeDef.variant !== Semantic.ENode.TaggedUnionDatatype) {
       throw new CompilerError(
-        `The 'try'-operator can only be used on expressions with a tagged union type`,
+        `The '?!' error propagation operator can only be used on expressions with a tagged union type`,
         errPropExpr.sourceloc
       );
     }
@@ -6183,13 +6288,33 @@ export class SemanticElaborator {
 
     if (!okTag || !errTag) {
       throw new CompilerError(
-        `The 'try'-operator can only be used on tagged union types that provide both a Ok and a Err tag.`,
+        `The '?!' error propagation operator can only be used on tagged union types that provide both a Ok and a Err tag.`,
         errPropExpr.sourceloc
       );
     }
 
     const okIndex = typeDef.members.findIndex((m) => m.tag === "Ok");
     const errIndex = typeDef.members.findIndex((m) => m.tag === "Err");
+
+    if (this.inAttemptExpr) {
+      // short circuit and build an expr for lowering instead of rewriting to a return statement
+      const expr = this.sr.exprNodes.get(this.inAttemptExpr);
+      assert(expr.variant === Semantic.ENode.AttemptExpr);
+      expr.errorTypesCaught.add(errTag.type);
+      return Semantic.addExpr(this.sr, {
+        variant: Semantic.ENode.AttemptErrorPropagationExpr,
+        expr: rightExprId,
+        errTagIndex: errIndex,
+        errTagType: errTag.type,
+        okTagIndex: okIndex,
+        okTagType: okTag.type,
+        instanceIds: [],
+        isTemporary: true,
+        sourceloc: errPropExpr.sourceloc,
+        toAttemptExpr: this.inAttemptExpr,
+        type: okTag.type,
+      });
+    }
 
     assert(this.inFunction);
     const functionSymbol = this.sr.symbolNodes.get(this.inFunction);
@@ -6309,11 +6434,14 @@ export class SemanticElaborator {
               constraints: [],
               emittedExpr: null,
               statements: [returnStatement()],
+              sourceloc: errPropExpr.sourceloc,
             })[1],
           })[1],
         ],
+        sourceloc: errPropExpr.sourceloc,
       })[1],
       instanceIds: [],
+      noreturn: false, // dont care
       isTemporary: true,
       sourceloc: errPropExpr.sourceloc,
       type: okTag.type,
@@ -6667,8 +6795,9 @@ export class SemanticElaborator {
       statements: [],
       emittedExpr: null,
       constraints: [...this.currentContext.constraints],
+      sourceloc: blockScope.sourceloc,
     });
-    this.withContext(
+    const result = this.withContext(
       {
         context: Semantic.isolateElaborationContext(this.currentContext, {
           currentScope: blockScopeExpr.scope,
@@ -6677,10 +6806,11 @@ export class SemanticElaborator {
           instanceDeps: this.currentContext.instanceDeps,
         }),
         inFunction: this.inFunction,
+        inAttemptExpr: this.inAttemptExpr,
         functionReturnsInstanceIds: this.functionReturnsInstanceIds,
       },
       () => {
-        this.elaborateBlockScope(
+        return this.elaborateBlockScope(
           {
             targetScopeId: scopeId,
             sourceScopeId: blockScopeExpr.scope,
@@ -6700,10 +6830,169 @@ export class SemanticElaborator {
       variant: Semantic.ENode.BlockScopeExpr,
       instanceIds: [],
       block: scopeId,
+      noreturn: result.noReturn,
       isTemporary: true,
       type: resultType || makeVoidType(this.sr),
       sourceloc: blockScopeExpr.sourceloc,
     });
+  }
+
+  attemptExpr(attempt: Collect.AttemptExpr, inference: Inference) {
+    const uniqueId = makeTempId();
+    const [attemptExpr, attemptExprId] = Semantic.addExpr<Semantic.AttemptExpr>(this.sr, {
+      variant: Semantic.ENode.AttemptExpr,
+      attemptScopeExpr: -1 as Semantic.ExprId,
+      elseScopeExpr: -1 as Semantic.ExprId,
+      instanceIds: [],
+      attemptScopeReturnsType: null,
+      elseScopeReturnsType: null,
+      errorTypesCaught: new Set(),
+      uniqueId: makeTempId(),
+      errorLabel: `__attempt_error_label_${uniqueId}`,
+      resultLabel: `__attempt_result_label_${uniqueId}`,
+      isTemporary: true,
+      sourceloc: attempt.sourceloc,
+      type: -1 as Semantic.TypeUseId,
+      errorUnionType: -1 as Semantic.TypeUseId,
+    });
+
+    const attemptBlockScope = this.sr.cc.scopeNodes.get(attempt.attemptScope);
+    assert(attemptBlockScope.variant === Collect.ENode.BlockScope);
+    const [attemptScope, attemptScopeId] = Semantic.addBlockScope<Semantic.BlockScope>(this.sr, {
+      variant: Semantic.ENode.BlockScope,
+      statements: [],
+      emittedExpr: null,
+      constraints: [...this.currentContext.constraints],
+      sourceloc: attemptBlockScope.sourceloc,
+    });
+    const attemptScopeResult = this.withContext(
+      {
+        context: Semantic.isolateElaborationContext(this.currentContext, {
+          currentScope: attempt.attemptScope,
+          genericsScope: attempt.attemptScope,
+          constraints: this.currentContext.constraints,
+          instanceDeps: this.currentContext.instanceDeps,
+        }),
+        inFunction: this.inFunction,
+        inAttemptExpr: attemptExprId,
+        functionReturnsInstanceIds: this.functionReturnsInstanceIds,
+      },
+      () => {
+        return this.elaborateBlockScope(
+          {
+            targetScopeId: attemptScopeId,
+            sourceScopeId: attempt.attemptScope,
+          },
+          true,
+          inference
+        );
+      }
+    );
+
+    const errorUnion =
+      attemptExpr.errorTypesCaught.size > 0
+        ? this.sr.b.untaggedUnionTypeUse([...attemptExpr.errorTypesCaught], attempt.sourceloc)
+        : this.sr.b.noneType();
+
+    const elseBlockScope = this.sr.cc.scopeNodes.get(attempt.elseScope);
+    assert(elseBlockScope.variant === Collect.ENode.BlockScope);
+    const [elseScope, elseScopeId] = Semantic.addBlockScope(this.sr, {
+      variant: Semantic.ENode.BlockScope,
+      statements: [],
+      emittedExpr: null,
+      constraints: [...this.currentContext.constraints],
+      sourceloc: elseBlockScope.sourceloc,
+    });
+
+    assert(elseBlockScope.statements.length === 2);
+    const statement = this.sr.cc.statementNodes.get(elseBlockScope.statements[0]);
+    assert(statement.variant === Collect.ENode.VariableDefinitionStatement);
+
+    const elseScopeResult = this.withContext(
+      {
+        context: Semantic.isolateElaborationContext(this.currentContext, {
+          currentScope: attempt.elseScope,
+          genericsScope: attempt.elseScope,
+          constraints: this.currentContext.constraints,
+          instanceDeps: this.currentContext.instanceDeps,
+        }),
+        inFunction: this.inFunction,
+        inAttemptExpr: this.inAttemptExpr,
+        functionReturnsInstanceIds: this.functionReturnsInstanceIds,
+      },
+      () => {
+        // Override type of the 'e' variable, will be picked up at variable elaboration
+        this.currentContext.elaborationTypeOverride.set(statement.variableSymbol, errorUnion);
+        return this.elaborateBlockScope(
+          {
+            targetScopeId: elseScopeId,
+            sourceScopeId: attempt.elseScope,
+          },
+          true,
+          inference
+        );
+      }
+    );
+
+    const memberSet = new Set<Semantic.TypeUseId>();
+    if (attemptScope.emittedExpr && !attemptScopeResult.noReturn) {
+      attemptExpr.attemptScopeReturnsType = this.sr.exprNodes.get(attemptScope.emittedExpr).type;
+      memberSet.add(attemptExpr.attemptScopeReturnsType);
+    }
+    if (elseScope.emittedExpr && !elseScopeResult.noReturn) {
+      // elseScope is nested 1 level deeper than attemptScope because of the 'e' variable
+      const doScope = this.sr.exprNodes.get(elseScope.emittedExpr);
+      assert(doScope.variant === Semantic.ENode.BlockScopeExpr);
+      const block = this.sr.blockScopeNodes.get(doScope.block);
+      if (block.emittedExpr) {
+        attemptExpr.elseScopeReturnsType = this.sr.exprNodes.get(elseScope.emittedExpr).type;
+        memberSet.add(attemptExpr.elseScopeReturnsType);
+      }
+    }
+
+    const resultUnion =
+      memberSet.size > 0
+        ? this.sr.b.untaggedUnionTypeUse([...memberSet], attempt.sourceloc)
+        : this.sr.b.noneType();
+
+    attemptExpr.type = resultUnion;
+
+    const [attemptScopeExpr, attemptScopeExprId] = this.sr.b.blockScopeExpr(
+      attemptScopeId,
+      attemptScopeResult.noReturn
+    );
+    if (attemptScopeExpr.type !== this.sr.b.voidType()) {
+      attemptExpr.attemptScopeExpr = Conversion.MakeConversionOrThrow(
+        this.sr,
+        attemptScopeExprId,
+        resultUnion,
+        this.currentContext.constraints,
+        attemptScope.sourceloc,
+        Conversion.Mode.Implicit,
+        false
+      );
+    } else {
+      attemptExpr.attemptScopeExpr = attemptScopeExprId;
+    }
+
+    const [elseExpr, elseExprId] = this.sr.b.blockScopeExpr(elseScopeId, elseScopeResult.noReturn);
+    if (elseExpr.type !== this.sr.b.voidType()) {
+      attemptExpr.elseScopeExpr = Conversion.MakeConversionOrThrow(
+        this.sr,
+        elseExprId,
+        resultUnion,
+        this.currentContext.constraints,
+        elseScope.sourceloc,
+        Conversion.Mode.Implicit,
+        false
+      );
+    } else {
+      attemptExpr.elseScopeExpr = elseExprId;
+    }
+
+    attemptExpr.errorUnionType = errorUnion;
+
+    return [attemptExpr, attemptExprId] as const;
   }
 
   typeLiteral(literal: Collect.TypeLiteralExpr) {
@@ -6742,6 +7031,8 @@ export class SemanticElaborator {
           genericsScope: this.sr.cc.moduleScopeId,
           constraints: [],
         }),
+        inAttemptExpr: null,
+        inFunction: null,
       },
       () => {
         return this.typeDefSymbol(allocatorCollectSymbol);
@@ -6784,6 +7075,21 @@ export class SemanticBuilder {
       type: resultType,
       isTemporary: true,
       sourceloc: sourceloc,
+    });
+  }
+
+  blockScopeExpr(blockScopeId: Semantic.BlockScopeId, noreturn: boolean) {
+    const blockScope = this.sr.blockScopeNodes.get(blockScopeId);
+    return Semantic.addExpr(this.sr, {
+      variant: Semantic.ENode.BlockScopeExpr,
+      block: blockScopeId,
+      instanceIds: [],
+      noreturn: noreturn,
+      isTemporary: true,
+      sourceloc: blockScope.sourceloc,
+      type: blockScope.emittedExpr
+        ? this.sr.exprNodes.get(blockScope.emittedExpr).type
+        : this.sr.b.voidType(),
     });
   }
 
@@ -7073,6 +7379,8 @@ export class SemanticBuilder {
             symbolDependsOn: new Map(),
           },
         }),
+        inAttemptExpr: null,
+        inFunction: null,
       },
       () =>
         this.sr.e.elaborateFunctionSymbolWithGenerics(
@@ -7372,7 +7680,7 @@ export class SemanticBuilder {
   arrayLiteral(
     arrayTypeId: Semantic.TypeUseId,
     elements: Semantic.ExprId[],
-    inFunction: Semantic.SymbolId | undefined,
+    inFunction: Semantic.SymbolId | null,
     allocator: Semantic.ExprId | null,
     sourceloc: SourceLoc
   ) {
@@ -7414,7 +7722,7 @@ export class SemanticBuilder {
       name: string;
       value: Semantic.ExprId;
     }[],
-    inFunction: Semantic.SymbolId | undefined,
+    inFunction: Semantic.SymbolId | null,
     allocator: Semantic.ExprId | null,
     sourceloc: SourceLoc
   ) {
@@ -8052,7 +8360,7 @@ export namespace Semantic {
     ReturnStatement,
     // Expressions
     ParenthesisExpr,
-    ErrorPropagationExpr,
+    AttemptErrorPropagationExpr,
     BinaryExpr,
     LiteralExpr,
     UnaryExpr,
@@ -8063,6 +8371,7 @@ export namespace Semantic {
     SizeofExpr,
     AlignofExpr,
     ExplicitCastExpr,
+    AttemptExpr,
     ValueToUnionCastExpr,
     UnionToValueCastExpr,
     UnionToUnionCastExpr,
@@ -8223,6 +8532,7 @@ export namespace Semantic {
     statements: StatementId[];
     emittedExpr: ExprId | null;
     constraints: Constraint[];
+    sourceloc: SourceLoc;
   };
 
   export type FunctionRequireBlock = {
@@ -8504,6 +8814,23 @@ export namespace Semantic {
     sourceloc: SourceLoc;
   };
 
+  export type AttemptExpr = {
+    variant: ENode.AttemptExpr;
+    instanceIds: InstanceId[];
+    attemptScopeExpr: ExprId;
+    attemptScopeReturnsType: TypeUseId | null;
+    elseScopeExpr: ExprId;
+    elseScopeReturnsType: TypeUseId | null;
+    errorTypesCaught: Set<TypeUseId>;
+    errorLabel: string;
+    resultLabel: string;
+    errorUnionType: TypeUseId;
+    uniqueId: bigint;
+    type: TypeUseId;
+    isTemporary: boolean;
+    sourceloc: SourceLoc;
+  };
+
   export type ValueToUnionCastExpr = {
     variant: ENode.ValueToUnionCastExpr;
     instanceIds: InstanceId[];
@@ -8546,8 +8873,8 @@ export namespace Semantic {
     sourceloc: SourceLoc;
   };
 
-  export type ErrorPropagationExpr = {
-    variant: ENode.ErrorPropagationExpr;
+  export type AttemptErrorPropagationExpr = {
+    variant: ENode.AttemptErrorPropagationExpr;
     instanceIds: InstanceId[];
     expr: ExprId;
     type: TypeUseId;
@@ -8555,7 +8882,7 @@ export namespace Semantic {
     okTagType: TypeUseId;
     errTagIndex: number;
     errTagType: TypeUseId;
-    returnedType: TypeUseId;
+    toAttemptExpr: ExprId;
     isTemporary: boolean;
     sourceloc: SourceLoc;
   };
@@ -8619,7 +8946,7 @@ export namespace Semantic {
       value: ExprId;
     }[];
     type: TypeUseId;
-    inFunction?: SymbolId;
+    inFunction: SymbolId | null;
     allocator: ExprId | null;
     isTemporary: boolean;
     sourceloc: SourceLoc;
@@ -8639,7 +8966,7 @@ export namespace Semantic {
     instanceIds: InstanceId[];
     elements: ExprId[];
     type: TypeUseId;
-    inFunction?: SymbolId;
+    inFunction: SymbolId | null;
     allocator: ExprId | null;
     isTemporary: boolean;
     sourceloc: SourceLoc;
@@ -8695,6 +9022,7 @@ export namespace Semantic {
     variant: ENode.BlockScopeExpr;
     instanceIds: InstanceId[];
     block: BlockScopeId;
+    noreturn: boolean;
     type: TypeUseId;
     isTemporary: boolean;
     sourceloc: SourceLoc;
@@ -8717,13 +9045,14 @@ export namespace Semantic {
     | AddressOfExpr
     | DereferenceExpr
     | ExplicitCastExpr
+    | AttemptExpr
     | ValueToUnionCastExpr
     | StringSubscriptExpr
     | UnionToValueCastExpr
     | UnionToUnionCastExpr
     | UnionTagCheckExpr
-    | ErrorPropagationExpr
-    | ErrorPropagationExpr
+    | AttemptErrorPropagationExpr
+    | AttemptErrorPropagationExpr
     | ExprCallExpr
     | StructLiteralExpr
     | LiteralExpr
@@ -9201,6 +9530,7 @@ export namespace Semantic {
     constraints: Constraint[];
     instanceDeps: InstanceDeps;
 
+    elaborationTypeOverride: Map<Collect.SymbolId, Semantic.TypeUseId>;
     elaboratedVariables: Map<Collect.SymbolId, Semantic.SymbolId>;
     scopeNoReturn: Set<Collect.ScopeId>;
     scopeNoReturnConstraints: Constraint[];
@@ -9224,6 +9554,7 @@ export namespace Semantic {
       scopeNoReturn: new Set(),
       scopeNoReturnConstraints: [],
       elaboratedVariables: new Map(),
+      elaborationTypeOverride: new Map(),
     };
   }
 
@@ -9246,6 +9577,7 @@ export namespace Semantic {
       scopeNoReturn: new Set(parent.scopeNoReturn),
       scopeNoReturnConstraints: [...args.constraints],
       elaboratedVariables: new Map(parent.elaboratedVariables),
+      elaborationTypeOverride: new Map(parent.elaborationTypeOverride),
     };
   }
 
@@ -9258,6 +9590,7 @@ export namespace Semantic {
       instanceDeps: InstanceDeps;
     }
   ): ElaborationContext {
+    // THE ORDER OF [a, b] IS VERY IMPORTANT, DO NOT MIX UP!!!
     return {
       substitute: new Map([...a.substitute, ...b.substitute]),
       constraints: [...a.constraints, ...b.constraints],
@@ -9267,6 +9600,10 @@ export namespace Semantic {
       scopeNoReturn: new Set([...a.scopeNoReturn, ...b.scopeNoReturn]),
       scopeNoReturnConstraints: [...a.constraints, ...b.constraints],
       elaboratedVariables: new Map([...a.elaboratedVariables, ...b.elaboratedVariables]),
+      elaborationTypeOverride: new Map([
+        ...a.elaborationTypeOverride,
+        ...b.elaborationTypeOverride,
+      ]),
     };
   }
 

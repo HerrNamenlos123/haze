@@ -28,7 +28,7 @@ import {
   type NameSet,
 } from "../shared/common";
 import { assert, InternalError, printWarningMessage, type SourceLoc } from "../shared/Errors";
-import { makeTempName } from "../shared/store";
+import { makeTempId, makeTempName } from "../shared/store";
 import { Collect, printCollectedDatatype } from "../SymbolCollection/SymbolCollection";
 import { stat } from "node:fs";
 
@@ -72,6 +72,8 @@ export namespace Lowered {
     ExprStatement,
     BlockScopeExpr,
     ReturnStatement,
+    LabelJumpStatement,
+    LabelDefinitionStatement,
     // Expressions
     ParenthesisExpr,
     BinaryExpr,
@@ -423,6 +425,8 @@ export namespace Lowered {
   export type Statement =
     | InlineCStatement
     | ReturnStatement
+    | LabelJumpStatement
+    | LabelDefinitionStatement
     | VariableStatement
     | IfStatement
     | ForStatement
@@ -447,6 +451,18 @@ export namespace Lowered {
   export type ReturnStatement = {
     variant: ENode.ReturnStatement;
     expr: ExprId | null;
+    sourceloc: SourceLoc;
+  };
+
+  export type LabelJumpStatement = {
+    variant: ENode.LabelJumpStatement;
+    labelName: string;
+    sourceloc: SourceLoc;
+  };
+
+  export type LabelDefinitionStatement = {
+    variant: ENode.LabelDefinitionStatement;
+    labelName: string;
     sourceloc: SourceLoc;
   };
 
@@ -607,7 +623,7 @@ export namespace Lowered {
 const storeInTempVarAndGet = (
   lr: Lowered.Module,
   type: Lowered.TypeUseId,
-  value: Lowered.ExprId,
+  value: Lowered.ExprId | null,
   sourceloc: SourceLoc,
   flattened: Lowered.StatementId[],
   varname?: string
@@ -701,6 +717,28 @@ function makeIntrinsicCall(
     type: returnType,
   });
 }
+
+const shouldBeOptimizedToNullptr = (
+  lr: Lowered.Module,
+  loweredUnionType: Lowered.TypeUseId,
+  valueType: Semantic.TypeUseId
+) => {
+  const unionTypeDef = lr.typeDefNodes.get(lr.typeUseNodes.get(loweredUnionType).type);
+  assert(
+    unionTypeDef.variant === Lowered.ENode.UntaggedUnionDatatype ||
+      unionTypeDef.variant === Lowered.ENode.TaggedUnionDatatype
+  );
+  if (unionTypeDef.optimizeAsRawPointer) {
+    const exprTypeDef = lr.sr.typeDefNodes.get(lr.sr.typeUseNodes.get(valueType).type);
+    if (
+      exprTypeDef.variant === Semantic.ENode.PrimitiveDatatype &&
+      (exprTypeDef.primitive === EPrimitive.none || exprTypeDef.primitive === EPrimitive.null)
+    ) {
+      return true;
+    }
+  }
+  return false;
+};
 
 type InstanceInfo = {
   returnedInstanceIds: Set<Semantic.InstanceId>;
@@ -1565,23 +1603,14 @@ export function lowerExpr(
           loweredUnion.variant === Lowered.ENode.TaggedUnionDatatype
       );
 
-      let optimizeExprToNullptr = false;
-      if (loweredUnion.optimizeAsRawPointer) {
-        const exprTypeDef = lr.sr.typeDefNodes.get(
-          lr.sr.typeUseNodes.get(lr.sr.exprNodes.get(expr.expr).type).type
-        );
-        if (
-          exprTypeDef.variant === Semantic.ENode.PrimitiveDatatype &&
-          (exprTypeDef.primitive === EPrimitive.none || exprTypeDef.primitive === EPrimitive.null)
-        ) {
-          optimizeExprToNullptr = true;
-        }
-      }
-
       return Lowered.addExpr(lr, {
         variant: Lowered.ENode.ValueToUnionCastExpr,
         expr: lowerExpr(lr, expr.expr, flattened, instanceInfo)[1],
-        optimizeExprToNullptr: optimizeExprToNullptr,
+        optimizeExprToNullptr: shouldBeOptimizedToNullptr(
+          lr,
+          loweredUnionId,
+          lr.sr.exprNodes.get(expr.expr).type
+        ),
         index: expr.index,
         type: loweredUnionId,
       });
@@ -1602,21 +1631,14 @@ export function lowerExpr(
           loweredUnion.variant === Lowered.ENode.TaggedUnionDatatype
       );
 
-      let optimizeExprToNullptr = false;
-      if (loweredUnion.optimizeAsRawPointer) {
-        const exprTypeDef = lr.sr.typeDefNodes.get(lr.sr.typeUseNodes.get(sourceExpr.type).type);
-        if (
-          exprTypeDef.variant === Semantic.ENode.PrimitiveDatatype &&
-          exprTypeDef.primitive === EPrimitive.none
-        ) {
-          optimizeExprToNullptr = true;
-        }
-      }
-
       return Lowered.addExpr(lr, {
         variant: Lowered.ENode.UnionToValueCastExpr,
         expr: lowerExpr(lr, expr.expr, flattened, instanceInfo)[1],
-        optimizeExprToNullptr: optimizeExprToNullptr,
+        optimizeExprToNullptr: shouldBeOptimizedToNullptr(
+          lr,
+          loweredUnionId,
+          lr.sr.exprNodes.get(expr.expr).type
+        ),
         index: expr.tag,
         type: lowerTypeUse(lr, expr.type),
       });
@@ -1648,7 +1670,6 @@ export function lowerExpr(
           loweredTargetUnion.variant === Lowered.ENode.TaggedUnionDatatype
       );
 
-      let optimizeExprToNullptr = false;
       if (loweredSourceUnion.optimizeAsRawPointer || loweredTargetUnion.optimizeAsRawPointer) {
         let isFine = false;
         // This is not a true ultimate solution, it just checks if the union actually remains the same,
@@ -1715,7 +1736,7 @@ export function lowerExpr(
       return Lowered.addExpr(lr, {
         variant: Lowered.ENode.UnionToUnionCastExpr,
         expr: lowerExpr(lr, expr.expr, flattened, instanceInfo)[1],
-        optimizeExprToNullptr: optimizeExprToNullptr,
+        optimizeExprToNullptr: false,
         tagMapping: mapping,
         type: loweredTargetUnionId,
       });
@@ -1792,6 +1813,234 @@ export function lowerExpr(
           type: loweredUnionId,
         });
       }
+    }
+
+    case Semantic.ENode.AttemptErrorPropagationExpr: {
+      const attemptExpr = lr.sr.exprNodes.get(expr.toAttemptExpr);
+      assert(attemptExpr.variant === Semantic.ENode.AttemptExpr);
+
+      const [scope, scopeId] = Lowered.addBlockScope<Lowered.BlockScope>(lr, {
+        definesVariables: true,
+        statements: [],
+        emittedExpr: null,
+      });
+
+      const innerExpr = lr.sr.exprNodes.get(expr.expr);
+      const loweredInnerExpr = storeInTempVarAndGet(
+        lr,
+        lowerTypeUse(lr, innerExpr.type),
+        lowerExpr(lr, expr.expr, scope.statements, instanceInfo)[1],
+        expr.sourceloc,
+        scope.statements
+      );
+
+      const loweredValueUnionDef = lr.typeDefNodes.get(
+        lr.typeUseNodes.get(loweredInnerExpr[0].type).type
+      );
+      assert(
+        loweredValueUnionDef.variant === Lowered.ENode.UntaggedUnionDatatype ||
+          loweredValueUnionDef.variant === Lowered.ENode.TaggedUnionDatatype
+      );
+      scope.statements.push(
+        Lowered.addStatement(lr, {
+          variant: Lowered.ENode.IfStatement,
+          condition: Lowered.addExpr(lr, {
+            variant: Lowered.ENode.UnionTagCheckExpr,
+            expr: loweredInnerExpr[1],
+            invertCheck: false,
+            tags: [expr.errTagIndex],
+            optimizeExprToNullptr: loweredValueUnionDef.optimizeAsRawPointer !== null,
+            type: lowerTypeUse(lr, expr.errTagType),
+          })[1],
+          elseIfs: [],
+          then: Lowered.addBlockScope(lr, {
+            definesVariables: false,
+            emittedExpr: null,
+            statements: [
+              Lowered.addStatement(lr, {
+                variant: Lowered.ENode.LabelJumpStatement,
+                labelName: attemptExpr.errorLabel,
+                sourceloc: expr.sourceloc,
+              })[1],
+            ],
+          })[1],
+          sourceloc: expr.sourceloc,
+          else: undefined,
+        })[1]
+      );
+
+      scope.emittedExpr = Lowered.addExpr(lr, {
+        variant: Lowered.ENode.UnionToValueCastExpr,
+        expr: loweredInnerExpr[1],
+        index: expr.okTagIndex,
+        optimizeExprToNullptr: loweredValueUnionDef.optimizeAsRawPointer !== null,
+        type: lowerTypeUse(lr, expr.okTagType),
+      })[1];
+
+      return Lowered.addExpr(lr, {
+        variant: Lowered.ENode.BlockScopeExpr,
+        block: scopeId,
+        sourceloc: expr.sourceloc,
+        type: lowerTypeUse(lr, expr.type),
+      });
+    }
+
+    case Semantic.ENode.AttemptExpr: {
+      // This scope contains everything
+      const [enclosingBlockScope, enclosingBlockScopeId] =
+        Lowered.addBlockScope<Lowered.BlockScope>(lr, {
+          definesVariables: true,
+          emittedExpr: null,
+          statements: [],
+        });
+
+      const attemptResultType = lowerTypeUse(lr, expr.type);
+
+      let resultVarId: Lowered.ExprId | null = null;
+      if (expr.attemptScopeReturnsType || expr.elseScopeReturnsType) {
+        resultVarId = storeInTempVarAndGet(
+          lr,
+          attemptResultType,
+          null,
+          expr.sourceloc,
+          enclosingBlockScope.statements,
+          `__attempt_result_${expr.uniqueId}`
+        )[1];
+        enclosingBlockScope.emittedExpr = resultVarId;
+      } else {
+        assert(expr.type === lr.sr.b.noneType());
+      }
+
+      const errorVarId = storeInTempVarAndGet(
+        lr,
+        lowerTypeUse(lr, expr.errorUnionType),
+        null,
+        expr.sourceloc,
+        enclosingBlockScope.statements,
+        `__attempt_error_${expr.uniqueId}`
+      )[1];
+
+      const loweredAttemptScopeExpr = lowerExpr(
+        lr,
+        expr.attemptScopeExpr,
+        enclosingBlockScope.statements,
+        instanceInfo
+      );
+      if (expr.attemptScopeReturnsType) {
+        assert(resultVarId);
+        enclosingBlockScope.statements.push(
+          Lowered.addStatement(lr, {
+            variant: Lowered.ENode.ExprStatement,
+            expr: Lowered.addExpr(lr, {
+              variant: Lowered.ENode.ExprAssignmentExpr,
+              assignRefTarget: false,
+              target: resultVarId,
+              type: attemptResultType,
+              value: loweredAttemptScopeExpr[1],
+            })[1],
+            sourceloc: expr.sourceloc,
+          })[1]
+        );
+        // Jump to yield and produce a value
+        enclosingBlockScope.statements.push(
+          Lowered.addStatement(lr, {
+            variant: Lowered.ENode.LabelJumpStatement,
+            labelName: expr.resultLabel,
+            sourceloc: expr.sourceloc,
+          })[1]
+        );
+      } else {
+        enclosingBlockScope.statements.push(
+          Lowered.addStatement(lr, {
+            variant: Lowered.ENode.ExprStatement,
+            expr: loweredAttemptScopeExpr[1],
+            sourceloc: expr.sourceloc,
+          })[1]
+        );
+        // Jump to yield without producing a value
+        enclosingBlockScope.statements.push(
+          Lowered.addStatement(lr, {
+            variant: Lowered.ENode.LabelJumpStatement,
+            labelName: expr.resultLabel,
+            sourceloc: expr.sourceloc,
+          })[1]
+        );
+      }
+
+      enclosingBlockScope.statements.push(
+        Lowered.addStatement(lr, {
+          variant: Lowered.ENode.LabelDefinitionStatement,
+          labelName: expr.errorLabel,
+          sourceloc: expr.sourceloc,
+        })[1]
+      );
+      const loweredElseScopeExpr = lowerExpr(
+        lr,
+        expr.elseScopeExpr,
+        enclosingBlockScope.statements,
+        instanceInfo
+      );
+      if (expr.elseScopeReturnsType) {
+        assert(resultVarId);
+        enclosingBlockScope.statements.push(
+          Lowered.addStatement(lr, {
+            variant: Lowered.ENode.ExprStatement,
+            expr: Lowered.addExpr(lr, {
+              variant: Lowered.ENode.ExprAssignmentExpr,
+              assignRefTarget: false,
+              target: resultVarId,
+              type: attemptResultType,
+              value: loweredElseScopeExpr[1],
+            })[1],
+            sourceloc: expr.sourceloc,
+          })[1]
+        );
+        // Jump to error and produce a value
+        enclosingBlockScope.statements.push(
+          Lowered.addStatement(lr, {
+            variant: Lowered.ENode.LabelJumpStatement,
+            labelName: expr.resultLabel,
+            sourceloc: expr.sourceloc,
+          })[1]
+        );
+      } else {
+        enclosingBlockScope.statements.push(
+          Lowered.addStatement(lr, {
+            variant: Lowered.ENode.ExprStatement,
+            expr: loweredElseScopeExpr[1],
+            sourceloc: expr.sourceloc,
+          })[1]
+        );
+        // Jump to yield without producing a value
+        enclosingBlockScope.statements.push(
+          Lowered.addStatement(lr, {
+            variant: Lowered.ENode.LabelJumpStatement,
+            labelName: expr.resultLabel,
+            sourceloc: expr.sourceloc,
+          })[1]
+        );
+      }
+
+      // if (expr.attemptScopeReturnsType) {
+      // }
+      // if (expr.elseScopeReturnsType) {
+      // }
+
+      // ...
+
+      enclosingBlockScope.statements.push(
+        Lowered.addStatement(lr, {
+          variant: Lowered.ENode.LabelDefinitionStatement,
+          labelName: expr.resultLabel,
+          sourceloc: expr.sourceloc,
+        })[1]
+      );
+      return Lowered.addExpr(lr, {
+        variant: Lowered.ENode.BlockScopeExpr,
+        block: enclosingBlockScopeId,
+        sourceloc: expr.sourceloc,
+        type: attemptResultType,
+      });
     }
 
     default:

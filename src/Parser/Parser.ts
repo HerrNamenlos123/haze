@@ -72,6 +72,7 @@ import {
   type ASTAggregateLiteralElement,
   type ASTSubscriptIndexExpr,
   type ASTForStatement,
+  type ASTAttemptExpr,
 } from "../shared/AST";
 import {
   BinaryExprContext,
@@ -155,12 +156,12 @@ import {
   ForStatementContext,
   FStringLiteralExprContext,
   RequiresPureContext,
-  RequiresAutoretContext,
   WhileLetStatementContext,
   IfStatementConditionContext,
   IfLetStatementConditionContext,
   RequiresNoreturnIfContext,
   HexIntegerLiteralContext,
+  AttemptExprContext,
 } from "./grammar/autogen/HazeParser";
 import {
   BaseErrorListener,
@@ -422,7 +423,6 @@ class ASTTransformer extends HazeParserVisitor<any> {
     } else {
       return {
         final: false,
-        autoret: false,
         noreturn: false,
         noreturnIf: null,
         pure: false,
@@ -728,7 +728,6 @@ class ASTTransformer extends HazeParserVisitor<any> {
     const block: ASTFunctionRequiresBlock = {
       final: false,
       pure: false,
-      autoret: false,
       noreturn: false,
       noreturnIf: null,
     };
@@ -738,9 +737,6 @@ class ASTTransformer extends HazeParserVisitor<any> {
       }
       if (part instanceof RequiresPureContext) {
         block.pure = true;
-      }
-      if (part instanceof RequiresAutoretContext) {
-        block.autoret = true;
       }
       if (part instanceof RequiresNoreturnContext) {
         block.noreturn = true;
@@ -1559,6 +1555,16 @@ class ASTTransformer extends HazeParserVisitor<any> {
         variant: "SymbolImport",
       };
     }
+  };
+
+  visitAttemptExpr = (ctx: AttemptExprContext): ASTAttemptExpr => {
+    return {
+      variant: "AttemptExpr",
+      attemptScope: this.visit(ctx.rawScope()[0]),
+      elseScope: this.visit(ctx.rawScope()[1]),
+      elseVar: ctx.ID() ? ctx.ID()!.getText() : null,
+      sourceloc: this.loc(ctx),
+    };
   };
 
   visitGlobalDeclaration = (ctx: GlobalDeclarationContext) => {

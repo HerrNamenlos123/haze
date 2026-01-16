@@ -1,35 +1,36 @@
 
-extern C noemit struct cJSON {};
+namespace ffi {
+    extern C noemit struct cJSON {};
 
-extern C hzstd_json_parse(allocator: Allocator, data: str, error: hzstd_str_ref_t): cJSON | none :: final;
-extern C hzstd_json_create_string(allocator: Allocator, data: str): cJSON :: final;
-extern C hzstd_json_create_number(allocator: Allocator, data: real): cJSON :: final;
-extern C hzstd_json_create_object(allocator: Allocator): cJSON :: final;
-extern C hzstd_json_create_array(allocator: Allocator): cJSON :: final;
+    extern C hzstd_json_parse(allocator: Allocator, data: str, error: ffi.hzstd_str_ref_t): cJSON | none :: final;
+    extern C hzstd_json_create_string(allocator: Allocator, data: str): cJSON :: final;
+    extern C hzstd_json_create_number(allocator: Allocator, data: real): cJSON :: final;
+    extern C hzstd_json_create_object(allocator: Allocator): cJSON :: final;
+    extern C hzstd_json_create_array(allocator: Allocator): cJSON :: final;
 
-extern C hzstd_json_object_has_attribute(json: cJSON, name: str): bool :: final;
-extern C hzstd_json_is_string(json: cJSON): bool :: final;
-extern C hzstd_json_is_object(json: cJSON): bool :: final;
-extern C hzstd_json_is_bool(json: cJSON): bool :: final;
-extern C hzstd_json_is_true(json: cJSON): bool :: final;
-extern C hzstd_json_is_false(json: cJSON): bool :: final;
-extern C hzstd_json_is_number(json: cJSON): bool :: final;
-extern C hzstd_json_is_array(json: cJSON): bool :: final;
-extern C hzstd_json_is_null(json: cJSON): bool :: final;
+    extern C hzstd_json_object_has_attribute(json: cJSON, name: str): bool :: final;
+    extern C hzstd_json_is_string(json: cJSON): bool :: final;
+    extern C hzstd_json_is_object(json: cJSON): bool :: final;
+    extern C hzstd_json_is_bool(json: cJSON): bool :: final;
+    extern C hzstd_json_is_true(json: cJSON): bool :: final;
+    extern C hzstd_json_is_false(json: cJSON): bool :: final;
+    extern C hzstd_json_is_number(json: cJSON): bool :: final;
+    extern C hzstd_json_is_array(json: cJSON): bool :: final;
+    extern C hzstd_json_is_null(json: cJSON): bool :: final;
 
-extern C hzstd_json_get_string_value(allocator: Allocator, json: cJSON): hzstd_str_ref_t | none :: final;
-extern C hzstd_json_get_number_value(allocator: Allocator, json: cJSON): real :: final;
+    extern C hzstd_json_get_string_value(allocator: Allocator, json: cJSON): ffi.hzstd_str_ref_t | none :: final;
+    extern C hzstd_json_get_number_value(allocator: Allocator, json: cJSON): real :: final;
 
-extern C hzstd_json_get_object_item(allocator: Allocator, json: cJSON, name: str): cJSON | none :: final;
-extern C hzstd_json_get_array_size(allocator: Allocator, json: cJSON): usize :: final;
-extern C hzstd_json_get_array_item(allocator: Allocator, json: cJSON, index: usize): cJSON :: final;
+    extern C hzstd_json_get_object_item(allocator: Allocator, json: cJSON, name: str): cJSON | none :: final;
+    extern C hzstd_json_get_array_size(allocator: Allocator, json: cJSON): usize :: final;
+    extern C hzstd_json_get_array_item(allocator: Allocator, json: cJSON, index: usize): cJSON :: final;
 
-extern C hzstd_json_add_item_to_object(allocator: Allocator, object: cJSON, name: str, item: cJSON): bool :: final;
-extern C hzstd_json_add_item_to_array(allocator: Allocator, object: cJSON, item: cJSON): bool :: final;
+    extern C hzstd_json_add_item_to_object(allocator: Allocator, object: cJSON, name: str, item: cJSON): bool :: final;
+    extern C hzstd_json_add_item_to_array(allocator: Allocator, object: cJSON, item: cJSON): bool :: final;
 
-extern C hzstd_json_print_unformatted(allocator: Allocator, json: cJSON): str :: final;
-extern C hzstd_json_print(allocator: Allocator, json: cJSON): str :: final;
-
+    extern C hzstd_json_print_unformatted(allocator: Allocator, json: cJSON): str :: final;
+    extern C hzstd_json_print(allocator: Allocator, json: cJSON): str :: final;
+}
 
 namespace json {
     struct Error {
@@ -38,7 +39,7 @@ namespace json {
 
     struct Value {
         allocator: Allocator;
-        data: cJSON;
+        data: ffi.cJSON;
 
         struct Proxy {
             json: Value;
@@ -46,9 +47,9 @@ namespace json {
 
             to<T>() {
                 if comptime T == type<str> {
-                    let obj = hzstd_json_get_object_item(this.json.allocator, this.json.data, this.attribute);
+                    let obj = ffi.hzstd_json_get_object_item(this.json.allocator, this.json.data, this.attribute);
                     if obj {
-                        let value = hzstd_json_get_string_value(this.json.allocator, obj);
+                        let value = ffi.hzstd_json_get_string_value(this.json.allocator, obj);
                         if value {
                             return value.data;
                         }
@@ -57,9 +58,9 @@ namespace json {
                     sys.panic("JSON object does not have attribute");
                 } 
                 else if T == type<real> {
-                    let obj = hzstd_json_get_object_item(this.json.allocator, this.json.data, this.attribute);
+                    let obj = ffi.hzstd_json_get_object_item(this.json.allocator, this.json.data, this.attribute);
                     if obj {
-                        let value = hzstd_json_get_number_value(this.json.allocator, obj);
+                        let value = ffi.hzstd_json_get_number_value(this.json.allocator, obj);
                         return value;
                     }
                     sys.panic("JSON object does not have attribute");
@@ -71,13 +72,13 @@ namespace json {
 
             operator[](index: str): Result<Proxy, Error> {
                 // String access to a proxy, so the parent must be an object
-                if hzstd_json_object_has_attribute(this.json.data, this.attribute) {
+                if ffi.hzstd_json_object_has_attribute(this.json.data, this.attribute) {
                     // Already exists, check type
-                    if !hzstd_json_is_object(this.json.data) {
+                    if !ffi.hzstd_json_is_object(this.json.data) {
                         sys.panic("JSON was expected to be an object");
                     }
 
-                    let obj = hzstd_json_get_object_item(this.json.allocator, this.json.data, this.attribute);
+                    let obj = ffi.hzstd_json_get_object_item(this.json.allocator, this.json.data, this.attribute);
                     if obj {
                         return Result<Proxy, Error>.Ok({ json: { allocator: this.json.allocator, data: obj }, attribute: index });
                     }
@@ -85,35 +86,35 @@ namespace json {
                 }
                 else {
                     // Does not exist yet, create
-                    let newObj = hzstd_json_create_object(this.json.allocator);
-                    hzstd_json_add_item_to_object(this.json.allocator, this.json.data, this.attribute, newObj);
+                    let newObj = ffi.hzstd_json_create_object(this.json.allocator);
+                    ffi.hzstd_json_add_item_to_object(this.json.allocator, this.json.data, this.attribute, newObj);
                     return Result<Proxy, Error>.Ok({ json: { allocator: this.json.allocator, data: newObj }, attribute: index });
                 }
             }
 
             operator:=(value: str): void {
-                let item = hzstd_json_create_string(this.json.allocator, value);
-                let success = hzstd_json_add_item_to_object(this.json.allocator, this.json.data, this.attribute, item);
+                let item = ffi.hzstd_json_create_string(this.json.allocator, value);
+                let success = ffi.hzstd_json_add_item_to_object(this.json.allocator, this.json.data, this.attribute, item);
                 assert(success, none);
             }
 
             operator:=(value: real): void {
-                let item = hzstd_json_create_number(this.json.allocator, value);
-                let success = hzstd_json_add_item_to_object(this.json.allocator, this.json.data, this.attribute, item);
+                let item = ffi.hzstd_json_create_number(this.json.allocator, value);
+                let success = ffi.hzstd_json_add_item_to_object(this.json.allocator, this.json.data, this.attribute, item);
                 assert(success, none);
             }
 
             operator:=(value: Value): void {
-                let success = hzstd_json_add_item_to_object(this.json.allocator, this.json.data, this.attribute, value.data);
+                let success = ffi.hzstd_json_add_item_to_object(this.json.allocator, this.json.data, this.attribute, value.data);
                 assert(success, none);
             }
 
             push(value: Value): void {
-                if hzstd_json_object_has_attribute(this.json.data, this.attribute) {
-                    let obj = hzstd_json_get_object_item(this.json.allocator, this.json.data, this.attribute);
+                if ffi.hzstd_json_object_has_attribute(this.json.data, this.attribute) {
+                    let obj = ffi.hzstd_json_get_object_item(this.json.allocator, this.json.data, this.attribute);
                     if obj {
-                        assert(hzstd_json_is_array(obj), none);
-                        hzstd_json_add_item_to_array(this.json.allocator, obj, value.data);
+                        assert(ffi.hzstd_json_is_array(obj), none);
+                        ffi.hzstd_json_add_item_to_array(this.json.allocator, obj, value.data);
                         return;
                     }
                     sys.panic("JSON object does not have attribute");
@@ -144,10 +145,10 @@ namespace json {
 
         print(options: PrintOptions) {
             if (options.pretty) {
-                return hzstd_json_print(this.allocator, this.data);
+                return ffi.hzstd_json_print(this.allocator, this.data);
             }
             else {
-                return hzstd_json_print_unformatted(this.allocator, this.data);
+                return ffi.hzstd_json_print_unformatted(this.allocator, this.data);
             }
         }
 
@@ -158,8 +159,8 @@ namespace json {
     }
 
     parseWithAllocator(allocator: Allocator, data: str): Result<Value, Error> {
-        let error = hzstd_str_ref_t { data: "" };
-        const cjson = hzstd_json_parse(allocator, data, error);
+        let error = ffi.hzstd_str_ref_t { data: "" };
+        const cjson = ffi.hzstd_json_parse(allocator, data, error);
         if cjson {
             return Result<Value, Error>.Ok({
                 allocator: allocator,
@@ -171,13 +172,13 @@ namespace json {
 
     object(): Value {
         let allocator = Alloc.arena();
-        let obj = hzstd_json_create_object(allocator);
+        let obj = ffi.hzstd_json_create_object(allocator);
         return { allocator: allocator, data: obj };
     }
 
     array(): Value {
         let allocator = Alloc.arena();
-        let obj = hzstd_json_create_array(allocator);
+        let obj = ffi.hzstd_json_create_array(allocator);
         return { allocator: allocator, data: obj };
     }
 }

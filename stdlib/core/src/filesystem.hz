@@ -113,7 +113,7 @@ export namespace fs {
     }
 
     export read(allocator: Allocator, path: str): Result<str, Error> {
-        let output = hzstd_str_ref_t { data: "" } with allocator;
+        let output = ffi.hzstd_str_ref_t { data: "" } with allocator;
         let result = ffi.hzstd_read_file_text(allocator, path, output);
         if result.code == ffi.hzstd_fs_error_code_none {
             return Result<str, Error>.Ok(output.data);

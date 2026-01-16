@@ -1,5 +1,5 @@
 CompileFlags:
   CompilationDatabase: __haze__/
   Add: [
-    "-I/home/fzachs/.haze/global", "-DHAZE_PLATFORM_WIN32", "-Wno-parentheses-equality", "-I/home/fzachs/.haze/global/wgpu-native/include", "-Wno-unused-includes"
+    "-I/home/fzachs/.haze/global", "-DHAZE_PLATFORM_LINUX", "-Wno-parentheses-equality", "-I/home/fzachs/.haze/global/wgpu-native/include", "-Wno-unused-includes"
   ]

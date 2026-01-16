@@ -44,6 +44,7 @@ import {
   EOverloadedOperator,
   type ASTExprIsTypeExpr,
   type ASTEnumValueDefinition,
+  type ASTVariableDefinitionStatement,
 } from "../shared/AST";
 import {
   BrandedArray,
@@ -192,6 +193,7 @@ export namespace Collect {
     PostIncrExpr,
     ArraySubscriptExpr,
     TypeLiteralExpr,
+    AttemptExpr,
     // Specials
     ModuleImport,
     SymbolImport,
@@ -458,7 +460,6 @@ export namespace Collect {
   };
 
   export type FunctionRequiresBlock = {
-    autoret: boolean;
     final: boolean;
     pure: boolean;
     noreturn: boolean;
@@ -743,6 +744,13 @@ export namespace Collect {
     datatype: Collect.TypeUseId;
   };
 
+  export type AttemptExpr = BaseExpr & {
+    variant: ENode.AttemptExpr;
+    attemptScope: Collect.ScopeId;
+    elseScope: Collect.ScopeId;
+    elseVar: string | null;
+  };
+
   export type Expressions =
     | ParenthesisExpr
     | ErrorPropagationExpr
@@ -761,6 +769,7 @@ export namespace Collect {
     | TypeLiteralExpr
     | PreIncrExpr
     | PostIncrExpr
+    | AttemptExpr
     | MemberAccessExpr;
 
   export type ModuleImport = {
@@ -1384,7 +1393,6 @@ function collectTypeUse(
         requires: {
           final: item.requires.final,
           pure: item.requires.pure,
-          autoret: item.requires.autoret,
           noreturn: item.requires.noreturn,
           noreturnIf: item.requires.noreturnIf
             ? {
@@ -1561,7 +1569,6 @@ function collectSymbol(
         requires: {
           final: item.requires.final,
           pure: item.requires.pure,
-          autoret: item.requires.autoret,
           noreturn: item.requires.noreturn,
           noreturnIf: item.requires.noreturnIf
             ? {
@@ -2547,6 +2554,62 @@ function collectExpr(
         datatype: collectTypeUse(cc, item.datatype, {
           currentParentScope: args.currentParentScope,
         }),
+        sourceloc: item.sourceloc,
+      })[1];
+    }
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
+    case "AttemptExpr": {
+      let outerElseScope = collectScope(
+        cc,
+        {
+          variant: "Scope",
+          unsafe: true,
+          statements: [
+            ...(item.elseVar
+              ? [
+                  {
+                    variant: "VariableDefinitionStatement",
+                    name: item.elseVar,
+                    comptime: false,
+                    mutability: EVariableMutability.Let,
+                    sourceloc: item.sourceloc,
+                    variableContext: EVariableContext.FunctionLocal,
+                    datatype: undefined,
+                    expr: {
+                      variant: "SymbolValueExpr",
+                      generics: [],
+                      name: "uninitialized",
+                      sourceloc: item.sourceloc,
+                    },
+                  } as ASTVariableDefinitionStatement,
+                ]
+              : []),
+            {
+              variant: "ExprStatement",
+              expr: {
+                variant: "BlockScopeExpr",
+                scope: item.elseScope,
+                sourceloc: item.sourceloc,
+              },
+              sourceloc: item.sourceloc,
+            },
+          ],
+          sourceloc: item.sourceloc,
+        },
+        {
+          currentParentScope: args.currentParentScope,
+        }
+      );
+
+      return Collect.makeExpr(cc, {
+        variant: Collect.ENode.AttemptExpr,
+        attemptScope: collectScope(cc, item.attemptScope, args),
+        elseScope: outerElseScope,
+        elseVar: item.elseVar,
         sourceloc: item.sourceloc,
       })[1];
     }
