@@ -2515,6 +2515,61 @@ function lowerStatement(
       ];
     }
 
+    case Semantic.ENode.RaiseStatement: {
+      const semanticExpr = lr.sr.exprNodes.get(statement.expr);
+
+      const attemptExpr = lr.sr.exprNodes.get(statement.toAttemptExpr);
+      assert(attemptExpr.variant === Semantic.ENode.AttemptExpr);
+
+      const targetUnionUse = lr.sr.typeUseNodes.get(attemptExpr.errorUnionType);
+      const targetUnionDef = lr.sr.typeDefNodes.get(targetUnionUse.type);
+      assert(targetUnionDef.variant === Semantic.ENode.UntaggedUnionDatatype);
+      const targetIndex = targetUnionDef.members.findIndex((m) => m === semanticExpr.type);
+      assert(targetIndex !== -1);
+
+      const loweredErrorUnionType = lowerTypeUse(lr, attemptExpr.errorUnionType);
+
+      const flattened: Lowered.StatementId[] = [];
+      const loweredExpr = lowerExpr(lr, statement.expr, flattened, instanceInfo);
+      return [
+        ...flattened,
+        Lowered.addStatement(lr, {
+          variant: Lowered.ENode.ExprStatement,
+          expr: Lowered.addExpr(lr, {
+            variant: Lowered.ENode.ExprAssignmentExpr,
+            assignRefTarget: false,
+            target: Lowered.addExpr(lr, {
+              variant: Lowered.ENode.SymbolValueExpr,
+              name: {
+                mangledName: attemptExpr.errorResultVarname,
+                prettyName: attemptExpr.errorResultVarname,
+                wasMangled: false,
+              },
+              type: loweredErrorUnionType,
+            })[1],
+            value: Lowered.addExpr(lr, {
+              variant: Lowered.ENode.ValueToUnionCastExpr,
+              expr: loweredExpr[1],
+              index: targetIndex,
+              optimizeExprToNullptr: shouldBeOptimizedToNullptr(
+                lr,
+                loweredErrorUnionType,
+                semanticExpr.type
+              ),
+              type: loweredErrorUnionType,
+            })[1],
+            type: loweredErrorUnionType,
+          })[1],
+          sourceloc: statement.sourceloc,
+        })[1],
+        Lowered.addStatement(lr, {
+          variant: Lowered.ENode.LabelJumpStatement,
+          labelName: attemptExpr.errorLabel,
+          sourceloc: statement.sourceloc,
+        })[1],
+      ];
+    }
+
     default:
       throw new InternalError("Unhandled case: ");
   }

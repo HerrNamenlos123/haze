@@ -22,6 +22,7 @@ REQUIRES: 'requires';
 UNSAFE: 'unsafe';
 DO: 'do';
 YIELD: 'yield';
+RAISE: 'raise';
 EMIT: 'emit';
 INLINE: 'inline';
 ATTEMPT: 'attempt';

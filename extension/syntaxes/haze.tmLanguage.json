@@ -35,7 +35,7 @@
         },
         {
           "name": "keyword.control",
-          "match": "\\b(extern|noemit|const|mut|let|if|comptime|else|while|do|attempt|unsafe|emit|for|return|static|defer|operator|union)\\b"
+          "match": "\\b(extern|noemit|const|mut|let|if|comptime|else|while|do|attempt|unsafe|emit|for|return|static|defer|operator|union|raise)\\b"
         },
         {
           "name": "keyword.struct",

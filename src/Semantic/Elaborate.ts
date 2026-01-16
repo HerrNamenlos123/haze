@@ -5752,6 +5752,31 @@ export class SemanticElaborator {
         }
       }
 
+      case Collect.ENode.RaiseStatement: {
+        const [e, eId] = s.expr ? this.expr(s.expr, undefined) : this.sr.b.noneExpr();
+
+        if (!this.inAttemptExpr) {
+          throw new CompilerError(
+            `A 'raise' statement can only be used in conjunction with a attempt/else construct, no corresponding construct for this statement is found`,
+            s.sourceloc
+          );
+        }
+
+        const expr = this.sr.exprNodes.get(this.inAttemptExpr);
+        assert(expr.variant === Semantic.ENode.AttemptExpr);
+        expr.errorTypesCaught.add(e.type);
+
+        this.currentContext.scopeCanExitEarly.add(this.currentContext.currentScope);
+        this.currentContext.scopeWillExitEarly.add(this.currentContext.currentScope);
+
+        return Semantic.addStatement(this.sr, {
+          variant: Semantic.ENode.RaiseStatement,
+          expr: eId,
+          toAttemptExpr: this.inAttemptExpr,
+          sourceloc: s.sourceloc,
+        })[1];
+      }
+
       default:
         assert(false);
     }
@@ -6554,13 +6579,14 @@ export class SemanticElaborator {
         isTemporary: true,
       });
     } else {
-      throw new CompilerError(
-        `This comparison is invalid, as the 'is' operator can only be meaningfully applied to union types, which '${Semantic.serializeTypeUse(
-          this.sr,
-          sourceExpr.type
-        )}' is not.`,
-        exprIsType.sourceloc
-      );
+      // It is not a union, so the 'is' operator is not meaningful to distinguish anything, therefore
+      // all other types will result in a compile time true/false constant.
+      // Limiting is and making it a compile error would seriously negatively affect how pleasant the operator is to use.
+      if (sourceExpr.type === comparisonType) {
+        return this.sr.b.literal(true, exprIsType.sourceloc);
+      } else {
+        return this.sr.b.literal(false, exprIsType.sourceloc);
+      }
     }
   }
 
@@ -8521,6 +8547,7 @@ export namespace Semantic {
     ExprStatement,
     BlockScopeExpr,
     ReturnStatement,
+    RaiseStatement,
     // Expressions
     ParenthesisExpr,
     AttemptErrorPropagationExpr,
@@ -9240,6 +9267,13 @@ export namespace Semantic {
     sourceloc: SourceLoc;
   };
 
+  export type RaiseStatement = {
+    variant: ENode.RaiseStatement;
+    expr: ExprId;
+    toAttemptExpr: ExprId;
+    sourceloc: SourceLoc;
+  };
+
   export type IfStatement = {
     variant: ENode.IfStatement;
     isLetBinding: boolean;
@@ -9288,6 +9322,7 @@ export namespace Semantic {
   export type Statement =
     | InlineCStatement
     | ReturnStatement
+    | RaiseStatement
     | VariableStatement
     | IfStatement
     | ForStatement

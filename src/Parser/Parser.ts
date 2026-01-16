@@ -73,6 +73,7 @@ import {
   type ASTSubscriptIndexExpr,
   type ASTForStatement,
   type ASTAttemptExpr,
+  type ASTRaiseStatement,
 } from "../shared/AST";
 import {
   BinaryExprContext,
@@ -162,6 +163,7 @@ import {
   RequiresNoreturnIfContext,
   HexIntegerLiteralContext,
   AttemptExprContext,
+  RaiseStatementContext,
 } from "./grammar/autogen/HazeParser";
 import {
   BaseErrorListener,
@@ -1563,6 +1565,14 @@ class ASTTransformer extends HazeParserVisitor<any> {
       attemptScope: this.visit(ctx.rawScope()[0]),
       elseScope: this.visit(ctx.rawScope()[1]),
       elseVar: ctx.ID() ? ctx.ID()!.getText() : null,
+      sourceloc: this.loc(ctx),
+    };
+  };
+
+  visitRaiseStatement = (ctx: RaiseStatementContext): ASTRaiseStatement => {
+    return {
+      variant: "RaiseStatement",
+      expr: ctx.expr() ? this.visit(ctx.expr()!) : null,
       sourceloc: this.loc(ctx),
     };
   };

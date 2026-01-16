@@ -26,7 +26,30 @@ adapterRequestCallback(status: wgpu.ffi.WGPURequestAdapterStatus,
   }
 }
 
+get() {
+    // return 1;
+    return 3;
+}
+
 main(): int {
+
+    let a = attempt {
+        let v = get();
+        if v == 1 {
+            raise "Oh no it's 1";
+        } 
+        else if v == 2 {
+            raise 187;
+        }
+    }
+    else e {
+        if e is str {
+            fmt.println("Error: ", e);
+        }
+        else {
+            fmt.println("Error: ", e);
+        }
+    }
 
     return 0;
     // let a = fs.exists("my/very/test");

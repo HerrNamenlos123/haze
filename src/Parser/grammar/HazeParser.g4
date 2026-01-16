@@ -245,6 +245,7 @@ statement
     : INLINEC LB STRING_LITERAL RB SEMI?                                            #CInlineStatement
     | expr SEMI?                                                                    #ExprStatement
     | RETURN expr? SEMI?                                                            #ReturnStatement
+    | RAISE expr? SEMI?                                                             #RaiseStatement
     | variableCreation                                                              #VariableCreationStatement
     | IF comptime=COMPTIME? ifCondition=ifStatementConditionImpl then=rawScope (ELSE IF elseIfCondition+=ifStatementConditionImpl elseIfThen+=rawScope)* (ELSE elseBlock=rawScope)? #IfStatement
     | FOR comptime=COMPTIME? ID (COMMA ID)? IN expr rawScope                        #ForEachStatement

@@ -171,6 +171,7 @@ export namespace Collect {
     ForEachStatement,
     WhileStatement,
     ReturnStatement,
+    RaiseStatement,
     InlineCStatement,
     BlockScopeExpr,
     VariableDefinitionStatement,
@@ -547,6 +548,11 @@ export namespace Collect {
     expr: Collect.ExprId | null;
   };
 
+  export type RaiseStatement = BaseStatement & {
+    variant: ENode.RaiseStatement;
+    expr: Collect.ExprId | null;
+  };
+
   export type ForStatement = BaseStatement & {
     variant: ENode.ForStatement;
     initStatement: Collect.StatementId | null;
@@ -596,6 +602,7 @@ export namespace Collect {
     | ExprStatement
     | InlineCStatement
     | ReturnStatement
+    | RaiseStatement
     | IfStatement
     | ForStatement
     | ForEachStatement
@@ -606,6 +613,7 @@ export namespace Collect {
     | Omit<ExprStatement, "owningScope">
     | Omit<InlineCStatement, "owningScope">
     | Omit<ReturnStatement, "owningScope">
+    | Omit<RaiseStatement, "owningScope">
     | Omit<IfStatement, "owningScope">
     | Omit<ForStatement, "owningScope">
     | Omit<ForEachStatement, "owningScope">
@@ -2037,6 +2045,17 @@ function collectScope(
       case "ReturnStatement":
         addStatement(cc, blockScopeId, {
           variant: Collect.ENode.ReturnStatement,
+          expr:
+            (astStatement.expr &&
+              collectExpr(cc, astStatement.expr, { currentParentScope: blockScopeId })) ||
+            null,
+          sourceloc: astStatement.sourceloc,
+        });
+        break;
+
+      case "RaiseStatement":
+        addStatement(cc, blockScopeId, {
+          variant: Collect.ENode.RaiseStatement,
           expr:
             (astStatement.expr &&
               collectExpr(cc, astStatement.expr, { currentParentScope: blockScopeId })) ||
