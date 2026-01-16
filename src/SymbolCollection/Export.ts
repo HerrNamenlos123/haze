@@ -94,7 +94,12 @@ export function ExportTypeDef(
             rawParams = rawParams.slice(1, undefined);
           }
           const parameters = rawParams
-            .map((p, i) => `${method.parameterNames[i + 1]}: ${Semantic.serializeTypeUse(sr, p)}`)
+            .map(
+              (p, i) =>
+                `${method.parameterNames[i + 1]}${
+                  p.optional ? "?" : ""
+                }: ${Semantic.serializeTypeUse(sr, p.type)}`
+            )
             .join(", ");
           if (functype.returnType) {
             file += `${method.name}(${parameters}): (${Semantic.serializeTypeUse(
@@ -207,7 +212,13 @@ export function ExportSymbol(
       file +=
         "(" +
         functype.parameters
-          .map((p, i) => `${symbol.parameterNames[i]}: ${Semantic.serializeTypeUse(sr, p)}`)
+          .map(
+            (p, i) =>
+              `${symbol.parameterNames[i]}${p.optional ? "?" : ""}: ${Semantic.serializeTypeUse(
+                sr,
+                p.type
+              )}`
+          )
           .join(", ") +
         (functype.vararg ? ", ..." : "") +
         ")" +

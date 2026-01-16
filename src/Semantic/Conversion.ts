@@ -935,15 +935,25 @@ export namespace Conversion {
         );
       }
 
+      const concreteMatch = fromType.concrete && to.concrete;
+      const varargMatch = fromType.vararg === to.vararg;
+      const noreturnMatch = fromType.requires.noreturn === to.requires.noreturn;
+      const noreturnIfMatch = fromType.requires.noreturnIf?.expr === to.requires.noreturnIf?.expr;
+      const returnTypeMatch = fromType.returnType === to.returnType;
+      const paramLengthMatch = fromType.parameters.length === to.parameters.length;
+      // Compare parameter types, not the parameter objects themselves (which may have different names, etc.)
+      const paramsMatch = fromType.parameters.every((p, i) => to.parameters[i].type === p.type);
+      const purityOk = !to.requires.pure || fromType.requires.pure;
+
       if (
-        fromType.concrete &&
-        to.concrete &&
-        fromType.vararg === to.vararg &&
-        fromType.requires.noreturn === to.requires.noreturn &&
-        fromType.requires.noreturnIf?.expr === to.requires.noreturnIf?.expr &&
-        fromType.returnType === to.returnType &&
-        fromType.parameters.length === to.parameters.length &&
-        fromType.parameters.every((p, i) => to.parameters[i] === p)
+        concreteMatch &&
+        varargMatch &&
+        noreturnMatch &&
+        noreturnIfMatch &&
+        returnTypeMatch &&
+        paramLengthMatch &&
+        paramsMatch &&
+        purityOk
       ) {
         return ok(
           Semantic.addExpr(sr, {
@@ -956,6 +966,9 @@ export namespace Conversion {
           })[1]
         );
       }
+
+      // If we reach here, the function types are incompatible
+      // Fall through to "No suitable conversion" error below
     }
 
     // Conversion between Integers

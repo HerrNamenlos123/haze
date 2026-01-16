@@ -491,75 +491,123 @@ export class SemanticElaborator {
     const calledExprTypeUse = this.getTypeUse(calledExpr.type);
     const calledExprType = this.getTypeDef(calledExprTypeUse.type);
 
-    const convertArgs = (
-      givenArgs: Semantic.ExprId[],
-      requiredTypes: {
-        optional: boolean;
-        type: Semantic.TypeUseId;
-      }[],
-      sourceloc: SourceLoc[],
-      vararg: boolean
-    ) => {
-      console.log(
-        "Converting args to call ",
-        requiredTypes.map(
-          (t) => (t.optional ? "?" : "") + Semantic.serializeTypeUse(this.sr, t.type)
-        )
-      );
-      const newRequiredTypes = requiredTypes.filter((t) => {
-        const tt = this.getTypeDef(this.getTypeUse(t.type).type);
-        return tt.variant !== Semantic.ENode.ParameterPackDatatype && !t.optional;
-      });
-      if (vararg || requiredTypes.length !== newRequiredTypes.length) {
-        assertCompilerError(
-          givenArgs.length >= newRequiredTypes.length,
-          `This call requires at least ${newRequiredTypes.length} arguments but only ${givenArgs.length} were given`,
-          calledExpr.sourceloc
-        );
-      } else {
-        assertCompilerError(
-          givenArgs.length === newRequiredTypes.length,
-          `This call requires ${newRequiredTypes.length} arguments but ${givenArgs.length} were given`,
-          calledExpr.sourceloc
-        );
-      }
-      assert(sourceloc.length === givenArgs.length);
-      return givenArgs.map((a, index) => {
-        if (index < newRequiredTypes.length) {
-          return Conversion.MakeConversionOrThrow(
-            this.sr,
-            a,
-            newRequiredTypes[index].type,
-            this.currentContext.constraints,
-            sourceloc[index],
-            Conversion.Mode.Implicit,
-            inference?.unsafe || false
-          );
-        } else {
-          return a;
-        }
-      });
-    };
-
-    const getActualCallingArguments = (
-      expectedParameterTypes: {
+    // Helper: Elaborate all calling arguments with type hints from parameter types
+    const elaborateCallingArguments = (
+      parameterTypes: {
         optional: boolean;
         type: Semantic.TypeUseId;
       }[]
     ): Semantic.ExprId[] => {
-      return callExpr.arguments.map((a, i) => {
-        const alreadyKnown = decisiveArguments.find((d) => d.index === i);
-        if (alreadyKnown && alreadyKnown.exprId) {
-          return alreadyKnown.exprId;
+      return callExpr.arguments.map((arg, index) => {
+        // Reuse already-elaborated decisive arguments
+        if (decisiveArguments[index]?.exprId) {
+          return decisiveArguments[index].exprId;
+        }
+
+        // Elaborate with type hint for struct inference
+        const paramType = index < parameterTypes.length ? parameterTypes[index].type : undefined;
+        return this.sr.e.expr(arg, {
+          gonnaInstantiateStructWithType: paramType,
+          unsafe: inference?.unsafe,
+        })[1];
+      });
+    };
+
+    // Helper: Validate argument count and return actual args (with defaults for optional)
+    const validateAndPrepareArguments = (
+      givenArgs: Semantic.ExprId[],
+      parameterTypes: {
+        optional: boolean;
+        type: Semantic.TypeUseId;
+      }[],
+      hasVararg: boolean,
+      hasParameterPack: boolean
+    ): Semantic.ExprId[] => {
+      // Count required parameters (non-optional, non-pack)
+      const requiredParams = parameterTypes.filter(
+        (p) => !p.optional && !this.isParameterPackType(p.type)
+      );
+      const optionalParams = parameterTypes.filter(
+        (p) => p.optional && !this.isParameterPackType(p.type)
+      );
+
+      // Check argument count
+      if (hasVararg || hasParameterPack) {
+        // Vararg and pack: at least required params needed
+        assertCompilerError(
+          givenArgs.length >= requiredParams.length,
+          `This call requires at least ${requiredParams.length} arguments but ${givenArgs.length} were given`,
+          calledExpr.sourceloc
+        );
+      } else {
+        // No vararg/pack: exact match or with optional params
+        const maxParams = parameterTypes.length;
+        const minParams = requiredParams.length;
+        assertCompilerError(
+          givenArgs.length >= minParams && givenArgs.length <= maxParams,
+          `This call requires ${minParams}${
+            minParams !== maxParams ? `-${maxParams}` : ""
+          } arguments but ${givenArgs.length} were given`,
+          calledExpr.sourceloc
+        );
+      }
+
+      // Fill in missing optional arguments with `none`
+      const result = [...givenArgs];
+      for (let i = givenArgs.length; i < parameterTypes.length; i++) {
+        if (parameterTypes[i].optional) {
+          result.push(this.sr.b.noneExpr()[1]);
+        }
+      }
+
+      return result;
+    };
+
+    // Helper: Insert implicit conversions for arguments
+    const convertArguments = (
+      givenArgs: Semantic.ExprId[],
+      parameterTypes: {
+        optional: boolean;
+        type: Semantic.TypeUseId;
+      }[],
+      hasVararg: boolean,
+      hasParameterPack: boolean
+    ): Semantic.ExprId[] => {
+      const argumentSourcelocs = callExpr.arguments.map(
+        (a) => this.sr.cc.exprNodes.get(a).sourceloc
+      );
+
+      // Find the index of the parameter pack parameter (if any)
+      const packParameterIndex = hasParameterPack
+        ? parameterTypes.findIndex((p) => this.isParameterPackType(p.type))
+        : -1;
+
+      return givenArgs.map((arg, index) => {
+        // If this is the parameter pack position, keep args as-is (they'll be bundled by codegen)
+        if (index === packParameterIndex) {
+          return arg;
+        }
+
+        // Only convert if we have a corresponding non-pack parameter
+        if (
+          index < parameterTypes.length &&
+          !this.isParameterPackType(parameterTypes[index].type)
+        ) {
+          return Conversion.MakeConversionOrThrow(
+            this.sr,
+            arg,
+            parameterTypes[index].type,
+            this.currentContext.constraints,
+            index < argumentSourcelocs.length ? argumentSourcelocs[index] : calledExpr.sourceloc,
+            Conversion.Mode.Implicit,
+            inference?.unsafe || false
+          );
+        } else if (hasVararg && index >= parameterTypes.length) {
+          // Vararg: pass remaining args as-is
+          return arg;
         } else {
-          let structType = undefined as Semantic.TypeUseId | undefined;
-          if (i < expectedParameterTypes.length) {
-            structType = expectedParameterTypes[i].type;
-          }
-          return this.sr.e.expr(a, {
-            gonnaInstantiateStructWithType: structType,
-            unsafe: inference?.unsafe,
-          })[1];
+          // Default: pass as-is (shouldn't reach here if validation passed)
+          return arg;
         }
       });
     };
@@ -574,17 +622,21 @@ export class SemanticElaborator {
       if (calledExprType.thisExprType) {
         parametersWithoutThis = parametersWithoutThis.slice(1);
       }
-      return this.sr.b.callExpr(
-        calledExprId,
-        convertArgs(
-          getActualCallingArguments(parametersWithoutThis),
-          parametersWithoutThis,
-          argumentSourcelocs,
-          ftype.vararg
-        ),
-        this.inFunction,
-        callExpr.sourceloc
+      const hasParameterPack = parametersWithoutThis.some((p) => this.isParameterPackType(p.type));
+      const elaboratedArgs = elaborateCallingArguments(parametersWithoutThis);
+      const preparedArgs = validateAndPrepareArguments(
+        elaboratedArgs,
+        parametersWithoutThis,
+        ftype.vararg,
+        hasParameterPack
       );
+      const finalArgs = convertArguments(
+        preparedArgs,
+        parametersWithoutThis,
+        ftype.vararg,
+        hasParameterPack
+      );
+      return this.sr.b.callExpr(calledExprId, finalArgs, this.inFunction, callExpr.sourceloc);
     }
 
     if (calledExprType.variant === Semantic.ENode.DeferredFunctionDatatype) {
@@ -604,11 +656,22 @@ export class SemanticElaborator {
         resolvedFunctionId = calledExpr.symbol;
       }
 
-      const actualArgs = convertArgs(
-        getActualCallingArguments(calledExprType.parameters),
+      const hasParameterPack = calledExprType.parameters.some((p) =>
+        this.isParameterPackType(p.type)
+      );
+
+      const elaboratedArgs = elaborateCallingArguments(calledExprType.parameters);
+      const preparedArgs = validateAndPrepareArguments(
+        elaboratedArgs,
         calledExprType.parameters,
-        argumentSourcelocs,
-        calledExprType.vararg
+        calledExprType.vararg,
+        hasParameterPack
+      );
+      const actualArgs = convertArguments(
+        preparedArgs,
+        calledExprType.parameters,
+        calledExprType.vararg,
+        hasParameterPack
       );
 
       // This is the handling for noreturn_if assertions like assert()
@@ -772,14 +835,25 @@ export class SemanticElaborator {
 
       const constructorFunctype = this.getTypeDef(elaboratedMethod.type);
       assert(constructorFunctype.variant === Semantic.ENode.FunctionDatatype);
+      const hasParameterPack = constructorFunctype.parameters.some((p) =>
+        this.isParameterPackType(p.type)
+      );
+      const elaboratedArgs = elaborateCallingArguments(constructorFunctype.parameters);
+      const preparedArgs = validateAndPrepareArguments(
+        elaboratedArgs,
+        constructorFunctype.parameters,
+        constructorFunctype.vararg,
+        hasParameterPack
+      );
+      const finalArgs = convertArguments(
+        preparedArgs,
+        constructorFunctype.parameters,
+        constructorFunctype.vararg,
+        hasParameterPack
+      );
       return this.sr.b.callExpr(
         this.sr.b.symbolValue(elaboratedMethodId, callExpr.sourceloc)[1],
-        convertArgs(
-          getActualCallingArguments(constructorFunctype.parameters),
-          constructorFunctype.parameters,
-          argumentSourcelocs,
-          constructorFunctype.vararg
-        ),
+        finalArgs,
         this.inFunction,
         callExpr.sourceloc
       );
@@ -792,32 +866,31 @@ export class SemanticElaborator {
       assert(index !== -1);
       const typeOfTag = union.members[index].type;
 
-      const args = getActualCallingArguments([
+      const paramTypes = [
         {
           optional: false,
           type: typeOfTag,
         },
-      ]);
+      ];
+      const hasParameterPack = paramTypes.some((p) => this.isParameterPackType(p.type));
+      const elaboratedArgs = elaborateCallingArguments(paramTypes);
+      const preparedArgs = validateAndPrepareArguments(
+        elaboratedArgs,
+        paramTypes,
+        false,
+        hasParameterPack
+      );
+      const finalArgs = convertArguments(preparedArgs, paramTypes, false, hasParameterPack);
 
       const instanceIds = new Set<Semantic.InstanceId>();
-      for (const a of args) {
+      for (const a of finalArgs) {
         const e = this.sr.e.getExpr(a);
         e.instanceIds.forEach((i) => instanceIds.add(i));
       }
 
       return Semantic.addExpr(this.sr, {
         variant: Semantic.ENode.ValueToUnionCastExpr,
-        expr: convertArgs(
-          args,
-          [
-            {
-              optional: false,
-              type: typeOfTag,
-            },
-          ],
-          argumentSourcelocs,
-          false
-        )[0],
+        expr: finalArgs[0],
         instanceIds: [...instanceIds],
         isTemporary: true,
         index: index,
@@ -7239,6 +7312,12 @@ export class SemanticElaborator {
       true,
       sourceloc
     );
+  }
+
+  private isParameterPackType(typeUseId: Semantic.TypeUseId): boolean {
+    const typeUse = this.sr.typeUseNodes.get(typeUseId);
+    const typeDef = this.sr.typeDefNodes.get(typeUse.type);
+    return typeDef.variant === Semantic.ENode.ParameterPackDatatype;
   }
 }
 
