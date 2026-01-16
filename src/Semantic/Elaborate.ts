@@ -5107,16 +5107,29 @@ export class SemanticElaborator {
 
           const elseIfs = s.elseif.map((e) => {
             assert(e.condition);
-            const conditionExpr = this.expr(e.condition, undefined)[1];
-            const innerConstraints = [...this.currentContext.constraints];
+            // Evaluate condition with the constraints from previous branches
+            const conditionExpr = this.withContext(
+              {
+                context: Semantic.isolateElaborationContext(this.currentContext, {
+                  constraints: elseConstraints,
+                  currentScope: this.currentContext.currentScope,
+                  genericsScope: this.currentContext.genericsScope,
+                  instanceDeps: this.currentContext.instanceDeps,
+                }),
+                inFunction: this.inFunction,
+                inAttemptExpr: this.inAttemptExpr,
+                functionReturnsInstanceIds: this.functionReturnsInstanceIds,
+              },
+              () => this.expr(e.condition!, undefined)[1]
+            );
+            const innerConstraints = [...elseConstraints]; // Start with constraints from previous branches
             this.buildConstraints(innerConstraints, conditionExpr);
             this.buildConstraints(elseConstraints, conditionExpr, { inverse: true });
-
             const boolCondition = Conversion.MakeConversionOrThrow(
               this.sr,
               conditionExpr,
               this.sr.b.boolType(),
-              this.currentContext.constraints,
+              elseConstraints,
               s.sourceloc,
               Conversion.Mode.Implicit,
               false
@@ -6047,7 +6060,16 @@ export class SemanticElaborator {
     }
 
     if (expr.variant === Semantic.ENode.UnionTagCheckExpr) {
-      const unionExpr = this.getExpr(expr.expr);
+      let unionExpr = this.getExpr(expr.expr);
+
+      // If the union expression has been narrowed (wrapped in UnionToUnionCastExpr), unwrap it
+      while (
+        unionExpr.variant === Semantic.ENode.UnionToUnionCastExpr &&
+        unionExpr.castComesFromNarrowingAndMayBeUnwrapped
+      ) {
+        unionExpr = this.getExpr(unionExpr.expr);
+      }
+
       if (unionExpr.variant === Semantic.ENode.SymbolValueExpr) {
         for (const comparisonType of expr.comparisonTypesAnd) {
           let invert = expr.invertCheck;
@@ -6383,7 +6405,7 @@ export class SemanticElaborator {
               variant: Semantic.ENode.UnionToUnionCastExpr,
               instanceIds: [],
               expr: symbolValueExprId,
-              canBeUnwrappedForLHS: true,
+              castComesFromNarrowingAndMayBeUnwrapped: true,
               isTemporary: false,
               sourceloc: symbolValue.sourceloc,
               type: newUnion,
@@ -7809,7 +7831,10 @@ export class SemanticBuilder {
       // This is a special case for value narrowing and here, it is the easiest to fix, although not very nice
       case Semantic.ENode.UnionToUnionCastExpr: {
         const unionExpr = this.sr.exprNodes.get(lhs.expr);
-        if (unionExpr.variant !== Semantic.ENode.SymbolValueExpr || !lhs.canBeUnwrappedForLHS) {
+        if (
+          unionExpr.variant !== Semantic.ENode.SymbolValueExpr ||
+          !lhs.castComesFromNarrowingAndMayBeUnwrapped
+        ) {
           throw new CompilerError(`This expression is not a valid LHS`, lhs.sourceloc);
         }
 
@@ -7857,7 +7882,8 @@ export class SemanticBuilder {
 
     if (
       (target.variant === Semantic.ENode.UnionToValueCastExpr && target.canBeUnwrappedForLHS) ||
-      (target.variant === Semantic.ENode.UnionToUnionCastExpr && target.canBeUnwrappedForLHS)
+      (target.variant === Semantic.ENode.UnionToUnionCastExpr &&
+        target.castComesFromNarrowingAndMayBeUnwrapped)
     ) {
       targetId = target.expr;
       target = this.sr.exprNodes.get(target.expr);
@@ -9212,7 +9238,7 @@ export namespace Semantic {
     instanceIds: InstanceId[];
     expr: ExprId;
     type: TypeUseId;
-    canBeUnwrappedForLHS: boolean; // This is if the cast originates from a constrained symbol value access
+    castComesFromNarrowingAndMayBeUnwrapped: boolean;
     isTemporary: boolean;
     sourceloc: SourceLoc;
   };

@@ -1445,7 +1445,7 @@ export namespace Conversion {
             instanceIds: fromExpr.instanceIds,
             expr: fromExprId,
             type: toId,
-            canBeUnwrappedForLHS: false,
+            castComesFromNarrowingAndMayBeUnwrapped: false,
             sourceloc: sourceloc,
             isTemporary: fromExpr.isTemporary,
           })[1]
@@ -1572,7 +1572,7 @@ export namespace Conversion {
               instanceIds: fromExpr.instanceIds,
               expr: fromExprId,
               type: toId,
-              canBeUnwrappedForLHS: false,
+              castComesFromNarrowingAndMayBeUnwrapped: false,
               sourceloc: sourceloc,
               isTemporary: fromExpr.isTemporary,
             })[1]
@@ -1609,7 +1609,7 @@ export namespace Conversion {
               instanceIds: fromExpr.instanceIds,
               expr: fromExprId,
               type: toId,
-              canBeUnwrappedForLHS: false,
+              castComesFromNarrowingAndMayBeUnwrapped: false,
               sourceloc: sourceloc,
               isTemporary: fromExpr.isTemporary,
             })[1]

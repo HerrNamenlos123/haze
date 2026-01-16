@@ -50,10 +50,10 @@ namespace process {
     }
 
     let argsLength = args.length;
-    assert(argsLength >= 0, none);
+    assert(argsLength >= 0);
 
     let envCount = envc;
-    assert(envCount >= 0, none);
+    assert(envCount >= 0);
 
     let out = hzstd_process_result_t {};
     let result = hzstd_spawn_process(exe, argv, argsLength, envp, envCount, cwd, inherit_stdio, out);

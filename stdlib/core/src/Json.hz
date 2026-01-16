@@ -95,25 +95,25 @@ namespace json {
             operator:=(value: str): void {
                 let item = ffi.hzstd_json_create_string(this.json.allocator, value);
                 let success = ffi.hzstd_json_add_item_to_object(this.json.allocator, this.json.data, this.attribute, item);
-                assert(success, none);
+                assert(success);
             }
 
             operator:=(value: real): void {
                 let item = ffi.hzstd_json_create_number(this.json.allocator, value);
                 let success = ffi.hzstd_json_add_item_to_object(this.json.allocator, this.json.data, this.attribute, item);
-                assert(success, none);
+                assert(success);
             }
 
             operator:=(value: Value): void {
                 let success = ffi.hzstd_json_add_item_to_object(this.json.allocator, this.json.data, this.attribute, value.data);
-                assert(success, none);
+                assert(success);
             }
 
             push(value: Value): void {
                 if ffi.hzstd_json_object_has_attribute(this.json.data, this.attribute) {
                     let obj = ffi.hzstd_json_get_object_item(this.json.allocator, this.json.data, this.attribute);
                     if obj {
-                        assert(ffi.hzstd_json_is_array(obj), none);
+                        assert(ffi.hzstd_json_is_array(obj));
                         ffi.hzstd_json_add_item_to_array(this.json.allocator, obj, value.data);
                         return;
                     }

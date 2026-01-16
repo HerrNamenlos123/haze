@@ -190,8 +190,8 @@ export createWindow(config: WindowConfig): Result<Window, none> {
 
     const width = config.size.width;
     const height = config.size.height;
-    assert(width >= i32.min && width <= i32.max, none);
-    assert(height >= i32.min && height <= i32.max, none);
+    assert(width >= i32.min && width <= i32.max);
+    assert(height >= i32.min && height <= i32.max);
     const handle = ffi.createWindow(width, height, config.title, none, none);
     if !handle {
         return Result<Window, none>.Err(none);
