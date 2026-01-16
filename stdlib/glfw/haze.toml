@@ -4,13 +4,15 @@ description = "GLFW support for Haze"
 license = "MIT"
 authors = ["HerrNamenlos123"]
 type = "lib"
-# src = "."
 
-[scripts.linux]
-prebuild = { command = "$HAZE_MODULE_SOURCE_DIR/build-linux.sh", depends = "./**/*" }
-
-[scripts.win32]
-prebuild = { command = "call \"%HAZE_MODULE_SOURCE_DIR%/build-win.bat\"", depends = "./**/*" }
+[generator.glfw-build]
+exec = "scripts/build-glfw.hz"
+inputs = []
+outputs = [
+    { module="this", dir="bin", path="include/GLFW/glfw3.h" },
+    { module="this", dir="bin", path="include/GLFW/glfw3native.h" },
+    # ... Output files ... (artifacts)
+]
 
 [interface.compiler.linux]
 defines = ["_GLFW_X11", "_GLFW_WAYLAND"]

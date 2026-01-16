@@ -1,0 +1,70 @@
+
+main(): int {
+    attempt {
+        let binaryDir = env.get("HAZE_MODULE_BINARY_DIR");
+        if !binaryDir { raise f"HAZE_MODULE_BINARY_DIR not defined"; }
+
+        let repoPath = f"{binaryDir}/glfw";
+
+        if !fs.exists(repoPath)?! {
+            process.run("git", { "clone", "https://github.com/glfw/glfw.git", repoPath }, process.Options {
+                inherit_stdio: true,
+            })?!;
+        }
+
+        process.run("git", { "-c", "advice.detachedHead=false", "checkout", "3.4" }, process.Options {
+            inherit_stdio: true,
+            cwd: repoPath,
+        })?!;
+
+        // Unfortunately we have to build from inside the build directory with cmake ..
+        // because the GLFW cmake build is set up badly and it relies on relative paths
+        fs.createDirectory(f"{repoPath}/build")?!;
+        process.run("cmake", 
+            { 
+                "-B", 
+                f"{repoPath}/build", 
+                "-DBUILD_SHARED_LIBS=OFF", 
+                f"-DCMAKE_INSTALL_PREFIX={binaryDir}", 
+                "-DCMAKE_POSITION_INDEPENDENT_CODE=OFF",
+                "-DGLFW_USE_PTHREADS=ON",
+                "-DGLFW_BUILD_EXAMPLES=OFF",
+                "-DGLFW_BUILD_TESTS=OFF"
+            }, 
+            process.Options {
+                inherit_stdio: true,
+                cwd: repoPath,
+            }
+        )?!;
+
+        process.run("cmake", 
+            { 
+                "--build", 
+                f"{repoPath}/build", 
+                "--target", 
+                "install", 
+            }, 
+            process.Options {
+                inherit_stdio: true,
+                cwd: repoPath,
+            }
+        )?!;
+    }
+    else e {
+        if e is fs.Error {
+            fmt.println(f"build-wgpu step failed:", e);
+            return 1;
+        }
+        else if e is str {
+            fmt.println(f"build-wgpu step failed: {e}");
+            return 1;
+        }
+        else if e is int {
+            fmt.println(f"build-wgpu step failed: Process exited with code {e}");
+            return 1;
+        }
+        assert(false);
+    }
+
+    return 0;
+}
