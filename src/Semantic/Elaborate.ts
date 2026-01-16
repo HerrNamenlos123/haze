@@ -659,6 +659,7 @@ export class SemanticElaborator {
               // If condition is true, just ignore all constraints
               if (!result.value[0].literal.value) {
                 this.currentContext.scopeNoReturn.add(this.currentContext.currentScope);
+                console.log("add 1");
               }
             }
           } else {
@@ -675,6 +676,7 @@ export class SemanticElaborator {
       // This is the handling for if -> noreturn
       if (calledExprType.requires.noreturn) {
         this.currentContext.scopeNoReturn.add(this.currentContext.currentScope);
+        console.log("add 2");
       }
 
       return this.sr.b.callExpr(calledExprId, actualArgs, this.inFunction, callExpr.sourceloc);
@@ -2678,6 +2680,7 @@ export class SemanticElaborator {
     lastExprIsEmit: boolean,
     inference: Inference
   ) {
+    console.log("start scope");
     const scope = this.sr.cc.scopeNodes.get(args.sourceScopeId);
     assert(scope.variant === Collect.ENode.BlockScope);
 
@@ -2692,6 +2695,7 @@ export class SemanticElaborator {
     });
 
     let noReturn = false;
+    let exitsEarly = false;
     this.withContext(
       {
         context: newContext,
@@ -2718,8 +2722,8 @@ export class SemanticElaborator {
           let gonnaInstantiateStructWithType: Semantic.TypeUseId | undefined;
 
           if (this.sr.cc.statementNodes.get(sId).variant === Collect.ENode.ReturnStatement) {
+            // For return type inference
             gonnaInstantiateStructWithType = this.getFunctionSymbolReturnType(this.inFunction);
-            this.currentContext.scopeNoReturn.add(this.currentContext.currentScope);
           }
 
           const statementId = this.elaborateStatement(sId, {
@@ -2733,8 +2737,15 @@ export class SemanticElaborator {
             if (expr.variant === Semantic.ENode.BlockScopeExpr) {
               if (expr.noreturn) {
                 this.currentContext.scopeNoReturn.add(this.currentContext.currentScope);
+                console.log("noreturn scope");
               }
             }
+          } else if (statement.variant === Semantic.ENode.ReturnStatement) {
+            this.currentContext.scopeExitsEarly.add(this.currentContext.currentScope);
+            console.log(
+              "early exit return",
+              statement.expr && Semantic.serializeExpr(this.sr, statement.expr)
+            );
           }
 
           if (
@@ -2755,15 +2766,25 @@ export class SemanticElaborator {
         if (this.currentContext.scopeNoReturn.has(args.sourceScopeId)) {
           noReturn = true;
         }
+        if (this.currentContext.scopeExitsEarly.has(args.sourceScopeId)) {
+          exitsEarly = true;
+        }
       }
     );
 
-    if (noReturn) {
+    // If a scope has any path that exits early (via return), it's exitsEarly.
+    // If a scope has NO paths that exit early but has a noReturn path, it's noReturn.
+    // exitsEarly takes precedence because it represents a real return path.
+    if (exitsEarly) {
+      this.currentContext.scopeExitsEarly.add(args.sourceScopeId);
+    } else if (noReturn) {
       this.currentContext.scopeNoReturn.add(args.sourceScopeId);
     }
 
+    console.log("scope done ", noReturn, exitsEarly);
     return {
       noReturn: noReturn,
+      exitsEarly: exitsEarly,
     };
   }
 
@@ -3100,6 +3121,7 @@ export class SemanticElaborator {
             }
           }
 
+          let noReturn = false;
           if (func.functionScope) {
             const functionScope = this.sr.cc.scopeNodes.get(func.functionScope);
             assert(functionScope.variant === Collect.ENode.FunctionScope);
@@ -3165,7 +3187,7 @@ export class SemanticElaborator {
             }
 
             symbol.scope = bodyScopeId;
-            this.withContext(
+            const blockScopeResult = this.withContext(
               {
                 context: newContext,
                 inFunction: symbolId,
@@ -3173,7 +3195,7 @@ export class SemanticElaborator {
                 inAttemptExpr: null,
               },
               () => {
-                this.elaborateBlockScope(
+                return this.elaborateBlockScope(
                   {
                     sourceScopeId: functionScope.blockScope,
                     targetScopeId: bodyScopeId,
@@ -3183,6 +3205,10 @@ export class SemanticElaborator {
                 );
               }
             );
+            noReturn = blockScopeResult.noReturn;
+            if (func.name === "isWin32") {
+              console.log("Function ", func.name, blockScopeResult);
+            }
 
             if (func.name === "main" && parentStructOrNS) {
               const modulePrefix = getModuleGlobalNamespaceName(
@@ -3267,7 +3293,7 @@ export class SemanticElaborator {
               requires: {
                 final: true,
                 pure: func.requires.pure || (!func.requires.final && !symbol.isImpure),
-                noreturn: func.requires.noreturn,
+                noreturn: func.requires.noreturn || noReturn,
                 noreturnIf: func.requires.noreturnIf,
               },
               sourceloc: func.sourceloc,
@@ -4883,7 +4909,7 @@ export class SemanticElaborator {
           );
 
           // If the body of if does not return, then the inverse of the condition applies to the body after the if
-          if (result.noReturn) {
+          if (result.exitsEarly || result.noReturn) {
             this.buildConstraints(this.currentContext.constraints, resultingConditionId, {
               inverse: true,
             });
@@ -6904,9 +6930,12 @@ export class SemanticElaborator {
       sourceloc: elseBlockScope.sourceloc,
     });
 
-    assert(elseBlockScope.statements.length === 2);
-    const statement = this.sr.cc.statementNodes.get(elseBlockScope.statements[0]);
-    assert(statement.variant === Collect.ENode.VariableDefinitionStatement);
+    let errorVarDefStatement: Collect.VariableDefinitionStatement | null = null;
+    if (elseBlockScope.statements.length === 2) {
+      const statement = this.sr.cc.statementNodes.get(elseBlockScope.statements[0]);
+      assert(statement.variant === Collect.ENode.VariableDefinitionStatement);
+      errorVarDefStatement = statement;
+    }
 
     const elseScopeResult = this.withContext(
       {
@@ -6922,7 +6951,12 @@ export class SemanticElaborator {
       },
       () => {
         // Override type of the 'e' variable, will be picked up at variable elaboration
-        this.currentContext.elaborationTypeOverride.set(statement.variableSymbol, errorUnion);
+        if (errorVarDefStatement) {
+          this.currentContext.elaborationTypeOverride.set(
+            errorVarDefStatement.variableSymbol,
+            errorUnion
+          );
+        }
         return this.elaborateBlockScope(
           {
             targetScopeId: elseScopeId,
@@ -6935,18 +6969,22 @@ export class SemanticElaborator {
     );
 
     const memberSet = new Set<Semantic.TypeUseId>();
+    let attemptProducesValue = false;
+    let elseProducesValue = false;
     if (attemptScope.emittedExpr && !attemptScopeResult.noReturn) {
-      attemptExpr.attemptScopeReturnsType = this.sr.exprNodes.get(attemptScope.emittedExpr).type;
-      memberSet.add(attemptExpr.attemptScopeReturnsType);
+      const e = this.sr.exprNodes.get(attemptScope.emittedExpr);
+      if (!Conversion.isVoidById(this.sr, e.type)) {
+        attemptExpr.attemptScopeReturnsType = this.sr.exprNodes.get(attemptScope.emittedExpr).type;
+        memberSet.add(attemptExpr.attemptScopeReturnsType);
+        attemptProducesValue = true;
+      }
     }
     if (elseScope.emittedExpr && !elseScopeResult.noReturn) {
-      // elseScope is nested 1 level deeper than attemptScope because of the 'e' variable
-      const doScope = this.sr.exprNodes.get(elseScope.emittedExpr);
-      assert(doScope.variant === Semantic.ENode.BlockScopeExpr);
-      const block = this.sr.blockScopeNodes.get(doScope.block);
-      if (block.emittedExpr) {
+      const e = this.sr.exprNodes.get(elseScope.emittedExpr);
+      if (!Conversion.isVoidById(this.sr, e.type)) {
         attemptExpr.elseScopeReturnsType = this.sr.exprNodes.get(elseScope.emittedExpr).type;
         memberSet.add(attemptExpr.elseScopeReturnsType);
+        elseProducesValue = true;
       }
     }
 
@@ -6961,7 +6999,7 @@ export class SemanticElaborator {
       attemptScopeId,
       attemptScopeResult.noReturn
     );
-    if (attemptScopeExpr.type !== this.sr.b.voidType()) {
+    if (attemptProducesValue) {
       attemptExpr.attemptScopeExpr = Conversion.MakeConversionOrThrow(
         this.sr,
         attemptScopeExprId,
@@ -6976,7 +7014,7 @@ export class SemanticElaborator {
     }
 
     const [elseExpr, elseExprId] = this.sr.b.blockScopeExpr(elseScopeId, elseScopeResult.noReturn);
-    if (elseExpr.type !== this.sr.b.voidType()) {
+    if (elseProducesValue) {
       attemptExpr.elseScopeExpr = Conversion.MakeConversionOrThrow(
         this.sr,
         elseExprId,
@@ -7895,6 +7933,13 @@ export class SemanticBuilder {
       }
 
       return a - b;
+    });
+
+    canonicalMembers.forEach((m) => {
+      const def = this.sr.typeDefNodes.get(this.sr.typeUseNodes.get(m).type);
+      if (def.variant === Semantic.ENode.PrimitiveDatatype && def.primitive === EPrimitive.void) {
+        throw new InternalError("Union cannot have a void datatype");
+      }
     });
 
     return makeTypeUse(
@@ -9533,6 +9578,7 @@ export namespace Semantic {
     elaborationTypeOverride: Map<Collect.SymbolId, Semantic.TypeUseId>;
     elaboratedVariables: Map<Collect.SymbolId, Semantic.SymbolId>;
     scopeNoReturn: Set<Collect.ScopeId>;
+    scopeExitsEarly: Set<Collect.ScopeId>;
     scopeNoReturnConstraints: Constraint[];
   };
 
@@ -9552,6 +9598,7 @@ export namespace Semantic {
         symbolDependsOn: new Map(),
       },
       scopeNoReturn: new Set(),
+      scopeExitsEarly: new Set(),
       scopeNoReturnConstraints: [],
       elaboratedVariables: new Map(),
       elaborationTypeOverride: new Map(),
@@ -9575,6 +9622,7 @@ export namespace Semantic {
       instanceDeps: args.instanceDeps,
 
       scopeNoReturn: new Set(parent.scopeNoReturn),
+      scopeExitsEarly: new Set(parent.scopeExitsEarly),
       scopeNoReturnConstraints: [...args.constraints],
       elaboratedVariables: new Map(parent.elaboratedVariables),
       elaborationTypeOverride: new Map(parent.elaborationTypeOverride),
@@ -9598,6 +9646,7 @@ export namespace Semantic {
       genericsScope: args.genericsScope,
       instanceDeps: args.instanceDeps,
       scopeNoReturn: new Set([...a.scopeNoReturn, ...b.scopeNoReturn]),
+      scopeExitsEarly: new Set([...a.scopeExitsEarly, ...b.scopeExitsEarly]),
       scopeNoReturnConstraints: [...a.constraints, ...b.constraints],
       elaboratedVariables: new Map([...a.elaboratedVariables, ...b.elaboratedVariables]),
       elaborationTypeOverride: new Map([

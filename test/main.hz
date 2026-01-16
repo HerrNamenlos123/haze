@@ -26,33 +26,23 @@ adapterRequestCallback(status: wgpu.ffi.WGPURequestAdapterStatus,
   }
 }
 
-foo(): Result<int, none> {
-    return Result<int, none>.Ok(187);
-    // return Result<int, none>.Err(none);
-}
-
-bar(): Result<real, str> {
-    return Result<real, str>.Ok(42.0);
-    // return Result<real, str>.Err("42 is wrong");
-}
-
 main(): int {
 
-    let a = attempt {
-        let number = foo()?!;
-        fmt.println(number);
-        bar()?!;
-        number;
-    } else e {
-        // assert(false, none);
-        if e is str {
-            fmt.println("Error: ", e);
-        }
-        else {
-            fmt.println("Error: ", e);
-        }
-        e;
-    }
+    // let a = attempt {
+    //     let number = foo()?!;
+    //     fmt.println(number);
+    //     bar()?!;
+    //     number;
+    // } else e {
+    //     // assert(false, none);
+    //     if e is str {
+    //         fmt.println("Error: ", e);
+    //     }
+    //     else {
+    //         fmt.println("Error: ", e);
+    //     }
+    //     e;
+    // }
 
     return 0;
     // let a = fs.exists("my/very/test");

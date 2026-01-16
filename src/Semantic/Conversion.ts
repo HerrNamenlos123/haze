@@ -248,6 +248,18 @@ export namespace Conversion {
     return isInteger(type.primitive);
   }
 
+  export function isNoneById(sr: SemanticResult, typeUseId: Semantic.TypeUseId): boolean {
+    const type = sr.typeDefNodes.get(sr.typeUseNodes.get(typeUseId).type);
+    if (type.variant !== Semantic.ENode.PrimitiveDatatype) return false;
+    return type.primitive === EPrimitive.none;
+  }
+
+  export function isVoidById(sr: SemanticResult, typeUseId: Semantic.TypeUseId): boolean {
+    const type = sr.typeDefNodes.get(sr.typeUseNodes.get(typeUseId).type);
+    if (type.variant !== Semantic.ENode.PrimitiveDatatype) return false;
+    return type.primitive === EPrimitive.void;
+  }
+
   export function getIntegerBits(type: Semantic.PrimitiveDatatypeDef): number {
     switch (type.primitive) {
       case EPrimitive.i8:

@@ -1,0 +1,267 @@
+
+
+namespace attempt_tests {
+
+    ok_int(v: int): Result<int, none> {
+        return Result<int, none>.Ok(v);
+    }
+
+    err_none(): Result<int, none> {
+        return Result<int, none>.Err(none);
+    }
+
+    ok_real(v: real): Result<real, str> {
+        return Result<real, str>.Ok(v);
+    }
+
+    err_str(msg: str): Result<real, str> {
+        return Result<real, str>.Err(msg);
+    }
+
+    panic(): none {
+        sys.panic("panic");
+    }
+
+    // GROUP A — Attempt returns value
+
+    // Else returns value
+    a1(): int | real {
+        let x = attempt {
+            ok_int(1)?!;
+            10;
+        } else {
+            3.5;
+        };
+        return x;
+    }
+
+    // Else returns nothing
+    a2(): int | none {
+        let x = attempt {
+            ok_int(1)?!;
+            10;
+        } else {
+        };
+        return x;
+    }
+
+    // Else never returns
+    a3(): int {
+        let x = attempt {
+            ok_int(1)?!;
+            10;
+        } else {
+            panic();
+        };
+        return x;
+    }
+
+    // GROUP B — Attempt returns nothing (implicit none)
+
+    // Else returns value
+    b1(): real | none {
+        let x = attempt {
+            ok_int(1)?!;
+            fmt.println("");
+        } else {
+            2.5;
+        };
+        return x;
+    }
+
+    // B2 — Else returns nothing
+    b2(): none {
+        let x = attempt {
+            ok_int(1)?!;
+            fmt.println("");
+        } else {
+        };
+        return x;
+    }
+
+    // B3 — Else never returns
+    b3(): none {
+        let x = attempt {
+            ok_int(1)?!;
+            fmt.println("");
+        } else {
+            panic();
+        };
+        return x;
+    }
+
+    // GROUP C — Attempt never returns
+
+    // Else returns value
+    c1(): int {
+        let x = attempt {
+            panic();
+        } else {
+            42;
+        };
+        return x;
+    }
+
+    // Else returns nothing
+    c2(): none {
+        let x = attempt {
+            panic();
+        } else {
+        };
+        return x;
+    }
+
+    // Else never returns
+    c3(): none {
+        let x = attempt {
+            panic();
+        } else {
+            panic();
+        };
+        return x;
+    }
+
+    // GROUP D — Error propagation correctness
+
+    // Single ?!
+    d1(): int {
+        let x = attempt {
+            err_none()?!;
+            1;
+        } else {
+            2;
+        };
+        return x;
+    }
+
+    // Multiple ?!, first fails
+    d2(): int {
+        let x = attempt {
+            err_none()?!;
+            ok_int(5)?!;
+            1;
+        } else {
+            2;
+        };
+        return x;
+    }
+
+    // Multiple ?!, later fails
+    d3(): int {
+        let x = attempt {
+            ok_int(5)?!;
+            err_none()?!;
+            1;
+        } else {
+            2;
+        };
+        return x;
+    }
+
+    // GROUP E — Error union construction
+
+    // Two different error types
+    e1(): none {
+        attempt {
+            err_str("bad")?!;
+            err_none()?!;
+        } else e {
+            if e is str {
+                fmt.println("str");
+            } else {
+                fmt.println("none");
+            }
+        };
+    }
+
+    // Ignore e
+    e2(): none {
+        attempt {
+            err_str("bad")?!;
+        } else {
+            fmt.println("ignored");
+        };
+    }
+
+    // GROUP F — Nested attempts
+
+    // Inner handles error, outer succeeds
+    f1(): int {
+        let x = attempt {
+            let y = attempt {
+                err_none()?!;
+                1;
+            } else {
+                2;
+            };
+            y + 1;
+        } else {
+            100;
+        };
+        return x;
+    }
+
+    // Inner propagates to outer
+    f2(): int {
+        let x = attempt {
+            let y = attempt {
+                err_none()?!;
+                1;
+            } else {
+                panic();
+            };
+            y;
+        } else {
+            42;
+        };
+        return x;
+    }
+
+    // GROUP G — Unwrap-via-panic idiom
+
+    // Successful unwrap
+    g1(): int {
+        let x = attempt {
+            ok_int(9)?!;
+            9;
+        } else {
+            assert(false, none);
+        };
+        return x;
+    }
+
+    // Failed unwrap 
+    g2(): int {
+        let x = attempt {
+            err_none()?!;
+            9;
+        } else {
+            assert(false, none);
+        };
+        return x;
+    }
+
+    // GROUP H — Control-flow integrity
+
+    // No fallthrough into else
+    h1(): int {
+        let x = attempt {
+            1;
+        } else {
+            2;
+        };
+        assert(x == 1, none);
+        return x;
+    }
+
+    // No double assignment
+    h2(): int {
+        let x = attempt {
+            err_none()?!;
+            1;
+        } else {
+            2;
+        };
+        return x;
+    }
+}
