@@ -339,8 +339,8 @@ export namespace Conversion {
           at.parameters.every((p, index) =>
             IsStructurallyEquivalent(
               sr,
-              sr.typeUseNodes.get(p).type,
-              sr.typeUseNodes.get(bt.parameters[index]).type,
+              sr.typeUseNodes.get(p.type).type,
+              sr.typeUseNodes.get(bt.parameters[index].type).type,
               seen
             )
           )
@@ -1108,8 +1108,6 @@ export namespace Conversion {
         `Conversions from Integers to Floating points are not implemented yet, as it requires value narrowing on floating point numbers instead of bigint...`,
         sourceloc
       );
-
-      // console.log("AAA");
 
       // if (source.isWithinRange(...Conversion.getIntegerMinMax(t.primitive))) {
       //   return ok(

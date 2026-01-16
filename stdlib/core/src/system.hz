@@ -13,7 +13,7 @@ namespace sys {
 }
 
 export assert(condition: bool, msg?: str) :: noreturn_if(!condition) {
-    if (msg) {
+    if msg {
         ffi.hzstd_assert_msg(condition, msg);
     }
     else {

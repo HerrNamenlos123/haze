@@ -471,7 +471,10 @@ export namespace Collect {
 
   export type FunctionDatatype = {
     variant: ENode.FunctionDatatype;
-    parameters: Collect.TypeUseId[];
+    parameters: {
+      optional: boolean;
+      type: Collect.TypeUseId;
+    }[];
     returnType: Collect.TypeUseId;
     vararg: boolean;
     requires: FunctionRequiresBlock;
@@ -1396,7 +1399,10 @@ function collectTypeUse(
       return Collect.makeTypeUse(cc, {
         variant: Collect.ENode.FunctionDatatype,
         returnType: collectTypeUse(cc, item.returnType, args),
-        parameters: item.params.map((p) => collectTypeUse(cc, p.datatype, args)),
+        parameters: item.params.map((p) => ({
+          optional: p.optional,
+          type: collectTypeUse(cc, p.datatype, args),
+        })),
         vararg: item.ellipsis,
         requires: {
           final: item.requires.final,
@@ -2801,7 +2807,7 @@ export function printCollectedDatatype(
 
     case Collect.ENode.FunctionDatatype: {
       return `(${type.parameters
-        .map((p, i) => `param${i}: ${printCollectedDatatype(cc, p)}`)
+        .map((p, i) => `param${i}${p.optional ? "?" : ""}: ${printCollectedDatatype(cc, p.type)}`)
         .join(", ")}${type.vararg ? ", ..." : ""}) => ${printCollectedDatatype(
         cc,
         type.returnType

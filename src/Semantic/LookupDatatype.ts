@@ -5,7 +5,10 @@ import { EDatatypeMutability } from "../shared/AST";
 export function makeDeferredFunctionDatatypeAvailable(
   sr: SemanticResult,
   args: {
-    parameters: Semantic.TypeUseId[];
+    parameters: {
+      optional: boolean;
+      type: Semantic.TypeUseId;
+    }[];
     vararg: boolean;
     sourceloc: SourceLoc;
   }
@@ -18,7 +21,10 @@ export function makeDeferredFunctionDatatypeAvailable(
     }
     let wrong = false;
     for (let i = 0; i < args.parameters.length; i++) {
-      if (type.parameters[i] !== args.parameters[i]) {
+      if (
+        type.parameters[i].type !== args.parameters[i].type ||
+        type.parameters[i].optional !== args.parameters[i].optional
+      ) {
         wrong = true;
         break;
       }
@@ -35,7 +41,7 @@ export function makeDeferredFunctionDatatypeAvailable(
     variant: Semantic.ENode.DeferredFunctionDatatype,
     parameters: args.parameters,
     vararg: args.vararg,
-    concrete: args.parameters.every((p) => isTypeConcrete(sr, p)),
+    concrete: args.parameters.every((p) => isTypeConcrete(sr, p.type)),
   });
   sr.deferredFunctionTypeCache.push(ftypeId);
   return ftypeId;
@@ -44,7 +50,7 @@ export function makeDeferredFunctionDatatypeAvailable(
 export function makeRawFunctionDatatypeAvailable(
   sr: SemanticResult,
   args: {
-    parameters: Semantic.TypeUseId[];
+    parameters: { optional: boolean; type: Semantic.TypeUseId }[];
     returnType: Semantic.TypeUseId;
     vararg: boolean;
     requires: Semantic.FunctionRequireBlock;
@@ -59,7 +65,10 @@ export function makeRawFunctionDatatypeAvailable(
     }
     let wrong = false;
     for (let i = 0; i < args.parameters.length; i++) {
-      if (type.parameters[i] !== args.parameters[i]) {
+      if (
+        type.parameters[i].type !== args.parameters[i].type ||
+        type.parameters[i].optional !== args.parameters[i].optional
+      ) {
         wrong = true;
         break;
       }
@@ -86,7 +95,8 @@ export function makeRawFunctionDatatypeAvailable(
     vararg: args.vararg,
     requires: args.requires,
     concrete:
-      args.parameters.every((p) => isTypeConcrete(sr, p)) && isTypeConcrete(sr, args.returnType),
+      args.parameters.every((p) => isTypeConcrete(sr, p.type)) &&
+      isTypeConcrete(sr, args.returnType),
   });
   sr.functionTypeCache.push(ftypeId);
   return ftypeId;
@@ -95,7 +105,7 @@ export function makeRawFunctionDatatypeAvailable(
 export function makeFunctionDatatypeAvailable(
   sr: SemanticResult,
   args: {
-    parameters: Semantic.TypeUseId[];
+    parameters: { optional: boolean; type: Semantic.TypeUseId }[];
     returnType: Semantic.TypeUseId;
     vararg: boolean;
     mutability: EDatatypeMutability;

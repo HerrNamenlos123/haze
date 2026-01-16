@@ -493,13 +493,22 @@ export class SemanticElaborator {
 
     const convertArgs = (
       givenArgs: Semantic.ExprId[],
-      requiredTypes: Semantic.TypeUseId[],
+      requiredTypes: {
+        optional: boolean;
+        type: Semantic.TypeUseId;
+      }[],
       sourceloc: SourceLoc[],
       vararg: boolean
     ) => {
+      console.log(
+        "Converting args to call ",
+        requiredTypes.map(
+          (t) => (t.optional ? "?" : "") + Semantic.serializeTypeUse(this.sr, t.type)
+        )
+      );
       const newRequiredTypes = requiredTypes.filter((t) => {
-        const tt = this.getTypeDef(this.getTypeUse(t).type);
-        return tt.variant !== Semantic.ENode.ParameterPackDatatype;
+        const tt = this.getTypeDef(this.getTypeUse(t.type).type);
+        return tt.variant !== Semantic.ENode.ParameterPackDatatype && !t.optional;
       });
       if (vararg || requiredTypes.length !== newRequiredTypes.length) {
         assertCompilerError(
@@ -520,7 +529,7 @@ export class SemanticElaborator {
           return Conversion.MakeConversionOrThrow(
             this.sr,
             a,
-            newRequiredTypes[index],
+            newRequiredTypes[index].type,
             this.currentContext.constraints,
             sourceloc[index],
             Conversion.Mode.Implicit,
@@ -533,7 +542,10 @@ export class SemanticElaborator {
     };
 
     const getActualCallingArguments = (
-      expectedParameterTypes: Semantic.TypeUseId[]
+      expectedParameterTypes: {
+        optional: boolean;
+        type: Semantic.TypeUseId;
+      }[]
     ): Semantic.ExprId[] => {
       return callExpr.arguments.map((a, i) => {
         const alreadyKnown = decisiveArguments.find((d) => d.index === i);
@@ -542,7 +554,7 @@ export class SemanticElaborator {
         } else {
           let structType = undefined as Semantic.TypeUseId | undefined;
           if (i < expectedParameterTypes.length) {
-            structType = expectedParameterTypes[i];
+            structType = expectedParameterTypes[i].type;
           }
           return this.sr.e.expr(a, {
             gonnaInstantiateStructWithType: structType,
@@ -635,7 +647,7 @@ export class SemanticElaborator {
 
           assert(paramIndex >= 0 && paramIndex < calledExprType.parameters.length);
           const param = calledExprType.parameters[paramIndex];
-          const paramTypeUse = this.sr.typeUseNodes.get(param);
+          const paramTypeUse = this.sr.typeUseNodes.get(param.type);
           const paramTypeDef = this.sr.typeDefNodes.get(paramTypeUse.type);
 
           if (
@@ -780,7 +792,12 @@ export class SemanticElaborator {
       assert(index !== -1);
       const typeOfTag = union.members[index].type;
 
-      const args = getActualCallingArguments([typeOfTag]);
+      const args = getActualCallingArguments([
+        {
+          optional: false,
+          type: typeOfTag,
+        },
+      ]);
 
       const instanceIds = new Set<Semantic.InstanceId>();
       for (const a of args) {
@@ -790,7 +807,17 @@ export class SemanticElaborator {
 
       return Semantic.addExpr(this.sr, {
         variant: Semantic.ENode.ValueToUnionCastExpr,
-        expr: convertArgs(args, [typeOfTag], argumentSourcelocs, false)[0],
+        expr: convertArgs(
+          args,
+          [
+            {
+              optional: false,
+              type: typeOfTag,
+            },
+          ],
+          argumentSourcelocs,
+          false
+        )[0],
         instanceIds: [...instanceIds],
         isTemporary: true,
         index: index,
@@ -1429,7 +1456,12 @@ export class SemanticElaborator {
         func = sym;
       } else {
         const functionType = makeRawFunctionDatatypeAvailable(this.sr, {
-          parameters: [object.type],
+          parameters: [
+            {
+              optional: false,
+              type: object.type,
+            },
+          ],
           returnType: this.sr.b.strType(),
           requires: {
             final: true,
@@ -1532,7 +1564,17 @@ export class SemanticElaborator {
           func = sym;
         } else {
           const functionType = makeRawFunctionDatatypeAvailable(this.sr, {
-            parameters: [object.type, this.sr.b.optionalIntType(), this.sr.b.optionalIntType()],
+            parameters: [
+              {
+                optional: false,
+                type: object.type,
+              },
+              { optional: false, type: this.sr.b.optionalIntType() },
+              {
+                optional: false,
+                type: this.sr.b.optionalIntType(),
+              },
+            ],
             returnType: this.sr.b.strType(),
             requires: {
               final: true,
@@ -1637,7 +1679,16 @@ export class SemanticElaborator {
           func = sym;
         } else {
           const functionType = makeRawFunctionDatatypeAvailable(this.sr, {
-            parameters: [object.type, objectType.datatype],
+            parameters: [
+              {
+                optional: false,
+                type: object.type,
+              },
+              {
+                optional: false,
+                type: objectType.datatype,
+              },
+            ],
             returnType: this.sr.b.voidType(),
             requires: {
               final: true,
@@ -1703,7 +1754,12 @@ export class SemanticElaborator {
           func = sym;
         } else {
           const functionType = makeRawFunctionDatatypeAvailable(this.sr, {
-            parameters: [object.type],
+            parameters: [
+              {
+                optional: false,
+                type: object.type,
+              },
+            ],
             returnType: objectType.datatype,
             requires: {
               final: true,
@@ -3010,15 +3066,21 @@ export class SemanticElaborator {
                 sourceloc: func.sourceloc,
               });
               newContext.elaboratedVariables.set(packVariable, paramPackVariableId);
-              return makeTypeUse(
-                this.sr,
-                paramPackId,
-                EDatatypeMutability.Const,
-                false,
-                func.sourceloc
-              )[1];
+              return {
+                optional: false,
+                type: makeTypeUse(
+                  this.sr,
+                  paramPackId,
+                  EDatatypeMutability.Const,
+                  false,
+                  func.sourceloc
+                )[1],
+              };
             }
-            return this.lookupAndElaborateDatatype(p.type);
+            return {
+              optional: p.optional,
+              type: this.lookupAndElaborateDatatype(p.type),
+            };
           })
           .filter((p) => Boolean(p))
           .map((p) => p!);
@@ -3026,15 +3088,16 @@ export class SemanticElaborator {
         if (func.methodType === EMethodType.Method && !func.staticMethod) {
           parameterNames.unshift("this");
           assert(parentStructOrNS);
-          parameters.unshift(
-            makeTypeUse(
+          parameters.unshift({
+            optional: false,
+            type: makeTypeUse(
               this.sr,
               parentStructOrNS,
               func.methodRequiredMutability ?? EDatatypeMutability.Default,
               false,
               func.sourceloc
-            )[1]
-          );
+            )[1],
+          });
         }
 
         let ftype = makeDeferredFunctionDatatypeAvailable(this.sr, {
@@ -3108,7 +3171,7 @@ export class SemanticElaborator {
             const funcType = this.sr.typeDefNodes.get(ftype);
             assert(funcType.variant === Semantic.ENode.DeferredFunctionDatatype);
             for (const paramId of funcType.parameters) {
-              const paramUse = this.sr.typeUseNodes.get(paramId);
+              const paramUse = this.sr.typeUseNodes.get(paramId.type);
               const paramType = this.sr.typeDefNodes.get(paramUse.type);
 
               if (
@@ -3391,7 +3454,10 @@ export class SemanticElaborator {
 
       case Collect.ENode.FunctionDatatype: {
         const result = makeFunctionDatatypeAvailable(this.sr, {
-          parameters: type.parameters.map((p) => this.lookupAndElaborateDatatype(p)),
+          parameters: type.parameters.map((p) => ({
+            optional: p.optional,
+            type: this.lookupAndElaborateDatatype(p.type),
+          })),
           returnType: this.lookupAndElaborateDatatype(type.returnType),
           vararg: type.vararg,
           mutability: type.mutability,
@@ -3826,7 +3892,7 @@ export class SemanticElaborator {
 
         if (ftype.parameters.length !== 2) return;
         if (
-          this.sr.e.getTypeUse(ftype.parameters[1]).type !==
+          this.sr.e.getTypeUse(ftype.parameters[1].type).type !==
           this.sr.e.getTypeUse(valueExpr.type).type
         )
           return;
@@ -4541,7 +4607,12 @@ export class SemanticElaborator {
             func = sym;
           } else {
             const functionType = makeRawFunctionDatatypeAvailable(this.sr, {
-              parameters: [this.sr.b.u8Type()],
+              parameters: [
+                {
+                  optional: false,
+                  type: this.sr.b.u8Type(),
+                },
+              ],
               returnType: this.sr.b.strType(),
               requires: {
                 final: true,
@@ -6758,7 +6829,8 @@ export class SemanticElaborator {
 
           if (ftype.parameters.length !== 2) continue;
           if (
-            this.sr.e.getTypeUse(ftype.parameters[1]).type !== this.sr.e.getTypeUse(index.type).type
+            this.sr.e.getTypeUse(ftype.parameters[1].type).type !==
+            this.sr.e.getTypeUse(index.type).type
           ) {
             continue;
           }
@@ -7755,7 +7827,13 @@ export class SemanticBuilder {
     assert(args.parameterNames.length === fType.parameters.length);
 
     const fullSource = `${args.funcname}(${fType.parameters
-      .map((p, i) => `${args.parameterNames[i]}: ${Semantic.serializeTypeUse(this.sr, p)}`)
+      .map(
+        (p, i) =>
+          `${args.parameterNames[i]}${p.optional ? "?" : ""}: ${Semantic.serializeTypeUse(
+            this.sr,
+            p.type
+          )}`
+      )
       .join(", ")}): ${Semantic.serializeTypeUse(this.sr, fType.returnType)} :: final { \n${
       args.bodySourceCode
     } \n}`;
@@ -8736,7 +8814,10 @@ export namespace Semantic {
 
   export type FunctionDatatypeDef = {
     variant: ENode.FunctionDatatype;
-    parameters: TypeUseId[];
+    parameters: {
+      optional: boolean;
+      type: TypeUseId;
+    }[];
     returnType: TypeUseId;
     vararg: boolean;
     requires: FunctionRequireBlock;
@@ -8745,7 +8826,10 @@ export namespace Semantic {
 
   export type DeferredFunctionDatatypeDef = {
     variant: ENode.DeferredFunctionDatatype;
-    parameters: TypeUseId[];
+    parameters: {
+      optional: boolean;
+      type: TypeUseId;
+    }[];
     vararg: boolean;
     concrete: boolean;
   };
@@ -10116,7 +10200,7 @@ export namespace Semantic {
           );
         }
         return `(${datatype.parameters
-          .map((p, i) => `arg_${i}: ${serializeTypeUse(sr, p)}`)
+          .map((p, i) => `arg_${i}${p.optional ? "?" : ""}: ${serializeTypeUse(sr, p.type)}`)
           .join(", ")}${datatype.vararg ? ", ..." : ""}) => (${serializeTypeUse(
           sr,
           datatype.returnType
@@ -10124,7 +10208,7 @@ export namespace Semantic {
       }
 
       case Semantic.ENode.DeferredFunctionDatatype:
-        return `(${datatype.parameters.map((p) => serializeTypeUse(sr, p)).join(", ")}${
+        return `(${datatype.parameters.map((p) => serializeTypeUse(sr, p.type)).join(", ")}${
           datatype.vararg ? ", ..." : ""
         }) :: deferred`;
 
@@ -10264,7 +10348,7 @@ export namespace Semantic {
     if (symbol.variant === Semantic.ENode.FunctionSymbol) {
       const ftype = sr.typeDefNodes.get(symbol.type);
       assert(ftype.variant === Semantic.ENode.FunctionDatatype);
-      functionParameterPart += ftype.parameters.map((p) => mangleTypeUse(sr, p).name).join("");
+      functionParameterPart += ftype.parameters.map((p) => mangleTypeUse(sr, p.type).name).join("");
       if (ftype.parameters.length === 0 && !ftype.vararg) {
         functionParameterPart += "v";
       }
@@ -10416,7 +10500,7 @@ export namespace Semantic {
       case Semantic.ENode.FunctionDatatype: {
         let params = "";
         for (const p of type.parameters) {
-          const ppt = sr.typeUseNodes.get(p);
+          const ppt = sr.typeUseNodes.get(p.type);
           const pp = sr.typeDefNodes.get(ppt.type);
           if (pp.variant === Semantic.ENode.ParameterPackDatatype) {
             assert(pp.parameters !== null, "Cannot mangle an unresolved parameter pack");
@@ -10427,7 +10511,7 @@ export namespace Semantic {
               params += mangleTypeUse(sr, packParamS.type).name;
             }
           } else {
-            params += mangleTypeUse(sr, p).name;
+            params += mangleTypeUse(sr, p.type).name;
           }
         }
         return {

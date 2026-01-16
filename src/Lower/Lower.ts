@@ -2175,7 +2175,7 @@ export function lowerTypeDef(lr: Lowered.Module, typeId: Semantic.TypeDefId): Lo
       const parameters: Lowered.TypeUseId[] = [];
 
       for (const p of type.parameters) {
-        const pp = lr.sr.typeUseNodes.get(p);
+        const pp = lr.sr.typeUseNodes.get(p.type);
         const typeDef = lr.sr.typeDefNodes.get(pp.type);
         if (typeDef.variant === Semantic.ENode.ParameterPackDatatype) {
           for (const packParam of typeDef.parameters || []) {
@@ -2185,7 +2185,7 @@ export function lowerTypeDef(lr: Lowered.Module, typeId: Semantic.TypeDefId): Lo
             parameters.push(lowerTypeUse(lr, sym.type));
           }
         } else {
-          parameters.push(lowerTypeUse(lr, p));
+          parameters.push(lowerTypeUse(lr, p.type));
         }
       }
       const [p, pId] = Lowered.addTypeDef<Lowered.FunctionDatatypeDef>(lr, {
@@ -2787,12 +2787,12 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
       const functype = lr.sr.typeDefNodes.get(symbol.type);
       assert(functype.variant === Semantic.ENode.FunctionDatatype);
       const paramPackId = functype.parameters.find((p) => {
-        const ppt = lr.sr.typeUseNodes.get(p);
+        const ppt = lr.sr.typeUseNodes.get(p.type);
         const pp = lr.sr.typeDefNodes.get(ppt.type);
         return pp.variant === Semantic.ENode.ParameterPackDatatype;
       });
       if (paramPackId) {
-        const paramPackt = lr.sr.typeUseNodes.get(paramPackId);
+        const paramPackt = lr.sr.typeUseNodes.get(paramPackId.type);
         const paramPack = lr.sr.typeDefNodes.get(paramPackt.type);
         assert(paramPack.variant === Semantic.ENode.ParameterPackDatatype);
         parameterNames.pop();
