@@ -1,5 +1,6 @@
 
 namespace ffi {
+    extern C noemit hzstd_panic_str_n(msg: str, skip: int) :: final;
     extern C noemit hzstd_panic_n(msg: ccstr, skip: int) :: final;
     extern C noemit hzstd_assert(condition: bool) :: final;
     extern C noemit hzstd_assert_msg(condition: bool, msg: str) :: final;

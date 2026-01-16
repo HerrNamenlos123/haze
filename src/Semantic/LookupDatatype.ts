@@ -71,6 +71,8 @@ export function makeRawFunctionDatatypeAvailable(
     if (type.vararg !== args.vararg) continue;
     if (type.requires.final !== args.requires.final) continue;
     if (type.requires.pure !== args.requires.pure) continue;
+    if (type.requires.noreturn !== args.requires.noreturn) continue;
+    if (type.requires.noreturnIf?.expr !== args.requires.noreturnIf?.expr) continue;
 
     // Everything matches
     return id;

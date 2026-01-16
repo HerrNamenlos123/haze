@@ -657,9 +657,11 @@ export class SemanticElaborator {
               // The condition is already known at compile time, skip the condition
               // This is where assert(false) turns into noreturn
               // If condition is true, just ignore all constraints
-              if (!result.value[0].literal.value) {
+              if (
+                !result.value[0].literal.value &&
+                !this.currentContext.scopeCanExitEarly.has(this.currentContext.currentScope)
+              ) {
                 this.currentContext.scopeNoReturn.add(this.currentContext.currentScope);
-                console.log("add 1");
               }
             }
           } else {
@@ -674,9 +676,11 @@ export class SemanticElaborator {
       }
 
       // This is the handling for if -> noreturn
-      if (calledExprType.requires.noreturn) {
+      if (
+        calledExprType.requires.noreturn &&
+        !this.currentContext.scopeCanExitEarly.has(this.currentContext.currentScope)
+      ) {
         this.currentContext.scopeNoReturn.add(this.currentContext.currentScope);
-        console.log("add 2");
       }
 
       return this.sr.b.callExpr(calledExprId, actualArgs, this.inFunction, callExpr.sourceloc);
@@ -2680,7 +2684,6 @@ export class SemanticElaborator {
     lastExprIsEmit: boolean,
     inference: Inference
   ) {
-    console.log("start scope");
     const scope = this.sr.cc.scopeNodes.get(args.sourceScopeId);
     assert(scope.variant === Collect.ENode.BlockScope);
 
@@ -2695,7 +2698,8 @@ export class SemanticElaborator {
     });
 
     let noReturn = false;
-    let exitsEarly = false;
+    let canExitEarly = false;
+    let willExitEarly = false;
     this.withContext(
       {
         context: newContext,
@@ -2734,24 +2738,28 @@ export class SemanticElaborator {
 
           if (statement.variant === Semantic.ENode.ExprStatement) {
             const expr = this.sr.exprNodes.get(statement.expr);
-            if (expr.variant === Semantic.ENode.BlockScopeExpr) {
+            if (
+              expr.variant === Semantic.ENode.BlockScopeExpr &&
+              !this.currentContext.scopeCanExitEarly.has(this.currentContext.currentScope)
+            ) {
               if (expr.noreturn) {
+                // If a function calls a noreturn scope, but the function also already had an early return,
+                // it is NOT noreturn.
                 this.currentContext.scopeNoReturn.add(this.currentContext.currentScope);
-                console.log("noreturn scope");
               }
             }
           } else if (statement.variant === Semantic.ENode.ReturnStatement) {
-            this.currentContext.scopeExitsEarly.add(this.currentContext.currentScope);
-            console.log(
-              "early exit return",
-              statement.expr && Semantic.serializeExpr(this.sr, statement.expr)
-            );
+            this.currentContext.scopeCanExitEarly.add(this.currentContext.currentScope);
+            this.currentContext.scopeWillExitEarly.add(this.currentContext.currentScope);
           }
 
           if (
             lastExprIsEmit &&
             statement.variant === Semantic.ENode.ExprStatement &&
-            index === statements.length - 1
+            index === statements.length - 1 &&
+            // If it's void (as by calling a void function at the end), we ignore it, don't emit and
+            // later let it be turned into "none" instead.
+            !Conversion.isVoidById(this.sr, this.sr.exprNodes.get(statement.expr).type)
           ) {
             blockScope.emittedExpr = statement.expr;
           } else {
@@ -2766,25 +2774,39 @@ export class SemanticElaborator {
         if (this.currentContext.scopeNoReturn.has(args.sourceScopeId)) {
           noReturn = true;
         }
-        if (this.currentContext.scopeExitsEarly.has(args.sourceScopeId)) {
-          exitsEarly = true;
+        if (this.currentContext.scopeCanExitEarly.has(args.sourceScopeId)) {
+          canExitEarly = true;
+        }
+        if (this.currentContext.scopeWillExitEarly.has(args.sourceScopeId)) {
+          willExitEarly = true;
         }
       }
     );
 
-    // If a scope has any path that exits early (via return), it's exitsEarly.
-    // If a scope has NO paths that exit early but has a noReturn path, it's noReturn.
-    // exitsEarly takes precedence because it represents a real return path.
-    if (exitsEarly) {
-      this.currentContext.scopeExitsEarly.add(args.sourceScopeId);
-    } else if (noReturn) {
+    if (canExitEarly) {
+      this.currentContext.scopeCanExitEarly.add(args.sourceScopeId);
+    }
+    if (willExitEarly) {
+      this.currentContext.scopeWillExitEarly.add(args.sourceScopeId);
+    }
+    if (noReturn) {
       this.currentContext.scopeNoReturn.add(args.sourceScopeId);
     }
 
-    console.log("scope done ", noReturn, exitsEarly);
+    if (blockScope.emittedExpr === -1) {
+      // Still nothing returned, so return "none" which is our replacement for void
+      blockScope.emittedExpr = this.sr.b.literalValue(
+        {
+          type: EPrimitive.none,
+        },
+        blockScope.sourceloc
+      )[1];
+    }
+
     return {
       noReturn: noReturn,
-      exitsEarly: exitsEarly,
+      canExitEarly: canExitEarly,
+      willExitEarly: willExitEarly,
     };
   }
 
@@ -3121,15 +3143,19 @@ export class SemanticElaborator {
             }
           }
 
-          let noReturn = false;
+          let blockScopeResult: {
+            willExitEarly: boolean;
+            canExitEarly: boolean;
+            noReturn: boolean;
+          } | null = null;
           if (func.functionScope) {
             const functionScope = this.sr.cc.scopeNodes.get(func.functionScope);
             assert(functionScope.variant === Collect.ENode.FunctionScope);
 
-            const [bodyScope, bodyScopeId] = Semantic.addBlockScope(this.sr, {
+            const [bodyScope, bodyScopeId] = Semantic.addBlockScope<Semantic.BlockScope>(this.sr, {
               variant: Semantic.ENode.BlockScope,
               statements: [],
-              emittedExpr: null,
+              emittedExpr: -1 as Semantic.ExprId,
               constraints: [],
               sourceloc: functionScope.sourceloc,
             });
@@ -3187,7 +3213,7 @@ export class SemanticElaborator {
             }
 
             symbol.scope = bodyScopeId;
-            const blockScopeResult = this.withContext(
+            blockScopeResult = this.withContext(
               {
                 context: newContext,
                 inFunction: symbolId,
@@ -3205,10 +3231,6 @@ export class SemanticElaborator {
                 );
               }
             );
-            noReturn = blockScopeResult.noReturn;
-            if (func.name === "isWin32") {
-              console.log("Function ", func.name, blockScopeResult);
-            }
 
             if (func.name === "main" && parentStructOrNS) {
               const modulePrefix = getModuleGlobalNamespaceName(
@@ -3293,11 +3315,31 @@ export class SemanticElaborator {
               requires: {
                 final: true,
                 pure: func.requires.pure || (!func.requires.final && !symbol.isImpure),
-                noreturn: func.requires.noreturn || noReturn,
+                noreturn: func.requires.noreturn || (blockScopeResult?.noReturn ?? false),
                 noreturnIf: func.requires.noreturnIf,
               },
               sourceloc: func.sourceloc,
             });
+            const functype = this.sr.typeDefNodes.get(symbol.type);
+            assert(functype.variant === Semantic.ENode.FunctionDatatype);
+
+            // Fix returning "none" if nothing is returned but the function returns "none"
+            if (
+              blockScopeResult &&
+              !blockScopeResult.willExitEarly &&
+              Conversion.isNoneById(this.sr, functype.returnType) &&
+              !functype.requires.noreturn
+            ) {
+              assert(symbol.scope);
+              const bodyScope = this.sr.blockScopeNodes.get(symbol.scope);
+              bodyScope.statements.push(
+                Semantic.addStatement(this.sr, {
+                  variant: Semantic.ENode.ReturnStatement,
+                  expr: this.sr.b.noneExpr()[1],
+                  sourceloc: func.sourceloc,
+                })[1]
+              );
+            }
 
             // Now the return type has been fixed, so we have to go over all return statements now
             // and insert implicit type conversions to the return type in order to convert between unions implicitly.
@@ -4616,7 +4658,7 @@ export class SemanticElaborator {
             const [thenScope, thenScopeId] = Semantic.addBlockScope(this.sr, {
               variant: Semantic.ENode.BlockScope,
               statements: [],
-              emittedExpr: null,
+              emittedExpr: -1 as Semantic.ExprId,
               constraints: [...this.currentContext.constraints],
               sourceloc: s.sourceloc,
             });
@@ -4655,7 +4697,7 @@ export class SemanticElaborator {
               const [thenScope, thenScopeId] = Semantic.addBlockScope(this.sr, {
                 variant: Semantic.ENode.BlockScope,
                 statements: [],
-                emittedExpr: null,
+                emittedExpr: -1 as Semantic.ExprId,
                 sourceloc: s.sourceloc,
                 constraints: [...this.currentContext.constraints],
               });
@@ -4686,7 +4728,7 @@ export class SemanticElaborator {
           if (s.elseBlock) {
             const [thenScope, thenScopeId] = Semantic.addBlockScope(this.sr, {
               variant: Semantic.ENode.BlockScope,
-              emittedExpr: null,
+              emittedExpr: -1 as Semantic.ExprId,
               sourceloc: s.sourceloc,
               statements: [],
               constraints: [...this.currentContext.constraints],
@@ -4723,7 +4765,7 @@ export class SemanticElaborator {
               block: Semantic.addBlockScope(this.sr, {
                 variant: Semantic.ENode.BlockScope,
                 statements: [],
-                emittedExpr: null,
+                emittedExpr: this.sr.b.noneExpr()[1],
                 constraints: [...this.currentContext.constraints],
                 sourceloc: s.sourceloc,
               })[1],
@@ -4880,7 +4922,7 @@ export class SemanticElaborator {
           const [thenScope, thenScopeId] = Semantic.addBlockScope(this.sr, {
             variant: Semantic.ENode.BlockScope,
             statements: [],
-            emittedExpr: null,
+            emittedExpr: -1 as Semantic.ExprId,
             constraints: constraints,
             sourceloc: s.sourceloc,
           });
@@ -4909,10 +4951,14 @@ export class SemanticElaborator {
           );
 
           // If the body of if does not return, then the inverse of the condition applies to the body after the if
-          if (result.exitsEarly || result.noReturn) {
+          if (result.willExitEarly || result.noReturn) {
             this.buildConstraints(this.currentContext.constraints, resultingConditionId, {
               inverse: true,
             });
+          }
+
+          if (result.canExitEarly || result.willExitEarly) {
+            this.currentContext.scopeCanExitEarly.add(this.currentContext.currentScope);
           }
 
           const elseIfs = s.elseif.map((e) => {
@@ -4935,7 +4981,7 @@ export class SemanticElaborator {
             const [innerThenScope, innerThenScopeId] = Semantic.addBlockScope(this.sr, {
               variant: Semantic.ENode.BlockScope,
               statements: [],
-              emittedExpr: null,
+              emittedExpr: -1 as Semantic.ExprId,
               sourceloc: s.sourceloc,
               constraints: innerConstraints,
             });
@@ -4977,7 +5023,7 @@ export class SemanticElaborator {
             [elseScope, elseScopeId] = Semantic.addBlockScope(this.sr, {
               variant: Semantic.ENode.BlockScope,
               statements: [],
-              emittedExpr: null,
+              emittedExpr: -1 as Semantic.ExprId,
               constraints: elseConstraints,
               sourceloc: s.sourceloc,
             });
@@ -5024,14 +5070,6 @@ export class SemanticElaborator {
 
       case Collect.ENode.WhileStatement: {
         let resultingConditionId: Semantic.ExprId | null = null;
-
-        // console.log("While statement: ", this.currentContext.constraints, s.sourceloc);
-        // if (this.currentContext.constraints.length === 1) {
-        //   const constraint = this.currentContext.constraints[0];
-        //   const variable = this.sr.symbolNodes.get(constraint.variableSymbol);
-        //   assert(variable.variant === Semantic.ENode.VariableSymbol);
-        //   console.log(variable.name);
-        // }
 
         const constraints = [...this.currentContext.constraints];
         if (s.letScopeId) {
@@ -5171,7 +5209,7 @@ export class SemanticElaborator {
 
         const [thenScope, thenScopeId] = Semantic.addBlockScope(this.sr, {
           variant: Semantic.ENode.BlockScope,
-          emittedExpr: null,
+          emittedExpr: -1 as Semantic.ExprId,
           statements: [],
           constraints: constraints,
           sourceloc: s.sourceloc,
@@ -5542,7 +5580,7 @@ export class SemanticElaborator {
         const [body, bodyId] = Semantic.addBlockScope(this.sr, {
           variant: Semantic.ENode.BlockScope,
           statements: [],
-          emittedExpr: null,
+          emittedExpr: -1 as Semantic.ExprId,
           constraints: [...this.currentContext.constraints],
           sourceloc: s.sourceloc,
         });
@@ -5629,7 +5667,7 @@ export class SemanticElaborator {
             const [thenScope, thenScopeId] = Semantic.addBlockScope(this.sr, {
               variant: Semantic.ENode.BlockScope,
               statements: [],
-              emittedExpr: null,
+              emittedExpr: -1 as Semantic.ExprId,
               constraints: [...this.currentContext.constraints],
               sourceloc: s.sourceloc,
             });
@@ -5690,7 +5728,7 @@ export class SemanticElaborator {
               block: Semantic.addBlockScope(this.sr, {
                 variant: Semantic.ENode.BlockScope,
                 statements: allScopes,
-                emittedExpr: null,
+                emittedExpr: this.sr.b.noneExpr()[1],
                 constraints: [...this.currentContext.constraints],
                 sourceloc: s.sourceloc,
               })[1],
@@ -6309,36 +6347,37 @@ export class SemanticElaborator {
       );
     }
 
-    const okTag = typeDef.members.find((m) => m.tag === "Ok");
-    const errTag = typeDef.members.find((m) => m.tag === "Err");
+    const srcOkTag = typeDef.members.find((m) => m.tag === "Ok");
+    const srcErrTag = typeDef.members.find((m) => m.tag === "Err");
 
-    if (!okTag || !errTag) {
+    if (!srcOkTag || !srcErrTag) {
       throw new CompilerError(
         `The '?!' error propagation operator can only be used on tagged union types that provide both a Ok and a Err tag.`,
         errPropExpr.sourceloc
       );
     }
 
-    const okIndex = typeDef.members.findIndex((m) => m.tag === "Ok");
-    const errIndex = typeDef.members.findIndex((m) => m.tag === "Err");
+    const srcOkIndex = typeDef.members.findIndex((m) => m.tag === "Ok");
+    const srcErrIndex = typeDef.members.findIndex((m) => m.tag === "Err");
 
     if (this.inAttemptExpr) {
       // short circuit and build an expr for lowering instead of rewriting to a return statement
       const expr = this.sr.exprNodes.get(this.inAttemptExpr);
       assert(expr.variant === Semantic.ENode.AttemptExpr);
-      expr.errorTypesCaught.add(errTag.type);
+      expr.errorTypesCaught.add(srcErrTag.type);
+
       return Semantic.addExpr(this.sr, {
         variant: Semantic.ENode.AttemptErrorPropagationExpr,
         expr: rightExprId,
-        errTagIndex: errIndex,
-        errTagType: errTag.type,
-        okTagIndex: okIndex,
-        okTagType: okTag.type,
+        srcErrTagIndex: srcErrIndex,
+        srcErrTagType: srcErrTag.type,
+        srcOkTagIndex: srcOkIndex,
+        srcOkTagType: srcOkTag.type,
         instanceIds: [],
         isTemporary: true,
         sourceloc: errPropExpr.sourceloc,
         toAttemptExpr: this.inAttemptExpr,
-        type: okTag.type,
+        type: srcOkTag.type,
       });
     }
 
@@ -6376,14 +6415,14 @@ export class SemanticElaborator {
         sourceloc: errPropExpr.sourceloc,
         isTemporary: true,
         canBeUnwrappedForLHS: false,
-        tag: errIndex,
-        type: errTag.type,
+        tag: srcErrIndex,
+        type: srcErrTag.type,
       })[1];
       if (functionType.variant === Semantic.ENode.FunctionDatatype) {
         return Conversion.MakeConversionOrThrow(
           this.sr,
           errValue,
-          errTag.type,
+          srcErrTag.type,
           [],
           errPropExpr.sourceloc,
           Conversion.Mode.Implicit,
@@ -6412,7 +6451,7 @@ export class SemanticElaborator {
       })[1];
       functionSymbol.returnStatements.add(statementId);
       rightExpr.instanceIds.forEach((id) => functionSymbol.returnsInstanceIds.add(id));
-      functionSymbol.returnedDatatypes.add(errTag.type);
+      functionSymbol.returnedDatatypes.add(srcErrTag.type);
       return statementId;
     };
 
@@ -6428,8 +6467,8 @@ export class SemanticElaborator {
           isTemporary: true,
           canBeUnwrappedForLHS: false,
           sourceloc: errPropExpr.sourceloc,
-          tag: okIndex,
-          type: okTag.type,
+          tag: srcOkIndex,
+          type: srcOkTag.type,
         })[1],
         statements: [
           Semantic.addStatement(this.sr, {
@@ -6451,14 +6490,14 @@ export class SemanticElaborator {
               sourceloc: errPropExpr.sourceloc,
               type: this.sr.b.boolType(),
               invertCheck: false,
-              comparisonTypesAnd: [errTag.type],
+              comparisonTypesAnd: [srcErrTag.type],
             })[1],
             elseIfs: [],
             sourceloc: errPropExpr.sourceloc,
             then: Semantic.addBlockScope(this.sr, {
               variant: Semantic.ENode.BlockScope,
               constraints: [],
-              emittedExpr: null,
+              emittedExpr: -1 as Semantic.ExprId,
               statements: [returnStatement()],
               sourceloc: errPropExpr.sourceloc,
             })[1],
@@ -6470,7 +6509,7 @@ export class SemanticElaborator {
       noreturn: false, // dont care
       isTemporary: true,
       sourceloc: errPropExpr.sourceloc,
-      type: okTag.type,
+      type: srcOkTag.type,
     });
   }
 
@@ -6819,7 +6858,7 @@ export class SemanticElaborator {
     const [scope, scopeId] = Semantic.addBlockScope(this.sr, {
       variant: Semantic.ENode.BlockScope,
       statements: [],
-      emittedExpr: null,
+      emittedExpr: -1 as Semantic.ExprId,
       constraints: [...this.currentContext.constraints],
       sourceloc: blockScope.sourceloc,
     });
@@ -6847,18 +6886,14 @@ export class SemanticElaborator {
       }
     );
 
-    let resultType = null as Semantic.TypeUseId | null;
-    if (scope.emittedExpr) {
-      const emittedExpr = this.sr.exprNodes.get(scope.emittedExpr);
-      resultType = emittedExpr.type;
-    }
+    assert(scope.emittedExpr !== -1);
     return Semantic.addExpr(this.sr, {
       variant: Semantic.ENode.BlockScopeExpr,
       instanceIds: [],
       block: scopeId,
       noreturn: result.noReturn,
       isTemporary: true,
-      type: resultType || makeVoidType(this.sr),
+      type: this.sr.exprNodes.get(scope.emittedExpr).type,
       sourceloc: blockScopeExpr.sourceloc,
     });
   }
@@ -6876,7 +6911,9 @@ export class SemanticElaborator {
       uniqueId: makeTempId(),
       errorLabel: `__attempt_error_label_${uniqueId}`,
       resultLabel: `__attempt_result_label_${uniqueId}`,
+      errorResultVarname: `__attempt_error_${uniqueId}`,
       isTemporary: true,
+      hasErrorVar: Boolean(attempt.elseVar),
       sourceloc: attempt.sourceloc,
       type: -1 as Semantic.TypeUseId,
       errorUnionType: -1 as Semantic.TypeUseId,
@@ -6887,7 +6924,7 @@ export class SemanticElaborator {
     const [attemptScope, attemptScopeId] = Semantic.addBlockScope<Semantic.BlockScope>(this.sr, {
       variant: Semantic.ENode.BlockScope,
       statements: [],
-      emittedExpr: null,
+      emittedExpr: -1 as Semantic.ExprId,
       constraints: [...this.currentContext.constraints],
       sourceloc: attemptBlockScope.sourceloc,
     });
@@ -6925,7 +6962,7 @@ export class SemanticElaborator {
     const [elseScope, elseScopeId] = Semantic.addBlockScope(this.sr, {
       variant: Semantic.ENode.BlockScope,
       statements: [],
-      emittedExpr: null,
+      emittedExpr: -1 as Semantic.ExprId,
       constraints: [...this.currentContext.constraints],
       sourceloc: elseBlockScope.sourceloc,
     });
@@ -6969,23 +7006,13 @@ export class SemanticElaborator {
     );
 
     const memberSet = new Set<Semantic.TypeUseId>();
-    let attemptProducesValue = false;
-    let elseProducesValue = false;
-    if (attemptScope.emittedExpr && !attemptScopeResult.noReturn) {
-      const e = this.sr.exprNodes.get(attemptScope.emittedExpr);
-      if (!Conversion.isVoidById(this.sr, e.type)) {
-        attemptExpr.attemptScopeReturnsType = this.sr.exprNodes.get(attemptScope.emittedExpr).type;
-        memberSet.add(attemptExpr.attemptScopeReturnsType);
-        attemptProducesValue = true;
-      }
+    if (!attemptScopeResult.noReturn && !attemptScopeResult.willExitEarly) {
+      attemptExpr.attemptScopeReturnsType = this.sr.exprNodes.get(attemptScope.emittedExpr).type;
+      memberSet.add(attemptExpr.attemptScopeReturnsType);
     }
-    if (elseScope.emittedExpr && !elseScopeResult.noReturn) {
-      const e = this.sr.exprNodes.get(elseScope.emittedExpr);
-      if (!Conversion.isVoidById(this.sr, e.type)) {
-        attemptExpr.elseScopeReturnsType = this.sr.exprNodes.get(elseScope.emittedExpr).type;
-        memberSet.add(attemptExpr.elseScopeReturnsType);
-        elseProducesValue = true;
-      }
+    if (!elseScopeResult.noReturn && !elseScopeResult.willExitEarly) {
+      attemptExpr.elseScopeReturnsType = this.sr.exprNodes.get(elseScope.emittedExpr).type;
+      memberSet.add(attemptExpr.elseScopeReturnsType);
     }
 
     const resultUnion =
@@ -6999,7 +7026,7 @@ export class SemanticElaborator {
       attemptScopeId,
       attemptScopeResult.noReturn
     );
-    if (attemptProducesValue) {
+    if (attemptExpr.attemptScopeReturnsType) {
       attemptExpr.attemptScopeExpr = Conversion.MakeConversionOrThrow(
         this.sr,
         attemptScopeExprId,
@@ -7014,7 +7041,7 @@ export class SemanticElaborator {
     }
 
     const [elseExpr, elseExprId] = this.sr.b.blockScopeExpr(elseScopeId, elseScopeResult.noReturn);
-    if (elseProducesValue) {
+    if (attemptExpr.elseScopeReturnsType) {
       attemptExpr.elseScopeExpr = Conversion.MakeConversionOrThrow(
         this.sr,
         elseExprId,
@@ -7026,6 +7053,29 @@ export class SemanticElaborator {
       );
     } else {
       attemptExpr.elseScopeExpr = elseExprId;
+    }
+
+    // Insert the error variable
+    if (attemptExpr.hasErrorVar) {
+      assert(elseScope.statements.length === 1);
+      const vardefStatement = this.sr.statementNodes.get(elseScope.statements[0]);
+      assert(vardefStatement.variant === Semantic.ENode.VariableStatement);
+      vardefStatement.value = Semantic.addExpr(this.sr, {
+        variant: Semantic.ENode.SymbolValueExpr,
+        instanceIds: [],
+        isTemporary: false,
+        sourceloc: attemptExpr.sourceloc,
+        symbol: this.sr.b.variableSymbol(
+          attemptExpr.errorResultVarname,
+          errorUnion,
+          false,
+          null,
+          EVariableMutability.Let,
+          null,
+          attemptExpr.sourceloc
+        )[1],
+        type: errorUnion,
+      })[1];
     }
 
     attemptExpr.errorUnionType = errorUnion;
@@ -7451,6 +7501,65 @@ export class SemanticBuilder {
     return this.sr.b.callExpr(
       this.makeStringFormatFunc(fragments, allocator, sourceloc)[1],
       allocator ? [allocator, ...fragments] : fragments,
+      this.sr.e.inFunction,
+      sourceloc
+    );
+  }
+
+  makeSysPanicFunc(sourceloc: SourceLoc) {
+    const fmtNsId = Semantic.findBuiltinSymbolByName(this.sr, "sys", null);
+    const fmtNsDef = this.sr.cc.symbolNodes.get(fmtNsId);
+    assert(fmtNsDef.variant === Collect.ENode.TypeDefSymbol);
+    const fmtNs = this.sr.cc.typeDefNodes.get(fmtNsDef.typeDef);
+    assert(fmtNs.variant === Collect.ENode.NamespaceTypeDef);
+
+    const symbolId = Semantic.findBuiltinSymbolByName(this.sr, "sys.panic", null);
+    const chosenOverloadId = this.sr.e.FunctionOverloadChoose(symbolId, [], sourceloc);
+
+    let elaboratedNsContext = null as Semantic.ElaborationContext | null;
+    for (const cache of this.sr.elaboratedNamespaceSymbols) {
+      if (cache.originalSharedInstance === fmtNs.sharedInstance) {
+        elaboratedNsContext = cache.substitutionContext;
+      }
+    }
+    assert(elaboratedNsContext);
+
+    const elaboratedMethodId = this.sr.e.withContext(
+      {
+        context: Semantic.mergeSubstitutionContext(elaboratedNsContext, this.sr.e.currentContext, {
+          currentScope: this.sr.e.currentContext.currentScope,
+          genericsScope: this.sr.e.currentContext.currentScope,
+          instanceDeps: {
+            instanceDependsOn: new Map(),
+            structMembersDependOn: new Map(),
+            symbolDependsOn: new Map(),
+          },
+        }),
+        inAttemptExpr: null,
+        inFunction: null,
+      },
+      () =>
+        this.sr.e.elaborateFunctionSymbolWithGenerics(
+          this.sr.e.elaborateFunctionSignature(chosenOverloadId),
+          [],
+          sourceloc,
+          [this.strType()]
+        )
+    );
+    assert(elaboratedMethodId);
+    const elaboratedMethod = this.sr.symbolNodes.get(elaboratedMethodId);
+    assert(elaboratedMethod.variant === Semantic.ENode.FunctionSymbol);
+
+    const functype = this.sr.e.getTypeDef(elaboratedMethod.type);
+    assert(functype.variant === Semantic.ENode.FunctionDatatype);
+    return this.sr.b.symbolValue(elaboratedMethodId, sourceloc);
+  }
+
+  callSysPanic(message: string, sourceloc: SourceLoc) {
+    assert(this.sr.e.inFunction);
+    return this.sr.b.callExpr(
+      this.makeSysPanicFunc(sourceloc)[1],
+      [this.literal(message, sourceloc)[1]],
       this.sr.e.inFunction,
       sourceloc
     );
@@ -7967,6 +8076,15 @@ export class SemanticBuilder {
       false,
       sourceloc
     )[1];
+  }
+
+  noneExpr() {
+    return this.literalValue(
+      {
+        type: EPrimitive.none,
+      },
+      null
+    );
   }
 
   primitiveType(primitive: EPrimitive, sourceloc: SourceLoc): Semantic.TypeUseId {
@@ -8575,7 +8693,7 @@ export namespace Semantic {
   export type BlockScope = {
     variant: ENode.BlockScope;
     statements: StatementId[];
-    emittedExpr: ExprId | null;
+    emittedExpr: ExprId;
     constraints: Constraint[];
     sourceloc: SourceLoc;
   };
@@ -8869,8 +8987,10 @@ export namespace Semantic {
     errorTypesCaught: Set<TypeUseId>;
     errorLabel: string;
     resultLabel: string;
+    errorResultVarname: string;
     errorUnionType: TypeUseId;
     uniqueId: bigint;
+    hasErrorVar: boolean;
     type: TypeUseId;
     isTemporary: boolean;
     sourceloc: SourceLoc;
@@ -8923,10 +9043,10 @@ export namespace Semantic {
     instanceIds: InstanceId[];
     expr: ExprId;
     type: TypeUseId;
-    okTagIndex: number;
-    okTagType: TypeUseId;
-    errTagIndex: number;
-    errTagType: TypeUseId;
+    srcOkTagIndex: number;
+    srcOkTagType: TypeUseId;
+    srcErrTagIndex: number;
+    srcErrTagType: TypeUseId;
     toAttemptExpr: ExprId;
     isTemporary: boolean;
     sourceloc: SourceLoc;
@@ -9578,8 +9698,8 @@ export namespace Semantic {
     elaborationTypeOverride: Map<Collect.SymbolId, Semantic.TypeUseId>;
     elaboratedVariables: Map<Collect.SymbolId, Semantic.SymbolId>;
     scopeNoReturn: Set<Collect.ScopeId>;
-    scopeExitsEarly: Set<Collect.ScopeId>;
-    scopeNoReturnConstraints: Constraint[];
+    scopeCanExitEarly: Set<Collect.ScopeId>;
+    scopeWillExitEarly: Set<Collect.ScopeId>;
   };
 
   export function makeElaborationContext(args: {
@@ -9598,8 +9718,8 @@ export namespace Semantic {
         symbolDependsOn: new Map(),
       },
       scopeNoReturn: new Set(),
-      scopeExitsEarly: new Set(),
-      scopeNoReturnConstraints: [],
+      scopeCanExitEarly: new Set(),
+      scopeWillExitEarly: new Set(),
       elaboratedVariables: new Map(),
       elaborationTypeOverride: new Map(),
     };
@@ -9622,8 +9742,8 @@ export namespace Semantic {
       instanceDeps: args.instanceDeps,
 
       scopeNoReturn: new Set(parent.scopeNoReturn),
-      scopeExitsEarly: new Set(parent.scopeExitsEarly),
-      scopeNoReturnConstraints: [...args.constraints],
+      scopeCanExitEarly: new Set(parent.scopeCanExitEarly),
+      scopeWillExitEarly: new Set(parent.scopeWillExitEarly),
       elaboratedVariables: new Map(parent.elaboratedVariables),
       elaborationTypeOverride: new Map(parent.elaborationTypeOverride),
     };
@@ -9646,8 +9766,8 @@ export namespace Semantic {
       genericsScope: args.genericsScope,
       instanceDeps: args.instanceDeps,
       scopeNoReturn: new Set([...a.scopeNoReturn, ...b.scopeNoReturn]),
-      scopeExitsEarly: new Set([...a.scopeExitsEarly, ...b.scopeExitsEarly]),
-      scopeNoReturnConstraints: [...a.constraints, ...b.constraints],
+      scopeCanExitEarly: new Set([...a.scopeCanExitEarly, ...b.scopeCanExitEarly]),
+      scopeWillExitEarly: new Set([...a.scopeWillExitEarly, ...b.scopeWillExitEarly]),
       elaboratedVariables: new Map([...a.elaboratedVariables, ...b.elaboratedVariables]),
       elaborationTypeOverride: new Map([
         ...a.elaborationTypeOverride,

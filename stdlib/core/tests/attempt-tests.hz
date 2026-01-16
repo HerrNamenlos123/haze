@@ -2,6 +2,8 @@
 
 namespace attempt_tests {
 
+    ok_void() {}
+
     ok_int(v: int): Result<int, none> {
         return Result<int, none>.Ok(v);
     }
@@ -28,7 +30,6 @@ namespace attempt_tests {
     a1(): int | real {
         let x = attempt {
             ok_int(1)?!;
-            10;
         } else {
             3.5;
         };
@@ -39,7 +40,6 @@ namespace attempt_tests {
     a2(): int | none {
         let x = attempt {
             ok_int(1)?!;
-            10;
         } else {
         };
         return x;
@@ -49,7 +49,6 @@ namespace attempt_tests {
     a3(): int {
         let x = attempt {
             ok_int(1)?!;
-            10;
         } else {
             panic();
         };
@@ -61,6 +60,8 @@ namespace attempt_tests {
     // Else returns value
     b1(): real | none {
         let x = attempt {
+            ok_int(1)?!;
+            ok_void();
         } else {
             2.5;
         };
@@ -71,6 +72,7 @@ namespace attempt_tests {
     b2(): none {
         let x = attempt {
             ok_int(1)?!;
+            ok_void();
         } else {
         };
         return x;
@@ -80,6 +82,7 @@ namespace attempt_tests {
     b3(): none {
         let x = attempt {
             ok_int(1)?!;
+            ok_void();
         } else {
             panic();
         };

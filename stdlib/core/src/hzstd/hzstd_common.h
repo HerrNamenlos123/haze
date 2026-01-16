@@ -31,9 +31,11 @@ typedef char* hzstd_cstr_t;
 typedef const char* hzstd_ccstr_t;
 
 typedef struct hzstd_null_t {
+  hzstd_u8_t dummy;
 } hzstd_null_t;
 
 typedef struct hzstd_none_t {
+  hzstd_u8_t dummy;
 } hzstd_none_t;
 
 #define HZSTD_MAX(a, b) ((a) > (b) ? (a) : (b))

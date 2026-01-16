@@ -1,4 +1,3 @@
-import { inline } from "@ltd/j-toml";
 import { Conversion } from "../Semantic/Conversion";
 import {
   makePrimitiveAvailable,
@@ -15,8 +14,6 @@ import {
   EExternLanguage,
   EIncrOperation,
   EUnaryOperation,
-  EVariableMutability,
-  IncrOperationToString,
   UnaryOperationToString,
 } from "../shared/AST";
 import {
@@ -28,9 +25,7 @@ import {
   type NameSet,
 } from "../shared/common";
 import { assert, InternalError, printWarningMessage, type SourceLoc } from "../shared/Errors";
-import { makeTempId, makeTempName } from "../shared/store";
-import { Collect, printCollectedDatatype } from "../SymbolCollection/SymbolCollection";
-import { stat } from "node:fs";
+import { makeTempName } from "../shared/store";
 
 export namespace Lowered {
   export type FunctionId = Brand<number, "LoweredFunction">;
@@ -619,6 +614,30 @@ export namespace Lowered {
     name: NameSet;
   };
 }
+
+const callSysPanic = (
+  lr: Lowered.Module,
+  message: string,
+  steps: bigint,
+  instanceInfo: InstanceInfo
+) => {
+  const flattened: Lowered.StatementId[] = [];
+  const id = Lowered.addStatement(lr, {
+    variant: Lowered.ENode.ExprStatement,
+    expr: makeIntrinsicCall(
+      lr,
+      "hzstd_panic_str_n",
+      [
+        lowerExpr(lr, lr.sr.b.literal(message, null)[1], flattened, instanceInfo)[1],
+        lowerExpr(lr, lr.sr.b.literal(steps, null)[1], flattened, instanceInfo)[1],
+      ],
+      lowerTypeUse(lr, lr.sr.b.voidType())
+    )[1],
+    sourceloc: null,
+  })[1];
+  assert(flattened.length === 0);
+  return id;
+};
 
 const storeInTempVarAndGet = (
   lr: Lowered.Module,
@@ -1826,13 +1845,23 @@ export function lowerExpr(
       });
 
       const innerExpr = lr.sr.exprNodes.get(expr.expr);
+      const srcUnionUse = lowerTypeUse(lr, innerExpr.type);
       const loweredInnerExpr = storeInTempVarAndGet(
         lr,
-        lowerTypeUse(lr, innerExpr.type),
+        srcUnionUse,
         lowerExpr(lr, expr.expr, scope.statements, instanceInfo)[1],
         expr.sourceloc,
         scope.statements
       );
+
+      const targetUnionUse = lr.sr.typeUseNodes.get(attemptExpr.errorUnionType);
+      const targetUnionDef = lr.sr.typeDefNodes.get(targetUnionUse.type);
+      assert(targetUnionDef.variant === Semantic.ENode.UntaggedUnionDatatype);
+
+      const targetIndex = targetUnionDef.members.findIndex((m) => m === expr.srcErrTagType);
+      assert(targetIndex !== -1);
+
+      const loweredErrorUnionType = lowerTypeUse(lr, attemptExpr.errorUnionType);
 
       const loweredValueUnionDef = lr.typeDefNodes.get(
         lr.typeUseNodes.get(loweredInnerExpr[0].type).type
@@ -1848,15 +1877,54 @@ export function lowerExpr(
             variant: Lowered.ENode.UnionTagCheckExpr,
             expr: loweredInnerExpr[1],
             invertCheck: false,
-            tags: [expr.errTagIndex],
+            tags: [expr.srcErrTagIndex],
             optimizeExprToNullptr: loweredValueUnionDef.optimizeAsRawPointer !== null,
-            type: lowerTypeUse(lr, expr.errTagType),
+            type: lowerTypeUse(lr, expr.srcErrTagType),
           })[1],
           elseIfs: [],
           then: Lowered.addBlockScope(lr, {
             definesVariables: false,
             emittedExpr: null,
             statements: [
+              Lowered.addStatement(lr, {
+                variant: Lowered.ENode.ExprStatement,
+                expr: Lowered.addExpr(lr, {
+                  variant: Lowered.ENode.ExprAssignmentExpr,
+                  target: Lowered.addExpr(lr, {
+                    variant: Lowered.ENode.SymbolValueExpr,
+                    name: {
+                      mangledName: attemptExpr.errorResultVarname,
+                      prettyName: attemptExpr.errorResultVarname,
+                      wasMangled: false,
+                    },
+                    type: loweredErrorUnionType,
+                  })[1],
+                  type: loweredErrorUnionType,
+                  value: Lowered.addExpr(lr, {
+                    variant: Lowered.ENode.ValueToUnionCastExpr,
+                    expr: Lowered.addExpr(lr, {
+                      variant: Lowered.ENode.UnionToValueCastExpr,
+                      expr: loweredInnerExpr[1],
+                      index: expr.srcErrTagIndex,
+                      type: srcUnionUse,
+                      optimizeExprToNullptr: shouldBeOptimizedToNullptr(
+                        lr,
+                        srcUnionUse,
+                        innerExpr.type
+                      ),
+                    })[1],
+                    index: targetIndex,
+                    type: loweredErrorUnionType,
+                    optimizeExprToNullptr: shouldBeOptimizedToNullptr(
+                      lr,
+                      loweredErrorUnionType,
+                      innerExpr.type
+                    ),
+                  })[1],
+                  assignRefTarget: false,
+                })[1],
+                sourceloc: expr.sourceloc,
+              })[1],
               Lowered.addStatement(lr, {
                 variant: Lowered.ENode.LabelJumpStatement,
                 labelName: attemptExpr.errorLabel,
@@ -1872,9 +1940,9 @@ export function lowerExpr(
       scope.emittedExpr = Lowered.addExpr(lr, {
         variant: Lowered.ENode.UnionToValueCastExpr,
         expr: loweredInnerExpr[1],
-        index: expr.okTagIndex,
+        index: expr.srcOkTagIndex,
         optimizeExprToNullptr: loweredValueUnionDef.optimizeAsRawPointer !== null,
-        type: lowerTypeUse(lr, expr.okTagType),
+        type: lowerTypeUse(lr, expr.srcOkTagType),
       })[1];
 
       return Lowered.addExpr(lr, {
@@ -1895,21 +1963,17 @@ export function lowerExpr(
         });
 
       const attemptResultType = lowerTypeUse(lr, expr.type);
+      const attemptErrorType = lowerTypeUse(lr, expr.errorUnionType);
 
-      let resultVarId: Lowered.ExprId | null = null;
-      if (expr.attemptScopeReturnsType || expr.elseScopeReturnsType) {
-        resultVarId = storeInTempVarAndGet(
-          lr,
-          attemptResultType,
-          null,
-          expr.sourceloc,
-          enclosingBlockScope.statements,
-          `__attempt_result_${expr.uniqueId}`
-        )[1];
-        enclosingBlockScope.emittedExpr = resultVarId;
-      } else {
-        assert(expr.type === lr.sr.b.noneType());
-      }
+      let resultVarId = storeInTempVarAndGet(
+        lr,
+        attemptResultType,
+        null,
+        expr.sourceloc,
+        enclosingBlockScope.statements,
+        `__attempt_result_${expr.uniqueId}`
+      )[1];
+      enclosingBlockScope.emittedExpr = resultVarId;
 
       const errorVarId = storeInTempVarAndGet(
         lr,
@@ -1917,7 +1981,7 @@ export function lowerExpr(
         null,
         expr.sourceloc,
         enclosingBlockScope.statements,
-        `__attempt_error_${expr.uniqueId}`
+        expr.errorResultVarname
       )[1];
 
       const loweredAttemptScopeExpr = lowerExpr(
@@ -1950,6 +2014,7 @@ export function lowerExpr(
           })[1]
         );
       } else {
+        // Does not return
         enclosingBlockScope.statements.push(
           Lowered.addStatement(lr, {
             variant: Lowered.ENode.ExprStatement,
@@ -1957,13 +2022,8 @@ export function lowerExpr(
             sourceloc: expr.sourceloc,
           })[1]
         );
-        // Jump to yield without producing a value
         enclosingBlockScope.statements.push(
-          Lowered.addStatement(lr, {
-            variant: Lowered.ENode.LabelJumpStatement,
-            labelName: expr.resultLabel,
-            sourceloc: expr.sourceloc,
-          })[1]
+          callSysPanic(lr, "noreturn function tried to return", 0n, instanceInfo)
         );
       }
 
@@ -1980,6 +2040,7 @@ export function lowerExpr(
         enclosingBlockScope.statements,
         instanceInfo
       );
+
       if (expr.elseScopeReturnsType) {
         assert(resultVarId);
         enclosingBlockScope.statements.push(
@@ -2004,6 +2065,7 @@ export function lowerExpr(
           })[1]
         );
       } else {
+        // Does not return
         enclosingBlockScope.statements.push(
           Lowered.addStatement(lr, {
             variant: Lowered.ENode.ExprStatement,
@@ -2011,22 +2073,10 @@ export function lowerExpr(
             sourceloc: expr.sourceloc,
           })[1]
         );
-        // Jump to yield without producing a value
         enclosingBlockScope.statements.push(
-          Lowered.addStatement(lr, {
-            variant: Lowered.ENode.LabelJumpStatement,
-            labelName: expr.resultLabel,
-            sourceloc: expr.sourceloc,
-          })[1]
+          callSysPanic(lr, "noreturn function tried to return", 0n, instanceInfo)
         );
       }
-
-      // if (expr.attemptScopeReturnsType) {
-      // }
-      // if (expr.elseScopeReturnsType) {
-      // }
-
-      // ...
 
       enclosingBlockScope.statements.push(
         Lowered.addStatement(lr, {
@@ -2591,9 +2641,7 @@ function lowerBlockScope(
     printWarningMessage(`Dead code detected and stripped`, location);
   }
 
-  const emitted = blockScope.emittedExpr
-    ? lowerExpr(lr, blockScope.emittedExpr, statements, instanceInfo)[1]
-    : null;
+  const emitted = lowerExpr(lr, blockScope.emittedExpr, statements, instanceInfo)[1];
 
   if (returnedExpr !== undefined) {
     statements.push(
@@ -2613,7 +2661,18 @@ function lowerBlockScope(
       const expr = lr.exprNodes.get(statement.expr);
       if (expr.variant === Lowered.ENode.BlockScopeExpr) {
         const blockScope = lr.blockScopeNodes.get(expr.block);
-        if (!blockScope.definesVariables && blockScope.emittedExpr === null) {
+
+        // If the ExprStatement (doesnt yield a value) contains a block scope, eliminate the
+        // block scope's yield if possible
+        if (blockScope.emittedExpr) {
+          const expr = lr.exprNodes.get(blockScope.emittedExpr);
+          if (expr.variant === Lowered.ENode.LiteralExpr && expr.literal.type === EPrimitive.none) {
+            blockScope.emittedExpr = null;
+          }
+        }
+
+        // Flatten trivial scopes
+        if (!blockScope.definesVariables && !blockScope.emittedExpr) {
           flattenedStatements.push(...blockScope.statements);
           continue;
         }
@@ -2734,6 +2793,21 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
             returnedInstanceIds: symbol.returnsInstanceIds,
           })) ||
         null;
+
+      // Remove last "none" expression to make C simpler
+      if (f.scope && Conversion.isVoidById(lr.sr, functype.returnType)) {
+        const scope = lr.blockScopeNodes.get(f.scope);
+        if (scope.emittedExpr) {
+          const expr = lr.exprNodes.get(scope.emittedExpr);
+          const exprType = lr.typeDefNodes.get(lr.typeUseNodes.get(expr.type).type);
+          assert(
+            exprType.variant === Lowered.ENode.PrimitiveDatatype &&
+              exprType.primitive === EPrimitive.none
+          );
+          scope.emittedExpr = null;
+        }
+      }
+
       break;
     }
 

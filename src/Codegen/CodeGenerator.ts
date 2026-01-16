@@ -788,7 +788,9 @@ class CodeGenerator {
             )}`
           );
         }
-        outWriter.writeLine(`${statement.labelName}:`).pushIndent();
+        // The semicolon is for safety because a label at the end of a scope it not valid standard C
+        // but with the semicolon it is
+        outWriter.writeLine(`${statement.labelName}:;`).pushIndent();
         return { temp: tempWriter, out: outWriter };
       }
 
