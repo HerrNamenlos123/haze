@@ -108,11 +108,11 @@ export namespace fs {
     }
 
 
-    export read(path: str) {
-        return read(Alloc.heap(), path);
+    export readFile(path: str) {
+        return readFile(Alloc.heap(), path);
     }
 
-    export read(allocator: Allocator, path: str): Result<str, Error> {
+    export readFile(allocator: Allocator, path: str): Result<str, Error> {
         let output = ffi.hzstd_str_ref_t { data: "" } with allocator;
         let result = ffi.hzstd_read_file_text(allocator, path, output);
         if result.code == ffi.hzstd_fs_error_code_none {

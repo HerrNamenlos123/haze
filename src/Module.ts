@@ -1135,7 +1135,7 @@ export class ModuleCompiler {
   constructor(
     public config: ModuleConfig,
     public cache: Cache,
-    public globalBuildDir: string,
+    public hazeWorkspaceDirectory: string,
     public moduleDir: string
   ) {
     this.cc = makeCollectionContext(this.config);
@@ -1360,7 +1360,9 @@ export class ModuleCompiler {
     // Finally, topologically sort the generators in the correct order they need to be executed, batched
     const executionOrder = this.topoLayers(generatorGraph);
 
-    const cache = new FileChangeCache(path.join(this.globalBuildDir, "generator.cache.json"));
+    const cache = new FileChangeCache(
+      path.join(this.hazeWorkspaceDirectory, "generator.cache.json")
+    );
     cache.load();
 
     // And now actually run all of them (if required)
@@ -1419,6 +1421,9 @@ export class ModuleCompiler {
       case EModuleFileDir.BinaryDir:
         dir = this.getModuleBinaryDir(moduleName);
         break;
+      case EModuleFileDir.AutogenDir:
+        dir = join(this.hazeWorkspaceDirectory, "autogen");
+        break;
       case EModuleFileDir.SourceDir:
         assert(false);
       case EModuleFileDir.ModuleRootDir:
@@ -1444,11 +1449,15 @@ export class ModuleCompiler {
       throw new GeneralError(`Build of generator step ${gen.name} failed`);
     }
 
+    console.log(this.hazeWorkspaceDirectory);
     await withEnv(
       {
+        HAZE_WORKSPACE_DIR: this.hazeWorkspaceDirectory,
         HAZE_MODULE_SOURCE_DIR: this.currentModuleRootDir,
         HAZE_MODULE_BUILD_DIR: this.moduleDir + "/build",
         HAZE_MODULE_BINARY_DIR: this.moduleDir + "/bin",
+        HAZE_MODULE_TMP_DIR: this.moduleDir + "/tmp",
+        HAZE_MODULE_AUTOGEN_DIR: this.moduleDir + "/autogen",
       },
       async () => {
         const exitCode = await project.run(this.resolveExec(gen.exec), sourceloc, []);
@@ -1471,11 +1480,11 @@ export class ModuleCompiler {
   }
 
   getModuleBinaryDir(moduleName: string) {
-    return join(this.globalBuildDir, moduleName, "bin");
+    return join(this.hazeWorkspaceDirectory, moduleName, "bin");
   }
 
   getModuleBuildDir(moduleName: string) {
-    return join(this.globalBuildDir, moduleName, "build");
+    return join(this.hazeWorkspaceDirectory, moduleName, "build");
   }
 
   async build(isTopLevelModule: boolean) {
@@ -1506,9 +1515,12 @@ export class ModuleCompiler {
         : process.cwd();
 
       const env = process.env as any;
+      env.HAZE_WORKSPACE_DIR = this.hazeWorkspaceDirectory;
       env.HAZE_MODULE_SOURCE_DIR = this.currentModuleRootDir;
       env.HAZE_MODULE_BUILD_DIR = this.moduleDir + "/build";
       env.HAZE_MODULE_BINARY_DIR = this.moduleDir + "/bin";
+      env.HAZE_MODULE_TMP_DIR = this.moduleDir + "/tmp";
+      env.HAZE_MODULE_AUTOGEN_DIR = this.moduleDir + "/autogen";
       env.CC = HAZE_C_COMPILER;
       env.CXX = HAZE_CXX_COMPILER;
 
@@ -1522,7 +1534,7 @@ export class ModuleCompiler {
           } else {
             const changed = checkForChanges(
               script.depends,
-              this.globalBuildDir,
+              this.hazeWorkspaceDirectory,
               this.currentModuleRootDir
             );
             if (changed.length > 0) {
@@ -1531,7 +1543,7 @@ export class ModuleCompiler {
               } catch (e) {
                 invalidateChangeCache(
                   script.depends,
-                  this.globalBuildDir,
+                  this.hazeWorkspaceDirectory,
                   this.currentModuleRootDir
                 );
                 throw e;
@@ -1638,7 +1650,7 @@ export class ModuleCompiler {
           }
 
           await writeFile(
-            `${this.globalBuildDir}/compile_commands.json`,
+            `${this.hazeWorkspaceDirectory}/compile_commands.json`,
             JSON.stringify(cleanedCommands, null, 2)
           );
         } else {
@@ -1649,7 +1661,7 @@ export class ModuleCompiler {
           let cleanedCommands: CompileCommands = [];
           try {
             currentCommands = JSON.parse(
-              await readFile(`${this.globalBuildDir}/compile_commands.json`, "utf-8")
+              await readFile(`${this.hazeWorkspaceDirectory}/compile_commands.json`, "utf-8")
             );
             for (const c of currentCommands) {
               if (!addedFiles.has(c.file)) {
@@ -1667,7 +1679,7 @@ export class ModuleCompiler {
           }
 
           await writeFile(
-            `${this.globalBuildDir}/compile_commands.json`,
+            `${this.hazeWorkspaceDirectory}/compile_commands.json`,
             JSON.stringify(cleanedCommands, null, 2)
           );
         }
@@ -1876,7 +1888,11 @@ export class ModuleCompiler {
 
     return await Promise.all(
       deps.map(async (dep) => {
-        const libpath = join(join(this.globalBuildDir, dep.name), "bin", dep.name + ".hzlib");
+        const libpath = join(
+          join(this.hazeWorkspaceDirectory, dep.name),
+          "bin",
+          dep.name + ".hzlib"
+        );
         const metadata = await this.loadSingleDependencyMetadata(libpath, dep.name);
         return metadata;
       })
@@ -1900,7 +1916,7 @@ export class ModuleCompiler {
     }
 
     for (const dep of deps) {
-      const libpath = join(join(this.globalBuildDir, dep.name), "bin", dep.name + ".hzlib");
+      const libpath = join(join(this.hazeWorkspaceDirectory, dep.name), "bin", dep.name + ".hzlib");
       const metadata = await this.loadSingleDependencyMetadata(libpath, dep.name);
       await this.collectDirectory(
         join(this.moduleDir, "__deps", dep.name),

@@ -110,6 +110,7 @@ export enum EModuleFileDir {
   BinaryDir = "bin",
   SourceDir = "src",
   ModuleRootDir = "root",
+  AutogenDir = "autogen",
 }
 
 export type GeneratorFile =
@@ -639,6 +640,9 @@ export class ConfigParser {
             const dirStr = file["dir"] as string;
             let dir: EModuleFileDir | null = null;
             switch (dirStr) {
+              case "autogen":
+                dir = EModuleFileDir.AutogenDir;
+                break;
               case "bin":
                 dir = EModuleFileDir.BinaryDir;
                 break;

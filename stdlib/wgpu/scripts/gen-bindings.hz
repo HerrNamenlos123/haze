@@ -1,4 +1,32 @@
 
 main(): int {
+    attempt {
+        let binaryDir = env.get("HAZE_MODULE_BINARY_DIR");
+        if !binaryDir { raise f"HAZE_MODULE_BINARY_DIR not defined"; }
+
+        let tempDir = env.get("HAZE_MODULE_TMP_DIR");
+        if !tempDir { raise f"HAZE_MODULE_TMP_DIR not defined"; }
+
+        let workspaceDir = env.get("HAZE_WORKSPACE_DIR");
+        if !workspaceDir { raise f"HAZE_WORKSPACE_DIR not defined"; }
+
+        const file = fs.readFile(f"{workspaceDir}/wgpu/bin/include/webgpu.h")?!;
+        fmt.println("File: ", file);
+    }
+    else e {
+        if e is fs.Error {
+            fmt.println(f"build-wgpu step failed:", e);
+            return 1;
+        }
+        else if e is str {
+            fmt.println(f"build-wgpu step failed: {e}");
+            return 1;
+        }
+        else if e is int {
+            fmt.println(f"build-wgpu step failed: Process exited with code {e}");
+            return 1;
+        }
+        assert(false);
+    }
     return 0;
 }
