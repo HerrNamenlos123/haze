@@ -1,4 +1,5 @@
 
+
 main(): int {
     attempt {
         let binaryDir = env.get("HAZE_MODULE_BINARY_DIR");
@@ -10,8 +11,9 @@ main(): int {
         let workspaceDir = env.get("HAZE_WORKSPACE_DIR");
         if !workspaceDir { raise f"HAZE_WORKSPACE_DIR not defined"; }
 
-        const file = fs.readFile(f"{workspaceDir}/wgpu/bin/include/webgpu.h")?!;
-        fmt.println("File: ", file);
+        // const file = fs.readFile(f"{workspaceDir}/wgpu/bin/include/webgpu.h")?!;
+        // fmt.println("File: ", file);
+        test();
     }
     else e {
         if e is fs.Error {

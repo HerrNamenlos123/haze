@@ -1,0 +1,11 @@
+
+namespace ffi {
+    extern C noemit hzstd_regex_match(regex: Regex, text: str): i32 :: final;
+}
+
+namespace regex {
+    export match(regex: Regex, text: str) {
+        let result = ffi.hzstd_regex_match(regex, text);
+        return result != 0;
+    }
+}

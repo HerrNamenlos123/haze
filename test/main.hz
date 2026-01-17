@@ -31,7 +31,27 @@ get() {
     return 3;
 }
 
+test() {
+    // let a = r"foo\/bar[i]*"gim;
+    // let b = r"beeeebb[i]*"gim;
+    // let c = r"foo\/bar[i]*"mig;
+
+    let r = r"\w+"
+    let text = "hello"
+
+    fmt.println(regex.match(r, text))
+
+    let r1 = r"world"
+    let r2 = r"^world$"
+
+    fmt.println(regex.match(r1, "hello world"))
+    fmt.println(regex.match(r2, "hello world"))
+}
+
 main(): int {
+
+    test();
+    return 0;
 
     let a = attempt {
         let v = get();

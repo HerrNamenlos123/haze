@@ -118,6 +118,10 @@ HEX_INTEGER_LITERAL
 
 ID: [a-zA-Z_][a-zA-Z_0-9]*;
 
+REGEX_LITERAL
+    : 'r"' REGEX_BODY '"' REGEX_FLAGS?
+    ;
+
 // ╔═══════════════════════════════════════════════════════════════════════════════╗
 // ║                        F R A G M E N T   R U L E S                            ║
 // ╚═══════════════════════════════════════════════════════════════════════════════╝
@@ -141,6 +145,18 @@ fragment DEC_PART: DIGIT+;
 fragment FLOAT_PART: DIGIT+ '.' DIGIT*; // Handles 123., .456, 123.45
 fragment DIGIT: [0-9];
 fragment HEX_DIGIT: [0-9a-fA-F];
+
+fragment REGEX_BODY
+    : REGEX_CHAR*
+    ;
+
+fragment REGEX_CHAR
+    : ~["\r\n]
+    ;
+
+fragment REGEX_FLAGS
+    : [a-zA-Z]+
+    ;
 
 
 // ╔═══════════════════════════════════════════════════════════════════════════════╗

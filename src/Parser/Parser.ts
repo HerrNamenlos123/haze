@@ -164,6 +164,7 @@ import {
   HexIntegerLiteralContext,
   AttemptExprContext,
   RaiseStatementContext,
+  RegexLiteralContext,
 } from "./grammar/autogen/HazeParser";
 import {
   BaseErrorListener,
@@ -1679,6 +1680,42 @@ class ASTTransformer extends HazeParserVisitor<any> {
       variant: "TypeLiteralExpr",
       datatype: this.visit(ctx.datatype()),
       sourceloc: this.loc(ctx),
+    };
+  };
+
+  visitRegexLiteral = (ctx: RegexLiteralContext): LiteralValue => {
+    const text = ctx.REGEX_LITERAL().getText();
+
+    if (!text.startsWith('r"')) {
+      throw new Error("not a regex literal");
+    }
+
+    const lastQuote = text.lastIndexOf('"');
+
+    if (lastQuote < 2) {
+      throw new Error("malformed regex literal");
+    }
+
+    const pattern = text.slice(2, lastQuote);
+    const flags = text.slice(lastQuote + 1);
+
+    const allowedFlags = new Set(["i", "m", "s", "u", "g"]);
+    const flagSet = new Set<string>();
+    for (const c of flags.toLowerCase()) {
+      if (!allowedFlags.has(c)) {
+        throw new CompilerError(`unknown regex flag '${c}'`, this.loc(ctx));
+      }
+      if (flagSet.has(c)) {
+        throw new CompilerError(`duplicate regex flag '${c}'`, this.loc(ctx));
+      }
+      flagSet.add(c);
+    }
+
+    return {
+      type: EPrimitive.Regex,
+      pattern: pattern,
+      flags: flagSet,
+      id: null,
     };
   };
 

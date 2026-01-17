@@ -236,6 +236,7 @@ export type ModuleMetadata = {
   includeDirs: PlatformStrings;
   interfaceMacros: PlatformStrings;
   linkerFlags: PlatformStrings;
+  fullModuleGraph: [string, string][];
   compileCommands: CompileCommands;
   importFile: "import.hz";
 };
@@ -324,6 +325,7 @@ export function parseModuleMetadata(metadata: string): ModuleMetadata {
       win32: getStringArray(obj["interfaceMacros"]["win32"]),
       linux: getStringArray(obj["interfaceMacros"]["linux"]),
     }),
+    fullModuleGraph: obj["fullModuleGraph"],
     compileCommands: obj["compileCommands"],
     importFile: "import.hz",
   };

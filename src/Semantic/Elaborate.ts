@@ -7448,6 +7448,22 @@ export class SemanticBuilder {
     });
   }
 
+  elaborateRegex(pattern: string, flags: Set<string>) {
+    const id = internRegex(this.sr, pattern, flags);
+
+    let regexData = this.sr.elaboratedRegexTable.get(id);
+    if (!regexData) {
+      regexData = {
+        id: id,
+        flags: flags,
+        pattern: pattern,
+      };
+      this.sr.elaboratedRegexTable.set(id, regexData);
+    }
+
+    return id;
+  }
+
   literalValue(literal: LiteralValue, sourceloc: SourceLoc) {
     if (literal.type === "enum") {
       const enumType = this.sr.typeDefNodes.get(literal.enumType);
@@ -7465,6 +7481,16 @@ export class SemanticBuilder {
           false,
           sourceloc
         )[1],
+      });
+    } else if (literal.type === EPrimitive.Regex) {
+      literal.id = this.elaborateRegex(literal.pattern, literal.flags);
+      return Semantic.addExpr(this.sr, {
+        variant: Semantic.ENode.LiteralExpr,
+        instanceIds: [],
+        literal: literal,
+        sourceloc: sourceloc,
+        isTemporary: true,
+        type: makePrimitiveAvailable(this.sr, literal.type, EDatatypeMutability.Const, sourceloc),
       });
     } else {
       return Semantic.addExpr(this.sr, {
@@ -8555,6 +8581,25 @@ export function insertIntoEnumDefCache(
   });
 }
 
+export function internRegex(sr: SemanticResult, pattern: string, flags: Set<string>) {
+  const flagsSorted = [...flags];
+  flagsSorted.sort((a, b) => a.localeCompare(b));
+  const key = pattern + flagsSorted.join("");
+
+  let value = sr.elaboratedRegexInternMap.get(key);
+  if (value === undefined) {
+    value = sr.nextRegexId++;
+    sr.elaboratedRegexInternMap.set(key, value);
+  }
+  return value;
+}
+
+export type RegexData = {
+  pattern: string;
+  flags: Set<string>;
+  id: bigint;
+};
+
 export type SemanticResult = {
   cc: CollectionContext;
 
@@ -8603,6 +8648,10 @@ export type SemanticResult = {
   syntheticFunctions: Map<string, Semantic.SymbolId>;
 
   syntheticScopeToVariableMap: Map<Collect.ScopeId, Map<string, Semantic.SymbolId>>;
+
+  nextRegexId: bigint;
+  elaboratedRegexInternMap: Map<string, bigint>; // This maps the pattern/flag key to the ID
+  elaboratedRegexTable: Map<bigint, RegexData>; // This maps the regex ID to the actual data
 
   exportedCollectedSymbols: Set<number>;
 
@@ -9527,6 +9576,8 @@ export namespace Semantic {
         return "null";
       } else if (expr.literal.type === EPrimitive.none) {
         return "none";
+      } else if (expr.literal.type === EPrimitive.Regex) {
+        return "Regex";
       } else if (expr.literal.type === "enum") {
         return expr.literal.enumType.toString() + "|" + expr.literal.valueName;
       } else {
@@ -10052,6 +10103,10 @@ export namespace Semantic {
       elaboratedGlobalVariableSymbols: new Map(),
       exportedTypeAliases: new Set(),
 
+      elaboratedRegexInternMap: new Map(),
+      elaboratedRegexTable: new Map(),
+      nextRegexId: 0n,
+
       cInjections: [],
       globalMainFunction: null,
 
@@ -10145,6 +10200,8 @@ export namespace Semantic {
         return `${value.value}`;
       } else if (value.type === EPrimitive.null) {
         return `null`;
+      } else if (value.type === EPrimitive.Regex) {
+        return `r"${value.pattern}"${[...value.flags].join("")}`;
       } else if (value.type === EPrimitive.none) {
         return `none`;
       } else if (value.type === "enum") {
@@ -10596,10 +10653,17 @@ export namespace Semantic {
       }
 
       case Semantic.ENode.PrimitiveDatatype: {
-        return {
-          name: "hzstd_" + primitiveToString(type.primitive) + "_t",
-          wasMangled: false,
-        };
+        if (type.primitive === EPrimitive.Regex) {
+          return {
+            name: "hzstd_regex_t",
+            wasMangled: false,
+          };
+        } else {
+          return {
+            name: "hzstd_" + primitiveToString(type.primitive) + "_t",
+            wasMangled: false,
+          };
+        }
       }
 
       case Semantic.ENode.FunctionDatatype: {
@@ -10733,6 +10797,11 @@ export namespace Semantic {
     } else if (literalType === EPrimitive.none) {
       return {
         name: "4none",
+        wasMangled: true,
+      };
+    } else if (literalType === EPrimitive.Regex) {
+      return {
+        name: "5Regex",
         wasMangled: true,
       };
     } else if (literalType === "enum") {

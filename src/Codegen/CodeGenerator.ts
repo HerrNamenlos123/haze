@@ -1,6 +1,8 @@
+import { mkdirSync, writeFileSync } from "fs";
 import { Lowered, lowerExpr, lowerTypeDef } from "../Lower/Lower";
+import { HAZE_GLOBAL_DIR } from "../Module";
 import { Conversion } from "../Semantic/Conversion";
-import { Semantic } from "../Semantic/Elaborate";
+import { Semantic, type RegexData } from "../Semantic/Elaborate";
 import {
   BinaryOperationToString,
   EBinaryOperation,
@@ -11,8 +13,10 @@ import {
 } from "../shared/AST";
 import { EPrimitive, primitiveToString, type NameSet } from "../shared/common";
 import { getModuleGlobalNamespaceName, ModuleType, type ModuleConfig } from "../shared/Config";
-import { assert, InternalError, printWarningMessage } from "../shared/Errors";
+import { assert, GeneralError, InternalError, printWarningMessage } from "../shared/Errors";
 import { OutputWriter } from "./OutputWriter";
+import { spawnSync } from "child_process";
+import * as path from "path";
 
 function makeUnionMappingName(from: Lowered.TypeUseId, to: Lowered.TypeUseId) {
   return `_H_Union_Mapping_${from}_to_${to}_`;
@@ -81,7 +85,18 @@ class CodeGenerator {
     global_variables: new OutputWriter(),
   };
 
-  constructor(public config: ModuleConfig, public lr: Lowered.Module) {
+  constructor(
+    public config: ModuleConfig,
+    public moduleDir: string,
+    public allModules: [string, string][],
+    public lr: Lowered.Module
+  ) {
+    if (this.config.hzstdLocation) {
+      this.includeLocalHeader(this.config.hzstdLocation + "/hzstd/hzstd.h");
+    } else {
+      this.includeLocalHeader("hzstd.h");
+    }
+
     // const contextSymbol = this.module.globalScope.lookupSymbol(
     //   "Context",
     //   this.module.globalScope.location,
@@ -95,6 +110,22 @@ class CodeGenerator {
         .writeLine("int32_t main(int argc, const char* argv[]) {")
         .pushIndent();
       this.out.function_definitions.writeLine("hzstd_initialize();");
+
+      const have = new Set<string>();
+      for (const module of this.allModules) {
+        const name = getModuleGlobalNamespaceName(module[0], module[1]);
+        if (have.has(name)) {
+          continue;
+        }
+        have.add(name);
+        this.includeLocalHeader(
+          `${this.moduleDir}/../${module[0]}/build/regex/__hz_${name}_regex_table.h`
+        );
+        this.out.function_definitions.writeLine(
+          `hzstd_regex_init_table(__hz_${name}_regex_table, __hz_${name}_regex_table_count);`
+        );
+      }
+
       //   // .writeLine(
       //   //   `${generateUsageCode(this.module.getBuiltinType("Context"), this.module)} ctx = {};`,
       //   // )
@@ -127,8 +158,123 @@ class CodeGenerator {
     this.out.includes.writeLine(`#include "${filename}"`);
   }
 
+  modulePrefix() {
+    const modulePrefix = getModuleGlobalNamespaceName(this.config.name, this.config.version);
+    return modulePrefix;
+  }
+
+  compileRegex(regex: RegexData) {
+    const symbol = `__hz_${this.modulePrefix()}_regex_${regex.id}`;
+    const outPath = path.join(this.moduleDir, `build/regex/${symbol}.c`);
+    const regexCompilerPath = `${HAZE_GLOBAL_DIR}/regex-compiler/haze-regex-compile`;
+    mkdirSync(path.dirname(outPath), { recursive: true });
+
+    // --- invoke C helper
+    const proc = spawnSync(
+      regexCompilerPath,
+      [outPath, symbol, regex.pattern, [...regex.flags].join("")],
+      {
+        encoding: "utf8", // stdout = string
+        maxBuffer: 10 * 1024 * 1024,
+      }
+    );
+
+    if (proc.error) {
+      throw proc.error;
+    }
+
+    if (proc.status !== 0) {
+      // IMPORTANT: helper prints errors to stdout
+      throw new GeneralError(`regex compilation failed:\n${proc.stdout}`);
+    }
+  }
+
+  regexTablePath() {
+    const outDir = path.join(this.moduleDir, "build/regex");
+    const tablePath = path.join(outDir, `__hz_${this.modulePrefix()}_regex_table.c`);
+    return tablePath;
+  }
+
+  compileRegexes() {
+    const outDir = path.join(this.moduleDir, "build/regex");
+    mkdirSync(outDir, { recursive: true });
+
+    const prefix = this.modulePrefix();
+    const cPath = path.join(outDir, `__hz_${prefix}_regex_table.c`);
+    const hPath = path.join(outDir, `__hz_${prefix}_regex_table.h`);
+
+    // --- collect regexes
+    let maxId = 0n;
+    const entries: { id: bigint }[] = [];
+
+    for (const [, regex] of this.lr.sr.elaboratedRegexTable) {
+      this.compileRegex(regex);
+      entries.push({ id: regex.id });
+      if (regex.id > maxId) maxId = regex.id;
+    }
+
+    /* =======================
+     Generate HEADER (.h)
+     ======================= */
+
+    let h = "";
+    h += `#ifndef __HZ_${prefix.toUpperCase()}_REGEX_TABLE_H\n`;
+    h += `#define __HZ_${prefix.toUpperCase()}_REGEX_TABLE_H\n\n`;
+
+    assert(this.config.hzstdLocation);
+    h += "#include <stddef.h>\n";
+    h += "#include <stdint.h>\n\n";
+    h += `#include "${this.config.hzstdLocation}/hzstd/hzstd_regex.h"\n\n`;
+
+    h += '#ifdef __cplusplus\nextern "C" {\n#endif\n\n';
+
+    h += `extern hzstd_regex_blob_t __hz_${prefix}_regex_table[];\n`;
+    h += `extern const size_t __hz_${prefix}_regex_table_count;\n\n`;
+
+    h += "#ifdef __cplusplus\n}\n#endif\n\n";
+    h += `#endif /* __HZ_${prefix.toUpperCase()}_REGEX_TABLE_H */\n`;
+
+    writeFileSync(hPath, h);
+
+    /* =======================
+     Generate SOURCE (.c)
+     ======================= */
+
+    let c = "";
+    c += "// ------------------------------------------------------------------\n";
+    c += "// GENERATED FILE — DO NOT EDIT\n";
+    c += "// Regex blob table (IDs start at 1)\n";
+    c += "// ------------------------------------------------------------------\n\n";
+
+    c += "#include <stdint.h>\n";
+    c += "#include <stddef.h>\n\n";
+    h += `#include "${this.config.hzstdLocation}/hzstd/hzstd_regex.h"\n\n`;
+    c += `#include "__hz_${prefix}_regex_table.h"\n\n`;
+
+    for (const { id } of entries) {
+      c += `#include "__hz_${prefix}_regex_${id}.c"\n`;
+    }
+
+    c += "\n";
+
+    c += `hzstd_regex_blob_t __hz_${prefix}_regex_table[] = {\n`;
+    for (const { id } of entries) {
+      c +=
+        `    [${id}] = { .data = __hz_${prefix}_regex_${id}_data, ` +
+        `.size = __hz_${prefix}_regex_${id}_size, .code = NULL },\n`;
+    }
+    c += "};\n\n";
+
+    c += `const size_t __hz_${prefix}_regex_table_count = ${maxId + 1n};\n`;
+
+    writeFileSync(cPath, c);
+  }
+
   writeString() {
     const writer = new OutputWriter();
+
+    this.compileRegexes();
+    this.includeLocalHeader(this.regexTablePath());
 
     // writer.writeLine("// clang-format off\n\n");
     writer.writeLine("#define _POSIX_C_SOURCE 199309L\n");
@@ -175,12 +321,6 @@ class CodeGenerator {
     this.includeSystemHeader("limits.h");
     this.includeSystemHeader("string.h");
     this.includeSystemHeader("math.h");
-
-    if (this.config.hzstdLocation) {
-      this.includeLocalHeader(this.config.hzstdLocation + "/hzstd/hzstd.h");
-    } else {
-      this.includeLocalHeader("hzstd.h");
-    }
 
     const sortedLoweredTypeDefs: (Lowered.TypeDef | Lowered.TypeUse)[] = [];
 
@@ -1368,6 +1508,10 @@ class CodeGenerator {
           outWriter.write("(hzstd_null_t){}");
         } else if (expr.literal.type === EPrimitive.none) {
           outWriter.write("(hzstd_none_t){}");
+        } else if (expr.literal.type === EPrimitive.Regex) {
+          assert(expr.literal.id !== null);
+          const ns = getModuleGlobalNamespaceName(this.config.name, this.config.version);
+          outWriter.write(`(hzstd_regex_t){ .blob = &__hz_${ns}_regex_table[${expr.literal.id}] }`);
         } else if (expr.literal.type === EPrimitive.f32) {
           outWriter.write(
             `(${this.primitiveToC(expr.literal.type)})(${stringifyWithDecimal(
@@ -1536,8 +1680,13 @@ class CodeGenerator {
   //   }
 }
 
-export function generateCode(config: ModuleConfig, lr: Lowered.Module): string {
-  const gen = new CodeGenerator(config, lr);
+export function generateCode(
+  config: ModuleConfig,
+  moduleDir: string,
+  allModules: [string, string][],
+  lr: Lowered.Module
+): string {
+  const gen = new CodeGenerator(config, moduleDir, allModules, lr);
   gen.generate();
   return gen.writeString();
 }

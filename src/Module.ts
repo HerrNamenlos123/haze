@@ -369,6 +369,21 @@ async function getStdlibDirectory() {
   }
 }
 
+async function getToolsDirectory() {
+  if (process.env["NODE_ENV"] === "production") {
+    let whichHz = null as string | null;
+    try {
+      whichHz = await which("haze");
+    } catch {
+      throw new GeneralError("Compiler not found in path");
+    }
+    const realHz = realpathSync(whichHz);
+    return join(dirname(realHz), "tools/");
+  } else {
+    return join(__dirname, "../tools");
+  }
+}
+
 async function catchErrors(fn: () => Promise<void>) {
   try {
     await fn();
@@ -873,6 +888,8 @@ export class ProjectCompiler {
         libunwind: HAZE_CACHE + "/libunwind",
         cmakeToolchain: HAZE_CACHE + "/cmake-toolchain",
         bdwgc: HAZE_CACHE + "/bdgwc",
+        regexEngine: HAZE_CACHE + "/regex-engine",
+        regexCompiler: HAZE_CACHE + "/regex-compiler",
       };
 
       // Step 1: Download
@@ -886,7 +903,7 @@ export class ProjectCompiler {
       // Step 2: Extract
       if (!this.isStepDone(MARKERS.extract)) {
         console.info("Extracting LLVM toolchain...");
-        await exec(
+        exec(
           `tar -xf "${HAZE_TMP_DIR + "/llvm.tar.xz"}" -C "${HAZE_GLOBAL_DIR}" --strip-components=1`
         );
         this.markStepDone(MARKERS.extract);
@@ -903,16 +920,14 @@ export class ProjectCompiler {
         console.info("Retrieving libtinfo.so.5...");
         mkdirSync(`${HAZE_TMP_DIR}/`, { recursive: true });
         const packageManager = await detectPackageManager();
-        await exec(`rm -f ${HAZE_GLOBAL_DIR}/lib/libtinfo.so.5`);
+        exec(`rm -f ${HAZE_GLOBAL_DIR}/lib/libtinfo.so.5`);
         if (packageManager === "debian") {
-          await exec(`rm -f ${HAZE_TMP_DIR}/libtinfo5_6.1-1ubuntu1_amd64.deb*`);
-          await exec(
+          exec(`rm -f ${HAZE_TMP_DIR}/libtinfo5_6.1-1ubuntu1_amd64.deb*`);
+          exec(
             `cd ${HAZE_TMP_DIR} && wget http://archive.ubuntu.com/ubuntu/pool/main/n/ncurses/libtinfo5_6.1-1ubuntu1_amd64.deb`
           );
-          await exec(
-            `dpkg-deb -x ${HAZE_TMP_DIR}/libtinfo5_6.1-1ubuntu1_amd64.deb ${HAZE_GLOBAL_DIR}`
-          );
-          await exec(
+          exec(`dpkg-deb -x ${HAZE_TMP_DIR}/libtinfo5_6.1-1ubuntu1_amd64.deb ${HAZE_GLOBAL_DIR}`);
+          exec(
             `cd ${HAZE_GLOBAL_DIR + "/lib"} && ln -s x86_64-linux-gnu/libtinfo.so.5 libtinfo.so.5`
           );
         } else if (packageManager === "fedora") {
@@ -926,13 +941,13 @@ export class ProjectCompiler {
           // await exec(
           //   `cd ${HAZE_GLOBAL_DIR + "/lib"} && ln -s ../usr/lib/libtinfo.so.5 libtinfo.so.5`
           // );
-          await exec(`rm -f ${HAZE_TMP_DIR}/libtinfo5_6.1-1ubuntu1_amd64.deb*`);
-          await exec(
+          exec(`rm -f ${HAZE_TMP_DIR}/libtinfo5_6.1-1ubuntu1_amd64.deb*`);
+          exec(
             `cd ${HAZE_TMP_DIR} && wget http://archive.ubuntu.com/ubuntu/pool/main/n/ncurses/libtinfo5_6.1-1ubuntu1_amd64.deb`
           );
-          await exec(`cd ${HAZE_TMP_DIR} && ar x libtinfo5_6.1-1ubuntu1_amd64.deb`);
-          await exec(`cd ${HAZE_TMP_DIR} && tar -xf data.tar.xz -C ${HAZE_GLOBAL_DIR}`);
-          await exec(
+          exec(`cd ${HAZE_TMP_DIR} && ar x libtinfo5_6.1-1ubuntu1_amd64.deb`);
+          exec(`cd ${HAZE_TMP_DIR} && tar -xf data.tar.xz -C ${HAZE_GLOBAL_DIR}`);
+          exec(
             `cd ${HAZE_GLOBAL_DIR + "/lib"} && ln -s x86_64-linux-gnu/libtinfo.so.5 libtinfo.so.5`
           );
         } else {
@@ -1073,6 +1088,46 @@ export class ProjectCompiler {
         execInherit(`cmake --build build --target=install`, builddir);
         this.markStepDone(MARKERS.bdwgc);
         console.info("Retrieving and building bdwgc... Done");
+      }
+
+      if (!this.isStepDone(MARKERS.regexEngine)) {
+        const builddir = `${HAZE_TMP_DIR}/pcre2-build`;
+        const outdir = `${HAZE_GLOBAL_DIR}/pcre2`;
+        const commitHash = "pcre2-10.47";
+        console.info("Retrieving and building Regex Engine...");
+        if (existsSync(builddir)) {
+          rmSync(builddir, { recursive: true, force: true });
+        }
+        if (existsSync(outdir)) {
+          rmSync(outdir, { recursive: true, force: true });
+        }
+        mkdirSync(builddir);
+        execInherit(
+          `git clone https://github.com/PCRE2Project/pcre2.git "${builddir}" --branch ${commitHash} -c advice.detachedHead=false --depth 1`
+        );
+        execInherit(`git submodule update --init`, builddir);
+        execInherit(
+          `cmake . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DPCRE2_SUPPORT_JIT=ON -DCMAKE_INSTALL_PREFIX="${outdir}" -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DBUILD_TESTING=OFF`,
+          builddir
+        );
+        execInherit(`cmake --build build -j`, builddir);
+        execInherit(`cmake --build build --target=install`, builddir);
+        this.markStepDone(MARKERS.regexEngine);
+        console.info("Retrieving and building Regex Engine... Done");
+      }
+
+      if (!this.isStepDone(MARKERS.regexCompiler)) {
+        console.info("Building Regex Compiler...");
+        const outfile = `${HAZE_GLOBAL_DIR}/regex-compiler/haze-regex-compile${
+          PLATFORM === Platform.Win32 ? ".exe" : ""
+        }`;
+        const toolsDir = await getToolsDirectory();
+        mkdirSync(dirname(outfile), { recursive: true });
+        execInherit(
+          `${HAZE_C_COMPILER} "${toolsDir}/regex-compiler/main.c" -o ${outfile} -g -std=c11 -lpcre2-8 -L"${HAZE_GLOBAL_DIR}/pcre2/lib/" -L"${HAZE_GLOBAL_DIR}/pcre2/lib64/"`
+        );
+        // this.markStepDone(MARKERS.regexCompiler);
+        console.info("Building Regex Compiler... Done");
       }
     });
   }
@@ -1585,6 +1640,11 @@ export class ModuleCompiler {
       // Semantic.PrettyPrintAnalyzed(sr);
       const lowered = LowerModule(sr);
 
+      const allModules: [string, string][] = [
+        [this.config.name, this.config.version],
+        ...(await this.loadDependencyModuleGraph()),
+      ];
+
       const name = this.config.name;
       const platform = this.config.platform;
       const moduleCFile = join(this.moduleDir, `build/${name}-${platform}.c`);
@@ -1600,7 +1660,7 @@ export class ModuleCompiler {
       await mkdir(join(this.moduleDir, "build/"), { recursive: true });
       await mkdir(join(this.moduleDir, "bin/"), { recursive: true });
 
-      const code = generateCode(this.config, lowered);
+      const code = generateCode(this.config, this.moduleDir, allModules, lowered);
       await writeFile(moduleCFile, code);
 
       const compilerFlags = this.config.compilerFlags;
@@ -1611,7 +1671,6 @@ export class ModuleCompiler {
       compilerFlags.addAll("-Wno-extra-tokens");
 
       includeDirs.addAll(`${this.moduleDir}/bin/include`);
-      includeDirs.addAll(`${this.config.source}/../include`);
       includeDirs.addAll(`${HAZE_GLOBAL_DIR}/include`);
       compilerFlags.addAll(`-fno-omit-frame-pointer`);
       linkerFlags.addAll(`-L"${this.moduleDir}/bin/lib"`);
@@ -1622,10 +1681,16 @@ export class ModuleCompiler {
       linkerFlags.addLinux(`-llzma`);
 
       includeDirs.addAll(`${HAZE_GLOBAL_DIR}/haze-bdwgc/include`);
-      linkerFlags.addLinux(`-L"${HAZE_GLOBAL_DIR}/haze-bdwgc/lib64/"`);
-      linkerFlags.addLinux(`-L"${HAZE_GLOBAL_DIR}/haze-bdwgc/lib/"`);
-      linkerFlags.addLinux(`-lgc`);
-      linkerFlags.addWin32(`"${HAZE_GLOBAL_DIR}/haze-bdwgc/lib/gc.lib"`);
+      linkerFlags.addAll(`-L"${HAZE_GLOBAL_DIR}/haze-bdwgc/lib64/"`);
+      linkerFlags.addAll(`-L"${HAZE_GLOBAL_DIR}/haze-bdwgc/lib/"`);
+      linkerFlags.addAll(`-lgc`);
+      // linkerFlags.addWin32(`"${HAZE_GLOBAL_DIR}/haze-bdwgc/lib/gc.lib"`);
+
+      includeDirs.addAll(`${HAZE_GLOBAL_DIR}/pcre2/include`);
+      linkerFlags.addAll(`-L"${HAZE_GLOBAL_DIR}/pcre2/lib64/"`);
+      linkerFlags.addAll(`-L"${HAZE_GLOBAL_DIR}/pcre2/lib/"`);
+      linkerFlags.addAll(`-lpcre2-8`);
+      // linkerFlags.addWin32(`"${HAZE_GLOBAL_DIR}/pcre2/lib/gc.lib"`);
 
       compilerFlags.addWin32(`-D_CRT_SECURE_NO_WARNINGS`);
       linkerFlags.addWin32(`-fuse-ld=lld`);
@@ -1741,7 +1806,7 @@ export class ModuleCompiler {
         });
         await writeCompileCommands();
 
-        await exec(cmd);
+        exec(cmd);
       } else {
         const flags = `${platformCompilerFlags.join(" ")}`;
         const filePreamble = `// clang-format off\n\n`;
@@ -1760,16 +1825,16 @@ export class ModuleCompiler {
         });
         await writeCompileCommands();
 
-        await exec(cmd);
+        exec(cmd);
 
         // if (fs.existsSync(moduleAFile)) {
         //   await exec(`rm ${moduleAFile}`);
         // }
 
         if (PLATFORM === Platform.Linux) {
-          await exec(`"${ARCHIVE_TOOL}" r "${moduleAFile}" "${moduleOFile}" > /dev/null`);
+          exec(`"${ARCHIVE_TOOL}" r "${moduleAFile}" "${moduleOFile}" > /dev/null`);
         } else {
-          await exec(`"${ARCHIVE_TOOL}" r "${moduleAFile}" "${moduleOFile}" > NUL 2>&1`);
+          exec(`"${ARCHIVE_TOOL}" r "${moduleAFile}" "${moduleOFile}" > NUL 2>&1`);
         }
 
         const makerel = (absolute: string) => {
@@ -1794,6 +1859,7 @@ export class ModuleCompiler {
           includeDirs: includeDirs,
           interfaceMacros: interfaceMacros,
           compileCommands: compileCommands,
+          fullModuleGraph: allModules,
           importFile: HAZE_LIB_IMPORT_FILE,
         };
         const moduleMetadataSerialized = {
@@ -1837,6 +1903,18 @@ export class ModuleCompiler {
         // );
       }
     });
+  }
+
+  private async loadDependencyModuleGraph() {
+    const metadata = await this.loadDependenciesMetadata();
+
+    const modules: [string, string][] = [];
+
+    metadata.forEach((meta) => {
+      modules.push(...meta.fullModuleGraph);
+    });
+
+    return modules;
   }
 
   private async loadDependencyBinaries() {
@@ -1917,7 +1995,8 @@ export class ModuleCompiler {
 
     for (const dep of deps) {
       const libpath = join(join(this.hazeWorkspaceDirectory, dep.name), "bin", dep.name + ".hzlib");
-      const metadata = await this.loadSingleDependencyMetadata(libpath, dep.name);
+      // WARNING: For some weird reason this is required
+      const _ = await this.loadSingleDependencyMetadata(libpath, dep.name);
       await this.collectDirectory(
         join(this.moduleDir, "__deps", dep.name),
         ECollectionMode.ImportUnderRootDirectly

@@ -81,6 +81,10 @@ export enum EPrimitive {
   null,
   none,
   void,
+  // This is intentionally uppercase because lowercase would collide with the 'regex' namespace.
+  // In order to resolve the naming conflict, we introduce the 'Regex' type as a compiler-internal builtin
+  // even though it is Uppercase. Users won't care at all because it is more consistent with stdlib this way.
+  Regex,
 }
 
 export enum EVariableContext {
@@ -126,6 +130,12 @@ export type LiteralValue =
       type: EPrimitive.f32 | EPrimitive.f64 | EPrimitive.real;
       value: number;
       unit: ELiteralUnit | null;
+    }
+  | {
+      type: EPrimitive.Regex;
+      pattern: string;
+      flags: Set<string>;
+      id: bigint | null;
     }
   | {
       type: "enum";
@@ -183,6 +193,8 @@ export function primitiveToString(primitive: EPrimitive) {
       return "ccstr";
     case EPrimitive.cptr:
       return "cptr";
+    case EPrimitive.Regex:
+      return "Regex";
     default:
       throw new InternalError("Unexpected datatype " + primitive);
   }
@@ -232,6 +244,8 @@ export function stringToPrimitive(str: string) {
       return EPrimitive.ccstr;
     case "str":
       return EPrimitive.str;
+    case "Regex":
+      return EPrimitive.Regex;
     default:
       return undefined;
   }

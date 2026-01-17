@@ -103,6 +103,7 @@ literal
     | HEX_INTEGER_LITERAL                       #HexIntegerLiteral
     | FLOAT_LITERAL                             #FloatLiteral
     | STRING_LITERAL                            #StringConstant
+    | REGEX_LITERAL                             #RegexLiteral
     ;
 
 interpolatedString: FSTRING_START (interpolatedStringFragment)* FSTRING_END (WITH allocatorExpr=expr)?;
