@@ -1,7 +1,7 @@
 
 namespace ffi {
     extern C noemit struct hzstd_str_ref_t {
-        data: str;
+        data: str = "";
     };
 
     extern C hzstd_cstr_from_str(allocator: Allocator, data: str): cstr :: final;

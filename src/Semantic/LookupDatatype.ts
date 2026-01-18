@@ -11,7 +11,7 @@ export function makeDeferredFunctionDatatypeAvailable(
     }[];
     vararg: boolean;
     sourceloc: SourceLoc;
-  }
+  },
 ): Semantic.TypeDefId {
   for (const id of sr.deferredFunctionTypeCache) {
     const type = sr.typeDefNodes.get(id);
@@ -37,7 +37,7 @@ export function makeDeferredFunctionDatatypeAvailable(
   }
 
   // Nothing found
-  const [ftype, ftypeId] = Semantic.addType(sr, {
+  const [_, ftypeId] = Semantic.addType(sr, {
     variant: Semantic.ENode.DeferredFunctionDatatype,
     parameters: args.parameters,
     vararg: args.vararg,
@@ -55,7 +55,7 @@ export function makeRawFunctionDatatypeAvailable(
     vararg: boolean;
     requires: Semantic.FunctionRequireBlock;
     sourceloc: SourceLoc;
-  }
+  },
 ): Semantic.TypeDefId {
   for (const id of sr.functionTypeCache) {
     const type = sr.typeDefNodes.get(id);
@@ -88,7 +88,7 @@ export function makeRawFunctionDatatypeAvailable(
   }
 
   // Nothing found
-  const [ftype, ftypeId] = Semantic.addType(sr, {
+  const [_, ftypeId] = Semantic.addType(sr, {
     variant: Semantic.ENode.FunctionDatatype,
     parameters: args.parameters,
     returnType: args.returnType,
@@ -111,14 +111,14 @@ export function makeFunctionDatatypeAvailable(
     mutability: EDatatypeMutability;
     requires: Semantic.FunctionRequireBlock;
     sourceloc: SourceLoc;
-  }
+  },
 ): Semantic.TypeUseId {
   return makeTypeUse(
     sr,
     makeRawFunctionDatatypeAvailable(sr, args),
     args.mutability,
     false,
-    args.sourceloc
+    args.sourceloc,
   )[1];
 }
 
@@ -127,7 +127,7 @@ export function makeTypeUse(
   typeId: Semantic.TypeDefId,
   mutability: EDatatypeMutability,
   inline: boolean,
-  sourceloc: SourceLoc
+  sourceloc: SourceLoc,
 ) {
   const type = sr.typeDefNodes.get(typeId);
   if (
@@ -182,7 +182,7 @@ export function makeStackArrayDatatypeAvailable(
   length: bigint,
   mutability: EDatatypeMutability,
   inline: boolean,
-  sourceloc: SourceLoc
+  sourceloc: SourceLoc,
 ): Semantic.TypeUseId {
   for (const id of sr.fixedArrayTypeCache) {
     const type = sr.typeDefNodes.get(id);
@@ -194,7 +194,7 @@ export function makeStackArrayDatatypeAvailable(
   }
 
   // Nothing found
-  const [type, typeId] = Semantic.addType(sr, {
+  const [_, typeId] = Semantic.addType(sr, {
     variant: Semantic.ENode.FixedArrayDatatype,
     datatype: datatype,
     length: length,
@@ -209,7 +209,7 @@ export function makeDynamicArrayDatatypeAvailable(
   datatype: Semantic.TypeUseId,
   mutability: EDatatypeMutability,
   inline: boolean,
-  sourceloc: SourceLoc
+  sourceloc: SourceLoc,
 ): Semantic.TypeUseId {
   for (const id of sr.dynamicArrayTypeCache) {
     const type = sr.typeDefNodes.get(id);
@@ -221,7 +221,7 @@ export function makeDynamicArrayDatatypeAvailable(
   }
 
   // Nothing found
-  const [type, typeId] = Semantic.addType(sr, {
+  const [_, typeId] = Semantic.addType(sr, {
     variant: Semantic.ENode.DynamicArrayDatatype,
     datatype: datatype,
     concrete: isTypeConcrete(sr, datatype),

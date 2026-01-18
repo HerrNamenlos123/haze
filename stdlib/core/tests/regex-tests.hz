@@ -1,5 +1,4 @@
 
-
 test_match_compile_time() {
     let r = r"\w+";
 
@@ -24,8 +23,10 @@ test_find() {
     let r = r"world";
     let text = "hello world!";
 
-    let match = regex.find(r, text);
-    assert(match != none);
+    let m = regex.find(r, text);
+    assert(m != none);
+
+    let match = m!;
     assert(match.start == 6);
     assert(match.end == 11);
 

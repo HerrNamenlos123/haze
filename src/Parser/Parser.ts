@@ -201,12 +201,12 @@ export namespace Parser {
     }
 
     syntaxError(
-      recognizer: any,
-      offendingSymbol: any,
+      _recognizer: any,
+      _offendingSymbol: any,
       line: number,
       column: number,
       msg: string,
-      e: any
+      _e: any,
     ) {
       printErrorMessage(msg, { filename: this.filename, start: { line, column } }, "SyntaxError");
     }
@@ -262,7 +262,10 @@ export namespace Parser {
 }
 
 class ASTTransformer extends HazeParserVisitor<any> {
-  constructor(public config: ModuleConfig, public filename: string) {
+  constructor(
+    public config: ModuleConfig,
+    public filename: string,
+  ) {
     super();
   }
 
@@ -292,9 +295,9 @@ class ASTTransformer extends HazeParserVisitor<any> {
       | FunctionDefinitionContext
       | StructDefinitionContext
       | TypeAliasDirectiveContext
-      | EnumDefinitionContext
+      | EnumDefinitionContext,
   ): EExternLanguage {
-    if (!Boolean(ctx._extern)) {
+    if (!ctx._extern) {
       return EExternLanguage.None;
     } else if (ctx._externLang?.getText() === "C") {
       return EExternLanguage.Extern_C;
@@ -307,7 +310,7 @@ class ASTTransformer extends HazeParserVisitor<any> {
     ctx:
       | GlobalVariableDefinitionContext
       | VariableCreationStatementRuleContext
-      | StructMemberContext
+      | StructMemberContext,
   ): EVariableMutability {
     if (!ctx.variableMutabilitySpecifier) {
       return EVariableMutability.Default;
@@ -405,7 +408,7 @@ class ASTTransformer extends HazeParserVisitor<any> {
       return EBinaryOperation.BoolOr;
     } else {
       throw new InternalError(
-        "Operator is not known: " + JSON.stringify(ctx._op.map((o) => o.text))
+        "Operator is not known: " + JSON.stringify(ctx._op.map((o) => o.text)),
       );
     }
   }
@@ -419,7 +422,7 @@ class ASTTransformer extends HazeParserVisitor<any> {
   }
 
   requires(
-    ctx: FunctionDefinitionContext | StructMethodContext | FunctionDatatypeContext
+    ctx: FunctionDefinitionContext | StructMethodContext | FunctionDatatypeContext,
   ): ASTFunctionRequiresBlock {
     if (ctx.requiresBlock()) {
       return this.visit(ctx.requiresBlock()!);
@@ -671,6 +674,7 @@ class ASTTransformer extends HazeParserVisitor<any> {
     return {
       variant: "TaggedUnionDatatype",
       members: members,
+      nodiscard: Boolean(ctx.NODISCARD()),
       sourceloc: this.loc(ctx),
     };
   };
@@ -799,7 +803,7 @@ class ASTTransformer extends HazeParserVisitor<any> {
   };
 
   visitGlobalVariableDefinition = (
-    ctx: GlobalVariableDefinitionContext
+    ctx: GlobalVariableDefinitionContext,
   ): ASTGlobalVariableDefinition => {
     return {
       variant: "GlobalVariableDefinition",
@@ -1058,7 +1062,7 @@ class ASTTransformer extends HazeParserVisitor<any> {
   };
 
   visitVariableCreationStatementRule = (
-    ctx: VariableCreationStatementRuleContext
+    ctx: VariableCreationStatementRuleContext,
   ): ASTVariableDefinitionStatement => {
     return {
       variant: "VariableDefinitionStatement",
@@ -1073,7 +1077,7 @@ class ASTTransformer extends HazeParserVisitor<any> {
   };
 
   visitVariableCreationStatement = (
-    ctx: VariableCreationStatementContext
+    ctx: VariableCreationStatementContext,
   ): ASTVariableDefinitionStatement => {
     return this.visit(ctx.variableCreation());
   };
@@ -1244,7 +1248,7 @@ class ASTTransformer extends HazeParserVisitor<any> {
   };
 
   visitPostfixResultPropagationExpr = (
-    ctx: PostfixResultPropagationExprContext
+    ctx: PostfixResultPropagationExprContext,
   ): ASTErrorPropagationExpr => {
     return {
       variant: "ErrorPropagationExpr",
@@ -1314,7 +1318,7 @@ class ASTTransformer extends HazeParserVisitor<any> {
   };
 
   visitAggregateLiteralElement = (
-    ctx: AggregateLiteralElementContext
+    ctx: AggregateLiteralElementContext,
   ): ASTAggregateLiteralElement => {
     return {
       key: ctx.ID() ? ctx.ID()!.getText() : null,
@@ -1412,7 +1416,7 @@ class ASTTransformer extends HazeParserVisitor<any> {
         if (ctx.INLINE()) {
           throw new CompilerError(
             `The 'inline' modifier cannot be applied to a static array type (static arrays are always inline)`,
-            this.loc(ctx)
+            this.loc(ctx),
           );
         }
         if (ctx.CONST()) {
@@ -1421,7 +1425,7 @@ class ASTTransformer extends HazeParserVisitor<any> {
         if (ctx.MUT()) {
           throw new CompilerError(
             `The 'mut' modifier cannot be applied to a static array type`,
-            this.loc(ctx)
+            this.loc(ctx),
           );
         }
         break;
@@ -1442,7 +1446,7 @@ class ASTTransformer extends HazeParserVisitor<any> {
         if (ctx.INLINE()) {
           throw new CompilerError(
             `The 'inline' modifier cannot be applied to a dynamic array type`,
-            this.loc(ctx)
+            this.loc(ctx),
           );
         }
         if (ctx.CONST()) {
@@ -1458,20 +1462,20 @@ class ASTTransformer extends HazeParserVisitor<any> {
       case "FunctionDatatype":
         if (ctx.INLINE()) {
           throw new CompilerError(
-            `The 'inline' modifier cannot be applied to a function datatype`,
-            this.loc(ctx)
+            `The 'inline' modifier cannot be applied to unions function datatypes`,
+            this.loc(ctx),
           );
         }
         if (ctx.CONST()) {
           throw new CompilerError(
-            `The 'const' modifier cannot be applied to a function datatype`,
-            this.loc(ctx)
+            `The 'const' modifier cannot be applied to unions or function datatypes`,
+            this.loc(ctx),
           );
         }
         if (ctx.MUT()) {
           throw new CompilerError(
-            `The 'mut' modifier cannot be applied to a function datatype`,
-            this.loc(ctx)
+            `The 'mut' modifier cannot be applied to unions or function datatypes`,
+            this.loc(ctx),
           );
         }
         break;
@@ -1481,7 +1485,7 @@ class ASTTransformer extends HazeParserVisitor<any> {
         if (ctx.CONST() || ctx.MUT() || ctx.INLINE()) {
           throw new CompilerError(
             `A mutability specifier cannot appear on a '${datatype.variant}' datatype`,
-            this.loc(ctx)
+            this.loc(ctx),
           );
         }
         break;
@@ -1738,8 +1742,10 @@ class ASTTransformer extends HazeParserVisitor<any> {
         }
       });
 
-    const combinedFragments = [] as
-      | ({ type: "expr"; value: ASTExpr } | { type: "text"; value: string })[];
+    const combinedFragments = [] as (
+      | { type: "expr"; value: ASTExpr }
+      | { type: "text"; value: string }
+    )[];
 
     for (const fragment of fragments) {
       if (fragment.type === "expr") {

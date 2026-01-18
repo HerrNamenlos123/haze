@@ -1,7 +1,7 @@
 
 extern C noemit sizeof(...): usize :: final;
 
-export type Result<T, E> = union { Ok: T, Err: E, }
+export type Result<T, E> = nodiscard union { Ok: T, Err: E, };
 
 export clamp<T>(value: T, min: T, max: T): T {
     if (value < min) {

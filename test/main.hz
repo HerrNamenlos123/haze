@@ -36,10 +36,15 @@ test() {
     // let b = r"beeeebb[i]*"gim;
     // let c = r"foo\/bar[i]*"mig;
 
-    let r = r"\w+"
+    let r = r"\w+";
     let text = "hello"
 
-    fmt.println(regex.match(r, text))
+    attempt {
+        fmt.println(regex.match(regex.runtime("\\w+", "")?!, text))
+    }
+    else e {
+        fmt.println("Regex Error:", e)
+    }
 
     let r1 = r"world"
     let r2 = r"^world$"
@@ -50,7 +55,9 @@ test() {
 
 main(): int {
 
-    test();
+    test_regex();
+    // integer_comparison_runtime_tests();
+    // test();
     return 0;
 
     let a = attempt {

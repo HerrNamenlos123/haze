@@ -245,6 +245,7 @@ export type ASTTaggedUnionDatatype = {
     tag: string;
     type: ASTTypeUse;
   }[];
+  nodiscard: boolean;
   sourceloc: SourceLoc;
 };
 

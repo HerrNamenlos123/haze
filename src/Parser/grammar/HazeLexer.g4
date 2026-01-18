@@ -16,6 +16,7 @@ INLINEC: '__c__';
 EXTERN: 'extern';
 STATIC: 'static';
 STRUCT: 'struct';
+NODISCARD: 'nodiscard';
 NONCLONABLE: 'nonclonable';
 CLONABLE: 'clonable';
 REQUIRES: 'requires';

@@ -124,7 +124,7 @@ baseDatatype
 
 datatype
     : baseDatatype (SINGLEOR baseDatatype)*                                     #UntaggedUnionDatatype
-    | UNION LCURLY (ID COLON baseDatatype COMMA)+ (ID COLON baseDatatype COMMA?) RCURLY   #TaggedUnionDatatype
+    | NODISCARD? UNION LCURLY (ID COLON baseDatatype COMMA)+ (ID COLON baseDatatype COMMA?) RCURLY   #TaggedUnionDatatype
     ;
 
 datatypeFragment

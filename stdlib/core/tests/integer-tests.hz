@@ -1,0 +1,170 @@
+// integer_comparison_matrix.hz
+//
+// Exhaustive comparison test matrix for all integer types.
+// Purpose: validate code generation for mathematical integer semantics.
+//
+// Integer types:
+//   Unsigned: u8, u16, u32, u64, usize
+//   Signed:   i8, i16, i32, i64, int
+//
+// Operations tested:
+//   <, <=, >, >=, ==, !=
+//
+// Notes:
+// - No `_ = expr` (use variables)
+// - No `fn` keyword
+// - No generic inference (explicit <T, U>)
+// - int and usize are treated as distinct named types
+
+cmp_all<T, U>(a: T, b: U) {
+    let r_lt  = a <  b;
+    let r_le  = a <= b;
+    let r_gt  = a >  b;
+    let r_ge  = a >= b;
+    let r_eq  = a == b;
+    let r_ne  = a != b;
+}
+
+integer_comparison_runtime_tests() {
+    // Unsigned values
+    let u8v    : u8    = 7;
+    let u16v   : u16   = 7;
+    let u32v   : u32   = 7;
+    let u64v   : u64   = 7;
+    let usizev : usize = 7;
+
+    // Signed values (negative on purpose)
+    let i8v  : i8  = -3;
+    let i16v : i16 = -3;
+    let i32v : i32 = -3;
+    let i64v : i64 = -3;
+    let intv : int = -3;
+
+    // --- Unsigned vs Unsigned (including self) ---
+
+    cmp_all<u8, u8>(u8v, u8v);
+    cmp_all<u8, u16>(u8v, u16v);
+    cmp_all<u8, u32>(u8v, u32v);
+    cmp_all<u8, u64>(u8v, u64v);
+    cmp_all<u8, usize>(u8v, usizev);
+
+    cmp_all<u16, u8>(u16v, u8v);
+    cmp_all<u16, u16>(u16v, u16v);
+    cmp_all<u16, u32>(u16v, u32v);
+    cmp_all<u16, u64>(u16v, u64v);
+    cmp_all<u16, usize>(u16v, usizev);
+
+    cmp_all<u32, u8>(u32v, u8v);
+    cmp_all<u32, u16>(u32v, u16v);
+    cmp_all<u32, u32>(u32v, u32v);
+    cmp_all<u32, u64>(u32v, u64v);
+    cmp_all<u32, usize>(u32v, usizev);
+
+    cmp_all<u64, u8>(u64v, u8v);
+    cmp_all<u64, u16>(u64v, u16v);
+    cmp_all<u64, u32>(u64v, u32v);
+    cmp_all<u64, u64>(u64v, u64v);
+    cmp_all<u64, usize>(u64v, usizev);
+
+    cmp_all<usize, u8>(usizev, u8v);
+    cmp_all<usize, u16>(usizev, u16v);
+    cmp_all<usize, u32>(usizev, u32v);
+    cmp_all<usize, u64>(usizev, u64v);
+    cmp_all<usize, usize>(usizev, usizev);
+
+    // --- Signed vs Signed (including self) ---
+
+    cmp_all<i8, i8>(i8v, i8v);
+    cmp_all<i8, i16>(i8v, i16v);
+    cmp_all<i8, i32>(i8v, i32v);
+    cmp_all<i8, i64>(i8v, i64v);
+    cmp_all<i8, int>(i8v, intv);
+
+    cmp_all<i16, i8>(i16v, i8v);
+    cmp_all<i16, i16>(i16v, i16v);
+    cmp_all<i16, i32>(i16v, i32v);
+    cmp_all<i16, i64>(i16v, i64v);
+    cmp_all<i16, int>(i16v, intv);
+
+    cmp_all<i32, i8>(i32v, i8v);
+    cmp_all<i32, i16>(i32v, i16v);
+    cmp_all<i32, i32>(i32v, i32v);
+    cmp_all<i32, i64>(i32v, i64v);
+    cmp_all<i32, int>(i32v, intv);
+
+    cmp_all<i64, i8>(i64v, i8v);
+    cmp_all<i64, i16>(i64v, i16v);
+    cmp_all<i64, i32>(i64v, i32v);
+    cmp_all<i64, i64>(i64v, i64v);
+    cmp_all<i64, int>(i64v, intv);
+
+    cmp_all<int, i8>(intv, i8v);
+    cmp_all<int, i16>(intv, i16v);
+    cmp_all<int, i32>(intv, i32v);
+    cmp_all<int, i64>(intv, i64v);
+    cmp_all<int, int>(intv, intv);
+
+    // --- Unsigned vs Signed ---
+
+    cmp_all<u8, i8>(u8v, i8v);
+    cmp_all<u8, i16>(u8v, i16v);
+    cmp_all<u8, i32>(u8v, i32v);
+    cmp_all<u8, i64>(u8v, i64v);
+    cmp_all<u8, int>(u8v, intv);
+
+    cmp_all<u16, i8>(u16v, i8v);
+    cmp_all<u16, i16>(u16v, i16v);
+    cmp_all<u16, i32>(u16v, i32v);
+    cmp_all<u16, i64>(u16v, i64v);
+    cmp_all<u16, int>(u16v, intv);
+
+    cmp_all<u32, i8>(u32v, i8v);
+    cmp_all<u32, i16>(u32v, i16v);
+    cmp_all<u32, i32>(u32v, i32v);
+    cmp_all<u32, i64>(u32v, i64v);
+    cmp_all<u32, int>(u32v, intv);
+
+    cmp_all<u64, i8>(u64v, i8v);
+    cmp_all<u64, i16>(u64v, i16v);
+    cmp_all<u64, i32>(u64v, i32v);
+    cmp_all<u64, i64>(u64v, i64v);
+    cmp_all<u64, int>(u64v, intv);
+
+    cmp_all<usize, i8>(usizev, i8v);
+    cmp_all<usize, i16>(usizev, i16v);
+    cmp_all<usize, i32>(usizev, i32v);
+    cmp_all<usize, i64>(usizev, i64v);
+    cmp_all<usize, int>(usizev, intv);
+
+    // --- Signed vs Unsigned ---
+
+    cmp_all<i8, u8>(i8v, u8v);
+    cmp_all<i8, u16>(i8v, u16v);
+    cmp_all<i8, u32>(i8v, u32v);
+    cmp_all<i8, u64>(i8v, u64v);
+    cmp_all<i8, usize>(i8v, usizev);
+
+    cmp_all<i16, u8>(i16v, u8v);
+    cmp_all<i16, u16>(i16v, u16v);
+    cmp_all<i16, u32>(i16v, u32v);
+    cmp_all<i16, u64>(i16v, u64v);
+    cmp_all<i16, usize>(i16v, usizev);
+
+    cmp_all<i32, u8>(i32v, u8v);
+    cmp_all<i32, u16>(i32v, u16v);
+    cmp_all<i32, u32>(i32v, u32v);
+    cmp_all<i32, u64>(i32v, u64v);
+    cmp_all<i32, usize>(i32v, usizev);
+
+    cmp_all<i64, u8>(i64v, u8v);
+    cmp_all<i64, u16>(i64v, u16v);
+    cmp_all<i64, u32>(i64v, u32v);
+    cmp_all<i64, u64>(i64v, u64v);
+    cmp_all<i64, usize>(i64v, usizev);
+
+    cmp_all<int, u8>(intv, u8v);
+    cmp_all<int, u16>(intv, u16v);
+    cmp_all<int, u32>(intv, u32v);
+    cmp_all<int, u64>(intv, u64v);
+    cmp_all<int, usize>(intv, usizev);
+}

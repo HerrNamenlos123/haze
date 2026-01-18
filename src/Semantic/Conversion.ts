@@ -97,16 +97,20 @@ export namespace Conversion {
   export function prettyRanges(
     ranges: ValueRange[],
     primitive: EPrimitive,
-    mode: "float" | "integer"
+    mode: "float" | "integer",
   ): string {
-    return ranges.map((r) => prettyRange(r.min, r.max, primitive, mode)).join(" u ");
+    if (ranges.length > 0) {
+      return ranges.map((r) => prettyRange(r.min, r.max, primitive, mode)).join(" u ");
+    } else {
+      return "()";
+    }
   }
 
   export function prettyRange(
     min: bigint | undefined,
     max: bigint | undefined,
     primitive: EPrimitive,
-    mode: "float" | "integer"
+    mode: "float" | "integer",
   ): string {
     let minStr: string;
     let maxStr: string;
@@ -260,8 +264,16 @@ export namespace Conversion {
     return type.primitive === EPrimitive.void;
   }
 
-  export function getIntegerBits(type: Semantic.PrimitiveDatatypeDef): number {
-    switch (type.primitive) {
+  export function isNodiscardById(sr: SemanticResult, typeId: Semantic.TypeDefId): boolean {
+    const type = sr.typeDefNodes.get(typeId);
+    if (type.variant === Semantic.ENode.TaggedUnionDatatype) {
+      return type.nodiscard;
+    }
+    return false;
+  }
+
+  export function getIntegerBits(primitive: EPrimitive): number {
+    switch (primitive) {
       case EPrimitive.i8:
       case EPrimitive.u8:
         return 8;
@@ -284,7 +296,7 @@ export namespace Conversion {
     sr: SemanticResult,
     a: Semantic.TypeDefId,
     b: Semantic.TypeDefId,
-    seen: Map<Semantic.TypeDefId, Set<Semantic.TypeDefId>> = new Map()
+    seen: Map<Semantic.TypeDefId, Set<Semantic.TypeDefId>> = new Map(),
   ): boolean {
     // Symmetric check: has this pair already been seen?
     if (seen.get(a)?.has(b) || seen.get(b)?.has(a)) {
@@ -299,7 +311,7 @@ export namespace Conversion {
       throw new InternalError(
         "Cannot check structural equivalence of a non-concrete datatype",
         undefined,
-        1
+        1,
       );
     }
 
@@ -341,8 +353,8 @@ export namespace Conversion {
               sr,
               sr.typeUseNodes.get(p.type).type,
               sr.typeUseNodes.get(bt.parameters[index].type).type,
-              seen
-            )
+              seen,
+            ),
           )
         );
       }
@@ -377,7 +389,7 @@ export namespace Conversion {
             sr,
             sr.typeUseNodes.get(at.thisExprType).type,
             sr.typeUseNodes.get(bt.thisExprType).type,
-            seen
+            seen,
           )
         )
           return false;
@@ -400,7 +412,7 @@ export namespace Conversion {
               sr,
               sr.typeUseNodes.get(sr.exprNodes.get(at.generics[i]).type).type,
               sr.typeUseNodes.get(sr.exprNodes.get(bt.generics[i]).type).type,
-              seen
+              seen,
             )
           )
             return false;
@@ -417,7 +429,7 @@ export namespace Conversion {
               const m = sr.symbolNodes.get(mId);
               assert(m.variant === Semantic.ENode.VariableSymbol);
               return m.name;
-            })
+            }),
           ),
         ];
         assert(remainingMembersA.length === at.members.length);
@@ -427,7 +439,7 @@ export namespace Conversion {
               const m = sr.symbolNodes.get(mId);
               assert(m.variant === Semantic.ENode.VariableSymbol);
               return m.name;
-            })
+            }),
           ),
         ];
         assert(remainingMembersB.length === bt.members.length);
@@ -461,7 +473,7 @@ export namespace Conversion {
               sr,
               sr.typeUseNodes.get(am.type).type,
               sr.typeUseNodes.get(bm.type).type,
-              seen
+              seen,
             )
           ) {
             return false;
@@ -512,10 +524,10 @@ export namespace Conversion {
               current.max === undefined
                 ? undefined
                 : next.max === undefined
-                ? undefined
-                : current.max > next.max
-                ? current.max
-                : next.max;
+                  ? undefined
+                  : current.max > next.max
+                    ? current.max
+                    : next.max;
           } else {
             result.push(current);
             current = { ...next };
@@ -613,7 +625,7 @@ export namespace Conversion {
       },
       constrainFromConstraints: (
         constraints: Semantic.Constraint[],
-        fromExprId: Semantic.ExprId
+        fromExprId: Semantic.ExprId,
       ) => {
         const fromExpr = sr.exprNodes.get(fromExprId);
         for (const constraint of constraints) {
@@ -683,7 +695,7 @@ export namespace Conversion {
               value.literal.type === EPrimitive.i16 ||
               value.literal.type === EPrimitive.i32 ||
               value.literal.type === EPrimitive.i64 ||
-              value.literal.type === EPrimitive.int
+              value.literal.type === EPrimitive.int,
           );
           values.constrainEq(value.literal.value);
         }
@@ -780,7 +792,7 @@ export namespace Conversion {
     constraints: Semantic.Constraint[],
     sourceloc: SourceLoc,
     mode: Mode,
-    unsafe: boolean
+    unsafe: boolean,
   ) {
     const c = MakeConversion(sr, fromExprId, toId, constraints, sourceloc, mode, unsafe);
     if (c.ok) {
@@ -796,7 +808,7 @@ export namespace Conversion {
     constraints: Semantic.Constraint[],
     sourceloc: SourceLoc,
     mode: Mode,
-    unsafe?: boolean
+    unsafe?: boolean,
   ): { ok: true; expr: Semantic.ExprId } | { ok: false; error: string } {
     const fromExpr = sr.exprNodes.get(fromExprId);
     const fromTypeInstance = sr.typeUseNodes.get(fromExpr.type);
@@ -830,13 +842,13 @@ export namespace Conversion {
               prefix: null,
               value: fromExpr.literal.value,
             },
-            fromExpr.sourceloc
-          )[1]
+            fromExpr.sourceloc,
+          )[1],
         );
       }
       throw new CompilerError(
         `Conversion from str to cstr/ccstr (char*/const char*) is not possible because the value is not known at compile time, therefore no C string literal can be emitted that preserves null termination. For runtime strings, use str.cstr(arena).`,
-        sourceloc
+        sourceloc,
       );
     }
 
@@ -849,13 +861,13 @@ export namespace Conversion {
       if (fromTypeInstance.inline && !toInstance.inline) {
         throw new CompilerError(
           `Reference conversions from inline to non-inline are not implemented yet, make sure you are consistent with inline structs. Cannot convert ${fromTypeText} to ${toTypeText}`,
-          sourceloc
+          sourceloc,
         );
       }
       if (!fromTypeInstance.inline && toInstance.inline) {
         throw new CompilerError(
           `Reference conversions from non-inline to inline are not implemented yet, make sure you are consistent with inline structs. Cannot convert ${fromTypeText} to ${toTypeText}`,
-          sourceloc
+          sourceloc,
         );
       }
     }
@@ -886,7 +898,7 @@ export namespace Conversion {
           type: toId,
           sourceloc: sourceloc,
           isTemporary: fromExpr.isTemporary,
-        })[1]
+        })[1],
       );
     }
 
@@ -905,7 +917,7 @@ export namespace Conversion {
           type: toId,
           sourceloc: sourceloc,
           isTemporary: fromExpr.isTemporary,
-        })[1]
+        })[1],
       );
     }
 
@@ -917,21 +929,21 @@ export namespace Conversion {
       if (!to.requires.final) {
         throw new CompilerError(
           `Cannot use a non-final function datatype as a conversion target`,
-          sourceloc
+          sourceloc,
         );
       }
 
       if (!fromType.requires.final) {
         throw new CompilerError(
           `Cannot convert a non-final function datatype, that is not fully elaborated yet. Remember to manually mark functions as final if they are extern or participate in recursion.`,
-          sourceloc
+          sourceloc,
         );
       }
 
       if (!fromType.requires.pure && to.requires.pure) {
         throw new CompilerError(
           `Passing an impure function to a value that requires it to be pure. This is not safe as the caller may assume no side effects which the given function could have.`,
-          sourceloc
+          sourceloc,
         );
       }
 
@@ -963,7 +975,7 @@ export namespace Conversion {
             type: toId,
             sourceloc: sourceloc,
             isTemporary: fromExpr.isTemporary,
-          })[1]
+          })[1],
         );
       }
 
@@ -984,8 +996,8 @@ export namespace Conversion {
       assert(t.variant === Semantic.ENode.PrimitiveDatatype);
       const fromSigned = Conversion.isSignedInteger(f.primitive);
       const toSigned = Conversion.isSignedInteger(t.primitive);
-      const fromBits = Conversion.getIntegerBits(f);
-      const toBits = Conversion.getIntegerBits(t);
+      const fromBits = Conversion.getIntegerBits(f.primitive);
+      const toBits = Conversion.getIntegerBits(t.primitive);
 
       if (fromSigned === toSigned && toBits >= fromBits) {
         // Totally safe
@@ -997,7 +1009,7 @@ export namespace Conversion {
             type: toId,
             sourceloc: sourceloc,
             isTemporary: fromExpr.isTemporary,
-          })[1]
+          })[1],
         );
       } else {
         const source = valueNarrowing(sr);
@@ -1014,17 +1026,16 @@ export namespace Conversion {
               type: toId,
               sourceloc: sourceloc,
               isTemporary: fromExpr.isTemporary,
-            })[1]
+            })[1],
           );
         }
 
         let sourceRangeText = "";
         if (!source.isExact()) {
-          const ranges = source.ranges;
           sourceRangeText = `range ${Conversion.prettyRanges(
             source.ranges,
             f.primitive,
-            "integer"
+            "integer",
           )}`;
         } else {
           sourceRangeText = `value ${source.isExact()!}`;
@@ -1033,16 +1044,16 @@ export namespace Conversion {
         throw new CompilerError(
           `No safe conversion from '${Semantic.serializeTypeUse(
             sr,
-            fromExpr.type
+            fromExpr.type,
           )}' to '${Semantic.serializeTypeUse(
             sr,
-            toId
+            toId,
           )}' is known: Target type has integer range ${Conversion.prettyRange(
             ...Conversion.getIntegerMinMax(t.primitive),
             t.primitive,
-            "integer"
+            "integer",
           )}, but the source has ${sourceRangeText}. Add a conditional that constrains the integer range.`,
-          sourceloc
+          sourceloc,
         );
       }
     }
@@ -1074,7 +1085,7 @@ export namespace Conversion {
             type: toId,
             sourceloc: sourceloc,
             isTemporary: fromExpr.isTemporary,
-          })[1]
+          })[1],
         );
       }
 
@@ -1088,16 +1099,16 @@ export namespace Conversion {
       throw new CompilerError(
         `No lossless conversion from '${Semantic.serializeTypeUse(
           sr,
-          fromExpr.type
+          fromExpr.type,
         )}' to '${Semantic.serializeTypeUse(
           sr,
-          toId
+          toId,
         )}' is possible: Floating point target type has safe integer range ${Conversion.prettyRange(
           ...floatSafeIntegerRange,
           t.primitive,
-          "float"
+          "float",
         )}, but the source has ${sourceRangeText}. Add a conditional that constrains the integer range.`,
-        sourceloc
+        sourceloc,
       );
     }
     if (
@@ -1119,7 +1130,7 @@ export namespace Conversion {
 
       throw new CompilerError(
         `Conversions from Integers to Floating points are not implemented yet, as it requires value narrowing on floating point numbers instead of bigint...`,
-        sourceloc
+        sourceloc,
       );
 
       // if (source.isWithinRange(...Conversion.getIntegerMinMax(t.primitive))) {
@@ -1177,7 +1188,7 @@ export namespace Conversion {
           type: toId,
           sourceloc: sourceloc,
           isTemporary: fromExpr.isTemporary,
-        })[1]
+        })[1],
       );
     }
     if (
@@ -1198,7 +1209,7 @@ export namespace Conversion {
           type: toId,
           sourceloc: sourceloc,
           isTemporary: fromExpr.isTemporary,
-        })[1]
+        })[1],
       );
     }
 
@@ -1216,15 +1227,15 @@ export namespace Conversion {
         throw new CompilerError(
           `Conversion from '${Semantic.serializeTypeUse(
             sr,
-            fromExpr.type
+            fromExpr.type,
           )}' to '${Semantic.serializeTypeUse(
             sr,
-            toId
+            toId,
           )}' is lossy. If wanted, cast explicitly using '... as ${Semantic.serializeTypeUse(
             sr,
-            toId
+            toId,
           )}'`,
-          sourceloc
+          sourceloc,
         );
       }
       return ok(
@@ -1235,7 +1246,7 @@ export namespace Conversion {
           type: toId,
           sourceloc: sourceloc,
           isTemporary: fromExpr.isTemporary,
-        })[1]
+        })[1],
       );
     }
 
@@ -1252,7 +1263,7 @@ export namespace Conversion {
               type: toId,
               sourceloc: sourceloc,
               isTemporary: fromExpr.isTemporary,
-            })[1]
+            })[1],
           );
         }
 
@@ -1269,7 +1280,7 @@ export namespace Conversion {
               type: toId,
               sourceloc: sourceloc,
               isTemporary: fromExpr.isTemporary,
-            })[1]
+            })[1],
           );
         }
 
@@ -1287,7 +1298,7 @@ export namespace Conversion {
               type: toId,
               sourceloc: sourceloc,
               isTemporary: fromExpr.isTemporary,
-            })[1]
+            })[1],
           );
         }
 
@@ -1301,13 +1312,13 @@ export namespace Conversion {
                 type: toId,
                 sourceloc: sourceloc,
                 isTemporary: fromExpr.isTemporary,
-              })[1]
+              })[1],
             );
           }
 
           throw new CompilerError(
             `This value cannot be converted to 'const' since other references may exist, which may allow mutation of a const value. Use .freezeClone() to safely clone the object and make it deeply immutable.`,
-            sourceloc
+            sourceloc,
           );
         }
       }
@@ -1372,7 +1383,7 @@ export namespace Conversion {
             index: matching,
             sourceloc: sourceloc,
             isTemporary: fromExpr.isTemporary,
-          })[1]
+          })[1],
         );
       }
     }
@@ -1410,7 +1421,7 @@ export namespace Conversion {
             index: matching,
             sourceloc: sourceloc,
             isTemporary: fromExpr.isTemporary,
-          })[1]
+          })[1],
         );
       }
     }
@@ -1448,7 +1459,7 @@ export namespace Conversion {
             castComesFromNarrowingAndMayBeUnwrapped: false,
             sourceloc: sourceloc,
             isTemporary: fromExpr.isTemporary,
-          })[1]
+          })[1],
         );
       }
     }
@@ -1485,7 +1496,7 @@ export namespace Conversion {
                 isTemporary: true,
                 instanceIds: [],
                 type: toId,
-              })[1]
+              })[1],
             );
           }
         }
@@ -1515,9 +1526,9 @@ export namespace Conversion {
             throw new CompilerError(
               `Type '${Semantic.serializeTypeUse(
                 sr,
-                fromExpr.type
+                fromExpr.type,
               )}' is not implicitly convertible to bool: Union does not contain a null- or none-Variant.`,
-              sourceloc
+              sourceloc,
             );
           }
 
@@ -1531,7 +1542,7 @@ export namespace Conversion {
               isTemporary: true,
               instanceIds: [],
               type: toId,
-            })[1]
+            })[1],
           );
         }
       }
@@ -1550,7 +1561,7 @@ export namespace Conversion {
             canBeUnwrappedForLHS: false,
             sourceloc: sourceloc,
             isTemporary: fromExpr.isTemporary,
-          })[1]
+          })[1],
         );
       }
 
@@ -1575,7 +1586,7 @@ export namespace Conversion {
               castComesFromNarrowingAndMayBeUnwrapped: false,
               sourceloc: sourceloc,
               isTemporary: fromExpr.isTemporary,
-            })[1]
+            })[1],
           );
         }
       }
@@ -1612,7 +1623,7 @@ export namespace Conversion {
               castComesFromNarrowingAndMayBeUnwrapped: false,
               sourceloc: sourceloc,
               isTemporary: fromExpr.isTemporary,
-            })[1]
+            })[1],
           );
         }
 
@@ -1623,16 +1634,16 @@ export namespace Conversion {
     throw new CompilerError(
       `No suitable conversion from '${Semantic.serializeTypeUse(
         sr,
-        fromExpr.type
+        fromExpr.type,
       )}' to '${Semantic.serializeTypeUse(sr, toId)}' is known`,
-      sourceloc
+      sourceloc,
     );
   }
 
   export function MakeDefaultValue(
     sr: SemanticResult,
     targetTypeId: Semantic.TypeUseId,
-    sourceloc: SourceLoc
+    sourceloc: SourceLoc,
   ): Semantic.ExprId {
     const typeInstance = sr.typeUseNodes.get(targetTypeId);
     const targetType = sr.typeDefNodes.get(typeInstance.type);
@@ -1655,7 +1666,7 @@ export namespace Conversion {
             unit: null,
             value: 0n,
           },
-          sourceloc
+          sourceloc,
         )[1];
       } else if (
         targetType.primitive === EPrimitive.f32 ||
@@ -1668,7 +1679,7 @@ export namespace Conversion {
             unit: null,
             value: 0,
           },
-          sourceloc
+          sourceloc,
         )[1];
       } else if (targetType.primitive === EPrimitive.bool) {
         return sr.b.literal(false, sourceloc)[1];
@@ -1677,14 +1688,14 @@ export namespace Conversion {
           {
             type: EPrimitive.null,
           },
-          sourceloc
+          sourceloc,
         )[1];
       } else if (targetType.primitive === EPrimitive.none) {
         return sr.b.literalValue(
           {
             type: EPrimitive.none,
           },
-          sourceloc
+          sourceloc,
         )[1];
       }
     }
@@ -1715,18 +1726,18 @@ export namespace Conversion {
       throw new CompilerError(
         `Default value for type '${Semantic.serializeTypeUse(
           sr,
-          targetTypeId
+          targetTypeId,
         )}' is requested, but this struct has no default value because not all members specify a default value`,
-        sourceloc
+        sourceloc,
       );
     }
 
     throw new CompilerError(
       `Default value for type '${Semantic.serializeTypeUse(
         sr,
-        targetTypeId
+        targetTypeId,
       )}' is requested, but no safe default value is known for that type`,
-      sourceloc
+      sourceloc,
     );
   }
 
@@ -1734,30 +1745,16 @@ export namespace Conversion {
     sr: SemanticResult,
     a: Semantic.ExprId,
     b: Semantic.ExprId,
-    sourceloc: SourceLoc
+    sourceloc: SourceLoc,
   ): Semantic.TypeUseId {
     const leftTypeId = sr.typeUseNodes.get(sr.exprNodes.get(a).type).type;
     const rightTypeId = sr.typeUseNodes.get(sr.exprNodes.get(b).type).type;
 
+    if (isIntegerById(sr, leftTypeId) && isIntegerById(sr, rightTypeId)) {
+      return sr.b.boolType();
+    }
+
     const comparisons = [
-      {
-        comparable: [
-          makeRawPrimitiveAvailable(sr, EPrimitive.i8),
-          makeRawPrimitiveAvailable(sr, EPrimitive.i16),
-          makeRawPrimitiveAvailable(sr, EPrimitive.i32),
-          makeRawPrimitiveAvailable(sr, EPrimitive.i64),
-          makeRawPrimitiveAvailable(sr, EPrimitive.int),
-        ],
-      },
-      {
-        comparable: [
-          makeRawPrimitiveAvailable(sr, EPrimitive.u8),
-          makeRawPrimitiveAvailable(sr, EPrimitive.u16),
-          makeRawPrimitiveAvailable(sr, EPrimitive.u32),
-          makeRawPrimitiveAvailable(sr, EPrimitive.u64),
-          makeRawPrimitiveAvailable(sr, EPrimitive.usize),
-        ],
-      },
       {
         comparable: [makeRawPrimitiveAvailable(sr, EPrimitive.null)],
       },
@@ -1793,9 +1790,9 @@ export namespace Conversion {
     throw new CompilerError(
       `No safe comparison is available between types '${Semantic.serializeTypeDef(
         sr,
-        leftTypeId
+        leftTypeId,
       )}' and '${Semantic.serializeTypeDef(sr, rightTypeId)}'`,
-      sourceloc
+      sourceloc,
     );
   }
 
@@ -1804,7 +1801,7 @@ export namespace Conversion {
     a: Semantic.ExprId,
     b: Semantic.ExprId,
     operation: EBinaryOperation,
-    sourceloc: SourceLoc
+    sourceloc: SourceLoc,
   ): Semantic.TypeUseId {
     const leftTypeId = sr.typeUseNodes.get(sr.exprNodes.get(a).type).type;
     const rightTypeId = sr.typeUseNodes.get(sr.exprNodes.get(b).type).type;
@@ -1838,12 +1835,12 @@ export namespace Conversion {
 
     throw new CompilerError(
       `No safe ${BinaryOperationToString(
-        operation
+        operation,
       )} operation is known between types '${Semantic.serializeTypeDef(
         sr,
-        leftTypeId
+        leftTypeId,
       )}' and '${Semantic.serializeTypeDef(sr, rightTypeId)}'`,
-      sourceloc
+      sourceloc,
     );
   }
 
@@ -2020,7 +2017,7 @@ export namespace Conversion {
     sr: SemanticResult,
     a: Semantic.TypeUseId,
     operation: EUnaryOperation,
-    sourceloc: SourceLoc
+    sourceloc: SourceLoc,
   ): Semantic.TypeUseId {
     const ops = UnaryOperationResults(sr)[operation];
 
@@ -2032,9 +2029,9 @@ export namespace Conversion {
 
     throw new CompilerError(
       `No unary ${UnaryOperationToString(
-        operation
+        operation,
       )} operation is known for type '${Semantic.serializeTypeUse(sr, a)}'`,
-      sourceloc
+      sourceloc,
     );
   }
 }

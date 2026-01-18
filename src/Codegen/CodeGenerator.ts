@@ -89,7 +89,7 @@ class CodeGenerator {
     public config: ModuleConfig,
     public moduleDir: string,
     public allModules: [string, string][],
-    public lr: Lowered.Module
+    public lr: Lowered.Module,
   ) {
     if (this.config.hzstdLocation) {
       this.includeLocalHeader(this.config.hzstdLocation + "/hzstd/hzstd.h");
@@ -119,10 +119,10 @@ class CodeGenerator {
         }
         have.add(name);
         this.includeLocalHeader(
-          `${this.moduleDir}/../${module[0]}/build/regex/__hz_${name}_regex_table.h`
+          `${this.moduleDir}/../${module[0]}/build/regex/__hz_${name}_regex_table.h`,
         );
         this.out.function_definitions.writeLine(
-          `hzstd_regex_init_table(__hz_${name}_regex_table, __hz_${name}_regex_table_count);`
+          `hzstd_regex_init_table(__hz_${name}_regex_table, __hz_${name}_regex_table_count);`,
         );
       }
 
@@ -176,7 +176,7 @@ class CodeGenerator {
       {
         encoding: "utf8", // stdout = string
         maxBuffer: 10 * 1024 * 1024,
-      }
+      },
     );
 
     if (proc.error) {
@@ -340,14 +340,14 @@ class CodeGenerator {
       } else if (symbol.variant === Lowered.ENode.StructDatatype) {
         if (!symbol.noemit) {
           this.out.type_declarations.writeLine(
-            `typedef struct ${this.mangleTypeDef(symbol)} ${this.mangleTypeDef(symbol)};`
+            `typedef struct ${this.mangleTypeDef(symbol)} ${this.mangleTypeDef(symbol)};`,
           );
           this.out.type_definitions
             .writeLine(`struct ${this.mangleTypeDef(symbol)} {`)
             .pushIndent();
           for (const member of symbol.members) {
             this.out.type_definitions.writeLine(
-              `${this.mangleTypeUse(member.type)} ${member.name};`
+              `${this.mangleTypeUse(member.type)} ${member.name};`,
             );
           }
           if (symbol.members.length === 0) {
@@ -357,7 +357,7 @@ class CodeGenerator {
         }
       } else if (symbol.variant === Lowered.ENode.PointerDatatype) {
         this.out.type_declarations.writeLine(
-          `typedef ${this.mangleTypeUse(symbol.referee)}* ${this.mangleTypeDef(symbol)};`
+          `typedef ${this.mangleTypeUse(symbol.referee)}* ${this.mangleTypeDef(symbol)};`,
         );
       } else if (
         symbol.variant === Lowered.ENode.UntaggedUnionDatatype ||
@@ -366,12 +366,12 @@ class CodeGenerator {
         if (symbol.optimizeAsRawPointer) {
           this.out.type_declarations.writeLine(
             `typedef ${this.mangleTypeUse(symbol.optimizeAsRawPointer)} ${this.mangleTypeDef(
-              symbol
-            )};`
+              symbol,
+            )};`,
           );
         } else {
           this.out.type_declarations.writeLine(
-            `typedef struct ${this.mangleTypeDef(symbol)} ${this.mangleTypeDef(symbol)};`
+            `typedef struct ${this.mangleTypeDef(symbol)} ${this.mangleTypeDef(symbol)};`,
           );
           this.out.type_definitions
             .writeLine(`struct ${this.mangleTypeDef(symbol)} {`)
@@ -395,23 +395,23 @@ class CodeGenerator {
         }
       } else if (symbol.variant === Lowered.ENode.FixedArrayDatatype) {
         this.out.type_declarations.writeLine(
-          `typedef struct ${this.mangleTypeDef(symbol)} ${this.mangleTypeDef(symbol)};`
+          `typedef struct ${this.mangleTypeDef(symbol)} ${this.mangleTypeDef(symbol)};`,
         );
         this.out.type_definitions.writeLine(`struct ${this.mangleTypeDef(symbol)} {`).pushIndent();
         this.out.type_definitions.writeLine(
-          `${this.mangleTypeUse(symbol.datatype)} data[${symbol.length}];`
+          `${this.mangleTypeUse(symbol.datatype)} data[${symbol.length}];`,
         );
         this.out.type_definitions.popIndent().writeLine(`};`);
       } else if (symbol.variant === Lowered.ENode.DynamicArrayDatatype) {
         this.out.type_declarations.writeLine(
-          `typedef hzstd_dynamic_array_t ${this.mangleTypeDef(symbol)};`
+          `typedef hzstd_dynamic_array_t ${this.mangleTypeDef(symbol)};`,
         );
         // this.out.type_definitions.writeLine(`struct ${this.mangleTypeDef(symbol)} {`).pushIndent();
         // this.out.type_definitions.writeLine(`hzstd_dynamic_array_t data;`);
         // this.out.type_definitions.popIndent().writeLine(`};`);
       } else if (symbol.variant === Lowered.ENode.SliceDatatype) {
         this.out.type_declarations.writeLine(
-          `typedef struct ${this.mangleTypeDef(symbol)} ${this.mangleTypeDef(symbol)};`
+          `typedef struct ${this.mangleTypeDef(symbol)} ${this.mangleTypeDef(symbol)};`,
         );
         this.out.type_definitions.writeLine(`struct ${this.mangleTypeDef(symbol)} {`).pushIndent();
         this.out.type_definitions.writeLine(`${this.mangleTypeUse(symbol.datatype)}* data;`);
@@ -420,17 +420,17 @@ class CodeGenerator {
       } else if (symbol.variant === Lowered.ENode.FunctionDatatype) {
         this.out.type_declarations.writeLine(
           `typedef ${this.mangleTypeUse(symbol.returnType)} (*${this.mangleTypeDef(
-            symbol
-          )})(${symbol.parameters.map((p) => `${this.mangleTypeUse(p)}`).join(", ")});`
+            symbol,
+          )})(${symbol.parameters.map((p) => `${this.mangleTypeUse(p)}`).join(", ")});`,
         );
       } else if (symbol.variant === Lowered.ENode.CallableDatatype) {
         this.out.type_declarations.writeLine(
-          `typedef struct ${this.mangleTypeDef(symbol)} ${this.mangleTypeDef(symbol)};`
+          `typedef struct ${this.mangleTypeDef(symbol)} ${this.mangleTypeDef(symbol)};`,
         );
         this.out.type_definitions.writeLine(`struct ${this.mangleTypeDef(symbol)} {`).pushIndent();
         if (symbol.thisExprType) {
           this.out.type_definitions.writeLine(
-            `${this.mangleTypeUse(symbol.thisExprType)} thisPtr;`
+            `${this.mangleTypeUse(symbol.thisExprType)} thisPtr;`,
           );
         }
         this.out.type_definitions.writeLine(`${this.mangleTypeDef(symbol.functionType)} fn;`);
@@ -438,7 +438,7 @@ class CodeGenerator {
       } else if (symbol.variant === Lowered.ENode.TypeUse) {
         if (symbol.pointer) {
           this.out.type_declarations.writeLine(
-            `typedef ${this.mangleTypeDef(symbol.type)}* ${this.mangleTypeUse(symbol)};`
+            `typedef ${this.mangleTypeDef(symbol.type)}* ${this.mangleTypeUse(symbol)};`,
           );
         } else {
           const a = this.mangleTypeDef(symbol.type);
@@ -452,7 +452,7 @@ class CodeGenerator {
           this.out.type_declarations.writeLine(`typedef enum {`).pushIndent();
           for (const value of symbol.values) {
             this.out.type_declarations.writeLine(
-              `${this.mangleName(value.loweredName)} = ${this.emitExpr(value.value).out.get()},`
+              `${this.mangleName(value.loweredName)} = ${this.emitExpr(value.value).out.get()},`,
             );
           }
           this.out.type_declarations.popIndent().writeLine(`} ${this.mangleName(symbol.name)} ;`);
@@ -468,12 +468,12 @@ class CodeGenerator {
       if (statement.value) {
         this.out.global_variables.writeLine(
           `${this.mangleTypeUse(statement.type)} ${this.mangleName(
-            statement.name
-          )} = ${this.emitExpr(statement.value).out.get()};`
+            statement.name,
+          )} = ${this.emitExpr(statement.value).out.get()};`,
         );
       } else {
         this.out.global_variables.writeLine(
-          `${this.mangleTypeUse(statement.type)} ${this.mangleName(statement.name)} = {0};`
+          `${this.mangleTypeUse(statement.type)} ${this.mangleName(statement.name)} = {0};`,
         );
       }
     }
@@ -619,7 +619,7 @@ class CodeGenerator {
     leftId: Lowered.ExprId,
     rightId: Lowered.ExprId,
     plainResultTypeId: Lowered.TypeDefId,
-    operation: EBinaryOperation
+    operation: EBinaryOperation,
   ) {
     const left = this.lr.exprNodes.get(leftId);
     const right = this.lr.exprNodes.get(rightId);
@@ -716,7 +716,7 @@ class CodeGenerator {
 
   emitStatement(
     statementId: Lowered.StatementId,
-    noSourceloc = false
+    noSourceloc = false,
   ): {
     temp: OutputWriter;
     out: OutputWriter;
@@ -730,8 +730,8 @@ class CodeGenerator {
         if (statement.sourceloc && this.lr.sr.cc.config.includeSourceloc && !noSourceloc) {
           outWriter.writeLine(
             `#line ${statement.sourceloc.start.line} ${JSON.stringify(
-              statement.sourceloc.filename
-            )}`
+              statement.sourceloc.filename,
+            )}`,
           );
         }
         if (statement.expr) {
@@ -748,8 +748,8 @@ class CodeGenerator {
         if (statement.sourceloc && this.lr.sr.cc.config.includeSourceloc && !noSourceloc) {
           outWriter.writeLine(
             `#line ${statement.sourceloc.start.line} ${JSON.stringify(
-              statement.sourceloc.filename
-            )}`
+              statement.sourceloc.filename,
+            )}`,
           );
         }
         outWriter.write(`${this.mangleTypeUse(statement.type)} ${this.mangleName(statement.name)}`);
@@ -777,8 +777,8 @@ class CodeGenerator {
         if (statement.sourceloc && this.lr.sr.cc.config.includeSourceloc && !noSourceloc) {
           outWriter.writeLine(
             `#line ${statement.sourceloc.start.line} ${JSON.stringify(
-              statement.sourceloc.filename
-            )}`
+              statement.sourceloc.filename,
+            )}`,
           );
         }
 
@@ -804,8 +804,8 @@ class CodeGenerator {
         if (statement.sourceloc && this.lr.sr.cc.config.includeSourceloc && !noSourceloc) {
           outWriter.writeLine(
             `#line ${statement.sourceloc.start.line} ${JSON.stringify(
-              statement.sourceloc.filename
-            )}`
+              statement.sourceloc.filename,
+            )}`,
           );
         }
         outWriter.writeLine(statement.value);
@@ -816,8 +816,8 @@ class CodeGenerator {
         if (statement.sourceloc && this.lr.sr.cc.config.includeSourceloc && !noSourceloc) {
           outWriter.writeLine(
             `#line ${statement.sourceloc.start.line} ${JSON.stringify(
-              statement.sourceloc.filename
-            )}`
+              statement.sourceloc.filename,
+            )}`,
           );
         }
 
@@ -838,14 +838,14 @@ class CodeGenerator {
         });
         assert(
           initStatements.length === 1,
-          "The init statement in a for loop cannot be so complex that it requires multiple statements in C"
+          "The init statement in a for loop cannot be so complex that it requires multiple statements in C",
         );
 
         outWriter
           .writeLine(
             `for (${initStatements[0] ?? ""} ${loopCondition ? loopCondition.out.get() : ""}; ${
               loopIncrement ? "(void)(" + loopIncrement.out.get() + ")" : ""
-            }) {`
+            }) {`,
           )
           .pushIndent();
 
@@ -860,8 +860,8 @@ class CodeGenerator {
         if (statement.sourceloc && this.lr.sr.cc.config.includeSourceloc && !noSourceloc) {
           outWriter.writeLine(
             `#line ${statement.sourceloc.start.line} ${JSON.stringify(
-              statement.sourceloc.filename
-            )}`
+              statement.sourceloc.filename,
+            )}`,
           );
         }
         const exprWriter = this.emitExpr(statement.condition);
@@ -878,8 +878,8 @@ class CodeGenerator {
         if (statement.sourceloc && this.lr.sr.cc.config.includeSourceloc && !noSourceloc) {
           outWriter.writeLine(
             `#line ${statement.sourceloc.start.line} ${JSON.stringify(
-              statement.sourceloc.filename
-            )}`
+              statement.sourceloc.filename,
+            )}`,
           );
         }
         const exprWriter = this.emitExpr(statement.condition);
@@ -912,8 +912,8 @@ class CodeGenerator {
         if (statement.sourceloc && this.lr.sr.cc.config.includeSourceloc && !noSourceloc) {
           outWriter.writeLine(
             `#line ${statement.sourceloc.start.line} ${JSON.stringify(
-              statement.sourceloc.filename
-            )}`
+              statement.sourceloc.filename,
+            )}`,
           );
         }
         outWriter.writeLine(`goto ${statement.labelName};`).pushIndent();
@@ -924,8 +924,8 @@ class CodeGenerator {
         if (statement.sourceloc && this.lr.sr.cc.config.includeSourceloc && !noSourceloc) {
           outWriter.writeLine(
             `#line ${statement.sourceloc.start.line} ${JSON.stringify(
-              statement.sourceloc.filename
-            )}`
+              statement.sourceloc.filename,
+            )}`,
           );
         }
         // The semicolon is for safety because a label at the end of a scope it not valid standard C
@@ -948,7 +948,7 @@ class CodeGenerator {
     const tempWriter = new OutputWriter();
     const outWriter = new OutputWriter();
     switch (expr.variant) {
-      case Lowered.ENode.ExprCallExpr:
+      case Lowered.ENode.ExprCallExpr: {
         const args = expr.arguments.map((a) => {
           const r = this.emitExpr(a);
           tempWriter.write(r.temp);
@@ -961,6 +961,7 @@ class CodeGenerator {
         outWriter.write(callExprWriter.out.get() + "(" + args.join(", ") + ")");
 
         return { out: outWriter, temp: tempWriter };
+      }
 
       case Lowered.ENode.StructLiteralExpr: {
         outWriter.writeLine(`((${this.mangleTypeUse(expr.type)}) { `).pushIndent();
@@ -1070,7 +1071,7 @@ class CodeGenerator {
         const union = this.lr.typeDefNodes.get(typeUse.type);
         assert(
           union.variant === Lowered.ENode.UntaggedUnionDatatype ||
-            union.variant === Lowered.ENode.TaggedUnionDatatype
+            union.variant === Lowered.ENode.TaggedUnionDatatype,
         );
 
         if (union.optimizeAsRawPointer) {
@@ -1078,14 +1079,14 @@ class CodeGenerator {
             outWriter.write(`((${this.mangleTypeUse(expr.type)})(0))`);
           } else {
             outWriter.write(
-              `((${this.mangleTypeUse(expr.type)})(${this.emitExpr(expr.expr).out.get()}))`
+              `((${this.mangleTypeUse(expr.type)})(${this.emitExpr(expr.expr).out.get()}))`,
             );
           }
         } else {
           outWriter.write(
             `((${this.mangleTypeUse(expr.type)}) { .tag = ${expr.index}, .as_tag_${
               expr.index
-            } = ${this.emitExpr(expr.expr).out.get()} })`
+            } = ${this.emitExpr(expr.expr).out.get()} })`,
           );
         }
         return { out: outWriter, temp: tempWriter };
@@ -1098,7 +1099,7 @@ class CodeGenerator {
         const union = this.lr.typeDefNodes.get(typeUse.type);
         assert(
           union.variant === Lowered.ENode.UntaggedUnionDatatype ||
-            union.variant === Lowered.ENode.TaggedUnionDatatype
+            union.variant === Lowered.ENode.TaggedUnionDatatype,
         );
 
         if (union.optimizeAsRawPointer) {
@@ -1116,7 +1117,7 @@ class CodeGenerator {
         const union = this.lr.typeDefNodes.get(typeUse.type);
         assert(
           union.variant === Lowered.ENode.UntaggedUnionDatatype ||
-            union.variant === Lowered.ENode.TaggedUnionDatatype
+            union.variant === Lowered.ENode.TaggedUnionDatatype,
         );
 
         if (union.optimizeAsRawPointer) {
@@ -1125,16 +1126,16 @@ class CodeGenerator {
         } else {
           const sourceUnionExpr = this.lr.exprNodes.get(expr.expr);
           const sourceUnionExprType = this.lr.typeDefNodes.get(
-            this.lr.typeUseNodes.get(sourceUnionExpr.type).type
+            this.lr.typeUseNodes.get(sourceUnionExpr.type).type,
           );
 
           outWriter.write(
             `({ ${this.mangleName(sourceUnionExprType.name)} source = ${this.emitExpr(
-              expr.expr
+              expr.expr,
             ).out.get()}; ${this.mangleName(union.name)} target = { .tag = ${makeUnionMappingName(
               expr.tagMapping.from,
-              expr.tagMapping.to
-            )}[source.tag] }; memcpy(&target.as_bytes, &source.as_bytes, sizeof(source.as_bytes)); target; })`
+              expr.tagMapping.to,
+            )}[source.tag] }; memcpy(&target.as_bytes, &source.as_bytes, sizeof(source.as_bytes)); target; })`,
           );
         }
         return { out: outWriter, temp: tempWriter };
@@ -1147,7 +1148,7 @@ class CodeGenerator {
         const union = this.lr.typeDefNodes.get(typeUse.type);
         assert(
           union.variant === Lowered.ENode.UntaggedUnionDatatype ||
-            union.variant === Lowered.ENode.TaggedUnionDatatype
+            union.variant === Lowered.ENode.TaggedUnionDatatype,
         );
 
         let operator = expr.invertCheck ? "!=" : "==";
@@ -1157,16 +1158,16 @@ class CodeGenerator {
         } else {
           if (expr.tags.length === 1) {
             outWriter.write(
-              `((${this.emitExpr(expr.expr).out.get()}).tag ${operator} ${expr.tags[0]})`
+              `((${this.emitExpr(expr.expr).out.get()}).tag ${operator} ${expr.tags[0]})`,
             );
           } else {
             const exprType = this.lr.typeUseNodes.get(expr.type);
             outWriter.write(
               `({ ${this.mangleName(exprType.name)} __value = ${this.emitExpr(
-                expr.expr
+                expr.expr,
               ).out.get()}; ${expr.tags
                 .map((t) => `value.tag ${operator} ${t}`)
-                .join(expr.invertCheck ? "&&" : "||")};)`
+                .join(expr.invertCheck ? "&&" : "||")};)`,
             );
           }
         }
@@ -1181,7 +1182,7 @@ class CodeGenerator {
             const writer = this.emitExpr(expr.expr);
             tempWriter.write(writer.temp);
             outWriter.write(
-              "(" + UnaryOperationToString(expr.operation) + "(" + writer.out.get() + "))"
+              "(" + UnaryOperationToString(expr.operation) + "(" + writer.out.get() + "))",
             );
             break;
           }
@@ -1211,17 +1212,17 @@ class CodeGenerator {
             assert(
               leftTypeDef.variant === Lowered.ENode.PrimitiveDatatype &&
                 rightTypeDef.variant === Lowered.ENode.PrimitiveDatatype &&
-                leftTypeDef.primitive === rightTypeDef.primitive
+                leftTypeDef.primitive === rightTypeDef.primitive,
             );
             if (Conversion.isInteger(leftTypeDef.primitive)) {
               const functionName = this.makeCheckedBinaryArithmeticFunction(
                 expr.left,
                 expr.right,
                 expr.plainResultType,
-                expr.operation
+                expr.operation,
               );
               outWriter.write(
-                functionName + "(" + leftWriter.out.get() + ", " + rightWriter.out.get() + ")"
+                functionName + "(" + leftWriter.out.get() + ", " + rightWriter.out.get() + ")",
               );
             } else {
               outWriter.write(
@@ -1231,7 +1232,7 @@ class CodeGenerator {
                   BinaryOperationToString(expr.operation) +
                   " " +
                   rightWriter.out.get() +
-                  ")"
+                  ")",
               );
             }
             break;
@@ -1245,6 +1246,36 @@ class CodeGenerator {
             const rightWriter = this.emitExpr(expr.right);
             tempWriter.write(leftWriter.temp);
             tempWriter.write(rightWriter.temp);
+
+            const leftType = this.lr.typeDefNodes.get(
+              this.lr.typeUseNodes.get(this.lr.exprNodes.get(expr.left).type).type,
+            );
+            const rightType = this.lr.typeDefNodes.get(
+              this.lr.typeUseNodes.get(this.lr.exprNodes.get(expr.right).type).type,
+            );
+
+            let left = leftWriter.out.get();
+            let right = rightWriter.out.get();
+            if (
+              leftType.variant === Lowered.ENode.PrimitiveDatatype &&
+              rightType.variant === Lowered.ENode.PrimitiveDatatype &&
+              Conversion.isInteger(leftType.primitive) &&
+              Conversion.isInteger(rightType.primitive)
+            ) {
+              const leftSigned = Conversion.isSignedInteger(leftType.primitive);
+              const rightSigned = Conversion.isSignedInteger(rightType.primitive);
+
+              const plan: IntComparisonPlan = {
+                leftBits: Conversion.getIntegerBits(leftType.primitive),
+                rightBits: Conversion.getIntegerBits(rightType.primitive),
+                leftUnsigned: !leftSigned,
+                rightUnsigned: !rightSigned,
+              };
+
+              outWriter.write(emitIntCompare(left, right, plan, expr.operation));
+              break;
+            }
+
             outWriter.write(
               "(" +
                 leftWriter.out.get() +
@@ -1252,7 +1283,7 @@ class CodeGenerator {
                 BinaryOperationToString(expr.operation) +
                 " " +
                 rightWriter.out.get() +
-                ")"
+                ")",
             );
             break;
           }
@@ -1263,14 +1294,38 @@ class CodeGenerator {
             const rightWriter = this.emitExpr(expr.right);
             tempWriter.write(leftWriter.temp);
             tempWriter.write(rightWriter.temp);
+
+            const leftType = this.lr.typeDefNodes.get(
+              this.lr.typeUseNodes.get(this.lr.exprNodes.get(expr.left).type).type,
+            );
+            const rightType = this.lr.typeDefNodes.get(
+              this.lr.typeUseNodes.get(this.lr.exprNodes.get(expr.right).type).type,
+            );
+
+            let left = leftWriter.out.get();
+            let right = rightWriter.out.get();
+            if (
+              leftType.variant === Lowered.ENode.PrimitiveDatatype &&
+              rightType.variant === Lowered.ENode.PrimitiveDatatype &&
+              Conversion.isInteger(leftType.primitive) &&
+              Conversion.isInteger(rightType.primitive)
+            ) {
+              const leftSigned = Conversion.isSignedInteger(leftType.primitive);
+              const rightSigned = Conversion.isSignedInteger(rightType.primitive);
+
+              const plan: IntComparisonPlan = {
+                leftBits: Conversion.getIntegerBits(leftType.primitive),
+                rightBits: Conversion.getIntegerBits(rightType.primitive),
+                leftUnsigned: !leftSigned,
+                rightUnsigned: !rightSigned,
+              };
+
+              outWriter.write(emitIntCompare(left, right, plan, expr.operation));
+              break;
+            }
+
             outWriter.write(
-              "(" +
-                leftWriter.out.get() +
-                " " +
-                BinaryOperationToString(expr.operation) +
-                " " +
-                rightWriter.out.get() +
-                ")"
+              "(" + left + " " + BinaryOperationToString(expr.operation) + " " + right + ")",
             );
             break;
           }
@@ -1288,7 +1343,7 @@ class CodeGenerator {
                 BinaryOperationToString(expr.operation) +
                 " " +
                 rightWriter.out.get() +
-                ")"
+                ")",
             );
             break;
           }
@@ -1300,8 +1355,8 @@ class CodeGenerator {
         tempWriter.write(thisExpr.temp);
         outWriter.write(
           `((${this.mangleTypeUse(
-            expr.type
-          )}) { .thisPtr = ${thisExpr.out.get()}, .fn = ${this.mangleName(expr.functionName)} })`
+            expr.type,
+          )}) { .thisPtr = ${thisExpr.out.get()}, .fn = ${this.mangleName(expr.functionName)} })`,
         );
         return { out: outWriter, temp: tempWriter };
       }
@@ -1385,7 +1440,7 @@ class CodeGenerator {
           outWriter.write(
             `(${this.mangleTypeUse(expr.type)}){ .data = {${values
               .map((v) => v.get())
-              .join(", ")}} }`
+              .join(", ")}} }`,
           );
         } else if (typeDef.variant === Lowered.ENode.DynamicArrayDatatype) {
           assert(false, "should have been transpiled away");
@@ -1405,7 +1460,7 @@ class CodeGenerator {
         const typeDef = this.lr.typeDefNodes.get(typeUse.type);
         assert(
           typeDef.variant === Lowered.ENode.PrimitiveDatatype &&
-            typeDef.primitive === EPrimitive.str
+            typeDef.primitive === EPrimitive.str,
         );
 
         tempWriter.write(index.temp);
@@ -1422,7 +1477,7 @@ class CodeGenerator {
         const typeDef = this.lr.typeDefNodes.get(typeUse.type);
         assert(
           typeDef.variant === Lowered.ENode.FixedArrayDatatype ||
-            typeDef.variant === Lowered.ENode.DynamicArrayDatatype
+            typeDef.variant === Lowered.ENode.DynamicArrayDatatype,
         );
 
         const elementType = this.lr.typeUseNodes.get(typeDef.datatype);
@@ -1435,8 +1490,8 @@ class CodeGenerator {
           tempWriter.write(index.temp);
           outWriter.write(
             `HZSTD_DYNAMIC_ARRAY_GET(${e.out.get()}, ${this.mangleName(
-              elementType.name
-            )}, ${index.out.get()})`
+              elementType.name,
+            )}, ${index.out.get()})`,
           );
           return { out: outWriter, temp: tempWriter };
         } else {
@@ -1462,8 +1517,8 @@ class CodeGenerator {
         const array = e.out.get();
         outWriter.write(
           `(${this.mangleTypeUse(
-            sliceType
-          )}){ .data=(${array}).data + ${startIndex.out.get()}, .length=(${endIndex.out.get()} - ${startIndex.out.get()}) }`
+            sliceType,
+          )}){ .data=(${array}).data + ${startIndex.out.get()}, .length=(${endIndex.out.get()} - ${startIndex.out.get()}) }`,
         );
         return { out: outWriter, temp: tempWriter };
       }
@@ -1502,7 +1557,7 @@ class CodeGenerator {
           outWriter.write(`HZSTD_STRING("${value}", ${length})`);
         } else if (expr.literal.type === EPrimitive.bool) {
           outWriter.write(
-            `(${this.primitiveToC(expr.literal.type)})(${expr.literal.value ? "1" : "0"})`
+            `(${this.primitiveToC(expr.literal.type)})(${expr.literal.value ? "1" : "0"})`,
           );
         } else if (expr.literal.type === EPrimitive.null) {
           outWriter.write("(hzstd_null_t){}");
@@ -1515,12 +1570,12 @@ class CodeGenerator {
         } else if (expr.literal.type === EPrimitive.f32) {
           outWriter.write(
             `(${this.primitiveToC(expr.literal.type)})(${stringifyWithDecimal(
-              expr.literal.value
-            )}f)`
+              expr.literal.value,
+            )}f)`,
           );
         } else if (expr.literal.type === EPrimitive.f64 || expr.literal.type === EPrimitive.real) {
           outWriter.write(
-            `(${this.primitiveToC(expr.literal.type)})(${stringifyWithDecimal(expr.literal.value)})`
+            `(${this.primitiveToC(expr.literal.type)})(${stringifyWithDecimal(expr.literal.value)})`,
           );
         } else if (expr.literal.type === "enum") {
           const enumTypeId = lowerTypeDef(this.lr, expr.literal.enumType);
@@ -1680,11 +1735,162 @@ class CodeGenerator {
   //   }
 }
 
+type IntComparisonPlan = {
+  leftUnsigned: boolean;
+  rightUnsigned: boolean;
+  leftBits: number;
+  rightBits: number;
+};
+
+function cIntType(bits: number, signed: boolean): string {
+  if (signed) {
+    switch (bits) {
+      case 8:
+        return "hzstd_i8_t";
+      case 16:
+        return "hzstd_i16_t";
+      case 32:
+        return "hzstd_i32_t";
+      case 64:
+        return "hzstd_i64_t";
+      default:
+        throw new Error("invalid signed bit width");
+    }
+  } else {
+    switch (bits) {
+      case 8:
+        return "hzstd_u8_t";
+      case 16:
+        return "hzstd_u16_t";
+      case 32:
+        return "hzstd_u32_t";
+      case 64:
+        return "hzstd_u64_t";
+      default:
+        throw new Error("invalid unsigned bit width");
+    }
+  }
+}
+
+// Emits a cast only if EITHER bit width or signedness differ
+function maybeCast(
+  expr: string,
+  fromBits: number,
+  fromSigned: boolean,
+  toBits: number,
+  toSigned: boolean,
+): string {
+  if (fromBits === toBits && fromSigned === toSigned) {
+    return expr;
+  }
+  return `((${cIntType(toBits, toSigned)})(${expr}))`;
+}
+
+function nextSignedWidth(bits: number): number {
+  if (bits <= 8) return 16;
+  if (bits <= 16) return 32;
+  if (bits <= 32) return 64;
+  return 64;
+}
+
+function negResultForEquality(op: EBinaryOperation): string {
+  return op === EBinaryOperation.Unequal ? "1" : "0";
+}
+
+function negResultForOrdering(op: EBinaryOperation, signedIsLeft: boolean): string {
+  // signed < 0 case
+  if (signedIsLeft) {
+    if (op === EBinaryOperation.LessThan) return "1";
+    if (op === EBinaryOperation.LessEqual) return "1";
+    if (op === EBinaryOperation.GreaterThan) return "0";
+    if (op === EBinaryOperation.GreaterEqual) return "0";
+  } else {
+    // unsigned vs signed < 0
+    if (op === EBinaryOperation.LessThan) return "0";
+    if (op === EBinaryOperation.LessEqual) return "0";
+    if (op === EBinaryOperation.GreaterThan) return "1";
+    if (op === EBinaryOperation.GreaterEqual) return "1";
+  }
+
+  // equality handled elsewhere
+  throw new Error("not an ordering op");
+}
+
+// Core comparison emitter
+export function emitIntCompare(
+  lhs: string,
+  rhs: string,
+  p: {
+    leftUnsigned: boolean;
+    rightUnsigned: boolean;
+    leftBits: number;
+    rightBits: number;
+  },
+  operation: EBinaryOperation,
+): string {
+  const op = BinaryOperationToString(operation);
+
+  const leftSigned = !p.leftUnsigned;
+  const rightSigned = !p.rightUnsigned;
+  const maxBits = Math.max(p.leftBits, p.rightBits);
+
+  // ------------------------------------------------------------
+  // signed / signed
+  // ------------------------------------------------------------
+  if (leftSigned && rightSigned) {
+    const l = maybeCast(lhs, p.leftBits, true, maxBits, true);
+    const r = maybeCast(rhs, p.rightBits, true, maxBits, true);
+    return `(${l} ${op} ${r})`;
+  }
+
+  // ------------------------------------------------------------
+  // unsigned / unsigned
+  // ------------------------------------------------------------
+  if (!leftSigned && !rightSigned) {
+    const l = maybeCast(lhs, p.leftBits, false, maxBits, false);
+    const r = maybeCast(rhs, p.rightBits, false, maxBits, false);
+    return `(${l} ${op} ${r})`;
+  }
+
+  // ------------------------------------------------------------
+  // mixed signedness (ℤ semantics)
+  //
+  // signed < 0 => fixed result
+  // otherwise widen BOTH to signed(maxBits + 1) and compare
+  // ------------------------------------------------------------
+
+  const wideBits = nextSignedWidth(maxBits);
+  const wideType = cIntType(wideBits, true);
+
+  const lWide = `((${wideType})(${lhs}))`;
+  const rWide = `((${wideType})(${rhs}))`;
+
+  // signed (left) vs unsigned (right)
+  if (leftSigned && !rightSigned) {
+    if (operation === EBinaryOperation.Equal || operation === EBinaryOperation.Unequal) {
+      return `((${lhs}) < 0 ? ${negResultForEquality(operation)} : (${lWide} ${op} ${rWide}))`;
+    }
+
+    return `((${lhs}) < 0 ? ${negResultForOrdering(operation, true)} : (${lWide} ${op} ${rWide}))`;
+  }
+
+  // unsigned (left) vs signed (right)
+  if (!leftSigned && rightSigned) {
+    if (operation === EBinaryOperation.Equal || operation === EBinaryOperation.Unequal) {
+      return `((${rhs}) < 0 ? ${negResultForEquality(operation)} : (${lWide} ${op} ${rWide}))`;
+    }
+
+    return `((${rhs}) < 0 ? ${negResultForOrdering(operation, false)} : (${lWide} ${op} ${rWide}))`;
+  }
+
+  throw new Error("unreachable");
+}
+
 export function generateCode(
   config: ModuleConfig,
   moduleDir: string,
   allModules: [string, string][],
-  lr: Lowered.Module
+  lr: Lowered.Module,
 ): string {
   const gen = new CodeGenerator(config, moduleDir, allModules, lr);
   gen.generate();

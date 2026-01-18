@@ -149,7 +149,7 @@ export class CLIPrinter {
           return this.createCustomFormat(payload.module, payload.spinnerIndex);
         },
       },
-      Presets.shades_classic
+      Presets.shades_classic,
     );
   }
 
@@ -443,7 +443,7 @@ function saveCache(cache: FileWatcherCache, globalBuildDir: string) {
 export function invalidateChangeCache(
   globs: string[],
   globalBuildDir: string,
-  workingDir: string
+  workingDir: string,
 ): string[] {
   const cache = loadCache(globalBuildDir);
   const changed: string[] = [];
@@ -463,7 +463,7 @@ export function invalidateChangeCache(
 export function checkForChanges(
   globs: string[],
   globalBuildDir: string,
-  workingDir: string
+  workingDir: string,
 ): string[] {
   const cache = loadCache(globalBuildDir);
   const changed: string[] = [];
@@ -554,15 +554,16 @@ class Cache {
       [
         ...(await this.getFilesWithModificationDates(moduleDir)),
         await this.getFileModificationDate(configFile),
-      ].map((f) => `${f.file}=${new Date(f.modified).toISOString()}`)
+      ].map((f) => `${f.file}=${new Date(f.modified).toISOString()}`),
     );
     if (!this.data[name]) {
       return true;
     }
     const foundFiles = new Set(
       this.data[name]["files"].map(
-        (f: { file: string; modified: string }) => `${f.file}=${new Date(f.modified).toISOString()}`
-      )
+        (f: { file: string; modified: string }) =>
+          `${f.file}=${new Date(f.modified).toISOString()}`,
+      ),
     );
     if (foundFiles.difference(files).size !== 0) {
       return true;
@@ -733,7 +734,7 @@ export class ProjectCompiler {
       config,
       this.cache,
       this.globalBuildDir,
-      join(this.globalBuildDir, config.name)
+      join(this.globalBuildDir, config.name),
     );
 
     if (!mainModule.config.nostdlib) {
@@ -745,7 +746,7 @@ export class ProjectCompiler {
         stdlibConfig,
         this.cache,
         this.globalBuildDir,
-        join(this.globalBuildDir, stdlibConfig.name)
+        join(this.globalBuildDir, stdlibConfig.name),
       );
 
       const c = new CLIPrinter();
@@ -777,7 +778,7 @@ export class ProjectCompiler {
           config,
           this.cache,
           this.globalBuildDir,
-          join(this.globalBuildDir, config.name)
+          join(this.globalBuildDir, config.name),
         );
 
         const c = new CLIPrinter();
@@ -828,7 +829,7 @@ export class ProjectCompiler {
 
       if (config?.moduleType === ModuleType.Library) {
         throw new GeneralError(
-          `This module is a library and cannot be executed. Use 'haze build' to build it instead.`
+          `This module is a library and cannot be executed. Use 'haze build' to build it instead.`,
         );
       }
 
@@ -904,7 +905,7 @@ export class ProjectCompiler {
       if (!this.isStepDone(MARKERS.extract)) {
         console.info("Extracting LLVM toolchain...");
         exec(
-          `tar -xf "${HAZE_TMP_DIR + "/llvm.tar.xz"}" -C "${HAZE_GLOBAL_DIR}" --strip-components=1`
+          `tar -xf "${HAZE_TMP_DIR + "/llvm.tar.xz"}" -C "${HAZE_GLOBAL_DIR}" --strip-components=1`,
         );
         this.markStepDone(MARKERS.extract);
         console.info("Extracting LLVM toolchain... Done");
@@ -924,11 +925,11 @@ export class ProjectCompiler {
         if (packageManager === "debian") {
           exec(`rm -f ${HAZE_TMP_DIR}/libtinfo5_6.1-1ubuntu1_amd64.deb*`);
           exec(
-            `cd ${HAZE_TMP_DIR} && wget http://archive.ubuntu.com/ubuntu/pool/main/n/ncurses/libtinfo5_6.1-1ubuntu1_amd64.deb`
+            `cd ${HAZE_TMP_DIR} && wget http://archive.ubuntu.com/ubuntu/pool/main/n/ncurses/libtinfo5_6.1-1ubuntu1_amd64.deb`,
           );
           exec(`dpkg-deb -x ${HAZE_TMP_DIR}/libtinfo5_6.1-1ubuntu1_amd64.deb ${HAZE_GLOBAL_DIR}`);
           exec(
-            `cd ${HAZE_GLOBAL_DIR + "/lib"} && ln -s x86_64-linux-gnu/libtinfo.so.5 libtinfo.so.5`
+            `cd ${HAZE_GLOBAL_DIR + "/lib"} && ln -s x86_64-linux-gnu/libtinfo.so.5 libtinfo.so.5`,
           );
         } else if (packageManager === "fedora") {
           // await exec(`rm -f ${HAZE_TMP_DIR}ncurses-compat-libs*`);
@@ -943,17 +944,17 @@ export class ProjectCompiler {
           // );
           exec(`rm -f ${HAZE_TMP_DIR}/libtinfo5_6.1-1ubuntu1_amd64.deb*`);
           exec(
-            `cd ${HAZE_TMP_DIR} && wget http://archive.ubuntu.com/ubuntu/pool/main/n/ncurses/libtinfo5_6.1-1ubuntu1_amd64.deb`
+            `cd ${HAZE_TMP_DIR} && wget http://archive.ubuntu.com/ubuntu/pool/main/n/ncurses/libtinfo5_6.1-1ubuntu1_amd64.deb`,
           );
           exec(`cd ${HAZE_TMP_DIR} && ar x libtinfo5_6.1-1ubuntu1_amd64.deb`);
           exec(`cd ${HAZE_TMP_DIR} && tar -xf data.tar.xz -C ${HAZE_GLOBAL_DIR}`);
           exec(
-            `cd ${HAZE_GLOBAL_DIR + "/lib"} && ln -s x86_64-linux-gnu/libtinfo.so.5 libtinfo.so.5`
+            `cd ${HAZE_GLOBAL_DIR + "/lib"} && ln -s x86_64-linux-gnu/libtinfo.so.5 libtinfo.so.5`,
           );
         } else {
           throw new CompilerError(
             "This Distro/Package Manager is not supported yet, please report",
-            null
+            null,
           );
         }
         this.markStepDone(MARKERS.ncursesLib);
@@ -963,7 +964,7 @@ export class ProjectCompiler {
       if (!this.isStepDone(MARKERS.winSDK) && PLATFORM === Platform.Win32) {
         console.info("Installing Windows SDK...");
         execInherit(
-          `powershell -NoLogo -NoProfile -Command \\"if (-not (winget list --name 'Visual Studio Community 2022' | Select-String 'Visual Studio Community 2022')) { winget install 'Visual Studio Community 2022' --override '--add Microsoft.VisualStudio.Workload.NativeDesktop Microsoft.VisualStudio.ComponentGroup.WindowsAppSDK.Cpp' -s msstore } else { Write-Host 'Visual Studio already installed.' }\\"`
+          `powershell -NoLogo -NoProfile -Command \\"if (-not (winget list --name 'Visual Studio Community 2022' | Select-String 'Visual Studio Community 2022')) { winget install 'Visual Studio Community 2022' --override '--add Microsoft.VisualStudio.Workload.NativeDesktop Microsoft.VisualStudio.ComponentGroup.WindowsAppSDK.Cpp' -s msstore } else { Write-Host 'Visual Studio already installed.' }\\"`,
         );
         this.markStepDone(MARKERS.winSDK);
         console.info("Installing Windows SDK... Done");
@@ -972,7 +973,7 @@ export class ProjectCompiler {
       if (!this.isStepDone(MARKERS.winNinja) && PLATFORM === Platform.Win32) {
         console.info("Installing Ninja Build System...");
         execInherit(
-          `powershell -NoLogo -NoProfile -Command "if (-not (winget list --id 'Ninja-build.Ninja' | Select-String 'Ninja-build.Ninja')) { winget install 'Ninja-build.Ninja' } else { Write-Host 'Ninja already installed.'; exit 0 }"`
+          `powershell -NoLogo -NoProfile -Command "if (-not (winget list --id 'Ninja-build.Ninja' | Select-String 'Ninja-build.Ninja')) { winget install 'Ninja-build.Ninja' } else { Write-Host 'Ninja already installed.'; exit 0 }"`,
         );
         this.markStepDone(MARKERS.winNinja);
         console.info("Installing Ninja Build System... Done");
@@ -1053,11 +1054,11 @@ export class ProjectCompiler {
         execInherit(`rm -rf ${outdir}`);
         execInherit(`mkdir -p ${builddir}`);
         execInherit(
-          `git clone https://github.com/libunwind/libunwind.git ${builddir} && cd ${builddir} && git checkout ${commitHash}`
+          `git clone https://github.com/libunwind/libunwind.git ${builddir} && cd ${builddir} && git checkout ${commitHash}`,
         );
         execInherit(`cd ${builddir} && autoreconf -i`);
         execInherit(
-          `cd ${builddir} && CFLAGS="-fPIC" CXXFLAGS="-fPIC" ./configure --prefix=${outdir} -disable-tests -disable-shared`
+          `cd ${builddir} && CFLAGS="-fPIC" CXXFLAGS="-fPIC" ./configure --prefix=${outdir} -disable-tests -disable-shared`,
         );
         execInherit(`cd ${builddir} && make -j`);
         execInherit(`cd ${builddir} && make install`);
@@ -1078,11 +1079,11 @@ export class ProjectCompiler {
         }
         mkdirSync(builddir);
         execInherit(
-          `git clone https://github.com/bdwgc/bdwgc.git "${builddir}" && cd "${builddir}" && git checkout ${commitHash}`
+          `git clone https://github.com/bdwgc/bdwgc.git "${builddir}" && cd "${builddir}" && git checkout ${commitHash}`,
         );
         execInherit(
           `cmake . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DGC_BUILD_SHARED_LIBS=OFF -DCMAKE_INSTALL_PREFIX="${outdir}" -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DBUILD_TESTING=OFF`,
-          builddir
+          builddir,
         );
         execInherit(`cmake --build build -j`, builddir);
         execInherit(`cmake --build build --target=install`, builddir);
@@ -1103,12 +1104,12 @@ export class ProjectCompiler {
         }
         mkdirSync(builddir);
         execInherit(
-          `git clone https://github.com/PCRE2Project/pcre2.git "${builddir}" --branch ${commitHash} -c advice.detachedHead=false --depth 1`
+          `git clone https://github.com/PCRE2Project/pcre2.git "${builddir}" --branch ${commitHash} -c advice.detachedHead=false --depth 1`,
         );
         execInherit(`git submodule update --init`, builddir);
         execInherit(
           `cmake . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DPCRE2_SUPPORT_JIT=ON -DCMAKE_INSTALL_PREFIX="${outdir}" -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DBUILD_TESTING=OFF`,
-          builddir
+          builddir,
         );
         execInherit(`cmake --build build -j`, builddir);
         execInherit(`cmake --build build --target=install`, builddir);
@@ -1124,9 +1125,9 @@ export class ProjectCompiler {
         const toolsDir = await getToolsDirectory();
         mkdirSync(dirname(outfile), { recursive: true });
         execInherit(
-          `${HAZE_C_COMPILER} "${toolsDir}/regex-compiler/main.c" -o ${outfile} -g -std=c11 -lpcre2-8 -L"${HAZE_GLOBAL_DIR}/pcre2/lib/" -L"${HAZE_GLOBAL_DIR}/pcre2/lib64/"`
+          `${HAZE_C_COMPILER} "${toolsDir}/regex-compiler/main.c" -o ${outfile} -g -std=c11 -lpcre2-8 -L"${HAZE_GLOBAL_DIR}/pcre2/lib/" -L"${HAZE_GLOBAL_DIR}/pcre2/lib64/"`,
         );
-        // this.markStepDone(MARKERS.regexCompiler);
+        this.markStepDone(MARKERS.regexCompiler);
         console.info("Building Regex Compiler... Done");
       }
     });
@@ -1191,7 +1192,7 @@ export class ModuleCompiler {
     public config: ModuleConfig,
     public cache: Cache,
     public hazeWorkspaceDirectory: string,
-    public moduleDir: string
+    public moduleDir: string,
   ) {
     this.cc = makeCollectionContext(this.config);
   }
@@ -1219,7 +1220,7 @@ export class ModuleCompiler {
       filepath,
       this.config.name,
       this.config.version,
-      collectionMode
+      collectionMode,
     );
   }
 
@@ -1235,7 +1236,7 @@ export class ModuleCompiler {
       filepath,
       this.config.name,
       this.config.version,
-      collectionMode
+      collectionMode,
     );
   }
 
@@ -1262,7 +1263,7 @@ export class ModuleCompiler {
       fullPath,
       this.config.name,
       this.config.version,
-      ECollectionMode.ImportUnderRootDirectly
+      ECollectionMode.ImportUnderRootDirectly,
     );
   }
 
@@ -1369,7 +1370,7 @@ export class ModuleCompiler {
         if (outputIndex.has(key)) {
           throw new GeneralError(
             `Output file '${out.path}' is produced by both ` +
-              `'${outputIndex.get(key)}' and '${gen.name}'`
+              `'${outputIndex.get(key)}' and '${gen.name}'`,
           );
         }
 
@@ -1393,7 +1394,7 @@ export class ModuleCompiler {
 
         if (producer === gen.name) {
           throw new GeneralError(
-            `Generator '${gen.name}' lists its own output '${input.path}' as input`
+            `Generator '${gen.name}' lists its own output '${input.path}' as input`,
           );
         }
 
@@ -1406,7 +1407,7 @@ export class ModuleCompiler {
       for (const dep of node.dependsOn) {
         if (!generatorGraph.has(dep)) {
           throw new GeneralError(
-            `Generator '${node.config.name}' depends on unknown generator '${dep}'`
+            `Generator '${node.config.name}' depends on unknown generator '${dep}'`,
           );
         }
       }
@@ -1416,7 +1417,7 @@ export class ModuleCompiler {
     const executionOrder = this.topoLayers(generatorGraph);
 
     const cache = new FileChangeCache(
-      path.join(this.hazeWorkspaceDirectory, "generator.cache.json")
+      path.join(this.hazeWorkspaceDirectory, "generator.cache.json"),
     );
     cache.load();
 
@@ -1519,14 +1520,14 @@ export class ModuleCompiler {
         if (exitCode !== 0) {
           throw new GeneralError(`Generator step ${gen.name} failed with exit code ${exitCode}`);
         }
-      }
+      },
     );
 
     for (const file of gen.outputs) {
       const path = this.resolveGeneratorFile(file);
       if (!existsSync(path)) {
         throw new GeneralError(
-          `Generator step ${gen.name} claims to generate file '${path}', but it was not generated`
+          `Generator step ${gen.name} claims to generate file '${path}', but it was not generated`,
         );
       }
     }
@@ -1590,7 +1591,7 @@ export class ModuleCompiler {
             const changed = checkForChanges(
               script.depends,
               this.hazeWorkspaceDirectory,
-              this.currentModuleRootDir
+              this.currentModuleRootDir,
             );
             if (changed.length > 0) {
               try {
@@ -1599,7 +1600,7 @@ export class ModuleCompiler {
                 invalidateChangeCache(
                   script.depends,
                   this.hazeWorkspaceDirectory,
-                  this.currentModuleRootDir
+                  this.currentModuleRootDir,
                 );
                 throw e;
               }
@@ -1635,7 +1636,7 @@ export class ModuleCompiler {
         this.cc,
         this.config.moduleType === ModuleType.Library,
         this.config.name,
-        this.config.version
+        this.config.version,
       );
       // Semantic.PrettyPrintAnalyzed(sr);
       const lowered = LowerModule(sr);
@@ -1716,7 +1717,7 @@ export class ModuleCompiler {
 
           await writeFile(
             `${this.hazeWorkspaceDirectory}/compile_commands.json`,
-            JSON.stringify(cleanedCommands, null, 2)
+            JSON.stringify(cleanedCommands, null, 2),
           );
         } else {
           // Not top level module, so do a best effort of appending currently known commands, to at least get partial compile commands.
@@ -1726,7 +1727,7 @@ export class ModuleCompiler {
           let cleanedCommands: CompileCommands = [];
           try {
             currentCommands = JSON.parse(
-              await readFile(`${this.hazeWorkspaceDirectory}/compile_commands.json`, "utf-8")
+              await readFile(`${this.hazeWorkspaceDirectory}/compile_commands.json`, "utf-8"),
             );
             for (const c of currentCommands) {
               if (!addedFiles.has(c.file)) {
@@ -1745,7 +1746,7 @@ export class ModuleCompiler {
 
           await writeFile(
             `${this.hazeWorkspaceDirectory}/compile_commands.json`,
-            JSON.stringify(cleanedCommands, null, 2)
+            JSON.stringify(cleanedCommands, null, 2),
           );
         }
       };
@@ -1892,7 +1893,7 @@ export class ModuleCompiler {
         await createTarGz(
           `${this.moduleDir}/build`,
           [makerel(moduleAFile), makerel(importFilePath), makerel(moduleMetadataFile)],
-          moduleOutputLib
+          moduleOutputLib,
         );
       }
       if (this.config.configFilePath) {
@@ -1929,7 +1930,7 @@ export class ModuleCompiler {
       const lib = meta.libs.find((l) => l.platform === this.config.platform);
       if (!lib) {
         throw new GeneralError(
-          `Lib ${meta.name} does not provide platform ${this.config.platform}`
+          `Lib ${meta.name} does not provide platform ${this.config.platform}`,
         );
       }
 
@@ -1969,11 +1970,11 @@ export class ModuleCompiler {
         const libpath = join(
           join(this.hazeWorkspaceDirectory, dep.name),
           "bin",
-          dep.name + ".hzlib"
+          dep.name + ".hzlib",
         );
         const metadata = await this.loadSingleDependencyMetadata(libpath, dep.name);
         return metadata;
-      })
+      }),
     );
   }
 
@@ -1999,7 +2000,7 @@ export class ModuleCompiler {
       const _ = await this.loadSingleDependencyMetadata(libpath, dep.name);
       await this.collectDirectory(
         join(this.moduleDir, "__deps", dep.name),
-        ECollectionMode.ImportUnderRootDirectly
+        ECollectionMode.ImportUnderRootDirectly,
       );
     }
   }
@@ -2007,7 +2008,7 @@ export class ModuleCompiler {
   private async addInternalBuiltinSources() {
     await this.collectDirectory(
       join(await getStdlibDirectory(), "internal"),
-      ECollectionMode.ImportUnderRootDirectly
+      ECollectionMode.ImportUnderRootDirectly,
     );
     this.config.hzstdLocation = join(await getStdlibDirectory(), "core", "src");
     this.config.includeDirs.addAll(this.config.hzstdLocation);

@@ -1,11 +1,101 @@
 
 namespace ffi {
-    extern C noemit hzstd_regex_match(regex: Regex, text: str): i32 :: final;
+    extern C noemit struct hzstd_regex_blob_t {};
+    extern C hzstd_regex_runtime_compile(pattern: str, flags: str, error_message: ffi.hzstd_str_ref_t): hzstd_regex_blob_t :: final;
+
+    extern C noemit struct hzstd_regex_match_result_t {
+        start: usize = 0;
+        end: usize = 0;
+    };
+    extern C noemit struct hzstd_regex_find_result_t {
+        found: bool = false;
+        match: inline hzstd_regex_match_result_t = default;
+    };
+
+    extern C noemit hzstd_regex_match(regex: Regex, text: str): bool :: final;
+    extern C noemit hzstd_regex_find(regex: Regex, text: str): inline hzstd_regex_find_result_t :: final;
+    extern C noemit hzstd_regex_find_all(allocator: Allocator, regex: Regex, text: str): [](inline hzstd_regex_match_result_t) :: final;
+    extern C noemit hzstd_regex_replace(regex: Regex, text: str, replacement: str): str :: final;
 }
 
 namespace regex {
+    export struct Match {
+        start: int;
+        end: int;
+    }
+
+    export runtime(pattern: str, flags?: str): Result<Regex, str> {
+        do unsafe {
+            let realFlags = "";
+            if flags { // TODO: We have to go this workaround, once supported the flag should just be a default param.
+                realFlags = flags;
+            }
+
+            let errorMessage = ffi.hzstd_str_ref_t {};
+            let resultBlob = ffi.hzstd_regex_runtime_compile(pattern, realFlags, errorMessage);
+
+            let isError = false;
+            __c__("isError = resultBlob == NULL;");
+            if isError {
+                return Result<Regex, str>.Err(errorMessage.data);
+            }
+            let resultRegex: Regex = uninitialized;
+            __c__("resultRegex.blob = resultBlob;");
+            return Result<Regex, str>.Ok(resultRegex);
+        }
+    }
+
     export match(regex: Regex, text: str) {
-        let result = ffi.hzstd_regex_match(regex, text);
-        return result != 0;
+        return ffi.hzstd_regex_match(regex, text);
+    }
+
+    export find(r: Regex, text: str): Match | none {
+        let result = ffi.hzstd_regex_find(r, text);
+        if !result.found {
+            return none;
+        }
+
+        let start = result.match.start;
+        let end = result.match.end;
+        if start > int.max {
+            sys.panic(f"Integer overflow in regex_find result start index: {start} > {int.max}");
+        }
+        if end > int.max {
+            sys.panic(f"Integer overflow in regex_find result end index: {end} > {int.max}");
+        }
+
+        return Match {
+            start: start,
+            end: end,
+        }
+    }
+
+    export findAll(r: Regex, text: str): []Match {
+        return findAll(Alloc.heap(), r, text);
+    }
+
+    export findAll(allocator: Allocator, r: Regex, text: str): []Match {
+        let result = ffi.hzstd_regex_find_all(allocator, r, text);
+        let output = []Match {};
+        for (let i = 0; i < result.length; i++) {
+            let start = result[i].start;
+            let end = result[i].end;
+            if start > int.max {
+                sys.panic(f"Integer overflow in regex_find result start index: {start} > {int.max}");
+            }
+            if end > int.max {
+                sys.panic(f"Integer overflow in regex_find result end index: {end} > {int.max}");
+            }
+
+            output.push({
+                start: start,
+                end: end,
+            });
+        }
+        return output;
+    }
+
+    export replace(r: Regex, text: str, replacement: str): str {
+        return ffi.hzstd_regex_replace(r, text, replacement);
     }
 }
