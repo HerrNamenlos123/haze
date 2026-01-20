@@ -1254,7 +1254,11 @@ export class ModuleCompiler {
     }
   }
 
-  collectImmediate(sourceCode: string, fullPath = "internal") {
+  collectImmediate(
+    sourceCode: string,
+    fullPath = "internal",
+    mode = ECollectionMode.ImportUnderRootDirectly,
+  ) {
     const ast = Parser.parseTextToAST(this.config, sourceCode, fullPath);
     CollectFile(
       this.cc,
@@ -1263,7 +1267,7 @@ export class ModuleCompiler {
       fullPath,
       this.config.name,
       this.config.version,
-      ECollectionMode.ImportUnderRootDirectly,
+      mode,
     );
   }
 

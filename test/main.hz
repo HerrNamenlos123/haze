@@ -26,35 +26,10 @@ adapterRequestCallback(status: wgpu.ffi.WGPURequestAdapterStatus,
   }
 }
 
-get() {
-    // return 1;
-    return 3;
-}
-
-test() {
-    // let a = r"foo\/bar[i]*"gim;
-    // let b = r"beeeebb[i]*"gim;
-    // let c = r"foo\/bar[i]*"mig;
-
-    let r = r"\w+";
-    let text = "hello"
-
-    attempt {
-        fmt.println(regex.match(regex.runtime("\\w+", "")?!, text))
-    }
-    else e {
-        fmt.println("Regex Error:", e)
-    }
-
-    let r1 = r"world"
-    let r2 = r"^world$"
-
-    fmt.println(regex.match(r1, "hello world"))
-    fmt.println(regex.match(r2, "hello world"))
-}
-
 main(): int {
 
+    // let filepath = "/home/fzachs/Projects/haze/__haze__/wgpu/bin/include/webgpu.h";
+    // matchEnums(filepath);
     return 0;
     // let a = fs.exists("my/very/test");
     // if !a {

@@ -8005,6 +8005,38 @@ export class SemanticBuilder {
       args.bodySourceCode
     } \n}`;
 
+    console.log(fullSource);
+    const moduleScope = this.sr.cc.scopeNodes.get(this.sr.cc.moduleScopeId);
+    assert(moduleScope.variant === Collect.ENode.ModuleScope);
+
+    const ns = (a) => {
+      const s = this.sr.cc.symbolNodes.get(a);
+      if (s.variant === Collect.ENode.TypeDefSymbol) {
+        const t = this.sr.cc.typeDefNodes.get(s.typeDef);
+        if (t.variant === Collect.ENode.NamespaceTypeDef) {
+          console.log(t.name);
+        }
+      }
+    };
+    for (const a of moduleScope.symbols) {
+      ns(a);
+    }
+    for (const sc of moduleScope.scopes) {
+      const s = this.sr.cc.scopeNodes.get(sc);
+      if (s.variant === Collect.ENode.UnitScope) {
+        for (const ss of s.symbols) ns(ss);
+        for (const ssc of s.scopes) {
+          const scope = this.sr.cc.scopeNodes.get(ssc);
+          if (scope.variant === Collect.ENode.FileScope) {
+            for (const sss of scope.symbols) ns(sss);
+          }
+        }
+      }
+    }
+    assert(
+      false,
+      "TODO: Fix this problem. The issue is that the original source is collected in ModuleScope>UnitScope>FileScope. The user symbols are defined in FileScope + wrapped in ModuleNamespace (e.g. haze_v0_0_0). But the ModuleNamespace is in the FileScope. The collectImmediate function does not know what UNIT the function came from because collection already happened, and references the Global Module Scope. But haze_v0_0_0 does not exist in the global Module Scope. We need some kind of alias from the module root to the unit for the module namespace.",
+    );
     this.sr.moduleCompiler.collectImmediate(fullSource);
 
     const [e, eId] = this.sr.e.expr(
@@ -10296,6 +10328,18 @@ export namespace Semantic {
         },
       ];
     }
+
+    // if (type.variant === Semantic.ENode.NamespaceDatatype) {
+    //   const currentModuleNamespace = getModuleGlobalNamespaceName(
+    //     sr.cc.config.name,
+    //     sr.cc.config.version,
+    //   );
+    //   // console.log(type.name);
+    //   // console.log();
+    //   if (type.name === currentModuleNamespace) {
+    //     return [];
+    //   }
+    // }
 
     let current = {
       pretty: type.name,

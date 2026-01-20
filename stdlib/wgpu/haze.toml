@@ -21,15 +21,15 @@ outputs = [
     # { module="this", artifact="wgpu_native" }
 ]
 
-# [generator.wgpu-bindings]
-# exec = "scripts/gen-bindings.hz"
-# inputs = [
-#     { module="this", dir="bin", path="include/webgpu.h" },
-#     { module="this", dir="bin", path="include/wgpu.h" },
-# ]
-# outputs = [
-#     { module="this", dir="autogen", path="wgpu-bindings.hz" }
-# ]
+[generator.wgpu-bindings]
+exec = "scripts/gen-bindings.hz"
+inputs = [
+    { module="this", dir="bin", path="include/webgpu.h" },
+    { module="this", dir="bin", path="include/wgpu.h" },
+]
+outputs = [
+    { module="this", dir="autogen", path="wgpu-bindings.hz" }
+]
 
 [linker]
 flags = ["-lwgpu_native"]

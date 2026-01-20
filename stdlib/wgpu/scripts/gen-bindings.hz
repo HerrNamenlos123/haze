@@ -1,6 +1,78 @@
 
+struct EnumValue {
+    name: str = "";
+    value: str = ""; // Hexadecimal string
+}
 
-main(): int {
+struct EnumResult {
+    name: str = "";
+    values: []EnumValue = {};
+}
+
+matchEnums(filepath: str): Result<[]EnumResult, str> {
+    attempt {
+        let file = fs.readFile(filepath)?!;
+
+        // Remove all comments to avoid accidental matches
+        let stripped = regex.replace(r"\/\/[^\n\r]*|\/\*[\s\S]*?\*\/", file, "");
+
+        let enumsBodies = regex.findAll(r"enum\s+(?:\w+\s*)?\{[\s\S]*?\}", stripped);
+        let enumCountBaseline = enumsBodies.length;
+
+        let enumDefinitions = regex.findAll(r"(?:typedef\s+)?enum\s+(?:(\w+)\s*)?\{([\s\S]*?)\}\s*(\w+)?\s*", stripped);
+        assert(enumDefinitions.length == enumCountBaseline);
+
+        let results = []EnumResult {};
+
+        for (let i = 0; i < enumDefinitions.length; i++) {
+            fmt.println(f"Enum {i}: ");
+            let enumText = stripped.substr(enumDefinitions[i].start, enumDefinitions[i].end);
+            let enumMatches = regex.find(r"^(?:typedef\s+)?enum\s+(?:(\w+)\s*)?\{([\s\S]*?)\}\s*(\w+)?\s*$", enumText);
+            if !enumMatches { raise "enum not found"; }
+            assert(enumMatches.groups.length == 3);
+            let structName = enumText.substr(enumMatches.groups[0].start, enumMatches.groups[0].end);
+            let body = enumText.substr(enumMatches.groups[1].start, enumMatches.groups[1].end);
+            let typedefName = enumText.substr(enumMatches.groups[2].start, enumMatches.groups[2].end);
+
+            let result = EnumResult {
+                name: typedefName,
+            };
+
+            // let enumerators = regex.findAll(r"(\w+)\s*(?:=\s*([^,}]+))?\s*,?", body);
+            // for (let j = 0; j < enumerators.length; j++) {
+            //     let enumerator = body.substr(enumerators[j].start, enumerators[j].end);
+
+            //     let values = regex.find(r"^\s*(\w+)\s*(?:=\s*(.+?))?\s*,?\s*$", enumerator);
+            //     if !values { raise "Values in enum not found"; }
+            //     assert(values.groups.length == 2);
+            //     let enumeratorName = enumerator.substr(values.groups[0].start, values.groups[0].end);
+            //     let enumeratorValue = enumerator.substr(values.groups[1].start, values.groups[1].end);
+            //     assert(regex.match(r"^0[xX][0-9a-fA-F]+$", enumeratorValue));
+            //     result.values.push({
+            //         name: enumeratorName,
+            //         value: enumeratorValue,
+            //     })
+            // }
+            results.push(result);
+        }
+
+        return results;
+    }
+    else e {
+        if e is fs.Error {
+            return fmt.format(e);
+        }
+        else if e is str {
+            return fmt.format(e);
+        }
+        else if e is int {
+            return fmt.format(e);
+        }
+        assert(false);
+    }
+}
+
+generate(): int {
     attempt {
         let binaryDir = env.get("HAZE_MODULE_BINARY_DIR");
         if !binaryDir { raise f"HAZE_MODULE_BINARY_DIR not defined"; }
@@ -11,24 +83,16 @@ main(): int {
         let workspaceDir = env.get("HAZE_WORKSPACE_DIR");
         if !workspaceDir { raise f"HAZE_WORKSPACE_DIR not defined"; }
 
-        // const file = fs.readFile(f"{workspaceDir}/wgpu/bin/include/webgpu.h")?!;
-        // fmt.println("File: ", file);
-        test();
+        let filepath = f"{workspaceDir}/wgpu/bin/include/webgpu.h";
+        matchEnums(filepath)?!;
     }
     else e {
-        if e is fs.Error {
-            fmt.println(f"build-wgpu step failed:", e);
-            return 1;
-        }
-        else if e is str {
-            fmt.println(f"build-wgpu step failed: {e}");
-            return 1;
-        }
-        else if e is int {
-            fmt.println(f"build-wgpu step failed: Process exited with code {e}");
-            return 1;
-        }
-        assert(false);
+        fmt.println(f"build-wgpu step failed: {e}");
+        return 1;
     }
     return 0;
+}
+
+main(): int {
+    return generate();
 }

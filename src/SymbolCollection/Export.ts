@@ -13,7 +13,7 @@ import {
 export function ExportCollectedTypeDefAlias(
   sr: SemanticResult,
   typedefId: Collect.TypeDefId,
-  nested: boolean
+  nested: boolean,
 ) {
   const typedef = sr.cc.typeDefNodes.get(typedefId);
   assert(typedef.variant === Collect.ENode.TypeDefAlias);
@@ -36,7 +36,7 @@ export function ExportCollectedTypeDefAlias(
 export function ExportTypeDef(
   sr: SemanticResult,
   typedefId: Semantic.TypeDefId,
-  nested: boolean
+  nested: boolean,
 ): string {
   let file = "";
   const typedef = sr.typeDefNodes.get(typedefId);
@@ -73,7 +73,7 @@ export function ExportTypeDef(
         if (defaultValue) {
           file += `${content.name}: ${Semantic.serializeTypeUse(
             sr,
-            content.type
+            content.type,
           )} = ${Semantic.serializeExpr(sr, defaultValue.value)};\n`;
         } else {
           file += `${content.name}: ${Semantic.serializeTypeUse(sr, content.type)};\n`;
@@ -98,13 +98,13 @@ export function ExportTypeDef(
               (p, i) =>
                 `${method.parameterNames[i + 1]}${
                   p.optional ? "?" : ""
-                }: ${Semantic.serializeTypeUse(sr, p.type)}`
+                }: ${Semantic.serializeTypeUse(sr, p.type)}`,
             )
             .join(", ");
           if (functype.returnType) {
             file += `${method.name}(${parameters}): (${Semantic.serializeTypeUse(
               sr,
-              functype.returnType
+              functype.returnType,
             )})`;
             file += " :: final";
             if (functype.requires.pure) {
@@ -116,7 +116,7 @@ export function ExportTypeDef(
             if (functype.requires.noreturnIf) {
               file += `, noreturn_if(${printCollectedExpr(
                 sr.cc,
-                functype.requires.noreturnIf.expr
+                functype.requires.noreturnIf.expr,
               )})`;
             }
             file += `;\n`;
@@ -153,6 +153,13 @@ export function ExportTypeDef(
     // }
 
     case Semantic.ENode.EnumDatatype: {
+      const namespaces = Semantic.getNamespaceChainFromDatatype(sr, typedefId);
+      if (!nested) {
+        for (const ns of namespaces.slice(0, -1)) {
+          file += "namespace " + ns.pretty + " {\n";
+        }
+      }
+
       if (typedef.extern === EExternLanguage.Extern) {
         file += "extern ";
       } else if (typedef.extern === EExternLanguage.Extern_C) {
@@ -167,6 +174,12 @@ export function ExportTypeDef(
         file += `${value.name} = ${Semantic.serializeExpr(sr, value.valueExpr)},\n`;
       }
       file += "}\n";
+
+      if (!nested) {
+        for (const ns of namespaces.slice(0, -1)) {
+          file += "}\n";
+        }
+      }
       break;
     }
 
@@ -179,7 +192,7 @@ export function ExportTypeDef(
 export function ExportSymbol(
   sr: SemanticResult,
   symbolId: Semantic.SymbolId,
-  nested: boolean
+  nested: boolean,
 ): string {
   let file = "";
 
@@ -195,7 +208,7 @@ export function ExportSymbol(
       }
       assert(
         symbol.generics.length === 0 &&
-          !funcSymHasParameterPack(sr.cc, symbol.originalCollectedFunction)
+          !funcSymHasParameterPack(sr.cc, symbol.originalCollectedFunction),
       );
       const functype = sr.typeDefNodes.get(symbol.type);
       assert(functype.variant === Semantic.ENode.FunctionDatatype);
@@ -216,8 +229,8 @@ export function ExportSymbol(
             (p, i) =>
               `${symbol.parameterNames[i]}${p.optional ? "?" : ""}: ${Semantic.serializeTypeUse(
                 sr,
-                p.type
-              )}`
+                p.type,
+              )}`,
           )
           .join(", ") +
         (functype.vararg ? ", ..." : "") +
@@ -271,7 +284,7 @@ export function ExportSymbol(
 function getNamespacesFromScope(
   cc: CollectionContext,
   scopeId: Collect.ScopeId,
-  current: string[] = []
+  current: string[] = [],
 ): string[] {
   const scope = cc.scopeNodes.get(scopeId);
   switch (scope.variant) {
@@ -303,7 +316,7 @@ function getNamespacesFromScope(
 function getNamespacesFromSymbol(
   cc: CollectionContext,
   symbolId: Collect.SymbolId,
-  current: string[] = []
+  current: string[] = [],
 ): string[] {
   const symbol = cc.symbolNodes.get(symbolId);
   switch (symbol.variant) {

@@ -255,4 +255,18 @@ namespace fmt {
     export format_to(writer: mut StringWriter, value: usize, args: FormatArgs) {
         format_to(writer, value as u64, args);
     }
+
+    export format_to(writer: mut StringWriter, value: fs.Error, args: FormatArgs) {
+        let num = 0;
+        __c__("num = value;");
+        format_to(writer, num, args);
+    }
+
+    export format_to(writer: mut StringWriter, value: none, args: FormatArgs) {
+        format_to(writer, "none", args);
+    }
+
+    export format_to(writer: mut StringWriter, value: null, args: FormatArgs) {
+        format_to(writer, "null", args);
+    }
 }

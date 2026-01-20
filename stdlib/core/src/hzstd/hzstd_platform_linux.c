@@ -29,31 +29,27 @@
 #include <stdlib.h>
 #include <string.h>
 
-extern char **environ;
+extern char** environ;
 
 static hzstd_semaphore_t infinite_block_event;
 
-void hzstd_initialize_platform() {
-  assert(hzstd_create_semaphore(&infinite_block_event));
-}
+void hzstd_initialize_platform() { assert(hzstd_create_semaphore(&infinite_block_event)); }
 
-_Noreturn void hzstd_block_thread_forever() {
+_Noreturn void hzstd_block_thread_forever()
+{
   hzstd_wait_for_semaphore(&infinite_block_event);
   abort();
 }
 
-bool hzstd_create_semaphore(hzstd_semaphore_t *semaphore) {
+bool hzstd_create_semaphore(hzstd_semaphore_t* semaphore)
+{
   assert(sem_init(&semaphore->handle, 0, 0) == 0);
   return true;
 }
 
-bool hzstd_trigger_semaphore(hzstd_semaphore_t *semaphore) {
-  return sem_post(&semaphore->handle);
-}
+bool hzstd_trigger_semaphore(hzstd_semaphore_t* semaphore) { return sem_post(&semaphore->handle); }
 
-void hzstd_wait_for_semaphore(hzstd_semaphore_t *semaphore) {
-  sem_wait(&semaphore->handle);
-}
+void hzstd_wait_for_semaphore(hzstd_semaphore_t* semaphore) { sem_wait(&semaphore->handle); }
 
 static hzstd_str_t panic_reason = HZSTD_STRING_FROM_CSTR("Unknown reason");
 static unw_context_t panic_context;
@@ -61,8 +57,8 @@ static hzstd_int_t panic_skip_n_frames = 0;
 static atomic_int panic_in_progress = 0;
 static hzstd_semaphore_t panic_trigger;
 
-_Noreturn void hzstd_panic_with_stacktrace(hzstd_str_t msg,
-                                           hzstd_int_t skip_n_frames) {
+_Noreturn void hzstd_panic_with_stacktrace(hzstd_str_t msg, hzstd_int_t skip_n_frames)
+{
   unw_getcontext(&panic_context);
   panic_reason = msg;
   panic_skip_n_frames = skip_n_frames;
@@ -70,7 +66,8 @@ _Noreturn void hzstd_panic_with_stacktrace(hzstd_str_t msg,
   hzstd_block_thread_forever();
 }
 
-static void hzstd_panic_handler(int sig, siginfo_t *si, void *ucontext) {
+static void hzstd_panic_handler(int sig, siginfo_t* si, void* ucontext)
+{
   int expected = 0;
   if (atomic_compare_exchange_strong(&panic_in_progress, &expected, 1)) {
     // This thread claims the global context
@@ -78,25 +75,21 @@ static void hzstd_panic_handler(int sig, siginfo_t *si, void *ucontext) {
 
     switch (si->si_code) {
     case SEGV_MAPERR:
-      panic_reason =
-          HZSTD_STRING_FROM_CSTR("Segmentation Fault: Address not mapped "
-                                 "(invalid pointer, nullptr, unmapped memory)");
+      panic_reason = HZSTD_STRING_FROM_CSTR("Segmentation Fault: Address not mapped "
+                                            "(invalid pointer, nullptr, unmapped memory)");
       break;
 
     case SEGV_ACCERR:
-      panic_reason =
-          HZSTD_STRING_FROM_CSTR("Segmentation Fault: Access Violation "
-                                 "(invalid access to memory page)");
+      panic_reason = HZSTD_STRING_FROM_CSTR("Segmentation Fault: Access Violation "
+                                            "(invalid access to memory page)");
       break;
 
     case SEGV_BNDERR:
-      panic_reason =
-          HZSTD_STRING_FROM_CSTR("Segmentation Fault: Bounds Check Error");
+      panic_reason = HZSTD_STRING_FROM_CSTR("Segmentation Fault: Bounds Check Error");
       break;
 
     case SEGV_PKUERR:
-      panic_reason =
-          HZSTD_STRING_FROM_CSTR("Segmentation Fault: Protection Key Failure");
+      panic_reason = HZSTD_STRING_FROM_CSTR("Segmentation Fault: Protection Key Failure");
       break;
 
     default:
@@ -106,13 +99,15 @@ static void hzstd_panic_handler(int sig, siginfo_t *si, void *ucontext) {
 
     hzstd_trigger_semaphore(&panic_trigger);
     hzstd_block_thread_forever();
-  } else {
+  }
+  else {
     // Another thread is already unwinding
     hzstd_block_thread_forever();
   }
 }
 
-static void *hzstd_panic_handler_thread(void *_) {
+static void* hzstd_panic_handler_thread(void* _)
+{
   hzstd_wait_for_semaphore(&panic_trigger);
 
   hzstd_allocator_t allocator = hzstd_make_arena_allocator();
@@ -127,8 +122,8 @@ static void *hzstd_panic_handler_thread(void *_) {
 
   // Now do the actual work
   size_t nextId = 1;
-  hzstd_dynamic_array_t *frameArray = hzstd_dynamic_array_create(
-      allocator, sizeof(hzstd_unwind_frame_t *), numberOfFrames);
+  hzstd_dynamic_array_t* frameArray
+      = hzstd_dynamic_array_create(allocator, sizeof(hzstd_unwind_frame_t*), numberOfFrames);
   unw_init_local2(&cursor, &panic_context, UNW_INIT_SIGNAL_FRAME);
   do {
     unw_word_t pc;
@@ -138,14 +133,12 @@ static void *hzstd_panic_handler_thread(void *_) {
     // recursion, it is likely that they repeat)
     bool pushed = false;
     for (size_t i = 0; i < hzstd_dynamic_array_size(frameArray); i++) {
-      hzstd_unwind_frame_t *framePtr;
-      assert(hzstd_dynamic_array_get(frameArray, i, &framePtr) ==
-             hzstd_dynamic_array_result_ok);
+      hzstd_unwind_frame_t* framePtr;
+      assert(hzstd_dynamic_array_get(frameArray, i, &framePtr) == hzstd_dynamic_array_result_ok);
       if (framePtr->instructionPointer == (hzstd_cptr_t)pc) {
         // Frame with same function found, push new frame but reuse the function
         // name (retrieving name is slow)
-        assert(hzstd_dynamic_array_push(frameArray, &framePtr) ==
-               hzstd_dynamic_array_result_ok);
+        assert(hzstd_dynamic_array_push(frameArray, &framePtr) == hzstd_dynamic_array_result_ok);
         pushed = true;
         break;
       }
@@ -154,27 +147,23 @@ static void *hzstd_panic_handler_thread(void *_) {
     if (!pushed) {
       // Now retrieve the name, it's a new one
       int maxNameLength = 4096;
-      hzstd_str_t name =
-          HZSTD_STRING(hzstd_allocate(allocator, maxNameLength), 0);
+      hzstd_str_t name = HZSTD_STRING(hzstd_allocate(allocator, maxNameLength), 0);
 
       unw_word_t offset;
-      if (unw_get_proc_name(&cursor, (char *)name.data, maxNameLength,
-                            &offset) == 0) {
+      if (unw_get_proc_name(&cursor, (char*)name.data, maxNameLength, &offset) == 0) {
         name.length = strlen(name.data);
       }
 
       // Doesn't work inline in HZSTD_ALLOC_STRUCT_RAW
-      hzstd_unwind_frame_t frameStruct = (hzstd_unwind_frame_t){
-          .id = nextId++,
-          .instructionPointer = (void *)pc,
-          .name = name,
+      hzstd_unwind_frame_t frameStruct = (hzstd_unwind_frame_t) {
+        .id = nextId++,
+        .instructionPointer = (void*)pc,
+        .name = name,
       };
 
-      hzstd_unwind_frame_t *framePtr =
-          HZSTD_ALLOC_STRUCT(allocator, hzstd_unwind_frame_t, frameStruct);
+      hzstd_unwind_frame_t* framePtr = HZSTD_ALLOC_STRUCT(allocator, hzstd_unwind_frame_t, frameStruct);
 
-      assert(hzstd_dynamic_array_push(frameArray, &framePtr) ==
-             hzstd_dynamic_array_result_ok);
+      assert(hzstd_dynamic_array_push(frameArray, &framePtr) == hzstd_dynamic_array_result_ok);
     }
 
   } while (unw_step(&cursor) > 0);
@@ -190,7 +179,8 @@ static void *hzstd_panic_handler_thread(void *_) {
   abort();
 }
 
-void hzstd_setup_panic_handler() {
+void hzstd_setup_panic_handler()
+{
   static thread_local char altstack_buf[8192];
   // This function registers a signal handler for the SIGSEGV signal (segfault).
   // The signal gets its own alternative stack (altstack), required to make the
@@ -232,12 +222,12 @@ void hzstd_setup_panic_handler() {
 
 // Convert array of hzstd_str_t → malloced C string array, inserting exe as
 // argv[0]
-static inline char **
-process_str_array_to_cstrv_with_exe_malloc(hzstd_str_t exe, hzstd_str_t *arr,
-                                           size_t count) {
-  char **out = malloc(sizeof(char *) * (count + 2));
-  if (!out)
+static inline char** process_str_array_to_cstrv_with_exe_malloc(hzstd_str_t exe, hzstd_str_t* arr, size_t count)
+{
+  char** out = malloc(sizeof(char*) * (count + 2));
+  if (!out) {
     return NULL;
+  }
 
   // argv[0] = executable
   out[0] = strdup(exe.data); // temporary, free later
@@ -249,8 +239,9 @@ process_str_array_to_cstrv_with_exe_malloc(hzstd_str_t exe, hzstd_str_t *arr,
   for (size_t i = 0; i < count; ++i) {
     out[i + 1] = strdup(arr[i].data); // temporary, free later
     if (!out[i + 1]) {
-      for (size_t j = 0; j <= i; ++j)
+      for (size_t j = 0; j <= i; ++j) {
         free(out[j]);
+      }
       free(out);
       return NULL;
     }
@@ -261,29 +252,34 @@ process_str_array_to_cstrv_with_exe_malloc(hzstd_str_t exe, hzstd_str_t *arr,
 }
 
 // Read all from fd into GC-allocated buffer (stdout/stderr)
-static inline char *read_all_fd_gc(int fd) {
+static inline char* read_all_fd_gc(int fd)
+{
   size_t cap = 4096;
   size_t len = 0;
   hzstd_allocator_t allocator = hzstd_make_heap_allocator();
-  char *buf = hzstd_allocate(allocator, cap + 1);
-  if (!buf)
+  char* buf = hzstd_allocate(allocator, cap + 1);
+  if (!buf) {
     return NULL;
+  }
 
   for (;;) {
     if (len + 2048 > cap) {
       cap *= 2;
-      char *new_buf = hzstd_allocate(allocator, cap + 1);
-      if (!new_buf)
+      char* new_buf = hzstd_allocate(allocator, cap + 1);
+      if (!new_buf) {
         return NULL;
+      }
       memcpy(new_buf, buf, len);
       buf = new_buf;
     }
 
     ssize_t r = read(fd, buf + len, cap - len);
-    if (r == 0)
+    if (r == 0) {
       break;
-    if (r < 0)
+    }
+    if (r < 0) {
       return NULL;
+    }
     len += r;
   }
 
@@ -291,13 +287,14 @@ static inline char *read_all_fd_gc(int fd) {
   return buf;
 }
 
-static inline void process_set_error_message(hzstd_process_result_t *out,
-                                             int err) {
-  if (!out)
+static inline void process_set_error_message(hzstd_process_result_t* out, int err)
+{
+  if (!out) {
     return;
+  }
 
   char buf[256]; // temporary buffer
-  const char *msg = NULL;
+  const char* msg = NULL;
 
 #if defined(__GLIBC__) && defined(_GNU_SOURCE)
   // GNU-specific strerror_r returns char* directly
@@ -306,7 +303,8 @@ static inline void process_set_error_message(hzstd_process_result_t *out,
   // XSI-compliant strerror_r writes to buf and returns int
   if (strerror_r(err, buf, sizeof(buf)) == 0) {
     msg = buf;
-  } else {
+  }
+  else {
     msg = "Unknown error";
   }
 #endif
@@ -314,7 +312,7 @@ static inline void process_set_error_message(hzstd_process_result_t *out,
   if (msg) {
     size_t len = strlen(msg);
     // GC-allocate the message
-    char *gc_msg = hzstd_allocate(hzstd_make_heap_allocator(), len + 1);
+    char* gc_msg = hzstd_allocate(hzstd_make_heap_allocator(), len + 1);
     if (gc_msg) {
       memcpy(gc_msg, msg, len);
       gc_msg[len] = '\0';
@@ -324,9 +322,15 @@ static inline void process_set_error_message(hzstd_process_result_t *out,
 }
 
 // Linux GC-safe process spawn (hybrid: GC for outputs only)
-int hzstd_spawn_process(hzstd_str_t exe, hzstd_str_t *argv, size_t argc,
-                        hzstd_str_t *envp, size_t envc, hzstd_str_t *cwd,
-                        bool inherit_stdio, hzstd_process_result_t *out) {
+int hzstd_spawn_process(hzstd_str_t exe,
+                        hzstd_str_t* argv,
+                        size_t argc,
+                        hzstd_str_t* envp,
+                        size_t envc,
+                        hzstd_str_t* cwd,
+                        bool inherit_stdio,
+                        hzstd_process_result_t* out)
+{
 
   out->exit_code = -1;
   out->stdout_data = NULL;
@@ -337,8 +341,8 @@ int hzstd_spawn_process(hzstd_str_t exe, hzstd_str_t *argv, size_t argc,
   posix_spawn_file_actions_init(&actions);
   posix_spawnattr_init(&attrs);
 
-  int stdout_pipe[2] = {-1, -1};
-  int stderr_pipe[2] = {-1, -1};
+  int stdout_pipe[2] = { -1, -1 };
+  int stderr_pipe[2] = { -1, -1 };
 
   if (!inherit_stdio) {
     if (pipe(stdout_pipe) != 0) {
@@ -360,43 +364,49 @@ int hzstd_spawn_process(hzstd_str_t exe, hzstd_str_t *argv, size_t argc,
   }
 
   // Convert argv → malloced array with exe as argv[0]
-  char **argv_c = process_str_array_to_cstrv_with_exe_malloc(exe, argv, argc);
-  if (!argv_c)
+  char** argv_c = process_str_array_to_cstrv_with_exe_malloc(exe, argv, argc);
+  if (!argv_c) {
     return ENOMEM;
+  }
 
-  char **envp_c = NULL;
+  char** envp_c = NULL;
   if (envp) {
-    envp_c = malloc(sizeof(char *) * (envc + 1));
+    envp_c = malloc(sizeof(char*) * (envc + 1));
     if (!envp_c) {
-      for (size_t i = 0; argv_c[i]; ++i)
+      for (size_t i = 0; argv_c[i]; ++i) {
         free(argv_c[i]);
+      }
       free(argv_c);
       return ENOMEM;
     }
-    for (size_t i = 0; i < envc; ++i)
+    for (size_t i = 0; i < envc; ++i) {
       envp_c[i] = strdup(envp[i].data);
+    }
     envp_c[envc] = NULL;
   }
 
-  char *cwd_c = NULL;
-  if (cwd)
+  char* cwd_c = NULL;
+  if (cwd) {
     cwd_c = strdup(cwd->data);
+  }
 #ifdef __linux__
-  if (cwd_c)
+  if (cwd_c) {
     posix_spawn_file_actions_addchdir_np(&actions, cwd_c);
+  }
 #endif
 
   pid_t pid;
-  int rc = posix_spawnp(&pid, argv_c[0], &actions, &attrs, argv_c,
-                        envp ? envp_c : environ);
+  int rc = posix_spawnp(&pid, argv_c[0], &actions, &attrs, argv_c, envp ? envp_c : environ);
 
   // Clean up temporary allocations immediately
-  for (size_t i = 0; argv_c[i]; ++i)
+  for (size_t i = 0; argv_c[i]; ++i) {
     free(argv_c[i]);
+  }
   free(argv_c);
   if (envp_c) {
-    for (size_t i = 0; i < envc; ++i)
+    for (size_t i = 0; i < envc; ++i) {
       free(envp_c[i]);
+    }
     free(envp_c);
   }
   free(cwd_c);
