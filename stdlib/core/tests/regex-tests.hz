@@ -1,4 +1,5 @@
 
+
 test_match_compile_time() {
     let r = r"\w+";
 
@@ -9,28 +10,25 @@ test_match_compile_time() {
 
 test_runtime_compile() {
     let ok = regex.runtime("[a-z]+", "");
-    assert(ok.isOk());
+    assert(ok);
 
-    let r = ok.unwrap();
-    assert(regex.match(r, "abc") == true);
-    assert(regex.match(r, "123") == false);
+    assert(regex.match(ok, "abc") == true);
+    assert(regex.match(ok, "123") == false);
 
     let err = regex.runtime("(", "");
-    assert(err.isErr());
+    assert(!err);
 }
 
 test_find() {
     let r = r"world";
     let text = "hello world!";
 
-    let m = regex.find(r, text);
-    assert(m != none);
-
-    let match = m!;
+    let match = regex.find(r, text);
+    assert(match);
     assert(match.start == 6);
     assert(match.end == 11);
 
-    let slice = text[match.start .. match.end];
+    let slice = text.substr(match.start, match.end);
     assert(slice == "world");
 }
 
@@ -39,7 +37,7 @@ test_find_none() {
     let text = "abc";
 
     let m = regex.find(r, text);
-    assert(m == none);
+    assert(!m);
 }
 
 test_find_all() {
@@ -50,9 +48,9 @@ test_find_all() {
 
     assert(matches.length == 3);
 
-    assert(text[matches[0].start .. matches[0].end] == "1");
-    assert(text[matches[1].start .. matches[1].end] == "22");
-    assert(text[matches[2].start .. matches[2].end] == "333");
+    assert(text.substr(matches[0].start, matches[0].end) == "1");
+    assert(text.substr(matches[1].start, matches[1].end) == "22");
+    assert(text.substr(matches[2].start, matches[2].end) == "333");
 }
 
 test_zero_length() {
@@ -84,7 +82,8 @@ test_replace_no_match() {
 
 test_compile_and_runtime_mix() {
     let r1 = r"[a-z]+";
-    let r2 = regex.runtime("[A-Z]+", "").unwrap();
+    let r2 = regex.runtime("[A-Z]+", "");
+    assert(r2);
 
     let text = "abc DEF";
 
@@ -103,5 +102,5 @@ test_regex() {
     test_replace_no_match();
     test_compile_and_runtime_mix();
 
-    print("All regex tests passed.");
+    fmt.println("All regex tests passed.");
 }

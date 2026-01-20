@@ -55,29 +55,6 @@ test() {
 
 main(): int {
 
-    test_regex();
-    // integer_comparison_runtime_tests();
-    // test();
-    return 0;
-
-    let a = attempt {
-        let v = get();
-        if v == 1 {
-            raise "Oh no it's 1";
-        } 
-        else if v == 2 {
-            raise 187;
-        }
-    }
-    else e {
-        if e is str {
-            fmt.println("Error: ", e);
-        }
-        else {
-            fmt.println("Error: ", e);
-        }
-    }
-
     return 0;
     // let a = fs.exists("my/very/test");
     // if !a {
