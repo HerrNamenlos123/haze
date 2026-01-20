@@ -242,6 +242,12 @@ export namespace Conversion {
     return type.primitive === EPrimitive.bool;
   }
 
+  export function isStr(sr: SemanticResult, typeId: Semantic.TypeDefId): boolean {
+    const type = sr.typeDefNodes.get(typeId);
+    if (type.variant !== Semantic.ENode.PrimitiveDatatype) return false;
+    return type.primitive === EPrimitive.str;
+  }
+
   export function isInteger(primitive: EPrimitive): boolean {
     return isSignedInteger(primitive) || isUnsignedInteger(primitive);
   }
@@ -1755,6 +1761,9 @@ export namespace Conversion {
     }
 
     const comparisons = [
+      {
+        comparable: [makeRawPrimitiveAvailable(sr, EPrimitive.str)],
+      },
       {
         comparable: [makeRawPrimitiveAvailable(sr, EPrimitive.null)],
       },
