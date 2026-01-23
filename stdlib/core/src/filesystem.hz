@@ -23,6 +23,8 @@ namespace ffi {
 
     extern C hzstd_read_file_text(allocator: Allocator, path: str, outputBuffer: hzstd_str_ref_t): inline hzstd_fs_error_t :: final;
 
+    extern C hzstd_write_file_text(allocator: Allocator, path: str, input: str): inline hzstd_fs_error_t :: final;
+
     extern C hzstd_mkdir_recursive(path: str): inline hzstd_fs_error_t :: final;
 
     extern C noemit struct hzstd_fs_exists_result_t {
@@ -120,6 +122,20 @@ export namespace fs {
         }
         else {
             return Result<str, Error>.Err(mapErrorEnum(result.code));
+        }
+    }
+
+    export writeFile(path: str, text: str) {
+        return writeFile(Alloc.heap(), path, text);
+    }
+
+    export writeFile(allocator: Allocator, path: str, text: str): Result<none, Error> {
+        let result = ffi.hzstd_write_file_text(allocator, path, text);
+        if result.code == ffi.hzstd_fs_error_code_none {
+            return Result<none, Error>.Ok(none);
+        }
+        else {
+            return Result<none, Error>.Err(mapErrorEnum(result.code));
         }
     }
 

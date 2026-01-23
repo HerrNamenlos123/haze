@@ -133,8 +133,10 @@ export class SemanticElaborator {
   binaryExpr(binaryExpr: Collect.BinaryExpr, inference: Inference) {
     if (binaryExpr.operation === EBinaryOperation.BoolAnd) {
       let [left, leftId] = this.expr(binaryExpr.left, inference);
+
+      // This builds the constraints that apply to the expr itself, the right part of the AND
       const constraints = [...this.currentContext.constraints];
-      this.buildConstraints(constraints, leftId);
+      this.buildConstraints(constraints, leftId, {});
 
       let [right, rightId] = [
         undefined as Semantic.Expression | undefined,
@@ -730,11 +732,11 @@ export class SemanticElaborator {
               // The condition is already known at compile time, skip the condition
               // This is where assert(false) turns into noreturn
               // If condition is true, just ignore all constraints
-              if (
-                !result.value[0].literal.value &&
-                !this.currentContext.scopeCanExitEarly.has(this.currentContext.currentScope)
-              ) {
-                this.currentContext.scopeNoReturn.add(this.currentContext.currentScope);
+              if (!result.value[0].literal.value) {
+                this.currentContext.scopeNoFallthrough.add(this.currentContext.currentScope);
+                if (!this.currentContext.scopeCanExitEarly.has(this.currentContext.currentScope)) {
+                  this.currentContext.scopeNoReturn.add(this.currentContext.currentScope);
+                }
               }
             }
           } else {
@@ -749,11 +751,11 @@ export class SemanticElaborator {
       }
 
       // This is the handling for if -> noreturn
-      if (
-        calledExprType.requires.noreturn &&
-        !this.currentContext.scopeCanExitEarly.has(this.currentContext.currentScope)
-      ) {
-        this.currentContext.scopeNoReturn.add(this.currentContext.currentScope);
+      if (calledExprType.requires.noreturn) {
+        this.currentContext.scopeNoFallthrough.add(this.currentContext.currentScope);
+        if (!this.currentContext.scopeCanExitEarly.has(this.currentContext.currentScope)) {
+          this.currentContext.scopeNoReturn.add(this.currentContext.currentScope);
+        }
       }
 
       return this.sr.b.callExpr(calledExprId, actualArgs, this.inFunction, callExpr.sourceloc);
@@ -1582,6 +1584,7 @@ export class SemanticElaborator {
           parameterNames: ["this"],
           funcname: funcname,
           bodySourceCode: code,
+          currentScope: this.currentContext.currentScope,
           sourceloc: memberAccess.sourceloc,
         });
         this.sr.syntheticFunctions.set(funcname, funcId);
@@ -1692,6 +1695,7 @@ export class SemanticElaborator {
             parameterNames: ["this", "start", "end"],
             funcname: funcname,
             bodySourceCode: code,
+            currentScope: this.currentContext.currentScope,
             sourceloc: memberAccess.sourceloc,
           });
           this.sr.syntheticFunctions.set(funcname, funcId);
@@ -1809,6 +1813,7 @@ export class SemanticElaborator {
             parameterNames: ["this", "element"],
             funcname: funcname,
             bodySourceCode: code,
+            currentScope: this.currentContext.currentScope,
             sourceloc: memberAccess.sourceloc,
           });
           this.sr.syntheticFunctions.set(funcname, funcId);
@@ -1880,6 +1885,7 @@ export class SemanticElaborator {
             parameterNames: ["this"],
             funcname: funcname,
             bodySourceCode: code,
+            currentScope: this.currentContext.currentScope,
             sourceloc: memberAccess.sourceloc,
           });
           this.sr.syntheticFunctions.set(funcname, funcId);
@@ -2856,6 +2862,7 @@ export class SemanticElaborator {
     let noReturn = false;
     let canExitEarly = false;
     let willExitEarly = false;
+    let noFallthrough = false;
     this.withContext(
       {
         context: newContext,
@@ -2869,7 +2876,7 @@ export class SemanticElaborator {
           if (sym.variant === Collect.ENode.VariableSymbol) {
             this.elaborateVariableSymbolInScope(sId);
           } else if (sym.variant === Collect.ENode.TypeDefSymbol) {
-            const symbols = this.typeDefSymbol(sym);
+            this.typeDefSymbol(sym);
           } else {
             assert(false);
           }
@@ -2891,23 +2898,6 @@ export class SemanticElaborator {
             unsafe: scope.unsafe,
           });
           const statement = this.sr.statementNodes.get(statementId);
-
-          if (statement.variant === Semantic.ENode.ExprStatement) {
-            const expr = this.sr.exprNodes.get(statement.expr);
-            if (
-              expr.variant === Semantic.ENode.BlockScopeExpr &&
-              !this.currentContext.scopeCanExitEarly.has(this.currentContext.currentScope)
-            ) {
-              if (expr.noreturn) {
-                // If a function calls a noreturn scope, but the function also already had an early return,
-                // it is NOT noreturn.
-                this.currentContext.scopeNoReturn.add(this.currentContext.currentScope);
-              }
-            }
-          } else if (statement.variant === Semantic.ENode.ReturnStatement) {
-            this.currentContext.scopeCanExitEarly.add(this.currentContext.currentScope);
-            this.currentContext.scopeWillExitEarly.add(this.currentContext.currentScope);
-          }
 
           if (
             lastExprIsEmit &&
@@ -2936,6 +2926,9 @@ export class SemanticElaborator {
         if (this.currentContext.scopeWillExitEarly.has(args.sourceScopeId)) {
           willExitEarly = true;
         }
+        if (this.currentContext.scopeNoFallthrough.has(args.sourceScopeId)) {
+          noFallthrough = true;
+        }
       },
     );
 
@@ -2948,6 +2941,9 @@ export class SemanticElaborator {
     if (noReturn) {
       this.currentContext.scopeNoReturn.add(args.sourceScopeId);
     }
+    if (noFallthrough) {
+      this.currentContext.scopeNoFallthrough.add(args.sourceScopeId);
+    }
 
     if (blockScope.emittedExpr === -1) {
       // Still nothing returned, so return "none" which is our replacement for void
@@ -2959,10 +2955,12 @@ export class SemanticElaborator {
       )[1];
     }
 
+    assert(blockScope.emittedExpr !== -1);
     return {
       noReturn: noReturn,
       canExitEarly: canExitEarly,
       willExitEarly: willExitEarly,
+      noFallthrough: noFallthrough,
     };
   }
 
@@ -3310,6 +3308,7 @@ export class SemanticElaborator {
             willExitEarly: boolean;
             canExitEarly: boolean;
             noReturn: boolean;
+            noFallthrough: boolean;
           } | null = null;
           if (func.functionScope) {
             const functionScope = this.sr.cc.scopeNodes.get(func.functionScope);
@@ -3425,6 +3424,16 @@ export class SemanticElaborator {
             symbol.returnsInstanceIds,
           ).forEach((d) => symbol.returnsInstanceIds.add(d));
 
+          // Add "none" as a returned value if nothing is returned
+          if (
+            blockScopeResult &&
+            !blockScopeResult.noFallthrough &&
+            !func.requires.noreturn &&
+            !func.requires.final
+          ) {
+            symbol.returnedDatatypes.add(this.sr.b.noneType());
+          }
+
           if (!func.requires.final) {
             let inferredReturnType: Semantic.TypeUseId | null = expectedReturnType;
             if (!inferredReturnType) {
@@ -3485,22 +3494,21 @@ export class SemanticElaborator {
             const functype = this.sr.typeDefNodes.get(symbol.type);
             assert(functype.variant === Semantic.ENode.FunctionDatatype);
 
-            // Fix returning "none" if nothing is returned but the function returns "none"
+            // Fix returning "none" if nothing is returned but the function returns "none", except it returns 'void'
             if (
               blockScopeResult &&
-              !blockScopeResult.willExitEarly &&
-              Conversion.isNoneById(this.sr, functype.returnType) &&
-              !functype.requires.noreturn
+              !blockScopeResult.noFallthrough &&
+              !Conversion.isVoidById(this.sr, functype.returnType)
             ) {
               assert(symbol.scope);
               const bodyScope = this.sr.blockScopeNodes.get(symbol.scope);
-              bodyScope.statements.push(
-                Semantic.addStatement(this.sr, {
-                  variant: Semantic.ENode.ReturnStatement,
-                  expr: this.sr.b.noneExpr()[1],
-                  sourceloc: func.sourceloc,
-                })[1],
-              );
+              const statementId = Semantic.addStatement(this.sr, {
+                variant: Semantic.ENode.ReturnStatement,
+                expr: this.sr.b.noneExpr()[1],
+                sourceloc: func.sourceloc,
+              })[1];
+              bodyScope.statements.push(statementId);
+              symbol.returnStatements.add(statementId);
             }
 
             // Now the return type has been fixed, so we have to go over all return statements now
@@ -3509,21 +3517,30 @@ export class SemanticElaborator {
             // return statement, 'Foo' must be implicitly converted to 'Foo | str'.
             for (const sId of symbol.returnStatements) {
               const statement = this.sr.statementNodes.get(sId);
-              if (
-                statement.variant === Semantic.ENode.ReturnStatement &&
-                statement.expr !== undefined
-              ) {
-                const returnedExpr = this.getExpr(statement.expr);
-                if (returnedExpr.type !== inferredReturnType) {
-                  statement.expr = Conversion.MakeConversionOrThrow(
-                    this.sr,
-                    statement.expr,
-                    inferredReturnType,
-                    [],
-                    statement.sourceloc,
-                    Conversion.Mode.Implicit,
-                    false,
-                  );
+              if (statement.variant === Semantic.ENode.ReturnStatement) {
+                if (statement.expr) {
+                  // Convert an existing value
+                  const returnedExpr = this.getExpr(statement.expr);
+                  if (returnedExpr.type !== inferredReturnType) {
+                    statement.expr = Conversion.MakeConversionOrThrow(
+                      this.sr,
+                      statement.expr,
+                      inferredReturnType,
+                      [],
+                      statement.sourceloc,
+                      Conversion.Mode.Implicit,
+                      false,
+                    );
+                  }
+                } else {
+                  // Insert a "none" value if no value was returned at all
+                  if (Conversion.isNoneById(this.sr, inferredReturnType)) {
+                    statement.expr = this.sr.b.noneExpr()[1];
+                  } else if (Conversion.isVoidById(this.sr, inferredReturnType)) {
+                    // The only valid place where a return statement can actually return nothing
+                  } else {
+                    assert(false);
+                  }
                 }
               }
             }
@@ -4731,6 +4748,7 @@ export class SemanticElaborator {
               parameterNames: ["value"],
               funcname: funcname,
               bodySourceCode: code,
+              currentScope: this.currentContext.currentScope,
               sourceloc: memberAccessExpr.sourceloc,
             });
             this.sr.syntheticFunctions.set(funcname, funcId);
@@ -4823,16 +4841,16 @@ export class SemanticElaborator {
           if (!s.condition) {
             throw new CompilerError(`Comptime 'if let' statements not supported yet`, s.sourceloc);
           }
-          const [condition, conditionId] = this.expr(s.condition, undefined);
+          const conditionId = this.expr(s.condition, undefined)[1];
           const conditionValue = EvalCTFEBoolean(this.sr, conditionId, s.sourceloc);
           if (conditionValue) {
-            const [thenScope, thenScopeId] = Semantic.addBlockScope(this.sr, {
+            const thenScopeId = Semantic.addBlockScope(this.sr, {
               variant: Semantic.ENode.BlockScope,
               statements: [],
               emittedExpr: -1 as Semantic.ExprId,
               constraints: [...this.currentContext.constraints],
               sourceloc: s.sourceloc,
-            });
+            })[1];
             const result = this.elaborateBlockScope(
               {
                 targetScopeId: thenScopeId,
@@ -4863,15 +4881,15 @@ export class SemanticElaborator {
                 s.sourceloc,
               );
             }
-            const [condition, conditionId] = this.expr(elif.condition, undefined);
+            const conditionId = this.expr(elif.condition, undefined)[1];
             if (EvalCTFEBoolean(this.sr, conditionId, s.sourceloc)) {
-              const [thenScope, thenScopeId] = Semantic.addBlockScope(this.sr, {
+              const thenScopeId = Semantic.addBlockScope(this.sr, {
                 variant: Semantic.ENode.BlockScope,
                 statements: [],
                 emittedExpr: -1 as Semantic.ExprId,
                 sourceloc: s.sourceloc,
                 constraints: [...this.currentContext.constraints],
-              });
+              })[1];
               const result = this.elaborateBlockScope(
                 {
                   targetScopeId: thenScopeId,
@@ -4897,13 +4915,13 @@ export class SemanticElaborator {
           }
 
           if (s.elseBlock) {
-            const [thenScope, thenScopeId] = Semantic.addBlockScope(this.sr, {
+            const thenScopeId = Semantic.addBlockScope(this.sr, {
               variant: Semantic.ENode.BlockScope,
               emittedExpr: -1 as Semantic.ExprId,
               sourceloc: s.sourceloc,
               statements: [],
               constraints: [...this.currentContext.constraints],
-            });
+            })[1];
             const result = this.elaborateBlockScope(
               {
                 targetScopeId: thenScopeId,
@@ -4966,7 +4984,7 @@ export class SemanticElaborator {
             const sym = this.sr.cc.symbolNodes.get(letStatement.variableSymbol);
             assert(sym.variant === Collect.ENode.VariableSymbol);
             const varType = this.expr(letStatement.value, undefined)[0].type;
-            const [variableSymbolExpr, variableSymbolExprId] = this.expr(
+            const variableSymbolExprId = this.expr(
               Collect.makeExpr(this.sr.cc, {
                 variant: Collect.ENode.SymbolValueExpr,
                 genericArgs: [],
@@ -4974,7 +4992,7 @@ export class SemanticElaborator {
                 sourceloc: s.sourceloc,
               })[1],
               undefined,
-            );
+            )[1];
             const variableAsBoolResult = Conversion.MakeConversion(
               this.sr,
               variableSymbolExprId,
@@ -5090,13 +5108,13 @@ export class SemanticElaborator {
             false,
           );
 
-          const [thenScope, thenScopeId] = Semantic.addBlockScope(this.sr, {
+          const thenScopeId = Semantic.addBlockScope(this.sr, {
             variant: Semantic.ENode.BlockScope,
             statements: [],
             emittedExpr: -1 as Semantic.ExprId,
             constraints: constraints,
             sourceloc: s.sourceloc,
-          });
+          })[1];
           const result = this.withContext(
             {
               context: Semantic.isolateElaborationContext(this.currentContext, {
@@ -5128,6 +5146,7 @@ export class SemanticElaborator {
             });
           }
 
+          let noFallthrough = result.noFallthrough;
           if (result.canExitEarly || result.willExitEarly) {
             this.currentContext.scopeCanExitEarly.add(this.currentContext.currentScope);
           }
@@ -5162,14 +5181,14 @@ export class SemanticElaborator {
               false,
             );
 
-            const [innerThenScope, innerThenScopeId] = Semantic.addBlockScope(this.sr, {
+            const innerThenScopeId = Semantic.addBlockScope(this.sr, {
               variant: Semantic.ENode.BlockScope,
               statements: [],
               emittedExpr: -1 as Semantic.ExprId,
               sourceloc: s.sourceloc,
               constraints: innerConstraints,
-            });
-            this.withContext(
+            })[1];
+            const innerScopeResult = this.withContext(
               {
                 context: Semantic.isolateElaborationContext(this.currentContext, {
                   constraints: innerConstraints,
@@ -5181,7 +5200,7 @@ export class SemanticElaborator {
                 inAttemptExpr: this.inAttemptExpr,
                 functionReturnsInstanceIds: this.functionReturnsInstanceIds,
               },
-              () => {
+              () =>
                 this.elaborateBlockScope(
                   {
                     targetScopeId: innerThenScopeId,
@@ -5189,9 +5208,12 @@ export class SemanticElaborator {
                   },
                   false,
                   undefined,
-                );
-              },
+                ),
             );
+
+            if (!innerScopeResult.noFallthrough) {
+              noFallthrough = false;
+            }
 
             return {
               condition: boolCondition,
@@ -5199,19 +5221,16 @@ export class SemanticElaborator {
             };
           });
 
-          let [elseScope, elseScopeId] = [
-            undefined as undefined | Semantic.BlockScope,
-            undefined as Semantic.BlockScopeId | undefined,
-          ];
+          let elseScopeId = undefined as Semantic.BlockScopeId | undefined;
           if (s.elseBlock) {
-            [elseScope, elseScopeId] = Semantic.addBlockScope(this.sr, {
+            elseScopeId = Semantic.addBlockScope(this.sr, {
               variant: Semantic.ENode.BlockScope,
               statements: [],
               emittedExpr: -1 as Semantic.ExprId,
               constraints: elseConstraints,
               sourceloc: s.sourceloc,
-            });
-            this.withContext(
+            })[1];
+            const elseResult = this.withContext(
               {
                 context: Semantic.isolateElaborationContext(this.currentContext, {
                   constraints: elseConstraints,
@@ -5223,7 +5242,7 @@ export class SemanticElaborator {
                 inAttemptExpr: this.inAttemptExpr,
                 functionReturnsInstanceIds: this.functionReturnsInstanceIds,
               },
-              () => {
+              () =>
                 this.elaborateBlockScope(
                   {
                     targetScopeId: elseScopeId!,
@@ -5231,9 +5250,18 @@ export class SemanticElaborator {
                   },
                   false,
                   undefined,
-                );
-              },
+                ),
             );
+
+            if (!elseResult.noFallthrough) {
+              noFallthrough = false;
+            }
+          } else {
+            noFallthrough = false;
+          }
+
+          if (noFallthrough) {
+            this.currentContext.scopeNoFallthrough.add(this.currentContext.currentScope);
           }
 
           return Semantic.addStatement(this.sr, {
@@ -5270,7 +5298,7 @@ export class SemanticElaborator {
           const sym = this.sr.cc.symbolNodes.get(letStatement.variableSymbol);
           assert(sym.variant === Collect.ENode.VariableSymbol);
           const varType = this.expr(letStatement.value, undefined)[0].type;
-          const [variableSymbolExpr, variableSymbolExprId] = this.expr(
+          const variableSymbolExprId = this.expr(
             Collect.makeExpr(this.sr.cc, {
               variant: Collect.ENode.SymbolValueExpr,
               genericArgs: [],
@@ -5278,7 +5306,7 @@ export class SemanticElaborator {
               sourceloc: s.sourceloc,
             })[1],
             undefined,
-          );
+          )[1];
           const variableAsBoolResult = Conversion.MakeConversion(
             this.sr,
             variableSymbolExprId,
@@ -5391,13 +5419,13 @@ export class SemanticElaborator {
           false,
         );
 
-        const [thenScope, thenScopeId] = Semantic.addBlockScope(this.sr, {
+        const thenScopeId = Semantic.addBlockScope(this.sr, {
           variant: Semantic.ENode.BlockScope,
           emittedExpr: -1 as Semantic.ExprId,
           statements: [],
           constraints: constraints,
           sourceloc: s.sourceloc,
-        });
+        })[1];
 
         this.withContext(
           {
@@ -5446,6 +5474,10 @@ export class SemanticElaborator {
 
         const functionSymbol = this.getSymbol(this.inFunction);
         assert(functionSymbol.variant === Semantic.ENode.FunctionSymbol);
+
+        this.currentContext.scopeCanExitEarly.add(this.currentContext.currentScope);
+        this.currentContext.scopeWillExitEarly.add(this.currentContext.currentScope);
+        this.currentContext.scopeNoFallthrough.add(this.currentContext.currentScope);
 
         if (s.expr) {
           let eId: Semantic.ExprId;
@@ -5772,13 +5804,13 @@ export class SemanticElaborator {
           : null;
         const loopIncrement = s.loopIncrement ? this.expr(s.loopIncrement, {})[1] : null;
 
-        const [body, bodyId] = Semantic.addBlockScope(this.sr, {
+        const bodyId = Semantic.addBlockScope(this.sr, {
           variant: Semantic.ENode.BlockScope,
           statements: [],
           emittedExpr: -1 as Semantic.ExprId,
           constraints: [...this.currentContext.constraints],
           sourceloc: s.sourceloc,
-        });
+        })[1];
 
         this.elaborateBlockScope(
           {
@@ -5805,10 +5837,10 @@ export class SemanticElaborator {
 
       case Collect.ENode.ForEachStatement: {
         if (s.comptime) {
-          const [value, valueId] = this.expr(s.value, undefined);
+          const valueId = this.expr(s.value, undefined)[1];
           const r = EvalCTFE(this.sr, valueId);
           if (!r.ok) throw new CompilerError(r.error, s.sourceloc);
-          const [comptimeValue, comptimeValueId] = r.value;
+          const comptimeValue = r.value[0];
           if (comptimeValue.variant !== Semantic.ENode.SymbolValueExpr) {
             throw new CompilerError(
               `For each loop over something other than a parameter pack is not implemented yet`,
@@ -5859,13 +5891,13 @@ export class SemanticElaborator {
 
           const allScopes: Semantic.StatementId[] = [];
           for (let i = 0; i < comptimeExpr.parameters.length; i++) {
-            const [thenScope, thenScopeId] = Semantic.addBlockScope(this.sr, {
+            const thenScopeId = Semantic.addBlockScope(this.sr, {
               variant: Semantic.ENode.BlockScope,
               statements: [],
               emittedExpr: -1 as Semantic.ExprId,
               constraints: [...this.currentContext.constraints],
               sourceloc: s.sourceloc,
-            });
+            })[1];
 
             const semanticParamId = comptimeExpr.parameters[i];
             const paramValue = this.sr.symbolNodes.get(semanticParamId);
@@ -5928,15 +5960,6 @@ export class SemanticElaborator {
                 sourceloc: s.sourceloc,
               })[1],
               sourceloc: s.sourceloc,
-              // If all generated scopes of the comptime for-each loop - that is - every single iteration - does
-              // not return, then the entire for loop is marked as no-return
-              noreturn: allScopes.every((s) => {
-                const statement = this.sr.statementNodes.get(s);
-                assert(statement.variant === Semantic.ENode.ExprStatement);
-                const expr = this.sr.exprNodes.get(statement.expr);
-                assert(expr.variant === Semantic.ENode.BlockScopeExpr);
-                return expr.noreturn;
-              }),
               isTemporary: true,
               type: this.sr.b.voidType(),
             })[1],
@@ -5963,6 +5986,7 @@ export class SemanticElaborator {
 
         this.currentContext.scopeCanExitEarly.add(this.currentContext.currentScope);
         this.currentContext.scopeWillExitEarly.add(this.currentContext.currentScope);
+        this.currentContext.scopeNoFallthrough.add(this.currentContext.currentScope);
 
         return Semantic.addStatement(this.sr, {
           variant: Semantic.ENode.RaiseStatement,
@@ -6727,7 +6751,7 @@ export class SemanticElaborator {
             then: Semantic.addBlockScope(this.sr, {
               variant: Semantic.ENode.BlockScope,
               constraints: [],
-              emittedExpr: -1 as Semantic.ExprId,
+              emittedExpr: this.sr.b.noneExpr()[1],
               statements: [returnStatement()],
               sourceloc: errPropExpr.sourceloc,
             })[1],
@@ -7118,12 +7142,24 @@ export class SemanticElaborator {
       },
     );
 
+    if (result.canExitEarly) {
+      this.currentContext.scopeCanExitEarly.add(this.currentContext.currentScope);
+    }
+    if (result.noFallthrough) {
+      this.currentContext.scopeNoFallthrough.add(this.currentContext.currentScope);
+    }
+    if (result.noReturn) {
+      this.currentContext.scopeNoReturn.add(this.currentContext.currentScope);
+    }
+    if (result.willExitEarly) {
+      this.currentContext.scopeWillExitEarly.add(this.currentContext.currentScope);
+    }
+
     assert(scope.emittedExpr !== -1);
     return Semantic.addExpr(this.sr, {
       variant: Semantic.ENode.BlockScopeExpr,
       instanceIds: [],
       block: scopeId,
-      noreturn: result.noReturn,
       isTemporary: true,
       type: this.sr.exprNodes.get(scope.emittedExpr).type,
       sourceloc: blockScopeExpr.sourceloc,
@@ -7254,10 +7290,7 @@ export class SemanticElaborator {
 
     attemptExpr.type = resultUnion;
 
-    const [attemptScopeExpr, attemptScopeExprId] = this.sr.b.blockScopeExpr(
-      attemptScopeId,
-      attemptScopeResult.noReturn,
-    );
+    const attemptScopeExprId = this.sr.b.blockScopeExpr(attemptScopeId)[1];
     if (attemptExpr.attemptScopeReturnsType) {
       attemptExpr.attemptScopeExpr = Conversion.MakeConversionOrThrow(
         this.sr,
@@ -7272,7 +7305,7 @@ export class SemanticElaborator {
       attemptExpr.attemptScopeExpr = attemptScopeExprId;
     }
 
-    const [elseExpr, elseExprId] = this.sr.b.blockScopeExpr(elseScopeId, elseScopeResult.noReturn);
+    const elseExprId = this.sr.b.blockScopeExpr(elseScopeId)[1];
     if (attemptExpr.elseScopeReturnsType) {
       attemptExpr.elseScopeExpr = Conversion.MakeConversionOrThrow(
         this.sr,
@@ -7312,6 +7345,28 @@ export class SemanticElaborator {
 
     attemptExpr.errorUnionType = errorUnion;
 
+    console.log(attemptScopeResult, elseScopeResult);
+    // Handle control flow analysis
+    console.error(
+      "FIX THIS: The control flow analysis for attempt/else blocks is completely broken, but it cannot be fixed because we don't know where it escapes to. We need a solution so we know whether it escapes to the function with a return statement (which also applies to the parent) or if it escapes to the else block with an error (which does NOT apply to the parent). Find a way to distinguish both, and then try hard to actually get the control flow right.",
+    );
+    if (elseScopeResult.canExitEarly) {
+      this.currentContext.scopeCanExitEarly.add(this.currentContext.currentScope);
+    }
+    if (elseScopeResult.willExitEarly) {
+      this.currentContext.scopeWillExitEarly.add(this.currentContext.currentScope);
+    }
+    if (
+      (attemptScopeResult.willExitEarly || attemptScopeResult.noReturn) &&
+      (elseScopeResult.willExitEarly || elseScopeResult.noReturn)
+    ) {
+      this.currentContext.scopeNoFallthrough.add(this.currentContext.currentScope);
+    }
+    if (attemptScopeResult.noReturn && elseScopeResult.noReturn) {
+      this.currentContext.scopeNoReturn.add(this.currentContext.currentScope);
+    }
+
+    assert(attemptBlockScope.emittedExpr !== -1 && elseBlockScope.emittedExpr !== -1);
     return [attemptExpr, attemptExprId] as const;
   }
 
@@ -7404,13 +7459,12 @@ export class SemanticBuilder {
     });
   }
 
-  blockScopeExpr(blockScopeId: Semantic.BlockScopeId, noreturn: boolean) {
+  blockScopeExpr(blockScopeId: Semantic.BlockScopeId) {
     const blockScope = this.sr.blockScopeNodes.get(blockScopeId);
     return Semantic.addExpr(this.sr, {
       variant: Semantic.ENode.BlockScopeExpr,
       block: blockScopeId,
       instanceIds: [],
-      noreturn: noreturn,
       isTemporary: true,
       sourceloc: blockScope.sourceloc,
       type: blockScope.emittedExpr
@@ -7987,6 +8041,7 @@ export class SemanticBuilder {
     parameterNames: string[];
     funcname: string;
     bodySourceCode: string;
+    currentScope: Collect.ScopeId;
     sourceloc: SourceLoc;
   }): [Semantic.FunctionSymbol, Semantic.SymbolId] {
     const fType = this.sr.typeDefNodes.get(args.functionTypeId);
@@ -8005,41 +8060,31 @@ export class SemanticBuilder {
       args.bodySourceCode
     } \n}`;
 
-    console.log(fullSource);
-    const moduleScope = this.sr.cc.scopeNodes.get(this.sr.cc.moduleScopeId);
-    assert(moduleScope.variant === Collect.ENode.ModuleScope);
+    let scopeId = this.sr.e.currentContext.currentScope;
+    while (true) {
+      let scope = this.sr.cc.scopeNodes.get(scopeId);
+      if (
+        scope.variant === Collect.ENode.BlockScope ||
+        scope.variant === Collect.ENode.NamespaceScope ||
+        scope.variant === Collect.ENode.FunctionScope
+      ) {
+        scopeId = scope.parentScope;
+        continue;
+      }
 
-    const ns = (a) => {
-      const s = this.sr.cc.symbolNodes.get(a);
-      if (s.variant === Collect.ENode.TypeDefSymbol) {
-        const t = this.sr.cc.typeDefNodes.get(s.typeDef);
-        if (t.variant === Collect.ENode.NamespaceTypeDef) {
-          console.log(t.name);
-        }
-      }
-    };
-    for (const a of moduleScope.symbols) {
-      ns(a);
+      break;
     }
-    for (const sc of moduleScope.scopes) {
-      const s = this.sr.cc.scopeNodes.get(sc);
-      if (s.variant === Collect.ENode.UnitScope) {
-        for (const ss of s.symbols) ns(ss);
-        for (const ssc of s.scopes) {
-          const scope = this.sr.cc.scopeNodes.get(ssc);
-          if (scope.variant === Collect.ENode.FileScope) {
-            for (const sss of scope.symbols) ns(sss);
-          }
-        }
-      }
-    }
+
+    let scope = this.sr.cc.scopeNodes.get(scopeId);
     assert(
-      false,
-      "TODO: Fix this problem. The issue is that the original source is collected in ModuleScope>UnitScope>FileScope. The user symbols are defined in FileScope + wrapped in ModuleNamespace (e.g. haze_v0_0_0). But the ModuleNamespace is in the FileScope. The collectImmediate function does not know what UNIT the function came from because collection already happened, and references the Global Module Scope. But haze_v0_0_0 does not exist in the global Module Scope. We need some kind of alias from the module root to the unit for the module namespace.",
+      scope.variant === Collect.ENode.ModuleScope || scope.variant === Collect.ENode.FileScope,
     );
-    this.sr.moduleCompiler.collectImmediate(fullSource);
 
-    const [e, eId] = this.sr.e.expr(
+    this.sr.moduleCompiler.collectImmediate(fullSource, {
+      inScope: scopeId,
+    });
+
+    const [e, _] = this.sr.e.expr(
       Collect.makeExpr(this.sr.cc, {
         variant: Collect.ENode.SymbolValueExpr,
         genericArgs: [],
@@ -9526,7 +9571,6 @@ export namespace Semantic {
     variant: ENode.BlockScopeExpr;
     instanceIds: InstanceId[];
     block: BlockScopeId;
-    noreturn: boolean;
     type: TypeUseId;
     isTemporary: boolean;
     sourceloc: SourceLoc;
@@ -10046,6 +10090,7 @@ export namespace Semantic {
     elaborationTypeOverride: Map<Collect.SymbolId, Semantic.TypeUseId>;
     elaboratedVariables: Map<Collect.SymbolId, Semantic.SymbolId>;
     scopeNoReturn: Set<Collect.ScopeId>;
+    scopeNoFallthrough: Set<Collect.ScopeId>;
     scopeCanExitEarly: Set<Collect.ScopeId>;
     scopeWillExitEarly: Set<Collect.ScopeId>;
   };
@@ -10067,6 +10112,7 @@ export namespace Semantic {
       },
       scopeNoReturn: new Set(),
       scopeCanExitEarly: new Set(),
+      scopeNoFallthrough: new Set(),
       scopeWillExitEarly: new Set(),
       elaboratedVariables: new Map(),
       elaborationTypeOverride: new Map(),
@@ -10092,6 +10138,7 @@ export namespace Semantic {
       scopeNoReturn: new Set(parent.scopeNoReturn),
       scopeCanExitEarly: new Set(parent.scopeCanExitEarly),
       scopeWillExitEarly: new Set(parent.scopeWillExitEarly),
+      scopeNoFallthrough: new Set(parent.scopeNoFallthrough),
       elaboratedVariables: new Map(parent.elaboratedVariables),
       elaborationTypeOverride: new Map(parent.elaborationTypeOverride),
     };
@@ -10116,6 +10163,7 @@ export namespace Semantic {
       scopeNoReturn: new Set([...a.scopeNoReturn, ...b.scopeNoReturn]),
       scopeCanExitEarly: new Set([...a.scopeCanExitEarly, ...b.scopeCanExitEarly]),
       scopeWillExitEarly: new Set([...a.scopeWillExitEarly, ...b.scopeWillExitEarly]),
+      scopeNoFallthrough: new Set([...a.scopeNoFallthrough, ...b.scopeNoFallthrough]),
       elaboratedVariables: new Map([...a.elaboratedVariables, ...b.elaboratedVariables]),
       elaborationTypeOverride: new Map([
         ...a.elaborationTypeOverride,
@@ -10328,18 +10376,6 @@ export namespace Semantic {
         },
       ];
     }
-
-    // if (type.variant === Semantic.ENode.NamespaceDatatype) {
-    //   const currentModuleNamespace = getModuleGlobalNamespaceName(
-    //     sr.cc.config.name,
-    //     sr.cc.config.version,
-    //   );
-    //   // console.log(type.name);
-    //   // console.log();
-    //   if (type.name === currentModuleNamespace) {
-    //     return [];
-    //   }
-    // }
 
     let current = {
       pretty: type.name,

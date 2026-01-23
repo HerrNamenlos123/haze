@@ -49,6 +49,7 @@ import { Parser } from "./Parser/Parser";
 import {
   Collect,
   CollectFile,
+  CollectImmediate,
   ECollectionMode,
   makeCollectionContext,
   PrettyPrintCollected,
@@ -1256,19 +1257,12 @@ export class ModuleCompiler {
 
   collectImmediate(
     sourceCode: string,
-    fullPath = "internal",
-    mode = ECollectionMode.ImportUnderRootDirectly,
+    args: {
+      inScope: Collect.ScopeId;
+    },
   ) {
-    const ast = Parser.parseTextToAST(this.config, sourceCode, fullPath);
-    CollectFile(
-      this.cc,
-      ast,
-      this.cc.moduleScopeId,
-      fullPath,
-      this.config.name,
-      this.config.version,
-      mode,
-    );
+    const ast = Parser.parseTextToAST(this.config, sourceCode, "internal");
+    CollectImmediate(this.cc, ast, args.inScope);
   }
 
   async addProjectSourceFiles() {
@@ -1509,7 +1503,6 @@ export class ModuleCompiler {
       throw new GeneralError(`Build of generator step ${gen.name} failed`);
     }
 
-    console.log(this.hazeWorkspaceDirectory);
     await withEnv(
       {
         HAZE_WORKSPACE_DIR: this.hazeWorkspaceDirectory,

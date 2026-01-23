@@ -929,7 +929,6 @@ export function lowerExpr(
         if (globalVariableStatementId) {
           const globalVariableStatement = lr.sr.symbolNodes.get(globalVariableStatementId);
           assert(globalVariableStatement.variant === Semantic.ENode.GlobalVariableDefinitionSymbol);
-          globalVariableStatement.name;
           const mangled = Semantic.mangleSymbol(lr.sr, expr.symbol);
           mangledName = mangled.name;
           wasMangled = mangled.wasMangled;
@@ -2733,6 +2732,7 @@ function lowerBlockScope(
     printWarningMessage(`Dead code detected and stripped`, location);
   }
 
+  assert(blockScope.emittedExpr !== -1);
   const emitted = lowerExpr(lr, blockScope.emittedExpr, statements, instanceInfo)[1];
 
   if (returnedExpr !== undefined) {
@@ -3010,9 +3010,10 @@ function serializeLoweredExpr(lr: Lowered.Module, exprId: Lowered.ExprId): strin
     case Lowered.ENode.UnionTagCheckExpr:
       return `((${serializeLoweredExpr(lr, expr.expr)}) is union tags [${expr.tags}])`;
 
-    case Lowered.ENode.ExplicitCastExpr:
+    case Lowered.ENode.ExplicitCastExpr: {
       const exprType = lr.typeUseNodes.get(expr.type);
       return `(${serializeLoweredExpr(lr, expr.expr)} as ${exprType.name.prettyName})`;
+    }
 
     case Lowered.ENode.ExprCallExpr:
       return `((${serializeLoweredExpr(lr, expr.expr)})(${expr.arguments
@@ -3076,6 +3077,8 @@ function serializeLoweredExpr(lr: Lowered.Module, exprId: Lowered.ExprId): strin
         return `null`;
       } else if (expr.literal.type === EPrimitive.none) {
         return `none`;
+      } else if (expr.literal.type === EPrimitive.Regex) {
+        return `Regex`;
       } else if (expr.literal.type === "enum") {
         return `Enum Literal`;
       } else {

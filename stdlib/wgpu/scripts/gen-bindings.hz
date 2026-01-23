@@ -9,50 +9,38 @@ struct EnumResult {
     values: []EnumValue = {};
 }
 
-matchEnums(filepath: str): Result<[]EnumResult, str> {
+extractEnums(file: str): Result<[]EnumResult, str> {
     attempt {
-        let file = fs.readFile(filepath)?!;
-
         // Remove all comments to avoid accidental matches
         let stripped = regex.replace(r"\/\/[^\n\r]*|\/\*[\s\S]*?\*\/", file, "");
 
-        let enumsBodies = regex.findAll(r"enum\s+(?:\w+\s*)?\{[\s\S]*?\}", stripped);
-        let enumCountBaseline = enumsBodies.length;
+        // Get loose baseline enum number to make sure we are not missing some weird inconsistent enums
+        let baselineEnums = regex.findAll(r"enum\s+(?:\w+\s*)?\{[\s\S]*?\}", stripped);
 
+        // Now get them using the strictly matching structure
         let enumDefinitions = regex.findAll(r"(?:typedef\s+)?enum\s+(?:(\w+)\s*)?\{([\s\S]*?)\}\s*(\w+)?\s*", stripped);
-        assert(enumDefinitions.length == enumCountBaseline);
+        assert(enumDefinitions.length == baselineEnums.length);
 
         let results = []EnumResult {};
-
         for (let i = 0; i < enumDefinitions.length; i++) {
-            fmt.println(f"Enum {i}: ");
-            let enumText = stripped.substr(enumDefinitions[i].start, enumDefinitions[i].end);
-            let enumMatches = regex.find(r"^(?:typedef\s+)?enum\s+(?:(\w+)\s*)?\{([\s\S]*?)\}\s*(\w+)?\s*$", enumText);
-            if !enumMatches { raise "enum not found"; }
-            assert(enumMatches.groups.length == 3);
-            let structName = enumText.substr(enumMatches.groups[0].start, enumMatches.groups[0].end);
-            let body = enumText.substr(enumMatches.groups[1].start, enumMatches.groups[1].end);
-            let typedefName = enumText.substr(enumMatches.groups[2].start, enumMatches.groups[2].end);
+            assert(enumDefinitions[i].groups.length == 3);
 
             let result = EnumResult {
-                name: typedefName,
+                name: enumDefinitions[i].groups[2].text,
             };
 
-            // let enumerators = regex.findAll(r"(\w+)\s*(?:=\s*([^,}]+))?\s*,?", body);
-            // for (let j = 0; j < enumerators.length; j++) {
-            //     let enumerator = body.substr(enumerators[j].start, enumerators[j].end);
-
-            //     let values = regex.find(r"^\s*(\w+)\s*(?:=\s*(.+?))?\s*,?\s*$", enumerator);
-            //     if !values { raise "Values in enum not found"; }
-            //     assert(values.groups.length == 2);
-            //     let enumeratorName = enumerator.substr(values.groups[0].start, values.groups[0].end);
-            //     let enumeratorValue = enumerator.substr(values.groups[1].start, values.groups[1].end);
-            //     assert(regex.match(r"^0[xX][0-9a-fA-F]+$", enumeratorValue));
-            //     result.values.push({
-            //         name: enumeratorName,
-            //         value: enumeratorValue,
-            //     })
-            // }
+            let enumerators = regex.findAll(r"(\w+)\s*(?:=\s*([^,}]+))?\s*,?", enumDefinitions[i].groups[1].text);
+            for (let j = 0; j < enumerators.length; j++) {
+                let values = regex.find(r"^\s*(\w+)\s*(?:=\s*(.+?))?\s*,?\s*$", enumerators[j].text);
+                if !values { raise "Values in enum not found"; }
+                assert(values.groups.length == 2);
+                let enumeratorValue = values.groups[1].text;
+                assert(regex.match(r"^0[xX][0-9a-fA-F]+$", enumeratorValue));
+                result.values.push({
+                    name: values.groups[0].text,
+                    value: enumeratorValue,
+                })
+            }
             results.push(result);
         }
 
@@ -72,6 +60,23 @@ matchEnums(filepath: str): Result<[]EnumResult, str> {
     }
 }
 
+struct GenArgs {
+    outfile: str;
+    enums: []EnumResult;
+}
+
+generateBindings(args: GenArgs) {
+    let file = "";
+    file = file + "A";
+    fs.writeFile(args.outfile, file)?!;
+}
+
+fooz() {
+    if (false) {
+        return 5;
+    }
+}
+
 generate(): int {
     attempt {
         let binaryDir = env.get("HAZE_MODULE_BINARY_DIR");
@@ -84,11 +89,24 @@ generate(): int {
         if !workspaceDir { raise f"HAZE_WORKSPACE_DIR not defined"; }
 
         let filepath = f"{workspaceDir}/wgpu/bin/include/webgpu.h";
-        matchEnums(filepath)?!;
+        let file = fs.readFile(filepath)?!;
+        let enums = extractEnums(file)?!;
+
+        generateBindings({
+            outfile: f"{binaryDir}/autogen/webgpu.hz",
+            enums: enums,
+        });
     }
     else e {
-        fmt.println(f"build-wgpu step failed: {e}");
-        return 1;
+        if e is fs.Error {
+            fmt.println(f"build-wgpu step failed: {e}");
+            return 1;
+        }
+        else if e is str {
+            fmt.println(f"build-wgpu step failed: {e}");
+            return 1;
+        }
+        assert(false);
     }
     return 0;
 }

@@ -121,23 +121,18 @@ hzstd_bool_t hzstd_regex_match(hzstd_regex_t regex, hzstd_str_t text)
   return rc >= 0;
 }
 
-hzstd_regex_find_result_t hzstd_regex_find(hzstd_allocator_t allocator, hzstd_regex_t regex, hzstd_str_t text)
+hzstd_regex_find_one_result_t hzstd_regex_find(hzstd_allocator_t allocator, hzstd_regex_t regex, hzstd_str_t text)
 {
-  hzstd_regex_find_result_t result
-      = { 
-        .found = false,
-        .match = {
-          .start = 0,
-          .end = 0,
-        },
-        .groups = (HZSTD_DYNAMIC_ARRAY_CREATE(allocator, hzstd_regex_span_t, HZSTD_DEFAULT_DYNAMIC_ARRAY_CAPACITY)) };
+  hzstd_regex_find_one_result_t result = {
+    .found = false,
+    .match = { 0 },
+  };
 
   if (!regex.blob || !regex.blob->code) {
     return result;
   }
 
   pcre2_code* code = (pcre2_code*)regex.blob->code;
-
   pcre2_match_data* md = pcre2_match_data_create_from_pattern(code, NULL);
 
   int rc = pcre2_match(code, (PCRE2_SPTR)text.data, text.length, 0, 0, md, NULL);
@@ -145,35 +140,53 @@ hzstd_regex_find_result_t hzstd_regex_find(hzstd_allocator_t allocator, hzstd_re
   if (rc >= 0) {
     PCRE2_SIZE* ovec = pcre2_get_ovector_pointer(md);
 
-    /* ---- whole match ---- */
-    result.found = 1;
-    result.match.start = (size_t)ovec[0];
-    result.match.end = (size_t)ovec[1];
-
-    /* ---- capture groups ---- */
     uint32_t group_count = 0;
     pcre2_pattern_info(code, PCRE2_INFO_CAPTURECOUNT, &group_count);
 
-    if (group_count > 0) {
+    result.found = true;
+    result.match.span.start = (size_t)ovec[0];
+    result.match.span.end = (size_t)ovec[1];
+    result.match.text.data = text.data + ovec[0];
+    result.match.text.length = ovec[1] - ovec[0];
 
-      /* Groups are 1..group_count */
-      for (uint32_t i = 1; i <= group_count; i++) {
-        PCRE2_SIZE start = ovec[2 * i];
-        PCRE2_SIZE end = ovec[2 * i + 1];
+    result.match.groups = HZSTD_DYNAMIC_ARRAY_CREATE(allocator, hzstd_regex_group_t, group_count);
 
-        hzstd_regex_span_t span;
-        if (start == PCRE2_UNSET || end == PCRE2_UNSET) {
-          /* Unmatched optional group */
-          span.start = (size_t)-1;
-          span.end = (size_t)-1;
-        }
-        else {
-          span.start = (size_t)start;
-          span.end = (size_t)end;
-        }
+    for (uint32_t i = 1; i <= group_count; i++) {
+      PCRE2_SIZE start = ovec[2 * i];
+      PCRE2_SIZE end = ovec[2 * i + 1];
 
-        HZSTD_DYNAMIC_ARRAY_PUSH(result.groups, span);
+      hzstd_regex_group_t group;
+
+      if (start == PCRE2_UNSET || end == PCRE2_UNSET) {
+        size_t anchor = (size_t)ovec[1];
+
+        group = (hzstd_regex_group_t) {
+                    .present = false,
+                    .span = {
+                        .start = anchor,
+                        .end   = anchor,
+                    },
+                    .text = {
+                        .data   = text.data + anchor,
+                        .length = 0,
+                    },
+                };
       }
+      else {
+        group = (hzstd_regex_group_t) {
+                    .present = true,
+                    .span = {
+                        .start = (size_t)start,
+                        .end   = (size_t)end,
+                    },
+                    .text = {
+                        .data   = text.data + start,
+                        .length = end - start,
+                    },
+                };
+      }
+
+      HZSTD_DYNAMIC_ARRAY_PUSH(result.match.groups, group);
     }
   }
 
@@ -272,18 +285,21 @@ hzstd_str_t hzstd_regex_replace(hzstd_regex_t regex, hzstd_str_t text, hzstd_str
   return result;
 }
 
-hzstd_dynamic_array_t* hzstd_regex_find_all(hzstd_allocator_t allocator, hzstd_regex_t regex, hzstd_str_t text)
+HZSTD_DARRAY(hzstd_regex_find_match_t)
+hzstd_regex_find_all(hzstd_allocator_t allocator, hzstd_regex_t regex, hzstd_str_t text)
 {
-  hzstd_dynamic_array_t* result
-      = HZSTD_DYNAMIC_ARRAY_CREATE(allocator, hzstd_regex_span_t, HZSTD_DEFAULT_DYNAMIC_ARRAY_CAPACITY);
+  HZSTD_DARRAY(hzstd_regex_find_match_t)
+  result = HZSTD_DYNAMIC_ARRAY_CREATE(allocator, hzstd_regex_find_match_t, HZSTD_DEFAULT_DYNAMIC_ARRAY_CAPACITY);
 
   if (!regex.blob || !regex.blob->code) {
     return result;
   }
 
   pcre2_code* code = (pcre2_code*)regex.blob->code;
-
   pcre2_match_data* md = pcre2_match_data_create_from_pattern(code, NULL);
+
+  uint32_t group_count = 0;
+  pcre2_pattern_info(code, PCRE2_INFO_CAPTURECOUNT, &group_count);
 
   size_t offset = 0;
 
@@ -291,22 +307,68 @@ hzstd_dynamic_array_t* hzstd_regex_find_all(hzstd_allocator_t allocator, hzstd_r
     int rc = pcre2_match(code, (PCRE2_SPTR)text.data, text.length, offset, 0, md, NULL);
 
     if (rc < 0) {
-      break; // no more matches
+      break;
     }
 
     PCRE2_SIZE* ovec = pcre2_get_ovector_pointer(md);
-    size_t start = (size_t)ovec[0];
-    size_t end = (size_t)ovec[1];
 
-    hzstd_regex_span_t findResult = {
-      .start = start,
-      .end = end,
-    };
-    HZSTD_DYNAMIC_ARRAY_PUSH(result, findResult);
+    hzstd_regex_find_match_t match = {
+            .span = {
+                .start = (size_t)ovec[0],
+                .end   = (size_t)ovec[1],
+            },
+            .text = {
+              .data = text.data + ovec[0],
+              .length = ovec[1] - ovec[0],
+            },
+            .groups = HZSTD_DYNAMIC_ARRAY_CREATE(
+                allocator,
+                hzstd_regex_group_t,
+                // the minimum size is internally maxed anyways
+                group_count)
+        };
 
-    // Advance offset
-    if (start == end) {
-      // zero-length match: advance by one code unit
+    /* ---- capture groups ---- */
+    for (uint32_t i = 1; i <= group_count; i++) {
+      PCRE2_SIZE start = ovec[2 * i];
+      PCRE2_SIZE end = ovec[2 * i + 1];
+
+      hzstd_regex_group_t span;
+      if (start == PCRE2_UNSET || end == PCRE2_UNSET) {
+        size_t anchor = (size_t)ovec[1];
+        span = (hzstd_regex_group_t) {
+          .present = false,
+          .span = {
+            .start = ovec[1],
+            .end = ovec[1],
+          },
+          .text = {
+            .data   = text.data + anchor,
+            .length = 0,
+          },
+        };
+      }
+      else {
+        span = (hzstd_regex_group_t) {
+          .present = true,
+          .span = {
+            .start = start,
+            .end = end,
+          },
+          .text = {
+            .data = text.data + start,
+            .length = end - start,
+          },
+        };
+      }
+
+      HZSTD_DYNAMIC_ARRAY_PUSH(match.groups, span);
+    }
+
+    HZSTD_DYNAMIC_ARRAY_PUSH(result, match);
+
+    /* ---- advance offset ---- */
+    if (match.span.start == match.span.end) {
       if (offset < text.length) {
         offset++;
       }
@@ -315,7 +377,7 @@ hzstd_dynamic_array_t* hzstd_regex_find_all(hzstd_allocator_t allocator, hzstd_r
       }
     }
     else {
-      offset = end;
+      offset = match.span.end;
     }
   }
 

@@ -2647,6 +2647,32 @@ export enum ECollectionMode {
   ImportUnderRootDirectly,
 }
 
+export function CollectImmediate(
+  cc: CollectionContext,
+  ast: ASTRoot,
+  parentScope: Collect.ScopeId,
+) {
+  const parent = cc.scopeNodes.get(parentScope);
+  for (const decl of ast) {
+    if (
+      decl.variant === "CInjectDirective" ||
+      decl.variant === "ModuleImport" ||
+      decl.variant === "GlobalVariableDefinition" ||
+      decl.variant === "TypeAlias" ||
+      decl.variant === "SymbolImport"
+    ) {
+      collectGlobalDirective(cc, decl, {
+        currentParentScope: parentScope,
+      });
+    } else {
+      const symbolId = collectSymbol(cc, decl, {
+        currentParentScope: parentScope,
+      });
+      parent.symbols.add(symbolId);
+    }
+  }
+}
+
 export function CollectFile(
   cc: CollectionContext,
   ast: ASTRoot,
@@ -2702,24 +2728,7 @@ export function CollectFile(
       fileScope.symbols.add(globalNamespaceId);
     }
   } else if (collectionMode === ECollectionMode.ImportUnderRootDirectly) {
-    for (const decl of ast) {
-      if (
-        decl.variant === "CInjectDirective" ||
-        decl.variant === "ModuleImport" ||
-        decl.variant === "GlobalVariableDefinition" ||
-        decl.variant === "TypeAlias" ||
-        decl.variant === "SymbolImport"
-      ) {
-        collectGlobalDirective(cc, decl, {
-          currentParentScope: parentScope,
-        });
-      } else {
-        const symbolId = collectSymbol(cc, decl, {
-          currentParentScope: parentScope,
-        });
-        parent.symbols.add(symbolId);
-      }
-    }
+    CollectImmediate(cc, ast, parentScope);
   }
 }
 

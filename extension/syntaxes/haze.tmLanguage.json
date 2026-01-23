@@ -55,6 +55,12 @@
         }
       ]
     },
+    "regex-strings": {
+      "name": "string.other",
+      "begin": "\\br\"",
+      "end": "\"",
+      "patterns": []
+    },
     "strings": {
       "name": "string.quoted.double",
       "begin": "\"",
@@ -229,6 +235,7 @@
     },
     "main-patterns": {
       "patterns": [
+        { "include": "#regex-strings" },
         { "include": "#keywords" },
         { "include": "#strings" },
         { "include": "#hints" },

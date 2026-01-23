@@ -4,18 +4,31 @@ namespace ffi {
     extern C hzstd_regex_runtime_compile(pattern: str, flags: str, error_message: ffi.hzstd_str_ref_t): hzstd_regex_blob_t :: final;
 
     extern C noemit struct hzstd_regex_span_t {
-        start: usize = 0;
-        end: usize = 0;
+        start: usize;
+        end: usize;
     };
-    extern C noemit struct hzstd_regex_find_result_t {
-        found: bool = false;
-        match: inline hzstd_regex_span_t = default;
-        groups: []inline hzstd_regex_span_t;
+
+    extern C noemit struct hzstd_regex_group_t {
+        span: inline hzstd_regex_span_t;
+        text: str;
+        present: bool;
+    };
+
+    extern C noemit struct hzstd_regex_find_match_t {
+        span: inline hzstd_regex_span_t;
+        text: str;
+        groups: []inline hzstd_regex_group_t;
+    };
+
+    extern C noemit struct hzstd_regex_find_one_result_t {
+        found: bool;
+        // 'match' may only be accessed if 'found' is true
+        match: inline hzstd_regex_find_match_t;
     };
 
     extern C noemit hzstd_regex_match(regex: Regex, text: str): bool :: final;
-    extern C noemit hzstd_regex_find(allocator: Allocator, regex: Regex, text: str): inline hzstd_regex_find_result_t :: final;
-    extern C noemit hzstd_regex_find_all(allocator: Allocator, regex: Regex, text: str): [](inline hzstd_regex_span_t) :: final;
+    extern C noemit hzstd_regex_find(allocator: Allocator, regex: Regex, text: str): inline hzstd_regex_find_one_result_t :: final;
+    extern C noemit hzstd_regex_find_all(allocator: Allocator, regex: Regex, text: str): [](inline hzstd_regex_find_match_t) :: final;
     extern C noemit hzstd_regex_replace(regex: Regex, text: str, replacement: str): str :: final;
 }
 
@@ -25,9 +38,16 @@ namespace regex {
         end: int;
     }
 
+    export struct Group {
+        span: Span;
+        text: str;
+        present: bool;
+    }
+
     export struct Match {
-        match: Span;
-        groups: []Span;
+        span: Span;
+        text: str;
+        groups: []Group;
     }
 
     export runtime(pattern: str, flags?: str): Result<Regex, str> {
@@ -65,8 +85,8 @@ namespace regex {
             return none;
         }
 
-        let start = result.match.start;
-        let end = result.match.end;
+        let start = result.match.span.start;
+        let end = result.match.span.end;
         if start > int.max {
             sys.panic(f"Integer overflow in regex_find result start index: {start} > {int.max}");
         }
@@ -74,37 +94,42 @@ namespace regex {
             sys.panic(f"Integer overflow in regex_find result end index: {end} > {int.max}");
         }
 
-        let spans = []Span {};
-        for (let i = 0; i < result.groups.length; i++) {
-            let s = result.groups[i].start;
-            let e = result.groups[i].end;
+        let groups = []Group {};
+        for (let i = 0; i < result.match.groups.length; i++) {
+            let s = result.match.groups[i].span.start;
+            let e = result.match.groups[i].span.end;
             assert(s <= int.max, f"Integer overflow in regex_find result start index: {start} > {int.max}");
             assert(e <= int.max, f"Integer overflow in regex_find result end index: {start} > {int.max}");
-            spans.push({
-                start: s,
-                end: e,
+            groups.push({
+                span: {
+                    start: s,
+                    end: e,
+                },
+                text: result.match.groups[i].text,
+                present: result.match.groups[i].present,
             });
         }
 
         return Match {
-            match: {
+            span: {
                 start: start,
                 end: end,
             },
-            groups: spans,
+            text: result.match.text,
+            groups: groups,
         }
     }
 
-    export findAll(r: Regex, text: str): []Span {
+    export findAll(r: Regex, text: str) {
         return findAll(Alloc.heap(), r, text);
     }
 
-    export findAll(allocator: Allocator, r: Regex, text: str): []Span {
+    export findAll(allocator: Allocator, r: Regex, text: str): []Match {
         let result = ffi.hzstd_regex_find_all(allocator, r, text);
-        let output = []Span {};
+        let matches = []Match {};
         for (let i = 0; i < result.length; i++) {
-            let start = result[i].start;
-            let end = result[i].end;
+            let start = result[i].span.start;
+            let end = result[i].span.end;
             if start > int.max {
                 sys.panic(f"Integer overflow in regex_find result start index: {start} > {int.max}");
             }
@@ -112,12 +137,32 @@ namespace regex {
                 sys.panic(f"Integer overflow in regex_find result end index: {end} > {int.max}");
             }
 
-            output.push({
-                start: start,
-                end: end,
+            let groups = []Group {};
+            for (let j = 0; j < result[i].groups.length; j++) {
+                let s = result[i].groups[j].span.start;
+                let e = result[i].groups[j].span.end;
+                assert(s <= int.max, f"Integer overflow in regex_find result start index: {start} > {int.max}");
+                assert(e <= int.max, f"Integer overflow in regex_find result end index: {start} > {int.max}");
+                groups.push({
+                    span: {
+                        start: s,
+                        end: e,
+                    },
+                    text: result[i].groups[j].text,
+                    present: result[i].groups[j].present,
+                });
+            }
+
+            matches.push({
+                span: {
+                    start: start,
+                    end: end,
+                },
+                text: result[i].text,
+                groups: groups,
             });
         }
-        return output;
+        return matches;
     }
 
     export replace(r: Regex, text: str, replacement: str): str {

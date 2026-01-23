@@ -99,6 +99,9 @@ typedef struct {
   size_t capacity;
 } hzstd_dynamic_array_t;
 
+// This type is to be used for encoding the actual type in the code, so we know what it is, even if actually irrelevant.
+#define HZSTD_DARRAY(arraytype) hzstd_dynamic_array_t*
+
 typedef enum {
   hzstd_dynamic_array_result_ok,
   hzstd_dynamic_array_result_max_array_size,
