@@ -63,7 +63,7 @@ export enum EBinaryOperation {
   GreaterThan,
   GreaterEqual,
   Equal,
-  Unequal,
+  NotEqual,
   BoolAnd,
   BoolOr,
 }
@@ -135,7 +135,7 @@ export function BinaryOperationToString(op: EBinaryOperation): string {
       return ">=";
     case EBinaryOperation.Equal:
       return "==";
-    case EBinaryOperation.Unequal:
+    case EBinaryOperation.NotEqual:
       return "!=";
     case EBinaryOperation.BoolAnd:
       return "&&";

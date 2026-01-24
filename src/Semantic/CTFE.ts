@@ -32,13 +32,13 @@ export function EvalCTFEOrFail(sr: SemanticResult, exprId: Semantic.ExprId, sour
 
 export function EvalCTFE(
   sr: SemanticResult,
-  exprId: Semantic.ExprId
+  exprId: Semantic.ExprId,
 ): { ok: true; value: [Semantic.Expression, Semantic.ExprId] } | { ok: false; error: string } {
   const expr = sr.exprNodes.get(exprId);
 
   const ok = (value: [Semantic.Expression, Semantic.ExprId]) =>
-    ({ ok: true, value: value } as const);
-  const err = (error: string) => ({ ok: false, error: error } as const);
+    ({ ok: true, value: value }) as const;
+  const err = (error: string) => ({ ok: false, error: error }) as const;
 
   switch (expr.variant) {
     case Semantic.ENode.BinaryExpr: {
@@ -51,8 +51,8 @@ export function EvalCTFE(
 
       switch (expr.operation) {
         case EBinaryOperation.Equal:
-        case EBinaryOperation.Unequal: {
-          const negate = expr.operation === EBinaryOperation.Unequal;
+        case EBinaryOperation.NotEqual: {
+          const negate = expr.operation === EBinaryOperation.NotEqual;
           if (
             left.variant === Semantic.ENode.LiteralExpr &&
             right.variant === Semantic.ENode.LiteralExpr
@@ -74,6 +74,12 @@ export function EvalCTFE(
                 assert(right.literal.type === EPrimitive.none);
                 return ok(sr.b.literal(negate ? false : true, expr.sourceloc));
               }
+              if (left.literal.type === EPrimitive.Regex) {
+                assert(right.literal.type === EPrimitive.Regex);
+                assert(left.literal.id);
+                assert(right.literal.id);
+                return ok(sr.b.literal(left.literal.id === right.literal.id, expr.sourceloc));
+              }
               if (left.literal.type === "enum") {
                 assert(right.literal.type === "enum");
                 const equal =
@@ -84,7 +90,8 @@ export function EvalCTFE(
               assert(
                 right.literal.type !== EPrimitive.null &&
                   right.literal.type !== EPrimitive.none &&
-                  right.literal.type !== "enum"
+                  right.literal.type !== EPrimitive.Regex &&
+                  right.literal.type !== "enum",
               );
               const equal = left.literal.value === right.literal.value;
               return ok(sr.b.literal(negate ? !equal : equal, expr.sourceloc));
@@ -93,28 +100,28 @@ export function EvalCTFE(
             return err(
               `Cannot compare values of type ${Semantic.serializeLiteralType(
                 sr,
-                left.literal
-              )} and ${Semantic.serializeLiteralType(sr, right.literal)} at compile time`
+                left.literal,
+              )} and ${Semantic.serializeLiteralType(sr, right.literal)} at compile time`,
             );
           } else {
             return err(
               `Cannot compare expressions of types ${Semantic.serializeTypeUse(
                 sr,
-                left.type
-              )} and ${Semantic.serializeTypeUse(sr, left.type)} at compile time`
+                left.type,
+              )} and ${Semantic.serializeTypeUse(sr, left.type)} at compile time`,
             );
           }
         }
 
         case EBinaryOperation.BoolAnd: {
-          const leftValue = EvalCTFEBoolean(sr, leftId, expr.sourceloc);
-          const rightValue = EvalCTFEBoolean(sr, rightId, expr.sourceloc);
+          const leftValue = EvalCTFEBoolean(sr, leftId);
+          const rightValue = EvalCTFEBoolean(sr, rightId);
           return ok(sr.b.literal(leftValue && rightValue, expr.sourceloc));
         }
 
         case EBinaryOperation.BoolOr: {
-          const leftValue = EvalCTFEBoolean(sr, leftId, expr.sourceloc);
-          const rightValue = EvalCTFEBoolean(sr, rightId, expr.sourceloc);
+          const leftValue = EvalCTFEBoolean(sr, leftId);
+          const rightValue = EvalCTFEBoolean(sr, rightId);
           return ok(sr.b.literal(leftValue || rightValue, expr.sourceloc));
         }
 
@@ -132,7 +139,7 @@ export function EvalCTFE(
     case Semantic.ENode.ExplicitCastExpr: {
       const r = EvalCTFE(sr, expr.expr);
       if (!r.ok) return err(r.error);
-      const [value, valueId] = r.value;
+      const [value] = r.value;
 
       const targetType = sr.typeUseNodes.get(expr.type);
       const targetTypeDef = sr.typeDefNodes.get(targetType.type);
@@ -147,8 +154,8 @@ export function EvalCTFE(
                 limit[0],
                 limit[1],
                 targetTypeDef.primitive,
-                "integer"
-              )} for type ${primitiveToString(targetTypeDef.primitive)}.`
+                "integer",
+              )} for type ${primitiveToString(targetTypeDef.primitive)}.`,
             );
           }
 
@@ -159,8 +166,8 @@ export function EvalCTFE(
                 unit: null,
                 value: literalValue,
               },
-              expr.sourceloc
-            )
+              expr.sourceloc,
+            ),
           );
         }
       }
@@ -207,13 +214,13 @@ export function EvalCTFE(
 export function EvalCTFENumericValue(
   sr: SemanticResult,
   exprId: Semantic.ExprId,
-  sourceloc: SourceLoc
+  sourceloc: SourceLoc,
 ) {
   const r = EvalCTFE(sr, exprId);
   if (!r.ok) {
     throw new CompilerError(r.error, sourceloc);
   }
-  const [result, resultId] = r.value;
+  const [result] = r.value;
   assert(result.variant === Semantic.ENode.LiteralExpr);
 
   if (
@@ -234,10 +241,11 @@ export function EvalCTFENumericValue(
   }
 }
 
-export function EvalCTFEBoolean(sr: SemanticResult, exprId: Semantic.ExprId, sourceloc: SourceLoc) {
+export function EvalCTFEBoolean(sr: SemanticResult, exprId: Semantic.ExprId) {
   const r = EvalCTFE(sr, exprId);
-  if (!r.ok) throw new CompilerError(r.error, sourceloc);
-  const [result, resultId] = r.value;
+  const expr = sr.exprNodes.get(exprId);
+  if (!r.ok) throw new CompilerError(r.error, expr.sourceloc);
+  const [result] = r.value;
   assert(result.variant === Semantic.ENode.LiteralExpr);
 
   if (result.literal.type === EPrimitive.bool) {
@@ -247,7 +255,7 @@ export function EvalCTFEBoolean(sr: SemanticResult, exprId: Semantic.ExprId, sou
       `A ${
         result.literal.type === "enum" ? `Enum Literal` : primitiveToString(result.literal.type)
       } value cannot be tested for truthiness, use explicit comparisons.`,
-      result.sourceloc
+      result.sourceloc,
     );
   }
 }

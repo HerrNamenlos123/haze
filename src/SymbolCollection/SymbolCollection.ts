@@ -456,6 +456,8 @@ export namespace Collect {
     noreturn: boolean;
     noreturnIf: {
       expr: Collect.ExprId;
+      argIndex: number | null;
+      operation: "noreturn-if-truthy" | "noreturn-if-falsy" | null;
     } | null;
   };
 
@@ -1399,6 +1401,8 @@ function collectTypeUse(
           noreturnIf: item.requires.noreturnIf
             ? {
                 expr: collectExpr(cc, item.requires.noreturnIf.expr, args),
+                argIndex: null,
+                operation: null,
               }
             : null,
         },
@@ -1566,6 +1570,8 @@ function collectSymbol(
           noreturnIf: item.requires.noreturnIf
             ? {
                 expr: collectExpr(cc, item.requires.noreturnIf.expr, args),
+                argIndex: null,
+                operation: null,
               }
             : null,
         },
@@ -2788,7 +2794,7 @@ export function printCollectedDatatype(
 
     case Collect.ENode.TaggedUnionDatatype: {
       return (
-        "union {" +
+        `${type.nodiscard ? "nodiscard " : ""}union {` +
         type.members
           .map((m) => {
             return `${m.tag}: ${printCollectedDatatype(cc, m.type)}`;
@@ -2827,6 +2833,18 @@ export const printCollectedExpr = (cc: CollectionContext, exprId: Collect.ExprId
     case Collect.ENode.LiteralExpr: {
       return "literal";
       // return Semantic.serializeLiteralValue(cc, expr.literal);
+    }
+
+    case Collect.ENode.FStringExpr: {
+      return `f"${expr.fragments
+        .map((f) => {
+          if (f.type === "expr") {
+            return "{" + printCollectedExpr(cc, f.value) + "}";
+          } else {
+            return f.value;
+          }
+        })
+        .join("")}"${expr.allocator ? "with " + printCollectedExpr(cc, expr.allocator) : ""}`;
     }
 
     case Collect.ENode.BinaryExpr: {
@@ -3066,6 +3084,12 @@ export const printCollectedStatement = (
 
     case Collect.ENode.InlineCStatement: {
       print(`__c__(${JSON.stringify(statement.value)})`);
+      break;
+    }
+
+    case Collect.ENode.ForStatement: {
+      print(`for ${statement.comptime ? "comptime " : ""}(...)`);
+      printCollectedScope(cc, statement.body, indent + 2);
       break;
     }
 

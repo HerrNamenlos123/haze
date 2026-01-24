@@ -51,6 +51,130 @@ import {
 import { EUnaryOperation, type EIncrOperation } from "../shared/AST";
 import { type Brand, type LiteralValue } from "../shared/common";
 import { makeTempId, makeTempName } from "../shared/store";
+import { ConditionChain, ConstraintSet } from "./Constraint";
+
+export enum FlowType {
+  NoReturn, // Control never comes back: Program terminates or infinite loop
+  Return, // Control exits the current context and returns from the containing function
+  Raise, // Control exits the current context and jumps to the nearest attempt/else construct
+  Fallthrough, // Control continues normally
+}
+
+export class FlowResult {
+  private set = new Set<FlowType>();
+
+  private constructor() {}
+
+  static empty() {
+    return new FlowResult();
+  }
+
+  static fallthrough() {
+    const result = new FlowResult();
+    result.add(FlowType.Fallthrough);
+    return result;
+  }
+
+  static return() {
+    const result = new FlowResult();
+    result.add(FlowType.Return);
+    return result;
+  }
+
+  clone() {
+    const result = new FlowResult();
+    result.addAll(this);
+    return result;
+  }
+
+  get() {
+    return this.set;
+  }
+
+  has(type: FlowType) {
+    return this.set.has(type);
+  }
+
+  add(type: FlowType) {
+    this.set.add(type);
+  }
+
+  remove(type: FlowType) {
+    this.set.delete(type);
+  }
+
+  addAll(result: FlowResult) {
+    for (const a of result.set) {
+      this.set.add(a);
+    }
+  }
+
+  with(type: FlowType) {
+    const result = this.clone();
+    result.add(type);
+    return result;
+  }
+
+  withAll(r: FlowResult) {
+    const result = this.clone();
+    result.addAll(r);
+    return result;
+  }
+
+  addExitFlows(src: FlowResult) {
+    for (const f of src.get()) {
+      if (f !== FlowType.Fallthrough) {
+        this.add(f);
+      }
+    }
+  }
+}
+
+export class WriteResult {
+  private set = new Set<Semantic.SymbolId>();
+
+  private constructor() {}
+
+  static empty() {
+    return new WriteResult();
+  }
+
+  clone() {
+    const result = new WriteResult();
+    result.addAll(this);
+    return result;
+  }
+
+  get() {
+    return this.set;
+  }
+
+  add(type: Semantic.SymbolId) {
+    this.set.add(type);
+  }
+
+  has(id: Semantic.SymbolId) {
+    return this.set.has(id);
+  }
+
+  addAll(result: WriteResult) {
+    for (const a of result.set) {
+      this.set.add(a);
+    }
+  }
+
+  with(type: Semantic.SymbolId) {
+    const result = this.clone();
+    result.add(type);
+    return result;
+  }
+
+  withAll(r: WriteResult) {
+    const result = this.clone();
+    result.addAll(r);
+    return result;
+  }
+}
 
 type Inference =
   | undefined
@@ -74,6 +198,49 @@ export class SemanticElaborator {
     currentContext: Semantic.ElaborationContext,
   ) {
     this.currentContext = currentContext;
+  }
+
+  withAdditionalConstraints<T>(constraints: ConstraintSet, fn: () => T): T {
+    const c = ConstraintSet.empty();
+    c.addAll(this.currentContext.constraints);
+    c.addAll(constraints);
+    return this.withContext(
+      {
+        context: Semantic.isolateElaborationContext(this.currentContext, {
+          constraints: c,
+          currentScope: this.currentContext.currentScope,
+          genericsScope: this.currentContext.genericsScope,
+          instanceDeps: this.currentContext.instanceDeps,
+        }),
+        inFunction: this.inFunction,
+        inAttemptExpr: this.inAttemptExpr,
+        functionReturnsInstanceIds: this.functionReturnsInstanceIds,
+      },
+      fn,
+    );
+  }
+
+  withScopes<T>(
+    args: {
+      currentScope: Collect.ScopeId;
+      genericsScope: Collect.ScopeId;
+    },
+    fn: () => T,
+  ): T {
+    return this.withContext(
+      {
+        context: Semantic.isolateElaborationContext(this.currentContext, {
+          currentScope: args.currentScope,
+          genericsScope: args.genericsScope,
+          constraints: this.currentContext.constraints,
+          instanceDeps: this.currentContext.instanceDeps,
+        }),
+        inFunction: this.inFunction,
+        inAttemptExpr: this.inAttemptExpr,
+        functionReturnsInstanceIds: this.functionReturnsInstanceIds,
+      },
+      fn,
+    );
   }
 
   withContext<T>(
@@ -135,31 +302,12 @@ export class SemanticElaborator {
       let [left, leftId] = this.expr(binaryExpr.left, inference);
 
       // This builds the constraints that apply to the expr itself, the right part of the AND
-      const constraints = [...this.currentContext.constraints];
-      this.buildConstraints(constraints, leftId, {});
+      const constraints = this.currentContext.constraints.clone();
+      this.buildLogicalConstraintSet(constraints, leftId);
 
-      let [right, rightId] = [
-        undefined as Semantic.Expression | undefined,
-        undefined as Semantic.ExprId | undefined,
-      ];
-      this.withContext(
-        {
-          context: Semantic.isolateElaborationContext(this.currentContext, {
-            constraints: constraints,
-            currentScope: this.currentContext.currentScope,
-            genericsScope: this.currentContext.genericsScope,
-            instanceDeps: this.currentContext.instanceDeps,
-          }),
-          functionReturnsInstanceIds: this.functionReturnsInstanceIds,
-          inFunction: this.inFunction,
-          inAttemptExpr: this.inAttemptExpr,
-        },
-        () => {
-          [right, rightId] = this.expr(binaryExpr.right, inference);
-        },
+      const [right, rightId] = this.withAdditionalConstraints(constraints, () =>
+        this.expr(binaryExpr.right, inference),
       );
-      assert(right);
-      assert(rightId);
       return this.sr.b.binaryExpr(
         Conversion.MakeConversionOrThrow(
           this.sr,
@@ -211,7 +359,7 @@ export class SemanticElaborator {
       );
     } else if (
       binaryExpr.operation === EBinaryOperation.Equal ||
-      binaryExpr.operation === EBinaryOperation.Unequal
+      binaryExpr.operation === EBinaryOperation.NotEqual
     ) {
       let left = this.expr(binaryExpr.left, inference)[0];
       let right = this.expr(binaryExpr.right, inference)[0];
@@ -266,8 +414,8 @@ export class SemanticElaborator {
       }
     }
 
-    let [left, leftId] = this.expr(binaryExpr.left, inference);
-    let [right, rightId] = this.expr(binaryExpr.right, inference);
+    let leftId = this.expr(binaryExpr.left, inference)[1];
+    let rightId = this.expr(binaryExpr.right, inference)[1];
     return this.sr.b.binaryExpr(
       leftId,
       rightId,
@@ -345,12 +493,12 @@ export class SemanticElaborator {
       if (collectedExpr.name === "sizeof") {
         this.assertNoGenericArgs(collectedExpr, "sizeof");
         this.assertParameterN(callExpr, 1, "sizeof");
-        this.sr.b.sizeof(this.expr(callExpr.arguments[0], undefined)[1]);
+        return this.sr.b.sizeof(this.expr(callExpr.arguments[0], undefined)[1]);
       }
       if (collectedExpr.name === "alignof") {
         this.assertNoGenericArgs(collectedExpr, "alignof");
         this.assertParameterN(callExpr, 1, "alignof");
-        this.sr.b.alignof(this.expr(callExpr.arguments[0], undefined)[1]);
+        return this.sr.b.alignof(this.expr(callExpr.arguments[0], undefined)[1]);
       }
       if (collectedExpr.name === "static_assert") {
         this.assertNoGenericArgs(collectedExpr, "static_assert");
@@ -373,11 +521,7 @@ export class SemanticElaborator {
             second = s;
           }
         }
-        const value = EvalCTFEBoolean(
-          this.sr,
-          this.expr(callExpr.arguments[0], undefined)[1],
-          callExpr.sourceloc,
-        );
+        const value = EvalCTFEBoolean(this.sr, this.expr(callExpr.arguments[0], undefined)[1]);
         if (value) {
           return this.sr.b.literal(true, collectedExpr.sourceloc);
         } else {
@@ -612,8 +756,6 @@ export class SemanticElaborator {
       });
     };
 
-    const argumentSourcelocs = callExpr.arguments.map((a) => this.sr.cc.exprNodes.get(a).sourceloc);
-
     assert(this.inFunction);
     if (calledExprType.variant === Semantic.ENode.CallableDatatype) {
       const ftype = this.sr.typeDefNodes.get(calledExprType.functionType);
@@ -636,6 +778,7 @@ export class SemanticElaborator {
         ftype.vararg,
         hasParameterPack,
       );
+
       return this.sr.b.callExpr(calledExprId, finalArgs, this.inFunction, callExpr.sourceloc);
     }
 
@@ -645,17 +788,6 @@ export class SemanticElaborator {
         callExpr.sourceloc,
       );
     } else if (calledExprType.variant === Semantic.ENode.FunctionDatatype) {
-      let [resolvedFunction, resolvedFunctionId] = [
-        null as Semantic.FunctionSymbol | null,
-        null as Semantic.SymbolId | null,
-      ];
-      if (calledExpr.variant === Semantic.ENode.SymbolValueExpr) {
-        const symbol = this.sr.symbolNodes.get(calledExpr.symbol);
-        assert(symbol.variant === Semantic.ENode.FunctionSymbol);
-        resolvedFunction = symbol;
-        resolvedFunctionId = calledExpr.symbol;
-      }
-
       const hasParameterPack = calledExprType.parameters.some((p) =>
         this.isParameterPackType(p.type),
       );
@@ -673,91 +805,6 @@ export class SemanticElaborator {
         calledExprType.vararg,
         hasParameterPack,
       );
-
-      // This is the handling for noreturn_if assertions like assert()
-      if (resolvedFunction && resolvedFunctionId && calledExprType.requires.noreturnIf) {
-        const noReturnIf = calledExprType.requires.noreturnIf;
-        let [e, eId] = [this.sr.cc.exprNodes.get(noReturnIf.expr), noReturnIf.expr];
-
-        let negateCondition = false;
-        const unwrapParenthesis = () => {
-          if (e.variant === Collect.ENode.ParenthesisExpr) {
-            eId = e.expr;
-            e = this.sr.cc.exprNodes.get(eId);
-          }
-        };
-
-        unwrapParenthesis();
-        if (e.variant === Collect.ENode.UnaryExpr && e.operation === EUnaryOperation.Negate) {
-          negateCondition = !negateCondition;
-          eId = e.expr;
-          e = this.sr.cc.exprNodes.get(eId);
-          unwrapParenthesis();
-        }
-
-        if (e.variant === Collect.ENode.SymbolValueExpr && e.genericArgs.length === 0) {
-          const name = e.name;
-          const paramIndex = resolvedFunction.parameterNames.findIndex((p) => p === name);
-          if (paramIndex === -1) {
-            throw new CompilerError(
-              `The condition accesses a symbol ('${name}') which is not a parameter of the function. For now, only parameters may be accessed in conditions.`,
-              e.sourceloc,
-            );
-          }
-
-          assert(paramIndex >= 0 && paramIndex < actualArgs.length);
-          const passedArgId = actualArgs[paramIndex];
-
-          assert(paramIndex >= 0 && paramIndex < calledExprType.parameters.length);
-          const param = calledExprType.parameters[paramIndex];
-          const paramTypeUse = this.sr.typeUseNodes.get(param.type);
-          const paramTypeDef = this.sr.typeDefNodes.get(paramTypeUse.type);
-
-          if (
-            paramTypeDef.variant !== Semantic.ENode.PrimitiveDatatype ||
-            paramTypeDef.primitive !== EPrimitive.bool
-          ) {
-            throw new CompilerError(
-              `Currently, noreturn_if() conditions are only allowed to access bool parameters, other types are not implemented yet`,
-              e.sourceloc,
-            );
-          }
-
-          const result = EvalCTFE(this.sr, passedArgId);
-          if (result.ok) {
-            if (
-              result.value[0].variant === Semantic.ENode.LiteralExpr &&
-              result.value[0].literal.type === EPrimitive.bool
-            ) {
-              // The condition is already known at compile time, skip the condition
-              // This is where assert(false) turns into noreturn
-              // If condition is true, just ignore all constraints
-              if (!result.value[0].literal.value) {
-                this.currentContext.scopeNoFallthrough.add(this.currentContext.currentScope);
-                if (!this.currentContext.scopeCanExitEarly.has(this.currentContext.currentScope)) {
-                  this.currentContext.scopeNoReturn.add(this.currentContext.currentScope);
-                }
-              }
-            }
-          } else {
-            // The condition is not known at compile time, build normal constraints
-
-            // This is the actual point where constraints like assert() are applied to the remaining scope
-            this.buildConstraints(this.currentContext.constraints, passedArgId, {
-              inverse: !negateCondition,
-            });
-          }
-        }
-      }
-
-      // This is the handling for if -> noreturn
-      if (calledExprType.requires.noreturn) {
-        this.currentContext.scopeNoFallthrough.add(this.currentContext.currentScope);
-        if (!this.currentContext.scopeCanExitEarly.has(this.currentContext.currentScope)) {
-          this.currentContext.scopeNoReturn.add(this.currentContext.currentScope);
-        }
-      }
-
       return this.sr.b.callExpr(calledExprId, actualArgs, this.inFunction, callExpr.sourceloc);
     } else if (calledExprType.variant === Semantic.ENode.StructDatatype) {
       const original = this.sr.cc.typeDefNodes.get(calledExprType.originalCollectedDefinition);
@@ -888,6 +935,7 @@ export class SemanticElaborator {
         e.instanceIds.forEach((i) => instanceIds.add(i));
       }
 
+      const e = this.sr.exprNodes.get(finalArgs[0]);
       return Semantic.addExpr(this.sr, {
         variant: Semantic.ENode.ValueToUnionCastExpr,
         expr: finalArgs[0],
@@ -902,6 +950,8 @@ export class SemanticElaborator {
           false,
           calledExpr.sourceloc,
         )[1],
+        flow: e.flow,
+        writes: e.writes,
       });
     } else if (calledExprType.variant === Semantic.ENode.PrimitiveDatatype) {
       throw new CompilerError(
@@ -1017,6 +1067,8 @@ export class SemanticElaborator {
             isTemporary: true,
             sourceloc: e.sourceloc,
             type: this.sr.b.boolType(),
+            flow: e.flow,
+            writes: e.writes,
           });
         }
       }
@@ -1611,6 +1663,8 @@ export class SemanticElaborator {
           false,
           memberAccess.sourceloc,
         )[1],
+        flow: object.flow,
+        writes: object.writes,
       });
     }
 
@@ -1722,6 +1776,8 @@ export class SemanticElaborator {
             false,
             memberAccess.sourceloc,
           )[1],
+          flow: object.flow,
+          writes: object.writes,
         });
       }
 
@@ -1840,6 +1896,8 @@ export class SemanticElaborator {
             false,
             memberAccess.sourceloc,
           )[1],
+          flow: object.flow,
+          writes: object.writes,
         });
       }
       if (memberAccess.memberName === "pop") {
@@ -1912,6 +1970,8 @@ export class SemanticElaborator {
             false,
             memberAccess.sourceloc,
           )[1],
+          flow: object.flow,
+          writes: object.writes,
         });
       }
       throw new CompilerError(
@@ -2091,15 +2151,6 @@ export class SemanticElaborator {
           Semantic.addType(this.sr, {
             variant: Semantic.ENode.CallableDatatype,
             thisExprType: object.type,
-            // TODO: Fix
-            // thisExprType: wasReference
-            //   ? object.type
-            //   : makeReferenceDatatypeAvailable(
-            //       sr,
-            //       object.type,
-            //       EDatatypeMutability.Const,
-            //       expr.sourceloc
-            //     ),
             functionType: elaboratedMethod.type,
             concrete: this.sr.typeDefNodes.get(elaboratedMethod.type).concrete,
           })[1],
@@ -2109,6 +2160,8 @@ export class SemanticElaborator {
         )[1],
         sourceloc: memberAccess.sourceloc,
         isTemporary: true,
+        flow: object.flow,
+        writes: object.writes,
       });
     }
 
@@ -2376,7 +2429,7 @@ export class SemanticElaborator {
               // its generics must be found from within the struct
               currentScope: definedStructType.lexicalScope,
               genericsScope: definedStructType.lexicalScope,
-              constraints: [],
+              constraints: ConstraintSet.empty(),
               instanceDeps: {
                 instanceDependsOn: new Map(),
                 structMembersDependOn: new Map(),
@@ -2435,7 +2488,7 @@ export class SemanticElaborator {
               this.sr,
               defaultExprId,
               typeId,
-              [],
+              ConstraintSet.empty(),
               symbol.sourceloc,
               Conversion.Mode.Implicit,
               false,
@@ -2838,13 +2891,72 @@ export class SemanticElaborator {
     }
   }
 
-  elaborateBlockScope(
+  sequenceControlFlow(a: FlowResult, b: FlowResult): FlowResult {
+    const out = FlowResult.empty();
+
+    // a is the state from all statements that came before
+    // b is the new statement
+    out.addAll(a);
+
+    if (out.has(FlowType.NoReturn)) {
+      // This is actually a bad case when there is code after a noreturn function.
+      // It is unreachable and should be stripped but we will just keep it and ignore the problem.
+    }
+
+    if (b.has(FlowType.Raise)) {
+      out.add(FlowType.Raise);
+    }
+    if (b.has(FlowType.Return)) {
+      out.add(FlowType.Return);
+    }
+
+    if (b.has(FlowType.NoReturn) && !(out.has(FlowType.Raise) || out.has(FlowType.Return))) {
+      out.add(FlowType.NoReturn);
+    }
+
+    if (!b.has(FlowType.Fallthrough)) {
+      // b no-fallthrough stops every fallthrough up to this point
+      out.remove(FlowType.Fallthrough);
+    }
+
+    return out;
+  }
+
+  makeAndElaborateBlockScope(sourceScopeId: Collect.ScopeId, args: { lastExprIsEmit: boolean }) {
+    const sourceScope = this.sr.cc.scopeNodes.get(sourceScopeId);
+    assert(
+      sourceScope.variant !== Collect.ENode.ModuleScope &&
+        sourceScope.variant !== Collect.ENode.UnitScope &&
+        sourceScope.variant !== Collect.ENode.FileScope,
+    );
+    const [scope, scopeId] = Semantic.addBlockScope(this.sr, {
+      variant: Semantic.ENode.BlockScope,
+      statements: [],
+      emittedExpr: -1 as Semantic.ExprId,
+      sourceloc: sourceScope.sourceloc,
+    });
+    const { flow, writes } = this.elaborateRawBlockScope(
+      {
+        targetScopeId: scopeId,
+        sourceScopeId: sourceScopeId,
+      },
+      args.lastExprIsEmit,
+    );
+    assert(scope.emittedExpr !== -1);
+    return {
+      flow: flow,
+      scope: scope,
+      scopeId: scopeId,
+      writes: writes,
+    };
+  }
+
+  elaborateRawBlockScope(
     args: {
       sourceScopeId: Collect.ScopeId;
       targetScopeId: Semantic.BlockScopeId;
     },
     lastExprIsEmit: boolean,
-    inference: Inference,
   ) {
     const scope = this.sr.cc.scopeNodes.get(args.sourceScopeId);
     assert(scope.variant === Collect.ENode.BlockScope);
@@ -2852,23 +2964,12 @@ export class SemanticElaborator {
     const blockScope = this.sr.blockScopeNodes.get(args.targetScopeId);
     assert(blockScope.variant === Semantic.ENode.BlockScope);
 
-    const newContext = Semantic.isolateElaborationContext(this.currentContext, {
-      currentScope: args.sourceScopeId,
-      genericsScope: args.sourceScopeId,
-      constraints: blockScope.constraints,
-      instanceDeps: this.currentContext.instanceDeps,
-    });
-
-    let noReturn = false;
-    let canExitEarly = false;
-    let willExitEarly = false;
-    let noFallthrough = false;
-    this.withContext(
+    let blockFlow = FlowResult.fallthrough();
+    let blockWrites = WriteResult.empty();
+    this.withScopes(
       {
-        context: newContext,
-        inFunction: this.inFunction,
-        functionReturnsInstanceIds: this.functionReturnsInstanceIds,
-        inAttemptExpr: this.inAttemptExpr,
+        currentScope: args.sourceScopeId,
+        genericsScope: args.sourceScopeId,
       },
       () => {
         for (const sId of scope.symbols) {
@@ -2893,11 +2994,19 @@ export class SemanticElaborator {
             gonnaInstantiateStructWithType = this.getFunctionSymbolReturnType(this.inFunction);
           }
 
-          const statementId = this.elaborateStatement(sId, {
+          const {
+            flow: statementFlow,
+            writes: statementWrites,
+            statementId,
+          } = this.elaborateStatement(sId, {
             gonnaInstantiateStructWithType: gonnaInstantiateStructWithType,
             unsafe: scope.unsafe,
           });
+          if (!statementId) return;
+
           const statement = this.sr.statementNodes.get(statementId);
+          blockFlow = this.sequenceControlFlow(blockFlow, statementFlow);
+          blockWrites.addAll(statementWrites);
 
           if (
             lastExprIsEmit &&
@@ -2912,38 +3021,8 @@ export class SemanticElaborator {
             blockScope.statements.push(statementId);
           }
         });
-
-        // NOTE
-        // the noReturn attribute has to be solved via the currentContext Set and not just via returned noReturn flags,
-        // because expressions have to set it and we cannot return flags from every expression.
-        // It may look weirdly complicated in just this function but it is required because of expressions.
-        if (this.currentContext.scopeNoReturn.has(args.sourceScopeId)) {
-          noReturn = true;
-        }
-        if (this.currentContext.scopeCanExitEarly.has(args.sourceScopeId)) {
-          canExitEarly = true;
-        }
-        if (this.currentContext.scopeWillExitEarly.has(args.sourceScopeId)) {
-          willExitEarly = true;
-        }
-        if (this.currentContext.scopeNoFallthrough.has(args.sourceScopeId)) {
-          noFallthrough = true;
-        }
       },
     );
-
-    if (canExitEarly) {
-      this.currentContext.scopeCanExitEarly.add(args.sourceScopeId);
-    }
-    if (willExitEarly) {
-      this.currentContext.scopeWillExitEarly.add(args.sourceScopeId);
-    }
-    if (noReturn) {
-      this.currentContext.scopeNoReturn.add(args.sourceScopeId);
-    }
-    if (noFallthrough) {
-      this.currentContext.scopeNoFallthrough.add(args.sourceScopeId);
-    }
 
     if (blockScope.emittedExpr === -1) {
       // Still nothing returned, so return "none" which is our replacement for void
@@ -2957,10 +3036,8 @@ export class SemanticElaborator {
 
     assert(blockScope.emittedExpr !== -1);
     return {
-      noReturn: noReturn,
-      canExitEarly: canExitEarly,
-      willExitEarly: willExitEarly,
-      noFallthrough: noFallthrough,
+      flow: blockFlow,
+      writes: blockWrites,
     };
   }
 
@@ -3204,6 +3281,74 @@ export class SemanticElaborator {
           sourceloc: func.sourceloc,
         });
 
+        let noreturnIf: {
+          expr: Collect.ExprId;
+          argIndex: number;
+          operation: "noreturn-if-truthy" | "noreturn-if-falsy";
+        } | null = null;
+        if (func.requires.noreturnIf) {
+          // We do not care about function-type identity since we don't set it, since the
+          // Deferred Function Type does not have requirements per definition anyways, therefore
+          // it is enough if we just set it once after the function has been elaborated.
+          let [e, eId] = [
+            this.sr.cc.exprNodes.get(func.requires.noreturnIf.expr),
+            func.requires.noreturnIf.expr,
+          ];
+
+          let negateCondition = false;
+          const unwrapParenthesis = () => {
+            if (e.variant === Collect.ENode.ParenthesisExpr) {
+              eId = e.expr;
+              e = this.sr.cc.exprNodes.get(eId);
+            }
+          };
+
+          unwrapParenthesis();
+          if (e.variant === Collect.ENode.UnaryExpr && e.operation === EUnaryOperation.Negate) {
+            negateCondition = !negateCondition;
+            eId = e.expr;
+            e = this.sr.cc.exprNodes.get(eId);
+            unwrapParenthesis();
+          }
+
+          if (e.variant === Collect.ENode.SymbolValueExpr && e.genericArgs.length === 0) {
+            const name = e.name;
+            const paramIndex = parameterNames.findIndex((p) => p === name);
+            if (paramIndex === -1) {
+              throw new CompilerError(
+                `The condition accesses a symbol ('${name}') which is not a parameter of the function. For now, only parameters may be accessed in conditions.`,
+                e.sourceloc,
+              );
+            }
+
+            assert(paramIndex >= 0 && paramIndex < parameters.length);
+            const param = parameters[paramIndex];
+            const paramTypeUse = this.sr.typeUseNodes.get(param.type);
+            const paramTypeDef = this.sr.typeDefNodes.get(paramTypeUse.type);
+
+            if (
+              paramTypeDef.variant !== Semantic.ENode.PrimitiveDatatype ||
+              paramTypeDef.primitive !== EPrimitive.bool
+            ) {
+              throw new CompilerError(
+                `Currently, noreturn_if() conditions are only allowed to access bool parameters, other types are not implemented yet`,
+                e.sourceloc,
+              );
+            }
+
+            noreturnIf = {
+              expr: func.requires.noreturnIf.expr,
+              argIndex: paramIndex,
+              operation: negateCondition ? "noreturn-if-falsy" : "noreturn-if-truthy",
+            };
+          } else {
+            throw new CompilerError(
+              `Unsupported expression in noreturn_if() construct`,
+              e.sourceloc,
+            );
+          }
+        }
+
         if (func.requires.final) {
           const returnType = expectedReturnType || this.sr.b.voidType();
           ftype = makeRawFunctionDatatypeAvailable(this.sr, {
@@ -3214,7 +3359,7 @@ export class SemanticElaborator {
               final: func.requires.final,
               noreturn: func.requires.noreturn,
               pure: func.requires.pure,
-              noreturnIf: func.requires.noreturnIf,
+              noreturnIf: noreturnIf,
             },
             sourceloc: func.sourceloc,
           });
@@ -3304,23 +3449,12 @@ export class SemanticElaborator {
             }
           }
 
-          let blockScopeResult: {
-            willExitEarly: boolean;
-            canExitEarly: boolean;
-            noReturn: boolean;
-            noFallthrough: boolean;
-          } | null = null;
-          if (func.functionScope) {
+          if (!func.functionScope) {
+            // Function declaration without body
+          } else {
+            // With scope
             const functionScope = this.sr.cc.scopeNodes.get(func.functionScope);
             assert(functionScope.variant === Collect.ENode.FunctionScope);
-
-            const bodyScopeId = Semantic.addBlockScope<Semantic.BlockScope>(this.sr, {
-              variant: Semantic.ENode.BlockScope,
-              statements: [],
-              emittedExpr: -1 as Semantic.ExprId,
-              constraints: [],
-              sourceloc: functionScope.sourceloc,
-            })[1];
 
             if (symbol.methodType === EMethodType.Method) {
               const collectedThisRefId = [...functionScope.symbols].find((sId) => {
@@ -3373,25 +3507,19 @@ export class SemanticElaborator {
               }
             }
 
-            symbol.scope = bodyScopeId;
-            blockScopeResult = this.withContext(
+            const { scopeId, flow } = this.withContext(
               {
                 context: newContext,
                 inFunction: symbolId,
                 functionReturnsInstanceIds: symbol.returnsInstanceIds,
                 inAttemptExpr: null,
               },
-              () => {
-                return this.elaborateBlockScope(
-                  {
-                    sourceScopeId: functionScope.blockScope,
-                    targetScopeId: bodyScopeId,
-                  },
-                  false,
-                  undefined,
-                );
-              },
+              () =>
+                this.makeAndElaborateBlockScope(functionScope.blockScope, {
+                  lastExprIsEmit: false,
+                }),
             );
+            symbol.scope = scopeId;
 
             if (func.name === "main" && parentStructOrNS) {
               const modulePrefix = getModuleGlobalNamespaceName(
@@ -3417,129 +3545,123 @@ export class SemanticElaborator {
                 this.sr.globalMainFunction = symbolId;
               }
             }
-          }
 
-          Semantic.getInstanceDepsGraph(
-            symbol.instanceDepsSnapshot,
-            symbol.returnsInstanceIds,
-          ).forEach((d) => symbol.returnsInstanceIds.add(d));
+            Semantic.getInstanceDepsGraph(
+              symbol.instanceDepsSnapshot,
+              symbol.returnsInstanceIds,
+            ).forEach((d) => symbol.returnsInstanceIds.add(d));
 
-          // Add "none" as a returned value if nothing is returned
-          if (
-            blockScopeResult &&
-            !blockScopeResult.noFallthrough &&
-            !func.requires.noreturn &&
-            !func.requires.final
-          ) {
-            symbol.returnedDatatypes.add(this.sr.b.noneType());
-          }
-
-          if (!func.requires.final) {
-            let inferredReturnType: Semantic.TypeUseId | null = expectedReturnType;
-            if (!inferredReturnType) {
-              if (symbol.returnedDatatypes.size === 0) {
-                inferredReturnType = this.sr.b.voidType();
-              } else if (symbol.returnedDatatypes.size === 1) {
-                inferredReturnType = [...symbol.returnedDatatypes][0];
-              } else {
-                inferredReturnType = this.sr.b.untaggedUnionTypeUse(
-                  [...symbol.returnedDatatypes],
-                  symbol.sourceloc,
-                );
-              }
+            // Add "none" as a returned value if nothing is returned. This is only for the return type.
+            if (flow.has(FlowType.Fallthrough) && !func.requires.noreturn && !func.requires.final) {
+              symbol.returnedDatatypes.add(this.sr.b.noneType());
             }
 
-            // If anything is returned that is a reference, like an object or an array, then it must be considered impure,
-            // even if the return type is not mutable, because objects are required to have "identity" and multiple calls
-            // cannot be collapsed into a single one because otherwise two different objects would have the same identity.
-            const returnUse = this.sr.typeUseNodes.get(inferredReturnType);
-            const returnDef = this.sr.typeDefNodes.get(returnUse.type);
-            if (
-              returnDef.variant === Semantic.ENode.StructDatatype ||
-              returnDef.variant === Semantic.ENode.DynamicArrayDatatype ||
-              (returnDef.variant === Semantic.ENode.UntaggedUnionDatatype &&
-                returnDef.members.some((m) => {
-                  const typeUse = this.sr.typeUseNodes.get(m);
-                  const typeDef = this.sr.typeDefNodes.get(typeUse.type);
-                  return (
-                    typeDef.variant === Semantic.ENode.StructDatatype ||
-                    typeDef.variant === Semantic.ENode.DynamicArrayDatatype
-                  );
-                })) ||
-              (returnDef.variant === Semantic.ENode.TaggedUnionDatatype &&
-                returnDef.members.some((m) => {
-                  const typeUse = this.sr.typeUseNodes.get(m.type);
-                  const typeDef = this.sr.typeDefNodes.get(typeUse.type);
-                  return (
-                    typeDef.variant === Semantic.ENode.StructDatatype ||
-                    typeDef.variant === Semantic.ENode.DynamicArrayDatatype
-                  );
-                }))
-            ) {
-              symbol.isImpure = true;
-            }
-
-            symbol.type = makeRawFunctionDatatypeAvailable(this.sr, {
-              parameters: parameters,
-              returnType: inferredReturnType,
-              vararg: func.vararg,
-              requires: {
-                final: true,
-                pure: func.requires.pure || (!func.requires.final && !symbol.isImpure),
-                noreturn: func.requires.noreturn || (blockScopeResult?.noReturn ?? false),
-                noreturnIf: func.requires.noreturnIf,
-              },
-              sourceloc: func.sourceloc,
-            });
-            const functype = this.sr.typeDefNodes.get(symbol.type);
-            assert(functype.variant === Semantic.ENode.FunctionDatatype);
-
-            // Fix returning "none" if nothing is returned but the function returns "none", except it returns 'void'
-            if (
-              blockScopeResult &&
-              !blockScopeResult.noFallthrough &&
-              !Conversion.isVoidById(this.sr, functype.returnType)
-            ) {
-              assert(symbol.scope);
-              const bodyScope = this.sr.blockScopeNodes.get(symbol.scope);
-              const statementId = Semantic.addStatement(this.sr, {
-                variant: Semantic.ENode.ReturnStatement,
-                expr: this.sr.b.noneExpr()[1],
-                sourceloc: func.sourceloc,
-              })[1];
-              bodyScope.statements.push(statementId);
-              symbol.returnStatements.add(statementId);
-            }
-
-            // Now the return type has been fixed, so we have to go over all return statements now
-            // and insert implicit type conversions to the return type in order to convert between unions implicitly.
-            // Important if: 'Foo' and 'str' is returned, then the return type is 'Foo | str', so in each
-            // return statement, 'Foo' must be implicitly converted to 'Foo | str'.
-            for (const sId of symbol.returnStatements) {
-              const statement = this.sr.statementNodes.get(sId);
-              if (statement.variant === Semantic.ENode.ReturnStatement) {
-                if (statement.expr) {
-                  // Convert an existing value
-                  const returnedExpr = this.getExpr(statement.expr);
-                  if (returnedExpr.type !== inferredReturnType) {
-                    statement.expr = Conversion.MakeConversionOrThrow(
-                      this.sr,
-                      statement.expr,
-                      inferredReturnType,
-                      [],
-                      statement.sourceloc,
-                      Conversion.Mode.Implicit,
-                      false,
-                    );
-                  }
+            if (!func.requires.final) {
+              let inferredReturnType: Semantic.TypeUseId | null = expectedReturnType;
+              if (!inferredReturnType) {
+                if (symbol.returnedDatatypes.size === 0) {
+                  inferredReturnType = this.sr.b.voidType();
+                } else if (symbol.returnedDatatypes.size === 1) {
+                  inferredReturnType = [...symbol.returnedDatatypes][0];
                 } else {
-                  // Insert a "none" value if no value was returned at all
-                  if (Conversion.isNoneById(this.sr, inferredReturnType)) {
-                    statement.expr = this.sr.b.noneExpr()[1];
-                  } else if (Conversion.isVoidById(this.sr, inferredReturnType)) {
-                    // The only valid place where a return statement can actually return nothing
+                  inferredReturnType = this.sr.b.untaggedUnionTypeUse(
+                    [...symbol.returnedDatatypes],
+                    symbol.sourceloc,
+                  );
+                }
+              }
+
+              // If anything is returned that is a reference, like an object or an array, then it must be considered impure,
+              // even if the return type is not mutable, because objects are required to have "identity" and multiple calls
+              // cannot be collapsed into a single one because otherwise two different objects would have the same identity.
+              const returnUse = this.sr.typeUseNodes.get(inferredReturnType);
+              const returnDef = this.sr.typeDefNodes.get(returnUse.type);
+              if (
+                returnDef.variant === Semantic.ENode.StructDatatype ||
+                returnDef.variant === Semantic.ENode.DynamicArrayDatatype ||
+                (returnDef.variant === Semantic.ENode.UntaggedUnionDatatype &&
+                  returnDef.members.some((m) => {
+                    const typeUse = this.sr.typeUseNodes.get(m);
+                    const typeDef = this.sr.typeDefNodes.get(typeUse.type);
+                    return (
+                      typeDef.variant === Semantic.ENode.StructDatatype ||
+                      typeDef.variant === Semantic.ENode.DynamicArrayDatatype
+                    );
+                  })) ||
+                (returnDef.variant === Semantic.ENode.TaggedUnionDatatype &&
+                  returnDef.members.some((m) => {
+                    const typeUse = this.sr.typeUseNodes.get(m.type);
+                    const typeDef = this.sr.typeDefNodes.get(typeUse.type);
+                    return (
+                      typeDef.variant === Semantic.ENode.StructDatatype ||
+                      typeDef.variant === Semantic.ENode.DynamicArrayDatatype
+                    );
+                  }))
+              ) {
+                symbol.isImpure = true;
+              }
+
+              symbol.type = makeRawFunctionDatatypeAvailable(this.sr, {
+                parameters: parameters,
+                returnType: inferredReturnType,
+                vararg: func.vararg,
+                requires: {
+                  final: true,
+                  pure: func.requires.pure || (!func.requires.final && !symbol.isImpure),
+                  noreturn: func.requires.noreturn || flow.has(FlowType.NoReturn),
+                  noreturnIf: noreturnIf,
+                },
+                sourceloc: func.sourceloc,
+              });
+              const functype = this.sr.typeDefNodes.get(symbol.type);
+              assert(functype.variant === Semantic.ENode.FunctionDatatype);
+
+              // Fix returning "none" if nothing is returned but the function returns "none", except it returns 'void'
+              if (
+                flow.has(FlowType.Fallthrough) &&
+                !Conversion.isVoidById(this.sr, functype.returnType)
+              ) {
+                assert(symbol.scope);
+                const bodyScope = this.sr.blockScopeNodes.get(symbol.scope);
+                const statementId = Semantic.addStatement(this.sr, {
+                  variant: Semantic.ENode.ReturnStatement,
+                  expr: this.sr.b.noneExpr()[1],
+                  sourceloc: func.sourceloc,
+                })[1];
+                bodyScope.statements.push(statementId);
+                symbol.returnStatements.add(statementId);
+              }
+
+              // Now the return type has been fixed, so we have to go over all return statements now
+              // and insert implicit type conversions to the return type in order to convert between unions implicitly.
+              // Important if: 'Foo' and 'str' is returned, then the return type is 'Foo | str', so in each
+              // return statement, 'Foo' must be implicitly converted to 'Foo | str'.
+              for (const sId of symbol.returnStatements) {
+                const statement = this.sr.statementNodes.get(sId);
+                if (statement.variant === Semantic.ENode.ReturnStatement) {
+                  if (statement.expr) {
+                    // Convert an existing value
+                    const returnedExpr = this.getExpr(statement.expr);
+                    if (returnedExpr.type !== inferredReturnType) {
+                      statement.expr = Conversion.MakeConversionOrThrow(
+                        this.sr,
+                        statement.expr,
+                        inferredReturnType,
+                        ConstraintSet.empty(),
+                        statement.sourceloc,
+                        Conversion.Mode.Implicit,
+                        false,
+                      );
+                    }
                   } else {
-                    assert(false);
+                    // Insert a "none" value if no value was returned at all
+                    if (Conversion.isNoneById(this.sr, inferredReturnType)) {
+                      statement.expr = this.sr.b.noneExpr()[1];
+                    } else if (Conversion.isVoidById(this.sr, inferredReturnType)) {
+                      // The only valid place where a return statement can actually return nothing
+                    } else {
+                      assert(false);
+                    }
                   }
                 }
               }
@@ -3798,7 +3920,7 @@ export class SemanticElaborator {
                       context: Semantic.isolateElaborationContext(this.currentContext, {
                         currentScope: collectedNamespace.namespaceScope,
                         genericsScope: this.currentContext.genericsScope,
-                        constraints: [],
+                        constraints: ConstraintSet.empty(),
                         instanceDeps: {
                           instanceDependsOn: new Map(),
                           structMembersDependOn: new Map(),
@@ -4033,34 +4155,39 @@ export class SemanticElaborator {
         assert(functionSymbol.variant === Semantic.ENode.FunctionSymbol);
         instanceIds.forEach((i) => functionSymbol.createsInstanceIds.add(i));
 
-        return Semantic.addExpr(this.sr, {
-          variant: Semantic.ENode.ExprCallExpr,
-          instanceIds: instanceIds,
-          arguments: [valueExprId],
-          calledExpr: Semantic.addExpr(this.sr, {
-            variant: Semantic.ENode.CallableExpr,
-            functionSymbol: exactMatchId,
-            instanceIds: [],
-            isTemporary: true,
-            sourceloc: assignment.sourceloc,
-            thisExpr: targetExprId,
-            type: makeTypeUse(
-              this.sr,
-              Semantic.addType(this.sr, {
-                variant: Semantic.ENode.CallableDatatype,
-                thisExprType: targetExpr.type,
-                functionType: method.type,
-                concrete: true,
-              })[1],
-              EDatatypeMutability.Const,
-              false,
-              assignment.sourceloc,
-            )[1],
-          })[1],
-          type: ftype.returnType,
-          sourceloc: assignment.sourceloc,
+        // Note:
+        // For control flow and write analysis, only target and value are required and
+        // LHS handling is not required, since this is not a symbol value access with a primitive read
+        // and instead an operator overload that translates into a function call
+        // (and very likely then performs an actual symbol write inside of the operator).
+        // We do not care about it here because the CallExpr then internally
+        // will insert a write if the operator actually is a mutating method.
+
+        const calledExpr = Semantic.addExpr(this.sr, {
+          variant: Semantic.ENode.CallableExpr,
+          functionSymbol: exactMatchId,
+          instanceIds: [],
           isTemporary: true,
-        });
+          sourceloc: assignment.sourceloc,
+          thisExpr: targetExprId,
+          type: makeTypeUse(
+            this.sr,
+            Semantic.addType(this.sr, {
+              variant: Semantic.ENode.CallableDatatype,
+              thisExprType: targetExpr.type,
+              functionType: method.type,
+              concrete: true,
+            })[1],
+            EDatatypeMutability.Const,
+            false,
+            assignment.sourceloc,
+          )[1],
+          flow: targetExpr.flow.withAll(valueExpr.flow),
+          writes: targetExpr.writes.withAll(valueExpr.writes),
+        })[1];
+
+        assert(this.inFunction);
+        return this.sr.b.callExpr(calledExpr, [valueExprId], this.inFunction, assignment.sourceloc);
       }
 
       throw new CompilerError(
@@ -4177,7 +4304,7 @@ export class SemanticElaborator {
             context: Semantic.isolateElaborationContext(this.currentContext, {
               currentScope: functionSymbol.functionScope || functionSymbol.parentScope,
               genericsScope: functionSymbol.functionScope || functionSymbol.parentScope,
-              constraints: [],
+              constraints: ConstraintSet.empty(),
               instanceDeps: {
                 instanceDependsOn: new Map(),
                 structMembersDependOn: new Map(),
@@ -4201,7 +4328,7 @@ export class SemanticElaborator {
             context: Semantic.isolateElaborationContext(this.currentContext, {
               currentScope: functionSymbol.functionScope || functionSymbol.parentScope,
               genericsScope: functionSymbol.functionScope || functionSymbol.parentScope,
-              constraints: [],
+              constraints: ConstraintSet.empty(),
               instanceDeps: {
                 instanceDependsOn: new Map(),
                 structMembersDependOn: new Map(),
@@ -4510,7 +4637,7 @@ export class SemanticElaborator {
     allocator: Semantic.ExprId | null,
     sourceloc: SourceLoc,
     inference: Inference,
-  ): [Semantic.Expression, Semantic.ExprId] {
+  ): [Semantic.StructLiteralExpr, Semantic.ExprId] {
     const structUse = this.sr.typeUseNodes.get(typeUseId);
     const struct = this.sr.typeDefNodes.get(structUse.type);
     assert(struct.variant === Semantic.ENode.StructDatatype);
@@ -4588,7 +4715,7 @@ export class SemanticElaborator {
         throw new CompilerError(`Cannot assign member ${m.key} twice`, sourceloc);
       }
 
-      const [e, eId] = this.expr(m.value, {
+      const [_, eId] = this.expr(m.value, {
         gonnaInstantiateStructWithType: variable.type || undefined,
       });
 
@@ -4769,6 +4896,8 @@ export class SemanticElaborator {
               false,
               memberAccessExpr.sourceloc,
             )[1],
+            flow: FlowResult.fallthrough(),
+            writes: WriteResult.empty(),
           });
         }
       }
@@ -4796,6 +4925,8 @@ export class SemanticElaborator {
           memberAccessExpr.sourceloc,
         )[1],
         sourceloc: memberAccessExpr.sourceloc,
+        flow: FlowResult.fallthrough(),
+        writes: WriteResult.empty(),
       });
     } else if (datatypeValue.variant === Semantic.ENode.EnumDatatype) {
       if (memberAccessExpr.genericArgs.length !== 0) {
@@ -4817,7 +4948,10 @@ export class SemanticElaborator {
     );
   }
 
-  elaborateStatement(statementId: Collect.StatementId, inference: Inference): Semantic.StatementId {
+  elaborateStatement(
+    statementId: Collect.StatementId,
+    inference: Inference,
+  ): { statementId: Semantic.StatementId | null; flow: FlowResult; writes: WriteResult } {
     const s = this.sr.cc.statementNodes.get(statementId);
 
     switch (s.variant) {
@@ -4826,11 +4960,15 @@ export class SemanticElaborator {
       // =================================================================================================================
 
       case Collect.ENode.InlineCStatement:
-        return Semantic.addStatement(this.sr, {
-          variant: Semantic.ENode.InlineCStatement,
-          value: s.value,
-          sourceloc: s.sourceloc,
-        })[1];
+        return {
+          statementId: Semantic.addStatement(this.sr, {
+            variant: Semantic.ENode.InlineCStatement,
+            value: s.value,
+            sourceloc: s.sourceloc,
+          })[1],
+          flow: FlowResult.fallthrough(),
+          writes: WriteResult.empty(),
+        };
 
       // =================================================================================================================
       // =================================================================================================================
@@ -4841,37 +4979,25 @@ export class SemanticElaborator {
           if (!s.condition) {
             throw new CompilerError(`Comptime 'if let' statements not supported yet`, s.sourceloc);
           }
-          const conditionId = this.expr(s.condition, undefined)[1];
-          const conditionValue = EvalCTFEBoolean(this.sr, conditionId, s.sourceloc);
-          if (conditionValue) {
-            const thenScopeId = Semantic.addBlockScope(this.sr, {
-              variant: Semantic.ENode.BlockScope,
-              statements: [],
-              emittedExpr: -1 as Semantic.ExprId,
-              constraints: [...this.currentContext.constraints],
-              sourceloc: s.sourceloc,
-            })[1];
-            const result = this.elaborateBlockScope(
-              {
-                targetScopeId: thenScopeId,
-                sourceScopeId: s.thenBlock,
-              },
-              false,
-              undefined,
-            );
-            return Semantic.addStatement(this.sr, {
-              variant: Semantic.ENode.ExprStatement,
-              expr: Semantic.addExpr(this.sr, {
-                variant: Semantic.ENode.BlockScopeExpr,
-                instanceIds: [],
-                block: thenScopeId,
-                isTemporary: true,
-                noreturn: result.noReturn,
-                type: this.sr.b.voidType(),
-                sourceloc: s.sourceloc,
-              })[1],
-              sourceloc: s.sourceloc,
-            })[1];
+          const [conditionExpr, conditionExprId] = this.expr(s.condition, undefined);
+          if (EvalCTFEBoolean(this.sr, conditionExprId)) {
+            const { flow, writes, scopeId } = this.makeAndElaborateBlockScope(s.thenBlock, {
+              lastExprIsEmit: false,
+            });
+            const resultFlow = FlowResult.empty();
+            resultFlow.addAll(conditionExpr.flow);
+            resultFlow.addAll(flow);
+            const resultWrites = WriteResult.empty();
+            resultWrites.addAll(conditionExpr.writes);
+            resultWrites.addAll(writes);
+            // If true, control flow is exactly the flow of the 'then'-block. Only one comptime block can be active
+            return {
+              statementId: this.sr.b.exprStatement(
+                this.sr.b.blockScopeExpr(scopeId, flow, writes)[1],
+              )[1],
+              flow: resultFlow,
+              writes: resultWrites,
+            };
           }
 
           for (const elif of s.elseif) {
@@ -4881,95 +5007,88 @@ export class SemanticElaborator {
                 s.sourceloc,
               );
             }
-            const conditionId = this.expr(elif.condition, undefined)[1];
-            if (EvalCTFEBoolean(this.sr, conditionId, s.sourceloc)) {
-              const thenScopeId = Semantic.addBlockScope(this.sr, {
-                variant: Semantic.ENode.BlockScope,
-                statements: [],
-                emittedExpr: -1 as Semantic.ExprId,
-                sourceloc: s.sourceloc,
-                constraints: [...this.currentContext.constraints],
-              })[1];
-              const result = this.elaborateBlockScope(
-                {
-                  targetScopeId: thenScopeId,
-                  sourceScopeId: elif.thenBlock,
-                },
-                false,
-                undefined,
-              );
-              return Semantic.addStatement(this.sr, {
-                variant: Semantic.ENode.ExprStatement,
-                expr: Semantic.addExpr(this.sr, {
-                  variant: Semantic.ENode.BlockScopeExpr,
-                  instanceIds: [],
-                  block: thenScopeId,
-                  isTemporary: true,
-                  noreturn: result.noReturn,
-                  type: this.sr.b.voidType(),
-                  sourceloc: s.sourceloc,
-                })[1],
-                sourceloc: s.sourceloc,
-              })[1];
+            const [elifConditionExpr, elifConditionExprId] = this.expr(elif.condition, undefined);
+            if (EvalCTFEBoolean(this.sr, elifConditionExprId)) {
+              const { flow, writes, scopeId } = this.makeAndElaborateBlockScope(elif.thenBlock, {
+                lastExprIsEmit: false,
+              });
+              const resultFlow = FlowResult.empty();
+              resultFlow.addAll(conditionExpr.flow);
+              resultFlow.addAll(elifConditionExpr.flow);
+              resultFlow.addAll(flow);
+              const resultWrites = WriteResult.empty();
+              resultWrites.addAll(conditionExpr.writes);
+              resultWrites.addAll(elifConditionExpr.writes);
+              resultWrites.addAll(writes);
+              // If true, control flow is exactly the flow of the 'then'-block. Only one comptime block can be active
+              return {
+                statementId: this.sr.b.exprStatement(
+                  this.sr.b.blockScopeExpr(scopeId, flow, writes)[1],
+                )[1],
+                flow: resultFlow,
+                writes: resultWrites,
+              };
             }
           }
 
           if (s.elseBlock) {
-            const thenScopeId = Semantic.addBlockScope(this.sr, {
-              variant: Semantic.ENode.BlockScope,
-              emittedExpr: -1 as Semantic.ExprId,
-              sourceloc: s.sourceloc,
-              statements: [],
-              constraints: [...this.currentContext.constraints],
-            })[1];
-            const result = this.elaborateBlockScope(
-              {
-                targetScopeId: thenScopeId,
-                sourceScopeId: s.elseBlock,
-              },
-              false,
-              undefined,
-            );
-            return Semantic.addStatement(this.sr, {
-              variant: Semantic.ENode.ExprStatement,
-              expr: Semantic.addExpr(this.sr, {
-                variant: Semantic.ENode.BlockScopeExpr,
-                instanceIds: [],
-                block: thenScopeId,
-                isTemporary: true,
-                noreturn: result.noReturn,
-                type: this.sr.b.voidType(),
-                sourceloc: s.sourceloc,
-              })[1],
-              sourceloc: s.sourceloc,
-            })[1];
+            const { flow, writes, scopeId } = this.makeAndElaborateBlockScope(s.elseBlock, {
+              lastExprIsEmit: false,
+            });
+            const resultFlow = FlowResult.empty();
+            resultFlow.addAll(conditionExpr.flow);
+            // Add flows from all elseif conditions that were checked but not taken
+            for (const elif of s.elseif) {
+              const [elifConditionExpr] = this.expr(elif.condition!, undefined);
+              resultFlow.addAll(elifConditionExpr.flow);
+            }
+            resultFlow.addAll(flow);
+            const resultWrites = WriteResult.empty();
+            resultWrites.addAll(conditionExpr.writes);
+            // Add writes from all elseif conditions that were checked but not taken
+            for (const elif of s.elseif) {
+              const [elifConditionExpr] = this.expr(elif.condition!, undefined);
+              resultWrites.addAll(elifConditionExpr.writes);
+            }
+            resultWrites.addAll(writes);
+            // If true, control flow is exactly the flow of the 'then'-block. Only one comptime block can be active
+            return {
+              statementId: this.sr.b.exprStatement(
+                this.sr.b.blockScopeExpr(scopeId, flow, writes)[1],
+              )[1],
+              flow: resultFlow,
+              writes: resultWrites,
+            };
           }
 
-          // Nothing was true, emit empty scope statement
-          return Semantic.addStatement(this.sr, {
-            variant: Semantic.ENode.ExprStatement,
-            expr: Semantic.addExpr(this.sr, {
-              variant: Semantic.ENode.BlockScopeExpr,
-              instanceIds: [],
-              block: Semantic.addBlockScope(this.sr, {
-                variant: Semantic.ENode.BlockScope,
-                statements: [],
-                emittedExpr: this.sr.b.noneExpr()[1],
-                constraints: [...this.currentContext.constraints],
-                sourceloc: s.sourceloc,
-              })[1],
-              isTemporary: true,
-              noreturn: false,
-              type: this.sr.b.voidType(),
-              sourceloc: s.sourceloc,
-            })[1],
-            sourceloc: s.sourceloc,
-          })[1];
+          // Nothing applies, entire statement collapses to nothing
+          // But we still need to track flows/writes from all condition evaluations
+          const resultFlow = FlowResult.fallthrough();
+          resultFlow.addAll(conditionExpr.flow);
+          const resultWrites = WriteResult.empty();
+          resultWrites.addAll(conditionExpr.writes);
+          for (const elif of s.elseif) {
+            const [elifConditionExpr] = this.expr(elif.condition!, undefined);
+            resultFlow.addAll(elifConditionExpr.flow);
+            resultWrites.addAll(elifConditionExpr.writes);
+          }
+          return {
+            statementId: null,
+            flow: resultFlow,
+            writes: resultWrites,
+          };
         } else {
           // Non-comptime
+          const thenConstraints = ConstraintSet.empty();
+          const branchFlows: {
+            constraints: ConstraintSet;
+            flow: FlowResult;
+          }[] = [];
+
+          const resultFlow = FlowResult.empty();
+          const resultWrites = WriteResult.empty();
+
           let resultingConditionId: Semantic.ExprId | null = null;
-          const constraints = [...this.currentContext.constraints];
-          const elseConstraints = [...this.currentContext.constraints];
           if (s.letScopeId) {
             const scope = this.sr.cc.scopeNodes.get(s.letScopeId);
             assert(scope.variant === Collect.ENode.BlockScope);
@@ -4983,8 +5102,7 @@ export class SemanticElaborator {
             assert(letStatement.value);
             const sym = this.sr.cc.symbolNodes.get(letStatement.variableSymbol);
             assert(sym.variant === Collect.ENode.VariableSymbol);
-            const varType = this.expr(letStatement.value, undefined)[0].type;
-            const variableSymbolExprId = this.expr(
+            const [variableSymbolExpr, variableSymbolExprId] = this.expr(
               Collect.makeExpr(this.sr.cc, {
                 variant: Collect.ENode.SymbolValueExpr,
                 genericArgs: [],
@@ -4992,7 +5110,9 @@ export class SemanticElaborator {
                 sourceloc: s.sourceloc,
               })[1],
               undefined,
-            )[1];
+            );
+            resultFlow.addExitFlows(variableSymbolExpr.flow);
+            resultWrites.addAll(variableSymbolExpr.writes);
             const variableAsBoolResult = Conversion.MakeConversion(
               this.sr,
               variableSymbolExprId,
@@ -5008,59 +5128,38 @@ export class SemanticElaborator {
 
             if (variableAsBoolResult.ok) {
               assert(letStatement.value);
-              this.buildConstraints(constraints, variableAsBoolResult.expr, {});
-              this.buildConstraints(elseConstraints, variableAsBoolResult.expr, { inverse: true });
-              const conditionFromLet = Semantic.addExpr(this.sr, {
-                variant: Semantic.ENode.BlockScopeExpr,
-                block: Semantic.addBlockScope(this.sr, {
-                  variant: Semantic.ENode.BlockScope,
-                  constraints: this.currentContext.constraints,
-                  emittedExpr: variableAsBoolResult.expr,
-                  statements: [
-                    Semantic.addStatement(this.sr, {
-                      variant: Semantic.ENode.ExprStatement,
-                      expr: Semantic.addExpr(this.sr, {
-                        variant: Semantic.ENode.ExprAssignmentExpr,
-                        instanceIds: [],
-                        isTemporary: true,
-                        operation: EAssignmentOperation.Rebind,
-                        target: variableSymbolExprId,
-                        type: varType,
-                        value: this.expr(letStatement.value!, undefined)[1],
-                        sourceloc: s.sourceloc,
-                      })[1],
-                      sourceloc: s.sourceloc,
-                    })[1],
-                  ],
-                  sourceloc: s.sourceloc,
-                })[1],
-                instanceIds: [],
-                noreturn: false,
-                isTemporary: true,
-                sourceloc: s.sourceloc,
-                type: this.sr.b.boolType(),
-              })[1];
+              this.buildLogicalConstraintSet(thenConstraints, variableAsBoolResult.expr);
+              const [assignmentExpr, assignmentExprId] = this.sr.b.assignment(
+                variableSymbolExprId,
+                EAssignmentOperation.Rebind,
+                this.expr(letStatement.value!, undefined)[1],
+                this.currentContext.constraints,
+                s.sourceloc,
+                inference,
+              );
+              const conditionFromLet = this.sr.b.blockScopeExpr(
+                this.sr.b.blockScope(
+                  [this.sr.b.exprStatement(assignmentExprId)[1]],
+                  variableAsBoolResult.expr,
+                  s.sourceloc,
+                )[1],
+                FlowResult.fallthrough().withAll(assignmentExpr.flow),
+                WriteResult.empty().withAll(assignmentExpr.writes),
+              )[1];
 
               if (s.condition) {
                 // Variable is convertible to bool and we have guard, combine both
-                resultingConditionId = this.withContext(
-                  {
-                    context: Semantic.isolateElaborationContext(this.currentContext, {
-                      constraints: constraints,
-                      currentScope: this.currentContext.currentScope,
-                      genericsScope: this.currentContext.genericsScope,
-                      instanceDeps: this.currentContext.instanceDeps,
-                    }),
-                    functionReturnsInstanceIds: this.functionReturnsInstanceIds,
-                    inFunction: this.inFunction,
-                    inAttemptExpr: this.inAttemptExpr,
-                  },
+                const [guardExpr, guardExprId] = this.expr(s.condition!, undefined);
+                resultFlow.addExitFlows(guardExpr.flow);
+                resultWrites.addAll(guardExpr.writes);
+                resultingConditionId = this.withAdditionalConstraints(
+                  thenConstraints,
                   () =>
                     this.sr.b.binaryExpr(
                       conditionFromLet,
                       Conversion.MakeConversionOrThrow(
                         this.sr,
-                        this.expr(s.condition!, undefined)[1],
+                        guardExprId,
                         this.sr.b.boolType(),
                         this.currentContext.constraints,
                         s.sourceloc,
@@ -5072,6 +5171,7 @@ export class SemanticElaborator {
                       s.sourceloc,
                     )[1],
                 );
+                this.buildLogicalConstraintSet(thenConstraints, guardExprId);
               } else {
                 // Variable is convertible to bool but no guard, only use value
                 resultingConditionId = conditionFromLet;
@@ -5079,22 +5179,26 @@ export class SemanticElaborator {
             } else {
               if (s.condition) {
                 // Variable is NOT convertible to bool but we have a guard, use only guard: Keep as-is
-                resultingConditionId = this.expr(s.condition, undefined)[1];
-                this.buildConstraints(constraints, resultingConditionId, {});
-                this.buildConstraints(elseConstraints, resultingConditionId, { inverse: true });
+                const [e, eId] = this.expr(s.condition, undefined);
+                resultingConditionId = eId;
+                resultFlow.addExitFlows(e.flow);
+                resultWrites.addAll(e.writes);
+                this.buildLogicalConstraintSet(thenConstraints, resultingConditionId);
               } else {
                 // Variable is neither convertible to bool nor we have a guard, error
                 throw new CompilerError(
-                  `The type of the 'while let' expression is not implicitly convertible to bool, therefore a 'while let ... if ...'-guard is required.`,
+                  `The type of the 'if let' expression is not implicitly convertible to bool, therefore a guard of the form 'if let a; b' is required.`,
                   s.sourceloc,
                 );
               }
             }
           } else {
             assert(s.condition);
-            resultingConditionId = this.expr(s.condition, undefined)[1];
-            this.buildConstraints(constraints, resultingConditionId, {});
-            this.buildConstraints(elseConstraints, resultingConditionId, { inverse: true });
+            const [e, eId] = this.expr(s.condition, undefined);
+            resultingConditionId = eId;
+            resultFlow.addExitFlows(e.flow);
+            resultWrites.addAll(e.writes);
+            this.buildLogicalConstraintSet(thenConstraints, resultingConditionId);
           }
 
           // Before applying constraints
@@ -5108,171 +5212,137 @@ export class SemanticElaborator {
             false,
           );
 
-          const thenScopeId = Semantic.addBlockScope(this.sr, {
-            variant: Semantic.ENode.BlockScope,
-            statements: [],
-            emittedExpr: -1 as Semantic.ExprId,
-            constraints: constraints,
-            sourceloc: s.sourceloc,
-          })[1];
-          const result = this.withContext(
+          const [ifStatement, ifStatementId] = Semantic.addStatement<Semantic.IfStatement>(
+            this.sr,
             {
-              context: Semantic.isolateElaborationContext(this.currentContext, {
-                constraints: constraints,
-                currentScope: this.currentContext.currentScope,
-                genericsScope: this.currentContext.genericsScope,
-                instanceDeps: this.currentContext.instanceDeps,
-              }),
-              inFunction: this.inFunction,
-              inAttemptExpr: this.inAttemptExpr,
-              functionReturnsInstanceIds: this.functionReturnsInstanceIds,
-            },
-            () => {
-              return this.elaborateBlockScope(
-                {
-                  targetScopeId: thenScopeId,
-                  sourceScopeId: s.thenBlock,
-                },
-                false,
-                undefined,
-              );
+              variant: Semantic.ENode.IfStatement,
+              isLetBinding: Boolean(s.letScopeId),
+              condition: boolCondition,
+              then: -1 as Semantic.BlockScopeId,
+              elseIfs: [],
+              else: undefined,
+              sourceloc: s.sourceloc,
             },
           );
 
-          // If the body of if does not return, then the inverse of the condition applies to the body after the if
-          if (result.willExitEarly || result.noReturn) {
-            this.buildConstraints(this.currentContext.constraints, resultingConditionId, {
-              inverse: true,
-            });
-          }
+          const { flow, writes, scopeId } = this.withAdditionalConstraints(thenConstraints, () =>
+            this.makeAndElaborateBlockScope(s.thenBlock, { lastExprIsEmit: false }),
+          );
+          ifStatement.then = scopeId;
+          resultWrites.addAll(writes);
+          branchFlows.push({
+            flow: flow,
+            constraints: thenConstraints,
+          });
 
-          let noFallthrough = result.noFallthrough;
-          if (result.canExitEarly || result.willExitEarly) {
-            this.currentContext.scopeCanExitEarly.add(this.currentContext.currentScope);
-          }
-
-          const elseIfs = s.elseif.map((e) => {
+          const elseIfConstraints = new ConditionChain();
+          s.elseif.forEach((e) => {
             assert(e.condition);
-            // Evaluate condition with the constraints from previous branches
-            const conditionExpr = this.withContext(
-              {
-                context: Semantic.isolateElaborationContext(this.currentContext, {
-                  constraints: elseConstraints,
-                  currentScope: this.currentContext.currentScope,
-                  genericsScope: this.currentContext.genericsScope,
-                  instanceDeps: this.currentContext.instanceDeps,
-                }),
-                inFunction: this.inFunction,
-                inAttemptExpr: this.inAttemptExpr,
-                functionReturnsInstanceIds: this.functionReturnsInstanceIds,
-              },
-              () => this.expr(e.condition!, undefined)[1],
+
+            // This contains all constraints from all previous conditions (and ONLY the conditions)
+            const thisBranchPrevConstraints = elseIfConstraints.branchConstraints(
+              thenConstraints.inverse(),
             );
-            const innerConstraints = [...elseConstraints]; // Start with constraints from previous branches
-            this.buildConstraints(innerConstraints, conditionExpr, {});
-            this.buildConstraints(elseConstraints, conditionExpr, { inverse: true });
+
+            // Evaluate condition with the constraints from previous branches
+            const [conditionExprData, conditionExpr] = this.withAdditionalConstraints(
+              thisBranchPrevConstraints,
+              () => this.expr(e.condition!, undefined),
+            );
+            resultFlow.addExitFlows(conditionExprData.flow);
+            resultWrites.addAll(conditionExprData.writes);
+
             const boolCondition = Conversion.MakeConversionOrThrow(
               this.sr,
               conditionExpr,
               this.sr.b.boolType(),
-              elseConstraints,
+              thisBranchPrevConstraints,
               s.sourceloc,
               Conversion.Mode.Implicit,
               false,
             );
 
-            const innerThenScopeId = Semantic.addBlockScope(this.sr, {
-              variant: Semantic.ENode.BlockScope,
-              statements: [],
-              emittedExpr: -1 as Semantic.ExprId,
-              sourceloc: s.sourceloc,
-              constraints: innerConstraints,
-            })[1];
-            const innerScopeResult = this.withContext(
-              {
-                context: Semantic.isolateElaborationContext(this.currentContext, {
-                  constraints: innerConstraints,
-                  currentScope: this.currentContext.currentScope,
-                  genericsScope: this.currentContext.genericsScope,
-                  instanceDeps: this.currentContext.instanceDeps,
-                }),
-                inFunction: this.inFunction,
-                inAttemptExpr: this.inAttemptExpr,
-                functionReturnsInstanceIds: this.functionReturnsInstanceIds,
-              },
-              () =>
-                this.elaborateBlockScope(
-                  {
-                    targetScopeId: innerThenScopeId,
-                    sourceScopeId: e.thenBlock,
-                  },
-                  false,
-                  undefined,
-                ),
+            // This contains ONLY this elseIf's condition, so it can be inverted cleanly later
+            const thisBranchConstraints = ConstraintSet.empty();
+            this.buildLogicalConstraintSet(thisBranchConstraints, conditionExpr);
+            elseIfConstraints.add(thisBranchConstraints);
+
+            // This now contains ALL the conditions that actually apply to the scope
+            const scopeConstraints = this.currentContext.constraints.clone();
+            scopeConstraints.addAll(thisBranchPrevConstraints);
+            scopeConstraints.addAll(thisBranchConstraints);
+
+            const { flow, writes, scopeId } = this.withAdditionalConstraints(scopeConstraints, () =>
+              this.makeAndElaborateBlockScope(e.thenBlock, { lastExprIsEmit: false }),
             );
+            resultWrites.addAll(writes);
+            branchFlows.push({
+              flow: flow,
+              constraints: thisBranchConstraints,
+            });
 
-            if (!innerScopeResult.noFallthrough) {
-              noFallthrough = false;
-            }
-
-            return {
+            ifStatement.elseIfs.push({
               condition: boolCondition,
-              then: innerThenScopeId,
-            };
+              then: scopeId,
+            });
           });
 
-          let elseScopeId = undefined as Semantic.BlockScopeId | undefined;
           if (s.elseBlock) {
-            elseScopeId = Semantic.addBlockScope(this.sr, {
-              variant: Semantic.ENode.BlockScope,
-              statements: [],
-              emittedExpr: -1 as Semantic.ExprId,
-              constraints: elseConstraints,
-              sourceloc: s.sourceloc,
-            })[1];
-            const elseResult = this.withContext(
-              {
-                context: Semantic.isolateElaborationContext(this.currentContext, {
-                  constraints: elseConstraints,
-                  currentScope: this.currentContext.currentScope,
-                  genericsScope: this.currentContext.genericsScope,
-                  instanceDeps: this.currentContext.instanceDeps,
-                }),
-                inFunction: this.inFunction,
-                inAttemptExpr: this.inAttemptExpr,
-                functionReturnsInstanceIds: this.functionReturnsInstanceIds,
-              },
-              () =>
-                this.elaborateBlockScope(
-                  {
-                    targetScopeId: elseScopeId!,
-                    sourceScopeId: s.elseBlock!,
-                  },
-                  false,
-                  undefined,
-                ),
+            // This contains all constraints from all previous conditions (and ONLY the conditions)
+            const thisBranchPrevConstraints = elseIfConstraints.branchConstraints(
+              thenConstraints.inverse(),
             );
 
-            if (!elseResult.noFallthrough) {
-              noFallthrough = false;
+            // This now contains ALL the conditions that actually apply to the scope
+            const scopeConstraints = this.currentContext.constraints.clone();
+            scopeConstraints.addAll(thisBranchPrevConstraints);
+
+            const { flow, writes, scopeId } = this.withAdditionalConstraints(scopeConstraints, () =>
+              this.makeAndElaborateBlockScope(s.elseBlock!, { lastExprIsEmit: false }),
+            );
+            resultWrites.addAll(writes);
+            branchFlows.push({
+              flow: flow,
+              constraints: ConstraintSet.empty(),
+            });
+            ifStatement.else = scopeId;
+          }
+
+          for (const { flow } of branchFlows) {
+            for (const e of flow.get()) {
+              if (e === FlowType.Raise || e === FlowType.Return) {
+                resultFlow.add(e);
+              }
             }
-          } else {
-            noFallthrough = false;
           }
 
-          if (noFallthrough) {
-            this.currentContext.scopeNoFallthrough.add(this.currentContext.currentScope);
+          if (!s.elseBlock) {
+            branchFlows.push({
+              flow: FlowResult.fallthrough(),
+              constraints: ConstraintSet.empty(), // IMPORTANT: no constraints
+            });
           }
 
-          return Semantic.addStatement(this.sr, {
-            variant: Semantic.ENode.IfStatement,
-            isLetBinding: Boolean(s.letScopeId),
-            condition: boolCondition,
-            then: thenScopeId,
-            elseIfs: elseIfs,
-            else: elseScopeId,
-            sourceloc: s.sourceloc,
-          })[1];
+          if (branchFlows.some((b) => b.flow.has(FlowType.Fallthrough))) {
+            resultFlow.add(FlowType.Fallthrough);
+          }
+
+          let fallthroughBranches = branchFlows.filter((f) => f.flow.has(FlowType.Fallthrough));
+          let nonFallthroughBranches = branchFlows.filter((f) => !f.flow.has(FlowType.Fallthrough));
+
+          let canNarrowAfterIf =
+            (fallthroughBranches.length > 0 || !s.elseBlock) && nonFallthroughBranches.length > 0;
+          if (canNarrowAfterIf) {
+            const constraints = ConstraintSet.empty();
+            nonFallthroughBranches.forEach((b) => constraints.addAll(b.constraints));
+            this.currentContext.constraints.addAll(constraints.inverse());
+          }
+
+          return {
+            statementId: ifStatementId,
+            flow: resultFlow,
+            writes: resultWrites,
+          };
         }
       }
 
@@ -5283,7 +5353,10 @@ export class SemanticElaborator {
       case Collect.ENode.WhileStatement: {
         let resultingConditionId: Semantic.ExprId | null = null;
 
-        const constraints = [...this.currentContext.constraints];
+        const resultFlow = FlowResult.fallthrough();
+        const resultWrites = WriteResult.empty();
+
+        const conditionConstraints = ConstraintSet.empty();
         if (s.letScopeId) {
           const scope = this.sr.cc.scopeNodes.get(s.letScopeId);
           assert(scope.variant === Collect.ENode.BlockScope);
@@ -5297,8 +5370,7 @@ export class SemanticElaborator {
           assert(letStatement.value);
           const sym = this.sr.cc.symbolNodes.get(letStatement.variableSymbol);
           assert(sym.variant === Collect.ENode.VariableSymbol);
-          const varType = this.expr(letStatement.value, undefined)[0].type;
-          const variableSymbolExprId = this.expr(
+          const [variableSymbolExpr, variableSymbolExprId] = this.expr(
             Collect.makeExpr(this.sr.cc, {
               variant: Collect.ENode.SymbolValueExpr,
               genericArgs: [],
@@ -5306,7 +5378,9 @@ export class SemanticElaborator {
               sourceloc: s.sourceloc,
             })[1],
             undefined,
-          )[1];
+          );
+          resultFlow.addExitFlows(variableSymbolExpr.flow);
+          resultWrites.addAll(variableSymbolExpr.writes);
           const variableAsBoolResult = Conversion.MakeConversion(
             this.sr,
             variableSymbolExprId,
@@ -5322,58 +5396,38 @@ export class SemanticElaborator {
 
           if (variableAsBoolResult.ok) {
             assert(letStatement.value);
-            this.buildConstraints(constraints, variableAsBoolResult.expr, {});
-            const conditionFromLet = Semantic.addExpr(this.sr, {
-              variant: Semantic.ENode.BlockScopeExpr,
-              block: Semantic.addBlockScope(this.sr, {
-                variant: Semantic.ENode.BlockScope,
-                constraints: this.currentContext.constraints,
-                emittedExpr: variableAsBoolResult.expr,
-                statements: [
-                  Semantic.addStatement(this.sr, {
-                    variant: Semantic.ENode.ExprStatement,
-                    expr: Semantic.addExpr(this.sr, {
-                      variant: Semantic.ENode.ExprAssignmentExpr,
-                      instanceIds: [],
-                      isTemporary: true,
-                      operation: EAssignmentOperation.Rebind,
-                      target: variableSymbolExprId,
-                      type: varType,
-                      value: this.expr(letStatement.value!, undefined)[1],
-                      sourceloc: s.sourceloc,
-                    })[1],
-                    sourceloc: s.sourceloc,
-                  })[1],
-                ],
-                sourceloc: s.sourceloc,
-              })[1],
-              instanceIds: [],
-              noreturn: false,
-              isTemporary: true,
-              sourceloc: s.sourceloc,
-              type: this.sr.b.boolType(),
-            })[1];
+            this.buildLogicalConstraintSet(conditionConstraints, variableAsBoolResult.expr);
+            const [assignmentExpr, assignmentExprId] = this.sr.b.assignment(
+              variableSymbolExprId,
+              EAssignmentOperation.Rebind,
+              this.expr(letStatement.value!, undefined)[1],
+              this.currentContext.constraints,
+              s.sourceloc,
+              inference,
+            );
+            const conditionFromLet = this.sr.b.blockScopeExpr(
+              this.sr.b.blockScope(
+                [this.sr.b.exprStatement(assignmentExprId)[1]],
+                variableAsBoolResult.expr,
+                s.sourceloc,
+              )[1],
+              FlowResult.fallthrough().withAll(assignmentExpr.flow),
+              WriteResult.empty().withAll(assignmentExpr.writes),
+            )[1];
 
             if (s.condition) {
               // Variable is convertible to bool and we have guard, combine both
-              resultingConditionId = this.withContext(
-                {
-                  context: Semantic.isolateElaborationContext(this.currentContext, {
-                    constraints: constraints,
-                    currentScope: this.currentContext.currentScope,
-                    genericsScope: this.currentContext.genericsScope,
-                    instanceDeps: this.currentContext.instanceDeps,
-                  }),
-                  functionReturnsInstanceIds: this.functionReturnsInstanceIds,
-                  inFunction: this.inFunction,
-                  inAttemptExpr: this.inAttemptExpr,
-                },
+              const [guardExpr, guardExprId] = this.expr(s.condition!, undefined);
+              resultFlow.addExitFlows(guardExpr.flow);
+              resultWrites.addAll(guardExpr.writes);
+              resultingConditionId = this.withAdditionalConstraints(
+                conditionConstraints,
                 () =>
                   this.sr.b.binaryExpr(
                     conditionFromLet,
                     Conversion.MakeConversionOrThrow(
                       this.sr,
-                      this.expr(s.condition!, undefined)[1],
+                      guardExprId,
                       this.sr.b.boolType(),
                       this.currentContext.constraints,
                       s.sourceloc,
@@ -5385,6 +5439,7 @@ export class SemanticElaborator {
                     s.sourceloc,
                   )[1],
               );
+              this.buildLogicalConstraintSet(conditionConstraints, guardExprId);
             } else {
               // Variable is convertible to bool but no guard, only use value
               resultingConditionId = conditionFromLet;
@@ -5392,8 +5447,11 @@ export class SemanticElaborator {
           } else {
             if (s.condition) {
               // Variable is NOT convertible to bool but we have a guard, use only guard: Keep as-is
-              resultingConditionId = this.expr(s.condition, undefined)[1];
-              this.buildConstraints(constraints, resultingConditionId, {});
+              const [e, eId] = this.expr(s.condition, undefined);
+              resultingConditionId = eId;
+              resultFlow.addExitFlows(e.flow);
+              resultWrites.addAll(e.writes);
+              this.buildLogicalConstraintSet(conditionConstraints, resultingConditionId);
             } else {
               // Variable is neither convertible to bool nor we have a guard, error
               throw new CompilerError(
@@ -5404,8 +5462,11 @@ export class SemanticElaborator {
           }
         } else {
           assert(s.condition);
-          resultingConditionId = this.expr(s.condition, undefined)[1];
-          this.buildConstraints(constraints, resultingConditionId, {});
+          const [e, eId] = this.expr(s.condition, undefined);
+          resultingConditionId = eId;
+          resultFlow.addExitFlows(e.flow);
+          resultWrites.addAll(e.writes);
+          this.buildLogicalConstraintSet(conditionConstraints, resultingConditionId);
         }
 
         assert(resultingConditionId);
@@ -5419,45 +5480,23 @@ export class SemanticElaborator {
           false,
         );
 
-        const thenScopeId = Semantic.addBlockScope(this.sr, {
-          variant: Semantic.ENode.BlockScope,
-          emittedExpr: -1 as Semantic.ExprId,
-          statements: [],
-          constraints: constraints,
-          sourceloc: s.sourceloc,
-        })[1];
-
-        this.withContext(
-          {
-            context: Semantic.isolateElaborationContext(this.currentContext, {
-              constraints: constraints,
-              currentScope: this.currentContext.currentScope,
-              genericsScope: this.currentContext.genericsScope,
-              instanceDeps: this.currentContext.instanceDeps,
-            }),
-            functionReturnsInstanceIds: this.functionReturnsInstanceIds,
-            inFunction: this.inFunction,
-            inAttemptExpr: this.inAttemptExpr,
-          },
-          () => {
-            this.elaborateBlockScope(
-              {
-                targetScopeId: thenScopeId,
-                sourceScopeId: s.block,
-              },
-              false,
-              undefined,
-            );
-          },
+        const { flow, writes, scopeId } = this.withAdditionalConstraints(conditionConstraints, () =>
+          this.makeAndElaborateBlockScope(s.block, { lastExprIsEmit: false }),
         );
+        resultFlow.addAll(flow);
+        resultWrites.addAll(writes);
 
-        return Semantic.addStatement(this.sr, {
-          variant: Semantic.ENode.WhileStatement,
-          isLetBinding: Boolean(s.letScopeId),
-          condition: boolCondition,
-          then: thenScopeId,
-          sourceloc: s.sourceloc,
-        })[1];
+        return {
+          statementId: Semantic.addStatement(this.sr, {
+            variant: Semantic.ENode.WhileStatement,
+            isLetBinding: Boolean(s.letScopeId),
+            condition: boolCondition,
+            then: scopeId,
+            sourceloc: s.sourceloc,
+          })[1],
+          flow: resultFlow,
+          writes: resultWrites,
+        };
       }
 
       // =================================================================================================================
@@ -5474,10 +5513,6 @@ export class SemanticElaborator {
 
         const functionSymbol = this.getSymbol(this.inFunction);
         assert(functionSymbol.variant === Semantic.ENode.FunctionSymbol);
-
-        this.currentContext.scopeCanExitEarly.add(this.currentContext.currentScope);
-        this.currentContext.scopeWillExitEarly.add(this.currentContext.currentScope);
-        this.currentContext.scopeNoFallthrough.add(this.currentContext.currentScope);
 
         if (s.expr) {
           let eId: Semantic.ExprId;
@@ -5515,14 +5550,22 @@ export class SemanticElaborator {
             sourceloc: s.sourceloc,
           })[1];
           functionSymbol.returnStatements.add(resultId);
-          return resultId;
+          return {
+            statementId: resultId,
+            flow: FlowResult.return(),
+            writes: WriteResult.empty(),
+          };
         } else {
           const resultId = Semantic.addStatement(this.sr, {
             variant: Semantic.ENode.ReturnStatement,
             sourceloc: s.sourceloc,
           })[1];
           functionSymbol.returnStatements.add(resultId);
-          return resultId;
+          return {
+            statementId: resultId,
+            flow: FlowResult.return(),
+            writes: WriteResult.empty(),
+          };
         }
       }
 
@@ -5737,26 +5780,30 @@ export class SemanticElaborator {
         //   }
         // }
 
-        return Semantic.addStatement(this.sr, {
-          variant: Semantic.ENode.VariableStatement,
-          mutability: variableSymbol.mutability,
-          comptime: collectedVariableSymbol.comptime,
-          name: variableSymbol.name,
-          variableSymbol: variableSymbolId,
-          value:
-            (valueId &&
-              Conversion.MakeConversionOrThrow(
-                this.sr,
-                valueId,
-                variableSymbol.type,
-                this.currentContext.constraints,
-                s.sourceloc,
-                Conversion.Mode.Implicit,
-                inference?.unsafe || false,
-              )) ||
-            null,
-          sourceloc: s.sourceloc,
-        })[1];
+        return {
+          statementId: Semantic.addStatement(this.sr, {
+            variant: Semantic.ENode.VariableStatement,
+            mutability: variableSymbol.mutability,
+            comptime: collectedVariableSymbol.comptime,
+            name: variableSymbol.name,
+            variableSymbol: variableSymbolId,
+            value:
+              (valueId &&
+                Conversion.MakeConversionOrThrow(
+                  this.sr,
+                  valueId,
+                  variableSymbol.type,
+                  this.currentContext.constraints,
+                  s.sourceloc,
+                  Conversion.Mode.Implicit,
+                  inference?.unsafe || false,
+                )) ||
+              null,
+            sourceloc: s.sourceloc,
+          })[1],
+          flow: FlowResult.fallthrough(),
+          writes: WriteResult.empty().with(variableSymbolId),
+        };
       }
 
       // =================================================================================================================
@@ -5774,11 +5821,15 @@ export class SemanticElaborator {
           );
         }
 
-        return Semantic.addStatement(this.sr, {
-          variant: Semantic.ENode.ExprStatement,
-          expr: eId,
-          sourceloc: s.sourceloc,
-        })[1];
+        return {
+          statementId: Semantic.addStatement(this.sr, {
+            variant: Semantic.ENode.ExprStatement,
+            expr: eId,
+            sourceloc: s.sourceloc,
+          })[1],
+          flow: e.flow,
+          writes: e.writes,
+        };
       }
 
       // =================================================================================================================
@@ -5790,13 +5841,12 @@ export class SemanticElaborator {
           assert(false, "Comptime for loops are not implemented yet (comptime for-each is)");
         }
 
-        const initStatement = s.initStatement ? this.elaborateStatement(s.initStatement, {}) : null;
         const loopCondition = s.loopCondition
           ? Conversion.MakeConversionOrThrow(
               this.sr,
               this.expr(s.loopCondition, {})[1],
               this.sr.b.boolType(),
-              [...this.currentContext.constraints],
+              this.currentContext.constraints,
               s.sourceloc,
               Conversion.Mode.Implicit,
               false,
@@ -5804,31 +5854,45 @@ export class SemanticElaborator {
           : null;
         const loopIncrement = s.loopIncrement ? this.expr(s.loopIncrement, {})[1] : null;
 
-        const bodyId = Semantic.addBlockScope(this.sr, {
-          variant: Semantic.ENode.BlockScope,
-          statements: [],
-          emittedExpr: -1 as Semantic.ExprId,
-          constraints: [...this.currentContext.constraints],
-          sourceloc: s.sourceloc,
-        })[1];
+        const { flow, writes, scopeId } = this.makeAndElaborateBlockScope(s.body, {
+          lastExprIsEmit: false,
+        });
+        flow.add(FlowType.Fallthrough);
 
-        this.elaborateBlockScope(
-          {
-            sourceScopeId: s.body,
-            targetScopeId: bodyId,
-          },
-          false,
-          {},
-        );
-
-        return Semantic.addStatement(this.sr, {
-          variant: Semantic.ENode.ForStatement,
-          body: bodyId,
-          initStatement: initStatement,
-          loopCondition: loopCondition,
-          loopIncrement: loopIncrement,
-          sourceloc: s.sourceloc,
-        })[1];
+        if (s.initStatement) {
+          const {
+            flow: letStatementFlow,
+            writes: letStatementWrites,
+            statementId,
+          } = this.elaborateStatement(s.initStatement, {});
+          flow.addAll(letStatementFlow);
+          writes.addAll(letStatementWrites);
+          return {
+            statementId: Semantic.addStatement(this.sr, {
+              variant: Semantic.ENode.ForStatement,
+              body: scopeId,
+              initStatement: statementId,
+              loopCondition: loopCondition,
+              loopIncrement: loopIncrement,
+              sourceloc: s.sourceloc,
+            })[1],
+            flow: flow,
+            writes: writes,
+          };
+        } else {
+          return {
+            statementId: Semantic.addStatement(this.sr, {
+              variant: Semantic.ENode.ForStatement,
+              body: scopeId,
+              initStatement: null,
+              loopCondition: loopCondition,
+              loopIncrement: loopIncrement,
+              sourceloc: s.sourceloc,
+            })[1],
+            flow: flow,
+            writes: writes,
+          };
+        }
       }
 
       // =================================================================================================================
@@ -5889,16 +5953,10 @@ export class SemanticElaborator {
             } satisfies Semantic.VariableSymbol);
           }
 
+          const resultWrites = WriteResult.empty();
+          const resultFlow = FlowResult.fallthrough();
           const allScopes: Semantic.StatementId[] = [];
           for (let i = 0; i < comptimeExpr.parameters.length; i++) {
-            const thenScopeId = Semantic.addBlockScope(this.sr, {
-              variant: Semantic.ENode.BlockScope,
-              statements: [],
-              emittedExpr: -1 as Semantic.ExprId,
-              constraints: [...this.currentContext.constraints],
-              sourceloc: s.sourceloc,
-            })[1];
-
             const semanticParamId = comptimeExpr.parameters[i];
             const paramValue = this.sr.symbolNodes.get(semanticParamId);
             assert(paramValue.variant === Semantic.ENode.VariableSymbol);
@@ -5917,54 +5975,34 @@ export class SemanticElaborator {
               )[1];
               syntheticMap.set(s.indexVariable, loopIndexId);
             }
-            const thenScopeResult = this.elaborateBlockScope(
-              {
-                targetScopeId: thenScopeId,
-                sourceScopeId: s.body,
-              },
-              false,
-              undefined,
-            );
+            const { flow, writes, scopeId } = this.makeAndElaborateBlockScope(s.body, {
+              lastExprIsEmit: false,
+            });
+            resultFlow.addAll(flow);
+            resultWrites.addAll(writes);
             if (s.indexVariable) {
               syntheticMap.delete(s.indexVariable);
             }
             syntheticMap.delete(s.loopVariable);
 
             allScopes.push(
-              Semantic.addStatement(this.sr, {
-                variant: Semantic.ENode.ExprStatement,
-                expr: Semantic.addExpr(this.sr, {
-                  variant: Semantic.ENode.BlockScopeExpr,
-                  instanceIds: [],
-                  block: thenScopeId,
-                  noreturn: thenScopeResult.noReturn,
-                  sourceloc: s.sourceloc,
-                  isTemporary: true,
-                  type: this.sr.b.voidType(),
-                })[1],
-                sourceloc: s.sourceloc,
-              })[1],
+              this.sr.b.exprStatement(this.sr.b.blockScopeExpr(scopeId, flow, writes)[1])[1],
             );
           }
 
-          return Semantic.addStatement(this.sr, {
-            variant: Semantic.ENode.ExprStatement,
-            expr: Semantic.addExpr(this.sr, {
-              variant: Semantic.ENode.BlockScopeExpr,
-              instanceIds: [],
-              block: Semantic.addBlockScope(this.sr, {
-                variant: Semantic.ENode.BlockScope,
-                statements: allScopes,
-                emittedExpr: this.sr.b.noneExpr()[1],
-                constraints: [...this.currentContext.constraints],
-                sourceloc: s.sourceloc,
-              })[1],
-              sourceloc: s.sourceloc,
-              isTemporary: true,
-              type: this.sr.b.voidType(),
-            })[1],
-            sourceloc: s.sourceloc,
-          })[1];
+          resultFlow.add(FlowType.Fallthrough);
+
+          return {
+            statementId: this.sr.b.exprStatement(
+              this.sr.b.blockScopeExpr(
+                this.sr.b.blockScope(allScopes, this.sr.b.noneExpr()[1], s.sourceloc)[1],
+                resultFlow,
+                resultWrites,
+              )[1],
+            )[1],
+            flow: resultFlow,
+            writes: resultWrites,
+          };
         } else {
           assert(false, "Non-comptime for each not implemented yet");
         }
@@ -5984,16 +6022,16 @@ export class SemanticElaborator {
         assert(expr.variant === Semantic.ENode.AttemptExpr);
         expr.errorTypesCaught.add(e.type);
 
-        this.currentContext.scopeCanExitEarly.add(this.currentContext.currentScope);
-        this.currentContext.scopeWillExitEarly.add(this.currentContext.currentScope);
-        this.currentContext.scopeNoFallthrough.add(this.currentContext.currentScope);
-
-        return Semantic.addStatement(this.sr, {
-          variant: Semantic.ENode.RaiseStatement,
-          expr: eId,
-          toAttemptExpr: this.inAttemptExpr,
-          sourceloc: s.sourceloc,
-        })[1];
+        return {
+          statementId: Semantic.addStatement(this.sr, {
+            variant: Semantic.ENode.RaiseStatement,
+            expr: eId,
+            toAttemptExpr: this.inAttemptExpr,
+            sourceloc: s.sourceloc,
+          })[1],
+          flow: FlowResult.empty().with(FlowType.Raise),
+          writes: WriteResult.empty(),
+        };
       }
 
       default:
@@ -6002,11 +6040,10 @@ export class SemanticElaborator {
   }
 
   applyBinaryExprConstraints(
-    constraints: Semantic.Constraint[],
+    constraints: ConstraintSet,
     symbolValueExprId: Semantic.ExprId,
     literalExprId: Semantic.ExprId,
     operation: EBinaryOperation,
-    args: { inverse?: boolean },
   ) {
     const symbolValueExpr = this.sr.exprNodes.get(symbolValueExprId);
     assert(symbolValueExpr.variant === Semantic.ENode.SymbolValueExpr);
@@ -6033,36 +6070,17 @@ export class SemanticElaborator {
       return;
     }
 
-    const invertBinaryOperation = (op: EBinaryOperation) => {
-      switch (op) {
-        case EBinaryOperation.Equal:
-          return EBinaryOperation.Unequal;
-        case EBinaryOperation.Unequal:
-          return EBinaryOperation.Equal;
-        case EBinaryOperation.GreaterEqual:
-          return EBinaryOperation.LessThan;
-        case EBinaryOperation.GreaterThan:
-          return EBinaryOperation.LessEqual;
-        case EBinaryOperation.LessEqual:
-          return EBinaryOperation.GreaterThan;
-        case EBinaryOperation.LessThan:
-          return EBinaryOperation.GreaterEqual;
-        default:
-          assert(false);
-      }
-    };
-
     switch (operation) {
       case EBinaryOperation.Equal:
-      case EBinaryOperation.Unequal:
+      case EBinaryOperation.NotEqual:
       case EBinaryOperation.GreaterEqual:
       case EBinaryOperation.GreaterThan:
       case EBinaryOperation.LessEqual:
       case EBinaryOperation.LessThan:
-        constraints.push({
+        constraints.add({
           constraintValue: {
             kind: "comparison",
-            operation: args?.inverse ? invertBinaryOperation(operation) : operation,
+            operation: operation,
             value: literalExprId,
           },
           variableSymbol: symbolValueExpr.symbol,
@@ -6070,28 +6088,32 @@ export class SemanticElaborator {
     }
   }
 
-  buildConstraints(
-    constraints: Semantic.Constraint[],
-    exprId: Semantic.ExprId,
-    args: { inverse?: boolean },
-  ) {
+  buildLogicalConstraintSet(constraints: ConstraintSet, exprId: Semantic.ExprId) {
     const expr = this.sr.exprNodes.get(exprId);
     const exprTypeUse = this.sr.typeUseNodes.get(expr.type);
     const exprTypeDef = this.sr.typeDefNodes.get(exprTypeUse.type);
 
+    if (
+      expr.variant === Semantic.ENode.ExplicitCastExpr &&
+      Conversion.isBoolean(this.sr, this.sr.typeUseNodes.get(expr.type).type)
+    ) {
+      this.buildLogicalConstraintSet(constraints, expr.expr);
+      return;
+    }
+
     if (expr.variant === Semantic.ENode.UnaryExpr) {
       if (expr.operation === EUnaryOperation.Negate) {
-        this.buildConstraints(constraints, expr.expr, {
-          inverse: !args?.inverse,
-        });
+        const c = ConstraintSet.empty();
+        this.buildLogicalConstraintSet(c, expr.expr);
+        constraints.addAll(c.inverse());
         return;
       }
     }
 
     if (expr.variant === Semantic.ENode.BinaryExpr) {
       if (expr.operation === EBinaryOperation.BoolAnd) {
-        this.buildConstraints(constraints, expr.left, args);
-        this.buildConstraints(constraints, expr.right, args);
+        this.buildLogicalConstraintSet(constraints, expr.left);
+        this.buildLogicalConstraintSet(constraints, expr.right);
         return;
       } else {
         const leftExpr = this.sr.exprNodes.get(expr.left);
@@ -6104,7 +6126,6 @@ export class SemanticElaborator {
               expr.left,
               rightValue.value[1],
               expr.operation,
-              args,
             );
           }
         } else if (rightExpr.variant === Semantic.ENode.SymbolValueExpr) {
@@ -6115,7 +6136,6 @@ export class SemanticElaborator {
               expr.right,
               leftValue.value[1],
               expr.operation,
-              args,
             );
           }
         }
@@ -6136,14 +6156,10 @@ export class SemanticElaborator {
 
       if (unionExpr.variant === Semantic.ENode.SymbolValueExpr) {
         for (const comparisonType of expr.comparisonTypesAnd) {
-          let invert = expr.invertCheck;
-          if (args?.inverse) {
-            invert = !invert;
-          }
-          constraints.push({
+          constraints.add({
             constraintValue: {
               kind: "union",
-              operation: invert ? "isNot" : "is",
+              operation: expr.invertCheck ? "isNot" : "is",
               typeDef: this.getTypeUse(comparisonType).type,
             },
             variableSymbol: unionExpr.symbol,
@@ -6158,22 +6174,20 @@ export class SemanticElaborator {
     ) {
       const memberDefs = exprTypeDef.members.map((m) => this.sr.typeUseNodes.get(m).type);
       if (memberDefs.includes(this.sr.b.nullTypeDef())) {
-        let invert = args?.inverse || false;
-        constraints.push({
+        constraints.add({
           constraintValue: {
             kind: "union",
-            operation: invert ? "is" : "isNot",
+            operation: "isNot",
             typeDef: this.sr.b.nullTypeDef(),
           },
           variableSymbol: expr.symbol,
         });
       }
       if (memberDefs.includes(this.sr.b.noneTypeDef())) {
-        let invert = args?.inverse || false;
-        constraints.push({
+        constraints.add({
           constraintValue: {
             kind: "union",
-            operation: invert ? "is" : "isNot",
+            operation: "isNot",
             typeDef: this.sr.b.noneTypeDef(),
           },
           variableSymbol: expr.symbol,
@@ -6185,14 +6199,13 @@ export class SemanticElaborator {
       expr.variant === Semantic.ENode.SymbolValueExpr &&
       exprTypeDef.variant === Semantic.ENode.TaggedUnionDatatype
     ) {
-      let invert = args?.inverse || false;
       const okTag = exprTypeDef.members.find((m) => m.tag === "Ok");
       const errTag = exprTypeDef.members.find((m) => m.tag === "Err");
       if (okTag && errTag) {
-        constraints.push({
+        constraints.add({
           constraintValue: {
             kind: "union",
-            operation: invert ? "isNot" : "is",
+            operation: "is",
             typeDef: this.sr.typeUseNodes.get(okTag.type).type,
           },
           variableSymbol: expr.symbol,
@@ -6452,6 +6465,8 @@ export class SemanticElaborator {
               canBeUnwrappedForLHS: true,
               sourceloc: symbolValue.sourceloc,
               type: [...narrowing.possibleVariants][0],
+              flow: symbolValueExpr.flow,
+              writes: symbolValueExpr.writes,
             });
             return [result, resultId] as const;
           } else if (narrowing.possibleVariants.size !== members.length) {
@@ -6472,6 +6487,8 @@ export class SemanticElaborator {
               isTemporary: false,
               sourceloc: symbolValue.sourceloc,
               type: newUnion,
+              flow: symbolValueExpr.flow,
+              writes: symbolValueExpr.writes,
             });
           }
         }
@@ -6573,12 +6590,12 @@ export class SemanticElaborator {
           assert(false);
         }
       } else {
-        const [generic, genericId] = Semantic.addType(this.sr, {
+        const genericId = Semantic.addType(this.sr, {
           variant: Semantic.ENode.GenericParameterDatatype,
           name: symbol.name,
           collectedParameter: symbolId,
           concrete: false,
-        });
+        })[1];
         return this.sr.b.datatypeDefAsValue(genericId, symbolValue.sourceloc);
       }
     }
@@ -6632,6 +6649,8 @@ export class SemanticElaborator {
         sourceloc: errPropExpr.sourceloc,
         toAttemptExpr: this.inAttemptExpr,
         type: srcOkTag.type,
+        flow: FlowResult.fallthrough().with(FlowType.Raise).withAll(rightExpr.flow),
+        writes: WriteResult.empty().withAll(rightExpr.writes),
       });
     }
 
@@ -6671,13 +6690,15 @@ export class SemanticElaborator {
         canBeUnwrappedForLHS: false,
         tag: srcErrIndex,
         type: srcErrTag.type,
+        flow: FlowResult.fallthrough(),
+        writes: WriteResult.empty(),
       })[1];
       if (functionType.variant === Semantic.ENode.FunctionDatatype) {
         return Conversion.MakeConversionOrThrow(
           this.sr,
           errValue,
           srcErrTag.type,
-          [],
+          ConstraintSet.empty(),
           errPropExpr.sourceloc,
           Conversion.Mode.Implicit,
           false,
@@ -6695,6 +6716,8 @@ export class SemanticElaborator {
         isTemporary: true,
         sourceloc: errPropExpr.sourceloc,
         type: rightExpr.type,
+        flow: FlowResult.fallthrough(),
+        writes: WriteResult.empty(),
       })[1];
 
     const returnStatement = () => {
@@ -6709,62 +6732,60 @@ export class SemanticElaborator {
       return statementId;
     };
 
-    return Semantic.addExpr(this.sr, {
-      variant: Semantic.ENode.BlockScopeExpr,
-      block: Semantic.addBlockScope(this.sr, {
-        variant: Semantic.ENode.BlockScope,
-        constraints: [],
-        emittedExpr: Semantic.addExpr(this.sr, {
-          variant: Semantic.ENode.UnionToValueCastExpr,
-          expr: symbolValue(),
-          instanceIds: [],
-          isTemporary: true,
-          canBeUnwrappedForLHS: false,
+    const blockScopeId = this.sr.b.blockScope(
+      [
+        Semantic.addStatement(this.sr, {
+          variant: Semantic.ENode.VariableStatement,
+          name: tempVariable.name,
+          comptime: false,
           sourceloc: errPropExpr.sourceloc,
-          tag: srcOkIndex,
-          type: srcOkTag.type,
+          value: rightExprId,
+          variableSymbol: tempVariableId,
         })[1],
-        statements: [
-          Semantic.addStatement(this.sr, {
-            variant: Semantic.ENode.VariableStatement,
-            name: tempVariable.name,
-            comptime: false,
+        Semantic.addStatement(this.sr, {
+          variant: Semantic.ENode.IfStatement,
+          isLetBinding: false,
+          condition: Semantic.addExpr(this.sr, {
+            variant: Semantic.ENode.UnionTagCheckExpr,
+            expr: rightExprId,
+            instanceIds: [],
+            isTemporary: true,
             sourceloc: errPropExpr.sourceloc,
-            value: rightExprId,
-            variableSymbol: tempVariableId,
+            type: this.sr.b.boolType(),
+            invertCheck: false,
+            comparisonTypesAnd: [srcErrTag.type],
+            flow: rightExpr.flow,
+            writes: rightExpr.writes,
           })[1],
-          Semantic.addStatement(this.sr, {
-            variant: Semantic.ENode.IfStatement,
-            isLetBinding: false,
-            condition: Semantic.addExpr(this.sr, {
-              variant: Semantic.ENode.UnionTagCheckExpr,
-              expr: rightExprId,
-              instanceIds: [],
-              isTemporary: true,
-              sourceloc: errPropExpr.sourceloc,
-              type: this.sr.b.boolType(),
-              invertCheck: false,
-              comparisonTypesAnd: [srcErrTag.type],
-            })[1],
-            elseIfs: [],
-            sourceloc: errPropExpr.sourceloc,
-            then: Semantic.addBlockScope(this.sr, {
-              variant: Semantic.ENode.BlockScope,
-              constraints: [],
-              emittedExpr: this.sr.b.noneExpr()[1],
-              statements: [returnStatement()],
-              sourceloc: errPropExpr.sourceloc,
-            })[1],
-          })[1],
-        ],
+          elseIfs: [],
+          sourceloc: errPropExpr.sourceloc,
+          then: this.sr.b.blockScope(
+            [returnStatement()],
+            this.sr.b.noneExpr()[1],
+            errPropExpr.sourceloc,
+          )[1],
+        })[1],
+      ],
+      Semantic.addExpr(this.sr, {
+        variant: Semantic.ENode.UnionToValueCastExpr,
+        expr: symbolValue(),
+        instanceIds: [],
+        isTemporary: true,
+        canBeUnwrappedForLHS: false,
         sourceloc: errPropExpr.sourceloc,
+        tag: srcOkIndex,
+        type: srcOkTag.type,
+        flow: rightExpr.flow,
+        writes: rightExpr.writes,
       })[1],
-      instanceIds: [],
-      noreturn: false, // dont care
-      isTemporary: true,
-      sourceloc: errPropExpr.sourceloc,
-      type: srcOkTag.type,
-    });
+      errPropExpr.sourceloc,
+    )[1];
+
+    return this.sr.b.blockScopeExpr(
+      blockScopeId,
+      FlowResult.fallthrough().with(FlowType.Return).withAll(rightExpr.flow),
+      WriteResult.empty().withAll(rightExpr.writes),
+    );
   }
 
   exprIsType(exprIsType: Collect.ExprIsTypeExpr, inference: Inference) {
@@ -6806,6 +6827,8 @@ export class SemanticElaborator {
         sourceloc: exprIsType.sourceloc,
         invertCheck: false,
         isTemporary: true,
+        flow: sourceExpr.flow,
+        writes: sourceExpr.writes,
       });
     } else {
       // It is not a union, so the 'is' operator is not meaningful to distinguish anything, therefore
@@ -6899,6 +6922,8 @@ export class SemanticElaborator {
         ),
         sourceloc: arraySubscript.sourceloc,
         isTemporary: true,
+        flow: value.flow,
+        writes: value.writes,
       });
     } else {
       const [index, indexId] = this.expr(rawIndex.value, undefined);
@@ -6942,6 +6967,8 @@ export class SemanticElaborator {
           type: valueType.datatype,
           sourceloc: arraySubscript.sourceloc,
           isTemporary: false,
+          flow: value.flow,
+          writes: value.writes,
         });
       } else if (
         exprType.variant === Semantic.ENode.PrimitiveDatatype &&
@@ -6963,6 +6990,8 @@ export class SemanticElaborator {
           isTemporary: true,
           sourceloc: arraySubscript.sourceloc,
           type: this.sr.b.u8Type(),
+          flow: value.flow,
+          writes: value.writes,
         });
       } else if (exprType.variant === Semantic.ENode.StructDatatype) {
         const overloads = new Set<Semantic.SymbolId>();
@@ -7036,10 +7065,14 @@ export class SemanticElaborator {
                 false,
                 arraySubscript.sourceloc,
               )[1],
+              flow: value.flow,
+              writes: value.writes,
             })[1],
             type: ftype.returnType,
             sourceloc: arraySubscript.sourceloc,
             isTemporary: true,
+            flow: value.flow,
+            writes: value.writes,
           });
         }
 
@@ -7084,6 +7117,10 @@ export class SemanticElaborator {
 
   postIncr(postIncr: Collect.PostIncrExpr) {
     const [e, eId] = this.expr(postIncr.expr, undefined);
+
+    const instanceIds: Semantic.InstanceId[] = [];
+    const writes = this.sr.b.updateLHSDependencies(eId, instanceIds);
+
     return Semantic.addExpr(this.sr, {
       variant: Semantic.ENode.PostIncrExpr,
       instanceIds: [],
@@ -7092,74 +7129,47 @@ export class SemanticElaborator {
       operation: postIncr.operation,
       sourceloc: postIncr.sourceloc,
       isTemporary: true,
+      flow: e.flow,
+      writes: WriteResult.empty().withAll(writes),
     });
   }
 
   preIncr(preIncr: Collect.PreIncrExpr) {
     const [e, eId] = this.expr(preIncr.expr, undefined);
+
+    const instanceIds: Semantic.InstanceId[] = [];
+    const writes = this.sr.b.updateLHSDependencies(eId, instanceIds);
+
     return Semantic.addExpr(this.sr, {
       variant: Semantic.ENode.PreIncrExpr,
-      instanceIds: [],
+      instanceIds: instanceIds,
       type: e.type,
       expr: eId,
       operation: preIncr.operation,
       sourceloc: preIncr.sourceloc,
       isTemporary: true,
+      flow: e.flow,
+      writes: WriteResult.empty().withAll(writes),
     });
   }
 
   blockScopeExpr(blockScopeExpr: Collect.BlockScopeExpr, inference: Inference) {
-    const blockScope = this.sr.cc.scopeNodes.get(blockScopeExpr.scope);
-    assert(blockScope.variant === Collect.ENode.BlockScope);
-    const [scope, scopeId] = Semantic.addBlockScope(this.sr, {
-      variant: Semantic.ENode.BlockScope,
-      statements: [],
-      emittedExpr: -1 as Semantic.ExprId,
-      constraints: [...this.currentContext.constraints],
-      sourceloc: blockScope.sourceloc,
-    });
-    const result = this.withContext(
+    const { flow, scope, scopeId, writes } = this.withScopes(
       {
-        context: Semantic.isolateElaborationContext(this.currentContext, {
-          currentScope: blockScopeExpr.scope,
-          genericsScope: blockScopeExpr.scope,
-          constraints: this.currentContext.constraints,
-          instanceDeps: this.currentContext.instanceDeps,
-        }),
-        inFunction: this.inFunction,
-        inAttemptExpr: this.inAttemptExpr,
-        functionReturnsInstanceIds: this.functionReturnsInstanceIds,
+        currentScope: blockScopeExpr.scope,
+        genericsScope: blockScopeExpr.scope,
       },
       () => {
-        return this.elaborateBlockScope(
-          {
-            targetScopeId: scopeId,
-            sourceScopeId: blockScopeExpr.scope,
-          },
-          true,
-          inference,
-        );
+        return this.makeAndElaborateBlockScope(blockScopeExpr.scope, { lastExprIsEmit: true });
       },
     );
 
-    if (result.canExitEarly) {
-      this.currentContext.scopeCanExitEarly.add(this.currentContext.currentScope);
-    }
-    if (result.noFallthrough) {
-      this.currentContext.scopeNoFallthrough.add(this.currentContext.currentScope);
-    }
-    if (result.noReturn) {
-      this.currentContext.scopeNoReturn.add(this.currentContext.currentScope);
-    }
-    if (result.willExitEarly) {
-      this.currentContext.scopeWillExitEarly.add(this.currentContext.currentScope);
-    }
-
-    assert(scope.emittedExpr !== -1);
     return Semantic.addExpr(this.sr, {
       variant: Semantic.ENode.BlockScopeExpr,
       instanceIds: [],
       block: scopeId,
+      flow: flow,
+      writes: writes,
       isTemporary: true,
       type: this.sr.exprNodes.get(scope.emittedExpr).type,
       sourceloc: blockScopeExpr.sourceloc,
@@ -7176,7 +7186,7 @@ export class SemanticElaborator {
       attemptScopeReturnsType: null,
       elseScopeReturnsType: null,
       errorTypesCaught: new Set(),
-      uniqueId: makeTempId(),
+      uniqueId,
       errorLabel: `__attempt_error_label_${uniqueId}`,
       resultLabel: `__attempt_result_label_${uniqueId}`,
       errorResultVarname: `__attempt_error_${uniqueId}`,
@@ -7185,41 +7195,29 @@ export class SemanticElaborator {
       sourceloc: attempt.sourceloc,
       type: -1 as Semantic.TypeUseId,
       errorUnionType: -1 as Semantic.TypeUseId,
+      flow: FlowResult.empty(),
+      writes: WriteResult.empty(),
     });
 
-    const attemptBlockScope = this.sr.cc.scopeNodes.get(attempt.attemptScope);
-    assert(attemptBlockScope.variant === Collect.ENode.BlockScope);
-    const [attemptScope, attemptScopeId] = Semantic.addBlockScope<Semantic.BlockScope>(this.sr, {
-      variant: Semantic.ENode.BlockScope,
-      statements: [],
-      emittedExpr: -1 as Semantic.ExprId,
-      constraints: [...this.currentContext.constraints],
-      sourceloc: attemptBlockScope.sourceloc,
-    });
-    const attemptScopeResult = this.withContext(
-      {
-        context: Semantic.isolateElaborationContext(this.currentContext, {
-          currentScope: attempt.attemptScope,
-          genericsScope: attempt.attemptScope,
-          constraints: this.currentContext.constraints,
-          instanceDeps: this.currentContext.instanceDeps,
-        }),
-        inFunction: this.inFunction,
-        inAttemptExpr: attemptExprId,
-        functionReturnsInstanceIds: this.functionReturnsInstanceIds,
-      },
+    // ───────────────────────────────────────────────────────────────────────────
+    // Attempt block
+    // ───────────────────────────────────────────────────────────────────────────
+    const {
+      flow: attemptFlow,
+      writes: attemptWrites,
+      scope: attemptScope,
+      scopeId: attemptScopeId,
+    } = this.withScopes(
+      { currentScope: attempt.attemptScope, genericsScope: attempt.attemptScope },
       () => {
-        return this.elaborateBlockScope(
-          {
-            targetScopeId: attemptScopeId,
-            sourceScopeId: attempt.attemptScope,
-          },
-          true,
-          inference,
-        );
+        this.inAttemptExpr = attemptExprId;
+        return this.makeAndElaborateBlockScope(attempt.attemptScope, { lastExprIsEmit: true });
       },
     );
 
+    // ───────────────────────────────────────────────────────────────────────────
+    // Else block
+    // ───────────────────────────────────────────────────────────────────────────
     const errorUnion =
       attemptExpr.errorTypesCaught.size > 0
         ? this.sr.b.untaggedUnionTypeUse([...attemptExpr.errorTypesCaught], attempt.sourceloc)
@@ -7227,58 +7225,66 @@ export class SemanticElaborator {
 
     const elseBlockScope = this.sr.cc.scopeNodes.get(attempt.elseScope);
     assert(elseBlockScope.variant === Collect.ENode.BlockScope);
-    const [elseScope, elseScopeId] = Semantic.addBlockScope(this.sr, {
-      variant: Semantic.ENode.BlockScope,
-      statements: [],
-      emittedExpr: -1 as Semantic.ExprId,
-      constraints: [...this.currentContext.constraints],
-      sourceloc: elseBlockScope.sourceloc,
-    });
 
     let errorVarDefStatement: Collect.VariableDefinitionStatement | null = null;
     if (elseBlockScope.statements.length === 2) {
-      const statement = this.sr.cc.statementNodes.get(elseBlockScope.statements[0]);
-      assert(statement.variant === Collect.ENode.VariableDefinitionStatement);
-      errorVarDefStatement = statement;
+      const s = this.sr.cc.statementNodes.get(elseBlockScope.statements[0]);
+      assert(s.variant === Collect.ENode.VariableDefinitionStatement);
+      errorVarDefStatement = s;
     }
 
-    const elseScopeResult = this.withContext(
-      {
-        context: Semantic.isolateElaborationContext(this.currentContext, {
-          currentScope: attempt.elseScope,
-          genericsScope: attempt.elseScope,
-          constraints: this.currentContext.constraints,
-          instanceDeps: this.currentContext.instanceDeps,
-        }),
-        inFunction: this.inFunction,
-        inAttemptExpr: this.inAttemptExpr,
-        functionReturnsInstanceIds: this.functionReturnsInstanceIds,
-      },
+    const {
+      flow: elseFlow,
+      writes: elseWrites,
+      scope: elseScope,
+      scopeId: elseScopeId,
+    } = this.withScopes(
+      { currentScope: attempt.elseScope, genericsScope: attempt.elseScope },
       () => {
-        // Override type of the 'e' variable, will be picked up at variable elaboration
         if (errorVarDefStatement) {
           this.currentContext.elaborationTypeOverride.set(
             errorVarDefStatement.variableSymbol,
             errorUnion,
           );
         }
-        return this.elaborateBlockScope(
-          {
-            targetScopeId: elseScopeId,
-            sourceScopeId: attempt.elseScope,
-          },
-          true,
-          inference,
-        );
+        return this.makeAndElaborateBlockScope(attempt.elseScope, { lastExprIsEmit: true });
       },
     );
 
+    // ───────────────────────────────────────────────────────────────────────────
+    // FLOW + WRITES
+    // ───────────────────────────────────────────────────────────────────────────
+    const resultFlow = FlowResult.empty();
+    resultFlow.addAll(attemptFlow);
+    resultFlow.addAll(elseFlow);
+
+    const canFallthrough =
+      attemptFlow.has(FlowType.Fallthrough) || elseFlow.has(FlowType.Fallthrough);
+
+    if (canFallthrough) {
+      resultFlow.add(FlowType.Fallthrough);
+    } else {
+      resultFlow.add(FlowType.NoReturn);
+    }
+
+    const resultWrites = WriteResult.empty();
+    resultWrites.addAll(attemptWrites);
+    resultWrites.addAll(elseWrites);
+
+    attemptExpr.flow = resultFlow;
+    attemptExpr.writes = resultWrites;
+
+    // ───────────────────────────────────────────────────────────────────────────
+    // RESULT TYPE
+    // ───────────────────────────────────────────────────────────────────────────
     const memberSet = new Set<Semantic.TypeUseId>();
-    if (!attemptScopeResult.noReturn && !attemptScopeResult.willExitEarly) {
+
+    if (attemptFlow.has(FlowType.Fallthrough)) {
       attemptExpr.attemptScopeReturnsType = this.sr.exprNodes.get(attemptScope.emittedExpr).type;
       memberSet.add(attemptExpr.attemptScopeReturnsType);
     }
-    if (!elseScopeResult.noReturn && !elseScopeResult.willExitEarly) {
+
+    if (elseFlow.has(FlowType.Fallthrough)) {
       attemptExpr.elseScopeReturnsType = this.sr.exprNodes.get(elseScope.emittedExpr).type;
       memberSet.add(attemptExpr.elseScopeReturnsType);
     }
@@ -7289,43 +7295,52 @@ export class SemanticElaborator {
         : this.sr.b.noneType();
 
     attemptExpr.type = resultUnion;
+    attemptExpr.errorUnionType = errorUnion;
 
-    const attemptScopeExprId = this.sr.b.blockScopeExpr(attemptScopeId)[1];
-    if (attemptExpr.attemptScopeReturnsType) {
-      attemptExpr.attemptScopeExpr = Conversion.MakeConversionOrThrow(
-        this.sr,
-        attemptScopeExprId,
-        resultUnion,
-        this.currentContext.constraints,
-        attemptScope.sourceloc,
-        Conversion.Mode.Implicit,
-        false,
-      );
-    } else {
-      attemptExpr.attemptScopeExpr = attemptScopeExprId;
-    }
+    // ───────────────────────────────────────────────────────────────────────────
+    // BLOCK EXPRESSIONS
+    // ───────────────────────────────────────────────────────────────────────────
+    const attemptScopeExprId = this.sr.b.blockScopeExpr(
+      attemptScopeId,
+      attemptFlow,
+      attemptWrites,
+    )[1];
 
-    const elseExprId = this.sr.b.blockScopeExpr(elseScopeId)[1];
-    if (attemptExpr.elseScopeReturnsType) {
-      attemptExpr.elseScopeExpr = Conversion.MakeConversionOrThrow(
-        this.sr,
-        elseExprId,
-        resultUnion,
-        this.currentContext.constraints,
-        elseScope.sourceloc,
-        Conversion.Mode.Implicit,
-        false,
-      );
-    } else {
-      attemptExpr.elseScopeExpr = elseExprId;
-    }
+    attemptExpr.attemptScopeExpr = attemptExpr.attemptScopeReturnsType
+      ? Conversion.MakeConversionOrThrow(
+          this.sr,
+          attemptScopeExprId,
+          resultUnion,
+          this.currentContext.constraints,
+          attemptScope.sourceloc,
+          Conversion.Mode.Implicit,
+          false,
+        )
+      : attemptScopeExprId;
 
-    // Insert the error variable
+    const elseExprId = this.sr.b.blockScopeExpr(elseScopeId, elseFlow, elseWrites)[1];
+
+    attemptExpr.elseScopeExpr = attemptExpr.elseScopeReturnsType
+      ? Conversion.MakeConversionOrThrow(
+          this.sr,
+          elseExprId,
+          resultUnion,
+          this.currentContext.constraints,
+          elseScope.sourceloc,
+          Conversion.Mode.Implicit,
+          false,
+        )
+      : elseExprId;
+
+    // ───────────────────────────────────────────────────────────────────────────
+    // ERROR VARIABLE
+    // ───────────────────────────────────────────────────────────────────────────
     if (attemptExpr.hasErrorVar) {
       assert(elseScope.statements.length === 1);
-      const vardefStatement = this.sr.statementNodes.get(elseScope.statements[0]);
-      assert(vardefStatement.variant === Semantic.ENode.VariableStatement);
-      vardefStatement.value = Semantic.addExpr(this.sr, {
+      const vardef = this.sr.statementNodes.get(elseScope.statements[0]);
+      assert(vardef.variant === Semantic.ENode.VariableStatement);
+
+      vardef.value = Semantic.addExpr(this.sr, {
         variant: Semantic.ENode.SymbolValueExpr,
         instanceIds: [],
         isTemporary: false,
@@ -7339,34 +7354,12 @@ export class SemanticElaborator {
           null,
           attemptExpr.sourceloc,
         )[1],
+        flow: FlowResult.fallthrough(),
+        writes: WriteResult.empty(),
         type: errorUnion,
       })[1];
     }
 
-    attemptExpr.errorUnionType = errorUnion;
-
-    console.log(attemptScopeResult, elseScopeResult);
-    // Handle control flow analysis
-    console.error(
-      "FIX THIS: The control flow analysis for attempt/else blocks is completely broken, but it cannot be fixed because we don't know where it escapes to. We need a solution so we know whether it escapes to the function with a return statement (which also applies to the parent) or if it escapes to the else block with an error (which does NOT apply to the parent). Find a way to distinguish both, and then try hard to actually get the control flow right.",
-    );
-    if (elseScopeResult.canExitEarly) {
-      this.currentContext.scopeCanExitEarly.add(this.currentContext.currentScope);
-    }
-    if (elseScopeResult.willExitEarly) {
-      this.currentContext.scopeWillExitEarly.add(this.currentContext.currentScope);
-    }
-    if (
-      (attemptScopeResult.willExitEarly || attemptScopeResult.noReturn) &&
-      (elseScopeResult.willExitEarly || elseScopeResult.noReturn)
-    ) {
-      this.currentContext.scopeNoFallthrough.add(this.currentContext.currentScope);
-    }
-    if (attemptScopeResult.noReturn && elseScopeResult.noReturn) {
-      this.currentContext.scopeNoReturn.add(this.currentContext.currentScope);
-    }
-
-    assert(attemptBlockScope.emittedExpr !== -1 && elseBlockScope.emittedExpr !== -1);
     return [attemptExpr, attemptExprId] as const;
   }
 
@@ -7404,7 +7397,7 @@ export class SemanticElaborator {
         context: Semantic.makeElaborationContext({
           currentScope: this.sr.cc.moduleScopeId,
           genericsScope: this.sr.cc.moduleScopeId,
-          constraints: [],
+          constraints: ConstraintSet.empty(),
         }),
         inAttemptExpr: null,
         inFunction: null,
@@ -7441,29 +7434,57 @@ export class SemanticBuilder {
   constructor(public sr: SemanticResult) {}
 
   binaryExpr(
-    left: Semantic.ExprId,
-    right: Semantic.ExprId,
+    leftId: Semantic.ExprId,
+    rightId: Semantic.ExprId,
     operation: EBinaryOperation,
     resultType: Semantic.TypeUseId,
     sourceloc: SourceLoc,
   ) {
+    const left = this.sr.exprNodes.get(leftId);
+    const right = this.sr.exprNodes.get(rightId);
     return Semantic.addExpr(this.sr, {
       variant: Semantic.ENode.BinaryExpr,
       instanceIds: [],
-      left: left,
+      left: leftId,
       operation: operation,
-      right: right,
+      right: rightId,
       type: resultType,
       isTemporary: true,
+      sourceloc: sourceloc,
+      flow: left.flow.withAll(right.flow),
+      writes: left.writes.withAll(right.writes),
+    });
+  }
+
+  exprStatement(exprId: Semantic.ExprId) {
+    const expr = this.sr.exprNodes.get(exprId);
+    return Semantic.addStatement(this.sr, {
+      variant: Semantic.ENode.ExprStatement,
+      expr: exprId,
+      sourceloc: expr.sourceloc,
+    });
+  }
+
+  blockScope(
+    statements: Semantic.StatementId[],
+    emittedExpr: Semantic.ExprId,
+    sourceloc: SourceLoc,
+  ) {
+    return Semantic.addBlockScope(this.sr, {
+      variant: Semantic.ENode.BlockScope,
+      statements: statements,
+      emittedExpr: emittedExpr,
       sourceloc: sourceloc,
     });
   }
 
-  blockScopeExpr(blockScopeId: Semantic.BlockScopeId) {
+  blockScopeExpr(blockScopeId: Semantic.BlockScopeId, flow: FlowResult, writes: WriteResult) {
     const blockScope = this.sr.blockScopeNodes.get(blockScopeId);
     return Semantic.addExpr(this.sr, {
       variant: Semantic.ENode.BlockScopeExpr,
       block: blockScopeId,
+      flow: flow,
+      writes: writes,
       instanceIds: [],
       isTemporary: true,
       sourceloc: blockScope.sourceloc,
@@ -7497,6 +7518,15 @@ export class SemanticBuilder {
     assert(functionSymbol.variant === Semantic.ENode.FunctionSymbol);
     instanceIds.forEach((i) => functionSymbol.createsInstanceIds.add(i));
 
+    let ftype: Semantic.FunctionDatatypeDef | null =
+      ftypeDef.variant === Semantic.ENode.FunctionDatatype ? ftypeDef : null;
+    if (ftypeDef.variant === Semantic.ENode.CallableDatatype) {
+      const f = this.sr.typeDefNodes.get(ftypeDef.functionType);
+      assert(f.variant === Semantic.ENode.FunctionDatatype);
+      ftype = f;
+    }
+    assert(ftype);
+
     let returnType: Semantic.TypeUseId | null = null;
     if (ftypeDef.variant === Semantic.ENode.FunctionDatatype) {
       returnType = ftypeDef.returnType;
@@ -7512,6 +7542,62 @@ export class SemanticBuilder {
       }
     }
 
+    const resultFlow = FlowResult.empty();
+    const resultWrites = WriteResult.empty();
+    resultFlow.addAll(expr.flow);
+    resultWrites.addAll(expr.writes);
+    callArguments.forEach((a) => {
+      const e = this.sr.exprNodes.get(a);
+      resultFlow.addAll(e.flow);
+      resultWrites.addAll(e.writes);
+    });
+    resultFlow.remove(FlowType.Fallthrough);
+
+    let isFallthrough = true;
+
+    // This is the handling for noreturn_if assertions like assert()
+    if (ftype.requires.noreturnIf) {
+      const noReturnIf = ftype.requires.noreturnIf;
+
+      assert(noReturnIf.argIndex !== null);
+      const passedArgId = callArguments[noReturnIf.argIndex];
+
+      const result = EvalCTFE(this.sr, passedArgId);
+      if (result.ok) {
+        if (
+          result.value[0].variant === Semantic.ENode.LiteralExpr &&
+          result.value[0].literal.type === EPrimitive.bool
+        ) {
+          // The condition is already known at compile time, skip the condition
+          // This is where assert(false) turns into noreturn
+          // If condition is true, just ignore all constraints
+          if (!result.value[0].literal.value) {
+            isFallthrough = false;
+            resultFlow.add(FlowType.NoReturn);
+          }
+        }
+      } else {
+        // The condition is not known at compile time, build normal constraints
+
+        // This is the actual point where constraints like assert() are applied to the remaining scope
+        const c = ConstraintSet.empty();
+        this.sr.e.buildLogicalConstraintSet(c, passedArgId);
+        this.sr.e.currentContext.constraints.addAll(
+          noReturnIf.operation === "noreturn-if-truthy" ? c.inverse() : c,
+        );
+      }
+    }
+
+    // This is the handling for noreturn like "sys.panic()";
+    if (ftype.requires.noreturn) {
+      isFallthrough = false;
+      resultFlow.add(FlowType.NoReturn);
+    }
+
+    if (isFallthrough) {
+      resultFlow.add(FlowType.Fallthrough);
+    }
+
     return Semantic.addExpr(this.sr, {
       variant: Semantic.ENode.ExprCallExpr,
       instanceIds: instanceIds,
@@ -7520,6 +7606,8 @@ export class SemanticBuilder {
       isTemporary: true,
       type: returnType,
       sourceloc: sourceloc,
+      flow: resultFlow,
+      writes: resultWrites,
     });
   }
 
@@ -7538,6 +7626,8 @@ export class SemanticBuilder {
       type: resultType,
       isTemporary: true,
       sourceloc: sourceloc,
+      flow: expr.flow,
+      writes: expr.writes,
     });
   }
 
@@ -7574,6 +7664,8 @@ export class SemanticBuilder {
           false,
           sourceloc,
         )[1],
+        flow: FlowResult.fallthrough(),
+        writes: WriteResult.empty(),
       });
     } else if (literal.type === EPrimitive.Regex) {
       literal.id = this.elaborateRegex(literal.pattern, literal.flags);
@@ -7584,6 +7676,8 @@ export class SemanticBuilder {
         sourceloc: sourceloc,
         isTemporary: true,
         type: makePrimitiveAvailable(this.sr, literal.type, EDatatypeMutability.Const, sourceloc),
+        flow: FlowResult.fallthrough(),
+        writes: WriteResult.empty(),
       });
     } else {
       return Semantic.addExpr(this.sr, {
@@ -7593,6 +7687,8 @@ export class SemanticBuilder {
         sourceloc: sourceloc,
         isTemporary: true,
         type: makePrimitiveAvailable(this.sr, literal.type, EDatatypeMutability.Const, sourceloc),
+        flow: FlowResult.fallthrough(),
+        writes: WriteResult.empty(),
       });
     }
   }
@@ -7642,10 +7738,11 @@ export class SemanticBuilder {
     return Semantic.addExpr(this.sr, {
       variant: Semantic.ENode.DatatypeAsValueExpr,
       instanceIds: [],
-      symbol: type,
       type: makeTypeUse(this.sr, type, EDatatypeMutability.Default, false, sourceloc)[1],
       isTemporary: false,
       sourceloc: sourceloc,
+      flow: FlowResult.fallthrough(),
+      writes: WriteResult.empty(),
     });
   }
 
@@ -7653,10 +7750,11 @@ export class SemanticBuilder {
     return Semantic.addExpr(this.sr, {
       variant: Semantic.ENode.DatatypeAsValueExpr,
       instanceIds: [],
-      symbol: type,
       type: type,
       isTemporary: false,
       sourceloc: sourceloc,
+      flow: FlowResult.fallthrough(),
+      writes: WriteResult.empty(),
     });
   }
 
@@ -7669,6 +7767,8 @@ export class SemanticBuilder {
       type: this.intType(),
       isTemporary: false,
       sourceloc: valueExpr.sourceloc,
+      flow: FlowResult.fallthrough(),
+      writes: WriteResult.empty(),
     });
   }
 
@@ -7681,6 +7781,8 @@ export class SemanticBuilder {
       type: this.intType(),
       isTemporary: false,
       sourceloc: valueExpr.sourceloc,
+      flow: FlowResult.fallthrough(),
+      writes: WriteResult.empty(),
     });
   }
 
@@ -7695,6 +7797,8 @@ export class SemanticBuilder {
         type: makeTypeUse(this.sr, symbol.type, EDatatypeMutability.Default, false, sourceloc)[1],
         isTemporary: false,
         sourceloc: sourceloc,
+        flow: FlowResult.fallthrough(),
+        writes: WriteResult.empty(),
       });
     } else if (symbol.variant === Semantic.ENode.VariableSymbol) {
       assert(symbol.type);
@@ -7705,6 +7809,8 @@ export class SemanticBuilder {
         type: symbol.type,
         isTemporary: false,
         sourceloc: sourceloc,
+        flow: FlowResult.fallthrough(),
+        writes: WriteResult.empty(),
       });
     } else {
       assert(false);
@@ -7894,22 +8000,20 @@ export class SemanticBuilder {
     return directiveId;
   }
 
-  updateLHSDependencies(lhsId: Semantic.ExprId, dependencies: Semantic.InstanceId[]): void {
+  updateLHSDependencies(lhsId: Semantic.ExprId, dependencies: Semantic.InstanceId[]): WriteResult {
     const lhs = this.sr.exprNodes.get(lhsId);
     switch (lhs.variant) {
       case Semantic.ENode.ArraySubscriptExpr: {
         lhs.instanceIds.forEach((id) =>
           Semantic.addInstanceDeps(this.sr.e.currentContext.instanceDeps, id, dependencies),
         );
-        break;
+        return WriteResult.empty();
       }
 
       case Semantic.ENode.SymbolValueExpr: {
         Semantic.addSymbolDeps(this.sr.e.currentContext, lhs.symbol, dependencies);
-        this.sr.e.currentContext.constraints = this.sr.e.currentContext.constraints.filter((c) => {
-          return c.variableSymbol !== lhs.symbol;
-        });
-        break;
+        this.sr.e.currentContext.constraints.deleteSymbol(lhs.symbol);
+        return WriteResult.empty().with(lhs.symbol);
       }
 
       case Semantic.ENode.MemberAccessExpr: {
@@ -7931,7 +8035,7 @@ export class SemanticBuilder {
             dependencies,
           );
         }
-        break;
+        return WriteResult.empty();
       }
 
       // This is a special case for value narrowing and here, it is the easiest to fix, although not very nice
@@ -7940,9 +8044,7 @@ export class SemanticBuilder {
         if (unionExpr.variant !== Semantic.ENode.SymbolValueExpr || !lhs.canBeUnwrappedForLHS) {
           throw new CompilerError(`This expression is not a valid LHS`, lhs.sourceloc);
         }
-
-        Semantic.addSymbolDeps(this.sr.e.currentContext, unionExpr.symbol, dependencies);
-        break;
+        return this.updateLHSDependencies(lhs.expr, dependencies);
       }
 
       // This is a special case for value narrowing and here, it is the easiest to fix, although not very nice
@@ -7954,9 +8056,7 @@ export class SemanticBuilder {
         ) {
           throw new CompilerError(`This expression is not a valid LHS`, lhs.sourceloc);
         }
-
-        Semantic.addSymbolDeps(this.sr.e.currentContext, unionExpr.symbol, dependencies);
-        break;
+        return this.updateLHSDependencies(lhs.expr, dependencies);
       }
 
       case Semantic.ENode.StructLiteralExpr:
@@ -7985,11 +8085,15 @@ export class SemanticBuilder {
     }
   }
 
+  //   valueAssignment() {
+  //   return this.assignment(targetId);
+  // }
+
   assignment(
     targetId: Semantic.ExprId,
     operation: EAssignmentOperation,
     valueId: Semantic.ExprId,
-    constraints: Semantic.Constraint[],
+    constraints: ConstraintSet,
     sourceloc: SourceLoc,
     inference: Inference,
   ) {
@@ -8014,7 +8118,7 @@ export class SemanticBuilder {
 
     // An assignment like let d = (a = b) makes a now dependent on b, as well as the result on b
     // I don't think the result would ever depend on a, right? ... right??    .....    .....   right????
-    this.updateLHSDependencies(targetId, value.instanceIds);
+    const writes = this.updateLHSDependencies(targetId, value.instanceIds);
 
     return Semantic.addExpr(this.sr, {
       variant: Semantic.ENode.ExprAssignmentExpr,
@@ -8033,6 +8137,8 @@ export class SemanticBuilder {
       operation: operation,
       sourceloc: sourceloc,
       isTemporary: true,
+      flow: target.flow.withAll(value.flow),
+      writes: target.writes.withAll(value.writes).withAll(writes),
     });
   }
 
@@ -8151,6 +8257,8 @@ export class SemanticBuilder {
       type: memberType,
       sourceloc: sourceloc,
       isTemporary: temporary,
+      flow: expr.flow,
+      writes: expr.writes,
     });
   }
 
@@ -8186,6 +8294,13 @@ export class SemanticBuilder {
         structType.variant === Semantic.ENode.DynamicArrayDatatype,
     );
 
+    const flow = FlowResult.fallthrough();
+    const writes = WriteResult.empty();
+    elements.forEach((eId) => {
+      const e = this.sr.exprNodes.get(eId);
+      flow.addAll(e.flow);
+      writes.addAll(e.writes);
+    });
     const e = Semantic.addExpr<Semantic.ArrayLiteralExpr>(this.sr, {
       variant: Semantic.ENode.ArrayLiteralExpr,
       instanceIds: [Semantic.makeInstanceId(this.sr)],
@@ -8195,6 +8310,8 @@ export class SemanticBuilder {
       allocator: allocator,
       sourceloc: sourceloc,
       isTemporary: true,
+      flow: flow,
+      writes: writes,
     });
 
     if (allocator) {
@@ -8220,12 +8337,12 @@ export class SemanticBuilder {
     inFunction: Semantic.SymbolId | null,
     allocator: Semantic.ExprId | null,
     sourceloc: SourceLoc,
-  ) {
+  ): [Semantic.StructLiteralExpr, Semantic.ExprId] {
     const structTypeUse = this.sr.typeUseNodes.get(structTypeId);
     const structType = this.sr.typeDefNodes.get(structTypeUse.type);
     assert(structType.variant === Semantic.ENode.StructDatatype);
 
-    const e = Semantic.addExpr<Semantic.StructLiteralExpr>(this.sr, {
+    const [literal, literalId] = Semantic.addExpr<Semantic.StructLiteralExpr>(this.sr, {
       variant: Semantic.ENode.StructLiteralExpr,
       instanceIds: [Semantic.makeInstanceId(this.sr)],
       assign: assign,
@@ -8234,6 +8351,8 @@ export class SemanticBuilder {
       allocator: allocator,
       sourceloc: sourceloc,
       isTemporary: true,
+      flow: FlowResult.fallthrough(),
+      writes: WriteResult.empty(),
     });
 
     if (allocator) {
@@ -8244,7 +8363,7 @@ export class SemanticBuilder {
       // Structs as struct default values are not inside functions
       const functionSymbol = this.sr.e.getSymbol(inFunction);
       assert(functionSymbol.variant === Semantic.ENode.FunctionSymbol);
-      e[0].instanceIds.forEach((i) => functionSymbol.createsInstanceIds.add(i));
+      literal.instanceIds.forEach((i) => functionSymbol.createsInstanceIds.add(i));
     }
 
     for (const a of assign) {
@@ -8255,15 +8374,18 @@ export class SemanticBuilder {
       assert(member);
 
       const value = this.sr.e.getExpr(a.value);
+      literal.flow.addAll(value.flow);
+      literal.writes.addAll(value.writes);
+
       Semantic.addStructMemberInstanceDeps(
         this.sr.e.currentContext.instanceDeps,
-        e[0].instanceIds[0],
+        literal.instanceIds[0],
         member,
         value.instanceIds,
       );
     }
 
-    return e;
+    return [literal, literalId] as const;
   }
 
   namespaceType(
@@ -8966,24 +9088,6 @@ export namespace Semantic {
     return pushBrandedNode(sr.exprNodes, n) as [T, ExprId];
   }
 
-  export type ConstraintValue =
-    | {
-        kind: "comparison";
-        operation: EBinaryOperation;
-        value: Semantic.ExprId;
-      }
-    | {
-        kind: "union";
-        operation: "is" | "isNot";
-        typeUse?: Semantic.TypeUseId;
-        typeDef?: Semantic.TypeDefId;
-      };
-
-  export type Constraint = {
-    variableSymbol: Semantic.SymbolId;
-    constraintValue: ConstraintValue;
-  };
-
   export type CInjectDirectiveSymbol = {
     variant: ENode.CInjectDirectiveSymbol;
     value: string;
@@ -9071,7 +9175,6 @@ export namespace Semantic {
     variant: ENode.BlockScope;
     statements: StatementId[];
     emittedExpr: ExprId;
-    constraints: Constraint[];
     sourceloc: SourceLoc;
   };
 
@@ -9081,6 +9184,8 @@ export namespace Semantic {
     noreturn: boolean;
     noreturnIf: {
       expr: Collect.ExprId;
+      argIndex: number | null;
+      operation: "noreturn-if-truthy" | "noreturn-if-falsy" | null;
     } | null;
   };
 
@@ -9258,110 +9363,85 @@ export namespace Semantic {
     | TypeDefSymbol
     | FunctionSymbol;
 
-  export type ExprMemberAccessExpr = {
+  export type BaseExpr = {
+    type: TypeUseId;
+    flow: FlowResult;
+    writes: WriteResult;
+    isTemporary: boolean;
+    sourceloc: SourceLoc;
+  };
+
+  export type ExprMemberAccessExpr = BaseExpr & {
     variant: ENode.MemberAccessExpr;
     instanceIds: InstanceId[];
     expr: ExprId;
     memberName: string;
-    type: TypeUseId;
-    isTemporary: boolean;
-    sourceloc: SourceLoc;
   };
 
-  export type CallableExpr = {
+  export type CallableExpr = BaseExpr & {
     variant: ENode.CallableExpr;
     instanceIds: InstanceId[];
     thisExpr: ExprId;
     functionSymbol: SymbolId;
-    type: TypeUseId;
-    isTemporary: boolean;
-    sourceloc: SourceLoc;
   };
 
-  export type SymbolValueExpr = {
+  export type SymbolValueExpr = BaseExpr & {
     variant: ENode.SymbolValueExpr;
     instanceIds: InstanceId[];
     symbol: SymbolId;
-    type: TypeUseId;
-    isTemporary: boolean;
-    sourceloc: SourceLoc;
   };
 
-  export type DatatypeAsValueExpr = {
+  export type DatatypeAsValueExpr = BaseExpr & {
     variant: ENode.DatatypeAsValueExpr;
     instanceIds: InstanceId[];
-    type: TypeUseId;
-    isTemporary: boolean;
-    sourceloc: SourceLoc;
   };
 
-  export type UnionTagReferenceExpr = {
+  export type UnionTagReferenceExpr = BaseExpr & {
     variant: ENode.UnionTagReferenceExpr;
     instanceIds: InstanceId[];
     unionType: TypeDefId;
     tag: string;
-    type: TypeUseId;
-    isTemporary: boolean;
-    sourceloc: SourceLoc;
   };
 
-  export type SizeofExpr = {
+  export type SizeofExpr = BaseExpr & {
     variant: ENode.SizeofExpr;
     instanceIds: InstanceId[];
     valueExpr: ExprId;
-    type: TypeUseId;
-    isTemporary: boolean;
-    sourceloc: SourceLoc;
   };
 
-  export type AlignofExpr = {
+  export type AlignofExpr = BaseExpr & {
     variant: ENode.AlignofExpr;
     instanceIds: InstanceId[];
     valueExpr: ExprId;
-    type: TypeUseId;
-    isTemporary: boolean;
-    sourceloc: SourceLoc;
   };
 
-  export type ExprAssignmentExpr = {
+  export type ExprAssignmentExpr = BaseExpr & {
     variant: ENode.ExprAssignmentExpr;
     instanceIds: InstanceId[];
     value: ExprId;
     target: ExprId;
-    type: TypeUseId;
     operation: EAssignmentOperation;
-    isTemporary: boolean;
-    sourceloc: SourceLoc;
   };
 
-  export type DereferenceExpr = {
+  export type DereferenceExpr = BaseExpr & {
     variant: ENode.DereferenceExpr;
     instanceIds: InstanceId[];
     expr: ExprId;
-    type: TypeUseId;
-    isTemporary: boolean;
-    sourceloc: SourceLoc;
   };
 
-  export type AddressOfExpr = {
+  export type AddressOfExpr = BaseExpr & {
     variant: ENode.AddressOfExpr;
     instanceIds: InstanceId[];
     expr: ExprId;
-    type: TypeUseId;
-    isTemporary: boolean;
-    sourceloc: SourceLoc;
   };
 
-  export type ExplicitCastExpr = {
+  export type ExplicitCastExpr = BaseExpr & {
     variant: ENode.ExplicitCastExpr;
     instanceIds: InstanceId[];
     expr: ExprId;
-    type: TypeUseId;
-    isTemporary: boolean;
-    sourceloc: SourceLoc;
   };
 
-  export type AttemptExpr = {
+  export type AttemptExpr = BaseExpr & {
     variant: ENode.AttemptExpr;
     instanceIds: InstanceId[];
     attemptScopeExpr: ExprId;
@@ -9375,163 +9455,118 @@ export namespace Semantic {
     errorUnionType: TypeUseId;
     uniqueId: bigint;
     hasErrorVar: boolean;
-    type: TypeUseId;
-    isTemporary: boolean;
-    sourceloc: SourceLoc;
   };
 
-  export type ValueToUnionCastExpr = {
+  export type ValueToUnionCastExpr = BaseExpr & {
     variant: ENode.ValueToUnionCastExpr;
     instanceIds: InstanceId[];
     expr: ExprId;
-    type: TypeUseId;
     index: number;
-    isTemporary: boolean;
-    sourceloc: SourceLoc;
   };
 
-  export type UnionToValueCastExpr = {
+  export type UnionToValueCastExpr = BaseExpr & {
     variant: ENode.UnionToValueCastExpr;
     instanceIds: InstanceId[];
     expr: ExprId;
-    type: TypeUseId;
     canBeUnwrappedForLHS: boolean; // This is if the cast originates from a constrained symbol value access
     tag: number;
-    isTemporary: boolean;
-    sourceloc: SourceLoc;
   };
 
-  export type UnionToUnionCastExpr = {
+  export type UnionToUnionCastExpr = BaseExpr & {
     variant: ENode.UnionToUnionCastExpr;
     instanceIds: InstanceId[];
     expr: ExprId;
-    type: TypeUseId;
     castComesFromNarrowingAndMayBeUnwrapped: boolean;
-    isTemporary: boolean;
-    sourceloc: SourceLoc;
   };
 
-  export type UnionTagCheckExpr = {
+  export type UnionTagCheckExpr = BaseExpr & {
     variant: ENode.UnionTagCheckExpr;
     instanceIds: InstanceId[];
     expr: ExprId;
-    type: TypeUseId;
     comparisonTypesAnd: TypeUseId[];
     invertCheck: boolean;
-    isTemporary: boolean;
-    sourceloc: SourceLoc;
   };
 
-  export type AttemptErrorPropagationExpr = {
+  export type AttemptErrorPropagationExpr = BaseExpr & {
     variant: ENode.AttemptErrorPropagationExpr;
     instanceIds: InstanceId[];
     expr: ExprId;
-    type: TypeUseId;
     srcOkTagIndex: number;
     srcOkTagType: TypeUseId;
     srcErrTagIndex: number;
     srcErrTagType: TypeUseId;
     toAttemptExpr: ExprId;
-    isTemporary: boolean;
-    sourceloc: SourceLoc;
   };
 
-  export type BinaryExpr = {
+  export type BinaryExpr = BaseExpr & {
     variant: ENode.BinaryExpr;
     instanceIds: InstanceId[];
     left: ExprId;
     right: ExprId;
     operation: EBinaryOperation;
-    type: TypeUseId;
-    isTemporary: boolean;
-    sourceloc: SourceLoc;
   };
 
-  export type UnaryExpr = {
+  export type UnaryExpr = BaseExpr & {
     variant: ENode.UnaryExpr;
     instanceIds: InstanceId[];
     expr: ExprId;
     operation: EUnaryOperation;
-    type: TypeUseId;
-    isTemporary: boolean;
-    sourceloc: SourceLoc;
   };
 
-  export type PostIncrExpr = {
+  export type PostIncrExpr = BaseExpr & {
     variant: ENode.PostIncrExpr;
     instanceIds: InstanceId[];
     expr: ExprId;
     operation: EIncrOperation;
-    type: TypeUseId;
-    isTemporary: boolean;
-    sourceloc: SourceLoc;
   };
 
-  export type PreIncrExpr = {
+  export type PreIncrExpr = BaseExpr & {
     variant: ENode.PreIncrExpr;
     instanceIds: InstanceId[];
     expr: ExprId;
     operation: EIncrOperation;
-    type: TypeUseId;
-    isTemporary: boolean;
-    sourceloc: SourceLoc;
   };
 
-  export type ExprCallExpr = {
+  export type ExprCallExpr = BaseExpr & {
     variant: ENode.ExprCallExpr;
     instanceIds: InstanceId[];
     calledExpr: ExprId;
     arguments: ExprId[];
-    type: TypeUseId;
-    isTemporary: boolean;
-    sourceloc: SourceLoc;
   };
 
-  export type StructLiteralExpr = {
+  export type StructLiteralExpr = BaseExpr & {
     variant: ENode.StructLiteralExpr;
     instanceIds: InstanceId[];
     assign: {
       name: string;
       value: ExprId;
     }[];
-    type: TypeUseId;
     inFunction: SymbolId | null;
     allocator: ExprId | null;
-    isTemporary: boolean;
-    sourceloc: SourceLoc;
   };
 
-  export type LiteralExpr = {
+  export type LiteralExpr = BaseExpr & {
     variant: ENode.LiteralExpr;
     instanceIds: InstanceId[];
     literal: LiteralValue;
-    type: TypeUseId;
-    isTemporary: boolean;
-    sourceloc: SourceLoc;
   };
 
-  export type ArrayLiteralExpr = {
+  export type ArrayLiteralExpr = BaseExpr & {
     variant: ENode.ArrayLiteralExpr;
     instanceIds: InstanceId[];
     elements: ExprId[];
-    type: TypeUseId;
     inFunction: SymbolId | null;
     allocator: ExprId | null;
-    isTemporary: boolean;
-    sourceloc: SourceLoc;
   };
 
-  export type ArraySubscriptExpr = {
+  export type ArraySubscriptExpr = BaseExpr & {
     variant: ENode.ArraySubscriptExpr;
     instanceIds: InstanceId[];
     expr: ExprId;
     indices: ExprId[];
-    type: TypeUseId;
-    isTemporary: boolean;
-    sourceloc: SourceLoc;
   };
 
-  export type ArraySliceExpr = {
+  export type ArraySliceExpr = BaseExpr & {
     variant: ENode.ArraySliceExpr;
     instanceIds: InstanceId[];
     expr: ExprId;
@@ -9539,22 +9574,16 @@ export namespace Semantic {
       start: ExprId | null;
       end: ExprId | null;
     }[];
-    type: TypeUseId;
-    isTemporary: boolean;
-    sourceloc: SourceLoc;
   };
 
-  export type StringSubscriptExpr = {
+  export type StringSubscriptExpr = BaseExpr & {
     variant: ENode.StringSubscriptExpr;
     instanceIds: InstanceId[];
     expr: ExprId;
     index: ExprId;
-    type: TypeUseId;
-    isTemporary: boolean;
-    sourceloc: SourceLoc;
   };
 
-  export type StringConstructExpr = {
+  export type StringConstructExpr = BaseExpr & {
     variant: ENode.StringConstructExpr;
     instanceIds: InstanceId[];
     value: {
@@ -9562,18 +9591,12 @@ export namespace Semantic {
       data: ExprId;
       length: ExprId;
     };
-    type: TypeUseId;
-    isTemporary: boolean;
-    sourceloc: SourceLoc;
   };
 
-  export type BlockScopeExpr = {
+  export type BlockScopeExpr = BaseExpr & {
     variant: ENode.BlockScopeExpr;
     instanceIds: InstanceId[];
     block: BlockScopeId;
-    type: TypeUseId;
-    isTemporary: boolean;
-    sourceloc: SourceLoc;
   };
 
   export type Expression =
@@ -10084,21 +10107,17 @@ export namespace Semantic {
     substitute: Map<Collect.SymbolId, Semantic.ExprId>;
     currentScope: Collect.ScopeId; // This is the scope in which we are elaborating and it changes (e.g. A<i32> when elaborating A<i32>.B)
     genericsScope: Collect.ScopeId; // This is the scope for generics which does not change (e.g. A<i32>.B<u8> => i32 and u8 are elaborated in the same scope)
-    constraints: Constraint[];
+    constraints: ConstraintSet;
     instanceDeps: InstanceDeps;
 
     elaborationTypeOverride: Map<Collect.SymbolId, Semantic.TypeUseId>;
     elaboratedVariables: Map<Collect.SymbolId, Semantic.SymbolId>;
-    scopeNoReturn: Set<Collect.ScopeId>;
-    scopeNoFallthrough: Set<Collect.ScopeId>;
-    scopeCanExitEarly: Set<Collect.ScopeId>;
-    scopeWillExitEarly: Set<Collect.ScopeId>;
   };
 
   export function makeElaborationContext(args: {
     currentScope: Collect.ScopeId;
     genericsScope: Collect.ScopeId;
-    constraints: Constraint[];
+    constraints: ConstraintSet;
   }): ElaborationContext {
     return {
       substitute: new Map(),
@@ -10110,10 +10129,6 @@ export namespace Semantic {
         structMembersDependOn: new Map(),
         symbolDependsOn: new Map(),
       },
-      scopeNoReturn: new Set(),
-      scopeCanExitEarly: new Set(),
-      scopeNoFallthrough: new Set(),
-      scopeWillExitEarly: new Set(),
       elaboratedVariables: new Map(),
       elaborationTypeOverride: new Map(),
     };
@@ -10124,21 +10139,17 @@ export namespace Semantic {
     args: {
       currentScope: Collect.ScopeId;
       genericsScope: Collect.ScopeId;
-      constraints: Constraint[];
+      constraints: ConstraintSet;
       instanceDeps: InstanceDeps;
     },
   ): ElaborationContext {
     return {
       substitute: new Map(parent.substitute),
-      constraints: [...args.constraints],
+      constraints: args.constraints.clone(),
       currentScope: args.currentScope,
       genericsScope: args.genericsScope,
       instanceDeps: args.instanceDeps,
 
-      scopeNoReturn: new Set(parent.scopeNoReturn),
-      scopeCanExitEarly: new Set(parent.scopeCanExitEarly),
-      scopeWillExitEarly: new Set(parent.scopeWillExitEarly),
-      scopeNoFallthrough: new Set(parent.scopeNoFallthrough),
       elaboratedVariables: new Map(parent.elaboratedVariables),
       elaborationTypeOverride: new Map(parent.elaborationTypeOverride),
     };
@@ -10154,16 +10165,15 @@ export namespace Semantic {
     },
   ): ElaborationContext {
     // THE ORDER OF [a, b] IS VERY IMPORTANT, DO NOT MIX UP!!!
+    const constraints = ConstraintSet.empty();
+    constraints.addAll(a.constraints);
+    constraints.addAll(b.constraints);
     return {
       substitute: new Map([...a.substitute, ...b.substitute]),
-      constraints: [...a.constraints, ...b.constraints],
+      constraints: constraints,
       currentScope: args.currentScope,
       genericsScope: args.genericsScope,
       instanceDeps: args.instanceDeps,
-      scopeNoReturn: new Set([...a.scopeNoReturn, ...b.scopeNoReturn]),
-      scopeCanExitEarly: new Set([...a.scopeCanExitEarly, ...b.scopeCanExitEarly]),
-      scopeWillExitEarly: new Set([...a.scopeWillExitEarly, ...b.scopeWillExitEarly]),
-      scopeNoFallthrough: new Set([...a.scopeNoFallthrough, ...b.scopeNoFallthrough]),
       elaboratedVariables: new Map([...a.elaboratedVariables, ...b.elaboratedVariables]),
       elaborationTypeOverride: new Map([
         ...a.elaborationTypeOverride,
@@ -10237,7 +10247,7 @@ export namespace Semantic {
     const context = makeElaborationContext({
       currentScope: cc.moduleScopeId,
       genericsScope: cc.moduleScopeId,
-      constraints: [],
+      constraints: ConstraintSet.empty(),
     });
 
     sr.e = new SemanticElaborator(sr, context);
@@ -11082,6 +11092,10 @@ export namespace Semantic {
         } else {
           assert(false);
         }
+      }
+
+      case Semantic.ENode.AttemptExpr: {
+        return `attempt {...} else {...}`;
       }
 
       case Semantic.ENode.ArraySliceExpr: {

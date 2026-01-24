@@ -15,6 +15,7 @@ import {
 } from "./Elaborate";
 import { Collect } from "../SymbolCollection/SymbolCollection";
 import { makeTypeUse } from "./LookupDatatype";
+import type { ConstraintSet, ConstraintValue } from "./Constraint";
 
 export namespace Conversion {
   export function isSignedInteger(primitive: EPrimitive): boolean {
@@ -629,12 +630,9 @@ export namespace Conversion {
         }
         return values.ranges.length > 0;
       },
-      constrainFromConstraints: (
-        constraints: Semantic.Constraint[],
-        fromExprId: Semantic.ExprId,
-      ) => {
+      constrainFromConstraints: (constraints: ConstraintSet, fromExprId: Semantic.ExprId) => {
         const fromExpr = sr.exprNodes.get(fromExprId);
-        for (const constraint of constraints) {
+        for (const constraint of constraints.toArray()) {
           if (fromExpr.variant !== Semantic.ENode.SymbolValueExpr) {
             continue;
           }
@@ -644,7 +642,7 @@ export namespace Conversion {
           values.constrainFromConstraint(constraint.constraintValue);
         }
       },
-      constrainFromConstraint: (constraintValue: Semantic.ConstraintValue) => {
+      constrainFromConstraint: (constraintValue: ConstraintValue) => {
         if (constraintValue.kind === "comparison") {
           const valueExpr = sr.exprNodes.get(constraintValue.value);
           if (
@@ -679,7 +677,7 @@ export namespace Conversion {
               if (constraintValue.operation === EBinaryOperation.Equal) {
                 values.constrainEq(value);
               }
-              if (constraintValue.operation === EBinaryOperation.Unequal) {
+              if (constraintValue.operation === EBinaryOperation.NotEqual) {
                 values.constrainNe(value);
               }
             }
@@ -733,17 +731,17 @@ export namespace Conversion {
         }
       },
 
-      constrainFromConstraints(constraints: Semantic.Constraint[], fromExprId: Semantic.ExprId) {
+      constrainFromConstraints(constraints: ConstraintSet, fromExprId: Semantic.ExprId) {
         const fromExpr = sr.exprNodes.get(fromExprId);
         if (fromExpr.variant !== Semantic.ENode.SymbolValueExpr) return;
 
-        for (const c of constraints) {
+        for (const c of constraints.toArray()) {
           if (c.variableSymbol !== fromExpr.symbol) continue;
           this.constrainFromConstraint(c.constraintValue);
         }
       },
 
-      constrainFromConstraint(cv: Semantic.ConstraintValue) {
+      constrainFromConstraint(cv: ConstraintValue) {
         if (cv.kind === "union") {
           if (cv.operation === "is") {
             // Keep only this variant
@@ -795,7 +793,7 @@ export namespace Conversion {
     sr: SemanticResult,
     fromExprId: Semantic.ExprId,
     toId: Semantic.TypeUseId,
-    constraints: Semantic.Constraint[],
+    constraints: ConstraintSet,
     sourceloc: SourceLoc,
     mode: Mode,
     unsafe: boolean,
@@ -811,7 +809,7 @@ export namespace Conversion {
     sr: SemanticResult,
     fromExprId: Semantic.ExprId,
     toId: Semantic.TypeUseId,
-    constraints: Semantic.Constraint[],
+    constraints: ConstraintSet,
     sourceloc: SourceLoc,
     mode: Mode,
     unsafe?: boolean,
@@ -821,6 +819,9 @@ export namespace Conversion {
     const fromType = sr.typeDefNodes.get(fromTypeInstance.type);
     const toInstance = sr.typeUseNodes.get(toId);
     const to = sr.typeDefNodes.get(toInstance.type);
+
+    const flow = fromExpr.flow;
+    const writes = fromExpr.writes;
 
     const fromTypeText = Semantic.serializeTypeUse(sr, fromExpr.type);
     const toTypeText = Semantic.serializeTypeUse(sr, toId);
@@ -904,6 +905,8 @@ export namespace Conversion {
           type: toId,
           sourceloc: sourceloc,
           isTemporary: fromExpr.isTemporary,
+          flow: flow,
+          writes: writes,
         })[1],
       );
     }
@@ -923,6 +926,8 @@ export namespace Conversion {
           type: toId,
           sourceloc: sourceloc,
           isTemporary: fromExpr.isTemporary,
+          flow: flow,
+          writes: writes,
         })[1],
       );
     }
@@ -981,6 +986,8 @@ export namespace Conversion {
             type: toId,
             sourceloc: sourceloc,
             isTemporary: fromExpr.isTemporary,
+            flow: flow,
+            writes: writes,
           })[1],
         );
       }
@@ -1015,6 +1022,8 @@ export namespace Conversion {
             type: toId,
             sourceloc: sourceloc,
             isTemporary: fromExpr.isTemporary,
+            flow: flow,
+            writes: writes,
           })[1],
         );
       } else {
@@ -1032,6 +1041,8 @@ export namespace Conversion {
               type: toId,
               sourceloc: sourceloc,
               isTemporary: fromExpr.isTemporary,
+              flow: flow,
+              writes: writes,
             })[1],
           );
         }
@@ -1091,6 +1102,8 @@ export namespace Conversion {
             type: toId,
             sourceloc: sourceloc,
             isTemporary: fromExpr.isTemporary,
+            flow: flow,
+            writes: writes,
           })[1],
         );
       }
@@ -1194,6 +1207,8 @@ export namespace Conversion {
           type: toId,
           sourceloc: sourceloc,
           isTemporary: fromExpr.isTemporary,
+          flow: flow,
+          writes: writes,
         })[1],
       );
     }
@@ -1215,6 +1230,8 @@ export namespace Conversion {
           type: toId,
           sourceloc: sourceloc,
           isTemporary: fromExpr.isTemporary,
+          flow: flow,
+          writes: writes,
         })[1],
       );
     }
@@ -1252,6 +1269,8 @@ export namespace Conversion {
           type: toId,
           sourceloc: sourceloc,
           isTemporary: fromExpr.isTemporary,
+          flow: flow,
+          writes: writes,
         })[1],
       );
     }
@@ -1269,6 +1288,8 @@ export namespace Conversion {
               type: toId,
               sourceloc: sourceloc,
               isTemporary: fromExpr.isTemporary,
+              flow: flow,
+              writes: writes,
             })[1],
           );
         }
@@ -1286,6 +1307,8 @@ export namespace Conversion {
               type: toId,
               sourceloc: sourceloc,
               isTemporary: fromExpr.isTemporary,
+              flow: flow,
+              writes: writes,
             })[1],
           );
         }
@@ -1304,6 +1327,8 @@ export namespace Conversion {
               type: toId,
               sourceloc: sourceloc,
               isTemporary: fromExpr.isTemporary,
+              flow: flow,
+              writes: writes,
             })[1],
           );
         }
@@ -1318,6 +1343,8 @@ export namespace Conversion {
                 type: toId,
                 sourceloc: sourceloc,
                 isTemporary: fromExpr.isTemporary,
+                flow: flow,
+                writes: writes,
               })[1],
             );
           }
@@ -1389,6 +1416,8 @@ export namespace Conversion {
             index: matching,
             sourceloc: sourceloc,
             isTemporary: fromExpr.isTemporary,
+            flow: flow,
+            writes: writes,
           })[1],
         );
       }
@@ -1427,6 +1456,8 @@ export namespace Conversion {
             index: matching,
             sourceloc: sourceloc,
             isTemporary: fromExpr.isTemporary,
+            flow: flow,
+            writes: writes,
           })[1],
         );
       }
@@ -1465,6 +1496,8 @@ export namespace Conversion {
             castComesFromNarrowingAndMayBeUnwrapped: false,
             sourceloc: sourceloc,
             isTemporary: fromExpr.isTemporary,
+            flow: flow,
+            writes: writes,
           })[1],
         );
       }
@@ -1502,6 +1535,8 @@ export namespace Conversion {
                 isTemporary: true,
                 instanceIds: [],
                 type: toId,
+                flow: flow,
+                writes: writes,
               })[1],
             );
           }
@@ -1548,6 +1583,8 @@ export namespace Conversion {
               isTemporary: true,
               instanceIds: [],
               type: toId,
+              flow: flow,
+              writes: writes,
             })[1],
           );
         }
@@ -1567,6 +1604,8 @@ export namespace Conversion {
             canBeUnwrappedForLHS: false,
             sourceloc: sourceloc,
             isTemporary: fromExpr.isTemporary,
+            flow: flow,
+            writes: writes,
           })[1],
         );
       }
@@ -1592,6 +1631,8 @@ export namespace Conversion {
               castComesFromNarrowingAndMayBeUnwrapped: false,
               sourceloc: sourceloc,
               isTemporary: fromExpr.isTemporary,
+              flow: flow,
+              writes: writes,
             })[1],
           );
         }
@@ -1629,6 +1670,8 @@ export namespace Conversion {
               castComesFromNarrowingAndMayBeUnwrapped: false,
               sourceloc: sourceloc,
               isTemporary: fromExpr.isTemporary,
+              flow: flow,
+              writes: writes,
             })[1],
           );
         }
@@ -1817,7 +1860,7 @@ export namespace Conversion {
 
     switch (operation) {
       case EBinaryOperation.Equal:
-      case EBinaryOperation.Unequal:
+      case EBinaryOperation.NotEqual:
       case EBinaryOperation.GreaterEqual:
       case EBinaryOperation.LessEqual:
       case EBinaryOperation.LessThan:

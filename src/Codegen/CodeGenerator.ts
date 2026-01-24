@@ -1289,7 +1289,7 @@ class CodeGenerator {
           }
 
           case EBinaryOperation.Equal:
-          case EBinaryOperation.Unequal: {
+          case EBinaryOperation.NotEqual: {
             const leftWriter = this.emitExpr(expr.left);
             const rightWriter = this.emitExpr(expr.right);
             tempWriter.write(leftWriter.temp);
@@ -1794,7 +1794,7 @@ function nextSignedWidth(bits: number): number {
 }
 
 function negResultForEquality(op: EBinaryOperation): string {
-  return op === EBinaryOperation.Unequal ? "1" : "0";
+  return op === EBinaryOperation.NotEqual ? "1" : "0";
 }
 
 function negResultForOrdering(op: EBinaryOperation, signedIsLeft: boolean): string {
@@ -1867,7 +1867,7 @@ export function emitIntCompare(
 
   // signed (left) vs unsigned (right)
   if (leftSigned && !rightSigned) {
-    if (operation === EBinaryOperation.Equal || operation === EBinaryOperation.Unequal) {
+    if (operation === EBinaryOperation.Equal || operation === EBinaryOperation.NotEqual) {
       return `((${lhs}) < 0 ? ${negResultForEquality(operation)} : (${lWide} ${op} ${rWide}))`;
     }
 
@@ -1876,7 +1876,7 @@ export function emitIntCompare(
 
   // unsigned (left) vs signed (right)
   if (!leftSigned && rightSigned) {
-    if (operation === EBinaryOperation.Equal || operation === EBinaryOperation.Unequal) {
+    if (operation === EBinaryOperation.Equal || operation === EBinaryOperation.NotEqual) {
       return `((${rhs}) < 0 ? ${negResultForEquality(operation)} : (${lWide} ${op} ${rWide}))`;
     }
 

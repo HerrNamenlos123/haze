@@ -397,11 +397,11 @@ class ASTTransformer extends HazeParserVisitor<any> {
     } else if (ctx._op.length === 1 && ctx._op[0].text === "==") {
       return EBinaryOperation.Equal;
     } else if (ctx._op.length === 1 && ctx._op[0].text === "!=") {
-      return EBinaryOperation.Unequal;
+      return EBinaryOperation.NotEqual;
     } else if (ctx._op.length === 1 && ctx._op[0].text === "is") {
       return EBinaryOperation.Equal;
     } else if (ctx._op.length === 2 && ctx._op[0].text === "is" && ctx._op[1].text === "not") {
-      return EBinaryOperation.Unequal;
+      return EBinaryOperation.NotEqual;
     } else if (ctx._op.length === 1 && ctx._op[0].text === "&&") {
       return EBinaryOperation.BoolAnd;
     } else if (ctx._op.length === 1 && ctx._op[0].text === "||") {

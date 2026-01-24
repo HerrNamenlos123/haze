@@ -65,22 +65,19 @@ struct GenArgs {
     enums: []EnumResult;
 }
 
-generateBindings(args: GenArgs) {
+generateBindings(args: GenArgs): Result<none, fs.Error> {
     let file = "";
     file = file + "A";
     fs.writeFile(args.outfile, file)?!;
-}
-
-fooz() {
-    if (false) {
-        return 5;
-    }
 }
 
 generate(): int {
     attempt {
         let binaryDir = env.get("HAZE_MODULE_BINARY_DIR");
         if !binaryDir { raise f"HAZE_MODULE_BINARY_DIR not defined"; }
+
+        let autogenDir = env.get("HAZE_MODULE_AUTOGEN_DIR");
+        if !autogenDir { raise f"HAZE_MODULE_AUTOGEN_DIR not defined"; }
 
         let tempDir = env.get("HAZE_MODULE_TMP_DIR");
         if !tempDir { raise f"HAZE_MODULE_TMP_DIR not defined"; }
@@ -93,9 +90,9 @@ generate(): int {
         let enums = extractEnums(file)?!;
 
         generateBindings({
-            outfile: f"{binaryDir}/autogen/webgpu.hz",
+            outfile: f"{autogenDir}/wgpu-bindings.hz",
             enums: enums,
-        });
+        })?!;
     }
     else e {
         if e is fs.Error {

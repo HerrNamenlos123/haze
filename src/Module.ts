@@ -663,6 +663,23 @@ export function getCurrentPlatform() {
   }
 }
 
+function toCIdentifier(str: string) {
+  // Replace invalid characters with underscores
+  let id = str.replace(/[^A-Za-z0-9_]/g, "_");
+
+  // C identifiers cannot start with a digit
+  if (/^[0-9]/.test(id)) {
+    id = "_" + id;
+  }
+
+  // Ensure non-empty
+  if (id.length === 0) {
+    id = "_";
+  }
+
+  return id;
+}
+
 export class ProjectCompiler {
   cache: Cache = new Cache();
   globalBuildDir: string = "";
@@ -681,7 +698,7 @@ export class ProjectCompiler {
         moduleType: ModuleType.Executable,
         nostdlib: false,
         platform: getCurrentPlatform(),
-        name: "haze",
+        name: toCIdentifier(basename(singleFilename)),
         version: "0.0.0",
         scripts: {
           any: [],
@@ -1476,7 +1493,7 @@ export class ModuleCompiler {
         dir = this.getModuleBinaryDir(moduleName);
         break;
       case EModuleFileDir.AutogenDir:
-        dir = join(this.hazeWorkspaceDirectory, "autogen");
+        dir = join(this.hazeWorkspaceDirectory, moduleName, "autogen");
         break;
       case EModuleFileDir.SourceDir:
         assert(false);

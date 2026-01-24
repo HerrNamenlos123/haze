@@ -870,7 +870,7 @@ export function lowerExpr(
         );
         if (
           expr.operation === EBinaryOperation.Equal ||
-          expr.operation === EBinaryOperation.Unequal
+          expr.operation === EBinaryOperation.NotEqual
         ) {
           return makeIntrinsicCall(
             lr,
