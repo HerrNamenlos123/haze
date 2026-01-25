@@ -1486,6 +1486,7 @@ function collectSymbol(
   item:
     | ASTFunctionDefinition
     | ASTStructMemberDefinition
+    | ASTCInjectDirective
     | ASTSymbolDefinition
     | ASTEnumValueDefinition,
   args: {
@@ -1675,6 +1676,14 @@ function collectSymbol(
     case "NamespaceDefinition":
     case "StructDefinition": {
       return collectTypeDef(cc, item, args);
+    }
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
+    case "CInjectDirective": {
+      return collectGlobalDirective(cc, item, args);
     }
 
     // =================================================================================================================

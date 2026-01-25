@@ -5,7 +5,7 @@ __c__("#include \"glfw3webgpu.h\"");
 __c__("#include \"glfw3webgpu.c\"");
 
 namespace ffi {
-    extern C noemit glfwCreateWindowWGPUSurface(instance: wgpu.ffi.WGPUInstanceImpl, w: glfw.ffi.GLFWwindow): wgpu.ffi.WGPUSurfaceImpl | none :: final;
+    extern C noemit glfwCreateWindowWGPUSurface(instance: wgpu.ffi.WGPUInstanceImpl, w: glfw.ffi.GLFWwindow): mut wgpu.ffi.WGPUSurfaceImpl | none :: final;
 }
 
 export createWindowWGPUSurface(instance: wgpu.Instance, window: glfw.Window): Result<wgpu.Surface, none> {

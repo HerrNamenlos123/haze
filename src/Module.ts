@@ -1293,6 +1293,12 @@ export class ModuleCompiler {
     } else {
       await this.collectFile(this.config.source.filepath, mode);
     }
+
+    // Possibly add the autogen directory
+    const autogenDir = this.getModuleAutogenDir(this.config.name);
+    if (existsSync(autogenDir)) {
+      await this.collectDirectory(autogenDir, mode);
+    }
   }
 
   generatorFileKey(file: GeneratorFile): string {
@@ -1493,7 +1499,7 @@ export class ModuleCompiler {
         dir = this.getModuleBinaryDir(moduleName);
         break;
       case EModuleFileDir.AutogenDir:
-        dir = join(this.hazeWorkspaceDirectory, moduleName, "autogen");
+        dir = this.getModuleAutogenDir(moduleName);
         break;
       case EModuleFileDir.SourceDir:
         assert(false);
@@ -1553,6 +1559,10 @@ export class ModuleCompiler {
     return join(this.hazeWorkspaceDirectory, moduleName, "bin");
   }
 
+  getModuleAutogenDir(moduleName: string) {
+    return join(this.hazeWorkspaceDirectory, moduleName, "autogen");
+  }
+
   getModuleBuildDir(moduleName: string) {
     return join(this.hazeWorkspaceDirectory, moduleName, "build");
   }
@@ -1593,49 +1603,6 @@ export class ModuleCompiler {
       env.HAZE_MODULE_AUTOGEN_DIR = this.moduleDir + "/autogen";
       env.CC = HAZE_C_COMPILER;
       env.CXX = HAZE_CXX_COMPILER;
-
-      if (this.config.configFilePath) {
-        const runPrebuildScript = async (script: ScriptDef) => {
-          assert(this.currentModuleRootDir);
-          const exec = () => execInherit(script.command, this.moduleDir + "/build");
-
-          if (script.depends === null) {
-            exec();
-          } else {
-            const changed = checkForChanges(
-              script.depends,
-              this.hazeWorkspaceDirectory,
-              this.currentModuleRootDir,
-            );
-            if (changed.length > 0) {
-              try {
-                exec();
-              } catch (e) {
-                invalidateChangeCache(
-                  script.depends,
-                  this.hazeWorkspaceDirectory,
-                  this.currentModuleRootDir,
-                );
-                throw e;
-              }
-            } else {
-              console.log(`Skipping prebuild step for '${this.config.name}': No changes detected`);
-            }
-          }
-        };
-
-        const prebuildScript = this.config.scripts.any.find((s) => s.name === "prebuild");
-        if (prebuildScript) await runPrebuildScript(prebuildScript);
-
-        if (PLATFORM === Platform.Win32) {
-          const prebuildScript = this.config.scripts.win32.find((s) => s.name === "prebuild");
-          if (prebuildScript) await runPrebuildScript(prebuildScript);
-        }
-        if (PLATFORM === Platform.Linux) {
-          const prebuildScript = this.config.scripts.linux.find((s) => s.name === "prebuild");
-          if (prebuildScript) await runPrebuildScript(prebuildScript);
-        }
-      }
 
       await this.runAllGenerators();
 

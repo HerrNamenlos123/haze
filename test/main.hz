@@ -5,17 +5,11 @@ import gl
 import wgpu
 import glfw_wgpu
 
-extern C const WGPURequestAdapterStatus_Success: wgpu.ffi.WGPURequestAdapterStatus;
-
-let g_adapter = none as wgpu.ffi.WGPUAdapterImpl | none;
+let g_adapter = none as wgpu.Adapter | none;
 let g_adapterReady = false;
 
-adapterRequestCallback(status: wgpu.ffi.WGPURequestAdapterStatus,
-                                      adapter: wgpu.ffi.WGPUAdapterImpl,
-                                     message: inline wgpu.ffi.WGPUStringView,
-                                     userdata1: cptr,
-                                     userdata2: cptr): void {
-  if (status == WGPURequestAdapterStatus_Success) {
+adapterRequestCallback(status: wgpu.RequestAdapterStatus, adapter: mut wgpu.Adapter, message: str): void {
+  if (status == wgpu.RequestAdapterStatus.Success) {
     g_adapter = adapter;
     g_adapterReady = true;
     fmt.println("Adapter request successful");
@@ -27,103 +21,56 @@ adapterRequestCallback(status: wgpu.ffi.WGPURequestAdapterStatus,
 }
 
 main(): int {
+    attempt {
+        if !glfw.init() { raise "GLFW init failed"; }
 
-    // let filepath = "/home/fzachs/Projects/haze/__haze__/wgpu/bin/include/webgpu.h";
-    // matchEnums(filepath);
-    return 0;
-    // let a = fs.exists("my/very/test");
-    // if !a {
-    //     fmt.println("exists", a);
-    // }
-    // else {
-    //     fmt.println("RESULT", a);
-    // }
-    // return 0;
+        const window = glfw.createWindow({ 
+            title: "WebGPU Example",
+            noApi: true,
+        });
+        if !window { raise "Window creation failed"; }
+        // wgpu.init(window.handle);
 
-    if !glfw.init() {
-        return 0;
-    }
+        let instance = wgpu.createInstance();
+        if !instance { raise "WGPU Instance creation failed"; }
 
-    const window = glfw.createWindow({ 
-        title: "WebGPU Example",
-        noApi: true,
-    });
-    if !window {
-        fmt.println("Window creation failed");
-        return 0;
-    }
-    // wgpu.init(window.handle);
+        let surface = glfw_wgpu.createWindowWGPUSurface(instance, window);
+        if !surface { raise "WGPU Surface creation failed"; }
 
-    let instance = wgpu.createInstance();
-    if !instance {
-        fmt.println("WGPU instance could not be created");
-        return 0;
-    }
+        instance.requestAdapter({
+            // All unspecified fields get their default value
+        }, { 
+            callback: adapterRequestCallback 
+            // All unspecified fields get their default value
+        });
 
-    let surface = glfw_wgpu.createWindowWGPUSurface(instance, window);
-    if !surface {
-        fmt.println("Failed to create WGPU GLFW surface");
-        return 0;
-    }
-
-    let adapterOpts = wgpu.ffi.WGPURequestAdapterOptions {
-        compatibleSurface: surface.handle,
-    };
-    let adapterCallback = inline wgpu.ffi.WGPURequestAdapterCallbackInfo {
-        callback: adapterRequestCallback,
-    };
-    instance.requestAdapter(adapterOpts, adapterCallback);
-
-    let timeout = 1000;
-    while !g_adapterReady && timeout > 0 {
-        for (let i = 0; i < 10000; i++) {
+        let timeout = 1000;
+        while !g_adapterReady && timeout > 0 {
+            for (let i = 0; i < 10000; i++) {
+            }
+            timeout--;
         }
-        timeout--;
-    }
 
-    if (!g_adapter) {
-        fmt.println("Failed to get adapter after timeout");
+        if (!g_adapter) {
+            fmt.println("Failed to get adapter after timeout");
+            return 0;
+        }
+
+        while !window.shouldClose() {
+            glfw.pollEvents();
+            // wgpu.wgpu_start(window.handle);
+            // wgpu.wgpu_end(window.handle);
+        }
+
+        window.destroy();
+        glfw.terminate();
+        
         return 0;
     }
-
-//   WGPUDeviceDescriptor device_desc = { 0 };
-//   WGPURequestDeviceCallbackInfo device_callback = {
-//     callback = device_request_callback,
-//   };
-//   wgpuAdapterRequestDevice(g_adapter, &device_desc, device_callback);
-
-//   // Wait for device to be ready
-//   int timeout = 1000; // 1 second timeout
-//   while (!g_device_ready && timeout > 0) {
-//     // Simple busy loop with minimal sleep
-//     for (int i = 0; i < 10000; i++) {
-//       // Spin
-//     }
-//     timeout--;
-//   }
-
-//   if (!g_device) {
-//     fprintf(stderr, "Failed to get device after timeout\n");
-//     return;
-//   }
-
-    // gl.init(window.getProcAddress());
-    // gl.viewport(0, 0, 1920, 1080);
-
-    while !window.shouldClose() {
-        glfw.pollEvents();
-        // wgpu.wgpu_start(window.handle);
-
-        // gl.clearColor(Color((math.sin(glfw.getTime() * 10.0) + 1.0) / 2.0, 0.1, 0.1, 1.0));
-        // gl.clear();
-        // wgpu.wgpu_end(window.handle);
-        // window.swapBuffers();
+    else e {
+        fmt.println("Application failed: ", e);
+        return 1;
     }
-
-    window.destroy();
-    glfw.terminate();
-
-    return 0;
 
     // fmt.println("TODO: Implement a proper platform configuration system. Currently there is an interface.compiler.defines feature to define transitive macros, but this is not the solution, it is only a workaround. We rather want a real, proper configuration system where we can e.g. differentiate between x11 and wayland platform configurations and compile for one of them.");
 

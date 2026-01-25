@@ -18,12 +18,12 @@ topLevelDeclarations
 // Imports
 
 importStatements
-    : IMPORT (module=ID | path=STRING_LITERAL) (AS alias=ID)? SEMI?                         #ImportStatement
-    | FROM (module=ID | path=STRING_LITERAL) IMPORT importAs (COMMA importAs)* SEMI?        #FromImportStatement
+    : IMPORT (module=id | path=STRING_LITERAL) (AS alias=id)? SEMI?                         #ImportStatement
+    | FROM (module=id | path=STRING_LITERAL) IMPORT importAs (COMMA importAs)* SEMI?        #FromImportStatement
     ;
 
 importAs
-    : symbol=ID (AS alias=ID)?
+    : symbol=id (AS alias=id)?
     ;
 
 // Namespaces
@@ -56,7 +56,7 @@ globalDeclaration
     ;
 
 namespaceDefinition
-    : (export=EXPORT)? NAMESPACE ID (DOT ID)* LCURLY globalDeclaration* RCURLY
+    : (export=EXPORT)? NAMESPACE id (DOT id)* LCURLY globalDeclaration* RCURLY
     ;
 
 // Directives
@@ -65,11 +65,11 @@ cInjectDirective: (export=EXPORT)? INLINEC LB STRING_LITERAL RB SEMI?;
 
 // Functions
 
-externLanguage: ID;
+externLanguage: id;
 
-functionDefinition: (export=EXPORT)? (extern=EXTERN externLang=externLanguage? pub=PUB? noemit=NOEMIT?)? ID (LANGLE ID (COMMA ID)* RANGLE)? LB params RB (COLON datatype)? requiresBlock? (ARROW)? (funcbody | SEMI?);
+functionDefinition: (export=EXPORT)? (extern=EXTERN externLang=externLanguage? pub=PUB? noemit=NOEMIT?)? id (LANGLE id (COMMA id)* RANGLE)? LB params RB (COLON datatype)? requiresBlock? (ARROW)? (funcbody | SEMI?);
 lambda: LB params RB (COLON datatype)? requiresBlock? ARROW funcbody;
-param: ID QUESTIONMARK? COLON (datatype | ellipsis);
+param: id QUESTIONMARK? COLON (datatype | ellipsis);
 params: (param (COMMA param)* (COMMA ellipsis)?)? | ellipsis;
 ellipsis: ELLIPSIS;
 
@@ -81,11 +81,11 @@ exprAsFuncbody: expr;
 // Variables
 
 globalVariableDef
-    : (export=EXPORT)? (extern=EXTERN externLang=externLanguage?)? pub=PUB? variableMutabilitySpecifier comptime=COMPTIME? ID (((COLON datatype)? EQUALS expr) | (COLON datatype)) SEMI?        #GlobalVariableDefinition
+    : (export=EXPORT)? (extern=EXTERN externLang=externLanguage?)? pub=PUB? variableMutabilitySpecifier comptime=COMPTIME? id (((COLON datatype)? EQUALS expr) | (COLON datatype)) SEMI?        #GlobalVariableDefinition
     ;
 
 typeDef
-    : (export=EXPORT)? (extern=EXTERN externLang=externLanguage?)? pub=PUB? TYPE name=ID (LANGLE generic+=ID (COMMA generic+=ID)* RANGLE)? EQUALS datatype SEMI?        #TypeAliasDirective
+    : (export=EXPORT)? (extern=EXTERN externLang=externLanguage?)? pub=PUB? TYPE name=id (LANGLE generic+=id (COMMA generic+=id)* RANGLE)? EQUALS datatype SEMI?        #TypeAliasDirective
     ;
 
 variableMutabilitySpecifier
@@ -124,11 +124,11 @@ baseDatatype
 
 datatype
     : baseDatatype (SINGLEOR baseDatatype)*                                     #UntaggedUnionDatatype
-    | NODISCARD? UNION LCURLY (ID COLON baseDatatype COMMA)+ (ID COLON baseDatatype COMMA?) RCURLY   #TaggedUnionDatatype
+    | NODISCARD? UNION LCURLY (id COLON baseDatatype COMMA)+ (id COLON baseDatatype COMMA?) RCURLY   #TaggedUnionDatatype
     ;
 
 datatypeFragment
-    : ID (LANGLE genericLiteral (COMMA genericLiteral)* RANGLE)?
+    : id (LANGLE genericLiteral (COMMA genericLiteral)* RANGLE)?
     ;
 
 genericLiteral
@@ -138,21 +138,21 @@ genericLiteral
 
 structContent
     : sourceLocationPrefixRule LCURLY structContent* RCURLY                                                 #StructContentWithSourceloc
-    | variableMutabilitySpecifier? ID COLON datatype (EQUALS expr)? SEMI?                                    #StructMember
-    | static=STATIC? mutability=(MUT | CONST)? name=(ID | OPERATORASSIGN | OPERATORREBIND | OPERATORPLUS | OPERATORMINUS | OPERATORMUL | OPERATORDIV | OPERATORMOD | OPERATORSUBSCRIPT | OPERATORAS) (LANGLE generic+=ID (COMMA generic+=ID)* RANGLE)? LB params RB (COLON datatype)? requiresBlock? (funcbody | SEMI?)    #StructMethod
+    | variableMutabilitySpecifier? id COLON datatype (EQUALS expr)? SEMI?                                    #StructMember
+    | static=STATIC? mutability=(MUT | CONST)? name=(RAW_ID | TYPE | OPERATORASSIGN | OPERATORREBIND | OPERATORPLUS | OPERATORMINUS | OPERATORMUL | OPERATORDIV | OPERATORMOD | OPERATORSUBSCRIPT | OPERATORAS) (LANGLE generic+=id (COMMA generic+=id)* RANGLE)? LB params RB (COLON datatype)? requiresBlock? (funcbody | SEMI?)    #StructMethod
     | structDefinition                                                                                      #NestedStructDefinition
     ;
 
 enumContent
-    : ID (EQUALS expr)?
+    : id (EQUALS expr)?
     ;
 
 enumDefinition
-    : (export=EXPORT)? (extern=EXTERN externLang=externLanguage)? pub=PUB? noemit=NOEMIT? ENUM BITFLAG? UNSCOPED? ID requiresBlock? LCURLY (((content+=enumContent COMMA)+ (content+=enumContent COMMA?)?) | (content+=enumContent COMMA?))? RCURLY (SEMI)?
+    : (export=EXPORT)? (extern=EXTERN externLang=externLanguage)? pub=PUB? noemit=NOEMIT? ENUM BITFLAG? UNSCOPED? id requiresBlock? LCURLY (((content+=enumContent COMMA)+ (content+=enumContent COMMA?)?) | (content+=enumContent COMMA?))? RCURLY (SEMI)?
     ;
 
 structDefinition
-    : (export=EXPORT)? (extern=EXTERN externLang=externLanguage)? pub=PUB? noemit=NOEMIT? OPAQUE? PLAIN? STRUCT ID (LANGLE ID (COMMA ID)* RANGLE)? requiresBlock? LCURLY (content+=structContent)* RCURLY (SEMI)?
+    : (export=EXPORT)? (extern=EXTERN externLang=externLanguage)? pub=PUB? noemit=NOEMIT? OPAQUE? PLAIN? STRUCT id (LANGLE id (COMMA id)* RANGLE)? requiresBlock? LCURLY (content+=structContent)* RCURLY (SEMI)?
     ;
 
 typeDefinition
@@ -181,7 +181,7 @@ requiresBlock
     ;
 
 aggregateLiteralElement
-    : (key=ID COLON)? value=expr
+    : (key=id COLON)? value=expr
     ;
 
 expr
@@ -198,7 +198,7 @@ expr
     | expr op=(PLUSPLUS | MINUSMINUS)                                               #PostIncrExpr
     | callExpr=expr LB (argExpr+=expr (COMMA argExpr+=expr)*)? RB (WITH allocatorExpr=expr)?                  #ExprCallExpr
     | value=expr LBRACKET (index+=subscriptExpr) (COMMA index+=subscriptExpr)* COMMA? RBRACKET          #ArraySubscriptExpr
-    | expr (DOT | QUESTIONDOT) ID (LANGLE genericLiteral (COMMA genericLiteral)* RANGLE)?              #ExprMemberAccess
+    | expr (DOT | QUESTIONDOT) id (LANGLE genericLiteral (COMMA genericLiteral)* RANGLE)?              #ExprMemberAccess
     | expr QUESTIONEXCL                                                             #PostfixResultPropagationExpr
 
     // Part 2: Right to left
@@ -223,23 +223,23 @@ expr
     
     // Ternary-like control expressions
     // <- ternary
-    | ATTEMPT rawScope ELSE (ID)? rawScope                                          #AttemptExpr
+    | ATTEMPT rawScope ELSE (id)? rawScope                                          #AttemptExpr
 
     // Assignment
     | <assoc=right> expr op=(EQUALS|COLONEQUALS|PLUSEQ|MINUSEQ|MULEQ|DIVEQ|MODEQ) expr     #ExprAssignmentExpr
 
-    | ID (LANGLE genericLiteral (COMMA genericLiteral)* RANGLE)?                    #SymbolValueExpr
+    | id (LANGLE genericLiteral (COMMA genericLiteral)* RANGLE)?                    #SymbolValueExpr
     ;
 
 // Statements & Conditionals
 
 variableCreation
-    : variableMutabilitySpecifier comptime=COMPTIME? ID (((COLON datatype)? EQUALS expr) | (COLON datatype)) SEMI? #VariableCreationStatementRule
+    : variableMutabilitySpecifier comptime=COMPTIME? id (((COLON datatype)? EQUALS expr) | (COLON datatype)) SEMI? #VariableCreationStatementRule
     ;
 
 ifStatementConditionImpl
     : ifExpr=expr #IfStatementCondition
-    | LET ID (COLON datatype)? EQUALS letExpr=expr (SEMI guardExpr=expr)? #IfLetStatementCondition
+    | LET id (COLON datatype)? EQUALS letExpr=expr (SEMI guardExpr=expr)? #IfLetStatementCondition
     ;
 
 statement
@@ -249,9 +249,15 @@ statement
     | RAISE expr? SEMI?                                                             #RaiseStatement
     | variableCreation                                                              #VariableCreationStatement
     | IF comptime=COMPTIME? ifCondition=ifStatementConditionImpl then=rawScope (ELSE IF elseIfCondition+=ifStatementConditionImpl elseIfThen+=rawScope)* (ELSE elseBlock=rawScope)? #IfStatement
-    | FOR comptime=COMPTIME? ID (COMMA ID)? IN expr rawScope                        #ForEachStatement
+    | FOR comptime=COMPTIME? id (COMMA id)? IN expr rawScope                        #ForEachStatement
     | FOR comptime=COMPTIME? LB statement? SEMI condition=expr? SEMI incr=expr? RB rawScope #ForStatement
     | WHILE expr rawScope                                                           #WhileStatement
-    | WHILE LET ID (COLON datatype)? EQUALS expr (SEMI expr)? rawScope              #WhileLetStatement
+    | WHILE LET id (COLON datatype)? EQUALS expr (SEMI expr)? rawScope              #WhileLetStatement
     | typeDef                                                                       #TypeAliasStatement
+    ;
+
+// This is a hack-around so the word "type" can be used as variable names without creating a syntax error
+id
+    : TYPE
+    | RAW_ID
     ;

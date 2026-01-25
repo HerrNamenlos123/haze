@@ -60,14 +60,731 @@ extractEnums(file: str): Result<[]EnumResult, str> {
     }
 }
 
+struct StructField {
+    name: str = "";
+    fieldType: str = "";
+}
+
+struct StructResult {
+    name: str = "";
+    fields: []StructField = {};
+}
+
+
+extractStructs(file: str): Result<[]StructResult, str> {
+    attempt {
+        // Strip comments
+        let stripped = regex.replace(r"\/\/[^\n\r]*|\/\*[\s\S]*?\*\/", file, "");
+
+        // Match: typedef struct NAME { ... } NAME ...
+        let structDefs = regex.findAll(
+            r"typedef\s+struct\s+(\w+)\s*\{([\s\S]*?)\}\s*(\w+)\s*[^;]*;",
+            stripped
+        );
+
+        let results = []StructResult {};
+
+        for (let i = 0; i < structDefs.length; i++) {
+            let structName = structDefs[i].groups[2].text;
+            let body = structDefs[i].groups[1].text;
+
+            let result = StructResult { name: structName };
+
+            // Match fields: type name;
+            let fields = regex.findAll(
+                r"([A-Za-z_][A-Za-z0-9_\s\*\[\]]+?)\s+(\w+)\s*;",
+                body
+            );
+
+            for (let j = 0; j < fields.length; j++) {
+                let fieldType = regex.replace(
+                    r"^\s+|\s+$",
+                    regex.replace(r"\s+", " ", fields[j].groups[0].text),
+                    ""
+                );
+                let fieldName = fields[j].groups[1].text;
+
+                result.fields.push({
+                    name: fieldName,
+                    fieldType: fieldType,
+                });
+            }
+
+            results.push(result);
+        }
+
+        return results;
+    }
+    else e {
+        return fmt.format(e);
+    }
+}
+
+struct FunctionType {
+    name: str = "";
+    returnType: str = "";
+    params: []FunctionParam = {};
+}
+
+extractFunctionTypes(file: str): Result<[]FunctionType, str> {
+    attempt {
+        // Strip comments
+        let stripped = regex.replace(r"\/\/[^\n\r]*|\/\*[\s\S]*?\*\/", file, "");
+
+        // Match: typedef RET (*NAME)(ARGS...) ...
+        let funcDefs = regex.findAll(
+            r"typedef\s+(.+?)\s*\(\*\s*(\w+)\s*\)\s*\(([\s\S]*?)\)\s*[^;]*;",
+            stripped
+        );
+
+        let results = []FunctionType {};
+
+        for (let i = 0; i < funcDefs.length; i++) {
+            let returnType = regex.replace(
+                r"^\s+|\s+$",
+                regex.replace(r"\s+", " ", funcDefs[i].groups[0].text),
+                ""
+            );
+
+            let funcName = funcDefs[i].groups[1].text;
+            let paramsText = funcDefs[i].groups[2].text;
+
+            let result = FunctionType {
+                name: funcName,
+                returnType: returnType,
+            };
+
+            // Split parameters
+            let params = regex.findAll(
+                r"([A-Za-z_][A-Za-z0-9_\s\*\[\]]+?)\s+(\w+)\s*(?:,|$)",
+                paramsText
+            );
+
+            for (let j = 0; j < params.length; j++) {
+                let paramType = regex.replace(
+                    r"^\s+|\s+$",
+                    regex.replace(r"\s+", " ", params[j].groups[0].text),
+                    ""
+                );
+
+                let paramName = params[j].groups[1].text;
+
+                result.params.push({
+                    name: paramName,
+                    paramType: paramType,
+                });
+            }
+
+            results.push(result);
+        }
+
+        return results;
+    }
+    else e {
+        return fmt.format(e);
+    }
+}
+
+struct BitflagType {
+    name: str = "";
+    baseType: str = "";
+}
+
+extractBitflagTypes(file: str): Result<[]BitflagType, str> {
+    attempt {
+        let stripped = regex.replace(r"\/\/[^\n\r]*|\/\*[\s\S]*?\*\/", file, "");
+
+        let defs = regex.findAll(
+            r"typedef\s+(\w+)\s+(\w+)\s*;",
+            stripped
+        );
+
+        let results = []BitflagType {};
+
+        for (let i = 0; i < defs.length; i++) {
+            let base = defs[i].groups[0].text;
+            let name = defs[i].groups[1].text;
+
+            if base == "WGPUFlags" {
+                results.push({
+                    name: name,
+                    baseType: base,
+                });
+            }
+        }
+
+        return results;
+    }
+    else e {
+        return fmt.format(e);
+    }
+}
+
+struct BitflagValue {
+    typeName: str = "";
+    name: str = "";
+    value: str = "";
+}
+
+extractBitflagValues(file: str): Result<[]BitflagValue, str> {
+    attempt {
+        let stripped = regex.replace(r"\/\/[^\n\r]*|\/\*[\s\S]*?\*\/", file, "");
+
+        let values = regex.findAll(
+            r"static\s+const\s+(\w+)\s+(\w+)\s*=\s*(0x[0-9A-Fa-f]+)",
+            stripped
+        );
+
+        let results = []BitflagValue {};
+
+        for (let i = 0; i < values.length; i++) {
+            results.push({
+                typeName: values[i].groups[0].text,
+                name: values[i].groups[1].text,
+                value: values[i].groups[2].text,
+            });
+        }
+
+        return results;
+    }
+    else e {
+        return fmt.format(e);
+    }
+}
+
+struct Typedef {
+    name: str = "";
+    base: str = "";
+}
+
+extractTypedefs(file: str): Result<[]Typedef, str> {
+    attempt {
+        let stripped = regex.replace(r"\/\/[^\n\r]*|\/\*[\s\S]*?\*\/", file, "");
+
+        // Only primitive integer typedefs
+        let defs = regex.findAll(
+            r"typedef\s+(u?int(8|16|32|64)_t)\s+(\w+)\s*;",
+            stripped
+        );
+
+        let results = []Typedef {};
+
+        for (let i = 0; i < defs.length; i++) {
+            let base = defs[i].groups[0].text;
+            let name = defs[i].groups[2].text;
+
+            results.push({
+                name: name,
+                base: base,
+            });
+        }
+
+        return results;
+    }
+    else e {
+        return fmt.format(e);
+    }
+}
+
+struct FunctionParam {
+    name: str = "";
+    paramType: str = "";
+}
+
+struct FunctionDecl {
+    name: str = "";
+    returnType: str = "";
+    params: []FunctionParam = {};
+}
+
+extractFunctionDecls(file: str): Result<[]FunctionDecl, str> {
+    attempt {
+        // Strip comments
+        let stripped = regex.replace(r"\/\/[^\n\r]*|\/\*[\s\S]*?\*\/", file, "");
+
+        // Match: WGPU_EXPORT RET NAME(PARAMS) ...
+        let funcDefs = regex.findAll(
+            r"WGPU_EXPORT\s+(.+?)\s+(\w+)\s*\(([\s\S]*?)\)\s*[^;]*;",
+            stripped
+        );
+
+        let results = []FunctionDecl {};
+
+        for (let i = 0; i < funcDefs.length; i++) {
+            let returnType = regex.replace(
+                r"^\s+|\s+$",
+                regex.replace(r"\s+", " ", funcDefs[i].groups[0].text),
+                ""
+            );
+
+            let funcName = funcDefs[i].groups[1].text;
+            let paramsText = funcDefs[i].groups[2].text;
+
+            let result = FunctionDecl {
+                name: funcName,
+                returnType: returnType,
+            };
+
+            // Parse parameters
+            let params = regex.findAll(
+                r"([A-Za-z_][A-Za-z0-9_\s\*\[\]]+?)\s+(\w+)\s*(?:,|$)",
+                paramsText
+            );
+
+            for (let j = 0; j < params.length; j++) {
+                let paramType = regex.replace(
+                    r"^\s+|\s+$",
+                    regex.replace(r"\s+", " ", params[j].groups[0].text),
+                    ""
+                );
+
+                let paramName = params[j].groups[1].text;
+
+                result.params.push({
+                    name: paramName,
+                    paramType: paramType,
+                });
+            }
+
+            results.push(result);
+        }
+
+        return results;
+    }
+    else e {
+        return fmt.format(e);
+    }
+}
+
 struct GenArgs {
     outfile: str;
     enums: []EnumResult;
+    structs: []StructResult;
+    functionTypes: []FunctionType;
+    implStructs: []ImplStruct;
+    bitflagValues: []BitflagValue;
+    bitflagTypes: []BitflagType;
+    typedefs: []Typedef;
+    funcDecls: []FunctionDecl;
+}
+
+struct ImplStruct {
+    implName: str = "";
+    publicName: str = "";
+}
+
+// This Impl stuff is a hack because WebGPU wants to use opaque handles and therefore uses
+// implementation structs and then typedefs pointers to them as handles. But we cannot properly
+// use the handles because then Haze would think they are inline non-pointer structs, but
+// in C they are actually pointers and we would have a lot of mismatches everywhere because
+// Haze would work with value semantics on reference types.
+//
+// Therefore we use the Impl structs directly so Haze can work with the non-inline reference directly,
+// but in order to do that, we have to convert between Impl/Non-Impl names and manually typedef 
+// the structs to their name because they aren't currently.
+getImplStructs(file: str): Result<[]ImplStruct, str> {
+    attempt {
+        // Strip comments
+        let stripped = regex.replace(r"\/\/[^\n\r]*|\/\*[\s\S]*?\*\/", file, "");
+
+        // Match: typedef struct XImpl* X ...
+        let implDefs = regex.findAll(
+            r"typedef\s+struct\s+(\w+)\s*\*\s*(\w+)\s*[^;]*;",
+            stripped
+        );
+
+        let results = []ImplStruct {};
+
+        for (let i = 0; i < implDefs.length; i++) {
+            results.push({
+                implName: implDefs[i].groups[0].text,
+                publicName: implDefs[i].groups[1].text,
+            });
+        }
+
+        return results;
+    }
+    else e {
+        return fmt.format(e);
+    }
+}
+
+parseType(args: GenArgs, fieldType: str): str {
+    if fieldType == "void" {
+        return "void";
+    }
+    if fieldType == "size_t" {
+        return "usize";
+    }
+    if fieldType == "uint8_t" {
+        return "u8";
+    }
+    if fieldType == "uint16_t" {
+        return "u16";
+    }
+    if fieldType == "uint32_t" {
+        return "u32";
+    }
+    if fieldType == "uint64_t" {
+        return "u64";
+    }
+    if fieldType == "int8_t" {
+        return "i8";
+    }
+    if fieldType == "int16_t" {
+        return "i16";
+    }
+    if fieldType == "int32_t" {
+        return "i32";
+    }
+    if fieldType == "int64_t" {
+        return "i64";
+    }
+    if fieldType == "WGPUBool" {
+        return "bool";
+    }
+    if fieldType == "float" {
+        return "f32";
+    }
+    if fieldType == "double" {
+        return "f64";
+    }
+    if fieldType == "char const * WGPU_NULLABLE" {
+        return "ccstr";
+    }
+    if fieldType == "void *" {
+        return "cptr";
+    }
+    if fieldType == "void const *" {
+        return "cptr";
+    }
+    if fieldType == "WGPU_NULLABLE void*" {
+        return "cptr";
+    }
+
+    // Pointer-To-Opaque are Double-pointers and not supported in Haze
+    if fieldType == "WGPURenderBundle const *" {
+        return "cptr /* WGPURenderBundleImpl* const* */";
+    }
+    if fieldType == "WGPUDevice const *" {
+        return "cptr /* WGPUDeviceImpl* const* */";
+    }
+    if fieldType == "WGPUBindGroupLayout const *" {
+        return "cptr /* WGPUBindGroupLayoutImpl* const* */";
+    }
+
+    // Pointer-To-Opaque: Array is not supported in Haze directly
+    if fieldType == "WGPUCommandBuffer const *" {
+        return "cptr /* WGPUCommandBufferImpl* const* a.k.a (WGPUCommandBufferImpl*)[] */";
+    }
+
+    // Pointer-To-Enum: Array is not supported in Haze directly
+    if fieldType == "WGPUTextureFormat const *" {
+        return "cptr /* WGPUTextureFormat const * a.k.a WGPUTextureFormat[] */";
+    }
+    if fieldType == "WGPUFeatureName const *" {
+        return "cptr /* WGPUFeatureName const * a.k.a WGPUFeatureName[] */";
+    }
+    if fieldType == "WGPUWGSLLanguageFeatureName const *" {
+        return "cptr /* WGPUWGSLLanguageFeatureName const * a.k.a WGPUWGSLLanguageFeatureName[] */";
+    }
+    if fieldType == "WGPUPresentMode const *" {
+        return "cptr /* WGPUPresentMode const * a.k.a WGPUPresentMode[] */";
+    }
+    if fieldType == "WGPUCompositeAlphaMode const *" {
+        return "cptr /* WGPUCompositeAlphaMode const * a.k.a WGPUCompositeAlphaMode[] */";
+    }
+
+    // Pointer-to-primitive is not supported in Haze
+    if fieldType == "uint32_t const *" {
+        return "cptr /* uint32_t const* */";
+    }
+
+    // "<STRUCT_NAME> *" -> Pointer (non-inline)
+    let pointerStruct = regex.find(r"^(.*)\s\*$", fieldType);
+    if pointerStruct {
+        let baseType = pointerStruct.groups[0].text;
+        for (let i = 0; i < args.structs.length; i++) {
+            if (args.structs[i].name == baseType) {
+                // Struct matches
+                return f"mut {args.structs[i].name}";
+            }
+        }
+    }
+
+    // "struct <STRUCT_NAME> *" -> Pointer (non-inline, explicit struct)
+    let structPointer = regex.find(
+        r"^struct\s+(\w+)\s\*$",
+        fieldType
+    );
+    if structPointer {
+        let baseType = structPointer.groups[0].text;
+        for (let i = 0; i < args.structs.length; i++) {
+            if (args.structs[i].name == baseType) {
+                // Struct matches
+                return f"mut {args.structs[i].name}";
+            }
+        }
+    }
+
+    // "<STRUCT_NAME> const *" -> Pointer (const)
+    let constPointerStruct = regex.find(r"^(.*)\s+const\s\*$", fieldType);
+    if constPointerStruct {
+        let baseType = constPointerStruct.groups[0].text;
+        for (let i = 0; i < args.structs.length; i++) {
+            if (args.structs[i].name == baseType) {
+                // Struct matches
+                return f"{args.structs[i].name}";
+            }
+        }
+    }
+
+    // "WGPU_NULLABLE <STRUCT_NAME> *" -> Nullable pointer
+    let nullablePointerStruct = regex.find(
+        r"^WGPU_NULLABLE\s+(.*)\s\*$",
+        fieldType
+    );
+    if nullablePointerStruct {
+        let baseType = nullablePointerStruct.groups[0].text;
+        for (let i = 0; i < args.structs.length; i++) {
+            if (args.structs[i].name == baseType) {
+                // Struct matches
+                return f"mut {args.structs[i].name} | none";
+            }
+        }
+    }
+
+    // "WGPU_NULLABLE <STRUCT_NAME> const *" -> Nullable const pointer
+    let nullableConstPointerStruct = regex.find(
+        r"^WGPU_NULLABLE\s+(.*)\s+const\s\*$",
+        fieldType
+    );
+    if nullableConstPointerStruct {
+        let baseType = nullableConstPointerStruct.groups[0].text;
+        for (let i = 0; i < args.structs.length; i++) {
+            if (args.structs[i].name == baseType) {
+                // Struct matches
+                return f"{args.structs[i].name} | none";
+            }
+        }
+    }
+
+    // "struct <STRUCT_NAME> const *" -> Const pointer with explicit struct keyword
+    let structConstPointer = regex.find(
+        r"^struct\s+(\w+)\s+const\s\*$",
+        fieldType
+    );
+    if structConstPointer {
+        let baseType = structConstPointer.groups[0].text;
+        for (let i = 0; i < args.structs.length; i++) {
+            if (args.structs[i].name == baseType) {
+                // Struct matches
+                return f"{args.structs[i].name}";
+            }
+        }
+    }
+
+    // "<STRUCT_NAME>" -> Plain struct value
+    let plainStruct = regex.find(r"^(\w+)$", fieldType);
+    if plainStruct {
+        let baseType = plainStruct.groups[0].text;
+        for (let i = 0; i < args.structs.length; i++) {
+            if (args.structs[i].name == baseType) {
+                // Struct matches
+                return f"inline {args.structs[i].name}";
+            }
+        }
+    }
+
+    // "<ENUM_NAME>" -> Plain enum type
+    for (let i = 0; i < args.enums.length; i++) {
+        if (args.enums[i].name == fieldType) {
+            return f"{args.enums[i].name}";
+        }
+    }
+
+    // "<TYPEDEF_NAME>" -> Typedefed type
+    for (let i = 0; i < args.typedefs.length; i++) {
+        if (args.typedefs[i].name == fieldType) {
+            return f"{args.typedefs[i].name}";
+        }
+    }
+
+    // "<BITFLAG_NAME>" -> Bitflag type
+    for (let i = 0; i < args.bitflagTypes.length; i++) {
+        if (args.bitflagTypes[i].name == fieldType) {
+            return f"{args.bitflagTypes[i].name}";
+        }
+    }
+
+    // "<FUNCTYPE_NAME>" -> Plain callback function datatype
+    for (let i = 0; i < args.functionTypes.length; i++) {
+        if (args.functionTypes[i].name == fieldType) {
+            return f"{args.functionTypes[i].name}";
+        }
+    }
+
+    // "<PUBLIC_NAME>" -> Opaque handle -> "<IMPL_NAME>"
+    let opaqueHandle = regex.find(r"^(\w+)$", fieldType);
+    if opaqueHandle {
+        let publicName = opaqueHandle.groups[0].text;
+        for (let i = 0; i < args.implStructs.length; i++) {
+            if (args.implStructs[i].publicName == publicName) {
+                // Opaque handle matches
+                return f"mut {args.implStructs[i].implName}";
+            }
+        }
+    }
+
+    // "WGPU_NULLABLE <PUBLIC_NAME>" -> Nullable opaque handle
+    let nullableOpaqueHandle = regex.find(
+        r"^WGPU_NULLABLE\s+(\w+)$",
+        fieldType
+    );
+    if nullableOpaqueHandle {
+        let publicName = nullableOpaqueHandle.groups[0].text;
+        for (let i = 0; i < args.implStructs.length; i++) {
+            if (args.implStructs[i].publicName == publicName) {
+                // Nullable opaque handle matches
+                return f"mut {args.implStructs[i].implName} | none";
+            }
+        }
+    }
+
+    return f"<{fieldType}>";
+}
+
+betterEnum(file: str, e: EnumResult, r: Regex, finalName: str) {
+    let values = "";
+    for (let j = 0; j < e.values.length; j++) {
+        values = values + f"    {regex.replace(r, e.values[j].name, "")} = {e.values[j].value},\n";
+    }
+    file = file + f"export enum {finalName} {{\n{values}}};\n\n";
+
+    file = file + f"{finalName}ToFFI(nice: {finalName}): ffi.{e.name} {{\n";
+    file = file + f"    do unsafe {{\n";
+    file = file + f"        let raw: ffi.{e.name} = uninitialized;\n";
+    file = file + f"        __c__(\"raw = (int)nice;\"); // By design binary-equivalent, should turn into a no-op when optimized\n";
+    file = file + f"        return raw;\n";
+    file = file + f"    }}\n";
+    file = file + f"}}\n";
+    file = file + f"{finalName}FromFFI(raw: ffi.{e.name}): {finalName} {{\n";
+    file = file + f"    do unsafe {{\n";
+    file = file + f"        let nice: {finalName} = uninitialized;\n";
+    file = file + f"        __c__(\"nice = (int)raw;\"); // By design binary-equivalent, should turn into a no-op when optimized\n";
+    file = file + f"        return nice;\n";
+    file = file + f"    }}\n";
+    file = file + f"}}\n\n";
+
+    return file;
 }
 
 generateBindings(args: GenArgs): Result<none, fs.Error> {
-    let file = "";
-    file = file + "A";
+    let file = "\nnamespace ffi {\n";
+
+    let functionsReturnNullable = []str {
+        "wgpuCreateInstance",
+    };
+
+    for (let i = 0; i < args.implStructs.length; i++) {
+        let s = args.implStructs[i];
+        file = file + f"    export __c__(\"typedef struct {s.implName} {s.implName};\");\n";
+    }
+
+    for (let i = 0; i < args.enums.length; i++) {
+        let e = args.enums[i];
+        let values = "";
+        for (let j = 0; j < e.values.length; j++) {
+            values = values + f"        {e.values[j].name} = {e.values[j].value},\n";
+        }
+        file = file + f"    export extern C noemit enum unscoped {e.name} {{\n{values}    }}\n\n";
+    }
+
+    for (let i = 0; i < args.typedefs.length; i++) {
+        let t = args.typedefs[i];
+        file = file + f"    type {t.name} = {parseType(args, t.base)};\n";
+    }
+
+    for (let i = 0; i < args.bitflagTypes.length; i++) {
+        let t = args.bitflagTypes[i];
+        file = file + f"    type {t.name} = {parseType(args, t.baseType)};\n";
+    }
+
+    for (let i = 0; i < args.bitflagValues.length; i++) {
+        let v = args.bitflagValues[i];
+        file = file + f"    const {v.name}: {parseType(args, v.typeName)} = {v.value};\n";
+    }
+
+    for (let i = 0; i < args.implStructs.length; i++) {
+        let s = args.implStructs[i];
+        file = file + f"    export extern C noemit struct {s.implName} {{}};\n";
+    }
+
+    for (let i = 0; i < args.functionTypes.length; i++) {
+        let f = args.functionTypes[i];
+        let params = "";
+        for (let j = 0; j < f.params.length; j++) {
+            params = params + f"{f.params[j].name}: {parseType(args, f.params[j].paramType)}";
+            if j != f.params.length - 1 {
+                params = params + ", ";
+            }
+        }
+        file = file + f"    export extern C type {f.name} = ({params}) => {parseType(args, f.returnType)} :: final;\n";
+    }
+
+    for (let i = 0; i < args.structs.length; i++) {
+        let s = args.structs[i];
+        let fields = "";
+        for (let j = 0; j < s.fields.length; j++) {
+            let nullable = "";
+            if (s.fields[j].name == "nextInChain") {
+                nullable = " | none";
+            }
+            fields = fields + f"        {s.fields[j].name}: {parseType(args, s.fields[j].fieldType)}{nullable};\n";
+        }
+        file = file + f"    export extern C noemit struct {s.name} {{\n{fields}    }}\n\n";
+    }
+
+    for (let i = 0; i < args.funcDecls.length; i++) {
+        let f = args.funcDecls[i];
+        let params = "";
+        for (let j = 0; j < f.params.length; j++) {
+            params = params + f"{f.params[j].name}: {parseType(args, f.params[j].paramType)}";
+            if j != f.params.length - 1 {
+                params = params + ", ";
+            }
+        }
+        let nullable = "";
+        for (let j = 0; j < functionsReturnNullable.length; j++) {
+            if functionsReturnNullable[j] == f.name {
+                nullable = " | none";
+            }
+        }
+        file = file + f"    export extern C noemit {f.name}({params}): {parseType(args, f.returnType)}{nullable} :: final;\n";
+    }
+
+    file = file + "}\n\n";
+
+    // Now generate the non-FFI bindings
+    for (let i = 0; i < args.enums.length; i++) {
+        let e = args.enums[i];
+        if e.name == "WGPUFeatureLevel" {
+            file = betterEnum(file, e, r"WGPUFeatureLevel_", "FeatureLevel");
+        }
+        if e.name == "WGPUPowerPreference" {
+            file = betterEnum(file, e, r"WGPUPowerPreference_", "PowerPreference");
+        }
+        if e.name == "WGPUBackendType" {
+            file = betterEnum(file, e, r"WGPUBackendType_", "BackendType");
+        }
+        if e.name == "WGPUCallbackMode" {
+            file = betterEnum(file, e, r"WGPUCallbackMode_", "CallbackMode");
+        }
+        if e.name == "WGPURequestAdapterStatus" {
+            file = betterEnum(file, e, r"WGPURequestAdapterStatus_", "RequestAdapterStatus");
+        }
+    }
+
     fs.writeFile(args.outfile, file)?!;
 }
 
@@ -88,10 +805,24 @@ generate(): int {
         let filepath = f"{workspaceDir}/wgpu/bin/include/webgpu.h";
         let file = fs.readFile(filepath)?!;
         let enums = extractEnums(file)?!;
+        let structs = extractStructs(file)?!;
+        let functionTypes = extractFunctionTypes(file)?!;
+        let implStructs = getImplStructs(file)?!;
+        let bitflagTypes = extractBitflagTypes(file)?!;
+        let bitflagValues = extractBitflagValues(file)?!;
+        let typedefs = extractTypedefs(file)?!;
+        let funcDecls = extractFunctionDecls(file)?!;
 
         generateBindings({
             outfile: f"{autogenDir}/wgpu-bindings.hz",
             enums: enums,
+            structs: structs,
+            functionTypes: functionTypes,
+            implStructs: implStructs,
+            bitflagValues: bitflagValues,
+            bitflagTypes: bitflagTypes,
+            typedefs: typedefs,
+            funcDecls: funcDecls,
         })?!;
     }
     else e {

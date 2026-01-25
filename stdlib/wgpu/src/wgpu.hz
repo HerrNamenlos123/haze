@@ -2,245 +2,114 @@
 export __c__("#include \"wgpu.h\"");
 __c__("#include \"wgpu_impl.c\"");
 
-export __c__("typedef struct WGPUSurfaceImpl WGPUSurfaceImpl;");
-export __c__("typedef struct WGPUInstanceImpl WGPUInstanceImpl;");
-export __c__("typedef struct WGPUAdapterImpl WGPUAdapterImpl;");
-export __c__("typedef struct WGPUAdapterImpl WGPUDeviceImpl;");
-
 export extern C noemit wgpu_init(glfwWindow: cptr) :: final;
 export extern C noemit wgpu_start(glfwWindow: cptr) :: final;
 export extern C noemit wgpu_end(glfwWindow: cptr) :: final;
 
-namespace ffi {
-    // We use the WGPU*Impl types since they are all consistently mapped to struct pointers,
-    // therefore we can immediately work with them as references.
-    // If we used the non-impl version, then they would be typedef-ed to pointers, 
-    // but Haze does not know that, so Haze would get very weird value semantics, that are not even necessary.
-    export extern C noemit struct WGPUSurfaceImpl {};
-    export extern C noemit struct WGPUInstanceImpl {};
-    export extern C noemit struct WGPUAdapterImpl {};
-    export extern C noemit struct WGPUDeviceImpl {};
-
-    export extern C noemit enum WGPURequestAdapterStatus {
-        WGPURequestAdapterStatus_Success = 0x00000001,
-        WGPURequestAdapterStatus_InstanceDropped = 0x00000002,
-        WGPURequestAdapterStatus_Unavailable = 0x00000003,
-        WGPURequestAdapterStatus_Error = 0x00000004,
-        WGPURequestAdapterStatus_Unknown = 0x00000005,
-        WGPURequestAdapterStatus_Force32 = 0x7FFFFFFF
-    };
-
-    export extern C noemit enum WGPUFeatureName {
-        WGPUFeatureName_Undefined = 0x00000000,
-        WGPUFeatureName_DepthClipControl = 0x00000001,
-        WGPUFeatureName_Depth32FloatStencil8 = 0x00000002,
-        WGPUFeatureName_TimestampQuery = 0x00000003,
-        WGPUFeatureName_TextureCompressionBC = 0x00000004,
-        WGPUFeatureName_TextureCompressionBCSliced3D = 0x00000005,
-        WGPUFeatureName_TextureCompressionETC2 = 0x00000006,
-        WGPUFeatureName_TextureCompressionASTC = 0x00000007,
-        WGPUFeatureName_TextureCompressionASTCSliced3D = 0x00000008,
-        WGPUFeatureName_IndirectFirstInstance = 0x00000009,
-        WGPUFeatureName_ShaderF16 = 0x0000000A,
-        WGPUFeatureName_RG11B10UfloatRenderable = 0x0000000B,
-        WGPUFeatureName_BGRA8UnormStorage = 0x0000000C,
-        WGPUFeatureName_Float32Filterable = 0x0000000D,
-        WGPUFeatureName_Float32Blendable = 0x0000000E,
-        WGPUFeatureName_ClipDistances = 0x0000000F,
-        WGPUFeatureName_DualSourceBlending = 0x00000010,
-        WGPUFeatureName_Force32 = 0x7FFFFFFF
-    };
-
-    export extern C noemit enum WGPUErrorType {
-        WGPUErrorType_NoError = 0x00000001,
-        WGPUErrorType_Validation = 0x00000002,
-        WGPUErrorType_OutOfMemory = 0x00000003,
-        WGPUErrorType_Internal = 0x00000004,
-        WGPUErrorType_Unknown = 0x00000005,
-        WGPUErrorType_Force32 = 0x7FFFFFFF
-    };
-
-    export extern C noemit enum WGPUCallbackMode {
-        WGPUCallbackMode_WaitAnyOnly = 0x00000001,
-        WGPUCallbackMode_AllowProcessEvents = 0x00000002,
-        WGPUCallbackMode_AllowSpontaneous = 0x00000003,
-        WGPUCallbackMode_Force32 = 0x7FFFFFFF
-    };
-
-    export extern C noemit enum WGPUDeviceLostReason {
-        WGPUDeviceLostReason_Unknown = 0x00000001,
-        WGPUDeviceLostReason_Destroyed = 0x00000002,
-        WGPUDeviceLostReason_InstanceDropped = 0x00000003,
-        WGPUDeviceLostReason_FailedCreation = 0x00000004,
-        WGPUDeviceLostReason_Force32 = 0x7FFFFFFF
-    };
-
-    export extern C noemit struct WGPUStringView {
-        data: cptr;
-        length: usize;
-    };
-
-    export extern C noemit struct WGPUInstanceDescriptor {
-        nextInChain: WGPUChainedStruct | none = none;
-        features: inline WGPUInstanceCapabilities = default;
-    };
-
-    export extern C noemit struct WGPUQueueDescriptor {
-        nextInChain: WGPUChainedStruct | none = none;
-        label: inline WGPUStringView;
-    };
-
-    export extern C type WGPUDeviceLostCallback = (device: WGPUDeviceImpl | none, reason: inline WGPUDeviceLostReason, message: inline WGPUStringView, userdata1: cptr, userdata2: cptr) => void :: final;
-
-    export extern C noemit struct WGPUDeviceLostCallbackInfo {
-        nextInChain: WGPUChainedStruct | none = none;
-        mode: WGPUCallbackMode;
-        callback: WGPUDeviceLostCallback;
-        userdata1: cptr = none;
-        userdata2: cptr = none;
-    };
-
-    export extern C type WGPUUncapturedErrorCallback = (device: WGPUDeviceImpl | none, _type: WGPUErrorType, message: inline WGPUStringView, userdata1: cptr, userdata2: cptr) => void :: final;
-
-    export extern C noemit struct WGPUUncapturedErrorCallbackInfo {
-        nextInChain: WGPUChainedStruct | none = none;
-        callback: WGPUUncapturedErrorCallback;
-        userdata1: cptr = none;
-        userdata2: cptr = none;
-    };
-
-    export extern C noemit struct WGPULimits {
-        nextInChain: WGPUChainedStructOut | none = none;
-        maxTextureDimension1D: u32;
-        maxTextureDimension2D: u32;
-        maxTextureDimension3D: u32;
-        maxTextureArrayLayers: u32;
-        maxBindGroups: u32;
-        maxBindGroupsPlusVertexBuffers: u32;
-        maxBindingsPerBindGroup: u32;
-        maxDynamicUniformBuffersPerPipelineLayout: u32;
-        maxDynamicStorageBuffersPerPipelineLayout: u32;
-        maxSampledTexturesPerShaderStage: u32;
-        maxSamplersPerShaderStage: u32;
-        maxStorageBuffersPerShaderStage: u32;
-        maxStorageTexturesPerShaderStage: u32;
-        maxUniformBuffersPerShaderStage: u32;
-        maxUniformBufferBindingSize: u64;
-        maxStorageBufferBindingSize: u64;
-        minUniformBufferOffsetAlignment: u32;
-        minStorageBufferOffsetAlignment: u32;
-        maxVertexBuffers: u32;
-        maxBufferSize: u64;
-        maxVertexAttributes: u32;
-        maxVertexBufferArrayStride: u32;
-        maxInterStageShaderVariables: u32;
-        maxColorAttachments: u32;
-        maxColorAttachmentBytesPerSample: u32;
-        maxComputeWorkgroupStorageSize: u32;
-        maxComputeInvocationsPerWorkgroup: u32;
-        maxComputeWorkgroupSizeX: u32;
-        maxComputeWorkgroupSizeY: u32;
-        maxComputeWorkgroupSizeZ: u32;
-        maxComputeWorkgroupsPerDimension: u32;
-    };
-
-    export extern C noemit struct WGPUDeviceDescriptor {
-        nextInChain: WGPUChainedStruct | none = none;
-        label: inline WGPUStringView;
-        requiredFeatureCount: usize;
-        requiredFeatures: WGPUFeatureName;
-        requiredLimits: WGPULimits | none;
-        defaultQueue: inline WGPUQueueDescriptor;
-        deviceLostCallbackInfo: inline WGPUDeviceLostCallbackInfo;
-        uncapturedErrorCallbackInfo: inline WGPUUncapturedErrorCallbackInfo;
-    };
-
-    export extern C noemit struct WGPUInstanceCapabilities {
-        nextInChain: WGPUChainedStructOut | none = none;
-        timedWaitAnyEnable: u32 = 0;
-        timedWaitAnyMaxCount: usize = 0;
-    };
-
-    export extern C noemit struct WGPUChainedStruct {
-        next: WGPUChainedStruct | none = none;
-        sType: int = 0; // Enum
-    };
-
-    export extern C noemit struct WGPUChainedStructOut {
-        next: WGPUChainedStructOut | none = none;
-        sType: int = 0; // Enum
-    };
-
-    extern C noemit wgpuCreateInstance(instanceDesc: WGPUInstanceDescriptor): WGPUInstanceImpl | none :: final;
-
-    export extern C noemit struct WGPURequestAdapterOptions {
-        nextInChain: WGPUChainedStruct | none = none;
-        featureLevel: int = 0; // enum WGPUFeatureLevel
-        powerPreference: int = 0; // enum WGPUPowerPreference
-        forceFallbackAdapter: u32 = 0;
-        backendType: int = 0; // enum WGPUBackendType
-        compatibleSurface: WGPUSurfaceImpl | none = none;
-    };
-
-    type WGPURequestAdapterCallback = (status: WGPURequestAdapterStatus, adapter: WGPUAdapterImpl, message: inline WGPUStringView, userdata1: cptr, userdata1: cptr) => void :: final;
-
-    export extern C noemit struct WGPURequestAdapterCallbackInfo {
-        nextInChain: WGPUChainedStruct | none = none;
-        mode: int = 0; // enum WGPUCallbackMode
-        callback: WGPURequestAdapterCallback;
-        userdata1: cptr = none;
-        userdata2: cptr = none;
-    };
-
-    extern C noemit struct WGPUFuture {
-        id: u64;
-    };
-
-    extern C noemit wgpuInstanceRequestAdapter(instance: WGPUInstanceImpl, options: WGPURequestAdapterOptions | none, callbackInfo: inline WGPURequestAdapterCallbackInfo): inline WGPUFuture :: final;
-}
-
 export struct Future {
     id: u64;
-}
 
-export struct Surface {
-    handle: ffi.WGPUSurfaceImpl;
-}
-
-export struct Instance {
-    handle: ffi.WGPUInstanceImpl;
-
-    requestAdapter(adapterOpts: ffi.WGPURequestAdapterOptions | none, callbackInfo: inline ffi.WGPURequestAdapterCallbackInfo) {
-        return const Future {
-            id: ffi.wgpuInstanceRequestAdapter(this.handle, adapterOpts, callbackInfo).id,
+    constructor(future: inline ffi.WGPUFuture): const Future {
+        return {
+            id: future.id,
         };
     }
 }
 
+export struct Surface {
+    handle: mut ffi.WGPUSurfaceImpl;
+}
+
+export struct Adapter {
+    handle: mut ffi.WGPUAdapterImpl;
+}
+
+export struct RequestAdapterOptions {
+    featureLevel: FeatureLevel = FeatureLevel.Core;
+    powerPreference: PowerPreference = PowerPreference.Undefined;
+    forceFallbackAdapter: bool = false;
+    backendType: BackendType = BackendType.Undefined;
+    compatibleSurface: mut Surface | none = none;
+}
+
+export type RequestAdapterCallback = (status: RequestAdapterStatus, adapter: mut Adapter, message: str) => void :: final;
+export struct RequestAdapterCallbackInfo {
+    callback: RequestAdapterCallback;
+    mode: CallbackMode = CallbackMode.WaitAnyOnly;
+    userdata1: cptr = none;
+    userdata2: cptr = none;
+}
+
+requestAdapterCallbackProxy(status: ffi.WGPURequestAdapterStatus, adapter: mut ffi.WGPUAdapterImpl, message: inline ffi.WGPUStringView, userdata1: cptr, userdata2: cptr): void :: final {
+    do unsafe {
+        let callback: RequestAdapterCallback = uninitialized;
+        __c__("callback = (void*)userdata1;");
+        let msg = "";
+        __c__("msg.data = message.data;");
+        __c__("msg.length = message.length;");
+        callback(RequestAdapterStatusFromFFI(status), Adapter { handle: adapter }, msg);
+    }
+}
+
+export struct Instance {
+    handle: mut ffi.WGPUInstanceImpl;
+
+    requestAdapter(adapterOpts: RequestAdapterOptions | none, callbackInfo: RequestAdapterCallbackInfo) {
+
+        let callback = callbackInfo.callback;
+        let userdata1: cptr = none;
+        __c__("userdata1 = (void*)callback;"); // Pass the function pointer to the highlevel callback into the lowlevel hook
+
+        let ffiCallbackInfo = inline ffi.WGPURequestAdapterCallbackInfo {
+            nextInChain: none,
+            callback: requestAdapterCallbackProxy,
+            mode: CallbackModeToFFI(callbackInfo.mode),
+            userdata1: userdata1,
+            userdata2: none,
+        };
+
+        if adapterOpts {
+            let surface = adapterOpts.compatibleSurface;
+            let compatibleSurface: mut ffi.WGPUSurfaceImpl | none = none;
+            if surface {
+                compatibleSurface = surface.handle;
+            }
+
+            return Future(
+                ffi.wgpuInstanceRequestAdapter(this.handle, {
+                    nextInChain: none,
+                    featureLevel: FeatureLevelToFFI(adapterOpts.featureLevel),
+                    powerPreference: PowerPreferenceToFFI(adapterOpts.powerPreference),
+                    forceFallbackAdapter: adapterOpts.forceFallbackAdapter,
+                    backendType: BackendTypeToFFI(adapterOpts.backendType),
+                    compatibleSurface: compatibleSurface,
+                }, ffiCallbackInfo)
+            );
+        }
+        else {
+            return Future(ffi.wgpuInstanceRequestAdapter(this.handle, none, ffiCallbackInfo));
+        }
+    }
+}
+
 export createInstance() { 
-  let instance_desc = ffi.WGPUInstanceDescriptor {};
-  let instance = ffi.wgpuCreateInstance(instance_desc);
-  if instance {
-    return Instance {
-        handle: instance,
+    let instance_desc = ffi.WGPUInstanceDescriptor {
+        nextInChain: none,
+        features: {
+            nextInChain: none,
+            timedWaitAnyEnable: false,
+            timedWaitAnyMaxCount: 0,
+        }
     };
-  }
-  else {
+    let instance = ffi.wgpuCreateInstance(instance_desc);
+    if instance {
+        return Instance {
+            handle: instance,
+        };
+    }
     return none;
-  }
 }
 
 export init(handle: cptr) {
     wgpu_init(handle);
 }
-
-// export extern C noemit wgpu_init(glfwWindow: cptr) :: final;
-// export extern C noemit wgpu_start(glfwWindow: cptr) :: final;
-// export extern C noemit wgpu_end(glfwWindow: cptr) :: final;
-
-//   WGPUInstanceDescriptor instance_desc = { 0 };
-//   g_instance = wgpuCreateInstance(&instance_desc);
-//   if (!g_instance) {
-//     fprintf(stderr, "Failed to create instance\n");
-//     return;
-//   }

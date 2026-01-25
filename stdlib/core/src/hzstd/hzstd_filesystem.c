@@ -89,6 +89,30 @@ static hzstd_fs_error_code_t hzstd_fs_error_from_windows_error(DWORD err)
 }
 #endif
 
+// --- Helper: get parent directory from a path ---
+static hzstd_str_t hzstd_fs_parent_dir(const char* path)
+{
+  size_t len = strlen(path);
+  if (len == 0) {
+    return (hzstd_str_t) { .data = (char*)".", .length = 1 };
+  }
+
+  // Find last separator
+  int last_sep = -1;
+  for (int i = (int)len - 1; i >= 0; i--) {
+    if (path[i] == '/' || path[i] == '\\') {
+      last_sep = i;
+      break;
+    }
+  }
+
+  if (last_sep <= 0) {
+    return (hzstd_str_t) { .data = (char*)".", .length = 1 };
+  }
+
+  return (hzstd_str_t) { .data = (char*)path, .length = (size_t)last_sep };
+}
+
 hzstd_fs_error_t hzstd_read_file_text(hzstd_allocator_t allocator, hzstd_str_t path, hzstd_str_ref_t* outputBuffer)
 {
   outputBuffer->data = HZSTD_STRING(NULL, 0);
@@ -188,6 +212,10 @@ hzstd_fs_error_t hzstd_write_file_text(hzstd_allocator_t allocator, hzstd_str_t 
       .message = HZSTD_STRING("out of memory", 13),
     };
   }
+
+  // Create parent directory, not the file path itself
+  hzstd_str_t parent = hzstd_fs_parent_dir(nullTermPath);
+  hzstd_mkdir_recursive(parent);
 
   FILE* f = fopen(nullTermPath, "wb");
   if (!f) {
@@ -392,30 +420,6 @@ static inline hzstd_str_t hzstd_fs_windows_error(DWORD err)
   return out;
 }
 #endif
-
-// --- Helper: get parent directory from a path ---
-static hzstd_str_t hzstd_fs_parent_dir(const char* path)
-{
-  size_t len = strlen(path);
-  if (len == 0) {
-    return (hzstd_str_t) { .data = (char*)".", .length = 1 };
-  }
-
-  // Find last separator
-  int last_sep = -1;
-  for (int i = (int)len - 1; i >= 0; i--) {
-    if (path[i] == '/' || path[i] == '\\') {
-      last_sep = i;
-      break;
-    }
-  }
-
-  if (last_sep <= 0) {
-    return (hzstd_str_t) { .data = (char*)".", .length = 1 };
-  }
-
-  return (hzstd_str_t) { .data = (char*)path, .length = (size_t)last_sep };
-}
 
 // --- Copy single file ---
 static hzstd_fs_error_t

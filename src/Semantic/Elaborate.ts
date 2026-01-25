@@ -1374,6 +1374,7 @@ export class SemanticElaborator {
       extern: enumValue.extern,
       name: enumValue.name,
       noemit: enumValue.noemit,
+      unscoped: enumValue.unscoped,
       originalCollectedSymbol: enumId,
       parentStructOrNS: parentNamespace,
       sourceloc: enumValue.sourceloc,
@@ -4384,6 +4385,7 @@ export class SemanticElaborator {
     inference: Inference,
   ) {
     const symbol = this.sr.cc.symbolNodes.get(symbolId);
+
     if (symbol.variant === Collect.ENode.TypeDefSymbol) {
       const typedef = this.sr.cc.typeDefNodes.get(symbol.typeDef);
       if (typedef.variant === Collect.ENode.EnumTypeDef && typedef.unscoped) {
@@ -4397,24 +4399,28 @@ export class SemanticElaborator {
       }
     }
 
-    if (
-      symbol.variant === Collect.ENode.TypeDefSymbol &&
-      symbol.name === name &&
-      this.sr.cc.typeDefNodes.get(symbol.typeDef).variant === Collect.ENode.StructTypeDef
-    ) {
-      const typedef = this.sr.cc.typeDefNodes.get(symbol.typeDef);
-      assert(typedef.variant === Collect.ENode.StructTypeDef);
-      // A struct nested in a struct
-      const instantiated = this.instantiateAndElaborateStructWithGenerics(
-        symbol.typeDef,
-        memberAccessExpr.genericArgs.map((g) => this.expressionAsGenericArg(g)),
-        memberAccessExpr.sourceloc,
-      );
-      return this.sr.b.datatypeDefAsValue(instantiated, memberAccessExpr.sourceloc);
-    } else if (
-      symbol.variant === Collect.ENode.FunctionOverloadGroupSymbol &&
-      symbol.name === name
-    ) {
+    if (symbol.variant === Collect.ENode.TypeDefSymbol && symbol.name === name) {
+      const def = this.sr.cc.typeDefNodes.get(symbol.typeDef);
+      if (def.variant === Collect.ENode.StructTypeDef) {
+        const typedef = this.sr.cc.typeDefNodes.get(symbol.typeDef);
+        assert(typedef.variant === Collect.ENode.StructTypeDef);
+        // A struct nested in a struct
+        const instantiated = this.instantiateAndElaborateStructWithGenerics(
+          symbol.typeDef,
+          memberAccessExpr.genericArgs.map((g) => this.expressionAsGenericArg(g)),
+          memberAccessExpr.sourceloc,
+        );
+        return this.sr.b.datatypeDefAsValue(instantiated, memberAccessExpr.sourceloc);
+      } else if (def.variant === Collect.ENode.NamespaceTypeDef) {
+        const ns = this.namespace(symbol.typeDef);
+        return this.sr.b.datatypeDefAsValue(ns, memberAccessExpr.sourceloc);
+      } else if (def.variant === Collect.ENode.EnumTypeDef) {
+        const e = this.enum(symbol.typeDef);
+        return this.sr.b.datatypeDefAsValue(e, memberAccessExpr.sourceloc);
+      }
+    }
+
+    if (symbol.variant === Collect.ENode.FunctionOverloadGroupSymbol && symbol.name === name) {
       // A method or a namespaced function
 
       const chosenOverloadId = this.FunctionOverloadChoose(
@@ -4447,9 +4453,9 @@ export class SemanticElaborator {
       const functionSymbol = this.sr.symbolNodes.get(functionSymbolId);
       assert(functionSymbol.variant === Semantic.ENode.FunctionSymbol);
       return this.sr.b.symbolValue(functionSymbolId, memberAccessExpr.sourceloc);
-    } else {
-      return undefined;
     }
+
+    return undefined;
   }
 
   lookupAndElaborateNamespaceMemberAccess(
@@ -6254,7 +6260,36 @@ export class SemanticElaborator {
         structInst.sourceloc,
         inference,
       );
-    } else if (
+    }
+
+    if (struct.variant === Semantic.ENode.UntaggedUnionDatatype) {
+      if (struct.members.length === 2) {
+        const a = struct.members[0];
+        const b = struct.members[1];
+        const aUse = this.sr.typeUseNodes.get(a);
+        const bUse = this.sr.typeUseNodes.get(b);
+
+        if (Conversion.isStruct(this.sr, aUse.type) && Conversion.isNoneById(this.sr, b)) {
+          return this.makeStructLiteral(
+            a,
+            structInst.elements,
+            structInst.allocator ? this.expr(structInst.allocator, undefined)[1] : null,
+            structInst.sourceloc,
+            inference,
+          );
+        } else if (Conversion.isStruct(this.sr, bUse.type) && Conversion.isNoneById(this.sr, a)) {
+          return this.makeStructLiteral(
+            b,
+            structInst.elements,
+            structInst.allocator ? this.expr(structInst.allocator, undefined)[1] : null,
+            structInst.sourceloc,
+            inference,
+          );
+        }
+      }
+    }
+
+    if (
       struct.variant === Semantic.ENode.FixedArrayDatatype ||
       struct.variant === Semantic.ENode.DynamicArrayDatatype
     ) {
@@ -6265,15 +6300,15 @@ export class SemanticElaborator {
         structInst.sourceloc,
         inference,
       );
-    } else {
-      throw new CompilerError(
-        `Type '${Semantic.serializeTypeUse(
-          this.sr,
-          structId,
-        )}' is not a valid type for an aggregate literal`,
-        structInst.sourceloc,
-      );
     }
+
+    throw new CompilerError(
+      `Type '${Semantic.serializeTypeUse(
+        this.sr,
+        structId,
+      )}' is not a valid type for an aggregate literal`,
+      structInst.sourceloc,
+    );
   }
 
   symbolValue(
@@ -9223,6 +9258,7 @@ export namespace Semantic {
     name: string;
     noemit: boolean;
     export: boolean;
+    unscoped: boolean;
     extern: EExternLanguage;
     values: EnumValue[];
     parentStructOrNS: TypeDefId | null;
@@ -10336,10 +10372,9 @@ export namespace Semantic {
       } else if (value.type === EPrimitive.none) {
         return `none`;
       } else if (value.type === "enum") {
-        const enumType = sr.typeDefNodes.get(value.enumType);
-        assert(enumType.variant === Semantic.ENode.EnumDatatype && enumType.parentStructOrNS);
-        const parent = Semantic.getNamespaceChainFromDatatype(sr, enumType.parentStructOrNS);
-        return `${parent.map((p) => p.pretty).join(".")}.${value.valueName}`;
+        const parent = Semantic.getNamespaceChainFromDatatype(sr, value.enumType);
+        const result = `${parent.map((p) => p.pretty).join(".")}.${value.valueName}`;
+        return result;
       } else {
         return `(${value.value} as ${primitiveToString(value.type)})`;
       }
@@ -10616,7 +10651,7 @@ export namespace Semantic {
         use.name +
         names
           .slice(1)
-          .map((n) => n.pretty)
+          .map((n) => n.mangled)
           .join(""),
       wasMangled: use.wasMangled || names.slice(1).some((n) => n.wasMangled),
     };
@@ -10871,9 +10906,10 @@ export namespace Semantic {
           };
         }
         return {
-          name: type.parentStructOrNS
-            ? mangleTypeDef(sr, type.parentStructOrNS).name
-            : "" + type.name.length + type.name,
+          name:
+            (type.parentStructOrNS ? mangleTypeDef(sr, type.parentStructOrNS).name : "") +
+            type.name.length +
+            type.name,
           wasMangled: true,
         };
       }

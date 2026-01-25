@@ -117,7 +117,7 @@ HEX_INTEGER_LITERAL
     : '0' [xX] HEX_DIGIT+
     ;
 
-ID: [a-zA-Z_][a-zA-Z_0-9]*;
+RAW_ID: [a-zA-Z_][a-zA-Z_0-9]*;
 
 REGEX_LITERAL
     : 'r"' REGEX_BODY '"' REGEX_FLAGS?
@@ -184,8 +184,9 @@ mode InterpolatedString;
 FSTRING_ESCAPE_OPENING_BRACES: '{{' -> type(FSTRING_GRAPHEME);
 FSTRING_ESCAPE_CLOSING_BRACES: '}}' -> type(FSTRING_GRAPHEME);
 FSTRING_ESCAPE_QUOTE: '\\"' -> type(FSTRING_GRAPHEME);
+FSTRING_ESCAPE: ESC -> type(FSTRING_GRAPHEME);
+
 FSTRING_EXPR_START: '{' -> type(LCURLY), pushMode(DEFAULT_MODE);
 FSTRING_END: '"' -> popMode;
-FSTRING_EXPR_END: '}' -> popMode;
-FSTRING_GRAPHEME: ~('{' | '"' | '\\');
 
+FSTRING_GRAPHEME: ~('{' | '"' | '\\');

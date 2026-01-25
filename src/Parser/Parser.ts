@@ -645,7 +645,7 @@ class ASTTransformer extends HazeParserVisitor<any> {
 
   visitDatatypeFragment = (ctx: DatatypeFragmentContext) => {
     return {
-      name: ctx.ID().getText(),
+      name: ctx.id().getText(),
       generics: ctx.genericLiteral().map((g) => this.visit(g) as ASTTypeUse | ASTLiteralExpr),
       sourceloc: this.loc(ctx),
     };
@@ -668,7 +668,7 @@ class ASTTransformer extends HazeParserVisitor<any> {
 
   visitTaggedUnionDatatype = (ctx: TaggedUnionDatatypeContext): ASTTaggedUnionDatatype => {
     const members = ctx.baseDatatype().map((d, index) => ({
-      tag: ctx.ID()[index].getText(),
+      tag: ctx.id()[index].getText(),
       type: this.visit(d),
     }));
     return {
@@ -709,7 +709,7 @@ class ASTTransformer extends HazeParserVisitor<any> {
       }
       return {
         datatype: datatype,
-        name: p.ID().getText(),
+        name: p.id().getText(),
         optional: Boolean(p.QUESTIONMARK()),
         sourceloc: this.loc(p),
       } satisfies ASTParam;
@@ -758,10 +758,10 @@ class ASTTransformer extends HazeParserVisitor<any> {
   };
 
   visitFunctionDefinition = (ctx: FunctionDefinitionContext): ASTFunctionDefinition => {
-    const names = ctx.ID().map((c) => c.getText());
+    const names = ctx.id().map((c) => c.getText());
     const params = this.visitParams(ctx.params());
     const generics = ctx
-      .ID()
+      .id()
       .slice(1)
       .map((g) => g.getText());
 
@@ -812,7 +812,7 @@ class ASTTransformer extends HazeParserVisitor<any> {
       extern: this.exlang(ctx),
       comptime: Boolean(ctx._comptime),
       mutability: this.mutability(ctx),
-      name: ctx.ID().getText(),
+      name: ctx.id().getText(),
       sourceloc: this.loc(ctx),
       datatype: (ctx.datatype() && this.visit(ctx.datatype()!)) || undefined,
       expr: (ctx.expr() && this.visit(ctx.expr()!)) || undefined,
@@ -823,7 +823,7 @@ class ASTTransformer extends HazeParserVisitor<any> {
     return [
       {
         variant: "StructMember",
-        name: ctx.ID().getText(),
+        name: ctx.id().getText(),
         type: this.visit(ctx.datatype()),
         mutability: ctx.variableMutabilitySpecifier()
           ? this.mutability(ctx)
@@ -836,8 +836,8 @@ class ASTTransformer extends HazeParserVisitor<any> {
 
   visitStructMethod = (ctx: StructMethodContext): ASTFunctionDefinition[] => {
     const genericNames = ctx._generic.map((c) => {
-      assert(c.text);
-      return c.text;
+      assert(c.getText());
+      return c.getText();
     });
     const params = this.visitParams(ctx.params());
 
@@ -931,7 +931,7 @@ class ASTTransformer extends HazeParserVisitor<any> {
   visitEnumContent = (ctx: EnumContentContext): ASTEnumValueDefinition => {
     return {
       variant: "EnumValue",
-      name: ctx.ID().getText(),
+      name: ctx.id().getText(),
       value: ctx.expr() ? this.visit(ctx.expr()!) : null,
       sourceloc: this.loc(ctx),
     };
@@ -945,7 +945,7 @@ class ASTTransformer extends HazeParserVisitor<any> {
       bitflag: Boolean(ctx.BITFLAG()),
       unscoped: Boolean(ctx.UNSCOPED()),
       extern: this.exlang(ctx),
-      name: ctx.ID().getText(),
+      name: ctx.id().getText(),
       noemit: Boolean(ctx._noemit),
       values: ctx._content.map((c) => this.visit(c)),
       sourceloc: this.loc(ctx),
@@ -958,9 +958,9 @@ class ASTTransformer extends HazeParserVisitor<any> {
   };
 
   visitStructDefinition = (ctx: StructDefinitionContext): ASTStructDefinition => {
-    const name = ctx.ID()[0].getText();
+    const name = ctx.id()[0].getText();
     const generics = ctx
-      .ID()
+      .id()
       .slice(1)
       .map((g) => g.getText());
     const content = ctx._content.map((c) => this.visit(c));
@@ -1068,7 +1068,7 @@ class ASTTransformer extends HazeParserVisitor<any> {
       variant: "VariableDefinitionStatement",
       mutability: this.mutability(ctx),
       comptime: Boolean(ctx._comptime),
-      name: ctx.ID().getText(),
+      name: ctx.id().getText(),
       sourceloc: this.loc(ctx),
       datatype: (ctx.datatype() && this.visit(ctx.datatype()!)) || undefined,
       expr: (ctx.expr() && this.visit(ctx.expr()!)) || undefined,
@@ -1085,8 +1085,8 @@ class ASTTransformer extends HazeParserVisitor<any> {
   visitForEachStatement = (ctx: ForEachStatementContext): ASTForEachStatement => {
     return {
       variant: "ForEachStatement",
-      loopVariable: ctx.ID()[0].getText(),
-      indexVariable: ctx.ID().length > 1 ? ctx.ID()[1].getText() : null,
+      loopVariable: ctx.id()[0].getText(),
+      indexVariable: ctx.id().length > 1 ? ctx.id()[1].getText() : null,
       value: this.visit(ctx.expr()),
       body: this.visit(ctx.rawScope()),
       sourceloc: this.loc(ctx),
@@ -1117,7 +1117,7 @@ class ASTTransformer extends HazeParserVisitor<any> {
     assert(ctx._letExpr);
     return {
       type: "let",
-      name: ctx.ID().getText(),
+      name: ctx.id().getText(),
       datatype: ctx.datatype() ? this.visit(ctx.datatype()!) : null,
       letExpr: this.visit(ctx._letExpr),
       guardExpr: ctx._guardExpr ? this.visit(ctx._guardExpr) : null,
@@ -1201,7 +1201,7 @@ class ASTTransformer extends HazeParserVisitor<any> {
     return {
       variant: "WhileStatement",
       letCondition: {
-        name: ctx.ID().getText(),
+        name: ctx.id().getText(),
         type: ctx.datatype() ? this.visit(ctx.datatype()!) : null,
         expr: this.visit(exprs[0]),
       },
@@ -1213,10 +1213,10 @@ class ASTTransformer extends HazeParserVisitor<any> {
 
   visitTypeAliasDirective = (ctx: TypeAliasDirectiveContext): ASTTypeAlias => {
     assert(ctx._name !== null && ctx._name !== undefined);
-    assert(ctx._name.text);
+    assert(ctx._name.getText());
 
     const generics = ctx
-      .ID()
+      .id()
       .slice(1)
       .map((g) => g.getText());
 
@@ -1230,7 +1230,7 @@ class ASTTransformer extends HazeParserVisitor<any> {
         sourceloc: this.loc(ctx), // TODO: Find a better sourceloc from the actual token, not the function
       })),
       pub: Boolean(ctx._pub),
-      name: ctx._name.text,
+      name: ctx._name.getText(),
       sourceloc: this.loc(ctx),
     };
   };
@@ -1311,7 +1311,7 @@ class ASTTransformer extends HazeParserVisitor<any> {
     return {
       variant: "ExprMemberAccess",
       expr: this.visit(ctx.expr()),
-      member: ctx.ID().getText(),
+      member: ctx.id().getText(),
       sourceloc: this.loc(ctx),
       generics: generics,
     };
@@ -1321,7 +1321,7 @@ class ASTTransformer extends HazeParserVisitor<any> {
     ctx: AggregateLiteralElementContext,
   ): ASTAggregateLiteralElement => {
     return {
-      key: ctx.ID() ? ctx.ID()!.getText() : null,
+      key: ctx.id() ? ctx.id()!.getText() : null,
       value: this.visit(ctx.expr()),
       sourceloc: this.loc(ctx),
     };
@@ -1404,7 +1404,7 @@ class ASTTransformer extends HazeParserVisitor<any> {
     return {
       variant: "SymbolValueExpr",
       generics: generics,
-      name: ctx.ID().getText(),
+      name: ctx.id().getText(),
       sourceloc: this.loc(ctx),
     };
   };
@@ -1517,18 +1517,18 @@ class ASTTransformer extends HazeParserVisitor<any> {
     if (ctx._path) {
       assert(ctx._path.text);
       return {
-        alias: ctx._alias?.text || null,
+        alias: ctx._alias?.getText() || null,
         mode: "path",
         name: JSON.parse(ctx._path.text),
         sourceloc: this.loc(ctx),
         variant: "ModuleImport",
       };
     } else {
-      assert(ctx._module_?.text);
+      assert(ctx._module_);
       return {
-        alias: ctx._alias?.text || null,
+        alias: ctx._alias?.getText() || null,
         mode: "module",
-        name: ctx._module_.text,
+        name: ctx._module_.getText(),
         sourceloc: this.loc(ctx),
         variant: "ModuleImport",
       };
@@ -1537,10 +1537,10 @@ class ASTTransformer extends HazeParserVisitor<any> {
 
   visitFromImportStatement = (ctx: FromImportStatementContext): ASTSymbolImport => {
     const symbols = ctx.importAs().map((imp) => {
-      assert(imp._symbol_?.text);
+      assert(imp._symbol_);
       return {
-        alias: imp._alias?.text || null,
-        symbol: imp._symbol_.text,
+        alias: imp._alias?.getText() || null,
+        symbol: imp._symbol_.getText(),
       };
     });
     if (ctx._path) {
@@ -1553,11 +1553,11 @@ class ASTTransformer extends HazeParserVisitor<any> {
         variant: "SymbolImport",
       };
     } else {
-      assert(ctx._module_?.text);
+      assert(ctx._module_);
       return {
         symbols: symbols,
         mode: "module",
-        name: ctx._module_.text,
+        name: ctx._module_.getText(),
         sourceloc: this.loc(ctx),
         variant: "SymbolImport",
       };
@@ -1569,7 +1569,7 @@ class ASTTransformer extends HazeParserVisitor<any> {
       variant: "AttemptExpr",
       attemptScope: this.visit(ctx.rawScope()[0]),
       elseScope: this.visit(ctx.rawScope()[1]),
-      elseVar: ctx.ID() ? ctx.ID()!.getText() : null,
+      elseVar: ctx.id() ? ctx.id()!.getText() : null,
       sourceloc: this.loc(ctx),
     };
   };
@@ -1593,7 +1593,7 @@ class ASTTransformer extends HazeParserVisitor<any> {
   };
 
   visitNamespaceDefinition = (ctx: NamespaceDefinitionContext): ASTNamespaceDefinition => {
-    const names = ctx.ID().map((c) => c.getText());
+    const names = ctx.id().map((c) => c.getText());
     const namesReversed = names.reverse();
 
     let currentNamespace: ASTNamespaceDefinition = {
@@ -1723,8 +1723,45 @@ class ASTTransformer extends HazeParserVisitor<any> {
     };
   };
 
+  decodeEscape(text: string): string {
+    switch (text) {
+      case "\\n":
+        return "\n";
+      case "\\t":
+        return "\t";
+      case "\\r":
+        return "\r";
+      case "\\b":
+        return "\b";
+      case "\\f":
+        return "\f";
+      case "\\\\":
+        return "\\";
+      case '\\"':
+        return '"';
+    }
+
+    if (text.startsWith("\\x")) {
+      return String.fromCharCode(parseInt(text.slice(2), 16));
+    }
+
+    if (text.startsWith("\\u")) {
+      return String.fromCharCode(parseInt(text.slice(2), 16));
+    }
+
+    if (text.startsWith("\\U")) {
+      return String.fromCodePoint(parseInt(text.slice(2), 16));
+    }
+
+    if (/^\\[0-7]+$/.test(text)) {
+      return String.fromCharCode(parseInt(text.slice(1), 8));
+    }
+
+    return text;
+  }
+
   visitFStringLiteralExpr = (ctx: FStringLiteralExprContext): ASTFStringExpr => {
-    const fragments = ctx
+    const perCharacterFragments = ctx
       .interpolatedString()
       .interpolatedStringFragment()
       .map((g) => {
@@ -1735,9 +1772,12 @@ class ASTTransformer extends HazeParserVisitor<any> {
           } as const;
         } else {
           assert(g.FSTRING_GRAPHEME());
+          let text = this.decodeEscape(g.FSTRING_GRAPHEME()!.getText());
+          if (text === "{{") text = "{";
+          if (text === "}}") text = "}";
           return {
             type: "text",
-            value: g.FSTRING_GRAPHEME()!.getText(),
+            value: text,
           } as const;
         }
       });
@@ -1747,7 +1787,7 @@ class ASTTransformer extends HazeParserVisitor<any> {
       | { type: "text"; value: string }
     )[];
 
-    for (const fragment of fragments) {
+    for (const fragment of perCharacterFragments) {
       if (fragment.type === "expr") {
         combinedFragments.push(fragment);
       } else {

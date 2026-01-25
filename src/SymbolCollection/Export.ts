@@ -169,6 +169,9 @@ export function ExportTypeDef(
         file += "noemit ";
       }
       file += "enum ";
+      if (typedef.unscoped) {
+        file += "unscoped ";
+      }
       file += typedef.name + " {\n";
       for (const value of typedef.values) {
         file += `${value.name} = ${Semantic.serializeExpr(sr, value.valueExpr)},\n`;
