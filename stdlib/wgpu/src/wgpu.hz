@@ -2,10 +2,6 @@
 export __c__("#include \"wgpu.h\"");
 __c__("#include \"wgpu_impl.c\"");
 
-export extern C noemit wgpu_init(glfwWindow: cptr) :: final;
-export extern C noemit wgpu_start(glfwWindow: cptr) :: final;
-export extern C noemit wgpu_end(glfwWindow: cptr) :: final;
-
 export struct Future {
     id: u64;
 
@@ -18,10 +14,170 @@ export struct Future {
 
 export struct Surface {
     handle: mut ffi.WGPUSurfaceImpl;
+
+    getCapabilities(adapter: mut Adapter): Result<SurfaceCapabilities, none> {
+        do unsafe {
+            let caps = ffi.WGPUSurfaceCapabilities {
+                nextInChain: none,
+                usages: 0,
+                formatCount: 0,
+                formats: none,
+                presentModeCount: 0,
+                presentModes: none,
+                alphaModeCount: 0,
+                alphaModes: none,
+            };
+            let status = ffi.wgpuSurfaceGetCapabilities(this.handle, adapter.handle, caps);
+            if status != ffi.WGPUStatus_Success {
+                return none;
+            }
+            return SurfaceCapabilities.fromFFI(caps);
+        }
+    }
+
+    configure(config: SurfaceConfiguration) {
+        ffi.wgpuSurfaceConfigure(this.handle, config.toFFI());
+    }
 }
 
-export struct Adapter {
-    handle: mut ffi.WGPUAdapterImpl;
+export struct SurfaceConfiguration {
+    device: mut Device;
+    format: TextureFormat = TextureFormat.Undefined;
+    usage: TextureUsage = TextureUsage.None;
+    width: u32 = 0;
+    height: u32 = 0;
+    viewFormats: []TextureFormat = {};
+    alphaMode: CompositeAlphaMode = CompositeAlphaMode.Auto;
+    presentMode: PresentMode = PresentMode.Undefined;
+
+    static fromFFI(conf: ffi.WGPUSurfaceConfiguration) {
+        let c = SurfaceConfiguration {
+            device: Device { handle: conf.device },
+            format: TextureFormatFromFFI(conf.format),
+            usage: textureUsageFromFFI(conf.usage),
+            width: conf.width,
+            height: conf.height,
+            viewFormats: {},
+            alphaMode: CompositeAlphaModeFromFFI(conf.alphaMode),
+            presentMode: PresentModeFromFFI(conf.presentMode),
+        };
+
+        for (let i = 0; i < conf.viewFormatCount; i++) {
+            do unsafe {
+                let e: TextureFormat = uninitialized;
+                __c__("e = (int)((WGPUTextureFormat*)conf->viewFormats)[i];");
+                c.viewFormats.push(e);
+            }
+        }
+
+        return c;
+    }
+
+    toFFI() {
+        let c = ffi.WGPUSurfaceConfiguration {
+            nextInChain: none,
+            device: this.device.handle,
+            format: TextureFormatToFFI(this.format),
+            usage: textureUsageToFFI(this.usage),
+            width: this.width,
+            height: this.height,
+            viewFormatCount: 0,
+            viewFormats: none,
+            alphaMode: CompositeAlphaModeToFFI(this.alphaMode),
+            presentMode: PresentModeToFFI(this.presentMode),
+        }
+        __c__("c->viewFormatCount = hzstd_dynamic_array_size(this->viewFormats);");
+        __c__("c->viewFormats = hzstd_dynamic_array_raw_buffer(this->viewFormats);");
+        return c;
+    }
+}
+
+export enum bitflag TextureUsage {
+    None = 0,
+    CopySrc = 1,
+    CopyDst = 2,
+    TextureBinding = 4,
+    StorageBinding = 8,
+    RenderAttachment = 16,
+}
+
+textureUsageFromFFI(u: ffi.WGPUTextureUsage) {
+    do unsafe {
+        let usage: TextureUsage = uninitialized; // This is a bitflag
+        __c__("usage = (int)u;");
+        return usage;
+    }
+}
+
+textureUsageToFFI(u: TextureUsage) {
+    do unsafe {
+        let usage: ffi.WGPUTextureUsage = uninitialized; // This is a bitflag
+        __c__("usage = (int)u;");
+        return usage;
+    }
+}
+
+export struct SurfaceCapabilities {
+    usages: TextureUsage = TextureUsage.None;
+    formats: []TextureFormat = {};
+    presentModes: []PresentMode = {};
+    alphaModes: []CompositeAlphaMode = {};
+
+    static fromFFI(caps: ffi.WGPUSurfaceCapabilities) {
+        do unsafe {
+            let c = SurfaceCapabilities {
+                usages: textureUsageFromFFI(caps.usages),
+            };
+
+            for (let i = 0; i < caps.formatCount; i++) {
+                do unsafe {
+                    let e: TextureFormat = uninitialized;
+                    __c__("e = (int)((WGPUTextureFormat*)caps->formats)[i];");
+                    c.formats.push(e);
+                }
+            }
+
+            for (let i = 0; i < caps.presentModeCount; i++) {
+                do unsafe {
+                    let p: PresentMode = uninitialized;
+                    __c__("p = (int)((WGPUPresentMode*)caps->presentModes)[i];");
+                    c.presentModes.push(p);
+                }
+            }
+
+            for (let i = 0; i < caps.alphaModeCount; i++) {
+                do unsafe {
+                    let a: CompositeAlphaMode = uninitialized;
+                    __c__("a = (int)((WGPUCompositeAlphaMode*)caps->alphaModes)[i];");
+                    c.alphaModes.push(a);
+                }
+            }
+
+            return c;
+        }
+    }
+
+    toFFI() {
+        do unsafe {
+            let caps = ffi.WGPUSurfaceCapabilities {
+                nextInChain: none,
+                usages: textureUsageToFFI(this.usages),
+                formatCount: 0,
+                formats: none,
+                presentModeCount: 0,
+                presentModes: none,
+                alphaModeCount: 0,
+                alphaModes: none,
+            };
+            __c__("caps->formatCount = hzstd_dynamic_array_size(this->formats);");
+            __c__("caps->formats = hzstd_dynamic_array_raw_buffer(this->formats);");
+            __c__("caps->presentModeCount = hzstd_dynamic_array_size(this->presentModes);");
+            __c__("caps->presentModes = hzstd_dynamic_array_raw_buffer(this->presentModes);");
+            __c__("caps->alphaModeCount = hzstd_dynamic_array_size(this->alphaModes);");
+            __c__("caps->alphaModes = hzstd_dynamic_array_raw_buffer(this->alphaModes);");
+            return caps;
+        }
+    }
 }
 
 export struct RequestAdapterOptions {
@@ -36,18 +192,13 @@ export type RequestAdapterCallback = (status: RequestAdapterStatus, adapter: mut
 export struct RequestAdapterCallbackInfo {
     callback: RequestAdapterCallback;
     mode: CallbackMode = CallbackMode.WaitAnyOnly;
-    userdata1: cptr = none;
-    userdata2: cptr = none;
 }
 
 requestAdapterCallbackProxy(status: ffi.WGPURequestAdapterStatus, adapter: mut ffi.WGPUAdapterImpl, message: inline ffi.WGPUStringView, userdata1: cptr, userdata2: cptr): void :: final {
     do unsafe {
         let callback: RequestAdapterCallback = uninitialized;
         __c__("callback = (void*)userdata1;");
-        let msg = "";
-        __c__("msg.data = message.data;");
-        __c__("msg.length = message.length;");
-        callback(RequestAdapterStatusFromFFI(status), Adapter { handle: adapter }, msg);
+        callback(RequestAdapterStatusFromFFI(status), Adapter { handle: adapter }, viewToStr(message));
     }
 }
 
@@ -92,24 +243,222 @@ export struct Instance {
     }
 }
 
+export struct Limits {
+    maxTextureDimension1D: u32 = 0;
+    maxTextureDimension2D: u32 = 0;
+    maxTextureDimension3D: u32 = 0;
+    maxTextureArrayLayers: u32 = 0;
+    maxBindGroups: u32 = 0;
+    maxBindGroupsPlusVertexBuffers: u32 = 0;
+    maxBindingsPerBindGroup: u32 = 0;
+    maxDynamicUniformBuffersPerPipelineLayout: u32 = 0;
+    maxDynamicStorageBuffersPerPipelineLayout: u32 = 0;
+    maxSampledTexturesPerShaderStage: u32 = 0;
+    maxSamplersPerShaderStage: u32 = 0;
+    maxStorageBuffersPerShaderStage: u32 = 0;
+    maxStorageTexturesPerShaderStage: u32 = 0;
+    maxUniformBuffersPerShaderStage: u32 = 0;
+    maxUniformBufferBindingSize: u64 = 0;
+    maxStorageBufferBindingSize: u64 = 0;
+    minUniformBufferOffsetAlignment: u32 = 0;
+    minStorageBufferOffsetAlignment: u32 = 0;
+    maxVertexBuffers: u32 = 0;
+    maxBufferSize: u64 = 0;
+    maxVertexAttributes: u32 = 0;
+    maxVertexBufferArrayStride: u32 = 0;
+    maxInterStageShaderVariables: u32 = 0;
+    maxColorAttachments: u32 = 0;
+    maxColorAttachmentBytesPerSample: u32 = 0;
+    maxComputeWorkgroupStorageSize: u32 = 0;
+    maxComputeInvocationsPerWorkgroup: u32 = 0;
+    maxComputeWorkgroupSizeX: u32 = 0;
+    maxComputeWorkgroupSizeY: u32 = 0;
+    maxComputeWorkgroupSizeZ: u32 = 0;
+    maxComputeWorkgroupsPerDimension: u32 = 0;
+
+    toFFI() {
+        return ffi.WGPULimits {
+            nextInChain: none,
+            maxTextureDimension1D: this.maxTextureDimension1D,
+            maxTextureDimension2D: this.maxTextureDimension2D,
+            maxTextureDimension3D: this.maxTextureDimension3D,
+            maxTextureArrayLayers: this.maxTextureArrayLayers,
+            maxBindGroups: this.maxBindGroups,
+            maxBindGroupsPlusVertexBuffers: this.maxBindGroupsPlusVertexBuffers,
+            maxBindingsPerBindGroup: this.maxBindingsPerBindGroup,
+            maxDynamicUniformBuffersPerPipelineLayout: this.maxDynamicUniformBuffersPerPipelineLayout,
+            maxDynamicStorageBuffersPerPipelineLayout: this.maxDynamicStorageBuffersPerPipelineLayout,
+            maxSampledTexturesPerShaderStage: this.maxSampledTexturesPerShaderStage,
+            maxSamplersPerShaderStage: this.maxSamplersPerShaderStage,
+            maxStorageBuffersPerShaderStage: this.maxStorageBuffersPerShaderStage,
+            maxStorageTexturesPerShaderStage: this.maxStorageTexturesPerShaderStage,
+            maxUniformBuffersPerShaderStage: this.maxUniformBuffersPerShaderStage,
+            maxUniformBufferBindingSize: this.maxUniformBufferBindingSize,
+            maxStorageBufferBindingSize: this.maxStorageBufferBindingSize,
+            minUniformBufferOffsetAlignment: this.minUniformBufferOffsetAlignment,
+            minStorageBufferOffsetAlignment: this.minStorageBufferOffsetAlignment,
+            maxVertexBuffers: this.maxVertexBuffers,
+            maxBufferSize: this.maxBufferSize,
+            maxVertexAttributes: this.maxVertexAttributes,
+            maxVertexBufferArrayStride: this.maxVertexBufferArrayStride,
+            maxInterStageShaderVariables: this.maxInterStageShaderVariables,
+            maxColorAttachments: this.maxColorAttachments,
+            maxColorAttachmentBytesPerSample: this.maxColorAttachmentBytesPerSample,
+            maxComputeWorkgroupStorageSize: this.maxComputeWorkgroupStorageSize,
+            maxComputeInvocationsPerWorkgroup: this.maxComputeInvocationsPerWorkgroup,
+            maxComputeWorkgroupSizeX: this.maxComputeWorkgroupSizeX,
+            maxComputeWorkgroupSizeY: this.maxComputeWorkgroupSizeY,
+            maxComputeWorkgroupSizeZ: this.maxComputeWorkgroupSizeZ,
+            maxComputeWorkgroupsPerDimension: this.maxComputeWorkgroupsPerDimension,
+        };
+    }
+}
+
+export struct QueueDescriptor {
+    label: str = "";
+}
+
+export struct DeviceDescriptor {
+    label: str = "";
+    requiredFeatures: []FeatureName = []FeatureName {};
+    requiredLimits: Limits | none = none;
+    defaultQueue: QueueDescriptor = default;
+    // deviceLostCallbackInfo: DeviceLostCallbackInfo | none;
+    // uncapturedErrorCallbackInfo: inline WGPUUncapturedErrorCallbackInfo;
+}
+
+strToView(text: str) {
+    do unsafe {
+        let view: inline ffi.WGPUStringView = uninitialized;
+        __c__("view.data = text.data;");
+        __c__("view.length = text.length;");
+        return view;
+    }
+}
+
+viewToStr(view: inline ffi.WGPUStringView) {
+    do unsafe {
+        let text = "";
+        __c__("text = hzstd_str_dup(HZSTD_STRING(view.data, view.length));");
+        return text;
+    }
+}
+
+export type RequestDeviceCallback = (status: RequestDeviceStatus, device: mut Device, message: str) => void :: final;
+export struct RequestDeviceCallbackInfo {
+    mode: CallbackMode = CallbackMode.WaitAnyOnly;
+    callback: RequestDeviceCallback;
+}
+
+requestDeviceCallbackProxy(status: ffi.WGPURequestDeviceStatus, device: mut ffi.WGPUDeviceImpl, message: inline ffi.WGPUStringView, userdata1: cptr, userdata2: cptr): void :: final {
+    do unsafe {
+        let callback: RequestDeviceCallback = uninitialized;
+        __c__("callback = (void*)userdata1;");
+        callback(RequestDeviceStatusFromFFI(status), Device { handle: device }, viewToStr(message));
+    }
+}
+
+
+export struct Adapter {
+    handle: mut ffi.WGPUAdapterImpl;
+
+    requestDevice(descriptor: DeviceDescriptor | none, callbackInfo: RequestDeviceCallbackInfo) {
+        let ffiDescriptor: ffi.WGPUDeviceDescriptor | none = none;
+        if descriptor {
+            let requiredFeatureCount = 0 as usize;
+            let requiredFeatures = none as cptr;
+
+            let features = descriptor.requiredFeatures;
+            __c__("requiredFeatureCount = hzstd_dynamic_array_size(features);");
+            __c__("requiredFeatures = hzstd_dynamic_array_raw_buffer(features);");
+
+            let limits = none as ffi.WGPULimits | none;
+            let requiredLimits = descriptor.requiredLimits;
+            if requiredLimits {
+                limits = requiredLimits.toFFI();
+            }
+
+            do unsafe {
+                let nullCallback = none as cptr;
+                let nullCallback2: ffi.WGPUUncapturedErrorCallback = uninitialized;
+                __c__("nullCallback2 = NULL;");
+
+                let a: inline ffi.WGPUDeviceLostCallbackInfo = uninitialized;
+                a.nextInChain = none;
+                __c__("a.callback = NULL;");
+                a.mode = ffi.WGPUCallbackMode_WaitAnyOnly;
+                a.userdata1 = none;
+                a.userdata2 = none;
+
+                let b: inline ffi.WGPUUncapturedErrorCallbackInfo = uninitialized;
+                b.nextInChain = none;
+                __c__("a.callback = NULL;");
+                b.userdata1 = none;
+                b.userdata2 = none;
+
+                ffiDescriptor = ffi.WGPUDeviceDescriptor {
+                    nextInChain: none,
+                    label: strToView(descriptor.label),
+                    requiredFeatureCount: requiredFeatureCount,
+                    requiredFeatures: requiredFeatures,
+                    requiredLimits: limits,
+                    defaultQueue: {
+                        nextInChain: none,
+                        label: strToView(descriptor.defaultQueue.label),
+                    },
+                    deviceLostCallbackInfo: a,
+                    uncapturedErrorCallbackInfo: b,
+                }
+            }
+        }
+
+        let userdata1 = none as cptr;
+        __c__("userdata1 = callbackInfo->callback;");
+
+        let ffiCallbackInfo = inline ffi.WGPURequestDeviceCallbackInfo {
+            nextInChain: none,
+            mode: CallbackModeToFFI(callbackInfo.mode),
+            callback: requestDeviceCallbackProxy,
+            userdata1: userdata1,
+            userdata2: none,
+        };
+
+        return Future(
+            ffi.wgpuAdapterRequestDevice(this.handle, ffiDescriptor, ffiCallbackInfo)
+        );
+    }
+}
+
+export struct Device {
+    handle: mut ffi.WGPUDeviceImpl;
+
+    getQueue(): Result<mut Queue, none> {
+        const queue = ffi.wgpuDeviceGetQueue(this.handle);
+        if queue {
+            return Queue {
+                handle: queue,
+            };
+        }
+    }
+}
+
+export struct Queue {
+    handle: mut ffi.WGPUQueueImpl;
+}
+
 export createInstance() { 
-    let instance_desc = ffi.WGPUInstanceDescriptor {
+    let instance = ffi.wgpuCreateInstance({
         nextInChain: none,
         features: {
             nextInChain: none,
             timedWaitAnyEnable: false,
             timedWaitAnyMaxCount: 0,
         }
-    };
-    let instance = ffi.wgpuCreateInstance(instance_desc);
+    });
     if instance {
         return Instance {
             handle: instance,
         };
     }
     return none;
-}
-
-export init(handle: cptr) {
-    wgpu_init(handle);
 }

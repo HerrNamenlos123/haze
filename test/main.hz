@@ -5,8 +5,12 @@ import gl
 import wgpu
 import glfw_wgpu
 
-let g_adapter = none as wgpu.Adapter | none;
+let g_adapter = none as mut wgpu.Adapter | none;
 let g_adapterReady = false;
+
+export extern C noemit wgpu_init(glfwWindow: cptr) :: final;
+export extern C wgpu_start(glfwWindow: cptr, device: wgpu.ffi.WGPUDeviceImpl, surface: wgpu.ffi.WGPUSurfaceImpl, queue: wgpu.ffi.WGPUQueueImpl) :: final;
+export extern C wgpu_end(glfwWindow: cptr) :: final;
 
 adapterRequestCallback(status: wgpu.RequestAdapterStatus, adapter: mut wgpu.Adapter, message: str): void {
   if (status == wgpu.RequestAdapterStatus.Success) {
@@ -20,6 +24,23 @@ adapterRequestCallback(status: wgpu.RequestAdapterStatus, adapter: mut wgpu.Adap
   }
 }
 
+let g_device = none as mut wgpu.Device | none;
+let g_deviceReady = false;
+
+deviceRequestCallback(status: wgpu.RequestDeviceStatus, device: mut wgpu.Device, message: str): void {
+  if (status == wgpu.RequestDeviceStatus.Success) {
+    g_device = device;
+    g_deviceReady = true;
+    fmt.println("Device request successful");
+  }
+  else {
+    g_deviceReady = true;
+    fmt.println("Device request failed");
+  }
+}
+
+let g_queue = none as mut wgpu.Queue | none;
+
 main(): int {
     attempt {
         if !glfw.init() { raise "GLFW init failed"; }
@@ -29,7 +50,6 @@ main(): int {
             noApi: true,
         });
         if !window { raise "Window creation failed"; }
-        // wgpu.init(window.handle);
 
         let instance = wgpu.createInstance();
         if !instance { raise "WGPU Instance creation failed"; }
@@ -37,29 +57,49 @@ main(): int {
         let surface = glfw_wgpu.createWindowWGPUSurface(instance, window);
         if !surface { raise "WGPU Surface creation failed"; }
 
-        instance.requestAdapter({
-            // All unspecified fields get their default value
-        }, { 
-            callback: adapterRequestCallback 
-            // All unspecified fields get their default value
-        });
+        instance.requestAdapter({}, { callback: adapterRequestCallback });
 
-        let timeout = 1000;
+        let timeout = 100;
         while !g_adapterReady && timeout > 0 {
-            for (let i = 0; i < 10000; i++) {
-            }
+            time.sleep(0.1);
             timeout--;
         }
+        if (!g_adapter) { raise "Failed to get adapter after timeout"; }
 
-        if (!g_adapter) {
-            fmt.println("Failed to get adapter after timeout");
-            return 0;
+        g_adapter.requestDevice({}, { callback: deviceRequestCallback });
+
+        timeout = 100;
+        while !g_deviceReady && timeout > 0 {
+            time.sleep(0.1);
+            timeout--;
         }
+        if (!g_device) { raise "Failed to get device after timeout"; }
+
+        g_queue = g_device.getQueue()?!;
+        if (!g_queue) { raise "Failed to get queue"; }
+
+        let caps = surface.getCapabilities(g_adapter);
+        if (!caps) { raise "Failed to get surface capabilities"; }
+
+        let surfaceFormat = caps.formats[0];
+
+        let size = window.getFramebufferSize();
+        fmt.println("Format", size.x, size.y);
+
+        surface.configure({
+            device: g_device,
+            format: surfaceFormat,
+            usage: wgpu.TextureUsage.RenderAttachment,
+            width: size.x as u32,
+            height: size.y as u32,
+            presentMode: wgpu.PresentMode.Fifo,
+            alphaMode: caps.alphaModes[0],
+        });
 
         while !window.shouldClose() {
             glfw.pollEvents();
-            // wgpu.wgpu_start(window.handle);
-            // wgpu.wgpu_end(window.handle);
+            wgpu_start(window.handle, g_device.handle, surface.handle, g_queue.handle);
+            wgpu_end(window.handle);
         }
 
         window.destroy();
@@ -68,7 +108,15 @@ main(): int {
         return 0;
     }
     else e {
-        fmt.println("Application failed: ", e);
+        if e is str {
+            fmt.println("Application failed: ", e);
+        }
+        else if e is none {
+            fmt.println("Application failed: ", e);
+        }
+        else {
+            fmt.println("Application failed: ", e);
+        }
         return 1;
     }
 

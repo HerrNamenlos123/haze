@@ -8,10 +8,12 @@
 
 typedef struct hzstd_allocator_t {
   void* (*allocate)(void* ctx, size_t size);
+  void* (*allocateAtomic)(void* ctx, size_t size);
   void* ctx;
 } hzstd_allocator_t;
 
 void* hzstd_heap_allocate(size_t size);
+void* hzstd_heap_allocate_atomic(size_t size);
 void* hzstd_heap_realloc(void* buffer, size_t size);
 void hzstd_memzero(void* target, size_t size);
 void hzstd_init_gc();

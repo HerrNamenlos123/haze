@@ -2940,6 +2940,7 @@ export class SemanticElaborator {
       {
         targetScopeId: scopeId,
         sourceScopeId: sourceScopeId,
+        unsafe: false,
       },
       args.lastExprIsEmit,
     );
@@ -2956,6 +2957,7 @@ export class SemanticElaborator {
     args: {
       sourceScopeId: Collect.ScopeId;
       targetScopeId: Semantic.BlockScopeId;
+      unsafe: boolean;
     },
     lastExprIsEmit: boolean,
   ) {
@@ -3001,7 +3003,7 @@ export class SemanticElaborator {
             statementId,
           } = this.elaborateStatement(sId, {
             gonnaInstantiateStructWithType: gonnaInstantiateStructWithType,
-            unsafe: scope.unsafe,
+            unsafe: scope.unsafe || args.unsafe,
           });
           if (!statementId) return;
 
@@ -8207,6 +8209,7 @@ export class SemanticBuilder {
       if (
         scope.variant === Collect.ENode.BlockScope ||
         scope.variant === Collect.ENode.NamespaceScope ||
+        scope.variant === Collect.ENode.StructLexicalScope ||
         scope.variant === Collect.ENode.FunctionScope
       ) {
         scopeId = scope.parentScope;

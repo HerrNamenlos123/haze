@@ -80,6 +80,7 @@ typedef struct {
 
 hzstd_cstr_t hzstd_cstr_from_str(hzstd_allocator_t allocator, hzstd_str_t data);
 
+hzstd_str_t hzstd_str_dup(hzstd_str_t data);
 hzstd_str_t hzstd_cstr_dup(hzstd_cstr_t data);
 hzstd_str_t hzstd_str_from_cstr_ref(hzstd_cstr_t data);
 hzstd_str_t hzstd_str_from_cstr_dup(hzstd_allocator_t allocator, hzstd_cstr_t data);

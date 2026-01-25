@@ -23,6 +23,15 @@ void* hzstd_heap_allocate(size_t size)
   return ptr;
 }
 
+void* hzstd_heap_allocate_atomic(size_t size)
+{
+  void* ptr = GC_malloc_atomic(size);
+  if (!ptr) {
+    HZSTD_PANIC_FMT("System Out Of Memory while allocating %zu bytes", size);
+  }
+  return ptr;
+}
+
 void* hzstd_heap_realloc(void* buffer, size_t size)
 {
   void* ptr = GC_realloc(buffer, size);
@@ -86,11 +95,13 @@ void* hzstd_arena_allocate(hzstd_arena_t* arena, size_t size)
 }
 
 static void* heap_allocator_impl(void* ctx, size_t size) { return hzstd_heap_allocate(size); }
+static void* heap_allocator_atomic_impl(void* ctx, size_t size) { return hzstd_heap_allocate_atomic(size); }
 
 hzstd_allocator_t hzstd_make_heap_allocator()
 {
   return (hzstd_allocator_t) {
     .allocate = heap_allocator_impl,
+    .allocateAtomic = heap_allocator_atomic_impl,
     .ctx = NULL,
   };
 }
@@ -99,8 +110,11 @@ static void* arena_allocator_impl(void* ctx, size_t size) { return hzstd_arena_a
 
 hzstd_allocator_t hzstd_make_arena_allocator()
 {
+  // Arenas have no concept of atomic allocations since the entire arena is always scanned, so we just
+  // use the same allocation for both atomic and non-atomic.
   return (hzstd_allocator_t) {
     .allocate = arena_allocator_impl,
+    .allocateAtomic = arena_allocator_impl,
     .ctx = hzstd_arena_create(),
   };
 }

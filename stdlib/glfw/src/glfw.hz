@@ -36,12 +36,7 @@ namespace ffi {
     extern C glfwGetTime(): f64 :: final;
     // extern C glfwMakeContextCurrent(w: GLFWwindow*);
     extern C glfwGetProcAddress(procname: ccstr): (() => void) :: final;
-
-    // extern C glfwCreateWindowWGPUSurface(instance: inline WGPUInstance, w: GLFWwindow): inline WGPUSurface :: final;
-
-    // export extern C glfwCreateWindowWGPUSurface_impl(instance: inline WGPUInstance, w: GLFWwindow) {
-    //     return glfwCreateWindowWGPUSurface(instance, w);
-    // }
+    extern C noemit glfwGetFramebufferSize(w: GLFWwindow, width: cptr /* int* aka i32* */, height: cptr /* int* aka i32* */) :: final;
 
     export init(): bool {
         return glfwInit() != 0;
@@ -134,6 +129,17 @@ export struct Window {
             ffi.makeContextCurrent(this.handle);
             ffi.swapInterval(interval as i32);
         }
+    }
+
+    getFramebufferSize() {
+        let width = 0 as i32;
+        let height = 0 as i32;
+        let w = none as cptr;
+        let h = none as cptr;
+        __c__("w = &width;");
+        __c__("h = &height;");
+        ffi.glfwGetFramebufferSize(this.handle, w, h);
+        return Vec2(width, height);
     }
 
     getProcAddress(): (name: ccstr) => cptr {

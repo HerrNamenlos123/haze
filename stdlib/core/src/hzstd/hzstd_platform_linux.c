@@ -441,3 +441,11 @@ int hzstd_spawn_process(hzstd_str_t exe,
 
   return 0;
 }
+
+void os_sleep_ns(uint64_t ns)
+{
+  struct timespec ts;
+  ts.tv_sec = ns / 1000000000;
+  ts.tv_nsec = ns % 1000000000;
+  nanosleep(&ts, NULL);
+}

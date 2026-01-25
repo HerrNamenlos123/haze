@@ -1130,6 +1130,28 @@ export namespace Conversion {
         sourceloc,
       );
     }
+
+    if (
+      ((Conversion.isFloat(sr, fromTypeInstance.type) &&
+        Conversion.isIntegerById(sr, toInstance.type)) ||
+        (Conversion.isIntegerById(sr, fromTypeInstance.type) &&
+          Conversion.isFloat(sr, toInstance.type))) &&
+      mode === Mode.Explicit
+    ) {
+      return ok(
+        Semantic.addExpr(sr, {
+          variant: Semantic.ENode.ExplicitCastExpr,
+          instanceIds: fromExpr.instanceIds,
+          expr: fromExprId,
+          type: toId,
+          sourceloc: sourceloc,
+          isTemporary: fromExpr.isTemporary,
+          flow: flow,
+          writes: writes,
+        })[1],
+      );
+    }
+
     if (
       Conversion.isFloat(sr, fromTypeInstance.type) &&
       Conversion.isIntegerById(sr, toInstance.type)
@@ -1148,7 +1170,7 @@ export namespace Conversion {
       // source.constrainFromConstraints(constraints, fromExprId);
 
       throw new CompilerError(
-        `Conversions from Integers to Floating points are not implemented yet, as it requires value narrowing on floating point numbers instead of bigint...`,
+        `Conversions from Integers to Floating points are not implemented yet, as it requires value narrowing on floating point numbers instead of bigint.... Use an explicit cast to override.`,
         sourceloc,
       );
 

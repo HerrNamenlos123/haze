@@ -1399,7 +1399,10 @@ class CodeGenerator {
         const typeUse = this.lr.typeUseNodes.get(targetExpr.type);
         const typeDef = this.lr.typeDefNodes.get(typeUse.type);
 
-        if (typeDef.variant === Lowered.ENode.PrimitiveDatatype) {
+        if (
+          typeDef.variant === Lowered.ENode.PrimitiveDatatype ||
+          typeDef.variant === Lowered.ENode.EnumDatatype
+        ) {
           outWriter.write("(" + target.out.get() + " = " + value.out.get() + ")");
         } else if (
           typeDef.variant === Lowered.ENode.StructDatatype ||

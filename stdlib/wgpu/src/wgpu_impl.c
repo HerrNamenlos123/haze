@@ -9,17 +9,17 @@ void glfwGetFramebufferSize(GLFWwindow* window, int* width, int* height);
 WGPUSurface glfwCreateWindowWGPUSurface(WGPUInstance instance, GLFWwindow* window);
 
 // Global WebGPU state
-static WGPUInstance g_instance = NULL;
-static WGPUAdapter g_adapter = NULL;
-static WGPUDevice g_device = NULL;
+// static WGPUInstance g_instance = NULL;
+// static WGPUAdapter g_adapter = NULL;
+// static WGPUDevice g_device = NULL;
 static WGPUQueue g_queue = NULL;
 static WGPUSurface g_surface = NULL;
 static WGPURenderPassEncoder g_pass = NULL;
 static WGPUCommandEncoder g_encoder = NULL;
 
 // Synchronization flags for async operations
-static bool g_adapter_ready = false;
-static bool g_device_ready = false;
+// static bool g_adapter_ready = false;
+// static bool g_device_ready = false;
 
 // Adapter callback
 // static void adapter_request_callback(WGPURequestAdapterStatus status,
@@ -40,22 +40,22 @@ static bool g_device_ready = false;
 // }
 
 // Device callback
-static void device_request_callback(WGPURequestDeviceStatus status,
-                                    WGPUDevice device,
-                                    WGPUStringView message,
-                                    void* user_data,
-                                    void* reserved1)
-{
-  if (status == WGPURequestDeviceStatus_Success) {
-    g_device = device;
-    g_device_ready = true;
-    printf("Device request successful\n");
-  }
-  else {
-    fprintf(stderr, "Device request failed\n");
-    g_device_ready = true;
-  }
-}
+// static void device_request_callback(WGPURequestDeviceStatus status,
+//                                     WGPUDevice device,
+//                                     WGPUStringView message,
+//                                     void* user_data,
+//                                     void* reserved1)
+// {
+//   if (status == WGPURequestDeviceStatus_Success) {
+//     g_device = device;
+//     g_device_ready = true;
+//     printf("Device request successful\n");
+//   }
+//   else {
+//     fprintf(stderr, "Device request failed\n");
+//     g_device_ready = true;
+//   }
+// }
 
 void wgpu_init(GLFWwindow* window)
 {
@@ -98,70 +98,67 @@ void wgpu_init(GLFWwindow* window)
   //   fprintf(stderr, "Failed to get adapter after timeout\n");
   //   return;
   // }
-  // << We are here
 
-  // Request device asynchronously
-  WGPUDeviceDescriptor device_desc = { 0 };
-  WGPURequestDeviceCallbackInfo device_callback = {
-    .callback = device_request_callback,
-  };
-  wgpuAdapterRequestDevice(g_adapter, &device_desc, device_callback);
+  // // Request device asynchronously
+  // WGPUDeviceDescriptor device_desc = { 0 };
+  // WGPURequestDeviceCallbackInfo device_callback = {
+  //   .callback = device_request_callback,
+  // };
+  // wgpuAdapterRequestDevice(g_adapter, &device_desc, device_callback);
 
-  // Wait for device to be ready
-  int timeout = 1000; // 1 second timeout
-  while (!g_device_ready && timeout > 0) {
-    // Simple busy loop with minimal sleep
-    for (int i = 0; i < 10000; i++) {
-      // Spin
-    }
-    timeout--;
-  }
+  // // Wait for device to be ready
+  // int timeout = 1000; // 1 second timeout
+  // while (!g_device_ready && timeout > 0) {
+  //   // Simple busy loop with minimal sleep
+  //   for (int i = 0; i < 10000; i++) {
+  //     // Spin
+  //   }
+  //   timeout--;
+  // }
 
-  if (!g_device) {
-    fprintf(stderr, "Failed to get device after timeout\n");
-    return;
-  }
+  // if (!g_device) {
+  //   fprintf(stderr, "Failed to get device after timeout\n");
+  //   return;
+  // }
 
   // Get queue
-  g_queue = wgpuDeviceGetQueue(g_device);
-  if (!g_queue) {
-    fprintf(stderr, "Failed to get queue\n");
-    return;
-  }
+  // g_queue = wgpuDeviceGetQueue(g_device);
+  // if (!g_queue) {
+  //   fprintf(stderr, "Failed to get queue\n");
+  //   return;
+  // }
 
-  WGPUSurfaceCapabilities caps = { 0 };
-  wgpuSurfaceGetCapabilities(g_surface, g_adapter, &caps);
+  // WGPUSurfaceCapabilities caps = { 0 };
+  // wgpuSurfaceGetCapabilities(g_surface, g_adapter, &caps);
 
-  WGPUTextureFormat surface_format = caps.formats[0];
+  // WGPUTextureFormat surface_format = caps.formats[0];
 
-  int width, height;
-  glfwGetFramebufferSize(window, &width, &height);
+  // int width, height;
+  // glfwGetFramebufferSize(window, &width, &height);
 
-  WGPUSurfaceConfiguration surface_config = {
-    .device = g_device,
-    .format = surface_format,
-    .usage = WGPUTextureUsage_RenderAttachment,
-    .width = width,
-    .height = height,
-    .presentMode = WGPUPresentMode_Fifo,
-    .alphaMode = caps.alphaModes[0],
-  };
+  // WGPUSurfaceConfiguration surface_config = {
+  //   .device = g_device,
+  //   .format = surface_format,
+  //   .usage = WGPUTextureUsage_RenderAttachment,
+  //   .width = width,
+  //   .height = height,
+  //   .presentMode = WGPUPresentMode_Fifo,
+  //   .alphaMode = caps.alphaModes[0],
+  // };
 
-  wgpuSurfaceConfigure(g_surface, &surface_config);
+  // wgpuSurfaceConfigure(g_surface, &surface_config);
 
-  printf("WebGPU initialized successfully\n");
+  // printf("WebGPU initialized successfully\n");
 }
 
-void wgpu_start(GLFWwindow* window)
+void wgpu_start(GLFWwindow* window, WGPUDevice device, WGPUSurface surface, WGPUQueue queue)
 {
-  if (!g_device || !g_surface) {
-    fprintf(stderr, "WebGPU not initialized\n");
-    return;
-  }
+  g_surface = surface;
+  g_queue = queue;
 
   // Get current surface texture
   WGPUSurfaceTexture surface_texture = { 0 };
-  wgpuSurfaceGetCurrentTexture(g_surface, &surface_texture);
+  wgpuSurfaceGetCurrentTexture(surface, &surface_texture);
 
   if (surface_texture.texture == NULL) {
     fprintf(stderr, "Failed to get surface texture\n");
@@ -177,7 +174,7 @@ void wgpu_start(GLFWwindow* window)
 
   // Create command encoder
   WGPUCommandEncoderDescriptor encoder_desc = { 0 };
-  g_encoder = wgpuDeviceCreateCommandEncoder(g_device, &encoder_desc);
+  g_encoder = wgpuDeviceCreateCommandEncoder(device, &encoder_desc);
   if (!g_encoder) {
     fprintf(stderr, "Failed to create command encoder\n");
     return;

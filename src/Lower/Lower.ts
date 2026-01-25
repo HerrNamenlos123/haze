@@ -2294,10 +2294,13 @@ export function lowerTypeDef(lr: Lowered.Module, typeId: Semantic.TypeDefId): Lo
       let optimizeAsRawPointer: Lowered.TypeUseId | null = null;
       if (type.members.length === 2) {
         // Is optimized if either 'Foo | null' or 'Foo | none'. 'Foo | null | none' can NOT be optimized (length != 2)
-        const def1 = lr.sr.typeDefNodes.get(lr.sr.typeUseNodes.get(type.members[0]).type);
-        const def2 = lr.sr.typeDefNodes.get(lr.sr.typeUseNodes.get(type.members[1]).type);
+        const use1 = lr.sr.typeUseNodes.get(type.members[0]);
+        const def1 = lr.sr.typeDefNodes.get(use1.type);
+        const use2 = lr.sr.typeUseNodes.get(type.members[1]);
+        const def2 = lr.sr.typeDefNodes.get(use2.type);
         if (
           def1.variant === Semantic.ENode.StructDatatype &&
+          !use1.inline &&
           def2.variant === Semantic.ENode.PrimitiveDatatype &&
           (def2.primitive === EPrimitive.none || def2.primitive === EPrimitive.null)
         ) {
@@ -2305,6 +2308,7 @@ export function lowerTypeDef(lr: Lowered.Module, typeId: Semantic.TypeDefId): Lo
         }
         if (
           def2.variant === Semantic.ENode.StructDatatype &&
+          !use2.inline &&
           def1.variant === Semantic.ENode.PrimitiveDatatype &&
           (def1.primitive === EPrimitive.none || def1.primitive === EPrimitive.null)
         ) {

@@ -192,5 +192,6 @@ static inline hzstd_dynamic_array_result_t hzstd_dynamic_array_pop(hzstd_dynamic
 /* size / capacity accessors */
 static inline size_t hzstd_dynamic_array_size(const hzstd_dynamic_array_t* da) { return da ? da->size : 0; }
 static inline size_t hzstd_dynamic_array_capacity(const hzstd_dynamic_array_t* da) { return da ? da->capacity : 0; }
+static inline void* hzstd_dynamic_array_raw_buffer(const hzstd_dynamic_array_t* da) { return da->buffer; }
 
 #endif // HZSTD_ARRAY_H

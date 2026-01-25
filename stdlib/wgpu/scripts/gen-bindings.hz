@@ -684,6 +684,7 @@ generateBindings(args: GenArgs): Result<none, fs.Error> {
 
     let functionsReturnNullable = []str {
         "wgpuCreateInstance",
+        "wgpuDeviceGetQueue",
     };
 
     for (let i = 0; i < args.implStructs.length; i++) {
@@ -782,6 +783,27 @@ generateBindings(args: GenArgs): Result<none, fs.Error> {
         }
         if e.name == "WGPURequestAdapterStatus" {
             file = betterEnum(file, e, r"WGPURequestAdapterStatus_", "RequestAdapterStatus");
+        }
+        if e.name == "WGPURequestDeviceStatus" {
+            file = betterEnum(file, e, r"WGPURequestDeviceStatus_", "RequestDeviceStatus");
+        }
+        if e.name == "WGPUDeviceLostReason" {
+            file = betterEnum(file, e, r"WGPUDeviceLostReason_", "DeviceLostReason");
+        }
+        if e.name == "WGPUFeatureName" {
+            file = betterEnum(file, e, r"WGPUFeatureName_", "FeatureName");
+        }
+        if e.name == "WGPUTextureUsage" {
+            file = betterEnum(file, e, r"WGPUTextureUsage_", "TextureUsage");
+        }
+        if e.name == "WGPUTextureFormat" {
+            file = betterEnum(file, e, r"WGPUTextureFormat_", "TextureFormat");
+        }
+        if e.name == "WGPUPresentMode" {
+            file = betterEnum(file, e, r"WGPUPresentMode_", "PresentMode");
+        }
+        if e.name == "WGPUCompositeAlphaMode" {
+            file = betterEnum(file, e, r"WGPUCompositeAlphaMode_", "CompositeAlphaMode");
         }
     }
 
