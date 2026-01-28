@@ -4,6 +4,12 @@ main(): int {
         let binaryDir = env.get("HAZE_MODULE_BINARY_DIR");
         if !binaryDir { raise f"HAZE_MODULE_BINARY_DIR not defined"; }
 
+        let cCompiler = env.get("HAZE_C_COMPILER");
+        if !cCompiler { raise f"HAZE_C_COMPILER not defined"; }
+
+        let cxxCompiler = env.get("HAZE_CXX_COMPILER");
+        if !cxxCompiler { raise f"HAZE_CXX_COMPILER not defined"; }
+
         let repoPath = f"{binaryDir}/glfw";
 
         if !fs.exists(repoPath)?! {
@@ -29,7 +35,11 @@ main(): int {
                 "-DCMAKE_POSITION_INDEPENDENT_CODE=OFF",
                 "-DGLFW_USE_PTHREADS=ON",
                 "-DGLFW_BUILD_EXAMPLES=OFF",
-                "-DGLFW_BUILD_TESTS=OFF"
+                "-DGLFW_BUILD_TESTS=OFF",
+                "-G",
+                "Ninja",
+                f"-DCMAKE_C_COMPILER=\"{cCompiler}\"",
+                f"-DCMAKE_CXX_COMPILER=\"{cxxCompiler}\"",
             }, 
             process.Options {
                 inherit_stdio: true,

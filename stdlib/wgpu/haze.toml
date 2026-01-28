@@ -34,5 +34,18 @@ outputs = [
 [linker]
 flags = ["-lwgpu_native"]
 
+[interface.linker.win32]
+flags = [  
+    "-lws2_32",
+    "-luserenv",
+    "-liphlpapi",
+    "-lole32",
+    "-loleaut32",
+    "-lpropsys",
+    "-lruntimeobject",
+    "-lgdi32",
+    "-lopengl32"
+]
+
 [dependencies]
 glfw = { path = "./glfw" }

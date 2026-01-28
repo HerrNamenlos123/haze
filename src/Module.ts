@@ -301,8 +301,10 @@ if (PLATFORM === Platform.Win32) {
 
 export const HAZE_STDLIB_NAME = "haze-stdlib";
 
-const HAZE_C_COMPILER = HAZE_GLOBAL_DIR + "/bin/clang";
-const HAZE_CXX_COMPILER = HAZE_GLOBAL_DIR + "/bin/clang++";
+const HAZE_C_COMPILER =
+  HAZE_GLOBAL_DIR + (PLATFORM === Platform.Linux ? "/bin/clang" : "/bin/clang.exe");
+const HAZE_CXX_COMPILER =
+  HAZE_GLOBAL_DIR + (PLATFORM === Platform.Linux ? "/bin/clang++" : "/bin/clang++.exe");
 const ARCHIVE_TOOL = PLATFORM === Platform.Linux ? "ar" : HAZE_GLOBAL_DIR + "/bin/llvm-ar.exe";
 const HAZE_CONFIG_FILE = "haze.toml";
 const HAZE_LIB_IMPORT_FILE = "import.hz";
@@ -1126,7 +1128,7 @@ export class ProjectCompiler {
         );
         execInherit(`git submodule update --init`, builddir);
         execInherit(
-          `cmake . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DPCRE2_SUPPORT_JIT=ON -DCMAKE_INSTALL_PREFIX="${outdir}" -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DBUILD_TESTING=OFF`,
+          `cmake . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_BUILD_SHARED_LIBS=OFF -DPCRE2_SUPPORT_JIT=ON -DCMAKE_INSTALL_PREFIX="${outdir}" -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DBUILD_TESTING=OFF`,
           builddir,
         );
         execInherit(`cmake --build build -j`, builddir);
@@ -1141,10 +1143,13 @@ export class ProjectCompiler {
           PLATFORM === Platform.Win32 ? ".exe" : ""
         }`;
         const toolsDir = await getToolsDirectory();
+        const projDir = join(toolsDir, "regex-compiler");
         mkdirSync(dirname(outfile), { recursive: true });
         execInherit(
-          `${HAZE_C_COMPILER} "${toolsDir}/regex-compiler/main.c" -o ${outfile} -g -std=c11 -lpcre2-8 -L"${HAZE_GLOBAL_DIR}/pcre2/lib/" -L"${HAZE_GLOBAL_DIR}/pcre2/lib64/"`,
+          `cmake . -B "${HAZE_TMP_DIR}/regex-compiler-build" -DHAZE_GLOBAL_DIR="${HAZE_GLOBAL_DIR}" -G Ninja -DCMAKE_C_COMPILER="${HAZE_C_COMPILER}" -DCMAKE_CXX_COMPILER="${HAZE_CXX_COMPILER}"`,
+          projDir,
         );
+        execInherit(`cmake --build "${HAZE_TMP_DIR}/regex-compiler-build"`, projDir);
         this.markStepDone(MARKERS.regexCompiler);
         console.info("Building Regex Compiler... Done");
       }
@@ -1534,6 +1539,8 @@ export class ModuleCompiler {
         HAZE_MODULE_BINARY_DIR: this.moduleDir + "/bin",
         HAZE_MODULE_TMP_DIR: this.moduleDir + "/tmp",
         HAZE_MODULE_AUTOGEN_DIR: this.moduleDir + "/autogen",
+        HAZE_C_COMPILER: HAZE_C_COMPILER,
+        HAZE_CXX_COMPILER: HAZE_CXX_COMPILER,
       },
       async () => {
         const exitCode = await project.run(this.resolveExec(gen.exec), sourceloc, []);
@@ -1649,8 +1656,11 @@ export class ModuleCompiler {
       const linkerFlags = this.config.linkerFlags;
       const includeDirs = this.config.includeDirs;
       const interfaceMacros = this.config.interfaceMacros;
+      const interfaceLinker = this.config.interfaceLinkerFlags;
       compilerFlags.addAll("-Wno-parentheses-equality");
       compilerFlags.addAll("-Wno-extra-tokens");
+
+      interfaceMacros.addAll(`PCRE2_STATIC`);
 
       includeDirs.addAll(`${this.moduleDir}/bin/include`);
       includeDirs.addAll(`${HAZE_GLOBAL_DIR}/include`);
@@ -1676,6 +1686,10 @@ export class ModuleCompiler {
 
       compilerFlags.addWin32(`-D_CRT_SECURE_NO_WARNINGS`);
       linkerFlags.addWin32(`-fuse-ld=lld`);
+      linkerFlags.addWin32(`-lntdll`);
+      linkerFlags.addWin32(`-lkernel32`);
+      linkerFlags.addWin32(`-luser32`);
+      linkerFlags.addWin32(`-ladvapi32`);
 
       compilerFlags.addWin32("-DHAZE_PLATFORM_WIN32");
       compilerFlags.addLinux("-DHAZE_PLATFORM_LINUX");
@@ -1745,12 +1759,18 @@ export class ModuleCompiler {
 
       compilerFlags.addAll("-std=c11");
 
-      const [archives, dependencyLinkerFlags, dependencyIncludeDirs, dependencyInterfaceMacros] =
-        await this.loadDependencyBinaries();
+      const [
+        archives,
+        dependencyLinkerFlags,
+        dependencyIncludeDirs,
+        dependencyInterfaceMacros,
+        dependencyInterfaceLinker,
+      ] = await this.loadDependencyBinaries();
 
       linkerFlags.merge(dependencyLinkerFlags);
       includeDirs.merge(dependencyIncludeDirs);
       interfaceMacros.merge(dependencyInterfaceMacros);
+      interfaceLinker.merge(dependencyInterfaceLinker);
 
       if (this.config.moduleType === ModuleType.Executable) {
         compilerFlags.addAll(archives.map((l) => `"${l}"`));
@@ -1762,6 +1782,7 @@ export class ModuleCompiler {
       compilerFlags.addAll(interfaceMacros.getAll().map((dir) => `-D${dir}`));
       compilerFlags.addLinux(interfaceMacros.getLinux().map((dir) => `-D${dir}`));
       compilerFlags.addWin32(interfaceMacros.getWin32().map((dir) => `-D${dir}`));
+      linkerFlags.addWin32(interfaceLinker.getWin32().map((dir) => `${dir}`));
 
       compilerFlags.addAll(includeDirs.getAll().map((dir) => `-I"${dir}"`));
       compilerFlags.addLinux(includeDirs.getLinux().map((dir) => `-I"${dir}"`));
@@ -1769,6 +1790,7 @@ export class ModuleCompiler {
 
       const platformCompilerFlags = compilerFlags.combineForPlatform();
       const platformLinkerFlags = linkerFlags.combineForPlatform();
+      // console.log(this.config.name, linkerFlags);
 
       if (this.config.moduleType === ModuleType.Executable) {
         const flags = `${platformCompilerFlags.join(" ")} ${platformLinkerFlags.join(" ")}`;
@@ -1838,6 +1860,7 @@ export class ModuleCompiler {
             },
           ],
           linkerFlags: this.config.linkerFlags,
+          interfaceLinkerFlags: this.config.interfaceLinkerFlags,
           includeDirs: includeDirs,
           interfaceMacros: interfaceMacros,
           compileCommands: compileCommands,
@@ -1847,6 +1870,11 @@ export class ModuleCompiler {
         const moduleMetadataSerialized = {
           ...moduleMetadata,
           linkerFlags: {
+            all: moduleMetadata.linkerFlags.getAll(),
+            linux: moduleMetadata.linkerFlags.getLinux(),
+            win32: moduleMetadata.linkerFlags.getWin32(),
+          },
+          interfaceLinkerFlags: {
             all: moduleMetadata.linkerFlags.getAll(),
             linux: moduleMetadata.linkerFlags.getLinux(),
             win32: moduleMetadata.linkerFlags.getWin32(),
@@ -1906,6 +1934,7 @@ export class ModuleCompiler {
     const linkerFlags = new PlatformStrings();
     const includeDirs = new PlatformStrings();
     const interfaceMacros = new PlatformStrings();
+    const interfaceLinker = new PlatformStrings();
 
     metadata.forEach((meta) => {
       const lib = meta.libs.find((l) => l.platform === this.config.platform);
@@ -1921,9 +1950,10 @@ export class ModuleCompiler {
       linkerFlags.merge(meta.linkerFlags);
       includeDirs.merge(meta.includeDirs);
       interfaceMacros.merge(meta.interfaceMacros);
+      interfaceLinker.merge(meta.interfaceLinkerFlags);
     });
 
-    return [archives, linkerFlags, includeDirs, interfaceMacros] as const;
+    return [archives, linkerFlags, includeDirs, interfaceMacros, interfaceLinker] as const;
   }
 
   private async loadDependencyCompileCommands() {

@@ -7,23 +7,34 @@ main(): int {
         let repoPath = f"{binaryDir}/wgpu-native";
 
         if !fs.exists(repoPath)?! {
-            process.run("git", { "clone", "https://github.com/gfx-rs/wgpu-native.git", repoPath }, process.Options {
+            process.run("git", { "clone", "https://github.com/gfx-rs/wgpu-native.git", repoPath }, {
                 inherit_stdio: true,
             })?!;
         }
 
-        process.run("git", { "-c", "advice.detachedHead=false", "checkout", "768f15f6ace8e4ec8e8720d5732b29e0b34250a8" }, process.Options {
+        process.run("git", { "-c", "advice.detachedHead=false", "checkout", "768f15f6ace8e4ec8e8720d5732b29e0b34250a8" }, {
             inherit_stdio: true,
             cwd: repoPath,
         })?!;
 
-        process.run("git", { "submodule", "update", "--init", "--recursive" }, process.Options {
+        process.run("git", { "submodule", "update", "--init", "--recursive" }, {
             inherit_stdio: true,
             cwd: repoPath,
         })?!;
 
-        process.run("cargo", { "build", "--release" }, process.Options {
-            inherit_stdio: true,
+        attempt {
+            process.run("cargo", { "--version" })?!;
+        }
+        else {
+            let msg = "curl https://sh.rustup.rs -sSf | sh -s -- -y";
+            if platform.isWin32() {
+                msg = "winget install Rustlang.Rustup";
+            }
+            raise f"Cargo is not installed. Please install the 'cargo' Rust build system, it is required to build WebGPU-Native. Your best bet is: '{msg}'";
+        }
+
+        process.run("cargo", { "build", "--release" }, {
+            inherit_stdio : true,
             cwd: repoPath,
         })?!;
 
@@ -31,16 +42,16 @@ main(): int {
         if platform.isWin32() {
             filename = "wgpu_native.lib";
         }
-        fs.copyFile(f"{repoPath}/target/release/{filename}", f"{binaryDir}/lib/{filename}", fs.CopyOptions {
+        fs.copyFile(f"{repoPath}/target/release/{filename}", f"{binaryDir}/lib/{filename}", {
             overwrite: true
         })?!;
-        fs.copyFile(f"{repoPath}/ffi/wgpu.h", f"{binaryDir}/include/wgpu.h", fs.CopyOptions {
+        fs.copyFile(f"{repoPath}/ffi/wgpu.h", f"{binaryDir}/include/wgpu.h", {
             overwrite: true
         })?!;
-        fs.copyFile(f"{repoPath}/ffi/webgpu-headers/webgpu.h", f"{binaryDir}/include/webgpu.h", fs.CopyOptions {
+        fs.copyFile(f"{repoPath}/ffi/webgpu-headers/webgpu.h", f"{binaryDir}/include/webgpu.h", {
             overwrite: true
         })?!;
-        fs.copyFile(f"{repoPath}/ffi/webgpu-headers/webgpu.h", f"{binaryDir}/include/webgpu/webgpu.h", fs.CopyOptions {
+        fs.copyFile(f"{repoPath}/ffi/webgpu-headers/webgpu.h", f"{binaryDir}/include/webgpu/webgpu.h", {
             overwrite: true
         })?!;
     }
