@@ -1,0 +1,31 @@
+
+export struct CommandBuffer {
+    handle: mut ffi.WGPUCommandBufferImpl;
+}
+
+fromFFI(v: mut ffi.WGPUCommandBufferImpl): CommandBuffer {
+    return CommandBuffer {
+        handle: v,
+    };
+}
+
+toFFI(v: CommandBuffer): mut ffi.WGPUCommandBufferImpl {
+    return v.handle;
+}
+
+export struct CommandBufferDescriptor {
+    debugLabel?: str;
+}
+
+fromFFI(v: ffi.WGPUCommandBufferDescriptor): CommandBufferDescriptor {
+    return CommandBufferDescriptor {
+        debugLabel: fromOptionalFFI(v.label),
+    };
+}
+
+toFFI(v: CommandBufferDescriptor): ffi.WGPUCommandBufferDescriptor {
+    return ffi.WGPUCommandBufferDescriptor {
+        nextInChain: none,
+        label: toOptionalFFI(v.debugLabel),
+    };
+}

@@ -1,0 +1,255 @@
+
+export struct RenderPassEncoder {
+    handle: mut ffi.WGPURenderPassEncoderImpl;
+
+    end() {
+        ffi.wgpuRenderPassEncoderEnd(this.handle);
+    }
+}
+
+fromFFI(v: mut ffi.WGPURenderPassEncoderImpl) {
+    return RenderPassEncoder {
+        handle: v,
+    };
+}
+
+toFFI(v: RenderPassEncoder) {
+    return v.handle;
+}
+
+export struct RenderPassDescriptor {
+    debugLabel?: str;
+    colorAttachments: []RenderPassColorAttachment = {};
+    depthStencilAttachment: RenderPassDepthStencilAttachment | none = none;
+    occlusionQuerySet: mut QuerySet | none = none;
+    timestampWrites: RenderPassTimestampWrites | none = none;
+}
+
+fromFFI(v: ffi.WGPURenderPassDescriptor): RenderPassDescriptor {
+    let c = RenderPassDescriptor {
+        debugLabel: fromOptionalFFI(v.label),
+        colorAttachments: {},
+        depthStencilAttachment: none,
+        occlusionQuerySet: none,
+        timestampWrites: none,
+    };
+
+    for (let i = 0; i < v.colorAttachmentCount; i++) {
+        do unsafe {
+            let e: ffi.WGPURenderPassColorAttachment = uninitialized;
+            __c__("e = &((WGPURenderPassColorAttachment*)v->colorAttachments)[i];");
+            c.colorAttachments.push(fromFFI(e));
+        }
+    }
+
+    do unsafe {
+        let sa = none as ffi.WGPURenderPassDepthStencilAttachment | none;
+        __c__("sa = (WGPURenderPassDepthStencilAttachment*)v->depthStencilAttachment;"); 
+        if sa {
+            c.depthStencilAttachment = fromFFI(sa);
+        }
+    }
+
+    let oq = v.occlusionQuerySet;
+    if oq {
+        c.occlusionQuerySet = QuerySet { handle: oq };
+    }
+
+    do unsafe {
+        let tw = none as ffi.WGPURenderPassTimestampWrites | none;
+        __c__("tw = (WGPURenderPassTimestampWrites*)v->timestampWrites;"); 
+        if tw {
+            c.timestampWrites = fromFFI(tw);
+        }
+    }
+
+    return c;
+}
+
+toFFI(v: RenderPassDescriptor): ffi.WGPURenderPassDescriptor {
+    do unsafe {
+        let colorAttachments: []inline ffi.WGPURenderPassColorAttachment = {};
+        for (let i = 0; i < v.colorAttachments.length; i++) {
+            colorAttachments.push(toFFI(v.colorAttachments[i]));
+        }
+
+        let depthStencilPointer = none as ffi.WGPURenderPassDepthStencilAttachment | none;
+        let depthStencilValue: inline ffi.WGPURenderPassDepthStencilAttachment = uninitialized;
+        let dsa = v.depthStencilAttachment;
+        if dsa {
+            depthStencilValue = toFFI(dsa);
+            __c__("depthStencilPointer = &depthStencilValue;");
+        }
+
+        let occlusionQuerySet = none as mut ffi.WGPUQuerySetImpl | none;
+        let oqs = v.occlusionQuerySet;
+        if oqs {
+            occlusionQuerySet = oqs.handle;
+        }
+
+        let timestampWritesPointer = none as ffi.WGPURenderPassTimestampWrites | none;
+        let timestampWritesValue: inline ffi.WGPURenderPassTimestampWrites = uninitialized;
+        let tsw = v.timestampWrites;
+        if tsw {
+            timestampWritesValue = toFFI(tsw);
+            __c__("timestampWritesPointer = &timestampWritesValue;");
+        }
+
+        let label = toOptionalFFI(v.debugLabel);
+        let colorAttachmentCount: u64 = 0;
+        __c__("colorAttachmentCount = colorAttachments.length;");
+
+        let conf = ffi.WGPURenderPassDescriptor {
+            nextInChain: none,
+            label: label,
+            colorAttachmentCount: colorAttachmentCount,
+            colorAttachments: none,
+            depthStencilAttachment: depthStencilPointer,
+            occlusionQuerySet: occlusionQuerySet,
+            timestampWrites: timestampWritesPointer,
+        };
+
+        __c__("conf.colorAttachments = colorAttachments.data;");
+
+        return conf;
+    }
+}
+
+export struct RenderPassDepthStencilAttachment {
+    view: mut TextureView;
+    depthLoadOp: LoadOp;
+    depthStoreOp: StoreOp;
+    depthClearValue: f32;
+    depthReadOnly: bool;
+    stencilLoadOp: LoadOp;
+    stencilStoreOp: StoreOp;
+    stencilClearValue: u32;
+    stencilReadOnly: bool;
+}
+
+fromFFI(v: ffi.WGPURenderPassDepthStencilAttachment): RenderPassDepthStencilAttachment {
+    return RenderPassDepthStencilAttachment {
+        view: TextureView { handle: v.view },
+        depthLoadOp: LoadOpFromFFI(v.depthLoadOp),
+        depthStoreOp: StoreOpFromFFI(v.depthStoreOp),
+        depthClearValue: v.depthClearValue,
+        depthReadOnly: v.depthReadOnly,
+        stencilLoadOp: LoadOpFromFFI(v.stencilLoadOp),
+        stencilStoreOp: StoreOpFromFFI(v.stencilStoreOp),
+        stencilClearValue: v.stencilClearValue,
+        stencilReadOnly: v.stencilReadOnly,
+    };
+}
+
+toFFI(v: RenderPassDepthStencilAttachment): ffi.WGPURenderPassDepthStencilAttachment {
+    return ffi.WGPURenderPassDepthStencilAttachment {
+        view: v.view.handle,
+        depthLoadOp: LoadOpToFFI(v.depthLoadOp),
+        depthStoreOp: StoreOpToFFI(v.depthStoreOp),
+        depthClearValue: v.depthClearValue,
+        depthReadOnly: v.depthReadOnly,
+        stencilLoadOp: LoadOpToFFI(v.stencilLoadOp),
+        stencilStoreOp: StoreOpToFFI(v.stencilStoreOp),
+        stencilClearValue: v.stencilClearValue,
+        stencilReadOnly: v.stencilReadOnly,
+    };
+}
+
+export struct RenderPassTimestampWrites {
+    querySet: mut QuerySet;
+    beginningOfPassWriteIndex: u32;
+    endOfPassWriteIndex: u32;
+}
+
+fromFFI(v: ffi.WGPURenderPassTimestampWrites): RenderPassTimestampWrites {
+    return RenderPassTimestampWrites {
+        querySet: QuerySet { handle: v.querySet },
+        beginningOfPassWriteIndex: v.beginningOfPassWriteIndex,
+        endOfPassWriteIndex: v.endOfPassWriteIndex,
+    };
+}
+
+toFFI(v: RenderPassTimestampWrites): ffi.WGPURenderPassTimestampWrites {
+    return ffi.WGPURenderPassTimestampWrites {
+        querySet: v.querySet.handle,
+        beginningOfPassWriteIndex: v.beginningOfPassWriteIndex,
+        endOfPassWriteIndex: v.endOfPassWriteIndex,
+    };
+}
+
+export struct RenderPassColorAttachment {
+    view: mut TextureView | none = none;
+    depthSlice: u32 | none = none;
+    resolveTarget: mut TextureView | none = none;
+    loadOp: LoadOp;
+    storeOp: StoreOp;
+    clearValue: Color;
+}
+
+fromFFI(v: ffi.WGPURenderPassColorAttachment): RenderPassColorAttachment {
+    do unsafe {
+        let c = RenderPassColorAttachment {
+            view: none,
+            depthSlice: WGPU_DEPTH_SLICE_UNDEFINED,
+            resolveTarget: none,
+            loadOp: LoadOpFromFFI(v.loadOp),
+            storeOp: StoreOpFromFFI(v.storeOp),
+            clearValue: {
+                r: v.clearValue.r,
+                g: v.clearValue.g,
+                b: v.clearValue.b,
+                a: v.clearValue.a,
+            }
+        };
+
+        if v.depthSlice != WGPU_DEPTH_SLICE_UNDEFINED {
+            c.depthSlice = v.depthSlice;
+        }
+
+        let tv = v.view;
+        if tv {
+            c.view = TextureView { handle: tv };
+        }
+
+        let tvv = v.resolveTarget;
+        if tvv {
+            c.resolveTarget = TextureView { handle: tvv };
+        }
+
+        return c;
+    }
+}
+
+toFFI(v: RenderPassColorAttachment): ffi.WGPURenderPassColorAttachment {
+    do unsafe {
+        let viewHandle = none as mut ffi.WGPUTextureViewImpl | none;
+        let vv = v.view;
+        if vv {
+            viewHandle = vv.handle;
+        }
+        let resolveHandle = none as mut ffi.WGPUTextureViewImpl | none;
+        let rr = v.resolveTarget;
+        if rr {
+            resolveHandle = rr.handle;
+        }
+
+        let ds = WGPU_DEPTH_SLICE_UNDEFINED;
+        let dss = v.depthSlice;
+        if dss {
+            ds = dss;
+        }
+
+        let a: inline ffi.WGPURenderPassColorAttachment = uninitialized;
+        __c__("a.nextInChain = NULL;");
+        __c__("a.view = viewHandle;");
+        __c__("a.depthSlice = ds;");
+        __c__("a.resolveTarget = resolveHandle;");
+        __c__("a.loadOp = LoadOpToFFI(v->loadOp);");
+        __c__("a.storeOp = StoreOpToFFI(v->storeOp);");
+        __c__("a.clearValue.r = v->clearValue.r;");
+        __c__("a.clearValue.g = v->clearValue.g;");
+        __c__("a.clearValue.b = v->clearValue.b;");
+        __c__("a.clearValue.a = v->clearValue.a;");
+        return a;
+    }
+}

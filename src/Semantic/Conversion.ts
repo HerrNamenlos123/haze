@@ -859,23 +859,85 @@ export namespace Conversion {
       );
     }
 
-    // Error message for inline/non-inline objects
+    // Conversion between inline/non-inline structs of the same type
+    // Since a copy always happens, mutability doesn't matter
     if (
       fromType.variant === Semantic.ENode.StructDatatype &&
       to.variant === Semantic.ENode.StructDatatype &&
       fromTypeInstance.type === toInstance.type
     ) {
-      if (fromTypeInstance.inline && !toInstance.inline) {
-        throw new CompilerError(
-          `Reference conversions from inline to non-inline are not implemented yet, make sure you are consistent with inline structs. Cannot convert ${fromTypeText} to ${toTypeText}`,
-          sourceloc,
-        );
-      }
-      if (!fromTypeInstance.inline && toInstance.inline) {
-        throw new CompilerError(
-          `Reference conversions from non-inline to inline are not implemented yet, make sure you are consistent with inline structs. Cannot convert ${fromTypeText} to ${toTypeText}`,
-          sourceloc,
-        );
+      if (fromTypeInstance.inline !== toInstance.inline) {
+        // Create a struct literal that copies all members from the source struct
+        const assign: { name: string; value: Semantic.ExprId }[] = [];
+
+        fromType.members.forEach((memberSymbolId) => {
+          const memberSymbol = sr.symbolNodes.get(memberSymbolId);
+          if (memberSymbol.variant !== Semantic.ENode.VariableSymbol) return;
+
+          const memberName = memberSymbol.name;
+          const memberType = memberSymbol.type;
+          assert(memberType);
+
+          // Create a member access expression for this member
+          const memberAccessId = Semantic.addExpr(sr, {
+            variant: Semantic.ENode.MemberAccessExpr,
+            instanceIds: [...fromExpr.instanceIds],
+            expr: fromExprId,
+            memberName: memberName,
+            type: memberType,
+            sourceloc: sourceloc,
+            isTemporary: true,
+            flow: flow,
+            writes: writes,
+          })[1];
+
+          assign.push({
+            name: memberName,
+            value: memberAccessId,
+          });
+        });
+
+        // Create the struct literal expression
+        const [literal, literalId] = Semantic.addExpr<Semantic.StructLiteralExpr>(sr, {
+          variant: Semantic.ENode.StructLiteralExpr,
+          instanceIds: [Semantic.makeInstanceId(sr)],
+          assign: assign,
+          type: toId,
+          inFunction: sr.e.inFunction,
+          allocator: null,
+          sourceloc: sourceloc,
+          isTemporary: true,
+          flow: flow,
+          writes: writes,
+        });
+
+        // Add instance dependencies
+        if (sr.e.inFunction) {
+          const functionSymbol = sr.e.getSymbol(sr.e.inFunction);
+          assert(functionSymbol.variant === Semantic.ENode.FunctionSymbol);
+          literal.instanceIds.forEach((i) => functionSymbol.createsInstanceIds.add(i));
+        }
+
+        assign.forEach((a) => {
+          const member = fromType.members.find((m) => {
+            const varsym = sr.symbolNodes.get(m);
+            return varsym.variant === Semantic.ENode.VariableSymbol && varsym.name === a.name;
+          });
+          assert(member);
+
+          const value = sr.exprNodes.get(a.value);
+          literal.flow.addAll(value.flow);
+          literal.writes.addAll(value.writes);
+
+          Semantic.addStructMemberInstanceDeps(
+            sr.e.currentContext.instanceDeps,
+            literal.instanceIds[0],
+            member,
+            value.instanceIds,
+          );
+        });
+
+        return ok(literalId);
       }
     }
 

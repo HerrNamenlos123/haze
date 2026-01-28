@@ -31,7 +31,7 @@ fromOptionalFFI(view: inline ffi.WGPUStringView): str | none {
     }
 }
 
-toFFO(text: str): inline ffi.WGPUStringView {
+toFFI(text: str): inline ffi.WGPUStringView {
     do unsafe {
         let view: inline ffi.WGPUStringView = uninitialized;
         __c__("view.data = text.data;");

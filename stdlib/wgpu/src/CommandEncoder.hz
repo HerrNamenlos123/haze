@@ -3,43 +3,43 @@ export struct CommandEncoderDescriptor {
     label: str;
 }
 
-fromFFI(v: ffi.WGPUCommandEncoderDescriptor) {
+fromFFI(v: ffi.WGPUCommandEncoderDescriptor): CommandEncoderDescriptor {
     return CommandEncoderDescriptor {
-        label: viewToStr(v.label),
+        label: fromFFI(v.label),
     };
 }
 
-fromOptionalFFI(v: ffi.WGPUCommandEncoderDescriptor | none) {
+fromOptionalFFI(v: ffi.WGPUCommandEncoderDescriptor | none): CommandEncoderDescriptor | none {
     if !v {
         return none;
     }
     return CommandEncoderDescriptor {
-        label: viewToStr(v.label),
+        label: fromFFI(v.label),
     };
 }
 
-toFFI(c: CommandEncoderDescriptor) {
+toFFI(c: CommandEncoderDescriptor): ffi.WGPUCommandEncoderDescriptor {
     return ffi.WGPUCommandEncoderDescriptor {
         nextInChain: none,
-        label: strToView(this.label),
-    }
+        label: toFFI(c.label),
+    };
 }
 
-toOptionalFFI(c: CommandEncoderDescriptor | none) {
+toOptionalFFI(c: CommandEncoderDescriptor | none): ffi.WGPUCommandEncoderDescriptor | none {
     if !c {
         return none;
     }
     return ffi.WGPUCommandEncoderDescriptor {
         nextInChain: none,
-        label: strToView(this.label),
-    }
+        label: toFFI(c.label),
+    };
 }
 
 export struct CommandEncoder {
     handle: mut ffi.WGPUCommandEncoderImpl;
 
     beginRenderPass(descriptor: RenderPassDescriptor): Result<RenderPassEncoder, none> {
-        let handle = ffi.wgpuCommandEncoderBeginRenderPass(this.handle, descriptor.toFFI());
+        let handle = ffi.wgpuCommandEncoderBeginRenderPass(this.handle, toFFI(descriptor));
         if handle {
             return fromFFI(handle);
         }
@@ -48,7 +48,7 @@ export struct CommandEncoder {
     finish(descriptor?: CommandBufferDescriptor): Result<CommandBuffer, none> {
         let d = none as ffi.WGPUCommandBufferDescriptor | none;
         if descriptor {
-            d = descriptor.toFFI();
+            d = toFFI(descriptor);
         }
         let buffer = ffi.wgpuCommandEncoderFinish(this.handle, d);
         if buffer {
@@ -57,12 +57,12 @@ export struct CommandEncoder {
     }
 }
 
-fromFFI(v: ffi.WGPUCommandEncoderImpl) {
+fromFFI(v: mut ffi.WGPUCommandEncoderImpl): CommandEncoder {
     return CommandEncoder {
         handle: v,
     };
 }
 
-toFFI(v: CommandEncoder) {
+toFFI(v: CommandEncoder): mut ffi.WGPUCommandEncoderImpl {
     return v.handle;
 }
