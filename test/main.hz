@@ -96,6 +96,57 @@ main(): int {
             alphaMode: caps.alphaModes[0],
         });
 
+        let shadercode = fs.read("test/shaders.wgsl")?!;
+        let shader = g_device.createShaderModule({
+            // code: shadercode,
+        });
+
+        let vertices = [
+            vec2(-0.5, -0.5),
+            vec2( 0.5, -0.5),
+            vec2( 0.5,  0.5),
+
+            vec2(-0.5, -0.5),
+            vec2( 0.5,  0.5),
+            vec2(-0.5,  0.5),
+        ];
+
+        let vertexBuffer = g_device.createBuffer({
+            usage: wgpu.BufferUsage.Vertex | wgpu.BufferUsage.CopyDst,
+            size: sizeof(vertices),
+        });
+        g_queue.writeBuffer(vertexBuffer, 0, vertices);
+
+        let vertexLayout = wgpu.VertexBufferLayout {
+            arrayStride: sizeof(vec2),
+            stepMode: wgpu.VertexStepMode.Vertex,
+            attributes: {
+                {
+                    shaderLocation: 0,
+                    offset: 0,
+                    format: wgpu.VertexFormat.Float32x2,
+                },
+            },
+        };
+
+        let pipeline = g_device.createRenderPipeline({
+            vertex: {
+                module: shader,
+                entryPoint: "vs_main",
+                buffers: { vertexLayout },
+            },
+            fragment: {
+                module: shader,
+                entryPoint: "fs_main",
+                targets: {
+                    { format: surfaceFormat },
+                },
+            },
+            primitive: {
+                topology: wgpu.PrimitiveTopology.TriangleList,
+            },
+        });
+
         while !window.shouldClose() {
             glfw.pollEvents();
 
@@ -123,6 +174,10 @@ main(): int {
             };
             let renderPass = encoder.beginRenderPass(renderPassDescriptor);
             if !renderPass { raise "Failed to create render pass"; }
+
+            renderPass.setPipeline(pipeline);
+            renderPass.setVertexBuffer(0, vertexBuffer);
+            renderPass.draw(6, 1, 0, 0);
 
             renderPass.end();
             let commandBuffer = encoder.finish();

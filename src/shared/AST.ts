@@ -633,6 +633,7 @@ export type ASTStructMemberDefinition = {
   name: string;
   type: ASTTypeUse;
   defaultValue: ASTExpr | null;
+  optional: boolean;
   mutability: EVariableMutability;
   sourceloc: SourceLoc;
 };

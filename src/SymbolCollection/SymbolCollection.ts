@@ -56,8 +56,9 @@ import {
   type ASTStatement,
   type EIncrOperation,
 } from "../shared/AST";
-import { getModuleGlobalNamespaceName, type ModuleConfig } from "../shared/Config";
+import { ECollectionMode, getModuleGlobalNamespaceName, type ModuleConfig } from "../shared/Config";
 import { join } from "path";
+import { Semantic } from "../Semantic/Elaborate";
 
 const RESERVED_METHOD_NAMES = ["toString", "clone", "freezeClone"];
 
@@ -397,6 +398,7 @@ export namespace Collect {
     fullyQualifiedName: string;
     parentScope: Collect.ScopeId;
     generics: Collect.SymbolId[];
+    optional: Set<string>;
     defaultMemberValues: {
       name: string;
       value: Collect.ExprId;
@@ -882,27 +884,70 @@ export namespace Collect {
 
 function makeOverloadGroupAvailable(
   cc: CollectionContext,
-  parentScope: Collect.ScopeId,
+  parentScopeId: Collect.ScopeId,
   name: string,
   overloadedOperator: EOverloadedOperator | undefined,
 ) {
+  // If the parent scope is not a namespace and a file instead, we have to go up one level
+  // to the unit scope, to make sure function overloading works across files in the same unit,
+  // because otherwise functions would be in different overload groups because their parent id
+  // (the file scope) would be different.
+  // This here is actually only important for stdlib functions that live directly in the file scope root,
+  // for normal modules this actually doesn't even happen because they are already wrapped in the module namespace.
+  const parentScope = cc.scopeNodes.get(parentScopeId);
+  if (parentScope.variant === Collect.ENode.FileScope) {
+    parentScopeId = parentScope.parentScope;
+  }
+
+  // Get the namespace shared instance if the parent is a namespace scope
+  // This ensures overload groups are shared across all namespace scopes that share the same instance
+  let namespaceSharedInstanceId: Collect.NSSharedInstanceId | null = null;
+  if (parentScope.variant === Collect.ENode.NamespaceScope) {
+    const owningSymbol = cc.symbolNodes.get(parentScope.owningSymbol);
+    assert(owningSymbol.variant === Collect.ENode.TypeDefSymbol);
+    const namespaceDef = cc.typeDefNodes.get(owningSymbol.typeDef);
+    assert(namespaceDef.variant === Collect.ENode.NamespaceTypeDef);
+    namespaceSharedInstanceId = namespaceDef.sharedInstance;
+  }
+
   for (const group of cc.overloadGroups) {
     const og = cc.symbolNodes.get(group);
     assert(og.variant === Collect.ENode.FunctionOverloadGroupSymbol);
-    if (
-      og.parentScope === parentScope &&
-      og.name === name &&
-      og.overloadedOperator === overloadedOperator
-    ) {
-      return [og, group] as const;
+
+    // Check if names and operators match
+    if (og.name !== name || og.overloadedOperator !== overloadedOperator) {
+      continue;
+    }
+
+    // If this is a namespace scope, compare by shared instance instead of scope ID
+    if (namespaceSharedInstanceId !== null) {
+      const ogParentScope = cc.scopeNodes.get(og.parentScope);
+      if (ogParentScope.variant === Collect.ENode.NamespaceScope) {
+        const ogOwningSymbol = cc.symbolNodes.get(ogParentScope.owningSymbol);
+        assert(ogOwningSymbol.variant === Collect.ENode.TypeDefSymbol);
+        const ogNamespaceDef = cc.typeDefNodes.get(ogOwningSymbol.typeDef);
+        assert(ogNamespaceDef.variant === Collect.ENode.NamespaceTypeDef);
+
+        // Match by shared instance ID - this ensures functions in the same namespace
+        // across different files end up in the same overload group
+        if (ogNamespaceDef.sharedInstance === namespaceSharedInstanceId) {
+          return [og, group] as const;
+        }
+      }
+    } else {
+      // Not in a namespace scope, match by parent scope ID as before
+      if (og.parentScope === parentScopeId) {
+        return [og, group] as const;
+      }
     }
   }
+
   const [g, gId] = Collect.makeSymbol(cc, {
     variant: Collect.ENode.FunctionOverloadGroupSymbol,
     name: name,
     overloads: new Set(),
     overloadedOperator: overloadedOperator,
-    parentScope: parentScope,
+    parentScope: parentScopeId,
   });
   cc.overloadGroups.add(gId);
   return [g, gId] as const;
@@ -1189,6 +1234,7 @@ function collectTypeDef(
         name: item.name,
         fullyQualifiedName: fullyQualifiedName,
         generics: [],
+        optional: new Set(item.members.filter((m) => m.optional).map((m) => m.name)),
         defaultMemberValues: [],
         export: item.export,
         extern: item.extern,
@@ -1245,6 +1291,16 @@ function collectTypeDef(
           struct.defaultMemberValues.push({
             name: m.name,
             value: collectExpr(cc, m.defaultValue, { currentParentScope: fieldScopeId }),
+          });
+        } else if (m.optional) {
+          struct.defaultMemberValues.push({
+            name: m.name,
+            value: Collect.makeExpr(cc, {
+              variant: Collect.ENode.SymbolValueExpr,
+              genericArgs: [],
+              name: "none",
+              sourceloc: m.sourceloc,
+            })[1],
           });
         }
         collectSymbol(cc, m, {
@@ -1691,6 +1747,25 @@ function collectSymbol(
     // =================================================================================================================
 
     case "StructMember": {
+      let datatype: ASTTypeUse = item.type;
+      if (item.optional) {
+        datatype = {
+          variant: "UntaggedUnionDatatype",
+          members: [
+            datatype,
+            {
+              variant: "NamedDatatype",
+              name: "none",
+              generics: [],
+              inline: false,
+              mutability: EDatatypeMutability.Default,
+              sourceloc: item.sourceloc,
+            },
+          ],
+          sourceloc: item.sourceloc,
+        };
+      }
+
       const memberId = defineVariableSymbol(
         cc,
         {
@@ -1699,7 +1774,7 @@ function collectSymbol(
           comptime: false,
           mutability: item.mutability,
           sourceloc: item.sourceloc,
-          type: collectTypeUse(cc, item.type, {
+          type: collectTypeUse(cc, datatype, {
             currentParentScope: args.currentParentScope,
           }),
           globalValueInitializer: null,
@@ -2657,11 +2732,6 @@ function collectExpr(
   }
 }
 
-export enum ECollectionMode {
-  WrapIntoModuleNamespace,
-  ImportUnderRootDirectly,
-}
-
 export function CollectImmediate(
   cc: CollectionContext,
   ast: ASTRoot,
@@ -2695,14 +2765,21 @@ export function CollectFile(
   filepath: string,
   moduleName: string,
   moduleVersion: string,
-  collectionMode: ECollectionMode,
+  wrapInModuleNamespace: ECollectionMode,
 ) {
   const parent = cc.scopeNodes.get(parentScope);
   assert(
     parent.variant === Collect.ENode.UnitScope || parent.variant === Collect.ENode.ModuleScope,
   );
 
-  if (collectionMode === ECollectionMode.WrapIntoModuleNamespace) {
+  if (wrapInModuleNamespace === ECollectionMode.ImportUnderRootDirectly) {
+    // Mode 1: Import directly in root - no wrapping, place symbols directly in parent scope
+    CollectImmediate(cc, ast, parentScope);
+  } else if (wrapInModuleNamespace === ECollectionMode.WrapIntoModuleNamespace) {
+    // Mode 2: Wrap in module namespace
+    // Structure: Module > Unit (parentScope) > File > Namespace (shared via NamespaceSharedInstance) > symbols
+
+    // Create file scope under the unit
     const [fileScope, fileScopeId] = Collect.makeScope<Collect.FileScope>(cc, {
       variant: Collect.ENode.FileScope,
       filepath: filepath,
@@ -2711,6 +2788,7 @@ export function CollectFile(
     });
     parent.scopes.add(fileScopeId);
 
+    // Separate directives (imports, C inject) from regular declarations
     const namespacedDeclarations: ASTSymbolDefinition[] = [];
     for (const decl of ast) {
       if (
@@ -2718,14 +2796,18 @@ export function CollectFile(
         decl.variant === "ModuleImport" ||
         decl.variant === "SymbolImport"
       ) {
+        // Place directives in file scope
         collectGlobalDirective(cc, decl, {
           currentParentScope: fileScopeId,
         });
       } else {
+        // Regular declarations go into the namespace
         namespacedDeclarations.push(decl);
       }
     }
 
+    // Create or reuse the module namespace (e.g., Foo_v1_0_0)
+    // The namespace is shared across all files in the same unit via NamespaceSharedInstance
     if (namespacedDeclarations.length > 0) {
       const globalNamespaceId = collectTypeDef(
         cc,
@@ -2742,8 +2824,8 @@ export function CollectFile(
       );
       fileScope.symbols.add(globalNamespaceId);
     }
-  } else if (collectionMode === ECollectionMode.ImportUnderRootDirectly) {
-    CollectImmediate(cc, ast, parentScope);
+  } else {
+    assert(false, "Unknown collection mode");
   }
 }
 

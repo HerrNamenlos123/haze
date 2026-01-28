@@ -754,6 +754,12 @@ generateBindings(args: GenArgs): Result<none, fs.Error> {
             if (s.name == "WGPUSurfaceTexture" && s.fields[j].name == "texture") {
                 nullable = " | none";
             }
+            if (s.name == "WGPUChainedStruct" && s.fields[j].name == "next") {
+                nullable = " | none";
+            }
+            if (s.name == "WGPUChainedStructOut" && s.fields[j].name == "next") {
+                nullable = " | none";
+            }
             if (s.name == "WGPURenderPassDescriptor" && s.fields[j].name == "colorAttachments") {
                 tp = "cptr /* WGPURenderPassColorAttachment* a.k.a WGPURenderPassColorAttachment[] */";
             }

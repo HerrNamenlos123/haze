@@ -106,6 +106,11 @@ export class PlatformStrings {
   }
 }
 
+export enum ECollectionMode {
+  WrapIntoModuleNamespace,
+  ImportUnderRootDirectly,
+}
+
 export enum EModuleFileDir {
   BinaryDir = "bin",
   SourceDir = "src",

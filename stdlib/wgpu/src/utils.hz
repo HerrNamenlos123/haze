@@ -1,0 +1,49 @@
+
+toOptionalFFI(text: str | none): inline ffi.WGPUStringView {
+    do unsafe {
+        if text {
+            let view: inline ffi.WGPUStringView = uninitialized;
+            __c__("view.data = text.data;");
+            __c__("view.length = text.length;");
+            return view;
+        }
+        else {
+            let view: inline ffi.WGPUStringView = uninitialized;
+            __c__("view.data = 0;");
+            __c__("view.length = 0;");
+            return view;
+        }
+    }
+}
+
+fromOptionalFFI(view: inline ffi.WGPUStringView): str | none {
+    do unsafe {
+        let available = false;
+        __c__("available = view.data != NULL;");
+        if available {
+            let text = "";
+            __c__("text = hzstd_str_dup(HZSTD_STRING(view.data, view.length));");
+            return text;
+        }
+        else {
+            return none;
+        }
+    }
+}
+
+toFFO(text: str): inline ffi.WGPUStringView {
+    do unsafe {
+        let view: inline ffi.WGPUStringView = uninitialized;
+        __c__("view.data = text.data;");
+        __c__("view.length = text.length;");
+        return view;
+    }
+}
+
+fromFFI(view: inline ffi.WGPUStringView): str {
+    do unsafe {
+        let text = "";
+        __c__("text = hzstd_str_dup(HZSTD_STRING(view.data, view.length));");
+        return text;
+    }
+}

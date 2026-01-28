@@ -38,8 +38,8 @@ main(): int {
                 "-DGLFW_BUILD_TESTS=OFF",
                 "-G",
                 "Ninja",
-                f"-DCMAKE_C_COMPILER=\"{cCompiler}\"",
-                f"-DCMAKE_CXX_COMPILER=\"{cxxCompiler}\"",
+                f"-DCMAKE_C_COMPILER={cCompiler}",
+                f"-DCMAKE_CXX_COMPILER={cxxCompiler}",
             }, 
             process.Options {
                 inherit_stdio: true,

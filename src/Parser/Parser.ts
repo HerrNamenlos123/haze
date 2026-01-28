@@ -831,6 +831,7 @@ class ASTTransformer extends HazeParserVisitor<any> {
         mutability: ctx.variableMutabilitySpecifier()
           ? this.mutability(ctx)
           : EVariableMutability.Default,
+        optional: Boolean(ctx.QUESTIONMARK()),
         defaultValue: ctx.expr() ? this.visit(ctx.expr()!) : null,
         sourceloc: this.loc(ctx),
       },

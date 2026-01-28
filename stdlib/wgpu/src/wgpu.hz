@@ -101,35 +101,11 @@ export struct TextureViewDescriptor {
     }
 }
 
-export struct CommandEncoderDescriptor {
-    label: str;
-
-    static fromFFI(conf: ffi.WGPUCommandEncoderDescriptor) {
-        let c = CommandEncoderDescriptor {
-            label: viewToStr(conf.label),
-        };
-        return c;
-    }
-
-    toFFI() {
-        let c = ffi.WGPUCommandEncoderDescriptor {
-            nextInChain: none,
-            label: strToView(this.label),
-        }
-        return c;
-    }
-}
-
 export struct Texture {
     handle: mut ffi.WGPUTextureImpl;
 
     createView(viewDescriptor?: TextureViewDescriptor): Result<mut TextureView, none> {
-        let vd = none as ffi.WGPUTextureViewDescriptor | none;
-        let vdd = viewDescriptor;
-        if vdd {
-            vd = vdd.toFFI();
-        }
-        let textureView = ffi.wgpuTextureCreateView(this.handle, vd);
+        let textureView = ffi.wgpuTextureCreateView(this.handle, toOptionalFFI(viewDescriptor));
         if textureView {
             return TextureView {
                 handle: textureView,
@@ -245,7 +221,7 @@ export struct RenderPassTimestampWrites {
 }
 
 export struct RenderPassDescriptor {
-    label: str = "";
+    debugLabel?: str;
     colorAttachments: []RenderPassColorAttachment = {};
     depthStencilAttachment: RenderPassDepthStencilAttachment | none = none;
     occlusionQuerySet: mut QuerySet | none = none;
@@ -253,7 +229,7 @@ export struct RenderPassDescriptor {
 
     static fromFFI(conf: ffi.WGPURenderPassDescriptor) {
         let c = RenderPassDescriptor {
-            label: viewToStr(conf.label),
+            debugLabel: fromOptionalFFI(conf.label),
             colorAttachments: {},
             depthStencilAttachment: none,
             occlusionQuerySet: none,
@@ -293,7 +269,7 @@ export struct RenderPassDescriptor {
     toFFI() {
         let c = ffi.WGPURenderPassDescriptor {
             nextInChain: none,
-            label: strToView(this.label),
+            label: toOptionalFFI(this.debugLabel),
             colorAttachmentCount: 0,
             colorAttachments: none,
             depthStencilAttachment: none,
@@ -728,23 +704,6 @@ export struct DeviceDescriptor {
     // uncapturedErrorCallbackInfo: inline WGPUUncapturedErrorCallbackInfo;
 }
 
-strToView(text: str) {
-    do unsafe {
-        let view: inline ffi.WGPUStringView = uninitialized;
-        __c__("view.data = text.data;");
-        __c__("view.length = text.length;");
-        return view;
-    }
-}
-
-viewToStr(view: inline ffi.WGPUStringView) {
-    do unsafe {
-        let text = "";
-        __c__("text = hzstd_str_dup(HZSTD_STRING(view.data, view.length));");
-        return text;
-    }
-}
-
 export type RequestDeviceCallback = (status: RequestDeviceStatus, device: mut Device, message: str) => void :: final;
 export struct RequestDeviceCallbackInfo {
     mode: CallbackMode = CallbackMode.WaitAnyOnly;
@@ -827,77 +786,6 @@ export struct Adapter {
         return Future(
             ffi.wgpuAdapterRequestDevice(this.handle, ffiDescriptor, ffiCallbackInfo)
         );
-    }
-}
-
-export struct CommandEncoder {
-    handle: mut ffi.WGPUCommandEncoderImpl;
-
-    beginRenderPass(descriptor: RenderPassDescriptor): Result<RenderPassEncoder, none> {
-        let handle = ffi.wgpuCommandEncoderBeginRenderPass(this.handle, descriptor.toFFI());
-        if handle {
-            return RenderPassEncoder {
-                handle: handle,
-            };
-        }
-    }
-
-    finish(descriptor?: CommandBufferDescriptor): Result<CommandBuffer, none> {
-        let d = none as ffi.WGPUCommandBufferDescriptor | none;
-        if descriptor {
-            d = descriptor.toFFI();
-        }
-        let buffer = ffi.wgpuCommandEncoderFinish(this.handle, d);
-        if buffer {
-            return CommandBuffer {
-                handle: buffer,
-            };
-        }
-    }
-}
-
-export struct Device {
-    handle: mut ffi.WGPUDeviceImpl;
-
-    getQueue(): Result<mut Queue, none> {
-        const queue = ffi.wgpuDeviceGetQueue(this.handle);
-        if queue {
-            return Queue {
-                handle: queue,
-            };
-        }
-    }
-
-    createCommandEncoder(descriptor?: CommandEncoderDescriptor): Result<CommandEncoder, none> {
-        let d = none as ffi.WGPUCommandEncoderDescriptor | none;
-        if descriptor {
-            d = descriptor.toFFI();
-        }
-        let commandEncoder = ffi.wgpuDeviceCreateCommandEncoder(this.handle, d);
-        if commandEncoder {
-            return CommandEncoder {
-                handle: commandEncoder,
-            };
-        }
-    }
-}
-
-export struct Queue {
-    handle: mut ffi.WGPUQueueImpl;
-
-    submit(commands: []CommandBuffer) {
-        let rawCommands = []ffi.WGPUCommandBufferImpl {};
-        for (let i = 0; i < commands.length; i++) {
-            rawCommands.push(commands[i].handle);
-        }
-
-        let len = 0 as usize;
-        __c__("len = hzstd_dynamic_array_size(rawCommands);");
-
-        let rawPtr = none as cptr;
-        __c__("rawPtr = hzstd_dynamic_array_raw_buffer(rawCommands);");
-
-        ffi.wgpuQueueSubmit(this.handle, len, rawPtr);
     }
 }
 

@@ -2923,7 +2923,10 @@ export class SemanticElaborator {
     return out;
   }
 
-  makeAndElaborateBlockScope(sourceScopeId: Collect.ScopeId, args: { lastExprIsEmit: boolean }) {
+  makeAndElaborateBlockScope(
+    sourceScopeId: Collect.ScopeId,
+    args: { lastExprIsEmit: boolean; unsafe?: boolean },
+  ) {
     const sourceScope = this.sr.cc.scopeNodes.get(sourceScopeId);
     assert(
       sourceScope.variant !== Collect.ENode.ModuleScope &&
@@ -2940,7 +2943,7 @@ export class SemanticElaborator {
       {
         targetScopeId: scopeId,
         sourceScopeId: sourceScopeId,
-        unsafe: false,
+        unsafe: args.unsafe ?? false,
       },
       args.lastExprIsEmit,
     );
@@ -4991,6 +4994,7 @@ export class SemanticElaborator {
           if (EvalCTFEBoolean(this.sr, conditionExprId)) {
             const { flow, writes, scopeId } = this.makeAndElaborateBlockScope(s.thenBlock, {
               lastExprIsEmit: false,
+              unsafe: inference?.unsafe,
             });
             const resultFlow = FlowResult.empty();
             resultFlow.addAll(conditionExpr.flow);
@@ -5019,6 +5023,7 @@ export class SemanticElaborator {
             if (EvalCTFEBoolean(this.sr, elifConditionExprId)) {
               const { flow, writes, scopeId } = this.makeAndElaborateBlockScope(elif.thenBlock, {
                 lastExprIsEmit: false,
+                unsafe: inference?.unsafe,
               });
               const resultFlow = FlowResult.empty();
               resultFlow.addAll(conditionExpr.flow);
@@ -5042,6 +5047,7 @@ export class SemanticElaborator {
           if (s.elseBlock) {
             const { flow, writes, scopeId } = this.makeAndElaborateBlockScope(s.elseBlock, {
               lastExprIsEmit: false,
+              unsafe: inference?.unsafe,
             });
             const resultFlow = FlowResult.empty();
             resultFlow.addAll(conditionExpr.flow);
@@ -5234,7 +5240,10 @@ export class SemanticElaborator {
           );
 
           const { flow, writes, scopeId } = this.withAdditionalConstraints(thenConstraints, () =>
-            this.makeAndElaborateBlockScope(s.thenBlock, { lastExprIsEmit: false }),
+            this.makeAndElaborateBlockScope(s.thenBlock, {
+              lastExprIsEmit: false,
+              unsafe: inference?.unsafe,
+            }),
           );
           ifStatement.then = scopeId;
           resultWrites.addAll(writes);
@@ -5281,7 +5290,10 @@ export class SemanticElaborator {
             scopeConstraints.addAll(thisBranchConstraints);
 
             const { flow, writes, scopeId } = this.withAdditionalConstraints(scopeConstraints, () =>
-              this.makeAndElaborateBlockScope(e.thenBlock, { lastExprIsEmit: false }),
+              this.makeAndElaborateBlockScope(e.thenBlock, {
+                lastExprIsEmit: false,
+                unsafe: inference?.unsafe,
+              }),
             );
             resultWrites.addAll(writes);
             branchFlows.push({
@@ -5306,7 +5318,10 @@ export class SemanticElaborator {
             scopeConstraints.addAll(thisBranchPrevConstraints);
 
             const { flow, writes, scopeId } = this.withAdditionalConstraints(scopeConstraints, () =>
-              this.makeAndElaborateBlockScope(s.elseBlock!, { lastExprIsEmit: false }),
+              this.makeAndElaborateBlockScope(s.elseBlock!, {
+                lastExprIsEmit: false,
+                unsafe: inference?.unsafe,
+              }),
             );
             resultWrites.addAll(writes);
             branchFlows.push({
@@ -5489,7 +5504,10 @@ export class SemanticElaborator {
         );
 
         const { flow, writes, scopeId } = this.withAdditionalConstraints(conditionConstraints, () =>
-          this.makeAndElaborateBlockScope(s.block, { lastExprIsEmit: false }),
+          this.makeAndElaborateBlockScope(s.block, {
+            lastExprIsEmit: false,
+            unsafe: inference?.unsafe,
+          }),
         );
         resultFlow.addAll(flow);
         resultWrites.addAll(writes);
@@ -5864,6 +5882,7 @@ export class SemanticElaborator {
 
         const { flow, writes, scopeId } = this.makeAndElaborateBlockScope(s.body, {
           lastExprIsEmit: false,
+          unsafe: inference?.unsafe,
         });
         flow.add(FlowType.Fallthrough);
 
@@ -5985,6 +6004,7 @@ export class SemanticElaborator {
             }
             const { flow, writes, scopeId } = this.makeAndElaborateBlockScope(s.body, {
               lastExprIsEmit: false,
+              unsafe: inference?.unsafe,
             });
             resultFlow.addAll(flow);
             resultWrites.addAll(writes);
@@ -7197,7 +7217,10 @@ export class SemanticElaborator {
         genericsScope: blockScopeExpr.scope,
       },
       () => {
-        return this.makeAndElaborateBlockScope(blockScopeExpr.scope, { lastExprIsEmit: true });
+        return this.makeAndElaborateBlockScope(blockScopeExpr.scope, {
+          lastExprIsEmit: true,
+          unsafe: inference?.unsafe,
+        });
       },
     );
 
@@ -7248,7 +7271,10 @@ export class SemanticElaborator {
       { currentScope: attempt.attemptScope, genericsScope: attempt.attemptScope },
       () => {
         this.inAttemptExpr = attemptExprId;
-        return this.makeAndElaborateBlockScope(attempt.attemptScope, { lastExprIsEmit: true });
+        return this.makeAndElaborateBlockScope(attempt.attemptScope, {
+          lastExprIsEmit: true,
+          unsafe: inference?.unsafe,
+        });
       },
     );
 
@@ -7284,7 +7310,10 @@ export class SemanticElaborator {
             errorUnion,
           );
         }
-        return this.makeAndElaborateBlockScope(attempt.elseScope, { lastExprIsEmit: true });
+        return this.makeAndElaborateBlockScope(attempt.elseScope, {
+          lastExprIsEmit: true,
+          unsafe: inference?.unsafe,
+        });
       },
     );
 
@@ -8559,17 +8588,26 @@ export class SemanticBuilder {
       }
     });
 
-    return makeTypeUse(
-      this.sr,
-      Semantic.addType(this.sr, {
-        variant: Semantic.ENode.UntaggedUnionDatatype,
-        members: canonicalMembers,
-        concrete: !members.some((m) => !isTypeConcrete(this.sr, m)),
-      })[1],
-      EDatatypeMutability.Const,
-      false,
-      sourceloc,
-    )[1];
+    // Canonicalization: Create a stable key from the sorted members
+    // This ensures that unions with the same members always have the same TypeDefId
+    const canonicalKey = canonicalMembers.map((id) => id.toString()).join(",");
+
+    const existingUnionId = this.sr.elaboratedUntaggedUnions.get(canonicalKey);
+    if (existingUnionId !== undefined) {
+      // Reuse the existing union TypeDef
+      return makeTypeUse(this.sr, existingUnionId, EDatatypeMutability.Const, false, sourceloc)[1];
+    }
+
+    // Create new union and cache it
+    const [_, unionTypeDefId] = Semantic.addType(this.sr, {
+      variant: Semantic.ENode.UntaggedUnionDatatype,
+      members: canonicalMembers,
+      concrete: !members.some((m) => !isTypeConcrete(this.sr, m)),
+    });
+
+    this.sr.elaboratedUntaggedUnions.set(canonicalKey, unionTypeDefId);
+
+    return makeTypeUse(this.sr, unionTypeDefId, EDatatypeMutability.Const, false, sourceloc)[1];
   }
 
   taggedUnionTypeUse(
@@ -8577,18 +8615,29 @@ export class SemanticBuilder {
     nodiscard: boolean,
     sourceloc: SourceLoc,
   ) {
-    return makeTypeUse(
-      this.sr,
-      Semantic.addType(this.sr, {
-        variant: Semantic.ENode.TaggedUnionDatatype,
-        members: members,
-        nodiscard: nodiscard,
-        concrete: !members.some((m) => !isTypeConcrete(this.sr, m.type)),
-      })[1],
-      EDatatypeMutability.Const,
-      false,
-      sourceloc,
-    )[1];
+    // Canonicalization: Create a stable key from the members (tags + types) and nodiscard flag
+    // This ensures that tagged unions with the same structure always have the same TypeDefId
+    const canonicalKey = `${nodiscard ? "nodiscard:" : ""}${members
+      .map((m) => `${m.tag}:${m.type}`)
+      .join(",")}`;
+
+    const existingUnionId = this.sr.elaboratedTaggedUnions.get(canonicalKey);
+    if (existingUnionId !== undefined) {
+      // Reuse the existing union TypeDef
+      return makeTypeUse(this.sr, existingUnionId, EDatatypeMutability.Const, false, sourceloc)[1];
+    }
+
+    // Create new tagged union and cache it
+    const [_, unionTypeDefId] = Semantic.addType(this.sr, {
+      variant: Semantic.ENode.TaggedUnionDatatype,
+      members: members,
+      nodiscard: nodiscard,
+      concrete: !members.some((m) => !isTypeConcrete(this.sr, m.type)),
+    });
+
+    this.sr.elaboratedTaggedUnions.set(canonicalKey, unionTypeDefId);
+
+    return makeTypeUse(this.sr, unionTypeDefId, EDatatypeMutability.Const, false, sourceloc)[1];
   }
 
   noneExpr() {
@@ -8902,6 +8951,8 @@ export type SemanticResult = {
 
   elaboratedStructDatatypes: StructDefCache;
   elaboratedFuncdefSymbols: FuncDefCache;
+  elaboratedUntaggedUnions: Map<string, Semantic.TypeDefId>;
+  elaboratedTaggedUnions: Map<string, Semantic.TypeDefId>;
   elaboratedNamespaceSymbols: {
     originalSharedInstance: Collect.NSSharedInstanceId;
     substitutionContext: Semantic.ElaborationContext;
@@ -10248,6 +10299,8 @@ export namespace Semantic {
 
       elaboratedStructDatatypes: new Map(),
       elaboratedFuncdefSymbols: new Map(),
+      elaboratedUntaggedUnions: new Map(),
+      elaboratedTaggedUnions: new Map(),
       elaboratedEnumSymbols: new Map(),
       elaboratedPrimitiveTypes: [],
       elaboratedNamespaceSymbols: [],
@@ -11135,6 +11188,10 @@ export namespace Semantic {
 
       case Semantic.ENode.AttemptExpr: {
         return `attempt {...} else {...}`;
+      }
+
+      case Semantic.ENode.UnionTagReferenceExpr: {
+        return `${Semantic.serializeTypeDef(sr, expr.unionType)}.${expr.tag}`;
       }
 
       case Semantic.ENode.ArraySliceExpr: {

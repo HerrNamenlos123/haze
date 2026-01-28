@@ -1,0 +1,68 @@
+
+export struct CommandEncoderDescriptor {
+    label: str;
+}
+
+fromFFI(v: ffi.WGPUCommandEncoderDescriptor) {
+    return CommandEncoderDescriptor {
+        label: viewToStr(v.label),
+    };
+}
+
+fromOptionalFFI(v: ffi.WGPUCommandEncoderDescriptor | none) {
+    if !v {
+        return none;
+    }
+    return CommandEncoderDescriptor {
+        label: viewToStr(v.label),
+    };
+}
+
+toFFI(c: CommandEncoderDescriptor) {
+    return ffi.WGPUCommandEncoderDescriptor {
+        nextInChain: none,
+        label: strToView(this.label),
+    }
+}
+
+toOptionalFFI(c: CommandEncoderDescriptor | none) {
+    if !c {
+        return none;
+    }
+    return ffi.WGPUCommandEncoderDescriptor {
+        nextInChain: none,
+        label: strToView(this.label),
+    }
+}
+
+export struct CommandEncoder {
+    handle: mut ffi.WGPUCommandEncoderImpl;
+
+    beginRenderPass(descriptor: RenderPassDescriptor): Result<RenderPassEncoder, none> {
+        let handle = ffi.wgpuCommandEncoderBeginRenderPass(this.handle, descriptor.toFFI());
+        if handle {
+            return fromFFI(handle);
+        }
+    }
+
+    finish(descriptor?: CommandBufferDescriptor): Result<CommandBuffer, none> {
+        let d = none as ffi.WGPUCommandBufferDescriptor | none;
+        if descriptor {
+            d = descriptor.toFFI();
+        }
+        let buffer = ffi.wgpuCommandEncoderFinish(this.handle, d);
+        if buffer {
+            return fromFFI(buffer);
+        }
+    }
+}
+
+fromFFI(v: ffi.WGPUCommandEncoderImpl) {
+    return CommandEncoder {
+        handle: v,
+    };
+}
+
+toFFI(v: CommandEncoder) {
+    return v.handle;
+}

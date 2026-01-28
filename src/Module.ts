@@ -31,6 +31,7 @@ import fs from "fs";
 import { version } from "../package.json";
 import {
   ConfigParser,
+  ECollectionMode,
   EModuleFileDir,
   ModuleType,
   parseModuleMetadata,
@@ -43,16 +44,13 @@ import {
   type GeneratorGraphNode,
   type ModuleConfig,
   type ModuleMetadata,
-  type ScriptDef,
 } from "./shared/Config";
 import { Parser } from "./Parser/Parser";
 import {
   Collect,
   CollectFile,
   CollectImmediate,
-  ECollectionMode,
   makeCollectionContext,
-  PrettyPrintCollected,
   type CollectionContext,
 } from "./SymbolCollection/SymbolCollection";
 import { generateCode } from "./Codegen/CodeGenerator";
@@ -71,7 +69,6 @@ import which from "which";
 
 import { MultiBar, Presets, SingleBar } from "cli-progress";
 import chalk from "chalk";
-import { sleep } from "./main";
 import { once } from "events";
 
 export enum EModulePrintCompilerPhase {
@@ -1203,6 +1200,7 @@ function execInherit(str: string, dir?: string) {
 export class ModuleCompiler {
   cc: CollectionContext;
   currentModuleRootDir: string | null = null;
+  currentUnitScope: Collect.ScopeId | null = null;
 
   constructor(
     public config: ModuleConfig,
@@ -1243,12 +1241,23 @@ export class ModuleCompiler {
   async collectFile(filepath: string, collectionMode: ECollectionMode) {
     const fileText = await readFile(filepath, "utf-8");
     const ast = Parser.parseTextToAST(this.config, fileText, filepath);
+
+    // Determine parent scope based on collection mode
+    let parentScopeId: Collect.ScopeId;
+    if (collectionMode === ECollectionMode.WrapIntoModuleNamespace) {
+      // Create unit scope once and reuse it for all files in this collection session
+      if (this.currentUnitScope === null) {
+        this.currentUnitScope = this.makeUnit()[1];
+      }
+      parentScopeId = this.currentUnitScope;
+    } else {
+      parentScopeId = this.cc.moduleScopeId;
+    }
+
     CollectFile(
       this.cc,
       ast,
-      collectionMode === ECollectionMode.WrapIntoModuleNamespace
-        ? this.makeUnit()[1]
-        : this.cc.moduleScopeId,
+      parentScopeId,
       filepath,
       this.config.name,
       this.config.version,

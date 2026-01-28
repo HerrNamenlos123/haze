@@ -141,7 +141,7 @@ genericLiteral
 
 structContent
     : sourceLocationPrefixRule LCURLY structContent* RCURLY                                                 #StructContentWithSourceloc
-    | variableMutabilitySpecifier? id COLON datatype (EQUALS expr)? SEMI?                                    #StructMember
+    | variableMutabilitySpecifier? id QUESTIONMARK? COLON datatype (EQUALS expr)? SEMI?                     #StructMember
     | static=STATIC? mutability=(MUT | CONST)? name=(RAW_ID | TYPE | OPERATORASSIGN | OPERATORREBIND | OPERATORPLUS | OPERATORMINUS | OPERATORMUL | OPERATORDIV | OPERATORMOD | OPERATORSUBSCRIPT | OPERATORAS) (LANGLE generic+=id (COMMA generic+=id)* RANGLE)? LB params RB (COLON datatype)? requiresBlock? (funcbody | SEMI?)    #StructMethod
     | structDefinition                                                                                      #NestedStructDefinition
     ;

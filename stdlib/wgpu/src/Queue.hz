@@ -1,0 +1,29 @@
+
+export struct Queue {
+    handle: mut ffi.WGPUQueueImpl;
+
+    submit(commands: []CommandBuffer) {
+        let rawCommands = []ffi.WGPUCommandBufferImpl {};
+        for (let i = 0; i < commands.length; i++) {
+            rawCommands.push(commands[i].handle);
+        }
+
+        let len = 0 as usize;
+        __c__("len = hzstd_dynamic_array_size(rawCommands);");
+
+        let rawPtr = none as cptr;
+        __c__("rawPtr = hzstd_dynamic_array_raw_buffer(rawCommands);");
+
+        ffi.wgpuQueueSubmit(this.handle, len, rawPtr);
+    }
+}
+
+fromFFI(v: mut ffi.WGPUQueueImpl) {
+    return Queue {
+        handle: v,
+    };
+}
+
+toFFI(v: Queue) {
+    return v.handle;
+}

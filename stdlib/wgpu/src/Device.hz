@@ -1,0 +1,22 @@
+
+export struct Device {
+    handle: mut ffi.WGPUDeviceImpl;
+
+    getQueue(): Result<mut Queue, none> {
+        const queue = ffi.wgpuDeviceGetQueue(this.handle);
+        if queue {
+            return fromFFI(queue);
+        }
+    }
+
+    createCommandEncoder(descriptor?: CommandEncoderDescriptor): Result<CommandEncoder, none> {
+        let commandEncoder = ffi.wgpuDeviceCreateCommandEncoder(this.handle, toOptionalFFI(descriptor));
+        if commandEncoder {
+            return fromFFI(commandEncoder);
+        }
+    }
+
+    createShaderModule(descriptor: ShaderModuleDescriptor) {
+        return fromFFI(ffi.wgpuDeviceCreateShaderModule(this.handle, toFFI(descriptor)));
+    }
+}
