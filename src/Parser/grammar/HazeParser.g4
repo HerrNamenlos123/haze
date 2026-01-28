@@ -111,14 +111,17 @@ interpolatedStringFragment: FSTRING_GRAPHEME | interpolatedStringExpression;
 interpolatedStringExpression: LCURLY expr RCURLY;
 
 datatypeImpl
-    : datatypeFragment (DOT datatypeFragment)*                                  #NamedDatatype
+    : INLINE datatypeImpl                                                       #InlineDatatype
+    | MUT datatypeImpl                                                          #MutDatatype
+    | CONST datatypeImpl                                                        #ConstDatatype
+    | datatypeFragment (DOT datatypeFragment)*                                  #NamedDatatype
     | LBRACKET n=(INTEGER_LITERAL | HEX_INTEGER_LITERAL) RBRACKET datatype      #StackArrayDatatype
     | LBRACKET RBRACKET datatype                                                #DynamicArrayDatatype
     | LB params RB ARROW datatype requiresBlock?                                #FunctionDatatype
     ;
 
 baseDatatype
-    : (MUT | CONST)? (INLINE)? datatypeImpl                                     #DatatypeWithMutability
+    : datatypeImpl                                                              #DatatypeWithMutability
     | LB datatype RB                                                            #DatatypeInParenthesis
     ;
 

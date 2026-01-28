@@ -165,6 +165,9 @@ import {
   AttemptExprContext,
   RaiseStatementContext,
   RegexLiteralContext,
+  InlineDatatypeContext,
+  ConstDatatypeContext,
+  MutDatatypeContext,
 } from "./grammar/autogen/HazeParser";
 import {
   BaseErrorListener,
@@ -1409,91 +1412,119 @@ class ASTTransformer extends HazeParserVisitor<any> {
     };
   };
 
+  visitMutDatatype = (ctx: MutDatatypeContext): ASTTypeUse => {
+    const dt: ASTTypeUse = this.visit(ctx.datatypeImpl());
+    if ("mutability" in dt && ctx.MUT()) {
+      dt.mutability = EDatatypeMutability.Mut;
+    }
+    return dt;
+  };
+
+  visitConstDatatype = (ctx: ConstDatatypeContext): ASTTypeUse => {
+    const dt: ASTTypeUse = this.visit(ctx.datatypeImpl());
+    if ("mutability" in dt && ctx.CONST()) {
+      dt.mutability = EDatatypeMutability.Const;
+    }
+    return dt;
+  };
+
+  visitInlineDatatype = (ctx: InlineDatatypeContext): ASTTypeUse => {
+    const dt: ASTTypeUse = this.visit(ctx.datatypeImpl());
+    if ("inline" in dt && ctx.INLINE()) {
+      dt.inline = true;
+    }
+    return dt;
+  };
+
   visitDatatypeWithMutability = (ctx: DatatypeWithMutabilityContext): ASTTypeUse => {
     const datatype: ASTTypeUse = this.visit(ctx.datatypeImpl());
-    switch (datatype.variant) {
-      case "StackArrayDatatype":
-        if (ctx.INLINE()) {
-          throw new CompilerError(
-            `The 'inline' modifier cannot be applied to a static array type (static arrays are always inline)`,
-            this.loc(ctx),
-          );
-        }
-        if (ctx.CONST()) {
-          datatype.mutability = EDatatypeMutability.Const;
-        }
-        if (ctx.MUT()) {
-          throw new CompilerError(
-            `The 'mut' modifier cannot be applied to a static array type`,
-            this.loc(ctx),
-          );
-        }
-        break;
-
-      case "NamedDatatype":
-        if (ctx.INLINE()) {
-          datatype.inline = true;
-        }
-        if (ctx.CONST()) {
-          datatype.mutability = EDatatypeMutability.Const;
-        }
-        if (ctx.MUT()) {
-          datatype.mutability = EDatatypeMutability.Mut;
-        }
-        break;
-
-      case "DynamicArrayDatatype":
-        if (ctx.INLINE()) {
-          throw new CompilerError(
-            `The 'inline' modifier cannot be applied to a dynamic array type`,
-            this.loc(ctx),
-          );
-        }
-        if (ctx.CONST()) {
-          datatype.mutability = EDatatypeMutability.Const;
-        }
-        if (ctx.MUT()) {
-          datatype.mutability = EDatatypeMutability.Mut;
-        }
-        break;
-
-      case "UntaggedUnionDatatype":
-      case "TaggedUnionDatatype":
-      case "FunctionDatatype":
-        if (ctx.INLINE()) {
-          throw new CompilerError(
-            `The 'inline' modifier cannot be applied to unions function datatypes`,
-            this.loc(ctx),
-          );
-        }
-        if (ctx.CONST()) {
-          throw new CompilerError(
-            `The 'const' modifier cannot be applied to unions or function datatypes`,
-            this.loc(ctx),
-          );
-        }
-        if (ctx.MUT()) {
-          throw new CompilerError(
-            `The 'mut' modifier cannot be applied to unions or function datatypes`,
-            this.loc(ctx),
-          );
-        }
-        break;
-
-      case "Deferred":
-      case "ParameterPack":
-        if (ctx.CONST() || ctx.MUT() || ctx.INLINE()) {
-          throw new CompilerError(
-            `A mutability specifier cannot appear on a '${datatype.variant}' datatype`,
-            this.loc(ctx),
-          );
-        }
-        break;
-
-      default:
-        assert(false);
-    }
     return datatype;
+    // const datatype: ASTTypeUse = this.visit(ctx.datatypeImpl());
+    // switch (datatype.variant) {
+    //   case "StackArrayDatatype":
+    //     if (ctx.INLINE()) {
+    //       throw new CompilerError(
+    //         `The 'inline' modifier cannot be applied to a static array type (static arrays are always inline)`,
+    //         this.loc(ctx),
+    //       );
+    //     }
+    //     if (ctx.CONST()) {
+    //       datatype.mutability = EDatatypeMutability.Const;
+    //     }
+    //     if (ctx.MUT()) {
+    //       throw new CompilerError(
+    //         `The 'mut' modifier cannot be applied to a static array type`,
+    //         this.loc(ctx),
+    //       );
+    //     }
+    //     break;
+
+    //   case "NamedDatatype":
+    //     if (ctx.INLINE()) {
+    //       datatype.inline = true;
+    //     }
+    //     if (ctx.CONST()) {
+    //       datatype.mutability = EDatatypeMutability.Const;
+    //     }
+    //     if (ctx.MUT()) {
+    //       datatype.mutability = EDatatypeMutability.Mut;
+    //     }
+    //     break;
+
+    //   case "DynamicArrayDatatype":
+    //     console.log(ctx.getText());
+    //     console.log(ctx._inline);
+    //     if (ctx.INLINE()) {
+    //       throw new CompilerError(
+    //         `The 'inline' modifier cannot be applied to a dynamic array type`,
+    //         this.loc(ctx),
+    //       );
+    //     }
+    //     if (ctx.CONST()) {
+    //       datatype.mutability = EDatatypeMutability.Const;
+    //     }
+    //     if (ctx.MUT()) {
+    //       datatype.mutability = EDatatypeMutability.Mut;
+    //     }
+    //     break;
+
+    //   case "UntaggedUnionDatatype":
+    //   case "TaggedUnionDatatype":
+    //   case "FunctionDatatype":
+    //     if (ctx.INLINE()) {
+    //       throw new CompilerError(
+    //         `The 'inline' modifier cannot be applied to unions function datatypes`,
+    //         this.loc(ctx),
+    //       );
+    //     }
+    //     if (ctx.CONST()) {
+    //       throw new CompilerError(
+    //         `The 'const' modifier cannot be applied to unions or function datatypes`,
+    //         this.loc(ctx),
+    //       );
+    //     }
+    //     if (ctx.MUT()) {
+    //       throw new CompilerError(
+    //         `The 'mut' modifier cannot be applied to unions or function datatypes`,
+    //         this.loc(ctx),
+    //       );
+    //     }
+    //     break;
+
+    //   case "Deferred":
+    //   case "ParameterPack":
+    //     if (ctx.CONST() || ctx.MUT() || ctx.INLINE()) {
+    //       throw new CompilerError(
+    //         `A mutability specifier cannot appear on a '${datatype.variant}' datatype`,
+    //         this.loc(ctx),
+    //       );
+    //     }
+    //     break;
+
+    //   default:
+    //     assert(false);
+    // }
+    // return datatype;
   };
 
   visitDatatypeInParenthesis = (ctx: DatatypeInParenthesisContext): ASTTypeUse => {

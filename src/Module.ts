@@ -72,6 +72,7 @@ import which from "which";
 import { MultiBar, Presets, SingleBar } from "cli-progress";
 import chalk from "chalk";
 import { sleep } from "./main";
+import { once } from "events";
 
 export enum EModulePrintCompilerPhase {
   Parsing,
@@ -259,26 +260,17 @@ async function createTarGz(cwd: string, files: string[], outPath: string) {
   const output = fs.createWriteStream(outPath);
   const archive = archiver("tar", { gzip: true });
 
-  return new Promise<void>((resolve, reject) => {
-    output.on("close", () => {
-      resolve();
-    });
+  archive.pipe(output);
 
-    archive.on("error", (err) => reject(err));
+  for (const file of files) {
+    archive.file(path.join(cwd, file), { name: file });
+  }
 
-    archive.pipe(output);
-
-    // Add each file relative to cwd
-    files.forEach((file) => {
-      const fullPath = path.join(cwd, file);
-      archive.file(fullPath, { name: file });
-    });
-
-    archive.finalize();
-  });
+  await archive.finalize();
+  await once(output, "close");
 }
 
-async function extractTarGz(archivePath: string, destDir: string) {
+function extractTarGz(archivePath: string, destDir: string) {
   return new Promise<void>((resolve, reject) => {
     fs.createReadStream(archivePath)
       .pipe(gunzip())
@@ -413,7 +405,7 @@ async function catchErrors(fn: () => Promise<void>) {
   }
 }
 
-async function commandExists(cmd: string) {
+function commandExists(cmd: string) {
   return new Promise<boolean>((resolve) => {
     const child = spawn("command", ["-v", cmd], { shell: true });
     child.on("close", (code) => resolve(code === 0));
@@ -697,6 +689,7 @@ export class ProjectCompiler {
         configFilePath: undefined,
         dependencies: [],
         linkerFlags: new PlatformStrings(),
+        interfaceLinkerFlags: new PlatformStrings(),
         moduleType: ModuleType.Executable,
         nostdlib: false,
         platform: getCurrentPlatform(),

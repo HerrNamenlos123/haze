@@ -515,7 +515,6 @@ class CodeGenerator {
         sortedLoweredTypes.push(type);
       } else if (type.variant === Lowered.ENode.StructDatatype) {
         appliedTypes.add(type);
-        sortedLoweredTypes.push(type);
         for (const m of type.members) {
           const type = this.lr.typeUseNodes.get(m.type);
           const typeDef = this.lr.typeDefNodes.get(type.type);
@@ -524,6 +523,7 @@ class CodeGenerator {
             processTypeUse(m.type);
           }
         }
+        sortedLoweredTypes.push(type);
       } else if (type.variant === Lowered.ENode.PrimitiveDatatype) {
         appliedTypes.add(type);
         sortedLoweredTypes.push(type);

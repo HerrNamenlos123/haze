@@ -1131,6 +1131,7 @@ export namespace Conversion {
       );
     }
 
+    // Explicit Integer <-> Float conversion
     if (
       ((Conversion.isFloat(sr, fromTypeInstance.type) &&
         Conversion.isIntegerById(sr, toInstance.type)) ||
@@ -1444,38 +1445,46 @@ export namespace Conversion {
         );
       }
     }
+
+    // Value To Tagged Union (i.e. Value-To-Result)
     if (to.variant === Semantic.ENode.TaggedUnionDatatype) {
-      const matching = to.members.findIndex((m) => {
+      const matchFunc = (m: { tag: string; type: Semantic.TypeUseId }) => {
         // Check Direct match
         if (m.type === fromExpr.type) {
           return true;
         }
 
         // Check match with implicit mutability change
+        const mUse = sr.typeUseNodes.get(m.type);
         if (
           fromTypeInstance.mutability === EDatatypeMutability.Const &&
-          sr.typeUseNodes.get(m.type).mutability === EDatatypeMutability.Default
+          mUse.mutability === EDatatypeMutability.Default &&
+          mUse.type === fromTypeInstance.type
         ) {
           return true;
         }
         if (
           fromTypeInstance.mutability === EDatatypeMutability.Mut &&
-          sr.typeUseNodes.get(m.type).mutability === EDatatypeMutability.Default
+          sr.typeUseNodes.get(m.type).mutability === EDatatypeMutability.Default &&
+          mUse.type === fromTypeInstance.type
         ) {
           return true;
         }
 
         return false;
-      });
+      };
 
-      if (matching != -1) {
+      const allMatches = to.members.filter(matchFunc);
+      const matchingIndex = to.members.findIndex(matchFunc);
+
+      if (allMatches.length === 1 && matchingIndex != -1) {
         return ok(
           Semantic.addExpr(sr, {
             variant: Semantic.ENode.ValueToUnionCastExpr,
             expr: fromExprId,
             instanceIds: fromExpr.instanceIds,
             type: toId,
-            index: matching,
+            index: matchingIndex,
             sourceloc: sourceloc,
             isTemporary: fromExpr.isTemporary,
             flow: flow,

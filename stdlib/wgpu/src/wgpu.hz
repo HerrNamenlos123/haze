@@ -38,6 +38,325 @@ export struct Surface {
     configure(config: SurfaceConfiguration) {
         ffi.wgpuSurfaceConfigure(this.handle, config.toFFI());
     }
+
+    getCurrentTexture() {
+        let texture = ffi.WGPUSurfaceTexture {
+            nextInChain: none,
+            texture: none,
+            status: ffi.WGPUSurfaceGetCurrentTextureStatus_SuccessOptimal, // will be overwritten
+        };
+        ffi.wgpuSurfaceGetCurrentTexture(this.handle, texture);
+        return SurfaceTexture.fromFFI(texture);
+    }
+
+    present(): Result<none, none> {
+        let status = ffi.wgpuSurfacePresent(this.handle);
+        if status == ffi.WGPUStatus_Success {
+            return Result<none, none>.Ok(none);
+        }
+        return Result<none, none>.Err(none);
+    }
+}
+
+export struct TextureViewDescriptor {
+    label: str;
+    format: TextureFormat;
+    dimension: TextureViewDimension;
+    baseMipLevel: u32;
+    mipLevelCount: u32;
+    baseArrayLayer: u32;
+    arrayLayerCount: u32;
+    aspect: TextureAspect;
+    usage: TextureUsage;
+
+    static fromFFI(conf: ffi.WGPUTextureViewDescriptor) {
+        let c = TextureViewDescriptor {
+            label: viewToStr(conf.label),
+            format: TextureFormatFromFFI(conf.format),
+            dimension: TextureViewDimensionFromFFI(conf.dimension),
+            baseMipLevel: conf.baseMipLevel,
+            mipLevelCount: conf.mipLevelCount,
+            baseArrayLayer: conf.baseArrayLayer,
+            arrayLayerCount: conf.arrayLayerCount,
+            aspect: TextureAspectFromFFI(conf.aspect),
+            usage: textureUsageFromFFI(conf.usage),
+        };
+        return c;
+    }
+
+    toFFI() {
+        let c = ffi.WGPUTextureViewDescriptor {
+            nextInChain: none,
+            label: strToView(this.label),
+            format: TextureFormatToFFI(this.format),
+            dimension: TextureViewDimensionToFFI(this.dimension),
+            baseMipLevel: this.baseMipLevel,
+            mipLevelCount: this.mipLevelCount,
+            baseArrayLayer: this.baseArrayLayer,
+            arrayLayerCount: this.arrayLayerCount,
+            aspect: TextureAspectToFFI(this.aspect),
+            usage: textureUsageToFFI(this.usage),
+        }
+        return c;
+    }
+}
+
+export struct CommandEncoderDescriptor {
+    label: str;
+
+    static fromFFI(conf: ffi.WGPUCommandEncoderDescriptor) {
+        let c = CommandEncoderDescriptor {
+            label: viewToStr(conf.label),
+        };
+        return c;
+    }
+
+    toFFI() {
+        let c = ffi.WGPUCommandEncoderDescriptor {
+            nextInChain: none,
+            label: strToView(this.label),
+        }
+        return c;
+    }
+}
+
+export struct Texture {
+    handle: mut ffi.WGPUTextureImpl;
+
+    createView(viewDescriptor?: TextureViewDescriptor): Result<mut TextureView, none> {
+        let vd = none as ffi.WGPUTextureViewDescriptor | none;
+        let vdd = viewDescriptor;
+        if vdd {
+            vd = vdd.toFFI();
+        }
+        let textureView = ffi.wgpuTextureCreateView(this.handle, vd);
+        if textureView {
+            return TextureView {
+                handle: textureView,
+            };
+        }
+        return none;
+    }
+}
+
+export struct RenderPassEncoder {
+    handle: mut ffi.WGPURenderPassEncoderImpl;
+
+    end() {
+        ffi.wgpuRenderPassEncoderEnd(this.handle);
+    }
+}
+
+export struct TextureView {
+    handle: mut ffi.WGPUTextureViewImpl;
+}
+
+export struct CommandBuffer {
+    handle: mut ffi.WGPUCommandBufferImpl;
+}
+
+export struct CommandBufferDescriptor {
+    label: str;
+
+    static fromFFI(conf: ffi.WGPUCommandBufferDescriptor) {
+        let c = CommandBufferDescriptor {
+            label: viewToStr(conf.label),
+        };
+        return c;
+    }
+
+    toFFI() {
+        let c = ffi.WGPUCommandBufferDescriptor {
+            nextInChain: none,
+            label: strToView(this.label),
+        }
+        return c;
+    }
+}
+
+export struct RenderPassDepthStencilAttachment {
+    view: mut TextureView;
+    depthLoadOp: LoadOp;
+    depthStoreOp: StoreOp;
+    depthClearValue: f32;
+    depthReadOnly: bool;
+    stencilLoadOp: LoadOp;
+    stencilStoreOp: StoreOp;
+    stencilClearValue: u32;
+    stencilReadOnly: bool;
+
+    static fromFFI(conf: ffi.WGPURenderPassDepthStencilAttachment) {
+        let c = RenderPassDepthStencilAttachment {
+            view: TextureView { handle: conf.view },
+            depthLoadOp: LoadOpFromFFI(conf.depthLoadOp),
+            depthStoreOp: StoreOpFromFFI(conf.depthStoreOp),
+            depthClearValue: conf.depthClearValue,
+            depthReadOnly: conf.depthReadOnly,
+            stencilLoadOp: LoadOpFromFFI(conf.stencilLoadOp),
+            stencilStoreOp: StoreOpFromFFI(conf.stencilStoreOp),
+            stencilClearValue: conf.stencilClearValue,
+            stencilReadOnly: conf.stencilReadOnly,
+        };
+        return c;
+    }
+
+    toFFI() {
+        let c = ffi.WGPURenderPassDepthStencilAttachment {
+            view: this.view.handle,
+            depthLoadOp: LoadOpToFFI(this.depthLoadOp),
+            depthStoreOp: StoreOpToFFI(this.depthStoreOp),
+            depthClearValue: this.depthClearValue,
+            depthReadOnly: this.depthReadOnly,
+            stencilLoadOp: LoadOpToFFI(this.stencilLoadOp),
+            stencilStoreOp: StoreOpToFFI(this.stencilStoreOp),
+            stencilClearValue: this.stencilClearValue,
+            stencilReadOnly: this.stencilReadOnly,
+        }
+        return c;
+    }
+}
+
+export struct QuerySet {
+    handle: mut ffi.WGPUQuerySetImpl;
+}
+
+export struct RenderPassTimestampWrites {
+    querySet: mut QuerySet;
+    beginningOfPassWriteIndex: u32;
+    endOfPassWriteIndex: u32;
+
+    static fromFFI(conf: ffi.WGPURenderPassTimestampWrites) {
+        let c = RenderPassTimestampWrites {
+            querySet: QuerySet { handle: conf.querySet },
+            beginningOfPassWriteIndex: conf.beginningOfPassWriteIndex,
+            endOfPassWriteIndex: conf.endOfPassWriteIndex,
+        };
+        return c;
+    }
+
+    toFFI() {
+        let c = ffi.WGPURenderPassTimestampWrites {
+            querySet: this.querySet.handle,
+            beginningOfPassWriteIndex: this.beginningOfPassWriteIndex,
+            endOfPassWriteIndex: this.endOfPassWriteIndex,
+        }
+        return c;
+    }
+}
+
+export struct RenderPassDescriptor {
+    label: str = "";
+    colorAttachments: []RenderPassColorAttachment = {};
+    depthStencilAttachment: RenderPassDepthStencilAttachment | none = none;
+    occlusionQuerySet: mut QuerySet | none = none;
+    timestampWrites: RenderPassTimestampWrites | none = none;
+
+    static fromFFI(conf: ffi.WGPURenderPassDescriptor) {
+        let c = RenderPassDescriptor {
+            label: viewToStr(conf.label),
+            colorAttachments: {},
+            depthStencilAttachment: none,
+            occlusionQuerySet: none,
+            timestampWrites: none,
+        };
+
+        for (let i = 0; i < conf.colorAttachmentCount; i++) {
+            do unsafe {
+                let e: ffi.WGPURenderPassColorAttachment = uninitialized;
+                __c__("e = &((WGPURenderPassColorAttachment*)conf->colorAttachments)[i];");
+                c.colorAttachments.push(RenderPassColorAttachment.fromFFI(e));
+            }
+        }
+
+        let sa = none as ffi.WGPURenderPassDepthStencilAttachment | none;
+        // This is assigned in C because of a constness mismatch we ignore
+        __c__("sa = (WGPURenderPassDepthStencilAttachment*)conf->depthStencilAttachment;"); 
+        if sa {
+            c.depthStencilAttachment = RenderPassDepthStencilAttachment.fromFFI(sa);
+        }
+
+        let oq = conf.occlusionQuerySet;
+        if oq {
+            c.occlusionQuerySet = QuerySet { handle: oq };
+        }
+
+        let tw = none as ffi.WGPURenderPassTimestampWrites | none;
+        // This is assigned in C because of a constness mismatch we ignore
+        __c__("tw = (WGPURenderPassTimestampWrites*)conf->timestampWrites;"); 
+        if tw {
+            c.timestampWrites = RenderPassTimestampWrites.fromFFI(tw);
+        }
+
+        return c;
+    }
+
+    toFFI() {
+        let c = ffi.WGPURenderPassDescriptor {
+            nextInChain: none,
+            label: strToView(this.label),
+            colorAttachmentCount: 0,
+            colorAttachments: none,
+            depthStencilAttachment: none,
+            occlusionQuerySet: none,
+            timestampWrites: none,
+        }
+
+        let attachments: [](inline ffi.WGPURenderPassColorAttachment) = {};
+        for (let i = 0; i < this.colorAttachments.length; i++) {
+            attachments.push(this.colorAttachments[i].toInlineFFI());
+        }
+
+        __c__("c->colorAttachmentCount = hzstd_dynamic_array_size(attachments);");
+        __c__("c->colorAttachments = hzstd_dynamic_array_raw_buffer(attachments);");
+
+        let sa = this.depthStencilAttachment;
+        if sa {
+            c.depthStencilAttachment = sa.toFFI();
+        }
+
+        let oq = this.occlusionQuerySet;
+        if oq {
+            c.occlusionQuerySet = oq.handle;
+        }
+
+        let tw = this.timestampWrites;
+        if tw {
+            c.timestampWrites = tw.toFFI();
+        }
+
+        return c;
+    }
+}
+
+export struct SurfaceTexture {
+    texture: Texture | none;
+    status: SurfaceGetCurrentTextureStatus;
+
+    static fromFFI(conf: ffi.WGPUSurfaceTexture) {
+        let c = SurfaceTexture {
+            texture: none,
+            status: SurfaceGetCurrentTextureStatusFromFFI(conf.status),
+        };
+        let t = conf.texture;
+        if t {
+            c.texture = Texture { handle: t };
+        }
+        return c;
+    }
+
+    toFFI() {
+        let t = none as mut ffi.WGPUTextureImpl | none;
+        let tt = this.texture;
+        if tt {
+            t = tt.handle;
+        }
+        let c = ffi.WGPUSurfaceTexture {
+            nextInChain: none,
+            texture: t,
+            status: SurfaceGetCurrentTextureStatusToFFI(this.status),
+        }
+        return c;
+    }
 }
 
 export struct SurfaceConfiguration {
@@ -176,6 +495,88 @@ export struct SurfaceCapabilities {
             __c__("caps->alphaModeCount = hzstd_dynamic_array_size(this->alphaModes);");
             __c__("caps->alphaModes = hzstd_dynamic_array_raw_buffer(this->alphaModes);");
             return caps;
+        }
+    }
+}
+
+extern C const WGPU_DEPTH_SLICE_UNDEFINED: u32;
+
+export struct RenderPassColorAttachment {
+    view: mut TextureView | none = none;
+    depthSlice: u32 | none = none;
+    resolveTarget: mut TextureView | none = none;
+    loadOp: LoadOp;
+    storeOp: StoreOp;
+    clearValue: Color;
+
+    static fromFFI(conf: ffi.WGPURenderPassColorAttachment) {
+        do unsafe {
+            let c = RenderPassColorAttachment {
+                view: none,
+                depthSlice: WGPU_DEPTH_SLICE_UNDEFINED,
+                resolveTarget: none,
+                loadOp: LoadOpFromFFI(conf.loadOp),
+                storeOp: StoreOpFromFFI(conf.storeOp),
+                clearValue: {
+                    r: conf.clearValue.r,
+                    g: conf.clearValue.g,
+                    b: conf.clearValue.b,
+                    a: conf.clearValue.a,
+                }
+            };
+
+            if conf.depthSlice != WGPU_DEPTH_SLICE_UNDEFINED {
+                c.depthSlice = conf.depthSlice;
+            }
+
+            let tv = conf.view;
+            if tv {
+                c.view = TextureView { handle: tv };
+            }
+
+            let tvv = conf.resolveTarget;
+            if tvv {
+                c.resolveTarget = TextureView { handle: tvv };
+            }
+
+            return c;
+        }
+    }
+
+    toInlineFFI() {
+        do unsafe {
+            let v = none as mut ffi.WGPUTextureViewImpl | none;
+            let vv = this.view;
+            if vv {
+                v = vv.handle;
+            }
+            let r = none as mut ffi.WGPUTextureViewImpl | none;
+            let rr = this.resolveTarget;
+            if rr {
+                r = rr.handle;
+            }
+
+            let ds = WGPU_DEPTH_SLICE_UNDEFINED;
+            let dss = this.depthSlice;
+            if dss {
+                ds = dss;
+            }
+
+            let c = inline ffi.WGPURenderPassColorAttachment {
+                nextInChain: none,
+                depthSlice: ds,
+                view: v,
+                resolveTarget: r,
+                loadOp: LoadOpToFFI(this.loadOp),
+                storeOp: StoreOpToFFI(this.storeOp),
+                clearValue: {
+                    r: this.clearValue.r,
+                    g: this.clearValue.g,
+                    b: this.clearValue.b,
+                    a: this.clearValue.a,
+                }
+            };
+            return c;
         }
     }
 }
@@ -429,6 +830,32 @@ export struct Adapter {
     }
 }
 
+export struct CommandEncoder {
+    handle: mut ffi.WGPUCommandEncoderImpl;
+
+    beginRenderPass(descriptor: RenderPassDescriptor): Result<RenderPassEncoder, none> {
+        let handle = ffi.wgpuCommandEncoderBeginRenderPass(this.handle, descriptor.toFFI());
+        if handle {
+            return RenderPassEncoder {
+                handle: handle,
+            };
+        }
+    }
+
+    finish(descriptor?: CommandBufferDescriptor): Result<CommandBuffer, none> {
+        let d = none as ffi.WGPUCommandBufferDescriptor | none;
+        if descriptor {
+            d = descriptor.toFFI();
+        }
+        let buffer = ffi.wgpuCommandEncoderFinish(this.handle, d);
+        if buffer {
+            return CommandBuffer {
+                handle: buffer,
+            };
+        }
+    }
+}
+
 export struct Device {
     handle: mut ffi.WGPUDeviceImpl;
 
@@ -440,10 +867,38 @@ export struct Device {
             };
         }
     }
+
+    createCommandEncoder(descriptor?: CommandEncoderDescriptor): Result<CommandEncoder, none> {
+        let d = none as ffi.WGPUCommandEncoderDescriptor | none;
+        if descriptor {
+            d = descriptor.toFFI();
+        }
+        let commandEncoder = ffi.wgpuDeviceCreateCommandEncoder(this.handle, d);
+        if commandEncoder {
+            return CommandEncoder {
+                handle: commandEncoder,
+            };
+        }
+    }
 }
 
 export struct Queue {
     handle: mut ffi.WGPUQueueImpl;
+
+    submit(commands: []CommandBuffer) {
+        let rawCommands = []ffi.WGPUCommandBufferImpl {};
+        for (let i = 0; i < commands.length; i++) {
+            rawCommands.push(commands[i].handle);
+        }
+
+        let len = 0 as usize;
+        __c__("len = hzstd_dynamic_array_size(rawCommands);");
+
+        let rawPtr = none as cptr;
+        __c__("rawPtr = hzstd_dynamic_array_raw_buffer(rawCommands);");
+
+        ffi.wgpuQueueSubmit(this.handle, len, rawPtr);
+    }
 }
 
 export createInstance() { 

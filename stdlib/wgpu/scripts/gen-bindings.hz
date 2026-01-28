@@ -656,8 +656,13 @@ parseType(args: GenArgs, fieldType: str): str {
 
 betterEnum(file: str, e: EnumResult, r: Regex, finalName: str) {
     let values = "";
+
     for (let j = 0; j < e.values.length; j++) {
-        values = values + f"    {regex.replace(r, e.values[j].name, "")} = {e.values[j].value},\n";
+        let v = regex.replace(r, e.values[j].name, "");
+        if ascii.isDigit(v[0]) {
+            v = "_" + v;
+        }
+        values = values + f"    {v} = {e.values[j].value},\n";
     }
     file = file + f"export enum {finalName} {{\n{values}}};\n\n";
 
@@ -685,6 +690,10 @@ generateBindings(args: GenArgs): Result<none, fs.Error> {
     let functionsReturnNullable = []str {
         "wgpuCreateInstance",
         "wgpuDeviceGetQueue",
+        "wgpuTextureCreateView",
+        "wgpuDeviceCreateCommandEncoder",
+        "wgpuCommandEncoderBeginRenderPass",
+        "wgpuCommandEncoderFinish",
     };
 
     for (let i = 0; i < args.implStructs.length; i++) {
@@ -738,10 +747,17 @@ generateBindings(args: GenArgs): Result<none, fs.Error> {
         let fields = "";
         for (let j = 0; j < s.fields.length; j++) {
             let nullable = "";
+            let tp = parseType(args, s.fields[j].fieldType);
             if (s.fields[j].name == "nextInChain") {
                 nullable = " | none";
             }
-            fields = fields + f"        {s.fields[j].name}: {parseType(args, s.fields[j].fieldType)}{nullable};\n";
+            if (s.name == "WGPUSurfaceTexture" && s.fields[j].name == "texture") {
+                nullable = " | none";
+            }
+            if (s.name == "WGPURenderPassDescriptor" && s.fields[j].name == "colorAttachments") {
+                tp = "cptr /* WGPURenderPassColorAttachment* a.k.a WGPURenderPassColorAttachment[] */";
+            }
+            fields = fields + f"        {s.fields[j].name}: {tp}{nullable};\n";
         }
         file = file + f"    export extern C noemit struct {s.name} {{\n{fields}    }}\n\n";
     }
@@ -804,6 +820,24 @@ generateBindings(args: GenArgs): Result<none, fs.Error> {
         }
         if e.name == "WGPUCompositeAlphaMode" {
             file = betterEnum(file, e, r"WGPUCompositeAlphaMode_", "CompositeAlphaMode");
+        }
+        if e.name == "WGPUSurfaceGetCurrentTextureStatus" {
+            file = betterEnum(file, e, r"WGPUSurfaceGetCurrentTextureStatus_", "SurfaceGetCurrentTextureStatus");
+        }
+        if e.name == "WGPUTextureViewDimension" {
+            file = betterEnum(file, e, r"WGPUTextureViewDimension_", "TextureViewDimension");
+        }
+        if e.name == "WGPUTextureAspect" {
+            file = betterEnum(file, e, r"WGPUTextureAspect_", "TextureAspect");
+        }
+        if e.name == "WGPULoadOp" {
+            file = betterEnum(file, e, r"WGPULoadOp_", "LoadOp");
+        }
+        if e.name == "WGPUStoreOp" {
+            file = betterEnum(file, e, r"WGPUStoreOp_", "StoreOp");
+        }
+        if e.name == "WGPUStatus" {
+            file = betterEnum(file, e, r"WGPUStatus_", "Status");
         }
     }
 
