@@ -194,11 +194,9 @@ export createWindow(config: WindowConfig): Result<Window, none> {
         ffi.windowHint(GLFW_CLIENT_API, GLFW_NO_API);
     }
 
-    const width = config.size.width;
-    const height = config.size.height;
-    assert(width >= i32.min && width <= i32.max);
-    assert(height >= i32.min && height <= i32.max);
-    const handle = ffi.createWindow(width, height, config.title, none, none);
+    assert(config.size.width >= i32.min && config.size.width <= i32.max);
+    assert(config.size.height >= i32.min && config.size.height <= i32.max);
+    const handle = ffi.createWindow(config.size.width, config.size.height, config.title, none, none);
     if !handle {
         return Result<Window, none>.Err(none);
     }

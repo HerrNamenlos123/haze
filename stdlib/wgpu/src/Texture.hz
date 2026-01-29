@@ -14,13 +14,13 @@ export struct TextureViewDescriptor {
 fromFFI(v: ffi.WGPUTextureViewDescriptor): TextureViewDescriptor :: final {
     return TextureViewDescriptor {
         label: fromFFI(v.label),
-        format: TextureFormatFromFFI(v.format),
-        dimension: TextureViewDimensionFromFFI(v.dimension),
+        format: fromFFI(v.format),
+        dimension: fromFFI(v.dimension),
         baseMipLevel: v.baseMipLevel,
         mipLevelCount: v.mipLevelCount,
         baseArrayLayer: v.baseArrayLayer,
         arrayLayerCount: v.arrayLayerCount,
-        aspect: TextureAspectFromFFI(v.aspect),
+        aspect: fromFFI(v.aspect),
         usage: fromFFI(v.usage),
     };
 }
@@ -36,13 +36,13 @@ toFFI(v: TextureViewDescriptor): ffi.WGPUTextureViewDescriptor :: final {
     return ffi.WGPUTextureViewDescriptor {
         nextInChain: none,
         label: toFFI(v.label),
-        format: TextureFormatToFFI(v.format),
-        dimension: TextureViewDimensionToFFI(v.dimension),
+        format: toFFI(v.format),
+        dimension: toFFI(v.dimension),
         baseMipLevel: v.baseMipLevel,
         mipLevelCount: v.mipLevelCount,
         baseArrayLayer: v.baseArrayLayer,
         arrayLayerCount: v.arrayLayerCount,
-        aspect: TextureAspectToFFI(v.aspect),
+        aspect: toFFI(v.aspect),
         usage: toFFI(v.usage),
     };
 }

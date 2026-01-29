@@ -666,14 +666,14 @@ betterEnum(file: str, e: EnumResult, r: Regex, finalName: str) {
     }
     file = file + f"export enum {finalName} {{\n{values}}};\n\n";
 
-    file = file + f"{finalName}ToFFI(nice: {finalName}): ffi.{e.name} {{\n";
+    file = file + f"toFFI(nice: {finalName}): ffi.{e.name} {{\n";
     file = file + f"    do unsafe {{\n";
     file = file + f"        let raw: ffi.{e.name} = uninitialized;\n";
     file = file + f"        __c__(\"raw = (int)nice;\"); // By design binary-equivalent, should turn into a no-op when optimized\n";
     file = file + f"        return raw;\n";
     file = file + f"    }}\n";
     file = file + f"}}\n";
-    file = file + f"{finalName}FromFFI(raw: ffi.{e.name}): {finalName} {{\n";
+    file = file + f"fromFFI(raw: ffi.{e.name}): {finalName} {{\n";
     file = file + f"    do unsafe {{\n";
     file = file + f"        let nice: {finalName} = uninitialized;\n";
     file = file + f"        __c__(\"nice = (int)raw;\"); // By design binary-equivalent, should turn into a no-op when optimized\n";

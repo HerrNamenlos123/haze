@@ -1,0 +1,11 @@
+
+
+export struct Future {
+    id: u64;
+}
+
+fromFFI(future: inline ffi.WGPUFuture): const Future {
+    return {
+        id: future.id,
+    };
+}

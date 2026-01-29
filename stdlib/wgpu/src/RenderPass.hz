@@ -68,49 +68,16 @@ fromFFI(v: ffi.WGPURenderPassDescriptor): RenderPassDescriptor :: final {
 
 toFFI(v: RenderPassDescriptor): ffi.WGPURenderPassDescriptor :: final {
     do unsafe {
-        let colorAttachments: []inline ffi.WGPURenderPassColorAttachment = {};
-        for (let i = 0; i < v.colorAttachments.length; i++) {
-            colorAttachments.push(toFFI(v.colorAttachments[i]));
-        }
-
-        let depthStencilPointer = none as ffi.WGPURenderPassDepthStencilAttachment | none;
-        let depthStencilValue: inline ffi.WGPURenderPassDepthStencilAttachment = uninitialized;
-        let dsa = v.depthStencilAttachment;
-        if dsa {
-            depthStencilValue = toFFI(dsa);
-            __c__("depthStencilPointer = &depthStencilValue;");
-        }
-
-        let occlusionQuerySet = none as mut ffi.WGPUQuerySetImpl | none;
-        let oqs = v.occlusionQuerySet;
-        if oqs {
-            occlusionQuerySet = oqs.handle;
-        }
-
-        let timestampWritesPointer = none as ffi.WGPURenderPassTimestampWrites | none;
-        let timestampWritesValue: inline ffi.WGPURenderPassTimestampWrites = uninitialized;
-        let tsw = v.timestampWrites;
-        if tsw {
-            timestampWritesValue = toFFI(tsw);
-            __c__("timestampWritesPointer = &timestampWritesValue;");
-        }
-
-        let label = toOptionalFFI(v.debugLabel);
-
-        assert(colorAttachments.length >= 0);
-        let conf = ffi.WGPURenderPassDescriptor {
+        let colorAttachmentArray = arrayToFFI<RenderPassColorAttachment, inline ffi.WGPURenderPassColorAttachment>(v.colorAttachments);
+        return ffi.WGPURenderPassDescriptor {
             nextInChain: none,
-            label: label,
-            colorAttachmentCount: colorAttachments.length,
-            colorAttachments: none,
-            depthStencilAttachment: depthStencilPointer,
-            occlusionQuerySet: occlusionQuerySet,
-            timestampWrites: timestampWritesPointer,
+            label: toOptionalFFI(v.debugLabel),
+            colorAttachmentCount: colorAttachmentArray.length,
+            colorAttachments: colorAttachmentArray.data,
+            depthStencilAttachment: v.depthStencilAttachment ? toFFI(v.depthStencilAttachment) : none,
+            occlusionQuerySet: v.occlusionQuerySet ? v.occlusionQuerySet.handle : none,
+            timestampWrites: v.timestampWrites ? toFFI(v.timestampWrites) : none,
         };
-
-        __c__("conf.colorAttachments = colorAttachments.data;");
-
-        return conf;
     }
 }
 
@@ -129,12 +96,12 @@ export struct RenderPassDepthStencilAttachment {
 fromFFI(v: ffi.WGPURenderPassDepthStencilAttachment): RenderPassDepthStencilAttachment :: final {
     return RenderPassDepthStencilAttachment {
         view: TextureView { handle: v.view },
-        depthLoadOp: LoadOpFromFFI(v.depthLoadOp),
-        depthStoreOp: StoreOpFromFFI(v.depthStoreOp),
+        depthLoadOp: fromFFI(v.depthLoadOp),
+        depthStoreOp: fromFFI(v.depthStoreOp),
         depthClearValue: v.depthClearValue,
         depthReadOnly: v.depthReadOnly,
-        stencilLoadOp: LoadOpFromFFI(v.stencilLoadOp),
-        stencilStoreOp: StoreOpFromFFI(v.stencilStoreOp),
+        stencilLoadOp: fromFFI(v.stencilLoadOp),
+        stencilStoreOp: fromFFI(v.stencilStoreOp),
         stencilClearValue: v.stencilClearValue,
         stencilReadOnly: v.stencilReadOnly,
     };
@@ -143,12 +110,12 @@ fromFFI(v: ffi.WGPURenderPassDepthStencilAttachment): RenderPassDepthStencilAtta
 toFFI(v: RenderPassDepthStencilAttachment): ffi.WGPURenderPassDepthStencilAttachment :: final {
     return ffi.WGPURenderPassDepthStencilAttachment {
         view: v.view.handle,
-        depthLoadOp: LoadOpToFFI(v.depthLoadOp),
-        depthStoreOp: StoreOpToFFI(v.depthStoreOp),
+        depthLoadOp: toFFI(v.depthLoadOp),
+        depthStoreOp: toFFI(v.depthStoreOp),
         depthClearValue: v.depthClearValue,
         depthReadOnly: v.depthReadOnly,
-        stencilLoadOp: LoadOpToFFI(v.stencilLoadOp),
-        stencilStoreOp: StoreOpToFFI(v.stencilStoreOp),
+        stencilLoadOp: toFFI(v.stencilLoadOp),
+        stencilStoreOp: toFFI(v.stencilStoreOp),
         stencilClearValue: v.stencilClearValue,
         stencilReadOnly: v.stencilReadOnly,
     };
@@ -186,69 +153,34 @@ export struct RenderPassColorAttachment {
 }
 
 fromFFI(v: ffi.WGPURenderPassColorAttachment): RenderPassColorAttachment :: final {
-    do unsafe {
-        let c = RenderPassColorAttachment {
-            view: none,
-            depthSlice: WGPU_DEPTH_SLICE_UNDEFINED,
-            resolveTarget: none,
-            loadOp: LoadOpFromFFI(v.loadOp),
-            storeOp: StoreOpFromFFI(v.storeOp),
-            clearValue: {
-                r: v.clearValue.r,
-                g: v.clearValue.g,
-                b: v.clearValue.b,
-                a: v.clearValue.a,
-            }
-        };
-
-        if v.depthSlice != WGPU_DEPTH_SLICE_UNDEFINED {
-            c.depthSlice = v.depthSlice;
+    return RenderPassColorAttachment {
+        view: v.view ? TextureView { handle: v.view } : none,
+        depthSlice: v.depthSlice != WGPU_DEPTH_SLICE_UNDEFINED ? v.depthSlice : none,
+        resolveTarget: v.resolveTarget ? TextureView { handle: v.resolveTarget } : none,
+        loadOp: fromFFI(v.loadOp),
+        storeOp: fromFFI(v.storeOp),
+        clearValue: {
+            r: v.clearValue.r,
+            g: v.clearValue.g,
+            b: v.clearValue.b,
+            a: v.clearValue.a,
         }
-
-        let tv = v.view;
-        if tv {
-            c.view = TextureView { handle: tv };
-        }
-
-        let tvv = v.resolveTarget;
-        if tvv {
-            c.resolveTarget = TextureView { handle: tvv };
-        }
-
-        return c;
-    }
+    };
 }
 
 toFFI(v: RenderPassColorAttachment): ffi.WGPURenderPassColorAttachment :: final {
-    do unsafe {
-        let viewHandle = none as mut ffi.WGPUTextureViewImpl | none;
-        let vv = v.view;
-        if vv {
-            viewHandle = vv.handle;
+    return inline ffi.WGPURenderPassColorAttachment {
+        nextInChain: none,
+        view: v.view ? v.view.handle : none,
+        depthSlice: v.depthSlice ? v.depthSlice : WGPU_DEPTH_SLICE_UNDEFINED,
+        resolveTarget: v.resolveTarget ? v.resolveTarget.handle : none,
+        loadOp: toFFI(v.loadOp),
+        storeOp: toFFI(v.storeOp),
+        clearValue: {
+            r: v.clearValue.r,
+            g: v.clearValue.g,
+            b: v.clearValue.b,
+            a: v.clearValue.a,
         }
-        let resolveHandle = none as mut ffi.WGPUTextureViewImpl | none;
-        let rr = v.resolveTarget;
-        if rr {
-            resolveHandle = rr.handle;
-        }
-
-        let ds = WGPU_DEPTH_SLICE_UNDEFINED;
-        let dss = v.depthSlice;
-        if dss {
-            ds = dss;
-        }
-
-        let a: inline ffi.WGPURenderPassColorAttachment = uninitialized;
-        __c__("a.nextInChain = NULL;");
-        __c__("a.view = viewHandle;");
-        __c__("a.depthSlice = ds;");
-        __c__("a.resolveTarget = resolveHandle;");
-        __c__("a.loadOp = LoadOpToFFI(v->loadOp);");
-        __c__("a.storeOp = StoreOpToFFI(v->storeOp);");
-        __c__("a.clearValue.r = v->clearValue.r;");
-        __c__("a.clearValue.g = v->clearValue.g;");
-        __c__("a.clearValue.b = v->clearValue.b;");
-        __c__("a.clearValue.a = v->clearValue.a;");
-        return a;
-    }
+    };
 }

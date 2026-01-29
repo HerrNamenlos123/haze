@@ -2,16 +2,6 @@
 export __c__("#include \"wgpu.h\"");
 __c__("#include \"wgpu_impl.c\"");
 
-export struct Future {
-    id: u64;
-
-    constructor(future: inline ffi.WGPUFuture): const Future {
-        return {
-            id: future.id,
-        };
-    }
-}
-
 export struct QuerySet {
     handle: mut ffi.WGPUQuerySetImpl;
 }
@@ -36,50 +26,11 @@ requestAdapterCallbackProxy(status: ffi.WGPURequestAdapterStatus, adapter: mut f
     do unsafe {
         let callback: RequestAdapterCallback = uninitialized;
         __c__("callback = (void*)userdata1;");
-        callback(RequestAdapterStatusFromFFI(status), Adapter { handle: adapter }, fromFFI(message));
+        callback(fromFFI(status), fromFFI(adapter), fromFFI(message));
     }
 }
 
-export struct Instance {
-    handle: mut ffi.WGPUInstanceImpl;
 
-    requestAdapter(adapterOpts: RequestAdapterOptions | none, callbackInfo: RequestAdapterCallbackInfo) {
-
-        let callback = callbackInfo.callback;
-        let userdata1: cptr = none;
-        __c__("userdata1 = (void*)callback;"); // Pass the function pointer to the highlevel callback into the lowlevel hook
-
-        let ffiCallbackInfo = inline ffi.WGPURequestAdapterCallbackInfo {
-            nextInChain: none,
-            callback: requestAdapterCallbackProxy,
-            mode: CallbackModeToFFI(callbackInfo.mode),
-            userdata1: userdata1,
-            userdata2: none,
-        };
-
-        if adapterOpts {
-            let surface = adapterOpts.compatibleSurface;
-            let compatibleSurface: mut ffi.WGPUSurfaceImpl | none = none;
-            if surface {
-                compatibleSurface = surface.handle;
-            }
-
-            return Future(
-                ffi.wgpuInstanceRequestAdapter(this.handle, {
-                    nextInChain: none,
-                    featureLevel: FeatureLevelToFFI(adapterOpts.featureLevel),
-                    powerPreference: PowerPreferenceToFFI(adapterOpts.powerPreference),
-                    forceFallbackAdapter: adapterOpts.forceFallbackAdapter,
-                    backendType: BackendTypeToFFI(adapterOpts.backendType),
-                    compatibleSurface: compatibleSurface,
-                }, ffiCallbackInfo)
-            );
-        }
-        else {
-            return Future(ffi.wgpuInstanceRequestAdapter(this.handle, none, ffiCallbackInfo));
-        }
-    }
-}
 
 export struct Limits {
     maxTextureDimension1D: u32 = 0;
@@ -175,80 +126,10 @@ requestDeviceCallbackProxy(status: ffi.WGPURequestDeviceStatus, device: mut ffi.
     do unsafe {
         let callback: RequestDeviceCallback = uninitialized;
         __c__("callback = (void*)userdata1;");
-        callback(RequestDeviceStatusFromFFI(status), Device { handle: device }, fromFFI(message));
+        callback(fromFFI(status), Device { handle: device }, fromFFI(message));
     }
 }
 
-
-export struct Adapter {
-    handle: mut ffi.WGPUAdapterImpl;
-
-    requestDevice(descriptor: DeviceDescriptor | none, callbackInfo: RequestDeviceCallbackInfo) {
-        let ffiDescriptor: ffi.WGPUDeviceDescriptor | none = none;
-        if descriptor {
-            let requiredFeatureCount = 0 as usize;
-            let requiredFeatures = none as cptr;
-
-            let features = descriptor.requiredFeatures;
-            __c__("requiredFeatureCount = hzstd_dynamic_array_size(features);");
-            __c__("requiredFeatures = hzstd_dynamic_array_raw_buffer(features);");
-
-            let limits = none as ffi.WGPULimits | none;
-            let requiredLimits = descriptor.requiredLimits;
-            if requiredLimits {
-                limits = requiredLimits.toFFI();
-            }
-
-            do unsafe {
-                let nullCallback = none as cptr;
-                let nullCallback2: ffi.WGPUUncapturedErrorCallback = uninitialized;
-                __c__("nullCallback2 = NULL;");
-
-                let a: inline ffi.WGPUDeviceLostCallbackInfo = uninitialized;
-                a.nextInChain = none;
-                __c__("a.callback = NULL;");
-                a.mode = ffi.WGPUCallbackMode_WaitAnyOnly;
-                a.userdata1 = none;
-                a.userdata2 = none;
-
-                let b: inline ffi.WGPUUncapturedErrorCallbackInfo = uninitialized;
-                b.nextInChain = none;
-                __c__("a.callback = NULL;");
-                b.userdata1 = none;
-                b.userdata2 = none;
-
-                ffiDescriptor = ffi.WGPUDeviceDescriptor {
-                    nextInChain: none,
-                    label: toOptionalFFI(descriptor.debugLabel),
-                    requiredFeatureCount: requiredFeatureCount,
-                    requiredFeatures: requiredFeatures,
-                    requiredLimits: limits,
-                    defaultQueue: {
-                        nextInChain: none,
-                        label: toOptionalFFI(descriptor.defaultQueue.debugLabel),
-                    },
-                    deviceLostCallbackInfo: a,
-                    uncapturedErrorCallbackInfo: b,
-                }
-            }
-        }
-
-        let userdata1 = none as cptr;
-        __c__("userdata1 = callbackInfo->callback;");
-
-        let ffiCallbackInfo = inline ffi.WGPURequestDeviceCallbackInfo {
-            nextInChain: none,
-            mode: CallbackModeToFFI(callbackInfo.mode),
-            callback: requestDeviceCallbackProxy,
-            userdata1: userdata1,
-            userdata2: none,
-        };
-
-        return Future(
-            ffi.wgpuAdapterRequestDevice(this.handle, ffiDescriptor, ffiCallbackInfo)
-        );
-    }
-}
 
 export createInstance() { 
     let instance = ffi.wgpuCreateInstance({
@@ -260,9 +141,7 @@ export createInstance() {
         }
     });
     if instance {
-        return Instance {
-            handle: instance,
-        };
+        return fromFFI(instance);
     }
     return none;
 }

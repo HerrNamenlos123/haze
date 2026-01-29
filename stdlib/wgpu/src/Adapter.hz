@@ -1,0 +1,78 @@
+
+export struct Adapter {
+    handle: mut ffi.WGPUAdapterImpl;
+
+    requestDevice(descriptor: DeviceDescriptor | none, callbackInfo: RequestDeviceCallbackInfo) {
+        let ffiDescriptor: ffi.WGPUDeviceDescriptor | none = none;
+        if descriptor {
+            let requiredFeatureCount = 0 as usize;
+            let requiredFeatures = none as cptr;
+
+            let features = descriptor.requiredFeatures;
+            __c__("requiredFeatureCount = hzstd_dynamic_array_size(features);");
+            __c__("requiredFeatures = hzstd_dynamic_array_raw_buffer(features);");
+
+            let limits = none as ffi.WGPULimits | none;
+            let requiredLimits = descriptor.requiredLimits;
+            if requiredLimits {
+                limits = requiredLimits.toFFI();
+            }
+
+            do unsafe {
+                let nullCallback = none as cptr;
+                let nullCallback2: ffi.WGPUUncapturedErrorCallback = uninitialized;
+                __c__("nullCallback2 = NULL;");
+
+                let a: inline ffi.WGPUDeviceLostCallbackInfo = uninitialized;
+                a.nextInChain = none;
+                __c__("a.callback = NULL;");
+                a.mode = ffi.WGPUCallbackMode_WaitAnyOnly;
+                a.userdata1 = none;
+                a.userdata2 = none;
+
+                let b: inline ffi.WGPUUncapturedErrorCallbackInfo = uninitialized;
+                b.nextInChain = none;
+                __c__("a.callback = NULL;");
+                b.userdata1 = none;
+                b.userdata2 = none;
+
+                ffiDescriptor = ffi.WGPUDeviceDescriptor {
+                    nextInChain: none,
+                    label: toOptionalFFI(descriptor.debugLabel),
+                    requiredFeatureCount: requiredFeatureCount,
+                    requiredFeatures: requiredFeatures,
+                    requiredLimits: limits,
+                    defaultQueue: {
+                        nextInChain: none,
+                        label: toOptionalFFI(descriptor.defaultQueue.debugLabel),
+                    },
+                    deviceLostCallbackInfo: a,
+                    uncapturedErrorCallbackInfo: b,
+                }
+            }
+        }
+
+        let userdata1 = none as cptr;
+        __c__("userdata1 = callbackInfo->callback;");
+
+        let ffiCallbackInfo = inline ffi.WGPURequestDeviceCallbackInfo {
+            nextInChain: none,
+            mode: toFFI(callbackInfo.mode),
+            callback: requestDeviceCallbackProxy,
+            userdata1: userdata1,
+            userdata2: none,
+        };
+
+        return fromFFI(
+            ffi.wgpuAdapterRequestDevice(this.handle, ffiDescriptor, ffiCallbackInfo)
+        );
+    }
+}
+
+fromFFI(v: mut ffi.WGPUAdapterImpl): mut Adapter :: final {
+    return Adapter { handle: v };
+}
+
+toFFI(v: Adapter): mut ffi.WGPUAdapterImpl :: final {
+    return v.handle;
+}

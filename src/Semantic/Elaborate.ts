@@ -2041,7 +2041,12 @@ export class SemanticElaborator {
       const member = this.sr.symbolNodes.get(memberId);
       assert(member.variant === Semantic.ENode.VariableSymbol && member.type);
 
-      return this.sr.b.memberAccess(objectId, memberAccess.memberName, memberAccess.sourceloc);
+      return this.sr.b.memberAccess(
+        objectId,
+        memberAccess.memberName,
+        this.currentContext.constraints,
+        memberAccess.sourceloc,
+      );
     }
 
     const collectedStruct = this.sr.cc.typeDefNodes.get(objectType.originalCollectedDefinition);
@@ -7414,8 +7419,16 @@ export class SemanticElaborator {
 
   ternaryExpr(ternary: Collect.TernaryExpr, inference: Inference) {
     const [condition, conditionId] = this.expr(ternary.condition, { unsafe: inference?.unsafe });
-    let [then, thenId] = this.expr(ternary.then, inference);
-    let [_else, elseId] = this.expr(ternary.else, inference);
+
+    const constraints = ConstraintSet.empty();
+    this.buildLogicalConstraintSet(constraints, conditionId);
+
+    let [then, thenId] = this.withAdditionalConstraints(constraints, () =>
+      this.expr(ternary.then, inference),
+    );
+    let [_else, elseId] = this.withAdditionalConstraints(constraints.inverse(), () =>
+      this.expr(ternary.else, inference),
+    );
 
     const flow = FlowResult.empty();
     flow.addAll(then.flow);
@@ -8684,7 +8697,12 @@ export class SemanticBuilder {
     });
   }
 
-  memberAccess(exprId: Semantic.ExprId, name: string, sourceloc: SourceLoc) {
+  memberAccess(
+    exprId: Semantic.ExprId,
+    name: string,
+    constraints: ConstraintSet,
+    sourceloc: SourceLoc,
+  ) {
     const expr = this.sr.exprNodes.get(exprId);
     const exprType = this.sr.typeDefNodes.get(this.sr.typeUseNodes.get(expr.type).type);
     assert(exprType.variant === Semantic.ENode.StructDatatype);
@@ -8699,7 +8717,74 @@ export class SemanticBuilder {
     }
     assert(memberType);
 
-    return this.memberAccessRaw(exprId, name, memberType, false, sourceloc);
+    const [resultExpr, resultExprId] = this.memberAccessRaw(
+      exprId,
+      name,
+      memberType,
+      false,
+      sourceloc,
+    );
+
+    // This is for taking accesses like foo.bar and wrapping them in a union cast if the member is narrowed.
+    const memberTypeUse = this.sr.typeUseNodes.get(memberType);
+    const memberTypeDef = this.sr.typeDefNodes.get(memberTypeUse.type);
+    if (
+      memberTypeDef.variant === Semantic.ENode.UntaggedUnionDatatype ||
+      memberTypeDef.variant === Semantic.ENode.TaggedUnionDatatype
+    ) {
+      const members =
+        memberTypeDef.variant === Semantic.ENode.UntaggedUnionDatatype
+          ? memberTypeDef.members
+          : memberTypeDef.members.map((m) => m.type);
+
+      const narrowing = Conversion.typeNarrowing(this.sr);
+      narrowing.addVariants(members);
+      narrowing.constrainFromConstraints(constraints, resultExprId);
+
+      assert(narrowing.possibleVariants.size <= members.length);
+      if (narrowing.possibleVariants.size === 1) {
+        // Only one value remains: Union to Value
+        const tag = members.findIndex((m) => m === [...narrowing.possibleVariants][0]);
+        assert(tag !== -1);
+
+        const [result, resultId] = Semantic.addExpr(this.sr, {
+          variant: Semantic.ENode.UnionToValueCastExpr,
+          instanceIds: [],
+          expr: resultExprId,
+          tag: tag,
+          isTemporary: false,
+          canBeUnwrappedForLHS: true,
+          sourceloc: resultExpr.sourceloc,
+          type: [...narrowing.possibleVariants][0],
+          flow: resultExpr.flow,
+          writes: resultExpr.writes,
+        });
+        return [result, resultId] as const;
+      } else if (narrowing.possibleVariants.size !== members.length) {
+        // If multiple values remain but they are not equal: Union to Union (e.g. A | B | null to A | B)
+
+        // We do not need type checking since the source is the same union and narrowing can only remove members
+        // Not like in Conversion, there we actually need it
+        const newUnion = this.sr.b.untaggedUnionTypeUse(
+          [...narrowing.possibleVariants],
+          expr.sourceloc,
+        );
+
+        return Semantic.addExpr(this.sr, {
+          variant: Semantic.ENode.UnionToUnionCastExpr,
+          instanceIds: [],
+          expr: resultExprId,
+          castComesFromNarrowingAndMayBeUnwrapped: true,
+          isTemporary: false,
+          sourceloc: resultExpr.sourceloc,
+          type: newUnion,
+          flow: resultExpr.flow,
+          writes: resultExpr.writes,
+        });
+      }
+    }
+
+    return [resultExpr, resultExprId] as const;
   }
 
   arrayLiteral(

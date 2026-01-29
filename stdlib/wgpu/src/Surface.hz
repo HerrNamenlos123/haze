@@ -51,27 +51,17 @@ export struct SurfaceTexture {
 }
 
 fromFFI(v: ffi.WGPUSurfaceTexture): SurfaceTexture :: final {
-    let c = SurfaceTexture {
-        texture: none,
-        status: SurfaceGetCurrentTextureStatusFromFFI(v.status),
+    return SurfaceTexture {
+        texture: v.texture ? fromFFI(v.texture) : none,
+        status: fromFFI(v.status),
     };
-    let t = v.texture;
-    if t {
-        c.texture = fromFFI(t);
-    }
-    return c;
 }
 
 toFFI(v: SurfaceTexture): ffi.WGPUSurfaceTexture :: final {
-    let t = none as mut ffi.WGPUTextureImpl | none;
-    let tt = v.texture;
-    if tt {
-        t = toFFI(tt);
-    }
     return ffi.WGPUSurfaceTexture {
         nextInChain: none,
-        texture: t,
-        status: SurfaceGetCurrentTextureStatusToFFI(v.status),
+        texture: v.texture ? toFFI(v.texture) : none,
+        status: toFFI(v.status),
     };
 }
 
@@ -89,13 +79,13 @@ export struct SurfaceConfiguration {
 fromFFI(v: ffi.WGPUSurfaceConfiguration): SurfaceConfiguration :: final {
     let c = SurfaceConfiguration {
         device: Device { handle: v.device },
-        format: TextureFormatFromFFI(v.format),
+        format: fromFFI(v.format),
         usage: fromFFI(v.usage),
         width: v.width,
         height: v.height,
         viewFormats: {},
-        alphaMode: CompositeAlphaModeFromFFI(v.alphaMode),
-        presentMode: PresentModeFromFFI(v.presentMode),
+        alphaMode: fromFFI(v.alphaMode),
+        presentMode: fromFFI(v.presentMode),
     };
 
     for (let i = 0; i < v.viewFormatCount; i++) {
@@ -110,21 +100,19 @@ fromFFI(v: ffi.WGPUSurfaceConfiguration): SurfaceConfiguration :: final {
 }
 
 toFFI(v: SurfaceConfiguration): ffi.WGPUSurfaceConfiguration :: final {
-    let c = ffi.WGPUSurfaceConfiguration {
+    let viewFormats = arrayToFFI<TextureFormat, ffi.WGPUTextureFormat>(v.viewFormats);
+    return ffi.WGPUSurfaceConfiguration {
         nextInChain: none,
         device: v.device.handle,
-        format: TextureFormatToFFI(v.format),
+        format: toFFI(v.format),
         usage: toFFI(v.usage),
         width: v.width,
         height: v.height,
-        viewFormatCount: 0,
-        viewFormats: none,
-        alphaMode: CompositeAlphaModeToFFI(v.alphaMode),
-        presentMode: PresentModeToFFI(v.presentMode),
+        viewFormatCount: viewFormats.length,
+        viewFormats: viewFormats.data,
+        alphaMode: toFFI(v.alphaMode),
+        presentMode: toFFI(v.presentMode),
     };
-    __c__("c->viewFormatCount = hzstd_dynamic_array_size(v->viewFormats);");
-    __c__("c->viewFormats = hzstd_dynamic_array_raw_buffer(v->viewFormats);");
-    return c;
 }
 
 export struct SurfaceCapabilities {
@@ -169,23 +157,17 @@ fromFFI(v: ffi.WGPUSurfaceCapabilities): SurfaceCapabilities :: final {
 }
 
 toFFI(v: SurfaceCapabilities): ffi.WGPUSurfaceCapabilities :: final {
-    do unsafe {
-        let caps = ffi.WGPUSurfaceCapabilities {
-            nextInChain: none,
-            usages: toFFI(v.usages),
-            formatCount: 0,
-            formats: none,
-            presentModeCount: 0,
-            presentModes: none,
-            alphaModeCount: 0,
-            alphaModes: none,
-        };
-        __c__("caps->formatCount = hzstd_dynamic_array_size(v->formats);");
-        __c__("caps->formats = hzstd_dynamic_array_raw_buffer(v->formats);");
-        __c__("caps->presentModeCount = hzstd_dynamic_array_size(v->presentModes);");
-        __c__("caps->presentModes = hzstd_dynamic_array_raw_buffer(v->presentModes);");
-        __c__("caps->alphaModeCount = hzstd_dynamic_array_size(v->alphaModes);");
-        __c__("caps->alphaModes = hzstd_dynamic_array_raw_buffer(v->alphaModes);");
-        return caps;
-    }
+    let formats = arrayToFFI<TextureFormat, ffi.WGPUTextureFormat>(v.formats);
+    let presentModes = arrayToFFI<PresentMode, ffi.WGPUPresentMode>(v.presentModes);
+    let alphaModes = arrayToFFI<CompositeAlphaMode, ffi.WGPUCompositeAlphaMode>(v.alphaModes);
+    return ffi.WGPUSurfaceCapabilities {
+        nextInChain: none,
+        usages: toFFI(v.usages),
+        formatCount: formats.length,
+        formats: formats.data,
+        presentModeCount: presentModes.length,
+        presentModes: presentModes.data,
+        alphaModeCount: alphaModes.length,
+        alphaModes: alphaModes.data,
+    };
 }

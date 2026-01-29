@@ -48,3 +48,21 @@ fromFFI(view: inline ffi.WGPUStringView): str :: final {
         return text;
     }
 }
+
+struct ArrayFFIResult {
+    data: cptr = none;
+    length: usize = 0;
+}
+
+arrayToFFI<T, ffiT>(array: []T) {
+
+    let ffiArray: []ffiT = {};
+    for element in array {
+        ffiArray.push(toFFI(element));
+    }
+
+    let result = ArrayFFIResult {};
+    __c__("result->data = hzstd_dynamic_array_raw_buffer(ffiArray);");
+    __c__("result->length = hzstd_dynamic_array_size(ffiArray);");
+    return result;
+}

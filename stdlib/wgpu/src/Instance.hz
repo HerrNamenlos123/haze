@@ -1,0 +1,48 @@
+export struct Instance {
+    handle: mut ffi.WGPUInstanceImpl;
+
+    requestAdapter(adapterOpts: RequestAdapterOptions | none, callbackInfo: RequestAdapterCallbackInfo) {
+
+        let callback = callbackInfo.callback;
+        let userdata1: cptr = none;
+        __c__("userdata1 = (void*)callback;"); // Pass the function pointer to the highlevel callback into the lowlevel hook
+
+        let ffiCallbackInfo = inline ffi.WGPURequestAdapterCallbackInfo {
+            nextInChain: none,
+            callback: requestAdapterCallbackProxy,
+            mode: toFFI(callbackInfo.mode),
+            userdata1: userdata1,
+            userdata2: none,
+        };
+
+        if adapterOpts {
+            let surface = adapterOpts.compatibleSurface;
+            let compatibleSurface: mut ffi.WGPUSurfaceImpl | none = none;
+            if surface {
+                compatibleSurface = surface.handle;
+            }
+
+            return fromFFI(
+                ffi.wgpuInstanceRequestAdapter(this.handle, {
+                    nextInChain: none,
+                    featureLevel: toFFI(adapterOpts.featureLevel),
+                    powerPreference: toFFI(adapterOpts.powerPreference),
+                    forceFallbackAdapter: adapterOpts.forceFallbackAdapter,
+                    backendType: toFFI(adapterOpts.backendType),
+                    compatibleSurface: compatibleSurface,
+                }, ffiCallbackInfo)
+            );
+        }
+        else {
+            return fromFFI(ffi.wgpuInstanceRequestAdapter(this.handle, none, ffiCallbackInfo));
+        }
+    }
+}
+
+fromFFI(v: mut ffi.WGPUInstanceImpl): mut Instance :: final {
+    return Instance { handle: v };
+}
+
+toFFI(v: Instance): mut ffi.WGPUInstanceImpl :: final {
+    return v.handle;
+}
