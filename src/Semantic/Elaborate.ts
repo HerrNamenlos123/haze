@@ -6045,7 +6045,107 @@ export class SemanticElaborator {
             writes: resultWrites,
           };
         } else {
-          assert(false, "Non-comptime for each not implemented yet");
+          // Runtime for-each loop: for element in array {}
+          // Elaborate to semantic ForEachStatement, let lowering handle conversion to for-loop
+
+          // Step 1: Elaborate the array expression
+          const [arrayExpr, arrayExprId] = this.expr(s.value, undefined);
+          const arrayTypeUse = this.sr.typeUseNodes.get(arrayExpr.type);
+          const arrayType = this.sr.typeDefNodes.get(arrayTypeUse.type);
+
+          // Step 2: Validate it's an array and extract element type
+          if (
+            arrayType.variant !== Semantic.ENode.FixedArrayDatatype &&
+            arrayType.variant !== Semantic.ENode.DynamicArrayDatatype
+          ) {
+            throw new CompilerError(
+              `For-each loop requires an array type, but got '${Semantic.serializeTypeUse(this.sr, arrayExpr.type)}'`,
+              s.sourceloc,
+            );
+          }
+
+          const elementTypeUse = arrayType.datatype;
+
+          // Step 3: Create loop variable (element) with the array's element type
+          const [_, loopVariableId] = Semantic.addSymbol(this.sr, {
+            variant: Semantic.ENode.VariableSymbol,
+            comptime: false,
+            comptimeValue: null,
+            concrete: true,
+            export: false,
+            extern: EExternLanguage.None,
+            memberOfStruct: null,
+            mutability: EVariableMutability.Const,
+            name: s.loopVariable,
+            parentStructOrNS: null,
+            sourceloc: s.sourceloc,
+            type: elementTypeUse,
+            variableContext: EVariableContext.FunctionLocal,
+          });
+
+          // Step 4: Create index variable if specified
+          let indexVariableId: Semantic.SymbolId | null = null;
+          if (s.indexVariable) {
+            indexVariableId = Semantic.addSymbol(this.sr, {
+              variant: Semantic.ENode.VariableSymbol,
+              comptime: false,
+              comptimeValue: null,
+              concrete: true,
+              export: false,
+              extern: EExternLanguage.None,
+              memberOfStruct: null,
+              mutability: EVariableMutability.Const,
+              name: s.indexVariable,
+              parentStructOrNS: null,
+              sourceloc: s.sourceloc,
+              type: makePrimitiveAvailable(
+                this.sr,
+                EPrimitive.int,
+                EDatatypeMutability.Const,
+                s.sourceloc,
+              ),
+              variableContext: EVariableContext.FunctionLocal,
+            })[1];
+          }
+
+          // Step 5: Register variables in synthetic scope map so they're available in body
+          if (!this.sr.syntheticScopeToVariableMap.has(s.body)) {
+            this.sr.syntheticScopeToVariableMap.set(s.body, new Map());
+          }
+          const syntheticMap = this.sr.syntheticScopeToVariableMap.get(s.body)!;
+          syntheticMap.set(s.loopVariable, loopVariableId);
+          if (s.indexVariable && indexVariableId) {
+            syntheticMap.set(s.indexVariable, indexVariableId);
+          }
+
+          // Step 6: Elaborate the loop body
+          const { flow, writes, scopeId } = this.makeAndElaborateBlockScope(s.body, {
+            lastExprIsEmit: false,
+            unsafe: inference?.unsafe,
+          });
+
+          // Step 7: Clean up synthetic scope
+          syntheticMap.delete(s.loopVariable);
+          if (s.indexVariable) {
+            syntheticMap.delete(s.indexVariable);
+          }
+
+          // Step 8: Emit ForEachStatement in clean semantic form
+          // Lowering will convert this to a traditional for-loop
+          flow.add(FlowType.Fallthrough);
+
+          return {
+            statementId: Semantic.addStatement(this.sr, {
+              variant: Semantic.ENode.ForEachStatement,
+              arrayExpr: arrayExprId,
+              loopVariable: loopVariableId,
+              indexVariable: indexVariableId,
+              body: scopeId,
+              sourceloc: s.sourceloc,
+            })[1],
+            flow: flow,
+            writes: writes,
+          };
         }
       }
 
@@ -9252,6 +9352,7 @@ export namespace Semantic {
     WhileStatement,
     IfStatement,
     ForStatement,
+    ForEachStatement,
     VariableStatement,
     ExprStatement,
     BlockScopeExpr,
@@ -9912,6 +10013,15 @@ export namespace Semantic {
     sourceloc: SourceLoc;
   };
 
+  export type ForEachStatement = {
+    variant: ENode.ForEachStatement;
+    arrayExpr: ExprId;
+    loopVariable: SymbolId;
+    indexVariable: SymbolId | null;
+    body: BlockScopeId;
+    sourceloc: SourceLoc;
+  };
+
   export type WhileStatement = {
     variant: ENode.WhileStatement;
     isLetBinding: boolean;
@@ -9942,6 +10052,7 @@ export namespace Semantic {
     | VariableStatement
     | IfStatement
     | ForStatement
+    | ForEachStatement
     | WhileStatement
     | ExprStatement;
 

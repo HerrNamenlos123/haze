@@ -1,0 +1,37 @@
+
+test_for_each_loop_a() {
+    let array = []str { "1", "2", "3" };
+    for a in array {
+        fmt.println(f"Element: {a}");
+    }
+}
+
+test_for_each_loop_b() {
+    let array = []str { "1", "2", "3" };
+    for a, i in array {
+        fmt.println(f"Element #{i}: {a}");
+    }
+}
+
+
+test_for_each_loop_c() {
+    let array = [3]str { "1", "2", "3" };
+    for a in array {
+        fmt.println(f"Element: {a}");
+    }
+}
+
+test_for_each_loop_d() {
+    let array = [3]str { "1", "2", "3" };
+    for a, i in array {
+        fmt.println(f"Element #{i}: {a}");
+    }
+}
+
+main(): int {
+    test_for_each_loop_a();
+    test_for_each_loop_b();
+    test_for_each_loop_c();
+    test_for_each_loop_d();
+    return 0;
+}

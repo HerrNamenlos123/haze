@@ -2514,6 +2514,253 @@ function lowerStatement(
       return [sId];
     }
 
+    case Semantic.ENode.ForEachStatement: {
+      // Convert semantic ForEachStatement to lowered ForStatement
+      // for element in array {} becomes:
+      //   for (i = 0; i < array.length; i++) { element = array[i]; ... }
+      // or for fixed arrays:
+      //   for (i = 0; i < FIXED_SIZE; i++) { element = array[i]; ... }
+
+      const semanticForeachStmt = statement as Semantic.ForEachStatement;
+      const arrayExpr = lr.sr.exprNodes.get(semanticForeachStmt.arrayExpr);
+      const arrayType = lr.sr.typeDefNodes.get(lr.sr.typeUseNodes.get(arrayExpr.type).type);
+
+      // Lower the array expression and store in a temp var for multiple references
+      const flattenedArrayStatements: Lowered.StatementId[] = [];
+      const [loweredArrayExpr, loweredArrayExprId] = lowerExpr(
+        lr,
+        semanticForeachStmt.arrayExpr,
+        flattenedArrayStatements,
+        instanceInfo,
+      );
+
+      // Store array in temp variable to avoid re-evaluation
+      const [arrayVar, arrayVarId] = storeInTempVarAndGet(
+        lr,
+        loweredArrayExpr.type,
+        loweredArrayExprId,
+        semanticForeachStmt.sourceloc,
+        flattenedArrayStatements,
+      );
+
+      const intTypeUse = lowerTypeUse(
+        lr,
+        makePrimitiveAvailable(
+          lr.sr,
+          EPrimitive.int,
+          EDatatypeMutability.Const,
+          semanticForeachStmt.sourceloc,
+        ),
+      );
+
+      const boolTypeUse = lowerTypeUse(
+        lr,
+        makePrimitiveAvailable(
+          lr.sr,
+          EPrimitive.bool,
+          EDatatypeMutability.Const,
+          semanticForeachStmt.sourceloc,
+        ),
+      );
+
+      // Create index variable init statement: i = 0
+      const indexVarName = makeTempName();
+      const [indexInitStmt, indexInitStmtId] = Lowered.addStatement<Lowered.VariableStatement>(lr, {
+        variant: Lowered.ENode.VariableStatement,
+        name: {
+          prettyName: indexVarName,
+          mangledName: indexVarName,
+          wasMangled: false,
+        },
+        type: intTypeUse,
+        variableContext: EVariableContext.FunctionLocal,
+        value: Lowered.addExpr(lr, {
+          variant: Lowered.ENode.LiteralExpr,
+          literal: { type: EPrimitive.int, value: 0n, unit: null },
+          type: intTypeUse,
+        })[1],
+        sourceloc: semanticForeachStmt.sourceloc,
+      });
+
+      const indexSymbolExpr = Lowered.addExpr(lr, {
+        variant: Lowered.ENode.SymbolValueExpr,
+        name: {
+          prettyName: indexVarName,
+          mangledName: indexVarName,
+          wasMangled: false,
+        },
+        type: intTypeUse,
+      });
+
+      // Create loop condition: i < array.length (or fixed size)
+      let loopConditionExpr: Lowered.ExprId;
+      if (arrayType.variant === Semantic.ENode.DynamicArrayDatatype) {
+        // For dynamic arrays: i < array.length
+        const lengthMember = Lowered.addExpr(lr, {
+          variant: Lowered.ENode.MemberAccessExpr,
+          expr: arrayVarId,
+          memberName: "length",
+          requiresDeref: false,
+          type: intTypeUse,
+        })[1];
+
+        loopConditionExpr = Lowered.addExpr(lr, {
+          variant: Lowered.ENode.BinaryExpr,
+          left: indexSymbolExpr[1],
+          operation: EBinaryOperation.LessThan,
+          right: lengthMember,
+          plainResultType: lr.typeUseNodes.get(boolTypeUse).type,
+          type: boolTypeUse,
+        })[1];
+      } else {
+        // For fixed arrays: i < FIXED_SIZE
+        const fixedArrayType = arrayType as Semantic.FixedArrayDatatypeDef;
+        const sizeExpr = Lowered.addExpr(lr, {
+          variant: Lowered.ENode.LiteralExpr,
+          literal: { type: EPrimitive.int, value: fixedArrayType.length, unit: null },
+          type: intTypeUse,
+        })[1];
+
+        loopConditionExpr = Lowered.addExpr(lr, {
+          variant: Lowered.ENode.BinaryExpr,
+          left: indexSymbolExpr[1],
+          operation: EBinaryOperation.LessThan,
+          right: sizeExpr,
+          plainResultType: lr.typeUseNodes.get(boolTypeUse).type,
+          type: boolTypeUse,
+        })[1];
+      }
+
+      // Create loop increment: i = i + 1
+      const indexForIncr = Lowered.addExpr(lr, {
+        variant: Lowered.ENode.SymbolValueExpr,
+        name: {
+          prettyName: indexVarName,
+          mangledName: indexVarName,
+          wasMangled: false,
+        },
+        type: intTypeUse,
+      })[1];
+
+      const loopIncrementExpr = Lowered.addExpr(lr, {
+        variant: Lowered.ENode.ExprAssignmentExpr,
+        target: indexForIncr,
+        assignRefTarget: false,
+        type: intTypeUse,
+        value: Lowered.addExpr(lr, {
+          variant: Lowered.ENode.BinaryExpr,
+          left: indexForIncr,
+          operation: EBinaryOperation.Add,
+          plainResultType: lr.typeUseNodes.get(intTypeUse).type,
+          right: Lowered.addExpr(lr, {
+            variant: Lowered.ENode.LiteralExpr,
+            literal: { type: EPrimitive.int, value: 1n, unit: null },
+            type: intTypeUse,
+          })[1],
+          type: intTypeUse,
+        })[1],
+      })[1];
+
+      // Create body with element variable assignment
+      const bodyScope = lr.sr.blockScopeNodes.get(semanticForeachStmt.body);
+      const bodyStatements: Lowered.StatementId[] = [];
+
+      // Add element = array[i] as first statement
+      const subscriptExpr = Lowered.addExpr(lr, {
+        variant: Lowered.ENode.ArraySubscriptExpr,
+        expr: arrayVarId,
+        index: Lowered.addExpr(lr, {
+          variant: Lowered.ENode.SymbolValueExpr,
+          name: {
+            prettyName: indexVarName,
+            mangledName: indexVarName,
+            wasMangled: false,
+          },
+          type: intTypeUse,
+        })[1],
+        type: lowerTypeUse(lr, (arrayType as any).datatype),
+      })[1];
+
+      const loopVariable = lr.sr.symbolNodes.get(
+        semanticForeachStmt.loopVariable,
+      ) as Semantic.VariableSymbol;
+      bodyStatements.push(
+        Lowered.addStatement<Lowered.VariableStatement>(lr, {
+          variant: Lowered.ENode.VariableStatement,
+          name: {
+            prettyName: loopVariable.name,
+            mangledName: loopVariable.name,
+            wasMangled: false,
+          },
+          type: lowerTypeUse(lr, loopVariable.type!),
+          variableContext: loopVariable.variableContext,
+          value: subscriptExpr,
+          sourceloc: semanticForeachStmt.sourceloc,
+        })[1],
+      );
+
+      // If there's an index variable, add it
+      if (semanticForeachStmt.indexVariable) {
+        const indexVariable = lr.sr.symbolNodes.get(
+          semanticForeachStmt.indexVariable,
+        ) as Semantic.VariableSymbol;
+        bodyStatements.push(
+          Lowered.addStatement<Lowered.VariableStatement>(lr, {
+            variant: Lowered.ENode.VariableStatement,
+            name: {
+              prettyName: indexVariable.name,
+              mangledName: indexVariable.name,
+              wasMangled: false,
+            },
+            type: intTypeUse,
+            variableContext: indexVariable.variableContext,
+            value: Lowered.addExpr(lr, {
+              variant: Lowered.ENode.SymbolValueExpr,
+              name: {
+                prettyName: indexVarName,
+                mangledName: indexVarName,
+                wasMangled: false,
+              },
+              type: intTypeUse,
+            })[1],
+            sourceloc: semanticForeachStmt.sourceloc,
+          })[1],
+        );
+      }
+
+      // Add the rest of the body statements
+      for (const stmt of bodyScope.statements) {
+        bodyStatements.push(...lowerStatement(lr, stmt, instanceInfo));
+      }
+
+      // Build the lowered body scope
+      const bodyEmittedExpr = bodyScope.emittedExpr
+        ? lowerExpr(lr, bodyScope.emittedExpr, bodyStatements, instanceInfo)[1]
+        : Lowered.addExpr(lr, {
+            variant: Lowered.ENode.LiteralExpr,
+            literal: { type: EPrimitive.none, value: "" },
+            type: lowerTypeUse(lr, makeVoidType(lr.sr)),
+          })[1];
+
+      const [lowerBody, lowerBodyId] = Lowered.addBlockScope(lr, {
+        definesVariables: true,
+        statements: bodyStatements,
+        emittedExpr: bodyEmittedExpr,
+      });
+
+      // Create the ForStatement with all parts
+      const [forStmt, forStmtId] = Lowered.addStatement<Lowered.ForStatement>(lr, {
+        variant: Lowered.ENode.ForStatement,
+        initStatements: [indexInitStmtId],
+        loopCondition: loopConditionExpr,
+        loopIncrement: loopIncrementExpr,
+        body: lowerBodyId,
+        sourceloc: semanticForeachStmt.sourceloc,
+      });
+
+      return [...flattenedArrayStatements, forStmtId];
+    }
+
     case Semantic.ENode.WhileStatement: {
       const [s, sId] = Lowered.addStatement<Lowered.Statement>(lr, {
         variant: Lowered.ENode.WhileStatement,
