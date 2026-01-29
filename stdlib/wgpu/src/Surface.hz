@@ -1,0 +1,191 @@
+
+export struct Surface {
+    handle: mut ffi.WGPUSurfaceImpl;
+
+    getCapabilities(adapter: mut Adapter): Result<SurfaceCapabilities, none> {
+        do unsafe {
+            let caps = ffi.WGPUSurfaceCapabilities {
+                nextInChain: none,
+                usages: 0,
+                formatCount: 0,
+                formats: none,
+                presentModeCount: 0,
+                presentModes: none,
+                alphaModeCount: 0,
+                alphaModes: none,
+            };
+            let status = ffi.wgpuSurfaceGetCapabilities(this.handle, adapter.handle, caps);
+            if status != ffi.WGPUStatus_Success {
+                return none;
+            }
+            return fromFFI(caps);
+        }
+    }
+
+    configure(config: SurfaceConfiguration) {
+        ffi.wgpuSurfaceConfigure(this.handle, toFFI(config));
+    }
+
+    getCurrentTexture() {
+        let texture = ffi.WGPUSurfaceTexture {
+            nextInChain: none,
+            texture: none,
+            status: ffi.WGPUSurfaceGetCurrentTextureStatus_SuccessOptimal, // will be overwritten
+        };
+        ffi.wgpuSurfaceGetCurrentTexture(this.handle, texture);
+        return fromFFI(texture);
+    }
+
+    present(): Result<none, none> {
+        let status = ffi.wgpuSurfacePresent(this.handle);
+        if status == ffi.WGPUStatus_Success {
+            return Result<none, none>.Ok(none);
+        }
+        return Result<none, none>.Err(none);
+    }
+}
+
+export struct SurfaceTexture {
+    texture: Texture | none;
+    status: SurfaceGetCurrentTextureStatus;
+}
+
+fromFFI(v: ffi.WGPUSurfaceTexture): SurfaceTexture {
+    let c = SurfaceTexture {
+        texture: none,
+        status: SurfaceGetCurrentTextureStatusFromFFI(v.status),
+    };
+    let t = v.texture;
+    if t {
+        c.texture = fromFFI(t);
+    }
+    return c;
+}
+
+toFFI(v: SurfaceTexture): ffi.WGPUSurfaceTexture {
+    let t = none as mut ffi.WGPUTextureImpl | none;
+    let tt = v.texture;
+    if tt {
+        t = toFFI(tt);
+    }
+    return ffi.WGPUSurfaceTexture {
+        nextInChain: none,
+        texture: t,
+        status: SurfaceGetCurrentTextureStatusToFFI(v.status),
+    };
+}
+
+export struct SurfaceConfiguration {
+    device: mut Device;
+    format: TextureFormat = TextureFormat.Undefined;
+    usage: TextureUsage = TextureUsage.None;
+    width: u32 = 0;
+    height: u32 = 0;
+    viewFormats: []TextureFormat = {};
+    alphaMode: CompositeAlphaMode = CompositeAlphaMode.Auto;
+    presentMode: PresentMode = PresentMode.Undefined;
+}
+
+fromFFI(v: ffi.WGPUSurfaceConfiguration): SurfaceConfiguration {
+    let c = SurfaceConfiguration {
+        device: Device { handle: v.device },
+        format: TextureFormatFromFFI(v.format),
+        usage: fromFFI(v.usage),
+        width: v.width,
+        height: v.height,
+        viewFormats: {},
+        alphaMode: CompositeAlphaModeFromFFI(v.alphaMode),
+        presentMode: PresentModeFromFFI(v.presentMode),
+    };
+
+    for (let i = 0; i < v.viewFormatCount; i++) {
+        do unsafe {
+            let e: TextureFormat = uninitialized;
+            __c__("e = (int)((WGPUTextureFormat*)v->viewFormats)[i];");
+            c.viewFormats.push(e);
+        }
+    }
+
+    return c;
+}
+
+toFFI(v: SurfaceConfiguration): ffi.WGPUSurfaceConfiguration {
+    let c = ffi.WGPUSurfaceConfiguration {
+        nextInChain: none,
+        device: v.device.handle,
+        format: TextureFormatToFFI(v.format),
+        usage: toFFI(v.usage),
+        width: v.width,
+        height: v.height,
+        viewFormatCount: 0,
+        viewFormats: none,
+        alphaMode: CompositeAlphaModeToFFI(v.alphaMode),
+        presentMode: PresentModeToFFI(v.presentMode),
+    };
+    __c__("c->viewFormatCount = hzstd_dynamic_array_size(v->viewFormats);");
+    __c__("c->viewFormats = hzstd_dynamic_array_raw_buffer(v->viewFormats);");
+    return c;
+}
+
+export struct SurfaceCapabilities {
+    usages: TextureUsage = TextureUsage.None;
+    formats: []TextureFormat = {};
+    presentModes: []PresentMode = {};
+    alphaModes: []CompositeAlphaMode = {};
+}
+
+fromFFI(v: ffi.WGPUSurfaceCapabilities): SurfaceCapabilities {
+    do unsafe {
+        let c = SurfaceCapabilities {
+            usages: fromFFI(v.usages),
+        };
+
+        for (let i = 0; i < v.formatCount; i++) {
+            do unsafe {
+                let e: TextureFormat = uninitialized;
+                __c__("e = (int)((WGPUTextureFormat*)v->formats)[i];");
+                c.formats.push(e);
+            }
+        }
+
+        for (let i = 0; i < v.presentModeCount; i++) {
+            do unsafe {
+                let p: PresentMode = uninitialized;
+                __c__("p = (int)((WGPUPresentMode*)v->presentModes)[i];");
+                c.presentModes.push(p);
+            }
+        }
+
+        for (let i = 0; i < v.alphaModeCount; i++) {
+            do unsafe {
+                let a: CompositeAlphaMode = uninitialized;
+                __c__("a = (int)((WGPUCompositeAlphaMode*)v->alphaModes)[i];");
+                c.alphaModes.push(a);
+            }
+        }
+
+        return c;
+    }
+}
+
+toFFI(v: SurfaceCapabilities): ffi.WGPUSurfaceCapabilities {
+    do unsafe {
+        let caps = ffi.WGPUSurfaceCapabilities {
+            nextInChain: none,
+            usages: toFFI(v.usages),
+            formatCount: 0,
+            formats: none,
+            presentModeCount: 0,
+            presentModes: none,
+            alphaModeCount: 0,
+            alphaModes: none,
+        };
+        __c__("caps->formatCount = hzstd_dynamic_array_size(v->formats);");
+        __c__("caps->formats = hzstd_dynamic_array_raw_buffer(v->formats);");
+        __c__("caps->presentModeCount = hzstd_dynamic_array_size(v->presentModes);");
+        __c__("caps->presentModes = hzstd_dynamic_array_raw_buffer(v->presentModes);");
+        __c__("caps->alphaModeCount = hzstd_dynamic_array_size(v->alphaModes);");
+        __c__("caps->alphaModes = hzstd_dynamic_array_raw_buffer(v->alphaModes);");
+        return caps;
+    }
+}

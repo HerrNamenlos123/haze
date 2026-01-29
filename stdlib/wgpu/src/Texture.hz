@@ -1,0 +1,115 @@
+
+export struct TextureViewDescriptor {
+    label: str;
+    format: TextureFormat;
+    dimension: TextureViewDimension;
+    baseMipLevel: u32;
+    mipLevelCount: u32;
+    baseArrayLayer: u32;
+    arrayLayerCount: u32;
+    aspect: TextureAspect;
+    usage: TextureUsage;
+}
+
+fromFFI(v: ffi.WGPUTextureViewDescriptor): TextureViewDescriptor {
+    return TextureViewDescriptor {
+        label: fromFFI(v.label),
+        format: TextureFormatFromFFI(v.format),
+        dimension: TextureViewDimensionFromFFI(v.dimension),
+        baseMipLevel: v.baseMipLevel,
+        mipLevelCount: v.mipLevelCount,
+        baseArrayLayer: v.baseArrayLayer,
+        arrayLayerCount: v.arrayLayerCount,
+        aspect: TextureAspectFromFFI(v.aspect),
+        usage: fromFFI(v.usage),
+    };
+}
+
+fromOptionalFFI(v: ffi.WGPUTextureViewDescriptor | none): TextureViewDescriptor | none {
+    if !v {
+        return none;
+    }
+    return fromFFI(v);
+}
+
+toFFI(v: TextureViewDescriptor): ffi.WGPUTextureViewDescriptor {
+    return ffi.WGPUTextureViewDescriptor {
+        nextInChain: none,
+        label: toFFI(v.label),
+        format: TextureFormatToFFI(v.format),
+        dimension: TextureViewDimensionToFFI(v.dimension),
+        baseMipLevel: v.baseMipLevel,
+        mipLevelCount: v.mipLevelCount,
+        baseArrayLayer: v.baseArrayLayer,
+        arrayLayerCount: v.arrayLayerCount,
+        aspect: TextureAspectToFFI(v.aspect),
+        usage: toFFI(v.usage),
+    };
+}
+
+toOptionalFFI(v: TextureViewDescriptor | none): ffi.WGPUTextureViewDescriptor | none {
+    if !v {
+        return none;
+    }
+    return toFFI(v);
+}
+
+export struct Texture {
+    handle: mut ffi.WGPUTextureImpl;
+
+    createView(viewDescriptor?: TextureViewDescriptor): Result<mut TextureView, none> {
+        let textureView = ffi.wgpuTextureCreateView(this.handle, toOptionalFFI(viewDescriptor));
+        if textureView {
+            return TextureView {
+                handle: textureView,
+            };
+        }
+        return none;
+    }
+}
+
+fromFFI(v: mut ffi.WGPUTextureImpl): Texture {
+    return Texture { handle: v };
+}
+
+toFFI(v: Texture): mut ffi.WGPUTextureImpl {
+    return v.handle;
+}
+
+export struct TextureView {
+    handle: mut ffi.WGPUTextureViewImpl;
+}
+
+fromFFI(v: mut ffi.WGPUTextureViewImpl): TextureView {
+    return TextureView { handle: v };
+}
+
+toFFI(v: TextureView): mut ffi.WGPUTextureViewImpl {
+    return v.handle;
+}
+
+
+export enum bitflag TextureUsage {
+    None = 0,
+    CopySrc = 1,
+    CopyDst = 2,
+    TextureBinding = 4,
+    StorageBinding = 8,
+    RenderAttachment = 16,
+}
+
+fromFFI(v: ffi.WGPUTextureUsage): TextureUsage {
+    do unsafe {
+        let usage: TextureUsage = uninitialized; // This is a bitflag
+        __c__("usage = (int)v;");
+        return usage;
+    }
+}
+
+toFFI(v: TextureUsage): ffi.WGPUTextureUsage {
+    do unsafe {
+        let usage: ffi.WGPUTextureUsage = uninitialized; // This is a bitflag
+        __c__("usage = (int)v;");
+        return usage;
+    }
+}
