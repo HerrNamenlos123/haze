@@ -6188,19 +6188,13 @@ export class SemanticElaborator {
 
   applyBinaryExprConstraints(
     constraints: ConstraintSet,
-    symbolValueExprId: Semantic.ExprId,
+    exprId: Semantic.ExprId,
     literalExprId: Semantic.ExprId,
     operation: EBinaryOperation,
   ) {
-    const symbolValueExpr = this.sr.exprNodes.get(symbolValueExprId);
-    assert(symbolValueExpr.variant === Semantic.ENode.SymbolValueExpr);
+    const expr = this.sr.exprNodes.get(exprId);
     const literalExpr = this.sr.exprNodes.get(literalExprId);
     assert(literalExpr.variant === Semantic.ENode.LiteralExpr);
-
-    const symbol = this.sr.symbolNodes.get(symbolValueExpr.symbol);
-    if (symbol.variant !== Semantic.ENode.VariableSymbol || !symbol.type) {
-      return;
-    }
 
     if (
       literalExpr.literal.type !== EPrimitive.i8 &&
@@ -6223,15 +6217,34 @@ export class SemanticElaborator {
       case EBinaryOperation.GreaterEqual:
       case EBinaryOperation.GreaterThan:
       case EBinaryOperation.LessEqual:
-      case EBinaryOperation.LessThan:
-        constraints.add({
-          constraintValue: {
+      case EBinaryOperation.LessThan: {
+        // Prefer path-based constraint if available (member access / subscript)
+        const path = this.extractConstraintPath(exprId);
+        if (path) {
+          constraints.addPath(path, {
             kind: "comparison",
             operation: operation,
             value: literalExprId,
-          },
-          variableSymbol: symbolValueExpr.symbol,
-        });
+          });
+          return;
+        }
+
+        // Fallback to symbol-based constraint for plain symbol values
+        if (expr.variant === Semantic.ENode.SymbolValueExpr) {
+          const symbol = this.sr.symbolNodes.get(expr.symbol);
+          if (symbol.variant !== Semantic.ENode.VariableSymbol || !symbol.type) {
+            return;
+          }
+          constraints.add({
+            constraintValue: {
+              kind: "comparison",
+              operation: operation,
+              value: literalExprId,
+            },
+            variableSymbol: expr.symbol,
+          });
+        }
+      }
     }
   }
 
@@ -6267,28 +6280,25 @@ export class SemanticElaborator {
         this.buildLogicalConstraintSet(constraints, expr.right);
         return;
       } else {
-        const leftExpr = this.sr.exprNodes.get(expr.left);
-        const rightExpr = this.sr.exprNodes.get(expr.right);
-        if (leftExpr.variant === Semantic.ENode.SymbolValueExpr) {
-          const rightValue = EvalCTFE(this.sr, expr.right);
-          if (rightValue.ok) {
-            this.applyBinaryExprConstraints(
-              constraints,
-              expr.left,
-              rightValue.value[1],
-              expr.operation,
-            );
-          }
-        } else if (rightExpr.variant === Semantic.ENode.SymbolValueExpr) {
-          const leftValue = EvalCTFE(this.sr, expr.left);
-          if (leftValue.ok) {
-            this.applyBinaryExprConstraints(
-              constraints,
-              expr.right,
-              leftValue.value[1],
-              expr.operation,
-            );
-          }
+        const rightValue = EvalCTFE(this.sr, expr.right);
+        if (rightValue.ok) {
+          this.applyBinaryExprConstraints(
+            constraints,
+            expr.left,
+            rightValue.value[1],
+            expr.operation,
+          );
+          return;
+        }
+
+        const leftValue = EvalCTFE(this.sr, expr.left);
+        if (leftValue.ok) {
+          this.applyBinaryExprConstraints(
+            constraints,
+            expr.right,
+            leftValue.value[1],
+            expr.operation,
+          );
         }
       }
       return;

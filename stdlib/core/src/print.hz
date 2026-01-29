@@ -203,13 +203,13 @@ namespace fmt {
 
         // Find highest divisor
         let div: u64 = 1;
-        while v / div >= 10 as u64 {
+        while v / div >= 10 {
             div *= 10;
         }
 
-        while div > 0 as u64 {
+        while div > 0 {
             let digit = v / div;
-            if (digit >= 0 as u64 && digit <= 9 as u64) {
+            if digit >= 0 && digit <= 9 {
                 writer.write(digitToStr(digit));
             }
             else {
