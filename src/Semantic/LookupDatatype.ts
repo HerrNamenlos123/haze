@@ -1,6 +1,29 @@
 import { assert, type SourceLoc } from "../shared/Errors";
 import { isTypeConcrete, Semantic, type SemanticResult } from "./Elaborate";
-import { EDatatypeMutability } from "../shared/AST";
+import { EDatatypeMutability, EVariableMutability, EExternLanguage } from "../shared/AST";
+import { EVariableContext } from "../shared/common";
+
+function createLengthFieldSymbol(sr: SemanticResult, sourceloc: SourceLoc): Semantic.SymbolId {
+  // Create a synthetic VariableSymbol for the "length" field
+  const [_, lengthFieldId] = Semantic.addSymbol(sr, {
+    variant: Semantic.ENode.VariableSymbol,
+    name: "length",
+    export: false,
+    extern: EExternLanguage.None,
+    mutability: EVariableMutability.Default,
+    sourceloc: sourceloc,
+    memberOfStruct: null,
+    type: sr.b.usizeType(),
+    consumed: false,
+    variableContext: EVariableContext.Global,
+    parentStructOrNS: null,
+    comptime: false,
+    comptimeValue: null,
+    concrete: true,
+  });
+
+  return lengthFieldId;
+}
 
 export function makeDeferredFunctionDatatypeAvailable(
   sr: SemanticResult,
@@ -193,12 +216,14 @@ export function makeStackArrayDatatypeAvailable(
     return makeTypeUse(sr, id, mutability, inline, sourceloc)[1];
   }
 
-  // Nothing found
+  // Nothing found - create new type with lengthField
+  const lengthFieldId = createLengthFieldSymbol(sr, sourceloc);
   const [_, typeId] = Semantic.addType(sr, {
     variant: Semantic.ENode.FixedArrayDatatype,
     datatype: datatype,
     length: length,
     concrete: isTypeConcrete(sr, datatype),
+    syntheticFields: [lengthFieldId],
   });
   sr.fixedArrayTypeCache.push(typeId);
   return makeTypeUse(sr, typeId, mutability, inline, sourceloc)[1];
@@ -220,11 +245,13 @@ export function makeDynamicArrayDatatypeAvailable(
     return makeTypeUse(sr, id, mutability, inline, sourceloc)[1];
   }
 
-  // Nothing found
+  // Nothing found - create new type with lengthField
+  const lengthFieldId = createLengthFieldSymbol(sr, sourceloc);
   const [_, typeId] = Semantic.addType(sr, {
     variant: Semantic.ENode.DynamicArrayDatatype,
     datatype: datatype,
     concrete: isTypeConcrete(sr, datatype),
+    syntheticFields: [lengthFieldId],
   });
   sr.dynamicArrayTypeCache.push(typeId);
   return makeTypeUse(sr, typeId, mutability, inline, sourceloc)[1];

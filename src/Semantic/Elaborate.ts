@@ -1818,15 +1818,21 @@ export class SemanticElaborator {
     }
 
     if (objectType.variant === Semantic.ENode.DynamicArrayDatatype) {
-      if (memberAccess.memberName === "length") {
-        return this.sr.b.memberAccessRaw(
-          objectId,
-          "length",
-          this.sr.b.intType(),
-          true,
-          memberAccess.sourceloc,
-        );
+      for (const fieldId of objectType.syntheticFields) {
+        const field = this.sr.symbolNodes.get(fieldId);
+        if (field.variant === Semantic.ENode.VariableSymbol) {
+          if (field.name === "length" && memberAccess.memberName === "length") {
+            return this.sr.b.memberAccessRaw(
+              objectId,
+              "length",
+              this.sr.b.intType(),
+              true,
+              memberAccess.sourceloc,
+            );
+          }
+        }
       }
+
       if (memberAccess.memberName === "push") {
         const funcname = `__hz_dynamic_array_push_${
           Semantic.mangleTypeUse(this.sr, objectType.datatype).name
@@ -8227,9 +8233,6 @@ export class SemanticBuilder {
 
   extractConstraintPath(exprId: Semantic.ExprId): ConstraintPath | null {
     const expr = this.sr.exprNodes.get(exprId);
-    if (!expr) {
-      return null;
-    }
 
     // Base case: variable reference
     if (expr.variant === Semantic.ENode.SymbolValueExpr) {
@@ -8249,6 +8252,7 @@ export class SemanticBuilder {
       // Find the member symbol by name
       const exprTypeUse = this.sr.typeUseNodes.get(this.sr.exprNodes.get(expr.expr).type);
       const exprTypeDef = this.sr.typeDefNodes.get(exprTypeUse.type);
+
       if (exprTypeDef.variant !== Semantic.ENode.StructDatatype) return null;
 
       const memberSymbol = exprTypeDef.members.find((m) => {
@@ -9618,12 +9622,14 @@ export namespace Semantic {
     datatype: TypeUseId;
     length: bigint;
     concrete: boolean;
+    syntheticFields: SymbolId[];
   };
 
   export type DynamicArrayDatatypeDef = {
     variant: ENode.DynamicArrayDatatype;
     datatype: TypeUseId;
     concrete: boolean;
+    syntheticFields: SymbolId[];
   };
 
   export type SliceDatatypeDef = {
