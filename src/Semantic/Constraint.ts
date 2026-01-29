@@ -72,6 +72,14 @@ export function pathToKey(path: ConstraintPath): string {
   return key;
 }
 
+function pathConstraintKey(path: ConstraintPath, value: ConstraintValue): string {
+  const base = pathToKey(path);
+  if (value.kind === "comparison") {
+    return [base, "cmp", value.operation, value.value].join("|");
+  }
+  return [base, "union", value.operation, value.typeUse ?? "", value.typeDef ?? ""].join("|");
+}
+
 export function pathsMatch(a: ConstraintPath, b: ConstraintPath): boolean {
   if (a.root.symbolId !== b.root.symbolId) return false;
   if (a.path.length !== b.path.length) return false;
@@ -236,28 +244,35 @@ export class ConstraintSet {
   // ---- path-based operations -----------------------------------------------
 
   addPath(path: ConstraintPath, value: ConstraintValue): this {
-    this.pathMap.set(pathToKey(path), { path, value });
+    this.pathMap.set(pathConstraintKey(path, value), { path, value });
     this._inverse = undefined;
     return this;
   }
 
-  getPathConstraint(path: ConstraintPath): ConstraintValue | undefined {
-    const entry = this.pathMap.get(pathToKey(path));
-    return entry?.value;
+  getPathConstraint(path: ConstraintPath): ConstraintValue[] {
+    const out: ConstraintValue[] = [];
+    for (const entry of this.pathMap.values()) {
+      if (pathsMatch(entry.path, path)) {
+        out.push(entry.value);
+      }
+    }
+    return out;
   }
 
   deletePathAndChildren(path: ConstraintPath): this {
     const pathKey = pathToKey(path);
 
-    // Delete exact match
-    this.pathMap.delete(pathKey);
-
-    // Delete all paths that start with this prefix
+    // Delete exact path constraints and children
     const prefix = pathKey + ".";
     const subscriptPrefix = pathKey + "[";
+    const exactPrefix = pathKey + "|";
 
     for (const key of this.pathMap.keys()) {
-      if (key.startsWith(prefix) || key.startsWith(subscriptPrefix)) {
+      if (
+        key.startsWith(prefix) ||
+        key.startsWith(subscriptPrefix) ||
+        key.startsWith(exactPrefix)
+      ) {
         this.pathMap.delete(key);
       }
     }

@@ -127,7 +127,7 @@ export struct Window {
     swapInterval(interval: int) {
         if interval >= 0 && interval <= 10 {
             ffi.makeContextCurrent(this.handle);
-            ffi.swapInterval(interval as i32);
+            ffi.swapInterval(interval);
         }
     }
 

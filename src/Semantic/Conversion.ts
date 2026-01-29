@@ -19,7 +19,6 @@ import type {
   ConstraintSet,
   ConstraintValue,
   ConstraintPath,
-  ConstraintPathElement,
   ConstraintPathSubscriptIndex,
 } from "./Constraint";
 
@@ -48,18 +47,35 @@ export namespace Conversion {
       // Find the member symbol by name
       const exprTypeUse = sr.typeUseNodes.get(sr.exprNodes.get(expr.expr).type);
       const exprTypeDef = sr.typeDefNodes.get(exprTypeUse.type);
-      if (exprTypeDef.variant !== Semantic.ENode.StructDatatype) return null;
 
-      const memberSymbol = exprTypeDef.members.find((m) => {
-        const sym = sr.symbolNodes.get(m);
-        return sym.variant === Semantic.ENode.VariableSymbol && sym.name === expr.memberName;
-      });
-      if (!memberSymbol) return null;
+      if (
+        exprTypeDef.variant === Semantic.ENode.DynamicArrayDatatype ||
+        exprTypeDef.variant === Semantic.ENode.FixedArrayDatatype
+      ) {
+        for (const fieldId of exprTypeDef.syntheticFields) {
+          const field = sr.symbolNodes.get(fieldId);
+          assert(field.variant === Semantic.ENode.VariableSymbol);
+          if (field.name === expr.memberName) {
+            return {
+              root: basePath.root,
+              path: [...basePath.path, { kind: "member", member: fieldId }],
+            };
+          }
+        }
+      }
 
-      return {
-        root: basePath.root,
-        path: [...basePath.path, { kind: "member", member: memberSymbol }],
-      };
+      if (exprTypeDef.variant === Semantic.ENode.StructDatatype) {
+        const memberSymbol = exprTypeDef.members.find((m) => {
+          const sym = sr.symbolNodes.get(m);
+          return sym.variant === Semantic.ENode.VariableSymbol && sym.name === expr.memberName;
+        });
+        if (!memberSymbol) return null;
+
+        return {
+          root: basePath.root,
+          path: [...basePath.path, { kind: "member", member: memberSymbol }],
+        };
+      }
     }
 
     // Array subscript: arr[index]
@@ -710,6 +726,16 @@ export namespace Conversion {
         return values.ranges.length > 0;
       },
       constrainFromConstraints: (constraints: ConstraintSet, fromExprId: Semantic.ExprId) => {
+        const path = extractConstraintPath(sr, fromExprId);
+        if (path) {
+          const pathConstraints = constraints.getPathConstraint(path);
+          if (pathConstraints.length > 0) {
+            for (const c of pathConstraints) {
+              values.constrainFromConstraint(c);
+            }
+            return;
+          }
+        }
         const fromExpr = sr.exprNodes.get(fromExprId);
         for (const constraint of constraints.toArray()) {
           if (fromExpr.variant !== Semantic.ENode.SymbolValueExpr) {
@@ -811,17 +837,17 @@ export namespace Conversion {
       },
 
       constrainFromConstraints(constraints: ConstraintSet, fromExprId: Semantic.ExprId) {
-        // Try path-based constraints first
         const path = extractConstraintPath(sr, fromExprId);
         if (path) {
-          const constraint = constraints.getPathConstraint(path);
-          if (constraint) {
-            this.constrainFromConstraint(constraint);
+          const constraintsForPath = constraints.getPathConstraint(path);
+          if (constraintsForPath.length > 0) {
+            for (const c of constraintsForPath) {
+              this.constrainFromConstraint(c);
+            }
             return;
           }
         }
 
-        // Fallback to legacy symbol-based constraints
         const fromExpr = sr.exprNodes.get(fromExprId);
         if (fromExpr.variant !== Semantic.ENode.SymbolValueExpr) return;
 

@@ -209,12 +209,8 @@ namespace fmt {
 
         while div > 0 {
             let digit = v / div;
-            if digit >= 0 && digit <= 9 {
-                writer.write(digitToStr(digit));
-            }
-            else {
-                assert(false);
-            }
+            assert(digit >= 0 && digit <= 9);
+            writer.write(digitToStr(digit));
             v %= div;
             div /= 10;
         }

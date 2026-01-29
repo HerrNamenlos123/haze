@@ -6218,7 +6218,6 @@ export class SemanticElaborator {
       case EBinaryOperation.GreaterThan:
       case EBinaryOperation.LessEqual:
       case EBinaryOperation.LessThan: {
-        // Prefer path-based constraint if available (member access / subscript)
         const path = this.extractConstraintPath(exprId);
         if (path) {
           constraints.addPath(path, {
@@ -6229,7 +6228,6 @@ export class SemanticElaborator {
           return;
         }
 
-        // Fallback to symbol-based constraint for plain symbol values
         if (expr.variant === Semantic.ENode.SymbolValueExpr) {
           const symbol = this.sr.symbolNodes.get(expr.symbol);
           if (symbol.variant !== Semantic.ENode.VariableSymbol || !symbol.type) {
@@ -8263,19 +8261,36 @@ export class SemanticBuilder {
       const exprTypeUse = this.sr.typeUseNodes.get(this.sr.exprNodes.get(expr.expr).type);
       const exprTypeDef = this.sr.typeDefNodes.get(exprTypeUse.type);
 
-      if (exprTypeDef.variant !== Semantic.ENode.StructDatatype) return null;
+      if (
+        exprTypeDef.variant === Semantic.ENode.DynamicArrayDatatype ||
+        exprTypeDef.variant === Semantic.ENode.FixedArrayDatatype
+      ) {
+        for (const fieldId of exprTypeDef.syntheticFields) {
+          const field = this.sr.symbolNodes.get(fieldId);
+          assert(field.variant === Semantic.ENode.VariableSymbol);
+          if (field.name === expr.memberName) {
+            return {
+              root: basePath.root,
+              path: [...basePath.path, { kind: "member" as const, member: fieldId }],
+            };
+          }
+        }
+      }
 
-      const memberSymbol = exprTypeDef.members.find((m) => {
-        const sym = this.sr.symbolNodes.get(m);
-        return sym.variant === Semantic.ENode.VariableSymbol && sym.name === expr.memberName;
-      });
-      if (!memberSymbol) return null;
+      if (exprTypeDef.variant === Semantic.ENode.StructDatatype) {
+        const memberSymbol = exprTypeDef.members.find((m) => {
+          const sym = this.sr.symbolNodes.get(m);
+          return sym.variant === Semantic.ENode.VariableSymbol && sym.name === expr.memberName;
+        });
+        if (!memberSymbol) return null;
 
-      const result = {
-        root: basePath.root,
-        path: [...basePath.path, { kind: "member" as const, member: memberSymbol }],
-      };
-      return result;
+        return {
+          root: basePath.root,
+          path: [...basePath.path, { kind: "member" as const, member: memberSymbol }],
+        };
+      }
+
+      return null;
     }
 
     // Array subscript: arr[index]
