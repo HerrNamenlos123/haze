@@ -1258,6 +1258,9 @@ export class SemanticElaborator {
       case Collect.ENode.AttemptExpr:
         return this.attemptExpr(expr, inference);
 
+      case Collect.ENode.TernaryExpr:
+        return this.ternaryExpr(expr, inference);
+
       default:
         assert(false, "All cases handled: " + Collect.ENode[(expr as any).variant]);
     }
@@ -7409,6 +7412,81 @@ export class SemanticElaborator {
     });
   }
 
+  ternaryExpr(ternary: Collect.TernaryExpr, inference: Inference) {
+    const [condition, conditionId] = this.expr(ternary.condition, { unsafe: inference?.unsafe });
+    let [then, thenId] = this.expr(ternary.then, inference);
+    let [_else, elseId] = this.expr(ternary.else, inference);
+
+    const flow = FlowResult.empty();
+    flow.addAll(then.flow);
+    flow.addAll(_else.flow);
+
+    const writes = WriteResult.empty();
+    writes.addAll(then.writes);
+    writes.addAll(_else.writes);
+
+    const resultTypes: Semantic.TypeUseId[] = [];
+    if (then.flow.has(FlowType.Fallthrough)) {
+      resultTypes.push(then.type);
+    }
+    if (_else.flow.has(FlowType.Fallthrough)) {
+      resultTypes.push(_else.type);
+    }
+
+    let resultType: Semantic.TypeUseId | undefined = undefined;
+    if (resultTypes.length === 0) {
+      resultType = this.sr.b.noneType();
+    } else {
+      resultType = this.sr.b.untaggedUnionTypeUse(resultTypes, ternary.sourceloc);
+    }
+
+    if (then.flow.has(FlowType.Fallthrough)) {
+      thenId = Conversion.MakeConversionOrThrow(
+        this.sr,
+        thenId,
+        resultType,
+        this.currentContext.constraints,
+        condition.sourceloc,
+        Conversion.Mode.Implicit,
+        inference?.unsafe || false,
+      );
+    }
+    if (_else.flow.has(FlowType.Fallthrough)) {
+      elseId = Conversion.MakeConversionOrThrow(
+        this.sr,
+        elseId,
+        resultType,
+        this.currentContext.constraints,
+        condition.sourceloc,
+        Conversion.Mode.Implicit,
+        inference?.unsafe || false,
+      );
+    }
+
+    return Semantic.addExpr(this.sr, {
+      variant: Semantic.ENode.TernaryExpr,
+      condition: Conversion.MakeConversionOrThrow(
+        this.sr,
+        conditionId,
+        this.sr.b.boolType(),
+        this.currentContext.constraints,
+        condition.sourceloc,
+        Conversion.Mode.Implicit,
+        inference?.unsafe || false,
+      ),
+      then: thenId,
+      else: elseId,
+      flow: flow,
+      writes: writes,
+      instanceIds: [],
+      isTemporary: true,
+      sourceloc: ternary.sourceloc,
+      type: resultType,
+      thenProducesValue: then.flow.has(FlowType.Fallthrough),
+      elseProducesValue: _else.flow.has(FlowType.Fallthrough),
+    });
+  }
+
   attemptExpr(attempt: Collect.AttemptExpr, inference: Inference) {
     const uniqueId = makeTempId();
     const [attemptExpr, attemptExprId] = Semantic.addExpr<Semantic.AttemptExpr>(this.sr, {
@@ -9393,6 +9471,7 @@ export namespace Semantic {
     BinaryExpr,
     LiteralExpr,
     UnaryExpr,
+    TernaryExpr,
     ExprCallExpr,
     SymbolValueExpr,
     DatatypeAsValueExpr,
@@ -9897,6 +9976,16 @@ export namespace Semantic {
     operation: EIncrOperation;
   };
 
+  export type TernaryExpr = BaseExpr & {
+    variant: ENode.TernaryExpr;
+    instanceIds: InstanceId[];
+    condition: ExprId;
+    then: ExprId;
+    else: ExprId;
+    thenProducesValue: boolean;
+    elseProducesValue: boolean;
+  };
+
   export type ExprCallExpr = BaseExpr & {
     variant: ENode.ExprCallExpr;
     instanceIds: InstanceId[];
@@ -9993,6 +10082,7 @@ export namespace Semantic {
     | UnionToUnionCastExpr
     | UnionTagCheckExpr
     | AttemptErrorPropagationExpr
+    | TernaryExpr
     | ExprCallExpr
     | StructLiteralExpr
     | LiteralExpr

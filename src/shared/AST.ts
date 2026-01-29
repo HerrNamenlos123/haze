@@ -508,6 +508,14 @@ export type ASTAggregateLiteralExpr = {
   sourceloc: SourceLoc;
 };
 
+export type ASTTernaryExpr = {
+  variant: "TernaryExpr";
+  condition: ASTExpr;
+  then: ASTExpr;
+  else: ASTExpr;
+  sourceloc: SourceLoc;
+};
+
 export type ASTPreIncrExpr = {
   variant: "PreIncrExpr";
   expr: ASTExpr;
@@ -594,6 +602,7 @@ export type ASTExpr =
   | ASTPostIncrExpr
   | ASTExprCallExpr
   | ASTExprMemberAccess
+  | ASTTernaryExpr
   | ASTAggregateLiteralExpr
   | ASTPreIncrExpr
   | ASTUnaryExpr

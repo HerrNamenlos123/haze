@@ -74,6 +74,7 @@ import {
   type ASTForStatement,
   type ASTAttemptExpr,
   type ASTRaiseStatement,
+  type ASTTernaryExpr,
 } from "../shared/AST";
 import {
   BinaryExprContext,
@@ -168,6 +169,7 @@ import {
   InlineDatatypeContext,
   ConstDatatypeContext,
   MutDatatypeContext,
+  TernaryExprContext,
 } from "./grammar/autogen/HazeParser";
 import {
   BaseErrorListener,
@@ -836,6 +838,18 @@ class ASTTransformer extends HazeParserVisitor<any> {
         sourceloc: this.loc(ctx),
       },
     ];
+  };
+
+  visitTernaryExpr = (ctx: TernaryExprContext): ASTTernaryExpr => {
+    const exprs: ASTExpr[] = ctx.expr().map((e) => this.visit(e));
+    assert(exprs.length === 3);
+    return {
+      variant: "TernaryExpr",
+      condition: exprs[0],
+      then: exprs[1],
+      else: exprs[2],
+      sourceloc: this.loc(ctx),
+    };
   };
 
   visitStructMethod = (ctx: StructMethodContext): ASTFunctionDefinition[] => {

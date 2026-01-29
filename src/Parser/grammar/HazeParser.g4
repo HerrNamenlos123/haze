@@ -226,6 +226,7 @@ expr
     
     // Ternary-like control expressions
     // <- ternary
+    | expr QUESTIONMARK expr COLON expr                                             #TernaryExpr
     | ATTEMPT rawScope ELSE (id)? rawScope                                          #AttemptExpr
 
     // Assignment

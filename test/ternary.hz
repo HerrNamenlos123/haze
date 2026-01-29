@@ -1,0 +1,15 @@
+test_ternary_bar() {
+    return false;
+}
+
+test_ternary_foo() {
+    return 5 as int | str;
+}
+
+test_ternary_a() {
+    let result = test_ternary_bar() ? sys.panic("Test"):sys.panic("no");
+}
+
+main(): int {
+    return 0;
+}

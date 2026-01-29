@@ -2129,6 +2129,84 @@ export function lowerExpr(
       });
     }
 
+    case Semantic.ENode.TernaryExpr: {
+      const variableType = lowerTypeUse(lr, expr.type);
+
+      const statements = [] as Lowered.StatementId[];
+
+      const resultVariableId = storeInTempVarAndGet(
+        lr,
+        variableType,
+        null,
+        expr.sourceloc,
+        statements,
+      )[1];
+
+      let thenExpr = lowerExpr(lr, expr.then, statements, instanceInfo)[1];
+      if (expr.thenProducesValue) {
+        thenExpr = Lowered.addExpr(lr, {
+          variant: Lowered.ENode.ExprAssignmentExpr,
+          assignRefTarget: false,
+          target: resultVariableId,
+          type: variableType,
+          value: thenExpr,
+        })[1];
+      }
+
+      let elseExpr = lowerExpr(lr, expr.else, statements, instanceInfo)[1];
+      if (expr.elseProducesValue) {
+        elseExpr = Lowered.addExpr(lr, {
+          variant: Lowered.ENode.ExprAssignmentExpr,
+          assignRefTarget: false,
+          target: resultVariableId,
+          type: variableType,
+          value: elseExpr,
+        })[1];
+      }
+
+      statements.push(
+        Lowered.addStatement(lr, {
+          variant: Lowered.ENode.IfStatement,
+          condition: lowerExpr(lr, expr.condition, statements, instanceInfo)[1],
+          elseIfs: [],
+          sourceloc: expr.sourceloc,
+          then: Lowered.addBlockScope(lr, {
+            definesVariables: false,
+            statements: [
+              Lowered.addStatement(lr, {
+                variant: Lowered.ENode.ExprStatement,
+                expr: thenExpr,
+                sourceloc: expr.sourceloc,
+              })[1],
+            ],
+            emittedExpr: lowerExpr(lr, lr.sr.b.noneExpr()[1], statements, instanceInfo)[1],
+          })[1],
+          else: Lowered.addBlockScope(lr, {
+            definesVariables: false,
+            statements: [
+              Lowered.addStatement(lr, {
+                variant: Lowered.ENode.ExprStatement,
+                expr: elseExpr,
+                sourceloc: expr.sourceloc,
+              })[1],
+            ],
+            emittedExpr: lowerExpr(lr, lr.sr.b.noneExpr()[1], statements, instanceInfo)[1],
+          })[1],
+        })[1],
+      );
+
+      return Lowered.addExpr(lr, {
+        variant: Lowered.ENode.BlockScopeExpr,
+        block: Lowered.addBlockScope(lr, {
+          definesVariables: false,
+          statements: statements,
+          emittedExpr: resultVariableId,
+        })[1],
+        sourceloc: expr.sourceloc,
+        type: variableType,
+      });
+    }
+
     default:
       assert(false, "All cases handled " + Semantic.ENode[(expr as any).variant]);
   }

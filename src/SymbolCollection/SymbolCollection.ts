@@ -174,6 +174,7 @@ export namespace Collect {
     LiteralExpr,
     FStringExpr,
     UnaryExpr,
+    TernaryExpr,
     ExprCallExpr,
     SymbolValueExpr,
     ExplicitCastExpr,
@@ -660,6 +661,13 @@ export namespace Collect {
     arguments: Collect.ExprId[];
   };
 
+  export type TernaryExpr = BaseExpr & {
+    variant: ENode.TernaryExpr;
+    condition: Collect.ExprId;
+    then: Collect.ExprId;
+    else: Collect.ExprId;
+  };
+
   export type SymbolValueExpr = BaseExpr & {
     variant: ENode.SymbolValueExpr;
     name: string;
@@ -765,6 +773,7 @@ export namespace Collect {
     | UnaryExpr
     | SymbolValueExpr
     | ExprCallExpr
+    | TernaryExpr
     | ExplicitCastExpr
     | ExprIsTypeExpr
     | AggregateLiteralExpr
@@ -2709,6 +2718,16 @@ function collectExpr(
         attemptScope: collectScope(cc, item.attemptScope, args),
         elseScope: outerElseScope,
         elseVar: item.elseVar,
+        sourceloc: item.sourceloc,
+      })[1];
+    }
+
+    case "TernaryExpr": {
+      return Collect.makeExpr(cc, {
+        variant: Collect.ENode.TernaryExpr,
+        condition: collectExpr(cc, item.condition, { currentParentScope: args.currentParentScope }),
+        then: collectExpr(cc, item.then, { currentParentScope: args.currentParentScope }),
+        else: collectExpr(cc, item.else, { currentParentScope: args.currentParentScope }),
         sourceloc: item.sourceloc,
       })[1];
     }
