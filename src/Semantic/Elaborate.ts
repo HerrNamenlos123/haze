@@ -4348,6 +4348,14 @@ export class SemanticElaborator {
         ),
     });
 
+    // Check if this function symbol already has a signature registered
+    // This caused a bug where a function signature would conflict with itself
+    const existingSignatures = this.sr.elaboratedFunctionSignatures.get(functionSymbolId);
+    if (existingSignatures && existingSignatures.length > 0) {
+      // This function has already been elaborated, don't add it again
+      return existingSignatures[0];
+    }
+
     for (const sigId of this.sr.elaboratedFunctionSignaturesByName.get(cacheCodename) || []) {
       const sig = this.sr.symbolNodes.get(sigId);
       assert(sig.variant === Semantic.ENode.FunctionSignature);

@@ -9,14 +9,14 @@ toFFI(v: ShaderModuleDescriptor) {
     let source = ffi.WGPUShaderSourceWGSL {
         chain: {
             next: none,
-            sType: WGPUSType_ShaderSourceWGSL,
+            sType: ffi.WGPUSType_ShaderSourceWGSL,
         },
-        code: toFFI(code),
+        code: toFFI(v.code),
     }
 
     let desc = ffi.WGPUShaderModuleDescriptor {
         nextInChain: none,
-        label: toFFI(v.debugLabel),
+        label: toOptionalFFI(v.debugLabel),
     }
     __c__("desc->nextInChain = (void*)source;");
 
@@ -27,7 +27,7 @@ export struct ShaderModule {
     handle: mut ffi.WGPUShaderModuleImpl;
 }
 
-fromFFI(v: ffi.WGPUShaderModuleImpl) {
+fromFFI(v: mut ffi.WGPUShaderModuleImpl) {
     return ShaderModule {
         handle: v,
     };

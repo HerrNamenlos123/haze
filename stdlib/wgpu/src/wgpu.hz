@@ -71,7 +71,7 @@ export struct TextureViewDescriptor {
 
     static fromFFI(conf: ffi.WGPUTextureViewDescriptor) {
         let c = TextureViewDescriptor {
-            label: viewToStr(conf.label),
+            label: fromFFI(conf.label),
             format: TextureFormatFromFFI(conf.format),
             dimension: TextureViewDimensionFromFFI(conf.dimension),
             baseMipLevel: conf.baseMipLevel,
@@ -87,7 +87,7 @@ export struct TextureViewDescriptor {
     toFFI() {
         let c = ffi.WGPUTextureViewDescriptor {
             nextInChain: none,
-            label: strToView(this.label),
+            label: toFFI(this.label),
             format: TextureFormatToFFI(this.format),
             dimension: TextureViewDimensionToFFI(this.dimension),
             baseMipLevel: this.baseMipLevel,
@@ -431,11 +431,11 @@ export struct Limits {
 }
 
 export struct QueueDescriptor {
-    label: str = "";
+    debugLabel?: str;
 }
 
 export struct DeviceDescriptor {
-    label: str = "";
+    debugLabel?: str;
     requiredFeatures: []FeatureName = []FeatureName {};
     requiredLimits: Limits | none = none;
     defaultQueue: QueueDescriptor = default;
@@ -453,7 +453,7 @@ requestDeviceCallbackProxy(status: ffi.WGPURequestDeviceStatus, device: mut ffi.
     do unsafe {
         let callback: RequestDeviceCallback = uninitialized;
         __c__("callback = (void*)userdata1;");
-        callback(RequestDeviceStatusFromFFI(status), Device { handle: device }, viewToStr(message));
+        callback(RequestDeviceStatusFromFFI(status), Device { handle: device }, fromFFI(message));
     }
 }
 
@@ -497,13 +497,13 @@ export struct Adapter {
 
                 ffiDescriptor = ffi.WGPUDeviceDescriptor {
                     nextInChain: none,
-                    label: strToView(descriptor.label),
+                    label: toOptionalFFI(descriptor.debugLabel),
                     requiredFeatureCount: requiredFeatureCount,
                     requiredFeatures: requiredFeatures,
                     requiredLimits: limits,
                     defaultQueue: {
                         nextInChain: none,
-                        label: strToView(descriptor.defaultQueue.label),
+                        label: toOptionalFFI(descriptor.defaultQueue.debugLabel),
                     },
                     deviceLostCallbackInfo: a,
                     uncapturedErrorCallbackInfo: b,
