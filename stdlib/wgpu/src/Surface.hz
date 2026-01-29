@@ -66,7 +66,6 @@ toFFI(v: SurfaceTexture): ffi.WGPUSurfaceTexture :: final {
 }
 
 export struct SurfaceConfiguration {
-    device: mut Device;
     format: TextureFormat = TextureFormat.Undefined;
     usage: TextureUsage = TextureUsage.None;
     width: u32 = 0;
@@ -74,6 +73,7 @@ export struct SurfaceConfiguration {
     viewFormats: []TextureFormat = {};
     alphaMode: CompositeAlphaMode = CompositeAlphaMode.Auto;
     presentMode: PresentMode = PresentMode.Undefined;
+    device: mut Device;
 }
 
 fromFFI(v: ffi.WGPUSurfaceConfiguration): SurfaceConfiguration :: final {

@@ -1,0 +1,15 @@
+struct A {
+    struct B {
+        a: A;
+    }
+
+    make(): B {
+        return { a: this };
+    }
+}
+
+main(): int {
+    let a = A {};
+    a.make();
+    return 0;
+}

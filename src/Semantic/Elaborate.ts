@@ -33,6 +33,7 @@ import {
 import {
   Collect,
   funcSymHasParameterPack,
+  printCollectedDatatype,
   printCollectedExpr,
   printCollectedSymbol,
   type CollectionContext,
@@ -57,6 +58,7 @@ import {
   type ConstraintPath,
   type ConstraintPathSubscriptIndex,
 } from "./Constraint";
+import { isMethodSignature } from "typescript";
 
 export enum FlowType {
   NoReturn, // Control never comes back: Program terminates or infinite loop
@@ -842,6 +844,7 @@ export class SemanticElaborator {
       for (const [key, cache] of this.sr.elaboratedStructDatatypes) {
         for (const entry of cache) {
           if (entry.result === calledExprTypeUse.type) {
+            assert(elaboratedStructCache === null);
             elaboratedStructCache = entry;
           }
         }
@@ -873,13 +876,17 @@ export class SemanticElaborator {
           inFunction: null,
           inAttemptExpr: null,
         },
-        () =>
-          this.elaborateFunctionSymbolWithGenerics(
-            this.elaborateFunctionSignature(constructorId),
+        () => {
+          const signature = this.elaborateFunctionSignature(constructorId);
+          const sig = this.sr.symbolNodes.get(signature);
+          assert(sig.variant === Semantic.ENode.FunctionSignature);
+          return this.elaborateFunctionSymbolWithGenerics(
+            signature,
             [],
             callExpr.sourceloc,
             parameterPackTypes,
-          ),
+          );
+        },
       );
       assert(elaboratedMethodId);
       const elaboratedMethod = this.sr.symbolNodes.get(elaboratedMethodId);
@@ -890,6 +897,7 @@ export class SemanticElaborator {
       const hasParameterPack = constructorFunctype.parameters.some((p) =>
         this.isParameterPackType(p.type),
       );
+
       const elaboratedArgs = elaborateCallingArguments(constructorFunctype.parameters);
       const preparedArgs = validateAndPrepareArguments(
         elaboratedArgs,
@@ -2375,9 +2383,163 @@ export class SemanticElaborator {
     );
   }
 
+  elaborateMethodsAndTypedefsOfStruct(semanticStructId: Semantic.TypeDefId) {
+    const semanticStruct = this.sr.typeDefNodes.get(semanticStructId);
+    assert(semanticStruct.variant === Semantic.ENode.StructDatatype);
+    const collectedStructDef = this.sr.cc.symbolNodes.get(semanticStruct.originalCollectedSymbol);
+    assert(collectedStructDef.variant === Collect.ENode.TypeDefSymbol);
+    const collectedStruct = this.sr.cc.typeDefNodes.get(collectedStructDef.typeDef);
+    assert(collectedStruct.variant === Collect.ENode.StructTypeDef);
+
+    const lexicalScope = this.sr.cc.scopeNodes.get(collectedStruct.lexicalScope);
+    assert(lexicalScope.variant === Collect.ENode.StructLexicalScope);
+    const fieldScope = this.sr.cc.scopeNodes.get(collectedStruct.fieldScope);
+    assert(fieldScope.variant === Collect.ENode.StructFieldScope);
+    [...fieldScope.symbols, ...lexicalScope.symbols].forEach((symbolId) => {
+      const symbol = this.sr.cc.symbolNodes.get(symbolId);
+      if (symbol.variant === Collect.ENode.FunctionOverloadGroupSymbol) {
+        symbol.overloads.forEach((overloadId) => {
+          const overloadedFunc = this.sr.cc.symbolNodes.get(overloadId);
+          assert(overloadedFunc.variant === Collect.ENode.FunctionSymbol);
+          if (
+            overloadedFunc.generics.length !== 0 ||
+            funcSymHasParameterPack(this.sr.cc, overloadId)
+          ) {
+            return;
+          }
+          const signature = this.elaborateFunctionSignature(overloadId);
+          const funcId = this.elaborateFunctionSymbol(signature, semanticStructId, []);
+          const func = this.sr.symbolNodes.get(funcId);
+          assert(funcId && func && func.variant === Semantic.ENode.FunctionSymbol);
+          semanticStruct.methods.push(funcId);
+        });
+      } else if (symbol.variant === Collect.ENode.TypeDefSymbol) {
+        const def = this.sr.cc.typeDefNodes.get(symbol.typeDef);
+        if (def.variant === Collect.ENode.StructTypeDef) {
+          if (def.generics.length !== 0) {
+            return;
+          }
+          // If the nested struct is not generic, instantiate it without generics for early errors
+          const subStructId = this.instantiateAndElaborateStructWithGenerics(
+            symbol.typeDef,
+            [],
+            def.sourceloc,
+          );
+          semanticStruct.nestedStructs.push(subStructId);
+        }
+      }
+    });
+  }
+
+  elaborateStructMember(
+    semanticStructId: Semantic.TypeDefId,
+    symbol: Collect.VariableSymbol,
+    onlyElaborateType: boolean = false,
+  ) {
+    const semanticStruct = this.sr.typeDefNodes.get(semanticStructId);
+    assert(semanticStruct.variant === Semantic.ENode.StructDatatype);
+    const structSym = this.sr.cc.symbolNodes.get(semanticStruct.originalCollectedSymbol);
+    assert(structSym.variant === Collect.ENode.TypeDefSymbol);
+    const structType = this.sr.cc.typeDefNodes.get(structSym.typeDef);
+    assert(structType.variant === Collect.ENode.StructTypeDef);
+    assert(symbol.type);
+    const typeId = this.withContext(
+      {
+        context: Semantic.isolateElaborationContext(this.currentContext, {
+          // Start lookup in the struct itself, these are members, so both the type and
+          // its generics must be found from within the struct
+          currentScope: structType.lexicalScope,
+          genericsScope: structType.lexicalScope,
+          constraints: ConstraintSet.empty(),
+          instanceDeps: {
+            instanceDependsOn: new Map(),
+            structMembersDependOn: new Map(),
+            symbolDependsOn: new Map(),
+          },
+        }),
+        inAttemptExpr: null,
+        inFunction: null,
+      },
+      () => {
+        return this.lookupAndElaborateDatatype(symbol.type!);
+      },
+    );
+    if (onlyElaborateType) return;
+    const typeInstance = this.sr.typeUseNodes.get(typeId);
+    const type = this.sr.typeDefNodes.get(typeInstance.type);
+    const [variable, variableId] = Semantic.addSymbol(this.sr, {
+      variant: Semantic.ENode.VariableSymbol,
+      name: symbol.name,
+      export: false,
+      extern: EExternLanguage.None,
+      mutability: EVariableMutability.Default,
+      sourceloc: symbol.sourceloc,
+      memberOfStruct: semanticStructId,
+      type: typeId,
+      consumed: false,
+      variableContext: EVariableContext.MemberOfStruct,
+      parentStructOrNS: semanticStructId,
+      comptime: false,
+      comptimeValue: null,
+      concrete: type.concrete,
+    });
+    semanticStruct.members.push(variableId);
+    const defaultValue = structType.defaultMemberValues.find((v) => v.name === symbol.name);
+    if (defaultValue) {
+      const value = this.sr.cc.exprNodes.get(defaultValue.value);
+      let defaultExprId: Semantic.ExprId;
+      if (value.variant === Collect.ENode.SymbolValueExpr && value.name === "default") {
+        if (value.genericArgs.length !== 0) {
+          throw new CompilerError(
+            `'default' initializer cannot take any generics`,
+            symbol.sourceloc,
+          );
+        }
+        defaultExprId = Conversion.MakeDefaultValue(this.sr, typeId, symbol.sourceloc);
+      } else {
+        defaultExprId = this.expr(defaultValue.value, {
+          gonnaInstantiateStructWithType: variable.type,
+          unsafe: false,
+        })[1];
+      }
+      semanticStruct.memberDefaultValues.push({
+        memberName: variable.name,
+        value: Conversion.MakeConversionOrThrow(
+          this.sr,
+          defaultExprId,
+          typeId,
+          ConstraintSet.empty(),
+          symbol.sourceloc,
+          Conversion.Mode.Implicit,
+          false,
+        ),
+      });
+    }
+  }
+
+  elaborateMembersOfStruct(semanticStructId: Semantic.TypeDefId, onlyElaborateType: boolean) {
+    const semanticStruct = this.sr.typeDefNodes.get(semanticStructId);
+    assert(semanticStruct.variant === Semantic.ENode.StructDatatype);
+    const collectedStructDef = this.sr.cc.symbolNodes.get(semanticStruct.originalCollectedSymbol);
+    assert(collectedStructDef.variant === Collect.ENode.TypeDefSymbol);
+    const collectedStruct = this.sr.cc.typeDefNodes.get(collectedStructDef.typeDef);
+    assert(collectedStruct.variant === Collect.ENode.StructTypeDef);
+
+    const lexicalScope = this.sr.cc.scopeNodes.get(collectedStruct.lexicalScope);
+    assert(lexicalScope.variant === Collect.ENode.StructLexicalScope);
+    const fieldScope = this.sr.cc.scopeNodes.get(collectedStruct.fieldScope);
+    assert(fieldScope.variant === Collect.ENode.StructFieldScope);
+    [...fieldScope.symbols, ...lexicalScope.symbols].forEach((symbolId) => {
+      const symbol = this.sr.cc.symbolNodes.get(symbolId);
+      if (symbol.variant === Collect.ENode.VariableSymbol) {
+        this.elaborateStructMember(semanticStructId, symbol, onlyElaborateType);
+      }
+    });
+  }
+
   instantiateAndElaborateStruct(
     definedStructTypeId: Collect.TypeDefId, // The defining struct datatype to be instantiated (e.g. struct Foo<T> {})
-  ) {
+  ): Semantic.TypeDefId {
     const definedStructType = this.sr.cc.typeDefNodes.get(definedStructTypeId);
     assert(definedStructType.variant === Collect.ENode.StructTypeDef);
 
@@ -2389,12 +2551,40 @@ export class SemanticElaborator {
 
     const parentStructOrNS = this.elaborateParentSymbolFromCache(definedStructType.parentScope);
 
+    // This whole recursive stack and SCC business is a deep rabbit hole we must go down.
+    // It is required in order to make sure complex chains of structs work, where one struct
+    // may reference another struct, this struct has methods, those methods reference the original struct again
+    // and access its fields, etc. An intricate algorithm is required to make it work, such that all structs are
+    // elaborated and all of them can reference all other ones without issues of missing fields because they were
+    // not elaborated yet.
+    // Fun fact: This is really not trivial and the reason C++ has those shitty forward declarations and
+    // incomplete structs, which simply goes around this problem and the compiler gives the problem to
+    // the user instead of solving it. This is the reason C++ headers/sources with class method definitions suck.
+    // We want to solve it in the compiler instead.
+
     // If already existing, return cached to prevent loops
     const existing = getFromStructDefCache(this.sr, definedStructTypeId, {
       genericArgs: genericArgs,
       parentStructOrNS: parentStructOrNS,
     });
     if (existing) {
+      const struct = this.sr.typeDefNodes.get(existing);
+      assert(struct.variant === Semantic.ENode.StructDatatype);
+
+      if (this.currentContext.elaborationRecursiveStructStack.length === 0) {
+        // This is not in a chain (or already past the end of the chain), so fix the members if required
+        if (!struct.methodsFinalized && !struct.methodsInProgress) {
+          struct.methodsInProgress = false;
+          struct.methodsFinalized = true;
+          this.elaborateMethodsAndTypedefsOfStruct(existing);
+        }
+      }
+
+      if (struct.membersBuilt && !struct.membersFinalized) {
+        struct.membersFinalized = true;
+        this.elaborateMembersOfStruct(existing, true);
+      }
+
       return existing;
     }
 
@@ -2406,11 +2596,15 @@ export class SemanticElaborator {
       noemit: definedStructType.noemit,
       opaque: definedStructType.opaque,
       plain: definedStructType.plain,
+      membersBuilt: false,
+      membersFinalized: false,
       parentStructOrNS: parentStructOrNS,
       members: [],
       export: definedStructType.export,
       memberDefaultValues: [],
       methods: [],
+      methodsFinalized: false,
+      methodsInProgress: false,
       nestedStructs: [],
       sourceloc: definedStructType.sourceloc,
       concrete: genericArgs.every((g) => isTypeExprConcrete(this.sr, g)),
@@ -2440,148 +2634,33 @@ export class SemanticElaborator {
       const fieldScope = this.sr.cc.scopeNodes.get(definedStructType.fieldScope);
       assert(fieldScope.variant === Collect.ENode.StructFieldScope);
 
-      const elaborateMember = (symbol: Collect.VariableSymbol) => {
-        assert(symbol.type);
-        const typeId = this.withContext(
-          {
-            context: Semantic.isolateElaborationContext(this.currentContext, {
-              // Start lookup in the struct itself, these are members, so both the type and
-              // its generics must be found from within the struct
-              currentScope: definedStructType.lexicalScope,
-              genericsScope: definedStructType.lexicalScope,
-              constraints: ConstraintSet.empty(),
-              instanceDeps: {
-                instanceDependsOn: new Map(),
-                structMembersDependOn: new Map(),
-                symbolDependsOn: new Map(),
-              },
-            }),
-            inAttemptExpr: null,
-            inFunction: null,
-          },
-          () => {
-            return this.lookupAndElaborateDatatype(symbol.type!);
-          },
-        );
-        const typeInstance = this.sr.typeUseNodes.get(typeId);
-        const type = this.sr.typeDefNodes.get(typeInstance.type);
-        const [variable, variableId] = Semantic.addSymbol(this.sr, {
-          variant: Semantic.ENode.VariableSymbol,
-          name: symbol.name,
-          export: false,
-          extern: EExternLanguage.None,
-          mutability: EVariableMutability.Default,
-          sourceloc: symbol.sourceloc,
-          memberOfStruct: structId,
-          type: typeId,
-          consumed: false,
-          variableContext: EVariableContext.MemberOfStruct,
-          parentStructOrNS: structId,
-          comptime: false,
-          comptimeValue: null,
-          concrete: type.concrete,
-        });
-        struct.members.push(variableId);
-        const defaultValue = definedStructType.defaultMemberValues.find(
-          (v) => v.name === symbol.name,
-        );
-        if (defaultValue) {
-          const value = this.sr.cc.exprNodes.get(defaultValue.value);
-          let defaultExprId: Semantic.ExprId;
-          if (value.variant === Collect.ENode.SymbolValueExpr && value.name === "default") {
-            if (value.genericArgs.length !== 0) {
-              throw new CompilerError(
-                `'default' initializer cannot take any generics`,
-                symbol.sourceloc,
-              );
-            }
-            defaultExprId = Conversion.MakeDefaultValue(this.sr, typeId, symbol.sourceloc);
-          } else {
-            defaultExprId = this.expr(defaultValue.value, {
-              gonnaInstantiateStructWithType: variable.type,
-              unsafe: false,
-            })[1];
-          }
-          struct.memberDefaultValues.push({
-            memberName: variable.name,
-            value: Conversion.MakeConversionOrThrow(
-              this.sr,
-              defaultExprId,
-              typeId,
-              ConstraintSet.empty(),
-              symbol.sourceloc,
-              Conversion.Mode.Implicit,
-              false,
-            ),
-          });
-        }
-      };
+      const isRoot = this.currentContext.elaborationRecursiveStructStack.length === 0;
+      this.currentContext.elaborationRecursiveStructStack.push(structId);
 
-      const elaborateMethod = (symbol: Collect.FunctionOverloadGroupSymbol) => {
-        symbol.overloads.forEach((overloadId) => {
-          const overloadedFunc = this.sr.cc.symbolNodes.get(overloadId);
-          assert(overloadedFunc.variant === Collect.ENode.FunctionSymbol);
-          if (
-            overloadedFunc.generics.length !== 0 ||
-            funcSymHasParameterPack(this.sr.cc, overloadId)
-          ) {
-            return;
-          }
-          const signature = this.elaborateFunctionSignature(overloadId);
-          const funcId = this.elaborateFunctionSymbol(signature, structId, []);
-          const func = this.sr.symbolNodes.get(funcId);
-          assert(funcId && func && func.variant === Semantic.ENode.FunctionSymbol);
-          struct.methods.push(funcId);
-        });
-      };
+      if (isRoot) {
+        struct.methodsInProgress = true;
+      }
 
-      const elaborateTypedef = (symbol: Collect.TypeDefSymbol) => {
-        const def = this.sr.cc.typeDefNodes.get(symbol.typeDef);
-        if (def.variant === Collect.ENode.StructTypeDef) {
-          if (def.generics.length !== 0) {
-            return;
-          }
-          // If the nested struct is not generic, instantiate it without generics for early errors
-          const subStructId = this.instantiateAndElaborateStructWithGenerics(
-            symbol.typeDef,
-            [],
-            def.sourceloc,
-          );
-          struct.nestedStructs.push(subStructId);
-        }
-      };
+      // FIRST elaborate members
+      this.elaborateMembersOfStruct(structId, false);
+      struct.membersBuilt = true;
 
-      // FIRST elaborate types and members
-      [...fieldScope.symbols, ...lexicalScope.symbols].forEach((symbolId) => {
-        const symbol = this.sr.cc.symbolNodes.get(symbolId);
-        if (symbol.variant === Collect.ENode.VariableSymbol) {
-          elaborateMember(symbol);
-        } else if (symbol.variant === Collect.ENode.FunctionOverloadGroupSymbol) {
-          // Do not do functions yet, they may refer to members
-        } else if (symbol.variant === Collect.ENode.TypeDefSymbol) {
-          // Do not do typedefs including sub-structs yet, they may refer to members
-        } else if (symbol.variant === Collect.ENode.GenericTypeParameterSymbol) {
-          // Skip this, don't elaborate, it's only used for resolving and instantiation
-        } else {
-          assert(false, "unexpected type: " + symbol.variant);
-        }
-      });
+      if (isRoot) {
+        // If this is a root struct of an elaboration chain, since all members are elaborated now,
+        // elaborate methods and then elaborate members again, so they can elaborate their methods
 
-      // NOW elaborate methods (as they may refer to members of the parent)
-      [...fieldScope.symbols, ...lexicalScope.symbols].forEach((symbolId) => {
-        const symbol = this.sr.cc.symbolNodes.get(symbolId);
-        if (symbol.variant === Collect.ENode.VariableSymbol) {
-          // already done
-        } else if (symbol.variant === Collect.ENode.FunctionOverloadGroupSymbol) {
-          elaborateMethod(symbol);
-        } else if (symbol.variant === Collect.ENode.TypeDefSymbol) {
-          elaborateTypedef(symbol);
-        } else if (symbol.variant === Collect.ENode.GenericTypeParameterSymbol) {
-          // Skip this, don't elaborate, it's only used for resolving and instantiation
-        } else {
-          assert(false, "unexpected type: " + symbol.variant);
-        }
-      });
+        this.elaborateMethodsAndTypedefsOfStruct(structId);
+        struct.methodsFinalized = true;
+      }
+      // If this is NOT a root struct, do NOT elaborate methods
+
+      this.currentContext.elaborationRecursiveStructStack.pop();
+
+      if (isRoot) {
+        // Now elaborate all members again but without the stack, so they think they are the root now and fix themselves
+        this.elaborateMembersOfStruct(structId, true);
+        struct.membersFinalized = true;
+      }
     }
 
     return structId;
@@ -4296,7 +4375,37 @@ export class SemanticElaborator {
       })[1];
     });
 
+    const parameters = functionSymbol.parameters.map((p) => {
+      const type = this.withContext(
+        {
+          context: Semantic.isolateElaborationContext(this.currentContext, {
+            currentScope: functionSymbol.functionScope || functionSymbol.parentScope,
+            genericsScope: functionSymbol.functionScope || functionSymbol.parentScope,
+            constraints: ConstraintSet.empty(),
+            instanceDeps: {
+              instanceDependsOn: new Map(),
+              structMembersDependOn: new Map(),
+              symbolDependsOn: new Map(),
+            },
+          }),
+          inAttemptExpr: null,
+          inFunction: null,
+        },
+        () => this.lookupAndElaborateDatatype(p.type),
+      );
+      return {
+        name: p.name,
+        type: type,
+      };
+    });
+
     const parent = this.elaborateParentSymbolFromCache(functionSymbol.parentScope);
+
+    const cacheCodename =
+      (parent ? Semantic.serializeTypeDef(this.sr, parent) + "." : "") +
+      functionSymbol.name +
+      "|" +
+      parameters.map((p) => Semantic.serializeTypeUse(this.sr, p.type)).join("|");
 
     if (this.sr.elaboratedFunctionSignatures.has(functionSymbolId)) {
       const signatures = this.sr.elaboratedFunctionSignatures.get(functionSymbolId)!;
@@ -4313,9 +4422,6 @@ export class SemanticElaborator {
       }
     }
 
-    const cacheCodename =
-      (parent ? Semantic.serializeTypeDef(this.sr, parent) + "." : "") + functionSymbol.name;
-
     const [signature, signatureId] = Semantic.addSymbol(this.sr, {
       variant: Semantic.ENode.FunctionSignature,
       genericPlaceholders: genericPlaceholders,
@@ -4323,29 +4429,7 @@ export class SemanticElaborator {
       extern: functionSymbol.extern,
       name: functionSymbol.name,
       parentStructOrNS: parent,
-      parameters: functionSymbol.parameters.map((p) => {
-        const type = this.withContext(
-          {
-            context: Semantic.isolateElaborationContext(this.currentContext, {
-              currentScope: functionSymbol.functionScope || functionSymbol.parentScope,
-              genericsScope: functionSymbol.functionScope || functionSymbol.parentScope,
-              constraints: ConstraintSet.empty(),
-              instanceDeps: {
-                instanceDependsOn: new Map(),
-                structMembersDependOn: new Map(),
-                symbolDependsOn: new Map(),
-              },
-            }),
-            inAttemptExpr: null,
-            inFunction: null,
-          },
-          () => this.lookupAndElaborateDatatype(p.type),
-        );
-        return {
-          name: p.name,
-          type: type,
-        };
-      }),
+      parameters: parameters,
       returnType:
         functionSymbol.returnType &&
         this.withContext(
@@ -4366,14 +4450,6 @@ export class SemanticElaborator {
           () => this.lookupAndElaborateDatatype(functionSymbol.returnType!),
         ),
     });
-
-    // Check if this function symbol already has a signature registered
-    // This caused a bug where a function signature would conflict with itself
-    const existingSignatures = this.sr.elaboratedFunctionSignatures.get(functionSymbolId);
-    if (existingSignatures && existingSignatures.length > 0) {
-      // This function has already been elaborated, don't add it again
-      return existingSignatures[0];
-    }
 
     for (const sigId of this.sr.elaboratedFunctionSignaturesByName.get(cacheCodename) || []) {
       const sig = this.sr.symbolNodes.get(sigId);
@@ -9774,11 +9850,15 @@ export namespace Semantic {
     export: boolean;
     extern: EExternLanguage;
     members: Semantic.SymbolId[];
+    membersBuilt: boolean;
+    membersFinalized: boolean;
     memberDefaultValues: {
       memberName: string;
       value: Semantic.ExprId;
     }[];
     methods: Semantic.SymbolId[];
+    methodsInProgress: boolean;
+    methodsFinalized: boolean;
     nestedStructs: Semantic.TypeDefId[];
     parentStructOrNS: TypeDefId | null;
     sourceloc: SourceLoc;
@@ -10667,6 +10747,7 @@ export namespace Semantic {
 
     elaborationTypeOverride: Map<Collect.SymbolId, Semantic.TypeUseId>;
     elaboratedVariables: Map<Collect.SymbolId, Semantic.SymbolId>;
+    elaborationRecursiveStructStack: Semantic.TypeDefId[];
   };
 
   export function makeElaborationContext(args: {
@@ -10686,6 +10767,7 @@ export namespace Semantic {
       },
       elaboratedVariables: new Map(),
       elaborationTypeOverride: new Map(),
+      elaborationRecursiveStructStack: [],
     };
   }
 
@@ -10707,6 +10789,7 @@ export namespace Semantic {
 
       elaboratedVariables: new Map(parent.elaboratedVariables),
       elaborationTypeOverride: new Map(parent.elaborationTypeOverride),
+      elaborationRecursiveStructStack: [...parent.elaborationRecursiveStructStack],
     };
   }
 
@@ -10734,6 +10817,10 @@ export namespace Semantic {
         ...a.elaborationTypeOverride,
         ...b.elaborationTypeOverride,
       ]),
+      elaborationRecursiveStructStack: [
+        ...a.elaborationRecursiveStructStack,
+        ...b.elaborationRecursiveStructStack,
+      ],
     };
   }
 
@@ -10746,7 +10833,7 @@ export namespace Semantic {
     cc: CollectionContext,
     isLibrary: boolean,
     moduleName: string,
-    moduleVersion: string,
+    _moduleVersion: string,
   ) {
     const sr: SemanticResult = {
       overloadedOperators: [],
@@ -11436,15 +11523,22 @@ export namespace Semantic {
       }
 
       case Semantic.ENode.ParameterPackDatatype: {
-        assert(type.parameters !== null);
         return {
-          name: type.parameters
-            .map((p) => {
-              const sym = sr.symbolNodes.get(p);
-              assert(sym.variant === Semantic.ENode.VariableSymbol && sym.type);
-              return mangleTypeUse(sr, sym.type).name;
-            })
-            .join(""),
+          name:
+            type.parameters
+              ?.map((p) => {
+                const sym = sr.symbolNodes.get(p);
+                assert(sym.variant === Semantic.ENode.VariableSymbol && sym.type);
+                return mangleTypeUse(sr, sym.type).name;
+              })
+              .join("") ?? "_",
+          wasMangled: true,
+        };
+      }
+
+      case Semantic.ENode.GenericParameterDatatype: {
+        return {
+          name: type.name.length + type.name,
           wasMangled: true,
         };
       }
