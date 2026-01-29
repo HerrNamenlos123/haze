@@ -50,7 +50,7 @@ export struct SurfaceTexture {
     status: SurfaceGetCurrentTextureStatus;
 }
 
-fromFFI(v: ffi.WGPUSurfaceTexture): SurfaceTexture {
+fromFFI(v: ffi.WGPUSurfaceTexture): SurfaceTexture :: final {
     let c = SurfaceTexture {
         texture: none,
         status: SurfaceGetCurrentTextureStatusFromFFI(v.status),
@@ -62,7 +62,7 @@ fromFFI(v: ffi.WGPUSurfaceTexture): SurfaceTexture {
     return c;
 }
 
-toFFI(v: SurfaceTexture): ffi.WGPUSurfaceTexture {
+toFFI(v: SurfaceTexture): ffi.WGPUSurfaceTexture :: final {
     let t = none as mut ffi.WGPUTextureImpl | none;
     let tt = v.texture;
     if tt {
@@ -86,7 +86,7 @@ export struct SurfaceConfiguration {
     presentMode: PresentMode = PresentMode.Undefined;
 }
 
-fromFFI(v: ffi.WGPUSurfaceConfiguration): SurfaceConfiguration {
+fromFFI(v: ffi.WGPUSurfaceConfiguration): SurfaceConfiguration :: final {
     let c = SurfaceConfiguration {
         device: Device { handle: v.device },
         format: TextureFormatFromFFI(v.format),
@@ -109,7 +109,7 @@ fromFFI(v: ffi.WGPUSurfaceConfiguration): SurfaceConfiguration {
     return c;
 }
 
-toFFI(v: SurfaceConfiguration): ffi.WGPUSurfaceConfiguration {
+toFFI(v: SurfaceConfiguration): ffi.WGPUSurfaceConfiguration :: final {
     let c = ffi.WGPUSurfaceConfiguration {
         nextInChain: none,
         device: v.device.handle,
@@ -134,7 +134,7 @@ export struct SurfaceCapabilities {
     alphaModes: []CompositeAlphaMode = {};
 }
 
-fromFFI(v: ffi.WGPUSurfaceCapabilities): SurfaceCapabilities {
+fromFFI(v: ffi.WGPUSurfaceCapabilities): SurfaceCapabilities :: final {
     do unsafe {
         let c = SurfaceCapabilities {
             usages: fromFFI(v.usages),
@@ -168,7 +168,7 @@ fromFFI(v: ffi.WGPUSurfaceCapabilities): SurfaceCapabilities {
     }
 }
 
-toFFI(v: SurfaceCapabilities): ffi.WGPUSurfaceCapabilities {
+toFFI(v: SurfaceCapabilities): ffi.WGPUSurfaceCapabilities :: final {
     do unsafe {
         let caps = ffi.WGPUSurfaceCapabilities {
             nextInChain: none,

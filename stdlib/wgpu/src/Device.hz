@@ -3,7 +3,7 @@ export struct Device {
     handle: mut ffi.WGPUDeviceImpl;
 
     getQueue(): Result<mut Queue, none> {
-        const queue = ffi.wgpuDeviceGetQueue(this.handle);
+        let queue = ffi.wgpuDeviceGetQueue(this.handle);
         if queue {
             return fromFFI(queue);
         }

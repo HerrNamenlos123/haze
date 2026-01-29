@@ -18,12 +18,12 @@ export struct Queue {
     }
 }
 
-fromFFI(v: mut ffi.WGPUQueueImpl) {
+fromFFI(v: mut ffi.WGPUQueueImpl): mut Queue :: final {
     return Queue {
         handle: v,
     };
 }
 
-toFFI(v: Queue) {
+toFFI(v: Queue): mut ffi.WGPUQueueImpl :: final {
     return v.handle;
 }

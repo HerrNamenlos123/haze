@@ -11,7 +11,7 @@ export struct TextureViewDescriptor {
     usage: TextureUsage;
 }
 
-fromFFI(v: ffi.WGPUTextureViewDescriptor): TextureViewDescriptor {
+fromFFI(v: ffi.WGPUTextureViewDescriptor): TextureViewDescriptor :: final {
     return TextureViewDescriptor {
         label: fromFFI(v.label),
         format: TextureFormatFromFFI(v.format),
@@ -25,14 +25,14 @@ fromFFI(v: ffi.WGPUTextureViewDescriptor): TextureViewDescriptor {
     };
 }
 
-fromOptionalFFI(v: ffi.WGPUTextureViewDescriptor | none): TextureViewDescriptor | none {
+fromOptionalFFI(v: ffi.WGPUTextureViewDescriptor | none): TextureViewDescriptor | none :: final {
     if !v {
         return none;
     }
     return fromFFI(v);
 }
 
-toFFI(v: TextureViewDescriptor): ffi.WGPUTextureViewDescriptor {
+toFFI(v: TextureViewDescriptor): ffi.WGPUTextureViewDescriptor :: final {
     return ffi.WGPUTextureViewDescriptor {
         nextInChain: none,
         label: toFFI(v.label),
@@ -47,7 +47,7 @@ toFFI(v: TextureViewDescriptor): ffi.WGPUTextureViewDescriptor {
     };
 }
 
-toOptionalFFI(v: TextureViewDescriptor | none): ffi.WGPUTextureViewDescriptor | none {
+toOptionalFFI(v: TextureViewDescriptor | none): ffi.WGPUTextureViewDescriptor | none :: final {
     if !v {
         return none;
     }
@@ -68,11 +68,11 @@ export struct Texture {
     }
 }
 
-fromFFI(v: mut ffi.WGPUTextureImpl): Texture {
+fromFFI(v: mut ffi.WGPUTextureImpl): Texture :: final {
     return Texture { handle: v };
 }
 
-toFFI(v: Texture): mut ffi.WGPUTextureImpl {
+toFFI(v: Texture): mut ffi.WGPUTextureImpl :: final {
     return v.handle;
 }
 
@@ -80,11 +80,11 @@ export struct TextureView {
     handle: mut ffi.WGPUTextureViewImpl;
 }
 
-fromFFI(v: mut ffi.WGPUTextureViewImpl): TextureView {
+fromFFI(v: mut ffi.WGPUTextureViewImpl): TextureView :: final {
     return TextureView { handle: v };
 }
 
-toFFI(v: TextureView): mut ffi.WGPUTextureViewImpl {
+toFFI(v: TextureView): mut ffi.WGPUTextureViewImpl :: final {
     return v.handle;
 }
 
@@ -98,7 +98,7 @@ export enum bitflag TextureUsage {
     RenderAttachment = 16,
 }
 
-fromFFI(v: ffi.WGPUTextureUsage): TextureUsage {
+fromFFI(v: ffi.WGPUTextureUsage): TextureUsage :: final {
     do unsafe {
         let usage: TextureUsage = uninitialized; // This is a bitflag
         __c__("usage = (int)v;");
@@ -106,7 +106,7 @@ fromFFI(v: ffi.WGPUTextureUsage): TextureUsage {
     }
 }
 
-toFFI(v: TextureUsage): ffi.WGPUTextureUsage {
+toFFI(v: TextureUsage): ffi.WGPUTextureUsage :: final {
     do unsafe {
         let usage: ffi.WGPUTextureUsage = uninitialized; // This is a bitflag
         __c__("usage = (int)v;");

@@ -3,13 +3,13 @@ export struct CommandBuffer {
     handle: mut ffi.WGPUCommandBufferImpl;
 }
 
-fromFFI(v: mut ffi.WGPUCommandBufferImpl): CommandBuffer {
+fromFFI(v: mut ffi.WGPUCommandBufferImpl): CommandBuffer :: final {
     return CommandBuffer {
         handle: v,
     };
 }
 
-toFFI(v: CommandBuffer): mut ffi.WGPUCommandBufferImpl {
+toFFI(v: CommandBuffer): mut ffi.WGPUCommandBufferImpl :: final {
     return v.handle;
 }
 
@@ -17,13 +17,13 @@ export struct CommandBufferDescriptor {
     debugLabel?: str;
 }
 
-fromFFI(v: ffi.WGPUCommandBufferDescriptor): CommandBufferDescriptor {
+fromFFI(v: ffi.WGPUCommandBufferDescriptor): CommandBufferDescriptor :: final {
     return CommandBufferDescriptor {
         debugLabel: fromOptionalFFI(v.label),
     };
 }
 
-toFFI(v: CommandBufferDescriptor): ffi.WGPUCommandBufferDescriptor {
+toFFI(v: CommandBufferDescriptor): ffi.WGPUCommandBufferDescriptor :: final {
     return ffi.WGPUCommandBufferDescriptor {
         nextInChain: none,
         label: toOptionalFFI(v.debugLabel),

@@ -1,10 +1,11 @@
 
-toOptionalFFI(text: str | none): inline ffi.WGPUStringView {
+toOptionalFFI(text: str | none): inline ffi.WGPUStringView :: final {
     do unsafe {
         if text {
+            let t = text;
             let view: inline ffi.WGPUStringView = uninitialized;
-            __c__("view.data = text.data;");
-            __c__("view.length = text.length;");
+            __c__("view.data = t.data;");
+            __c__("view.length = t.length;");
             return view;
         }
         else {
@@ -16,7 +17,7 @@ toOptionalFFI(text: str | none): inline ffi.WGPUStringView {
     }
 }
 
-fromOptionalFFI(view: inline ffi.WGPUStringView): str | none {
+fromOptionalFFI(view: inline ffi.WGPUStringView): str | none :: final {
     do unsafe {
         let available = false;
         __c__("available = view.data != NULL;");
@@ -31,7 +32,7 @@ fromOptionalFFI(view: inline ffi.WGPUStringView): str | none {
     }
 }
 
-toFFI(text: str): inline ffi.WGPUStringView {
+toFFI(text: str): inline ffi.WGPUStringView :: final {
     do unsafe {
         let view: inline ffi.WGPUStringView = uninitialized;
         __c__("view.data = text.data;");
@@ -40,7 +41,7 @@ toFFI(text: str): inline ffi.WGPUStringView {
     }
 }
 
-fromFFI(view: inline ffi.WGPUStringView): str {
+fromFFI(view: inline ffi.WGPUStringView): str :: final {
     do unsafe {
         let text = "";
         __c__("text = hzstd_str_dup(HZSTD_STRING(view.data, view.length));");

@@ -4,7 +4,7 @@ export struct ShaderModuleDescriptor {
     code: str;
 }
 
-toFFI(v: ShaderModuleDescriptor) {
+toFFI(v: ShaderModuleDescriptor): ffi.WGPUShaderModuleDescriptor :: final {
 
     let source = ffi.WGPUShaderSourceWGSL {
         chain: {
@@ -27,12 +27,12 @@ export struct ShaderModule {
     handle: mut ffi.WGPUShaderModuleImpl;
 }
 
-fromFFI(v: mut ffi.WGPUShaderModuleImpl) {
+fromFFI(v: mut ffi.WGPUShaderModuleImpl): ShaderModule :: final {
     return ShaderModule {
         handle: v,
     };
 }
 
-toFFI(v: ShaderModule) {
+toFFI(v: ShaderModule): mut ffi.WGPUShaderModuleImpl :: final {
     return v.handle;
 }

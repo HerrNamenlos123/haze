@@ -36,7 +36,7 @@ requestAdapterCallbackProxy(status: ffi.WGPURequestAdapterStatus, adapter: mut f
     do unsafe {
         let callback: RequestAdapterCallback = uninitialized;
         __c__("callback = (void*)userdata1;");
-        callback(RequestAdapterStatusFromFFI(status), Adapter { handle: adapter }, viewToStr(message));
+        callback(RequestAdapterStatusFromFFI(status), Adapter { handle: adapter }, fromFFI(message));
     }
 }
 

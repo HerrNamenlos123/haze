@@ -7,13 +7,13 @@ export struct RenderPassEncoder {
     }
 }
 
-fromFFI(v: mut ffi.WGPURenderPassEncoderImpl) {
+fromFFI(v: mut ffi.WGPURenderPassEncoderImpl): RenderPassEncoder :: final {
     return RenderPassEncoder {
         handle: v,
     };
 }
 
-toFFI(v: RenderPassEncoder) {
+toFFI(v: RenderPassEncoder): mut ffi.WGPURenderPassEncoderImpl :: final {
     return v.handle;
 }
 
@@ -25,7 +25,7 @@ export struct RenderPassDescriptor {
     timestampWrites: RenderPassTimestampWrites | none = none;
 }
 
-fromFFI(v: ffi.WGPURenderPassDescriptor): RenderPassDescriptor {
+fromFFI(v: ffi.WGPURenderPassDescriptor): RenderPassDescriptor :: final {
     let c = RenderPassDescriptor {
         debugLabel: fromOptionalFFI(v.label),
         colorAttachments: {},
@@ -66,7 +66,7 @@ fromFFI(v: ffi.WGPURenderPassDescriptor): RenderPassDescriptor {
     return c;
 }
 
-toFFI(v: RenderPassDescriptor): ffi.WGPURenderPassDescriptor {
+toFFI(v: RenderPassDescriptor): ffi.WGPURenderPassDescriptor :: final {
     do unsafe {
         let colorAttachments: []inline ffi.WGPURenderPassColorAttachment = {};
         for (let i = 0; i < v.colorAttachments.length; i++) {
@@ -96,13 +96,12 @@ toFFI(v: RenderPassDescriptor): ffi.WGPURenderPassDescriptor {
         }
 
         let label = toOptionalFFI(v.debugLabel);
-        let colorAttachmentCount: u64 = 0;
-        __c__("colorAttachmentCount = colorAttachments.length;");
 
+        assert(colorAttachments.length >= 0);
         let conf = ffi.WGPURenderPassDescriptor {
             nextInChain: none,
             label: label,
-            colorAttachmentCount: colorAttachmentCount,
+            colorAttachmentCount: colorAttachments.length,
             colorAttachments: none,
             depthStencilAttachment: depthStencilPointer,
             occlusionQuerySet: occlusionQuerySet,
@@ -127,7 +126,7 @@ export struct RenderPassDepthStencilAttachment {
     stencilReadOnly: bool;
 }
 
-fromFFI(v: ffi.WGPURenderPassDepthStencilAttachment): RenderPassDepthStencilAttachment {
+fromFFI(v: ffi.WGPURenderPassDepthStencilAttachment): RenderPassDepthStencilAttachment :: final {
     return RenderPassDepthStencilAttachment {
         view: TextureView { handle: v.view },
         depthLoadOp: LoadOpFromFFI(v.depthLoadOp),
@@ -141,7 +140,7 @@ fromFFI(v: ffi.WGPURenderPassDepthStencilAttachment): RenderPassDepthStencilAtta
     };
 }
 
-toFFI(v: RenderPassDepthStencilAttachment): ffi.WGPURenderPassDepthStencilAttachment {
+toFFI(v: RenderPassDepthStencilAttachment): ffi.WGPURenderPassDepthStencilAttachment :: final {
     return ffi.WGPURenderPassDepthStencilAttachment {
         view: v.view.handle,
         depthLoadOp: LoadOpToFFI(v.depthLoadOp),
@@ -161,7 +160,7 @@ export struct RenderPassTimestampWrites {
     endOfPassWriteIndex: u32;
 }
 
-fromFFI(v: ffi.WGPURenderPassTimestampWrites): RenderPassTimestampWrites {
+fromFFI(v: ffi.WGPURenderPassTimestampWrites): RenderPassTimestampWrites :: final {
     return RenderPassTimestampWrites {
         querySet: QuerySet { handle: v.querySet },
         beginningOfPassWriteIndex: v.beginningOfPassWriteIndex,
@@ -169,7 +168,7 @@ fromFFI(v: ffi.WGPURenderPassTimestampWrites): RenderPassTimestampWrites {
     };
 }
 
-toFFI(v: RenderPassTimestampWrites): ffi.WGPURenderPassTimestampWrites {
+toFFI(v: RenderPassTimestampWrites): ffi.WGPURenderPassTimestampWrites :: final {
     return ffi.WGPURenderPassTimestampWrites {
         querySet: v.querySet.handle,
         beginningOfPassWriteIndex: v.beginningOfPassWriteIndex,
@@ -186,7 +185,7 @@ export struct RenderPassColorAttachment {
     clearValue: Color;
 }
 
-fromFFI(v: ffi.WGPURenderPassColorAttachment): RenderPassColorAttachment {
+fromFFI(v: ffi.WGPURenderPassColorAttachment): RenderPassColorAttachment :: final {
     do unsafe {
         let c = RenderPassColorAttachment {
             view: none,
@@ -220,7 +219,7 @@ fromFFI(v: ffi.WGPURenderPassColorAttachment): RenderPassColorAttachment {
     }
 }
 
-toFFI(v: RenderPassColorAttachment): ffi.WGPURenderPassColorAttachment {
+toFFI(v: RenderPassColorAttachment): ffi.WGPURenderPassColorAttachment :: final {
     do unsafe {
         let viewHandle = none as mut ffi.WGPUTextureViewImpl | none;
         let vv = v.view;
