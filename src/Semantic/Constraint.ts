@@ -2,6 +2,40 @@ import { EBinaryOperation } from "../shared/AST";
 import { assert } from "../shared/Errors";
 import type { Semantic } from "./Elaborate";
 
+// ============================================================================
+// Path-based constraint system
+// ============================================================================
+
+export type ConstraintPathRoot = {
+  kind: "symbol";
+  symbolId: Semantic.SymbolId;
+};
+
+export type ConstraintPathElement = ConstraintPathMember | ConstraintPathSubscript;
+
+export type ConstraintPathMember = {
+  kind: "member";
+  member: Semantic.SymbolId; // VariableSymbol representing the member
+};
+
+export type ConstraintPathSubscript = {
+  kind: "subscript";
+  index: ConstraintPathSubscriptIndex;
+};
+
+export type ConstraintPathSubscriptIndex =
+  | { kind: "literal"; value: string } // Serialized literal value for stable comparison
+  | { kind: "variable"; symbol: Semantic.SymbolId };
+
+export type ConstraintPath = {
+  root: ConstraintPathRoot;
+  path: ConstraintPathElement[]; // Empty for simple variables
+};
+
+// ============================================================================
+// Legacy constraint types (kept for backward compatibility)
+// ============================================================================
+
 export type Constraint = {
   variableSymbol: Semantic.SymbolId;
   constraintValue: ConstraintValue;
@@ -19,6 +53,75 @@ export type ConstraintValue =
       typeUse?: Semantic.TypeUseId;
       typeDef?: Semantic.TypeDefId;
     };
+
+// ============================================================================
+// Path manipulation functions
+// ============================================================================
+
+export function pathToKey(path: ConstraintPath): string {
+  let key = `${path.root.symbolId}`;
+  for (const element of path.path) {
+    if (element.kind === "member") {
+      key += `.${element.member}`;
+    } else if (element.index.kind === "literal") {
+      key += `[${element.index.value}]`;
+    } else {
+      key += `[V${element.index.symbol}]`;
+    }
+  }
+  return key;
+}
+
+export function pathsMatch(a: ConstraintPath, b: ConstraintPath): boolean {
+  if (a.root.symbolId !== b.root.symbolId) return false;
+  if (a.path.length !== b.path.length) return false;
+
+  for (let i = 0; i < a.path.length; i++) {
+    const elemA = a.path[i];
+    const elemB = b.path[i];
+
+    if (elemA.kind !== elemB.kind) return false;
+
+    if (elemA.kind === "member" && elemB.kind === "member") {
+      if (elemA.member !== elemB.member) return false;
+    } else if (elemA.kind === "subscript" && elemB.kind === "subscript") {
+      if (elemA.index.kind !== elemB.index.kind) return false;
+      if (elemA.index.kind === "literal" && elemB.index.kind === "literal") {
+        // Compare literal values (serialized strings)
+        if (elemA.index.value !== elemB.index.value) return false;
+      } else if (elemA.index.kind === "variable" && elemB.index.kind === "variable") {
+        if (elemA.index.symbol !== elemB.index.symbol) return false;
+      }
+    }
+  }
+
+  return true;
+}
+
+export function isPathPrefix(prefix: ConstraintPath, path: ConstraintPath): boolean {
+  if (prefix.root.symbolId !== path.root.symbolId) return false;
+  if (prefix.path.length > path.path.length) return false;
+
+  for (let i = 0; i < prefix.path.length; i++) {
+    const elemA = prefix.path[i];
+    const elemB = path.path[i];
+
+    if (elemA.kind !== elemB.kind) return false;
+
+    if (elemA.kind === "member" && elemB.kind === "member") {
+      if (elemA.member !== elemB.member) return false;
+    } else if (elemA.kind === "subscript" && elemB.kind === "subscript") {
+      if (elemA.index.kind !== elemB.index.kind) return false;
+      if (elemA.index.kind === "literal" && elemB.index.kind === "literal") {
+        if (elemA.index.value !== elemB.index.value) return false;
+      } else if (elemA.index.kind === "variable" && elemB.index.kind === "variable") {
+        if (elemA.index.symbol !== elemB.index.symbol) return false;
+      }
+    }
+  }
+
+  return true;
+}
 
 function constraintKey(c: Constraint): string {
   if (c.constraintValue.kind === "comparison") {
@@ -82,13 +185,36 @@ function invertConstraint(c: Constraint): Constraint {
   };
 }
 
+function invertConstraintValue(v: ConstraintValue): ConstraintValue {
+  if (v.kind === "comparison") {
+    return {
+      kind: "comparison",
+      operation: invertComparison(v.operation),
+      value: v.value,
+    };
+  }
+
+  // union constraint
+  return {
+    kind: "union",
+    operation: v.operation === "is" ? "isNot" : "is",
+    typeUse: v.typeUse,
+    typeDef: v.typeDef,
+  };
+}
+
 export class ConstraintSet {
   private readonly map: Map<string, Constraint>;
+  private readonly pathMap: Map<string, { path: ConstraintPath; value: ConstraintValue }>;
 
   private _inverse?: ConstraintSet;
 
-  private constructor(map?: Map<string, Constraint>) {
+  private constructor(
+    map?: Map<string, Constraint>,
+    pathMap?: Map<string, { path: ConstraintPath; value: ConstraintValue }>,
+  ) {
     this.map = map ?? new Map();
+    this.pathMap = pathMap ?? new Map();
   }
 
   // ---- construction --------------------------------------------------------
@@ -104,7 +230,66 @@ export class ConstraintSet {
   }
 
   clone(): ConstraintSet {
-    return new ConstraintSet(new Map(this.map));
+    return new ConstraintSet(new Map(this.map), new Map(this.pathMap));
+  }
+
+  // ---- path-based operations -----------------------------------------------
+
+  addPath(path: ConstraintPath, value: ConstraintValue): this {
+    this.pathMap.set(pathToKey(path), { path, value });
+    this._inverse = undefined;
+    return this;
+  }
+
+  getPathConstraint(path: ConstraintPath): ConstraintValue | undefined {
+    const entry = this.pathMap.get(pathToKey(path));
+    return entry?.value;
+  }
+
+  deletePathAndChildren(path: ConstraintPath): this {
+    const pathKey = pathToKey(path);
+
+    // Delete exact match
+    this.pathMap.delete(pathKey);
+
+    // Delete all paths that start with this prefix
+    const prefix = pathKey + ".";
+    const subscriptPrefix = pathKey + "[";
+
+    for (const key of this.pathMap.keys()) {
+      if (key.startsWith(prefix) || key.startsWith(subscriptPrefix)) {
+        this.pathMap.delete(key);
+      }
+    }
+
+    this._inverse = undefined;
+    return this;
+  }
+
+  deleteSymbolWrites(symbolId: Semantic.SymbolId): this {
+    // Delete if symbol is the root
+    for (const [key, entry] of this.pathMap) {
+      // Root was written
+      if (entry.path.root.symbolId === symbolId) {
+        this.pathMap.delete(key);
+        continue;
+      }
+
+      // Symbol used as array index - invalidate if written
+      for (const element of entry.path.path) {
+        if (
+          element.kind === "subscript" &&
+          element.index.kind === "variable" &&
+          element.index.symbol === symbolId
+        ) {
+          this.pathMap.delete(key);
+          break;
+        }
+      }
+    }
+
+    this._inverse = undefined;
+    return this;
   }
 
   // ---- basic operations ----------------------------------------------------
@@ -116,8 +301,13 @@ export class ConstraintSet {
   }
 
   addAll(other: ConstraintSet): this {
+    // Copy legacy constraints
     for (const c of other.map.values()) {
       this.map.set(constraintKey(c), c);
+    }
+    // Copy path-based constraints
+    for (const [key, value] of other.pathMap) {
+      this.pathMap.set(key, value);
     }
     this._inverse = undefined;
     return this;
@@ -156,8 +346,14 @@ export class ConstraintSet {
 
     const inv = new ConstraintSet();
 
+    // Invert legacy constraints
     for (const c of this.map.values()) {
       inv.add(invertConstraint(c));
+    }
+
+    // Invert path-based constraints
+    for (const { path, value } of this.pathMap.values()) {
+      inv.addPath(path, invertConstraintValue(value));
     }
 
     // cache both directions

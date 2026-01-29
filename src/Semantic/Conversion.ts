@@ -15,9 +15,88 @@ import {
 } from "./Elaborate";
 import { Collect } from "../SymbolCollection/SymbolCollection";
 import { makeTypeUse } from "./LookupDatatype";
-import type { ConstraintSet, ConstraintValue } from "./Constraint";
+import type {
+  ConstraintSet,
+  ConstraintValue,
+  ConstraintPath,
+  ConstraintPathElement,
+  ConstraintPathSubscriptIndex,
+} from "./Constraint";
 
 export namespace Conversion {
+  // Helper function to extract constraint path from expression
+  function extractConstraintPath(
+    sr: SemanticResult,
+    exprId: Semantic.ExprId,
+  ): ConstraintPath | null {
+    const expr = sr.exprNodes.get(exprId);
+    if (!expr) return null;
+
+    // Base case: variable reference
+    if (expr.variant === Semantic.ENode.SymbolValueExpr) {
+      return {
+        root: { kind: "symbol", symbolId: expr.symbol },
+        path: [],
+      };
+    }
+
+    // Member access: obj.member
+    if (expr.variant === Semantic.ENode.MemberAccessExpr) {
+      const basePath = extractConstraintPath(sr, expr.expr);
+      if (!basePath) return null;
+
+      // Find the member symbol by name
+      const exprTypeUse = sr.typeUseNodes.get(sr.exprNodes.get(expr.expr).type);
+      const exprTypeDef = sr.typeDefNodes.get(exprTypeUse.type);
+      if (exprTypeDef.variant !== Semantic.ENode.StructDatatype) return null;
+
+      const memberSymbol = exprTypeDef.members.find((m) => {
+        const sym = sr.symbolNodes.get(m);
+        return sym.variant === Semantic.ENode.VariableSymbol && sym.name === expr.memberName;
+      });
+      if (!memberSymbol) return null;
+
+      return {
+        root: basePath.root,
+        path: [...basePath.path, { kind: "member", member: memberSymbol }],
+      };
+    }
+
+    // Array subscript: arr[index]
+    if (expr.variant === Semantic.ENode.ArraySubscriptExpr) {
+      const basePath = extractConstraintPath(sr, expr.expr);
+      if (!basePath) return null;
+
+      // Only support single index for now
+      if (expr.indices.length !== 1) return null;
+
+      const indexExpr = sr.exprNodes.get(expr.indices[0]);
+      let subscriptIndex: ConstraintPathSubscriptIndex;
+
+      // Check if index is a literal
+      if (indexExpr.variant === Semantic.ENode.LiteralExpr) {
+        const literalValue = Semantic.serializeLiteralValue(sr, indexExpr.literal);
+        subscriptIndex = { kind: "literal", value: literalValue };
+      }
+      // Check if index is a variable reference
+      else if (indexExpr.variant === Semantic.ENode.SymbolValueExpr) {
+        subscriptIndex = { kind: "variable", symbol: indexExpr.symbol };
+      }
+      // Complex expression - not supported for path-based narrowing
+      else {
+        return null;
+      }
+
+      return {
+        root: basePath.root,
+        path: [...basePath.path, { kind: "subscript", index: subscriptIndex }],
+      };
+    }
+
+    // Cannot extract path from other expression types
+    return null;
+  }
+
   export function isSignedInteger(primitive: EPrimitive): boolean {
     switch (primitive) {
       case EPrimitive.i8:
@@ -732,6 +811,17 @@ export namespace Conversion {
       },
 
       constrainFromConstraints(constraints: ConstraintSet, fromExprId: Semantic.ExprId) {
+        // Try path-based constraints first
+        const path = extractConstraintPath(sr, fromExprId);
+        if (path) {
+          const constraint = constraints.getPathConstraint(path);
+          if (constraint) {
+            this.constrainFromConstraint(constraint);
+            return;
+          }
+        }
+
+        // Fallback to legacy symbol-based constraints
         const fromExpr = sr.exprNodes.get(fromExprId);
         if (fromExpr.variant !== Semantic.ENode.SymbolValueExpr) return;
 

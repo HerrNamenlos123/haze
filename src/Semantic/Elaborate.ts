@@ -51,7 +51,12 @@ import {
 import { EUnaryOperation, type EIncrOperation } from "../shared/AST";
 import { type Brand, type LiteralValue } from "../shared/common";
 import { makeTempId, makeTempName } from "../shared/store";
-import { ConditionChain, ConstraintSet } from "./Constraint";
+import {
+  ConditionChain,
+  ConstraintSet,
+  type ConstraintPath,
+  type ConstraintPathSubscriptIndex,
+} from "./Constraint";
 
 export enum FlowType {
   NoReturn, // Control never comes back: Program terminates or infinite loop
@@ -6124,6 +6129,10 @@ export class SemanticElaborator {
     }
   }
 
+  extractConstraintPath(exprId: Semantic.ExprId): ConstraintPath | null {
+    return this.sr.b.extractConstraintPath(exprId);
+  }
+
   buildLogicalConstraintSet(constraints: ConstraintSet, exprId: Semantic.ExprId) {
     const expr = this.sr.exprNodes.get(exprId);
     const exprTypeUse = this.sr.typeUseNodes.get(expr.type);
@@ -6190,6 +6199,19 @@ export class SemanticElaborator {
         unionExpr = this.getExpr(unionExpr.expr);
       }
 
+      // Try to extract constraint path (handles variables, members, and subscripts)
+      const path = this.extractConstraintPath(expr.expr);
+      if (path) {
+        for (const comparisonType of expr.comparisonTypesAnd) {
+          constraints.addPath(path, {
+            kind: "union",
+            operation: expr.invertCheck ? "isNot" : "is",
+            typeDef: this.getTypeUse(comparisonType).type,
+          });
+        }
+      }
+
+      // Legacy: also add symbol-based constraint for backward compatibility
       if (unionExpr.variant === Semantic.ENode.SymbolValueExpr) {
         for (const comparisonType of expr.comparisonTypesAnd) {
           constraints.add({
@@ -6204,30 +6226,50 @@ export class SemanticElaborator {
       }
     }
 
-    if (
-      expr.variant === Semantic.ENode.SymbolValueExpr &&
-      exprTypeDef.variant === Semantic.ENode.UntaggedUnionDatatype
-    ) {
+    // Boolean context narrowing: if (expr) where expr is union with null/none
+    if (exprTypeDef.variant === Semantic.ENode.UntaggedUnionDatatype) {
       const memberDefs = exprTypeDef.members.map((m) => this.sr.typeUseNodes.get(m).type);
-      if (memberDefs.includes(this.sr.b.nullTypeDef())) {
-        constraints.add({
-          constraintValue: {
+      const path = this.extractConstraintPath(exprId);
+
+      if (path) {
+        if (memberDefs.includes(this.sr.b.nullTypeDef())) {
+          constraints.addPath(path, {
             kind: "union",
             operation: "isNot",
             typeDef: this.sr.b.nullTypeDef(),
-          },
-          variableSymbol: expr.symbol,
-        });
-      }
-      if (memberDefs.includes(this.sr.b.noneTypeDef())) {
-        constraints.add({
-          constraintValue: {
+          });
+        }
+        if (memberDefs.includes(this.sr.b.noneTypeDef())) {
+          constraints.addPath(path, {
             kind: "union",
             operation: "isNot",
             typeDef: this.sr.b.noneTypeDef(),
-          },
-          variableSymbol: expr.symbol,
-        });
+          });
+        }
+      }
+
+      // Legacy: keep symbol-based constraints for backward compatibility
+      if (expr.variant === Semantic.ENode.SymbolValueExpr) {
+        if (memberDefs.includes(this.sr.b.nullTypeDef())) {
+          constraints.add({
+            constraintValue: {
+              kind: "union",
+              operation: "isNot",
+              typeDef: this.sr.b.nullTypeDef(),
+            },
+            variableSymbol: expr.symbol,
+          });
+        }
+        if (memberDefs.includes(this.sr.b.noneTypeDef())) {
+          constraints.add({
+            constraintValue: {
+              kind: "union",
+              operation: "isNot",
+              typeDef: this.sr.b.noneTypeDef(),
+            },
+            variableSymbol: expr.symbol,
+          });
+        }
       }
     }
 
@@ -6238,6 +6280,15 @@ export class SemanticElaborator {
       const okTag = exprTypeDef.members.find((m) => m.tag === "Ok");
       const errTag = exprTypeDef.members.find((m) => m.tag === "Err");
       if (okTag && errTag) {
+        const path = this.extractConstraintPath(exprId);
+        if (path) {
+          constraints.addPath(path, {
+            kind: "union",
+            operation: "is",
+            typeDef: this.sr.typeUseNodes.get(okTag.type).type,
+          });
+        }
+        // Legacy
         constraints.add({
           constraintValue: {
             kind: "union",
@@ -8074,10 +8125,90 @@ export class SemanticBuilder {
     return directiveId;
   }
 
+  extractConstraintPath(exprId: Semantic.ExprId): ConstraintPath | null {
+    const expr = this.sr.exprNodes.get(exprId);
+    if (!expr) {
+      return null;
+    }
+
+    // Base case: variable reference
+    if (expr.variant === Semantic.ENode.SymbolValueExpr) {
+      return {
+        root: { kind: "symbol" as const, symbolId: expr.symbol },
+        path: [],
+      };
+    }
+
+    // Member access: obj.member
+    if (expr.variant === Semantic.ENode.MemberAccessExpr) {
+      const basePath = this.extractConstraintPath(expr.expr);
+      if (!basePath) {
+        return null;
+      }
+
+      // Find the member symbol by name
+      const exprTypeUse = this.sr.typeUseNodes.get(this.sr.exprNodes.get(expr.expr).type);
+      const exprTypeDef = this.sr.typeDefNodes.get(exprTypeUse.type);
+      if (exprTypeDef.variant !== Semantic.ENode.StructDatatype) return null;
+
+      const memberSymbol = exprTypeDef.members.find((m) => {
+        const sym = this.sr.symbolNodes.get(m);
+        return sym.variant === Semantic.ENode.VariableSymbol && sym.name === expr.memberName;
+      });
+      if (!memberSymbol) return null;
+
+      const result = {
+        root: basePath.root,
+        path: [...basePath.path, { kind: "member" as const, member: memberSymbol }],
+      };
+      return result;
+    }
+
+    // Array subscript: arr[index]
+    if (expr.variant === Semantic.ENode.ArraySubscriptExpr) {
+      const basePath = this.extractConstraintPath(expr.expr);
+      if (!basePath) return null;
+
+      // Only support single index for now
+      if (expr.indices.length !== 1) return null;
+
+      const indexExpr = this.sr.exprNodes.get(expr.indices[0]);
+      let subscriptIndex: ConstraintPathSubscriptIndex;
+
+      // Check if index is a literal
+      if (indexExpr.variant === Semantic.ENode.LiteralExpr) {
+        const literalValue = Semantic.serializeLiteralValue(this.sr, indexExpr.literal);
+        subscriptIndex = { kind: "literal", value: literalValue };
+      }
+      // Check if index is a variable reference
+      else if (indexExpr.variant === Semantic.ENode.SymbolValueExpr) {
+        subscriptIndex = { kind: "variable", symbol: indexExpr.symbol };
+      }
+      // Complex expression - not supported for path-based narrowing
+      else {
+        return null;
+      }
+
+      return {
+        root: basePath.root,
+        path: [...basePath.path, { kind: "subscript", index: subscriptIndex }],
+      };
+    }
+
+    // Cannot extract path from other expression types
+    return null;
+  }
+
   updateLHSDependencies(lhsId: Semantic.ExprId, dependencies: Semantic.InstanceId[]): WriteResult {
     const lhs = this.sr.exprNodes.get(lhsId);
     switch (lhs.variant) {
       case Semantic.ENode.ArraySubscriptExpr: {
+        // Extract path for array subscript and delete it + children
+        const path = this.extractConstraintPath(lhsId);
+        if (path) {
+          this.sr.e.currentContext.constraints.deletePathAndChildren(path);
+        }
+
         lhs.instanceIds.forEach((id) =>
           Semantic.addInstanceDeps(this.sr.e.currentContext.instanceDeps, id, dependencies),
         );
@@ -8086,11 +8217,20 @@ export class SemanticBuilder {
 
       case Semantic.ENode.SymbolValueExpr: {
         Semantic.addSymbolDeps(this.sr.e.currentContext, lhs.symbol, dependencies);
+        // Delete symbol-based constraints (legacy)
         this.sr.e.currentContext.constraints.deleteSymbol(lhs.symbol);
+        // Delete path-based constraints for this symbol and all paths using it
+        this.sr.e.currentContext.constraints.deleteSymbolWrites(lhs.symbol);
         return WriteResult.empty().with(lhs.symbol);
       }
 
       case Semantic.ENode.MemberAccessExpr: {
+        // Extract path for member access and delete it + children
+        const path = this.extractConstraintPath(lhsId);
+        if (path) {
+          this.sr.e.currentContext.constraints.deletePathAndChildren(path);
+        }
+
         const struct = this.sr.e.getTypeDef(
           this.sr.e.getTypeUse(this.sr.e.getExpr(lhs.expr).type).type,
         );
