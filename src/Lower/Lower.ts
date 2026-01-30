@@ -1774,7 +1774,7 @@ export function lowerExpr(
         // Fill new entry
         loweredSourceUnion.members.forEach((source, sourceIndex) => {
           const targetIndex = loweredTargetUnion.members.findIndex((m) => m === source);
-          if (targetIndex) {
+          if (targetIndex !== -1) {
             mapping!.mapping.set(sourceIndex, targetIndex);
           }
         });
@@ -1782,7 +1782,7 @@ export function lowerExpr(
         // Verify existing entry
         loweredSourceUnion.members.forEach((source, sourceIndex) => {
           const targetIndex = loweredTargetUnion.members.findIndex((m) => m === source);
-          if (targetIndex) {
+          if (targetIndex !== -1) {
             assert(mapping!.mapping.get(sourceIndex) === targetIndex);
           }
         });

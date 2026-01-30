@@ -96,10 +96,10 @@ main(): int {
             alphaMode: caps.alphaModes[0],
         });
 
-        // let shadercode = fs.read("test/shaders.wgsl")?!;
-        // let shader = g_device.createShaderModule({
-        //     // code: shadercode,
-        // });
+        let shadercode = fs.readFile("test/shaders.wgsl")?!;
+        let shader = g_device.createShaderModule({
+            code: shadercode,
+        });
 
         // let vertices = [
         //     vec2(-0.5, -0.5),
@@ -196,6 +196,9 @@ main(): int {
     }
     else e {
         if e is str {
+            fmt.println("Application failed: ", e);
+        }
+        else if e is fs.Error {
             fmt.println("Application failed: ", e);
         }
         else if e is none {

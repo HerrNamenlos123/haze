@@ -837,6 +837,14 @@ export namespace Conversion {
       },
 
       constrainFromConstraints(constraints: ConstraintSet, fromExprId: Semantic.ExprId) {
+        const fromExpr = sr.exprNodes.get(fromExprId);
+        if (fromExpr.variant === Semantic.ENode.SymbolValueExpr) {
+          for (const c of constraints.toArray()) {
+            if (c.variableSymbol !== fromExpr.symbol) continue;
+            this.constrainFromConstraint(c.constraintValue);
+          }
+        }
+
         const path = extractConstraintPath(sr, fromExprId);
         if (path) {
           const constraintsForPath = constraints.getPathConstraint(path);
@@ -846,14 +854,6 @@ export namespace Conversion {
             }
             return;
           }
-        }
-
-        const fromExpr = sr.exprNodes.get(fromExprId);
-        if (fromExpr.variant !== Semantic.ENode.SymbolValueExpr) return;
-
-        for (const c of constraints.toArray()) {
-          if (c.variableSymbol !== fromExpr.symbol) continue;
-          this.constrainFromConstraint(c.constraintValue);
         }
       },
 

@@ -1,6 +1,6 @@
-import { EBinaryOperation } from "../shared/AST";
+import { BinaryOperationToString, EBinaryOperation } from "../shared/AST";
 import { assert } from "../shared/Errors";
-import type { Semantic } from "./Elaborate";
+import { Semantic, type SemanticResult } from "./Elaborate";
 
 // ============================================================================
 // Path-based constraint system
@@ -387,6 +387,33 @@ export class ConstraintSet {
     }
     this._inverse = undefined;
     return this;
+  }
+
+  serialize(sr: SemanticResult) {
+    let constraints = [] as string[];
+    for (const [key, constraint] of this.map) {
+      const symbol = sr.symbolNodes.get(constraint.variableSymbol);
+      assert(symbol.variant === Semantic.ENode.VariableSymbol);
+
+      if (constraint.constraintValue.kind === "comparison") {
+        constraints.push(
+          `${symbol.name} ${BinaryOperationToString(constraint.constraintValue.operation)} ${Semantic.serializeExpr(sr, constraint.constraintValue.value)}`,
+        );
+      } else {
+        if (constraint.constraintValue.typeDef) {
+          constraints.push(
+            `${symbol.name} ${constraint.constraintValue.operation} ${Semantic.serializeTypeDef(sr, constraint.constraintValue.typeDef)}`,
+          );
+        } else if (constraint.constraintValue.typeUse) {
+          constraints.push(
+            `${symbol.name} ${constraint.constraintValue.operation} ${Semantic.serializeTypeUse(sr, constraint.constraintValue.typeUse)}`,
+          );
+        } else {
+          assert(false);
+        }
+      }
+    }
+    return constraints;
   }
 }
 

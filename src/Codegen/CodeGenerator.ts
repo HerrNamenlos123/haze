@@ -479,13 +479,30 @@ class CodeGenerator {
     }
 
     for (const mapping of this.lr.loweredUnionMappings) {
-      this.out.type_declarations
-        .writeLine(`static const uint8_t ${makeUnionMappingName(mapping.from, mapping.to)}[] = {`)
+      this.out.function_declarations.writeLine(
+        `static inline ${this.mangleTypeUse(mapping.to)} ${makeUnionMappingName(mapping.from, mapping.to)}(${this.mangleTypeUse(mapping.from)} from);`,
+      );
+      this.out.function_definitions
+        .writeLine(
+          `static inline ${this.mangleTypeUse(mapping.to)} ${makeUnionMappingName(mapping.from, mapping.to)}(${this.mangleTypeUse(mapping.from)} from) {`,
+        )
         .pushIndent();
+      this.out.function_definitions.writeLine(`switch (from.tag) {`).pushIndent();
       for (const [from, to] of mapping.mapping) {
-        this.out.type_declarations.writeLine(`[${from}] = ${to},`);
+        this.out.function_definitions.writeLine(
+          `case ${from}: return (${this.mangleTypeUse(mapping.to)}) { .tag = ${to}, .as_tag_${to} = from.as_tag_${from} };`,
+        );
       }
-      this.out.type_declarations.popIndent().writeLine(`};`);
+      this.out.function_definitions.writeLine(`default: __builtin_unreachable();`);
+      this.out.function_definitions.popIndent().writeLine(`}`);
+      this.out.function_definitions.popIndent().writeLine(`}`);
+      // this.out.type_declarations
+      //   .writeLine(`static const uint8_t ${makeUnionMappingName(mapping.from, mapping.to)}[] = {`)
+      //   .pushIndent();
+      // for (const [from, to] of mapping.mapping) {
+      //   this.out.type_declarations.writeLine(`[${from}] = ${to},`);
+      // }
+      // this.out.type_declarations.popIndent().writeLine(`};`);
     }
   }
 
@@ -1124,19 +1141,8 @@ class CodeGenerator {
           // TODO: This is not finally implemented, it is only a quick fix
           outWriter.write(this.emitExpr(expr.expr).out.get());
         } else {
-          const sourceUnionExpr = this.lr.exprNodes.get(expr.expr);
-          const sourceUnionExprType = this.lr.typeDefNodes.get(
-            this.lr.typeUseNodes.get(sourceUnionExpr.type).type,
-          );
-
-          outWriter.write(
-            `({ ${this.mangleName(sourceUnionExprType.name)} source = ${this.emitExpr(
-              expr.expr,
-            ).out.get()}; ${this.mangleName(union.name)} target = { .tag = ${makeUnionMappingName(
-              expr.tagMapping.from,
-              expr.tagMapping.to,
-            )}[source.tag] }; memcpy(&target.as_bytes, &source.as_bytes, sizeof(source.as_bytes)); target; })`,
-          );
+          const mappingName = makeUnionMappingName(expr.tagMapping.from, expr.tagMapping.to);
+          outWriter.write(`(${mappingName}(${this.emitExpr(expr.expr).out.get()}))`);
         }
         return { out: outWriter, temp: tempWriter };
       }
