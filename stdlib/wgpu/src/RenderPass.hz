@@ -5,6 +5,33 @@ export struct RenderPassEncoder {
     end() {
         ffi.wgpuRenderPassEncoderEnd(this.handle);
     }
+
+    setPipeline(pipeline: mut RenderPipeline) {
+        // export extern C noemit wgpuRenderPassEncoderSetPipeline(renderPassEncoder: mut WGPURenderPassEncoderImpl, pipeline: mut WGPURenderPipelineImpl): void :: final;
+        ffi.wgpuRenderPassEncoderSetPipeline(this.handle, toFFI(pipeline));
+    }
+
+    setVertexBuffer(slot: u32, buffer: Buffer | none) {
+        // export extern C noemit wgpuRenderPassEncoderSetVertexBuffer(renderPassEncoder: mut WGPURenderPassEncoderImpl, slot: u32, buffer: mut WGPUBufferImpl | none, offset: u64, size: u64): void :: final;
+        let wholeSize = 0 as u64;
+        __c__("wholeSize = WGPU_WHOLE_SIZE;");
+        ffi.wgpuRenderPassEncoderSetVertexBuffer(this.handle, slot, buffer ? toFFI(buffer) : none, 0, wholeSize);
+    }
+
+    draw(vertexCount: u32, instanceCount: u32, firstVertex: u32, firstInstance: u32) {
+        // export extern C noemit wgpuRenderPassEncoderDraw(renderPassEncoder: mut WGPURenderPassEncoderImpl, vertexCount: u32, instanceCount: u32, firstVertex: u32, firstInstance: u32): void :: final;
+        ffi.wgpuRenderPassEncoderDraw(this.handle, vertexCount, instanceCount, firstVertex, firstInstance);
+    }
+
+    setViewport(x: real, y: real, width: real, height: real, minDepth: real, maxDepth: real) {
+        // export extern C noemit wgpuRenderPassEncoderSetViewport(renderPassEncoder: mut WGPURenderPassEncoderImpl, x: f32, y: f32, width: f32, height: f32, minDepth: f32, maxDepth: f32): void :: final;
+        ffi.wgpuRenderPassEncoderSetViewport(this.handle, x as f32, y as f32, width as f32, height as f32, minDepth as f32, maxDepth as f32);
+    }
+
+    setScissorRect(x: u32, y: u32, width: u32, height: u32) {
+        // export extern C noemit wgpuRenderPassEncoderSetScissorRect(renderPassEncoder: mut WGPURenderPassEncoderImpl, x: u32, y: u32, width: u32, height: u32): void :: final;
+        ffi.wgpuRenderPassEncoderSetScissorRect(this.handle, x, y, width, height);
+    }
 }
 
 fromFFI(v: mut ffi.WGPURenderPassEncoderImpl): RenderPassEncoder :: final {

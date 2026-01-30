@@ -101,51 +101,59 @@ main(): int {
             code: shadercode,
         });
 
-        // let vertices = [
-        //     vec2(-0.5, -0.5),
-        //     vec2( 0.5, -0.5),
-        //     vec2( 0.5,  0.5),
+        let vertices = [](inline Vec2f) {
+            Vec2f(-0.5 as f32, -0.5 as f32),
+            Vec2f( 0.5 as f32, -0.5 as f32),
+            Vec2f( 0.5 as f32,  0.5 as f32),
 
-        //     vec2(-0.5, -0.5),
-        //     vec2( 0.5,  0.5),
-        //     vec2(-0.5,  0.5),
-        // ];
+            Vec2f(-0.5 as f32, -0.5 as f32),
+            Vec2f( 0.5 as f32,  0.5 as f32),
+            Vec2f(-0.5 as f32,  0.5 as f32),
+        };
 
-        // let vertexBuffer = g_device.createBuffer({
-        //     usage: wgpu.BufferUsage.Vertex | wgpu.BufferUsage.CopyDst,
-        //     size: sizeof(vertices),
-        // });
-        // g_queue.writeBuffer(vertexBuffer, 0, vertices);
+        let s = sizeof(Vec2f) * vertices.length;
+        assert(s >= 0);
 
-        // let vertexLayout = wgpu.VertexBufferLayout {
-        //     arrayStride: sizeof(vec2),
-        //     stepMode: wgpu.VertexStepMode.Vertex,
-        //     attributes: {
-        //         {
-        //             shaderLocation: 0,
-        //             offset: 0,
-        //             format: wgpu.VertexFormat.Float32x2,
-        //         },
-        //     },
-        // };
+        let bit = wgpu.BufferUsage.Vertex;
+        let other = wgpu.BufferUsage.CopyDst;
+        __c__("bit = bit | other;");
+        let vertexBuffer = g_device.createBuffer({
+            usage: bit,
+            size: s,
+        });
+        g_queue.writeBuffer(vertexBuffer, vertices);
 
-        // let pipeline = g_device.createRenderPipeline({
-        //     vertex: {
-        //         module: shader,
-        //         entryPoint: "vs_main",
-        //         buffers: { vertexLayout },
-        //     },
-        //     fragment: {
-        //         module: shader,
-        //         entryPoint: "fs_main",
-        //         targets: {
-        //             { format: surfaceFormat },
-        //         },
-        //     },
-        //     primitive: {
-        //         topology: wgpu.PrimitiveTopology.TriangleList,
-        //     },
-        // });
+        let ss = sizeof(type<inline Vec2f>);
+        assert(ss >= 0);
+        let vertexLayout = wgpu.VertexBufferLayout {
+            arrayStride: ss,
+            stepMode: wgpu.VertexStepMode.Vertex,
+            attributes: {
+                {
+                    shaderLocation: 0,
+                    offset: 0,
+                    format: wgpu.VertexFormat.Float32x2,
+                },
+            },
+        };
+
+        let pipeline = g_device.createRenderPipeline({
+            vertex: {
+                module: shader,
+                entryPoint: "vs_main",
+                buffers: { vertexLayout },
+            },
+            fragment: {
+                module: shader,
+                entryPoint: "fs_main",
+                targets: {
+                    { format: surfaceFormat },
+                },
+            },
+            primitive: {
+                topology: wgpu.PrimitiveTopology.TriangleList,
+            },
+        });
 
         while !window.shouldClose() {
             glfw.pollEvents();
@@ -175,9 +183,13 @@ main(): int {
             let renderPass = encoder.beginRenderPass(renderPassDescriptor);
             if !renderPass { raise "Failed to create render pass"; }
 
-            // renderPass.setPipeline(pipeline);
-            // renderPass.setVertexBuffer(0, vertexBuffer);
-            // renderPass.draw(6, 1, 0, 0);
+            renderPass.setPipeline(pipeline);
+            renderPass.setVertexBuffer(0, vertexBuffer);
+
+            renderPass.setViewport(0, 0, size.x, size.y, 0.0, 1.0);
+            renderPass.setScissorRect(0, 0, size.x as u32, size.y as u32);
+
+            renderPass.draw(6, 1, 0, 0);
 
             renderPass.end();
             let commandBuffer = encoder.finish();

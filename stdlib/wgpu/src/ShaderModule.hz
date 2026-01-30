@@ -27,7 +27,7 @@ export struct ShaderModule {
     handle: mut ffi.WGPUShaderModuleImpl;
 }
 
-fromFFI(v: mut ffi.WGPUShaderModuleImpl): ShaderModule :: final {
+fromFFI(v: mut ffi.WGPUShaderModuleImpl): mut ShaderModule :: final {
     return ShaderModule {
         handle: v,
     };

@@ -16,6 +16,16 @@ export struct Queue {
 
         ffi.wgpuQueueSubmit(this.handle, len, rawPtr);
     }
+
+    writeBuffer(buffer: mut Buffer, data: [](inline Vec2f)) {
+        // export extern C noemit wgpuQueueWriteBuffer(queue: mut WGPUQueueImpl, buffer: mut WGPUBufferImpl, bufferOffset: u64, data: cptr, size: usize): void :: final;
+        let elementSize = sizeof(type<inline Vec2f>);
+        let raw = none as cptr;
+        let count = 0 as usize;
+        __c__("raw = hzstd_dynamic_array_raw_buffer(data);");
+        __c__("count = hzstd_dynamic_array_size(data) * elementSize;")
+        ffi.wgpuQueueWriteBuffer(this.handle, buffer.handle, 0, raw, count);
+    }
 }
 
 fromFFI(v: mut ffi.WGPUQueueImpl): mut Queue :: final {

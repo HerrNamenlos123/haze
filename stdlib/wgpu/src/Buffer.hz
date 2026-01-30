@@ -1,0 +1,95 @@
+
+export struct BufferDescriptor {
+    debugLabel?: str;
+    usage: BufferUsage;
+    size: u64;
+    mappedAtCreation: bool = false;
+}
+
+fromFFI(v: ffi.WGPUBufferDescriptor): BufferDescriptor :: final {
+    return BufferDescriptor {
+        debugLabel: fromOptionalFFI(v.label),
+        usage: bufferUsageFromFFI(v.usage),
+        size: v.size,
+        mappedAtCreation: v.mappedAtCreation,
+    };
+}
+
+toFFI(v: BufferDescriptor): ffi.WGPUBufferDescriptor :: final {
+    return ffi.WGPUBufferDescriptor {
+        nextInChain: none,
+        label: toOptionalFFI(v.debugLabel),
+        usage: toFFI(v.usage),
+        size: v.size,
+        mappedAtCreation: v.mappedAtCreation,
+    };
+}
+
+// TODO: Read these values from the header
+export enum bitflag BufferUsage {
+    None = 0x000,
+    MapRead = 0x001,
+    MapWrite = 0x002,
+    CopySrc = 0x004,
+    CopyDst = 0x008,
+    Index = 0x010,
+    Vertex = 0x020,
+    Uniform = 0x040,
+    Storage = 0x080,
+    Indirect = 0x100,
+    QueryResolve = 0x200,
+}
+
+bufferUsageFromFFI(v: ffi.WGPUBufferUsage): BufferUsage :: final {
+    do unsafe {
+        let usage: BufferUsage = uninitialized; // This is a bitflag
+        __c__("usage = (int)v;");
+        return usage;
+    }
+}
+
+toFFI(v: BufferUsage): ffi.WGPUBufferUsage :: final {
+    do unsafe {
+        let usage: ffi.WGPUBufferUsage = uninitialized; // This is a bitflag
+        __c__("usage = (int)v;");
+        return usage;
+    }
+}
+
+export struct Buffer {
+    handle: mut ffi.WGPUBufferImpl;
+}
+
+fromFFI(v: mut ffi.WGPUBufferImpl): mut Buffer :: final {
+    return Buffer { handle: v };
+}
+
+toFFI(v: Buffer): mut ffi.WGPUBufferImpl :: final {
+    return v.handle;
+}
+
+export struct VertexBufferLayout {
+    stepMode: VertexStepMode;
+    arrayStride: u64;
+    attributes: []VertexAttribute;
+}
+
+fromFFI(v: inline ffi.WGPUVertexBufferLayout): VertexBufferLayout :: final {
+    let c = none as cptr;
+    __c__("c = (void*)v.attributes;"); // ignoring constness issue
+    return VertexBufferLayout {
+        stepMode: fromFFI(v.stepMode),
+        arrayStride: v.arrayStride,
+        attributes: arrayFromFFI<VertexAttribute, inline ffi.WGPUVertexAttribute>(v.attributeCount, c),
+    };
+}
+
+toFFI(v: VertexBufferLayout): ffi.WGPUVertexBufferLayout :: final {
+    let attributes = arrayToFFI<VertexAttribute, inline ffi.WGPUVertexAttribute>(v.attributes);
+    return ffi.WGPUVertexBufferLayout {
+        stepMode: toFFI(v.stepMode),
+        arrayStride: v.arrayStride,
+        attributeCount: attributes.length,
+        attributes: attributes.data,
+    };
+}

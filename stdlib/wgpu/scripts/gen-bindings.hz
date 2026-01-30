@@ -763,6 +763,21 @@ generateBindings(args: GenArgs): Result<none, fs.Error> {
             if (s.name == "WGPURenderPassDescriptor" && s.fields[j].name == "colorAttachments") {
                 tp = "cptr /* WGPURenderPassColorAttachment* a.k.a WGPURenderPassColorAttachment[] */";
             }
+            if (s.name == "WGPUVertexBufferLayout" && s.fields[j].name == "attributes") {
+                tp = "cptr /* WGPUVertexAttribute* a.k.a WGPUVertexAttribute[] */";
+            }
+            if (s.name == "WGPUVertexState" && s.fields[j].name == "constants") {
+                tp = "cptr /* WGPUConstantEntry* a.k.a WGPUConstantEntry[] */";
+            }
+            if (s.name == "WGPUVertexState" && s.fields[j].name == "buffers") {
+                tp = "cptr /* WGPUVertexBufferLayout* a.k.a WGPUVertexBufferLayout[] */";
+            }
+            if (s.name == "WGPUFragmentState" && s.fields[j].name == "constants") {
+                tp = "cptr /* WGPUConstantEntry* a.k.a WGPUConstantEntry[] */";
+            }
+            if (s.name == "WGPUFragmentState" && s.fields[j].name == "targets") {
+                tp = "cptr /* WGPUColorTargetState* a.k.a WGPUColorTargetState[] */";
+            }
             fields = fields + f"        {s.fields[j].name}: {tp}{nullable};\n";
         }
         file = file + f"    export extern C noemit struct {s.name} {{\n{fields}    }}\n\n";
@@ -844,6 +859,39 @@ generateBindings(args: GenArgs): Result<none, fs.Error> {
         }
         if e.name == "WGPUStatus" {
             file = betterEnum(file, e, r"WGPUStatus_", "Status");
+        }
+        if e.name == "WGPUVertexStepMode" {
+            file = betterEnum(file, e, r"WGPUVertexStepMode_", "VertexStepMode");
+        }
+        if e.name == "WGPUVertexFormat" {
+            file = betterEnum(file, e, r"WGPUVertexFormat_", "VertexFormat");
+        }
+        if e.name == "WGPUPrimitiveTopology" {
+            file = betterEnum(file, e, r"WGPUPrimitiveTopology_", "PrimitiveTopology");
+        }
+        if e.name == "WGPUIndexFormat" {
+            file = betterEnum(file, e, r"WGPUIndexFormat_", "IndexFormat");
+        }
+        if e.name == "WGPUFrontFace" {
+            file = betterEnum(file, e, r"WGPUFrontFace_", "FrontFace");
+        }
+        if e.name == "WGPUCullMode" {
+            file = betterEnum(file, e, r"WGPUCullMode_", "CullMode");
+        }
+        if e.name == "WGPUOptionalBool" {
+            file = betterEnum(file, e, r"WGPUOptionalBool_", "OptionalBool");
+        }
+        if e.name == "WGPUCompareFunction" {
+            file = betterEnum(file, e, r"WGPUCompareFunction_", "CompareFunction");
+        }
+        if e.name == "WGPUStencilOperation" {
+            file = betterEnum(file, e, r"WGPUStencilOperation_", "StencilOperation");
+        }
+        if e.name == "WGPUBlendOperation" {
+            file = betterEnum(file, e, r"WGPUBlendOperation_", "BlendOperation");
+        }
+        if e.name == "WGPUBlendFactor" {
+            file = betterEnum(file, e, r"WGPUBlendFactor_", "BlendFactor");
         }
     }
 

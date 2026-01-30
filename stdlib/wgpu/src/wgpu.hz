@@ -1,4 +1,6 @@
 
+__c__("#pragma clang diagnostic ignored \"-Wincompatible-pointer-types-discards-qualifiers\"");
+
 export __c__("#include \"wgpu.h\"");
 __c__("#include \"wgpu_impl.c\"");
 

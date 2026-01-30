@@ -80,7 +80,7 @@ fromFFI(v: ffi.WGPUSurfaceConfiguration): SurfaceConfiguration :: final {
     let c = SurfaceConfiguration {
         device: Device { handle: v.device },
         format: fromFFI(v.format),
-        usage: fromFFI(v.usage),
+        usage: textureUsageFromFFI(v.usage),
         width: v.width,
         height: v.height,
         viewFormats: {},
@@ -125,7 +125,7 @@ export struct SurfaceCapabilities {
 fromFFI(v: ffi.WGPUSurfaceCapabilities): SurfaceCapabilities :: final {
     do unsafe {
         let c = SurfaceCapabilities {
-            usages: fromFFI(v.usages),
+            usages: textureUsageFromFFI(v.usages),
         };
 
         for (let i = 0; i < v.formatCount; i++) {

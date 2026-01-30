@@ -21,7 +21,7 @@ fromFFI(v: ffi.WGPUTextureViewDescriptor): TextureViewDescriptor :: final {
         baseArrayLayer: v.baseArrayLayer,
         arrayLayerCount: v.arrayLayerCount,
         aspect: fromFFI(v.aspect),
-        usage: fromFFI(v.usage),
+        usage: textureUsageFromFFI(v.usage),
     };
 }
 
@@ -98,7 +98,7 @@ export enum bitflag TextureUsage {
     RenderAttachment = 16,
 }
 
-fromFFI(v: ffi.WGPUTextureUsage): TextureUsage :: final {
+textureUsageFromFFI(v: ffi.WGPUTextureUsage): TextureUsage :: final {
     do unsafe {
         let usage: TextureUsage = uninitialized; // This is a bitflag
         __c__("usage = (int)v;");

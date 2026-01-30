@@ -4,7 +4,7 @@ export struct _Vec2<T> {
   y: T = default;
 
   constructor(x: T, y: T): _Vec2<T> {
-    return Vec2 {
+    return _Vec2<T> {
       x: x,
       y: y,
     };

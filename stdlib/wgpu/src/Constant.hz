@@ -1,0 +1,20 @@
+
+export struct ConstantEntry {
+    key: str;
+    value: real;
+}
+
+fromFFI(v: inline ffi.WGPUConstantEntry): ConstantEntry :: final {
+    return ConstantEntry {
+        key: fromFFI(v.key),
+        value: v.value,
+    };
+}
+
+toFFI(v: ConstantEntry): ffi.WGPUConstantEntry :: final {
+    return ffi.WGPUConstantEntry {
+        nextInChain: none,
+        key: toFFI(v.key),
+        value: v.value,
+    };
+}

@@ -1,0 +1,29 @@
+
+export struct PrimitiveState {
+    topology: PrimitiveTopology;
+    stripIndexFormat: IndexFormat = IndexFormat.Undefined;
+    frontFace: FrontFace = FrontFace.Undefined;
+    cullMode: CullMode = CullMode.Undefined;
+    unclippedDepth: bool = false;
+}
+
+fromFFI(v: ffi.WGPUPrimitiveState): PrimitiveState :: final {
+    return {
+        topology: fromFFI(v.topology),
+        stripIndexFormat: fromFFI(v.stripIndexFormat),
+        frontFace: fromFFI(v.frontFace),
+        cullMode: fromFFI(v.cullMode),
+        unclippedDepth: v.unclippedDepth,
+    };
+}
+
+toFFI(v: PrimitiveState): ffi.WGPUPrimitiveState :: final {
+    return {
+        nextInChain: none,
+        topology: toFFI(v.topology),
+        stripIndexFormat: toFFI(v.stripIndexFormat),
+        frontFace: toFFI(v.frontFace),
+        cullMode: toFFI(v.cullMode),
+        unclippedDepth: v.unclippedDepth,
+    };
+}

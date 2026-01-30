@@ -1,0 +1,88 @@
+
+export struct DepthStencilState {
+    format: TextureFormat;
+    depthWriteEnabled: bool | none = none;
+    depthCompare: CompareFunction;
+    stencilFront: StencilFaceState;
+    stencilBack: StencilFaceState;
+    stencilReadMask: u32;
+    stencilWriteMask: u32;
+    depthBias: i32;
+    depthBiasSlopeScale: f32;
+    depthBiasClamp: f32;
+}
+
+fromFFI(v: ffi.WGPUDepthStencilState): DepthStencilState :: final {
+    let depthWriteEnabled = none as bool | none;
+    if v.depthWriteEnabled == ffi.WGPUOptionalBool_Undefined {
+        depthWriteEnabled = none;
+    }
+    else if v.depthWriteEnabled == ffi.WGPUOptionalBool_False {
+        depthWriteEnabled = false;
+    }
+    else if v.depthWriteEnabled == ffi.WGPUOptionalBool_True {
+        depthWriteEnabled = true;
+    }
+    return {
+        format: fromFFI(v.format),
+        depthWriteEnabled: depthWriteEnabled,
+        depthCompare: fromFFI(v.depthCompare),
+        stencilFront: fromFFI(v.stencilFront),
+        stencilBack: fromFFI(v.stencilBack),
+        stencilReadMask: v.stencilReadMask,
+        stencilWriteMask: v.stencilWriteMask,
+        depthBias: v.depthBias,
+        depthBiasSlopeScale: v.depthBiasSlopeScale,
+        depthBiasClamp: v.depthBiasClamp,
+    };
+}
+
+toFFI(v: DepthStencilState): ffi.WGPUDepthStencilState :: final {
+    let depthWriteEnabled = ffi.WGPUOptionalBool_Undefined;
+    if v.depthWriteEnabled {
+        if v.depthWriteEnabled == true {
+            depthWriteEnabled = ffi.WGPUOptionalBool_True;
+        }
+        else {
+            depthWriteEnabled = ffi.WGPUOptionalBool_False;
+        }
+    }
+    return {
+        nextInChain: none,
+        format: toFFI(v.format),
+        depthWriteEnabled: depthWriteEnabled,
+        depthCompare: toFFI(v.depthCompare),
+        stencilFront: toFFI(v.stencilFront),
+        stencilBack: toFFI(v.stencilBack),
+        stencilReadMask: v.stencilReadMask,
+        stencilWriteMask: v.stencilWriteMask,
+        depthBias: v.depthBias,
+        depthBiasSlopeScale: v.depthBiasSlopeScale,
+        depthBiasClamp: v.depthBiasClamp,
+    };
+}
+
+export struct StencilFaceState {
+    compare: CompareFunction;
+    failOp: StencilOperation;
+    depthFailOp: StencilOperation;
+    passOp: StencilOperation;
+}
+
+fromFFI(v: inline ffi.WGPUStencilFaceState): StencilFaceState :: final {
+    return {
+        compare: fromFFI(v.compare),
+        failOp: fromFFI(v.failOp),
+        depthFailOp: fromFFI(v.depthFailOp),
+        passOp: fromFFI(v.passOp),
+    };
+}
+
+toFFI(v: StencilFaceState): ffi.WGPUStencilFaceState :: final {
+    return {
+        compare: toFFI(v.compare),
+        failOp: toFFI(v.failOp),
+        depthFailOp: toFFI(v.depthFailOp),
+        passOp: toFFI(v.passOp),
+    };
+}

@@ -54,8 +54,19 @@ struct ArrayFFIResult {
     length: usize = 0;
 }
 
-arrayToFFI<T, ffiT>(array: []T) {
+arrayFromFFI<T, ffiT>(length: usize, data: cptr) {
+    let result = []T {};
+    for (let i = 0; i < length; i++) {
+        do unsafe {
+            let elem: ffiT = uninitialized;
+            __c__("elem = ((__typeof__(elem)*)data)[i];");
+            result.push(fromFFI(elem));
+        }
+    }
+    return result;
+}
 
+arrayToFFI<T, ffiT>(array: []T) {
     let ffiArray: []ffiT = {};
     for element in array {
         ffiArray.push(toFFI(element));

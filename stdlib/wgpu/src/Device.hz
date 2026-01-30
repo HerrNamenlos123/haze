@@ -19,4 +19,13 @@ export struct Device {
     createShaderModule(descriptor: ShaderModuleDescriptor) {
         return fromFFI(ffi.wgpuDeviceCreateShaderModule(this.handle, toFFI(descriptor)));
     }
+
+    createBuffer(descriptor: BufferDescriptor) {
+        return fromFFI(ffi.wgpuDeviceCreateBuffer(this.handle, toFFI(descriptor)));
+    }
+
+    createRenderPipeline(descriptor: RenderPipelineDescriptor) {
+    // export extern C noemit wgpuDeviceCreateRenderPipeline(device: mut WGPUDeviceImpl, descriptor: WGPURenderPipelineDescriptor): mut WGPURenderPipelineImpl :: final;
+        return fromFFI(ffi.wgpuDeviceCreateRenderPipeline(this.handle, toFFI(descriptor)));
+    }
 }

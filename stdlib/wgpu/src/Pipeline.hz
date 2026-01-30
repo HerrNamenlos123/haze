@@ -1,0 +1,70 @@
+
+export struct RenderPipeline {
+    handle: mut ffi.WGPURenderPipelineImpl;
+}
+
+fromFFI(v: mut ffi.WGPURenderPipelineImpl): mut RenderPipeline :: final {
+    return RenderPipeline { handle: v };
+}
+
+toFFI(v: RenderPipeline): mut ffi.WGPURenderPipelineImpl :: final {
+    return v.handle;
+}
+
+export struct PipelineLayout {
+    handle: mut ffi.WGPUPipelineLayoutImpl;
+}
+
+fromFFI(v: mut ffi.WGPUPipelineLayoutImpl): mut PipelineLayout :: final {
+    return PipelineLayout { handle: v };
+}
+
+toFFI(v: PipelineLayout): mut ffi.WGPUPipelineLayoutImpl :: final {
+    return v.handle;
+}
+
+export struct RenderPipelineDescriptor {
+    debugLabel?: str;
+    layout?: mut PipelineLayout;
+    vertex: VertexState;
+    primitive: PrimitiveState;
+    depthStencil?: DepthStencilState;
+    multisample: MultisampleState = default;
+    fragment?: FragmentState;
+}
+
+toFFI(v: RenderPipelineDescriptor): ffi.WGPURenderPipelineDescriptor :: final {
+    return ffi.WGPURenderPipelineDescriptor {
+        nextInChain: none,
+        label: toOptionalFFI(v.debugLabel),
+        layout: v.layout ? toFFI(v.layout) : none,
+        vertex: toFFI(v.vertex),
+        primitive: toFFI(v.primitive),
+        depthStencil: v.depthStencil ? toFFI(v.depthStencil) : none,
+        multisample: toFFI(v.multisample),
+        fragment: v.fragment ? toFFI(v.fragment) : none,
+    };
+}
+
+export struct MultisampleState {
+    count: u32 = 1;
+    mask: u32 = 0;
+    alphaToCoverageEnabled: bool = false;
+}
+
+fromFFI(v: ffi.WGPUMultisampleState): MultisampleState :: final {
+    return {
+        count: v.count,
+        mask: v.mask,
+        alphaToCoverageEnabled: v.alphaToCoverageEnabled,
+    };
+}
+
+toFFI(v: MultisampleState): ffi.WGPUMultisampleState :: final {
+    return {
+        nextInChain: none,
+        count: v.count,
+        mask: v.mask,
+        alphaToCoverageEnabled: v.alphaToCoverageEnabled,
+    };
+}
