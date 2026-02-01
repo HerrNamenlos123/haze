@@ -1,24 +1,4 @@
 
-
-__c__("""
-typedef struct {
-    float x;
-    float y;
-} _ExpectedVec2f;
-
-void debug_vec2f_layout(void* ptr, size_t count) {
-    printf("=== Vec2f layout check ===\\n");
-    printf("sizeof(Vec2f)   = %zu\\n", sizeof(_ExpectedVec2f));
-    printf("alignof(Vec2f)  = %zu\\n", _Alignof(_ExpectedVec2f));
-    printf("vertex count   = %zu\\n", count);
-
-    float* f = (float*)ptr;
-    for (size_t i = 0; i < count * 2; i++) {
-        printf("f[%zu] = %f\\n", i, f[i]);
-    }
-}
-""");
-
 export struct Queue {
     handle: mut ffi.WGPUQueueImpl;
 
@@ -44,7 +24,6 @@ export struct Queue {
         let count = 0 as usize;
         __c__("raw = hzstd_dynamic_array_raw_buffer(data);");
         __c__("count = hzstd_dynamic_array_size(data) * elementSize;")
-        __c__("debug_vec2f_layout(raw, hzstd_dynamic_array_size(data));");
         ffi.wgpuQueueWriteBuffer(this.handle, buffer.handle, 0, raw, count);
     }
 }

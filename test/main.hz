@@ -138,6 +138,11 @@ main(): int {
             },
         };
 
+        let all = wgpu.ColorWriteMask.Red;
+        __c__("all |= WGPUColorWriteMask_Green;");
+        __c__("all |= WGPUColorWriteMask_Blue;");
+        __c__("all |= WGPUColorWriteMask_Alpha;");
+
         let pipeline = g_device.createRenderPipeline({
             vertex: {
                 module: shader,
@@ -148,12 +153,21 @@ main(): int {
                 module: shader,
                 entryPoint: "fs_main",
                 targets: {
-                    { format: surfaceFormat },
+                    { 
+                        format: surfaceFormat ,
+                        writeMask: all,
+                    },
                 },
             },
             primitive: {
                 topology: wgpu.PrimitiveTopology.TriangleList,
+                cullMode: wgpu.CullMode.None,
             },
+            multisample: {
+                count: 1,
+                mask: 0xFFFFFFFF,
+                alphaToCoverageEnabled: false,
+            }
         });
 
         while !window.shouldClose() {
