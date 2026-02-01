@@ -2291,7 +2291,7 @@ export class SemanticElaborator {
 
     if (global) {
       assert(variable.comptimeValue);
-      const [defSym, defSymId] = Semantic.addSymbol(this.sr, {
+      const [_, defSymId] = Semantic.addSymbol(this.sr, {
         variant: Semantic.ENode.GlobalVariableDefinitionSymbol,
         comptime: variable.comptime,
         concrete: variable.concrete,
@@ -2329,7 +2329,27 @@ export class SemanticElaborator {
       }
 
       case Collect.ENode.CInjectDirective: {
-        return [this.sr.b.cInject(symbol.value, symbol.export, symbol.sourceloc)];
+        const [e, eId] = this.expr(symbol.expr, undefined);
+
+        const result = EvalCTFE(this.sr, eId);
+        if (!result.ok) {
+          throw new CompilerError(`This expression is not evaluable at compile time`, e.sourceloc);
+        }
+
+        const r = result.value[0];
+        assert(r.variant === Semantic.ENode.LiteralExpr);
+        if (
+          r.literal.type !== EPrimitive.str &&
+          r.literal.type !== EPrimitive.cstr &&
+          r.literal.type !== EPrimitive.ccstr
+        ) {
+          throw new CompilerError(
+            `This intrinsic can only take compile-time-evaluable string literals`,
+            e.sourceloc,
+          );
+        }
+
+        return [this.sr.b.cInject(r.literal.value, symbol.export, symbol.sourceloc)];
       }
 
       default:
@@ -3959,6 +3979,7 @@ export class SemanticElaborator {
         } else if (found.variant === Collect.ENode.TypeDefSymbol) {
           const typedef = this.sr.cc.typeDefNodes.get(found.typeDef);
           if (typedef.variant === Collect.ENode.TypeDefAlias) {
+            // console.log("Looked up alias", Semantic.serializeTypeUse(this.sr));
             const generics = type.genericArgs.map((g) => {
               return this.withContext(
                 {
@@ -4048,7 +4069,38 @@ export class SemanticElaborator {
                     },
                   );
                 }
-                return aliasedTypeId;
+
+                const gotUse = this.sr.typeUseNodes.get(aliasedTypeId);
+
+                const supposedTypeForError = makeTypeUse(
+                  this.sr,
+                  gotUse.type,
+                  type.mutability,
+                  type.inline,
+                  type.sourceloc,
+                )[1];
+
+                let inline = gotUse.inline || type.inline;
+                let mutability = gotUse.mutability;
+
+                if (
+                  gotUse.mutability === EDatatypeMutability.Mut &&
+                  type.mutability === EDatatypeMutability.Default
+                ) {
+                  mutability = EDatatypeMutability.Default;
+                } else if (
+                  gotUse.mutability === EDatatypeMutability.Const &&
+                  type.mutability === EDatatypeMutability.Default
+                ) {
+                  mutability = EDatatypeMutability.Default;
+                } else if (gotUse.mutability !== type.mutability) {
+                  throw new CompilerError(
+                    `This alias is defined as ${Semantic.serializeTypeUse(this.sr, aliasedTypeId)}, which cannot be treated as ${Semantic.serializeTypeUse(this.sr, supposedTypeForError)}`,
+                    type.sourceloc,
+                  );
+                }
+
+                return makeTypeUse(this.sr, gotUse.type, mutability, inline, type.sourceloc)[1];
               },
             );
           } else if (typedef.variant === Collect.ENode.StructTypeDef) {
@@ -6730,6 +6782,7 @@ export class SemanticElaborator {
           );
         },
       );
+
       const result = this.sr.b.datatypeUseAsValue(newId, symbolValue.sourceloc);
       return result;
     }

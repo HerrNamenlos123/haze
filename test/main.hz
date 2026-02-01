@@ -12,6 +12,7 @@ export extern C noemit wgpu_init(glfwWindow: cptr) :: final;
 export extern C wgpu_start(glfwWindow: cptr, device: wgpu.ffi.WGPUDeviceImpl, surface: wgpu.ffi.WGPUSurfaceImpl, queue: wgpu.ffi.WGPUQueueImpl, texture: wgpu.ffi.WGPUTextureViewImpl) :: final;
 export extern C wgpu_end(glfwWindow: cptr) :: final;
 
+
 adapterRequestCallback(status: wgpu.RequestAdapterStatus, adapter: mut wgpu.Adapter, message: str): void {
   if (status == wgpu.RequestAdapterStatus.Success) {
     g_adapter = adapter;

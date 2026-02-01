@@ -61,7 +61,7 @@ namespaceDefinition
 
 // Directives
 
-cInjectDirective: (export=EXPORT)? INLINEC LB STRING_LITERAL RB SEMI?;
+cInjectDirective: (export=EXPORT)? INLINEC LB expr RB SEMI?;
 
 // Functions
 

@@ -632,7 +632,7 @@ export type ASTFuncBody = ASTScope | ASTExprAsFuncbody;
 
 export type ASTCInjectDirective = {
   variant: "CInjectDirective";
-  code: string;
+  expr: ASTExpr;
   export: boolean;
   sourceloc: SourceLoc;
 };

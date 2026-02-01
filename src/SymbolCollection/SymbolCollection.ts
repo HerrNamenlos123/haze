@@ -342,7 +342,7 @@ export namespace Collect {
 
   export type CInjectDirective = {
     variant: ENode.CInjectDirective;
-    value: string;
+    expr: Collect.ExprId;
     export: boolean;
     sourceloc: SourceLoc;
   };
@@ -1854,7 +1854,7 @@ function collectGlobalDirective(
     case "CInjectDirective": {
       const symbolId = Collect.makeSymbol(cc, {
         variant: Collect.ENode.CInjectDirective,
-        value: item.code,
+        expr: collectExpr(cc, item.expr, { currentParentScope: args.currentParentScope }),
         export: item.export,
         sourceloc: item.sourceloc,
       })[1];
@@ -3310,7 +3310,7 @@ export const printCollectedSymbol = (
     }
 
     case Collect.ENode.CInjectDirective: {
-      print(`- __c__(${symbol.value})`);
+      print(`- __c__(${printCollectedExpr(cc, symbol.expr)})`);
       break;
     }
 

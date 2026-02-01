@@ -462,14 +462,15 @@ class ASTTransformer extends HazeParserVisitor<any> {
   };
 
   visitCInjectDirective = (ctx: CInjectDirectiveContext): ASTCInjectDirective => {
-    const code = this.trimAndUnescapeStringLiteral(
-      ctx.STRING_LITERAL().getText(),
-      "single",
-      this.loc(ctx),
-    );
+    // const code = this.trimAndUnescapeStringLiteral(
+    //   ctx.STRING_LITERAL().getText(),
+    //   "single",
+    //   this.loc(ctx),
+    // );
     return {
       variant: "CInjectDirective",
-      code: code,
+      // code: code,
+      expr: this.visit(ctx.expr()),
       export: Boolean(ctx._export_),
       sourceloc: this.loc(ctx),
     };
