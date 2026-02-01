@@ -539,7 +539,7 @@ export namespace Collect {
 
   export type InlineCStatement = BaseStatement & {
     variant: ENode.InlineCStatement;
-    value: string;
+    expr: Collect.ExprId;
   };
 
   export type ReturnStatement = BaseStatement & {
@@ -2122,7 +2122,7 @@ function collectScope(
       case "InlineCStatement": {
         addStatement(cc, blockScopeId, {
           variant: Collect.ENode.InlineCStatement,
-          value: astStatement.code,
+          expr: collectExpr(cc, astStatement.expr, { currentParentScope: blockScopeId }),
           sourceloc: astStatement.sourceloc,
         });
         break;
@@ -3193,7 +3193,7 @@ export const printCollectedStatement = (
     }
 
     case Collect.ENode.InlineCStatement: {
-      print(`__c__(${JSON.stringify(statement.value)})`);
+      print(`__c__(${printCollectedExpr(cc, statement.expr)})`);
       break;
     }
 

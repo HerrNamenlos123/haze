@@ -1073,10 +1073,11 @@ class ASTTransformer extends HazeParserVisitor<any> {
   };
 
   visitCInlineStatement = (ctx: CInlineStatementContext): ASTInlineCStatement => {
-    const rawText = ctx.STRING_LITERAL().getText();
+    // const rawText = ctx.STRING_LITERAL().getText();
+    //   code: this.trimAndUnescapeStringLiteral(rawText, "single", this.loc(ctx)),
     return {
       variant: "InlineCStatement",
-      code: this.trimAndUnescapeStringLiteral(rawText, "single", this.loc(ctx)),
+      expr: this.visit(ctx.expr()),
       sourceloc: this.loc(ctx),
     };
   };

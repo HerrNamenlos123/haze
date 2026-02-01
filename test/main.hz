@@ -111,16 +111,6 @@ main(): int {
             Vec2f(-0.5 as f32,  0.5 as f32),
         };
 
-//         __c__("""
-// // This is very cool
-// int fooz = 0;
-// const char* other = " \""" ";
-// const char* my_string = "This is a very cool string!";
-// int inserted = {a * b};
-// float raaaaaar = 187;
-// // OH NO IT ENDS
-//         """);
-
         let s = sizeof(type<inline Vec2f>) * vertices.length;
         assert(s >= 0);
 

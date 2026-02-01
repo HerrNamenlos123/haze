@@ -305,7 +305,7 @@ export type ASTGlobalVariableDefinition = {
 
 export type ASTInlineCStatement = {
   variant: "InlineCStatement";
-  code: string;
+  expr: ASTExpr;
   sourceloc: SourceLoc;
 };
 

@@ -252,7 +252,7 @@ ifStatementConditionImpl
     ;
 
 statement
-    : INLINEC LB STRING_LITERAL RB SEMI?                                            #CInlineStatement
+    : INLINEC LB expr RB SEMI?                                                      #CInlineStatement
     | expr SEMI?                                                                    #ExprStatement
     | RETURN expr? SEMI?                                                            #ReturnStatement
     | RAISE expr? SEMI?                                                             #RaiseStatement

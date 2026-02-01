@@ -5073,16 +5073,37 @@ export class SemanticElaborator {
       // =================================================================================================================
       // =================================================================================================================
 
-      case Collect.ENode.InlineCStatement:
+      case Collect.ENode.InlineCStatement: {
+        const [e, eId] = this.expr(s.expr, undefined);
+
+        const result = EvalCTFE(this.sr, eId);
+        if (!result.ok) {
+          throw new CompilerError(`This expression is not evaluable at compile time`, e.sourceloc);
+        }
+
+        const r = result.value[0];
+        assert(r.variant === Semantic.ENode.LiteralExpr);
+        if (
+          r.literal.type !== EPrimitive.str &&
+          r.literal.type !== EPrimitive.cstr &&
+          r.literal.type !== EPrimitive.ccstr
+        ) {
+          throw new CompilerError(
+            `This intrinsic can only take compile-time-evaluable string literals`,
+            e.sourceloc,
+          );
+        }
+
         return {
           statementId: Semantic.addStatement(this.sr, {
             variant: Semantic.ENode.InlineCStatement,
-            value: s.value,
+            value: r.literal.value,
             sourceloc: s.sourceloc,
           })[1],
           flow: FlowResult.fallthrough(),
           writes: WriteResult.empty(),
         };
+      }
 
       // =================================================================================================================
       // =================================================================================================================
