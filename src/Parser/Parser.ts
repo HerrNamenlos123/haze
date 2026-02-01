@@ -170,6 +170,7 @@ import {
   ConstDatatypeContext,
   MutDatatypeContext,
   TernaryExprContext,
+  TripleStringConstantContext,
 } from "./grammar/autogen/HazeParser";
 import {
   BaseErrorListener,
@@ -461,9 +462,14 @@ class ASTTransformer extends HazeParserVisitor<any> {
   };
 
   visitCInjectDirective = (ctx: CInjectDirectiveContext): ASTCInjectDirective => {
+    const code = this.trimAndUnescapeStringLiteral(
+      ctx.STRING_LITERAL().getText(),
+      "single",
+      this.loc(ctx),
+    );
     return {
       variant: "CInjectDirective",
-      code: JSON.parse(ctx.STRING_LITERAL().getText()),
+      code: code,
       export: Boolean(ctx._export_),
       sourceloc: this.loc(ctx),
     };
@@ -513,10 +519,21 @@ class ASTTransformer extends HazeParserVisitor<any> {
       assert(false);
     }
 
+    const value = this.trimAndUnescapeStringLiteral(text, "single", this.loc(ctx));
     return {
       type: EPrimitive.str,
       prefix: prefix,
-      value: JSON.parse(text),
+      value: value,
+    };
+  };
+
+  visitTripleStringConstant = (ctx: TripleStringConstantContext): LiteralValue => {
+    let text = ctx.TRIPLE_STRING_LITERAL().getText();
+    const value = this.trimAndUnescapeStringLiteral(text, "triple", this.loc(ctx));
+    return {
+      type: EPrimitive.str,
+      prefix: null,
+      value: value,
     };
   };
 
@@ -1056,9 +1073,10 @@ class ASTTransformer extends HazeParserVisitor<any> {
   };
 
   visitCInlineStatement = (ctx: CInlineStatementContext): ASTInlineCStatement => {
+    const rawText = ctx.STRING_LITERAL().getText();
     return {
       variant: "InlineCStatement",
-      code: JSON.parse(ctx.STRING_LITERAL().getText()),
+      code: this.trimAndUnescapeStringLiteral(rawText, "single", this.loc(ctx)),
       sourceloc: this.loc(ctx),
     };
   };
@@ -1560,19 +1578,22 @@ class ASTTransformer extends HazeParserVisitor<any> {
   };
 
   visitImportStatement = (ctx: ImportStatementContext): ASTModuleImport => {
+    const path = ctx._alias
+      ? this.trimAndUnescapeStringLiteral(ctx._alias.getText(), "single", this.loc(ctx))
+      : null;
     if (ctx._path) {
       assert(ctx._path.text);
       return {
-        alias: ctx._alias?.getText() || null,
+        alias: path,
         mode: "path",
-        name: JSON.parse(ctx._path.text),
+        name: this.trimAndUnescapeStringLiteral(ctx._path.text, "single", this.loc(ctx)),
         sourceloc: this.loc(ctx),
         variant: "ModuleImport",
       };
     } else {
       assert(ctx._module_);
       return {
-        alias: ctx._alias?.getText() || null,
+        alias: path,
         mode: "module",
         name: ctx._module_.getText(),
         sourceloc: this.loc(ctx),
@@ -1594,7 +1615,7 @@ class ASTTransformer extends HazeParserVisitor<any> {
       return {
         symbols: symbols,
         mode: "path",
-        name: JSON.parse(ctx._path.text),
+        name: this.trimAndUnescapeStringLiteral(ctx._path.text, "single", this.loc(ctx)),
         sourceloc: this.loc(ctx),
         variant: "SymbolImport",
       };
@@ -1769,41 +1790,168 @@ class ASTTransformer extends HazeParserVisitor<any> {
     };
   };
 
-  decodeEscape(text: string): string {
-    switch (text) {
-      case "\\n":
-        return "\n";
-      case "\\t":
-        return "\t";
-      case "\\r":
-        return "\r";
-      case "\\b":
-        return "\b";
-      case "\\f":
-        return "\f";
-      case "\\\\":
-        return "\\";
-      case '\\"':
-        return '"';
+  trimAndUnescapeStringLiteral(
+    raw: string,
+    mode: "single" | "triple",
+    sourceloc: SourceLoc,
+  ): string {
+    // --- strip delimiters ---
+    if (mode === "triple") {
+      raw = raw.slice(3, -3);
+    } else {
+      raw = raw.slice(1, -1);
+    }
+
+    // --- trimming semantics ---
+
+    // trim exactly one leading newline + indentation
+    const leading = raw.match(/^\n[ \t]*/);
+    if (leading) {
+      raw = raw.slice(leading[0].length);
+    }
+
+    // trim exactly one trailing newline + indentation
+    const trailing = raw.match(/\n[ \t]*$/);
+    if (trailing) {
+      raw = raw.slice(0, raw.length - trailing[0].length);
+    }
+
+    // --- unescape ---
+
+    let out = "";
+    for (let i = 0; i < raw.length; i++) {
+      const c = raw[i];
+
+      if (c !== "\\") {
+        out += c;
+        continue;
+      }
+
+      const n = raw[++i];
+      if (n === undefined) throw new CompilerError("Invalid escape: trailing \\", sourceloc);
+
+      switch (n) {
+        case "b":
+          out += "\b";
+          break;
+        case "t":
+          out += "\t";
+          break;
+        case "n":
+          out += "\n";
+          break;
+        case "f":
+          out += "\f";
+          break;
+        case "r":
+          out += "\r";
+          break;
+        case "\\":
+          out += "\\";
+          break;
+        case '"':
+          out += '"';
+          break;
+
+        case "x": {
+          const hex = raw.slice(i + 1, i + 3);
+          if (!/^[0-9a-fA-F]{2}$/.test(hex))
+            throw new CompilerError("Invalid \\x escape", sourceloc);
+          out += String.fromCharCode(parseInt(hex, 16));
+          i += 2;
+          break;
+        }
+
+        case "u": {
+          const hex = raw.slice(i + 1, i + 5);
+          if (!/^[0-9a-fA-F]{4}$/.test(hex))
+            throw new CompilerError("Invalid \\u escape", sourceloc);
+          out += String.fromCharCode(parseInt(hex, 16));
+          i += 4;
+          break;
+        }
+
+        case "U": {
+          const hex = raw.slice(i + 1, i + 9);
+          if (!/^[0-9a-fA-F]{8}$/.test(hex))
+            throw new CompilerError("Invalid \\U escape", sourceloc);
+          out += String.fromCodePoint(parseInt(hex, 16));
+          i += 8;
+          break;
+        }
+
+        default: {
+          // octal \0 - \377
+          if (/[0-7]/.test(n)) {
+            let oct = n;
+            for (let k = 0; k < 2; k++) {
+              const d = raw[i + 1];
+              if (d && /[0-7]/.test(d)) {
+                oct += d;
+                i++;
+              } else break;
+            }
+            out += String.fromCharCode(parseInt(oct, 8));
+          } else {
+            throw new CompilerError(`Unknown escape: \\${n}`, sourceloc);
+          }
+        }
+      }
+    }
+
+    return out;
+  }
+
+  unescapeFStringLiteralFragment(text: string, sourceloc: SourceLoc): string {
+    if (text.length === 2) {
+      switch (text[1]) {
+        case "n":
+          return "\n";
+        case "t":
+          return "\t";
+        case "r":
+          return "\r";
+        case "b":
+          return "\b";
+        case "f":
+          return "\f";
+        case "\\":
+          return "\\";
+        case '"':
+          return '"';
+      }
+    }
+
+    if (text === '\\"""') {
+      return '"""';
     }
 
     if (text.startsWith("\\x")) {
-      return String.fromCharCode(parseInt(text.slice(2), 16));
+      const hex = text.slice(2);
+      if (!/^[0-9a-fA-F]{2}$/.test(hex))
+        throw new CompilerError(`Invalid \\x escape: ${text}`, sourceloc);
+      return String.fromCharCode(parseInt(hex, 16));
     }
 
     if (text.startsWith("\\u")) {
-      return String.fromCharCode(parseInt(text.slice(2), 16));
+      const hex = text.slice(2);
+      if (!/^[0-9a-fA-F]{4}$/.test(hex))
+        throw new CompilerError(`Invalid \\u escape: ${text}`, sourceloc);
+      return String.fromCharCode(parseInt(hex, 16));
     }
 
     if (text.startsWith("\\U")) {
-      return String.fromCodePoint(parseInt(text.slice(2), 16));
+      const hex = text.slice(2);
+      if (!/^[0-9a-fA-F]{8}$/.test(hex))
+        throw new CompilerError(`Invalid \\U escape: ${text}`, sourceloc);
+      return String.fromCodePoint(parseInt(hex, 16));
     }
 
-    if (/^\\[0-7]+$/.test(text)) {
+    if (/^\\[0-7]{1,3}$/.test(text)) {
       return String.fromCharCode(parseInt(text.slice(1), 8));
     }
 
-    return text;
+    return text; // No escape
   }
 
   visitFStringLiteralExpr = (ctx: FStringLiteralExprContext): ASTFStringExpr => {
@@ -1818,7 +1966,10 @@ class ASTTransformer extends HazeParserVisitor<any> {
           } as const;
         } else {
           assert(g.FSTRING_GRAPHEME());
-          let text = this.decodeEscape(g.FSTRING_GRAPHEME()!.getText());
+          let text = this.unescapeFStringLiteralFragment(
+            g.FSTRING_GRAPHEME()!.getText(),
+            this.loc(ctx),
+          );
           if (text === "{{") text = "{";
           if (text === "}}") text = "}";
           return {
@@ -1847,6 +1998,27 @@ class ASTTransformer extends HazeParserVisitor<any> {
       }
     }
 
+    // --- trimming semantics for f-strings ---
+
+    if (combinedFragments.length > 0) {
+      const first = combinedFragments[0];
+      const last = combinedFragments[combinedFragments.length - 1];
+
+      if (first.type === "text") {
+        const leading = first.value.match(/^\n[ \t]*/);
+        if (leading) {
+          first.value = first.value.slice(leading[0].length);
+        }
+      }
+
+      if (last.type === "text") {
+        const trailing = last.value.match(/\n[ \t]*$/);
+        if (trailing) {
+          last.value = last.value.slice(0, last.value.length - trailing[0].length);
+        }
+      }
+    }
+
     return {
       variant: "FStringExpr",
       fragments: combinedFragments,
@@ -1858,7 +2030,11 @@ class ASTTransformer extends HazeParserVisitor<any> {
   };
 
   visitSourceLocationPrefixRule = (ctx: SourceLocationPrefixRuleContext): SourceLoc => {
-    const filename = JSON.parse(ctx.STRING_LITERAL().getText());
+    const filename = this.trimAndUnescapeStringLiteral(
+      ctx.STRING_LITERAL().getText(),
+      "single",
+      this.loc(ctx),
+    );
 
     const ints = ctx.INTEGER_LITERAL().map((int) => parseInt(int.getText()));
     const float = ctx.FLOAT_LITERAL() ? ctx.FLOAT_LITERAL()!.getText() : null;

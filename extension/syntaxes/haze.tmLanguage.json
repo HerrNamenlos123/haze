@@ -55,6 +55,107 @@
         }
       ]
     },
+    "f-triple-strings": {
+      "patterns": [
+        {
+          "name": "meta.f-triple-string.haze",
+          "begin": "(?<!\\w)(f\"\"\")",
+          "beginCaptures": {
+            "1": { "name": "storage.type.string.f.haze" }
+          },
+          "end": "(?<!\\\\)\"\"\"",
+          "endCaptures": {
+            "0": { "name": "storage.type.string.f.haze" }
+          },
+          "patterns": [
+            {
+              "name": "meta.interpolation.haze",
+              "begin": "\\{",
+              "beginCaptures": {
+                "0": { "name": "punctuation.section.embedded.begin" }
+              },
+              "end": "\\}",
+              "endCaptures": {
+                "0": { "name": "punctuation.section.embedded.end" }
+              },
+              "patterns": [{ "include": "#main-patterns" }]
+            },
+            {
+              "name": "constant.character.escape.haze",
+              "match": "\\\\\"\"\""
+            },
+            {
+              "name": "constant.character.escape.haze",
+              "match": "\\\\."
+            },
+            {
+              "name": "string.content.haze",
+              "match": "(?:(?!\"\"\")[^\\\\{])+"
+            }
+          ]
+        }
+      ]
+    },
+    "f-strings": {
+      "patterns": [
+        {
+          "begin": "(?<!\\w)(f\")",
+          "beginCaptures": {
+            "1": { "name": "storage.type.string.f.haze" }
+          },
+          "end": "\"",
+          "endCaptures": {
+            "0": { "name": "storage.type.string.f.haze" }
+          },
+          "name": "meta.f-string.haze",
+          "patterns": [
+            {
+              "name": "meta.interpolation.haze",
+              "begin": "\\{",
+              "beginCaptures": {
+                "0": { "name": "punctuation.section.embedded.begin" }
+              },
+              "end": "\\}",
+              "endCaptures": {
+                "0": { "name": "punctuation.section.embedded.end" }
+              },
+              "patterns": [{ "include": "#main-patterns" }]
+            },
+            {
+              "name": "constant.character.escape.haze",
+              "match": "\\\\."
+            },
+            {
+              "name": "string.content.haze",
+              "match": "[^\"\\\\{]+"
+            }
+          ]
+        }
+      ]
+    },
+    "triple-strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.triple.haze",
+          "begin": "\"\"\"",
+          "end": "(?<!\\\\)\"\"\"",
+          "patterns": [
+            {
+              "name": "constant.character.escape.haze",
+              "match": "\\\\\"\"\""
+            },
+            {
+              "name": "constant.character.escape.haze",
+              "match": "\\\\."
+            },
+            {
+              "name": "string.content.haze",
+              "match": "(?:(?!\"\"\")[^\\\\])+"
+            }
+          ]
+        }
+      ]
+    },
     "regex-strings": {
       "name": "string.other",
       "begin": "\\br\"",
@@ -63,12 +164,16 @@
     },
     "strings": {
       "name": "string.quoted.double",
-      "begin": "\"",
+      "begin": "(?<!f)\"",
       "end": "\"",
       "patterns": [
         {
           "name": "constant.character.escape.haze",
           "match": "\\\\."
+        },
+        {
+          "name": "string.content.haze",
+          "match": "[^\"\\\\]+"
         }
       ]
     },
@@ -121,10 +226,14 @@
               "begin": "(?<=\\w)\\s*<",
               "end": ">",
               "beginCaptures": {
-                "0": { "name": "punctuation.definition.generic.begin" }
+                "0": {
+                  "name": "punctuation.definition.generic.begin"
+                }
               },
               "endCaptures": {
-                "0": { "name": "punctuation.definition.generic.end" }
+                "0": {
+                  "name": "punctuation.definition.generic.end"
+                }
               },
               "patterns": [
                 {
@@ -144,12 +253,20 @@
               "begin": "\\(",
               "end": "\\)",
               "beginCaptures": {
-                "0": { "name": "punctuation.definition.parameters.begin" }
+                "0": {
+                  "name": "punctuation.definition.parameters.begin"
+                }
               },
               "endCaptures": {
-                "0": { "name": "punctuation.definition.parameters.end" }
+                "0": {
+                  "name": "punctuation.definition.parameters.end"
+                }
               },
-              "patterns": [{ "include": "#main-patterns" }]
+              "patterns": [
+                {
+                  "include": "#main-patterns"
+                }
+              ]
             }
           ]
         }
@@ -162,11 +279,17 @@
           "begin": "\\b([A-Z][\\w]*)\\s*{",
           "end": "}",
           "beginCaptures": {
-            "1": { "name": "entity.name.type.my-language" },
-            "0": { "name": "punctuation.definition.block.begin" }
+            "0": {
+              "name": "punctuation.definition.block.begin"
+            },
+            "1": {
+              "name": "entity.name.type.my-language"
+            }
           },
           "endCaptures": {
-            "0": { "name": "punctuation.definition.block.end" }
+            "0": {
+              "name": "punctuation.definition.block.end"
+            }
           },
           "patterns": [
             {
@@ -210,11 +333,26 @@
           "name": "constant.numeric",
           "match": "\\b\\d+\\b"
         },
-        { "match": "\\b(true)\\b", "name": "constant.language.boolean.true.ts" },
-        { "match": "\\b(false)\\b", "name": "constant.language.boolean.false.ts" },
-        { "match": "\\b(null)\\b", "name": "constant.language.boolean.false.ts" },
-        { "match": "\\b(none)\\b", "name": "constant.language.boolean.false.ts" },
-        { "match": "\\b(nullptr)\\b", "name": "constant.language.boolean.false.ts" }
+        {
+          "match": "\\b(true)\\b",
+          "name": "constant.language.boolean.true.ts"
+        },
+        {
+          "match": "\\b(false)\\b",
+          "name": "constant.language.boolean.false.ts"
+        },
+        {
+          "match": "\\b(null)\\b",
+          "name": "constant.language.boolean.false.ts"
+        },
+        {
+          "match": "\\b(none)\\b",
+          "name": "constant.language.boolean.false.ts"
+        },
+        {
+          "match": "\\b(nullptr)\\b",
+          "name": "constant.language.boolean.false.ts"
+        }
       ]
     },
     "datatypes": {
@@ -235,17 +373,48 @@
     },
     "main-patterns": {
       "patterns": [
-        { "include": "#regex-strings" },
-        { "include": "#keywords" },
-        { "include": "#strings" },
-        { "include": "#hints" },
-        { "include": "#comments" },
-        { "include": "#constants" },
-        { "include": "#datatypes" },
-        { "include": "#variables" },
-        { "include": "#functions" },
-        { "include": "#structs" },
-        { "include": "#operators" }
+        {
+          "include": "#f-triple-strings"
+        },
+        {
+          "include": "#triple-strings"
+        },
+        {
+          "include": "#f-strings"
+        },
+        {
+          "include": "#regex-strings"
+        },
+        {
+          "include": "#keywords"
+        },
+        {
+          "include": "#strings"
+        },
+        {
+          "include": "#hints"
+        },
+        {
+          "include": "#comments"
+        },
+        {
+          "include": "#constants"
+        },
+        {
+          "include": "#datatypes"
+        },
+        {
+          "include": "#variables"
+        },
+        {
+          "include": "#functions"
+        },
+        {
+          "include": "#structs"
+        },
+        {
+          "include": "#operators"
+        }
       ]
     }
   },

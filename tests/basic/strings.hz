@@ -1,0 +1,17 @@
+
+test_strings() {
+    // This is like the worst-worst case, both for the compiler and for syntax highlighting
+    let singleline1 = "Result={a * \"Test {b}\"} test";
+    let singleline2 = f"Result={"First:" + f"Test {b}"} test";
+    let singleline3 = """Result="Test" + {a + b}; test:\""" """;
+    let singleline4 = f"""Result="Test" + {a + b}; test:\""" """;
+    let multiline = f"""
+// This is very cool
+int fooz = 0;
+const char* other = " \""" ";
+const char* my_string = "This is a very cool string!";
+int inserted = {a * b};
+float raaaaaar = 187;
+// OH NO IT ENDS
+    """;
+}

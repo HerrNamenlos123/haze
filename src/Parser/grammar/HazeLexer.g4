@@ -175,6 +175,28 @@ BLOCK_COMMENT: '/*' .*? '*/' -> channel(HIDDEN);
 // ------------------------
 // Main mode (normal code)
 // ------------------------
+
+FTRIPLE_STRING_START
+    : 'f"""' -> pushMode(InterpolatedStringTriple)
+    ;
+
+fragment TRIPLE_ESCAPE_TRIPLE_QUOTE
+    : '\\"""'
+    ;
+
+TRIPLE_STRING_LITERAL
+    : '"""' TRIPLE_STRING_BODY '"""'
+    ;
+
+fragment TRIPLE_STRING_BODY
+    : (
+        TRIPLE_ESCAPE_TRIPLE_QUOTE
+      | '""' ~'"'
+      | '"' ~'"'
+      | ~'"'
+      )*
+    ;
+
 STRING_LITERAL: ('"' | 'b"') (ESC | ~["\\])* '"' ;
 
 FSTRING_START: 'f"' -> pushMode(InterpolatedString);
@@ -190,3 +212,36 @@ FSTRING_EXPR_START: '{' -> type(LCURLY), pushMode(DEFAULT_MODE);
 FSTRING_END: '"' -> popMode;
 
 FSTRING_GRAPHEME: ~('{' | '"' | '\\');
+
+mode InterpolatedStringTriple;
+
+FTRIPLE_ESCAPE_TRIPLE_QUOTE
+    : '\\"""' -> type(FSTRING_GRAPHEME)
+    ;
+FTRIPLE_END: '"""' -> popMode;
+
+FTRIPLE_ESCAPE_OPENING_BRACES: '{{' -> type(FSTRING_GRAPHEME);
+FTRIPLE_ESCAPE_CLOSING_BRACES: '}}' -> type(FSTRING_GRAPHEME);
+
+fragment FTRIPLE_ESC
+    : '\\x' HEX HEX
+    | '\\' [btnfr'\\]
+    | '\\' ('u' HEX HEX HEX HEX | 'U' HEX HEX HEX HEX HEX HEX HEX HEX)
+    | '\\' OCTAL
+    ;
+
+FTRIPLE_ESCAPE
+    : FTRIPLE_ESC -> type(FSTRING_GRAPHEME)
+    ;
+
+FTRIPLE_EXPR_START: '{' -> type(LCURLY), pushMode(DEFAULT_MODE);
+
+// allow everything except start of interpolation or terminator
+FTRIPLE_GRAPHEME
+    : (
+        '""' ~'"'
+      | '"' ~'"'
+      | ~'{'
+      )
+    -> type(FSTRING_GRAPHEME)
+    ;

@@ -103,10 +103,15 @@ literal
     | HEX_INTEGER_LITERAL                       #HexIntegerLiteral
     | FLOAT_LITERAL                             #FloatLiteral
     | STRING_LITERAL                            #StringConstant
+    | TRIPLE_STRING_LITERAL                     #TripleStringConstant
     | REGEX_LITERAL                             #RegexLiteral
     ;
 
-interpolatedString: FSTRING_START (interpolatedStringFragment)* FSTRING_END (WITH allocatorExpr=expr)?;
+interpolatedString
+    : FSTRING_START (interpolatedStringFragment)* FSTRING_END (WITH allocatorExpr=expr)?
+    | FTRIPLE_STRING_START (interpolatedStringFragment)* FTRIPLE_END (WITH allocatorExpr=expr)?
+    ;
+
 interpolatedStringFragment: FSTRING_GRAPHEME | interpolatedStringExpression;
 interpolatedStringExpression: LCURLY expr RCURLY;
 
