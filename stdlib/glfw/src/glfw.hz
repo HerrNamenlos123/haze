@@ -139,7 +139,7 @@ export struct Window {
         __c__("w = &width;");
         __c__("h = &height;");
         ffi.glfwGetFramebufferSize(this.handle, w, h);
-        return Vec2(width, height);
+        return Vec2i(width, height);
     }
 
     getProcAddress(): (name: ccstr) => cptr {

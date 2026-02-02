@@ -68,8 +68,8 @@ toFFI(v: SurfaceTexture): ffi.WGPUSurfaceTexture :: final {
 export struct SurfaceConfiguration {
     format: TextureFormat = TextureFormat.Undefined;
     usage: TextureUsage = TextureUsage.None;
-    width: u32 = 0;
-    height: u32 = 0;
+    width: int = 0;
+    height: int = 0;
     viewFormats: []TextureFormat = {};
     alphaMode: CompositeAlphaMode = CompositeAlphaMode.Auto;
     presentMode: PresentMode = PresentMode.Undefined;
@@ -100,6 +100,8 @@ fromFFI(v: ffi.WGPUSurfaceConfiguration): SurfaceConfiguration :: final {
 }
 
 toFFI(v: SurfaceConfiguration): ffi.WGPUSurfaceConfiguration :: final {
+    assert(v.width >= u32.min && v.width <= u32.max, "Surface Width is out of bounds (v.width ∉ [u32.min, u32.max])");
+    assert(v.height >= u32.min && v.height <= u32.max, "Surface Height is out of bounds (v.height ∉ [u32.min, u32.max])");
     let viewFormats = arrayToFFI<TextureFormat, ffi.WGPUTextureFormat>(v.viewFormats);
     return ffi.WGPUSurfaceConfiguration {
         nextInChain: none,

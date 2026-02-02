@@ -82,24 +82,20 @@ main(): int {
         let caps = surface.getCapabilities(g_adapter);
         if (!caps) { raise "Failed to get surface capabilities"; }
 
-        let surfaceFormat = caps.formats[0];
-
         let size = window.getFramebufferSize();
-        fmt.println("Format", size.x, size.y);
 
         surface.configure({
             device: g_device,
-            format: surfaceFormat,
+            format: caps.formats[0],
             usage: wgpu.TextureUsage.RenderAttachment,
-            width: size.x as u32,
-            height: size.y as u32,
+            width: size.x,
+            height: size.y,
             presentMode: wgpu.PresentMode.Fifo,
             alphaMode: caps.alphaModes[0],
         });
 
-        let shadercode = fs.readFile("test/shaders.wgsl")?!;
         let shader = g_device.createShaderModule({
-            code: shadercode,
+            code: fs.readFile("test/shaders.wgsl")?!,
         });
 
         let vertices = [](inline Vec2f) {
@@ -112,15 +108,12 @@ main(): int {
             Vec2f(-0.5 as f32,  0.5 as f32),
         };
 
-        let s = sizeof(type<inline Vec2f>) * vertices.length;
-        assert(s >= 0);
-
         let bit = wgpu.BufferUsage.Vertex;
         let other = wgpu.BufferUsage.CopyDst;
         __c__("bit = bit | other;");
         let vertexBuffer = g_device.createBuffer({
             usage: bit,
-            size: s,
+            size: sizeof(type<inline Vec2f>) * vertices.length,
         });
         g_queue.writeBuffer(vertexBuffer, vertices);
 
@@ -154,7 +147,7 @@ main(): int {
                 entryPoint: "fs_main",
                 targets: {
                     { 
-                        format: surfaceFormat ,
+                        format: caps.formats[0],
                         writeMask: all,
                     },
                 },
@@ -168,10 +161,9 @@ main(): int {
             glfw.pollEvents();
 
             let surfaceTexture = surface.getCurrentTexture();
-            let tex = surfaceTexture.texture;
-            if !tex { raise "Failed to get surface texture"; }
+            if !surfaceTexture.texture { raise "Failed to get surface texture"; }
 
-            let backbuffer = tex.createView();
+            let backbuffer = surfaceTexture.texture.createView();
             if !backbuffer { raise "Failed to create texture view"; }
 
             let encoder = g_device.createCommandEncoder();
@@ -195,8 +187,8 @@ main(): int {
             renderPass.setPipeline(pipeline);
             renderPass.setVertexBuffer(0, vertexBuffer);
 
-            renderPass.setViewport(0, 0, size.x, size.y, 0.0, 1.0);
-            renderPass.setScissorRect(0, 0, size.x as u32, size.y as u32);
+            renderPass.setViewport(0, 0, size.x as real, size.y as real, 0.0, 1.0);
+            renderPass.setScissorRect(0, 0, size.x, size.y);
 
             renderPass.draw(6, 1, 0, 0);
 

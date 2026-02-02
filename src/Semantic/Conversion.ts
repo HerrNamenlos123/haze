@@ -1253,6 +1253,28 @@ export namespace Conversion {
       }
     }
 
+    // Explicit Integer <-> Float conversion
+    if (
+      ((Conversion.isFloat(sr, fromTypeInstance.type) &&
+        Conversion.isIntegerById(sr, toInstance.type)) ||
+        (Conversion.isIntegerById(sr, fromTypeInstance.type) &&
+          Conversion.isFloat(sr, toInstance.type))) &&
+      mode === Mode.Explicit
+    ) {
+      return ok(
+        Semantic.addExpr(sr, {
+          variant: Semantic.ENode.ExplicitCastExpr,
+          instanceIds: fromExpr.instanceIds,
+          expr: fromExprId,
+          type: toId,
+          sourceloc: sourceloc,
+          isTemporary: fromExpr.isTemporary,
+          flow: flow,
+          writes: writes,
+        })[1],
+      );
+    }
+
     // Conversions between Integer and float
     if (
       Conversion.isIntegerById(sr, fromTypeInstance.type) &&
@@ -1288,7 +1310,8 @@ export namespace Conversion {
 
       let sourceRangeText = "";
       if (!source.isExact()) {
-        sourceRangeText = `range ${Conversion.prettyRanges(source.ranges, f.primitive, "float")}`;
+        // sourceRangeText = `range ${Conversion.prettyRanges(source.ranges, f.primitive, "float")}`;
+        sourceRangeText = `range TBD`;
       } else {
         sourceRangeText = `value ${source.isExact()!}`;
       }
@@ -1306,28 +1329,6 @@ export namespace Conversion {
           "float",
         )}, but the source has ${sourceRangeText}. Add a conditional that constrains the integer range.`,
         sourceloc,
-      );
-    }
-
-    // Explicit Integer <-> Float conversion
-    if (
-      ((Conversion.isFloat(sr, fromTypeInstance.type) &&
-        Conversion.isIntegerById(sr, toInstance.type)) ||
-        (Conversion.isIntegerById(sr, fromTypeInstance.type) &&
-          Conversion.isFloat(sr, toInstance.type))) &&
-      mode === Mode.Explicit
-    ) {
-      return ok(
-        Semantic.addExpr(sr, {
-          variant: Semantic.ENode.ExplicitCastExpr,
-          instanceIds: fromExpr.instanceIds,
-          expr: fromExprId,
-          type: toId,
-          sourceloc: sourceloc,
-          isTemporary: fromExpr.isTemporary,
-          flow: flow,
-          writes: writes,
-        })[1],
       );
     }
 

@@ -28,8 +28,12 @@ export struct RenderPassEncoder {
         ffi.wgpuRenderPassEncoderSetViewport(this.handle, x as f32, y as f32, width as f32, height as f32, minDepth as f32, maxDepth as f32);
     }
 
-    setScissorRect(x: u32, y: u32, width: u32, height: u32) {
+    setScissorRect(x: int, y: int, width: int, height: int) {
         // export extern C noemit wgpuRenderPassEncoderSetScissorRect(renderPassEncoder: mut WGPURenderPassEncoderImpl, x: u32, y: u32, width: u32, height: u32): void :: final;
+        assert(x >= u32.min && x <= u32.max, "Scissor Rect x is out of bounds (x ∉ [u32.min, u32.max])");
+        assert(y >= u32.min && y <= u32.max, "Scissor Rect y is out of bounds (y ∉ [u32.min, u32.max])");
+        assert(width >= u32.min && width <= u32.max, "Scissor Rect width is out of bounds (width ∉ [u32.min, u32.max])");
+        assert(height >= u32.min && height <= u32.max, "Scissor Rect height is out of bounds (height ∉ [u32.min, u32.max])");
         ffi.wgpuRenderPassEncoderSetScissorRect(this.handle, x, y, width, height);
     }
 }
