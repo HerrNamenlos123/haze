@@ -58,7 +58,10 @@ import {
   type ConstraintPath,
   type ConstraintPathSubscriptIndex,
 } from "./Constraint";
-import { isMethodSignature } from "typescript";
+
+function isPowerOfTwo(x: bigint): boolean {
+  return x > 0n && (x & (x - 1n)) === 0n;
+}
 
 export enum FlowType {
   NoReturn, // Control never comes back: Program terminates or infinite loop
@@ -364,12 +367,48 @@ export class SemanticElaborator {
         this.sr.b.boolType(),
         binaryExpr.sourceloc,
       );
+    } else if (binaryExpr.operation === EBinaryOperation.BitwiseOr) {
+      let [left, leftId] = this.expr(binaryExpr.left, { unsafe: inference?.unsafe });
+      let [right, rightId] = this.expr(binaryExpr.right, { unsafe: inference?.unsafe });
+      let leftUse = this.sr.typeUseNodes.get(left.type);
+      let rightUse = this.sr.typeUseNodes.get(right.type);
+      let leftDef = this.sr.typeDefNodes.get(leftUse.type);
+      let rightDef = this.sr.typeDefNodes.get(rightUse.type);
+      if (
+        leftDef.variant === Semantic.ENode.EnumDatatype &&
+        rightDef.variant === Semantic.ENode.EnumDatatype
+      ) {
+        if (leftUse.type !== rightUse.type) {
+          throw new CompilerError(
+            `Bitwise Or operation between '${Semantic.serializeTypeUse(this.sr, left.type)}' and '${Semantic.serializeTypeUse(this.sr, right.type)}' is not allowed since the enums are unrelated`,
+            binaryExpr.sourceloc,
+          );
+        }
+        if (!leftDef.bitflag) {
+          throw new CompilerError(
+            `Bitwise Or operation on '${Semantic.serializeTypeUse(this.sr, left.type)}' is not allowed since it is not a bitflag enum`,
+            binaryExpr.sourceloc,
+          );
+        }
+
+        return this.sr.b.binaryExpr(
+          leftId,
+          rightId,
+          EBinaryOperation.BitwiseOr,
+          left.type,
+          binaryExpr.sourceloc,
+        );
+      }
+      throw new CompilerError(
+        `Bitwise Or operation is only allowed on bitflag enums`,
+        binaryExpr.sourceloc,
+      );
     } else if (
       binaryExpr.operation === EBinaryOperation.Equal ||
       binaryExpr.operation === EBinaryOperation.NotEqual
     ) {
-      let left = this.expr(binaryExpr.left, inference)[0];
-      let right = this.expr(binaryExpr.right, inference)[0];
+      let left = this.expr(binaryExpr.left, { unsafe: inference?.unsafe })[0];
+      let right = this.expr(binaryExpr.right, { unsafe: inference?.unsafe })[0];
       if (
         left.variant === Semantic.ENode.DatatypeAsValueExpr &&
         right.variant === Semantic.ENode.DatatypeAsValueExpr
@@ -1391,6 +1430,7 @@ export class SemanticElaborator {
       name: enumValue.name,
       noemit: enumValue.noemit,
       unscoped: enumValue.unscoped,
+      bitflag: enumValue.bitflag,
       originalCollectedSymbol: enumId,
       parentStructOrNS: parentNamespace,
       sourceloc: enumValue.sourceloc,
@@ -1398,7 +1438,7 @@ export class SemanticElaborator {
       values: [],
       type: -1 as Semantic.TypeUseId,
     });
-    const [enumSymbol, enumSymbolId] = this.sr.b.typeDefSymbol(enumTypeId);
+    const [_, enumSymbolId] = this.sr.b.typeDefSymbol(enumTypeId);
 
     insertIntoEnumDefCache(this.sr, enumId, {
       substitutionContext: this.currentContext,
@@ -1413,7 +1453,7 @@ export class SemanticElaborator {
 
     const getEnumType = () => {
       if (enumValue.values[0].value) {
-        const [valueResult, valueResultId] = EvalCTFEOrFail(
+        const [valueResult, _] = EvalCTFEOrFail(
           this.sr,
           this.expr(enumValue.values[0].value, undefined)[1],
           enumValue.values[0].sourceloc,
@@ -1450,13 +1490,18 @@ export class SemanticElaborator {
 
       if (enumDatatype === "int") {
         let nextValue = 0n;
+
+        if (enumValue.bitflag) {
+          nextValue = 1n;
+        }
+
         const usedValues = new Set<bigint>();
         for (const value of enumValue.values) {
           if (value.value) {
-            const [valueResult, valueResultId] = EvalCTFEOrFail(
+            const [valueResult, _] = EvalCTFEOrFail(
               this.sr,
               this.expr(value.value, undefined)[1],
-              enumValue.values[0].sourceloc,
+              value.sourceloc,
             );
             assert(valueResult.variant === Semantic.ENode.LiteralExpr);
 
@@ -1470,7 +1515,30 @@ export class SemanticElaborator {
               );
             }
             assert(valueResult.literal.type === EPrimitive.int);
-            nextValue = valueResult.literal.value + 1n;
+
+            if (
+              enumValue.bitflag &&
+              !isPowerOfTwo(valueResult.literal.value) &&
+              valueResult.literal.value !== 0n
+            ) {
+              throw new CompilerError(
+                `This value does not resolve to an integer that is a power of two/an integer with exactly one bit set`,
+                value.sourceloc,
+              );
+            }
+
+            if (usedValues.has(valueResult.literal.value)) {
+              throw new CompilerError(
+                `Multiple fields with value ${valueResult.literal.value} not allowed`,
+                value.sourceloc,
+              );
+            }
+
+            if (enumValue.bitflag) {
+              nextValue = valueResult.literal.value * 2n;
+            } else {
+              nextValue = valueResult.literal.value + 1n;
+            }
 
             enumType.values.push({
               name: value.name,
@@ -1486,23 +1554,26 @@ export class SemanticElaborator {
               )[1],
             });
 
-            if (usedValues.has(valueResult.literal.value)) {
-              throw new CompilerError(
-                `Multiple fields with value ${valueResult.literal.value} not allowed`,
-                value.sourceloc,
-              );
-            }
             usedValues.add(valueResult.literal.value);
           } else {
-            while (usedValues.has(nextValue)) {
-              nextValue++;
+            if (enumValue.bitflag) {
+              while (usedValues.has(nextValue)) {
+                nextValue *= 2n;
+              }
+            } else {
+              while (usedValues.has(nextValue)) {
+                nextValue++;
+              }
             }
 
-            const v = nextValue++;
+            if (enumValue.bitflag) {
+              assert(isPowerOfTwo(nextValue));
+            }
+
             enumType.values.push({
               name: value.name,
               type: enumDatatypeId,
-              valueExpr: this.sr.b.literal(v, value.sourceloc)[1],
+              valueExpr: this.sr.b.literal(nextValue, value.sourceloc)[1],
               literalExpr: this.sr.b.literalValue(
                 {
                   type: "enum",
@@ -1513,23 +1584,30 @@ export class SemanticElaborator {
               )[1],
             });
 
-            if (usedValues.has(v)) {
+            if (usedValues.has(nextValue)) {
               throw new CompilerError(
-                `Multiple fields with value ${v} not allowed`,
+                `Multiple fields with value ${nextValue} not allowed`,
                 value.sourceloc,
               );
             }
-            usedValues.add(v);
+            usedValues.add(nextValue);
           }
         }
       } else {
+        if (enumValue.bitflag) {
+          throw new CompilerError(
+            `bitflag enums are required to have integer values`,
+            enumValue.sourceloc,
+          );
+        }
+
         const usedValues = new Set<string>();
         for (const value of enumValue.values) {
           if (value.value) {
-            const [valueResult, valueResultId] = EvalCTFEOrFail(
+            const [valueResult, _] = EvalCTFEOrFail(
               this.sr,
               this.expr(value.value, undefined)[1],
-              enumValue.values[0].sourceloc,
+              value.sourceloc,
             );
             assert(valueResult.variant === Semantic.ENode.LiteralExpr);
 
@@ -9905,6 +9983,7 @@ export namespace Semantic {
     noemit: boolean;
     export: boolean;
     unscoped: boolean;
+    bitflag: boolean;
     extern: EExternLanguage;
     values: EnumValue[];
     parentStructOrNS: TypeDefId | null;

@@ -108,19 +108,14 @@ main(): int {
             Vec2f(-0.5 as f32,  0.5 as f32),
         };
 
-        let bit = wgpu.BufferUsage.Vertex;
-        let other = wgpu.BufferUsage.CopyDst;
-        __c__("bit = bit | other;");
         let vertexBuffer = g_device.createBuffer({
-            usage: bit,
+            usage: wgpu.BufferUsage.Vertex | wgpu.BufferUsage.CopyDst,
             size: sizeof(type<inline Vec2f>) * vertices.length,
         });
         g_queue.writeBuffer(vertexBuffer, vertices);
 
-        let ss = sizeof(type<inline Vec2f>);
-        assert(ss >= 0);
         let vertexLayout = wgpu.VertexBufferLayout {
-            arrayStride: ss,
+            arrayStride: sizeof(type<inline Vec2f>),
             stepMode: wgpu.VertexStepMode.Vertex,
             attributes: {
                 {
@@ -130,11 +125,6 @@ main(): int {
                 },
             },
         };
-
-        let all = wgpu.ColorWriteMask.Red;
-        __c__("all |= WGPUColorWriteMask_Green;");
-        __c__("all |= WGPUColorWriteMask_Blue;");
-        __c__("all |= WGPUColorWriteMask_Alpha;");
 
         let pipeline = g_device.createRenderPipeline({
             vertex: {
@@ -148,7 +138,6 @@ main(): int {
                 targets: {
                     { 
                         format: caps.formats[0],
-                        writeMask: all,
                     },
                 },
             },

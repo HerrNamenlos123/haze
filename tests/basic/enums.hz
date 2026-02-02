@@ -1,0 +1,38 @@
+
+enum A {
+    None,
+    Test,
+    Foo,
+}
+
+enum B {
+    None = 2,
+    Test,
+    Foo = 5,
+    FF,
+}
+
+enum bitflag C {
+    None,
+    Test,
+    Foo,
+    Bar,
+}
+
+enum bitflag D {
+    None = 2,
+    Test,
+    Foo = 16,
+    FF,
+}
+
+main(): int {
+
+    let a = A.Test;
+    let b = B.Foo;
+    let c = C.Bar | C.Test;
+
+    // let d 
+
+    return 0;
+}

@@ -172,6 +172,9 @@ export function ExportTypeDef(
       if (typedef.unscoped) {
         file += "unscoped ";
       }
+      if (typedef.bitflag) {
+        file += "bitflag ";
+      }
       file += typedef.name + " {\n";
       for (const value of typedef.values) {
         file += `${value.name} = ${Semantic.serializeExpr(sr, value.valueExpr)},\n`;

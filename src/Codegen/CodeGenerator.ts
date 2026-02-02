@@ -638,8 +638,6 @@ class CodeGenerator {
     plainResultTypeId: Lowered.TypeDefId,
     operation: EBinaryOperation,
   ) {
-    const left = this.lr.exprNodes.get(leftId);
-    const right = this.lr.exprNodes.get(rightId);
     const plainResultType = this.lr.typeDefNodes.get(plainResultTypeId);
 
     let opStr = "";
@@ -662,9 +660,6 @@ class CodeGenerator {
       default:
         assert(false);
     }
-
-    const leftType = this.lr.typeUseNodes.get(left.type);
-    const rightType = this.lr.typeUseNodes.get(right.type);
 
     return `hzstd_arithmetic_${opStr}_${this.mangleName(plainResultType.name)}`;
   }
@@ -1353,6 +1348,26 @@ class CodeGenerator {
             );
             break;
           }
+
+          case EBinaryOperation.BitwiseOr: {
+            const leftWriter = this.emitExpr(expr.left);
+            const rightWriter = this.emitExpr(expr.right);
+            tempWriter.write(leftWriter.temp);
+            tempWriter.write(rightWriter.temp);
+            outWriter.write(
+              "(" +
+                leftWriter.out.get() +
+                " " +
+                BinaryOperationToString(expr.operation) +
+                " " +
+                rightWriter.out.get() +
+                ")",
+            );
+            break;
+          }
+
+          default:
+            assert(false);
         }
         return { out: outWriter, temp: tempWriter };
 
@@ -1595,7 +1610,7 @@ class CodeGenerator {
             return v.originalName === expr.literal.valueName;
           });
           assert(value);
-          outWriter.write(`(${this.emitExpr(value.value).out.get()})`);
+          outWriter.write(`(${this.mangleName(value.loweredName)})`);
         } else {
           let postfix = "";
           switch (expr.literal.type) {
@@ -1849,7 +1864,7 @@ export function emitIntCompare(
   if (leftSigned && rightSigned) {
     const l = maybeCast(lhs, p.leftBits, true, maxBits, true);
     const r = maybeCast(rhs, p.rightBits, true, maxBits, true);
-    return `(${l} ${op} ${r})`;
+    return `((${l}) ${op} (${r}))`;
   }
 
   // ------------------------------------------------------------
@@ -1858,18 +1873,18 @@ export function emitIntCompare(
   if (!leftSigned && !rightSigned) {
     const l = maybeCast(lhs, p.leftBits, false, maxBits, false);
     const r = maybeCast(rhs, p.rightBits, false, maxBits, false);
-    return `(${l} ${op} ${r})`;
+    return `((${l}) ${op} (${r}))`;
   }
 
   // ------------------------------------------------------------
   // mixed signedness (ℤ semantics)
   //
   // signed < 0 => fixed result
-  // otherwise widen BOTH to signed(maxBits + 1) and compare
+  // otherwise widen BOTH to unsigned(maxBits) and compare
   // ------------------------------------------------------------
 
   const wideBits = nextSignedWidth(maxBits);
-  const wideType = cIntType(wideBits, true);
+  const wideType = cIntType(wideBits, false);
 
   const lWide = `((${wideType})(${lhs}))`;
   const rWide = `((${wideType})(${rhs}))`;

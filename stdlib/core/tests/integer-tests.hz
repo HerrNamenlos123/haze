@@ -168,3 +168,8 @@ integer_comparison_runtime_tests() {
     cmp_all<int, u64>(intv, u64v);
     cmp_all<int, usize>(intv, usizev);
 }
+
+main(): int {
+    integer_comparison_runtime_tests();
+    return 0;
+}

@@ -87,7 +87,7 @@ toFFI(v: FragmentState): ffi.WGPUFragmentState :: final {
 export struct ColorTargetState {
     format: TextureFormat;
     blend?: BlendState;
-    writeMask: ColorWriteMask = ColorWriteMask.None;
+    writeMask: ColorWriteMask = ColorWriteMask.Red | ColorWriteMask.Green | ColorWriteMask.Blue | ColorWriteMask.Alpha;
 }
 
 fromFFI(v: inline ffi.WGPUColorTargetState): ColorTargetState :: final {

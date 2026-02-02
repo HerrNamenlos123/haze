@@ -226,7 +226,7 @@ expr
     | expr (op+=DOUBLEEQUALS|op+=NOTEQUALS) expr                                    #BinaryExpr
     // | expr ('&') expr                                                            #BinaryExpr
     // | expr ('^') expr                                                            #BinaryExpr
-    // | expr ('|') expr                                                            #BinaryExpr
+    | expr op+=SINGLEOR expr                                                        #BinaryExpr
     | expr op+=(DOUBLEAND|DOUBLEOR) expr                                            #BinaryExpr
     
     // Ternary-like control expressions

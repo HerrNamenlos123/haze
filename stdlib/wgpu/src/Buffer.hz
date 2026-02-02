@@ -62,13 +62,14 @@ toFFI(v: Buffer): mut ffi.WGPUBufferImpl :: final {
 
 export struct VertexBufferLayout {
     stepMode: VertexStepMode;
-    arrayStride: u64;
+    arrayStride: int;
     attributes: []VertexAttribute;
 }
 
 fromFFI(v: inline ffi.WGPUVertexBufferLayout): VertexBufferLayout :: final {
     let c = none as cptr;
     __c__("c = (void*)v.attributes;"); // ignoring constness issue
+    assert(v.arrayStride >= int.min && v.arrayStride <= int.max, "Vertex Buffer Layout: Array Stride out of bounds");
     return VertexBufferLayout {
         stepMode: fromFFI(v.stepMode),
         arrayStride: v.arrayStride,
@@ -77,6 +78,7 @@ fromFFI(v: inline ffi.WGPUVertexBufferLayout): VertexBufferLayout :: final {
 }
 
 toFFI(v: VertexBufferLayout): ffi.WGPUVertexBufferLayout :: final {
+    assert(v.arrayStride >= u64.min && v.arrayStride <= u64.max, "Vertex Buffer Layout: Array Stride out of bounds");
     let attributes = arrayToFFI<VertexAttribute, inline ffi.WGPUVertexAttribute>(v.attributes);
     return ffi.WGPUVertexBufferLayout {
         stepMode: toFFI(v.stepMode),

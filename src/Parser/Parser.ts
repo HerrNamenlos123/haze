@@ -412,6 +412,8 @@ class ASTTransformer extends HazeParserVisitor<any> {
       return EBinaryOperation.BoolAnd;
     } else if (ctx._op.length === 1 && ctx._op[0].text === "||") {
       return EBinaryOperation.BoolOr;
+    } else if (ctx._op.length === 1 && ctx._op[0].text === "|") {
+      return EBinaryOperation.BitwiseOr;
     } else {
       throw new InternalError(
         "Operator is not known: " + JSON.stringify(ctx._op.map((o) => o.text)),

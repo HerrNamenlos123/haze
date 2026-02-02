@@ -66,6 +66,7 @@ export enum EBinaryOperation {
   NotEqual,
   BoolAnd,
   BoolOr,
+  BitwiseOr,
 }
 
 export function IncrOperationToString(op: EIncrOperation): string {
@@ -141,6 +142,8 @@ export function BinaryOperationToString(op: EBinaryOperation): string {
       return "&&";
     case EBinaryOperation.BoolOr:
       return "||";
+    case EBinaryOperation.BitwiseOr:
+      return "|";
     default:
       throw new ImpossibleSituation();
   }
