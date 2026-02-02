@@ -102,10 +102,12 @@ main(): int {
             Vec2f(-0.5 as f32, -0.5 as f32),
             Vec2f( 0.5 as f32, -0.5 as f32),
             Vec2f( 0.5 as f32,  0.5 as f32),
-
-            Vec2f(-0.5 as f32, -0.5 as f32),
-            Vec2f( 0.5 as f32,  0.5 as f32),
             Vec2f(-0.5 as f32,  0.5 as f32),
+        };
+
+        let indices = []u16 {
+            0, 1, 2,
+            2, 3, 0,
         };
 
         let vertexBuffer = g_device.createBuffer({
@@ -113,6 +115,12 @@ main(): int {
             size: sizeof(type<inline Vec2f>) * vertices.length,
         });
         g_queue.writeBuffer(vertexBuffer, vertices);
+
+        let indexBuffer = g_device.createBuffer({
+            usage: wgpu.BufferUsage.Index | wgpu.BufferUsage.CopyDst,
+            size: sizeof(u16) * indices.length,
+        });
+        g_queue.writeBuffer(indexBuffer, indices);
 
         let vertexLayout = wgpu.VertexBufferLayout {
             arrayStride: sizeof(type<inline Vec2f>),
@@ -179,7 +187,10 @@ main(): int {
             renderPass.setViewport(0, 0, size.x as real, size.y as real, 0.0, 1.0);
             renderPass.setScissorRect(0, 0, size.x, size.y);
 
-            renderPass.draw(6, 1, 0, 0);
+            renderPass.setIndexBuffer(indexBuffer, wgpu.IndexFormat.Uint16);
+            renderPass.drawIndexed(6, 1, 0, 0, 0);
+
+            // renderPass.draw(6, 1, 0, 0);
 
             renderPass.end();
             let commandBuffer = encoder.finish();

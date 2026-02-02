@@ -69,6 +69,11 @@
           },
           "patterns": [
             {
+              "name": "constant.character.escape.haze",
+              "match": "\\{\\{|\\}\\}"
+            },
+
+            {
               "name": "meta.interpolation.haze",
               "begin": "\\{",
               "beginCaptures": {
@@ -78,7 +83,15 @@
               "endCaptures": {
                 "0": { "name": "punctuation.section.embedded.end" }
               },
-              "patterns": [{ "include": "#main-patterns" }]
+              "patterns": [
+                { "include": "#f-strings" },
+                { "include": "#f-triple-strings" },
+                { "include": "#strings" },
+                { "include": "#comments" },
+                { "include": "#functions" },
+                { "include": "#structs" },
+                { "include": "#main-patterns" }
+              ]
             },
             {
               "name": "constant.character.escape.haze",
@@ -110,6 +123,10 @@
           "name": "meta.f-string.haze",
           "patterns": [
             {
+              "name": "constant.character.escape.haze",
+              "match": "\\{\\{|\\}\\}"
+            },
+            {
               "name": "meta.interpolation.haze",
               "begin": "\\{",
               "beginCaptures": {
@@ -119,7 +136,15 @@
               "endCaptures": {
                 "0": { "name": "punctuation.section.embedded.end" }
               },
-              "patterns": [{ "include": "#main-patterns" }]
+              "patterns": [
+                { "include": "#f-strings" },
+                { "include": "#f-triple-strings" },
+                { "include": "#strings" },
+                { "include": "#comments" },
+                { "include": "#functions" },
+                { "include": "#structs" },
+                { "include": "#main-patterns" }
+              ]
             },
             {
               "name": "constant.character.escape.haze",

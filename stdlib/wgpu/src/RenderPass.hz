@@ -11,11 +11,18 @@ export struct RenderPassEncoder {
         ffi.wgpuRenderPassEncoderSetPipeline(this.handle, toFFI(pipeline));
     }
 
-    setVertexBuffer(slot: u32, buffer: Buffer | none) {
+    setVertexBuffer(slot: u32, buffer: Buffer) {
         // export extern C noemit wgpuRenderPassEncoderSetVertexBuffer(renderPassEncoder: mut WGPURenderPassEncoderImpl, slot: u32, buffer: mut WGPUBufferImpl | none, offset: u64, size: u64): void :: final;
         let wholeSize = 0 as u64;
         __c__("wholeSize = WGPU_WHOLE_SIZE;");
-        ffi.wgpuRenderPassEncoderSetVertexBuffer(this.handle, slot, buffer ? toFFI(buffer) : none, 0, wholeSize);
+        ffi.wgpuRenderPassEncoderSetVertexBuffer(this.handle, slot, toFFI(buffer), 0, wholeSize);
+    }
+
+    setIndexBuffer(buffer: Buffer, format: IndexFormat) {
+        // export extern C noemit wgpuRenderPassEncoderSetIndexBuffer(renderPassEncoder: mut WGPURenderPassEncoderImpl, buffer: mut WGPUBufferImpl, format: WGPUIndexFormat, offset: u64, size: u64): void :: final;
+        let wholeSize = 0 as u64;
+        __c__("wholeSize = WGPU_WHOLE_SIZE;");
+        ffi.wgpuRenderPassEncoderSetIndexBuffer(this.handle, toFFI(buffer), format, 0, wholeSize);
     }
 
     draw(vertexCount: u32, instanceCount: u32, firstVertex: u32, firstInstance: u32) {
