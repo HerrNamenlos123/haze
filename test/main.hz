@@ -114,13 +114,13 @@ main(): int {
             usage: wgpu.BufferUsage.Vertex | wgpu.BufferUsage.CopyDst,
             size: sizeof(type<inline Vec2f>) * vertices.length,
         });
-        g_queue.writeBuffer(vertexBuffer, vertices);
+        g_queue.writeBuffer<inline Vec2f>(vertexBuffer, vertices);
 
         let indexBuffer = g_device.createBuffer({
             usage: wgpu.BufferUsage.Index | wgpu.BufferUsage.CopyDst,
             size: sizeof(u16) * indices.length,
         });
-        g_queue.writeBuffer(indexBuffer, indices);
+        g_queue.writeBuffer<u16>(indexBuffer, indices);
 
         let vertexLayout = wgpu.VertexBufferLayout {
             arrayStride: sizeof(type<inline Vec2f>),

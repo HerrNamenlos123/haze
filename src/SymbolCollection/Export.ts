@@ -1,4 +1,8 @@
-import { Semantic, type SemanticResult } from "../Semantic/Elaborate";
+import {
+  IsExprDecisiveForOverloadResolution,
+  Semantic,
+  type SemanticResult,
+} from "../Semantic/Elaborate";
 import { EExternLanguage } from "../shared/AST";
 import { EMethodType } from "../shared/common";
 import { assert, formatSourceLoc } from "../shared/Errors";
@@ -125,6 +129,28 @@ export function ExportTypeDef(
           }
         }
       }
+
+      // Emit generic methods. Those are NOT elaborated yet, so we have to workaround through the collected symbol.
+      const collected = sr.cc.symbolNodes.get(typedef.originalCollectedSymbol);
+      assert(collected.variant === Collect.ENode.TypeDefSymbol);
+      const collectedStruct = sr.cc.typeDefNodes.get(collected.typeDef);
+      assert(collectedStruct.variant === Collect.ENode.StructTypeDef);
+      const lexicalScope = sr.cc.scopeNodes.get(collectedStruct.lexicalScope);
+      assert(lexicalScope.variant === Collect.ENode.StructLexicalScope);
+      for (const symbolId of lexicalScope.symbols) {
+        const symbol = sr.cc.symbolNodes.get(symbolId);
+        if (symbol.variant === Collect.ENode.FunctionOverloadGroupSymbol) {
+          for (const overloadId of symbol.overloads) {
+            const overload = sr.cc.symbolNodes.get(overloadId);
+            if (overload.variant === Collect.ENode.FunctionSymbol) {
+              if (overload.generics.length > 0) {
+                file += overload.originalSourcecode + "\n";
+              }
+            }
+          }
+        }
+      }
+
       for (const inner of typedef.nestedStructs) {
         file += ExportTypeDef(sr, inner, true) + "\n\n";
       }
