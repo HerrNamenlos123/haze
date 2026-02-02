@@ -2,11 +2,12 @@
 
 export struct VertexAttribute {
     format: VertexFormat;
-    offset: u64;
-    shaderLocation: u32;
+    offset: int;
+    shaderLocation: int;
 }
 
 fromFFI(v: inline ffi.WGPUVertexAttribute): VertexAttribute :: final {
+    assert(v.offset <= int.max);
     return VertexAttribute {
         format: fromFFI(v.format),
         offset: v.offset,
@@ -15,6 +16,8 @@ fromFFI(v: inline ffi.WGPUVertexAttribute): VertexAttribute :: final {
 }
 
 toFFI(v: VertexAttribute): ffi.WGPUVertexAttribute :: final {
+    assert(v.offset >= u64.min && v.offset <= u64.max);
+    assert(v.shaderLocation >= u32.min && v.shaderLocation <= u32.max);
     return ffi.WGPUVertexAttribute {
         format: toFFI(v.format),
         offset: v.offset,
