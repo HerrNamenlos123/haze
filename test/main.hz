@@ -161,13 +161,7 @@ main(): int {
             },
             primitive: {
                 topology: wgpu.PrimitiveTopology.TriangleList,
-                cullMode: wgpu.CullMode.None,
             },
-            multisample: {
-                count: 1,
-                mask: 0xFFFFFFFF,
-                alphaToCoverageEnabled: false,
-            }
         });
 
         while !window.shouldClose() {

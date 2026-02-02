@@ -3,7 +3,7 @@ export struct PrimitiveState {
     topology: PrimitiveTopology;
     stripIndexFormat: IndexFormat = IndexFormat.Undefined;
     frontFace: FrontFace = FrontFace.Undefined;
-    cullMode: CullMode = CullMode.Undefined;
+    cullMode: CullMode = CullMode.None;
     unclippedDepth: bool = false;
 }
 
