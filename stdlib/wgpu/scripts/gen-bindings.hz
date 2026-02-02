@@ -712,8 +712,7 @@ generateBindings(args: GenArgs): Result<none, fs.Error> {
 
     for (let i = 0; i < args.typedefs.length; i++) {
         let t = args.typedefs[i];
-        file = file + f"    type {t.name} = {a()};\n";
-        // file = file + f"    type {t.name} = {parseType(args, t.base)};\n";
+        file = file + f"    type {t.name} = {parseType(args, t.base)};\n";
     }
 
     for (let i = 0; i < args.bitflagTypes.length; i++) {

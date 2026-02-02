@@ -238,62 +238,28 @@
     "functions": {
       "patterns": [
         {
-          "begin": "(?x) (?:[a-zA-Z_][\\w]*\\.)? ([a-zA-Z_][\\w]*) \\s* (?=<|\\()",
-          "end": "(?=[;\\n])",
+          "begin": "(?:[a-zA-Z_][\\w]*\\.)?([a-zA-Z_][\\w]*)\\s*\\(",
+          "end": "\\)",
           "beginCaptures": {
-            "1": {
-              "name": "meta.function-call"
-            }
+            "1": { "name": "meta.function-call" }
           },
-          "patterns": [
-            {
-              "name": "meta.generic-args",
-              "begin": "(?<=\\w)\\s*<",
-              "end": ">",
-              "beginCaptures": {
-                "0": {
-                  "name": "punctuation.definition.generic.begin"
-                }
-              },
-              "endCaptures": {
-                "0": {
-                  "name": "punctuation.definition.generic.end"
-                }
-              },
-              "patterns": [
-                {
-                  "match": "\\b[a-zA-Z_][\\w]*\\b",
-                  "name": "entity.name.type.my-language"
-                },
-                {
-                  "match": ",",
-                  "name": "punctuation.separator.comma"
-                },
-                {
-                  "include": "$self"
-                }
-              ]
-            },
-            {
-              "begin": "\\(",
-              "end": "\\)",
-              "beginCaptures": {
-                "0": {
-                  "name": "punctuation.definition.parameters.begin"
-                }
-              },
-              "endCaptures": {
-                "0": {
-                  "name": "punctuation.definition.parameters.end"
-                }
-              },
-              "patterns": [
-                {
-                  "include": "#main-patterns"
-                }
-              ]
-            }
-          ]
+          "patterns": [{ "include": "#main-patterns" }]
+        }
+      ]
+    },
+    "punctuation": {
+      "patterns": [
+        {
+          "name": "punctuation.accessor.dot.haze",
+          "match": "\\."
+        },
+        {
+          "name": "punctuation.separator.comma.haze",
+          "match": ","
+        },
+        {
+          "name": "punctuation.terminator.semicolon.haze",
+          "match": ";"
         }
       ]
     },
@@ -439,7 +405,8 @@
         },
         {
           "include": "#operators"
-        }
+        },
+        { "include": "#punctuation" }
       ]
     }
   },
