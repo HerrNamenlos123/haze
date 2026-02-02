@@ -155,7 +155,7 @@ main(): int {
         });
 
         while !window.shouldClose() {
-            glfw.pollEvents();
+            glfw.pollEvents()>;
 
             let surfaceTexture = surface.getCurrentTexture();
             if !surfaceTexture.texture { raise "Failed to get surface texture"; }

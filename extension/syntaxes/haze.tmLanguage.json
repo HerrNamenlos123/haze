@@ -235,15 +235,37 @@
         }
       ]
     },
+    "generics": {
+      "patterns": [
+        {
+          "name": "meta.generic.haze",
+          "begin": "<",
+          "end": ">",
+          "beginCaptures": {
+            "0": { "name": "punctuation.definition.generic.begin.haze" }
+          },
+          "endCaptures": {
+            "0": { "name": "punctuation.definition.generic.end.haze" }
+          },
+          "patterns": [
+            { "include": "#datatypes" },
+            { "include": "#keywords" },
+            { "include": "#variables" },
+            { "include": "#generics" },
+            { "match": ",", "name": "punctuation.separator.comma.haze" }
+          ]
+        }
+      ]
+    },
     "functions": {
       "patterns": [
         {
-          "begin": "(?:[a-zA-Z_][\\w]*\\.)?([a-zA-Z_][\\w]*)\\s*\\(",
+          "begin": "(?:[a-zA-Z_][\\w]*\\.)?([a-zA-Z_][\\w]*)\\s*(?=<|\\()",
           "end": "\\)",
           "beginCaptures": {
             "1": { "name": "meta.function-call" }
           },
-          "patterns": [{ "include": "#main-patterns" }]
+          "patterns": [{ "include": "#generics" }, { "include": "#main-patterns" }]
         }
       ]
     },
