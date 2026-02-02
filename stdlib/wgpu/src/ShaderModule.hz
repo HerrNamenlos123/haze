@@ -36,3 +36,26 @@ fromFFI(v: mut ffi.WGPUShaderModuleImpl): mut ShaderModule :: final {
 toFFI(v: ShaderModule): mut ffi.WGPUShaderModuleImpl :: final {
     return v.handle;
 }
+
+export enum bitflag ShaderStage {
+    None = 0,
+    Vertex = 1,
+    Fragment = 2,
+    Compute = 4,
+}
+
+shaderStageFromFFI(v: ffi.WGPUShaderStage): ShaderStage :: final {
+    do unsafe {
+        let usage: ShaderStage = uninitialized; // This is a bitflag
+        __c__("usage = (int)v;");
+        return usage;
+    }
+}
+
+toFFI(v: ShaderStage): ffi.WGPUShaderStage :: final {
+    do unsafe {
+        let usage: ffi.WGPUShaderStage = uninitialized; // This is a bitflag
+        __c__("usage = (int)v;");
+        return usage;
+    }
+}

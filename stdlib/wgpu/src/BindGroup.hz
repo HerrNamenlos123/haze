@@ -1,0 +1,237 @@
+
+export struct BindGroup {
+    handle: mut ffi.WGPUBindGroupImpl;
+}
+
+fromFFI(v: mut ffi.WGPUBindGroupImpl): mut BindGroup :: final {
+    return {
+        handle: v,
+    };
+}
+
+toFFI(v: mut BindGroup): mut ffi.WGPUBindGroupImpl :: final {
+    return v.handle;
+}
+
+export struct BindGroupLayout {
+    handle: mut ffi.WGPUBindGroupLayoutImpl;
+}
+
+fromFFI(v: mut ffi.WGPUBindGroupLayoutImpl): mut BindGroupLayout :: final {
+    return {
+        handle: v,
+    };
+}
+
+toFFI(v: BindGroupLayout): mut ffi.WGPUBindGroupLayoutImpl :: final {
+    return v.handle;
+}
+
+export struct BindGroupLayoutDescriptor {
+    debugLabel?: str;
+    entries: []BindGroupLayoutEntry = {};
+}
+
+fromFFI(v: inline ffi.WGPUBindGroupLayoutDescriptor): BindGroupLayoutDescriptor :: final {
+    let c = none as cptr;
+    __c__("c = (void*)v.entries;"); // ignoring constness issue
+    return {
+        debugLabel: fromOptionalFFI(v.label),
+        entries: arrayFromFFI<BindGroupLayoutEntry, inline ffi.WGPUBindGroupLayoutEntry>(v.entryCount, c),
+    };
+}
+
+toFFI(v: BindGroupLayoutDescriptor): ffi.WGPUBindGroupLayoutDescriptor :: final {
+    let entries = arrayToFFI<BindGroupLayoutEntry, inline ffi.WGPUBindGroupLayoutEntry>(v.entries);
+    return {
+        label: toOptionalFFI(v.debugLabel),
+        nextInChain: none,
+        entryCount: entries.length,
+        entries: entries.data,
+    };
+}
+
+export struct BindGroupLayoutEntry {
+    binding: int;
+    visibility: ShaderStage;
+    buffer: BufferBindingLayout = default;
+    sampler: SamplerBindingLayout = default;
+    texture: TextureBindingLayout = default;
+    storageTexture: StorageTextureBindingLayout = default;
+}
+
+fromFFI(v: inline ffi.WGPUBindGroupLayoutEntry): BindGroupLayoutEntry :: final {
+    return {
+        binding: v.binding,
+        visibility: shaderStageFromFFI(v.visibility),
+        buffer: fromFFI(v.buffer),
+        sampler: fromFFI(v.sampler),
+        texture: fromFFI(v.texture),
+        storageTexture: fromFFI(v.storageTexture),
+    };
+}
+
+toFFI(v: BindGroupLayoutEntry): inline ffi.WGPUBindGroupLayoutEntry :: final {
+    assert(v.binding >= u32.min && v.binding <= u32.max);
+    return {
+        nextInChain: none,
+        binding: v.binding,
+        visibility: toFFI(v.visibility),
+        buffer: toFFI(v.buffer),
+        sampler: toFFI(v.sampler),
+        texture: toFFI(v.texture),
+        storageTexture: toFFI(v.storageTexture),
+    };
+}
+
+export struct BufferBindingLayout {
+    type: BufferBindingType = BufferBindingType.BindingNotUsed;
+    hasDynamicOffset: bool = false;
+    minBindingSize: int = 0;
+}
+
+fromFFI(v: inline ffi.WGPUBufferBindingLayout): BufferBindingLayout :: final {
+    assert(v.minBindingSize <= int.max);
+    return {
+        type: fromFFI(v.type),
+        hasDynamicOffset: v.hasDynamicOffset,
+        minBindingSize: v.minBindingSize,
+    };
+}
+
+toFFI(v: BufferBindingLayout): inline ffi.WGPUBufferBindingLayout :: final {
+    assert(v.minBindingSize >= 0);
+    return {
+        nextInChain: none,
+        type: toFFI(v.type),
+        hasDynamicOffset: v.hasDynamicOffset,
+        minBindingSize: v.minBindingSize,
+    };
+}
+
+export struct SamplerBindingLayout {
+    type: SamplerBindingType = SamplerBindingType.BindingNotUsed;
+}
+
+fromFFI(v: inline ffi.WGPUSamplerBindingLayout): SamplerBindingLayout :: final {
+    return {
+        type: fromFFI(v.type),
+    };
+}
+
+toFFI(v: SamplerBindingLayout): inline ffi.WGPUSamplerBindingLayout :: final {
+    return {
+        nextInChain: none,
+        type: toFFI(v.type),
+    };
+}
+
+export struct TextureBindingLayout {
+    sampleType: TextureSampleType = TextureSampleType.BindingNotUsed;
+    viewDimension: TextureViewDimension = TextureViewDimension.Undefined;
+    multisampled: bool = false;
+}
+
+fromFFI(v: inline ffi.WGPUTextureBindingLayout): TextureBindingLayout :: final {
+    return {
+        sampleType: fromFFI(v.sampleType),
+        viewDimension: fromFFI(v.viewDimension),
+        multisampled: v.multisampled,
+    };
+}
+
+toFFI(v: TextureBindingLayout): inline ffi.WGPUTextureBindingLayout :: final {
+    return {
+        nextInChain: none,
+        sampleType: toFFI(v.sampleType),
+        viewDimension: toFFI(v.viewDimension),
+        multisampled: v.multisampled,
+    };
+}
+
+export struct StorageTextureBindingLayout {
+    access: StorageTextureAccess = StorageTextureAccess.BindingNotUsed;
+    format: TextureFormat = TextureFormat.Undefined;
+    viewDimension: TextureViewDimension = TextureViewDimension.Undefined;
+}
+
+fromFFI(v: inline ffi.WGPUStorageTextureBindingLayout): StorageTextureBindingLayout :: final {
+    return {
+        access: fromFFI(v.access),
+        format: fromFFI(v.format),
+        viewDimension: fromFFI(v.viewDimension),
+    };
+}
+
+toFFI(v: StorageTextureBindingLayout): inline ffi.WGPUStorageTextureBindingLayout :: final {
+    return {
+        nextInChain: none,
+        access: toFFI(v.access),
+        format: toFFI(v.format),
+        viewDimension: toFFI(v.viewDimension),
+    };
+}
+
+export struct BindGroupDescriptor {
+    debugLabel?: str;
+    layout: BindGroupLayout;
+    entries: [](mut BindGroupEntry) = {};
+}
+
+fromFFI(v: inline ffi.WGPUBindGroupDescriptor): BindGroupDescriptor :: final {
+    let c = none as cptr;
+    __c__("c = (void*)v.entries;"); // ignoring constness issue
+    return {
+        debugLabel: fromOptionalFFI(v.label),
+        layout: fromFFI(v.layout),
+        entries: arrayFromFFI<mut BindGroupEntry, inline ffi.WGPUBindGroupEntry>(v.entryCount, c),
+    };
+}
+
+toFFI(v: BindGroupDescriptor): inline ffi.WGPUBindGroupDescriptor :: final {
+    let entries = arrayToFFI<mut BindGroupEntry, inline ffi.WGPUBindGroupEntry>(v.entries);
+    return {
+        nextInChain: none,
+        label: toOptionalFFI(v.debugLabel),
+        layout: toFFI(v.layout),
+        entryCount: entries.length,
+        entries: entries.data,
+    };
+}
+
+export struct BindGroupEntry {
+    binding: int;
+    buffer?: mut Buffer;
+    offset: int;
+    size: int;
+    sampler?: mut Sampler;
+    textureView?: mut TextureView;
+}
+
+fromFFI(v: inline ffi.WGPUBindGroupEntry): mut BindGroupEntry :: final {
+    assert(v.offset <= int.max);
+    assert(v.size <= int.max);
+    return {
+        binding: v.binding,
+        buffer: v.buffer ? fromFFI(v.buffer) : none,
+        offset: v.offset,
+        size: v.size,
+        sampler: v.sampler ? fromFFI(v.sampler) : none,
+        textureView: v.textureView ? fromFFI(v.textureView) : none,
+    };
+}
+
+toFFI(v: BindGroupEntry): inline ffi.WGPUBindGroupEntry :: final {
+    assert(v.binding >= u32.min && v.binding <= u32.max);
+    assert(v.offset >= 0);
+    assert(v.size >= 0);
+    return {
+        nextInChain: none,
+        binding: v.binding,
+        buffer: v.buffer ? toFFI(v.buffer) : none,
+        offset: v.offset,
+        size: v.size,
+        sampler: v.sampler ? toFFI(v.sampler) : none,
+        textureView: v.textureView ? toFFI(v.textureView) : none,
+    };
+}

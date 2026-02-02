@@ -53,6 +53,12 @@ export struct RenderPassEncoder {
         assert(height >= u32.min && height <= u32.max, "Scissor Rect height is out of bounds (height ∉ [u32.min, u32.max])");
         ffi.wgpuRenderPassEncoderSetScissorRect(this.handle, x, y, width, height);
     }
+
+    setBindGroup(groupIndex: int, group: mut BindGroup) {
+        assert(groupIndex >= u32.min && groupIndex <= u32.max);
+        // export extern C noemit wgpuRenderPassEncoderSetBindGroup(renderPassEncoder: mut WGPURenderPassEncoderImpl, groupIndex: u32, group: mut WGPUBindGroupImpl | none, dynamicOffsetCount: usize, dynamicOffsets: cptr /* uint32_t const* */): void :: final;
+        ffi.wgpuRenderPassEncoderSetBindGroup(this.handle, groupIndex, toFFI(group), 0, none);
+    }
 }
 
 fromFFI(v: mut ffi.WGPURenderPassEncoderImpl): RenderPassEncoder :: final {

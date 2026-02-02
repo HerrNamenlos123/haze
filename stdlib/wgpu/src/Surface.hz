@@ -46,7 +46,7 @@ export struct Surface {
 }
 
 export struct SurfaceTexture {
-    texture: Texture | none;
+    texture: mut Texture | none;
     status: SurfaceGetCurrentTextureStatus;
 }
 

@@ -1,0 +1,15 @@
+
+
+export struct Sampler {
+    handle: mut ffi.WGPUSamplerImpl;
+}
+
+fromFFI(v: mut ffi.WGPUSamplerImpl): mut Sampler :: final {
+    return {
+        handle: v,
+    };
+}
+
+toFFI(v: mut Sampler): mut ffi.WGPUSamplerImpl :: final {
+    return v.handle;
+}

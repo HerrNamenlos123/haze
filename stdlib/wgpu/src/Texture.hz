@@ -68,8 +68,8 @@ export struct Texture {
     }
 }
 
-fromFFI(v: mut ffi.WGPUTextureImpl): Texture :: final {
-    return Texture { handle: v };
+fromFFI(v: mut ffi.WGPUTextureImpl): mut Texture :: final {
+    return { handle: v };
 }
 
 toFFI(v: Texture): mut ffi.WGPUTextureImpl :: final {
@@ -80,8 +80,8 @@ export struct TextureView {
     handle: mut ffi.WGPUTextureViewImpl;
 }
 
-fromFFI(v: mut ffi.WGPUTextureViewImpl): TextureView :: final {
-    return TextureView { handle: v };
+fromFFI(v: mut ffi.WGPUTextureViewImpl): mut TextureView :: final {
+    return { handle: v };
 }
 
 toFFI(v: TextureView): mut ffi.WGPUTextureViewImpl :: final {

@@ -28,4 +28,19 @@ export struct Device {
     // export extern C noemit wgpuDeviceCreateRenderPipeline(device: mut WGPUDeviceImpl, descriptor: WGPURenderPipelineDescriptor): mut WGPURenderPipelineImpl :: final;
         return fromFFI(ffi.wgpuDeviceCreateRenderPipeline(this.handle, toFFI(descriptor)));
     }
+
+    createBindGroupLayout(descriptor: BindGroupLayoutDescriptor) {
+        // export extern C noemit wgpuDeviceCreateBindGroupLayout(device: mut WGPUDeviceImpl, descriptor: WGPUBindGroupLayoutDescriptor): mut WGPUBindGroupLayoutImpl :: final;
+        return fromFFI(ffi.wgpuDeviceCreateBindGroupLayout(this.handle, toFFI(descriptor)));
+    }
+
+    createPipelineLayout(descriptor: PipelineLayoutDescriptor) {
+        // export extern C noemit wgpuDeviceCreatePipelineLayout(device: mut WGPUDeviceImpl, descriptor: WGPUPipelineLayoutDescriptor): mut WGPUPipelineLayoutImpl :: final;
+        return fromFFI(ffi.wgpuDeviceCreatePipelineLayout(this.handle, toFFI(descriptor)));
+    }
+
+    createBindGroup(descriptor: BindGroupDescriptor) {
+        // export extern C noemit wgpuDeviceCreateBindGroup(device: mut WGPUDeviceImpl, descriptor: WGPUBindGroupDescriptor): mut WGPUBindGroupImpl :: final;
+        return fromFFI(ffi.wgpuDeviceCreateBindGroup(this.handle, toFFI(descriptor)));
+    }
 }

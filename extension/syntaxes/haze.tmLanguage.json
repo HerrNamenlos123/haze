@@ -260,12 +260,62 @@
     "functions": {
       "patterns": [
         {
-          "begin": "(?:[a-zA-Z_][\\w]*\\.)?([a-zA-Z_][\\w]*)\\s*(?=<|\\()",
-          "end": "\\)",
+          "begin": "(?x) (?:[a-zA-Z_][\\w]*\\.)? ([a-zA-Z_][\\w]*) \\s* (?=<|\\()",
+          "end": "(?=[;\\n])",
           "beginCaptures": {
-            "1": { "name": "meta.function-call" }
+            "1": {
+              "name": "meta.function-call"
+            }
           },
-          "patterns": [{ "include": "#generics" }, { "include": "#main-patterns" }]
+          "patterns": [
+            {
+              "name": "meta.generic-args",
+              "begin": "(?<=\\w)\\s*<",
+              "end": ">",
+              "beginCaptures": {
+                "0": {
+                  "name": "punctuation.definition.generic.begin"
+                }
+              },
+              "endCaptures": {
+                "0": {
+                  "name": "punctuation.definition.generic.end"
+                }
+              },
+              "patterns": [
+                {
+                  "match": "\\b[a-zA-Z_][\\w]*\\b",
+                  "name": "entity.name.type.my-language"
+                },
+                {
+                  "match": ",",
+                  "name": "punctuation.separator.comma"
+                },
+                {
+                  "include": "$self"
+                }
+              ]
+            },
+            {
+              "begin": "\\(",
+              "end": "\\)",
+              "beginCaptures": {
+                "0": {
+                  "name": "punctuation.definition.parameters.begin"
+                }
+              },
+              "endCaptures": {
+                "0": {
+                  "name": "punctuation.definition.parameters.end"
+                }
+              },
+              "patterns": [
+                {
+                  "include": "#main-patterns"
+                }
+              ]
+            }
+          ]
         }
       ]
     },

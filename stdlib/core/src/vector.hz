@@ -31,7 +31,7 @@ export struct _Vec2<T> {
   }
 
   length(): real {
-    return math.sqrt(math.pow(this.x as real, 2.0) + math.pow(this.y as real, 2.0)) real;
+    return math.sqrt(math.pow(this.x as real, 2.0) + math.pow(this.y as real, 2.0)) as real;
   }
 
   normalize(): _Vec2<T> {

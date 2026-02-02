@@ -68,3 +68,27 @@ toFFI(v: MultisampleState): ffi.WGPUMultisampleState :: final {
         alphaToCoverageEnabled: v.alphaToCoverageEnabled,
     };
 }
+
+export struct PipelineLayoutDescriptor {
+    debugLabel?: str;
+    bindGroupLayouts: [](mut BindGroupLayout);
+}
+
+fromFFI(v: inline ffi.WGPUPipelineLayoutDescriptor): PipelineLayoutDescriptor :: final {
+    let c = none as cptr;
+    __c__("c = (void*)v.bindGroupLayouts;"); // ignoring constness issue
+    return {
+        debugLabel: fromOptionalFFI(v.label),
+        bindGroupLayouts: arrayFromFFI<mut BindGroupLayout, mut ffi.WGPUBindGroupLayoutImpl>(v.bindGroupLayoutCount, c),
+    };
+}
+
+toFFI(v: PipelineLayoutDescriptor): inline ffi.WGPUPipelineLayoutDescriptor :: final {
+    let layouts = arrayToFFI<mut BindGroupLayout, mut ffi.WGPUBindGroupLayoutImpl>(v.bindGroupLayouts);
+    return {
+        nextInChain: none,
+        label: toOptionalFFI(v.debugLabel),
+        bindGroupLayoutCount: layouts.length,
+        bindGroupLayouts: layouts.data,
+    };
+}

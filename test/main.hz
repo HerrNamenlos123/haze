@@ -42,10 +42,6 @@ deviceRequestCallback(status: wgpu.RequestDeviceStatus, device: mut wgpu.Device,
 
 let g_queue = none as mut wgpu.Queue | none;
 
-struct App {
-    screenSize: Vec2f;
-}
-
 main(): int {
     attempt {
         if !glfw.init() { raise "GLFW init failed"; }
@@ -100,7 +96,7 @@ main(): int {
             glfw.pollEvents();
             renderer.beginFrame();
 
-            renderer.drawRect(Vec2(-0.5, -0.5), Vec2(1, 1), Color(1, 0, 1, 0));
+            renderer.drawRect(Vec2(100, 200), Vec2(200, 150), Color(1, 0, 0, 1));
 
             renderer.endFrame();
         }

@@ -778,6 +778,12 @@ generateBindings(args: GenArgs): Result<none, fs.Error> {
             if (s.name == "WGPUFragmentState" && s.fields[j].name == "targets") {
                 tp = "cptr /* WGPUColorTargetState* a.k.a WGPUColorTargetState[] */";
             }
+            if (s.name == "WGPUBindGroupLayoutDescriptor" && s.fields[j].name == "entries") {
+                tp = "cptr /* WGPUBindGroupDescriptor* a.k.a WGPUBindGroupDescriptor[] */";
+            }
+            if (s.name == "WGPUBindGroupDescriptor" && s.fields[j].name == "entries") {
+                tp = "cptr /* WGPUBindGroupDescriptor* a.k.a WGPUBindGroupDescriptor[] */";
+            }
             fields = fields + f"        {s.fields[j].name}: {tp}{nullable};\n";
         }
         file = file + f"    export extern C noemit struct {s.name} {{\n{fields}    }}\n\n";
@@ -892,6 +898,18 @@ generateBindings(args: GenArgs): Result<none, fs.Error> {
         }
         if e.name == "WGPUBlendFactor" {
             file = betterEnum(file, e, r"WGPUBlendFactor_", "BlendFactor");
+        }
+        if e.name == "WGPUBufferBindingType" {
+            file = betterEnum(file, e, r"WGPUBufferBindingType_", "BufferBindingType");
+        }
+        if e.name == "WGPUSamplerBindingType" {
+            file = betterEnum(file, e, r"WGPUSamplerBindingType_", "SamplerBindingType");
+        }
+        if e.name == "WGPUStorageTextureAccess" {
+            file = betterEnum(file, e, r"WGPUStorageTextureAccess_", "StorageTextureAccess");
+        }
+        if e.name == "WGPUTextureSampleType" {
+            file = betterEnum(file, e, r"WGPUTextureSampleType_", "TextureSampleType");
         }
     }
 

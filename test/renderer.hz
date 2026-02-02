@@ -9,12 +9,18 @@ struct DrawCommands {
     indices: []u32 = {};
 }
 
+struct Globals {
+    screenSize: inline Vec2f;
+}
+
 opaque struct Renderer {
     windowSize: Vec2i;
     queue: mut wgpu.Queue;
     device: mut wgpu.Device;
     surface: mut wgpu.Surface;
     pipeline: mut wgpu.RenderPipeline;
+    globalsBuffer: mut wgpu.Buffer;
+    globalsBindGroup: mut wgpu.BindGroup;
 
     vertexBuffer?: mut wgpu.Buffer;
     currentVertexBufferSize?: int;
@@ -46,6 +52,37 @@ opaque struct Renderer {
             },
         };
 
+        let globalsLayout = device.createBindGroupLayout({
+            entries: {
+                {
+                    binding: 0,
+                    visibility: wgpu.ShaderStage.Vertex,
+                    buffer: { type: wgpu.BufferBindingType.Uniform },
+                },
+            },
+        });
+
+        let globalsBuffer = device.createBuffer({
+            usage: wgpu.BufferUsage.Uniform | wgpu.BufferUsage.CopyDst,
+            size: sizeof(type<inline Globals>),
+        });
+
+        let globalsBindGroup = device.createBindGroup({
+            layout: globalsLayout,
+            entries: {
+                {
+                    binding: 0,
+                    buffer: globalsBuffer,
+                    offset: 0,
+                    size: sizeof(type<inline Globals>),
+                },
+            },
+        });
+
+        let pipelineLayout = device.createPipelineLayout({
+            bindGroupLayouts: { globalsLayout },
+        });
+
         let code = fs.readFile("test/shaders.wgsl");
         assert(code);
         let shader = g_device.createShaderModule({
@@ -54,6 +91,7 @@ opaque struct Renderer {
 
 
         let pipeline = device.createRenderPipeline({
+            layout: pipelineLayout,
             vertex: {
                 module: shader,
                 entryPoint: "vs_main",
@@ -79,6 +117,8 @@ opaque struct Renderer {
             queue: queue,
             surface: surface,
             pipeline: pipeline,
+            globalsBuffer: globalsBuffer,
+            globalsBindGroup: globalsBindGroup,
         };
     }
 
@@ -134,6 +174,7 @@ opaque struct Renderer {
                 size: needVertexBufferSize,
             });
             assert(this.vertexBuffer);
+            this.currentVertexBufferSize = needVertexBufferSize;
             this.queue.writeBuffer<inline Vertex>(this.vertexBuffer, this.commands.vertices);
         }
         assert(this.vertexBuffer);
@@ -168,6 +209,15 @@ opaque struct Renderer {
             return;
         }
 
+        this.queue.writeBuffer<inline Globals>(this.globalsBuffer, [](inline Globals) {
+            {
+                screenSize: Vec2f(
+                    this.windowSize.x as f32,
+                    this.windowSize.y as f32
+                ),
+            }
+        });
+
         let colorAttachment = wgpu.RenderPassColorAttachment {
             view: backbuffer,
             clearValue: Color(0, 0, 0, 0),
@@ -188,6 +238,8 @@ opaque struct Renderer {
 
         renderPass.setPipeline(this.pipeline);
         renderPass.setVertexBuffer(0, this.vertexBuffer);
+
+        renderPass.setBindGroup(0, this.globalsBindGroup);
 
         renderPass.setViewport(0, 0, this.windowSize.x as real, this.windowSize.y as real, 0.0, 1.0);
         renderPass.setScissorRect(0, 0, this.windowSize.x, this.windowSize.y);
