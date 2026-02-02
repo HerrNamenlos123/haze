@@ -22,12 +22,22 @@ export struct RenderPassEncoder {
         // export extern C noemit wgpuRenderPassEncoderSetIndexBuffer(renderPassEncoder: mut WGPURenderPassEncoderImpl, buffer: mut WGPUBufferImpl, format: WGPUIndexFormat, offset: u64, size: u64): void :: final;
         let wholeSize = 0 as u64;
         __c__("wholeSize = WGPU_WHOLE_SIZE;");
-        ffi.wgpuRenderPassEncoderSetIndexBuffer(this.handle, toFFI(buffer), format, 0, wholeSize);
+        ffi.wgpuRenderPassEncoderSetIndexBuffer(this.handle, toFFI(buffer), toFFI(format), 0, wholeSize);
     }
 
     draw(vertexCount: u32, instanceCount: u32, firstVertex: u32, firstInstance: u32) {
         // export extern C noemit wgpuRenderPassEncoderDraw(renderPassEncoder: mut WGPURenderPassEncoderImpl, vertexCount: u32, instanceCount: u32, firstVertex: u32, firstInstance: u32): void :: final;
         ffi.wgpuRenderPassEncoderDraw(this.handle, vertexCount, instanceCount, firstVertex, firstInstance);
+    }
+
+    drawIndexed(indexCount: int, instanceCount: int, firstIndex: int, baseVertex: int, firstInstance: int) {
+        // export extern C noemit wgpuRenderPassEncoderDrawIndexed(renderPassEncoder: mut WGPURenderPassEncoderImpl, indexCount: u32, instanceCount: u32, firstIndex: u32, baseVertex: i32, firstInstance: u32): void :: final;
+        assert(indexCount >= u32.min && indexCount <= u32.max);
+        assert(instanceCount >= u32.min && instanceCount <= u32.max);
+        assert(firstIndex >= u32.min && firstIndex <= u32.max);
+        assert(baseVertex >= i32.min && baseVertex <= i32.max);
+        assert(firstInstance >= u32.min && firstInstance <= u32.max);
+        ffi.wgpuRenderPassEncoderDrawIndexed(this.handle, indexCount, instanceCount, firstIndex, baseVertex, firstInstance);
     }
 
     setViewport(x: real, y: real, width: real, height: real, minDepth: real, maxDepth: real) {

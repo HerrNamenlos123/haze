@@ -60,7 +60,7 @@ toFFI(v: Buffer): mut ffi.WGPUBufferImpl :: final {
     return v.handle;
 }
 
-struct VertexBufferLayout {
+export struct VertexBufferLayout {
     stepMode: VertexStepMode;
     arrayStride: int;
     attributes: []VertexAttribute;

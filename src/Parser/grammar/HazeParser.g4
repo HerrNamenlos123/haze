@@ -108,8 +108,8 @@ literal
     ;
 
 interpolatedString
-    : FSTRING_START (interpolatedStringFragment)* FSTRING_END (WITH allocatorExpr=expr)?
-    | FTRIPLE_STRING_START (interpolatedStringFragment)* FTRIPLE_END (WITH allocatorExpr=expr)?
+    : FSTRING_START (interpolatedStringFragment)* FSTRING_END (WITH allocatorExpr=expr)?            #SingleFString
+    | FTRIPLE_STRING_START (interpolatedStringFragment)* FTRIPLE_END (WITH allocatorExpr=expr)?     #TripleFString
     ;
 
 interpolatedStringFragment: FSTRING_GRAPHEME | interpolatedStringExpression;

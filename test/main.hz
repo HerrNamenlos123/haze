@@ -190,8 +190,6 @@ main(): int {
             renderPass.setIndexBuffer(indexBuffer, wgpu.IndexFormat.Uint16);
             renderPass.drawIndexed(6, 1, 0, 0, 0);
 
-            // renderPass.draw(6, 1, 0, 0);
-
             renderPass.end();
             let commandBuffer = encoder.finish();
             if !commandBuffer { raise "Failed to finish render pass and get command buffer"; }

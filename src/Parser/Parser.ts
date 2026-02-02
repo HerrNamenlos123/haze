@@ -171,6 +171,8 @@ import {
   MutDatatypeContext,
   TernaryExprContext,
   TripleStringConstantContext,
+  SingleFStringContext,
+  TripleFStringContext,
 } from "./grammar/autogen/HazeParser";
 import {
   BaseErrorListener,
@@ -464,14 +466,8 @@ class ASTTransformer extends HazeParserVisitor<any> {
   };
 
   visitCInjectDirective = (ctx: CInjectDirectiveContext): ASTCInjectDirective => {
-    // const code = this.trimAndUnescapeStringLiteral(
-    //   ctx.STRING_LITERAL().getText(),
-    //   "single",
-    //   this.loc(ctx),
-    // );
     return {
       variant: "CInjectDirective",
-      // code: code,
       expr: this.visit(ctx.expr()),
       export: Boolean(ctx._export_),
       sourceloc: this.loc(ctx),
@@ -522,7 +518,7 @@ class ASTTransformer extends HazeParserVisitor<any> {
       assert(false);
     }
 
-    const value = this.trimAndUnescapeStringLiteral(text, "single", this.loc(ctx));
+    const value = this.trimAndUnescapeStringLiteral(text, 1, this.loc(ctx));
     return {
       type: EPrimitive.str,
       prefix: prefix,
@@ -532,7 +528,7 @@ class ASTTransformer extends HazeParserVisitor<any> {
 
   visitTripleStringConstant = (ctx: TripleStringConstantContext): LiteralValue => {
     let text = ctx.TRIPLE_STRING_LITERAL().getText();
-    const value = this.trimAndUnescapeStringLiteral(text, "triple", this.loc(ctx));
+    const value = this.trimAndUnescapeStringLiteral(text, 3, this.loc(ctx));
     return {
       type: EPrimitive.str,
       prefix: null,
@@ -1583,14 +1579,14 @@ class ASTTransformer extends HazeParserVisitor<any> {
 
   visitImportStatement = (ctx: ImportStatementContext): ASTModuleImport => {
     const path = ctx._alias
-      ? this.trimAndUnescapeStringLiteral(ctx._alias.getText(), "single", this.loc(ctx))
+      ? this.trimAndUnescapeStringLiteral(ctx._alias.getText(), 1, this.loc(ctx))
       : null;
     if (ctx._path) {
       assert(ctx._path.text);
       return {
         alias: path,
         mode: "path",
-        name: this.trimAndUnescapeStringLiteral(ctx._path.text, "single", this.loc(ctx)),
+        name: this.trimAndUnescapeStringLiteral(ctx._path.text, 1, this.loc(ctx)),
         sourceloc: this.loc(ctx),
         variant: "ModuleImport",
       };
@@ -1619,7 +1615,7 @@ class ASTTransformer extends HazeParserVisitor<any> {
       return {
         symbols: symbols,
         mode: "path",
-        name: this.trimAndUnescapeStringLiteral(ctx._path.text, "single", this.loc(ctx)),
+        name: this.trimAndUnescapeStringLiteral(ctx._path.text, 1, this.loc(ctx)),
         sourceloc: this.loc(ctx),
         variant: "SymbolImport",
       };
@@ -1794,30 +1790,29 @@ class ASTTransformer extends HazeParserVisitor<any> {
     };
   };
 
-  trimAndUnescapeStringLiteral(
-    raw: string,
-    mode: "single" | "triple",
-    sourceloc: SourceLoc,
-  ): string {
+  trimAndUnescapeStringLiteral(raw: string, stripQuotes: number, sourceloc: SourceLoc): string {
     // --- strip delimiters ---
-    if (mode === "triple") {
-      raw = raw.slice(3, -3);
-    } else {
-      raw = raw.slice(1, -1);
+    if (stripQuotes > 0) {
+      raw = raw.slice(stripQuotes, -stripQuotes);
     }
 
     // --- trimming semantics ---
 
     // trim exactly one leading newline + indentation
-    const leading = raw.match(/^\n[ \t]*/);
-    if (leading) {
-      raw = raw.slice(leading[0].length);
+    if (raw.startsWith("\n")) {
+      let i = 1;
+      while (raw[i] === " " || raw[i] === "\t") i++;
+      raw = raw.slice(i);
     }
 
     // trim exactly one trailing newline + indentation
-    const trailing = raw.match(/\n[ \t]*$/);
-    if (trailing) {
-      raw = raw.slice(0, raw.length - trailing[0].length);
+    if (raw.endsWith("\n") || raw.endsWith(" \n") || raw.endsWith("\t\n")) {
+      let i = raw.length - 1;
+      if (raw[i] !== "\n") return raw;
+
+      i--;
+      while (i >= 0 && (raw[i] === " " || raw[i] === "\t")) i--;
+      raw = raw.slice(0, i + 1);
     }
 
     // --- unescape ---
@@ -1958,30 +1953,32 @@ class ASTTransformer extends HazeParserVisitor<any> {
     return text; // No escape
   }
 
-  visitFStringLiteralExpr = (ctx: FStringLiteralExprContext): ASTFStringExpr => {
-    const perCharacterFragments = ctx
-      .interpolatedString()
-      .interpolatedStringFragment()
-      .map((g) => {
-        if (g.interpolatedStringExpression()) {
-          return {
-            type: "expr",
-            value: this.visit(g.interpolatedStringExpression()!.expr()),
-          } as const;
-        } else {
-          assert(g.FSTRING_GRAPHEME());
-          let text = this.unescapeFStringLiteralFragment(
-            g.FSTRING_GRAPHEME()!.getText(),
-            this.loc(ctx),
-          );
-          if (text === "{{") text = "{";
-          if (text === "}}") text = "}";
-          return {
-            type: "text",
-            value: text,
-          } as const;
-        }
-      });
+  processFString(
+    ctx: SingleFStringContext | TripleFStringContext,
+    mode: "single" | "triple",
+  ): ASTFStringExpr {
+    const perCharacterFragments = ctx.interpolatedStringFragment().map((g) => {
+      if (g.interpolatedStringExpression()) {
+        return {
+          type: "expr",
+          value: this.visit(g.interpolatedStringExpression()!.expr()),
+        } as const;
+      } else {
+        assert(g.FSTRING_GRAPHEME());
+        // let text = this.unescapeFStringLiteralFragment(
+        //   g.FSTRING_GRAPHEME()!.getText(),
+        //   this.loc(ctx),
+        // );
+        let text = g.FSTRING_GRAPHEME()!.getText();
+        if (text === "{{") text = "{";
+        if (text === "}}") text = "}";
+        if (text === '\\"""') text = '"""';
+        return {
+          type: "text",
+          value: text,
+        } as const;
+      }
+    });
 
     const combinedFragments = [] as (
       | { type: "expr"; value: ASTExpr }
@@ -2002,41 +1999,42 @@ class ASTTransformer extends HazeParserVisitor<any> {
       }
     }
 
-    // --- trimming semantics for f-strings ---
-
-    if (combinedFragments.length > 0) {
-      const first = combinedFragments[0];
-      const last = combinedFragments[combinedFragments.length - 1];
-
-      if (first.type === "text") {
-        const leading = first.value.match(/^\n[ \t]*/);
-        if (leading) {
-          first.value = first.value.slice(leading[0].length);
-        }
+    const unescapedFragments = combinedFragments.map((f) => {
+      if (f.type === "text") {
+        const stripped = this.trimAndUnescapeStringLiteral(f.value, 0, this.loc(ctx));
+        return {
+          type: f.type,
+          value: stripped,
+        };
+      } else {
+        return f;
       }
-
-      if (last.type === "text") {
-        const trailing = last.value.match(/\n[ \t]*$/);
-        if (trailing) {
-          last.value = last.value.slice(0, last.value.length - trailing[0].length);
-        }
-      }
-    }
+    });
 
     return {
       variant: "FStringExpr",
-      fragments: combinedFragments,
-      allocator: ctx.interpolatedString()._allocatorExpr
-        ? this.visit(ctx.interpolatedString()._allocatorExpr!)
-        : null,
+      fragments: unescapedFragments,
+      allocator: ctx._allocatorExpr ? this.visit(ctx._allocatorExpr!) : null,
       sourceloc: this.loc(ctx),
     };
+  }
+
+  visitSingleFString = (ctx: SingleFStringContext): ASTFStringExpr => {
+    return this.processFString(ctx, "single");
+  };
+
+  visitTripleFString = (ctx: TripleFStringContext): ASTFStringExpr => {
+    return this.processFString(ctx, "single");
+  };
+
+  visitFStringLiteralExpr = (ctx: FStringLiteralExprContext): ASTFStringExpr => {
+    return this.visit(ctx.interpolatedString());
   };
 
   visitSourceLocationPrefixRule = (ctx: SourceLocationPrefixRuleContext): SourceLoc => {
     const filename = this.trimAndUnescapeStringLiteral(
       ctx.STRING_LITERAL().getText(),
-      "single",
+      1,
       this.loc(ctx),
     );
 
