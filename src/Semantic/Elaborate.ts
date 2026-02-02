@@ -343,7 +343,14 @@ export class SemanticElaborator {
       );
     } else if (binaryExpr.operation === EBinaryOperation.BoolOr) {
       let [left, leftId] = this.expr(binaryExpr.left, inference);
-      let [right, rightId] = this.expr(binaryExpr.right, inference);
+
+      // This builds the constraints that apply to the expr itself, the right part of the AND
+      const constraints = this.currentContext.constraints.clone();
+      this.buildLogicalConstraintSet(constraints, leftId);
+
+      const [right, rightId] = this.withAdditionalConstraints(constraints.inverse(), () =>
+        this.expr(binaryExpr.right, inference),
+      );
       return this.sr.b.binaryExpr(
         Conversion.MakeConversionOrThrow(
           this.sr,
@@ -4341,8 +4348,11 @@ export class SemanticElaborator {
   }
 
   assignmentExpr(assignment: Collect.ExprAssignmentExpr, inference: Inference) {
-    const [targetExpr, targetExprId] = this.expr(assignment.expr, inference);
-    const [valueExpr, valueExprId] = this.expr(assignment.value, inference);
+    const [targetExpr, targetExprId] = this.expr(assignment.expr, { unsafe: inference?.unsafe });
+    const [valueExpr, valueExprId] = this.expr(assignment.value, {
+      gonnaInstantiateStructWithType: targetExpr.type,
+      unsafe: inference?.unsafe,
+    });
 
     const lhsTypeUse = this.sr.typeUseNodes.get(targetExpr.type);
     const lhsType = this.sr.typeDefNodes.get(lhsTypeUse.type);

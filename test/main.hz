@@ -42,9 +42,8 @@ deviceRequestCallback(status: wgpu.RequestDeviceStatus, device: mut wgpu.Device,
 
 let g_queue = none as mut wgpu.Queue | none;
 
-struct Vertex {
-    pos: inline Vec2f;
-    color: inline Colorf;
+struct App {
+    screenSize: Vec2f;
 }
 
 main(): int {
@@ -81,14 +80,10 @@ main(): int {
         }
         if (!g_device) { raise "Failed to get device after timeout"; }
 
-        g_queue = g_device.getQueue()?!;
-        if (!g_queue) { raise "Failed to get queue"; }
-
         let caps = surface.getCapabilities(g_adapter);
         if (!caps) { raise "Failed to get surface capabilities"; }
 
         let size = window.getFramebufferSize();
-
         surface.configure({
             device: g_device,
             format: caps.formats[0],
@@ -99,127 +94,15 @@ main(): int {
             alphaMode: caps.alphaModes[0],
         });
 
-        let shader = g_device.createShaderModule({
-            code: fs.readFile("test/shaders.wgsl")?!,
-        });
-
-        let vertices = [](inline Vertex) {
-            {
-                pos: Vec2f(-0.5 as f32, -0.5 as f32),
-                color: Colorf(0, 0, 0, 1),
-            },
-            {
-                pos: Vec2f(0.5 as f32, -0.5 as f32),
-                color: Colorf(1, 0, 0, 1),
-            },
-            {
-                pos: Vec2f(0.5 as f32, 0.5 as f32),
-                color: Colorf(1, 1, 0, 1),
-            },
-            {
-                pos: Vec2f(-0.5 as f32, 0.5 as f32),
-                color: Colorf(0, 1, 0, 1),
-            },
-        };
-
-        let indices = []u16 {
-            0, 1, 2,
-            2, 3, 0,
-        };
-
-        let vertexBuffer = g_device.createBuffer({
-            usage: wgpu.BufferUsage.Vertex | wgpu.BufferUsage.CopyDst,
-            size: sizeof(type<inline Vertex>) * vertices.length,
-        });
-        g_queue.writeBuffer<inline Vertex>(vertexBuffer, vertices);
-
-        let indexBuffer = g_device.createBuffer({
-            usage: wgpu.BufferUsage.Index | wgpu.BufferUsage.CopyDst,
-            size: sizeof(u16) * indices.length,
-        });
-        g_queue.writeBuffer<u16>(indexBuffer, indices);
-
-        let vertexLayout = wgpu.VertexBufferLayout {
-            arrayStride: sizeof(type<inline Vertex>),
-            stepMode: wgpu.VertexStepMode.Vertex,
-            attributes: {
-                {
-                    shaderLocation: 0,
-                    offset: 0,
-                    format: wgpu.VertexFormat.Float32x2,
-                },
-                {
-                    shaderLocation: 1,
-                    offset: sizeof(type<inline Vec2f>),
-                    format: wgpu.VertexFormat.Float32x4,
-                },
-            },
-        };
-
-        let pipeline = g_device.createRenderPipeline({
-            vertex: {
-                module: shader,
-                entryPoint: "vs_main",
-                buffers: { vertexLayout },
-            },
-            fragment: {
-                module: shader,
-                entryPoint: "fs_main",
-                targets: {
-                    { 
-                        format: caps.formats[0],
-                    },
-                },
-            },
-            primitive: {
-                topology: wgpu.PrimitiveTopology.TriangleList,
-            },
-        });
+        let renderer = Renderer(size, g_device, surface, caps.formats);
 
         while !window.shouldClose() {
             glfw.pollEvents();
+            renderer.beginFrame();
 
-            let surfaceTexture = surface.getCurrentTexture();
-            if !surfaceTexture.texture { raise "Failed to get surface texture"; }
+            renderer.drawRect(Vec2(-0.5, -0.5), Vec2(1, 1), Color(1, 0, 1, 0));
 
-            let backbuffer = surfaceTexture.texture.createView();
-            if !backbuffer { raise "Failed to create texture view"; }
-
-            let encoder = g_device.createCommandEncoder();
-            if !encoder { raise "Failed to create command encoder"; }
-
-            let colorAttachment = wgpu.RenderPassColorAttachment {
-                view: backbuffer,
-                clearValue: Color(0.8, 0.1, 0.1, 0.1),
-                loadOp: wgpu.LoadOp.Clear,
-                storeOp: wgpu.StoreOp.Store,
-            };
-
-            let renderPassDescriptor = wgpu.RenderPassDescriptor {
-                colorAttachments: {
-                    colorAttachment,
-                },
-            };
-            let renderPass = encoder.beginRenderPass(renderPassDescriptor);
-            if !renderPass { raise "Failed to create render pass"; }
-
-            renderPass.setPipeline(pipeline);
-            renderPass.setVertexBuffer(0, vertexBuffer);
-
-            renderPass.setViewport(0, 0, size.x as real, size.y as real, 0.0, 1.0);
-            renderPass.setScissorRect(0, 0, size.x, size.y);
-
-            renderPass.setIndexBuffer(indexBuffer, wgpu.IndexFormat.Uint16);
-            renderPass.drawIndexed(6, 1, 0, 0, 0);
-
-            renderPass.end();
-            let commandBuffer = encoder.finish();
-            if !commandBuffer { raise "Failed to finish render pass and get command buffer"; }
-
-            g_queue.submit({ commandBuffer });
-            if !surface.present() {
-                raise "Surface present failed";
-            }
+            renderer.endFrame();
         }
 
         window.destroy();

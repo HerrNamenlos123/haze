@@ -30,12 +30,12 @@ export struct _Vec2<T> {
     return _Vec2<T>(this.x / v, this.y / v);
   }
 
-  length(): T {
-    return math.sqrt(math.pow(this.x, 2.0) + math.pow(this.y, 2.0)) as T;
+  length(): real {
+    return math.sqrt(math.pow(this.x as real, 2.0) + math.pow(this.y as real, 2.0)) real;
   }
 
   normalize(): _Vec2<T> {
-    return this.div(this.length());
+    return this.div(this.length() as T);
   }
 
   dot(other: _Vec2<T>): T {
