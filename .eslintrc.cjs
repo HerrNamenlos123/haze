@@ -21,6 +21,7 @@ module.exports = {
         "prefer-const": "off",
         "no-fallthrough": "off", // Typescript already checks this and ESlint is too stupid for assert(false)
         "no-empty": "off",
+        "no-constant-condition": "off",
         "@typescript-eslint/no-floating-promises": ["error"],
         "@typescript-eslint/no-explicit-any": "off",
         "@typescript-eslint/restrict-plus-operands": "off",

@@ -98,16 +98,18 @@ async function main(): Promise<number> {
 }
 
 if (true) {
-  main().then((exitCode) => {
-    process.exit(exitCode);
-  });
+  main()
+    .then((exitCode) => {
+      process.exit(exitCode);
+    })
+    .catch(() => {});
 } else {
   setInterval(() => {
-    main();
+    main().catch(() => {});
   }, 15000);
 }
 
-export async function sleep(ms: number) {
+export function sleep(ms: number) {
   return new Promise<void>((res, rej) => {
     setTimeout(() => {
       res();
