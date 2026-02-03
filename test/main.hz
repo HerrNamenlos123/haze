@@ -97,6 +97,13 @@ main(): int {
             renderer.beginFrame();
 
             renderer.drawRect(Vec2(100, 200), Vec2(200, 150), Color(1, 0, 0, 1));
+            renderer.drawRect(Vec2(150, 250), Vec2(150, 200), Color(0, 0, 1, 1));
+
+            renderer.drawTriangle(
+                { pos: Vec2(100, 200), color: Color(1, 0, 0, 1) },
+                { pos: Vec2(300, 150), color: Color(0, 1, 0, 1) },
+                { pos: Vec2(400, 300), color: Color(0, 0, 1, 1) },
+            );
 
             renderer.endFrame();
         }

@@ -70,7 +70,7 @@ externLanguage: id;
 functionDefinition: (export=EXPORT)? (extern=EXTERN externLang=externLanguage? pub=PUB? noemit=NOEMIT?)? id (LANGLE id (COMMA id)* RANGLE)? LB params RB (COLON datatype)? requiresBlock? (ARROW)? (funcbody | SEMI?);
 lambda: LB params RB (COLON datatype)? requiresBlock? ARROW funcbody;
 param: id QUESTIONMARK? COLON (datatype | ellipsis);
-params: (param (COMMA param)* (COMMA ellipsis)?)? | ellipsis;
+params: (param (COMMA param)* (COMMA ellipsis)? COMMA?)? | ellipsis;
 ellipsis: ELLIPSIS;
 
 funcbody: (rawScope | exprAsFuncbody);
@@ -204,7 +204,7 @@ expr
 
     // Part 1: Left to right
     | expr op=(PLUSPLUS | MINUSMINUS)                                               #PostIncrExpr
-    | callExpr=expr LB (argExpr+=expr (COMMA argExpr+=expr)*)? RB (WITH allocatorExpr=expr)?                  #ExprCallExpr
+    | callExpr=expr LB (argExpr+=expr (COMMA argExpr+=expr)* COMMA?)? RB (WITH allocatorExpr=expr)?                  #ExprCallExpr
     | value=expr LBRACKET (index+=subscriptExpr) (COMMA index+=subscriptExpr)* COMMA? RBRACKET          #ArraySubscriptExpr
     | expr (DOT | QUESTIONDOT) id (LANGLE genericLiteral (COMMA genericLiteral)* RANGLE)?              #ExprMemberAccess
     | expr QUESTIONEXCL                                                             #PostfixResultPropagationExpr

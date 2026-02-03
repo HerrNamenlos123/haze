@@ -1,6 +1,6 @@
 
 struct Vertex {
-    pos: inline Vec2f = {};
+    pos: inline Vec3f = {};
     color: inline Colorf = {};
 }
 
@@ -42,11 +42,11 @@ opaque struct Renderer {
                 {
                     shaderLocation: 0,
                     offset: 0,
-                    format: wgpu.VertexFormat.Float32x2,
+                    format: wgpu.VertexFormat.Float32x3,
                 },
                 {
                     shaderLocation: 1,
-                    offset: sizeof(type<inline Vec2f>),
+                    offset: sizeof(type<inline Vec3f>),
                     format: wgpu.VertexFormat.Float32x4,
                 },
             },
@@ -122,43 +122,51 @@ opaque struct Renderer {
         };
     }
 
-    drawRect(pos: Vec2, size: Vec2, color: Color) {
-        let col = Colorf(color.r as f32, color.g as f32, color.b as f32, color.a as f32);
+    struct TriangleVertex {
+        pos: Vec2;
+        color: Color;
+    };
 
+    drawTriangle(a: TriangleVertex, b: TriangleVertex, c: TriangleVertex) {
         let baseIndex = this.commands.vertices.length;
+
         this.commands.vertices.push({
-            pos: Vec2f(pos.x as f32, pos.y as f32),
-            color: col,
+            pos: Vec3f(a.pos.x as f32, a.pos.y as f32, 0.0 as f32),
+            color: Colorf(a.color.r as f32, a.color.g as f32, a.color.b as f32, a.color.a as f32),
         });
         this.commands.vertices.push({
-            pos: Vec2f((pos.x + size.x) as f32, pos.y as f32),
-            color: col,
+            pos: Vec3f(b.pos.x as f32, b.pos.y as f32, 0.0 as f32),
+            color: Colorf(b.color.r as f32, b.color.g as f32, b.color.b as f32, b.color.a as f32),
         });
         this.commands.vertices.push({
-            pos: Vec2f((pos.x + size.x) as f32, (pos.y + size.y) as f32),
-            color: col,
-        });
-        this.commands.vertices.push({
-            pos: Vec2f(pos.x as f32, (pos.y + size.y) as f32),
-            color: col,
+            pos: Vec3f(c.pos.x as f32, c.pos.y as f32, 0.0 as f32),
+            color: Colorf(c.color.r as f32, c.color.g as f32, c.color.b as f32, c.color.a as f32),
         });
 
         let indexA = baseIndex;
         let indexB = baseIndex + 1;
         let indexC = baseIndex + 2;
-        let indexD = baseIndex + 3;
 
         assert(indexA >= u32.min && indexA <= u32.max);
         assert(indexB >= u32.min && indexB <= u32.max);
         assert(indexC >= u32.min && indexC <= u32.max);
-        assert(indexD >= u32.min && indexD <= u32.max);
 
         this.commands.indices.push(indexA);
         this.commands.indices.push(indexB);
         this.commands.indices.push(indexC);
-        this.commands.indices.push(indexA);
-        this.commands.indices.push(indexC);
-        this.commands.indices.push(indexD);
+    }
+
+    drawRect(pos: Vec2, size: Vec2, color: Color) {
+        this.drawTriangle(
+            { pos: Vec2(pos.x, pos.y), color: color },
+            { pos: Vec2(pos.x + size.x, pos.y), color: color },
+            { pos: Vec2(pos.x + size.x, pos.y + size.y), color: color },
+        );
+        this.drawTriangle(
+            { pos: Vec2(pos.x + size.x, pos.y + size.y), color: color },
+            { pos: Vec2(pos.x, pos.y + size.y), color: color },
+            { pos: Vec2(pos.x, pos.y), color: color },
+        );
     }
 
     beginFrame() {

@@ -17,7 +17,7 @@ var<uniform> globals : Globals;
 
 @vertex
 fn vs_main(
-    @location(0) pos: vec2<f32>,
+    @location(0) pos: vec3<f32>,
     @location(1) color: vec4<f32>,
 ) -> VSOut {
     let clip = vec2(
@@ -26,7 +26,7 @@ fn vs_main(
     );
 
     var o: VSOut;
-    o.pos = vec4(clip, 0.0, 1.0);
+    o.pos = vec4(clip, pos.z, 1.0);
     o.color = color;
     return o;
 }
