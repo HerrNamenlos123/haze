@@ -17,6 +17,20 @@ export type SourceLocNotNull = {
 
 export type SourceLoc = SourceLocNotNull | null;
 
+export type CompilerDiagnostic = {
+  type: ErrorType;
+  message: string;
+  loc?: SourceLoc;
+  title?: string;
+};
+
+type DiagnosticSink = (diag: CompilerDiagnostic) => void;
+let diagnosticSink: DiagnosticSink | null = null;
+
+export function setDiagnosticSink(sink: DiagnosticSink | null) {
+  diagnosticSink = sink;
+}
+
 export function formatSourceLoc(loc: SourceLocNotNull) {
   if (loc.end) {
     if (loc.end.line === loc.start.line) {
@@ -37,7 +51,7 @@ function formatCompilerMessage(
   type: ErrorType,
   error: string,
   msg: string,
-  loc?: SourceLoc
+  loc?: SourceLoc,
 ): string {
   let text = "";
   if (loc) {
@@ -52,6 +66,10 @@ function formatCompilerMessage(
 }
 
 function printCompilerMessage(type: ErrorType, error: string, msg: string, loc?: SourceLoc): void {
+  if (diagnosticSink) {
+    diagnosticSink({ type, message: msg, loc, title: error });
+    return;
+  }
   console.log(formatCompilerMessage(type, error, msg, loc));
 }
 
@@ -94,8 +112,13 @@ export function getCallerLocation(depth = 1): SourceLoc {
 }
 
 export class CompilerError extends Error {
+  loc: SourceLoc;
+  rawMessage: string;
+
   constructor(msg: string, loc: SourceLoc) {
     super(formatErrorMessage(msg, loc));
+    this.loc = loc;
+    this.rawMessage = msg;
   }
 }
 
@@ -108,7 +131,10 @@ export class InternalError extends Error {
 export class ImpossibleSituation extends Error {
   constructor() {
     super(
-      formatErrorMessage("Impossible situation, something fatal has happened", getCallerLocation(2))
+      formatErrorMessage(
+        "Impossible situation, something fatal has happened",
+        getCallerLocation(2),
+      ),
     );
   }
 }
@@ -155,7 +181,7 @@ export function assert(condition: unknown, message = "Assertion failed"): assert
 export function assertCompilerError(
   condition: unknown,
   message: string,
-  sourceloc: SourceLoc
+  sourceloc: SourceLoc,
 ): asserts condition {
   if (!condition) {
     throw new CompilerError(message, sourceloc);

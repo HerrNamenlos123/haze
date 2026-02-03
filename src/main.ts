@@ -3,9 +3,11 @@ import { GeneralError, SilentError } from "./shared/Errors";
 import { join } from "path";
 import path from "node:path";
 import { getFile, ProjectCompiler } from "./Module";
+import { startLsp } from "./lsp";
 
 import pkg from "../package.json" assert { type: "json" };
 const version = pkg.version;
+const isLspMode = process.argv.includes("lsp");
 
 async function main(): Promise<number> {
   const parser = new ArgumentParser({ add_help: false });
@@ -58,6 +60,10 @@ async function main(): Promise<number> {
     help: "Arguments to pass to the script",
   });
 
+  subparsers.add_parser("lsp", {
+    help: "Run the Haze language server over stdio",
+  });
+
   const args = main_parser.parse_args();
 
   if (args.version) {
@@ -66,6 +72,10 @@ async function main(): Promise<number> {
   }
 
   try {
+    if (args.command === "lsp") {
+      await startLsp();
+      return 0;
+    }
     if (args.command === "build" || args.command === "run" || args.command === "exec") {
       const project = new ProjectCompiler();
       if (!(await project.build(args.filename, args.sourceloc))) {
@@ -100,7 +110,9 @@ async function main(): Promise<number> {
 if (true) {
   main()
     .then((exitCode) => {
-      process.exit(exitCode);
+      if (!isLspMode) {
+        process.exit(exitCode);
+      }
     })
     .catch(() => {});
 } else {
@@ -110,7 +122,7 @@ if (true) {
 }
 
 export function sleep(ms: number) {
-  return new Promise<void>((res, rej) => {
+  return new Promise<void>((res, _rej) => {
     setTimeout(() => {
       res();
     }, ms);

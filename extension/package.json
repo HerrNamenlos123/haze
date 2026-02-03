@@ -4,9 +4,10 @@
   "description": "",
   "repository": "https://github.com/HerrNamenlos123/haze",
   "version": "0.0.1",
-  "engines": {
-    "vscode": "^1.93.0"
-  },
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onLanguage:haze"
+  ],
   "categories": [
     "Programming Languages"
   ],
@@ -34,6 +35,26 @@
       {
         "language": "haze"
       }
+    ],
+    "commands": [
+      {
+        "command": "haze.restartServer",
+        "title": "Haze: Restart Language Server"
+      }
     ]
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.3.0"
+  },
+  "scripts": {
+    "build": "npx tsc && vsce package",
+    "install": "npm run build && code --install-extension haze-0.0.1.vsix"
   }
 }

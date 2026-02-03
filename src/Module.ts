@@ -1998,7 +1998,7 @@ export class ModuleCompiler {
     return parseModuleMetadata(await readFile(join(tempdir, "metadata.json"), "utf-8"));
   }
 
-  private async collectImports() {
+  async collectImports() {
     const deps = [...this.config.dependencies];
     if (this.config.name !== HAZE_STDLIB_NAME && !this.config.nostdlib) {
       deps.push({
@@ -2018,7 +2018,7 @@ export class ModuleCompiler {
     }
   }
 
-  private async addInternalBuiltinSources() {
+  async addInternalBuiltinSources() {
     await this.collectDirectory(
       join(await getStdlibDirectory(), "internal"),
       ECollectionMode.ImportUnderRootDirectly,
