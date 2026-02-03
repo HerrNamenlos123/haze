@@ -13,6 +13,20 @@ struct Globals {
     screenSize: inline Vec2f;
 }
 
+max<T>(a: T, b: T): T => {
+    if a >= b {
+        return a;
+    }
+    return b;
+}
+
+min<T>(a: T, b: T): T => {
+    if a <= b {
+        return a;
+    }
+    return b;
+}
+
 opaque struct Renderer {
     windowSize: Vec2i;
     queue: mut wgpu.Queue;
@@ -166,6 +180,82 @@ opaque struct Renderer {
             { pos: Vec2(pos.x + size.x, pos.y + size.y), color: color },
             { pos: Vec2(pos.x, pos.y + size.y), color: color },
             { pos: Vec2(pos.x, pos.y), color: color },
+        );
+    }
+
+    drawQuarterCircle(
+        center: Vec2,
+        radius: real,
+        startAngle: real,
+        endAngle: real,
+        color: Color,
+        segments: int,
+    ) {
+        let step = (endAngle - startAngle) / (segments as real);
+        let prev = Vec2(
+            center.x + math.cos(startAngle) * radius,
+            center.y + math.sin(startAngle) * radius,
+        );
+
+        for (let i = 0; i <= segments; i++) {
+            let a = startAngle + step * (i as real);
+            let p = Vec2(
+                center.x + math.cos(a) * radius,
+                center.y + math.sin(a) * radius,
+            );
+
+            this.drawTriangle(
+                { pos: center, color: color },
+                { pos: prev,   color: color },
+                { pos: p,      color: color },
+            );
+
+            prev = p;
+        }
+    }
+
+    drawRoundedRect(
+        pos: Vec2,
+        size: Vec2,
+        radius: real,
+        color: Color,
+    ) {
+        let r = min<real>(radius, min<real>(size.x, size.y) * 0.5);
+
+        // center rect
+        this.drawRect(
+            Vec2(pos.x + r, pos.y + r),
+            Vec2(size.x - (2 as real)*r, size.y - (2 as real)*r),
+            color
+        );
+
+        // side rects
+        this.drawRect(Vec2(pos.x + r, pos.y),           Vec2(size.x - 2.0*r, r), color); // top
+        this.drawRect(Vec2(pos.x + r, pos.y + size.y-r),Vec2(size.x - 2.0*r, r), color); // bottom
+        this.drawRect(Vec2(pos.x, pos.y + r),           Vec2(r, size.y - 2.0*r), color); // left
+        this.drawRect(Vec2(pos.x + size.x-r, pos.y + r),Vec2(r, size.y - 2.0*r), color); // right
+
+        let segs = 8; // good default
+
+        // corners (clockwise)
+        this.drawQuarterCircle(
+            Vec2(pos.x + r, pos.y + r),
+            r, math.pi(), math.pi()*1.5, color, segs
+        );
+
+        this.drawQuarterCircle(
+            Vec2(pos.x + size.x - r, pos.y + r),
+            r, math.pi()*1.5, math.pi()*2.0, color, segs
+        );
+
+        this.drawQuarterCircle(
+            Vec2(pos.x + size.x - r, pos.y + size.y - r),
+            r, 0.0, math.pi()*0.5, color, segs
+        );
+
+        this.drawQuarterCircle(
+            Vec2(pos.x + r, pos.y + size.y - r),
+            r, math.pi()*0.5, math.pi(), color, segs
         );
     }
 

@@ -1,6 +1,0 @@
-name = "math"
-version = "0.0.0"
-description = "Just a test"
-license = "MIT"
-authors = ["HerrNamenlos123"]
-type = "lib"

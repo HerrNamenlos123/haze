@@ -1,5 +1,4 @@
 
-import math
 import glfw
 import gl
 import wgpu
@@ -103,6 +102,13 @@ main(): int {
                 { pos: Vec2(100, 200), color: Color(1, 0, 0, 1) },
                 { pos: Vec2(300, 150), color: Color(0, 1, 0, 1) },
                 { pos: Vec2(400, 300), color: Color(0, 0, 1, 1) },
+            );
+
+            renderer.drawRoundedRect(
+                Vec2(250, 350),
+                Vec2(300, 200),
+                30,
+                Color(1.0, 0.6549, 0.0588, 1),
             );
 
             renderer.endFrame();

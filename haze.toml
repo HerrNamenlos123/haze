@@ -25,7 +25,6 @@ test = "haze test"
 
 [dependencies]
 glfw = { path = "./glfw" }
-math = { path = "./math" }
 gl = { path = "./gl" }
 wgpu = { path = "./wgpu" }
 glfw_wgpu = { path = "./glfw_wgpu" }
