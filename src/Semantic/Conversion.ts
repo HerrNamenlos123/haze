@@ -6,7 +6,13 @@ import {
   UnaryOperationToString,
 } from "../shared/AST";
 import { EPrimitive, primitiveToString } from "../shared/common";
-import { assert, CompilerError, InternalError, type SourceLoc } from "../shared/Errors";
+import {
+  assert,
+  CompilerError,
+  formatSourceLoc,
+  InternalError,
+  type SourceLoc,
+} from "../shared/Errors";
 import {
   makePrimitiveAvailable,
   makeRawPrimitiveAvailable,
@@ -1249,6 +1255,35 @@ export namespace Conversion {
             "integer",
           )}, but the source has ${sourceRangeText}. Add a conditional that constrains the integer range.`,
           sourceloc,
+        );
+      }
+    }
+
+    // Trivial Integer <-> Float & Float <-> Float conversions
+    if (
+      (Conversion.isFloat(sr, fromTypeInstance.type) &&
+        Conversion.isIntegerById(sr, toInstance.type)) ||
+      (Conversion.isFloat(sr, fromTypeInstance.type) && Conversion.isFloat(sr, toInstance.type)) ||
+      (Conversion.isIntegerById(sr, fromTypeInstance.type) &&
+        Conversion.isFloat(sr, toInstance.type))
+    ) {
+      // If it is a conversion between Float and Int or Float and Float, it is trivially allowed
+      // if the value comes directly from a literal, since it would generally not be an issue that
+      // precision is lost. E.g. for "let x: f32 = 0.1" it's clear that we just want 0.1 as the
+      // closest representation that fits in f32. For "let x: f32 = y", this is not the case and
+      // losing precision may actually be an issue.
+      if (fromExpr.variant === Semantic.ENode.LiteralExpr) {
+        return ok(
+          Semantic.addExpr(sr, {
+            variant: Semantic.ENode.ExplicitCastExpr,
+            instanceIds: fromExpr.instanceIds,
+            expr: fromExprId,
+            type: toId,
+            sourceloc: sourceloc,
+            isTemporary: fromExpr.isTemporary,
+            flow: flow,
+            writes: writes,
+          })[1],
         );
       }
     }

@@ -27,6 +27,20 @@ min<T>(a: T, b: T): T => {
     return b;
 }
 
+struct PrimitiveInstance {
+    pos: inline Vec2f;            // center position in pixels
+    size: inline Vec2f;           // width/height
+    radius: f32;           // corner radius for rounded rect
+    borderThickness: f32;  // 0 = no border
+    fillColor: inline Colorf;
+    borderColor: inline Colorf;
+    type: u32;             // 0 = rect, 1 = circle, etc.
+};
+
+struct QuadVertex {
+    pos: inline Vec2f;  // [-0.5, -0.5] .. [0.5, 0.5]
+};
+
 opaque struct Renderer {
     windowSize: Vec2i;
     queue: mut wgpu.Queue;
@@ -50,19 +64,33 @@ opaque struct Renderer {
         }
 
         let vertexLayout = wgpu.VertexBufferLayout {
-            arrayStride: sizeof(type<inline Vertex>),
+            arrayStride: sizeof(type<inline QuadVertex>),
             stepMode: wgpu.VertexStepMode.Vertex,
             attributes: {
                 {
                     shaderLocation: 0,
                     offset: 0,
-                    format: wgpu.VertexFormat.Float32x3,
+                    format: wgpu.VertexFormat.Float32x2,
                 },
-                {
-                    shaderLocation: 1,
-                    offset: sizeof(type<inline Vec3f>),
-                    format: wgpu.VertexFormat.Float32x4,
-                },
+                // {
+                //     shaderLocation: 1,
+                //     offset: sizeof(type<inline Vec3f>),
+                //     format: wgpu.VertexFormat.Float32x4,
+                // },
+            },
+        };
+
+        let instanceLayout = wgpu.VertexBufferLayout {
+            arrayStride: sizeof(type<inline PrimitiveInstance>),
+            stepMode: wgpu.VertexStepMode.Instance, // key! this is per-instance
+            attributes: {
+                { shaderLocation: 1, offset: 0, format: wgpu.VertexFormat.Float32x2 }, // pos
+                { shaderLocation: 2, offset: 8, format: wgpu.VertexFormat.Float32x2 }, // size
+                { shaderLocation: 3, offset: 16, format: wgpu.VertexFormat.Float32 },   // radius
+                { shaderLocation: 4, offset: 20, format: wgpu.VertexFormat.Float32 },   // borderThickness
+                { shaderLocation: 5, offset: 24, format: wgpu.VertexFormat.Float32x4 }, // fillColor
+                { shaderLocation: 6, offset: 40, format: wgpu.VertexFormat.Float32x4 }, // borderColor
+                { shaderLocation: 7, offset: 56, format: wgpu.VertexFormat.Uint32 },    // type
             },
         };
 
@@ -109,7 +137,7 @@ opaque struct Renderer {
             vertex: {
                 module: shader,
                 entryPoint: "vs_main",
-                buffers: { vertexLayout },
+                buffers: { vertexLayout, instanceLayout },
             },
             fragment: {
                 module: shader,
@@ -117,6 +145,18 @@ opaque struct Renderer {
                 targets: {
                     { 
                         format: surfaceFormats[0],
+                        blend: {
+                            color: {
+                                srcFactor: wgpu.BlendFactor.SrcAlpha,
+                                dstFactor: wgpu.BlendFactor.OneMinusSrcAlpha,
+                                operation: wgpu.BlendOperation.Add,
+                            },
+                            alpha: {
+                                srcFactor: wgpu.BlendFactor.One,
+                                dstFactor: wgpu.BlendFactor.OneMinusSrcAlpha,
+                                operation: wgpu.BlendOperation.Add,
+                            },
+                        },
                     },
                 },
             },
@@ -265,6 +305,10 @@ opaque struct Renderer {
 
     endFrame() {
 
+        this.commands.indices = {
+            0, 1, 2, 0, 2, 3
+        }
+
         let needVertexBufferSize = sizeof(type<inline Vertex>) * this.commands.vertices.length;
         if !this.vertexBuffer || (!this.currentVertexBufferSize || this.currentVertexBufferSize != needVertexBufferSize) {
             this.vertexBuffer = this.device.createBuffer({
@@ -316,6 +360,63 @@ opaque struct Renderer {
             }
         });
 
+        let quadVertices = [](inline QuadVertex) {
+            { pos: Vec2f(-0.5, -0.5) },
+            { pos: Vec2f(0.5, -0.5) },
+            { pos: Vec2f(0.5, 0.5) },
+            { pos: Vec2f(-0.5, 0.5) },
+        }
+        let quadVertexBuffer = this.device.createBuffer({
+            usage: wgpu.BufferUsage.Vertex | wgpu.BufferUsage.CopyDst,
+            size: sizeof(type<inline QuadVertex>) * 4,
+        });
+        this.queue.writeBuffer<inline QuadVertex>(quadVertexBuffer, quadVertices);
+
+        let primitives = [](inline PrimitiveInstance) {
+            {
+                type: 0,
+                pos: Vec2f(200, 200),
+                size: Vec2f(100, 100),
+                fillColor: Colorf(1, 0, 0, 1),
+                borderColor: Colorf(0, 1, 0, 0),
+                borderThickness: 1,
+                radius: 100,
+            },
+            {
+                type: 0,
+                pos: Vec2f(200, 400),
+                size: Vec2f(100, 100),
+                fillColor: Colorf(1, 0, 0, 1),
+                borderColor: Colorf(0, 1, 0, 0),
+                borderThickness: 2,
+                radius: 100,
+            },
+            {
+                type: 0,
+                pos: Vec2f(200, 600),
+                size: Vec2f(100, 100),
+                fillColor: Colorf(1, 0, 0, 1),
+                borderColor: Colorf(0, 1, 0, 0),
+                borderThickness: 3,
+                radius: 100,
+            },
+            {
+                type: 0,
+                pos: Vec2f(800, 200),
+                size: Vec2f(200, 200),
+                fillColor: Colorf(0, 0, 1, 1),
+                borderColor: Colorf(0, 1, 0, 0),
+                borderThickness: 1,
+                radius: 20,
+            }
+        };
+
+        let instanceBuffer = this.device.createBuffer({
+            size: sizeof(type<inline PrimitiveInstance>) * primitives.length,
+            usage: wgpu.BufferUsage.Vertex | wgpu.BufferUsage.Storage | wgpu.BufferUsage.CopyDst,
+        });
+        this.queue.writeBuffer<inline PrimitiveInstance>(instanceBuffer, primitives);
+
         let colorAttachment = wgpu.RenderPassColorAttachment {
             view: backbuffer,
             clearValue: Color(0, 0, 0, 0),
@@ -335,7 +436,8 @@ opaque struct Renderer {
         }
 
         renderPass.setPipeline(this.pipeline);
-        renderPass.setVertexBuffer(0, this.vertexBuffer);
+        // renderPass.setVertexBuffer(0, this.vertexBuffer);
+        renderPass.setVertexBuffer(0, quadVertexBuffer);
 
         renderPass.setBindGroup(0, this.globalsBindGroup);
 
@@ -343,7 +445,12 @@ opaque struct Renderer {
         renderPass.setScissorRect(0, 0, this.windowSize.x, this.windowSize.y);
 
         renderPass.setIndexBuffer(this.indexBuffer, wgpu.IndexFormat.Uint32);
-        renderPass.drawIndexed(this.commands.indices.length, 1, 0, 0, 0);
+        renderPass.setVertexBuffer(1, instanceBuffer);
+
+        renderPass.drawIndexed(this.commands.indices.length, primitives.length, 0, 0, 0);
+
+        // SDF rendering
+        // renderPass.draw(4, primitives.length, 0, 0); // 4 vertices per instance
 
         renderPass.end();
 

@@ -2517,10 +2517,23 @@ function collectExpr(
       if (
         item.operation === EUnaryOperation.Minus &&
         item.expr.variant === "LiteralExpr" &&
-        item.expr.literal.type === EPrimitive.int
+        (item.expr.literal.type === EPrimitive.u8 ||
+          item.expr.literal.type === EPrimitive.u16 ||
+          item.expr.literal.type === EPrimitive.u32 ||
+          item.expr.literal.type === EPrimitive.u64 ||
+          item.expr.literal.type === EPrimitive.usize ||
+          item.expr.literal.type === EPrimitive.i8 ||
+          item.expr.literal.type === EPrimitive.i16 ||
+          item.expr.literal.type === EPrimitive.i32 ||
+          item.expr.literal.type === EPrimitive.i64 ||
+          item.expr.literal.type === EPrimitive.int ||
+          item.expr.literal.type === EPrimitive.f32 ||
+          item.expr.literal.type === EPrimitive.f64 ||
+          item.expr.literal.type === EPrimitive.real)
       ) {
         item.expr.literal.value = -item.expr.literal.value; // This is the raw pure-tree AST, so we can safely mutate it
-        return collectExpr(cc, item.expr, args);
+        const result = collectExpr(cc, item.expr, args);
+        return result;
       }
 
       return Collect.makeExpr(cc, {

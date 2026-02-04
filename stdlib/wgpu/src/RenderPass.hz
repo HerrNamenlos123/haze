@@ -25,8 +25,12 @@ export struct RenderPassEncoder {
         ffi.wgpuRenderPassEncoderSetIndexBuffer(this.handle, toFFI(buffer), toFFI(format), 0, wholeSize);
     }
 
-    draw(vertexCount: u32, instanceCount: u32, firstVertex: u32, firstInstance: u32) {
+    draw(vertexCount: int, instanceCount: int, firstVertex: int, firstInstance: int) {
         // export extern C noemit wgpuRenderPassEncoderDraw(renderPassEncoder: mut WGPURenderPassEncoderImpl, vertexCount: u32, instanceCount: u32, firstVertex: u32, firstInstance: u32): void :: final;
+        assert(vertexCount >= u32.min && vertexCount <= u32.max);
+        assert(instanceCount >= u32.min && instanceCount <= u32.max);
+        assert(firstVertex >= u32.min && firstVertex <= u32.max);
+        assert(firstInstance >= u32.min && firstInstance <= u32.max);
         ffi.wgpuRenderPassEncoderDraw(this.handle, vertexCount, instanceCount, firstVertex, firstInstance);
     }
 
