@@ -254,6 +254,8 @@ postfix
     | LBRACKET indexList RBRACKET
     | (DOT | QUESTIONDOT) id genericArgs?
     | QUESTIONEXCL
+    | AS datatype
+    | IS datatype
     ;
 
 multiplicative
@@ -276,13 +278,8 @@ logical
     : equality ((DOUBLEAND|DOUBLEOR|SINGLEOR) equality)*
     ;
 
-typeExpr
-    : logical
-    | logical (AS | IS) typeExpr
-    ;
-
 ternary
-    : typeExpr (QUESTIONMARK expr COLON ternary)?
+    : logical (QUESTIONMARK expr COLON ternary)?
     | ATTEMPT rawScope ELSE id? rawScope
     ;
 

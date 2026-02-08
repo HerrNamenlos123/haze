@@ -148,7 +148,6 @@ import {
   ComparisonContext,
   EqualityContext,
   LogicalContext,
-  TypeExprContext,
   TernaryContext,
   AssignmentContext,
   InlineDatatypeContext,
@@ -408,65 +407,6 @@ class ASTBuilder extends HazeParserListener {
     const tokens = tokenLists.flat().filter((t): t is TerminalNode => Boolean(t));
     tokens.sort((a, b) => a.symbol.tokenIndex - b.symbol.tokenIndex);
     return tokens;
-  }
-
-  private coerceExprToTypeUse(expr: ASTExpr): ASTTypeUse {
-    if (expr.variant === "TypeLiteralExpr") {
-      return expr.datatype;
-    }
-
-    const fragments: {
-      name: string;
-      generics: (ASTTypeUse | ASTLiteralExpr)[];
-      sourceloc: SourceLoc;
-    }[] = [];
-
-    const collectFragments = (e: ASTExpr) => {
-      if (e.variant === "SymbolValueExpr") {
-        fragments.push({
-          name: e.name,
-          generics: e.generics,
-          sourceloc: e.sourceloc,
-        });
-        return;
-      }
-
-      if (e.variant === "ExprMemberAccess") {
-        collectFragments(e.expr);
-        fragments.push({
-          name: e.member,
-          generics: e.generics,
-          sourceloc: e.sourceloc,
-        });
-        return;
-      }
-
-      throw new InternalError(
-        `Type expression is not a valid datatype: ${String(e?.variant ?? e)}`,
-      );
-    };
-
-    collectFragments(expr);
-
-    let nested: ASTNamedDatatype | undefined = undefined;
-    for (let i = fragments.length - 1; i >= 0; i--) {
-      const f = fragments[i];
-      nested = {
-        variant: "NamedDatatype",
-        name: f.name,
-        generics: f.generics,
-        sourceloc: f.sourceloc,
-        inline: false,
-        mutability: EDatatypeMutability.Default,
-        nested,
-      } satisfies ASTNamedDatatype;
-    }
-
-    if (!nested) {
-      throw new InternalError("Type expression produced no datatype fragments");
-    }
-
-    return nested;
   }
 
   getSource(ctx: ParserRuleContext) {
@@ -1681,6 +1621,32 @@ class ASTBuilder extends HazeParserListener {
         continue;
       }
 
+      if (postfix.AS() || postfix.IS()) {
+        if (i >= produced.length) {
+          throw new InternalError("PostfixExpr AS/IS missing datatype");
+        }
+
+        const datatype = produced[i++] as ASTTypeUse;
+
+        if (postfix.AS()) {
+          expr = {
+            variant: "ExplicitCastExpr",
+            expr,
+            castedTo: datatype,
+            sourceloc: this.loc(postfix),
+          } satisfies ASTExplicitCastExpr;
+        } else {
+          expr = {
+            variant: "ExprIsTypeExpr",
+            expr,
+            comparisonType: datatype,
+            sourceloc: this.loc(postfix),
+          } satisfies ASTExprIsTypeExpr;
+        }
+
+        continue;
+      }
+
       if (postfix.QUESTIONEXCL()) {
         expr = {
           variant: "ErrorPropagationExpr",
@@ -1831,44 +1797,6 @@ class ASTBuilder extends HazeParserListener {
     }
 
     this.stack.push(expr);
-  };
-
-  exitTypeExpr = (ctx: TypeExprContext) => {
-    const start = this.getMark(ctx);
-    const produced = this.stack.splice(start);
-
-    if (!ctx.AS() && !ctx.IS()) {
-      if (produced.length !== 1) {
-        throw new InternalError("TypeExpr stack mismatch");
-      }
-
-      this.stack.push(produced[0]);
-      return;
-    }
-
-    if (produced.length !== 2) {
-      throw new InternalError("TypeExpr operator stack mismatch");
-    }
-
-    const left = produced[0] as ASTExpr;
-    const rightExpr = produced[1] as ASTExpr;
-    const comparisonType = this.coerceExprToTypeUse(rightExpr);
-
-    if (ctx.AS()) {
-      this.stack.push({
-        variant: "ExplicitCastExpr",
-        expr: left,
-        castedTo: comparisonType,
-        sourceloc: this.loc(ctx),
-      } satisfies ASTExplicitCastExpr);
-    } else {
-      this.stack.push({
-        variant: "ExprIsTypeExpr",
-        expr: left,
-        comparisonType,
-        sourceloc: this.loc(ctx),
-      } satisfies ASTExprIsTypeExpr);
-    }
   };
 
   exitTernary = (ctx: TernaryContext) => {
