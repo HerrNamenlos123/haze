@@ -107,7 +107,7 @@ export opaque struct MemoryBuffer {
     }
 
     string(): str {
-        if (!this.committed) {
+        if !this.committed {
             sys.panic("Attempted to call .toString() on a MemoryBuffer that was not committed yet. Call .commit() to ensure deep immutability and enable string slices");
         }
 

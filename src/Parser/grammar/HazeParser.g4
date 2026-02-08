@@ -171,17 +171,16 @@ typeDefinition
 // Expressions
 
 subscriptExpr
-    : expr                  #SubscriptSingleExpr
-    | start=expr? COLON end=expr?     #SubscriptSliceExpr
+    : expr
+    | start=expr? COLON end=expr?
     ;
 
 requiresPart
-    // : expr               #RequiresExpr
-    : NORETURN                              #RequiresNoreturn
-    | NORETURNIF LB expr RB                 #RequiresNoreturnIf
-    | FINAL                                 #RequiresFinal
-    | PURE                                  #RequiresPure
-    | LB requiresPart RB                    #RequiresInParens
+    : NORETURN
+    | NORETURNIF LB expr RB
+    | FINAL
+    | PURE
+    | LB requiresPart RB
     ;
 
 requiresBlock
@@ -200,7 +199,7 @@ withAllocator
     : WITH expr
     ;
 
-prefixExpr
+primaryExpr
     : LB expr RB
     | doScope
     | TYPE LANGLE datatype RANGLE
@@ -209,8 +208,17 @@ prefixExpr
     | interpolatedString
     | braceExpr
     | id genericArgs?
-    | preUnaryOp prefixExpr
     ;
+
+postfixExpr
+    : primaryExpr postfix*
+    ;
+
+prefixExpr
+    : preUnaryOp prefixExpr
+    | postfixExpr
+    ;
+
 
 preUnaryOp
     : MINUSMINUS
@@ -237,10 +245,6 @@ aggregateBody
 braceExpr
     : datatype LCURLY aggregateBody RCURLY withAllocator?
     | LCURLY aggregateBody RCURLY withAllocator?
-    ;
-
-postfixExpr
-    : prefixExpr postfix*
     ;
 
 postfix
@@ -272,8 +276,13 @@ logical
     : equality ((DOUBLEAND|DOUBLEOR|SINGLEOR) equality)*
     ;
 
+typeExpr
+    : logical
+    | logical (AS | IS) typeExpr
+    ;
+
 ternary
-    : logical ('?' expr ':' ternary)?
+    : typeExpr (QUESTIONMARK expr COLON ternary)?
     | ATTEMPT rawScope ELSE id? rawScope
     ;
 
@@ -289,11 +298,6 @@ assignOp
     | MULEQ
     | DIVEQ
     | MODEQ
-    ;
-
-typeExpr
-    : logical
-    | logical (AS | IS) typeExpr
     ;
 
 expr

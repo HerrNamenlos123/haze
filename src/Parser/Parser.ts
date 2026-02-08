@@ -76,16 +76,11 @@ import {
   type ASTFuncBody,
 } from "../shared/AST";
 import {
-  BinaryExprContext,
   BooleanConstantContext,
   CInjectDirectiveContext,
   CInlineStatementContext,
   DatatypeFragmentContext,
-  ExplicitCastExprContext,
   ExprAsFuncbodyContext,
-  ExprAssignmentExprContext,
-  ExprCallExprContext,
-  ExprMemberAccessContext,
   ExprStatementContext,
   FunctionDatatypeContext,
   FunctionDefinitionContext,
@@ -95,41 +90,31 @@ import {
   HazeParser,
   IfStatementContext,
   LambdaContext,
-  LambdaExprContext,
   NamedDatatypeContext,
   NamespaceDefinitionContext,
   NestedStructDefinitionContext,
   ParamsContext,
-  ParenthesisExprContext,
-  PostIncrExprContext,
-  PreIncrExprContext,
   ProgContext,
   ReturnStatementContext,
   StringConstantContext,
   StructDefinitionContext,
   StructMemberContext,
   StructMethodContext,
-  SymbolValueExprContext,
-  UnaryExprContext,
   VariableCreationStatementContext,
   WhileStatementContext,
   IntegerLiteralContext,
   FloatLiteralContext,
   IntegerUnitLiteralContext,
   FloatUnitLiteralContext,
-  LiteralExprContext,
   FromImportStatementContext,
   ImportStatementContext,
-  ArraySubscriptExprContext,
   ForEachStatementContext,
-  TypeLiteralExprContext,
   DatatypeInParenthesisContext,
   DatatypeWithMutabilityContext,
   TypeAliasDirectiveContext,
   TypeAliasStatementContext,
   VariableConstContext,
   VariableLetContext,
-  BlockScopeExprContext,
   DoScopeContext,
   RawScopeContext,
   SourceLocationPrefixRuleContext,
@@ -139,41 +124,40 @@ import {
   DynamicArrayDatatypeContext,
   StackArrayDatatypeContext,
   RequiresBlockContext,
-  RequiresFinalContext,
   StructContentWithSourcelocContext,
-  RequiresInParensContext,
-  RequiresNoreturnContext,
-  ExprIsTypeExprContext,
   UntaggedUnionDatatypeContext,
   TaggedUnionDatatypeContext,
-  PostfixResultPropagationExprContext,
   EnumContentContext,
   EnumDefinitionContext,
-  AggregateLiteralExprContext,
   AggregateLiteralElementContext,
-  SubscriptSingleExprContext,
-  SubscriptSliceExprContext,
   VariableCreationStatementRuleContext,
   ForStatementContext,
-  FStringLiteralExprContext,
-  RequiresPureContext,
   WhileLetStatementContext,
   IfStatementConditionContext,
   IfLetStatementConditionContext,
-  RequiresNoreturnIfContext,
   HexIntegerLiteralContext,
-  AttemptExprContext,
   RaiseStatementContext,
   RegexLiteralContext,
+  SubscriptExprContext,
+  PrimaryExprContext,
+  PrefixExprContext,
+  BraceExprContext,
+  PostfixExprContext,
+  MultiplicativeContext,
+  AdditiveContext,
+  ComparisonContext,
+  EqualityContext,
+  LogicalContext,
+  TypeExprContext,
+  TernaryContext,
+  AssignmentContext,
   InlineDatatypeContext,
   ConstDatatypeContext,
   MutDatatypeContext,
-  TernaryExprContext,
   TripleStringConstantContext,
   SingleFStringContext,
   TripleFStringContext,
   ParamContext,
-  IdContext,
 } from "./grammar/autogen/HazeParser";
 import {
   BaseErrorListener,
@@ -350,97 +334,139 @@ class ASTBuilder extends HazeParserListener {
     throw new InternalError("Mutability field of variable is neither let nor const");
   }
 
-  incrop(ctx: PostIncrExprContext): EIncrOperation {
-    if (!ctx._op) {
-      throw new InternalError("Operator missing");
-    }
-    if (ctx._op.text === "++") {
-      return EIncrOperation.Incr;
-    } else if (ctx._op.text === "--") {
-      return EIncrOperation.Decr;
-    } else {
-      throw new InternalError("Operator is neither increment nor decrement");
-    }
-  }
-
-  unaryop(ctx: UnaryExprContext) {
-    if (!ctx._op) {
-      throw new InternalError("Operator missing");
-    }
-    if (ctx._op.text === "-") {
-      return EUnaryOperation.Minus;
-    } else if (ctx._op.text === "+") {
-      return EUnaryOperation.Plus;
-    } else if (ctx._op.text === "not") {
-      return EUnaryOperation.Negate;
-    } else if (ctx._op.text === "!") {
-      return EUnaryOperation.Negate;
-    } else {
-      throw new InternalError("Operator is neither increment nor decrement");
-    }
-  }
-
-  assignop(ctx: ExprAssignmentExprContext) {
-    if (!ctx._op) {
-      throw new InternalError("Operator missing");
-    }
-    if (ctx._op.text === "=") {
+  private assignOpFromText(text: string): EAssignmentOperation {
+    if (text === "=") {
       return EAssignmentOperation.Rebind;
-    } else if (ctx._op.text === ":=") {
-      return EAssignmentOperation.Assign;
-    } else if (ctx._op.text === "+=") {
-      return EAssignmentOperation.Add;
-    } else if (ctx._op.text === "-=") {
-      return EAssignmentOperation.Subtract;
-    } else if (ctx._op.text === "*=") {
-      return EAssignmentOperation.Multiply;
-    } else if (ctx._op.text === "/=") {
-      return EAssignmentOperation.Divide;
-    } else if (ctx._op.text === "%=") {
-      return EAssignmentOperation.Modulo;
-    } else {
-      throw new InternalError("Operator is unknown: " + ctx._op.text);
     }
+    if (text === ":=") {
+      return EAssignmentOperation.Assign;
+    }
+    if (text === "+=") {
+      return EAssignmentOperation.Add;
+    }
+    if (text === "-=") {
+      return EAssignmentOperation.Subtract;
+    }
+    if (text === "*=") {
+      return EAssignmentOperation.Multiply;
+    }
+    if (text === "/=") {
+      return EAssignmentOperation.Divide;
+    }
+    if (text === "%=") {
+      return EAssignmentOperation.Modulo;
+    }
+
+    throw new InternalError("Operator is unknown: " + text);
   }
 
-  binaryop(ctx: BinaryExprContext) {
-    if (ctx._op.length === 1 && ctx._op[0].text === "*") {
-      return EBinaryOperation.Multiply;
-    } else if (ctx._op.length === 1 && ctx._op[0].text === "/") {
-      return EBinaryOperation.Divide;
-    } else if (ctx._op.length === 1 && ctx._op[0].text === "%") {
-      return EBinaryOperation.Modulo;
-    } else if (ctx._op.length === 1 && ctx._op[0].text === "+") {
-      return EBinaryOperation.Add;
-    } else if (ctx._op.length === 1 && ctx._op[0].text === "-") {
-      return EBinaryOperation.Subtract;
-    } else if (ctx._op.length === 1 && ctx._op[0].text === "<") {
-      return EBinaryOperation.LessThan;
-    } else if (ctx._op.length === 1 && ctx._op[0].text === ">") {
-      return EBinaryOperation.GreaterThan;
-    } else if (ctx._op.length === 1 && ctx._op[0].text === "<=") {
-      return EBinaryOperation.LessEqual;
-    } else if (ctx._op.length === 1 && ctx._op[0].text === ">=") {
-      return EBinaryOperation.GreaterEqual;
-    } else if (ctx._op.length === 1 && ctx._op[0].text === "==") {
-      return EBinaryOperation.Equal;
-    } else if (ctx._op.length === 1 && ctx._op[0].text === "!=") {
-      return EBinaryOperation.NotEqual;
-    } else if (ctx._op.length === 1 && ctx._op[0].text === "is") {
-      return EBinaryOperation.Equal;
-    } else if (ctx._op.length === 2 && ctx._op[0].text === "is" && ctx._op[1].text === "not") {
-      return EBinaryOperation.NotEqual;
-    } else if (ctx._op.length === 1 && ctx._op[0].text === "&&") {
-      return EBinaryOperation.BoolAnd;
-    } else if (ctx._op.length === 1 && ctx._op[0].text === "||") {
-      return EBinaryOperation.BoolOr;
-    } else if (ctx._op.length === 1 && ctx._op[0].text === "|") {
-      return EBinaryOperation.BitwiseOr;
-    } else {
-      throw new InternalError(
-        "Operator is not known: " + JSON.stringify(ctx._op.map((o) => o.text)),
-      );
+  private unaryOpFromText(text: string): EUnaryOperation {
+    if (text === "-") {
+      return EUnaryOperation.Minus;
     }
+    if (text === "+") {
+      return EUnaryOperation.Plus;
+    }
+    if (text === "not" || text === "!") {
+      return EUnaryOperation.Negate;
+    }
+
+    throw new InternalError("Unary operator is unknown: " + text);
+  }
+
+  private incrOpFromText(text: string): EIncrOperation {
+    if (text === "++") {
+      return EIncrOperation.Incr;
+    }
+    if (text === "--") {
+      return EIncrOperation.Decr;
+    }
+
+    throw new InternalError("Increment operator is unknown: " + text);
+  }
+
+  private binaryOpFromText(text: string): EBinaryOperation {
+    if (text === "*") return EBinaryOperation.Multiply;
+    if (text === "/") return EBinaryOperation.Divide;
+    if (text === "%") return EBinaryOperation.Modulo;
+    if (text === "+") return EBinaryOperation.Add;
+    if (text === "-") return EBinaryOperation.Subtract;
+    if (text === "<") return EBinaryOperation.LessThan;
+    if (text === ">") return EBinaryOperation.GreaterThan;
+    if (text === "<=") return EBinaryOperation.LessEqual;
+    if (text === ">=") return EBinaryOperation.GreaterEqual;
+    if (text === "==") return EBinaryOperation.Equal;
+    if (text === "!=") return EBinaryOperation.NotEqual;
+    if (text === "&&") return EBinaryOperation.BoolAnd;
+    if (text === "||") return EBinaryOperation.BoolOr;
+    if (text === "|") return EBinaryOperation.BitwiseOr;
+
+    throw new InternalError("Binary operator is not known: " + text);
+  }
+
+  private collectOperatorTokens(...tokenLists: (TerminalNode | null)[][]): TerminalNode[] {
+    const tokens = tokenLists.flat().filter((t): t is TerminalNode => Boolean(t));
+    tokens.sort((a, b) => a.symbol.tokenIndex - b.symbol.tokenIndex);
+    return tokens;
+  }
+
+  private coerceExprToTypeUse(expr: ASTExpr): ASTTypeUse {
+    if (expr.variant === "TypeLiteralExpr") {
+      return expr.datatype;
+    }
+
+    const fragments: {
+      name: string;
+      generics: (ASTTypeUse | ASTLiteralExpr)[];
+      sourceloc: SourceLoc;
+    }[] = [];
+
+    const collectFragments = (e: ASTExpr) => {
+      if (e.variant === "SymbolValueExpr") {
+        fragments.push({
+          name: e.name,
+          generics: e.generics,
+          sourceloc: e.sourceloc,
+        });
+        return;
+      }
+
+      if (e.variant === "ExprMemberAccess") {
+        collectFragments(e.expr);
+        fragments.push({
+          name: e.member,
+          generics: e.generics,
+          sourceloc: e.sourceloc,
+        });
+        return;
+      }
+
+      throw new InternalError(
+        `Type expression is not a valid datatype: ${String(e?.variant ?? e)}`,
+      );
+    };
+
+    collectFragments(expr);
+
+    let nested: ASTNamedDatatype | undefined = undefined;
+    for (let i = fragments.length - 1; i >= 0; i--) {
+      const f = fragments[i];
+      nested = {
+        variant: "NamedDatatype",
+        name: f.name,
+        generics: f.generics,
+        sourceloc: f.sourceloc,
+        inline: false,
+        mutability: EDatatypeMutability.Default,
+        nested,
+      } satisfies ASTNamedDatatype;
+    }
+
+    if (!nested) {
+      throw new InternalError("Type expression produced no datatype fragments");
+    }
+
+    return nested;
   }
 
   getSource(ctx: ParserRuleContext) {
@@ -916,17 +942,6 @@ class ASTBuilder extends HazeParserListener {
     } satisfies ASTExprAsFuncbody);
   };
 
-  exitRequiresInParens = (ctx: RequiresInParensContext) => {
-    const start = this.getMark(ctx);
-    const produced = this.stack.splice(start);
-
-    if (produced.length !== 1) {
-      throw new InternalError("RequiresInParens stack mismatch");
-    }
-
-    this.stack.push(produced[0]);
-  };
-
   exitRequiresBlock = (ctx: RequiresBlockContext) => {
     const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
@@ -941,13 +956,13 @@ class ASTBuilder extends HazeParserListener {
     };
 
     for (const part of ctx.requiresPart()) {
-      if (part instanceof RequiresFinalContext) {
+      if (part.FINAL()) {
         block.final = true;
-      } else if (part instanceof RequiresPureContext) {
+      } else if (part.PURE()) {
         block.pure = true;
-      } else if (part instanceof RequiresNoreturnContext) {
+      } else if (part.NORETURN()) {
         block.noreturn = true;
-      } else if (part instanceof RequiresNoreturnIfContext) {
+      } else if (part.NORETURNIF()) {
         if (i >= produced.length) {
           throw new InternalError("RequiresBlock stack underflow");
         }
@@ -1125,39 +1140,6 @@ class ASTBuilder extends HazeParserListener {
         sourceloc: this.loc(ctx),
       } satisfies ASTStructMemberDefinition,
     ]);
-  };
-
-  exitTernaryExpr = (ctx: TernaryExprContext) => {
-    const start = this.getMark(ctx);
-    const produced = this.stack.splice(start);
-
-    let condition: ASTExpr | undefined;
-    let thenExpr: ASTExpr | undefined;
-    let elseExpr: ASTExpr | undefined;
-
-    if (produced.length === 3) {
-      condition = produced[0] as ASTExpr;
-      thenExpr = produced[1] as ASTExpr;
-      elseExpr = produced[2] as ASTExpr;
-    } else if (produced.length === 2) {
-      if (start === 0) {
-        throw new InternalError("TernaryExpr stack mismatch");
-      }
-      condition = this.stack[start - 1] as ASTExpr;
-      this.stack.splice(start - 1, 1);
-      thenExpr = produced[0] as ASTExpr;
-      elseExpr = produced[1] as ASTExpr;
-    } else {
-      throw new InternalError("TernaryExpr stack mismatch");
-    }
-
-    this.stack.push({
-      variant: "TernaryExpr",
-      condition,
-      then: thenExpr,
-      else: elseExpr,
-      sourceloc: this.loc(ctx),
-    } satisfies ASTTernaryExpr);
   };
 
   exitStructMethod = (ctx: StructMethodContext) => {
@@ -1430,21 +1412,534 @@ class ASTBuilder extends HazeParserListener {
     } satisfies ASTBlockScopeExpr);
   };
 
-  exitScopeStatement = (ctx: BlockScopeExprContext) => {
+  exitSubscriptExpr = (ctx: SubscriptExprContext) => {
     const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
-    if (produced.length !== 1) {
-      throw new InternalError("ScopeStatement stack mismatch");
+    if (!ctx.COLON()) {
+      if (produced.length !== 1) {
+        throw new InternalError("SubscriptExpr index stack mismatch");
+      }
+
+      this.stack.push({
+        type: "index",
+        value: produced[0] as ASTExpr,
+      } satisfies ASTSubscriptIndexExpr);
+      return;
     }
 
-    const scope = produced[0] as ASTScope;
+    const hasStart = Boolean(ctx._start);
+    const hasEnd = Boolean(ctx._end);
+
+    const expected = (hasStart ? 1 : 0) + (hasEnd ? 1 : 0);
+    if (produced.length !== expected) {
+      throw new InternalError("SubscriptExpr slice stack mismatch");
+    }
+
+    let i = 0;
+    const startExpr = hasStart ? (produced[i++] as ASTExpr) : null;
+    const endExpr = hasEnd ? (produced[i++] as ASTExpr) : null;
 
     this.stack.push({
-      variant: "BlockScopeExpr",
-      scope,
+      type: "slice",
+      start: startExpr,
+      end: endExpr,
+    } satisfies ASTSubscriptIndexExpr);
+  };
+
+  exitBraceExpr = (ctx: BraceExprContext) => {
+    const start = this.getMark(ctx);
+    const produced = this.stack.splice(start);
+
+    let i = 0;
+    const datatype = ctx.datatype() ? (produced[i++] as ASTTypeUse) : null;
+
+    const elementCount = ctx.aggregateBody().aggregateLiteralElement().length;
+    const elements = produced.slice(i, i + elementCount) as ASTAggregateLiteralElement[];
+    i += elementCount;
+
+    const allocator = ctx.withAllocator() ? (produced[i++] as ASTExpr) : null;
+
+    if (i !== produced.length) {
+      throw new InternalError("BraceExpr stack mismatch");
+    }
+
+    this.stack.push({
+      variant: "AggregateLiteralExpr",
+      datatype,
+      elements,
+      allocator,
       sourceloc: this.loc(ctx),
-    } satisfies ASTBlockScopeExpr);
+    } satisfies ASTAggregateLiteralExpr);
+  };
+
+  exitPrimaryExpr = (ctx: PrimaryExprContext) => {
+    const start = this.getMark(ctx);
+    const produced = this.stack.splice(start);
+
+    if (ctx.LB() && ctx.RB() && ctx.expr()) {
+      if (produced.length !== 1) {
+        throw new InternalError("PrimaryExpr parenthesis stack mismatch");
+      }
+
+      this.stack.push({
+        variant: "ParenthesisExpr",
+        expr: produced[0] as ASTExpr,
+        sourceloc: this.loc(ctx),
+      } satisfies ASTParenthesisExpr);
+      return;
+    }
+
+    if (ctx.doScope()) {
+      if (produced.length !== 1) {
+        throw new InternalError("PrimaryExpr doScope stack mismatch");
+      }
+
+      this.stack.push(produced[0]);
+      return;
+    }
+
+    if (ctx.TYPE() && ctx.datatype()) {
+      if (produced.length !== 1) {
+        throw new InternalError("PrimaryExpr type literal stack mismatch");
+      }
+
+      this.stack.push({
+        variant: "TypeLiteralExpr",
+        datatype: produced[0] as ASTTypeUse,
+        sourceloc: this.loc(ctx),
+      } satisfies ASTTypeLiteralExpr);
+      return;
+    }
+
+    if (ctx.lambda()) {
+      if (produced.length !== 1) {
+        throw new InternalError("PrimaryExpr lambda stack mismatch");
+      }
+
+      this.stack.push({
+        variant: "LambdaExpr",
+        lambda: produced[0] as ASTLambda,
+        sourceloc: this.loc(ctx),
+      } satisfies ASTLambdaExpr);
+      return;
+    }
+
+    if (ctx.literal()) {
+      if (produced.length !== 1) {
+        throw new InternalError("PrimaryExpr literal stack mismatch");
+      }
+
+      this.stack.push({
+        variant: "LiteralExpr",
+        literal: produced[0] as LiteralValue,
+        sourceloc: this.loc(ctx),
+      } satisfies ASTLiteralExpr);
+      return;
+    }
+
+    if (ctx.interpolatedString()) {
+      if (produced.length !== 1) {
+        throw new InternalError("PrimaryExpr fstring stack mismatch");
+      }
+
+      this.stack.push(produced[0]);
+      return;
+    }
+
+    if (ctx.braceExpr()) {
+      if (produced.length !== 1) {
+        throw new InternalError("PrimaryExpr brace stack mismatch");
+      }
+
+      this.stack.push(produced[0]);
+      return;
+    }
+
+    if (ctx.id()) {
+      const genericCount = ctx.genericArgs()?.genericLiteral().length ?? 0;
+      if (produced.length !== genericCount) {
+        throw new InternalError("PrimaryExpr symbol generic count mismatch");
+      }
+
+      this.stack.push({
+        variant: "SymbolValueExpr",
+        generics: produced as (ASTTypeUse | ASTLiteralExpr)[],
+        name: ctx.id()!.getText(),
+        sourceloc: this.loc(ctx),
+      } satisfies ASTSymbolValueExpr);
+      return;
+    }
+
+    throw new InternalError("PrimaryExpr produced unexpected children");
+  };
+
+  exitPrefixExpr = (ctx: PrefixExprContext) => {
+    const start = this.getMark(ctx);
+    const produced = this.stack.splice(start);
+
+    if (ctx.preUnaryOp()) {
+      if (produced.length !== 1) {
+        throw new InternalError("PrefixExpr unary stack mismatch");
+      }
+
+      const expr = produced[0] as ASTExpr;
+      const opText = ctx.preUnaryOp()!.getText();
+
+      if (opText === "++" || opText === "--") {
+        this.stack.push({
+          variant: "PreIncrExpr",
+          expr,
+          operation: this.incrOpFromText(opText),
+          sourceloc: this.loc(ctx),
+        } satisfies ASTPreIncrExpr);
+      } else {
+        this.stack.push({
+          variant: "UnaryExpr",
+          expr,
+          operation: this.unaryOpFromText(opText),
+          sourceloc: this.loc(ctx),
+        } satisfies ASTUnaryExpr);
+      }
+
+      return;
+    }
+
+    if (produced.length !== 1) {
+      throw new InternalError("PrefixExpr stack mismatch");
+    }
+
+    this.stack.push(produced[0]);
+  };
+
+  exitPostfixExpr = (ctx: PostfixExprContext) => {
+    const start = this.getMark(ctx);
+    const produced = this.stack.splice(start);
+
+    if (produced.length < 1) {
+      throw new InternalError("PostfixExpr stack underflow");
+    }
+
+    let i = 0;
+    let expr = produced[i++] as ASTExpr;
+
+    for (const postfix of ctx.postfix()) {
+      if (postfix.PLUSPLUS() || postfix.MINUSMINUS()) {
+        const opText = postfix.getText();
+        expr = {
+          variant: "PostIncrExpr",
+          expr,
+          operation: this.incrOpFromText(opText),
+          sourceloc: this.loc(postfix),
+        } satisfies ASTPostIncrExpr;
+        continue;
+      }
+
+      if (postfix.LB() && postfix.RB()) {
+        const argCount = postfix.argList()?.expr().length ?? 0;
+        const args = produced.slice(i, i + argCount) as ASTExpr[];
+        i += argCount;
+
+        const allocator = postfix.withAllocator() ? (produced[i++] as ASTExpr) : null;
+
+        expr = {
+          variant: "ExprCallExpr",
+          calledExpr: expr,
+          arguments: args,
+          allocator,
+          sourceloc: this.loc(postfix),
+        } satisfies ASTExprCallExpr;
+        continue;
+      }
+
+      if (postfix.LBRACKET() && postfix.RBRACKET()) {
+        const indexCount = postfix.indexList()?.subscriptExpr().length ?? 0;
+        const indices = produced.slice(i, i + indexCount) as ASTSubscriptIndexExpr[];
+        i += indexCount;
+
+        expr = {
+          variant: "ArraySubscriptExpr",
+          expr,
+          indices,
+          sourceloc: this.loc(postfix),
+        } satisfies ASTArraySubscriptExpr;
+        continue;
+      }
+
+      if (postfix.DOT() || postfix.QUESTIONDOT()) {
+        const genericCount = postfix.genericArgs()?.genericLiteral().length ?? 0;
+        const generics = produced.slice(i, i + genericCount) as (ASTTypeUse | ASTLiteralExpr)[];
+        i += genericCount;
+
+        expr = {
+          variant: "ExprMemberAccess",
+          expr,
+          member: postfix.id()!.getText(),
+          generics,
+          sourceloc: this.loc(postfix),
+        } satisfies ASTExprMemberAccess;
+        continue;
+      }
+
+      if (postfix.QUESTIONEXCL()) {
+        expr = {
+          variant: "ErrorPropagationExpr",
+          expr,
+          sourceloc: this.loc(postfix),
+        } satisfies ASTErrorPropagationExpr;
+        continue;
+      }
+
+      throw new InternalError("PostfixExpr encountered unknown postfix");
+    }
+
+    if (i !== produced.length) {
+      throw new InternalError("PostfixExpr stack mismatch");
+    }
+
+    this.stack.push(expr);
+  };
+
+  exitMultiplicative = (ctx: MultiplicativeContext) => {
+    const start = this.getMark(ctx);
+    const produced = this.stack.splice(start) as ASTExpr[];
+
+    const operators = this.collectOperatorTokens(ctx.MUL(), ctx.DIV(), ctx.MOD()).map((t) =>
+      t.getText(),
+    );
+
+    if (produced.length !== operators.length + 1) {
+      throw new InternalError("Multiplicative stack mismatch");
+    }
+
+    let expr = produced[0];
+    for (let idx = 0; idx < operators.length; idx++) {
+      expr = {
+        variant: "BinaryExpr",
+        a: expr,
+        b: produced[idx + 1],
+        operation: this.binaryOpFromText(operators[idx]),
+        sourceloc: this.loc(ctx),
+      } satisfies ASTBinaryExpr;
+    }
+
+    this.stack.push(expr);
+  };
+
+  exitAdditive = (ctx: AdditiveContext) => {
+    const start = this.getMark(ctx);
+    const produced = this.stack.splice(start) as ASTExpr[];
+
+    const operators = this.collectOperatorTokens(ctx.PLUS(), ctx.MINUS()).map((t) => t.getText());
+
+    if (produced.length !== operators.length + 1) {
+      throw new InternalError("Additive stack mismatch");
+    }
+
+    let expr = produced[0];
+    for (let idx = 0; idx < operators.length; idx++) {
+      expr = {
+        variant: "BinaryExpr",
+        a: expr,
+        b: produced[idx + 1],
+        operation: this.binaryOpFromText(operators[idx]),
+        sourceloc: this.loc(ctx),
+      } satisfies ASTBinaryExpr;
+    }
+
+    this.stack.push(expr);
+  };
+
+  exitComparison = (ctx: ComparisonContext) => {
+    const start = this.getMark(ctx);
+    const produced = this.stack.splice(start) as ASTExpr[];
+
+    const operators = this.collectOperatorTokens(
+      ctx.LANGLE(),
+      ctx.RANGLE(),
+      ctx.LEQ(),
+      ctx.GEQ(),
+    ).map((t) => t.getText());
+
+    if (produced.length !== operators.length + 1) {
+      throw new InternalError("Comparison stack mismatch");
+    }
+
+    let expr = produced[0];
+    for (let idx = 0; idx < operators.length; idx++) {
+      expr = {
+        variant: "BinaryExpr",
+        a: expr,
+        b: produced[idx + 1],
+        operation: this.binaryOpFromText(operators[idx]),
+        sourceloc: this.loc(ctx),
+      } satisfies ASTBinaryExpr;
+    }
+
+    this.stack.push(expr);
+  };
+
+  exitEquality = (ctx: EqualityContext) => {
+    const start = this.getMark(ctx);
+    const produced = this.stack.splice(start) as ASTExpr[];
+
+    const operators = this.collectOperatorTokens(ctx.DOUBLEEQUALS(), ctx.NOTEQUALS()).map((t) =>
+      t.getText(),
+    );
+
+    if (produced.length !== operators.length + 1) {
+      throw new InternalError("Equality stack mismatch");
+    }
+
+    let expr = produced[0];
+    for (let idx = 0; idx < operators.length; idx++) {
+      expr = {
+        variant: "BinaryExpr",
+        a: expr,
+        b: produced[idx + 1],
+        operation: this.binaryOpFromText(operators[idx]),
+        sourceloc: this.loc(ctx),
+      } satisfies ASTBinaryExpr;
+    }
+
+    this.stack.push(expr);
+  };
+
+  exitLogical = (ctx: LogicalContext) => {
+    const start = this.getMark(ctx);
+    const produced = this.stack.splice(start) as ASTExpr[];
+
+    const operators = this.collectOperatorTokens(
+      ctx.DOUBLEAND(),
+      ctx.DOUBLEOR(),
+      ctx.SINGLEOR(),
+    ).map((t) => t.getText());
+
+    if (produced.length !== operators.length + 1) {
+      throw new InternalError("Logical stack mismatch");
+    }
+
+    let expr = produced[0];
+    for (let idx = 0; idx < operators.length; idx++) {
+      expr = {
+        variant: "BinaryExpr",
+        a: expr,
+        b: produced[idx + 1],
+        operation: this.binaryOpFromText(operators[idx]),
+        sourceloc: this.loc(ctx),
+      } satisfies ASTBinaryExpr;
+    }
+
+    this.stack.push(expr);
+  };
+
+  exitTypeExpr = (ctx: TypeExprContext) => {
+    const start = this.getMark(ctx);
+    const produced = this.stack.splice(start);
+
+    if (!ctx.AS() && !ctx.IS()) {
+      if (produced.length !== 1) {
+        throw new InternalError("TypeExpr stack mismatch");
+      }
+
+      this.stack.push(produced[0]);
+      return;
+    }
+
+    if (produced.length !== 2) {
+      throw new InternalError("TypeExpr operator stack mismatch");
+    }
+
+    const left = produced[0] as ASTExpr;
+    const rightExpr = produced[1] as ASTExpr;
+    const comparisonType = this.coerceExprToTypeUse(rightExpr);
+
+    if (ctx.AS()) {
+      this.stack.push({
+        variant: "ExplicitCastExpr",
+        expr: left,
+        castedTo: comparisonType,
+        sourceloc: this.loc(ctx),
+      } satisfies ASTExplicitCastExpr);
+    } else {
+      this.stack.push({
+        variant: "ExprIsTypeExpr",
+        expr: left,
+        comparisonType,
+        sourceloc: this.loc(ctx),
+      } satisfies ASTExprIsTypeExpr);
+    }
+  };
+
+  exitTernary = (ctx: TernaryContext) => {
+    const start = this.getMark(ctx);
+    const produced = this.stack.splice(start);
+
+    if (ctx.ATTEMPT()) {
+      if (produced.length !== 2) {
+        throw new InternalError("Ternary attempt stack mismatch");
+      }
+
+      this.stack.push({
+        variant: "AttemptExpr",
+        attemptScope: produced[0] as ASTScope,
+        elseScope: produced[1] as ASTScope,
+        elseVar: ctx.id() ? ctx.id()!.getText() : null,
+        sourceloc: this.loc(ctx),
+      } satisfies ASTAttemptExpr);
+      return;
+    }
+
+    if (!ctx.QUESTIONMARK()) {
+      if (produced.length !== 1) {
+        throw new InternalError("Ternary stack mismatch");
+      }
+
+      this.stack.push(produced[0]);
+      return;
+    }
+
+    if (produced.length !== 3) {
+      throw new InternalError("Ternary stack mismatch");
+    }
+
+    this.stack.push({
+      variant: "TernaryExpr",
+      condition: produced[0] as ASTExpr,
+      then: produced[1] as ASTExpr,
+      else: produced[2] as ASTExpr,
+      sourceloc: this.loc(ctx),
+    } satisfies ASTTernaryExpr);
+  };
+
+  exitAssignment = (ctx: AssignmentContext) => {
+    const start = this.getMark(ctx);
+    const produced = this.stack.splice(start);
+
+    if (!ctx.assignOp()) {
+      if (produced.length !== 1) {
+        throw new InternalError("Assignment stack mismatch");
+      }
+
+      this.stack.push(produced[0]);
+      return;
+    }
+
+    if (produced.length !== 2) {
+      throw new InternalError("Assignment operator stack mismatch");
+    }
+
+    const target = produced[0] as ASTExpr;
+    const value = produced[1] as ASTExpr;
+    const opText = ctx.assignOp()!.getText();
+
+    this.stack.push({
+      variant: "ExprAssignmentExpr",
+      target,
+      value,
+      operation: this.assignOpFromText(opText),
+      sourceloc: this.loc(ctx),
+    } satisfies ASTExprAssignmentExpr);
   };
 
   exitCInlineStatement = (ctx: CInlineStatementContext) => {
@@ -1854,151 +2349,6 @@ class ASTBuilder extends HazeParserListener {
     this.stack.push(produced[0]);
   };
 
-  exitParenthesisExpr = (ctx: ParenthesisExprContext) => {
-    const start = this.getMark(ctx);
-    const produced = this.stack.splice(start);
-
-    if (produced.length !== 1) {
-      throw new InternalError("ParenthesisExpr stack mismatch");
-    }
-
-    const expr = produced[0];
-
-    this.stack.push({
-      variant: "ParenthesisExpr",
-      expr,
-      sourceloc: this.loc(ctx),
-    } satisfies ASTParenthesisExpr);
-  };
-
-  exitPostfixResultPropagationExpr = (ctx: PostfixResultPropagationExprContext) => {
-    const start = this.getMark(ctx);
-    const produced = this.stack.splice(start);
-
-    let expr: ASTExpr | undefined;
-
-    if (produced.length === 1) {
-      expr = produced[0] as ASTExpr;
-    } else if (produced.length === 0) {
-      if (start === 0) {
-        throw new InternalError("PostfixResultPropagationExpr stack mismatch");
-      }
-      expr = this.stack[start - 1] as ASTExpr;
-      this.stack.splice(start - 1, 1);
-    } else {
-      throw new InternalError("PostfixResultPropagationExpr stack mismatch");
-    }
-
-    this.stack.push({
-      variant: "ErrorPropagationExpr",
-      expr,
-      sourceloc: this.loc(ctx),
-    } satisfies ASTErrorPropagationExpr);
-  };
-
-  exitLambdaExpr = (ctx: LambdaExprContext) => {
-    const start = this.getMark(ctx);
-    const produced = this.stack.splice(start);
-
-    if (produced.length !== 1) {
-      throw new InternalError("LambdaExpr stack mismatch");
-    }
-
-    const lambda = produced[0];
-
-    this.stack.push({
-      variant: "LambdaExpr",
-      lambda,
-      sourceloc: this.loc(ctx),
-    } satisfies ASTLambdaExpr);
-  };
-
-  exitLiteralExpr = (ctx: LiteralExprContext) => {
-    const start = this.getMark(ctx);
-    const produced = this.stack.splice(start);
-
-    if (produced.length !== 1) {
-      throw new InternalError("LiteralExpr stack mismatch");
-    }
-
-    const literal = produced[0];
-
-    this.stack.push({
-      variant: "LiteralExpr",
-      literal,
-      sourceloc: this.loc(ctx),
-    } satisfies ASTLiteralExpr);
-  };
-
-  exitPostIncrExpr = (ctx: PostIncrExprContext) => {
-    const start = this.getMark(ctx);
-    const produced = this.stack.splice(start);
-
-    let expr: ASTExpr | undefined;
-
-    if (produced.length === 1) {
-      expr = produced[0] as ASTExpr;
-    } else if (produced.length === 0) {
-      if (start === 0) {
-        throw new InternalError("PostIncrExpr stack mismatch");
-      }
-      expr = this.stack[start - 1] as ASTExpr;
-      this.stack.splice(start - 1, 1);
-    } else {
-      throw new InternalError("PostIncrExpr stack mismatch");
-    }
-
-    this.stack.push({
-      variant: "PostIncrExpr",
-      expr,
-      operation: this.incrop(ctx),
-      sourceloc: this.loc(ctx),
-    } satisfies ASTPostIncrExpr);
-  };
-
-  exitExprCallExpr = (ctx: ExprCallExprContext) => {
-    const start = this.getMark(ctx);
-    const produced = this.stack.splice(start);
-
-    const argCount = ctx._argExpr.length;
-    const hasAllocator = !!ctx._allocatorExpr;
-    const expectedTail = argCount + (hasAllocator ? 1 : 0);
-
-    let i = 0;
-    let calledExpr: ASTExpr | undefined;
-
-    if (produced.length === expectedTail + 1) {
-      calledExpr = produced[i++] as ASTExpr;
-    } else if (produced.length === expectedTail) {
-      if (start === 0) {
-        throw new InternalError("ExprCallExpr missing calledExpr");
-      }
-      calledExpr = this.stack[start - 1] as ASTExpr;
-      this.stack.splice(start - 1, 1);
-    } else if (produced.length === 0) {
-      throw new InternalError("ExprCallExpr missing calledExpr");
-    } else {
-      throw new InternalError("ExprCallExpr stack mismatch");
-    }
-
-    const arguments_ = produced.slice(i, i + argCount);
-    i += argCount;
-
-    const allocator = hasAllocator ? produced[i++] : null;
-
-    if (i !== produced.length) {
-      throw new InternalError("ExprCallExpr stack mismatch");
-    }
-
-    this.stack.push({
-      variant: "ExprCallExpr",
-      calledExpr,
-      arguments: arguments_,
-      allocator,
-      sourceloc: this.loc(ctx),
-    } satisfies ASTExprCallExpr);
-  };
-
   exitDynamicArrayDatatype = (ctx: DynamicArrayDatatypeContext) => {
     const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
@@ -2017,43 +2367,6 @@ class ASTBuilder extends HazeParserListener {
     } satisfies ASTDynamicArrayDatatype);
   };
 
-  exitExprMemberAccess = (ctx: ExprMemberAccessContext) => {
-    const start = this.getMark(ctx);
-    const produced = this.stack.splice(start);
-    const genericCount = ctx.genericLiteral().length;
-
-    let expr: ASTExpr | undefined;
-    let generics: (ASTTypeUse | ASTLiteralExpr)[] = [];
-
-    if (produced.length === genericCount + 1) {
-      expr = produced[0] as ASTExpr;
-      generics = produced.slice(1) as (ASTTypeUse | ASTLiteralExpr)[];
-    } else if (produced.length === genericCount) {
-      if (start === 0) {
-        throw new InternalError("ExprMemberAccess stack underflow");
-      }
-      expr = this.stack[start - 1] as ASTExpr;
-      this.stack.splice(start - 1, 1);
-      generics = produced as (ASTTypeUse | ASTLiteralExpr)[];
-    } else if (produced.length < 1) {
-      throw new InternalError("ExprMemberAccess stack underflow");
-    } else {
-      throw new InternalError("ExprMemberAccess stack mismatch");
-    }
-
-    if (generics.length !== genericCount) {
-      throw new InternalError("ExprMemberAccess generic count mismatch");
-    }
-
-    this.stack.push({
-      variant: "ExprMemberAccess",
-      expr,
-      member: ctx.id().getText(),
-      sourceloc: this.loc(ctx),
-      generics,
-    } satisfies ASTExprMemberAccess);
-  };
-
   exitAggregateLiteralElement = (ctx: AggregateLiteralElementContext) => {
     const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
@@ -2069,209 +2382,6 @@ class ASTBuilder extends HazeParserListener {
       value,
       sourceloc: this.loc(ctx),
     } satisfies ASTAggregateLiteralElement);
-  };
-
-  exitAggregateLiteralExpr = (ctx: AggregateLiteralExprContext) => {
-    const start = this.getMark(ctx);
-    const produced = this.stack.splice(start);
-
-    let i = 0;
-
-    // datatype (optional)
-    const datatype = ctx.datatype() ? produced[i++] : null;
-
-    // elements (variadic)
-    const elementCount = ctx.aggregateLiteralElement().length;
-    const elements = produced.slice(i, i + elementCount);
-    i += elementCount;
-
-    // allocator (optional)
-    const allocator = ctx._allocatorExpr ? produced[i++] : null;
-
-    if (i !== produced.length) {
-      throw new InternalError("AggregateLiteralExpr stack mismatch");
-    }
-
-    this.stack.push({
-      variant: "AggregateLiteralExpr",
-      datatype,
-      elements,
-      allocator,
-      sourceloc: this.loc(ctx),
-    } satisfies ASTAggregateLiteralExpr);
-  };
-
-  exitPreIncrExpr = (ctx: PreIncrExprContext) => {
-    const start = this.getMark(ctx);
-    const produced = this.stack.splice(start);
-
-    if (produced.length !== 1) {
-      throw new InternalError("PreIncrExpr stack mismatch");
-    }
-
-    const expr = produced[0];
-
-    this.stack.push({
-      variant: "PreIncrExpr",
-      expr,
-      operation: this.incrop(ctx),
-      sourceloc: this.loc(ctx),
-    } satisfies ASTPreIncrExpr);
-  };
-
-  exitUnaryExpr = (ctx: UnaryExprContext) => {
-    const start = this.getMark(ctx);
-    const produced = this.stack.splice(start);
-
-    if (produced.length !== 1) {
-      throw new InternalError("UnaryExpr stack mismatch");
-    }
-
-    const expr = produced[0];
-
-    this.stack.push({
-      variant: "UnaryExpr",
-      expr,
-      operation: this.unaryop(ctx),
-      sourceloc: this.loc(ctx),
-    } satisfies ASTUnaryExpr);
-  };
-
-  exitExprIsTypeExpr = (ctx: ExprIsTypeExprContext) => {
-    const start = this.getMark(ctx);
-    const produced = this.stack.splice(start);
-
-    let comparisonType: ASTTypeUse | undefined;
-    let expr: ASTExpr | undefined;
-
-    if (produced.length === 2) {
-      comparisonType = produced[0] as ASTTypeUse;
-      expr = produced[1] as ASTExpr;
-    } else if (produced.length === 1) {
-      if (start === 0) {
-        throw new InternalError("ExprIsTypeExpr stack mismatch");
-      }
-      comparisonType = produced[0] as ASTTypeUse;
-      expr = this.stack[start - 1] as ASTExpr;
-      this.stack.splice(start - 1, 1);
-    } else {
-      throw new InternalError("ExprIsTypeExpr stack mismatch");
-    }
-
-    this.stack.push({
-      variant: "ExprIsTypeExpr",
-      comparisonType,
-      expr,
-      sourceloc: this.loc(ctx),
-    } satisfies ASTExprIsTypeExpr);
-  };
-
-  exitExplicitCastExpr = (ctx: ExplicitCastExprContext) => {
-    const start = this.getMark(ctx);
-    const produced = this.stack.splice(start);
-
-    let castedTo: ASTTypeUse | undefined;
-    let expr: ASTExpr | undefined;
-
-    if (produced.length === 2) {
-      castedTo = produced[0] as ASTTypeUse;
-      expr = produced[1] as ASTExpr;
-    } else if (produced.length === 1) {
-      if (start === 0) {
-        throw new InternalError("ExplicitCastExpr stack mismatch");
-      }
-      castedTo = produced[0] as ASTTypeUse;
-      expr = this.stack[start - 1] as ASTExpr;
-      this.stack.splice(start - 1, 1);
-    } else {
-      throw new InternalError("ExplicitCastExpr stack mismatch");
-    }
-
-    this.stack.push({
-      variant: "ExplicitCastExpr",
-      castedTo,
-      expr,
-      sourceloc: this.loc(ctx),
-    } satisfies ASTExplicitCastExpr);
-  };
-
-  exitBinaryExpr = (ctx: BinaryExprContext) => {
-    const start = this.getMark(ctx);
-    const produced = this.stack.splice(start);
-
-    let a: ASTExpr | undefined;
-    let b: ASTExpr | undefined;
-
-    if (produced.length === 2) {
-      a = produced[0] as ASTExpr;
-      b = produced[1] as ASTExpr;
-    } else if (produced.length === 1) {
-      if (start === 0) {
-        throw new InternalError("BinaryExpr stack mismatch");
-      }
-      a = this.stack[start - 1] as ASTExpr;
-      this.stack.splice(start - 1, 1);
-      b = produced[0] as ASTExpr;
-    } else {
-      throw new InternalError("BinaryExpr stack mismatch");
-    }
-
-    this.stack.push({
-      variant: "BinaryExpr",
-      a,
-      b,
-      operation: this.binaryop(ctx),
-      sourceloc: this.loc(ctx),
-    } satisfies ASTBinaryExpr);
-  };
-
-  exitExprAssignmentExpr = (ctx: ExprAssignmentExprContext) => {
-    const start = this.getMark(ctx);
-    const produced = this.stack.splice(start);
-
-    let target: ASTExpr | undefined;
-    let value: ASTExpr | undefined;
-
-    if (produced.length === 2) {
-      target = produced[0] as ASTExpr;
-      value = produced[1] as ASTExpr;
-    } else if (produced.length === 1) {
-      if (start === 0) {
-        throw new InternalError("ExprAssignmentExpr stack mismatch");
-      }
-      target = this.stack[start - 1] as ASTExpr;
-      this.stack.splice(start - 1, 1);
-      value = produced[0] as ASTExpr;
-    } else {
-      throw new InternalError("ExprAssignmentExpr stack mismatch");
-    }
-
-    this.stack.push({
-      variant: "ExprAssignmentExpr",
-      target,
-      value,
-      operation: this.assignop(ctx),
-      sourceloc: this.loc(ctx),
-    } satisfies ASTExprAssignmentExpr);
-  };
-
-  exitSymbolValueExpr = (ctx: SymbolValueExprContext) => {
-    const start = this.getMark(ctx);
-    const produced = this.stack.splice(start);
-
-    // All produced values are generics
-    if (produced.length !== ctx.genericLiteral().length) {
-      throw new InternalError("SymbolValueExpr generic count mismatch");
-    }
-
-    const generics = produced as (ASTTypeUse | ASTLiteralExpr)[];
-
-    this.stack.push({
-      variant: "SymbolValueExpr",
-      generics,
-      name: ctx.id().getText(),
-      sourceloc: this.loc(ctx),
-    } satisfies ASTSymbolValueExpr);
   };
 
   exitMutDatatype = (ctx: MutDatatypeContext) => {
@@ -2472,26 +2582,6 @@ class ASTBuilder extends HazeParserListener {
     this.stack.push(result);
   };
 
-  exitAttemptExpr = (ctx: AttemptExprContext) => {
-    const start = this.getMark(ctx);
-    const produced = this.stack.splice(start);
-
-    if (produced.length !== 2) {
-      throw new InternalError("AttemptExpr stack mismatch");
-    }
-
-    const attemptScope = produced[0];
-    const elseScope = produced[1];
-
-    this.stack.push({
-      variant: "AttemptExpr",
-      attemptScope,
-      elseScope,
-      elseVar: ctx.id() ? ctx.id()!.getText() : null,
-      sourceloc: this.loc(ctx),
-    } satisfies ASTAttemptExpr);
-  };
-
   exitRaiseStatement = (ctx: RaiseStatementContext) => {
     const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
@@ -2604,106 +2694,6 @@ class ASTBuilder extends HazeParserListener {
       inline: false,
       sourceloc: this.loc(ctx),
     } satisfies ASTStackArrayDatatype);
-  };
-
-  exitSubscriptSingleExpr = (ctx: SubscriptSingleExprContext) => {
-    const start = this.getMark(ctx);
-    const produced = this.stack.splice(start);
-
-    if (produced.length !== 1) {
-      throw new InternalError("SubscriptSingleExpr stack mismatch");
-    }
-
-    const value = produced[0];
-
-    this.stack.push({
-      type: "index",
-      value,
-    } satisfies ASTSubscriptIndexExpr);
-  };
-
-  exitSubscriptSliceExpr = (ctx: SubscriptSliceExprContext) => {
-    const startMark = this.getMark(ctx);
-    const produced = this.stack.splice(startMark);
-
-    let i = 0;
-
-    const start = ctx._start
-      ? (produced[i++] ??
-        (() => {
-          throw new InternalError("SubscriptSliceExpr start missing");
-        })())
-      : null;
-
-    const end = ctx._end
-      ? (produced[i++] ??
-        (() => {
-          throw new InternalError("SubscriptSliceExpr end missing");
-        })())
-      : null;
-
-    if (i !== produced.length) {
-      throw new InternalError("SubscriptSliceExpr stack mismatch");
-    }
-
-    this.stack.push({
-      type: "slice",
-      start,
-      end,
-    } satisfies ASTSubscriptIndexExpr);
-  };
-
-  exitArraySubscriptExpr = (ctx: ArraySubscriptExprContext) => {
-    const start = this.getMark(ctx);
-    const produced = this.stack.splice(start);
-
-    const indexCount = ctx._index.length;
-    let expr: ASTExpr | undefined;
-    let indices: ASTSubscriptIndexExpr[] = [];
-
-    if (produced.length === indexCount + 1) {
-      expr = produced[0] as ASTExpr;
-      indices = produced.slice(1) as ASTSubscriptIndexExpr[];
-    } else if (produced.length === indexCount) {
-      if (start === 0) {
-        throw new InternalError("ArraySubscriptExpr stack underflow");
-      }
-      expr = this.stack[start - 1] as ASTExpr;
-      this.stack.splice(start - 1, 1);
-      indices = produced as ASTSubscriptIndexExpr[];
-    } else if (produced.length < 1) {
-      throw new InternalError("ArraySubscriptExpr stack underflow");
-    } else {
-      throw new InternalError("ArraySubscriptExpr stack mismatch");
-    }
-
-    if (indices.length !== indexCount) {
-      throw new InternalError("ArraySubscriptExpr index count mismatch");
-    }
-
-    this.stack.push({
-      variant: "ArraySubscriptExpr",
-      expr,
-      indices,
-      sourceloc: this.loc(ctx),
-    } satisfies ASTArraySubscriptExpr);
-  };
-
-  exitTypeLiteralExpr = (ctx: TypeLiteralExprContext) => {
-    const start = this.getMark(ctx);
-    const produced = this.stack.splice(start);
-
-    if (produced.length !== 1) {
-      throw new InternalError("TypeLiteralExpr stack mismatch");
-    }
-
-    const datatype = produced[0];
-
-    this.stack.push({
-      variant: "TypeLiteralExpr",
-      datatype,
-      sourceloc: this.loc(ctx),
-    } satisfies ASTTypeLiteralExpr);
   };
 
   exitRegexLiteral = (ctx: RegexLiteralContext) => {
@@ -3024,17 +3014,6 @@ class ASTBuilder extends HazeParserListener {
     this.exitFStringCommon(ctx);
   };
 
-  exitFStringLiteralExpr = (ctx: FStringLiteralExprContext) => {
-    const start = this.getMark(ctx);
-    const produced = this.stack.splice(start);
-
-    if (produced.length !== 1) {
-      throw new InternalError("FStringLiteralExpr stack mismatch");
-    }
-
-    this.stack.push(produced[0]);
-  };
-
   exitSourceLocationPrefixRule = (ctx: SourceLocationPrefixRuleContext) => {
     const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
@@ -3055,7 +3034,7 @@ class ASTBuilder extends HazeParserListener {
     }
   };
 
-  enterGlobalDeclarationWithSource = (ctx: GlobalDeclarationWithSourceContext) => {
+  enterGlobalDeclarationWithSource = (_ctx: GlobalDeclarationWithSourceContext) => {
     this.sourcelocOverridePending.push(false);
   };
   exitGlobalDeclarationWithSource = (ctx: GlobalDeclarationWithSourceContext) => {
@@ -3110,7 +3089,7 @@ class ASTBuilder extends HazeParserListener {
     }
   };
 
-  enterStructContentWithSourceloc = (ctx: StructContentWithSourcelocContext) => {
+  enterStructContentWithSourceloc = (_ctx: StructContentWithSourcelocContext) => {
     this.sourcelocOverridePending.push(false);
   };
   exitStructContentWithSourceloc = (ctx: StructContentWithSourcelocContext) => {
