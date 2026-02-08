@@ -822,7 +822,7 @@ export class ProjectCompiler {
     env.HAZE_CMAKE_TOOLCHAIN = HAZE_CMAKE_TOOLCHAIN;
   }
 
-  async build(singleFilename?: string, sourceloc?: boolean) {
+  async build(singleFilename?: string, sourceloc?: boolean, fullRebuild?: boolean) {
     if (!(await this.setupToolchain())) {
       return false;
     }
@@ -865,7 +865,7 @@ export class ProjectCompiler {
       });
       stdlibModule.config.printerModule = c.modules[c.modules.length - 1];
       c.start();
-      if (!(await stdlibModule.build(false))) {
+      if (!(await stdlibModule.build(false, fullRebuild))) {
         return false;
       }
       c.stopAndFinishAll();
@@ -897,7 +897,7 @@ export class ProjectCompiler {
         });
         depModule.config.printerModule = c.modules[c.modules.length - 1];
         c.start();
-        if (!(await depModule.build(false))) {
+        if (!(await depModule.build(false, fullRebuild))) {
           return false;
         }
         c.stopAndFinishAll();
@@ -914,7 +914,7 @@ export class ProjectCompiler {
     mainModule.config.printerModule = c.modules[c.modules.length - 1];
     c.start();
 
-    if (!(await mainModule.build(true))) {
+    if (!(await mainModule.build(true, fullRebuild))) {
       return false;
     }
 
@@ -1535,7 +1535,8 @@ export class ModuleCompiler {
       return undefined;
     }
 
-    const compilerSrcDir = join(process.cwd(), "src");
+    const compilerRootDir = join(__dirname, "..");
+    const compilerSrcDir = join(compilerRootDir, "src");
     if (!existsSync(compilerSrcDir)) {
       return "missing-src";
     }
@@ -1763,7 +1764,7 @@ export class ModuleCompiler {
     console.log(`>> Running generator ${gen.name}...`);
     const sourceloc = this.config.includeSourceloc;
     const project = new ProjectCompiler();
-    if (!(await project.build(this.resolveExec(gen.exec), sourceloc))) {
+    if (!(await project.build(this.resolveExec(gen.exec), sourceloc, false))) {
       throw new GeneralError(`Build of generator step ${gen.name} failed`);
     }
 
@@ -1810,7 +1811,7 @@ export class ModuleCompiler {
     return join(this.hazeWorkspaceDirectory, moduleName, "build");
   }
 
-  async build(isTopLevelModule: boolean) {
+  async build(isTopLevelModule: boolean, fullRebuild?: boolean) {
     return await catchErrors(async () => {
       const log = (msg: string) => {
         assert(this.config.printerModule);
@@ -1855,14 +1856,13 @@ export class ModuleCompiler {
       const compilerKey = compilerFingerprint ? `${version}:${compilerFingerprint}` : `${version}`;
       const cachedCompilerKey = buildCache.getModuleCompilerKey(this.config.name);
       const compilerKeyChanged = cachedCompilerKey !== compilerKey;
+      const forceFullRebuild = fullRebuild === true || compilerKeyChanged;
 
       const initialRelevantFiles = await this.gatherModuleRelevantFiles();
-      const generatorsNeedRun = compilerKeyChanged ? true : this.generatorsNeedRun();
-      const moduleChanged = buildCache.hasModuleChanged(
-        this.config.name,
-        initialRelevantFiles,
-        compilerKey,
-      );
+      const generatorsNeedRun = forceFullRebuild ? true : this.generatorsNeedRun();
+      const moduleChanged = forceFullRebuild
+        ? true
+        : buildCache.hasModuleChanged(this.config.name, initialRelevantFiles, compilerKey);
 
       if (!moduleChanged && !generatorsNeedRun) {
         // console.log(`Skipping module ${this.config.name} (no changes)`);
@@ -1870,7 +1870,7 @@ export class ModuleCompiler {
       }
 
       const generatorsRan = generatorsNeedRun
-        ? await this.runAllGenerators(compilerKeyChanged)
+        ? await this.runAllGenerators(forceFullRebuild)
         : false;
 
       if (!moduleChanged && !generatorsRan) {

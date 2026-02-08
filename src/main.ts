@@ -25,6 +25,11 @@ async function main(): Promise<number> {
     dest: "sourceloc",
     help: "Disable source location tracking",
   });
+  build_parser.add_argument("--full-rebuild", {
+    action: "store_true",
+    dest: "fullRebuild",
+    help: "Force a full rebuild of all modules",
+  });
 
   const get_parser = subparsers.add_parser("get", { help: "Download a file" });
   get_parser.add_argument("url", { help: "URL to download" });
@@ -42,6 +47,11 @@ async function main(): Promise<number> {
     dest: "sourceloc",
     help: "Disable source location tracking",
   });
+  run_parser.add_argument("--full-rebuild", {
+    action: "store_true",
+    dest: "fullRebuild",
+    help: "Force a full rebuild of all modules",
+  });
 
   const exec_parser = subparsers.add_parser("exec", {
     help: "Run a single file immediately as a script",
@@ -50,6 +60,11 @@ async function main(): Promise<number> {
     action: "store_false",
     dest: "sourceloc",
     help: "Disable source location tracking",
+  });
+  exec_parser.add_argument("--full-rebuild", {
+    action: "store_true",
+    dest: "fullRebuild",
+    help: "Force a full rebuild of all modules",
   });
   exec_parser.add_argument("filename", {
     nargs: "?",
@@ -78,7 +93,7 @@ async function main(): Promise<number> {
     }
     if (args.command === "build" || args.command === "run" || args.command === "exec") {
       const project = new ProjectCompiler();
-      if (!(await project.build(args.filename, args.sourceloc))) {
+      if (!(await project.build(args.filename, args.sourceloc, args.fullRebuild))) {
         return 1;
       }
       if (args.command === "run" || args.command === "exec") {
