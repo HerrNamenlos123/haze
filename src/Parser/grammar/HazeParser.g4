@@ -192,53 +192,161 @@ aggregateLiteralElement
     : (key=id COLON)? value=expr
     ;
 
-expr
-    // https://en.cppreference.com/w/c/language/operator_precedence
-    : LB expr RB                                                                    #ParenthesisExpr
-    | doScope                                                                       #BlockScopeExpr
-    | TYPE LANGLE datatype RANGLE                                                   #TypeLiteralExpr
-    | lambda                                                                        #LambdaExpr
-    | literal                                                                       #LiteralExpr
-    | interpolatedString                                                            #FStringLiteralExpr
-    | datatype? LCURLY aggregateLiteralElement? (COMMA aggregateLiteralElement)* COMMA? RCURLY (WITH allocatorExpr=expr)?      #AggregateLiteralExpr
-
-    // Part 1: Left to right
-    | expr op=(PLUSPLUS | MINUSMINUS)                                               #PostIncrExpr
-    | callExpr=expr LB (argExpr+=expr (COMMA argExpr+=expr)* COMMA?)? RB (WITH allocatorExpr=expr)?                  #ExprCallExpr
-    | value=expr LBRACKET (index+=subscriptExpr) (COMMA index+=subscriptExpr)* COMMA? RBRACKET          #ArraySubscriptExpr
-    | expr (DOT | QUESTIONDOT) id (LANGLE genericLiteral (COMMA genericLiteral)* RANGLE)?              #ExprMemberAccess
-    | expr QUESTIONEXCL                                                             #PostfixResultPropagationExpr
-
-    // Part 2: Right to left
-    | <assoc=right> op=(MINUSMINUS | PLUSPLUS) expr                                 #PreIncrExpr
-    | <assoc=right> op=(PLUS | MINUS) expr                                          #UnaryExpr
-    | <assoc=right> op=NOT expr /* and bitwise not */                               #UnaryExpr
-    | <assoc=right> expr AS datatype                                                #ExplicitCastExpr
-    | <assoc=right> expr IS datatype                                                #ExprIsTypeExpr
-    // | <assoc=right> MUL expr                                                     #DereferenceExpr
-    // | <assoc=right> SINGLEAND expr                                               #AddressOfExpr
-
-    // Part 3: Left to right
-    | expr op+=(MUL|DIV|MOD) expr                                                   #BinaryExpr
-    | expr op+=(PLUS|MINUS) expr                                                    #BinaryExpr
-    // | expr ('<<'|'>>') expr                                                      #BinaryExpr
-    | expr op+=(LANGLE|RANGLE|LEQ|GEQ) expr                                         #BinaryExpr
-    | expr (op+=DOUBLEEQUALS|op+=NOTEQUALS) expr                                    #BinaryExpr
-    // | expr ('&') expr                                                            #BinaryExpr
-    // | expr ('^') expr                                                            #BinaryExpr
-    | expr op+=SINGLEOR expr                                                        #BinaryExpr
-    | expr op+=(DOUBLEAND|DOUBLEOR) expr                                            #BinaryExpr
-    
-    // Ternary-like control expressions
-    // <- ternary
-    | expr QUESTIONMARK expr COLON expr                                             #TernaryExpr
-    | ATTEMPT rawScope ELSE (id)? rawScope                                          #AttemptExpr
-
-    // Assignment
-    | <assoc=right> expr op=(EQUALS|COLONEQUALS|PLUSEQ|MINUSEQ|MULEQ|DIVEQ|MODEQ) expr     #ExprAssignmentExpr
-
-    | id (LANGLE genericLiteral (COMMA genericLiteral)* RANGLE)?                    #SymbolValueExpr
+genericArgs
+    : LANGLE genericLiteral (COMMA genericLiteral)* RANGLE
     ;
+
+withAllocator
+    : WITH expr
+    ;
+
+prefixExpr
+    : LB expr RB
+    | doScope
+    | TYPE LANGLE datatype RANGLE
+    | lambda
+    | literal
+    | interpolatedString
+    | braceExpr
+    | id genericArgs?
+    | preUnaryOp prefixExpr
+    ;
+
+preUnaryOp
+    : MINUSMINUS
+    | PLUSPLUS
+    | PLUS
+    | MINUS
+    | NOT
+    ;
+
+indexList
+    : subscriptExpr (COMMA subscriptExpr)* COMMA?
+    ;
+
+argList
+    : expr (COMMA expr)* COMMA?
+    ;
+
+aggregateBody
+    : aggregateLiteralElement?
+      (COMMA aggregateLiteralElement)*
+      COMMA?
+    ;
+
+braceExpr
+    : datatype LCURLY aggregateBody RCURLY withAllocator?
+    | LCURLY aggregateBody RCURLY withAllocator?
+    ;
+
+postfixExpr
+    : prefixExpr postfix*
+    ;
+
+postfix
+    : PLUSPLUS
+    | MINUSMINUS
+    | LB argList? RB withAllocator?
+    | LBRACKET indexList RBRACKET
+    | (DOT | QUESTIONDOT) id genericArgs?
+    | QUESTIONEXCL
+    ;
+
+multiplicative
+    : postfixExpr ((MUL|DIV|MOD) postfixExpr)*
+    ;
+
+additive
+    : multiplicative ((PLUS|MINUS) multiplicative)*
+    ;
+
+comparison
+    : additive ((LANGLE|RANGLE|LEQ|GEQ) additive)*
+    ;
+
+equality
+    : comparison ((DOUBLEEQUALS|NOTEQUALS) comparison)*
+    ;
+
+logical
+    : equality ((DOUBLEAND|DOUBLEOR|SINGLEOR) equality)*
+    ;
+
+ternary
+    : logical ('?' expr ':' ternary)?
+    | ATTEMPT rawScope ELSE id? rawScope
+    ;
+
+assignment
+    : ternary (assignOp assignment)?
+    ;
+
+assignOp
+    : EQUALS
+    | COLONEQUALS
+    | PLUSEQ
+    | MINUSEQ
+    | MULEQ
+    | DIVEQ
+    | MODEQ
+    ;
+
+typeExpr
+    : logical
+    | logical (AS | IS) typeExpr
+    ;
+
+expr
+    : assignment
+    ;
+
+// expr
+//     // https://en.cppreference.com/w/c/language/operator_precedence
+//     : LB expr RB                                                                    #ParenthesisExpr
+//     | doScope                                                                       #BlockScopeExpr
+//     | TYPE LANGLE datatype RANGLE                                                   #TypeLiteralExpr
+//     | lambda                                                                        #LambdaExpr
+//     | literal                                                                       #LiteralExpr
+//     | interpolatedString                                                            #FStringLiteralExpr
+//     | datatype? LCURLY aggregateLiteralElement? (COMMA aggregateLiteralElement)* COMMA? RCURLY (WITH allocatorExpr=expr)?      #AggregateLiteralExpr
+
+//     // Part 1: Left to right
+//     | expr op=(PLUSPLUS | MINUSMINUS)                                               #PostIncrExpr
+//     | callExpr=expr LB (argExpr+=expr (COMMA argExpr+=expr)* COMMA?)? RB (WITH allocatorExpr=expr)?                  #ExprCallExpr
+//     | value=expr LBRACKET (index+=subscriptExpr) (COMMA index+=subscriptExpr)* COMMA? RBRACKET          #ArraySubscriptExpr
+//     | expr (DOT | QUESTIONDOT) id (LANGLE genericLiteral (COMMA genericLiteral)* RANGLE)?              #ExprMemberAccess
+//     | expr QUESTIONEXCL                                                             #PostfixResultPropagationExpr
+
+//     // Part 2: Right to left
+//     | <assoc=right> op=(MINUSMINUS | PLUSPLUS) expr                                 #PreIncrExpr
+//     | <assoc=right> op=(PLUS | MINUS) expr                                          #UnaryExpr
+//     | <assoc=right> op=NOT expr /* and bitwise not */                               #UnaryExpr
+//     | <assoc=right> expr AS datatype                                                #ExplicitCastExpr
+//     | <assoc=right> expr IS datatype                                                #ExprIsTypeExpr
+//     // | <assoc=right> MUL expr                                                     #DereferenceExpr
+//     // | <assoc=right> SINGLEAND expr                                               #AddressOfExpr
+
+//     // Part 3: Left to right
+//     | expr op+=(MUL|DIV|MOD) expr                                                   #BinaryExpr
+//     | expr op+=(PLUS|MINUS) expr                                                    #BinaryExpr
+//     // | expr ('<<'|'>>') expr                                                      #BinaryExpr
+//     | expr op+=(LANGLE|RANGLE|LEQ|GEQ) expr                                         #BinaryExpr
+//     | expr (op+=DOUBLEEQUALS|op+=NOTEQUALS) expr                                    #BinaryExpr
+//     // | expr ('&') expr                                                            #BinaryExpr
+//     // | expr ('^') expr                                                            #BinaryExpr
+//     | expr op+=SINGLEOR expr                                                        #BinaryExpr
+//     | expr op+=(DOUBLEAND|DOUBLEOR) expr                                            #BinaryExpr
+    
+//     // Ternary-like control expressions
+//     // <- ternary
+//     | expr QUESTIONMARK expr COLON expr                                             #TernaryExpr
+//     | ATTEMPT rawScope ELSE (id)? rawScope                                          #AttemptExpr
+
+//     // Assignment
+//     | <assoc=right> expr op=(EQUALS|COLONEQUALS|PLUSEQ|MINUSEQ|MULEQ|DIVEQ|MODEQ) expr     #ExprAssignmentExpr
+
+//     | id (LANGLE genericLiteral (COMMA genericLiteral)* RANGLE)?                    #SymbolValueExpr
+//     ;
 
 // Statements & Conditionals
 
