@@ -1472,92 +1472,6 @@ class ASTTransformer extends HazeParserVisitor<any> {
   visitDatatypeWithMutability = (ctx: DatatypeWithMutabilityContext): ASTTypeUse => {
     const datatype: ASTTypeUse = this.visit(ctx.datatypeImpl());
     return datatype;
-    // const datatype: ASTTypeUse = this.visit(ctx.datatypeImpl());
-    // switch (datatype.variant) {
-    //   case "StackArrayDatatype":
-    //     if (ctx.INLINE()) {
-    //       throw new CompilerError(
-    //         `The 'inline' modifier cannot be applied to a static array type (static arrays are always inline)`,
-    //         this.loc(ctx),
-    //       );
-    //     }
-    //     if (ctx.CONST()) {
-    //       datatype.mutability = EDatatypeMutability.Const;
-    //     }
-    //     if (ctx.MUT()) {
-    //       throw new CompilerError(
-    //         `The 'mut' modifier cannot be applied to a static array type`,
-    //         this.loc(ctx),
-    //       );
-    //     }
-    //     break;
-
-    //   case "NamedDatatype":
-    //     if (ctx.INLINE()) {
-    //       datatype.inline = true;
-    //     }
-    //     if (ctx.CONST()) {
-    //       datatype.mutability = EDatatypeMutability.Const;
-    //     }
-    //     if (ctx.MUT()) {
-    //       datatype.mutability = EDatatypeMutability.Mut;
-    //     }
-    //     break;
-
-    //   case "DynamicArrayDatatype":
-    //     console.log(ctx.getText());
-    //     console.log(ctx._inline);
-    //     if (ctx.INLINE()) {
-    //       throw new CompilerError(
-    //         `The 'inline' modifier cannot be applied to a dynamic array type`,
-    //         this.loc(ctx),
-    //       );
-    //     }
-    //     if (ctx.CONST()) {
-    //       datatype.mutability = EDatatypeMutability.Const;
-    //     }
-    //     if (ctx.MUT()) {
-    //       datatype.mutability = EDatatypeMutability.Mut;
-    //     }
-    //     break;
-
-    //   case "UntaggedUnionDatatype":
-    //   case "TaggedUnionDatatype":
-    //   case "FunctionDatatype":
-    //     if (ctx.INLINE()) {
-    //       throw new CompilerError(
-    //         `The 'inline' modifier cannot be applied to unions function datatypes`,
-    //         this.loc(ctx),
-    //       );
-    //     }
-    //     if (ctx.CONST()) {
-    //       throw new CompilerError(
-    //         `The 'const' modifier cannot be applied to unions or function datatypes`,
-    //         this.loc(ctx),
-    //       );
-    //     }
-    //     if (ctx.MUT()) {
-    //       throw new CompilerError(
-    //         `The 'mut' modifier cannot be applied to unions or function datatypes`,
-    //         this.loc(ctx),
-    //       );
-    //     }
-    //     break;
-
-    //   case "Deferred":
-    //   case "ParameterPack":
-    //     if (ctx.CONST() || ctx.MUT() || ctx.INLINE()) {
-    //       throw new CompilerError(
-    //         `A mutability specifier cannot appear on a '${datatype.variant}' datatype`,
-    //         this.loc(ctx),
-    //       );
-    //     }
-    //     break;
-
-    //   default:
-    //     assert(false);
-    // }
-    // return datatype;
   };
 
   visitDatatypeInParenthesis = (ctx: DatatypeInParenthesisContext): ASTTypeUse => {
@@ -1953,10 +1867,7 @@ class ASTTransformer extends HazeParserVisitor<any> {
     return text; // No escape
   }
 
-  processFString(
-    ctx: SingleFStringContext | TripleFStringContext,
-    mode: "single" | "triple",
-  ): ASTFStringExpr {
+  processFString(ctx: SingleFStringContext | TripleFStringContext): ASTFStringExpr {
     const perCharacterFragments = ctx.interpolatedStringFragment().map((g) => {
       if (g.interpolatedStringExpression()) {
         return {
@@ -1965,10 +1876,6 @@ class ASTTransformer extends HazeParserVisitor<any> {
         } as const;
       } else {
         assert(g.FSTRING_GRAPHEME());
-        // let text = this.unescapeFStringLiteralFragment(
-        //   g.FSTRING_GRAPHEME()!.getText(),
-        //   this.loc(ctx),
-        // );
         let text = g.FSTRING_GRAPHEME()!.getText();
         if (text === "{{") text = "{";
         if (text === "}}") text = "}";
@@ -2020,11 +1927,11 @@ class ASTTransformer extends HazeParserVisitor<any> {
   }
 
   visitSingleFString = (ctx: SingleFStringContext): ASTFStringExpr => {
-    return this.processFString(ctx, "single");
+    return this.processFString(ctx);
   };
 
   visitTripleFString = (ctx: TripleFStringContext): ASTFStringExpr => {
-    return this.processFString(ctx, "single");
+    return this.processFString(ctx);
   };
 
   visitFStringLiteralExpr = (ctx: FStringLiteralExprContext): ASTFStringExpr => {
