@@ -4,6 +4,7 @@ import { join } from "path";
 import path from "node:path";
 import { getFile, ProjectCompiler } from "./Module";
 import { startLsp } from "./lsp";
+import open from "open";
 
 import pkg from "../package.json" with { type: "json" };
 const version = pkg.version;
@@ -122,7 +123,34 @@ async function main(): Promise<number> {
   return 0;
 }
 
-if (true) {
+if ((process.env as any).HAZE_EXEC_MODE === "profiling") {
+  const url = "chrome://inspect";
+
+  // ANSI helpers
+  const reset = "\x1b[0m";
+  const bold = "\x1b[1m";
+  const fg = (r: number, g: number, b: number) => `\x1b[38;2;${r};${g};${b}m`;
+  const bg = (r: number, g: number, b: number) => `\x1b[48;2;${r};${g};${b}m`;
+
+  console.log(
+    `${bold}${fg(255, 255, 255)}${bg(255, 0, 200)}  OPEN CHROME INSPECT  ${reset}\n` +
+      `${bold}${fg(0, 255, 255)}${url}${reset}`,
+  );
+
+  async function runMain() {
+    try {
+      await main();
+    } catch {
+      // intentionally ignored for profiling
+    }
+
+    setTimeout(() => {
+      void runMain();
+    }, 5000);
+  }
+
+  void runMain();
+} else {
   main()
     .then((exitCode) => {
       if (!isLspMode) {
@@ -130,10 +158,6 @@ if (true) {
       }
     })
     .catch(() => {});
-} else {
-  setInterval(() => {
-    main().catch(() => {});
-  }, 15000);
 }
 
 export function sleep(ms: number) {

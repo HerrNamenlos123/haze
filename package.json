@@ -15,7 +15,7 @@
     "generate-parser": "cd src/Parser/grammar && npx antlr4ng-cli -Dlanguage=TypeScript -visitor HazeLexer.g4 HazeParser.g4 -o autogen && cd ../../..",
     "postinstall": "bun run generate-parser",
     "test": "bun run src/all.test.ts",
-    "node": "node scripts/build.js && node --inspect dist/bundle.js"
+    "profile": "node scripts/build.js && HAZE_EXEC_MODE=profiling node --inspect dist/bundle.js"
   },
   "bin": {
     "haze": "dist/haze"
@@ -42,8 +42,9 @@
     "eslint": "^9.39.2",
     "fast-glob": "^3.3.3",
     "gunzip-maybe": "^1.4.2",
-    "vscode-languageserver": "^9.0.1",
+    "open": "^11.0.0",
     "typescript-eslint": "^8.53.0",
+    "vscode-languageserver": "^9.0.1",
     "which": "^5.0.0"
   },
   "devDependencies": {
