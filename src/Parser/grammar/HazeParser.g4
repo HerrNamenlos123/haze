@@ -257,7 +257,7 @@ postfix
     ;
 
 multiplicative
-    : postfixExpr ((MUL|DIV|MOD) postfixExpr)*
+    : prefixExpr ((MUL|DIV|MOD) prefixExpr)*
     ;
 
 additive
