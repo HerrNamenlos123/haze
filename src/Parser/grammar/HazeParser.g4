@@ -170,6 +170,25 @@ typeDefinition
 
 // Expressions
 
+nameSegment
+    : id genericArgs?
+    ;
+
+nameExpr
+    : nameSegment (DOT nameSegment)*
+    ;
+
+primaryExpr
+    : LB expr RB
+    | doScope
+    | TYPE LANGLE datatype RANGLE
+    | lambda
+    | literal
+    | interpolatedString
+    | braceExpr
+    | nameExpr
+    ;
+
 subscriptExpr
     : expr
     | start=expr? COLON end=expr?
@@ -197,17 +216,6 @@ genericArgs
 
 withAllocator
     : WITH expr
-    ;
-
-primaryExpr
-    : LB expr RB
-    | doScope
-    | TYPE LANGLE datatype RANGLE
-    | lambda
-    | literal
-    | interpolatedString
-    | braceExpr
-    | id genericArgs?
     ;
 
 postfixExpr
@@ -243,8 +251,7 @@ aggregateBody
     ;
 
 braceExpr
-    : datatype LCURLY aggregateBody RCURLY withAllocator?
-    | LCURLY aggregateBody RCURLY withAllocator?
+    : nameExpr? LCURLY aggregateBody RCURLY withAllocator?
     ;
 
 postfix
@@ -252,7 +259,7 @@ postfix
     | MINUSMINUS
     | LB argList? RB withAllocator?
     | LBRACKET indexList RBRACKET
-    | (DOT | QUESTIONDOT) id genericArgs?
+    | (DOT | QUESTIONDOT) nameSegment
     | QUESTIONEXCL
     | AS datatype
     | IS datatype

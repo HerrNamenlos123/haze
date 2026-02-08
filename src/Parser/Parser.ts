@@ -138,6 +138,8 @@ import {
   HexIntegerLiteralContext,
   RaiseStatementContext,
   RegexLiteralContext,
+  NameSegmentContext,
+  NameExprContext,
   SubscriptExprContext,
   PrimaryExprContext,
   PrefixExprContext,
@@ -409,6 +411,65 @@ class ASTBuilder extends HazeParserListener {
     const tokens = tokenLists.flat().filter((t): t is TerminalNode => Boolean(t));
     tokens.sort((a, b) => a.symbol.tokenIndex - b.symbol.tokenIndex);
     return tokens;
+  }
+
+  private coerceExprToTypeUse(expr: ASTExpr): ASTTypeUse {
+    if (expr.variant === "TypeLiteralExpr") {
+      return expr.datatype;
+    }
+
+    const fragments: {
+      name: string;
+      generics: (ASTTypeUse | ASTLiteralExpr)[];
+      sourceloc: SourceLoc;
+    }[] = [];
+
+    const collectFragments = (e: ASTExpr) => {
+      if (e.variant === "SymbolValueExpr") {
+        fragments.push({
+          name: e.name,
+          generics: e.generics,
+          sourceloc: e.sourceloc,
+        });
+        return;
+      }
+
+      if (e.variant === "ExprMemberAccess") {
+        collectFragments(e.expr);
+        fragments.push({
+          name: e.member,
+          generics: e.generics,
+          sourceloc: e.sourceloc,
+        });
+        return;
+      }
+
+      throw new InternalError(
+        `Type expression is not a valid datatype: ${String(e?.variant ?? e)}`,
+      );
+    };
+
+    collectFragments(expr);
+
+    let nested: ASTNamedDatatype | undefined = undefined;
+    for (let i = fragments.length - 1; i >= 0; i--) {
+      const f = fragments[i];
+      nested = {
+        variant: "NamedDatatype",
+        name: f.name,
+        generics: f.generics,
+        sourceloc: f.sourceloc,
+        inline: false,
+        mutability: EDatatypeMutability.Default,
+        nested,
+      } satisfies ASTNamedDatatype;
+    }
+
+    if (!nested) {
+      throw new InternalError("Type expression produced no datatype fragments");
+    }
+
+    return nested;
   }
 
   getSource(ctx: ParserRuleContext) {
@@ -1394,7 +1455,8 @@ class ASTBuilder extends HazeParserListener {
     const produced = this.stack.splice(start);
 
     let i = 0;
-    const datatype = ctx.datatype() ? (produced[i++] as ASTTypeUse) : null;
+    const datatypeExpr = ctx.nameExpr() ? (produced[i++] as ASTExpr) : null;
+    const datatype = datatypeExpr ? this.coerceExprToTypeUse(datatypeExpr) : null;
 
     const elementCount = ctx.aggregateBody().aggregateLiteralElement().length;
     const elements = produced.slice(i, i + elementCount) as ASTAggregateLiteralElement[];
@@ -1413,6 +1475,61 @@ class ASTBuilder extends HazeParserListener {
       allocator,
       sourceloc: this.loc(ctx),
     } satisfies ASTAggregateLiteralExpr);
+  };
+
+  exitNameSegment = (ctx: NameSegmentContext) => {
+    const start = this.getMark(ctx);
+    const produced = this.stack.splice(start);
+
+    const genericCount = ctx.genericArgs()?.genericLiteral().length ?? 0;
+    if (produced.length !== genericCount) {
+      throw new InternalError("NameSegment generic count mismatch");
+    }
+
+    this.stack.push({
+      name: ctx.id().getText(),
+      generics: produced as (ASTTypeUse | ASTLiteralExpr)[],
+      sourceloc: this.loc(ctx),
+    });
+  };
+
+  exitNameExpr = (ctx: NameExprContext) => {
+    const start = this.getMark(ctx);
+    const produced = this.stack.splice(start);
+
+    if (produced.length !== ctx.nameSegment().length) {
+      throw new InternalError("NameExpr segment count mismatch");
+    }
+
+    const segments = produced as {
+      name: string;
+      generics: (ASTTypeUse | ASTLiteralExpr)[];
+      sourceloc: SourceLoc;
+    }[];
+
+    if (segments.length === 0) {
+      throw new InternalError("NameExpr missing segments");
+    }
+
+    let expr: ASTExpr = {
+      variant: "SymbolValueExpr",
+      name: segments[0].name,
+      generics: segments[0].generics,
+      sourceloc: segments[0].sourceloc,
+    } satisfies ASTSymbolValueExpr;
+
+    for (let i = 1; i < segments.length; i++) {
+      const seg = segments[i];
+      expr = {
+        variant: "ExprMemberAccess",
+        expr,
+        member: seg.name,
+        generics: seg.generics,
+        sourceloc: seg.sourceloc,
+      } satisfies ASTExprMemberAccess;
+    }
+
+    this.stack.push(expr);
   };
 
   exitPrimaryExpr = (ctx: PrimaryExprContext) => {
@@ -1498,18 +1615,12 @@ class ASTBuilder extends HazeParserListener {
       return;
     }
 
-    if (ctx.id()) {
-      const genericCount = ctx.genericArgs()?.genericLiteral().length ?? 0;
-      if (produced.length !== genericCount) {
-        throw new InternalError("PrimaryExpr symbol generic count mismatch");
+    if (ctx.nameExpr()) {
+      if (produced.length !== 1) {
+        throw new InternalError("PrimaryExpr nameExpr stack mismatch");
       }
 
-      this.stack.push({
-        variant: "SymbolValueExpr",
-        generics: produced as (ASTTypeUse | ASTLiteralExpr)[],
-        name: ctx.id()!.getText(),
-        sourceloc: this.loc(ctx),
-      } satisfies ASTSymbolValueExpr);
+      this.stack.push(produced[0]);
       return;
     }
 
@@ -1609,15 +1720,21 @@ class ASTBuilder extends HazeParserListener {
       }
 
       if (postfix.DOT() || postfix.QUESTIONDOT()) {
-        const genericCount = postfix.genericArgs()?.genericLiteral().length ?? 0;
-        const generics = produced.slice(i, i + genericCount) as (ASTTypeUse | ASTLiteralExpr)[];
-        i += genericCount;
+        if (i >= produced.length) {
+          throw new InternalError("PostfixExpr member access missing segment");
+        }
+
+        const segment = produced[i++] as {
+          name: string;
+          generics: (ASTTypeUse | ASTLiteralExpr)[];
+          sourceloc: SourceLoc;
+        };
 
         expr = {
           variant: "ExprMemberAccess",
           expr,
-          member: postfix.id()!.getText(),
-          generics,
+          member: segment.name,
+          generics: segment.generics,
           sourceloc: this.loc(postfix),
         } satisfies ASTExprMemberAccess;
         continue;
