@@ -301,54 +301,6 @@ expr
     : assignment
     ;
 
-// expr
-//     // https://en.cppreference.com/w/c/language/operator_precedence
-//     : LB expr RB                                                                    #ParenthesisExpr
-//     | doScope                                                                       #BlockScopeExpr
-//     | TYPE LANGLE datatype RANGLE                                                   #TypeLiteralExpr
-//     | lambda                                                                        #LambdaExpr
-//     | literal                                                                       #LiteralExpr
-//     | interpolatedString                                                            #FStringLiteralExpr
-//     | datatype? LCURLY aggregateLiteralElement? (COMMA aggregateLiteralElement)* COMMA? RCURLY (WITH allocatorExpr=expr)?      #AggregateLiteralExpr
-
-//     // Part 1: Left to right
-//     | expr op=(PLUSPLUS | MINUSMINUS)                                               #PostIncrExpr
-//     | callExpr=expr LB (argExpr+=expr (COMMA argExpr+=expr)* COMMA?)? RB (WITH allocatorExpr=expr)?                  #ExprCallExpr
-//     | value=expr LBRACKET (index+=subscriptExpr) (COMMA index+=subscriptExpr)* COMMA? RBRACKET          #ArraySubscriptExpr
-//     | expr (DOT | QUESTIONDOT) id (LANGLE genericLiteral (COMMA genericLiteral)* RANGLE)?              #ExprMemberAccess
-//     | expr QUESTIONEXCL                                                             #PostfixResultPropagationExpr
-
-//     // Part 2: Right to left
-//     | <assoc=right> op=(MINUSMINUS | PLUSPLUS) expr                                 #PreIncrExpr
-//     | <assoc=right> op=(PLUS | MINUS) expr                                          #UnaryExpr
-//     | <assoc=right> op=NOT expr /* and bitwise not */                               #UnaryExpr
-//     | <assoc=right> expr AS datatype                                                #ExplicitCastExpr
-//     | <assoc=right> expr IS datatype                                                #ExprIsTypeExpr
-//     // | <assoc=right> MUL expr                                                     #DereferenceExpr
-//     // | <assoc=right> SINGLEAND expr                                               #AddressOfExpr
-
-//     // Part 3: Left to right
-//     | expr op+=(MUL|DIV|MOD) expr                                                   #BinaryExpr
-//     | expr op+=(PLUS|MINUS) expr                                                    #BinaryExpr
-//     // | expr ('<<'|'>>') expr                                                      #BinaryExpr
-//     | expr op+=(LANGLE|RANGLE|LEQ|GEQ) expr                                         #BinaryExpr
-//     | expr (op+=DOUBLEEQUALS|op+=NOTEQUALS) expr                                    #BinaryExpr
-//     // | expr ('&') expr                                                            #BinaryExpr
-//     // | expr ('^') expr                                                            #BinaryExpr
-//     | expr op+=SINGLEOR expr                                                        #BinaryExpr
-//     | expr op+=(DOUBLEAND|DOUBLEOR) expr                                            #BinaryExpr
-    
-//     // Ternary-like control expressions
-//     // <- ternary
-//     | expr QUESTIONMARK expr COLON expr                                             #TernaryExpr
-//     | ATTEMPT rawScope ELSE (id)? rawScope                                          #AttemptExpr
-
-//     // Assignment
-//     | <assoc=right> expr op=(EQUALS|COLONEQUALS|PLUSEQ|MINUSEQ|MULEQ|DIVEQ|MODEQ) expr     #ExprAssignmentExpr
-
-//     | id (LANGLE genericLiteral (COMMA genericLiteral)* RANGLE)?                    #SymbolValueExpr
-//     ;
-
 // Statements & Conditionals
 
 variableCreation

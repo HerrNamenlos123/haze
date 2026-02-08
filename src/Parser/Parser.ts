@@ -216,7 +216,9 @@ export namespace Parser {
     const parser = new HazeParser(tokenStream);
     parser.removeErrorListeners();
     parser.addErrorListener(errorListener);
-    parser.buildParseTrees = true; // Listener mode instead of Visitor mode (much faster)
+
+    parser.buildParseTrees = true; // Listener mode instead of Visitor mode: TODO: FIX
+    parser.setProfile(true);
 
     parser.addParseListener(listener);
 
