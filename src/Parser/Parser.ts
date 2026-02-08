@@ -6,7 +6,6 @@ import {
   SyntaxError,
   type SourceLoc,
 } from "../shared/Errors";
-import { readFile } from "fs/promises";
 import {
   EAssignmentOperation,
   EBinaryOperation,
@@ -15,7 +14,6 @@ import {
   ELiteralUnit,
   EUnaryOperation,
   type ASTBinaryExpr,
-  type ASTCInjectDirective,
   type ASTLiteralExpr,
   type ASTTypeUse,
   type ASTExplicitCastExpr,
@@ -39,7 +37,6 @@ import {
   type ASTPostIncrExpr,
   type ASTPreIncrExpr,
   type ASTReturnStatement,
-  type ASTRoot,
   type ASTScope,
   type ASTStructDefinition,
   type ASTAggregateLiteralExpr,
@@ -75,6 +72,8 @@ import {
   type ASTAttemptExpr,
   type ASTRaiseStatement,
   type ASTTernaryExpr,
+  type ASTStatement,
+  type ASTFuncBody,
 } from "../shared/AST";
 import {
   BinaryExprContext,
@@ -173,18 +172,20 @@ import {
   TripleStringConstantContext,
   SingleFStringContext,
   TripleFStringContext,
+  ParamContext,
 } from "./grammar/autogen/HazeParser";
 import {
   BaseErrorListener,
   CharStream,
   CommonTokenStream,
+  Interval,
   ParserRuleContext,
   TerminalNode,
 } from "antlr4ng";
 import { HazeLexer } from "./grammar/autogen/HazeLexer";
-import { HazeParserVisitor } from "./grammar/autogen/HazeParserVisitor";
 import { EMethodType, EPrimitive, EVariableContext, type LiteralValue } from "../shared/common";
 import type { ModuleConfig } from "../shared/Config";
+import { HazeParserListener } from "./grammar/autogen/HazeParserListener";
 
 type IfStatementCondition =
   | {
@@ -220,12 +221,7 @@ export namespace Parser {
     }
   }
 
-  async function parseFile(filename: string) {
-    const text = await readFile(filename, "utf-8");
-    return parse(text, filename);
-  }
-
-  function parse(text: string, errorListenerFilename: string) {
+  function parse(text: string, listener: ASTBuilder, errorListenerFilename: string) {
     const errorListener = new HazeErrorListener(errorListenerFilename);
     let inputStream = CharStream.fromString(text);
     let lexer = new HazeLexer(inputStream);
@@ -236,40 +232,34 @@ export namespace Parser {
     const parser = new HazeParser(tokenStream);
     parser.removeErrorListeners();
     parser.addErrorListener(errorListener);
+    parser.buildParseTrees = true; // Listener mode instead of Visitor mode (much faster)
 
-    if (parser.numberOfSyntaxErrors != 0) {
-      return;
-    }
-    const ast = parser.prog();
-    if (parser.numberOfSyntaxErrors != 0) {
-      return;
-    }
-    return ast;
-  }
+    parser.addParseListener(listener);
 
-  function transformAST(config: ModuleConfig, ctx: ProgContext, filename: string): ASTRoot {
-    const transformer = new ASTTransformer(config, filename);
-    return transformer.visit(ctx);
+    parser.prog();
+    if (parser.numberOfSyntaxErrors != 0) {
+      throw new SyntaxError();
+    }
   }
 
   export function parseTextToAST(config: ModuleConfig, text: string, filename: string) {
-    const ctx = parse(text, filename);
-    if (!ctx) {
-      throw new SyntaxError();
-    }
-    return transformAST(config, ctx, filename);
-  }
+    const listener = new ASTBuilder(config, filename);
+    parse(text, listener, filename);
 
-  export async function parseFileToAST(config: ModuleConfig, filename: string) {
-    const ctx = await parseFile(filename);
-    if (!ctx) {
-      throw new SyntaxError();
-    }
-    return transformAST(config, ctx, filename);
+    const result = listener.result();
+    console.log(result);
+    return result;
   }
 }
 
-class ASTTransformer extends HazeParserVisitor<any> {
+class ASTBuilder extends HazeParserListener {
+  stack: any[] = [];
+  private marks: number[] = [];
+  sourcelocOverride: SourceLoc[] = [];
+
+  debug = true;
+  ruleTrace: string[] = [];
+
   constructor(
     public config: ModuleConfig,
     public filename: string,
@@ -277,7 +267,35 @@ class ASTTransformer extends HazeParserVisitor<any> {
     super();
   }
 
-  sourcelocOverride: SourceLoc[] = [];
+  private enter(ctx: ParserRuleContext) {
+    console.log("Inserting mark", ctx.constructor.name);
+    this.marks.push(this.stack.length);
+    if (this.debug) {
+      this.ruleTrace.push(ctx.constructor.name);
+    }
+  }
+
+  private popMark(ctx: ParserRuleContext): number {
+    const mark = this.marks.pop();
+    console.log("Popping mark", ctx.constructor.name, this.getSource(ctx));
+
+    if (mark === undefined) {
+      throw new InternalError(`Missing mark for ${ctx.constructor.name}`);
+    }
+
+    if (mark > this.stack.length) {
+      throw new InternalError(
+        `Invalid mark in ${ctx.constructor.name}: mark=${mark}, stack=${this.stack.length}`,
+      );
+    }
+
+    return mark;
+  }
+
+  result() {
+    if (this.stack.length !== 1) throw new Error("bad stack");
+    return this.stack[0];
+  }
 
   loc(ctx: ParserRuleContext): SourceLoc {
     if (this.sourcelocOverride.length > 0) {
@@ -424,123 +442,196 @@ class ASTTransformer extends HazeParserVisitor<any> {
   }
 
   getSource(ctx: ParserRuleContext) {
-    if (!ctx.start || !ctx.start.inputStream) return "";
-    const startIdx = ctx.start.start;
-    const stopIdx = ctx.stop?.stop ?? ctx.start.start;
-    const originalText = ctx.start.inputStream.getTextFromRange(startIdx, stopIdx);
-    return originalText;
+    if (!ctx.start || !ctx.stop) return "<no-source>";
+    const interval = new Interval(ctx.start.start, ctx.stop.stop);
+    return ctx.start.inputStream!.getTextFromInterval(interval);
   }
 
-  requires(
-    ctx: FunctionDefinitionContext | StructMethodContext | FunctionDatatypeContext,
-  ): ASTFunctionRequiresBlock {
-    if (ctx.requiresBlock()) {
-      return this.visit(ctx.requiresBlock()!);
-    } else {
-      return {
-        final: false,
-        noreturn: false,
-        noreturnIf: null,
-        pure: false,
-      };
-    }
-  }
-
-  visitProg = (ctx: ProgContext): ASTRoot => {
-    const result = ctx.children
-      .map((c) => {
-        if (c instanceof TerminalNode && c.getText() === "<EOF>") {
-          return;
-        }
-        const result = this.visit(c);
-        return result;
-      })
-      .filter((c) => !!c)
-      .flat();
-    return result;
-  };
-
-  visitTopLevelDeclarations = (ctx: TopLevelDeclarationsContext) => {
-    const children = ctx.children.map((c) => this.visit(c)).flat();
-    return children;
-  };
-
-  visitCInjectDirective = (ctx: CInjectDirectiveContext): ASTCInjectDirective => {
+  private emptyRequires(): ASTFunctionRequiresBlock {
     return {
+      final: false,
+      noreturn: false,
+      noreturnIf: null,
+      pure: false,
+    };
+  }
+
+  enterProg = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitProg = (ctx: ProgContext) => {
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
+
+    if (produced.length !== 1) {
+      throw new InternalError(`Prog stack mismatch: got ${produced.length}`);
+    }
+
+    this.stack.push(produced[0]);
+  };
+
+  enterTopLevelDeclarations = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitTopLevelDeclarations = (ctx: TopLevelDeclarationsContext) => {
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
+
+    const out: any[] = [];
+
+    for (const v of produced) {
+      if (Array.isArray(v)) out.push(...v);
+      else if (v != null) out.push(v);
+    }
+
+    this.stack.push(out);
+  };
+
+  enterCInjectDirective = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitCInjectDirective = (ctx: CInjectDirectiveContext) => {
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
+
+    if (produced.length !== 1) {
+      throw new InternalError(`CInjectDirective expected 1 child, got ${produced.length}`);
+    }
+
+    this.stack.push({
       variant: "CInjectDirective",
-      expr: this.visit(ctx.expr()),
+      expr: produced[0],
       export: Boolean(ctx._export_),
       sourceloc: this.loc(ctx),
-    };
+    });
   };
 
-  visitIntegerLiteral = (ctx: IntegerLiteralContext): LiteralValue => {
-    return {
+  enterIntegerLiteral = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitIntegerLiteral = (ctx: IntegerLiteralContext) => {
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
+
+    if (produced.length !== 0) {
+      throw new InternalError("IntegerLiteral stack mismatch");
+    }
+
+    this.stack.push({
       type: EPrimitive.int,
       value: BigInt(ctx.INTEGER_LITERAL().getText()),
       unit: null,
-    };
+    } satisfies LiteralValue);
   };
 
-  visitHexIntegerLiteral = (ctx: HexIntegerLiteralContext): LiteralValue => {
-    return {
+  enterHexIntegerLiteral = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitHexIntegerLiteral = (ctx: HexIntegerLiteralContext) => {
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
+
+    if (produced.length !== 0) {
+      throw new InternalError("HexIntegerLiteral stack mismatch");
+    }
+
+    this.stack.push({
       type: EPrimitive.int,
       value: BigInt(ctx.HEX_INTEGER_LITERAL().getText()),
       unit: null,
-    };
+    } satisfies LiteralValue);
   };
 
-  visitFloatLiteral = (ctx: FloatLiteralContext): LiteralValue => {
-    return {
+  enterFloatLiteral = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitFloatLiteral = (ctx: FloatLiteralContext) => {
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
+
+    if (produced.length !== 0) {
+      throw new InternalError("FloatLiteral stack mismatch");
+    }
+
+    this.stack.push({
       type: EPrimitive.real,
       value: Number(ctx.FLOAT_LITERAL().getText()),
       unit: null,
-    };
+    } satisfies LiteralValue);
   };
 
-  visitIntegerUnitLiteral = (ctx: IntegerUnitLiteralContext): LiteralValue => {
-    return this.makeIntegerUnitLiteral(ctx);
+  enterIntegerUnitLiteral = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitIntegerUnitLiteral = (ctx: IntegerUnitLiteralContext) => {
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
+
+    if (produced.length !== 0) {
+      throw new InternalError("IntegerUnitLiteral stack mismatch");
+    }
+
+    this.stack.push(this.makeIntegerUnitLiteral(ctx));
   };
 
-  visitFloatUnitLiteral = (ctx: FloatUnitLiteralContext): LiteralValue => {
-    return this.makeFloatUnitLiteral(ctx);
+  enterFloatUnitLiteral = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitFloatUnitLiteral = (ctx: FloatUnitLiteralContext) => {
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
+
+    if (produced.length !== 0) {
+      throw new InternalError("FloatUnitLiteral stack mismatch");
+    }
+
+    this.stack.push(this.makeFloatUnitLiteral(ctx));
   };
 
-  visitStringConstant = (ctx: StringConstantContext): LiteralValue => {
+  enterStringConstant = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitStringConstant = (ctx: StringConstantContext) => {
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
+
+    if (produced.length !== 0) {
+      throw new InternalError("StringConstant stack mismatch");
+    }
+
     let text = ctx.STRING_LITERAL().getText();
 
     let prefix: "b" | null = null;
     if (text.startsWith('b"')) {
-      text = text.slice(1, undefined);
+      text = text.slice(1);
       prefix = "b";
-    } else if (text.startsWith('"')) {
-    } else {
-      assert(false);
+    } else if (!text.startsWith('"')) {
+      throw new InternalError("Malformed string literal");
     }
 
     const value = this.trimAndUnescapeStringLiteral(text, 1, this.loc(ctx));
-    return {
+
+    this.stack.push({
       type: EPrimitive.str,
-      prefix: prefix,
-      value: value,
-    };
+      prefix,
+      value,
+    } satisfies LiteralValue);
   };
 
-  visitTripleStringConstant = (ctx: TripleStringConstantContext): LiteralValue => {
-    let text = ctx.TRIPLE_STRING_LITERAL().getText();
+  enterTripleStringConstant = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitTripleStringConstant = (ctx: TripleStringConstantContext) => {
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
+
+    if (produced.length !== 0) {
+      throw new InternalError("TripleStringConstant stack mismatch");
+    }
+
+    const text = ctx.TRIPLE_STRING_LITERAL().getText();
     const value = this.trimAndUnescapeStringLiteral(text, 3, this.loc(ctx));
-    return {
+
+    this.stack.push({
       type: EPrimitive.str,
       prefix: null,
-      value: value,
-    };
+      value,
+    } satisfies LiteralValue);
   };
 
-  visitBooleanConstant = (ctx: BooleanConstantContext): LiteralValue => {
-    return {
+  enterBooleanConstant = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitBooleanConstant = (ctx: BooleanConstantContext) => {
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
+
+    if (produced.length !== 0) {
+      throw new InternalError("BooleanConstant stack mismatch");
+    }
+
+    this.stack.push({
       type: EPrimitive.bool,
-      value: ctx.getText() === "true" ? true : false,
-    };
+      value: ctx.getText() === "true",
+    } satisfies LiteralValue);
   };
 
   makeIntegerUnitLiteral(ctx: IntegerUnitLiteralContext): LiteralValue {
@@ -652,141 +743,293 @@ class ASTTransformer extends HazeParserVisitor<any> {
     };
   }
 
-  visitGenericLiteralDatatype = (ctx: GenericLiteralDatatypeContext): ASTTypeUse => {
-    return this.visit(ctx.datatype());
-  };
+  enterGenericLiteralDatatype = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitGenericLiteralDatatype = (ctx: GenericLiteralDatatypeContext) => {
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
 
-  visitGenericLiteralConstant = (ctx: GenericLiteralConstantContext): ASTLiteralExpr => {
-    return {
-      variant: "LiteralExpr",
-      literal: this.visit(ctx.literal()),
-      sourceloc: this.loc(ctx),
-    };
-  };
-
-  visitDatatypeFragment = (ctx: DatatypeFragmentContext) => {
-    return {
-      name: ctx.id().getText(),
-      generics: ctx.genericLiteral().map((g) => this.visit(g) as ASTTypeUse | ASTLiteralExpr),
-      sourceloc: this.loc(ctx),
-    };
-  };
-
-  visitUntaggedUnionDatatype = (ctx: UntaggedUnionDatatypeContext): ASTUntaggedUnionDatatype => {
-    const members = ctx.baseDatatype().map((d) => this.visit(d));
-
-    // This is every normal variable: A union with only one variant
-    if (members.length === 1) {
-      return members[0];
+    if (produced.length !== 1) {
+      throw new InternalError("GenericLiteralDatatype stack mismatch");
     }
 
-    return {
-      variant: "UntaggedUnionDatatype",
-      members: members,
-      sourceloc: this.loc(ctx),
-    };
+    this.stack.push(produced[0]);
   };
 
-  visitTaggedUnionDatatype = (ctx: TaggedUnionDatatypeContext): ASTTaggedUnionDatatype => {
-    const members = ctx.baseDatatype().map((d, index) => ({
-      tag: ctx.id()[index].getText(),
-      type: this.visit(d),
+  enterGenericLiteralConstant = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitGenericLiteralConstant = (ctx: GenericLiteralConstantContext) => {
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
+
+    if (produced.length !== 1) {
+      throw new InternalError("GenericLiteralConstant stack mismatch");
+    }
+
+    const literal = produced[0] as LiteralValue;
+
+    this.stack.push({
+      variant: "LiteralExpr",
+      literal,
+      sourceloc: this.loc(ctx),
+    } satisfies ASTLiteralExpr);
+  };
+
+  enterDatatypeFragment = (ctx: ParserRuleContext) => {
+    console.log("> pushing fragment");
+    this.enter(ctx);
+  };
+  exitDatatypeFragment = (ctx: DatatypeFragmentContext) => {
+    console.log("> popping fragment");
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
+
+    const genericCount = ctx.genericLiteral().length;
+
+    if (produced.length !== genericCount) {
+      throw new InternalError(
+        `DatatypeFragment stack mismatch: expected ${genericCount}, got ${produced.length}`,
+      );
+    }
+
+    // id is guaranteed by grammar — this assert is for corruption detection
+    const idNode = ctx.id();
+    if (!idNode) {
+      throw new InternalError("Parser stack corrupted before DatatypeFragment");
+    }
+
+    this.stack.push({
+      name: idNode.getText(),
+      generics: produced as (ASTTypeUse | ASTLiteralExpr)[],
+      sourceloc: this.loc(ctx),
+    });
+  };
+
+  enterUntaggedUnionDatatype = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitUntaggedUnionDatatype = (ctx: UntaggedUnionDatatypeContext) => {
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
+
+    if (produced.length === 0) {
+      throw new InternalError("UntaggedUnionDatatype missing members");
+    }
+
+    if (produced.length === 1) {
+      // passthrough
+      this.stack.push(produced[0]);
+      return;
+    }
+
+    this.stack.push({
+      variant: "UntaggedUnionDatatype",
+      members: produced as ASTTypeUse[],
+      sourceloc: this.loc(ctx),
+    } satisfies ASTUntaggedUnionDatatype);
+  };
+
+  enterTaggedUnionDatatype = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitTaggedUnionDatatype = (ctx: TaggedUnionDatatypeContext) => {
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
+
+    const ids = ctx.id();
+
+    if (produced.length !== ids.length) {
+      throw new InternalError("TaggedUnionDatatype stack mismatch");
+    }
+
+    const members = produced.map((type, i) => ({
+      tag: ids[i].getText(),
+      type: type as ASTTypeUse,
     }));
-    return {
+
+    this.stack.push({
       variant: "TaggedUnionDatatype",
-      members: members,
+      members,
       nodiscard: Boolean(ctx.NODISCARD()),
       sourceloc: this.loc(ctx),
-    };
+    } satisfies ASTTaggedUnionDatatype);
   };
 
-  visitNamedDatatype = (ctx: NamedDatatypeContext): ASTNamedDatatype => {
-    const fragments = ctx.datatypeFragment().map((c) => this.visitDatatypeFragment(c));
-    const datatypes: ASTNamedDatatype[] = [];
-    for (const fragment of fragments.reverse()) {
-      datatypes.push({
+  enterNamedDatatype = (ctx: ParserRuleContext) => {
+    console.log("> pushing datatype");
+    this.enter(ctx);
+  };
+  exitNamedDatatype = (ctx: NamedDatatypeContext) => {
+    console.log("> popping datatype");
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
+
+    if (produced.length === 0) {
+      throw new InternalError("NamedDatatype missing fragments");
+    }
+
+    const fragments = produced as {
+      name: string;
+      sourceloc: SourceLoc;
+      generics: (ASTTypeUse | ASTLiteralExpr)[];
+    }[];
+
+    let nested: ASTNamedDatatype | undefined = undefined;
+
+    for (let i = fragments.length - 1; i >= 0; i--) {
+      const f = fragments[i];
+
+      nested = {
         variant: "NamedDatatype",
-        name: fragment.name,
-        sourceloc: fragment.sourceloc,
-        generics: fragment.generics,
+        name: f.name,
+        sourceloc: f.sourceloc,
+        generics: f.generics,
         inline: false,
         mutability: EDatatypeMutability.Default,
-        nested: datatypes[datatypes.length - 1],
-      });
+        nested,
+      };
     }
-    return datatypes[datatypes.length - 1];
+
+    this.stack.push(nested!);
   };
 
-  visitParams = (ctx: ParamsContext): { params: ASTParam[]; ellipsis: boolean } => {
-    const params = ctx.param().map((p) => {
-      let datatype: ASTTypeUse;
-      if (p.datatype()) {
-        datatype = this.visit(p.datatype()!);
-      } else {
-        datatype = {
+  enterParam = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitParam = (p: ParamContext) => {
+    const start = this.popMark(p);
+    const produced = this.stack.splice(start);
+
+    // datatype is optional and is the only stack child
+    const datatype = p.datatype()
+      ? produced[0]
+      : {
           variant: "ParameterPack",
-          sourceloc: this.loc(ctx),
+          sourceloc: this.loc(p),
         };
-      }
-      return {
-        datatype: datatype,
-        name: p.id().getText(),
-        optional: Boolean(p.QUESTIONMARK()),
-        sourceloc: this.loc(p),
-      } satisfies ASTParam;
-    });
-    return {
-      params: params,
+
+    if (p.datatype() && produced.length !== 1) {
+      throw new InternalError("param datatype stack mismatch");
+    }
+
+    this.stack.push({
+      datatype,
+      name: p.id().getText(),
+      optional: Boolean(p.QUESTIONMARK()),
+      sourceloc: this.loc(p),
+    } satisfies ASTParam);
+  };
+
+  enterParams = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitParams = (ctx: ParamsContext) => {
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
+
+    // produced = array of ASTParam (one per param child)
+
+    this.stack.push({
+      params: produced as ASTParam[],
       ellipsis: Boolean(ctx.ellipsis()),
-    };
+    });
   };
 
-  visitExprAsFuncbody = (ctx: ExprAsFuncbodyContext): ASTExprAsFuncbody => {
-    return {
+  enterExprAsFuncbody = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitExprAsFuncbody = (ctx: ExprAsFuncbodyContext) => {
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
+
+    if (produced.length !== 1) {
+      throw new InternalError("ExprAsFuncbody stack mismatch");
+    }
+
+    const expr = produced[0] as ASTExpr;
+
+    this.stack.push({
       variant: "ExprAsFuncBody",
-      expr: this.visit(ctx.expr()),
-    };
+      expr,
+    } satisfies ASTExprAsFuncbody);
   };
 
-  visitRequiresInParens = (ctx: RequiresInParensContext) => {
-    return this.visit(ctx.requiresPart());
+  enterRequiresInParens = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitRequiresInParens = (ctx: RequiresInParensContext) => {
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
+
+    if (produced.length !== 1) {
+      throw new InternalError("RequiresInParens stack mismatch");
+    }
+
+    this.stack.push(produced[0]);
   };
 
-  visitRequiresBlock = (ctx: RequiresBlockContext): ASTFunctionRequiresBlock => {
+  enterRequiresBlock = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitRequiresBlock = (ctx: RequiresBlockContext) => {
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
+
+    let i = 0;
+
     const block: ASTFunctionRequiresBlock = {
       final: false,
       pure: false,
       noreturn: false,
       noreturnIf: null,
     };
+
     for (const part of ctx.requiresPart()) {
       if (part instanceof RequiresFinalContext) {
         block.final = true;
-      }
-      if (part instanceof RequiresPureContext) {
+      } else if (part instanceof RequiresPureContext) {
         block.pure = true;
-      }
-      if (part instanceof RequiresNoreturnContext) {
+      } else if (part instanceof RequiresNoreturnContext) {
         block.noreturn = true;
-      }
-      if (part instanceof RequiresNoreturnIfContext) {
+      } else if (part instanceof RequiresNoreturnIfContext) {
+        if (i >= produced.length) {
+          throw new InternalError("RequiresBlock stack underflow");
+        }
+
         block.noreturnIf = {
-          expr: this.visit(part.expr()),
+          expr: produced[i++] as ASTExpr,
         };
       }
     }
-    return block;
+
+    if (i !== produced.length) {
+      throw new InternalError("RequiresBlock stack mismatch");
+    }
+
+    this.stack.push(block);
   };
 
-  visitFunctionDefinition = (ctx: FunctionDefinitionContext): ASTFunctionDefinition => {
+  enterFunctionDefinition = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitFunctionDefinition = (ctx: FunctionDefinitionContext) => {
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
+
+    let i = 0;
+
+    // params (required)
+    const params = produced[i++] as {
+      params: ASTParam[];
+      ellipsis: boolean;
+    };
+
+    // return type (optional)
+    const returnType = ctx.datatype() ? (produced[i++] as ASTTypeUse) : undefined;
+
+    // requires block (optional)
+    const requires = ctx.requiresBlock()
+      ? (produced[i++] as ASTFunctionRequiresBlock)
+      : this.emptyRequires();
+
+    // funcbody (optional)
+    const funcbody = ctx.funcbody() ? (produced[i++] as ASTFuncBody) : undefined;
+
+    if (i !== produced.length) {
+      throw new InternalError(
+        `FunctionDefinition stack mismatch: expected ${i}, got ${produced.length}`,
+      );
+    }
+
     const names = ctx.id().map((c) => c.getText());
-    const params = this.visitParams(ctx.params());
     const generics = ctx
       .id()
       .slice(1)
       .map((g) => g.getText());
 
-    return {
+    this.stack.push({
       variant: "FunctionDefinition",
       export: Boolean(ctx._export_),
       noemit: Boolean(ctx._noemit),
@@ -795,38 +1038,81 @@ class ASTTransformer extends HazeParserVisitor<any> {
       params: params.params,
       generics: generics.map((p) => ({
         name: p,
-        sourceloc: this.loc(ctx), // TODO: Find a better sourceloc from the actual token, not the function
+        sourceloc: this.loc(ctx),
       })),
-      requires: this.requires(ctx),
+      requires,
       static: false,
       methodType: EMethodType.None,
       name: names[0],
       methodRequiredMutability: null,
       operatorOverloading: undefined,
       ellipsis: params.ellipsis,
-      funcbody: (ctx.funcbody() && this.visit(ctx.funcbody()!)) || undefined,
-      returnType: (ctx.datatype() && this.visit(ctx.datatype()!)) || undefined,
+      funcbody,
+      returnType,
       sourceloc: this.loc(ctx),
       originalSourcecode: this.getSource(ctx),
-    };
+    } satisfies ASTFunctionDefinition);
   };
 
-  visitLambda = (ctx: LambdaContext): ASTLambda => {
-    const params = this.visitParams(ctx.params());
-    return {
+  enterLambda = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitLambda = (ctx: LambdaContext) => {
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
+
+    let i = 0;
+
+    const params = produced[i++] as {
+      params: ASTParam[];
+      ellipsis: boolean;
+    };
+
+    if (!ctx.funcbody()) {
+      throw new InternalError("Lambda missing funcbody");
+    }
+
+    const funcbody = produced[i++] as ASTFuncBody;
+
+    let returnType: ASTTypeUse | undefined = undefined;
+    if (ctx.datatype()) {
+      returnType = produced[i++] as ASTTypeUse;
+    }
+
+    if (i !== produced.length) {
+      throw new InternalError("Lambda stack mismatch");
+    }
+
+    this.stack.push({
       variant: "Lambda",
       params: params.params,
       ellipsis: params.ellipsis,
-      funcbody: (ctx.funcbody() && this.visit(ctx.funcbody()!)) || undefined,
-      returnType: (ctx.datatype() && this.visit(ctx.datatype()!)) || undefined,
+      funcbody,
+      returnType,
       sourceloc: this.loc(ctx),
-    };
+    } satisfies ASTLambda);
   };
 
-  visitGlobalVariableDefinition = (
-    ctx: GlobalVariableDefinitionContext,
-  ): ASTGlobalVariableDefinition => {
-    return {
+  enterGlobalVariableDefinition = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitGlobalVariableDefinition = (ctx: GlobalVariableDefinitionContext) => {
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
+
+    let i = 0;
+
+    let datatype: ASTTypeUse | undefined = undefined;
+    if (ctx.datatype()) {
+      datatype = produced[i++] as ASTTypeUse;
+    }
+
+    let expr: ASTExpr | undefined = undefined;
+    if (ctx.expr()) {
+      expr = produced[i++] as ASTExpr;
+    }
+
+    if (i !== produced.length) {
+      throw new InternalError("GlobalVariableDefinition stack mismatch");
+    }
+
+    this.stack.push({
       variant: "GlobalVariableDefinition",
       pub: Boolean(ctx._pub),
       export: Boolean(ctx._export_),
@@ -835,144 +1121,215 @@ class ASTTransformer extends HazeParserVisitor<any> {
       mutability: this.mutability(ctx),
       name: ctx.id().getText(),
       sourceloc: this.loc(ctx),
-      datatype: (ctx.datatype() && this.visit(ctx.datatype()!)) || undefined,
-      expr: (ctx.expr() && this.visit(ctx.expr()!)) || undefined,
-    };
+      datatype,
+      expr,
+    } satisfies ASTGlobalVariableDefinition);
   };
 
-  visitStructMember = (ctx: StructMemberContext): ASTStructMemberDefinition[] => {
-    return [
+  enterStructMember = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitStructMember = (ctx: StructMemberContext) => {
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
+
+    let i = 0;
+
+    const type = produced[i++] as ASTTypeUse;
+
+    let defaultValue: ASTExpr | null = null;
+    if (ctx.expr()) {
+      defaultValue = produced[i++] as ASTExpr;
+    }
+
+    if (i !== produced.length) {
+      throw new InternalError("StructMember stack mismatch");
+    }
+
+    this.stack.push([
       {
         variant: "StructMember",
         name: ctx.id().getText(),
-        type: this.visit(ctx.datatype()),
+        type,
         mutability: ctx.variableMutabilitySpecifier()
           ? this.mutability(ctx)
           : EVariableMutability.Default,
         optional: Boolean(ctx.QUESTIONMARK()),
-        defaultValue: ctx.expr() ? this.visit(ctx.expr()!) : null,
+        defaultValue,
         sourceloc: this.loc(ctx),
-      },
-    ];
+      } satisfies ASTStructMemberDefinition,
+    ]);
   };
 
-  visitTernaryExpr = (ctx: TernaryExprContext): ASTTernaryExpr => {
-    const exprs: ASTExpr[] = ctx.expr().map((e) => this.visit(e));
-    assert(exprs.length === 3);
-    return {
+  enterTernaryExpr = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitTernaryExpr = (ctx: TernaryExprContext) => {
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
+
+    if (produced.length !== 3) {
+      throw new InternalError("TernaryExpr stack mismatch");
+    }
+
+    const condition = produced[0] as ASTExpr;
+    const thenExpr = produced[1] as ASTExpr;
+    const elseExpr = produced[2] as ASTExpr;
+
+    this.stack.push({
       variant: "TernaryExpr",
-      condition: exprs[0],
-      then: exprs[1],
-      else: exprs[2],
+      condition,
+      then: thenExpr,
+      else: elseExpr,
       sourceloc: this.loc(ctx),
-    };
+    } satisfies ASTTernaryExpr);
   };
 
-  visitStructMethod = (ctx: StructMethodContext): ASTFunctionDefinition[] => {
-    const genericNames = ctx._generic.map((c) => {
-      assert(c.getText());
-      return c.getText();
-    });
-    const params = this.visitParams(ctx.params());
+  enterStructMethod = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitStructMethod = (ctx: StructMethodContext) => {
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
 
-    assert(ctx._name?.text);
+    let i = 0;
+
+    // params (required)
+    const params = produced[i++] as {
+      params: ASTParam[];
+      ellipsis: boolean;
+    };
+
+    // return type (optional)
+    const returnType = ctx.datatype() ? (produced[i++] as ASTTypeUse) : undefined;
+
+    // requires block (optional)
+    const requires = ctx.requiresBlock()
+      ? (produced[i++] as ASTFunctionRequiresBlock)
+      : this.emptyRequires();
+
+    // funcbody (optional)
+    const funcbody = ctx.funcbody() ? (produced[i++] as ASTFuncBody) : undefined;
+
+    if (i !== produced.length) {
+      throw new InternalError("StructMethod stack mismatch");
+    }
+
+    const genericNames = ctx._generic.map((c) => {
+      const t = c.getText();
+      if (!t) throw new InternalError("missing generic name");
+      return t;
+    });
+
+    if (!ctx._name?.text) {
+      throw new InternalError("missing method name");
+    }
+
     let name = ctx._name.text;
     let methodType = EMethodType.Method;
     let operatorOverloading: ASTFunctionOverloading | undefined = undefined;
+
     if (name === "constructor") {
       methodType = EMethodType.Constructor;
     } else if (name === "operator+") {
-      operatorOverloading = {
-        operator: EOverloadedOperator.Add,
-      };
+      operatorOverloading = { operator: EOverloadedOperator.Add };
       name = "__operator_add";
     } else if (name === "operator-") {
-      operatorOverloading = {
-        operator: EOverloadedOperator.Sub,
-      };
+      operatorOverloading = { operator: EOverloadedOperator.Sub };
       name = "__operator_sub";
     } else if (name === "operator*") {
-      operatorOverloading = {
-        operator: EOverloadedOperator.Mul,
-      };
+      operatorOverloading = { operator: EOverloadedOperator.Mul };
       name = "__operator_mul";
     } else if (name === "operator/") {
-      operatorOverloading = {
-        operator: EOverloadedOperator.Div,
-      };
+      operatorOverloading = { operator: EOverloadedOperator.Div };
       name = "__operator_div";
     } else if (name === "operator%") {
-      operatorOverloading = {
-        operator: EOverloadedOperator.Mod,
-      };
+      operatorOverloading = { operator: EOverloadedOperator.Mod };
       name = "__operator_mod";
     } else if (name === "operator=") {
-      operatorOverloading = {
-        operator: EOverloadedOperator.Rebind,
-      };
+      operatorOverloading = { operator: EOverloadedOperator.Rebind };
       name = "__operator_assign";
     } else if (name === "operator:=") {
-      operatorOverloading = {
-        operator: EOverloadedOperator.Assign,
-      };
+      operatorOverloading = { operator: EOverloadedOperator.Assign };
       name = "__operator_assign";
     } else if (name === "operator as") {
-      operatorOverloading = {
-        operator: EOverloadedOperator.Cast,
-      };
+      operatorOverloading = { operator: EOverloadedOperator.Cast };
       name = "__operator_cast";
     } else if (name === "operator[]") {
-      operatorOverloading = {
-        operator: EOverloadedOperator.Subscript,
-      };
+      operatorOverloading = { operator: EOverloadedOperator.Subscript };
       name = "__operator_subscript";
     }
 
     let methodRequiredMutability: EDatatypeMutability.Mut | EDatatypeMutability.Const | null = null;
+
     if (ctx.MUT()) {
       methodRequiredMutability = EDatatypeMutability.Mut;
     } else if (ctx.CONST()) {
       methodRequiredMutability = EDatatypeMutability.Const;
     }
 
-    return [
-      {
-        variant: "FunctionDefinition",
-        params: params.params,
-        export: false,
-        externLanguage: EExternLanguage.None,
-        noemit: false,
-        pub: false,
-        methodType: methodType,
-        methodRequiredMutability: methodRequiredMutability,
-        name: name,
-        static: Boolean(ctx._static_),
-        generics: genericNames.map((n) => ({
-          name: n,
-          sourceloc: this.loc(ctx), // TODO: Find a better sourceloc from the actual token, not the function
-        })),
-        requires: this.requires(ctx),
-        ellipsis: params.ellipsis,
-        operatorOverloading: operatorOverloading,
-        returnType: (ctx.datatype() && this.visit(ctx.datatype()!)) || undefined,
-        funcbody: (ctx.funcbody() && this.visit(ctx.funcbody()!)) || undefined,
+    const fn: ASTFunctionDefinition = {
+      variant: "FunctionDefinition",
+      params: params.params,
+      export: false,
+      externLanguage: EExternLanguage.None,
+      noemit: false,
+      pub: false,
+      methodType,
+      methodRequiredMutability,
+      name,
+      static: Boolean(ctx._static_),
+      generics: genericNames.map((n) => ({
+        name: n,
         sourceloc: this.loc(ctx),
-        originalSourcecode: this.getSource(ctx),
-      },
-    ];
+      })),
+      requires,
+      ellipsis: params.ellipsis,
+      operatorOverloading,
+      returnType,
+      funcbody,
+      sourceloc: this.loc(ctx),
+      originalSourcecode: this.getSource(ctx),
+    };
+
+    this.stack.push([fn]);
   };
 
-  visitEnumContent = (ctx: EnumContentContext): ASTEnumValueDefinition => {
-    return {
+  enterEnumContent = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitEnumContent = (ctx: EnumContentContext) => {
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
+
+    let value: ASTExpr | null = null;
+
+    if (ctx.expr()) {
+      if (produced.length !== 1) {
+        throw new InternalError("EnumContent stack mismatch");
+      }
+      value = produced[0] as ASTExpr;
+    } else {
+      if (produced.length !== 0) {
+        throw new InternalError("EnumContent stack mismatch");
+      }
+    }
+
+    this.stack.push({
       variant: "EnumValue",
       name: ctx.id().getText(),
-      value: ctx.expr() ? this.visit(ctx.expr()!) : null,
+      value,
       sourceloc: this.loc(ctx),
-    };
+    } satisfies ASTEnumValueDefinition);
   };
 
-  visitEnumDefinition = (ctx: EnumDefinitionContext): ASTEnumDefinition => {
-    return {
+  enterEnumDefinition = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitEnumDefinition = (ctx: EnumDefinitionContext) => {
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
+
+    // Every produced child must be an enum value
+    for (const v of produced) {
+      if (!v || v.variant !== "EnumValue") {
+        throw new InternalError("EnumDefinition stack mismatch");
+      }
+    }
+
+    const values = produced as ASTEnumValueDefinition[];
+
+    this.stack.push({
       variant: "EnumDefinition",
       export: Boolean(ctx._export_),
       pub: Boolean(ctx._pub),
@@ -981,189 +1338,372 @@ class ASTTransformer extends HazeParserVisitor<any> {
       extern: this.exlang(ctx),
       name: ctx.id().getText(),
       noemit: Boolean(ctx._noemit),
-      values: ctx._content.map((c) => this.visit(c)),
+      values,
       sourceloc: this.loc(ctx),
       originalSourcecode: this.getSource(ctx),
-    };
+    } satisfies ASTEnumDefinition);
   };
 
-  visitNestedStructDefinition = (ctx: NestedStructDefinitionContext): ASTStructDefinition[] => {
-    return [this.visit(ctx.structDefinition())];
+  enterNestedStructDefinition = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitNestedStructDefinition = (ctx: NestedStructDefinitionContext) => {
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
+
+    if (produced.length !== 1) {
+      throw new InternalError("NestedStructDefinition stack mismatch");
+    }
+
+    const def = produced[0] as ASTStructDefinition;
+
+    this.stack.push([def]);
   };
 
-  visitStructDefinition = (ctx: StructDefinitionContext): ASTStructDefinition => {
-    const name = ctx.id()[0].getText();
-    const generics = ctx
-      .id()
-      .slice(1)
-      .map((g) => g.getText());
-    const content = ctx._content.map((c) => this.visit(c));
+  enterStructDefinition = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitStructDefinition = (ctx: StructDefinitionContext) => {
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
+
     const members: ASTStructMemberDefinition[] = [];
     const methods: ASTFunctionDefinition[] = [];
     const declarations: ASTStructDefinition[] = [];
 
     const processContent = (c: any) => {
       if (Array.isArray(c)) {
-        c.forEach((cc) => processContent(cc));
-      } else if (c.variant === "StructMember") {
-        members.push(c);
-      } else if (c.variant === "FunctionDefinition") {
-        methods.push(c);
-      } else if (c.variant === "StructDefinition") {
-        declarations.push(c);
-      } else {
-        throw new InternalError("Struct content was neither member nor method");
+        for (const cc of c) processContent(cc);
+        return;
+      }
+
+      switch (c.variant) {
+        case "StructMember":
+          members.push(c);
+          break;
+
+        case "FunctionDefinition":
+          methods.push(c);
+          break;
+
+        case "StructDefinition":
+          declarations.push(c);
+          break;
+
+        default:
+          throw new InternalError(
+            "StructDefinition produced unexpected child: " + String(c?.variant),
+          );
       }
     };
 
-    for (const c of content) {
+    for (const c of produced) {
       processContent(c);
     }
 
-    return {
+    const name = ctx.id()[0].getText();
+    const generics = ctx
+      .id()
+      .slice(1)
+      .map((g) => g.getText());
+
+    this.stack.push({
       variant: "StructDefinition",
       export: Boolean(ctx._export_),
       pub: Boolean(ctx._pub),
       extern: this.exlang(ctx),
       opaque: Boolean(ctx.OPAQUE()),
       plain: Boolean(ctx.PLAIN()),
-      name: name,
+      name,
       noemit: Boolean(ctx._noemit),
       generics: generics.map((p) => ({
         name: p,
-        sourceloc: this.loc(ctx), // TODO: Find a better sourceloc from the actual token, not the function
+        sourceloc: this.loc(ctx),
       })),
       nestedStructs: declarations,
-      members: members,
-      methods: methods,
+      members,
+      methods,
       sourceloc: this.loc(ctx),
       originalSourcecode: this.getSource(ctx),
-    };
+    } satisfies ASTStructDefinition);
   };
 
-  visitRawScope = (ctx: RawScopeContext): ASTScope => {
-    return {
+  enterRawScope = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitRawScope = (ctx: RawScopeContext) => {
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
+
+    // produced = results of ctx.statement()
+
+    this.stack.push({
       variant: "Scope",
       sourceloc: this.loc(ctx),
       unsafe: false,
-      statements: ctx.statement().map((s) => this.visit(s)),
-    };
+      statements: produced as ASTStatement[],
+    } satisfies ASTScope);
   };
 
-  visitDoScope = (ctx: DoScopeContext): ASTBlockScopeExpr => {
-    return {
-      variant: "BlockScopeExpr",
-      scope: {
-        variant: "Scope",
-        unsafe: Boolean(ctx.UNSAFE()),
-        statements: ctx.statement().map((s) => this.visit(s)),
-        sourceloc: this.loc(ctx),
-      },
+  enterDoScope = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitDoScope = (ctx: DoScopeContext) => {
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
+
+    const scope: ASTScope = {
+      variant: "Scope",
+      unsafe: Boolean(ctx.UNSAFE()),
+      statements: produced,
       sourceloc: this.loc(ctx),
     };
-  };
 
-  visitScopeStatement = (ctx: BlockScopeExprContext): ASTBlockScopeExpr => {
-    return {
+    this.stack.push({
       variant: "BlockScopeExpr",
-      scope: this.visit(ctx.doScope()),
+      scope,
       sourceloc: this.loc(ctx),
-    };
+    } satisfies ASTBlockScopeExpr);
   };
 
-  visitCInlineStatement = (ctx: CInlineStatementContext): ASTInlineCStatement => {
-    // const rawText = ctx.STRING_LITERAL().getText();
-    //   code: this.trimAndUnescapeStringLiteral(rawText, "single", this.loc(ctx)),
-    return {
+  enterScopeStatement = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitScopeStatement = (ctx: BlockScopeExprContext) => {
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
+
+    if (produced.length !== 1) {
+      throw new InternalError("ScopeStatement stack mismatch");
+    }
+
+    const scope = produced[0] as ASTScope;
+
+    this.stack.push({
+      variant: "BlockScopeExpr",
+      scope,
+      sourceloc: this.loc(ctx),
+    } satisfies ASTBlockScopeExpr);
+  };
+
+  enterCInlineStatement = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitCInlineStatement = (ctx: CInlineStatementContext) => {
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
+
+    if (produced.length !== 1) {
+      throw new InternalError("CInlineStatement stack mismatch");
+    }
+
+    const expr = produced[0] as ASTExpr;
+
+    this.stack.push({
       variant: "InlineCStatement",
-      expr: this.visit(ctx.expr()),
+      expr,
       sourceloc: this.loc(ctx),
-    };
+    } satisfies ASTInlineCStatement);
   };
 
-  visitExprStatement = (ctx: ExprStatementContext): ASTExprStatement => {
-    return {
+  enterExprStatement = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitExprStatement = (ctx: ExprStatementContext) => {
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
+
+    if (produced.length !== 1) {
+      throw new InternalError("ExprStatement stack mismatch");
+    }
+
+    const expr = produced[0] as ASTExpr;
+
+    this.stack.push({
       variant: "ExprStatement",
-      expr: this.visit(ctx.expr()),
+      expr,
       sourceloc: this.loc(ctx),
-    };
+    } satisfies ASTExprStatement);
   };
 
-  visitReturnStatement = (ctx: ReturnStatementContext): ASTReturnStatement => {
-    return {
+  enterReturnStatement = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitReturnStatement = (ctx: ReturnStatementContext) => {
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
+
+    let expr: ASTExpr | undefined = undefined;
+
+    if (ctx.expr()) {
+      if (produced.length !== 1) {
+        throw new InternalError("ReturnStatement stack mismatch");
+      }
+      expr = produced[0] as ASTExpr;
+    } else {
+      if (produced.length !== 0) {
+        throw new InternalError("ReturnStatement stack mismatch");
+      }
+    }
+
+    this.stack.push({
       variant: "ReturnStatement",
-      expr: (ctx.expr() && this.visit(ctx.expr()!)) || undefined,
+      expr,
       sourceloc: this.loc(ctx),
-    };
+    } satisfies ASTReturnStatement);
   };
 
-  visitVariableCreationStatementRule = (
-    ctx: VariableCreationStatementRuleContext,
-  ): ASTVariableDefinitionStatement => {
-    return {
+  enterVariableCreationStatementRule = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitVariableCreationStatementRule = (ctx: VariableCreationStatementRuleContext) => {
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
+
+    let i = 0;
+
+    let datatype: ASTTypeUse | undefined = undefined;
+    if (ctx.datatype()) {
+      datatype = produced[i++] as ASTTypeUse;
+    }
+
+    let expr: ASTExpr | undefined = undefined;
+    if (ctx.expr()) {
+      expr = produced[i++] as ASTExpr;
+    }
+
+    if (i !== produced.length) {
+      throw new InternalError("VariableCreationStatementRule stack mismatch");
+    }
+
+    this.stack.push({
       variant: "VariableDefinitionStatement",
       mutability: this.mutability(ctx),
       comptime: Boolean(ctx._comptime),
       name: ctx.id().getText(),
       sourceloc: this.loc(ctx),
-      datatype: (ctx.datatype() && this.visit(ctx.datatype()!)) || undefined,
-      expr: (ctx.expr() && this.visit(ctx.expr()!)) || undefined,
+      datatype,
+      expr,
       variableContext: EVariableContext.FunctionLocal,
-    };
+    } satisfies ASTVariableDefinitionStatement);
   };
 
-  visitVariableCreationStatement = (
-    ctx: VariableCreationStatementContext,
-  ): ASTVariableDefinitionStatement => {
-    return this.visit(ctx.variableCreation());
+  enterVariableCreationStatement = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitVariableCreationStatement = (ctx: VariableCreationStatementContext) => {
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
+
+    if (produced.length !== 1) {
+      throw new InternalError("VariableCreationStatement stack mismatch");
+    }
+
+    // passthrough
+    this.stack.push(produced[0]);
   };
 
-  visitForEachStatement = (ctx: ForEachStatementContext): ASTForEachStatement => {
-    return {
+  enterForEachStatement = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitForEachStatement = (ctx: ForEachStatementContext) => {
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
+
+    if (produced.length !== 2) {
+      throw new InternalError("ForEachStatement stack mismatch");
+    }
+
+    const value = produced[0] as ASTExpr;
+    const body = produced[1] as ASTScope;
+
+    this.stack.push({
       variant: "ForEachStatement",
       loopVariable: ctx.id()[0].getText(),
       indexVariable: ctx.id().length > 1 ? ctx.id()[1].getText() : null,
-      value: this.visit(ctx.expr()),
-      body: this.visit(ctx.rawScope()),
+      value,
+      body,
       sourceloc: this.loc(ctx),
       comptime: Boolean(ctx._comptime),
-    };
+    } satisfies ASTForEachStatement);
   };
 
-  visitForStatement = (ctx: ForStatementContext): ASTForStatement => {
-    return {
+  enterForStatement = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitForStatement = (ctx: ForStatementContext) => {
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
+
+    let i = 0;
+
+    let initStatement: ASTStatement | null = null;
+    if (ctx.statement()) {
+      initStatement = produced[i++] as ASTStatement;
+    }
+
+    let loopCondition: ASTExpr | null = null;
+    if (ctx._condition) {
+      loopCondition = produced[i++] as ASTExpr;
+    }
+
+    let loopIncrement: ASTExpr | null = null;
+    if (ctx._incr) {
+      loopIncrement = produced[i++] as ASTExpr;
+    }
+
+    const body = produced[i++] as ASTScope;
+
+    if (i !== produced.length) {
+      throw new InternalError("ForStatement stack mismatch");
+    }
+
+    this.stack.push({
       variant: "ForStatement",
-      initStatement: ctx.statement() ? this.visit(ctx.statement()!) : null,
-      loopCondition: ctx._condition ? this.visit(ctx._condition) : null,
-      loopIncrement: ctx._incr ? this.visit(ctx._incr) : null,
-      body: this.visit(ctx.rawScope()),
+      initStatement,
+      loopCondition,
+      loopIncrement,
+      body,
       sourceloc: this.loc(ctx),
       comptime: Boolean(ctx._comptime),
-    };
+    } satisfies ASTForStatement);
   };
 
-  visitIfStatementCondition = (ctx: IfStatementConditionContext): IfStatementCondition => {
-    return {
+  enterIfStatementCondition = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitIfStatementCondition = (ctx: IfStatementConditionContext) => {
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
+
+    if (produced.length !== 1) {
+      throw new InternalError("IfStatementCondition stack mismatch");
+    }
+
+    const expr = produced[0] as ASTExpr;
+
+    this.stack.push({
       type: "expr",
-      expr: this.visit(ctx.expr()),
-    };
+      expr,
+    } satisfies IfStatementCondition);
   };
 
-  visitIfLetStatementCondition = (ctx: IfLetStatementConditionContext): IfStatementCondition => {
+  enterIfLetStatementCondition = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitIfLetStatementCondition = (ctx: IfLetStatementConditionContext) => {
     assert(ctx._letExpr);
-    return {
+
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
+
+    let i = 0;
+
+    let datatype: ASTTypeUse | null = null;
+    if (ctx.datatype()) {
+      datatype = produced[i++] as ASTTypeUse;
+    }
+
+    const letExpr = produced[i++] as ASTExpr;
+
+    let guardExpr: ASTExpr | null = null;
+    if (ctx._guardExpr) {
+      guardExpr = produced[i++] as ASTExpr;
+    }
+
+    if (i !== produced.length) {
+      throw new InternalError("IfLetStatementCondition stack mismatch");
+    }
+
+    this.stack.push({
       type: "let",
       name: ctx.id().getText(),
-      datatype: ctx.datatype() ? this.visit(ctx.datatype()!) : null,
-      letExpr: this.visit(ctx._letExpr),
-      guardExpr: ctx._guardExpr ? this.visit(ctx._guardExpr) : null,
-    };
+      datatype,
+      letExpr,
+      guardExpr,
+    } satisfies IfStatementCondition);
   };
 
-  visitIfStatement = (ctx: IfStatementContext): ASTIfStatement => {
+  enterIfStatement = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitIfStatement = (ctx: IfStatementContext) => {
     if (!ctx._then) {
       throw new InternalError("then scope is missing");
     }
+
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
 
     const transformCondition = (cond: IfStatementCondition) => {
       if (cond.type === "let") {
@@ -1183,7 +1723,26 @@ class ASTTransformer extends HazeParserVisitor<any> {
       }
     };
 
-    let elseIfs: {
+    let i = 0;
+
+    // --- if condition (required)
+    if (i >= produced.length) {
+      throw new InternalError("IfStatement missing if condition");
+    }
+    const ifCond = produced[i++] as IfStatementCondition;
+
+    // --- then scope (required)
+    if (i >= produced.length) {
+      throw new InternalError("IfStatement missing then scope");
+    }
+    const thenScope = produced[i++] as ASTScope;
+
+    // --- else-if pairs
+    if (ctx._elseIfCondition.length !== ctx._elseIfThen.length) {
+      throw new InternalError("inconsistent length");
+    }
+
+    const elseIfs: {
       condition: ASTExpr | null;
       letCondition: {
         name: string;
@@ -1193,61 +1752,116 @@ class ASTTransformer extends HazeParserVisitor<any> {
       then: ASTScope;
     }[] = [];
 
-    if (ctx._elseIfCondition.length !== ctx._elseIfThen.length) {
-      throw new InternalError("inconsistent length");
-    }
+    for (let k = 0; k < ctx._elseIfCondition.length; k++) {
+      const cond = produced[i++] as IfStatementCondition;
+      const then = produced[i++] as ASTScope;
 
-    for (let i = 0; i < ctx._elseIfCondition.length; i++) {
       elseIfs.push({
-        ...transformCondition(this.visit(ctx._elseIfCondition[i])),
-        then: this.visit(ctx._elseIfThen[i]),
+        ...transformCondition(cond),
+        then,
       });
     }
 
+    // --- else block (optional)
     let elseBlock: ASTScope | undefined = undefined;
     if (ctx._elseBlock) {
-      elseBlock = this.visit(ctx._elseBlock);
+      elseBlock = produced[i++] as ASTScope;
     }
 
-    assert(ctx._ifCondition);
-    return {
+    if (i !== produced.length) {
+      throw new InternalError("IfStatement stack mismatch");
+    }
+
+    const head = transformCondition(ifCond);
+
+    this.stack.push({
       variant: "IfStatement",
-      ...transformCondition(this.visit(ctx._ifCondition)),
-      then: this.visit(ctx._then),
+      ...head,
+      then: thenScope,
       sourceloc: this.loc(ctx),
-      elseIfs: elseIfs,
+      elseIfs,
       comptime: Boolean(ctx._comptime),
       else: elseBlock,
-    };
+    } satisfies ASTIfStatement);
   };
 
-  visitWhileStatement = (ctx: WhileStatementContext): ASTWhileStatement => {
-    return {
+  enterWhileStatement = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitWhileStatement = (ctx: WhileStatementContext) => {
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
+
+    if (produced.length !== 2) {
+      throw new InternalError("WhileStatement stack mismatch");
+    }
+
+    const condition = produced[0];
+    const body = produced[1];
+
+    this.stack.push({
       variant: "WhileStatement",
       letCondition: null,
-      condition: this.visit(ctx.expr()),
-      body: this.visit(ctx.rawScope()),
+      condition,
+      body,
       sourceloc: this.loc(ctx),
-    };
+    } satisfies ASTWhileStatement);
   };
 
-  visitWhileLetStatement = (ctx: WhileLetStatementContext): ASTWhileStatement => {
+  enterWhileLetStatement = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitWhileLetStatement = (ctx: WhileLetStatementContext) => {
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
+
     const exprs = ctx.expr();
     assert(exprs.length >= 1 && exprs.length <= 2);
-    return {
+
+    let i = 0;
+
+    // datatype (optional)
+    const type = ctx.datatype() ? produced[i++] : null;
+
+    // let expression (required)
+    if (i >= produced.length) {
+      throw new InternalError("WhileLetStatement missing let expr");
+    }
+    const letExpr = produced[i++];
+
+    // condition (optional)
+    const condition = exprs.length === 2 ? produced[i++] : null;
+
+    // body (required)
+    if (i >= produced.length) {
+      throw new InternalError("WhileLetStatement missing body");
+    }
+    const body = produced[i++];
+
+    if (i !== produced.length) {
+      throw new InternalError("WhileLetStatement stack mismatch");
+    }
+
+    this.stack.push({
       variant: "WhileStatement",
       letCondition: {
         name: ctx.id().getText(),
-        type: ctx.datatype() ? this.visit(ctx.datatype()!) : null,
-        expr: this.visit(exprs[0]),
+        type,
+        expr: letExpr,
       },
-      condition: exprs.length === 2 ? this.visit(exprs[1]) : null,
-      body: this.visit(ctx.rawScope()),
+      condition,
+      body,
       sourceloc: this.loc(ctx),
-    };
+    } satisfies ASTWhileStatement);
   };
 
-  visitTypeAliasDirective = (ctx: TypeAliasDirectiveContext): ASTTypeAlias => {
+  enterTypeAliasDirective = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitTypeAliasDirective = (ctx: TypeAliasDirectiveContext) => {
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
+
+    if (produced.length !== 1) {
+      throw new InternalError("TypeAliasDirective stack mismatch");
+    }
+
+    const datatype = produced[0];
+
     assert(ctx._name !== null && ctx._name !== undefined);
     assert(ctx._name.getText());
 
@@ -1256,249 +1870,540 @@ class ASTTransformer extends HazeParserVisitor<any> {
       .slice(1)
       .map((g) => g.getText());
 
-    return {
+    this.stack.push({
       variant: "TypeAlias",
-      datatype: this.visit(ctx.datatype()),
+      datatype,
       export: Boolean(ctx._export_),
       extern: this.exlang(ctx),
       generics: generics.map((p) => ({
         name: p,
-        sourceloc: this.loc(ctx), // TODO: Find a better sourceloc from the actual token, not the function
+        sourceloc: this.loc(ctx),
       })),
       pub: Boolean(ctx._pub),
       name: ctx._name.getText(),
       sourceloc: this.loc(ctx),
-    };
+    } satisfies ASTTypeAlias);
   };
 
-  visitTypeAliasStatement = (ctx: TypeAliasStatementContext): ASTTypeAlias => {
-    return this.visit(ctx.typeDef());
+  enterTypeAliasStatement = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitTypeAliasStatement = (ctx: TypeAliasStatementContext) => {
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
+
+    if (produced.length !== 1) {
+      throw new InternalError("TypeAliasStatement stack mismatch");
+    }
+
+    this.stack.push(produced[0]);
   };
 
-  visitParenthesisExpr = (ctx: ParenthesisExprContext): ASTParenthesisExpr => {
-    return {
+  enterParenthesisExpr = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitParenthesisExpr = (ctx: ParenthesisExprContext) => {
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
+
+    if (produced.length !== 1) {
+      throw new InternalError("ParenthesisExpr stack mismatch");
+    }
+
+    const expr = produced[0];
+
+    this.stack.push({
       variant: "ParenthesisExpr",
-      expr: this.visit(ctx.expr()),
+      expr,
       sourceloc: this.loc(ctx),
-    };
+    } satisfies ASTParenthesisExpr);
   };
 
-  visitPostfixResultPropagationExpr = (
-    ctx: PostfixResultPropagationExprContext,
-  ): ASTErrorPropagationExpr => {
-    return {
+  enterPostfixResultPropagationExpr = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitPostfixResultPropagationExpr = (ctx: PostfixResultPropagationExprContext) => {
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
+
+    if (produced.length !== 1) {
+      throw new InternalError("PostfixResultPropagationExpr stack mismatch");
+    }
+
+    const expr = produced[0];
+
+    this.stack.push({
       variant: "ErrorPropagationExpr",
-      expr: this.visit(ctx.expr()),
+      expr,
       sourceloc: this.loc(ctx),
-    };
+    } satisfies ASTErrorPropagationExpr);
   };
 
-  visitLambdaExpr = (ctx: LambdaExprContext): ASTLambdaExpr => {
-    return {
+  enterLambdaExpr = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitLambdaExpr = (ctx: LambdaExprContext) => {
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
+
+    if (produced.length !== 1) {
+      throw new InternalError("LambdaExpr stack mismatch");
+    }
+
+    const lambda = produced[0];
+
+    this.stack.push({
       variant: "LambdaExpr",
-      lambda: this.visit(ctx.lambda()),
+      lambda,
       sourceloc: this.loc(ctx),
-    };
+    } satisfies ASTLambdaExpr);
   };
 
-  visitLiteralExpr = (ctx: LiteralExprContext): ASTLiteralExpr => {
-    return {
+  enterLiteralExpr = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitLiteralExpr = (ctx: LiteralExprContext) => {
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
+
+    if (produced.length !== 1) {
+      throw new InternalError("LiteralExpr stack mismatch");
+    }
+
+    const literal = produced[0];
+
+    this.stack.push({
       variant: "LiteralExpr",
-      literal: this.visit(ctx.literal()),
+      literal,
       sourceloc: this.loc(ctx),
-    };
+    } satisfies ASTLiteralExpr);
   };
 
-  visitPostIncrExpr = (ctx: PostIncrExprContext): ASTPostIncrExpr => {
-    return {
+  enterPostIncrExpr = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitPostIncrExpr = (ctx: PostIncrExprContext) => {
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
+
+    if (produced.length !== 1) {
+      throw new InternalError("PostIncrExpr stack mismatch");
+    }
+
+    const expr = produced[0];
+
+    this.stack.push({
       variant: "PostIncrExpr",
-      expr: this.visit(ctx.expr()),
+      expr,
       operation: this.incrop(ctx),
       sourceloc: this.loc(ctx),
-    };
+    } satisfies ASTPostIncrExpr);
   };
 
-  visitExprCallExpr = (ctx: ExprCallExprContext): ASTExprCallExpr => {
-    const exprs = ctx._argExpr.map((e) => this.visit(e));
-    assert(ctx._callExpr);
-    return {
+  enterExprCallExpr = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitExprCallExpr = (ctx: ExprCallExprContext) => {
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
+
+    let i = 0;
+
+    // called expression (required)
+    if (produced.length === 0) {
+      throw new InternalError("ExprCallExpr missing calledExpr");
+    }
+
+    const calledExpr = produced[i++];
+
+    // arguments (variadic)
+    const argCount = ctx._argExpr.length;
+    const arguments_ = produced.slice(i, i + argCount);
+    i += argCount;
+
+    // allocator (optional)
+    const allocator = ctx._allocatorExpr ? produced[i++] : null;
+
+    if (i !== produced.length) {
+      throw new InternalError("ExprCallExpr stack mismatch");
+    }
+
+    this.stack.push({
       variant: "ExprCallExpr",
-      calledExpr: this.visit(ctx._callExpr),
-      arguments: exprs,
-      allocator: ctx._allocatorExpr ? this.visit(ctx._allocatorExpr) : null,
+      calledExpr,
+      arguments: arguments_,
+      allocator,
       sourceloc: this.loc(ctx),
-    };
+    } satisfies ASTExprCallExpr);
   };
 
-  visitDynamicArrayDatatype = (ctx: DynamicArrayDatatypeContext): ASTDynamicArrayDatatype => {
-    return {
+  enterDynamicArrayDatatype = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitDynamicArrayDatatype = (ctx: DynamicArrayDatatypeContext) => {
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
+
+    if (produced.length !== 1) {
+      throw new InternalError("DynamicArrayDatatype stack mismatch");
+    }
+
+    const datatype = produced[0];
+
+    this.stack.push({
       variant: "DynamicArrayDatatype",
-      datatype: this.visit(ctx.datatype()),
+      datatype,
       mutability: EDatatypeMutability.Default,
       sourceloc: this.loc(ctx),
-    };
+    } satisfies ASTDynamicArrayDatatype);
   };
 
-  visitExprMemberAccess = (ctx: ExprMemberAccessContext): ASTExprMemberAccess => {
-    const generics: (ASTTypeUse | ASTLiteralExpr)[] = [];
-    for (let i = 0; i < ctx.genericLiteral().length; i++) {
-      generics.push(this.visit(ctx.genericLiteral()[i]));
+  enterExprMemberAccess = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitExprMemberAccess = (ctx: ExprMemberAccessContext) => {
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
+
+    if (produced.length < 1) {
+      throw new InternalError("ExprMemberAccess stack underflow");
     }
-    return {
+
+    const expr = produced[0];
+    const generics = produced.slice(1);
+
+    if (generics.length !== ctx.genericLiteral().length) {
+      throw new InternalError("ExprMemberAccess generic count mismatch");
+    }
+
+    this.stack.push({
       variant: "ExprMemberAccess",
-      expr: this.visit(ctx.expr()),
+      expr,
       member: ctx.id().getText(),
       sourceloc: this.loc(ctx),
-      generics: generics,
-    };
+      generics,
+    } satisfies ASTExprMemberAccess);
   };
 
-  visitAggregateLiteralElement = (
-    ctx: AggregateLiteralElementContext,
-  ): ASTAggregateLiteralElement => {
-    return {
+  enterAggregateLiteralElement = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitAggregateLiteralElement = (ctx: AggregateLiteralElementContext) => {
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
+
+    if (produced.length !== 1) {
+      throw new InternalError("AggregateLiteralElement stack mismatch");
+    }
+
+    const value = produced[0];
+
+    this.stack.push({
       key: ctx.id() ? ctx.id()!.getText() : null,
-      value: this.visit(ctx.expr()),
+      value,
       sourceloc: this.loc(ctx),
-    };
+    } satisfies ASTAggregateLiteralElement);
   };
 
-  visitAggregateLiteralExpr = (ctx: AggregateLiteralExprContext): ASTAggregateLiteralExpr => {
-    const elements: ASTAggregateLiteralElement[] = ctx
-      .aggregateLiteralElement()
-      .map((c) => this.visit(c));
-    return {
+  enterAggregateLiteralExpr = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitAggregateLiteralExpr = (ctx: AggregateLiteralExprContext) => {
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
+
+    let i = 0;
+
+    // datatype (optional)
+    const datatype = ctx.datatype() ? produced[i++] : null;
+
+    // elements (variadic)
+    const elementCount = ctx.aggregateLiteralElement().length;
+    const elements = produced.slice(i, i + elementCount);
+    i += elementCount;
+
+    // allocator (optional)
+    const allocator = ctx._allocatorExpr ? produced[i++] : null;
+
+    if (i !== produced.length) {
+      throw new InternalError("AggregateLiteralExpr stack mismatch");
+    }
+
+    this.stack.push({
       variant: "AggregateLiteralExpr",
-      datatype: ctx.datatype() ? this.visit(ctx.datatype()!) : null,
-      elements: elements,
-      allocator: ctx._allocatorExpr ? this.visit(ctx._allocatorExpr) : null,
+      datatype,
+      elements,
+      allocator,
       sourceloc: this.loc(ctx),
-    };
+    } satisfies ASTAggregateLiteralExpr);
   };
 
-  visitPreIncrExpr = (ctx: PreIncrExprContext): ASTPreIncrExpr => {
-    return {
+  enterPreIncrExpr = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitPreIncrExpr = (ctx: PreIncrExprContext) => {
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
+
+    if (produced.length !== 1) {
+      throw new InternalError("PreIncrExpr stack mismatch");
+    }
+
+    const expr = produced[0];
+
+    this.stack.push({
       variant: "PreIncrExpr",
-      expr: this.visit(ctx.expr()),
+      expr,
       operation: this.incrop(ctx),
       sourceloc: this.loc(ctx),
-    };
+    } satisfies ASTPreIncrExpr);
   };
 
-  visitUnaryExpr = (ctx: UnaryExprContext): ASTUnaryExpr => {
-    return {
+  enterUnaryExpr = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitUnaryExpr = (ctx: UnaryExprContext) => {
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
+
+    if (produced.length !== 1) {
+      throw new InternalError("UnaryExpr stack mismatch");
+    }
+
+    const expr = produced[0];
+
+    this.stack.push({
       variant: "UnaryExpr",
-      expr: this.visit(ctx.expr()),
+      expr,
       operation: this.unaryop(ctx),
       sourceloc: this.loc(ctx),
-    };
+    } satisfies ASTUnaryExpr);
   };
 
-  visitExprIsTypeExpr = (ctx: ExprIsTypeExprContext): ASTExprIsTypeExpr => {
-    return {
+  enterExprIsTypeExpr = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitExprIsTypeExpr = (ctx: ExprIsTypeExprContext) => {
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
+
+    if (produced.length !== 2) {
+      throw new InternalError("ExprIsTypeExpr stack mismatch");
+    }
+
+    const comparisonType = produced[0];
+    const expr = produced[1];
+
+    this.stack.push({
       variant: "ExprIsTypeExpr",
-      comparisonType: this.visit(ctx.datatype()),
-      expr: this.visit(ctx.expr()),
+      comparisonType,
+      expr,
       sourceloc: this.loc(ctx),
-    };
+    } satisfies ASTExprIsTypeExpr);
   };
 
-  visitExplicitCastExpr = (ctx: ExplicitCastExprContext): ASTExplicitCastExpr => {
-    return {
+  enterExplicitCastExpr = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitExplicitCastExpr = (ctx: ExplicitCastExprContext) => {
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
+
+    if (produced.length !== 2) {
+      throw new InternalError("ExplicitCastExpr stack mismatch");
+    }
+
+    const castedTo = produced[0];
+    const expr = produced[1];
+
+    this.stack.push({
       variant: "ExplicitCastExpr",
-      castedTo: this.visit(ctx.datatype()),
-      expr: this.visit(ctx.expr()),
+      castedTo,
+      expr,
       sourceloc: this.loc(ctx),
-    };
+    } satisfies ASTExplicitCastExpr);
   };
 
-  visitBinaryExpr = (ctx: BinaryExprContext): ASTBinaryExpr => {
-    return {
+  enterBinaryExpr = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitBinaryExpr = (ctx: BinaryExprContext) => {
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
+
+    if (produced.length !== 2) {
+      throw new InternalError("BinaryExpr stack mismatch");
+    }
+
+    const a = produced[0];
+    const b = produced[1];
+
+    this.stack.push({
       variant: "BinaryExpr",
-      a: this.visit(ctx.expr()[0]),
-      b: this.visit(ctx.expr()[1]),
+      a,
+      b,
       operation: this.binaryop(ctx),
       sourceloc: this.loc(ctx),
-    };
+    } satisfies ASTBinaryExpr);
   };
 
-  visitExprAssignmentExpr = (ctx: ExprAssignmentExprContext): ASTExprAssignmentExpr => {
-    return {
+  enterExprAssignmentExpr = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitExprAssignmentExpr = (ctx: ExprAssignmentExprContext) => {
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
+
+    if (produced.length !== 2) {
+      throw new InternalError("ExprAssignmentExpr stack mismatch");
+    }
+
+    const target = produced[0];
+    const value = produced[1];
+
+    this.stack.push({
       variant: "ExprAssignmentExpr",
-      target: this.visit(ctx.expr()[0]),
-      value: this.visit(ctx.expr()[1]),
+      target,
+      value,
       operation: this.assignop(ctx),
       sourceloc: this.loc(ctx),
-    };
+    } satisfies ASTExprAssignmentExpr);
   };
 
-  visitSymbolValueExpr = (ctx: SymbolValueExprContext): ASTSymbolValueExpr => {
-    const generics: (ASTTypeUse | ASTLiteralExpr)[] = [];
-    for (let i = 0; i < ctx.genericLiteral().length; i++) {
-      generics.push(this.visit(ctx.genericLiteral()[i]));
+  enterSymbolValueExpr = (ctx: ParserRuleContext) => {
+    console.log("> entering symbol");
+    this.enter(ctx);
+  };
+  exitSymbolValueExpr = (ctx: SymbolValueExprContext) => {
+    console.log("> exiting symbol");
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
+
+    // All produced values are generics
+    if (produced.length !== ctx.genericLiteral().length) {
+      throw new InternalError("SymbolValueExpr generic count mismatch");
     }
-    return {
+
+    const generics = produced as (ASTTypeUse | ASTLiteralExpr)[];
+
+    this.stack.push({
       variant: "SymbolValueExpr",
-      generics: generics,
+      generics,
       name: ctx.id().getText(),
       sourceloc: this.loc(ctx),
-    };
+    } satisfies ASTSymbolValueExpr);
   };
 
-  visitMutDatatype = (ctx: MutDatatypeContext): ASTTypeUse => {
-    const dt: ASTTypeUse = this.visit(ctx.datatypeImpl());
+  enterMutDatatype = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitMutDatatype = (ctx: MutDatatypeContext) => {
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
+
+    if (produced.length !== 1) {
+      throw new InternalError("MutDatatype stack mismatch");
+    }
+
+    const dt = produced[0] as ASTTypeUse;
+
     if ("mutability" in dt && ctx.MUT()) {
       dt.mutability = EDatatypeMutability.Mut;
     }
-    return dt;
+
+    this.stack.push(dt);
   };
 
-  visitConstDatatype = (ctx: ConstDatatypeContext): ASTTypeUse => {
-    const dt: ASTTypeUse = this.visit(ctx.datatypeImpl());
+  enterConstDatatype = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitConstDatatype = (ctx: ConstDatatypeContext) => {
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
+
+    if (produced.length !== 1) {
+      throw new InternalError("ConstDatatype stack mismatch");
+    }
+
+    const dt = produced[0] as ASTTypeUse;
+
     if ("mutability" in dt && ctx.CONST()) {
       dt.mutability = EDatatypeMutability.Const;
     }
-    return dt;
+
+    this.stack.push(dt);
   };
 
-  visitInlineDatatype = (ctx: InlineDatatypeContext): ASTTypeUse => {
-    const dt: ASTTypeUse = this.visit(ctx.datatypeImpl());
+  enterInlineDatatype = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitInlineDatatype = (ctx: InlineDatatypeContext) => {
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
+
+    if (produced.length !== 1) {
+      throw new InternalError("InlineDatatype stack mismatch");
+    }
+
+    const dt = produced[0] as ASTTypeUse;
+
     if ("inline" in dt && ctx.INLINE()) {
       dt.inline = true;
     }
-    return dt;
+
+    this.stack.push(dt);
   };
 
-  visitDatatypeWithMutability = (ctx: DatatypeWithMutabilityContext): ASTTypeUse => {
-    const datatype: ASTTypeUse = this.visit(ctx.datatypeImpl());
-    return datatype;
+  enterDatatypeWithMutability = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitDatatypeWithMutability = (ctx: DatatypeWithMutabilityContext) => {
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
+
+    if (produced.length !== 1) {
+      throw new InternalError("DatatypeWithMutability stack mismatch");
+    }
+
+    const datatype = produced[0] as ASTTypeUse;
+
+    this.stack.push(datatype);
   };
 
-  visitDatatypeInParenthesis = (ctx: DatatypeInParenthesisContext): ASTTypeUse => {
-    return this.visit(ctx.datatype());
+  enterDatatypeInParenthesis = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitDatatypeInParenthesis = (ctx: DatatypeInParenthesisContext) => {
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
+
+    if (produced.length !== 1) {
+      throw new InternalError("DatatypeInParenthesis stack mismatch");
+    }
+
+    this.stack.push(produced[0]);
   };
 
-  visitFunctionDatatype = (ctx: FunctionDatatypeContext): ASTFunctionDatatype => {
-    const params = this.visitParams(ctx.params());
-    return {
+  enterFunctionDatatype = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitFunctionDatatype = (ctx: FunctionDatatypeContext) => {
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
+
+    let i = 0;
+
+    // params (required)
+    if (produced.length === 0) {
+      throw new InternalError("FunctionDatatype missing params");
+    }
+
+    const params = produced[i++] as {
+      params: ASTParam[];
+      ellipsis: boolean;
+    };
+
+    // return type
+    const returnType = produced[i++] as ASTTypeUse;
+
+    // requires block (optional)
+    const requires = ctx.requiresBlock()
+      ? (produced[i++] as ASTFunctionRequiresBlock)
+      : {
+          final: false,
+          noreturn: false,
+          noreturnIf: null,
+          pure: false,
+        };
+
+    if (i !== produced.length) {
+      throw new InternalError("FunctionDatatype stack mismatch");
+    }
+
+    this.stack.push({
       variant: "FunctionDatatype",
       params: params.params,
       ellipsis: params.ellipsis,
-      returnType: (ctx.datatype() && this.visit(ctx.datatype()!)) || undefined,
-      requires: this.requires(ctx),
+      returnType: returnType,
+      requires,
       mutability: EDatatypeMutability.Default,
       sourceloc: this.loc(ctx),
-    };
+    } satisfies ASTFunctionDatatype);
   };
 
-  visitImportStatement = (ctx: ImportStatementContext): ASTModuleImport => {
-    const path = ctx._alias
+  enterImportStatement = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitImportStatement = (ctx: ImportStatementContext) => {
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
+
+    if (produced.length !== 0) {
+      throw new InternalError("ImportStatement produced unexpected children");
+    }
+
+    const alias = ctx._alias
       ? this.trimAndUnescapeStringLiteral(ctx._alias.getText(), 1, this.loc(ctx))
       : null;
+
+    let result: ASTModuleImport;
+
     if (ctx._path) {
       assert(ctx._path.text);
-      return {
-        alias: path,
+      result = {
+        alias,
         mode: "path",
         name: this.trimAndUnescapeStringLiteral(ctx._path.text, 1, this.loc(ctx)),
         sourceloc: this.loc(ctx),
@@ -1506,17 +2411,28 @@ class ASTTransformer extends HazeParserVisitor<any> {
       };
     } else {
       assert(ctx._module_);
-      return {
-        alias: path,
+      result = {
+        alias,
         mode: "module",
         name: ctx._module_.getText(),
         sourceloc: this.loc(ctx),
         variant: "ModuleImport",
       };
     }
+
+    this.stack.push(result);
   };
 
-  visitFromImportStatement = (ctx: FromImportStatementContext): ASTSymbolImport => {
+  enterFromImportStatement = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitFromImportStatement = (ctx: FromImportStatementContext) => {
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
+
+    // This rule should not produce semantic children
+    if (produced.length !== 0) {
+      throw new InternalError("FromImportStatement produced unexpected children");
+    }
+
     const symbols = ctx.importAs().map((imp) => {
       assert(imp._symbol_);
       return {
@@ -1524,10 +2440,13 @@ class ASTTransformer extends HazeParserVisitor<any> {
         symbol: imp._symbol_.getText(),
       };
     });
+
+    let result: ASTSymbolImport;
+
     if (ctx._path) {
       assert(ctx._path.text);
-      return {
-        symbols: symbols,
+      result = {
+        symbols,
         mode: "path",
         name: this.trimAndUnescapeStringLiteral(ctx._path.text, 1, this.loc(ctx)),
         sourceloc: this.loc(ctx),
@@ -1535,70 +2454,112 @@ class ASTTransformer extends HazeParserVisitor<any> {
       };
     } else {
       assert(ctx._module_);
-      return {
-        symbols: symbols,
+      result = {
+        symbols,
         mode: "module",
         name: ctx._module_.getText(),
         sourceloc: this.loc(ctx),
         variant: "SymbolImport",
       };
     }
+
+    this.stack.push(result);
   };
 
-  visitAttemptExpr = (ctx: AttemptExprContext): ASTAttemptExpr => {
-    return {
+  enterAttemptExpr = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitAttemptExpr = (ctx: AttemptExprContext) => {
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
+
+    if (produced.length !== 2) {
+      throw new InternalError("AttemptExpr stack mismatch");
+    }
+
+    const attemptScope = produced[0];
+    const elseScope = produced[1];
+
+    this.stack.push({
       variant: "AttemptExpr",
-      attemptScope: this.visit(ctx.rawScope()[0]),
-      elseScope: this.visit(ctx.rawScope()[1]),
+      attemptScope,
+      elseScope,
       elseVar: ctx.id() ? ctx.id()!.getText() : null,
       sourceloc: this.loc(ctx),
-    };
+    } satisfies ASTAttemptExpr);
   };
 
-  visitRaiseStatement = (ctx: RaiseStatementContext): ASTRaiseStatement => {
-    return {
-      variant: "RaiseStatement",
-      expr: ctx.expr() ? this.visit(ctx.expr()!) : null,
-      sourceloc: this.loc(ctx),
-    };
-  };
+  enterRaiseStatement = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitRaiseStatement = (ctx: RaiseStatementContext) => {
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
 
-  visitGlobalDeclaration = (ctx: GlobalDeclarationContext) => {
-    const results = [];
-    for (const child of ctx.children ?? []) {
-      const result = this.visit(child);
-      if (result !== undefined && result !== null) results.push(result);
+    let expr: ASTExpr | null = null;
+
+    if (ctx.expr()) {
+      if (produced.length !== 1) {
+        throw new InternalError("RaiseStatement stack mismatch");
+      }
+      expr = produced[0];
+    } else {
+      if (produced.length !== 0) {
+        throw new InternalError("RaiseStatement unexpected children");
+      }
     }
-    const flat = results.flat();
-    return flat;
+
+    this.stack.push({
+      variant: "RaiseStatement",
+      expr,
+      sourceloc: this.loc(ctx),
+    } satisfies ASTRaiseStatement);
   };
 
-  visitNamespaceDefinition = (ctx: NamespaceDefinitionContext): ASTNamespaceDefinition => {
-    const names = ctx.id().map((c) => c.getText());
-    const namesReversed = names.reverse();
+  enterGlobalDeclaration = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitGlobalDeclaration = (ctx: GlobalDeclarationContext) => {
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
 
-    let currentNamespace: ASTNamespaceDefinition = {
+    // produced already contains all child results
+    // some children may push arrays → flatten once
+
+    const flat = produced.flat();
+
+    this.stack.push(flat);
+  };
+
+  enterNamespaceDefinition = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitNamespaceDefinition = (ctx: NamespaceDefinitionContext) => {
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
+
+    const declarations = [];
+    for (const x of produced) {
+      if (Array.isArray(x)) declarations.push(...x);
+      else if (x != null) declarations.push(x);
+    }
+
+    const names = ctx
+      .id()
+      .map((c) => c.getText())
+      .reverse();
+
+    let current: ASTNamespaceDefinition = {
       variant: "NamespaceDefinition",
-      declarations: ctx
-        .globalDeclaration()
-        .map((g) => this.visit(g))
-        .flat(),
+      declarations,
       export: Boolean(ctx._export_),
-      name: namesReversed[0],
+      name: names[0],
       sourceloc: this.loc(ctx),
     };
 
-    for (const name of namesReversed.slice(1)) {
-      currentNamespace = {
+    for (const name of names.slice(1)) {
+      current = {
         variant: "NamespaceDefinition",
-        declarations: [currentNamespace],
+        declarations: [current],
         export: Boolean(ctx._export_),
-        name: name,
+        name,
         sourceloc: this.loc(ctx),
       };
     }
 
-    return currentNamespace;
+    this.stack.push(current);
   };
 
   integerFromDecimalOrHex(ctx: {
@@ -1623,52 +2584,129 @@ class ASTTransformer extends HazeParserVisitor<any> {
     return value;
   }
 
-  visitStackArrayDatatype = (ctx: StackArrayDatatypeContext): ASTStackArrayDatatype => {
-    return {
+  enterStackArrayDatatype = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitStackArrayDatatype = (ctx: StackArrayDatatypeContext) => {
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
+
+    if (produced.length !== 1) {
+      throw new InternalError("StackArrayDatatype stack mismatch");
+    }
+
+    const datatype = produced[0];
+
+    this.stack.push({
       variant: "StackArrayDatatype",
-      datatype: this.visit(ctx.datatype()),
+      datatype,
       length: this.integerFromDecimalOrHex(ctx),
       mutability: EDatatypeMutability.Default,
       inline: false,
       sourceloc: this.loc(ctx),
-    };
+    } satisfies ASTStackArrayDatatype);
   };
 
-  visitSubscriptSingleExpr = (ctx: SubscriptSingleExprContext): ASTSubscriptIndexExpr => {
-    return {
+  enterSubscriptSingleExpr = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitSubscriptSingleExpr = (ctx: SubscriptSingleExprContext) => {
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
+
+    if (produced.length !== 1) {
+      throw new InternalError("SubscriptSingleExpr stack mismatch");
+    }
+
+    const value = produced[0];
+
+    this.stack.push({
       type: "index",
-      value: this.visit(ctx.expr()),
-    };
+      value,
+    } satisfies ASTSubscriptIndexExpr);
   };
 
-  visitSubscriptSliceExpr = (ctx: SubscriptSliceExprContext): ASTSubscriptIndexExpr => {
-    return {
+  enterSubscriptSliceExpr = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitSubscriptSliceExpr = (ctx: SubscriptSliceExprContext) => {
+    const startMark = this.popMark(ctx);
+    const produced = this.stack.splice(startMark);
+
+    let i = 0;
+
+    const start = ctx._start
+      ? (produced[i++] ??
+        (() => {
+          throw new InternalError("SubscriptSliceExpr start missing");
+        })())
+      : null;
+
+    const end = ctx._end
+      ? (produced[i++] ??
+        (() => {
+          throw new InternalError("SubscriptSliceExpr end missing");
+        })())
+      : null;
+
+    if (i !== produced.length) {
+      throw new InternalError("SubscriptSliceExpr stack mismatch");
+    }
+
+    this.stack.push({
       type: "slice",
-      start: ctx._start ? this.visit(ctx._start) : null,
-      end: ctx._end ? this.visit(ctx._end) : null,
-    };
+      start,
+      end,
+    } satisfies ASTSubscriptIndexExpr);
   };
 
-  visitArraySubscriptExpr = (ctx: ArraySubscriptExprContext): ASTArraySubscriptExpr => {
-    assert(ctx._value);
-    assert(ctx._index);
-    return {
+  enterArraySubscriptExpr = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitArraySubscriptExpr = (ctx: ArraySubscriptExprContext) => {
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
+
+    if (produced.length < 1) {
+      throw new InternalError("ArraySubscriptExpr stack underflow");
+    }
+
+    const expr = produced[0];
+    const indices = produced.slice(1);
+
+    // optional sanity check if you want strictness:
+    if (indices.length !== ctx._index.length) {
+      throw new InternalError("ArraySubscriptExpr index count mismatch");
+    }
+
+    this.stack.push({
       variant: "ArraySubscriptExpr",
-      expr: this.visit(ctx._value),
-      indices: ctx._index.map((i) => this.visit(i)),
+      expr,
+      indices,
       sourceloc: this.loc(ctx),
-    };
+    } satisfies ASTArraySubscriptExpr);
   };
 
-  visitTypeLiteralExpr = (ctx: TypeLiteralExprContext): ASTTypeLiteralExpr => {
-    return {
+  enterTypeLiteralExpr = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitTypeLiteralExpr = (ctx: TypeLiteralExprContext) => {
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
+
+    if (produced.length !== 1) {
+      throw new InternalError("TypeLiteralExpr stack mismatch");
+    }
+
+    const datatype = produced[0];
+
+    this.stack.push({
       variant: "TypeLiteralExpr",
-      datatype: this.visit(ctx.datatype()),
+      datatype,
       sourceloc: this.loc(ctx),
-    };
+    } satisfies ASTTypeLiteralExpr);
   };
 
-  visitRegexLiteral = (ctx: RegexLiteralContext): LiteralValue => {
+  enterRegexLiteral = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitRegexLiteral = (ctx: RegexLiteralContext) => {
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
+
+    // this rule should not have semantic children
+    if (produced.length !== 0) {
+      throw new InternalError("RegexLiteral produced unexpected children");
+    }
+
     const text = ctx.REGEX_LITERAL().getText();
 
     if (!text.startsWith('r"')) {
@@ -1686,6 +2724,7 @@ class ASTTransformer extends HazeParserVisitor<any> {
 
     const allowedFlags = new Set(["i", "m", "s", "u", "g"]);
     const flagSet = new Set<string>();
+
     for (const c of flags.toLowerCase()) {
       if (!allowedFlags.has(c)) {
         throw new CompilerError(`unknown regex flag '${c}'`, this.loc(ctx));
@@ -1696,12 +2735,12 @@ class ASTTransformer extends HazeParserVisitor<any> {
       flagSet.add(c);
     }
 
-    return {
+    this.stack.push({
       type: EPrimitive.Regex,
-      pattern: pattern,
+      pattern,
       flags: flagSet,
       id: null,
-    };
+    } satisfies LiteralValue);
   };
 
   trimAndUnescapeStringLiteral(raw: string, stripQuotes: number, sourceloc: SourceLoc): string {
@@ -1867,19 +2906,33 @@ class ASTTransformer extends HazeParserVisitor<any> {
     return text; // No escape
   }
 
-  processFString(ctx: SingleFStringContext | TripleFStringContext): ASTFStringExpr {
+  private processFStringFragments(
+    ctx: SingleFStringContext | TripleFStringContext,
+    exprs: ASTExpr[],
+    allocator: ASTExpr | null,
+  ): ASTFStringExpr {
+    let exprIndex = 0;
+
+    // --- build raw fragment stream (text + expr interleaved) ---
+
     const perCharacterFragments = ctx.interpolatedStringFragment().map((g) => {
       if (g.interpolatedStringExpression()) {
+        if (exprIndex >= exprs.length) {
+          throw new InternalError("FString expression underflow");
+        }
+
         return {
           type: "expr",
-          value: this.visit(g.interpolatedStringExpression()!.expr()),
+          value: exprs[exprIndex++],
         } as const;
       } else {
         assert(g.FSTRING_GRAPHEME());
+
         let text = g.FSTRING_GRAPHEME()!.getText();
         if (text === "{{") text = "{";
         if (text === "}}") text = "}";
         if (text === '\\"""') text = '"""';
+
         return {
           type: "text",
           value: text,
@@ -1887,58 +2940,106 @@ class ASTTransformer extends HazeParserVisitor<any> {
       }
     });
 
-    const combinedFragments = [] as (
+    if (exprIndex !== exprs.length) {
+      throw new InternalError("FString expression count mismatch");
+    }
+
+    // --- merge adjacent text fragments ---
+
+    const combinedFragments: (
       | { type: "expr"; value: ASTExpr }
       | { type: "text"; value: string }
-    )[];
+    )[] = [];
 
     for (const fragment of perCharacterFragments) {
       if (fragment.type === "expr") {
         combinedFragments.push(fragment);
       } else {
-        const lastFragment =
+        const last =
           combinedFragments.length > 0 ? combinedFragments[combinedFragments.length - 1] : null;
-        if (lastFragment && lastFragment.type === "text") {
-          lastFragment.value += fragment.value;
+
+        if (last && last.type === "text") {
+          last.value += fragment.value;
         } else {
-          combinedFragments.push(fragment);
+          combinedFragments.push({
+            type: "text",
+            value: fragment.value,
+          });
         }
       }
     }
 
+    // --- unescape text fragments ---
+
     const unescapedFragments = combinedFragments.map((f) => {
       if (f.type === "text") {
-        const stripped = this.trimAndUnescapeStringLiteral(f.value, 0, this.loc(ctx));
         return {
-          type: f.type,
-          value: stripped,
-        };
+          type: "text",
+          value: this.trimAndUnescapeStringLiteral(f.value, 0, this.loc(ctx)),
+        } as const;
       } else {
         return f;
       }
     });
 
+    // --- final AST node ---
+
     return {
       variant: "FStringExpr",
       fragments: unescapedFragments,
-      allocator: ctx._allocatorExpr ? this.visit(ctx._allocatorExpr!) : null,
+      allocator,
       sourceloc: this.loc(ctx),
     };
   }
 
-  visitSingleFString = (ctx: SingleFStringContext): ASTFStringExpr => {
-    return this.processFString(ctx);
+  private exitFStringCommon(ctx: SingleFStringContext | TripleFStringContext) {
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
+
+    let allocator: ASTExpr | null = null;
+    let exprs = produced;
+
+    if (ctx._allocatorExpr) {
+      allocator = exprs.pop()!;
+    }
+
+    const result = this.processFStringFragments(ctx, exprs as ASTExpr[], allocator);
+
+    this.stack.push(result);
+  }
+
+  enterSingleFString = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitSingleFString = (ctx: SingleFStringContext) => {
+    this.exitFStringCommon(ctx);
   };
 
-  visitTripleFString = (ctx: TripleFStringContext): ASTFStringExpr => {
-    return this.processFString(ctx);
+  enterTripleFString = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitTripleFString = (ctx: TripleFStringContext) => {
+    this.exitFStringCommon(ctx);
   };
 
-  visitFStringLiteralExpr = (ctx: FStringLiteralExprContext): ASTFStringExpr => {
-    return this.visit(ctx.interpolatedString());
+  enterFStringLiteralExpr = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitFStringLiteralExpr = (ctx: FStringLiteralExprContext) => {
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
+
+    if (produced.length !== 1) {
+      throw new InternalError("FStringLiteralExpr stack mismatch");
+    }
+
+    this.stack.push(produced[0]);
   };
 
-  visitSourceLocationPrefixRule = (ctx: SourceLocationPrefixRuleContext): SourceLoc => {
+  enterSourceLocationPrefixRule = (ctx: ParserRuleContext) => this.enter(ctx);
+  exitSourceLocationPrefixRule = (ctx: SourceLocationPrefixRuleContext) => {
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
+
+    // sanity check: this rule should not produce child AST nodes
+    if (produced.length !== 0) {
+      throw new InternalError("SourceLocationPrefixRule produced unexpected children");
+    }
+
     const filename = this.trimAndUnescapeStringLiteral(
       ctx.STRING_LITERAL().getText(),
       1,
@@ -1947,64 +3048,104 @@ class ASTTransformer extends HazeParserVisitor<any> {
 
     const ints = ctx.INTEGER_LITERAL().map((int) => parseInt(int.getText()));
     const float = ctx.FLOAT_LITERAL() ? ctx.FLOAT_LITERAL()!.getText() : null;
+
+    let result: SourceLoc;
+
+    if (ints.length === 2 && float === null) {
+      result = {
+        filename,
+        start: { line: ints[0], column: ints[1] },
+      };
+    } else if (ints.length === 3) {
+      result = {
+        filename,
+        start: { line: ints[0], column: ints[1] },
+        end: { line: ints[0], column: ints[2] },
+      };
+    } else if (ints.length === 2 && float !== null) {
+      const end = float.split(".");
+      result = {
+        filename,
+        start: { line: ints[0], column: ints[1] },
+        end: { line: parseInt(end[0]), column: parseInt(end[1]) },
+      };
+    } else {
+      throw new CompilerError(`Unexpected number of integers`, this.loc(ctx));
+    }
+
+    this.stack.push(result);
+  };
+
+  enterGlobalDeclarationWithSource = (ctx: GlobalDeclarationWithSourceContext) => {
+    this.enter(ctx);
+    const sourceloc = this.computeSourceLoc(ctx.sourceLocationPrefixRule());
+    this.sourcelocOverride.push(sourceloc);
+  };
+  exitGlobalDeclarationWithSource = (ctx: GlobalDeclarationWithSourceContext) => {
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
+
+    this.sourcelocOverride.pop();
+
+    // flatten declarations (this rule semantically returns a list)
+    const flat = [];
+    for (const x of produced) {
+      if (Array.isArray(x)) flat.push(...x);
+      else if (x != null) flat.push(x);
+    }
+
+    this.stack.push(flat);
+  };
+
+  private computeSourceLoc = (ctx: SourceLocationPrefixRuleContext): SourceLoc => {
+    const filename = this.trimAndUnescapeStringLiteral(
+      ctx.STRING_LITERAL().getText(),
+      1,
+      this.loc(ctx),
+    );
+
+    const ints = ctx.INTEGER_LITERAL().map((int) => parseInt(int.getText()));
+    const float = ctx.FLOAT_LITERAL() ? ctx.FLOAT_LITERAL()!.getText() : null;
+
     if (ints.length === 2 && float === null) {
       return {
-        filename: filename,
-        start: {
-          line: ints[0],
-          column: ints[1],
-        },
+        filename,
+        start: { line: ints[0], column: ints[1] },
       };
     } else if (ints.length === 3) {
       return {
-        filename: filename,
-        start: {
-          line: ints[0],
-          column: ints[1],
-        },
-        end: {
-          line: ints[0],
-          column: ints[2],
-        },
+        filename,
+        start: { line: ints[0], column: ints[1] },
+        end: { line: ints[0], column: ints[2] },
       };
     } else if (ints.length === 2 && float !== null) {
       const end = float.split(".");
       return {
-        filename: filename,
-        start: {
-          line: ints[0],
-          column: ints[1],
-        },
-        end: {
-          line: parseInt(end[0]),
-          column: parseInt(end[1]),
-        },
+        filename,
+        start: { line: ints[0], column: ints[1] },
+        end: { line: parseInt(end[0]), column: parseInt(end[1]) },
       };
     } else {
       throw new CompilerError(`Unexpected number of integers`, this.loc(ctx));
     }
   };
 
-  visitGlobalDeclarationWithSource = (ctx: GlobalDeclarationWithSourceContext): any => {
-    const sourceloc = this.visitSourceLocationPrefixRule(ctx.sourceLocationPrefixRule());
-
+  enterStructContentWithSourceloc = (ctx: StructContentWithSourcelocContext) => {
+    this.enter(ctx);
+    const sourceloc = this.computeSourceLoc(ctx.sourceLocationPrefixRule());
     this.sourcelocOverride.push(sourceloc);
-    const decls = ctx
-      .globalDeclaration()
-      .map((g) => this.visit(g))
-      .flat();
-    this.sourcelocOverride.pop();
-
-    return decls;
   };
+  exitStructContentWithSourceloc = (ctx: StructContentWithSourcelocContext) => {
+    const start = this.popMark(ctx);
+    const produced = this.stack.splice(start);
 
-  visitStructContentWithSourceloc = (ctx: StructContentWithSourcelocContext) => {
-    const sourceloc = this.visitSourceLocationPrefixRule(ctx.sourceLocationPrefixRule());
-
-    this.sourcelocOverride.push(sourceloc);
-    const content = ctx.structContent().map((c) => this.visit(c));
     this.sourcelocOverride.pop();
 
-    return content;
+    for (const v of produced) {
+      if (Array.isArray(v)) {
+        throw new InternalError(`${ctx.constructor.name} received nested array on stack`);
+      }
+      this.stack.push(v);
+    }
   };
 }
