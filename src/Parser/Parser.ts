@@ -248,7 +248,6 @@ export namespace Parser {
     parse(text, listener, filename);
 
     const result = listener.result();
-    console.log(result);
     return result;
   }
 }
@@ -257,6 +256,7 @@ class ASTBuilder extends HazeParserListener {
   stack: any[] = [];
   private marks: number[] = [];
   sourcelocOverride: SourceLoc[] = [];
+  private sourcelocOverridePending: boolean[] = [];
 
   debug = true;
   ruleTrace: string[] = [];
@@ -268,13 +268,11 @@ class ASTBuilder extends HazeParserListener {
     super();
   }
 
-  enterEveryRule = (ctx: ParserRuleContext) => {
-    console.log("Inserting mark", ctx.constructor.name);
+  enterEveryRule = (_ctx: ParserRuleContext) => {
     this.marks.push(this.stack.length);
   };
 
-  exitEveryRule = (ctx: ParserRuleContext) => {
-    console.log("Popping mark", ctx.constructor.name);
+  exitEveryRule = (_ctx: ParserRuleContext) => {
     this.marks.pop();
   };
 
@@ -3046,51 +3044,27 @@ class ASTBuilder extends HazeParserListener {
       throw new InternalError("SourceLocationPrefixRule produced unexpected children");
     }
 
-    const filename = this.trimAndUnescapeStringLiteral(
-      ctx.STRING_LITERAL().getText(),
-      1,
-      this.loc(ctx),
-    );
+    const result = this.computeSourceLoc(ctx);
 
-    const ints = ctx.INTEGER_LITERAL().map((int) => parseInt(int.getText()));
-    const float = ctx.FLOAT_LITERAL() ? ctx.FLOAT_LITERAL()!.getText() : null;
-
-    let result: SourceLoc;
-
-    if (ints.length === 2 && float === null) {
-      result = {
-        filename,
-        start: { line: ints[0], column: ints[1] },
-      };
-    } else if (ints.length === 3) {
-      result = {
-        filename,
-        start: { line: ints[0], column: ints[1] },
-        end: { line: ints[0], column: ints[2] },
-      };
-    } else if (ints.length === 2 && float !== null) {
-      const end = float.split(".");
-      result = {
-        filename,
-        start: { line: ints[0], column: ints[1] },
-        end: { line: parseInt(end[0]), column: parseInt(end[1]) },
-      };
-    } else {
-      throw new CompilerError(`Unexpected number of integers`, this.loc(ctx));
+    if (this.sourcelocOverridePending.length > 0) {
+      const lastIndex = this.sourcelocOverridePending.length - 1;
+      if (!this.sourcelocOverridePending[lastIndex]) {
+        this.sourcelocOverridePending[lastIndex] = true;
+        this.sourcelocOverride.push(result);
+      }
     }
-
-    this.stack.push(result);
   };
 
   enterGlobalDeclarationWithSource = (ctx: GlobalDeclarationWithSourceContext) => {
-    const sourceloc = this.computeSourceLoc(ctx.sourceLocationPrefixRule());
-    this.sourcelocOverride.push(sourceloc);
+    this.sourcelocOverridePending.push(false);
   };
   exitGlobalDeclarationWithSource = (ctx: GlobalDeclarationWithSourceContext) => {
     const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
-
-    this.sourcelocOverride.pop();
+    const didOverride = this.sourcelocOverridePending.pop();
+    if (didOverride) {
+      this.sourcelocOverride.pop();
+    }
 
     // flatten declarations (this rule semantically returns a list)
     const flat = [];
@@ -3103,11 +3077,12 @@ class ASTBuilder extends HazeParserListener {
   };
 
   private computeSourceLoc = (ctx: SourceLocationPrefixRuleContext): SourceLoc => {
-    const filename = this.trimAndUnescapeStringLiteral(
-      ctx.STRING_LITERAL().getText(),
-      1,
-      this.loc(ctx),
-    );
+    const stringLiteral = ctx.STRING_LITERAL();
+    if (!stringLiteral) {
+      throw new CompilerError("Missing source location filename", this.loc(ctx));
+    }
+
+    const filename = this.trimAndUnescapeStringLiteral(stringLiteral.getText(), 1, this.loc(ctx));
 
     const ints = ctx.INTEGER_LITERAL().map((int) => parseInt(int.getText()));
     const float = ctx.FLOAT_LITERAL() ? ctx.FLOAT_LITERAL()!.getText() : null;
@@ -3136,14 +3111,15 @@ class ASTBuilder extends HazeParserListener {
   };
 
   enterStructContentWithSourceloc = (ctx: StructContentWithSourcelocContext) => {
-    const sourceloc = this.computeSourceLoc(ctx.sourceLocationPrefixRule());
-    this.sourcelocOverride.push(sourceloc);
+    this.sourcelocOverridePending.push(false);
   };
   exitStructContentWithSourceloc = (ctx: StructContentWithSourcelocContext) => {
     const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
-
-    this.sourcelocOverride.pop();
+    const didOverride = this.sourcelocOverridePending.pop();
+    if (didOverride) {
+      this.sourcelocOverride.pop();
+    }
 
     for (const v of produced) {
       if (Array.isArray(v)) {
