@@ -111,7 +111,7 @@ export struct QueueDescriptor {
 
 export struct DeviceDescriptor {
     debugLabel?: str;
-    requiredFeatures: []FeatureName = []FeatureName {};
+    requiredFeatures: []FeatureName = [];
     requiredLimits: Limits | none = none;
     defaultQueue: QueueDescriptor = default;
     // deviceLostCallbackInfo: DeviceLostCallbackInfo | none;

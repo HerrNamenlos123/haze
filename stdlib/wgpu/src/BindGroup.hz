@@ -29,7 +29,7 @@ toFFI(v: BindGroupLayout): mut ffi.WGPUBindGroupLayoutImpl :: final {
 
 export struct BindGroupLayoutDescriptor {
     debugLabel?: str;
-    entries: []BindGroupLayoutEntry = {};
+    entries: []BindGroupLayoutEntry = [];
 }
 
 fromFFI(v: inline ffi.WGPUBindGroupLayoutDescriptor): BindGroupLayoutDescriptor :: final {
@@ -175,7 +175,7 @@ toFFI(v: StorageTextureBindingLayout): inline ffi.WGPUStorageTextureBindingLayou
 export struct BindGroupDescriptor {
     debugLabel?: str;
     layout: BindGroupLayout;
-    entries: [](mut BindGroupEntry) = {};
+    entries: [](mut BindGroupEntry) = [];
 }
 
 fromFFI(v: inline ffi.WGPUBindGroupDescriptor): BindGroupDescriptor :: final {

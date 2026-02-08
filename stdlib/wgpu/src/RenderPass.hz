@@ -77,7 +77,7 @@ toFFI(v: RenderPassEncoder): mut ffi.WGPURenderPassEncoderImpl :: final {
 
 export struct RenderPassDescriptor {
     debugLabel?: str;
-    colorAttachments: []RenderPassColorAttachment = {};
+    colorAttachments: []RenderPassColorAttachment = [];
     depthStencilAttachment: RenderPassDepthStencilAttachment | none = none;
     occlusionQuerySet: mut QuerySet | none = none;
     timestampWrites: RenderPassTimestampWrites | none = none;
@@ -86,7 +86,7 @@ export struct RenderPassDescriptor {
 fromFFI(v: ffi.WGPURenderPassDescriptor): RenderPassDescriptor :: final {
     let c = RenderPassDescriptor {
         debugLabel: fromOptionalFFI(v.label),
-        colorAttachments: {},
+        colorAttachments: [],
         depthStencilAttachment: none,
         occlusionQuerySet: none,
         timestampWrites: none,
@@ -227,7 +227,7 @@ fromFFI(v: ffi.WGPURenderPassColorAttachment): RenderPassColorAttachment :: fina
 }
 
 toFFI(v: RenderPassColorAttachment): ffi.WGPURenderPassColorAttachment :: final {
-    return inline ffi.WGPURenderPassColorAttachment {
+    return (ffi.WGPURenderPassColorAttachment {
         nextInChain: none,
         view: v.view ? v.view.handle : none,
         depthSlice: v.depthSlice ? v.depthSlice : WGPU_DEPTH_SLICE_UNDEFINED,
@@ -240,5 +240,5 @@ toFFI(v: RenderPassColorAttachment): ffi.WGPURenderPassColorAttachment :: final 
             b: v.clearValue.b,
             a: v.clearValue.a,
         }
-    };
+    }) as inline ffi.WGPURenderPassColorAttachment;
 }

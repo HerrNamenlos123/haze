@@ -5,8 +5,8 @@ struct Vertex {
 }
 
 struct DrawCommands {
-    vertices: [](inline Vertex) = {};
-    indices: []u32 = {};
+    vertices: [](inline Vertex) = [];
+    indices: []u32 = [];
 }
 
 struct Globals {
@@ -351,28 +351,31 @@ opaque struct Renderer {
             return;
         }
 
-        this.queue.writeBuffer<inline Globals>(this.globalsBuffer, [](inline Globals) {
-            {
-                screenSize: Vec2f(
-                    this.windowSize.x as f32,
-                    this.windowSize.y as f32
-                ),
-            }
-        });
+        this.queue.writeBuffer<inline Globals>(
+            this.globalsBuffer,
+            [
+                {
+                    screenSize: Vec2f(
+                        this.windowSize.x as f32,
+                        this.windowSize.y as f32
+                    ),
+                }
+            ]
+        );
 
-        let quadVertices = [](inline QuadVertex) {
+        let quadVertices: []inline QuadVertex = [
             { pos: Vec2f(-0.5, -0.5) },
             { pos: Vec2f(0.5, -0.5) },
             { pos: Vec2f(0.5, 0.5) },
             { pos: Vec2f(-0.5, 0.5) },
-        }
+        ];
         let quadVertexBuffer = this.device.createBuffer({
             usage: wgpu.BufferUsage.Vertex | wgpu.BufferUsage.CopyDst,
             size: sizeof(type<inline QuadVertex>) * 4,
         });
         this.queue.writeBuffer<inline QuadVertex>(quadVertexBuffer, quadVertices);
 
-        let primitives = [](inline PrimitiveInstance) {
+        let primitives: []inline PrimitiveInstance = [
             {
                 type: 0,
                 pos: Vec2f(200, 200),
@@ -409,7 +412,7 @@ opaque struct Renderer {
                 borderThickness: 1,
                 radius: 20,
             }
-        };
+        ];
 
         let instanceBuffer = this.device.createBuffer({
             size: sizeof(type<inline PrimitiveInstance>) * primitives.length,

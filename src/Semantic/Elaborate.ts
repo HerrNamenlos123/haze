@@ -7436,10 +7436,26 @@ export class SemanticElaborator {
     castExpr: Collect.ExplicitCastExpr,
     inference: Semantic.Inference,
   ): [Semantic.Expression, Semantic.ExprId] {
+    const targetType = this.lookupAndElaborateDatatype(castExpr.targetType);
+    const castedExpr = this.sr.cc.exprNodes.get(castExpr.expr);
+    let innerInference: Semantic.Inference | undefined = undefined;
+    if (castedExpr.variant === Collect.ENode.AggregateLiteralExpr) {
+      innerInference = {
+        gonnaInstantiateStructWithType: targetType,
+      };
+    } else if (castedExpr.variant === Collect.ENode.ParenthesisExpr) {
+      const innerExpr = this.sr.cc.exprNodes.get(castedExpr.expr);
+      if (innerExpr.variant === Collect.ENode.AggregateLiteralExpr) {
+        innerInference = {
+          gonnaInstantiateStructWithType: targetType,
+        };
+      }
+    }
+
     const result = Conversion.MakeConversionOrThrow(
       this.sr,
-      this.expr(castExpr.expr, undefined)[1],
-      this.lookupAndElaborateDatatype(castExpr.targetType),
+      this.expr(castExpr.expr, innerInference)[1],
+      targetType,
       this.currentContext.constraints,
       castExpr.sourceloc,
       Conversion.Mode.Explicit,

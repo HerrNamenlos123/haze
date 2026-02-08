@@ -17,7 +17,7 @@ namespace process {
                         out: hzstd_process_result_t): int :: final;
 
   export struct Options {
-    env: []str = {};
+    env: []str = [];
     cwd: str | none = none;
     inherit_stdio: bool = false;
   }

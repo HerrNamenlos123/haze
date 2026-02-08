@@ -110,7 +110,7 @@ test_member_narrowing_different_objects(): void {
 // ============================================================================
 
 test_array_narrowing_simple(): void {
-    let arr = [](int | null) { 5, null };
+    let arr: [](int | null) = [ 5, null ];
     if arr[0] is int {
         let x: int = arr[0];
         fmt.println("✓ Array narrowing: simple case works");
@@ -118,7 +118,7 @@ test_array_narrowing_simple(): void {
 }
 
 test_array_narrowing_literal_index(): void {
-    let arr = [](int | null) { 5, null, 10 };
+    let arr: [](int | null) = [ 5, null, 10 ];
     if arr[0] is int {
         let val: int = arr[0];
         fmt.println("✓ Array narrowing: literal index works");
@@ -130,7 +130,7 @@ test_array_narrowing_literal_index(): void {
 }
 
 test_array_narrowing_variable_index(): void {
-    let arr = [](int | null) { 5, null };
+    let arr: [](int | null) = [ 5, null ];
     let i = 0;
     if arr[i] is int {
         let x: int = arr[i];
@@ -150,16 +150,16 @@ test_array_narrowing_variable_index(): void {
 // }
 
 test_array_narrowing_after_reassign(): void {
-    let arr = [](int | null) { 5, null };
+    let arr: [](int | null) = [ 5, null ];
     if arr[0] is int {
         let x: int = arr[0];
-        arr = [](int | null) { null, 10 };
+        arr = [ null, 10 ];
         fmt.println("✓ Array narrowing: reassignment case works");
     }
 }
 
 test_array_narrowing_after_index_reassign(): void {
-    let arr = [](int | null) { 5, null };
+    let arr: [](int | null) = [ 5, null ];
     let i = 0;
     if arr[i] is int {
         let x: int = arr[i];
@@ -173,7 +173,7 @@ test_array_narrowing_after_index_reassign(): void {
 // ============================================================================
 
 test_combined_member_of_array(): void {
-    let points = [](Point | null) { Point { x: 5 as int | null, y: null }, null };
+    let points: [](Point | null) = [ Point { x: 5 as int | null, y: null }, null ];
     if points[0] is Point {
         let p: Point = points[0];
         let x: int | null = p.x;  // Note: p.x is int | null, not narrowed

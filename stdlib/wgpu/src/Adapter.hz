@@ -55,13 +55,13 @@ export struct Adapter {
         let userdata1 = none as cptr;
         __c__("userdata1 = callbackInfo->callback;");
 
-        let ffiCallbackInfo = inline ffi.WGPURequestDeviceCallbackInfo {
+        let ffiCallbackInfo = {
             nextInChain: none,
             mode: toFFI(callbackInfo.mode),
             callback: requestDeviceCallbackProxy,
             userdata1: userdata1,
             userdata2: none,
-        };
+        } as inline ffi.WGPURequestDeviceCallbackInfo;
 
         return fromFFI(
             ffi.wgpuAdapterRequestDevice(this.handle, ffiDescriptor, ffiCallbackInfo)

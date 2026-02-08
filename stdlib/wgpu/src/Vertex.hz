@@ -28,8 +28,8 @@ toFFI(v: VertexAttribute): ffi.WGPUVertexAttribute :: final {
 export struct VertexState {
     module: mut ShaderModule;
     entryPoint: str;
-    constants: []ConstantEntry = {};
-    buffers: []VertexBufferLayout = {};
+    constants: []ConstantEntry = [];
+    buffers: []VertexBufferLayout = [];
 }
 
 fromFFI(v: ffi.WGPUVertexState): VertexState :: final {
@@ -58,8 +58,8 @@ toFFI(v: VertexState): ffi.WGPUVertexState :: final {
 export struct FragmentState {
     module: mut ShaderModule;
     entryPoint: str;
-    constants: []ConstantEntry = {};
-    targets: []ColorTargetState = {};
+    constants: []ConstantEntry = [];
+    targets: []ColorTargetState = [];
 }
 
 fromFFI(v: ffi.WGPUFragmentState): FragmentState :: final {

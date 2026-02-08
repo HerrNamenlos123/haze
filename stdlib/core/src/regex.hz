@@ -94,7 +94,7 @@ namespace regex {
             sys.panic(f"Integer overflow in regex_find result end index: {end} > {int.max}");
         }
 
-        let groups = []Group {};
+        let groups: []Group = [];
         for (let i = 0; i < result.match.groups.length; i++) {
             let s = result.match.groups[i].span.start;
             let e = result.match.groups[i].span.end;
@@ -126,7 +126,7 @@ namespace regex {
 
     export findAll(allocator: Allocator, r: Regex, text: str): []Match {
         let result = ffi.hzstd_regex_find_all(allocator, r, text);
-        let matches = []Match {};
+        let matches: []Match = [];
         for (let i = 0; i < result.length; i++) {
             let start = result[i].span.start;
             let end = result[i].span.end;
@@ -137,7 +137,7 @@ namespace regex {
                 sys.panic(f"Integer overflow in regex_find result end index: {end} > {int.max}");
             }
 
-            let groups = []Group {};
+            let groups: []Group = [];
             for (let j = 0; j < result[i].groups.length; j++) {
                 let s = result[i].groups[j].span.start;
                 let e = result[i].groups[j].span.end;

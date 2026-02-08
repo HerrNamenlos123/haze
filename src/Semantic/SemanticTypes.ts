@@ -2207,10 +2207,19 @@ export namespace Semantic {
         throw new InternalError("Symbol not supported: " + symbol.variant);
       }
 
-      case Semantic.ENode.StructLiteralExpr:
-        return `${serializeTypeUse(sr, expr.type)} { ${expr.assign
+      case Semantic.ENode.StructLiteralExpr: {
+        const typeUse = sr.typeUseNodes.get(expr.type);
+        const baseName = getNamespaceChainFromDatatype(sr, typeUse.type)
+          .map((n) => n.pretty)
+          .join(".");
+        const literal = `${baseName} { ${expr.assign
           .map((a) => `${a.name}: ${serializeExpr(sr, a.value)}`)
           .join(", ")} }`;
+        if (typeUse.inline || typeUse.mutability !== EDatatypeMutability.Default) {
+          return `(${literal}) as ${serializeTypeUse(sr, expr.type)}`;
+        }
+        return literal;
+      }
 
       case Semantic.ENode.LiteralExpr: {
         return serializeLiteralValue(sr, expr.literal);
@@ -2242,9 +2251,9 @@ export namespace Semantic {
         return `${serializeTypeUse(sr, expr.type)}`;
 
       case Semantic.ENode.ArrayLiteralExpr: {
-        return `(${Semantic.serializeTypeUse(sr, expr.type)} {${expr.elements
+        return `([${expr.elements
           .map((v) => serializeExpr(sr, v))
-          .join(", ")}})`;
+          .join(", ")}]) as ${Semantic.serializeTypeUse(sr, expr.type)}`;
       }
 
       case Semantic.ENode.ArraySubscriptExpr: {

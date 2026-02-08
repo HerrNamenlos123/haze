@@ -6,7 +6,7 @@ struct EnumValue {
 
 struct EnumResult {
     name: str = "";
-    values: []EnumValue = {};
+    values: []EnumValue = [];
 }
 
 extractEnums(file: str): Result<[]EnumResult, str> {
@@ -21,7 +21,7 @@ extractEnums(file: str): Result<[]EnumResult, str> {
         let enumDefinitions = regex.findAll(r"(?:typedef\s+)?enum\s+(?:(\w+)\s*)?\{([\s\S]*?)\}\s*(\w+)?\s*", stripped);
         assert(enumDefinitions.length == baselineEnums.length);
 
-        let results = []EnumResult {};
+        let results: []EnumResult = [];
         for (let i = 0; i < enumDefinitions.length; i++) {
             assert(enumDefinitions[i].groups.length == 3);
 
@@ -67,7 +67,7 @@ struct StructField {
 
 struct StructResult {
     name: str = "";
-    fields: []StructField = {};
+    fields: []StructField = [];
 }
 
 
@@ -82,7 +82,7 @@ extractStructs(file: str): Result<[]StructResult, str> {
             stripped
         );
 
-        let results = []StructResult {};
+        let results: []StructResult = [];
 
         for (let i = 0; i < structDefs.length; i++) {
             let structName = structDefs[i].groups[2].text;
@@ -123,7 +123,7 @@ extractStructs(file: str): Result<[]StructResult, str> {
 struct FunctionType {
     name: str = "";
     returnType: str = "";
-    params: []FunctionParam = {};
+    params: []FunctionParam = [];
 }
 
 extractFunctionTypes(file: str): Result<[]FunctionType, str> {
@@ -137,7 +137,7 @@ extractFunctionTypes(file: str): Result<[]FunctionType, str> {
             stripped
         );
 
-        let results = []FunctionType {};
+        let results: []FunctionType = [];
 
         for (let i = 0; i < funcDefs.length; i++) {
             let returnType = regex.replace(
@@ -199,7 +199,7 @@ extractBitflagTypes(file: str): Result<[]BitflagType, str> {
             stripped
         );
 
-        let results = []BitflagType {};
+        let results: []BitflagType = [];
 
         for (let i = 0; i < defs.length; i++) {
             let base = defs[i].groups[0].text;
@@ -235,7 +235,7 @@ extractBitflagValues(file: str): Result<[]BitflagValue, str> {
             stripped
         );
 
-        let results = []BitflagValue {};
+        let results: []BitflagValue = [];
 
         for (let i = 0; i < values.length; i++) {
             results.push({
@@ -267,7 +267,7 @@ extractTypedefs(file: str): Result<[]Typedef, str> {
             stripped
         );
 
-        let results = []Typedef {};
+        let results: []Typedef = [];
 
         for (let i = 0; i < defs.length; i++) {
             let base = defs[i].groups[0].text;
@@ -294,7 +294,7 @@ struct FunctionParam {
 struct FunctionDecl {
     name: str = "";
     returnType: str = "";
-    params: []FunctionParam = {};
+    params: []FunctionParam = [];
 }
 
 extractFunctionDecls(file: str): Result<[]FunctionDecl, str> {
@@ -308,7 +308,7 @@ extractFunctionDecls(file: str): Result<[]FunctionDecl, str> {
             stripped
         );
 
-        let results = []FunctionDecl {};
+        let results: []FunctionDecl = [];
 
         for (let i = 0; i < funcDefs.length; i++) {
             let returnType = regex.replace(
@@ -393,7 +393,7 @@ getImplStructs(file: str): Result<[]ImplStruct, str> {
             stripped
         );
 
-        let results = []ImplStruct {};
+        let results: []ImplStruct = [];
 
         for (let i = 0; i < implDefs.length; i++) {
             results.push({
@@ -687,14 +687,14 @@ betterEnum(file: str, e: EnumResult, r: Regex, finalName: str) {
 generateBindings(args: GenArgs): Result<none, fs.Error> {
     let file = "\nnamespace ffi {\n";
 
-    let functionsReturnNullable = []str {
+    let functionsReturnNullable: []str = [
         "wgpuCreateInstance",
         "wgpuDeviceGetQueue",
         "wgpuTextureCreateView",
         "wgpuDeviceCreateCommandEncoder",
         "wgpuCommandEncoderBeginRenderPass",
         "wgpuCommandEncoderFinish",
-    };
+    ];
 
     for (let i = 0; i < args.implStructs.length; i++) {
         let s = args.implStructs[i];

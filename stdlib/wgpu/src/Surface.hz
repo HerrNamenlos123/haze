@@ -70,7 +70,7 @@ export struct SurfaceConfiguration {
     usage: TextureUsage = TextureUsage.None;
     width: int = 0;
     height: int = 0;
-    viewFormats: []TextureFormat = {};
+    viewFormats: []TextureFormat = [];
     alphaMode: CompositeAlphaMode = CompositeAlphaMode.Auto;
     presentMode: PresentMode = PresentMode.Undefined;
     device: mut Device;
@@ -83,7 +83,7 @@ fromFFI(v: ffi.WGPUSurfaceConfiguration): SurfaceConfiguration :: final {
         usage: textureUsageFromFFI(v.usage),
         width: v.width,
         height: v.height,
-        viewFormats: {},
+        viewFormats: [],
         alphaMode: fromFFI(v.alphaMode),
         presentMode: fromFFI(v.presentMode),
     };
@@ -119,9 +119,9 @@ toFFI(v: SurfaceConfiguration): ffi.WGPUSurfaceConfiguration :: final {
 
 export struct SurfaceCapabilities {
     usages: TextureUsage = TextureUsage.None;
-    formats: []TextureFormat = {};
-    presentModes: []PresentMode = {};
-    alphaModes: []CompositeAlphaMode = {};
+    formats: []TextureFormat = [];
+    presentModes: []PresentMode = [];
+    alphaModes: []CompositeAlphaMode = [];
 }
 
 fromFFI(v: ffi.WGPUSurfaceCapabilities): SurfaceCapabilities :: final {

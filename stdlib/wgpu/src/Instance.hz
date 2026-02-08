@@ -7,13 +7,13 @@ export struct Instance {
         let userdata1: cptr = none;
         __c__("userdata1 = (void*)callback;"); // Pass the function pointer to the highlevel callback into the lowlevel hook
 
-        let ffiCallbackInfo = inline ffi.WGPURequestAdapterCallbackInfo {
+        let ffiCallbackInfo = {
             nextInChain: none,
             callback: requestAdapterCallbackProxy,
             mode: toFFI(callbackInfo.mode),
             userdata1: userdata1,
             userdata2: none,
-        };
+        } as inline ffi.WGPURequestAdapterCallbackInfo;
 
         if adapterOpts {
             let surface = adapterOpts.compatibleSurface;

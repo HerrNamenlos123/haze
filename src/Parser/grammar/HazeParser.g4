@@ -185,6 +185,7 @@ primaryExpr
     | lambda
     | literal
     | interpolatedString
+    | arrayExpr
     | braceExpr
     | nameExpr
     ;
@@ -248,6 +249,10 @@ aggregateBody
     : aggregateLiteralElement?
       (COMMA aggregateLiteralElement)*
       COMMA?
+    ;
+
+arrayExpr
+    : LBRACKET aggregateBody RBRACKET withAllocator?
     ;
 
 braceExpr

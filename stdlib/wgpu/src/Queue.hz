@@ -3,7 +3,7 @@ export struct Queue {
     handle: mut ffi.WGPUQueueImpl;
 
     submit(commands: []CommandBuffer) {
-        let rawCommands = []ffi.WGPUCommandBufferImpl {};
+        let rawCommands: []ffi.WGPUCommandBufferImpl = [];
         for (let i = 0; i < commands.length; i++) {
             rawCommands.push(commands[i].handle);
         }

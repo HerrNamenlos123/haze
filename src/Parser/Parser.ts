@@ -143,6 +143,7 @@ import {
   SubscriptExprContext,
   PrimaryExprContext,
   PrefixExprContext,
+  ArrayExprContext,
   BraceExprContext,
   PostfixExprContext,
   MultiplicativeContext,
@@ -1477,6 +1478,30 @@ class ASTBuilder extends HazeParserListener {
     } satisfies ASTAggregateLiteralExpr);
   };
 
+  exitArrayExpr = (ctx: ArrayExprContext) => {
+    const start = this.getMark(ctx);
+    const produced = this.stack.splice(start);
+
+    let i = 0;
+    const elementCount = ctx.aggregateBody().aggregateLiteralElement().length;
+    const elements = produced.slice(i, i + elementCount) as ASTAggregateLiteralElement[];
+    i += elementCount;
+
+    const allocator = ctx.withAllocator() ? (produced[i++] as ASTExpr) : null;
+
+    if (i !== produced.length) {
+      throw new InternalError("ArrayExpr stack mismatch");
+    }
+
+    this.stack.push({
+      variant: "AggregateLiteralExpr",
+      datatype: null,
+      elements,
+      allocator,
+      sourceloc: this.loc(ctx),
+    } satisfies ASTAggregateLiteralExpr);
+  };
+
   exitNameSegment = (ctx: NameSegmentContext) => {
     const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
@@ -1609,6 +1634,15 @@ class ASTBuilder extends HazeParserListener {
     if (ctx.braceExpr()) {
       if (produced.length !== 1) {
         throw new InternalError("PrimaryExpr brace stack mismatch");
+      }
+
+      this.stack.push(produced[0]);
+      return;
+    }
+
+    if (ctx.arrayExpr()) {
+      if (produced.length !== 1) {
+        throw new InternalError("PrimaryExpr arrayExpr stack mismatch");
       }
 
       this.stack.push(produced[0]);
