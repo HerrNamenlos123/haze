@@ -173,6 +173,7 @@ import {
   SingleFStringContext,
   TripleFStringContext,
   ParamContext,
+  IdContext,
 } from "./grammar/autogen/HazeParser";
 import {
   BaseErrorListener,
@@ -267,17 +268,20 @@ class ASTBuilder extends HazeParserListener {
     super();
   }
 
-  private enter(ctx: ParserRuleContext) {
+  enterEveryRule = (ctx: ParserRuleContext) => {
     console.log("Inserting mark", ctx.constructor.name);
     this.marks.push(this.stack.length);
-    if (this.debug) {
-      this.ruleTrace.push(ctx.constructor.name);
-    }
-  }
+  };
 
-  private popMark(ctx: ParserRuleContext): number {
-    const mark = this.marks.pop();
-    console.log("Popping mark", ctx.constructor.name, this.getSource(ctx));
+  exitEveryRule = (ctx: ParserRuleContext) => {
+    console.log("Popping mark", ctx.constructor.name);
+    this.marks.pop();
+  };
+
+  private getMark(ctx: ParserRuleContext): number {
+    // const mark = this.marks.pop();
+    // console.log("Popping mark", ctx.constructor.name, this.getSource(ctx));
+    const mark = this.marks[this.marks.length - 1];
 
     if (mark === undefined) {
       throw new InternalError(`Missing mark for ${ctx.constructor.name}`);
@@ -456,9 +460,8 @@ class ASTBuilder extends HazeParserListener {
     };
   }
 
-  enterProg = (ctx: ParserRuleContext) => this.enter(ctx);
   exitProg = (ctx: ProgContext) => {
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     if (produced.length !== 1) {
@@ -468,9 +471,8 @@ class ASTBuilder extends HazeParserListener {
     this.stack.push(produced[0]);
   };
 
-  enterTopLevelDeclarations = (ctx: ParserRuleContext) => this.enter(ctx);
   exitTopLevelDeclarations = (ctx: TopLevelDeclarationsContext) => {
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     const out: any[] = [];
@@ -483,9 +485,8 @@ class ASTBuilder extends HazeParserListener {
     this.stack.push(out);
   };
 
-  enterCInjectDirective = (ctx: ParserRuleContext) => this.enter(ctx);
   exitCInjectDirective = (ctx: CInjectDirectiveContext) => {
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     if (produced.length !== 1) {
@@ -500,9 +501,8 @@ class ASTBuilder extends HazeParserListener {
     });
   };
 
-  enterIntegerLiteral = (ctx: ParserRuleContext) => this.enter(ctx);
   exitIntegerLiteral = (ctx: IntegerLiteralContext) => {
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     if (produced.length !== 0) {
@@ -516,9 +516,8 @@ class ASTBuilder extends HazeParserListener {
     } satisfies LiteralValue);
   };
 
-  enterHexIntegerLiteral = (ctx: ParserRuleContext) => this.enter(ctx);
   exitHexIntegerLiteral = (ctx: HexIntegerLiteralContext) => {
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     if (produced.length !== 0) {
@@ -532,9 +531,8 @@ class ASTBuilder extends HazeParserListener {
     } satisfies LiteralValue);
   };
 
-  enterFloatLiteral = (ctx: ParserRuleContext) => this.enter(ctx);
   exitFloatLiteral = (ctx: FloatLiteralContext) => {
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     if (produced.length !== 0) {
@@ -548,9 +546,8 @@ class ASTBuilder extends HazeParserListener {
     } satisfies LiteralValue);
   };
 
-  enterIntegerUnitLiteral = (ctx: ParserRuleContext) => this.enter(ctx);
   exitIntegerUnitLiteral = (ctx: IntegerUnitLiteralContext) => {
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     if (produced.length !== 0) {
@@ -560,9 +557,8 @@ class ASTBuilder extends HazeParserListener {
     this.stack.push(this.makeIntegerUnitLiteral(ctx));
   };
 
-  enterFloatUnitLiteral = (ctx: ParserRuleContext) => this.enter(ctx);
   exitFloatUnitLiteral = (ctx: FloatUnitLiteralContext) => {
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     if (produced.length !== 0) {
@@ -572,9 +568,8 @@ class ASTBuilder extends HazeParserListener {
     this.stack.push(this.makeFloatUnitLiteral(ctx));
   };
 
-  enterStringConstant = (ctx: ParserRuleContext) => this.enter(ctx);
   exitStringConstant = (ctx: StringConstantContext) => {
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     if (produced.length !== 0) {
@@ -600,9 +595,8 @@ class ASTBuilder extends HazeParserListener {
     } satisfies LiteralValue);
   };
 
-  enterTripleStringConstant = (ctx: ParserRuleContext) => this.enter(ctx);
   exitTripleStringConstant = (ctx: TripleStringConstantContext) => {
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     if (produced.length !== 0) {
@@ -619,9 +613,8 @@ class ASTBuilder extends HazeParserListener {
     } satisfies LiteralValue);
   };
 
-  enterBooleanConstant = (ctx: ParserRuleContext) => this.enter(ctx);
   exitBooleanConstant = (ctx: BooleanConstantContext) => {
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     if (produced.length !== 0) {
@@ -743,9 +736,8 @@ class ASTBuilder extends HazeParserListener {
     };
   }
 
-  enterGenericLiteralDatatype = (ctx: ParserRuleContext) => this.enter(ctx);
   exitGenericLiteralDatatype = (ctx: GenericLiteralDatatypeContext) => {
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     if (produced.length !== 1) {
@@ -755,9 +747,8 @@ class ASTBuilder extends HazeParserListener {
     this.stack.push(produced[0]);
   };
 
-  enterGenericLiteralConstant = (ctx: ParserRuleContext) => this.enter(ctx);
   exitGenericLiteralConstant = (ctx: GenericLiteralConstantContext) => {
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     if (produced.length !== 1) {
@@ -773,13 +764,8 @@ class ASTBuilder extends HazeParserListener {
     } satisfies ASTLiteralExpr);
   };
 
-  enterDatatypeFragment = (ctx: ParserRuleContext) => {
-    console.log("> pushing fragment");
-    this.enter(ctx);
-  };
   exitDatatypeFragment = (ctx: DatatypeFragmentContext) => {
-    console.log("> popping fragment");
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     const genericCount = ctx.genericLiteral().length;
@@ -803,9 +789,8 @@ class ASTBuilder extends HazeParserListener {
     });
   };
 
-  enterUntaggedUnionDatatype = (ctx: ParserRuleContext) => this.enter(ctx);
   exitUntaggedUnionDatatype = (ctx: UntaggedUnionDatatypeContext) => {
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     if (produced.length === 0) {
@@ -825,9 +810,8 @@ class ASTBuilder extends HazeParserListener {
     } satisfies ASTUntaggedUnionDatatype);
   };
 
-  enterTaggedUnionDatatype = (ctx: ParserRuleContext) => this.enter(ctx);
   exitTaggedUnionDatatype = (ctx: TaggedUnionDatatypeContext) => {
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     const ids = ctx.id();
@@ -849,13 +833,8 @@ class ASTBuilder extends HazeParserListener {
     } satisfies ASTTaggedUnionDatatype);
   };
 
-  enterNamedDatatype = (ctx: ParserRuleContext) => {
-    console.log("> pushing datatype");
-    this.enter(ctx);
-  };
   exitNamedDatatype = (ctx: NamedDatatypeContext) => {
-    console.log("> popping datatype");
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     if (produced.length === 0) {
@@ -887,9 +866,8 @@ class ASTBuilder extends HazeParserListener {
     this.stack.push(nested!);
   };
 
-  enterParam = (ctx: ParserRuleContext) => this.enter(ctx);
   exitParam = (p: ParamContext) => {
-    const start = this.popMark(p);
+    const start = this.getMark(p);
     const produced = this.stack.splice(start);
 
     // datatype is optional and is the only stack child
@@ -912,9 +890,8 @@ class ASTBuilder extends HazeParserListener {
     } satisfies ASTParam);
   };
 
-  enterParams = (ctx: ParserRuleContext) => this.enter(ctx);
   exitParams = (ctx: ParamsContext) => {
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     // produced = array of ASTParam (one per param child)
@@ -925,9 +902,8 @@ class ASTBuilder extends HazeParserListener {
     });
   };
 
-  enterExprAsFuncbody = (ctx: ParserRuleContext) => this.enter(ctx);
   exitExprAsFuncbody = (ctx: ExprAsFuncbodyContext) => {
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     if (produced.length !== 1) {
@@ -942,9 +918,8 @@ class ASTBuilder extends HazeParserListener {
     } satisfies ASTExprAsFuncbody);
   };
 
-  enterRequiresInParens = (ctx: ParserRuleContext) => this.enter(ctx);
   exitRequiresInParens = (ctx: RequiresInParensContext) => {
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     if (produced.length !== 1) {
@@ -954,9 +929,8 @@ class ASTBuilder extends HazeParserListener {
     this.stack.push(produced[0]);
   };
 
-  enterRequiresBlock = (ctx: ParserRuleContext) => this.enter(ctx);
   exitRequiresBlock = (ctx: RequiresBlockContext) => {
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     let i = 0;
@@ -993,9 +967,8 @@ class ASTBuilder extends HazeParserListener {
     this.stack.push(block);
   };
 
-  enterFunctionDefinition = (ctx: ParserRuleContext) => this.enter(ctx);
   exitFunctionDefinition = (ctx: FunctionDefinitionContext) => {
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     let i = 0;
@@ -1054,9 +1027,8 @@ class ASTBuilder extends HazeParserListener {
     } satisfies ASTFunctionDefinition);
   };
 
-  enterLambda = (ctx: ParserRuleContext) => this.enter(ctx);
   exitLambda = (ctx: LambdaContext) => {
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     let i = 0;
@@ -1091,9 +1063,8 @@ class ASTBuilder extends HazeParserListener {
     } satisfies ASTLambda);
   };
 
-  enterGlobalVariableDefinition = (ctx: ParserRuleContext) => this.enter(ctx);
   exitGlobalVariableDefinition = (ctx: GlobalVariableDefinitionContext) => {
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     let i = 0;
@@ -1126,9 +1097,8 @@ class ASTBuilder extends HazeParserListener {
     } satisfies ASTGlobalVariableDefinition);
   };
 
-  enterStructMember = (ctx: ParserRuleContext) => this.enter(ctx);
   exitStructMember = (ctx: StructMemberContext) => {
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     let i = 0;
@@ -1159,9 +1129,8 @@ class ASTBuilder extends HazeParserListener {
     ]);
   };
 
-  enterTernaryExpr = (ctx: ParserRuleContext) => this.enter(ctx);
   exitTernaryExpr = (ctx: TernaryExprContext) => {
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     if (produced.length !== 3) {
@@ -1181,9 +1150,8 @@ class ASTBuilder extends HazeParserListener {
     } satisfies ASTTernaryExpr);
   };
 
-  enterStructMethod = (ctx: ParserRuleContext) => this.enter(ctx);
   exitStructMethod = (ctx: StructMethodContext) => {
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     let i = 0;
@@ -1289,9 +1257,8 @@ class ASTBuilder extends HazeParserListener {
     this.stack.push([fn]);
   };
 
-  enterEnumContent = (ctx: ParserRuleContext) => this.enter(ctx);
   exitEnumContent = (ctx: EnumContentContext) => {
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     let value: ASTExpr | null = null;
@@ -1315,9 +1282,8 @@ class ASTBuilder extends HazeParserListener {
     } satisfies ASTEnumValueDefinition);
   };
 
-  enterEnumDefinition = (ctx: ParserRuleContext) => this.enter(ctx);
   exitEnumDefinition = (ctx: EnumDefinitionContext) => {
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     // Every produced child must be an enum value
@@ -1344,9 +1310,8 @@ class ASTBuilder extends HazeParserListener {
     } satisfies ASTEnumDefinition);
   };
 
-  enterNestedStructDefinition = (ctx: ParserRuleContext) => this.enter(ctx);
   exitNestedStructDefinition = (ctx: NestedStructDefinitionContext) => {
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     if (produced.length !== 1) {
@@ -1358,9 +1323,8 @@ class ASTBuilder extends HazeParserListener {
     this.stack.push([def]);
   };
 
-  enterStructDefinition = (ctx: ParserRuleContext) => this.enter(ctx);
   exitStructDefinition = (ctx: StructDefinitionContext) => {
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     const members: ASTStructMemberDefinition[] = [];
@@ -1424,9 +1388,8 @@ class ASTBuilder extends HazeParserListener {
     } satisfies ASTStructDefinition);
   };
 
-  enterRawScope = (ctx: ParserRuleContext) => this.enter(ctx);
   exitRawScope = (ctx: RawScopeContext) => {
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     // produced = results of ctx.statement()
@@ -1439,9 +1402,8 @@ class ASTBuilder extends HazeParserListener {
     } satisfies ASTScope);
   };
 
-  enterDoScope = (ctx: ParserRuleContext) => this.enter(ctx);
   exitDoScope = (ctx: DoScopeContext) => {
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     const scope: ASTScope = {
@@ -1458,9 +1420,8 @@ class ASTBuilder extends HazeParserListener {
     } satisfies ASTBlockScopeExpr);
   };
 
-  enterScopeStatement = (ctx: ParserRuleContext) => this.enter(ctx);
   exitScopeStatement = (ctx: BlockScopeExprContext) => {
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     if (produced.length !== 1) {
@@ -1476,9 +1437,8 @@ class ASTBuilder extends HazeParserListener {
     } satisfies ASTBlockScopeExpr);
   };
 
-  enterCInlineStatement = (ctx: ParserRuleContext) => this.enter(ctx);
   exitCInlineStatement = (ctx: CInlineStatementContext) => {
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     if (produced.length !== 1) {
@@ -1494,9 +1454,8 @@ class ASTBuilder extends HazeParserListener {
     } satisfies ASTInlineCStatement);
   };
 
-  enterExprStatement = (ctx: ParserRuleContext) => this.enter(ctx);
   exitExprStatement = (ctx: ExprStatementContext) => {
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     if (produced.length !== 1) {
@@ -1512,9 +1471,8 @@ class ASTBuilder extends HazeParserListener {
     } satisfies ASTExprStatement);
   };
 
-  enterReturnStatement = (ctx: ParserRuleContext) => this.enter(ctx);
   exitReturnStatement = (ctx: ReturnStatementContext) => {
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     let expr: ASTExpr | undefined = undefined;
@@ -1537,9 +1495,8 @@ class ASTBuilder extends HazeParserListener {
     } satisfies ASTReturnStatement);
   };
 
-  enterVariableCreationStatementRule = (ctx: ParserRuleContext) => this.enter(ctx);
   exitVariableCreationStatementRule = (ctx: VariableCreationStatementRuleContext) => {
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     let i = 0;
@@ -1570,9 +1527,8 @@ class ASTBuilder extends HazeParserListener {
     } satisfies ASTVariableDefinitionStatement);
   };
 
-  enterVariableCreationStatement = (ctx: ParserRuleContext) => this.enter(ctx);
   exitVariableCreationStatement = (ctx: VariableCreationStatementContext) => {
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     if (produced.length !== 1) {
@@ -1583,9 +1539,8 @@ class ASTBuilder extends HazeParserListener {
     this.stack.push(produced[0]);
   };
 
-  enterForEachStatement = (ctx: ParserRuleContext) => this.enter(ctx);
   exitForEachStatement = (ctx: ForEachStatementContext) => {
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     if (produced.length !== 2) {
@@ -1606,9 +1561,8 @@ class ASTBuilder extends HazeParserListener {
     } satisfies ASTForEachStatement);
   };
 
-  enterForStatement = (ctx: ParserRuleContext) => this.enter(ctx);
   exitForStatement = (ctx: ForStatementContext) => {
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     let i = 0;
@@ -1645,9 +1599,8 @@ class ASTBuilder extends HazeParserListener {
     } satisfies ASTForStatement);
   };
 
-  enterIfStatementCondition = (ctx: ParserRuleContext) => this.enter(ctx);
   exitIfStatementCondition = (ctx: IfStatementConditionContext) => {
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     if (produced.length !== 1) {
@@ -1662,11 +1615,10 @@ class ASTBuilder extends HazeParserListener {
     } satisfies IfStatementCondition);
   };
 
-  enterIfLetStatementCondition = (ctx: ParserRuleContext) => this.enter(ctx);
   exitIfLetStatementCondition = (ctx: IfLetStatementConditionContext) => {
     assert(ctx._letExpr);
 
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     let i = 0;
@@ -1696,13 +1648,12 @@ class ASTBuilder extends HazeParserListener {
     } satisfies IfStatementCondition);
   };
 
-  enterIfStatement = (ctx: ParserRuleContext) => this.enter(ctx);
   exitIfStatement = (ctx: IfStatementContext) => {
     if (!ctx._then) {
       throw new InternalError("then scope is missing");
     }
 
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     const transformCondition = (cond: IfStatementCondition) => {
@@ -1785,9 +1736,8 @@ class ASTBuilder extends HazeParserListener {
     } satisfies ASTIfStatement);
   };
 
-  enterWhileStatement = (ctx: ParserRuleContext) => this.enter(ctx);
   exitWhileStatement = (ctx: WhileStatementContext) => {
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     if (produced.length !== 2) {
@@ -1806,9 +1756,8 @@ class ASTBuilder extends HazeParserListener {
     } satisfies ASTWhileStatement);
   };
 
-  enterWhileLetStatement = (ctx: ParserRuleContext) => this.enter(ctx);
   exitWhileLetStatement = (ctx: WhileLetStatementContext) => {
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     const exprs = ctx.expr();
@@ -1851,9 +1800,8 @@ class ASTBuilder extends HazeParserListener {
     } satisfies ASTWhileStatement);
   };
 
-  enterTypeAliasDirective = (ctx: ParserRuleContext) => this.enter(ctx);
   exitTypeAliasDirective = (ctx: TypeAliasDirectiveContext) => {
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     if (produced.length !== 1) {
@@ -1885,9 +1833,8 @@ class ASTBuilder extends HazeParserListener {
     } satisfies ASTTypeAlias);
   };
 
-  enterTypeAliasStatement = (ctx: ParserRuleContext) => this.enter(ctx);
   exitTypeAliasStatement = (ctx: TypeAliasStatementContext) => {
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     if (produced.length !== 1) {
@@ -1897,9 +1844,8 @@ class ASTBuilder extends HazeParserListener {
     this.stack.push(produced[0]);
   };
 
-  enterParenthesisExpr = (ctx: ParserRuleContext) => this.enter(ctx);
   exitParenthesisExpr = (ctx: ParenthesisExprContext) => {
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     if (produced.length !== 1) {
@@ -1915,9 +1861,8 @@ class ASTBuilder extends HazeParserListener {
     } satisfies ASTParenthesisExpr);
   };
 
-  enterPostfixResultPropagationExpr = (ctx: ParserRuleContext) => this.enter(ctx);
   exitPostfixResultPropagationExpr = (ctx: PostfixResultPropagationExprContext) => {
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     if (produced.length !== 1) {
@@ -1933,9 +1878,8 @@ class ASTBuilder extends HazeParserListener {
     } satisfies ASTErrorPropagationExpr);
   };
 
-  enterLambdaExpr = (ctx: ParserRuleContext) => this.enter(ctx);
   exitLambdaExpr = (ctx: LambdaExprContext) => {
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     if (produced.length !== 1) {
@@ -1951,9 +1895,8 @@ class ASTBuilder extends HazeParserListener {
     } satisfies ASTLambdaExpr);
   };
 
-  enterLiteralExpr = (ctx: ParserRuleContext) => this.enter(ctx);
   exitLiteralExpr = (ctx: LiteralExprContext) => {
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     if (produced.length !== 1) {
@@ -1969,9 +1912,8 @@ class ASTBuilder extends HazeParserListener {
     } satisfies ASTLiteralExpr);
   };
 
-  enterPostIncrExpr = (ctx: ParserRuleContext) => this.enter(ctx);
   exitPostIncrExpr = (ctx: PostIncrExprContext) => {
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     if (produced.length !== 1) {
@@ -1988,27 +1930,35 @@ class ASTBuilder extends HazeParserListener {
     } satisfies ASTPostIncrExpr);
   };
 
-  enterExprCallExpr = (ctx: ParserRuleContext) => this.enter(ctx);
   exitExprCallExpr = (ctx: ExprCallExprContext) => {
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
-    let i = 0;
+    const argCount = ctx._argExpr.length;
+    const hasAllocator = !!ctx._allocatorExpr;
+    const expectedTail = argCount + (hasAllocator ? 1 : 0);
 
-    // called expression (required)
-    if (produced.length === 0) {
+    let i = 0;
+    let calledExpr: ASTExpr | undefined;
+
+    if (produced.length === expectedTail + 1) {
+      calledExpr = produced[i++] as ASTExpr;
+    } else if (produced.length === expectedTail) {
+      if (start === 0) {
+        throw new InternalError("ExprCallExpr missing calledExpr");
+      }
+      calledExpr = this.stack[start - 1] as ASTExpr;
+      this.stack.splice(start - 1, 1);
+    } else if (produced.length === 0) {
       throw new InternalError("ExprCallExpr missing calledExpr");
+    } else {
+      throw new InternalError("ExprCallExpr stack mismatch");
     }
 
-    const calledExpr = produced[i++];
-
-    // arguments (variadic)
-    const argCount = ctx._argExpr.length;
     const arguments_ = produced.slice(i, i + argCount);
     i += argCount;
 
-    // allocator (optional)
-    const allocator = ctx._allocatorExpr ? produced[i++] : null;
+    const allocator = hasAllocator ? produced[i++] : null;
 
     if (i !== produced.length) {
       throw new InternalError("ExprCallExpr stack mismatch");
@@ -2023,9 +1973,8 @@ class ASTBuilder extends HazeParserListener {
     } satisfies ASTExprCallExpr);
   };
 
-  enterDynamicArrayDatatype = (ctx: ParserRuleContext) => this.enter(ctx);
   exitDynamicArrayDatatype = (ctx: DynamicArrayDatatypeContext) => {
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     if (produced.length !== 1) {
@@ -2042,19 +1991,31 @@ class ASTBuilder extends HazeParserListener {
     } satisfies ASTDynamicArrayDatatype);
   };
 
-  enterExprMemberAccess = (ctx: ParserRuleContext) => this.enter(ctx);
   exitExprMemberAccess = (ctx: ExprMemberAccessContext) => {
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
+    const genericCount = ctx.genericLiteral().length;
 
-    if (produced.length < 1) {
+    let expr: ASTExpr | undefined;
+    let generics: (ASTTypeUse | ASTLiteralExpr)[] = [];
+
+    if (produced.length === genericCount + 1) {
+      expr = produced[0] as ASTExpr;
+      generics = produced.slice(1) as (ASTTypeUse | ASTLiteralExpr)[];
+    } else if (produced.length === genericCount) {
+      if (start === 0) {
+        throw new InternalError("ExprMemberAccess stack underflow");
+      }
+      expr = this.stack[start - 1] as ASTExpr;
+      this.stack.splice(start - 1, 1);
+      generics = produced as (ASTTypeUse | ASTLiteralExpr)[];
+    } else if (produced.length < 1) {
       throw new InternalError("ExprMemberAccess stack underflow");
+    } else {
+      throw new InternalError("ExprMemberAccess stack mismatch");
     }
 
-    const expr = produced[0];
-    const generics = produced.slice(1);
-
-    if (generics.length !== ctx.genericLiteral().length) {
+    if (generics.length !== genericCount) {
       throw new InternalError("ExprMemberAccess generic count mismatch");
     }
 
@@ -2067,9 +2028,8 @@ class ASTBuilder extends HazeParserListener {
     } satisfies ASTExprMemberAccess);
   };
 
-  enterAggregateLiteralElement = (ctx: ParserRuleContext) => this.enter(ctx);
   exitAggregateLiteralElement = (ctx: AggregateLiteralElementContext) => {
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     if (produced.length !== 1) {
@@ -2085,9 +2045,8 @@ class ASTBuilder extends HazeParserListener {
     } satisfies ASTAggregateLiteralElement);
   };
 
-  enterAggregateLiteralExpr = (ctx: ParserRuleContext) => this.enter(ctx);
   exitAggregateLiteralExpr = (ctx: AggregateLiteralExprContext) => {
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     let i = 0;
@@ -2116,9 +2075,8 @@ class ASTBuilder extends HazeParserListener {
     } satisfies ASTAggregateLiteralExpr);
   };
 
-  enterPreIncrExpr = (ctx: ParserRuleContext) => this.enter(ctx);
   exitPreIncrExpr = (ctx: PreIncrExprContext) => {
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     if (produced.length !== 1) {
@@ -2135,9 +2093,8 @@ class ASTBuilder extends HazeParserListener {
     } satisfies ASTPreIncrExpr);
   };
 
-  enterUnaryExpr = (ctx: ParserRuleContext) => this.enter(ctx);
   exitUnaryExpr = (ctx: UnaryExprContext) => {
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     if (produced.length !== 1) {
@@ -2154,9 +2111,8 @@ class ASTBuilder extends HazeParserListener {
     } satisfies ASTUnaryExpr);
   };
 
-  enterExprIsTypeExpr = (ctx: ParserRuleContext) => this.enter(ctx);
   exitExprIsTypeExpr = (ctx: ExprIsTypeExprContext) => {
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     if (produced.length !== 2) {
@@ -2174,9 +2130,8 @@ class ASTBuilder extends HazeParserListener {
     } satisfies ASTExprIsTypeExpr);
   };
 
-  enterExplicitCastExpr = (ctx: ParserRuleContext) => this.enter(ctx);
   exitExplicitCastExpr = (ctx: ExplicitCastExprContext) => {
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     if (produced.length !== 2) {
@@ -2194,9 +2149,8 @@ class ASTBuilder extends HazeParserListener {
     } satisfies ASTExplicitCastExpr);
   };
 
-  enterBinaryExpr = (ctx: ParserRuleContext) => this.enter(ctx);
   exitBinaryExpr = (ctx: BinaryExprContext) => {
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     if (produced.length !== 2) {
@@ -2215,9 +2169,8 @@ class ASTBuilder extends HazeParserListener {
     } satisfies ASTBinaryExpr);
   };
 
-  enterExprAssignmentExpr = (ctx: ParserRuleContext) => this.enter(ctx);
   exitExprAssignmentExpr = (ctx: ExprAssignmentExprContext) => {
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     if (produced.length !== 2) {
@@ -2236,13 +2189,8 @@ class ASTBuilder extends HazeParserListener {
     } satisfies ASTExprAssignmentExpr);
   };
 
-  enterSymbolValueExpr = (ctx: ParserRuleContext) => {
-    console.log("> entering symbol");
-    this.enter(ctx);
-  };
   exitSymbolValueExpr = (ctx: SymbolValueExprContext) => {
-    console.log("> exiting symbol");
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     // All produced values are generics
@@ -2260,9 +2208,8 @@ class ASTBuilder extends HazeParserListener {
     } satisfies ASTSymbolValueExpr);
   };
 
-  enterMutDatatype = (ctx: ParserRuleContext) => this.enter(ctx);
   exitMutDatatype = (ctx: MutDatatypeContext) => {
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     if (produced.length !== 1) {
@@ -2278,9 +2225,8 @@ class ASTBuilder extends HazeParserListener {
     this.stack.push(dt);
   };
 
-  enterConstDatatype = (ctx: ParserRuleContext) => this.enter(ctx);
   exitConstDatatype = (ctx: ConstDatatypeContext) => {
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     if (produced.length !== 1) {
@@ -2296,9 +2242,8 @@ class ASTBuilder extends HazeParserListener {
     this.stack.push(dt);
   };
 
-  enterInlineDatatype = (ctx: ParserRuleContext) => this.enter(ctx);
   exitInlineDatatype = (ctx: InlineDatatypeContext) => {
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     if (produced.length !== 1) {
@@ -2314,9 +2259,8 @@ class ASTBuilder extends HazeParserListener {
     this.stack.push(dt);
   };
 
-  enterDatatypeWithMutability = (ctx: ParserRuleContext) => this.enter(ctx);
   exitDatatypeWithMutability = (ctx: DatatypeWithMutabilityContext) => {
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     if (produced.length !== 1) {
@@ -2328,9 +2272,8 @@ class ASTBuilder extends HazeParserListener {
     this.stack.push(datatype);
   };
 
-  enterDatatypeInParenthesis = (ctx: ParserRuleContext) => this.enter(ctx);
   exitDatatypeInParenthesis = (ctx: DatatypeInParenthesisContext) => {
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     if (produced.length !== 1) {
@@ -2340,9 +2283,8 @@ class ASTBuilder extends HazeParserListener {
     this.stack.push(produced[0]);
   };
 
-  enterFunctionDatatype = (ctx: ParserRuleContext) => this.enter(ctx);
   exitFunctionDatatype = (ctx: FunctionDatatypeContext) => {
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     let i = 0;
@@ -2385,9 +2327,8 @@ class ASTBuilder extends HazeParserListener {
     } satisfies ASTFunctionDatatype);
   };
 
-  enterImportStatement = (ctx: ParserRuleContext) => this.enter(ctx);
   exitImportStatement = (ctx: ImportStatementContext) => {
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     if (produced.length !== 0) {
@@ -2423,9 +2364,8 @@ class ASTBuilder extends HazeParserListener {
     this.stack.push(result);
   };
 
-  enterFromImportStatement = (ctx: ParserRuleContext) => this.enter(ctx);
   exitFromImportStatement = (ctx: FromImportStatementContext) => {
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     // This rule should not produce semantic children
@@ -2466,9 +2406,8 @@ class ASTBuilder extends HazeParserListener {
     this.stack.push(result);
   };
 
-  enterAttemptExpr = (ctx: ParserRuleContext) => this.enter(ctx);
   exitAttemptExpr = (ctx: AttemptExprContext) => {
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     if (produced.length !== 2) {
@@ -2487,9 +2426,8 @@ class ASTBuilder extends HazeParserListener {
     } satisfies ASTAttemptExpr);
   };
 
-  enterRaiseStatement = (ctx: ParserRuleContext) => this.enter(ctx);
   exitRaiseStatement = (ctx: RaiseStatementContext) => {
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     let expr: ASTExpr | null = null;
@@ -2512,9 +2450,8 @@ class ASTBuilder extends HazeParserListener {
     } satisfies ASTRaiseStatement);
   };
 
-  enterGlobalDeclaration = (ctx: ParserRuleContext) => this.enter(ctx);
   exitGlobalDeclaration = (ctx: GlobalDeclarationContext) => {
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     // produced already contains all child results
@@ -2525,9 +2462,8 @@ class ASTBuilder extends HazeParserListener {
     this.stack.push(flat);
   };
 
-  enterNamespaceDefinition = (ctx: ParserRuleContext) => this.enter(ctx);
   exitNamespaceDefinition = (ctx: NamespaceDefinitionContext) => {
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     const declarations = [];
@@ -2584,9 +2520,8 @@ class ASTBuilder extends HazeParserListener {
     return value;
   }
 
-  enterStackArrayDatatype = (ctx: ParserRuleContext) => this.enter(ctx);
   exitStackArrayDatatype = (ctx: StackArrayDatatypeContext) => {
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     if (produced.length !== 1) {
@@ -2605,9 +2540,8 @@ class ASTBuilder extends HazeParserListener {
     } satisfies ASTStackArrayDatatype);
   };
 
-  enterSubscriptSingleExpr = (ctx: ParserRuleContext) => this.enter(ctx);
   exitSubscriptSingleExpr = (ctx: SubscriptSingleExprContext) => {
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     if (produced.length !== 1) {
@@ -2622,9 +2556,8 @@ class ASTBuilder extends HazeParserListener {
     } satisfies ASTSubscriptIndexExpr);
   };
 
-  enterSubscriptSliceExpr = (ctx: ParserRuleContext) => this.enter(ctx);
   exitSubscriptSliceExpr = (ctx: SubscriptSliceExprContext) => {
-    const startMark = this.popMark(ctx);
+    const startMark = this.getMark(ctx);
     const produced = this.stack.splice(startMark);
 
     let i = 0;
@@ -2654,9 +2587,8 @@ class ASTBuilder extends HazeParserListener {
     } satisfies ASTSubscriptIndexExpr);
   };
 
-  enterArraySubscriptExpr = (ctx: ParserRuleContext) => this.enter(ctx);
   exitArraySubscriptExpr = (ctx: ArraySubscriptExprContext) => {
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     if (produced.length < 1) {
@@ -2679,9 +2611,8 @@ class ASTBuilder extends HazeParserListener {
     } satisfies ASTArraySubscriptExpr);
   };
 
-  enterTypeLiteralExpr = (ctx: ParserRuleContext) => this.enter(ctx);
   exitTypeLiteralExpr = (ctx: TypeLiteralExprContext) => {
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     if (produced.length !== 1) {
@@ -2697,9 +2628,8 @@ class ASTBuilder extends HazeParserListener {
     } satisfies ASTTypeLiteralExpr);
   };
 
-  enterRegexLiteral = (ctx: ParserRuleContext) => this.enter(ctx);
   exitRegexLiteral = (ctx: RegexLiteralContext) => {
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     // this rule should not have semantic children
@@ -2993,7 +2923,7 @@ class ASTBuilder extends HazeParserListener {
   }
 
   private exitFStringCommon(ctx: SingleFStringContext | TripleFStringContext) {
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     let allocator: ASTExpr | null = null;
@@ -3008,19 +2938,16 @@ class ASTBuilder extends HazeParserListener {
     this.stack.push(result);
   }
 
-  enterSingleFString = (ctx: ParserRuleContext) => this.enter(ctx);
   exitSingleFString = (ctx: SingleFStringContext) => {
     this.exitFStringCommon(ctx);
   };
 
-  enterTripleFString = (ctx: ParserRuleContext) => this.enter(ctx);
   exitTripleFString = (ctx: TripleFStringContext) => {
     this.exitFStringCommon(ctx);
   };
 
-  enterFStringLiteralExpr = (ctx: ParserRuleContext) => this.enter(ctx);
   exitFStringLiteralExpr = (ctx: FStringLiteralExprContext) => {
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     if (produced.length !== 1) {
@@ -3030,9 +2957,8 @@ class ASTBuilder extends HazeParserListener {
     this.stack.push(produced[0]);
   };
 
-  enterSourceLocationPrefixRule = (ctx: ParserRuleContext) => this.enter(ctx);
   exitSourceLocationPrefixRule = (ctx: SourceLocationPrefixRuleContext) => {
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     // sanity check: this rule should not produce child AST nodes
@@ -3077,12 +3003,11 @@ class ASTBuilder extends HazeParserListener {
   };
 
   enterGlobalDeclarationWithSource = (ctx: GlobalDeclarationWithSourceContext) => {
-    this.enter(ctx);
     const sourceloc = this.computeSourceLoc(ctx.sourceLocationPrefixRule());
     this.sourcelocOverride.push(sourceloc);
   };
   exitGlobalDeclarationWithSource = (ctx: GlobalDeclarationWithSourceContext) => {
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     this.sourcelocOverride.pop();
@@ -3131,12 +3056,11 @@ class ASTBuilder extends HazeParserListener {
   };
 
   enterStructContentWithSourceloc = (ctx: StructContentWithSourcelocContext) => {
-    this.enter(ctx);
     const sourceloc = this.computeSourceLoc(ctx.sourceLocationPrefixRule());
     this.sourcelocOverride.push(sourceloc);
   };
   exitStructContentWithSourceloc = (ctx: StructContentWithSourcelocContext) => {
-    const start = this.popMark(ctx);
+    const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     this.sourcelocOverride.pop();
