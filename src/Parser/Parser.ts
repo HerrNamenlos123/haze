@@ -1133,13 +1133,25 @@ class ASTBuilder extends HazeParserListener {
     const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
-    if (produced.length !== 3) {
+    let condition: ASTExpr | undefined;
+    let thenExpr: ASTExpr | undefined;
+    let elseExpr: ASTExpr | undefined;
+
+    if (produced.length === 3) {
+      condition = produced[0] as ASTExpr;
+      thenExpr = produced[1] as ASTExpr;
+      elseExpr = produced[2] as ASTExpr;
+    } else if (produced.length === 2) {
+      if (start === 0) {
+        throw new InternalError("TernaryExpr stack mismatch");
+      }
+      condition = this.stack[start - 1] as ASTExpr;
+      this.stack.splice(start - 1, 1);
+      thenExpr = produced[0] as ASTExpr;
+      elseExpr = produced[1] as ASTExpr;
+    } else {
       throw new InternalError("TernaryExpr stack mismatch");
     }
-
-    const condition = produced[0] as ASTExpr;
-    const thenExpr = produced[1] as ASTExpr;
-    const elseExpr = produced[2] as ASTExpr;
 
     this.stack.push({
       variant: "TernaryExpr",
@@ -1865,11 +1877,19 @@ class ASTBuilder extends HazeParserListener {
     const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
-    if (produced.length !== 1) {
+    let expr: ASTExpr | undefined;
+
+    if (produced.length === 1) {
+      expr = produced[0] as ASTExpr;
+    } else if (produced.length === 0) {
+      if (start === 0) {
+        throw new InternalError("PostfixResultPropagationExpr stack mismatch");
+      }
+      expr = this.stack[start - 1] as ASTExpr;
+      this.stack.splice(start - 1, 1);
+    } else {
       throw new InternalError("PostfixResultPropagationExpr stack mismatch");
     }
-
-    const expr = produced[0];
 
     this.stack.push({
       variant: "ErrorPropagationExpr",
@@ -1916,11 +1936,19 @@ class ASTBuilder extends HazeParserListener {
     const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
-    if (produced.length !== 1) {
+    let expr: ASTExpr | undefined;
+
+    if (produced.length === 1) {
+      expr = produced[0] as ASTExpr;
+    } else if (produced.length === 0) {
+      if (start === 0) {
+        throw new InternalError("PostIncrExpr stack mismatch");
+      }
+      expr = this.stack[start - 1] as ASTExpr;
+      this.stack.splice(start - 1, 1);
+    } else {
       throw new InternalError("PostIncrExpr stack mismatch");
     }
-
-    const expr = produced[0];
 
     this.stack.push({
       variant: "PostIncrExpr",
@@ -2115,12 +2143,22 @@ class ASTBuilder extends HazeParserListener {
     const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
-    if (produced.length !== 2) {
+    let comparisonType: ASTTypeUse | undefined;
+    let expr: ASTExpr | undefined;
+
+    if (produced.length === 2) {
+      comparisonType = produced[0] as ASTTypeUse;
+      expr = produced[1] as ASTExpr;
+    } else if (produced.length === 1) {
+      if (start === 0) {
+        throw new InternalError("ExprIsTypeExpr stack mismatch");
+      }
+      comparisonType = produced[0] as ASTTypeUse;
+      expr = this.stack[start - 1] as ASTExpr;
+      this.stack.splice(start - 1, 1);
+    } else {
       throw new InternalError("ExprIsTypeExpr stack mismatch");
     }
-
-    const comparisonType = produced[0];
-    const expr = produced[1];
 
     this.stack.push({
       variant: "ExprIsTypeExpr",
@@ -2134,12 +2172,22 @@ class ASTBuilder extends HazeParserListener {
     const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
-    if (produced.length !== 2) {
+    let castedTo: ASTTypeUse | undefined;
+    let expr: ASTExpr | undefined;
+
+    if (produced.length === 2) {
+      castedTo = produced[0] as ASTTypeUse;
+      expr = produced[1] as ASTExpr;
+    } else if (produced.length === 1) {
+      if (start === 0) {
+        throw new InternalError("ExplicitCastExpr stack mismatch");
+      }
+      castedTo = produced[0] as ASTTypeUse;
+      expr = this.stack[start - 1] as ASTExpr;
+      this.stack.splice(start - 1, 1);
+    } else {
       throw new InternalError("ExplicitCastExpr stack mismatch");
     }
-
-    const castedTo = produced[0];
-    const expr = produced[1];
 
     this.stack.push({
       variant: "ExplicitCastExpr",
@@ -2153,12 +2201,22 @@ class ASTBuilder extends HazeParserListener {
     const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
-    if (produced.length !== 2) {
+    let a: ASTExpr | undefined;
+    let b: ASTExpr | undefined;
+
+    if (produced.length === 2) {
+      a = produced[0] as ASTExpr;
+      b = produced[1] as ASTExpr;
+    } else if (produced.length === 1) {
+      if (start === 0) {
+        throw new InternalError("BinaryExpr stack mismatch");
+      }
+      a = this.stack[start - 1] as ASTExpr;
+      this.stack.splice(start - 1, 1);
+      b = produced[0] as ASTExpr;
+    } else {
       throw new InternalError("BinaryExpr stack mismatch");
     }
-
-    const a = produced[0];
-    const b = produced[1];
 
     this.stack.push({
       variant: "BinaryExpr",
@@ -2173,12 +2231,22 @@ class ASTBuilder extends HazeParserListener {
     const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
-    if (produced.length !== 2) {
+    let target: ASTExpr | undefined;
+    let value: ASTExpr | undefined;
+
+    if (produced.length === 2) {
+      target = produced[0] as ASTExpr;
+      value = produced[1] as ASTExpr;
+    } else if (produced.length === 1) {
+      if (start === 0) {
+        throw new InternalError("ExprAssignmentExpr stack mismatch");
+      }
+      target = this.stack[start - 1] as ASTExpr;
+      this.stack.splice(start - 1, 1);
+      value = produced[0] as ASTExpr;
+    } else {
       throw new InternalError("ExprAssignmentExpr stack mismatch");
     }
-
-    const target = produced[0];
-    const value = produced[1];
 
     this.stack.push({
       variant: "ExprAssignmentExpr",
@@ -2591,15 +2659,27 @@ class ASTBuilder extends HazeParserListener {
     const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
-    if (produced.length < 1) {
+    const indexCount = ctx._index.length;
+    let expr: ASTExpr | undefined;
+    let indices: ASTSubscriptIndexExpr[] = [];
+
+    if (produced.length === indexCount + 1) {
+      expr = produced[0] as ASTExpr;
+      indices = produced.slice(1) as ASTSubscriptIndexExpr[];
+    } else if (produced.length === indexCount) {
+      if (start === 0) {
+        throw new InternalError("ArraySubscriptExpr stack underflow");
+      }
+      expr = this.stack[start - 1] as ASTExpr;
+      this.stack.splice(start - 1, 1);
+      indices = produced as ASTSubscriptIndexExpr[];
+    } else if (produced.length < 1) {
       throw new InternalError("ArraySubscriptExpr stack underflow");
+    } else {
+      throw new InternalError("ArraySubscriptExpr stack mismatch");
     }
 
-    const expr = produced[0];
-    const indices = produced.slice(1);
-
-    // optional sanity check if you want strictness:
-    if (indices.length !== ctx._index.length) {
+    if (indices.length !== indexCount) {
       throw new InternalError("ArraySubscriptExpr index count mismatch");
     }
 
