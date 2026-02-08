@@ -1,8 +1,4 @@
-import {
-  IsExprDecisiveForOverloadResolution,
-  Semantic,
-  type SemanticResult,
-} from "../Semantic/Elaborate";
+import { Semantic } from "../Semantic/SemanticTypes";
 import { EExternLanguage } from "../shared/AST";
 import { EMethodType } from "../shared/common";
 import { assert, formatSourceLoc } from "../shared/Errors";
@@ -15,7 +11,7 @@ import {
 } from "./SymbolCollection";
 
 export function ExportCollectedTypeDefAlias(
-  sr: SemanticResult,
+  sr: Semantic.Context,
   typedefId: Collect.TypeDefId,
   nested: boolean,
 ) {
@@ -38,7 +34,7 @@ export function ExportCollectedTypeDefAlias(
 }
 
 export function ExportTypeDef(
-  sr: SemanticResult,
+  sr: Semantic.Context,
   typedefId: Semantic.TypeDefId,
   nested: boolean,
 ): string {
@@ -222,7 +218,7 @@ export function ExportTypeDef(
 }
 
 export function ExportSymbol(
-  sr: SemanticResult,
+  sr: Semantic.Context,
   symbolId: Semantic.SymbolId,
   nested: boolean,
 ): string {
@@ -369,7 +365,7 @@ function getNamespacesFromSymbol(
   }
 }
 
-export function ExportCollectedSymbols(sr: SemanticResult) {
+export function ExportCollectedSymbols(sr: Semantic.Context) {
   let file = "";
 
   for (const symbolId of sr.exportedSymbols) {

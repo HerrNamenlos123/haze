@@ -13,12 +13,7 @@ import {
   InternalError,
   type SourceLoc,
 } from "../shared/Errors";
-import {
-  makePrimitiveAvailable,
-  makeRawPrimitiveAvailable,
-  Semantic,
-  type SemanticResult,
-} from "./Elaborate";
+import { makePrimitiveAvailable, makeRawPrimitiveAvailable } from "./Elaborate";
 import { Collect } from "../SymbolCollection/SymbolCollection";
 import { makeTypeUse } from "./LookupDatatype";
 import type {
@@ -27,11 +22,13 @@ import type {
   ConstraintPath,
   ConstraintPathSubscriptIndex,
 } from "./Constraint";
+import { Semantic } from "./SemanticTypes";
+import { StarLoopEntryState } from "antlr4ng";
 
 export namespace Conversion {
   // Helper function to extract constraint path from expression
   function extractConstraintPath(
-    sr: SemanticResult,
+    sr: Semantic.Context,
     exprId: Semantic.ExprId,
   ): ConstraintPath | null {
     const expr = sr.exprNodes.get(exprId);
@@ -300,7 +297,7 @@ export namespace Conversion {
     return `${minSymbol}${minStr}, ${maxStr}${maxSymbol}`;
   }
 
-  export function isString(sr: SemanticResult, typeId: Semantic.TypeDefId): boolean {
+  export function isString(sr: Semantic.Context, typeId: Semantic.TypeDefId): boolean {
     const type = sr.typeDefNodes.get(typeId);
     if (type.variant !== Semantic.ENode.PrimitiveDatatype) return false;
     return (
@@ -310,41 +307,41 @@ export namespace Conversion {
     );
   }
 
-  export function isStruct(sr: SemanticResult, typeId: Semantic.TypeDefId): boolean {
+  export function isStruct(sr: Semantic.Context, typeId: Semantic.TypeDefId): boolean {
     const type = sr.typeDefNodes.get(typeId);
     if (type.variant !== Semantic.ENode.StructDatatype) return false;
     return true;
   }
 
-  export function isF32(sr: SemanticResult, typeId: Semantic.TypeDefId): boolean {
+  export function isF32(sr: Semantic.Context, typeId: Semantic.TypeDefId): boolean {
     const type = sr.typeDefNodes.get(typeId);
     if (type.variant !== Semantic.ENode.PrimitiveDatatype) return false;
     return type.primitive === EPrimitive.f32;
   }
 
-  export function isF64(sr: SemanticResult, typeId: Semantic.TypeDefId): boolean {
+  export function isF64(sr: Semantic.Context, typeId: Semantic.TypeDefId): boolean {
     const type = sr.typeDefNodes.get(typeId);
     if (type.variant !== Semantic.ENode.PrimitiveDatatype) return false;
     return type.primitive === EPrimitive.f64;
   }
 
-  export function isReal(sr: SemanticResult, typeId: Semantic.TypeDefId): boolean {
+  export function isReal(sr: Semantic.Context, typeId: Semantic.TypeDefId): boolean {
     const type = sr.typeDefNodes.get(typeId);
     if (type.variant !== Semantic.ENode.PrimitiveDatatype) return false;
     return type.primitive === EPrimitive.real;
   }
 
-  export function isFloat(sr: SemanticResult, typeId: Semantic.TypeDefId): boolean {
+  export function isFloat(sr: Semantic.Context, typeId: Semantic.TypeDefId): boolean {
     return isF32(sr, typeId) || isF64(sr, typeId) || isReal(sr, typeId);
   }
 
-  export function isBoolean(sr: SemanticResult, typeId: Semantic.TypeDefId): boolean {
+  export function isBoolean(sr: Semantic.Context, typeId: Semantic.TypeDefId): boolean {
     const type = sr.typeDefNodes.get(typeId);
     if (type.variant !== Semantic.ENode.PrimitiveDatatype) return false;
     return type.primitive === EPrimitive.bool;
   }
 
-  export function isStr(sr: SemanticResult, typeId: Semantic.TypeDefId): boolean {
+  export function isStr(sr: Semantic.Context, typeId: Semantic.TypeDefId): boolean {
     const type = sr.typeDefNodes.get(typeId);
     if (type.variant !== Semantic.ENode.PrimitiveDatatype) return false;
     return type.primitive === EPrimitive.str;
@@ -354,25 +351,25 @@ export namespace Conversion {
     return isSignedInteger(primitive) || isUnsignedInteger(primitive);
   }
 
-  export function isIntegerById(sr: SemanticResult, typeId: Semantic.TypeDefId): boolean {
+  export function isIntegerById(sr: Semantic.Context, typeId: Semantic.TypeDefId): boolean {
     const type = sr.typeDefNodes.get(typeId);
     if (type.variant !== Semantic.ENode.PrimitiveDatatype) return false;
     return isInteger(type.primitive);
   }
 
-  export function isNoneById(sr: SemanticResult, typeUseId: Semantic.TypeUseId): boolean {
+  export function isNoneById(sr: Semantic.Context, typeUseId: Semantic.TypeUseId): boolean {
     const type = sr.typeDefNodes.get(sr.typeUseNodes.get(typeUseId).type);
     if (type.variant !== Semantic.ENode.PrimitiveDatatype) return false;
     return type.primitive === EPrimitive.none;
   }
 
-  export function isVoidById(sr: SemanticResult, typeUseId: Semantic.TypeUseId): boolean {
+  export function isVoidById(sr: Semantic.Context, typeUseId: Semantic.TypeUseId): boolean {
     const type = sr.typeDefNodes.get(sr.typeUseNodes.get(typeUseId).type);
     if (type.variant !== Semantic.ENode.PrimitiveDatatype) return false;
     return type.primitive === EPrimitive.void;
   }
 
-  export function isNodiscardById(sr: SemanticResult, typeId: Semantic.TypeDefId): boolean {
+  export function isNodiscardById(sr: Semantic.Context, typeId: Semantic.TypeDefId): boolean {
     const type = sr.typeDefNodes.get(typeId);
     if (type.variant === Semantic.ENode.TaggedUnionDatatype) {
       return type.nodiscard;
@@ -401,7 +398,7 @@ export namespace Conversion {
   }
 
   export function IsStructurallyEquivalent(
-    sr: SemanticResult,
+    sr: Semantic.Context,
     a: Semantic.TypeDefId,
     b: Semantic.TypeDefId,
     seen: Map<Semantic.TypeDefId, Set<Semantic.TypeDefId>> = new Map(),
@@ -601,7 +598,7 @@ export namespace Conversion {
     min: bigint | undefined;
   };
 
-  function valueNarrowing(sr: SemanticResult) {
+  function valueNarrowing(sr: Semantic.Context) {
     const values = {
       ranges: [] as ValueRange[],
       normalize: () => {
@@ -832,7 +829,7 @@ export namespace Conversion {
     return values;
   }
 
-  export function typeNarrowing(sr: SemanticResult) {
+  export function typeNarrowing(sr: Semantic.Context) {
     return {
       possibleVariants: new Set<Semantic.TypeUseId>(),
 
@@ -912,7 +909,7 @@ export namespace Conversion {
   }
 
   export function MakeConversionOrThrow(
-    sr: SemanticResult,
+    sr: Semantic.Context,
     fromExprId: Semantic.ExprId,
     toId: Semantic.TypeUseId,
     constraints: ConstraintSet,
@@ -928,7 +925,7 @@ export namespace Conversion {
   }
 
   export function MakeConversion(
-    sr: SemanticResult,
+    sr: Semantic.Context,
     fromExprId: Semantic.ExprId,
     toId: Semantic.TypeUseId,
     constraints: ConstraintSet,
@@ -1001,7 +998,7 @@ export namespace Conversion {
           assert(memberType);
 
           // Create a member access expression for this member
-          const memberAccessId = Semantic.addExpr(sr, {
+          const memberAccessId = sr.b.addExpr(sr, {
             variant: Semantic.ENode.MemberAccessExpr,
             instanceIds: [...fromExpr.instanceIds],
             expr: fromExprId,
@@ -1020,7 +1017,7 @@ export namespace Conversion {
         });
 
         // Create the struct literal expression
-        const [literal, literalId] = Semantic.addExpr<Semantic.StructLiteralExpr>(sr, {
+        const [literal, literalId] = sr.b.addExpr<Semantic.StructLiteralExpr>(sr, {
           variant: Semantic.ENode.StructLiteralExpr,
           instanceIds: [Semantic.makeInstanceId(sr)],
           assign: assign,
@@ -1082,7 +1079,7 @@ export namespace Conversion {
       to.primitive === EPrimitive.cptr
     ) {
       return ok(
-        Semantic.addExpr(sr, {
+        sr.b.addExpr(sr, {
           variant: Semantic.ENode.ExplicitCastExpr,
           instanceIds: fromExpr.instanceIds,
           expr: fromExprId,
@@ -1103,7 +1100,7 @@ export namespace Conversion {
       to.primitive === EPrimitive.cptr
     ) {
       return ok(
-        Semantic.addExpr(sr, {
+        sr.b.addExpr(sr, {
           variant: Semantic.ENode.ExplicitCastExpr,
           instanceIds: fromExpr.instanceIds,
           expr: fromExprId,
@@ -1163,7 +1160,7 @@ export namespace Conversion {
         purityOk
       ) {
         return ok(
-          Semantic.addExpr(sr, {
+          sr.b.addExpr(sr, {
             variant: Semantic.ENode.ExplicitCastExpr,
             instanceIds: fromExpr.instanceIds,
             expr: fromExprId,
@@ -1199,7 +1196,7 @@ export namespace Conversion {
       if (fromSigned === toSigned && toBits >= fromBits) {
         // Totally safe
         return ok(
-          Semantic.addExpr(sr, {
+          sr.b.addExpr(sr, {
             variant: Semantic.ENode.ExplicitCastExpr,
             instanceIds: fromExpr.instanceIds,
             expr: fromExprId,
@@ -1218,7 +1215,7 @@ export namespace Conversion {
 
         if (source.isWithinRange(...Conversion.getIntegerMinMax(t.primitive))) {
           return ok(
-            Semantic.addExpr(sr, {
+            sr.b.addExpr(sr, {
               variant: Semantic.ENode.ExplicitCastExpr,
               instanceIds: fromExpr.instanceIds,
               expr: fromExprId,
@@ -1274,7 +1271,7 @@ export namespace Conversion {
       // losing precision may actually be an issue.
       if (fromExpr.variant === Semantic.ENode.LiteralExpr) {
         return ok(
-          Semantic.addExpr(sr, {
+          sr.b.addExpr(sr, {
             variant: Semantic.ENode.ExplicitCastExpr,
             instanceIds: fromExpr.instanceIds,
             expr: fromExprId,
@@ -1297,7 +1294,7 @@ export namespace Conversion {
       mode === Mode.Explicit
     ) {
       return ok(
-        Semantic.addExpr(sr, {
+        sr.b.addExpr(sr, {
           variant: Semantic.ENode.ExplicitCastExpr,
           instanceIds: fromExpr.instanceIds,
           expr: fromExprId,
@@ -1330,7 +1327,7 @@ export namespace Conversion {
 
       if (source.isWithinRange(...floatSafeIntegerRange)) {
         return ok(
-          Semantic.addExpr(sr, {
+          sr.b.addExpr(sr, {
             variant: Semantic.ENode.ExplicitCastExpr,
             instanceIds: fromExpr.instanceIds,
             expr: fromExprId,
@@ -1437,7 +1434,7 @@ export namespace Conversion {
         to.primitive === EPrimitive.real)
     ) {
       return ok(
-        Semantic.addExpr(sr, {
+        sr.b.addExpr(sr, {
           variant: Semantic.ENode.ExplicitCastExpr,
           instanceIds: fromExpr.instanceIds,
           expr: fromExprId,
@@ -1460,7 +1457,7 @@ export namespace Conversion {
         to.primitive === EPrimitive.real)
     ) {
       return ok(
-        Semantic.addExpr(sr, {
+        sr.b.addExpr(sr, {
           variant: Semantic.ENode.ExplicitCastExpr,
           instanceIds: fromExpr.instanceIds,
           expr: fromExprId,
@@ -1485,10 +1482,7 @@ export namespace Conversion {
     ) {
       if (mode !== Mode.Explicit) {
         throw new CompilerError(
-          `Conversion from '${Semantic.serializeTypeUse(
-            sr,
-            fromExpr.type,
-          )}' to '${Semantic.serializeTypeUse(
+          `Conversion from '${Semantic.serializeTypeUse(sr, fromExpr.type)}' to '${Semantic.serializeTypeUse(
             sr,
             toId,
           )}' is lossy. If wanted, cast explicitly using '... as ${Semantic.serializeTypeUse(
@@ -1499,7 +1493,7 @@ export namespace Conversion {
         );
       }
       return ok(
-        Semantic.addExpr(sr, {
+        sr.b.addExpr(sr, {
           variant: Semantic.ENode.ExplicitCastExpr,
           instanceIds: fromExpr.instanceIds,
           expr: fromExprId,
@@ -1518,7 +1512,7 @@ export namespace Conversion {
       if (fromTypeInstance.inline === toInstance.inline) {
         if (fromTypeInstance.mutability === toInstance.mutability) {
           return ok(
-            Semantic.addExpr(sr, {
+            sr.b.addExpr(sr, {
               variant: Semantic.ENode.ExplicitCastExpr,
               instanceIds: fromExpr.instanceIds,
               expr: fromExprId,
@@ -1537,7 +1531,7 @@ export namespace Conversion {
           toInstance.mutability === EDatatypeMutability.Default
         ) {
           return ok(
-            Semantic.addExpr(sr, {
+            sr.b.addExpr(sr, {
               variant: Semantic.ENode.ExplicitCastExpr,
               instanceIds: fromExpr.instanceIds,
               expr: fromExprId,
@@ -1557,7 +1551,7 @@ export namespace Conversion {
           toInstance.mutability === EDatatypeMutability.Const
         ) {
           return ok(
-            Semantic.addExpr(sr, {
+            sr.b.addExpr(sr, {
               variant: Semantic.ENode.ExplicitCastExpr,
               instanceIds: fromExpr.instanceIds,
               expr: fromExprId,
@@ -1573,7 +1567,7 @@ export namespace Conversion {
         if (toInstance.mutability === EDatatypeMutability.Const) {
           if (mode === Mode.Explicit && unsafe) {
             return ok(
-              Semantic.addExpr(sr, {
+              sr.b.addExpr(sr, {
                 variant: Semantic.ENode.ExplicitCastExpr,
                 instanceIds: fromExpr.instanceIds,
                 expr: fromExprId,
@@ -1645,7 +1639,7 @@ export namespace Conversion {
 
       if (matching != -1) {
         return ok(
-          Semantic.addExpr(sr, {
+          sr.b.addExpr(sr, {
             variant: Semantic.ENode.ValueToUnionCastExpr,
             expr: fromExprId,
             instanceIds: fromExpr.instanceIds,
@@ -1693,7 +1687,7 @@ export namespace Conversion {
 
       if (allMatches.length === 1 && matchingIndex != -1) {
         return ok(
-          Semantic.addExpr(sr, {
+          sr.b.addExpr(sr, {
             variant: Semantic.ENode.ValueToUnionCastExpr,
             expr: fromExprId,
             instanceIds: fromExpr.instanceIds,
@@ -1733,7 +1727,7 @@ export namespace Conversion {
 
       if ([...membersFrom.possibleVariants].every((v) => membersTo.possibleVariants.has(v))) {
         return ok(
-          Semantic.addExpr(sr, {
+          sr.b.addExpr(sr, {
             variant: Semantic.ENode.UnionToUnionCastExpr,
             instanceIds: fromExpr.instanceIds,
             expr: fromExprId,
@@ -1771,7 +1765,7 @@ export namespace Conversion {
           if (okTag && errTag) {
             // It's a result type
             return ok(
-              Semantic.addExpr(sr, {
+              sr.b.addExpr(sr, {
                 variant: Semantic.ENode.UnionTagCheckExpr,
                 comparisonTypesAnd: [okTag.type],
                 expr: fromExprId,
@@ -1819,7 +1813,7 @@ export namespace Conversion {
           }
 
           return ok(
-            Semantic.addExpr(sr, {
+            sr.b.addExpr(sr, {
               variant: Semantic.ENode.UnionTagCheckExpr,
               comparisonTypesAnd: types,
               expr: fromExprId,
@@ -1840,7 +1834,7 @@ export namespace Conversion {
         assert(tag !== -1);
 
         return ok(
-          Semantic.addExpr(sr, {
+          sr.b.addExpr(sr, {
             variant: Semantic.ENode.UnionToValueCastExpr,
             instanceIds: fromExpr.instanceIds,
             expr: fromExprId,
@@ -1868,7 +1862,7 @@ export namespace Conversion {
         if (!missing) {
           // Fine, it is either the same union or one with the same members in a different order
           return ok(
-            Semantic.addExpr(sr, {
+            sr.b.addExpr(sr, {
               variant: Semantic.ENode.UnionToUnionCastExpr,
               instanceIds: fromExpr.instanceIds,
               expr: fromExprId,
@@ -1907,7 +1901,7 @@ export namespace Conversion {
         if (allFound) {
           // Union matches exactly after narrowing
           return ok(
-            Semantic.addExpr(sr, {
+            sr.b.addExpr(sr, {
               variant: Semantic.ENode.UnionToUnionCastExpr,
               instanceIds: fromExpr.instanceIds,
               expr: fromExprId,
@@ -1935,7 +1929,7 @@ export namespace Conversion {
   }
 
   export function MakeDefaultValue(
-    sr: SemanticResult,
+    sr: Semantic.Context,
     targetTypeId: Semantic.TypeUseId,
     sourceloc: SourceLoc,
   ): Semantic.ExprId {
@@ -2036,7 +2030,7 @@ export namespace Conversion {
   }
 
   export function makeComparisonResultType(
-    sr: SemanticResult,
+    sr: Semantic.Context,
     a: Semantic.ExprId,
     b: Semantic.ExprId,
     sourceloc: SourceLoc,
@@ -2094,7 +2088,7 @@ export namespace Conversion {
   }
 
   export function makeBinaryResultType(
-    sr: SemanticResult,
+    sr: Semantic.Context,
     a: Semantic.ExprId,
     b: Semantic.ExprId,
     operation: EBinaryOperation,
@@ -2141,7 +2135,7 @@ export namespace Conversion {
     );
   }
 
-  const UnaryOperationResults = (sr: SemanticResult) => ({
+  const UnaryOperationResults = (sr: Semantic.Context) => ({
     [EUnaryOperation.Plus]: [
       {
         from: makeRawPrimitiveAvailable(sr, EPrimitive.i8),
@@ -2311,7 +2305,7 @@ export namespace Conversion {
   });
 
   export function makeUnaryResultType(
-    sr: SemanticResult,
+    sr: Semantic.Context,
     a: Semantic.TypeUseId,
     operation: EUnaryOperation,
     sourceloc: SourceLoc,

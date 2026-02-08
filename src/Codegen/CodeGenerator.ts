@@ -1,22 +1,20 @@
 import { mkdirSync, writeFileSync } from "fs";
-import { Lowered, lowerExpr, lowerTypeDef } from "../Lower/Lower";
+import { Lowered, lowerTypeDef } from "../Lower/Lower";
 import { HAZE_GLOBAL_DIR } from "../Module";
 import { Conversion } from "../Semantic/Conversion";
-import { Semantic, type RegexData } from "../Semantic/Elaborate";
 import {
   BinaryOperationToString,
   EBinaryOperation,
-  EDatatypeMutability,
-  EIncrOperation,
   EUnaryOperation,
   UnaryOperationToString,
 } from "../shared/AST";
 import { EPrimitive, primitiveToString, type NameSet } from "../shared/common";
 import { getModuleGlobalNamespaceName, ModuleType, type ModuleConfig } from "../shared/Config";
-import { assert, GeneralError, InternalError, printWarningMessage } from "../shared/Errors";
+import { assert, GeneralError, InternalError } from "../shared/Errors";
 import { OutputWriter } from "./OutputWriter";
 import { spawnSync } from "child_process";
 import * as path from "path";
+import type { Semantic } from "../Semantic/SemanticTypes";
 
 function makeUnionMappingName(from: Lowered.TypeUseId, to: Lowered.TypeUseId) {
   return `_H_Union_Mapping_${from}_to_${to}_`;
@@ -163,7 +161,7 @@ class CodeGenerator {
     return modulePrefix;
   }
 
-  compileRegex(regex: RegexData) {
+  compileRegex(regex: Semantic.RegexData) {
     const symbol = `__hz_${this.modulePrefix()}_regex_${regex.id}`;
     const outPath = path.join(this.moduleDir, `build/regex/${symbol}.c`);
     const regexCompilerPath = `${HAZE_GLOBAL_DIR}/regex-compiler/haze-regex-compile`;

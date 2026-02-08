@@ -14,7 +14,6 @@ import { existsSync } from "node:fs";
 
 import { ModuleCompiler, ProjectCompiler } from "./Module";
 import { ModuleType } from "./shared/Config";
-import { type ASTRoot } from "./shared/AST";
 import {
   CompilerError,
   ErrorType,
@@ -23,13 +22,7 @@ import {
   type CompilerDiagnostic,
   type SourceLoc,
 } from "./shared/Errors";
-import { Semantic, type SemanticResult } from "./Semantic/Elaborate";
-
-export type AnalysisResult = {
-  diagnostics: CompilerDiagnostic[];
-  ast: ASTRoot | null;
-  symbols?: SemanticResult;
-};
+import { Semantic } from "./Semantic/SemanticTypes";
 
 // Walk up the directory tree to find the module root (haze.toml location).
 function findModuleRoot(filePath: string): string | null {

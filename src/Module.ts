@@ -9,7 +9,6 @@ import {
   GeneralError,
   ImpossibleSituation,
   InternalError,
-  SilentError,
   SyntaxError,
   UnreachableCode,
 } from "./shared/Errors";
@@ -17,10 +16,8 @@ import {
   createWriteStream,
   existsSync,
   mkdirSync,
-  openSync,
   readdirSync,
   realpathSync,
-  rmdirSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -56,7 +53,6 @@ import {
 import { generateCode } from "./Codegen/CodeGenerator";
 import { LowerModule } from "./Lower/Lower";
 import { ExportCollectedSymbols as ExportSymbols } from "./SymbolCollection/Export";
-import { Semantic } from "./Semantic/Elaborate";
 import { cwd, stdout } from "process";
 import { spawnSync } from "child_process";
 import archiver from "archiver";
@@ -70,6 +66,7 @@ import which from "which";
 import { MultiBar, Presets, SingleBar } from "cli-progress";
 import chalk from "chalk";
 import { once } from "events";
+import { Semantic } from "./Semantic/SemanticTypes";
 
 export enum EModulePrintCompilerPhase {
   Parsing,

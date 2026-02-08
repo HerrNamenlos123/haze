@@ -1,6 +1,6 @@
 import { BinaryOperationToString, EBinaryOperation } from "../shared/AST";
 import { assert } from "../shared/Errors";
-import { Semantic, type SemanticResult } from "./Elaborate";
+import { Semantic } from "./SemanticTypes";
 
 // ============================================================================
 // Path-based constraint system
@@ -389,9 +389,9 @@ export class ConstraintSet {
     return this;
   }
 
-  serialize(sr: SemanticResult) {
+  serialize(sr: Semantic.Context) {
     let constraints = [] as string[];
-    for (const [key, constraint] of this.map) {
+    for (const [_, constraint] of this.map) {
       const symbol = sr.symbolNodes.get(constraint.variableSymbol);
       assert(symbol.variant === Semantic.ENode.VariableSymbol);
 

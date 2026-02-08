@@ -58,7 +58,6 @@ import {
 } from "../shared/AST";
 import { ECollectionMode, getModuleGlobalNamespaceName, type ModuleConfig } from "../shared/Config";
 import { join } from "path";
-import { Semantic } from "../Semantic/Elaborate";
 
 const RESERVED_METHOD_NAMES = ["toString", "clone", "freezeClone"];
 

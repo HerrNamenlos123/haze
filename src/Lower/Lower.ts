@@ -1,12 +1,7 @@
 import { Conversion } from "../Semantic/Conversion";
-import {
-  makePrimitiveAvailable,
-  makeRawPrimitiveAvailable,
-  makeVoidType,
-  Semantic,
-  type SemanticResult,
-} from "../Semantic/Elaborate";
+import { makePrimitiveAvailable, makeVoidType } from "../Semantic/Elaborate";
 import { makeRawFunctionDatatypeAvailable, makeTypeUse } from "../Semantic/LookupDatatype";
+import { Semantic } from "../Semantic/SemanticTypes";
 import {
   BinaryOperationToString,
   EAssignmentOperation,
@@ -108,7 +103,7 @@ export namespace Lowered {
   };
 
   export type Module = {
-    sr: SemanticResult;
+    sr: Semantic.Context;
 
     functionNodes: BrandedArray<Lowered.FunctionId, Lowered.FunctionSymbol>;
     typeUseNodes: BrandedArray<Lowered.TypeUseId, Lowered.TypeUse>;
@@ -3459,7 +3454,7 @@ export function PrettyPrintLowered(lr: Lowered.Module) {
   }
 }
 
-export function LowerModule(sr: SemanticResult): Lowered.Module {
+export function LowerModule(sr: Semantic.Context): Lowered.Module {
   const lr: Lowered.Module = {
     sr: sr,
 

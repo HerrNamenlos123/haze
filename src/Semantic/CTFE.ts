@@ -2,7 +2,7 @@ import { EBinaryOperation } from "../shared/AST";
 import { EPrimitive, primitiveToString, type LiteralValue } from "../shared/common";
 import { assert, CompilerError, type SourceLoc } from "../shared/Errors";
 import { Conversion } from "./Conversion";
-import { Semantic, type SemanticResult } from "./Elaborate";
+import { Semantic } from "./SemanticTypes";
 
 export const getLiteralIntegerValue = (literalValue: LiteralValue) => {
   if (
@@ -22,7 +22,11 @@ export const getLiteralIntegerValue = (literalValue: LiteralValue) => {
   return undefined;
 };
 
-export function EvalCTFEOrFail(sr: SemanticResult, exprId: Semantic.ExprId, sourceloc: SourceLoc) {
+export function EvalCTFEOrFail(
+  sr: Semantic.Context,
+  exprId: Semantic.ExprId,
+  sourceloc: SourceLoc,
+) {
   const valueResult = EvalCTFE(sr, exprId);
   if (!valueResult.ok) {
     throw new CompilerError(valueResult.error, sourceloc);
@@ -31,7 +35,7 @@ export function EvalCTFEOrFail(sr: SemanticResult, exprId: Semantic.ExprId, sour
 }
 
 export function EvalCTFE(
-  sr: SemanticResult,
+  sr: Semantic.Context,
   exprId: Semantic.ExprId,
 ): { ok: true; value: [Semantic.Expression, Semantic.ExprId] } | { ok: false; error: string } {
   const expr = sr.exprNodes.get(exprId);
@@ -212,7 +216,7 @@ export function EvalCTFE(
 }
 
 export function EvalCTFENumericValue(
-  sr: SemanticResult,
+  sr: Semantic.Context,
   exprId: Semantic.ExprId,
   sourceloc: SourceLoc,
 ) {
@@ -241,7 +245,7 @@ export function EvalCTFENumericValue(
   }
 }
 
-export function EvalCTFEBoolean(sr: SemanticResult, exprId: Semantic.ExprId) {
+export function EvalCTFEBoolean(sr: Semantic.Context, exprId: Semantic.ExprId) {
   const r = EvalCTFE(sr, exprId);
   const expr = sr.exprNodes.get(exprId);
   if (!r.ok) throw new CompilerError(r.error, expr.sourceloc);

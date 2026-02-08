@@ -1,24 +1,17 @@
-import { HAZE_STDLIB_NAME, ModuleCompiler } from "../Module";
 import {
   EAssignmentOperation,
   EBinaryOperation,
   EExternLanguage,
   EDatatypeMutability,
   EVariableMutability,
-  BinaryOperationToString,
-  UnaryOperationToString,
-  IncrOperationToString,
   EOverloadedOperator,
 } from "../shared/AST";
 import {
-  BrandedArray,
   EMethodType,
   EPrimitive,
   EVariableContext,
   primitiveToString,
-  pushBrandedNode,
   stringToPrimitive,
-  type NameSet,
 } from "../shared/common";
 import { getModuleGlobalNamespaceName } from "../shared/Config";
 import {
@@ -33,10 +26,8 @@ import {
 import {
   Collect,
   funcSymHasParameterPack,
-  printCollectedDatatype,
   printCollectedExpr,
   printCollectedSymbol,
-  type CollectionContext,
 } from "../SymbolCollection/SymbolCollection";
 import { Conversion } from "./Conversion";
 import { EvalCTFE, EvalCTFEBoolean, EvalCTFEOrFail } from "./CTFE";
@@ -49,153 +40,14 @@ import {
   makeDeferredFunctionDatatypeAvailable,
 } from "./LookupDatatype";
 
-import { EUnaryOperation, type EIncrOperation } from "../shared/AST";
-import { type Brand, type LiteralValue } from "../shared/common";
+import { EUnaryOperation } from "../shared/AST";
 import { makeTempId, makeTempName } from "../shared/store";
-import {
-  ConditionChain,
-  ConstraintSet,
-  type ConstraintPath,
-  type ConstraintPathSubscriptIndex,
-} from "./Constraint";
+import { ConditionChain, ConstraintSet, type ConstraintPath } from "./Constraint";
+import { Semantic } from "./SemanticTypes";
 
 function isPowerOfTwo(x: bigint): boolean {
   return x > 0n && (x & (x - 1n)) === 0n;
 }
-
-export enum FlowType {
-  NoReturn, // Control never comes back: Program terminates or infinite loop
-  Return, // Control exits the current context and returns from the containing function
-  Raise, // Control exits the current context and jumps to the nearest attempt/else construct
-  Fallthrough, // Control continues normally
-}
-
-export class FlowResult {
-  private set = new Set<FlowType>();
-
-  private constructor() {}
-
-  static empty() {
-    return new FlowResult();
-  }
-
-  static fallthrough() {
-    const result = new FlowResult();
-    result.add(FlowType.Fallthrough);
-    return result;
-  }
-
-  static return() {
-    const result = new FlowResult();
-    result.add(FlowType.Return);
-    return result;
-  }
-
-  clone() {
-    const result = new FlowResult();
-    result.addAll(this);
-    return result;
-  }
-
-  get() {
-    return this.set;
-  }
-
-  has(type: FlowType) {
-    return this.set.has(type);
-  }
-
-  add(type: FlowType) {
-    this.set.add(type);
-  }
-
-  remove(type: FlowType) {
-    this.set.delete(type);
-  }
-
-  addAll(result: FlowResult) {
-    for (const a of result.set) {
-      this.set.add(a);
-    }
-  }
-
-  with(type: FlowType) {
-    const result = this.clone();
-    result.add(type);
-    return result;
-  }
-
-  withAll(r: FlowResult) {
-    const result = this.clone();
-    result.addAll(r);
-    return result;
-  }
-
-  addExitFlows(src: FlowResult) {
-    for (const f of src.get()) {
-      if (f !== FlowType.Fallthrough) {
-        this.add(f);
-      }
-    }
-  }
-}
-
-export class WriteResult {
-  private set = new Set<Semantic.SymbolId>();
-
-  private constructor() {}
-
-  static empty() {
-    return new WriteResult();
-  }
-
-  clone() {
-    const result = new WriteResult();
-    result.addAll(this);
-    return result;
-  }
-
-  get() {
-    return this.set;
-  }
-
-  add(type: Semantic.SymbolId) {
-    this.set.add(type);
-  }
-
-  has(id: Semantic.SymbolId) {
-    return this.set.has(id);
-  }
-
-  addAll(result: WriteResult) {
-    for (const a of result.set) {
-      this.set.add(a);
-    }
-  }
-
-  with(type: Semantic.SymbolId) {
-    const result = this.clone();
-    result.add(type);
-    return result;
-  }
-
-  withAll(r: WriteResult) {
-    const result = this.clone();
-    result.addAll(r);
-    return result;
-  }
-}
-
-type Inference =
-  | undefined
-  | {
-      gonnaCallFunctionWithParameterValues?: {
-        index: number;
-        exprId: Semantic.ExprId | null;
-      }[];
-      gonnaInstantiateStructWithType?: Semantic.TypeUseId;
-      unsafe?: boolean;
-    };
 
 export class SemanticElaborator {
   currentContext: Semantic.ElaborationContext;
@@ -204,7 +56,7 @@ export class SemanticElaborator {
   functionReturnsInstanceIds?: Set<Semantic.InstanceId>;
 
   constructor(
-    public sr: SemanticResult,
+    public sr: Semantic.Context,
     currentContext: Semantic.ElaborationContext,
   ) {
     this.currentContext = currentContext;
@@ -307,7 +159,7 @@ export class SemanticElaborator {
     return this.sr.typeDefNodes.get(id);
   }
 
-  binaryExpr(binaryExpr: Collect.BinaryExpr, inference: Inference) {
+  binaryExpr(binaryExpr: Collect.BinaryExpr, inference: Semantic.Inference) {
     if (binaryExpr.operation === EBinaryOperation.BoolAnd) {
       let [left, leftId] = this.expr(binaryExpr.left, inference);
 
@@ -531,7 +383,7 @@ export class SemanticElaborator {
 
   callExpr(
     callExpr: Collect.ExprCallExpr,
-    inference: Inference,
+    inference: Semantic.Inference,
   ): [Semantic.Expression, Semantic.ExprId] {
     const collectedExpr = this.sr.cc.exprNodes.get(callExpr.calledExpr);
     if (collectedExpr.variant === Collect.ENode.SymbolValueExpr) {
@@ -886,8 +738,8 @@ export class SemanticElaborator {
       const collectedMethod = this.sr.cc.symbolNodes.get(constructorId);
       assert(collectedMethod.variant === Collect.ENode.FunctionSymbol);
 
-      let elaboratedStructCache = null as StructDef | null;
-      for (const [key, cache] of this.sr.elaboratedStructDatatypes) {
+      let elaboratedStructCache = null as Semantic.StructDef | null;
+      for (const [_, cache] of this.sr.elaboratedStructDatatypes) {
         for (const entry of cache) {
           if (entry.result === calledExprTypeUse.type) {
             assert(elaboratedStructCache === null);
@@ -995,7 +847,7 @@ export class SemanticElaborator {
       }
 
       const e = this.sr.exprNodes.get(finalArgs[0]);
-      return Semantic.addExpr(this.sr, {
+      return this.sr.b.addExpr(this.sr, {
         variant: Semantic.ENode.ValueToUnionCastExpr,
         expr: finalArgs[0],
         instanceIds: [...instanceIds],
@@ -1023,7 +875,7 @@ export class SemanticElaborator {
 
   unaryExpr(
     unaryExpr: Collect.UnaryExpr,
-    inference: Inference,
+    inference: Semantic.Inference,
   ): [Semantic.Expression, Semantic.ExprId] {
     const [e, eId] = this.sr.e.expr(unaryExpr.expr, undefined);
 
@@ -1117,7 +969,7 @@ export class SemanticElaborator {
         const okTag = aDef.members.find((m) => m.tag === "Ok");
         const errTag = aDef.members.find((m) => m.tag === "Err");
         if (okTag && errTag) {
-          return Semantic.addExpr(this.sr, {
+          return this.sr.b.addExpr(this.sr, {
             variant: Semantic.ENode.UnionTagCheckExpr,
             expr: eId,
             instanceIds: [],
@@ -1143,7 +995,7 @@ export class SemanticElaborator {
     }
   }
 
-  literalExpr(literalExpr: Collect.LiteralExpr, inference: Inference) {
+  literalExpr(literalExpr: Collect.LiteralExpr, inference: Semantic.Inference) {
     if (
       literalExpr.literal.type === EPrimitive.u8 ||
       literalExpr.literal.type === EPrimitive.u16 ||
@@ -1246,7 +1098,7 @@ export class SemanticElaborator {
 
   expr(
     exprId: Collect.ExprId,
-    inference: Inference,
+    inference: Semantic.Inference,
   ): readonly [Semantic.Expression, Semantic.ExprId] {
     const expr = this.sr.cc.exprNodes.get(exprId);
 
@@ -1430,7 +1282,7 @@ export class SemanticElaborator {
       return found;
     }
 
-    const [enumType, enumTypeId] = Semantic.addType<Semantic.EnumDatatypeDef>(this.sr, {
+    const [enumType, enumTypeId] = this.sr.b.addType<Semantic.EnumDatatypeDef>(this.sr, {
       variant: Semantic.ENode.EnumDatatype,
       concrete: true,
       extern: enumValue.extern,
@@ -1673,7 +1525,7 @@ export class SemanticElaborator {
 
   memberAccess(
     memberAccess: Collect.MemberAccessExpr,
-    inference: Inference,
+    inference: Semantic.Inference,
   ): readonly [Semantic.Expression, Semantic.ExprId] {
     const collectedObjectExpr = this.sr.cc.exprNodes.get(memberAccess.expr);
     if (
@@ -1746,7 +1598,7 @@ export class SemanticElaborator {
 
       assert(func && funcId);
 
-      return Semantic.addExpr(this.sr, {
+      return this.sr.b.addExpr(this.sr, {
         variant: Semantic.ENode.CallableExpr,
         functionSymbol: funcId,
         instanceIds: [],
@@ -1755,7 +1607,7 @@ export class SemanticElaborator {
         thisExpr: objectId,
         type: makeTypeUse(
           this.sr,
-          Semantic.addType(this.sr, {
+          this.sr.b.addType(this.sr, {
             variant: Semantic.ENode.CallableDatatype,
             concrete: true,
             functionType: func.type,
@@ -1859,7 +1711,7 @@ export class SemanticElaborator {
 
         assert(func && funcId);
 
-        return Semantic.addExpr(this.sr, {
+        return this.sr.b.addExpr(this.sr, {
           variant: Semantic.ENode.CallableExpr,
           functionSymbol: funcId,
           instanceIds: [],
@@ -1868,7 +1720,7 @@ export class SemanticElaborator {
           thisExpr: objectId,
           type: makeTypeUse(
             this.sr,
-            Semantic.addType(this.sr, {
+            this.sr.b.addType(this.sr, {
               variant: Semantic.ENode.CallableDatatype,
               concrete: true,
               functionType: func.type,
@@ -1985,7 +1837,7 @@ export class SemanticElaborator {
 
         assert(func && funcId);
 
-        return Semantic.addExpr(this.sr, {
+        return this.sr.b.addExpr(this.sr, {
           variant: Semantic.ENode.CallableExpr,
           functionSymbol: funcId,
           instanceIds: [],
@@ -1994,7 +1846,7 @@ export class SemanticElaborator {
           thisExpr: objectId,
           type: makeTypeUse(
             this.sr,
-            Semantic.addType(this.sr, {
+            this.sr.b.addType(this.sr, {
               variant: Semantic.ENode.CallableDatatype,
               concrete: true,
               functionType: func.type,
@@ -2059,7 +1911,7 @@ export class SemanticElaborator {
 
         assert(func && funcId);
 
-        return Semantic.addExpr(this.sr, {
+        return this.sr.b.addExpr(this.sr, {
           variant: Semantic.ENode.CallableExpr,
           functionSymbol: funcId,
           instanceIds: [],
@@ -2068,7 +1920,7 @@ export class SemanticElaborator {
           thisExpr: objectId,
           type: makeTypeUse(
             this.sr,
-            Semantic.addType(this.sr, {
+            this.sr.b.addType(this.sr, {
               variant: Semantic.ENode.CallableDatatype,
               concrete: true,
               functionType: func.type,
@@ -2171,8 +2023,8 @@ export class SemanticElaborator {
       // const objectType = this.sr.typeDefNodes.get(this.sr.typeUseNodes.get(objectTypeId).type);
 
       const typedef = this.sr.typeUseNodes.get(objectTypeId).type;
-      let elaboratedStructCache = null as StructDef | null;
-      for (const [key, cache] of this.sr.elaboratedStructDatatypes) {
+      let elaboratedStructCache = null as Semantic.StructDef | null;
+      for (const [_, cache] of this.sr.elaboratedStructDatatypes) {
         for (const entry of cache) {
           if (entry.result === typedef) {
             elaboratedStructCache = entry;
@@ -2254,14 +2106,14 @@ export class SemanticElaborator {
         );
       }
 
-      return Semantic.addExpr(this.sr, {
+      return this.sr.b.addExpr(this.sr, {
         variant: Semantic.ENode.CallableExpr,
         instanceIds: [],
         thisExpr: objectId,
         functionSymbol: elaboratedMethodId,
         type: makeTypeUse(
           this.sr,
-          Semantic.addType(this.sr, {
+          this.sr.b.addType(this.sr, {
             variant: Semantic.ENode.CallableDatatype,
             thisExprType: object.type,
             functionType: elaboratedMethod.type,
@@ -2376,7 +2228,7 @@ export class SemanticElaborator {
 
     if (global) {
       assert(variable.comptimeValue);
-      const [_, defSymId] = Semantic.addSymbol(this.sr, {
+      const [_, defSymId] = this.sr.b.addSymbol(this.sr, {
         variant: Semantic.ENode.GlobalVariableDefinitionSymbol,
         comptime: variable.comptime,
         concrete: variable.concrete,
@@ -2572,7 +2424,7 @@ export class SemanticElaborator {
     if (onlyElaborateType) return;
     const typeInstance = this.sr.typeUseNodes.get(typeId);
     const type = this.sr.typeDefNodes.get(typeInstance.type);
-    const [variable, variableId] = Semantic.addSymbol(this.sr, {
+    const [variable, variableId] = this.sr.b.addSymbol(this.sr, {
       variant: Semantic.ENode.VariableSymbol,
       name: symbol.name,
       export: false,
@@ -2693,7 +2545,7 @@ export class SemanticElaborator {
       return existing;
     }
 
-    const [struct, structId] = Semantic.addType<Semantic.StructDatatypeDef>(this.sr, {
+    const [struct, structId] = this.sr.b.addType<Semantic.StructDatatypeDef>(this.sr, {
       variant: Semantic.ENode.StructDatatype,
       name: definedStructType.name,
       generics: genericArgs,
@@ -2722,7 +2574,7 @@ export class SemanticElaborator {
         genericArgs: genericArgs,
         parentStructOrNS: parentStructOrNS,
         result: structId,
-        resultAsTypeDefSymbol: Semantic.addSymbol(this.sr, {
+        resultAsTypeDefSymbol: this.sr.b.addSymbol(this.sr, {
           variant: Semantic.ENode.TypeDefSymbol,
           datatype: structId,
         })[1],
@@ -2816,7 +2668,7 @@ export class SemanticElaborator {
             );
           }
         }
-        const [variable, variableId] = Semantic.addSymbol(this.sr, {
+        const [_, variableId] = this.sr.b.addSymbol(this.sr, {
           variant: Semantic.ENode.VariableSymbol,
           export: false,
           extern: EExternLanguage.None,
@@ -3095,32 +2947,35 @@ export class SemanticElaborator {
     }
   }
 
-  sequenceControlFlow(a: FlowResult, b: FlowResult): FlowResult {
-    const out = FlowResult.empty();
+  sequenceControlFlow(a: Semantic.FlowResult, b: Semantic.FlowResult): Semantic.FlowResult {
+    const out = Semantic.FlowResult.empty();
 
     // a is the state from all statements that came before
     // b is the new statement
     out.addAll(a);
 
-    if (out.has(FlowType.NoReturn)) {
+    if (out.has(Semantic.FlowType.NoReturn)) {
       // This is actually a bad case when there is code after a noreturn function.
       // It is unreachable and should be stripped but we will just keep it and ignore the problem.
     }
 
-    if (b.has(FlowType.Raise)) {
-      out.add(FlowType.Raise);
+    if (b.has(Semantic.FlowType.Raise)) {
+      out.add(Semantic.FlowType.Raise);
     }
-    if (b.has(FlowType.Return)) {
-      out.add(FlowType.Return);
-    }
-
-    if (b.has(FlowType.NoReturn) && !(out.has(FlowType.Raise) || out.has(FlowType.Return))) {
-      out.add(FlowType.NoReturn);
+    if (b.has(Semantic.FlowType.Return)) {
+      out.add(Semantic.FlowType.Return);
     }
 
-    if (!b.has(FlowType.Fallthrough)) {
+    if (
+      b.has(Semantic.FlowType.NoReturn) &&
+      !(out.has(Semantic.FlowType.Raise) || out.has(Semantic.FlowType.Return))
+    ) {
+      out.add(Semantic.FlowType.NoReturn);
+    }
+
+    if (!b.has(Semantic.FlowType.Fallthrough)) {
       // b no-fallthrough stops every fallthrough up to this point
-      out.remove(FlowType.Fallthrough);
+      out.remove(Semantic.FlowType.Fallthrough);
     }
 
     return out;
@@ -3136,7 +2991,7 @@ export class SemanticElaborator {
         sourceScope.variant !== Collect.ENode.UnitScope &&
         sourceScope.variant !== Collect.ENode.FileScope,
     );
-    const [scope, scopeId] = Semantic.addBlockScope(this.sr, {
+    const [scope, scopeId] = this.sr.b.addBlockScope(this.sr, {
       variant: Semantic.ENode.BlockScope,
       statements: [],
       emittedExpr: -1 as Semantic.ExprId,
@@ -3173,8 +3028,8 @@ export class SemanticElaborator {
     const blockScope = this.sr.blockScopeNodes.get(args.targetScopeId);
     assert(blockScope.variant === Semantic.ENode.BlockScope);
 
-    let blockFlow = FlowResult.fallthrough();
-    let blockWrites = WriteResult.empty();
+    let blockFlow = Semantic.FlowResult.fallthrough();
+    let blockWrites = Semantic.WriteResult.empty();
     this.withScopes(
       {
         currentScope: args.sourceScopeId,
@@ -3404,10 +3259,10 @@ export class SemanticElaborator {
               });
               assert(packVariable);
 
-              const [paramPack, paramPackId] = Semantic.addType(this.sr, {
+              const [_, paramPackId] = this.sr.b.addType(this.sr, {
                 variant: Semantic.ENode.ParameterPackDatatype,
                 parameters: paramPackTypes.map((t, i) => {
-                  const [variable, variableId] = Semantic.addSymbol(this.sr, {
+                  const [_, variableId] = this.sr.b.addSymbol(this.sr, {
                     variant: Semantic.ENode.VariableSymbol,
                     comptime: false,
                     comptimeValue: null,
@@ -3427,7 +3282,7 @@ export class SemanticElaborator {
                 }),
                 concrete: true,
               });
-              const paramPackVariableId = Semantic.addSymbol(this.sr, {
+              const paramPackVariableId = this.sr.b.addSymbol(this.sr, {
                 variant: Semantic.ENode.VariableSymbol,
                 comptime: false,
                 comptimeValue: null,
@@ -3581,7 +3436,7 @@ export class SemanticElaborator {
           );
         }
 
-        let [symbol, symbolId] = Semantic.addSymbol<Semantic.FunctionSymbol>(this.sr, {
+        let [symbol, symbolId] = this.sr.b.addSymbol<Semantic.FunctionSymbol>(this.sr, {
           variant: Semantic.ENode.FunctionSymbol,
           type: ftype,
           annotatedReturnType: expectedReturnType,
@@ -3682,7 +3537,7 @@ export class SemanticElaborator {
                 false,
                 func.sourceloc,
               )[1];
-              const variableId = Semantic.addSymbol(this.sr, {
+              const variableId = this.sr.b.addSymbol(this.sr, {
                 variant: Semantic.ENode.VariableSymbol,
                 memberOfStruct: symbol.methodOf,
                 mutability: EVariableMutability.Default,
@@ -3761,7 +3616,11 @@ export class SemanticElaborator {
             ).forEach((d) => symbol.returnsInstanceIds.add(d));
 
             // Add "none" as a returned value if nothing is returned. This is only for the return type.
-            if (flow.has(FlowType.Fallthrough) && !func.requires.noreturn && !func.requires.final) {
+            if (
+              flow.has(Semantic.FlowType.Fallthrough) &&
+              !func.requires.noreturn &&
+              !func.requires.final
+            ) {
               symbol.returnedDatatypes.add(this.sr.b.noneType());
             }
 
@@ -3817,7 +3676,7 @@ export class SemanticElaborator {
                 requires: {
                   final: true,
                   pure: func.requires.pure || (!func.requires.final && !symbol.isImpure),
-                  noreturn: func.requires.noreturn || flow.has(FlowType.NoReturn),
+                  noreturn: func.requires.noreturn || flow.has(Semantic.FlowType.NoReturn),
                   noreturnIf: noreturnIf,
                 },
                 sourceloc: func.sourceloc,
@@ -3827,12 +3686,12 @@ export class SemanticElaborator {
 
               // Fix returning "none" if nothing is returned but the function returns "none", except it returns 'void'
               if (
-                flow.has(FlowType.Fallthrough) &&
+                flow.has(Semantic.FlowType.Fallthrough) &&
                 !Conversion.isVoidById(this.sr, functype.returnType)
               ) {
                 assert(symbol.scope);
                 const bodyScope = this.sr.blockScopeNodes.get(symbol.scope);
-                const statementId = Semantic.addStatement(this.sr, {
+                const statementId = this.sr.b.addStatement(this.sr, {
                   variant: Semantic.ENode.ReturnStatement,
                   expr: this.sr.b.noneExpr()[1],
                   sourceloc: func.sourceloc,
@@ -4006,7 +3865,7 @@ export class SemanticElaborator {
           const functype = this.lookupAndElaborateDatatype(farg.datatype);
           return makeTypeUse(
             this.sr,
-            Semantic.addType(this.sr, {
+            this.sr.b.addType(this.sr, {
               variant: Semantic.ENode.CallableDatatype,
               functionType: this.sr.typeUseNodes.get(functype).type,
               thisExprType: undefined,
@@ -4050,7 +3909,7 @@ export class SemanticElaborator {
           } else {
             return makeTypeUse(
               this.sr,
-              Semantic.addType(this.sr, {
+              this.sr.b.addType(this.sr, {
                 variant: Semantic.ENode.GenericParameterDatatype,
                 name: found.name,
                 collectedParameter: foundId,
@@ -4347,7 +4206,7 @@ export class SemanticElaborator {
     }
   }
 
-  assignmentExpr(assignment: Collect.ExprAssignmentExpr, inference: Inference) {
+  assignmentExpr(assignment: Collect.ExprAssignmentExpr, inference: Semantic.Inference) {
     const [targetExpr, targetExprId] = this.expr(assignment.expr, { unsafe: inference?.unsafe });
     const [valueExpr, valueExprId] = this.expr(assignment.value, {
       gonnaInstantiateStructWithType: targetExpr.type,
@@ -4407,7 +4266,7 @@ export class SemanticElaborator {
         // We do not care about it here because the CallExpr then internally
         // will insert a write if the operator actually is a mutating method.
 
-        const calledExpr = Semantic.addExpr(this.sr, {
+        const calledExpr = this.sr.b.addExpr(this.sr, {
           variant: Semantic.ENode.CallableExpr,
           functionSymbol: exactMatchId,
           instanceIds: [],
@@ -4416,7 +4275,7 @@ export class SemanticElaborator {
           thisExpr: targetExprId,
           type: makeTypeUse(
             this.sr,
-            Semantic.addType(this.sr, {
+            this.sr.b.addType(this.sr, {
               variant: Semantic.ENode.CallableDatatype,
               thisExprType: targetExpr.type,
               functionType: method.type,
@@ -4507,7 +4366,7 @@ export class SemanticElaborator {
     const genericPlaceholders = functionSymbol.generics.map((gId) => {
       const g = this.sr.cc.symbolNodes.get(gId);
       assert(g.variant === Collect.ENode.GenericTypeParameterSymbol);
-      return Semantic.addType(this.sr, {
+      return this.sr.b.addType(this.sr, {
         variant: Semantic.ENode.GenericParameterDatatype,
         name: g.name,
         collectedParameter: gId,
@@ -4562,7 +4421,7 @@ export class SemanticElaborator {
       }
     }
 
-    const [signature, signatureId] = Semantic.addSymbol(this.sr, {
+    const [signature, signatureId] = this.sr.b.addSymbol(this.sr, {
       variant: Semantic.ENode.FunctionSignature,
       genericPlaceholders: genericPlaceholders,
       originalFunction: functionSymbolId,
@@ -4630,7 +4489,7 @@ export class SemanticElaborator {
     symbolId: Collect.SymbolId,
     name: string,
     memberAccessExpr: Collect.MemberAccessExpr,
-    inference: Inference,
+    inference: Semantic.Inference,
   ) {
     const symbol = this.sr.cc.symbolNodes.get(symbolId);
 
@@ -4710,7 +4569,7 @@ export class SemanticElaborator {
     namespaceValueId: Semantic.ExprId,
     name: string,
     memberAccessExpr: Collect.MemberAccessExpr,
-    inference: Inference,
+    inference: Semantic.Inference,
   ) {
     const namespace = this.sr.exprNodes.get(namespaceValueId);
     assert(namespace.variant === Semantic.ENode.DatatypeAsValueExpr);
@@ -4751,7 +4610,7 @@ export class SemanticElaborator {
     namespaceOrStructValueId: Semantic.ExprId,
     name: string,
     memberAccessExpr: Collect.MemberAccessExpr,
-    inference: Inference,
+    inference: Semantic.Inference,
   ) {
     const namespaceOrStructValue = this.sr.exprNodes.get(namespaceOrStructValueId);
     assert(namespaceOrStructValue.variant === Semantic.ENode.DatatypeAsValueExpr);
@@ -4766,8 +4625,8 @@ export class SemanticElaborator {
 
     const typedef = this.sr.typeUseNodes.get(namespaceOrStructValue.type).type;
 
-    let elaboratedStructCache = null as StructDef | null;
-    for (const [key, cache] of this.sr.elaboratedStructDatatypes) {
+    let elaboratedStructCache = null as Semantic.StructDef | null;
+    for (const [_, cache] of this.sr.elaboratedStructDatatypes) {
       for (const entry of cache) {
         if (entry.result === typedef) {
           elaboratedStructCache = entry;
@@ -4829,7 +4688,7 @@ export class SemanticElaborator {
     elements: Collect.AggregateLiteralElement[],
     allocator: Semantic.ExprId | null,
     sourceloc: SourceLoc,
-    inference: Inference,
+    _inference: Semantic.Inference,
   ): [Semantic.Expression, Semantic.ExprId] {
     const arrayUse = this.sr.typeUseNodes.get(arrayTypeUseId);
     const array = this.sr.typeDefNodes.get(arrayUse.type);
@@ -4890,7 +4749,7 @@ export class SemanticElaborator {
     elements: Collect.AggregateLiteralElement[],
     allocator: Semantic.ExprId | null,
     sourceloc: SourceLoc,
-    inference: Inference,
+    inference: Semantic.Inference,
   ): [Semantic.StructLiteralExpr, Semantic.ExprId] {
     const structUse = this.sr.typeUseNodes.get(typeUseId);
     const struct = this.sr.typeDefNodes.get(structUse.type);
@@ -5025,11 +4884,11 @@ export class SemanticElaborator {
   }
 
   elaborateDatatypeMemberAccess(
-    sr: SemanticResult,
+    sr: Semantic.Context,
     datatypeAsValueExprId: Semantic.ExprId,
     typeUseId: Semantic.TypeUseId,
     memberAccessExpr: Collect.MemberAccessExpr,
-    inference: Inference,
+    inference: Semantic.Inference,
   ) {
     const datatypeValueInstance = sr.typeUseNodes.get(typeUseId);
     const datatypeValue = sr.typeDefNodes.get(datatypeValueInstance.type);
@@ -5137,7 +4996,7 @@ export class SemanticElaborator {
 
           assert(func && funcId);
 
-          return Semantic.addExpr(this.sr, {
+          return sr.b.addExpr(this.sr, {
             variant: Semantic.ENode.SymbolValueExpr,
             instanceIds: [],
             symbol: funcId,
@@ -5150,8 +5009,8 @@ export class SemanticElaborator {
               false,
               memberAccessExpr.sourceloc,
             )[1],
-            flow: FlowResult.fallthrough(),
-            writes: WriteResult.empty(),
+            flow: Semantic.FlowResult.fallthrough(),
+            writes: Semantic.WriteResult.empty(),
           });
         }
       }
@@ -5165,7 +5024,7 @@ export class SemanticElaborator {
         );
       }
 
-      return Semantic.addExpr(this.sr, {
+      return this.sr.b.addExpr(this.sr, {
         variant: Semantic.ENode.UnionTagReferenceExpr,
         instanceIds: [],
         isTemporary: true,
@@ -5179,8 +5038,8 @@ export class SemanticElaborator {
           memberAccessExpr.sourceloc,
         )[1],
         sourceloc: memberAccessExpr.sourceloc,
-        flow: FlowResult.fallthrough(),
-        writes: WriteResult.empty(),
+        flow: Semantic.FlowResult.fallthrough(),
+        writes: Semantic.WriteResult.empty(),
       });
     } else if (datatypeValue.variant === Semantic.ENode.EnumDatatype) {
       if (memberAccessExpr.genericArgs.length !== 0) {
@@ -5204,8 +5063,12 @@ export class SemanticElaborator {
 
   elaborateStatement(
     statementId: Collect.StatementId,
-    inference: Inference,
-  ): { statementId: Semantic.StatementId | null; flow: FlowResult; writes: WriteResult } {
+    inference: Semantic.Inference,
+  ): {
+    statementId: Semantic.StatementId | null;
+    flow: Semantic.FlowResult;
+    writes: Semantic.WriteResult;
+  } {
     const s = this.sr.cc.statementNodes.get(statementId);
 
     switch (s.variant) {
@@ -5235,13 +5098,13 @@ export class SemanticElaborator {
         }
 
         return {
-          statementId: Semantic.addStatement(this.sr, {
+          statementId: this.sr.b.addStatement(this.sr, {
             variant: Semantic.ENode.InlineCStatement,
             value: r.literal.value,
             sourceloc: s.sourceloc,
           })[1],
-          flow: FlowResult.fallthrough(),
-          writes: WriteResult.empty(),
+          flow: Semantic.FlowResult.fallthrough(),
+          writes: Semantic.WriteResult.empty(),
         };
       }
 
@@ -5260,10 +5123,10 @@ export class SemanticElaborator {
               lastExprIsEmit: false,
               unsafe: inference?.unsafe,
             });
-            const resultFlow = FlowResult.empty();
+            const resultFlow = Semantic.FlowResult.empty();
             resultFlow.addAll(conditionExpr.flow);
             resultFlow.addAll(flow);
-            const resultWrites = WriteResult.empty();
+            const resultWrites = Semantic.WriteResult.empty();
             resultWrites.addAll(conditionExpr.writes);
             resultWrites.addAll(writes);
             // If true, control flow is exactly the flow of the 'then'-block. Only one comptime block can be active
@@ -5289,11 +5152,11 @@ export class SemanticElaborator {
                 lastExprIsEmit: false,
                 unsafe: inference?.unsafe,
               });
-              const resultFlow = FlowResult.empty();
+              const resultFlow = Semantic.FlowResult.empty();
               resultFlow.addAll(conditionExpr.flow);
               resultFlow.addAll(elifConditionExpr.flow);
               resultFlow.addAll(flow);
-              const resultWrites = WriteResult.empty();
+              const resultWrites = Semantic.WriteResult.empty();
               resultWrites.addAll(conditionExpr.writes);
               resultWrites.addAll(elifConditionExpr.writes);
               resultWrites.addAll(writes);
@@ -5313,7 +5176,7 @@ export class SemanticElaborator {
               lastExprIsEmit: false,
               unsafe: inference?.unsafe,
             });
-            const resultFlow = FlowResult.empty();
+            const resultFlow = Semantic.FlowResult.empty();
             resultFlow.addAll(conditionExpr.flow);
             // Add flows from all elseif conditions that were checked but not taken
             for (const elif of s.elseif) {
@@ -5321,7 +5184,7 @@ export class SemanticElaborator {
               resultFlow.addAll(elifConditionExpr.flow);
             }
             resultFlow.addAll(flow);
-            const resultWrites = WriteResult.empty();
+            const resultWrites = Semantic.WriteResult.empty();
             resultWrites.addAll(conditionExpr.writes);
             // Add writes from all elseif conditions that were checked but not taken
             for (const elif of s.elseif) {
@@ -5341,9 +5204,9 @@ export class SemanticElaborator {
 
           // Nothing applies, entire statement collapses to nothing
           // But we still need to track flows/writes from all condition evaluations
-          const resultFlow = FlowResult.fallthrough();
+          const resultFlow = Semantic.FlowResult.fallthrough();
           resultFlow.addAll(conditionExpr.flow);
-          const resultWrites = WriteResult.empty();
+          const resultWrites = Semantic.WriteResult.empty();
           resultWrites.addAll(conditionExpr.writes);
           for (const elif of s.elseif) {
             const [elifConditionExpr] = this.expr(elif.condition!, undefined);
@@ -5360,11 +5223,11 @@ export class SemanticElaborator {
           const thenConstraints = ConstraintSet.empty();
           const branchFlows: {
             constraints: ConstraintSet;
-            flow: FlowResult;
+            flow: Semantic.FlowResult;
           }[] = [];
 
-          const resultFlow = FlowResult.empty();
-          const resultWrites = WriteResult.empty();
+          const resultFlow = Semantic.FlowResult.empty();
+          const resultWrites = Semantic.WriteResult.empty();
 
           let resultingConditionId: Semantic.ExprId | null = null;
           if (s.letScopeId) {
@@ -5421,8 +5284,8 @@ export class SemanticElaborator {
                   variableAsBoolResult.expr,
                   s.sourceloc,
                 )[1],
-                FlowResult.fallthrough().withAll(assignmentExpr.flow),
-                WriteResult.empty().withAll(assignmentExpr.writes),
+                Semantic.FlowResult.fallthrough().withAll(assignmentExpr.flow),
+                Semantic.WriteResult.empty().withAll(assignmentExpr.writes),
               )[1];
 
               if (s.condition) {
@@ -5490,7 +5353,7 @@ export class SemanticElaborator {
             false,
           );
 
-          const [ifStatement, ifStatementId] = Semantic.addStatement<Semantic.IfStatement>(
+          const [ifStatement, ifStatementId] = this.sr.b.addStatement<Semantic.IfStatement>(
             this.sr,
             {
               variant: Semantic.ENode.IfStatement,
@@ -5597,7 +5460,7 @@ export class SemanticElaborator {
 
           for (const { flow } of branchFlows) {
             for (const e of flow.get()) {
-              if (e === FlowType.Raise || e === FlowType.Return) {
+              if (e === Semantic.FlowType.Raise || e === Semantic.FlowType.Return) {
                 resultFlow.add(e);
               }
             }
@@ -5605,17 +5468,21 @@ export class SemanticElaborator {
 
           if (!s.elseBlock) {
             branchFlows.push({
-              flow: FlowResult.fallthrough(),
+              flow: Semantic.FlowResult.fallthrough(),
               constraints: ConstraintSet.empty(), // IMPORTANT: no constraints
             });
           }
 
-          if (branchFlows.some((b) => b.flow.has(FlowType.Fallthrough))) {
-            resultFlow.add(FlowType.Fallthrough);
+          if (branchFlows.some((b) => b.flow.has(Semantic.FlowType.Fallthrough))) {
+            resultFlow.add(Semantic.FlowType.Fallthrough);
           }
 
-          let fallthroughBranches = branchFlows.filter((f) => f.flow.has(FlowType.Fallthrough));
-          let nonFallthroughBranches = branchFlows.filter((f) => !f.flow.has(FlowType.Fallthrough));
+          let fallthroughBranches = branchFlows.filter((f) =>
+            f.flow.has(Semantic.FlowType.Fallthrough),
+          );
+          let nonFallthroughBranches = branchFlows.filter(
+            (f) => !f.flow.has(Semantic.FlowType.Fallthrough),
+          );
 
           let canNarrowAfterIf =
             (fallthroughBranches.length > 0 || !s.elseBlock) && nonFallthroughBranches.length > 0;
@@ -5640,8 +5507,8 @@ export class SemanticElaborator {
       case Collect.ENode.WhileStatement: {
         let resultingConditionId: Semantic.ExprId | null = null;
 
-        const resultFlow = FlowResult.fallthrough();
-        const resultWrites = WriteResult.empty();
+        const resultFlow = Semantic.FlowResult.fallthrough();
+        const resultWrites = Semantic.WriteResult.empty();
 
         const conditionConstraints = ConstraintSet.empty();
         if (s.letScopeId) {
@@ -5698,8 +5565,8 @@ export class SemanticElaborator {
                 variableAsBoolResult.expr,
                 s.sourceloc,
               )[1],
-              FlowResult.fallthrough().withAll(assignmentExpr.flow),
-              WriteResult.empty().withAll(assignmentExpr.writes),
+              Semantic.FlowResult.fallthrough().withAll(assignmentExpr.flow),
+              Semantic.WriteResult.empty().withAll(assignmentExpr.writes),
             )[1];
 
             if (s.condition) {
@@ -5777,7 +5644,7 @@ export class SemanticElaborator {
         resultWrites.addAll(writes);
 
         return {
-          statementId: Semantic.addStatement(this.sr, {
+          statementId: this.sr.b.addStatement(this.sr, {
             variant: Semantic.ENode.WhileStatement,
             isLetBinding: Boolean(s.letScopeId),
             condition: boolCondition,
@@ -5834,7 +5701,7 @@ export class SemanticElaborator {
           assert(this.functionReturnsInstanceIds);
           expression.instanceIds.forEach((i) => this.functionReturnsInstanceIds!.add(i));
 
-          const resultId = Semantic.addStatement(this.sr, {
+          const resultId = this.sr.b.addStatement(this.sr, {
             variant: Semantic.ENode.ReturnStatement,
             expr: eId,
             sourceloc: s.sourceloc,
@@ -5842,19 +5709,19 @@ export class SemanticElaborator {
           functionSymbol.returnStatements.add(resultId);
           return {
             statementId: resultId,
-            flow: FlowResult.return(),
-            writes: WriteResult.empty(),
+            flow: Semantic.FlowResult.return(),
+            writes: Semantic.WriteResult.empty(),
           };
         } else {
-          const resultId = Semantic.addStatement(this.sr, {
+          const resultId = this.sr.b.addStatement(this.sr, {
             variant: Semantic.ENode.ReturnStatement,
             sourceloc: s.sourceloc,
           })[1];
           functionSymbol.returnStatements.add(resultId);
           return {
             statementId: resultId,
-            flow: FlowResult.return(),
-            writes: WriteResult.empty(),
+            flow: Semantic.FlowResult.return(),
+            writes: Semantic.WriteResult.empty(),
           };
         }
       }
@@ -6071,7 +5938,7 @@ export class SemanticElaborator {
         // }
 
         return {
-          statementId: Semantic.addStatement(this.sr, {
+          statementId: this.sr.b.addStatement(this.sr, {
             variant: Semantic.ENode.VariableStatement,
             mutability: variableSymbol.mutability,
             comptime: collectedVariableSymbol.comptime,
@@ -6091,8 +5958,8 @@ export class SemanticElaborator {
               null,
             sourceloc: s.sourceloc,
           })[1],
-          flow: FlowResult.fallthrough(),
-          writes: WriteResult.empty().with(variableSymbolId),
+          flow: Semantic.FlowResult.fallthrough(),
+          writes: Semantic.WriteResult.empty().with(variableSymbolId),
         };
       }
 
@@ -6112,7 +5979,7 @@ export class SemanticElaborator {
         }
 
         return {
-          statementId: Semantic.addStatement(this.sr, {
+          statementId: this.sr.b.addStatement(this.sr, {
             variant: Semantic.ENode.ExprStatement,
             expr: eId,
             sourceloc: s.sourceloc,
@@ -6148,7 +6015,7 @@ export class SemanticElaborator {
           lastExprIsEmit: false,
           unsafe: inference?.unsafe,
         });
-        flow.add(FlowType.Fallthrough);
+        flow.add(Semantic.FlowType.Fallthrough);
 
         if (s.initStatement) {
           const {
@@ -6159,7 +6026,7 @@ export class SemanticElaborator {
           flow.addAll(letStatementFlow);
           writes.addAll(letStatementWrites);
           return {
-            statementId: Semantic.addStatement(this.sr, {
+            statementId: this.sr.b.addStatement(this.sr, {
               variant: Semantic.ENode.ForStatement,
               body: scopeId,
               initStatement: statementId,
@@ -6172,7 +6039,7 @@ export class SemanticElaborator {
           };
         } else {
           return {
-            statementId: Semantic.addStatement(this.sr, {
+            statementId: this.sr.b.addStatement(this.sr, {
               variant: Semantic.ENode.ForStatement,
               body: scopeId,
               initStatement: null,
@@ -6222,7 +6089,7 @@ export class SemanticElaborator {
           let loopIndex: undefined | Semantic.VariableSymbol = undefined;
           let loopIndexId: undefined | Semantic.SymbolId = undefined;
           if (s.indexVariable) {
-            [loopIndex, loopIndexId] = Semantic.addSymbol(this.sr, {
+            [loopIndex, loopIndexId] = this.sr.b.addSymbol(this.sr, {
               variant: Semantic.ENode.VariableSymbol,
               comptime: true,
               comptimeValue: null,
@@ -6244,8 +6111,8 @@ export class SemanticElaborator {
             } satisfies Semantic.VariableSymbol);
           }
 
-          const resultWrites = WriteResult.empty();
-          const resultFlow = FlowResult.fallthrough();
+          const resultWrites = Semantic.WriteResult.empty();
+          const resultFlow = Semantic.FlowResult.fallthrough();
           const allScopes: Semantic.StatementId[] = [];
           for (let i = 0; i < comptimeExpr.parameters.length; i++) {
             const semanticParamId = comptimeExpr.parameters[i];
@@ -6282,7 +6149,7 @@ export class SemanticElaborator {
             );
           }
 
-          resultFlow.add(FlowType.Fallthrough);
+          resultFlow.add(Semantic.FlowType.Fallthrough);
 
           return {
             statementId: this.sr.b.exprStatement(
@@ -6318,7 +6185,7 @@ export class SemanticElaborator {
           const elementTypeUse = arrayType.datatype;
 
           // Step 3: Create loop variable (element) with the array's element type
-          const [_, loopVariableId] = Semantic.addSymbol(this.sr, {
+          const [_, loopVariableId] = this.sr.b.addSymbol(this.sr, {
             variant: Semantic.ENode.VariableSymbol,
             comptime: false,
             comptimeValue: null,
@@ -6337,7 +6204,7 @@ export class SemanticElaborator {
           // Step 4: Create index variable if specified
           let indexVariableId: Semantic.SymbolId | null = null;
           if (s.indexVariable) {
-            indexVariableId = Semantic.addSymbol(this.sr, {
+            indexVariableId = this.sr.b.addSymbol(this.sr, {
               variant: Semantic.ENode.VariableSymbol,
               comptime: false,
               comptimeValue: null,
@@ -6383,10 +6250,10 @@ export class SemanticElaborator {
 
           // Step 8: Emit ForEachStatement in clean semantic form
           // Lowering will convert this to a traditional for-loop
-          flow.add(FlowType.Fallthrough);
+          flow.add(Semantic.FlowType.Fallthrough);
 
           return {
-            statementId: Semantic.addStatement(this.sr, {
+            statementId: this.sr.b.addStatement(this.sr, {
               variant: Semantic.ENode.ForEachStatement,
               arrayExpr: arrayExprId,
               loopVariable: loopVariableId,
@@ -6415,14 +6282,14 @@ export class SemanticElaborator {
         expr.errorTypesCaught.add(e.type);
 
         return {
-          statementId: Semantic.addStatement(this.sr, {
+          statementId: this.sr.b.addStatement(this.sr, {
             variant: Semantic.ENode.RaiseStatement,
             expr: eId,
             toAttemptExpr: this.inAttemptExpr,
             sourceloc: s.sourceloc,
           })[1],
-          flow: FlowResult.empty().with(FlowType.Raise),
-          writes: WriteResult.empty(),
+          flow: Semantic.FlowResult.empty().with(Semantic.FlowType.Raise),
+          writes: Semantic.WriteResult.empty(),
         };
       }
 
@@ -6660,7 +6527,7 @@ export class SemanticElaborator {
     }
   }
 
-  structInstantiation(structInst: Collect.AggregateLiteralExpr, inference: Inference) {
+  structInstantiation(structInst: Collect.AggregateLiteralExpr, inference: Semantic.Inference) {
     let structId = undefined as Semantic.TypeUseId | undefined;
     if (structInst.structType) {
       structId = this.withContext(
@@ -6753,7 +6620,7 @@ export class SemanticElaborator {
 
   symbolValue(
     symbolValue: Collect.SymbolValueExpr,
-    inference: Inference,
+    inference: Semantic.Inference,
   ): [Semantic.Expression, Semantic.ExprId] {
     if (symbolValue.name === "null") {
       return this.sr.b.literalValue(
@@ -6932,7 +6799,7 @@ export class SemanticElaborator {
             const tag = members.findIndex((m) => m === [...narrowing.possibleVariants][0]);
             assert(tag !== -1);
 
-            const [result, resultId] = Semantic.addExpr(this.sr, {
+            const [result, resultId] = this.sr.b.addExpr(this.sr, {
               variant: Semantic.ENode.UnionToValueCastExpr,
               instanceIds: [],
               expr: symbolValueExprId,
@@ -6955,7 +6822,7 @@ export class SemanticElaborator {
               symbolValue.sourceloc,
             );
 
-            return Semantic.addExpr(this.sr, {
+            return this.sr.b.addExpr(this.sr, {
               variant: Semantic.ENode.UnionToUnionCastExpr,
               instanceIds: [],
               expr: symbolValueExprId,
@@ -7066,7 +6933,7 @@ export class SemanticElaborator {
           assert(false);
         }
       } else {
-        const genericId = Semantic.addType(this.sr, {
+        const genericId = this.sr.b.addType(this.sr, {
           variant: Semantic.ENode.GenericParameterDatatype,
           name: symbol.name,
           collectedParameter: symbolId,
@@ -7081,7 +6948,7 @@ export class SemanticElaborator {
     );
   }
 
-  errorPropagationExpr(errPropExpr: Collect.ErrorPropagationExpr, inference: Inference) {
+  errorPropagationExpr(errPropExpr: Collect.ErrorPropagationExpr, inference: Semantic.Inference) {
     const [rightExpr, rightExprId] = this.expr(errPropExpr.expr, inference);
 
     const typeUse = this.sr.typeUseNodes.get(rightExpr.type);
@@ -7113,7 +6980,7 @@ export class SemanticElaborator {
       assert(expr.variant === Semantic.ENode.AttemptExpr);
       expr.errorTypesCaught.add(srcErrTag.type);
 
-      return Semantic.addExpr(this.sr, {
+      return this.sr.b.addExpr(this.sr, {
         variant: Semantic.ENode.AttemptErrorPropagationExpr,
         expr: rightExprId,
         srcErrTagIndex: srcErrIndex,
@@ -7125,8 +6992,10 @@ export class SemanticElaborator {
         sourceloc: errPropExpr.sourceloc,
         toAttemptExpr: this.inAttemptExpr,
         type: srcOkTag.type,
-        flow: FlowResult.fallthrough().with(FlowType.Raise).withAll(rightExpr.flow),
-        writes: WriteResult.empty().withAll(rightExpr.writes),
+        flow: Semantic.FlowResult.fallthrough()
+          .with(Semantic.FlowType.Raise)
+          .withAll(rightExpr.flow),
+        writes: Semantic.WriteResult.empty().withAll(rightExpr.writes),
       });
     }
 
@@ -7139,7 +7008,7 @@ export class SemanticElaborator {
         functionType.variant === Semantic.ENode.DeferredFunctionDatatype,
     );
 
-    const [tempVariable, tempVariableId] = Semantic.addSymbol(this.sr, {
+    const [tempVariable, tempVariableId] = this.sr.b.addSymbol(this.sr, {
       variant: Semantic.ENode.VariableSymbol,
       comptime: false,
       comptimeValue: null,
@@ -7157,7 +7026,7 @@ export class SemanticElaborator {
     });
 
     const returnResult = () => {
-      const errValue = Semantic.addExpr(this.sr, {
+      const errValue = this.sr.b.addExpr(this.sr, {
         variant: Semantic.ENode.UnionToValueCastExpr,
         expr: symbolValue(),
         instanceIds: [],
@@ -7166,8 +7035,8 @@ export class SemanticElaborator {
         canBeUnwrappedForLHS: false,
         tag: srcErrIndex,
         type: srcErrTag.type,
-        flow: FlowResult.fallthrough(),
-        writes: WriteResult.empty(),
+        flow: Semantic.FlowResult.fallthrough(),
+        writes: Semantic.WriteResult.empty(),
       })[1];
       if (functionType.variant === Semantic.ENode.FunctionDatatype) {
         return Conversion.MakeConversionOrThrow(
@@ -7185,19 +7054,19 @@ export class SemanticElaborator {
     };
 
     const symbolValue = () =>
-      Semantic.addExpr(this.sr, {
+      this.sr.b.addExpr(this.sr, {
         variant: Semantic.ENode.SymbolValueExpr,
         instanceIds: [],
         symbol: tempVariableId,
         isTemporary: true,
         sourceloc: errPropExpr.sourceloc,
         type: rightExpr.type,
-        flow: FlowResult.fallthrough(),
-        writes: WriteResult.empty(),
+        flow: Semantic.FlowResult.fallthrough(),
+        writes: Semantic.WriteResult.empty(),
       })[1];
 
     const returnStatement = () => {
-      const statementId = Semantic.addStatement(this.sr, {
+      const statementId = this.sr.b.addStatement(this.sr, {
         variant: Semantic.ENode.ReturnStatement,
         expr: returnResult(),
         sourceloc: errPropExpr.sourceloc,
@@ -7210,7 +7079,7 @@ export class SemanticElaborator {
 
     const blockScopeId = this.sr.b.blockScope(
       [
-        Semantic.addStatement(this.sr, {
+        this.sr.b.addStatement(this.sr, {
           variant: Semantic.ENode.VariableStatement,
           name: tempVariable.name,
           comptime: false,
@@ -7218,10 +7087,10 @@ export class SemanticElaborator {
           value: rightExprId,
           variableSymbol: tempVariableId,
         })[1],
-        Semantic.addStatement(this.sr, {
+        this.sr.b.addStatement(this.sr, {
           variant: Semantic.ENode.IfStatement,
           isLetBinding: false,
-          condition: Semantic.addExpr(this.sr, {
+          condition: this.sr.b.addExpr(this.sr, {
             variant: Semantic.ENode.UnionTagCheckExpr,
             expr: rightExprId,
             instanceIds: [],
@@ -7242,7 +7111,7 @@ export class SemanticElaborator {
           )[1],
         })[1],
       ],
-      Semantic.addExpr(this.sr, {
+      this.sr.b.addExpr(this.sr, {
         variant: Semantic.ENode.UnionToValueCastExpr,
         expr: symbolValue(),
         instanceIds: [],
@@ -7259,12 +7128,12 @@ export class SemanticElaborator {
 
     return this.sr.b.blockScopeExpr(
       blockScopeId,
-      FlowResult.fallthrough().with(FlowType.Return).withAll(rightExpr.flow),
-      WriteResult.empty().withAll(rightExpr.writes),
+      Semantic.FlowResult.fallthrough().with(Semantic.FlowType.Return).withAll(rightExpr.flow),
+      Semantic.WriteResult.empty().withAll(rightExpr.writes),
     );
   }
 
-  exprIsType(exprIsType: Collect.ExprIsTypeExpr, inference: Inference) {
+  exprIsType(exprIsType: Collect.ExprIsTypeExpr, inference: Semantic.Inference) {
     const comparisonType = this.lookupAndElaborateDatatype(exprIsType.comparisonType);
     const [sourceExpr, sourceExprId] = this.expr(exprIsType.expr, {
       unsafe: inference?.unsafe,
@@ -7286,15 +7155,12 @@ export class SemanticElaborator {
           `This comparison is always false, as '${Semantic.serializeTypeUse(
             this.sr,
             comparisonType,
-          )}' is not a member of the union '${Semantic.serializeTypeUse(
-            this.sr,
-            sourceExpr.type,
-          )}'.`,
+          )}' is not a member of the union '${Semantic.serializeTypeUse(this.sr, sourceExpr.type)}'.`,
           exprIsType.sourceloc,
         );
       }
 
-      return Semantic.addExpr(this.sr, {
+      return this.sr.b.addExpr(this.sr, {
         variant: Semantic.ENode.UnionTagCheckExpr,
         instanceIds: [],
         expr: sourceExprId,
@@ -7376,15 +7242,12 @@ export class SemanticElaborator {
         valueType.variant !== Semantic.ENode.DynamicArrayDatatype
       ) {
         throw new CompilerError(
-          `Expression of type ${Semantic.serializeTypeUse(
-            this.sr,
-            value.type,
-          )} cannot be subscripted`,
+          `Expression of type ${Semantic.serializeTypeUse(this.sr, value.type)} cannot be subscripted`,
           arraySubscript.sourceloc,
         );
       }
 
-      return Semantic.addExpr(this.sr, {
+      return this.sr.b.addExpr(this.sr, {
         variant: Semantic.ENode.ArraySliceExpr,
         instanceIds: [],
         expr: valueId,
@@ -7427,15 +7290,12 @@ export class SemanticElaborator {
           valueType.variant !== Semantic.ENode.DynamicArrayDatatype
         ) {
           throw new CompilerError(
-            `Expression of type ${Semantic.serializeTypeUse(
-              this.sr,
-              value.type,
-            )} cannot be subscripted`,
+            `Expression of type ${Semantic.serializeTypeUse(this.sr, value.type)} cannot be subscripted`,
             arraySubscript.sourceloc,
           );
         }
 
-        return Semantic.addExpr(this.sr, {
+        return this.sr.b.addExpr(this.sr, {
           variant: Semantic.ENode.ArraySubscriptExpr,
           instanceIds: [],
           expr: valueId,
@@ -7458,7 +7318,7 @@ export class SemanticElaborator {
             arraySubscript.sourceloc,
           );
         }
-        return Semantic.addExpr(this.sr, {
+        return this.sr.b.addExpr(this.sr, {
           variant: Semantic.ENode.StringSubscriptExpr,
           expr: valueId,
           index: indexId,
@@ -7518,11 +7378,11 @@ export class SemanticElaborator {
           assert(functionSymbol.variant === Semantic.ENode.FunctionSymbol);
           instanceIds.forEach((i) => functionSymbol.createsInstanceIds.add(i));
 
-          return Semantic.addExpr(this.sr, {
+          return this.sr.b.addExpr(this.sr, {
             variant: Semantic.ENode.ExprCallExpr,
             instanceIds: instanceIds,
             arguments: [indexId],
-            calledExpr: Semantic.addExpr(this.sr, {
+            calledExpr: this.sr.b.addExpr(this.sr, {
               variant: Semantic.ENode.CallableExpr,
               functionSymbol: exactMatchId,
               instanceIds: [],
@@ -7531,7 +7391,7 @@ export class SemanticElaborator {
               thisExpr: valueId,
               type: makeTypeUse(
                 this.sr,
-                Semantic.addType(this.sr, {
+                this.sr.b.addType(this.sr, {
                   variant: Semantic.ENode.CallableDatatype,
                   thisExprType: value.type,
                   functionType: method.type,
@@ -7561,23 +7421,20 @@ export class SemanticElaborator {
         );
       } else {
         throw new CompilerError(
-          `Expression of type '${Semantic.serializeTypeUse(
-            this.sr,
-            value.type,
-          )}' cannot be subscripted`,
+          `Expression of type '${Semantic.serializeTypeUse(this.sr, value.type)}' cannot be subscripted`,
           value.sourceloc,
         );
       }
     }
   }
 
-  parenthesisExpr(parenthesisExpr: Collect.ParenthesisExpr, inference: Inference) {
+  parenthesisExpr(parenthesisExpr: Collect.ParenthesisExpr, inference: Semantic.Inference) {
     return this.expr(parenthesisExpr.expr, inference);
   }
 
   explicitCastExpr(
     castExpr: Collect.ExplicitCastExpr,
-    inference: Inference,
+    inference: Semantic.Inference,
   ): [Semantic.Expression, Semantic.ExprId] {
     const result = Conversion.MakeConversionOrThrow(
       this.sr,
@@ -7597,7 +7454,7 @@ export class SemanticElaborator {
     const instanceIds: Semantic.InstanceId[] = [];
     const writes = this.sr.b.updateLHSDependencies(eId, instanceIds);
 
-    return Semantic.addExpr(this.sr, {
+    return this.sr.b.addExpr(this.sr, {
       variant: Semantic.ENode.PostIncrExpr,
       instanceIds: [],
       type: e.type,
@@ -7606,7 +7463,7 @@ export class SemanticElaborator {
       sourceloc: postIncr.sourceloc,
       isTemporary: true,
       flow: e.flow,
-      writes: WriteResult.empty().withAll(writes),
+      writes: Semantic.WriteResult.empty().withAll(writes),
     });
   }
 
@@ -7616,7 +7473,7 @@ export class SemanticElaborator {
     const instanceIds: Semantic.InstanceId[] = [];
     const writes = this.sr.b.updateLHSDependencies(eId, instanceIds);
 
-    return Semantic.addExpr(this.sr, {
+    return this.sr.b.addExpr(this.sr, {
       variant: Semantic.ENode.PreIncrExpr,
       instanceIds: instanceIds,
       type: e.type,
@@ -7625,11 +7482,11 @@ export class SemanticElaborator {
       sourceloc: preIncr.sourceloc,
       isTemporary: true,
       flow: e.flow,
-      writes: WriteResult.empty().withAll(writes),
+      writes: Semantic.WriteResult.empty().withAll(writes),
     });
   }
 
-  blockScopeExpr(blockScopeExpr: Collect.BlockScopeExpr, inference: Inference) {
+  blockScopeExpr(blockScopeExpr: Collect.BlockScopeExpr, inference: Semantic.Inference) {
     const { flow, scope, scopeId, writes } = this.withScopes(
       {
         currentScope: blockScopeExpr.scope,
@@ -7643,7 +7500,7 @@ export class SemanticElaborator {
       },
     );
 
-    return Semantic.addExpr(this.sr, {
+    return this.sr.b.addExpr(this.sr, {
       variant: Semantic.ENode.BlockScopeExpr,
       instanceIds: [],
       block: scopeId,
@@ -7655,7 +7512,7 @@ export class SemanticElaborator {
     });
   }
 
-  ternaryExpr(ternary: Collect.TernaryExpr, inference: Inference) {
+  ternaryExpr(ternary: Collect.TernaryExpr, inference: Semantic.Inference) {
     const [condition, conditionId] = this.expr(ternary.condition, { unsafe: inference?.unsafe });
 
     const constraints = ConstraintSet.empty();
@@ -7668,19 +7525,19 @@ export class SemanticElaborator {
       this.expr(ternary.else, inference),
     );
 
-    const flow = FlowResult.empty();
+    const flow = Semantic.FlowResult.empty();
     flow.addAll(then.flow);
     flow.addAll(_else.flow);
 
-    const writes = WriteResult.empty();
+    const writes = Semantic.WriteResult.empty();
     writes.addAll(then.writes);
     writes.addAll(_else.writes);
 
     const resultTypes: Semantic.TypeUseId[] = [];
-    if (then.flow.has(FlowType.Fallthrough)) {
+    if (then.flow.has(Semantic.FlowType.Fallthrough)) {
       resultTypes.push(then.type);
     }
-    if (_else.flow.has(FlowType.Fallthrough)) {
+    if (_else.flow.has(Semantic.FlowType.Fallthrough)) {
       resultTypes.push(_else.type);
     }
 
@@ -7691,7 +7548,7 @@ export class SemanticElaborator {
       resultType = this.sr.b.untaggedUnionTypeUse(resultTypes, ternary.sourceloc);
     }
 
-    if (then.flow.has(FlowType.Fallthrough)) {
+    if (then.flow.has(Semantic.FlowType.Fallthrough)) {
       thenId = Conversion.MakeConversionOrThrow(
         this.sr,
         thenId,
@@ -7702,7 +7559,7 @@ export class SemanticElaborator {
         inference?.unsafe || false,
       );
     }
-    if (_else.flow.has(FlowType.Fallthrough)) {
+    if (_else.flow.has(Semantic.FlowType.Fallthrough)) {
       elseId = Conversion.MakeConversionOrThrow(
         this.sr,
         elseId,
@@ -7714,7 +7571,7 @@ export class SemanticElaborator {
       );
     }
 
-    return Semantic.addExpr(this.sr, {
+    return this.sr.b.addExpr(this.sr, {
       variant: Semantic.ENode.TernaryExpr,
       condition: Conversion.MakeConversionOrThrow(
         this.sr,
@@ -7733,14 +7590,14 @@ export class SemanticElaborator {
       isTemporary: true,
       sourceloc: ternary.sourceloc,
       type: resultType,
-      thenProducesValue: then.flow.has(FlowType.Fallthrough),
-      elseProducesValue: _else.flow.has(FlowType.Fallthrough),
+      thenProducesValue: then.flow.has(Semantic.FlowType.Fallthrough),
+      elseProducesValue: _else.flow.has(Semantic.FlowType.Fallthrough),
     });
   }
 
-  attemptExpr(attempt: Collect.AttemptExpr, inference: Inference) {
+  attemptExpr(attempt: Collect.AttemptExpr, inference: Semantic.Inference) {
     const uniqueId = makeTempId();
-    const [attemptExpr, attemptExprId] = Semantic.addExpr<Semantic.AttemptExpr>(this.sr, {
+    const [attemptExpr, attemptExprId] = this.sr.b.addExpr<Semantic.AttemptExpr>(this.sr, {
       variant: Semantic.ENode.AttemptExpr,
       attemptScopeExpr: -1 as Semantic.ExprId,
       elseScopeExpr: -1 as Semantic.ExprId,
@@ -7757,8 +7614,8 @@ export class SemanticElaborator {
       sourceloc: attempt.sourceloc,
       type: -1 as Semantic.TypeUseId,
       errorUnionType: -1 as Semantic.TypeUseId,
-      flow: FlowResult.empty(),
-      writes: WriteResult.empty(),
+      flow: Semantic.FlowResult.empty(),
+      writes: Semantic.WriteResult.empty(),
     });
 
     // ───────────────────────────────────────────────────────────────────────────
@@ -7822,20 +7679,20 @@ export class SemanticElaborator {
     // ───────────────────────────────────────────────────────────────────────────
     // FLOW + WRITES
     // ───────────────────────────────────────────────────────────────────────────
-    const resultFlow = FlowResult.empty();
+    const resultFlow = Semantic.FlowResult.empty();
     resultFlow.addAll(attemptFlow);
     resultFlow.addAll(elseFlow);
 
     const canFallthrough =
-      attemptFlow.has(FlowType.Fallthrough) || elseFlow.has(FlowType.Fallthrough);
+      attemptFlow.has(Semantic.FlowType.Fallthrough) || elseFlow.has(Semantic.FlowType.Fallthrough);
 
     if (canFallthrough) {
-      resultFlow.add(FlowType.Fallthrough);
+      resultFlow.add(Semantic.FlowType.Fallthrough);
     } else {
-      resultFlow.add(FlowType.NoReturn);
+      resultFlow.add(Semantic.FlowType.NoReturn);
     }
 
-    const resultWrites = WriteResult.empty();
+    const resultWrites = Semantic.WriteResult.empty();
     resultWrites.addAll(attemptWrites);
     resultWrites.addAll(elseWrites);
 
@@ -7847,12 +7704,12 @@ export class SemanticElaborator {
     // ───────────────────────────────────────────────────────────────────────────
     const memberSet = new Set<Semantic.TypeUseId>();
 
-    if (attemptFlow.has(FlowType.Fallthrough)) {
+    if (attemptFlow.has(Semantic.FlowType.Fallthrough)) {
       attemptExpr.attemptScopeReturnsType = this.sr.exprNodes.get(attemptScope.emittedExpr).type;
       memberSet.add(attemptExpr.attemptScopeReturnsType);
     }
 
-    if (elseFlow.has(FlowType.Fallthrough)) {
+    if (elseFlow.has(Semantic.FlowType.Fallthrough)) {
       attemptExpr.elseScopeReturnsType = this.sr.exprNodes.get(elseScope.emittedExpr).type;
       memberSet.add(attemptExpr.elseScopeReturnsType);
     }
@@ -7908,7 +7765,7 @@ export class SemanticElaborator {
       const vardef = this.sr.statementNodes.get(elseScope.statements[0]);
       assert(vardef.variant === Semantic.ENode.VariableStatement);
 
-      vardef.value = Semantic.addExpr(this.sr, {
+      vardef.value = this.sr.b.addExpr(this.sr, {
         variant: Semantic.ENode.SymbolValueExpr,
         instanceIds: [],
         isTemporary: false,
@@ -7922,8 +7779,8 @@ export class SemanticElaborator {
           null,
           attemptExpr.sourceloc,
         )[1],
-        flow: FlowResult.fallthrough(),
-        writes: WriteResult.empty(),
+        flow: Semantic.FlowResult.fallthrough(),
+        writes: Semantic.WriteResult.empty(),
         type: errorUnion,
       })[1];
     }
@@ -7998,1399 +7855,10 @@ export class SemanticElaborator {
   }
 }
 
-export class SemanticBuilder {
-  constructor(public sr: SemanticResult) {}
-
-  binaryExpr(
-    leftId: Semantic.ExprId,
-    rightId: Semantic.ExprId,
-    operation: EBinaryOperation,
-    resultType: Semantic.TypeUseId,
-    sourceloc: SourceLoc,
-  ) {
-    const left = this.sr.exprNodes.get(leftId);
-    const right = this.sr.exprNodes.get(rightId);
-    return Semantic.addExpr(this.sr, {
-      variant: Semantic.ENode.BinaryExpr,
-      instanceIds: [],
-      left: leftId,
-      operation: operation,
-      right: rightId,
-      type: resultType,
-      isTemporary: true,
-      sourceloc: sourceloc,
-      flow: left.flow.withAll(right.flow),
-      writes: left.writes.withAll(right.writes),
-    });
-  }
-
-  exprStatement(exprId: Semantic.ExprId) {
-    const expr = this.sr.exprNodes.get(exprId);
-    return Semantic.addStatement(this.sr, {
-      variant: Semantic.ENode.ExprStatement,
-      expr: exprId,
-      sourceloc: expr.sourceloc,
-    });
-  }
-
-  blockScope(
-    statements: Semantic.StatementId[],
-    emittedExpr: Semantic.ExprId,
-    sourceloc: SourceLoc,
-  ) {
-    return Semantic.addBlockScope(this.sr, {
-      variant: Semantic.ENode.BlockScope,
-      statements: statements,
-      emittedExpr: emittedExpr,
-      sourceloc: sourceloc,
-    });
-  }
-
-  blockScopeExpr(blockScopeId: Semantic.BlockScopeId, flow: FlowResult, writes: WriteResult) {
-    const blockScope = this.sr.blockScopeNodes.get(blockScopeId);
-    return Semantic.addExpr(this.sr, {
-      variant: Semantic.ENode.BlockScopeExpr,
-      block: blockScopeId,
-      flow: flow,
-      writes: writes,
-      instanceIds: [],
-      isTemporary: true,
-      sourceloc: blockScope.sourceloc,
-      type: blockScope.emittedExpr
-        ? this.sr.exprNodes.get(blockScope.emittedExpr).type
-        : this.sr.b.voidType(),
-    });
-  }
-
-  callExpr(
-    exprId: Semantic.ExprId,
-    callArguments: Semantic.ExprId[],
-    inFunction: Semantic.SymbolId,
-    sourceloc: SourceLoc,
-  ) {
-    const expr = this.sr.exprNodes.get(exprId);
-    const ftypeUse = this.sr.typeUseNodes.get(expr.type);
-    const ftypeDef = this.sr.typeDefNodes.get(ftypeUse.type);
-
-    assert(
-      ftypeDef.variant === Semantic.ENode.FunctionDatatype ||
-        ftypeDef.variant === Semantic.ENode.CallableDatatype,
-    );
-
-    const instanceIds: Semantic.InstanceId[] = [];
-    // if (producesAllocation) {
-    //   instanceIds.push(Semantic.makeInstanceId(this.sr));
-    // }
-
-    const functionSymbol = this.sr.e.getSymbol(inFunction);
-    assert(functionSymbol.variant === Semantic.ENode.FunctionSymbol);
-    instanceIds.forEach((i) => functionSymbol.createsInstanceIds.add(i));
-
-    let ftype: Semantic.FunctionDatatypeDef | null =
-      ftypeDef.variant === Semantic.ENode.FunctionDatatype ? ftypeDef : null;
-    if (ftypeDef.variant === Semantic.ENode.CallableDatatype) {
-      const f = this.sr.typeDefNodes.get(ftypeDef.functionType);
-      assert(f.variant === Semantic.ENode.FunctionDatatype);
-      ftype = f;
-    }
-    assert(ftype);
-
-    let returnType: Semantic.TypeUseId | null = null;
-    if (ftypeDef.variant === Semantic.ENode.FunctionDatatype) {
-      returnType = ftypeDef.returnType;
-      if (!ftypeDef.requires.pure) {
-        functionSymbol.isImpure = true;
-      }
-    } else {
-      const functype = this.sr.typeDefNodes.get(ftypeDef.functionType);
-      assert(functype.variant === Semantic.ENode.FunctionDatatype);
-      returnType = functype.returnType;
-      if (!functype.requires.pure) {
-        functionSymbol.isImpure = true;
-      }
-    }
-
-    const resultFlow = FlowResult.empty();
-    const resultWrites = WriteResult.empty();
-    resultFlow.addAll(expr.flow);
-    resultWrites.addAll(expr.writes);
-    callArguments.forEach((a) => {
-      const e = this.sr.exprNodes.get(a);
-      resultFlow.addAll(e.flow);
-      resultWrites.addAll(e.writes);
-    });
-    resultFlow.remove(FlowType.Fallthrough);
-
-    let isFallthrough = true;
-
-    // This is the handling for noreturn_if assertions like assert()
-    if (ftype.requires.noreturnIf) {
-      const noReturnIf = ftype.requires.noreturnIf;
-
-      assert(noReturnIf.argIndex !== null);
-      const passedArgId = callArguments[noReturnIf.argIndex];
-
-      const result = EvalCTFE(this.sr, passedArgId);
-      if (result.ok) {
-        if (
-          result.value[0].variant === Semantic.ENode.LiteralExpr &&
-          result.value[0].literal.type === EPrimitive.bool
-        ) {
-          // The condition is already known at compile time, skip the condition
-          // This is where assert(false) turns into noreturn
-          // If condition is true, just ignore all constraints
-          if (!result.value[0].literal.value) {
-            isFallthrough = false;
-            resultFlow.add(FlowType.NoReturn);
-          }
-        }
-      } else {
-        // The condition is not known at compile time, build normal constraints
-
-        // This is the actual point where constraints like assert() are applied to the remaining scope
-        const c = ConstraintSet.empty();
-        this.sr.e.buildLogicalConstraintSet(c, passedArgId);
-        this.sr.e.currentContext.constraints.addAll(
-          noReturnIf.operation === "noreturn-if-truthy" ? c.inverse() : c,
-        );
-      }
-    }
-
-    // This is the handling for noreturn like "sys.panic()";
-    if (ftype.requires.noreturn) {
-      isFallthrough = false;
-      resultFlow.add(FlowType.NoReturn);
-    }
-
-    if (isFallthrough) {
-      resultFlow.add(FlowType.Fallthrough);
-    }
-
-    return Semantic.addExpr(this.sr, {
-      variant: Semantic.ENode.ExprCallExpr,
-      instanceIds: instanceIds,
-      calledExpr: exprId,
-      arguments: callArguments,
-      isTemporary: true,
-      type: returnType,
-      sourceloc: sourceloc,
-      flow: resultFlow,
-      writes: resultWrites,
-    });
-  }
-
-  unaryExpr(
-    exprId: Semantic.ExprId,
-    operation: EUnaryOperation,
-    resultType: Semantic.TypeUseId,
-    sourceloc: SourceLoc,
-  ) {
-    const expr = this.sr.exprNodes.get(exprId);
-    return Semantic.addExpr(this.sr, {
-      variant: Semantic.ENode.UnaryExpr,
-      instanceIds: [],
-      expr: exprId,
-      operation: operation,
-      type: resultType,
-      isTemporary: true,
-      sourceloc: sourceloc,
-      flow: expr.flow,
-      writes: expr.writes,
-    });
-  }
-
-  elaborateRegex(pattern: string, flags: Set<string>) {
-    const id = internRegex(this.sr, pattern, flags);
-
-    let regexData = this.sr.elaboratedRegexTable.get(id);
-    if (!regexData) {
-      regexData = {
-        id: id,
-        flags: flags,
-        pattern: pattern,
-      };
-      this.sr.elaboratedRegexTable.set(id, regexData);
-    }
-
-    return id;
-  }
-
-  literalValue(literal: LiteralValue, sourceloc: SourceLoc) {
-    if (literal.type === "enum") {
-      const enumType = this.sr.typeDefNodes.get(literal.enumType);
-      assert(enumType.variant === Semantic.ENode.EnumDatatype);
-      return Semantic.addExpr(this.sr, {
-        variant: Semantic.ENode.LiteralExpr,
-        instanceIds: [],
-        literal: literal,
-        sourceloc: sourceloc,
-        isTemporary: true,
-        type: makeTypeUse(
-          this.sr,
-          literal.enumType,
-          EDatatypeMutability.Default,
-          false,
-          sourceloc,
-        )[1],
-        flow: FlowResult.fallthrough(),
-        writes: WriteResult.empty(),
-      });
-    } else if (literal.type === EPrimitive.Regex) {
-      literal.id = this.elaborateRegex(literal.pattern, literal.flags);
-      return Semantic.addExpr(this.sr, {
-        variant: Semantic.ENode.LiteralExpr,
-        instanceIds: [],
-        literal: literal,
-        sourceloc: sourceloc,
-        isTemporary: true,
-        type: makePrimitiveAvailable(this.sr, literal.type, EDatatypeMutability.Const, sourceloc),
-        flow: FlowResult.fallthrough(),
-        writes: WriteResult.empty(),
-      });
-    } else {
-      return Semantic.addExpr(this.sr, {
-        variant: Semantic.ENode.LiteralExpr,
-        instanceIds: [],
-        literal: literal,
-        sourceloc: sourceloc,
-        isTemporary: true,
-        type: makePrimitiveAvailable(this.sr, literal.type, EDatatypeMutability.Const, sourceloc),
-        flow: FlowResult.fallthrough(),
-        writes: WriteResult.empty(),
-      });
-    }
-  }
-
-  literal(value: boolean | number | bigint | string, sourceloc: SourceLoc) {
-    if (typeof value === "bigint") {
-      return this.literalValue(
-        {
-          type: EPrimitive.int,
-          unit: null,
-          value: value,
-        },
-        sourceloc,
-      );
-    } else if (typeof value === "number") {
-      return this.literalValue(
-        {
-          type: EPrimitive.real,
-          unit: null,
-          value: value,
-        },
-        sourceloc,
-      );
-    } else if (typeof value === "boolean") {
-      return this.literalValue(
-        {
-          type: EPrimitive.bool,
-          value: value,
-        },
-        sourceloc,
-      );
-    } else if (typeof value === "string") {
-      return this.literalValue(
-        {
-          type: EPrimitive.str,
-          prefix: null,
-          value: value,
-        },
-        sourceloc,
-      );
-    } else {
-      assert(false);
-    }
-  }
-
-  datatypeDefAsValue(type: Semantic.TypeDefId, sourceloc: SourceLoc) {
-    return Semantic.addExpr(this.sr, {
-      variant: Semantic.ENode.DatatypeAsValueExpr,
-      instanceIds: [],
-      type: makeTypeUse(this.sr, type, EDatatypeMutability.Default, false, sourceloc)[1],
-      isTemporary: false,
-      sourceloc: sourceloc,
-      flow: FlowResult.fallthrough(),
-      writes: WriteResult.empty(),
-    });
-  }
-
-  datatypeUseAsValue(type: Semantic.TypeUseId, sourceloc: SourceLoc) {
-    return Semantic.addExpr(this.sr, {
-      variant: Semantic.ENode.DatatypeAsValueExpr,
-      instanceIds: [],
-      type: type,
-      isTemporary: false,
-      sourceloc: sourceloc,
-      flow: FlowResult.fallthrough(),
-      writes: WriteResult.empty(),
-    });
-  }
-
-  sizeof(valueExprId: Semantic.ExprId) {
-    const valueExpr = this.sr.exprNodes.get(valueExprId);
-    return Semantic.addExpr(this.sr, {
-      variant: Semantic.ENode.SizeofExpr,
-      instanceIds: [],
-      valueExpr: valueExprId,
-      type: this.intType(),
-      isTemporary: false,
-      sourceloc: valueExpr.sourceloc,
-      flow: FlowResult.fallthrough(),
-      writes: WriteResult.empty(),
-    });
-  }
-
-  alignof(valueExprId: Semantic.ExprId) {
-    const valueExpr = this.sr.exprNodes.get(valueExprId);
-    return Semantic.addExpr(this.sr, {
-      variant: Semantic.ENode.AlignofExpr,
-      instanceIds: [],
-      valueExpr: valueExprId,
-      type: this.intType(),
-      isTemporary: false,
-      sourceloc: valueExpr.sourceloc,
-      flow: FlowResult.fallthrough(),
-      writes: WriteResult.empty(),
-    });
-  }
-
-  symbolValue(symbolId: Semantic.SymbolId, sourceloc: SourceLoc) {
-    const symbol = this.sr.symbolNodes.get(symbolId);
-    if (symbol.variant === Semantic.ENode.FunctionSymbol) {
-      // Currently dependencies don't go across function borders at all
-      return Semantic.addExpr(this.sr, {
-        variant: Semantic.ENode.SymbolValueExpr,
-        instanceIds: [],
-        symbol: symbolId,
-        type: makeTypeUse(this.sr, symbol.type, EDatatypeMutability.Default, false, sourceloc)[1],
-        isTemporary: false,
-        sourceloc: sourceloc,
-        flow: FlowResult.fallthrough(),
-        writes: WriteResult.empty(),
-      });
-    } else if (symbol.variant === Semantic.ENode.VariableSymbol) {
-      assert(symbol.type);
-      return Semantic.addExpr(this.sr, {
-        variant: Semantic.ENode.SymbolValueExpr,
-        instanceIds: Semantic.getSymbolDeps(this.sr.e.currentContext.instanceDeps, symbolId),
-        symbol: symbolId,
-        type: symbol.type,
-        isTemporary: false,
-        sourceloc: sourceloc,
-        flow: FlowResult.fallthrough(),
-        writes: WriteResult.empty(),
-      });
-    } else {
-      assert(false);
-    }
-  }
-
-  variableSymbol(
-    name: string,
-    type: Semantic.TypeUseId,
-    comptime: boolean,
-    comptimeValue: Semantic.ExprId | null,
-    mutability: EVariableMutability,
-    parentStructOrNS: Semantic.TypeDefId | null,
-    sourceloc: SourceLoc,
-  ) {
-    return Semantic.addSymbol(this.sr, {
-      variant: Semantic.ENode.VariableSymbol,
-      type: type,
-      export: false,
-      extern: EExternLanguage.None,
-      comptime: comptime,
-      comptimeValue: comptimeValue,
-      name: name,
-      memberOfStruct: null,
-      mutability: mutability,
-      variableContext: EVariableContext.Global,
-      parentStructOrNS: parentStructOrNS,
-      sourceloc: sourceloc,
-      consumed: false,
-      dependsOn: new Set(),
-      concrete: true,
-    });
-  }
-
-  typeDefSymbol(datatype: Semantic.TypeDefId) {
-    return Semantic.addSymbol(this.sr, {
-      variant: Semantic.ENode.TypeDefSymbol,
-      datatype: datatype,
-    });
-  }
-
-  makeStringFormatFunc(
-    fragments: Semantic.ExprId[],
-    allocator: Semantic.ExprId | null,
-    sourceloc: SourceLoc,
-  ) {
-    const fmtNsId = Semantic.findBuiltinSymbolByName(this.sr, "fmt", null);
-    const fmtNsDef = this.sr.cc.symbolNodes.get(fmtNsId);
-    assert(fmtNsDef.variant === Collect.ENode.TypeDefSymbol);
-    const fmtNs = this.sr.cc.typeDefNodes.get(fmtNsDef.typeDef);
-    assert(fmtNs.variant === Collect.ENode.NamespaceTypeDef);
-
-    const symbolId = Semantic.findBuiltinSymbolByName(
-      this.sr,
-      allocator ? "fmt.formatWithAllocator" : "fmt.format",
-      null,
-    );
-    const chosenOverloadId = this.sr.e.FunctionOverloadChoose(symbolId, [], sourceloc);
-
-    let elaboratedNsContext = null as Semantic.ElaborationContext | null;
-    for (const cache of this.sr.elaboratedNamespaceSymbols) {
-      if (cache.originalSharedInstance === fmtNs.sharedInstance) {
-        elaboratedNsContext = cache.substitutionContext;
-      }
-    }
-    assert(elaboratedNsContext);
-
-    const elaboratedMethodId = this.sr.e.withContext(
-      {
-        context: Semantic.mergeSubstitutionContext(elaboratedNsContext, this.sr.e.currentContext, {
-          currentScope: this.sr.e.currentContext.currentScope,
-          genericsScope: this.sr.e.currentContext.currentScope,
-          instanceDeps: {
-            instanceDependsOn: new Map(),
-            structMembersDependOn: new Map(),
-            symbolDependsOn: new Map(),
-          },
-        }),
-        inAttemptExpr: null,
-        inFunction: null,
-      },
-      () =>
-        this.sr.e.elaborateFunctionSymbolWithGenerics(
-          this.sr.e.elaborateFunctionSignature(chosenOverloadId),
-          [],
-          sourceloc,
-          [
-            ...fragments.map((f) => {
-              const expr = this.sr.exprNodes.get(f);
-              return expr.type;
-            }),
-          ],
-        ),
-    );
-    assert(elaboratedMethodId);
-    const elaboratedMethod = this.sr.symbolNodes.get(elaboratedMethodId);
-    assert(elaboratedMethod.variant === Semantic.ENode.FunctionSymbol);
-
-    const functype = this.sr.e.getTypeDef(elaboratedMethod.type);
-    assert(functype.variant === Semantic.ENode.FunctionDatatype);
-    return this.sr.b.symbolValue(elaboratedMethodId, sourceloc);
-  }
-
-  callStringFormatFunc(
-    fragments: Semantic.ExprId[],
-    allocator: Semantic.ExprId | null,
-    sourceloc: SourceLoc,
-  ) {
-    assert(this.sr.e.inFunction);
-    return this.sr.b.callExpr(
-      this.makeStringFormatFunc(fragments, allocator, sourceloc)[1],
-      allocator ? [allocator, ...fragments] : fragments,
-      this.sr.e.inFunction,
-      sourceloc,
-    );
-  }
-
-  makeSysPanicFunc(sourceloc: SourceLoc) {
-    const fmtNsId = Semantic.findBuiltinSymbolByName(this.sr, "sys", null);
-    const fmtNsDef = this.sr.cc.symbolNodes.get(fmtNsId);
-    assert(fmtNsDef.variant === Collect.ENode.TypeDefSymbol);
-    const fmtNs = this.sr.cc.typeDefNodes.get(fmtNsDef.typeDef);
-    assert(fmtNs.variant === Collect.ENode.NamespaceTypeDef);
-
-    const symbolId = Semantic.findBuiltinSymbolByName(this.sr, "sys.panic", null);
-    const chosenOverloadId = this.sr.e.FunctionOverloadChoose(symbolId, [], sourceloc);
-
-    let elaboratedNsContext = null as Semantic.ElaborationContext | null;
-    for (const cache of this.sr.elaboratedNamespaceSymbols) {
-      if (cache.originalSharedInstance === fmtNs.sharedInstance) {
-        elaboratedNsContext = cache.substitutionContext;
-      }
-    }
-    assert(elaboratedNsContext);
-
-    const elaboratedMethodId = this.sr.e.withContext(
-      {
-        context: Semantic.mergeSubstitutionContext(elaboratedNsContext, this.sr.e.currentContext, {
-          currentScope: this.sr.e.currentContext.currentScope,
-          genericsScope: this.sr.e.currentContext.currentScope,
-          instanceDeps: {
-            instanceDependsOn: new Map(),
-            structMembersDependOn: new Map(),
-            symbolDependsOn: new Map(),
-          },
-        }),
-        inAttemptExpr: null,
-        inFunction: null,
-      },
-      () =>
-        this.sr.e.elaborateFunctionSymbolWithGenerics(
-          this.sr.e.elaborateFunctionSignature(chosenOverloadId),
-          [],
-          sourceloc,
-          [this.strType()],
-        ),
-    );
-    assert(elaboratedMethodId);
-    const elaboratedMethod = this.sr.symbolNodes.get(elaboratedMethodId);
-    assert(elaboratedMethod.variant === Semantic.ENode.FunctionSymbol);
-
-    const functype = this.sr.e.getTypeDef(elaboratedMethod.type);
-    assert(functype.variant === Semantic.ENode.FunctionDatatype);
-    return this.sr.b.symbolValue(elaboratedMethodId, sourceloc);
-  }
-
-  callSysPanic(message: string, sourceloc: SourceLoc) {
-    assert(this.sr.e.inFunction);
-    return this.sr.b.callExpr(
-      this.makeSysPanicFunc(sourceloc)[1],
-      [this.literal(message, sourceloc)[1]],
-      this.sr.e.inFunction,
-      sourceloc,
-    );
-  }
-
-  cInject(value: string, _export: boolean, sourceloc: SourceLoc) {
-    const [_, directiveId] = Semantic.addSymbol(this.sr, {
-      variant: Semantic.ENode.CInjectDirectiveSymbol,
-      value: value,
-      sourceloc: sourceloc,
-    });
-    this.sr.cInjections.push(directiveId);
-    if (_export) {
-      this.sr.exportedSymbols.add(directiveId);
-    }
-    return directiveId;
-  }
-
-  extractConstraintPath(exprId: Semantic.ExprId): ConstraintPath | null {
-    const expr = this.sr.exprNodes.get(exprId);
-
-    // Base case: variable reference
-    if (expr.variant === Semantic.ENode.SymbolValueExpr) {
-      return {
-        root: { kind: "symbol" as const, symbolId: expr.symbol },
-        path: [],
-      };
-    }
-
-    // Member access: obj.member
-    if (expr.variant === Semantic.ENode.MemberAccessExpr) {
-      const basePath = this.extractConstraintPath(expr.expr);
-      if (!basePath) {
-        return null;
-      }
-
-      // Find the member symbol by name
-      const exprTypeUse = this.sr.typeUseNodes.get(this.sr.exprNodes.get(expr.expr).type);
-      const exprTypeDef = this.sr.typeDefNodes.get(exprTypeUse.type);
-
-      if (
-        exprTypeDef.variant === Semantic.ENode.DynamicArrayDatatype ||
-        exprTypeDef.variant === Semantic.ENode.FixedArrayDatatype
-      ) {
-        for (const fieldId of exprTypeDef.syntheticFields) {
-          const field = this.sr.symbolNodes.get(fieldId);
-          assert(field.variant === Semantic.ENode.VariableSymbol);
-          if (field.name === expr.memberName) {
-            return {
-              root: basePath.root,
-              path: [...basePath.path, { kind: "member" as const, member: fieldId }],
-            };
-          }
-        }
-      }
-
-      if (exprTypeDef.variant === Semantic.ENode.StructDatatype) {
-        const memberSymbol = exprTypeDef.members.find((m) => {
-          const sym = this.sr.symbolNodes.get(m);
-          return sym.variant === Semantic.ENode.VariableSymbol && sym.name === expr.memberName;
-        });
-        if (!memberSymbol) return null;
-
-        return {
-          root: basePath.root,
-          path: [...basePath.path, { kind: "member" as const, member: memberSymbol }],
-        };
-      }
-
-      return null;
-    }
-
-    // Array subscript: arr[index]
-    if (expr.variant === Semantic.ENode.ArraySubscriptExpr) {
-      const basePath = this.extractConstraintPath(expr.expr);
-      if (!basePath) return null;
-
-      // Only support single index for now
-      if (expr.indices.length !== 1) return null;
-
-      const indexExpr = this.sr.exprNodes.get(expr.indices[0]);
-      let subscriptIndex: ConstraintPathSubscriptIndex;
-
-      // Check if index is a literal
-      if (indexExpr.variant === Semantic.ENode.LiteralExpr) {
-        const literalValue = Semantic.serializeLiteralValue(this.sr, indexExpr.literal);
-        subscriptIndex = { kind: "literal", value: literalValue };
-      }
-      // Check if index is a variable reference
-      else if (indexExpr.variant === Semantic.ENode.SymbolValueExpr) {
-        subscriptIndex = { kind: "variable", symbol: indexExpr.symbol };
-      }
-      // Complex expression - not supported for path-based narrowing
-      else {
-        return null;
-      }
-
-      return {
-        root: basePath.root,
-        path: [...basePath.path, { kind: "subscript", index: subscriptIndex }],
-      };
-    }
-
-    // Cannot extract path from other expression types
-    return null;
-  }
-
-  updateLHSDependencies(lhsId: Semantic.ExprId, dependencies: Semantic.InstanceId[]): WriteResult {
-    const lhs = this.sr.exprNodes.get(lhsId);
-    switch (lhs.variant) {
-      case Semantic.ENode.ArraySubscriptExpr: {
-        // Extract path for array subscript and delete it + children
-        const path = this.extractConstraintPath(lhsId);
-        if (path) {
-          this.sr.e.currentContext.constraints.deletePathAndChildren(path);
-        }
-
-        lhs.instanceIds.forEach((id) =>
-          Semantic.addInstanceDeps(this.sr.e.currentContext.instanceDeps, id, dependencies),
-        );
-        return WriteResult.empty();
-      }
-
-      case Semantic.ENode.SymbolValueExpr: {
-        Semantic.addSymbolDeps(this.sr.e.currentContext, lhs.symbol, dependencies);
-        // Delete symbol-based constraints (legacy)
-        this.sr.e.currentContext.constraints.deleteSymbol(lhs.symbol);
-        // Delete path-based constraints for this symbol and all paths using it
-        this.sr.e.currentContext.constraints.deleteSymbolWrites(lhs.symbol);
-        return WriteResult.empty().with(lhs.symbol);
-      }
-
-      case Semantic.ENode.MemberAccessExpr: {
-        // Extract path for member access and delete it + children
-        const path = this.extractConstraintPath(lhsId);
-        if (path) {
-          this.sr.e.currentContext.constraints.deletePathAndChildren(path);
-        }
-
-        const struct = this.sr.e.getTypeDef(
-          this.sr.e.getTypeUse(this.sr.e.getExpr(lhs.expr).type).type,
-        );
-        assert(struct.variant === Semantic.ENode.StructDatatype);
-
-        const member = struct.members.find((m) => {
-          const mem = this.sr.symbolNodes.get(m);
-          return mem.variant === Semantic.ENode.VariableSymbol && mem.name === lhs.memberName;
-        });
-        assert(member);
-        for (const inst of lhs.instanceIds) {
-          Semantic.addStructMemberInstanceDeps(
-            this.sr.e.currentContext.instanceDeps,
-            inst,
-            member,
-            dependencies,
-          );
-        }
-        return WriteResult.empty();
-      }
-
-      // This is a special case for value narrowing and here, it is the easiest to fix, although not very nice
-      case Semantic.ENode.UnionToValueCastExpr: {
-        const unionExpr = this.sr.exprNodes.get(lhs.expr);
-        if (unionExpr.variant !== Semantic.ENode.SymbolValueExpr || !lhs.canBeUnwrappedForLHS) {
-          throw new CompilerError(`This expression is not a valid LHS`, lhs.sourceloc);
-        }
-        return this.updateLHSDependencies(lhs.expr, dependencies);
-      }
-
-      // This is a special case for value narrowing and here, it is the easiest to fix, although not very nice
-      case Semantic.ENode.UnionToUnionCastExpr: {
-        const unionExpr = this.sr.exprNodes.get(lhs.expr);
-        if (
-          unionExpr.variant !== Semantic.ENode.SymbolValueExpr ||
-          !lhs.castComesFromNarrowingAndMayBeUnwrapped
-        ) {
-          throw new CompilerError(`This expression is not a valid LHS`, lhs.sourceloc);
-        }
-        return this.updateLHSDependencies(lhs.expr, dependencies);
-      }
-
-      case Semantic.ENode.StructLiteralExpr:
-      case Semantic.ENode.ValueToUnionCastExpr:
-      case Semantic.ENode.StringConstructExpr:
-      case Semantic.ENode.PostIncrExpr:
-      case Semantic.ENode.PreIncrExpr:
-      case Semantic.ENode.LiteralExpr:
-      case Semantic.ENode.UnaryExpr:
-      case Semantic.ENode.ExplicitCastExpr:
-      case Semantic.ENode.ExprAssignmentExpr:
-      case Semantic.ENode.DereferenceExpr:
-      case Semantic.ENode.DatatypeAsValueExpr:
-      case Semantic.ENode.CallableExpr:
-      case Semantic.ENode.BlockScopeExpr:
-      case Semantic.ENode.BinaryExpr:
-      case Semantic.ENode.ArraySliceExpr:
-      case Semantic.ENode.ArrayLiteralExpr:
-      case Semantic.ENode.SizeofExpr:
-      case Semantic.ENode.AlignofExpr:
-      case Semantic.ENode.AddressOfExpr:
-      case Semantic.ENode.ExprCallExpr:
-      default:
-        throw new CompilerError(`This expression is not a valid LHS`, lhs.sourceloc);
-      // assert(false, (lhs as any).variant.toString());
-    }
-  }
-
-  //   valueAssignment() {
-  //   return this.assignment(targetId);
-  // }
-
-  assignment(
-    targetId: Semantic.ExprId,
-    operation: EAssignmentOperation,
-    valueId: Semantic.ExprId,
-    constraints: ConstraintSet,
-    sourceloc: SourceLoc,
-    inference: Inference,
-  ) {
-    let target = this.sr.exprNodes.get(targetId);
-    const value = this.sr.exprNodes.get(valueId);
-
-    if (
-      (target.variant === Semantic.ENode.UnionToValueCastExpr && target.canBeUnwrappedForLHS) ||
-      (target.variant === Semantic.ENode.UnionToUnionCastExpr &&
-        target.castComesFromNarrowingAndMayBeUnwrapped)
-    ) {
-      targetId = target.expr;
-      target = this.sr.exprNodes.get(target.expr);
-    }
-
-    if (target.isTemporary) {
-      throw new CompilerError(
-        `Cannot assign to a temporary of type ${Semantic.serializeTypeUse(this.sr, target.type)}`,
-        sourceloc,
-      );
-    }
-
-    // An assignment like let d = (a = b) makes a now dependent on b, as well as the result on b
-    // I don't think the result would ever depend on a, right? ... right??    .....    .....   right????
-    const writes = this.updateLHSDependencies(targetId, value.instanceIds);
-
-    return Semantic.addExpr(this.sr, {
-      variant: Semantic.ENode.ExprAssignmentExpr,
-      instanceIds: [...value.instanceIds],
-      value: Conversion.MakeConversionOrThrow(
-        this.sr,
-        valueId,
-        target.type,
-        constraints,
-        sourceloc,
-        Conversion.Mode.Implicit,
-        inference?.unsafe || false,
-      ),
-      target: targetId,
-      type: target.type,
-      operation: operation,
-      sourceloc: sourceloc,
-      isTemporary: true,
-      flow: target.flow.withAll(value.flow),
-      writes: target.writes.withAll(value.writes).withAll(writes),
-    });
-  }
-
-  syntheticFunctionFromCode(args: {
-    functionTypeId: Semantic.TypeDefId;
-    parameterNames: string[];
-    funcname: string;
-    bodySourceCode: string;
-    currentScope: Collect.ScopeId;
-    sourceloc: SourceLoc;
-  }): [Semantic.FunctionSymbol, Semantic.SymbolId] {
-    const fType = this.sr.typeDefNodes.get(args.functionTypeId);
-    assert(fType.variant === Semantic.ENode.FunctionDatatype);
-    assert(args.parameterNames.length === fType.parameters.length);
-
-    const fullSource = `${args.funcname}(${fType.parameters
-      .map(
-        (p, i) =>
-          `${args.parameterNames[i]}${p.optional ? "?" : ""}: ${Semantic.serializeTypeUse(
-            this.sr,
-            p.type,
-          )}`,
-      )
-      .join(", ")}): ${Semantic.serializeTypeUse(this.sr, fType.returnType)} :: final { \n${
-      args.bodySourceCode
-    } \n}`;
-
-    let scopeId = this.sr.e.currentContext.currentScope;
-    while (true) {
-      let scope = this.sr.cc.scopeNodes.get(scopeId);
-      if (
-        scope.variant === Collect.ENode.BlockScope ||
-        scope.variant === Collect.ENode.NamespaceScope ||
-        scope.variant === Collect.ENode.StructLexicalScope ||
-        scope.variant === Collect.ENode.FunctionScope
-      ) {
-        scopeId = scope.parentScope;
-        continue;
-      }
-
-      break;
-    }
-
-    let scope = this.sr.cc.scopeNodes.get(scopeId);
-    assert(
-      scope.variant === Collect.ENode.ModuleScope || scope.variant === Collect.ENode.FileScope,
-    );
-
-    this.sr.moduleCompiler.collectImmediate(fullSource, {
-      inScope: scopeId,
-    });
-
-    const [e, _] = this.sr.e.expr(
-      Collect.makeExpr(this.sr.cc, {
-        variant: Collect.ENode.SymbolValueExpr,
-        genericArgs: [],
-        name: args.funcname,
-        sourceloc: args.sourceloc,
-      })[1],
-      {},
-    );
-
-    assert(e.variant === Semantic.ENode.SymbolValueExpr);
-    const symbol = this.sr.symbolNodes.get(e.symbol);
-    assert(symbol.variant === Semantic.ENode.FunctionSymbol);
-
-    return [symbol, e.symbol];
-  }
-
-  memberAccessRaw(
-    exprId: Semantic.ExprId,
-    name: string,
-    memberType: Semantic.TypeUseId,
-    temporary: boolean,
-    sourceloc: SourceLoc,
-  ) {
-    const expr = this.sr.e.getExpr(exprId);
-
-    const typeDef = this.sr.e.getTypeDef(this.sr.e.getTypeUse(expr.type).type);
-
-    const dependsOn = new Set<Semantic.InstanceId>();
-    if (typeDef.variant === Semantic.ENode.StructDatatype) {
-      const member = typeDef.members.find((m) => {
-        const mem = this.sr.symbolNodes.get(m);
-        return mem.variant === Semantic.ENode.VariableSymbol && mem.name === name;
-      });
-      assert(member);
-
-      const memberSym = this.sr.symbolNodes.get(member);
-      assert(memberSym.variant === Semantic.ENode.VariableSymbol);
-
-      for (const inst of expr.instanceIds) {
-        // Get ONLY the dependencies of the specific struct member being accessed
-        Semantic.getStructMemberInstanceDeps(
-          this.sr.e.currentContext.instanceDeps,
-          inst,
-          member,
-        ).forEach((d) => dependsOn.add(d));
-      }
-    } else if (
-      typeDef.variant === Semantic.ENode.PrimitiveDatatype &&
-      typeDef.primitive === EPrimitive.str &&
-      name === "length"
-    ) {
-      // No work required
-    } else if (typeDef.variant === Semantic.ENode.DynamicArrayDatatype && name === "length") {
-      // No work required
-    } else {
-      assert(false);
-    }
-
-    return Semantic.addExpr(this.sr, {
-      variant: Semantic.ENode.MemberAccessExpr,
-      instanceIds: [...dependsOn],
-      expr: exprId,
-      memberName: name,
-      type: memberType,
-      sourceloc: sourceloc,
-      isTemporary: temporary,
-      flow: expr.flow,
-      writes: expr.writes,
-    });
-  }
-
-  memberAccess(
-    exprId: Semantic.ExprId,
-    name: string,
-    constraints: ConstraintSet,
-    sourceloc: SourceLoc,
-  ) {
-    const expr = this.sr.exprNodes.get(exprId);
-    const exprType = this.sr.typeDefNodes.get(this.sr.typeUseNodes.get(expr.type).type);
-    assert(exprType.variant === Semantic.ENode.StructDatatype);
-
-    let memberType: Semantic.TypeUseId | null = null;
-    for (const m of exprType.members) {
-      const symbol = this.sr.symbolNodes.get(m);
-      if (symbol.variant === Semantic.ENode.VariableSymbol && symbol.name === name) {
-        memberType = symbol.type;
-        break;
-      }
-    }
-    assert(memberType);
-
-    const [resultExpr, resultExprId] = this.memberAccessRaw(
-      exprId,
-      name,
-      memberType,
-      false,
-      sourceloc,
-    );
-
-    // This is for taking accesses like foo.bar and wrapping them in a union cast if the member is narrowed.
-    const memberTypeUse = this.sr.typeUseNodes.get(memberType);
-    const memberTypeDef = this.sr.typeDefNodes.get(memberTypeUse.type);
-    if (
-      memberTypeDef.variant === Semantic.ENode.UntaggedUnionDatatype ||
-      memberTypeDef.variant === Semantic.ENode.TaggedUnionDatatype
-    ) {
-      const members =
-        memberTypeDef.variant === Semantic.ENode.UntaggedUnionDatatype
-          ? memberTypeDef.members
-          : memberTypeDef.members.map((m) => m.type);
-
-      const narrowing = Conversion.typeNarrowing(this.sr);
-      narrowing.addVariants(members);
-      narrowing.constrainFromConstraints(constraints, resultExprId);
-
-      assert(narrowing.possibleVariants.size <= members.length);
-      if (narrowing.possibleVariants.size === 1) {
-        // Only one value remains: Union to Value
-        const tag = members.findIndex((m) => m === [...narrowing.possibleVariants][0]);
-        assert(tag !== -1);
-
-        const [result, resultId] = Semantic.addExpr(this.sr, {
-          variant: Semantic.ENode.UnionToValueCastExpr,
-          instanceIds: [],
-          expr: resultExprId,
-          tag: tag,
-          isTemporary: false,
-          canBeUnwrappedForLHS: true,
-          sourceloc: resultExpr.sourceloc,
-          type: [...narrowing.possibleVariants][0],
-          flow: resultExpr.flow,
-          writes: resultExpr.writes,
-        });
-        return [result, resultId] as const;
-      } else if (narrowing.possibleVariants.size !== members.length) {
-        // If multiple values remain but they are not equal: Union to Union (e.g. A | B | null to A | B)
-
-        // We do not need type checking since the source is the same union and narrowing can only remove members
-        // Not like in Conversion, there we actually need it
-        const newUnion = this.sr.b.untaggedUnionTypeUse(
-          [...narrowing.possibleVariants],
-          expr.sourceloc,
-        );
-
-        return Semantic.addExpr(this.sr, {
-          variant: Semantic.ENode.UnionToUnionCastExpr,
-          instanceIds: [],
-          expr: resultExprId,
-          castComesFromNarrowingAndMayBeUnwrapped: true,
-          isTemporary: false,
-          sourceloc: resultExpr.sourceloc,
-          type: newUnion,
-          flow: resultExpr.flow,
-          writes: resultExpr.writes,
-        });
-      }
-    }
-
-    return [resultExpr, resultExprId] as const;
-  }
-
-  arrayLiteral(
-    arrayTypeId: Semantic.TypeUseId,
-    elements: Semantic.ExprId[],
-    inFunction: Semantic.SymbolId | null,
-    allocator: Semantic.ExprId | null,
-    sourceloc: SourceLoc,
-  ) {
-    const structTypeUse = this.sr.typeUseNodes.get(arrayTypeId);
-    const structType = this.sr.typeDefNodes.get(structTypeUse.type);
-    assert(
-      structType.variant === Semantic.ENode.FixedArrayDatatype ||
-        structType.variant === Semantic.ENode.DynamicArrayDatatype,
-    );
-
-    const flow = FlowResult.fallthrough();
-    const writes = WriteResult.empty();
-    elements.forEach((eId) => {
-      const e = this.sr.exprNodes.get(eId);
-      flow.addAll(e.flow);
-      writes.addAll(e.writes);
-    });
-    const e = Semantic.addExpr<Semantic.ArrayLiteralExpr>(this.sr, {
-      variant: Semantic.ENode.ArrayLiteralExpr,
-      instanceIds: [Semantic.makeInstanceId(this.sr)],
-      elements: elements,
-      type: arrayTypeId,
-      inFunction: inFunction,
-      allocator: allocator,
-      sourceloc: sourceloc,
-      isTemporary: true,
-      flow: flow,
-      writes: writes,
-    });
-
-    if (allocator) {
-      this.sr.e.assertExprAllocatorType(allocator, sourceloc);
-    }
-
-    if (inFunction) {
-      // Structs as struct default values are not inside functions
-      const functionSymbol = this.sr.e.getSymbol(inFunction);
-      assert(functionSymbol.variant === Semantic.ENode.FunctionSymbol);
-      e[0].instanceIds.forEach((i) => functionSymbol.createsInstanceIds.add(i));
-    }
-
-    return e;
-  }
-
-  structLiteral(
-    structTypeId: Semantic.TypeUseId,
-    assign: {
-      name: string;
-      value: Semantic.ExprId;
-    }[],
-    inFunction: Semantic.SymbolId | null,
-    allocator: Semantic.ExprId | null,
-    sourceloc: SourceLoc,
-  ): [Semantic.StructLiteralExpr, Semantic.ExprId] {
-    const structTypeUse = this.sr.typeUseNodes.get(structTypeId);
-    const structType = this.sr.typeDefNodes.get(structTypeUse.type);
-    assert(structType.variant === Semantic.ENode.StructDatatype);
-
-    const [literal, literalId] = Semantic.addExpr<Semantic.StructLiteralExpr>(this.sr, {
-      variant: Semantic.ENode.StructLiteralExpr,
-      instanceIds: [Semantic.makeInstanceId(this.sr)],
-      assign: assign,
-      type: structTypeId,
-      inFunction: inFunction,
-      allocator: allocator,
-      sourceloc: sourceloc,
-      isTemporary: true,
-      flow: FlowResult.fallthrough(),
-      writes: WriteResult.empty(),
-    });
-
-    if (allocator) {
-      this.sr.e.assertExprAllocatorType(allocator, sourceloc);
-    }
-
-    if (inFunction) {
-      // Structs as struct default values are not inside functions
-      const functionSymbol = this.sr.e.getSymbol(inFunction);
-      assert(functionSymbol.variant === Semantic.ENode.FunctionSymbol);
-      literal.instanceIds.forEach((i) => functionSymbol.createsInstanceIds.add(i));
-    }
-
-    for (const a of assign) {
-      const member = structType.members.find((m) => {
-        const varsym = this.sr.symbolNodes.get(m);
-        return varsym.variant === Semantic.ENode.VariableSymbol && varsym.name === a.name;
-      });
-      assert(member);
-
-      const value = this.sr.e.getExpr(a.value);
-      literal.flow.addAll(value.flow);
-      literal.writes.addAll(value.writes);
-
-      Semantic.addStructMemberInstanceDeps(
-        this.sr.e.currentContext.instanceDeps,
-        literal.instanceIds[0],
-        member,
-        value.instanceIds,
-      );
-    }
-
-    return [literal, literalId] as const;
-  }
-
-  namespaceType(
-    name: string,
-    parentStructOrNS: Semantic.TypeDefId | null,
-    collectedNamespace: Collect.TypeDefId,
-    _export: boolean,
-  ) {
-    return Semantic.addType<Semantic.NamespaceDatatypeDef>(this.sr, {
-      variant: Semantic.ENode.NamespaceDatatype,
-      name: name,
-      parentStructOrNS: parentStructOrNS,
-      symbols: [],
-      export: _export,
-      concrete: true,
-      collectedNamespace: collectedNamespace,
-    });
-  }
-
-  paramPackTypeUse(mutability: EDatatypeMutability, sourceloc: SourceLoc) {
-    return makeTypeUse(
-      this.sr,
-      Semantic.addType(this.sr, {
-        variant: Semantic.ENode.ParameterPackDatatype,
-        parameters: null,
-        concrete: true,
-      })[1],
-      mutability,
-      false,
-      sourceloc,
-    )[1];
-  }
-
-  paramPackTypeDef() {
-    return Semantic.addType(this.sr, {
-      variant: Semantic.ENode.ParameterPackDatatype,
-      parameters: null,
-      concrete: true,
-    })[1];
-  }
-
-  untaggedUnionTypeUse(members: Semantic.TypeUseId[], sourceloc: SourceLoc) {
-    const canonicalMemberSet = new Set<Semantic.TypeUseId>();
-
-    const processMember = (mId: Semantic.TypeUseId) => {
-      const mUse = this.sr.e.getTypeUse(mId);
-      const mDef = this.sr.e.getTypeDef(mUse.type);
-
-      if (mDef.variant === Semantic.ENode.UntaggedUnionDatatype) {
-        for (const i of mDef.members) {
-          processMember(i);
-        }
-      } else {
-        canonicalMemberSet.add(mId);
-      }
-    };
-
-    for (const mId of members) {
-      processMember(mId);
-    }
-
-    const canonicalMembers = [...canonicalMemberSet];
-    canonicalMembers.sort((a, b) => {
-      const aUse = this.sr.e.getTypeUse(a);
-      const bUse = this.sr.e.getTypeUse(b);
-      const aDef = this.sr.e.getTypeDef(aUse.type);
-      const bDef = this.sr.e.getTypeDef(bUse.type);
-
-      const getVariantRank = (typeDef: Semantic.TypeDef) => {
-        switch (typeDef.variant) {
-          case Semantic.ENode.StructDatatype:
-            return 1;
-          case Semantic.ENode.FixedArrayDatatype:
-            return 2;
-          case Semantic.ENode.DynamicArrayDatatype:
-            return 3;
-          case Semantic.ENode.CallableDatatype:
-            return 4;
-          case Semantic.ENode.FunctionDatatype:
-            return 5;
-          case Semantic.ENode.PrimitiveDatatype:
-            return 6;
-          default:
-            return 99; // Handle unknown/other variants last
-        }
-      };
-
-      const rankA = getVariantRank(aDef);
-      const rankB = getVariantRank(bDef);
-
-      if (rankA !== rankB) {
-        return rankA - rankB; // Ascending rank (lower rank comes first)
-      }
-
-      const getStructRank = (typeUse: Semantic.TypeUse, typeDef: Semantic.TypeDef) => {
-        if (typeDef.variant !== Semantic.ENode.StructDatatype) {
-          return 0;
-        }
-        if (typeUse.inline) {
-          return 2;
-        } else {
-          return 1;
-        }
-      };
-      const structRankA = getStructRank(aUse, aDef);
-      const structRankB = getStructRank(bUse, bDef);
-      if (structRankA !== structRankB) {
-        return structRankA - structRankB; // Ascending rank (lower rank comes first)
-      }
-
-      if (
-        aDef.variant === Semantic.ENode.StructDatatype &&
-        bDef.variant === Semantic.ENode.StructDatatype &&
-        aDef.name !== bDef.name
-      ) {
-        return aDef.name.localeCompare(bDef.name);
-      }
-
-      if (
-        aDef.variant === Semantic.ENode.PrimitiveDatatype &&
-        bDef.variant === Semantic.ENode.PrimitiveDatatype
-      ) {
-        return aDef.primitive - bDef.primitive;
-      }
-
-      return a - b;
-    });
-
-    canonicalMembers.forEach((m) => {
-      const def = this.sr.typeDefNodes.get(this.sr.typeUseNodes.get(m).type);
-      if (def.variant === Semantic.ENode.PrimitiveDatatype && def.primitive === EPrimitive.void) {
-        throw new InternalError("Union cannot have a void datatype");
-      }
-    });
-
-    // Canonicalization: Create a stable key from the sorted members
-    // This ensures that unions with the same members always have the same TypeDefId
-    const canonicalKey = canonicalMembers.map((id) => id.toString()).join(",");
-
-    const existingUnionId = this.sr.elaboratedUntaggedUnions.get(canonicalKey);
-    if (existingUnionId !== undefined) {
-      // Reuse the existing union TypeDef
-      return makeTypeUse(this.sr, existingUnionId, EDatatypeMutability.Const, false, sourceloc)[1];
-    }
-
-    // Create new union and cache it
-    const [_, unionTypeDefId] = Semantic.addType(this.sr, {
-      variant: Semantic.ENode.UntaggedUnionDatatype,
-      members: canonicalMembers,
-      concrete: !members.some((m) => !isTypeConcrete(this.sr, m)),
-    });
-
-    this.sr.elaboratedUntaggedUnions.set(canonicalKey, unionTypeDefId);
-
-    return makeTypeUse(this.sr, unionTypeDefId, EDatatypeMutability.Const, false, sourceloc)[1];
-  }
-
-  taggedUnionTypeUse(
-    members: { tag: string; type: Semantic.TypeUseId }[],
-    nodiscard: boolean,
-    sourceloc: SourceLoc,
-  ) {
-    // Canonicalization: Create a stable key from the members (tags + types) and nodiscard flag
-    // This ensures that tagged unions with the same structure always have the same TypeDefId
-    const canonicalKey = `${nodiscard ? "nodiscard:" : ""}${members
-      .map((m) => `${m.tag}:${m.type}`)
-      .join(",")}`;
-
-    const existingUnionId = this.sr.elaboratedTaggedUnions.get(canonicalKey);
-    if (existingUnionId !== undefined) {
-      // Reuse the existing union TypeDef
-      return makeTypeUse(this.sr, existingUnionId, EDatatypeMutability.Const, false, sourceloc)[1];
-    }
-
-    // Create new tagged union and cache it
-    const [_, unionTypeDefId] = Semantic.addType(this.sr, {
-      variant: Semantic.ENode.TaggedUnionDatatype,
-      members: members,
-      nodiscard: nodiscard,
-      concrete: !members.some((m) => !isTypeConcrete(this.sr, m.type)),
-    });
-
-    this.sr.elaboratedTaggedUnions.set(canonicalKey, unionTypeDefId);
-
-    return makeTypeUse(this.sr, unionTypeDefId, EDatatypeMutability.Const, false, sourceloc)[1];
-  }
-
-  noneExpr() {
-    return this.literalValue(
-      {
-        type: EPrimitive.none,
-      },
-      null,
-    );
-  }
-
-  primitiveType(primitive: EPrimitive, sourceloc: SourceLoc): Semantic.TypeUseId {
-    return makePrimitiveAvailable(this.sr, primitive, EDatatypeMutability.Const, sourceloc);
-  }
-
-  intType() {
-    return this.primitiveType(EPrimitive.int, null);
-  }
-
-  nullType() {
-    return this.primitiveType(EPrimitive.null, null);
-  }
-
-  noneType() {
-    return this.primitiveType(EPrimitive.none, null);
-  }
-
-  optionalIntType() {
-    return this.untaggedUnionTypeUse([this.intType(), this.noneType()], null);
-  }
-
-  boolType() {
-    return this.primitiveType(EPrimitive.bool, null);
-  }
-
-  strType() {
-    return this.primitiveType(EPrimitive.str, null);
-  }
-
-  voidType() {
-    return this.primitiveType(EPrimitive.void, null);
-  }
-
-  u8Type() {
-    return this.primitiveType(EPrimitive.u8, null);
-  }
-
-  usizeType() {
-    return this.primitiveType(EPrimitive.usize, null);
-  }
-
-  nullTypeDef() {
-    return makeRawPrimitiveAvailable(this.sr, EPrimitive.null);
-  }
-
-  noneTypeDef() {
-    return makeRawPrimitiveAvailable(this.sr, EPrimitive.none);
-  }
-
-  unionTagRefTypeDef() {
-    return Semantic.addType(this.sr, {
-      variant: Semantic.ENode.UnionTagRefDatatype,
-      concrete: true,
-    })[1];
-  }
-
-  doesUnionContain(unionId: Semantic.TypeUseId, typeId: Semantic.TypeUseId) {
-    const union = this.sr.typeDefNodes.get(this.sr.typeUseNodes.get(unionId).type);
-    assert(union.variant === Semantic.ENode.UntaggedUnionDatatype);
-
-    return union.members.some((m) => m === typeId);
-  }
-}
-
-export function printSubstitutionContext(sr: SemanticResult, context: Semantic.ElaborationContext) {
+export function printSubstitutionContext(
+  sr: Semantic.Context,
+  context: Semantic.ElaborationContext,
+) {
   console.info(`Substitutions: (${[...context.substitute.values()].length})`);
   for (const [fromId, toId] of context.substitute) {
     printCollectedSymbol(sr.cc, fromId, 0, false);
@@ -9398,17 +7866,8 @@ export function printSubstitutionContext(sr: SemanticResult, context: Semantic.E
   }
 }
 
-type FuncDef = {
-  canonicalizedGenerics: string[];
-  paramPackTypes: Semantic.TypeUseId[];
-  substitutionContext: Semantic.ElaborationContext;
-  result: Semantic.SymbolId;
-  parentStructOrNS: Semantic.TypeDefId | null;
-};
-type FuncDefCache = Map<Collect.SymbolId, FuncDef[]>;
-
 function getFromFuncDefCache(
-  sr: SemanticResult,
+  sr: Semantic.Context,
   symbolId: Collect.SymbolId,
   args: {
     genericArgs: Semantic.ExprId[];
@@ -9439,7 +7898,7 @@ function getFromFuncDefCache(
 }
 
 function insertIntoFuncDefCache(
-  sr: SemanticResult,
+  sr: Semantic.Context,
   symbolId: Collect.SymbolId,
   args: {
     genericArgs: Semantic.ExprId[];
@@ -9468,17 +7927,8 @@ function insertIntoFuncDefCache(
   });
 }
 
-type StructDef = {
-  canonicalizedGenerics: string[];
-  substitutionContext: Semantic.ElaborationContext;
-  parentStructOrNS: Semantic.TypeDefId | null;
-  result: Semantic.TypeDefId;
-  resultAsTypeDefSymbol: Semantic.SymbolId;
-};
-type StructDefCache = Map<Collect.TypeDefId, StructDef[]>;
-
 export function getFromStructDefCache(
-  sr: SemanticResult,
+  sr: Semantic.Context,
   symbolId: Collect.TypeDefId,
   args: {
     genericArgs: Semantic.ExprId[];
@@ -9506,7 +7956,7 @@ export function getFromStructDefCache(
 }
 
 export function insertIntoStructDefCache(
-  sr: SemanticResult,
+  sr: Semantic.Context,
   symbolId: Collect.TypeDefId,
   args: {
     genericArgs: Semantic.ExprId[];
@@ -9535,16 +7985,8 @@ export function insertIntoStructDefCache(
   });
 }
 
-type EnumDef = {
-  substitutionContext: Semantic.ElaborationContext;
-  parentStructOrNS: Semantic.TypeDefId | null;
-  result: Semantic.TypeDefId;
-  resultAsTypeDefSymbol: Semantic.SymbolId;
-};
-type EnumDefCache = Map<Collect.TypeDefId, EnumDef[]>;
-
 export function getFromEnumDefCache(
-  sr: SemanticResult,
+  sr: Semantic.Context,
   symbolId: Collect.TypeDefId,
   args: {
     parentStructOrNS: Semantic.TypeDefId | null;
@@ -9563,7 +8005,7 @@ export function getFromEnumDefCache(
 }
 
 export function insertIntoEnumDefCache(
-  sr: SemanticResult,
+  sr: Semantic.Context,
   symbolId: Collect.TypeDefId,
   args: {
     substitutionContext: Semantic.ElaborationContext;
@@ -9586,91 +8028,8 @@ export function insertIntoEnumDefCache(
   });
 }
 
-export function internRegex(sr: SemanticResult, pattern: string, flags: Set<string>) {
-  const flagsSorted = [...flags];
-  flagsSorted.sort((a, b) => a.localeCompare(b));
-  const key = pattern + flagsSorted.join("");
-
-  let value = sr.elaboratedRegexInternMap.get(key);
-  if (value === undefined) {
-    value = sr.nextRegexId++;
-    sr.elaboratedRegexInternMap.set(key, value);
-  }
-  return value;
-}
-
-export type RegexData = {
-  pattern: string;
-  flags: Set<string>;
-  id: bigint;
-};
-
-export type SemanticResult = {
-  cc: CollectionContext;
-
-  moduleCompiler: ModuleCompiler;
-
-  e: SemanticElaborator; // "e" = "Elaborator"
-  b: SemanticBuilder; // "b" = "Builder"
-
-  nextInstanceId: Semantic.InstanceId;
-
-  blockScopeNodes: BrandedArray<Semantic.BlockScopeId, Semantic.BlockScope>;
-  symbolNodes: BrandedArray<Semantic.SymbolId, Semantic.Symbol>;
-  exprNodes: BrandedArray<Semantic.ExprId, Semantic.Expression>;
-  statementNodes: BrandedArray<Semantic.StatementId, Semantic.Statement>;
-  typeDefNodes: BrandedArray<Semantic.TypeDefId, Semantic.TypeDef>;
-  typeUseNodes: BrandedArray<Semantic.TypeUseId, Semantic.TypeUse>;
-
-  overloadedOperators: Semantic.FunctionSymbol[];
-
-  elaboratedFunctionSignatures: Map<Collect.SymbolId, Semantic.SymbolId[]>;
-  elaboratedFunctionSignaturesByName: Map<string, Semantic.SymbolId[]>;
-
-  elaboratedStructDatatypes: StructDefCache;
-  elaboratedFuncdefSymbols: FuncDefCache;
-  elaboratedUntaggedUnions: Map<string, Semantic.TypeDefId>;
-  elaboratedTaggedUnions: Map<string, Semantic.TypeDefId>;
-  elaboratedNamespaceSymbols: {
-    originalSharedInstance: Collect.NSSharedInstanceId;
-    substitutionContext: Semantic.ElaborationContext;
-    result: Semantic.TypeDefId;
-  }[];
-  elaboratedEnumSymbols: EnumDefCache;
-
-  // Those are GlobalVariableDefinitionSymbols
-  elaboratedGlobalVariableDefinitionSymbols: Set<Semantic.SymbolId>;
-
-  // Those are VariableSymbols
-  elaboratedGlobalVariableSymbols: Map<Collect.SymbolId, Semantic.SymbolId>;
-  // Function-local variable symbols are cached per function call because they are separate for each generic instance.
-
-  elaboratedPrimitiveTypes: Semantic.TypeDefId[];
-  functionTypeCache: Semantic.TypeDefId[];
-  deferredFunctionTypeCache: Semantic.TypeDefId[];
-  fixedArrayTypeCache: Semantic.TypeDefId[];
-  dynamicArrayTypeCache: Semantic.TypeDefId[];
-  typeInstanceCache: Semantic.TypeUseId[];
-
-  syntheticFunctions: Map<string, Semantic.SymbolId>;
-
-  syntheticScopeToVariableMap: Map<Collect.ScopeId, Map<string, Semantic.SymbolId>>;
-
-  nextRegexId: bigint;
-  elaboratedRegexInternMap: Map<string, bigint>; // This maps the pattern/flag key to the ID
-  elaboratedRegexTable: Map<bigint, RegexData>; // This maps the regex ID to the actual data
-
-  exportedCollectedSymbols: Set<number>;
-
-  exportedSymbols: Set<Semantic.SymbolId>;
-  exportedTypeAliases: Set<Collect.TypeDefId>;
-
-  cInjections: Semantic.SymbolId[];
-  globalMainFunction: Semantic.SymbolId | null;
-};
-
 export function makeRawPrimitiveAvailable(
-  sr: SemanticResult,
+  sr: Semantic.Context,
   primitive: EPrimitive,
 ): Semantic.TypeDefId {
   for (const id of sr.elaboratedPrimitiveTypes) {
@@ -9681,7 +8040,7 @@ export function makeRawPrimitiveAvailable(
     }
   }
   assert(primitive);
-  const [_, sId] = Semantic.addType(sr, {
+  const [_, sId] = sr.b.addType(sr, {
     variant: Semantic.ENode.PrimitiveDatatype,
     primitive: primitive,
     concrete: true,
@@ -9690,12 +8049,12 @@ export function makeRawPrimitiveAvailable(
   return sId;
 }
 
-export function makeVoidType(sr: SemanticResult) {
+export function makeVoidType(sr: Semantic.Context) {
   return makePrimitiveAvailable(sr, EPrimitive.void, EDatatypeMutability.Default, null);
 }
 
 export function makePrimitiveAvailable(
-  sr: SemanticResult,
+  sr: Semantic.Context,
   primitive: EPrimitive,
   mutability: EDatatypeMutability,
   sourceloc: SourceLoc,
@@ -9703,7 +8062,7 @@ export function makePrimitiveAvailable(
   return makeTypeUse(sr, makeRawPrimitiveAvailable(sr, primitive), mutability, false, sourceloc)[1];
 }
 
-export function isTypeExprConcrete(sr: SemanticResult, id: Semantic.ExprId) {
+export function isTypeExprConcrete(sr: Semantic.Context, id: Semantic.ExprId) {
   const expr = sr.exprNodes.get(id);
   if (
     expr.variant === Semantic.ENode.LiteralExpr ||
@@ -9718,14 +8077,14 @@ export function isTypeExprConcrete(sr: SemanticResult, id: Semantic.ExprId) {
   }
 }
 
-export function isTypeConcrete(sr: SemanticResult, id: Semantic.TypeUseId) {
+export function isTypeConcrete(sr: Semantic.Context, id: Semantic.TypeUseId) {
   const typeInstance = sr.typeUseNodes.get(id);
   const symbol = sr.typeDefNodes.get(typeInstance.type);
   assert("concrete" in symbol);
   return symbol.concrete;
 }
 
-export function IsExprDecisiveForOverloadResolution(sr: SemanticResult, exprId: Collect.ExprId) {
+export function IsExprDecisiveForOverloadResolution(sr: Semantic.Context, exprId: Collect.ExprId) {
   const expr = sr.cc.exprNodes.get(exprId);
 
   switch (expr.variant) {
@@ -9741,2333 +8100,3 @@ export function IsExprDecisiveForOverloadResolution(sr: SemanticResult, exprId: 
       return true;
   }
 }
-
-export namespace Semantic {
-  export type SymbolId = Brand<number, "SemanticSymbol">;
-  export type StatementId = Brand<number, "SemanticStatement">;
-  export type ExprId = Brand<number, "SemanticExpr">;
-  export type BlockScopeId = Brand<number, "SemanticBlockScope">;
-  export type TypeDefId = Brand<number, "SemanticTypeDef">;
-  export type TypeUseId = Brand<number, "SemanticTypeUse">;
-  export type InstanceId = Brand<number, "SemanticInstance">;
-
-  export enum ENode {
-    CInjectDirectiveSymbol,
-    // Symbols
-    VariableSymbol,
-    GlobalVariableDefinitionSymbol,
-    FunctionSymbol,
-    FunctionSignature,
-    StructSignature,
-    TypeDefSymbol,
-    // Datatypes
-    FunctionDatatype,
-    DeferredFunctionDatatype,
-    BlockScope,
-    EnumDatatype,
-    StructDatatype,
-    CallableDatatype,
-    ParameterPackDatatype,
-    PrimitiveDatatype,
-    GenericParameterDatatype,
-    NamespaceDatatype,
-    FixedArrayDatatype,
-    DynamicArrayDatatype,
-    SliceDatatype,
-    UntaggedUnionDatatype,
-    TaggedUnionDatatype,
-    UnionTagRefDatatype,
-    // Statements
-    InlineCStatement,
-    WhileStatement,
-    IfStatement,
-    ForStatement,
-    ForEachStatement,
-    VariableStatement,
-    ExprStatement,
-    BlockScopeExpr,
-    ReturnStatement,
-    RaiseStatement,
-    // Expressions
-    ParenthesisExpr,
-    AttemptErrorPropagationExpr,
-    BinaryExpr,
-    LiteralExpr,
-    UnaryExpr,
-    TernaryExpr,
-    ExprCallExpr,
-    SymbolValueExpr,
-    DatatypeAsValueExpr,
-    UnionTagReferenceExpr,
-    SizeofExpr,
-    AlignofExpr,
-    ExplicitCastExpr,
-    AttemptExpr,
-    ValueToUnionCastExpr,
-    UnionToValueCastExpr,
-    UnionToUnionCastExpr,
-    UnionTagCheckExpr,
-    MemberAccessExpr,
-    CallableExpr,
-    AddressOfExpr,
-    DereferenceExpr,
-    ExprAssignmentExpr,
-    StructLiteralExpr,
-    PreIncrExpr,
-    PostIncrExpr,
-    ArrayLiteralExpr,
-    ArraySubscriptExpr,
-    ArraySliceExpr,
-    StringSubscriptExpr,
-    StringConstructExpr,
-    // Dummy
-    Dummy,
-  }
-
-  export function addBlockScope<T extends Semantic.BlockScope>(
-    sr: SemanticResult,
-    n: T,
-  ): [T, BlockScopeId] {
-    return pushBrandedNode(sr.blockScopeNodes, n) as [T, BlockScopeId];
-  }
-
-  export function addTypeInstance<T extends Semantic.TypeUse>(
-    sr: SemanticResult,
-    n: T,
-  ): [T, TypeUseId] {
-    return pushBrandedNode(sr.typeUseNodes, n) as [T, TypeUseId];
-  }
-
-  export function addStatement<T extends Semantic.Statement>(
-    sr: SemanticResult,
-    n: T,
-  ): [T, StatementId] {
-    return pushBrandedNode(sr.statementNodes, n) as [T, StatementId];
-  }
-
-  export function addType<T extends Semantic.TypeDef>(sr: SemanticResult, n: T): [T, TypeDefId] {
-    return pushBrandedNode(sr.typeDefNodes, n) as [T, TypeDefId];
-  }
-
-  export function addSymbol<T extends Semantic.Symbol>(sr: SemanticResult, n: T): [T, SymbolId] {
-    return pushBrandedNode(sr.symbolNodes, n) as [T, SymbolId];
-  }
-
-  export function addExpr<T extends Semantic.Expression>(sr: SemanticResult, n: T): [T, ExprId] {
-    return pushBrandedNode(sr.exprNodes, n) as [T, ExprId];
-  }
-
-  export type CInjectDirectiveSymbol = {
-    variant: ENode.CInjectDirectiveSymbol;
-    value: string;
-    sourceloc: SourceLoc;
-  };
-
-  export type VariableSymbol = {
-    variant: ENode.VariableSymbol;
-    name: string;
-    memberOfStruct: TypeDefId | null;
-    type: TypeUseId | null;
-    mutability: EVariableMutability;
-    export: boolean;
-    extern: EExternLanguage;
-    variableContext: EVariableContext;
-    parentStructOrNS: TypeDefId | null;
-    sourceloc: SourceLoc;
-    comptime: boolean;
-    comptimeValue: ExprId | null;
-    concrete: boolean;
-  };
-
-  export type GlobalVariableDefinitionSymbol = {
-    variant: ENode.GlobalVariableDefinitionSymbol;
-    variableSymbol: SymbolId;
-    name: string;
-    value: ExprId | null;
-    export: boolean;
-    extern: EExternLanguage;
-    parentStructOrNS: TypeDefId | null;
-    sourceloc: SourceLoc;
-    comptime: boolean;
-    concrete: boolean;
-  };
-
-  export type FunctionSignature = {
-    variant: ENode.FunctionSignature;
-    originalFunction: Collect.SymbolId;
-    genericPlaceholders: Semantic.TypeDefId[];
-    name: string;
-    extern: EExternLanguage;
-    parentStructOrNS: TypeDefId | null;
-    parameters: {
-      name: string;
-      type: TypeUseId;
-    }[];
-    returnType: Semantic.TypeUseId | null;
-  };
-
-  export type FunctionSymbol = {
-    variant: ENode.FunctionSymbol;
-    staticMethod: boolean;
-    name: string;
-    type: TypeDefId;
-    noemit: boolean;
-    generics: Semantic.ExprId[];
-    parameterNames: string[];
-    parameterPack: boolean;
-    methodRequiredMutability: EDatatypeMutability.Const | EDatatypeMutability.Mut | null;
-    extern: EExternLanguage;
-    scope: Semantic.BlockScopeId | null;
-    overloadedOperator?: EOverloadedOperator;
-    export: boolean;
-    createsInstanceIds: Set<Semantic.InstanceId>;
-    returnsInstanceIds: Set<Semantic.InstanceId>;
-    returnStatements: Set<Semantic.StatementId>;
-    isImpure: boolean;
-    returnedDatatypes: Set<Semantic.TypeUseId>;
-    instanceDepsSnapshot: InstanceDeps;
-    annotatedReturnType: Semantic.TypeUseId | null;
-    methodType: EMethodType;
-    methodOf: TypeDefId | null;
-    sourceloc: SourceLoc;
-    parentStructOrNS: TypeDefId | null;
-    originalCollectedFunction: Collect.SymbolId;
-    concrete: boolean;
-  };
-
-  export type TypeDefSymbol = {
-    variant: ENode.TypeDefSymbol;
-    datatype: TypeDefId;
-  };
-
-  export type BlockScope = {
-    variant: ENode.BlockScope;
-    statements: StatementId[];
-    emittedExpr: ExprId;
-    sourceloc: SourceLoc;
-  };
-
-  export type FunctionRequireBlock = {
-    final: boolean;
-    pure: boolean;
-    noreturn: boolean;
-    noreturnIf: {
-      expr: Collect.ExprId;
-      argIndex: number | null;
-      operation: "noreturn-if-truthy" | "noreturn-if-falsy" | null;
-    } | null;
-  };
-
-  export type FunctionDatatypeDef = {
-    variant: ENode.FunctionDatatype;
-    parameters: {
-      optional: boolean;
-      type: TypeUseId;
-    }[];
-    returnType: TypeUseId;
-    vararg: boolean;
-    requires: FunctionRequireBlock;
-    concrete: boolean;
-  };
-
-  export type DeferredFunctionDatatypeDef = {
-    variant: ENode.DeferredFunctionDatatype;
-    parameters: {
-      optional: boolean;
-      type: TypeUseId;
-    }[];
-    vararg: boolean;
-    concrete: boolean;
-  };
-
-  export type EnumValue = {
-    name: string;
-    type: TypeUseId;
-    valueExpr: ExprId; // This is the actual integer value, used for code generation (e.g. 0 or "red")
-    literalExpr: ExprId; // This is the high level literal, used for further elaboration (e.g. Color.Red)
-  };
-
-  export type EnumDatatypeDef = {
-    variant: ENode.EnumDatatype;
-    name: string;
-    noemit: boolean;
-    export: boolean;
-    unscoped: boolean;
-    bitflag: boolean;
-    extern: EExternLanguage;
-    values: EnumValue[];
-    parentStructOrNS: TypeDefId | null;
-    sourceloc: SourceLoc;
-    type: TypeUseId;
-    concrete: boolean;
-    originalCollectedSymbol: Collect.TypeDefId;
-  };
-
-  export type StructDatatypeDef = {
-    variant: ENode.StructDatatype;
-    name: string;
-    noemit: boolean;
-    generics: ExprId[];
-    opaque: boolean;
-    plain: boolean;
-    export: boolean;
-    extern: EExternLanguage;
-    members: Semantic.SymbolId[];
-    membersBuilt: boolean;
-    membersFinalized: boolean;
-    memberDefaultValues: {
-      memberName: string;
-      value: Semantic.ExprId;
-    }[];
-    methods: Semantic.SymbolId[];
-    methodsInProgress: boolean;
-    methodsFinalized: boolean;
-    nestedStructs: Semantic.TypeDefId[];
-    parentStructOrNS: TypeDefId | null;
-    sourceloc: SourceLoc;
-    concrete: boolean;
-    originalCollectedDefinition: Collect.TypeDefId;
-    originalCollectedSymbol: Collect.SymbolId;
-  };
-
-  export type ParameterPackDatatypeDef = {
-    variant: ENode.ParameterPackDatatype;
-    parameters: Semantic.SymbolId[] | null;
-    concrete: boolean;
-  };
-
-  export type CallableDatatypeDef = {
-    variant: ENode.CallableDatatype;
-    thisExprType?: TypeUseId;
-    functionType: TypeDefId;
-    concrete: boolean;
-  };
-
-  export type PrimitiveDatatypeDef = {
-    variant: ENode.PrimitiveDatatype;
-    primitive: EPrimitive;
-    concrete: boolean;
-  };
-
-  export type FixedArrayDatatypeDef = {
-    variant: ENode.FixedArrayDatatype;
-    datatype: TypeUseId;
-    length: bigint;
-    concrete: boolean;
-    syntheticFields: SymbolId[];
-  };
-
-  export type DynamicArrayDatatypeDef = {
-    variant: ENode.DynamicArrayDatatype;
-    datatype: TypeUseId;
-    concrete: boolean;
-    syntheticFields: SymbolId[];
-  };
-
-  export type SliceDatatypeDef = {
-    variant: ENode.SliceDatatype;
-    datatype: TypeUseId;
-    concrete: boolean;
-  };
-
-  export type UntaggedUnionDatatypeDef = {
-    variant: ENode.UntaggedUnionDatatype;
-    members: TypeUseId[];
-    concrete: boolean;
-  };
-
-  export type TaggedUnionDatatypeDef = {
-    variant: ENode.TaggedUnionDatatype;
-    members: {
-      tag: string;
-      type: TypeUseId;
-    }[];
-    nodiscard: boolean;
-    concrete: boolean;
-  };
-
-  export type UnionTagRefDatatypeDef = {
-    variant: ENode.UnionTagRefDatatype;
-    concrete: boolean;
-  };
-
-  export type GenericParameterDatatypeDef = {
-    variant: ENode.GenericParameterDatatype;
-    name: string;
-    collectedParameter: Collect.SymbolId;
-    concrete: boolean;
-  };
-
-  export type NamespaceDatatypeDef = {
-    variant: ENode.NamespaceDatatype;
-    name: string;
-    export: boolean;
-    parentStructOrNS: TypeDefId | null;
-    symbols: Semantic.SymbolId[];
-    collectedNamespace: Collect.TypeDefId;
-    concrete: boolean; // For consistency, always true
-  };
-
-  export type TypeDef =
-    | GenericParameterDatatypeDef
-    | NamespaceDatatypeDef
-    | DeferredFunctionDatatypeDef
-    | FunctionDatatypeDef
-    | StructDatatypeDef
-    | EnumDatatypeDef
-    | FixedArrayDatatypeDef
-    | DynamicArrayDatatypeDef
-    | SliceDatatypeDef
-    | ParameterPackDatatypeDef
-    | UntaggedUnionDatatypeDef
-    | TaggedUnionDatatypeDef
-    | CallableDatatypeDef
-    | PrimitiveDatatypeDef
-    | UnionTagRefDatatypeDef;
-
-  export type TypeUse = {
-    type: TypeDefId;
-    mutability: EDatatypeMutability;
-    inline: boolean;
-    sourceloc: SourceLoc;
-  };
-
-  export type Symbol =
-    | CInjectDirectiveSymbol
-    | VariableSymbol
-    | GlobalVariableDefinitionSymbol
-    | FunctionSignature
-    | TypeDefSymbol
-    | FunctionSymbol;
-
-  export type BaseExpr = {
-    type: TypeUseId;
-    flow: FlowResult;
-    writes: WriteResult;
-    isTemporary: boolean;
-    sourceloc: SourceLoc;
-  };
-
-  export type ExprMemberAccessExpr = BaseExpr & {
-    variant: ENode.MemberAccessExpr;
-    instanceIds: InstanceId[];
-    expr: ExprId;
-    memberName: string;
-  };
-
-  export type CallableExpr = BaseExpr & {
-    variant: ENode.CallableExpr;
-    instanceIds: InstanceId[];
-    thisExpr: ExprId;
-    functionSymbol: SymbolId;
-  };
-
-  export type SymbolValueExpr = BaseExpr & {
-    variant: ENode.SymbolValueExpr;
-    instanceIds: InstanceId[];
-    symbol: SymbolId;
-  };
-
-  export type DatatypeAsValueExpr = BaseExpr & {
-    variant: ENode.DatatypeAsValueExpr;
-    instanceIds: InstanceId[];
-  };
-
-  export type UnionTagReferenceExpr = BaseExpr & {
-    variant: ENode.UnionTagReferenceExpr;
-    instanceIds: InstanceId[];
-    unionType: TypeDefId;
-    tag: string;
-  };
-
-  export type SizeofExpr = BaseExpr & {
-    variant: ENode.SizeofExpr;
-    instanceIds: InstanceId[];
-    valueExpr: ExprId;
-  };
-
-  export type AlignofExpr = BaseExpr & {
-    variant: ENode.AlignofExpr;
-    instanceIds: InstanceId[];
-    valueExpr: ExprId;
-  };
-
-  export type ExprAssignmentExpr = BaseExpr & {
-    variant: ENode.ExprAssignmentExpr;
-    instanceIds: InstanceId[];
-    value: ExprId;
-    target: ExprId;
-    operation: EAssignmentOperation;
-  };
-
-  export type DereferenceExpr = BaseExpr & {
-    variant: ENode.DereferenceExpr;
-    instanceIds: InstanceId[];
-    expr: ExprId;
-  };
-
-  export type AddressOfExpr = BaseExpr & {
-    variant: ENode.AddressOfExpr;
-    instanceIds: InstanceId[];
-    expr: ExprId;
-  };
-
-  export type ExplicitCastExpr = BaseExpr & {
-    variant: ENode.ExplicitCastExpr;
-    instanceIds: InstanceId[];
-    expr: ExprId;
-  };
-
-  export type AttemptExpr = BaseExpr & {
-    variant: ENode.AttemptExpr;
-    instanceIds: InstanceId[];
-    attemptScopeExpr: ExprId;
-    attemptScopeReturnsType: TypeUseId | null;
-    elseScopeExpr: ExprId;
-    elseScopeReturnsType: TypeUseId | null;
-    errorTypesCaught: Set<TypeUseId>;
-    errorLabel: string;
-    resultLabel: string;
-    errorResultVarname: string;
-    errorUnionType: TypeUseId;
-    uniqueId: bigint;
-    hasErrorVar: boolean;
-  };
-
-  export type ValueToUnionCastExpr = BaseExpr & {
-    variant: ENode.ValueToUnionCastExpr;
-    instanceIds: InstanceId[];
-    expr: ExprId;
-    index: number;
-  };
-
-  export type UnionToValueCastExpr = BaseExpr & {
-    variant: ENode.UnionToValueCastExpr;
-    instanceIds: InstanceId[];
-    expr: ExprId;
-    canBeUnwrappedForLHS: boolean; // This is if the cast originates from a constrained symbol value access
-    tag: number;
-  };
-
-  export type UnionToUnionCastExpr = BaseExpr & {
-    variant: ENode.UnionToUnionCastExpr;
-    instanceIds: InstanceId[];
-    expr: ExprId;
-    castComesFromNarrowingAndMayBeUnwrapped: boolean;
-  };
-
-  export type UnionTagCheckExpr = BaseExpr & {
-    variant: ENode.UnionTagCheckExpr;
-    instanceIds: InstanceId[];
-    expr: ExprId;
-    comparisonTypesAnd: TypeUseId[];
-    invertCheck: boolean;
-  };
-
-  export type AttemptErrorPropagationExpr = BaseExpr & {
-    variant: ENode.AttemptErrorPropagationExpr;
-    instanceIds: InstanceId[];
-    expr: ExprId;
-    srcOkTagIndex: number;
-    srcOkTagType: TypeUseId;
-    srcErrTagIndex: number;
-    srcErrTagType: TypeUseId;
-    toAttemptExpr: ExprId;
-  };
-
-  export type BinaryExpr = BaseExpr & {
-    variant: ENode.BinaryExpr;
-    instanceIds: InstanceId[];
-    left: ExprId;
-    right: ExprId;
-    operation: EBinaryOperation;
-  };
-
-  export type UnaryExpr = BaseExpr & {
-    variant: ENode.UnaryExpr;
-    instanceIds: InstanceId[];
-    expr: ExprId;
-    operation: EUnaryOperation;
-  };
-
-  export type PostIncrExpr = BaseExpr & {
-    variant: ENode.PostIncrExpr;
-    instanceIds: InstanceId[];
-    expr: ExprId;
-    operation: EIncrOperation;
-  };
-
-  export type PreIncrExpr = BaseExpr & {
-    variant: ENode.PreIncrExpr;
-    instanceIds: InstanceId[];
-    expr: ExprId;
-    operation: EIncrOperation;
-  };
-
-  export type TernaryExpr = BaseExpr & {
-    variant: ENode.TernaryExpr;
-    instanceIds: InstanceId[];
-    condition: ExprId;
-    then: ExprId;
-    else: ExprId;
-    thenProducesValue: boolean;
-    elseProducesValue: boolean;
-  };
-
-  export type ExprCallExpr = BaseExpr & {
-    variant: ENode.ExprCallExpr;
-    instanceIds: InstanceId[];
-    calledExpr: ExprId;
-    arguments: ExprId[];
-  };
-
-  export type StructLiteralExpr = BaseExpr & {
-    variant: ENode.StructLiteralExpr;
-    instanceIds: InstanceId[];
-    assign: {
-      name: string;
-      value: ExprId;
-    }[];
-    inFunction: SymbolId | null;
-    allocator: ExprId | null;
-  };
-
-  export type LiteralExpr = BaseExpr & {
-    variant: ENode.LiteralExpr;
-    instanceIds: InstanceId[];
-    literal: LiteralValue;
-  };
-
-  export type ArrayLiteralExpr = BaseExpr & {
-    variant: ENode.ArrayLiteralExpr;
-    instanceIds: InstanceId[];
-    elements: ExprId[];
-    inFunction: SymbolId | null;
-    allocator: ExprId | null;
-  };
-
-  export type ArraySubscriptExpr = BaseExpr & {
-    variant: ENode.ArraySubscriptExpr;
-    instanceIds: InstanceId[];
-    expr: ExprId;
-    indices: ExprId[];
-  };
-
-  export type ArraySliceExpr = BaseExpr & {
-    variant: ENode.ArraySliceExpr;
-    instanceIds: InstanceId[];
-    expr: ExprId;
-    indices: {
-      start: ExprId | null;
-      end: ExprId | null;
-    }[];
-  };
-
-  export type StringSubscriptExpr = BaseExpr & {
-    variant: ENode.StringSubscriptExpr;
-    instanceIds: InstanceId[];
-    expr: ExprId;
-    index: ExprId;
-  };
-
-  export type StringConstructExpr = BaseExpr & {
-    variant: ENode.StringConstructExpr;
-    instanceIds: InstanceId[];
-    value: {
-      variant: "data-length";
-      data: ExprId;
-      length: ExprId;
-    };
-  };
-
-  export type BlockScopeExpr = BaseExpr & {
-    variant: ENode.BlockScopeExpr;
-    instanceIds: InstanceId[];
-    block: BlockScopeId;
-  };
-
-  export type Expression =
-    | ExprMemberAccessExpr
-    | SymbolValueExpr
-    | DatatypeAsValueExpr
-    | UnionTagReferenceExpr
-    | SizeofExpr
-    | AlignofExpr
-    | BlockScopeExpr
-    | ExprAssignmentExpr
-    | UnaryExpr
-    | BinaryExpr
-    | CallableExpr
-    | PreIncrExpr
-    | PostIncrExpr
-    | AddressOfExpr
-    | DereferenceExpr
-    | ExplicitCastExpr
-    | AttemptExpr
-    | ValueToUnionCastExpr
-    | StringSubscriptExpr
-    | UnionToValueCastExpr
-    | UnionToUnionCastExpr
-    | UnionTagCheckExpr
-    | AttemptErrorPropagationExpr
-    | TernaryExpr
-    | ExprCallExpr
-    | StructLiteralExpr
-    | LiteralExpr
-    | ArrayLiteralExpr
-    | ArraySubscriptExpr
-    | ArraySliceExpr
-    | StringConstructExpr;
-
-  // =============================================
-
-  export type InlineCStatement = {
-    variant: ENode.InlineCStatement;
-    value: string;
-    sourceloc: SourceLoc;
-  };
-
-  export type ReturnStatement = {
-    variant: ENode.ReturnStatement;
-    expr?: ExprId;
-    sourceloc: SourceLoc;
-  };
-
-  export type RaiseStatement = {
-    variant: ENode.RaiseStatement;
-    expr: ExprId;
-    toAttemptExpr: ExprId;
-    sourceloc: SourceLoc;
-  };
-
-  export type IfStatement = {
-    variant: ENode.IfStatement;
-    isLetBinding: boolean;
-    condition: ExprId;
-    then: BlockScopeId;
-    elseIfs: {
-      condition: ExprId;
-      then: BlockScopeId;
-    }[];
-    else?: BlockScopeId;
-    sourceloc: SourceLoc;
-  };
-
-  export type ForStatement = {
-    variant: ENode.ForStatement;
-    initStatement: StatementId | null;
-    loopCondition: ExprId | null;
-    loopIncrement: ExprId | null;
-    body: BlockScopeId;
-    sourceloc: SourceLoc;
-  };
-
-  export type ForEachStatement = {
-    variant: ENode.ForEachStatement;
-    arrayExpr: ExprId;
-    loopVariable: SymbolId;
-    indexVariable: SymbolId | null;
-    body: BlockScopeId;
-    sourceloc: SourceLoc;
-  };
-
-  export type WhileStatement = {
-    variant: ENode.WhileStatement;
-    isLetBinding: boolean;
-    condition: ExprId;
-    then: BlockScopeId;
-    sourceloc: SourceLoc;
-  };
-
-  export type VariableStatement = {
-    variant: ENode.VariableStatement;
-    name: string;
-    value: ExprId | null;
-    comptime: boolean;
-    variableSymbol: SymbolId;
-    sourceloc: SourceLoc;
-  };
-
-  export type ExprStatement = {
-    variant: ENode.ExprStatement;
-    expr: ExprId;
-    sourceloc: SourceLoc;
-  };
-
-  export type Statement =
-    | InlineCStatement
-    | ReturnStatement
-    | RaiseStatement
-    | VariableStatement
-    | IfStatement
-    | ForStatement
-    | ForEachStatement
-    | WhileStatement
-    | ExprStatement;
-
-  export function canonicalizeGenericExpr(sr: SemanticResult, exprId: Semantic.ExprId) {
-    const expr = sr.exprNodes.get(exprId);
-    if (expr.variant === Semantic.ENode.DatatypeAsValueExpr) {
-      return expr.type.toString();
-    } else if (expr.variant === Semantic.ENode.LiteralExpr) {
-      if (expr.literal.type === EPrimitive.null) {
-        return "null";
-      } else if (expr.literal.type === EPrimitive.none) {
-        return "none";
-      } else if (expr.literal.type === EPrimitive.Regex) {
-        return "Regex";
-      } else if (expr.literal.type === "enum") {
-        return expr.literal.enumType.toString() + "|" + expr.literal.valueName;
-      } else {
-        return primitiveToString(expr.literal.type) + "_" + expr.literal.value.toString();
-      }
-    } else {
-      throw new CompilerError(
-        `This expression is not suitable as a generic type argument or literal value`,
-        expr.sourceloc,
-      );
-    }
-  }
-
-  export function tryLookupSymbol(
-    sr: SemanticResult,
-    name: string,
-    args: { startLookupInScope: Collect.ScopeId; sourceloc: SourceLoc; pubRequired?: boolean },
-  ):
-    | { type: "semantic"; id: Semantic.ExprId }
-    | { type: "collect"; id: Collect.SymbolId }
-    | undefined {
-    const cc = sr.cc;
-    const scope = cc.scopeNodes.get(args.startLookupInScope);
-
-    if (sr.syntheticScopeToVariableMap.has(args.startLookupInScope)) {
-      const map = sr.syntheticScopeToVariableMap.get(args.startLookupInScope)!;
-      if (map.has(name)) {
-        const symbolId = map.get(name)!;
-        const symbol = sr.symbolNodes.get(symbolId);
-        assert(symbol.variant === Semantic.ENode.VariableSymbol);
-        assert(symbol.type);
-        return {
-          id: sr.b.symbolValue(symbolId, args.sourceloc)[1],
-          type: "semantic",
-        };
-      }
-    }
-
-    const lookupDirect = (symbols: Set<Collect.SymbolId>) => {
-      for (const id of symbols) {
-        const s = cc.symbolNodes.get(id);
-        if (s.variant === Collect.ENode.FunctionOverloadGroupSymbol && s.name === name) {
-          if (
-            [...s.overloads].some((o) => {
-              const func = cc.symbolNodes.get(o);
-              assert(func.variant === Collect.ENode.FunctionSymbol);
-              return !args.pubRequired || func.pub;
-            })
-          ) {
-            return id;
-          }
-        } else if (s.variant === Collect.ENode.TypeDefSymbol && s.name === name) {
-          const typedef = sr.cc.typeDefNodes.get(s.typeDef);
-          if (typedef.variant === Collect.ENode.StructTypeDef && typedef.name === name) {
-            if (!args.pubRequired || typedef.pub) {
-              return id;
-            }
-          } else if (typedef.variant === Collect.ENode.NamespaceTypeDef && typedef.name === name) {
-            if (!args.pubRequired || typedef.pub) {
-              // Caution: This lookup needs to return the actual namespace definition and NOT the shared instance.
-              // Because the lookup must also resolve generics and to do that, it needs to know the correct scopes
-              // and the parent scope stack must be valid, which is not the case with the shared instance as it has multiple.
-              return id;
-            }
-          } else if (typedef.variant === Collect.ENode.TypeDefAlias && typedef.name === name) {
-            return id;
-          } else if (typedef.variant === Collect.ENode.EnumTypeDef && typedef.name === name) {
-            return id;
-          }
-        } else if (s.variant === Collect.ENode.GenericTypeParameterSymbol && s.name === name) {
-          return id;
-        } else if (s.variant === Collect.ENode.VariableSymbol && s.name === name) {
-          if (!args.pubRequired) {
-            return id;
-          }
-        }
-      }
-    };
-
-    switch (scope.variant) {
-      case Collect.ENode.NamespaceScope: {
-        const ns = cc.symbolNodes.get(scope.owningSymbol);
-        assert(ns.variant === Collect.ENode.TypeDefSymbol);
-        const nsTd = cc.typeDefNodes.get(ns.typeDef);
-        assert(nsTd.variant === Collect.ENode.NamespaceTypeDef);
-        const instance = cc.nsSharedInstances.get(nsTd.sharedInstance);
-        assert(instance.variant === Collect.ENode.NamespaceSharedInstance);
-        for (const nsScope of instance.namespaceScopes) {
-          const sc = cc.scopeNodes.get(nsScope);
-          assert(sc.variant === Collect.ENode.NamespaceScope);
-          const found = lookupDirect(sc.symbols);
-          if (found) {
-            return {
-              id: found,
-              type: "collect",
-            };
-          }
-        }
-        return tryLookupSymbol(sr, name, {
-          startLookupInScope: scope.parentScope,
-          sourceloc: args.sourceloc,
-        });
-      }
-
-      case Collect.ENode.ModuleScope:
-      case Collect.ENode.UnitScope:
-      case Collect.ENode.FileScope:
-      case Collect.ENode.BlockScope:
-      case Collect.ENode.TypeDefScope:
-      case Collect.ENode.StructLexicalScope:
-      case Collect.ENode.FunctionScope: {
-        const found = lookupDirect(scope.symbols);
-        if (found) {
-          return {
-            id: found,
-            type: "collect",
-          };
-        }
-
-        if (scope.variant === Collect.ENode.ModuleScope) {
-          return undefined;
-        }
-
-        if (scope.variant === Collect.ENode.FileScope) {
-          // File Scope -> Don't go higher but look in adjacent files in the same unit, then go higher
-          const unitScope = cc.scopeNodes.get(scope.parentScope);
-          assert(unitScope.variant === Collect.ENode.UnitScope);
-
-          for (const file of unitScope.scopes) {
-            if (file === args.startLookupInScope) continue; // Prevent infinite recursion with itself
-
-            const fileScope = cc.scopeNodes.get(file);
-            assert(fileScope.variant === Collect.ENode.FileScope);
-
-            const found = lookupDirect(fileScope.symbols);
-            if (found) {
-              return {
-                id: found,
-                type: "collect",
-              };
-            }
-          }
-
-          return tryLookupSymbol(sr, name, {
-            startLookupInScope: scope.parentScope,
-            sourceloc: args.sourceloc,
-          });
-        } else {
-          // Not a file scope -> Can go higher
-          return tryLookupSymbol(sr, name, {
-            startLookupInScope: scope.parentScope,
-            sourceloc: args.sourceloc,
-          });
-        }
-      }
-
-      default:
-        assert(false, "Unknown scope type: " + (scope as any).variant);
-    }
-  }
-
-  export function lookupSymbol(
-    sr: SemanticResult,
-    name: string,
-    args: { startLookupInScope: Collect.ScopeId; sourceloc: SourceLoc },
-  ) {
-    const found = tryLookupSymbol(sr, name, args);
-    if (found) return found;
-    throw new CompilerError(`Symbol '${name}' was not declared in this scope`, args.sourceloc);
-  }
-
-  export function findBuiltinSymbolByName(
-    sr: SemanticResult,
-    symbolPath: string,
-    sourceloc: SourceLoc,
-  ): Collect.SymbolId {
-    const names = symbolPath.split(".");
-
-    let scope = sr.cc.moduleScopeId;
-    let symbolId: Collect.SymbolId | undefined;
-
-    for (let i = 0; i < names.length; i++) {
-      const name = names[i];
-      const isLast = i === names.length - 1;
-
-      const symbolResult = tryLookupSymbol(sr, name, {
-        startLookupInScope: scope,
-        sourceloc,
-      });
-
-      if (!symbolResult) {
-        throw new InternalError(
-          `Symbol '${symbolPath}' was expected to be defined but '${name}' could not be found`,
-        );
-      }
-
-      if (symbolResult.type === "semantic") {
-        throw new InternalError(`Symbol '${name}' resolved to a semantic expression, not a symbol`);
-      }
-      symbolId = symbolResult.id;
-
-      const symbol = sr.cc.symbolNodes.get(symbolId);
-      if (!isLast) {
-        // Intermediate symbol must introduce a scope
-        if (symbol.variant !== Collect.ENode.TypeDefSymbol) {
-          throw new InternalError(
-            `Symbol '${name}' of '${symbolPath}' was expected to be a namespace or struct, but it is not`,
-          );
-        }
-
-        const symbolDef = sr.cc.typeDefNodes.get(symbol.typeDef);
-        if (symbolDef.variant === Collect.ENode.StructTypeDef) {
-          scope = symbolDef.lexicalScope;
-        } else if (symbolDef.variant === Collect.ENode.NamespaceTypeDef) {
-          scope = symbolDef.namespaceScope;
-        } else {
-          throw new InternalError(
-            `Symbol '${name}' of '${symbolPath}' was expected to be a namespace or struct, but it is not`,
-          );
-        }
-      }
-    }
-
-    assert(symbolId);
-    return symbolId;
-  }
-
-  export function getInstanceDepsGraph(deps: InstanceDeps, instanceIds: Set<Semantic.InstanceId>) {
-    const instances = new Set<Semantic.InstanceId>();
-
-    const processInstance = (inst: Semantic.InstanceId) => {
-      if (instances.has(inst)) {
-        return;
-      }
-
-      instances.add(inst);
-      getInstanceDeps(deps, inst).forEach((d) => {
-        processInstance(d);
-      });
-      getAllStructMemberInstanceDeps(deps, inst).forEach((d) => {
-        processInstance(d);
-      });
-    };
-
-    instanceIds.forEach((d) => {
-      processInstance(d);
-    });
-    return instances;
-  }
-
-  export function getSymbolDeps(deps: InstanceDeps, symbolId: Semantic.SymbolId) {
-    let map = deps.symbolDependsOn.get(symbolId);
-    if (!map) {
-      return [];
-    }
-
-    return [...map];
-  }
-
-  export function addSymbolDeps(
-    context: ElaborationContext,
-    symbolId: Semantic.SymbolId,
-    dependency: Semantic.InstanceId | Semantic.InstanceId[],
-  ) {
-    let map = context.instanceDeps.symbolDependsOn.get(symbolId);
-
-    if (!map) {
-      const set = new Set<Semantic.InstanceId>();
-      context.instanceDeps.symbolDependsOn.set(symbolId, set);
-      map = set;
-    }
-
-    if (Array.isArray(dependency)) {
-      for (const d of dependency) {
-        map.add(d);
-      }
-    } else {
-      map.add(dependency);
-    }
-  }
-
-  export function getInstanceDeps(deps: InstanceDeps, instanceId: Semantic.InstanceId) {
-    let map = deps.instanceDependsOn.get(instanceId);
-    if (!map) {
-      return [];
-    }
-
-    return [...map];
-  }
-
-  export function addInstanceDeps(
-    deps: InstanceDeps,
-    instanceId: Semantic.InstanceId,
-    dependency: Semantic.InstanceId | Semantic.InstanceId[],
-  ) {
-    let map = deps.instanceDependsOn.get(instanceId);
-
-    if (!map) {
-      const set = new Set<Semantic.InstanceId>();
-      deps.instanceDependsOn.set(instanceId, set);
-      map = set;
-    }
-
-    if (Array.isArray(dependency)) {
-      for (const d of dependency) {
-        map.add(d);
-      }
-    } else {
-      map.add(dependency);
-    }
-  }
-
-  export function getAllStructMemberInstanceDeps(
-    deps: InstanceDeps,
-    instanceId: Semantic.InstanceId,
-  ) {
-    let innerMap = deps.structMembersDependOn.get(instanceId);
-    if (!innerMap) {
-      return new Set<Semantic.InstanceId>();
-    }
-
-    const all = new Set<Semantic.InstanceId>();
-    innerMap.forEach((e, k) => {
-      e.forEach((i) => {
-        all.add(i);
-      });
-    });
-    return all;
-  }
-
-  export function getStructMemberInstanceDeps(
-    deps: InstanceDeps,
-    instanceId: Semantic.InstanceId,
-    member: Semantic.SymbolId,
-  ) {
-    let innerMap = deps.structMembersDependOn.get(instanceId);
-    if (!innerMap) {
-      return new Set<Semantic.InstanceId>();
-    }
-
-    let set = innerMap.get(member);
-    if (!set) {
-      set = new Set<Semantic.InstanceId>();
-      innerMap.set(member, set);
-    }
-
-    return [...set];
-  }
-
-  export function addStructMemberInstanceDeps(
-    deps: InstanceDeps,
-    instanceId: Semantic.InstanceId,
-    member: Semantic.SymbolId,
-    dependency: Semantic.InstanceId | Semantic.InstanceId[],
-  ) {
-    let innerMap = deps.structMembersDependOn.get(instanceId);
-    if (!innerMap) {
-      innerMap = new Map<Semantic.SymbolId, Set<Semantic.InstanceId>>();
-      deps.structMembersDependOn.set(instanceId, innerMap);
-    }
-
-    let set = innerMap.get(member);
-    if (!set) {
-      set = new Set<Semantic.InstanceId>();
-      innerMap.set(member, set);
-    }
-
-    if (Array.isArray(dependency)) {
-      for (const d of dependency) {
-        set.add(d);
-      }
-    } else {
-      set.add(dependency);
-    }
-  }
-
-  export type InstanceDeps = {
-    instanceDependsOn: Map<Semantic.InstanceId, Set<Semantic.InstanceId>>;
-    structMembersDependOn: Map<
-      Semantic.InstanceId,
-      Map<Semantic.SymbolId, Set<Semantic.InstanceId>>
-    >;
-    symbolDependsOn: Map<Semantic.SymbolId, Set<Semantic.InstanceId>>;
-  };
-
-  export type ElaborationContext = {
-    substitute: Map<Collect.SymbolId, Semantic.ExprId>;
-    currentScope: Collect.ScopeId; // This is the scope in which we are elaborating and it changes (e.g. A<i32> when elaborating A<i32>.B)
-    genericsScope: Collect.ScopeId; // This is the scope for generics which does not change (e.g. A<i32>.B<u8> => i32 and u8 are elaborated in the same scope)
-    constraints: ConstraintSet;
-    instanceDeps: InstanceDeps;
-
-    elaborationTypeOverride: Map<Collect.SymbolId, Semantic.TypeUseId>;
-    elaboratedVariables: Map<Collect.SymbolId, Semantic.SymbolId>;
-    elaborationRecursiveStructStack: Semantic.TypeDefId[];
-  };
-
-  export function makeElaborationContext(args: {
-    currentScope: Collect.ScopeId;
-    genericsScope: Collect.ScopeId;
-    constraints: ConstraintSet;
-  }): ElaborationContext {
-    return {
-      substitute: new Map(),
-      constraints: args.constraints,
-      currentScope: args.currentScope,
-      genericsScope: args.genericsScope,
-      instanceDeps: {
-        instanceDependsOn: new Map(),
-        structMembersDependOn: new Map(),
-        symbolDependsOn: new Map(),
-      },
-      elaboratedVariables: new Map(),
-      elaborationTypeOverride: new Map(),
-      elaborationRecursiveStructStack: [],
-    };
-  }
-
-  export function isolateElaborationContext(
-    parent: ElaborationContext,
-    args: {
-      currentScope: Collect.ScopeId;
-      genericsScope: Collect.ScopeId;
-      constraints: ConstraintSet;
-      instanceDeps: InstanceDeps;
-    },
-  ): ElaborationContext {
-    return {
-      substitute: new Map(parent.substitute),
-      constraints: args.constraints.clone(),
-      currentScope: args.currentScope,
-      genericsScope: args.genericsScope,
-      instanceDeps: args.instanceDeps,
-
-      elaboratedVariables: new Map(parent.elaboratedVariables),
-      elaborationTypeOverride: new Map(parent.elaborationTypeOverride),
-      elaborationRecursiveStructStack: [...parent.elaborationRecursiveStructStack],
-    };
-  }
-
-  export function mergeSubstitutionContext(
-    a: ElaborationContext,
-    b: ElaborationContext,
-    args: {
-      currentScope: Collect.ScopeId;
-      genericsScope: Collect.ScopeId;
-      instanceDeps: InstanceDeps;
-    },
-  ): ElaborationContext {
-    // THE ORDER OF [a, b] IS VERY IMPORTANT, DO NOT MIX UP!!!
-    const constraints = ConstraintSet.empty();
-    constraints.addAll(a.constraints);
-    constraints.addAll(b.constraints);
-    return {
-      substitute: new Map([...a.substitute, ...b.substitute]),
-      constraints: constraints,
-      currentScope: args.currentScope,
-      genericsScope: args.genericsScope,
-      instanceDeps: args.instanceDeps,
-      elaboratedVariables: new Map([...a.elaboratedVariables, ...b.elaboratedVariables]),
-      elaborationTypeOverride: new Map([
-        ...a.elaborationTypeOverride,
-        ...b.elaborationTypeOverride,
-      ]),
-      elaborationRecursiveStructStack: [
-        ...a.elaborationRecursiveStructStack,
-        ...b.elaborationRecursiveStructStack,
-      ],
-    };
-  }
-
-  export function makeInstanceId(sr: SemanticResult) {
-    return sr.nextInstanceId++ as Semantic.InstanceId;
-  }
-
-  export function SemanticallyAnalyze(
-    moduleCompiler: ModuleCompiler,
-    cc: CollectionContext,
-    isLibrary: boolean,
-    moduleName: string,
-    _moduleVersion: string,
-  ) {
-    const sr: SemanticResult = {
-      overloadedOperators: [],
-
-      moduleCompiler: moduleCompiler,
-      cc: cc,
-
-      e: undefined as any,
-      b: undefined as any,
-
-      nextInstanceId: 1 as Semantic.InstanceId,
-
-      elaboratedFunctionSignatures: new Map(),
-      elaboratedFunctionSignaturesByName: new Map(),
-
-      elaboratedStructDatatypes: new Map(),
-      elaboratedFuncdefSymbols: new Map(),
-      elaboratedUntaggedUnions: new Map(),
-      elaboratedTaggedUnions: new Map(),
-      elaboratedEnumSymbols: new Map(),
-      elaboratedPrimitiveTypes: [],
-      elaboratedNamespaceSymbols: [],
-      elaboratedGlobalVariableDefinitionSymbols: new Set(),
-      functionTypeCache: [],
-      deferredFunctionTypeCache: [],
-      fixedArrayTypeCache: [],
-      dynamicArrayTypeCache: [],
-      typeInstanceCache: [],
-
-      syntheticFunctions: new Map(),
-
-      blockScopeNodes: new BrandedArray<Semantic.BlockScopeId, Semantic.BlockScope>([]),
-      symbolNodes: new BrandedArray<Semantic.SymbolId, Semantic.Symbol>([]),
-      typeDefNodes: new BrandedArray<Semantic.TypeDefId, Semantic.TypeDef>([]),
-      statementNodes: new BrandedArray<Semantic.StatementId, Semantic.Statement>([]),
-      typeUseNodes: new BrandedArray<Semantic.TypeUseId, Semantic.TypeUse>([]),
-      exprNodes: new BrandedArray<Semantic.ExprId, Semantic.Expression>([]),
-
-      syntheticScopeToVariableMap: new Map(),
-
-      exportedCollectedSymbols: new Set(),
-      elaboratedGlobalVariableSymbols: new Map(),
-      exportedTypeAliases: new Set(),
-
-      elaboratedRegexInternMap: new Map(),
-      elaboratedRegexTable: new Map(),
-      nextRegexId: 0n,
-
-      cInjections: [],
-      globalMainFunction: null,
-
-      exportedSymbols: new Set(),
-    };
-
-    const context = makeElaborationContext({
-      currentScope: cc.moduleScopeId,
-      genericsScope: cc.moduleScopeId,
-      constraints: ConstraintSet.empty(),
-    });
-
-    sr.e = new SemanticElaborator(sr, context);
-    sr.b = new SemanticBuilder(sr);
-
-    sr.e.topLevelScope(cc.moduleScopeId);
-
-    if (moduleName !== HAZE_STDLIB_NAME) {
-      if (!isLibrary) {
-        if (!sr.globalMainFunction) {
-          throw new CompilerError("No main function is defined in global scope", null);
-        }
-
-        const mainFunctionSymbol = sr.symbolNodes.get(sr.globalMainFunction);
-        assert(mainFunctionSymbol.variant === Semantic.ENode.FunctionSymbol);
-        const mainFunctionType = sr.typeDefNodes.get(mainFunctionSymbol.type);
-        assert(mainFunctionType.variant === Semantic.ENode.FunctionDatatype);
-        const returnType = sr.typeDefNodes.get(
-          sr.typeUseNodes.get(mainFunctionType.returnType).type,
-        );
-        if (
-          returnType.variant !== Semantic.ENode.PrimitiveDatatype ||
-          returnType.primitive !== EPrimitive.int
-        ) {
-          throw new CompilerError("Main function must return int", mainFunctionSymbol.sourceloc);
-        }
-      } else {
-        if (sr.globalMainFunction) {
-          throw new CompilerError(
-            "main function is defined, but not allowed because module is built as library",
-            null,
-          );
-        }
-      }
-    }
-
-    return sr;
-  }
-
-  export function serializeMutability(typeUse: TypeUse) {
-    let s = "";
-    if (typeUse.inline) {
-      s += "inline ";
-    }
-
-    if (typeUse.mutability === EDatatypeMutability.Const) {
-      s += "const ";
-    } else if (typeUse.mutability === EDatatypeMutability.Mut) {
-      s += "mut ";
-    }
-
-    return s;
-  }
-
-  export function serializeTypeUse(sr: SemanticResult, datatypeId: Semantic.TypeUseId): string {
-    const datatype = sr.typeUseNodes.get(datatypeId);
-    const names = getNamespaceChainFromDatatype(sr, datatype.type);
-    return serializeMutability(datatype) + names.map((n) => n.pretty).join(".");
-  }
-
-  export function serializeLiteralType(sr: SemanticResult, value: LiteralValue) {
-    if (value.type === "enum") {
-      const enumType = sr.typeDefNodes.get(value.enumType);
-      assert(enumType.variant === Semantic.ENode.EnumDatatype && enumType.parentStructOrNS);
-      const parent = Semantic.getNamespaceChainFromDatatype(sr, enumType.parentStructOrNS);
-      return `${parent.map((p) => p.pretty).join(".")}.${value.valueName}`;
-    } else {
-      return primitiveToString(value.type);
-    }
-  }
-
-  export function serializeLiteralValue(sr: SemanticResult, value: LiteralValue) {
-    if (value.type === EPrimitive.str) {
-      return `${JSON.stringify(value.value)}`;
-    } else if (value.type === EPrimitive.cstr || value.type === EPrimitive.ccstr) {
-      return `${JSON.stringify(value.value)}`;
-    } else if (value.type === EPrimitive.bool) {
-      return `${value.value ? "true" : "false"}`;
-    } else {
-      if (value.type === EPrimitive.int || value.type === EPrimitive.real) {
-        return `${value.value}`;
-      } else if (value.type === EPrimitive.null) {
-        return `null`;
-      } else if (value.type === EPrimitive.Regex) {
-        return `r"${value.pattern}"${[...value.flags].join("")}`;
-      } else if (value.type === EPrimitive.none) {
-        return `none`;
-      } else if (value.type === "enum") {
-        const parent = Semantic.getNamespaceChainFromDatatype(sr, value.enumType);
-        const result = `${parent.map((p) => p.pretty).join(".")}.${value.valueName}`;
-        return result;
-      } else {
-        return `(${value.value} as ${primitiveToString(value.type)})`;
-      }
-    }
-  }
-
-  export function getTypeDefChainFromDatatype(
-    sr: SemanticResult,
-    typeId: Semantic.TypeDefId,
-  ): Semantic.TypeDefId[] {
-    const type = sr.typeDefNodes.get(typeId);
-
-    if (
-      type.variant !== Semantic.ENode.StructDatatype &&
-      type.variant !== Semantic.ENode.EnumDatatype &&
-      type.variant !== Semantic.ENode.NamespaceDatatype
-    ) {
-      return [typeId];
-    }
-
-    if (type.parentStructOrNS) {
-      return [...getTypeDefChainFromDatatype(sr, type.parentStructOrNS), typeId];
-    } else {
-      return [typeId];
-    }
-  }
-
-  export function getNamespaceChainFromDatatype(sr: SemanticResult, typeId: Semantic.TypeDefId) {
-    const type = sr.typeDefNodes.get(typeId);
-
-    if (
-      type.variant !== Semantic.ENode.StructDatatype &&
-      type.variant !== Semantic.ENode.EnumDatatype &&
-      type.variant !== Semantic.ENode.NamespaceDatatype
-    ) {
-      const mangle = mangleTypeDef(sr, typeId);
-      return [
-        {
-          pretty: serializeTypeDef(sr, typeId),
-          mangled: mangle.name,
-          wasMangled: mangle.wasMangled,
-          isMonomorphized: false,
-          isExported: false,
-        },
-      ];
-    }
-
-    let current = {
-      pretty: type.name,
-      mangled: type.name.length + type.name,
-      wasMangled: true,
-      isMonomorphized: false,
-      isExported: type.export,
-    };
-    if (type.variant === Semantic.ENode.StructDatatype && type.generics.length > 0) {
-      current.isMonomorphized = true;
-      current.pretty += `<${type.generics.map((g) => serializeExpr(sr, g)).join(", ")}>`;
-      current.mangled += `I${type.generics
-        .map((g) => {
-          const expr = sr.exprNodes.get(g);
-          if (expr.variant === Semantic.ENode.DatatypeAsValueExpr) {
-            return mangleTypeUse(sr, expr.type).name;
-          } else if (expr.variant === Semantic.ENode.LiteralExpr) {
-            return mangleLiteralValue(sr, g).name;
-          } else {
-            assert(false);
-          }
-        })
-        .join("")}E`;
-    }
-
-    let fragments = [current];
-    if (type.parentStructOrNS) {
-      fragments = [...getNamespaceChainFromDatatype(sr, type.parentStructOrNS), current];
-    }
-    return fragments;
-  }
-
-  export function getNamespaceChainFromSymbol(sr: SemanticResult, symbolId: Semantic.SymbolId) {
-    const symbol = sr.symbolNodes.get(symbolId);
-    assert(
-      symbol.variant === Semantic.ENode.FunctionSymbol ||
-        symbol.variant === Semantic.ENode.VariableSymbol ||
-        symbol.variant === Semantic.ENode.FunctionSignature ||
-        symbol.variant === Semantic.ENode.GlobalVariableDefinitionSymbol,
-    );
-
-    let current = {
-      pretty: symbol.name,
-      mangled: symbol.name.length + symbol.name,
-      isMonomorphized: false,
-      isExported: symbol.variant !== Semantic.ENode.FunctionSignature && symbol.export,
-    };
-    if (symbol.variant === Semantic.ENode.FunctionSymbol && symbol.generics.length > 0) {
-      current.isMonomorphized = true;
-      current.pretty += `<${symbol.generics.map((g) => serializeExpr(sr, g)).join(", ")}>`;
-      current.mangled += `I${symbol.generics
-        .map((g) => {
-          const expr = sr.exprNodes.get(g);
-          if (expr.variant === Semantic.ENode.DatatypeAsValueExpr) {
-            return mangleTypeUse(sr, expr.type).name;
-          } else if (expr.variant === Semantic.ENode.LiteralExpr) {
-            return mangleLiteralValue(sr, g).name;
-          } else {
-            assert(false);
-          }
-        })
-        .join("")}E`;
-    }
-
-    let fragments = [current];
-    if (symbol.parentStructOrNS) {
-      fragments = [...getNamespaceChainFromDatatype(sr, symbol.parentStructOrNS), current];
-    }
-    return fragments;
-  }
-
-  export function serializeTypeDef(sr: SemanticResult, datatypeId: Semantic.TypeDefId): string {
-    const datatype = sr.typeDefNodes.get(datatypeId);
-
-    switch (datatype.variant) {
-      case Semantic.ENode.PrimitiveDatatype:
-        return primitiveToString(datatype.primitive);
-
-      case Semantic.ENode.GenericParameterDatatype:
-        return datatype.name;
-
-      case Semantic.ENode.EnumDatatype:
-      case Semantic.ENode.StructDatatype:
-        if (datatype.extern === EExternLanguage.Extern_C) {
-          return datatype.name;
-        }
-        return getNamespaceChainFromDatatype(sr, datatypeId)
-          .map((n) => n.pretty)
-          .join(".");
-
-      case Semantic.ENode.FunctionDatatype: {
-        let blocks = [] as string[];
-        if (datatype.requires.final) {
-          blocks.push("final");
-        }
-        if (datatype.requires.noreturn) {
-          blocks.push("noreturn");
-        }
-        if (datatype.requires.pure) {
-          blocks.push("pure");
-        }
-        if (datatype.requires.noreturnIf) {
-          blocks.push(
-            `noreturn_if(${printCollectedExpr(sr.cc, datatype.requires.noreturnIf.expr)})`,
-          );
-        }
-        return `(${datatype.parameters
-          .map((p, i) => `arg_${i}${p.optional ? "?" : ""}: ${serializeTypeUse(sr, p.type)}`)
-          .join(", ")}${datatype.vararg ? ", ..." : ""}) => (${serializeTypeUse(
-          sr,
-          datatype.returnType,
-        )}) ${blocks.length > 0 ? ":: " + blocks.join(", ") : ""}`;
-      }
-
-      case Semantic.ENode.DeferredFunctionDatatype:
-        return `(${datatype.parameters.map((p) => serializeTypeUse(sr, p.type)).join(", ")}${
-          datatype.vararg ? ", ..." : ""
-        }) :: deferred`;
-
-      case Semantic.ENode.CallableDatatype:
-        return `Callable<${serializeTypeDef(sr, datatype.functionType)}>(this=${
-          datatype.thisExprType ? serializeTypeUse(sr, datatype.thisExprType) : ""
-        })`;
-
-      case Semantic.ENode.NamespaceDatatype:
-        return getNamespaceChainFromDatatype(sr, datatypeId)
-          .map((n) => n.pretty)
-          .join(".");
-
-      case Semantic.ENode.FixedArrayDatatype:
-        return `[${datatype.length}]${serializeTypeUse(sr, datatype.datatype)}`;
-
-      case Semantic.ENode.DynamicArrayDatatype:
-        return `${serializeMutability(sr.typeUseNodes.get(datatype.datatype))}[]${serializeTypeUse(
-          sr,
-          datatype.datatype,
-        )}`;
-
-      case Semantic.ENode.UntaggedUnionDatatype: {
-        return datatype.members.map((m) => serializeTypeUse(sr, m)).join(" | ");
-      }
-
-      case Semantic.ENode.TaggedUnionDatatype: {
-        return (
-          `${datatype.nodiscard ? "nodiscard " : ""}union { ` +
-          datatype.members.map((m) => `${m.tag}: ${serializeTypeUse(sr, m.type)}`).join(", ") +
-          " }"
-        );
-      }
-
-      case Semantic.ENode.UnionTagRefDatatype: {
-        return "<union-tag>";
-      }
-
-      case Semantic.ENode.ParameterPackDatatype:
-        if (datatype.parameters === null) {
-          return "...";
-        } else {
-          return `Pack[${datatype.parameters.map((p) => {
-            const param = sr.symbolNodes.get(p);
-            assert(param.variant === Semantic.ENode.VariableSymbol);
-            assert(param.type);
-            return `${param.name}: ${serializeTypeUse(sr, param.type)}`;
-          })}]`;
-        }
-
-      default:
-        throw new InternalError("Not handled: ");
-    }
-  }
-
-  export function isSymbolExported(sr: SemanticResult, symbolId: Semantic.SymbolId) {
-    const symbol = sr.symbolNodes.get(symbolId);
-    assert(
-      symbol.variant === Semantic.ENode.FunctionSymbol ||
-        symbol.variant === Semantic.ENode.FunctionSignature ||
-        symbol.variant === Semantic.ENode.GlobalVariableDefinitionSymbol,
-    );
-
-    if (symbol.extern === EExternLanguage.Extern_C) {
-      return false;
-    }
-
-    const names = getNamespaceChainFromSymbol(sr, symbolId);
-    return names.some((n) => n.isExported) || ("export" in symbol && symbol.export);
-  }
-
-  export function isSymbolMonomorphized(sr: SemanticResult, symbolId: Semantic.SymbolId) {
-    const symbol = sr.symbolNodes.get(symbolId);
-    assert(
-      symbol.variant === Semantic.ENode.FunctionSymbol ||
-        symbol.variant === Semantic.ENode.FunctionSignature ||
-        symbol.variant === Semantic.ENode.GlobalVariableDefinitionSymbol,
-    );
-
-    if (symbol.extern === EExternLanguage.Extern_C) {
-      return false;
-    }
-
-    const names = getNamespaceChainFromSymbol(sr, symbolId);
-    return names.some((n) => n.isMonomorphized);
-  }
-
-  export function serializeFullSymbolName(sr: SemanticResult, symbolId: Semantic.SymbolId) {
-    const symbol = sr.symbolNodes.get(symbolId);
-    assert(
-      symbol.variant === Semantic.ENode.FunctionSymbol ||
-        symbol.variant === Semantic.ENode.FunctionSignature ||
-        symbol.variant === Semantic.ENode.GlobalVariableDefinitionSymbol,
-    );
-
-    if (symbol.extern === EExternLanguage.Extern_C) {
-      return symbol.name;
-    }
-
-    const names = getNamespaceChainFromSymbol(sr, symbolId);
-    return names.map((n) => n.pretty).join(".");
-  }
-
-  export function mangleFullTypeUse(sr: SemanticResult, typeUseId: Semantic.TypeUseId) {
-    const type = sr.typeUseNodes.get(typeUseId);
-
-    const names = getNamespaceChainFromDatatype(sr, type.type);
-
-    const use = mangleTypeUse(sr, typeUseId);
-    return {
-      name:
-        use.name +
-        names
-          .slice(1)
-          .map((n) => n.mangled)
-          .join(""),
-      wasMangled: use.wasMangled || names.slice(1).some((n) => n.wasMangled),
-    };
-  }
-
-  export function mangleSymbol(sr: SemanticResult, symbolId: Semantic.SymbolId) {
-    const symbol = sr.symbolNodes.get(symbolId);
-    assert(
-      symbol.variant === Semantic.ENode.FunctionSymbol ||
-        symbol.variant === Semantic.ENode.VariableSymbol ||
-        symbol.variant === Semantic.ENode.GlobalVariableDefinitionSymbol,
-    );
-
-    if (symbol.extern === EExternLanguage.Extern_C) {
-      return {
-        name: symbol.name,
-        wasMangled: false,
-      };
-    }
-
-    let functionParameterPart = "";
-    if (symbol.variant === Semantic.ENode.FunctionSymbol) {
-      const ftype = sr.typeDefNodes.get(symbol.type);
-      assert(ftype.variant === Semantic.ENode.FunctionDatatype);
-      functionParameterPart += ftype.parameters.map((p) => mangleTypeUse(sr, p.type).name).join("");
-      if (ftype.parameters.length === 0 && !ftype.vararg) {
-        functionParameterPart += "v";
-      }
-      if (ftype.vararg) {
-        functionParameterPart += "V";
-      }
-    }
-
-    const names = getNamespaceChainFromSymbol(sr, symbolId);
-    if (names.length === 1) {
-      return {
-        name: names[0].mangled + functionParameterPart,
-        wasMangled: true,
-      };
-    } else {
-      return {
-        name: `N${names.map((n) => n.mangled).join("")}E` + functionParameterPart,
-        wasMangled: true,
-      };
-    }
-  }
-
-  let CallableUniqueCounter = 1;
-  const CallableManglingHashStore = new Map<Semantic.CallableDatatypeDef, number>();
-
-  export function makeNameSetSymbol(sr: SemanticResult, symbolId: Semantic.SymbolId): NameSet {
-    const mangled = mangleSymbol(sr, symbolId);
-    const pretty = serializeFullSymbolName(sr, symbolId);
-    return {
-      mangledName: mangled.name,
-      prettyName: pretty,
-      wasMangled: mangled.wasMangled,
-    };
-  }
-
-  export function makeNameSetTypeDef(sr: SemanticResult, typeDefId: Semantic.TypeDefId): NameSet {
-    const mangled = mangleTypeDef(sr, typeDefId);
-    const pretty = serializeTypeDef(sr, typeDefId);
-    return {
-      mangledName: mangled.name,
-      prettyName: pretty,
-      wasMangled: mangled.wasMangled,
-    };
-  }
-
-  export function makeNameSetTypeUse(sr: SemanticResult, typeUseId: Semantic.TypeUseId): NameSet {
-    const mangled = mangleTypeUse(sr, typeUseId);
-    const pretty = serializeTypeUse(sr, typeUseId);
-    return {
-      mangledName: mangled.name,
-      prettyName: pretty,
-      wasMangled: mangled.wasMangled,
-    };
-  }
-
-  export function mangleTypeUse(sr: SemanticResult, typeInstanceId: Semantic.TypeUseId) {
-    const typeInstance = sr.typeUseNodes.get(typeInstanceId);
-
-    const def = mangleTypeDef(sr, typeInstance.type);
-
-    if (
-      sr.typeDefNodes.get(typeInstance.type).variant === Semantic.ENode.StructDatatype ||
-      sr.typeDefNodes.get(typeInstance.type).variant === Semantic.ENode.DynamicArrayDatatype
-    ) {
-      if (typeInstance.inline) {
-        def.name = "i" + def.name;
-      } else {
-        def.name = "p" + def.name;
-      }
-      def.wasMangled = true;
-    }
-
-    if (sr.typeDefNodes.get(typeInstance.type).variant !== Semantic.ENode.ParameterPackDatatype) {
-      if (typeInstance.mutability === EDatatypeMutability.Const) {
-        def.name = "c" + def.name;
-        def.wasMangled = true;
-      } else if (typeInstance.mutability === EDatatypeMutability.Mut) {
-        def.name = "m" + def.name;
-        def.wasMangled = true;
-      }
-    }
-
-    return def;
-  }
-
-  export function mangleTypeDef(
-    sr: SemanticResult,
-    typeId: Semantic.TypeDefId,
-  ): { name: string; wasMangled: boolean } {
-    const type = sr.typeDefNodes.get(typeId);
-
-    switch (type.variant) {
-      case Semantic.ENode.StructDatatype: {
-        if (type.extern === EExternLanguage.Extern_C) {
-          return {
-            name: type.name,
-            wasMangled: false,
-          };
-        }
-
-        const names = getNamespaceChainFromDatatype(sr, typeId);
-        if (names.length === 1) {
-          return {
-            name: names[0].mangled,
-            wasMangled: true,
-          };
-        } else {
-          return {
-            name: `N${names.map((n) => n.mangled).join("")}E`,
-            wasMangled: true,
-          };
-        }
-      }
-
-      case Semantic.ENode.NamespaceDatatype: {
-        const names = getNamespaceChainFromDatatype(sr, typeId);
-        if (names.length === 1) {
-          return {
-            name: names[0].mangled,
-            wasMangled: true,
-          };
-        } else {
-          return {
-            name: `N${names.map((n) => n.mangled).join("")}E`,
-            wasMangled: true,
-          };
-        }
-      }
-
-      case Semantic.ENode.CallableDatatype: {
-        if (!CallableManglingHashStore.has(type)) {
-          CallableManglingHashStore.set(type, CallableUniqueCounter++);
-        }
-        const uniqueID = CallableManglingHashStore.get(type);
-        assert(uniqueID);
-        return {
-          name: "__Callable__" + uniqueID.toString(),
-          wasMangled: true,
-        };
-      }
-
-      case Semantic.ENode.PrimitiveDatatype: {
-        if (type.primitive === EPrimitive.Regex) {
-          return {
-            name: "hzstd_regex_t",
-            wasMangled: false,
-          };
-        } else {
-          return {
-            name: "hzstd_" + primitiveToString(type.primitive) + "_t",
-            wasMangled: false,
-          };
-        }
-      }
-
-      case Semantic.ENode.FunctionDatatype: {
-        let params = "";
-        for (const p of type.parameters) {
-          const ppt = sr.typeUseNodes.get(p.type);
-          const pp = sr.typeDefNodes.get(ppt.type);
-          if (pp.variant === Semantic.ENode.ParameterPackDatatype) {
-            assert(pp.parameters !== null, "Cannot mangle an unresolved parameter pack");
-            for (const packParam of pp.parameters) {
-              const packParamS = sr.symbolNodes.get(packParam);
-              assert(packParamS.variant === Semantic.ENode.VariableSymbol);
-              assert(packParamS.type);
-              params += mangleTypeUse(sr, packParamS.type).name;
-            }
-          } else {
-            params += mangleTypeUse(sr, p.type).name;
-          }
-        }
-        return {
-          name: "F" + params + "E" + mangleTypeUse(sr, type.returnType).name,
-          wasMangled: true,
-        };
-      }
-
-      case Semantic.ENode.FixedArrayDatatype: {
-        return {
-          name: "A" + type.length + "_" + mangleTypeUse(sr, type.datatype).name,
-          wasMangled: true,
-        };
-      }
-
-      case Semantic.ENode.DynamicArrayDatatype: {
-        return {
-          name: "D" + mangleTypeUse(sr, type.datatype).name,
-          wasMangled: true,
-        };
-      }
-
-      case Semantic.ENode.SliceDatatype: {
-        return {
-          name: "S" + mangleTypeUse(sr, type.datatype).name,
-          wasMangled: true,
-        };
-      }
-
-      case Semantic.ENode.UntaggedUnionDatatype: {
-        return {
-          name:
-            "U" +
-            type.members.length.toString() +
-            "_" +
-            type.members.map((m) => mangleTypeUse(sr, m).name).join("_"),
-          wasMangled: true,
-        };
-      }
-
-      case Semantic.ENode.TaggedUnionDatatype: {
-        return {
-          name:
-            "T" +
-            type.members.length.toString() +
-            "_" +
-            type.members.map((m) => `${m.tag}${mangleTypeUse(sr, m.type).name}`).join("_"),
-          wasMangled: true,
-        };
-      }
-
-      case Semantic.ENode.EnumDatatype: {
-        if (type.extern === EExternLanguage.Extern_C) {
-          return {
-            name: type.name,
-            wasMangled: false,
-          };
-        }
-        return {
-          name:
-            (type.parentStructOrNS ? mangleTypeDef(sr, type.parentStructOrNS).name : "") +
-            type.name.length +
-            type.name,
-          wasMangled: true,
-        };
-      }
-
-      case Semantic.ENode.ParameterPackDatatype: {
-        return {
-          name:
-            type.parameters
-              ?.map((p) => {
-                const sym = sr.symbolNodes.get(p);
-                assert(sym.variant === Semantic.ENode.VariableSymbol && sym.type);
-                return mangleTypeUse(sr, sym.type).name;
-              })
-              .join("") ?? "_",
-          wasMangled: true,
-        };
-      }
-
-      case Semantic.ENode.GenericParameterDatatype: {
-        return {
-          name: type.name.length + type.name,
-          wasMangled: true,
-        };
-      }
-
-      default:
-        throw new InternalError("Unhandled variant: " + type.variant);
-    }
-  }
-
-  export function mangleLiteralValue(sr: SemanticResult, exprId: ExprId) {
-    const expr = sr.exprNodes.get(exprId);
-    assert(expr.variant === Semantic.ENode.LiteralExpr);
-    const literal = expr.literal;
-    const literalType = literal.type;
-    if (literalType === EPrimitive.bool) {
-      return {
-        name: `Lb${literal.value ? "1" : "0"}E`,
-        wasMangled: true,
-      };
-    } else if (
-      literalType === EPrimitive.str ||
-      literalType === EPrimitive.cstr ||
-      literalType === EPrimitive.ccstr
-    ) {
-      const utf8 = new TextEncoder().encode(literal.value);
-      let base64 = btoa(String.fromCharCode(...utf8));
-      // make it C-identifier-safe: base64 → base64url (replace +/ with _)
-      base64 = base64.replace(/\+/g, "_").replace(/\//g, "_").replace(/=+$/, "");
-      return {
-        name: `Ls${base64}E`,
-        wasMangled: true,
-      };
-    } else if (literalType === EPrimitive.null) {
-      return {
-        name: "4null",
-        wasMangled: true,
-      };
-    } else if (literalType === EPrimitive.none) {
-      return {
-        name: "4none",
-        wasMangled: true,
-      };
-    } else if (literalType === EPrimitive.Regex) {
-      return {
-        name: "5Regex",
-        wasMangled: true,
-      };
-    } else if (literalType === "enum") {
-      const enumType = sr.typeDefNodes.get(literal.enumType);
-      assert(enumType.variant === Semantic.ENode.EnumDatatype && enumType.parentStructOrNS);
-      const parent = mangleTypeDef(sr, enumType.parentStructOrNS);
-      if (parent.wasMangled) {
-        return {
-          name: parent.name + literal.valueName.length + literal.valueName,
-          wasMangled: true,
-        };
-      } else {
-        return {
-          name: literal.valueName,
-          wasMangled: false,
-        };
-      }
-    } else {
-      if (Number.isInteger(literalType)) {
-        assert(typeof literal.value === "bigint");
-        return {
-          name: literal.value < 0 ? `Lin${-literal.value}E` : `Li${literal.value}E`,
-          wasMangled: true,
-        };
-      } else {
-        const repr = literal.value.toString().replace("-", "n").replace(".", "_");
-        return {
-          name: `Lf${repr}E`,
-          wasMangled: true,
-        };
-      }
-    }
-  }
-
-  export function serializeExpr(sr: SemanticResult, exprId: Semantic.ExprId): string {
-    const expr = sr.exprNodes.get(exprId);
-
-    switch (expr.variant) {
-      case Semantic.ENode.BinaryExpr:
-        return `(${serializeExpr(sr, expr.left)} ${BinaryOperationToString(
-          expr.operation,
-        )} ${serializeExpr(sr, expr.right)})`;
-
-      case Semantic.ENode.ValueToUnionCastExpr: {
-        return `(${serializeExpr(sr, expr.expr)} as (${serializeTypeUse(sr, expr.type)}))`;
-      }
-
-      case Semantic.ENode.UnionToValueCastExpr: {
-        return `(${serializeExpr(sr, expr.expr)} as tag ${expr.tag})`;
-      }
-
-      case Semantic.ENode.UnionTagCheckExpr: {
-        return `(${serializeExpr(sr, expr.expr)} tag check TBD...)`;
-      }
-
-      case Semantic.ENode.UnionToUnionCastExpr: {
-        return `(${serializeExpr(sr, expr.expr)} as (${serializeTypeUse(sr, expr.type)}))`;
-      }
-
-      case Semantic.ENode.UnaryExpr:
-        return `(${UnaryOperationToString(expr.operation)} ${serializeExpr(sr, expr.expr)})`;
-
-      case Semantic.ENode.SizeofExpr:
-        return `sizeof(${serializeExpr(sr, expr.valueExpr)})`;
-
-      case Semantic.ENode.AlignofExpr:
-        return `alignof(${serializeExpr(sr, expr.valueExpr)})`;
-
-      case Semantic.ENode.ExplicitCastExpr:
-        return `(${serializeExpr(sr, expr.expr)} as ${serializeTypeUse(sr, expr.type)})`;
-
-      case Semantic.ENode.ExprCallExpr:
-        return `(${serializeExpr(sr, expr.calledExpr)}(${expr.arguments
-          .map((a) => serializeExpr(sr, a))
-          .join(", ")}))`;
-
-      case Semantic.ENode.PostIncrExpr:
-        return `((${serializeExpr(sr, expr.expr)})${IncrOperationToString(expr.operation)})`;
-
-      case Semantic.ENode.PreIncrExpr:
-        return `(${IncrOperationToString(expr.operation)}(${serializeExpr(sr, expr.expr)}))`;
-
-      case Semantic.ENode.SymbolValueExpr: {
-        const symbol = sr.symbolNodes.get(expr.symbol);
-        if (symbol.variant === Semantic.ENode.VariableSymbol) {
-          return symbol.name;
-        } else if (symbol.variant === Semantic.ENode.FunctionSymbol) {
-          const generic =
-            symbol.generics.length > 0
-              ? "<" + symbol.generics.map((g) => serializeExpr(sr, g)).join(", ") + ">"
-              : "";
-          return serializeFullSymbolName(sr, expr.symbol) + generic;
-        }
-        throw new InternalError("Symbol not supported: " + symbol.variant);
-      }
-
-      case Semantic.ENode.StructLiteralExpr:
-        return `${serializeTypeUse(sr, expr.type)} { ${expr.assign
-          .map((a) => `${a.name}: ${serializeExpr(sr, a.value)}`)
-          .join(", ")} }`;
-
-      case Semantic.ENode.LiteralExpr: {
-        return serializeLiteralValue(sr, expr.literal);
-      }
-
-      case Semantic.ENode.MemberAccessExpr:
-        return `(${serializeExpr(sr, expr.expr)}.${expr.memberName})`;
-
-      case Semantic.ENode.CallableExpr:
-        return `Callable(${serializeFullSymbolName(sr, expr.functionSymbol)}, this=${serializeExpr(
-          sr,
-          expr.thisExpr,
-        )})`;
-
-      case Semantic.ENode.BlockScopeExpr: {
-        return `do { ... }`;
-      }
-
-      case Semantic.ENode.AddressOfExpr:
-        return `&${serializeExpr(sr, expr.expr)}`;
-
-      case Semantic.ENode.DereferenceExpr:
-        return `*${serializeExpr(sr, expr.expr)}`;
-
-      case Semantic.ENode.ExprAssignmentExpr:
-        return `${serializeExpr(sr, expr.target)} = ${serializeExpr(sr, expr.value)}`;
-
-      case Semantic.ENode.DatatypeAsValueExpr:
-        return `${serializeTypeUse(sr, expr.type)}`;
-
-      case Semantic.ENode.ArrayLiteralExpr: {
-        return `(${Semantic.serializeTypeUse(sr, expr.type)} {${expr.elements
-          .map((v) => serializeExpr(sr, v))
-          .join(", ")}})`;
-      }
-
-      case Semantic.ENode.ArraySubscriptExpr: {
-        const indices: string[] = [];
-        for (const index of expr.indices) {
-          indices.push(serializeExpr(sr, index));
-        }
-        return `${serializeExpr(sr, expr.expr)}[${indices.join(", ")}]`;
-      }
-
-      case Semantic.ENode.StringSubscriptExpr: {
-        const indices: string[] = [];
-        indices.push(serializeExpr(sr, expr.index));
-        return `${serializeExpr(sr, expr.expr)}[${indices.join(", ")}]`;
-      }
-
-      case Semantic.ENode.StringConstructExpr: {
-        if (expr.value.variant === "data-length") {
-          return `str(${serializeExpr(sr, expr.value.data)}, ${serializeExpr(
-            sr,
-            expr.value.length,
-          )})`;
-        } else {
-          assert(false);
-        }
-      }
-
-      case Semantic.ENode.AttemptExpr: {
-        return `attempt {...} else {...}`;
-      }
-
-      case Semantic.ENode.UnionTagReferenceExpr: {
-        return `${Semantic.serializeTypeDef(sr, expr.unionType)}.${expr.tag}`;
-      }
-
-      case Semantic.ENode.ArraySliceExpr: {
-        const indices: string[] = [];
-        for (const index of expr.indices) {
-          if (index.start && index.end) {
-            indices.push(serializeExpr(sr, index.start) + ":" + serializeExpr(sr, index.end));
-          } else if (index.start) {
-            indices.push(serializeExpr(sr, index.start));
-          } else if (index.end) {
-            indices.push(serializeExpr(sr, index.end));
-          } else {
-            assert(false);
-          }
-        }
-        return `${serializeExpr(sr, expr.expr)}[${indices.join(", ")}]`;
-      }
-
-      default:
-        assert(false, Semantic.ENode[expr.variant]);
-    }
-  }
-}
-
-// const gray = "\x1b[90m";
-// const reset = "\x1b[0m";
-
-// const print = (str: string, indent = 0, color = reset) => {
-//   console.info(color + " ".repeat(indent) + str + reset);
-// };
-
-// function printSymbol(sr: SemanticResult, symbolId: Semantic.SymbolId, indent: number) { const symbol = sr.symbolNodes.get(symbolId);
-//   switch (symbol.variant) {
-//     case Semantic.ENode.NamespaceDatatype:
-//       print(`Namespace ${symbol.name} {`, indent);
-//       for (const s of symbol.symbols) {
-//         printSymbol(sr, s, indent + 2);
-//       }
-//       print(`}`, indent);
-//       break;
-
-//     case Semantic.ENode.VariableSymbol:
-//       print(`Variable Symbol ${symbol.name};`, indent);
-//       break;
-
-//     case Semantic.ENode.FunctionSymbol:
-//       if (symbol.scope) {
-//         print(
-//           `Function ${getParentNames(sr, symbolId)}: ${serializeDatatype(sr, symbol.type)} {`,
-//           indent
-//         );
-//         printSymbol(sr, symbol.scope, indent + 2);
-//         print(`}`, indent);
-//       } else {
-//         print(
-//           `Function ${getParentNames(sr, symbolId)}: ${serializeDatatype(sr, symbol.type)};`,
-//           indent
-//         );
-//       }
-//       break;
-
-//     case Semantic.ENode.PrimitiveDatatype:
-//       print(`${serializeDatatype(sr, symbolId)}`, indent);
-//       break;
-
-//     case Semantic.ENode.StructDatatype: {
-//       print(`Struct ${serializeDatatype(sr, symbolId)} {`, indent);
-//       for (const memberId of symbol.members) {
-//         const member = sr.nodes.get(memberId);
-//         assert(member.variant === Semantic.ENode.VariableSymbol);
-//         assert(member.type);
-//         print(`${member.name}: ${serializeDatatype(sr, member.type)}`, indent + 2);
-//       }
-//       for (const method of symbol.methods) {
-//         printSymbol(sr, method, indent + 2);
-//       }
-//       print(`}`, indent);
-//       break;
-//     }
-
-//     case Semantic.ENode.InlineCStatement:
-//       print(`InlineC "${symbol.value}"`, indent);
-//       break;
-
-//     case Semantic.ENode.ReturnStatement:
-//       print(`Return ${symbol.expr ? serializeExpr(sr, symbol.expr) : ""}`, indent);
-//       break;
-
-//     case Semantic.ENode.VariableStatement: {
-//       const variableSymbol = sr.nodes.get(symbol.variableSymbol);
-//       assert(variableSymbol.variant === Semantic.ENode.VariableSymbol);
-//       assert(variableSymbol.type);
-//       print(
-//         `var ${symbol.name}: ${serializeDatatype(sr, variableSymbol.type)} ${
-//           symbol.value ? "= " + serializeExpr(sr, symbol.value) : ""
-//         }`,
-//         indent
-//       );
-//       break;
-//     }
-
-//     case Semantic.ENode.IfStatement:
-//       print(`If ${serializeExpr(sr, symbol.condition)}`, indent);
-//       printSymbol(sr, symbol.then, indent + 2);
-//       for (const elseif of symbol.elseIfs) {
-//         print(`else if ${serializeExpr(sr, elseif.condition)}`, indent);
-//         printSymbol(sr, elseif.then, indent + 2);
-//       }
-//       if (symbol.else) {
-//         print(`else`, indent);
-//         printSymbol(sr, symbol.else, indent + 2);
-//       }
-//       break;
-
-//     case Semantic.ENode.WhileStatement:
-//       print(`While ${serializeExpr(sr, symbol.condition)}`, indent);
-//       printSymbol(sr, symbol.then, indent + 2);
-//       break;
-
-//     case Semantic.ENode.ExprStatement:
-//       print(`Expr ${serializeExpr(sr, symbol.expr)};`, indent);
-//       break;
-
-//     case Semantic.ENode.BlockScope:
-//       print("Block {", indent);
-//       for (const sId of symbol.statements) {
-//         printSymbol(sr, sId, indent + 2);
-//       }
-//       print("}", indent);
-//       break;
-
-//     case Semantic.ENode.BlockScopeStatement:
-//       printSymbol(sr, symbol.block, indent + 2);
-//       break;
-
-//     default:
-//       assert(false, "Unhandled case " + symbol.variant);
-//   }
-// }
-
-// export function PrettyPrintAnalyzed(sr: SemanticResult) {
-//   // printSymbol(sr.globalNamespace, 0);
-
-//   print("");
-//   print("Elaborated Structs:");
-//   for (const symbol of sr.elaboratedStructDatatypes) {
-//     print("");
-//     printSymbol(sr, symbol.resultSymbol, 0);
-//   }
-
-//   print("Elaborated Functions:");
-//   for (const symbol of sr.elaboratedFuncdefSymbols) {
-//     print("");
-//     printSymbol(sr, symbol.resultSymbol, 0);
-//   }
-//   print("\n");
-// }

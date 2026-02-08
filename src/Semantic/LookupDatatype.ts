@@ -1,11 +1,12 @@
 import { assert, type SourceLoc } from "../shared/Errors";
-import { isTypeConcrete, Semantic, type SemanticResult } from "./Elaborate";
+import { isTypeConcrete } from "./Elaborate";
 import { EDatatypeMutability, EVariableMutability, EExternLanguage } from "../shared/AST";
 import { EVariableContext } from "../shared/common";
+import { Semantic } from "./SemanticTypes";
 
-function createLengthFieldSymbol(sr: SemanticResult, sourceloc: SourceLoc): Semantic.SymbolId {
+function createLengthFieldSymbol(sr: Semantic.Context, sourceloc: SourceLoc): Semantic.SymbolId {
   // Create a synthetic VariableSymbol for the "length" field
-  const [_, lengthFieldId] = Semantic.addSymbol(sr, {
+  const [_, lengthFieldId] = sr.b.addSymbol(sr, {
     variant: Semantic.ENode.VariableSymbol,
     name: "length",
     export: false,
@@ -26,7 +27,7 @@ function createLengthFieldSymbol(sr: SemanticResult, sourceloc: SourceLoc): Sema
 }
 
 export function makeDeferredFunctionDatatypeAvailable(
-  sr: SemanticResult,
+  sr: Semantic.Context,
   args: {
     parameters: {
       optional: boolean;
@@ -60,7 +61,7 @@ export function makeDeferredFunctionDatatypeAvailable(
   }
 
   // Nothing found
-  const [_, ftypeId] = Semantic.addType(sr, {
+  const [_, ftypeId] = sr.b.addType(sr, {
     variant: Semantic.ENode.DeferredFunctionDatatype,
     parameters: args.parameters,
     vararg: args.vararg,
@@ -71,7 +72,7 @@ export function makeDeferredFunctionDatatypeAvailable(
 }
 
 export function makeRawFunctionDatatypeAvailable(
-  sr: SemanticResult,
+  sr: Semantic.Context,
   args: {
     parameters: { optional: boolean; type: Semantic.TypeUseId }[];
     returnType: Semantic.TypeUseId;
@@ -111,7 +112,7 @@ export function makeRawFunctionDatatypeAvailable(
   }
 
   // Nothing found
-  const [_, ftypeId] = Semantic.addType(sr, {
+  const [_, ftypeId] = sr.b.addType(sr, {
     variant: Semantic.ENode.FunctionDatatype,
     parameters: args.parameters,
     returnType: args.returnType,
@@ -126,7 +127,7 @@ export function makeRawFunctionDatatypeAvailable(
 }
 
 export function makeFunctionDatatypeAvailable(
-  sr: SemanticResult,
+  sr: Semantic.Context,
   args: {
     parameters: { optional: boolean; type: Semantic.TypeUseId }[];
     returnType: Semantic.TypeUseId;
@@ -146,7 +147,7 @@ export function makeFunctionDatatypeAvailable(
 }
 
 export function makeTypeUse(
-  sr: SemanticResult,
+  sr: Semantic.Context,
   typeId: Semantic.TypeDefId,
   mutability: EDatatypeMutability,
   inline: boolean,
@@ -171,7 +172,7 @@ export function makeTypeUse(
       return [typeUse, id] as const;
     }
 
-    const instance = Semantic.addTypeInstance(sr, {
+    const instance = sr.b.addTypeInstance(sr, {
       mutability: mutability,
       inline: inline,
       type: typeId,
@@ -188,7 +189,7 @@ export function makeTypeUse(
       return [typeUse, id] as const;
     }
 
-    const instance = Semantic.addTypeInstance(sr, {
+    const instance = sr.b.addTypeInstance(sr, {
       mutability: EDatatypeMutability.Default,
       inline: false,
       type: typeId,
@@ -200,7 +201,7 @@ export function makeTypeUse(
 }
 
 export function makeStackArrayDatatypeAvailable(
-  sr: SemanticResult,
+  sr: Semantic.Context,
   datatype: Semantic.TypeUseId,
   length: bigint,
   mutability: EDatatypeMutability,
@@ -218,7 +219,7 @@ export function makeStackArrayDatatypeAvailable(
 
   // Nothing found - create new type with lengthField
   const lengthFieldId = createLengthFieldSymbol(sr, sourceloc);
-  const [_, typeId] = Semantic.addType(sr, {
+  const [_, typeId] = sr.b.addType(sr, {
     variant: Semantic.ENode.FixedArrayDatatype,
     datatype: datatype,
     length: length,
@@ -230,7 +231,7 @@ export function makeStackArrayDatatypeAvailable(
 }
 
 export function makeDynamicArrayDatatypeAvailable(
-  sr: SemanticResult,
+  sr: Semantic.Context,
   datatype: Semantic.TypeUseId,
   mutability: EDatatypeMutability,
   inline: boolean,
@@ -247,7 +248,7 @@ export function makeDynamicArrayDatatypeAvailable(
 
   // Nothing found - create new type with lengthField
   const lengthFieldId = createLengthFieldSymbol(sr, sourceloc);
-  const [_, typeId] = Semantic.addType(sr, {
+  const [_, typeId] = sr.b.addType(sr, {
     variant: Semantic.ENode.DynamicArrayDatatype,
     datatype: datatype,
     concrete: isTypeConcrete(sr, datatype),

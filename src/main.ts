@@ -5,7 +5,7 @@ import path from "node:path";
 import { getFile, ProjectCompiler } from "./Module";
 import { startLsp } from "./lsp";
 
-import pkg from "../package.json" assert { type: "json" };
+import pkg from "../package.json" with { type: "json" };
 const version = pkg.version;
 const isLspMode = process.argv.includes("lsp");
 
