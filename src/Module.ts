@@ -643,6 +643,72 @@ export class FileChangeCache {
   }
 }
 
+type ModuleBuildCacheData = Record<string, Record<string, FileStamp>>;
+
+export class ModuleBuildCache {
+  private cacheFile: string;
+  private data: ModuleBuildCacheData = {};
+  private dirty = false;
+
+  constructor(cacheFile: string) {
+    this.cacheFile = cacheFile;
+  }
+
+  load(): void {
+    if (!fs.existsSync(this.cacheFile)) {
+      this.data = {};
+      return;
+    }
+
+    const raw = fs.readFileSync(this.cacheFile, "utf8");
+    this.data = JSON.parse(raw);
+  }
+
+  save(): void {
+    if (!this.dirty) return;
+
+    fs.mkdirSync(path.dirname(this.cacheFile), { recursive: true });
+    fs.writeFileSync(this.cacheFile, JSON.stringify(this.data, null, 2));
+    this.dirty = false;
+  }
+
+  hasModuleChanged(moduleName: string, files: string[]): boolean {
+    const normalized = new Set(files.map((f) => path.resolve(f)));
+    const prev = this.data[moduleName] ?? {};
+
+    for (const file of normalized) {
+      if (!fs.existsSync(file)) return true;
+      const stat = fs.statSync(file);
+      const prevStamp = prev[file];
+      if (!prevStamp || prevStamp.mtimeMs < stat.mtimeMs) {
+        return true;
+      }
+    }
+
+    for (const prevFile of Object.keys(prev)) {
+      if (!normalized.has(prevFile)) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  updateModule(moduleName: string, files: string[]): void {
+    const normalized = files.map((f) => path.resolve(f));
+    const next: Record<string, FileStamp> = {};
+
+    for (const file of normalized) {
+      if (!fs.existsSync(file)) continue;
+      const stat = fs.statSync(file);
+      next[file] = { mtimeMs: stat.mtimeMs };
+    }
+
+    this.data[moduleName] = next;
+    this.dirty = true;
+  }
+}
+
 export function getCurrentPlatform() {
   if (PLATFORM === Platform.Linux) {
     return "linux-x64";
@@ -1286,6 +1352,191 @@ export class ModuleCompiler {
     CollectImmediate(this.cc, ast, args.inScope);
   }
 
+  async scanProjectSourceFiles() {
+    const files = new Set<string>();
+
+    const addDir = async (dirpath: string) => {
+      if (!existsSync(dirpath)) return;
+      for (const file of readdirSync(dirpath)) {
+        const fullPath = join(dirpath, file);
+        const stats = statSync(fullPath);
+        if (stats.isDirectory()) {
+          await addDir(fullPath);
+        } else if (extname(fullPath) === ".hz") {
+          files.add(fullPath);
+        }
+      }
+    };
+
+    if (this.config.source.type === "src-dir") {
+      await addDir(this.config.source.dirpath);
+    } else {
+      files.add(this.config.source.filepath);
+    }
+
+    const autogenDir = this.getModuleAutogenDir(this.config.name);
+    if (existsSync(autogenDir)) {
+      await addDir(autogenDir);
+    }
+
+    return files;
+  }
+
+  private buildGeneratorGraph(): Map<string, GeneratorGraphNode> {
+    const generatorGraph = new Map<string, GeneratorGraphNode>();
+    for (const gen of this.config.generators) {
+      if (gen.type !== "exec") continue;
+
+      generatorGraph.set(gen.name, {
+        config: gen,
+        dependsOn: [],
+      });
+    }
+
+    const outputIndex = new Map<string, string>();
+    for (const node of generatorGraph.values()) {
+      const gen = node.config;
+
+      if (gen.type !== "exec") continue;
+
+      for (const out of gen.outputs) {
+        if (out.type !== "module-file") continue;
+
+        const key = this.generatorFileKey(out);
+
+        if (outputIndex.has(key)) {
+          throw new GeneralError(
+            `Output file '${out.path}' is produced by both ` +
+              `'${outputIndex.get(key)}' and '${gen.name}'`,
+          );
+        }
+
+        outputIndex.set(key, gen.name);
+      }
+    }
+
+    for (const node of generatorGraph.values()) {
+      const gen = node.config;
+
+      if (gen.type !== "exec") continue;
+
+      for (const input of gen.inputs) {
+        if (input.type !== "module-file") continue;
+
+        const key = this.generatorFileKey(input);
+        const producer = outputIndex.get(key);
+
+        if (!producer) continue;
+
+        if (producer === gen.name) {
+          throw new GeneralError(
+            `Generator '${gen.name}' lists its own output '${input.path}' as input`,
+          );
+        }
+
+        node.dependsOn.push(producer);
+      }
+    }
+
+    for (const node of generatorGraph.values()) {
+      for (const dep of node.dependsOn) {
+        if (!generatorGraph.has(dep)) {
+          throw new GeneralError(
+            `Generator '${node.config.name}' depends on unknown generator '${dep}'`,
+          );
+        }
+      }
+    }
+
+    return generatorGraph;
+  }
+
+  private getGeneratorsToRun(
+    batch: GeneratorGraphNode[],
+    cache: FileChangeCache,
+  ): { gen: GeneratorGraphNode; inputPaths: string[]; outputPaths: string[] }[] {
+    const toRun: { gen: GeneratorGraphNode; inputPaths: string[]; outputPaths: string[] }[] = [];
+    for (const gen of batch) {
+      if (gen.config.type !== "exec") throw new Error("Not implemented");
+      const inputPaths = gen.config.inputs.map((i) => this.resolveGeneratorFile(i));
+      const outputPaths = gen.config.outputs.map((i) => this.resolveGeneratorFile(i));
+
+      if (
+        cache.haveAnyFilesChanged([
+          this.resolveExec(gen.config.exec),
+          ...inputPaths,
+          ...outputPaths,
+        ])
+      ) {
+        toRun.push({ gen, inputPaths, outputPaths });
+      }
+    }
+
+    return toRun;
+  }
+
+  private generatorsNeedRun(): boolean {
+    const generatorGraph = this.buildGeneratorGraph();
+    const executionOrder = this.topoLayers(generatorGraph);
+
+    const cache = new FileChangeCache(
+      path.join(this.hazeWorkspaceDirectory, "generator.cache.json"),
+    );
+    cache.load();
+
+    for (const batch of executionOrder) {
+      const toRun = this.getGeneratorsToRun(batch, cache);
+      if (toRun.length > 0) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  private getDependencyLibPaths() {
+    const deps = [...this.config.dependencies];
+    if (this.config.name !== HAZE_STDLIB_NAME && !this.config.nostdlib) {
+      deps.push({
+        name: HAZE_STDLIB_NAME,
+        path: HAZE_STDLIB_NAME,
+      });
+    }
+
+    return deps.map((dep) =>
+      join(join(this.hazeWorkspaceDirectory, dep.name), "bin", dep.name + ".hzlib"),
+    );
+  }
+
+  private async gatherModuleRelevantFiles(): Promise<string[]> {
+    const files = new Set<string>();
+
+    if (this.config.configFilePath) {
+      files.add(this.config.configFilePath);
+    }
+
+    const sourceFiles = await this.scanProjectSourceFiles();
+    sourceFiles.forEach((f) => files.add(f));
+
+    const depLibs = this.getDependencyLibPaths();
+    depLibs.forEach((f) => files.add(f));
+
+    for (const gen of this.config.generators) {
+      if (gen.type !== "exec") continue;
+      files.add(this.resolveExec(gen.exec));
+      for (const input of gen.inputs) {
+        if (input.type !== "module-file") continue;
+        files.add(this.resolveGeneratorFile(input));
+      }
+      for (const output of gen.outputs) {
+        if (output.type !== "module-file") continue;
+        files.add(this.resolveGeneratorFile(output));
+      }
+    }
+
+    return [...files];
+  }
+
   async addProjectSourceFiles() {
     let mode = ECollectionMode.WrapIntoModuleNamespace;
     if (this.config.name === HAZE_STDLIB_NAME) {
@@ -1369,76 +1620,7 @@ export class ModuleCompiler {
   }
 
   async runAllGenerators() {
-    // Build a graph of all generators, indexed by name, so they can cross-refer to each other as dependents
-    const generatorGraph = new Map<string, GeneratorGraphNode>();
-    for (const gen of this.config.generators) {
-      if (gen.type !== "exec") continue;
-
-      generatorGraph.set(gen.name, {
-        config: gen,
-        dependsOn: [],
-      });
-    }
-
-    // Build a hashed index of output files (unique across all generators), so we can infer dependencies
-    const outputIndex = new Map<string, string>(); // key → generator name
-    for (const node of generatorGraph.values()) {
-      const gen = node.config;
-
-      if (gen.type !== "exec") continue;
-
-      for (const out of gen.outputs) {
-        if (out.type !== "module-file") continue;
-
-        const key = this.generatorFileKey(out);
-
-        if (outputIndex.has(key)) {
-          throw new GeneralError(
-            `Output file '${out.path}' is produced by both ` +
-              `'${outputIndex.get(key)}' and '${gen.name}'`,
-          );
-        }
-
-        outputIndex.set(key, gen.name);
-      }
-    }
-
-    // Now use the output file index to infer which generator depends on which other generators
-    for (const node of generatorGraph.values()) {
-      const gen = node.config;
-
-      if (gen.type !== "exec") continue;
-
-      for (const input of gen.inputs) {
-        if (input.type !== "module-file") continue;
-
-        const key = this.generatorFileKey(input);
-        const producer = outputIndex.get(key);
-
-        if (!producer) continue; // input comes from filesystem or other module
-
-        if (producer === gen.name) {
-          throw new GeneralError(
-            `Generator '${gen.name}' lists its own output '${input.path}' as input`,
-          );
-        }
-
-        node.dependsOn.push(producer);
-      }
-    }
-
-    // Validate that all dependencies exist
-    for (const node of generatorGraph.values()) {
-      for (const dep of node.dependsOn) {
-        if (!generatorGraph.has(dep)) {
-          throw new GeneralError(
-            `Generator '${node.config.name}' depends on unknown generator '${dep}'`,
-          );
-        }
-      }
-    }
-
-    // Finally, topologically sort the generators in the correct order they need to be executed, batched
+    const generatorGraph = this.buildGeneratorGraph();
     const executionOrder = this.topoLayers(generatorGraph);
 
     const cache = new FileChangeCache(
@@ -1446,32 +1628,18 @@ export class ModuleCompiler {
     );
     cache.load();
 
-    // And now actually run all of them (if required)
+    let ranAny = false;
+
     for (const batch of executionOrder) {
-      const toRun = [];
-
-      // Decision phase: What generators to run now? (based on cache)
       cache.load();
-      for (const gen of batch) {
-        if (gen.config.type !== "exec") throw new Error("Not implemented");
-        const inputPaths = gen.config.inputs.map((i) => this.resolveGeneratorFile(i));
-        const outputPaths = gen.config.outputs.map((i) => this.resolveGeneratorFile(i));
+      const toRun = this.getGeneratorsToRun(batch, cache);
 
-        if (
-          cache.haveAnyFilesChanged([
-            this.resolveExec(gen.config.exec),
-            ...inputPaths,
-            ...outputPaths,
-          ])
-        ) {
-          toRun.push({ gen, inputPaths, outputPaths });
-        }
+      if (toRun.length > 0) {
+        ranAny = true;
       }
 
-      // Execution phase: Run generators (NO CACHE ACCESS)
       await Promise.all(toRun.map((item) => this.executeGenerator(item.gen.config)));
 
-      // Commit phase: Batch is done and write result into cache
       for (const item of toRun) {
         assert(item.gen.config.type === "exec");
         cache.updateFiles([
@@ -1482,6 +1650,8 @@ export class ModuleCompiler {
       }
       cache.save();
     }
+
+    return ranAny;
   }
 
   resolveExec(exec: string) {
@@ -1594,7 +1764,6 @@ export class ModuleCompiler {
       //     console.log(`Building module ${this.config.name}`);
       //   }
       // }
-      console.log(`Building module ${this.config.name}`);
 
       this.currentModuleRootDir = this.config.configFilePath
         ? dirname(this.config.configFilePath)
@@ -1610,7 +1779,28 @@ export class ModuleCompiler {
       env.CC = HAZE_C_COMPILER;
       env.CXX = HAZE_CXX_COMPILER;
 
-      await this.runAllGenerators();
+      const buildCache = new ModuleBuildCache(
+        path.join(this.hazeWorkspaceDirectory, "module-build.cache.json"),
+      );
+      buildCache.load();
+
+      const initialRelevantFiles = await this.gatherModuleRelevantFiles();
+      const generatorsNeedRun = this.generatorsNeedRun();
+      const moduleChanged = buildCache.hasModuleChanged(this.config.name, initialRelevantFiles);
+
+      if (!moduleChanged && !generatorsNeedRun) {
+        // console.log(`Skipping module ${this.config.name} (no changes)`);
+        return;
+      }
+
+      const generatorsRan = generatorsNeedRun ? await this.runAllGenerators() : false;
+
+      if (!moduleChanged && !generatorsRan) {
+        // console.log(`Skipping module ${this.config.name} (no changes)`);
+        return;
+      }
+
+      console.log(`Building module ${this.config.name}`);
 
       await this.addInternalBuiltinSources();
       await this.collectImports();
@@ -1911,6 +2101,10 @@ export class ModuleCompiler {
         //   this.module.moduleConfig.configFilePath,
         // );
       }
+
+      const finalRelevantFiles = await this.gatherModuleRelevantFiles();
+      buildCache.updateModule(this.config.name, finalRelevantFiles);
+      buildCache.save();
     });
   }
 
