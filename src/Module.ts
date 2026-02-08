@@ -62,6 +62,7 @@ import { spawn } from "child_process";
 import fg from "fast-glob";
 import { writeFile, readFile } from "fs/promises";
 import which from "which";
+import { createHash } from "crypto";
 
 import { MultiBar, Presets, SingleBar } from "cli-progress";
 import chalk from "chalk";
@@ -643,7 +644,14 @@ export class FileChangeCache {
   }
 }
 
-type ModuleBuildCacheData = Record<string, Record<string, FileStamp>>;
+type ModuleBuildCacheEntry = {
+  files: Record<string, FileStamp>;
+  compilerKey?: string;
+};
+
+type ModuleBuildCacheData = Record<string, ModuleBuildCacheEntry>;
+
+type LegacyModuleBuildCacheData = Record<string, Record<string, FileStamp>>;
 
 export class ModuleBuildCache {
   private cacheFile: string;
@@ -661,7 +669,21 @@ export class ModuleBuildCache {
     }
 
     const raw = fs.readFileSync(this.cacheFile, "utf8");
-    this.data = JSON.parse(raw);
+    const parsed = JSON.parse(raw) as ModuleBuildCacheData | LegacyModuleBuildCacheData;
+
+    const legacyEntry = Object.values(parsed)[0];
+    if (legacyEntry && !(legacyEntry as ModuleBuildCacheEntry).files) {
+      const legacy = parsed as LegacyModuleBuildCacheData;
+      const migrated: ModuleBuildCacheData = {};
+      for (const [moduleName, files] of Object.entries(legacy)) {
+        migrated[moduleName] = { files };
+      }
+      this.data = migrated;
+      this.dirty = true;
+      return;
+    }
+
+    this.data = parsed as ModuleBuildCacheData;
   }
 
   save(): void {
@@ -672,9 +694,18 @@ export class ModuleBuildCache {
     this.dirty = false;
   }
 
-  hasModuleChanged(moduleName: string, files: string[]): boolean {
+  getModuleCompilerKey(moduleName: string): string | undefined {
+    return this.data[moduleName]?.compilerKey;
+  }
+
+  hasModuleChanged(moduleName: string, files: string[], compilerKey?: string): boolean {
     const normalized = new Set(files.map((f) => path.resolve(f)));
-    const prev = this.data[moduleName] ?? {};
+    const entry = this.data[moduleName];
+
+    if (!entry) return true;
+    if (compilerKey && entry.compilerKey !== compilerKey) return true;
+
+    const prev = entry.files ?? {};
 
     for (const file of normalized) {
       if (!fs.existsSync(file)) return true;
@@ -694,7 +725,7 @@ export class ModuleBuildCache {
     return false;
   }
 
-  updateModule(moduleName: string, files: string[]): void {
+  updateModule(moduleName: string, files: string[], compilerKey?: string): void {
     const normalized = files.map((f) => path.resolve(f));
     const next: Record<string, FileStamp> = {};
 
@@ -704,7 +735,10 @@ export class ModuleBuildCache {
       next[file] = { mtimeMs: stat.mtimeMs };
     }
 
-    this.data[moduleName] = next;
+    this.data[moduleName] = {
+      files: next,
+      compilerKey,
+    };
     this.dirty = true;
   }
 }
@@ -1454,6 +1488,7 @@ export class ModuleCompiler {
   private getGeneratorsToRun(
     batch: GeneratorGraphNode[],
     cache: FileChangeCache,
+    force: boolean,
   ): { gen: GeneratorGraphNode; inputPaths: string[]; outputPaths: string[] }[] {
     const toRun: { gen: GeneratorGraphNode; inputPaths: string[]; outputPaths: string[] }[] = [];
     for (const gen of batch) {
@@ -1462,6 +1497,7 @@ export class ModuleCompiler {
       const outputPaths = gen.config.outputs.map((i) => this.resolveGeneratorFile(i));
 
       if (
+        force ||
         cache.haveAnyFilesChanged([
           this.resolveExec(gen.config.exec),
           ...inputPaths,
@@ -1485,13 +1521,44 @@ export class ModuleCompiler {
     cache.load();
 
     for (const batch of executionOrder) {
-      const toRun = this.getGeneratorsToRun(batch, cache);
+      const toRun = this.getGeneratorsToRun(batch, cache, false);
       if (toRun.length > 0) {
         return true;
       }
     }
 
     return false;
+  }
+
+  private computeCompilerFingerprint(): string | undefined {
+    if (process.env["NODE_ENV"] === "production") {
+      return undefined;
+    }
+
+    const compilerSrcDir = join(process.cwd(), "src");
+    if (!existsSync(compilerSrcDir)) {
+      return "missing-src";
+    }
+
+    const hash = createHash("sha256");
+
+    const visit = (dir: string) => {
+      const entries = readdirSync(dir).sort();
+      for (const entry of entries) {
+        const fullPath = join(dir, entry);
+        const stats = statSync(fullPath);
+        if (stats.isDirectory()) {
+          visit(fullPath);
+        } else {
+          hash.update(fullPath);
+          hash.update(String(stats.mtimeMs));
+          hash.update(String(stats.size));
+        }
+      }
+    };
+
+    visit(compilerSrcDir);
+    return hash.digest("hex");
   }
 
   private getDependencyLibPaths() {
@@ -1619,7 +1686,7 @@ export class ModuleCompiler {
     return layers;
   }
 
-  async runAllGenerators() {
+  async runAllGenerators(force = false) {
     const generatorGraph = this.buildGeneratorGraph();
     const executionOrder = this.topoLayers(generatorGraph);
 
@@ -1632,7 +1699,7 @@ export class ModuleCompiler {
 
     for (const batch of executionOrder) {
       cache.load();
-      const toRun = this.getGeneratorsToRun(batch, cache);
+      const toRun = this.getGeneratorsToRun(batch, cache, force);
 
       if (toRun.length > 0) {
         ranAny = true;
@@ -1784,16 +1851,27 @@ export class ModuleCompiler {
       );
       buildCache.load();
 
+      const compilerFingerprint = this.computeCompilerFingerprint();
+      const compilerKey = compilerFingerprint ? `${version}:${compilerFingerprint}` : `${version}`;
+      const cachedCompilerKey = buildCache.getModuleCompilerKey(this.config.name);
+      const compilerKeyChanged = cachedCompilerKey !== compilerKey;
+
       const initialRelevantFiles = await this.gatherModuleRelevantFiles();
-      const generatorsNeedRun = this.generatorsNeedRun();
-      const moduleChanged = buildCache.hasModuleChanged(this.config.name, initialRelevantFiles);
+      const generatorsNeedRun = compilerKeyChanged ? true : this.generatorsNeedRun();
+      const moduleChanged = buildCache.hasModuleChanged(
+        this.config.name,
+        initialRelevantFiles,
+        compilerKey,
+      );
 
       if (!moduleChanged && !generatorsNeedRun) {
         // console.log(`Skipping module ${this.config.name} (no changes)`);
         return;
       }
 
-      const generatorsRan = generatorsNeedRun ? await this.runAllGenerators() : false;
+      const generatorsRan = generatorsNeedRun
+        ? await this.runAllGenerators(compilerKeyChanged)
+        : false;
 
       if (!moduleChanged && !generatorsRan) {
         // console.log(`Skipping module ${this.config.name} (no changes)`);
@@ -1919,7 +1997,7 @@ export class ModuleCompiler {
                 cleanedCommands.push(c);
               }
             }
-          } catch (e) {}
+          } catch (_e) {}
 
           for (const c of compileCommands) {
             if (!addedFiles.has(c.file)) {
@@ -2103,7 +2181,7 @@ export class ModuleCompiler {
       }
 
       const finalRelevantFiles = await this.gatherModuleRelevantFiles();
-      buildCache.updateModule(this.config.name, finalRelevantFiles);
+      buildCache.updateModule(this.config.name, finalRelevantFiles, compilerKey);
       buildCache.save();
     });
   }
@@ -2210,10 +2288,10 @@ export class ModuleCompiler {
   }
 
   async addInternalBuiltinSources() {
-    await this.collectDirectory(
-      join(await getStdlibDirectory(), "internal"),
-      ECollectionMode.ImportUnderRootDirectly,
-    );
+    // await this.collectDirectory(
+    //   join(await getStdlibDirectory(), "internal"),
+    //   ECollectionMode.ImportUnderRootDirectly,
+    // );
     this.config.hzstdLocation = join(await getStdlibDirectory(), "core", "src");
     this.config.includeDirs.addAll(this.config.hzstdLocation);
   }
