@@ -95,21 +95,24 @@ main(): int {
             glfw.pollEvents();
             renderer.beginFrame();
 
-            renderer.drawRect(Vec2(100, 200), Vec2(200, 150), Color(1, 0, 0, 1));
-            renderer.drawRect(Vec2(150, 250), Vec2(150, 200), Color(0, 0, 1, 1));
-
-            renderer.drawTriangle(
-                { pos: Vec2(100, 200), color: Color(1, 0, 0, 1) },
-                { pos: Vec2(300, 150), color: Color(0, 1, 0, 1) },
-                { pos: Vec2(400, 300), color: Color(0, 0, 1, 1) },
-            );
-
-            renderer.drawRoundedRect(
-                Vec2(250, 350),
-                Vec2(300, 200),
-                30,
-                Color(1.0, 0.6549, 0.0588, 1),
-            );
+            renderer.drawRect({
+                pos: Vec2(100, 100), 
+                size: Vec2(200, 200), 
+                fillColor: Color(1, 0, 0, 1),
+                cornerRadius: 30,
+            });
+            renderer.drawRect({
+                pos: Vec2(200, 400), 
+                size: Vec2(300, 200), 
+                fillColor: Color(1, 0, 1, 1),
+                cornerRadius: 3,
+            });
+            renderer.drawRect({
+                pos: Vec2(250, 350), 
+                size: Vec2(300, 200), 
+                fillColor: Color(1.0, 0.6549, 0.0588, 1),
+                cornerRadius: 30,
+            });
 
             renderer.endFrame();
         }

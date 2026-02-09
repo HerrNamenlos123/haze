@@ -13,6 +13,10 @@ export struct _Color<T> {
             a: a,
         };
     }
+
+    isDefault() {
+        return this.r == 0.0 && this.g == 0.0 && this.b == 0.0 && this.a == 0.0;
+    }
 }
 
 export type Color = _Color<real>;

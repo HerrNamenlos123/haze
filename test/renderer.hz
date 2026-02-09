@@ -50,12 +50,10 @@ opaque struct Renderer {
     globalsBuffer: mut wgpu.Buffer;
     globalsBindGroup: mut wgpu.BindGroup;
 
-    vertexBuffer?: mut wgpu.Buffer;
-    currentVertexBufferSize?: int;
-    indexBuffer?: mut wgpu.Buffer;
-    currentIndexBufferSize?: int;
+    vertexBuffer: mut wgpu.Buffer;
+    indexBuffer: mut wgpu.Buffer;
 
-    commands: mut DrawCommands = {};
+    primitives: []inline PrimitiveInstance = [];
 
     constructor(size: Vec2i, device: mut wgpu.Device, surface: mut wgpu.Surface, surfaceFormats: []wgpu.TextureFormat) {
         let queue = device.getQueue();
@@ -72,11 +70,6 @@ opaque struct Renderer {
                     offset: 0,
                     format: wgpu.VertexFormat.Float32x2,
                 },
-                // {
-                //     shaderLocation: 1,
-                //     offset: sizeof(type<inline Vec3f>),
-                //     format: wgpu.VertexFormat.Float32x4,
-                // },
             },
         };
 
@@ -131,7 +124,6 @@ opaque struct Renderer {
             code: code,
         });
 
-
         let pipeline = device.createRenderPipeline({
             layout: pipelineLayout,
             vertex: {
@@ -165,12 +157,31 @@ opaque struct Renderer {
             },
         });
 
+        let vertexBuffer = device.createBuffer({
+            usage: wgpu.BufferUsage.Vertex | wgpu.BufferUsage.CopyDst,
+            size: sizeof(type<inline QuadVertex>) * 4,
+        });
+        queue.writeBuffer<inline QuadVertex>(vertexBuffer, [
+            { pos: Vec2f(-0.5, -0.5) },
+            { pos: Vec2f(0.5, -0.5) },
+            { pos: Vec2f(0.5, 0.5) },
+            { pos: Vec2f(-0.5, 0.5) },
+        ]);
+
+        let indexBuffer = device.createBuffer({
+            usage: wgpu.BufferUsage.Index | wgpu.BufferUsage.CopyDst,
+            size: sizeof(u32) * 6,
+        });
+        queue.writeBuffer<u32>(indexBuffer, [0, 1, 2, 0, 2, 3]);
+
         return Renderer {
             windowSize: size,
             device: device,
             queue: queue,
             surface: surface,
             pipeline: pipeline,
+            vertexBuffer: vertexBuffer,
+            indexBuffer: indexBuffer,
             globalsBuffer: globalsBuffer,
             globalsBindGroup: globalsBindGroup,
         };
@@ -181,158 +192,55 @@ opaque struct Renderer {
         color: Color;
     };
 
-    drawTriangle(a: TriangleVertex, b: TriangleVertex, c: TriangleVertex) {
-        let baseIndex = this.commands.vertices.length;
+    struct RectOpts {
+        pos: Vec2;
+        size: Vec2;
+        fillColor: Color = { r: 1, g: 1, b: 1, a: 1 };
+        cornerRadius: real = 0;
+        borderColor: Color = { r: 1, g: 1, b: 1, a: 1 };
+        borderThickness: real = 0;
+    };
 
-        this.commands.vertices.push({
-            pos: Vec3f(a.pos.x as f32, a.pos.y as f32, 0.0 as f32),
-            color: Colorf(a.color.r as f32, a.color.g as f32, a.color.b as f32, a.color.a as f32),
-        });
-        this.commands.vertices.push({
-            pos: Vec3f(b.pos.x as f32, b.pos.y as f32, 0.0 as f32),
-            color: Colorf(b.color.r as f32, b.color.g as f32, b.color.b as f32, b.color.a as f32),
-        });
-        this.commands.vertices.push({
-            pos: Vec3f(c.pos.x as f32, c.pos.y as f32, 0.0 as f32),
-            color: Colorf(c.color.r as f32, c.color.g as f32, c.color.b as f32, c.color.a as f32),
-        });
-
-        let indexA = baseIndex;
-        let indexB = baseIndex + 1;
-        let indexC = baseIndex + 2;
-
-        assert(indexA >= u32.min && indexA <= u32.max);
-        assert(indexB >= u32.min && indexB <= u32.max);
-        assert(indexC >= u32.min && indexC <= u32.max);
-
-        this.commands.indices.push(indexA);
-        this.commands.indices.push(indexB);
-        this.commands.indices.push(indexC);
-    }
-
-    drawRect(pos: Vec2, size: Vec2, color: Color) {
-        this.drawTriangle(
-            { pos: Vec2(pos.x, pos.y), color: color },
-            { pos: Vec2(pos.x + size.x, pos.y), color: color },
-            { pos: Vec2(pos.x + size.x, pos.y + size.y), color: color },
-        );
-        this.drawTriangle(
-            { pos: Vec2(pos.x + size.x, pos.y + size.y), color: color },
-            { pos: Vec2(pos.x, pos.y + size.y), color: color },
-            { pos: Vec2(pos.x, pos.y), color: color },
-        );
-    }
-
-    drawQuarterCircle(
-        center: Vec2,
-        radius: real,
-        startAngle: real,
-        endAngle: real,
-        color: Color,
-        segments: int,
-    ) {
-        let step = (endAngle - startAngle) / (segments as real);
-        let prev = Vec2(
-            center.x + math.cos(startAngle) * radius,
-            center.y + math.sin(startAngle) * radius,
-        );
-
-        for (let i = 0; i <= segments; i++) {
-            let a = startAngle + step * (i as real);
-            let p = Vec2(
-                center.x + math.cos(a) * radius,
-                center.y + math.sin(a) * radius,
-            );
-
-            this.drawTriangle(
-                { pos: center, color: color },
-                { pos: prev,   color: color },
-                { pos: p,      color: color },
-            );
-
-            prev = p;
+    drawRect(opts: RectOpts) {
+        if opts.fillColor.a != 0.0 {
+            this.primitives.push({
+                type: 0, // Filled Rounded Rectangle
+                pos: { x: (opts.pos.x + opts.size.x / 2.0) as f32, y: (opts.pos.y + opts.size.y / 2.0) as f32 },
+                size: { x: opts.size.x as f32, y: opts.size.y as f32 },
+                radius: opts.cornerRadius as f32,
+                borderThickness: 0,
+                fillColor: {
+                    r: opts.fillColor.r as f32,
+                    g: opts.fillColor.g as f32,
+                    b: opts.fillColor.b as f32,
+                    a: opts.fillColor.a as f32,
+                },
+                borderColor: { r: 0, g: 0, b: 0, a: 0 },
+            });
         }
-    }
-
-    drawRoundedRect(
-        pos: Vec2,
-        size: Vec2,
-        radius: real,
-        color: Color,
-    ) {
-        let r = min<real>(radius, min<real>(size.x, size.y) * 0.5);
-
-        // center rect
-        this.drawRect(
-            Vec2(pos.x + r, pos.y + r),
-            Vec2(size.x - (2 as real)*r, size.y - (2 as real)*r),
-            color
-        );
-
-        // side rects
-        this.drawRect(Vec2(pos.x + r, pos.y),           Vec2(size.x - 2.0*r, r), color); // top
-        this.drawRect(Vec2(pos.x + r, pos.y + size.y-r),Vec2(size.x - 2.0*r, r), color); // bottom
-        this.drawRect(Vec2(pos.x, pos.y + r),           Vec2(r, size.y - 2.0*r), color); // left
-        this.drawRect(Vec2(pos.x + size.x-r, pos.y + r),Vec2(r, size.y - 2.0*r), color); // right
-
-        let segs = 8; // good default
-
-        // corners (clockwise)
-        this.drawQuarterCircle(
-            Vec2(pos.x + r, pos.y + r),
-            r, math.pi(), math.pi()*1.5, color, segs
-        );
-
-        this.drawQuarterCircle(
-            Vec2(pos.x + size.x - r, pos.y + r),
-            r, math.pi()*1.5, math.pi()*2.0, color, segs
-        );
-
-        this.drawQuarterCircle(
-            Vec2(pos.x + size.x - r, pos.y + size.y - r),
-            r, 0.0, math.pi()*0.5, color, segs
-        );
-
-        this.drawQuarterCircle(
-            Vec2(pos.x + r, pos.y + size.y - r),
-            r, math.pi()*0.5, math.pi(), color, segs
-        );
+        if opts.borderColor.a != 0.0 && opts.borderThickness > 0.0 {
+            this.primitives.push({
+                type: 1, // Outlined Rounded Rectangle
+                pos: { x: (opts.pos.x + opts.size.x / 2.0) as f32, y: (opts.pos.y + opts.size.y / 2.0) as f32 },
+                size: { x: opts.size.x as f32, y: opts.size.y as f32 },
+                radius: opts.cornerRadius as f32,
+                borderThickness: opts.borderThickness as f32,
+                fillColor: { r: 0, g: 0, b: 0, a: 0 },
+                borderColor: {
+                    r: opts.borderColor.r as f32,
+                    g: opts.borderColor.g as f32,
+                    b: opts.borderColor.b as f32,
+                    a: opts.borderColor.a as f32,
+                },
+            });
+        }
     }
 
     beginFrame() {
-        this.commands = {};
+        this.primitives = [];
     }
 
     endFrame() {
-
-        this.commands.indices = {
-            0, 1, 2, 0, 2, 3
-        }
-
-        let needVertexBufferSize = sizeof(type<inline Vertex>) * this.commands.vertices.length;
-        if !this.vertexBuffer || (!this.currentVertexBufferSize || this.currentVertexBufferSize != needVertexBufferSize) {
-            this.vertexBuffer = this.device.createBuffer({
-                usage: wgpu.BufferUsage.Vertex | wgpu.BufferUsage.CopyDst,
-                size: needVertexBufferSize,
-            });
-            assert(this.vertexBuffer);
-            this.currentVertexBufferSize = needVertexBufferSize;
-            this.queue.writeBuffer<inline Vertex>(this.vertexBuffer, this.commands.vertices);
-        }
-        assert(this.vertexBuffer);
-
-        let needIndexBufferSize = sizeof(u32) * this.commands.indices.length;
-        if !this.indexBuffer || (!this.currentIndexBufferSize || this.currentIndexBufferSize != needIndexBufferSize) {
-            this.indexBuffer = this.device.createBuffer({
-                usage: wgpu.BufferUsage.Index | wgpu.BufferUsage.CopyDst,
-                size: needIndexBufferSize,
-            });
-            this.currentIndexBufferSize = needIndexBufferSize;
-            assert(this.indexBuffer);
-            this.queue.writeBuffer<u32>(this.indexBuffer, this.commands.indices);
-        }
-        assert(this.indexBuffer);
-
         let surfaceTexture = this.surface.getCurrentTexture();
         if !surfaceTexture.texture { 
             fmt.println("Failed to get surface texture"); 
@@ -363,62 +271,11 @@ opaque struct Renderer {
             ]
         );
 
-        let quadVertices: []inline QuadVertex = [
-            { pos: Vec2f(-0.5, -0.5) },
-            { pos: Vec2f(0.5, -0.5) },
-            { pos: Vec2f(0.5, 0.5) },
-            { pos: Vec2f(-0.5, 0.5) },
-        ];
-        let quadVertexBuffer = this.device.createBuffer({
-            usage: wgpu.BufferUsage.Vertex | wgpu.BufferUsage.CopyDst,
-            size: sizeof(type<inline QuadVertex>) * 4,
-        });
-        this.queue.writeBuffer<inline QuadVertex>(quadVertexBuffer, quadVertices);
-
-        let primitives: []inline PrimitiveInstance = [
-            {
-                type: 0,
-                pos: Vec2f(200, 200),
-                size: Vec2f(100, 100),
-                fillColor: Colorf(1, 0, 0, 1),
-                borderColor: Colorf(0, 1, 0, 0),
-                borderThickness: 1,
-                radius: 100,
-            },
-            {
-                type: 0,
-                pos: Vec2f(200, 400),
-                size: Vec2f(100, 100),
-                fillColor: Colorf(1, 0, 0, 1),
-                borderColor: Colorf(0, 1, 0, 0),
-                borderThickness: 2,
-                radius: 100,
-            },
-            {
-                type: 0,
-                pos: Vec2f(200, 600),
-                size: Vec2f(100, 100),
-                fillColor: Colorf(1, 0, 0, 1),
-                borderColor: Colorf(0, 1, 0, 0),
-                borderThickness: 3,
-                radius: 100,
-            },
-            {
-                type: 0,
-                pos: Vec2f(800, 200),
-                size: Vec2f(200, 200),
-                fillColor: Colorf(0, 0, 1, 1),
-                borderColor: Colorf(0, 1, 0, 0),
-                borderThickness: 1,
-                radius: 20,
-            }
-        ];
-
         let instanceBuffer = this.device.createBuffer({
-            size: sizeof(type<inline PrimitiveInstance>) * primitives.length,
+            size: sizeof(type<inline PrimitiveInstance>) * this.primitives.length,
             usage: wgpu.BufferUsage.Vertex | wgpu.BufferUsage.Storage | wgpu.BufferUsage.CopyDst,
         });
-        this.queue.writeBuffer<inline PrimitiveInstance>(instanceBuffer, primitives);
+        this.queue.writeBuffer<inline PrimitiveInstance>(instanceBuffer, this.primitives);
 
         let colorAttachment = wgpu.RenderPassColorAttachment {
             view: backbuffer,
@@ -439,8 +296,7 @@ opaque struct Renderer {
         }
 
         renderPass.setPipeline(this.pipeline);
-        // renderPass.setVertexBuffer(0, this.vertexBuffer);
-        renderPass.setVertexBuffer(0, quadVertexBuffer);
+        renderPass.setVertexBuffer(0, this.vertexBuffer);
 
         renderPass.setBindGroup(0, this.globalsBindGroup);
 
@@ -450,10 +306,7 @@ opaque struct Renderer {
         renderPass.setIndexBuffer(this.indexBuffer, wgpu.IndexFormat.Uint32);
         renderPass.setVertexBuffer(1, instanceBuffer);
 
-        renderPass.drawIndexed(this.commands.indices.length, primitives.length, 0, 0, 0);
-
-        // SDF rendering
-        // renderPass.draw(4, primitives.length, 0, 0); // 4 vertices per instance
+        renderPass.drawIndexed(6, this.primitives.length, 0, 0, 0);
 
         renderPass.end();
 
