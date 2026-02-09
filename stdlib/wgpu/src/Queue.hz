@@ -24,6 +24,22 @@ export struct Queue {
         let count = 0 as usize;
         __c__("raw = hzstd_dynamic_array_raw_buffer(data);");
         __c__("count = hzstd_dynamic_array_size(data) * elementSize;")
+
+        // __c__("""
+        //     printf("Number of Shapes: %d\\n", hzstd_dynamic_array_size(data));
+        //     for (int i = 0; i < hzstd_dynamic_array_size(data); i++) {
+        //         float* floats = (float*)(raw + i * elementSize);
+        //         printf("Shape #%d:\\n", i + 1);
+        //         printf("Pos: %f %f\\n", floats[0], floats[1]);
+        //         printf("Size: %f %f\\n", floats[2], floats[3]);
+        //         printf("Radius: %f\\n", floats[4]);
+        //         printf("Border Thickness: %f\\n", floats[5]);
+        //         printf("Fill Color: %f %f %f %f\\n", floats[6], floats[7], floats[8], floats[9]);
+        //         printf("Border Color: %f %f %f %f\\n", floats[10], floats[11], floats[12], floats[13]);
+        //         printf("Type: %u\\n", ((uint32_t*)raw)[14]);
+        //     }
+        // """);
+
         ffi.wgpuQueueWriteBuffer(this.handle, buffer.handle, 0, raw, count);
     }
 }

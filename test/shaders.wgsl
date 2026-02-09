@@ -75,7 +75,7 @@ fn fs_main(in: VSOut) -> @location(0) vec4<f32> {
 
     let p = in.localPos * in.instSize;
 
-    if (in._type == 0u) { // Rounded Rectangle
+    if (in._type == 0u) { // Filled Rounded Rectangle
         let halfSize = in.instSize / 2.0;
         let r = in.radius;
         // let d = length(max(abs(p) - halfSize + vec2(r,r), vec2(0.0))) - r;
@@ -86,8 +86,11 @@ fn fs_main(in: VSOut) -> @location(0) vec4<f32> {
         let outside = max(q, vec2(0.0));
         let insideDist = min(max(q.x, q.y), 0.0); // negative inside edges
         sdf = length(outside) + insideDist - r;
-
-    } else {
+    } 
+    else if (in._type == 1u) { // Outlined Rounded Rectangle
+        sdf = 1.0; // placeholder for other shapes
+    } 
+    else {
         sdf = 1.0; // placeholder for other shapes
     }
 

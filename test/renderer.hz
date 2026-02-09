@@ -34,7 +34,7 @@ struct PrimitiveInstance {
     borderThickness: f32;  // 0 = no border
     fillColor: inline Colorf;
     borderColor: inline Colorf;
-    type: u32;             // 0 = rect, 1 = circle, etc.
+    type: u32;             // 0 = Filled Rounded Rectangle, 1 = Outlined Rounded Rectangle
 };
 
 struct QuadVertex {
