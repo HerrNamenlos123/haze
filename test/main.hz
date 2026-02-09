@@ -100,18 +100,24 @@ main(): int {
                 size: Vec2(200, 200), 
                 fillColor: Color(1, 0, 0, 1),
                 cornerRadius: 30,
+                borderThickness: 1,
+                borderColor: Color(0, 1, 0, 1),
             });
             renderer.drawRect({
                 pos: Vec2(200, 400), 
                 size: Vec2(300, 200), 
                 fillColor: Color(1, 0, 1, 1),
                 cornerRadius: 3,
+                borderThickness: 2,
+                borderColor: Color(0, 1, 0, 1),
             });
             renderer.drawRect({
                 pos: Vec2(250, 350), 
                 size: Vec2(300, 200), 
                 fillColor: Color(1.0, 0.6549, 0.0588, 1),
                 cornerRadius: 30,
+                borderThickness: 10,
+                borderColor: Color(0, 1, 0, 1),
             });
 
             renderer.endFrame();
