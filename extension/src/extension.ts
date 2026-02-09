@@ -8,7 +8,12 @@ async function startClient(_ctx: vscode.ExtensionContext) {
   let args = process.env.NODE_ENV === "development" ? ["run", "dev", "lsp"] : ["lsp"];
 
   command = "bun";
-  args = ["run", "--cwd", "/home/fzachs/Projects/haze", "dev", "lsp"];
+
+  if (process.platform === "win32") {
+    args = ["run", "--cwd", "C:/Users/Florian Zachs/Projects/haze", "dev", "lsp"];
+  } else {
+    args = ["run", "--cwd", "/home/fzachs/Projects/haze", "dev", "lsp"];
+  }
 
   client = new LanguageClient(
     "haze",
@@ -28,8 +33,6 @@ async function stopClient() {
 }
 
 export async function activate(ctx: vscode.ExtensionContext) {
-  await startClient(ctx);
-
   ctx.subscriptions.push(
     vscode.commands.registerCommand("haze.restartServer", async () => {
       await stopClient();
@@ -37,6 +40,8 @@ export async function activate(ctx: vscode.ExtensionContext) {
       vscode.window.showInformationMessage("Haze language server restarted");
     }),
   );
+
+  await startClient(ctx);
 }
 
 export async function deactivate() {

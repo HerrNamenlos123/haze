@@ -6,7 +6,7 @@ import {
   TextDocumentSyncKind,
   TextDocuments,
 } from "vscode-languageserver/node";
-import type { InitializeParams } from "vscode-languageserver/node";
+import type { Connection, InitializeParams } from "vscode-languageserver/node";
 import { TextDocument } from "vscode-languageserver-textdocument";
 import { URI } from "vscode-uri";
 import path from "node:path";
@@ -46,6 +46,7 @@ function findModuleRoot(filePath: string): string | null {
 // Analyze the entire module containing the changed file.
 // Returns diagnostics grouped by file path.
 async function analyzeModule(
+  connection: Connection,
   changedFile: string,
   changedText: string,
 ): Promise<Map<string, CompilerDiagnostic[]>> {
@@ -89,6 +90,7 @@ async function analyzeModule(
       config.name,
       config.version,
     );
+    connection.console.log(">>> Analyzed: " + JSON.stringify(diagnostics));
 
     // Group diagnostics by file (include all module files)
     const diagnosticsByFile = new Map<string, CompilerDiagnostic[]>();
@@ -222,7 +224,7 @@ export function startLsp(): Promise<never> {
     }
     connection.console.log(`[LSP] Analyzing module at: ${filePath}`);
 
-    const diagnosticsByFile = await analyzeModule(filePath, document.getText());
+    const diagnosticsByFile = await analyzeModule(connection, filePath, document.getText());
     connection.console.log(
       `[LSP] Analysis complete. Files with diagnostics: ${diagnosticsByFile.size}`,
     );
