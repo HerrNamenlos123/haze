@@ -116,7 +116,7 @@ main(): int {
                 size: Vec2(300, 200), 
                 fillColor: Color(1.0, 0.6549, 0.0588, 1),
                 cornerRadius: 30,
-                borderThickness: 10,
+                borderThickness: 3,
                 borderColor: Color(0, 1, 0, 1),
             });
 

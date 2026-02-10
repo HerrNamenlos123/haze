@@ -95,27 +95,19 @@ fn process_rounded_rect_fill(in: VSOut) -> vec4<f32> {
 }
 
 fn process_rounded_rect_outline(in: VSOut) -> vec4<f32> {
-    let halfSizePx = in.instSize * 0.5;
-    let r = in.radius;
-    let p = in.localPos * in.instSize;
-    let q = abs(p) - halfSizePx + vec2(r, r);
-    let outside = max(q, vec2(0.0));
-    let insideDist = min(max(q.x, q.y), 0.0);
-    let sdfPx = length(outside) + insideDist - r;
+    let edgeSDF = rounded_rectangle_sdf(in);
 
-    if (sdfPx < 0.0 || sdfPx > in.borderThickness) {
-        discard; // outside or inside rectangle
+    // Turn the inside edge SDF into an SDF for the line (positive both inside and outside rect but negative in border)
+    let lineSDF = abs(edgeSDF - in.borderThickness / 2.0) - in.borderThickness / 2.0;
+
+    let fw = fwidth(lineSDF);
+    let fraction = clamp(0.5 - lineSDF / fw, 0.0, 1.0);
+
+    if (fraction == 0.0) {
+        discard;
     }
 
-    let aa = 1.0; // 1px anti-alias at outer edge
-    var alpha: f32 = 1.0;
-
-    // Fade only over the last 'aa' pixels
-    if (sdfPx > in.borderThickness - aa) {
-        alpha = smoothstep(in.borderThickness, in.borderThickness - aa, sdfPx);
-    }
-
-    return vec4<f32>(in.borderColor.rgb, alpha);
+    return vec4(in.borderColor.rgb, in.borderColor.a * fraction);
 }
 
 @fragment
