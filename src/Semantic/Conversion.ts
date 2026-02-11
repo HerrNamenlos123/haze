@@ -397,201 +397,201 @@ export namespace Conversion {
     throw new InternalError("Requested getIntegerBits from a non-integer");
   }
 
-  export function IsStructurallyEquivalent(
-    sr: Semantic.Context,
-    a: Semantic.TypeDefId,
-    b: Semantic.TypeDefId,
-    seen: Map<Semantic.TypeDefId, Set<Semantic.TypeDefId>> = new Map(),
-  ): boolean {
-    // Symmetric check: has this pair already been seen?
-    if (seen.get(a)?.has(b) || seen.get(b)?.has(a)) {
-      return true;
-    }
+  // export function IsStructurallyEquivalent(
+  //   sr: Semantic.Context,
+  //   a: Semantic.TypeDefId,
+  //   b: Semantic.TypeDefId,
+  //   seen: Map<Semantic.TypeDefId, Set<Semantic.TypeDefId>> = new Map(),
+  // ): boolean {
+  //   // Symmetric check: has this pair already been seen?
+  //   if (seen.get(a)?.has(b) || seen.get(b)?.has(a)) {
+  //     return true;
+  //   }
 
-    // Mark pair as seen
-    if (!seen.has(a)) seen.set(a, new Set());
-    seen.get(a)!.add(b);
+  //   // Mark pair as seen
+  //   if (!seen.has(a)) seen.set(a, new Set());
+  //   seen.get(a)!.add(b);
 
-    if (!sr.typeDefNodes.get(a).concrete || !sr.typeDefNodes.get(b).concrete) {
-      throw new InternalError(
-        "Cannot check structural equivalence of a non-concrete datatype",
-        undefined,
-        1,
-      );
-    }
+  //   if (!sr.typeDefNodes.get(a).concrete || !sr.typeDefNodes.get(b).concrete) {
+  //     throw new InternalError(
+  //       "Cannot check structural equivalence of a non-concrete datatype",
+  //       undefined,
+  //       1,
+  //     );
+  //   }
 
-    const at = sr.typeDefNodes.get(a);
-    const bt = sr.typeDefNodes.get(b);
+  //   const at = sr.typeDefNodes.get(a);
+  //   const bt = sr.typeDefNodes.get(b);
 
-    if (at.variant !== bt.variant) {
-      return false;
-    }
-    switch (at.variant) {
-      case Semantic.ENode.PrimitiveDatatype:
-        assert(bt.variant === Semantic.ENode.PrimitiveDatatype);
-        return at.primitive === bt.primitive;
+  //   if (at.variant !== bt.variant) {
+  //     return false;
+  //   }
+  //   switch (at.variant) {
+  //     case Semantic.ENode.PrimitiveDatatype:
+  //       assert(bt.variant === Semantic.ENode.PrimitiveDatatype);
+  //       return at.primitive === bt.primitive;
 
-      case Semantic.ENode.FixedArrayDatatype: {
-        assert(bt.variant === Semantic.ENode.FixedArrayDatatype);
-        const a = sr.typeUseNodes.get(at.datatype);
-        const b = sr.typeUseNodes.get(bt.datatype);
-        return IsStructurallyEquivalent(sr, a.type, b.type, seen) && at.length === bt.length;
-      }
+  //     case Semantic.ENode.FixedArrayDatatype: {
+  //       assert(bt.variant === Semantic.ENode.FixedArrayDatatype);
+  //       const a = sr.typeUseNodes.get(at.datatype);
+  //       const b = sr.typeUseNodes.get(bt.datatype);
+  //       return IsStructurallyEquivalent(sr, a.type, b.type, seen) && at.length === bt.length;
+  //     }
 
-      case Semantic.ENode.DynamicArrayDatatype: {
-        assert(bt.variant === Semantic.ENode.DynamicArrayDatatype);
-        const a = sr.typeUseNodes.get(at.datatype);
-        const b = sr.typeUseNodes.get(bt.datatype);
-        return IsStructurallyEquivalent(sr, a.type, b.type, seen);
-      }
+  //     case Semantic.ENode.DynamicArrayDatatype: {
+  //       assert(bt.variant === Semantic.ENode.DynamicArrayDatatype);
+  //       const a = sr.typeUseNodes.get(at.datatype);
+  //       const b = sr.typeUseNodes.get(bt.datatype);
+  //       return IsStructurallyEquivalent(sr, a.type, b.type, seen);
+  //     }
 
-      case Semantic.ENode.FunctionDatatype: {
-        assert(bt.variant === Semantic.ENode.FunctionDatatype);
-        const aa = sr.typeUseNodes.get(at.returnType);
-        const bb = sr.typeUseNodes.get(bt.returnType);
-        return (
-          at.vararg === bt.vararg &&
-          IsStructurallyEquivalent(sr, aa.type, bb.type, seen) &&
-          at.parameters.length === bt.parameters.length &&
-          at.parameters.every((p, index) =>
-            IsStructurallyEquivalent(
-              sr,
-              sr.typeUseNodes.get(p.type).type,
-              sr.typeUseNodes.get(bt.parameters[index].type).type,
-              seen,
-            ),
-          )
-        );
-      }
+  //     case Semantic.ENode.FunctionDatatype: {
+  //       assert(bt.variant === Semantic.ENode.FunctionDatatype);
+  //       const aa = sr.typeUseNodes.get(at.returnType);
+  //       const bb = sr.typeUseNodes.get(bt.returnType);
+  //       return (
+  //         at.vararg === bt.vararg &&
+  //         IsStructurallyEquivalent(sr, aa.type, bb.type, seen) &&
+  //         at.parameters.length === bt.parameters.length &&
+  //         at.parameters.every((p, index) =>
+  //           IsStructurallyEquivalent(
+  //             sr,
+  //             sr.typeUseNodes.get(p.type).type,
+  //             sr.typeUseNodes.get(bt.parameters[index].type).type,
+  //             seen,
+  //           ),
+  //         )
+  //       );
+  //     }
 
-      case Semantic.ENode.UntaggedUnionDatatype: {
-        assert(bt.variant === Semantic.ENode.UntaggedUnionDatatype);
-        if (
-          at.members.length === bt.members.length &&
-          at.members.every((a, i) => a === bt.members[i])
-        )
-          return true;
-        return false;
-      }
+  //     case Semantic.ENode.UntaggedUnionDatatype: {
+  //       assert(bt.variant === Semantic.ENode.UntaggedUnionDatatype);
+  //       if (
+  //         at.members.length === bt.members.length &&
+  //         at.members.every((a, i) => a === bt.members[i])
+  //       )
+  //         return true;
+  //       return false;
+  //     }
 
-      case Semantic.ENode.TaggedUnionDatatype: {
-        assert(bt.variant === Semantic.ENode.TaggedUnionDatatype);
-        if (
-          at.members.length === bt.members.length &&
-          at.members.every((a, i) => a.tag === bt.members[i].tag && a.type === bt.members[i].type)
-        )
-          return true;
-        return false;
-      }
+  //     case Semantic.ENode.TaggedUnionDatatype: {
+  //       assert(bt.variant === Semantic.ENode.TaggedUnionDatatype);
+  //       if (
+  //         at.members.length === bt.members.length &&
+  //         at.members.every((a, i) => a.tag === bt.members[i].tag && a.type === bt.members[i].type)
+  //       )
+  //         return true;
+  //       return false;
+  //     }
 
-      case Semantic.ENode.CallableDatatype: {
-        assert(bt.variant === Semantic.ENode.CallableDatatype);
-        if (Boolean(at.thisExprType) !== Boolean(bt.thisExprType)) return false;
-        if (
-          at.thisExprType &&
-          bt.thisExprType &&
-          IsStructurallyEquivalent(
-            sr,
-            sr.typeUseNodes.get(at.thisExprType).type,
-            sr.typeUseNodes.get(bt.thisExprType).type,
-            seen,
-          )
-        )
-          return false;
-        return IsStructurallyEquivalent(sr, at.functionType, bt.functionType, seen);
-      }
+  //     case Semantic.ENode.CallableDatatype: {
+  //       assert(bt.variant === Semantic.ENode.CallableDatatype);
+  //       if (Boolean(at.thisExprType) !== Boolean(bt.thisExprType)) return false;
+  //       if (
+  //         at.thisExprType &&
+  //         bt.thisExprType &&
+  //         IsStructurallyEquivalent(
+  //           sr,
+  //           sr.typeUseNodes.get(at.thisExprType).type,
+  //           sr.typeUseNodes.get(bt.thisExprType).type,
+  //           seen,
+  //         )
+  //       )
+  //         return false;
+  //       return IsStructurallyEquivalent(sr, at.functionType, bt.functionType, seen);
+  //     }
 
-      case Semantic.ENode.GenericParameterDatatype: {
-        throw new InternalError("Cannot check structural equivalence of a generic parameter");
-      }
+  //     case Semantic.ENode.GenericParameterDatatype: {
+  //       throw new InternalError("Cannot check structural equivalence of a generic parameter");
+  //     }
 
-      case Semantic.ENode.StructDatatype: {
-        assert(bt.variant === Semantic.ENode.StructDatatype);
-        if (at.generics.length !== bt.generics.length) {
-          return false;
-        }
+  //     case Semantic.ENode.StructDatatype: {
+  //       assert(bt.variant === Semantic.ENode.StructDatatype);
+  //       if (at.generics.length !== bt.generics.length) {
+  //         return false;
+  //       }
 
-        for (let i = 0; i < at.generics.length; i++) {
-          if (
-            !IsStructurallyEquivalent(
-              sr,
-              sr.typeUseNodes.get(sr.exprNodes.get(at.generics[i]).type).type,
-              sr.typeUseNodes.get(sr.exprNodes.get(bt.generics[i]).type).type,
-              seen,
-            )
-          )
-            return false;
-        }
+  //       for (let i = 0; i < at.generics.length; i++) {
+  //         if (
+  //           !IsStructurallyEquivalent(
+  //             sr,
+  //             sr.typeUseNodes.get(sr.exprNodes.get(at.generics[i]).type).type,
+  //             sr.typeUseNodes.get(sr.exprNodes.get(bt.generics[i]).type).type,
+  //             seen,
+  //           )
+  //         )
+  //           return false;
+  //       }
 
-        if (at.members.length !== bt.members.length) {
-          return false;
-        }
+  //       if (at.members.length !== bt.members.length) {
+  //         return false;
+  //       }
 
-        // All members are unique
-        const remainingMembersA = [
-          ...new Set(
-            at.members.map((mId) => {
-              const m = sr.symbolNodes.get(mId);
-              assert(m.variant === Semantic.ENode.VariableSymbol);
-              return m.name;
-            }),
-          ),
-        ];
-        assert(remainingMembersA.length === at.members.length);
-        let remainingMembersB = [
-          ...new Set(
-            bt.members.map((mId) => {
-              const m = sr.symbolNodes.get(mId);
-              assert(m.variant === Semantic.ENode.VariableSymbol);
-              return m.name;
-            }),
-          ),
-        ];
-        assert(remainingMembersB.length === bt.members.length);
+  //       // All members are unique
+  //       const remainingMembersA = [
+  //         ...new Set(
+  //           at.members.map((mId) => {
+  //             const m = sr.symbolNodes.get(mId);
+  //             assert(m.variant === Semantic.ENode.VariableSymbol);
+  //             return m.name;
+  //           }),
+  //         ),
+  //       ];
+  //       assert(remainingMembersA.length === at.members.length);
+  //       let remainingMembersB = [
+  //         ...new Set(
+  //           bt.members.map((mId) => {
+  //             const m = sr.symbolNodes.get(mId);
+  //             assert(m.variant === Semantic.ENode.VariableSymbol);
+  //             return m.name;
+  //           }),
+  //         ),
+  //       ];
+  //       assert(remainingMembersB.length === bt.members.length);
 
-        // All members are unique and the same count. So if all members from A are in B, the inverse must also be true.
+  //       // All members are unique and the same count. So if all members from A are in B, the inverse must also be true.
 
-        for (const m of remainingMembersA) {
-          if (!remainingMembersB.includes(m)) {
-            return false; // Member from A is not available in B
-          }
-          remainingMembersB = remainingMembersB.filter((k) => k !== m);
+  //       for (const m of remainingMembersA) {
+  //         if (!remainingMembersB.includes(m)) {
+  //           return false; // Member from A is not available in B
+  //         }
+  //         remainingMembersB = remainingMembersB.filter((k) => k !== m);
 
-          const amId = at.members.find((mmId) => {
-            const mm = sr.symbolNodes.get(mmId);
-            assert(mm.variant === Semantic.ENode.VariableSymbol);
-            return mm.name;
-          });
-          const bmId = bt.members.find((mmId) => {
-            const mm = sr.symbolNodes.get(mmId);
-            assert(mm.variant === Semantic.ENode.VariableSymbol);
-            return mm.name;
-          });
-          assert(amId && bmId);
-          const am = sr.symbolNodes.get(amId);
-          const bm = sr.symbolNodes.get(bmId);
-          assert(am.variant === Semantic.ENode.VariableSymbol);
-          assert(bm.variant === Semantic.ENode.VariableSymbol);
-          assert(am.type && bm.type);
-          if (
-            !IsStructurallyEquivalent(
-              sr,
-              sr.typeUseNodes.get(am.type).type,
-              sr.typeUseNodes.get(bm.type).type,
-              seen,
-            )
-          ) {
-            return false;
-          }
-        }
+  //         const amId = at.members.find((mmId) => {
+  //           const mm = sr.symbolNodes.get(mmId);
+  //           assert(mm.variant === Semantic.ENode.VariableSymbol);
+  //           return mm.name;
+  //         });
+  //         const bmId = bt.members.find((mmId) => {
+  //           const mm = sr.symbolNodes.get(mmId);
+  //           assert(mm.variant === Semantic.ENode.VariableSymbol);
+  //           return mm.name;
+  //         });
+  //         assert(amId && bmId);
+  //         const am = sr.symbolNodes.get(amId);
+  //         const bm = sr.symbolNodes.get(bmId);
+  //         assert(am.variant === Semantic.ENode.VariableSymbol);
+  //         assert(bm.variant === Semantic.ENode.VariableSymbol);
+  //         assert(am.type && bm.type);
+  //         if (
+  //           !IsStructurallyEquivalent(
+  //             sr,
+  //             sr.typeUseNodes.get(am.type).type,
+  //             sr.typeUseNodes.get(bm.type).type,
+  //             seen,
+  //           )
+  //         ) {
+  //           return false;
+  //         }
+  //       }
 
-        return true;
-      }
+  //       return true;
+  //     }
 
-      default:
-        assert(false, "All cases handled: " + Semantic.ENode[at.variant]);
-    }
-  }
+  //     default:
+  //       assert(false, "All cases handled: " + Semantic.ENode[at.variant]);
+  //   }
+  // }
 
   type ValueRange = {
     max: bigint | undefined;
@@ -1916,6 +1916,48 @@ export namespace Conversion {
         }
 
         // Union does not match exactly, but may be extended
+      }
+    }
+
+    // Callable conversions
+    if (
+      fromType.variant === Semantic.ENode.CallableDatatype &&
+      to.variant === Semantic.ENode.CallableDatatype
+    ) {
+      const fType = sr.typeDefNodes.get(fromType.functionType);
+      assert(fType.variant === Semantic.ENode.FunctionDatatype);
+      const tType = sr.typeDefNodes.get(to.functionType);
+      assert(tType.variant === Semantic.ENode.FunctionDatatype);
+
+      if (fType.concrete && tType.concrete) {
+        if (
+          fType.parameters.length === tType.parameters.length &&
+          fType.parameters.map(
+            (p, i) =>
+              p.type === tType.parameters[i].type && p.optional === tType.parameters[i].optional,
+          ) &&
+          fType.returnType === tType.returnType &&
+          fType.vararg === tType.vararg &&
+          fType.requires.final === tType.requires.final &&
+          fType.requires.noreturn === tType.requires.noreturn &&
+          fType.requires.noreturnIf?.argIndex === tType.requires.noreturnIf?.argIndex &&
+          fType.requires.noreturnIf?.expr === tType.requires.noreturnIf?.expr &&
+          fType.requires.noreturnIf?.operation === tType.requires.noreturnIf?.operation &&
+          fType.requires.pure === tType.requires.pure
+        ) {
+          return ok(
+            sr.b.addExpr(sr, {
+              variant: Semantic.ENode.ExplicitCastExpr,
+              instanceIds: fromExpr.instanceIds,
+              expr: fromExprId,
+              type: toId,
+              sourceloc: sourceloc,
+              isTemporary: fromExpr.isTemporary,
+              flow: flow,
+              writes: writes,
+            })[1],
+          );
+        }
       }
     }
 

@@ -815,6 +815,9 @@ export function lowerExpr(
   exprId: Semantic.ExprId,
   flattened: Lowered.StatementId[],
   instanceInfo: InstanceInfo,
+  args?: {
+    noLambdaHoisting?: boolean;
+  },
 ): [Lowered.Expression, Lowered.ExprId] {
   const expr = lr.sr.exprNodes.get(exprId);
 
@@ -975,8 +978,13 @@ export function lowerExpr(
           },
         );
 
-        let prettyName = symbol.name;
-        let mangledName = symbol.name;
+        let name = symbol.name;
+        if (symbol.requiresHoisting && !args?.noLambdaHoisting) {
+          name = "*" + name;
+        }
+
+        let prettyName = name;
+        let mangledName = name;
         let wasMangled = false;
         if (globalVariableStatementId) {
           const globalVariableStatement = lr.sr.symbolNodes.get(globalVariableStatementId);
@@ -1106,7 +1114,7 @@ export function lowerExpr(
 
       const structTypeUse = lr.typeUseNodes.get(structType);
       if (structTypeUse.pointer) {
-        const [structExpr, structExprId] = Lowered.addExpr(lr, {
+        const [_, structExprId] = Lowered.addExpr(lr, {
           variant: Lowered.ENode.StructLiteralExpr,
           type: makeLowerTypeUse(lr, lowerTypeDef(lr, semanticTypeUse.type), true)[1],
           memberAssigns: expr.assign.map((a) => ({
@@ -1114,15 +1122,6 @@ export function lowerExpr(
             value: lowerExpr(lr, a.value, flattened, instanceInfo)[1],
           })),
         });
-
-        let returns = false;
-        if (expr.inFunction) {
-          const funcsym = lr.sr.symbolNodes.get(expr.inFunction);
-          assert(funcsym.variant === Semantic.ENode.FunctionSymbol);
-          if (expr.instanceIds.some((id) => funcsym.returnsInstanceIds.has(id))) {
-            returns = true;
-          }
-        }
 
         let allocatorExprId: Lowered.ExprId;
         if (expr.allocator) {
@@ -1148,72 +1147,7 @@ export function lowerExpr(
           structType,
         );
 
-        // const [result, resultId] = Lowered.addExpr(lr, {
-        //   variant: Lowered.ENode.ExplicitCastExpr,
-        //   expr: makeIntrinsicCall(
-        //     lr,
-        //     "hzstd_arena_allocate",
-        //     [
-        //       Lowered.addExpr(lr, {
-        //         variant: Lowered.ENode.MemberAccessExpr,
-        //         memberName: "arenaImpl",
-        //         expr: arenaId,
-        //         requiresDeref: true,
-        //         type: lowerTypeUse(
-        //           lr,
-        //           makeTypeUse(
-        //             lr.sr,
-        //             lr.sr.e.arenaTypeDef(),
-        //             EDatatypeMutability.Default,
-        //             false,
-        //             null
-        //           )[1]
-        //         ),
-        //       })[1],
-        //       sizeof[1],
-        //       alignof[1],
-        //     ],
-        //     makeLowerTypeUse(lr, makeVoidPointerType(lr), true)[1]
-        //   )[1],
-        //   type: structType,
-        // });
-
-        // const statements: Lowered.StatementId[] = [];
-        // const [structVar, structVarId] = storeInTempVarAndGet(
-        //   lr,
-        //   structType,
-        //   resultId,
-        //   expr.sourceloc,
-        //   statements
-        // );
-
-        // statements.push(
-        //   Lowered.addStatement(lr, {
-        //     variant: Lowered.ENode.ExprStatement,
-        //     expr: Lowered.addExpr(lr, {
-        //       variant: Lowered.ENode.ExprAssignmentExpr,
-        //       target: structVarId,
-        //       type: structType,
-        //       assignRefTarget: true,
-        //       value: structExprId,
-        //     })[1],
-        //     sourceloc: expr.sourceloc,
-        //   })[1]
-        // );
-
-        // const [blockScope, blockScopeId] = Lowered.addBlockScope<Lowered.BlockScope>(lr, {
-        //   statements: statements,
-        //   definesVariables: true,
-        //   emittedExpr: structVarId,
-        // });
-
         return [result, resultId];
-        // return Lowered.addExpr(lr, {
-        //   variant: Lowered.ENode.BlockScopeExpr,
-        //   block: blockScopeId,
-        //   sourceloc: expr.sourceloc,
-        //   type: structType,
-        // });
       } else {
         return Lowered.addExpr(lr, {
           variant: Lowered.ENode.StructLiteralExpr,
@@ -1230,13 +1164,7 @@ export function lowerExpr(
       const [e, eId] = lowerExpr(lr, expr.expr, flattened, instanceInfo);
 
       const statements: Lowered.StatementId[] = [];
-      const [tempvar, tempvarId] = storeInTempVarAndGet(
-        lr,
-        e.type,
-        eId,
-        expr.sourceloc,
-        statements,
-      );
+      const [_, tempvarId] = storeInTempVarAndGet(lr, e.type, eId, expr.sourceloc, statements);
 
       statements.push(
         Lowered.addStatement(lr, {
@@ -1566,7 +1494,9 @@ export function lowerExpr(
         };
         envValue = {
           type: "lambda",
-          captures: expr.envValue.captures.map((c) => lowerExpr(lr, c, flattened, instanceInfo)[1]),
+          captures: expr.envValue.captures.map((c) => {
+            return lowerExpr(lr, c.value, flattened, instanceInfo, { noLambdaHoisting: true })[1];
+          }),
         };
       }
 
@@ -2662,15 +2592,41 @@ function lowerStatement(
       const variableSymbol = lr.sr.symbolNodes.get(statement.variableSymbol);
       assert(variableSymbol.variant === Semantic.ENode.VariableSymbol);
       assert(variableSymbol.type);
+
+      let name = statement.name;
+      let value = statement.value && lowerExpr(lr, statement.value, flattened, instanceInfo)[1];
+      if (value && variableSymbol.requiresHoisting) {
+        const original = storeInTempVarAndGet(
+          lr,
+          lowerTypeUse(lr, variableSymbol.type),
+          value,
+          null,
+          flattened,
+        )[1];
+        value = makeIntrinsicCall(
+          lr,
+          "HZSTD_HOIST",
+          [
+            Lowered.addExpr(lr, {
+              variant: Lowered.ENode.DatatypeAsValueExpr,
+              type: lowerTypeUse(lr, variableSymbol.type),
+            })[1],
+            original,
+          ],
+          lowerTypeUse(lr, variableSymbol.type),
+        )[1];
+        name = "*" + name;
+      }
+
       const [s, sId] = Lowered.addStatement<Lowered.Statement>(lr, {
         variant: Lowered.ENode.VariableStatement,
         name: {
-          mangledName: statement.name,
-          prettyName: statement.name,
+          mangledName: name,
+          prettyName: name,
           wasMangled: false,
         },
         type: lowerTypeUse(lr, variableSymbol.type),
-        value: statement.value && lowerExpr(lr, statement.value, flattened, instanceInfo)[1],
+        value: value,
         variableContext: variableSymbol.variableContext,
         sourceloc: statement.sourceloc,
       });
@@ -3248,16 +3204,24 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
       } else if (symbol.envType?.type === "lambda") {
         envType = {
           type: "lambda",
-          captures: symbol.envType.captures.map((c) => ({
-            name: c.name,
-            type: lowerTypeUse(lr, c.type),
-          })),
+          captures: symbol.envType.captures.map((c) => {
+            return {
+              name: c.name,
+              type: lowerTypeUse(lr, c.type),
+            };
+          }),
         };
-        for (const c of symbol.envType.captures) {
-          mainFuncParameterNames.unshift(c.name);
+        for (let i = symbol.envType.captures.length - 1; i >= 0; i--) {
+          let name = symbol.envType.captures[i].name;
+          const varsym = lr.sr.symbolNodes.get(symbol.envType.captures[i].capturedSymbol);
+          assert(varsym.variant === Semantic.ENode.VariableSymbol);
+          if (varsym.requiresHoisting) {
+            name = "*" + name;
+          }
+          mainFuncParameterNames.unshift(name);
           mainFuncParameters.unshift({
             optional: false,
-            type: c.type,
+            type: symbol.envType.captures[i].type,
           });
         }
         trampolineFuncParameterNames.unshift("__hz_env");
@@ -3432,8 +3396,8 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
                   variant: Lowered.ENode.SymbolValueExpr,
                   type: lowerTypeUse(lr, lr.sr.b.cptrType()),
                   name: {
-                    mangledName: "__hz_env",
-                    prettyName: "__hz_env",
+                    mangledName: c.name,
+                    prettyName: c.name,
                     wasMangled: false,
                   },
                 })[1],
@@ -3528,17 +3492,43 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
       const variableSymbol = lr.sr.symbolNodes.get(symbol.variableSymbol);
       assert(variableSymbol.variant === Semantic.ENode.VariableSymbol);
       assert(variableSymbol.type);
+
+      let name = Semantic.makeNameSetSymbol(lr.sr, symbolId);
       const flattened: Lowered.StatementId[] = [];
-      const [p, pId] = Lowered.addStatement<Lowered.VariableStatement>(lr, {
+      let value =
+        symbol.value &&
+        lowerExpr(lr, symbol.value, flattened, {
+          returnedInstanceIds: new Set(),
+        })[1];
+      if (value && variableSymbol.requiresHoisting) {
+        const original = storeInTempVarAndGet(
+          lr,
+          lowerTypeUse(lr, variableSymbol.type),
+          value,
+          null,
+          flattened,
+        )[1];
+        value = makeIntrinsicCall(
+          lr,
+          "HZSTD_HOIST",
+          [
+            Lowered.addExpr(lr, {
+              variant: Lowered.ENode.DatatypeAsValueExpr,
+              type: lowerTypeUse(lr, variableSymbol.type),
+            })[1],
+            original,
+          ],
+          lowerTypeUse(lr, variableSymbol.type),
+        )[1];
+        name.mangledName = "*" + name.mangledName;
+      }
+
+      const [_, pId] = Lowered.addStatement<Lowered.VariableStatement>(lr, {
         variant: Lowered.ENode.VariableStatement,
-        name: Semantic.makeNameSetSymbol(lr.sr, symbolId),
+        name: name,
         type: lowerTypeUse(lr, variableSymbol.type),
         variableContext: EVariableContext.Global,
-        value:
-          symbol.value &&
-          lowerExpr(lr, symbol.value, flattened, {
-            returnedInstanceIds: new Set(),
-          })[1],
+        value: value,
         sourceloc: symbol.sourceloc,
       });
       assert(

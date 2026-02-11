@@ -41,21 +41,11 @@ deviceRequestCallback(status: wgpu.RequestDeviceStatus, device: mut wgpu.Device,
 
 let g_queue = none as mut wgpu.Queue | none;
 
+struct Foo {
+    bar: int;
+}
+
 main(): int {
-
-    let array = [1, 2, 3] as []int;
-    array.push(5);
-    let push = array.push;
-
-    let foo = (value: int) => {
-        fmt.println("Closure called!", value);
-    };
-
-    push(4);
-
-    foo(187);
-
-    return 0;
 
     attempt {
         if !glfw.init() { raise "GLFW init failed"; }

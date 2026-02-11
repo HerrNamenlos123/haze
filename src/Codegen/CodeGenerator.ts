@@ -1083,6 +1083,18 @@ class CodeGenerator {
           }
         }
 
+        if (type.variant === Lowered.ENode.CallableDatatype) {
+          const sourceExpr = this.lr.exprNodes.get(expr.expr);
+          const exprTypeUse = this.lr.typeUseNodes.get(sourceExpr.type);
+          const exprType = this.lr.typeDefNodes.get(exprTypeUse.type);
+          if (exprType.variant === Lowered.ENode.CallableDatatype) {
+            outWriter.write(
+              `({ ${this.mangleTypeUse(sourceExpr.type)} __tmp = ${this.emitExpr(expr.expr).out.get()}; (${this.mangleTypeUse(expr.type)}){ .env=__tmp.env, .fn=__tmp.fn }; })`,
+            );
+            return { out: outWriter, temp: tempWriter };
+          }
+        }
+
         outWriter.write(`((${this.mangleTypeUse(expr.type)})(${exprWriter.out.get()}))`);
         return { out: outWriter, temp: tempWriter };
       }
@@ -1395,7 +1407,7 @@ class CodeGenerator {
               tempWriter.write(e.temp);
               return `env[${i}] = ${e.out.get()};`;
             });
-            env = `({ void** env = hzstd_heap_allocate(sizeof(void*) * ${expr.envValue.captures.length}); ${setters} (void*)env; })`;
+            env = `({ void** env = hzstd_heap_allocate(sizeof(void*) * ${expr.envValue.captures.length}); ${setters.join(" ")} (void*)env; })`;
           }
         }
         const func = this.lr.functionNodes.get(expr.function);
@@ -1447,6 +1459,8 @@ class CodeGenerator {
 
         if (
           typeDef.variant === Lowered.ENode.PrimitiveDatatype ||
+          typeDef.variant === Lowered.ENode.FunctionDatatype ||
+          typeDef.variant === Lowered.ENode.CallableDatatype ||
           typeDef.variant === Lowered.ENode.EnumDatatype
         ) {
           outWriter.write("(" + target.out.get() + " = " + value.out.get() + ")");

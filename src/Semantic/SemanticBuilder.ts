@@ -506,6 +506,7 @@ export class SemanticBuilder {
       name: name,
       memberOfStruct: null,
       mutability: mutability,
+      requiresHoisting: false,
       variableContext: EVariableContext.Global,
       parentStructOrNS: parentStructOrNS,
       sourceloc: sourceloc,

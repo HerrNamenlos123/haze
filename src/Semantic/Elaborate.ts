@@ -44,6 +44,7 @@ import { EUnaryOperation } from "../shared/AST";
 import { makeTempId, makeTempName } from "../shared/store";
 import { ConditionChain, ConstraintSet, type ConstraintPath } from "./Constraint";
 import { Semantic } from "./SemanticTypes";
+import { TypeHierarchySupertypesRequest } from "vscode-languageserver";
 
 function isPowerOfTwo(x: bigint): boolean {
   return x > 0n && (x & (x - 1n)) === 0n;
@@ -2459,6 +2460,7 @@ export class SemanticElaborator {
       name: symbol.name,
       export: false,
       extern: EExternLanguage.None,
+      requiresHoisting: false,
       mutability: EVariableMutability.Default,
       sourceloc: symbol.sourceloc,
       memberOfStruct: semanticStructId,
@@ -2711,6 +2713,7 @@ export class SemanticElaborator {
           comptime: symbol.comptime,
           comptimeValue: null,
           variableContext: variableContext,
+          requiresHoisting: false,
           consumed: false,
           type: type,
           concrete: false,
@@ -3307,6 +3310,7 @@ export class SemanticElaborator {
                     memberOfStruct: null,
                     mutability: EVariableMutability.Default,
                     parentStructOrNS: null,
+                    requiresHoisting: false,
                     type: t,
                     consumed: false,
                     variableContext: EVariableContext.FunctionParameter,
@@ -3322,6 +3326,7 @@ export class SemanticElaborator {
                 comptimeValue: null,
                 consumed: false,
                 concrete: true,
+                requiresHoisting: false,
                 name: `__param_pack`,
                 export: false,
                 extern: EExternLanguage.None,
@@ -3571,6 +3576,7 @@ export class SemanticElaborator {
                 type: thisRef,
                 comptime: false,
                 comptimeValue: null,
+                requiresHoisting: false,
                 concrete: isTypeConcrete(this.sr, thisRef),
                 export: false,
                 extern: EExternLanguage.None,
@@ -6115,6 +6121,7 @@ export class SemanticElaborator {
               concrete: true,
               export: false,
               extern: EExternLanguage.None,
+              requiresHoisting: false,
               memberOfStruct: null,
               mutability: EVariableMutability.Const,
               name: s.indexVariable,
@@ -6209,6 +6216,7 @@ export class SemanticElaborator {
             comptime: false,
             comptimeValue: null,
             concrete: true,
+            requiresHoisting: false,
             export: false,
             extern: EExternLanguage.None,
             memberOfStruct: null,
@@ -6235,6 +6243,7 @@ export class SemanticElaborator {
               name: s.indexVariable,
               parentStructOrNS: null,
               sourceloc: s.sourceloc,
+              requiresHoisting: false,
               type: makePrimitiveAvailable(
                 this.sr,
                 EPrimitive.int,
@@ -6793,16 +6802,15 @@ export class SemanticElaborator {
           ];
         }
 
-        const [symbolValueExpr, symbolValueExprId] = this.sr.b.symbolValue(
-          elaboratedSymbolId,
-          symbolValue.sourceloc,
-        );
+        let resultingExprId = this.sr.b.symbolValue(elaboratedSymbolId, symbolValue.sourceloc)[1];
 
         const type = this.sr.typeDefNodes.get(this.sr.typeUseNodes.get(elaboratedSymbol.type).type);
         if (
           type.variant === Semantic.ENode.UntaggedUnionDatatype ||
           type.variant === Semantic.ENode.TaggedUnionDatatype
         ) {
+          let resultingExpr = this.sr.exprNodes.get(resultingExprId);
+
           const members =
             type.variant === Semantic.ENode.UntaggedUnionDatatype
               ? type.members
@@ -6810,7 +6818,7 @@ export class SemanticElaborator {
 
           const narrowing = Conversion.typeNarrowing(this.sr);
           narrowing.addVariants(members);
-          narrowing.constrainFromConstraints(this.currentContext.constraints, symbolValueExprId);
+          narrowing.constrainFromConstraints(this.currentContext.constraints, resultingExprId);
 
           assert(narrowing.possibleVariants.size <= members.length);
           if (narrowing.possibleVariants.size === 1) {
@@ -6818,19 +6826,18 @@ export class SemanticElaborator {
             const tag = members.findIndex((m) => m === [...narrowing.possibleVariants][0]);
             assert(tag !== -1);
 
-            const [result, resultId] = this.sr.b.addExpr(this.sr, {
+            resultingExprId = this.sr.b.addExpr(this.sr, {
               variant: Semantic.ENode.UnionToValueCastExpr,
               instanceIds: [],
-              expr: symbolValueExprId,
+              expr: resultingExprId,
               tag: tag,
               isTemporary: false,
               canBeUnwrappedForLHS: true,
               sourceloc: symbolValue.sourceloc,
               type: [...narrowing.possibleVariants][0],
-              flow: symbolValueExpr.flow,
-              writes: symbolValueExpr.writes,
-            });
-            return [result, resultId] as const;
+              flow: resultingExpr.flow,
+              writes: resultingExpr.writes,
+            })[1];
           } else if (narrowing.possibleVariants.size !== members.length) {
             // If multiple values remain but they are not equal: Union to Union (e.g. A | B | null to A | B)
 
@@ -6841,21 +6848,60 @@ export class SemanticElaborator {
               symbolValue.sourceloc,
             );
 
-            return this.sr.b.addExpr(this.sr, {
+            resultingExprId = this.sr.b.addExpr(this.sr, {
               variant: Semantic.ENode.UnionToUnionCastExpr,
               instanceIds: [],
-              expr: symbolValueExprId,
+              expr: resultingExprId,
               castComesFromNarrowingAndMayBeUnwrapped: true,
               isTemporary: false,
               sourceloc: symbolValue.sourceloc,
               type: newUnion,
-              flow: symbolValueExpr.flow,
-              writes: symbolValueExpr.writes,
+              flow: resultingExpr.flow,
+              writes: resultingExpr.writes,
+            })[1];
+          }
+        }
+
+        const resultingExpr = this.sr.exprNodes.get(resultingExprId);
+
+        if (foundResult.crossedLambdaScope) {
+          const typeUse = this.sr.typeUseNodes.get(resultingExpr.type);
+          const typeDef = this.sr.typeDefNodes.get(typeUse.type);
+
+          if (typeDef.variant === Semantic.ENode.DynamicArrayDatatype) {
+          } else if (typeDef.variant === Semantic.ENode.StructDatatype) {
+            if (typeUse.inline) {
+              elaboratedSymbol.requiresHoisting = true;
+            }
+          } else {
+            elaboratedSymbol.requiresHoisting = true;
+          }
+
+          const lambdaScope = this.sr.cc.scopeNodes.get(foundResult.crossedLambdaScope);
+          assert(lambdaScope.variant === Collect.ENode.LambdaScope);
+          const lambdaExprId = this.currentContext.elaboratedLambdaExprs.get(
+            foundResult.crossedLambdaScope,
+          );
+          assert(lambdaExprId);
+          const lambdaExpr = this.sr.exprNodes.get(lambdaExprId);
+          assert(lambdaExpr.variant === Semantic.ENode.CallableExpr);
+          assert(lambdaExpr.envType?.type === "lambda");
+          assert(lambdaExpr.envValue?.type === "lambda");
+
+          if (!lambdaExpr.envValue.captures.find((c) => c.variable === elaboratedSymbolId)) {
+            lambdaExpr.envType.captures.push({
+              name: symbol.name,
+              type: resultingExpr.type,
+              capturedSymbol: elaboratedSymbolId,
+            });
+            lambdaExpr.envValue.captures.push({
+              variable: elaboratedSymbolId,
+              value: resultingExprId,
             });
           }
         }
 
-        return [symbolValueExpr, symbolValueExprId] as const;
+        return [resultingExpr, resultingExprId] as const;
       } else if (
         elaboratedSymbol.variant === Semantic.ENode.TypeDefSymbol &&
         this.sr.typeDefNodes.get(elaboratedSymbol.datatype).variant ===
@@ -7037,6 +7083,7 @@ export class SemanticElaborator {
       extern: EExternLanguage.None,
       memberOfStruct: null,
       mutability: EVariableMutability.Default,
+      requiresHoisting: false,
       name: makeTempName(),
       sourceloc: errPropExpr.sourceloc,
       parentStructOrNS: null,
@@ -7544,15 +7591,41 @@ export class SemanticElaborator {
     });
   }
 
-  callableExpr(callable: Collect.CallableExpr, inference: Semantic.Inference) {
+  callableExpr(
+    callable: Collect.CallableExpr,
+    inference: Semantic.Inference,
+  ): [Semantic.Expression, Semantic.ExprId] {
     const functionSignatureId = this.elaborateFunctionSignature(callable.functionSymbol);
     const functionSignature = this.sr.symbolNodes.get(functionSignatureId);
 
-    // A temporary env block that we will overwrite later since we don't know captures yet
     const envType: Semantic.EnvBlockType = {
       type: "lambda",
       captures: [],
     };
+    const envValue: Semantic.EnvBlockValue = {
+      type: "lambda",
+      captures: [],
+    };
+
+    // We have to do this very weirdly, because we need to define the callable expression.
+    // To do so, we need to elaborate the function. But as soon as the function elaborates,
+    // the body is elaborated, which does the SymbolValueExpr. This uses the context
+    // and tries to find the CallableExpr. But it does not exist yet. So we have to do this
+    // half baked to create the callable, THEN put the callable in the context,
+    // THEN elaborate the function, and THEN put everything back together.
+    const [callableExpr, callableExprId] = this.sr.b.addExpr(this.sr, {
+      variant: Semantic.ENode.CallableExpr,
+      functionSymbol: -1 as Semantic.SymbolId,
+      instanceIds: [],
+      isTemporary: true,
+      sourceloc: callable.sourceloc,
+      envType: envType,
+      envValue: envValue,
+      type: -1 as Semantic.TypeUseId,
+      flow: Semantic.FlowResult.fallthrough(),
+      writes: Semantic.WriteResult.empty(),
+    });
+    this.currentContext.elaboratedLambdaExprs.set(callable.lambdaScope, callableExprId);
 
     assert(functionSignature.variant === Semantic.ENode.FunctionSignature);
     const elaboratedFunctionId = this.elaborateFunctionSymbol(
@@ -7564,15 +7637,41 @@ export class SemanticElaborator {
     const elaboratedFunction = this.sr.symbolNodes.get(elaboratedFunctionId);
     assert(elaboratedFunction.variant === Semantic.ENode.FunctionSymbol);
 
+    // Now everything is known, so we can fix it up
+    callableExpr.functionSymbol = elaboratedFunctionId;
+    callableExpr.type = makeTypeUse(
+      this.sr,
+      this.sr.b.addType(this.sr, {
+        variant: Semantic.ENode.CallableDatatype,
+        concrete: true,
+        functionType: elaboratedFunction.type,
+        envType: envType,
+      })[1],
+      EDatatypeMutability.Default,
+      false,
+      callable.sourceloc,
+    )[1];
+
+    // Make the lambda transitive. Simply access all captures once by name, but outside of the lambda itself,
+    // so if captures go across multiple lambdas, they will recursively be applied to all of them.
+    for (const c of envValue.captures) {
+      const varsym = this.sr.symbolNodes.get(c.variable);
+      assert(varsym.variant === Semantic.ENode.VariableSymbol);
+      this.expr(
+        Collect.makeExpr(this.sr.cc, {
+          variant: Collect.ENode.SymbolValueExpr,
+          genericArgs: [],
+          name: varsym.name,
+          sourceloc: null,
+        })[1],
+        undefined,
+      );
+    }
+
     // Now we know what is being captured, overwrite the env block of the function (globally unique so we can mutate it)
     elaboratedFunction.envType = envType;
 
-    const envValue: Semantic.EnvBlockValue = {
-      type: "lambda",
-      captures: [],
-    };
-
-    return this.sr.b.callableExpr(elaboratedFunctionId, envType, envValue, callable.sourceloc);
+    return [callableExpr, callableExprId];
   }
 
   ternaryExpr(ternary: Collect.TernaryExpr, inference: Semantic.Inference) {

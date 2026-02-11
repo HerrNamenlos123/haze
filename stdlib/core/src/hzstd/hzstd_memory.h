@@ -34,6 +34,13 @@ void hzstd_init_gc();
     (void*)env;                                                                                                        \
   })
 
+#define HZSTD_HOIST(struct_t, value)                                                                                   \
+  ({                                                                                                                   \
+    struct_t* ptr = hzstd_heap_allocate(sizeof(struct_t));                                                             \
+    *ptr = value;                                                                                                      \
+    ptr;                                                                                                               \
+  })
+
 typedef struct hzstd_arena_chunk_t {
   struct hzstd_arena_chunk_t* next_chunk;
   size_t capacity;

@@ -3,6 +3,16 @@ extern C noemit sizeof(...): usize :: final;
 
 export type Result<T, E> = nodiscard union { Ok: T, Err: E, };
 
+export struct Box<T> {
+    value: T;
+
+    constructor(value: T) {
+        return Box {
+            value: value,
+        };
+    }
+}
+
 export clamp<T>(value: T, min: T, max: T): T {
     if (value < min) {
         return min;

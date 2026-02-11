@@ -129,6 +129,7 @@ export namespace Semantic {
     export: boolean;
     extern: EExternLanguage;
     variableContext: EVariableContext;
+    requiresHoisting: boolean;
     parentStructOrNS: TypeDefId | null;
     sourceloc: SourceLoc;
     comptime: boolean;
@@ -424,6 +425,7 @@ export namespace Semantic {
         captures: {
           name: string;
           type: TypeUseId;
+          capturedSymbol: SymbolId;
         }[];
       }
     | null;
@@ -435,7 +437,10 @@ export namespace Semantic {
       }
     | {
         type: "lambda";
-        captures: ExprId[];
+        captures: {
+          variable: SymbolId;
+          value: ExprId;
+        }[];
       }
     | null;
 
@@ -927,7 +932,7 @@ export namespace Semantic {
     args: { startLookupInScope: Collect.ScopeId; sourceloc: SourceLoc; pubRequired?: boolean },
   ):
     | { type: "semantic"; id: Semantic.ExprId }
-    | { type: "collect"; id: Collect.SymbolId }
+    | { type: "collect"; id: Collect.SymbolId; crossedLambdaScope: Collect.ScopeId | null }
     | undefined {
     const cc = sr.cc;
     const scope = cc.scopeNodes.get(args.startLookupInScope);
@@ -1003,6 +1008,7 @@ export namespace Semantic {
             return {
               id: found,
               type: "collect",
+              crossedLambdaScope: null,
             };
           }
         }
@@ -1012,6 +1018,7 @@ export namespace Semantic {
         });
       }
 
+      case Collect.ENode.LambdaScope:
       case Collect.ENode.ModuleScope:
       case Collect.ENode.UnitScope:
       case Collect.ENode.FileScope:
@@ -1024,6 +1031,7 @@ export namespace Semantic {
           return {
             id: found,
             type: "collect",
+            crossedLambdaScope: null, // Lambda scope doesn't have symbols
           };
         }
 
@@ -1047,6 +1055,7 @@ export namespace Semantic {
               return {
                 id: found,
                 type: "collect",
+                crossedLambdaScope: null,
               };
             }
           }
@@ -1057,10 +1066,18 @@ export namespace Semantic {
           });
         } else {
           // Not a file scope -> Can go higher
-          return tryLookupSymbol(sr, name, {
+          const result = tryLookupSymbol(sr, name, {
             startLookupInScope: scope.parentScope,
             sourceloc: args.sourceloc,
           });
+
+          if (scope.variant === Collect.ENode.LambdaScope && result?.type === "collect") {
+            // Intentionally overwrite because it is written on exit of recursion and we want
+            // the first match, which will be the last one to be applied
+            result.crossedLambdaScope = args.startLookupInScope;
+          }
+
+          return result;
         }
       }
 
@@ -1302,6 +1319,7 @@ export namespace Semantic {
 
     elaborationTypeOverride: Map<Collect.SymbolId, Semantic.TypeUseId>;
     elaboratedVariables: Map<Collect.SymbolId, Semantic.SymbolId>;
+    elaboratedLambdaExprs: Map<Collect.ScopeId, Semantic.ExprId>;
     elaborationRecursiveStructStack: Semantic.TypeDefId[];
   };
 
@@ -1321,6 +1339,7 @@ export namespace Semantic {
         symbolDependsOn: new Map(),
       },
       elaboratedVariables: new Map(),
+      elaboratedLambdaExprs: new Map(),
       elaborationTypeOverride: new Map(),
       elaborationRecursiveStructStack: [],
     };
@@ -1343,6 +1362,7 @@ export namespace Semantic {
       instanceDeps: args.instanceDeps,
 
       elaboratedVariables: new Map(parent.elaboratedVariables),
+      elaboratedLambdaExprs: new Map(parent.elaboratedLambdaExprs),
       elaborationTypeOverride: new Map(parent.elaborationTypeOverride),
       elaborationRecursiveStructStack: [...parent.elaborationRecursiveStructStack],
     };
@@ -1368,6 +1388,7 @@ export namespace Semantic {
       genericsScope: args.genericsScope,
       instanceDeps: args.instanceDeps,
       elaboratedVariables: new Map([...a.elaboratedVariables, ...b.elaboratedVariables]),
+      elaboratedLambdaExprs: new Map([...a.elaboratedLambdaExprs, ...b.elaboratedLambdaExprs]),
       elaborationTypeOverride: new Map([
         ...a.elaborationTypeOverride,
         ...b.elaborationTypeOverride,

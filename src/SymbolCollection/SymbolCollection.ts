@@ -134,6 +134,7 @@ export namespace Collect {
     FileScope,
     ExportScope,
     FunctionScope,
+    LambdaScope,
     StructLexicalScope,
     StructFieldScope,
     TypeDefScope,
@@ -227,6 +228,15 @@ export namespace Collect {
     symbols: Set<Collect.SymbolId>;
   };
 
+  export type LambdaScope = {
+    variant: ENode.LambdaScope;
+    parentScope: Collect.ScopeId;
+    owningSymbol: Collect.SymbolId;
+    sourceloc: SourceLoc;
+    functionScope: Collect.ScopeId;
+    symbols: Set<Collect.SymbolId>;
+  };
+
   export type StructFieldScope = {
     variant: ENode.StructFieldScope;
     parentScope: Collect.ScopeId;
@@ -275,6 +285,7 @@ export namespace Collect {
     | UnitScope
     | FileScope
     | FunctionScope
+    | LambdaScope
     | StructFieldScope
     | StructLexicalScope
     | NamespaceScope
@@ -785,6 +796,7 @@ export namespace Collect {
   export type CallableExpr = BaseExpr & {
     variant: ENode.CallableExpr;
     functionSymbol: Collect.SymbolId;
+    lambdaScope: Collect.ScopeId;
   };
 
   export type Expressions =
@@ -2612,14 +2624,24 @@ function collectExpr(
         vararg: false,
       });
 
+      const [lambdaScope, lambdaScopeId] = Collect.makeScope(cc, {
+        variant: Collect.ENode.LambdaScope,
+        owningSymbol: functionSymbolId,
+        parentScope: args.currentParentScope,
+        sourceloc: item.sourceloc,
+        functionScope: -1 as Collect.ScopeId,
+        symbols: new Set(),
+      });
+
       const [functionScope, functionScopeId] = Collect.makeScope(cc, {
         variant: Collect.ENode.FunctionScope,
         owningSymbol: functionSymbolId,
-        parentScope: args.currentParentScope,
+        parentScope: lambdaScopeId,
         sourceloc: item.sourceloc,
         blockScope: -1 as Collect.ScopeId,
         symbols: new Set(),
       });
+      lambdaScope.functionScope = functionScopeId;
       functionSymbol.functionScope = functionScopeId;
 
       functionScope.blockScope = collectScope(cc, item.lambda.scope, {
@@ -2646,6 +2668,7 @@ function collectExpr(
       return Collect.makeExpr(cc, {
         variant: Collect.ENode.CallableExpr,
         functionSymbol: functionSymbolId,
+        lambdaScope: lambdaScopeId,
         sourceloc: item.sourceloc,
       })[1];
     }
