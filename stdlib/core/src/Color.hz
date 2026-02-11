@@ -1,5 +1,5 @@
 
-export struct _Color<T> {
+export inline struct _Color<T> {
     r: T = default;
     g: T = default;
     b: T = default;

@@ -1,15 +1,10 @@
 
-struct Vertex {
-    pos: inline Vec3f = {};
-    color: inline Colorf = {};
+inline struct Vertex {
+    pos: Vec3f = {};
+    color: Colorf = {};
 }
 
-struct DrawCommands {
-    vertices: [](inline Vertex) = [];
-    indices: []u32 = [];
-}
-
-struct Globals {
+inline struct Globals {
     screenSize: inline Vec2f;
 }
 
@@ -27,18 +22,18 @@ min<T>(a: T, b: T): T => {
     return b;
 }
 
-struct PrimitiveInstance {
-    pos: inline Vec2f;            // center position in pixels
-    size: inline Vec2f;           // width/height
+inline struct PrimitiveInstance {
+    pos: Vec2f;            // center position in pixels
+    size: Vec2f;           // width/height
     radius: f32;           // corner radius for rounded rect
     borderThickness: f32;  // 0 = no border
-    fillColor: inline Colorf;
-    borderColor: inline Colorf;
+    fillColor: Colorf;
+    borderColor: Colorf;
     type: u32;             // 0 = Filled Rounded Rectangle, 1 = Outlined Rounded Rectangle
 };
 
-struct QuadVertex {
-    pos: inline Vec2f;  // [-0.5, -0.5] .. [0.5, 0.5]
+inline struct QuadVertex {
+    pos: Vec2f;  // [-0.5, -0.5] .. [0.5, 0.5]
 };
 
 opaque struct Renderer {
@@ -53,7 +48,7 @@ opaque struct Renderer {
     vertexBuffer: mut wgpu.Buffer;
     indexBuffer: mut wgpu.Buffer;
 
-    primitives: []inline PrimitiveInstance = [];
+    primitives: []PrimitiveInstance = [];
 
     constructor(size: Vec2i, device: mut wgpu.Device, surface: mut wgpu.Surface, surfaceFormats: []wgpu.TextureFormat) {
         let queue = device.getQueue();
@@ -62,7 +57,7 @@ opaque struct Renderer {
         }
 
         let vertexLayout = wgpu.VertexBufferLayout {
-            arrayStride: sizeof(type<inline QuadVertex>),
+            arrayStride: sizeof(QuadVertex),
             stepMode: wgpu.VertexStepMode.Vertex,
             attributes: {
                 {
@@ -74,7 +69,7 @@ opaque struct Renderer {
         };
 
         let instanceLayout = wgpu.VertexBufferLayout {
-            arrayStride: sizeof(type<inline PrimitiveInstance>),
+            arrayStride: sizeof(PrimitiveInstance),
             stepMode: wgpu.VertexStepMode.Instance, // key! this is per-instance
             attributes: {
                 { shaderLocation: 1, offset: 0, format: wgpu.VertexFormat.Float32x2 }, // pos
@@ -99,7 +94,7 @@ opaque struct Renderer {
 
         let globalsBuffer = device.createBuffer({
             usage: wgpu.BufferUsage.Uniform | wgpu.BufferUsage.CopyDst,
-            size: sizeof(type<inline Globals>),
+            size: sizeof(Globals),
         });
 
         let globalsBindGroup = device.createBindGroup({
@@ -109,7 +104,7 @@ opaque struct Renderer {
                     binding: 0,
                     buffer: globalsBuffer,
                     offset: 0,
-                    size: sizeof(type<inline Globals>),
+                    size: sizeof(Globals),
                 },
             },
         });
@@ -159,9 +154,9 @@ opaque struct Renderer {
 
         let vertexBuffer = device.createBuffer({
             usage: wgpu.BufferUsage.Vertex | wgpu.BufferUsage.CopyDst,
-            size: sizeof(type<inline QuadVertex>) * 4,
+            size: sizeof(QuadVertex) * 4,
         });
-        queue.writeBuffer<inline QuadVertex>(vertexBuffer, [
+        queue.writeBuffer<QuadVertex>(vertexBuffer, [
             { pos: Vec2f(-0.5, -0.5) },
             { pos: Vec2f(0.5, -0.5) },
             { pos: Vec2f(0.5, 0.5) },
@@ -259,7 +254,7 @@ opaque struct Renderer {
             return;
         }
 
-        this.queue.writeBuffer<inline Globals>(
+        this.queue.writeBuffer<Globals>(
             this.globalsBuffer,
             [
                 {
@@ -272,10 +267,10 @@ opaque struct Renderer {
         );
 
         let instanceBuffer = this.device.createBuffer({
-            size: sizeof(type<inline PrimitiveInstance>) * this.primitives.length,
+            size: sizeof(type<PrimitiveInstance>) * this.primitives.length,
             usage: wgpu.BufferUsage.Vertex | wgpu.BufferUsage.Storage | wgpu.BufferUsage.CopyDst,
         });
-        this.queue.writeBuffer<inline PrimitiveInstance>(instanceBuffer, this.primitives);
+        this.queue.writeBuffer<PrimitiveInstance>(instanceBuffer, this.primitives);
 
         let colorAttachment = wgpu.RenderPassColorAttachment {
             view: backbuffer,
