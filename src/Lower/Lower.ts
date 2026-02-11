@@ -23,6 +23,8 @@ import {
 import { assert, InternalError, printWarningMessage, type SourceLoc } from "../shared/Errors";
 import { makeTempName } from "../shared/store";
 
+const ENABLE_IMMEDIATE_CALLABLE_CALL_OPTIMIZATION = true;
+
 export namespace Lowered {
   export type FunctionId = Brand<number, "LoweredFunction">;
   export type TypeUseId = Brand<number, "LoweredTypeUse">;
@@ -227,8 +229,7 @@ export namespace Lowered {
     variant: ENode.CallableExpr;
     envType: EnvBlockType;
     envValue: EnvBlockValue;
-    functionName: NameSet;
-    functionType: TypeUseId;
+    function: FunctionId;
     type: TypeUseId;
   };
 
@@ -523,6 +524,12 @@ export namespace Lowered {
     isLibraryLocal: boolean;
     noreturn: boolean;
     envType: EnvBlockType;
+    // For closures, the main FunctionSymbol is the native one with all captures directly passed.
+    // Those native functions have a corresponding trampoline function for generic env-block calls.
+    // This trampoline function then has isClosureTrampolineFor set back to the original function.
+    // This is the core of the closure optimization, which makes methods fast.
+    closureTrampoline: Lowered.FunctionId | null;
+    isClosureTrampolineFor: Lowered.FunctionId | null;
     scope: BlockScopeId | null;
     sourceloc: SourceLoc;
   };
@@ -656,6 +663,27 @@ const callSysPanic = (
   })[1];
   assert(flattened.length === 0);
   return id;
+};
+
+const storeInTempVarAndGetIfRequired = (
+  lr: Lowered.Module,
+  type: Lowered.TypeUseId,
+  value: Lowered.ExprId | null,
+  sourceloc: SourceLoc,
+  flattened: Lowered.StatementId[],
+  varname?: string,
+): [Lowered.Expression, Lowered.ExprId] => {
+  if (value) {
+    const expr = lr.exprNodes.get(value);
+    if (
+      expr.variant === Lowered.ENode.LiteralExpr ||
+      expr.variant === Lowered.ENode.SymbolValueExpr
+    ) {
+      return [expr, value];
+    }
+  }
+
+  return storeInTempVarAndGet(lr, type, value, sourceloc, flattened, varname);
 };
 
 const storeInTempVarAndGet = (
@@ -803,35 +831,25 @@ export function lowerExpr(
       if (calledExprTypeDef.variant === Lowered.ENode.CallableDatatype) {
         if (
           calledExpr.variant === Lowered.ENode.CallableExpr &&
-          calledExpr.envValue?.type === "method"
+          calledExpr.envValue?.type === "method" &&
+          ENABLE_IMMEDIATE_CALLABLE_CALL_OPTIMIZATION
         ) {
           // A method is immediately called -> Optimize callable object away
-
-          // Temporary env block -> required because callables require additional indirection
-          // But we put it here on the stack so it's all perfectly in cache and not a real performance hit.
-          const env = storeInTempVarAndGet(
-            lr,
-            lowerTypeUse(lr, lr.sr.b.cptrType()),
-            calledExpr.envValue.thisExpr,
-            expr.sourceloc,
-            flattened,
-          );
+          // As optimization, switch back from the trampoline function to the native function
+          const trampolineFunction = lr.functionNodes.get(calledExpr.function);
+          assert(trampolineFunction.isClosureTrampolineFor);
+          const nativeFunction = lr.functionNodes.get(trampolineFunction.isClosureTrampolineFor);
 
           const type = lowerTypeUse(lr, expr.type);
           const [callExpr, callExprId] = Lowered.addExpr<Lowered.ExprCallExpr>(lr, {
             variant: Lowered.ENode.ExprCallExpr,
             expr: Lowered.addExpr(lr, {
               variant: Lowered.ENode.SymbolValueExpr,
-              name: calledExpr.functionName,
-              functionType: calledExpr.functionType,
+              name: nativeFunction.name,
               type: calledExpr.type,
             })[1],
             arguments: [
-              Lowered.addExpr(lr, {
-                variant: Lowered.ENode.AddressOfExpr,
-                expr: env[1],
-                type: lowerTypeUse(lr, lr.sr.b.cptrType()),
-              })[1],
+              calledExpr.envValue.thisExpr,
               ...expr.arguments.map((a) => lowerExpr(lr, a, flattened, instanceInfo)[1]),
             ],
             type: type,
@@ -840,6 +858,13 @@ export function lowerExpr(
         } else {
           // The callable is from a variable with unknown origin or a real lambda -> Actually call the callable properly
           const type = lowerTypeUse(lr, expr.type);
+          const callableTmp = storeInTempVarAndGetIfRequired(
+            lr,
+            calledExpr.type,
+            calledExprId,
+            null,
+            flattened,
+          )[1];
           const [callExpr, callExprId] = Lowered.addExpr<Lowered.ExprCallExpr>(lr, {
             variant: Lowered.ENode.ExprCallExpr,
             expr: Lowered.addExpr(lr, {
@@ -847,12 +872,12 @@ export function lowerExpr(
               memberName: "fn",
               requiresDeref: false,
               type: calledExpr.type,
-              expr: calledExprId,
+              expr: callableTmp,
             })[1],
             arguments: [
               Lowered.addExpr(lr, {
                 variant: Lowered.ENode.MemberAccessExpr,
-                expr: calledExprId,
+                expr: callableTmp,
                 requiresDeref: false,
                 memberName: "env",
                 type: lowerTypeUse(lr, lr.sr.b.cptrType()),
@@ -1547,9 +1572,16 @@ export function lowerExpr(
 
       const functionSymbol = lr.sr.symbolNodes.get(expr.functionSymbol);
       assert(functionSymbol.variant === Semantic.ENode.FunctionSymbol);
+
+      const loweredFuncId = lowerSymbol(lr, expr.functionSymbol);
+      assert(loweredFuncId);
+      const loweredFunc = lr.functionNodes.get(loweredFuncId);
+      assert(loweredFunc.variant === Lowered.ENode.FunctionSymbol);
+      assert(loweredFunc.closureTrampoline);
+
       return Lowered.addExpr(lr, {
         variant: Lowered.ENode.CallableExpr,
-        functionName: Semantic.makeNameSetSymbol(lr.sr, expr.functionSymbol),
+        function: loweredFunc.closureTrampoline,
         envType: envType,
         envValue: envValue,
         type: lowerTypeUse(lr, expr.type),
@@ -3184,14 +3216,29 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
 
       const originalFuncType = lr.sr.typeDefNodes.get(symbol.type);
       assert(originalFuncType.variant === Semantic.ENode.FunctionDatatype);
-      const newParameters = [...originalFuncType.parameters];
+      const mainFuncParameters = [...originalFuncType.parameters];
+      const mainFuncParameterNames = [...parameterNames];
+      const trampolineFuncParameters = [...originalFuncType.parameters];
+      const trampolineFuncParameterNames = [...parameterNames];
 
       let envType: Lowered.EnvBlockType = null;
+      let makeTrampoline = false;
       if (symbol.envType?.type === "method") {
         envType = {
           type: "method",
           thisExprType: lowerTypeUse(lr, symbol.envType.thisExprType),
         };
+        mainFuncParameterNames.unshift("this");
+        mainFuncParameters.unshift({
+          optional: false,
+          type: symbol.envType.thisExprType,
+        });
+        trampolineFuncParameterNames.unshift("__hz_env");
+        trampolineFuncParameters.unshift({
+          optional: false,
+          type: lr.sr.b.cptrType(),
+        });
+        makeTrampoline = true;
       } else if (symbol.envType?.type === "lambda") {
         envType = {
           type: "lambda",
@@ -3200,18 +3247,23 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
             type: lowerTypeUse(lr, c.type),
           })),
         };
-      }
-
-      if (envType !== null) {
-        parameterNames.unshift("__hz_env");
-        newParameters.unshift({
+        for (const c of symbol.envType.captures) {
+          mainFuncParameterNames.unshift(c.name);
+          mainFuncParameters.unshift({
+            optional: false,
+            type: c.type,
+          });
+        }
+        trampolineFuncParameterNames.unshift("__hz_env");
+        trampolineFuncParameters.unshift({
           optional: false,
           type: lr.sr.b.cptrType(),
         });
+        makeTrampoline = true;
       }
 
       const newFuncType = makeRawFunctionDatatypeAvailable(lr.sr, {
-        parameters: newParameters,
+        parameters: mainFuncParameters,
         returnType: originalFuncType.returnType,
         sourceloc: symbol.sourceloc,
         requires: {
@@ -3230,10 +3282,12 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
       const [f, fId] = Lowered.addFunction<Lowered.FunctionSymbol>(lr, {
         variant: Lowered.ENode.FunctionSymbol,
         name: Semantic.makeNameSetSymbol(lr.sr, symbolId),
-        parameterNames: parameterNames,
+        parameterNames: mainFuncParameterNames,
         type: lowerTypeDef(lr, newFuncType),
         noreturn: originalFuncType.requires.noreturn,
         envType: envType,
+        closureTrampoline: null,
+        isClosureTrampolineFor: null,
         isLibraryLocal:
           monomorphized ||
           (!exported && symbol.extern !== EExternLanguage.Extern_C && symbol.scope !== null),
@@ -3266,6 +3320,157 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
               exprType.primitive === EPrimitive.none,
           );
           scope.emittedExpr = null;
+        }
+      }
+
+      if (makeTrampoline) {
+        const name = Semantic.makeNameSetSymbol(lr.sr, symbolId);
+        name.mangledName += "_trampoline";
+        name.prettyName += "_trampoline";
+        const [trampoline, trampolineId] = Lowered.addFunction<Lowered.FunctionSymbol>(lr, {
+          variant: Lowered.ENode.FunctionSymbol,
+          name: name,
+          parameterNames: trampolineFuncParameterNames,
+          type: lowerTypeDef(
+            lr,
+            makeRawFunctionDatatypeAvailable(lr.sr, {
+              parameters: trampolineFuncParameters,
+              returnType: originalFuncType.returnType,
+              sourceloc: symbol.sourceloc,
+              requires: {
+                final: originalFuncType.requires.final,
+                pure: originalFuncType.requires.pure,
+                noreturn: originalFuncType.requires.noreturn,
+                noreturnIf: originalFuncType.requires.noreturnIf,
+              },
+              vararg: false,
+            }),
+          ),
+          noreturn: originalFuncType.requires.noreturn,
+          envType: envType,
+          closureTrampoline: null,
+          isClosureTrampolineFor: null,
+          isLibraryLocal:
+            monomorphized ||
+            (!exported && symbol.extern !== EExternLanguage.Extern_C && symbol.scope !== null),
+          scope: null,
+          sourceloc: symbol.sourceloc,
+          externLanguage: symbol.extern,
+        });
+        f.closureTrampoline = trampolineId;
+        trampoline.isClosureTrampolineFor = fId;
+
+        if (symbol.scope) {
+          const statements: Lowered.StatementId[] = [];
+          if (envType?.type === "method") {
+            statements.push(
+              Lowered.addStatement(lr, {
+                variant: Lowered.ENode.InlineCStatement,
+                sourceloc: f.sourceloc,
+                value: "void* this = ((void**)__hz_env)[0];",
+              })[1],
+            );
+            const args: Lowered.ExprId[] = [];
+            for (let i = 0; i < parameterNames.length; i++) {
+              args.push(
+                Lowered.addExpr(lr, {
+                  variant: Lowered.ENode.SymbolValueExpr,
+                  type: lowerTypeUse(lr, originalFuncType.parameters[i].type),
+                  name: {
+                    mangledName: parameterNames[i],
+                    prettyName: parameterNames[i],
+                    wasMangled: false,
+                  },
+                })[1],
+              );
+            }
+            statements.push(
+              Lowered.addStatement(lr, {
+                variant: Lowered.ENode.ReturnStatement,
+                sourceloc: f.sourceloc,
+                expr: Lowered.addExpr(lr, {
+                  variant: Lowered.ENode.ExprCallExpr,
+                  arguments: [
+                    Lowered.addExpr(lr, {
+                      variant: Lowered.ENode.SymbolValueExpr,
+                      type: envType.thisExprType,
+                      name: {
+                        mangledName: "this",
+                        prettyName: "this",
+                        wasMangled: false,
+                      },
+                    })[1],
+                    ...args,
+                  ],
+                  expr: Lowered.addExpr(lr, {
+                    variant: Lowered.ENode.SymbolValueExpr,
+                    type: lowerTypeUse(lr, lr.sr.b.cptrType()),
+                    name: f.name,
+                  })[1],
+                  type: lowerTypeUse(lr, lr.sr.b.voidType()),
+                })[1],
+              })[1],
+            );
+          } else if (envType?.type === "lambda") {
+            envType.captures.forEach((c, i) => {
+              statements.push(
+                Lowered.addStatement(lr, {
+                  variant: Lowered.ENode.InlineCStatement,
+                  sourceloc: f.sourceloc,
+                  value: `void* ${c.name} = ((void**)__hz_env)[${i}];`,
+                })[1],
+              );
+            });
+            const args: Lowered.ExprId[] = [];
+            for (let i = 0; i < parameterNames.length; i++) {
+              args.push(
+                Lowered.addExpr(lr, {
+                  variant: Lowered.ENode.SymbolValueExpr,
+                  type: lowerTypeUse(lr, originalFuncType.parameters[i].type),
+                  name: {
+                    mangledName: parameterNames[i],
+                    prettyName: parameterNames[i],
+                    wasMangled: false,
+                  },
+                })[1],
+              );
+            }
+            statements.push(
+              Lowered.addStatement(lr, {
+                variant: Lowered.ENode.ReturnStatement,
+                sourceloc: f.sourceloc,
+                expr: Lowered.addExpr(lr, {
+                  variant: Lowered.ENode.ExprCallExpr,
+                  arguments: [
+                    Lowered.addExpr(lr, {
+                      variant: Lowered.ENode.SymbolValueExpr,
+                      type: lowerTypeUse(lr, lr.sr.b.cptrType()),
+                      name: {
+                        mangledName: "__hz_env",
+                        prettyName: "__hz_env",
+                        wasMangled: false,
+                      },
+                    })[1],
+                    ...args,
+                  ],
+                  expr: Lowered.addExpr(lr, {
+                    variant: Lowered.ENode.SymbolValueExpr,
+                    type: lowerTypeUse(lr, lr.sr.b.cptrType()),
+                    name: f.name,
+                  })[1],
+                  type: lowerTypeUse(lr, lr.sr.b.voidType()),
+                })[1],
+              })[1],
+            );
+          } else {
+            assert(false);
+          }
+
+          trampoline.scope = Lowered.addBlockScope(lr, {
+            definesVariables: true,
+            statements: statements,
+            emittedExpr: null,
+          })[1];
         }
       }
 
@@ -3458,8 +3663,10 @@ function serializeLoweredExpr(lr: Lowered.Module, exprId: Lowered.ExprId): strin
     case Lowered.ENode.MemberAccessExpr:
       return `(${serializeLoweredExpr(lr, expr.expr)}.${expr.memberName})`;
 
-    case Lowered.ENode.CallableExpr:
-      return `Callable(${expr.functionName.prettyName})`;
+    case Lowered.ENode.CallableExpr: {
+      const func = lr.functionNodes.get(expr.function);
+      return `Callable(${func.name.prettyName})`;
+    }
 
     case Lowered.ENode.AddressOfExpr:
       return `&${serializeLoweredExpr(lr, expr.expr)}`;

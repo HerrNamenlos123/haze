@@ -27,6 +27,13 @@ void hzstd_init_gc();
     tmp;                                                                                                               \
   })
 
+#define HZSTD_ENV_BLOCK_FOR_THIS_PTR(value)                                                                            \
+  ({                                                                                                                   \
+    void** env = hzstd_heap_allocate(sizeof(void*));                                                                   \
+    *env = (value);                                                                                                    \
+    (void*)env;                                                                                                        \
+  })
+
 typedef struct hzstd_arena_chunk_t {
   struct hzstd_arena_chunk_t* next_chunk;
   size_t capacity;

@@ -687,24 +687,28 @@ class CodeGenerator {
     if (symbol.scope) {
       this.out.function_definitions.writeLine(signature + " {").pushIndent();
 
-      // Insert any environment lookups for methods and lambdas
-      if (symbol.envType?.type === "method") {
-        this.out.function_definitions.writeLine(
-          `${this.mangleTypeUse(symbol.envType.thisExprType)} this = ((void**)__hz_env)[0];`,
-        );
-      } else if (symbol.envType?.type === "lambda") {
-        symbol.envType.captures.forEach((c, i) => {
-          this.out.function_definitions.writeLine(
-            `${this.mangleTypeUse(c.type)} ${c.name} = ((void**)__hz_env)[${i}];`,
-          );
-        });
-      }
+      // // Insert any environment lookups for methods and lambdas
+      // if (symbol.envType?.type === "method") {
+      //   this.out.function_definitions.writeLine(
+      //     `${this.mangleTypeUse(symbol.envType.thisExprType)} this = ((void**)__hz_env)[0];`,
+      //   );
+      // } else if (symbol.envType?.type === "lambda") {
+      //   symbol.envType.captures.forEach((c, i) => {
+      //     this.out.function_definitions.writeLine(
+      //       `${this.mangleTypeUse(c.type)} ${c.name} = ((void**)__hz_env)[${i}];`,
+      //     );
+      //   });
+      // }
 
       const s = this.emitScope(symbol.scope);
       this.out.function_definitions.write(s.temp);
       this.out.function_definitions.write(s.out);
 
       this.out.function_definitions.popIndent().writeLine("}").writeLine();
+    }
+
+    if (symbol.closureTrampoline) {
+      this.emitFunction(symbol.closureTrampoline);
     }
   }
 
@@ -1383,7 +1387,7 @@ class CodeGenerator {
         if (expr.envValue?.type === "method") {
           const thisExpr = this.emitExpr(expr.envValue.thisExpr);
           tempWriter.write(thisExpr.temp);
-          env = `({ void** env = hzstd_heap_allocate(sizeof(void*)); *env = ${thisExpr.out.get()}; (void*)env; })`;
+          env = `HZSTD_ENV_BLOCK_FOR_THIS_PTR(${thisExpr.out.get()})`;
         } else if (expr.envValue?.type === "lambda") {
           if (expr.envValue.captures.length > 0) {
             const setters = expr.envValue.captures.map((c, i) => {
@@ -1394,10 +1398,11 @@ class CodeGenerator {
             env = `({ void** env = hzstd_heap_allocate(sizeof(void*) * ${expr.envValue.captures.length}); ${setters} (void*)env; })`;
           }
         }
+        const func = this.lr.functionNodes.get(expr.function);
         outWriter.write(
           `((${this.mangleTypeUse(
             expr.type,
-          )}) { .fn = ${this.mangleName(expr.functionName)}, .env = ${env} })`,
+          )}) { .fn = ${this.mangleName(func.name)}, .env = ${env} })`,
         );
         return { out: outWriter, temp: tempWriter };
       }

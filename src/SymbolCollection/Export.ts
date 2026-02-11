@@ -95,7 +95,7 @@ export function ExportTypeDef(
           const parameters = functype.parameters
             .map(
               (p, i) =>
-                `${method.parameterNames[i + 1]}${
+                `${method.parameterNames[i]}${
                   p.optional ? "?" : ""
                 }: ${Semantic.serializeTypeUse(sr, p.type)}`,
             )

@@ -1608,17 +1608,6 @@ export class SemanticElaborator {
 
       assert(func && funcId);
 
-      let envType: Semantic.EnvBlockType = {
-        type: "method",
-        thisExprType: makeTypeUse(
-          this.sr,
-          this.sr.typeUseNodes.get(object.type).type,
-          EDatatypeMutability.Mut,
-          "force-no-inline",
-          memberAccess.sourceloc,
-        )[1],
-      };
-
       return this.sr.b.callableExpr(
         funcId,
         {
