@@ -41,6 +41,11 @@ async function main(): Promise<number> {
     dest: "ignoreLock",
     help: "Skip build lock acquisition (internal use)",
   });
+  build_parser.add_argument("--strip", {
+    action: "store_true",
+    dest: "strip",
+    help: "Strip the final executable after building",
+  });
 
   const get_parser = subparsers.add_parser("get", { help: "Download a file" });
   get_parser.add_argument("url", { help: "URL to download" });
@@ -73,6 +78,11 @@ async function main(): Promise<number> {
     dest: "ignoreLock",
     help: "Skip build lock acquisition (internal use)",
   });
+  run_parser.add_argument("--strip", {
+    action: "store_true",
+    dest: "strip",
+    help: "Strip the final executable after building",
+  });
 
   const exec_parser = subparsers.add_parser("exec", {
     help: "Run a single file immediately as a script",
@@ -96,6 +106,11 @@ async function main(): Promise<number> {
     action: "store_true",
     dest: "ignoreLock",
     help: "Skip build lock acquisition (internal use)",
+  });
+  exec_parser.add_argument("--strip", {
+    action: "store_true",
+    dest: "strip",
+    help: "Strip the final executable after building",
   });
   exec_parser.add_argument("filename", {
     nargs: "?",
@@ -123,7 +138,11 @@ async function main(): Promise<number> {
       return 0;
     }
     if (args.command === "build" || args.command === "run" || args.command === "exec") {
-      const project = new ProjectCompiler(Boolean(args.verbose), Boolean(args.ignoreLock));
+      const project = new ProjectCompiler(
+        Boolean(args.verbose),
+        Boolean(args.ignoreLock),
+        Boolean(args.strip),
+      );
       if (!(await project.build(args.filename, args.sourceloc, args.fullRebuild))) {
         return 1;
       }

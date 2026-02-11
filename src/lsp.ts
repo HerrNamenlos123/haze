@@ -62,7 +62,7 @@ async function analyzeModule(
     }
 
     // Module-based analysis
-    const project = new ProjectCompiler(false, false);
+    const project = new ProjectCompiler(false, false, false);
     const previousCwd = process.cwd();
     process.chdir(moduleRoot);
     const config = await project.getConfig(undefined, true);
@@ -79,6 +79,7 @@ async function analyzeModule(
       project.cache,
       globalBuildDir,
       moduleDir,
+      false,
       false,
     );
     moduleCompiler.currentModuleRootDir = moduleRoot;

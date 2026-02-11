@@ -862,10 +862,12 @@ export class ProjectCompiler {
   globalBuildDir: string = "";
   verbose: boolean;
   ignoreLock: boolean;
+  strip: boolean;
 
-  constructor(verbose: boolean = false, ignoreLock: boolean = false) {
+  constructor(verbose: boolean = false, ignoreLock: boolean = false, strip: boolean = false) {
     this.verbose = verbose;
     this.ignoreLock = ignoreLock;
+    this.strip = strip;
   }
 
   async getConfig(singleFilename?: string, sourceloc?: boolean) {
@@ -943,6 +945,7 @@ export class ProjectCompiler {
         this.globalBuildDir,
         join(this.globalBuildDir, config.name),
         this.verbose,
+        this.strip,
       );
 
       if (!mainModule.config.nostdlib) {
@@ -956,6 +959,7 @@ export class ProjectCompiler {
           this.globalBuildDir,
           join(this.globalBuildDir, stdlibConfig.name),
           this.verbose,
+          this.strip,
         );
 
         const c = new CLIPrinter();
@@ -989,6 +993,7 @@ export class ProjectCompiler {
             this.globalBuildDir,
             join(this.globalBuildDir, config.name),
             this.verbose,
+            this.strip,
           );
 
           const c = new CLIPrinter();
@@ -1017,7 +1022,7 @@ export class ProjectCompiler {
       mainModule.config.printerModule = c.modules[c.modules.length - 1];
       c.start();
 
-      if (!(await mainModule.build(true, fullRebuild))) {
+      if (!(await mainModule.build(true, fullRebuild || this.strip))) {
         return false;
       }
 
@@ -1411,6 +1416,7 @@ export class ModuleCompiler {
     public hazeWorkspaceDirectory: string,
     public moduleDir: string,
     public verbose: boolean,
+    public strip: boolean,
   ) {
     this.cc = makeCollectionContext(this.config);
   }
@@ -1870,7 +1876,7 @@ export class ModuleCompiler {
     assert(this.currentModuleRootDir);
     console.log(`>> Running generator ${gen.name}...`);
     const sourceloc = this.config.includeSourceloc;
-    const project = new ProjectCompiler(false, true);
+    const project = new ProjectCompiler(false, true, false);
     if (!(await project.build(this.resolveExec(gen.exec), sourceloc, false))) {
       throw new GeneralError(`Build of generator step ${gen.name} failed`);
     }
@@ -1925,6 +1931,15 @@ export class ModuleCompiler {
         this.config.printerModule.printer.log(msg);
       };
 
+      const maybeStripExecutable = () => {
+        if (!isTopLevelModule || !this.strip) return;
+        if (this.config.moduleType !== ModuleType.Executable) return;
+        if (PLATFORM !== Platform.Linux) return;
+        const moduleExecutable = join(this.moduleDir, `bin/${this.config.name}`);
+        if (!existsSync(moduleExecutable)) return;
+        exec(`strip --strip-unneeded "${moduleExecutable}"`);
+      };
+
       // if (this.config.configFilePath) {
       //   if (
       //     !(await this.cache.hasModuleChanged(
@@ -1973,6 +1988,7 @@ export class ModuleCompiler {
 
       if (!moduleChanged && !generatorsNeedRun) {
         // console.log(`Skipping module ${this.config.name} (no changes)`);
+        maybeStripExecutable();
         return;
       }
 
@@ -1982,6 +1998,7 @@ export class ModuleCompiler {
 
       if (!moduleChanged && !generatorsRan) {
         // console.log(`Skipping module ${this.config.name} (no changes)`);
+        maybeStripExecutable();
         return;
       }
 
@@ -2189,6 +2206,9 @@ export class ModuleCompiler {
         await writeCompileCommands();
 
         exec(cmd);
+        if (this.strip) {
+          exec(`strip --strip-unneeded "${moduleExecutable}"`);
+        }
       } else {
         const flags = `${platformCompilerFlags.join(" ")}`;
         const filePreamble = `// clang-format off\n\n`;
