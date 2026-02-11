@@ -52,8 +52,9 @@ export struct Adapter {
             }
         }
 
+        let callback = Box<RequestDeviceCallback>(callbackInfo.callback);
         let userdata1 = none as cptr;
-        __c__("userdata1 = callbackInfo->callback;");
+        __c__("userdata1 = callback;");
 
         let ffiCallbackInfo = {
             nextInChain: none,

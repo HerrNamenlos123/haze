@@ -3,7 +3,7 @@ export struct Instance {
 
     requestAdapter(adapterOpts: RequestAdapterOptions | none, callbackInfo: RequestAdapterCallbackInfo) {
 
-        let callback = callbackInfo.callback;
+        let callback = Box<RequestAdapterCallback>(callbackInfo.callback);
         let userdata1: cptr = none;
         __c__("userdata1 = (void*)callback;"); // Pass the function pointer to the highlevel callback into the lowlevel hook
 

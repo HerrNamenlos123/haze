@@ -4,46 +4,9 @@ import gl
 import wgpu
 import glfw_wgpu
 
-let g_adapter = none as mut wgpu.Adapter | none;
-let g_adapterReady = false;
-
 export extern C noemit wgpu_init(glfwWindow: cptr) :: final;
 export extern C wgpu_start(glfwWindow: cptr, device: wgpu.ffi.WGPUDeviceImpl, surface: wgpu.ffi.WGPUSurfaceImpl, queue: wgpu.ffi.WGPUQueueImpl, texture: wgpu.ffi.WGPUTextureViewImpl) :: final;
 export extern C wgpu_end(glfwWindow: cptr) :: final;
-
-
-adapterRequestCallback(status: wgpu.RequestAdapterStatus, adapter: mut wgpu.Adapter, message: str): void {
-  if (status == wgpu.RequestAdapterStatus.Success) {
-    g_adapter = adapter;
-    g_adapterReady = true;
-    fmt.println("Adapter request successful");
-  }
-  else {
-    g_adapterReady = true;
-    fmt.println("Adapter request failed");
-  }
-}
-
-let g_device = none as mut wgpu.Device | none;
-let g_deviceReady = false;
-
-deviceRequestCallback(status: wgpu.RequestDeviceStatus, device: mut wgpu.Device, message: str): void {
-  if (status == wgpu.RequestDeviceStatus.Success) {
-    g_device = device;
-    g_deviceReady = true;
-    fmt.println("Device request successful");
-  }
-  else {
-    g_deviceReady = true;
-    fmt.println("Device request failed");
-  }
-}
-
-let g_queue = none as mut wgpu.Queue | none;
-
-struct Foo {
-    bar: int;
-}
 
 main(): int {
 
@@ -62,30 +25,57 @@ main(): int {
         let surface = glfw_wgpu.createWindowWGPUSurface(instance, window);
         if !surface { raise "WGPU Surface creation failed"; }
 
-        instance.requestAdapter({}, { callback: adapterRequestCallback });
-
+        let adapter = none as mut wgpu.Adapter | none;
+        let adapterReady = false;
+        instance.requestAdapter({}, { 
+            callback: (status: wgpu.RequestAdapterStatus, _adapter: mut wgpu.Adapter, message: str): void => {
+                if (status == wgpu.RequestAdapterStatus.Success) {
+                    adapter = _adapter;
+                    adapterReady = true;
+                    fmt.println("Adapter request successful");
+                }
+                else {
+                    adapterReady = true;
+                    fmt.println("Adapter request failed");
+                }
+            }
+        });
         let timeout = 100;
-        while !g_adapterReady && timeout > 0 {
+        while !adapterReady && timeout > 0 {
             time.sleep(0.1);
             timeout--;
         }
-        if (!g_adapter) { raise "Failed to get adapter after timeout"; }
+        if (!adapter) { raise "Failed to get adapter after timeout"; }
 
-        g_adapter.requestDevice({}, { callback: deviceRequestCallback });
+        let device = none as mut wgpu.Device | none;
+        let deviceReady = false;
+        adapter.requestDevice({}, { 
+            callback: (status: wgpu.RequestDeviceStatus, _device: mut wgpu.Device, message: str): void => {
+                if (status == wgpu.RequestDeviceStatus.Success) {
+                    device = _device;
+                    deviceReady = true;
+                    fmt.println("Device request successful");
+                }
+                else {
+                    deviceReady = true;
+                    fmt.println("Device request failed");
+                }
+            }
+        });
 
         timeout = 100;
-        while !g_deviceReady && timeout > 0 {
+        while !deviceReady && timeout > 0 {
             time.sleep(0.1);
             timeout--;
         }
-        if (!g_device) { raise "Failed to get device after timeout"; }
+        if (!device) { raise "Failed to get device after timeout"; }
 
-        let caps = surface.getCapabilities(g_adapter);
+        let caps = surface.getCapabilities(adapter);
         if (!caps) { raise "Failed to get surface capabilities"; }
 
         let size = window.getFramebufferSize();
         surface.configure({
-            device: g_device,
+            device: device,
             format: caps.formats[0],
             usage: wgpu.TextureUsage.RenderAttachment,
             width: size.x,
@@ -94,7 +84,7 @@ main(): int {
             alphaMode: caps.alphaModes[0],
         });
 
-        let renderer = Renderer(size, g_device, surface, caps.formats);
+        let renderer = Renderer(size, device, surface, caps.formats);
 
         while !window.shouldClose() {
             glfw.pollEvents();

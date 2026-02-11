@@ -18,7 +18,7 @@ export struct RequestAdapterOptions {
     compatibleSurface: mut Surface | none = none;
 }
 
-export type RequestAdapterCallback = (status: RequestAdapterStatus, adapter: mut Adapter, message: str) -> void :: final;
+export type RequestAdapterCallback = (status: RequestAdapterStatus, adapter: mut Adapter, message: str) => void :: final;
 export struct RequestAdapterCallbackInfo {
     callback: RequestAdapterCallback;
     mode: CallbackMode = CallbackMode.WaitAnyOnly;
@@ -26,9 +26,9 @@ export struct RequestAdapterCallbackInfo {
 
 requestAdapterCallbackProxy(status: ffi.WGPURequestAdapterStatus, adapter: mut ffi.WGPUAdapterImpl, message: inline ffi.WGPUStringView, userdata1: cptr, userdata2: cptr): void :: final {
     do unsafe {
-        let callback: RequestAdapterCallback = uninitialized;
+        let callback: Box<RequestAdapterCallback> = uninitialized;
         __c__("callback = (void*)userdata1;");
-        callback(fromFFI(status), fromFFI(adapter), fromFFI(message));
+        callback.value(fromFFI(status), fromFFI(adapter), fromFFI(message));
     }
 }
 
@@ -118,7 +118,7 @@ export struct DeviceDescriptor {
     // uncapturedErrorCallbackInfo: inline WGPUUncapturedErrorCallbackInfo;
 }
 
-export type RequestDeviceCallback = (status: RequestDeviceStatus, device: mut Device, message: str) -> void :: final;
+export type RequestDeviceCallback = (status: RequestDeviceStatus, device: mut Device, message: str) => void :: final;
 export struct RequestDeviceCallbackInfo {
     mode: CallbackMode = CallbackMode.WaitAnyOnly;
     callback: RequestDeviceCallback;
@@ -126,9 +126,9 @@ export struct RequestDeviceCallbackInfo {
 
 requestDeviceCallbackProxy(status: ffi.WGPURequestDeviceStatus, device: mut ffi.WGPUDeviceImpl, message: inline ffi.WGPUStringView, userdata1: cptr, userdata2: cptr): void :: final {
     do unsafe {
-        let callback: RequestDeviceCallback = uninitialized;
+        let callback: Box<RequestDeviceCallback> = uninitialized;
         __c__("callback = (void*)userdata1;");
-        callback(fromFFI(status), Device { handle: device }, fromFFI(message));
+        callback.value(fromFFI(status), Device { handle: device }, fromFFI(message));
     }
 }
 

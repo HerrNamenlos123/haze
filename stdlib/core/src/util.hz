@@ -7,7 +7,7 @@ export struct Box<T> {
     value: T;
 
     constructor(value: T) {
-        return Box {
+        return Box<T> {
             value: value,
         };
     }

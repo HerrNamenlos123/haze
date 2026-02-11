@@ -115,7 +115,7 @@ opaque struct Renderer {
 
         let code = fs.readFile("test/shaders.wgsl");
         assert(code);
-        let shader = g_device.createShaderModule({
+        let shader = device.createShaderModule({
             code: code,
         });
 

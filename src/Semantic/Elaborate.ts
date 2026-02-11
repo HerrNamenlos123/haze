@@ -3818,7 +3818,10 @@ export class SemanticElaborator {
             variant: Semantic.ENode.CallableDatatype,
             concrete: true,
             functionType: functype,
-            envType: null,
+            envType: {
+              type: "lambda",
+              captures: [],
+            },
           })[1],
           EDatatypeMutability.Default,
           false,
