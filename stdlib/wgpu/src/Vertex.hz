@@ -130,7 +130,7 @@ toFFI(v: BlendState): ffi.WGPUBlendState :: final {
 }
 
 export struct BlendComponent {
-    operation: BlendOperation;
+    operation: BlendOperation = BlendOperation.Undefined;
     srcFactor: BlendFactor;
     dstFactor: BlendFactor;
 }

@@ -157,6 +157,10 @@ namespace fmt {
             else if typeof(arg) == type<none> {
                 ffi.printf("none");
             }
+            else if typeof(arg) == type<Vec2f> || typeof(arg) == type<mut _Vec2<f32>> {
+                let s = format(arg);
+                __c__("fwrite(s.data, 1, s.length, stdout);");
+            }
             else {
                 static_assert(false, "Type '" + typeof(arg).name + "' is not supported in fmt.print");
             }
@@ -252,6 +256,36 @@ namespace fmt {
         format_to(writer, value as u64, args);
     }
 
+    export format_to(writer: mut StringWriter, value: f32, args: FormatArgs) {
+        let n = 0;
+        let string = "";
+        __c__("""
+char buf[64];
+n = snprintf(buf, sizeof(buf), "%.9g", value);
+string = HZSTD_STRING_FROM_CSTR(buf);
+        """);
+        if n > 0 && n < 64 {
+            writer.write(string);
+        }
+    }
+
+    export format_to(writer: mut StringWriter, value: f64, args: FormatArgs) {
+        let n = 0;
+        let string = "";
+        __c__("""
+char buf[64];
+n = snprintf(buf, sizeof(buf), "%.17g", value);
+string = HZSTD_STRING_FROM_CSTR(buf);
+        """);
+        if n > 0 && n < 64 {
+            writer.write(string);
+        }
+    }
+
+    export format_to(writer: mut StringWriter, value: real, args: FormatArgs) {
+        format_to(writer, value as f64, args);
+    }
+
     export format_to(writer: mut StringWriter, value: fs.Error, args: FormatArgs) {
         let num = 0;
         __c__("num = value;");
@@ -264,5 +298,17 @@ namespace fmt {
 
     export format_to(writer: mut StringWriter, value: null, args: FormatArgs) {
         format_to(writer, "null", args);
+    }
+
+    export format_to(writer: mut StringWriter, value: Vec2f, args: FormatArgs) {
+        format_to(writer, "(", args);
+        format_to(writer, value.x, args);
+        format_to(writer, ", ", args);
+        format_to(writer, value.y, args);
+        format_to(writer, ")", args);
+    }
+
+    export format_to(writer: mut StringWriter, value: mut _Vec2<f32>, args: FormatArgs) {
+        format_to(writer, value as Vec2f, args);
     }
 }
