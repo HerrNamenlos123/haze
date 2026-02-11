@@ -1,5 +1,5 @@
 
-export struct _Vec2<T> {
+export inline struct _Vec2<T> {
   x: T = default;
   y: T = default;
 
@@ -47,7 +47,7 @@ export type Vec2 = _Vec2<real>;
 export type Vec2i = _Vec2<int>;
 export type Vec2f = _Vec2<f32>;
 
-export struct _Vec3<T> {
+export inline struct _Vec3<T> {
   x: T = default;
   y: T = default;
   z: T = default;
@@ -98,7 +98,7 @@ export type Vec3 = _Vec3<real>;
 export type Vec3i = _Vec3<int>;
 export type Vec3f = _Vec3<f32>;
 
-export struct _Vec4<T> {
+export inline struct _Vec4<T> {
   x: T = default;
   y: T = default;
   z: T = default;

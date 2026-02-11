@@ -63,6 +63,9 @@ export function ExportTypeDef(
       if (typedef.plain) {
         file += "plain ";
       }
+      if (typedef.inlineByDefault) {
+        file += "inline ";
+      }
       file += "struct ";
       file += namespaces[namespaces.length - 1].pretty + " {\n";
       for (const member of typedef.members) {

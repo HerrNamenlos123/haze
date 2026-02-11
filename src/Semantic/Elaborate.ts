@@ -2553,6 +2553,7 @@ export class SemanticElaborator {
       noemit: definedStructType.noemit,
       opaque: definedStructType.opaque,
       plain: definedStructType.plain,
+      inlineByDefault: definedStructType.inlineByDefault,
       membersBuilt: false,
       membersFinalized: false,
       parentStructOrNS: parentStructOrNS,
@@ -3333,7 +3334,7 @@ export class SemanticElaborator {
               this.sr,
               parentStructOrNS,
               func.methodRequiredMutability ?? EDatatypeMutability.Default,
-              false,
+              "force-no-inline",
               func.sourceloc,
             )[1],
           });
@@ -3534,7 +3535,7 @@ export class SemanticElaborator {
                 this.sr,
                 symbol.methodOf,
                 symbol.methodRequiredMutability ?? EDatatypeMutability.Default,
-                false,
+                "force-no-inline",
                 func.sourceloc,
               )[1];
               const variableId = this.sr.b.addSymbol(this.sr, {
@@ -3923,7 +3924,6 @@ export class SemanticElaborator {
         } else if (found.variant === Collect.ENode.TypeDefSymbol) {
           const typedef = this.sr.cc.typeDefNodes.get(found.typeDef);
           if (typedef.variant === Collect.ENode.TypeDefAlias) {
-            // console.log("Looked up alias", Semantic.serializeTypeUse(this.sr));
             const generics = type.genericArgs.map((g) => {
               return this.withContext(
                 {

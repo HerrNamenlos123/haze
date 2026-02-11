@@ -39,7 +39,7 @@
         },
         {
           "name": "keyword.struct",
-          "match": "\\b(struct|clonable|nonclonable|in|final|autodest|autoret|pure|enum|bitflag|unscoped)\\b"
+          "match": "\\b(struct|inline|clonable|nonclonable|in|final|autodest|autoret|pure|enum|bitflag|unscoped)\\b"
         },
         {
           "match": "\\b(is|not)\\b",

@@ -62,7 +62,7 @@ async function analyzeModule(
     }
 
     // Module-based analysis
-    const project = new ProjectCompiler();
+    const project = new ProjectCompiler(false, false);
     const previousCwd = process.cwd();
     process.chdir(moduleRoot);
     const config = await project.getConfig(undefined, true);
@@ -74,7 +74,13 @@ async function analyzeModule(
 
     const globalBuildDir = path.join(process.cwd(), "__haze__");
     const moduleDir = path.join(globalBuildDir, config.name);
-    const moduleCompiler = new ModuleCompiler(config, project.cache, globalBuildDir, moduleDir);
+    const moduleCompiler = new ModuleCompiler(
+      config,
+      project.cache,
+      globalBuildDir,
+      moduleDir,
+      false,
+    );
     moduleCompiler.currentModuleRootDir = moduleRoot;
 
     // Collect all module sources

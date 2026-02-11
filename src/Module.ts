@@ -97,6 +97,92 @@ function copyFile(source: string, targetFolder: string) {
   fs.copyFileSync(source, targetFolder);
 }
 
+function sleep(ms: number) {
+  return new Promise<void>((resolve) => setTimeout(resolve, ms));
+}
+
+function isProcessAlive(pid: number) {
+  if (!Number.isFinite(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err: any) {
+    if (err?.code === "ESRCH") {
+      return false;
+    }
+    return true;
+  }
+}
+
+async function acquireBuildLock(lockPath: string) {
+  const start = Date.now();
+
+  while (true) {
+    try {
+      const fd = fs.openSync(lockPath, "wx");
+      const payload = {
+        pid: process.pid,
+        startedAt: new Date().toISOString(),
+        cwd: process.cwd(),
+      };
+      fs.writeFileSync(fd, JSON.stringify(payload), "utf8");
+      fs.closeSync(fd);
+
+      return () => {
+        try {
+          fs.unlinkSync(lockPath);
+        } catch {
+          // ignore
+        }
+      };
+    } catch (err: any) {
+      if (err?.code !== "EEXIST") {
+        throw err;
+      }
+
+      let shouldClear = false;
+      try {
+        const raw = fs.readFileSync(lockPath, "utf8");
+        const data = JSON.parse(raw);
+        const pid = typeof data?.pid === "number" ? data.pid : null;
+        if (pid !== null && !isProcessAlive(pid)) {
+          shouldClear = true;
+        }
+      } catch {
+        // ignore parse/read errors
+      }
+
+      if (!shouldClear) {
+        try {
+          const stat = fs.statSync(lockPath);
+          if (Date.now() - stat.mtimeMs > HAZE_BUILD_LOCK_TIMEOUT_MS) {
+            shouldClear = true;
+          }
+        } catch {
+          // ignore stat errors
+        }
+      }
+
+      if (shouldClear) {
+        try {
+          fs.unlinkSync(lockPath);
+          continue;
+        } catch {
+          // ignore unlink failures and continue to wait
+        }
+      }
+
+      if (Date.now() - start > HAZE_BUILD_LOCK_TIMEOUT_MS) {
+        throw new GeneralError(
+          `Timed out waiting for build lock at ${lockPath}. Another build may still be running.`,
+        );
+      }
+
+      await sleep(HAZE_BUILD_LOCK_RETRY_MS);
+    }
+  }
+}
+
 /**
  * Temporarily sets environment variables for an async callback.
  *
@@ -250,6 +336,9 @@ export const HAZE_GLOBAL_DIR = HAZE_DIR + "/global";
 export const HAZE_TMP_DIR = HAZE_DIR + "/tmp";
 export const HAZE_MUSL_SYSROOT = HAZE_DIR + "/sysroot";
 export const HAZE_CMAKE_TOOLCHAIN = HAZE_DIR + "/musl-toolchain.cmake";
+const HAZE_BUILD_LOCKFILE = "build.lock";
+const HAZE_BUILD_LOCK_TIMEOUT_MS = 60_000;
+const HAZE_BUILD_LOCK_RETRY_MS = 200;
 
 async function createTarGz(cwd: string, files: string[], outPath: string) {
   const output = fs.createWriteStream(outPath);
@@ -771,8 +860,13 @@ function toCIdentifier(str: string) {
 export class ProjectCompiler {
   cache: Cache = new Cache();
   globalBuildDir: string = "";
+  verbose: boolean;
+  ignoreLock: boolean;
 
-  constructor() {}
+  constructor(verbose: boolean = false, ignoreLock: boolean = false) {
+    this.verbose = verbose;
+    this.ignoreLock = ignoreLock;
+  }
 
   async getConfig(singleFilename?: string, sourceloc?: boolean) {
     let config: ModuleConfig | undefined;
@@ -833,97 +927,109 @@ export class ProjectCompiler {
     }
     this.globalBuildDir = join(process.cwd(), "__haze__");
     this.setEnv(config);
+    mkdirSync(this.globalBuildDir, { recursive: true });
 
-    if (!singleFilename) {
-      await this.cache.load(join(this.globalBuildDir, "cache.json"));
-    }
-    const mainModule = new ModuleCompiler(
-      config,
-      this.cache,
-      this.globalBuildDir,
-      join(this.globalBuildDir, config.name),
-    );
+    const releaseBuildLock = this.ignoreLock
+      ? null
+      : await acquireBuildLock(join(this.globalBuildDir, HAZE_BUILD_LOCKFILE));
 
-    if (!mainModule.config.nostdlib) {
-      const stdlibConfig = await parseConfig(join(await getStdlibDirectory(), "core"), sourceloc);
-      if (!stdlibConfig) {
-        return false;
+    try {
+      if (!singleFilename) {
+        await this.cache.load(join(this.globalBuildDir, "cache.json"));
       }
-      const stdlibModule = new ModuleCompiler(
-        stdlibConfig,
+      const mainModule = new ModuleCompiler(
+        config,
         this.cache,
         this.globalBuildDir,
-        join(this.globalBuildDir, stdlibConfig.name),
+        join(this.globalBuildDir, config.name),
+        this.verbose,
       );
 
-      const c = new CLIPrinter();
-      c.modules.push({
-        name: stdlibModule.config.name,
-        phase: EModulePrintCompilerPhase.Analyzing,
-        startTime: new Date(),
-        printer: c,
-      });
-      stdlibModule.config.printerModule = c.modules[c.modules.length - 1];
-      c.start();
-      if (!(await stdlibModule.build(false, fullRebuild))) {
-        return false;
-      }
-      c.stopAndFinishAll();
-    }
-
-    if (!singleFilename) {
-      const deps = mainModule.config.dependencies;
-      for (const dep of deps) {
-        const depdir = join(await getStdlibDirectory(), dep.path);
-
-        const config = await parseConfig(depdir, sourceloc);
-        if (!config) {
+      if (!mainModule.config.nostdlib) {
+        const stdlibConfig = await parseConfig(join(await getStdlibDirectory(), "core"), sourceloc);
+        if (!stdlibConfig) {
           return false;
         }
-
-        const depModule = new ModuleCompiler(
-          config,
+        const stdlibModule = new ModuleCompiler(
+          stdlibConfig,
           this.cache,
           this.globalBuildDir,
-          join(this.globalBuildDir, config.name),
+          join(this.globalBuildDir, stdlibConfig.name),
+          this.verbose,
         );
 
         const c = new CLIPrinter();
         c.modules.push({
-          name: depModule.config.name,
+          name: stdlibModule.config.name,
           phase: EModulePrintCompilerPhase.Analyzing,
           startTime: new Date(),
           printer: c,
         });
-        depModule.config.printerModule = c.modules[c.modules.length - 1];
+        stdlibModule.config.printerModule = c.modules[c.modules.length - 1];
         c.start();
-        if (!(await depModule.build(false, fullRebuild))) {
+        if (!(await stdlibModule.build(false, fullRebuild))) {
           return false;
         }
         c.stopAndFinishAll();
       }
+
+      if (!singleFilename) {
+        const deps = mainModule.config.dependencies;
+        for (const dep of deps) {
+          const depdir = join(await getStdlibDirectory(), dep.path);
+
+          const config = await parseConfig(depdir, sourceloc);
+          if (!config) {
+            return false;
+          }
+
+          const depModule = new ModuleCompiler(
+            config,
+            this.cache,
+            this.globalBuildDir,
+            join(this.globalBuildDir, config.name),
+            this.verbose,
+          );
+
+          const c = new CLIPrinter();
+          c.modules.push({
+            name: depModule.config.name,
+            phase: EModulePrintCompilerPhase.Analyzing,
+            startTime: new Date(),
+            printer: c,
+          });
+          depModule.config.printerModule = c.modules[c.modules.length - 1];
+          c.start();
+          if (!(await depModule.build(false, fullRebuild))) {
+            return false;
+          }
+          c.stopAndFinishAll();
+        }
+      }
+
+      const c = new CLIPrinter();
+      c.modules.push({
+        name: mainModule.config.name,
+        phase: EModulePrintCompilerPhase.Analyzing,
+        startTime: new Date(),
+        printer: c,
+      });
+      mainModule.config.printerModule = c.modules[c.modules.length - 1];
+      c.start();
+
+      if (!(await mainModule.build(true, fullRebuild))) {
+        return false;
+      }
+
+      c.stopAndFinishAll();
+
+      if (!singleFilename) {
+        await this.cache.save();
+      }
+      return true;
+    } finally {
+      releaseBuildLock?.();
     }
-
-    const c = new CLIPrinter();
-    c.modules.push({
-      name: mainModule.config.name,
-      phase: EModulePrintCompilerPhase.Analyzing,
-      startTime: new Date(),
-      printer: c,
-    });
-    mainModule.config.printerModule = c.modules[c.modules.length - 1];
-    c.start();
-
-    if (!(await mainModule.build(true, fullRebuild))) {
-      return false;
-    }
-
-    c.stopAndFinishAll();
-
-    if (!singleFilename) {
-      await this.cache.save();
-    }
-    return true;
   }
 
   async run(singleFilename?: string, sourceloc?: boolean, args?: string[]): Promise<number> {
@@ -1304,6 +1410,7 @@ export class ModuleCompiler {
     public cache: Cache,
     public hazeWorkspaceDirectory: string,
     public moduleDir: string,
+    public verbose: boolean,
   ) {
     this.cc = makeCollectionContext(this.config);
   }
@@ -1763,7 +1870,7 @@ export class ModuleCompiler {
     assert(this.currentModuleRootDir);
     console.log(`>> Running generator ${gen.name}...`);
     const sourceloc = this.config.includeSourceloc;
-    const project = new ProjectCompiler();
+    const project = new ProjectCompiler(false, true);
     if (!(await project.build(this.resolveExec(gen.exec), sourceloc, false))) {
       throw new GeneralError(`Build of generator step ${gen.name} failed`);
     }
@@ -2025,6 +2132,10 @@ export class ModuleCompiler {
       }
 
       compilerFlags.addAll("-std=c11");
+
+      if (this.verbose) {
+        compilerFlags.addAll("-v");
+      }
 
       const [
         archives,

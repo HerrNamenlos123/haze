@@ -679,6 +679,7 @@ export type ASTStructDefinition = {
   noemit: boolean;
   opaque: boolean;
   plain: boolean;
+  inlineByDefault: boolean;
   pub: boolean;
   generics: {
     name: string;

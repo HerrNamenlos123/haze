@@ -267,6 +267,7 @@ export namespace Semantic {
     generics: ExprId[];
     opaque: boolean;
     plain: boolean;
+    inlineByDefault: boolean;
     export: boolean;
     extern: EExternLanguage;
     members: Semantic.SymbolId[];

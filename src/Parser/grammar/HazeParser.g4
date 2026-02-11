@@ -160,7 +160,7 @@ enumDefinition
     ;
 
 structDefinition
-    : (export=EXPORT)? (extern=EXTERN externLang=externLanguage)? pub=PUB? noemit=NOEMIT? OPAQUE? PLAIN? STRUCT id (LANGLE id (COMMA id)* RANGLE)? requiresBlock? LCURLY (content+=structContent)* RCURLY (SEMI)?
+    : (export=EXPORT)? (extern=EXTERN externLang=externLanguage)? pub=PUB? noemit=NOEMIT? OPAQUE? PLAIN? INLINE? STRUCT id (LANGLE id (COMMA id)* RANGLE)? requiresBlock? LCURLY (content+=structContent)* RCURLY (SEMI)?
     ;
 
 typeDefinition

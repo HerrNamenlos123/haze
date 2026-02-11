@@ -407,6 +407,7 @@ export namespace Collect {
     export: boolean;
     opaque: boolean;
     plain: boolean;
+    inlineByDefault: boolean;
     pub: boolean;
     extern: EExternLanguage;
     noemit: boolean;
@@ -1248,6 +1249,7 @@ function collectTypeDef(
         extern: item.extern,
         opaque: item.opaque,
         plain: item.plain,
+        inlineByDefault: item.inlineByDefault,
         pub: false,
         noemit: item.noemit,
         lexicalScope: -1 as Collect.ScopeId,
@@ -1960,7 +1962,8 @@ function collectGlobalDirective(
         dependency.name,
         "metadata.json",
       );
-      const metadata: ModuleConfig = JSON.parse(readFileSync(metadataPath, "utf8"));
+      const filecontent = readFileSync(metadataPath, "utf8");
+      const metadata: ModuleConfig = JSON.parse(filecontent);
       const importedNamespace = getModuleGlobalNamespaceName(metadata.name, metadata.version);
       const [alias, aliasId] = Collect.makeTypeDef<Collect.TypeDefAlias>(cc, {
         variant: Collect.ENode.TypeDefAlias,

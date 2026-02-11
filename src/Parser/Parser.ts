@@ -1370,6 +1370,7 @@ class ASTBuilder extends HazeParserListener {
       extern: this.exlang(ctx),
       opaque: Boolean(ctx.OPAQUE()),
       plain: Boolean(ctx.PLAIN()),
+      inlineByDefault: Boolean(ctx.INLINE()),
       name,
       noemit: Boolean(ctx._noemit),
       generics: generics.map((p) => ({

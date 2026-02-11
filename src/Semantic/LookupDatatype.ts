@@ -1,4 +1,4 @@
-import { assert, type SourceLoc } from "../shared/Errors";
+import { assert, CompilerError, type SourceLoc } from "../shared/Errors";
 import { isTypeConcrete } from "./Elaborate";
 import { EDatatypeMutability, EVariableMutability, EExternLanguage } from "../shared/AST";
 import { EVariableContext } from "../shared/common";
@@ -150,21 +150,24 @@ export function makeTypeUse(
   sr: Semantic.Context,
   typeId: Semantic.TypeDefId,
   mutability: EDatatypeMutability,
-  inline: boolean,
+  inline: boolean | "force-no-inline",
   sourceloc: SourceLoc,
 ) {
   const type = sr.typeDefNodes.get(typeId);
-  if (
-    type.variant === Semantic.ENode.StructDatatype ||
-    type.variant === Semantic.ENode.FixedArrayDatatype ||
-    type.variant === Semantic.ENode.DynamicArrayDatatype
-  ) {
+  if (type.variant === Semantic.ENode.StructDatatype) {
+    let shouldBeInline = type.inlineByDefault;
+    if (inline === "force-no-inline") {
+      shouldBeInline = false;
+    } else {
+      shouldBeInline ||= inline;
+    }
+
     for (const id of sr.typeInstanceCache) {
       const typeUse = sr.typeUseNodes.get(id);
       if (
         typeUse.mutability !== mutability ||
         typeUse.type !== typeId ||
-        typeUse.inline !== inline
+        typeUse.inline !== shouldBeInline
       ) {
         continue;
       }
@@ -174,7 +177,7 @@ export function makeTypeUse(
 
     const instance = sr.b.addTypeInstance(sr, {
       mutability: mutability,
-      inline: inline,
+      inline: shouldBeInline,
       type: typeId,
       sourceloc: sourceloc,
     });

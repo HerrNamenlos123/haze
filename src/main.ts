@@ -31,6 +31,16 @@ async function main(): Promise<number> {
     dest: "fullRebuild",
     help: "Force a full rebuild of all modules",
   });
+  build_parser.add_argument("--verbose", {
+    action: "store_true",
+    dest: "verbose",
+    help: "Enable verbose compiler output",
+  });
+  build_parser.add_argument("--ignore-lock", {
+    action: "store_true",
+    dest: "ignoreLock",
+    help: "Skip build lock acquisition (internal use)",
+  });
 
   const get_parser = subparsers.add_parser("get", { help: "Download a file" });
   get_parser.add_argument("url", { help: "URL to download" });
@@ -53,6 +63,16 @@ async function main(): Promise<number> {
     dest: "fullRebuild",
     help: "Force a full rebuild of all modules",
   });
+  run_parser.add_argument("--verbose", {
+    action: "store_true",
+    dest: "verbose",
+    help: "Enable verbose compiler output",
+  });
+  run_parser.add_argument("--ignore-lock", {
+    action: "store_true",
+    dest: "ignoreLock",
+    help: "Skip build lock acquisition (internal use)",
+  });
 
   const exec_parser = subparsers.add_parser("exec", {
     help: "Run a single file immediately as a script",
@@ -66,6 +86,16 @@ async function main(): Promise<number> {
     action: "store_true",
     dest: "fullRebuild",
     help: "Force a full rebuild of all modules",
+  });
+  exec_parser.add_argument("--verbose", {
+    action: "store_true",
+    dest: "verbose",
+    help: "Enable verbose compiler output",
+  });
+  exec_parser.add_argument("--ignore-lock", {
+    action: "store_true",
+    dest: "ignoreLock",
+    help: "Skip build lock acquisition (internal use)",
   });
   exec_parser.add_argument("filename", {
     nargs: "?",
@@ -93,7 +123,7 @@ async function main(): Promise<number> {
       return 0;
     }
     if (args.command === "build" || args.command === "run" || args.command === "exec") {
-      const project = new ProjectCompiler();
+      const project = new ProjectCompiler(Boolean(args.verbose), Boolean(args.ignoreLock));
       if (!(await project.build(args.filename, args.sourceloc, args.fullRebuild))) {
         return 1;
       }
