@@ -1575,13 +1575,19 @@ export function lowerExpr(
 
       const loweredFuncId = lowerSymbol(lr, expr.functionSymbol);
       assert(loweredFuncId);
-      const loweredFunc = lr.functionNodes.get(loweredFuncId);
-      assert(loweredFunc.variant === Lowered.ENode.FunctionSymbol);
-      assert(loweredFunc.closureTrampoline);
+
+      let callableFunc = loweredFuncId;
+
+      if (expr.envValue !== undefined) {
+        const loweredFunc = lr.functionNodes.get(loweredFuncId);
+        assert(loweredFunc.variant === Lowered.ENode.FunctionSymbol);
+        assert(loweredFunc.closureTrampoline);
+        callableFunc = loweredFunc.closureTrampoline;
+      }
 
       return Lowered.addExpr(lr, {
         variant: Lowered.ENode.CallableExpr,
-        function: loweredFunc.closureTrampoline,
+        function: callableFunc,
         envType: envType,
         envValue: envValue,
         type: lowerTypeUse(lr, expr.type),
@@ -3147,7 +3153,7 @@ function lowerBlockScope(
     flattenedStatements.push(s);
   }
 
-  const [scope, scopeId] = Lowered.addBlockScope<Lowered.BlockScope>(lr, {
+  const [_, scopeId] = Lowered.addBlockScope<Lowered.BlockScope>(lr, {
     statements: flattenedStatements,
     definesVariables: containsVariables,
     emittedExpr: emitted,
@@ -3412,6 +3418,7 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
               })[1],
             );
           } else if (envType?.type === "lambda") {
+            const args: Lowered.ExprId[] = [];
             envType.captures.forEach((c, i) => {
               statements.push(
                 Lowered.addStatement(lr, {
@@ -3420,8 +3427,18 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
                   value: `void* ${c.name} = ((void**)__hz_env)[${i}];`,
                 })[1],
               );
+              args.push(
+                Lowered.addExpr(lr, {
+                  variant: Lowered.ENode.SymbolValueExpr,
+                  type: lowerTypeUse(lr, lr.sr.b.cptrType()),
+                  name: {
+                    mangledName: "__hz_env",
+                    prettyName: "__hz_env",
+                    wasMangled: false,
+                  },
+                })[1],
+              );
             });
-            const args: Lowered.ExprId[] = [];
             for (let i = 0; i < parameterNames.length; i++) {
               args.push(
                 Lowered.addExpr(lr, {
@@ -3441,18 +3458,7 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
                 sourceloc: f.sourceloc,
                 expr: Lowered.addExpr(lr, {
                   variant: Lowered.ENode.ExprCallExpr,
-                  arguments: [
-                    Lowered.addExpr(lr, {
-                      variant: Lowered.ENode.SymbolValueExpr,
-                      type: lowerTypeUse(lr, lr.sr.b.cptrType()),
-                      name: {
-                        mangledName: "__hz_env",
-                        prettyName: "__hz_env",
-                        wasMangled: false,
-                      },
-                    })[1],
-                    ...args,
-                  ],
+                  arguments: args,
                   expr: Lowered.addExpr(lr, {
                     variant: Lowered.ENode.SymbolValueExpr,
                     type: lowerTypeUse(lr, lr.sr.b.cptrType()),
