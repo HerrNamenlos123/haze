@@ -43,9 +43,14 @@ let g_queue = none as mut wgpu.Queue | none;
 
 main(): int {
 
+    let array = [1, 2, 3] as []int;
+    let push = array.push;
+
     let foo = (value: int) => {
         fmt.println("Closure called!", value);
     };
+
+    push(4);
 
     foo(187);
 

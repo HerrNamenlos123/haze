@@ -665,21 +665,16 @@ export class SemanticElaborator {
     if (calledExprType.variant === Semantic.ENode.CallableDatatype) {
       const ftype = this.sr.typeDefNodes.get(calledExprType.functionType);
       assert(ftype.variant === Semantic.ENode.FunctionDatatype);
-      let parametersWithoutThis = ftype.parameters;
-      const hasParameterPack = parametersWithoutThis.some((p) => this.isParameterPackType(p.type));
-      const elaboratedArgs = elaborateCallingArguments(parametersWithoutThis);
+      let params = ftype.parameters;
+      const hasParameterPack = params.some((p) => this.isParameterPackType(p.type));
+      const elaboratedArgs = elaborateCallingArguments(params);
       const preparedArgs = validateAndPrepareArguments(
         elaboratedArgs,
-        parametersWithoutThis,
+        params,
         ftype.vararg,
         hasParameterPack,
       );
-      const finalArgs = convertArguments(
-        preparedArgs,
-        parametersWithoutThis,
-        ftype.vararg,
-        hasParameterPack,
-      );
+      const finalArgs = convertArguments(preparedArgs, params, ftype.vararg, hasParameterPack);
 
       return this.sr.b.callExpr(calledExprId, finalArgs, this.inFunction, callExpr.sourceloc);
     }
@@ -1613,13 +1608,20 @@ export class SemanticElaborator {
 
       assert(func && funcId);
 
-      return this.sr.b.addExpr(this.sr, {
-        variant: Semantic.ENode.CallableExpr,
-        functionSymbol: funcId,
-        instanceIds: [],
-        isTemporary: true,
-        sourceloc: memberAccess.sourceloc,
-        envType: {
+      let envType: Semantic.EnvBlockType = {
+        type: "method",
+        thisExprType: makeTypeUse(
+          this.sr,
+          this.sr.typeUseNodes.get(object.type).type,
+          EDatatypeMutability.Mut,
+          "force-no-inline",
+          memberAccess.sourceloc,
+        )[1],
+      };
+
+      return this.sr.b.callableExpr(
+        funcId,
+        {
           type: "method",
           thisExprType: makeTypeUse(
             this.sr,
@@ -1629,25 +1631,12 @@ export class SemanticElaborator {
             memberAccess.sourceloc,
           )[1],
         },
-        envValue: {
+        {
           type: "method",
           thisExpr: objectId,
         },
-        type: makeTypeUse(
-          this.sr,
-          this.sr.b.addType(this.sr, {
-            variant: Semantic.ENode.CallableDatatype,
-            concrete: true,
-            functionType: func.type,
-            thisExprType: object.type,
-          })[1],
-          EDatatypeMutability.Default,
-          false,
-          memberAccess.sourceloc,
-        )[1],
-        flow: object.flow,
-        writes: object.writes,
-      });
+        memberAccess.sourceloc,
+      );
     }
 
     if (objectType.variant === Semantic.ENode.ParameterPackDatatype) {
@@ -1745,13 +1734,9 @@ export class SemanticElaborator {
 
         assert(func && funcId);
 
-        return this.sr.b.addExpr(this.sr, {
-          variant: Semantic.ENode.CallableExpr,
-          functionSymbol: funcId,
-          instanceIds: [],
-          isTemporary: true,
-          sourceloc: memberAccess.sourceloc,
-          envType: {
+        return this.sr.b.callableExpr(
+          funcId,
+          {
             type: "method",
             thisExprType: makeTypeUse(
               this.sr,
@@ -1761,25 +1746,12 @@ export class SemanticElaborator {
               memberAccess.sourceloc,
             )[1],
           },
-          envValue: {
+          {
             type: "method",
             thisExpr: objectId,
           },
-          type: makeTypeUse(
-            this.sr,
-            this.sr.b.addType(this.sr, {
-              variant: Semantic.ENode.CallableDatatype,
-              concrete: true,
-              functionType: func.type,
-              thisExprType: object.type,
-            })[1],
-            EDatatypeMutability.Default,
-            false,
-            memberAccess.sourceloc,
-          )[1],
-          flow: object.flow,
-          writes: object.writes,
-        });
+          memberAccess.sourceloc,
+        );
       }
 
       // TODO: Turn this into a slice [N]u8
@@ -1890,13 +1862,9 @@ export class SemanticElaborator {
 
         assert(func && funcId);
 
-        return this.sr.b.addExpr(this.sr, {
-          variant: Semantic.ENode.CallableExpr,
-          functionSymbol: funcId,
-          instanceIds: [],
-          isTemporary: true,
-          sourceloc: memberAccess.sourceloc,
-          envType: {
+        return this.sr.b.callableExpr(
+          funcId,
+          {
             type: "method",
             thisExprType: makeTypeUse(
               this.sr,
@@ -1906,25 +1874,12 @@ export class SemanticElaborator {
               memberAccess.sourceloc,
             )[1],
           },
-          envValue: {
+          {
             type: "method",
             thisExpr: objectId,
           },
-          type: makeTypeUse(
-            this.sr,
-            this.sr.b.addType(this.sr, {
-              variant: Semantic.ENode.CallableDatatype,
-              concrete: true,
-              functionType: func.type,
-              thisExprType: object.type,
-            })[1],
-            EDatatypeMutability.Default,
-            false,
-            memberAccess.sourceloc,
-          )[1],
-          flow: object.flow,
-          writes: object.writes,
-        });
+          memberAccess.sourceloc,
+        );
       }
       if (memberAccess.memberName === "pop") {
         const funcname = `__hz_dynamic_array_pop_${
@@ -1982,13 +1937,9 @@ export class SemanticElaborator {
 
         assert(func && funcId);
 
-        return this.sr.b.addExpr(this.sr, {
-          variant: Semantic.ENode.CallableExpr,
-          functionSymbol: funcId,
-          instanceIds: [],
-          isTemporary: true,
-          sourceloc: memberAccess.sourceloc,
-          envType: {
+        return this.sr.b.callableExpr(
+          funcId,
+          {
             type: "method",
             thisExprType: makeTypeUse(
               this.sr,
@@ -1998,25 +1949,12 @@ export class SemanticElaborator {
               memberAccess.sourceloc,
             )[1],
           },
-          envValue: {
+          {
             type: "method",
             thisExpr: objectId,
           },
-          type: makeTypeUse(
-            this.sr,
-            this.sr.b.addType(this.sr, {
-              variant: Semantic.ENode.CallableDatatype,
-              concrete: true,
-              functionType: func.type,
-              thisExprType: object.type,
-            })[1],
-            EDatatypeMutability.Default,
-            false,
-            memberAccess.sourceloc,
-          )[1],
-          flow: object.flow,
-          writes: object.writes,
-        });
+          memberAccess.sourceloc,
+        );
       }
       throw new CompilerError(
         `Datatype '${Semantic.serializeTypeUse(
@@ -2200,10 +2138,9 @@ export class SemanticElaborator {
         );
       }
 
-      return this.sr.b.addExpr(this.sr, {
-        variant: Semantic.ENode.CallableExpr,
-        instanceIds: [],
-        envType: {
+      return this.sr.b.callableExpr(
+        elaboratedMethodId,
+        {
           type: "method",
           thisExprType: makeTypeUse(
             this.sr,
@@ -2213,28 +2150,12 @@ export class SemanticElaborator {
             memberAccess.sourceloc,
           )[1],
         },
-        envValue: {
+        {
           type: "method",
           thisExpr: objectId,
         },
-        functionSymbol: elaboratedMethodId,
-        type: makeTypeUse(
-          this.sr,
-          this.sr.b.addType(this.sr, {
-            variant: Semantic.ENode.CallableDatatype,
-            thisExprType: object.type,
-            functionType: elaboratedMethod.type,
-            concrete: this.sr.typeDefNodes.get(elaboratedMethod.type).concrete,
-          })[1],
-          EDatatypeMutability.Const,
-          false,
-          memberAccess.sourceloc,
-        )[1],
-        sourceloc: memberAccess.sourceloc,
-        isTemporary: true,
-        flow: object.flow,
-        writes: object.writes,
-      });
+        memberAccess.sourceloc,
+      );
     }
 
     throw new CompilerError(
@@ -3902,7 +3823,7 @@ export class SemanticElaborator {
             variant: Semantic.ENode.CallableDatatype,
             concrete: true,
             functionType: functype,
-            thisExprType: null,
+            envType: null,
           })[1],
           EDatatypeMutability.Default,
           false,
@@ -4377,13 +4298,9 @@ export class SemanticElaborator {
         // We do not care about it here because the CallExpr then internally
         // will insert a write if the operator actually is a mutating method.
 
-        const calledExpr = this.sr.b.addExpr(this.sr, {
-          variant: Semantic.ENode.CallableExpr,
-          functionSymbol: exactMatchId,
-          instanceIds: [],
-          isTemporary: true,
-          sourceloc: assignment.sourceloc,
-          envType: {
+        const calledExpr = this.sr.b.callableExpr(
+          exactMatchId,
+          {
             type: "method",
             thisExprType: makeTypeUse(
               this.sr,
@@ -4393,25 +4310,12 @@ export class SemanticElaborator {
               assignment.sourceloc,
             )[1],
           },
-          envValue: {
+          {
             type: "method",
             thisExpr: targetExprId,
           },
-          type: makeTypeUse(
-            this.sr,
-            this.sr.b.addType(this.sr, {
-              variant: Semantic.ENode.CallableDatatype,
-              thisExprType: targetExpr.type,
-              functionType: method.type,
-              concrete: true,
-            })[1],
-            EDatatypeMutability.Const,
-            false,
-            assignment.sourceloc,
-          )[1],
-          flow: targetExpr.flow.withAll(valueExpr.flow),
-          writes: targetExpr.writes.withAll(valueExpr.writes),
-        })[1];
+          assignment.sourceloc,
+        )[1];
 
         assert(this.inFunction);
         return this.sr.b.callExpr(calledExpr, [valueExprId], this.inFunction, assignment.sourceloc);
@@ -4976,7 +4880,6 @@ export class SemanticElaborator {
       assignedMembers.push(m.key);
     }
 
-    console.log(remainingMembers, assign);
     for (const m of remainingMembers) {
       const defaultValue = struct.memberDefaultValues.find((v) => v.memberName === m);
       if (defaultValue) {
@@ -7510,13 +7413,9 @@ export class SemanticElaborator {
             variant: Semantic.ENode.ExprCallExpr,
             instanceIds: instanceIds,
             arguments: [indexId],
-            calledExpr: this.sr.b.addExpr(this.sr, {
-              variant: Semantic.ENode.CallableExpr,
-              functionSymbol: exactMatchId,
-              instanceIds: [],
-              isTemporary: true,
-              sourceloc: arraySubscript.sourceloc,
-              envType: {
+            calledExpr: this.sr.b.callableExpr(
+              exactMatchId,
+              {
                 type: "method",
                 thisExprType: makeTypeUse(
                   this.sr,
@@ -7526,25 +7425,12 @@ export class SemanticElaborator {
                   arraySubscript.sourceloc,
                 )[1],
               },
-              envValue: {
+              {
                 type: "method",
                 thisExpr: valueId,
               },
-              type: makeTypeUse(
-                this.sr,
-                this.sr.b.addType(this.sr, {
-                  variant: Semantic.ENode.CallableDatatype,
-                  thisExprType: value.type,
-                  functionType: method.type,
-                  concrete: true,
-                })[1],
-                EDatatypeMutability.Const,
-                false,
-                arraySubscript.sourceloc,
-              )[1],
-              flow: value.flow,
-              writes: value.writes,
-            })[1],
+              arraySubscript.sourceloc,
+            )[1],
             type: ftype.returnType,
             sourceloc: arraySubscript.sourceloc,
             isTemporary: true,
@@ -7688,6 +7574,9 @@ export class SemanticElaborator {
     );
     const elaboratedFunction = this.sr.symbolNodes.get(elaboratedFunctionId);
     assert(elaboratedFunction.variant === Semantic.ENode.FunctionSymbol);
+
+    // Now we know what is being captured, overwrite the env block of the function (globally unique so we can mutate it)
+    elaboratedFunction.envType = envType;
 
     const envValue: Semantic.EnvBlockValue = {
       type: "lambda",

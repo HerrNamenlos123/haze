@@ -92,11 +92,7 @@ export function ExportTypeDef(
         } else {
           const functype = sr.typeDefNodes.get(method.type);
           assert(functype.variant === Semantic.ENode.FunctionDatatype);
-          let rawParams = functype.parameters;
-          if (!method.staticMethod && method.methodType !== EMethodType.Constructor) {
-            rawParams = rawParams.slice(1, undefined);
-          }
-          const parameters = rawParams
+          const parameters = functype.parameters
             .map(
               (p, i) =>
                 `${method.parameterNames[i + 1]}${

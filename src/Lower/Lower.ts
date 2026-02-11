@@ -2376,7 +2376,30 @@ export function lowerTypeDef(lr: Lowered.Module, typeId: Semantic.TypeDefId): Lo
     if (lr.loweredTypeDefs.has(typeId)) {
       return lr.loweredTypeDefs.get(typeId)!;
     } else {
-      const ftypeId = lowerTypeDef(lr, type.functionType);
+      // Produce a new function type that respects the env block
+      let additionalArgs: {
+        optional: boolean;
+        type: Semantic.TypeUseId;
+      }[] = [];
+      if (type.envType !== null) {
+        additionalArgs.push({
+          optional: false,
+          type: lr.sr.b.cptrType(),
+        });
+      }
+
+      const semFType = lr.sr.typeDefNodes.get(type.functionType);
+      assert(semFType.variant === Semantic.ENode.FunctionDatatype);
+      const ftypeId = lowerTypeDef(
+        lr,
+        makeRawFunctionDatatypeAvailable(lr.sr, {
+          parameters: [...additionalArgs, ...semFType.parameters],
+          requires: semFType.requires,
+          returnType: semFType.returnType,
+          sourceloc: null,
+          vararg: semFType.vararg,
+        }),
+      );
       const ftype = lr.typeDefNodes.get(ftypeId);
       assert(ftype.variant === Lowered.ENode.FunctionDatatype);
       const [p, pId] = Lowered.addTypeDef<Lowered.CallableDatatypeDef>(lr, {
@@ -3219,6 +3242,8 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
         externLanguage: symbol.extern,
       });
       lr.loweredFunctions.set(symbolId, fId);
+
+      // console.log("Function", f.name, )
 
       const remainingInstances = new Set(symbol.createsInstanceIds);
       symbol.returnsInstanceIds.forEach((i) => remainingInstances.delete(i));

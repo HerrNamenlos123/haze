@@ -3182,8 +3182,12 @@ export const printCollectedExpr = (cc: CollectionContext, exprId: Collect.ExprId
     }
 
     case Collect.ENode.AggregateLiteralExpr: {
+      let type = "";
+      if (expr.structType) {
+        type = printCollectedDatatype(cc, expr.structType);
+      }
       return (
-        `${printCollectedDatatype(cc, expr.structType)} {` +
+        `${type}{` +
         expr.elements
           .map((a) => {
             if (a.key) {

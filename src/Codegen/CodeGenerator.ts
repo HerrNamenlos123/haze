@@ -1385,12 +1385,14 @@ class CodeGenerator {
           tempWriter.write(thisExpr.temp);
           env = `({ void** env = hzstd_heap_allocate(sizeof(void*)); *env = ${thisExpr.out.get()}; (void*)env; })`;
         } else if (expr.envValue?.type === "lambda") {
-          const setters = expr.envValue.captures.map((c, i) => {
-            const e = this.emitExpr(c);
-            tempWriter.write(e.temp);
-            return `env[${i}] = ${e.out.get()};`;
-          });
-          env = `({ void** env = hzstd_heap_allocate(sizeof(void*) * ${expr.envValue.captures.length}); ${setters} (void*)env; })`;
+          if (expr.envValue.captures.length > 0) {
+            const setters = expr.envValue.captures.map((c, i) => {
+              const e = this.emitExpr(c);
+              tempWriter.write(e.temp);
+              return `env[${i}] = ${e.out.get()};`;
+            });
+            env = `({ void** env = hzstd_heap_allocate(sizeof(void*) * ${expr.envValue.captures.length}); ${setters} (void*)env; })`;
+          }
         }
         outWriter.write(
           `((${this.mangleTypeUse(

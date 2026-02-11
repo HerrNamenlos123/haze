@@ -298,6 +298,7 @@ export namespace Semantic {
   export type CallableDatatypeDef = {
     variant: ENode.CallableDatatype;
     functionType: TypeDefId;
+    envType: EnvBlockType;
     concrete: boolean;
   };
 

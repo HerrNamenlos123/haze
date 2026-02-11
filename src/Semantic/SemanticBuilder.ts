@@ -140,7 +140,7 @@ export class SemanticBuilder {
           variant: Semantic.ENode.CallableDatatype,
           concrete: true,
           functionType: functionSymbol.type,
-          thisExprType: null,
+          envType: envType,
         })[1],
         EDatatypeMutability.Default,
         false,
