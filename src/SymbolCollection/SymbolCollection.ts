@@ -58,6 +58,7 @@ import {
 } from "../shared/AST";
 import { ECollectionMode, getModuleGlobalNamespaceName, type ModuleConfig } from "../shared/Config";
 import { join } from "path";
+import { makeTempId } from "../shared/store";
 
 const RESERVED_METHOD_NAMES = ["toString", "clone", "freezeClone"];
 
@@ -165,6 +166,7 @@ export namespace Collect {
     InlineCStatement,
     BlockScopeExpr,
     VariableDefinitionStatement,
+    CallableDatatype,
     FunctionDatatype,
     ParenthesisExpr,
     ErrorPropagationExpr,
@@ -176,6 +178,7 @@ export namespace Collect {
     TernaryExpr,
     ExprCallExpr,
     SymbolValueExpr,
+    CallableExpr,
     ExplicitCastExpr,
     ExprIsTypeExpr,
     MemberAccessExpr,
@@ -464,6 +467,19 @@ export namespace Collect {
     } | null;
   };
 
+  export type CallableDatatype = {
+    variant: ENode.CallableDatatype;
+    parameters: {
+      optional: boolean;
+      type: Collect.TypeUseId;
+    }[];
+    returnType: Collect.TypeUseId;
+    vararg: boolean;
+    requires: FunctionRequiresBlock;
+    mutability: EDatatypeMutability;
+    sourceloc: SourceLoc;
+  };
+
   export type FunctionDatatype = {
     variant: ENode.FunctionDatatype;
     parameters: {
@@ -516,6 +532,7 @@ export namespace Collect {
 
   export type TypeUse =
     | NamedDatatype
+    | CallableDatatype
     | FunctionDatatype
     | StackArrayDatatype
     | DynamicArrayDatatype
@@ -765,6 +782,11 @@ export namespace Collect {
     elseVar: string | null;
   };
 
+  export type CallableExpr = BaseExpr & {
+    variant: ENode.CallableExpr;
+    functionSymbol: Collect.SymbolId;
+  };
+
   export type Expressions =
     | ParenthesisExpr
     | ErrorPropagationExpr
@@ -781,6 +803,7 @@ export namespace Collect {
     | LiteralExpr
     | FStringExpr
     | ArraySubscriptExpr
+    | CallableExpr
     | TypeLiteralExpr
     | PreIncrExpr
     | PostIncrExpr
@@ -1454,6 +1477,35 @@ function collectTypeUse(
     case "FunctionDatatype":
       return Collect.makeTypeUse(cc, {
         variant: Collect.ENode.FunctionDatatype,
+        returnType: collectTypeUse(cc, item.returnType, args),
+        parameters: item.params.map((p) => ({
+          optional: p.optional,
+          type: collectTypeUse(cc, p.datatype, args),
+        })),
+        vararg: item.ellipsis,
+        requires: {
+          final: item.requires.final,
+          pure: item.requires.pure,
+          noreturn: item.requires.noreturn,
+          noreturnIf: item.requires.noreturnIf
+            ? {
+                expr: collectExpr(cc, item.requires.noreturnIf.expr, args),
+                argIndex: null,
+                operation: null,
+              }
+            : null,
+        },
+        sourceloc: item.sourceloc,
+        mutability: item.mutability,
+      })[1];
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
+    case "CallableDatatype":
+      return Collect.makeTypeUse(cc, {
+        variant: Collect.ENode.CallableDatatype,
         returnType: collectTypeUse(cc, item.returnType, args),
         parameters: item.params.map((p) => ({
           optional: p.optional,
@@ -2487,8 +2539,116 @@ function collectExpr(
     // =================================================================================================================
     // =================================================================================================================
 
-    case "LambdaExpr":
-      assert(false, "Not implemented yet");
+    case "LambdaExpr": {
+      if (item.lambda.scope.variant === "ExprAsFuncBody") {
+        item.lambda.scope = {
+          variant: "Scope",
+          statements: [
+            {
+              variant: "ReturnStatement",
+              sourceloc: item.sourceloc,
+              expr: item.lambda.scope.expr,
+            },
+          ],
+          unsafe: false,
+          sourceloc: item.sourceloc,
+        };
+      }
+
+      if (item.lambda.ellipsis) {
+        throw new CompilerError(
+          `A Lambda Function is not allowed to have unchecked, C-style variadic arguments`,
+          item.sourceloc,
+        );
+      }
+
+      const callableName = `__hz_callable_${makeTempId()}`;
+
+      const overloadGroup = Collect.makeSymbol(cc, {
+        variant: Collect.ENode.FunctionOverloadGroupSymbol,
+        name: callableName,
+        overloads: new Set(),
+        parentScope: args.currentParentScope,
+      });
+      const [functionSymbol, functionSymbolId] = Collect.makeSymbol(cc, {
+        variant: Collect.ENode.FunctionSymbol,
+        export: false,
+        extern: EExternLanguage.None,
+        functionScope: -1 as Collect.ScopeId,
+        generics: [],
+        methodRequiredMutability: null,
+        methodType: EMethodType.None,
+        name: callableName,
+        noemit: false,
+        originalSourcecode: "",
+        overloadGroup: overloadGroup[1],
+        parameters: item.lambda.params.map((p) => {
+          return {
+            name: p.name,
+            optional: p.optional,
+            sourceloc: p.sourceloc,
+            type: collectTypeUse(cc, p.datatype, args),
+          };
+        }),
+        parentScope: args.currentParentScope,
+        pub: false,
+        requires: {
+          final: item.lambda.requires.final,
+          pure: item.lambda.requires.pure,
+          noreturn: item.lambda.requires.noreturn,
+          noreturnIf: item.lambda.requires.noreturnIf
+            ? {
+                expr: collectExpr(cc, item.lambda.requires.noreturnIf.expr, args),
+                argIndex: null,
+                operation: null,
+              }
+            : null,
+        },
+        returnType: item.lambda.returnType
+          ? collectTypeUse(cc, item.lambda.returnType, args)
+          : null,
+        sourceloc: item.lambda.sourceloc,
+        staticMethod: false,
+        vararg: false,
+      });
+
+      const [functionScope, functionScopeId] = Collect.makeScope(cc, {
+        variant: Collect.ENode.FunctionScope,
+        owningSymbol: functionSymbolId,
+        parentScope: args.currentParentScope,
+        sourceloc: item.sourceloc,
+        blockScope: -1 as Collect.ScopeId,
+        symbols: new Set(),
+      });
+      functionSymbol.functionScope = functionScopeId;
+
+      functionScope.blockScope = collectScope(cc, item.lambda.scope, {
+        currentParentScope: functionScopeId,
+      });
+
+      for (const p of functionSymbol.parameters) {
+        defineVariableSymbol(
+          cc,
+          {
+            variant: Collect.ENode.VariableSymbol,
+            comptime: false,
+            mutability: EVariableMutability.Let,
+            name: p.name,
+            sourceloc: p.sourceloc,
+            type: p.type,
+            globalValueInitializer: null,
+            variableContext: EVariableContext.FunctionParameter,
+          },
+          functionScopeId,
+        );
+      }
+
+      return Collect.makeExpr(cc, {
+        variant: Collect.ENode.CallableExpr,
+        functionSymbol: functionSymbolId,
+        sourceloc: item.sourceloc,
+      })[1];
+    }
 
     // =================================================================================================================
     // =================================================================================================================
@@ -2938,6 +3098,31 @@ export function printCollectedDatatype(
       )}`;
     }
 
+    case Collect.ENode.CallableDatatype: {
+      let requireFragments: string[] = [];
+      if (type.requires.final) {
+        requireFragments.push("final");
+      }
+      if (type.requires.noreturn) {
+        requireFragments.push("noreturn");
+      }
+      if (type.requires.noreturnIf) {
+        requireFragments.push(`noreturn_if(${type.requires.noreturnIf.expr})`);
+      }
+      if (type.requires.pure) {
+        requireFragments.push("pure");
+      }
+
+      let requires = requireFragments.length > 0 ? ":: " + requireFragments.join(", ") : "";
+
+      return `((${type.parameters.map((p, i) => {
+        if (p.optional) {
+          return `arg_${i}?: ${printCollectedDatatype(cc, p.type)}`;
+        }
+        return `arg_${i}: ${printCollectedDatatype(cc, p.type)}`;
+      })}${type.vararg ? ", ..." : ""}) -> ${printCollectedDatatype(cc, type.returnType)}${requires})`;
+    }
+
     default:
       assert(false, (type as any).variant.toString());
   }
@@ -3276,7 +3461,7 @@ export const printCollectedSymbol = (
         symbol.parameters
           .map((p) => `${p.name}: ${printCollectedDatatype(cc, p.type)}`)
           .join(", ") +
-        ") => " +
+        ") -> " +
         printCollectedDatatype(cc, symbol.returnType);
       print(`- ${ftype}`);
       if (symbol.functionScope) {

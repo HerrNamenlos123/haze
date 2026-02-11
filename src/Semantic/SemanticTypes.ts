@@ -177,6 +177,7 @@ export namespace Semantic {
     scope: Semantic.BlockScopeId | null;
     overloadedOperator?: EOverloadedOperator;
     export: boolean;
+    envType: EnvBlockType;
     createsInstanceIds: Set<Semantic.InstanceId>;
     returnsInstanceIds: Set<Semantic.InstanceId>;
     returnStatements: Set<Semantic.StatementId>;
@@ -296,7 +297,6 @@ export namespace Semantic {
 
   export type CallableDatatypeDef = {
     variant: ENode.CallableDatatype;
-    thisExprType?: TypeUseId;
     functionType: TypeDefId;
     concrete: boolean;
   };
@@ -413,10 +413,36 @@ export namespace Semantic {
     memberName: string;
   };
 
+  export type EnvBlockType =
+    | {
+        type: "method";
+        thisExprType: TypeUseId;
+      }
+    | {
+        type: "lambda";
+        captures: {
+          name: string;
+          type: TypeUseId;
+        }[];
+      }
+    | null;
+
+  export type EnvBlockValue =
+    | {
+        type: "method";
+        thisExpr: ExprId;
+      }
+    | {
+        type: "lambda";
+        captures: ExprId[];
+      }
+    | null;
+
   export type CallableExpr = BaseExpr & {
     variant: ENode.CallableExpr;
     instanceIds: InstanceId[];
-    thisExpr: ExprId;
+    envType: EnvBlockType;
+    envValue: EnvBlockValue;
     functionSymbol: SymbolId;
   };
 
@@ -1628,7 +1654,11 @@ export namespace Semantic {
     return fragments;
   }
 
-  export function serializeTypeDef(sr: Semantic.Context, datatypeId: Semantic.TypeDefId): string {
+  export function serializeTypeDef(
+    sr: Semantic.Context,
+    datatypeId: Semantic.TypeDefId,
+    args?: { functionTypeAsCallable?: boolean },
+  ): string {
     const datatype = sr.typeDefNodes.get(datatypeId);
 
     switch (datatype.variant) {
@@ -1665,7 +1695,9 @@ export namespace Semantic {
         }
         return `(${datatype.parameters
           .map((p, i) => `arg_${i}${p.optional ? "?" : ""}: ${serializeTypeUse(sr, p.type)}`)
-          .join(", ")}${datatype.vararg ? ", ..." : ""}) => (${serializeTypeUse(
+          .join(
+            ", ",
+          )}${datatype.vararg ? ", ..." : ""}) ${args?.functionTypeAsCallable ? "=>" : "->"} (${serializeTypeUse(
           sr,
           datatype.returnType,
         )}) ${blocks.length > 0 ? ":: " + blocks.join(", ") : ""}`;
@@ -1677,9 +1709,7 @@ export namespace Semantic {
         }) :: deferred`;
 
       case Semantic.ENode.CallableDatatype:
-        return `Callable<${serializeTypeDef(sr, datatype.functionType)}>(this=${
-          datatype.thisExprType ? serializeTypeUse(sr, datatype.thisExprType) : ""
-        })`;
+        return `${serializeTypeDef(sr, datatype.functionType, { functionTypeAsCallable: true })}`;
 
       case Semantic.ENode.NamespaceDatatype:
         return getNamespaceChainFromDatatype(sr, datatypeId)
@@ -2229,11 +2259,11 @@ export namespace Semantic {
       case Semantic.ENode.MemberAccessExpr:
         return `(${serializeExpr(sr, expr.expr)}.${expr.memberName})`;
 
-      case Semantic.ENode.CallableExpr:
-        return `Callable(${serializeFullSymbolName(sr, expr.functionSymbol)}, this=${serializeExpr(
-          sr,
-          expr.thisExpr,
-        )})`;
+      case Semantic.ENode.CallableExpr: {
+        const parts = [] as string[];
+        parts.push(serializeFullSymbolName(sr, expr.functionSymbol));
+        return `Callable(${parts.join(", ")})`;
+      }
 
       case Semantic.ENode.BlockScopeExpr: {
         return `do { ... }`;

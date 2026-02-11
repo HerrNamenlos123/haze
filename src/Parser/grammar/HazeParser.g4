@@ -67,8 +67,8 @@ cInjectDirective: (export=EXPORT)? INLINEC LB expr RB SEMI?;
 
 externLanguage: id;
 
-functionDefinition: (export=EXPORT)? (extern=EXTERN externLang=externLanguage? pub=PUB? noemit=NOEMIT?)? id (LANGLE id (COMMA id)* RANGLE)? LB params RB (COLON datatype)? requiresBlock? (ARROW)? (funcbody | SEMI?);
-lambda: LB params RB (COLON datatype)? requiresBlock? ARROW funcbody;
+functionDefinition: (export=EXPORT)? (extern=EXTERN externLang=externLanguage? pub=PUB? noemit=NOEMIT?)? id (LANGLE id (COMMA id)* RANGLE)? LB params RB (COLON datatype)? requiresBlock? (DOUBLEARROW)? (funcbody | SEMI?);
+lambda: LB params RB (COLON datatype)? requiresBlock? DOUBLEARROW funcbody;
 param: id QUESTIONMARK? COLON (datatype | ellipsis);
 params: (param (COMMA param)* (COMMA ellipsis)? COMMA?)? | ellipsis;
 ellipsis: ELLIPSIS;
@@ -122,7 +122,7 @@ datatypeImpl
     | datatypeFragment (DOT datatypeFragment)*                                  #NamedDatatype
     | LBRACKET n=(INTEGER_LITERAL | HEX_INTEGER_LITERAL) RBRACKET datatype      #StackArrayDatatype
     | LBRACKET RBRACKET datatype                                                #DynamicArrayDatatype
-    | LB params RB ARROW datatype requiresBlock?                                #FunctionDatatype
+    | LB params RB (DOUBLEARROW | SINGLEARROW) datatype requiresBlock?          #FunctionDatatype
     ;
 
 baseDatatype

@@ -118,6 +118,39 @@ export class SemanticBuilder {
     });
   }
 
+  callableExpr(
+    functionSymbolId: Semantic.SymbolId,
+    envType: Semantic.EnvBlockType,
+    envValue: Semantic.EnvBlockValue,
+    sourceloc: SourceLoc,
+  ) {
+    const functionSymbol = this.sr.symbolNodes.get(functionSymbolId);
+    assert(functionSymbol.variant === Semantic.ENode.FunctionSymbol);
+    return this.sr.b.addExpr(this.sr, {
+      variant: Semantic.ENode.CallableExpr,
+      functionSymbol: functionSymbolId,
+      instanceIds: [],
+      isTemporary: true,
+      sourceloc: sourceloc,
+      envType: envType,
+      envValue: envValue,
+      type: makeTypeUse(
+        this.sr,
+        this.sr.b.addType(this.sr, {
+          variant: Semantic.ENode.CallableDatatype,
+          concrete: true,
+          functionType: functionSymbol.type,
+          thisExprType: null,
+        })[1],
+        EDatatypeMutability.Default,
+        false,
+        sourceloc,
+      )[1],
+      flow: Semantic.FlowResult.fallthrough(),
+      writes: Semantic.WriteResult.empty(),
+    });
+  }
+
   callExpr(
     exprId: Semantic.ExprId,
     callArguments: Semantic.ExprId[],
@@ -540,6 +573,7 @@ export class SemanticBuilder {
               return expr.type;
             }),
           ],
+          null,
         ),
     );
     assert(elaboratedMethodId);
@@ -603,6 +637,7 @@ export class SemanticBuilder {
           [],
           sourceloc,
           [this.strType()],
+          null,
         ),
     );
     assert(elaboratedMethodId);
@@ -893,6 +928,7 @@ export class SemanticBuilder {
     bodySourceCode: string;
     currentScope: Collect.ScopeId;
     sourceloc: SourceLoc;
+    envType: Semantic.EnvBlockType;
   }): [Semantic.FunctionSymbol, Semantic.SymbolId] {
     const fType = this.sr.typeDefNodes.get(args.functionTypeId);
     assert(fType.variant === Semantic.ENode.FunctionDatatype);
@@ -948,6 +984,9 @@ export class SemanticBuilder {
     assert(e.variant === Semantic.ENode.SymbolValueExpr);
     const symbol = this.sr.symbolNodes.get(e.symbol);
     assert(symbol.variant === Semantic.ENode.FunctionSymbol);
+
+    // Inject a synthetic env block
+    symbol.envType = args.envType;
 
     return [symbol, e.symbol];
   }
@@ -1425,6 +1464,10 @@ export class SemanticBuilder {
 
   strType() {
     return this.primitiveType(EPrimitive.str, null);
+  }
+
+  cptrType() {
+    return this.primitiveType(EPrimitive.cptr, null);
   }
 
   voidType() {

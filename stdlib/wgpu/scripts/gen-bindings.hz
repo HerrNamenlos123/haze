@@ -739,7 +739,7 @@ generateBindings(args: GenArgs): Result<none, fs.Error> {
                 params = params + ", ";
             }
         }
-        file = file + f"    export extern C type {f.name} = ({params}) => {parseType(args, f.returnType)} :: final;\n";
+        file = file + f"    export extern C type {f.name} = ({params}) -> {parseType(args, f.returnType)} :: final;\n";
     }
 
     for (let i = 0; i < args.structs.length; i++) {

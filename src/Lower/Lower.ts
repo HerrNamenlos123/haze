@@ -225,7 +225,8 @@ export namespace Lowered {
 
   export type CallableExpr = {
     variant: ENode.CallableExpr;
-    thisExpr: ExprId;
+    envType: EnvBlockType;
+    envValue: EnvBlockValue;
     functionName: NameSet;
     functionType: TypeUseId;
     type: TypeUseId;
@@ -491,6 +492,28 @@ export namespace Lowered {
     sourceloc: SourceLoc;
   };
 
+  export type EnvBlockType =
+    | {
+        type: "method";
+        thisExprType: Lowered.TypeUseId;
+      }
+    | {
+        type: "lambda";
+        captures: { name: string; type: Lowered.TypeUseId }[];
+      }
+    | null;
+
+  export type EnvBlockValue =
+    | {
+        type: "method";
+        thisExpr: Lowered.ExprId;
+      }
+    | {
+        type: "lambda";
+        captures: Lowered.ExprId[];
+      }
+    | null;
+
   export type FunctionSymbol = {
     variant: ENode.FunctionSymbol;
     name: NameSet;
@@ -499,6 +522,7 @@ export namespace Lowered {
     externLanguage: EExternLanguage;
     isLibraryLocal: boolean;
     noreturn: boolean;
+    envType: EnvBlockType;
     scope: BlockScopeId | null;
     sourceloc: SourceLoc;
   };
@@ -534,7 +558,6 @@ export namespace Lowered {
   export type CallableDatatypeDef = {
     variant: ENode.CallableDatatype;
     name: NameSet;
-    thisExprType: TypeUseId | null;
     functionType: TypeDefId;
   };
 
@@ -778,17 +801,22 @@ export function lowerExpr(
       );
 
       if (calledExprTypeDef.variant === Lowered.ENode.CallableDatatype) {
-        let thisExprId: Lowered.ExprId;
-        if (calledExpr.variant === Lowered.ENode.CallableExpr) {
-          thisExprId = calledExpr.thisExpr;
-        } else if (calledExpr.variant === Lowered.ENode.SymbolValueExpr) {
-          thisExprId = calledExprId;
-        } else {
-          throw new InternalError("Not implemented");
-        }
+        if (
+          calledExpr.variant === Lowered.ENode.CallableExpr &&
+          calledExpr.envValue?.type === "method"
+        ) {
+          // A method is immediately called -> Optimize callable object away
 
-        if (calledExpr.variant === Lowered.ENode.CallableExpr) {
-          // A method or lambda is immediately called
+          // Temporary env block -> required because callables require additional indirection
+          // But we put it here on the stack so it's all perfectly in cache and not a real performance hit.
+          const env = storeInTempVarAndGet(
+            lr,
+            lowerTypeUse(lr, lr.sr.b.cptrType()),
+            calledExpr.envValue.thisExpr,
+            expr.sourceloc,
+            flattened,
+          );
+
           const type = lowerTypeUse(lr, expr.type);
           const [callExpr, callExprId] = Lowered.addExpr<Lowered.ExprCallExpr>(lr, {
             variant: Lowered.ENode.ExprCallExpr,
@@ -799,14 +827,18 @@ export function lowerExpr(
               type: calledExpr.type,
             })[1],
             arguments: [
-              calledExpr.thisExpr,
+              Lowered.addExpr(lr, {
+                variant: Lowered.ENode.AddressOfExpr,
+                expr: env[1],
+                type: lowerTypeUse(lr, lr.sr.b.cptrType()),
+              })[1],
               ...expr.arguments.map((a) => lowerExpr(lr, a, flattened, instanceInfo)[1]),
             ],
             type: type,
           });
           return [callExpr, callExprId];
         } else {
-          // The callable is from a variable with unknown origin
+          // The callable is from a variable with unknown origin or a real lambda -> Actually call the callable properly
           const type = lowerTypeUse(lr, expr.type);
           const [callExpr, callExprId] = Lowered.addExpr<Lowered.ExprCallExpr>(lr, {
             variant: Lowered.ENode.ExprCallExpr,
@@ -822,8 +854,8 @@ export function lowerExpr(
                 variant: Lowered.ENode.MemberAccessExpr,
                 expr: calledExprId,
                 requiresDeref: false,
-                memberName: "thisPtr",
-                type: lr.exprNodes.get(thisExprId).type,
+                memberName: "env",
+                type: lowerTypeUse(lr, lr.sr.b.cptrType()),
               })[1],
               ...expr.arguments.map((a) => lowerExpr(lr, a, flattened, instanceInfo)[1]),
             ],
@@ -1455,30 +1487,62 @@ export function lowerExpr(
 
     case Semantic.ENode.CallableExpr: {
       lowerSymbol(lr, expr.functionSymbol);
-      const thisExpr = lr.sr.exprNodes.get(expr.thisExpr);
-      const thisExprTypeUse = lr.sr.typeUseNodes.get(thisExpr.type);
 
-      let loweredThisExpression = lowerExpr(lr, expr.thisExpr, flattened, instanceInfo)[1];
-      const structPointerType = lowerTypeUse(lr, thisExpr.type);
-      let tempId = loweredThisExpression;
-      if (thisExpr.isTemporary) {
-        tempId = storeInTempVarAndGet(
+      let envType: Lowered.EnvBlockType = null;
+      let envValue: Lowered.EnvBlockValue = null;
+
+      if (expr.envValue?.type === "method") {
+        const thisExpr = lr.sr.exprNodes.get(expr.envValue.thisExpr);
+        const thisExprTypeUse = lr.sr.typeUseNodes.get(thisExpr.type);
+
+        let loweredThisExpression = lowerExpr(
           lr,
-          lowerTypeUse(lr, thisExpr.type),
-          loweredThisExpression,
-          expr.sourceloc,
+          expr.envValue.thisExpr,
           flattened,
+          instanceInfo,
         )[1];
-      }
+        const structPointerType = lowerTypeUse(lr, thisExpr.type);
+        let tempId = loweredThisExpression;
+        if (thisExpr.isTemporary) {
+          tempId = storeInTempVarAndGet(
+            lr,
+            lowerTypeUse(lr, thisExpr.type),
+            loweredThisExpression,
+            expr.sourceloc,
+            flattened,
+          )[1];
+        }
 
-      if (thisExprTypeUse.inline) {
-        loweredThisExpression = Lowered.addExpr(lr, {
-          variant: Lowered.ENode.AddressOfExpr,
-          expr: tempId,
-          type: structPointerType,
-        })[1];
-      } else {
-        loweredThisExpression = tempId;
+        if (thisExprTypeUse.inline) {
+          loweredThisExpression = Lowered.addExpr(lr, {
+            variant: Lowered.ENode.AddressOfExpr,
+            expr: tempId,
+            type: structPointerType,
+          })[1];
+        } else {
+          loweredThisExpression = tempId;
+        }
+        envType = {
+          type: "method",
+          thisExprType: lowerTypeUse(lr, thisExpr.type),
+        };
+        envValue = {
+          type: "method",
+          thisExpr: loweredThisExpression,
+        };
+      } else if (expr.envValue?.type === "lambda") {
+        assert(expr.envType?.type === "lambda");
+        envType = {
+          type: "lambda",
+          captures: expr.envType.captures.map((c) => ({
+            name: c.name,
+            type: lowerTypeUse(lr, c.type),
+          })),
+        };
+        envValue = {
+          type: "lambda",
+          captures: expr.envValue.captures.map((c) => lowerExpr(lr, c, flattened, instanceInfo)[1]),
+        };
       }
 
       const functionSymbol = lr.sr.symbolNodes.get(expr.functionSymbol);
@@ -1486,7 +1550,8 @@ export function lowerExpr(
       return Lowered.addExpr(lr, {
         variant: Lowered.ENode.CallableExpr,
         functionName: Semantic.makeNameSetSymbol(lr.sr, expr.functionSymbol),
-        thisExpr: loweredThisExpression,
+        envType: envType,
+        envValue: envValue,
         type: lowerTypeUse(lr, expr.type),
         functionType: makeLowerTypeUse(lr, lowerTypeDef(lr, functionSymbol.type), false)[1],
       });
@@ -2316,7 +2381,6 @@ export function lowerTypeDef(lr: Lowered.Module, typeId: Semantic.TypeDefId): Lo
       assert(ftype.variant === Lowered.ENode.FunctionDatatype);
       const [p, pId] = Lowered.addTypeDef<Lowered.CallableDatatypeDef>(lr, {
         variant: Lowered.ENode.CallableDatatype,
-        thisExprType: (type.thisExprType && lowerTypeUse(lr, type.thisExprType)) || null,
         functionType: ftypeId,
         name: Semantic.makeNameSetTypeDef(lr.sr, typeId),
       });
@@ -3099,8 +3163,32 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
       assert(originalFuncType.variant === Semantic.ENode.FunctionDatatype);
       const newParameters = [...originalFuncType.parameters];
 
+      let envType: Lowered.EnvBlockType = null;
+      if (symbol.envType?.type === "method") {
+        envType = {
+          type: "method",
+          thisExprType: lowerTypeUse(lr, symbol.envType.thisExprType),
+        };
+      } else if (symbol.envType?.type === "lambda") {
+        envType = {
+          type: "lambda",
+          captures: symbol.envType.captures.map((c) => ({
+            name: c.name,
+            type: lowerTypeUse(lr, c.type),
+          })),
+        };
+      }
+
+      if (envType !== null) {
+        parameterNames.unshift("__hz_env");
+        newParameters.unshift({
+          optional: false,
+          type: lr.sr.b.cptrType(),
+        });
+      }
+
       const newFuncType = makeRawFunctionDatatypeAvailable(lr.sr, {
-        parameters: originalFuncType.parameters,
+        parameters: newParameters,
         returnType: originalFuncType.returnType,
         sourceloc: symbol.sourceloc,
         requires: {
@@ -3122,6 +3210,7 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
         parameterNames: parameterNames,
         type: lowerTypeDef(lr, newFuncType),
         noreturn: originalFuncType.requires.noreturn,
+        envType: envType,
         isLibraryLocal:
           monomorphized ||
           (!exported && symbol.extern !== EExternLanguage.Extern_C && symbol.scope !== null),
@@ -3345,10 +3434,7 @@ function serializeLoweredExpr(lr: Lowered.Module, exprId: Lowered.ExprId): strin
       return `(${serializeLoweredExpr(lr, expr.expr)}.${expr.memberName})`;
 
     case Lowered.ENode.CallableExpr:
-      return `Callable(${expr.functionName.prettyName}, this=${serializeLoweredExpr(
-        lr,
-        expr.thisExpr,
-      )})`;
+      return `Callable(${expr.functionName.prettyName})`;
 
     case Lowered.ENode.AddressOfExpr:
       return `&${serializeLoweredExpr(lr, expr.expr)}`;

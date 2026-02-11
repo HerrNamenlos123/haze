@@ -74,6 +74,7 @@ import {
   type ASTTernaryExpr,
   type ASTStatement,
   type ASTFuncBody,
+  type ASTCallableDatatype,
 } from "../shared/AST";
 import {
   BooleanConstantContext,
@@ -1059,12 +1060,17 @@ class ASTBuilder extends HazeParserListener {
       throw new InternalError("Lambda missing funcbody");
     }
 
-    const funcbody = produced[i++] as ASTFuncBody;
-
     let returnType: ASTTypeUse | undefined = undefined;
     if (ctx.datatype()) {
       returnType = produced[i++] as ASTTypeUse;
     }
+
+    // requires block (optional)
+    const requires = ctx.requiresBlock()
+      ? (produced[i++] as ASTFunctionRequiresBlock)
+      : this.emptyRequires();
+
+    const funcbody = produced[i++] as ASTFuncBody;
 
     if (i !== produced.length) {
       throw new InternalError("Lambda stack mismatch");
@@ -1074,8 +1080,9 @@ class ASTBuilder extends HazeParserListener {
       variant: "Lambda",
       params: params.params,
       ellipsis: params.ellipsis,
-      funcbody,
+      scope: funcbody,
       returnType,
+      requires: requires,
       sourceloc: this.loc(ctx),
     } satisfies ASTLambda);
   };
@@ -2574,15 +2581,28 @@ class ASTBuilder extends HazeParserListener {
       throw new InternalError("FunctionDatatype stack mismatch");
     }
 
-    this.stack.push({
-      variant: "FunctionDatatype",
-      params: params.params,
-      ellipsis: params.ellipsis,
-      returnType: returnType,
-      requires,
-      mutability: EDatatypeMutability.Default,
-      sourceloc: this.loc(ctx),
-    } satisfies ASTFunctionDatatype);
+    const isCallable = Boolean(ctx.DOUBLEARROW());
+    if (isCallable) {
+      this.stack.push({
+        variant: "CallableDatatype",
+        params: params.params,
+        ellipsis: params.ellipsis,
+        returnType: returnType,
+        requires,
+        mutability: EDatatypeMutability.Default,
+        sourceloc: this.loc(ctx),
+      } satisfies ASTCallableDatatype);
+    } else {
+      this.stack.push({
+        variant: "FunctionDatatype",
+        params: params.params,
+        ellipsis: params.ellipsis,
+        returnType: returnType,
+        requires,
+        mutability: EDatatypeMutability.Default,
+        sourceloc: this.loc(ctx),
+      } satisfies ASTFunctionDatatype);
+    }
   };
 
   exitImportStatement = (ctx: ImportStatementContext) => {

@@ -426,11 +426,7 @@ class CodeGenerator {
           `typedef struct ${this.mangleTypeDef(symbol)} ${this.mangleTypeDef(symbol)};`,
         );
         this.out.type_definitions.writeLine(`struct ${this.mangleTypeDef(symbol)} {`).pushIndent();
-        if (symbol.thisExprType) {
-          this.out.type_definitions.writeLine(
-            `${this.mangleTypeUse(symbol.thisExprType)} thisPtr;`,
-          );
-        }
+        this.out.type_definitions.writeLine(`void* env;`);
         this.out.type_definitions.writeLine(`${this.mangleTypeDef(symbol.functionType)} fn;`);
         this.out.type_definitions.popIndent().writeLine(`};`).writeLine();
       } else if (symbol.variant === Lowered.ENode.TypeUse) {
@@ -690,6 +686,19 @@ class CodeGenerator {
 
     if (symbol.scope) {
       this.out.function_definitions.writeLine(signature + " {").pushIndent();
+
+      // Insert any environment lookups for methods and lambdas
+      if (symbol.envType?.type === "method") {
+        this.out.function_definitions.writeLine(
+          `${this.mangleTypeUse(symbol.envType.thisExprType)} this = ((void**)__hz_env)[0];`,
+        );
+      } else if (symbol.envType?.type === "lambda") {
+        symbol.envType.captures.forEach((c, i) => {
+          this.out.function_definitions.writeLine(
+            `${this.mangleTypeUse(c.type)} ${c.name} = ((void**)__hz_env)[${i}];`,
+          );
+        });
+      }
 
       const s = this.emitScope(symbol.scope);
       this.out.function_definitions.write(s.temp);
@@ -1006,7 +1015,7 @@ class CodeGenerator {
           outWriter.write("(" + exprWriter.out.get() + ")." + expr.memberName);
         } else if (
           eTypeDef.variant === Lowered.ENode.CallableDatatype &&
-          (expr.memberName === "thisPtr" || expr.memberName === "fn")
+          (expr.memberName === "env" || expr.memberName === "fn")
         ) {
           outWriter.write("(" + exprWriter.out.get() + ")." + expr.memberName);
         } else if (
@@ -1370,12 +1379,23 @@ class CodeGenerator {
         return { out: outWriter, temp: tempWriter };
 
       case Lowered.ENode.CallableExpr: {
-        const thisExpr = this.emitExpr(expr.thisExpr);
-        tempWriter.write(thisExpr.temp);
+        let env = "NULL";
+        if (expr.envValue?.type === "method") {
+          const thisExpr = this.emitExpr(expr.envValue.thisExpr);
+          tempWriter.write(thisExpr.temp);
+          env = `({ void** env = hzstd_heap_allocate(sizeof(void*)); *env = ${thisExpr.out.get()}; (void*)env; })`;
+        } else if (expr.envValue?.type === "lambda") {
+          const setters = expr.envValue.captures.map((c, i) => {
+            const e = this.emitExpr(c);
+            tempWriter.write(e.temp);
+            return `env[${i}] = ${e.out.get()};`;
+          });
+          env = `({ void** env = hzstd_heap_allocate(sizeof(void*) * ${expr.envValue.captures.length}); ${setters} (void*)env; })`;
+        }
         outWriter.write(
           `((${this.mangleTypeUse(
             expr.type,
-          )}) { .thisPtr = ${thisExpr.out.get()}, .fn = ${this.mangleName(expr.functionName)} })`,
+          )}) { .fn = ${this.mangleName(expr.functionName)}, .env = ${env} })`,
         );
         return { out: outWriter, temp: tempWriter };
       }

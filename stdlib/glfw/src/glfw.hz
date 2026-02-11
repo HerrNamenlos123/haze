@@ -35,7 +35,7 @@ namespace ffi {
     extern C glfwWindowHint(hint: i32, value: i32) :: final;
     extern C glfwGetTime(): f64 :: final;
     // extern C glfwMakeContextCurrent(w: GLFWwindow*);
-    extern C glfwGetProcAddress(procname: ccstr): (() => void) :: final;
+    extern C glfwGetProcAddress(procname: ccstr): (() -> void) :: final;
     extern C noemit glfwGetFramebufferSize(w: GLFWwindow, width: cptr /* int* aka i32* */, height: cptr /* int* aka i32* */) :: final;
 
     export init(): bool {
@@ -95,7 +95,7 @@ namespace ffi {
         return glfwGetTime() as f64;
     }
 
-    export extern C glfw_getProcAddress(procname: ccstr): () => void {
+    export extern C glfw_getProcAddress(procname: ccstr): () -> void {
         return glfwGetProcAddress(procname);
     }
 }
@@ -142,7 +142,7 @@ export struct Window {
         return Vec2i(width, height);
     }
 
-    getProcAddress(): (name: ccstr) => cptr {
+    getProcAddress(): ((name: ccstr) -> cptr) {
         // This makeContextCurrent() is important because getProcAddress is usually immediately passed to
         // gl.init, which then takes the GL context. It is important that the two are linked.
         // We just need to hope someone doesn't call getProcAddress and then do something else instead of gl.init()
@@ -150,7 +150,7 @@ export struct Window {
 
         do unsafe {
             const rawProc = ffi.glfw_getProcAddress;
-            const castedProc: (name: ccstr) => cptr = uninitialized;
+            const castedProc: ((name: ccstr) -> cptr) = uninitialized;
             __c__("castedProc = (void*)rawProc;");
             return castedProc;
         }

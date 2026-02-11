@@ -666,9 +666,6 @@ export class SemanticElaborator {
       const ftype = this.sr.typeDefNodes.get(calledExprType.functionType);
       assert(ftype.variant === Semantic.ENode.FunctionDatatype);
       let parametersWithoutThis = ftype.parameters;
-      if (calledExprType.thisExprType) {
-        parametersWithoutThis = parametersWithoutThis.slice(1);
-      }
       const hasParameterPack = parametersWithoutThis.some((p) => this.isParameterPackType(p.type));
       const elaboratedArgs = elaborateCallingArguments(parametersWithoutThis);
       const preparedArgs = validateAndPrepareArguments(
@@ -783,6 +780,16 @@ export class SemanticElaborator {
             [],
             callExpr.sourceloc,
             parameterPackTypes,
+            {
+              type: "method",
+              thisExprType: makeTypeUse(
+                this.sr,
+                calledExprTypeUse.type,
+                EDatatypeMutability.Mut,
+                "force-no-inline",
+                callExpr.sourceloc,
+              )[1],
+            },
           );
         },
       );
@@ -1166,6 +1173,9 @@ export class SemanticElaborator {
 
       case Collect.ENode.TernaryExpr:
         return this.ternaryExpr(expr, inference);
+
+      case Collect.ENode.CallableExpr:
+        return this.callableExpr(expr, inference);
 
       default:
         assert(false, "All cases handled: " + Collect.ENode[(expr as any).variant]);
@@ -1563,12 +1573,7 @@ export class SemanticElaborator {
         func = sym;
       } else {
         const functionType = makeRawFunctionDatatypeAvailable(this.sr, {
-          parameters: [
-            {
-              optional: false,
-              type: object.type,
-            },
-          ],
+          parameters: [],
           returnType: this.sr.b.strType(),
           requires: {
             final: true,
@@ -1587,11 +1592,21 @@ export class SemanticElaborator {
         const code = `return fmt.format(this);`;
         [func, funcId] = this.sr.b.syntheticFunctionFromCode({
           functionTypeId: functionType,
-          parameterNames: ["this"],
+          parameterNames: [],
           funcname: funcname,
           bodySourceCode: code,
           currentScope: this.currentContext.currentScope,
           sourceloc: memberAccess.sourceloc,
+          envType: {
+            type: "method",
+            thisExprType: makeTypeUse(
+              this.sr,
+              this.sr.typeUseNodes.get(object.type).type,
+              EDatatypeMutability.Mut,
+              "force-no-inline",
+              memberAccess.sourceloc,
+            )[1],
+          },
         });
         this.sr.syntheticFunctions.set(funcname, funcId);
       }
@@ -1604,7 +1619,20 @@ export class SemanticElaborator {
         instanceIds: [],
         isTemporary: true,
         sourceloc: memberAccess.sourceloc,
-        thisExpr: objectId,
+        envType: {
+          type: "method",
+          thisExprType: makeTypeUse(
+            this.sr,
+            this.sr.typeUseNodes.get(object.type).type,
+            EDatatypeMutability.Mut,
+            "force-no-inline",
+            memberAccess.sourceloc,
+          )[1],
+        },
+        envValue: {
+          type: "method",
+          thisExpr: objectId,
+        },
         type: makeTypeUse(
           this.sr,
           this.sr.b.addType(this.sr, {
@@ -1675,10 +1703,6 @@ export class SemanticElaborator {
         } else {
           const functionType = makeRawFunctionDatatypeAvailable(this.sr, {
             parameters: [
-              {
-                optional: false,
-                type: object.type,
-              },
               { optional: false, type: this.sr.b.optionalIntType() },
               {
                 optional: false,
@@ -1700,11 +1724,21 @@ export class SemanticElaborator {
 
           [func, funcId] = this.sr.b.syntheticFunctionFromCode({
             functionTypeId: functionType,
-            parameterNames: ["this", "start", "end"],
+            parameterNames: ["start", "end"],
             funcname: funcname,
             bodySourceCode: code,
             currentScope: this.currentContext.currentScope,
             sourceloc: memberAccess.sourceloc,
+            envType: {
+              type: "method",
+              thisExprType: makeTypeUse(
+                this.sr,
+                this.sr.typeUseNodes.get(object.type).type,
+                EDatatypeMutability.Mut,
+                "force-no-inline",
+                memberAccess.sourceloc,
+              )[1],
+            },
           });
           this.sr.syntheticFunctions.set(funcname, funcId);
         }
@@ -1717,7 +1751,20 @@ export class SemanticElaborator {
           instanceIds: [],
           isTemporary: true,
           sourceloc: memberAccess.sourceloc,
-          thisExpr: objectId,
+          envType: {
+            type: "method",
+            thisExprType: makeTypeUse(
+              this.sr,
+              this.sr.typeUseNodes.get(object.type).type,
+              EDatatypeMutability.Mut,
+              "force-no-inline",
+              memberAccess.sourceloc,
+            )[1],
+          },
+          envValue: {
+            type: "method",
+            thisExpr: objectId,
+          },
           type: makeTypeUse(
             this.sr,
             this.sr.b.addType(this.sr, {
@@ -1801,10 +1848,6 @@ export class SemanticElaborator {
             parameters: [
               {
                 optional: false,
-                type: object.type,
-              },
-              {
-                optional: false,
                 type: objectType.datatype,
               },
             ],
@@ -1826,11 +1869,21 @@ export class SemanticElaborator {
 
           [func, funcId] = this.sr.b.syntheticFunctionFromCode({
             functionTypeId: functionType,
-            parameterNames: ["this", "element"],
+            parameterNames: ["element"],
             funcname: funcname,
             bodySourceCode: code,
             currentScope: this.currentContext.currentScope,
             sourceloc: memberAccess.sourceloc,
+            envType: {
+              type: "method",
+              thisExprType: makeTypeUse(
+                this.sr,
+                this.sr.typeUseNodes.get(object.type).type,
+                EDatatypeMutability.Mut,
+                "force-no-inline",
+                memberAccess.sourceloc,
+              )[1],
+            },
           });
           this.sr.syntheticFunctions.set(funcname, funcId);
         }
@@ -1843,7 +1896,20 @@ export class SemanticElaborator {
           instanceIds: [],
           isTemporary: true,
           sourceloc: memberAccess.sourceloc,
-          thisExpr: objectId,
+          envType: {
+            type: "method",
+            thisExprType: makeTypeUse(
+              this.sr,
+              this.sr.typeUseNodes.get(object.type).type,
+              EDatatypeMutability.Mut,
+              "force-no-inline",
+              memberAccess.sourceloc,
+            )[1],
+          },
+          envValue: {
+            type: "method",
+            thisExpr: objectId,
+          },
           type: makeTypeUse(
             this.sr,
             this.sr.b.addType(this.sr, {
@@ -1877,12 +1943,7 @@ export class SemanticElaborator {
           func = sym;
         } else {
           const functionType = makeRawFunctionDatatypeAvailable(this.sr, {
-            parameters: [
-              {
-                optional: false,
-                type: object.type,
-              },
-            ],
+            parameters: [],
             returnType: objectType.datatype,
             requires: {
               final: true,
@@ -1900,11 +1961,21 @@ export class SemanticElaborator {
 
           [func, funcId] = this.sr.b.syntheticFunctionFromCode({
             functionTypeId: functionType,
-            parameterNames: ["this"],
+            parameterNames: [],
             funcname: funcname,
             bodySourceCode: code,
             currentScope: this.currentContext.currentScope,
             sourceloc: memberAccess.sourceloc,
+            envType: {
+              type: "method",
+              thisExprType: makeTypeUse(
+                this.sr,
+                this.sr.typeUseNodes.get(object.type).type,
+                EDatatypeMutability.Mut,
+                "force-no-inline",
+                memberAccess.sourceloc,
+              )[1],
+            },
           });
           this.sr.syntheticFunctions.set(funcname, funcId);
         }
@@ -1917,7 +1988,20 @@ export class SemanticElaborator {
           instanceIds: [],
           isTemporary: true,
           sourceloc: memberAccess.sourceloc,
-          thisExpr: objectId,
+          envType: {
+            type: "method",
+            thisExprType: makeTypeUse(
+              this.sr,
+              this.sr.typeUseNodes.get(object.type).type,
+              EDatatypeMutability.Mut,
+              "force-no-inline",
+              memberAccess.sourceloc,
+            )[1],
+          },
+          envValue: {
+            type: "method",
+            thisExpr: objectId,
+          },
           type: makeTypeUse(
             this.sr,
             this.sr.b.addType(this.sr, {
@@ -2064,6 +2148,16 @@ export class SemanticElaborator {
             memberAccess.genericArgs.map((g) => this.expressionAsGenericArg(g)),
             memberAccess.sourceloc,
             parameterPackTypes,
+            {
+              type: "method",
+              thisExprType: makeTypeUse(
+                this.sr,
+                this.sr.typeUseNodes.get(object.type).type,
+                EDatatypeMutability.Mut,
+                "force-no-inline",
+                memberAccess.sourceloc,
+              )[1],
+            },
           ),
       );
       assert(elaboratedMethodId);
@@ -2109,7 +2203,20 @@ export class SemanticElaborator {
       return this.sr.b.addExpr(this.sr, {
         variant: Semantic.ENode.CallableExpr,
         instanceIds: [],
-        thisExpr: objectId,
+        envType: {
+          type: "method",
+          thisExprType: makeTypeUse(
+            this.sr,
+            this.sr.typeUseNodes.get(object.type).type,
+            EDatatypeMutability.Mut,
+            "force-no-inline",
+            memberAccess.sourceloc,
+          )[1],
+        },
+        envValue: {
+          type: "method",
+          thisExpr: objectId,
+        },
         functionSymbol: elaboratedMethodId,
         type: makeTypeUse(
           this.sr,
@@ -2173,7 +2280,10 @@ export class SemanticElaborator {
     }
   }
 
-  functionOverloadGroup(overloadGroup: Collect.FunctionOverloadGroupSymbol) {
+  functionOverloadGroup(
+    overloadGroup: Collect.FunctionOverloadGroupSymbol,
+    env: Semantic.EnvBlockType,
+  ) {
     const functionSymbols: Semantic.SymbolId[] = [];
     for (const id of overloadGroup.overloads) {
       const func = this.sr.cc.symbolNodes.get(id);
@@ -2184,6 +2294,7 @@ export class SemanticElaborator {
           signature,
           this.elaborateParentSymbolFromCache(func.parentScope),
           [],
+          env,
         );
         functionSymbols.push(sId);
       }
@@ -2253,7 +2364,7 @@ export class SemanticElaborator {
         return this.typeDefSymbol(symbol);
 
       case Collect.ENode.FunctionOverloadGroupSymbol:
-        return this.functionOverloadGroup(symbol);
+        return this.functionOverloadGroup(symbol, null);
 
       case Collect.ENode.VariableSymbol: {
         const ids = this.variableSymbol(symbol, symbolId);
@@ -2365,7 +2476,16 @@ export class SemanticElaborator {
             return;
           }
           const signature = this.elaborateFunctionSignature(overloadId);
-          const funcId = this.elaborateFunctionSymbol(signature, semanticStructId, []);
+          const funcId = this.elaborateFunctionSymbol(signature, semanticStructId, [], {
+            type: "method",
+            thisExprType: makeTypeUse(
+              this.sr,
+              semanticStructId,
+              EDatatypeMutability.Mut,
+              "force-no-inline",
+              semanticStruct.sourceloc,
+            )[1],
+          });
           const func = this.sr.symbolNodes.get(funcId);
           assert(funcId && func && func.variant === Semantic.ENode.FunctionSymbol);
           semanticStruct.methods.push(funcId);
@@ -3111,6 +3231,7 @@ export class SemanticElaborator {
     genericArgs: Semantic.ExprId[],
     usageSourceLocation: SourceLoc,
     paramPackTypes: Semantic.TypeUseId[],
+    env: Semantic.EnvBlockType,
   ) {
     const functionSignature = this.sr.symbolNodes.get(functionSignatureId);
     assert(functionSignature.variant === Semantic.ENode.FunctionSignature);
@@ -3168,6 +3289,7 @@ export class SemanticElaborator {
           functionSignatureId,
           functionSignature.parentStructOrNS,
           paramPackTypes,
+          env,
         );
       },
     );
@@ -3177,6 +3299,7 @@ export class SemanticElaborator {
     functionSignatureId: Semantic.SymbolId,
     parentStructOrNS: Semantic.TypeDefId | null,
     paramPackTypes: Semantic.TypeUseId[],
+    env: Semantic.EnvBlockType,
   ): Semantic.SymbolId {
     const functionSignature = this.sr.symbolNodes.get(functionSignatureId);
     assert(functionSignature.variant === Semantic.ENode.FunctionSignature);
@@ -3325,19 +3448,10 @@ export class SemanticElaborator {
           .filter((p) => Boolean(p))
           .map((p) => p!);
 
+        let useEnv = false;
         if (func.methodType === EMethodType.Method && !func.staticMethod) {
-          parameterNames.unshift("this");
           assert(parentStructOrNS);
-          parameters.unshift({
-            optional: false,
-            type: makeTypeUse(
-              this.sr,
-              parentStructOrNS,
-              func.methodRequiredMutability ?? EDatatypeMutability.Default,
-              "force-no-inline",
-              func.sourceloc,
-            )[1],
-          });
+          useEnv = true;
         }
 
         let ftype = makeDeferredFunctionDatatypeAvailable(this.sr, {
@@ -3451,6 +3565,7 @@ export class SemanticElaborator {
           overloadedOperator: func.overloadedOperator,
           noemit: func.noemit,
           extern: func.extern,
+          envType: useEnv ? env : null,
           parameterNames: parameterNames,
           methodRequiredMutability: func.methodRequiredMutability,
           returnedDatatypes: new Set(),
@@ -3759,6 +3874,46 @@ export class SemanticElaborator {
       // =================================================================================================================
       // =================================================================================================================
 
+      case Collect.ENode.CallableDatatype: {
+        // No interning, Callable datatypes are (and must be for C reasons) completely unique for every callable
+        // but they can be converted between one another through type erasure.
+        // Every Callable Datatype consists of Function Datatype + This Pointer + Env Block.
+        // The Function Datatype is interned normally, but the callable itself is not.
+
+        const functype = makeRawFunctionDatatypeAvailable(this.sr, {
+          parameters: type.parameters.map((p) => ({
+            optional: p.optional,
+            type: this.lookupAndElaborateDatatype(p.type),
+          })),
+          returnType: this.lookupAndElaborateDatatype(type.returnType),
+          vararg: type.vararg,
+          requires: {
+            final: type.requires.final,
+            pure: type.requires.pure,
+            noreturn: type.requires.noreturn,
+            noreturnIf: type.requires.noreturnIf,
+          },
+          sourceloc: type.sourceloc,
+        });
+
+        return makeTypeUse(
+          this.sr,
+          this.sr.b.addType(this.sr, {
+            variant: Semantic.ENode.CallableDatatype,
+            concrete: true,
+            functionType: functype,
+            thisExprType: null,
+          })[1],
+          EDatatypeMutability.Default,
+          false,
+          type.sourceloc,
+        )[1];
+      }
+
+      // =================================================================================================================
+      // =================================================================================================================
+      // =================================================================================================================
+
       case Collect.ENode.FunctionDatatype: {
         const result = makeFunctionDatatypeAvailable(this.sr, {
           parameters: type.parameters.map((p) => ({
@@ -3832,50 +3987,6 @@ export class SemanticElaborator {
             throw new CompilerError(`Type ${type.name} is not generic`, type.sourceloc);
           }
           return makePrimitiveAvailable(this.sr, primitive, type.mutability, type.sourceloc);
-        }
-
-        if (type.name === "Callable") {
-          if (type.genericArgs.length != 1) {
-            throw new CompilerError(
-              `Type Callable<> must take exactly 1 type parameter`,
-              type.sourceloc,
-            );
-          }
-          const farg = this.sr.cc.exprNodes.get(type.genericArgs[0]);
-          if (
-            farg.variant !== Collect.ENode.LiteralExpr &&
-            farg.variant !== Collect.ENode.TypeLiteralExpr
-          ) {
-            throw new CompilerError(
-              `Expression '${printCollectedExpr(
-                this.sr.cc,
-                type.genericArgs[0],
-              )}' cannot be used as a generic substitute`,
-              type.sourceloc,
-            );
-          }
-          if (
-            farg.variant !== Collect.ENode.TypeLiteralExpr ||
-            this.sr.cc.typeUseNodes.get(farg.datatype).variant !== Collect.ENode.FunctionDatatype
-          ) {
-            throw new CompilerError(
-              `Type Callable<> must take a function datatype as the generic argument`,
-              type.sourceloc,
-            );
-          }
-          const functype = this.lookupAndElaborateDatatype(farg.datatype);
-          return makeTypeUse(
-            this.sr,
-            this.sr.b.addType(this.sr, {
-              variant: Semantic.ENode.CallableDatatype,
-              functionType: this.sr.typeUseNodes.get(functype).type,
-              thisExprType: undefined,
-              concrete: isTypeConcrete(this.sr, functype),
-            })[1],
-            type.mutability,
-            false,
-            type.sourceloc,
-          )[1];
         }
 
         let foundResult = Semantic.lookupSymbol(this.sr, type.name, {
@@ -4272,7 +4383,20 @@ export class SemanticElaborator {
           instanceIds: [],
           isTemporary: true,
           sourceloc: assignment.sourceloc,
-          thisExpr: targetExprId,
+          envType: {
+            type: "method",
+            thisExprType: makeTypeUse(
+              this.sr,
+              this.sr.typeUseNodes.get(targetExpr.type).type,
+              EDatatypeMutability.Mut,
+              "force-no-inline",
+              assignment.sourceloc,
+            )[1],
+          },
+          envValue: {
+            type: "method",
+            thisExpr: targetExprId,
+          },
           type: makeTypeUse(
             this.sr,
             this.sr.b.addType(this.sr, {
@@ -4555,6 +4679,7 @@ export class SemanticElaborator {
         memberAccessExpr.genericArgs.map((g) => this.expressionAsGenericArg(g)),
         memberAccessExpr.sourceloc,
         paramPackTypes,
+        null,
       );
 
       const functionSymbol = this.sr.symbolNodes.get(functionSymbolId);
@@ -4851,6 +4976,7 @@ export class SemanticElaborator {
       assignedMembers.push(m.key);
     }
 
+    console.log(remainingMembers, assign);
     for (const m of remainingMembers) {
       const defaultValue = struct.memberDefaultValues.find((v) => v.memberName === m);
       if (defaultValue) {
@@ -4990,6 +5116,7 @@ export class SemanticElaborator {
               bodySourceCode: code,
               currentScope: this.currentContext.currentScope,
               sourceloc: memberAccessExpr.sourceloc,
+              envType: null,
             });
             this.sr.syntheticFunctions.set(funcname, funcId);
           }
@@ -6875,6 +7002,7 @@ export class SemanticElaborator {
         symbolValue.genericArgs.map((g) => this.expressionAsGenericArg(g)),
         symbolValue.sourceloc,
         parameterPackTypes,
+        null,
       );
       assert(elaboratedSymbolId);
       const elaboratedSymbol = this.sr.symbolNodes.get(elaboratedSymbolId);
@@ -7388,7 +7516,20 @@ export class SemanticElaborator {
               instanceIds: [],
               isTemporary: true,
               sourceloc: arraySubscript.sourceloc,
-              thisExpr: valueId,
+              envType: {
+                type: "method",
+                thisExprType: makeTypeUse(
+                  this.sr,
+                  this.sr.typeUseNodes.get(value.type).type,
+                  EDatatypeMutability.Mut,
+                  "force-no-inline",
+                  arraySubscript.sourceloc,
+                )[1],
+              },
+              envValue: {
+                type: "method",
+                thisExpr: valueId,
+              },
               type: makeTypeUse(
                 this.sr,
                 this.sr.b.addType(this.sr, {
@@ -7526,6 +7667,34 @@ export class SemanticElaborator {
       type: this.sr.exprNodes.get(scope.emittedExpr).type,
       sourceloc: blockScopeExpr.sourceloc,
     });
+  }
+
+  callableExpr(callable: Collect.CallableExpr, inference: Semantic.Inference) {
+    const functionSignatureId = this.elaborateFunctionSignature(callable.functionSymbol);
+    const functionSignature = this.sr.symbolNodes.get(functionSignatureId);
+
+    // A temporary env block that we will overwrite later since we don't know captures yet
+    const envType: Semantic.EnvBlockType = {
+      type: "lambda",
+      captures: [],
+    };
+
+    assert(functionSignature.variant === Semantic.ENode.FunctionSignature);
+    const elaboratedFunctionId = this.elaborateFunctionSymbol(
+      functionSignatureId,
+      functionSignature.parentStructOrNS,
+      [],
+      envType,
+    );
+    const elaboratedFunction = this.sr.symbolNodes.get(elaboratedFunctionId);
+    assert(elaboratedFunction.variant === Semantic.ENode.FunctionSymbol);
+
+    const envValue: Semantic.EnvBlockValue = {
+      type: "lambda",
+      captures: [],
+    };
+
+    return this.sr.b.callableExpr(elaboratedFunctionId, envType, envValue, callable.sourceloc);
   }
 
   ternaryExpr(ternary: Collect.TernaryExpr, inference: Semantic.Inference) {

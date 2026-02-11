@@ -252,6 +252,16 @@ export type ASTTaggedUnionDatatype = {
   sourceloc: SourceLoc;
 };
 
+export type ASTCallableDatatype = {
+  variant: "CallableDatatype";
+  params: ASTParam[];
+  ellipsis: boolean;
+  returnType: ASTTypeUse;
+  requires: ASTFunctionRequiresBlock;
+  mutability: EDatatypeMutability;
+  sourceloc: SourceLoc;
+};
+
 export type ASTFunctionDatatype = {
   variant: "FunctionDatatype";
   params: ASTParam[];
@@ -287,6 +297,7 @@ export type ASTTypeUse =
   | ASTUntaggedUnionDatatype
   | ASTTaggedUnionDatatype
   | ASTNamedDatatype
+  | ASTCallableDatatype
   | ASTFunctionDatatype
   | ASTDeferredType
   | ASTStackArrayDatatype
@@ -622,7 +633,8 @@ export type ASTLambda = {
   params: ASTParam[];
   ellipsis: boolean;
   returnType?: ASTTypeUse;
-  funcbody: ASTFuncBody;
+  scope: ASTFuncBody;
+  requires: ASTFunctionRequiresBlock;
   sourceloc: SourceLoc;
 };
 

@@ -18,7 +18,7 @@ export struct RequestAdapterOptions {
     compatibleSurface: mut Surface | none = none;
 }
 
-export type RequestAdapterCallback = (status: RequestAdapterStatus, adapter: mut Adapter, message: str) => void :: final;
+export type RequestAdapterCallback = (status: RequestAdapterStatus, adapter: mut Adapter, message: str) -> void :: final;
 export struct RequestAdapterCallbackInfo {
     callback: RequestAdapterCallback;
     mode: CallbackMode = CallbackMode.WaitAnyOnly;
@@ -118,7 +118,7 @@ export struct DeviceDescriptor {
     // uncapturedErrorCallbackInfo: inline WGPUUncapturedErrorCallbackInfo;
 }
 
-export type RequestDeviceCallback = (status: RequestDeviceStatus, device: mut Device, message: str) => void :: final;
+export type RequestDeviceCallback = (status: RequestDeviceStatus, device: mut Device, message: str) -> void :: final;
 export struct RequestDeviceCallbackInfo {
     mode: CallbackMode = CallbackMode.WaitAnyOnly;
     callback: RequestDeviceCallback;
