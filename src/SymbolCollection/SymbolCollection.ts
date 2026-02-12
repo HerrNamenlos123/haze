@@ -150,6 +150,7 @@ export namespace Collect {
     DynamicArrayDatatype,
     UntaggedUnionDatatype,
     TaggedUnionDatatype,
+    TypeOfExprDatatype,
     ParameterPack,
     EnumTypeDef,
     StructTypeDef,
@@ -521,6 +522,13 @@ export namespace Collect {
     sourceloc: SourceLoc;
   };
 
+  export type TypeOfExprDatatype = {
+    variant: ENode.TypeOfExprDatatype;
+    expr: Collect.ExprId;
+    mutability: EDatatypeMutability;
+    sourceloc: SourceLoc;
+  };
+
   export type UntaggedUnionDatatype = {
     variant: ENode.UntaggedUnionDatatype;
     members: Collect.TypeUseId[];
@@ -550,6 +558,7 @@ export namespace Collect {
     | DynamicArrayDatatype
     | UntaggedUnionDatatype
     | TaggedUnionDatatype
+    | TypeOfExprDatatype
     | ParameterPack;
 
   /// ===============================================================
@@ -1563,6 +1572,18 @@ function collectTypeUse(
       return Collect.makeTypeUse(cc, {
         variant: Collect.ENode.DynamicArrayDatatype,
         datatype: collectTypeUse(cc, item.datatype, args),
+        mutability: item.mutability,
+        sourceloc: item.sourceloc,
+      })[1];
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
+    case "TypeOfExprDatatype":
+      return Collect.makeTypeUse(cc, {
+        variant: Collect.ENode.TypeOfExprDatatype,
+        expr: collectExpr(cc, item.expr, args),
         mutability: item.mutability,
         sourceloc: item.sourceloc,
       })[1];
@@ -3099,6 +3120,10 @@ export function printCollectedDatatype(
 
     case Collect.ENode.DynamicArrayDatatype: {
       return `[]${printCollectedDatatype(cc, type.datatype)}`;
+    }
+
+    case Collect.ENode.TypeOfExprDatatype: {
+      return `typeof(${printCollectedExpr(cc, type.expr)})`;
     }
 
     case Collect.ENode.UntaggedUnionDatatype: {

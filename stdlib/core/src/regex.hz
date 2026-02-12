@@ -68,7 +68,7 @@ namespace regex {
             let resultRegex: Regex = uninitialized;
             __c__("resultRegex.blob = resultBlob;");
             return Result<Regex, str>.Ok(resultRegex);
-        }
+        };
     }
 
     export match(regex: Regex, text: str): bool {
@@ -117,7 +117,7 @@ namespace regex {
             },
             text: result.match.text,
             groups: groups,
-        }
+        };
     }
 
     export findAll(r: Regex, text: str) {

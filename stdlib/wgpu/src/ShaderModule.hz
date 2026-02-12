@@ -49,7 +49,7 @@ shaderStageFromFFI(v: ffi.WGPUShaderStage): ShaderStage :: final {
         let usage: ShaderStage = uninitialized; // This is a bitflag
         __c__("usage = (int)v;");
         return usage;
-    }
+    };
 }
 
 toFFI(v: ShaderStage): ffi.WGPUShaderStage :: final {
@@ -57,5 +57,5 @@ toFFI(v: ShaderStage): ffi.WGPUShaderStage :: final {
         let usage: ffi.WGPUShaderStage = uninitialized; // This is a bitflag
         __c__("usage = (int)v;");
         return usage;
-    }
+    };
 }

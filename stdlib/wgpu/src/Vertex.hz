@@ -165,7 +165,7 @@ colorWriteMaskFromFFI(v: inline ffi.WGPUColorWriteMask): ColorWriteMask :: final
         let usage: ColorWriteMask = uninitialized; // This is a bitflag
         __c__("usage = (int)v;");
         return usage;
-    }
+    };
 }
 
 toFFI(v: ColorWriteMask): ffi.WGPUColorWriteMask :: final {
@@ -173,5 +173,5 @@ toFFI(v: ColorWriteMask): ffi.WGPUColorWriteMask :: final {
         let usage: ffi.WGPUColorWriteMask = uninitialized; // This is a bitflag
         __c__("usage = (int)v;");
         return usage;
-    }
+    };
 }

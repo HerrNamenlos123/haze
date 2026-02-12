@@ -256,16 +256,21 @@ export function EvalCTFEBoolean(sr: Semantic.Context, exprId: Semantic.ExprId) {
   const expr = sr.exprNodes.get(exprId);
   if (!r.ok) throw new CompilerError(r.error, expr.sourceloc);
   const [result] = r.value;
-  assert(result.variant === Semantic.ENode.LiteralExpr);
 
-  if (result.literal.type === EPrimitive.bool) {
-    return result.literal.value;
-  } else {
-    throw new CompilerError(
-      `A ${
-        result.literal.type === "enum" ? `Enum Literal` : primitiveToString(result.literal.type)
-      } value cannot be tested for truthiness, use explicit comparisons.`,
-      result.sourceloc,
-    );
+  if (result.variant === Semantic.ENode.LiteralExpr) {
+    if (result.literal.type === EPrimitive.bool) {
+      return result.literal.value;
+    } else {
+      throw new CompilerError(
+        `A ${
+          result.literal.type === "enum" ? `Enum Literal` : primitiveToString(result.literal.type)
+        } value cannot be tested for truthiness, use explicit comparisons.`,
+        result.sourceloc,
+      );
+    }
   }
+  console.log(result);
+  // else if (result.variant === Semantic.ENode.Typeo)
+
+  assert(false);
 }

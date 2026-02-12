@@ -13,12 +13,12 @@ main(): int {
         let repoPath = f"{binaryDir}/glfw";
 
         if !fs.exists(repoPath)?! {
-            process.run("git", { "clone", "https://github.com/glfw/glfw.git", repoPath }, process.Options {
+            process.run("git", { "clone", "https://github.com/glfw/glfw.git", repoPath }, {
                 inherit_stdio: true,
             })?!;
         }
 
-        process.run("git", { "-c", "advice.detachedHead=false", "checkout", "3.4" }, process.Options {
+        process.run("git", { "-c", "advice.detachedHead=false", "checkout", "3.4" }, {
             inherit_stdio: true,
             cwd: repoPath,
         })?!;
@@ -74,7 +74,7 @@ main(): int {
             return 1;
         }
         assert(false);
-    }
+    };
 
     return 0;
 }

@@ -1,10 +1,7 @@
 
 export reactive<T>(value: T): Reactive<T> {
 
-    if comptime T is Reactive<T> { 
-        // Reactive<Reactive<T>> is identical to Reactive<T> by the compiler, so
-        // T is Reactive<T> is essentially asking: Is T already reactive?
-        // because Reactive<T> IS Reactive<Reactive<T>> by definition
+    if comptime type<IsReactive<T>> { 
         return value;
     }
 
@@ -17,7 +14,7 @@ hzstd_slot_write(slot, &tmp, sizeof(tmp));
 result = hzstd_reactive_create(slot);
         """);
         result;
-    }
+    };
 }
 
 export computed<T>(fn: () => T): Computed<T> {
@@ -31,7 +28,7 @@ slot = hzstd_slot_alloc(sizeof(resultValue));
 hzstd_slot_write(slot, &resultValue, sizeof(resultValue));
                 """);
                 return slot;
-            }
+            };
         };
 
         let result: Computed<T> = uninitialized;
@@ -39,5 +36,5 @@ hzstd_slot_write(slot, &resultValue, sizeof(resultValue));
 result = hzstd_computed_create(fnWrapper.fn, fnWrapper.env);
         """);
         result;
-    }
+    };
 }

@@ -97,7 +97,7 @@ fromFFI(v: ffi.WGPURenderPassDescriptor): RenderPassDescriptor :: final {
             let e: ffi.WGPURenderPassColorAttachment = uninitialized;
             __c__("e = &((WGPURenderPassColorAttachment*)v->colorAttachments)[i];");
             c.colorAttachments.push(fromFFI(e));
-        }
+        };
     }
 
     do unsafe {
@@ -106,7 +106,7 @@ fromFFI(v: ffi.WGPURenderPassDescriptor): RenderPassDescriptor :: final {
         if sa {
             c.depthStencilAttachment = fromFFI(sa);
         }
-    }
+    };
 
     let oq = v.occlusionQuerySet;
     if oq {
@@ -119,7 +119,7 @@ fromFFI(v: ffi.WGPURenderPassDescriptor): RenderPassDescriptor :: final {
         if tw {
             c.timestampWrites = fromFFI(tw);
         }
-    }
+    };
 
     return c;
 }
@@ -136,7 +136,7 @@ toFFI(v: RenderPassDescriptor): ffi.WGPURenderPassDescriptor :: final {
             occlusionQuerySet: v.occlusionQuerySet ? v.occlusionQuerySet.handle : none,
             timestampWrites: v.timestampWrites ? toFFI(v.timestampWrites) : none,
         };
-    }
+    };
 }
 
 export struct RenderPassDepthStencilAttachment {

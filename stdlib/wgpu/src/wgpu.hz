@@ -29,7 +29,7 @@ requestAdapterCallbackProxy(status: ffi.WGPURequestAdapterStatus, adapter: mut f
         let callback: Box<RequestAdapterCallback> = uninitialized;
         __c__("callback = (void*)userdata1;");
         callback.value(fromFFI(status), fromFFI(adapter), fromFFI(message));
-    }
+    };
 }
 
 
@@ -129,7 +129,7 @@ requestDeviceCallbackProxy(status: ffi.WGPURequestDeviceStatus, device: mut ffi.
         let callback: Box<RequestDeviceCallback> = uninitialized;
         __c__("callback = (void*)userdata1;");
         callback.value(fromFFI(status), Device { handle: device }, fromFFI(message));
-    }
+    };
 }
 
 

@@ -48,8 +48,8 @@ export struct Adapter {
                     },
                     deviceLostCallbackInfo: a,
                     uncapturedErrorCallbackInfo: b,
-                }
-            }
+                };
+            };
         }
 
         let callback = Box<RequestDeviceCallback>(callbackInfo.callback);

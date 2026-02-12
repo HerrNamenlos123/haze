@@ -29,7 +29,7 @@ export opaque struct MemoryBuffer {
             buffer.committed = false;
             buffer.writeZero(0, length);
             return buffer;
-        }
+        };
     }
 
     constructor(length: int) {
@@ -41,7 +41,7 @@ export opaque struct MemoryBuffer {
             buffer.committed = false;
             buffer.writeZero(0, length);
             return buffer;
-        }
+        };
     }
 
     operator[](index: int): ByteRef {

@@ -75,6 +75,7 @@ import {
   type ASTStatement,
   type ASTFuncBody,
   type ASTCallableDatatype,
+  type ASTTypeOfExprDatatype,
 } from "../shared/AST";
 import {
   BooleanConstantContext,
@@ -161,6 +162,7 @@ import {
   SingleFStringContext,
   TripleFStringContext,
   ParamContext,
+  TypeOfExprDatatypeContext,
 } from "./grammar/autogen/HazeParser";
 import {
   BaseErrorListener,
@@ -2454,6 +2456,22 @@ class ASTBuilder extends HazeParserListener {
       mutability: EDatatypeMutability.Default,
       sourceloc: this.loc(ctx),
     } satisfies ASTDynamicArrayDatatype);
+  };
+
+  exitTypeOfExprDatatype = (ctx: TypeOfExprDatatypeContext) => {
+    const start = this.getMark(ctx);
+    const produced = this.stack.splice(start);
+
+    if (produced.length !== 1) {
+      throw new InternalError("TypeOfExprDatatype stack mismatch");
+    }
+
+    this.stack.push({
+      variant: "TypeOfExprDatatype",
+      expr: produced[0] as ASTExpr,
+      mutability: EDatatypeMutability.Default,
+      sourceloc: this.loc(ctx),
+    } satisfies ASTTypeOfExprDatatype);
   };
 
   exitAggregateLiteralElement = (ctx: AggregateLiteralElementContext) => {

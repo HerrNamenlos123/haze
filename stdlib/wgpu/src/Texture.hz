@@ -103,7 +103,7 @@ textureUsageFromFFI(v: ffi.WGPUTextureUsage): TextureUsage :: final {
         let usage: TextureUsage = uninitialized; // This is a bitflag
         __c__("usage = (int)v;");
         return usage;
-    }
+    };
 }
 
 toFFI(v: TextureUsage): ffi.WGPUTextureUsage :: final {
@@ -111,5 +111,5 @@ toFFI(v: TextureUsage): ffi.WGPUTextureUsage :: final {
         let usage: ffi.WGPUTextureUsage = uninitialized; // This is a bitflag
         __c__("usage = (int)v;");
         return usage;
-    }
+    };
 }

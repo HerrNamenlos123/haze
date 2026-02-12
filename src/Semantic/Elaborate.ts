@@ -3999,6 +3999,78 @@ export class SemanticElaborator {
           );
         }
 
+        if (type.name === "IsReactive") {
+          if (type.genericArgs.length !== 1) {
+            throw new CompilerError(
+              `IsReactive<T> requires exactly 1 generic argument`,
+              type.sourceloc,
+            );
+          }
+
+          if (type.inline) {
+            throw new CompilerError(`IsReactive<T> cannot be inline`, type.sourceloc);
+          }
+
+          if (type.innerNested) {
+            throw new CompilerError(`IsReactive<T> does not have children`, type.sourceloc);
+          }
+
+          const [genericArgExpr] = this.expr(type.genericArgs[0], undefined);
+          if (genericArgExpr.variant !== Semantic.ENode.DatatypeAsValueExpr) {
+            throw new CompilerError(
+              `Reactive<T> requires T to resolve to a datatype`,
+              type.sourceloc,
+            );
+          }
+
+          const typeUse = this.sr.typeUseNodes.get(genericArgExpr.type);
+          const typeDef = this.sr.typeDefNodes.get(typeUse.type);
+          return this.sr.b.literalType(
+            {
+              type: EPrimitive.bool,
+              value:
+                typeDef.variant === Semantic.ENode.ReactiveDatatype ||
+                typeDef.variant === Semantic.ENode.ComputedDatatype,
+            },
+            type.sourceloc,
+          );
+        }
+
+        if (type.name === "IsComputed") {
+          if (type.genericArgs.length !== 1) {
+            throw new CompilerError(
+              `IsComputed<T> requires exactly 1 generic argument`,
+              type.sourceloc,
+            );
+          }
+
+          if (type.inline) {
+            throw new CompilerError(`IsComputed<T> cannot be inline`, type.sourceloc);
+          }
+
+          if (type.innerNested) {
+            throw new CompilerError(`IsComputed<T> does not have children`, type.sourceloc);
+          }
+
+          const [genericArgExpr] = this.expr(type.genericArgs[0], undefined);
+          if (genericArgExpr.variant !== Semantic.ENode.DatatypeAsValueExpr) {
+            throw new CompilerError(
+              `IsComputed<T> requires T to resolve to a datatype`,
+              type.sourceloc,
+            );
+          }
+
+          const typeUse = this.sr.typeUseNodes.get(genericArgExpr.type);
+          const typeDef = this.sr.typeDefNodes.get(typeUse.type);
+          return this.sr.b.literalType(
+            {
+              type: EPrimitive.bool,
+              value: typeDef.variant === Semantic.ENode.ComputedDatatype,
+            },
+            type.sourceloc,
+          );
+        }
+
         if (type.name === "Computed") {
           if (type.genericArgs.length !== 1) {
             throw new CompilerError(
@@ -4348,6 +4420,13 @@ export class SemanticElaborator {
           type: this.lookupAndElaborateDatatype(m.type),
         }));
         return this.sr.b.taggedUnionTypeUse(rawMembers, type.nodiscard, type.sourceloc);
+      }
+
+      case Collect.ENode.TypeOfExprDatatype: {
+        const sc = this.sr.cc.scopeNodes.get(this.currentContext.currentScope);
+        console.log("Looking up typeof in scope", this.currentContext.currentScope, sc);
+        const expr = this.expr(type.expr, undefined)[0];
+        return expr.type;
       }
 
       // =================================================================================================================
@@ -8397,9 +8476,17 @@ export function makeRawComputedDatatypeAvailable(
 ): Semantic.TypeDefId {
   const wrappedTypeUse = sr.typeUseNodes.get(wrappedType);
   const wrappedTypeDef = sr.typeDefNodes.get(wrappedTypeUse.type);
+
+  // Example: Computed<Computed<T>> -> Computed<T>
+  // If the inner type T is already a computed, simply unwrap it and use it directly
   if (wrappedTypeDef.variant === Semantic.ENode.ComputedDatatype) {
-    // If the inner type T is already computed, simply unwrap it and use it directly
     return wrappedTypeUse.type;
+  }
+
+  // Example: Computed<Reactive<T>> -> Computed<T>
+  // If the inner type T is a reactive, unwrap it because a computed supersedes a reactive
+  if (wrappedTypeDef.variant === Semantic.ENode.ReactiveDatatype) {
+    wrappedType = wrappedTypeDef.wrappedType; // Unwrap T but then make T -> Computed<T>
   }
 
   for (const id of sr.elaboratedComputedTypes) {
@@ -8439,9 +8526,17 @@ export function makeRawReactiveDatatypeAvailable(
 ): Semantic.TypeDefId {
   const wrappedTypeUse = sr.typeUseNodes.get(wrappedType);
   const wrappedTypeDef = sr.typeDefNodes.get(wrappedTypeUse.type);
+
+  // Example: Reactive<Reactive<T>> -> Reactive<T>
+  // If the inner type T is already reactive, simply unwrap it and use it directly
   if (wrappedTypeDef.variant === Semantic.ENode.ReactiveDatatype) {
-    // If the inner type T is already reactive, simply unwrap it and use it directly
     return wrappedTypeUse.type;
+  }
+
+  // Example: Reactive<Computed<T>> -> Computed<T>
+  // If the inner type T is a computed, unwrap it because a computed supersedes a reactive
+  if (wrappedTypeDef.variant === Semantic.ENode.ComputedDatatype) {
+    return wrappedTypeUse.type; // Use computed directly
   }
 
   for (const id of sr.elaboratedReactiveTypes) {

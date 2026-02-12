@@ -39,7 +39,7 @@ extractEnums(file: str): Result<[]EnumResult, str> {
                 result.values.push({
                     name: values.groups[0].text,
                     value: enumeratorValue,
-                })
+                });
             }
             results.push(result);
         }
@@ -57,7 +57,7 @@ extractEnums(file: str): Result<[]EnumResult, str> {
             return fmt.format(e);
         }
         assert(false);
-    }
+    };
 }
 
 struct StructField {
@@ -117,7 +117,7 @@ extractStructs(file: str): Result<[]StructResult, str> {
     }
     else e {
         return fmt.format(e);
-    }
+    };
 }
 
 struct FunctionType {
@@ -182,7 +182,7 @@ extractFunctionTypes(file: str): Result<[]FunctionType, str> {
     }
     else e {
         return fmt.format(e);
-    }
+    };
 }
 
 struct BitflagType {
@@ -217,7 +217,7 @@ extractBitflagTypes(file: str): Result<[]BitflagType, str> {
     }
     else e {
         return fmt.format(e);
-    }
+    };
 }
 
 struct BitflagValue {
@@ -249,7 +249,7 @@ extractBitflagValues(file: str): Result<[]BitflagValue, str> {
     }
     else e {
         return fmt.format(e);
-    }
+    };
 }
 
 struct Typedef {
@@ -283,7 +283,7 @@ extractTypedefs(file: str): Result<[]Typedef, str> {
     }
     else e {
         return fmt.format(e);
-    }
+    };
 }
 
 struct FunctionParam {
@@ -353,7 +353,7 @@ extractFunctionDecls(file: str): Result<[]FunctionDecl, str> {
     }
     else e {
         return fmt.format(e);
-    }
+    };
 }
 
 struct GenArgs {
@@ -406,7 +406,7 @@ getImplStructs(file: str): Result<[]ImplStruct, str> {
     }
     else e {
         return fmt.format(e);
-    }
+    };
 }
 
 parseType(args: GenArgs, fieldType: str): str {
@@ -671,14 +671,14 @@ betterEnum(file: str, e: EnumResult, r: Regex, finalName: str) {
     file = file + f"        let raw: ffi.{e.name} = uninitialized;\n";
     file = file + f"        __c__(\"raw = (int)nice;\"); // By design binary-equivalent, should turn into a no-op when optimized\n";
     file = file + f"        return raw;\n";
-    file = file + f"    }}\n";
+    file = file + f"    }};\n";
     file = file + f"}}\n";
     file = file + f"fromFFI(raw: ffi.{e.name}): {finalName} {{\n";
     file = file + f"    do unsafe {{\n";
     file = file + f"        let nice: {finalName} = uninitialized;\n";
     file = file + f"        __c__(\"nice = (int)raw;\"); // By design binary-equivalent, should turn into a no-op when optimized\n";
     file = file + f"        return nice;\n";
-    file = file + f"    }}\n";
+    file = file + f"    }};\n";
     file = file + f"}}\n\n";
 
     return file;
@@ -963,7 +963,7 @@ generate(): int {
             return 1;
         }
         assert(false);
-    }
+    };
     return 0;
 }
 

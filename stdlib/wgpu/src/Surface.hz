@@ -19,7 +19,7 @@ export struct Surface {
                 return none;
             }
             return fromFFI(caps);
-        }
+        };
     }
 
     configure(config: SurfaceConfiguration) {
@@ -93,7 +93,7 @@ fromFFI(v: ffi.WGPUSurfaceConfiguration): SurfaceConfiguration :: final {
             let e: TextureFormat = uninitialized;
             __c__("e = (int)((WGPUTextureFormat*)v->viewFormats)[i];");
             c.viewFormats.push(e);
-        }
+        };
     }
 
     return c;
@@ -135,7 +135,7 @@ fromFFI(v: ffi.WGPUSurfaceCapabilities): SurfaceCapabilities :: final {
                 let e: TextureFormat = uninitialized;
                 __c__("e = (int)((WGPUTextureFormat*)v->formats)[i];");
                 c.formats.push(e);
-            }
+            };
         }
 
         for (let i = 0; i < v.presentModeCount; i++) {
@@ -143,7 +143,7 @@ fromFFI(v: ffi.WGPUSurfaceCapabilities): SurfaceCapabilities :: final {
                 let p: PresentMode = uninitialized;
                 __c__("p = (int)((WGPUPresentMode*)v->presentModes)[i];");
                 c.presentModes.push(p);
-            }
+            };
         }
 
         for (let i = 0; i < v.alphaModeCount; i++) {
@@ -151,11 +151,11 @@ fromFFI(v: ffi.WGPUSurfaceCapabilities): SurfaceCapabilities :: final {
                 let a: CompositeAlphaMode = uninitialized;
                 __c__("a = (int)((WGPUCompositeAlphaMode*)v->alphaModes)[i];");
                 c.alphaModes.push(a);
-            }
+            };
         }
 
         return c;
-    }
+    };
 }
 
 toFFI(v: SurfaceCapabilities): ffi.WGPUSurfaceCapabilities :: final {

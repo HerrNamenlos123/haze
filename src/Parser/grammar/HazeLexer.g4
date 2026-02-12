@@ -54,6 +54,7 @@ OPERATORAS: 'operator as';
 TRUE: 'true';
 FALSE: 'false';
 TYPE: 'type';
+TYPEOF: 'typeof';
 RETURN: 'return';
 IF: 'if';
 ELSE: 'else';

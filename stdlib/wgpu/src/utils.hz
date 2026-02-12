@@ -14,7 +14,7 @@ toOptionalFFI(text: str | none): inline ffi.WGPUStringView :: final {
             __c__("view.length = 0;");
             return view;
         }
-    }
+    };
 }
 
 fromOptionalFFI(view: inline ffi.WGPUStringView): str | none :: final {
@@ -29,7 +29,7 @@ fromOptionalFFI(view: inline ffi.WGPUStringView): str | none :: final {
         else {
             return none;
         }
-    }
+    };
 }
 
 toFFI(text: str): inline ffi.WGPUStringView :: final {
@@ -38,7 +38,7 @@ toFFI(text: str): inline ffi.WGPUStringView :: final {
         __c__("view.data = text.data;");
         __c__("view.length = text.length;");
         return view;
-    }
+    };
 }
 
 fromFFI(view: inline ffi.WGPUStringView): str :: final {
@@ -46,7 +46,7 @@ fromFFI(view: inline ffi.WGPUStringView): str :: final {
         let text = "";
         __c__("text = hzstd_str_dup(HZSTD_STRING(view.data, view.length));");
         return text;
-    }
+    };
 }
 
 struct ArrayFFIResult {
@@ -61,7 +61,7 @@ arrayFromFFI<T, ffiT>(length: usize, data: cptr) {
             let elem: ffiT = uninitialized;
             __c__("elem = ((__typeof__(elem)*)data)[i];");
             result.push(fromFFI(elem));
-        }
+        };
     }
     return result;
 }

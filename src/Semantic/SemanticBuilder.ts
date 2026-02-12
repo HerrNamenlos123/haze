@@ -363,6 +363,28 @@ export class SemanticBuilder {
     }
   }
 
+  literalType(literalValue: LiteralValue, sourceloc: SourceLoc): Semantic.TypeUseId {
+    assert(literalValue.type !== "enum");
+    return makeTypeUse(
+      this.sr,
+      this.addType(this.sr, {
+        variant: Semantic.ENode.LiteralDatatype,
+        concrete: true,
+        sourceloc: sourceloc,
+        type: makePrimitiveAvailable(
+          this.sr,
+          literalValue.type,
+          EDatatypeMutability.Const,
+          sourceloc,
+        ),
+        literalValue: literalValue,
+      })[1],
+      EDatatypeMutability.Const,
+      false,
+      sourceloc,
+    )[1];
+  }
+
   literal(value: boolean | number | bigint | string, sourceloc: SourceLoc) {
     if (typeof value === "bigint") {
       return this.literalValue(

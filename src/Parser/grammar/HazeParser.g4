@@ -45,7 +45,7 @@ globalDeclaration
     | typeDefinition 
     | namespaceDefinition 
     | globalVariableDef 
-    | typeDef 
+    | typeDef SEMI
     | globalDeclarationWithSource
     // The cInjectDirective must be here in global and cannot be part of topLevel directly, because
     // MANY declarations start with an optional "export" and it is ambiguous for ANTLR.
@@ -85,7 +85,7 @@ globalVariableDef
     ;
 
 typeDef
-    : (export=EXPORT)? (extern=EXTERN externLang=externLanguage?)? pub=PUB? TYPE name=id (LANGLE generic+=id (COMMA generic+=id)* RANGLE)? EQUALS datatype SEMI?        #TypeAliasDirective
+    : (export=EXPORT)? (extern=EXTERN externLang=externLanguage?)? pub=PUB? TYPE name=id (LANGLE generic+=id (COMMA generic+=id)* RANGLE)? EQUALS datatype        #TypeAliasDirective
     ;
 
 variableMutabilitySpecifier
@@ -123,6 +123,7 @@ datatypeImpl
     | LBRACKET n=(INTEGER_LITERAL | HEX_INTEGER_LITERAL) RBRACKET datatype      #StackArrayDatatype
     | LBRACKET RBRACKET datatype                                                #DynamicArrayDatatype
     | LB params RB (DOUBLEARROW | SINGLEARROW) datatype requiresBlock?          #FunctionDatatype
+    | TYPEOF LB expr RB                                                         #TypeOfExprDatatype
     ;
 
 baseDatatype
@@ -326,20 +327,21 @@ ifStatementConditionImpl
 
 statement
     : INLINEC LB expr RB SEMI?                                                      #CInlineStatement
-    | expr SEMI?                                                                    #ExprStatement
-    | RETURN expr? SEMI?                                                            #ReturnStatement
-    | RAISE expr? SEMI?                                                             #RaiseStatement
+    | typeDef SEMI                                                                  #TypeAliasStatement
+    | expr SEMI                                                                     #ExprStatement
+    | RETURN expr? SEMI                                                             #ReturnStatement
+    | RAISE expr? SEMI                                                              #RaiseStatement
     | variableCreation                                                              #VariableCreationStatement
     | IF comptime=COMPTIME? ifCondition=ifStatementConditionImpl then=rawScope (ELSE IF elseIfCondition+=ifStatementConditionImpl elseIfThen+=rawScope)* (ELSE elseBlock=rawScope)? #IfStatement
     | FOR comptime=COMPTIME? id (COMMA id)? IN expr rawScope                        #ForEachStatement
     | FOR comptime=COMPTIME? LB statement? SEMI condition=expr? SEMI incr=expr? RB rawScope #ForStatement
     | WHILE expr rawScope                                                           #WhileStatement
     | WHILE LET id (COLON datatype)? EQUALS expr (SEMI expr)? rawScope              #WhileLetStatement
-    | typeDef                                                                       #TypeAliasStatement
     ;
 
 // This is a hack-around so the word "type" can be used as variable names without creating a syntax error
 id
     : TYPE
     | RAW_ID
+    | TYPEOF
     ;

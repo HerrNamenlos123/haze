@@ -55,6 +55,7 @@ export namespace Semantic {
     DeferredFunctionDatatype,
     BlockScope,
     EnumDatatype,
+    LiteralDatatype,
     StructDatatype,
     CallableDatatype,
     ParameterPackDatatype,
@@ -268,6 +269,14 @@ export namespace Semantic {
     originalCollectedSymbol: Collect.TypeDefId;
   };
 
+  export type LiteralDatatypeDef = {
+    variant: ENode.LiteralDatatype;
+    literalValue: LiteralValue;
+    sourceloc: SourceLoc;
+    type: TypeUseId;
+    concrete: boolean;
+  };
+
   export type StructDatatypeDef = {
     variant: ENode.StructDatatype;
     name: string;
@@ -393,6 +402,7 @@ export namespace Semantic {
     | FunctionDatatypeDef
     | StructDatatypeDef
     | EnumDatatypeDef
+    | LiteralDatatypeDef
     | FixedArrayDatatypeDef
     | DynamicArrayDatatypeDef
     | SliceDatatypeDef

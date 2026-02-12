@@ -31,7 +31,7 @@ main(): int {
                 msg = "winget install Rustlang.Rustup";
             }
             raise f"Cargo is not installed. Please install the 'cargo' Rust build system, it is required to build WebGPU-Native. Your best bet is: '{msg}'";
-        }
+        };
 
         process.run("cargo", { "build", "--release" }, {
             inherit_stdio : true,
@@ -69,7 +69,7 @@ main(): int {
             return 1;
         }
         assert(false);
-    }
+    };
 
     return 0;
 }

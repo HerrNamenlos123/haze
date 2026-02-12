@@ -37,7 +37,7 @@ bufferUsageFromFFI(v: ffi.WGPUBufferUsage): BufferUsage :: final {
         let usage: BufferUsage = uninitialized; // This is a bitflag
         __c__("usage = (int)v;");
         return usage;
-    }
+    };
 }
 
 toFFI(v: BufferUsage): ffi.WGPUBufferUsage :: final {
@@ -45,7 +45,7 @@ toFFI(v: BufferUsage): ffi.WGPUBufferUsage :: final {
         let usage: ffi.WGPUBufferUsage = uninitialized; // This is a bitflag
         __c__("usage = (int)v;");
         return usage;
-    }
+    };
 }
 
 export struct Buffer {

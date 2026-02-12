@@ -89,6 +89,19 @@ namespace fmt {
 
     export print(args: ...) {
         for comptime arg in args {
+            do unsafe {
+                let a = arg;
+                // do unsafe {
+                    type Arg = typeof(a);
+                    if comptime Arg is str {}
+                // };
+            };
+
+            // If this is the same, then Arg is reactive, because reactives cannot be nested
+            // and Reactive<Reactive<T>> is by definition the same as Reactive<T>
+            // if comptime Arg == Reactive<Arg> {
+            //     // print();
+            // }
 
             if comptime typeof(arg) == int || typeof(arg) == type<mut int> {
                 const value = arg;

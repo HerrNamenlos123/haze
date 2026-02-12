@@ -288,6 +288,13 @@ export type ASTDynamicArrayDatatype = {
   sourceloc: SourceLoc;
 };
 
+export type ASTTypeOfExprDatatype = {
+  variant: "TypeOfExprDatatype";
+  expr: ASTExpr;
+  mutability: EDatatypeMutability;
+  sourceloc: SourceLoc;
+};
+
 export type ASTParameterPackDatatype = {
   variant: "ParameterPack";
   sourceloc: SourceLoc;
@@ -302,6 +309,7 @@ export type ASTTypeUse =
   | ASTDeferredType
   | ASTStackArrayDatatype
   | ASTDynamicArrayDatatype
+  | ASTTypeOfExprDatatype
   | ASTParameterPackDatatype;
 
 export type ASTGlobalVariableDefinition = {
