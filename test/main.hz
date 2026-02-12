@@ -28,7 +28,7 @@ main(): int {
 
     fmt.println(c);
     a := 5;
-    fmt.println(c as int);
+    fmt.println(c);
 
     return 0;
 

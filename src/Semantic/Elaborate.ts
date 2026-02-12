@@ -160,7 +160,7 @@ export class SemanticElaborator {
     return this.sr.typeDefNodes.get(id);
   }
 
-  unwrapReactiveOrComputedIfPossible(exprId: Semantic.ExprId) {
+  unwrapReactiveOrComputedIfPossible(exprId: Semantic.ExprId): Semantic.ExprId {
     const expr = this.sr.exprNodes.get(exprId);
     const typeUse = this.sr.typeUseNodes.get(expr.type);
     const typeDef = this.sr.typeDefNodes.get(typeUse.type);
@@ -177,7 +177,7 @@ export class SemanticElaborator {
         Conversion.Mode.Implicit,
       );
       if (result.ok) {
-        return result.expr;
+        return this.unwrapReactiveOrComputedIfPossible(result.expr);
       }
     }
     return exprId;
@@ -3986,6 +3986,36 @@ export class SemanticElaborator {
             type.mutability,
             type.sourceloc,
           );
+        }
+
+        if (type.name === "ReactiveInner") {
+          if (type.genericArgs.length !== 1) {
+            throw new CompilerError(
+              `ReactiveInner<T> requires exactly 1 generic argument`,
+              type.sourceloc,
+            );
+          }
+
+          if (type.inline) {
+            throw new CompilerError(`ReactiveInner<T> cannot be inline`, type.sourceloc);
+          }
+
+          if (type.innerNested) {
+            throw new CompilerError(`ReactiveInner<T> does not have children`, type.sourceloc);
+          }
+
+          const [genericArgExpr, genericArgExprId] = this.expr(type.genericArgs[0], undefined);
+          if (genericArgExpr.variant !== Semantic.ENode.DatatypeAsValueExpr) {
+            throw new CompilerError(
+              `ReactiveInner<T> requires T to resolve to a datatype`,
+              type.sourceloc,
+            );
+          }
+
+          const expr = this.sr.exprNodes.get(
+            this.sr.e.unwrapReactiveOrComputedIfPossible(genericArgExprId),
+          );
+          return expr.type;
         }
 
         if (type.name === "IsReactive") {

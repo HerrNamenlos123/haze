@@ -87,104 +87,94 @@ namespace fmt {
         return result;
     }
 
-    export print(args: ...) {
-        for comptime arg in args {
-            type Arg = typeof(arg);
-
-            // If this is the same, then Arg is reactive, because reactives cannot be nested
-            // and Reactive<Reactive<T>> is by definition the same as Reactive<T>
-            if comptime type<IsReactive<Arg>> {
-                // print();
-                // static_assert(false, "TRUE");
-                return;
-            }
-
-            if comptime typeof(arg) is int || typeof(arg) is mut int {
-                const value = arg;
-                // ffi.printf("%lld", arg);
+    export printFragment<T>(value: T) {
+        if comptime type<IsReactive<T>> {
+            printFragment<ReactiveInner<T>>(value);
+        }
+        else {
+            if comptime T is int || T is mut int {
                 __c__("printf(\"%\"PRId64, value);");
             }
-            else if typeof(arg) is cstr || typeof(arg) is ccstr {
-                const s = arg;
-                __c__("printf(\"%s\", s);");
-                // ffi.printf("%s", arg);
+            else if T is cstr || T is ccstr {
+                __c__("printf(\"%s\", value);");
             }
-            else if typeof(arg) is str {
-                const s = arg;
-                __c__("fwrite(s.data, 1, s.length, stdout);");
-                // ffi.printf("%s", arg);
+            else if T is str {
+                __c__("fwrite(value.data, 1, value.length, stdout);");
             }
-            else if typeof(arg) is str {
-                const s = arg;
-                __c__("fwrite(s.data, 1, s.length, stdout);");
-                // ffi.printf("%s", arg);
+            else if T is str {
+                __c__("fwrite(value.data, 1, value.length, stdout);");
             }
-            else if typeof(arg) is bool {
-                if arg {
+            else if T is bool {
+                if value {
                     ffi.printf("true");
                 }
                 else {
                     ffi.printf("false");
                 }
             }
-            else if typeof(arg) is usize {
-                ffi.printf("%zu", arg);
+            else if T is usize {
+                ffi.printf("%zu", value);
             }
-            else if typeof(arg) is real || typeof(arg) is mut real {
-                ffi.printf("%f", arg);
+            else if T is real || T is mut real {
+                ffi.printf("%f", value);
             }
-            else if typeof(arg) is u8 || typeof(arg) is u16 || typeof(arg) is u32 {
-                const value = arg;
+            else if T is u8 || T is u16 || T is u32 {
                 __c__("printf(\"%\"PRIu8, value);");
             }
-            else if typeof(arg) is u64 {
-                const value = arg;
+            else if T is u64 {
                 __c__("printf(\"%\"PRIu64, value);");
             }
-            else if typeof(arg) is i8 || typeof(arg) is i16 || typeof(arg) is i32 {
-                const value = arg;
+            else if T is i8 || T is i16 || T is i32 {
                 __c__("printf(\"%\"PRId8, value);");
             }
-            else if typeof(arg) is i64 {
-                const value = arg;
+            else if T is i64 {
                 __c__("printf(\"%\"PRId64, value);");
             }
-            else if typeof(arg) is Vec2 || typeof(arg) is Vec2 {
-                ffi.printf("(%f, %f)", arg.x, arg.y);
+            else if T is Vec2 || T is Vec2 {
+                ffi.printf("(%f, %f)", value.x, value.y);
             }
-            else if typeof(arg) is Vec3 || typeof(arg) is Vec3 {
-                ffi.printf("(%f, %f, %f)", arg.x, arg.y, arg.z);
+            else if T is Vec3 || T is Vec3 {
+                ffi.printf("(%f, %f, %f)", value.x, value.y, value.z);
             }
-            else if typeof(arg) is Vec4 || typeof(arg) is Vec4 {
-                ffi.printf("(%f, %f, %f, %f)", arg.x, arg.y, arg.z, arg.w);
+            else if T is Vec4 || T is Vec4 {
+                ffi.printf("(%f, %f, %f, %f)", value.x, value.y, value.z, value.w);
             }
-            else if typeof(arg) is fs.Error {
-                ffi.printf("%d", arg);
+            else if T is fs.Error {
+                ffi.printf("%d", value);
             }
-            else if typeof(arg) is null {
+            else if T is null {
                 ffi.printf("null");
             }
-            else if typeof(arg) is none {
+            else if T is none {
                 ffi.printf("none");
             }
-            else if typeof(arg) is Vec2f || typeof(arg) is mut _Vec2<f32> {
-                let s = format(arg);
+            else if T is Vec2f || T is mut _Vec2<f32> {
+                let s = format(value);
                 __c__("fwrite(s.data, 1, s.length, stdout);");
             }
             else {
-                static_assert(false, "Type '" + typeof(arg).name + "' is not supported in fmt.print");
+                static_assert(false, "Type '" + T.name + "' is not supported in fmt.print");
+            }
+        }
+    }
+
+    export print(args: ...) {
+        for comptime arg, i in args {
+            printFragment<typeof(arg)>(arg);
+            if comptime i != args.length - 1 {
+                printFragment<str>(" ");
             }
         }
     }
 
     export println(args: ...) {
         for comptime arg, i in args {
-            print(arg);
+            printFragment<typeof(arg)>(arg);
             if comptime i != args.length - 1 {
-                print(" ");
+                printFragment<str>(" ");
             }
         }
-        print("\n");
+        printFragment<str>("\n");
     }
 
     export format_to(writer: mut StringWriter, value: i64, args: FormatArgs) {
