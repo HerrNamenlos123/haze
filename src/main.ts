@@ -143,6 +143,7 @@ async function main(): Promise<number> {
         Boolean(args.ignoreLock),
         Boolean(args.strip),
       );
+
       if (!(await project.build(args.filename, args.sourceloc, args.fullRebuild))) {
         return 1;
       }

@@ -221,14 +221,12 @@ export class SemanticBuilder {
 
       const result = EvalCTFE(this.sr, passedArgId);
       if (result.ok) {
-        if (
-          result.value[0].variant === Semantic.ENode.LiteralExpr &&
-          result.value[0].literal.type === EPrimitive.bool
-        ) {
+        const val = result.value[0];
+        if (val.variant === Semantic.ENode.LiteralExpr && val.literal.type === EPrimitive.bool) {
           // The condition is already known at compile time, skip the condition
           // This is where assert(false) turns into noreturn
           // If condition is true, just ignore all constraints
-          if (!result.value[0].literal.value) {
+          if (!val.literal.value) {
             isFallthrough = false;
             resultFlow.add(Semantic.FlowType.NoReturn);
           }

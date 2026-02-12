@@ -468,10 +468,16 @@ class CodeGenerator {
       const statement = this.lr.statementNodes.get(statementId);
       assert(statement.variant === Lowered.ENode.VariableStatement);
       if (statement.value) {
+        let exprValue = this.emitExpr(statement.value).out.get();
+
+        if (statement.intrinsicTakeAddrOfValue) {
+          exprValue = `&(${exprValue})`;
+        }
+
         this.out.global_variables.writeLine(
           `${this.mangleTypeUse(statement.type)} ${this.mangleName(
             statement.name,
-          )} = ${this.emitExpr(statement.value).out.get()};`,
+          )} = ${exprValue};`,
         );
       } else {
         this.out.global_variables.writeLine(
@@ -799,7 +805,14 @@ class CodeGenerator {
         if (statement.value) {
           const exprWriter = this.emitExpr(statement.value);
           tempWriter.write(exprWriter.temp);
-          outWriter.writeLine(` = ${exprWriter.out.get()};`);
+
+          let exprValue = exprWriter.out.get();
+
+          if (statement.intrinsicTakeAddrOfValue) {
+            exprValue = `&(${exprValue})`;
+          }
+
+          outWriter.writeLine(` = ${exprValue};`);
         } else {
           const statementType = this.lr.typeUseNodes.get(statement.type);
           const statementTypeDef = this.lr.typeDefNodes.get(statementType.type);

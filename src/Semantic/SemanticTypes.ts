@@ -106,8 +106,6 @@ export namespace Semantic {
     DereferenceExpr,
     ExprAssignmentExpr,
     StructLiteralExpr,
-    PreIncrExpr,
-    PostIncrExpr,
     ArrayLiteralExpr,
     ArraySubscriptExpr,
     ArraySliceExpr,
@@ -610,20 +608,6 @@ export namespace Semantic {
     operation: EUnaryOperation;
   };
 
-  export type PostIncrExpr = BaseExpr & {
-    variant: ENode.PostIncrExpr;
-    instanceIds: InstanceId[];
-    expr: ExprId;
-    operation: EIncrOperation;
-  };
-
-  export type PreIncrExpr = BaseExpr & {
-    variant: ENode.PreIncrExpr;
-    instanceIds: InstanceId[];
-    expr: ExprId;
-    operation: EIncrOperation;
-  };
-
   export type TernaryExpr = BaseExpr & {
     variant: ENode.TernaryExpr;
     instanceIds: InstanceId[];
@@ -737,8 +721,6 @@ export namespace Semantic {
     | UnaryExpr
     | BinaryExpr
     | CallableExpr
-    | PreIncrExpr
-    | PostIncrExpr
     | AddressOfExpr
     | DereferenceExpr
     | ExplicitCastExpr
@@ -827,6 +809,7 @@ export namespace Semantic {
     value: ExprId | null;
     comptime: boolean;
     variableSymbol: SymbolId;
+    intrinsicTakeAddrOfValue: boolean;
     sourceloc: SourceLoc;
   };
 
@@ -2317,12 +2300,6 @@ export namespace Semantic {
         return `(${serializeExpr(sr, expr.calledExpr)}(${expr.arguments
           .map((a) => serializeExpr(sr, a))
           .join(", ")}))`;
-
-      case Semantic.ENode.PostIncrExpr:
-        return `((${serializeExpr(sr, expr.expr)})${IncrOperationToString(expr.operation)})`;
-
-      case Semantic.ENode.PreIncrExpr:
-        return `(${IncrOperationToString(expr.operation)}(${serializeExpr(sr, expr.expr)}))`;
 
       case Semantic.ENode.SymbolValueExpr: {
         const symbol = sr.symbolNodes.get(expr.symbol);

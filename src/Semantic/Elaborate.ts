@@ -5,6 +5,7 @@ import {
   EDatatypeMutability,
   EVariableMutability,
   EOverloadedOperator,
+  EIncrOperation,
 } from "../shared/AST";
 import {
   EMethodType,
@@ -24,7 +25,10 @@ import {
   type SourceLoc,
 } from "../shared/Errors";
 import {
+  addStatement,
   Collect,
+  CollectImmediate,
+  defineVariableSymbol,
   funcSymHasParameterPack,
   printCollectedExpr,
   printCollectedSymbol,
@@ -1202,12 +1206,6 @@ export class SemanticElaborator {
 
       case Collect.ENode.ErrorPropagationExpr:
         return this.errorPropagationExpr(expr, inference);
-
-      case Collect.ENode.PreIncrExpr:
-        return this.preIncr(expr);
-
-      case Collect.ENode.PostIncrExpr:
-        return this.postIncr(expr);
 
       case Collect.ENode.AttemptExpr:
         return this.attemptExpr(expr, inference);
@@ -6222,6 +6220,7 @@ export class SemanticElaborator {
             variant: Semantic.ENode.VariableStatement,
             mutability: variableSymbol.mutability,
             comptime: collectedVariableSymbol.comptime,
+            intrinsicTakeAddrOfValue: s.intrinsicTakeAddrOfValue,
             name: variableSymbol.name,
             variableSymbol: variableSymbolId,
             value:
@@ -7409,6 +7408,7 @@ export class SemanticElaborator {
           comptime: false,
           sourceloc: errPropExpr.sourceloc,
           value: rightExprId,
+          intrinsicTakeAddrOfValue: false,
           variableSymbol: tempVariableId,
         })[1],
         this.sr.b.addStatement(this.sr, {
@@ -7784,43 +7784,156 @@ export class SemanticElaborator {
     return [this.sr.exprNodes.get(result), result];
   }
 
-  postIncr(postIncr: Collect.PostIncrExpr) {
-    const [e, eId] = this.expr(postIncr.expr, undefined);
+  // postIncr(postIncr: Collect.PostIncrExpr) {
+  //   // const [e, eId] = this.expr(postIncr.expr, undefined);
 
-    const instanceIds: Semantic.InstanceId[] = [];
-    const writes = this.sr.b.updateLHSDependencies(eId, instanceIds);
+  //   // const unwrappedValueId = this.unwrapReactiveOrComputedIfPossible(eId);
 
-    return this.sr.b.addExpr(this.sr, {
-      variant: Semantic.ENode.PostIncrExpr,
-      instanceIds: [],
-      type: e.type,
-      expr: eId,
-      operation: postIncr.operation,
-      sourceloc: postIncr.sourceloc,
-      isTemporary: true,
-      flow: e.flow,
-      writes: Semantic.WriteResult.empty().withAll(writes),
-    });
-  }
+  //   // // this.sr.e.assignmentExpr
+  //   // this.sr.b.assignment(eId);
+  //   //   this.sr.b.binaryExpr(eId, unwrappedValueId);
 
-  preIncr(preIncr: Collect.PreIncrExpr) {
-    const [e, eId] = this.expr(preIncr.expr, undefined);
+  //   // if (postIncr.operation === EIncrOperation.Incr) {
+  //   //   // x++ -> x = x + 1
+  //   // }
 
-    const instanceIds: Semantic.InstanceId[] = [];
-    const writes = this.sr.b.updateLHSDependencies(eId, instanceIds);
+  //   // const instanceIds: Semantic.InstanceId[] = [];
+  //   // const writes = this.sr.b.updateLHSDependencies(eId, instanceIds);
 
-    return this.sr.b.addExpr(this.sr, {
-      variant: Semantic.ENode.PreIncrExpr,
-      instanceIds: instanceIds,
-      type: e.type,
-      expr: eId,
-      operation: preIncr.operation,
-      sourceloc: preIncr.sourceloc,
-      isTemporary: true,
-      flow: e.flow,
-      writes: Semantic.WriteResult.empty().withAll(writes),
-    });
-  }
+  //   // this.sr.b.addExpr(this.sr, {
+  //   //   variant: Semantic.ENode.PostIncrExpr,
+  //   //   instanceIds: [],
+  //   //   type: e.type,
+  //   //   expr: eId,
+  //   //   operation: postIncr.operation,
+  //   //   sourceloc: postIncr.sourceloc,
+  //   //   isTemporary: true,
+  //   //   flow: e.flow,
+  //   //   writes: Semantic.WriteResult.empty().withAll(writes),
+  //   // });
+
+  //   assert(this.inFunction);
+  //   const functionSymbol = this.sr.symbolNodes.get(this.inFunction);
+  //   assert(functionSymbol.variant === Semantic.ENode.FunctionSymbol);
+
+  //   const [blockScope, blockScopeId] = Collect.makeScope(this.sr.cc, {
+  //     variant: Collect.ENode.BlockScope,
+  //     owningSymbol: functionSymbol.originalCollectedFunction,
+  //     parentScope: this.currentContext.currentScope,
+  //     sourceloc: postIncr.sourceloc,
+  //     statements: [],
+  //     emittedExpr: null,
+  //     unsafe: true,
+  //     symbols: new Set(),
+  //   });
+
+  //   const [e, eId] = this.expr(postIncr.expr, undefined);
+
+  //   const tmpVar = defineVariableSymbol(
+  //     this.sr.cc,
+  //     {
+  //       variant: Collect.ENode.VariableSymbol,
+  //       name: "*__tmp",
+  //       comptime: false,
+  //       type: null,
+  //       mutability: EVariableMutability.Let,
+  //       globalValueInitializer: null,
+  //       variableContext: EVariableContext.FunctionLocal,
+  //       sourceloc: postIncr.sourceloc,
+  //     },
+  //     blockScopeId,
+  //   )[1];
+  //   addStatement(this.sr.cc, blockScopeId, {
+  //     variant: Collect.ENode.VariableDefinitionStatement,
+  //     sourceloc: postIncr.sourceloc,
+  //     value: Collect.makeExpr(this.sr.cc, {
+  //       variant: Collect.ENode.SymbolValueExpr,
+  //       genericArgs: [],
+  //       name: "uninitialized",
+  //       sourceloc: postIncr.sourceloc,
+  //     })[1],
+  //     comptime: false,
+  //     variableSymbol: tmpVar,
+  //   });
+
+  //   // addStatement(cc, blockScopeId, {
+  //   //   variant: Collect.ENode.ExprStatement,
+  //   //   expr: collectExpr(cc, astStatement.expr, { currentParentScope: blockScopeId }),
+  //   //   sourceloc: astStatement.sourceloc,
+  //   // });
+
+  //   const collectedExprId = Collect.makeExpr(this.sr.cc, {
+  //     variant: Collect.ENode.BlockScopeExpr,
+  //     scope: blockScopeId,
+  //     sourceloc: postIncr.sourceloc,
+  //   })[1];
+
+  //   return this.expr(collectedExprId, undefined);
+
+  //   // const [e, eId] = lowerExpr(lr, expr.expr, flattened, instanceInfo);
+
+  //   const statements: Lowered.StatementId[] = [];
+  //   const [_, tempvarId] = storeInTempVarAndGet(lr, e.type, eId, expr.sourceloc, statements);
+
+  //   statements.push(
+  //     Lowered.addStatement(lr, {
+  //       variant: Lowered.ENode.ExprStatement,
+  //       expr: Lowered.addExpr(lr, {
+  //         variant: Lowered.ENode.ExprAssignmentExpr,
+  //         target: eId,
+  //         assignRefTarget: false,
+  //         type: e.type,
+  //         value: Lowered.addExpr(lr, {
+  //           variant: Lowered.ENode.BinaryExpr,
+  //           left: eId,
+  //           operation:
+  //             expr.operation === EIncrOperation.Incr
+  //               ? EBinaryOperation.Add
+  //               : EBinaryOperation.Subtract,
+  //           plainResultType: lr.typeUseNodes.get(e.type).type,
+  //           right: lowerExpr(
+  //             lr,
+  //             lr.sr.b.literal(1n, expr.sourceloc)[1],
+  //             statements,
+  //             instanceInfo,
+  //           )[1],
+  //           type: e.type,
+  //         })[1],
+  //       })[1],
+  //       sourceloc: expr.sourceloc,
+  //     })[1],
+  //   );
+
+  //   return Lowered.addExpr(lr, {
+  //     variant: Lowered.ENode.BlockScopeExpr,
+  //     block: Lowered.addBlockScope(lr, {
+  //       definesVariables: true,
+  //       statements: statements,
+  //       emittedExpr: tempvarId,
+  //     })[1],
+  //     sourceloc: expr.sourceloc,
+  //     type: lowerTypeUse(lr, expr.type),
+  //   });
+  // }
+
+  // preIncr(preIncr: Collect.PreIncrExpr) {
+  //   const [e, eId] = this.expr(preIncr.expr, undefined);
+
+  //   const instanceIds: Semantic.InstanceId[] = [];
+  //   const writes = this.sr.b.updateLHSDependencies(eId, instanceIds);
+
+  //   return this.sr.b.addExpr(this.sr, {
+  //     variant: Semantic.ENode.PreIncrExpr,
+  //     instanceIds: instanceIds,
+  //     type: e.type,
+  //     expr: eId,
+  //     operation: preIncr.operation,
+  //     sourceloc: preIncr.sourceloc,
+  //     isTemporary: true,
+  //     flow: e.flow,
+  //     writes: Semantic.WriteResult.empty().withAll(writes),
+  //   });
+  // }
 
   blockScopeExpr(blockScopeExpr: Collect.BlockScopeExpr, inference: Semantic.Inference) {
     const { flow, scope, scopeId, writes } = this.withScopes(

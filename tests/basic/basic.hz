@@ -1,39 +1,13 @@
-returnStatement(): none {
-    return;
-}
 
-returnInt(): i8 {
-    return 3;
-}
+main(): int {
+    let x = reactive<int>(0);
 
-returnBinaryOperation(): i32 {
-    return 4+9;
-}
+    let a = x += 1;
+    let b = x -= 1;
 
-bracket(): i32 {
-    return (6+1);
-}
+    let y = 0;
+    let e = y += 1;
+    let f = y -= 1;
 
-vars(): i32 {
-    const x = 0;
-    let y = x * 2;
-    y = y * 4;
-    const z = (y + x);
-    const u: i8 = x;
-    let w: i16 = u;
-    return w;
-}
-
-functions(): i32 {
-    const foo = () => 5;
-    return foo();
-}
-
-main(): i32 {
-    returnStatement();
-    returnInt();
-    returnBinaryOperation();
-    vars();
-    functions();
     return 0;
 }

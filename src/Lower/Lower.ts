@@ -439,6 +439,7 @@ export namespace Lowered {
     name: NameSet;
     type: TypeUseId;
     variableContext: EVariableContext;
+    intrinsicTakeAddrOfValue: boolean;
     value: ExprId | null;
     sourceloc: SourceLoc;
   };
@@ -722,6 +723,7 @@ const storeInTempVarAndGet = (
         wasMangled: false,
       },
       type: type,
+      intrinsicTakeAddrOfValue: false,
       variableContext: EVariableContext.FunctionLocal,
       value: value,
       sourceloc: sourceloc,
@@ -1176,98 +1178,51 @@ export function lowerExpr(
       }
     }
 
-    case Semantic.ENode.PostIncrExpr: {
-      const [e, eId] = lowerExpr(lr, expr.expr, flattened, instanceInfo);
+    // case Semantic.ENode.PreIncrExpr: {
+    //   const [e, eId] = lowerExpr(lr, expr.expr, flattened, instanceInfo);
 
-      const statements: Lowered.StatementId[] = [];
-      const [_, tempvarId] = storeInTempVarAndGet(lr, e.type, eId, expr.sourceloc, statements);
+    //   const statements: Lowered.StatementId[] = [];
 
-      statements.push(
-        Lowered.addStatement(lr, {
-          variant: Lowered.ENode.ExprStatement,
-          expr: Lowered.addExpr(lr, {
-            variant: Lowered.ENode.ExprAssignmentExpr,
-            target: eId,
-            assignRefTarget: false,
-            type: e.type,
-            value: Lowered.addExpr(lr, {
-              variant: Lowered.ENode.BinaryExpr,
-              left: eId,
-              operation:
-                expr.operation === EIncrOperation.Incr
-                  ? EBinaryOperation.Add
-                  : EBinaryOperation.Subtract,
-              plainResultType: lr.typeUseNodes.get(e.type).type,
-              right: lowerExpr(
-                lr,
-                lr.sr.b.literal(1n, expr.sourceloc)[1],
-                statements,
-                instanceInfo,
-              )[1],
-              type: e.type,
-            })[1],
-          })[1],
-          sourceloc: expr.sourceloc,
-        })[1],
-      );
+    //   statements.push(
+    //     Lowered.addStatement(lr, {
+    //       variant: Lowered.ENode.ExprStatement,
+    //       expr: Lowered.addExpr(lr, {
+    //         variant: Lowered.ENode.ExprAssignmentExpr,
+    //         target: eId,
+    //         assignRefTarget: false,
+    //         type: e.type,
+    //         value: Lowered.addExpr(lr, {
+    //           variant: Lowered.ENode.BinaryExpr,
+    //           left: eId,
+    //           operation:
+    //             expr.operation === EIncrOperation.Incr
+    //               ? EBinaryOperation.Add
+    //               : EBinaryOperation.Subtract,
+    //           plainResultType: lr.typeUseNodes.get(e.type).type,
+    //           right: lowerExpr(
+    //             lr,
+    //             lr.sr.b.literal(1n, expr.sourceloc)[1],
+    //             statements,
+    //             instanceInfo,
+    //           )[1],
+    //           type: e.type,
+    //         })[1],
+    //       })[1],
+    //       sourceloc: expr.sourceloc,
+    //     })[1],
+    //   );
 
-      return Lowered.addExpr(lr, {
-        variant: Lowered.ENode.BlockScopeExpr,
-        block: Lowered.addBlockScope(lr, {
-          definesVariables: true,
-          statements: statements,
-          emittedExpr: tempvarId,
-        })[1],
-        sourceloc: expr.sourceloc,
-        type: lowerTypeUse(lr, expr.type),
-      });
-    }
-
-    case Semantic.ENode.PreIncrExpr: {
-      const [e, eId] = lowerExpr(lr, expr.expr, flattened, instanceInfo);
-
-      const statements: Lowered.StatementId[] = [];
-
-      statements.push(
-        Lowered.addStatement(lr, {
-          variant: Lowered.ENode.ExprStatement,
-          expr: Lowered.addExpr(lr, {
-            variant: Lowered.ENode.ExprAssignmentExpr,
-            target: eId,
-            assignRefTarget: false,
-            type: e.type,
-            value: Lowered.addExpr(lr, {
-              variant: Lowered.ENode.BinaryExpr,
-              left: eId,
-              operation:
-                expr.operation === EIncrOperation.Incr
-                  ? EBinaryOperation.Add
-                  : EBinaryOperation.Subtract,
-              plainResultType: lr.typeUseNodes.get(e.type).type,
-              right: lowerExpr(
-                lr,
-                lr.sr.b.literal(1n, expr.sourceloc)[1],
-                statements,
-                instanceInfo,
-              )[1],
-              type: e.type,
-            })[1],
-          })[1],
-          sourceloc: expr.sourceloc,
-        })[1],
-      );
-
-      return Lowered.addExpr(lr, {
-        variant: Lowered.ENode.BlockScopeExpr,
-        block: Lowered.addBlockScope(lr, {
-          definesVariables: true,
-          statements: statements,
-          emittedExpr: eId,
-        })[1],
-        sourceloc: expr.sourceloc,
-        type: lowerTypeUse(lr, expr.type),
-      });
-    }
+    //   return Lowered.addExpr(lr, {
+    //     variant: Lowered.ENode.BlockScopeExpr,
+    //     block: Lowered.addBlockScope(lr, {
+    //       definesVariables: true,
+    //       statements: statements,
+    //       emittedExpr: eId,
+    //     })[1],
+    //     sourceloc: expr.sourceloc,
+    //     type: lowerTypeUse(lr, expr.type),
+    //   });
+    // }
 
     case Semantic.ENode.ArrayLiteralExpr: {
       const typeUse = lr.sr.typeUseNodes.get(expr.type);
@@ -2837,6 +2792,7 @@ function lowerStatement(
           prettyName: name,
           wasMangled: false,
         },
+        intrinsicTakeAddrOfValue: statement.intrinsicTakeAddrOfValue,
         type: lowerTypeUse(lr, variableSymbol.type),
         value: value,
         variableContext: variableSymbol.variableContext,
@@ -2923,6 +2879,7 @@ function lowerStatement(
           name: indexName,
           type: intTypeUse,
           variableContext: EVariableContext.FunctionLocal,
+          intrinsicTakeAddrOfValue: false,
           value: Lowered.addExpr(lr, {
             variant: Lowered.ENode.LiteralExpr,
             literal: { type: EPrimitive.int, value: 0n, unit: null },
@@ -2999,6 +2956,7 @@ function lowerStatement(
           },
           type: lowerTypeUse(lr, loopVariable.type!),
           variableContext: loopVariable.variableContext,
+          intrinsicTakeAddrOfValue: false,
           value: Lowered.addExpr(lr, {
             variant: Lowered.ENode.ArraySubscriptExpr,
             expr: arrayVarId,
@@ -3024,6 +2982,7 @@ function lowerStatement(
             type: intTypeUse,
             variableContext: indexVariable.variableContext,
             value: indexSymbolExpr,
+            intrinsicTakeAddrOfValue: false,
             sourceloc: semanticForeachStmt.sourceloc,
           })[1],
         );
@@ -3791,6 +3750,7 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
       const [_, pId] = Lowered.addStatement<Lowered.VariableStatement>(lr, {
         variant: Lowered.ENode.VariableStatement,
         name: name,
+        intrinsicTakeAddrOfValue: false,
         type: lowerTypeUse(lr, variableSymbol.type),
         variableContext: EVariableContext.Global,
         value: value,
