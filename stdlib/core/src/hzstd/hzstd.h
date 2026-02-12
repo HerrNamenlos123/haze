@@ -8,6 +8,7 @@
 #include "hzstd_json.h"
 #include "hzstd_memory.h"
 #include "hzstd_platform.h"
+#include "hzstd_reactive.h"
 #include "hzstd_regex.h"
 #include "hzstd_runtime.h"
 

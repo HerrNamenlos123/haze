@@ -160,17 +160,46 @@ export class SemanticElaborator {
     return this.sr.typeDefNodes.get(id);
   }
 
+  unwrapReactiveOrComputedIfPossible(exprId: Semantic.ExprId) {
+    const expr = this.sr.exprNodes.get(exprId);
+    const typeUse = this.sr.typeUseNodes.get(expr.type);
+    const typeDef = this.sr.typeDefNodes.get(typeUse.type);
+    if (
+      typeDef.variant === Semantic.ENode.ReactiveDatatype ||
+      typeDef.variant === Semantic.ENode.ComputedDatatype
+    ) {
+      const result = Conversion.MakeConversion(
+        this.sr,
+        exprId,
+        typeDef.wrappedType,
+        this.currentContext.constraints,
+        expr.sourceloc,
+        Conversion.Mode.Implicit,
+      );
+      if (result.ok) {
+        return result.expr;
+      }
+    }
+    return exprId;
+  }
+
   binaryExpr(binaryExpr: Collect.BinaryExpr, inference: Semantic.Inference) {
     if (binaryExpr.operation === EBinaryOperation.BoolAnd) {
       let [left, leftId] = this.expr(binaryExpr.left, inference);
+      leftId = this.unwrapReactiveOrComputedIfPossible(leftId);
+      left = this.sr.exprNodes.get(leftId);
 
       // This builds the constraints that apply to the expr itself, the right part of the AND
       const constraints = this.currentContext.constraints.clone();
       this.buildLogicalConstraintSet(constraints, leftId);
 
-      const [right, rightId] = this.withAdditionalConstraints(constraints, () =>
+      let [right, rightId] = this.withAdditionalConstraints(constraints, () =>
         this.expr(binaryExpr.right, inference),
       );
+
+      rightId = this.unwrapReactiveOrComputedIfPossible(rightId);
+      right = this.sr.exprNodes.get(rightId);
+
       return this.sr.b.binaryExpr(
         Conversion.MakeConversionOrThrow(
           this.sr,
@@ -196,14 +225,19 @@ export class SemanticElaborator {
       );
     } else if (binaryExpr.operation === EBinaryOperation.BoolOr) {
       let [left, leftId] = this.expr(binaryExpr.left, inference);
+      leftId = this.unwrapReactiveOrComputedIfPossible(leftId);
+      left = this.sr.exprNodes.get(leftId);
 
       // This builds the constraints that apply to the expr itself, the right part of the AND
       const constraints = this.currentContext.constraints.clone();
       this.buildLogicalConstraintSet(constraints, leftId);
 
-      const [right, rightId] = this.withAdditionalConstraints(constraints.inverse(), () =>
+      let [right, rightId] = this.withAdditionalConstraints(constraints.inverse(), () =>
         this.expr(binaryExpr.right, inference),
       );
+      rightId = this.unwrapReactiveOrComputedIfPossible(rightId);
+      right = this.sr.exprNodes.get(rightId);
+
       return this.sr.b.binaryExpr(
         Conversion.MakeConversionOrThrow(
           this.sr,
@@ -230,6 +264,12 @@ export class SemanticElaborator {
     } else if (binaryExpr.operation === EBinaryOperation.BitwiseOr) {
       let [left, leftId] = this.expr(binaryExpr.left, { unsafe: inference?.unsafe });
       let [right, rightId] = this.expr(binaryExpr.right, { unsafe: inference?.unsafe });
+
+      leftId = this.unwrapReactiveOrComputedIfPossible(leftId);
+      left = this.sr.exprNodes.get(leftId);
+      rightId = this.unwrapReactiveOrComputedIfPossible(rightId);
+      right = this.sr.exprNodes.get(rightId);
+
       let leftUse = this.sr.typeUseNodes.get(left.type);
       let rightUse = this.sr.typeUseNodes.get(right.type);
       let leftDef = this.sr.typeDefNodes.get(leftUse.type);
@@ -267,8 +307,14 @@ export class SemanticElaborator {
       binaryExpr.operation === EBinaryOperation.Equal ||
       binaryExpr.operation === EBinaryOperation.NotEqual
     ) {
-      let left = this.expr(binaryExpr.left, { unsafe: inference?.unsafe })[0];
-      let right = this.expr(binaryExpr.right, { unsafe: inference?.unsafe })[0];
+      let [left, leftId] = this.expr(binaryExpr.left, { unsafe: inference?.unsafe });
+      let [right, rightId] = this.expr(binaryExpr.right, { unsafe: inference?.unsafe });
+
+      leftId = this.unwrapReactiveOrComputedIfPossible(leftId);
+      left = this.sr.exprNodes.get(leftId);
+      rightId = this.unwrapReactiveOrComputedIfPossible(rightId);
+      right = this.sr.exprNodes.get(rightId);
+
       if (
         left.variant === Semantic.ENode.DatatypeAsValueExpr &&
         right.variant === Semantic.ENode.DatatypeAsValueExpr
@@ -281,6 +327,12 @@ export class SemanticElaborator {
     } else if (binaryExpr.operation === EBinaryOperation.Add) {
       let [left, leftId] = this.expr(binaryExpr.left, inference);
       let [right, rightId] = this.expr(binaryExpr.right, inference);
+
+      leftId = this.unwrapReactiveOrComputedIfPossible(leftId);
+      left = this.sr.exprNodes.get(leftId);
+      rightId = this.unwrapReactiveOrComputedIfPossible(rightId);
+      right = this.sr.exprNodes.get(rightId);
+
       const leftTypeUse = this.sr.typeUseNodes.get(left.type);
       // const leftType = this.sr.typeDefNodes.get(leftTypeUse.type);
       const rightTypeUse = this.sr.typeUseNodes.get(right.type);
@@ -322,6 +374,10 @@ export class SemanticElaborator {
 
     let leftId = this.expr(binaryExpr.left, inference)[1];
     let rightId = this.expr(binaryExpr.right, inference)[1];
+
+    leftId = this.unwrapReactiveOrComputedIfPossible(leftId);
+    rightId = this.unwrapReactiveOrComputedIfPossible(rightId);
+
     return this.sr.b.binaryExpr(
       leftId,
       rightId,
@@ -2658,73 +2714,68 @@ export class SemanticElaborator {
 
   elaborateVariableSymbolInScope(variableSymbolId: Collect.SymbolId) {
     const symbol = this.sr.cc.symbolNodes.get(variableSymbolId);
-    switch (symbol.variant) {
-      case Collect.ENode.VariableSymbol: {
-        let variableContext = EVariableContext.FunctionLocal;
-        let type: Semantic.TypeUseId | null = null;
+    assert(symbol.variant === Collect.ENode.VariableSymbol);
 
-        const typeOverride = this.currentContext.elaborationTypeOverride.get(variableSymbolId);
-        if (typeOverride) {
-          type = typeOverride;
-        }
+    let variableContext = EVariableContext.FunctionLocal;
+    let type: Semantic.TypeUseId | null = null;
 
-        if (symbol.variableContext === EVariableContext.FunctionParameter) {
-          variableContext = EVariableContext.FunctionParameter;
-          if (!symbol.type) {
-            throw new InternalError("Parameter needs datatype");
-          }
-          const symbolType = this.sr.cc.typeUseNodes.get(symbol.type);
-          if (symbolType.variant === Collect.ENode.ParameterPack) {
-            // Is elaborated directly in function
-            break;
-          }
-          type = this.withContext(
-            {
-              context: Semantic.isolateElaborationContext(this.currentContext, {
-                genericsScope: symbol.inScope,
-                currentScope: symbol.inScope,
-                constraints: this.currentContext.constraints,
-                instanceDeps: this.currentContext.instanceDeps,
-              }),
-              inFunction: this.inFunction,
-              inAttemptExpr: this.inAttemptExpr,
-            },
-            () => this.lookupAndElaborateDatatype(symbol.type!),
-          );
-        } else if (symbol.variableContext === EVariableContext.ThisReference) {
-          if (this.currentContext.elaboratedVariables.has(variableSymbolId)) {
-            break;
-          } else {
-            assert(
-              false,
-              "Variable definition statement for This-Reference was encountered, but it's not yet in the variableMap. It should already be elaborated by the parent.",
-            );
-          }
-        }
-        const [_, variableId] = this.sr.b.addSymbol(this.sr, {
-          variant: Semantic.ENode.VariableSymbol,
-          export: false,
-          extern: EExternLanguage.None,
-          mutability: symbol.mutability,
-          name: symbol.name,
-          sourceloc: symbol.sourceloc,
-          memberOfStruct: null,
-          parentStructOrNS: this.elaborateParentSymbolFromCache(symbol.inScope),
-          comptime: symbol.comptime,
-          comptimeValue: null,
-          variableContext: variableContext,
-          requiresHoisting: false,
-          consumed: false,
-          type: type,
-          concrete: false,
-        });
-        this.currentContext.elaboratedVariables.set(variableSymbolId, variableId);
-        break;
-      }
-
-      default:
-        assert(false, symbol.variant.toString());
+    const typeOverride = this.currentContext.elaborationTypeOverride.get(variableSymbolId);
+    if (typeOverride) {
+      type = typeOverride;
     }
+
+    if (symbol.variableContext === EVariableContext.FunctionParameter) {
+      variableContext = EVariableContext.FunctionParameter;
+      if (!symbol.type) {
+        throw new InternalError("Parameter needs datatype");
+      }
+      const symbolType = this.sr.cc.typeUseNodes.get(symbol.type);
+      if (symbolType.variant === Collect.ENode.ParameterPack) {
+        // Is elaborated directly in function
+        return;
+      }
+      type = this.withContext(
+        {
+          context: Semantic.isolateElaborationContext(this.currentContext, {
+            genericsScope: symbol.inScope,
+            currentScope: symbol.inScope,
+            constraints: this.currentContext.constraints,
+            instanceDeps: this.currentContext.instanceDeps,
+          }),
+          inFunction: this.inFunction,
+          inAttemptExpr: this.inAttemptExpr,
+        },
+        () => this.lookupAndElaborateDatatype(symbol.type!),
+      );
+    } else if (symbol.variableContext === EVariableContext.ThisReference) {
+      if (this.currentContext.elaboratedVariables.has(variableSymbolId)) {
+        return;
+      } else {
+        assert(
+          false,
+          "Variable definition statement for This-Reference was encountered, but it's not yet in the variableMap. It should already be elaborated by the parent.",
+        );
+      }
+    }
+    const [_, variableId] = this.sr.b.addSymbol(this.sr, {
+      variant: Semantic.ENode.VariableSymbol,
+      export: false,
+      extern: EExternLanguage.None,
+      mutability: symbol.mutability,
+      name: symbol.name,
+      sourceloc: symbol.sourceloc,
+      memberOfStruct: null,
+      parentStructOrNS: this.elaborateParentSymbolFromCache(symbol.inScope),
+      comptime: symbol.comptime,
+      comptimeValue: null,
+      variableContext: variableContext,
+      requiresHoisting: false,
+      consumed: false,
+      type: type,
+      concrete: false,
+    });
+    this.currentContext.elaboratedVariables.set(variableSymbolId, variableId);
+    return variableId;
   }
 
   prepareParameterPackTypes(
@@ -3480,6 +3531,7 @@ export class SemanticElaborator {
           overloadedOperator: func.overloadedOperator,
           noemit: func.noemit,
           extern: func.extern,
+          parameterSymbols: new Set<Semantic.SymbolId>(),
           envType: useEnv ? env : null,
           parameterNames: parameterNames,
           methodRequiredMutability: func.methodRequiredMutability,
@@ -3585,11 +3637,12 @@ export class SemanticElaborator {
                 variableContext: EVariableContext.FunctionParameter,
               })[1];
               newContext.elaboratedVariables.set(collectedThisRefId, variableId);
+              symbol.parameterSymbols.add(variableId);
             }
 
             for (const sId of functionScope.symbols) {
-              const symbol = this.sr.cc.symbolNodes.get(sId);
-              if (symbol.variant === Collect.ENode.VariableSymbol) {
+              const varSymbol = this.sr.cc.symbolNodes.get(sId);
+              if (varSymbol.variant === Collect.ENode.VariableSymbol) {
                 this.withContext(
                   {
                     context: newContext,
@@ -3597,7 +3650,10 @@ export class SemanticElaborator {
                     inAttemptExpr: null,
                   },
                   () => {
-                    this.elaborateVariableSymbolInScope(sId);
+                    const varSymId = this.elaborateVariableSymbolInScope(sId);
+                    if (varSymId) {
+                      symbol.parameterSymbols.add(varSymId);
+                    }
                   },
                 );
               }
@@ -3791,20 +3847,23 @@ export class SemanticElaborator {
       // =================================================================================================================
 
       case Collect.ENode.CallableDatatype: {
-        // No interning, Callable datatypes are (and must be for C reasons) completely unique for every callable
+        // No interning, Callable datatypes must be completely unique for every callable due to the env block.
         // but they can be converted between one another through type erasure.
         // Every Callable Datatype consists of Function Datatype + This Pointer + Env Block.
         // The Function Datatype is interned normally, but the callable itself is not.
+        // Later in lowering, the env block disappears into a void*, therefore the callables are interned there,
+        // which is why some callables with different name but identical layout disappear.
 
         const functype = makeRawFunctionDatatypeAvailable(this.sr, {
           parameters: type.parameters.map((p) => ({
             optional: p.optional,
+            symbol: null,
             type: this.lookupAndElaborateDatatype(p.type),
           })),
           returnType: this.lookupAndElaborateDatatype(type.returnType),
           vararg: type.vararg,
           requires: {
-            final: type.requires.final,
+            final: true,
             pure: type.requires.pure,
             noreturn: type.requires.noreturn,
             noreturnIf: type.requires.noreturnIf,
@@ -3843,7 +3902,7 @@ export class SemanticElaborator {
           vararg: type.vararg,
           mutability: type.mutability,
           requires: {
-            final: type.requires.final,
+            final: true,
             pure: type.requires.pure,
             noreturn: type.requires.noreturn,
             noreturnIf: type.requires.noreturnIf,
@@ -3906,6 +3965,70 @@ export class SemanticElaborator {
             throw new CompilerError(`Type ${type.name} is not generic`, type.sourceloc);
           }
           return makePrimitiveAvailable(this.sr, primitive, type.mutability, type.sourceloc);
+        }
+
+        if (type.name === "Reactive") {
+          if (type.genericArgs.length !== 1) {
+            throw new CompilerError(
+              `Reactive<T> requires exactly 1 generic argument`,
+              type.sourceloc,
+            );
+          }
+
+          if (type.inline) {
+            throw new CompilerError(`Reactive<T> cannot be inline`, type.sourceloc);
+          }
+
+          if (type.innerNested) {
+            throw new CompilerError(`Reactive<T> does not have children`, type.sourceloc);
+          }
+
+          const [genericArgExpr] = this.expr(type.genericArgs[0], undefined);
+          if (genericArgExpr.variant !== Semantic.ENode.DatatypeAsValueExpr) {
+            throw new CompilerError(
+              `Reactive<T> requires T to resolve to a datatype`,
+              type.sourceloc,
+            );
+          }
+
+          return makeReactiveDatatypeAvailable(
+            this.sr,
+            genericArgExpr.type,
+            type.mutability,
+            type.sourceloc,
+          );
+        }
+
+        if (type.name === "Computed") {
+          if (type.genericArgs.length !== 1) {
+            throw new CompilerError(
+              `Computed<T> requires exactly 1 generic argument`,
+              type.sourceloc,
+            );
+          }
+
+          if (type.inline) {
+            throw new CompilerError(`Computed<T> cannot be inline`, type.sourceloc);
+          }
+
+          if (type.innerNested) {
+            throw new CompilerError(`Computed<T> does not have children`, type.sourceloc);
+          }
+
+          const [genericArgExpr] = this.expr(type.genericArgs[0], undefined);
+          if (genericArgExpr.variant !== Semantic.ENode.DatatypeAsValueExpr) {
+            throw new CompilerError(
+              `Computed<T> requires T to resolve to a datatype`,
+              type.sourceloc,
+            );
+          }
+
+          return makeComputedDatatypeAvailable(
+            this.sr,
+            genericArgExpr.type,
+            type.mutability,
+            type.sourceloc,
+          );
         }
 
         let foundResult = Semantic.lookupSymbol(this.sr, type.name, {
@@ -4326,6 +4449,39 @@ export class SemanticElaborator {
         )}' is not a valid LHS, no matching assignment operator overload exists`,
         assignment.sourceloc,
       );
+    }
+
+    if (
+      assignment.operation === EAssignmentOperation.Assign &&
+      lhsType.variant === Semantic.ENode.ReactiveDatatype
+    ) {
+      if (targetExpr.isTemporary) {
+        throw new CompilerError(
+          `Cannot assign to a temporary of type ${Semantic.serializeTypeUse(this.sr, targetExpr.type)}`,
+          assignment.sourceloc,
+        );
+      }
+
+      const writes = this.sr.b.updateLHSDependencies(targetExprId, targetExpr.instanceIds);
+      return this.sr.b.addExpr(this.sr, {
+        variant: Semantic.ENode.ReactiveWriteExpr,
+        instanceIds: [...targetExpr.instanceIds],
+        value: Conversion.MakeConversionOrThrow(
+          this.sr,
+          valueExprId,
+          lhsType.wrappedType,
+          this.currentContext.constraints,
+          assignment.sourceloc,
+          Conversion.Mode.Implicit,
+          inference?.unsafe || false,
+        ),
+        target: targetExprId,
+        type: targetExpr.type,
+        sourceloc: assignment.sourceloc,
+        isTemporary: true,
+        flow: targetExpr.flow.withAll(valueExpr.flow),
+        writes: targetExpr.writes.withAll(valueExpr.writes).withAll(writes),
+      });
     }
 
     // Fix assignment to unions. This is so you can assign a union if the union was already narrowed (unnarrowing it here)
@@ -6422,7 +6578,7 @@ export class SemanticElaborator {
         return;
       } else {
         const rightValue = EvalCTFE(this.sr, expr.right);
-        if (rightValue.ok) {
+        if (rightValue.ok && rightValue.value[0].variant === Semantic.ENode.LiteralExpr) {
           this.applyBinaryExprConstraints(
             constraints,
             expr.left,
@@ -6433,7 +6589,7 @@ export class SemanticElaborator {
         }
 
         const leftValue = EvalCTFE(this.sr, expr.left);
-        if (leftValue.ok) {
+        if (leftValue.ok && leftValue.value[0].variant === Semantic.ENode.LiteralExpr) {
           this.applyBinaryExprConstraints(
             constraints,
             expr.right,
@@ -6872,6 +7028,8 @@ export class SemanticElaborator {
           const typeDef = this.sr.typeDefNodes.get(typeUse.type);
 
           if (typeDef.variant === Semantic.ENode.DynamicArrayDatatype) {
+          } else if (typeDef.variant === Semantic.ENode.ReactiveDatatype) {
+          } else if (typeDef.variant === Semantic.ENode.ComputedDatatype) {
           } else if (typeDef.variant === Semantic.ENode.StructDatatype) {
             if (typeUse.inline) {
               elaboratedSymbol.requiresHoisting = true;
@@ -8216,6 +8374,90 @@ export function makeRawPrimitiveAvailable(
 
 export function makeVoidType(sr: Semantic.Context) {
   return makePrimitiveAvailable(sr, EPrimitive.void, EDatatypeMutability.Default, null);
+}
+
+export function makeComputedDatatypeAvailable(
+  sr: Semantic.Context,
+  wrappedType: Semantic.TypeUseId,
+  mutability: EDatatypeMutability,
+  sourceloc: SourceLoc,
+): Semantic.TypeUseId {
+  return makeTypeUse(
+    sr,
+    makeRawComputedDatatypeAvailable(sr, wrappedType),
+    mutability,
+    false,
+    sourceloc,
+  )[1];
+}
+
+export function makeRawComputedDatatypeAvailable(
+  sr: Semantic.Context,
+  wrappedType: Semantic.TypeUseId,
+): Semantic.TypeDefId {
+  const wrappedTypeUse = sr.typeUseNodes.get(wrappedType);
+  const wrappedTypeDef = sr.typeDefNodes.get(wrappedTypeUse.type);
+  if (wrappedTypeDef.variant === Semantic.ENode.ComputedDatatype) {
+    // If the inner type T is already computed, simply unwrap it and use it directly
+    return wrappedTypeUse.type;
+  }
+
+  for (const id of sr.elaboratedComputedTypes) {
+    const s = sr.typeDefNodes.get(id);
+    assert(s.variant === Semantic.ENode.ComputedDatatype);
+    if (s.wrappedType === wrappedType) {
+      return id;
+    }
+  }
+  const [_, sId] = sr.b.addType(sr, {
+    variant: Semantic.ENode.ComputedDatatype,
+    wrappedType: wrappedType,
+    concrete: isTypeConcrete(sr, wrappedType),
+  });
+  sr.elaboratedComputedTypes.push(sId);
+  return sId;
+}
+
+export function makeReactiveDatatypeAvailable(
+  sr: Semantic.Context,
+  wrappedType: Semantic.TypeUseId,
+  mutability: EDatatypeMutability,
+  sourceloc: SourceLoc,
+): Semantic.TypeUseId {
+  return makeTypeUse(
+    sr,
+    makeRawReactiveDatatypeAvailable(sr, wrappedType),
+    mutability,
+    false,
+    sourceloc,
+  )[1];
+}
+
+export function makeRawReactiveDatatypeAvailable(
+  sr: Semantic.Context,
+  wrappedType: Semantic.TypeUseId,
+): Semantic.TypeDefId {
+  const wrappedTypeUse = sr.typeUseNodes.get(wrappedType);
+  const wrappedTypeDef = sr.typeDefNodes.get(wrappedTypeUse.type);
+  if (wrappedTypeDef.variant === Semantic.ENode.ReactiveDatatype) {
+    // If the inner type T is already reactive, simply unwrap it and use it directly
+    return wrappedTypeUse.type;
+  }
+
+  for (const id of sr.elaboratedReactiveTypes) {
+    const s = sr.typeDefNodes.get(id);
+    assert(s.variant === Semantic.ENode.ReactiveDatatype);
+    if (s.wrappedType === wrappedType) {
+      return id;
+    }
+  }
+  const [_, sId] = sr.b.addType(sr, {
+    variant: Semantic.ENode.ReactiveDatatype,
+    wrappedType: wrappedType,
+    concrete: isTypeConcrete(sr, wrappedType),
+  });
+  sr.elaboratedReactiveTypes.push(sId);
+  return sId;
 }
 
 export function makePrimitiveAvailable(

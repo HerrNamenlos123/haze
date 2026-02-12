@@ -51,6 +51,8 @@ export namespace Lowered {
     FixedArrayDatatype,
     DynamicArrayDatatype,
     SliceDatatype,
+    ReactiveDatatype,
+    ComputedDatatype,
     UntaggedUnionDatatype,
     TaggedUnionDatatype,
     EnumDatatype,
@@ -552,6 +554,8 @@ export namespace Lowered {
     | FixedArrayDatatypeDef
     | DynamicArrayDatatype
     | SliceDatatype
+    | ReactiveDatatype
+    | ComputedDatatype
     | UntaggedUnionDatatypeDef
     | TaggedUnionDatatypeDef
     | EnumDatatypeDef;
@@ -607,6 +611,18 @@ export namespace Lowered {
 
   export type SliceDatatype = {
     variant: ENode.SliceDatatype;
+    datatype: TypeUseId;
+    name: NameSet;
+  };
+
+  export type ComputedDatatype = {
+    variant: ENode.ComputedDatatype;
+    datatype: TypeUseId;
+    name: NameSet;
+  };
+
+  export type ReactiveDatatype = {
+    variant: ENode.ReactiveDatatype;
     datatype: TypeUseId;
     name: NameSet;
   };
@@ -1727,6 +1743,142 @@ export function lowerExpr(
       });
     }
 
+    case Semantic.ENode.ReactiveWriteExpr: {
+      const statements: Lowered.StatementId[] = [];
+
+      const reactiveType = lowerTypeUse(lr, expr.type);
+
+      const valueExpr = lr.sr.exprNodes.get(expr.value);
+      const tmpReactive = storeInTempVarAndGet(
+        lr,
+        reactiveType,
+        lowerExpr(lr, expr.target, statements, instanceInfo)[1],
+        expr.sourceloc,
+        statements,
+        "__tmp_reactive",
+      )[1];
+
+      storeInTempVarAndGet(
+        lr,
+        lowerTypeUse(lr, valueExpr.type),
+        lowerExpr(lr, expr.value, statements, instanceInfo)[1],
+        expr.sourceloc,
+        statements,
+        "__tmp_value",
+      );
+
+      statements.push(
+        Lowered.addStatement(lr, {
+          variant: Lowered.ENode.InlineCStatement,
+          value: `void* __slot = hzstd_reactive_read(__tmp_reactive);
+hzstd_slot_write(__slot, &__tmp_value, sizeof(__tmp_value));
+hzstd_reactive_write(__tmp_reactive, __slot);`,
+          sourceloc: expr.sourceloc,
+        })[1],
+      );
+
+      return Lowered.addExpr(lr, {
+        variant: Lowered.ENode.BlockScopeExpr,
+        block: Lowered.addBlockScope(lr, {
+          definesVariables: true,
+          emittedExpr: tmpReactive,
+          statements: statements,
+        })[1],
+        type: reactiveType,
+        sourceloc: expr.sourceloc,
+      });
+    }
+
+    case Semantic.ENode.ComputedReadExpr: {
+      const statements: Lowered.StatementId[] = [];
+
+      const reactiveType = lowerTypeUse(lr, lr.sr.exprNodes.get(expr.value).type);
+      const valueType = lowerTypeUse(lr, expr.type);
+
+      storeInTempVarAndGet(
+        lr,
+        reactiveType,
+        lowerExpr(lr, expr.value, statements, instanceInfo)[1],
+        expr.sourceloc,
+        statements,
+        "__tmp_computed",
+      );
+
+      const result = storeInTempVarAndGet(
+        lr,
+        valueType,
+        null,
+        expr.sourceloc,
+        statements,
+        "__tmp_result",
+      )[1];
+
+      statements.push(
+        Lowered.addStatement(lr, {
+          variant: Lowered.ENode.InlineCStatement,
+          value: `void* __slot = hzstd_computed_read(__tmp_computed);
+hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
+          sourceloc: expr.sourceloc,
+        })[1],
+      );
+
+      return Lowered.addExpr(lr, {
+        variant: Lowered.ENode.BlockScopeExpr,
+        block: Lowered.addBlockScope(lr, {
+          definesVariables: true,
+          emittedExpr: result,
+          statements: statements,
+        })[1],
+        type: valueType,
+        sourceloc: expr.sourceloc,
+      });
+    }
+
+    case Semantic.ENode.ReactiveReadExpr: {
+      const statements: Lowered.StatementId[] = [];
+
+      const reactiveType = lowerTypeUse(lr, lr.sr.exprNodes.get(expr.value).type);
+      const valueType = lowerTypeUse(lr, expr.type);
+
+      storeInTempVarAndGet(
+        lr,
+        reactiveType,
+        lowerExpr(lr, expr.value, statements, instanceInfo)[1],
+        expr.sourceloc,
+        statements,
+        "__tmp_reactive",
+      );
+
+      const result = storeInTempVarAndGet(
+        lr,
+        valueType,
+        null,
+        expr.sourceloc,
+        statements,
+        "__tmp_result",
+      )[1];
+
+      statements.push(
+        Lowered.addStatement(lr, {
+          variant: Lowered.ENode.InlineCStatement,
+          value: `void* __slot = hzstd_reactive_read(__tmp_reactive);
+hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
+          sourceloc: expr.sourceloc,
+        })[1],
+      );
+
+      return Lowered.addExpr(lr, {
+        variant: Lowered.ENode.BlockScopeExpr,
+        block: Lowered.addBlockScope(lr, {
+          definesVariables: true,
+          emittedExpr: result,
+          statements: statements,
+        })[1],
+        type: valueType,
+        sourceloc: expr.sourceloc,
+      });
+    }
+
     case Semantic.ENode.UnionToUnionCastExpr: {
       const sourceExpr = lr.sr.exprNodes.get(expr.expr);
       const sourceType = lr.sr.typeDefNodes.get(lr.sr.typeUseNodes.get(sourceExpr.type).type);
@@ -2370,7 +2522,19 @@ export function lowerTypeDef(lr: Lowered.Module, typeId: Semantic.TypeDefId): Lo
       );
       const ftype = lr.typeDefNodes.get(ftypeId);
       assert(ftype.variant === Lowered.ENode.FunctionDatatype);
-      const [p, pId] = Lowered.addTypeDef<Lowered.CallableDatatypeDef>(lr, {
+
+      // Now do another cache lookup in order to intern identical callables, that were not identical during elaboration,
+      // but are identical now.
+      for (const [_, id] of lr.loweredTypeDefs) {
+        const type = lr.typeDefNodes.get(id);
+        if (type.variant === Lowered.ENode.CallableDatatype) {
+          if (type.functionType === ftypeId) {
+            return id;
+          }
+        }
+      }
+
+      const [_, pId] = Lowered.addTypeDef<Lowered.CallableDatatypeDef>(lr, {
         variant: Lowered.ENode.CallableDatatype,
         functionType: ftypeId,
         name: Semantic.makeNameSetTypeDef(lr.sr, typeId),
@@ -2500,6 +2664,54 @@ export function lowerTypeDef(lr: Lowered.Module, typeId: Semantic.TypeDefId): Lo
       lr.loweredTypeDefs.set(typeId, pId);
       return pId;
     }
+  } else if (type.variant === Semantic.ENode.ComputedDatatype) {
+    if (lr.loweredTypeDefs.has(typeId)) {
+      return lr.loweredTypeDefs.get(typeId)!;
+    } else {
+      const wrapped = lowerTypeUse(lr, type.wrappedType);
+
+      // Do another cache lookup for deduplication (should not be needed ?!?)
+      for (const [_, reactiveId] of lr.loweredTypeDefs) {
+        const reactive = lr.typeDefNodes.get(reactiveId);
+        if (reactive.variant === Lowered.ENode.ComputedDatatype) {
+          if (reactive.datatype === wrapped) {
+            return reactiveId;
+          }
+        }
+      }
+
+      const [_, pId] = Lowered.addTypeDef<Lowered.ComputedDatatype>(lr, {
+        variant: Lowered.ENode.ComputedDatatype,
+        datatype: wrapped,
+        name: Semantic.makeNameSetTypeDef(lr.sr, typeId),
+      });
+      lr.loweredTypeDefs.set(typeId, pId);
+      return pId;
+    }
+  } else if (type.variant === Semantic.ENode.ReactiveDatatype) {
+    if (lr.loweredTypeDefs.has(typeId)) {
+      return lr.loweredTypeDefs.get(typeId)!;
+    } else {
+      const wrapped = lowerTypeUse(lr, type.wrappedType);
+
+      // Do another cache lookup for deduplication (should not be needed ?!?)
+      for (const [_, reactiveId] of lr.loweredTypeDefs) {
+        const reactive = lr.typeDefNodes.get(reactiveId);
+        if (reactive.variant === Lowered.ENode.ReactiveDatatype) {
+          if (reactive.datatype === wrapped) {
+            return reactiveId;
+          }
+        }
+      }
+
+      const [_, pId] = Lowered.addTypeDef<Lowered.ReactiveDatatype>(lr, {
+        variant: Lowered.ENode.ReactiveDatatype,
+        datatype: wrapped,
+        name: Semantic.makeNameSetTypeDef(lr.sr, typeId),
+      });
+      lr.loweredTypeDefs.set(typeId, pId);
+      return pId;
+    }
   } else if (type.variant === Semantic.ENode.EnumDatatype) {
     if (lr.loweredTypeDefs.has(typeId)) {
       return lr.loweredTypeDefs.get(typeId)!;
@@ -2598,7 +2810,7 @@ function lowerStatement(
       if (value && variableSymbol.requiresHoisting) {
         const original = storeInTempVarAndGet(
           lr,
-          lowerTypeUse(lr, variableSymbol.type),
+          lr.exprNodes.get(value).type,
           value,
           null,
           flattened,
@@ -3178,6 +3390,19 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
 
       const originalFuncType = lr.sr.typeDefNodes.get(symbol.type);
       assert(originalFuncType.variant === Semantic.ENode.FunctionDatatype);
+
+      const hoistedParams = new Set<Semantic.VariableSymbol>();
+      for (const param of symbol.parameterSymbols) {
+        const sym = lr.sr.symbolNodes.get(param);
+        assert(sym.variant === Semantic.ENode.VariableSymbol);
+        if (sym.requiresHoisting) {
+          const i = parameterNames.findIndex((n) => n === sym.name);
+          assert(i !== -1);
+          parameterNames[i] = `__hz_${parameterNames[i]}_unhoisted`;
+          hoistedParams.add(sym);
+        }
+      }
+
       const mainFuncParameters = [...originalFuncType.parameters];
       const mainFuncParameterNames = [...parameterNames];
       const trampolineFuncParameters = [...originalFuncType.parameters];
@@ -3278,6 +3503,46 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
             returnedInstanceIds: symbol.returnsInstanceIds,
           })) ||
         null;
+
+      if (f.scope) {
+        const scope = lr.blockScopeNodes.get(f.scope);
+        const statements: Lowered.StatementId[] = [];
+        for (const param of hoistedParams) {
+          assert(param.type);
+
+          const paramType = lowerTypeUse(lr, param.type);
+
+          const unhoistedName = `__hz_${param.name}_unhoisted`;
+          storeInTempVarAndGet(
+            lr,
+            paramType,
+            makeIntrinsicCall(
+              lr,
+              "HZSTD_HOIST",
+              [
+                Lowered.addExpr(lr, {
+                  variant: Lowered.ENode.DatatypeAsValueExpr,
+                  type: paramType,
+                })[1],
+                Lowered.addExpr(lr, {
+                  variant: Lowered.ENode.SymbolValueExpr,
+                  name: {
+                    mangledName: unhoistedName,
+                    prettyName: param.name,
+                    wasMangled: false,
+                  },
+                  type: paramType,
+                })[1],
+              ],
+              paramType,
+            )[1],
+            null,
+            statements,
+            "*" + param.name,
+          );
+        }
+        scope.statements.unshift(...statements.reverse());
+      }
 
       // Remove last "none" expression to make C simpler
       if (f.scope && Conversion.isVoidById(lr.sr, functype.returnType)) {
@@ -3503,7 +3768,7 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
       if (value && variableSymbol.requiresHoisting) {
         const original = storeInTempVarAndGet(
           lr,
-          lowerTypeUse(lr, variableSymbol.type),
+          lr.exprNodes.get(value).type,
           value,
           null,
           flattened,

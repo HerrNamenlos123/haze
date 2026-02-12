@@ -1,0 +1,43 @@
+
+export reactive<T>(value: T): Reactive<T> {
+
+    if comptime T is Reactive<T> { 
+        // Reactive<Reactive<T>> is identical to Reactive<T> by the compiler, so
+        // T is Reactive<T> is essentially asking: Is T already reactive?
+        // because Reactive<T> IS Reactive<Reactive<T>> by definition
+        return value;
+    }
+
+    let tmp: T = value;
+    return do unsafe {
+        let result: Reactive<T> = uninitialized;
+        __c__("""
+void* slot = hzstd_slot_alloc(sizeof(tmp));
+hzstd_slot_write(slot, &tmp, sizeof(tmp));
+result = hzstd_reactive_create(slot);
+        """);
+        result;
+    }
+}
+
+export computed<T>(fn: () => T): Computed<T> {
+    return do unsafe {
+        let fnWrapper = (): cptr => {
+            let resultValue = fn();
+            do unsafe {
+                let slot = none as cptr;
+                __c__("""
+slot = hzstd_slot_alloc(sizeof(resultValue));
+hzstd_slot_write(slot, &resultValue, sizeof(resultValue));
+                """);
+                return slot;
+            }
+        };
+
+        let result: Computed<T> = uninitialized;
+        __c__("""
+result = hzstd_computed_create(fnWrapper.fn, fnWrapper.env);
+        """);
+        result;
+    }
+}

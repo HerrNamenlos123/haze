@@ -89,6 +89,7 @@ namespace fmt {
 
     export print(args: ...) {
         for comptime arg in args {
+
             if comptime typeof(arg) == int || typeof(arg) == type<mut int> {
                 const value = arg;
                 // ffi.printf("%lld", arg);

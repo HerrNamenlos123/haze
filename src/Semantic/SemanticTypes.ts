@@ -60,6 +60,8 @@ export namespace Semantic {
     ParameterPackDatatype,
     PrimitiveDatatype,
     GenericParameterDatatype,
+    ReactiveDatatype,
+    ComputedDatatype,
     NamespaceDatatype,
     FixedArrayDatatype,
     DynamicArrayDatatype,
@@ -110,6 +112,9 @@ export namespace Semantic {
     ArraySliceExpr,
     StringSubscriptExpr,
     StringConstructExpr,
+    ReactiveWriteExpr,
+    ReactiveReadExpr,
+    ComputedReadExpr,
     // Dummy
     Dummy,
   }
@@ -177,6 +182,7 @@ export namespace Semantic {
     extern: EExternLanguage;
     scope: Semantic.BlockScopeId | null;
     overloadedOperator?: EOverloadedOperator;
+    parameterSymbols: Set<Semantic.SymbolId>;
     export: boolean;
     envType: EnvBlockType;
     createsInstanceIds: Set<Semantic.InstanceId>;
@@ -358,6 +364,18 @@ export namespace Semantic {
     concrete: boolean;
   };
 
+  export type ReactiveDatatypeDef = {
+    variant: ENode.ReactiveDatatype;
+    wrappedType: TypeUseId;
+    concrete: boolean;
+  };
+
+  export type ComputedDatatypeDef = {
+    variant: ENode.ComputedDatatype;
+    wrappedType: TypeUseId;
+    concrete: boolean;
+  };
+
   export type NamespaceDatatypeDef = {
     variant: ENode.NamespaceDatatype;
     name: string;
@@ -378,6 +396,8 @@ export namespace Semantic {
     | FixedArrayDatatypeDef
     | DynamicArrayDatatypeDef
     | SliceDatatypeDef
+    | ReactiveDatatypeDef
+    | ComputedDatatypeDef
     | ParameterPackDatatypeDef
     | UntaggedUnionDatatypeDef
     | TaggedUnionDatatypeDef
@@ -670,6 +690,25 @@ export namespace Semantic {
     };
   };
 
+  export type ReactiveReadExpr = BaseExpr & {
+    variant: ENode.ReactiveReadExpr;
+    instanceIds: InstanceId[];
+    value: ExprId;
+  };
+
+  export type ComputedReadExpr = BaseExpr & {
+    variant: ENode.ComputedReadExpr;
+    instanceIds: InstanceId[];
+    value: ExprId;
+  };
+
+  export type ReactiveWriteExpr = BaseExpr & {
+    variant: ENode.ReactiveWriteExpr;
+    instanceIds: InstanceId[];
+    value: ExprId;
+    target: ExprId;
+  };
+
   export type BlockScopeExpr = BaseExpr & {
     variant: ENode.BlockScopeExpr;
     instanceIds: InstanceId[];
@@ -693,10 +732,13 @@ export namespace Semantic {
     | AddressOfExpr
     | DereferenceExpr
     | ExplicitCastExpr
+    | ReactiveWriteExpr
     | AttemptExpr
+    | ReactiveReadExpr
     | ValueToUnionCastExpr
     | StringSubscriptExpr
     | UnionToValueCastExpr
+    | ComputedReadExpr
     | UnionToUnionCastExpr
     | UnionTagCheckExpr
     | AttemptErrorPropagationExpr
@@ -879,6 +921,8 @@ export namespace Semantic {
     // Function-local variable symbols are cached per function call because they are separate for each generic instance.
 
     elaboratedPrimitiveTypes: Semantic.TypeDefId[];
+    elaboratedReactiveTypes: Semantic.TypeDefId[];
+    elaboratedComputedTypes: Semantic.TypeDefId[];
     functionTypeCache: Semantic.TypeDefId[];
     deferredFunctionTypeCache: Semantic.TypeDefId[];
     fixedArrayTypeCache: Semantic.TypeDefId[];
@@ -1431,6 +1475,8 @@ export namespace Semantic {
       elaboratedTaggedUnions: new Map(),
       elaboratedEnumSymbols: new Map(),
       elaboratedPrimitiveTypes: [],
+      elaboratedReactiveTypes: [],
+      elaboratedComputedTypes: [],
       elaboratedNamespaceSymbols: [],
       elaboratedGlobalVariableDefinitionSymbols: new Set(),
       functionTypeCache: [],
@@ -1761,6 +1807,14 @@ export namespace Semantic {
 
       case Semantic.ENode.UnionTagRefDatatype: {
         return "<union-tag>";
+      }
+
+      case Semantic.ENode.ReactiveDatatype: {
+        return `Reactive<${serializeTypeUse(sr, datatype.wrappedType)}>`;
+      }
+
+      case Semantic.ENode.ComputedDatatype: {
+        return `Computed<${serializeTypeUse(sr, datatype.wrappedType)}>`;
       }
 
       case Semantic.ENode.ParameterPackDatatype:
@@ -2123,6 +2177,20 @@ export namespace Semantic {
         };
       }
 
+      case Semantic.ENode.ReactiveDatatype: {
+        return {
+          name: "R" + mangleTypeUse(sr, type.wrappedType).name,
+          wasMangled: true,
+        };
+      }
+
+      case Semantic.ENode.ComputedDatatype: {
+        return {
+          name: "C" + mangleTypeUse(sr, type.wrappedType).name,
+          wasMangled: true,
+        };
+      }
+
       default:
         throw new InternalError("Unhandled variant: " + type.variant);
     }
@@ -2336,6 +2404,10 @@ export namespace Semantic {
 
       case Semantic.ENode.AttemptExpr: {
         return `attempt {...} else {...}`;
+      }
+
+      case Semantic.ENode.AttemptErrorPropagationExpr: {
+        return `(${Semantic.serializeExpr(sr, expr.expr)})?!`;
       }
 
       case Semantic.ENode.UnionTagReferenceExpr: {

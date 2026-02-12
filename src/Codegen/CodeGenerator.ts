@@ -10,7 +10,7 @@ import {
 } from "../shared/AST";
 import { EPrimitive, primitiveToString, type NameSet } from "../shared/common";
 import { getModuleGlobalNamespaceName, ModuleType, type ModuleConfig } from "../shared/Config";
-import { assert, GeneralError, InternalError } from "../shared/Errors";
+import { assert, formatSourceLoc, GeneralError, InternalError } from "../shared/Errors";
 import { OutputWriter } from "./OutputWriter";
 import { spawnSync } from "child_process";
 import * as path from "path";
@@ -451,6 +451,14 @@ class CodeGenerator {
           }
           this.out.type_declarations.popIndent().writeLine(`} ${this.mangleName(symbol.name)} ;`);
         }
+      } else if (symbol.variant === Lowered.ENode.ReactiveDatatype) {
+        this.out.type_declarations.writeLine(
+          `typedef hzstd_reactive_cell_t* ${this.mangleTypeDef(symbol)};`,
+        );
+      } else if (symbol.variant === Lowered.ENode.ComputedDatatype) {
+        this.out.type_declarations.writeLine(
+          `typedef hzstd_computed_node_t* ${this.mangleTypeDef(symbol)};`,
+        );
       } else {
         assert(false);
       }
@@ -565,6 +573,12 @@ class CodeGenerator {
       } else if (type.variant === Lowered.ENode.EnumDatatype) {
         appliedTypes.add(type);
         processTypeUse(type.type);
+        sortedLoweredTypes.push(type);
+      } else if (type.variant === Lowered.ENode.ReactiveDatatype) {
+        appliedTypes.add(type);
+        sortedLoweredTypes.push(type);
+      } else if (type.variant === Lowered.ENode.ComputedDatatype) {
+        appliedTypes.add(type);
         sortedLoweredTypes.push(type);
       } else {
         assert(false);
@@ -722,7 +736,12 @@ class CodeGenerator {
     for (const statementId of scope.statements) {
       const statement = this.lr.statementNodes.get(statementId);
       if (returned) {
-        assert(false, "Dead code should have been stripped in lowering phase");
+        // Ignore dead code and skip it without warning.
+        // Usually dead code is stripped entirely in elaboration and never reaches lowering,
+        // but in some cases like comptime functions, dead code can get through because
+        // in the highlevel elaboration, it isn't dead code, but with monomorphization applied,
+        // then turns into dead code. So we can just skip it.
+        continue;
       }
 
       if (statement.variant === Lowered.ENode.ReturnStatement) {

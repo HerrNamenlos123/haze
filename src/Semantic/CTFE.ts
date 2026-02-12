@@ -205,8 +205,14 @@ export function EvalCTFE(
       break;
     }
 
+    case Semantic.ENode.DatatypeAsValueExpr:
     case Semantic.ENode.LiteralExpr: {
       return ok([expr, exprId]);
+    }
+
+    case Semantic.ENode.ComputedReadExpr:
+    case Semantic.ENode.ReactiveReadExpr: {
+      return EvalCTFE(sr, expr.value);
     }
 
     default:

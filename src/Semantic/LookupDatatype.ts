@@ -1,4 +1,4 @@
-import { assert, CompilerError, type SourceLoc } from "../shared/Errors";
+import { assert, type SourceLoc } from "../shared/Errors";
 import { isTypeConcrete } from "./Elaborate";
 import { EDatatypeMutability, EVariableMutability, EExternLanguage } from "../shared/AST";
 import { EVariableContext } from "../shared/common";
@@ -16,6 +16,7 @@ function createLengthFieldSymbol(sr: Semantic.Context, sourceloc: SourceLoc): Se
     memberOfStruct: null,
     type: sr.b.usizeType(),
     consumed: false,
+    requiresHoisting: false,
     variableContext: EVariableContext.Global,
     parentStructOrNS: null,
     comptime: false,

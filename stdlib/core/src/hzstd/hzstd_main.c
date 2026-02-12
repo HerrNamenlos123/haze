@@ -6,6 +6,7 @@
 #include "hzstd_filesystem.c"
 #include "hzstd_json.c"
 #include "hzstd_memory.c"
+#include "hzstd_reactive.c"
 #include "hzstd_regex.c"
 #include "hzstd_runtime.c"
 #include "hzstd_string.c"

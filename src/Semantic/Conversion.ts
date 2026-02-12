@@ -9,6 +9,7 @@ import { EPrimitive, primitiveToString } from "../shared/common";
 import {
   assert,
   CompilerError,
+  formatErrorMessage,
   formatSourceLoc,
   InternalError,
   type SourceLoc,
@@ -946,6 +947,7 @@ export namespace Conversion {
     const toTypeText = Semantic.serializeTypeUse(sr, toId);
 
     const ok = (v: Semantic.ExprId) => ({ ok: true as const, expr: v });
+    const err = (msg: string) => ({ ok: false as const, error: msg });
 
     // naive return, it's the same type so remove the cast
     if (fromExpr.type === toId) {
@@ -972,9 +974,8 @@ export namespace Conversion {
           )[1],
         );
       }
-      throw new CompilerError(
+      return err(
         `Conversion from str to cstr/ccstr (char*/const char*) is not possible because the value is not known at compile time, therefore no C string literal can be emitted that preserves null termination. For runtime strings, use str.cstr(arena).`,
-        sourceloc,
       );
     }
 
@@ -1119,23 +1120,18 @@ export namespace Conversion {
       to.variant === Semantic.ENode.FunctionDatatype
     ) {
       if (!to.requires.final) {
-        throw new CompilerError(
-          `Cannot use a non-final function datatype as a conversion target`,
-          sourceloc,
-        );
+        return err(`Cannot use a non-final function datatype as a conversion target`);
       }
 
       if (!fromType.requires.final) {
-        throw new CompilerError(
+        return err(
           `Cannot convert a non-final function datatype, that is not fully elaborated yet. Remember to manually mark functions as final if they are extern or participate in recursion.`,
-          sourceloc,
         );
       }
 
       if (!fromType.requires.pure && to.requires.pure) {
-        throw new CompilerError(
+        return err(
           `Passing an impure function to a value that requires it to be pure. This is not safe as the caller may assume no side effects which the given function could have.`,
-          sourceloc,
         );
       }
 
@@ -1239,7 +1235,7 @@ export namespace Conversion {
           sourceRangeText = `value ${source.isExact()!}`;
         }
 
-        throw new CompilerError(
+        return err(
           `No safe conversion from '${Semantic.serializeTypeUse(
             sr,
             fromExpr.type,
@@ -1251,7 +1247,6 @@ export namespace Conversion {
             t.primitive,
             "integer",
           )}, but the source has ${sourceRangeText}. Add a conditional that constrains the integer range.`,
-          sourceloc,
         );
       }
     }
@@ -1348,7 +1343,7 @@ export namespace Conversion {
         sourceRangeText = `value ${source.isExact()!}`;
       }
 
-      throw new CompilerError(
+      return err(
         `No lossless conversion from '${Semantic.serializeTypeUse(
           sr,
           fromExpr.type,
@@ -1360,7 +1355,6 @@ export namespace Conversion {
           t.primitive,
           "float",
         )}, but the source has ${sourceRangeText}. Add a conditional that constrains the integer range.`,
-        sourceloc,
       );
     }
 
@@ -1381,9 +1375,8 @@ export namespace Conversion {
       // source.constrainExactFromExprIfPossible(fromExprId);
       // source.constrainFromConstraints(constraints, fromExprId);
 
-      throw new CompilerError(
+      return err(
         `Conversions from Integers to Floating points are not implemented yet, as it requires value narrowing on floating point numbers instead of bigint.... Use an explicit cast to override.`,
-        sourceloc,
       );
 
       // if (source.isWithinRange(...Conversion.getIntegerMinMax(t.primitive))) {
@@ -1481,7 +1474,7 @@ export namespace Conversion {
         to.primitive === EPrimitive.f32)
     ) {
       if (mode !== Mode.Explicit) {
-        throw new CompilerError(
+        return err(
           `Conversion from '${Semantic.serializeTypeUse(sr, fromExpr.type)}' to '${Semantic.serializeTypeUse(
             sr,
             toId,
@@ -1489,7 +1482,6 @@ export namespace Conversion {
             sr,
             toId,
           )}'`,
-          sourceloc,
         );
       }
       return ok(
@@ -1580,9 +1572,8 @@ export namespace Conversion {
             );
           }
 
-          throw new CompilerError(
+          return err(
             `This value cannot be converted to 'const' since other references may exist, which may allow mutation of a const value. Use .freezeClone() to safely clone the object and make it deeply immutable.`,
-            sourceloc,
           );
         }
       }
@@ -1803,12 +1794,11 @@ export namespace Conversion {
           }
 
           if (types.length === 0) {
-            throw new CompilerError(
+            return err(
               `Type '${Semantic.serializeTypeUse(
                 sr,
                 fromExpr.type,
               )}' is not implicitly convertible to bool: Union does not contain a null- or none-Variant.`,
-              sourceloc,
             );
           }
 
@@ -1932,19 +1922,27 @@ export namespace Conversion {
       if (fType.concrete && tType.concrete) {
         if (
           fType.parameters.length === tType.parameters.length &&
-          fType.parameters.map(
+          fType.parameters.every(
             (p, i) =>
               p.type === tType.parameters[i].type && p.optional === tType.parameters[i].optional,
           ) &&
           fType.returnType === tType.returnType &&
           fType.vararg === tType.vararg &&
-          fType.requires.final === tType.requires.final &&
+          fType.requires.final &&
+          tType.requires.final &&
           fType.requires.noreturn === tType.requires.noreturn &&
           fType.requires.noreturnIf?.argIndex === tType.requires.noreturnIf?.argIndex &&
           fType.requires.noreturnIf?.expr === tType.requires.noreturnIf?.expr &&
-          fType.requires.noreturnIf?.operation === tType.requires.noreturnIf?.operation &&
-          fType.requires.pure === tType.requires.pure
+          fType.requires.noreturnIf?.operation === tType.requires.noreturnIf?.operation
         ) {
+          if (tType.requires.pure && !fType.requires.pure) {
+            // It is an error, if a pure function is required but an impure function is given.
+            // Every other combination is valid
+            return err(
+              `Assigning impure function ${fromTypeText} to pure function ${toTypeText} is not allowed because the target requires a function to be pure and to not have sideeffects.`,
+            );
+          }
+
           return ok(
             sr.b.addExpr(sr, {
               variant: Semantic.ENode.ExplicitCastExpr,
@@ -1961,12 +1959,43 @@ export namespace Conversion {
       }
     }
 
-    throw new CompilerError(
+    // Read Conversion: Reactive<T> to T
+    if (fromType.variant === Semantic.ENode.ReactiveDatatype && fromType.wrappedType === toId) {
+      return ok(
+        sr.b.addExpr(sr, {
+          variant: Semantic.ENode.ReactiveReadExpr,
+          instanceIds: [],
+          value: fromExprId,
+          type: toId,
+          sourceloc: sourceloc,
+          isTemporary: true,
+          flow: Semantic.FlowResult.fallthrough(),
+          writes: Semantic.WriteResult.empty(),
+        })[1],
+      );
+    }
+
+    // Read Conversion: Computed<T> to T
+    if (fromType.variant === Semantic.ENode.ComputedDatatype && fromType.wrappedType === toId) {
+      return ok(
+        sr.b.addExpr(sr, {
+          variant: Semantic.ENode.ComputedReadExpr,
+          instanceIds: [],
+          value: fromExprId,
+          type: toId,
+          sourceloc: sourceloc,
+          isTemporary: true,
+          flow: Semantic.FlowResult.fallthrough(),
+          writes: Semantic.WriteResult.empty(),
+        })[1],
+      );
+    }
+
+    return err(
       `No suitable conversion from '${Semantic.serializeTypeUse(
         sr,
         fromExpr.type,
       )}' to '${Semantic.serializeTypeUse(sr, toId)}' is known`,
-      sourceloc,
     );
   }
 

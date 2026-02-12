@@ -309,6 +309,7 @@ export namespace Collect {
     staticMethod: boolean;
     overloadGroup: Collect.SymbolId;
     overloadedOperator?: EOverloadedOperator;
+    parameterSymbols: Set<SymbolId>;
     generics: Collect.SymbolId[];
     name: string;
     requires: FunctionRequiresBlock;
@@ -1693,6 +1694,7 @@ function collectSymbol(
         parentScope: args.currentParentScope,
         methodType: item.methodType,
         overloadedOperator: item.operatorOverloading?.operator,
+        parameterSymbols: new Set(),
         pub: item.pub,
         requires: {
           final: item.requires.final,
@@ -1770,7 +1772,7 @@ function collectSymbol(
         }
 
         for (const p of parameters) {
-          defineVariableSymbol(
+          const varsymId = defineVariableSymbol(
             cc,
             {
               variant: Collect.ENode.VariableSymbol,
@@ -1783,7 +1785,8 @@ function collectSymbol(
               variableContext: EVariableContext.FunctionParameter,
             },
             functionScopeId,
-          );
+          )[1];
+          functionSymbol.parameterSymbols.add(varsymId);
         }
       }
 
@@ -2594,6 +2597,7 @@ function collectExpr(
         noemit: false,
         originalSourcecode: "",
         overloadGroup: overloadGroup[1],
+        parameterSymbols: new Set(),
         parameters: item.lambda.params.map((p) => {
           return {
             name: p.name,
@@ -2649,7 +2653,7 @@ function collectExpr(
       });
 
       for (const p of functionSymbol.parameters) {
-        defineVariableSymbol(
+        const varsymId = defineVariableSymbol(
           cc,
           {
             variant: Collect.ENode.VariableSymbol,
@@ -2662,7 +2666,8 @@ function collectExpr(
             variableContext: EVariableContext.FunctionParameter,
           },
           functionScopeId,
-        );
+        )[1];
+        functionSymbol.parameterSymbols.add(varsymId);
       }
 
       return Collect.makeExpr(cc, {
