@@ -4423,8 +4423,6 @@ export class SemanticElaborator {
       }
 
       case Collect.ENode.TypeOfExprDatatype: {
-        const sc = this.sr.cc.scopeNodes.get(this.currentContext.currentScope);
-        console.log("Looking up typeof in scope", this.currentContext.currentScope, sc);
         const expr = this.expr(type.expr, undefined)[0];
         return expr.type;
       }

@@ -2317,7 +2317,7 @@ function collectScope(
         const structScopeId = Collect.makeScope<Collect.TypeDefScope>(cc, {
           variant: Collect.ENode.TypeDefScope,
           owningSymbol: symbolId,
-          parentScope: args.currentParentScope,
+          parentScope: blockScopeId,
           sourceloc: item.sourceloc,
           symbols: new Set(),
         })[1];
