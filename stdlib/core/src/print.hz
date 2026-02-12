@@ -89,41 +89,37 @@ namespace fmt {
 
     export print(args: ...) {
         for comptime arg in args {
-            do unsafe {
-                let a = arg;
-                // do unsafe {
-                    type Arg = typeof(a);
-                    if comptime Arg is str {}
-                // };
-            };
+            type Arg = typeof(arg);
 
             // If this is the same, then Arg is reactive, because reactives cannot be nested
             // and Reactive<Reactive<T>> is by definition the same as Reactive<T>
-            // if comptime Arg == Reactive<Arg> {
-            //     // print();
-            // }
+            if comptime type<IsReactive<Arg>> {
+                // print();
+                // static_assert(false, "TRUE");
+                return;
+            }
 
-            if comptime typeof(arg) == int || typeof(arg) == type<mut int> {
+            if comptime typeof(arg) is int || typeof(arg) is mut int {
                 const value = arg;
                 // ffi.printf("%lld", arg);
                 __c__("printf(\"%\"PRId64, value);");
             }
-            else if typeof(arg) == cstr || typeof(arg) == ccstr {
+            else if typeof(arg) is cstr || typeof(arg) is ccstr {
                 const s = arg;
                 __c__("printf(\"%s\", s);");
                 // ffi.printf("%s", arg);
             }
-            else if typeof(arg) == str {
+            else if typeof(arg) is str {
                 const s = arg;
                 __c__("fwrite(s.data, 1, s.length, stdout);");
                 // ffi.printf("%s", arg);
             }
-            else if typeof(arg) == type<str> {
+            else if typeof(arg) is str {
                 const s = arg;
                 __c__("fwrite(s.data, 1, s.length, stdout);");
                 // ffi.printf("%s", arg);
             }
-            else if typeof(arg) == bool {
+            else if typeof(arg) is bool {
                 if arg {
                     ffi.printf("true");
                 }
@@ -131,47 +127,47 @@ namespace fmt {
                     ffi.printf("false");
                 }
             }
-            else if typeof(arg) == type<usize> {
+            else if typeof(arg) is usize {
                 ffi.printf("%zu", arg);
             }
-            else if typeof(arg) == type<real> || typeof(arg) == type<mut real> {
+            else if typeof(arg) is real || typeof(arg) is mut real {
                 ffi.printf("%f", arg);
             }
-            else if typeof(arg) == type<u8> || typeof(arg) == type<u16> || typeof(arg) == type<u32> {
+            else if typeof(arg) is u8 || typeof(arg) is u16 || typeof(arg) is u32 {
                 const value = arg;
                 __c__("printf(\"%\"PRIu8, value);");
             }
-            else if typeof(arg) == type<u64> {
+            else if typeof(arg) is u64 {
                 const value = arg;
                 __c__("printf(\"%\"PRIu64, value);");
             }
-            else if typeof(arg) == type<i8> || typeof(arg) == type<i16> || typeof(arg) == type<i32> {
+            else if typeof(arg) is i8 || typeof(arg) is i16 || typeof(arg) is i32 {
                 const value = arg;
                 __c__("printf(\"%\"PRId8, value);");
             }
-            else if typeof(arg) == type<i64> {
+            else if typeof(arg) is i64 {
                 const value = arg;
                 __c__("printf(\"%\"PRId64, value);");
             }
-            else if typeof(arg) == type<Vec2> || typeof(arg) == type<Vec2> {
+            else if typeof(arg) is Vec2 || typeof(arg) is Vec2 {
                 ffi.printf("(%f, %f)", arg.x, arg.y);
             }
-            else if typeof(arg) == type<Vec3> || typeof(arg) == type<Vec3> {
+            else if typeof(arg) is Vec3 || typeof(arg) is Vec3 {
                 ffi.printf("(%f, %f, %f)", arg.x, arg.y, arg.z);
             }
-            else if typeof(arg) == type<Vec4> || typeof(arg) == type<Vec4> {
+            else if typeof(arg) is Vec4 || typeof(arg) is Vec4 {
                 ffi.printf("(%f, %f, %f, %f)", arg.x, arg.y, arg.z, arg.w);
             }
-            else if typeof(arg) == type<fs.Error> {
+            else if typeof(arg) is fs.Error {
                 ffi.printf("%d", arg);
             }
-            else if typeof(arg) == type<null> {
+            else if typeof(arg) is null {
                 ffi.printf("null");
             }
-            else if typeof(arg) == type<none> {
+            else if typeof(arg) is none {
                 ffi.printf("none");
             }
-            else if typeof(arg) == type<Vec2f> || typeof(arg) == type<mut _Vec2<f32>> {
+            else if typeof(arg) is Vec2f || typeof(arg) is mut _Vec2<f32> {
                 let s = format(arg);
                 __c__("fwrite(s.data, 1, s.length, stdout);");
             }

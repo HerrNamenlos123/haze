@@ -307,23 +307,12 @@ export class SemanticElaborator {
       binaryExpr.operation === EBinaryOperation.Equal ||
       binaryExpr.operation === EBinaryOperation.NotEqual
     ) {
-      let [left, leftId] = this.expr(binaryExpr.left, { unsafe: inference?.unsafe });
-      let [right, rightId] = this.expr(binaryExpr.right, { unsafe: inference?.unsafe });
-
-      leftId = this.unwrapReactiveOrComputedIfPossible(leftId);
-      left = this.sr.exprNodes.get(leftId);
-      rightId = this.unwrapReactiveOrComputedIfPossible(rightId);
-      right = this.sr.exprNodes.get(rightId);
-
-      if (
-        left.variant === Semantic.ENode.DatatypeAsValueExpr &&
-        right.variant === Semantic.ENode.DatatypeAsValueExpr
-      ) {
-        return this.sr.b.literal(
-          binaryExpr.operation === EBinaryOperation.Equal && left.type === right.type,
-          binaryExpr.sourceloc,
-        );
-      }
+      // let [left, leftId] = this.expr(binaryExpr.left, { unsafe: inference?.unsafe });
+      // let [right, rightId] = this.expr(binaryExpr.right, { unsafe: inference?.unsafe });
+      // leftId = this.unwrapReactiveOrComputedIfPossible(leftId);
+      // left = this.sr.exprNodes.get(leftId);
+      // rightId = this.unwrapReactiveOrComputedIfPossible(rightId);
+      // right = this.sr.exprNodes.get(rightId);
     } else if (binaryExpr.operation === EBinaryOperation.Add) {
       let [left, leftId] = this.expr(binaryExpr.left, inference);
       let [right, rightId] = this.expr(binaryExpr.right, inference);
