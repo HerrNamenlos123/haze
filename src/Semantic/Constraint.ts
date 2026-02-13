@@ -354,9 +354,16 @@ export class ConstraintSet {
     return [...this.map.values()];
   }
 
-  /** Get the total number of constraints in this set */
-  constraintCount(): number {
-    return this.map.size + this.pathMap.size;
+  /** Get the number of distinct symbols that have constraints */
+  distinctSymbolCount(): number {
+    const symbols = new Set<Semantic.SymbolId>();
+    for (const c of this.map.values()) {
+      symbols.add(c.variableSymbol);
+    }
+    for (const { path } of this.pathMap.values()) {
+      symbols.add(path.root.symbolId);
+    }
+    return symbols.size;
   }
 
   // ---- inversion -----------------------------------------------------------
@@ -364,11 +371,11 @@ export class ConstraintSet {
   inverse(): ConstraintSet {
     if (this._inverse) return this._inverse;
 
-    // If there are multiple constraints (A && B), we cannot properly invert them
+    // If there are multiple distinct symbols with constraints (A && B), we cannot properly invert them
     // because the correct inverse would be (!A || !B), which is not representable
     // in the constraint system. So we return an empty constraint set instead of
     // an incorrect inversion (!A && !B).
-    if (this.constraintCount() > 1) {
+    if (this.distinctSymbolCount() > 1) {
       const empty = ConstraintSet.empty();
       empty._inverse = this;
       this._inverse = empty;
@@ -444,7 +451,12 @@ export class ConditionChain {
   private invertedPrefix(): ConstraintSet {
     const out = ConstraintSet.empty();
     for (const c of this.conditions) {
-      out.addAll(c.inverse());
+      const inverted = c.inverse();
+      // Only add the inverted constraints if they are not empty (which indicates inversion failed)
+      // If inversion failed, we skip the constraint rather than add an empty one
+      if (!inverted.isEmpty()) {
+        out.addAll(inverted);
+      }
     }
     return out;
   }

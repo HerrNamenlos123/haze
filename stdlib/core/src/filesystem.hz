@@ -226,7 +226,7 @@ export namespace fs {
         return Result<none, Error>.Ok(none);
     }
 
-    struct FileState {
+    export struct FileState {
         mtime: int;   // or platform timestamp type
         size: int;    // optional but useful
     }
