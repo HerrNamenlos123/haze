@@ -56,6 +56,14 @@ namespace ffi {
     // Optional: move a file or directory (copy + delete original). Behaves like
     // hzstd_fs_copy.
     extern C noemit hzstd_fs_move(src: str, dst: str, options: hzstd_fs_copy_options_t): inline hzstd_fs_error_t :: final;
+
+    extern C inline struct hzstd_file_stat_t {
+        exists: bool;
+        mtime_ns: i64;
+        size: i64;
+    }
+
+    extern C hzstd_file_stat(path: str): hzstd_file_stat_t :: final;
 }
 
 export namespace fs {
@@ -216,6 +224,145 @@ export namespace fs {
             return Result<none, Error>.Err(mapErrorEnum(result.code));
         }
         return Result<none, Error>.Ok(none);
+    }
+
+    struct FileState {
+        mtime: int;   // or platform timestamp type
+        size: int;    // optional but useful
+    }
+
+    export statFile(path: str): FileState | none {
+        let result = ffi.hzstd_file_stat(path);
+        if !result.exists {
+            return none;
+        }
+
+        return FileState {
+            mtime: result.mtime_ns,
+            size: result.size,
+        };
+    }
+
+    export enum WatchStrategy {
+        ModificationDate,
+        DiffContent,
+    }
+
+    export struct WatchConfig {
+        interval: real = 0.1;
+    }
+
+    export struct FileChangeEvent {
+        path: str;
+        kind: FileChangeKind;
+    }
+
+    export enum FileChangeKind {
+        Modified,
+        Created,
+        Deleted,
+    }
+
+    export struct WatchHandle {
+        handle: int;
+        strategy: WatchStrategy = WatchStrategy.ModificationDate;
+    }
+
+    struct Watcher {
+        id: int;
+        path: str;
+        interval: real;
+        nextPollTime: real;
+        lastState?: FileState;
+        callback: (event: FileChangeEvent) => void;
+        active: bool;
+    }
+
+    // NOTE: These global variables are not ideal
+    let watchers: []Watcher = [];
+    let nextId = 1;
+
+    export watch(
+        path: str,
+        onChange: (event: FileChangeEvent) => void,
+        config?: WatchConfig,
+    ): WatchHandle {
+        let state = statFile(path);
+
+        if !config {
+            config = WatchConfig {};
+        }
+        assert(config);
+
+        let w = Watcher {
+            id: nextId++,
+            path: path,
+            interval: config.interval,
+            nextPollTime: time.now() + config.interval,
+            lastState: state,
+            callback: onChange,
+            active: true,
+        };
+        watchers.push(w);
+
+        return WatchHandle { handle: w.id };
+    }
+
+    export unwatch(handle: WatchHandle) {
+        for w in watchers {
+            if w.id == handle.handle {
+                w.active = false;
+                return;
+            }
+        }
+    }
+
+    diff(old?: FileState, new?: FileState): FileChangeEvent | none {
+        if !old && new {
+            return FileChangeEvent {
+                path: "", // filled by caller
+                kind: FileChangeKind.Created,
+            };
+        }
+
+        if old && !new {
+            return FileChangeEvent {
+                path: "",
+                kind: FileChangeKind.Deleted,
+            };
+        }
+
+        if old && new {
+            if old.mtime != new.mtime || old.size != new.size {
+                return FileChangeEvent {
+                    path: "",
+                    kind: FileChangeKind.Modified,
+                };
+            }
+        }
+
+        return none;
+    }
+
+    // This function will disappear in the future in favor of a global coroutine event loop
+    export pollEvents() {
+        let t = time.now();
+
+        for w in watchers {
+            if w.active {
+                if t >= w.nextPollTime {
+                    w.nextPollTime = t + w.interval;
+
+                    let newState = statFile(w.path);
+                    let event = diff(w.lastState, newState);
+                    if event {
+                        event.path = w.path;
+                        w.lastState = newState;
+                        w.callback(event);
+                    }
+                }
+            }
+        }
     }
 
     // // Static loading

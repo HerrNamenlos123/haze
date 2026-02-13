@@ -87,4 +87,6 @@ hzstd_str_t hzstd_str_from_cstr_dup(hzstd_allocator_t allocator, hzstd_cstr_t da
 
 hzstd_bool_t hzstd_strings_equal(hzstd_str_t a, hzstd_str_t b);
 
+const char* hzstd_raw_malloc_null_terminated_str(hzstd_str_t str);
+
 #endif // HZSTD_STRING_H

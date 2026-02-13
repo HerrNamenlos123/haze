@@ -66,4 +66,12 @@ hzstd_fs_error_t hzstd_fs_copy_dir(hzstd_str_t src, hzstd_str_t dst, const hzstd
 // hzstd_fs_copy.
 hzstd_fs_error_t hzstd_fs_move(hzstd_str_t src, hzstd_str_t dst, const hzstd_fs_copy_options_t* options);
 
+typedef struct {
+  bool exists;
+  int64_t mtime_ns; // modification time (nanoseconds since Unix epoch)
+  int64_t size; // file size in bytes
+} hzstd_file_stat_t;
+
+hzstd_file_stat_t hzstd_file_stat(hzstd_str_t path);
+
 #endif // HZSTD_FILESYSTEM_H

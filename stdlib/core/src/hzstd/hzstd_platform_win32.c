@@ -2,6 +2,7 @@
 // This file is conditionally imported in hzstd_main.c depending on platform!
 
 // WARNING: windows.h MUST ALWAYS BE THE FIRST IMPORT!
+#define WIN32_LEAN_AND_MEAN
 #include <excpt.h>
 #include <windows.h>
 
@@ -616,4 +617,20 @@ void os_sleep_ns(uint64_t ns)
   SetWaitableTimer(timer, &li, 0, NULL, NULL, FALSE);
   WaitForSingleObject(timer, INFINITE);
   CloseHandle(timer);
+}
+
+double hzstd_time_now(void)
+{
+  static LARGE_INTEGER frequency;
+  static int initialized = 0;
+
+  if (!initialized) {
+    QueryPerformanceFrequency(&frequency);
+    initialized = 1;
+  }
+
+  LARGE_INTEGER counter;
+  QueryPerformanceCounter(&counter);
+
+  return (double)counter.QuadPart / (double)frequency.QuadPart;
 }

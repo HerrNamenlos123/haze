@@ -63,4 +63,6 @@ int hzstd_spawn_process(hzstd_str_t exe,
 
 void os_sleep_ns(uint64_t nanoseconds);
 
+double hzstd_time_now(void);
+
 #endif // HZSTD_PLATFORM_H

@@ -60,3 +60,11 @@ hzstd_bool_t hzstd_strings_equal(hzstd_str_t a, hzstd_str_t b)
   }
   return memcmp(a.data, b.data, a.length) == 0;
 }
+
+const char* hzstd_raw_malloc_null_terminated_str(hzstd_str_t str)
+{
+  char* buffer = malloc(str.length + 1);
+  memcpy(buffer, str.data, str.length);
+  buffer[str.length] = '\0';
+  return buffer;
+}
