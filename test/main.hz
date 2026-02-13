@@ -23,31 +23,37 @@ main(): int {
     // b() → 3
 
     let a = reactive<int>(1);
-    let b = 1;
 
-    let c = computed<int>(() => {
-        fmt.println("Computed evaluated");
-        return a as int;
+    let b = computed<int>(() => {
+        fmt.println("b evaluated");
+        return a + 1;
     });
 
-    fmt.println(c);
-    fmt.println(c);
-    fmt.println(c);
+    let c = computed<int>(() => {
+        fmt.println("c evaluated");
+        return b + 1;
+    });
 
-    // a++;
-    b++;
+    let d = computed<int>(() => {
+        fmt.println("d evaluated");
+        return c + 1;
+    });
 
-    ++b;
+    fmt.println(d);
+    fmt.println(d);
+    fmt.println(d);
 
-    fmt.println(c);
-    fmt.println(c);
-    fmt.println(c);
+    a++;
 
-    // a++;
+    fmt.println(d);
+    fmt.println(d);
+    fmt.println(d);
 
-    fmt.println(c);
-    fmt.println(c);
-    fmt.println(c);
+    a++;
+
+    fmt.println(d);
+    fmt.println(d);
+    fmt.println(d);
 
     return 0;
 

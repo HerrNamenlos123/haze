@@ -3056,6 +3056,158 @@ function collectExpr(
     // =================================================================================================================
 
     case "ExprAssignmentExpr":
+      if (
+        item.operation === EAssignmentOperation.Add ||
+        item.operation === EAssignmentOperation.Subtract ||
+        item.operation === EAssignmentOperation.Divide ||
+        item.operation === EAssignmentOperation.Modulo ||
+        item.operation === EAssignmentOperation.Multiply
+      ) {
+        const blockScopeId = makeBlockScope(cc, args.currentParentScope, true, item.sourceloc);
+        const blockScope = cc.scopeNodes.get(blockScopeId);
+        assert(blockScope.variant === Collect.ENode.BlockScope);
+
+        const targetId = collectExpr(cc, item.target, { currentParentScope: blockScopeId });
+        const valueId = collectExpr(cc, item.value, { currentParentScope: blockScopeId });
+
+        const reactiveT = makeNamedDatatype(cc, "__T", [], item.sourceloc)[1];
+        const reactiveInnerT = makeNamedDatatype(cc, "ReactiveInner", ["__T"], item.sourceloc)[1];
+
+        let operation = EBinaryOperation.Add;
+        if (item.operation === EAssignmentOperation.Add) {
+          operation = EBinaryOperation.Add;
+        } else if (item.operation === EAssignmentOperation.Subtract) {
+          operation = EBinaryOperation.Subtract;
+        } else if (item.operation === EAssignmentOperation.Multiply) {
+          operation = EBinaryOperation.Multiply;
+        } else if (item.operation === EAssignmentOperation.Divide) {
+          operation = EBinaryOperation.Divide;
+        } else if (item.operation === EAssignmentOperation.Modulo) {
+          operation = EBinaryOperation.Modulo;
+        } else {
+          assert(false);
+        }
+
+        const handle = defineVariableSymbol(
+          cc,
+          {
+            variant: Collect.ENode.VariableSymbol,
+            name: "*__handle",
+            comptime: false,
+            type: reactiveT,
+            mutability: EVariableMutability.Let,
+            globalValueInitializer: null,
+            variableContext: EVariableContext.FunctionLocal,
+            sourceloc: item.sourceloc,
+          },
+          blockScopeId,
+        )[1];
+        const result = defineVariableSymbol(
+          cc,
+          {
+            variant: Collect.ENode.VariableSymbol,
+            name: "__result",
+            comptime: false,
+            type: reactiveInnerT,
+            mutability: EVariableMutability.Let,
+            globalValueInitializer: null,
+            variableContext: EVariableContext.FunctionLocal,
+            sourceloc: item.sourceloc,
+          },
+          blockScopeId,
+        )[1];
+        const aliasSymbol = Collect.makeSymbol(cc, {
+          variant: Collect.ENode.TypeDefSymbol,
+          inScope: blockScopeId,
+          name: "__T",
+          typeDef: Collect.makeTypeDef(cc, {
+            variant: Collect.ENode.TypeDefAlias,
+            generics: [],
+            genericScope: blockScopeId,
+            inScope: blockScopeId,
+            name: "__T",
+            sourceloc: item.sourceloc,
+            target: Collect.makeTypeUse(cc, {
+              variant: Collect.ENode.TypeOfExprDatatype,
+              expr: targetId,
+              mutability: EDatatypeMutability.Default,
+              sourceloc: item.sourceloc,
+            })[1],
+          })[1],
+        })[1];
+        blockScope.symbols.add(aliasSymbol);
+
+        addStatement(cc, blockScopeId, {
+          variant: Collect.ENode.VariableDefinitionStatement,
+          sourceloc: item.sourceloc,
+          value: targetId,
+          intrinsicTakeAddrOfValue: true,
+          comptime: false,
+          variableSymbol: handle,
+        });
+        addStatement(cc, blockScopeId, {
+          variant: Collect.ENode.VariableDefinitionStatement,
+          sourceloc: item.sourceloc,
+          value: Collect.makeExpr(cc, {
+            variant: Collect.ENode.BinaryExpr,
+            left: Collect.makeExpr(cc, {
+              variant: Collect.ENode.ExplicitCastExpr,
+              expr: Collect.makeExpr(cc, {
+                variant: Collect.ENode.SymbolValueExpr,
+                genericArgs: [],
+                name: "*__handle",
+                sourceloc: item.sourceloc,
+              })[1],
+              sourceloc: item.sourceloc,
+              targetType: reactiveInnerT,
+            })[1],
+            operation: operation,
+            right: valueId,
+            sourceloc: item.sourceloc,
+          })[1],
+          intrinsicTakeAddrOfValue: false,
+          comptime: false,
+          variableSymbol: result,
+        });
+        addStatement(cc, blockScopeId, {
+          variant: Collect.ENode.ExprStatement,
+          sourceloc: item.sourceloc,
+          expr: Collect.makeExpr(cc, {
+            variant: Collect.ENode.ExprAssignmentExpr,
+            expr: Collect.makeExpr(cc, {
+              variant: Collect.ENode.SymbolValueExpr,
+              genericArgs: [],
+              name: "*__handle",
+              sourceloc: item.sourceloc,
+            })[1],
+            value: Collect.makeExpr(cc, {
+              variant: Collect.ENode.SymbolValueExpr,
+              genericArgs: [],
+              name: "__result",
+              sourceloc: item.sourceloc,
+            })[1],
+            operation: EAssignmentOperation.Assign,
+            sourceloc: item.sourceloc,
+          })[1],
+        });
+        addStatement(cc, blockScopeId, {
+          variant: Collect.ENode.ExprStatement,
+          sourceloc: item.sourceloc,
+          expr: Collect.makeExpr(cc, {
+            variant: Collect.ENode.SymbolValueExpr,
+            genericArgs: [],
+            name: "__result",
+            sourceloc: item.sourceloc,
+          })[1],
+        });
+
+        return Collect.makeExpr(cc, {
+          variant: Collect.ENode.BlockScopeExpr,
+          scope: blockScopeId,
+          sourceloc: item.sourceloc,
+        })[1];
+      }
+
       return Collect.makeExpr(cc, {
         variant: Collect.ENode.ExprAssignmentExpr,
         expr: collectExpr(cc, item.target, args),

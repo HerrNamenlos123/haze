@@ -191,14 +191,14 @@ namespace fmt {
         // Find highest divisor
         let div: i64 = 1;
         while v / div >= 10 as i64 {
-            div *= 10;
+            div *= 10 as i64;
         }
 
         while div > 0 as i64 {
             let digit = v / div;
             writer.write(digitToStr(digit));
             v %= div;
-            div /= 10;
+            div /= 10 as i64;
         }
     }
 
