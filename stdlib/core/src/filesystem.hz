@@ -250,6 +250,8 @@ export namespace fs {
 
     export struct WatchConfig {
         interval: real = 0.1;
+        immediate: bool = true;
+        strategy: WatchStrategy = WatchStrategy.ModificationDate;
     }
 
     export struct FileChangeEvent {
@@ -265,7 +267,6 @@ export namespace fs {
 
     export struct WatchHandle {
         handle: int;
-        strategy: WatchStrategy = WatchStrategy.ModificationDate;
     }
 
     struct Watcher {
@@ -283,6 +284,7 @@ export namespace fs {
     struct GlobalFilesystemContext {
         watchers: []Watcher;
         nextId: int;
+        inPoll: bool;
     }
 
     // Global context that is lazily initialized on first use
@@ -298,6 +300,7 @@ export namespace fs {
         _globalFilesystemContext = GlobalFilesystemContext {
             watchers: [],
             nextId: 1,
+            inPoll: false,
         };
         
         assert(_globalFilesystemContext);
@@ -309,15 +312,6 @@ export namespace fs {
         onChange: (event: FileChangeEvent) => void,
         config?: WatchConfig,
     ): WatchHandle {
-        return watchWithStrategy(path, onChange, WatchStrategy.ModificationDate, config);
-    }
-
-    export watchWithStrategy(
-        path: str,
-        onChange: (event: FileChangeEvent) => void,
-        strategy: WatchStrategy,
-        config?: WatchConfig,
-    ): WatchHandle {
         let state = statFile(path);
         let content: str | none = none;
 
@@ -326,7 +320,7 @@ export namespace fs {
         }
         assert(config);
 
-        if strategy == WatchStrategy.DiffContent {
+        if config.strategy == WatchStrategy.DiffContent {
             if state {
                 let fileResult = readFile(path);
                 if fileResult {
@@ -345,11 +339,18 @@ export namespace fs {
             lastContent: content,
             callback: onChange,
             active: true,
-            strategy: strategy,
+            strategy: config.strategy,
         };
         ctx.watchers.push(w);
 
-        return WatchHandle { handle: w.id, strategy: strategy };
+        if config.immediate {
+            onChange({
+                path: path,
+                kind: state ? FileChangeKind.Created : FileChangeKind.Deleted
+            });
+        }
+
+        return WatchHandle { handle: w.id };
     }
 
     export unwatch(handle: WatchHandle) {
@@ -391,17 +392,22 @@ export namespace fs {
 
     // This function will disappear in the future in favor of a global coroutine event loop
     export pollEvents() {
-        let t = time.now();
+        let ctx = _getFilesystemContext();
+        if ctx.inPoll { return; }
+        ctx.inPoll = true;
 
         if !_globalFilesystemContext {
+            ctx.inPoll = false;
             return;
         }
 
-        let ctx = _getFilesystemContext();
+        let t = time.now();
         for w in ctx.watchers {
             if w.active {
                 if t >= w.nextPollTime {
-                    w.nextPollTime = t + w.interval;
+                    while w.nextPollTime <= t {
+                        w.nextPollTime += w.interval;
+                    }
 
                     if w.strategy == WatchStrategy.ModificationDate {
                         let newState = statFile(w.path);
@@ -412,18 +418,37 @@ export namespace fs {
                             w.callback(event);
                         }
                     } else if w.strategy == WatchStrategy.DiffContent {
-                        const fileResult = readFile(w.path);
-                        if fileResult {
-                            let newContent = fileResult;
-                            let update = false;
-                            if !w.lastContent {
-                                update = true;
+                        let newState = statFile(w.path);
+                        let lifecycle = diff(w.lastState, newState);
+
+                        if lifecycle && lifecycle.kind != FileChangeKind.Modified {
+                            lifecycle.path = w.path;
+                            w.lastState = newState;
+                            w.lastContent = none;
+                            w.callback(lifecycle);
+                        }
+
+                        if lifecycle && lifecycle.kind == FileChangeKind.Modified {
+                            let fileResult = readFile(w.path);
+                            if fileResult {
+                                let newContent = fileResult;
+
+                                if !w.lastContent || (w.lastContent && w.lastContent != newContent) {
+                                    w.lastContent = newContent;
+                                    w.lastState = newState;
+                                    w.callback({
+                                        path: w.path,
+                                        kind: FileChangeKind.Modified
+                                    });
+                                }
                             }
-                            else if (w.lastContent != newContent) {
-                                w.lastContent = newContent;
-                                w.callback(FileChangeEvent {
+                            else {
+                                // treat as deletion race
+                                w.lastState = none;
+                                w.lastContent = none;
+                                w.callback({
                                     path: w.path,
-                                    kind: FileChangeKind.Modified,
+                                    kind: FileChangeKind.Deleted
                                 });
                             }
                         }
@@ -431,6 +456,11 @@ export namespace fs {
                 }
             }
         }
+
+        // TODO: Filtering/deleting is not possible yet
+        // ctx.watchers = ctx.watchers.filter(w => w.active);
+
+        ctx.inPoll = false;
     }
 
     // // Static loading

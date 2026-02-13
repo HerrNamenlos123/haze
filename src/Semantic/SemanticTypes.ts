@@ -312,7 +312,6 @@ export namespace Semantic {
   export type CallableDatatypeDef = {
     variant: ENode.CallableDatatype;
     functionType: TypeDefId;
-    envType: EnvBlockType;
     concrete: boolean;
   };
 
@@ -917,6 +916,7 @@ export namespace Semantic {
     elaboratedReactiveTypes: Semantic.TypeDefId[];
     elaboratedComputedTypes: Semantic.TypeDefId[];
     functionTypeCache: Semantic.TypeDefId[];
+    callableTypeCache: Semantic.TypeDefId[];
     deferredFunctionTypeCache: Semantic.TypeDefId[];
     fixedArrayTypeCache: Semantic.TypeDefId[];
     dynamicArrayTypeCache: Semantic.TypeDefId[];
@@ -1473,6 +1473,7 @@ export namespace Semantic {
       elaboratedNamespaceSymbols: [],
       elaboratedGlobalVariableDefinitionSymbols: new Set(),
       functionTypeCache: [],
+      callableTypeCache: [],
       deferredFunctionTypeCache: [],
       fixedArrayTypeCache: [],
       dynamicArrayTypeCache: [],
@@ -2049,16 +2050,9 @@ export namespace Semantic {
         assert(uniqueID);
 
         let func = mangleTypeDef(sr, type.functionType);
-        let t = "";
-        if (type.envType?.type === "method") {
-          t = "_" + mangleTypeUse(sr, type.envType.thisExprType).name;
-        } else if (type.envType?.type === "lambda") {
-          t = type.envType.captures.length + "_";
-          type.envType.captures.map((c) => mangleTypeUse(sr, c.type).name).join("");
-        }
 
         return {
-          name: "CL" + t + "_" + func.name,
+          name: "CL" + func.name,
           wasMangled: true,
         };
       }
@@ -2094,8 +2088,27 @@ export namespace Semantic {
             params += mangleTypeUse(sr, p.type).name;
           }
         }
+        let requires = "_";
+        if (type.requires.final) {
+          requires += "f";
+        }
+        if (type.requires.noreturn) {
+          requires += "n";
+        }
+        if (type.requires.noreturnIf) {
+          requires += "ni";
+          requires += type.requires.noreturnIf.argIndex?.toString();
+          if (type.requires.noreturnIf.operation === "noreturn-if-truthy") {
+            requires += "t";
+          }
+          requires += "f";
+        }
+        if (type.requires.pure) {
+          requires += "p";
+        }
+        requires += "_";
         return {
-          name: "F" + params + "E" + mangleTypeUse(sr, type.returnType).name,
+          name: "F" + params + "E" + requires + mangleTypeUse(sr, type.returnType).name,
           wasMangled: true,
         };
       }

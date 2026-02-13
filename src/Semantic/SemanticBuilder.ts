@@ -17,7 +17,7 @@ import {
 import { Conversion } from "./Conversion";
 import { EvalCTFE } from "./CTFE";
 import { isTypeConcrete, makePrimitiveAvailable, makeRawPrimitiveAvailable } from "./Elaborate";
-import { makeTypeUse } from "./LookupDatatype";
+import { makeCallableDatatypeAvailable, makeTypeUse } from "./LookupDatatype";
 import { Semantic } from "./SemanticTypes";
 
 export class SemanticBuilder {
@@ -134,18 +134,10 @@ export class SemanticBuilder {
       sourceloc: sourceloc,
       envType: envType,
       envValue: envValue,
-      type: makeTypeUse(
-        this.sr,
-        this.sr.b.addType(this.sr, {
-          variant: Semantic.ENode.CallableDatatype,
-          concrete: true,
-          functionType: functionSymbol.type,
-          envType: envType,
-        })[1],
-        EDatatypeMutability.Default,
-        false,
+      type: makeCallableDatatypeAvailable(this.sr, {
+        functionType: functionSymbol.type,
         sourceloc,
-      )[1],
+      }),
       flow: Semantic.FlowResult.fallthrough(),
       writes: Semantic.WriteResult.empty(),
     });
@@ -862,8 +854,6 @@ export class SemanticBuilder {
       case Semantic.ENode.StructLiteralExpr:
       case Semantic.ENode.ValueToUnionCastExpr:
       case Semantic.ENode.StringConstructExpr:
-      case Semantic.ENode.PostIncrExpr:
-      case Semantic.ENode.PreIncrExpr:
       case Semantic.ENode.LiteralExpr:
       case Semantic.ENode.UnaryExpr:
       case Semantic.ENode.ExplicitCastExpr:

@@ -42,6 +42,7 @@ import {
   makeRawFunctionDatatypeAvailable,
   makeFunctionDatatypeAvailable,
   makeDeferredFunctionDatatypeAvailable,
+  makeCallableDatatypeAvailable,
 } from "./LookupDatatype";
 
 import { EUnaryOperation } from "../shared/AST";
@@ -2663,6 +2664,7 @@ export class SemanticElaborator {
       originalCollectedDefinition: definedStructTypeId,
       originalCollectedSymbol: definedStructType.collectedTypeDefSymbol,
     });
+    // console.log(">> elaborate struct", Semantic.serializeTypeDef(this.sr, structId));
 
     if (struct.concrete) {
       insertIntoStructDefCache(this.sr, definedStructTypeId, {
@@ -3881,21 +3883,10 @@ export class SemanticElaborator {
           sourceloc: type.sourceloc,
         });
 
-        return makeTypeUse(
-          this.sr,
-          this.sr.b.addType(this.sr, {
-            variant: Semantic.ENode.CallableDatatype,
-            concrete: true,
-            functionType: functype,
-            envType: {
-              type: "lambda",
-              captures: [],
-            },
-          })[1],
-          EDatatypeMutability.Default,
-          false,
-          type.sourceloc,
-        )[1];
+        return makeCallableDatatypeAvailable(this.sr, {
+          functionType: functype,
+          sourceloc: type.sourceloc,
+        });
       }
 
       // =================================================================================================================
@@ -8033,18 +8024,10 @@ export class SemanticElaborator {
 
     // Now everything is known, so we can fix it up
     callableExpr.functionSymbol = elaboratedFunctionId;
-    callableExpr.type = makeTypeUse(
-      this.sr,
-      this.sr.b.addType(this.sr, {
-        variant: Semantic.ENode.CallableDatatype,
-        concrete: true,
-        functionType: elaboratedFunction.type,
-        envType: envType,
-      })[1],
-      EDatatypeMutability.Default,
-      false,
-      callable.sourceloc,
-    )[1];
+    callableExpr.type = makeCallableDatatypeAvailable(this.sr, {
+      functionType: elaboratedFunction.type,
+      sourceloc: callable.sourceloc,
+    });
 
     // Make the lambda transitive. Simply access all captures once by name, but outside of the lambda itself,
     // so if captures go across multiple lambdas, they will recursively be applied to all of them.

@@ -41,7 +41,7 @@ opaque struct Renderer {
     queue: mut wgpu.Queue;
     device: mut wgpu.Device;
     surface: mut wgpu.Surface;
-    pipeline: mut wgpu.RenderPipeline;
+    pipeline: Computed<mut wgpu.RenderPipeline>;
     globalsBuffer: mut wgpu.Buffer;
     globalsBindGroup: mut wgpu.BindGroup;
 
@@ -113,13 +113,21 @@ opaque struct Renderer {
             bindGroupLayouts: { globalsLayout },
         });
 
-        let code = fs.readFile("test/shaders.wgsl");
-        assert(code);
-        let shader = device.createShaderModule({
-            code: code,
+        let shaderSource = reactive<str>("");
+        fs.watch("test/shaders.wgsl", (event: fs.FileChangeEvent): void => {
+            let result = fs.readFile("test/shaders.wgsl");
+            if result {
+                shaderSource := result;
+            }
+        }, { 
+            immediate: true, 
+            strategy: fs.WatchStrategy.DiffContent 
         });
+        let shader = computed<mut wgpu.ShaderModule>(() => device.createShaderModule({
+            code: shaderSource,
+        }));
 
-        let pipeline = device.createRenderPipeline({
+        let pipeline = computed<mut wgpu.RenderPipeline>(() => device.createRenderPipeline({
             layout: pipelineLayout,
             vertex: {
                 module: shader,
@@ -150,7 +158,7 @@ opaque struct Renderer {
             primitive: {
                 topology: wgpu.PrimitiveTopology.TriangleList,
             },
-        });
+        }));
 
         let vertexBuffer = device.createBuffer({
             usage: wgpu.BufferUsage.Vertex | wgpu.BufferUsage.CopyDst,

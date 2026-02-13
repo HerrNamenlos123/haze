@@ -72,6 +72,48 @@ export function makeDeferredFunctionDatatypeAvailable(
   return ftypeId;
 }
 
+export function makeRawCallableDatatypeAvailable(
+  sr: Semantic.Context,
+  args: {
+    functionType: Semantic.TypeDefId;
+    sourceloc: SourceLoc;
+  },
+): Semantic.TypeDefId {
+  for (const id of sr.callableTypeCache) {
+    const type = sr.typeDefNodes.get(id);
+    assert(type.variant === Semantic.ENode.CallableDatatype);
+    if (type.functionType === args.functionType) {
+      // Everything matches
+      return id;
+    }
+  }
+
+  // Nothing found
+  const [_, ftypeId] = sr.b.addType(sr, {
+    variant: Semantic.ENode.CallableDatatype,
+    functionType: args.functionType,
+    concrete: sr.typeDefNodes.get(args.functionType).concrete,
+  });
+  sr.callableTypeCache.push(ftypeId);
+  return ftypeId;
+}
+
+export function makeCallableDatatypeAvailable(
+  sr: Semantic.Context,
+  args: {
+    functionType: Semantic.TypeDefId;
+    sourceloc: SourceLoc;
+  },
+): Semantic.TypeUseId {
+  return makeTypeUse(
+    sr,
+    makeRawCallableDatatypeAvailable(sr, args),
+    EDatatypeMutability.Default,
+    false,
+    args.sourceloc,
+  )[1];
+}
+
 export function makeRawFunctionDatatypeAvailable(
   sr: Semantic.Context,
   args: {

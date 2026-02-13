@@ -57,9 +57,11 @@ main(): int {
     fmt.println(d);
 
     let file = reactive<str>("");
-
     fs.watch("test/shaders.wgsl", (event: fs.FileChangeEvent): void => {
         fmt.println("FILE CHANGED");
+    }, { 
+        immediate: true, 
+        strategy: fs.WatchStrategy.DiffContent 
     });
 
     // return 0;

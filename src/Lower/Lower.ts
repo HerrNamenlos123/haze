@@ -947,7 +947,9 @@ export function lowerExpr(
         ) {
           return makeIntrinsicCall(
             lr,
-            "hzstd_strings_equal",
+            expr.operation === EBinaryOperation.Equal
+              ? "hzstd_strings_equal"
+              : "!hzstd_strings_equal",
             [
               lowerExpr(lr, expr.left, flattened, instanceInfo)[1],
               lowerExpr(lr, expr.right, flattened, instanceInfo)[1],
@@ -2475,12 +2477,10 @@ export function lowerTypeDef(lr: Lowered.Module, typeId: Semantic.TypeDefId): Lo
         optional: boolean;
         type: Semantic.TypeUseId;
       }[] = [];
-      if (type.envType !== null) {
-        additionalArgs.push({
-          optional: false,
-          type: lr.sr.b.cptrType(),
-        });
-      }
+      additionalArgs.push({
+        optional: false,
+        type: lr.sr.b.cptrType(),
+      });
 
       const semFType = lr.sr.typeDefNodes.get(type.functionType);
       assert(semFType.variant === Semantic.ENode.FunctionDatatype);
@@ -2496,17 +2496,6 @@ export function lowerTypeDef(lr: Lowered.Module, typeId: Semantic.TypeDefId): Lo
       );
       const ftype = lr.typeDefNodes.get(ftypeId);
       assert(ftype.variant === Lowered.ENode.FunctionDatatype);
-
-      // Now do another cache lookup in order to intern identical callables, that were not identical during elaboration,
-      // but are identical now.
-      for (const [_, id] of lr.loweredTypeDefs) {
-        const type = lr.typeDefNodes.get(id);
-        if (type.variant === Lowered.ENode.CallableDatatype) {
-          if (type.functionType === ftypeId) {
-            return id;
-          }
-        }
-      }
 
       const [_, pId] = Lowered.addTypeDef<Lowered.CallableDatatypeDef>(lr, {
         variant: Lowered.ENode.CallableDatatype,
