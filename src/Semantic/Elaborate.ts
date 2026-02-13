@@ -1272,7 +1272,7 @@ export class SemanticElaborator {
 
     const [ns, nsId] = this.sr.b.namespaceType(
       namespace.name,
-      parentNamespace,
+      parentNamespace ? this.sr.b.typeDefSymbol(parentNamespace)[1] : null,
       namespaceId,
       namespace.export,
     );
@@ -1317,16 +1317,17 @@ export class SemanticElaborator {
     const enumValue = this.sr.cc.typeDefNodes.get(enumId);
     assert(enumValue.variant === Collect.ENode.EnumTypeDef);
 
-    let parentNamespace = null as Semantic.TypeDefId | null;
+    let parentNamespace = null as Semantic.SymbolId | null;
     const parentScope = this.sr.cc.scopeNodes.get(enumValue.parentScope);
     if (parentScope.variant === Collect.ENode.NamespaceScope) {
       const namespaceSymbol = this.sr.cc.symbolNodes.get(parentScope.owningSymbol);
       assert(namespaceSymbol.variant === Collect.ENode.TypeDefSymbol);
-      parentNamespace = this.namespace(namespaceSymbol.typeDef);
+      const parentNamespaceId = this.namespace(namespaceSymbol.typeDef);
+      parentNamespace = this.sr.b.typeDefSymbol(parentNamespaceId)[1];
     }
 
     const found = getFromEnumDefCache(this.sr, enumId, {
-      parentStructOrNS: parentNamespace,
+      parentSymbol: parentNamespace,
     });
     if (found) {
       return found;
@@ -1341,7 +1342,7 @@ export class SemanticElaborator {
       unscoped: enumValue.unscoped,
       bitflag: enumValue.bitflag,
       originalCollectedSymbol: enumId,
-      parentStructOrNS: parentNamespace,
+      parentSymbolId: parentNamespace,
       sourceloc: enumValue.sourceloc,
       export: enumValue.export,
       values: [],
@@ -1351,7 +1352,7 @@ export class SemanticElaborator {
 
     insertIntoEnumDefCache(this.sr, enumId, {
       substitutionContext: this.currentContext,
-      parentStructOrNS: parentNamespace,
+      parentSymbolId: parentNamespace,
       result: enumTypeId,
       resultAsTypeDefSymbol: enumSymbolId,
     });
@@ -2315,7 +2316,7 @@ export class SemanticElaborator {
         export: variable.export,
         extern: variable.extern,
         name: variable.name,
-        parentStructOrNS: variable.parentStructOrNS,
+        parentSymbolId: variable.parentSymbolId,
         sourceloc: variable.sourceloc,
         value: variable.comptimeValue,
         variableSymbol: variableId,
@@ -2447,7 +2448,7 @@ export class SemanticElaborator {
           const signature = this.elaborateFunctionSignature(overloadId);
           this.elaborateFunctionSymbol(
             signature,
-            semanticStructId,
+            this.sr.b.typeDefSymbol(semanticStructId)[1],
             [],
             {
               type: "method",
@@ -2530,7 +2531,7 @@ export class SemanticElaborator {
       type: typeId,
       consumed: false,
       variableContext: EVariableContext.MemberOfStruct,
-      parentStructOrNS: semanticStructId,
+      parentSymbolId: this.sr.b.typeDefSymbol(semanticStructId)[1],
       comptime: false,
       comptimeValue: null,
       concrete: type.concrete,
@@ -2601,7 +2602,7 @@ export class SemanticElaborator {
       return substitute;
     });
 
-    const parentStructOrNS = this.elaborateParentSymbolFromCache(definedStructType.parentScope);
+    const parentSymbolId = this.elaborateParentSymbolFromCache(definedStructType.parentScope);
 
     // This whole recursive stack and SCC business is a deep rabbit hole we must go down.
     // It is required in order to make sure complex chains of structs work, where one struct
@@ -2617,7 +2618,7 @@ export class SemanticElaborator {
     // If already existing, return cached to prevent loops
     const existing = getFromStructDefCache(this.sr, definedStructTypeId, {
       genericArgs: genericArgs,
-      parentStructOrNS: parentStructOrNS,
+      parentSymbolId: parentSymbolId,
     });
     if (existing) {
       const struct = this.sr.typeDefNodes.get(existing);
@@ -2651,7 +2652,7 @@ export class SemanticElaborator {
       inlineByDefault: definedStructType.inlineByDefault,
       membersBuilt: false,
       membersFinalized: false,
-      parentStructOrNS: parentStructOrNS,
+      parentSymbolId: parentSymbolId,
       members: [],
       export: definedStructType.export,
       memberDefaultValues: [],
@@ -2664,12 +2665,11 @@ export class SemanticElaborator {
       originalCollectedDefinition: definedStructTypeId,
       originalCollectedSymbol: definedStructType.collectedTypeDefSymbol,
     });
-    // console.log(">> elaborate struct", Semantic.serializeTypeDef(this.sr, structId));
 
     if (struct.concrete) {
       insertIntoStructDefCache(this.sr, definedStructTypeId, {
         genericArgs: genericArgs,
-        parentStructOrNS: parentStructOrNS,
+        parentSymbolId: parentSymbolId,
         result: structId,
         resultAsTypeDefSymbol: this.sr.b.addSymbol(this.sr, {
           variant: Semantic.ENode.TypeDefSymbol,
@@ -2773,7 +2773,7 @@ export class SemanticElaborator {
       name: symbol.name,
       sourceloc: symbol.sourceloc,
       memberOfStruct: null,
-      parentStructOrNS: this.elaborateParentSymbolFromCache(symbol.inScope),
+      parentSymbolId: this.elaborateParentSymbolFromCache(symbol.inScope),
       comptime: symbol.comptime,
       comptimeValue: null,
       variableContext: variableContext,
@@ -3259,7 +3259,7 @@ export class SemanticElaborator {
       () => {
         return this.elaborateFunctionSymbol(
           functionSignatureId,
-          functionSignature.parentStructOrNS,
+          functionSignature.parentSymbolId,
           paramPackTypes,
           env,
         );
@@ -3269,7 +3269,7 @@ export class SemanticElaborator {
 
   elaborateFunctionSymbol(
     functionSignatureId: Semantic.SymbolId,
-    parentStructOrNS: Semantic.TypeDefId | null,
+    parentSymbolId: Semantic.SymbolId | null,
     paramPackTypes: Semantic.TypeUseId[],
     env: Semantic.EnvBlockType,
     args?: {
@@ -3313,10 +3313,18 @@ export class SemanticElaborator {
         const existing = getFromFuncDefCache(this.sr, functionSignature.originalFunction, {
           genericArgs: genericArgs,
           paramPackTypes: paramPackTypes,
-          parentStructOrNS: parentStructOrNS,
+          parentSymbolId: parentSymbolId,
         });
         if (existing) {
           return existing;
+        }
+
+        let methodOf = null as Semantic.TypeDefId | null;
+        if (parentSymbolId) {
+          const parentSym = this.sr.symbolNodes.get(parentSymbolId);
+          if (parentSym.variant === Semantic.ENode.TypeDefSymbol) {
+            methodOf = parentSym.datatype;
+          }
         }
 
         // We need to define the symbol very early and then wrestle with setting attributes, because
@@ -3330,9 +3338,9 @@ export class SemanticElaborator {
           generics: genericArgs,
           staticMethod: func.staticMethod,
           parameterPack: false, // set later
-          methodOf: parentStructOrNS,
+          methodOf: methodOf,
           methodType: func.methodType,
-          parentStructOrNS: parentStructOrNS,
+          parentSymbolId: parentSymbolId,
           overloadedOperator: func.overloadedOperator,
           noemit: func.noemit,
           extern: func.extern,
@@ -3356,10 +3364,14 @@ export class SemanticElaborator {
         insertIntoFuncDefCache(this.sr, functionSignature.originalFunction, {
           genericArgs: genericArgs,
           paramPackTypes: paramPackTypes,
-          parentStructOrNS: parentStructOrNS,
+          parentSymbolId: parentSymbolId,
           result: symbolId,
           substitutionContext: newContext,
         });
+        this.currentContext.elaboratedParameterPacks.set(
+          functionSignature.originalFunction,
+          paramPackTypes,
+        );
 
         symbol.annotatedReturnType =
           func.returnType && this.lookupAndElaborateDatatype(func.returnType);
@@ -3411,7 +3423,7 @@ export class SemanticElaborator {
                     extern: EExternLanguage.None,
                     memberOfStruct: null,
                     mutability: EVariableMutability.Default,
-                    parentStructOrNS: null,
+                    parentSymbolId: null,
                     requiresHoisting: false,
                     type: t,
                     consumed: false,
@@ -3434,7 +3446,7 @@ export class SemanticElaborator {
                 extern: EExternLanguage.None,
                 memberOfStruct: null,
                 mutability: EVariableMutability.Default,
-                parentStructOrNS: null,
+                parentSymbolId: null,
                 type: makeTypeUse(
                   this.sr,
                   paramPackId,
@@ -3466,7 +3478,7 @@ export class SemanticElaborator {
           .map((p) => p!);
 
         if (func.methodType === EMethodType.Method && !func.staticMethod) {
-          assert(parentStructOrNS);
+          assert(parentSymbolId);
           symbol.envType = env;
         }
 
@@ -3644,7 +3656,7 @@ export class SemanticElaborator {
                 concrete: isTypeConcrete(this.sr, thisRef),
                 export: false,
                 extern: EExternLanguage.None,
-                parentStructOrNS: symbol.parentStructOrNS,
+                parentSymbolId: symbol.parentSymbolId,
                 sourceloc: symbol.sourceloc,
                 variableContext: EVariableContext.FunctionParameter,
               })[1];
@@ -3685,12 +3697,14 @@ export class SemanticElaborator {
             );
             symbol.scope = scopeId;
 
-            if (func.name === "main" && parentStructOrNS) {
+            if (func.name === "main" && parentSymbolId) {
               const modulePrefix = getModuleGlobalNamespaceName(
                 this.sr.cc.config.name,
                 this.sr.cc.config.version,
               );
-              const parent = this.sr.typeDefNodes.get(parentStructOrNS);
+              const parentDef = this.sr.symbolNodes.get(parentSymbolId);
+              assert(parentDef.variant === Semantic.ENode.TypeDefSymbol);
+              const parent = this.sr.typeDefNodes.get(parentDef.datatype);
               if ("name" in parent && parent.name === modulePrefix) {
                 if (this.sr.globalMainFunction !== null) {
                   const existing = this.sr.symbolNodes.get(this.sr.globalMainFunction);
@@ -4608,8 +4622,7 @@ export class SemanticElaborator {
     );
   }
 
-  elaborateParentSymbolFromCache(parentScopeId: Collect.ScopeId): Semantic.TypeDefId | null {
-    let parentStructOrNS = null as Semantic.TypeDefId | null;
+  elaborateParentSymbolFromCache(parentScopeId: Collect.ScopeId): Semantic.SymbolId | null {
     const parentScope = this.sr.cc.scopeNodes.get(parentScopeId);
     if (parentScope.variant === Collect.ENode.StructLexicalScope) {
       // This parenting works by elaborating the lexical parent on demand. If we somehow got into it, to access one
@@ -4636,17 +4649,84 @@ export class SemanticElaborator {
             (g, i) => g === Semantic.canonicalizeGenericExpr(this.sr, parentGenericArgs[i]),
           )
         ) {
-          parentStructOrNS = cache.result;
-          break;
+          return this.sr.b.typeDefSymbol(cache.result)[1];
         }
       }
-      assert(parentStructOrNS, "Parent struct not found in cache: Impossible");
+      assert(false, "Parent struct not found in cache: Impossible");
     } else if (parentScope.variant === Collect.ENode.NamespaceScope) {
       const sym = this.sr.cc.symbolNodes.get(parentScope.owningSymbol);
       assert(sym.variant === Collect.ENode.TypeDefSymbol);
-      parentStructOrNS = this.namespace(sym.typeDef);
+      const namespace = this.namespace(sym.typeDef);
+      return this.sr.b.typeDefSymbol(namespace)[1];
+    } else if (parentScope.variant === Collect.ENode.FunctionScope) {
+      const collectedFunc = this.sr.cc.symbolNodes.get(parentScope.owningSymbol);
+      assert(collectedFunc.variant === Collect.ENode.FunctionSymbol);
+
+      const funcGenericArgs = collectedFunc.generics.map((g) => {
+        const subst = this.currentContext.substitute.get(g);
+        assert(subst);
+        return subst;
+      });
+
+      const parameterPack = this.currentContext.elaboratedParameterPacks.get(
+        parentScope.owningSymbol,
+      );
+      assert(parameterPack);
+
+      const entries = this.sr.elaboratedFuncdefSymbols.get(parentScope.owningSymbol);
+      for (const cache of entries || []) {
+        if (
+          cache.canonicalizedGenerics.length === funcGenericArgs.length &&
+          cache.canonicalizedGenerics.every(
+            (g, i) => g === Semantic.canonicalizeGenericExpr(this.sr, funcGenericArgs[i]),
+          ) &&
+          cache.paramPackTypes.length === parameterPack.length &&
+          cache.paramPackTypes.every((t, i) => parameterPack[i] === t)
+        ) {
+          return cache.result;
+        }
+      }
+      assert(false, "Parent function not found in cache: Impossible");
+    } else if (parentScope.variant === Collect.ENode.LambdaScope) {
+      const collectedFunc = this.sr.cc.symbolNodes.get(parentScope.owningSymbol);
+      assert(collectedFunc.variant === Collect.ENode.FunctionSymbol);
+
+      const funcGenericArgs = collectedFunc.generics.map((g) => {
+        const subst = this.currentContext.substitute.get(g);
+        assert(subst);
+        return subst;
+      });
+
+      const parameterPack = this.currentContext.elaboratedParameterPacks.get(
+        parentScope.owningSymbol,
+      );
+      assert(parameterPack);
+
+      const entries = this.sr.elaboratedFuncdefSymbols.get(parentScope.owningSymbol);
+      for (const cache of entries || []) {
+        if (
+          cache.canonicalizedGenerics.length === funcGenericArgs.length &&
+          cache.canonicalizedGenerics.every(
+            (g, i) => g === Semantic.canonicalizeGenericExpr(this.sr, funcGenericArgs[i]),
+          ) &&
+          cache.paramPackTypes.length === parameterPack.length &&
+          cache.paramPackTypes.every((t, i) => parameterPack[i] === t)
+        ) {
+          return cache.result;
+        }
+      }
+      assert(false, "Parent function not found in cache: Impossible");
+    } else if (
+      parentScope.variant === Collect.ENode.ModuleScope ||
+      parentScope.variant === Collect.ENode.FileScope
+    ) {
+      return null;
+    } else if (parentScope.variant === Collect.ENode.BlockScope) {
+      // Go up recursively until a function or struct is found. This is
+      // the case for closures that are defined on the inside of other functions.
+      return this.elaborateParentSymbolFromCache(parentScope.parentScope);
     }
-    return parentStructOrNS;
+    assert(false);
   }
 
   elaborateFunctionSignature(functionSymbolId: Collect.SymbolId): Semantic.SymbolId {
@@ -4674,7 +4754,7 @@ export class SemanticElaborator {
         if (
           signature.genericPlaceholders.length === genericPlaceholders.length &&
           signature.genericPlaceholders.every((g, i) => g === genericPlaceholders[i]) &&
-          signature.parentStructOrNS === parent
+          signature.parentSymbolId === parent
         ) {
           return signatureId;
         }
@@ -4687,7 +4767,7 @@ export class SemanticElaborator {
       originalFunction: functionSymbolId,
       extern: functionSymbol.extern,
       name: functionSymbol.name,
-      parentStructOrNS: parent,
+      parentSymbolId: parent,
       parameters: [],
       returnType: null,
     });
@@ -4740,8 +4820,13 @@ export class SemanticElaborator {
         () => this.lookupAndElaborateDatatype(functionSymbol.returnType!),
       );
 
+    let parentName = "";
+    if (parent) {
+      parentName = Semantic.serializeFullSymbolName(this.sr, parent);
+    }
+
     const cacheCodename =
-      (parent ? Semantic.serializeTypeDef(this.sr, parent) + "." : "") +
+      (parent ? parentName + "." : "") +
       functionSymbol.name +
       "|" +
       signature.parameters.map((p) => Semantic.serializeTypeUse(this.sr, p.type)).join("|");
@@ -4751,7 +4836,7 @@ export class SemanticElaborator {
       assert(sig.variant === Semantic.ENode.FunctionSignature);
       if (
         sig.name === signature.name &&
-        sig.parentStructOrNS === signature.parentStructOrNS &&
+        sig.parentSymbolId === signature.parentSymbolId &&
         sig.genericPlaceholders.length === signature.genericPlaceholders.length &&
         sig.genericPlaceholders.every((p, i) => signature.genericPlaceholders[i] === p) &&
         sig.parameters.length === signature.parameters.length &&
@@ -6394,7 +6479,7 @@ export class SemanticElaborator {
               memberOfStruct: null,
               mutability: EVariableMutability.Const,
               name: s.indexVariable,
-              parentStructOrNS: null,
+              parentSymbolId: null,
               sourceloc: s.sourceloc,
               type: makePrimitiveAvailable(
                 this.sr,
@@ -6491,7 +6576,7 @@ export class SemanticElaborator {
             memberOfStruct: null,
             mutability: EVariableMutability.Const,
             name: s.loopVariable,
-            parentStructOrNS: null,
+            parentSymbolId: null,
             sourceloc: s.sourceloc,
             type: elementTypeUse,
             variableContext: EVariableContext.FunctionLocal,
@@ -6510,7 +6595,7 @@ export class SemanticElaborator {
               memberOfStruct: null,
               mutability: EVariableMutability.Const,
               name: s.indexVariable,
-              parentStructOrNS: null,
+              parentSymbolId: null,
               sourceloc: s.sourceloc,
               requiresHoisting: false,
               type: makePrimitiveAvailable(
@@ -7357,7 +7442,7 @@ export class SemanticElaborator {
       requiresHoisting: false,
       name: makeTempName(),
       sourceloc: errPropExpr.sourceloc,
-      parentStructOrNS: null,
+      parentSymbolId: null,
       type: rightExpr.type,
       consumed: false,
       variableContext: EVariableContext.FunctionLocal,
@@ -8015,7 +8100,7 @@ export class SemanticElaborator {
     assert(functionSignature.variant === Semantic.ENode.FunctionSignature);
     const elaboratedFunctionId = this.elaborateFunctionSymbol(
       functionSignatureId,
-      functionSignature.parentStructOrNS,
+      functionSignature.parentSymbolId,
       [],
       envType,
     );
@@ -8411,7 +8496,7 @@ function getFromFuncDefCache(
   args: {
     genericArgs: Semantic.ExprId[];
     paramPackTypes: Semantic.TypeUseId[];
-    parentStructOrNS: Semantic.TypeDefId | null;
+    parentSymbolId: Semantic.SymbolId | null;
   },
 ) {
   const entries = sr.elaboratedFuncdefSymbols.get(symbolId);
@@ -8423,7 +8508,7 @@ function getFromFuncDefCache(
 
   for (const entry of entries) {
     if (
-      entry.parentStructOrNS === args.parentStructOrNS &&
+      entry.parentSymbolId === args.parentSymbolId &&
       entry.canonicalizedGenerics.length === canonicalizedGenerics.length &&
       entry.canonicalizedGenerics.every((g, index) => g === canonicalizedGenerics[index]) &&
       entry.paramPackTypes.length === args.paramPackTypes.length &&
@@ -8444,7 +8529,7 @@ function insertIntoFuncDefCache(
     paramPackTypes: Semantic.TypeUseId[];
     substitutionContext: Semantic.ElaborationContext;
     result: Semantic.SymbolId;
-    parentStructOrNS: Semantic.TypeDefId | null;
+    parentSymbolId: Semantic.SymbolId | null;
   },
 ) {
   const canonicalizedGenerics = args.genericArgs.map((g) =>
@@ -8460,7 +8545,7 @@ function insertIntoFuncDefCache(
   entries.push({
     canonicalizedGenerics: canonicalizedGenerics,
     paramPackTypes: args.paramPackTypes,
-    parentStructOrNS: args.parentStructOrNS,
+    parentSymbolId: args.parentSymbolId,
     result: args.result,
     substitutionContext: args.substitutionContext,
   });
@@ -8471,7 +8556,7 @@ export function getFromStructDefCache(
   symbolId: Collect.TypeDefId,
   args: {
     genericArgs: Semantic.ExprId[];
-    parentStructOrNS: Semantic.TypeDefId | null;
+    parentSymbolId: Semantic.SymbolId | null;
   },
 ) {
   const entries = sr.elaboratedStructDatatypes.get(symbolId);
@@ -8483,7 +8568,7 @@ export function getFromStructDefCache(
 
   for (const entry of entries) {
     if (
-      entry.parentStructOrNS === args.parentStructOrNS &&
+      entry.parentSymbolId === args.parentSymbolId &&
       entry.canonicalizedGenerics.length === canonicalizedGenerics.length &&
       entry.canonicalizedGenerics.every((g, index) => g === canonicalizedGenerics[index])
     ) {
@@ -8502,7 +8587,7 @@ export function insertIntoStructDefCache(
     substitutionContext: Semantic.ElaborationContext;
     result: Semantic.TypeDefId;
     resultAsTypeDefSymbol: Semantic.SymbolId;
-    parentStructOrNS: Semantic.TypeDefId | null;
+    parentSymbolId: Semantic.SymbolId | null;
   },
 ) {
   const canonicalizedGenerics = args.genericArgs.map((g) =>
@@ -8517,7 +8602,7 @@ export function insertIntoStructDefCache(
 
   entries.push({
     canonicalizedGenerics: canonicalizedGenerics,
-    parentStructOrNS: args.parentStructOrNS,
+    parentSymbolId: args.parentSymbolId,
     result: args.result,
     substitutionContext: args.substitutionContext,
     resultAsTypeDefSymbol: args.resultAsTypeDefSymbol,
@@ -8528,14 +8613,14 @@ export function getFromEnumDefCache(
   sr: Semantic.Context,
   symbolId: Collect.TypeDefId,
   args: {
-    parentStructOrNS: Semantic.TypeDefId | null;
+    parentSymbol: Semantic.SymbolId | null;
   },
 ) {
   const entries = sr.elaboratedEnumSymbols.get(symbolId);
   if (entries === undefined) return;
 
   for (const entry of entries) {
-    if (entry.parentStructOrNS === args.parentStructOrNS) {
+    if (entry.parentSymbolId === args.parentSymbol) {
       return entry.result;
     }
   }
@@ -8550,7 +8635,7 @@ export function insertIntoEnumDefCache(
     substitutionContext: Semantic.ElaborationContext;
     result: Semantic.TypeDefId;
     resultAsTypeDefSymbol: Semantic.SymbolId;
-    parentStructOrNS: Semantic.TypeDefId | null;
+    parentSymbolId: Semantic.SymbolId | null;
   },
 ) {
   let entries = sr.elaboratedEnumSymbols.get(symbolId);
@@ -8560,7 +8645,7 @@ export function insertIntoEnumDefCache(
   }
 
   entries.push({
-    parentStructOrNS: args.parentStructOrNS,
+    parentSymbolId: args.parentSymbolId,
     result: args.result,
     substitutionContext: args.substitutionContext,
     resultAsTypeDefSymbol: args.resultAsTypeDefSymbol,

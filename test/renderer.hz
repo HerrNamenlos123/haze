@@ -41,7 +41,7 @@ opaque struct Renderer {
     queue: mut wgpu.Queue;
     device: mut wgpu.Device;
     surface: mut wgpu.Surface;
-    pipeline: Computed<mut wgpu.RenderPipeline>;
+    pipeline: Computed<mut wgpu.RenderPipeline | none>;
     globalsBuffer: mut wgpu.Buffer;
     globalsBindGroup: mut wgpu.BindGroup;
 
@@ -113,52 +113,55 @@ opaque struct Renderer {
             bindGroupLayouts: { globalsLayout },
         });
 
-        let shaderSource = reactive<str>("");
-        fs.watch("test/shaders.wgsl", (event: fs.FileChangeEvent): void => {
-            let result = fs.readFile("test/shaders.wgsl");
-            if result {
-                shaderSource := result;
+        let shaderSource = fs.watchText("test/shaders.wgsl");
+        let shader = computed<mut wgpu.ShaderModule | none>(() => {
+            let value = shaderSource as str | none;
+            if !value {
+                return none;
             }
-        }, { 
-            immediate: true, 
-            strategy: fs.WatchStrategy.DiffContent 
+            return device.createShaderModule({
+                code: value,
+            });
         });
-        let shader = computed<mut wgpu.ShaderModule>(() => device.createShaderModule({
-            code: shaderSource,
-        }));
 
-        let pipeline = computed<mut wgpu.RenderPipeline>(() => device.createRenderPipeline({
-            layout: pipelineLayout,
-            vertex: {
-                module: shader,
-                entryPoint: "vs_main",
-                buffers: { vertexLayout, instanceLayout },
-            },
-            fragment: {
-                module: shader,
-                entryPoint: "fs_main",
-                targets: {
-                    { 
-                        format: surfaceFormats[0],
-                        blend: {
-                            color: {
-                                srcFactor: wgpu.BlendFactor.SrcAlpha,
-                                dstFactor: wgpu.BlendFactor.OneMinusSrcAlpha,
-                                operation: wgpu.BlendOperation.Add,
-                            },
-                            alpha: {
-                                srcFactor: wgpu.BlendFactor.One,
-                                dstFactor: wgpu.BlendFactor.OneMinusSrcAlpha,
-                                operation: wgpu.BlendOperation.Add,
+        let pipeline = computed<mut wgpu.RenderPipeline | none>(() => {
+            let value = shader as mut wgpu.ShaderModule | none;
+            if !value {
+                return none;
+            }
+            return device.createRenderPipeline({
+                layout: pipelineLayout,
+                vertex: {
+                    module: value,
+                    entryPoint: "vs_main",
+                    buffers: { vertexLayout, instanceLayout },
+                },
+                fragment: {
+                    module: value,
+                    entryPoint: "fs_main",
+                    targets: {
+                        { 
+                            format: surfaceFormats[0],
+                            blend: {
+                                color: {
+                                    srcFactor: wgpu.BlendFactor.SrcAlpha,
+                                    dstFactor: wgpu.BlendFactor.OneMinusSrcAlpha,
+                                    operation: wgpu.BlendOperation.Add,
+                                },
+                                alpha: {
+                                    srcFactor: wgpu.BlendFactor.One,
+                                    dstFactor: wgpu.BlendFactor.OneMinusSrcAlpha,
+                                    operation: wgpu.BlendOperation.Add,
+                                },
                             },
                         },
                     },
                 },
-            },
-            primitive: {
-                topology: wgpu.PrimitiveTopology.TriangleList,
-            },
-        }));
+                primitive: {
+                    topology: wgpu.PrimitiveTopology.TriangleList,
+                },
+            });
+        });
 
         let vertexBuffer = device.createBuffer({
             usage: wgpu.BufferUsage.Vertex | wgpu.BufferUsage.CopyDst,
@@ -244,6 +247,12 @@ opaque struct Renderer {
     }
 
     endFrame() {
+        let pipelineValue = this.pipeline as mut wgpu.RenderPipeline | none;
+        if !pipelineValue {
+            fmt.println("No pipeline available, frame skipped");
+            return;
+        }
+
         let surfaceTexture = this.surface.getCurrentTexture();
         if !surfaceTexture.texture { 
             fmt.println("Failed to get surface texture"); 
@@ -298,7 +307,7 @@ opaque struct Renderer {
             return;
         }
 
-        renderPass.setPipeline(this.pipeline);
+        renderPass.setPipeline(pipelineValue);
         renderPass.setVertexBuffer(0, this.vertexBuffer);
 
         renderPass.setBindGroup(0, this.globalsBindGroup);

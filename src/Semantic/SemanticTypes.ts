@@ -134,7 +134,7 @@ export namespace Semantic {
     extern: EExternLanguage;
     variableContext: EVariableContext;
     requiresHoisting: boolean;
-    parentStructOrNS: TypeDefId | null;
+    parentSymbolId: SymbolId | null;
     sourceloc: SourceLoc;
     comptime: boolean;
     comptimeValue: ExprId | null;
@@ -148,7 +148,7 @@ export namespace Semantic {
     value: ExprId | null;
     export: boolean;
     extern: EExternLanguage;
-    parentStructOrNS: TypeDefId | null;
+    parentSymbolId: SymbolId | null;
     sourceloc: SourceLoc;
     comptime: boolean;
     concrete: boolean;
@@ -160,7 +160,7 @@ export namespace Semantic {
     genericPlaceholders: Semantic.TypeDefId[];
     name: string;
     extern: EExternLanguage;
-    parentStructOrNS: TypeDefId | null;
+    parentSymbolId: SymbolId | null;
     parameters: {
       name: string;
       type: TypeUseId;
@@ -194,7 +194,7 @@ export namespace Semantic {
     methodType: EMethodType;
     methodOf: TypeDefId | null;
     sourceloc: SourceLoc;
-    parentStructOrNS: TypeDefId | null;
+    parentSymbolId: SymbolId | null;
     originalCollectedFunction: Collect.SymbolId;
     concrete: boolean;
   };
@@ -260,7 +260,7 @@ export namespace Semantic {
     bitflag: boolean;
     extern: EExternLanguage;
     values: EnumValue[];
-    parentStructOrNS: TypeDefId | null;
+    parentSymbolId: SymbolId | null;
     sourceloc: SourceLoc;
     type: TypeUseId;
     concrete: boolean;
@@ -296,7 +296,7 @@ export namespace Semantic {
     methodsInProgress: boolean;
     methodsFinalized: boolean;
     nestedStructs: Semantic.TypeDefId[];
-    parentStructOrNS: TypeDefId | null;
+    parentSymbolId: SymbolId | null;
     sourceloc: SourceLoc;
     concrete: boolean;
     originalCollectedDefinition: Collect.TypeDefId;
@@ -386,7 +386,7 @@ export namespace Semantic {
     variant: ENode.NamespaceDatatype;
     name: string;
     export: boolean;
-    parentStructOrNS: TypeDefId | null;
+    parentSymbolId: SymbolId | null;
     symbols: Semantic.SymbolId[];
     collectedNamespace: Collect.TypeDefId;
     concrete: boolean; // For consistency, always true
@@ -848,7 +848,7 @@ export namespace Semantic {
 
   export type EnumDef = {
     substitutionContext: Semantic.ElaborationContext;
-    parentStructOrNS: Semantic.TypeDefId | null;
+    parentSymbolId: Semantic.SymbolId | null;
     result: Semantic.TypeDefId;
     resultAsTypeDefSymbol: Semantic.SymbolId;
   };
@@ -857,7 +857,7 @@ export namespace Semantic {
   export type StructDef = {
     canonicalizedGenerics: string[];
     substitutionContext: Semantic.ElaborationContext;
-    parentStructOrNS: Semantic.TypeDefId | null;
+    parentSymbolId: Semantic.SymbolId | null;
     result: Semantic.TypeDefId;
     resultAsTypeDefSymbol: Semantic.SymbolId;
   };
@@ -868,7 +868,7 @@ export namespace Semantic {
     paramPackTypes: Semantic.TypeUseId[];
     substitutionContext: Semantic.ElaborationContext;
     result: Semantic.SymbolId;
-    parentStructOrNS: Semantic.TypeDefId | null;
+    parentSymbolId: Semantic.SymbolId | null;
   };
   export type FuncDefCache = Map<Collect.SymbolId, FuncDef[]>;
 
@@ -904,6 +904,7 @@ export namespace Semantic {
       result: Semantic.TypeDefId;
     }[];
     elaboratedEnumSymbols: EnumDefCache;
+    elaboratedTypeDefSymbols: SymbolId[];
 
     // Those are GlobalVariableDefinitionSymbols
     elaboratedGlobalVariableDefinitionSymbols: Set<Semantic.SymbolId>;
@@ -1357,6 +1358,7 @@ export namespace Semantic {
     elaborationTypeOverride: Map<Collect.SymbolId, Semantic.TypeUseId>;
     elaboratedVariables: Map<Collect.SymbolId, Semantic.SymbolId>;
     elaboratedLambdaExprs: Map<Collect.ScopeId, Semantic.ExprId>;
+    elaboratedParameterPacks: Map<Collect.SymbolId, Semantic.TypeUseId[]>;
     elaborationRecursiveStructStack: Semantic.TypeDefId[];
   };
 
@@ -1376,6 +1378,7 @@ export namespace Semantic {
         symbolDependsOn: new Map(),
       },
       elaboratedVariables: new Map(),
+      elaboratedParameterPacks: new Map(),
       elaboratedLambdaExprs: new Map(),
       elaborationTypeOverride: new Map(),
       elaborationRecursiveStructStack: [],
@@ -1399,6 +1402,7 @@ export namespace Semantic {
       instanceDeps: args.instanceDeps,
 
       elaboratedVariables: new Map(parent.elaboratedVariables),
+      elaboratedParameterPacks: new Map(parent.elaboratedParameterPacks),
       elaboratedLambdaExprs: new Map(parent.elaboratedLambdaExprs),
       elaborationTypeOverride: new Map(parent.elaborationTypeOverride),
       elaborationRecursiveStructStack: [...parent.elaborationRecursiveStructStack],
@@ -1426,6 +1430,10 @@ export namespace Semantic {
       instanceDeps: args.instanceDeps,
       elaboratedVariables: new Map([...a.elaboratedVariables, ...b.elaboratedVariables]),
       elaboratedLambdaExprs: new Map([...a.elaboratedLambdaExprs, ...b.elaboratedLambdaExprs]),
+      elaboratedParameterPacks: new Map([
+        ...a.elaboratedParameterPacks,
+        ...b.elaboratedParameterPacks,
+      ]),
       elaborationTypeOverride: new Map([
         ...a.elaborationTypeOverride,
         ...b.elaborationTypeOverride,
@@ -1472,6 +1480,7 @@ export namespace Semantic {
       elaboratedComputedTypes: [],
       elaboratedNamespaceSymbols: [],
       elaboratedGlobalVariableDefinitionSymbols: new Set(),
+      elaboratedTypeDefSymbols: [],
       functionTypeCache: [],
       callableTypeCache: [],
       deferredFunctionTypeCache: [],
@@ -1571,8 +1580,10 @@ export namespace Semantic {
   export function serializeLiteralType(sr: Semantic.Context, value: LiteralValue) {
     if (value.type === "enum") {
       const enumType = sr.typeDefNodes.get(value.enumType);
-      assert(enumType.variant === Semantic.ENode.EnumDatatype && enumType.parentStructOrNS);
-      const parent = Semantic.getNamespaceChainFromDatatype(sr, enumType.parentStructOrNS);
+      assert(enumType.variant === Semantic.ENode.EnumDatatype && enumType.parentSymbolId);
+      const def = sr.symbolNodes.get(enumType.parentSymbolId);
+      assert(def.variant === Semantic.ENode.TypeDefSymbol);
+      const parent = Semantic.getNamespaceChainFromDatatype(sr, def.datatype);
       return `${parent.map((p) => p.pretty).join(".")}.${value.valueName}`;
     } else {
       return primitiveToString(value.type);
@@ -1619,8 +1630,10 @@ export namespace Semantic {
       return [typeId];
     }
 
-    if (type.parentStructOrNS) {
-      return [...getTypeDefChainFromDatatype(sr, type.parentStructOrNS), typeId];
+    if (type.parentSymbolId) {
+      const sym = sr.symbolNodes.get(type.parentSymbolId);
+      assert(sym.variant === Semantic.ENode.TypeDefSymbol);
+      return [...getTypeDefChainFromDatatype(sr, sym.datatype), typeId];
     } else {
       return [typeId];
     }
@@ -1671,8 +1684,10 @@ export namespace Semantic {
     }
 
     let fragments = [current];
-    if (type.parentStructOrNS) {
-      fragments = [...getNamespaceChainFromDatatype(sr, type.parentStructOrNS), current];
+    if (type.parentSymbolId) {
+      const sym = sr.symbolNodes.get(type.parentSymbolId);
+      assert(sym.variant === Semantic.ENode.TypeDefSymbol);
+      fragments = [...getNamespaceChainFromDatatype(sr, sym.datatype), current];
     }
     return fragments;
   }
@@ -1710,8 +1725,15 @@ export namespace Semantic {
     }
 
     let fragments = [current];
-    if (symbol.parentStructOrNS) {
-      fragments = [...getNamespaceChainFromDatatype(sr, symbol.parentStructOrNS), current];
+    if (symbol.parentSymbolId) {
+      const sym = sr.symbolNodes.get(symbol.parentSymbolId);
+      if (sym.variant === Semantic.ENode.TypeDefSymbol) {
+        fragments = [...getNamespaceChainFromDatatype(sr, sym.datatype), current];
+      } else if (sym.variant === Semantic.ENode.FunctionSymbol) {
+        fragments = [...getNamespaceChainFromSymbol(sr, symbol.parentSymbolId), current];
+      } else {
+        assert(false, Semantic.ENode[sym.variant]);
+      }
     }
     return fragments;
   }
@@ -1862,6 +1884,11 @@ export namespace Semantic {
 
   export function serializeFullSymbolName(sr: Semantic.Context, symbolId: Semantic.SymbolId) {
     const symbol = sr.symbolNodes.get(symbolId);
+
+    if (symbol.variant === Semantic.ENode.TypeDefSymbol) {
+      return serializeTypeDef(sr, symbol.datatype);
+    }
+
     assert(
       symbol.variant === Semantic.ENode.FunctionSymbol ||
         symbol.variant === Semantic.ENode.FunctionSignature ||
@@ -2163,11 +2190,14 @@ export namespace Semantic {
             wasMangled: false,
           };
         }
+        let parent = "";
+        if (type.parentSymbolId) {
+          const sym = sr.symbolNodes.get(type.parentSymbolId);
+          assert(sym.variant === Semantic.ENode.TypeDefSymbol);
+          parent += mangleTypeDef(sr, sym.datatype).name;
+        }
         return {
-          name:
-            (type.parentStructOrNS ? mangleTypeDef(sr, type.parentStructOrNS).name : "") +
-            type.name.length +
-            type.name,
+          name: parent + type.name.length + type.name,
           wasMangled: true,
         };
       }
@@ -2252,8 +2282,12 @@ export namespace Semantic {
       };
     } else if (literalType === "enum") {
       const enumType = sr.typeDefNodes.get(literal.enumType);
-      assert(enumType.variant === Semantic.ENode.EnumDatatype && enumType.parentStructOrNS);
-      const parent = mangleTypeDef(sr, enumType.parentStructOrNS);
+      assert(enumType.variant === Semantic.ENode.EnumDatatype && enumType.parentSymbolId);
+
+      const sym = sr.symbolNodes.get(enumType.parentSymbolId);
+      assert(sym.variant === Semantic.ENode.TypeDefSymbol);
+
+      const parent = mangleTypeDef(sr, sym.datatype);
       if (parent.wasMangled) {
         return {
           name: parent.name + literal.valueName.length + literal.valueName,

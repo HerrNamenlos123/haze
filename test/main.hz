@@ -9,63 +9,6 @@ export extern C wgpu_start(glfwWindow: cptr, device: wgpu.ffi.WGPUDeviceImpl, su
 export extern C wgpu_end(glfwWindow: cptr) :: final;
 
 main(): int {
-    // let x = reactive<int>(5);
-    // let y = x;
-    // x := 10;
-    // fmt.println("Value:", y as int);
-
-    // a = reactive<int>(1)
-    // b = computed(() => a + 1)
-
-    // b() → 2
-    // b() → should NOT recompute
-    // a := 2
-    // b() → 3
-
-
-    let a = reactive<int>(1);
-
-    let b = computed<int>(() => {
-        fmt.println("b evaluated");
-        return a + 1;
-    });
-
-    let c = computed<int>(() => {
-        fmt.println("c evaluated");
-        return b + 1;
-    });
-
-    let d = computed<int>(() => {
-        fmt.println("d evaluated");
-        return c + 1;
-    });
-
-    fmt.println(d);
-    fmt.println(d);
-    fmt.println(d);
-
-    a++;
-
-    fmt.println(d);
-    fmt.println(d);
-    fmt.println(d);
-
-    a++;
-
-    fmt.println(d);
-    fmt.println(d);
-    fmt.println(d);
-
-    let file = reactive<str>("");
-    fs.watch("test/shaders.wgsl", (event: fs.FileChangeEvent): void => {
-        fmt.println("FILE CHANGED");
-    }, { 
-        immediate: true, 
-        strategy: fs.WatchStrategy.DiffContent 
-    });
-
-    // return 0;
-
     attempt {
         if !glfw.init() { raise "GLFW init failed"; }
 

@@ -505,7 +505,7 @@ export class SemanticBuilder {
     comptime: boolean,
     comptimeValue: Semantic.ExprId | null,
     mutability: EVariableMutability,
-    parentStructOrNS: Semantic.TypeDefId | null,
+    parentSymbolId: Semantic.SymbolId | null,
     sourceloc: SourceLoc,
   ) {
     return this.addSymbol(this.sr, {
@@ -520,7 +520,7 @@ export class SemanticBuilder {
       mutability: mutability,
       requiresHoisting: false,
       variableContext: EVariableContext.Global,
-      parentStructOrNS: parentStructOrNS,
+      parentSymbolId: parentSymbolId,
       sourceloc: sourceloc,
       consumed: false,
       dependsOn: new Set(),
@@ -528,11 +528,20 @@ export class SemanticBuilder {
     });
   }
 
-  typeDefSymbol(datatype: Semantic.TypeDefId) {
-    return this.addSymbol(this.sr, {
+  typeDefSymbol(datatype: Semantic.TypeDefId): [Semantic.TypeDefSymbol, Semantic.SymbolId] {
+    for (const id of this.sr.elaboratedTypeDefSymbols) {
+      const sym = this.sr.symbolNodes.get(id);
+      assert(sym.variant === Semantic.ENode.TypeDefSymbol);
+      if (sym.datatype === datatype) {
+        return [sym, id];
+      }
+    }
+    const symbol = this.addSymbol(this.sr, {
       variant: Semantic.ENode.TypeDefSymbol,
       datatype: datatype,
     });
+    this.sr.elaboratedTypeDefSymbols.push(symbol[1]);
+    return symbol;
   }
 
   makeStringFormatFunc(
@@ -1257,14 +1266,14 @@ export class SemanticBuilder {
 
   namespaceType(
     name: string,
-    parentStructOrNS: Semantic.TypeDefId | null,
+    parentSymbolId: Semantic.SymbolId | null,
     collectedNamespace: Collect.TypeDefId,
     _export: boolean,
   ) {
     return this.addType<Semantic.NamespaceDatatypeDef>(this.sr, {
       variant: Semantic.ENode.NamespaceDatatype,
       name: name,
-      parentStructOrNS: parentStructOrNS,
+      parentSymbolId: parentSymbolId,
       symbols: [],
       export: _export,
       concrete: true,

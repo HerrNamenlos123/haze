@@ -18,7 +18,7 @@ function createLengthFieldSymbol(sr: Semantic.Context, sourceloc: SourceLoc): Se
     consumed: false,
     requiresHoisting: false,
     variableContext: EVariableContext.Global,
-    parentStructOrNS: null,
+    parentSymbolId: null,
     comptime: false,
     comptimeValue: null,
     concrete: true,

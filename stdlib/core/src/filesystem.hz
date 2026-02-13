@@ -463,6 +463,22 @@ export namespace fs {
         ctx.inPoll = false;
     }
 
+    export watchText(path: str) {
+        let text = reactive<str | none>(none);
+
+        fs.watch(path, (event: fs.FileChangeEvent): void => {
+            let result = fs.readFile(path);
+            if result {
+                text := result;
+            }
+        }, { 
+            immediate: true, 
+            strategy: fs.WatchStrategy.DiffContent 
+        });
+
+        return text;
+    }
+
     // // Static loading
     // let a: str = fs.readText("resources/shader.wgsl");
     // let a: MemoryBuffer = fs.readBinary("font.ttf");

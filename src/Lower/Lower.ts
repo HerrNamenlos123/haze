@@ -3459,6 +3459,8 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
       });
       lr.loweredFunctions.set(symbolId, fId);
 
+      // console.log("Func ", f.name.mangledName, symbol.envType);
+
       const remainingInstances = new Set(symbol.createsInstanceIds);
       symbol.returnsInstanceIds.forEach((i) => remainingInstances.delete(i));
 
