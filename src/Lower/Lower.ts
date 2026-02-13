@@ -2437,10 +2437,29 @@ export function lowerTypeDef(lr: Lowered.Module, typeId: Semantic.TypeDefId): Lo
           parameters.push(lowerTypeUse(lr, p.type));
         }
       }
+
+      const returnType = lowerTypeUse(lr, type.returnType);
+
+      // Now additionally intern equivalent function types, that were not equivalent in elaboration
+      // but are not equivalent after lowering.
+      for (const [_, id] of lr.loweredTypeDefs) {
+        const t = lr.typeDefNodes.get(id);
+        if (t.variant === Lowered.ENode.FunctionDatatype) {
+          if (
+            t.vararg === type.vararg &&
+            t.returnType === returnType &&
+            t.parameters.length === parameters.length &&
+            t.parameters.every((p, i) => parameters[i] === p)
+          ) {
+            return id;
+          }
+        }
+      }
+
       const [p, pId] = Lowered.addTypeDef<Lowered.FunctionDatatypeDef>(lr, {
         variant: Lowered.ENode.FunctionDatatype,
         parameters: parameters,
-        returnType: lowerTypeUse(lr, type.returnType),
+        returnType: returnType,
         name: Semantic.makeNameSetTypeDef(lr.sr, typeId),
         vararg: type.vararg,
       });
@@ -3450,8 +3469,6 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
         externLanguage: symbol.extern,
       });
       lr.loweredFunctions.set(symbolId, fId);
-
-      // console.log("Function", f.name, )
 
       const remainingInstances = new Set(symbol.createsInstanceIds);
       symbol.returnsInstanceIds.forEach((i) => remainingInstances.delete(i));

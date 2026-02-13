@@ -2047,8 +2047,18 @@ export namespace Semantic {
         }
         const uniqueID = CallableManglingHashStore.get(type);
         assert(uniqueID);
+
+        let func = mangleTypeDef(sr, type.functionType);
+        let t = "";
+        if (type.envType?.type === "method") {
+          t = "_" + mangleTypeUse(sr, type.envType.thisExprType).name;
+        } else if (type.envType?.type === "lambda") {
+          t = type.envType.captures.length + "_";
+          type.envType.captures.map((c) => mangleTypeUse(sr, c.type).name).join("");
+        }
+
         return {
-          name: "__Callable__" + uniqueID.toString(),
+          name: "CL" + t + "_" + func.name,
           wasMangled: true,
         };
       }

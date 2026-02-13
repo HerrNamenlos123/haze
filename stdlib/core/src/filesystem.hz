@@ -274,8 +274,10 @@ export namespace fs {
         interval: real;
         nextPollTime: real;
         lastState?: FileState;
+        lastContent?: str;
         callback: (event: FileChangeEvent) => void;
         active: bool;
+        strategy: WatchStrategy;
     }
 
     struct GlobalFilesystemContext {
@@ -307,12 +309,31 @@ export namespace fs {
         onChange: (event: FileChangeEvent) => void,
         config?: WatchConfig,
     ): WatchHandle {
+        return watchWithStrategy(path, onChange, WatchStrategy.ModificationDate, config);
+    }
+
+    export watchWithStrategy(
+        path: str,
+        onChange: (event: FileChangeEvent) => void,
+        strategy: WatchStrategy,
+        config?: WatchConfig,
+    ): WatchHandle {
         let state = statFile(path);
+        let content: str | none = none;
 
         if !config {
             config = WatchConfig {};
         }
         assert(config);
+
+        if strategy == WatchStrategy.DiffContent {
+            if state {
+                let fileResult = readFile(path);
+                if fileResult {
+                    content = fileResult;
+                }
+            }
+        }
 
         let ctx = _getFilesystemContext();
         let w = Watcher {
@@ -321,12 +342,14 @@ export namespace fs {
             interval: config.interval,
             nextPollTime: time.now() + config.interval,
             lastState: state,
+            lastContent: content,
             callback: onChange,
             active: true,
+            strategy: strategy,
         };
         ctx.watchers.push(w);
 
-        return WatchHandle { handle: w.id };
+        return WatchHandle { handle: w.id, strategy: strategy };
     }
 
     export unwatch(handle: WatchHandle) {
@@ -380,12 +403,30 @@ export namespace fs {
                 if t >= w.nextPollTime {
                     w.nextPollTime = t + w.interval;
 
-                    let newState = statFile(w.path);
-                    let event = diff(w.lastState, newState);
-                    if event {
-                        event.path = w.path;
-                        w.lastState = newState;
-                        w.callback(event);
+                    if w.strategy == WatchStrategy.ModificationDate {
+                        let newState = statFile(w.path);
+                        let event = diff(w.lastState, newState);
+                        if event {
+                            event.path = w.path;
+                            w.lastState = newState;
+                            w.callback(event);
+                        }
+                    } else if w.strategy == WatchStrategy.DiffContent {
+                        const fileResult = readFile(w.path);
+                        if fileResult {
+                            let newContent = fileResult;
+                            let update = false;
+                            if !w.lastContent {
+                                update = true;
+                            }
+                            else if (w.lastContent != newContent) {
+                                w.lastContent = newContent;
+                                w.callback(FileChangeEvent {
+                                    path: w.path,
+                                    kind: FileChangeKind.Modified,
+                                });
+                            }
+                        }
                     }
                 }
             }
