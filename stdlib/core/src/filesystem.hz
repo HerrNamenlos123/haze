@@ -217,4 +217,14 @@ export namespace fs {
         }
         return Result<none, Error>.Ok(none);
     }
+
+    // // Static loading
+    // let a: str = fs.readText("resources/shader.wgsl");
+    // let a: MemoryBuffer = fs.readBinary("font.ttf");
+    // let a: DataSource = fs.open("font.ttf");
+
+    // // Pure filesystem watching
+    // let a: Reactive<str> = fs.watchText("resources/shader.wgsl", { interval: 0.1 });
+    // let a: Reactive<MemoryBuffer> = fs.watchBinary("font.ttf", { interval: 0.1 });
+    // let a: Reactive<DataSource> = fs.watchFile("font.ttf", { interval: 0.1 });
 }

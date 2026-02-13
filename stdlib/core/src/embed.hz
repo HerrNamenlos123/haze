@@ -1,0 +1,15 @@
+
+namespace embed {
+    // // Static embedding
+    // let a: str = embed.text("resources/shader.wgsl");
+    // let a: MemoryBuffer = embed.binary("font.ttf");
+    // let a: DataSource = embed.file("font.ttf");
+
+    // // Static embedding + watching (filesystem dominates embedding if available)
+    // let a: Reactive<str> = embed.watchText("resources/shader.wgsl", { interval: 0.1 });
+    // let a: Reactive<MemoryBuffer> = embed.watchBinary("font.ttf", { interval: 0.1 });
+    // let a: Reactive<DataSource> = embed.watchFile("font.ttf", { interval: 0.1 });
+
+    // let message: str = datasource.text();
+    // let image: MemoryBuffer = datasource.binary();
+}

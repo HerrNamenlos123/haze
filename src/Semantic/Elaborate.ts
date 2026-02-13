@@ -2430,19 +2430,24 @@ export class SemanticElaborator {
             return;
           }
           const signature = this.elaborateFunctionSignature(overloadId);
-          const funcId = this.elaborateFunctionSymbol(signature, semanticStructId, [], {
-            type: "method",
-            thisExprType: makeTypeUse(
-              this.sr,
-              semanticStructId,
-              EDatatypeMutability.Mut,
-              "force-no-inline",
-              semanticStruct.sourceloc,
-            )[1],
-          });
-          const func = this.sr.symbolNodes.get(funcId);
-          assert(funcId && func && func.variant === Semantic.ENode.FunctionSymbol);
-          semanticStruct.methods.push(funcId);
+          this.elaborateFunctionSymbol(
+            signature,
+            semanticStructId,
+            [],
+            {
+              type: "method",
+              thisExprType: makeTypeUse(
+                this.sr,
+                semanticStructId,
+                EDatatypeMutability.Mut,
+                "force-no-inline",
+                semanticStruct.sourceloc,
+              )[1],
+            },
+            {
+              addToMethods: semanticStruct.methods,
+            },
+          );
         });
       } else if (symbol.variant === Collect.ENode.TypeDefSymbol) {
         const def = this.sr.cc.typeDefNodes.get(symbol.typeDef);
@@ -3251,6 +3256,9 @@ export class SemanticElaborator {
     parentStructOrNS: Semantic.TypeDefId | null,
     paramPackTypes: Semantic.TypeUseId[],
     env: Semantic.EnvBlockType,
+    args?: {
+      addToMethods?: Semantic.SymbolId[];
+    },
   ): Semantic.SymbolId {
     const functionSignature = this.sr.symbolNodes.get(functionSignatureId);
     assert(functionSignature.variant === Semantic.ENode.FunctionSignature);
@@ -3295,7 +3303,49 @@ export class SemanticElaborator {
           return existing;
         }
 
-        const expectedReturnType =
+        // We need to define the symbol very early and then wrestle with setting attributes, because
+        // we must define the method BEFORE elaborating any parameters or return types, to support
+        // complex recursive usage patterns between structs and methods and types.
+        let [symbol, symbolId] = this.sr.b.addSymbol<Semantic.FunctionSymbol>(this.sr, {
+          variant: Semantic.ENode.FunctionSymbol,
+          type: -1 as Semantic.TypeDefId, // Assigned later
+          annotatedReturnType: null,
+          export: func.export,
+          generics: genericArgs,
+          staticMethod: func.staticMethod,
+          parameterPack: false, // set later
+          methodOf: parentStructOrNS,
+          methodType: func.methodType,
+          parentStructOrNS: parentStructOrNS,
+          overloadedOperator: func.overloadedOperator,
+          noemit: func.noemit,
+          extern: func.extern,
+          parameterSymbols: new Set<Semantic.SymbolId>(),
+          envType: null,
+          parameterNames: func.parameters.map((p) => p.name),
+          methodRequiredMutability: func.methodRequiredMutability,
+          returnedDatatypes: new Set(),
+          name: func.name,
+          sourceloc: func.sourceloc,
+          createsInstanceIds: new Set(),
+          returnStatements: new Set(),
+          returnsInstanceIds: new Set(),
+          isImpure: false,
+          instanceDepsSnapshot: this.sr.e.currentContext.instanceDeps,
+          scope: null,
+          concrete: false, // assigned later
+          originalCollectedFunction: functionSignature.originalFunction,
+        });
+        args?.addToMethods?.push(symbolId);
+        insertIntoFuncDefCache(this.sr, functionSignature.originalFunction, {
+          genericArgs: genericArgs,
+          paramPackTypes: paramPackTypes,
+          parentStructOrNS: parentStructOrNS,
+          result: symbolId,
+          substitutionContext: newContext,
+        });
+
+        symbol.annotatedReturnType =
           func.returnType && this.lookupAndElaborateDatatype(func.returnType);
 
         if (func.vararg && func.extern !== EExternLanguage.Extern_C) {
@@ -3305,8 +3355,6 @@ export class SemanticElaborator {
           );
         }
 
-        let parameterPack = false;
-        const parameterNames = func.parameters.map((p) => p.name);
         const parameters = func.parameters
           .map((p, i) => {
             const paramType = this.sr.cc.typeUseNodes.get(p.type);
@@ -3323,7 +3371,7 @@ export class SemanticElaborator {
                   func.sourceloc,
                 );
               }
-              parameterPack = true;
+              symbol.parameterPack = true;
 
               assert(func.functionScope);
               const functionScope = this.sr.cc.scopeNodes.get(func.functionScope);
@@ -3401,17 +3449,17 @@ export class SemanticElaborator {
           .filter((p) => Boolean(p))
           .map((p) => p!);
 
-        let useEnv = false;
         if (func.methodType === EMethodType.Method && !func.staticMethod) {
           assert(parentStructOrNS);
-          useEnv = true;
+          symbol.envType = env;
         }
 
-        let ftype = makeDeferredFunctionDatatypeAvailable(this.sr, {
+        symbol.type = makeDeferredFunctionDatatypeAvailable(this.sr, {
           parameters: parameters,
           vararg: func.vararg,
           sourceloc: func.sourceloc,
         });
+        symbol.concrete = this.sr.typeDefNodes.get(symbol.type).concrete;
 
         let noreturnIf: {
           expr: Collect.ExprId;
@@ -3445,7 +3493,7 @@ export class SemanticElaborator {
 
           if (e.variant === Collect.ENode.SymbolValueExpr && e.genericArgs.length === 0) {
             const name = e.name;
-            const paramIndex = parameterNames.findIndex((p) => p === name);
+            const paramIndex = symbol.parameterNames.findIndex((p) => p === name);
             if (paramIndex === -1) {
               throw new CompilerError(
                 `The condition accesses a symbol ('${name}') which is not a parameter of the function. For now, only parameters may be accessed in conditions.`,
@@ -3482,8 +3530,8 @@ export class SemanticElaborator {
         }
 
         if (func.requires.final) {
-          const returnType = expectedReturnType || this.sr.b.voidType();
-          ftype = makeRawFunctionDatatypeAvailable(this.sr, {
+          const returnType = symbol.annotatedReturnType || this.sr.b.voidType();
+          symbol.type = makeRawFunctionDatatypeAvailable(this.sr, {
             parameters: parameters,
             returnType: returnType,
             vararg: func.vararg,
@@ -3504,48 +3552,9 @@ export class SemanticElaborator {
           );
         }
 
-        let [symbol, symbolId] = this.sr.b.addSymbol<Semantic.FunctionSymbol>(this.sr, {
-          variant: Semantic.ENode.FunctionSymbol,
-          type: ftype,
-          annotatedReturnType: expectedReturnType,
-          export: func.export,
-          generics: genericArgs,
-          staticMethod: func.staticMethod,
-          parameterPack: parameterPack,
-          methodOf: parentStructOrNS,
-          methodType: func.methodType,
-          parentStructOrNS: parentStructOrNS,
-          overloadedOperator: func.overloadedOperator,
-          noemit: func.noemit,
-          extern: func.extern,
-          parameterSymbols: new Set<Semantic.SymbolId>(),
-          envType: useEnv ? env : null,
-          parameterNames: parameterNames,
-          methodRequiredMutability: func.methodRequiredMutability,
-          returnedDatatypes: new Set(),
-          name: func.name,
-          sourceloc: func.sourceloc,
-          createsInstanceIds: new Set(),
-          returnStatements: new Set(),
-          returnsInstanceIds: new Set(),
-          isImpure: false,
-          instanceDepsSnapshot: this.sr.e.currentContext.instanceDeps,
-          scope: null,
-          concrete: this.sr.typeDefNodes.get(ftype).concrete,
-          originalCollectedFunction: functionSignature.originalFunction,
-        });
-
         if (symbol.concrete) {
-          insertIntoFuncDefCache(this.sr, functionSignature.originalFunction, {
-            genericArgs: genericArgs,
-            paramPackTypes: paramPackTypes,
-            parentStructOrNS: parentStructOrNS,
-            result: symbolId,
-            substitutionContext: newContext,
-          });
-
           if (!func.requires.final) {
-            const funcType = this.sr.typeDefNodes.get(ftype);
+            const funcType = this.sr.typeDefNodes.get(symbol.type);
             assert(funcType.variant === Semantic.ENode.DeferredFunctionDatatype);
             for (const paramId of funcType.parameters) {
               const paramUse = this.sr.typeUseNodes.get(paramId.type);
@@ -3700,7 +3709,7 @@ export class SemanticElaborator {
             }
 
             if (!func.requires.final) {
-              let inferredReturnType: Semantic.TypeUseId | null = expectedReturnType;
+              let inferredReturnType: Semantic.TypeUseId | null = symbol.annotatedReturnType;
               if (!inferredReturnType) {
                 if (symbol.returnedDatatypes.size === 0) {
                   inferredReturnType = this.sr.b.voidType();
@@ -4650,7 +4659,39 @@ export class SemanticElaborator {
       })[1];
     });
 
-    const parameters = functionSymbol.parameters.map((p) => {
+    const parent = this.elaborateParentSymbolFromCache(functionSymbol.parentScope);
+
+    if (this.sr.elaboratedFunctionSignatures.has(functionSymbolId)) {
+      const signatures = this.sr.elaboratedFunctionSignatures.get(functionSymbolId)!;
+      for (const signatureId of signatures) {
+        const signature = this.sr.symbolNodes.get(signatureId);
+        assert(signature.variant === Semantic.ENode.FunctionSignature);
+        if (
+          signature.genericPlaceholders.length === genericPlaceholders.length &&
+          signature.genericPlaceholders.every((g, i) => g === genericPlaceholders[i]) &&
+          signature.parentStructOrNS === parent
+        ) {
+          return signatureId;
+        }
+      }
+    }
+
+    const [signature, signatureId] = this.sr.b.addSymbol<Semantic.FunctionSignature>(this.sr, {
+      variant: Semantic.ENode.FunctionSignature,
+      genericPlaceholders: genericPlaceholders,
+      originalFunction: functionSymbolId,
+      extern: functionSymbol.extern,
+      name: functionSymbol.name,
+      parentStructOrNS: parent,
+      parameters: [],
+      returnType: null,
+    });
+    if (!this.sr.elaboratedFunctionSignatures.get(functionSymbolId)) {
+      this.sr.elaboratedFunctionSignatures.set(functionSymbolId, []);
+    }
+    this.sr.elaboratedFunctionSignatures.get(functionSymbolId)!.push(signatureId);
+
+    signature.parameters = functionSymbol.parameters.map((p) => {
       const type = this.withContext(
         {
           context: Semantic.isolateElaborationContext(this.currentContext, {
@@ -4674,57 +4715,31 @@ export class SemanticElaborator {
       };
     });
 
-    const parent = this.elaborateParentSymbolFromCache(functionSymbol.parentScope);
+    signature.returnType =
+      functionSymbol.returnType &&
+      this.withContext(
+        {
+          context: Semantic.isolateElaborationContext(this.currentContext, {
+            currentScope: functionSymbol.functionScope || functionSymbol.parentScope,
+            genericsScope: functionSymbol.functionScope || functionSymbol.parentScope,
+            constraints: ConstraintSet.empty(),
+            instanceDeps: {
+              instanceDependsOn: new Map(),
+              structMembersDependOn: new Map(),
+              symbolDependsOn: new Map(),
+            },
+          }),
+          inAttemptExpr: null,
+          inFunction: null,
+        },
+        () => this.lookupAndElaborateDatatype(functionSymbol.returnType!),
+      );
 
     const cacheCodename =
       (parent ? Semantic.serializeTypeDef(this.sr, parent) + "." : "") +
       functionSymbol.name +
       "|" +
-      parameters.map((p) => Semantic.serializeTypeUse(this.sr, p.type)).join("|");
-
-    if (this.sr.elaboratedFunctionSignatures.has(functionSymbolId)) {
-      const signatures = this.sr.elaboratedFunctionSignatures.get(functionSymbolId)!;
-      for (const signatureId of signatures) {
-        const signature = this.sr.symbolNodes.get(signatureId);
-        assert(signature.variant === Semantic.ENode.FunctionSignature);
-        if (
-          signature.genericPlaceholders.length === genericPlaceholders.length &&
-          signature.genericPlaceholders.every((g, i) => g === genericPlaceholders[i]) &&
-          signature.parentStructOrNS === parent
-        ) {
-          return signatureId;
-        }
-      }
-    }
-
-    const [signature, signatureId] = this.sr.b.addSymbol(this.sr, {
-      variant: Semantic.ENode.FunctionSignature,
-      genericPlaceholders: genericPlaceholders,
-      originalFunction: functionSymbolId,
-      extern: functionSymbol.extern,
-      name: functionSymbol.name,
-      parentStructOrNS: parent,
-      parameters: parameters,
-      returnType:
-        functionSymbol.returnType &&
-        this.withContext(
-          {
-            context: Semantic.isolateElaborationContext(this.currentContext, {
-              currentScope: functionSymbol.functionScope || functionSymbol.parentScope,
-              genericsScope: functionSymbol.functionScope || functionSymbol.parentScope,
-              constraints: ConstraintSet.empty(),
-              instanceDeps: {
-                instanceDependsOn: new Map(),
-                structMembersDependOn: new Map(),
-                symbolDependsOn: new Map(),
-              },
-            }),
-            inAttemptExpr: null,
-            inFunction: null,
-          },
-          () => this.lookupAndElaborateDatatype(functionSymbol.returnType!),
-        ),
-    });
+      signature.parameters.map((p) => Semantic.serializeTypeUse(this.sr, p.type)).join("|");
 
     for (const sigId of this.sr.elaboratedFunctionSignaturesByName.get(cacheCodename) || []) {
       const sig = this.sr.symbolNodes.get(sigId);
@@ -4747,11 +4762,6 @@ export class SemanticElaborator {
         );
       }
     }
-
-    if (!this.sr.elaboratedFunctionSignatures.get(functionSymbolId)) {
-      this.sr.elaboratedFunctionSignatures.set(functionSymbolId, []);
-    }
-    this.sr.elaboratedFunctionSignatures.get(functionSymbolId)!.push(signatureId);
 
     if (!this.sr.elaboratedFunctionSignaturesByName.get(cacheCodename)) {
       this.sr.elaboratedFunctionSignaturesByName.set(cacheCodename, []);

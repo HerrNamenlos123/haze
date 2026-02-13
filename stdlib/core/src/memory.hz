@@ -15,38 +15,31 @@ export namespace Alloc {
     }
 }
 
-export opaque struct MemoryBuffer {
+export opaque struct ByteBuffer {
     committed: bool;
     length: int;
-    // The actual data comes here but Haze can't express it, we use ptr + sizeof(MemoryBuffer) for correct alignment.
+    buffer: cptr;
 
     constructor(allocator: Allocator, length: int) {
         do unsafe {
-            const structSize = sizeof(type<inline MemoryBuffer>);
-            let buffer: mut MemoryBuffer = uninitialized;
-            __c__("buffer = hzstd_allocate(allocator, structSize + length);");
-            buffer.length = length;
-            buffer.committed = false;
+            let buffer = ByteBuffer {
+                committed: false,
+                length: length,
+                buffer: none as cptr,
+            };
+            __c__("buffer->buffer = hzstd_allocate(allocator, length);");
             buffer.writeZero(0, length);
             return buffer;
         };
     }
 
     constructor(length: int) {
-        do unsafe {
-            const structSize = sizeof(type<inline MemoryBuffer>);
-            let buffer: mut MemoryBuffer = uninitialized;
-            __c__("buffer = hzstd_allocate(hzstd_make_heap_allocator(), structSize + length);");
-            buffer.length = length;
-            buffer.committed = false;
-            buffer.writeZero(0, length);
-            return buffer;
-        };
+        return ByteBuffer(Alloc.heap(), length);
     }
 
-    operator[](index: int): ByteRef {
+    operator[](index: int): ByteBufferRef {
         if (index < 0 || index >= this.length) {
-            sys.panic("Out of bounds access in MemoryBuffer");
+            sys.panic("Out of bounds access in ByteBuffer");
         }
 
         return {
@@ -57,12 +50,11 @@ export opaque struct MemoryBuffer {
 
     getAt(index: int): u8 {
         if (index < 0 || index >= this.length) {
-            sys.panic("Out of bounds access in MemoryBuffer");
+            sys.panic("Out of bounds access in ByteBuffer");
         }
 
         let result: u8 = 0;
-        const structSize = sizeof(type<inline MemoryBuffer>);
-        __c__("result = ((hzstd_u8_t*)this + structSize)[index];");
+        __c__("result = ((hzstd_u8_t*)this->buffer)[index];");
         return result;
     }
 
@@ -72,55 +64,72 @@ export opaque struct MemoryBuffer {
 
     assertNotCommitted() {
         if (this.committed) {
-            sys.panic("A mutation was attempted on a MemoryBuffer that was already committed. Mutation is no longer allowed, it is now deeply immutable.");
+            sys.panic("A mutation was attempted on a ByteBuffer that was already committed. Mutation is no longer allowed, it is now deeply immutable.");
         }
     }
 
     setAt(index: int, value: u8) {
         if (index < 0 || index >= this.length) {
-            sys.panic("Out of bounds access in MemoryBuffer");
+            sys.panic("Out of bounds access in ByteBuffer");
         }
 
         this.assertNotCommitted();
-        const structSize = sizeof(type<inline MemoryBuffer>);
-        __c__("((hzstd_u8_t*)this + structSize)[index] = value;");
+        __c__("((hzstd_u8_t*)this->buffer)[index] = value;");
     }
 
-    mut write(index: int, data: str) {
-        if (index < 0 || index + data.length - 1 >= this.length) {
-            sys.panic("Out of bounds access in MemoryBuffer");
+    mut write(startIndex: int, data: str) {
+        if (startIndex < 0 || startIndex + data.length - 1 >= this.length) {
+            sys.panic("Out of bounds access in ByteBuffer");
         }
 
         this.assertNotCommitted();
-        const structSize = sizeof(type<inline MemoryBuffer>);
-        __c__("memcpy((hzstd_u8_t*)this + structSize + index, data.data, data.length);");
+        __c__("memcpy((hzstd_u8_t*)this->buffer + startIndex, data.data, data.length);");
     }
 
     mut writeZero(startIndex: int, length: int) {
         if (startIndex < 0 || startIndex + length - 1 >= this.length) {
-            sys.panic("Out of bounds access in MemoryBuffer");
+            sys.panic("Out of bounds access in ByteBuffer");
         }
 
         this.assertNotCommitted();
-        const structSize = sizeof(type<inline MemoryBuffer>);
-        __c__("memset((hzstd_u8_t*)this + structSize + startIndex, 0, length);");
+        __c__("memset((hzstd_u8_t*)this->buffer + startIndex, 0, length);");
+    }
+
+    bytes(): Bytes {
+        if !this.committed {
+            sys.panic("Attempted to call .bytes() on a ByteBuffer that was not committed yet. Call .commit() to ensure deep immutability and enable byte slices");
+        }
+
+        do unsafe {
+            let bytes: Bytes = uninitialized;
+            __c__("bytes.basePtr = NULL;");
+            __c__("bytes.offset = 0;");
+            __c__("bytes.length = 0;");
+            if (this.length > 0) {
+                __c__("bytes.basePtr = this->buffer;");
+                __c__("bytes.offset = 0;");
+                __c__("bytes.length = this->length;");
+            }
+            return bytes;
+        };
     }
 
     string(): str {
         if !this.committed {
-            sys.panic("Attempted to call .toString() on a MemoryBuffer that was not committed yet. Call .commit() to ensure deep immutability and enable string slices");
+            sys.panic("Attempted to call .string() on a ByteBuffer that was not committed yet. Call .commit() to ensure deep immutability and enable string slices");
         }
+
+        // TODO: Perform utf-8 validation once we have actual unicode support
 
         let result = "";
         if (this.length > 0) {
-            const structSize = sizeof(type<inline MemoryBuffer>);
-            __c__("result = HZSTD_STRING((const char*)((hzstd_u8_t*)this + structSize), this->length);");
+            __c__("result = HZSTD_STRING((const char*)this->buffer, this->length);");
         }
         return result;
     }
 
-    struct ByteRef {
-        buffer: MemoryBuffer;
+    struct ByteBufferRef {
+        buffer: ByteBuffer;
         index: int;
 
         get(): u8 {
@@ -130,5 +139,47 @@ export opaque struct MemoryBuffer {
         operator:=(value: u8) {
             this.buffer.setAt(this.index, value);
         }
+    }
+}
+
+export opaque inline struct Bytes {
+    // This slice must consist of base pointer + offset + length. Since we don't want to constrain to 
+    // a non-moving GC, we can't rely on interior pointers holding buffers alive. Therefore we must
+    // reference the base object directly and encode an offset, such that the GC recognizes the 
+    // pointer, thereby keeping the door open for a future switch to a moving/compacting GC.
+
+    // However, currently it still wouldn't work with a moving GC since it requires actual GC references
+    // and not plain pointers. But that wouldn't work together with slices taken from immutable program
+    // memory like hardcoded strings or embedded files. So we will just ignore it.
+    // But we keep base+offset so we remember that interior pointers may no longer be supported at some point.
+    basePtr: cptr;
+    offset: int;
+    length: int;
+
+    constructor(buffer: ByteBuffer) {
+        return buffer.bytes();
+    }
+
+    operator[](index: int): u8 {
+        return this.getAt(index);
+    }
+
+    getAt(index: int): u8 {
+        if (index < 0 || index >= this.length) {
+            sys.panic("Out of bounds access in Bytes slice");
+        }
+
+        let result: u8 = 0;
+        __c__("result = ((hzstd_u8_t*)this->basePtr + this->offset)[index];");
+        return result;
+    }
+
+    string(): str {
+        // TODO: Perform utf-8 validation once we have actual unicode support
+        let result = "";
+        if (this.length > 0) {
+            __c__("result = HZSTD_STRING((const char*)(this->basePtr + this->offset), this->length);");
+        }
+        return result;
     }
 }

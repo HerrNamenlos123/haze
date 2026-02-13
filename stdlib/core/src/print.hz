@@ -11,10 +11,10 @@ namespace fmt {
     }
 
     export opaque struct StringWriter {
-        buffer: mut MemoryBuffer | none;
+        buffer: mut ByteBuffer | none;
         written: int = 0;
 
-        constructor(buffer?: mut MemoryBuffer) {
+        constructor(buffer?: mut ByteBuffer) {
             return StringWriter {
                 buffer: buffer,
             };
@@ -51,7 +51,7 @@ namespace fmt {
         for comptime value, i in values {
             format_to(reader, value, {});
         }
-        let writer = StringWriter(MemoryBuffer(reader.written));
+        let writer = StringWriter(ByteBuffer(reader.written));
         for comptime value, i in values {
             format_to(writer, value, {});
         }
@@ -70,7 +70,7 @@ namespace fmt {
         for comptime value, i in values {
             format_to(reader, value, {});
         }
-        let writer = StringWriter(MemoryBuffer(allocator, reader.written));
+        let writer = StringWriter(ByteBuffer(allocator, reader.written));
         for comptime value, i in values {
             format_to(writer, value, {});
         }
