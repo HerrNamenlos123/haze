@@ -354,10 +354,26 @@ export class ConstraintSet {
     return [...this.map.values()];
   }
 
+  /** Get the total number of constraints in this set */
+  constraintCount(): number {
+    return this.map.size + this.pathMap.size;
+  }
+
   // ---- inversion -----------------------------------------------------------
 
   inverse(): ConstraintSet {
     if (this._inverse) return this._inverse;
+
+    // If there are multiple constraints (A && B), we cannot properly invert them
+    // because the correct inverse would be (!A || !B), which is not representable
+    // in the constraint system. So we return an empty constraint set instead of
+    // an incorrect inversion (!A && !B).
+    if (this.constraintCount() > 1) {
+      const empty = ConstraintSet.empty();
+      empty._inverse = this;
+      this._inverse = empty;
+      return empty;
+    }
 
     const inv = new ConstraintSet();
 
