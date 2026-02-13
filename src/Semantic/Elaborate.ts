@@ -2278,6 +2278,20 @@ export class SemanticElaborator {
       type = expr.type;
       global = true;
       comptimeValue = exprId;
+    } else if (variableSymbol.globalValueInitializer) {
+      // Type is provided and there's an initializer, process the initializer and convert to the declared type
+      const [expr, exprId] = this.sr.e.expr(variableSymbol.globalValueInitializer, undefined);
+      const conversionResult = Conversion.MakeConversionOrThrow(
+        this.sr,
+        exprId,
+        type,
+        this.currentContext.constraints,
+        variableSymbol.sourceloc,
+        Conversion.Mode.Implicit,
+        false,
+      );
+      global = true;
+      comptimeValue = conversionResult;
     }
 
     const [variable, variableId] = this.sr.b.variableSymbol(

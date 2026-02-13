@@ -278,9 +278,29 @@ export namespace fs {
         active: bool;
     }
 
-    // NOTE: These global variables are not ideal
-    extern C let watchers: []Watcher = [];
-    extern C let nextId = 1;
+    struct GlobalFilesystemContext {
+        watchers: []Watcher;
+        nextId: int;
+    }
+
+    // Global context that is lazily initialized on first use
+    extern C let _globalFilesystemContext: mut GlobalFilesystemContext | none = none;
+
+    // Lazily initialize the global filesystem context on first use
+    _getFilesystemContext(): mut GlobalFilesystemContext {
+        if _globalFilesystemContext {
+            return _globalFilesystemContext;
+        }
+        
+        // If we reach here, it was none, so initialize it
+        _globalFilesystemContext = GlobalFilesystemContext {
+            watchers: [],
+            nextId: 1,
+        };
+        
+        assert(_globalFilesystemContext);
+        return _globalFilesystemContext;
+    }
 
     export watch(
         path: str,
@@ -294,8 +314,9 @@ export namespace fs {
         }
         assert(config);
 
+        let ctx = _getFilesystemContext();
         let w = Watcher {
-            id: nextId++,
+            id: ctx.nextId++,
             path: path,
             interval: config.interval,
             nextPollTime: time.now() + config.interval,
@@ -303,13 +324,14 @@ export namespace fs {
             callback: onChange,
             active: true,
         };
-        watchers.push(w);
+        ctx.watchers.push(w);
 
         return WatchHandle { handle: w.id };
     }
 
     export unwatch(handle: WatchHandle) {
-        for w in watchers {
+        let ctx = _getFilesystemContext();
+        for w in ctx.watchers {
             if w.id == handle.handle {
                 w.active = false;
                 return;
@@ -348,7 +370,12 @@ export namespace fs {
     export pollEvents() {
         let t = time.now();
 
-        for w in watchers {
+        if !_globalFilesystemContext {
+            return;
+        }
+
+        let ctx = _getFilesystemContext();
+        for w in ctx.watchers {
             if w.active {
                 if t >= w.nextPollTime {
                     w.nextPollTime = t + w.interval;
