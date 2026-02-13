@@ -57,7 +57,7 @@ namespace ffi {
     // hzstd_fs_copy.
     extern C noemit hzstd_fs_move(src: str, dst: str, options: hzstd_fs_copy_options_t): inline hzstd_fs_error_t :: final;
 
-    extern C inline struct hzstd_file_stat_t {
+    extern C noemit inline struct hzstd_file_stat_t {
         exists: bool;
         mtime_ns: i64;
         size: i64;
@@ -279,8 +279,8 @@ export namespace fs {
     }
 
     // NOTE: These global variables are not ideal
-    let watchers: []Watcher = [];
-    let nextId = 1;
+    extern C let watchers: []Watcher = [];
+    extern C let nextId = 1;
 
     export watch(
         path: str,

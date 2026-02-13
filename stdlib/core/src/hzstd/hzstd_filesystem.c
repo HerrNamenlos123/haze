@@ -706,6 +706,10 @@ hzstd_file_stat_t hzstd_file_stat(hzstd_str_t path)
   result.mtime_ns = (int64_t)st.st_mtime * 1000000000LL;
 #endif
 
+#else
+#error unknown platform
+#endif
+
   free((void*)cpath);
 
   return result;
