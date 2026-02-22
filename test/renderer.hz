@@ -113,7 +113,7 @@ opaque struct Renderer {
             bindGroupLayouts: { globalsLayout },
         });
 
-        let shaderSource = fs.watchText("test/shaders.wgsl", { interval: 0.1 });
+        let shaderSource = fs.watchText("test/shaders.wgsl");
         let shader = computed<mut wgpu.ShaderModule | none>(() => {
             let value = shaderSource as str | none;
             if !value {
