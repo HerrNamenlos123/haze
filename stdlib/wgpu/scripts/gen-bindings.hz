@@ -913,7 +913,7 @@ generateBindings(args: GenArgs): Result<none, fs.Error> {
         }
     }
 
-    fs.writeFile(args.outfile, file)?!;
+    fs.writeText(args.outfile, file)?!;
 }
 
 generate(): int {
@@ -931,7 +931,7 @@ generate(): int {
         if !workspaceDir { raise f"HAZE_WORKSPACE_DIR not defined"; }
 
         let filepath = f"{workspaceDir}/wgpu/bin/include/webgpu.h";
-        let file = fs.readFile(filepath)?!;
+        let file = fs.readText(filepath)?!;
         let enums = extractEnums(file)?!;
         let structs = extractStructs(file)?!;
         let functionTypes = extractFunctionTypes(file)?!;

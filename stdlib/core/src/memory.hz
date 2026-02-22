@@ -190,4 +190,18 @@ export opaque inline struct Bytes {
         }
         return result;
     }
+
+    operator==(other: Bytes) {
+        if this.length != other.length {
+            return false;
+        }
+
+        let equal = false;
+        __c__("equal = memcmp(this->basePtr + this->offset, other.basePtr + other.offset, this->length) == 0;");
+        return equal;
+    }
+
+    operator!=(other: Bytes) {
+        return !(this == other);
+    }
 }

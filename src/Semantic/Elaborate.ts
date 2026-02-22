@@ -310,14 +310,197 @@ export class SemanticElaborator {
       );
     } else if (
       binaryExpr.operation === EBinaryOperation.Equal ||
-      binaryExpr.operation === EBinaryOperation.NotEqual
+      binaryExpr.operation === EBinaryOperation.NotEqual ||
+      binaryExpr.operation === EBinaryOperation.LessThan ||
+      binaryExpr.operation === EBinaryOperation.GreaterThan ||
+      binaryExpr.operation === EBinaryOperation.LessEqual ||
+      binaryExpr.operation === EBinaryOperation.GreaterEqual
     ) {
-      // let [left, leftId] = this.expr(binaryExpr.left, { unsafe: inference?.unsafe });
-      // let [right, rightId] = this.expr(binaryExpr.right, { unsafe: inference?.unsafe });
-      // leftId = this.unwrapReactiveOrComputedIfPossible(leftId);
-      // left = this.sr.exprNodes.get(leftId);
-      // rightId = this.unwrapReactiveOrComputedIfPossible(rightId);
-      // right = this.sr.exprNodes.get(rightId);
+      let [left, leftId] = this.expr(binaryExpr.left, { unsafe: inference?.unsafe });
+      let [right, rightId] = this.expr(binaryExpr.right, { unsafe: inference?.unsafe });
+
+      leftId = this.unwrapReactiveOrComputedIfPossible(leftId);
+      left = this.sr.exprNodes.get(leftId);
+      rightId = this.unwrapReactiveOrComputedIfPossible(rightId);
+      right = this.sr.exprNodes.get(rightId);
+
+      // Try to find an overloaded operator on the left operand's type
+      const leftTypeUse = this.sr.typeUseNodes.get(left.type);
+      const leftTypeDef = this.sr.typeDefNodes.get(leftTypeUse.type);
+
+      if (leftTypeDef.variant === Semantic.ENode.StructDatatype) {
+        const original = this.sr.cc.typeDefNodes.get(leftTypeDef.originalCollectedDefinition);
+        assert(original.variant === Collect.ENode.StructTypeDef);
+
+        const structScope = this.sr.cc.scopeNodes.get(original.lexicalScope);
+        assert(structScope.variant === Collect.ENode.StructLexicalScope);
+
+        // Map binary operations to overloaded operators
+        const operatorMap: Record<EBinaryOperation, EOverloadedOperator | null> = {
+          [EBinaryOperation.Equal]: EOverloadedOperator.Equal,
+          [EBinaryOperation.NotEqual]: EOverloadedOperator.NotEqual,
+          [EBinaryOperation.LessThan]: EOverloadedOperator.LessThan,
+          [EBinaryOperation.GreaterThan]: EOverloadedOperator.GreaterThan,
+          [EBinaryOperation.LessEqual]: EOverloadedOperator.LessThanOrEqual,
+          [EBinaryOperation.GreaterEqual]: EOverloadedOperator.GreaterThanOrEqual,
+          [EBinaryOperation.Add]: EOverloadedOperator.Add,
+          [EBinaryOperation.Subtract]: EOverloadedOperator.Sub,
+          [EBinaryOperation.Multiply]: EOverloadedOperator.Mul,
+          [EBinaryOperation.Divide]: EOverloadedOperator.Div,
+          [EBinaryOperation.Modulo]: EOverloadedOperator.Mod,
+          [EBinaryOperation.BitwiseOr]: null,
+          [EBinaryOperation.BoolAnd]: null,
+          [EBinaryOperation.BoolOr]: null,
+        };
+
+        const overloadedOp = operatorMap[binaryExpr.operation];
+        if (overloadedOp !== null) {
+          const overloadGroupId = [...structScope.symbols].find((mId) => {
+            const m = this.sr.cc.symbolNodes.get(mId);
+            return (
+              m.variant === Collect.ENode.FunctionOverloadGroupSymbol &&
+              m.overloadedOperator === overloadedOp
+            );
+          });
+
+          if (overloadGroupId) {
+            // Found an overloaded operator, try to use it
+            const decisiveArguments = [{ index: 0, exprId: rightId }];
+
+            try {
+              const operatorId = this.FunctionOverloadChoose(
+                overloadGroupId,
+                decisiveArguments,
+                binaryExpr.sourceloc,
+              );
+
+              const collectedMethod = this.sr.cc.symbolNodes.get(operatorId);
+              assert(collectedMethod.variant === Collect.ENode.FunctionSymbol);
+
+              let elaboratedStructCache = null as Semantic.StructDef | null;
+              for (const [_, cache] of this.sr.elaboratedStructDatatypes) {
+                for (const entry of cache) {
+                  if (entry.result === leftTypeUse.type) {
+                    elaboratedStructCache = entry;
+                  }
+                }
+              }
+              assert(elaboratedStructCache);
+
+              const parameterPackTypes = this.prepareParameterPackTypes(
+                collectedMethod.name,
+                collectedMethod.parameters,
+                undefined,
+                binaryExpr.sourceloc,
+              );
+
+              const elaboratedMethodId = this.withContext(
+                {
+                  context: Semantic.mergeSubstitutionContext(
+                    elaboratedStructCache.substitutionContext,
+                    this.currentContext,
+                    {
+                      currentScope: this.currentContext.currentScope,
+                      genericsScope: this.currentContext.currentScope,
+                      instanceDeps: {
+                        instanceDependsOn: new Map(),
+                        structMembersDependOn: new Map(),
+                        symbolDependsOn: new Map(),
+                      },
+                    },
+                  ),
+                  inAttemptExpr: null,
+                  inFunction: null,
+                },
+                () =>
+                  this.elaborateFunctionSymbolWithGenerics(
+                    this.elaborateFunctionSignature(operatorId),
+                    [],
+                    binaryExpr.sourceloc,
+                    parameterPackTypes,
+                    {
+                      type: "method",
+                      thisExprType: makeTypeUse(
+                        this.sr,
+                        leftTypeUse.type,
+                        EDatatypeMutability.Mut,
+                        "force-no-inline",
+                        binaryExpr.sourceloc,
+                      )[1],
+                    },
+                  ),
+              );
+              assert(elaboratedMethodId);
+              const elaboratedMethod = this.sr.symbolNodes.get(elaboratedMethodId);
+              assert(elaboratedMethod.variant === Semantic.ENode.FunctionSymbol);
+
+              const operatorFunctype = this.getTypeDef(elaboratedMethod.type);
+              assert(operatorFunctype.variant === Semantic.ENode.FunctionDatatype);
+
+              // Create a callable expression that wraps the method with the this pointer
+              const callableExpr = this.sr.b.callableExpr(
+                elaboratedMethodId,
+                {
+                  type: "method",
+                  thisExprType: makeTypeUse(
+                    this.sr,
+                    leftTypeUse.type,
+                    EDatatypeMutability.Mut,
+                    "force-no-inline",
+                    binaryExpr.sourceloc,
+                  )[1],
+                },
+                {
+                  type: "method",
+                  thisExpr: leftId,
+                },
+                binaryExpr.sourceloc,
+              )[1];
+
+              // Apply implicit conversions for the right operand
+              const rightParam = operatorFunctype.parameters[0];
+              const convertedRight = Conversion.MakeConversionOrThrow(
+                this.sr,
+                rightId,
+                rightParam.type,
+                this.currentContext.constraints,
+                binaryExpr.sourceloc,
+                Conversion.Mode.Implicit,
+                inference?.unsafe || false,
+              );
+
+              assert(this.inFunction);
+              return this.sr.b.callExpr(
+                callableExpr,
+                [convertedRight],
+                this.inFunction,
+                binaryExpr.sourceloc,
+              );
+            } catch (e) {
+              // If overload resolution fails, fall through to default behavior
+              console.error(
+                "Operator overload resolution failed:",
+                e instanceof Error ? e.message : String(e),
+              );
+            }
+          }
+        }
+      }
+
+      // Fall through to default comparison behavior
+      return this.sr.b.binaryExpr(
+        leftId,
+        rightId,
+        binaryExpr.operation,
+        Conversion.makeBinaryResultType(
+          this.sr,
+          leftId,
+          rightId,
+          binaryExpr.operation,
+          binaryExpr.sourceloc,
+        ),
+        binaryExpr.sourceloc,
+      );
     } else if (binaryExpr.operation === EBinaryOperation.Add) {
       let [left, leftId] = this.expr(binaryExpr.left, inference);
       let [right, rightId] = this.expr(binaryExpr.right, inference);

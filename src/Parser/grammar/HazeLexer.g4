@@ -50,6 +50,12 @@ OPERATORMUL: 'operator*';
 OPERATORDIV: 'operator/';
 OPERATORMOD: 'operator%';
 OPERATORAS: 'operator as';
+OPERATOREQ: 'operator==';
+OPERATORNEQ: 'operator!=';
+OPERATORLT: 'operator<';
+OPERATORGT: 'operator>';
+OPERATORLTE: 'operator<=';
+OPERATORGTE: 'operator>=';
 
 TRUE: 'true';
 FALSE: 'false';

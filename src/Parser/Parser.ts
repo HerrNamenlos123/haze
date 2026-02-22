@@ -1233,6 +1233,24 @@ class ASTBuilder extends HazeParserListener {
     } else if (name === "operator[]") {
       operatorOverloading = { operator: EOverloadedOperator.Subscript };
       name = "__operator_subscript";
+    } else if (name === "operator==") {
+      operatorOverloading = { operator: EOverloadedOperator.Equal };
+      name = "__operator_eq";
+    } else if (name === "operator!=") {
+      operatorOverloading = { operator: EOverloadedOperator.NotEqual };
+      name = "__operator_neq";
+    } else if (name === "operator<") {
+      operatorOverloading = { operator: EOverloadedOperator.LessThan };
+      name = "__operator_lt";
+    } else if (name === "operator>") {
+      operatorOverloading = { operator: EOverloadedOperator.GreaterThan };
+      name = "__operator_gt";
+    } else if (name === "operator<=") {
+      operatorOverloading = { operator: EOverloadedOperator.LessThanOrEqual };
+      name = "__operator_lte";
+    } else if (name === "operator>=") {
+      operatorOverloading = { operator: EOverloadedOperator.GreaterThanOrEqual };
+      name = "__operator_gte";
     }
 
     let methodRequiredMutability: EDatatypeMutability.Mut | EDatatypeMutability.Const | null = null;

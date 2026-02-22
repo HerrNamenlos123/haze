@@ -297,6 +297,61 @@ hzstd_fs_error_t hzstd_write_file_text(hzstd_allocator_t allocator, hzstd_str_t 
   };
 }
 
+hzstd_fs_error_t
+hzstd_write_file_binary(hzstd_allocator_t allocator, hzstd_str_t path, void* buffer, hzstd_int_t length)
+{
+  if (!buffer || length <= 0) {
+    return (hzstd_fs_error_t) {
+      .code = hzstd_fs_error_code_invalid_path,
+      .message = HZSTD_STRING("invalid buffer or length", 24),
+    };
+  }
+
+  char* nullTermPath = hzstd_cstr_from_str(allocator, path);
+  if (!nullTermPath) {
+    return (hzstd_fs_error_t) {
+      .code = hzstd_fs_error_code_out_of_memory,
+      .message = HZSTD_STRING("out of memory", 13),
+    };
+  }
+
+  // Create parent directory, not the file path itself
+  hzstd_str_t parent = hzstd_fs_parent_dir(nullTermPath);
+  hzstd_mkdir_recursive(parent);
+
+  FILE* f = fopen(nullTermPath, "wb");
+  if (!f) {
+    int err = errno;
+    return (hzstd_fs_error_t) {
+      .code = hzstd_fs_error_from_errno(err),
+      .message = strerror(err) ? hzstd_str_from_cstr_dup(allocator, strerror(err)) : HZSTD_STRING(NULL, 0),
+    };
+  }
+
+  size_t written = fwrite(buffer, 1, (size_t)length, f);
+  if (written < (size_t)length) {
+    int err = errno;
+    fclose(f);
+    return (hzstd_fs_error_t) {
+      .code = hzstd_fs_error_code_io_error,
+      .message = strerror(err) ? hzstd_str_from_cstr_dup(allocator, strerror(err)) : HZSTD_STRING(NULL, 0),
+    };
+  }
+
+  if (fclose(f) != 0) {
+    int err = errno;
+    return (hzstd_fs_error_t) {
+      .code = hzstd_fs_error_from_errno(err),
+      .message = strerror(err) ? hzstd_str_from_cstr_dup(allocator, strerror(err)) : HZSTD_STRING(NULL, 0),
+    };
+  }
+
+  return (hzstd_fs_error_t) {
+    .code = hzstd_fs_error_code_none,
+    .message = HZSTD_STRING(NULL, 0),
+  };
+}
+
 hzstd_fs_error_t hzstd_mkdir_recursive(hzstd_str_t path)
 {
   if (path.data == NULL || path.length == 0) {

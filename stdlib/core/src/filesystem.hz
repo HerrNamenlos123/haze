@@ -25,6 +25,7 @@ namespace ffi {
     extern C hzstd_read_file_binary(allocator: Allocator, path: str, buffer: cptr, length: int): inline hzstd_fs_error_t :: final;
 
     extern C hzstd_write_file_text(allocator: Allocator, path: str, input: str): inline hzstd_fs_error_t :: final;
+    extern C hzstd_write_file_binary(allocator: Allocator, path: str, buffer: cptr, length: int): inline hzstd_fs_error_t :: final;
 
     extern C hzstd_mkdir_recursive(path: str): inline hzstd_fs_error_t :: final;
 
@@ -134,6 +135,17 @@ export namespace fs {
         }
     }
 
+    export open(path: str) {
+        return open(Alloc.heap(), path);
+    }
+
+    export open(allocator: Allocator, path: str) {
+        // TODO: Implement this. This should return a DataSource.
+        // DataSource is supposed to be a generic data acquisition tool for code that just needs data.
+        // They don't care if the data is loaded from memory, from disk or streamed in chunks.
+        // But currently can't do it yet because we don't have a good way to close the file handle.
+    }
+
     export readBinary(path: str) {
         return readBinary(Alloc.heap(), path);
     }
@@ -156,6 +168,22 @@ export namespace fs {
         }
         else {
             return Result<Bytes, Error>.Err(mapErrorEnum(result.code));
+        }
+    }
+
+    export writeBinary(path: str, data: Bytes) {
+        return writeBinary(Alloc.heap(), path, data);
+    }
+
+    export writeBinary(allocator: Allocator, path: str, data: Bytes): Result<none, Error> {
+        let ptr = none as cptr;
+        __c__("ptr = data.basePtr + data.offset;");
+        let result = ffi.hzstd_write_file_binary(allocator, path, ptr, data.length);
+        if result.code == ffi.hzstd_fs_error_code_none {
+            return Result<none, Error>.Ok(none);
+        }
+        else {
+            return Result<none, Error>.Err(mapErrorEnum(result.code));
         }
     }
 
@@ -301,7 +329,7 @@ export namespace fs {
         interval: real;
         nextPollTime: real;
         lastState?: FileState;
-        lastContent?: str;
+        lastContent?: Bytes;
         callback: (event: FileChangeEvent) => void;
         active: bool;
         strategy: WatchStrategy;
@@ -339,7 +367,7 @@ export namespace fs {
         config?: WatchConfig,
     ): WatchHandle {
         let state = statFile(path);
-        let content: str | none = none;
+        let content: Bytes | none = none;
 
         if !config {
             config = WatchConfig {};
@@ -504,10 +532,47 @@ export namespace fs {
         }, { 
             immediate: true, 
             interval: options.interval,
-            strategy: fs.WatchStrategy.DiffContent 
+            strategy: fs.WatchStrategy.ModificationDate 
         });
 
         return text;
+    }
+
+    export watchBinary(path: str, options: FileWatchOptions = {}) {
+        let data = reactive<Bytes | none>(none);
+
+        fs.watch(path, (event: fs.FileChangeEvent): void => {
+            let result = fs.readBinary(path);
+            if result {
+                data := result;
+            }
+        }, { 
+            immediate: true, 
+            interval: options.interval,
+            strategy: fs.WatchStrategy.ModificationDate,
+        });
+
+        return data;
+    }
+
+    export watchFile(path: str, options: FileWatchOptions = {}) {
+        // TODO: Find a way to deal with file handles with data sources, so we can actually
+        // support streaming through datasources, so files are opened and later closed reliably
+        // DataSource should be able to handle large files.
+        // let data = reactive<Bytes | none>(none);
+
+        // fs.watch(path, (event: fs.FileChangeEvent): void => {
+        //     let result = fs.open(path);
+        //     if result {
+        //         data := result;
+        //     }
+        // }, { 
+        //     immediate: true, 
+        //     interval: options.interval,
+        //     strategy: fs.WatchStrategy.ModificationDate,
+        // });
+
+        // return text;
     }
 
     // // Static loading

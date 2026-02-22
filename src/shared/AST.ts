@@ -29,6 +29,12 @@ export enum EOverloadedOperator {
   Assign,
   Subscript,
   Cast,
+  Equal,
+  NotEqual,
+  LessThan,
+  GreaterThan,
+  LessThanOrEqual,
+  GreaterThanOrEqual,
 }
 
 export enum ELiteralUnit {
