@@ -30,6 +30,8 @@ typedef struct {
 // } hzstd_file_t;
 
 hzstd_fs_error_t hzstd_read_file_text(hzstd_allocator_t allocator, hzstd_str_t path, hzstd_str_ref_t* outputBuffer);
+hzstd_fs_error_t
+hzstd_read_file_binary(hzstd_allocator_t allocator, hzstd_str_t path, void* buffer, hzstd_int_t length);
 
 hzstd_fs_error_t hzstd_write_file_text(hzstd_allocator_t allocator, hzstd_str_t path, hzstd_str_t input);
 

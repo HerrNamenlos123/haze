@@ -103,7 +103,7 @@ fn process_rounded_rect_outline(in: VSOut) -> vec4<f32> {
     let fw = fwidth(lineSDF);
     let fraction = clamp(0.5 - lineSDF / fw, 0.0, 1.0);
 
-    return vec4(1, 0, 0, 1);
+    // return vec4(1, 0, 0, 1);
 
     if (fraction == 0.0) {
         discard;

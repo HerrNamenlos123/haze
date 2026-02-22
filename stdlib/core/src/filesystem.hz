@@ -22,6 +22,7 @@ namespace ffi {
     };
 
     extern C hzstd_read_file_text(allocator: Allocator, path: str, outputBuffer: hzstd_str_ref_t): inline hzstd_fs_error_t :: final;
+    extern C hzstd_read_file_binary(allocator: Allocator, path: str, buffer: cptr, length: int): inline hzstd_fs_error_t :: final;
 
     extern C hzstd_write_file_text(allocator: Allocator, path: str, input: str): inline hzstd_fs_error_t :: final;
 
@@ -118,11 +119,11 @@ export namespace fs {
     }
 
 
-    export readFile(path: str) {
-        return readFile(Alloc.heap(), path);
+    export readText(path: str) {
+        return readText(Alloc.heap(), path);
     }
 
-    export readFile(allocator: Allocator, path: str): Result<str, Error> {
+    export readText(allocator: Allocator, path: str): Result<str, Error> {
         let output = ffi.hzstd_str_ref_t { data: "" } with allocator;
         let result = ffi.hzstd_read_file_text(allocator, path, output);
         if result.code == ffi.hzstd_fs_error_code_none {
@@ -133,11 +134,36 @@ export namespace fs {
         }
     }
 
-    export writeFile(path: str, text: str) {
-        return writeFile(Alloc.heap(), path, text);
+    export readBinary(path: str) {
+        return readBinary(Alloc.heap(), path);
     }
 
-    export writeFile(allocator: Allocator, path: str, text: str): Result<none, Error> {
+    export readBinary(allocator: Allocator, path: str): Result<Bytes, Error> {
+        let stat = fs.statFile(path);
+        if !stat {
+            return Result<Bytes, Error>.Err(Error.NotFound);
+        }
+
+        if stat.size == 0 {
+            return Bytes();
+        }
+        
+        let buffer = ByteBuffer(stat.size); // Since we read binary, the stat size actually matches the number of bytes
+        let result = ffi.hzstd_read_file_binary(allocator, path, buffer.buffer, buffer.length);
+        if result.code == ffi.hzstd_fs_error_code_none {
+            buffer.commit();
+            return Result<Bytes, Error>.Ok(buffer.bytes());
+        }
+        else {
+            return Result<Bytes, Error>.Err(mapErrorEnum(result.code));
+        }
+    }
+
+    export writeText(path: str, text: str) {
+        return writeText(Alloc.heap(), path, text);
+    }
+
+    export writeText(allocator: Allocator, path: str, text: str): Result<none, Error> {
         let result = ffi.hzstd_write_file_text(allocator, path, text);
         if result.code == ffi.hzstd_fs_error_code_none {
             return Result<none, Error>.Ok(none);
@@ -322,7 +348,7 @@ export namespace fs {
 
         if config.strategy == WatchStrategy.DiffContent {
             if state {
-                let fileResult = readFile(path);
+                let fileResult = readBinary(path);
                 if fileResult {
                     content = fileResult;
                 }
@@ -429,7 +455,7 @@ export namespace fs {
                         }
 
                         if lifecycle && lifecycle.kind == FileChangeKind.Modified {
-                            let fileResult = readFile(w.path);
+                            let fileResult = readBinary(w.path);
                             if fileResult {
                                 let newContent = fileResult;
 
@@ -471,12 +497,13 @@ export namespace fs {
         let text = reactive<str | none>(none);
 
         fs.watch(path, (event: fs.FileChangeEvent): void => {
-            let result = fs.readFile(path);
+            let result = fs.readText(path);
             if result {
                 text := result;
             }
         }, { 
             immediate: true, 
+            interval: options.interval,
             strategy: fs.WatchStrategy.DiffContent 
         });
 
