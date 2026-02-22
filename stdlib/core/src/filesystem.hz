@@ -463,7 +463,11 @@ export namespace fs {
         ctx.inPoll = false;
     }
 
-    export watchText(path: str) {
+    export struct FileWatchOptions {
+        interval: real = 0.1;
+    }
+
+    export watchText(path: str, options: FileWatchOptions = {}) {
         let text = reactive<str | none>(none);
 
         fs.watch(path, (event: fs.FileChangeEvent): void => {

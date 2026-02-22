@@ -69,7 +69,7 @@ externLanguage: id;
 
 functionDefinition: (export=EXPORT)? (extern=EXTERN externLang=externLanguage? pub=PUB? noemit=NOEMIT?)? id (LANGLE id (COMMA id)* RANGLE)? LB params RB (COLON datatype)? requiresBlock? (DOUBLEARROW)? (funcbody | SEMI?);
 lambda: LB params RB (COLON datatype)? requiresBlock? DOUBLEARROW funcbody;
-param: id QUESTIONMARK? COLON (datatype | ellipsis);
+param: id QUESTIONMARK? COLON (datatype | ellipsis) (EQUALS expr)?;
 params: (param (COMMA param)* (COMMA ellipsis)? COMMA?)? | ellipsis;
 ellipsis: ELLIPSIS;
 

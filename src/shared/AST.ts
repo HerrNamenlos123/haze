@@ -223,6 +223,7 @@ export type ASTParam = {
   name: string;
   datatype: ASTTypeUse;
   optional: boolean;
+  defaultValue: ASTExpr | null;
   sourceloc: SourceLoc;
 };
 

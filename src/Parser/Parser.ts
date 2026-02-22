@@ -901,22 +901,30 @@ class ASTBuilder extends HazeParserListener {
     const start = this.getMark(p);
     const produced = this.stack.splice(start);
 
-    // datatype is optional and is the only stack child
+    let i = 0;
+
+    // datatype is required unless it's a parameter pack (ellipsis)
     const datatype = p.datatype()
-      ? produced[0]
+      ? produced[i++]
       : {
           variant: "ParameterPack",
           sourceloc: this.loc(p),
         };
 
-    if (p.datatype() && produced.length !== 1) {
-      throw new InternalError("param datatype stack mismatch");
+    let defaultValue: ASTExpr | null = null;
+    if (p.expr()) {
+      defaultValue = produced[i++] as ASTExpr;
+    }
+
+    if (i !== produced.length) {
+      throw new InternalError("param stack mismatch");
     }
 
     this.stack.push({
       datatype,
       name: p.id().getText(),
       optional: Boolean(p.QUESTIONMARK()),
+      defaultValue,
       sourceloc: this.loc(p),
     } satisfies ASTParam);
   };

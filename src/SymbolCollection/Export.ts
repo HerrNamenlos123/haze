@@ -252,13 +252,20 @@ export function ExportSymbol(
       file +=
         "(" +
         functype.parameters
-          .map(
-            (p, i) =>
-              `${symbol.parameterNames[i]}${p.optional ? "?" : ""}: ${Semantic.serializeTypeUse(
-                sr,
-                p.type,
-              )}`,
-          )
+          .map((p, i) => {
+            let paramStr = `${symbol.parameterNames[i]}${p.optional ? "?" : ""}: ${Semantic.serializeTypeUse(
+              sr,
+              p.type,
+            )}`;
+            // Add default value if present
+            const defaultValue = symbol.parameterDefaultValues.find(
+              (dv) => dv.parameterName === symbol.parameterNames[i],
+            );
+            if (defaultValue) {
+              paramStr += ` = ${Semantic.serializeExpr(sr, defaultValue.value)}`;
+            }
+            return paramStr;
+          })
           .join(", ") +
         (functype.vararg ? ", ..." : "") +
         ")" +

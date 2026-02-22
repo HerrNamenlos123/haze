@@ -591,6 +591,29 @@ export class SemanticElaborator {
     const calledExprTypeUse = this.getTypeUse(calledExpr.type);
     const calledExprType = this.getTypeDef(calledExprTypeUse.type);
 
+    // Try to extract the function symbol if calling a specific function
+    let calledFunctionSymbol: Semantic.FunctionSymbol | undefined = undefined;
+    let calledCollectedFunctionSymbol: Collect.FunctionSymbol | undefined = undefined;
+    if (calledExpr.variant === Semantic.ENode.SymbolValueExpr) {
+      const sym = this.sr.symbolNodes.get(calledExpr.symbol);
+      if (sym.variant === Semantic.ENode.FunctionSymbol) {
+        calledFunctionSymbol = sym;
+        const collectedSym = this.sr.cc.symbolNodes.get(sym.originalCollectedFunction);
+        if (collectedSym.variant === Collect.ENode.FunctionSymbol) {
+          calledCollectedFunctionSymbol = collectedSym;
+        }
+      }
+    } else if (calledExpr.variant === Semantic.ENode.CallableExpr) {
+      const sym = this.sr.symbolNodes.get(calledExpr.functionSymbol);
+      if (sym.variant === Semantic.ENode.FunctionSymbol) {
+        calledFunctionSymbol = sym;
+        const collectedSym = this.sr.cc.symbolNodes.get(sym.originalCollectedFunction);
+        if (collectedSym.variant === Collect.ENode.FunctionSymbol) {
+          calledCollectedFunctionSymbol = collectedSym;
+        }
+      }
+    }
+
     // Helper: Elaborate all calling arguments with type hints from parameter types
     const elaborateCallingArguments = (
       parameterTypes: {
@@ -622,14 +645,32 @@ export class SemanticElaborator {
       }[],
       hasVararg: boolean,
       hasParameterPack: boolean,
+      functionSymbol?: Semantic.FunctionSymbol,
+      collectedFunctionSymbol?: Collect.FunctionSymbol,
     ): Semantic.ExprId[] => {
-      // Count required parameters (non-optional, non-pack)
-      const requiredParams = parameterTypes.filter(
-        (p) => !p.optional && !this.isParameterPackType(p.type),
-      );
-      const optionalParams = parameterTypes.filter(
-        (p) => p.optional && !this.isParameterPackType(p.type),
-      );
+      // Count required parameters (non-optional, non-pack, without defaults)
+      const requiredParams = parameterTypes.filter((p, i) => {
+        // Check if this parameter has a default value
+        // First try the elaborated function symbol's parameterDefaultValues
+        if (functionSymbol && i < functionSymbol.parameterNames.length) {
+          const paramName = functionSymbol.parameterNames[i];
+          if (functionSymbol.parameterDefaultValues.some((dv) => dv.parameterName === paramName)) {
+            return false; // Has default
+          }
+        }
+
+        // Fallback to the collected function symbol
+        if (
+          collectedFunctionSymbol &&
+          i < collectedFunctionSymbol.parameters.length &&
+          collectedFunctionSymbol.parameters[i].defaultParameterValue !== null
+        ) {
+          return false; // Has default
+        }
+
+        // No default, check if it's optional or a parameter pack
+        return !p.optional && !this.isParameterPackType(p.type);
+      });
 
       // Check argument count
       if (hasVararg || hasParameterPack) {
@@ -652,9 +693,63 @@ export class SemanticElaborator {
         );
       }
 
-      // Fill in missing optional arguments with `none`
+      // Fill in missing arguments with defaults or `none` for optional
       const result = [...givenArgs];
       for (let i = givenArgs.length; i < parameterTypes.length; i++) {
+        // Try to get default from elaborated function symbol first
+        if (functionSymbol && i < functionSymbol.parameterNames.length) {
+          const paramName = functionSymbol.parameterNames[i];
+          const defaultValue = functionSymbol.parameterDefaultValues.find(
+            (dv) => dv.parameterName === paramName,
+          );
+          if (defaultValue) {
+            result.push(defaultValue.value);
+            continue;
+          }
+        }
+
+        // If not in elaborated symbol, check collected function symbol
+        if (
+          collectedFunctionSymbol &&
+          i < collectedFunctionSymbol.parameters.length &&
+          collectedFunctionSymbol.parameters[i].defaultParameterValue !== null
+        ) {
+          const defaultParamValue = collectedFunctionSymbol.parameters[i].defaultParameterValue!;
+          const paramType = parameterTypes[i].type;
+
+          const value = this.sr.cc.exprNodes.get(defaultParamValue);
+          let defaultExprId: Semantic.ExprId;
+          if (value.variant === Collect.ENode.SymbolValueExpr && value.name === "default") {
+            if (value.genericArgs.length !== 0) {
+              throw new CompilerError(
+                `'default' initializer cannot take any generics`,
+                value.sourceloc,
+              );
+            }
+            defaultExprId = Conversion.MakeDefaultValue(
+              this.sr,
+              paramType,
+              collectedFunctionSymbol.parameters[i].sourceloc,
+            );
+          } else {
+            defaultExprId = this.expr(defaultParamValue, {
+              gonnaInstantiateStructWithType: paramType,
+              unsafe: false,
+            })[1];
+          }
+          const convertedDefault = Conversion.MakeConversionOrThrow(
+            this.sr,
+            defaultExprId,
+            paramType,
+            this.currentContext.constraints,
+            collectedFunctionSymbol.parameters[i].sourceloc,
+            Conversion.Mode.Implicit,
+            false,
+          );
+          result.push(convertedDefault);
+          continue;
+        }
+
         if (parameterTypes[i].optional) {
           result.push(this.sr.b.noneExpr()[1]);
         }
@@ -724,6 +819,8 @@ export class SemanticElaborator {
         params,
         ftype.vararg,
         hasParameterPack,
+        calledFunctionSymbol,
+        calledCollectedFunctionSymbol,
       );
       const finalArgs = convertArguments(preparedArgs, params, ftype.vararg, hasParameterPack);
 
@@ -746,6 +843,8 @@ export class SemanticElaborator {
         calledExprType.parameters,
         calledExprType.vararg,
         hasParameterPack,
+        calledFunctionSymbol,
+        calledCollectedFunctionSymbol,
       );
       const actualArgs = convertArguments(
         preparedArgs,
@@ -855,6 +954,8 @@ export class SemanticElaborator {
         constructorFunctype.parameters,
         constructorFunctype.vararg,
         hasParameterPack,
+        elaboratedMethod,
+        undefined,
       );
       const finalArgs = convertArguments(
         preparedArgs,
@@ -890,6 +991,8 @@ export class SemanticElaborator {
         paramTypes,
         false,
         hasParameterPack,
+        undefined,
+        undefined,
       );
       const finalArgs = convertArguments(preparedArgs, paramTypes, false, hasParameterPack);
 
@@ -2895,7 +2998,14 @@ export class SemanticElaborator {
           continue;
         }
 
-        if (maxArgIndex < signature.parameters.length - 1) {
+        // Count required parameters (non-optional, without defaults)
+        const requiredParamCount = overload.parameters.filter((p, i) => {
+          const hasDefault = p.defaultParameterValue !== null;
+          const isOptional = p.optional;
+          return !hasDefault && !isOptional;
+        }).length;
+
+        if (maxArgIndex < requiredParamCount - 1) {
           matchingSignatures.push({
             matches: false,
             signature: signatureId,
@@ -3338,6 +3448,7 @@ export class SemanticElaborator {
           generics: genericArgs,
           staticMethod: func.staticMethod,
           parameterPack: false, // set later
+          parameterDefaultValues: [], // set later
           methodOf: methodOf,
           methodType: func.methodType,
           parentSymbolId: parentSymbolId,
@@ -3476,6 +3587,76 @@ export class SemanticElaborator {
           })
           .filter((p) => Boolean(p))
           .map((p) => p!);
+
+        // Validate that non-default parameters don't follow default or optional parameters
+        let hasSeenDefaultOrOptional = false;
+        for (let i = 0; i < func.parameters.length; i++) {
+          const param = func.parameters[i];
+          const hasDefault = param.defaultParameterValue !== null;
+          const isOptional = param.optional;
+
+          if (hasSeenDefaultOrOptional && !hasDefault && !isOptional) {
+            throw new CompilerError(
+              `Non-default parameter '${param.name}' cannot follow a default or optional parameter`,
+              param.sourceloc,
+            );
+          }
+
+          if (hasDefault || isOptional) {
+            hasSeenDefaultOrOptional = true;
+          }
+        }
+
+        // Elaborate default parameter values
+        for (const param of func.parameters) {
+          if (param.defaultParameterValue) {
+            const value = this.sr.cc.exprNodes.get(param.defaultParameterValue);
+            let defaultExprId: Semantic.ExprId;
+            if (value.variant === Collect.ENode.SymbolValueExpr && value.name === "default") {
+              if (value.genericArgs.length !== 0) {
+                throw new CompilerError(
+                  `'default' initializer cannot take any generics`,
+                  param.sourceloc,
+                );
+              }
+              const paramType = parameters.find(
+                (_p, i) => func.parameters[i].name === param.name,
+              )?.type;
+              if (!paramType) {
+                throw new CompilerError(
+                  `Cannot find type for parameter '${param.name}'`,
+                  param.sourceloc,
+                );
+              }
+              defaultExprId = Conversion.MakeDefaultValue(this.sr, paramType, param.sourceloc);
+            } else {
+              const paramType = parameters.find(
+                (_p, i) => func.parameters[i].name === param.name,
+              )?.type;
+              defaultExprId = this.expr(param.defaultParameterValue, {
+                gonnaInstantiateStructWithType: paramType,
+                unsafe: false,
+              })[1];
+            }
+            const paramType = parameters.find(
+              (_p, i) => func.parameters[i].name === param.name,
+            )?.type;
+            if (paramType) {
+              symbol.parameterDefaultValues.push({
+                parameterName: param.name,
+                value: Conversion.MakeConversionOrThrow(
+                  this.sr,
+                  defaultExprId,
+                  paramType,
+                  this.currentContext.constraints,
+                  param.sourceloc,
+                  Conversion.Mode.Implicit,
+                  false,
+                ),
+              });
+            }
+          }
+        }
 
         if (func.methodType === EMethodType.Method && !func.staticMethod) {
           assert(parentSymbolId);

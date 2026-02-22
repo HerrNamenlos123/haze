@@ -177,6 +177,10 @@ export namespace Semantic {
     generics: Semantic.ExprId[];
     parameterNames: string[];
     parameterPack: boolean;
+    parameterDefaultValues: {
+      parameterName: string;
+      value: Semantic.ExprId;
+    }[];
     methodRequiredMutability: EDatatypeMutability.Const | EDatatypeMutability.Mut | null;
     extern: EExternLanguage;
     scope: Semantic.BlockScopeId | null;

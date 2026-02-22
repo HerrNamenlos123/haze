@@ -300,6 +300,7 @@ export namespace Collect {
     name: string;
     type: Collect.TypeUseId;
     optional: boolean;
+    defaultParameterValue: Collect.ExprId | null;
     sourceloc: SourceLoc;
   };
 
@@ -1686,6 +1687,7 @@ function collectSymbol(
           name: p.name,
           type: collectTypeUse(cc, datatype, args),
           optional: p.optional,
+          defaultParameterValue: p.defaultValue ? collectExpr(cc, p.defaultValue, args) : null,
           sourceloc: p.sourceloc,
         };
       });
@@ -2610,6 +2612,7 @@ function collectExpr(
           return {
             name: p.name,
             optional: p.optional,
+            defaultParameterValue: p.defaultValue ? collectExpr(cc, p.defaultValue, args) : null,
             sourceloc: p.sourceloc,
             type: collectTypeUse(cc, p.datatype, args),
           };
