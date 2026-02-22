@@ -2984,12 +2984,16 @@ export class SemanticElaborator {
           continue;
         }
 
-        let maxArgIndex = 0;
+        // Calculate the actual number of arguments passed and the highest index
+        const argCount = calledWithArgs.length;
+        let maxArgIndex = -1;
         for (const arg of calledWithArgs) {
           if (arg.index > maxArgIndex) maxArgIndex = arg.index;
         }
 
-        if (maxArgIndex >= signature.parameters.length) {
+        // If any arguments were passed, maxArgIndex is the highest index
+        // Check if we're trying to pass arguments beyond what the signature accepts
+        if (argCount > 0 && maxArgIndex >= signature.parameters.length) {
           matchingSignatures.push({
             matches: false,
             signature: signatureId,
@@ -3005,11 +3009,13 @@ export class SemanticElaborator {
           return !hasDefault && !isOptional;
         }).length;
 
-        if (maxArgIndex < requiredParamCount - 1) {
+        // Check if we have enough arguments for the required parameters
+        // Use argCount (actual number of args) not maxArgIndex + 1
+        if (argCount < requiredParamCount) {
           matchingSignatures.push({
             matches: false,
             signature: signatureId,
-            reason: `Not enough parameters given`,
+            reason: `Not enough parameters given (requires ${requiredParamCount}, got ${argCount})`,
           });
           continue;
         }
