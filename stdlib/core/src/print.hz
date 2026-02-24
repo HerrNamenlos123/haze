@@ -23,7 +23,7 @@ namespace fmt {
         mut write(value: str) {
             let buffer = this.buffer;
             if buffer {
-                buffer.write(this.written, value);
+                buffer.writeAt(this.written, value);
             }
             this.written += value.length;
         }

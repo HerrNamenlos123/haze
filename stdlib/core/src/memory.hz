@@ -77,13 +77,22 @@ export opaque struct ByteBuffer {
         __c__("((hzstd_u8_t*)this->buffer)[index] = value;");
     }
 
-    mut write(startIndex: int, data: str) {
+    mut writeAt(startIndex: int, data: str) {
         if (startIndex < 0 || startIndex + data.length - 1 >= this.length) {
             sys.panic("Out of bounds access in ByteBuffer");
         }
 
         this.assertNotCommitted();
         __c__("memcpy((hzstd_u8_t*)this->buffer + startIndex, data.data, data.length);");
+    }
+
+    mut writeAt(startIndex: int, data: Bytes) {
+        if (startIndex < 0 || startIndex + data.length - 1 >= this.length) {
+            sys.panic("Out of bounds access in ByteBuffer");
+        }
+
+        this.assertNotCommitted();
+        __c__("memcpy((hzstd_u8_t*)this->buffer + startIndex, data.basePtr + data.offset, data.length);");
     }
 
     mut writeZero(startIndex: int, length: int) {

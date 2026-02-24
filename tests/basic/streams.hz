@@ -25,6 +25,7 @@ assertEqBytes(a: Bytes, b: Bytes, msg: str = "bytes not equal"): void {
 readAll(s: io.Stream): Bytes {
     let out = ByteBuffer(s.size());
 
+    let written = 0;
     let exit = false;
     while !exit {
         let chunk = s.read();
@@ -32,7 +33,8 @@ readAll(s: io.Stream): Bytes {
             exit = true; 
         }
         else {
-            out.write(chunk);
+            out.writeAt(written, chunk);
+            written += chunk.length;
         }
     }
 
@@ -53,7 +55,7 @@ readUntilEOF(s: io.Stream): void {
 // spec
 // ------------------------------------------------------------
 
-runStreamSpec(name: string, open: () => io.Stream): void {
+runStreamSpec(name: str, open: () => io.Stream): void {
 
     // ---------- stable EOF ----------
     do {
@@ -78,7 +80,7 @@ runStreamSpec(name: string, open: () => io.Stream): void {
         let size = s.size();
         let reference = readAllFrom(open);
 
-        let testPos = [
+        let testPos: []int = [
             0,
             size / 3,
             size / 2,
@@ -93,7 +95,7 @@ runStreamSpec(name: string, open: () => io.Stream): void {
             let rest = readAll(s2);
             let expected = reference.slice(pos, reference.length);
 
-            assertEqBytes(rest, expected, name + " seek mismatch at " + string(pos));
+            assertEqBytes(rest, expected, f"{name} seek mismatch at {pos}");
         }
     };
 
@@ -139,13 +141,13 @@ runStreamSpec(name: string, open: () => io.Stream): void {
 // ------------------------------------------------------------
 
 runChunkVariants(bytes: Bytes): void {
-    let sizes = [1, 7, 64, 511, 4096];
+    let sizes: []int = [1, 7, 64, 511, 4096];
 
-    let reference = readAllFrom(() => io.Stream.fromBytes(bytes, {chunkSize: 4096}));
+    let reference = readAllFrom(() => io.Stream.fromBytes(bytes, {chunkSize: 4096}) as io.Stream);
 
     for c in sizes {
-        let data = readAllFrom(() => io.Stream.fromBytes(bytes, {chunkSize: c}));
-        assertEqBytes(reference, data, "chunk dependence at " + string(c));
+        let data = readAllFrom(() => io.Stream.fromBytes(bytes, {chunkSize: c}) as io.Stream);
+        assertEqBytes(reference, data, f"chunk dependence at {c}");
     }
 }
 
@@ -164,7 +166,7 @@ main(): int {
     // reference backend spec
     runStreamSpec(
         "fromBytes",
-        () => io.Stream.fromBytes(bytes, {chunkSize: 97})
+        () => io.Stream.fromBytes(bytes, {chunkSize: 97}) as io.Stream
     );
 
     // chunk invariance

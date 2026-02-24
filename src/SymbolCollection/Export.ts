@@ -124,6 +124,10 @@ export function ExportTypeDef(
             assert(false);
           }
 
+          if (method.staticMethod) {
+            file += "static ";
+          }
+
           if (method.methodRequiredMutability === EDatatypeMutability.Mut) {
             file += "mut ";
           } else if (method.methodRequiredMutability === EDatatypeMutability.Const) {
