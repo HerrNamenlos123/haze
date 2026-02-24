@@ -1,15 +1,47 @@
 
 namespace embed {
-    // // Static embedding
-    // let a: str = embed.text("resources/shader.wgsl");
-    // let a: MemoryBuffer = embed.binary("font.ttf");
-    // let a: DataSource = embed.file("font.ttf");
+    export text<TPath>(_path: TPath): str {
+        return builtin.embed_file_text(TPath);
+    }
 
-    // // Static embedding + watching (filesystem dominates embedding if available)
-    // let a: Reactive<str> = embed.watchText("resources/shader.wgsl", { interval: 0.1 });
-    // let a: Reactive<MemoryBuffer> = embed.watchBinary("font.ttf", { interval: 0.1 });
-    // let a: Reactive<DataSource> = embed.watchFile("font.ttf", { interval: 0.1 });
+    export binary<TPath>(_path: TPath): Bytes {
+        return builtin.embed_file_binary(TPath);
+    }
 
-    // let message: str = datasource.text();
-    // let image: MemoryBuffer = datasource.binary();
+    export file<TPath>(_path: TPath): Bytes {
+        // DataSource embedding
+    }
+
+    export watchText<TPath>(path: TPath): Reactive<str> {
+        let data = reactive(builtin.embed_file_text(TPath));
+        fs.watch(TPath, (event: fs.FileChangeEvent) => {
+            if let d = fs.readText(path as str) {
+                data := d;
+            }
+        }, {
+            immediate: true, 
+            interval: options.interval,
+            strategy: fs.WatchStrategy.ModificationDate,
+        });
+        return data;
+    }
+
+    export watchBinary<TPath>(path: TPath): Reactive<Bytes> {
+        let data = reactive(builtin.embed_file_binary(TPath));
+        fs.watch(TPath, (event: fs.FileChangeEvent) => {
+            if let d = fs.readBinary(path as str) {
+                data := d;
+            }
+        }, {
+            immediate: true, 
+            interval: options.interval,
+            strategy: fs.WatchStrategy.ModificationDate,
+        });
+        return data;
+    }
+
+    export watchFile<TPath>(_path: TPath): Bytes {
+        // TODO: DataSource embedding
+        sys.panic("Not implemented yet");
+    }
 }

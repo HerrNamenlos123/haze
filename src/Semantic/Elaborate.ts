@@ -2626,6 +2626,23 @@ export class SemanticElaborator {
         memberAccess.sourceloc,
       );
 
+      const functionSignatureId = this.elaborateFunctionSignature(chosenOverloadId);
+
+      // Try to infer generic arguments if none were provided
+      let genericArgs = memberAccess.genericArgs.map((g) => this.expressionAsGenericArg(g));
+      if (genericArgs.length === 0 && collectedMethod.generics.length > 0) {
+        // Need to elaborate in a temporary context to infer types
+        const inferredArgs = this.inferGenericArgumentsFromCallSite(
+          functionSignatureId,
+          chosenOverloadId,
+          inference,
+          memberAccess.sourceloc,
+        );
+        if (inferredArgs !== null) {
+          genericArgs = inferredArgs;
+        }
+      }
+
       const elaboratedMethodId = this.withContext(
         {
           context: Semantic.mergeSubstitutionContext(
@@ -2646,8 +2663,8 @@ export class SemanticElaborator {
         },
         () =>
           this.elaborateFunctionSymbolWithGenerics(
-            this.elaborateFunctionSignature(chosenOverloadId),
-            memberAccess.genericArgs.map((g) => this.expressionAsGenericArg(g)),
+            functionSignatureId,
+            genericArgs,
             memberAccess.sourceloc,
             parameterPackTypes,
             {
@@ -3738,6 +3755,86 @@ export class SemanticElaborator {
       flow: blockFlow,
       writes: blockWrites,
     };
+  }
+
+  inferGenericArgumentsFromCallSite(
+    functionSignatureId: Semantic.SymbolId,
+    collectedFunctionSymbolId: Collect.SymbolId,
+    inference: Semantic.Inference,
+    sourceloc: SourceLoc,
+  ): Semantic.ExprId[] | null {
+    // Get the function signature which has elaborated parameter types
+    const functionSignature = this.sr.symbolNodes.get(functionSignatureId);
+    assert(functionSignature.variant === Semantic.ENode.FunctionSignature);
+
+    // Get the collected function to access its generic parameters
+    const collectedFunc = this.sr.cc.symbolNodes.get(collectedFunctionSymbolId);
+    assert(collectedFunc.variant === Collect.ENode.FunctionSymbol);
+
+    // No generics to infer
+    if (collectedFunc.generics.length === 0) {
+      return null;
+    }
+
+    // No inference data available
+    if (!inference?.gonnaCallFunctionWithParameterValues) {
+      return null;
+    }
+
+    // Map from generic parameter symbol ID to inferred type
+    const inferredTypes = new Map<Collect.SymbolId, Semantic.TypeUseId>();
+
+    // For each parameter, check if its type is directly a generic parameter
+    for (let i = 0; i < functionSignature.parameters.length; i++) {
+      const param = functionSignature.parameters[i];
+      const paramTypeUse = this.sr.typeUseNodes.get(param.type);
+      const paramTypeDef = this.sr.typeDefNodes.get(paramTypeUse.type);
+
+      // Check if this parameter's type is a generic parameter
+      if (paramTypeDef.variant === Semantic.ENode.GenericParameterDatatype) {
+        // Find the corresponding actual argument
+        const actualArg = inference.gonnaCallFunctionWithParameterValues.find(
+          (arg) => arg.index === i,
+        );
+
+        if (actualArg && actualArg.exprId !== null) {
+          // Get the type of the actual argument
+          const actualExpr = this.sr.exprNodes.get(actualArg.exprId);
+          
+          // If it's a literal expression, create a LiteralDatatype to preserve the value
+          let actualType: Semantic.TypeUseId;
+          if (actualExpr.variant === Semantic.ENode.LiteralExpr) {
+            actualType = this.sr.b.literalType(actualExpr.literal, sourceloc);
+          } else {
+            actualType = actualExpr.type;
+          }
+
+          // Map this generic parameter to the actual type
+          inferredTypes.set(paramTypeDef.collectedParameter, actualType);
+        }
+      }
+    }
+
+    // Check if all generic parameters were inferred
+    const inferredGenericArgs: Semantic.ExprId[] = [];
+    for (const genericParamSymbolId of collectedFunc.generics) {
+      const inferredType = inferredTypes.get(genericParamSymbolId);
+      if (!inferredType) {
+        // Could not infer this generic parameter
+        const genericSym = this.sr.cc.symbolNodes.get(genericParamSymbolId);
+        assert(genericSym.variant === Collect.ENode.GenericTypeParameterSymbol);
+        throw new CompilerError(
+          `Could not infer generic parameter '${genericSym.name}' for function '${collectedFunc.name}'. Please specify it explicitly.`,
+          sourceloc,
+        );
+      }
+
+      // Convert the type to an expression (as a type literal)
+      const typeAsExpr = this.sr.b.datatypeUseAsValue(inferredType, sourceloc);
+      inferredGenericArgs.push(typeAsExpr[1]);
+    }
+
+    return inferredGenericArgs;
   }
 
   elaborateFunctionSymbolWithGenerics(
@@ -5544,9 +5641,23 @@ export class SemanticElaborator {
       const functionSignature = this.sr.symbolNodes.get(functionSignatureId);
       assert(functionSignature.variant === Semantic.ENode.FunctionSignature);
 
+      // Try to infer generic arguments if none were provided
+      let genericArgs = memberAccessExpr.genericArgs.map((g) => this.expressionAsGenericArg(g));
+      if (genericArgs.length === 0 && funcsym.generics.length > 0) {
+        const inferredArgs = this.inferGenericArgumentsFromCallSite(
+          functionSignatureId,
+          chosenOverloadId,
+          inference,
+          memberAccessExpr.sourceloc,
+        );
+        if (inferredArgs !== null) {
+          genericArgs = inferredArgs;
+        }
+      }
+
       const functionSymbolId = this.elaborateFunctionSymbolWithGenerics(
         functionSignatureId,
-        memberAccessExpr.genericArgs.map((g) => this.expressionAsGenericArg(g)),
+        genericArgs,
         memberAccessExpr.sourceloc,
         paramPackTypes,
         null,
@@ -7909,9 +8020,25 @@ export class SemanticElaborator {
         symbolValue.sourceloc,
       );
 
+      const functionSignatureId = this.elaborateFunctionSignature(chosenOverloadId);
+
+      // Try to infer generic arguments if none were provided
+      let genericArgs = symbolValue.genericArgs.map((g) => this.expressionAsGenericArg(g));
+      if (genericArgs.length === 0 && chosenOverload.generics.length > 0) {
+        const inferredArgs = this.inferGenericArgumentsFromCallSite(
+          functionSignatureId,
+          chosenOverloadId,
+          inference,
+          symbolValue.sourceloc,
+        );
+        if (inferredArgs !== null) {
+          genericArgs = inferredArgs;
+        }
+      }
+
       const elaboratedSymbolId = this.elaborateFunctionSymbolWithGenerics(
-        this.elaborateFunctionSignature(chosenOverloadId),
-        symbolValue.genericArgs.map((g) => this.expressionAsGenericArg(g)),
+        functionSignatureId,
+        genericArgs,
         symbolValue.sourceloc,
         parameterPackTypes,
         null,

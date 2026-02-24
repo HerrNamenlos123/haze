@@ -522,12 +522,11 @@ export namespace fs {
     }
 
     export watchText(path: str, options: FileWatchOptions = {}) {
-        let text = reactive<str | none>(none);
+        let data = reactive<str | none>(none);
 
         fs.watch(path, (event: fs.FileChangeEvent): void => {
-            let result = fs.readText(path);
-            if result {
-                text := result;
+            if let d = fs.readText(path) {
+                data := d;
             }
         }, { 
             immediate: true, 
@@ -535,16 +534,15 @@ export namespace fs {
             strategy: fs.WatchStrategy.ModificationDate 
         });
 
-        return text;
+        return data;
     }
 
     export watchBinary(path: str, options: FileWatchOptions = {}) {
         let data = reactive<Bytes | none>(none);
 
         fs.watch(path, (event: fs.FileChangeEvent): void => {
-            let result = fs.readBinary(path);
-            if result {
-                data := result;
+            if let d = fs.readBinary(path) {
+                data := d;
             }
         }, { 
             immediate: true, 
