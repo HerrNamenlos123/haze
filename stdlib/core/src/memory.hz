@@ -182,6 +182,50 @@ export opaque inline struct Bytes {
         return result;
     }
 
+    slice(start?: int, end?: int): Bytes {
+        let len = this.length;
+
+        // --- resolve start ---
+        let s = 0;
+        if start {
+            s = start;
+            if s < 0 {
+                s = len + s;
+            }
+        }
+
+        // --- resolve end ---
+        let e = len;
+        if end {
+            e = end;
+            if e < 0 {
+                e = len + e;
+            }
+        }
+
+        // --- clamp to [0, len] ---
+        if s < 0 { s = 0; }
+        if s > len { s = len; }
+
+        if e < 0 { e = 0; }
+        if e > len { e = len; }
+
+        // --- empty if reversed ---
+        if e <= s {
+            return Bytes {
+                basePtr: this.basePtr,
+                offset: this.offset,
+                length: 0,
+            };
+        }
+
+        return Bytes {
+            basePtr: this.basePtr,
+            offset: this.offset + s,
+            length: e - s,
+        };
+    }
+
     string(): str {
         // TODO: Perform utf-8 validation once we have actual unicode support
         let result = "";

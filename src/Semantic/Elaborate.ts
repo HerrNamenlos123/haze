@@ -2981,6 +2981,7 @@ export class SemanticElaborator {
     assert(lexicalScope.variant === Collect.ENode.StructLexicalScope);
     const fieldScope = this.sr.cc.scopeNodes.get(collectedStruct.fieldScope);
     assert(fieldScope.variant === Collect.ENode.StructFieldScope);
+
     [...fieldScope.symbols, ...lexicalScope.symbols].forEach((symbolId) => {
       const symbol = this.sr.cc.symbolNodes.get(symbolId);
       if (symbol.variant === Collect.ENode.FunctionOverloadGroupSymbol) {
@@ -3007,9 +3008,6 @@ export class SemanticElaborator {
                 "force-no-inline",
                 semanticStruct.sourceloc,
               )[1],
-            },
-            {
-              addToMethods: semanticStruct.methods,
             },
           );
         });
@@ -3172,6 +3170,11 @@ export class SemanticElaborator {
       const struct = this.sr.typeDefNodes.get(existing);
       assert(struct.variant === Semantic.ENode.StructDatatype);
 
+      if (struct.membersBuilt && !struct.membersFinalized) {
+        struct.membersFinalized = true;
+        this.elaborateMembersOfStruct(existing, true);
+      }
+
       if (this.currentContext.elaborationRecursiveStructStack.length === 0) {
         // This is not in a chain (or already past the end of the chain), so fix the members if required
         if (!struct.methodsFinalized && !struct.methodsInProgress) {
@@ -3179,11 +3182,6 @@ export class SemanticElaborator {
           struct.methodsFinalized = true;
           this.elaborateMethodsAndTypedefsOfStruct(existing);
         }
-      }
-
-      if (struct.membersBuilt && !struct.membersFinalized) {
-        struct.membersFinalized = true;
-        this.elaborateMembersOfStruct(existing, true);
       }
 
       return existing;
@@ -3913,9 +3911,6 @@ export class SemanticElaborator {
     parentSymbolId: Semantic.SymbolId | null,
     paramPackTypes: Semantic.TypeUseId[],
     env: Semantic.EnvBlockType,
-    args?: {
-      addToMethods?: Semantic.SymbolId[];
-    },
   ): Semantic.SymbolId {
     const functionSignature = this.sr.symbolNodes.get(functionSignatureId);
     assert(functionSignature.variant === Semantic.ENode.FunctionSignature);
@@ -3960,11 +3955,11 @@ export class SemanticElaborator {
           return existing;
         }
 
-        let methodOf = null as Semantic.TypeDefId | null;
+        let childOf = null as Semantic.TypeDefId | null;
         if (parentSymbolId) {
           const parentSym = this.sr.symbolNodes.get(parentSymbolId);
           if (parentSym.variant === Semantic.ENode.TypeDefSymbol) {
-            methodOf = parentSym.datatype;
+            childOf = parentSym.datatype;
           }
         }
 
@@ -3980,7 +3975,7 @@ export class SemanticElaborator {
           staticMethod: func.staticMethod,
           parameterPack: false, // set later
           parameterDefaultValues: [], // set later
-          methodOf: methodOf,
+          methodOf: childOf,
           methodType: func.methodType,
           parentSymbolId: parentSymbolId,
           overloadedOperator: func.overloadedOperator,
@@ -4002,7 +3997,18 @@ export class SemanticElaborator {
           concrete: false, // assigned later
           originalCollectedFunction: functionSignature.originalFunction,
         });
-        args?.addToMethods?.push(symbolId);
+
+        if (childOf) {
+          const parent = this.sr.typeDefNodes.get(childOf);
+          assert(
+            parent.variant === Semantic.ENode.StructDatatype ||
+              parent.variant === Semantic.ENode.NamespaceDatatype,
+          );
+          if (parent.variant === Semantic.ENode.StructDatatype) {
+            parent.methods.push(symbolId);
+          }
+        }
+
         insertIntoFuncDefCache(this.sr, functionSignature.originalFunction, {
           genericArgs: genericArgs,
           paramPackTypes: paramPackTypes,
@@ -9297,6 +9303,10 @@ function getFromFuncDefCache(
     parentSymbolId: Semantic.SymbolId | null;
   },
 ) {
+  const functionSymbol = sr.cc.symbolNodes.get(symbolId);
+  // Validity check for myself
+  assert(functionSymbol.variant === Collect.ENode.FunctionSymbol);
+
   const entries = sr.elaboratedFuncdefSymbols.get(symbolId);
   if (entries === undefined) return;
 

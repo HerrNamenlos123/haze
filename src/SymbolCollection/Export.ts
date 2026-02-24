@@ -1,5 +1,5 @@
 import { Semantic } from "../Semantic/SemanticTypes";
-import { EExternLanguage, EOverloadedOperator } from "../shared/AST";
+import { EDatatypeMutability, EExternLanguage, EOverloadedOperator } from "../shared/AST";
 import { EMethodType } from "../shared/common";
 import { assert, formatSourceLoc } from "../shared/Errors";
 import {
@@ -122,6 +122,12 @@ export function ExportTypeDef(
             methodName = "operator[]";
           } else {
             assert(false);
+          }
+
+          if (method.methodRequiredMutability === EDatatypeMutability.Mut) {
+            file += "mut ";
+          } else if (method.methodRequiredMutability === EDatatypeMutability.Const) {
+            file += "const ";
           }
 
           if (functype.returnType) {

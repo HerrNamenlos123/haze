@@ -1,0 +1,174 @@
+
+// ------------------------------------------------------------
+// tiny test framework
+// ------------------------------------------------------------
+
+fail(msg: str): void {
+    sys.panic("TEST FAILED: " + msg);
+}
+
+assert(cond: bool, msg: str = "assertion failed"): void {
+    if !cond { fail(msg); }
+}
+
+assertEqBytes(a: Bytes, b: Bytes, msg: str = "bytes not equal"): void {
+    if a.length != b.length { fail(f"{msg} (length mismatch)"); }
+    for (let i = 0; i < a.length; i++) {
+        if a[i] != b[i] { fail(f"{msg} (diff at {i})"); }
+    }
+}
+
+// ------------------------------------------------------------
+// helpers
+// ------------------------------------------------------------
+
+readAll(s: io.Stream): Bytes {
+    let out = ByteBuffer(s.size());
+
+    let exit = false;
+    while !exit {
+        let chunk = s.read();
+        if chunk.length == 0 { 
+            exit = true; 
+        }
+        else {
+            out.write(chunk);
+        }
+    }
+
+    out.commit();
+    return out.bytes();
+}
+
+readAllFrom(open: () => io.Stream): Bytes {
+    let s = open();
+    return readAll(s);
+}
+
+readUntilEOF(s: io.Stream): void {
+    while s.read().length != 0 {}
+}
+
+// ------------------------------------------------------------
+// spec
+// ------------------------------------------------------------
+
+runStreamSpec(name: string, open: () => io.Stream): void {
+
+    // ---------- stable EOF ----------
+    do {
+        let s = open();
+        readUntilEOF(s);
+
+        assert(s.read().length == 0, name + " EOF unstable 1");
+        assert(s.read().length == 0, name + " EOF unstable 2");
+        assert(s.read().length == 0, name + " EOF unstable 3");
+    };
+
+    // ---------- deterministic iteration ----------
+    do {
+        let a = readAllFrom(open);
+        let b = readAllFrom(open);
+        assertEqBytes(a, b, name + " nondeterministic read");
+    };
+
+    // ---------- seek correctness ----------
+    do {
+        let s = open();
+        let size = s.size();
+        let reference = readAllFrom(open);
+
+        let testPos = [
+            0,
+            size / 3,
+            size / 2,
+            size - 1,
+            size
+        ];
+
+        for pos in testPos {
+            let s2 = open();
+            assert(s2.seek(pos, io.SeekMode.Start), name + " valid seek failed");
+
+            let rest = readAll(s2);
+            let expected = reference.slice(pos, reference.length);
+
+            assertEqBytes(rest, expected, name + " seek mismatch at " + string(pos));
+        }
+    };
+
+    // ---------- failed seek does not move ----------
+    do {
+        let s = open();
+        assert(s.seek(5, io.SeekMode.Start), name + " setup seek failed");
+
+        let before = s.read();
+
+        assert(!s.seek(-999999, io.SeekMode.Start), name + " invalid seek returned true");
+        let after = s.read();
+
+        assertEqBytes(before, after, name + " cursor moved after failed seek");
+    };
+
+    // ---------- rewind equivalence ----------
+    do {
+        let s = open();
+        let a = readAll(s);
+
+        assert(s.seek(0, io.SeekMode.Start), name + " rewind failed");
+        let b = readAll(s);
+
+        assertEqBytes(a, b, name + " rewind mismatch");
+    };
+
+    // ---------- lifetime safety ----------
+    do {
+        let s = open();
+        s.read();
+        s.res.release();
+
+        // All of these must panic, so selectively comment them in to check
+        s.read();
+        s.seek(0, io.SeekMode.Start);
+        s.size();
+    };
+}
+
+// ------------------------------------------------------------
+// chunk independence driver
+// ------------------------------------------------------------
+
+runChunkVariants(bytes: Bytes): void {
+    let sizes = [1, 7, 64, 511, 4096];
+
+    let reference = readAllFrom(() => io.Stream.fromBytes(bytes, {chunkSize: 4096}));
+
+    for c in sizes {
+        let data = readAllFrom(() => io.Stream.fromBytes(bytes, {chunkSize: c}));
+        assertEqBytes(reference, data, "chunk dependence at " + string(c));
+    }
+}
+
+// ------------------------------------------------------------
+// entry
+// ------------------------------------------------------------
+
+getBytes(): Bytes {
+    return embed.binary("tests/basic/streams.hz");
+}
+
+main(): int {
+
+    let bytes = getBytes();
+
+    // reference backend spec
+    runStreamSpec(
+        "fromBytes",
+        () => io.Stream.fromBytes(bytes, {chunkSize: 97})
+    );
+
+    // chunk invariance
+    runChunkVariants(bytes);
+
+    return 0;
+}

@@ -34,12 +34,10 @@ namespace io {
             this.cell.releaseFn(this.cell.data);
         }
 
-        _with<TRet>(fn: (value: T) => TRet): TRet {
+        use<TRet>(fn: (value: T) => TRet): TRet {
             this.assertAlive();
             return fn(this.cell.data);
         }
-
-        test() {}
     }
 
     export enum SeekMode {
@@ -51,32 +49,89 @@ namespace io {
     export opaque inline struct Stream {
         res: Resource<Impl>;
 
-        opaque struct Impl {
-            state: cptr;
+        struct Impl {
+            // Invariant: The read function returns slices of data, up to the chunkSize or the remaining data.
+            // If and only if there are no more bytes to read, it returns an empty slice (EOF).
+            readFn: () => Bytes;
+            seekFn: (pos: int, mode: SeekMode) => bool;
+            sizeFn: () => int;
 
-            readFn: (state: cptr, out: []u8) => int;
-            seekFn: (state: cptr, pos: int, mode: SeekMode) => bool;
-            sizeFn: (state: cptr) => int;
-
-            closeFn: (state: cptr) => void;
+            closeFn: () => void;
         }
 
         constructor(impl: Impl) {
             return Stream {
-                res: Resource<Impl>(impl, (implVal: Impl) => implVal.closeFn(implVal.state)),
+                res: Resource<Impl>(impl, (implVal: Impl): void => implVal.closeFn()),
             };
         }
 
-        read(out: []u8): int {
-            return this.res._with<int>((impl: Impl) => impl.readFn(impl.state, out));
+        read(): Bytes {
+            return this.res.use<Bytes>((impl: Impl) => impl.readFn());
         }
 
         seek(pos: int, mode: SeekMode): bool {
-            return this.res._with<bool>((impl: Impl) => impl.seekFn(impl.state, pos, mode));
+            return this.res.use<bool>((impl: Impl) => impl.seekFn(pos, mode));
         }
 
         size(): int {
-            return this.res._with<int>((impl: Impl) => impl.sizeFn(impl.state));
+            return this.res.use<int>((impl: Impl) => impl.sizeFn());
+        }
+
+        struct ByteCell {
+            bytes: Bytes;
+            cursor: int;
+            chunkSize: int;
+        }
+
+        inline struct FromBytesOptions {
+            chunkSize: int = 4096;
+        }
+
+        static fromBytes(bytes: Bytes, options: FromBytesOptions = {}) {
+            if options.chunkSize <= 0 {
+                sys.panic("chunkSize must be > 0");
+            }
+
+            let cell = ByteCell { bytes: bytes, cursor: 0, chunkSize: options.chunkSize };
+            // Storing the chunkSize in the ByteCell so we don't have to hoist another struct and reduce allocations
+            return Stream({
+                readFn: (): Bytes => {
+                    if cell.cursor >= cell.bytes.length {
+                        return Bytes();
+                    }
+                    let start = cell.cursor;
+                    let end = min(cell.cursor + cell.chunkSize, cell.bytes.length);
+                    cell.cursor = end;
+                    return cell.bytes.slice(start, end);
+                },
+                seekFn: (pos: int, mode: SeekMode): bool => {
+                    let size = cell.bytes.length;
+
+                    let newPos = 0;
+                    if mode == SeekMode.Start {
+                        newPos = pos;
+                    }
+                    else if mode == SeekMode.Current {
+                        newPos = cell.cursor + pos;
+                    }
+                    else {
+                        newPos = size + pos;
+                    }
+
+                    if newPos < 0 || newPos > size {
+                        return false;
+                    }
+
+                    cell.cursor = newPos;
+                    return true;
+                },
+                sizeFn: (): int => {
+                    return cell.bytes.length;
+                },
+                closeFn: (): void => {
+                    // no-op
+                },
+            });
         }
     }
 }
