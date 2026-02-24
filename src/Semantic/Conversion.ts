@@ -935,6 +935,15 @@ export namespace Conversion {
     unsafe?: boolean,
   ): { ok: true; expr: Semantic.ExprId } | { ok: false; error: string } {
     const fromExpr = sr.exprNodes.get(fromExprId);
+    
+    // Intrinsic values cannot be assigned to variables - they can only be called
+    if (fromExpr.variant === Semantic.ENode.IntrinsicSymbol) {
+      return {
+        ok: false as const,
+        error: `Intrinsic functions cannot be assigned to variables. They may only be called directly.`,
+      };
+    }
+
     const fromTypeInstance = sr.typeUseNodes.get(fromExpr.type);
     const fromType = sr.typeDefNodes.get(fromTypeInstance.type);
     const toInstance = sr.typeUseNodes.get(toId);

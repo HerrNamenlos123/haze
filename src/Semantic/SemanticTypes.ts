@@ -41,6 +41,10 @@ export namespace Semantic {
   export type TypeUseId = Brand<number, "SemanticTypeUse">;
   export type InstanceId = Brand<number, "SemanticInstance">;
 
+  export enum EIntrinsicType {
+    EmbedFile,
+  }
+
   export enum ENode {
     CInjectDirectiveSymbol,
     // Symbols
@@ -50,6 +54,7 @@ export namespace Semantic {
     FunctionSignature,
     StructSignature,
     TypeDefSymbol,
+    IntrinsicSymbol,
     // Datatypes
     FunctionDatatype,
     DeferredFunctionDatatype,
@@ -206,6 +211,12 @@ export namespace Semantic {
   export type TypeDefSymbol = {
     variant: ENode.TypeDefSymbol;
     datatype: TypeDefId;
+  };
+
+  export type IntrinsicSymbol = {
+    variant: ENode.IntrinsicSymbol;
+    intrinsicType: EIntrinsicType;
+    sourceloc: SourceLoc;
   };
 
   export type BlockScope = {
@@ -429,7 +440,8 @@ export namespace Semantic {
     | GlobalVariableDefinitionSymbol
     | FunctionSignature
     | TypeDefSymbol
-    | FunctionSymbol;
+    | FunctionSymbol
+    | IntrinsicSymbol;
 
   export type BaseExpr = {
     type: TypeUseId;
@@ -487,6 +499,12 @@ export namespace Semantic {
     variant: ENode.SymbolValueExpr;
     instanceIds: InstanceId[];
     symbol: SymbolId;
+  };
+
+  export type IntrinsicValueExpr = BaseExpr & {
+    variant: ENode.IntrinsicSymbol;
+    instanceIds: InstanceId[];
+    intrinsicType: EIntrinsicType;
   };
 
   export type DatatypeAsValueExpr = BaseExpr & {
@@ -715,6 +733,7 @@ export namespace Semantic {
   export type Expression =
     | ExprMemberAccessExpr
     | SymbolValueExpr
+    | IntrinsicValueExpr
     | DatatypeAsValueExpr
     | UnionTagReferenceExpr
     | SizeofExpr
@@ -1864,10 +1883,10 @@ export namespace Semantic {
         } else if (literal.type === EPrimitive.none) {
           return "none";
         } else if (literal.type === EPrimitive.Regex) {
-          return `/${literal.value}/`;
+          return `r"${literal.pattern}"${[...literal.flags]}`;
         } else if (literal.type === "enum") {
           // Handle enum literals
-          return `${literal.value}`;
+          return `${Semantic.serializeTypeUse(sr, literal.enumType)}.${literal.valueName}`;
         } else {
           return `${literal.value}`;
         }
@@ -2307,7 +2326,7 @@ export namespace Semantic {
           const enumParentSym = sr.symbolNodes.get(enumType.parentSymbolId);
           assert(enumParentSym.variant === Semantic.ENode.TypeDefSymbol);
           return {
-            name: `Le${mangleTypeDef(sr, enumParentSym.datatype).name}_${literal.value}`,
+            name: `Le${mangleTypeDef(sr, enumParentSym.datatype).name}_${literal.valueName}`,
             wasMangled: true,
           };
         }
@@ -2549,6 +2568,14 @@ export namespace Semantic {
           }
         }
         return `${serializeExpr(sr, expr.expr)}[${indices.join(", ")}]`;
+      }
+
+      case Semantic.ENode.IntrinsicSymbol: {
+        switch (expr.intrinsicType) {
+          case Semantic.EIntrinsicType.EmbedFile:
+            return `builtin.embed_file`;
+        }
+        assert(false, "Unknown intrinsic type");
       }
 
       default:

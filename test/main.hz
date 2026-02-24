@@ -10,7 +10,19 @@ export extern C wgpu_end(glfwWindow: cptr) :: final;
 
 test<T>() {
     let a: T = "Hello World";
-    // builtin.embed_file("Test");
+    let embeddedContent = builtin.embed_file("Test");
+}
+
+testIntrinsicCallWorks() {
+    // This should work - calling the intrinsic and assigning the result
+    let x: str = builtin.embed_file("test.txt");
+}
+
+theIntrinsicCannotBeAssignedAlone() {
+    // This should error - trying to assign the intrinsic itself without calling it
+    // For now, this will cause a compilation error which is the desired behavior
+    // This line should be commented out or removed in the actual code
+    // let fn = builtin.embed_file;
 }
 
 main(): int {

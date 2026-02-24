@@ -440,6 +440,21 @@ export class SemanticBuilder {
     });
   }
 
+  intrinsicValue(intrinsicType: Semantic.EIntrinsicType, sourceloc: SourceLoc) {
+    // Create a synthetic type for intrinsic values (they're not really values)
+    // We use a special dummy type for now
+    return this.addExpr(this.sr, {
+      variant: Semantic.ENode.IntrinsicSymbol,
+      instanceIds: [],
+      intrinsicType: intrinsicType,
+      type: this.voidType(), // Use void as a placeholder type for intrinsic values
+      isTemporary: false,
+      sourceloc: sourceloc,
+      flow: Semantic.FlowResult.fallthrough(),
+      writes: Semantic.WriteResult.empty(),
+    });
+  }
+
   sizeof(valueExprId: Semantic.ExprId) {
     const valueExpr = this.sr.exprNodes.get(valueExprId);
     return this.addExpr(this.sr, {
