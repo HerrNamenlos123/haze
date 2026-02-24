@@ -307,11 +307,12 @@ export class SemanticBuilder {
     return id;
   }
 
-  private internEmbeddedFile(sr: Semantic.Context, absolutePath: string) {
-    let value = sr.elaboratedEmbeddedFileInternMap.get(absolutePath);
+  private internEmbeddedFile(sr: Semantic.Context, absolutePath: string, isBinary: boolean) {
+    const hash = absolutePath + "/isBinary:" + isBinary;
+    let value = sr.elaboratedEmbeddedFileInternMap.get(hash);
     if (value === undefined) {
       value = sr.nextEmbeddedFileId++;
-      sr.elaboratedEmbeddedFileInternMap.set(absolutePath, value);
+      sr.elaboratedEmbeddedFileInternMap.set(hash, value);
     }
     return value;
   }
@@ -322,7 +323,7 @@ export class SemanticBuilder {
     isBinary: boolean,
     fileSize: number,
   ) {
-    const id = this.internEmbeddedFile(this.sr, absolutePath);
+    const id = this.internEmbeddedFile(this.sr, absolutePath, isBinary);
 
     let embeddedData = this.sr.elaboratedEmbeddedFileTable.get(id);
     if (!embeddedData) {

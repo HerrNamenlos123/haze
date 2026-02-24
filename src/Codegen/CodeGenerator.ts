@@ -83,8 +83,7 @@ class CodeGenerator {
     global_variables: new OutputWriter(),
   };
 
-  private sortedEmbeddedFiles: [bigint, Semantic.EmbeddedFileData][] = [];
-  private embeddedFileIndex: number = 0; // Track which embedded file we're on
+  private embeddedFiles: Semantic.EmbeddedFileData[] = [];
 
   constructor(
     public config: ModuleConfig,
@@ -154,25 +153,22 @@ class CodeGenerator {
     }
   }
 
-  private buildEmbeddedFileFunctionMap() {
-    // Build a sorted list of embedded files by ID
-    for (const [id, file] of this.lr.sr.elaboratedEmbeddedFileTable) {
-      this.sortedEmbeddedFiles.push([id, file]);
+  private normalizeCRLF(buffer: Buffer, isBinary: boolean): Buffer {
+    if (isBinary) {
+      // For binary files, don't modify anything
+      return buffer;
     }
-    // Sort by ID to ensure consistent ordering
-    this.sortedEmbeddedFiles.sort((a, b) => {
-      if (a[0] < b[0]) return -1;
-      if (a[0] > b[0]) return 1;
-      return 0;
-    });
-    this.embeddedFileIndex = 0;
+
+    // For text files, normalize to LF only (remove CR)
+    let content = buffer.toString("utf8");
+    content = content.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+    return Buffer.from(content, "utf8");
   }
 
-  private getNextEmbeddedFile(): Semantic.EmbeddedFileData | null {
-    if (this.embeddedFileIndex < this.sortedEmbeddedFiles.length) {
-      return this.sortedEmbeddedFiles[this.embeddedFileIndex++][1];
+  private buildEmbeddedFileFunctionMap() {
+    for (const [_id, file] of this.lr.sr.elaboratedEmbeddedFileTable) {
+      this.embeddedFiles.push(file);
     }
-    return null;
   }
 
   includeSystemHeader(filename: string) {
@@ -227,18 +223,20 @@ class CodeGenerator {
   }
 
   compileEmbeddedFile(embeddedFile: Semantic.EmbeddedFileData) {
-    const symbol = `__hz_${this.modulePrefix()}_embedded_${embeddedFile.id}`;
+    const typeName = embeddedFile.isBinary ? "binary" : "text";
+    const symbol = `__hz_${this.modulePrefix()}_embedded_${typeName}_${embeddedFile.id}`;
     const outDir = path.join(this.moduleDir, "build/embedded");
     mkdirSync(outDir, { recursive: true });
     const cFilePath = path.join(outDir, `${symbol}.c`);
 
-    // Read the file content
-    const fileContent = readFileSync(embeddedFile.absolutePath);
+    // Read the file content and normalize line endings for text files
+    const rawContent = readFileSync(embeddedFile.absolutePath);
+    const fileContent = this.normalizeCRLF(rawContent, embeddedFile.isBinary);
 
     // Generate C code as byte array
     let c = `// ------------------------------------------------------------------\n`;
     c += `// GENERATED FILE — DO NOT EDIT\n`;
-    c += `// Embedded file: ${embeddedFile.filePath}\n`;
+    c += `// Embedded file: ${embeddedFile.filePath} as ${embeddedFile.isBinary ? "binary" : "text"}\n`;
     c += `// ------------------------------------------------------------------\n\n`;
 
     c += `#include <stdint.h>\n`;
@@ -306,9 +304,10 @@ class CodeGenerator {
     h += '#ifdef __cplusplus\nextern "C" {\n#endif\n\n';
 
     // Declare all embedded file data
-    for (const { id } of entries) {
-      h += `extern const uint8_t __hz_${prefix}_embedded_${id}_data[];\n`;
-      h += `extern const size_t __hz_${prefix}_embedded_${id}_size;\n\n`;
+    for (const { id, isBinary } of entries) {
+      const typeName = isBinary ? "binary" : "text";
+      h += `extern const uint8_t __hz_${prefix}_embedded_${typeName}_${id}_data[];\n`;
+      h += `extern const size_t __hz_${prefix}_embedded_${typeName}_${id}_size;\n\n`;
     }
 
     h += "#ifdef __cplusplus\n}\n#endif\n\n";
@@ -330,8 +329,9 @@ class CodeGenerator {
     c += "#include <stddef.h>\n\n";
     c += `#include "__hz_${prefix}_embedded_table.h"\n\n`;
 
-    for (const { id } of entries) {
-      c += `#include "__hz_${prefix}_embedded_${id}.c"\n`;
+    for (const { id, isBinary } of entries) {
+      const typeName = isBinary ? "binary" : "text";
+      c += `#include "__hz_${prefix}_embedded_${typeName}_${id}.c"\n`;
     }
 
     writeFileSync(cPath, c);
@@ -869,44 +869,9 @@ class CodeGenerator {
 
     if (symbol.scope) {
       this.out.function_definitions.writeLine(signature + " {").pushIndent();
-
-      // Check if this is an embedded file function
-      // Look for __hz_embed_file_text_ or __hz_embed_file_binary_ patterns in the mangled name
-      const mangledFunctionName = symbol.name.mangledName;
-      const isEmbeddedFileText = mangledFunctionName.includes("__hz_embed_file_text_");
-      const isEmbeddedFileBinary = mangledFunctionName.includes("__hz_embed_file_binary_");
-
-      if ((isEmbeddedFileText || isEmbeddedFileBinary) && this.sortedEmbeddedFiles.length > 0) {
-        // Get the next embedded file in sequence
-        const embeddedFile = this.getNextEmbeddedFile();
-
-        if (embeddedFile) {
-          const prefix = this.modulePrefix();
-          if (isEmbeddedFileText) {
-            // Return as string
-            this.out.function_definitions.writeLine(
-              `return HZSTD_STRING((const char*)__hz_${prefix}_embedded_${embeddedFile.id}_data, __hz_${prefix}_embedded_${embeddedFile.id}_size);`,
-            );
-          } else {
-            // Return as Bytes - the Bytes type should have data/size fields
-            this.out.function_definitions.writeLine(`// Return Bytes with embedded file data`);
-            this.out.function_definitions.writeLine(
-              `return (${this.mangleTypeUse(ftype.returnType)}){ .data = __hz_${prefix}_embedded_${embeddedFile.id}_data, .size = __hz_${prefix}_embedded_${embeddedFile.id}_size };`,
-            );
-          }
-        } else {
-          // Fallback - emit the normal scope
-          const s = this.emitScope(symbol.scope);
-          this.out.function_definitions.write(s.temp);
-          this.out.function_definitions.write(s.out);
-        }
-      } else {
-        // Normal function - emit the scope normally
-        const s = this.emitScope(symbol.scope);
-        this.out.function_definitions.write(s.temp);
-        this.out.function_definitions.write(s.out);
-      }
-
+      const s = this.emitScope(symbol.scope);
+      this.out.function_definitions.write(s.temp);
+      this.out.function_definitions.write(s.out);
       this.out.function_definitions.popIndent().writeLine("}").writeLine();
     }
 

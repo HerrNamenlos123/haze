@@ -1,5 +1,5 @@
 import { Semantic } from "../Semantic/SemanticTypes";
-import { EExternLanguage } from "../shared/AST";
+import { EExternLanguage, EOverloadedOperator } from "../shared/AST";
 import { EMethodType } from "../shared/common";
 import { assert, formatSourceLoc } from "../shared/Errors";
 import {
@@ -100,8 +100,32 @@ export function ExportTypeDef(
                 }: ${Semantic.serializeTypeUse(sr, p.type)}`,
             )
             .join(", ");
+          let methodName = method.name;
+
+          if (method.overloadedOperator === undefined) {
+            // Nothing
+          } else if (method.overloadedOperator === EOverloadedOperator.Assign) {
+            methodName = "operator:=";
+          } else if (method.overloadedOperator === EOverloadedOperator.LessThan) {
+            methodName = "operator<";
+          } else if (method.overloadedOperator === EOverloadedOperator.LessThanOrEqual) {
+            methodName = "operator<=";
+          } else if (method.overloadedOperator === EOverloadedOperator.GreaterThan) {
+            methodName = "operator>";
+          } else if (method.overloadedOperator === EOverloadedOperator.GreaterThanOrEqual) {
+            methodName = "operator>=";
+          } else if (method.overloadedOperator === EOverloadedOperator.Equal) {
+            methodName = "operator==";
+          } else if (method.overloadedOperator === EOverloadedOperator.NotEqual) {
+            methodName = "operator!=";
+          } else if (method.overloadedOperator === EOverloadedOperator.Subscript) {
+            methodName = "operator[]";
+          } else {
+            assert(false);
+          }
+
           if (functype.returnType) {
-            file += `${method.name}(${parameters}): (${Semantic.serializeTypeUse(
+            file += `${methodName}(${parameters}): (${Semantic.serializeTypeUse(
               sr,
               functype.returnType,
             )})`;
@@ -120,7 +144,7 @@ export function ExportTypeDef(
             }
             file += `;\n`;
           } else {
-            file += `${method.name}(${parameters});\n`;
+            file += `${methodName}(${parameters});\n`;
           }
         }
       }

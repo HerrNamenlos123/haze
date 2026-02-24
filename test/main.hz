@@ -9,13 +9,14 @@ export extern C wgpu_start(glfwWindow: cptr, device: wgpu.ffi.WGPUDeviceImpl, su
 export extern C wgpu_end(glfwWindow: cptr) :: final;
 
 test<T>() {
-    let a: T = "Hello World";
-    let embeddedContent = builtin.embed_file_text("Test");
+    let embeddedContent = builtin.embed_file_text(T);
+    fmt.println("Embedded file: ", embeddedContent.length);
+    fmt.println(embeddedContent);
 }
 
 testIntrinsicCallWorks() {
     // This should work - calling the intrinsic and assigning the result
-    let x: str = builtin.embed_file_text("test.txt");
+    // let x: str = builtin.embed_file_text("test.txt");
 }
 
 theIntrinsicCannotBeAssignedAlone() {
@@ -26,10 +27,11 @@ theIntrinsicCannotBeAssignedAlone() {
 }
 
 main(): int {
+    test<"haze.toml">();
+    return 0;
+
     attempt {
         if !glfw.init() { raise "GLFW init failed"; }
-
-        test<"Hello World">();
 
         const window = glfw.createWindow({ 
             title: "WebGPU Example",

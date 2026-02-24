@@ -9,7 +9,7 @@ namespace std {
             releaseFn: (value: T) => void;
         }
 
-        constructor(data, releaseFn: (value: T) => void) {
+        constructor(data: T, releaseFn: (value: T) => void) {
             return Resource {
                 cell: {
                     data: data,
@@ -33,7 +33,7 @@ namespace std {
             this.cell.releaseFn(this.cell.data);
         }
 
-        with<TRet>(fn: (value: T) => TRet): TRet {
+        _with<TRet>(fn: (value: T) => TRet): TRet {
             this.assertAlive();
             return fn(this.cell.data);
         }

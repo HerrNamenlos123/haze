@@ -6,12 +6,7 @@ import {
   UnaryOperationToString,
 } from "../shared/AST";
 import { EPrimitive, primitiveToString } from "../shared/common";
-import {
-  assert,
-  CompilerError,
-  InternalError,
-  type SourceLoc,
-} from "../shared/Errors";
+import { assert, CompilerError, InternalError, type SourceLoc } from "../shared/Errors";
 import { makePrimitiveAvailable, makeRawPrimitiveAvailable } from "./Elaborate";
 import { Collect } from "../SymbolCollection/SymbolCollection";
 import { makeTypeUse } from "./LookupDatatype";

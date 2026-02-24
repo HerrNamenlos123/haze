@@ -344,4 +344,5 @@ id
     : TYPE
     | RAW_ID
     | TYPEOF
+    | WITH
     ;

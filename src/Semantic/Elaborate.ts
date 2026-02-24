@@ -622,15 +622,6 @@ export class SemanticElaborator {
     }
   }
 
-  private getModuleRootDirectory(): string {
-    const config = this.sr.cc.config;
-    if (config.source.type === "src-dir") {
-      return config.source.dirpath;
-    } else {
-      return path.dirname(config.source.filepath);
-    }
-  }
-
   private getBytesTypeDef(): Semantic.TypeDefId {
     const bytesSymbolId = Semantic.findBuiltinSymbolByName(this.sr, "Bytes", null);
     const bytesSymbol = this.sr.cc.symbolNodes.get(bytesSymbolId);
@@ -678,7 +669,7 @@ export class SemanticElaborator {
         }
 
         // Get and elaborate the argument
-        const [argExpr, argExprId] = this.expr(callExpr.arguments[0], undefined);
+        const [argExpr] = this.expr(callExpr.arguments[0], undefined);
 
         // Check if the argument is a string literal or a literal datatype that resolves to a string
         let filePath: string | null = null;
@@ -715,8 +706,8 @@ export class SemanticElaborator {
         }
 
         // Resolve the file path relative to the module root
-        const moduleRoot = this.getModuleRootDirectory();
-        const absolutePath = path.resolve(moduleRoot, filePath);
+        assert(this.sr.cc.moduleCompiler?.currentModuleRootDir);
+        const absolutePath = path.resolve(this.sr.cc.moduleCompiler.currentModuleRootDir, filePath);
 
         // Load and validate the file
         let fileSize: number;
@@ -753,30 +744,18 @@ export class SemanticElaborator {
           );
         }
 
-        // Generate function name based on the file path (mangled for uniqueness)
-        let mangledName: string;
-        if (argExpr.variant === Semantic.ENode.LiteralExpr) {
-          mangledName = Semantic.mangleLiteralValue(this.sr, argExprId).name;
-        } else {
-          // For DatatypeAsValueExpr (literal datatype)
-          const typeUse = this.sr.typeUseNodes.get(argExpr.type);
-          const typeDefId = typeUse.type;
-          mangledName = Semantic.mangleTypeDef(this.sr, typeDefId).name;
-        }
-        const funcName = `${funcNamePrefix}_${mangledName}`;
+        const embeddedFileId = this.sr.b.elaborateEmbeddedFile(
+          absolutePath,
+          filePath,
+          isBinary,
+          fileSize,
+        );
 
+        const funcName = `${funcNamePrefix}_${embeddedFileId}`;
         let funcId = null as Semantic.SymbolId | null;
         if (this.sr.syntheticFunctions.has(funcName)) {
           funcId = this.sr.syntheticFunctions.get(funcName)!;
         } else {
-          // Elaborate the embedded file data
-          const embeddedFileId = this.sr.b.elaborateEmbeddedFile(
-            absolutePath,
-            filePath,
-            isBinary,
-            fileSize,
-          );
-
           // Determine return type
           let returnType: Semantic.TypeUseId;
           if (isBinary) {
@@ -793,7 +772,6 @@ export class SemanticElaborator {
             returnType = this.sr.b.strType();
           }
 
-          // Create a synthetic function with empty body that will be filled in by codegen
           const functionType = makeRawFunctionDatatypeAvailable(this.sr, {
             parameters: [],
             returnType: returnType,
@@ -807,7 +785,17 @@ export class SemanticElaborator {
             vararg: false,
           });
 
-          const code = `return "";`; // Placeholder - codegen will fill this in
+          const moduleName = getModuleGlobalNamespaceName(
+            this.sr.cc.config.name,
+            this.sr.cc.config.version,
+          );
+
+          const innerCode = isBinary
+            ? `__c__("data = (_H${Semantic.mangleFullTypeUse(this.sr, returnType).name}){ .offset = 0, .basePtr = (void*)__hz_${moduleName}_embedded_binary_${embeddedFileId}_data, .length = __hz_${moduleName}_embedded_binary_${embeddedFileId}_size };");`
+            : `__c__("data = HZSTD_STRING((const char*)__hz_${moduleName}_embedded_text_${embeddedFileId}_data, __hz_${moduleName}_embedded_text_${embeddedFileId}_size);");`;
+
+          const code = `do unsafe { let data: ${Semantic.serializeTypeUse(this.sr, returnType)} = uninitialized; ${innerCode} return data; };`;
+
           const [_func, newFuncId] = this.sr.b.syntheticFunctionFromCode({
             functionTypeId: functionType,
             parameterNames: [],
@@ -8404,9 +8392,9 @@ export class SemanticElaborator {
           const ftype = this.sr.e.getTypeDef(method.type);
           assert(ftype.variant === Semantic.ENode.FunctionDatatype);
 
-          if (ftype.parameters.length !== 2) continue;
+          if (ftype.parameters.length !== 1) continue;
           if (
-            this.sr.e.getTypeUse(ftype.parameters[1].type).type !==
+            this.sr.e.getTypeUse(ftype.parameters[0].type).type !==
             this.sr.e.getTypeUse(index.type).type
           ) {
             continue;

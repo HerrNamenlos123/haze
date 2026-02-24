@@ -27,7 +27,6 @@ import {
   type ASTSymbolImport,
   type ASTSymbolDefinition,
   AssignmentOperationToString,
-  IncrOperationToString,
   EVariableMutability,
   type ASTBlockScopeExpr,
   type ASTTypeDef,
@@ -59,13 +58,14 @@ import {
 import { ECollectionMode, getModuleGlobalNamespaceName, type ModuleConfig } from "../shared/Config";
 import { join } from "path";
 import { makeTempId } from "../shared/store";
-import { Semantic } from "../Semantic/SemanticTypes";
+import type { ModuleCompiler } from "../Module";
 
 const RESERVED_METHOD_NAMES = ["toString", "clone", "freezeClone"];
 
 export type CollectionContext = {
   config: ModuleConfig;
   moduleScopeId: Collect.ScopeId;
+  moduleCompiler: ModuleCompiler | null;
 
   exprNodes: BrandedArray<Collect.ExprId, Collect.Expressions>;
   symbolNodes: BrandedArray<Collect.SymbolId, Collect.Symbols>;
@@ -95,6 +95,7 @@ export function funcSymHasParameterPack(cc: CollectionContext, id: Collect.Symbo
 export function makeCollectionContext(config: ModuleConfig): CollectionContext {
   const cc: CollectionContext = {
     config: config,
+    moduleCompiler: null,
     moduleScopeId: -1 as Collect.ScopeId,
 
     exprNodes: new BrandedArray([]),

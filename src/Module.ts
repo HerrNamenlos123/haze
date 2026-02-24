@@ -1419,6 +1419,7 @@ export class ModuleCompiler {
     public strip: boolean,
   ) {
     this.cc = makeCollectionContext(this.config);
+    this.cc.moduleCompiler = this;
   }
 
   private makeUnit() {
