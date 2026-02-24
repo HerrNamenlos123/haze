@@ -12,6 +12,7 @@ import {
   EVariableContext,
   primitiveToString,
   stringToPrimitive,
+  type LiteralValue,
 } from "../shared/common";
 import { getModuleGlobalNamespaceName } from "../shared/Config";
 import {
@@ -4690,6 +4691,22 @@ export class SemanticElaborator {
             throw new CompilerError(`Type ${type.name} is not generic`, type.sourceloc);
           }
           return makePrimitiveAvailable(this.sr, primitive, type.mutability, type.sourceloc);
+        }
+
+        if (type.name === "false" || type.name === "true") {
+          if (type.genericArgs.length !== 0) {
+            throw new CompilerError(
+              `A false/true-type cannot have generic arguments`,
+              type.sourceloc,
+            );
+          }
+          return this.sr.b.literalType(
+            {
+              type: EPrimitive.bool,
+              value: type.name === "true",
+            },
+            type.sourceloc,
+          );
         }
 
         if (type.name === "Reactive") {
@@ -9395,6 +9412,56 @@ export function insertIntoEnumDefCache(
     substitutionContext: args.substitutionContext,
     resultAsTypeDefSymbol: args.resultAsTypeDefSymbol,
   });
+}
+
+export function makeLiteralDatatypeAvailable(
+  sr: Semantic.Context,
+  literalValue: LiteralValue,
+  sourceloc: SourceLoc,
+): Semantic.TypeDefId {
+  for (const id of sr.elaboratedLiteralTypes) {
+    const s = sr.typeDefNodes.get(id);
+    assert(s.variant === Semantic.ENode.LiteralDatatype);
+    if (s.literalValue.type === literalValue.type) {
+      if (s.literalValue.type === "enum") {
+        assert(literalValue.type === "enum");
+        if (
+          s.literalValue.enumType === literalValue.enumType &&
+          s.literalValue.valueName === literalValue.valueName
+        ) {
+          return id;
+        }
+      } else if (s.literalValue.type === EPrimitive.Regex) {
+        // Regex is skipped, we consider them unique. Mainly because i'm lazy.
+      } else if (s.literalValue.type === EPrimitive.null) {
+        assert(literalValue.type === EPrimitive.null);
+        return id;
+      } else if (s.literalValue.type === EPrimitive.none) {
+        assert(literalValue.type === EPrimitive.none);
+        return id;
+      } else {
+        assert(
+          literalValue.type !== EPrimitive.none &&
+            literalValue.type !== EPrimitive.null &&
+            literalValue.type !== EPrimitive.Regex &&
+            literalValue.type !== "enum",
+        );
+        if (s.literalValue.value === literalValue.value) {
+          return id;
+        }
+      }
+    }
+  }
+  assert(literalValue.type !== "enum"); // TODO
+  const [_, sId] = sr.b.addType(sr, {
+    variant: Semantic.ENode.LiteralDatatype,
+    concrete: true,
+    sourceloc: sourceloc,
+    type: makePrimitiveAvailable(sr, literalValue.type, EDatatypeMutability.Const, sourceloc),
+    literalValue: literalValue,
+  });
+  sr.elaboratedLiteralTypes.push(sId);
+  return sId;
 }
 
 export function makeRawPrimitiveAvailable(

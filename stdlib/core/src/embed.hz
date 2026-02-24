@@ -13,7 +13,7 @@ namespace embed {
     }
 
     export watchText<TPath>(path: TPath, options: fs.FileWatchOptions = {}): Reactive<str> {
-        let data = reactive(builtin.embed_file_text(TPath));
+        let data = std.reactive(builtin.embed_file_text(TPath));
         fs.watch(TPath, (event: fs.FileChangeEvent): void => {
             if let d = fs.readText(path as str) {
                 data := d;
@@ -30,13 +30,17 @@ namespace embed {
         if comptime TCond is true {
             return watchText(path, options);
         }
-        else {
-            return reactive(text(path));
+        else if TCond is false {
+            return std.reactive(text(path));
         }
+        else {
+            static_assert(false, "Condition of watchBinaryIf resolves to anything other than true/false at compile time: " + TCond.name);
+        }
+        assert(false);
     }
 
     export watchBinary<TPath>(path: TPath, options: fs.FileWatchOptions = {}): Reactive<Bytes> {
-        let data = reactive(builtin.embed_file_binary(TPath));
+        let data = std.reactive(builtin.embed_file_binary(TPath));
         fs.watch(TPath, (event: fs.FileChangeEvent): void => {
             if let d = fs.readBinary(path as str) {
                 data := d;
@@ -53,9 +57,13 @@ namespace embed {
         if comptime TCond is true {
             return watchBinary(path, options);
         }
-        else {
-            return reactive(binary(path));
+        else if  TCond is false {
+            return std.reactive(binary(path));
         }
+        else {
+            static_assert(false, "Condition of watchBinaryIf resolves to anything other than true/false at compile time: " + TCond.name);
+        }
+        assert(false);
     }
 
     export watchFile<TPath>(_path: TPath): Bytes {

@@ -808,7 +808,7 @@ class ASTBuilder extends HazeParserListener {
     }
 
     // id is guaranteed by grammar — this assert is for corruption detection
-    const idNode = ctx.id();
+    const idNode = ctx.type_id();
     if (!idNode) {
       throw new InternalError("Parser stack corrupted before DatatypeFragment");
     }

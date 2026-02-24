@@ -36,12 +36,20 @@ inline struct QuadVertex {
     pos: Vec2f;  // [-0.5, -0.5] .. [0.5, 0.5]
 };
 
+inline struct RendererOptions {
+    size: Vec2i;
+    device: mut wgpu.Device;
+    surface: mut wgpu.Surface;
+    surfaceFormats: []wgpu.TextureFormat;
+    shadercode: Reactive<str>;
+}
+
 opaque struct Renderer {
     windowSize: Vec2i;
     queue: mut wgpu.Queue;
     device: mut wgpu.Device;
     surface: mut wgpu.Surface;
-    pipeline: Computed<mut wgpu.RenderPipeline | none>;
+    pipeline: Computed<mut wgpu.RenderPipeline>;
     globalsBuffer: mut wgpu.Buffer;
     globalsBindGroup: mut wgpu.BindGroup;
 
@@ -50,8 +58,8 @@ opaque struct Renderer {
 
     primitives: []PrimitiveInstance = [];
 
-    constructor(size: Vec2i, device: mut wgpu.Device, surface: mut wgpu.Surface, surfaceFormats: []wgpu.TextureFormat) {
-        let queue = device.getQueue();
+    constructor(options: RendererOptions) {
+        let queue = options.device.getQueue();
         if !queue { 
             sys.panic("Failed to get queue");
         }
@@ -82,7 +90,7 @@ opaque struct Renderer {
             },
         };
 
-        let globalsLayout = device.createBindGroupLayout({
+        let globalsLayout = options.device.createBindGroupLayout({
             entries: {
                 {
                     binding: 0,
@@ -92,12 +100,12 @@ opaque struct Renderer {
             },
         });
 
-        let globalsBuffer = device.createBuffer({
+        let globalsBuffer = options.device.createBuffer({
             usage: wgpu.BufferUsage.Uniform | wgpu.BufferUsage.CopyDst,
             size: sizeof(Globals),
         });
 
-        let globalsBindGroup = device.createBindGroup({
+        let globalsBindGroup = options.device.createBindGroup({
             layout: globalsLayout,
             entries: {
                 {
@@ -109,39 +117,30 @@ opaque struct Renderer {
             },
         });
 
-        let pipelineLayout = device.createPipelineLayout({
+        let pipelineLayout = options.device.createPipelineLayout({
             bindGroupLayouts: { globalsLayout },
         });
 
-        let shaderSource = fs.watchText("test/shaders.wgsl");
-        let shader = computed<mut wgpu.ShaderModule | none>(() => {
-            let value = shaderSource as str | none;
-            if !value {
-                return none;
-            }
-            return device.createShaderModule({
-                code: value,
+        let shader = std.computed<mut wgpu.ShaderModule>(() => {
+            return options.device.createShaderModule({
+                code: options.shadercode,
             });
         });
 
-        let pipeline = computed<mut wgpu.RenderPipeline | none>(() => {
-            let value = shader as mut wgpu.ShaderModule | none;
-            if !value {
-                return none;
-            }
-            return device.createRenderPipeline({
+        let pipeline = std.computed<mut wgpu.RenderPipeline>(() => {
+            return options.device.createRenderPipeline({
                 layout: pipelineLayout,
                 vertex: {
-                    module: value,
+                    module: shader,
                     entryPoint: "vs_main",
                     buffers: { vertexLayout, instanceLayout },
                 },
                 fragment: {
-                    module: value,
+                    module: shader,
                     entryPoint: "fs_main",
                     targets: {
                         { 
-                            format: surfaceFormats[0],
+                            format: options.surfaceFormats[0],
                             blend: {
                                 color: {
                                     srcFactor: wgpu.BlendFactor.SrcAlpha,
@@ -163,7 +162,7 @@ opaque struct Renderer {
             });
         });
 
-        let vertexBuffer = device.createBuffer({
+        let vertexBuffer = options.device.createBuffer({
             usage: wgpu.BufferUsage.Vertex | wgpu.BufferUsage.CopyDst,
             size: sizeof(QuadVertex) * 4,
         });
@@ -174,17 +173,17 @@ opaque struct Renderer {
             { pos: Vec2f(-0.5, 0.5) },
         ]);
 
-        let indexBuffer = device.createBuffer({
+        let indexBuffer = options.device.createBuffer({
             usage: wgpu.BufferUsage.Index | wgpu.BufferUsage.CopyDst,
             size: sizeof(u32) * 6,
         });
         queue.writeBuffer<u32>(indexBuffer, [0, 1, 2, 0, 2, 3]);
 
         return Renderer {
-            windowSize: size,
-            device: device,
+            windowSize: options.size,
+            device: options.device,
             queue: queue,
-            surface: surface,
+            surface: options.surface,
             pipeline: pipeline,
             vertexBuffer: vertexBuffer,
             indexBuffer: indexBuffer,
@@ -247,11 +246,7 @@ opaque struct Renderer {
     }
 
     endFrame() {
-        let pipelineValue = this.pipeline as mut wgpu.RenderPipeline | none;
-        if !pipelineValue {
-            fmt.println("No pipeline available, frame skipped");
-            return;
-        }
+        let pipelineValue = std.unwrap(this.pipeline);
 
         let surfaceTexture = this.surface.getCurrentTexture();
         if !surfaceTexture.texture { 

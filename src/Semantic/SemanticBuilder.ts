@@ -16,7 +16,12 @@ import {
 } from "./Constraint";
 import { Conversion } from "./Conversion";
 import { EvalCTFE } from "./CTFE";
-import { isTypeConcrete, makePrimitiveAvailable, makeRawPrimitiveAvailable } from "./Elaborate";
+import {
+  isTypeConcrete,
+  makeLiteralDatatypeAvailable,
+  makePrimitiveAvailable,
+  makeRawPrimitiveAvailable,
+} from "./Elaborate";
 import { makeCallableDatatypeAvailable, makeTypeUse } from "./LookupDatatype";
 import { Semantic } from "./SemanticTypes";
 
@@ -390,18 +395,7 @@ export class SemanticBuilder {
     assert(literalValue.type !== "enum");
     return makeTypeUse(
       this.sr,
-      this.addType(this.sr, {
-        variant: Semantic.ENode.LiteralDatatype,
-        concrete: true,
-        sourceloc: sourceloc,
-        type: makePrimitiveAvailable(
-          this.sr,
-          literalValue.type,
-          EDatatypeMutability.Const,
-          sourceloc,
-        ),
-        literalValue: literalValue,
-      })[1],
+      makeLiteralDatatypeAvailable(this.sr, literalValue, sourceloc),
       EDatatypeMutability.Const,
       false,
       sourceloc,

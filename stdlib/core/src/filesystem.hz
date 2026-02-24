@@ -522,7 +522,7 @@ export namespace fs {
     }
 
     export watchText(path: str, options: FileWatchOptions = {}) {
-        let data = reactive<str | none>(none);
+        let data = std.reactive<str | none>(none);
 
         fs.watch(path, (event: fs.FileChangeEvent): void => {
             if let d = fs.readText(path) {
@@ -538,7 +538,7 @@ export namespace fs {
     }
 
     export watchBinary(path: str, options: FileWatchOptions = {}) {
-        let data = reactive<Bytes | none>(none);
+        let data = std.reactive<Bytes | none>(none);
 
         fs.watch(path, (event: fs.FileChangeEvent): void => {
             if let d = fs.readBinary(path) {

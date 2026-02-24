@@ -137,7 +137,7 @@ datatype
     ;
 
 datatypeFragment
-    : id (LANGLE genericLiteral (COMMA genericLiteral)* RANGLE)?
+    : type_id (LANGLE genericLiteral (COMMA genericLiteral)* RANGLE)?
     ;
 
 genericLiteral
@@ -344,5 +344,14 @@ id
     : TYPE
     | RAW_ID
     | TYPEOF
+    ;
+
+// This is a hack-around so the word "type" can be used as variable names without creating a syntax error
+type_id
+    : TYPE
+    | RAW_ID
+    | TYPEOF
+    | TRUE
+    | FALSE
     | WITH
     ;

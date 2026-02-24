@@ -195,6 +195,24 @@ export type ASTFunctionOverloading =
       operator: EOverloadedOperator.Subscript;
     }
   | {
+      operator: EOverloadedOperator.Equal;
+    }
+  | {
+      operator: EOverloadedOperator.NotEqual;
+    }
+  | {
+      operator: EOverloadedOperator.LessThan;
+    }
+  | {
+      operator: EOverloadedOperator.LessThanOrEqual;
+    }
+  | {
+      operator: EOverloadedOperator.GreaterThan;
+    }
+  | {
+      operator: EOverloadedOperator.GreaterThanOrEqual;
+    }
+  | {
       operator: EOverloadedOperator.Assign;
     }
   | {

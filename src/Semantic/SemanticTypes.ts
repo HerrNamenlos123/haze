@@ -945,6 +945,7 @@ export namespace Semantic {
     elaboratedGlobalVariableSymbols: Map<Collect.SymbolId, Semantic.SymbolId>;
     // Function-local variable symbols are cached per function call because they are separate for each generic instance.
 
+    elaboratedLiteralTypes: Semantic.TypeDefId[];
     elaboratedPrimitiveTypes: Semantic.TypeDefId[];
     elaboratedReactiveTypes: Semantic.TypeDefId[];
     elaboratedComputedTypes: Semantic.TypeDefId[];
@@ -1507,6 +1508,7 @@ export namespace Semantic {
       elaboratedFunctionSignatures: new Map(),
       elaboratedFunctionSignaturesByName: new Map(),
 
+      elaboratedLiteralTypes: [],
       elaboratedStructDatatypes: new Map(),
       elaboratedFuncdefSymbols: new Map(),
       elaboratedUntaggedUnions: new Map(),
