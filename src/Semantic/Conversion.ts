@@ -9,8 +9,6 @@ import { EPrimitive, primitiveToString } from "../shared/common";
 import {
   assert,
   CompilerError,
-  formatErrorMessage,
-  formatSourceLoc,
   InternalError,
   type SourceLoc,
 } from "../shared/Errors";
@@ -24,7 +22,6 @@ import type {
   ConstraintPathSubscriptIndex,
 } from "./Constraint";
 import { Semantic } from "./SemanticTypes";
-import { StarLoopEntryState } from "antlr4ng";
 
 export namespace Conversion {
   // Helper function to extract constraint path from expression
@@ -935,7 +932,7 @@ export namespace Conversion {
     unsafe?: boolean,
   ): { ok: true; expr: Semantic.ExprId } | { ok: false; error: string } {
     const fromExpr = sr.exprNodes.get(fromExprId);
-    
+
     // Intrinsic values cannot be assigned to variables - they can only be called
     if (fromExpr.variant === Semantic.ENode.IntrinsicSymbol) {
       return {
@@ -1976,7 +1973,10 @@ export namespace Conversion {
         const toLiteral = to.literalValue;
 
         // Check if the literal types and values match
-        if (fromLiteral.type === toLiteral.type && fromLiteral.value === toLiteral.value) {
+        // Need to check property existence for union discriminants that may not have 'value'
+        const fromValue = "value" in fromLiteral ? fromLiteral.value : undefined;
+        const toValue = "value" in toLiteral ? toLiteral.value : undefined;
+        if (fromLiteral.type === toLiteral.type && fromValue === toValue) {
           // The literals match, so we can just return the expression as-is
           // since a literal matches the literal type it represents
           return ok(

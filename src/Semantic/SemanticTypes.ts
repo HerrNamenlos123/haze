@@ -42,7 +42,8 @@ export namespace Semantic {
   export type InstanceId = Brand<number, "SemanticInstance">;
 
   export enum EIntrinsicType {
-    EmbedFile,
+    EmbedFileText,
+    EmbedFileBinary,
   }
 
   export enum ENode {
@@ -869,6 +870,14 @@ export namespace Semantic {
     id: bigint;
   };
 
+  export type EmbeddedFileData = {
+    filePath: string; // Relative to module root
+    absolutePath: string; // Resolved absolute path
+    isBinary: boolean;
+    id: bigint; // Unique ID for this embedded file
+    fileSize: number; // Size in bytes
+  };
+
   export type EnumDef = {
     substitutionContext: Semantic.ElaborationContext;
     parentSymbolId: Semantic.SymbolId | null;
@@ -953,6 +962,11 @@ export namespace Semantic {
     nextRegexId: bigint;
     elaboratedRegexInternMap: Map<string, bigint>; // This maps the pattern/flag key to the ID
     elaboratedRegexTable: Map<bigint, RegexData>; // This maps the regex ID to the actual data
+
+    nextEmbeddedFileId: bigint;
+    elaboratedEmbeddedFileInternMap: Map<string, bigint>; // This maps the absolute path to the ID
+    elaboratedEmbeddedFileTable: Map<bigint, EmbeddedFileData>; // This maps the ID to the actual data
+    embeddedFileFunctionMap: Map<Semantic.SymbolId, bigint>; // This maps synthetic function IDs to embedded file IDs
 
     exportedCollectedSymbols: Set<number>;
 
@@ -1529,6 +1543,12 @@ export namespace Semantic {
       elaboratedRegexInternMap: new Map(),
       elaboratedRegexTable: new Map(),
       nextRegexId: 0n,
+
+      elaboratedEmbeddedFileInternMap: new Map(),
+      elaboratedEmbeddedFileTable: new Map(),
+      nextEmbeddedFileId: 0n,
+
+      embeddedFileFunctionMap: new Map(),
 
       cInjections: [],
       globalMainFunction: null,
@@ -2572,8 +2592,10 @@ export namespace Semantic {
 
       case Semantic.ENode.IntrinsicSymbol: {
         switch (expr.intrinsicType) {
-          case Semantic.EIntrinsicType.EmbedFile:
-            return `builtin.embed_file`;
+          case Semantic.EIntrinsicType.EmbedFileText:
+            return `builtin.embed_file_text`;
+          case Semantic.EIntrinsicType.EmbedFileBinary:
+            return `builtin.embed_file_binary`;
         }
         assert(false, "Unknown intrinsic type");
       }

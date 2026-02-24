@@ -5,7 +5,6 @@ import {
   EDatatypeMutability,
   EVariableMutability,
   EOverloadedOperator,
-  EIncrOperation,
 } from "../shared/AST";
 import {
   EMethodType,
@@ -25,12 +24,8 @@ import {
   type SourceLoc,
 } from "../shared/Errors";
 import {
-  addStatement,
   Collect,
-  CollectImmediate,
-  defineVariableSymbol,
   funcSymHasParameterPack,
-  printCollectedExpr,
   printCollectedSymbol,
 } from "../SymbolCollection/SymbolCollection";
 import { Conversion } from "./Conversion";
@@ -48,8 +43,9 @@ import {
 import { EUnaryOperation } from "../shared/AST";
 import { makeTempId, makeTempName } from "../shared/store";
 import { ConditionChain, ConstraintSet, type ConstraintPath } from "./Constraint";
+import { readFileSync, statSync } from "fs";
+import * as path from "path";
 import { Semantic } from "./SemanticTypes";
-import { TypeHierarchySupertypesRequest } from "vscode-languageserver";
 
 function isPowerOfTwo(x: bigint): boolean {
   return x > 0n && (x & (x - 1n)) === 0n;
@@ -328,12 +324,12 @@ export class SemanticElaborator {
       binaryExpr.operation === EBinaryOperation.GreaterEqual
     ) {
       let [left, leftId] = this.expr(binaryExpr.left, { unsafe: inference?.unsafe });
-      let [right, rightId] = this.expr(binaryExpr.right, { unsafe: inference?.unsafe });
+      let [_right, rightId] = this.expr(binaryExpr.right, { unsafe: inference?.unsafe });
 
       leftId = this.unwrapReactiveOrComputedIfPossible(leftId);
       left = this.sr.exprNodes.get(leftId);
       rightId = this.unwrapReactiveOrComputedIfPossible(rightId);
-      right = this.sr.exprNodes.get(rightId);
+      const _right2 = this.sr.exprNodes.get(rightId);
 
       // Try to find an overloaded operator on the left operand's type
       const leftTypeUse = this.sr.typeUseNodes.get(left.type);
@@ -626,17 +622,57 @@ export class SemanticElaborator {
     }
   }
 
+  private getModuleRootDirectory(): string {
+    const config = this.sr.cc.config;
+    if (config.source.type === "src-dir") {
+      return config.source.dirpath;
+    } else {
+      return path.dirname(config.source.filepath);
+    }
+  }
+
+  private getBytesTypeDef(): Semantic.TypeDefId {
+    const bytesSymbolId = Semantic.findBuiltinSymbolByName(this.sr, "Bytes", null);
+    const bytesSymbol = this.sr.cc.symbolNodes.get(bytesSymbolId);
+    assert(bytesSymbol.variant === Collect.ENode.TypeDefSymbol);
+
+    const bytesTypeDefId = this.withContext(
+      {
+        context: Semantic.makeElaborationContext({
+          currentScope: this.sr.cc.moduleScopeId,
+          genericsScope: this.sr.cc.moduleScopeId,
+          constraints: ConstraintSet.empty(),
+        }),
+        inAttemptExpr: null,
+        inFunction: null,
+      },
+      () => {
+        return this.typeDefSymbol(bytesSymbol);
+      },
+    );
+    assert(bytesTypeDefId.length === 1);
+    const elaboratedBytesSymbol = this.sr.symbolNodes.get(bytesTypeDefId[0]);
+    assert(elaboratedBytesSymbol.variant === Semantic.ENode.TypeDefSymbol);
+
+    return elaboratedBytesSymbol.datatype;
+  }
+
   handleIntrinsicCall(
     intrinsicExpr: Semantic.IntrinsicValueExpr,
     callExpr: Collect.ExprCallExpr,
-    inference: Semantic.Inference,
+    _inference: Semantic.Inference,
   ): [Semantic.Expression, Semantic.ExprId] {
     switch (intrinsicExpr.intrinsicType) {
-      case Semantic.EIntrinsicType.EmbedFile: {
+      case Semantic.EIntrinsicType.EmbedFileText:
+      case Semantic.EIntrinsicType.EmbedFileBinary: {
+        const isBinary = intrinsicExpr.intrinsicType === Semantic.EIntrinsicType.EmbedFileBinary;
+        const funcNamePrefix = isBinary ? "__hz_embed_file_binary" : "__hz_embed_file_text";
+        const intrinsicName = isBinary ? "builtin.embed_file_binary" : "builtin.embed_file_text";
+
         // Check argument count
         if (callExpr.arguments.length !== 1) {
           throw new CompilerError(
-            `builtin.embed_file() takes exactly 1 argument, got ${callExpr.arguments.length}`,
+            `${intrinsicName}() takes exactly 1 argument, got ${callExpr.arguments.length}`,
             callExpr.sourceloc,
           );
         }
@@ -673,35 +709,94 @@ export class SemanticElaborator {
 
         if (filePath === null) {
           throw new CompilerError(
-            `builtin.embed_file() argument must be a string literal or a string literal type (LiteralDatatype)`,
+            `${intrinsicName}() argument must be a string literal or a string literal type (LiteralDatatype)`,
             callExpr.sourceloc,
           );
         }
 
-        // TODO: For now, return an empty synthetic function
-        // In the future, this would actually read the file and embed it
-        // Create a synthetic embedded file function
-        
-        // Generate function name based on the file path
+        // Resolve the file path relative to the module root
+        const moduleRoot = this.getModuleRootDirectory();
+        const absolutePath = path.resolve(moduleRoot, filePath);
+
+        // Load and validate the file
+        let fileSize: number;
+        try {
+          const stats = statSync(absolutePath);
+          fileSize = stats.size;
+
+          // Check file size constraints
+          const MB_50 = 50 * 1024 * 1024;
+          const MB_100 = 100 * 1024 * 1024;
+
+          if (fileSize >= MB_100) {
+            throw new CompilerError(
+              `Embedded file size (${(fileSize / 1024 / 1024).toFixed(2)} MB) exceeds 100 MB limit: ${absolutePath}`,
+              callExpr.sourceloc,
+            );
+          }
+
+          if (fileSize >= MB_50) {
+            printWarningMessage(
+              `Embedded file size (${(fileSize / 1024 / 1024).toFixed(2)} MB) exceeds 50 MB: ${absolutePath}`,
+              callExpr.sourceloc,
+            );
+          }
+
+          const _fileContent = readFileSync(absolutePath);
+        } catch (error) {
+          if (error instanceof CompilerError) {
+            throw error;
+          }
+          throw new CompilerError(
+            `Failed to read embedded file: ${absolutePath}\n${(error as any).message}`,
+            callExpr.sourceloc,
+          );
+        }
+
+        // Generate function name based on the file path (mangled for uniqueness)
         let mangledName: string;
         if (argExpr.variant === Semantic.ENode.LiteralExpr) {
           mangledName = Semantic.mangleLiteralValue(this.sr, argExprId).name;
         } else {
           // For DatatypeAsValueExpr (literal datatype)
           const typeUse = this.sr.typeUseNodes.get(argExpr.type);
-          const typeDef = this.sr.typeDefNodes.get(typeUse.type);
-          mangledName = Semantic.mangleTypeDef(this.sr, typeDef).name;
+          const typeDefId = typeUse.type;
+          mangledName = Semantic.mangleTypeDef(this.sr, typeDefId).name;
         }
-        const funcName = `__hz_embed_file_${mangledName}`;
+        const funcName = `${funcNamePrefix}_${mangledName}`;
 
         let funcId = null as Semantic.SymbolId | null;
         if (this.sr.syntheticFunctions.has(funcName)) {
           funcId = this.sr.syntheticFunctions.get(funcName)!;
         } else {
-          // Create a synthetic function with empty body that represents the embedded file
+          // Elaborate the embedded file data
+          const embeddedFileId = this.sr.b.elaborateEmbeddedFile(
+            absolutePath,
+            filePath,
+            isBinary,
+            fileSize,
+          );
+
+          // Determine return type
+          let returnType: Semantic.TypeUseId;
+          if (isBinary) {
+            const bytesTypeDef = this.getBytesTypeDef();
+            const [_bytesTypeUse, bytesTypeUseId] = makeTypeUse(
+              this.sr,
+              bytesTypeDef,
+              EDatatypeMutability.Default,
+              true,
+              callExpr.sourceloc,
+            );
+            returnType = bytesTypeUseId;
+          } else {
+            returnType = this.sr.b.strType();
+          }
+
+          // Create a synthetic function with empty body that will be filled in by codegen
           const functionType = makeRawFunctionDatatypeAvailable(this.sr, {
             parameters: [],
-            returnType: this.sr.b.strType(),
+            returnType: returnType,
             requires: {
               final: true,
               pure: true,
@@ -712,18 +807,21 @@ export class SemanticElaborator {
             vararg: false,
           });
 
-          const code = `return "";`; // Empty body for now
-          const [func, newFuncId] = this.sr.b.syntheticFunctionFromCode({
+          const code = `return "";`; // Placeholder - codegen will fill this in
+          const [_func, newFuncId] = this.sr.b.syntheticFunctionFromCode({
             functionTypeId: functionType,
             parameterNames: [],
             funcname: funcName,
             bodySourceCode: code,
             currentScope: this.currentContext.currentScope,
             sourceloc: callExpr.sourceloc,
-            envType: { type: "none" },
+            envType: { type: "lambda", captures: [] },
           });
           this.sr.syntheticFunctions.set(funcName, newFuncId);
           funcId = newFuncId;
+
+          // Store the mapping for code generation
+          this.sr.embeddedFileFunctionMap.set(newFuncId, embeddedFileId);
         }
 
         assert(funcId);
@@ -732,10 +830,11 @@ export class SemanticElaborator {
 
         // Create a call expression that immediately calls the synthetic function with no arguments
         const funcSymbolValueId = this.sr.b.symbolValue(funcId, callExpr.sourceloc)[1];
-        const funcSymbolValue = this.sr.exprNodes.get(funcSymbolValueId);
-        
+        const _funcSymbolValue = this.sr.exprNodes.get(funcSymbolValueId);
+
         // Call the synthetic function with no arguments
-        return this.sr.b.callExpr(funcSymbolValueId, [], this.inFunction, callExpr.sourceloc);
+        const inFunc = this.inFunction ?? undefined;
+        return this.sr.b.callExpr(funcSymbolValueId, [], inFunc as any, callExpr.sourceloc);
       }
     }
 
@@ -819,7 +918,7 @@ export class SemanticElaborator {
           const first = this.getExpr(callingArguments[0]);
           const firstType = this.getTypeDef(this.sr.typeUseNodes.get(first.type).type);
           const second = callingArguments.length > 1 ? this.getExpr(callingArguments[1]) : null;
-          const secondType =
+          const _secondType =
             callingArguments.length > 1 && second
               ? this.getTypeDef(this.getTypeUse(second.type).type)
               : null;
@@ -2013,8 +2112,17 @@ export class SemanticElaborator {
       collectedObjectExpr.variant === Collect.ENode.SymbolValueExpr &&
       collectedObjectExpr.name === "builtin"
     ) {
-      if (memberAccess.memberName === "embed_file") {
-        return this.sr.b.intrinsicValue(Semantic.EIntrinsicType.EmbedFile, memberAccess.sourceloc);
+      if (memberAccess.memberName === "embed_file_text") {
+        return this.sr.b.intrinsicValue(
+          Semantic.EIntrinsicType.EmbedFileText,
+          memberAccess.sourceloc,
+        );
+      }
+      if (memberAccess.memberName === "embed_file_binary") {
+        return this.sr.b.intrinsicValue(
+          Semantic.EIntrinsicType.EmbedFileBinary,
+          memberAccess.sourceloc,
+        );
       }
       throw new CompilerError(
         `builtin namespace does not define any declarations named '${memberAccess.memberName}'`,
@@ -2709,13 +2817,13 @@ export class SemanticElaborator {
           variableSymbol.sourceloc,
         );
       }
-      const [expr, exprId] = this.sr.e.expr(variableSymbol.globalValueInitializer, undefined);
-      type = expr.type;
+      const [_expr, exprId] = this.sr.e.expr(variableSymbol.globalValueInitializer, undefined);
+      type = _expr.type;
       global = true;
       comptimeValue = exprId;
     } else if (variableSymbol.globalValueInitializer) {
       // Type is provided and there's an initializer, process the initializer and convert to the declared type
-      const [expr, exprId] = this.sr.e.expr(variableSymbol.globalValueInitializer, undefined);
+      const [_expr, exprId] = this.sr.e.expr(variableSymbol.globalValueInitializer, undefined);
       const conversionResult = Conversion.MakeConversionOrThrow(
         this.sr,
         exprId,
@@ -3333,7 +3441,7 @@ export class SemanticElaborator {
         }
 
         // Count required parameters (non-optional, without defaults)
-        const requiredParamCount = overload.parameters.filter((p, i) => {
+        const requiredParamCount = overload.parameters.filter((p, _i) => {
           const hasDefault = p.defaultParameterValue !== null;
           const isOptional = p.optional;
           return !hasDefault && !isOptional;
@@ -8585,7 +8693,7 @@ export class SemanticElaborator {
 
   callableExpr(
     callable: Collect.CallableExpr,
-    inference: Semantic.Inference,
+    _inference: Semantic.Inference,
   ): [Semantic.Expression, Semantic.ExprId] {
     const functionSignatureId = this.elaborateFunctionSignature(callable.functionSymbol);
     const functionSignature = this.sr.symbolNodes.get(functionSignatureId);

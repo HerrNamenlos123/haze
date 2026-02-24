@@ -307,6 +307,38 @@ export class SemanticBuilder {
     return id;
   }
 
+  private internEmbeddedFile(sr: Semantic.Context, absolutePath: string) {
+    let value = sr.elaboratedEmbeddedFileInternMap.get(absolutePath);
+    if (value === undefined) {
+      value = sr.nextEmbeddedFileId++;
+      sr.elaboratedEmbeddedFileInternMap.set(absolutePath, value);
+    }
+    return value;
+  }
+
+  elaborateEmbeddedFile(
+    absolutePath: string,
+    filePath: string, // Original relative path
+    isBinary: boolean,
+    fileSize: number,
+  ) {
+    const id = this.internEmbeddedFile(this.sr, absolutePath);
+
+    let embeddedData = this.sr.elaboratedEmbeddedFileTable.get(id);
+    if (!embeddedData) {
+      embeddedData = {
+        filePath: filePath,
+        absolutePath: absolutePath,
+        isBinary: isBinary,
+        id: id,
+        fileSize: fileSize,
+      };
+      this.sr.elaboratedEmbeddedFileTable.set(id, embeddedData);
+    }
+
+    return id;
+  }
+
   literalValue(literal: LiteralValue, sourceloc: SourceLoc) {
     if (literal.type === "enum") {
       const enumType = this.sr.typeDefNodes.get(literal.enumType);

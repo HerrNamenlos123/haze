@@ -1,0 +1,41 @@
+
+namespace std {
+    export opaque inline struct Resource<T> {
+        cell: Cell; // Will be private in future, access is hardcoded by "using" statement.
+
+        struct Cell {
+            data: T;
+            alive: bool;
+            releaseFn: (value: T) => void;
+        }
+
+        constructor(data, releaseFn: (value: T) => void) {
+            return Resource {
+                cell: {
+                    data: data,
+                    alive: true,
+                    releaseFn: releaseFn,
+                }
+            };
+        }
+
+        assertAlive() {
+            if !this.cell.alive {
+                sys.panic("Resource is no longer alive");
+            }
+        }
+
+        release() {
+            if !this.cell.alive {
+                return;
+            }
+            this.cell.alive = false;
+            this.cell.releaseFn(this.cell.data);
+        }
+
+        with<TRet>(fn: (value: T) => TRet): TRet {
+            this.assertAlive();
+            return fn(this.cell.data);
+        }
+    }
+}
