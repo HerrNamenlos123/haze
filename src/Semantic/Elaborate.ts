@@ -7788,6 +7788,53 @@ export class SemanticElaborator {
     );
   }
 
+  addCaptureToLambda(
+    lambdaScopeId: Collect.ScopeId,
+    resultingExprId: Semantic.ExprId,
+    capturedVariableId: Semantic.SymbolId,
+  ) {
+    const capturedVariable = this.sr.symbolNodes.get(capturedVariableId);
+    assert(capturedVariable.variant === Semantic.ENode.VariableSymbol);
+    assert(capturedVariable.type);
+
+    const resultingExpr = this.sr.exprNodes.get(resultingExprId);
+
+    const typeUse = this.sr.typeUseNodes.get(capturedVariable.type);
+    const typeDef = this.sr.typeDefNodes.get(typeUse.type);
+
+    if (typeDef.variant === Semantic.ENode.DynamicArrayDatatype) {
+    } else if (typeDef.variant === Semantic.ENode.ReactiveDatatype) {
+    } else if (typeDef.variant === Semantic.ENode.ComputedDatatype) {
+    } else if (typeDef.variant === Semantic.ENode.StructDatatype) {
+      if (typeUse.inline) {
+        capturedVariable.requiresHoisting = true;
+      }
+    } else {
+      capturedVariable.requiresHoisting = true;
+    }
+
+    const lambdaScope = this.sr.cc.scopeNodes.get(lambdaScopeId);
+    assert(lambdaScope.variant === Collect.ENode.LambdaScope);
+    const lambdaExprId = this.sr.e.currentContext.elaboratedLambdaExprs.get(lambdaScopeId);
+    assert(lambdaExprId);
+    const lambdaExpr = this.sr.exprNodes.get(lambdaExprId);
+    assert(lambdaExpr.variant === Semantic.ENode.CallableExpr);
+    assert(lambdaExpr.envType?.type === "lambda");
+    assert(lambdaExpr.envValue?.type === "lambda");
+
+    if (!lambdaExpr.envValue.captures.find((c) => c.variable === capturedVariableId)) {
+      lambdaExpr.envType.captures.push({
+        name: capturedVariable.name,
+        type: resultingExpr.type,
+        capturedSymbol: capturedVariableId,
+      });
+      lambdaExpr.envValue.captures.push({
+        variable: capturedVariableId,
+        value: resultingExprId,
+      });
+    }
+  }
+
   symbolValue(
     symbolValue: Collect.SymbolValueExpr,
     inference: Semantic.Inference,
@@ -7829,12 +7876,14 @@ export class SemanticElaborator {
       const found = this.sr.exprNodes.get(foundResult.id);
       if (found.variant === Semantic.ENode.SymbolValueExpr) {
         const variable = this.sr.symbolNodes.get(found.symbol);
-        if (
-          variable.variant === Semantic.ENode.VariableSymbol &&
-          variable.comptime &&
-          variable.comptimeValue
-        ) {
-          return [this.sr.exprNodes.get(variable.comptimeValue), variable.comptimeValue];
+        if (variable.variant === Semantic.ENode.VariableSymbol) {
+          if (variable.comptime && variable.comptimeValue) {
+            return [this.sr.exprNodes.get(variable.comptimeValue), variable.comptimeValue];
+          }
+
+          if (foundResult.crossedLambdaScope) {
+            this.addCaptureToLambda(foundResult.crossedLambdaScope, foundResult.id, found.symbol);
+          }
         }
       }
       return [this.sr.exprNodes.get(foundResult.id), foundResult.id];
@@ -8004,48 +8053,15 @@ export class SemanticElaborator {
           }
         }
 
-        const resultingExpr = this.sr.exprNodes.get(resultingExprId);
-
         if (foundResult.crossedLambdaScope) {
-          const typeUse = this.sr.typeUseNodes.get(resultingExpr.type);
-          const typeDef = this.sr.typeDefNodes.get(typeUse.type);
-
-          if (typeDef.variant === Semantic.ENode.DynamicArrayDatatype) {
-          } else if (typeDef.variant === Semantic.ENode.ReactiveDatatype) {
-          } else if (typeDef.variant === Semantic.ENode.ComputedDatatype) {
-          } else if (typeDef.variant === Semantic.ENode.StructDatatype) {
-            if (typeUse.inline) {
-              elaboratedSymbol.requiresHoisting = true;
-            }
-          } else {
-            elaboratedSymbol.requiresHoisting = true;
-          }
-
-          const lambdaScope = this.sr.cc.scopeNodes.get(foundResult.crossedLambdaScope);
-          assert(lambdaScope.variant === Collect.ENode.LambdaScope);
-          const lambdaExprId = this.currentContext.elaboratedLambdaExprs.get(
+          this.addCaptureToLambda(
             foundResult.crossedLambdaScope,
+            resultingExprId,
+            elaboratedSymbolId,
           );
-          assert(lambdaExprId);
-          const lambdaExpr = this.sr.exprNodes.get(lambdaExprId);
-          assert(lambdaExpr.variant === Semantic.ENode.CallableExpr);
-          assert(lambdaExpr.envType?.type === "lambda");
-          assert(lambdaExpr.envValue?.type === "lambda");
-
-          if (!lambdaExpr.envValue.captures.find((c) => c.variable === elaboratedSymbolId)) {
-            lambdaExpr.envType.captures.push({
-              name: symbol.name,
-              type: resultingExpr.type,
-              capturedSymbol: elaboratedSymbolId,
-            });
-            lambdaExpr.envValue.captures.push({
-              variable: elaboratedSymbolId,
-              value: resultingExprId,
-            });
-          }
         }
 
-        return [resultingExpr, resultingExprId] as const;
+        return [this.sr.exprNodes.get(resultingExprId), resultingExprId] as const;
       } else if (
         elaboratedSymbol.variant === Semantic.ENode.TypeDefSymbol &&
         this.sr.typeDefNodes.get(elaboratedSymbol.datatype).variant ===

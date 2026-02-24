@@ -1007,7 +1007,7 @@ export namespace Semantic {
     name: string,
     args: { startLookupInScope: Collect.ScopeId; sourceloc: SourceLoc; pubRequired?: boolean },
   ):
-    | { type: "semantic"; id: Semantic.ExprId }
+    | { type: "semantic"; id: Semantic.ExprId; crossedLambdaScope: Collect.ScopeId | null }
     | { type: "collect"; id: Collect.SymbolId; crossedLambdaScope: Collect.ScopeId | null }
     | undefined {
     const cc = sr.cc;
@@ -1023,6 +1023,7 @@ export namespace Semantic {
         return {
           id: sr.b.symbolValue(symbolId, args.sourceloc)[1],
           type: "semantic",
+          crossedLambdaScope: null,
         };
       }
     }
@@ -1147,7 +1148,7 @@ export namespace Semantic {
             sourceloc: args.sourceloc,
           });
 
-          if (scope.variant === Collect.ENode.LambdaScope && result?.type === "collect") {
+          if (scope.variant === Collect.ENode.LambdaScope && result) {
             // Intentionally overwrite because it is written on exit of recursion and we want
             // the first match, which will be the last one to be applied
             result.crossedLambdaScope = args.startLookupInScope;

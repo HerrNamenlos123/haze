@@ -2873,6 +2873,10 @@ function lowerStatement(
       const arrayType = lr.sr.typeDefNodes.get(
         lr.sr.typeUseNodes.get(lr.sr.exprNodes.get(semanticForeachStmt.arrayExpr).type).type,
       );
+      assert(
+        arrayType.variant === Semantic.ENode.FixedArrayDatatype ||
+          arrayType.variant === Semantic.ENode.DynamicArrayDatatype,
+      );
       const flattenedArrayStatements: Lowered.StatementId[] = [];
       const [_arrayVar, arrayVarId] = storeInTempVarAndGet(
         lr,
@@ -2978,26 +2982,58 @@ function lowerStatement(
       const loopVariable = lr.sr.symbolNodes.get(
         semanticForeachStmt.loopVariable,
       ) as Semantic.VariableSymbol;
-      bodyStatements.push(
+      assert(loopVariable.type);
+
+      const flattened = [] as Lowered.StatementId[];
+
+      const loopVarType = lowerTypeUse(lr, arrayType.datatype);
+      let loopVariableName = loopVariable.name;
+      let loopVariableValue = Lowered.addExpr(lr, {
+        variant: Lowered.ENode.ArraySubscriptExpr,
+        expr: arrayVarId,
+        index: indexSymbolExpr,
+        type: loopVarType,
+      })[1];
+      if (loopVariable.requiresHoisting) {
+        const original = storeInTempVarAndGet(
+          lr,
+          lr.exprNodes.get(loopVariableValue).type,
+          loopVariableValue,
+          null,
+          flattened,
+        )[1];
+        loopVariableValue = makeIntrinsicCall(
+          lr,
+          "HZSTD_HOIST",
+          [
+            Lowered.addExpr(lr, {
+              variant: Lowered.ENode.DatatypeAsValueExpr,
+              type: lowerTypeUse(lr, loopVariable.type),
+            })[1],
+            original,
+          ],
+          lowerTypeUse(lr, loopVariable.type),
+        )[1];
+        loopVariableName = "*" + loopVariableName;
+      }
+
+      flattened.push(
         Lowered.addStatement<Lowered.VariableStatement>(lr, {
           variant: Lowered.ENode.VariableStatement,
           name: {
-            prettyName: loopVariable.name,
-            mangledName: loopVariable.name,
+            prettyName: loopVariableName,
+            mangledName: loopVariableName,
             wasMangled: false,
           },
           type: lowerTypeUse(lr, loopVariable.type!),
           variableContext: loopVariable.variableContext,
           intrinsicTakeAddrOfValue: false,
-          value: Lowered.addExpr(lr, {
-            variant: Lowered.ENode.ArraySubscriptExpr,
-            expr: arrayVarId,
-            index: indexSymbolExpr,
-            type: lowerTypeUse(lr, (arrayType as any).datatype),
-          })[1],
+          value: loopVariableValue,
           sourceloc: semanticForeachStmt.sourceloc,
         })[1],
       );
+
+      bodyStatements.push(...flattened);
 
       if (semanticForeachStmt.indexVariable) {
         const indexVariable = lr.sr.symbolNodes.get(
