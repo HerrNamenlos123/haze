@@ -3800,7 +3800,7 @@ export class SemanticElaborator {
         if (actualArg && actualArg.exprId !== null) {
           // Get the type of the actual argument
           const actualExpr = this.sr.exprNodes.get(actualArg.exprId);
-          
+
           // If it's a literal expression, create a LiteralDatatype to preserve the value
           let actualType: Semantic.TypeUseId;
           if (actualExpr.variant === Semantic.ENode.LiteralExpr) {

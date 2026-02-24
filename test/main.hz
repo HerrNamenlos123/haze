@@ -10,10 +10,12 @@ export extern C wgpu_end(glfwWindow: cptr) :: final;
 
 main(): int {
 
+    let comptime switchA = true;
+
     const a = computed<str>(() => {
-        let t = embed.watchText("haze.toml");
+        let t = embed.watchTextIf(true, "haze.toml");
         fmt.println("Text: ", t);
-        return t;
+        return t as str;
     });
 
     attempt {

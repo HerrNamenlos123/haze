@@ -12,9 +12,9 @@ namespace embed {
         // DataSource embedding
     }
 
-    export watchText<TPath>(path: TPath): Reactive<str> {
+    export watchText<TPath>(path: TPath, options: fs.FileWatchOptions = {}): Reactive<str> {
         let data = reactive(builtin.embed_file_text(TPath));
-        fs.watch(TPath, (event: fs.FileChangeEvent) => {
+        fs.watch(TPath, (event: fs.FileChangeEvent): void => {
             if let d = fs.readText(path as str) {
                 data := d;
             }
@@ -26,9 +26,18 @@ namespace embed {
         return data;
     }
 
-    export watchBinary<TPath>(path: TPath): Reactive<Bytes> {
+    export watchTextIf<TCond, TPath>(condition: TCond, path: TPath, options: fs.FileWatchOptions = {}): Reactive<str> {
+        if comptime TCond is true {
+            return watchText(path, options);
+        }
+        else {
+            return reactive(text(path));
+        }
+    }
+
+    export watchBinary<TPath>(path: TPath, options: fs.FileWatchOptions = {}): Reactive<Bytes> {
         let data = reactive(builtin.embed_file_binary(TPath));
-        fs.watch(TPath, (event: fs.FileChangeEvent) => {
+        fs.watch(TPath, (event: fs.FileChangeEvent): void => {
             if let d = fs.readBinary(path as str) {
                 data := d;
             }
@@ -38,6 +47,15 @@ namespace embed {
             strategy: fs.WatchStrategy.ModificationDate,
         });
         return data;
+    }
+
+    export watchBinaryIf<TCond, TPath>(condition: TCond, path: TPath, options: fs.FileWatchOptions = {}): Reactive<str> {
+        if comptime TCond is true {
+            return watchBinary(path, options);
+        }
+        else {
+            return reactive(binary(path));
+        }
     }
 
     export watchFile<TPath>(_path: TPath): Bytes {

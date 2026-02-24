@@ -955,6 +955,36 @@ export namespace Conversion {
       return ok(fromExprId);
     }
 
+    // Conversion from LiteralDatatype to PrimitiveDatatype
+    // When a literal type like "hello" (LiteralDatatype) needs to become str (PrimitiveDatatype)
+    if (
+      fromType.variant === Semantic.ENode.LiteralDatatype &&
+      to.variant === Semantic.ENode.PrimitiveDatatype
+    ) {
+      const literalValue = fromType.literalValue;
+      // Check if the literal type matches the target primitive type
+      if (literalValue.type === to.primitive) {
+        // Create a literal expression with the value from the literal datatype
+        return ok(sr.b.literalValue(literalValue, sourceloc)[1]);
+      }
+      // Handle conversion from string literal to cstr/ccstr
+      if (
+        literalValue.type === EPrimitive.str &&
+        (to.primitive === EPrimitive.cstr || to.primitive === EPrimitive.ccstr)
+      ) {
+        return ok(
+          sr.b.literalValue(
+            {
+              type: to.primitive,
+              prefix: null,
+              value: literalValue.value,
+            },
+            sourceloc,
+          )[1],
+        );
+      }
+    }
+
     // Conversion from str to cstr
     if (
       fromType.variant === Semantic.ENode.PrimitiveDatatype &&
