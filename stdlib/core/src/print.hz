@@ -21,24 +21,21 @@ namespace fmt {
         }
 
         mut write(value: str) {
-            let buffer = this.buffer;
-            if buffer {
-                buffer.writeAt(this.written, value);
+            if this.buffer {
+                this.buffer.push(value);
+                this.written += value.length;
             }
-            this.written += value.length;
         }
 
         commit() {
-            const buffer = this.buffer;
-            if buffer {
-                buffer.commit();
+            if this.buffer {
+                this.buffer.commit();
             }
         }
 
         string() {
-            const buffer = this.buffer;
-            if (buffer) {
-                return buffer.string();
+            if this.buffer {
+                return this.buffer.string();
             }
             else {
                 return "";

@@ -17,11 +17,17 @@
     {
       "type": "lldb",
       "request": "launch",
+      "name": "Launch testing file",
+      "program": "${workspaceFolder}/__haze__/streams_hz/bin/streams_hz",
+      "args": [],
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
       "name": "Launch c-test",
       "program": "${workspaceFolder}/test/c-test/win/build/Debug/unwind_test.exe",
-      "args": [
-        "recurse"
-      ],
+      "args": ["recurse"],
       "cwd": "${workspaceFolder}"
     },
     {
@@ -94,9 +100,7 @@
       "name": "Extension",
       "type": "extensionHost",
       "request": "launch",
-      "args": [
-        "--extensionDevelopmentPath=${workspaceFolder}"
-      ]
+      "args": ["--extensionDevelopmentPath=${workspaceFolder}"]
     }
   ]
 }

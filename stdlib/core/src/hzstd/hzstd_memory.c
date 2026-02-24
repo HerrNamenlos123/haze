@@ -67,31 +67,35 @@ static hzstd_arena_chunk_t* hzstd_arena_enlarge(hzstd_arena_chunk_t* last_chunk,
 
 void* hzstd_arena_allocate(hzstd_arena_t* arena, size_t size)
 {
-  size_t chunk_size = HZSTD_MAX(HZSTD_DEFAULT_ARENA_CHUNK_SIZE, size);
   assert(size != 0);
+
+  size_t alignment = alignof(max_align_t);
+  size_t chunk_size = HZSTD_MAX(HZSTD_DEFAULT_ARENA_CHUNK_SIZE, size + alignment);
 
   if (!arena->first_chunk) {
     arena->first_chunk = hzstd_arena_create_chunk(chunk_size);
   }
 
-  hzstd_arena_chunk_t* last_chunk = arena->first_chunk;
-  while (last_chunk->next_chunk) {
-    last_chunk = last_chunk->next_chunk;
+  hzstd_arena_chunk_t* chunk = arena->first_chunk;
+  while (chunk->next_chunk) {
+    chunk = chunk->next_chunk;
   }
 
-  size_t alignment = alignof(max_align_t);
-  if (last_chunk->capacity - last_chunk->used < size + alignment) {
-    last_chunk = hzstd_arena_enlarge(last_chunk, chunk_size);
+  uintptr_t base = (uintptr_t)(chunk + 1);
+  uintptr_t current = base + chunk->used;
+  uintptr_t aligned = (current + (alignment - 1)) & ~(alignment - 1);
+
+  size_t new_used = (aligned - base) + size;
+
+  if (new_used > chunk->capacity) {
+    chunk = hzstd_arena_enlarge(chunk, chunk_size);
+    base = (uintptr_t)(chunk + 1);
+    aligned = (base + (alignment - 1)) & ~(alignment - 1);
+    new_used = (aligned - base) + size;
   }
 
-  // compute aligned address
-  uintptr_t rawAddr = (uintptr_t)(last_chunk + 1) + last_chunk->used;
-  uintptr_t alignedAddr = (rawAddr + (alignment - 1)) & ~(alignment - 1);
-  size_t padding = alignedAddr - rawAddr;
-
-  last_chunk->used += padding + size;
-
-  return (void*)alignedAddr;
+  chunk->used = new_used;
+  return (void*)aligned;
 }
 
 static void* heap_allocator_impl(void* ctx, size_t size) { return hzstd_heap_allocate(size); }

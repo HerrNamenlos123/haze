@@ -160,8 +160,11 @@ export namespace fs {
             return Bytes();
         }
         
-        let buffer = ByteBuffer(stat.size); // Since we read binary, the stat size actually matches the number of bytes
-        let result = ffi.hzstd_read_file_binary(allocator, path, buffer.buffer, buffer.length);
+        let buffer = ByteBuffer();
+        buffer.resize(stat.size);
+        const ptr = none as cptr;
+        __c__("ptr = hzstd_dynamic_array_raw_buffer(buffer->data);");
+        let result = ffi.hzstd_read_file_binary(allocator, path, ptr, buffer.length());
         if result.code == ffi.hzstd_fs_error_code_none {
             buffer.commit();
             return Result<Bytes, Error>.Ok(buffer.bytes());

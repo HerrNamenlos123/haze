@@ -17,49 +17,100 @@ export namespace Alloc {
 
 export opaque struct ByteBuffer {
     committed: bool;
-    length: int;
-    buffer: cptr;
+    data: []u8;
 
-    constructor(allocator: Allocator, length: int) {
-        do unsafe {
-            let buffer = ByteBuffer {
-                committed: false,
-                length: length,
-                buffer: none as cptr,
-            };
-            __c__("buffer->buffer = hzstd_allocate(allocator, length);");
-            buffer.writeZero(0, length);
-            return buffer;
-        };
+    frozenPtr: cptr;
+    frozenLen: int;
+
+    constructor() {
+        return ByteBuffer(0);
     }
 
-    constructor(length: int) {
-        return ByteBuffer(Alloc.heap(), length);
+    constructor(reserve: int) {
+        let arr: []u8 = [];
+        if reserve > 0 {
+            arr.reserve(reserve);
+        }
+
+        // The frozen buffer is GC managed. Nothing ever needs to be freed. 
+        // There is no point in resizing a buffer within an arena.
+
+        return ByteBuffer {
+            committed: false,
+            data: arr,
+            frozenPtr: none,
+            frozenLen: 0,
+        };
     }
 
     operator[](index: int): ByteBufferRef {
-        if (index < 0 || index >= this.length) {
+        let len = this.length();
+
+        if index < 0 || index >= len {
             sys.panic("Out of bounds access in ByteBuffer");
         }
 
-        return {
-            buffer: this,
-            index: index,
-        };
+        return { buffer: this, index: index };
     }
 
     getAt(index: int): u8 {
-        if (index < 0 || index >= this.length) {
-            sys.panic("Out of bounds access in ByteBuffer");
+        if !this.committed {
+            if index < 0 || index >= this.data.length {
+                sys.panic("Out of bounds access in ByteBuffer");
+            }
+            return this.data[index];
         }
+        else {
+            if index < 0 || index >= this.frozenLen {
+                sys.panic("Out of bounds access in ByteBuffer");
+            }
 
-        let result: u8 = 0;
-        __c__("result = ((hzstd_u8_t*)this->buffer)[index];");
-        return result;
+            let result: u8 = 0;
+            __c__("result = ((hzstd_u8_t*)this->frozenPtr)[index];");
+            return result;
+        }
     }
 
     commit() {
+        if this.committed { return; }
+
+        let len = this.data.length;
+
+        do unsafe {
+            let ptr: cptr = none as cptr;
+
+            if len > 0 {
+                __c__("ptr = hzstd_allocate(hzstd_make_heap_allocator(), len);");
+                __c__("memcpy(ptr, hzstd_dynamic_array_raw_buffer(this->data), len);");
+            }
+
+            this.frozenPtr = ptr;
+            this.frozenLen = len;
+        };
+
+        this.data = [];        // release dynamic array
         this.committed = true;
+    }
+
+    reserve(newCapacity: int) {
+        this.assertNotCommitted();
+        this.data.reserve(newCapacity);
+    }
+
+    resize(newSize: int) {    
+        this.assertNotCommitted();
+        // Do the dumb, obvious thing now, optimize later
+        while this.data.length < newSize {
+            this.data.push(0);
+        }
+        while this.data.length > newSize {
+            this.data.pop();
+        }
+    }
+
+    length() {
+        if this.committed { return this.frozenLen; }
+        return this.data.length;
     }
 
     assertNotCommitted() {
@@ -69,39 +120,65 @@ export opaque struct ByteBuffer {
     }
 
     setAt(index: int, value: u8) {
-        if (index < 0 || index >= this.length) {
+        this.assertNotCommitted();
+        if (index < 0 || index >= this.data.length) {
             sys.panic("Out of bounds access in ByteBuffer");
         }
+        this.data[index] = value;
+    }
 
+    mut push(data: str) {
         this.assertNotCommitted();
-        __c__("((hzstd_u8_t*)this->buffer)[index] = value;");
+        let pLength = this.data.length;
+
+        // Always resize to this size, it will strictly grow the buffer
+        this.resize(pLength + data.length);
+        this.writeAt(pLength, data);
+    }
+
+    mut push(data: Bytes) {
+        this.assertNotCommitted();
+        let pLength = this.data.length;
+
+        // Always resize to this size, it will strictly grow the buffer
+        this.resize(pLength + data.length);
+        this.writeAt(pLength, data);
     }
 
     mut writeAt(startIndex: int, data: str) {
-        if (startIndex < 0 || startIndex + data.length - 1 >= this.length) {
+        if (startIndex < 0 || startIndex + data.length > this.data.length) {
             sys.panic("Out of bounds access in ByteBuffer");
         }
 
         this.assertNotCommitted();
-        __c__("memcpy((hzstd_u8_t*)this->buffer + startIndex, data.data, data.length);");
+        // Do the dumb, trivial loop, we can optimize bounds checking away later
+        for (let i = 0; i < data.length; i++) {
+            this.data[startIndex + i] = data[i];
+        }
     }
 
     mut writeAt(startIndex: int, data: Bytes) {
-        if (startIndex < 0 || startIndex + data.length - 1 >= this.length) {
+        if (startIndex < 0 || startIndex + data.length > this.data.length) {
             sys.panic("Out of bounds access in ByteBuffer");
         }
 
         this.assertNotCommitted();
-        __c__("memcpy((hzstd_u8_t*)this->buffer + startIndex, data.basePtr + data.offset, data.length);");
+        // Do the dumb, trivial loop, we can optimize bounds checking away later
+        for (let i = 0; i < data.length; i++) {
+            this.data[startIndex + i] = data[i];
+        }
     }
 
     mut writeZero(startIndex: int, length: int) {
-        if (startIndex < 0 || startIndex + length - 1 >= this.length) {
+        if (startIndex < 0 || startIndex + length > this.data.length) {
             sys.panic("Out of bounds access in ByteBuffer");
         }
 
         this.assertNotCommitted();
-        __c__("memset((hzstd_u8_t*)this->buffer + startIndex, 0, length);");
+        // Do the dumb, trivial loop, we can optimize bounds checking away later
+        for (let i = 0; i < length; i++) {
+            this.data[startIndex + i] = 0;
+        }
     }
 
     bytes(): Bytes {
@@ -114,10 +191,11 @@ export opaque struct ByteBuffer {
             __c__("bytes.basePtr = NULL;");
             __c__("bytes.offset = 0;");
             __c__("bytes.length = 0;");
-            if (this.length > 0) {
-                __c__("bytes.basePtr = this->buffer;");
+            if (this.frozenLen > 0) {
+                // This is ONLY safe because we make sure the array cannot be mutated anymore
+                __c__("bytes.basePtr = this->frozenPtr;");
                 __c__("bytes.offset = 0;");
-                __c__("bytes.length = this->length;");
+                __c__("bytes.length = this->frozenLen;");
             }
             return bytes;
         };
@@ -131,8 +209,8 @@ export opaque struct ByteBuffer {
         // TODO: Perform utf-8 validation once we have actual unicode support
 
         let result = "";
-        if (this.length > 0) {
-            __c__("result = HZSTD_STRING((const char*)this->buffer, this->length);");
+        if (this.frozenLen > 0) {
+            __c__("result = HZSTD_STRING((const char*)this->frozenPtr, this->frozenLen);");
         }
         return result;
     }

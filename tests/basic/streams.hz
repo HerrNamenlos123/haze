@@ -23,9 +23,9 @@ assertEqBytes(a: Bytes, b: Bytes, msg: str = "bytes not equal"): void {
 // ------------------------------------------------------------
 
 readAll(s: io.Stream): Bytes {
-    let out = ByteBuffer(s.size());
+    let out = ByteBuffer();
+    out.reserve(s.size());
 
-    let written = 0;
     let exit = false;
     while !exit {
         let chunk = s.read();
@@ -33,8 +33,7 @@ readAll(s: io.Stream): Bytes {
             exit = true; 
         }
         else {
-            out.writeAt(written, chunk);
-            written += chunk.length;
+            out.push(chunk);
         }
     }
 
@@ -105,6 +104,7 @@ runStreamSpec(name: str, open: () => io.Stream): void {
         assert(s.seek(5, io.SeekMode.Start), name + " setup seek failed");
 
         let before = s.read();
+        assert(s.seek(5, io.SeekMode.Start), name + " setup seek failed");
 
         assert(!s.seek(-999999, io.SeekMode.Start), name + " invalid seek returned true");
         let after = s.read();
@@ -130,9 +130,9 @@ runStreamSpec(name: str, open: () => io.Stream): void {
         s.res.release();
 
         // All of these must panic, so selectively comment them in to check
-        s.read();
-        s.seek(0, io.SeekMode.Start);
-        s.size();
+        // s.read();
+        // s.seek(0, io.SeekMode.Start);
+        // s.size();
     };
 }
 

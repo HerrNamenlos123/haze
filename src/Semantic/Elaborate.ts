@@ -2446,6 +2446,84 @@ export class SemanticElaborator {
           memberAccess.sourceloc,
         );
       }
+      if (memberAccess.memberName === "reserve") {
+        const funcname = `__hz_dynamic_array_reserve_${
+          Semantic.mangleTypeUse(this.sr, objectType.datatype).name
+        }`;
+
+        let [func, funcId] = [null, null] as [
+          Semantic.FunctionSymbol | null,
+          Semantic.SymbolId | null,
+        ];
+        if (this.sr.syntheticFunctions.has(funcname)) {
+          funcId = this.sr.syntheticFunctions.get(funcname)!;
+          assert(funcId);
+          const sym = this.sr.symbolNodes.get(funcId);
+          assert(sym.variant === Semantic.ENode.FunctionSymbol);
+          func = sym;
+        } else {
+          const functionType = makeRawFunctionDatatypeAvailable(this.sr, {
+            parameters: [
+              {
+                optional: false,
+                type: this.sr.b.intType(),
+              },
+            ],
+            returnType: this.sr.b.voidType(),
+            requires: {
+              final: true,
+              pure: false,
+              noreturn: false,
+              noreturnIf: null,
+            },
+            sourceloc: memberAccess.sourceloc,
+            vararg: false,
+          });
+
+          const code = `__c__("hzstd_dynamic_array_reserve(this, capacity);");`;
+
+          [func, funcId] = this.sr.b.syntheticFunctionFromCode({
+            functionTypeId: functionType,
+            parameterNames: ["capacity"],
+            funcname: funcname,
+            bodySourceCode: code,
+            currentScope: this.currentContext.currentScope,
+            sourceloc: memberAccess.sourceloc,
+            envType: {
+              type: "method",
+              thisExprType: makeTypeUse(
+                this.sr,
+                this.sr.typeUseNodes.get(object.type).type,
+                EDatatypeMutability.Mut,
+                "force-no-inline",
+                memberAccess.sourceloc,
+              )[1],
+            },
+          });
+          this.sr.syntheticFunctions.set(funcname, funcId);
+        }
+
+        assert(func && funcId);
+
+        return this.sr.b.callableExpr(
+          funcId,
+          {
+            type: "method",
+            thisExprType: makeTypeUse(
+              this.sr,
+              this.sr.typeUseNodes.get(object.type).type,
+              EDatatypeMutability.Mut,
+              "force-no-inline",
+              memberAccess.sourceloc,
+            )[1],
+          },
+          {
+            type: "method",
+            thisExpr: objectId,
+          },
+          memberAccess.sourceloc,
+        );
+      }
       if (memberAccess.memberName === "pop") {
         const funcname = `__hz_dynamic_array_pop_${
           Semantic.mangleTypeUse(this.sr, objectType.datatype).name
