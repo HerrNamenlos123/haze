@@ -12,8 +12,8 @@ namespace embed {
         // DataSource embedding
     }
 
-    export watchText<TPath>(path: TPath, options: fs.FileWatchOptions = {}): Reactive<str> {
-        let data = std.reactive(builtin.embed_file_text(TPath));
+    export watchText<TPath>(path: TPath, options: fs.FileWatchOptions = {}): rx.Reactive<str> {
+        let data = rx.reactive(builtin.embed_file_text(TPath));
         fs.watch(TPath, (event: fs.FileChangeEvent): void => {
             if let d = fs.readText(path as str) {
                 data := d;
@@ -26,12 +26,12 @@ namespace embed {
         return data;
     }
 
-    export watchTextIf<TCond, TPath>(condition: TCond, path: TPath, options: fs.FileWatchOptions = {}): Reactive<str> {
+    export watchTextIf<TCond, TPath>(condition: TCond, path: TPath, options: fs.FileWatchOptions = {}): rx.Reactive<str> {
         if comptime TCond is true {
             return watchText(path, options);
         }
         else if TCond is false {
-            return std.reactive(text(path));
+            return rx.reactive(text(path));
         }
         else {
             static_assert(false, "Condition of watchBinaryIf resolves to anything other than true/false at compile time: " + TCond.name);
@@ -39,8 +39,8 @@ namespace embed {
         assert(false);
     }
 
-    export watchBinary<TPath>(path: TPath, options: fs.FileWatchOptions = {}): Reactive<Bytes> {
-        let data = std.reactive(builtin.embed_file_binary(TPath));
+    export watchBinary<TPath>(path: TPath, options: fs.FileWatchOptions = {}): rx.Reactive<Bytes> {
+        let data = rx.reactive(builtin.embed_file_binary(TPath));
         fs.watch(TPath, (event: fs.FileChangeEvent): void => {
             if let d = fs.readBinary(path as str) {
                 data := d;
@@ -53,12 +53,12 @@ namespace embed {
         return data;
     }
 
-    export watchBinaryIf<TCond, TPath>(condition: TCond, path: TPath, options: fs.FileWatchOptions = {}): Reactive<str> {
+    export watchBinaryIf<TCond, TPath>(condition: TCond, path: TPath, options: fs.FileWatchOptions = {}): rx.Reactive<str> {
         if comptime TCond is true {
             return watchBinary(path, options);
         }
         else if  TCond is false {
-            return std.reactive(binary(path));
+            return rx.reactive(binary(path));
         }
         else {
             static_assert(false, "Condition of watchBinaryIf resolves to anything other than true/false at compile time: " + TCond.name);

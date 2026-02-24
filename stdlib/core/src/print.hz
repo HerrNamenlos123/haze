@@ -88,8 +88,8 @@ namespace fmt {
     }
 
     export printFragment<T>(value: T) {
-        if comptime type<IsReactive<T>> {
-            printFragment<ReactiveInner<T>>(value);
+        if comptime type<rx.IsReactive<T>> {
+            printFragment<rx.ReactiveInner<T>>(value);
         }
         else {
             if comptime T is int || T is mut int {

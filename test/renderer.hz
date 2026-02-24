@@ -41,7 +41,7 @@ inline struct RendererOptions {
     device: mut wgpu.Device;
     surface: mut wgpu.Surface;
     surfaceFormats: []wgpu.TextureFormat;
-    shadercode: Reactive<str>;
+    shadercode: rx.Reactive<str>;
 }
 
 opaque struct Renderer {
@@ -49,7 +49,7 @@ opaque struct Renderer {
     queue: mut wgpu.Queue;
     device: mut wgpu.Device;
     surface: mut wgpu.Surface;
-    pipeline: Computed<mut wgpu.RenderPipeline>;
+    pipeline: rx.Computed<mut wgpu.RenderPipeline>;
     globalsBuffer: mut wgpu.Buffer;
     globalsBindGroup: mut wgpu.BindGroup;
 
@@ -121,13 +121,13 @@ opaque struct Renderer {
             bindGroupLayouts: { globalsLayout },
         });
 
-        let shader = std.computed<mut wgpu.ShaderModule>(() => {
+        let shader = rx.computed<mut wgpu.ShaderModule>(() => {
             return options.device.createShaderModule({
                 code: options.shadercode,
             });
         });
 
-        let pipeline = std.computed<mut wgpu.RenderPipeline>(() => {
+        let pipeline = rx.computed<mut wgpu.RenderPipeline>(() => {
             return options.device.createRenderPipeline({
                 layout: pipelineLayout,
                 vertex: {
@@ -246,7 +246,7 @@ opaque struct Renderer {
     }
 
     endFrame() {
-        let pipelineValue = std.unwrap(this.pipeline);
+        let pipelineValue = rx.unwrap(this.pipeline);
 
         let surfaceTexture = this.surface.getCurrentTexture();
         if !surfaceTexture.texture { 

@@ -1,16 +1,17 @@
 
-namespace std {
-    export opaque inline struct Resource<T> {
-        cell: Cell; // Will be private in future, access is hardcoded by "using" statement.
+namespace io {
 
-        struct Cell {
-            data: T;
+    export opaque inline struct Resource<T> {
+        cell: Cell<T>; // Will be private in future, access is hardcoded by "using" statement.
+
+        struct Cell<U> {
+            data: U;
             alive: bool;
-            releaseFn: (value: T) => void;
+            releaseFn: (value: U) => void;
         }
 
         constructor(data: T, releaseFn: (value: T) => void) {
-            return Resource {
+            return Resource<T> {
                 cell: {
                     data: data,
                     alive: true,
@@ -36,6 +37,46 @@ namespace std {
         _with<TRet>(fn: (value: T) => TRet): TRet {
             this.assertAlive();
             return fn(this.cell.data);
+        }
+
+        test() {}
+    }
+
+    export enum SeekMode {
+        Start,    // absolute position
+        Current,  // relative to current cursor
+        End       // relative to end of stream
+    }
+
+    export opaque inline struct Stream {
+        res: Resource<Impl>;
+
+        opaque struct Impl {
+            state: cptr;
+
+            readFn: (state: cptr, out: []u8) => int;
+            seekFn: (state: cptr, pos: int, mode: SeekMode) => bool;
+            sizeFn: (state: cptr) => int;
+
+            closeFn: (state: cptr) => void;
+        }
+
+        constructor(impl: Impl) {
+            return Stream {
+                res: Resource<Impl>(impl, (implVal: Impl) => implVal.closeFn(implVal.state)),
+            };
+        }
+
+        read(out: []u8): int {
+            return this.res._with<int>((impl: Impl) => impl.readFn(impl.state, out));
+        }
+
+        seek(pos: int, mode: SeekMode): bool {
+            return this.res._with<bool>((impl: Impl) => impl.seekFn(impl.state, pos, mode));
+        }
+
+        size(): int {
+            return this.res._with<int>((impl: Impl) => impl.sizeFn(impl.state));
         }
     }
 }

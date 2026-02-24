@@ -1871,11 +1871,11 @@ export namespace Semantic {
       }
 
       case Semantic.ENode.ReactiveDatatype: {
-        return `Reactive<${serializeTypeUse(sr, datatype.wrappedType)}>`;
+        return `rx.Reactive<${serializeTypeUse(sr, datatype.wrappedType)}>`;
       }
 
       case Semantic.ENode.ComputedDatatype: {
-        return `Computed<${serializeTypeUse(sr, datatype.wrappedType)}>`;
+        return `rx.Computed<${serializeTypeUse(sr, datatype.wrappedType)}>`;
       }
 
       case Semantic.ENode.ParameterPackDatatype:

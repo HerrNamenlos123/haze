@@ -2756,8 +2756,14 @@ function collectExpr(
 
       const exprId = collectExpr(cc, item.expr, { currentParentScope: blockScopeId });
 
-      const reactiveT = makeNamedDatatype(cc, "__T", [], item.sourceloc)[1];
-      const reactiveInnerT = makeNamedDatatype(cc, "ReactiveInner", ["__T"], item.sourceloc)[1];
+      const reactiveT = makeNamedDatatype(cc, "__T", [], null, item.sourceloc)[1];
+      const reactiveInnerT = makeNamedDatatype(
+        cc,
+        "rx",
+        [],
+        makeNamedDatatype(cc, "ReactiveInner", ["__T"], null, item.sourceloc)[1],
+        item.sourceloc,
+      )[1];
 
       const handle = defineVariableSymbol(
         cc,
@@ -2874,8 +2880,14 @@ function collectExpr(
 
       const exprId = collectExpr(cc, item.expr, { currentParentScope: blockScopeId });
 
-      const reactiveT = makeNamedDatatype(cc, "__T", [], item.sourceloc)[1];
-      const reactiveInnerT = makeNamedDatatype(cc, "ReactiveInner", ["__T"], item.sourceloc)[1];
+      const reactiveT = makeNamedDatatype(cc, "__T", [], null, item.sourceloc)[1];
+      const reactiveInnerT = makeNamedDatatype(
+        cc,
+        "rx",
+        [],
+        makeNamedDatatype(cc, "ReactiveInner", ["__T"], null, item.sourceloc)[1],
+        item.sourceloc,
+      )[1];
 
       const handle = defineVariableSymbol(
         cc,
@@ -3074,8 +3086,14 @@ function collectExpr(
         const targetId = collectExpr(cc, item.target, { currentParentScope: blockScopeId });
         const valueId = collectExpr(cc, item.value, { currentParentScope: blockScopeId });
 
-        const reactiveT = makeNamedDatatype(cc, "__T", [], item.sourceloc)[1];
-        const reactiveInnerT = makeNamedDatatype(cc, "ReactiveInner", ["__T"], item.sourceloc)[1];
+        const reactiveT = makeNamedDatatype(cc, "__T", [], null, item.sourceloc)[1];
+        const reactiveInnerT = makeNamedDatatype(
+          cc,
+          "rx",
+          [],
+          makeNamedDatatype(cc, "ReactiveInner", ["__T"], null, item.sourceloc)[1],
+          item.sourceloc,
+        )[1];
 
         let operation = EBinaryOperation.Add;
         if (item.operation === EAssignmentOperation.Add) {
@@ -3361,6 +3379,7 @@ function makeNamedDatatype(
   cc: CollectionContext,
   name: string,
   generics: string[],
+  child: Collect.TypeUseId | null,
   sourceloc: SourceLoc,
 ) {
   return Collect.makeTypeUse(cc, {
@@ -3374,7 +3393,7 @@ function makeNamedDatatype(
       })[1];
     }),
     inline: false,
-    innerNested: null,
+    innerNested: child,
     mutability: EDatatypeMutability.Default,
     name: name,
     sourceloc: sourceloc,

@@ -2627,23 +2627,6 @@ export class SemanticElaborator {
         memberAccess.sourceloc,
       );
 
-      const functionSignatureId = this.elaborateFunctionSignature(chosenOverloadId);
-
-      // Try to infer generic arguments if none were provided
-      let genericArgs = memberAccess.genericArgs.map((g) => this.expressionAsGenericArg(g));
-      if (genericArgs.length === 0 && collectedMethod.generics.length > 0) {
-        // Need to elaborate in a temporary context to infer types
-        const inferredArgs = this.inferGenericArgumentsFromCallSite(
-          functionSignatureId,
-          chosenOverloadId,
-          inference,
-          memberAccess.sourceloc,
-        );
-        if (inferredArgs !== null) {
-          genericArgs = inferredArgs;
-        }
-      }
-
       const elaboratedMethodId = this.withContext(
         {
           context: Semantic.mergeSubstitutionContext(
@@ -2662,8 +2645,25 @@ export class SemanticElaborator {
           inAttemptExpr: null,
           inFunction: null,
         },
-        () =>
-          this.elaborateFunctionSymbolWithGenerics(
+        () => {
+          const functionSignatureId = this.elaborateFunctionSignature(chosenOverloadId);
+
+          // Try to infer generic arguments if none were provided
+          let genericArgs = memberAccess.genericArgs.map((g) => this.expressionAsGenericArg(g));
+          if (genericArgs.length === 0 && collectedMethod.generics.length > 0) {
+            // Need to elaborate in a temporary context to infer types
+            const inferredArgs = this.inferGenericArgumentsFromCallSite(
+              functionSignatureId,
+              chosenOverloadId,
+              inference,
+              memberAccess.sourceloc,
+            );
+            if (inferredArgs !== null) {
+              genericArgs = inferredArgs;
+            }
+          }
+
+          return this.elaborateFunctionSymbolWithGenerics(
             functionSignatureId,
             genericArgs,
             memberAccess.sourceloc,
@@ -2678,7 +2678,8 @@ export class SemanticElaborator {
                 memberAccess.sourceloc,
               )[1],
             },
-          ),
+          );
+        },
       );
       assert(elaboratedMethodId);
       const elaboratedMethod = this.sr.symbolNodes.get(elaboratedMethodId);
@@ -4709,170 +4710,205 @@ export class SemanticElaborator {
           );
         }
 
-        if (type.name === "Reactive") {
-          if (type.genericArgs.length !== 1) {
-            throw new CompilerError(
-              `Reactive<T> requires exactly 1 generic argument`,
-              type.sourceloc,
-            );
-          }
-
-          if (type.inline) {
-            throw new CompilerError(`Reactive<T> cannot be inline`, type.sourceloc);
+        if (type.name === "rx") {
+          if (type.genericArgs.length !== 0) {
+            throw new CompilerError(`A namespace cannot have generic parameters`, type.sourceloc);
           }
 
           if (type.innerNested) {
-            throw new CompilerError(`Reactive<T> does not have children`, type.sourceloc);
+            const innerTypeUse = this.sr.cc.typeUseNodes.get(type.innerNested);
+            if (innerTypeUse.variant === Collect.ENode.NamedDatatype) {
+              if (innerTypeUse.name === "Reactive") {
+                if (innerTypeUse.genericArgs.length !== 1) {
+                  throw new CompilerError(
+                    `rx.Reactive<T> requires exactly 1 generic argument`,
+                    type.sourceloc,
+                  );
+                }
+
+                if (innerTypeUse.inline) {
+                  throw new CompilerError(
+                    `rx.Reactive<T> cannot be inline`,
+                    innerTypeUse.sourceloc,
+                  );
+                }
+
+                if (innerTypeUse.innerNested) {
+                  throw new CompilerError(
+                    `rx.Reactive<T> is not a namespace`,
+                    innerTypeUse.sourceloc,
+                  );
+                }
+
+                const [genericArgExpr] = this.expr(innerTypeUse.genericArgs[0], undefined);
+                if (genericArgExpr.variant !== Semantic.ENode.DatatypeAsValueExpr) {
+                  throw new CompilerError(
+                    `rx.Reactive<T> requires T to resolve to a datatype`,
+                    type.sourceloc,
+                  );
+                }
+
+                return makeReactiveDatatypeAvailable(
+                  this.sr,
+                  genericArgExpr.type,
+                  innerTypeUse.mutability,
+                  innerTypeUse.sourceloc,
+                );
+              }
+
+              if (innerTypeUse.name === "ReactiveInner") {
+                if (innerTypeUse.genericArgs.length !== 1) {
+                  throw new CompilerError(
+                    `rx.ReactiveInner<T> requires exactly 1 generic argument`,
+                    innerTypeUse.sourceloc,
+                  );
+                }
+
+                if (innerTypeUse.inline) {
+                  throw new CompilerError(
+                    `rx.ReactiveInner<T> cannot be inline`,
+                    innerTypeUse.sourceloc,
+                  );
+                }
+
+                if (innerTypeUse.innerNested) {
+                  throw new CompilerError(
+                    `rx.ReactiveInner<T> does not have children`,
+                    innerTypeUse.sourceloc,
+                  );
+                }
+
+                const [genericArgExpr, genericArgExprId] = this.expr(
+                  innerTypeUse.genericArgs[0],
+                  undefined,
+                );
+                if (genericArgExpr.variant !== Semantic.ENode.DatatypeAsValueExpr) {
+                  throw new CompilerError(
+                    `rx.ReactiveInner<T> requires T to resolve to a datatype`,
+                    innerTypeUse.sourceloc,
+                  );
+                }
+
+                const expr = this.sr.exprNodes.get(
+                  this.sr.e.unwrapReactiveOrComputedIfPossible(genericArgExprId),
+                );
+                return expr.type;
+              }
+
+              if (innerTypeUse.name === "IsReactive") {
+                if (innerTypeUse.genericArgs.length !== 1) {
+                  throw new CompilerError(
+                    `rx.IsReactive<T> requires exactly 1 generic argument`,
+                    innerTypeUse.sourceloc,
+                  );
+                }
+
+                if (innerTypeUse.inline) {
+                  throw new CompilerError(`IsReactive<T> cannot be inline`, innerTypeUse.sourceloc);
+                }
+
+                if (innerTypeUse.innerNested) {
+                  throw new CompilerError(
+                    `rx.IsReactive<T> does not have children`,
+                    innerTypeUse.sourceloc,
+                  );
+                }
+
+                const [genericArgExpr] = this.expr(innerTypeUse.genericArgs[0], undefined);
+                if (genericArgExpr.variant !== Semantic.ENode.DatatypeAsValueExpr) {
+                  throw new CompilerError(
+                    `rx.Reactive<T> requires T to resolve to a datatype`,
+                    innerTypeUse.sourceloc,
+                  );
+                }
+
+                const typeUse = this.sr.typeUseNodes.get(genericArgExpr.type);
+                const typeDef = this.sr.typeDefNodes.get(typeUse.type);
+                return this.sr.b.literalType(
+                  {
+                    type: EPrimitive.bool,
+                    value:
+                      typeDef.variant === Semantic.ENode.ReactiveDatatype ||
+                      typeDef.variant === Semantic.ENode.ComputedDatatype,
+                  },
+                  innerTypeUse.sourceloc,
+                );
+              }
+
+              if (innerTypeUse.name === "IsComputed") {
+                if (innerTypeUse.genericArgs.length !== 1) {
+                  throw new CompilerError(
+                    `rx.IsComputed<T> requires exactly 1 generic argument`,
+                    innerTypeUse.sourceloc,
+                  );
+                }
+
+                if (innerTypeUse.inline) {
+                  throw new CompilerError(`IsComputed<T> cannot be inline`, innerTypeUse.sourceloc);
+                }
+
+                if (innerTypeUse.innerNested) {
+                  throw new CompilerError(
+                    `rx.IsComputed<T> does not have children`,
+                    innerTypeUse.sourceloc,
+                  );
+                }
+
+                const [genericArgExpr] = this.expr(innerTypeUse.genericArgs[0], undefined);
+                if (genericArgExpr.variant !== Semantic.ENode.DatatypeAsValueExpr) {
+                  throw new CompilerError(
+                    `rx.IsComputed<T> requires T to resolve to a datatype`,
+                    innerTypeUse.sourceloc,
+                  );
+                }
+
+                const typeUse = this.sr.typeUseNodes.get(genericArgExpr.type);
+                const typeDef = this.sr.typeDefNodes.get(typeUse.type);
+                return this.sr.b.literalType(
+                  {
+                    type: EPrimitive.bool,
+                    value: typeDef.variant === Semantic.ENode.ComputedDatatype,
+                  },
+                  innerTypeUse.sourceloc,
+                );
+              }
+
+              if (innerTypeUse.name === "Computed") {
+                if (innerTypeUse.genericArgs.length !== 1) {
+                  throw new CompilerError(
+                    `rx.Computed<T> requires exactly 1 generic argument`,
+                    innerTypeUse.sourceloc,
+                  );
+                }
+
+                if (innerTypeUse.inline) {
+                  throw new CompilerError(`Computed<T> cannot be inline`, innerTypeUse.sourceloc);
+                }
+
+                if (innerTypeUse.innerNested) {
+                  throw new CompilerError(
+                    `rx.Computed<T> does not have children`,
+                    innerTypeUse.sourceloc,
+                  );
+                }
+
+                const [genericArgExpr] = this.expr(innerTypeUse.genericArgs[0], undefined);
+                if (genericArgExpr.variant !== Semantic.ENode.DatatypeAsValueExpr) {
+                  throw new CompilerError(
+                    `rx.Computed<T> requires T to resolve to a datatype`,
+                    innerTypeUse.sourceloc,
+                  );
+                }
+
+                return makeComputedDatatypeAvailable(
+                  this.sr,
+                  genericArgExpr.type,
+                  innerTypeUse.mutability,
+                  innerTypeUse.sourceloc,
+                );
+              }
+            }
           }
-
-          const [genericArgExpr] = this.expr(type.genericArgs[0], undefined);
-          if (genericArgExpr.variant !== Semantic.ENode.DatatypeAsValueExpr) {
-            throw new CompilerError(
-              `Reactive<T> requires T to resolve to a datatype`,
-              type.sourceloc,
-            );
-          }
-
-          return makeReactiveDatatypeAvailable(
-            this.sr,
-            genericArgExpr.type,
-            type.mutability,
-            type.sourceloc,
-          );
-        }
-
-        if (type.name === "ReactiveInner") {
-          if (type.genericArgs.length !== 1) {
-            throw new CompilerError(
-              `ReactiveInner<T> requires exactly 1 generic argument`,
-              type.sourceloc,
-            );
-          }
-
-          if (type.inline) {
-            throw new CompilerError(`ReactiveInner<T> cannot be inline`, type.sourceloc);
-          }
-
-          if (type.innerNested) {
-            throw new CompilerError(`ReactiveInner<T> does not have children`, type.sourceloc);
-          }
-
-          const [genericArgExpr, genericArgExprId] = this.expr(type.genericArgs[0], undefined);
-          if (genericArgExpr.variant !== Semantic.ENode.DatatypeAsValueExpr) {
-            throw new CompilerError(
-              `ReactiveInner<T> requires T to resolve to a datatype`,
-              type.sourceloc,
-            );
-          }
-
-          const expr = this.sr.exprNodes.get(
-            this.sr.e.unwrapReactiveOrComputedIfPossible(genericArgExprId),
-          );
-          return expr.type;
-        }
-
-        if (type.name === "IsReactive") {
-          if (type.genericArgs.length !== 1) {
-            throw new CompilerError(
-              `IsReactive<T> requires exactly 1 generic argument`,
-              type.sourceloc,
-            );
-          }
-
-          if (type.inline) {
-            throw new CompilerError(`IsReactive<T> cannot be inline`, type.sourceloc);
-          }
-
-          if (type.innerNested) {
-            throw new CompilerError(`IsReactive<T> does not have children`, type.sourceloc);
-          }
-
-          const [genericArgExpr] = this.expr(type.genericArgs[0], undefined);
-          if (genericArgExpr.variant !== Semantic.ENode.DatatypeAsValueExpr) {
-            throw new CompilerError(
-              `Reactive<T> requires T to resolve to a datatype`,
-              type.sourceloc,
-            );
-          }
-
-          const typeUse = this.sr.typeUseNodes.get(genericArgExpr.type);
-          const typeDef = this.sr.typeDefNodes.get(typeUse.type);
-          return this.sr.b.literalType(
-            {
-              type: EPrimitive.bool,
-              value:
-                typeDef.variant === Semantic.ENode.ReactiveDatatype ||
-                typeDef.variant === Semantic.ENode.ComputedDatatype,
-            },
-            type.sourceloc,
-          );
-        }
-
-        if (type.name === "IsComputed") {
-          if (type.genericArgs.length !== 1) {
-            throw new CompilerError(
-              `IsComputed<T> requires exactly 1 generic argument`,
-              type.sourceloc,
-            );
-          }
-
-          if (type.inline) {
-            throw new CompilerError(`IsComputed<T> cannot be inline`, type.sourceloc);
-          }
-
-          if (type.innerNested) {
-            throw new CompilerError(`IsComputed<T> does not have children`, type.sourceloc);
-          }
-
-          const [genericArgExpr] = this.expr(type.genericArgs[0], undefined);
-          if (genericArgExpr.variant !== Semantic.ENode.DatatypeAsValueExpr) {
-            throw new CompilerError(
-              `IsComputed<T> requires T to resolve to a datatype`,
-              type.sourceloc,
-            );
-          }
-
-          const typeUse = this.sr.typeUseNodes.get(genericArgExpr.type);
-          const typeDef = this.sr.typeDefNodes.get(typeUse.type);
-          return this.sr.b.literalType(
-            {
-              type: EPrimitive.bool,
-              value: typeDef.variant === Semantic.ENode.ComputedDatatype,
-            },
-            type.sourceloc,
-          );
-        }
-
-        if (type.name === "Computed") {
-          if (type.genericArgs.length !== 1) {
-            throw new CompilerError(
-              `Computed<T> requires exactly 1 generic argument`,
-              type.sourceloc,
-            );
-          }
-
-          if (type.inline) {
-            throw new CompilerError(`Computed<T> cannot be inline`, type.sourceloc);
-          }
-
-          if (type.innerNested) {
-            throw new CompilerError(`Computed<T> does not have children`, type.sourceloc);
-          }
-
-          const [genericArgExpr] = this.expr(type.genericArgs[0], undefined);
-          if (genericArgExpr.variant !== Semantic.ENode.DatatypeAsValueExpr) {
-            throw new CompilerError(
-              `Computed<T> requires T to resolve to a datatype`,
-              type.sourceloc,
-            );
-          }
-
-          return makeComputedDatatypeAvailable(
-            this.sr,
-            genericArgExpr.type,
-            type.mutability,
-            type.sourceloc,
-          );
         }
 
         let foundResult = Semantic.lookupSymbol(this.sr, type.name, {
