@@ -56,6 +56,7 @@ export namespace Lowered {
     UntaggedUnionDatatype,
     TaggedUnionDatatype,
     EnumDatatype,
+    LiteralDatatype,
     // Type Use
     TypeUse,
     // Statements
@@ -559,7 +560,8 @@ export namespace Lowered {
     | ComputedDatatype
     | UntaggedUnionDatatypeDef
     | TaggedUnionDatatypeDef
-    | EnumDatatypeDef;
+    | EnumDatatypeDef
+    | LiteralDatatypeDef;
 
   export type PointerDatatypeDef = {
     variant: ENode.PointerDatatype;
@@ -654,6 +656,13 @@ export namespace Lowered {
     }[];
     type: TypeUseId;
     noemit: boolean;
+    name: NameSet;
+  };
+
+  export type LiteralDatatypeDef = {
+    variant: ENode.LiteralDatatype;
+    baseType: TypeUseId;
+    literalValue: LiteralValue;
     name: NameSet;
   };
 }
@@ -2703,6 +2712,21 @@ export function lowerTypeDef(lr: Lowered.Module, typeId: Semantic.TypeDefId): Lo
       });
       lr.loweredTypeDefs.set(typeId, pId);
       assert(flattened.length === 0);
+      return pId;
+    }
+  } else if (type.variant === Semantic.ENode.LiteralDatatype) {
+    if (lr.loweredTypeDefs.has(typeId)) {
+      return lr.loweredTypeDefs.get(typeId)!;
+    } else {
+      // Lower the base type of the literal datatype
+      const baseType = lowerTypeUse(lr, type.type);
+      const [p, pId] = Lowered.addTypeDef<Lowered.LiteralDatatypeDef>(lr, {
+        variant: Lowered.ENode.LiteralDatatype,
+        baseType: baseType,
+        literalValue: type.literalValue,
+        name: Semantic.makeNameSetTypeDef(lr.sr, typeId),
+      });
+      lr.loweredTypeDefs.set(typeId, pId);
       return pId;
     }
   } else if (type.variant === Semantic.ENode.ParameterPackDatatype) {

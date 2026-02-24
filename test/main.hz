@@ -8,9 +8,16 @@ export extern C noemit wgpu_init(glfwWindow: cptr) :: final;
 export extern C wgpu_start(glfwWindow: cptr, device: wgpu.ffi.WGPUDeviceImpl, surface: wgpu.ffi.WGPUSurfaceImpl, queue: wgpu.ffi.WGPUQueueImpl, texture: wgpu.ffi.WGPUTextureViewImpl) :: final;
 export extern C wgpu_end(glfwWindow: cptr) :: final;
 
+test<T>() {
+    let a: T = "Hello World";
+    // builtin.embed_file("Test");
+}
+
 main(): int {
     attempt {
         if !glfw.init() { raise "GLFW init failed"; }
+
+        test<"Hello World">();
 
         const window = glfw.createWindow({ 
             title: "WebGPU Example",

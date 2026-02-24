@@ -459,6 +459,13 @@ class CodeGenerator {
         this.out.type_declarations.writeLine(
           `typedef hzstd_computed_node_t* ${this.mangleTypeDef(symbol)};`,
         );
+      } else if (symbol.variant === Lowered.ENode.LiteralDatatype) {
+        // A literal datatype is just an alias for its base type
+        const a = this.mangleTypeUse(symbol.baseType);
+        const b = this.mangleTypeDef(symbol);
+        if (a !== b) {
+          this.out.type_declarations.writeLine(`typedef ${a} ${b};`);
+        }
       } else {
         assert(false);
       }
@@ -585,6 +592,10 @@ class CodeGenerator {
         sortedLoweredTypes.push(type);
       } else if (type.variant === Lowered.ENode.ComputedDatatype) {
         appliedTypes.add(type);
+        sortedLoweredTypes.push(type);
+      } else if (type.variant === Lowered.ENode.LiteralDatatype) {
+        appliedTypes.add(type);
+        processTypeUse(type.baseType);
         sortedLoweredTypes.push(type);
       } else {
         assert(false);

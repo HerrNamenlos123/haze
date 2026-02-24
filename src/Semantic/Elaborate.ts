@@ -4538,6 +4538,9 @@ export class SemanticElaborator {
             const mapped = this.sr.exprNodes.get(mappedTo);
             if (mapped.variant === Semantic.ENode.DatatypeAsValueExpr) {
               return mapped.type;
+            } else if (mapped.variant === Semantic.ENode.LiteralExpr) {
+              // Convert literal expression to a literal datatype
+              return this.sr.b.literalType(mapped.literal, type.sourceloc);
             } else {
               throw new CompilerError(
                 `Generic placeholder '${type.name}' resolves to value '${Semantic.serializeExpr(

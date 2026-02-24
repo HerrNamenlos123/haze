@@ -1959,6 +1959,33 @@ export namespace Conversion {
       }
     }
 
+    // Conversion to LiteralDatatype
+    if (to.variant === Semantic.ENode.LiteralDatatype) {
+      // If the source is a literal, check if it matches the literal datatype
+      if (fromExpr.variant === Semantic.ENode.LiteralExpr) {
+        const fromLiteral = fromExpr.literal;
+        const toLiteral = to.literalValue;
+
+        // Check if the literal types and values match
+        if (fromLiteral.type === toLiteral.type && fromLiteral.value === toLiteral.value) {
+          // The literals match, so we can just return the expression as-is
+          // since a literal matches the literal type it represents
+          return ok(
+            sr.b.addExpr(sr, {
+              variant: Semantic.ENode.ExplicitCastExpr,
+              instanceIds: fromExpr.instanceIds,
+              expr: fromExprId,
+              type: toId,
+              sourceloc: sourceloc,
+              isTemporary: fromExpr.isTemporary,
+              flow: flow,
+              writes: writes,
+            })[1],
+          );
+        }
+      }
+    }
+
     // Read Conversion: Reactive<T> to T
     if (fromType.variant === Semantic.ENode.ReactiveDatatype && fromType.wrappedType === toId) {
       return ok(

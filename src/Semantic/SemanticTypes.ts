@@ -1849,6 +1849,30 @@ export namespace Semantic {
           })}]`;
         }
 
+      case Semantic.ENode.LiteralDatatype: {
+        const literal = datatype.literalValue;
+        if (literal.type === EPrimitive.bool) {
+          return literal.value ? "true" : "false";
+        } else if (
+          literal.type === EPrimitive.str ||
+          literal.type === EPrimitive.cstr ||
+          literal.type === EPrimitive.ccstr
+        ) {
+          return `"${literal.value}"`;
+        } else if (literal.type === EPrimitive.null) {
+          return "null";
+        } else if (literal.type === EPrimitive.none) {
+          return "none";
+        } else if (literal.type === EPrimitive.Regex) {
+          return `/${literal.value}/`;
+        } else if (literal.type === "enum") {
+          // Handle enum literals
+          return `${literal.value}`;
+        } else {
+          return `${literal.value}`;
+        }
+      }
+
       default:
         throw new InternalError("Not handled: ");
     }
@@ -2239,6 +2263,55 @@ export namespace Semantic {
           name: "C" + mangleTypeUse(sr, type.wrappedType).name,
           wasMangled: true,
         };
+      }
+
+      case Semantic.ENode.LiteralDatatype: {
+        const literal = type.literalValue;
+        const literalType = literal.type;
+        if (literalType === EPrimitive.bool) {
+          return {
+            name: `Lb${literal.value ? "1" : "0"}E`,
+            wasMangled: true,
+          };
+        } else if (
+          literalType === EPrimitive.str ||
+          literalType === EPrimitive.cstr ||
+          literalType === EPrimitive.ccstr
+        ) {
+          const utf8 = new TextEncoder().encode(literal.value);
+          let base64 = btoa(String.fromCharCode(...utf8));
+          // make it C-identifier-safe: base64 → base64url (replace +/ with _)
+          base64 = base64.replace(/\+/g, "_").replace(/\//g, "_").replace(/=+$/, "");
+          return {
+            name: `Ls${base64}E`,
+            wasMangled: true,
+          };
+        } else if (literalType === EPrimitive.null) {
+          return {
+            name: "4null",
+            wasMangled: true,
+          };
+        } else if (literalType === EPrimitive.none) {
+          return {
+            name: "4none",
+            wasMangled: true,
+          };
+        } else if (literalType === EPrimitive.Regex) {
+          return {
+            name: "5Regex",
+            wasMangled: true,
+          };
+        } else if (literalType === "enum") {
+          const enumType = sr.typeDefNodes.get(literal.enumType);
+          assert(enumType.variant === Semantic.ENode.EnumDatatype && enumType.parentSymbolId);
+          const enumParentSym = sr.symbolNodes.get(enumType.parentSymbolId);
+          assert(enumParentSym.variant === Semantic.ENode.TypeDefSymbol);
+          return {
+            name: `Le${mangleTypeDef(sr, enumParentSym.datatype).name}_${literal.value}`,
+            wasMangled: true,
+          };
+        }
+        throw new InternalError(`Unhandled literal datatype variant: ${literalType}`);
       }
 
       default:
