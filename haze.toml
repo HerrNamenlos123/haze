@@ -29,9 +29,8 @@ gl = { path = "./gl" }
 wgpu = { path = "./wgpu" }
 glfw_wgpu = { path = "./glfw_wgpu" }
 
-# UI framework modules
+# UI framework module
 ui = { path = "./ui" }
-flex_layout = { path = "./flex_layout" }
 
 # gl = { path = "./gl" }
 # glDraw = { path = "./glDraw" }

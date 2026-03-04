@@ -63,6 +63,42 @@ export struct DrawCallbacks {
     onDrawText: (pos: Vec2, size: Vec2, style: TextStyle, content: str) => void;
 }
 
+// calculate layout of an element recursively
+// returns a Positioned tree
+export layoutFlex(root: UIElement, width: real, height: real): Positioned {
+    let layoutElement = (el: UIElement, avail: Vec2) => Positioned;
+    layoutElement = (el: UIElement, avail: Vec2): Positioned :: final => {
+        if el is Div {
+            let used = Vec2(el.style.padding * 2.0, el.style.padding * 2.0);
+            // compute children's layouts first
+            let positionedChildren: []Positioned = [];
+            for child in el.children {
+                let childAvail = avail; // naive, ignoring flexGrow
+                let posChild = layoutElement(child, childAvail);
+                used.x += posChild.size.x;
+                used.y += posChild.size.y;
+                positionedChildren.push(posChild);
+            }
+            // determine own size based on specified or used
+            let finalSize = Vec2(
+                el.style.width != none ? el.style.width : used.x,
+                el.style.height != none ? el.style.height : used.y
+            );
+            return Positioned { element: el, pos: Vec2(0, 0), size: finalSize, children: positionedChildren };
+        }
+        else if el is Text {
+            let measured = measureText(el.content, el.style.fontSize);
+            let finalSize = Vec2(measured.x, measured.y);
+            return Positioned { element: el, pos: Vec2(0, 0), size: finalSize, children: [] };
+        }
+        else {
+            assert(false);
+        }
+    };
+    let rootPos = layoutElement(root, Vec2(width, height));
+    return rootPos;
+}
+
 // traverse positioned tree and fire callbacks
 export traverseDraw(pos: Positioned, callbacks: DrawCallbacks): void :: final {
     if pos.element is Div {
