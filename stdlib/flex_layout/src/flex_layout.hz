@@ -4,41 +4,41 @@ export namespace flex {
 
     // calculate layout of an element recursively
     // returns a Ui.Positioned tree
-    export fn layoutFlex(root: ui.UIElement, width: f32, height: f32): ui.Positioned {
+    export layoutFlex(root: ui.UIElement, width: real, height: real): ui.Positioned {
         // simple recursive algorithm: treat root as container with given size
-        fn layoutElement(el: ui.UIElement, avail: ui.Vec2): ui.Positioned {
-            match el {
-                ui.UIElement.Div(d) => {
-                    // start with padding
-                    let mut used = ui.Vec2(d.style.padding * 2.0, d.style.padding * 2.0);
-                    // compute children's layouts first
-                    let mut positionedChildren: []ui.Positioned = [];
-                    for child in d.children {
-                        let childAvail = avail; // naive, ignoring flexGrow
-                        let posChild = layoutElement(child, childAvail);
-                        used.x += posChild.size.x;
-                        used.y += posChild.size.y;
-                        positionedChildren.push(posChild);
-                    }
-                    // determine own size based on specified or used
-                    let finalSize = ui.Vec2(
-                        if d.style.width != none { d.style.width! } else { used.x },
-                        if d.style.height != none { d.style.height! } else { used.y }
-                    );
-                    return ui.Positioned { element: el, pos: ui.Vec2(0,0), size: finalSize, children: positionedChildren };
+        const layoutElement = (el: ui.UIElement, avail: Vec2): ui.Positioned :: final => {
+            if el is ui.Div {
+                let used = Vec2(el.style.padding * 2.0, el.style.padding * 2.0);
+                // compute children's layouts first
+                let positionedChildren: []ui.Positioned = [];
+                for child in d.children {
+                    let childAvail = avail; // naive, ignoring flexGrow
+                    let posChild = layoutElement(child, childAvail);
+                    used.x += posChild.size.x;
+                    used.y += posChild.size.y;
+                    positionedChildren.push(posChild);
                 }
-                ui.UIElement.Text(t) => {
-                    let measured = ui.measureText(t.content, t.style.fontSize);
-                    let finalSize = ui.Vec2(
-                        if t.style.fontSize != none { measured.x } else { measured.x },
-                        measured.y
-                    );
-                    return ui.Positioned { element: el, pos: ui.Vec2(0,0), size: finalSize, children: [] };
-                }
+                // determine own size based on specified or used
+                let finalSize = Vec2(
+                    el.style.width != none ? el.style.width : used.x ,
+                    el.style.height != none ? el.style.height : used.y
+                );
+                return ui.Positioned { element: el, pos: Vec2(0,0), size: finalSize, children: positionedChildren };
+            }
+            else if el is ui.Text {
+                let measured = ui.measureText(el.content, el.style.fontSize);
+                let finalSize = Vec2(
+                    el.style.fontSize != none ? measured.x : measured.x,
+                    measured.y
+                );
+                return ui.Positioned { element: el, pos: Vec2(0,0), size: finalSize, children: [] };
+            }
+            else {
+                assert(false);
             }
         }
-        let rootPos = layoutElement(root, ui.Vec2(width, height));
-        rootPos
+        let rootPos = layoutElement(root, Vec2(width, height));
+        return rootPos;
     }
 
 }

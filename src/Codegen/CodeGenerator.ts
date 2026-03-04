@@ -476,7 +476,7 @@ class CodeGenerator {
       | { type: "use"; id: Lowered.TypeUseId }
     )[] = [];
 
-    this.sortTypes(sortedLoweredTypes);
+    this.sortTypes(new Set(), sortedLoweredTypes);
 
     for (const decl of this.lr.cInjections) {
       this.out.cDecls.writeLine(decl);
@@ -687,13 +687,12 @@ class CodeGenerator {
   }
 
   sortTypes(
+    appliedTypes: Set<Lowered.TypeDef | Lowered.TypeUse>,
     sortedLoweredTypes: (
       | { type: "def"; id: Lowered.TypeDefId }
       | { type: "use"; id: Lowered.TypeUseId }
     )[],
   ) {
-    const appliedTypes = new Set<Lowered.TypeDef | Lowered.TypeUse>();
-
     // This function processes the type in the sense that it goes over all types that this type depends on,
     // and if there is a direct relationship, then that type is processed, which sorts it first.
     // This is required because C has a very strict requirement on ordering of struct definitions that depend on another
@@ -722,7 +721,10 @@ class CodeGenerator {
           const type = this.lr.typeUseNodes.get(m.type);
           const typeDef = this.lr.typeDefNodes.get(type.type);
           // Pointer do not matter, only direct usages are bad.
-          if (typeDef.variant !== Lowered.ENode.PointerDatatype) {
+          if (
+            typeDef.variant !== Lowered.ENode.PointerDatatype &&
+            typeDef.variant !== Lowered.ENode.DynamicArrayDatatype
+          ) {
             processTypeUse(m.type);
           }
         }
@@ -775,15 +777,11 @@ class CodeGenerator {
 
     const processTypeUse = (typeId: Lowered.TypeUseId) => {
       const type = this.lr.typeUseNodes.get(typeId);
-      console.log("Process", type.name.mangledName);
       if (appliedTypes.has(type)) {
-        console.log("already done");
         return;
       }
       appliedTypes.add(type);
-      console.log("Process", type.name.mangledName, "children");
       processTypeDef(type.type);
-      console.log("Process", type.name.mangledName, "itself");
       sortedLoweredTypes.push({ type: "use", id: typeId });
     };
 
