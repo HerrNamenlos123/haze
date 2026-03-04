@@ -1,0 +1,77 @@
+// style structs
+export inline struct LayoutStyle {
+    // optional fixed size
+    width?: real = none;
+    height?: real = none;
+    padding: real; // uniform padding for simplicity
+    // flex properties
+    flexGrow: real; // relative grow factor
+    // row or column
+    direction: Direction;
+    justify: Justify;
+    align: Align;
+}
+
+export enum Direction { Row, Column }
+export enum Justify { Start, Center, End, SpaceBetween }
+export enum Align { Start, Center, End, Stretch }
+
+export inline struct TextStyle {
+    fontSize: real;
+    textColor?: Color = none;
+}
+
+// UI element definitions
+export struct Div {
+    children: []UIElement;
+    style: LayoutStyle;
+}
+
+export struct Text {
+    content: str;
+    style: TextStyle;
+}
+
+export type UIElement = Div | Text;
+
+// positioned element returned after layout
+export struct Positioned {
+    element: UIElement;
+    pos: Vec2;
+    size: Vec2;
+    children: []Positioned;
+}
+
+// helpers to create elements
+export div(style: LayoutStyle, children: []UIElement): UIElement {
+    return Div { children: children, style: style };
+}
+
+export text(content: str, style: TextStyle): UIElement {
+    return Text { content: content, style: style };
+}
+
+// measurement stub for text
+export measureText(content: str, fontSize: real): Vec2 {
+    // simplistic: width = char count * fontSize * 0.5, height = fontSize
+    return Vec2((content.length as real) * fontSize * 0.5, fontSize);
+}
+
+// interface for draw callbacks
+export struct DrawCallbacks {
+    onDrawDiv: (pos: Vec2, size: Vec2, style: LayoutStyle) => void;
+    onDrawText: (pos: Vec2, size: Vec2, style: TextStyle, content: str) => void;
+}
+
+// traverse positioned tree and fire callbacks
+export traverseDraw(pos: Positioned, callbacks: DrawCallbacks): void :: final {
+    if pos.element is Div {
+        callbacks.onDrawDiv(pos.pos, pos.size, pos.element.style);
+    }
+    else if pos.element is Text {
+        callbacks.onDrawText(pos.pos, pos.size, pos.element.style, pos.element.content);
+    }
+    for child in pos.children {
+        traverseDraw(child, callbacks);
+    }
+}

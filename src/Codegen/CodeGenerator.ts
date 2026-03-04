@@ -14,7 +14,7 @@ import { assert, GeneralError, InternalError } from "../shared/Errors";
 import { OutputWriter } from "./OutputWriter";
 import { spawnSync } from "child_process";
 import * as path from "path";
-import type { Semantic } from "../Semantic/SemanticTypes";
+import { Semantic } from "../Semantic/SemanticTypes";
 
 function makeUnionMappingName(from: Lowered.TypeUseId, to: Lowered.TypeUseId) {
   return `_H_Union_Mapping_${from}_to_${to}_`;
@@ -471,9 +471,12 @@ class CodeGenerator {
     this.includeSystemHeader("string.h");
     this.includeSystemHeader("math.h");
 
-    const sortedLoweredTypeDefs: (Lowered.TypeDef | Lowered.TypeUse)[] = [];
+    const sortedLoweredTypes: (
+      | { type: "def"; id: Lowered.TypeDefId }
+      | { type: "use"; id: Lowered.TypeUseId }
+    )[] = [];
 
-    this.sortTypeDefs(sortedLoweredTypeDefs);
+    this.sortTypes(sortedLoweredTypes);
 
     for (const decl of this.lr.cInjections) {
       this.out.cDecls.writeLine(decl);
@@ -483,104 +486,142 @@ class CodeGenerator {
       this.emitFunction(symbol);
     }
 
-    for (const symbol of sortedLoweredTypeDefs) {
-      if (symbol.variant === Lowered.ENode.PrimitiveDatatype) {
-        // All primitives are handled in hzstd
-      } else if (symbol.variant === Lowered.ENode.StructDatatype) {
-        if (!symbol.noemit) {
-          this.out.type_declarations.writeLine(
-            `typedef struct ${this.mangleTypeDef(symbol)} ${this.mangleTypeDef(symbol)};`,
-          );
-          this.out.type_definitions
-            .writeLine(`struct ${this.mangleTypeDef(symbol)} {`)
-            .pushIndent();
-          for (const member of symbol.members) {
-            this.out.type_definitions.writeLine(
-              `${this.mangleTypeUse(member.type)} ${member.name};`,
+    for (const symbolInfo of sortedLoweredTypes) {
+      if (symbolInfo.type === "def") {
+        const symbol = this.lr.typeDefNodes.get(symbolInfo.id);
+        if (symbol.variant === Lowered.ENode.PrimitiveDatatype) {
+          // All primitives are handled in hzstd
+        } else if (symbol.variant === Lowered.ENode.StructDatatype) {
+          if (!symbol.noemit) {
+            this.out.type_declarations.writeLine(
+              `typedef struct ${this.mangleTypeDef(symbol)} ${this.mangleTypeDef(symbol)};`,
             );
+            this.out.type_definitions
+              .writeLine(`struct ${this.mangleTypeDef(symbol)} {`)
+              .pushIndent();
+            for (const member of symbol.members) {
+              this.out.type_definitions.writeLine(
+                `${this.mangleTypeUse(member.type)} ${member.name};`,
+              );
+            }
+            if (symbol.members.length === 0) {
+              this.out.type_definitions.writeLine(`hzstd_u8_t dummy;`);
+            }
+            this.out.type_definitions.popIndent().writeLine(`};`).writeLine();
           }
-          if (symbol.members.length === 0) {
-            this.out.type_definitions.writeLine(`hzstd_u8_t dummy;`);
-          }
-          this.out.type_definitions.popIndent().writeLine(`};`).writeLine();
-        }
-      } else if (symbol.variant === Lowered.ENode.PointerDatatype) {
-        this.out.type_declarations.writeLine(
-          `typedef ${this.mangleTypeUse(symbol.referee)}* ${this.mangleTypeDef(symbol)};`,
-        );
-      } else if (
-        symbol.variant === Lowered.ENode.UntaggedUnionDatatype ||
-        symbol.variant === Lowered.ENode.TaggedUnionDatatype
-      ) {
-        if (symbol.optimizeAsRawPointer) {
+        } else if (symbol.variant === Lowered.ENode.PointerDatatype) {
           this.out.type_declarations.writeLine(
-            `typedef ${this.mangleTypeUse(symbol.optimizeAsRawPointer)} ${this.mangleTypeDef(
-              symbol,
-            )};`,
+            `typedef ${this.mangleTypeUse(symbol.referee)}* ${this.mangleTypeDef(symbol)};`,
           );
-        } else {
+        } else if (
+          symbol.variant === Lowered.ENode.UntaggedUnionDatatype ||
+          symbol.variant === Lowered.ENode.TaggedUnionDatatype
+        ) {
+          if (symbol.optimizeAsRawPointer) {
+            this.out.type_declarations.writeLine(
+              `typedef ${this.mangleTypeUse(symbol.optimizeAsRawPointer)} ${this.mangleTypeDef(
+                symbol,
+              )};`,
+            );
+          } else {
+            this.out.type_declarations.writeLine(
+              `typedef struct ${this.mangleTypeDef(symbol)} ${this.mangleTypeDef(symbol)};`,
+            );
+            this.out.type_definitions
+              .writeLine(`struct ${this.mangleTypeDef(symbol)} {`)
+              .pushIndent();
+            this.out.type_definitions.writeLine(`uint8_t tag;`);
+            this.out.type_definitions.writeLine(`union {`).pushIndent();
+            const members =
+              symbol.variant === Lowered.ENode.UntaggedUnionDatatype
+                ? symbol.members
+                : symbol.members.map((m) => m.type);
+            members.forEach((m, i) => {
+              this.out.type_definitions.writeLine(`${this.mangleTypeUse(m)} as_tag_${i};`);
+            });
+            this.out.type_definitions.writeLine(`char as_bytes[sizeof(union{`).pushIndent();
+            members.forEach((m, i) => {
+              this.out.type_definitions.writeLine(`${this.mangleTypeUse(m)} as_tag_${i};`);
+            });
+            this.out.type_definitions.popIndent().writeLine(`})];`);
+            this.out.type_definitions.popIndent().writeLine(`};`);
+            this.out.type_definitions.popIndent().writeLine(`};`);
+          }
+        } else if (symbol.variant === Lowered.ENode.FixedArrayDatatype) {
           this.out.type_declarations.writeLine(
             `typedef struct ${this.mangleTypeDef(symbol)} ${this.mangleTypeDef(symbol)};`,
           );
           this.out.type_definitions
             .writeLine(`struct ${this.mangleTypeDef(symbol)} {`)
             .pushIndent();
-          this.out.type_definitions.writeLine(`uint8_t tag;`);
-          this.out.type_definitions.writeLine(`union {`).pushIndent();
-          const members =
-            symbol.variant === Lowered.ENode.UntaggedUnionDatatype
-              ? symbol.members
-              : symbol.members.map((m) => m.type);
-          members.forEach((m, i) => {
-            this.out.type_definitions.writeLine(`${this.mangleTypeUse(m)} as_tag_${i};`);
-          });
-          this.out.type_definitions.writeLine(`char as_bytes[sizeof(union{`).pushIndent();
-          members.forEach((m, i) => {
-            this.out.type_definitions.writeLine(`${this.mangleTypeUse(m)} as_tag_${i};`);
-          });
-          this.out.type_definitions.popIndent().writeLine(`})];`);
+          this.out.type_definitions.writeLine(
+            `${this.mangleTypeUse(symbol.datatype)} data[${symbol.length}];`,
+          );
           this.out.type_definitions.popIndent().writeLine(`};`);
+        } else if (symbol.variant === Lowered.ENode.DynamicArrayDatatype) {
+          this.out.type_declarations.writeLine(
+            `typedef hzstd_dynamic_array_t ${this.mangleTypeDef(symbol)};`,
+          );
+          // this.out.type_definitions.writeLine(`struct ${this.mangleTypeDef(symbol)} {`).pushIndent();
+          // this.out.type_definitions.writeLine(`hzstd_dynamic_array_t data;`);
+          // this.out.type_definitions.popIndent().writeLine(`};`);
+        } else if (symbol.variant === Lowered.ENode.SliceDatatype) {
+          this.out.type_declarations.writeLine(
+            `typedef struct ${this.mangleTypeDef(symbol)} ${this.mangleTypeDef(symbol)};`,
+          );
+          this.out.type_definitions
+            .writeLine(`struct ${this.mangleTypeDef(symbol)} {`)
+            .pushIndent();
+          this.out.type_definitions.writeLine(`${this.mangleTypeUse(symbol.datatype)}* data;`);
+          this.out.type_definitions.writeLine(`uint64_t length;`);
           this.out.type_definitions.popIndent().writeLine(`};`);
+        } else if (symbol.variant === Lowered.ENode.FunctionDatatype) {
+          this.out.type_declarations.writeLine(
+            `typedef ${this.mangleTypeUse(symbol.returnType)} (*${this.mangleTypeDef(
+              symbol,
+            )})(${symbol.parameters.map((p) => `${this.mangleTypeUse(p)}`).join(", ")});`,
+          );
+        } else if (symbol.variant === Lowered.ENode.CallableDatatype) {
+          this.out.type_declarations.writeLine(
+            `typedef struct ${this.mangleTypeDef(symbol)} ${this.mangleTypeDef(symbol)};`,
+          );
+          this.out.type_definitions
+            .writeLine(`struct ${this.mangleTypeDef(symbol)} {`)
+            .pushIndent();
+          this.out.type_definitions.writeLine(`void* env;`);
+          this.out.type_definitions.writeLine(`${this.mangleTypeDef(symbol.functionType)} fn;`);
+          this.out.type_definitions.popIndent().writeLine(`};`).writeLine();
+        } else if (symbol.variant === Lowered.ENode.EnumDatatype) {
+          if (!symbol.noemit) {
+            this.out.type_declarations.writeLine(`typedef enum {`).pushIndent();
+            for (const value of symbol.values) {
+              this.out.type_declarations.writeLine(
+                `${this.mangleName(value.loweredName)} = ${this.emitExpr(value.value).out.get()},`,
+              );
+            }
+            this.out.type_declarations.popIndent().writeLine(`} ${this.mangleName(symbol.name)} ;`);
+          }
+        } else if (symbol.variant === Lowered.ENode.ReactiveDatatype) {
+          this.out.type_declarations.writeLine(
+            `typedef hzstd_reactive_cell_t* ${this.mangleTypeDef(symbol)};`,
+          );
+        } else if (symbol.variant === Lowered.ENode.ComputedDatatype) {
+          this.out.type_declarations.writeLine(
+            `typedef hzstd_computed_node_t* ${this.mangleTypeDef(symbol)};`,
+          );
+        } else if (symbol.variant === Lowered.ENode.LiteralDatatype) {
+          // A literal datatype is just an alias for its base type
+          const a = this.mangleTypeUse(symbol.baseType);
+          const b = this.mangleTypeDef(symbol);
+          if (a !== b) {
+            this.out.type_declarations.writeLine(`typedef ${a} ${b};`);
+          }
+        } else {
+          assert(false);
         }
-      } else if (symbol.variant === Lowered.ENode.FixedArrayDatatype) {
-        this.out.type_declarations.writeLine(
-          `typedef struct ${this.mangleTypeDef(symbol)} ${this.mangleTypeDef(symbol)};`,
-        );
-        this.out.type_definitions.writeLine(`struct ${this.mangleTypeDef(symbol)} {`).pushIndent();
-        this.out.type_definitions.writeLine(
-          `${this.mangleTypeUse(symbol.datatype)} data[${symbol.length}];`,
-        );
-        this.out.type_definitions.popIndent().writeLine(`};`);
-      } else if (symbol.variant === Lowered.ENode.DynamicArrayDatatype) {
-        this.out.type_declarations.writeLine(
-          `typedef hzstd_dynamic_array_t ${this.mangleTypeDef(symbol)};`,
-        );
-        // this.out.type_definitions.writeLine(`struct ${this.mangleTypeDef(symbol)} {`).pushIndent();
-        // this.out.type_definitions.writeLine(`hzstd_dynamic_array_t data;`);
-        // this.out.type_definitions.popIndent().writeLine(`};`);
-      } else if (symbol.variant === Lowered.ENode.SliceDatatype) {
-        this.out.type_declarations.writeLine(
-          `typedef struct ${this.mangleTypeDef(symbol)} ${this.mangleTypeDef(symbol)};`,
-        );
-        this.out.type_definitions.writeLine(`struct ${this.mangleTypeDef(symbol)} {`).pushIndent();
-        this.out.type_definitions.writeLine(`${this.mangleTypeUse(symbol.datatype)}* data;`);
-        this.out.type_definitions.writeLine(`uint64_t length;`);
-        this.out.type_definitions.popIndent().writeLine(`};`);
-      } else if (symbol.variant === Lowered.ENode.FunctionDatatype) {
-        this.out.type_declarations.writeLine(
-          `typedef ${this.mangleTypeUse(symbol.returnType)} (*${this.mangleTypeDef(
-            symbol,
-          )})(${symbol.parameters.map((p) => `${this.mangleTypeUse(p)}`).join(", ")});`,
-        );
-      } else if (symbol.variant === Lowered.ENode.CallableDatatype) {
-        this.out.type_declarations.writeLine(
-          `typedef struct ${this.mangleTypeDef(symbol)} ${this.mangleTypeDef(symbol)};`,
-        );
-        this.out.type_definitions.writeLine(`struct ${this.mangleTypeDef(symbol)} {`).pushIndent();
-        this.out.type_definitions.writeLine(`void* env;`);
-        this.out.type_definitions.writeLine(`${this.mangleTypeDef(symbol.functionType)} fn;`);
-        this.out.type_definitions.popIndent().writeLine(`};`).writeLine();
-      } else if (symbol.variant === Lowered.ENode.TypeUse) {
+      } else {
+        const symbol = this.lr.typeUseNodes.get(symbolInfo.id);
+        // console.log("TypeUse: ", symbolInfo.id, symbol.name.mangledName, symbol);
         if (symbol.pointer) {
           this.out.type_declarations.writeLine(
             `typedef ${this.mangleTypeDef(symbol.type)}* ${this.mangleTypeUse(symbol)};`,
@@ -592,33 +633,6 @@ class CodeGenerator {
             this.out.type_declarations.writeLine(`typedef ${a} ${b};`);
           }
         }
-      } else if (symbol.variant === Lowered.ENode.EnumDatatype) {
-        if (!symbol.noemit) {
-          this.out.type_declarations.writeLine(`typedef enum {`).pushIndent();
-          for (const value of symbol.values) {
-            this.out.type_declarations.writeLine(
-              `${this.mangleName(value.loweredName)} = ${this.emitExpr(value.value).out.get()},`,
-            );
-          }
-          this.out.type_declarations.popIndent().writeLine(`} ${this.mangleName(symbol.name)} ;`);
-        }
-      } else if (symbol.variant === Lowered.ENode.ReactiveDatatype) {
-        this.out.type_declarations.writeLine(
-          `typedef hzstd_reactive_cell_t* ${this.mangleTypeDef(symbol)};`,
-        );
-      } else if (symbol.variant === Lowered.ENode.ComputedDatatype) {
-        this.out.type_declarations.writeLine(
-          `typedef hzstd_computed_node_t* ${this.mangleTypeDef(symbol)};`,
-        );
-      } else if (symbol.variant === Lowered.ENode.LiteralDatatype) {
-        // A literal datatype is just an alias for its base type
-        const a = this.mangleTypeUse(symbol.baseType);
-        const b = this.mangleTypeDef(symbol);
-        if (a !== b) {
-          this.out.type_declarations.writeLine(`typedef ${a} ${b};`);
-        }
-      } else {
-        assert(false);
       }
     }
 
@@ -672,7 +686,12 @@ class CodeGenerator {
     }
   }
 
-  sortTypeDefs(sortedLoweredTypes: (Lowered.TypeDef | Lowered.TypeUse)[]) {
+  sortTypes(
+    sortedLoweredTypes: (
+      | { type: "def"; id: Lowered.TypeDefId }
+      | { type: "use"; id: Lowered.TypeUseId }
+    )[],
+  ) {
     const appliedTypes = new Set<Lowered.TypeDef | Lowered.TypeUse>();
 
     // This function processes the type in the sense that it goes over all types that this type depends on,
@@ -685,17 +704,18 @@ class CodeGenerator {
         return;
       }
 
+      // console.log(type.name.mangledName, type.variant);
       if (type.variant === Lowered.ENode.FunctionDatatype) {
         appliedTypes.add(type);
         for (const p of type.parameters) {
           processTypeUse(p);
         }
         processTypeUse(type.returnType);
-        sortedLoweredTypes.push(type);
+        sortedLoweredTypes.push({ type: "def", id: typeId });
       } else if (type.variant === Lowered.ENode.CallableDatatype) {
         appliedTypes.add(type);
         processTypeDef(type.functionType);
-        sortedLoweredTypes.push(type);
+        sortedLoweredTypes.push({ type: "def", id: typeId });
       } else if (type.variant === Lowered.ENode.StructDatatype) {
         appliedTypes.add(type);
         for (const m of type.members) {
@@ -706,48 +726,48 @@ class CodeGenerator {
             processTypeUse(m.type);
           }
         }
-        sortedLoweredTypes.push(type);
+        sortedLoweredTypes.push({ type: "def", id: typeId });
       } else if (type.variant === Lowered.ENode.PrimitiveDatatype) {
         appliedTypes.add(type);
-        sortedLoweredTypes.push(type);
+        sortedLoweredTypes.push({ type: "def", id: typeId });
       } else if (type.variant === Lowered.ENode.PointerDatatype) {
         appliedTypes.add(type);
         processTypeUse(type.referee);
-        sortedLoweredTypes.push(type);
+        sortedLoweredTypes.push({ type: "def", id: typeId });
       } else if (type.variant === Lowered.ENode.FixedArrayDatatype) {
         appliedTypes.add(type);
         processTypeUse(type.datatype);
-        sortedLoweredTypes.push(type);
+        sortedLoweredTypes.push({ type: "def", id: typeId });
       } else if (type.variant === Lowered.ENode.DynamicArrayDatatype) {
         appliedTypes.add(type);
         processTypeUse(type.datatype);
-        sortedLoweredTypes.push(type);
+        sortedLoweredTypes.push({ type: "def", id: typeId });
       } else if (type.variant === Lowered.ENode.UntaggedUnionDatatype) {
         appliedTypes.add(type);
         for (const m of type.members) {
           processTypeUse(m);
         }
-        sortedLoweredTypes.push(type);
+        sortedLoweredTypes.push({ type: "def", id: typeId });
       } else if (type.variant === Lowered.ENode.TaggedUnionDatatype) {
         appliedTypes.add(type);
         for (const m of type.members) {
           processTypeUse(m.type);
         }
-        sortedLoweredTypes.push(type);
+        sortedLoweredTypes.push({ type: "def", id: typeId });
       } else if (type.variant === Lowered.ENode.EnumDatatype) {
         appliedTypes.add(type);
         processTypeUse(type.type);
-        sortedLoweredTypes.push(type);
+        sortedLoweredTypes.push({ type: "def", id: typeId });
       } else if (type.variant === Lowered.ENode.ReactiveDatatype) {
         appliedTypes.add(type);
-        sortedLoweredTypes.push(type);
+        sortedLoweredTypes.push({ type: "def", id: typeId });
       } else if (type.variant === Lowered.ENode.ComputedDatatype) {
         appliedTypes.add(type);
-        sortedLoweredTypes.push(type);
+        sortedLoweredTypes.push({ type: "def", id: typeId });
       } else if (type.variant === Lowered.ENode.LiteralDatatype) {
         appliedTypes.add(type);
         processTypeUse(type.baseType);
-        sortedLoweredTypes.push(type);
+        sortedLoweredTypes.push({ type: "def", id: typeId });
       } else {
         assert(false);
       }
@@ -755,12 +775,16 @@ class CodeGenerator {
 
     const processTypeUse = (typeId: Lowered.TypeUseId) => {
       const type = this.lr.typeUseNodes.get(typeId);
+      console.log("Process", type.name.mangledName);
       if (appliedTypes.has(type)) {
+        console.log("already done");
         return;
       }
       appliedTypes.add(type);
+      console.log("Process", type.name.mangledName, "children");
       processTypeDef(type.type);
-      sortedLoweredTypes.push(type);
+      console.log("Process", type.name.mangledName, "itself");
+      sortedLoweredTypes.push({ type: "use", id: typeId });
     };
 
     for (const [_id, t] of this.lr.loweredTypeDefs) {

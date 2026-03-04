@@ -2772,10 +2772,11 @@ function lowerTypeUse(lr: Lowered.Module, typeId: Semantic.TypeUseId): Lowered.T
       (typeDef.variant === Semantic.ENode.StructDatatype ||
         typeDef.variant === Semantic.ENode.DynamicArrayDatatype),
     sourceloc: typeUse.sourceloc,
-    type: lowerTypeDef(lr, typeUse.type),
+    type: -1 as Lowered.TypeDefId,
   })[1];
   lr.loweredTypeUses.set(typeId, id);
 
+  lr.typeUseNodes.get(id).type = lowerTypeDef(lr, typeUse.type); // AFTER cache insert
   return id;
 }
 

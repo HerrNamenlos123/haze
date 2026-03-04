@@ -1,0 +1,11 @@
+name = "flex_layout"
+version = "0.0.1"
+description = "Flexbox layout algorithm for ui module"
+license = "MIT"
+authors = []
+type = "lib"
+
+[dependencies]
+
+[compiler]
+# none

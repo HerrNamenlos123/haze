@@ -283,11 +283,11 @@ string = HZSTD_STRING_FROM_CSTR(buf);
         format_to(writer, value as f64, args);
     }
 
-    // export format_to(writer: mut StringWriter, value: fs.Error, args: FormatArgs) {
-    //     let num = 0;
-    //     __c__("num = value;");
-    //     format_to(writer, num, args);
-    // }
+    export format_to(writer: mut StringWriter, value: fs.Error, args: FormatArgs) {
+        let num = 0;
+        __c__("num = value;");
+        format_to(writer, num, args);
+    }
 
     export format_to(writer: mut StringWriter, value: none, args: FormatArgs) {
         format_to(writer, "none", args);

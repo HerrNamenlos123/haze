@@ -4,6 +4,10 @@ import gl
 import wgpu
 import glfw_wgpu
 
+// ui framework and layout modules (newly created)
+import ui
+import flex_layout
+
 export extern C noemit wgpu_init(glfwWindow: cptr) :: final;
 export extern C wgpu_start(glfwWindow: cptr, device: wgpu.ffi.WGPUDeviceImpl, surface: wgpu.ffi.WGPUSurfaceImpl, queue: wgpu.ffi.WGPUQueueImpl, texture: wgpu.ffi.WGPUTextureViewImpl) :: final;
 export extern C wgpu_end(glfwWindow: cptr) :: final;
@@ -72,6 +76,21 @@ main(): int {
 
         let caps = surface.getCapabilities(adapter);
         if (!caps) { raise "Failed to get surface capabilities"; }
+
+        // simple UI framework usage example (compile-time smoke test)
+        let rootUI = ui.div(ui.LayoutStyle{
+            width: none,
+            height: none,
+            padding: 10.0,
+            flexGrow: 0.0,
+            direction: ui.Direction.Column,
+            justify: ui.Justify.Start,
+            align: ui.Align.Start,
+        }, [
+            ui.text("Hello world", ui.TextStyle{fontSize: 24.0, textColor: ui.Color(1,1,1,1)})
+        ]);
+        let positioned = flex_layout.layoutFlex(rootUI, size.x as f32, size.y as f32);
+        // we don't yet render 'positioned'; this is just to ensure imports and layout compile
 
         let size = window.getFramebufferSize();
         surface.configure({

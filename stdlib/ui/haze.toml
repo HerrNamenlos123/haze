@@ -1,0 +1,11 @@
+name = "ui"
+version = "0.0.1"
+description = "Minimal UI framework: elements, trees, and draw command interface"
+license = "MIT"
+authors = []
+type = "lib"
+
+[dependencies]
+
+[compiler]
+# no special flags
