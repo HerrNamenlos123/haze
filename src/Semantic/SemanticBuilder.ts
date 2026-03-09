@@ -739,6 +739,12 @@ export class SemanticBuilder {
   extractConstraintPath(exprId: Semantic.ExprId): ConstraintPath | null {
     const expr = this.sr.exprNodes.get(exprId);
 
+    // Unwrap union casts to extract path from the underlying expression
+    if (expr.variant === Semantic.ENode.UnionToValueCastExpr ||
+        expr.variant === Semantic.ENode.UnionToUnionCastExpr) {
+      return this.extractConstraintPath(expr.expr);
+    }
+
     // Base case: variable reference
     if (expr.variant === Semantic.ENode.SymbolValueExpr) {
       return {
@@ -1026,7 +1032,9 @@ export class SemanticBuilder {
 
     let scope = this.sr.cc.scopeNodes.get(scopeId);
     assert(
-      scope.variant === Collect.ENode.ModuleScope || scope.variant === Collect.ENode.FileScope,
+      scope.variant === Collect.ENode.ModuleScope ||
+        scope.variant === Collect.ENode.FileScope ||
+        scope.variant === Collect.ENode.LambdaScope,
     );
 
     this.sr.moduleCompiler.collectImmediate(fullSource, {

@@ -27,6 +27,12 @@ export namespace Conversion {
     const expr = sr.exprNodes.get(exprId);
     if (!expr) return null;
 
+    // Unwrap union casts to extract path from the underlying expression
+    if (expr.variant === Semantic.ENode.UnionToValueCastExpr ||
+        expr.variant === Semantic.ENode.UnionToUnionCastExpr) {
+      return extractConstraintPath(sr, expr.expr);
+    }
+
     // Base case: variable reference
     if (expr.variant === Semantic.ENode.SymbolValueExpr) {
       return {

@@ -77,6 +77,7 @@ main(): int {
         if (!caps) { raise "Failed to get surface capabilities"; }
 
         // simple UI framework usage example (compile-time smoke test)
+        let size = window.getFramebufferSize();
         let rootUI = ui.div(ui.LayoutStyle{
             width: none,
             height: none,
@@ -86,12 +87,11 @@ main(): int {
             justify: ui.Justify.Start,
             align: ui.Align.Start,
         }, [
-            ui.text("Hello world", ui.TextStyle{fontSize: 24.0, textColor: ui.Color(1,1,1,1)})
+            ui.text("Hello world", { fontSize: 24.0, textColor: Color(1, 1, 1, 1) })
         ]);
         let positioned = ui.layoutFlex(rootUI, size.x as real, size.y as real);
         // we don't yet render 'positioned'; this is just to ensure imports and layout compile
 
-        let size = window.getFramebufferSize();
         surface.configure({
             device: device,
             format: caps.formats[0],

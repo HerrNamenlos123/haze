@@ -22,33 +22,33 @@ export inline struct TextStyle {
 }
 
 // UI element definitions
-export struct Div {
-    children: []UIElement;
+export struct DivElement {
+    children: []Element;
     style: LayoutStyle;
 }
 
-export struct Text {
+export struct TextElement {
     content: str;
     style: TextStyle;
 }
 
-export type UIElement = Div | Text;
+export type Element = DivElement | TextElement;
 
 // positioned element returned after layout
-export struct Positioned {
-    element: UIElement;
+export struct PositionedElement {
+    element: Element;
     pos: Vec2;
     size: Vec2;
-    children: []Positioned;
+    children: []PositionedElement;
 }
 
 // helpers to create elements
-export div(style: LayoutStyle, children: []UIElement): UIElement {
-    return Div { children: children, style: style };
+export div(style: LayoutStyle, children: []Element): Element {
+    return DivElement { children: children, style: style };
 }
 
-export text(content: str, style: TextStyle): UIElement {
-    return Text { content: content, style: style };
+export text(content: str, style: TextStyle): Element {
+    return TextElement { content: content, style: style };
 }
 
 // measurement stub for text
@@ -65,13 +65,16 @@ export struct DrawCallbacks {
 
 // calculate layout of an element recursively
 // returns a Positioned tree
-export layoutFlex(root: UIElement, width: real, height: real): Positioned {
-    let layoutElement = (el: UIElement, avail: Vec2) => Positioned;
-    layoutElement = (el: UIElement, avail: Vec2): Positioned :: final => {
-        if el is Div {
+export layoutFlex(root: Element, width: real, height: real): PositionedElement {
+    let layoutElement = (el: Element, avail: Vec2): PositionedElement :: final => {
+        assert(false, "unreachable");
+        return PositionedElement { element: el, pos: Vec2(0, 0), size: Vec2(0, 0), children: [] };
+    };
+    layoutElement = (el: Element, avail: Vec2): PositionedElement :: final => {
+        if el is DivElement {
             let used = Vec2(el.style.padding * 2.0, el.style.padding * 2.0);
             // compute children's layouts first
-            let positionedChildren: []Positioned = [];
+            let positionedChildren: []PositionedElement = [];
             for child in el.children {
                 let childAvail = avail; // naive, ignoring flexGrow
                 let posChild = layoutElement(child, childAvail);
@@ -79,17 +82,18 @@ export layoutFlex(root: UIElement, width: real, height: real): Positioned {
                 used.y += posChild.size.y;
                 positionedChildren.push(posChild);
             }
+
             // determine own size based on specified or used
             let finalSize = Vec2(
-                el.style.width != none ? el.style.width : used.x,
-                el.style.height != none ? el.style.height : used.y
+                el.style.width ? el.style.width : used.x,
+                el.style.height ? el.style.height : used.y
             );
-            return Positioned { element: el, pos: Vec2(0, 0), size: finalSize, children: positionedChildren };
+            return PositionedElement { element: el, pos: Vec2(0, 0), size: finalSize, children: positionedChildren };
         }
-        else if el is Text {
+        else if el is TextElement {
             let measured = measureText(el.content, el.style.fontSize);
             let finalSize = Vec2(measured.x, measured.y);
-            return Positioned { element: el, pos: Vec2(0, 0), size: finalSize, children: [] };
+            return PositionedElement { element: el, pos: Vec2(0, 0), size: finalSize, children: [] };
         }
         else {
             assert(false);
@@ -100,11 +104,11 @@ export layoutFlex(root: UIElement, width: real, height: real): Positioned {
 }
 
 // traverse positioned tree and fire callbacks
-export traverseDraw(pos: Positioned, callbacks: DrawCallbacks): void :: final {
-    if pos.element is Div {
+export traverseDraw(pos: PositionedElement, callbacks: DrawCallbacks): void :: final {
+    if pos.element is DivElement {
         callbacks.onDrawDiv(pos.pos, pos.size, pos.element.style);
     }
-    else if pos.element is Text {
+    else if pos.element is TextElement {
         callbacks.onDrawText(pos.pos, pos.size, pos.element.style, pos.element.content);
     }
     for child in pos.children {
