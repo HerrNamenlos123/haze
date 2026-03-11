@@ -76,22 +76,7 @@ main(): int {
         let caps = surface.getCapabilities(adapter);
         if (!caps) { raise "Failed to get surface capabilities"; }
 
-        // simple UI framework usage example (compile-time smoke test)
         let size = window.getFramebufferSize();
-        let rootUI = ui.div(ui.LayoutStyle{
-            width: none,
-            height: none,
-            padding: 10.0,
-            flexGrow: 0.0,
-            direction: ui.Direction.Column,
-            justify: ui.Justify.Start,
-            align: ui.Align.Start,
-        }, [
-            ui.text("Hello world", { fontSize: 24.0, textColor: Color(1, 1, 1, 1) })
-        ]);
-        let positioned = ui.layoutFlex(rootUI, size.x as real, size.y as real);
-        // we don't yet render 'positioned'; this is just to ensure imports and layout compile
-
         surface.configure({
             device: device,
             format: caps.formats[0],
@@ -111,35 +96,176 @@ main(): int {
             shadercode: embed.watchTextIf(enableShaderHotreload, "test/shaders.wgsl"),
         });
 
+        ui.init(size.x, size.y);
+        let uiTree = rx.reactive<ui.DivElement>(ui.DivElement {
+            id: 1,
+            style: {
+                backgroundColor: Color(0.15, 0.15, 0.15, 1),
+                padding: ui.StylePaddingSimple { value: 30.0 },
+                direction: ui.Direction.Column,
+            },
+            children: [
+
+                // header
+                ui.DivElement {
+                    id: 2,
+                    style: {
+                        backgroundColor: Color(0.9, 0.2, 0.2, 1),
+                        padding: ui.StylePaddingSimple { value: 20.0 },
+                        align: ui.Align.Center,
+                        cornerRadius: ui.StyleCornerRadiusSimple {
+                            value: 10.0
+                        },
+                    },
+                    children: [
+                        ui.TextElement {
+                            id: 10,
+                            text: "HAZE UI TEST",
+                        }
+                    ]
+                },
+
+                // main row container
+                ui.DivElement {
+                    id: 3,
+                    style: {
+                        direction: ui.Direction.Row,
+                        padding: ui.StylePaddingSimple { value: 20.0 },
+                        backgroundColor: Color(0.25, 0.25, 0.25, 1),
+                        justify: ui.Justify.SpaceBetween,
+                        cornerRadius: ui.StyleCornerRadiusSimple {
+                            value: 20.0
+                        },
+                    },
+                    children: [
+
+                        // sidebar
+                        ui.DivElement {
+                            id: 4,
+                            style: {
+                                backgroundColor: Color(0.2, 0.6, 0.9, 1),
+                                padding: ui.StylePaddingSimple { value: 20.0 },
+                                direction: ui.Direction.Column,
+                            },
+                            children: [
+                                ui.TextElement { id: 11, text: "Menu" },
+                                ui.TextElement { id: 12, text: "Dashboard" },
+                                ui.TextElement { id: 13, text: "Settings" },
+                                ui.TextElement { id: 14, text: "About" },
+                            ]
+                        },
+
+                        // content panel
+                        ui.DivElement {
+                            id: 5,
+                            style: {
+                                backgroundColor: Color(0.2, 0.8, 0.4, 1),
+                                padding: ui.StylePaddingSimple { value: 30.0 },
+                                direction: ui.Direction.Column,
+                                align: ui.Align.Center,
+                            },
+                            children: [
+                                ui.TextElement {
+                                    id: 15,
+                                    text: "Welcome to the content area!",
+                                },
+                                ui.TextElement {
+                                    id: 16,
+                                    text: "Flexbox layout test",
+                                },
+                            ]
+                        },
+
+                        // right column
+                        ui.DivElement {
+                            id: 6,
+                            style: {
+                                backgroundColor: Color(0.9, 0.8, 0.2, 1),
+                                padding: ui.StylePaddingSimple { value: 20.0 },
+                                direction: ui.Direction.Column,
+                                justify: ui.Justify.Center,
+                                align: ui.Align.Center,
+                            },
+                            children: [
+                                ui.TextElement {
+                                    id: 17,
+                                    text: "Info Box",
+                                },
+                                ui.TextElement {
+                                    id: 18,
+                                    text: "Aligned center",
+                                }
+                            ]
+                        }
+                    ]
+                },
+
+                // footer
+                ui.DivElement {
+                    id: 7,
+                    style: {
+                        backgroundColor: Color(0.4, 0.4, 0.9, 1),
+                        padding: ui.StylePaddingSimple { value: 15.0 },
+                        align: ui.Align.Center,
+                    },
+                    children: [
+                        ui.TextElement {
+                            id: 19,
+                            text: "Footer text",
+                        }
+                    ]
+                }
+            ]
+        });
+
         while !window.shouldClose() {
             glfw.pollEvents();
             fs.pollEvents();
             renderer.beginFrame();
 
-            renderer.drawRect({
-                pos: Vec2(100, 100), 
-                size: Vec2(200, 200), 
-                fillColor: Color(1, 0, 0, 1),
-                cornerRadius: 30,
-                borderThickness: 1,
-                borderColor: Color(0, 1, 0, 1),
-            });
-            renderer.drawRect({
-                pos: Vec2(200, 400), 
-                size: Vec2(300, 200), 
-                fillColor: Color(1, 0, 1, 1),
-                cornerRadius: 3,
-                borderThickness: 2,
-                borderColor: Color(0, 1, 0, 1),
-            });
-            renderer.drawRect({
-                pos: Vec2(250, 350), 
-                size: Vec2(300, 200), 
-                fillColor: Color(1.0, 0.6549, 0.0588, 1),
-                cornerRadius: 30,
-                borderThickness: 3,
-                borderColor: Color(0, 1, 0, 1),
-            });
+        ui.layoutTree(rx.unwrap(uiTree), {
+            renderFilledRectangle: (position: Vec2, size: Vec2, backgroundColor: Color, cornerRadius: ui.CornerRadiusValues): void => {
+                renderer.drawRect({
+                    pos: position, 
+                    size: size,
+                    fillColor: backgroundColor,
+                    cornerRadius: {
+                        topLeft: cornerRadius.topLeft,
+                        topRight: cornerRadius.topRight,
+                        bottomLeft: cornerRadius.bottomLeft,
+                        bottomRight: cornerRadius.bottomRight,
+                    },
+                    // cornerRadius: 30,
+                    // borderThickness: 1,
+                    // borderColor: Color(0, 1, 0, 1),
+                });
+            }
+        });
+
+            // renderer.drawRect({
+            //     pos: Vec2(100, 100), 
+            //     size: Vec2(200, 200), 
+            //     fillColor: Color(1, 0, 0, 1),
+            //     cornerRadius: 30,
+            //     borderThickness: 1,
+            //     borderColor: Color(0, 1, 0, 1),
+            // });
+            // renderer.drawRect({
+            //     pos: Vec2(200, 400), 
+            //     size: Vec2(300, 200), 
+            //     fillColor: Color(1, 0, 1, 1),
+            //     cornerRadius: 3,
+            //     borderThickness: 2,
+            //     borderColor: Color(0, 1, 0, 1),
+            // });
+            // renderer.drawRect({
+            //     pos: Vec2(250, 350), 
+            //     size: Vec2(300, 200), 
+            //     fillColor: Color(1.0, 0.6549, 0.0588, 1),
+            //     cornerRadius: 30,
+            //     borderThickness: 3,
+            //     borderColor: Color(0, 1, 0, 1),
+            // });
 
             renderer.endFrame();
         }

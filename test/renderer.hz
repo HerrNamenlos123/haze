@@ -25,7 +25,10 @@ min<T>(a: T, b: T): T => {
 inline struct PrimitiveInstance {
     pos: Vec2f;            // center position in pixels
     size: Vec2f;           // width/height
-    radius: f32;           // corner radius for rounded rect
+    radiusTopLeft: f32;           // corner radius for rounded rect
+    radiusTopRight: f32;           // corner radius for rounded rect
+    radiusBottomLeft: f32;           // corner radius for rounded rect
+    radiusBottomRight: f32;           // corner radius for rounded rect
     borderThickness: f32;  // 0 = no border
     fillColor: Colorf;
     borderColor: Colorf;
@@ -80,13 +83,18 @@ opaque struct Renderer {
             arrayStride: sizeof(PrimitiveInstance),
             stepMode: wgpu.VertexStepMode.Instance, // key! this is per-instance
             attributes: {
-                { shaderLocation: 1, offset: 0, format: wgpu.VertexFormat.Float32x2 }, // pos
-                { shaderLocation: 2, offset: 8, format: wgpu.VertexFormat.Float32x2 }, // size
-                { shaderLocation: 3, offset: 16, format: wgpu.VertexFormat.Float32 },   // radius
-                { shaderLocation: 4, offset: 20, format: wgpu.VertexFormat.Float32 },   // borderThickness
-                { shaderLocation: 5, offset: 24, format: wgpu.VertexFormat.Float32x4 }, // fillColor
-                { shaderLocation: 6, offset: 40, format: wgpu.VertexFormat.Float32x4 }, // borderColor
-                { shaderLocation: 7, offset: 56, format: wgpu.VertexFormat.Uint32 },    // type
+                { shaderLocation: 1, offset: 0,  format: wgpu.VertexFormat.Float32x2 }, // pos
+                { shaderLocation: 2, offset: 8,  format: wgpu.VertexFormat.Float32x2 }, // size
+
+                { shaderLocation: 3, offset: 16, format: wgpu.VertexFormat.Float32 },   // radiusTopLeft
+                { shaderLocation: 4, offset: 20, format: wgpu.VertexFormat.Float32 },   // radiusTopRight
+                { shaderLocation: 5, offset: 24, format: wgpu.VertexFormat.Float32 },   // radiusBottomRight
+                { shaderLocation: 6, offset: 28, format: wgpu.VertexFormat.Float32 },   // radiusBottomLeft
+
+                { shaderLocation: 7, offset: 32, format: wgpu.VertexFormat.Float32 },   // borderThickness
+                { shaderLocation: 8, offset: 36, format: wgpu.VertexFormat.Float32x4 }, // fillColor
+                { shaderLocation: 9, offset: 52, format: wgpu.VertexFormat.Float32x4 }, // borderColor
+                { shaderLocation: 10, offset: 68, format: wgpu.VertexFormat.Uint32 },   // type
             },
         };
 
@@ -197,11 +205,18 @@ opaque struct Renderer {
         color: Color;
     };
 
+    struct CornerRadius {
+        topLeft: real = 0;
+        topRight: real = 0;
+        bottomLeft: real = 0;
+        bottomRight: real = 0;
+    };
+
     struct RectOpts {
         pos: Vec2;
         size: Vec2;
         fillColor: Color = { r: 1, g: 1, b: 1, a: 1 };
-        cornerRadius: real = 0;
+        cornerRadius: CornerRadius = {};
         borderColor: Color = { r: 1, g: 1, b: 1, a: 1 };
         borderThickness: real = 0;
     };
@@ -212,7 +227,10 @@ opaque struct Renderer {
                 type: 0, // Filled Rounded Rectangle
                 pos: { x: (opts.pos.x + opts.size.x / 2.0) as f32, y: (opts.pos.y + opts.size.y / 2.0) as f32 },
                 size: { x: opts.size.x as f32, y: opts.size.y as f32 },
-                radius: opts.cornerRadius as f32,
+                radiusTopLeft: opts.cornerRadius.topLeft as f32,
+                radiusTopRight: opts.cornerRadius.topRight as f32,
+                radiusBottomLeft: opts.cornerRadius.bottomLeft as f32,
+                radiusBottomRight: opts.cornerRadius.bottomRight as f32,
                 borderThickness: 0,
                 fillColor: {
                     r: opts.fillColor.r as f32,
@@ -228,7 +246,10 @@ opaque struct Renderer {
                 type: 1, // Outlined Rounded Rectangle
                 pos: { x: (opts.pos.x + opts.size.x / 2.0) as f32, y: (opts.pos.y + opts.size.y / 2.0) as f32 },
                 size: { x: opts.size.x as f32, y: opts.size.y as f32 },
-                radius: opts.cornerRadius as f32,
+                radiusTopLeft: opts.cornerRadius.topLeft as f32,
+                radiusTopRight: opts.cornerRadius.topRight as f32,
+                radiusBottomLeft: opts.cornerRadius.bottomLeft as f32,
+                radiusBottomRight: opts.cornerRadius.bottomRight as f32,
                 borderThickness: opts.borderThickness as f32,
                 fillColor: { r: 0, g: 0, b: 0, a: 0 },
                 borderColor: {

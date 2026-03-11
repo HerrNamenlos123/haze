@@ -3,10 +3,13 @@ struct VSOut {
     @location(0) localPos: vec2<f32>, // quad local [-0.5,0.5]
     @location(1) fillColor: vec4<f32>,
     @location(2) borderColor: vec4<f32>,
-    @location(3) radius: f32,
-    @location(4) borderThickness: f32,
-    @location(5) _type: u32,
-    @location(6) instSize: vec2<f32>,
+    @location(3) radiusTopLeft: f32,
+    @location(4) radiusTopRight: f32,
+    @location(5) radiusBottomLeft: f32,
+    @location(6) radiusBottomRight: f32,
+    @location(7) borderThickness: f32,
+    @location(8) _type: u32,
+    @location(9) instSize: vec2<f32>,
 };
 
 struct Globals {
@@ -21,11 +24,14 @@ fn vs_main(
     @location(0) quadPos: vec2<f32>,
     @location(1) instPos: vec2<f32>,
     @location(2) instSize: vec2<f32>,
-    @location(3) radius: f32,
-    @location(4) borderThickness: f32,
-    @location(5) fillColor: vec4<f32>,
-    @location(6) borderColor: vec4<f32>,
-    @location(7) _type: u32
+    @location(3) radiusTopLeft: f32,
+    @location(4) radiusTopRight: f32,
+    @location(5) radiusBottomLeft: f32,
+    @location(6) radiusBottomRight: f32,
+    @location(7) borderThickness: f32,
+    @location(8) fillColor: vec4<f32>,
+    @location(9) borderColor: vec4<f32>,
+    @location(10) _type: u32
 ) -> VSOut {
     var o: VSOut;
 
@@ -39,7 +45,12 @@ fn vs_main(
         o.localPos = quadPos;
         o.fillColor = fillColor;
         o.borderColor = borderColor;
-        o.radius = min(min(radius, instSize.x / 2.0), instSize.y / 2.0);
+        
+        o.radiusTopLeft = min(min(radiusTopLeft, instSize.x / 2.0), instSize.y / 2.0);
+        o.radiusTopRight = min(min(radiusTopRight, instSize.x / 2.0), instSize.y / 2.0);
+        o.radiusBottomLeft = min(min(radiusBottomLeft, instSize.x / 2.0), instSize.y / 2.0);
+        o.radiusBottomRight = min(min(radiusBottomRight, instSize.x / 2.0), instSize.y / 2.0);
+
         o.borderThickness = borderThickness;
         o._type = _type;
         o.instSize = instSize;
@@ -56,7 +67,12 @@ fn vs_main(
         o.localPos = quadPos * (vec2(1, 1) + paddingFraction);
         o.fillColor = fillColor;
         o.borderColor = borderColor;
-        o.radius = min(min(radius, instSize.x / 2.0), instSize.y / 2.0);
+
+        o.radiusTopLeft = min(min(radiusTopLeft, instSize.x / 2.0), instSize.y / 2.0);
+        o.radiusTopRight = min(min(radiusTopRight, instSize.x / 2.0), instSize.y / 2.0);
+        o.radiusBottomLeft = min(min(radiusBottomLeft, instSize.x / 2.0), instSize.y / 2.0);
+        o.radiusBottomRight = min(min(radiusBottomRight, instSize.x / 2.0), instSize.y / 2.0);
+
         o.borderThickness = borderThickness;
         o._type = _type;
         o.instSize = instSize;
@@ -72,8 +88,19 @@ fn vs_main(
 
 fn rounded_rectangle_sdf(in: VSOut) -> f32 {
     let halfSize = in.instSize / 2.0;
-    let r = in.radius;
     let p = in.localPos * in.instSize;
+
+    var r: f32;
+    if (p.x < 0.0 && p.y > 0.0) {
+        r = in.radiusBottomLeft;
+    } else if (p.x > 0.0 && p.y > 0.0) {
+        r = in.radiusBottomRight;
+    } else if (p.x < 0.0 && p.y < 0.0) {
+        r = in.radiusTopLeft;
+    } else {
+        r = in.radiusTopRight;
+    }
+
     let q = abs(p) - halfSize + vec2(r, r);
     let outside = max(q, vec2(0.0));
     let insideDist = min(max(q.x, q.y), 0.0); // negative inside edges

@@ -1,12 +1,12 @@
 
-export inline struct _Color<T> {
-    r: T = default;
-    g: T = default;
-    b: T = default;
-    a: T = default;
+export extern C noemit inline struct hzstd_color_t {
+    r: real = 0;
+    g: real = 0;
+    b: real = 0;
+    a: real = 0;
 
-    constructor(r: T, g: T, b: T, a: T): _Color<T> {
-        return _Color<T> {
+    constructor(r: real, g: real, b: real, a: real) {
+        return hzstd_color_t {
             r: r,
             g: g,
             b: b,
@@ -19,7 +19,26 @@ export inline struct _Color<T> {
     }
 }
 
-export type Color = _Color<real>;
-export type Colori = _Color<int>;
-export type Coloru8 = _Color<u8>;
-export type Colorf = _Color<f32>;
+export type Color = hzstd_color_t;
+
+export extern C noemit inline struct hzstd_colorf_t {
+    r: f32 = 0;
+    g: f32 = 0;
+    b: f32 = 0;
+    a: f32 = 0;
+
+    constructor(r: f32, g: f32, b: f32, a: f32) {
+        return hzstd_colorf_t {
+            r: r,
+            g: g,
+            b: b,
+            a: a,
+        };
+    }
+
+    isDefault() {
+        return this.r == 0.0 && this.g == 0.0 && this.b == 0.0 && this.a == 0.0;
+    }
+}
+
+export type Colorf = hzstd_colorf_t;

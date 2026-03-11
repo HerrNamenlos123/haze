@@ -1512,6 +1512,10 @@ export class ModuleCompiler {
           await addDir(fullPath);
         } else if (extname(fullPath) === ".hz") {
           files.add(fullPath);
+        } else if (extname(fullPath) === ".c") {
+          files.add(fullPath);
+        } else if (extname(fullPath) === ".h") {
+          files.add(fullPath);
         }
       }
     };

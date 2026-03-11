@@ -11,6 +11,7 @@
 #include "hzstd_reactive.h"
 #include "hzstd_regex.h"
 #include "hzstd_runtime.h"
+#include "hzstd_utils.h"
 
 void hzstd_initialize();
 

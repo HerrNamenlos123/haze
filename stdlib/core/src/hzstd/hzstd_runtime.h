@@ -26,6 +26,16 @@ void hzstd_assert(hzstd_bool_t condition);
 void hzstd_assert_msg_cstr(hzstd_bool_t condition, hzstd_cstr_t message);
 void hzstd_assert_msg(hzstd_bool_t condition, hzstd_str_t message);
 
+// typedef struct hzstd_callable_t {
+//   void* (*fn)(void*);
+//   void* env;
+// } hzstd_callable_t;
+
+// #define HZSTD_CALLABLE(callable)                                                                                       \
+//   (hzstd_callable_t) { .fn = (void*)callable.fn, .env = (void*)callable.env }
+
+// #define HZSTD_CALL_CALLABLE(callable) callable.fn(callable.env);
+
 void hzstd_print_stacktrace(hzstd_dynamic_array_t* frames, hzstd_int_t skip_n_frames);
 
 // This function is cold, static and inline to make sure it is DUPLICATED in

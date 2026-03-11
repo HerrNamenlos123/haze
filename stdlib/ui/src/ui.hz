@@ -1,117 +1,217 @@
-// style structs
-export inline struct LayoutStyle {
-    // optional fixed size
+
+__c__("#include \"ffi/ui.c\"");
+export __c__("#include \"ffi/hzui_public.h\"");
+
+namespace ffi {
+    extern C noemit hzui_clay_define_div_element(fn: cptr, env: cptr, id: usize, backgroundColor: Color, padding: PaddingValues, cornerRadius: CornerRadiusValues): void :: final;
+    extern C noemit hzui_clay_init(width: int, height: int): void :: final;
+    extern C noemit Clay_BeginLayout(): void :: final;
+    extern C noemit Clay_EndLayout(): inline Clay_RenderCommandArray :: final;
+    extern C noemit Clay_RenderClayCommands(callbacks: ClayCallbacks, commands: Clay_RenderCommandArray): void :: final;
+
+    extern C noemit struct Clay_RenderCommandArray {};
+    extern C noemit inline struct ClayCallbacks {
+        renderFilledRect: (userdata: cptr, x: real, y: real, width: real, height: real, backgroundColor: Color, cornerRadius: CornerRadiusValues) -> void;
+        renderFilledRectUserdata: cptr;
+    };
+
+    extern C noemit inline struct PaddingValues {
+        left: real;
+        right: real;
+        top: real;
+        bottom: real;
+    }
+
+    export extern C noemit inline struct hzui_corner_radius_values_t {
+        topLeft: real;
+        topRight: real;
+        bottomLeft: real;
+        bottomRight: real;
+    }
+}
+
+export type CornerRadiusValues = ffi.hzui_corner_radius_values_t;
+
+export inline struct StylePaddingSimple {
+    value?: real = none;
+}
+
+export inline struct StylePaddingFull {
+    left?: real = none;
+    right?: real = none;
+    top?: real = none;
+    bottom?: real = none;
+}
+
+export type StylePadding = StylePaddingSimple | StylePaddingFull | none;
+
+export inline struct StyleCornerRadiusSimple {
+    value?: real = none;
+}
+
+export inline struct StyleCornerRadiusFull {
+    topLeft?: real = none;
+    topRight?: real = none;
+    bottomLeft?: real = none;
+    bottomRight?: real = none;
+}
+
+export type StyleCornerRadius = StyleCornerRadiusSimple | StyleCornerRadiusFull | none;
+
+export inline struct DivStyle {
     width?: real = none;
     height?: real = none;
-    padding: real; // uniform padding for simplicity
-    // flex properties
-    flexGrow: real; // relative grow factor
-    // row or column
-    direction: Direction;
-    justify: Justify;
-    align: Align;
+    padding: StylePadding = none; 
+    // flexGrow: real;
+    direction: Direction = Direction.Column;
+    justify: Justify = Justify.Start;
+    align: Align = Align.Start;
+    cornerRadius: StyleCornerRadius = none;
+    backgroundColor: Color = Color { r: 0, g: 0, b: 0, a: 0 };
 }
 
 export enum Direction { Row, Column }
 export enum Justify { Start, Center, End, SpaceBetween }
 export enum Align { Start, Center, End, Stretch }
 
+export inline struct ComputedLayout {
+    position: Vec2;
+    size: Vec2;
+}
+
 export inline struct TextStyle {
-    fontSize: real;
+    fontSize?: real = none;
     textColor?: Color = none;
 }
 
-// UI element definitions
 export struct DivElement {
-    children: []Element;
-    style: LayoutStyle;
+    id: usize;
+    children: []Element = [];
+    style: DivStyle = {};
+    computedLayout?: ComputedLayout = none;
 }
 
 export struct TextElement {
-    content: str;
-    style: TextStyle;
+    id: usize;
+    text: str;
+    style: TextStyle = {};
+    computedLayout?: ComputedLayout = none;
 }
 
 export type Element = DivElement | TextElement;
 
-// positioned element returned after layout
-export struct PositionedElement {
-    element: Element;
-    pos: Vec2;
-    size: Vec2;
-    children: []PositionedElement;
-}
-
-// helpers to create elements
-export div(style: LayoutStyle, children: []Element): Element {
-    return DivElement { children: children, style: style };
-}
-
-export text(content: str, style: TextStyle): Element {
-    return TextElement { content: content, style: style };
-}
-
-// measurement stub for text
-export measureText(content: str, fontSize: real): Vec2 {
-    // simplistic: width = char count * fontSize * 0.5, height = fontSize
-    return Vec2((content.length as real) * fontSize * 0.5, fontSize);
-}
-
-// interface for draw callbacks
 export struct DrawCallbacks {
-    onDrawDiv: (pos: Vec2, size: Vec2, style: LayoutStyle) => void;
+    onDrawDiv: (pos: Vec2, size: Vec2, style: DivStyle) => void;
     onDrawText: (pos: Vec2, size: Vec2, style: TextStyle, content: str) => void;
 }
 
-// calculate layout of an element recursively
-// returns a Positioned tree
-export layoutFlex(root: Element, width: real, height: real): PositionedElement {
-    let layoutElement = (el: Element, avail: Vec2): PositionedElement :: final => {
-        assert(false, "unreachable");
-        return PositionedElement { element: el, pos: Vec2(0, 0), size: Vec2(0, 0), children: [] };
-    };
-    layoutElement = (el: Element, avail: Vec2): PositionedElement :: final => {
-        if el is DivElement {
-            let used = Vec2(el.style.padding * 2.0, el.style.padding * 2.0);
-            // compute children's layouts first
-            let positionedChildren: []PositionedElement = [];
-            for child in el.children {
-                let childAvail = avail; // naive, ignoring flexGrow
-                let posChild = layoutElement(child, childAvail);
-                used.x += posChild.size.x;
-                used.y += posChild.size.y;
-                positionedChildren.push(posChild);
+processTreeElement(element: Element): void :: final {
+    if element is DivElement {
+        let capturedElement = element; // TODO: Fix compiler error, an unwrapped union cannot be captured in lambda
+        let renderChildren = () => {
+            for child in capturedElement.children {
+                processTreeElement(child);
             }
+        };
+        let fn = none as cptr;
+        let env = none as cptr;
+        __c__("fn = (void*)renderChildren.fn;");
+        __c__("env = (void*)renderChildren.env;");
+        ffi.hzui_clay_define_div_element(fn, env, element.id, element.style.backgroundColor, getPaddingValues(element.style.padding), getCornerRadiusValues(element.style.cornerRadius));
 
-            // determine own size based on specified or used
-            let finalSize = Vec2(
-                el.style.width ? el.style.width : used.x,
-                el.style.height ? el.style.height : used.y
-            );
-            return PositionedElement { element: el, pos: Vec2(0, 0), size: finalSize, children: positionedChildren };
-        }
-        else if el is TextElement {
-            let measured = measureText(el.content, el.style.fontSize);
-            let finalSize = Vec2(measured.x, measured.y);
-            return PositionedElement { element: el, pos: Vec2(0, 0), size: finalSize, children: [] };
-        }
-        else {
-            assert(false);
-        }
-    };
-    let rootPos = layoutElement(root, Vec2(width, height));
-    return rootPos;
+        // element.computedLayout = Clay_GetLayout(element.id)
+    } 
+    else if element is TextElement {
+        // Clay_Text(element.id, element.content, element.style)
+
+        // element.computedLayout = Clay_GetLayout(element.id)
+    }
 }
 
-// traverse positioned tree and fire callbacks
-export traverseDraw(pos: PositionedElement, callbacks: DrawCallbacks): void :: final {
-    if pos.element is DivElement {
-        callbacks.onDrawDiv(pos.pos, pos.size, pos.element.style);
+export init(width: int, height: int) {
+    ffi.hzui_clay_init(width, height);
+}
+
+getPaddingValues(padding: StylePadding) {
+    if padding is StylePaddingSimple {
+        return ffi.PaddingValues {
+            left: padding.value ? padding.value : 0.0,
+            right: padding.value ? padding.value : 0.0,
+            bottom: padding.value ? padding.value : 0.0,
+            top: padding.value ? padding.value : 0.0,
+        };
     }
-    else if pos.element is TextElement {
-        callbacks.onDrawText(pos.pos, pos.size, pos.element.style, pos.element.content);
+    else if padding is StylePaddingFull {
+        return ffi.PaddingValues {
+            left: padding.left ? padding.left : 0.0,
+            right: padding.right ? padding.right : 0.0,
+            bottom: padding.bottom ? padding.bottom : 0.0,
+            top: padding.top ? padding.top : 0.0,
+        };
     }
-    for child in pos.children {
-        traverseDraw(child, callbacks);
+    return ffi.PaddingValues {
+        left: 0,
+        right: 0,
+        bottom: 0,
+        top: 0,
+    };
+}
+
+getCornerRadiusValues(cornerRadius: StyleCornerRadius) {
+    if cornerRadius is StyleCornerRadiusSimple {
+        return CornerRadiusValues {
+            topLeft: cornerRadius.value ? cornerRadius.value : 0.0,
+            topRight: cornerRadius.value ? cornerRadius.value : 0.0,
+            bottomLeft: cornerRadius.value ? cornerRadius.value : 0.0,
+            bottomRight: cornerRadius.value ? cornerRadius.value : 0.0,
+        };
     }
+    else if cornerRadius is StyleCornerRadiusFull {
+        return CornerRadiusValues {
+            topLeft: cornerRadius.topLeft ? cornerRadius.topLeft : 0.0,
+            topRight: cornerRadius.topRight ? cornerRadius.topRight : 0.0,
+            bottomLeft: cornerRadius.bottomLeft ? cornerRadius.bottomLeft : 0.0,
+            bottomRight: cornerRadius.bottomRight ? cornerRadius.bottomRight : 0.0,
+        };
+    }
+    return CornerRadiusValues {
+        topLeft: 0,
+        topRight: 0,
+        bottomLeft: 0,
+        bottomRight: 0,
+    };
+}
+
+export type RenderFilledRectCB = (position: Vec2, size: Vec2, backgroundColor: Color, cornerRadius: ffi.CornerRadiusValues) => void;
+
+export struct RenderCallbacks {
+    renderFilledRectangle: RenderFilledRectCB;
+}
+
+renderFilledRectTrampoline(userdata: cptr, x: real, y: real, width: real, height: real, backgroundColor: Color, cornerRadius: CornerRadiusValues): void {
+    do unsafe {
+        let callable: Box<RenderFilledRectCB> = uninitialized;
+        __c__("callable = userdata;");
+        callable.value(Vec2(x, y), Vec2(width, height), backgroundColor, cornerRadius);
+    };
+}
+
+export layoutTree(element: Element, callbacks: RenderCallbacks) {
+    ffi.Clay_BeginLayout();
+    processTreeElement(element);
+    let clayRenderCommands = ffi.Clay_EndLayout();
+    let clayRenderCommandsPtr = none as none | ffi.Clay_RenderCommandArray;
+    __c__("clayRenderCommandsPtr = &clayRenderCommands;");
+    assert(clayRenderCommandsPtr);
+
+    do unsafe {
+        let renderFilledRect = Box<RenderFilledRectCB>(callbacks.renderFilledRectangle);
+        let renderFilledRectUserdata = none as cptr;
+        __c__("renderFilledRectUserdata = renderFilledRect;");
+
+        ffi.Clay_RenderClayCommands({
+            renderFilledRect: renderFilledRectTrampoline,
+            renderFilledRectUserdata: renderFilledRect,
+        }, clayRenderCommandsPtr);
+    };
 }

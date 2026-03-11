@@ -28,8 +28,10 @@ export namespace Conversion {
     if (!expr) return null;
 
     // Unwrap union casts to extract path from the underlying expression
-    if (expr.variant === Semantic.ENode.UnionToValueCastExpr ||
-        expr.variant === Semantic.ENode.UnionToUnionCastExpr) {
+    if (
+      expr.variant === Semantic.ENode.UnionToValueCastExpr ||
+      expr.variant === Semantic.ENode.UnionToUnionCastExpr
+    ) {
       return extractConstraintPath(sr, expr.expr);
     }
 
@@ -1179,7 +1181,9 @@ export namespace Conversion {
       const returnTypeMatch = fromType.returnType === to.returnType;
       const paramLengthMatch = fromType.parameters.length === to.parameters.length;
       // Compare parameter types, not the parameter objects themselves (which may have different names, etc.)
-      const paramsMatch = fromType.parameters.every((p, i) => to.parameters[i].type === p.type);
+      const paramsMatch =
+        fromType.parameters.length === to.parameters.length &&
+        fromType.parameters.every((p, i) => to.parameters[i].type === p.type);
       const purityOk = !to.requires.pure || fromType.requires.pure;
 
       if (
