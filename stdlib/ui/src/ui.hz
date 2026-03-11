@@ -3,7 +3,7 @@ __c__("#include \"ffi/ui.c\"");
 export __c__("#include \"ffi/hzui_public.h\"");
 
 namespace ffi {
-    extern C noemit hzui_clay_define_div_element(fn: cptr, env: cptr, id: usize, backgroundColor: Color, padding: PaddingValues, cornerRadius: CornerRadiusValues): void :: final;
+    extern C noemit hzui_clay_define_div_element(fn: cptr, env: cptr, id: usize, backgroundColor: Color, padding: PaddingValues, cornerRadius: CornerRadiusValues, downInsteadOfRight: bool, gap: real): void :: final;
     extern C noemit hzui_clay_init(width: int, height: int): void :: final;
     extern C noemit Clay_BeginLayout(): void :: final;
     extern C noemit Clay_EndLayout(): inline Clay_RenderCommandArray :: final;
@@ -67,6 +67,7 @@ export inline struct DivStyle {
     justify: Justify = Justify.Start;
     align: Align = Align.Start;
     cornerRadius: StyleCornerRadius = none;
+    gap: real = 0;
     backgroundColor: Color = Color { r: 0, g: 0, b: 0, a: 0 };
 }
 
@@ -100,11 +101,6 @@ export struct TextElement {
 
 export type Element = DivElement | TextElement;
 
-export struct DrawCallbacks {
-    onDrawDiv: (pos: Vec2, size: Vec2, style: DivStyle) => void;
-    onDrawText: (pos: Vec2, size: Vec2, style: TextStyle, content: str) => void;
-}
-
 processTreeElement(element: Element): void :: final {
     if element is DivElement {
         let capturedElement = element; // TODO: Fix compiler error, an unwrapped union cannot be captured in lambda
@@ -117,7 +113,15 @@ processTreeElement(element: Element): void :: final {
         let env = none as cptr;
         __c__("fn = (void*)renderChildren.fn;");
         __c__("env = (void*)renderChildren.env;");
-        ffi.hzui_clay_define_div_element(fn, env, element.id, element.style.backgroundColor, getPaddingValues(element.style.padding), getCornerRadiusValues(element.style.cornerRadius));
+        ffi.hzui_clay_define_div_element(
+            fn, env, 
+            element.id, 
+            element.style.backgroundColor, 
+            getPaddingValues(element.style.padding), 
+            getCornerRadiusValues(element.style.cornerRadius),
+            element.style.direction == Direction.Column,
+            element.style.gap,
+        );
 
         // element.computedLayout = Clay_GetLayout(element.id)
     } 

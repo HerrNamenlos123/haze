@@ -61,7 +61,9 @@ void hzui_clay_define_div_element(void* (*fn)(void*),
                                   hzstd_usize_t id,
                                   hzstd_color_t backgroundColor,
                                   PaddingValues padding,
-                                  hzui_corner_radius_values_t cornerRadius)
+                                  hzui_corner_radius_values_t cornerRadius,
+                                  bool downInsteadOfRight,
+                                  double gap)
 {
   char id_cstr[64];
   snprintf(id_cstr, sizeof(id_cstr), "%" PRIu64, id);
@@ -70,13 +72,18 @@ void hzui_clay_define_div_element(void* (*fn)(void*),
 
   CLAY({ .id = CLAY_SID(id_str),
          .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_GROW(0) },
-                     .layoutDirection = CLAY_TOP_TO_BOTTOM,
+                     .layoutDirection = downInsteadOfRight ? CLAY_TOP_TO_BOTTOM : CLAY_LEFT_TO_RIGHT,
+                     .childAlignment = {
+                        .x = {},
+                        .y = {},
+                     },
                      .padding = {
                         .left = padding.left,
                         .right = padding.right,
                         .bottom = padding.bottom,
                         .top = padding.top,
                      } ,
+                     .childGap = gap,
                     },
                     .cornerRadius = {
                         .topLeft = cornerRadius.topLeft,

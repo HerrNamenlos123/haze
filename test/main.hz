@@ -103,6 +103,7 @@ main(): int {
                 backgroundColor: Color(0.15, 0.15, 0.15, 1),
                 padding: ui.StylePaddingSimple { value: 30.0 },
                 direction: ui.Direction.Column,
+                gap: 10,
             },
             children: [
 
@@ -136,6 +137,7 @@ main(): int {
                         cornerRadius: ui.StyleCornerRadiusSimple {
                             value: 20.0
                         },
+                        gap: 30,
                     },
                     children: [
 
