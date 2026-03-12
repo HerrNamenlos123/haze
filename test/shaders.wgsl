@@ -173,14 +173,19 @@ fn process_rounded_rect_outline(in: VSOut) -> vec4<f32> {
 
 fn process_glyph(in: VSOut) -> vec4<f32> {
 
-    let dist = textureSample(fontAtlas,fontSampler,in.uv).r;
+    // let dist = textureSample(fontAtlas,fontSampler,in.uv).r;
 
     // let fw = fwidth(dist);
     // let alpha = smoothstep(0.5-fw,0.5+fw,dist);
 
     // Apparently fixed smoothing works better than fwidth for fontstash (?)
-    let alpha = smoothstep(0.5 - 0.1, 0.5 + 0.1, dist);
+    // let alpha = smoothstep(0.5 - 0.1, 0.5 + 0.1, dist);
 
+    // let dist = textureSample(fontAtlas, fontSampler, in.uv).r;
+    // let w = fwidth(dist);
+    // let alpha = smoothstep(0.5 - w, 0.5 + w, dist);
+
+    let alpha = textureSample(fontAtlas,fontSampler,in.uv).r;
     if(alpha <= 0.0){
         discard;
     }

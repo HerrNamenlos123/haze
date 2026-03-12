@@ -48,7 +48,8 @@ namespace fmt {
         for comptime value, i in values {
             format_to(reader, value, {});
         }
-        let writer = StringWriter(ByteBuffer(reader.written));
+        let buffer = ByteBuffer(reader.written);
+        let writer = StringWriter(buffer);
         for comptime value, i in values {
             format_to(writer, value, {});
         }
@@ -113,6 +114,9 @@ namespace fmt {
                 ffi.printf("%zu", value);
             }
             else if T is real || T is mut real {
+                ffi.printf("%lf", value);
+            }
+            else if T is f32 {
                 ffi.printf("%f", value);
             }
             else if T is u8 || T is u16 || T is u32 {
@@ -145,7 +149,7 @@ namespace fmt {
             else if T is none {
                 ffi.printf("none");
             }
-            else if T is Vec2f || T is mut _Vec2<f32> {
+            else if T is Vec2f {
                 let s = format(value);
                 __c__("fwrite(s.data, 1, s.length, stdout);");
             }

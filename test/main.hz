@@ -129,6 +129,10 @@ main(): int {
             {
                 name: "default",
                 id: renderer.fontRenderer.defaultFont,
+            },
+            {
+                name: "roboto",
+                id: font,
             }
         ];
 
@@ -154,6 +158,8 @@ main(): int {
                 backgroundColor: Color(0.15, 0.15, 0.15, 1),
                 padding: ui.StylePaddingSimple { value: 30.0 },
                 direction: ui.Direction.Column,
+                fontFamily: "roboto",
+                fontSize: 16.0,
                 gap: 10,
             },
             children: [

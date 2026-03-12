@@ -98,7 +98,7 @@ struct TextRenderer {
         this.fs.layoutText(
             font,
             size,
-            x,
+            x as f32,
             baseline as f32,
             text,
             this.glyphBuffer
@@ -259,6 +259,11 @@ opaque struct Renderer {
             });
         });
 
+        let a = options.surfaceFormats[0];
+        let b = 0;
+        __c__("b = a;");
+        fmt.println(b);
+
         let pipeline = rx.computed<mut wgpu.RenderPipeline>(() => {
             return options.device.createRenderPipeline({
                 layout: pipelineLayout,
@@ -325,8 +330,8 @@ opaque struct Renderer {
         assert(fontAtlasView);
 
         let fontAtlasSampler = options.device.createSampler({
-            minFilter: wgpu.FilterMode.Linear,
-            magFilter: wgpu.FilterMode.Linear,
+            minFilter: wgpu.FilterMode.Nearest,
+            magFilter: wgpu.FilterMode.Nearest,
             maxAnisotropy: 1,
         });
 
