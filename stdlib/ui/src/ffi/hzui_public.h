@@ -35,6 +35,7 @@ typedef struct {
   hzstd_color_t color;
   hzui_text_wrap_mode_t wrapMode;
   hzui_text_alignment_t alignment;
+  void* elementPtr;
 } hzui_define_text_element_t;
 
 typedef struct {

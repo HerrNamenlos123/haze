@@ -28,6 +28,7 @@ typedef struct {
   void* renderFilledRectUserdata;
   void (*renderText)(void* userdata, hzui_draw_text_element_t element);
   void* renderTextUserdata;
+  void (*applyBoundingBox)(void* elementPtr, double x, double y, double w, double h);
 } ClayCallbacks;
 
 void Clay_RenderClayCommands(ClayCallbacks callbacks, Clay_RenderCommandArray* rcommands)
@@ -44,6 +45,9 @@ void Clay_RenderClayCommands(ClayCallbacks callbacks, Clay_RenderCommandArray* r
     switch (rcmd->commandType) {
 
     case CLAY_RENDER_COMMAND_TYPE_RECTANGLE: {
+      if (callbacks.applyBoundingBox && rcmd->userData) {
+        callbacks.applyBoundingBox(rcmd->userData, x, y, w, h);
+      }
       Clay_RectangleRenderData* config = &rcmd->renderData.rectangle;
       Clay_Color col = rcmd->renderData.rectangle.backgroundColor;
       callbacks.renderFilledRect(callbacks.renderFilledRectUserdata,
@@ -61,6 +65,9 @@ void Clay_RenderClayCommands(ClayCallbacks callbacks, Clay_RenderCommandArray* r
     } break;
 
     case CLAY_RENDER_COMMAND_TYPE_TEXT: {
+      if (callbacks.applyBoundingBox && rcmd->userData) {
+        callbacks.applyBoundingBox(rcmd->userData, x, y, w, h);
+      }
       callbacks.renderText(
         callbacks.renderTextUserdata,
         (hzui_draw_text_element_t) {

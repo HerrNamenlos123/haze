@@ -105,9 +105,11 @@ void hzui_clay_define_div_element(void* (*fn)(void*),
                                   PaddingValues padding,
                                   hzui_corner_radius_values_t cornerRadius,
                                   bool downInsteadOfRight,
-                                  double gap)
+                                  double gap,
+                                  void* elementPtr)
 {
   CLAY({ .id = make_id(id),
+         .userData = elementPtr,
          .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_GROW(0) },
                      .layoutDirection = downInsteadOfRight ? CLAY_TOP_TO_BOTTOM : CLAY_LEFT_TO_RIGHT,
                      .childAlignment = {
@@ -157,6 +159,7 @@ void hzui_clay_define_text_element(hzui_define_text_element_t element)
 
   CLAY_TEXT(clay_text,
             CLAY_TEXT_CONFIG({
+                .userData = element.elementPtr,
                 .textAlignment = clayTextAlignment,
                 .textColor = { .r = element.color.r, .g = element.color.g, .b = element.color.b, .a = element.color.a, },
                 .fontId = element.fontId,

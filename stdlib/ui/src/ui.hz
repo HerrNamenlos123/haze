@@ -5,7 +5,7 @@ __c__("#include \"ffi/ui.c\"");
 export __c__("#include \"ffi/hzui_public.h\"");
 
 namespace ffi {
-    extern C noemit hzui_clay_define_div_element(fn: cptr, env: cptr, id: usize, backgroundColor: Color, padding: PaddingValues, cornerRadius: CornerRadiusValues, downInsteadOfRight: bool, gap: real): void :: final;
+    extern C noemit hzui_clay_define_div_element(fn: cptr, env: cptr, id: usize, backgroundColor: Color, padding: PaddingValues, cornerRadius: CornerRadiusValues, downInsteadOfRight: bool, gap: real, elementPtr: cptr): void :: final;
     extern C noemit hzui_clay_define_text_element(element: hzui_define_text_element_t): void :: final;
 
     extern C noemit hzui_clay_init(width: int, height: int): void :: final;
@@ -13,7 +13,6 @@ namespace ffi {
     extern C noemit Clay_BeginLayout(): void :: final;
     extern C noemit Clay_EndLayout(): inline Clay_RenderCommandArray :: final;
     extern C noemit Clay_RenderClayCommands(callbacks: ClayCallbacks, commands: Clay_RenderCommandArray): void :: final;
-    extern C noemit hzui_clay_get_element_bounding_box(elementId: usize): hzui_optional_bounding_box_t :: final;
 
     extern C noemit struct Clay_RenderCommandArray {};
     extern C noemit inline struct ClayCallbacks {
@@ -21,6 +20,7 @@ namespace ffi {
         renderFilledRectUserdata: cptr;
         renderText: (userdata: cptr, element: hzui_draw_text_element_t) -> void;
         renderTextUserdata: cptr;
+        applyBoundingBox: (elementPtr: cptr, x: real, y: real, w: real, h: real) -> void;
     };
 
     extern C noemit inline struct hzui_optional_bounding_box_t {
@@ -49,6 +49,7 @@ namespace ffi {
         color: Color;
         wrapMode: hzui_text_wrap_mode_t;
         alignment: hzui_text_alignment_t;
+        elementPtr: cptr;
     }
 
     export extern C noemit inline struct hzui_draw_text_element_t {
@@ -152,18 +153,25 @@ export struct TextElement {
 
 export type Element = DivElement | TextElement;
 
-processTreeElement(element: Element, elementsForLayout: []Element): void :: final {
+processTreeElement(element: Element, boxes: []Box<Element>): void :: final {
     if element is DivElement {
         let capturedElement = element; // TODO: Fix compiler error, an unwrapped union cannot be captured in lambda
+        let capturedBoxes = boxes;
         let renderChildren = () => {
             for child in capturedElement.children {
-                processTreeElement(child, elementsForLayout);
+                processTreeElement(child, capturedBoxes);
             }
         };
         let fn = none as cptr;
         let env = none as cptr;
         __c__("fn = (void*)renderChildren.fn;");
         __c__("env = (void*)renderChildren.env;");
+
+        let elementBox = Box<Element>(element);
+        let elementPtr = none as cptr;
+        __c__("elementPtr = elementBox;");
+        boxes.push(elementBox);
+
         ffi.hzui_clay_define_div_element(
             fn, env, 
             element.id, 
@@ -172,13 +180,19 @@ processTreeElement(element: Element, elementsForLayout: []Element): void :: fina
             getCornerRadiusValues(element.style.cornerRadius),
             element.style.direction == Direction.Column,
             element.style.gap,
+            elementPtr,
         );
-        elementsForLayout.push(element);
     } 
     else if element is TextElement {
         if !element.style.font {
             return;
         }
+
+        let elementBox = Box<Element>(element);
+        let elementPtr = none as cptr;
+        __c__("elementPtr = elementBox;");
+        boxes.push(elementBox);
+
         ffi.hzui_clay_define_text_element(
             {
                 id: element.id, 
@@ -189,9 +203,9 @@ processTreeElement(element: Element, elementsForLayout: []Element): void :: fina
                 lineHeight: element.style.fontSize,
                 wrapMode: ffi.hzui_text_wrap_mode_t.hzui_text_wrap_mode_wrap_newlines,
                 alignment: ffi.hzui_text_alignment_t.hzui_text_alignment_left,
+                elementPtr: elementPtr,
             }
         );
-        elementsForLayout.push(element);
     }
 }
 
@@ -277,39 +291,35 @@ renderTextTrampoline(userdata: cptr, element: ffi.hzui_draw_text_element_t): voi
     };
 }
 
-export layoutTree(element: Element, callbacks: RenderCallbacks) {
-    ffi.Clay_BeginLayout();
-    let elementsForLayout: []Element = [];
-    processTreeElement(element, elementsForLayout);
-    let clayRenderCommands = ffi.Clay_EndLayout();
-
-    // Now all elements are rendered, so we can now go over them and retrieve the rendered layout.
-    // Doing that inside the tree code directly would introduce a 2-frame delay, here it's only 1 frame delayed.
-    for e in elementsForLayout {
-        let element = e; // TODO: Fix: Value narrowing does not work on the synthetic loop variable
+applyBoundingBoxTrampoline(elementPtr: cptr, x: real, y: real, w: real, h: real): void {
+    do unsafe {
+        let box: Box<Element> = uninitialized;
+        __c__("box = elementPtr;");
+        let element = box.value;
         if element is DivElement {
-            let boundingBox = ffi.hzui_clay_get_element_bounding_box(element.id);
-            if boundingBox.found {
-                if !element.layout {
-                    element.layout = { position: Vec2(0, 0), size: Vec2(0, 0) };
-                }
-                assert(element.layout);
-                element.layout.position = boundingBox.bounding_box.position;
-                element.layout.size = boundingBox.bounding_box.size;
+            if !element.layout {
+                element.layout = { position: Vec2(0, 0), size: Vec2(0, 0) };
             }
+            assert(element.layout);
+            element.layout.position = Vec2(x, y);
+            element.layout.size = Vec2(w, h);
         }
         else if element is TextElement {
-            let boundingBox = ffi.hzui_clay_get_element_bounding_box(element.id);
-            if boundingBox.found {
-                if !element.layout {
-                    element.layout = { position: Vec2(0, 0), size: Vec2(0, 0) };
-                }
-                assert(element.layout);
-                element.layout.position = boundingBox.bounding_box.position;
-                element.layout.size = boundingBox.bounding_box.size;
+            if !element.layout {
+                element.layout = { position: Vec2(0, 0), size: Vec2(0, 0) };
             }
+            assert(element.layout);
+            element.layout.position = Vec2(x, y);
+            element.layout.size = Vec2(w, h);
         }
-    }
+    };
+}
+
+export layoutTree(element: Element, callbacks: RenderCallbacks) {
+    ffi.Clay_BeginLayout();
+    let boxes: []Box<Element> = [];
+    processTreeElement(element, boxes);
+    let clayRenderCommands = ffi.Clay_EndLayout();
 
     let clayRenderCommandsPtr = none as none | ffi.Clay_RenderCommandArray;
     __c__("clayRenderCommandsPtr = &clayRenderCommands;");
@@ -328,6 +338,7 @@ export layoutTree(element: Element, callbacks: RenderCallbacks) {
             renderFilledRectUserdata: renderFilledRectUserdata,
             renderText: renderTextTrampoline,
             renderTextUserdata: renderTextUserdata,
+            applyBoundingBox: applyBoundingBoxTrampoline,
         }, clayRenderCommandsPtr);
     };
 }

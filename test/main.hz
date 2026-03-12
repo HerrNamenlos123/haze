@@ -285,10 +285,6 @@ main(): int {
             fs.pollEvents();
             renderer.beginFrame();
 
-            if flexboxLayoutTest.layout {
-                fmt.println("Test", flexboxLayoutTest.layout.position, flexboxLayoutTest.layout.size, flexboxLayoutTest.id);
-            }
-
             ui.layoutTree(rx.unwrap(uiTree), {
                 renderFilledRectangle: (position: Vec2, size: Vec2, backgroundColor: Color, cornerRadius: ui.CornerRadiusValues): void => {
                     renderer.drawRect({
@@ -301,18 +297,9 @@ main(): int {
                             bottomLeft: cornerRadius.bottomLeft,
                             bottomRight: cornerRadius.bottomRight,
                         },
-                        // cornerRadius: 30,
-                        // borderThickness: 1,
-                        // borderColor: Color(0, 1, 0, 1),
                     });
                 },
                 renderText: (element: ui.ffi.hzui_draw_text_element_t): void => {
-                    // fmt.println("Drawing text", fontSize, position.x, position.y, text, textColor.r, textColor.g, textColor.b, textColor.a);
-                    // renderer.drawRect({
-                    //     pos: element.position, 
-                    //     size: element.size,
-                    //     fillColor: Color(0, 0, 0, 1),
-                    // });
                     renderer.drawText({
                         font: element.fontId,
                         size: element.fontSize,
@@ -322,39 +309,6 @@ main(): int {
                     });
                 }
             });
-
-            // renderer.drawText({
-            //     font: font,
-            //     size: 42,
-            //     position: Vec2(100, 100),
-            //     text: "Hello World",
-            //     color: Color(1, 0, 0, 1),
-            // });
-
-            // renderer.drawRect({
-            //     pos: Vec2(100, 100), 
-            //     size: Vec2(200, 200), 
-            //     fillColor: Color(1, 0, 0, 1),
-            //     cornerRadius: 30,
-            //     borderThickness: 1,
-            //     borderColor: Color(0, 1, 0, 1),
-            // });
-            // renderer.drawRect({
-            //     pos: Vec2(200, 400), 
-            //     size: Vec2(300, 200), 
-            //     fillColor: Color(1, 0, 1, 1),
-            //     cornerRadius: 3,
-            //     borderThickness: 2,
-            //     borderColor: Color(0, 1, 0, 1),
-            // });
-            // renderer.drawRect({
-            //     pos: Vec2(250, 350), 
-            //     size: Vec2(300, 200), 
-            //     fillColor: Color(1.0, 0.6549, 0.0588, 1),
-            //     cornerRadius: 30,
-            //     borderThickness: 3,
-            //     borderColor: Color(0, 1, 0, 1),
-            // });
 
             renderer.endFrame();
         }
