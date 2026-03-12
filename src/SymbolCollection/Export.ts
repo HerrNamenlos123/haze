@@ -1,6 +1,7 @@
 import { Semantic } from "../Semantic/SemanticTypes";
 import { EDatatypeMutability, EExternLanguage, EOverloadedOperator } from "../shared/AST";
 import { EMethodType } from "../shared/common";
+import { getModuleGlobalNamespaceName } from "../shared/Config";
 import { assert, formatSourceLoc } from "../shared/Errors";
 import {
   Collect,
@@ -23,14 +24,21 @@ export function ExportCollectedTypeDefAlias(
     return symbol.name;
   });
   const genericsString = generics.length > 0 ? `<${generics.join(", ")}>` : "";
-  return (
+
+  let alias =
     "type " +
     typedef.name +
     genericsString +
     " = " +
     printCollectedDatatype(sr.cc, typedef.target) +
-    ";\n"
-  );
+    ";\n";
+
+  if (sr.cc.config.name !== "haze-stdlib") {
+    const moduleName = getModuleGlobalNamespaceName(sr.cc.config.name, sr.cc.config.version);
+    alias = `namespace ${moduleName} { ${alias} }`;
+  }
+
+  return alias;
 }
 
 export function ExportTypeDef(

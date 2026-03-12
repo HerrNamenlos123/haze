@@ -1,3 +1,4 @@
+import fontstash;
 
 inline struct Vertex {
     pos: Vec3f = {};
@@ -33,6 +34,10 @@ inline struct PrimitiveInstance {
     fillColor: Colorf;
     borderColor: Colorf;
     type: u32;             // 0 = Filled Rounded Rectangle, 1 = Outlined Rounded Rectangle
+
+    // For glyph rendering:
+    uvMin: Vec2f;
+    uvMax: Vec2f;
 };
 
 inline struct QuadVertex {
@@ -47,6 +52,79 @@ inline struct RendererOptions {
     shadercode: rx.Reactive<str>;
 }
 
+struct TextRenderer {
+    fs: fontstash.FontStash;
+    glyphBuffer: []fontstash.Glyph;
+    atlasUploaded: bool = false;
+
+    constructor() {
+        let glyphBuffer: []fontstash.Glyph = [];
+        glyphBuffer.reserve(1024);
+
+        return TextRenderer {
+            fs: fontstash.FontStash(1024, 1024),
+            glyphBuffer: glyphBuffer,
+        };
+    }
+
+    drawText(
+        renderer: Renderer,
+        font: fontstash.FontHandle,
+        size: f32,
+        x: f32,
+        y: f32,
+        text: str,
+        color: Color
+    ) {
+        // TODO: Add ability to reset/clear an array in-place instead of replacing it, for better memory efficiency
+        this.glyphBuffer = [];
+
+        this.fs.layoutText(
+            font,
+            size,
+            x,
+            y,
+            text,
+            this.glyphBuffer
+        );
+
+        for glyph in this.glyphBuffer {
+            let w: real = glyph.x1 - glyph.x0;
+            let h: real = glyph.y1 - glyph.y0;
+
+            renderer.primitives.push({
+                type: 2,
+
+                pos: {
+                    x: (glyph.x0 as real + w / 2.0) as f32,
+                    y: (glyph.y0 as real + h / 2.0) as f32
+                },
+
+                size: { x: w as f32, y: h as f32 },
+
+                radiusTopLeft: 0,
+                radiusTopRight: 0,
+                radiusBottomLeft: 0,
+                radiusBottomRight: 0,
+
+                borderThickness: 0,
+
+                fillColor: {
+                    r: color.r as f32,
+                    g: color.g as f32,
+                    b: color.b as f32,
+                    a: color.a as f32,
+                },
+
+                borderColor: { r: 0, g: 0, b: 0, a: 0 },
+
+                uvMin: { x: glyph.s0, y: glyph.t0 },
+                uvMax: { x: glyph.s1, y: glyph.t1 }
+            });
+        }
+    }
+}
+
 opaque struct Renderer {
     windowSize: Vec2i;
     queue: mut wgpu.Queue;
@@ -56,8 +134,17 @@ opaque struct Renderer {
     globalsBuffer: mut wgpu.Buffer;
     globalsBindGroup: mut wgpu.BindGroup;
 
+    instanceBuffer?: mut wgpu.Buffer = none;
+    instanceBufferSize: int = 0;
     vertexBuffer: mut wgpu.Buffer;
     indexBuffer: mut wgpu.Buffer;
+
+    // Font rendering
+    fontAtlasTexture: mut wgpu.Texture;
+    fontAtlasView: mut wgpu.TextureView;
+    fontAtlasSampler: mut wgpu.Sampler;
+    fontAtlasBindGroup: mut wgpu.BindGroup;
+    fontRenderer: mut TextRenderer;
 
     primitives: []PrimitiveInstance = [];
 
@@ -95,6 +182,8 @@ opaque struct Renderer {
                 { shaderLocation: 8, offset: 36, format: wgpu.VertexFormat.Float32x4 }, // fillColor
                 { shaderLocation: 9, offset: 52, format: wgpu.VertexFormat.Float32x4 }, // borderColor
                 { shaderLocation: 10, offset: 68, format: wgpu.VertexFormat.Uint32 },   // type
+                { shaderLocation: 11, offset: 72, format: wgpu.VertexFormat.Float32x2 },
+                { shaderLocation: 12, offset: 80, format: wgpu.VertexFormat.Float32x2 },
             },
         };
 
@@ -125,8 +214,27 @@ opaque struct Renderer {
             },
         });
 
+        let textLayout = options.device.createBindGroupLayout({
+            entries: {
+                {
+                    binding: 0,
+                    visibility: wgpu.ShaderStage.Fragment,
+                    texture: {
+                        sampleType: wgpu.TextureSampleType.Float,
+                        viewDimension: wgpu.TextureViewDimension._2D,
+                        multisampled: false,
+                    },
+                },
+                {
+                    binding: 1,
+                    visibility: wgpu.ShaderStage.Fragment,
+                    sampler: { type: wgpu.SamplerBindingType.Filtering },
+                },
+            },
+        });
+
         let pipelineLayout = options.device.createPipelineLayout({
-            bindGroupLayouts: { globalsLayout },
+            bindGroupLayouts: { globalsLayout, textLayout },
         });
 
         let shader = rx.computed<mut wgpu.ShaderModule>(() => {
@@ -187,6 +295,35 @@ opaque struct Renderer {
         });
         queue.writeBuffer<u32>(indexBuffer, [0, 1, 2, 0, 2, 3]);
 
+        let atlasSize = 1024;
+
+        let fontAtlasTexture = options.device.createTexture({
+            size: { width: atlasSize, height: atlasSize, depthOrArrayLayers: 1 },
+            format: wgpu.TextureFormat.R8Unorm,
+            usage: wgpu.TextureUsage.TextureBinding | wgpu.TextureUsage.CopyDst,
+            mipLevelCount: 1,
+            sampleCount: 1,
+        });
+
+        let fontAtlasView = fontAtlasTexture.createView();
+        assert(fontAtlasView);
+
+        let fontAtlasSampler = options.device.createSampler({
+            minFilter: wgpu.FilterMode.Linear,
+            magFilter: wgpu.FilterMode.Linear,
+            maxAnisotropy: 1,
+        });
+
+        let fontAtlasBindGroup = options.device.createBindGroup({
+            layout: textLayout,
+            entries: {
+                { binding: 0, textureView: fontAtlasView },
+                { binding: 1, sampler: fontAtlasSampler },
+            },
+        });
+
+        let fontRenderer = TextRenderer();
+
         return Renderer {
             windowSize: options.size,
             device: options.device,
@@ -197,6 +334,11 @@ opaque struct Renderer {
             indexBuffer: indexBuffer,
             globalsBuffer: globalsBuffer,
             globalsBindGroup: globalsBindGroup,
+            fontAtlasTexture: fontAtlasTexture,
+            fontAtlasView: fontAtlasView,
+            fontAtlasSampler: fontAtlasSampler,
+            fontAtlasBindGroup: fontAtlasBindGroup,
+            fontRenderer: fontRenderer,
         };
     }
 
@@ -239,6 +381,8 @@ opaque struct Renderer {
                     a: opts.fillColor.a as f32,
                 },
                 borderColor: { r: 0, g: 0, b: 0, a: 0 },
+                uvMin: { x: 0, y: 0 },
+                uvMax: { x: 0, y: 0 },
             });
         }
         if opts.borderColor.a != 0.0 && opts.borderThickness > 0.0 {
@@ -258,8 +402,41 @@ opaque struct Renderer {
                     b: opts.borderColor.b as f32,
                     a: opts.borderColor.a as f32,
                 },
+                uvMin: { x: 0, y: 0 },
+                uvMax: { x: 0, y: 0 },
             });
         }
+    }
+
+    drawText(
+        font: fontstash.FontHandle,
+        size: f32,
+        x: f32,
+        y: f32,
+        text: str,
+        color: Color
+    ) {
+        this.fontRenderer.drawText(
+            this,
+            font,
+            size,
+            x,
+            y,
+            text,
+            color
+        );
+    }
+
+    updateAtlas() {
+        let atlas = this.fontRenderer.fs.getAtlas()
+
+        this.queue.writeTexture(
+            { texture: this.fontAtlasTexture },
+            atlas.pixels,
+            atlas.width * atlas.height,
+            { offset: 0, bytesPerRow: atlas.width, rowsPerImage: atlas.height },
+            { width: atlas.width, height: atlas.height, depthOrArrayLayers: 1 }
+        );
     }
 
     beginFrame() {
@@ -268,6 +445,8 @@ opaque struct Renderer {
 
     endFrame() {
         let pipelineValue = rx.unwrap(this.pipeline);
+
+        this.updateAtlas();
 
         let surfaceTexture = this.surface.getCurrentTexture();
         if !surfaceTexture.texture { 
@@ -299,11 +478,17 @@ opaque struct Renderer {
             ]
         );
 
-        let instanceBuffer = this.device.createBuffer({
-            size: sizeof(type<PrimitiveInstance>) * this.primitives.length,
-            usage: wgpu.BufferUsage.Vertex | wgpu.BufferUsage.Storage | wgpu.BufferUsage.CopyDst,
-        });
-        this.queue.writeBuffer<PrimitiveInstance>(instanceBuffer, this.primitives);
+        let requiredInstanceBufferSize = sizeof(type<PrimitiveInstance>) * this.primitives.length;
+        if (!this.instanceBuffer || requiredInstanceBufferSize > this.instanceBufferSize) {
+            // Grow efficiently, at least double, or more if required
+            this.instanceBufferSize = max(requiredInstanceBufferSize, this.instanceBufferSize * 2);
+            this.instanceBuffer = this.device.createBuffer({
+                size: this.instanceBufferSize,
+                usage: wgpu.BufferUsage.Vertex | wgpu.BufferUsage.Storage | wgpu.BufferUsage.CopyDst,
+            });
+        }
+        assert(this.instanceBuffer);
+        this.queue.writeBuffer<PrimitiveInstance>(this.instanceBuffer, this.primitives);
 
         let colorAttachment = wgpu.RenderPassColorAttachment {
             view: backbuffer,
@@ -327,12 +512,13 @@ opaque struct Renderer {
         renderPass.setVertexBuffer(0, this.vertexBuffer);
 
         renderPass.setBindGroup(0, this.globalsBindGroup);
+        renderPass.setBindGroup(1, this.fontAtlasBindGroup);
 
         renderPass.setViewport(0, 0, this.windowSize.x as real, this.windowSize.y as real, 0.0, 1.0);
         renderPass.setScissorRect(0, 0, this.windowSize.x, this.windowSize.y);
 
         renderPass.setIndexBuffer(this.indexBuffer, wgpu.IndexFormat.Uint32);
-        renderPass.setVertexBuffer(1, instanceBuffer);
+        renderPass.setVertexBuffer(1, this.instanceBuffer);
 
         renderPass.drawIndexed(6, this.primitives.length, 0, 0, 0);
 

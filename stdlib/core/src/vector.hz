@@ -81,7 +81,7 @@ export inline struct _Vec3<T> {
   }
 
   length(): T {
-    return math.sqrt(math.pow(this.x, 2.0) + math.pow(this.y, 2.0) + math.pow(this.z, 2.0)) as T;
+    return math.sqrt(math.pow(this.x as real, 2.0) + math.pow(this.y as real, 2.0) + math.pow(this.z as real, 2.0)) as T;
   }
 
   normalize(): _Vec3<T> {

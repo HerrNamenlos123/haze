@@ -10,6 +10,7 @@ struct VSOut {
     @location(7) borderThickness: f32,
     @location(8) _type: u32,
     @location(9) instSize: vec2<f32>,
+    @location(10) uv: vec2<f32>,
 };
 
 struct Globals {
@@ -18,6 +19,12 @@ struct Globals {
 
 @group(0) @binding(0)
 var<uniform> globals: Globals;
+
+@group(1) @binding(0)
+var fontAtlas: texture_2d<f32>;
+
+@group(1) @binding(1)
+var fontSampler: sampler;
 
 @vertex
 fn vs_main(
@@ -31,7 +38,9 @@ fn vs_main(
     @location(7) borderThickness: f32,
     @location(8) fillColor: vec4<f32>,
     @location(9) borderColor: vec4<f32>,
-    @location(10) _type: u32
+    @location(10) _type: u32,
+    @location(11) uvMin: vec2<f32>,
+    @location(12) uvMax: vec2<f32>,
 ) -> VSOut {
     var o: VSOut;
 
@@ -54,6 +63,7 @@ fn vs_main(
         o.borderThickness = borderThickness;
         o._type = _type;
         o.instSize = instSize;
+        o.uv = vec2(0, 0);
     }
     else if (_type == 1u) { // Outlined Rounded Rectangle
         let paddingFraction = vec2(borderThickness * 2.0 / instSize.x, borderThickness * 2.0 / instSize.y);
@@ -76,6 +86,28 @@ fn vs_main(
         o.borderThickness = borderThickness;
         o._type = _type;
         o.instSize = instSize;
+        o.uv = vec2(0, 0);
+    }
+    else if (_type == 2u) { // Glyph
+        let scaledPos = quadPos * instSize + instPos;
+        o.pos = vec4(
+            (scaledPos.x / globals.screenSize.x) * 2.0 - 1.0,
+            1.0 - (scaledPos.y / globals.screenSize.y) * 2.0,
+            0.0, 1.0
+        );
+        o.localPos = quadPos;
+        o.fillColor = fillColor;
+        o.borderColor = vec4(0, 0, 0, 0);
+
+        o.radiusTopLeft = 0.0;
+        o.radiusTopRight = 0.0;
+        o.radiusBottomLeft = 0.0;
+        o.radiusBottomRight = 0.0;
+
+        o._type = _type;
+        o.borderThickness = 0.0;
+        o.instSize = instSize;
+        o.uv = mix(uvMin, uvMax, quadPos + vec2(0.5,0.5));
     }
 
     return o;
@@ -139,6 +171,23 @@ fn process_rounded_rect_outline(in: VSOut) -> vec4<f32> {
     return vec4(in.borderColor.rgb, in.borderColor.a * fraction);
 }
 
+fn process_glyph(in: VSOut) -> vec4<f32> {
+
+    let dist = textureSample(fontAtlas,fontSampler,in.uv).r;
+
+    // let fw = fwidth(dist);
+    // let alpha = smoothstep(0.5-fw,0.5+fw,dist);
+
+    // Apparently fixed smoothing works better than fwidth for fontstash (?)
+    let alpha = smoothstep(0.5 - 0.1, 0.5 + 0.1, dist);
+
+    if(alpha <= 0.0){
+        discard;
+    }
+
+    return vec4(in.fillColor.rgb, in.fillColor.a * alpha);
+}
+
 @fragment
 fn fs_main(in: VSOut) -> @location(0) vec4<f32> {
     if (in._type == 0u) { // Filled Rounded Rectangle
@@ -146,6 +195,9 @@ fn fs_main(in: VSOut) -> @location(0) vec4<f32> {
     }
     else if (in._type == 1u) { // Outlined Rounded Rectangle
         return process_rounded_rect_outline(in);
+    } 
+    else if (in._type == 2u) { // Glyph
+        return process_glyph(in);
     } 
     else {
         return vec4(0, 0, 0, 0);

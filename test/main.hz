@@ -220,29 +220,43 @@ main(): int {
             ]
         });
 
+        let font = renderer.fontRenderer.fs.addFont(
+            "roboto-regular",
+            "test/Roboto-Regular.ttf"
+        )
+
         while !window.shouldClose() {
             glfw.pollEvents();
             fs.pollEvents();
             renderer.beginFrame();
 
-        ui.layoutTree(rx.unwrap(uiTree), {
-            renderFilledRectangle: (position: Vec2, size: Vec2, backgroundColor: Color, cornerRadius: ui.CornerRadiusValues): void => {
-                renderer.drawRect({
-                    pos: position, 
-                    size: size,
-                    fillColor: backgroundColor,
-                    cornerRadius: {
-                        topLeft: cornerRadius.topLeft,
-                        topRight: cornerRadius.topRight,
-                        bottomLeft: cornerRadius.bottomLeft,
-                        bottomRight: cornerRadius.bottomRight,
-                    },
-                    // cornerRadius: 30,
-                    // borderThickness: 1,
-                    // borderColor: Color(0, 1, 0, 1),
-                });
-            }
-        });
+            ui.layoutTree(rx.unwrap(uiTree), {
+                renderFilledRectangle: (position: Vec2, size: Vec2, backgroundColor: Color, cornerRadius: ui.CornerRadiusValues): void => {
+                    renderer.drawRect({
+                        pos: position, 
+                        size: size,
+                        fillColor: backgroundColor,
+                        cornerRadius: {
+                            topLeft: cornerRadius.topLeft,
+                            topRight: cornerRadius.topRight,
+                            bottomLeft: cornerRadius.bottomLeft,
+                            bottomRight: cornerRadius.bottomRight,
+                        },
+                        // cornerRadius: 30,
+                        // borderThickness: 1,
+                        // borderColor: Color(0, 1, 0, 1),
+                    });
+                }
+            });
+
+            renderer.drawText(
+                font,
+                24,
+                40,
+                60,
+                "Hello World",
+                Color(1, 1, 1, 1)
+            );
 
             // renderer.drawRect({
             //     pos: Vec2(100, 100), 

@@ -42,6 +42,24 @@ export struct Queue {
 
         ffi.wgpuQueueWriteBuffer(this.handle, buffer.handle, 0, raw, count);
     }
+
+    writeTexture(
+        destination: TexelCopyTextureInfo,
+        textureData: cptr,
+        textureDataSize: int,
+        dataLayout: TexelCopyBufferLayout,
+        writeSize: Extent3D
+    ) {
+        assert(textureDataSize >= 0);
+        ffi.wgpuQueueWriteTexture(
+            this.handle,
+            toFFI(destination),
+            textureData,
+            textureDataSize,
+            toFFI(dataLayout),
+            toFFI(writeSize)
+        );
+    }
 }
 
 fromFFI(v: mut ffi.WGPUQueueImpl): mut Queue :: final {

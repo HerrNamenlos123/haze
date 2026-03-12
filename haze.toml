@@ -31,6 +31,7 @@ glfw_wgpu = { path = "./glfw_wgpu" }
 
 # UI framework module
 ui = { path = "./ui" }
+fontstash = { path = "./fontstash" }
 
 # gl = { path = "./gl" }
 # glDraw = { path = "./glDraw" }

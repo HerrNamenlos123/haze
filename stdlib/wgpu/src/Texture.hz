@@ -1,6 +1,6 @@
 
 export struct TextureViewDescriptor {
-    label: str;
+    debugLabel?: str;
     format: TextureFormat;
     dimension: TextureViewDimension;
     baseMipLevel: u32;
@@ -13,7 +13,7 @@ export struct TextureViewDescriptor {
 
 fromFFI(v: ffi.WGPUTextureViewDescriptor): TextureViewDescriptor :: final {
     return TextureViewDescriptor {
-        label: fromFFI(v.label),
+        debugLabel: fromOptionalFFI(v.label),
         format: fromFFI(v.format),
         dimension: fromFFI(v.dimension),
         baseMipLevel: v.baseMipLevel,
@@ -35,7 +35,7 @@ fromOptionalFFI(v: ffi.WGPUTextureViewDescriptor | none): TextureViewDescriptor 
 toFFI(v: TextureViewDescriptor): ffi.WGPUTextureViewDescriptor :: final {
     return ffi.WGPUTextureViewDescriptor {
         nextInChain: none,
-        label: toFFI(v.label),
+        label: toOptionalFFI(v.debugLabel),
         format: toFFI(v.format),
         dimension: toFFI(v.dimension),
         baseMipLevel: v.baseMipLevel,
@@ -111,5 +111,144 @@ toFFI(v: TextureUsage): ffi.WGPUTextureUsage :: final {
         let usage: ffi.WGPUTextureUsage = uninitialized; // This is a bitflag
         __c__("usage = (int)v;");
         return usage;
+    };
+}
+
+export inline struct Extent3D {
+    width: int;
+    height: int;
+    depthOrArrayLayers: int;
+}
+
+fromFFI(v: inline ffi.WGPUExtent3D): Extent3D :: final {
+    return {
+        width: v.width,
+        height: v.height,
+        depthOrArrayLayers: v.depthOrArrayLayers,
+    };
+}
+
+toFFI(v: Extent3D): ffi.WGPUExtent3D :: final {
+    assert(v.width >= u32.min && v.width <= u32.max);
+    assert(v.height >= u32.min && v.height <= u32.max);
+    assert(v.depthOrArrayLayers >= u32.min && v.depthOrArrayLayers <= u32.max);
+    return {
+        width: v.width,
+        height: v.height,
+        depthOrArrayLayers: v.depthOrArrayLayers,
+    };
+}
+
+export struct TextureDescriptor {
+    debugLabel?: str;
+    usage: TextureUsage;
+    dimension: TextureDimension = TextureDimension.Undefined;
+    size: Extent3D;
+    format: TextureFormat;
+    mipLevelCount: int;
+    sampleCount: int;
+    viewFormats: []TextureFormat = [];
+}
+
+fromFFI(v: ffi.WGPUTextureDescriptor): TextureDescriptor :: final {
+    let descriptor = TextureDescriptor {
+        debugLabel: fromOptionalFFI(v.label),
+        usage: textureUsageFromFFI(v.usage),
+        dimension: fromFFI(v.dimension),
+        size: fromFFI(v.size),
+        format: fromFFI(v.format),
+        mipLevelCount: v.mipLevelCount,
+        sampleCount: v.sampleCount,
+        viewFormats: [],
+    };
+
+    for (let i = 0; i < v.viewFormatCount; i++) {
+        do unsafe {
+            let e: TextureFormat = uninitialized;
+            __c__("e = (int)((WGPUTextureFormat*)v->viewFormats)[i];");
+            descriptor.viewFormats.push(e);
+        };
+    }
+
+    return descriptor;
+}
+
+toFFI(v: TextureDescriptor): ffi.WGPUTextureDescriptor :: final {
+    assert(v.size.width >= u32.min && v.size.width <= u32.max);
+    assert(v.size.height >= u32.min && v.size.height <= u32.max);
+    assert(v.size.depthOrArrayLayers >= u32.min && v.size.depthOrArrayLayers <= u32.max);
+    assert(v.mipLevelCount >= u32.min && v.mipLevelCount <= u32.max);
+    assert(v.sampleCount >= u32.min && v.sampleCount <= u32.max);
+    let viewFormats = arrayToFFI<TextureFormat, ffi.WGPUTextureFormat>(v.viewFormats);
+    return ffi.WGPUTextureDescriptor {
+        nextInChain: none,
+        label: toOptionalFFI(v.debugLabel),
+        usage: toFFI(v.usage),
+        dimension: toFFI(v.dimension),
+        size: toFFI(v.size),
+        format: toFFI(v.format),
+        mipLevelCount: v.mipLevelCount,
+        sampleCount: v.sampleCount,
+        viewFormatCount: viewFormats.length,
+        viewFormats: viewFormats.data,
+    };
+}
+
+export struct TexelCopyBufferLayout {
+    offset: int;
+    bytesPerRow: int;
+    rowsPerImage: int;
+}
+
+fromFFI(v: ffi.WGPUTexelCopyBufferLayout): TexelCopyBufferLayout :: final {
+    assert(v.offset <= int.max);
+    return {
+        offset: v.offset,
+        bytesPerRow: v.bytesPerRow,
+        rowsPerImage: v.rowsPerImage,
+    };
+}
+
+toFFI(v: TexelCopyBufferLayout): ffi.WGPUTexelCopyBufferLayout :: final {
+    assert(v.offset >= u64.min && v.offset <= u64.max);
+    assert(v.bytesPerRow >= u32.min && v.bytesPerRow <= u32.max);
+    assert(v.rowsPerImage >= u32.min && v.rowsPerImage <= u32.max);
+    return {
+        offset: v.offset,
+        bytesPerRow: v.bytesPerRow,
+        rowsPerImage: v.rowsPerImage,
+    };
+}
+
+export struct TexelCopyTextureInfo {
+    texture: mut Texture;
+    mipLevel: int = 0;
+    origin: Vec3i = { x: 0, y: 0, z: 0 };
+    aspect: TextureAspect = TextureAspect.Undefined;
+}
+
+fromFFI(v: ffi.WGPUTexelCopyTextureInfo): TexelCopyTextureInfo :: final {
+    return {
+        texture: fromFFI(v.texture),
+        mipLevel: v.mipLevel,
+        origin: Vec3i(v.origin.x, v.origin.y, v.origin.z),
+        aspect: fromFFI(v.aspect),
+    };
+}
+
+toFFI(v: TexelCopyTextureInfo): ffi.WGPUTexelCopyTextureInfo :: final {
+    assert(v.mipLevel >= u32.min && v.mipLevel <= u32.max);
+    assert(v.origin.x >= u32.min && v.origin.x <= u32.max);
+    assert(v.origin.y >= u32.min && v.origin.y <= u32.max);
+    assert(v.origin.z >= u32.min && v.origin.z <= u32.max);
+    return {
+        texture: toFFI(v.texture),
+        mipLevel: v.mipLevel,
+        origin: {
+            x: v.origin.x, 
+            y: v.origin.y, 
+            z: v.origin.z,
+        },
+        aspect: toFFI(v.aspect),
     };
 }

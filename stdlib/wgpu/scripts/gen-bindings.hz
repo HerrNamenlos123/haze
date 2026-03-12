@@ -911,6 +911,18 @@ generateBindings(args: GenArgs): Result<none, fs.Error> {
         if e.name == "WGPUTextureSampleType" {
             file = betterEnum(file, e, r"WGPUTextureSampleType_", "TextureSampleType");
         }
+        if e.name == "WGPUTextureDimension" {
+            file = betterEnum(file, e, r"WGPUTextureDimension_", "TextureDimension");
+        }
+        if e.name == "WGPUAddressMode" {
+            file = betterEnum(file, e, r"WGPUAddressMode_", "AddressMode");
+        }
+        if e.name == "WGPUFilterMode" {
+            file = betterEnum(file, e, r"WGPUFilterMode_", "FilterMode");
+        }
+        if e.name == "WGPUMipmapFilterMode" {
+            file = betterEnum(file, e, r"WGPUMipmapFilterMode_", "MipmapFilterMode");
+        }
     }
 
     fs.writeText(args.outfile, file)?!;

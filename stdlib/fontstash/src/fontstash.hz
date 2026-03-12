@@ -1,0 +1,127 @@
+
+__c__("#include \"ffi/haze_fontstash.c\"");
+export __c__("#include \"ffi/public/haze_fontstash.h\"");
+
+namespace ffi {
+    export extern C haze_fontstash_create(width: int, height: int): cptr :: final;
+    export extern C haze_fontstash_destroy(ctx: cptr) :: final;
+
+    export extern C haze_fontstash_add_font(
+        ctx: cptr,
+        name: str,
+        path: str
+    ): int :: final;
+
+    export extern C haze_fontstash_layout_text(
+        ctx: cptr,
+        font: int,
+        size: f32,
+        x: f32,
+        y: f32,
+        text: str,
+        out: []Glyph,
+    ): void :: final;
+
+    export extern C haze_fontstash_get_atlas(
+        ctx: cptr,
+    ): haze_fontstash_atlas_t :: final;
+
+    export extern C noemit inline struct haze_fontstash_atlas_t {
+        pixels: cptr;
+        width: int;
+        height: int;
+    };
+
+    export extern C noemit inline struct haze_fontstash_glyph_t {
+        x0: f32;
+        y0: f32;
+        x1: f32;
+        y1: f32;
+
+        s0: f32;
+        t0: f32;
+        s1: f32;
+        t1: f32;
+    }
+}
+
+export type Glyph = ffi.haze_fontstash_glyph_t;
+
+export struct Atlas {
+    width: int;
+    height: int;
+    pixels: cptr;
+}
+
+export inline struct FontHandle {
+    handle: int;
+}
+
+export opaque struct FontStash {
+    fonsContext: cptr | none;
+
+    constructor(width: int, height: int) {
+        let ctx = ffi.haze_fontstash_create(width, height);
+        let valid = false;
+        __c__("valid = ctx != NULL;");
+        if !valid {
+            sys.panic("Failed to create fontstash context");
+        }
+
+        return FontStash {
+            fonsContext: ctx,
+        };
+    }
+
+    destroy() {
+        assert(this.fonsContext, "FontStash Context was already destroyed");
+        ffi.haze_fontstash_destroy(this.fonsContext);
+        this.fonsContext = none;
+    }
+
+    addFont(name: str, path: str): FontHandle {
+        assert(this.fonsContext, "FontStash Context not available");
+        let id = ffi.haze_fontstash_add_font(
+            this.fonsContext,
+            name,
+            path
+        );
+
+        if id < 0 {
+            sys.panic("Failed to load font");
+        }
+        return FontHandle { handle: id };
+    }
+
+    layoutText(
+        font: FontHandle,
+        size: f32,
+        x: f32,
+        y: f32,
+        text: str,
+        out: []Glyph
+    ) {
+        assert(this.fonsContext, "FontStash Context not available");
+        ffi.haze_fontstash_layout_text(
+            this.fonsContext,
+            font.handle,
+            size,
+            x,
+            y,
+            text,
+            out,
+        );
+    }
+
+    getAtlas(): Atlas {
+        assert(this.fonsContext, "FontStash Context not available");
+        let atlas = ffi.haze_fontstash_get_atlas(
+            this.fonsContext,
+        );
+        return Atlas {
+            width: atlas.width,
+            height: atlas.height,
+            pixels: atlas.pixels,
+        };
+    }
+}

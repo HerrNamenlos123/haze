@@ -1,0 +1,6 @@
+name = "fontstash"
+version = "1.0.0"
+description = "FontStash Bindings for Haze"
+license = "MIT"
+authors = ["HerrNamenlos123"]
+type = "lib"

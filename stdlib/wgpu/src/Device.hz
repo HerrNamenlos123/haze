@@ -43,4 +43,14 @@ export struct Device {
         // export extern C noemit wgpuDeviceCreateBindGroup(device: mut WGPUDeviceImpl, descriptor: WGPUBindGroupDescriptor): mut WGPUBindGroupImpl :: final;
         return fromFFI(ffi.wgpuDeviceCreateBindGroup(this.handle, toFFI(descriptor)));
     }
+
+    createTexture(descriptor: TextureDescriptor) {
+        // export extern C noemit wgpuDeviceCreateTexture(device: mut WGPUDeviceImpl, descriptor: WGPUTextureDescriptor): mut WGPUTextureImpl :: final;
+        return fromFFI(ffi.wgpuDeviceCreateTexture(this.handle, toFFI(descriptor)));
+    }
+
+    createSampler(descriptor: SamplerDescriptor) {
+        // export extern C noemit wgpuDeviceCreateSampler(device: mut WGPUDeviceImpl, descriptor: WGPUSamplerDescriptor | none): mut WGPUSamplerImpl :: final;
+        return fromFFI(ffi.wgpuDeviceCreateSampler(this.handle, toFFI(descriptor)));
+    }
 }

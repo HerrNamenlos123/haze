@@ -1,5 +1,4 @@
 
-
 export struct Sampler {
     handle: mut ffi.WGPUSamplerImpl;
 }
@@ -12,4 +11,52 @@ fromFFI(v: mut ffi.WGPUSamplerImpl): mut Sampler :: final {
 
 toFFI(v: mut Sampler): mut ffi.WGPUSamplerImpl :: final {
     return v.handle;
+}
+
+export struct SamplerDescriptor {
+    debugLabel?: str;
+    addressModeU: AddressMode = AddressMode.Undefined;
+    addressModeV: AddressMode = AddressMode.Undefined;
+    addressModeW: AddressMode = AddressMode.Undefined;
+    magFilter: FilterMode = FilterMode.Undefined;
+    minFilter: FilterMode = FilterMode.Undefined;
+    mipmapFilter: MipmapFilterMode = MipmapFilterMode.Undefined;
+    lodMinClamp: real = 0.0;
+    lodMaxClamp: real = 0.0;
+    compare: CompareFunction = CompareFunction.Undefined;
+    maxAnisotropy: int;
+}
+
+fromFFI(v: ffi.WGPUSamplerDescriptor): SamplerDescriptor :: final {
+    return SamplerDescriptor {
+        debugLabel: fromOptionalFFI(v.label),
+        addressModeU: fromFFI(v.addressModeU),
+        addressModeV: fromFFI(v.addressModeV),
+        addressModeW: fromFFI(v.addressModeW),
+        magFilter: fromFFI(v.magFilter),
+        minFilter: fromFFI(v.minFilter),
+        mipmapFilter: fromFFI(v.mipmapFilter),
+        lodMinClamp: v.lodMinClamp,
+        lodMaxClamp: v.lodMaxClamp,
+        compare: fromFFI(v.compare),
+        maxAnisotropy: v.maxAnisotropy,
+    };
+}
+
+toFFI(v: SamplerDescriptor): ffi.WGPUSamplerDescriptor :: final {
+    assert(v.maxAnisotropy >= u16.min && v.maxAnisotropy <= u16.max);
+    return {
+        nextInChain: none,
+        label: toOptionalFFI(v.debugLabel),
+        addressModeU: toFFI(v.addressModeU),
+        addressModeV: toFFI(v.addressModeV),
+        addressModeW: toFFI(v.addressModeW),
+        magFilter: toFFI(v.magFilter),
+        minFilter: toFFI(v.minFilter),
+        mipmapFilter: toFFI(v.mipmapFilter),
+        lodMinClamp: v.lodMinClamp as f32,
+        lodMaxClamp: v.lodMaxClamp as f32,
+        compare: toFFI(v.compare),
+        maxAnisotropy: v.maxAnisotropy,
+    };
 }
