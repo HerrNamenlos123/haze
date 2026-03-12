@@ -186,8 +186,8 @@ export terminate() {
 }
 
 export createWindow(config: WindowConfig): Result<Window, none> {
-    ffi.windowHint(GLFW_CONTEXT_VERSION_MAJOR, 3 as i32);
-    ffi.windowHint(GLFW_CONTEXT_VERSION_MINOR, 3 as i32);
+    ffi.windowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+    ffi.windowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     ffi.windowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 
     if (config.noApi) {

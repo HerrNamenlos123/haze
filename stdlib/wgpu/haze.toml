@@ -46,6 +46,3 @@ flags = [
     "-lgdi32",
     "-lopengl32"
 ]
-
-[dependencies]
-glfw = { path = "./glfw" }

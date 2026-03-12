@@ -24,10 +24,10 @@ test = "haze test"
 # warnings_as_errors = false
 
 [dependencies]
-glfw = { path = "./glfw" }
+sdl = { path = "./sdl" }
 gl = { path = "./gl" }
 wgpu = { path = "./wgpu" }
-glfw_wgpu = { path = "./glfw_wgpu" }
+sdl_wgpu = { path = "./sdl_wgpu" }
 
 # UI framework module
 ui = { path = "./ui" }

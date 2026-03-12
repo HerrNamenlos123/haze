@@ -1,22 +1,22 @@
 
-import glfw
+import sdl
 import gl
 import wgpu
-import glfw_wgpu
+import sdl_wgpu
 
 // ui framework module (includes flexbox layout)
 import ui
 
-export extern C noemit wgpu_init(glfwWindow: cptr) :: final;
-export extern C wgpu_start(glfwWindow: cptr, device: wgpu.ffi.WGPUDeviceImpl, surface: wgpu.ffi.WGPUSurfaceImpl, queue: wgpu.ffi.WGPUQueueImpl, texture: wgpu.ffi.WGPUTextureViewImpl) :: final;
-export extern C wgpu_end(glfwWindow: cptr) :: final;
+export extern C noemit wgpu_init(window: cptr) :: final;
+export extern C wgpu_start(window: cptr, device: wgpu.ffi.WGPUDeviceImpl, surface: wgpu.ffi.WGPUSurfaceImpl, queue: wgpu.ffi.WGPUQueueImpl, texture: wgpu.ffi.WGPUTextureViewImpl) :: final;
+export extern C wgpu_end(window: cptr) :: final;
 
 main(): int {
 
     attempt {
-        if !glfw.init() { raise "GLFW init failed"; }
+        if !sdl.init() { raise "SDL init failed"; }
 
-        const window = glfw.createWindow({ 
+        const window = sdl.createWindow({ 
             title: "WebGPU Example",
             noApi: true,
         });
@@ -25,7 +25,7 @@ main(): int {
         let instance = wgpu.createInstance();
         if !instance { raise "WGPU Instance creation failed"; }
 
-        let surface = glfw_wgpu.createWindowWGPUSurface(instance, window);
+        let surface = sdl_wgpu.createWindowWGPUSurface(instance, window);
         if !surface { raise "WGPU Surface creation failed"; }
 
         let adapter = none as mut wgpu.Adapter | none;
@@ -235,7 +235,7 @@ main(): int {
         });
 
         while !window.shouldClose() {
-            glfw.pollEvents();
+            sdl.pollEvents();
             fs.pollEvents();
             renderer.beginFrame();
 
@@ -310,7 +310,7 @@ main(): int {
         }
 
         window.destroy();
-        glfw.terminate();
+        sdl.terminate();
         
         return 0;
     }

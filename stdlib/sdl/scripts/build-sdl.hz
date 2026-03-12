@@ -1,0 +1,78 @@
+main(): int {
+    attempt {
+        let binaryDir = env.get("HAZE_MODULE_BINARY_DIR");
+        if !binaryDir { raise f"HAZE_MODULE_BINARY_DIR not defined"; }
+
+        let cCompiler = env.get("HAZE_C_COMPILER");
+        if !cCompiler { raise f"HAZE_C_COMPILER not defined"; }
+
+        let cxxCompiler = env.get("HAZE_CXX_COMPILER");
+        if !cxxCompiler { raise f"HAZE_CXX_COMPILER not defined"; }
+
+        let repoPath = f"{binaryDir}/SDL";
+
+        if !fs.exists(repoPath)?! {
+            process.run("git", { "clone", "https://github.com/libsdl-org/SDL.git", repoPath }, {
+                inherit_stdio: true,
+            })?!;
+        }
+
+        process.run("git", { "-c", "advice.detachedHead=false", "checkout", "release-3.2.8" }, {
+            inherit_stdio: true,
+            cwd: repoPath,
+        })?!;
+
+        fs.createDirectory(f"{repoPath}/build")?!;
+        process.run("cmake",
+            {
+                "-B",
+                f"{repoPath}/build",
+                "-DSDL_SHARED=ON",
+                "-DSDL_STATIC=OFF",
+                "-DSDL_TEST_LIBRARY=OFF",
+                "-DSDL_TESTS=OFF",
+                "-DSDL_EXAMPLES=OFF",
+                f"-DCMAKE_INSTALL_PREFIX={binaryDir}",
+                "-DCMAKE_POSITION_INDEPENDENT_CODE=OFF",
+                "-G",
+                "Ninja",
+                f"-DCMAKE_C_COMPILER={cCompiler}",
+                f"-DCMAKE_CXX_COMPILER={cxxCompiler}",
+            },
+            process.Options {
+                inherit_stdio: true,
+                cwd: repoPath,
+            }
+        )?!;
+
+        process.run("cmake",
+            {
+                "--build",
+                f"{repoPath}/build",
+                "--target",
+                "install",
+            },
+            process.Options {
+                inherit_stdio: true,
+                cwd: repoPath,
+            }
+        )?!;
+    }
+    else e {
+        if e is fs.Error {
+            fmt.println(f"build-sdl step failed:", e);
+            return 1;
+        }
+        else if e is str {
+            fmt.println(f"build-sdl step failed: {e}");
+            return 1;
+        }
+        else if e is int {
+            fmt.println(f"build-sdl step failed: Process exited with code {e}");
+            return 1;
+        }
+        assert(false);
+    };
+
+    return 0;
+}

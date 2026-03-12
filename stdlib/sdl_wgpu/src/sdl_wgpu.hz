@@ -1,0 +1,18 @@
+import sdl
+import wgpu
+
+__c__("#include \"sdl3webgpu.h\"");
+__c__("#include \"sdl3webgpu.c\"");
+
+namespace ffi {
+    extern C noemit SDL_GetWGPUSurface(instance: wgpu.ffi.WGPUInstanceImpl, window: sdl.ffi.SDL_Window): mut wgpu.ffi.WGPUSurfaceImpl | none :: final;
+}
+
+export createWindowWGPUSurface(instance: wgpu.Instance, window: sdl.Window): Result<mut wgpu.Surface, none> {
+    let surface = ffi.SDL_GetWGPUSurface(instance.handle, window.handle);
+    if surface {
+        return wgpu.Surface {
+            handle: surface,
+        };
+    }
+}

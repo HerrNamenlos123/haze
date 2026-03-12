@@ -1,0 +1,163 @@
+__c__("#define SDL_MAIN_HANDLED");
+__c__("#include <SDL3/SDL.h>");
+__c__("#include \"sdl_impl.c\"");
+
+namespace ffi {
+	export extern C struct SDL_Window {};
+
+	extern C haze_sdl_init(): bool :: final;
+	extern C haze_sdl_terminate(): void :: final;
+	extern C haze_sdl_createWindow(width: i32, height: i32, title: ccstr, noApi: bool): SDL_Window | none :: final;
+	extern C haze_sdl_destroyWindow(window: SDL_Window): void :: final;
+	extern C haze_sdl_windowShouldClose(window: SDL_Window): bool :: final;
+	extern C haze_sdl_setWindowShouldClose(window: SDL_Window, value: bool): void :: final;
+	extern C haze_sdl_pollEvents(): void :: final;
+	extern C haze_sdl_makeContextCurrent(window: SDL_Window): bool :: final;
+	extern C haze_sdl_swapBuffers(window: SDL_Window): void :: final;
+	extern C haze_sdl_swapInterval(interval: i32): bool :: final;
+	extern C haze_sdl_getProcAddress(procname: ccstr): cptr :: final;
+	extern C haze_sdl_getTime(): f64 :: final;
+	extern C noemit SDL_GetWindowSizeInPixels(window: SDL_Window, width: cptr, height: cptr): bool :: final;
+
+	export init(): bool {
+		return haze_sdl_init();
+	}
+
+	export terminate(): void {
+		haze_sdl_terminate();
+	}
+
+	export createWindow(width: i32, height: i32, title: ccstr, noApi: bool): SDL_Window | none {
+		return haze_sdl_createWindow(width, height, title, noApi);
+	}
+
+	export destroyWindow(window: SDL_Window) {
+		haze_sdl_destroyWindow(window);
+	}
+
+	export windowShouldClose(window: SDL_Window): bool {
+		return haze_sdl_windowShouldClose(window);
+	}
+
+	export setWindowShouldClose(window: SDL_Window, value: bool) {
+		haze_sdl_setWindowShouldClose(window, value);
+	}
+
+	export pollEvents() {
+		haze_sdl_pollEvents();
+	}
+
+	export makeContextCurrent(window: SDL_Window): bool {
+		return haze_sdl_makeContextCurrent(window);
+	}
+
+	export swapBuffers(window: SDL_Window) {
+		haze_sdl_swapBuffers(window);
+	}
+
+	export swapInterval(interval: i32): bool {
+		return haze_sdl_swapInterval(interval);
+	}
+
+	export getProcAddress(procname: ccstr): cptr {
+		return haze_sdl_getProcAddress(procname);
+	}
+
+	export getTime(): f64 {
+		return haze_sdl_getTime();
+	}
+}
+
+export struct Window {
+	handle: ffi.SDL_Window;
+
+	makeContextCurrent() {
+		ffi.makeContextCurrent(this.handle);
+	}
+
+	shouldClose(): bool {
+		return ffi.windowShouldClose(this.handle);
+	}
+
+	close() {
+		ffi.setWindowShouldClose(this.handle, true);
+	}
+
+	destroy() {
+		ffi.destroyWindow(this.handle);
+	}
+
+	swapBuffers() {
+		ffi.makeContextCurrent(this.handle);
+		ffi.swapBuffers(this.handle);
+	}
+
+	swapInterval(interval: int) {
+		if interval >= 0 && interval <= 10 {
+			ffi.makeContextCurrent(this.handle);
+			ffi.swapInterval(interval);
+		}
+	}
+
+	getFramebufferSize() {
+		let width = 0 as i32;
+		let height = 0 as i32;
+		let w = none as cptr;
+		let h = none as cptr;
+		__c__("w = &width;");
+		__c__("h = &height;");
+		ffi.SDL_GetWindowSizeInPixels(this.handle, w, h);
+		return Vec2i(width, height);
+	}
+
+	getProcAddress(): ((name: ccstr) -> cptr) {
+		this.makeContextCurrent();
+
+		do unsafe {
+			const rawProc = ffi.getProcAddress;
+			const castedProc: ((name: ccstr) -> cptr) = uninitialized;
+			__c__("castedProc = (void*)rawProc;");
+			return castedProc;
+		};
+	}
+}
+
+export struct WindowSizeConfig {
+	width: int = 1080;
+	height: int = 720;
+}
+
+export struct WindowConfig {
+	title: ccstr;
+	size: WindowSizeConfig = {};
+	noApi: bool = false;
+}
+
+export init(): bool {
+	return ffi.init();
+}
+
+export terminate() {
+	ffi.terminate();
+}
+
+export createWindow(config: WindowConfig): Result<Window, none> {
+	assert(config.size.width >= i32.min && config.size.width <= i32.max);
+	assert(config.size.height >= i32.min && config.size.height <= i32.max);
+	const handle = ffi.createWindow(config.size.width, config.size.height, config.title, config.noApi);
+	if !handle {
+		return Result<Window, none>.Err(none);
+	}
+
+	return Result<Window, none>.Ok(
+		Window { handle: handle }
+	);
+}
+
+export pollEvents() {
+	ffi.pollEvents();
+}
+
+export getTime(): real {
+	return ffi.getTime() as real;
+}

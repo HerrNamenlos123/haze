@@ -1,0 +1,16 @@
+name = "sdl"
+version = "1.0.0"
+description = "SDL3 support for Haze"
+license = "MIT"
+authors = ["HerrNamenlos123"]
+type = "lib"
+
+[generator.sdl-build]
+exec = "scripts/build-sdl.hz"
+inputs = []
+outputs = [
+    { module="this", dir="bin", path="include/SDL3/SDL.h" },
+]
+
+[linker]
+flags = ["-lSDL3"]

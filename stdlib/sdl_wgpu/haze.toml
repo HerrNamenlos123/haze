@@ -1,0 +1,10 @@
+name = "sdl_wgpu"
+version = "1.0.0"
+description = "WebGPU integration for SDL3"
+license = "MIT"
+authors = ["HerrNamenlos123"]
+type = "lib"
+
+[dependencies]
+sdl = { path = "./sdl" }
+wgpu = { path = "./wgpu" }
