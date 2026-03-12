@@ -11,6 +11,29 @@ export extern C noemit wgpu_init(window: cptr) :: final;
 export extern C wgpu_start(window: cptr, device: wgpu.ffi.WGPUDeviceImpl, surface: wgpu.ffi.WGPUSurfaceImpl, queue: wgpu.ffi.WGPUQueueImpl, texture: wgpu.ffi.WGPUTextureViewImpl) :: final;
 export extern C wgpu_end(window: cptr) :: final;
 
+getWindowState(window: sdl.Window): WindowState {
+    let logicalSize = window.getLogicalSize();
+    let framebufferSize = window.getFramebufferSize();
+
+    let dpiScaleX = 1.0 as f32;
+    let dpiScaleY = 1.0 as f32;
+    if logicalSize.x > 0 {
+        dpiScaleX = framebufferSize.x as f32 / logicalSize.x as f32;
+    }
+    if logicalSize.y > 0 {
+        dpiScaleY = framebufferSize.y as f32 / logicalSize.y as f32;
+    }
+
+    // SDL typically reports uniform scale factors on desktop systems.
+    let dpiScale = (dpiScaleX + dpiScaleY) / (2.0 as f32);
+
+    return WindowState {
+        logicalSize: logicalSize,
+        framebufferSize: framebufferSize,
+        dpiScale: dpiScale,
+    };
+}
+
 main(): int {
 
     attempt {
@@ -76,20 +99,20 @@ main(): int {
         let caps = surface.getCapabilities(adapter);
         if (!caps) { raise "Failed to get surface capabilities"; }
 
-        let size = window.getFramebufferSize();
+        let windowState = getWindowState(window);
         surface.configure({
             device: device,
             format: caps.formats[0],
             usage: wgpu.TextureUsage.RenderAttachment,
-            width: size.x,
-            height: size.y,
+            width: windowState.framebufferSize.x,
+            height: windowState.framebufferSize.y,
             presentMode: wgpu.PresentMode.Fifo,
             alphaMode: caps.alphaModes[0],
         });
 
         let comptime enableShaderHotreload = true;
         let renderer = Renderer({
-            size: size, 
+            windowState: windowState,
             device: device, 
             surface: surface, 
             surfaceFormats: caps.formats,
@@ -101,7 +124,7 @@ main(): int {
             "test/Roboto-Regular.ttf"
         );
 
-        ui.init(size.x, size.y);
+        ui.init(windowState.logicalSize.x, windowState.logicalSize.y);
         let uiTree = rx.reactive<ui.DivElement>(ui.DivElement {
             id: 1,
             style: {
@@ -236,6 +259,24 @@ main(): int {
 
         while !window.shouldClose() {
             sdl.pollEvents();
+
+            if window.consumeSizeChanged() {
+                let nextWindowState = getWindowState(window);
+                if nextWindowState.framebufferSize.x > 0 && nextWindowState.framebufferSize.y > 0 {
+                    surface.configure({
+                        device: device,
+                        format: caps.formats[0],
+                        usage: wgpu.TextureUsage.RenderAttachment,
+                        width: nextWindowState.framebufferSize.x,
+                        height: nextWindowState.framebufferSize.y,
+                        presentMode: wgpu.PresentMode.Fifo,
+                        alphaMode: caps.alphaModes[0],
+                    });
+                    renderer.updateWindowState(nextWindowState);
+                    ui.setLayoutSize(nextWindowState.logicalSize.x, nextWindowState.logicalSize.y);
+                }
+            }
+
             fs.pollEvents();
             renderer.beginFrame();
 

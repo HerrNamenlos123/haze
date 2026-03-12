@@ -17,6 +17,8 @@ namespace ffi {
 	extern C haze_sdl_swapInterval(interval: i32): bool :: final;
 	extern C haze_sdl_getProcAddress(procname: ccstr): cptr :: final;
 	extern C haze_sdl_getTime(): f64 :: final;
+	extern C haze_sdl_consumeWindowSizeChanged(window: SDL_Window): bool :: final;
+	extern C noemit SDL_GetWindowSize(window: SDL_Window, width: cptr, height: cptr): bool :: final;
 	extern C noemit SDL_GetWindowSizeInPixels(window: SDL_Window, width: cptr, height: cptr): bool :: final;
 
 	export init(): bool {
@@ -66,6 +68,10 @@ namespace ffi {
 	export getTime(): f64 {
 		return haze_sdl_getTime();
 	}
+
+	export consumeWindowSizeChanged(window: SDL_Window): bool {
+		return haze_sdl_consumeWindowSizeChanged(window);
+	}
 }
 
 export struct Window {
@@ -99,6 +105,17 @@ export struct Window {
 		}
 	}
 
+	getLogicalSize() {
+		let width = 0 as i32;
+		let height = 0 as i32;
+		let w = none as cptr;
+		let h = none as cptr;
+		__c__("w = &width;");
+		__c__("h = &height;");
+		ffi.SDL_GetWindowSize(this.handle, w, h);
+		return Vec2i(width, height);
+	}
+
 	getFramebufferSize() {
 		let width = 0 as i32;
 		let height = 0 as i32;
@@ -108,6 +125,10 @@ export struct Window {
 		__c__("h = &height;");
 		ffi.SDL_GetWindowSizeInPixels(this.handle, w, h);
 		return Vec2i(width, height);
+	}
+
+	consumeSizeChanged(): bool {
+		return ffi.consumeWindowSizeChanged(this.handle);
 	}
 
 	getProcAddress(): ((name: ccstr) -> cptr) {

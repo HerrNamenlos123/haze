@@ -44,8 +44,14 @@ inline struct QuadVertex {
     pos: Vec2f;  // [-0.5, -0.5] .. [0.5, 0.5]
 };
 
+inline struct WindowState {
+    logicalSize: Vec2i;
+    framebufferSize: Vec2i;
+    dpiScale: f32;
+}
+
 inline struct RendererOptions {
-    size: Vec2i;
+    windowState: WindowState;
     device: mut wgpu.Device;
     surface: mut wgpu.Surface;
     surfaceFormats: []wgpu.TextureFormat;
@@ -129,7 +135,7 @@ struct TextRenderer {
 }
 
 opaque struct Renderer {
-    windowSize: Vec2i;
+    windowState: WindowState;
     queue: mut wgpu.Queue;
     device: mut wgpu.Device;
     surface: mut wgpu.Surface;
@@ -328,7 +334,7 @@ opaque struct Renderer {
         let fontRenderer = TextRenderer();
 
         return Renderer {
-            windowSize: options.size,
+            windowState: options.windowState,
             device: options.device,
             queue: queue,
             surface: options.surface,
@@ -449,6 +455,10 @@ opaque struct Renderer {
         this.primitives = [];
     }
 
+    updateWindowState(nextState: WindowState) {
+        this.windowState = nextState;
+    }
+
     endFrame() {
         let pipelineValue = rx.unwrap(this.pipeline);
 
@@ -477,8 +487,8 @@ opaque struct Renderer {
             [
                 {
                     screenSize: Vec2f(
-                        this.windowSize.x as f32,
-                        this.windowSize.y as f32
+                        this.windowState.logicalSize.x as f32,
+                        this.windowState.logicalSize.y as f32
                     ),
                 }
             ]
@@ -520,8 +530,15 @@ opaque struct Renderer {
         renderPass.setBindGroup(0, this.globalsBindGroup);
         renderPass.setBindGroup(1, this.fontAtlasBindGroup);
 
-        renderPass.setViewport(0, 0, this.windowSize.x as real, this.windowSize.y as real, 0.0, 1.0);
-        renderPass.setScissorRect(0, 0, this.windowSize.x, this.windowSize.y);
+        renderPass.setViewport(
+            0,
+            0,
+            this.windowState.framebufferSize.x as real,
+            this.windowState.framebufferSize.y as real,
+            0.0,
+            1.0
+        );
+        renderPass.setScissorRect(0, 0, this.windowState.framebufferSize.x, this.windowState.framebufferSize.y);
 
         renderPass.setIndexBuffer(this.indexBuffer, wgpu.IndexFormat.Uint32);
         renderPass.setVertexBuffer(1, this.instanceBuffer);

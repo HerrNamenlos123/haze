@@ -57,6 +57,11 @@ void hzui_clay_init(hzstd_int_t width, hzstd_int_t height)
   Clay_SetMeasureTextFunction(MeasureText, NULL);
 }
 
+void hzui_clay_set_layout_dimensions(hzstd_int_t width, hzstd_int_t height)
+{
+  Clay_SetLayoutDimensions((Clay_Dimensions) { width, height });
+}
+
 Clay_ElementId make_id(hzstd_usize_t id)
 {
   char id_cstr[64];

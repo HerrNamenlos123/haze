@@ -9,6 +9,7 @@ namespace ffi {
     extern C noemit hzui_clay_define_text_element(element: hzui_define_text_element_t): void :: final;
 
     extern C noemit hzui_clay_init(width: int, height: int): void :: final;
+    extern C noemit hzui_clay_set_layout_dimensions(width: int, height: int): void :: final;
     extern C noemit Clay_BeginLayout(): void :: final;
     extern C noemit Clay_EndLayout(): inline Clay_RenderCommandArray :: final;
     extern C noemit Clay_RenderClayCommands(callbacks: ClayCallbacks, commands: Clay_RenderCommandArray): void :: final;
@@ -187,6 +188,10 @@ processTreeElement(element: Element): void :: final {
 
 export init(width: int, height: int) {
     ffi.hzui_clay_init(width, height);
+}
+
+export setLayoutSize(width: int, height: int) {
+    ffi.hzui_clay_set_layout_dimensions(width, height);
 }
 
 getPaddingValues(padding: StylePadding) {
