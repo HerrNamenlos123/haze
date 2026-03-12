@@ -46,4 +46,14 @@ typedef struct {
   hzstd_color_t color;
 } hzui_draw_text_element_t;
 
+typedef struct {
+  hzstd_vec2_t position;
+  hzstd_vec2_t size;
+} hzui_bounding_box_t;
+
+typedef struct {
+  hzui_bounding_box_t bounding_box;
+  bool found;
+} hzui_optional_bounding_box_t;
+
 #endif // HZUI_PUBLIC_H

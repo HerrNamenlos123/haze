@@ -71,6 +71,33 @@ Clay_ElementId make_id(hzstd_usize_t id)
   return CLAY_SID(id_str);
 }
 
+hzui_optional_bounding_box_t hzui_clay_get_element_bounding_box(hzstd_usize_t elementId)
+{
+  Clay_ElementData data = Clay_GetElementData(make_id(elementId));
+  if (data.found) {
+    Clay_BoundingBox bb = data.boundingBox;
+    return (hzui_optional_bounding_box_t) {
+      .bounding_box = (hzui_bounding_box_t) {
+        .position = {
+          .x = bb.x,
+          .y = bb.y,
+        },
+        .size = {
+          .x = bb.width,
+          .y = bb.height,
+        },
+      },
+      .found = true,
+    };
+  }
+  else {
+    return (hzui_optional_bounding_box_t) {
+      .bounding_box = {},
+      .found = true,
+    };
+  }
+}
+
 void hzui_clay_define_div_element(void* (*fn)(void*),
                                   void* env,
                                   hzstd_usize_t id,

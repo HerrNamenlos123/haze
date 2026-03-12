@@ -13,6 +13,7 @@ namespace ffi {
     extern C noemit Clay_BeginLayout(): void :: final;
     extern C noemit Clay_EndLayout(): inline Clay_RenderCommandArray :: final;
     extern C noemit Clay_RenderClayCommands(callbacks: ClayCallbacks, commands: Clay_RenderCommandArray): void :: final;
+    extern C noemit hzui_clay_get_element_bounding_box(elementId: usize): hzui_optional_bounding_box_t :: final;
 
     extern C noemit struct Clay_RenderCommandArray {};
     extern C noemit inline struct ClayCallbacks {
@@ -20,6 +21,16 @@ namespace ffi {
         renderFilledRectUserdata: cptr;
         renderText: (userdata: cptr, element: hzui_draw_text_element_t) -> void;
         renderTextUserdata: cptr;
+    };
+
+    extern C noemit inline struct hzui_optional_bounding_box_t {
+        bounding_box: hzui_bounding_box_t;
+        found: bool;
+    };
+
+    extern C noemit inline struct hzui_bounding_box_t {
+        position: Vec2;
+        size: Vec2;
     };
 
     extern C noemit inline struct PaddingValues {
@@ -114,7 +125,7 @@ export enum Direction { Row, Column }
 export enum Justify { Start, Center, End, SpaceBetween }
 export enum Align { Start, Center, End, Stretch }
 
-export inline struct ComputedLayout {
+export inline struct RenderLayout {
     position: Vec2;
     size: Vec2;
 }
@@ -129,24 +140,24 @@ export struct DivElement {
     id: usize;
     children: []Element = [];
     style: DivStyle = {};
-    computedLayout?: ComputedLayout = none;
+    layout?: RenderLayout = none;
 }
 
 export struct TextElement {
     id: usize;
     text: str;
     style: TextStyle;
-    computedLayout?: ComputedLayout = none;
+    layout?: RenderLayout = none;
 }
 
 export type Element = DivElement | TextElement;
 
-processTreeElement(element: Element): void :: final {
+processTreeElement(element: Element, elementsForLayout: []Element): void :: final {
     if element is DivElement {
         let capturedElement = element; // TODO: Fix compiler error, an unwrapped union cannot be captured in lambda
         let renderChildren = () => {
             for child in capturedElement.children {
-                processTreeElement(child);
+                processTreeElement(child, elementsForLayout);
             }
         };
         let fn = none as cptr;
@@ -162,8 +173,7 @@ processTreeElement(element: Element): void :: final {
             element.style.direction == Direction.Column,
             element.style.gap,
         );
-
-        // element.computedLayout = Clay_GetLayout(element.id)
+        elementsForLayout.push(element);
     } 
     else if element is TextElement {
         if !element.style.font {
@@ -181,8 +191,7 @@ processTreeElement(element: Element): void :: final {
                 alignment: ffi.hzui_text_alignment_t.hzui_text_alignment_left,
             }
         );
-
-        // element.computedLayout = Clay_GetLayout(element.id)
+        elementsForLayout.push(element);
     }
 }
 
@@ -270,8 +279,38 @@ renderTextTrampoline(userdata: cptr, element: ffi.hzui_draw_text_element_t): voi
 
 export layoutTree(element: Element, callbacks: RenderCallbacks) {
     ffi.Clay_BeginLayout();
-    processTreeElement(element);
+    let elementsForLayout: []Element = [];
+    processTreeElement(element, elementsForLayout);
     let clayRenderCommands = ffi.Clay_EndLayout();
+
+    // Now all elements are rendered, so we can now go over them and retrieve the rendered layout.
+    // Doing that inside the tree code directly would introduce a 2-frame delay, here it's only 1 frame delayed.
+    for e in elementsForLayout {
+        let element = e; // TODO: Fix: Value narrowing does not work on the synthetic loop variable
+        if element is DivElement {
+            let boundingBox = ffi.hzui_clay_get_element_bounding_box(element.id);
+            if boundingBox.found {
+                if !element.layout {
+                    element.layout = { position: Vec2(0, 0), size: Vec2(0, 0) };
+                }
+                assert(element.layout);
+                element.layout.position = boundingBox.bounding_box.position;
+                element.layout.size = boundingBox.bounding_box.size;
+            }
+        }
+        else if element is TextElement {
+            let boundingBox = ffi.hzui_clay_get_element_bounding_box(element.id);
+            if boundingBox.found {
+                if !element.layout {
+                    element.layout = { position: Vec2(0, 0), size: Vec2(0, 0) };
+                }
+                assert(element.layout);
+                element.layout.position = boundingBox.bounding_box.position;
+                element.layout.size = boundingBox.bounding_box.size;
+            }
+        }
+    }
+
     let clayRenderCommandsPtr = none as none | ffi.Clay_RenderCommandArray;
     __c__("clayRenderCommandsPtr = &clayRenderCommands;");
     assert(clayRenderCommandsPtr);
