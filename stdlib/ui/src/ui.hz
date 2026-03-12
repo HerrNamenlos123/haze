@@ -1,9 +1,13 @@
 
+import fontstash
+
 __c__("#include \"ffi/ui.c\"");
 export __c__("#include \"ffi/hzui_public.h\"");
 
 namespace ffi {
     extern C noemit hzui_clay_define_div_element(fn: cptr, env: cptr, id: usize, backgroundColor: Color, padding: PaddingValues, cornerRadius: CornerRadiusValues, downInsteadOfRight: bool, gap: real): void :: final;
+    extern C noemit hzui_clay_define_text_element(element: hzui_define_text_element_t): void :: final;
+
     extern C noemit hzui_clay_init(width: int, height: int): void :: final;
     extern C noemit Clay_BeginLayout(): void :: final;
     extern C noemit Clay_EndLayout(): inline Clay_RenderCommandArray :: final;
@@ -13,6 +17,8 @@ namespace ffi {
     extern C noemit inline struct ClayCallbacks {
         renderFilledRect: (userdata: cptr, x: real, y: real, width: real, height: real, backgroundColor: Color, cornerRadius: CornerRadiusValues) -> void;
         renderFilledRectUserdata: cptr;
+        renderText: (userdata: cptr, element: hzui_draw_text_element_t) -> void;
+        renderTextUserdata: cptr;
     };
 
     extern C noemit inline struct PaddingValues {
@@ -22,11 +28,42 @@ namespace ffi {
         bottom: real;
     }
 
+    export extern C noemit inline struct hzui_define_text_element_t {
+        id: usize;
+        text: str;
+        fontId: int;
+        fontSize: real;
+        lineHeight: real;
+        color: Color;
+        wrapMode: hzui_text_wrap_mode_t;
+        alignment: hzui_text_alignment_t;
+    }
+
+    export extern C noemit inline struct hzui_draw_text_element_t {
+        position: Vec2;
+        text: str;
+        fontId: int;
+        fontSize: real;
+        color: Color;
+    }
+
     export extern C noemit inline struct hzui_corner_radius_values_t {
         topLeft: real;
         topRight: real;
         bottomLeft: real;
         bottomRight: real;
+    }
+
+    export extern C noemit enum hzui_text_wrap_mode_t {
+        hzui_text_wrap_mode_wrap_words,
+        hzui_text_wrap_mode_wrap_newlines,
+        hzui_text_wrap_mode_wrap_none,
+    }
+
+    export extern C noemit enum hzui_text_alignment_t {
+        hzui_text_alignment_left,
+        hzui_text_alignment_center,
+        hzui_text_alignment_right,
     }
 }
 
@@ -81,7 +118,8 @@ export inline struct ComputedLayout {
 }
 
 export inline struct TextStyle {
-    fontSize?: real = none;
+    fontSize: real;
+    font?: int;
     textColor?: Color = none;
 }
 
@@ -95,7 +133,7 @@ export struct DivElement {
 export struct TextElement {
     id: usize;
     text: str;
-    style: TextStyle = {};
+    style: TextStyle;
     computedLayout?: ComputedLayout = none;
 }
 
@@ -126,7 +164,21 @@ processTreeElement(element: Element): void :: final {
         // element.computedLayout = Clay_GetLayout(element.id)
     } 
     else if element is TextElement {
-        // Clay_Text(element.id, element.content, element.style)
+        if !element.style.font {
+            return;
+        }
+        ffi.hzui_clay_define_text_element(
+            {
+                id: element.id, 
+                text: element.text,
+                color: element.style.textColor ? element.style.textColor as Color : Color(1, 1, 1, 1) as Color,  
+                fontId: element.style.font,
+                fontSize: element.style.fontSize,
+                lineHeight: element.style.fontSize,
+                wrapMode: ffi.hzui_text_wrap_mode_t.hzui_text_wrap_mode_wrap_newlines,
+                alignment: ffi.hzui_text_alignment_t.hzui_text_alignment_left,
+            }
+        );
 
         // element.computedLayout = Clay_GetLayout(element.id)
     }
@@ -187,9 +239,11 @@ getCornerRadiusValues(cornerRadius: StyleCornerRadius) {
 }
 
 export type RenderFilledRectCB = (position: Vec2, size: Vec2, backgroundColor: Color, cornerRadius: ffi.CornerRadiusValues) => void;
+export type RenderTextCB = (element: ffi.hzui_draw_text_element_t) => void;
 
 export struct RenderCallbacks {
     renderFilledRectangle: RenderFilledRectCB;
+    renderText: RenderTextCB;
 }
 
 renderFilledRectTrampoline(userdata: cptr, x: real, y: real, width: real, height: real, backgroundColor: Color, cornerRadius: CornerRadiusValues): void {
@@ -197,6 +251,14 @@ renderFilledRectTrampoline(userdata: cptr, x: real, y: real, width: real, height
         let callable: Box<RenderFilledRectCB> = uninitialized;
         __c__("callable = userdata;");
         callable.value(Vec2(x, y), Vec2(width, height), backgroundColor, cornerRadius);
+    };
+}
+
+renderTextTrampoline(userdata: cptr, element: ffi.hzui_draw_text_element_t): void {
+    do unsafe {
+        let callable: Box<RenderTextCB> = uninitialized;
+        __c__("callable = userdata;");
+        callable.value(element);
     };
 }
 
@@ -212,10 +274,15 @@ export layoutTree(element: Element, callbacks: RenderCallbacks) {
         let renderFilledRect = Box<RenderFilledRectCB>(callbacks.renderFilledRectangle);
         let renderFilledRectUserdata = none as cptr;
         __c__("renderFilledRectUserdata = renderFilledRect;");
+        let renderText = Box<RenderTextCB>(callbacks.renderText);
+        let renderTextUserdata = none as cptr;
+        __c__("renderTextUserdata = renderText;");
 
         ffi.Clay_RenderClayCommands({
             renderFilledRect: renderFilledRectTrampoline,
-            renderFilledRectUserdata: renderFilledRect,
+            renderFilledRectUserdata: renderFilledRectUserdata,
+            renderText: renderTextTrampoline,
+            renderTextUserdata: renderTextUserdata,
         }, clayRenderCommandsPtr);
     };
 }

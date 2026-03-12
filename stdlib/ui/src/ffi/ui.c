@@ -1,4 +1,5 @@
 
+#include "ffi/hzui_public.h"
 #include "hzstd/hzstd_common.h"
 #include "hzstd/hzstd_memory.h"
 #include "hzstd/hzstd_runtime.h"
@@ -12,10 +13,10 @@
 
 #include "renderer.c"
 
-#define CLAY_STRING_TO_CSTR(str)                                                                                       \
+#define STRING_FROM_CLAY(str)                                                                                          \
   ({                                                                                                                   \
     Clay_String string = str;                                                                                          \
-    hzstd_cstr_from_str(hzstd_make_heap_allocator(), HZSTD_STRING(string.chars, string.length));                       \
+    HZSTD_STRING(string.chars, string.length);                                                                         \
   })
 
 typedef struct {
@@ -32,7 +33,7 @@ void HandleClayErrors(Clay_ErrorData errorData)
   switch (errorData.errorType) {
   // etc
   default:
-    printf("CLAY ERROR: %s\n", CLAY_STRING_TO_CSTR(errorData.errorText));
+    printf("CLAY ERROR: %s\n", HZSTD_CSTR(STRING_FROM_CLAY(errorData.errorText)));
   }
 }
 
@@ -56,6 +57,15 @@ void hzui_clay_init(hzstd_int_t width, hzstd_int_t height)
   Clay_SetMeasureTextFunction(MeasureText, NULL);
 }
 
+Clay_ElementId make_id(hzstd_usize_t id)
+{
+  char id_cstr[64];
+  // TODO: Find a way to work directly with integer ids without requiring string formatting and string hashing
+  snprintf(id_cstr, sizeof(id_cstr), "%" PRIu64, id);
+  Clay_String id_str = (Clay_String) { .chars = id_cstr, .length = strlen(id_cstr) };
+  return CLAY_SID(id_str);
+}
+
 void hzui_clay_define_div_element(void* (*fn)(void*),
                                   void* env,
                                   hzstd_usize_t id,
@@ -65,12 +75,7 @@ void hzui_clay_define_div_element(void* (*fn)(void*),
                                   bool downInsteadOfRight,
                                   double gap)
 {
-  char id_cstr[64];
-  snprintf(id_cstr, sizeof(id_cstr), "%" PRIu64, id);
-  Clay_String id_str = (Clay_String) { .chars = id_cstr, .length = strlen(id_cstr) };
-  // TODO: Find a way to work directly with integer ids without requiring string formatting and string hashing
-
-  CLAY({ .id = CLAY_SID(id_str),
+  CLAY({ .id = make_id(id),
          .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_GROW(0) },
                      .layoutDirection = downInsteadOfRight ? CLAY_TOP_TO_BOTTOM : CLAY_LEFT_TO_RIGHT,
                      .childAlignment = {
@@ -96,4 +101,35 @@ void hzui_clay_define_div_element(void* (*fn)(void*),
   {
     fn(env);
   }
+}
+
+void hzui_clay_define_text_element(hzui_define_text_element_t element)
+{
+  Clay_String clay_text = (Clay_String) { .chars = element.text.data, .length = element.text.length };
+
+  Clay_TextElementConfigWrapMode clayWrapMode = CLAY_TEXT_WRAP_NONE;
+  if (element.wrapMode == hzui_text_wrap_mode_wrap_words) {
+    clayWrapMode = CLAY_TEXT_WRAP_WORDS;
+  }
+  if (element.wrapMode == hzui_text_wrap_mode_wrap_newlines) {
+    clayWrapMode = CLAY_TEXT_WRAP_NEWLINES;
+  }
+
+  Clay_TextAlignment clayTextAlignment = CLAY_TEXT_ALIGN_CENTER;
+  if (element.alignment == hzui_text_alignment_left) {
+    clayTextAlignment = CLAY_TEXT_ALIGN_LEFT;
+  }
+  if (element.alignment == hzui_text_alignment_right) {
+    clayTextAlignment = CLAY_TEXT_ALIGN_RIGHT;
+  }
+
+  CLAY_TEXT(clay_text,
+            CLAY_TEXT_CONFIG({
+                .textAlignment = clayTextAlignment,
+                .textColor = { .r = element.color.r, .g = element.color.g, .b = element.color.b, .a = element.color.a, },
+                .fontId = element.fontId,
+                .fontSize = element.fontSize,
+                .lineHeight = element.lineHeight,
+                .wrapMode = clayWrapMode,
+            }));
 }

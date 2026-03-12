@@ -1,51 +1,134 @@
 
-export inline struct _Vec2<T> {
-  x: T = default;
-  y: T = default;
+export extern C noemit inline struct hzstd_vec2_t {
+  x: real = 0.0;
+  y: real = 0.0;
 
-  constructor(x: T, y: T): _Vec2<T> {
-    return _Vec2<T> {
+  constructor(x: real, y: real) {
+    return hzstd_vec2_t {
       x: x,
       y: y,
     };
   }
 
-  neg(): _Vec2<T> {
-    return _Vec2<T>(-this.x, -this.y);
+  neg() {
+    return hzstd_vec2_t(-this.x, -this.y);
   }
 
-  add(other: _Vec2<T>): _Vec2<T> {
-    return _Vec2<T>(this.x + other.x, this.y + other.y);
+  add(other: hzstd_vec2_t) {
+    return hzstd_vec2_t(this.x + other.x, this.y + other.y);
   }
 
-  sub(other: _Vec2<T>): _Vec2<T> {
-    return _Vec2<T>(this.x - other.x, this.y - other.y);
+  sub(other: hzstd_vec2_t) {
+    return hzstd_vec2_t(this.x - other.x, this.y - other.y);
   }
 
-  mul(v: T): _Vec2<T> {
-    return _Vec2<T>(this.x * v, this.y * v);
+  mul(v: real) {
+    return hzstd_vec2_t(this.x * v, this.y * v);
   }
 
-  div(v: T): _Vec2<T> {
-    return _Vec2<T>(this.x / v, this.y / v);
+  div(v: real) {
+    return hzstd_vec2_t(this.x / v, this.y / v);
   }
 
   length(): real {
-    return math.sqrt(math.pow(this.x as real, 2.0) + math.pow(this.y as real, 2.0)) as real;
+    return math.sqrt(math.pow(this.x, 2.0) + math.pow(this.y, 2.0));
   }
 
-  normalize(): _Vec2<T> {
-    return this.div(this.length() as T);
+  normalize() {
+    return this.div(this.length());
   }
 
-  dot(other: _Vec2<T>): T {
+  dot(other: hzstd_vec2_t) {
     return this.x * other.x + this.y * other.y;
   }
 }
+export type Vec2 = hzstd_vec2_t;
 
-export type Vec2 = _Vec2<real>;
-export type Vec2i = _Vec2<int>;
-export type Vec2f = _Vec2<f32>;
+export extern C noemit inline struct hzstd_vec2f_t {
+  x: f32 = 0.0;
+  y: f32 = 0.0;
+
+  constructor(x: f32, y: f32) {
+    return hzstd_vec2f_t {
+      x: x,
+      y: y,
+    };
+  }
+
+  neg() {
+    return hzstd_vec2f_t(-this.x, -this.y);
+  }
+
+  add(other: hzstd_vec2f_t) {
+    return hzstd_vec2f_t(this.x + other.x, this.y + other.y);
+  }
+
+  sub(other: hzstd_vec2f_t) {
+    return hzstd_vec2f_t(this.x - other.x, this.y - other.y);
+  }
+
+  mul(v: f32) {
+    return hzstd_vec2f_t(this.x * v, this.y * v);
+  }
+
+  div(v: f32) {
+    return hzstd_vec2f_t(this.x / v, this.y / v);
+  }
+
+  length(): f32 {
+    return math.sqrt(math.pow(this.x as real, 2.0) + math.pow(this.y as real, 2.0)) as f32;
+  }
+
+  normalize() {
+    return this.div(this.length());
+  }
+
+  dot(other: hzstd_vec2f_t) {
+    return this.x * other.x + this.y * other.y;
+  }
+}
+export type Vec2f = hzstd_vec2f_t;
+
+export extern C noemit inline struct hzstd_vec2i_t {
+  x: int = 0;
+  y: int = 0;
+
+  constructor(x: int, y: int) {
+    return hzstd_vec2i_t {
+      x: x,
+      y: y,
+    };
+  }
+
+  neg() {
+    return hzstd_vec2i_t(-this.x, -this.y);
+  }
+
+  add(other: hzstd_vec2i_t) {
+    return hzstd_vec2i_t(this.x + other.x, this.y + other.y);
+  }
+
+  sub(other: hzstd_vec2i_t) {
+    return hzstd_vec2i_t(this.x - other.x, this.y - other.y);
+  }
+
+  mul(v: int) {
+    return hzstd_vec2i_t(this.x * v, this.y * v);
+  }
+
+  div(v: int) {
+    return hzstd_vec2i_t(this.x / v, this.y / v);
+  }
+
+  length(): real {
+    return math.sqrt(math.pow(this.x as real, 2.0) + math.pow(this.y as real, 2.0));
+  }
+
+  dot(other: hzstd_vec2i_t) {
+    return this.x * other.x + this.y * other.y;
+  }
+}
+export type Vec2i = hzstd_vec2i_t;
 
 export inline struct _Vec3<T> {
   x: T = default;

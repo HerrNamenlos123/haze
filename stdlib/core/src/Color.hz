@@ -5,7 +5,7 @@ export extern C noemit inline struct hzstd_color_t {
     b: real = 0;
     a: real = 0;
 
-    constructor(r: real, g: real, b: real, a: real) {
+    constructor(r: real, g: real, b: real, a: real): mut hzstd_color_t {
         return hzstd_color_t {
             r: r,
             g: g,
@@ -19,7 +19,7 @@ export extern C noemit inline struct hzstd_color_t {
     }
 }
 
-export type Color = hzstd_color_t;
+export type Color = mut hzstd_color_t;
 
 export extern C noemit inline struct hzstd_colorf_t {
     r: f32 = 0;
@@ -27,7 +27,7 @@ export extern C noemit inline struct hzstd_colorf_t {
     b: f32 = 0;
     a: f32 = 0;
 
-    constructor(r: f32, g: f32, b: f32, a: f32) {
+    constructor(r: f32, g: f32, b: f32, a: f32): mut hzstd_colorf_t {
         return hzstd_colorf_t {
             r: r,
             g: g,
@@ -41,4 +41,4 @@ export extern C noemit inline struct hzstd_colorf_t {
     }
 }
 
-export type Colorf = hzstd_colorf_t;
+export type Colorf = mut hzstd_colorf_t;

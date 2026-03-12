@@ -1,4 +1,5 @@
 #include "clay.h"
+#include "hzstd/hzstd_string.h"
 #include "hzstd/hzstd_utils.h"
 #include "hzui_public.h"
 
@@ -25,6 +26,8 @@ typedef struct {
                            hzstd_color_t backgroundColor,
                            hzui_corner_radius_values_t cornerRadius);
   void* renderFilledRectUserdata;
+  void (*renderText)(void* userdata, hzui_draw_text_element_t element);
+  void* renderTextUserdata;
 } ClayCallbacks;
 
 void Clay_RenderClayCommands(ClayCallbacks callbacks, Clay_RenderCommandArray* rcommands)
@@ -36,15 +39,12 @@ void Clay_RenderClayCommands(ClayCallbacks callbacks, Clay_RenderCommandArray* r
     const double y = bounding_box.y;
     const double w = bounding_box.width;
     const double h = bounding_box.height;
-    // const SDL_FRect rect
-    //     = { (int)bounding_box.x, (int)bounding_box.y, (int)bounding_box.width, (int)bounding_box.height };
     float zIndex = 1 - (float)i / rcommands->length; // built-in zIndex won't work (is always 0)
 
     switch (rcmd->commandType) {
 
     case CLAY_RENDER_COMMAND_TYPE_RECTANGLE: {
       Clay_RectangleRenderData* config = &rcmd->renderData.rectangle;
-      //   GL_FillRoundedRect(rendererData, rect, zIndex, config->cornerRadius.topLeft, config->backgroundColor);
       Clay_Color col = rcmd->renderData.rectangle.backgroundColor;
       callbacks.renderFilledRect(callbacks.renderFilledRectUserdata,
                                  x,
@@ -61,6 +61,24 @@ void Clay_RenderClayCommands(ClayCallbacks callbacks, Clay_RenderCommandArray* r
     } break;
 
     case CLAY_RENDER_COMMAND_TYPE_TEXT: {
+      callbacks.renderText(
+        callbacks.renderTextUserdata,
+        (hzui_draw_text_element_t) {
+          .text = HZSTD_STRING(rcmd->renderData.text.stringContents.chars, rcmd->renderData.text.stringContents.length),
+          .position = {
+            .x = x,
+            .y = y,
+          },
+          .fontId = rcmd->renderData.text.fontId,
+          .fontSize = rcmd->renderData.text.fontSize,
+          .color = (hzstd_color_t) {
+              .r = rcmd->renderData.text.textColor.r,
+              .g = rcmd->renderData.text.textColor.g,
+              .b = rcmd->renderData.text.textColor.b,
+              .a = rcmd->renderData.text.textColor.a,
+          },
+        }
+      );
       //   Clay_TextRenderData* config = &rcmd->renderData.text;
       //   int font = rendererData->fonts[config->fontId];
       //   FONScontext* fs = rendererData->fontContext;

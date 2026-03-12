@@ -69,7 +69,7 @@ struct TextRenderer {
 
     drawText(
         renderer: Renderer,
-        font: fontstash.FontHandle,
+        font: int,
         size: f32,
         x: f32,
         y: f32,
@@ -408,22 +408,25 @@ opaque struct Renderer {
         }
     }
 
+    struct TextOpts {
+        font: int;
+        position: Vec2;
+        size: real;
+        text: str;
+        color: Color;
+    }
+
     drawText(
-        font: fontstash.FontHandle,
-        size: f32,
-        x: f32,
-        y: f32,
-        text: str,
-        color: Color
+        opts: TextOpts
     ) {
         this.fontRenderer.drawText(
             this,
-            font,
-            size,
-            x,
-            y,
-            text,
-            color
+            opts.font,
+            opts.size as f32,
+            opts.position.x as f32,
+            opts.position.y as f32,
+            opts.text,
+            opts.color
         );
     }
 

@@ -96,6 +96,11 @@ main(): int {
             shadercode: embed.watchTextIf(enableShaderHotreload, "test/shaders.wgsl"),
         });
 
+        let font = renderer.fontRenderer.fs.addFont(
+            "roboto-regular",
+            "test/Roboto-Regular.ttf"
+        );
+
         ui.init(size.x, size.y);
         let uiTree = rx.reactive<ui.DivElement>(ui.DivElement {
             id: 1,
@@ -122,6 +127,10 @@ main(): int {
                         ui.TextElement {
                             id: 10,
                             text: "HAZE UI TEST",
+                            style: {
+                                fontSize: 42,
+                                font: font,
+                            }
                         }
                     ]
                 },
@@ -150,10 +159,10 @@ main(): int {
                                 direction: ui.Direction.Column,
                             },
                             children: [
-                                ui.TextElement { id: 11, text: "Menu" },
-                                ui.TextElement { id: 12, text: "Dashboard" },
-                                ui.TextElement { id: 13, text: "Settings" },
-                                ui.TextElement { id: 14, text: "About" },
+                                ui.TextElement { id: 11, text: "Menu", style: { fontSize: 32, font: font } },
+                                ui.TextElement { id: 12, text: "Dashboard", style: { fontSize: 32, font: font } },
+                                ui.TextElement { id: 13, text: "Settings", style: { fontSize: 32, font: font } },
+                                ui.TextElement { id: 14, text: "About", style: { fontSize: 32, font: font } },
                             ]
                         },
 
@@ -170,10 +179,12 @@ main(): int {
                                 ui.TextElement {
                                     id: 15,
                                     text: "Welcome to the content area!",
+                                    style: { fontSize: 32, font: font }
                                 },
                                 ui.TextElement {
                                     id: 16,
                                     text: "Flexbox layout test",
+                                    style: { fontSize: 32, font: font }
                                 },
                             ]
                         },
@@ -192,10 +203,12 @@ main(): int {
                                 ui.TextElement {
                                     id: 17,
                                     text: "Info Box",
+                                    style: { fontSize: 32, font: font }
                                 },
                                 ui.TextElement {
                                     id: 18,
                                     text: "Aligned center",
+                                    style: { fontSize: 32, font: font }
                                 }
                             ]
                         }
@@ -214,16 +227,12 @@ main(): int {
                         ui.TextElement {
                             id: 19,
                             text: "Footer text",
+                            style: { fontSize: 20, font: font }
                         }
                     ]
                 }
             ]
         });
-
-        let font = renderer.fontRenderer.fs.addFont(
-            "roboto-regular",
-            "test/Roboto-Regular.ttf"
-        )
 
         while !window.shouldClose() {
             glfw.pollEvents();
@@ -246,17 +255,26 @@ main(): int {
                         // borderThickness: 1,
                         // borderColor: Color(0, 1, 0, 1),
                     });
+                },
+                renderText: (element: ui.ffi.hzui_draw_text_element_t): void => {
+                    // fmt.println("Drawing text", fontSize, position.x, position.y, text, textColor.r, textColor.g, textColor.b, textColor.a);
+                    renderer.drawText({
+                        font: element.fontId,
+                        size: element.fontSize,
+                        position: element.position,
+                        text: element.text,
+                        color: element.color,
+                    });
                 }
             });
 
-            renderer.drawText(
-                font,
-                24,
-                40,
-                60,
-                "Hello World",
-                Color(1, 1, 1, 1)
-            );
+            // renderer.drawText({
+            //     font: font,
+            //     size: 42,
+            //     position: Vec2(100, 100),
+            //     text: "Hello World",
+            //     color: Color(1, 0, 0, 1),
+            // });
 
             // renderer.drawRect({
             //     pos: Vec2(100, 100), 

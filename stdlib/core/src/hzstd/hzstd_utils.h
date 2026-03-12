@@ -24,6 +24,16 @@ typedef struct {
 } hzstd_vec2_t;
 
 typedef struct {
+  hzstd_f32_t x;
+  hzstd_f32_t y;
+} hzstd_vec2f_t;
+
+typedef struct {
+  hzstd_int_t x;
+  hzstd_int_t y;
+} hzstd_vec2i_t;
+
+typedef struct {
   hzstd_real_t x;
   hzstd_real_t y;
   hzstd_real_t z;

@@ -304,8 +304,4 @@ string = HZSTD_STRING_FROM_CSTR(buf);
         format_to(writer, value.y, args);
         format_to(writer, ")", args);
     }
-
-    export format_to(writer: mut StringWriter, value: mut _Vec2<f32>, args: FormatArgs) {
-        format_to(writer, value as Vec2f, args);
-    }
 }

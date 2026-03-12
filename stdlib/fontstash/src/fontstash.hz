@@ -53,10 +53,6 @@ export struct Atlas {
     pixels: cptr;
 }
 
-export inline struct FontHandle {
-    handle: int;
-}
-
 export opaque struct FontStash {
     fonsContext: cptr | none;
 
@@ -79,7 +75,7 @@ export opaque struct FontStash {
         this.fonsContext = none;
     }
 
-    addFont(name: str, path: str): FontHandle {
+    addFont(name: str, path: str): int {
         assert(this.fonsContext, "FontStash Context not available");
         let id = ffi.haze_fontstash_add_font(
             this.fonsContext,
@@ -90,11 +86,11 @@ export opaque struct FontStash {
         if id < 0 {
             sys.panic("Failed to load font");
         }
-        return FontHandle { handle: id };
+        return id;
     }
 
     layoutText(
-        font: FontHandle,
+        font: int,
         size: f32,
         x: f32,
         y: f32,
@@ -104,7 +100,7 @@ export opaque struct FontStash {
         assert(this.fonsContext, "FontStash Context not available");
         ffi.haze_fontstash_layout_text(
             this.fonsContext,
-            font.handle,
+            font,
             size,
             x,
             y,
