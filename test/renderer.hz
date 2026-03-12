@@ -259,11 +259,6 @@ opaque struct Renderer {
             });
         });
 
-        let a = options.surfaceFormats[0];
-        let b = 0;
-        __c__("b = a;");
-        fmt.println(b);
-
         let pipeline = rx.computed<mut wgpu.RenderPipeline>(() => {
             return options.device.createRenderPipeline({
                 layout: pipelineLayout,
@@ -330,8 +325,8 @@ opaque struct Renderer {
         assert(fontAtlasView);
 
         let fontAtlasSampler = options.device.createSampler({
-            minFilter: wgpu.FilterMode.Nearest,
-            magFilter: wgpu.FilterMode.Nearest,
+            minFilter: wgpu.FilterMode.Linear,
+            magFilter: wgpu.FilterMode.Linear,
             maxAnisotropy: 1,
         });
 
