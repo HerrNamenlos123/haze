@@ -160,6 +160,7 @@ main(): int {
                 direction: ui.Direction.Column,
                 fontFamily: "roboto",
                 fontSize: 16.0,
+                textColor: Color(1, 1, 1, 1),
                 gap: 10,
             },
             children: [
