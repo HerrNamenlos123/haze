@@ -68,11 +68,13 @@ struct TextRenderer {
         let glyphBuffer: []fontstash.Glyph = [];
         glyphBuffer.reserve(1024);
 
+        let fs = fontstash.FontStash(1024, 1024);
+
         let fontBytes = embed.binary("resources/ProggyClean.ttf");
-        let defaultFont = this.fs.addFont("default", fontBytes);
+        let defaultFont = fs.addFont("default", fontBytes);
 
         return TextRenderer {
-            fs: fontstash.FontStash(1024, 1024),
+            fs: fs,
             glyphBuffer: glyphBuffer,
             defaultFont: defaultFont,
         };

@@ -119,7 +119,7 @@ export opaque struct FontStash {
 
         let ptr = none as cptr;
         let length = 0;
-        __c__("ptr = data.basePtr + offset;");
+        __c__("ptr = data.basePtr + data.offset;");
         __c__("length = data.length;");
 
         let id = ffi.haze_fontstash_add_font_from_memory(

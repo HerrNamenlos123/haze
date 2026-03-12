@@ -20,7 +20,13 @@ import {
   type LiteralValue,
   type NameSet,
 } from "../shared/common";
-import { assert, InternalError, printWarningMessage, type SourceLoc } from "../shared/Errors";
+import {
+  assert,
+  formatSourceLoc,
+  InternalError,
+  printWarningMessage,
+  type SourceLoc,
+} from "../shared/Errors";
 import { makeTempName } from "../shared/store";
 
 const ENABLE_IMMEDIATE_CALLABLE_CALL_OPTIMIZATION = true;
@@ -3525,67 +3531,6 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
       const remainingInstances = new Set(symbol.createsInstanceIds);
       symbol.returnsInstanceIds.forEach((i) => remainingInstances.delete(i));
 
-      f.scope =
-        (symbol.scope &&
-          lowerBlockScope(lr, symbol.scope, {
-            returnedInstanceIds: symbol.returnsInstanceIds,
-          })) ||
-        null;
-
-      if (f.scope) {
-        const scope = lr.blockScopeNodes.get(f.scope);
-        const statements: Lowered.StatementId[] = [];
-        for (const param of hoistedParams) {
-          assert(param.type);
-
-          const paramType = lowerTypeUse(lr, param.type);
-
-          const unhoistedName = `__hz_${param.name}_unhoisted`;
-          storeInTempVarAndGet(
-            lr,
-            paramType,
-            makeIntrinsicCall(
-              lr,
-              "HZSTD_HOIST",
-              [
-                Lowered.addExpr(lr, {
-                  variant: Lowered.ENode.DatatypeAsValueExpr,
-                  type: paramType,
-                })[1],
-                Lowered.addExpr(lr, {
-                  variant: Lowered.ENode.SymbolValueExpr,
-                  name: {
-                    mangledName: unhoistedName,
-                    prettyName: param.name,
-                    wasMangled: false,
-                  },
-                  type: paramType,
-                })[1],
-              ],
-              paramType,
-            )[1],
-            null,
-            statements,
-            "*" + param.name,
-          );
-        }
-        scope.statements.unshift(...statements.reverse());
-      }
-
-      // Remove last "none" expression to make C simpler
-      if (f.scope && Conversion.isVoidById(lr.sr, functype.returnType)) {
-        const scope = lr.blockScopeNodes.get(f.scope);
-        if (scope.emittedExpr) {
-          const expr = lr.exprNodes.get(scope.emittedExpr);
-          const exprType = lr.typeDefNodes.get(lr.typeUseNodes.get(expr.type).type);
-          assert(
-            exprType.variant === Lowered.ENode.PrimitiveDatatype &&
-              exprType.primitive === EPrimitive.none,
-          );
-          scope.emittedExpr = null;
-        }
-      }
-
       if (makeTrampoline) {
         const name = Semantic.makeNameSetSymbol(lr.sr, symbolId);
         name.mangledName += "_trampoline";
@@ -3734,6 +3679,67 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
             statements: statements,
             emittedExpr: null,
           })[1];
+        }
+      }
+
+      f.scope =
+        (symbol.scope &&
+          lowerBlockScope(lr, symbol.scope, {
+            returnedInstanceIds: symbol.returnsInstanceIds,
+          })) ||
+        null;
+
+      if (f.scope) {
+        const scope = lr.blockScopeNodes.get(f.scope);
+        const statements: Lowered.StatementId[] = [];
+        for (const param of hoistedParams) {
+          assert(param.type);
+
+          const paramType = lowerTypeUse(lr, param.type);
+
+          const unhoistedName = `__hz_${param.name}_unhoisted`;
+          storeInTempVarAndGet(
+            lr,
+            paramType,
+            makeIntrinsicCall(
+              lr,
+              "HZSTD_HOIST",
+              [
+                Lowered.addExpr(lr, {
+                  variant: Lowered.ENode.DatatypeAsValueExpr,
+                  type: paramType,
+                })[1],
+                Lowered.addExpr(lr, {
+                  variant: Lowered.ENode.SymbolValueExpr,
+                  name: {
+                    mangledName: unhoistedName,
+                    prettyName: param.name,
+                    wasMangled: false,
+                  },
+                  type: paramType,
+                })[1],
+              ],
+              paramType,
+            )[1],
+            null,
+            statements,
+            "*" + param.name,
+          );
+        }
+        scope.statements.unshift(...statements.reverse());
+      }
+
+      // Remove last "none" expression to make C simpler
+      if (f.scope && Conversion.isVoidById(lr.sr, functype.returnType)) {
+        const scope = lr.blockScopeNodes.get(f.scope);
+        if (scope.emittedExpr) {
+          const expr = lr.exprNodes.get(scope.emittedExpr);
+          const exprType = lr.typeDefNodes.get(lr.typeUseNodes.get(expr.type).type);
+          assert(
+            exprType.variant === Lowered.ENode.PrimitiveDatatype &&
+              exprType.primitive === EPrimitive.none,
+          );
+          scope.emittedExpr = null;
         }
       }
 

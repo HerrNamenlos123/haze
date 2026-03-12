@@ -233,7 +233,7 @@ export opaque struct Context {
             }
         }
 
-        assert(false, "Font could not be found and default font is not available. Default font must always exist.");
+        sys.panic("Font could not be found and default font is not available. Default font must always exist.");
     }
 
     processTreeElement(ctx: TreeTraverseContext, element: Element): void :: final {
