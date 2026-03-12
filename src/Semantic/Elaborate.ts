@@ -2553,8 +2553,9 @@ export class SemanticElaborator {
             vararg: false,
           });
 
+          let name = Semantic.mangleTypeUse(this.sr, objectType.datatype);
           const code = `__c__("return HZSTD_ARRAY_POP(this, ${
-            Semantic.mangleTypeUse(this.sr, objectType.datatype).name
+            name.wasMangled ? "_H" + name.name : name.name
           });");`;
 
           [func, funcId] = this.sr.b.syntheticFunctionFromCode({

@@ -56,7 +56,10 @@ void hzstd_assert(hzstd_bool_t condition)
 {
   // TODO: Implement source location passing in haze to show actual location
   // here, plus a call stack
-  assert(condition);
+  // assert(condition);
+  if (!condition) {
+    hzstd_panic("Assertion failed");
+  }
   // __assert_fail("condition", __FILE__, __LINE__, __PRETTY_FUNCTION__);
 }
 

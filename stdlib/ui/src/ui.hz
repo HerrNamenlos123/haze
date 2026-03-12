@@ -122,7 +122,7 @@ export inline struct DivStyle {
     fontFamily?: str = none;
     fontSize?: real = none;
     fontWeight?: real = none;
-    lineHeight?: real = none;
+    lineHeight?: LineHeight = none;
     letterSpacing?: real = none;
     textColor?: Color = none;
     // textAlign?: Color = none;
@@ -132,7 +132,7 @@ export inline struct TextStyle {
     fontFamily?: str = none;
     fontSize?: real = none;
     fontWeight?: real = none;
-    lineHeight?: real = none;
+    lineHeight?: LineHeight = none;
     letterSpacing?: real = none;
     textColor?: Color = none;
     // textAlign?: Color = none;
@@ -141,6 +141,12 @@ export inline struct TextStyle {
 export enum Direction { Row, Column }
 export enum Justify { Start, Center, End, SpaceBetween }
 export enum Align { Start, Center, End, Stretch }
+
+export enum LineHeightMode { Auto, Relative, Pixels }
+export struct LineHeight {
+    mode: LineHeightMode;
+    value: real;
+};
 
 export inline struct RenderLayout {
     position: Vec2;
@@ -172,15 +178,18 @@ export inline struct ContextOpts {
     width: int;
     height: int;
     fonts: []FontEntry;
+    getFontLineHeight: (fontId: int, fontSize: real) => real;
 }
 
 export opaque struct Context {
     fonts: []FontEntry;
+    getFontLineHeight: (fontId: int, fontSize: real) => real;
 
     constructor(opts: ContextOpts) {
         ffi.hzui_clay_init(opts.width, opts.height);
         return Context {
             fonts: opts.fonts,
+            getFontLineHeight: opts.getFontLineHeight,
         };
     }
 
@@ -188,8 +197,7 @@ export opaque struct Context {
         fontFamilyStack: []str = [];
         fontSizeStack: []real = [];
         fontWeightStack: []real = [];
-        lineHeightStack: []real = [];
-        letterSpacingStack: []real = [];
+        lineHeightStack: []LineHeight = [];
         textColorStack: []Color = [];
 
         validateEmpty() {
@@ -197,15 +205,31 @@ export opaque struct Context {
             assert(this.fontSizeStack.length == 0);
             assert(this.fontWeightStack.length == 0);
             assert(this.lineHeightStack.length == 0);
-            assert(this.letterSpacingStack.length == 0);
             assert(this.textColorStack.length == 0);
         }
     }
 
     withCascadingStackApplied(ctx: TreeTraverseContext, element: Element, fn: () => none) {
         let fontFamily = element is DivElement ? element.style.fontFamily : element.style.fontFamily;
+        let fontSize = element is DivElement ? element.style.fontSize : element.style.fontSize;
+        let fontWeight = element is DivElement ? element.style.fontWeight : element.style.fontWeight;
+        let lineHeight = element is DivElement ? element.style.lineHeight : element.style.lineHeight;
+        let textColor = element is DivElement ? element.style.textColor : element.style.textColor;
+
         if fontFamily {
             ctx.fontFamilyStack.push(fontFamily);
+        }
+        if fontSize {
+            ctx.fontSizeStack.push(fontSize);
+        }
+        if fontWeight {
+            ctx.fontWeightStack.push(fontWeight);
+        }
+        if lineHeight {
+            ctx.lineHeightStack.push(lineHeight);
+        }
+        if textColor {
+            ctx.textColorStack.push(textColor);
         }
 
         fn();
@@ -213,27 +237,63 @@ export opaque struct Context {
         if fontFamily {
             ctx.fontFamilyStack.pop();
         }
+        if fontSize {
+            ctx.fontSizeStack.pop();
+        }
+        if fontWeight {
+            ctx.fontWeightStack.pop();
+        }
+        if lineHeight {
+            ctx.lineHeightStack.pop();
+        }
+        if textColor {
+            ctx.textColorStack.pop();
+        }
+    }
+
+    getFont(name: str) {
+        for entry in this.fonts {
+            if entry.name == name {
+                return entry.id;
+            }
+        }
     }
 
     getCurrentFont(ctx: TreeTraverseContext) {
         assert(ctx.fontFamilyStack.length > 0);
-        let currentFont = ctx.fontFamilyStack[ctx.fontFamilyStack.length - 1];
 
         // Find the font
-        for entry in this.fonts {
-            if entry.name == currentFont {
-                return entry.id;
-            }
+        let font = this.getFont(ctx.fontFamilyStack[ctx.fontFamilyStack.length - 1]);
+        if font {
+            return font;
         }
 
-        // Font has not been found, take default font instead
-        for entry in this.fonts {
-            if entry.name == "default" {
-                return entry.id;
-            }
+        font = this.getFont("default");
+        if font {
+            return font;
         }
 
         sys.panic("Font could not be found and default font is not available. Default font must always exist.");
+    }
+
+    getCurrentFontSize(ctx: TreeTraverseContext) {
+        assert(ctx.fontSizeStack.length > 0);
+        return ctx.fontSizeStack[ctx.fontSizeStack.length - 1];
+    }
+
+    getCurrentFontWeight(ctx: TreeTraverseContext) {
+        assert(ctx.fontWeightStack.length > 0);
+        return ctx.fontWeightStack[ctx.fontWeightStack.length - 1];
+    }
+
+    getCurrentLineHeight(ctx: TreeTraverseContext) {
+        assert(ctx.lineHeightStack.length > 0);
+        return ctx.lineHeightStack[ctx.lineHeightStack.length - 1];
+    }
+
+    getCurrentTextColor(ctx: TreeTraverseContext) {
+        assert(ctx.textColorStack.length > 0);
+        return ctx.textColorStack[ctx.textColorStack.length - 1];
     }
 
     processTreeElement(ctx: TreeTraverseContext, element: Element): void :: final {
@@ -276,17 +336,27 @@ export opaque struct Context {
                 let elementPtr = none as cptr;
                 __c__("elementPtr = elementBox;");
 
+                let fontSize = this.getCurrentFontSize(ctx);
+
+                let fontId = this.getCurrentFont(ctx);
+                let lineHeightPx = this.getFontLineHeight(fontId, fontSize);
+                let lineHeightMode = this.getCurrentLineHeight(ctx);
+                if lineHeightMode.mode == LineHeightMode.Relative {
+                    lineHeightPx *= lineHeightMode.value;
+                }
+                else if lineHeightMode.mode == LineHeightMode.Pixels {
+                    lineHeightPx = lineHeightMode.value;
+                }
+
                 ffi.hzui_clay_define_text_element(
                     {
                         id: element.id, 
                         text: element.text,
-                        color: element.style.textColor ? element.style.textColor as Color : Color(1, 1, 1, 1) as Color,  
-                        fontId: this.getCurrentFont(ctx),
-                        // fontSize: element.style.fontSize,
-                        fontSize: 30.0,
-                        // lineHeight: element.style.fontSize,
-                        lineHeight: 30.0,
-                        wrapMode: ffi.hzui_text_wrap_mode_t.hzui_text_wrap_mode_wrap_newlines,
+                        color: this.getCurrentTextColor(ctx),
+                        fontId: fontId,
+                        fontSize: fontSize,
+                        lineHeight: lineHeightPx,
+                        wrapMode: ffi.hzui_text_wrap_mode_t.hzui_text_wrap_mode_wrap_words,
                         alignment: ffi.hzui_text_alignment_t.hzui_text_alignment_left,
                         elementPtr: elementPtr,
                     }
@@ -299,7 +369,28 @@ export opaque struct Context {
         ffi.Clay_BeginLayout();
 
         let ctx = TreeTraverseContext {};
+
+        const DEFAULT_FONT_SIZE = 16.0;
+        const DEFAULT_FONT_WEIGHT = 400.0;
+        let DEFAULT_TEXT_COLOR = Color(0, 0, 0, 1);
+
+        ctx.fontFamilyStack.push("default");
+        ctx.fontSizeStack.push(DEFAULT_FONT_SIZE);
+        ctx.lineHeightStack.push({
+            mode: LineHeightMode.Auto,
+            value: 0.0,
+        });
+        ctx.fontWeightStack.push(DEFAULT_FONT_WEIGHT);
+        ctx.textColorStack.push(DEFAULT_TEXT_COLOR);
+
         this.processTreeElement(ctx, element);
+
+        ctx.textColorStack.pop();
+        ctx.fontWeightStack.pop();
+        ctx.lineHeightStack.pop();
+        ctx.fontSizeStack.pop();
+        ctx.fontFamilyStack.pop();
+
         ctx.validateEmpty();
 
         let clayRenderCommands = ffi.Clay_EndLayout();

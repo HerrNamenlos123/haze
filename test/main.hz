@@ -136,12 +136,16 @@ main(): int {
             width: windowState.logicalSize.x,
             height: windowState.logicalSize.y,
             fonts: fonts,
+            getFontLineHeight: (fontId: int, fontSize: real): real => {
+                let metrics = renderer.fontRenderer.fs.getMetrics(fontId, fontSize);
+                return metrics.lineh;
+            },
         });
 
         let flexboxLayoutTest = ui.TextElement {
             id: 16,
             text: "Flexbox layout test",
-            style: { fontSize: 32, font: font }
+            style: { fontSize: 60.0, fontFamily: "roboto" }
         };
 
         let uiTree = rx.reactive<ui.DivElement>(ui.DivElement {
@@ -170,8 +174,8 @@ main(): int {
                             id: 10,
                             text: "HAZE UI TEST",
                             style: {
-                                fontSize: 42,
-                                font: font,
+                                fontSize: 42.0,
+                                fontFamily: "roboto"
                             }
                         }
                     ]
@@ -201,10 +205,10 @@ main(): int {
                                 direction: ui.Direction.Column,
                             },
                             children: [
-                                ui.TextElement { id: 11, text: "Menu", style: { fontSize: 32, font: font } },
-                                ui.TextElement { id: 12, text: "Dashboard", style: { fontSize: 32, font: font } },
-                                ui.TextElement { id: 13, text: "Settings", style: { fontSize: 32, font: font } },
-                                ui.TextElement { id: 14, text: "About", style: { fontSize: 32, font: font } },
+                                ui.TextElement { id: 11, text: "Menu", style: {} },
+                                ui.TextElement { id: 12, text: "Dashboard", style: {} },
+                                ui.TextElement { id: 13, text: "Settings", style: {} },
+                                ui.TextElement { id: 14, text: "About", style: {} },
                             ]
                         },
 
@@ -221,7 +225,7 @@ main(): int {
                                 ui.TextElement {
                                     id: 15,
                                     text: "Welcome to the content area!",
-                                    style: { fontSize: 32, font: font }
+                                    style: {}
                                 },
                                 flexboxLayoutTest
                             ]
@@ -241,12 +245,12 @@ main(): int {
                                 ui.TextElement {
                                     id: 17,
                                     text: "Info Box",
-                                    style: { fontSize: 32, font: font }
+                                    style: {}
                                 },
                                 ui.TextElement {
                                     id: 18,
                                     text: "Aligned center",
-                                    style: { fontSize: 32, font: font }
+                                    style: {}
                                 }
                             ]
                         }
@@ -265,7 +269,7 @@ main(): int {
                         ui.TextElement {
                             id: 19,
                             text: "Footer text",
-                            style: { fontSize: 20, font: font }
+                            style: { fontSize: 20.0 }
                         }
                     ]
                 }

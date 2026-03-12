@@ -48,6 +48,37 @@ static inline Clay_Dimensions MeasureText(Clay_StringSlice text, Clay_TextElemen
                              .height = config->fontSize };
 }
 
+// static inline Clay_Dimensions MeasureTextImpl(App* app, int fontId, float fontSize, float letterSpacing, String text)
+// {
+//   auto& fs = app->rendererData.fontContext;
+//   int font = app->rendererData.fonts[fontId];
+
+//   fonsSetFont(fs, font);
+//   fonsSetSize(fs, fontSize);
+//   fonsSetSpacing(fs, letterSpacing);
+//   fonsSetAlign(fs, FONS_ALIGN_MIDDLE);
+
+//   FONStextIter iter;
+//   FONSquad q;
+//   float width = 0;
+
+//   float ascender, descender, lineh;
+//   fonsVertMetrics(fs, &ascender, &descender, &lineh);
+
+//   fonsTextIterInit(fs, &iter, 0, 0, text.data, text.data + text.length);
+//   while (fonsTextIterNext(fs, &iter, &q)) {
+//     width += iter.nextx - iter.x;
+//   }
+
+//   return Clay_Dimensions { width, lineh };
+// }
+
+// static inline Clay_Dimensions MeasureText(Clay_StringSlice text, Clay_TextElementConfig* config, void* app)
+// {
+//   return MeasureTextImpl(
+//       (App*)app, config->fontId, config->fontSize, config->letterSpacing, String::view(text.chars, text.length));
+// }
+
 void hzui_clay_init(hzstd_int_t width, hzstd_int_t height)
 {
   uint64_t totalMemorySize = Clay_MinMemorySize();
