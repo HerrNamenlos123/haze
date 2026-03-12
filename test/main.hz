@@ -106,7 +106,8 @@ main(): int {
             usage: wgpu.TextureUsage.RenderAttachment,
             width: windowState.framebufferSize.x,
             height: windowState.framebufferSize.y,
-            presentMode: wgpu.PresentMode.Fifo,
+            presentMode: wgpu.PresentMode.Fifo, // VSYNC=ON
+            // presentMode: wgpu.PresentMode.Mailbox, // VSYNC=OFF
             alphaMode: caps.alphaModes[0],
         });
 
@@ -261,6 +262,7 @@ main(): int {
             sdl.pollEvents();
 
             if window.consumeSizeChanged() {
+                let now = time.now();
                 let nextWindowState = getWindowState(window);
                 if nextWindowState.framebufferSize.x > 0 && nextWindowState.framebufferSize.y > 0 {
                     surface.configure({
