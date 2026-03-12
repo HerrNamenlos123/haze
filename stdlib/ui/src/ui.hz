@@ -41,6 +41,7 @@ namespace ffi {
 
     export extern C noemit inline struct hzui_draw_text_element_t {
         position: Vec2;
+        size: Vec2;
         text: str;
         fontId: int;
         fontSize: real;

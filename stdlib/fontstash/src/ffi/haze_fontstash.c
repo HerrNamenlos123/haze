@@ -86,3 +86,15 @@ haze_fontstash_atlas_t haze_fontstash_get_atlas(void* ctx)
 
   return atlas;
 }
+
+haze_fontstash_metrics_t haze_fontstash_get_metrics(hzstd_cptr_t ctx, hzstd_int_t font, hzstd_real_t size)
+{
+  FONScontext* fs = ctx;
+
+  fonsSetFont(fs, font);
+  fonsSetSize(fs, size);
+
+  haze_fontstash_metrics_t metrics;
+  fonsVertMetrics(fs, &metrics.ascender, &metrics.descender, &metrics.lineh);
+  return metrics;
+}

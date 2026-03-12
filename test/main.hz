@@ -258,6 +258,11 @@ main(): int {
                 },
                 renderText: (element: ui.ffi.hzui_draw_text_element_t): void => {
                     // fmt.println("Drawing text", fontSize, position.x, position.y, text, textColor.r, textColor.g, textColor.b, textColor.a);
+                    // renderer.drawRect({
+                    //     pos: element.position, 
+                    //     size: element.size,
+                    //     fillColor: Color(0, 0, 0, 1),
+                    // });
                     renderer.drawText({
                         font: element.fontId,
                         size: element.fontSize,

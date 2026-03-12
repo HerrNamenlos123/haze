@@ -22,4 +22,10 @@ typedef struct {
   hzstd_int_t height;
 } haze_fontstash_atlas_t;
 
+typedef struct {
+  float ascender;
+  float descender;
+  float lineh;
+} haze_fontstash_metrics_t;
+
 #endif // HAZE_FONTSTASH_H

@@ -26,6 +26,12 @@ namespace ffi {
         ctx: cptr,
     ): haze_fontstash_atlas_t :: final;
 
+    export extern C haze_fontstash_get_metrics(
+        ctx: cptr,
+        font: int,
+        size: real,
+    ): haze_fontstash_metrics_t :: final;
+
     export extern C noemit inline struct haze_fontstash_atlas_t {
         pixels: cptr;
         width: int;
@@ -43,9 +49,21 @@ namespace ffi {
         s1: f32;
         t1: f32;
     }
+
+    export extern C noemit inline struct haze_fontstash_metrics_t {
+        ascender: real;
+        descender: real;
+        lineh: real;
+    }
 }
 
 export type Glyph = ffi.haze_fontstash_glyph_t;
+
+export inline struct Metrics {
+    ascender: real;
+    descender: real;
+    lineh: real;
+}
 
 export struct Atlas {
     width: int;
@@ -118,6 +136,20 @@ export opaque struct FontStash {
             width: atlas.width,
             height: atlas.height,
             pixels: atlas.pixels,
+        };
+    }
+
+    getMetrics(font: int, fontSize: real): Metrics {
+        assert(this.fonsContext, "FontStash Context not available");
+        let metrics = ffi.haze_fontstash_get_metrics(
+            this.fonsContext,
+            font,
+            fontSize,
+        );
+        return {
+            ascender: metrics.ascender,
+            descender: metrics.descender,
+            lineh: metrics.lineh,
         };
     }
 }

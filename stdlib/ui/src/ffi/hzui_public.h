@@ -39,6 +39,7 @@ typedef struct {
 
 typedef struct {
   hzstd_vec2_t position;
+  hzstd_vec2_t size;
   hzstd_str_t text;
   hzstd_int_t fontId;
   hzstd_real_t fontSize;

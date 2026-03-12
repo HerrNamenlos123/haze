@@ -77,6 +77,10 @@ void Clay_RenderClayCommands(ClayCallbacks callbacks, Clay_RenderCommandArray* r
               .b = rcmd->renderData.text.textColor.b,
               .a = rcmd->renderData.text.textColor.a,
           },
+          .size = {
+            .x = w,
+            .y = h,
+          }
         }
       );
       //   Clay_TextRenderData* config = &rcmd->renderData.text;

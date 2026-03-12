@@ -79,11 +79,14 @@ struct TextRenderer {
         // TODO: Add ability to reset/clear an array in-place instead of replacing it, for better memory efficiency
         this.glyphBuffer = [];
 
+        let metrics = this.fs.getMetrics(font, size);
+        let baseline = y as real + metrics.ascender;
+
         this.fs.layoutText(
             font,
             size,
             x,
-            y,
+            baseline as f32,
             text,
             this.glyphBuffer
         );
