@@ -149,8 +149,8 @@ void haze_sdl_pollEvents(void)
       continue;
     }
 
-    if (event.type == SDL_EVENT_WINDOW_RESIZED || event.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED ||
-        event.type == SDL_EVENT_WINDOW_DISPLAY_CHANGED) {
+    if (event.type == SDL_EVENT_WINDOW_RESIZED || event.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED
+        || event.type == SDL_EVENT_WINDOW_DISPLAY_CHANGED) {
       SDL_Window* window = SDL_GetWindowFromID(event.window.windowID);
       if (window) {
         haze_sdl_set_window_size_changed(window, true);
