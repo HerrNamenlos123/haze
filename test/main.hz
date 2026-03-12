@@ -126,6 +126,13 @@ main(): int {
         );
 
         ui.init(windowState.logicalSize.x, windowState.logicalSize.y);
+
+        let flexboxLayoutTest = ui.TextElement {
+            id: 16,
+            text: "Flexbox layout test",
+            style: { fontSize: 32, font: font }
+        };
+
         let uiTree = rx.reactive<ui.DivElement>(ui.DivElement {
             id: 1,
             style: {
@@ -205,11 +212,7 @@ main(): int {
                                     text: "Welcome to the content area!",
                                     style: { fontSize: 32, font: font }
                                 },
-                                ui.TextElement {
-                                    id: 16,
-                                    text: "Flexbox layout test",
-                                    style: { fontSize: 32, font: font }
-                                },
+                                flexboxLayoutTest
                             ]
                         },
 
@@ -281,6 +284,10 @@ main(): int {
 
             fs.pollEvents();
             renderer.beginFrame();
+
+            if flexboxLayoutTest.layout {
+                fmt.println("Test", flexboxLayoutTest.layout.position, flexboxLayoutTest.layout.size, flexboxLayoutTest.id);
+            }
 
             ui.layoutTree(rx.unwrap(uiTree), {
                 renderFilledRectangle: (position: Vec2, size: Vec2, backgroundColor: Color, cornerRadius: ui.CornerRadiusValues): void => {

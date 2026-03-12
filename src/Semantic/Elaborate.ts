@@ -5333,8 +5333,16 @@ export class SemanticElaborator {
 
   assignmentExpr(assignment: Collect.ExprAssignmentExpr, inference: Semantic.Inference) {
     const [targetExpr, targetExprId] = this.expr(assignment.expr, { unsafe: inference?.unsafe });
+
+    // Fix assignment to unions. This is so you can assign a union if the union was already narrowed (unnarrowing it here)
+    let targetExprUnionUnwrappedId = targetExprId;
+    if (targetExpr.variant === Semantic.ENode.UnionToValueCastExpr) {
+      targetExprUnionUnwrappedId = targetExpr.expr;
+    }
+    const targetExprUnionUnwrapped = this.sr.exprNodes.get(targetExprUnionUnwrappedId);
+
     const [valueExpr, valueExprId] = this.expr(assignment.value, {
-      gonnaInstantiateStructWithType: targetExpr.type,
+      gonnaInstantiateStructWithType: targetExprUnionUnwrapped.type,
       unsafe: inference?.unsafe,
     });
 
@@ -5458,14 +5466,8 @@ export class SemanticElaborator {
       });
     }
 
-    // Fix assignment to unions. This is so you can assign a union if the union was already narrowed (unnarrowing it here)
-    let targetExprFixed = targetExprId;
-    if (targetExpr.variant === Semantic.ENode.UnionToValueCastExpr) {
-      targetExprFixed = targetExpr.expr;
-    }
-
     return this.sr.b.assignment(
-      targetExprFixed,
+      targetExprUnionUnwrappedId,
       assignment.operation,
       valueExprId,
       this.currentContext.constraints,
