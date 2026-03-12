@@ -21,8 +21,32 @@ namespace ffi {
 	extern C noemit SDL_GetWindowSize(window: SDL_Window, width: cptr, height: cptr): bool :: final;
 	extern C noemit SDL_GetWindowSizeInPixels(window: SDL_Window, width: cptr, height: cptr): bool :: final;
 
+	// Event trampoline registration (private to ffi namespace — SDL headers not available outside)
+	extern C type HazeSdlKeyFn = (userdata: cptr, scancode: i32, repeat: bool) -> void :: final;
+	extern C type HazeSdlResizeFn = (userdata: cptr, width: i32, height: i32) -> void :: final;
+	extern C type HazeSdlMouseMoveFn = (userdata: cptr, x: f32, y: f32) -> void :: final;
+
+	extern C noemit struct haze_sdl_trampolines_t {
+		keyDown: HazeSdlKeyFn;
+		keyUp: HazeSdlKeyFn;
+		resize: HazeSdlResizeFn;
+		mouseMove: HazeSdlMouseMoveFn;
+	}
+
+	extern C haze_sdl_register_trampolines(t: inline haze_sdl_trampolines_t): void :: final;
+	export extern C haze_sdl_set_window_event_userdata(window: SDL_Window, userdata: cptr): void :: final;
+
 	export init(): bool {
-		return haze_sdl_init();
+		let result = haze_sdl_init();
+		if result {
+			haze_sdl_register_trampolines({
+				keyDown: hazeKeyDownDispatch,
+				keyUp: hazeKeyUpDispatch,
+				resize: hazeResizeDispatch,
+				mouseMove: hazeMouseMoveDispatch,
+			} as inline haze_sdl_trampolines_t);
+		}
+		return result;
 	}
 
 	export terminate(): void {
@@ -74,8 +98,161 @@ namespace ffi {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// High-level event types
+// ---------------------------------------------------------------------------
+
+// Key enum — values match SDL3 scancodes so a direct integer cast works.
+export enum Key {
+	Unknown = 0,
+	A = 4, B = 5, C = 6, D = 7, E = 8, F = 9, G = 10, H = 11,
+	I = 12, J = 13, K = 14, L = 15, M = 16, N = 17, O = 18, P = 19,
+	Q = 20, R = 21, S = 22, T = 23, U = 24, V = 25, W = 26, X = 27,
+	Y = 28, Z = 29,
+	Num1 = 30, Num2 = 31, Num3 = 32, Num4 = 33, Num5 = 34,
+	Num6 = 35, Num7 = 36, Num8 = 37, Num9 = 38, Num0 = 39,
+	Return = 40,
+	Escape = 41,
+	Backspace = 42,
+	Tab = 43,
+	Space = 44,
+	Minus = 45,
+	Equals = 46,
+	LeftBracket = 47,
+	RightBracket = 48,
+	Backslash = 49,
+	Semicolon = 51,
+	Apostrophe = 52,
+	Grave = 53,
+	Comma = 54,
+	Period = 55,
+	Slash = 56,
+	CapsLock = 57,
+	F1 = 58, F2 = 59, F3 = 60, F4 = 61, F5 = 62, F6 = 63,
+	F7 = 64, F8 = 65, F9 = 66, F10 = 67, F11 = 68, F12 = 69,
+	Insert = 73,
+	Home = 74,
+	PageUp = 75,
+	Delete = 76,
+	End = 77,
+	PageDown = 78,
+	Right = 79,
+	Left = 80,
+	Down = 81,
+	Up = 82,
+	LCtrl = 224,
+	LShift = 225,
+	LAlt = 226,
+	LGui = 227,
+	RCtrl = 228,
+	RShift = 229,
+	RAlt = 230,
+	RGui = 231,
+}
+
+export struct KeyEvent {
+	key: Key;
+	repeat: bool;
+}
+
+export struct ResizeEvent {
+	width: int;
+	height: int;
+}
+
+export struct MouseMoveEvent {
+	x: f32;
+	y: f32;
+}
+
+// ---------------------------------------------------------------------------
+// Callback type aliases
+// ---------------------------------------------------------------------------
+
+export type KeyEventCallback = (e: KeyEvent) => bool :: final;
+export type ResizeEventCallback = (e: ResizeEvent) => bool :: final;
+export type MouseMoveEventCallback = (e: MouseMoveEvent) => bool :: final;
+
+// ---------------------------------------------------------------------------
+// Internal handler structs (one per event category)
+// ---------------------------------------------------------------------------
+
+export struct KeyHandler {
+	id: int;
+	callback: KeyEventCallback;
+}
+
+export struct ResizeHandler {
+	id: int;
+	callback: ResizeEventCallback;
+}
+
+export struct MouseMoveHandler {
+	id: int;
+	callback: MouseMoveEventCallback;
+}
+
+// ---------------------------------------------------------------------------
+// Internal: convert SDL3 scancode integer to Key enum
+// ---------------------------------------------------------------------------
+
+scancodeToKey(scancode: i32): Key :: final {
+	do unsafe {
+		let k: Key = uninitialized;
+		__c__("k = scancode;");
+		return k;
+	};
+}
+
+// ---------------------------------------------------------------------------
+// C-side event trampoline functions (called by sdl_impl.c)
+// ---------------------------------------------------------------------------
+
+hazeKeyDownDispatch(userdata: cptr, scancode: i32, repeat: bool): void :: final {
+	do unsafe {
+		let window: Window = uninitialized;
+		__c__("window = userdata;");
+		let e = KeyEvent { key: scancodeToKey(scancode), repeat: repeat };
+		window.dispatchKeyDown(e);
+	};
+}
+
+hazeKeyUpDispatch(userdata: cptr, scancode: i32, repeat: bool): void :: final {
+	do unsafe {
+		let window: Window = uninitialized;
+		__c__("window = userdata;");
+		let e = KeyEvent { key: scancodeToKey(scancode), repeat: repeat };
+		window.dispatchKeyUp(e);
+	};
+}
+
+hazeResizeDispatch(userdata: cptr, width: i32, height: i32): void :: final {
+	do unsafe {
+		let window: Window = uninitialized;
+		__c__("window = userdata;");
+		let e = ResizeEvent { width: width as int, height: height as int };
+		window.dispatchResize(e);
+	};
+}
+
+hazeMouseMoveDispatch(userdata: cptr, x: f32, y: f32): void :: final {
+	do unsafe {
+		let window: Window = uninitialized;
+		__c__("window = userdata;");
+		let e = MouseMoveEvent { x: x, y: y };
+		window.dispatchMouseMove(e);
+	};
+}
+
 export struct Window {
 	handle: ffi.SDL_Window;
+
+	// Event handler storage
+	nextHandlerId: int = 0;
+	keyDownHandlers: []KeyHandler = [];
+	keyUpHandlers: []KeyHandler = [];
+	resizeHandlers: []ResizeHandler = [];
+	mouseMoveHandlers: []MouseMoveHandler = [];
 
 	makeContextCurrent() {
 		ffi.makeContextCurrent(this.handle);
@@ -141,6 +318,126 @@ export struct Window {
 			return castedProc;
 		};
 	}
+
+	// --- Event handler registration ---
+
+	onKeyDown(cb: KeyEventCallback): int {
+		let id = this.nextHandlerId;
+		this.nextHandlerId = id + 1;
+		this.keyDownHandlers.push(KeyHandler { id: id, callback: cb });
+		return id;
+	}
+
+	onKeyUp(cb: KeyEventCallback): int {
+		let id = this.nextHandlerId;
+		this.nextHandlerId = id + 1;
+		this.keyUpHandlers.push(KeyHandler { id: id, callback: cb });
+		return id;
+	}
+
+	onResize(cb: ResizeEventCallback): int {
+		let id = this.nextHandlerId;
+		this.nextHandlerId = id + 1;
+		this.resizeHandlers.push(ResizeHandler { id: id, callback: cb });
+		return id;
+	}
+
+	onMouseMove(cb: MouseMoveEventCallback): int {
+		let id = this.nextHandlerId;
+		this.nextHandlerId = id + 1;
+		this.mouseMoveHandlers.push(MouseMoveHandler { id: id, callback: cb });
+		return id;
+	}
+
+	// --- Deregistration ---
+
+	removeHandler(id: int) {
+		let i = 0;
+		while i < this.keyDownHandlers.length {
+			if this.keyDownHandlers[i].id == id {
+				do unsafe {
+					__c__("hzstd_dynamic_array_remove(this->keyDownHandlers, (size_t)i, NULL);");
+				};
+				return;
+			}
+			i = i + 1;
+		}
+
+		i = 0;
+		while i < this.keyUpHandlers.length {
+			if this.keyUpHandlers[i].id == id {
+				do unsafe {
+					__c__("hzstd_dynamic_array_remove(this->keyUpHandlers, (size_t)i, NULL);");
+				};
+				return;
+			}
+			i = i + 1;
+		}
+
+		i = 0;
+		while i < this.resizeHandlers.length {
+			if this.resizeHandlers[i].id == id {
+				do unsafe {
+					__c__("hzstd_dynamic_array_remove(this->resizeHandlers, (size_t)i, NULL);");
+				};
+				return;
+			}
+			i = i + 1;
+		}
+
+		i = 0;
+		while i < this.mouseMoveHandlers.length {
+			if this.mouseMoveHandlers[i].id == id {
+				do unsafe {
+					__c__("hzstd_dynamic_array_remove(this->mouseMoveHandlers, (size_t)i, NULL);");
+				};
+				return;
+			}
+			i = i + 1;
+		}
+	}
+
+	// --- Internal dispatch (called by trampolines) ---
+
+	dispatchKeyDown(e: KeyEvent) {
+		let i = 0;
+		while i < this.keyDownHandlers.length {
+			if this.keyDownHandlers[i].callback(e) {
+				return;
+			}
+			i = i + 1;
+		}
+	}
+
+	dispatchKeyUp(e: KeyEvent) {
+		let i = 0;
+		while i < this.keyUpHandlers.length {
+			if this.keyUpHandlers[i].callback(e) {
+				return;
+			}
+			i = i + 1;
+		}
+	}
+
+	dispatchResize(e: ResizeEvent) {
+		let i = 0;
+		while i < this.resizeHandlers.length {
+			if this.resizeHandlers[i].callback(e) {
+				return;
+			}
+			i = i + 1;
+		}
+	}
+
+	dispatchMouseMove(e: MouseMoveEvent) {
+		let i = 0;
+		while i < this.mouseMoveHandlers.length {
+			if this.mouseMoveHandlers[i].callback(e) {
+				return;
+			}
+			i = i + 1;
+		}
+	}
 }
 
 export struct WindowSizeConfig {
@@ -170,9 +467,12 @@ export createWindow(config: WindowConfig): Result<Window, none> {
 		return Result<Window, none>.Err(none);
 	}
 
-	return Result<Window, none>.Ok(
-		Window { handle: handle }
-	);
+	let window = Window { handle: handle };
+	let windowPtr: cptr = none;
+	__c__("windowPtr = window;");
+	ffi.haze_sdl_set_window_event_userdata(handle, windowPtr);
+
+	return Result<Window, none>.Ok(window);
 }
 
 export pollEvents() {

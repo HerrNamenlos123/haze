@@ -4,6 +4,49 @@
 #define HAZE_SDL_SHOULD_CLOSE_PROPERTY "haze.should_close"
 #define HAZE_SDL_GL_CONTEXT_PROPERTY "haze.gl_context"
 #define HAZE_SDL_SIZE_CHANGED_PROPERTY "haze.size_changed"
+#define HAZE_SDL_EVENT_USERDATA_PROPERTY "haze.event_userdata"
+
+/* ---------- Trampoline function pointer types (must match Haze extern C type declarations) ---------- */
+
+typedef void (*HazeSdlKeyFn)(void* userdata, int scancode, bool repeat);
+typedef void (*HazeSdlResizeFn)(void* userdata, int width, int height);
+typedef void (*HazeSdlMouseMoveFn)(void* userdata, float x, float y);
+
+typedef struct {
+  HazeSdlKeyFn keyDown;
+  HazeSdlKeyFn keyUp;
+  HazeSdlResizeFn resize;
+  HazeSdlMouseMoveFn mouseMove;
+} haze_sdl_trampolines_t;
+
+static haze_sdl_trampolines_t g_haze_trampolines = { NULL, NULL, NULL, NULL };
+
+void haze_sdl_register_trampolines(haze_sdl_trampolines_t t) { g_haze_trampolines = t; }
+
+void haze_sdl_set_window_event_userdata(SDL_Window* window, void* userdata)
+{
+  if (!window) {
+    return;
+  }
+  SDL_PropertiesID props = SDL_GetWindowProperties(window);
+  if (props) {
+    SDL_SetPointerProperty(props, HAZE_SDL_EVENT_USERDATA_PROPERTY, userdata);
+  }
+}
+
+static void* haze_sdl_get_window_event_userdata(SDL_Window* window)
+{
+  if (!window) {
+    return NULL;
+  }
+  SDL_PropertiesID props = SDL_GetWindowProperties(window);
+  if (!props) {
+    return NULL;
+  }
+  return SDL_GetPointerProperty(props, HAZE_SDL_EVENT_USERDATA_PROPERTY, NULL);
+}
+
+/* -------------------------------------------------------------------------- */
 
 static bool haze_sdl_should_close_all = false;
 
@@ -154,7 +197,49 @@ void haze_sdl_pollEvents(void)
       SDL_Window* window = SDL_GetWindowFromID(event.window.windowID);
       if (window) {
         haze_sdl_set_window_size_changed(window, true);
+        if (g_haze_trampolines.resize) {
+          void* userdata = haze_sdl_get_window_event_userdata(window);
+          if (userdata) {
+            int w = 0, h = 0;
+            SDL_GetWindowSizeInPixels(window, &w, &h);
+            g_haze_trampolines.resize(userdata, w, h);
+          }
+        }
       }
+      continue;
+    }
+
+    if (event.type == SDL_EVENT_KEY_DOWN) {
+      SDL_Window* window = SDL_GetWindowFromID(event.key.windowID);
+      if (window && g_haze_trampolines.keyDown) {
+        void* userdata = haze_sdl_get_window_event_userdata(window);
+        if (userdata) {
+          g_haze_trampolines.keyDown(userdata, (int)event.key.scancode, (bool)event.key.repeat);
+        }
+      }
+      continue;
+    }
+
+    if (event.type == SDL_EVENT_KEY_UP) {
+      SDL_Window* window = SDL_GetWindowFromID(event.key.windowID);
+      if (window && g_haze_trampolines.keyUp) {
+        void* userdata = haze_sdl_get_window_event_userdata(window);
+        if (userdata) {
+          g_haze_trampolines.keyUp(userdata, (int)event.key.scancode, (bool)event.key.repeat);
+        }
+      }
+      continue;
+    }
+
+    if (event.type == SDL_EVENT_MOUSE_MOTION) {
+      SDL_Window* window = SDL_GetWindowFromID(event.motion.windowID);
+      if (window && g_haze_trampolines.mouseMove) {
+        void* userdata = haze_sdl_get_window_event_userdata(window);
+        if (userdata) {
+          g_haze_trampolines.mouseMove(userdata, event.motion.x, event.motion.y);
+        }
+      }
+      continue;
     }
   }
 }
