@@ -40,6 +40,12 @@ hzstd_int_t haze_fontstash_add_font(void* ctx, hzstd_str_t name, hzstd_str_t pat
   return fonsAddFont((FONScontext*)ctx, HZSTD_CSTR(name), HZSTD_CSTR(path));
 }
 
+hzstd_int_t haze_fontstash_add_font_from_memory(void* ctx, hzstd_str_t name, hzstd_cptr_t data, hzstd_int_t length)
+{
+  assert(ctx);
+  return fonsAddFontMem((FONScontext*)ctx, HZSTD_CSTR(name), data, length, 0);
+}
+
 void haze_fontstash_layout_text(void* ctx,
                                 hzstd_int_t font,
                                 float size,

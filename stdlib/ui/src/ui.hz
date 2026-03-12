@@ -1,6 +1,4 @@
 
-import fontstash
-
 __c__("#include \"ffi/ui.c\"");
 export __c__("#include \"ffi/hzui_public.h\"");
 
@@ -120,6 +118,24 @@ export inline struct DivStyle {
     cornerRadius: StyleCornerRadius = none;
     gap: real = 0;
     backgroundColor: Color = Color { r: 0, g: 0, b: 0, a: 0 };
+
+    fontFamily?: str = none;
+    fontSize?: real = none;
+    fontWeight?: real = none;
+    lineHeight?: real = none;
+    letterSpacing?: real = none;
+    textColor?: Color = none;
+    // textAlign?: Color = none;
+}
+
+export inline struct TextStyle {
+    fontFamily?: str = none;
+    fontSize?: real = none;
+    fontWeight?: real = none;
+    lineHeight?: real = none;
+    letterSpacing?: real = none;
+    textColor?: Color = none;
+    // textAlign?: Color = none;
 }
 
 export enum Direction { Row, Column }
@@ -129,12 +145,6 @@ export enum Align { Start, Center, End, Stretch }
 export inline struct RenderLayout {
     position: Vec2;
     size: Vec2;
-}
-
-export inline struct TextStyle {
-    fontSize: real;
-    font?: int;
-    textColor?: Color = none;
 }
 
 export struct DivElement {
@@ -153,64 +163,168 @@ export struct TextElement {
 
 export type Element = DivElement | TextElement;
 
-processTreeElement(element: Element, boxes: []Box<Element>): void :: final {
-    if element is DivElement {
-        let capturedElement = element; // TODO: Fix compiler error, an unwrapped union cannot be captured in lambda
-        let capturedBoxes = boxes;
-        let renderChildren = () => {
-            for child in capturedElement.children {
-                processTreeElement(child, capturedBoxes);
-            }
-        };
-        let fn = none as cptr;
-        let env = none as cptr;
-        __c__("fn = (void*)renderChildren.fn;");
-        __c__("env = (void*)renderChildren.env;");
-
-        let elementBox = Box<Element>(element);
-        let elementPtr = none as cptr;
-        __c__("elementPtr = elementBox;");
-        boxes.push(elementBox);
-
-        ffi.hzui_clay_define_div_element(
-            fn, env, 
-            element.id, 
-            element.style.backgroundColor, 
-            getPaddingValues(element.style.padding), 
-            getCornerRadiusValues(element.style.cornerRadius),
-            element.style.direction == Direction.Column,
-            element.style.gap,
-            elementPtr,
-        );
-    } 
-    else if element is TextElement {
-        if !element.style.font {
-            return;
-        }
-
-        let elementBox = Box<Element>(element);
-        let elementPtr = none as cptr;
-        __c__("elementPtr = elementBox;");
-        boxes.push(elementBox);
-
-        ffi.hzui_clay_define_text_element(
-            {
-                id: element.id, 
-                text: element.text,
-                color: element.style.textColor ? element.style.textColor as Color : Color(1, 1, 1, 1) as Color,  
-                fontId: element.style.font,
-                fontSize: element.style.fontSize,
-                lineHeight: element.style.fontSize,
-                wrapMode: ffi.hzui_text_wrap_mode_t.hzui_text_wrap_mode_wrap_newlines,
-                alignment: ffi.hzui_text_alignment_t.hzui_text_alignment_left,
-                elementPtr: elementPtr,
-            }
-        );
-    }
+export inline struct FontEntry {
+    name: str;
+    id: int;
 }
 
-export init(width: int, height: int) {
-    ffi.hzui_clay_init(width, height);
+export inline struct ContextOpts {
+    width: int;
+    height: int;
+    fonts: []FontEntry;
+}
+
+export opaque struct Context {
+    fonts: []FontEntry;
+
+    constructor(opts: ContextOpts) {
+        ffi.hzui_clay_init(opts.width, opts.height);
+        return Context {
+            fonts: opts.fonts,
+        };
+    }
+
+    struct TreeTraverseContext {
+        fontFamilyStack: []str = [];
+        fontSizeStack: []real = [];
+        fontWeightStack: []real = [];
+        lineHeightStack: []real = [];
+        letterSpacingStack: []real = [];
+        textColorStack: []Color = [];
+
+        validateEmpty() {
+            assert(this.fontFamilyStack.length == 0);
+            assert(this.fontSizeStack.length == 0);
+            assert(this.fontWeightStack.length == 0);
+            assert(this.lineHeightStack.length == 0);
+            assert(this.letterSpacingStack.length == 0);
+            assert(this.textColorStack.length == 0);
+        }
+    }
+
+    withCascadingStackApplied(ctx: TreeTraverseContext, element: Element, fn: () => none) {
+        let fontFamily = element is DivElement ? element.style.fontFamily : element.style.fontFamily;
+        if fontFamily {
+            ctx.fontFamilyStack.push(fontFamily);
+        }
+
+        fn();
+
+        if fontFamily {
+            ctx.fontFamilyStack.pop();
+        }
+    }
+
+    getCurrentFont(ctx: TreeTraverseContext) {
+        assert(ctx.fontFamilyStack.length > 0);
+        let currentFont = ctx.fontFamilyStack[ctx.fontFamilyStack.length - 1];
+
+        // Find the font
+        for entry in this.fonts {
+            if entry.name == currentFont {
+                return entry.id;
+            }
+        }
+
+        // Font has not been found, take default font instead
+        for entry in this.fonts {
+            if entry.name == "default" {
+                return entry.id;
+            }
+        }
+
+        assert(false, "Font could not be found and default font is not available. Default font must always exist.");
+    }
+
+    processTreeElement(ctx: TreeTraverseContext, element: Element): void :: final {
+        if element is DivElement {
+            let capturedElement = element; // TODO: Fix compiler error, an unwrapped union cannot be captured in lambda
+            this.withCascadingStackApplied(ctx, element, () => {
+                let element = capturedElement;
+                let renderChildren = () => {
+                    for child in element.children {
+                        this.processTreeElement(ctx, child);
+                    }
+                };
+                let fn = none as cptr;
+                let env = none as cptr;
+                __c__("fn = (void*)renderChildren.fn;");
+                __c__("env = (void*)renderChildren.env;");
+
+                let elementBox = Box<Element>(element);
+                let elementPtr = none as cptr;
+                __c__("elementPtr = elementBox;");
+
+                ffi.hzui_clay_define_div_element(
+                    fn, env, 
+                    element.id, 
+                    element.style.backgroundColor, 
+                    getPaddingValues(element.style.padding), 
+                    getCornerRadiusValues(element.style.cornerRadius),
+                    element.style.direction == Direction.Column,
+                    element.style.gap,
+                    elementPtr,
+                );
+            });
+        } 
+        else if element is TextElement {
+            let capturedElement = element; // TODO: Fix compiler error, an unwrapped union cannot be captured in lambda
+            this.withCascadingStackApplied(ctx, element, () => {
+                let element = capturedElement;
+
+                let elementBox = Box<Element>(element);
+                let elementPtr = none as cptr;
+                __c__("elementPtr = elementBox;");
+
+                ffi.hzui_clay_define_text_element(
+                    {
+                        id: element.id, 
+                        text: element.text,
+                        color: element.style.textColor ? element.style.textColor as Color : Color(1, 1, 1, 1) as Color,  
+                        fontId: this.getCurrentFont(ctx),
+                        // fontSize: element.style.fontSize,
+                        fontSize: 30.0,
+                        // lineHeight: element.style.fontSize,
+                        lineHeight: 30.0,
+                        wrapMode: ffi.hzui_text_wrap_mode_t.hzui_text_wrap_mode_wrap_newlines,
+                        alignment: ffi.hzui_text_alignment_t.hzui_text_alignment_left,
+                        elementPtr: elementPtr,
+                    }
+                );
+            });
+        }
+    }
+
+    render(element: Element, callbacks: RenderCallbacks) {
+        ffi.Clay_BeginLayout();
+
+        let ctx = TreeTraverseContext {};
+        this.processTreeElement(ctx, element);
+        ctx.validateEmpty();
+
+        let clayRenderCommands = ffi.Clay_EndLayout();
+
+        let clayRenderCommandsPtr = none as none | ffi.Clay_RenderCommandArray;
+        __c__("clayRenderCommandsPtr = &clayRenderCommands;");
+        assert(clayRenderCommandsPtr);
+
+        do unsafe {
+            let renderFilledRect = Box<RenderFilledRectCB>(callbacks.renderFilledRectangle);
+            let renderFilledRectUserdata = none as cptr;
+            __c__("renderFilledRectUserdata = renderFilledRect;");
+            let renderText = Box<RenderTextCB>(callbacks.renderText);
+            let renderTextUserdata = none as cptr;
+            __c__("renderTextUserdata = renderText;");
+
+            ffi.Clay_RenderClayCommands({
+                renderFilledRect: renderFilledRectTrampoline,
+                renderFilledRectUserdata: renderFilledRectUserdata,
+                renderText: renderTextTrampoline,
+                renderTextUserdata: renderTextUserdata,
+                applyBoundingBox: applyBoundingBoxTrampoline,
+            }, clayRenderCommandsPtr);
+        };
+    }
 }
 
 export setLayoutSize(width: int, height: int) {
@@ -312,33 +426,5 @@ applyBoundingBoxTrampoline(elementPtr: cptr, x: real, y: real, w: real, h: real)
             element.layout.position = Vec2(x, y);
             element.layout.size = Vec2(w, h);
         }
-    };
-}
-
-export layoutTree(element: Element, callbacks: RenderCallbacks) {
-    ffi.Clay_BeginLayout();
-    let boxes: []Box<Element> = [];
-    processTreeElement(element, boxes);
-    let clayRenderCommands = ffi.Clay_EndLayout();
-
-    let clayRenderCommandsPtr = none as none | ffi.Clay_RenderCommandArray;
-    __c__("clayRenderCommandsPtr = &clayRenderCommands;");
-    assert(clayRenderCommandsPtr);
-
-    do unsafe {
-        let renderFilledRect = Box<RenderFilledRectCB>(callbacks.renderFilledRectangle);
-        let renderFilledRectUserdata = none as cptr;
-        __c__("renderFilledRectUserdata = renderFilledRect;");
-        let renderText = Box<RenderTextCB>(callbacks.renderText);
-        let renderTextUserdata = none as cptr;
-        __c__("renderTextUserdata = renderText;");
-
-        ffi.Clay_RenderClayCommands({
-            renderFilledRect: renderFilledRectTrampoline,
-            renderFilledRectUserdata: renderFilledRectUserdata,
-            renderText: renderTextTrampoline,
-            renderTextUserdata: renderTextUserdata,
-            applyBoundingBox: applyBoundingBoxTrampoline,
-        }, clayRenderCommandsPtr);
     };
 }

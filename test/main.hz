@@ -125,7 +125,18 @@ main(): int {
             "test/Roboto-Regular.ttf"
         );
 
-        ui.init(windowState.logicalSize.x, windowState.logicalSize.y);
+        let fonts: []ui.FontEntry = [
+            {
+                name: "default",
+                id: renderer.fontRenderer.defaultFont,
+            }
+        ];
+
+        let uiCtx = ui.Context({
+            width: windowState.logicalSize.x,
+            height: windowState.logicalSize.y,
+            fonts: fonts,
+        });
 
         let flexboxLayoutTest = ui.TextElement {
             id: 16,
@@ -285,7 +296,7 @@ main(): int {
             fs.pollEvents();
             renderer.beginFrame();
 
-            ui.layoutTree(rx.unwrap(uiTree), {
+            uiCtx.render(rx.unwrap(uiTree), {
                 renderFilledRectangle: (position: Vec2, size: Vec2, backgroundColor: Color, cornerRadius: ui.CornerRadiusValues): void => {
                     renderer.drawRect({
                         pos: position, 

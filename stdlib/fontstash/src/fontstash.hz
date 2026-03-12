@@ -12,6 +12,13 @@ namespace ffi {
         path: str
     ): int :: final;
 
+    export extern C haze_fontstash_add_font_from_memory(
+        ctx: cptr,
+        name: str,
+        data: cptr,
+        length: int
+    ): int :: final;
+
     export extern C haze_fontstash_layout_text(
         ctx: cptr,
         font: int,
@@ -99,6 +106,27 @@ export opaque struct FontStash {
             this.fonsContext,
             name,
             path
+        );
+
+        if id < 0 {
+            sys.panic("Failed to load font");
+        }
+        return id;
+    }
+
+    addFont(name: str, data: Bytes): int {
+        assert(this.fonsContext, "FontStash Context not available");
+
+        let ptr = none as cptr;
+        let length = 0;
+        __c__("ptr = data.basePtr + offset;");
+        __c__("length = data.length;");
+
+        let id = ffi.haze_fontstash_add_font_from_memory(
+            this.fonsContext,
+            name,
+            ptr,
+            length,
         );
 
         if id < 0 {
