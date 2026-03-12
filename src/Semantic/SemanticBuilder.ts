@@ -7,7 +7,13 @@ import {
   type EUnaryOperation,
 } from "../shared/AST";
 import { EPrimitive, EVariableContext, pushBrandedNode, type LiteralValue } from "../shared/common";
-import { assert, CompilerError, InternalError, type SourceLoc } from "../shared/Errors";
+import {
+  assert,
+  CompilerError,
+  formatSourceLoc,
+  InternalError,
+  type SourceLoc,
+} from "../shared/Errors";
 import { Collect } from "../SymbolCollection/SymbolCollection";
 import {
   ConstraintSet,
@@ -604,6 +610,9 @@ export class SemanticBuilder {
     );
     const chosenOverloadId = this.sr.e.FunctionOverloadChoose(symbolId, [], sourceloc);
 
+    // Elaborate the namespace, so it can be found in the cache immediately after
+    this.sr.e.namespace(fmtNsDef.typeDef);
+
     let elaboratedNsContext = null as Semantic.ElaborationContext | null;
     for (const cache of this.sr.elaboratedNamespaceSymbols) {
       if (cache.originalSharedInstance === fmtNs.sharedInstance) {
@@ -740,8 +749,10 @@ export class SemanticBuilder {
     const expr = this.sr.exprNodes.get(exprId);
 
     // Unwrap union casts to extract path from the underlying expression
-    if (expr.variant === Semantic.ENode.UnionToValueCastExpr ||
-        expr.variant === Semantic.ENode.UnionToUnionCastExpr) {
+    if (
+      expr.variant === Semantic.ENode.UnionToValueCastExpr ||
+      expr.variant === Semantic.ENode.UnionToUnionCastExpr
+    ) {
       return this.extractConstraintPath(expr.expr);
     }
 
