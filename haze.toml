@@ -29,9 +29,9 @@ gl = { path = "./gl" }
 wgpu = { path = "./wgpu" }
 sdl_wgpu = { path = "./sdl_wgpu" }
 
-# UI framework module
-ui = { path = "./ui" }
+# UI framework module (fontstash must come before ui since ui depends on it)
 fontstash = { path = "./fontstash" }
+ui = { path = "./ui" }
 
 # gl = { path = "./gl" }
 # glDraw = { path = "./glDraw" }
