@@ -43,17 +43,17 @@ main(): int {
     let a = rx.shallowReactive(Foo { value: 5 });
     let aValue = rx.computed<int>(() => {
         fmt.println("Rerunning computed");
-        return rx.get(a).value;
+        return a.value;
     });
 
-    fmt.println(f"a.value = {rx.get(a).value}");
-    fmt.println(f"aValue = {rx.get(aValue)}");
+    fmt.println(f"a.value = {a.value}");
+    fmt.println(f"aValue = {aValue} {Foo {value: 0}}");
 
     // a := Foo { value: 6 };
     a.value = 6;
 
-    fmt.println(f"a.value = {rx.get(a).value}");
-    fmt.println(f"aValue = {rx.get(aValue)}");
+    fmt.println(f"a.value = {a.value}");
+    fmt.println("aValue = ", aValue);
 
     return 0;
 

@@ -46,31 +46,25 @@ namespace fmt {
     export format(values: ...) {
         let reader = StringWriter(none);
         for comptime value, i in values {
-            format_to(reader, value, {});
+            format_to_proxy(reader, value, {});
         }
         let buffer = ByteBuffer(reader.written);
         let writer = StringWriter(buffer);
         for comptime value, i in values {
-            format_to(writer, value, {});
+            format_to_proxy(writer, value, {});
         }
         writer.commit();
         return writer.string();
     }
 
-    // export foo(allocator: Allocator, values: ...) {
-    //     for comptime value, i in values {
-    //         let a = value;
-    //     }
-    // }
-
     export formatWithAllocator(allocator: Allocator, values: ...) {
         let reader = StringWriter(none);
         for comptime value, i in values {
-            format_to(reader, value, {});
+            format_to_proxy(reader, value, {});
         }
         let writer = StringWriter(ByteBuffer(allocator, reader.written));
         for comptime value, i in values {
-            format_to(writer, value, {});
+            format_to_proxy(writer, value, {});
         }
         writer.commit();
         return writer.toString();
@@ -87,7 +81,7 @@ namespace fmt {
 
     export printFragment<T>(value: T) {
         if comptime type<rx.IsReactive<T>> {
-            printFragment<rx.ReactiveInner<T>>(value);
+            printFragment<rx.UnwrapReactive<T>>(value);
         }
         else {
             if comptime T is int || T is mut int {
@@ -176,6 +170,19 @@ namespace fmt {
             }
         }
         printFragment<str>("\n");
+    }
+
+    export format_to_proxy<T>(writer: mut StringWriter, value: T, args: FormatArgs) {
+        if comptime type<rx.IsReactive<T>> {
+            format_to(writer, rx.get(value), args);
+        }
+        else {
+            format_to(writer, value, args);
+        }
+    }
+
+    export format_to<T>(writer: mut StringWriter, value: T, args: FormatArgs) {
+        static_assert(false, "FALLBACK");
     }
 
     export format_to(writer: mut StringWriter, value: i64, args: FormatArgs) {
