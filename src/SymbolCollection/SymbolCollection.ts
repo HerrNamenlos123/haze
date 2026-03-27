@@ -2761,7 +2761,7 @@ function collectExpr(
         cc,
         "rx",
         [],
-        makeNamedDatatype(cc, "ReactiveInner", ["__T"], null, item.sourceloc)[1],
+        makeNamedDatatype(cc, "UnwrapReactive", ["__T"], null, item.sourceloc)[1],
         item.sourceloc,
       )[1];
 
@@ -2885,7 +2885,7 @@ function collectExpr(
         cc,
         "rx",
         [],
-        makeNamedDatatype(cc, "ReactiveInner", ["__T"], null, item.sourceloc)[1],
+        makeNamedDatatype(cc, "UnwrapReactive", ["__T"], null, item.sourceloc)[1],
         item.sourceloc,
       )[1];
 
@@ -3091,7 +3091,7 @@ function collectExpr(
           cc,
           "rx",
           [],
-          makeNamedDatatype(cc, "ReactiveInner", ["__T"], null, item.sourceloc)[1],
+          makeNamedDatatype(cc, "UnwrapReactive", ["__T"], null, item.sourceloc)[1],
           item.sourceloc,
         )[1];
 

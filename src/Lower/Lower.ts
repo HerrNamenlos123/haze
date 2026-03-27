@@ -1264,7 +1264,7 @@ export function lowerExpr(
           const funcsym = lr.sr.symbolNodes.get(expr.inFunction);
           assert(funcsym.variant === Semantic.ENode.FunctionSymbol);
           if (expr.instanceIds.some((id) => funcsym.returnsInstanceIds.has(id))) {
-            returns = true;
+            // returns = true;
           }
         }
 
@@ -2666,7 +2666,10 @@ export function lowerTypeDef(lr: Lowered.Module, typeId: Semantic.TypeDefId): Lo
       lr.loweredTypeDefs.set(typeId, pId);
       return pId;
     }
-  } else if (type.variant === Semantic.ENode.ReactiveDatatype) {
+  } else if (
+    type.variant === Semantic.ENode.ReactiveDatatype ||
+    type.variant === Semantic.ENode.ShallowReactiveDatatype
+  ) {
     if (lr.loweredTypeDefs.has(typeId)) {
       return lr.loweredTypeDefs.get(typeId)!;
     } else {

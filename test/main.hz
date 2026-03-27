@@ -34,7 +34,28 @@ getWindowState(window: sdl.Window): WindowState {
     };
 }
 
+struct Foo {
+    value: int;
+}
+
 main(): int {
+
+    let a = rx.shallowReactive(Foo { value: 5 });
+    let aValue = rx.computed<int>(() => {
+        fmt.println("Rerunning computed");
+        return rx.toRaw(a).value;
+    });
+
+    fmt.println(f"a.value = {rx.toRaw(a).value}");
+    fmt.println(f"aValue = {rx.toRaw(aValue)}");
+
+    // a := Foo { value: 6 };
+    a.value = 6;
+
+    fmt.println(f"a.value = {rx.toRaw(a).value}");
+    fmt.println(f"aValue = {rx.toRaw(aValue)}");
+
+    return 0;
 
     attempt {
         if !sdl.init() { raise "SDL init failed"; }

@@ -2030,6 +2030,25 @@ export namespace Conversion {
       }
     }
 
+    // Read Conversion: ShallowReactive<T> to T
+    if (
+      fromType.variant === Semantic.ENode.ShallowReactiveDatatype &&
+      fromType.wrappedType === toId
+    ) {
+      return ok(
+        sr.b.addExpr(sr, {
+          variant: Semantic.ENode.ReactiveReadExpr,
+          instanceIds: [],
+          value: fromExprId,
+          type: toId,
+          sourceloc: sourceloc,
+          isTemporary: true,
+          flow: Semantic.FlowResult.fallthrough(),
+          writes: Semantic.WriteResult.empty(),
+        })[1],
+      );
+    }
+
     // Read Conversion: Reactive<T> to T
     if (fromType.variant === Semantic.ENode.ReactiveDatatype && fromType.wrappedType === toId) {
       return ok(

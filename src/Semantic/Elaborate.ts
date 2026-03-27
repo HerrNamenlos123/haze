@@ -167,6 +167,7 @@ export class SemanticElaborator {
     const typeUse = this.sr.typeUseNodes.get(expr.type);
     const typeDef = this.sr.typeDefNodes.get(typeUse.type);
     if (
+      typeDef.variant === Semantic.ENode.ShallowReactiveDatatype ||
       typeDef.variant === Semantic.ENode.ReactiveDatatype ||
       typeDef.variant === Semantic.ENode.ComputedDatatype
     ) {
@@ -4639,7 +4640,7 @@ export class SemanticElaborator {
                     } else if (Conversion.isVoidById(this.sr, inferredReturnType)) {
                       // The only valid place where a return statement can actually return nothing
                     } else {
-                      assert(false);
+                      assert(false, "TODO: Fix return type checking properly");
                     }
                   }
                 }
@@ -4803,6 +4804,44 @@ export class SemanticElaborator {
           if (type.innerNested) {
             const innerTypeUse = this.sr.cc.typeUseNodes.get(type.innerNested);
             if (innerTypeUse.variant === Collect.ENode.NamedDatatype) {
+              if (innerTypeUse.name === "ShallowReactive") {
+                if (innerTypeUse.genericArgs.length !== 1) {
+                  throw new CompilerError(
+                    `rx.ShallowReactive<T> requires exactly 1 generic argument`,
+                    type.sourceloc,
+                  );
+                }
+
+                if (innerTypeUse.inline) {
+                  throw new CompilerError(
+                    `rx.ShallowReactive<T> cannot be inline`,
+                    innerTypeUse.sourceloc,
+                  );
+                }
+
+                if (innerTypeUse.innerNested) {
+                  throw new CompilerError(
+                    `rx.ShallowReactive<T> is not a namespace`,
+                    innerTypeUse.sourceloc,
+                  );
+                }
+
+                const [genericArgExpr] = this.expr(innerTypeUse.genericArgs[0], undefined);
+                if (genericArgExpr.variant !== Semantic.ENode.DatatypeAsValueExpr) {
+                  throw new CompilerError(
+                    `rx.ShallowReactive<T> requires T to resolve to a datatype`,
+                    type.sourceloc,
+                  );
+                }
+
+                return makeShallowReactiveDatatypeAvailable(
+                  this.sr,
+                  genericArgExpr.type,
+                  innerTypeUse.mutability,
+                  innerTypeUse.sourceloc,
+                );
+              }
+
               if (innerTypeUse.name === "Reactive") {
                 if (innerTypeUse.genericArgs.length !== 1) {
                   throw new CompilerError(
@@ -4841,24 +4880,24 @@ export class SemanticElaborator {
                 );
               }
 
-              if (innerTypeUse.name === "ReactiveInner") {
+              if (innerTypeUse.name === "UnwrapReactive") {
                 if (innerTypeUse.genericArgs.length !== 1) {
                   throw new CompilerError(
-                    `rx.ReactiveInner<T> requires exactly 1 generic argument`,
+                    `rx.UnwrapReactive<T> requires exactly 1 generic argument`,
                     innerTypeUse.sourceloc,
                   );
                 }
 
                 if (innerTypeUse.inline) {
                   throw new CompilerError(
-                    `rx.ReactiveInner<T> cannot be inline`,
+                    `rx.UnwrapReactive<T> cannot be inline`,
                     innerTypeUse.sourceloc,
                   );
                 }
 
                 if (innerTypeUse.innerNested) {
                   throw new CompilerError(
-                    `rx.ReactiveInner<T> does not have children`,
+                    `rx.UnwrapReactive<T> does not have children`,
                     innerTypeUse.sourceloc,
                   );
                 }
@@ -4869,7 +4908,7 @@ export class SemanticElaborator {
                 );
                 if (genericArgExpr.variant !== Semantic.ENode.DatatypeAsValueExpr) {
                   throw new CompilerError(
-                    `rx.ReactiveInner<T> requires T to resolve to a datatype`,
+                    `rx.UnwrapReactive<T> requires T to resolve to a datatype`,
                     innerTypeUse.sourceloc,
                   );
                 }
@@ -4902,7 +4941,7 @@ export class SemanticElaborator {
                 const [genericArgExpr] = this.expr(innerTypeUse.genericArgs[0], undefined);
                 if (genericArgExpr.variant !== Semantic.ENode.DatatypeAsValueExpr) {
                   throw new CompilerError(
-                    `rx.Reactive<T> requires T to resolve to a datatype`,
+                    `rx.IsReactive<T> requires T to resolve to a datatype`,
                     innerTypeUse.sourceloc,
                   );
                 }
@@ -4913,6 +4952,7 @@ export class SemanticElaborator {
                   {
                     type: EPrimitive.bool,
                     value:
+                      typeDef.variant === Semantic.ENode.ShallowReactiveDatatype ||
                       typeDef.variant === Semantic.ENode.ReactiveDatatype ||
                       typeDef.variant === Semantic.ENode.ComputedDatatype,
                   },
@@ -5436,7 +5476,8 @@ export class SemanticElaborator {
 
     if (
       assignment.operation === EAssignmentOperation.Assign &&
-      lhsType.variant === Semantic.ENode.ReactiveDatatype
+      (lhsType.variant === Semantic.ENode.ShallowReactiveDatatype ||
+        lhsType.variant === Semantic.ENode.ReactiveDatatype)
     ) {
       if (targetExpr.isTemporary) {
         throw new CompilerError(
@@ -7884,6 +7925,7 @@ export class SemanticElaborator {
     const typeDef = this.sr.typeDefNodes.get(typeUse.type);
 
     if (typeDef.variant === Semantic.ENode.DynamicArrayDatatype) {
+    } else if (typeDef.variant === Semantic.ENode.ShallowReactiveDatatype) {
     } else if (typeDef.variant === Semantic.ENode.ReactiveDatatype) {
     } else if (typeDef.variant === Semantic.ENode.ComputedDatatype) {
     } else if (typeDef.variant === Semantic.ENode.StructDatatype) {
@@ -9660,11 +9702,12 @@ export function makeRawComputedDatatypeAvailable(
     return wrappedTypeUse.type;
   }
 
-  // Example: Computed<Reactive<T>> -> Computed<T>
-  // If the inner type T is a reactive, unwrap it because a computed supersedes a reactive
-  if (wrappedTypeDef.variant === Semantic.ENode.ReactiveDatatype) {
-    wrappedType = wrappedTypeDef.wrappedType; // Unwrap T but then make T -> Computed<T>
-  }
+  // This is no longer true, Computed should NOT unwrap inner state because it breaks deep reactivity propagation.
+  // // Example: Computed<ShallowReactive<T>> -> Computed<T>
+  // // If the inner type T is a reactive, unwrap it because a computed supersedes a reactive
+  // if (wrappedTypeDef.variant === Semantic.ENode.ReactiveDatatype) {
+  //   wrappedType = wrappedTypeDef.wrappedType; // Unwrap T but then make T -> Computed<T>
+  // }
 
   for (const id of sr.elaboratedComputedTypes) {
     const s = sr.typeDefNodes.get(id);
@@ -9697,6 +9740,21 @@ export function makeReactiveDatatypeAvailable(
   )[1];
 }
 
+export function makeShallowReactiveDatatypeAvailable(
+  sr: Semantic.Context,
+  wrappedType: Semantic.TypeUseId,
+  mutability: EDatatypeMutability,
+  sourceloc: SourceLoc,
+): Semantic.TypeUseId {
+  return makeTypeUse(
+    sr,
+    makeRawShallowReactiveDatatypeAvailable(sr, wrappedType),
+    mutability,
+    false,
+    sourceloc,
+  )[1];
+}
+
 export function makeRawReactiveDatatypeAvailable(
   sr: Semantic.Context,
   wrappedType: Semantic.TypeUseId,
@@ -9710,21 +9768,57 @@ export function makeRawReactiveDatatypeAvailable(
     return wrappedTypeUse.type;
   }
 
-  // Example: Reactive<Computed<T>> -> Computed<T>
-  // If the inner type T is a computed, unwrap it because a computed supersedes a reactive
-  if (wrappedTypeDef.variant === Semantic.ENode.ComputedDatatype) {
-    return wrappedTypeUse.type; // Use computed directly
-  }
-
   for (const id of sr.elaboratedReactiveTypes) {
     const s = sr.typeDefNodes.get(id);
-    assert(s.variant === Semantic.ENode.ReactiveDatatype);
+    assert(
+      s.variant === Semantic.ENode.ReactiveDatatype ||
+        s.variant === Semantic.ENode.ShallowReactiveDatatype,
+    );
     if (s.wrappedType === wrappedType) {
       return id;
     }
   }
   const [_, sId] = sr.b.addType(sr, {
     variant: Semantic.ENode.ReactiveDatatype,
+    wrappedType: wrappedType,
+    concrete: isTypeConcrete(sr, wrappedType),
+  });
+  sr.elaboratedReactiveTypes.push(sId);
+  return sId;
+}
+
+export function makeRawShallowReactiveDatatypeAvailable(
+  sr: Semantic.Context,
+  wrappedType: Semantic.TypeUseId,
+): Semantic.TypeDefId {
+  const wrappedTypeUse = sr.typeUseNodes.get(wrappedType);
+  const wrappedTypeDef = sr.typeDefNodes.get(wrappedTypeUse.type);
+
+  // Example: ShallowReactive<ShallowReactive<T>> -> ShallowReactive<T>
+  // If the inner type T is already reactive, simply unwrap it and use it directly
+  if (wrappedTypeDef.variant === Semantic.ENode.ShallowReactiveDatatype) {
+    return wrappedTypeUse.type;
+  }
+
+  // Reactive and Computed should stay separate and never collapse.
+  // // Example: ShallowReactive<Computed<T>> -> Computed<T>
+  // // If the inner type T is a computed, unwrap it because a computed supersedes a reactive
+  // if (wrappedTypeDef.variant === Semantic.ENode.ComputedDatatype) {
+  //   return wrappedTypeUse.type; // Use computed directly
+  // }
+
+  for (const id of sr.elaboratedReactiveTypes) {
+    const s = sr.typeDefNodes.get(id);
+    assert(
+      s.variant === Semantic.ENode.ReactiveDatatype ||
+        s.variant === Semantic.ENode.ShallowReactiveDatatype,
+    );
+    if (s.wrappedType === wrappedType) {
+      return id;
+    }
+  }
+  const [_, sId] = sr.b.addType(sr, {
+    variant: Semantic.ENode.ShallowReactiveDatatype,
     wrappedType: wrappedType,
     concrete: isTypeConcrete(sr, wrappedType),
   });

@@ -13,4 +13,14 @@ outputs = [
 ]
 
 [linker]
-flags = ["-lSDL3"]
+flags = ["-lSDL3-static"]
+
+[interface.linker.win32]
+flags = [  
+    "-lshell32",
+    "-lwinmm",
+    "-limm32",
+    "-lversion",
+    "-lcfgmgr32",
+    "-lsetupapi",
+]

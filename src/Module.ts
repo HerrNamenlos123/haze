@@ -1300,7 +1300,7 @@ export class ProjectCompiler {
           `git clone https://github.com/bdwgc/bdwgc.git "${builddir}" && cd "${builddir}" && git checkout ${commitHash}`,
         );
         execInherit(
-          `cmake . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DGC_BUILD_SHARED_LIBS=OFF -DCMAKE_INSTALL_PREFIX="${outdir}" -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DBUILD_TESTING=OFF`,
+          `cmake . -B build -G Ninja -DCMAKE_C_COMPILER="${HAZE_C_COMPILER}" -DCMAKE_CXX_COMPILER="${HAZE_CXX_COMPILER}" -DCMAKE_BUILD_TYPE=RelWithDebInfo -DGC_BUILD_SHARED_LIBS=OFF -DCMAKE_INSTALL_PREFIX="${outdir}" -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DBUILD_TESTING=OFF`,
           builddir,
         );
         execInherit(`cmake --build build -j`, builddir);

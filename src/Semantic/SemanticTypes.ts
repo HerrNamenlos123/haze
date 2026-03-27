@@ -68,6 +68,7 @@ export namespace Semantic {
     PrimitiveDatatype,
     GenericParameterDatatype,
     ReactiveDatatype,
+    ShallowReactiveDatatype,
     ComputedDatatype,
     NamespaceDatatype,
     FixedArrayDatatype,
@@ -392,6 +393,12 @@ export namespace Semantic {
     concrete: boolean;
   };
 
+  export type ShallowReactiveDatatypeDef = {
+    variant: ENode.ShallowReactiveDatatype;
+    wrappedType: TypeUseId;
+    concrete: boolean;
+  };
+
   export type ComputedDatatypeDef = {
     variant: ENode.ComputedDatatype;
     wrappedType: TypeUseId;
@@ -419,6 +426,7 @@ export namespace Semantic {
     | FixedArrayDatatypeDef
     | DynamicArrayDatatypeDef
     | SliceDatatypeDef
+    | ShallowReactiveDatatypeDef
     | ReactiveDatatypeDef
     | ComputedDatatypeDef
     | ParameterPackDatatypeDef
@@ -1875,6 +1883,10 @@ export namespace Semantic {
         return `rx.Reactive<${serializeTypeUse(sr, datatype.wrappedType)}>`;
       }
 
+      case Semantic.ENode.ShallowReactiveDatatype: {
+        return `rx.ShallowReactive<${serializeTypeUse(sr, datatype.wrappedType)}>`;
+      }
+
       case Semantic.ENode.ComputedDatatype: {
         return `rx.Computed<${serializeTypeUse(sr, datatype.wrappedType)}>`;
       }
@@ -2293,7 +2305,7 @@ export namespace Semantic {
         };
       }
 
-      case Semantic.ENode.ReactiveDatatype: {
+      case Semantic.ENode.ShallowReactiveDatatype: {
         return {
           name: "R" + mangleTypeUse(sr, type.wrappedType).name,
           wasMangled: true,

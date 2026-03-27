@@ -1,6 +1,6 @@
 
 namespace rx {
-    export reactive<T>(value: T): rx.Reactive<T> {
+    export shallowReactive<T>(value: T): rx.ShallowReactive<T> {
 
         if comptime type<rx.IsReactive<T>> { 
             return value;
@@ -40,7 +40,7 @@ namespace rx {
         };
     }
 
-    export unwrap<T>(value: T): rx.ReactiveInner<T> {
-        return value as rx.ReactiveInner<T>;
+    export toRaw<T>(value: T): rx.UnwrapReactive<T> {
+        return value as rx.UnwrapReactive<T>;
     }
 }
