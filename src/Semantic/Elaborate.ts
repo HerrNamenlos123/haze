@@ -2172,18 +2172,19 @@ export class SemanticElaborator {
 
     let [object, objectId] = this.expr(memberAccess.expr, inference);
 
+    // Handle datatypes BEFORE reactive unwrapping
+    if (object.variant === Semantic.ENode.DatatypeAsValueExpr) {
+      return this.elaborateDatatypeMemberAccess(this.sr, objectId, object.type, memberAccess, {
+        gonnaCallFunctionWithParameterValues: inference?.gonnaCallFunctionWithParameterValues,
+      });
+    }
+
     // Any dot access to any reactive value should first unwrap the reactive value, always
     objectId = this.unwrapReactiveOrComputedIfPossible(objectId);
     object = this.sr.exprNodes.get(objectId);
 
     let objectTypeUse = this.sr.typeUseNodes.get(object.type);
     let objectType = this.sr.typeDefNodes.get(objectTypeUse.type);
-
-    if (object.variant === Semantic.ENode.DatatypeAsValueExpr) {
-      return this.elaborateDatatypeMemberAccess(this.sr, objectId, object.type, memberAccess, {
-        gonnaCallFunctionWithParameterValues: inference?.gonnaCallFunctionWithParameterValues,
-      });
-    }
 
     if (memberAccess.memberName === "toString") {
       const funcname = `__hz_value_to_string_${Semantic.mangleTypeUse(this.sr, object.type).name}`;

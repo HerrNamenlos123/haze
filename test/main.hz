@@ -34,13 +34,26 @@ getWindowState(window: sdl.Window): WindowState {
     };
 }
 
+struct Bar {
+    value: int;
+}
+
 struct Foo {
     value: int;
+    bar: Bar;
 }
 
 main(): int {
 
-    let a = rx.shallowReactive(Foo { value: 5 });
+    do unsafe {
+        let b: rx.Reactive<Foo> = uninitialized;
+        fmt.println(typeof(b).name);
+        fmt.println(typeof(b.value).name);
+        fmt.println(typeof(b.bar).name);
+    };
+    return 0;
+
+    let a = rx.shallowReactive(Foo { value: 5, bar: { value: 42 } });
     let aValue = rx.computed<int>(() => {
         fmt.println("Rerunning computed");
         return a.value;
@@ -50,7 +63,7 @@ main(): int {
     fmt.println(f"aValue = {aValue}");
 
     // a := Foo { value: 6 };
-    a.value = 6;
+    // a.value = 6;
 
     fmt.println(f"a.value = {a.value}");
     fmt.println(f"aValue = {aValue}");
