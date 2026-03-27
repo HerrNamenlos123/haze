@@ -100,21 +100,16 @@ namespace fmt {
     }
 
     export format_to_proxy<T>(writer: mut StringWriter, value: T, args: FormatArgs) :: final {
-        static_print(f"format_to_proxy enter: {typeof(value).name}");
         if comptime type<rx.IsReactive<T>> {
-            static_print(f"format_to_proxy call: {typeof(value).name}");
             format_to_proxy(writer, rx.get(value), args);
         }
-        if comptime type<rx.IsShallowReactive<T>> {
-            static_print(f"format_to_proxy call: {typeof(value).name}");
+        else if type<rx.IsShallowReactive<T>> {
             format_to_proxy(writer, rx.get(value), args);
         }
-        if comptime type<rx.IsComputed<T>> {
-            static_print(f"format_to_proxy call: {typeof(value).name}");
+        else if type<rx.IsComputed<T>> {
             format_to_proxy(writer, rx.get(value), args);
         }
         else {
-            static_print(f"format_to: {typeof(value).name}");
             format_to(writer, value, args);
         }
     }
