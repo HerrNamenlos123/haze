@@ -1,0 +1,27 @@
+// Regression: generic overload should be a fallback when no exact non-generic match exists.
+
+pick(x: int): int {
+    return 1;
+}
+
+pick<T>(x: T): int {
+    return 2;
+}
+
+main(): int {
+    // Exact non-generic match must win.
+    let a = pick(42);
+
+    // Generic fallback must be accepted (instead of rejecting on int != T style mismatch).
+    let b = pick("hello");
+
+    if a != 1 {
+        return 10;
+    }
+
+    if b != 2 {
+        return 20;
+    }
+
+    return 0;
+}

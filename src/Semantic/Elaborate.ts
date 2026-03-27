@@ -3490,6 +3490,15 @@ export class SemanticElaborator {
         const overload = this.sr.cc.symbolNodes.get(overloadId);
         assert(overload.variant === Collect.ENode.FunctionSymbol);
 
+        if (exact && overload.generics.length > 0) {
+          matchingSignatures.push({
+            matches: false,
+            signature: this.elaborateFunctionSignature(overloadId),
+            reason: `Contains generic parameters (exact match not possible)`,
+          });
+          continue;
+        }
+
         const signatureId = this.elaborateFunctionSignature(overloadId);
         const signature = this.sr.symbolNodes.get(signatureId);
         assert(signature.variant === Semantic.ENode.FunctionSignature);
@@ -3562,6 +3571,14 @@ export class SemanticElaborator {
           const actuallyGivenexpression = this.sr.exprNodes.get(passed.exprId);
           const aUse = this.sr.e.getTypeUse(actuallyGivenexpression.type);
           const bUse = this.sr.e.getTypeUse(signatureParam.type);
+
+          const parameterIsConcrete = isTypeConcrete(this.sr, signatureParam.type);
+          // For non-exact overload matching, generic/non-concrete parameters are loose
+          // placeholders and should not reject otherwise viable candidates.
+          if (!exact && !parameterIsConcrete) {
+            return;
+          }
+
           if (aUse.type !== bUse.type) {
             matches = false;
             reason = `Parameter #${i + 1} has unrelated type: ${Semantic.serializeTypeUse(
