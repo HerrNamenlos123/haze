@@ -46,19 +46,19 @@ struct Foo {
 main(): int {
 
     let a = rx.reactive(Foo { value: 5, bar: { value: 42 } });
-    let aValue = rx.computed<int>(() => {
-        fmt.println("Rerunning computed");
-        return a.value as int;
-    });
+    // let aValue = rx.computed<int>(() => {
+    //     fmt.println("Rerunning computed");
+    //     return a.value as int;
+    // });
 
     fmt.println(f"a.value = {a.value}");
-    fmt.println(f"aValue = {aValue}");
+    // fmt.println(f"aValue = {aValue}");
 
-    // a := Foo { value: 6 };
-    // a.value = 6;
+    // // a := Foo { value: 6 };
+    // // a.value = 6;
 
-    fmt.println(f"a.value = {a.value}");
-    fmt.println(f"aValue = {aValue}");
+    // fmt.println(f"a.value = {a.value}");
+    // fmt.println(f"aValue = {aValue}");
 
     return 0;
 

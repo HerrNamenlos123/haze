@@ -9,5 +9,8 @@
     // "**/dist": true,
     // "**/build": true,
     // "**/autogen": true
+  },
+  "chat.tools.terminal.autoApprove": {
+    ".\\__haze__\\test\\bin\\test.exe": true
   }
 }
