@@ -4684,7 +4684,10 @@ export class SemanticElaborator {
     );
   }
 
-  lookupAndElaborateDatatype(typeId: Collect.TypeUseId): Semantic.TypeUseId {
+  lookupAndElaborateDatatype(
+    typeId: Collect.TypeUseId,
+    args?: { noSubstituteGenerics?: boolean },
+  ): Semantic.TypeUseId {
     const type = this.sr.cc.typeUseNodes.get(typeId);
 
     switch (type.variant) {
@@ -5074,7 +5077,7 @@ export class SemanticElaborator {
 
         if (found.variant === Collect.ENode.GenericTypeParameterSymbol) {
           const mappedTo = this.currentContext.substitute.get(foundId);
-          if (mappedTo) {
+          if (mappedTo && !args?.noSubstituteGenerics) {
             const mapped = this.sr.exprNodes.get(mappedTo);
             if (mapped.variant === Semantic.ENode.DatatypeAsValueExpr) {
               return mapped.type;
@@ -5710,7 +5713,7 @@ export class SemanticElaborator {
           inAttemptExpr: null,
           inFunction: null,
         },
-        () => this.lookupAndElaborateDatatype(p.type),
+        () => this.lookupAndElaborateDatatype(p.type, { noSubstituteGenerics: true }),
       );
       return {
         name: p.name,
