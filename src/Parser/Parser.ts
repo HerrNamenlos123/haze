@@ -163,6 +163,7 @@ import {
   TripleFStringContext,
   ParamContext,
   TypeOfExprDatatypeContext,
+  ComptimeIfStatementContext,
 } from "./grammar/autogen/HazeParser";
 import {
   BaseErrorListener,
@@ -2270,7 +2271,7 @@ class ASTBuilder extends HazeParserListener {
     } satisfies IfStatementCondition);
   };
 
-  exitIfStatement = (ctx: IfStatementContext) => {
+  processIfStatement(ctx: IfStatementContext | ComptimeIfStatementContext, comptime: boolean) {
     if (!ctx._then) {
       throw new InternalError("then scope is missing");
     }
@@ -2353,9 +2354,17 @@ class ASTBuilder extends HazeParserListener {
       then: thenScope,
       sourceloc: this.loc(ctx),
       elseIfs,
-      comptime: Boolean(ctx._comptime),
+      comptime: comptime,
       else: elseBlock,
     } satisfies ASTIfStatement);
+  }
+
+  exitIfStatement = (ctx: IfStatementContext) => {
+    this.processIfStatement(ctx, false);
+  };
+
+  exitComptimeIfStatement = (ctx: ComptimeIfStatementContext) => {
+    this.processIfStatement(ctx, true);
   };
 
   exitWhileStatement = (ctx: WhileStatementContext) => {

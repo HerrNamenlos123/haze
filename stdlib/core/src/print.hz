@@ -103,10 +103,10 @@ namespace fmt {
         if comptime type<rx.IsReactive<T>> {
             format_to_proxy(writer, rx.get(value), args);
         }
-        else if type<rx.IsShallowReactive<T>> {
+        else if comptime type<rx.IsShallowReactive<T>> {
             format_to_proxy(writer, rx.get(value), args);
         }
-        else if type<rx.IsComputed<T>> {
+        else if comptime type<rx.IsComputed<T>> {
             format_to_proxy(writer, rx.get(value), args);
         }
         else {

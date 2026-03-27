@@ -30,7 +30,7 @@ namespace embed {
         if comptime TCond is true {
             return watchText(path, options);
         }
-        else if TCond is false {
+        else if comptime TCond is false {
             return rx.reactive(text(path));
         }
         else {
@@ -57,7 +57,7 @@ namespace embed {
         if comptime TCond is true {
             return watchBinary(path, options);
         }
-        else if  TCond is false {
+        else if comptime TCond is false {
             return rx.reactive(binary(path));
         }
         else {

@@ -332,7 +332,8 @@ statement
     | RETURN expr? SEMI                                                             #ReturnStatement
     | RAISE expr? SEMI                                                              #RaiseStatement
     | variableCreation                                                              #VariableCreationStatement
-    | IF comptime=COMPTIME? ifCondition=ifStatementConditionImpl then=rawScope (ELSE IF elseIfCondition+=ifStatementConditionImpl elseIfThen+=rawScope)* (ELSE elseBlock=rawScope)? #IfStatement
+    | IF ifCondition=ifStatementConditionImpl then=rawScope (ELSE IF elseIfCondition+=ifStatementConditionImpl elseIfThen+=rawScope)* (ELSE elseBlock=rawScope)? #IfStatement
+    | IF COMPTIME ifCondition=ifStatementConditionImpl then=rawScope (ELSE IF COMPTIME elseIfCondition+=ifStatementConditionImpl elseIfThen+=rawScope)* (ELSE elseBlock=rawScope)? #ComptimeIfStatement
     | FOR comptime=COMPTIME? id (COMMA id)? IN expr rawScope                        #ForEachStatement
     | FOR comptime=COMPTIME? LB statement? SEMI condition=expr? SEMI incr=expr? RB rawScope #ForStatement
     | WHILE expr rawScope                                                           #WhileStatement

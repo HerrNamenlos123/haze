@@ -57,7 +57,7 @@ namespace json {
                     }
                     sys.panic("JSON object does not have attribute");
                 } 
-                else if T == type<real> {
+                else if comptime T == type<real> {
                     let obj = ffi.hzstd_json_get_object_item(this.json.allocator, this.json.data, this.attribute);
                     if obj {
                         let value = ffi.hzstd_json_get_number_value(this.json.allocator, obj);
