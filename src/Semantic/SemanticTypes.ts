@@ -299,6 +299,7 @@ export namespace Semantic {
     generics: ExprId[];
     opaque: boolean;
     plain: boolean;
+    reactiveClone: boolean;
     inlineByDefault: boolean;
     export: boolean;
     extern: EExternLanguage;
@@ -955,6 +956,10 @@ export namespace Semantic {
 
     elaboratedLiteralTypes: Semantic.TypeDefId[];
     elaboratedPrimitiveTypes: Semantic.TypeDefId[];
+    elaboratedDeepReactiveStructs: {
+      rawStruct: Semantic.TypeDefId;
+      reactiveStruct: Semantic.TypeDefId;
+    }[];
     elaboratedReactiveTypes: Semantic.TypeDefId[];
     elaboratedComputedTypes: Semantic.TypeDefId[];
     functionTypeCache: Semantic.TypeDefId[];
@@ -1516,6 +1521,7 @@ export namespace Semantic {
 
       elaboratedFunctionSignatures: new Map(),
       elaboratedFunctionSignaturesByName: new Map(),
+      elaboratedDeepReactiveStructs: [],
 
       elaboratedLiteralTypes: [],
       elaboratedStructDatatypes: new Map(),
@@ -2122,15 +2128,20 @@ export namespace Semantic {
           };
         }
 
+        let prefix = "";
+        if (type.reactiveClone) {
+          prefix += "r";
+        }
+
         const names = getNamespaceChainFromDatatype(sr, typeId);
         if (names.length === 1) {
           return {
-            name: names[0].mangled,
+            name: prefix + names[0].mangled,
             wasMangled: true,
           };
         } else {
           return {
-            name: `N${names.map((n) => n.mangled).join("")}E`,
+            name: prefix + `N${names.map((n) => n.mangled).join("")}E`,
             wasMangled: true,
           };
         }

@@ -19,8 +19,10 @@ import {
   assert,
   assertCompilerError,
   CompilerError,
+  ErrorType,
   formatSourceLoc,
   InternalError,
+  printCompilerMessage,
   printWarningMessage,
   type SourceLoc,
 } from "../shared/Errors";
@@ -891,6 +893,26 @@ export class SemanticElaborator {
             throw new CompilerError(`static_assert evaluated to false`, callExpr.sourceloc);
           }
         }
+      }
+      if (collectedExpr.name === "static_print") {
+        this.assertNoGenericArgs(collectedExpr, "static_print");
+        this.assertParameterN(callExpr, 1, "static_print");
+
+        const s = this.getExpr(this.expr(callExpr.arguments[0], undefined)[1]);
+        if (
+          s.variant !== Semantic.ENode.LiteralExpr ||
+          (s.literal.type !== EPrimitive.str &&
+            s.literal.type !== EPrimitive.cstr &&
+            s.literal.type !== EPrimitive.ccstr)
+        ) {
+          throw new CompilerError(
+            "The static_print function requires the second parameter to be a compile-time-evaluable string, or none",
+            collectedExpr.sourceloc,
+          );
+        }
+        const value = s.literal.value;
+        printCompilerMessage(ErrorType.Info, null, value);
+        return this.sr.b.noneExpr();
       }
 
       const primitive = stringToPrimitive(collectedExpr.name);
@@ -3330,6 +3352,7 @@ export class SemanticElaborator {
       extern: definedStructType.extern,
       noemit: definedStructType.noemit,
       opaque: definedStructType.opaque,
+      reactiveClone: false,
       plain: definedStructType.plain,
       inlineByDefault: definedStructType.inlineByDefault,
       membersBuilt: false,
@@ -5027,10 +5050,84 @@ export class SemanticElaborator {
                 return this.sr.b.literalType(
                   {
                     type: EPrimitive.bool,
-                    value:
-                      typeDef.variant === Semantic.ENode.ShallowReactiveDatatype ||
-                      typeDef.variant === Semantic.ENode.ReactiveDatatype ||
-                      typeDef.variant === Semantic.ENode.ComputedDatatype,
+                    value: typeDef.variant === Semantic.ENode.ReactiveDatatype,
+                  },
+                  innerTypeUse.sourceloc,
+                );
+              }
+              if (innerTypeUse.name === "IsShallowReactive") {
+                if (innerTypeUse.genericArgs.length !== 1) {
+                  throw new CompilerError(
+                    `rx.IsShallowReactive<T> requires exactly 1 generic argument`,
+                    innerTypeUse.sourceloc,
+                  );
+                }
+
+                if (innerTypeUse.inline) {
+                  throw new CompilerError(
+                    `IsShallowReactive<T> cannot be inline`,
+                    innerTypeUse.sourceloc,
+                  );
+                }
+
+                if (innerTypeUse.innerNested) {
+                  throw new CompilerError(
+                    `rx.IsShallowReactive<T> does not have children`,
+                    innerTypeUse.sourceloc,
+                  );
+                }
+
+                const [genericArgExpr] = this.expr(innerTypeUse.genericArgs[0], undefined);
+                if (genericArgExpr.variant !== Semantic.ENode.DatatypeAsValueExpr) {
+                  throw new CompilerError(
+                    `rx.IsShallowReactive<T> requires T to resolve to a datatype`,
+                    innerTypeUse.sourceloc,
+                  );
+                }
+
+                const typeUse = this.sr.typeUseNodes.get(genericArgExpr.type);
+                const typeDef = this.sr.typeDefNodes.get(typeUse.type);
+                return this.sr.b.literalType(
+                  {
+                    type: EPrimitive.bool,
+                    value: typeDef.variant === Semantic.ENode.ShallowReactiveDatatype,
+                  },
+                  innerTypeUse.sourceloc,
+                );
+              }
+              if (innerTypeUse.name === "IsComputed") {
+                if (innerTypeUse.genericArgs.length !== 1) {
+                  throw new CompilerError(
+                    `rx.IsComputed<T> requires exactly 1 generic argument`,
+                    innerTypeUse.sourceloc,
+                  );
+                }
+
+                if (innerTypeUse.inline) {
+                  throw new CompilerError(`IsComputed<T> cannot be inline`, innerTypeUse.sourceloc);
+                }
+
+                if (innerTypeUse.innerNested) {
+                  throw new CompilerError(
+                    `rx.IsComputed<T> does not have children`,
+                    innerTypeUse.sourceloc,
+                  );
+                }
+
+                const [genericArgExpr] = this.expr(innerTypeUse.genericArgs[0], undefined);
+                if (genericArgExpr.variant !== Semantic.ENode.DatatypeAsValueExpr) {
+                  throw new CompilerError(
+                    `rx.IsComputed<T> requires T to resolve to a datatype`,
+                    innerTypeUse.sourceloc,
+                  );
+                }
+
+                const typeUse = this.sr.typeUseNodes.get(genericArgExpr.type);
+                const typeDef = this.sr.typeDefNodes.get(typeUse.type);
+                return this.sr.b.literalType(
+                  {
+                    type: EPrimitive.bool,
+                    value: typeDef.variant === Semantic.ENode.ComputedDatatype,
                   },
                   innerTypeUse.sourceloc,
                 );
@@ -9844,6 +9941,83 @@ export function makeRawReactiveDatatypeAvailable(
     return wrappedTypeUse.type;
   }
 
+  // Here, do the actual deeply reactive type conversion
+  let makeNewStruct = false;
+  if (wrappedTypeDef.variant === Semantic.ENode.StructDatatype) {
+    for (const entry of sr.elaboratedDeepReactiveStructs) {
+      if (entry.rawStruct === wrappedTypeUse.type) {
+        return entry.reactiveStruct;
+      }
+    }
+
+    // sr.elaboratedDeepReactiveStructs.push(wrappedTypeDef);
+    // TODO: FATAL: There is still tons and tons of stuff to do in order to implement the
+    // reactive type cloning properly, there are still a lot of hidden issues with caching, parents, etc
+    makeNewStruct = true;
+    const [newStruct, newStructId] = sr.b.addType<Semantic.StructDatatypeDef>(sr, {
+      variant: Semantic.ENode.StructDatatype,
+      export: false,
+      extern: wrappedTypeDef.extern,
+      generics: wrappedTypeDef.generics,
+      inlineByDefault: wrappedTypeDef.inlineByDefault,
+      membersBuilt: false,
+      reactiveClone: true,
+      membersFinalized: false,
+      methodsFinalized: false,
+      memberDefaultValues: wrappedTypeDef.memberDefaultValues,
+      members: [],
+      methods: wrappedTypeDef.methods,
+      methodsInProgress: false,
+      name: wrappedTypeDef.name,
+      nestedStructs: wrappedTypeDef.nestedStructs,
+      noemit: wrappedTypeDef.noemit,
+      opaque: wrappedTypeDef.opaque,
+      originalCollectedDefinition: wrappedTypeDef.originalCollectedDefinition,
+      originalCollectedSymbol: wrappedTypeDef.originalCollectedSymbol,
+      parentSymbolId: wrappedTypeDef.parentSymbolId,
+      plain: wrappedTypeDef.plain,
+      sourceloc: wrappedTypeDef.sourceloc,
+      concrete: wrappedTypeDef.concrete,
+    });
+    const structSymbol = sr.b.typeDefSymbol(newStructId)[1];
+
+    for (const memberId of wrappedTypeDef.members) {
+      const member = sr.symbolNodes.get(memberId);
+      assert(member.variant === Semantic.ENode.VariableSymbol);
+      assert(member.type);
+      const newMember = sr.b.addSymbol(sr, {
+        variant: Semantic.ENode.VariableSymbol,
+        name: member.name,
+        comptime: member.comptime,
+        comptimeValue: member.comptimeValue,
+        concrete: member.concrete,
+        export: member.export,
+        extern: member.extern,
+        memberOfStruct: newStructId,
+        mutability: member.mutability,
+        parentSymbolId: structSymbol,
+        requiresHoisting: member.requiresHoisting,
+        sourceloc: member.sourceloc,
+        type: makeReactiveDatatypeAvailable(
+          sr,
+          member.type,
+          EDatatypeMutability.Default,
+          member.sourceloc,
+        ),
+        variableContext: member.variableContext,
+      })[1];
+      newStruct.members.push(newMember);
+    }
+
+    wrappedType = makeTypeUse(
+      sr,
+      newStructId,
+      EDatatypeMutability.Default,
+      false,
+      newStruct.sourceloc,
+    )[1];
+  }
+
   for (const id of sr.elaboratedReactiveTypes) {
     const s = sr.typeDefNodes.get(id);
     assert(
@@ -9854,12 +10028,21 @@ export function makeRawReactiveDatatypeAvailable(
       return id;
     }
   }
+
   const [_, sId] = sr.b.addType(sr, {
     variant: Semantic.ENode.ReactiveDatatype,
     wrappedType: wrappedType,
     concrete: isTypeConcrete(sr, wrappedType),
   });
   sr.elaboratedReactiveTypes.push(sId);
+
+  if (makeNewStruct) {
+    sr.elaboratedDeepReactiveStructs.push({
+      rawStruct: wrappedTypeUse.type,
+      reactiveStruct: sId,
+    });
+  }
+
   return sId;
 }
 

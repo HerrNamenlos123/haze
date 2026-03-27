@@ -2,6 +2,24 @@
 namespace rx {
     export shallowReactive<T>(value: T): rx.ShallowReactive<T> {
 
+        if comptime type<rx.IsShallowReactive<T>> { 
+            return value;
+        }
+
+        let tmp: T = value;
+        return do unsafe {
+            let result: rx.ShallowReactive<T> = uninitialized;
+            __c__("""
+    void* slot = hzstd_slot_alloc(sizeof(tmp));
+    hzstd_slot_write(slot, &tmp, sizeof(tmp));
+    result = hzstd_reactive_create(slot);
+            """);
+            result;
+        };
+    }
+
+    export reactive<T>(value: T): rx.Reactive<T> {
+
         if comptime type<rx.IsReactive<T>> { 
             return value;
         }

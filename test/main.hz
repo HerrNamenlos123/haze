@@ -45,18 +45,10 @@ struct Foo {
 
 main(): int {
 
-    do unsafe {
-        let b: rx.Reactive<Foo> = uninitialized;
-        fmt.println(typeof(b).name);
-        fmt.println(typeof(b.value).name);
-        fmt.println(typeof(b.bar).name);
-    };
-    return 0;
-
-    let a = rx.shallowReactive(Foo { value: 5, bar: { value: 42 } });
+    let a = rx.reactive(Foo { value: 5, bar: { value: 42 } });
     let aValue = rx.computed<int>(() => {
         fmt.println("Rerunning computed");
-        return a.value;
+        return a.value as int;
     });
 
     fmt.println(f"a.value = {a.value}");

@@ -1,6 +1,7 @@
 export enum ErrorType {
   Error,
   Warning,
+  Info,
 }
 
 export type SourceLocNotNull = {
@@ -49,7 +50,7 @@ export function formatSourceLoc(loc: SourceLocNotNull) {
 
 function formatCompilerMessage(
   type: ErrorType,
-  error: string,
+  error: string | null,
   msg: string,
   loc?: SourceLoc,
 ): string {
@@ -57,17 +58,29 @@ function formatCompilerMessage(
   if (loc) {
     text += `\x1b[31m${formatSourceLoc(loc)}: \x1b[0m`;
   }
-  if (type === ErrorType.Error) {
-    text += `\x1b[31m${error}\x1b[0m: ${msg}`;
+
+  if (error) {
+    if (type === ErrorType.Error) {
+      text += `\x1b[31m${error}\x1b[0m: ${msg}`;
+    } else if (type === ErrorType.Warning) {
+      text += `\x1b[33m${error}\x1b[0m: ${msg}`;
+    } else {
+      text += `${error}: ${msg}`;
+    }
   } else {
-    text += `\x1b[33m${error}\x1b[0m: ${msg}`;
+    text += msg;
   }
   return text;
 }
 
-function printCompilerMessage(type: ErrorType, error: string, msg: string, loc?: SourceLoc): void {
+export function printCompilerMessage(
+  type: ErrorType,
+  error: string | null,
+  msg: string,
+  loc?: SourceLoc,
+): void {
   if (diagnosticSink) {
-    diagnosticSink({ type, message: msg, loc, title: error });
+    diagnosticSink({ type, message: msg, loc, title: error ?? undefined });
     return;
   }
   console.log(formatCompilerMessage(type, error, msg, loc));
