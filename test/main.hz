@@ -43,17 +43,17 @@ main(): int {
     let a = rx.shallowReactive(Foo { value: 5 });
     let aValue = rx.computed<int>(() => {
         fmt.println("Rerunning computed");
-        return rx.toRaw(a).value;
+        return rx.get(a).value;
     });
 
-    fmt.println(f"a.value = {rx.toRaw(a).value}");
-    fmt.println(f"aValue = {rx.toRaw(aValue)}");
+    fmt.println(f"a.value = {rx.get(a).value}");
+    fmt.println(f"aValue = {rx.get(aValue)}");
 
     // a := Foo { value: 6 };
     a.value = 6;
 
-    fmt.println(f"a.value = {rx.toRaw(a).value}");
-    fmt.println(f"aValue = {rx.toRaw(aValue)}");
+    fmt.println(f"a.value = {rx.get(a).value}");
+    fmt.println(f"aValue = {rx.get(aValue)}");
 
     return 0;
 
@@ -173,7 +173,7 @@ main(): int {
             style: { fontSize: 60.0, fontFamily: "roboto" }
         };
 
-        let uiTree = rx.reactive<ui.DivElement>(ui.DivElement {
+        let uiTree = rx.shallowReactive<ui.DivElement>(ui.DivElement {
             id: 1,
             style: {
                 backgroundColor: Color(0.15, 0.15, 0.15, 1),
@@ -328,7 +328,7 @@ main(): int {
             fs.pollEvents();
             renderer.beginFrame();
 
-            uiCtx.render(rx.unwrap(uiTree), {
+            uiCtx.render(rx.get(uiTree), {
                 renderFilledRectangle: (position: Vec2, size: Vec2, backgroundColor: Color, cornerRadius: ui.CornerRadiusValues): void => {
                     renderer.drawRect({
                         pos: position, 

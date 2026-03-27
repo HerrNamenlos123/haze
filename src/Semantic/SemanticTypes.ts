@@ -2305,6 +2305,7 @@ export namespace Semantic {
         };
       }
 
+      case Semantic.ENode.ReactiveDatatype:
       case Semantic.ENode.ShallowReactiveDatatype: {
         return {
           name: "R" + mangleTypeUse(sr, type.wrappedType).name,

@@ -467,7 +467,7 @@ opaque struct Renderer {
     }
 
     endFrame() {
-        let pipelineValue = rx.unwrap(this.pipeline);
+        let pipelineValue = rx.get(this.pipeline);
 
         this.updateAtlas();
 

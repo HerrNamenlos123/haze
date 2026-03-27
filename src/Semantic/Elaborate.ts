@@ -2120,7 +2120,12 @@ export class SemanticElaborator {
       );
     }
 
-    const [object, objectId] = this.expr(memberAccess.expr, inference);
+    let [object, objectId] = this.expr(memberAccess.expr, inference);
+
+    // Any dot access to any reactive value should first unwrap the reactive value, always
+    objectId = this.unwrapReactiveOrComputedIfPossible(objectId);
+    object = this.sr.exprNodes.get(objectId);
+
     let objectTypeUse = this.sr.typeUseNodes.get(object.type);
     let objectType = this.sr.typeDefNodes.get(objectTypeUse.type);
 

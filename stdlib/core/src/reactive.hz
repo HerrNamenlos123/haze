@@ -40,7 +40,7 @@ namespace rx {
         };
     }
 
-    export toRaw<T>(value: T): rx.UnwrapReactive<T> {
+    export get<T>(value: T): rx.UnwrapReactive<T> {
         return value as rx.UnwrapReactive<T>;
     }
 }

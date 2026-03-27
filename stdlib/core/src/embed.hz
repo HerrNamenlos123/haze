@@ -13,7 +13,7 @@ namespace embed {
     }
 
     export watchText<TPath>(path: TPath, options: fs.FileWatchOptions = {}): rx.Reactive<str> {
-        let data = rx.reactive(builtin.embed_file_text(TPath));
+        let data = rx.shallowReactive(builtin.embed_file_text(TPath));
         fs.watch(TPath, (event: fs.FileChangeEvent): void => {
             if let d = fs.readText(path as str) {
                 data := d;
@@ -40,7 +40,7 @@ namespace embed {
     }
 
     export watchBinary<TPath>(path: TPath, options: fs.FileWatchOptions = {}): rx.Reactive<Bytes> {
-        let data = rx.reactive(builtin.embed_file_binary(TPath));
+        let data = rx.shallowReactive(builtin.embed_file_binary(TPath));
         fs.watch(TPath, (event: fs.FileChangeEvent): void => {
             if let d = fs.readBinary(path as str) {
                 data := d;
