@@ -47,13 +47,13 @@ main(): int {
     });
 
     fmt.println(f"a.value = {a.value}");
-    fmt.println(f"aValue = {aValue} {Foo {value: 0}}");
+    fmt.println(f"aValue = {aValue}");
 
     // a := Foo { value: 6 };
     a.value = 6;
 
     fmt.println(f"a.value = {a.value}");
-    fmt.println("aValue = ", aValue);
+    fmt.println(f"aValue = {aValue}");
 
     return 0;
 

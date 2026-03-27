@@ -209,18 +209,6 @@ STRING_LITERAL: ('"' | 'b"') (ESC | ~["\\])* '"' ;
 
 FSTRING_START: 'f"' -> pushMode(InterpolatedString);
 
-mode InterpolatedString;
-
-FSTRING_ESCAPE_OPENING_BRACES: '{{' -> type(FSTRING_GRAPHEME);
-FSTRING_ESCAPE_CLOSING_BRACES: '}}' -> type(FSTRING_GRAPHEME);
-FSTRING_ESCAPE_QUOTE: '\\"' -> type(FSTRING_GRAPHEME);
-FSTRING_ESCAPE: ESC -> type(FSTRING_GRAPHEME);
-
-FSTRING_EXPR_START: '{' -> type(LCURLY), pushMode(DEFAULT_MODE);
-FSTRING_END: '"' -> popMode;
-
-FSTRING_GRAPHEME: ~('{' | '"' | '\\');
-
 mode InterpolatedStringTriple;
 
 FTRIPLE_ESCAPE_TRIPLE_QUOTE
@@ -246,10 +234,18 @@ FTRIPLE_EXPR_START: '{' -> type(LCURLY), pushMode(DEFAULT_MODE);
 
 // allow everything except start of interpolation or terminator
 FTRIPLE_GRAPHEME
-    : (
-        '""' ~'"'
-      | '"' ~'"'
-      | ~'{'
-      )
+    : (~('{' | '"') | '"')
     -> type(FSTRING_GRAPHEME)
     ;
+
+mode InterpolatedString;
+
+FSTRING_ESCAPE_OPENING_BRACES: '{{' -> type(FSTRING_GRAPHEME);
+FSTRING_ESCAPE_CLOSING_BRACES: '}}' -> type(FSTRING_GRAPHEME);
+FSTRING_ESCAPE_QUOTE: '\\"' -> type(FSTRING_GRAPHEME);
+FSTRING_ESCAPE: ESC -> type(FSTRING_GRAPHEME);
+
+FSTRING_EXPR_START: '{' -> type(LCURLY), pushMode(DEFAULT_MODE);
+FSTRING_END: '"' -> popMode;
+
+FSTRING_GRAPHEME: ~('{' | '"' | '\\');

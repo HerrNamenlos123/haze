@@ -862,6 +862,7 @@ export class SemanticElaborator {
         let second = undefined as Semantic.LiteralExpr | undefined;
         if (callExpr.arguments.length > 1) {
           const s = this.getExpr(this.expr(callExpr.arguments[1], undefined)[1]);
+
           if (
             s.variant !== Semantic.ENode.LiteralExpr ||
             (s.literal.type !== EPrimitive.str &&
@@ -869,7 +870,7 @@ export class SemanticElaborator {
               s.literal.type !== EPrimitive.ccstr)
           ) {
             throw new CompilerError(
-              "The static_assert function requires the second parameter to be a string, or omitted",
+              "The static_assert function requires the second parameter to be a compile-time-evaluable string, or none",
               collectedExpr.sourceloc,
             );
           } else {
@@ -884,10 +885,11 @@ export class SemanticElaborator {
           if (second && second.literal.type === EPrimitive.str) {
             str = second.literal.value; // Bypass and don't escape it to make message look better
           }
-          throw new CompilerError(
-            `static_assert evaluated to false${str ? ": " + str : ""}`,
-            callExpr.sourceloc,
-          );
+          if (str) {
+            throw new CompilerError(str, callExpr.sourceloc);
+          } else {
+            throw new CompilerError(`static_assert evaluated to false`, callExpr.sourceloc);
+          }
         }
       }
 
@@ -1641,17 +1643,65 @@ export class SemanticElaborator {
   }
 
   fstring(fstring: Collect.FStringExpr) {
+    const knownFragments: {
+      knownString: string | null;
+    }[] = [];
+
     const fragments = fstring.fragments.map((f) => {
       if (f.type === "text") {
+        knownFragments.push({
+          knownString: f.value,
+        });
         return this.sr.b.literal(f.value, fstring.sourceloc)[1];
       } else {
-        return this.expr(f.value, {})[1];
+        const e = this.expr(f.value, {});
+
+        let knownString: string | null = null;
+        const result = EvalCTFE(this.sr, e[1]);
+        if (result.ok) {
+          if (
+            result.value[0].variant === Semantic.ENode.LiteralExpr &&
+            (result.value[0].literal.type === EPrimitive.str ||
+              result.value[0].literal.type === EPrimitive.cstr ||
+              result.value[0].literal.type === EPrimitive.ccstr)
+          ) {
+            knownString = result.value[0].literal.value;
+          } else if (
+            result.value[0].variant === Semantic.ENode.LiteralExpr &&
+            (result.value[0].literal.type === EPrimitive.int ||
+              result.value[0].literal.type === EPrimitive.i64 ||
+              result.value[0].literal.type === EPrimitive.u8 ||
+              result.value[0].literal.type === EPrimitive.u16 ||
+              result.value[0].literal.type === EPrimitive.u32 ||
+              result.value[0].literal.type === EPrimitive.u64 ||
+              result.value[0].literal.type === EPrimitive.i8 ||
+              result.value[0].literal.type === EPrimitive.i16 ||
+              result.value[0].literal.type === EPrimitive.i32 ||
+              result.value[0].literal.type === EPrimitive.usize)
+          ) {
+            knownString = result.value[0].literal.value.toString();
+          }
+        }
+
+        knownFragments.push({
+          knownString: knownString,
+        });
+        return e[1];
       }
     });
 
     const allocator = fstring.allocator ? this.expr(fstring.allocator, {})[1] : null;
     if (allocator) {
       this.sr.e.assertExprAllocatorType(allocator, fstring.sourceloc);
+    }
+
+    // Compile time optimization: If all values are well known at compile time, skip formatting entirely and
+    // produce a compile-time string constant, which is both faster, and allows f-strings to be used for
+    // compile-time string concatentation such as for static_assert.
+    if (knownFragments.every((f) => f.knownString)) {
+      // Now build a compile-time string
+      let result = knownFragments.map((f) => f.knownString!).join("");
+      return this.sr.b.literal(result, fstring.sourceloc);
     }
 
     return this.sr.b.callStringFormatFunc(fragments, allocator, fstring.sourceloc);

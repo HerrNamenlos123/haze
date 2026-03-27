@@ -70,106 +70,33 @@ namespace fmt {
         return writer.toString();
     }
 
-
-    export digitToStr(digit: int): str {
-        assert(digit >= 0 && digit <= 9);
-        let result: str = "";
-        __c__("static const char* digits[] = { \"0\", \"1\", \"2\", \"3\", \"4\", \"5\", \"6\", \"7\", \"8\", \"9\" };");
-        __c__("result = HZSTD_STRING(digits[digit], 1);");
-        return result;
-    }
-
-    export printFragment<T>(value: T) {
-        if comptime type<rx.IsReactive<T>> {
-            printFragment<rx.UnwrapReactive<T>>(value);
-        }
-        else {
-            if comptime T is int || T is mut int {
-                __c__("printf(\"%\"PRId64, value);");
-            }
-            else if T is cstr || T is ccstr {
-                __c__("printf(\"%s\", value);");
-            }
-            else if T is str {
-                __c__("fwrite(value.data, 1, value.length, stdout);");
-            }
-            else if T is str {
-                __c__("fwrite(value.data, 1, value.length, stdout);");
-            }
-            else if T is bool {
-                if value {
-                    ffi.printf("true");
-                }
-                else {
-                    ffi.printf("false");
-                }
-            }
-            else if T is usize {
-                ffi.printf("%zu", value);
-            }
-            else if T is real || T is mut real {
-                ffi.printf("%lf", value);
-            }
-            else if T is f32 {
-                ffi.printf("%f", value);
-            }
-            else if T is u8 || T is u16 || T is u32 {
-                __c__("printf(\"%\"PRIu8, value);");
-            }
-            else if T is u64 {
-                __c__("printf(\"%\"PRIu64, value);");
-            }
-            else if T is i8 || T is i16 || T is i32 {
-                __c__("printf(\"%\"PRId8, value);");
-            }
-            else if T is i64 {
-                __c__("printf(\"%\"PRId64, value);");
-            }
-            else if T is Vec2 || T is Vec2 {
-                ffi.printf("(%f, %f)", value.x, value.y);
-            }
-            else if T is Vec3 || T is Vec3 {
-                ffi.printf("(%f, %f, %f)", value.x, value.y, value.z);
-            }
-            else if T is Vec4 || T is Vec4 {
-                ffi.printf("(%f, %f, %f, %f)", value.x, value.y, value.z, value.w);
-            }
-            else if T is fs.Error {
-                ffi.printf("%d", value);
-            }
-            else if T is null {
-                ffi.printf("null");
-            }
-            else if T is none {
-                ffi.printf("none");
-            }
-            else if T is Vec2f {
-                let s = format(value);
-                __c__("fwrite(s.data, 1, s.length, stdout);");
-            }
-            else {
-                static_assert(false, "Type '" + T.name + "' is not supported in fmt.print");
-            }
-        }
-    }
-
     export print(args: ...) {
+        let writer = StringWriter(ByteBuffer());
         for comptime arg, i in args {
-            printFragment<typeof(arg)>(arg);
+            writer.write(fmt.format(arg));
             if comptime i != args.length - 1 {
-                printFragment<str>(" ");
+                writer.write(" ");
             }
         }
+        writer.commit();
+        let string = writer.string();
+        __c__("fwrite(string.data, 1, string.length, stdout);");
     }
 
     export println(args: ...) {
+        // TODO: This should just call print() and append a \n, but for that we must support 
+        // passing parameter packs to other parameter packs, i.e. unwrapping them
+        let writer = StringWriter(ByteBuffer());
         for comptime arg, i in args {
-            printFragment<typeof(arg)>(arg);
+            writer.write(fmt.format(arg));
             if comptime i != args.length - 1 {
-                printFragment<str>(" ");
+                writer.write(" ");
             }
         }
-        printFragment<str>("\n");
+        writer.write("\n");
+        writer.commit();
+        let string = writer.string();
+        __c__("fwrite(string.data, 1, string.length, stdout);");
     }
 
     export format_to_proxy<T>(writer: mut StringWriter, value: T, args: FormatArgs) :: final {
@@ -182,66 +109,27 @@ namespace fmt {
     }
 
     export format_to<T>(writer: mut StringWriter, value: T, args: FormatArgs) {
-        static_assert(false, f"FALLBACK {"Test"}");
-    }
-
-    export format_to(writer: mut StringWriter, value: i64, args: FormatArgs) {
-        let v = value;
-        if v < 0 {
-            writer.write("-");
-            if v == -9223372036854775808 {
-                writer.write("9223372036854775808");
-                return;
-            }
-            v = -v;
-        }
-
-        // Find highest divisor
-        let div: i64 = 1;
-        while v / div >= 10 as i64 {
-            div *= 10 as i64;
-        }
-
-        while div > 0 as i64 {
-            let digit = v / div;
-            writer.write(digitToStr(digit));
-            v %= div;
-            div /= 10 as i64;
-        }
-    }
-
-    export format_to(writer: mut StringWriter, value: u64, args: FormatArgs) {
-        let v = value;
-
-        // Find highest divisor
-        let div: u64 = 1;
-        while v / div >= 10 {
-            div *= 10;
-        }
-
-        while div > 0 {
-            let digit = v / div;
-            assert(digit >= 0 && digit <= 9);
-            writer.write(digitToStr(digit));
-            v %= div;
-            div /= 10;
-        }
+        static_assert(false, f"No formatter is known for type '{T.name}'. To format this type, define a matching overload for fmt.format_to().");
     }
 
     export format_to(writer: mut StringWriter, value: i8, args: FormatArgs) {
-        format_to(writer, value as i64, args);
+        format_to_sprintf<64, "\"%\" PRIi8", typeof(value)>(writer, value);
     }
 
     export format_to(writer: mut StringWriter, value: i16, args: FormatArgs) {
-        format_to(writer, value as i64, args);
+        format_to_sprintf<64, "\"%\" PRIi16", typeof(value)>(writer, value);
     }
 
     export format_to(writer: mut StringWriter, value: i32, args: FormatArgs) {
-        format_to(writer, value as i64, args);
+        format_to_sprintf<64, "\"%\" PRIi32", typeof(value)>(writer, value);
+    }
+
+    export format_to(writer: mut StringWriter, value: i64, args: FormatArgs) {
+        format_to_sprintf<64, "\"%\" PRIi64", typeof(value)>(writer, value);
     }
 
     export format_to(writer: mut StringWriter, value: int, args: FormatArgs) {
-        format_to(writer, value as i64, args);
+        format_to_sprintf<64, "\"%\" PRIi64", typeof(value)>(writer, value);
     }
 
     export format_to(writer: mut StringWriter, value: str, args: FormatArgs) {
@@ -249,45 +137,31 @@ namespace fmt {
     }
     
     export format_to(writer: mut StringWriter, value: u8, args: FormatArgs) {
-        format_to(writer, value as u64, args);
+        format_to_sprintf<64, "\"%\" PRIu8", typeof(value)>(writer, value);
     }
 
     export format_to(writer: mut StringWriter, value: u16, args: FormatArgs) {
-        format_to(writer, value as u64, args);
+        format_to_sprintf<64, "\"%\" PRIu16", typeof(value)>(writer, value);
     }
 
     export format_to(writer: mut StringWriter, value: u32, args: FormatArgs) {
-        format_to(writer, value as u64, args);
+        format_to_sprintf<64, "\"%\" PRIu32", typeof(value)>(writer, value);
+    }
+
+    export format_to(writer: mut StringWriter, value: u64, args: FormatArgs) {
+        format_to_sprintf<64, "\"%\" PRIu64", typeof(value)>(writer, value);
     }
 
     export format_to(writer: mut StringWriter, value: usize, args: FormatArgs) {
-        format_to(writer, value as u64, args);
+        format_to_sprintf<64, "\"%\" PRIu64", typeof(value)>(writer, value);
     }
 
     export format_to(writer: mut StringWriter, value: f32, args: FormatArgs) {
-        let n = 0;
-        let string = "";
-        __c__("""
-char buf[64];
-n = snprintf(buf, sizeof(buf), "%.9g", value);
-string = HZSTD_STRING_FROM_CSTR(buf);
-        """);
-        if n > 0 && n < 64 {
-            writer.write(string);
-        }
+        format_to_sprintf<64, "\"%.9g\"", typeof(value)>(writer, value);
     }
 
     export format_to(writer: mut StringWriter, value: f64, args: FormatArgs) {
-        let n = 0;
-        let string = "";
-        __c__("""
-char buf[64];
-n = snprintf(buf, sizeof(buf), "%.17g", value);
-string = HZSTD_STRING_FROM_CSTR(buf);
-        """);
-        if n > 0 && n < 64 {
-            writer.write(string);
-        }
+        format_to_sprintf<64, "\"%.17g}\"", typeof(value)>(writer, value);
     }
 
     export format_to(writer: mut StringWriter, value: real, args: FormatArgs) {
@@ -306,6 +180,19 @@ string = HZSTD_STRING_FROM_CSTR(buf);
 
     export format_to(writer: mut StringWriter, value: null, args: FormatArgs) {
         format_to(writer, "null", args);
+    }
+
+    export format_to_sprintf<BufferSize, Fmt, T>(writer: mut StringWriter, value: T) {
+        let n = 0;
+        let string = "";
+        __c__(f"""
+char buf[{BufferSize}];
+n = snprintf(buf, sizeof(buf), {Fmt}, value);
+string = HZSTD_STRING_FROM_CSTR(buf);
+        """);
+        if n > 0 && n < BufferSize {
+            writer.write(string);
+        }
     }
 
     export format_to(writer: mut StringWriter, value: Vec2f, args: FormatArgs) {
