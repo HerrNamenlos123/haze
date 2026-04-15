@@ -7,6 +7,7 @@ import {
   type ASTExplicitCastExpr,
   type ASTExprAssignmentExpr,
   type ASTExprCallExpr,
+  type ASTExprComptimeMemberAccess,
   type ASTExprMemberAccess,
   type ASTFunctionDefinition,
   type ASTGlobalVariableDefinition,
@@ -186,6 +187,7 @@ export namespace Collect {
     ExplicitCastExpr,
     ExprIsTypeExpr,
     MemberAccessExpr,
+    ComptimeMemberAccessExpr,
     ExprAssignmentExpr,
     AggregateLiteralExpr,
     ArraySubscriptExpr,
@@ -753,6 +755,12 @@ export namespace Collect {
     genericArgs: Collect.ExprId[];
   };
 
+  export type ComptimeMemberAccessExpr = BaseExpr & {
+    variant: ENode.ComptimeMemberAccessExpr;
+    expr: Collect.ExprId;
+    memberExpr: Collect.ExprId;
+  };
+
   export type LiteralExpr = BaseExpr & {
     variant: ENode.LiteralExpr;
     literal: LiteralValue;
@@ -812,6 +820,7 @@ export namespace Collect {
     | ExprIsTypeExpr
     | AggregateLiteralExpr
     | ExprAssignmentExpr
+    | ComptimeMemberAccessExpr
     | LiteralExpr
     | FStringExpr
     | ArraySubscriptExpr
@@ -2434,6 +2443,7 @@ function collectExpr(
     | ASTParenthesisExpr
     | ASTExprAssignmentExpr
     | ASTExprCallExpr
+    | ASTExprComptimeMemberAccess
     | ASTUnaryExpr
     | ASTExprMemberAccess
     | ASTLambdaExpr
@@ -3040,6 +3050,18 @@ function collectExpr(
             })[1];
           }
         }),
+        sourceloc: item.sourceloc,
+      })[1];
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
+    case "ExprComptimeMemberAccess":
+      return Collect.makeExpr(cc, {
+        variant: Collect.ENode.ComptimeMemberAccessExpr,
+        expr: collectExpr(cc, item.expr, args),
+        memberExpr: collectExpr(cc, item.memberExpr, args),
         sourceloc: item.sourceloc,
       })[1];
 
@@ -3692,6 +3714,10 @@ export const printCollectedExpr = (cc: CollectionContext, exprId: Collect.ExprId
         str += "<" + expr.genericArgs.map((g) => printCollectedExpr(cc, g)).join(", ") + ">";
       }
       return str;
+    }
+
+    case Collect.ENode.ComptimeMemberAccessExpr: {
+      return `${printCollectedExpr(cc, expr.expr)}.[${printCollectedExpr(cc, expr.memberExpr)}]`;
     }
 
     case Collect.ENode.ExprAssignmentExpr: {

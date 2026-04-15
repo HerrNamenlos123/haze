@@ -1764,6 +1764,9 @@ export class SemanticElaborator {
       case Collect.ENode.MemberAccessExpr:
         return this.memberAccess(expr, inference);
 
+      case Collect.ENode.ComptimeMemberAccessExpr:
+        return this.comptimeMemberAccess(expr, inference);
+
       case Collect.ENode.ExprAssignmentExpr:
         return this.assignmentExpr(expr, inference);
 
@@ -2902,6 +2905,47 @@ export class SemanticElaborator {
     throw new CompilerError(
       `No attribute named '${memberAccess.memberName}' in struct ${objectType.name}`,
       memberAccess.sourceloc,
+    );
+  }
+
+  comptimeMemberAccess(
+    memberAccess: Collect.ComptimeMemberAccessExpr,
+    inference: Semantic.Inference,
+  ): readonly [Semantic.Expression, Semantic.ExprId] {
+    const memberExprId = this.expr(memberAccess.memberExpr, undefined)[1];
+    const [memberResultExpr] = EvalCTFEOrFail(this.sr, memberExprId, memberAccess.sourceloc);
+
+    if (memberResultExpr.variant !== Semantic.ENode.LiteralExpr) {
+      throw new CompilerError(
+        `Compile-time member access requires the member expression to evaluate to a string literal`,
+        memberAccess.sourceloc,
+      );
+    }
+
+    const memberLiteral = memberResultExpr.literal;
+    if (
+      memberLiteral.type !== EPrimitive.str &&
+      memberLiteral.type !== EPrimitive.cstr &&
+      memberLiteral.type !== EPrimitive.ccstr
+    ) {
+      throw new CompilerError(
+        `Compile-time member access requires the member expression to evaluate to string, got ${Semantic.serializeLiteralType(
+          this.sr,
+          memberLiteral,
+        )}`,
+        memberAccess.sourceloc,
+      );
+    }
+
+    return this.memberAccess(
+      {
+        variant: Collect.ENode.MemberAccessExpr,
+        expr: memberAccess.expr,
+        memberName: memberLiteral.value,
+        genericArgs: [],
+        sourceloc: memberAccess.sourceloc,
+      },
+      inference,
     );
   }
 

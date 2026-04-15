@@ -265,6 +265,7 @@ postfix
     | MINUSMINUS
     | LB argList? RB withAllocator?
     | LBRACKET indexList RBRACKET
+    | DOT LBRACKET expr RBRACKET
     | (DOT | QUESTIONDOT) nameSegment
     | QUESTIONEXCL
     | AS datatype

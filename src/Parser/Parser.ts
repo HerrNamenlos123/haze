@@ -21,6 +21,7 @@ import {
   type ASTExprAsFuncbody,
   type ASTExprAssignmentExpr,
   type ASTExprCallExpr,
+  type ASTExprComptimeMemberAccess,
   type ASTExprMemberAccess,
   type ASTExprStatement,
   type ASTFunctionDatatype,
@@ -1773,6 +1774,22 @@ class ASTBuilder extends HazeParserListener {
           allocator,
           sourceloc: this.loc(postfix),
         } satisfies ASTExprCallExpr;
+        continue;
+      }
+
+      if (postfix.DOT() && postfix.LBRACKET() && postfix.RBRACKET()) {
+        if (i >= produced.length) {
+          throw new InternalError("PostfixExpr comptime member access missing expression");
+        }
+
+        const memberExpr = produced[i++] as ASTExpr;
+
+        expr = {
+          variant: "ExprComptimeMemberAccess",
+          expr,
+          memberExpr,
+          sourceloc: this.loc(postfix),
+        } satisfies ASTExprComptimeMemberAccess;
         continue;
       }
 

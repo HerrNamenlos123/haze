@@ -541,6 +541,13 @@ export type ASTExprMemberAccess = {
   sourceloc: SourceLoc;
 };
 
+export type ASTExprComptimeMemberAccess = {
+  variant: "ExprComptimeMemberAccess";
+  expr: ASTExpr;
+  memberExpr: ASTExpr;
+  sourceloc: SourceLoc;
+};
+
 export type ASTAggregateLiteralElement = {
   key: string | null;
   value: ASTExpr;
@@ -649,6 +656,7 @@ export type ASTExpr =
   | ASTPostIncrExpr
   | ASTExprCallExpr
   | ASTExprMemberAccess
+  | ASTExprComptimeMemberAccess
   | ASTTernaryExpr
   | ASTAggregateLiteralExpr
   | ASTPreIncrExpr
