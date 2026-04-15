@@ -1663,6 +1663,7 @@ class CodeGenerator {
           typeDef.variant === Lowered.ENode.PrimitiveDatatype ||
           typeDef.variant === Lowered.ENode.FunctionDatatype ||
           typeDef.variant === Lowered.ENode.CallableDatatype ||
+          typeDef.variant === Lowered.ENode.ReactiveDatatype ||
           typeDef.variant === Lowered.ENode.EnumDatatype
         ) {
           outWriter.write("(" + target.out.get() + " = " + value.out.get() + ")");

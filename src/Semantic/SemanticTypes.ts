@@ -2376,8 +2376,13 @@ export namespace Semantic {
             name: `Le${mangleTypeDef(sr, enumParentSym.datatype).name}_${literal.valueName}`,
             wasMangled: true,
           };
+        } else {
+          const name = primitiveToString(literalType);
+          return {
+            name: name.length + name,
+            wasMangled: true,
+          };
         }
-        throw new InternalError(`Unhandled literal datatype variant: ${literalType}`);
       }
 
       default:

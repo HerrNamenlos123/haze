@@ -45,7 +45,16 @@ struct Foo {
 
 main(): int {
 
+    let foo = Foo { value: 5, bar: { value: 42 } };
+    const comptime field = "value";
+    foo.[field] = 187;
+    fmt.println(foo.value);
+    return 0;
+
     let a = rx.reactive(Foo { value: 5, bar: { value: 42 } });
+    a.value = rx.reactive<int>(7);
+    // static_print(typeof(a).name);
+    // static_print(typeof(a.value).name);
     // let aValue = rx.computed<int>(() => {
     //     fmt.println("Rerunning computed");
     //     return a.value as int;
