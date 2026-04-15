@@ -32,7 +32,14 @@ import {
   printCollectedSymbol,
 } from "../SymbolCollection/SymbolCollection";
 import { Conversion } from "./Conversion";
-import { EvalCTFE, EvalCTFEBoolean, EvalCTFEOrFail, evalCT, evalCTMemberAccess, ctValueToExpr } from "./CTFE";
+import {
+  EvalCTFE,
+  EvalCTFEBoolean,
+  EvalCTFEOrFail,
+  evalCT,
+  evalCTMemberAccess,
+  ctValueToExpr,
+} from "./CTFE";
 import {
   makeStackArrayDatatypeAvailable,
   makeDynamicArrayDatatypeAvailable,
@@ -7424,7 +7431,10 @@ export class SemanticElaborator {
           assert(valueId);
           const r = evalCT(this.sr, valueId);
           if (r === null) {
-            throw new CompilerError(`This expression is not evaluable at compile time`, s.sourceloc);
+            throw new CompilerError(
+              `This expression is not evaluable at compile time`,
+              s.sourceloc,
+            );
           }
           // Keep symbol-based propagation as expression IDs; CTValue is the evaluator.
           variableSymbol.comptimeValue = valueId;

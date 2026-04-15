@@ -1,5 +1,11 @@
 import { EBinaryOperation } from "../shared/AST";
-import { EPrimitive, primitiveToString, CTValueHelpers, type CTValue, type LiteralValue } from "../shared/common";
+import {
+  EPrimitive,
+  primitiveToString,
+  CTValueHelpers,
+  type CTValue,
+  type LiteralValue,
+} from "../shared/common";
 import { assert, CompilerError, InternalError, type SourceLoc } from "../shared/Errors";
 import { Conversion } from "./Conversion";
 import { Semantic } from "./SemanticTypes";
@@ -249,9 +255,7 @@ export function EvalCTFE(
 
       const memberValue = evalCTMemberAccess(sr, objectValue, expr.memberName);
       if (memberValue === null) {
-        return err(
-          `No compile-time member named '${expr.memberName}' on this value`,
-        );
+        return err(`No compile-time member named '${expr.memberName}' on this value`);
       }
 
       return ok(ctValueToExpr(sr, memberValue, expr.sourceloc));
@@ -376,7 +380,11 @@ export function evalCT(sr: Semantic.Context, exprId: Semantic.ExprId): CTValue |
 
     case Semantic.ENode.SymbolValueExpr: {
       const symbol = sr.symbolNodes.get(expr.symbol);
-      if (symbol.variant === Semantic.ENode.VariableSymbol && symbol.comptime && symbol.comptimeValue) {
+      if (
+        symbol.variant === Semantic.ENode.VariableSymbol &&
+        symbol.comptime &&
+        symbol.comptimeValue
+      ) {
         return evalCT(sr, symbol.comptimeValue);
       }
       return null;
@@ -499,17 +507,20 @@ function equalCTValues(left: CTValue, right: CTValue): boolean {
  * Evaluate a struct literal to CTValue
  * Returns null if any field cannot be evaluated at compile time
  */
-function evalCTStructLiteral(sr: Semantic.Context, structLiteral: Semantic.StructLiteralExpr): CTValue | null {
+function evalCTStructLiteral(
+  sr: Semantic.Context,
+  structLiteral: Semantic.StructLiteralExpr,
+): CTValue | null {
   const typeUse = sr.typeUseNodes.get(structLiteral.type);
   const structTypeDef = sr.typeDefNodes.get(typeUse.type);
   assert(structTypeDef.variant === Semantic.ENode.StructDatatype);
 
   // Evaluate all fields to CTValue
   const fieldValues: CTValue[] = [];
-  
+
   // Build a map of field names to their evaluated values
   const fieldMap = new Map<string, CTValue>();
-  
+
   for (const fieldAssignment of structLiteral.assign) {
     const fieldValue = evalCT(sr, fieldAssignment.value);
     if (fieldValue === null) {
@@ -523,13 +534,13 @@ function evalCTStructLiteral(sr: Semantic.Context, structLiteral: Semantic.Struc
   for (const memberSymbolId of structTypeDef.members) {
     const memberSymbol = sr.symbolNodes.get(memberSymbolId);
     assert(memberSymbol.variant === Semantic.ENode.VariableSymbol);
-    
+
     const fieldValue = fieldMap.get(memberSymbol.name);
     if (fieldValue === undefined) {
       // This shouldn't happen if struct literal was properly validated
       return null;
     }
-    
+
     fieldValues.push(fieldValue);
   }
 
@@ -614,7 +625,7 @@ export function evalCTMemberAccess(
     const memberSymbolId = structTypeDef.members[i];
     const memberSymbol = sr.symbolNodes.get(memberSymbolId);
     assert(memberSymbol.variant === Semantic.ENode.VariableSymbol);
-    
+
     if (memberSymbol.name === fieldName) {
       fieldIndex = i;
       break;
@@ -704,9 +715,6 @@ export function ctValueToExpr(
       );
     case "struct":
     case "list":
-      throw new CompilerError(
-        "Cannot convert complex CTValue to expression yet",
-        sourceloc,
-      );
+      throw new CompilerError("Cannot convert complex CTValue to expression yet", sourceloc);
   }
 }
