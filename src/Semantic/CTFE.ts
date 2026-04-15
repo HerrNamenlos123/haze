@@ -1,6 +1,6 @@
 import { EBinaryOperation } from "../shared/AST";
-import { EPrimitive, primitiveToString, type LiteralValue } from "../shared/common";
-import { assert, CompilerError, type SourceLoc } from "../shared/Errors";
+import { EPrimitive, primitiveToString, CTValueHelpers, type CTValue, type LiteralValue } from "../shared/common";
+import { assert, CompilerError, InternalError, type SourceLoc } from "../shared/Errors";
 import { Conversion } from "./Conversion";
 import { Semantic } from "./SemanticTypes";
 
@@ -39,6 +39,13 @@ export function EvalCTFE(
   exprId: Semantic.ExprId,
 ): { ok: true; value: [Semantic.Expression, Semantic.ExprId] } | { ok: false; error: string } {
   const expr = sr.exprNodes.get(exprId);
+
+  // CTValue is the primary comptime evaluator. Keep EvalCTFE as a compatibility wrapper
+  // for existing call sites that still expect an expression result.
+  const ct = evalCT(sr, exprId);
+  if (ct !== null) {
+    return { ok: true, value: ctValueToExpr(sr, ct, expr.sourceloc) };
+  }
 
   const ok = (value: [Semantic.Expression, Semantic.ExprId]) =>
     ({ ok: true, value: value }) as const;
@@ -234,6 +241,22 @@ export function EvalCTFE(
       break;
     }
 
+    case Semantic.ENode.MemberAccessExpr: {
+      const objectValue = evalCT(sr, expr.expr);
+      if (objectValue === null) {
+        return err(`This Expression cannot be evaluated at compile time`);
+      }
+
+      const memberValue = evalCTMemberAccess(sr, objectValue, expr.memberName);
+      if (memberValue === null) {
+        return err(
+          `No compile-time member named '${expr.memberName}' on this value`,
+        );
+      }
+
+      return ok(ctValueToExpr(sr, memberValue, expr.sourceloc));
+    }
+
     case Semantic.ENode.DatatypeAsValueExpr:
     case Semantic.ENode.LiteralExpr: {
       return ok([expr, exprId]);
@@ -329,4 +352,361 @@ export function EvalCTFEBoolean(sr: Semantic.Context, exprId: Semantic.ExprId) {
     `Expression cannot be evaluated as a boolean value at compile time`,
     expr.sourceloc,
   );
+}
+
+/**
+ * Evaluate an expression to a unified CTValue representation
+ * Returns null if the expression cannot be evaluated at compile time
+ * First checks expr.comptimeValue, then falls back to evaluation
+ */
+export function evalCT(sr: Semantic.Context, exprId: Semantic.ExprId): CTValue | null {
+  const expr = sr.exprNodes.get(exprId);
+
+  switch (expr.variant) {
+    case Semantic.ENode.LiteralExpr:
+      return literalValueToCTValue(expr.literal);
+
+    case Semantic.ENode.DatatypeAsValueExpr: {
+      const typeUse = sr.typeUseNodes.get(expr.type);
+      return CTValueHelpers.type(typeUse.type);
+    }
+
+    case Semantic.ENode.StructLiteralExpr:
+      return evalCTStructLiteral(sr, expr);
+
+    case Semantic.ENode.SymbolValueExpr: {
+      const symbol = sr.symbolNodes.get(expr.symbol);
+      if (symbol.variant === Semantic.ENode.VariableSymbol && symbol.comptime && symbol.comptimeValue) {
+        return evalCT(sr, symbol.comptimeValue);
+      }
+      return null;
+    }
+
+    case Semantic.ENode.MemberAccessExpr: {
+      const objectValue = evalCT(sr, expr.expr);
+      if (objectValue === null) {
+        return null;
+      }
+      return evalCTMemberAccess(sr, objectValue, expr.memberName);
+    }
+
+    case Semantic.ENode.BinaryExpr:
+      return evalCTBinary(sr, expr);
+
+    case Semantic.ENode.ComputedReadExpr:
+    case Semantic.ENode.ReactiveReadExpr:
+      return evalCT(sr, expr.value);
+
+    default:
+      return null;
+  }
+}
+
+function evalCTBinary(sr: Semantic.Context, expr: Semantic.BinaryExpr): CTValue | null {
+  const left = evalCT(sr, expr.left);
+  const right = evalCT(sr, expr.right);
+  if (left === null || right === null) {
+    return null;
+  }
+
+  switch (expr.operation) {
+    case EBinaryOperation.Add:
+      if (left.kind === "int" && right.kind === "int") {
+        return CTValueHelpers.int(left.value + right.value, left.width || right.width);
+      }
+      if (left.kind === "float" && right.kind === "float") {
+        return CTValueHelpers.float(left.value + right.value, left.width || right.width);
+      }
+      if (left.kind === "string" && right.kind === "string") {
+        return CTValueHelpers.string(left.value + right.value, left.prefix ?? right.prefix ?? null);
+      }
+      return null;
+
+    case EBinaryOperation.Subtract:
+      if (left.kind === "int" && right.kind === "int") {
+        return CTValueHelpers.int(left.value - right.value, left.width || right.width);
+      }
+      if (left.kind === "float" && right.kind === "float") {
+        return CTValueHelpers.float(left.value - right.value, left.width || right.width);
+      }
+      return null;
+
+    case EBinaryOperation.Equal:
+      return CTValueHelpers.bool(equalCTValues(left, right));
+
+    case EBinaryOperation.NotEqual:
+      return CTValueHelpers.bool(!equalCTValues(left, right));
+
+    case EBinaryOperation.BoolAnd:
+      if (left.kind === "bool" && right.kind === "bool") {
+        return CTValueHelpers.bool(left.value && right.value);
+      }
+      return null;
+
+    case EBinaryOperation.BoolOr:
+      if (left.kind === "bool" && right.kind === "bool") {
+        return CTValueHelpers.bool(left.value || right.value);
+      }
+      return null;
+
+    default:
+      return null;
+  }
+}
+
+function equalCTValues(left: CTValue, right: CTValue): boolean {
+  if (left.kind === "int" && right.kind === "int") {
+    return left.value === right.value;
+  }
+  if (left.kind === "float" && right.kind === "float") {
+    return left.value === right.value;
+  }
+  if (left.kind === "string" && right.kind === "string") {
+    return left.value === right.value;
+  }
+  if (left.kind === "bool" && right.kind === "bool") {
+    return left.value === right.value;
+  }
+  if (left.kind === "null" && right.kind === "null") {
+    return true;
+  }
+  if (left.kind === "none" && right.kind === "none") {
+    return true;
+  }
+  if (left.kind === "type" && right.kind === "type") {
+    return left.typeDefId === right.typeDefId;
+  }
+  if (left.kind === "enum" && right.kind === "enum") {
+    return left.enumType === right.enumType && left.valueName === right.valueName;
+  }
+  if (left.kind === "struct" && right.kind === "struct") {
+    return (
+      left.typeDefId === right.typeDefId &&
+      left.fields.length === right.fields.length &&
+      left.fields.every((field, index) => equalCTValues(field, right.fields[index]))
+    );
+  }
+  if (left.kind === "list" && right.kind === "list") {
+    return (
+      left.items.length === right.items.length &&
+      left.items.every((item, index) => equalCTValues(item, right.items[index]))
+    );
+  }
+  return false;
+}
+
+/**
+ * Evaluate a struct literal to CTValue
+ * Returns null if any field cannot be evaluated at compile time
+ */
+function evalCTStructLiteral(sr: Semantic.Context, structLiteral: Semantic.StructLiteralExpr): CTValue | null {
+  const typeUse = sr.typeUseNodes.get(structLiteral.type);
+  const structTypeDef = sr.typeDefNodes.get(typeUse.type);
+  assert(structTypeDef.variant === Semantic.ENode.StructDatatype);
+
+  // Evaluate all fields to CTValue
+  const fieldValues: CTValue[] = [];
+  
+  // Build a map of field names to their evaluated values
+  const fieldMap = new Map<string, CTValue>();
+  
+  for (const fieldAssignment of structLiteral.assign) {
+    const fieldValue = evalCT(sr, fieldAssignment.value);
+    if (fieldValue === null) {
+      // If any field cannot be evaluated at compile time, the struct cannot be
+      return null;
+    }
+    fieldMap.set(fieldAssignment.name, fieldValue);
+  }
+
+  // Build the fields array in declaration order
+  for (const memberSymbolId of structTypeDef.members) {
+    const memberSymbol = sr.symbolNodes.get(memberSymbolId);
+    assert(memberSymbol.variant === Semantic.ENode.VariableSymbol);
+    
+    const fieldValue = fieldMap.get(memberSymbol.name);
+    if (fieldValue === undefined) {
+      // This shouldn't happen if struct literal was properly validated
+      return null;
+    }
+    
+    fieldValues.push(fieldValue);
+  }
+
+  return CTValueHelpers.struct(typeUse.type, fieldValues);
+}
+
+/**
+ * Convert a LiteralValue to CTValue wrapper
+ */
+function literalValueToCTValue(lit: LiteralValue): CTValue {
+  // Handle Regex separately (has pattern, not value)
+  if ("pattern" in lit && lit.type === EPrimitive.Regex) {
+    return CTValueHelpers.string(lit.pattern);
+  }
+
+  if ("value" in lit) {
+    switch (lit.type) {
+      case EPrimitive.bool:
+        return CTValueHelpers.bool(lit.value);
+      case EPrimitive.i8:
+      case EPrimitive.i16:
+      case EPrimitive.i32:
+      case EPrimitive.i64:
+      case EPrimitive.u8:
+      case EPrimitive.u16:
+      case EPrimitive.u32:
+      case EPrimitive.u64:
+      case EPrimitive.usize:
+      case EPrimitive.int:
+        return CTValueHelpers.int(lit.value, lit.type);
+      case EPrimitive.f32:
+      case EPrimitive.f64:
+      case EPrimitive.real:
+        return CTValueHelpers.float(lit.value, lit.type);
+      case EPrimitive.str:
+      case EPrimitive.cstr:
+      case EPrimitive.ccstr:
+        return CTValueHelpers.string(lit.value, lit.prefix);
+    }
+  } else if ("type" in lit) {
+    if (lit.type === EPrimitive.null) {
+      return CTValueHelpers.null_();
+    } else if (lit.type === EPrimitive.none) {
+      return CTValueHelpers.none_();
+    } else if (lit.type === "enum") {
+      return CTValueHelpers.enum_(lit.enumType, lit.valueName);
+    }
+  }
+  throw new InternalError("Unknown literal value type in literalValueToCTValue");
+}
+
+/**
+ * Try to evaluate a symbol's comptime value to CTValue
+ * Returns null if not evaluable at compile time
+ */
+export function evalCTSymbol(_sr: Semantic.Context, _symbolId: Semantic.SymbolId): CTValue | null {
+  // This will be used in Phase 2 to evaluate symbols
+  // For now, we'll implement this as we process symbols in elaboration
+  return null;
+}
+
+/**
+ * Evaluate member access on a compile-time struct value
+ * Given a CTValue struct and field name, returns the field value
+ * Returns null if not a struct or field not found
+ */
+export function evalCTMemberAccess(
+  sr: Semantic.Context,
+  ctValue: CTValue,
+  fieldName: string,
+): CTValue | null {
+  if (ctValue.kind !== "struct") {
+    return null;
+  }
+
+  const structTypeDef = sr.typeDefNodes.get(ctValue.typeDefId);
+  assert(structTypeDef.variant === Semantic.ENode.StructDatatype);
+
+  // Find the field index
+  let fieldIndex = -1;
+  for (let i = 0; i < structTypeDef.members.length; i++) {
+    const memberSymbolId = structTypeDef.members[i];
+    const memberSymbol = sr.symbolNodes.get(memberSymbolId);
+    assert(memberSymbol.variant === Semantic.ENode.VariableSymbol);
+    
+    if (memberSymbol.name === fieldName) {
+      fieldIndex = i;
+      break;
+    }
+  }
+
+  if (fieldIndex === -1) {
+    return null; // Field not found
+  }
+
+  if (fieldIndex >= ctValue.fields.length) {
+    return null; // Shouldn't happen
+  }
+
+  return ctValue.fields[fieldIndex];
+}
+
+/**
+ * Convert a CTValue back to a Semantic Expression
+ * This is used when we want to return a compile-time value in the semantic tree
+ */
+export function ctValueToExpr(
+  sr: Semantic.Context,
+  ctValue: CTValue,
+  sourceloc: SourceLoc,
+): [Semantic.Expression, Semantic.ExprId] {
+  switch (ctValue.kind) {
+    case "int":
+      return sr.b.literalValue(
+        {
+          type: ctValue.width || EPrimitive.int,
+          value: ctValue.value,
+          unit: null,
+        },
+        sourceloc,
+      );
+    case "float":
+      return sr.b.literalValue(
+        {
+          type: ctValue.width || EPrimitive.real,
+          value: ctValue.value,
+          unit: null,
+        },
+        sourceloc,
+      );
+    case "string":
+      return sr.b.literalValue(
+        {
+          type: EPrimitive.str,
+          value: ctValue.value,
+          prefix: ctValue.prefix || null,
+        },
+        sourceloc,
+      );
+    case "bool":
+      return sr.b.literalValue(
+        {
+          type: EPrimitive.bool,
+          value: ctValue.value,
+        },
+        sourceloc,
+      );
+    case "null":
+      return sr.b.literalValue(
+        {
+          type: EPrimitive.null,
+        },
+        sourceloc,
+      );
+    case "none":
+      return sr.b.literalValue(
+        {
+          type: EPrimitive.none,
+        },
+        sourceloc,
+      );
+    case "type":
+      return sr.b.datatypeDefAsValue(ctValue.typeDefId, sourceloc);
+    case "enum":
+      return sr.b.literalValue(
+        {
+          type: "enum",
+          enumType: ctValue.enumType,
+          valueName: ctValue.valueName,
+        },
+        sourceloc,
+      );
+    case "struct":
+    case "list":
+      throw new CompilerError(
+        "Cannot convert complex CTValue to expression yet",
+        sourceloc,
+      );
+  }
 }

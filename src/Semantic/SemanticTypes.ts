@@ -1927,7 +1927,7 @@ export namespace Semantic {
           return `r"${literal.pattern}"${[...literal.flags]}`;
         } else if (literal.type === "enum") {
           // Handle enum literals
-          return `${Semantic.serializeTypeUse(sr, literal.enumType)}.${literal.valueName}`;
+          return `${Semantic.serializeTypeDef(sr, literal.enumType)}.${literal.valueName}`;
         } else {
           return `${literal.value}`;
         }

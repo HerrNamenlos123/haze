@@ -32,7 +32,7 @@ import {
   printCollectedSymbol,
 } from "../SymbolCollection/SymbolCollection";
 import { Conversion } from "./Conversion";
-import { EvalCTFE, EvalCTFEBoolean, EvalCTFEOrFail } from "./CTFE";
+import { EvalCTFE, EvalCTFEBoolean, EvalCTFEOrFail, evalCT, evalCTMemberAccess, ctValueToExpr } from "./CTFE";
 import {
   makeStackArrayDatatypeAvailable,
   makeDynamicArrayDatatypeAvailable,
@@ -1679,29 +1679,16 @@ export class SemanticElaborator {
         const e = this.expr(f.value, {});
 
         let knownString: string | null = null;
-        const result = EvalCTFE(this.sr, e[1]);
-        if (result.ok) {
-          if (
-            result.value[0].variant === Semantic.ENode.LiteralExpr &&
-            (result.value[0].literal.type === EPrimitive.str ||
-              result.value[0].literal.type === EPrimitive.cstr ||
-              result.value[0].literal.type === EPrimitive.ccstr)
-          ) {
-            knownString = result.value[0].literal.value;
-          } else if (
-            result.value[0].variant === Semantic.ENode.LiteralExpr &&
-            (result.value[0].literal.type === EPrimitive.int ||
-              result.value[0].literal.type === EPrimitive.i64 ||
-              result.value[0].literal.type === EPrimitive.u8 ||
-              result.value[0].literal.type === EPrimitive.u16 ||
-              result.value[0].literal.type === EPrimitive.u32 ||
-              result.value[0].literal.type === EPrimitive.u64 ||
-              result.value[0].literal.type === EPrimitive.i8 ||
-              result.value[0].literal.type === EPrimitive.i16 ||
-              result.value[0].literal.type === EPrimitive.i32 ||
-              result.value[0].literal.type === EPrimitive.usize)
-          ) {
-            knownString = result.value[0].literal.value.toString();
+        const result = evalCT(this.sr, e[1]);
+        if (result !== null) {
+          if (result.kind === "string") {
+            knownString = result.value;
+          } else if (result.kind === "int") {
+            knownString = result.value.toString();
+          } else if (result.kind === "float") {
+            knownString = result.value.toString();
+          } else if (result.kind === "bool") {
+            knownString = result.value ? "true" : "false";
           }
         }
 
@@ -2733,6 +2720,31 @@ export class SemanticElaborator {
       }
       const member = this.sr.symbolNodes.get(memberId);
       assert(member.variant === Semantic.ENode.VariableSymbol && member.type);
+
+      // Check if we're accessing a member of a comptime struct value
+      // If so, evaluate the member access at compile time
+      if (object.variant === Semantic.ENode.SymbolValueExpr) {
+        const objectSymbol = this.sr.symbolNodes.get(object.symbol);
+        // Check if this is a comptime symbol with a struct value
+        if (
+          objectSymbol.variant === Semantic.ENode.VariableSymbol &&
+          objectSymbol.comptime &&
+          objectSymbol.comptimeValue
+        ) {
+          try {
+            const ctValue = evalCT(this.sr, objectSymbol.comptimeValue);
+            if (ctValue !== null) {
+              const fieldValue = evalCTMemberAccess(this.sr, ctValue, memberAccess.memberName);
+              if (fieldValue !== null) {
+                // Convert the CTValue back to an expression
+                return ctValueToExpr(this.sr, fieldValue, memberAccess.sourceloc);
+              }
+            }
+          } catch (_e) {
+            // If evaluation fails, fall through to regular member access
+          }
+        }
+      }
 
       return this.sr.b.memberAccess(
         objectId,
@@ -7410,9 +7422,12 @@ export class SemanticElaborator {
 
         if (variableSymbol.comptime) {
           assert(valueId);
-          const r = EvalCTFE(this.sr, valueId);
-          if (!r.ok) throw new CompilerError(r.error, s.sourceloc);
-          variableSymbol.comptimeValue = r.value[1];
+          const r = evalCT(this.sr, valueId);
+          if (r === null) {
+            throw new CompilerError(`This expression is not evaluable at compile time`, s.sourceloc);
+          }
+          // Keep symbol-based propagation as expression IDs; CTValue is the evaluator.
+          variableSymbol.comptimeValue = valueId;
         }
 
         if (value) {

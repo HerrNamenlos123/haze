@@ -51,6 +51,9 @@ struct Foo {
 
 main(): int {
 
+    const comptime foo = Bar { value: 5 };
+    static_print(f"{foo.value + 7}");
+
     // let foo = Foo { value: 5, bar: { value: 42 } };
     // const comptime field = "value";
     // foo.[field] = 187;

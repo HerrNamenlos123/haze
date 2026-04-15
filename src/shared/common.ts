@@ -1,5 +1,4 @@
-import type { Lowered } from "../Lower/Lower";
-import type { Semantic } from "../Semantic/Elaborate";
+import type { Semantic } from "../Semantic/SemanticTypes";
 import type { ELiteralUnit } from "./AST";
 import { InternalError } from "./Errors";
 
@@ -142,6 +141,163 @@ export type LiteralValue =
       enumType: Semantic.TypeDefId;
       valueName: string;
     };
+
+type CTIntegerWidth =
+  | EPrimitive.i8
+  | EPrimitive.i16
+  | EPrimitive.i32
+  | EPrimitive.i64
+  | EPrimitive.u8
+  | EPrimitive.u16
+  | EPrimitive.u32
+  | EPrimitive.u64
+  | EPrimitive.usize
+  | EPrimitive.int;
+
+type CTFloatWidth = EPrimitive.f32 | EPrimitive.f64 | EPrimitive.real;
+
+/**
+ * Unified compile-time value representation
+ * Tagged union supporting all values evaluable at compile-time
+ */
+export type CTValue =
+  // Primitive values (numbers, strings, booleans)
+  | {
+      kind: "int";
+      value: bigint;
+      width?: CTIntegerWidth; // Optional: track original width (i32, u64, etc.)
+    }
+  | {
+      kind: "float";
+      value: number;
+      width?: CTFloatWidth; // Optional: f32, f64 or real
+    }
+  | {
+      kind: "string";
+      value: string;
+      prefix?: "b" | null;
+    }
+  | {
+      kind: "bool";
+      value: boolean;
+    }
+  | {
+      kind: "null" | "none";
+    }
+  // Type as a compile-time value
+  | {
+      kind: "type";
+      typeDefId: Semantic.TypeDefId;
+    }
+  // Struct value with fields
+  | {
+      kind: "struct";
+      typeDefId: Semantic.TypeDefId;
+      fields: CTValue[]; // Index-based, in declaration order
+    }
+  // List/array of compile-time values
+  | {
+      kind: "list";
+      items: CTValue[];
+    }
+  // Enum value
+  | {
+      kind: "enum";
+      enumType: Semantic.TypeDefId;
+      valueName: string;
+    };
+
+/**
+ * Helper constructors for creating CTValue instances
+ * Use these to wrap values for storage at compile-time
+ */
+export namespace CTValueHelpers {
+  export function int(value: bigint, width?: CTIntegerWidth): CTValue {
+    return { kind: "int", value, width };
+  }
+
+  export function float(value: number, width?: CTFloatWidth): CTValue {
+    return { kind: "float", value, width };
+  }
+
+  export function string(value: string, prefix?: "b" | null): CTValue {
+    return { kind: "string", value, prefix };
+  }
+
+  export function bool(value: boolean): CTValue {
+    return { kind: "bool", value };
+  }
+
+  export function null_(): CTValue {
+    return { kind: "null" };
+  }
+
+  export function none_(): CTValue {
+    return { kind: "none" };
+  }
+
+  export function type(typeDefId: Semantic.TypeDefId): CTValue {
+    return { kind: "type", typeDefId };
+  }
+
+  export function struct(typeDefId: Semantic.TypeDefId, fields: CTValue[]): CTValue {
+    return { kind: "struct", typeDefId, fields };
+  }
+
+  export function list(items: CTValue[]): CTValue {
+    return { kind: "list", items };
+  }
+
+  export function enum_(enumType: Semantic.TypeDefId, valueName: string): CTValue {
+    return { kind: "enum", enumType, valueName };
+  }
+
+  /**
+   * Convert a literal value to CTValue
+   * Useful for wrapping existing LiteralValue instances
+   */
+  export function fromLiteral(lit: LiteralValue): CTValue {
+    // Handle Regex separately (has pattern, not value)
+    if ("pattern" in lit && lit.type === EPrimitive.Regex) {
+      return string(lit.pattern);
+    }
+
+    if ("value" in lit) {
+      switch (lit.type) {
+        case EPrimitive.bool:
+          return bool(lit.value);
+        case EPrimitive.i8:
+        case EPrimitive.i16:
+        case EPrimitive.i32:
+        case EPrimitive.i64:
+        case EPrimitive.u8:
+        case EPrimitive.u16:
+        case EPrimitive.u32:
+        case EPrimitive.u64:
+        case EPrimitive.usize:
+        case EPrimitive.int:
+          return int(lit.value, lit.type);
+        case EPrimitive.f32:
+        case EPrimitive.f64:
+        case EPrimitive.real:
+          return float(lit.value, lit.type);
+        case EPrimitive.str:
+        case EPrimitive.cstr:
+        case EPrimitive.ccstr:
+          return string(lit.value, lit.prefix);
+      }
+    } else if ("type" in lit) {
+      if (lit.type === EPrimitive.null) {
+        return null_();
+      } else if (lit.type === EPrimitive.none) {
+        return none_();
+      } else if (lit.type === "enum") {
+        return enum_(lit.enumType, lit.valueName);
+      }
+    }
+    throw new InternalError("Unknown literal value type in fromLiteral");
+  }
+}
 
 export enum EMethodType {
   None,
