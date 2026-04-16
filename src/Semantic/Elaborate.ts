@@ -3015,7 +3015,9 @@ export class SemanticElaborator {
     const typedef = this.sr.cc.typeDefNodes.get(typeDefSymbol.typeDef);
     switch (typedef.variant) {
       case Collect.ENode.TypeDefAlias: {
-        this.sr.exportedTypeAliases.add(typeDefSymbol.typeDef);
+        if (typeDefSymbol.export) {
+          this.sr.exportedTypeAliases.add(typeDefSymbol.typeDef);
+        }
         return []; // No need to pre-elaborate type aliases, they are elaborated on demand when looked up
       }
 
@@ -6525,7 +6527,7 @@ export class SemanticElaborator {
 
     const typeCategorySymbolId = Semantic.findBuiltinSymbolByName(
       this.sr,
-      "meta.TypeCategory",
+      "meta.ffi.hzstd_meta_type_category_t",
       sourceloc,
     );
     const typeCategorySymbol = this.sr.cc.symbolNodes.get(typeCategorySymbolId);

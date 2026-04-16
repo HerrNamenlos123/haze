@@ -346,6 +346,7 @@ export namespace Collect {
   export type TypeDefSymbol = {
     variant: ENode.TypeDefSymbol;
     name: string;
+    export: boolean;
     inScope: Collect.ScopeId;
     typeDef: Collect.TypeDefId;
   };
@@ -1193,6 +1194,7 @@ function collectTypeDef(
           variant: Collect.ENode.TypeDefSymbol,
           inScope: args.currentParentScope,
           typeDef: existingNamespaceId,
+          export: item.export,
           name: item.name,
         })[1];
         const [_, namespaceScopeId] = Collect.makeScope(cc, {
@@ -1305,6 +1307,7 @@ function collectTypeDef(
         variant: Collect.ENode.TypeDefSymbol,
         inScope: args.currentParentScope,
         name: item.name,
+        export: item.export,
         typeDef: structId,
       })[1];
       struct.collectedTypeDefSymbol = structSymbolId;
@@ -1406,6 +1409,7 @@ function collectTypeDef(
         variant: Collect.ENode.TypeDefSymbol,
         inScope: args.currentParentScope,
         name: item.name,
+        export: item.export,
         typeDef: enumTypeId,
       })[1];
       const structScopeId = Collect.makeScope<Collect.TypeDefScope>(cc, {
@@ -2005,6 +2009,7 @@ function collectGlobalDirective(
         variant: Collect.ENode.TypeDefSymbol,
         inScope: args.currentParentScope,
         name: item.name,
+        export: item.export,
         typeDef: aliasId,
       })[1];
       genericsScope.owningSymbol = symbolId;
@@ -2074,6 +2079,7 @@ function collectGlobalDirective(
         variant: Collect.ENode.TypeDefSymbol,
         inScope: args.currentParentScope,
         typeDef: aliasId,
+        export: false,
         name: item.name,
       })[1];
       const scope = cc.scopeNodes.get(args.currentParentScope);
@@ -2308,6 +2314,7 @@ function collectScope(
           variant: Collect.ENode.TypeDefSymbol,
           inScope: blockScopeId,
           typeDef: typeDefId,
+          export: astStatement.export,
           name: astStatement.name,
         })[1];
         (cc.scopeNodes.get(blockScopeId) as Collect.BlockScope).symbols.add(symbolId);
@@ -2793,6 +2800,7 @@ function collectExpr(
         variant: Collect.ENode.TypeDefSymbol,
         inScope: blockScopeId,
         name: "__T",
+        export: false,
         typeDef: Collect.makeTypeDef(cc, {
           variant: Collect.ENode.TypeDefAlias,
           generics: [],
@@ -2931,6 +2939,7 @@ function collectExpr(
         variant: Collect.ENode.TypeDefSymbol,
         inScope: blockScopeId,
         name: "__T",
+        export: false,
         typeDef: Collect.makeTypeDef(cc, {
           variant: Collect.ENode.TypeDefAlias,
           generics: [],
@@ -3164,6 +3173,7 @@ function collectExpr(
           variant: Collect.ENode.TypeDefSymbol,
           inScope: blockScopeId,
           name: "__T",
+          export: false,
           typeDef: Collect.makeTypeDef(cc, {
             variant: Collect.ENode.TypeDefAlias,
             generics: [],

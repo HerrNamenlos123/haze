@@ -25,13 +25,22 @@ export function ExportCollectedTypeDefAlias(
   });
   const genericsString = generics.length > 0 ? `<${generics.join(", ")}>` : "";
 
-  let alias =
+  let alias = "";
+  if (typedef.sourceloc) {
+    alias += `#source ${formatSourceLoc(typedef.sourceloc)} {\n`;
+  }
+
+  alias +=
     "type " +
     typedef.name +
     genericsString +
     " = " +
     printCollectedDatatype(sr.cc, typedef.target) +
     ";\n";
+
+  if (typedef.sourceloc) {
+    alias += `}\n`;
+  }
 
   if (sr.cc.config.name !== "haze-stdlib") {
     const moduleName = getModuleGlobalNamespaceName(sr.cc.config.name, sr.cc.config.version);
