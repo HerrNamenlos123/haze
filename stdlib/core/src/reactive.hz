@@ -10,9 +10,9 @@ namespace rx {
         return do unsafe {
             let result: rx.ShallowReactive<T> = uninitialized;
             __c__("""
-    void* slot = hzstd_slot_alloc(sizeof(tmp));
-    hzstd_slot_write(slot, &tmp, sizeof(tmp));
-    result = hzstd_reactive_create(slot);
+                void* slot = hzstd_slot_alloc(sizeof(tmp));
+                hzstd_slot_write(slot, &tmp, sizeof(tmp));
+                result = hzstd_reactive_create(slot);
             """);
             result;
         };
@@ -24,13 +24,16 @@ namespace rx {
             return value;
         }
 
-        let tmp: T = value;
         return do unsafe {
+
+            let reactiveValue: T = value;
+            // value
+
             let result: rx.Reactive<T> = uninitialized;
             __c__("""
-    void* slot = hzstd_slot_alloc(sizeof(tmp));
-    hzstd_slot_write(slot, &tmp, sizeof(tmp));
-    result = hzstd_reactive_create(slot);
+                void* slot = hzstd_slot_alloc(sizeof(reactiveValue));
+                hzstd_slot_write(slot, &reactiveValue, sizeof(reactiveValue));
+                result = hzstd_reactive_create(slot);
             """);
             result;
         };
@@ -43,8 +46,8 @@ namespace rx {
                 do unsafe {
                     let slot = none as cptr;
                     __c__("""
-    slot = hzstd_slot_alloc(sizeof(resultValue));
-    hzstd_slot_write(slot, &resultValue, sizeof(resultValue));
+                        slot = hzstd_slot_alloc(sizeof(resultValue));
+                        hzstd_slot_write(slot, &resultValue, sizeof(resultValue));
                     """);
                     return slot;
                 };
@@ -52,7 +55,7 @@ namespace rx {
 
             let result: rx.Computed<T> = uninitialized;
             __c__("""
-    result = hzstd_computed_create(fnWrapper.fn, fnWrapper.env);
+                result = hzstd_computed_create(fnWrapper.fn, fnWrapper.env);
             """);
             result;
         };
