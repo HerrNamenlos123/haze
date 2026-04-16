@@ -21,7 +21,13 @@ export class OutputWriter {
     const lines = raw.match(/[^\n]*\n?|$/g);
     for (const line of lines || []) {
       if (line === "") continue; // avoid trailing empty match
-      this.content += " ".repeat(this.indent * this.indentWidth) + line;
+
+      // Indenting
+      if (this.content[this.content.length - 1] === "\n") {
+        this.content += " ".repeat(this.indent * this.indentWidth);
+      }
+
+      this.content += line;
     }
 
     return this;

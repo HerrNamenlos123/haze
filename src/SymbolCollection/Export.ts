@@ -82,26 +82,25 @@ export function ExportTypeDef(
         }
       }
       assert(typedef.generics.length === 0);
-      let line = "";
       if (typedef.extern === EExternLanguage.Extern) {
-        line += "extern ";
+        file.write("extern ");
       } else if (typedef.extern === EExternLanguage.Extern_C) {
-        line += "extern C ";
+        file.write("extern C ");
       }
       if (typedef.noemit) {
-        line += "noemit ";
+        file.write("noemit ");
       }
       if (typedef.opaque) {
-        line += "opaque ";
+        file.write("opaque ");
       }
       if (typedef.plain) {
-        line += "plain ";
+        file.write("plain ");
       }
       if (typedef.inlineByDefault) {
-        line += "inline ";
+        file.write("inline ");
       }
-      line += "struct ";
-      file.writeLine(line + namespaces[namespaces.length - 1].pretty + " {").pushIndent();
+      file.write("struct ");
+      file.writeLine(namespaces[namespaces.length - 1].pretty + " {").pushIndent();
       for (const member of typedef.members) {
         const content = sr.symbolNodes.get(member);
         assert(content.variant === Semantic.ENode.VariableSymbol);
@@ -267,15 +266,15 @@ export function ExportTypeDef(
       if (typedef.bitflag) {
         file.write("bitflag ");
       }
-      file.writeLine(typedef.name + " {");
+      file.writeLine(typedef.name + " {").pushIndent();
       for (const value of typedef.values) {
         file.writeLine(`${value.name} = ${Semantic.serializeExpr(sr, value.valueExpr)},`);
       }
-      file.writeLine("}");
+      file.popIndent().writeLine("}");
 
       if (!nested) {
         for (const ns of namespaces.slice(0, -1)) {
-          file.writeLine("}");
+          file.popIndent().writeLine("}");
         }
       }
       break;
