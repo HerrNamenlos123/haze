@@ -3107,9 +3107,18 @@ function lowerStatement(
 
     case Semantic.ENode.ExprStatement: {
       const flattened: Lowered.StatementId[] = [];
+      const loweredExprId = lowerExpr(lr, statement.expr, flattened, instanceInfo)[1];
+      const loweredExpr = lr.exprNodes.get(loweredExprId);
+
+      // Elide pure compile-time placeholders like static_print, which lower to a literal none.
+      // Keep all other expressions (including side-effecting calls that return none).
+      if (loweredExpr.variant === Lowered.ENode.LiteralExpr && loweredExpr.literal.type === EPrimitive.none) {
+        return flattened;
+      }
+
       const [s, sId] = Lowered.addStatement<Lowered.Statement>(lr, {
         variant: Lowered.ENode.ExprStatement,
-        expr: lowerExpr(lr, statement.expr, flattened, instanceInfo)[1],
+        expr: loweredExprId,
         sourceloc: statement.sourceloc,
       });
       return [...flattened, sId];
