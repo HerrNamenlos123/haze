@@ -7289,7 +7289,10 @@ export class SemanticElaborator {
         const variableSymbol = this.sr.symbolNodes.get(variableSymbolId);
         assert(variableSymbol.variant === Semantic.ENode.VariableSymbol);
 
-        if (collectedVariableSymbol.comptime && variableSymbol.mutability !== EVariableMutability.Const) {
+        if (
+          collectedVariableSymbol.comptime &&
+          variableSymbol.mutability !== EVariableMutability.Const
+        ) {
           throw new CompilerError(
             `Comptime variables must be declared as 'const'. Use 'const comptime', not 'let comptime'.`,
             s.sourceloc,
