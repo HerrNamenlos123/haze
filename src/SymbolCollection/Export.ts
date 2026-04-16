@@ -1,3 +1,4 @@
+import { OutputWriter } from "../Codegen/OutputWriter";
 import { Semantic } from "../Semantic/SemanticTypes";
 import { EDatatypeMutability, EExternLanguage, EOverloadedOperator } from "../shared/AST";
 import { EMethodType } from "../shared/common";
@@ -25,26 +26,41 @@ export function ExportCollectedTypeDefAlias(
   });
   const genericsString = generics.length > 0 ? `<${generics.join(", ")}>` : "";
 
-  let alias = "";
-  if (typedef.sourceloc) {
-    alias += `#source ${formatSourceLoc(typedef.sourceloc)} {\n`;
-  }
-
-  alias +=
-    "type " +
-    typedef.name +
-    genericsString +
-    " = " +
-    printCollectedDatatype(sr.cc, typedef.target) +
-    ";\n";
-
-  if (typedef.sourceloc) {
-    alias += `}\n`;
-  }
+  let alias = new OutputWriter(4);
 
   if (sr.cc.config.name !== "haze-stdlib") {
     const moduleName = getModuleGlobalNamespaceName(sr.cc.config.name, sr.cc.config.version);
-    alias = `namespace ${moduleName} { ${alias} }`;
+    alias.writeLine(`namespace ${moduleName} {`).pushIndent();
+  }
+
+  const namespaces = getNamespacesFromTypeDefSymbol(sr.cc, typedefId);
+  for (const ns of namespaces.slice(0, -1)) {
+    alias.writeLine(`namespace ${ns} {`).pushIndent();
+  }
+
+  if (typedef.sourceloc) {
+    alias.writeLine(`#source ${formatSourceLoc(typedef.sourceloc)} {`).pushIndent();
+  }
+
+  alias.writeLine(
+    "type " +
+      typedef.name +
+      genericsString +
+      " = " +
+      printCollectedDatatype(sr.cc, typedef.target) +
+      ";",
+  );
+
+  if (typedef.sourceloc) {
+    alias.popIndent().writeLine(`}`);
+  }
+
+  for (const ns of namespaces.slice(0, -1)) {
+    alias.popIndent().writeLine(`}`);
+  }
+
+  if (sr.cc.config.name !== "haze-stdlib") {
+    alias.popIndent().writeLine(`}`);
   }
 
   return alias;
@@ -55,48 +71,51 @@ export function ExportTypeDef(
   typedefId: Semantic.TypeDefId,
   nested: boolean,
 ): string {
-  let file = "";
+  let file = new OutputWriter(4);
   const typedef = sr.typeDefNodes.get(typedefId);
   switch (typedef.variant) {
     case Semantic.ENode.StructDatatype: {
       const namespaces = Semantic.getNamespaceChainFromDatatype(sr, typedefId);
       if (!nested) {
         for (const ns of namespaces.slice(0, -1)) {
-          file += "namespace " + ns.pretty + " {\n";
+          file.writeLine("namespace " + ns.pretty + " {").pushIndent();
         }
       }
       assert(typedef.generics.length === 0);
+      let line = "";
       if (typedef.extern === EExternLanguage.Extern) {
-        file += "extern ";
+        line += "extern ";
       } else if (typedef.extern === EExternLanguage.Extern_C) {
-        file += "extern C ";
+        line += "extern C ";
       }
       if (typedef.noemit) {
-        file += "noemit ";
+        line += "noemit ";
       }
       if (typedef.opaque) {
-        file += "opaque ";
+        line += "opaque ";
       }
       if (typedef.plain) {
-        file += "plain ";
+        line += "plain ";
       }
       if (typedef.inlineByDefault) {
-        file += "inline ";
+        line += "inline ";
       }
-      file += "struct ";
-      file += namespaces[namespaces.length - 1].pretty + " {\n";
+      line += "struct ";
+      file.writeLine(line + namespaces[namespaces.length - 1].pretty + " {").pushIndent();
       for (const member of typedef.members) {
         const content = sr.symbolNodes.get(member);
         assert(content.variant === Semantic.ENode.VariableSymbol);
         const defaultValue = typedef.memberDefaultValues.find((v) => v.memberName === content.name);
         assert(content.type);
         if (defaultValue) {
-          file += `${content.name}: ${Semantic.serializeTypeUse(
-            sr,
-            content.type,
-          )} = ${Semantic.serializeExpr(sr, defaultValue.value)};\n`;
+          file.writeLine(
+            `${content.name}: ${Semantic.serializeTypeUse(
+              sr,
+              content.type,
+            )} = ${Semantic.serializeExpr(sr, defaultValue.value)};`,
+          );
         } else {
-          file += `${content.name}: ${Semantic.serializeTypeUse(sr, content.type)};\n`;
+          file.writeLine(`${content.name}: ${Semantic.serializeTypeUse(sr, content.type)};`);
         }
       }
       for (const methodId of typedef.methods) {
@@ -105,7 +124,7 @@ export function ExportTypeDef(
         if (method.generics.length !== 0) {
           const originalFunc = sr.cc.symbolNodes.get(method.originalCollectedFunction);
           assert(originalFunc.variant === Collect.ENode.FunctionSymbol);
-          file += originalFunc.originalSourcecode + "\n";
+          file.writeLine(originalFunc.originalSourcecode);
         } else {
           const functype = sr.typeDefNodes.get(method.type);
           assert(functype.variant === Semantic.ENode.FunctionDatatype);
@@ -142,36 +161,37 @@ export function ExportTypeDef(
           }
 
           if (method.staticMethod) {
-            file += "static ";
+            file.write("static ");
           }
 
           if (method.methodRequiredMutability === EDatatypeMutability.Mut) {
-            file += "mut ";
+            file.write("mut ");
           } else if (method.methodRequiredMutability === EDatatypeMutability.Const) {
-            file += "const ";
+            file.write("const ");
           }
 
           if (functype.returnType) {
-            file += `${methodName}(${parameters}): (${Semantic.serializeTypeUse(
-              sr,
-              functype.returnType,
-            )})`;
-            file += " :: final";
+            file.write(
+              `${methodName}(${parameters}): (${Semantic.serializeTypeUse(
+                sr,
+                functype.returnType,
+              )})`,
+            );
+            file.write(" :: final");
             if (functype.requires.pure) {
-              file += ", pure";
+              file.write(", pure");
             }
             if (functype.requires.noreturn) {
-              file += ", noreturn";
+              file.write(", noreturn");
             }
             if (functype.requires.noreturnIf) {
-              file += `, noreturn_if(${printCollectedExpr(
-                sr.cc,
-                functype.requires.noreturnIf.expr,
-              )})`;
+              file.write(
+                `, noreturn_if(${printCollectedExpr(sr.cc, functype.requires.noreturnIf.expr)})`,
+              );
             }
-            file += `;\n`;
+            file.writeLine(`;`);
           } else {
-            file += `${methodName}(${parameters});\n`;
+            file.writeLine(`${methodName}(${parameters});`);
           }
         }
       }
@@ -190,7 +210,7 @@ export function ExportTypeDef(
             const overload = sr.cc.symbolNodes.get(overloadId);
             if (overload.variant === Collect.ENode.FunctionSymbol) {
               if (overload.generics.length > 0) {
-                file += overload.originalSourcecode + "\n";
+                file.writeLine(overload.originalSourcecode);
               }
             }
           }
@@ -198,12 +218,12 @@ export function ExportTypeDef(
       }
 
       for (const inner of typedef.nestedStructs) {
-        file += ExportTypeDef(sr, inner, true) + "\n\n";
+        file.writeLine(ExportTypeDef(sr, inner, true)).writeLine();
       }
-      file += "}\n";
+      file.popIndent().writeLine("}");
       if (!nested) {
         for (const ns of namespaces.slice(0, -1)) {
-          file += "}\n";
+          file.popIndent().writeLine("}");
         }
       }
       break;
@@ -228,34 +248,34 @@ export function ExportTypeDef(
       const namespaces = Semantic.getNamespaceChainFromDatatype(sr, typedefId);
       if (!nested) {
         for (const ns of namespaces.slice(0, -1)) {
-          file += "namespace " + ns.pretty + " {\n";
+          file.writeLine("namespace " + ns.pretty + " {").pushIndent();
         }
       }
 
       if (typedef.extern === EExternLanguage.Extern) {
-        file += "extern ";
+        file.write("extern ");
       } else if (typedef.extern === EExternLanguage.Extern_C) {
-        file += "extern C ";
+        file.write("extern C ");
       }
       if (typedef.noemit) {
-        file += "noemit ";
+        file.write("noemit ");
       }
-      file += "enum ";
+      file.write("enum ");
       if (typedef.unscoped) {
-        file += "unscoped ";
+        file.write("unscoped ");
       }
       if (typedef.bitflag) {
-        file += "bitflag ";
+        file.write("bitflag ");
       }
-      file += typedef.name + " {\n";
+      file.writeLine(typedef.name + " {");
       for (const value of typedef.values) {
-        file += `${value.name} = ${Semantic.serializeExpr(sr, value.valueExpr)},\n`;
+        file.writeLine(`${value.name} = ${Semantic.serializeExpr(sr, value.valueExpr)},`);
       }
-      file += "}\n";
+      file.writeLine("}");
 
       if (!nested) {
         for (const ns of namespaces.slice(0, -1)) {
-          file += "}\n";
+          file.writeLine("}");
         }
       }
       break;
@@ -264,7 +284,7 @@ export function ExportTypeDef(
     default:
       assert(false);
   }
-  return file;
+  return file.get();
 }
 
 export function ExportSymbol(
@@ -398,6 +418,16 @@ function getNamespacesFromScope(
   }
 }
 
+function getNamespacesFromTypeDefSymbol(
+  cc: CollectionContext,
+  typedefId: Collect.TypeDefId,
+  current: string[] = [],
+) {
+  const typedef = cc.typeDefNodes.get(typedefId);
+  assert(typedef.variant === Collect.ENode.TypeDefAlias);
+  return getNamespacesFromScope(cc, typedef.inScope, [typedef.name, ...current]);
+}
+
 function getNamespacesFromSymbol(
   cc: CollectionContext,
   symbolId: Collect.SymbolId,
@@ -423,14 +453,14 @@ function getNamespacesFromSymbol(
 }
 
 export function ExportCollectedSymbols(sr: Semantic.Context) {
-  let file = "";
+  let file = new OutputWriter(4);
 
   for (const symbolId of sr.exportedSymbols) {
-    file += ExportSymbol(sr, symbolId, false);
+    file.writeLine(ExportSymbol(sr, symbolId, false));
   }
 
   for (const id of sr.exportedTypeAliases) {
-    file += ExportCollectedTypeDefAlias(sr, id, false);
+    file.writeLine(ExportCollectedTypeDefAlias(sr, id, false));
   }
 
   for (const symbolId of sr.cc.exportedGenericSymbols) {
@@ -441,7 +471,7 @@ export function ExportCollectedSymbols(sr: Semantic.Context) {
     // }
     const namespaces = getNamespacesFromSymbol(sr.cc, symbolId);
     for (const ns of namespaces.slice(0, -1)) {
-      file += "namespace " + ns + " {\n";
+      file.writeLine("namespace " + ns + " {");
     }
 
     if (symbol.variant === Collect.ENode.FunctionSymbol) {
@@ -452,7 +482,7 @@ export function ExportCollectedSymbols(sr: Semantic.Context) {
       if (code.startsWith("export ")) {
         code = code.replace("export ", "");
       }
-      file += code + "\n";
+      file.writeLine(code);
     } else if (symbol.variant === Collect.ENode.TypeDefSymbol) {
       const typedef = sr.cc.typeDefNodes.get(symbol.typeDef);
       if (typedef.variant === Collect.ENode.StructTypeDef) {
@@ -463,7 +493,7 @@ export function ExportCollectedSymbols(sr: Semantic.Context) {
         if (code.startsWith("export ")) {
           code = code.replace("export ", "");
         }
-        file += code + "\n";
+        file.writeLine(code);
       } else {
         assert(false);
       }
@@ -472,9 +502,9 @@ export function ExportCollectedSymbols(sr: Semantic.Context) {
     }
 
     for (const ns of namespaces.slice(0, -1)) {
-      file += "}\n";
+      file.writeLine("}");
     }
   }
 
-  return file;
+  return file.get();
 }

@@ -2,7 +2,7 @@ export class OutputWriter {
   private content: string = "";
   private indent: number = 0;
 
-  constructor() {}
+  constructor(private indentWidth = 2) {}
 
   pushIndent() {
     this.indent++;
@@ -21,7 +21,7 @@ export class OutputWriter {
     const lines = raw.match(/[^\n]*\n?|$/g);
     for (const line of lines || []) {
       if (line === "") continue; // avoid trailing empty match
-      this.content += "  ".repeat(this.indent) + line;
+      this.content += " ".repeat(this.indent * this.indentWidth) + line;
     }
 
     return this;
