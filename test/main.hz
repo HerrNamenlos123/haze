@@ -40,7 +40,8 @@ struct Bar {
 
 struct Foo {
     value: int;
-    bar: Bar;
+    otherValue: real;
+    // bar: Bar;
 }
 
 // Now implement comptime reflection.
@@ -51,8 +52,13 @@ struct Foo {
 
 main(): int {
 
-    const comptime foo = Bar { value: 5 };
-    static_print(f"{foo.value + 7}");
+    const foo = Foo { value: 187, otherValue: 42.0 };
+
+    static_print(f"Foo has {typeof(foo).fields.length} fields:");
+    for comptime field, i in typeof(foo).fields {
+        static_print(f"[{i}]: {field.name}");
+        fmt.println(f"Value of {field.name}: ", foo.[field.name]);
+    }
 
     // let foo = Foo { value: 5, bar: { value: 42 } };
     // const comptime field = "value";
