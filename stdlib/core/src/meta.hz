@@ -1,0 +1,38 @@
+
+namespace meta {
+    namespace ffi {
+        export extern C noemit enum unscoped hzstd_meta_type_category_t {
+            hzstd_meta_type_category_internal = 0,
+            hzstd_meta_type_category_namespace = 1,
+            hzstd_meta_type_category_struct = 2,
+            hzstd_meta_type_category_enum = 3,
+            hzstd_meta_type_category_primitive = 4,
+            hzstd_meta_type_category_function = 5,
+            hzstd_meta_type_category_callable = 6,
+            hzstd_meta_type_category_array = 7,
+            hzstd_meta_type_category_slice = 8,
+            hzstd_meta_type_category_union = 9,
+            hzstd_meta_type_category_reactive = 10,
+            hzstd_meta_type_category_generic = 11,
+            hzstd_meta_type_category_literal = 12,
+            hzstd_meta_type_category_parameter_pack = 13,
+        }
+    }
+
+    export enum TypeCategory {
+        Internal = ffi.hzstd_meta_type_category_internal,
+        Namespace = ffi.hzstd_meta_type_category_namespace,
+        Struct = ffi.hzstd_meta_type_category_struct,
+        Enum = ffi.hzstd_meta_type_category_enum,
+        Primitive = ffi.hzstd_meta_type_category_primitive,
+        Function = ffi.hzstd_meta_type_category_function,
+        Callable = ffi.hzstd_meta_type_category_callable,
+        Array = ffi.hzstd_meta_type_category_array,
+        Slice = ffi.hzstd_meta_type_category_slice,
+        Union = ffi.hzstd_meta_type_category_union,
+        Reactive = ffi.hzstd_meta_type_category_reactive,
+        Generic = ffi.hzstd_meta_type_category_generic,
+        Literal = ffi.hzstd_meta_type_category_literal,
+        ParameterPack = ffi.hzstd_meta_type_category_parameter_pack,
+    }
+}

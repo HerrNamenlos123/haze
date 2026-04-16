@@ -67,6 +67,7 @@ export class SemanticElaborator {
   inAttemptExpr: Semantic.ExprId | null = null;
   functionReturnsInstanceIds?: Set<Semantic.InstanceId>;
   metaFieldStructTypeId: Semantic.TypeDefId | null = null;
+  metaTypeCategoryEnumTypeId: Semantic.TypeDefId | null = null;
 
   constructor(
     public sr: Semantic.Context,
@@ -1939,6 +1940,48 @@ export class SemanticElaborator {
       this.sr.exportedSymbols.add(enumSymbolId);
     }
 
+    const resolveEnumValueLiteral = (
+      literal: LiteralValue,
+      sourceloc: SourceLoc,
+    ): { kind: "int" | "str"; value: bigint | string } => {
+      if (literal.type === EPrimitive.int) {
+        return { kind: "int", value: literal.value };
+      }
+
+      if (
+        literal.type === EPrimitive.str ||
+        literal.type === EPrimitive.cstr ||
+        literal.type === EPrimitive.ccstr
+      ) {
+        return { kind: "str", value: literal.value };
+      }
+
+      if (literal.type === "enum") {
+        const referencedEnum = this.sr.typeDefNodes.get(literal.enumType);
+        assert(referencedEnum.variant === Semantic.ENode.EnumDatatype);
+
+        const referencedValue = referencedEnum.values.find((v) => v.name === literal.valueName);
+        if (!referencedValue) {
+          throw new CompilerError(
+            `Enum value '${literal.valueName}' does not exist in '${referencedEnum.name}'`,
+            sourceloc,
+          );
+        }
+
+        const referencedExpr = this.sr.exprNodes.get(referencedValue.valueExpr);
+        assert(referencedExpr.variant === Semantic.ENode.LiteralExpr);
+        return resolveEnumValueLiteral(referencedExpr.literal, sourceloc);
+      }
+
+      throw new CompilerError(
+        `Enum values can only be of type string or integer, not '${Semantic.serializeLiteralType(
+          this.sr,
+          literal,
+        )}'`,
+        sourceloc,
+      );
+    };
+
     const getEnumType = () => {
       if (enumValue.values[0].value) {
         const [valueResult, _] = EvalCTFEOrFail(
@@ -1948,22 +1991,17 @@ export class SemanticElaborator {
         );
         assert(valueResult.variant === Semantic.ENode.LiteralExpr);
 
-        if (valueResult.literal.type === EPrimitive.int) {
+        const normalizedValue = resolveEnumValueLiteral(
+          valueResult.literal,
+          enumValue.values[0].sourceloc,
+        );
+
+        if (normalizedValue.kind === "int") {
           return ["int", this.sr.b.intType()] as const;
-        } else if (
-          valueResult.literal.type === EPrimitive.str ||
-          valueResult.literal.type === EPrimitive.cstr ||
-          valueResult.literal.type === EPrimitive.ccstr
-        ) {
+        } else if (normalizedValue.kind === "str") {
           return ["str", this.sr.b.strType()] as const;
         } else {
-          throw new CompilerError(
-            `Enum values can only be of type string or integer, not '${Semantic.serializeLiteralType(
-              this.sr,
-              valueResult.literal,
-            )}'`,
-            enumValue.values[0].sourceloc,
-          );
+          assert(false);
         }
       } else {
         return ["int", this.sr.b.intType()] as const;
@@ -1993,21 +2031,23 @@ export class SemanticElaborator {
             );
             assert(valueResult.variant === Semantic.ENode.LiteralExpr);
 
-            if (valueResult.type !== enumDatatypeId) {
+            const normalizedValue = resolveEnumValueLiteral(valueResult.literal, value.sourceloc);
+            if (normalizedValue.kind !== "int") {
               throw new CompilerError(
                 `This enum cannot have values with mixed datatypes '${Semantic.serializeTypeUse(
                   this.sr,
-                  valueResult.type,
+                  this.sr.b.strType(),
                 )}' and '${Semantic.serializeTypeUse(this.sr, enumDatatypeId)}'`,
                 value.sourceloc,
               );
             }
-            assert(valueResult.literal.type === EPrimitive.int);
+
+            const normalizedIntValue = normalizedValue.value as bigint;
 
             if (
               enumValue.bitflag &&
-              !isPowerOfTwo(valueResult.literal.value) &&
-              valueResult.literal.value !== 0n
+              !isPowerOfTwo(normalizedIntValue) &&
+              normalizedIntValue !== 0n
             ) {
               throw new CompilerError(
                 `This value does not resolve to an integer that is a power of two/an integer with exactly one bit set`,
@@ -2015,23 +2055,23 @@ export class SemanticElaborator {
               );
             }
 
-            if (usedValues.has(valueResult.literal.value)) {
+            if (usedValues.has(normalizedIntValue)) {
               throw new CompilerError(
-                `Multiple fields with value ${valueResult.literal.value} not allowed`,
+                `Multiple fields with value ${normalizedIntValue} not allowed`,
                 value.sourceloc,
               );
             }
 
             if (enumValue.bitflag) {
-              nextValue = valueResult.literal.value * 2n;
+              nextValue = normalizedIntValue * 2n;
             } else {
-              nextValue = valueResult.literal.value + 1n;
+              nextValue = normalizedIntValue + 1n;
             }
 
             enumType.values.push({
               name: value.name,
               type: enumDatatypeId,
-              valueExpr: this.sr.b.literal(valueResult.literal.value, value.sourceloc)[1],
+              valueExpr: this.sr.b.literal(normalizedIntValue, value.sourceloc)[1],
               literalExpr: this.sr.b.literalValue(
                 {
                   type: "enum",
@@ -2042,7 +2082,7 @@ export class SemanticElaborator {
               )[1],
             });
 
-            usedValues.add(valueResult.literal.value);
+            usedValues.add(normalizedIntValue);
           } else {
             if (enumValue.bitflag) {
               while (usedValues.has(nextValue)) {
@@ -2099,21 +2139,23 @@ export class SemanticElaborator {
             );
             assert(valueResult.variant === Semantic.ENode.LiteralExpr);
 
-            if (valueResult.type !== enumDatatypeId) {
+            const normalizedValue = resolveEnumValueLiteral(valueResult.literal, value.sourceloc);
+            if (normalizedValue.kind !== "str") {
               throw new CompilerError(
                 `This enum cannot have values with mixed datatypes '${Semantic.serializeTypeUse(
                   this.sr,
-                  valueResult.type,
+                  this.sr.b.intType(),
                 )}' and '${Semantic.serializeTypeUse(this.sr, enumDatatypeId)}'`,
                 value.sourceloc,
               );
             }
-            assert(valueResult.literal.type === EPrimitive.str);
+
+            const normalizedStrValue = normalizedValue.value as string;
 
             enumType.values.push({
               name: value.name,
               type: enumDatatypeId,
-              valueExpr: this.sr.b.literal(valueResult.literal.value, value.sourceloc)[1],
+              valueExpr: this.sr.b.literal(normalizedStrValue, value.sourceloc)[1],
               literalExpr: this.sr.b.literalValue(
                 {
                   type: "enum",
@@ -2124,13 +2166,13 @@ export class SemanticElaborator {
               )[1],
             });
 
-            if (usedValues.has(valueResult.literal.value)) {
+            if (usedValues.has(normalizedStrValue)) {
               throw new CompilerError(
-                `Multiple fields with value "${valueResult.literal.value}" not allowed`,
+                `Multiple fields with value "${normalizedStrValue}" not allowed`,
                 value.sourceloc,
               );
             }
-            usedValues.add(valueResult.literal.value);
+            usedValues.add(normalizedStrValue);
           } else {
             throw new CompilerError(
               `An enum with string values requires all values to be defined`,
@@ -6476,6 +6518,76 @@ export class SemanticElaborator {
     return makeTypeUse(this.sr, metaFieldStructId, EDatatypeMutability.Const, false, sourceloc)[1];
   }
 
+  ensureMetaTypeCategoryEnumType(sourceloc: SourceLoc): Semantic.TypeDefId {
+    if (this.metaTypeCategoryEnumTypeId !== null) {
+      return this.metaTypeCategoryEnumTypeId;
+    }
+
+    const typeCategorySymbolId = Semantic.findBuiltinSymbolByName(
+      this.sr,
+      "meta.TypeCategory",
+      sourceloc,
+    );
+    const typeCategorySymbol = this.sr.cc.symbolNodes.get(typeCategorySymbolId);
+    assert(typeCategorySymbol.variant === Collect.ENode.TypeDefSymbol);
+
+    const typeCategoryDef = this.sr.cc.typeDefNodes.get(typeCategorySymbol.typeDef);
+    assert(typeCategoryDef.variant === Collect.ENode.EnumTypeDef);
+
+    const typeCategoryEnumTypeId = this.enum(typeCategorySymbol.typeDef);
+    this.metaTypeCategoryEnumTypeId = typeCategoryEnumTypeId;
+    return typeCategoryEnumTypeId;
+  }
+
+  getDatatypeCategoryName(typeDef: Semantic.TypeDef): string {
+    switch (typeDef.variant) {
+      case Semantic.ENode.NamespaceDatatype:
+        return "Namespace";
+
+      case Semantic.ENode.StructDatatype:
+        return "Struct";
+
+      case Semantic.ENode.EnumDatatype:
+        return "Enum";
+
+      case Semantic.ENode.PrimitiveDatatype:
+        return "Primitive";
+
+      case Semantic.ENode.FunctionDatatype:
+      case Semantic.ENode.DeferredFunctionDatatype:
+        return "Function";
+
+      case Semantic.ENode.CallableDatatype:
+        return "Callable";
+
+      case Semantic.ENode.FixedArrayDatatype:
+      case Semantic.ENode.DynamicArrayDatatype:
+        return "Array";
+
+      case Semantic.ENode.SliceDatatype:
+        return "Slice";
+
+      case Semantic.ENode.UntaggedUnionDatatype:
+      case Semantic.ENode.TaggedUnionDatatype:
+      case Semantic.ENode.UnionTagRefDatatype:
+        return "Union";
+
+      case Semantic.ENode.ReactiveDatatype:
+      case Semantic.ENode.ShallowReactiveDatatype:
+      case Semantic.ENode.ComputedDatatype:
+        return "Reactive";
+
+      case Semantic.ENode.GenericParameterDatatype:
+        return "Generic";
+
+      case Semantic.ENode.LiteralDatatype:
+        return "Literal";
+
+      case Semantic.ENode.ParameterPackDatatype:
+        return "ParameterPack";
+    }
+  }
+
   elaborateDatatypeMemberAccess(
     sr: Semantic.Context,
     datatypeAsValueExprId: Semantic.ExprId,
@@ -6496,6 +6608,17 @@ export class SemanticElaborator {
       const name = Semantic.mangleFullTypeUse(sr, typeUseId);
       return this.sr.b.literal(
         name.wasMangled ? "_H" + name.name : name.name,
+        memberAccessExpr.sourceloc,
+      );
+    }
+    if (memberAccessExpr.memberName === "category") {
+      const typeCategoryEnumTypeId = this.ensureMetaTypeCategoryEnumType(memberAccessExpr.sourceloc);
+      return this.sr.b.literalValue(
+        {
+          type: "enum",
+          enumType: typeCategoryEnumTypeId,
+          valueName: this.getDatatypeCategoryName(datatypeValue),
+        },
         memberAccessExpr.sourceloc,
       );
     }
