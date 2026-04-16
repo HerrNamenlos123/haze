@@ -155,7 +155,7 @@ main(): int {
             alphaMode: caps.alphaModes[0],
         });
 
-        let comptime enableShaderHotreload = true;
+        const comptime enableShaderHotreload = true;
         let renderer = Renderer({
             windowState: windowState,
             device: device, 

@@ -3033,6 +3033,13 @@ export class SemanticElaborator {
       return [this.sr.elaboratedGlobalVariableSymbols.get(variableSymbolId)!];
     }
 
+    if (variableSymbol.comptime && variableSymbol.mutability !== EVariableMutability.Const) {
+      throw new CompilerError(
+        `Comptime variables must be declared as 'const'. Use 'const comptime', not 'let comptime'.`,
+        variableSymbol.sourceloc,
+      );
+    }
+
     let type =
       (variableSymbol.type && this.lookupAndElaborateDatatype(variableSymbol.type)) || null;
 
@@ -7281,6 +7288,13 @@ export class SemanticElaborator {
         assert(variableSymbolId);
         const variableSymbol = this.sr.symbolNodes.get(variableSymbolId);
         assert(variableSymbol.variant === Semantic.ENode.VariableSymbol);
+
+        if (collectedVariableSymbol.comptime && variableSymbol.mutability !== EVariableMutability.Const) {
+          throw new CompilerError(
+            `Comptime variables must be declared as 'const'. Use 'const comptime', not 'let comptime'.`,
+            s.sourceloc,
+          );
+        }
 
         if (collectedVariableSymbol.type) {
           variableSymbol.type = this.withContext(
