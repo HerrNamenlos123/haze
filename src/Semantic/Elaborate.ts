@@ -6612,7 +6612,9 @@ export class SemanticElaborator {
       );
     }
     if (memberAccessExpr.memberName === "category") {
-      const typeCategoryEnumTypeId = this.ensureMetaTypeCategoryEnumType(memberAccessExpr.sourceloc);
+      const typeCategoryEnumTypeId = this.ensureMetaTypeCategoryEnumType(
+        memberAccessExpr.sourceloc,
+      );
       return this.sr.b.literalValue(
         {
           type: "enum",
