@@ -6429,7 +6429,7 @@ export class SemanticElaborator {
       this.sr,
       {
         variant: Semantic.ENode.StructDatatype,
-        name: "meta.Field",
+        name: "hzstd_meta_field_t",
         noemit: true,
         generics: [],
         opaque: false,
@@ -6437,7 +6437,7 @@ export class SemanticElaborator {
         reactiveClone: false,
         inlineByDefault: false,
         export: false,
-        extern: EExternLanguage.None,
+        extern: EExternLanguage.Extern_C,
         members: [],
         membersBuilt: true,
         membersFinalized: true,

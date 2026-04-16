@@ -50,15 +50,19 @@ struct Foo {
 // Now extend this feature. type.fields should be valid only for normal structs, and it is supposed to return a ComptimeList<T> datatype. This is a new datatype you must create. Also create a new struct datatype called meta.Field. This is a both comptime and runtime struct which holds "name" as a string, and future other attributes.
 // Whenever type.fields is accessed, a ComptimeList<meta.Field> is created, which holds extra comptime data per value. Similar to how Parameter Packs are implemented, but Parameter Packs are very hacky, so try to find a better, more general, less hacky solution for meta.Field than Parameter packs. Then, this array can be used and only stored in comptime variables, indexed by index, .length, and looped over by for comptime. The value is then a meta.Field. Accessing and meta.Field ever basically instantiates a runtime struct which contains all the correct values, but additionally it also has compile time data attached. Accessing fields of the struct like the name resolves the compile time value and then optimizes the struct away and resolves directly to a compile time string literal. If the field is used in other more complex ways, the 
 
+print<T>(value: T) {
+    let s = "{\n";
+    for comptime field, i in typeof(value).fields {
+        s += f"    {field.name}: {value.[field.name]}{i < typeof(value).fields.length - 1 ? "," : ""}\n";
+    }
+    s += "}";
+    fmt.println(s);
+}
+
 main(): int {
 
     const foo = Foo { value: 187, otherValue: 42.0 };
-
-    static_print(f"Foo has {typeof(foo).fields.length} fields:");
-    for comptime field, i in typeof(foo).fields {
-        static_print(f"[{i}]: {field.name}");
-        fmt.println(f"Value #{i} of {field.name}: ", foo.[field.name]);
-    }
+    print(foo);
 
     // let foo = Foo { value: 5, bar: { value: 42 } };
     // const comptime field = "value";

@@ -7,6 +7,7 @@
 #include "hzstd_filesystem.h"
 #include "hzstd_json.h"
 #include "hzstd_memory.h"
+#include "hzstd_meta.h"
 #include "hzstd_platform.h"
 #include "hzstd_reactive.h"
 #include "hzstd_regex.h"
