@@ -3112,7 +3112,10 @@ function lowerStatement(
 
       // Elide pure compile-time placeholders like static_print, which lower to a literal none.
       // Keep all other expressions (including side-effecting calls that return none).
-      if (loweredExpr.variant === Lowered.ENode.LiteralExpr && loweredExpr.literal.type === EPrimitive.none) {
+      if (
+        loweredExpr.variant === Lowered.ENode.LiteralExpr &&
+        loweredExpr.literal.type === EPrimitive.none
+      ) {
         return flattened;
       }
 
