@@ -57,7 +57,7 @@ main(): int {
     static_print(f"Foo has {typeof(foo).fields.length} fields:");
     for comptime field, i in typeof(foo).fields {
         static_print(f"[{i}]: {field.name}");
-        fmt.println(f"Value of {field.name}: ", foo.[field.name]);
+        fmt.println(f"Value #{i} of {field.name}: ", foo.[field.name]);
     }
 
     // let foo = Foo { value: 5, bar: { value: 42 } };
@@ -66,8 +66,8 @@ main(): int {
     // fmt.println(foo.value);
     return 0;
 
-    let a = rx.reactive(Foo { value: 5, bar: { value: 42 } });
-    a.value = rx.reactive<int>(7);
+    // let a = rx.reactive(Foo { value: 5, bar: { value: 42 } });
+    // a.value = rx.reactive<int>(7);
     // static_print(typeof(a).name);
     // static_print(typeof(a.value).name);
     // let aValue = rx.computed<int>(() => {
@@ -75,7 +75,7 @@ main(): int {
     //     return a.value as int;
     // });
 
-    fmt.println(f"a.value = {a.value}");
+    // fmt.println(f"a.value = {a.value}");
     // fmt.println(f"aValue = {aValue}");
 
     // // a := Foo { value: 6 };

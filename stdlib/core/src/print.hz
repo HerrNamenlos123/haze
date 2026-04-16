@@ -167,7 +167,7 @@ namespace fmt {
     }
 
     export format_to(writer: mut StringWriter, value: f64, args: FormatArgs) {
-        format_to_sprintf<64, "\"%.17g}\"", typeof(value)>(writer, value);
+        format_to_sprintf<64, "\"%.17g\"", typeof(value)>(writer, value);
     }
 
     export format_to(writer: mut StringWriter, value: real, args: FormatArgs) {

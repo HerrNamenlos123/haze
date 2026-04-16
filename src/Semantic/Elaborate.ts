@@ -66,6 +66,7 @@ export class SemanticElaborator {
   inFunction: Semantic.SymbolId | null = null;
   inAttemptExpr: Semantic.ExprId | null = null;
   functionReturnsInstanceIds?: Set<Semantic.InstanceId>;
+  metaFieldStructTypeId: Semantic.TypeDefId | null = null;
 
   constructor(
     public sr: Semantic.Context,
@@ -6413,6 +6414,68 @@ export class SemanticElaborator {
     );
   }
 
+  ensureMetaFieldStructType(sourceloc: SourceLoc): Semantic.TypeUseId {
+    if (this.metaFieldStructTypeId !== null) {
+      return makeTypeUse(
+        this.sr,
+        this.metaFieldStructTypeId,
+        EDatatypeMutability.Const,
+        false,
+        sourceloc,
+      )[1];
+    }
+
+    const [metaFieldStruct, metaFieldStructId] = this.sr.b.addType<Semantic.StructDatatypeDef>(
+      this.sr,
+      {
+        variant: Semantic.ENode.StructDatatype,
+        name: "meta.Field",
+        noemit: true,
+        generics: [],
+        opaque: false,
+        plain: true,
+        reactiveClone: false,
+        inlineByDefault: false,
+        export: false,
+        extern: EExternLanguage.None,
+        members: [],
+        membersBuilt: true,
+        membersFinalized: true,
+        memberDefaultValues: [],
+        methods: [],
+        methodsInProgress: false,
+        methodsFinalized: true,
+        nestedStructs: [],
+        parentSymbolId: null,
+        sourceloc,
+        concrete: true,
+        originalCollectedDefinition: -1 as Collect.TypeDefId,
+        originalCollectedSymbol: -1 as Collect.SymbolId,
+      },
+    );
+
+    const [_, nameMemberId] = this.sr.b.addSymbol(this.sr, {
+      variant: Semantic.ENode.VariableSymbol,
+      comptime: false,
+      comptimeValue: null,
+      concrete: true,
+      export: false,
+      extern: EExternLanguage.None,
+      requiresHoisting: false,
+      memberOfStruct: metaFieldStructId,
+      mutability: EVariableMutability.Const,
+      name: "name",
+      parentSymbolId: null,
+      sourceloc,
+      type: this.sr.b.strType(),
+      variableContext: EVariableContext.MemberOfStruct,
+    } satisfies Semantic.VariableSymbol);
+    metaFieldStruct.members.push(nameMemberId);
+
+    this.metaFieldStructTypeId = metaFieldStructId;
+    return makeTypeUse(this.sr, metaFieldStructId, EDatatypeMutability.Const, false, sourceloc)[1];
+  }
+
   elaborateDatatypeMemberAccess(
     sr: Semantic.Context,
     datatypeAsValueExprId: Semantic.ExprId,
@@ -6445,6 +6508,50 @@ export class SemanticElaborator {
         inference,
       );
     } else if (datatypeValue.variant === Semantic.ENode.StructDatatype) {
+      if (memberAccessExpr.memberName === "fields") {
+        if (datatypeValue.reactiveClone) {
+          throw new CompilerError(
+            `Datatype ${Semantic.serializeTypeUse(sr, typeUseId)} does not support '.fields' reflection`,
+            memberAccessExpr.sourceloc,
+          );
+        }
+
+        const metaFieldType = this.ensureMetaFieldStructType(memberAccessExpr.sourceloc);
+        const reflectedFields: Semantic.ExprId[] = [];
+
+        for (const memberId of datatypeValue.members) {
+          const member = this.sr.symbolNodes.get(memberId);
+          assert(member.variant === Semantic.ENode.VariableSymbol);
+
+          const fieldNameExprId = this.sr.b.literal(member.name, memberAccessExpr.sourceloc)[1];
+          const fieldExprId = this.sr.b.structLiteral(
+            metaFieldType,
+            [{ name: "name", value: fieldNameExprId }],
+            this.inFunction,
+            null,
+            memberAccessExpr.sourceloc,
+          )[1];
+          reflectedFields.push(fieldExprId);
+        }
+
+        const reflectedType = makeStackArrayDatatypeAvailable(
+          this.sr,
+          metaFieldType,
+          BigInt(reflectedFields.length),
+          EDatatypeMutability.Const,
+          false,
+          memberAccessExpr.sourceloc,
+        );
+
+        return this.sr.b.arrayLiteral(
+          reflectedType,
+          reflectedFields,
+          this.inFunction,
+          null,
+          memberAccessExpr.sourceloc,
+        );
+      }
+
       return this.lookupAndElaborateStaticStructAccess(
         datatypeAsValueExprId,
         memberAccessExpr.memberName,
@@ -7608,6 +7715,148 @@ export class SemanticElaborator {
       case Collect.ENode.ForEachStatement: {
         if (s.comptime) {
           const valueId = this.expr(s.value, undefined)[1];
+
+          const getComptimeListItems = (
+            exprId: Semantic.ExprId,
+          ): { items: Semantic.ExprId[]; elementType: Semantic.TypeUseId } | null => {
+            const expr = this.sr.exprNodes.get(exprId);
+            if (expr.variant === Semantic.ENode.ArrayLiteralExpr) {
+              const arrayType = this.sr.typeDefNodes.get(this.sr.typeUseNodes.get(expr.type).type);
+              if (
+                arrayType.variant !== Semantic.ENode.FixedArrayDatatype &&
+                arrayType.variant !== Semantic.ENode.DynamicArrayDatatype
+              ) {
+                return null;
+              }
+              return {
+                items: expr.elements,
+                elementType: arrayType.datatype,
+              };
+            }
+
+            if (expr.variant === Semantic.ENode.SymbolValueExpr) {
+              const sym = this.sr.symbolNodes.get(expr.symbol);
+              if (sym.variant === Semantic.ENode.VariableSymbol && sym.comptimeValue) {
+                return getComptimeListItems(sym.comptimeValue);
+              }
+              return null;
+            }
+
+            if (
+              expr.variant === Semantic.ENode.ComputedReadExpr ||
+              expr.variant === Semantic.ENode.ReactiveReadExpr
+            ) {
+              return getComptimeListItems(expr.value);
+            }
+
+            return null;
+          };
+
+          const comptimeList = getComptimeListItems(valueId);
+          if (comptimeList) {
+            if (!this.sr.syntheticScopeToVariableMap.has(s.body)) {
+              this.sr.syntheticScopeToVariableMap.set(s.body, new Map());
+            }
+            const syntheticMap = this.sr.syntheticScopeToVariableMap.get(s.body)!;
+
+            const [_, loopValueSymbolId] = this.sr.b.addSymbol(this.sr, {
+              variant: Semantic.ENode.VariableSymbol,
+              comptime: true,
+              comptimeValue: null,
+              concrete: true,
+              export: false,
+              extern: EExternLanguage.None,
+              requiresHoisting: false,
+              memberOfStruct: null,
+              mutability: EVariableMutability.Const,
+              name: s.loopVariable,
+              parentSymbolId: null,
+              sourceloc: s.sourceloc,
+              type: comptimeList.elementType,
+              variableContext: EVariableContext.FunctionLocal,
+            } satisfies Semantic.VariableSymbol);
+
+            let loopIndex: undefined | Semantic.VariableSymbol = undefined;
+            let loopIndexId: undefined | Semantic.SymbolId = undefined;
+            if (s.indexVariable) {
+              [loopIndex, loopIndexId] = this.sr.b.addSymbol(this.sr, {
+                variant: Semantic.ENode.VariableSymbol,
+                comptime: true,
+                comptimeValue: null,
+                concrete: true,
+                export: false,
+                extern: EExternLanguage.None,
+                requiresHoisting: false,
+                memberOfStruct: null,
+                mutability: EVariableMutability.Const,
+                name: s.indexVariable,
+                parentSymbolId: null,
+                sourceloc: s.sourceloc,
+                type: makePrimitiveAvailable(
+                  this.sr,
+                  EPrimitive.int,
+                  EDatatypeMutability.Const,
+                  s.sourceloc,
+                ),
+                variableContext: EVariableContext.FunctionLocal,
+              } satisfies Semantic.VariableSymbol);
+            }
+
+            const resultWrites = Semantic.WriteResult.empty();
+            const resultFlow = Semantic.FlowResult.fallthrough();
+            const allScopes: Semantic.StatementId[] = [];
+
+            for (let i = 0; i < comptimeList.items.length; i++) {
+              const loopValueSymbol = this.sr.symbolNodes.get(loopValueSymbolId);
+              assert(loopValueSymbol.variant === Semantic.ENode.VariableSymbol);
+              loopValueSymbol.comptimeValue = comptimeList.items[i];
+              syntheticMap.set(s.loopVariable, loopValueSymbolId);
+
+              if (s.indexVariable) {
+                assert(loopIndexId && loopIndex);
+                loopIndex.comptimeValue = this.sr.b.literalValue(
+                  {
+                    type: EPrimitive.int,
+                    unit: null,
+                    value: BigInt(i),
+                  },
+                  s.sourceloc,
+                )[1];
+                syntheticMap.set(s.indexVariable, loopIndexId);
+              }
+
+              const { flow, writes, scopeId } = this.makeAndElaborateBlockScope(s.body, {
+                lastExprIsEmit: false,
+                unsafe: inference?.unsafe,
+              });
+              resultFlow.addAll(flow);
+              resultWrites.addAll(writes);
+
+              if (s.indexVariable) {
+                syntheticMap.delete(s.indexVariable);
+              }
+              syntheticMap.delete(s.loopVariable);
+
+              allScopes.push(
+                this.sr.b.exprStatement(this.sr.b.blockScopeExpr(scopeId, flow, writes)[1])[1],
+              );
+            }
+
+            resultFlow.add(Semantic.FlowType.Fallthrough);
+
+            return {
+              statementId: this.sr.b.exprStatement(
+                this.sr.b.blockScopeExpr(
+                  this.sr.b.blockScope(allScopes, this.sr.b.noneExpr()[1], s.sourceloc)[1],
+                  resultFlow,
+                  resultWrites,
+                )[1],
+              )[1],
+              flow: resultFlow,
+              writes: resultWrites,
+            };
+          }
+
           const r = EvalCTFE(this.sr, valueId);
           if (!r.ok) throw new CompilerError(r.error, s.sourceloc);
           const comptimeValue = r.value[0];

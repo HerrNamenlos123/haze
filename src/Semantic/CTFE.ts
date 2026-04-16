@@ -378,6 +378,18 @@ export function evalCT(sr: Semantic.Context, exprId: Semantic.ExprId): CTValue |
     case Semantic.ENode.StructLiteralExpr:
       return evalCTStructLiteral(sr, expr);
 
+    case Semantic.ENode.ArrayLiteralExpr: {
+      const items: CTValue[] = [];
+      for (const elementExprId of expr.elements) {
+        const item = evalCT(sr, elementExprId);
+        if (item === null) {
+          return null;
+        }
+        items.push(item);
+      }
+      return CTValueHelpers.list(items);
+    }
+
     case Semantic.ENode.SymbolValueExpr: {
       const symbol = sr.symbolNodes.get(expr.symbol);
       if (
@@ -396,6 +408,38 @@ export function evalCT(sr: Semantic.Context, exprId: Semantic.ExprId): CTValue |
         return null;
       }
       return evalCTMemberAccess(sr, objectValue, expr.memberName);
+    }
+
+    case Semantic.ENode.ArraySubscriptExpr: {
+      if (expr.indices.length !== 1) {
+        return null;
+      }
+
+      const listValue = evalCT(sr, expr.expr);
+      if (listValue === null || listValue.kind !== "list") {
+        return null;
+      }
+
+      const indexValue = evalCT(sr, expr.indices[0]);
+      if (indexValue === null || indexValue.kind !== "int") {
+        return null;
+      }
+
+      const indexAsBigint = indexValue.value;
+      if (indexAsBigint < 0n) {
+        return null;
+      }
+
+      const indexAsNumber = Number(indexAsBigint);
+      if (!Number.isSafeInteger(indexAsNumber)) {
+        return null;
+      }
+
+      if (indexAsNumber >= listValue.items.length) {
+        return null;
+      }
+
+      return listValue.items[indexAsNumber];
     }
 
     case Semantic.ENode.BinaryExpr:
