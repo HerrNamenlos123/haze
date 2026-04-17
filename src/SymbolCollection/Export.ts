@@ -27,15 +27,18 @@ export function ExportCollectedTypeDefAlias(
   const genericsString = generics.length > 0 ? `<${generics.join(", ")}>` : "";
 
   let alias = new OutputWriter(4);
+  // console.error(typedef.name);
 
   if (sr.cc.config.name !== "haze-stdlib") {
     const moduleName = getModuleGlobalNamespaceName(sr.cc.config.name, sr.cc.config.version);
-    alias.writeLine(`namespace ${moduleName} {`).pushIndent();
+    // alias.writeLine(`namespace ${moduleName} {`).pushIndent();
+    // console.log("1", moduleName);
   }
 
   const namespaces = getNamespacesFromTypeDefSymbol(sr.cc, typedefId);
   for (const ns of namespaces.slice(0, -1)) {
     alias.writeLine(`namespace ${ns} {`).pushIndent();
+    // console.log("2", ns);
   }
 
   if (typedef.sourceloc) {
@@ -60,7 +63,7 @@ export function ExportCollectedTypeDefAlias(
   }
 
   if (sr.cc.config.name !== "haze-stdlib") {
-    alias.popIndent().writeLine(`}`);
+    // alias.popIndent().writeLine(`}`);
   }
 
   return alias;
@@ -291,17 +294,17 @@ export function ExportSymbol(
   symbolId: Semantic.SymbolId,
   nested: boolean,
 ): string {
-  let file = "";
+  let file = new OutputWriter();
 
   const symbol = sr.symbolNodes.get(symbolId);
   switch (symbol.variant) {
     case Semantic.ENode.FunctionSymbol: {
       if (symbol.sourceloc) {
-        file += `#source ${formatSourceLoc(symbol.sourceloc)} {\n`;
+        file.writeLine(`#source ${formatSourceLoc(symbol.sourceloc)} {`).pushIndent();
       }
       const namespaces = Semantic.getNamespaceChainFromSymbol(sr, symbolId);
       for (const ns of namespaces.slice(0, -1)) {
-        file += "namespace " + ns.pretty + " {\n";
+        file.writeLine("namespace " + ns.pretty + " {").pushIndent();
       }
       assert(
         symbol.generics.length === 0 &&
@@ -311,69 +314,72 @@ export function ExportSymbol(
       assert(functype.variant === Semantic.ENode.FunctionDatatype);
       // console.log(symbol.name, symbol);
       if (symbol.extern === EExternLanguage.Extern) {
-        file += "extern ";
+        file.write("extern ");
       } else if (symbol.extern === EExternLanguage.Extern_C) {
-        file += "extern C ";
+        file.write("extern C ");
       }
       if (symbol.noemit) {
-        file += "noemit ";
+        file.write("noemit ");
       }
-      file += symbol.name;
-      file +=
+      file.write(symbol.name);
+      file.write(
         "(" +
-        functype.parameters
-          .map((p, i) => {
-            let paramStr = `${symbol.parameterNames[i]}${p.optional ? "?" : ""}: ${Semantic.serializeTypeUse(
-              sr,
-              p.type,
-            )}`;
-            // Add default value if present
-            const defaultValue = symbol.parameterDefaultValues.find(
-              (dv) => dv.parameterName === symbol.parameterNames[i],
-            );
-            if (defaultValue) {
-              paramStr += ` = ${Semantic.serializeExpr(sr, defaultValue.value)}`;
-            }
-            return paramStr;
-          })
-          .join(", ") +
-        (functype.vararg ? ", ..." : "") +
-        ")" +
-        (functype.returnType
-          ? ": (" + Semantic.serializeTypeUse(sr, functype.returnType) + ")"
-          : " ");
-      file += " :: final";
+          functype.parameters
+            .map((p, i) => {
+              let paramStr = `${symbol.parameterNames[i]}${p.optional ? "?" : ""}: ${Semantic.serializeTypeUse(
+                sr,
+                p.type,
+              )}`;
+              // Add default value if present
+              const defaultValue = symbol.parameterDefaultValues.find(
+                (dv) => dv.parameterName === symbol.parameterNames[i],
+              );
+              if (defaultValue) {
+                paramStr += ` = ${Semantic.serializeExpr(sr, defaultValue.value)}`;
+              }
+              return paramStr;
+            })
+            .join(", ") +
+          (functype.vararg ? ", ..." : "") +
+          ")" +
+          (functype.returnType
+            ? ": (" + Semantic.serializeTypeUse(sr, functype.returnType) + ")"
+            : " "),
+      );
+      file.write(" :: final");
       if (functype.requires.pure) {
-        file += ", pure";
+        file.write(", pure");
       }
       if (functype.requires.noreturn) {
-        file += ", noreturn";
+        file.write(", noreturn");
       }
       if (functype.requires.noreturnIf) {
-        file += `, noreturn_if(${printCollectedExpr(sr.cc, functype.requires.noreturnIf.expr)})`;
+        file.write(
+          `, noreturn_if(${printCollectedExpr(sr.cc, functype.requires.noreturnIf.expr)})`,
+        );
       }
-      file += ";\n";
+      file.writeLine(";");
       for (const ns of namespaces.slice(0, -1)) {
-        file += "}\n";
+        file.popIndent().writeLine("}");
       }
       if (symbol.sourceloc) {
-        file += `}\n`;
+        file.popIndent().writeLine(`}`);
       }
       break;
     }
 
     case Semantic.ENode.TypeDefSymbol: {
-      file += ExportTypeDef(sr, symbol.datatype, nested);
+      file.write(ExportTypeDef(sr, symbol.datatype, nested));
       break;
     }
 
     case Semantic.ENode.CInjectDirectiveSymbol: {
       if (symbol.sourceloc) {
-        file += `#source ${formatSourceLoc(symbol.sourceloc)} {\n`;
+        file.writeLine(`#source ${formatSourceLoc(symbol.sourceloc)} {`).pushIndent();
       }
-      file += `__c__(${JSON.stringify(symbol.value)});\n`;
+      file.writeLine(`__c__(${JSON.stringify(symbol.value)});`);
       if (symbol.sourceloc) {
-        file += `}\n`;
+        file.popIndent().writeLine(`}`);
       }
       break;
     }
@@ -382,7 +388,7 @@ export function ExportSymbol(
       assert(false, symbol.variant.toString());
   }
 
-  return file;
+  return file.get();
 }
 
 function getNamespacesFromScope(
