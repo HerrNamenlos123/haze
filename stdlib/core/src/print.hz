@@ -110,7 +110,7 @@ namespace fmt {
             format_to_proxy(writer, rx.get(value), args);
         }
         else {
-            format_to(writer, value, args);
+            format_to<typeof(value).baseType>(writer, value as T, args);
         }
     }
 

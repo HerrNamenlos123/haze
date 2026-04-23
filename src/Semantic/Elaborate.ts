@@ -6687,6 +6687,15 @@ export class SemanticElaborator {
         memberAccessExpr.sourceloc,
       );
     }
+    if (memberAccessExpr.memberName === "baseType") {
+      // For literal types (compile-time constants like datatype 5), unwrap to the base type
+      // For all other types, return the same type
+      const baseTypeUseId =
+        datatypeValue.variant === Semantic.ENode.LiteralDatatype
+          ? datatypeValue.type
+          : typeUseId;
+      return this.sr.b.datatypeUseAsValue(baseTypeUseId, memberAccessExpr.sourceloc);
+    }
 
     if (datatypeValue.variant === Semantic.ENode.NamespaceDatatype) {
       return this.lookupAndElaborateNamespaceMemberAccess(
