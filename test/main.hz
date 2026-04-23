@@ -62,7 +62,7 @@ main(): int {
 
     const foo = Foo { value: 187, otherValue: 42.0 };
     print(foo);
-    print(5);
+    // print(5);
 
     // let foo = Foo { value: 5, bar: { value: 42 } };
     // const comptime field = "value";
