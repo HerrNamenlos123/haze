@@ -10,7 +10,7 @@ namespace io {
             releaseFn: (value: U) => void;
         }
 
-        constructor(data: T, releaseFn: (value: T) => void) {
+        fn constructor(data: T, releaseFn: (value: T) => void) {
             return Resource<T> {
                 cell: {
                     data: data,
@@ -20,13 +20,13 @@ namespace io {
             };
         }
 
-        assertAlive() {
+        fn assertAlive() {
             if !this.cell.alive {
                 sys.panic("Resource is no longer alive");
             }
         }
 
-        release() {
+        fn release() {
             if !this.cell.alive {
                 return;
             }
@@ -34,9 +34,9 @@ namespace io {
             this.cell.releaseFn(this.cell.data);
         }
 
-        use<TRet>(fn: (value: T) => TRet): TRet {
+        fn use<TRet>(func: (value: T) => TRet): TRet {
             this.assertAlive();
-            return fn(this.cell.data);
+            return func(this.cell.data);
         }
     }
 
@@ -59,21 +59,21 @@ namespace io {
             closeFn: () => void;
         }
 
-        constructor(impl: Impl) {
+        fn constructor(impl: Impl) {
             return Stream {
                 res: Resource<Impl>(impl, (implVal: Impl): void => implVal.closeFn()),
             };
         }
 
-        read(): Bytes {
+        fn read(): Bytes {
             return this.res.use<Bytes>((impl: Impl) => impl.readFn());
         }
 
-        seek(pos: int, mode: SeekMode): bool {
+        fn seek(pos: int, mode: SeekMode): bool {
             return this.res.use<bool>((impl: Impl) => impl.seekFn(pos, mode));
         }
 
-        size(): int {
+        fn size(): int {
             return this.res.use<int>((impl: Impl) => impl.sizeFn());
         }
 
@@ -87,7 +87,7 @@ namespace io {
             chunkSize: int = 4096;
         }
 
-        static fromBytes(bytes: Bytes, options: FromBytesOptions = {}) {
+        static fn fromBytes(bytes: Bytes, options: FromBytesOptions = {}) {
             if options.chunkSize <= 0 {
                 sys.panic("chunkSize must be > 0");
             }

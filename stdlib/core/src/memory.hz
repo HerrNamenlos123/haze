@@ -2,15 +2,15 @@
 export extern C noemit struct hzstd_allocator_t {};
 export type Allocator = inline hzstd_allocator_t;
 
-export extern C hzstd_make_heap_allocator(): Allocator :: final;
-export extern C hzstd_make_arena_allocator(): Allocator :: final;
+export extern C fn hzstd_make_heap_allocator(): Allocator :: final;
+export extern C fn hzstd_make_arena_allocator(): Allocator :: final;
 
 export namespace Alloc {
-    export heap() {
+    export fn heap() {
         return hzstd_make_heap_allocator();
     }
 
-    export arena() {
+    export fn arena() {
         return hzstd_make_arena_allocator();
     }
 }
@@ -22,11 +22,11 @@ export opaque struct ByteBuffer {
     frozenPtr: cptr;
     frozenLen: int;
 
-    constructor() {
+    fn constructor() {
         return ByteBuffer(0);
     }
 
-    constructor(reserve: int) {
+    fn constructor(reserve: int) {
         let arr: []u8 = [];
         if reserve > 0 {
             arr.reserve(reserve);
@@ -43,7 +43,7 @@ export opaque struct ByteBuffer {
         };
     }
 
-    operator[](index: int): ByteBufferRef {
+    fn operator[](index: int): ByteBufferRef {
         let len = this.length();
 
         if index < 0 || index >= len {
@@ -53,7 +53,7 @@ export opaque struct ByteBuffer {
         return { buffer: this, index: index };
     }
 
-    getAt(index: int): u8 {
+    fn getAt(index: int): u8 {
         if !this.committed {
             if index < 0 || index >= this.data.length {
                 sys.panic("Out of bounds access in ByteBuffer");
@@ -71,7 +71,7 @@ export opaque struct ByteBuffer {
         }
     }
 
-    commit() {
+    fn commit() {
         if this.committed { return; }
 
         let len = this.data.length;
@@ -92,12 +92,12 @@ export opaque struct ByteBuffer {
         this.committed = true;
     }
 
-    reserve(newCapacity: int) {
+    fn reserve(newCapacity: int) {
         this.assertNotCommitted();
         this.data.reserve(newCapacity);
     }
 
-    resize(newSize: int) {    
+    fn resize(newSize: int) {    
         this.assertNotCommitted();
         // Do the dumb, obvious thing now, optimize later
         while this.data.length < newSize {
@@ -108,18 +108,18 @@ export opaque struct ByteBuffer {
         }
     }
 
-    length() {
+    fn length() {
         if this.committed { return this.frozenLen; }
         return this.data.length;
     }
 
-    assertNotCommitted() {
+    fn assertNotCommitted() {
         if (this.committed) {
             sys.panic("A mutation was attempted on a ByteBuffer that was already committed. Mutation is no longer allowed, it is now deeply immutable.");
         }
     }
 
-    setAt(index: int, value: u8) {
+    fn setAt(index: int, value: u8) {
         this.assertNotCommitted();
         if (index < 0 || index >= this.data.length) {
             sys.panic("Out of bounds access in ByteBuffer");
@@ -127,7 +127,7 @@ export opaque struct ByteBuffer {
         this.data[index] = value;
     }
 
-    mut push(data: str) {
+    mut fn push(data: str) {
         this.assertNotCommitted();
         let pLength = this.data.length;
 
@@ -136,7 +136,7 @@ export opaque struct ByteBuffer {
         this.writeAt(pLength, data);
     }
 
-    mut push(data: Bytes) {
+    mut fn push(data: Bytes) {
         this.assertNotCommitted();
         let pLength = this.data.length;
 
@@ -145,7 +145,7 @@ export opaque struct ByteBuffer {
         this.writeAt(pLength, data);
     }
 
-    mut writeAt(startIndex: int, data: str) {
+    mut fn writeAt(startIndex: int, data: str) {
         if (startIndex < 0 || startIndex + data.length > this.data.length) {
             sys.panic("Out of bounds access in ByteBuffer");
         }
@@ -157,7 +157,7 @@ export opaque struct ByteBuffer {
         }
     }
 
-    mut writeAt(startIndex: int, data: Bytes) {
+    mut fn writeAt(startIndex: int, data: Bytes) {
         if (startIndex < 0 || startIndex + data.length > this.data.length) {
             sys.panic("Out of bounds access in ByteBuffer");
         }
@@ -169,7 +169,7 @@ export opaque struct ByteBuffer {
         }
     }
 
-    mut writeZero(startIndex: int, length: int) {
+    mut fn writeZero(startIndex: int, length: int) {
         if (startIndex < 0 || startIndex + length > this.data.length) {
             sys.panic("Out of bounds access in ByteBuffer");
         }
@@ -181,7 +181,7 @@ export opaque struct ByteBuffer {
         }
     }
 
-    bytes(): Bytes {
+    fn bytes(): Bytes {
         if !this.committed {
             sys.panic("Attempted to call .bytes() on a ByteBuffer that was not committed yet. Call .commit() to ensure deep immutability and enable byte slices");
         }
@@ -201,7 +201,7 @@ export opaque struct ByteBuffer {
         };
     }
 
-    string(): str {
+    fn string(): str {
         if !this.committed {
             sys.panic("Attempted to call .string() on a ByteBuffer that was not committed yet. Call .commit() to ensure deep immutability and enable string slices");
         }
@@ -219,11 +219,11 @@ export opaque struct ByteBuffer {
         buffer: ByteBuffer;
         index: int;
 
-        get(): u8 {
+        fn get(): u8 {
             return this.buffer.getAt(this.index);
         }
 
-        operator:=(value: u8) {
+        fn operator:=(value: u8) {
             this.buffer.setAt(this.index, value);
         }
     }
@@ -243,7 +243,7 @@ export opaque inline struct Bytes {
     offset: int;
     length: int;
 
-    constructor() {
+    fn constructor() {
         return Bytes {
             basePtr: none,
             offset: 0,
@@ -251,15 +251,15 @@ export opaque inline struct Bytes {
         };
     }
 
-    constructor(buffer: ByteBuffer) {
+    fn constructor(buffer: ByteBuffer) {
         return buffer.bytes();
     }
 
-    operator[](index: int): u8 {
+    fn operator[](index: int): u8 {
         return this.getAt(index);
     }
 
-    getAt(index: int): u8 {
+    fn getAt(index: int): u8 {
         if (index < 0 || index >= this.length) {
             sys.panic("Out of bounds access in Bytes slice");
         }
@@ -269,7 +269,7 @@ export opaque inline struct Bytes {
         return result;
     }
 
-    slice(start?: int, end?: int): Bytes {
+    fn slice(start?: int, end?: int): Bytes {
         let len = this.length;
 
         // --- resolve start ---
@@ -313,7 +313,7 @@ export opaque inline struct Bytes {
         };
     }
 
-    string(): str {
+    fn string(): str {
         // TODO: Perform utf-8 validation once we have actual unicode support
         let result = "";
         if (this.length > 0) {
@@ -322,7 +322,7 @@ export opaque inline struct Bytes {
         return result;
     }
 
-    operator==(other: Bytes) {
+    fn operator==(other: Bytes) {
         if this.length != other.length {
             return false;
         }
@@ -332,7 +332,7 @@ export opaque inline struct Bytes {
         return equal;
     }
 
-    operator!=(other: Bytes) {
+    fn operator!=(other: Bytes) {
         return !(this == other);
     }
 }

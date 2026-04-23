@@ -21,20 +21,20 @@ namespace ffi {
         message: str;
     };
 
-    extern C hzstd_read_file_text(allocator: Allocator, path: str, outputBuffer: hzstd_str_ref_t): inline hzstd_fs_error_t :: final;
-    extern C hzstd_read_file_binary(allocator: Allocator, path: str, buffer: cptr, length: int): inline hzstd_fs_error_t :: final;
+    extern C fn hzstd_read_file_text(allocator: Allocator, path: str, outputBuffer: hzstd_str_ref_t): inline hzstd_fs_error_t :: final;
+    extern C fn hzstd_read_file_binary(allocator: Allocator, path: str, buffer: cptr, length: int): inline hzstd_fs_error_t :: final;
 
-    extern C hzstd_write_file_text(allocator: Allocator, path: str, input: str): inline hzstd_fs_error_t :: final;
-    extern C hzstd_write_file_binary(allocator: Allocator, path: str, buffer: cptr, length: int): inline hzstd_fs_error_t :: final;
+    extern C fn hzstd_write_file_text(allocator: Allocator, path: str, input: str): inline hzstd_fs_error_t :: final;
+    extern C fn hzstd_write_file_binary(allocator: Allocator, path: str, buffer: cptr, length: int): inline hzstd_fs_error_t :: final;
 
-    extern C hzstd_mkdir_recursive(path: str): inline hzstd_fs_error_t :: final;
+    extern C fn hzstd_mkdir_recursive(path: str): inline hzstd_fs_error_t :: final;
 
     extern C noemit struct hzstd_fs_exists_result_t {
         exists: bool;
         error: inline hzstd_fs_error_t;
     };
 
-    extern C noemit hzstd_fs_exists(path: str): inline hzstd_fs_exists_result_t :: final;
+    extern C noemit fn hzstd_fs_exists(path: str): inline hzstd_fs_exists_result_t :: final;
 
     extern C noemit struct hzstd_fs_copy_options_t {
         overwrite: bool;
@@ -45,19 +45,19 @@ namespace ffi {
     // Copy a file or directory (recursive if needed) to a destination.
     // Automatically creates parent directories. Overwrite, symlink, and error
     // behavior controlled via options.
-    extern C noemit hzstd_fs_copy(src: str, dst: str, options: hzstd_fs_copy_options_t): inline hzstd_fs_error_t :: final;
+    extern C noemit fn hzstd_fs_copy(src: str, dst: str, options: hzstd_fs_copy_options_t): inline hzstd_fs_error_t :: final;
 
     // Copy a single file to a destination. Parent directories are created
     // automatically. Fails if src is not a file.
-    extern C noemit hzstd_fs_copy_file(src: str, dst: str, options: hzstd_fs_copy_options_t): inline hzstd_fs_error_t :: final;
+    extern C noemit fn hzstd_fs_copy_file(src: str, dst: str, options: hzstd_fs_copy_options_t): inline hzstd_fs_error_t :: final;
 
     // Copy a directory recursively to a destination. Parent directories are created
     // automatically. All files and subdirectories are copied according to options.
-    extern C noemit hzstd_fs_copy_dir(src: str, dst: str, options: hzstd_fs_copy_options_t): inline hzstd_fs_error_t :: final;
+    extern C noemit fn hzstd_fs_copy_dir(src: str, dst: str, options: hzstd_fs_copy_options_t): inline hzstd_fs_error_t :: final;
 
     // Optional: move a file or directory (copy + delete original). Behaves like
     // hzstd_fs_copy.
-    extern C noemit hzstd_fs_move(src: str, dst: str, options: hzstd_fs_copy_options_t): inline hzstd_fs_error_t :: final;
+    extern C noemit fn hzstd_fs_move(src: str, dst: str, options: hzstd_fs_copy_options_t): inline hzstd_fs_error_t :: final;
 
     extern C noemit inline struct hzstd_file_stat_t {
         exists: bool;
@@ -65,7 +65,7 @@ namespace ffi {
         size: i64;
     }
 
-    extern C hzstd_file_stat(path: str): hzstd_file_stat_t :: final;
+    extern C fn hzstd_file_stat(path: str): hzstd_file_stat_t :: final;
 }
 
 export namespace fs {
@@ -83,7 +83,7 @@ export namespace fs {
         OutOfMemory,
     }
 
-    mapErrorEnum(error: ffi.hzstd_fs_error_code_t): Error {
+    fn mapErrorEnum(error: ffi.hzstd_fs_error_code_t): Error {
         if error == ffi.hzstd_fs_error_code_none {
             return Error.None;
         }
@@ -120,11 +120,11 @@ export namespace fs {
     }
 
 
-    export readText(path: str) {
+    export fn readText(path: str) {
         return readText(Alloc.heap(), path);
     }
 
-    export readText(allocator: Allocator, path: str): Result<str, Error> {
+    export fn readText(allocator: Allocator, path: str): Result<str, Error> {
         let output = ffi.hzstd_str_ref_t { data: "" } with allocator;
         let result = ffi.hzstd_read_file_text(allocator, path, output);
         if result.code == ffi.hzstd_fs_error_code_none {
@@ -135,22 +135,22 @@ export namespace fs {
         }
     }
 
-    export open(path: str) {
+    export fn open(path: str) {
         return open(Alloc.heap(), path);
     }
 
-    export open(allocator: Allocator, path: str) {
+    export fn open(allocator: Allocator, path: str) {
         // TODO: Implement this. This should return a DataSource.
         // DataSource is supposed to be a generic data acquisition tool for code that just needs data.
         // They don't care if the data is loaded from memory, from disk or streamed in chunks.
         // But currently can't do it yet because we don't have a good way to close the file handle.
     }
 
-    export readBinary(path: str) {
+    export fn readBinary(path: str) {
         return readBinary(Alloc.heap(), path);
     }
 
-    export readBinary(allocator: Allocator, path: str): Result<Bytes, Error> {
+    export fn readBinary(allocator: Allocator, path: str): Result<Bytes, Error> {
         let stat = fs.statFile(path);
         if !stat {
             return Result<Bytes, Error>.Err(Error.NotFound);
@@ -174,11 +174,11 @@ export namespace fs {
         }
     }
 
-    export writeBinary(path: str, data: Bytes) {
+    export fn writeBinary(path: str, data: Bytes) {
         return writeBinary(Alloc.heap(), path, data);
     }
 
-    export writeBinary(allocator: Allocator, path: str, data: Bytes): Result<none, Error> {
+    export fn writeBinary(allocator: Allocator, path: str, data: Bytes): Result<none, Error> {
         let ptr = none as cptr;
         __c__("ptr = data.basePtr + data.offset;");
         let result = ffi.hzstd_write_file_binary(allocator, path, ptr, data.length);
@@ -190,11 +190,11 @@ export namespace fs {
         }
     }
 
-    export writeText(path: str, text: str) {
+    export fn writeText(path: str, text: str) {
         return writeText(Alloc.heap(), path, text);
     }
 
-    export writeText(allocator: Allocator, path: str, text: str): Result<none, Error> {
+    export fn writeText(allocator: Allocator, path: str, text: str): Result<none, Error> {
         let result = ffi.hzstd_write_file_text(allocator, path, text);
         if result.code == ffi.hzstd_fs_error_code_none {
             return Result<none, Error>.Ok(none);
@@ -204,7 +204,7 @@ export namespace fs {
         }
     }
 
-    export exists(path: str): Result<bool, Error> {
+    export fn exists(path: str): Result<bool, Error> {
         let result = ffi.hzstd_fs_exists(path);
         if result.error.code == ffi.hzstd_fs_error_code_none {
             return Result<bool, Error>.Ok(result.exists);
@@ -212,7 +212,7 @@ export namespace fs {
         return Result<bool, Error>.Err(mapErrorEnum(result.error.code));
     }
 
-    export createDirectory(path: str): Result<none, Error> {
+    export fn createDirectory(path: str): Result<none, Error> {
         let result = ffi.hzstd_mkdir_recursive(path);
         if result.code == ffi.hzstd_fs_error_code_none {
             return Result<none, Error>.Ok(none);
@@ -229,7 +229,7 @@ export namespace fs {
     // Copy a file or directory (recursive if needed) to a destination.
     // Automatically creates parent directories. Overwrite, symlink, and error
     // behavior controlled via options.
-    export copy(src: str, dst: str, options: CopyOptions): Result<none, Error> {
+    export fn copy(src: str, dst: str, options: CopyOptions): Result<none, Error> {
         let result = ffi.hzstd_fs_copy(src, dst, {
             overwrite: options.overwrite,
             follow_symlinks: options.followSymlinks,
@@ -243,7 +243,7 @@ export namespace fs {
 
     // Copy a single file to a destination. Parent directories are created
     // automatically. Fails if src is not a file.
-    export copyFile(src: str, dst: str, options: CopyOptions): Result<none, Error> {
+    export fn copyFile(src: str, dst: str, options: CopyOptions): Result<none, Error> {
         let result = ffi.hzstd_fs_copy_file(src, dst, {
             overwrite: options.overwrite,
             follow_symlinks: options.followSymlinks,
@@ -257,7 +257,7 @@ export namespace fs {
 
     // Copy a directory recursively to a destination. Parent directories are created
     // automatically. All files and subdirectories are copied according to options.
-    export copyDirectory(src: str, dst: str, options: CopyOptions): Result<none, Error> {
+    export fn copyDirectory(src: str, dst: str, options: CopyOptions): Result<none, Error> {
         let result = ffi.hzstd_fs_copy_dir(src, dst, {
             overwrite: options.overwrite,
             follow_symlinks: options.followSymlinks,
@@ -271,7 +271,7 @@ export namespace fs {
 
     // Optional: move a file or directory (copy + delete original). Behaves like
     // hzstd_fs_copy.
-    export move(src: str, dst: str, options: CopyOptions): Result<none, Error> {
+    export fn move(src: str, dst: str, options: CopyOptions): Result<none, Error> {
         let result = ffi.hzstd_fs_move(src, dst, {
             overwrite: options.overwrite,
             follow_symlinks: options.followSymlinks,
@@ -288,7 +288,7 @@ export namespace fs {
         size: int;    // optional but useful
     }
 
-    export statFile(path: str): FileState | none {
+    export fn statFile(path: str): FileState | none {
         let result = ffi.hzstd_file_stat(path);
         if !result.exists {
             return none;
@@ -348,7 +348,7 @@ export namespace fs {
     extern C let _globalFilesystemContext: mut GlobalFilesystemContext | none = none;
 
     // Lazily initialize the global filesystem context on first use
-    _getFilesystemContext(): mut GlobalFilesystemContext {
+    fn _getFilesystemContext(): mut GlobalFilesystemContext {
         if _globalFilesystemContext {
             return _globalFilesystemContext;
         }
@@ -364,7 +364,7 @@ export namespace fs {
         return _globalFilesystemContext;
     }
 
-    export watch(
+    export fn watch(
         path: str,
         onChange: (event: FileChangeEvent) => void,
         config?: WatchConfig,
@@ -410,7 +410,7 @@ export namespace fs {
         return WatchHandle { handle: w.id };
     }
 
-    export unwatch(handle: WatchHandle) {
+    export fn unwatch(handle: WatchHandle) {
         let ctx = _getFilesystemContext();
         for w in ctx.watchers {
             if w.id == handle.handle {
@@ -420,7 +420,7 @@ export namespace fs {
         }
     }
 
-    diff(old?: FileState, new?: FileState): FileChangeEvent | none {
+    fn diff(old?: FileState, new?: FileState): FileChangeEvent | none {
         if !old && new {
             return FileChangeEvent {
                 path: "", // filled by caller
@@ -448,7 +448,7 @@ export namespace fs {
     }
 
     // This function will disappear in the future in favor of a global coroutine event loop
-    export pollEvents() {
+    export fn pollEvents() {
         let ctx = _getFilesystemContext();
         if ctx.inPoll { return; }
         ctx.inPoll = true;
@@ -524,7 +524,7 @@ export namespace fs {
         interval: real = 0.1;
     }
 
-    export watchText(path: str, options: FileWatchOptions = {}) {
+    export fn watchText(path: str, options: FileWatchOptions = {}) {
         let data = rx.shallowReactive<str | none>(none);
 
         fs.watch(path, (event: fs.FileChangeEvent): void => {
@@ -540,7 +540,7 @@ export namespace fs {
         return data;
     }
 
-    export watchBinary(path: str, options: FileWatchOptions = {}) {
+    export fn watchBinary(path: str, options: FileWatchOptions = {}) {
         let data = rx.shallowReactive<Bytes | none>(none);
 
         fs.watch(path, (event: fs.FileChangeEvent): void => {
@@ -556,7 +556,7 @@ export namespace fs {
         return data;
     }
 
-    export watchFile(path: str, options: FileWatchOptions = {}) {
+    export fn watchFile(path: str, options: FileWatchOptions = {}) {
         // TODO: Find a way to deal with file handles with data sources, so we can actually
         // support streaming through datasources, so files are opened and later closed reliably
         // DataSource should be able to handle large files.

@@ -7,7 +7,7 @@ namespace process {
     stderr_data: cstr = "";
   };
 
-  extern C noemit hzstd_spawn_process(exe: str,
+  extern C noemit fn hzstd_spawn_process(exe: str,
                         argv: cptr, // hzstd_str_t[]
                         argc: usize,
                         envp: cptr, // hzstd_str_t[], may be NULL → inherit
@@ -22,7 +22,7 @@ namespace process {
     inherit_stdio: bool = false;
   }
 
-  export run(exe: str, args: []str, options?: Options): Result<none, int> {
+  export fn run(exe: str, args: []str, options?: Options): Result<none, int> {
     // TODO: The c function expects env variables like ["CC=asdf", "CXX=asdfasdf"]. The stdlib API
     // should have an interface like env: { CC: "asdf", CXX: "asdfasdf" }. Need to find a way
     // to allow this kind of syntax, possibly with templates and anonymous structs.

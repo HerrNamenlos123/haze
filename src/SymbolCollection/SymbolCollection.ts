@@ -3,39 +3,26 @@ import { readFileSync } from "fs";
 import {
   EExternLanguage,
   type ASTBinaryExpr,
-  type ASTTypeUse,
-  type ASTExplicitCastExpr,
-  type ASTExprAssignmentExpr,
-  type ASTExprCallExpr,
-  type ASTExprComptimeMemberAccess,
-  type ASTExprMemberAccess,
   type ASTFunctionDefinition,
   type ASTGlobalVariableDefinition,
-  type ASTLambdaExpr,
-  type ASTParenthesisExpr,
-  type ASTPostIncrExpr,
-  type ASTPreIncrExpr,
   type ASTRoot,
   type ASTScope,
-  type ASTAggregateLiteralExpr,
-  type ASTSymbolValueExpr,
-  type ASTUnaryExpr,
   BinaryOperationToString,
   UnaryOperationToString,
-  type ASTLiteralExpr,
   type ASTStructMemberDefinition,
   type ASTModuleImport,
   type ASTSymbolImport,
   type ASTSymbolDefinition,
   AssignmentOperationToString,
   EVariableMutability,
-  type ASTBlockScopeExpr,
   type ASTTypeDef,
   type ASTTypeAlias,
   EOverloadedOperator,
-  type ASTExprIsTypeExpr,
   type ASTEnumValueDefinition,
   type ASTVariableDefinitionStatement,
+  type ASTTypeExpr,
+  buildASTDatatype,
+  type TypeModifier,
 } from "../shared/AST";
 import {
   BrandedArray,
@@ -54,7 +41,6 @@ import {
   EUnaryOperation,
   type ASTCInjectDirective,
   type ASTExpr,
-  type ASTStatement,
 } from "../shared/AST";
 import { ECollectionMode, getModuleGlobalNamespaceName, type ModuleConfig } from "../shared/Config";
 import { join } from "path";
@@ -70,7 +56,6 @@ export type CollectionContext = {
 
   exprNodes: BrandedArray<Collect.ExprId, Collect.Expressions>;
   symbolNodes: BrandedArray<Collect.SymbolId, Collect.Symbols>;
-  typeUseNodes: BrandedArray<Collect.TypeUseId, Collect.TypeUse>;
   typeDefNodes: BrandedArray<Collect.TypeDefId, Collect.TypeDef>;
   nsSharedInstances: BrandedArray<Collect.NSSharedInstanceId, Collect.NamespaceSharedInstance>;
   statementNodes: BrandedArray<Collect.StatementId, Collect.Statements>;
@@ -88,8 +73,8 @@ export function funcSymHasParameterPack(cc: CollectionContext, id: Collect.Symbo
   const funcsym = cc.symbolNodes.get(id);
   assert(funcsym.variant === Collect.ENode.FunctionSymbol);
   return funcsym.parameters.some((p) => {
-    const pp = cc.typeUseNodes.get(p.type);
-    return pp.variant === Collect.ENode.ParameterPack;
+    const pp = cc.exprNodes.get(p.type);
+    return pp.variant === Collect.ENode.ParameterPackDatatypeExpr;
   });
 }
 
@@ -100,7 +85,6 @@ export function makeCollectionContext(config: ModuleConfig): CollectionContext {
     moduleScopeId: -1 as Collect.ScopeId,
 
     exprNodes: new BrandedArray([]),
-    typeUseNodes: new BrandedArray([]),
     typeDefNodes: new BrandedArray([]),
     nsSharedInstances: new BrandedArray([]),
     scopeNodes: new BrandedArray([]),
@@ -126,7 +110,7 @@ export namespace Collect {
   export type ExprId = Brand<number, "CollectExpr">;
   export type SymbolId = Brand<number, "CollectSymbol">;
   export type TypeDefId = Brand<number, "CollectTypeDef">;
-  export type TypeUseId = Brand<number, "CollectTypeUse">;
+  // export type TypeUseId = Brand<number, "CollectTypeUse">;
   export type NSSharedInstanceId = Brand<number, "CollectNSSharedInstance">;
   export type StatementId = Brand<number, "CollectStatement">;
   export type ScopeId = Brand<number, "CollectScope">;
@@ -148,13 +132,13 @@ export namespace Collect {
     VariableSymbol,
     TypeDefSymbol,
     TypeDefAlias,
-    NamedDatatype,
-    StackArrayDatatype,
-    DynamicArrayDatatype,
-    UntaggedUnionDatatype,
-    TaggedUnionDatatype,
+    StackArrayTypeDefinitionExpr,
+    DynamicArrayTypeDefinitionExpr,
+    UntaggedUnionTypeDefinitionExpr,
+    TaggedUnionTypeDefinitionExpr,
     TypeOfExprDatatype,
-    ParameterPack,
+    TypeExprDatatype,
+    ParameterPackDatatypeExpr,
     EnumTypeDef,
     StructTypeDef,
     NamespaceSharedInstance,
@@ -171,8 +155,8 @@ export namespace Collect {
     InlineCStatement,
     BlockScopeExpr,
     VariableDefinitionStatement,
-    CallableDatatype,
-    FunctionDatatype,
+    CallableTypeDefinitionExpr,
+    FunctionTypeDefinitionExpr,
     ParenthesisExpr,
     ErrorPropagationExpr,
     UnsafeExpr,
@@ -184,6 +168,7 @@ export namespace Collect {
     ExprCallExpr,
     SymbolValueExpr,
     CallableExpr,
+    TypeExpr,
     ExplicitCastExpr,
     ExprIsTypeExpr,
     MemberAccessExpr,
@@ -192,6 +177,7 @@ export namespace Collect {
     AggregateLiteralExpr,
     ArraySubscriptExpr,
     TypeLiteralExpr,
+    TypeModifierExpr,
     AttemptExpr,
     // Specials
     ModuleImport,
@@ -301,7 +287,7 @@ export namespace Collect {
 
   export type ParameterValue = {
     name: string;
-    type: Collect.TypeUseId;
+    type: Collect.ExprId;
     optional: boolean;
     defaultParameterValue: Collect.ExprId | null;
     sourceloc: SourceLoc;
@@ -309,6 +295,7 @@ export namespace Collect {
 
   export type FunctionSymbol = {
     variant: ENode.FunctionSymbol;
+    comptime: boolean;
     parentScope: Collect.ScopeId;
     staticMethod: boolean;
     overloadGroup: Collect.SymbolId;
@@ -317,7 +304,7 @@ export namespace Collect {
     generics: Collect.SymbolId[];
     name: string;
     requires: FunctionRequiresBlock;
-    returnType: Collect.TypeUseId | null;
+    returnType: Collect.ExprId | null;
     parameters: ParameterValue[];
     vararg: boolean;
     export: boolean;
@@ -337,7 +324,7 @@ export namespace Collect {
     comptime: boolean;
     globalValueInitializer: Collect.ExprId | null;
     inScope: Collect.ScopeId;
-    type: Collect.TypeUseId | null;
+    type: Collect.ExprId | null;
     mutability: EVariableMutability;
     variableContext: EVariableContext;
     sourceloc: SourceLoc;
@@ -387,7 +374,7 @@ export namespace Collect {
     inScope: Collect.ScopeId;
     generics: Collect.SymbolId[];
     genericScope: Collect.ScopeId;
-    target: Collect.TypeUseId;
+    target: Collect.ExprId;
     sourceloc: SourceLoc;
   };
 
@@ -458,112 +445,6 @@ export namespace Collect {
     fullyQualifiedName: string;
     namespaceScopes: Set<Collect.ScopeId>;
   };
-
-  /// ===============================================================
-  /// ===                       Type Symbols                      ===
-  /// ===============================================================
-
-  export type NamedDatatype = {
-    variant: ENode.NamedDatatype;
-    name: string;
-    inline: boolean;
-    innerNested: Collect.TypeUseId | null;
-    genericArgs: Collect.ExprId[];
-    mutability: EDatatypeMutability;
-    sourceloc: SourceLoc;
-  };
-
-  export type FunctionRequiresBlock = {
-    final: boolean;
-    pure: boolean;
-    noreturn: boolean;
-    noreturnIf: {
-      expr: Collect.ExprId;
-      argIndex: number | null;
-      operation: "noreturn-if-truthy" | "noreturn-if-falsy" | null;
-    } | null;
-  };
-
-  export type CallableDatatype = {
-    variant: ENode.CallableDatatype;
-    parameters: {
-      optional: boolean;
-      type: Collect.TypeUseId;
-    }[];
-    returnType: Collect.TypeUseId;
-    vararg: boolean;
-    requires: FunctionRequiresBlock;
-    mutability: EDatatypeMutability;
-    sourceloc: SourceLoc;
-  };
-
-  export type FunctionDatatype = {
-    variant: ENode.FunctionDatatype;
-    parameters: {
-      optional: boolean;
-      type: Collect.TypeUseId;
-    }[];
-    returnType: Collect.TypeUseId;
-    vararg: boolean;
-    requires: FunctionRequiresBlock;
-    mutability: EDatatypeMutability;
-    sourceloc: SourceLoc;
-  };
-
-  export type StackArrayDatatype = {
-    variant: ENode.StackArrayDatatype;
-    datatype: Collect.TypeUseId;
-    length: bigint;
-    inline: boolean;
-    mutability: EDatatypeMutability;
-    sourceloc: SourceLoc;
-  };
-
-  export type DynamicArrayDatatype = {
-    variant: ENode.DynamicArrayDatatype;
-    datatype: Collect.TypeUseId;
-    mutability: EDatatypeMutability;
-    sourceloc: SourceLoc;
-  };
-
-  export type TypeOfExprDatatype = {
-    variant: ENode.TypeOfExprDatatype;
-    expr: Collect.ExprId;
-    mutability: EDatatypeMutability;
-    sourceloc: SourceLoc;
-  };
-
-  export type UntaggedUnionDatatype = {
-    variant: ENode.UntaggedUnionDatatype;
-    members: Collect.TypeUseId[];
-    sourceloc: SourceLoc;
-  };
-
-  export type TaggedUnionDatatype = {
-    variant: ENode.TaggedUnionDatatype;
-    members: {
-      tag: string;
-      type: Collect.TypeUseId;
-    }[];
-    nodiscard: boolean;
-    sourceloc: SourceLoc;
-  };
-
-  export type ParameterPack = {
-    variant: ENode.ParameterPack;
-    sourceloc: SourceLoc;
-  };
-
-  export type TypeUse =
-    | NamedDatatype
-    | CallableDatatype
-    | FunctionDatatype
-    | StackArrayDatatype
-    | DynamicArrayDatatype
-    | UntaggedUnionDatatype
-    | TaggedUnionDatatype
-    | TypeOfExprDatatype
-    | ParameterPack;
 
   /// ===============================================================
   /// ===                       Statements                        ===
@@ -720,13 +601,13 @@ export namespace Collect {
   export type ExplicitCastExpr = BaseExpr & {
     variant: ENode.ExplicitCastExpr;
     expr: Collect.ExprId;
-    targetType: Collect.TypeUseId;
+    targetType: Collect.ExprId;
   };
 
   export type ExprIsTypeExpr = BaseExpr & {
     variant: ENode.ExprIsTypeExpr;
     expr: Collect.ExprId;
-    comparisonType: Collect.TypeUseId;
+    comparisonType: Collect.ExprId;
   };
 
   export type AggregateLiteralElement = {
@@ -737,7 +618,7 @@ export namespace Collect {
 
   export type AggregateLiteralExpr = BaseExpr & {
     variant: ENode.AggregateLiteralExpr;
-    structType: Collect.TypeUseId | null;
+    structType: Collect.ExprId | null;
     elements: AggregateLiteralElement[];
     allocator: Collect.ExprId | null;
   };
@@ -792,7 +673,13 @@ export namespace Collect {
 
   export type TypeLiteralExpr = BaseExpr & {
     variant: ENode.TypeLiteralExpr;
-    datatype: Collect.TypeUseId;
+    datatype: Collect.ExprId;
+  };
+
+  export type TypeModifierExpr = BaseExpr & {
+    variant: ENode.TypeModifierExpr;
+    modifier: TypeModifier;
+    type: Collect.ExprId;
   };
 
   export type AttemptExpr = BaseExpr & {
@@ -806,6 +693,84 @@ export namespace Collect {
     variant: ENode.CallableExpr;
     functionSymbol: Collect.SymbolId;
     lambdaScope: Collect.ScopeId;
+  };
+
+  export type ParameterPackDatatypeExpr = BaseExpr & {
+    variant: ENode.ParameterPackDatatypeExpr;
+    sourceloc: SourceLoc;
+  };
+
+  /// ===============================================================
+  /// ===                       Type Expressions                      ===
+  /// ===============================================================
+
+  export type FunctionRequiresBlock = {
+    final: boolean;
+    pure: boolean;
+    noreturn: boolean;
+    noreturnIf: {
+      expr: Collect.ExprId;
+      argIndex: number | null;
+      operation: "noreturn-if-truthy" | "noreturn-if-falsy" | null;
+    } | null;
+  };
+
+  export type CallableTypeDefinitionExpr = {
+    variant: ENode.CallableTypeDefinitionExpr;
+    parameters: {
+      optional: boolean;
+      type: Collect.ExprId;
+    }[];
+    returnType: Collect.ExprId;
+    vararg: boolean;
+    requires: FunctionRequiresBlock;
+    mutability: EDatatypeMutability;
+    sourceloc: SourceLoc;
+  };
+
+  export type FunctionTypeDefinitionExpr = {
+    variant: ENode.FunctionTypeDefinitionExpr;
+    parameters: {
+      optional: boolean;
+      type: Collect.ExprId;
+    }[];
+    returnType: Collect.ExprId;
+    vararg: boolean;
+    requires: FunctionRequiresBlock;
+    mutability: EDatatypeMutability;
+    sourceloc: SourceLoc;
+  };
+
+  export type StackArrayTypeDefinitionExpr = {
+    variant: ENode.StackArrayTypeDefinitionExpr;
+    datatype: Collect.ExprId;
+    length: bigint;
+    inline: boolean;
+    mutability: EDatatypeMutability;
+    sourceloc: SourceLoc;
+  };
+
+  export type DynamicArrayTypeDefinitionExpr = {
+    variant: ENode.DynamicArrayTypeDefinitionExpr;
+    datatype: Collect.ExprId;
+    mutability: EDatatypeMutability;
+    sourceloc: SourceLoc;
+  };
+
+  export type UntaggedUnionTypeDefinitionExpr = {
+    variant: ENode.UntaggedUnionTypeDefinitionExpr;
+    members: Collect.ExprId[];
+    sourceloc: SourceLoc;
+  };
+
+  export type TaggedUnionTypeDefinitionExpr = {
+    variant: ENode.TaggedUnionTypeDefinitionExpr;
+    members: {
+      tag: string;
+      type: Collect.ExprId;
+    }[];
+    nodiscard: boolean;
+    sourceloc: SourceLoc;
   };
 
   export type Expressions =
@@ -827,8 +792,16 @@ export namespace Collect {
     | ArraySubscriptExpr
     | CallableExpr
     | TypeLiteralExpr
+    | TypeModifierExpr
     | AttemptExpr
-    | MemberAccessExpr;
+    | MemberAccessExpr
+    | ParameterPackDatatypeExpr
+    | CallableTypeDefinitionExpr
+    | FunctionTypeDefinitionExpr
+    | StackArrayTypeDefinitionExpr
+    | DynamicArrayTypeDefinitionExpr
+    | UntaggedUnionTypeDefinitionExpr
+    | TaggedUnionTypeDefinitionExpr;
 
   export type ModuleImport = {
     variant: ENode.ModuleImport;
@@ -870,18 +843,6 @@ export namespace Collect {
     }
     const id = cc.typeDefNodes.length as Collect.TypeDefId;
     cc.typeDefNodes.push(symbol);
-    return [symbol, id];
-  }
-
-  export function makeTypeUse<T extends Collect.TypeUse>(
-    cc: CollectionContext,
-    symbol: T,
-  ): [T, Collect.TypeUseId] {
-    if (cc.typeUseNodes.length === 0) {
-      cc.typeUseNodes.push({} as any);
-    }
-    const id = cc.typeUseNodes.length as Collect.TypeUseId;
-    cc.typeUseNodes.push(symbol);
     return [symbol, id];
   }
 
@@ -1456,183 +1417,23 @@ function collectTypeDef(
   }
 }
 
-function collectTypeUse(
-  cc: CollectionContext,
-  item: ASTTypeUse,
-  args: {
-    currentParentScope: Collect.ScopeId;
-  },
-): Collect.TypeUseId {
-  if (item === null) {
-    assert(false);
-  }
-  switch (item.variant) {
-    // =================================================================================================================
-    // =================================================================================================================
-    // =================================================================================================================
-
-    case "NamedDatatype": {
-      return Collect.makeTypeUse(cc, {
-        variant: Collect.ENode.NamedDatatype,
-        name: item.name,
-        inline: item.inline,
-        innerNested: (item.nested && collectTypeUse(cc, item.nested, args)) || null,
-        genericArgs: item.generics.map((g) => {
-          if (g.variant === "LiteralExpr") {
-            return collectExpr(cc, g, args);
-          } else {
-            return Collect.makeExpr(cc, {
-              variant: Collect.ENode.TypeLiteralExpr,
-              sourceloc: item.sourceloc,
-              datatype: collectTypeUse(cc, g, args),
-            })[1];
-          }
-        }),
-        mutability: item.mutability,
-        sourceloc: item.sourceloc,
-      })[1];
-    }
-
-    // =================================================================================================================
-    // =================================================================================================================
-    // =================================================================================================================
-
-    case "FunctionDatatype":
-      return Collect.makeTypeUse(cc, {
-        variant: Collect.ENode.FunctionDatatype,
-        returnType: collectTypeUse(cc, item.returnType, args),
-        parameters: item.params.map((p) => ({
-          optional: p.optional,
-          type: collectTypeUse(cc, p.datatype, args),
-        })),
-        vararg: item.ellipsis,
-        requires: {
-          final: item.requires.final,
-          pure: item.requires.pure,
-          noreturn: item.requires.noreturn,
-          noreturnIf: item.requires.noreturnIf
-            ? {
-                expr: collectExpr(cc, item.requires.noreturnIf.expr, args),
-                argIndex: null,
-                operation: null,
-              }
-            : null,
-        },
-        sourceloc: item.sourceloc,
-        mutability: item.mutability,
-      })[1];
-
-    // =================================================================================================================
-    // =================================================================================================================
-    // =================================================================================================================
-
-    case "CallableDatatype":
-      return Collect.makeTypeUse(cc, {
-        variant: Collect.ENode.CallableDatatype,
-        returnType: collectTypeUse(cc, item.returnType, args),
-        parameters: item.params.map((p) => ({
-          optional: p.optional,
-          type: collectTypeUse(cc, p.datatype, args),
-        })),
-        vararg: item.ellipsis,
-        requires: {
-          final: item.requires.final,
-          pure: item.requires.pure,
-          noreturn: item.requires.noreturn,
-          noreturnIf: item.requires.noreturnIf
-            ? {
-                expr: collectExpr(cc, item.requires.noreturnIf.expr, args),
-                argIndex: null,
-                operation: null,
-              }
-            : null,
-        },
-        sourceloc: item.sourceloc,
-        mutability: item.mutability,
-      })[1];
-
-    // =================================================================================================================
-    // =================================================================================================================
-    // =================================================================================================================
-
-    case "StackArrayDatatype":
-      return Collect.makeTypeUse(cc, {
-        variant: Collect.ENode.StackArrayDatatype,
-        datatype: collectTypeUse(cc, item.datatype, args),
-        length: item.length,
-        inline: item.inline,
-        mutability: item.mutability,
-        sourceloc: item.sourceloc,
-      })[1];
-
-    // =================================================================================================================
-    // =================================================================================================================
-    // =================================================================================================================
-
-    case "DynamicArrayDatatype":
-      return Collect.makeTypeUse(cc, {
-        variant: Collect.ENode.DynamicArrayDatatype,
-        datatype: collectTypeUse(cc, item.datatype, args),
-        mutability: item.mutability,
-        sourceloc: item.sourceloc,
-      })[1];
-
-    // =================================================================================================================
-    // =================================================================================================================
-    // =================================================================================================================
-
-    case "TypeOfExprDatatype":
-      return Collect.makeTypeUse(cc, {
-        variant: Collect.ENode.TypeOfExprDatatype,
-        expr: collectExpr(cc, item.expr, args),
-        mutability: item.mutability,
-        sourceloc: item.sourceloc,
-      })[1];
-
-    // =================================================================================================================
-    // =================================================================================================================
-    // =================================================================================================================
-
-    case "ParameterPack":
-      return Collect.makeTypeUse(cc, {
-        variant: Collect.ENode.ParameterPack,
-        sourceloc: item.sourceloc,
-      })[1];
-
-    // =================================================================================================================
-    // =================================================================================================================
-    // =================================================================================================================
-
-    case "UntaggedUnionDatatype":
-      return Collect.makeTypeUse(cc, {
-        variant: Collect.ENode.UntaggedUnionDatatype,
-        members: item.members.map((m) => collectTypeUse(cc, m, args)),
-        sourceloc: item.sourceloc,
-      })[1];
-
-    // =================================================================================================================
-    // =================================================================================================================
-    // =================================================================================================================
-
-    case "TaggedUnionDatatype":
-      return Collect.makeTypeUse(cc, {
-        variant: Collect.ENode.TaggedUnionDatatype,
-        members: item.members.map((m) => ({
-          tag: m.tag,
-          type: collectTypeUse(cc, m.type, args),
-        })),
-        nodiscard: item.nodiscard,
-        sourceloc: item.sourceloc,
-      })[1];
-
-    // =================================================================================================================
-    // =================================================================================================================
-    // =================================================================================================================
-
-    default:
-      assert(false, "All cases handled " + item.variant);
-  }
-}
+// function collectTypeUse(
+//   cc: CollectionContext,
+//   item: ASTTypeExpr,
+//   args: {
+//     currentParentScope: Collect.ScopeId;
+//   },
+// ): Collect.TypeUseId {
+//   if (item === null) {
+//     assert(false);
+//   }
+//   // Type annotations are expression-backed; preserve them as-is for elaboration.
+//   return Collect.makeTypeUse(cc, {
+//     variant: Collect.ENode.TypeExprDatatype,
+//     expr: collectExpr(cc, item, args),
+//     sourceloc: item.sourceloc,
+//   })[1];
+// }
 
 function collectSymbol(
   cc: CollectionContext,
@@ -1679,27 +1480,24 @@ function collectSymbol(
       }
 
       const parameters = item.params.map((p) => {
-        let datatype: ASTTypeUse = p.datatype;
+        let datatype: ASTTypeExpr = p.datatype;
         if (p.optional) {
           datatype = {
-            variant: "UntaggedUnionDatatype",
-            members: [
-              datatype,
-              {
-                variant: "NamedDatatype",
-                name: "none",
-                generics: [],
-                inline: false,
-                mutability: EDatatypeMutability.Default,
-                sourceloc: p.sourceloc,
-              },
-            ],
+            variant: "BinaryExpr",
+            a: datatype,
+            b: {
+              variant: "SymbolValueExpr",
+              name: "none",
+              generics: [],
+              sourceloc: p.sourceloc,
+            },
+            operation: EBinaryOperation.BitwiseOr,
             sourceloc: p.sourceloc,
-          };
+          } satisfies ASTBinaryExpr;
         }
         return {
           name: p.name,
-          type: collectTypeUse(cc, datatype, args),
+          type: collectExpr(cc, datatype, args),
           optional: p.optional,
           defaultParameterValue: p.defaultValue ? collectExpr(cc, p.defaultValue, args) : null,
           sourceloc: p.sourceloc,
@@ -1707,6 +1505,7 @@ function collectSymbol(
       });
       const [functionSymbol, functionSymbolId] = Collect.makeSymbol<Collect.FunctionSymbol>(cc, {
         variant: Collect.ENode.FunctionSymbol,
+        comptime: Boolean(item.comptime),
         export: item.export,
         extern: item.externLanguage,
         generics: [],
@@ -1733,7 +1532,7 @@ function collectSymbol(
         },
         noemit: item.noemit,
         vararg: item.ellipsis,
-        returnType: (item.returnType && collectTypeUse(cc, item.returnType, args)) || null,
+        returnType: (item.returnType && collectExpr(cc, item.returnType, args)) || null,
         methodRequiredMutability: item.methodRequiredMutability,
         sourceloc: item.sourceloc,
         functionScope: null,
@@ -1847,23 +1646,20 @@ function collectSymbol(
     // =================================================================================================================
 
     case "StructMember": {
-      let datatype: ASTTypeUse = item.type;
+      let datatype: ASTTypeExpr = item.type;
       if (item.optional) {
         datatype = {
-          variant: "UntaggedUnionDatatype",
-          members: [
-            datatype,
-            {
-              variant: "NamedDatatype",
-              name: "none",
-              generics: [],
-              inline: false,
-              mutability: EDatatypeMutability.Default,
-              sourceloc: item.sourceloc,
-            },
-          ],
+          variant: "BinaryExpr",
+          a: datatype,
+          b: {
+            variant: "SymbolValueExpr",
+            name: "none",
+            generics: [],
+            sourceloc: item.sourceloc,
+          },
+          operation: EBinaryOperation.BitwiseOr,
           sourceloc: item.sourceloc,
-        };
+        } satisfies ASTBinaryExpr;
       }
 
       const memberId = defineVariableSymbol(
@@ -1874,7 +1670,7 @@ function collectSymbol(
           comptime: false,
           mutability: item.mutability,
           sourceloc: item.sourceloc,
-          type: collectTypeUse(cc, datatype, {
+          type: collectExpr(cc, datatype, {
             currentParentScope: args.currentParentScope,
           }),
           globalValueInitializer: null,
@@ -1899,16 +1695,11 @@ function collectSymbol(
           mutability: EVariableMutability.Const,
           sourceloc: item.sourceloc,
           // This type is a placeholder and will later be replaced during elaboration
-          type: Collect.makeTypeUse(cc, {
-            variant: Collect.ENode.NamedDatatype,
-            genericArgs: [],
-            inline: false,
-            nodiscard: false,
-            innerNested: null,
-            mutability: EDatatypeMutability.Default,
-            name: "void",
-            sourceloc: item.sourceloc,
-          })[1],
+          type: collectExpr(
+            cc,
+            { variant: "SymbolValueExpr", name: "void", generics: [], sourceloc: item.sourceloc },
+            args,
+          ),
           globalValueInitializer: null,
           variableContext: EVariableContext.MemberOfStruct,
         },
@@ -1969,7 +1760,7 @@ function collectGlobalDirective(
           comptime: item.comptime,
           type:
             (item.datatype &&
-              collectTypeUse(cc, item.datatype, { currentParentScope: args.currentParentScope })) ||
+              collectExpr(cc, item.datatype, { currentParentScope: args.currentParentScope })) ||
             null,
           globalValueInitializer: item.expr
             ? collectExpr(cc, item.expr, { currentParentScope: args.currentParentScope })
@@ -2002,7 +1793,7 @@ function collectGlobalDirective(
         name: item.name,
         generics: [],
         genericScope: genericsScopeId,
-        target: collectTypeUse(cc, item.datatype, { currentParentScope: genericsScopeId }),
+        target: collectExpr(cc, item.datatype, { currentParentScope: genericsScopeId }),
         sourceloc: item.sourceloc,
       });
       const symbolId = Collect.makeSymbol(cc, {
@@ -2059,17 +1850,11 @@ function collectGlobalDirective(
       const [alias, aliasId] = Collect.makeTypeDef<Collect.TypeDefAlias>(cc, {
         variant: Collect.ENode.TypeDefAlias,
         inScope: args.currentParentScope,
-        target: Collect.makeTypeUse(cc, {
-          variant: Collect.ENode.NamedDatatype,
-          genericArgs: [],
-          inline: false,
-          nodiscard: false,
-          innerNested: null,
-          name: importedNamespace,
-          mutability: EDatatypeMutability.Default,
-          sourceloc: null,
-        })[1],
-        // mode: item.mode,
+        target: collectExpr(
+          cc,
+          { variant: "SymbolValueExpr", name: importedNamespace, generics: [], sourceloc: null },
+          args,
+        ),
         generics: [],
         genericScope: -1 as Collect.ScopeId,
         name: item.name,
@@ -2307,7 +2092,7 @@ function collectScope(
           name: astStatement.name,
           generics: [],
           genericScope: -1 as Collect.ScopeId,
-          target: collectTypeUse(cc, astStatement.datatype, { currentParentScope: blockScopeId }),
+          target: collectExpr(cc, astStatement.datatype, { currentParentScope: blockScopeId }),
           sourceloc: astStatement.sourceloc,
         });
         const symbolId = Collect.makeSymbol(cc, {
@@ -2340,7 +2125,7 @@ function collectScope(
             comptime: astStatement.comptime,
             type:
               (astStatement.datatype &&
-                collectTypeUse(cc, astStatement.datatype, { currentParentScope: blockScopeId })) ||
+                collectExpr(cc, astStatement.datatype, { currentParentScope: blockScopeId })) ||
               null,
             mutability: astStatement.mutability,
             globalValueInitializer: null,
@@ -2442,25 +2227,7 @@ function collectScope(
 
 function collectExpr(
   cc: CollectionContext,
-  item:
-    | ASTBlockScopeExpr
-    | ASTLiteralExpr
-    | ASTExpr
-    | ASTStatement
-    | ASTParenthesisExpr
-    | ASTExprAssignmentExpr
-    | ASTExprCallExpr
-    | ASTExprComptimeMemberAccess
-    | ASTUnaryExpr
-    | ASTExprMemberAccess
-    | ASTLambdaExpr
-    | ASTPreIncrExpr
-    | ASTPostIncrExpr
-    | ASTAggregateLiteralExpr
-    | ASTExplicitCastExpr
-    | ASTExprIsTypeExpr
-    | ASTBinaryExpr
-    | ASTSymbolValueExpr,
+  item: ASTExpr,
   args: {
     currentParentScope: Collect.ScopeId;
   },
@@ -2571,7 +2338,7 @@ function collectExpr(
             return Collect.makeExpr(cc, {
               variant: Collect.ENode.TypeLiteralExpr,
               sourceloc: item.sourceloc,
-              datatype: collectTypeUse(cc, g, args),
+              datatype: collectExpr(cc, g, args),
             })[1];
           }
         }),
@@ -2615,6 +2382,7 @@ function collectExpr(
       });
       const [functionSymbol, functionSymbolId] = Collect.makeSymbol(cc, {
         variant: Collect.ENode.FunctionSymbol,
+        comptime: false,
         export: false,
         extern: EExternLanguage.None,
         functionScope: -1 as Collect.ScopeId,
@@ -2632,7 +2400,7 @@ function collectExpr(
             optional: p.optional,
             defaultParameterValue: p.defaultValue ? collectExpr(cc, p.defaultValue, args) : null,
             sourceloc: p.sourceloc,
-            type: collectTypeUse(cc, p.datatype, args),
+            type: collectExpr(cc, p.datatype, args),
           };
         }),
         parentScope: args.currentParentScope,
@@ -2649,9 +2417,7 @@ function collectExpr(
               }
             : null,
         },
-        returnType: item.lambda.returnType
-          ? collectTypeUse(cc, item.lambda.returnType, args)
-          : null,
+        returnType: item.lambda.returnType ? collectExpr(cc, item.lambda.returnType, args) : null,
         sourceloc: item.lambda.sourceloc,
         staticMethod: false,
         vararg: false,
@@ -2714,7 +2480,7 @@ function collectExpr(
     case "AggregateLiteralExpr":
       return Collect.makeExpr(cc, {
         variant: Collect.ENode.AggregateLiteralExpr,
-        structType: item.datatype ? collectTypeUse(cc, item.datatype, args) : null,
+        structType: item.datatype ? collectExpr(cc, item.datatype, args) : null,
         elements: item.elements.map((m) => ({
           key: m.key,
           value: collectExpr(cc, m.value, args),
@@ -2773,14 +2539,12 @@ function collectExpr(
 
       const exprId = collectExpr(cc, item.expr, { currentParentScope: blockScopeId });
 
-      const reactiveT = makeNamedDatatype(cc, "__T", [], null, item.sourceloc)[1];
-      const reactiveInnerT = makeNamedDatatype(
+      const reactiveT = collectExpr(cc, buildASTDatatype(["__T"], item.sourceloc), args);
+      const reactiveInnerT = collectExpr(
         cc,
-        "rx",
-        [],
-        makeNamedDatatype(cc, "UnwrapReactive", ["__T"], null, item.sourceloc)[1],
-        item.sourceloc,
-      )[1];
+        buildASTDatatype(["rx", ["UnwrapReactive", ["__T"]]], item.sourceloc),
+        args,
+      );
 
       const handle = defineVariableSymbol(
         cc,
@@ -2808,12 +2572,22 @@ function collectExpr(
           inScope: blockScopeId,
           name: "__T",
           sourceloc: item.sourceloc,
-          target: Collect.makeTypeUse(cc, {
-            variant: Collect.ENode.TypeOfExprDatatype,
-            expr: exprId,
-            mutability: EDatatypeMutability.Default,
-            sourceloc: item.sourceloc,
-          })[1],
+          target: collectExpr(
+            cc,
+            {
+              variant: "ExprCallExpr",
+              allocator: null,
+              arguments: [item.expr],
+              calledExpr: {
+                variant: "SymbolValueExpr",
+                name: "typeof",
+                generics: [],
+                sourceloc: item.sourceloc,
+              },
+              sourceloc: item.sourceloc,
+            },
+            args,
+          ),
         })[1],
       })[1];
       blockScope.symbols.add(aliasSymbol);
@@ -2898,14 +2672,12 @@ function collectExpr(
 
       const exprId = collectExpr(cc, item.expr, { currentParentScope: blockScopeId });
 
-      const reactiveT = makeNamedDatatype(cc, "__T", [], null, item.sourceloc)[1];
-      const reactiveInnerT = makeNamedDatatype(
+      const reactiveT = collectExpr(cc, buildASTDatatype(["__T"], item.sourceloc), args);
+      const reactiveInnerT = collectExpr(
         cc,
-        "rx",
-        [],
-        makeNamedDatatype(cc, "UnwrapReactive", ["__T"], null, item.sourceloc)[1],
-        item.sourceloc,
-      )[1];
+        buildASTDatatype(["rx", ["UnwrapReactive", ["__T"]]], item.sourceloc),
+        args,
+      );
 
       const handle = defineVariableSymbol(
         cc,
@@ -2947,12 +2719,22 @@ function collectExpr(
           inScope: blockScopeId,
           name: "__T",
           sourceloc: item.sourceloc,
-          target: Collect.makeTypeUse(cc, {
-            variant: Collect.ENode.TypeOfExprDatatype,
-            expr: exprId,
-            mutability: EDatatypeMutability.Default,
-            sourceloc: item.sourceloc,
-          })[1],
+          target: collectExpr(
+            cc,
+            {
+              variant: "ExprCallExpr",
+              allocator: null,
+              arguments: [item.expr],
+              calledExpr: {
+                variant: "SymbolValueExpr",
+                name: "typeof",
+                generics: [],
+                sourceloc: item.sourceloc,
+              },
+              sourceloc: item.sourceloc,
+            },
+            args,
+          ),
         })[1],
       })[1];
       blockScope.symbols.add(aliasSymbol);
@@ -3055,7 +2837,7 @@ function collectExpr(
             return Collect.makeExpr(cc, {
               variant: Collect.ENode.TypeLiteralExpr,
               sourceloc: item.sourceloc,
-              datatype: collectTypeUse(cc, g, args),
+              datatype: collectExpr(cc, g, args),
             })[1];
           }
         }),
@@ -3082,7 +2864,7 @@ function collectExpr(
       return Collect.makeExpr(cc, {
         variant: Collect.ENode.ExprIsTypeExpr,
         expr: collectExpr(cc, item.expr, args),
-        comparisonType: collectTypeUse(cc, item.comparisonType, args),
+        comparisonType: collectExpr(cc, item.comparisonType, args),
         sourceloc: item.sourceloc,
       })[1];
 
@@ -3094,7 +2876,7 @@ function collectExpr(
       return Collect.makeExpr(cc, {
         variant: Collect.ENode.ExplicitCastExpr,
         expr: collectExpr(cc, item.expr, args),
-        targetType: collectTypeUse(cc, item.castedTo, args),
+        targetType: collectExpr(cc, item.castedTo, args),
         sourceloc: item.sourceloc,
       })[1];
 
@@ -3117,14 +2899,12 @@ function collectExpr(
         const targetId = collectExpr(cc, item.target, { currentParentScope: blockScopeId });
         const valueId = collectExpr(cc, item.value, { currentParentScope: blockScopeId });
 
-        const reactiveT = makeNamedDatatype(cc, "__T", [], null, item.sourceloc)[1];
-        const reactiveInnerT = makeNamedDatatype(
+        const reactiveT = collectExpr(cc, buildASTDatatype(["__T"], item.sourceloc), args);
+        const reactiveInnerT = collectExpr(
           cc,
-          "rx",
-          [],
-          makeNamedDatatype(cc, "UnwrapReactive", ["__T"], null, item.sourceloc)[1],
-          item.sourceloc,
-        )[1];
+          buildASTDatatype(["rx", ["UnwrapReactive", ["__T"]]], item.sourceloc),
+          args,
+        );
 
         let operation = EBinaryOperation.Add;
         if (item.operation === EAssignmentOperation.Add) {
@@ -3181,12 +2961,23 @@ function collectExpr(
             inScope: blockScopeId,
             name: "__T",
             sourceloc: item.sourceloc,
-            target: Collect.makeTypeUse(cc, {
-              variant: Collect.ENode.TypeOfExprDatatype,
-              expr: targetId,
-              mutability: EDatatypeMutability.Default,
-              sourceloc: item.sourceloc,
-            })[1],
+
+            target: collectExpr(
+              cc,
+              {
+                variant: "ExprCallExpr",
+                allocator: null,
+                arguments: [item.target],
+                calledExpr: {
+                  variant: "SymbolValueExpr",
+                  name: "typeof",
+                  generics: [],
+                  sourceloc: item.sourceloc,
+                },
+                sourceloc: item.sourceloc,
+              },
+              args,
+            ),
           })[1],
         })[1];
         blockScope.symbols.add(aliasSymbol);
@@ -3315,9 +3106,24 @@ function collectExpr(
     case "TypeLiteralExpr": {
       return Collect.makeExpr(cc, {
         variant: Collect.ENode.TypeLiteralExpr,
-        datatype: collectTypeUse(cc, item.datatype, {
+        datatype: collectExpr(cc, item.datatype, {
           currentParentScope: args.currentParentScope,
         }),
+        sourceloc: item.sourceloc,
+      })[1];
+    }
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
+    case "TypeModifierExpr": {
+      return Collect.makeExpr(cc, {
+        variant: Collect.ENode.TypeModifierExpr,
+        type: collectExpr(cc, item.type, {
+          currentParentScope: args.currentParentScope,
+        }),
+        modifier: item.modifier,
         sourceloc: item.sourceloc,
       })[1];
     }
@@ -3392,44 +3198,16 @@ function collectExpr(
     // =================================================================================================================
     // =================================================================================================================
 
-    // case "": {
-    //   return Collect.makeExpr(cc, {
-    //     variant: Collect.ENode.TypeLiteralExpr,
-    //     datatype: collectTypeUse(cc, item.datatype, {
-    //       currentParentScope: args.currentParentScope,
-    //     }),
-    //     sourceloc: item.sourceloc,
-    //   })[1];
-    // }
+    case "ParameterPack": {
+      return Collect.makeExpr(cc, {
+        variant: Collect.ENode.ParameterPackDatatypeExpr,
+        sourceloc: item.sourceloc,
+      })[1];
+    }
 
     default:
-      assert(false, "All cases handled " + item.variant);
+      assert(false, "All cases handled " + (item as any).variant);
   }
-}
-
-function makeNamedDatatype(
-  cc: CollectionContext,
-  name: string,
-  generics: string[],
-  child: Collect.TypeUseId | null,
-  sourceloc: SourceLoc,
-) {
-  return Collect.makeTypeUse(cc, {
-    variant: Collect.ENode.NamedDatatype,
-    genericArgs: generics.map((g) => {
-      return Collect.makeExpr(cc, {
-        variant: Collect.ENode.SymbolValueExpr,
-        genericArgs: [],
-        name: g,
-        sourceloc: sourceloc,
-      })[1];
-    }),
-    inline: false,
-    innerNested: child,
-    mutability: EDatatypeMutability.Default,
-    name: name,
-    sourceloc: sourceloc,
-  });
 }
 
 export function CollectImmediate(
@@ -3531,63 +3309,59 @@ export function CollectFile(
 
 export function printCollectedDatatype(
   cc: CollectionContext,
-  typeId: Collect.TypeUseId | null,
+  typeId: Collect.ExprId | null,
 ): string {
   if (typeId === null) {
     return "?";
   }
-  const type = cc.typeUseNodes.get(typeId);
+  const type = cc.exprNodes.get(typeId);
   switch (type.variant) {
-    case Collect.ENode.NamedDatatype: {
-      let str = "";
-      let n: Collect.NamedDatatype | null = type;
-      while (n) {
-        if (str !== "") {
-          str += ".";
-        }
-        str += n.name;
-        if (n.genericArgs.length > 0) {
-          str += "<" + n.genericArgs.map((g) => printCollectedExpr(cc, g)).join(", ") + ">";
-        }
-        n =
-          (n.innerNested && (cc.typeUseNodes.get(n.innerNested) as Collect.NamedDatatype)) || null;
-        assert(n === null || n.variant === Collect.ENode.NamedDatatype);
-      }
+    // case Collect.ENode.NamedDatatype: {
+    //   let str = "";
+    //   let n: Collect.NamedDatatype | null = type;
+    //   while (n) {
+    //     if (str !== "") {
+    //       str += ".";
+    //     }
+    //     str += n.name;
+    //     if (n.genericArgs.length > 0) {
+    //       str += "<" + n.genericArgs.map((g) => printCollectedExpr(cc, g)).join(", ") + ">";
+    //     }
+    //     n =
+    //       (n.innerNested && (cc.typeUseNodes.get(n.innerNested) as Collect.NamedDatatype)) || null;
+    //     assert(n === null || n.variant === Collect.ENode.NamedDatatype);
+    //   }
 
-      let s = "";
-      if (type.inline) {
-        s += "inline ";
-      }
-      if (type.mutability === EDatatypeMutability.Const) {
-        s += "const ";
-      }
-      if (type.mutability === EDatatypeMutability.Mut) {
-        s += "mut ";
-      }
-      return s + str;
-    }
+    //   let s = "";
+    //   if (type.inline) {
+    //     s += "inline ";
+    //   }
+    //   if (type.mutability === EDatatypeMutability.Const) {
+    //     s += "const ";
+    //   }
+    //   if (type.mutability === EDatatypeMutability.Mut) {
+    //     s += "mut ";
+    //   }
+    //   return s + str;
+    // }
 
-    case Collect.ENode.StackArrayDatatype: {
+    case Collect.ENode.StackArrayTypeDefinitionExpr: {
       return `[${type.length}]${printCollectedDatatype(cc, type.datatype)}`;
     }
 
-    case Collect.ENode.ParameterPack: {
+    case Collect.ENode.ParameterPackDatatypeExpr: {
       return `...`;
     }
 
-    case Collect.ENode.DynamicArrayDatatype: {
+    case Collect.ENode.DynamicArrayTypeDefinitionExpr: {
       return `[]${printCollectedDatatype(cc, type.datatype)}`;
     }
 
-    case Collect.ENode.TypeOfExprDatatype: {
-      return `typeof(${printCollectedExpr(cc, type.expr)})`;
-    }
-
-    case Collect.ENode.UntaggedUnionDatatype: {
+    case Collect.ENode.UntaggedUnionTypeDefinitionExpr: {
       return "(" + type.members.map((m) => printCollectedDatatype(cc, m)).join(" | ") + ")";
     }
 
-    case Collect.ENode.TaggedUnionDatatype: {
+    case Collect.ENode.TaggedUnionTypeDefinitionExpr: {
       return (
         `${type.nodiscard ? "nodiscard " : ""}union {` +
         type.members
@@ -3599,7 +3373,7 @@ export function printCollectedDatatype(
       );
     }
 
-    case Collect.ENode.FunctionDatatype: {
+    case Collect.ENode.FunctionTypeDefinitionExpr: {
       return `(${type.parameters
         .map((p, i) => `param${i}${p.optional ? "?" : ""}: ${printCollectedDatatype(cc, p.type)}`)
         .join(", ")}${type.vararg ? ", ..." : ""}) => ${printCollectedDatatype(
@@ -3608,7 +3382,7 @@ export function printCollectedDatatype(
       )}`;
     }
 
-    case Collect.ENode.CallableDatatype: {
+    case Collect.ENode.CallableTypeDefinitionExpr: {
       let requireFragments: string[] = [];
       if (type.requires.final) {
         requireFragments.push("final");
@@ -3973,7 +3747,7 @@ export const printCollectedSymbol = (
           .join(", ") +
         ") -> " +
         printCollectedDatatype(cc, symbol.returnType);
-      print(`- ${ftype}`);
+      print(`- ${symbol.comptime ? "comptime " : ""}${ftype}`);
       if (symbol.functionScope) {
         printCollectedScope(cc, symbol.functionScope, indent + 4);
       }

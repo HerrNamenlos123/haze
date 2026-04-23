@@ -67,9 +67,9 @@ cInjectDirective: (export=EXPORT)? INLINEC LB expr RB SEMI?;
 
 externLanguage: id;
 
-functionDefinition: (export=EXPORT)? (extern=EXTERN externLang=externLanguage? pub=PUB? noemit=NOEMIT?)? id (LANGLE id (COMMA id)* RANGLE)? LB params RB (COLON datatype)? requiresBlock? (DOUBLEARROW)? (funcbody | SEMI?);
-lambda: LB params RB (COLON datatype)? requiresBlock? DOUBLEARROW funcbody;
-param: id QUESTIONMARK? COLON (datatype | ellipsis) (EQUALS expr)?;
+functionDefinition: (export=EXPORT)? (extern=EXTERN externLang=externLanguage? pub=PUB? noemit=NOEMIT?)? FN comptime=COMPTIME? id (LANGLE id (COMMA id)* RANGLE)? LB params RB (COLON typeExpr)? requiresBlock? (DOUBLEARROW)? (funcbody | SEMI?);
+lambda: LB params RB (COLON typeExpr)? requiresBlock? DOUBLEARROW funcbody;
+param: id QUESTIONMARK? COLON (typeExpr | ellipsis) (EQUALS expr)?;
 params: (param (COMMA param)* (COMMA ellipsis)? COMMA?)? | ellipsis;
 ellipsis: ELLIPSIS;
 
@@ -81,11 +81,11 @@ exprAsFuncbody: expr;
 // Variables
 
 globalVariableDef
-    : (export=EXPORT)? (extern=EXTERN externLang=externLanguage?)? pub=PUB? variableMutabilitySpecifier comptime=COMPTIME? id (((COLON datatype)? EQUALS expr) | (COLON datatype)) SEMI?        #GlobalVariableDefinition
+    : (export=EXPORT)? (extern=EXTERN externLang=externLanguage?)? pub=PUB? variableMutabilitySpecifier comptime=COMPTIME? id (((COLON typeExpr)? EQUALS expr) | (COLON typeExpr)) SEMI?        #GlobalVariableDefinition
     ;
 
 typeDef
-    : (export=EXPORT)? (extern=EXTERN externLang=externLanguage?)? pub=PUB? TYPE name=id (LANGLE generic+=id (COMMA generic+=id)* RANGLE)? EQUALS datatype        #TypeAliasDirective
+    : (export=EXPORT)? (extern=EXTERN externLang=externLanguage?)? pub=PUB? TYPE name=id (LANGLE generic+=id (COMMA generic+=id)* RANGLE)? EQUALS typeExpr        #TypeAliasDirective
     ;
 
 variableMutabilitySpecifier
@@ -93,7 +93,7 @@ variableMutabilitySpecifier
     | CONST                             #VariableConst
     ;
 
-// Datatypes
+// Type Expressions
 
 literal
     : (TRUE | FALSE)                            #BooleanConstant
@@ -115,40 +115,54 @@ interpolatedString
 interpolatedStringFragment: FSTRING_GRAPHEME | interpolatedStringExpression;
 interpolatedStringExpression: LCURLY expr RCURLY;
 
-datatypeImpl
-    : INLINE datatypeImpl                                                       #InlineDatatype
-    | MUT datatypeImpl                                                          #MutDatatype
-    | CONST datatypeImpl                                                        #ConstDatatype
-    | datatypeFragment (DOT datatypeFragment)*                                  #NamedDatatype
-    | LBRACKET n=(INTEGER_LITERAL | HEX_INTEGER_LITERAL) RBRACKET datatype      #StackArrayDatatype
-    | LBRACKET RBRACKET datatype                                                #DynamicArrayDatatype
-    | LB params RB (DOUBLEARROW | SINGLEARROW) datatype requiresBlock?          #FunctionDatatype
-    | TYPEOF LB expr RB                                                         #TypeOfExprDatatype
+typeExprPrimary
+    : nameExpr
+    | TYPE LANGLE typeExpr RANGLE
+    | LB typeExpr RB
     ;
 
-baseDatatype
-    : datatypeImpl                                                              #DatatypeWithMutability
-    | LB datatype RB                                                            #DatatypeInParenthesis
+typeExprPostfix
+    : LB argList? RB withAllocator?
+    | LBRACKET indexList RBRACKET
+    | DOT LBRACKET expr RBRACKET
+    | (DOT | QUESTIONDOT) nameSegment
+    | QUESTIONEXCL
+    | AS typeExpr
+    | IS typeExpr
     ;
 
-datatype
-    : baseDatatype (SINGLEOR baseDatatype)*                                     #UntaggedUnionDatatype
-    | NODISCARD? UNION LCURLY (id COLON baseDatatype COMMA)+ (id COLON baseDatatype COMMA?) RCURLY   #TaggedUnionDatatype
+typeExprSimple
+    : typeExprPrimary typeExprPostfix*
     ;
 
-datatypeFragment
-    : type_id (LANGLE genericLiteral (COMMA genericLiteral)* RANGLE)?
+typeExprModified
+    : INLINE typeExprModified
+    | MUT typeExprModified
+    | CONST typeExprModified
+    | LBRACKET n=(INTEGER_LITERAL | HEX_INTEGER_LITERAL) RBRACKET typeExprModified
+    | LBRACKET RBRACKET typeExprModified
+    | LB params RB (DOUBLEARROW | SINGLEARROW) typeExprModified requiresBlock?
+    | typeExprSimple
+    ;
+
+typeExprUnion
+    : typeExprModified (SINGLEOR typeExprModified)*
+    ;
+
+typeExpr
+    : typeExprUnion
+    | NODISCARD? UNION LCURLY (id COLON typeExprUnion COMMA)+ (id COLON typeExprUnion COMMA?) RCURLY
     ;
 
 genericLiteral
-    : datatype              #GenericLiteralDatatype
+    : typeExpr              #GenericLiteralTypeExpr
     | literal               #GenericLiteralConstant
     ;
 
 structContent
     : sourceLocationPrefixRule LCURLY structContent* RCURLY                                                 #StructContentWithSourceloc
-    | variableMutabilitySpecifier? id QUESTIONMARK? COLON datatype (EQUALS expr)? SEMI?                     #StructMember
-    | static=STATIC? mutability=(MUT | CONST)? name=(RAW_ID | TYPE | OPERATORASSIGN | OPERATORREBIND | OPERATORPLUS | OPERATORMINUS | OPERATORMUL | OPERATORDIV | OPERATORMOD | OPERATORSUBSCRIPT | OPERATORAS | OPERATOREQ | OPERATORNEQ | OPERATORLT | OPERATORGT | OPERATORLTE | OPERATORGTE) (LANGLE generic+=id (COMMA generic+=id)* RANGLE)? LB params RB (COLON datatype)? requiresBlock? (funcbody | SEMI?)    #StructMethod
+    | variableMutabilitySpecifier? id QUESTIONMARK? COLON typeExpr (EQUALS expr)? SEMI?                     #StructMember
+    | static=STATIC? mutability=(MUT | CONST)? FN comptime=COMPTIME? name=(RAW_ID | TYPE | OPERATORASSIGN | OPERATORREBIND | OPERATORPLUS | OPERATORMINUS | OPERATORMUL | OPERATORDIV | OPERATORMOD | OPERATORSUBSCRIPT | OPERATORAS | OPERATOREQ | OPERATORNEQ | OPERATORLT | OPERATORGT | OPERATORLTE | OPERATORGTE) (LANGLE generic+=id (COMMA generic+=id)* RANGLE)? LB params RB (COLON typeExpr)? requiresBlock? (funcbody | SEMI?)    #StructMethod
     | structDefinition                                                                                      #NestedStructDefinition
     ;
 
@@ -182,7 +196,7 @@ nameExpr
 primaryExpr
     : LB expr RB
     | doScope
-    | TYPE LANGLE datatype RANGLE
+    | TYPE LANGLE typeExpr RANGLE
     | lambda
     | literal
     | interpolatedString
@@ -268,8 +282,8 @@ postfix
     | DOT LBRACKET expr RBRACKET
     | (DOT | QUESTIONDOT) nameSegment
     | QUESTIONEXCL
-    | AS datatype
-    | IS datatype
+    | AS typeExpr
+    | IS typeExpr
     ;
 
 multiplicative
@@ -318,12 +332,12 @@ expr
 // Statements & Conditionals
 
 variableCreation
-    : variableMutabilitySpecifier comptime=COMPTIME? id (((COLON datatype)? EQUALS expr) | (COLON datatype)) SEMI? #VariableCreationStatementRule
+    : variableMutabilitySpecifier comptime=COMPTIME? id (((COLON typeExpr)? EQUALS expr) | (COLON typeExpr)) SEMI? #VariableCreationStatementRule
     ;
 
 ifStatementConditionImpl
     : ifExpr=expr #IfStatementCondition
-    | LET id (COLON datatype)? EQUALS letExpr=expr (SEMI guardExpr=expr)? #IfLetStatementCondition
+    | LET id (COLON typeExpr)? EQUALS letExpr=expr (SEMI guardExpr=expr)? #IfLetStatementCondition
     ;
 
 statement
@@ -338,22 +352,11 @@ statement
     | FOR comptime=COMPTIME? id (COMMA id)? IN expr rawScope                        #ForEachStatement
     | FOR comptime=COMPTIME? LB statement? SEMI condition=expr? SEMI incr=expr? RB rawScope #ForStatement
     | WHILE expr rawScope                                                           #WhileStatement
-    | WHILE LET id (COLON datatype)? EQUALS expr (SEMI expr)? rawScope              #WhileLetStatement
+    | WHILE LET id (COLON typeExpr)? EQUALS expr (SEMI expr)? rawScope              #WhileLetStatement
     ;
 
 // This is a hack-around so the word "type" can be used as variable names without creating a syntax error
 id
     : TYPE
     | RAW_ID
-    | TYPEOF
-    ;
-
-// This is a hack-around so the word "type" can be used as variable names without creating a syntax error
-type_id
-    : TYPE
-    | RAW_ID
-    | TYPEOF
-    | TRUE
-    | FALSE
-    | WITH
     ;

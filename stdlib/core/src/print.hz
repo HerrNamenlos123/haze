@@ -2,7 +2,7 @@
 __c__("#include <stdio.h>");
 
 namespace ffi {
-    export extern C noemit printf(fmt: ccstr, ...) :: final;
+    export extern C noemit fn printf(fmt: ccstr, ...) :: final;
 }
 
 namespace fmt {
@@ -14,26 +14,26 @@ namespace fmt {
         buffer: mut ByteBuffer | none;
         written: int = 0;
 
-        constructor(buffer?: mut ByteBuffer) {
+        fn constructor(buffer?: mut ByteBuffer) {
             return StringWriter {
                 buffer: buffer,
             };
         }
 
-        mut write(value: str) {
+        mut fn write(value: str) {
             if this.buffer {
                 this.buffer.push(value);
                 this.written += value.length;
             }
         }
 
-        commit() {
+        fn commit() {
             if this.buffer {
                 this.buffer.commit();
             }
         }
 
-        string() {
+        fn string() {
             if this.buffer {
                 return this.buffer.string();
             }
@@ -43,7 +43,7 @@ namespace fmt {
         }
     }
 
-    export format(values: ...): str :: final {
+    export fn format(values: ...): str :: final {
         let reader = StringWriter(none);
         for comptime value, i in values {
             format_to_proxy(reader, value, {});
@@ -57,7 +57,7 @@ namespace fmt {
         return writer.string();
     }
 
-    export formatWithAllocator(allocator: Allocator, values: ...) {
+    export fn formatWithAllocator(allocator: Allocator, values: ...) {
         let reader = StringWriter(none);
         for comptime value, i in values {
             format_to_proxy(reader, value, {});
@@ -70,7 +70,7 @@ namespace fmt {
         return writer.toString();
     }
 
-    export print(args: ...) {
+    export fn print(args: ...) {
         let writer = StringWriter(ByteBuffer());
         for comptime arg, i in args {
             writer.write(fmt.format(arg));
@@ -83,7 +83,7 @@ namespace fmt {
         __c__("fwrite(string.data, 1, string.length, stdout);");
     }
 
-    export println(args: ...) {
+    export fn println(args: ...) {
         // TODO: This should just call print() and append a \n, but for that we must support 
         // passing parameter packs to other parameter packs, i.e. unwrapping them
         let writer = StringWriter(ByteBuffer());
@@ -99,7 +99,7 @@ namespace fmt {
         __c__("fwrite(string.data, 1, string.length, stdout);");
     }
 
-    export format_to_proxy<T>(writer: mut StringWriter, value: T, args: FormatArgs) :: final {
+    export fn format_to_proxy<T>(writer: mut StringWriter, value: T, args: FormatArgs) :: final {
         if comptime type<rx.IsReactive<T>> {
             format_to_proxy(writer, rx.get(value), args);
         }
@@ -114,81 +114,81 @@ namespace fmt {
         }
     }
 
-    export format_to<T>(writer: mut StringWriter, value: T, args: FormatArgs) {
+    export fn format_to<T>(writer: mut StringWriter, value: T, args: FormatArgs) {
         static_assert(false, f"No formatter is known for type '{T.name}'. To format this type, define a matching overload for fmt.format_to().");
     }
 
-    export format_to(writer: mut StringWriter, value: i8, args: FormatArgs) {
+    export fn format_to(writer: mut StringWriter, value: i8, args: FormatArgs) {
         format_to_sprintf<64, "\"%\" PRIi8", typeof(value)>(writer, value);
     }
 
-    export format_to(writer: mut StringWriter, value: i16, args: FormatArgs) {
+    export fn format_to(writer: mut StringWriter, value: i16, args: FormatArgs) {
         format_to_sprintf<64, "\"%\" PRIi16", typeof(value)>(writer, value);
     }
 
-    export format_to(writer: mut StringWriter, value: i32, args: FormatArgs) {
+    export fn format_to(writer: mut StringWriter, value: i32, args: FormatArgs) {
         format_to_sprintf<64, "\"%\" PRIi32", typeof(value)>(writer, value);
     }
 
-    export format_to(writer: mut StringWriter, value: i64, args: FormatArgs) {
+    export fn format_to(writer: mut StringWriter, value: i64, args: FormatArgs) {
         format_to_sprintf<64, "\"%\" PRIi64", typeof(value)>(writer, value);
     }
 
-    export format_to(writer: mut StringWriter, value: int, args: FormatArgs) {
+    export fn format_to(writer: mut StringWriter, value: int, args: FormatArgs) {
         format_to_sprintf<64, "\"%\" PRIi64", typeof(value)>(writer, value);
     }
 
-    export format_to(writer: mut StringWriter, value: str, args: FormatArgs) {
+    export fn format_to(writer: mut StringWriter, value: str, args: FormatArgs) {
         writer.write(value);
     }
     
-    export format_to(writer: mut StringWriter, value: u8, args: FormatArgs) {
+    export fn format_to(writer: mut StringWriter, value: u8, args: FormatArgs) {
         format_to_sprintf<64, "\"%\" PRIu8", typeof(value)>(writer, value);
     }
 
-    export format_to(writer: mut StringWriter, value: u16, args: FormatArgs) {
+    export fn format_to(writer: mut StringWriter, value: u16, args: FormatArgs) {
         format_to_sprintf<64, "\"%\" PRIu16", typeof(value)>(writer, value);
     }
 
-    export format_to(writer: mut StringWriter, value: u32, args: FormatArgs) {
+    export fn format_to(writer: mut StringWriter, value: u32, args: FormatArgs) {
         format_to_sprintf<64, "\"%\" PRIu32", typeof(value)>(writer, value);
     }
 
-    export format_to(writer: mut StringWriter, value: u64, args: FormatArgs) {
+    export fn format_to(writer: mut StringWriter, value: u64, args: FormatArgs) {
         format_to_sprintf<64, "\"%\" PRIu64", typeof(value)>(writer, value);
     }
 
-    export format_to(writer: mut StringWriter, value: usize, args: FormatArgs) {
+    export fn format_to(writer: mut StringWriter, value: usize, args: FormatArgs) {
         format_to_sprintf<64, "\"%\" PRIu64", typeof(value)>(writer, value);
     }
 
-    export format_to(writer: mut StringWriter, value: f32, args: FormatArgs) {
+    export fn format_to(writer: mut StringWriter, value: f32, args: FormatArgs) {
         format_to_sprintf<64, "\"%.9g\"", typeof(value)>(writer, value);
     }
 
-    export format_to(writer: mut StringWriter, value: f64, args: FormatArgs) {
+    export fn format_to(writer: mut StringWriter, value: f64, args: FormatArgs) {
         format_to_sprintf<64, "\"%.17g\"", typeof(value)>(writer, value);
     }
 
-    export format_to(writer: mut StringWriter, value: real, args: FormatArgs) {
+    export fn format_to(writer: mut StringWriter, value: real, args: FormatArgs) {
         format_to(writer, value as f64, args);
     }
 
-    export format_to(writer: mut StringWriter, value: fs.Error, args: FormatArgs) {
+    export fn format_to(writer: mut StringWriter, value: fs.Error, args: FormatArgs) {
         let num = 0;
         __c__("num = value;");
         format_to(writer, num, args);
     }
 
-    export format_to(writer: mut StringWriter, value: none, args: FormatArgs) {
+    export fn format_to(writer: mut StringWriter, value: none, args: FormatArgs) {
         format_to(writer, "none", args);
     }
 
-    export format_to(writer: mut StringWriter, value: null, args: FormatArgs) {
+    export fn format_to(writer: mut StringWriter, value: null, args: FormatArgs) {
         format_to(writer, "null", args);
     }
 
-    export format_to_sprintf<BufferSize, Fmt, T>(writer: mut StringWriter, value: T) {
+    export fn format_to_sprintf<BufferSize, Fmt, T>(writer: mut StringWriter, value: T) {
         let n = 0;
         let string = "";
         __c__(f"""
@@ -201,7 +201,7 @@ string = HZSTD_STRING_FROM_CSTR(buf);
         }
     }
 
-    export format_to(writer: mut StringWriter, value: Vec2f, args: FormatArgs) {
+    export fn format_to(writer: mut StringWriter, value: Vec2f, args: FormatArgs) {
         format_to(writer, "(", args);
         format_to(writer, value.x, args);
         format_to(writer, ", ", args);

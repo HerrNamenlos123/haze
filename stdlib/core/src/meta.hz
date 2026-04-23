@@ -36,83 +36,83 @@ namespace meta {
         ParameterPack = ffi.hzstd_meta_type_category_parameter_pack,
     }
 
-    export categoryOf<T>(value: T): TypeCategory :: final {
+    export fn categoryOf<T>(value: T): TypeCategory :: final {
         return typeof(value).category;
     }
 
-    export categoryOfType<T>(): TypeCategory :: final {
+    export fn categoryOfType<T>(): TypeCategory :: final {
         return T.category;
     }
 
-    export isPrimitive<T>(value: T): bool :: final {
+    export fn isPrimitive<T>(value: T): bool :: final {
         return categoryOf(value) == TypeCategory.Primitive;
     }
 
-    export isPrimitiveType<T>(): bool :: final {
+    export fn isPrimitiveType<T>(): bool :: final {
         return categoryOfType<T>() == TypeCategory.Primitive;
     }
 
-    export isStruct<T>(value: T): bool :: final {
+    export fn isStruct<T>(value: T): bool :: final {
         return categoryOf(value) == TypeCategory.Struct;
     }
 
-    export isStructType<T>(): bool :: final {
+    export fn isStructType<T>(): bool :: final {
         return categoryOfType<T>() == TypeCategory.Struct;
     }
 
-    export isEnum<T>(value: T): bool :: final {
+    export fn isEnum<T>(value: T): bool :: final {
         return categoryOf(value) == TypeCategory.Enum;
     }
 
-    export isEnumType<T>(): bool :: final {
+    export fn isEnumType<T>(): bool :: final {
         return categoryOfType<T>() == TypeCategory.Enum;
     }
 
-    export isArray<T>(value: T): bool :: final {
+    export fn isArray<T>(value: T): bool :: final {
         return categoryOf(value) == TypeCategory.Array;
     }
 
-    export isArrayType<T>(): bool :: final {
+    export fn isArrayType<T>(): bool :: final {
         return categoryOfType<T>() == TypeCategory.Array;
     }
 
-    export isSlice<T>(value: T): bool :: final {
+    export fn isSlice<T>(value: T): bool :: final {
         return categoryOf(value) == TypeCategory.Slice;
     }
 
-    export isSliceType<T>(): bool :: final {
+    export fn isSliceType<T>(): bool :: final {
         return categoryOfType<T>() == TypeCategory.Slice;
     }
 
-    export isUnion<T>(value: T): bool :: final {
+    export fn isUnion<T>(value: T): bool :: final {
         return categoryOf(value) == TypeCategory.Union;
     }
 
-    export isUnionType<T>(): bool :: final {
+    export fn isUnionType<T>(): bool :: final {
         return categoryOfType<T>() == TypeCategory.Union;
     }
 
-    export isReactive<T>(value: T): bool :: final {
+    export fn isReactive<T>(value: T): bool :: final {
         return categoryOf(value) == TypeCategory.Reactive;
     }
 
-    export isReactiveType<T>(): bool :: final {
+    export fn isReactiveType<T>(): bool :: final {
         return categoryOfType<T>() == TypeCategory.Reactive;
     }
 
-    export isCallable<T>(value: T): bool :: final {
+    export fn isCallable<T>(value: T): bool :: final {
         return categoryOf(value) == TypeCategory.Callable;
     }
 
-    export isCallableType<T>(): bool :: final {
+    export fn isCallableType<T>(): bool :: final {
         return categoryOfType<T>() == TypeCategory.Callable;
     }
 
-    export isFunction<T>(value: T): bool :: final {
+    export fn isFunction<T>(value: T): bool :: final {
         return categoryOf(value) == TypeCategory.Function;
     }
 
-    export isFunctionType<T>(): bool :: final {
+    export fn isFunctionType<T>(): bool :: final {
         return categoryOfType<T>() == TypeCategory.Function;
     }
 }

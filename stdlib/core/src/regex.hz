@@ -1,7 +1,7 @@
 
 namespace ffi {
     extern C noemit struct hzstd_regex_blob_t {};
-    extern C hzstd_regex_runtime_compile(pattern: str, flags: str, error_message: ffi.hzstd_str_ref_t): hzstd_regex_blob_t :: final;
+    extern C fn hzstd_regex_runtime_compile(pattern: str, flags: str, error_message: ffi.hzstd_str_ref_t): hzstd_regex_blob_t :: final;
 
     extern C noemit struct hzstd_regex_span_t {
         start: usize;
@@ -26,10 +26,10 @@ namespace ffi {
         match: inline hzstd_regex_find_match_t;
     };
 
-    extern C noemit hzstd_regex_match(regex: Regex, text: str): bool :: final;
-    extern C noemit hzstd_regex_find(allocator: Allocator, regex: Regex, text: str): inline hzstd_regex_find_one_result_t :: final;
-    extern C noemit hzstd_regex_find_all(allocator: Allocator, regex: Regex, text: str): [](inline hzstd_regex_find_match_t) :: final;
-    extern C noemit hzstd_regex_replace(regex: Regex, text: str, replacement: str): str :: final;
+    extern C noemit fn hzstd_regex_match(regex: Regex, text: str): bool :: final;
+    extern C noemit fn hzstd_regex_find(allocator: Allocator, regex: Regex, text: str): inline hzstd_regex_find_one_result_t :: final;
+    extern C noemit fn hzstd_regex_find_all(allocator: Allocator, regex: Regex, text: str): [](inline hzstd_regex_find_match_t) :: final;
+    extern C noemit fn hzstd_regex_replace(regex: Regex, text: str, replacement: str): str :: final;
 }
 
 namespace regex {
@@ -50,7 +50,7 @@ namespace regex {
         groups: []Group;
     }
 
-    export runtime(pattern: str, flags?: str): Result<Regex, str> {
+    export fn runtime(pattern: str, flags?: str): Result<Regex, str> {
         do unsafe {
             let realFlags = "";
             if flags { // TODO: We have to go this workaround, once supported the flag should just be a default param.
@@ -71,15 +71,15 @@ namespace regex {
         };
     }
 
-    export match(regex: Regex, text: str): bool {
+    export fn match(regex: Regex, text: str): bool {
         return ffi.hzstd_regex_match(regex, text);
     }
 
-    export find(r: Regex, text: str): Match | none {
+    export fn find(r: Regex, text: str): Match | none {
         return find(Alloc.heap(), r, text);
     }
 
-    export find(allocator: Allocator, r: Regex, text: str): Match | none {
+    export fn find(allocator: Allocator, r: Regex, text: str): Match | none {
         let result = ffi.hzstd_regex_find(allocator, r, text);
         if !result.found {
             return none;
@@ -120,11 +120,11 @@ namespace regex {
         };
     }
 
-    export findAll(r: Regex, text: str) {
+    export fn findAll(r: Regex, text: str) {
         return findAll(Alloc.heap(), r, text);
     }
 
-    export findAll(allocator: Allocator, r: Regex, text: str): []Match {
+    export fn findAll(allocator: Allocator, r: Regex, text: str): []Match {
         let result = ffi.hzstd_regex_find_all(allocator, r, text);
         let matches: []Match = [];
         for (let i = 0; i < result.length; i++) {
@@ -165,7 +165,7 @@ namespace regex {
         return matches;
     }
 
-    export replace(r: Regex, text: str, replacement: str): str {
+    export fn replace(r: Regex, text: str, replacement: str): str {
         return ffi.hzstd_regex_replace(r, text, replacement);
     }
 }

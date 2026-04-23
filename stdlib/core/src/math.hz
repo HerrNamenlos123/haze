@@ -1,70 +1,70 @@
 
 namespace ffi {
-    extern C noemit sqrt(v: real): real :: final;
-    extern C noemit pow(a: real, b: real): real :: final;
-    extern C noemit sin(v: real): real :: final;
-    extern C noemit sinh(v: real): real :: final;
-    extern C noemit cos(v: real): real :: final;
-    extern C noemit cosh(v: real): real :: final;
-    extern C noemit tan(v: real): real :: final;
-    extern C noemit atan2(y: real, x: real): real :: final;
+    extern C noemit fn sqrt(v: real): real :: final;
+    extern C noemit fn pow(a: real, b: real): real :: final;
+    extern C noemit fn sin(v: real): real :: final;
+    extern C noemit fn sinh(v: real): real :: final;
+    extern C noemit fn cos(v: real): real :: final;
+    extern C noemit fn cosh(v: real): real :: final;
+    extern C noemit fn tan(v: real): real :: final;
+    extern C noemit fn atan2(y: real, x: real): real :: final;
 }
 
 export namespace math {
 
-    export pi(): real {
+    export fn pi(): real {
         const pi = 3.141592653589793;
         return pi;
     }
 
-    export radToDeg(v: real): real {
+    export fn radToDeg(v: real): real {
         return v / math.pi() * 180.0;
     }
 
-    export degToRad(v: real): real {
+    export fn degToRad(v: real): real {
         return v * math.pi() / 180.0;
     }
 
-    export sqrt(v: real) {
+    export fn sqrt(v: real) {
         return ffi.sqrt(v);
     }
 
-    export pow(a: real, b: real) {
+    export fn pow(a: real, b: real) {
         return ffi.pow(a, b);
     }
 
-    export sin(v: real) {
+    export fn sin(v: real) {
         return ffi.sin(v);
     }
 
-    export sinh(v: real) {
+    export fn sinh(v: real) {
         return ffi.sinh(v);
     }
 
-    export cos(v: real) {
+    export fn cos(v: real) {
         return ffi.cos(v);
     }
 
-    export cosh(v: real) {
+    export fn cosh(v: real) {
         return ffi.cosh(v);
     }
 
-    export tan(v: real) {
+    export fn tan(v: real) {
         return ffi.tan(v);
     }
 
-    export atan2(a: real, b: real) {
+    export fn atan2(a: real, b: real) {
         return ffi.atan2(a, b);
     }
 
-    max<T>(a: T, b: T): T => {
+    fn max<T>(a: T, b: T): T => {
         if a >= b {
             return a;
         }
         return b;
     }
 
-    min<T>(a: T, b: T): T => {
+    fn min<T>(a: T, b: T): T => {
         if a <= b {
             return a;
         }

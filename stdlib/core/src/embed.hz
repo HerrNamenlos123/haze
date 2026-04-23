@@ -1,18 +1,18 @@
 
 namespace embed {
-    export text<TPath>(_path: TPath): str {
+    export fn text<TPath>(_path: TPath): str {
         return builtin.embed_file_text(TPath);
     }
 
-    export binary<TPath>(_path: TPath): Bytes {
+    export fn binary<TPath>(_path: TPath): Bytes {
         return builtin.embed_file_binary(TPath);
     }
 
-    export file<TPath>(_path: TPath): Bytes {
+    export fn file<TPath>(_path: TPath): Bytes {
         // DataSource embedding
     }
 
-    export watchText<TPath>(path: TPath, options: fs.FileWatchOptions = {}): rx.Reactive<str> {
+    export fn watchText<TPath>(path: TPath, options: fs.FileWatchOptions = {}): rx.Reactive<str> {
         let data = rx.shallowReactive(builtin.embed_file_text(TPath));
         fs.watch(TPath, (event: fs.FileChangeEvent): void => {
             if let d = fs.readText(path as str) {
@@ -26,11 +26,11 @@ namespace embed {
         return data;
     }
 
-    export watchTextIf<TCond, TPath>(condition: TCond, path: TPath, options: fs.FileWatchOptions = {}): rx.Reactive<str> {
-        if comptime TCond is true {
+    export fn watchTextIf<TCond, TPath>(condition: TCond, path: TPath, options: fs.FileWatchOptions = {}): rx.Reactive<str> {
+        if comptime typeof(TCond) == typeof(true) {
             return watchText(path, options);
         }
-        else if comptime TCond is false {
+        else if comptime typeof(TCond) == typeof(false) {
             return rx.reactive(text(path));
         }
         else {
@@ -39,7 +39,7 @@ namespace embed {
         assert(false);
     }
 
-    export watchBinary<TPath>(path: TPath, options: fs.FileWatchOptions = {}): rx.Reactive<Bytes> {
+    export fn watchBinary<TPath>(path: TPath, options: fs.FileWatchOptions = {}): rx.Reactive<Bytes> {
         let data = rx.shallowReactive(builtin.embed_file_binary(TPath));
         fs.watch(TPath, (event: fs.FileChangeEvent): void => {
             if let d = fs.readBinary(path as str) {
@@ -53,11 +53,11 @@ namespace embed {
         return data;
     }
 
-    export watchBinaryIf<TCond, TPath>(condition: TCond, path: TPath, options: fs.FileWatchOptions = {}): rx.Reactive<str> {
-        if comptime TCond is true {
+    export fn watchBinaryIf<TCond, TPath>(condition: TCond, path: TPath, options: fs.FileWatchOptions = {}): rx.Reactive<str> {
+        if comptime typeof(TCond) == typeof(true) {
             return watchBinary(path, options);
         }
-        else if comptime TCond is false {
+        else if comptime typeof(TCond) == typeof(false) {
             return rx.reactive(binary(path));
         }
         else {
@@ -66,7 +66,7 @@ namespace embed {
         assert(false);
     }
 
-    export watchFile<TPath>(_path: TPath): Bytes {
+    export fn watchFile<TPath>(_path: TPath): Bytes {
         // TODO: DataSource embedding
         sys.panic("Not implemented yet");
     }

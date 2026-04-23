@@ -5,7 +5,7 @@ namespace ffi {
         hzstd_platform_runtime_win32,
     };
 
-    extern C noemit hzstd_platform_runtime(): hzstd_platform_runtime_t :: final;
+    extern C noemit fn hzstd_platform_runtime(): hzstd_platform_runtime_t :: final;
 }
 
 namespace platform {
@@ -14,7 +14,7 @@ namespace platform {
         Win32,
     }
 
-    export current() {
+    export fn current() {
         let platform = ffi.hzstd_platform_runtime();
         if platform == ffi.hzstd_platform_runtime_linux {
             return Platform.Linux;
@@ -25,11 +25,11 @@ namespace platform {
         sys.panic("Unknown platform");
     }
 
-    export isLinux() {
+    export fn isLinux() {
         return current() == Platform.Linux;
     }
 
-    export isWin32() {
+    export fn isWin32() {
         return current() == Platform.Win32;
     }
 }

@@ -1,19 +1,19 @@
 
-extern C noemit sizeof(...): usize :: final;
+extern C noemit fn sizeof(...): usize :: final;
 
 export type Result<T, E> = nodiscard union { Ok: T, Err: E, };
 
 export struct Box<T> {
     value: T;
 
-    constructor(value: T) {
+    fn constructor(value: T) {
         return Box<T> {
             value: value,
         };
     }
 }
 
-export clamp<T>(value: T, min: T, max: T): T {
+export fn clamp<T>(value: T, min: T, max: T): T {
     if (value < min) {
         return min;
     }
@@ -25,7 +25,7 @@ export clamp<T>(value: T, min: T, max: T): T {
     }
 }
 
-export max<T>(a: T, b: T): T {
+export fn max<T>(a: T, b: T): T {
     if (a > b) {
         return a;
     }
@@ -34,7 +34,7 @@ export max<T>(a: T, b: T): T {
     }
 }
 
-export min<T>(a: T, b: T): T {
+export fn min<T>(a: T, b: T): T {
     if (a < b) {
         return a;
     }

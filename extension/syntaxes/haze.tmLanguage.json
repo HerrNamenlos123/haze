@@ -35,11 +35,11 @@
         },
         {
           "name": "keyword.control",
-          "match": "\\b(extern|noemit|const|mut|let|if|comptime|else|while|do|attempt|unsafe|emit|for|return|static|defer|operator|union|raise)\\b"
+          "match": "\\b(fn|extern|noemit|const|mut|let|if|comptime|else|while|do|attempt|unsafe|emit|for|return|static|defer|operator|union|raise)\\b"
         },
         {
           "name": "keyword.struct",
-          "match": "\\b(struct|inline|clonable|nonclonable|in|final|autodest|autoret|pure|enum|bitflag|unscoped)\\b"
+          "match": "\\b(struct|inline|clonable|nonclonable|constructor|in|final|autodest|autoret|pure|enum|bitflag|unscoped)\\b"
         },
         {
           "match": "\\b(is|not)\\b",

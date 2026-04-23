@@ -1,6 +1,6 @@
 
 namespace rx {
-    export shallowReactive<T>(value: T): rx.ShallowReactive<T> {
+    export fn shallowReactive<T>(value: T): rx.ShallowReactive<T> {
 
         if comptime type<rx.IsShallowReactive<T>> { 
             return value;
@@ -18,7 +18,7 @@ namespace rx {
         };
     }
 
-    export reactive<T>(value: T): rx.Reactive<T> {
+    export fn reactive<T>(value: T): rx.Reactive<T> {
 
         if comptime type<rx.IsReactive<T>> { 
             return value;
@@ -39,10 +39,10 @@ namespace rx {
         };
     }
 
-    export computed<T>(fn: () => T): rx.Computed<T> {
+    export fn computed<T>(func: () => T): rx.Computed<T> {
         return do unsafe {
             let fnWrapper = (): cptr => {
-                let resultValue = fn();
+                let resultValue = func();
                 do unsafe {
                     let slot = none as cptr;
                     __c__("""
@@ -61,7 +61,7 @@ namespace rx {
         };
     }
 
-    export get<T>(value: T): rx.UnwrapReactive<T> {
+    export fn get<T>(value: T): rx.UnwrapReactive<T> {
         return value as rx.UnwrapReactive<T>;
     }
 }

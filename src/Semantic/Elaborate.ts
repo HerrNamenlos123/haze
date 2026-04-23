@@ -3085,8 +3085,7 @@ export class SemanticElaborator {
       );
     }
 
-    let type =
-      (variableSymbol.type && this.lookupAndElaborateDatatype(variableSymbol.type)) || null;
+    let type = (variableSymbol.type && this.elaborateDatatype(variableSymbol.type)) || null;
 
     let comptimeValue: Semantic.ExprId | null = null;
     let global = false;
@@ -3332,7 +3331,7 @@ export class SemanticElaborator {
         inFunction: null,
       },
       () => {
-        return this.lookupAndElaborateDatatype(symbol.type!);
+        return this.elaborateDatatype(symbol.type!);
       },
     );
     if (onlyElaborateType) return;
@@ -3557,8 +3556,8 @@ export class SemanticElaborator {
       if (!symbol.type) {
         throw new InternalError("Parameter needs datatype");
       }
-      const symbolType = this.sr.cc.typeUseNodes.get(symbol.type);
-      if (symbolType.variant === Collect.ENode.ParameterPack) {
+      const symbolType = this.sr.cc.exprNodes.get(symbol.type);
+      if (symbolType.variant === Collect.ENode.ParameterPackDatatypeExpr) {
         // Is elaborated directly in function
         return;
       }
@@ -3573,7 +3572,7 @@ export class SemanticElaborator {
           inFunction: this.inFunction,
           inAttemptExpr: this.inAttemptExpr,
         },
-        () => this.lookupAndElaborateDatatype(symbol.type!),
+        () => this.elaborateDatatype(symbol.type!),
       );
     } else if (symbol.variableContext === EVariableContext.ThisReference) {
       if (this.currentContext.elaboratedVariables.has(variableSymbolId)) {
@@ -3620,8 +3619,8 @@ export class SemanticElaborator {
     const parameterPackTypes: Semantic.TypeUseId[] = [];
 
     const hasParameterPack = requiredParameters.some((p) => {
-      const t = this.sr.cc.typeUseNodes.get(p.type);
-      return t.variant === Collect.ENode.ParameterPack;
+      const t = this.sr.cc.exprNodes.get(p.type);
+      return t.variant === Collect.ENode.ParameterPackDatatypeExpr;
     });
     if (hasParameterPack) {
       const numParametersWithoutPack = requiredParameters.length - 1;
@@ -4312,8 +4311,7 @@ export class SemanticElaborator {
           paramPackTypes,
         );
 
-        symbol.annotatedReturnType =
-          func.returnType && this.lookupAndElaborateDatatype(func.returnType);
+        symbol.annotatedReturnType = func.returnType && this.elaborateDatatype(func.returnType);
 
         if (func.vararg && func.extern !== EExternLanguage.Extern_C) {
           throw new CompilerError(
@@ -4324,8 +4322,8 @@ export class SemanticElaborator {
 
         const parameters = func.parameters
           .map((p, i) => {
-            const paramType = this.sr.cc.typeUseNodes.get(p.type);
-            if (paramType.variant === Collect.ENode.ParameterPack) {
+            const paramType = this.sr.cc.exprNodes.get(p.type);
+            if (paramType.variant === Collect.ENode.ParameterPackDatatypeExpr) {
               if (i !== func.parameters.length - 1) {
                 throw new CompilerError(
                   `A Parameter Pack may only appear at the very end of the parameter list`,
@@ -4410,7 +4408,7 @@ export class SemanticElaborator {
             }
             return {
               optional: p.optional,
-              type: this.lookupAndElaborateDatatype(p.type),
+              type: this.elaborateDatatype(p.type),
             };
           })
           .filter((p) => Boolean(p))
@@ -4876,7 +4874,7 @@ export class SemanticElaborator {
   elaborateTypeDefAlias(
     typedef: Collect.TypeDefAlias,
     genericArgs: Collect.ExprId[],
-    innerNested: Collect.TypeUseId | null,
+    innerNested: Collect.ExprId | null,
     mutability: EDatatypeMutability | null,
     inline: boolean,
     sourceloc: SourceLoc,
@@ -4924,7 +4922,7 @@ export class SemanticElaborator {
         inAttemptExpr: this.inAttemptExpr,
       },
       () => {
-        const aliasedTypeId = this.lookupAndElaborateDatatype(typedef.target);
+        const aliasedTypeId = this.elaborateDatatype(typedef.target);
         const gotUse = this.sr.typeUseNodes.get(aliasedTypeId);
 
         let resultingInline = gotUse.inline || inline;
@@ -4962,7 +4960,7 @@ export class SemanticElaborator {
             },
             () => {
               // Use the outermost modifiers and ignore the inner ones
-              const typeUseId = this.lookupAndElaborateDatatype(innerNested!);
+              const typeUseId = this.elaborateDatatype(innerNested!);
               const typeUse = this.sr.typeUseNodes.get(typeUseId);
               return makeTypeUse(
                 this.sr,
@@ -5011,18 +5009,89 @@ export class SemanticElaborator {
     );
   }
 
-  lookupAndElaborateDatatype(
-    typeId: Collect.TypeUseId,
+  elaborateDatatype(
+    typeId: Collect.ExprId,
     args?: { noSubstituteGenerics?: boolean },
   ): Semantic.TypeUseId {
-    const type = this.sr.cc.typeUseNodes.get(typeId);
+    const type = this.sr.cc.exprNodes.get(typeId);
 
     switch (type.variant) {
+      case Collect.ENode.SymbolValueExpr: {
+        const [expr, exprId] = this.symbolValue(type, {});
+        if (expr.variant === Semantic.ENode.DatatypeAsValueExpr) {
+          return expr.type;
+        } else {
+          throw new CompilerError(
+            `Expression '${Semantic.serializeExpr(this.sr, exprId)}' does not evaluate to a datatype`,
+            expr.sourceloc,
+          );
+        }
+      }
+
+      case Collect.ENode.TypeModifierExpr: {
+        const [t, tId] = this.expr(type.type, {});
+        if (t.variant !== Semantic.ENode.DatatypeAsValueExpr) {
+          throw new CompilerError(
+            `Modifier '${type.modifier}' cannot apply to this expression, because it does not evaluate to a datatype`,
+            t.sourceloc,
+          );
+        }
+        const tUse = this.sr.typeUseNodes.get(t.type);
+        assert(tUse);
+
+        switch (type.modifier) {
+          case "mut": {
+            return makeTypeUse(
+              this.sr,
+              tUse.type,
+              EDatatypeMutability.Mut,
+              tUse.inline,
+              type.sourceloc,
+            )[1];
+          }
+
+          case "const": {
+            return makeTypeUse(
+              this.sr,
+              tUse.type,
+              EDatatypeMutability.Const,
+              tUse.inline,
+              type.sourceloc,
+            )[1];
+          }
+
+          case "inline": {
+            return makeTypeUse(this.sr, tUse.type, tUse.mutability, true, type.sourceloc)[1];
+          }
+
+          default:
+            assert(false, type.modifier);
+        }
+      }
+
+      case Collect.ENode.MemberAccessExpr: {
+        const [e, eId] = this.expr(type.expr, {});
+        const result = this.elaborateMemberFromExpr(
+          type.expr,
+          type.memberName,
+          type.genericArgs,
+          type.sourceloc,
+          {},
+        );
+        return;
+      }
+
+      case Collect.ENode.ExprCallExpr: {
+        const e = this.sr.cc.exprNodes.get(type.calledExpr);
+        console.log(e, type);
+        return;
+      }
+
       // =================================================================================================================
       // =================================================================================================================
       // =================================================================================================================
 
-      case Collect.ENode.CallableDatatype: {
+      case Collect.ENode.CallableTypeDefinitionExpr: {
         // No interning, Callable datatypes must be completely unique for every callable due to the env block.
         // but they can be converted between one another through type erasure.
         // Every Callable Datatype consists of Function Datatype + This Pointer + Env Block.
@@ -5034,9 +5103,9 @@ export class SemanticElaborator {
           parameters: type.parameters.map((p) => ({
             optional: p.optional,
             symbol: null,
-            type: this.lookupAndElaborateDatatype(p.type),
+            type: this.elaborateDatatype(p.type),
           })),
-          returnType: this.lookupAndElaborateDatatype(type.returnType),
+          returnType: this.elaborateDatatype(type.returnType),
           vararg: type.vararg,
           requires: {
             final: true,
@@ -5057,13 +5126,13 @@ export class SemanticElaborator {
       // =================================================================================================================
       // =================================================================================================================
 
-      case Collect.ENode.FunctionDatatype: {
+      case Collect.ENode.FunctionTypeDefinitionExpr: {
         const result = makeFunctionDatatypeAvailable(this.sr, {
           parameters: type.parameters.map((p) => ({
             optional: p.optional,
-            type: this.lookupAndElaborateDatatype(p.type),
+            type: this.elaborateDatatype(p.type),
           })),
-          returnType: this.lookupAndElaborateDatatype(type.returnType),
+          returnType: this.elaborateDatatype(type.returnType),
           vararg: type.vararg,
           mutability: type.mutability,
           requires: {
@@ -5081,10 +5150,10 @@ export class SemanticElaborator {
       // =================================================================================================================
       // =================================================================================================================
 
-      case Collect.ENode.StackArrayDatatype: {
+      case Collect.ENode.StackArrayTypeDefinitionExpr: {
         return makeStackArrayDatatypeAvailable(
           this.sr,
-          this.lookupAndElaborateDatatype(type.datatype),
+          this.elaborateDatatype(type.datatype),
           type.length,
           type.mutability,
           type.inline,
@@ -5096,10 +5165,10 @@ export class SemanticElaborator {
       // =================================================================================================================
       // =================================================================================================================
 
-      case Collect.ENode.DynamicArrayDatatype: {
+      case Collect.ENode.DynamicArrayTypeDefinitionExpr: {
         return makeDynamicArrayDatatypeAvailable(
           this.sr,
-          this.lookupAndElaborateDatatype(type.datatype),
+          this.elaborateDatatype(type.datatype),
           type.mutability,
           false,
           type.sourceloc,
@@ -5110,596 +5179,578 @@ export class SemanticElaborator {
       // =================================================================================================================
       // =================================================================================================================
 
-      // case Collect.ENode.TypeDefAlias: {
-      //   return lookupAndElaborateDatatype(sr, {
-      //     typeId: type.target,
-      //     context: args.context,
-      //     elaboratedVariables: args.elaboratedVariables,
-      //     isInCFuncdecl: args.isInCFuncdecl,
+      // case Collect.ENode.NamedDatatype: {
+      //   const primitive = stringToPrimitive(type.name);
+      //   if (primitive) {
+      //     if (type.genericArgs.length > 0) {
+      //       throw new CompilerError(`Type ${type.name} is not generic`, type.sourceloc);
+      //     }
+      //     return makePrimitiveAvailable(this.sr, primitive, type.mutability, type.sourceloc);
+      //   }
+
+      //   if (type.name === "false" || type.name === "true") {
+      //     if (type.genericArgs.length !== 0) {
+      //       throw new CompilerError(
+      //         `A false/true-type cannot have generic arguments`,
+      //         type.sourceloc,
+      //       );
+      //     }
+      //     return this.sr.b.literalType(
+      //       {
+      //         type: EPrimitive.bool,
+      //         value: type.name === "true",
+      //       },
+      //       type.sourceloc,
+      //     );
+      //   }
+
+      //   if (type.name === "rx") {
+      //     if (type.genericArgs.length !== 0) {
+      //       throw new CompilerError(`A namespace cannot have generic parameters`, type.sourceloc);
+      //     }
+
+      //     if (type.innerNested) {
+      //       const innerTypeUse = this.sr.cc.typeUseNodes.get(type.innerNested);
+      //       if (innerTypeUse.variant === Collect.ENode.NamedDatatype) {
+      //         if (innerTypeUse.name === "ShallowReactive") {
+      //           if (innerTypeUse.genericArgs.length !== 1) {
+      //             throw new CompilerError(
+      //               `rx.ShallowReactive<T> requires exactly 1 generic argument`,
+      //               type.sourceloc,
+      //             );
+      //           }
+
+      //           if (innerTypeUse.inline) {
+      //             throw new CompilerError(
+      //               `rx.ShallowReactive<T> cannot be inline`,
+      //               innerTypeUse.sourceloc,
+      //             );
+      //           }
+
+      //           if (innerTypeUse.innerNested) {
+      //             throw new CompilerError(
+      //               `rx.ShallowReactive<T> is not a namespace`,
+      //               innerTypeUse.sourceloc,
+      //             );
+      //           }
+
+      //           const [genericArgExpr] = this.expr(innerTypeUse.genericArgs[0], undefined);
+      //           if (genericArgExpr.variant !== Semantic.ENode.DatatypeAsValueExpr) {
+      //             throw new CompilerError(
+      //               `rx.ShallowReactive<T> requires T to resolve to a datatype`,
+      //               type.sourceloc,
+      //             );
+      //           }
+
+      //           return makeShallowReactiveDatatypeAvailable(
+      //             this.sr,
+      //             genericArgExpr.type,
+      //             innerTypeUse.mutability,
+      //             innerTypeUse.sourceloc,
+      //           );
+      //         }
+
+      //         if (innerTypeUse.name === "Reactive") {
+      //           if (innerTypeUse.genericArgs.length !== 1) {
+      //             throw new CompilerError(
+      //               `rx.Reactive<T> requires exactly 1 generic argument`,
+      //               type.sourceloc,
+      //             );
+      //           }
+
+      //           if (innerTypeUse.inline) {
+      //             throw new CompilerError(
+      //               `rx.Reactive<T> cannot be inline`,
+      //               innerTypeUse.sourceloc,
+      //             );
+      //           }
+
+      //           if (innerTypeUse.innerNested) {
+      //             throw new CompilerError(
+      //               `rx.Reactive<T> is not a namespace`,
+      //               innerTypeUse.sourceloc,
+      //             );
+      //           }
+
+      //           const [genericArgExpr] = this.expr(innerTypeUse.genericArgs[0], undefined);
+      //           if (genericArgExpr.variant !== Semantic.ENode.DatatypeAsValueExpr) {
+      //             throw new CompilerError(
+      //               `rx.Reactive<T> requires T to resolve to a datatype`,
+      //               type.sourceloc,
+      //             );
+      //           }
+
+      //           return makeReactiveDatatypeAvailable(
+      //             this.sr,
+      //             genericArgExpr.type,
+      //             innerTypeUse.mutability,
+      //             innerTypeUse.sourceloc,
+      //           );
+      //         }
+
+      //         if (innerTypeUse.name === "UnwrapReactive") {
+      //           if (innerTypeUse.genericArgs.length !== 1) {
+      //             throw new CompilerError(
+      //               `rx.UnwrapReactive<T> requires exactly 1 generic argument`,
+      //               innerTypeUse.sourceloc,
+      //             );
+      //           }
+
+      //           if (innerTypeUse.inline) {
+      //             throw new CompilerError(
+      //               `rx.UnwrapReactive<T> cannot be inline`,
+      //               innerTypeUse.sourceloc,
+      //             );
+      //           }
+
+      //           if (innerTypeUse.innerNested) {
+      //             throw new CompilerError(
+      //               `rx.UnwrapReactive<T> does not have children`,
+      //               innerTypeUse.sourceloc,
+      //             );
+      //           }
+
+      //           const [genericArgExpr, genericArgExprId] = this.expr(
+      //             innerTypeUse.genericArgs[0],
+      //             undefined,
+      //           );
+      //           if (genericArgExpr.variant !== Semantic.ENode.DatatypeAsValueExpr) {
+      //             throw new CompilerError(
+      //               `rx.UnwrapReactive<T> requires T to resolve to a datatype`,
+      //               innerTypeUse.sourceloc,
+      //             );
+      //           }
+
+      //           const expr = this.sr.exprNodes.get(
+      //             this.sr.e.unwrapReactiveOrComputedIfPossible(genericArgExprId),
+      //           );
+      //           return expr.type;
+      //         }
+
+      //         if (innerTypeUse.name === "IsReactive") {
+      //           if (innerTypeUse.genericArgs.length !== 1) {
+      //             throw new CompilerError(
+      //               `rx.IsReactive<T> requires exactly 1 generic argument`,
+      //               innerTypeUse.sourceloc,
+      //             );
+      //           }
+
+      //           if (innerTypeUse.inline) {
+      //             throw new CompilerError(`IsReactive<T> cannot be inline`, innerTypeUse.sourceloc);
+      //           }
+
+      //           if (innerTypeUse.innerNested) {
+      //             throw new CompilerError(
+      //               `rx.IsReactive<T> does not have children`,
+      //               innerTypeUse.sourceloc,
+      //             );
+      //           }
+
+      //           const [genericArgExpr] = this.expr(innerTypeUse.genericArgs[0], undefined);
+      //           if (genericArgExpr.variant !== Semantic.ENode.DatatypeAsValueExpr) {
+      //             throw new CompilerError(
+      //               `rx.IsReactive<T> requires T to resolve to a datatype`,
+      //               innerTypeUse.sourceloc,
+      //             );
+      //           }
+
+      //           const typeUse = this.sr.typeUseNodes.get(genericArgExpr.type);
+      //           const typeDef = this.sr.typeDefNodes.get(typeUse.type);
+      //           return this.sr.b.literalType(
+      //             {
+      //               type: EPrimitive.bool,
+      //               value: typeDef.variant === Semantic.ENode.ReactiveDatatype,
+      //             },
+      //             innerTypeUse.sourceloc,
+      //           );
+      //         }
+      //         if (innerTypeUse.name === "IsShallowReactive") {
+      //           if (innerTypeUse.genericArgs.length !== 1) {
+      //             throw new CompilerError(
+      //               `rx.IsShallowReactive<T> requires exactly 1 generic argument`,
+      //               innerTypeUse.sourceloc,
+      //             );
+      //           }
+
+      //           if (innerTypeUse.inline) {
+      //             throw new CompilerError(
+      //               `IsShallowReactive<T> cannot be inline`,
+      //               innerTypeUse.sourceloc,
+      //             );
+      //           }
+
+      //           if (innerTypeUse.innerNested) {
+      //             throw new CompilerError(
+      //               `rx.IsShallowReactive<T> does not have children`,
+      //               innerTypeUse.sourceloc,
+      //             );
+      //           }
+
+      //           const [genericArgExpr] = this.expr(innerTypeUse.genericArgs[0], undefined);
+      //           if (genericArgExpr.variant !== Semantic.ENode.DatatypeAsValueExpr) {
+      //             throw new CompilerError(
+      //               `rx.IsShallowReactive<T> requires T to resolve to a datatype`,
+      //               innerTypeUse.sourceloc,
+      //             );
+      //           }
+
+      //           const typeUse = this.sr.typeUseNodes.get(genericArgExpr.type);
+      //           const typeDef = this.sr.typeDefNodes.get(typeUse.type);
+      //           return this.sr.b.literalType(
+      //             {
+      //               type: EPrimitive.bool,
+      //               value: typeDef.variant === Semantic.ENode.ShallowReactiveDatatype,
+      //             },
+      //             innerTypeUse.sourceloc,
+      //           );
+      //         }
+      //         if (innerTypeUse.name === "IsComputed") {
+      //           if (innerTypeUse.genericArgs.length !== 1) {
+      //             throw new CompilerError(
+      //               `rx.IsComputed<T> requires exactly 1 generic argument`,
+      //               innerTypeUse.sourceloc,
+      //             );
+      //           }
+
+      //           if (innerTypeUse.inline) {
+      //             throw new CompilerError(`IsComputed<T> cannot be inline`, innerTypeUse.sourceloc);
+      //           }
+
+      //           if (innerTypeUse.innerNested) {
+      //             throw new CompilerError(
+      //               `rx.IsComputed<T> does not have children`,
+      //               innerTypeUse.sourceloc,
+      //             );
+      //           }
+
+      //           const [genericArgExpr] = this.expr(innerTypeUse.genericArgs[0], undefined);
+      //           if (genericArgExpr.variant !== Semantic.ENode.DatatypeAsValueExpr) {
+      //             throw new CompilerError(
+      //               `rx.IsComputed<T> requires T to resolve to a datatype`,
+      //               innerTypeUse.sourceloc,
+      //             );
+      //           }
+
+      //           const typeUse = this.sr.typeUseNodes.get(genericArgExpr.type);
+      //           const typeDef = this.sr.typeDefNodes.get(typeUse.type);
+      //           return this.sr.b.literalType(
+      //             {
+      //               type: EPrimitive.bool,
+      //               value: typeDef.variant === Semantic.ENode.ComputedDatatype,
+      //             },
+      //             innerTypeUse.sourceloc,
+      //           );
+      //         }
+
+      //         if (innerTypeUse.name === "IsComputed") {
+      //           if (innerTypeUse.genericArgs.length !== 1) {
+      //             throw new CompilerError(
+      //               `rx.IsComputed<T> requires exactly 1 generic argument`,
+      //               innerTypeUse.sourceloc,
+      //             );
+      //           }
+
+      //           if (innerTypeUse.inline) {
+      //             throw new CompilerError(`IsComputed<T> cannot be inline`, innerTypeUse.sourceloc);
+      //           }
+
+      //           if (innerTypeUse.innerNested) {
+      //             throw new CompilerError(
+      //               `rx.IsComputed<T> does not have children`,
+      //               innerTypeUse.sourceloc,
+      //             );
+      //           }
+
+      //           const [genericArgExpr] = this.expr(innerTypeUse.genericArgs[0], undefined);
+      //           if (genericArgExpr.variant !== Semantic.ENode.DatatypeAsValueExpr) {
+      //             throw new CompilerError(
+      //               `rx.IsComputed<T> requires T to resolve to a datatype`,
+      //               innerTypeUse.sourceloc,
+      //             );
+      //           }
+
+      //           const typeUse = this.sr.typeUseNodes.get(genericArgExpr.type);
+      //           const typeDef = this.sr.typeDefNodes.get(typeUse.type);
+      //           return this.sr.b.literalType(
+      //             {
+      //               type: EPrimitive.bool,
+      //               value: typeDef.variant === Semantic.ENode.ComputedDatatype,
+      //             },
+      //             innerTypeUse.sourceloc,
+      //           );
+      //         }
+
+      //         if (innerTypeUse.name === "Computed") {
+      //           if (innerTypeUse.genericArgs.length !== 1) {
+      //             throw new CompilerError(
+      //               `rx.Computed<T> requires exactly 1 generic argument`,
+      //               innerTypeUse.sourceloc,
+      //             );
+      //           }
+
+      //           if (innerTypeUse.inline) {
+      //             throw new CompilerError(`Computed<T> cannot be inline`, innerTypeUse.sourceloc);
+      //           }
+
+      //           if (innerTypeUse.innerNested) {
+      //             throw new CompilerError(
+      //               `rx.Computed<T> does not have children`,
+      //               innerTypeUse.sourceloc,
+      //             );
+      //           }
+
+      //           const [genericArgExpr] = this.expr(innerTypeUse.genericArgs[0], undefined);
+      //           if (genericArgExpr.variant !== Semantic.ENode.DatatypeAsValueExpr) {
+      //             throw new CompilerError(
+      //               `rx.Computed<T> requires T to resolve to a datatype`,
+      //               innerTypeUse.sourceloc,
+      //             );
+      //           }
+
+      //           return makeComputedDatatypeAvailable(
+      //             this.sr,
+      //             genericArgExpr.type,
+      //             innerTypeUse.mutability,
+      //             innerTypeUse.sourceloc,
+      //           );
+      //         }
+      //       }
+      //     }
+      //   }
+
+      //   // Generic placeholders (e.g. T) are anchored to genericsScope and must keep
+      //   // their visibility/precedence even if currentScope temporarily moves.
+      //   const genericScopeResult = Semantic.tryLookupSymbol(this.sr, type.name, {
+      //     startLookupInScope: this.currentContext.genericsScope,
+      //     sourceloc: type.sourceloc,
       //   });
+
+      //   let foundResult:
+      //     | { type: "semantic"; id: Semantic.ExprId; crossedLambdaScope: Collect.ScopeId | null }
+      //     | { type: "collect"; id: Collect.SymbolId; crossedLambdaScope: Collect.ScopeId | null }
+      //     | undefined;
+
+      //   if (
+      //     genericScopeResult &&
+      //     genericScopeResult.type === "collect" &&
+      //     this.sr.cc.symbolNodes.get(genericScopeResult.id).variant ===
+      //       Collect.ENode.GenericTypeParameterSymbol
+      //   ) {
+      //     foundResult = genericScopeResult;
+      //   } else {
+      //     foundResult = Semantic.tryLookupSymbol(this.sr, type.name, {
+      //       startLookupInScope: this.currentContext.currentScope,
+      //       sourceloc: type.sourceloc,
+      //     });
+      //   }
+
+      //   if (!foundResult) {
+      //     throw new CompilerError(
+      //       `Symbol '${type.name}' was not declared in this scope`,
+      //       type.sourceloc,
+      //     );
+      //   }
+      //   if (foundResult.type === "semantic") {
+      //     const e = this.sr.exprNodes.get(foundResult.id);
+      //     if (e.variant === Semantic.ENode.DatatypeAsValueExpr) {
+      //       return e.type;
+      //     }
+      //     assert(false);
+      //   }
+      //   let foundId = foundResult.id;
+      //   let found = this.sr.cc.symbolNodes.get(foundId);
+
+      //   if (found.variant === Collect.ENode.GenericTypeParameterSymbol) {
+      //     const mappedTo = this.currentContext.substitute.get(foundId);
+      //     if (mappedTo && !args?.noSubstituteGenerics) {
+      //       const mapped = this.sr.exprNodes.get(mappedTo);
+      //       if (mapped.variant === Semantic.ENode.DatatypeAsValueExpr) {
+      //         return mapped.type;
+      //       } else if (mapped.variant === Semantic.ENode.LiteralExpr) {
+      //         // Convert literal expression to a literal datatype
+      //         return this.sr.b.literalType(mapped.literal, type.sourceloc);
+      //       } else {
+      //         throw new CompilerError(
+      //           `Generic placeholder '${type.name}' resolves to value '${Semantic.serializeExpr(
+      //             this.sr,
+      //             mappedTo,
+      //           )}', which cannot be used as a datatype`,
+      //           type.sourceloc,
+      //         );
+      //       }
+      //     } else {
+      //       return makeTypeUse(
+      //         this.sr,
+      //         this.sr.b.addType(this.sr, {
+      //           variant: Semantic.ENode.GenericParameterDatatype,
+      //           name: found.name,
+      //           collectedParameter: foundId,
+      //           concrete: false,
+      //         })[1],
+      //         type.mutability,
+      //         false,
+      //         type.sourceloc,
+      //       )[1];
+      //     }
+      //   } else if (found.variant === Collect.ENode.TypeDefSymbol) {
+      //     const typedef = this.sr.cc.typeDefNodes.get(found.typeDef);
+      //     if (typedef.variant === Collect.ENode.TypeDefAlias) {
+      //       return this.elaborateTypeDefAlias(
+      //         typedef,
+      //         type.genericArgs,
+      //         type.innerNested,
+      //         type.mutability,
+      //         type.inline,
+      //         type.sourceloc,
+      //       );
+      //     } else if (typedef.variant === Collect.ENode.StructTypeDef) {
+      //       const generics = type.genericArgs.map((g) => {
+      //         return this.withContext(
+      //           {
+      //             context: this.currentContext,
+      //             inAttemptExpr: null,
+      //             inFunction: null,
+      //           },
+      //           () => this.expressionAsGenericArg(g),
+      //         );
+      //       });
+
+      //       const structId = this.instantiateAndElaborateStructWithGenerics(
+      //         found.typeDef,
+      //         generics,
+      //         type.sourceloc,
+      //       );
+      //       const struct = this.sr.typeDefNodes.get(structId);
+      //       assert(struct.variant === Semantic.ENode.StructDatatype);
+      //       const structScope = this.sr.cc.scopeNodes.get(typedef.lexicalScope);
+      //       assert(structScope.variant === Collect.ENode.StructLexicalScope);
+
+      //       if (type.innerNested) {
+      //         // Here we need to merge the context from the parent into the child
+      //         let cachedParentSubstitutions = undefined as Semantic.ElaborationContext | undefined;
+      //         const entry = this.sr.elaboratedStructDatatypes.get(found.typeDef);
+
+      //         for (const cache of entry || []) {
+      //           if (
+      //             cache.canonicalizedGenerics.length === generics.length &&
+      //             cache.canonicalizedGenerics.every(
+      //               (g, i) => g === Semantic.canonicalizeGenericExpr(this.sr, generics[i]),
+      //             )
+      //           ) {
+      //             cachedParentSubstitutions = cache.substitutionContext;
+      //             break;
+      //           }
+      //         }
+      //         assert(cachedParentSubstitutions);
+      //         return this.withContext(
+      //           {
+      //             context: Semantic.mergeSubstitutionContext(
+      //               cachedParentSubstitutions,
+      //               this.currentContext,
+      //               {
+      //                 currentScope: typedef.lexicalScope,
+      //                 genericsScope: this.currentContext.genericsScope,
+      //                 instanceDeps: {
+      //                   instanceDependsOn: new Map(),
+      //                   structMembersDependOn: new Map(),
+      //                   symbolDependsOn: new Map(),
+      //                 },
+      //               },
+      //             ),
+      //             inAttemptExpr: null,
+      //             inFunction: null,
+      //           },
+      //           () => {
+      //             // Use the outermost modifiers and ignore the inner ones
+      //             const typeUseId = this.lookupAndElaborateDatatype(type.innerNested!);
+      //             const typeUse = this.sr.typeUseNodes.get(typeUseId);
+      //             return makeTypeUse(
+      //               this.sr,
+      //               typeUse.type,
+      //               type.mutability,
+      //               type.inline,
+      //               type.sourceloc,
+      //             )[1];
+      //           },
+      //         );
+      //       } else {
+      //         return makeTypeUse(
+      //           this.sr,
+      //           structId,
+      //           type.mutability,
+      //           type.inline,
+      //           type.sourceloc,
+      //         )[1];
+      //       }
+      //     } else if (typedef.variant === Collect.ENode.NamespaceTypeDef) {
+      //       if (!type.innerNested) {
+      //         return makeTypeUse(
+      //           this.sr,
+      //           this.namespace(found.typeDef),
+      //           type.mutability,
+      //           type.inline,
+      //           type.sourceloc,
+      //         )[1];
+      //       }
+      //       return this.withContext(
+      //         {
+      //           context: Semantic.isolateElaborationContext(this.currentContext, {
+      //             currentScope: typedef.namespaceScope,
+      //             genericsScope: this.currentContext.genericsScope,
+      //             constraints: this.currentContext.constraints,
+      //             instanceDeps: {
+      //               instanceDependsOn: new Map(),
+      //               structMembersDependOn: new Map(),
+      //               symbolDependsOn: new Map(),
+      //             },
+      //           }),
+      //           inAttemptExpr: null,
+      //           inFunction: null,
+      //         },
+      //         () => {
+      //           // Use the outermost modifiers and ignore the inner ones
+      //           const typeUseId = this.lookupAndElaborateDatatype(type.innerNested!);
+      //           const typeUse = this.sr.typeUseNodes.get(typeUseId);
+      //           return makeTypeUse(
+      //             this.sr,
+      //             typeUse.type,
+      //             type.mutability,
+      //             type.inline,
+      //             type.sourceloc,
+      //           )[1];
+      //         },
+      //       );
+      //     } else if (typedef.variant === Collect.ENode.EnumTypeDef) {
+      //       return makeTypeUse(
+      //         this.sr,
+      //         this.enum(found.typeDef),
+      //         type.mutability,
+      //         type.inline,
+      //         type.sourceloc,
+      //       )[1];
+      //     }
+      //   }
+      //   throw new CompilerError(
+      //     `Symbol '${type.name}' cannot be used as a datatype here`,
+      //     type.sourceloc,
+      //   );
       // }
 
-      // =================================================================================================================
-      // =================================================================================================================
-      // =================================================================================================================
-
-      case Collect.ENode.NamedDatatype: {
-        const primitive = stringToPrimitive(type.name);
-        if (primitive) {
-          if (type.genericArgs.length > 0) {
-            throw new CompilerError(`Type ${type.name} is not generic`, type.sourceloc);
-          }
-          return makePrimitiveAvailable(this.sr, primitive, type.mutability, type.sourceloc);
-        }
-
-        if (type.name === "false" || type.name === "true") {
-          if (type.genericArgs.length !== 0) {
-            throw new CompilerError(
-              `A false/true-type cannot have generic arguments`,
-              type.sourceloc,
-            );
-          }
-          return this.sr.b.literalType(
-            {
-              type: EPrimitive.bool,
-              value: type.name === "true",
-            },
-            type.sourceloc,
-          );
-        }
-
-        if (type.name === "rx") {
-          if (type.genericArgs.length !== 0) {
-            throw new CompilerError(`A namespace cannot have generic parameters`, type.sourceloc);
-          }
-
-          if (type.innerNested) {
-            const innerTypeUse = this.sr.cc.typeUseNodes.get(type.innerNested);
-            if (innerTypeUse.variant === Collect.ENode.NamedDatatype) {
-              if (innerTypeUse.name === "ShallowReactive") {
-                if (innerTypeUse.genericArgs.length !== 1) {
-                  throw new CompilerError(
-                    `rx.ShallowReactive<T> requires exactly 1 generic argument`,
-                    type.sourceloc,
-                  );
-                }
-
-                if (innerTypeUse.inline) {
-                  throw new CompilerError(
-                    `rx.ShallowReactive<T> cannot be inline`,
-                    innerTypeUse.sourceloc,
-                  );
-                }
-
-                if (innerTypeUse.innerNested) {
-                  throw new CompilerError(
-                    `rx.ShallowReactive<T> is not a namespace`,
-                    innerTypeUse.sourceloc,
-                  );
-                }
-
-                const [genericArgExpr] = this.expr(innerTypeUse.genericArgs[0], undefined);
-                if (genericArgExpr.variant !== Semantic.ENode.DatatypeAsValueExpr) {
-                  throw new CompilerError(
-                    `rx.ShallowReactive<T> requires T to resolve to a datatype`,
-                    type.sourceloc,
-                  );
-                }
-
-                return makeShallowReactiveDatatypeAvailable(
-                  this.sr,
-                  genericArgExpr.type,
-                  innerTypeUse.mutability,
-                  innerTypeUse.sourceloc,
-                );
-              }
-
-              if (innerTypeUse.name === "Reactive") {
-                if (innerTypeUse.genericArgs.length !== 1) {
-                  throw new CompilerError(
-                    `rx.Reactive<T> requires exactly 1 generic argument`,
-                    type.sourceloc,
-                  );
-                }
-
-                if (innerTypeUse.inline) {
-                  throw new CompilerError(
-                    `rx.Reactive<T> cannot be inline`,
-                    innerTypeUse.sourceloc,
-                  );
-                }
-
-                if (innerTypeUse.innerNested) {
-                  throw new CompilerError(
-                    `rx.Reactive<T> is not a namespace`,
-                    innerTypeUse.sourceloc,
-                  );
-                }
-
-                const [genericArgExpr] = this.expr(innerTypeUse.genericArgs[0], undefined);
-                if (genericArgExpr.variant !== Semantic.ENode.DatatypeAsValueExpr) {
-                  throw new CompilerError(
-                    `rx.Reactive<T> requires T to resolve to a datatype`,
-                    type.sourceloc,
-                  );
-                }
-
-                return makeReactiveDatatypeAvailable(
-                  this.sr,
-                  genericArgExpr.type,
-                  innerTypeUse.mutability,
-                  innerTypeUse.sourceloc,
-                );
-              }
-
-              if (innerTypeUse.name === "UnwrapReactive") {
-                if (innerTypeUse.genericArgs.length !== 1) {
-                  throw new CompilerError(
-                    `rx.UnwrapReactive<T> requires exactly 1 generic argument`,
-                    innerTypeUse.sourceloc,
-                  );
-                }
-
-                if (innerTypeUse.inline) {
-                  throw new CompilerError(
-                    `rx.UnwrapReactive<T> cannot be inline`,
-                    innerTypeUse.sourceloc,
-                  );
-                }
-
-                if (innerTypeUse.innerNested) {
-                  throw new CompilerError(
-                    `rx.UnwrapReactive<T> does not have children`,
-                    innerTypeUse.sourceloc,
-                  );
-                }
-
-                const [genericArgExpr, genericArgExprId] = this.expr(
-                  innerTypeUse.genericArgs[0],
-                  undefined,
-                );
-                if (genericArgExpr.variant !== Semantic.ENode.DatatypeAsValueExpr) {
-                  throw new CompilerError(
-                    `rx.UnwrapReactive<T> requires T to resolve to a datatype`,
-                    innerTypeUse.sourceloc,
-                  );
-                }
-
-                const expr = this.sr.exprNodes.get(
-                  this.sr.e.unwrapReactiveOrComputedIfPossible(genericArgExprId),
-                );
-                return expr.type;
-              }
-
-              if (innerTypeUse.name === "IsReactive") {
-                if (innerTypeUse.genericArgs.length !== 1) {
-                  throw new CompilerError(
-                    `rx.IsReactive<T> requires exactly 1 generic argument`,
-                    innerTypeUse.sourceloc,
-                  );
-                }
-
-                if (innerTypeUse.inline) {
-                  throw new CompilerError(`IsReactive<T> cannot be inline`, innerTypeUse.sourceloc);
-                }
-
-                if (innerTypeUse.innerNested) {
-                  throw new CompilerError(
-                    `rx.IsReactive<T> does not have children`,
-                    innerTypeUse.sourceloc,
-                  );
-                }
-
-                const [genericArgExpr] = this.expr(innerTypeUse.genericArgs[0], undefined);
-                if (genericArgExpr.variant !== Semantic.ENode.DatatypeAsValueExpr) {
-                  throw new CompilerError(
-                    `rx.IsReactive<T> requires T to resolve to a datatype`,
-                    innerTypeUse.sourceloc,
-                  );
-                }
-
-                const typeUse = this.sr.typeUseNodes.get(genericArgExpr.type);
-                const typeDef = this.sr.typeDefNodes.get(typeUse.type);
-                return this.sr.b.literalType(
-                  {
-                    type: EPrimitive.bool,
-                    value: typeDef.variant === Semantic.ENode.ReactiveDatatype,
-                  },
-                  innerTypeUse.sourceloc,
-                );
-              }
-              if (innerTypeUse.name === "IsShallowReactive") {
-                if (innerTypeUse.genericArgs.length !== 1) {
-                  throw new CompilerError(
-                    `rx.IsShallowReactive<T> requires exactly 1 generic argument`,
-                    innerTypeUse.sourceloc,
-                  );
-                }
-
-                if (innerTypeUse.inline) {
-                  throw new CompilerError(
-                    `IsShallowReactive<T> cannot be inline`,
-                    innerTypeUse.sourceloc,
-                  );
-                }
-
-                if (innerTypeUse.innerNested) {
-                  throw new CompilerError(
-                    `rx.IsShallowReactive<T> does not have children`,
-                    innerTypeUse.sourceloc,
-                  );
-                }
-
-                const [genericArgExpr] = this.expr(innerTypeUse.genericArgs[0], undefined);
-                if (genericArgExpr.variant !== Semantic.ENode.DatatypeAsValueExpr) {
-                  throw new CompilerError(
-                    `rx.IsShallowReactive<T> requires T to resolve to a datatype`,
-                    innerTypeUse.sourceloc,
-                  );
-                }
-
-                const typeUse = this.sr.typeUseNodes.get(genericArgExpr.type);
-                const typeDef = this.sr.typeDefNodes.get(typeUse.type);
-                return this.sr.b.literalType(
-                  {
-                    type: EPrimitive.bool,
-                    value: typeDef.variant === Semantic.ENode.ShallowReactiveDatatype,
-                  },
-                  innerTypeUse.sourceloc,
-                );
-              }
-              if (innerTypeUse.name === "IsComputed") {
-                if (innerTypeUse.genericArgs.length !== 1) {
-                  throw new CompilerError(
-                    `rx.IsComputed<T> requires exactly 1 generic argument`,
-                    innerTypeUse.sourceloc,
-                  );
-                }
-
-                if (innerTypeUse.inline) {
-                  throw new CompilerError(`IsComputed<T> cannot be inline`, innerTypeUse.sourceloc);
-                }
-
-                if (innerTypeUse.innerNested) {
-                  throw new CompilerError(
-                    `rx.IsComputed<T> does not have children`,
-                    innerTypeUse.sourceloc,
-                  );
-                }
-
-                const [genericArgExpr] = this.expr(innerTypeUse.genericArgs[0], undefined);
-                if (genericArgExpr.variant !== Semantic.ENode.DatatypeAsValueExpr) {
-                  throw new CompilerError(
-                    `rx.IsComputed<T> requires T to resolve to a datatype`,
-                    innerTypeUse.sourceloc,
-                  );
-                }
-
-                const typeUse = this.sr.typeUseNodes.get(genericArgExpr.type);
-                const typeDef = this.sr.typeDefNodes.get(typeUse.type);
-                return this.sr.b.literalType(
-                  {
-                    type: EPrimitive.bool,
-                    value: typeDef.variant === Semantic.ENode.ComputedDatatype,
-                  },
-                  innerTypeUse.sourceloc,
-                );
-              }
-
-              if (innerTypeUse.name === "IsComputed") {
-                if (innerTypeUse.genericArgs.length !== 1) {
-                  throw new CompilerError(
-                    `rx.IsComputed<T> requires exactly 1 generic argument`,
-                    innerTypeUse.sourceloc,
-                  );
-                }
-
-                if (innerTypeUse.inline) {
-                  throw new CompilerError(`IsComputed<T> cannot be inline`, innerTypeUse.sourceloc);
-                }
-
-                if (innerTypeUse.innerNested) {
-                  throw new CompilerError(
-                    `rx.IsComputed<T> does not have children`,
-                    innerTypeUse.sourceloc,
-                  );
-                }
-
-                const [genericArgExpr] = this.expr(innerTypeUse.genericArgs[0], undefined);
-                if (genericArgExpr.variant !== Semantic.ENode.DatatypeAsValueExpr) {
-                  throw new CompilerError(
-                    `rx.IsComputed<T> requires T to resolve to a datatype`,
-                    innerTypeUse.sourceloc,
-                  );
-                }
-
-                const typeUse = this.sr.typeUseNodes.get(genericArgExpr.type);
-                const typeDef = this.sr.typeDefNodes.get(typeUse.type);
-                return this.sr.b.literalType(
-                  {
-                    type: EPrimitive.bool,
-                    value: typeDef.variant === Semantic.ENode.ComputedDatatype,
-                  },
-                  innerTypeUse.sourceloc,
-                );
-              }
-
-              if (innerTypeUse.name === "Computed") {
-                if (innerTypeUse.genericArgs.length !== 1) {
-                  throw new CompilerError(
-                    `rx.Computed<T> requires exactly 1 generic argument`,
-                    innerTypeUse.sourceloc,
-                  );
-                }
-
-                if (innerTypeUse.inline) {
-                  throw new CompilerError(`Computed<T> cannot be inline`, innerTypeUse.sourceloc);
-                }
-
-                if (innerTypeUse.innerNested) {
-                  throw new CompilerError(
-                    `rx.Computed<T> does not have children`,
-                    innerTypeUse.sourceloc,
-                  );
-                }
-
-                const [genericArgExpr] = this.expr(innerTypeUse.genericArgs[0], undefined);
-                if (genericArgExpr.variant !== Semantic.ENode.DatatypeAsValueExpr) {
-                  throw new CompilerError(
-                    `rx.Computed<T> requires T to resolve to a datatype`,
-                    innerTypeUse.sourceloc,
-                  );
-                }
-
-                return makeComputedDatatypeAvailable(
-                  this.sr,
-                  genericArgExpr.type,
-                  innerTypeUse.mutability,
-                  innerTypeUse.sourceloc,
-                );
-              }
-            }
-          }
-        }
-
-        // Generic placeholders (e.g. T) are anchored to genericsScope and must keep
-        // their visibility/precedence even if currentScope temporarily moves.
-        const genericScopeResult = Semantic.tryLookupSymbol(this.sr, type.name, {
-          startLookupInScope: this.currentContext.genericsScope,
-          sourceloc: type.sourceloc,
-        });
-
-        let foundResult:
-          | { type: "semantic"; id: Semantic.ExprId; crossedLambdaScope: Collect.ScopeId | null }
-          | { type: "collect"; id: Collect.SymbolId; crossedLambdaScope: Collect.ScopeId | null }
-          | undefined;
-
-        if (
-          genericScopeResult &&
-          genericScopeResult.type === "collect" &&
-          this.sr.cc.symbolNodes.get(genericScopeResult.id).variant ===
-            Collect.ENode.GenericTypeParameterSymbol
-        ) {
-          foundResult = genericScopeResult;
-        } else {
-          foundResult = Semantic.tryLookupSymbol(this.sr, type.name, {
-            startLookupInScope: this.currentContext.currentScope,
-            sourceloc: type.sourceloc,
-          });
-        }
-
-        if (!foundResult) {
-          throw new CompilerError(
-            `Symbol '${type.name}' was not declared in this scope`,
-            type.sourceloc,
-          );
-        }
-        if (foundResult.type === "semantic") {
-          const e = this.sr.exprNodes.get(foundResult.id);
-          if (e.variant === Semantic.ENode.DatatypeAsValueExpr) {
-            return e.type;
-          }
-          assert(false);
-        }
-        let foundId = foundResult.id;
-        let found = this.sr.cc.symbolNodes.get(foundId);
-
-        if (found.variant === Collect.ENode.GenericTypeParameterSymbol) {
-          const mappedTo = this.currentContext.substitute.get(foundId);
-          if (mappedTo && !args?.noSubstituteGenerics) {
-            const mapped = this.sr.exprNodes.get(mappedTo);
-            if (mapped.variant === Semantic.ENode.DatatypeAsValueExpr) {
-              return mapped.type;
-            } else if (mapped.variant === Semantic.ENode.LiteralExpr) {
-              // Convert literal expression to a literal datatype
-              return this.sr.b.literalType(mapped.literal, type.sourceloc);
-            } else {
-              throw new CompilerError(
-                `Generic placeholder '${type.name}' resolves to value '${Semantic.serializeExpr(
-                  this.sr,
-                  mappedTo,
-                )}', which cannot be used as a datatype`,
-                type.sourceloc,
-              );
-            }
-          } else {
-            return makeTypeUse(
-              this.sr,
-              this.sr.b.addType(this.sr, {
-                variant: Semantic.ENode.GenericParameterDatatype,
-                name: found.name,
-                collectedParameter: foundId,
-                concrete: false,
-              })[1],
-              type.mutability,
-              false,
-              type.sourceloc,
-            )[1];
-          }
-        } else if (found.variant === Collect.ENode.TypeDefSymbol) {
-          const typedef = this.sr.cc.typeDefNodes.get(found.typeDef);
-          if (typedef.variant === Collect.ENode.TypeDefAlias) {
-            return this.elaborateTypeDefAlias(
-              typedef,
-              type.genericArgs,
-              type.innerNested,
-              type.mutability,
-              type.inline,
-              type.sourceloc,
-            );
-          } else if (typedef.variant === Collect.ENode.StructTypeDef) {
-            const generics = type.genericArgs.map((g) => {
-              return this.withContext(
-                {
-                  context: this.currentContext,
-                  inAttemptExpr: null,
-                  inFunction: null,
-                },
-                () => this.expressionAsGenericArg(g),
-              );
-            });
-
-            const structId = this.instantiateAndElaborateStructWithGenerics(
-              found.typeDef,
-              generics,
-              type.sourceloc,
-            );
-            const struct = this.sr.typeDefNodes.get(structId);
-            assert(struct.variant === Semantic.ENode.StructDatatype);
-            const structScope = this.sr.cc.scopeNodes.get(typedef.lexicalScope);
-            assert(structScope.variant === Collect.ENode.StructLexicalScope);
-
-            if (type.innerNested) {
-              // Here we need to merge the context from the parent into the child
-              let cachedParentSubstitutions = undefined as Semantic.ElaborationContext | undefined;
-              const entry = this.sr.elaboratedStructDatatypes.get(found.typeDef);
-
-              for (const cache of entry || []) {
-                if (
-                  cache.canonicalizedGenerics.length === generics.length &&
-                  cache.canonicalizedGenerics.every(
-                    (g, i) => g === Semantic.canonicalizeGenericExpr(this.sr, generics[i]),
-                  )
-                ) {
-                  cachedParentSubstitutions = cache.substitutionContext;
-                  break;
-                }
-              }
-              assert(cachedParentSubstitutions);
-              return this.withContext(
-                {
-                  context: Semantic.mergeSubstitutionContext(
-                    cachedParentSubstitutions,
-                    this.currentContext,
-                    {
-                      currentScope: typedef.lexicalScope,
-                      genericsScope: this.currentContext.genericsScope,
-                      instanceDeps: {
-                        instanceDependsOn: new Map(),
-                        structMembersDependOn: new Map(),
-                        symbolDependsOn: new Map(),
-                      },
-                    },
-                  ),
-                  inAttemptExpr: null,
-                  inFunction: null,
-                },
-                () => {
-                  // Use the outermost modifiers and ignore the inner ones
-                  const typeUseId = this.lookupAndElaborateDatatype(type.innerNested!);
-                  const typeUse = this.sr.typeUseNodes.get(typeUseId);
-                  return makeTypeUse(
-                    this.sr,
-                    typeUse.type,
-                    type.mutability,
-                    type.inline,
-                    type.sourceloc,
-                  )[1];
-                },
-              );
-            } else {
-              return makeTypeUse(
-                this.sr,
-                structId,
-                type.mutability,
-                type.inline,
-                type.sourceloc,
-              )[1];
-            }
-          } else if (typedef.variant === Collect.ENode.NamespaceTypeDef) {
-            if (!type.innerNested) {
-              return makeTypeUse(
-                this.sr,
-                this.namespace(found.typeDef),
-                type.mutability,
-                type.inline,
-                type.sourceloc,
-              )[1];
-            }
-            return this.withContext(
-              {
-                context: Semantic.isolateElaborationContext(this.currentContext, {
-                  currentScope: typedef.namespaceScope,
-                  genericsScope: this.currentContext.genericsScope,
-                  constraints: this.currentContext.constraints,
-                  instanceDeps: {
-                    instanceDependsOn: new Map(),
-                    structMembersDependOn: new Map(),
-                    symbolDependsOn: new Map(),
-                  },
-                }),
-                inAttemptExpr: null,
-                inFunction: null,
-              },
-              () => {
-                // Use the outermost modifiers and ignore the inner ones
-                const typeUseId = this.lookupAndElaborateDatatype(type.innerNested!);
-                const typeUse = this.sr.typeUseNodes.get(typeUseId);
-                return makeTypeUse(
-                  this.sr,
-                  typeUse.type,
-                  type.mutability,
-                  type.inline,
-                  type.sourceloc,
-                )[1];
-              },
-            );
-          } else if (typedef.variant === Collect.ENode.EnumTypeDef) {
-            return makeTypeUse(
-              this.sr,
-              this.enum(found.typeDef),
-              type.mutability,
-              type.inline,
-              type.sourceloc,
-            )[1];
-          }
-        }
-        throw new CompilerError(
-          `Symbol '${type.name}' cannot be used as a datatype here`,
-          type.sourceloc,
-        );
-      }
-
-      case Collect.ENode.ParameterPack: {
+      case Collect.ENode.ParameterPackDatatypeExpr: {
         return this.sr.b.paramPackTypeUse(EDatatypeMutability.Default, type.sourceloc);
       }
 
-      case Collect.ENode.UntaggedUnionDatatype: {
-        const rawMembers = type.members.map((m) => this.lookupAndElaborateDatatype(m));
+      case Collect.ENode.UntaggedUnionTypeDefinitionExpr: {
+        const rawMembers = type.members.map((m) => this.elaborateDatatype(m));
         return this.sr.b.untaggedUnionTypeUse(rawMembers, type.sourceloc);
       }
 
-      case Collect.ENode.TaggedUnionDatatype: {
+      case Collect.ENode.TaggedUnionTypeDefinitionExpr: {
         const rawMembers = type.members.map((m) => ({
           tag: m.tag,
-          type: this.lookupAndElaborateDatatype(m.type),
+          type: this.elaborateDatatype(m.type),
         }));
         return this.sr.b.taggedUnionTypeUse(rawMembers, type.nodiscard, type.sourceloc);
-      }
-
-      case Collect.ENode.TypeOfExprDatatype: {
-        const expr = this.expr(type.expr, undefined)[0];
-        return expr.type;
       }
 
       // =================================================================================================================
@@ -5707,7 +5758,7 @@ export class SemanticElaborator {
       // =================================================================================================================
 
       default:
-        assert(false, (type as any).variant.toString());
+        assert(false, Collect.ENode[(type as any).variant]);
     }
   }
 
@@ -6027,7 +6078,7 @@ export class SemanticElaborator {
           inAttemptExpr: null,
           inFunction: null,
         },
-        () => this.lookupAndElaborateDatatype(p.type, { noSubstituteGenerics: true }),
+        () => this.elaborateDatatype(p.type, { noSubstituteGenerics: true }),
       );
       return {
         name: p.name,
@@ -6052,7 +6103,7 @@ export class SemanticElaborator {
           inAttemptExpr: null,
           inFunction: null,
         },
-        () => this.lookupAndElaborateDatatype(functionSymbol.returnType!),
+        () => this.elaborateDatatype(functionSymbol.returnType!),
       );
 
     let parentName = "";
@@ -6096,13 +6147,14 @@ export class SemanticElaborator {
     return signatureId;
   }
 
-  lookupSymbolInNamespaceOrStructScope(
-    symbolId: Collect.SymbolId,
+  elaborateMemberFromExpr(
+    exprId: Collect.ExprId,
     name: string,
-    memberAccessExpr: Collect.MemberAccessExpr,
+    generics: Collect.ExprId[],
+    sourceloc: SourceLoc,
     inference: Semantic.Inference,
   ) {
-    const symbol = this.sr.cc.symbolNodes.get(symbolId);
+    const expr = this.sr.cc.exprNodes.get(exprId);
 
     if (symbol.variant === Collect.ENode.TypeDefSymbol) {
       const typedef = this.sr.cc.typeDefNodes.get(symbol.typeDef);
@@ -6224,12 +6276,7 @@ export class SemanticElaborator {
       const scope = this.sr.cc.scopeNodes.get(scopeId);
       assert(scope.variant === Collect.ENode.NamespaceScope);
       for (const symbolId of scope.symbols) {
-        const s = this.lookupSymbolInNamespaceOrStructScope(
-          symbolId,
-          name,
-          memberAccessExpr,
-          inference,
-        );
+        const s = this.elaborateMemberFromExpr(symbolId, name, memberAccessExpr, inference);
         if (s) {
           return s;
         }
@@ -6290,8 +6337,7 @@ export class SemanticElaborator {
           inAttemptExpr: null,
           inFunction: null,
         },
-        () =>
-          this.lookupSymbolInNamespaceOrStructScope(symbolId, name, memberAccessExpr, inference),
+        () => this.elaborateMemberFromExpr(symbolId, name, memberAccessExpr, inference),
       );
       if (s) {
         const symbol = this.sr.exprNodes.get(s[1]);
@@ -6691,9 +6737,7 @@ export class SemanticElaborator {
       // For literal types (compile-time constants like datatype 5), unwrap to the base type
       // For all other types, return the same type
       const baseTypeUseId =
-        datatypeValue.variant === Semantic.ENode.LiteralDatatype
-          ? datatypeValue.type
-          : typeUseId;
+        datatypeValue.variant === Semantic.ENode.LiteralDatatype ? datatypeValue.type : typeUseId;
       return this.sr.b.datatypeUseAsValue(baseTypeUseId, memberAccessExpr.sourceloc);
     }
 
@@ -7619,7 +7663,7 @@ export class SemanticElaborator {
               inFunction: this.inFunction,
               inAttemptExpr: this.inAttemptExpr,
             },
-            () => this.lookupAndElaborateDatatype(collectedVariableSymbol.type!),
+            () => this.elaborateDatatype(collectedVariableSymbol.type!),
           );
           assert(variableSymbol.type);
         }
@@ -8542,7 +8586,7 @@ export class SemanticElaborator {
           inAttemptExpr: null,
           inFunction: null,
         },
-        () => this.lookupAndElaborateDatatype(structInst.structType!),
+        () => this.elaborateDatatype(structInst.structType!),
       );
     } else if (inference?.gonnaInstantiateStructWithType) {
       structId = inference?.gonnaInstantiateStructWithType;
@@ -8768,7 +8812,7 @@ export class SemanticElaborator {
           inAttemptExpr: this.inAttemptExpr,
         },
         () => {
-          return this.lookupAndElaborateDatatype(
+          return this.elaborateDatatype(
             (this.sr.cc.typeDefNodes.get(symbol.typeDef) as Collect.TypeDefAlias).target,
           );
         },
@@ -9195,7 +9239,7 @@ export class SemanticElaborator {
   }
 
   exprIsType(exprIsType: Collect.ExprIsTypeExpr, inference: Semantic.Inference) {
-    const comparisonType = this.lookupAndElaborateDatatype(exprIsType.comparisonType);
+    const comparisonType = this.elaborateDatatype(exprIsType.comparisonType);
     const [sourceExpr, sourceExprId] = this.expr(exprIsType.expr, {
       unsafe: inference?.unsafe,
     });
@@ -9493,7 +9537,7 @@ export class SemanticElaborator {
     castExpr: Collect.ExplicitCastExpr,
     inference: Semantic.Inference,
   ): [Semantic.Expression, Semantic.ExprId] {
-    const targetType = this.lookupAndElaborateDatatype(castExpr.targetType);
+    const targetType = this.elaborateDatatype(castExpr.targetType);
     const castedExpr = this.sr.cc.exprNodes.get(castExpr.expr);
     let innerInference: Semantic.Inference | undefined = undefined;
     if (castedExpr.variant === Collect.ENode.AggregateLiteralExpr) {
@@ -10051,7 +10095,7 @@ export class SemanticElaborator {
 
   typeLiteral(literal: Collect.TypeLiteralExpr) {
     return this.sr.b.datatypeUseAsValue(
-      this.lookupAndElaborateDatatype(literal.datatype),
+      this.elaborateDatatype(literal.datatype),
       literal.sourceloc,
     );
   }

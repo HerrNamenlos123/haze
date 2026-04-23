@@ -1,14 +1,14 @@
 namespace ffi {
-    extern C os_sleep_ns(nanoseconds: u64): void :: final;
-    extern C hzstd_time_now(): real :: final;
+    extern C fn os_sleep_ns(nanoseconds: u64): void :: final;
+    extern C fn hzstd_time_now(): real :: final;
 }
 
 namespace time {
-    export now() {
+    export fn now() {
         return ffi.hzstd_time_now();
     }
 
-    export sleep(seconds: real) {
+    export fn sleep(seconds: real) {
         let nanoseconds = seconds * 1000000000.0;
         let ns_u64: u64 = 0;
         __c__("ns_u64 = nanoseconds;");

@@ -3,42 +3,42 @@ export extern C noemit inline struct hzstd_vec2_t {
   x: real = 0.0;
   y: real = 0.0;
 
-  constructor(x: real, y: real) {
+  fn constructor(x: real, y: real) {
     return hzstd_vec2_t {
       x: x,
       y: y,
     };
   }
 
-  neg() {
+  fn neg() {
     return hzstd_vec2_t(-this.x, -this.y);
   }
 
-  add(other: hzstd_vec2_t) {
+  fn add(other: hzstd_vec2_t) {
     return hzstd_vec2_t(this.x + other.x, this.y + other.y);
   }
 
-  sub(other: hzstd_vec2_t) {
+  fn sub(other: hzstd_vec2_t) {
     return hzstd_vec2_t(this.x - other.x, this.y - other.y);
   }
 
-  mul(v: real) {
+  fn mul(v: real) {
     return hzstd_vec2_t(this.x * v, this.y * v);
   }
 
-  div(v: real) {
+  fn div(v: real) {
     return hzstd_vec2_t(this.x / v, this.y / v);
   }
 
-  length(): real {
+  fn length(): real {
     return math.sqrt(math.pow(this.x, 2.0) + math.pow(this.y, 2.0));
   }
 
-  normalize() {
+  fn normalize() {
     return this.div(this.length());
   }
 
-  dot(other: hzstd_vec2_t) {
+  fn dot(other: hzstd_vec2_t) {
     return this.x * other.x + this.y * other.y;
   }
 }
@@ -48,42 +48,42 @@ export extern C noemit inline struct hzstd_vec2f_t {
   x: f32 = 0.0;
   y: f32 = 0.0;
 
-  constructor(x: f32, y: f32) {
+  fn constructor(x: f32, y: f32) {
     return hzstd_vec2f_t {
       x: x,
       y: y,
     };
   }
 
-  neg() {
+  fn neg() {
     return hzstd_vec2f_t(-this.x, -this.y);
   }
 
-  add(other: hzstd_vec2f_t) {
+  fn add(other: hzstd_vec2f_t) {
     return hzstd_vec2f_t(this.x + other.x, this.y + other.y);
   }
 
-  sub(other: hzstd_vec2f_t) {
+  fn sub(other: hzstd_vec2f_t) {
     return hzstd_vec2f_t(this.x - other.x, this.y - other.y);
   }
 
-  mul(v: f32) {
+  fn mul(v: f32) {
     return hzstd_vec2f_t(this.x * v, this.y * v);
   }
 
-  div(v: f32) {
+  fn div(v: f32) {
     return hzstd_vec2f_t(this.x / v, this.y / v);
   }
 
-  length(): f32 {
+  fn length(): f32 {
     return math.sqrt(math.pow(this.x as real, 2.0) + math.pow(this.y as real, 2.0)) as f32;
   }
 
-  normalize() {
+  fn normalize() {
     return this.div(this.length());
   }
 
-  dot(other: hzstd_vec2f_t) {
+  fn dot(other: hzstd_vec2f_t) {
     return this.x * other.x + this.y * other.y;
   }
 }
@@ -93,38 +93,38 @@ export extern C noemit inline struct hzstd_vec2i_t {
   x: int = 0;
   y: int = 0;
 
-  constructor(x: int, y: int) {
+  fn constructor(x: int, y: int) {
     return hzstd_vec2i_t {
       x: x,
       y: y,
     };
   }
 
-  neg() {
+  fn neg() {
     return hzstd_vec2i_t(-this.x, -this.y);
   }
 
-  add(other: hzstd_vec2i_t) {
+  fn add(other: hzstd_vec2i_t) {
     return hzstd_vec2i_t(this.x + other.x, this.y + other.y);
   }
 
-  sub(other: hzstd_vec2i_t) {
+  fn sub(other: hzstd_vec2i_t) {
     return hzstd_vec2i_t(this.x - other.x, this.y - other.y);
   }
 
-  mul(v: int) {
+  fn mul(v: int) {
     return hzstd_vec2i_t(this.x * v, this.y * v);
   }
 
-  div(v: int) {
+  fn div(v: int) {
     return hzstd_vec2i_t(this.x / v, this.y / v);
   }
 
-  length(): real {
+  fn length(): real {
     return math.sqrt(math.pow(this.x as real, 2.0) + math.pow(this.y as real, 2.0));
   }
 
-  dot(other: hzstd_vec2i_t) {
+  fn dot(other: hzstd_vec2i_t) {
     return this.x * other.x + this.y * other.y;
   }
 }
@@ -135,7 +135,7 @@ export inline struct _Vec3<T> {
   y: T = default;
   z: T = default;
 
-  constructor(x: T, y: T, z: T): _Vec3<T> {
+  fn constructor(x: T, y: T, z: T): _Vec3<T> {
     return _Vec3<T> {
       x: x,
       y: y,
@@ -143,36 +143,36 @@ export inline struct _Vec3<T> {
     };
   }
 
-  neg(): _Vec3<T> {
+  fn neg(): _Vec3<T> {
     return _Vec3<T>(-this.x, -this.y, -this.z);
   }
 
-  add(other: _Vec3<T>): _Vec3<T> {
+  fn add(other: _Vec3<T>): _Vec3<T> {
     return _Vec3<T>(this.x + other.x, this.y + other.y, this.z + other.z);
   }
 
-  sub(other: _Vec3<T>): _Vec3<T> {
+  fn sub(other: _Vec3<T>): _Vec3<T> {
     return _Vec3<T>(this.x - other.x, this.y - other.y, this.z - other.z);
   }
 
-  mul(v: T): _Vec3<T> {
+  fn mul(v: T): _Vec3<T> {
     return _Vec3<T>(this.x * v, this.y * v, this.z * v);
   }
 
-  div(v: T): _Vec3<T> {
+  fn div(v: T): _Vec3<T> {
     return _Vec3<T>(this.x / v, this.y / v, this.z / v);
   }
 
-  length(): T {
+  fn length(): T {
     return math.sqrt(math.pow(this.x as real, 2.0) + math.pow(this.y as real, 2.0) + math.pow(this.z as real, 2.0)) as T;
   }
 
-  normalize(): _Vec3<T> {
+  fn normalize(): _Vec3<T> {
     let a = this.div(this.length());
     return _Vec3<T>(a.x, a.y, a.z);
   }
 
-  dot(other: _Vec3<T>): T {
+  fn dot(other: _Vec3<T>): T {
     return this.x * other.x + this.y * other.y + this.z * other.z;
   }
 }
@@ -187,7 +187,7 @@ export inline struct _Vec4<T> {
   z: T = default;
   w: T = default;
 
-  constructor(x: T, y: T, z: T, w: T): _Vec4<T> {
+  fn constructor(x: T, y: T, z: T, w: T): _Vec4<T> {
     return _Vec4<T> {
       x: x,
       y: y,
@@ -196,35 +196,35 @@ export inline struct _Vec4<T> {
     };
   }
 
-  neg(): _Vec4<T> {
+  fn neg(): _Vec4<T> {
     return _Vec4<T>(-this.x, -this.y, -this.z, -this.w);
   }
 
-  add(other: _Vec4<T>): _Vec4<T> {
+  fn add(other: _Vec4<T>): _Vec4<T> {
     return _Vec4<T>(this.x + other.x, this.y + other.y, this.z + other.z, this.w + other.w);
   }
 
-  sub(other: _Vec4<T>): _Vec4<T> {
+  fn sub(other: _Vec4<T>): _Vec4<T> {
     return _Vec4<T>(this.x - other.x, this.y - other.y, this.z - other.z, this.w - other.w);
   }
 
-  mul(v: T): _Vec4<T> {
+  fn mul(v: T): _Vec4<T> {
     return _Vec4<T>(this.x * v, this.y * v, this.z * v, this.w * v);
   }
 
-  div(v: T): _Vec4<T> {
+  fn div(v: T): _Vec4<T> {
     return _Vec4<T>(this.x / v, this.y / v, this.z / v, this.w / v);
   }
 
-  length(): T {
+  fn length(): T {
     return math.sqrt(math.pow(this.x, 2.0) + math.pow(this.y, 2.0) + math.pow(this.z, 2.0) + math.pow(this.w, 2.0)) as T;
   }
 
-  normalize(): _Vec4<T> {
+  fn normalize(): _Vec4<T> {
     return this.div(this.length());
   }
 
-  dot(other: _Vec4<T>): T {
+  fn dot(other: _Vec4<T>): T {
     return this.x * other.x + this.y * other.y + this.z * other.z + this.w * other.w;
   }
 }

@@ -15,7 +15,6 @@ import {
   EUnaryOperation,
   type ASTBinaryExpr,
   type ASTLiteralExpr,
-  type ASTTypeUse,
   type ASTExplicitCastExpr,
   type ASTExpr,
   type ASTExprAsFuncbody,
@@ -24,14 +23,12 @@ import {
   type ASTExprComptimeMemberAccess,
   type ASTExprMemberAccess,
   type ASTExprStatement,
-  type ASTFunctionDatatype,
   type ASTFunctionDefinition,
   type ASTGlobalVariableDefinition,
   type ASTIfStatement,
   type ASTInlineCStatement,
   type ASTLambda,
   type ASTLambdaExpr,
-  type ASTNamedDatatype,
   type ASTNamespaceDefinition,
   type ASTParam,
   type ASTParenthesisExpr,
@@ -50,20 +47,16 @@ import {
   type ASTModuleImport,
   type ASTSymbolImport,
   type ASTTypeAlias,
-  type ASTStackArrayDatatype,
   type ASTArraySubscriptExpr,
   type ASTForEachStatement,
   type ASTTypeLiteralExpr,
   type ASTFStringExpr,
-  type ASTDynamicArrayDatatype,
   EDatatypeMutability,
   EVariableMutability,
-  type ASTUntaggedUnionDatatype,
   type ASTFunctionRequiresBlock,
   type ASTFunctionOverloading,
   EOverloadedOperator,
   type ASTExprIsTypeExpr,
-  type ASTTaggedUnionDatatype,
   type ASTErrorPropagationExpr,
   type ASTEnumDefinition,
   type ASTEnumValueDefinition,
@@ -75,25 +68,21 @@ import {
   type ASTTernaryExpr,
   type ASTStatement,
   type ASTFuncBody,
-  type ASTCallableDatatype,
-  type ASTTypeOfExprDatatype,
+  type ASTTypeModifierExpr,
 } from "../shared/AST";
 import {
   BooleanConstantContext,
   CInjectDirectiveContext,
   CInlineStatementContext,
-  DatatypeFragmentContext,
   ExprAsFuncbodyContext,
   ExprStatementContext,
-  FunctionDatatypeContext,
   FunctionDefinitionContext,
   GenericLiteralConstantContext,
-  GenericLiteralDatatypeContext,
+  GenericLiteralTypeExprContext,
   GlobalVariableDefinitionContext,
   HazeParser,
   IfStatementContext,
   LambdaContext,
-  NamedDatatypeContext,
   NamespaceDefinitionContext,
   NestedStructDefinitionContext,
   ParamsContext,
@@ -112,8 +101,6 @@ import {
   FromImportStatementContext,
   ImportStatementContext,
   ForEachStatementContext,
-  DatatypeInParenthesisContext,
-  DatatypeWithMutabilityContext,
   TypeAliasDirectiveContext,
   TypeAliasStatementContext,
   VariableConstContext,
@@ -124,12 +111,8 @@ import {
   GlobalDeclarationWithSourceContext,
   GlobalDeclarationContext,
   TopLevelDeclarationsContext,
-  DynamicArrayDatatypeContext,
-  StackArrayDatatypeContext,
   RequiresBlockContext,
   StructContentWithSourcelocContext,
-  UntaggedUnionDatatypeContext,
-  TaggedUnionDatatypeContext,
   EnumContentContext,
   EnumDefinitionContext,
   AggregateLiteralElementContext,
@@ -156,15 +139,16 @@ import {
   LogicalContext,
   TernaryContext,
   AssignmentContext,
-  InlineDatatypeContext,
-  ConstDatatypeContext,
-  MutDatatypeContext,
   TripleStringConstantContext,
   SingleFStringContext,
   TripleFStringContext,
   ParamContext,
-  TypeOfExprDatatypeContext,
   ComptimeIfStatementContext,
+  TypeExprPrimaryContext,
+  TypeExprSimpleContext,
+  TypeExprModifiedContext,
+  TypeExprUnionContext,
+  TypeExprContext,
 } from "./grammar/autogen/HazeParser";
 import {
   BaseErrorListener,
@@ -187,7 +171,7 @@ type IfStatementCondition =
   | {
       type: "let";
       name: string;
-      datatype: ASTTypeUse | null;
+      datatype: ASTExpr | null;
       letExpr: ASTExpr;
       guardExpr: ASTExpr | null;
     };
@@ -419,63 +403,13 @@ class ASTBuilder extends HazeParserListener {
     return tokens;
   }
 
-  private coerceExprToTypeUse(expr: ASTExpr): ASTTypeUse {
-    if (expr.variant === "TypeLiteralExpr") {
-      return expr.datatype;
-    }
-
-    const fragments: {
-      name: string;
-      generics: (ASTTypeUse | ASTLiteralExpr)[];
-      sourceloc: SourceLoc;
-    }[] = [];
-
-    const collectFragments = (e: ASTExpr) => {
-      if (e.variant === "SymbolValueExpr") {
-        fragments.push({
-          name: e.name,
-          generics: e.generics,
-          sourceloc: e.sourceloc,
-        });
-        return;
-      }
-
-      if (e.variant === "ExprMemberAccess") {
-        collectFragments(e.expr);
-        fragments.push({
-          name: e.member,
-          generics: e.generics,
-          sourceloc: e.sourceloc,
-        });
-        return;
-      }
-
-      throw new InternalError(
-        `Type expression is not a valid datatype: ${String(e?.variant ?? e)}`,
-      );
-    };
-
-    collectFragments(expr);
-
-    let nested: ASTNamedDatatype | undefined = undefined;
-    for (let i = fragments.length - 1; i >= 0; i--) {
-      const f = fragments[i];
-      nested = {
-        variant: "NamedDatatype",
-        name: f.name,
-        generics: f.generics,
-        sourceloc: f.sourceloc,
-        inline: false,
-        mutability: EDatatypeMutability.Default,
-        nested,
-      } satisfies ASTNamedDatatype;
-    }
-
-    if (!nested) {
-      throw new InternalError("Type expression produced no datatype fragments");
-    }
-
-    return nested;
+  private makeSymbolExpr(name: string, sourceloc: SourceLoc): ASTSymbolValueExpr {
+    return {
+      variant: "SymbolValueExpr",
+      name,
+      generics: [],
+      sourceloc,
+    } satisfies ASTSymbolValueExpr;
   }
 
   getSource(ctx: ParserRuleContext) {
@@ -769,12 +703,12 @@ class ASTBuilder extends HazeParserListener {
     };
   }
 
-  exitGenericLiteralDatatype = (ctx: GenericLiteralDatatypeContext) => {
+  exitGenericLiteralTypeExpr = (ctx: GenericLiteralTypeExprContext) => {
     const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     if (produced.length !== 1) {
-      throw new InternalError("GenericLiteralDatatype stack mismatch");
+      throw new InternalError("GenericLiteralTypeExpr stack mismatch");
     }
 
     this.stack.push(produced[0]);
@@ -797,106 +731,306 @@ class ASTBuilder extends HazeParserListener {
     } satisfies ASTLiteralExpr);
   };
 
-  exitDatatypeFragment = (ctx: DatatypeFragmentContext) => {
+  exitTypeExprPrimary = (ctx: TypeExprPrimaryContext) => {
     const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
-    const genericCount = ctx.genericLiteral().length;
+    if (ctx.nameExpr() || (ctx.LB() && ctx.RB())) {
+      if (produced.length !== 1) {
+        throw new InternalError("TypeExprPrimary stack mismatch");
+      }
 
-    if (produced.length !== genericCount) {
-      throw new InternalError(
-        `DatatypeFragment stack mismatch: expected ${genericCount}, got ${produced.length}`,
-      );
-    }
-
-    // id is guaranteed by grammar — this assert is for corruption detection
-    const idNode = ctx.type_id();
-    if (!idNode) {
-      throw new InternalError("Parser stack corrupted before DatatypeFragment");
-    }
-
-    this.stack.push({
-      name: idNode.getText(),
-      generics: produced as (ASTTypeUse | ASTLiteralExpr)[],
-      sourceloc: this.loc(ctx),
-    });
-  };
-
-  exitUntaggedUnionDatatype = (ctx: UntaggedUnionDatatypeContext) => {
-    const start = this.getMark(ctx);
-    const produced = this.stack.splice(start);
-
-    if (produced.length === 0) {
-      throw new InternalError("UntaggedUnionDatatype missing members");
-    }
-
-    if (produced.length === 1) {
-      // passthrough
       this.stack.push(produced[0]);
       return;
     }
 
-    this.stack.push({
-      variant: "UntaggedUnionDatatype",
-      members: produced as ASTTypeUse[],
-      sourceloc: this.loc(ctx),
-    } satisfies ASTUntaggedUnionDatatype);
-  };
+    if (ctx.TYPE()) {
+      if (produced.length !== 1) {
+        throw new InternalError("TypeExprPrimary type literal stack mismatch");
+      }
 
-  exitTaggedUnionDatatype = (ctx: TaggedUnionDatatypeContext) => {
-    const start = this.getMark(ctx);
-    const produced = this.stack.splice(start);
-
-    const ids = ctx.id();
-
-    if (produced.length !== ids.length) {
-      throw new InternalError("TaggedUnionDatatype stack mismatch");
+      this.stack.push({
+        variant: "TypeLiteralExpr",
+        datatype: produced[0] as ASTExpr,
+        sourceloc: this.loc(ctx),
+      } satisfies ASTTypeLiteralExpr);
+      return;
     }
 
-    const members = produced.map((type, i) => ({
-      tag: ids[i].getText(),
-      type: type as ASTTypeUse,
-    }));
-
-    this.stack.push({
-      variant: "TaggedUnionDatatype",
-      members,
-      nodiscard: Boolean(ctx.NODISCARD()),
-      sourceloc: this.loc(ctx),
-    } satisfies ASTTaggedUnionDatatype);
+    throw new InternalError("TypeExprPrimary produced unexpected children");
   };
 
-  exitNamedDatatype = (ctx: NamedDatatypeContext) => {
+  exitTypeExprSimple = (ctx: TypeExprSimpleContext) => {
     const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
+
+    if (produced.length < 1) {
+      throw new InternalError("TypeExprSimple stack underflow");
+    }
+
+    let i = 0;
+    let expr = produced[i++] as ASTExpr;
+
+    for (const postfix of ctx.typeExprPostfix()) {
+      if (postfix.LB() && postfix.RB()) {
+        const argCount = postfix.argList()?.expr().length ?? 0;
+        const args = produced.slice(i, i + argCount) as ASTExpr[];
+        i += argCount;
+
+        const allocator = postfix.withAllocator() ? (produced[i++] as ASTExpr) : null;
+
+        expr = {
+          variant: "ExprCallExpr",
+          calledExpr: expr,
+          arguments: args,
+          allocator,
+          sourceloc: this.loc(postfix),
+        } satisfies ASTExprCallExpr;
+        continue;
+      }
+
+      if (postfix.DOT() && postfix.LBRACKET() && postfix.RBRACKET()) {
+        if (i >= produced.length) {
+          throw new InternalError("TypeExprSimple comptime member access missing expression");
+        }
+
+        expr = {
+          variant: "ExprComptimeMemberAccess",
+          expr,
+          memberExpr: produced[i++] as ASTExpr,
+          sourceloc: this.loc(postfix),
+        } satisfies ASTExprComptimeMemberAccess;
+        continue;
+      }
+
+      if (postfix.LBRACKET() && postfix.RBRACKET()) {
+        const indexCount = postfix.indexList()?.subscriptExpr().length ?? 0;
+        const indices = produced.slice(i, i + indexCount) as ASTSubscriptIndexExpr[];
+        i += indexCount;
+
+        expr = {
+          variant: "ArraySubscriptExpr",
+          expr,
+          indices,
+          sourceloc: this.loc(postfix),
+        } satisfies ASTArraySubscriptExpr;
+        continue;
+      }
+
+      if (postfix.DOT() || postfix.QUESTIONDOT()) {
+        if (i >= produced.length) {
+          throw new InternalError("TypeExprSimple member access missing segment");
+        }
+
+        const segment = produced[i++] as {
+          name: string;
+          generics: ASTExpr[];
+          sourceloc: SourceLoc;
+        };
+
+        expr = {
+          variant: "ExprMemberAccess",
+          expr,
+          member: segment.name,
+          generics: segment.generics,
+          sourceloc: this.loc(postfix),
+        } satisfies ASTExprMemberAccess;
+        continue;
+      }
+
+      if (postfix.AS() || postfix.IS()) {
+        if (i >= produced.length) {
+          throw new InternalError("TypeExprSimple AS/IS missing type expression");
+        }
+
+        const typeExpr = produced[i++] as ASTExpr;
+
+        if (postfix.AS()) {
+          expr = {
+            variant: "ExplicitCastExpr",
+            expr,
+            castedTo: typeExpr,
+            sourceloc: this.loc(postfix),
+          } satisfies ASTExplicitCastExpr;
+        } else {
+          expr = {
+            variant: "ExprIsTypeExpr",
+            expr,
+            comparisonType: typeExpr,
+            sourceloc: this.loc(postfix),
+          } satisfies ASTExprIsTypeExpr;
+        }
+
+        continue;
+      }
+
+      if (postfix.QUESTIONEXCL()) {
+        expr = {
+          variant: "ErrorPropagationExpr",
+          expr,
+          sourceloc: this.loc(postfix),
+        } satisfies ASTErrorPropagationExpr;
+        continue;
+      }
+
+      throw new InternalError("TypeExprSimple encountered unknown postfix");
+    }
+
+    if (i !== produced.length) {
+      throw new InternalError("TypeExprSimple stack mismatch");
+    }
+
+    this.stack.push(expr);
+  };
+
+  exitTypeExprModified = (ctx: TypeExprModifiedContext) => {
+    const start = this.getMark(ctx);
+    const produced = this.stack.splice(start);
+
+    if (ctx.typeExprSimple()) {
+      if (produced.length !== 1) {
+        throw new InternalError("TypeExprModified simple stack mismatch");
+      }
+
+      this.stack.push(produced[0]);
+      return;
+    }
+
+    if (ctx.INLINE() || ctx.MUT() || ctx.CONST()) {
+      if (produced.length !== 1) {
+        throw new InternalError("TypeExprModified modifier stack mismatch");
+      }
+
+      const modifier = ctx.INLINE() ? "inline" : ctx.MUT() ? "mut" : "const";
+      this.stack.push({
+        variant: "TypeModifierExpr",
+        modifier,
+        type: produced[0] as ASTExpr,
+        sourceloc: this.loc(ctx),
+      } satisfies ASTTypeModifierExpr);
+      return;
+    }
+
+    if (ctx.LBRACKET() && ctx.RBRACKET() && ctx.typeExprModified() && !ctx.LB()) {
+      if (produced.length !== 1) {
+        throw new InternalError("TypeExprModified array stack mismatch");
+      }
+
+      const inner = produced[0] as ASTExpr;
+      if (ctx._n) {
+        this.stack.push({
+          variant: "TypeModifierExpr",
+          modifier: "static-array",
+          type: inner,
+          staticArraySize: this.integerFromDecimalOrHex(ctx),
+          sourceloc: this.loc(ctx),
+        } satisfies ASTTypeModifierExpr);
+      } else {
+        this.stack.push({
+          variant: "TypeModifierExpr",
+          modifier: "dynamic-array",
+          type: inner,
+          sourceloc: this.loc(ctx),
+        } satisfies ASTTypeModifierExpr);
+      }
+
+      return;
+    }
+
+    if (ctx.params() && (ctx.DOUBLEARROW() || ctx.SINGLEARROW())) {
+      let i = 0;
+
+      const params = produced[i++] as {
+        params: ASTParam[];
+        ellipsis: boolean;
+      };
+
+      const returnType = produced[i++] as ASTExpr;
+      const requires = ctx.requiresBlock() ? (produced[i++] as ASTFunctionRequiresBlock) : null;
+
+      if (i !== produced.length) {
+        throw new InternalError("TypeExprModified function stack mismatch");
+      }
+
+      this.stack.push({
+        variant: "TypeModifierExpr",
+        modifier: ctx.DOUBLEARROW() ? "callable" : "function",
+        type: returnType,
+        parameterTypes: params.params.map((p) => p.datatype),
+        parameterOptional: params.params.map((p) => p.optional),
+        parameterEllipsis: params.ellipsis,
+        requires: requires,
+        sourceloc: this.loc(ctx),
+      } satisfies ASTTypeModifierExpr);
+      return;
+    }
+
+    throw new InternalError("TypeExprModified produced unexpected children");
+  };
+
+  exitTypeExprUnion = (ctx: TypeExprUnionContext) => {
+    const start = this.getMark(ctx);
+    const produced = this.stack.splice(start) as ASTExpr[];
 
     if (produced.length === 0) {
-      throw new InternalError("NamedDatatype missing fragments");
+      throw new InternalError("TypeExprUnion missing members");
     }
 
-    const fragments = produced as {
-      name: string;
-      sourceloc: SourceLoc;
-      generics: (ASTTypeUse | ASTLiteralExpr)[];
-    }[];
-
-    let nested: ASTNamedDatatype | undefined = undefined;
-
-    for (let i = fragments.length - 1; i >= 0; i--) {
-      const f = fragments[i];
-
-      nested = {
-        variant: "NamedDatatype",
-        name: f.name,
-        sourceloc: f.sourceloc,
-        generics: f.generics,
-        inline: false,
-        mutability: EDatatypeMutability.Default,
-        nested,
-      };
+    let expr = produced[0];
+    for (let idx = 1; idx < produced.length; idx++) {
+      expr = {
+        variant: "BinaryExpr",
+        a: expr,
+        b: produced[idx],
+        operation: EBinaryOperation.BitwiseOr,
+        sourceloc: this.loc(ctx),
+      } satisfies ASTBinaryExpr;
     }
 
-    this.stack.push(nested!);
+    this.stack.push(expr);
+  };
+
+  exitTypeExpr = (ctx: TypeExprContext) => {
+    const start = this.getMark(ctx);
+    const produced = this.stack.splice(start);
+
+    if (!ctx.UNION()) {
+      if (produced.length !== 1) {
+        throw new InternalError("TypeExpr stack mismatch");
+      }
+
+      this.stack.push(produced[0]);
+      return;
+    }
+
+    const members = produced as ASTExpr[];
+    const tags = ctx.id();
+
+    if (members.length !== tags.length) {
+      throw new InternalError("TypeExpr tagged union stack mismatch");
+    }
+
+    let unionExpr: ASTExpr = {
+      variant: "TypeModifierExpr",
+      modifier: "tagged-union",
+      type: members[0] as ASTExpr,
+      taggedUnionMembers: members.map((m, i) => ({
+        tag: tags[i].getText(),
+        type: m,
+      })),
+      sourceloc: this.loc(ctx),
+    } satisfies ASTTypeModifierExpr;
+
+    if (ctx.NODISCARD()) {
+      unionExpr = {
+        variant: "TypeModifierExpr",
+        modifier: "nodiscard",
+        type: unionExpr,
+        sourceloc: this.loc(ctx),
+      } satisfies ASTTypeModifierExpr;
+    }
+
+    this.stack.push(unionExpr);
   };
 
   exitParam = (p: ParamContext) => {
@@ -906,7 +1040,7 @@ class ASTBuilder extends HazeParserListener {
     let i = 0;
 
     // datatype is required unless it's a parameter pack (ellipsis)
-    const datatype = p.datatype()
+    const datatype = p.typeExpr()
       ? produced[i++]
       : {
           variant: "ParameterPack",
@@ -1010,7 +1144,7 @@ class ASTBuilder extends HazeParserListener {
     };
 
     // return type (optional)
-    const returnType = ctx.datatype() ? (produced[i++] as ASTTypeUse) : undefined;
+    const returnType = ctx.typeExpr() ? (produced[i++] as ASTExpr) : undefined;
 
     // requires block (optional)
     const requires = ctx.requiresBlock()
@@ -1035,6 +1169,7 @@ class ASTBuilder extends HazeParserListener {
     this.stack.push({
       variant: "FunctionDefinition",
       export: Boolean(ctx._export_),
+      comptime: Boolean(ctx._comptime),
       noemit: Boolean(ctx._noemit),
       pub: Boolean(ctx._pub),
       externLanguage: this.exlang(ctx),
@@ -1072,9 +1207,9 @@ class ASTBuilder extends HazeParserListener {
       throw new InternalError("Lambda missing funcbody");
     }
 
-    let returnType: ASTTypeUse | undefined = undefined;
-    if (ctx.datatype()) {
-      returnType = produced[i++] as ASTTypeUse;
+    let returnType: ASTExpr | undefined = undefined;
+    if (ctx.typeExpr()) {
+      returnType = produced[i++] as ASTExpr;
     }
 
     // requires block (optional)
@@ -1105,9 +1240,9 @@ class ASTBuilder extends HazeParserListener {
 
     let i = 0;
 
-    let datatype: ASTTypeUse | undefined = undefined;
-    if (ctx.datatype()) {
-      datatype = produced[i++] as ASTTypeUse;
+    let datatype: ASTExpr | undefined = undefined;
+    if (ctx.typeExpr()) {
+      datatype = produced[i++] as ASTExpr;
     }
 
     let expr: ASTExpr | undefined = undefined;
@@ -1139,7 +1274,7 @@ class ASTBuilder extends HazeParserListener {
 
     let i = 0;
 
-    const type = produced[i++] as ASTTypeUse;
+    const type = produced[i++] as ASTExpr;
 
     let defaultValue: ASTExpr | null = null;
     if (ctx.expr()) {
@@ -1178,7 +1313,7 @@ class ASTBuilder extends HazeParserListener {
     };
 
     // return type (optional)
-    const returnType = ctx.datatype() ? (produced[i++] as ASTTypeUse) : undefined;
+    const returnType = ctx.typeExpr() ? (produced[i++] as ASTExpr) : undefined;
 
     // requires block (optional)
     const requires = ctx.requiresBlock()
@@ -1265,6 +1400,7 @@ class ASTBuilder extends HazeParserListener {
 
     const fn: ASTFunctionDefinition = {
       variant: "FunctionDefinition",
+      comptime: Boolean(ctx._comptime),
       params: params.params,
       export: false,
       externLanguage: EExternLanguage.None,
@@ -1494,8 +1630,7 @@ class ASTBuilder extends HazeParserListener {
     const produced = this.stack.splice(start);
 
     let i = 0;
-    const datatypeExpr = ctx.nameExpr() ? (produced[i++] as ASTExpr) : null;
-    const datatype = datatypeExpr ? this.coerceExprToTypeUse(datatypeExpr) : null;
+    const datatype = ctx.nameExpr() ? (produced[i++] as ASTExpr) : null;
 
     const elementCount = ctx.aggregateBody().aggregateLiteralElement().length;
     const elements = produced.slice(i, i + elementCount) as ASTAggregateLiteralElement[];
@@ -1551,7 +1686,7 @@ class ASTBuilder extends HazeParserListener {
 
     this.stack.push({
       name: ctx.id().getText(),
-      generics: produced as (ASTTypeUse | ASTLiteralExpr)[],
+      generics: produced as ASTExpr[],
       sourceloc: this.loc(ctx),
     });
   };
@@ -1566,7 +1701,7 @@ class ASTBuilder extends HazeParserListener {
 
     const segments = produced as {
       name: string;
-      generics: (ASTTypeUse | ASTLiteralExpr)[];
+      generics: ASTExpr[];
       sourceloc: SourceLoc;
     }[];
 
@@ -1621,14 +1756,14 @@ class ASTBuilder extends HazeParserListener {
       return;
     }
 
-    if (ctx.TYPE() && ctx.datatype()) {
+    if (ctx.TYPE() && ctx.typeExpr()) {
       if (produced.length !== 1) {
         throw new InternalError("PrimaryExpr type literal stack mismatch");
       }
 
       this.stack.push({
         variant: "TypeLiteralExpr",
-        datatype: produced[0] as ASTTypeUse,
+        datatype: produced[0] as ASTExpr,
         sourceloc: this.loc(ctx),
       } satisfies ASTTypeLiteralExpr);
       return;
@@ -1814,7 +1949,7 @@ class ASTBuilder extends HazeParserListener {
 
         const segment = produced[i++] as {
           name: string;
-          generics: (ASTTypeUse | ASTLiteralExpr)[];
+          generics: ASTExpr[];
           sourceloc: SourceLoc;
         };
 
@@ -1833,7 +1968,7 @@ class ASTBuilder extends HazeParserListener {
           throw new InternalError("PostfixExpr AS/IS missing datatype");
         }
 
-        const datatype = produced[i++] as ASTTypeUse;
+        const datatype = produced[i++] as ASTExpr;
 
         if (postfix.AS()) {
           expr = {
@@ -2141,9 +2276,9 @@ class ASTBuilder extends HazeParserListener {
 
     let i = 0;
 
-    let datatype: ASTTypeUse | undefined = undefined;
-    if (ctx.datatype()) {
-      datatype = produced[i++] as ASTTypeUse;
+    let datatype: ASTExpr | undefined = undefined;
+    if (ctx.typeExpr()) {
+      datatype = produced[i++] as ASTExpr;
     }
 
     let expr: ASTExpr | undefined = undefined;
@@ -2263,9 +2398,9 @@ class ASTBuilder extends HazeParserListener {
 
     let i = 0;
 
-    let datatype: ASTTypeUse | null = null;
-    if (ctx.datatype()) {
-      datatype = produced[i++] as ASTTypeUse;
+    let datatype: ASTExpr | null = null;
+    if (ctx.typeExpr()) {
+      datatype = produced[i++] as ASTExpr;
     }
 
     const letExpr = produced[i++] as ASTExpr;
@@ -2337,7 +2472,7 @@ class ASTBuilder extends HazeParserListener {
       condition: ASTExpr | null;
       letCondition: {
         name: string;
-        type: ASTTypeUse | null;
+        type: ASTExpr | null;
         expr: ASTExpr;
       } | null;
       then: ASTScope;
@@ -2414,7 +2549,7 @@ class ASTBuilder extends HazeParserListener {
     let i = 0;
 
     // datatype (optional)
-    const type = ctx.datatype() ? produced[i++] : null;
+    const type = ctx.typeExpr() ? produced[i++] : null;
 
     // let expression (required)
     if (i >= produced.length) {
@@ -2492,40 +2627,6 @@ class ASTBuilder extends HazeParserListener {
     this.stack.push(produced[0]);
   };
 
-  exitDynamicArrayDatatype = (ctx: DynamicArrayDatatypeContext) => {
-    const start = this.getMark(ctx);
-    const produced = this.stack.splice(start);
-
-    if (produced.length !== 1) {
-      throw new InternalError("DynamicArrayDatatype stack mismatch");
-    }
-
-    const datatype = produced[0];
-
-    this.stack.push({
-      variant: "DynamicArrayDatatype",
-      datatype,
-      mutability: EDatatypeMutability.Default,
-      sourceloc: this.loc(ctx),
-    } satisfies ASTDynamicArrayDatatype);
-  };
-
-  exitTypeOfExprDatatype = (ctx: TypeOfExprDatatypeContext) => {
-    const start = this.getMark(ctx);
-    const produced = this.stack.splice(start);
-
-    if (produced.length !== 1) {
-      throw new InternalError("TypeOfExprDatatype stack mismatch");
-    }
-
-    this.stack.push({
-      variant: "TypeOfExprDatatype",
-      expr: produced[0] as ASTExpr,
-      mutability: EDatatypeMutability.Default,
-      sourceloc: this.loc(ctx),
-    } satisfies ASTTypeOfExprDatatype);
-  };
-
   exitAggregateLiteralElement = (ctx: AggregateLiteralElementContext) => {
     const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
@@ -2541,138 +2642,6 @@ class ASTBuilder extends HazeParserListener {
       value,
       sourceloc: this.loc(ctx),
     } satisfies ASTAggregateLiteralElement);
-  };
-
-  exitMutDatatype = (ctx: MutDatatypeContext) => {
-    const start = this.getMark(ctx);
-    const produced = this.stack.splice(start);
-
-    if (produced.length !== 1) {
-      throw new InternalError("MutDatatype stack mismatch");
-    }
-
-    const dt = produced[0] as ASTTypeUse;
-
-    if ("mutability" in dt && ctx.MUT()) {
-      dt.mutability = EDatatypeMutability.Mut;
-    }
-
-    this.stack.push(dt);
-  };
-
-  exitConstDatatype = (ctx: ConstDatatypeContext) => {
-    const start = this.getMark(ctx);
-    const produced = this.stack.splice(start);
-
-    if (produced.length !== 1) {
-      throw new InternalError("ConstDatatype stack mismatch");
-    }
-
-    const dt = produced[0] as ASTTypeUse;
-
-    if ("mutability" in dt && ctx.CONST()) {
-      dt.mutability = EDatatypeMutability.Const;
-    }
-
-    this.stack.push(dt);
-  };
-
-  exitInlineDatatype = (ctx: InlineDatatypeContext) => {
-    const start = this.getMark(ctx);
-    const produced = this.stack.splice(start);
-
-    if (produced.length !== 1) {
-      throw new InternalError("InlineDatatype stack mismatch");
-    }
-
-    const dt = produced[0] as ASTTypeUse;
-
-    if ("inline" in dt && ctx.INLINE()) {
-      dt.inline = true;
-    }
-
-    this.stack.push(dt);
-  };
-
-  exitDatatypeWithMutability = (ctx: DatatypeWithMutabilityContext) => {
-    const start = this.getMark(ctx);
-    const produced = this.stack.splice(start);
-
-    if (produced.length !== 1) {
-      throw new InternalError("DatatypeWithMutability stack mismatch");
-    }
-
-    const datatype = produced[0] as ASTTypeUse;
-
-    this.stack.push(datatype);
-  };
-
-  exitDatatypeInParenthesis = (ctx: DatatypeInParenthesisContext) => {
-    const start = this.getMark(ctx);
-    const produced = this.stack.splice(start);
-
-    if (produced.length !== 1) {
-      throw new InternalError("DatatypeInParenthesis stack mismatch");
-    }
-
-    this.stack.push(produced[0]);
-  };
-
-  exitFunctionDatatype = (ctx: FunctionDatatypeContext) => {
-    const start = this.getMark(ctx);
-    const produced = this.stack.splice(start);
-
-    let i = 0;
-
-    // params (required)
-    if (produced.length === 0) {
-      throw new InternalError("FunctionDatatype missing params");
-    }
-
-    const params = produced[i++] as {
-      params: ASTParam[];
-      ellipsis: boolean;
-    };
-
-    // return type
-    const returnType = produced[i++] as ASTTypeUse;
-
-    // requires block (optional)
-    const requires = ctx.requiresBlock()
-      ? (produced[i++] as ASTFunctionRequiresBlock)
-      : {
-          final: false,
-          noreturn: false,
-          noreturnIf: null,
-          pure: false,
-        };
-
-    if (i !== produced.length) {
-      throw new InternalError("FunctionDatatype stack mismatch");
-    }
-
-    const isCallable = Boolean(ctx.DOUBLEARROW());
-    if (isCallable) {
-      this.stack.push({
-        variant: "CallableDatatype",
-        params: params.params,
-        ellipsis: params.ellipsis,
-        returnType: returnType,
-        requires,
-        mutability: EDatatypeMutability.Default,
-        sourceloc: this.loc(ctx),
-      } satisfies ASTCallableDatatype);
-    } else {
-      this.stack.push({
-        variant: "FunctionDatatype",
-        params: params.params,
-        ellipsis: params.ellipsis,
-        returnType: returnType,
-        requires,
-        mutability: EDatatypeMutability.Default,
-        sourceloc: this.loc(ctx),
-      } satisfies ASTFunctionDatatype);
-    }
   };
 
   exitImportStatement = (ctx: ImportStatementContext) => {
@@ -2847,26 +2816,6 @@ class ASTBuilder extends HazeParserListener {
     }
     return value;
   }
-
-  exitStackArrayDatatype = (ctx: StackArrayDatatypeContext) => {
-    const start = this.getMark(ctx);
-    const produced = this.stack.splice(start);
-
-    if (produced.length !== 1) {
-      throw new InternalError("StackArrayDatatype stack mismatch");
-    }
-
-    const datatype = produced[0];
-
-    this.stack.push({
-      variant: "StackArrayDatatype",
-      datatype,
-      length: this.integerFromDecimalOrHex(ctx),
-      mutability: EDatatypeMutability.Default,
-      inline: false,
-      sourceloc: this.loc(ctx),
-    } satisfies ASTStackArrayDatatype);
-  };
 
   exitRegexLiteral = (ctx: RegexLiteralContext) => {
     const start = this.getMark(ctx);
