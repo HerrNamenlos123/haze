@@ -4898,22 +4898,23 @@ export class SemanticElaborator {
         typedef.sourceloc,
       );
     }
-    let context = this.currentContext;
-    if (typedef.generics.length !== 0) {
-      assert(typedef.genericScope);
-      context = Semantic.isolateElaborationContext(context, {
-        currentScope: typedef.genericScope,
-        genericsScope: context.currentScope,
-        constraints: context.constraints,
-        instanceDeps: {
-          instanceDependsOn: new Map(),
-          structMembersDependOn: new Map(),
-          symbolDependsOn: new Map(),
-        },
-      });
-      for (let i = 0; i < typedef.generics.length; i++) {
-        context.substitute.set(typedef.generics[i], generics[i]);
-      }
+    // Alias targets must always resolve in the alias definition scope, not the usage site.
+    // Using the alias generic scope keeps generic parameters visible while naturally falling
+    // back to the alias parent scope for non-generic names.
+    assert(typedef.genericScope !== (-1 as Collect.ScopeId));
+    const context = Semantic.isolateElaborationContext(this.currentContext, {
+      currentScope: typedef.genericScope,
+      genericsScope: typedef.genericScope,
+      constraints: this.currentContext.constraints,
+      instanceDeps: {
+        instanceDependsOn: new Map(),
+        structMembersDependOn: new Map(),
+        symbolDependsOn: new Map(),
+      },
+    });
+
+    for (let i = 0; i < typedef.generics.length; i++) {
+      context.substitute.set(typedef.generics[i], generics[i]);
     }
 
     return this.withContext(
@@ -4923,9 +4924,6 @@ export class SemanticElaborator {
         inAttemptExpr: this.inAttemptExpr,
       },
       () => {
-        console.log("Elaborate alias target", typedef.name);
-        const scope = this.sr.cc.scopeNodes.get(this.currentContext.currentScope);
-        console.log("Inner scope is now ", scope);
         const aliasedTypeId = this.lookupAndElaborateDatatype(typedef.target);
         const gotUse = this.sr.typeUseNodes.get(aliasedTypeId);
 
@@ -5464,10 +5462,38 @@ export class SemanticElaborator {
           }
         }
 
-        let foundResult = Semantic.lookupSymbol(this.sr, type.name, {
-          startLookupInScope: this.currentContext.currentScope,
+        // Generic placeholders (e.g. T) are anchored to genericsScope and must keep
+        // their visibility/precedence even if currentScope temporarily moves.
+        const genericScopeResult = Semantic.tryLookupSymbol(this.sr, type.name, {
+          startLookupInScope: this.currentContext.genericsScope,
           sourceloc: type.sourceloc,
         });
+
+        let foundResult:
+          | { type: "semantic"; id: Semantic.ExprId; crossedLambdaScope: Collect.ScopeId | null }
+          | { type: "collect"; id: Collect.SymbolId; crossedLambdaScope: Collect.ScopeId | null }
+          | undefined;
+
+        if (
+          genericScopeResult &&
+          genericScopeResult.type === "collect" &&
+          this.sr.cc.symbolNodes.get(genericScopeResult.id).variant ===
+            Collect.ENode.GenericTypeParameterSymbol
+        ) {
+          foundResult = genericScopeResult;
+        } else {
+          foundResult = Semantic.tryLookupSymbol(this.sr, type.name, {
+            startLookupInScope: this.currentContext.currentScope,
+            sourceloc: type.sourceloc,
+          });
+        }
+
+        if (!foundResult) {
+          throw new CompilerError(
+            `Symbol '${type.name}' was not declared in this scope`,
+            type.sourceloc,
+          );
+        }
         if (foundResult.type === "semantic") {
           const e = this.sr.exprNodes.get(foundResult.id);
           if (e.variant === Semantic.ENode.DatatypeAsValueExpr) {
@@ -5512,7 +5538,6 @@ export class SemanticElaborator {
           }
         } else if (found.variant === Collect.ENode.TypeDefSymbol) {
           const typedef = this.sr.cc.typeDefNodes.get(found.typeDef);
-          console.log("elaborate inner type def datatype ", typedef.name, typedef.variant);
           if (typedef.variant === Collect.ENode.TypeDefAlias) {
             return this.elaborateTypeDefAlias(
               typedef,
@@ -5611,7 +5636,6 @@ export class SemanticElaborator {
                 type.sourceloc,
               )[1];
             }
-            console.log("Elaborate namespace ", type.name);
             return this.withContext(
               {
                 context: Semantic.isolateElaborationContext(this.currentContext, {
@@ -5629,22 +5653,6 @@ export class SemanticElaborator {
               },
               () => {
                 // Use the outermost modifiers and ignore the inner ones
-                console.log("Find namespace type");
-                const u = this.sr.cc.typeUseNodes.get(type.innerNested!);
-                if (
-                  u.variant === Collect.ENode.NamedDatatype &&
-                  typedef.name === "ffi" &&
-                  u.name === "hzstd_meta_type_category_t"
-                ) {
-                  console.log("NAMESPACE");
-                  const scope = this.sr.cc.scopeNodes.get(this.currentContext.currentScope);
-                  assert(scope.variant === Collect.ENode.NamespaceScope);
-                  console.log(scope);
-                  for (const s of scope.symbols) {
-                    const ss = this.sr.cc.symbolNodes.get(s);
-                    console.log("SYMBOL", ss);
-                  }
-                }
                 const typeUseId = this.lookupAndElaborateDatatype(type.innerNested!);
                 const typeUse = this.sr.typeUseNodes.get(typeUseId);
                 return makeTypeUse(
@@ -6128,7 +6136,6 @@ export class SemanticElaborator {
         const e = this.enum(symbol.typeDef);
         return this.sr.b.datatypeDefAsValue(e, memberAccessExpr.sourceloc);
       } else if (def.variant === Collect.ENode.TypeDefAlias) {
-        console.log("Elaborate type def ", def.name);
         const e = this.elaborateTypeDefAlias(
           def,
           memberAccessExpr.genericArgs,
@@ -8728,9 +8735,11 @@ export class SemanticElaborator {
           alias.sourceloc,
         );
       }
-      let context = Semantic.isolateElaborationContext(this.currentContext, {
+      // Alias-as-value must follow the same scoping rules as alias-in-type-position.
+      assert(alias.genericScope !== (-1 as Collect.ScopeId));
+      const context = Semantic.isolateElaborationContext(this.currentContext, {
         currentScope: alias.genericScope,
-        genericsScope: symbol.inScope,
+        genericsScope: alias.genericScope,
         constraints: this.currentContext.constraints,
         instanceDeps: {
           instanceDependsOn: new Map(),
@@ -8739,21 +8748,8 @@ export class SemanticElaborator {
         },
       });
 
-      if (alias.generics.length !== 0) {
-        assert(alias.genericScope);
-        context = Semantic.isolateElaborationContext(context, {
-          currentScope: alias.genericScope,
-          genericsScope: context.currentScope,
-          constraints: context.constraints,
-          instanceDeps: {
-            instanceDependsOn: new Map(),
-            structMembersDependOn: new Map(),
-            symbolDependsOn: new Map(),
-          },
-        });
-        for (let i = 0; i < alias.generics.length; i++) {
-          context.substitute.set(alias.generics[i], generics[i]);
-        }
+      for (let i = 0; i < alias.generics.length; i++) {
+        context.substitute.set(alias.generics[i], generics[i]);
       }
 
       const newId = this.withContext(
