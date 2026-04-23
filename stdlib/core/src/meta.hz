@@ -19,7 +19,22 @@ namespace meta {
         }
     }
 
-    export type TypeCategory = ffi.hzstd_meta_type_category_t;
+    export enum TypeCategory {
+        Internal = ffi.hzstd_meta_type_category_internal,
+        Namespace = ffi.hzstd_meta_type_category_namespace,
+        Struct = ffi.hzstd_meta_type_category_struct,
+        Enum = ffi.hzstd_meta_type_category_enum,
+        Primitive = ffi.hzstd_meta_type_category_primitive,
+        Function = ffi.hzstd_meta_type_category_function,
+        Callable = ffi.hzstd_meta_type_category_callable,
+        Array = ffi.hzstd_meta_type_category_array,
+        Slice = ffi.hzstd_meta_type_category_slice,
+        Union = ffi.hzstd_meta_type_category_union,
+        Reactive = ffi.hzstd_meta_type_category_reactive,
+        Generic = ffi.hzstd_meta_type_category_generic,
+        Literal = ffi.hzstd_meta_type_category_literal,
+        ParameterPack = ffi.hzstd_meta_type_category_parameter_pack,
+    }
 
     export categoryOf<T>(value: T): TypeCategory :: final {
         return typeof(value).category;

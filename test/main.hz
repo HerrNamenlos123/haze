@@ -45,22 +45,24 @@ struct Foo {
 }
 
 print<T>(value: T) {
-    let s = "{\n";
-    for comptime field, i in typeof(value).fields {
-        s += f"    {field.name}: {value.[field.name]}{i < typeof(value).fields.length - 1 ? "," : ""}\n";
+    if comptime typeof(value).category == meta.TypeCategory.Struct {
+        let s = "{\n";
+        for comptime field, i in typeof(value).fields {
+            s += f"    {field.name}: {value.[field.name]}{i < typeof(value).fields.length - 1 ? "," : ""}\n";
+        }
+        s += "}";
+        fmt.println(s);
     }
-    s += "}";
-    fmt.println(s);
+    else {
+        fmt.println(value);
+    }
 }
 
 main(): int {
 
     const foo = Foo { value: 187, otherValue: 42.0 };
     print(foo);
-
-    if typeof(foo).category == meta.TypeCategory.Primitive {
-
-    }
+    print(5);
 
     // let foo = Foo { value: 5, bar: { value: 42 } };
     // const comptime field = "value";

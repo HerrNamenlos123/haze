@@ -6588,7 +6588,7 @@ export class SemanticElaborator {
 
     const typeCategorySymbolId = Semantic.findBuiltinSymbolByName(
       this.sr,
-      "meta.ffi.hzstd_meta_type_category_t",
+      "meta.TypeCategory",
       sourceloc,
     );
     const typeCategorySymbol = this.sr.cc.symbolNodes.get(typeCategorySymbolId);
