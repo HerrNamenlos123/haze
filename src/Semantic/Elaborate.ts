@@ -4873,6 +4873,146 @@ export class SemanticElaborator {
     );
   }
 
+  elaborateTypeDefAlias(
+    typedef: Collect.TypeDefAlias,
+    genericArgs: Collect.ExprId[],
+    innerNested: Collect.TypeUseId | null,
+    mutability: EDatatypeMutability | null,
+    inline: boolean,
+    sourceloc: SourceLoc,
+  ): Semantic.TypeUseId {
+    const generics = genericArgs.map((g) => {
+      return this.withContext(
+        {
+          context: this.currentContext,
+          inAttemptExpr: null,
+          inFunction: null,
+        },
+        () => this.expressionAsGenericArg(g),
+      );
+    });
+
+    if (typedef.generics.length !== generics.length) {
+      throw new CompilerError(
+        `Type ${typedef.name} expects ${typedef.generics.length} type parameters but got ${generics.length}`,
+        typedef.sourceloc,
+      );
+    }
+    let context = this.currentContext;
+    if (typedef.generics.length !== 0) {
+      assert(typedef.genericScope);
+      context = Semantic.isolateElaborationContext(context, {
+        currentScope: typedef.genericScope,
+        genericsScope: context.currentScope,
+        constraints: context.constraints,
+        instanceDeps: {
+          instanceDependsOn: new Map(),
+          structMembersDependOn: new Map(),
+          symbolDependsOn: new Map(),
+        },
+      });
+      for (let i = 0; i < typedef.generics.length; i++) {
+        context.substitute.set(typedef.generics[i], generics[i]);
+      }
+    }
+
+    return this.withContext(
+      {
+        context: context,
+        inFunction: this.inFunction,
+        inAttemptExpr: this.inAttemptExpr,
+      },
+      () => {
+        console.log("Elaborate alias target", typedef.name);
+        const scope = this.sr.cc.scopeNodes.get(this.currentContext.currentScope);
+        console.log("Inner scope is now ", scope);
+        const aliasedTypeId = this.lookupAndElaborateDatatype(typedef.target);
+        const gotUse = this.sr.typeUseNodes.get(aliasedTypeId);
+
+        let resultingInline = gotUse.inline || inline;
+        let resultingMutability = gotUse.mutability;
+
+        if (innerNested) {
+          const aliasedType = this.sr.typeDefNodes.get(
+            this.sr.typeUseNodes.get(aliasedTypeId).type,
+          );
+          if (aliasedType.variant !== Semantic.ENode.NamespaceDatatype) {
+            throw new CompilerError(
+              `Type '${Semantic.serializeTypeUse(
+                this.sr,
+                aliasedTypeId,
+              )}' cannot be used as a namespace`,
+              sourceloc,
+            );
+          }
+          const collectedNamespace = this.sr.cc.typeDefNodes.get(aliasedType.collectedNamespace);
+          assert(collectedNamespace.variant === Collect.ENode.NamespaceTypeDef);
+          return this.withContext(
+            {
+              context: Semantic.isolateElaborationContext(this.currentContext, {
+                currentScope: collectedNamespace.namespaceScope,
+                genericsScope: this.currentContext.genericsScope,
+                constraints: ConstraintSet.empty(),
+                instanceDeps: {
+                  instanceDependsOn: new Map(),
+                  structMembersDependOn: new Map(),
+                  symbolDependsOn: new Map(),
+                },
+              }),
+              inAttemptExpr: null,
+              inFunction: null,
+            },
+            () => {
+              // Use the outermost modifiers and ignore the inner ones
+              const typeUseId = this.lookupAndElaborateDatatype(innerNested!);
+              const typeUse = this.sr.typeUseNodes.get(typeUseId);
+              return makeTypeUse(
+                this.sr,
+                typeUse.type,
+                mutability ?? gotUse.mutability,
+                inline,
+                sourceloc,
+              )[1];
+            },
+          );
+        }
+
+        const supposedTypeForError = makeTypeUse(
+          this.sr,
+          gotUse.type,
+          mutability ?? EDatatypeMutability.Default,
+          inline,
+          sourceloc,
+        )[1];
+
+        if (
+          gotUse.mutability === EDatatypeMutability.Mut &&
+          mutability === EDatatypeMutability.Default
+        ) {
+          resultingMutability = EDatatypeMutability.Default;
+        } else if (
+          gotUse.mutability === EDatatypeMutability.Const &&
+          mutability === EDatatypeMutability.Default
+        ) {
+          resultingMutability = EDatatypeMutability.Default;
+        } else if (gotUse.mutability !== mutability && mutability !== null) {
+          throw new CompilerError(
+            `This alias is defined as ${Semantic.serializeTypeUse(this.sr, aliasedTypeId)}, which cannot be treated as ${Semantic.serializeTypeUse(this.sr, supposedTypeForError)}`,
+            sourceloc,
+          );
+        }
+
+        return makeTypeUse(
+          this.sr,
+          gotUse.type,
+          resultingMutability,
+          resultingInline,
+          sourceloc,
+        )[1];
+      },
+    );
+  }
+
   lookupAndElaborateDatatype(
     typeId: Collect.TypeUseId,
     args?: { noSubstituteGenerics?: boolean },
@@ -5372,129 +5512,15 @@ export class SemanticElaborator {
           }
         } else if (found.variant === Collect.ENode.TypeDefSymbol) {
           const typedef = this.sr.cc.typeDefNodes.get(found.typeDef);
+          console.log("elaborate inner type def datatype ", typedef.name, typedef.variant);
           if (typedef.variant === Collect.ENode.TypeDefAlias) {
-            const generics = type.genericArgs.map((g) => {
-              return this.withContext(
-                {
-                  context: this.currentContext,
-                  inAttemptExpr: null,
-                  inFunction: null,
-                },
-                () => this.expressionAsGenericArg(g),
-              );
-            });
-
-            if (typedef.generics.length !== generics.length) {
-              throw new CompilerError(
-                `Type ${typedef.name} expects ${typedef.generics.length} type parameters but got ${generics.length}`,
-                typedef.sourceloc,
-              );
-            }
-            let context = this.currentContext;
-            if (typedef.generics.length !== 0) {
-              assert(typedef.genericScope);
-              context = Semantic.isolateElaborationContext(context, {
-                currentScope: typedef.genericScope,
-                genericsScope: context.currentScope,
-                constraints: context.constraints,
-                instanceDeps: {
-                  instanceDependsOn: new Map(),
-                  structMembersDependOn: new Map(),
-                  symbolDependsOn: new Map(),
-                },
-              });
-              for (let i = 0; i < typedef.generics.length; i++) {
-                context.substitute.set(typedef.generics[i], generics[i]);
-              }
-            }
-
-            return this.withContext(
-              {
-                context: context,
-                inFunction: this.inFunction,
-                inAttemptExpr: this.inAttemptExpr,
-              },
-              () => {
-                const aliasedTypeId = this.lookupAndElaborateDatatype(typedef.target);
-                if (type.innerNested) {
-                  const aliasedType = this.sr.typeDefNodes.get(
-                    this.sr.typeUseNodes.get(aliasedTypeId).type,
-                  );
-                  if (aliasedType.variant !== Semantic.ENode.NamespaceDatatype) {
-                    throw new CompilerError(
-                      `Type '${Semantic.serializeTypeUse(
-                        this.sr,
-                        aliasedTypeId,
-                      )}' cannot be used as a namespace`,
-                      type.sourceloc,
-                    );
-                  }
-                  const collectedNamespace = this.sr.cc.typeDefNodes.get(
-                    aliasedType.collectedNamespace,
-                  );
-                  assert(collectedNamespace.variant === Collect.ENode.NamespaceTypeDef);
-                  return this.withContext(
-                    {
-                      context: Semantic.isolateElaborationContext(this.currentContext, {
-                        currentScope: collectedNamespace.namespaceScope,
-                        genericsScope: this.currentContext.genericsScope,
-                        constraints: ConstraintSet.empty(),
-                        instanceDeps: {
-                          instanceDependsOn: new Map(),
-                          structMembersDependOn: new Map(),
-                          symbolDependsOn: new Map(),
-                        },
-                      }),
-                      inAttemptExpr: null,
-                      inFunction: null,
-                    },
-                    () => {
-                      // Use the outermost modifiers and ignore the inner ones
-                      const typeUseId = this.lookupAndElaborateDatatype(type.innerNested!);
-                      const typeUse = this.sr.typeUseNodes.get(typeUseId);
-                      return makeTypeUse(
-                        this.sr,
-                        typeUse.type,
-                        type.mutability,
-                        type.inline,
-                        type.sourceloc,
-                      )[1];
-                    },
-                  );
-                }
-
-                const gotUse = this.sr.typeUseNodes.get(aliasedTypeId);
-
-                const supposedTypeForError = makeTypeUse(
-                  this.sr,
-                  gotUse.type,
-                  type.mutability,
-                  type.inline,
-                  type.sourceloc,
-                )[1];
-
-                let inline = gotUse.inline || type.inline;
-                let mutability = gotUse.mutability;
-
-                if (
-                  gotUse.mutability === EDatatypeMutability.Mut &&
-                  type.mutability === EDatatypeMutability.Default
-                ) {
-                  mutability = EDatatypeMutability.Default;
-                } else if (
-                  gotUse.mutability === EDatatypeMutability.Const &&
-                  type.mutability === EDatatypeMutability.Default
-                ) {
-                  mutability = EDatatypeMutability.Default;
-                } else if (gotUse.mutability !== type.mutability) {
-                  throw new CompilerError(
-                    `This alias is defined as ${Semantic.serializeTypeUse(this.sr, aliasedTypeId)}, which cannot be treated as ${Semantic.serializeTypeUse(this.sr, supposedTypeForError)}`,
-                    type.sourceloc,
-                  );
-                }
-
-                return makeTypeUse(this.sr, gotUse.type, mutability, inline, type.sourceloc)[1];
-              },
+            return this.elaborateTypeDefAlias(
+              typedef,
+              type.genericArgs,
+              type.innerNested,
+              type.mutability,
+              type.inline,
+              type.sourceloc,
             );
           } else if (typedef.variant === Collect.ENode.StructTypeDef) {
             const generics = type.genericArgs.map((g) => {
@@ -5585,6 +5611,7 @@ export class SemanticElaborator {
                 type.sourceloc,
               )[1];
             }
+            console.log("Elaborate namespace ", type.name);
             return this.withContext(
               {
                 context: Semantic.isolateElaborationContext(this.currentContext, {
@@ -5602,6 +5629,22 @@ export class SemanticElaborator {
               },
               () => {
                 // Use the outermost modifiers and ignore the inner ones
+                console.log("Find namespace type");
+                const u = this.sr.cc.typeUseNodes.get(type.innerNested!);
+                if (
+                  u.variant === Collect.ENode.NamedDatatype &&
+                  typedef.name === "ffi" &&
+                  u.name === "hzstd_meta_type_category_t"
+                ) {
+                  console.log("NAMESPACE");
+                  const scope = this.sr.cc.scopeNodes.get(this.currentContext.currentScope);
+                  assert(scope.variant === Collect.ENode.NamespaceScope);
+                  console.log(scope);
+                  for (const s of scope.symbols) {
+                    const ss = this.sr.cc.symbolNodes.get(s);
+                    console.log("SYMBOL", ss);
+                  }
+                }
                 const typeUseId = this.lookupAndElaborateDatatype(type.innerNested!);
                 const typeUse = this.sr.typeUseNodes.get(typeUseId);
                 return makeTypeUse(
@@ -6084,6 +6127,17 @@ export class SemanticElaborator {
       } else if (def.variant === Collect.ENode.EnumTypeDef) {
         const e = this.enum(symbol.typeDef);
         return this.sr.b.datatypeDefAsValue(e, memberAccessExpr.sourceloc);
+      } else if (def.variant === Collect.ENode.TypeDefAlias) {
+        console.log("Elaborate type def ", def.name);
+        const e = this.elaborateTypeDefAlias(
+          def,
+          memberAccessExpr.genericArgs,
+          null,
+          null,
+          false,
+          memberAccessExpr.sourceloc,
+        );
+        return this.sr.b.datatypeUseAsValue(e, memberAccessExpr.sourceloc);
       }
     }
 

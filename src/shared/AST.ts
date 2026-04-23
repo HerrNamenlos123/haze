@@ -2,13 +2,13 @@ import { ImpossibleSituation, type SourceLoc } from "./Errors";
 import type { EMethodType, EVariableContext, LiteralValue } from "./common";
 
 export enum EVariableMutability {
-  Const,
+  Const = 1,
   Let,
   Default,
 }
 
 export enum EDatatypeMutability {
-  Default,
+  Default = 1,
   Mut,
   Const,
 }
@@ -20,7 +20,7 @@ export enum EExternLanguage {
 }
 
 export enum EOverloadedOperator {
-  Add,
+  Add = 1,
   Sub,
   Mul,
   Div,

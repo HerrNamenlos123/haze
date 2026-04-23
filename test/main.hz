@@ -53,18 +53,10 @@ print<T>(value: T) {
     fmt.println(s);
 }
 
-namespace meta {
-    #source "C:\\Users\\fzachs\\Documents\\haze\\stdlib\\core\\src\\meta.hz":22:5-36 {
-        type TypeCategory = ffi.hzstd_meta_type_category_t;
-    }
-}
-
 main(): int {
 
     const foo = Foo { value: 187, otherValue: 42.0 };
     print(foo);
-
-    let a = meta.TypeCategory();
 
     if typeof(foo).category == meta.TypeCategory.Primitive {
 
