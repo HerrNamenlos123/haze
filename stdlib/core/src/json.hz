@@ -2,6 +2,7 @@
 namespace ffi {
     extern C noemit struct cJSON {};
 
+    fn foo(): none :: final;
     extern C fn hzstd_json_parse(allocator: Allocator, data: str, error: ffi.hzstd_str_ref_t): cJSON | none :: final;
     extern C fn hzstd_json_create_string(allocator: Allocator, data: str): cJSON :: final;
     extern C fn hzstd_json_create_number(allocator: Allocator, data: real): cJSON :: final;

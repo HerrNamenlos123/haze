@@ -36,11 +36,7 @@ import {
   type SourceLoc,
 } from "../shared/Errors";
 import { makeTempId, makeTempName } from "../shared/store";
-import {
-  ConditionChain,
-  type ConstraintPath,
-  ConstraintSet,
-} from "./Constraint";
+import { ConditionChain, ConstraintSet } from "./Constraint";
 import { Conversion } from "./Conversion";
 import {
   ctValueToExpr,
@@ -4628,6 +4624,18 @@ export class SemanticElaborator {
       }
     }
 
+    // Exception: For "none" and "null" literals, since they are both values and types at the same time
+    // (unlike all other primitive types), there is a special case that reinterprets the literal as a type
+    // if required, because none and null types are also parsed as conventional symbol value expressions.
+    if (expr.variant === Semantic.ENode.LiteralExpr) {
+      if (
+        expr.literal.type === EPrimitive.null ||
+        expr.literal.type === EPrimitive.none
+      ) {
+        return this.sr.b.primitiveType(expr.literal.type, expr.sourceloc);
+      }
+    }
+
     throw new CompilerError(
       `Expression '${Semantic.serializeExpr(this.sr, exprId)}' does not evaluate to a datatype`,
       expr.sourceloc
@@ -4643,6 +4651,11 @@ export class SemanticElaborator {
     switch (type.variant) {
       case Collect.ENode.SymbolValueExpr: {
         return this.evaluateExpressionToDatatype(this.expr(typeId, {})[1]);
+      }
+
+      case Collect.ENode.TypeOfExpr: {
+        const [expr] = this.expr(type.expr, {});
+        return expr.type;
       }
 
       case Collect.ENode.TypeModifierExpr: {
@@ -6292,34 +6305,139 @@ export class SemanticElaborator {
     const genericArgs = generics.map((g) => this.expressionAsGenericArg(g));
     let expr = this.sr.exprNodes.get(exprId);
 
+    // console.log("Resolve", name, expr.variant);
+
     // Handle datatypes BEFORE reactive unwrapping
     // TODO: Why? Can't remember
     if (expr.variant === Semantic.ENode.DatatypeAsValueExpr) {
       const typeUse = this.sr.typeUseNodes.get(expr.type);
       const typeDef = this.sr.typeDefNodes.get(typeUse.type);
 
-      if (
-        typeDef.variant === Semantic.ENode.StructDatatype &&
-        typeDef.name === name
-      ) {
-        // typeDef
-        assert(false);
-        // const typedef = this.sr.cc.typeDefNodes.get(symbol.typeDef);
-        // assert(typedef.variant === Collect.ENode.StructTypeDef);
-        // // A struct nested in a struct
-        // const instantiated = this.instantiateAndElaborateStructWithGenerics(
-        //   symbol.typeDef,
-        //   memberAccessExpr.genericArgs.map((g) => this.expressionAsGenericArg(g)),
-        //   memberAccessExpr.sourceloc,
-        // );
-        // return this.sr.b.datatypeDefAsValue(instantiated, memberAccessExpr.sourceloc);
+      if (typeDef.variant === Semantic.ENode.StructDatatype) {
+        if (name === "fields") {
+          if (typeDef.reactiveClone) {
+            throw new CompilerError(
+              `Datatype ${Semantic.serializeTypeUse(this.sr, expr.type)} does not support '.fields' reflection`,
+              sourceloc
+            );
+          }
+
+          const metaFieldType = this.ensureMetaFieldStructType(sourceloc);
+          const reflectedFields: Semantic.ExprId[] = [];
+
+          for (const memberId of typeDef.members) {
+            const member = this.sr.symbolNodes.get(memberId);
+            assert(member.variant === Semantic.ENode.VariableSymbol);
+
+            const fieldNameExprId = this.sr.b.literal(
+              member.name,
+              sourceloc
+            )[1];
+            const fieldExprId = this.sr.b.structLiteral(
+              metaFieldType,
+              [{ name: "name", value: fieldNameExprId }],
+              this.inFunction,
+              null,
+              sourceloc
+            )[1];
+            reflectedFields.push(fieldExprId);
+          }
+
+          const reflectedType = makeStackArrayDatatypeAvailable(
+            this.sr,
+            metaFieldType,
+            BigInt(reflectedFields.length),
+            EDatatypeMutability.Const,
+            false,
+            sourceloc
+          );
+
+          return this.sr.b.arrayLiteral(
+            reflectedType,
+            reflectedFields,
+            this.inFunction,
+            null,
+            sourceloc
+          );
+        }
+
+        const result = this.resolveMemberAccessInStruct(
+          exprId,
+          name,
+          genericArgs,
+          inference,
+          sourceloc
+        );
+        if (result) {
+          return result;
+        }
       }
 
-      if (
-        typeDef.variant === Semantic.ENode.EnumDatatype &&
-        typeDef.name === name
-      ) {
+      if (typeDef.variant === Semantic.ENode.EnumDatatype) {
+        if (generics.length !== 0) {
+          throw new CompilerError(
+            `Enums cannot take generic arguments`,
+            sourceloc
+          );
+        }
+
+        for (const value of typeDef.values) {
+          if (value.name === name) {
+            return [
+              this.sr.exprNodes.get(value.literalExpr),
+              value.literalExpr,
+            ];
+          }
+        }
+
+        throw new CompilerError(
+          `Enum '${Semantic.serializeTypeUse(this.sr, expr.type)}' does not have a value named '${name}'`,
+          sourceloc
+        );
+      }
+
+      if (typeDef.variant === Semantic.ENode.PrimitiveDatatype) {
+        // return this.elaboratePrimitiveDatatypeMemberAccess(
+        //   datatypeValue,
+        //   memberAccessExpr
+        // );
         assert(false);
+      }
+
+      if (typeDef.variant === Semantic.ENode.TaggedUnionDatatype) {
+        if (generics.length !== 0) {
+          throw new CompilerError(
+            `Unions cannot take generic arguments`,
+            sourceloc
+          );
+        }
+
+        for (const member of typeDef.members) {
+          if (member.tag === name) {
+            return this.sr.b.addExpr(this.sr, {
+              variant: Semantic.ENode.UnionTagReferenceExpr,
+              instanceIds: [],
+              isTemporary: true,
+              tag: name,
+              unionType: typeUse.type,
+              type: makeTypeUse(
+                this.sr,
+                this.sr.b.unionTagRefTypeDef(),
+                EDatatypeMutability.Default,
+                false,
+                sourceloc
+              )[1],
+              sourceloc: sourceloc,
+              flow: Semantic.FlowResult.fallthrough(),
+              writes: Semantic.WriteResult.empty(),
+            });
+          }
+        }
+
+        throw new CompilerError(
+          `Union '${Semantic.serializeTypeUse(this.sr, expr.type)}' does not have a tag named '${name}'`,
+          sourceloc
+        );
       }
 
       if (typeDef.variant === Semantic.ENode.NamespaceDatatype) {
@@ -6352,6 +6470,31 @@ export class SemanticElaborator {
                 inference,
                 sourceloc
               );
+            }
+          }
+
+          // Now check if there are unscoped enums in the namespace, they have lower priority than scoped types
+          for (const symbolId of scope.symbols) {
+            const symbol = this.sr.cc.symbolNodes.get(symbolId);
+            if (symbol.variant === Collect.ENode.TypeDefSymbol) {
+              const typedef = this.sr.cc.typeDefNodes.get(symbol.typeDef);
+              if (
+                typedef.variant === Collect.ENode.EnumTypeDef &&
+                typedef.unscoped
+              ) {
+                const semanticTypedef = this.sr.typeDefNodes.get(
+                  this.elaborateEnum(symbol.typeDef)
+                );
+                assert(semanticTypedef.variant === Semantic.ENode.EnumDatatype);
+                for (const e of semanticTypedef.values) {
+                  if (e.name === name) {
+                    return [
+                      this.sr.exprNodes.get(e.literalExpr),
+                      e.literalExpr,
+                    ] as const;
+                  }
+                }
+              }
             }
           }
         }
@@ -6462,20 +6605,6 @@ export class SemanticElaborator {
       return this.generateToStringMethod(exprId, sourceloc);
     }
 
-    // TODO: Fix this, this is for unscoped enums
-    // if (symbol.variant === Collect.ENode.TypeDefSymbol) {
-    //   const typedef = this.sr.cc.typeDefNodes.get(symbol.typeDef);
-    //   if (typedef.variant === Collect.ENode.EnumTypeDef && typedef.unscoped) {
-    //     const semanticTypedef = this.sr.typeDefNodes.get(this.enum(symbol.typeDef));
-    //     assert(semanticTypedef.variant === Semantic.ENode.EnumDatatype);
-    //     for (const e of semanticTypedef.values) {
-    //       if (e.name === name) {
-    //         return [this.sr.exprNodes.get(e.valueExpr), e.literalExpr] as const;
-    //       }
-    //     }
-    //   }
-    // }
-
     if (expr.variant === Semantic.ENode.DatatypeAsValueExpr) {
       // Call again recursively and handle on the top, to unwrap
       return this.resolveMemberAccess(
@@ -6485,17 +6614,18 @@ export class SemanticElaborator {
         inference,
         sourceloc
       );
-    } else if (exprType.variant === Semantic.ENode.StructDatatype) {
-      const result = this.resolveMemberAccessInStruct(
-        exprId,
+    }
+
+    // And here the remaining rest, based on the datatype
+    if (exprType.variant === Semantic.ENode.StructDatatype) {
+      // Call again recursively and handle on the top, to unwrap
+      return this.resolveMemberAccess(
+        this.sr.b.datatypeDefAsValue(exprTypeUse.type, sourceloc)[1],
         name,
-        genericArgs,
+        generics,
         inference,
         sourceloc
       );
-      if (result) {
-        return result;
-      }
     } else if (
       exprType.variant === Semantic.ENode.PrimitiveDatatype &&
       exprType.primitive === EPrimitive.str
@@ -6894,7 +7024,10 @@ export class SemanticElaborator {
         )}' does not have a member named '${name}'`,
         sourceloc
       );
-    } else if (exprType.variant === Semantic.ENode.NamespaceDatatype) {
+    } else if (
+      exprType.variant === Semantic.ENode.NamespaceDatatype ||
+      exprType.variant === Semantic.ENode.EnumDatatype
+    ) {
       // Call itself recursively and wrap in a datatype, to let the handler above handle it
       const typeAsValue = this.sr.b.datatypeDefAsValue(
         exprTypeUse.type,
@@ -6908,6 +7041,8 @@ export class SemanticElaborator {
         sourceloc
       );
     }
+
+    console.log(expr, exprType);
 
     // DATATYPE LOOKUP
 
@@ -6957,96 +7092,9 @@ export class SemanticElaborator {
     //     inference,
     //   );
     // } else if (datatypeValue.variant === Semantic.ENode.StructDatatype) {
-    //   if (memberAccessExpr.memberName === "fields") {
-    //     if (datatypeValue.reactiveClone) {
-    //       throw new CompilerError(
-    //         `Datatype ${Semantic.serializeTypeUse(this.sr, typeUseId)} does not support '.fields' reflection`,
-    //         memberAccessExpr.sourceloc,
-    //       );
-    //     }
-
-    //     const metaFieldType = this.ensureMetaFieldStructType(memberAccessExpr.sourceloc);
-    //     const reflectedFields: Semantic.ExprId[] = [];
-
-    //     for (const memberId of datatypeValue.members) {
-    //       const member = this.sr.symbolNodes.get(memberId);
-    //       assert(member.variant === Semantic.ENode.VariableSymbol);
-
-    //       const fieldNameExprId = this.sr.b.literal(member.name, memberAccessExpr.sourceloc)[1];
-    //       const fieldExprId = this.sr.b.structLiteral(
-    //         metaFieldType,
-    //         [{ name: "name", value: fieldNameExprId }],
-    //         this.inFunction,
-    //         null,
-    //         memberAccessExpr.sourceloc,
-    //       )[1];
-    //       reflectedFields.push(fieldExprId);
-    //     }
-
-    //     const reflectedType = makeStackArrayDatatypeAvailable(
-    //       this.sr,
-    //       metaFieldType,
-    //       BigInt(reflectedFields.length),
-    //       EDatatypeMutability.Const,
-    //       false,
-    //       memberAccessExpr.sourceloc,
-    //     );
-
-    //     return this.sr.b.arrayLiteral(
-    //       reflectedType,
-    //       reflectedFields,
-    //       this.inFunction,
-    //       null,
-    //       memberAccessExpr.sourceloc,
-    //     );
-    //   }
-
-    //   return this.elaborateMemberFromExpr(
-    //     datatypeAsValueExprId,
-    //     memberAccessExpr.memberName,
-    //     memberAccessExpr.genericArgs,
-    //     memberAccessExpr.sourceloc,
-    //     inference,
-    //   );
     // } else if (datatypeValue.variant === Semantic.ENode.PrimitiveDatatype) {
-    //   return this.elaboratePrimitiveDatatypeMemberAccess(datatypeValue, memberAccessExpr);
     // } else if (datatypeValue.variant === Semantic.ENode.TaggedUnionDatatype) {
-    //   if (!datatypeValue.members.find((m) => m.tag === memberAccessExpr.memberName)) {
-    //     throw new CompilerError(
-    //       `Type ${Semantic.serializeTypeUse(this.sr, typeUseId)} does not have a tag named '${
-    //         memberAccessExpr.memberName
-    //       }'`,
-    //       memberAccessExpr.sourceloc,
-    //     );
-    //   }
-
-    //   return this.sr.b.addExpr(this.sr, {
-    //     variant: Semantic.ENode.UnionTagReferenceExpr,
-    //     instanceIds: [],
-    //     isTemporary: true,
-    //     tag: memberAccessExpr.memberName,
-    //     unionType: datatypeValueInstance.type,
-    //     type: makeTypeUse(
-    //       this.sr,
-    //       this.sr.b.unionTagRefTypeDef(),
-    //       EDatatypeMutability.Default,
-    //       false,
-    //       memberAccessExpr.sourceloc,
-    //     )[1],
-    //     sourceloc: memberAccessExpr.sourceloc,
-    //     flow: Semantic.FlowResult.fallthrough(),
-    //     writes: Semantic.WriteResult.empty(),
-    //   });
     // } else if (datatypeValue.variant === Semantic.ENode.EnumDatatype) {
-    //   if (memberAccessExpr.genericArgs.length !== 0) {
-    //     throw new CompilerError(`Enums do not take generic arguments`, memberAccessExpr.sourceloc);
-    //   }
-
-    //   for (const value of datatypeValue.values) {
-    //     if (value.name === memberAccessExpr.memberName) {
-    //       return [this.sr.exprNodes.get(value.literalExpr), value.literalExpr] as const;
-    //     }
-    //   }
     // }
 
     // throw new CompilerError(

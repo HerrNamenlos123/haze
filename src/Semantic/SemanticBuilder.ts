@@ -1162,7 +1162,7 @@ export class SemanticBuilder {
     assert(fType.variant === Semantic.ENode.FunctionDatatype);
     assert(args.parameterNames.length === fType.parameters.length);
 
-    const fullSource = `${args.funcname}(${fType.parameters
+    const fullSource = `fn ${args.funcname}(${fType.parameters
       .map(
         (p, i) =>
           `${args.parameterNames[i]}${p.optional ? "?" : ""}: ${Semantic.serializeTypeUse(

@@ -145,8 +145,6 @@ export namespace Collect {
     DynamicArrayTypeDefinitionExpr,
     UntaggedUnionTypeDefinitionExpr,
     TaggedUnionTypeDefinitionExpr,
-    TypeOfExprDatatype,
-    TypeExprDatatype,
     EnumTypeDef,
     StructTypeDef,
     NamespaceSharedInstance,
@@ -169,6 +167,7 @@ export namespace Collect {
     ErrorPropagationExpr,
     UnsafeExpr,
     BinaryExpr,
+    TypeOfExpr,
     LiteralExpr,
     FStringExpr,
     UnaryExpr,
@@ -589,6 +588,11 @@ export namespace Collect {
     scope: Collect.ScopeId;
   };
 
+  export type TypeOfExpr = BaseExpr & {
+    variant: ENode.TypeOfExpr;
+    expr: Collect.ExprId;
+  };
+
   export type BinaryExpr = BaseExpr & {
     variant: ENode.BinaryExpr;
     left: Collect.ExprId;
@@ -798,6 +802,7 @@ export namespace Collect {
     | ParenthesisExpr
     | ErrorPropagationExpr
     | BlockScopeExpr
+    | TypeOfExpr
     | BinaryExpr
     | UnaryExpr
     | SymbolValueExpr
@@ -2787,15 +2792,8 @@ function collectExpr(
           target: collectExpr(
             cc,
             {
-              variant: "ExprCallExpr",
-              allocator: null,
-              arguments: [item.expr],
-              calledExpr: {
-                variant: "SymbolValueExpr",
-                name: "typeof",
-                generics: [],
-                sourceloc: item.sourceloc,
-              },
+              variant: "TypeOfExpr",
+              expr: item.expr,
               sourceloc: item.sourceloc,
             },
             args
@@ -2946,15 +2944,8 @@ function collectExpr(
           target: collectExpr(
             cc,
             {
-              variant: "ExprCallExpr",
-              allocator: null,
-              arguments: [item.expr],
-              calledExpr: {
-                variant: "SymbolValueExpr",
-                name: "typeof",
-                generics: [],
-                sourceloc: item.sourceloc,
-              },
+              variant: "TypeOfExpr",
+              expr: item.expr,
               sourceloc: item.sourceloc,
             },
             args
@@ -3211,15 +3202,8 @@ function collectExpr(
             target: collectExpr(
               cc,
               {
-                variant: "ExprCallExpr",
-                allocator: null,
-                arguments: [item.target],
-                calledExpr: {
-                  variant: "SymbolValueExpr",
-                  name: "typeof",
-                  generics: [],
-                  sourceloc: item.sourceloc,
-                },
+                variant: "TypeOfExpr",
+                expr: item.target,
                 sourceloc: item.sourceloc,
               },
               args
@@ -3366,14 +3350,8 @@ function collectExpr(
 
     case "TypeOfExpr": {
       return Collect.makeExpr(cc, {
-        variant: Collect.ENode.ExprCallExpr,
-        calledExpr: Collect.makeExpr(cc, {
-          variant: Collect.ENode.SymbolValueExpr,
-          name: "typeof",
-          genericArgs: [],
-          sourceloc: item.sourceloc,
-        })[1],
-        arguments: [collectExpr(cc, item.expr, args)],
+        variant: Collect.ENode.TypeOfExpr,
+        expr: collectExpr(cc, item.expr, args),
         sourceloc: item.sourceloc,
       })[1];
     }
