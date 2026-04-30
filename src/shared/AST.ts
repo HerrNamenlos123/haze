@@ -247,17 +247,19 @@ export type ASTFunctionDefinition = {
   originalSourcecode: string;
 };
 
-export type ASTParamType =
-  | { kind: "normal"; type: ASTExpr }
-  | { kind: "parampack" };
-
-export type ASTParam = {
-  name: string;
-  datatype: ASTParamType;
-  optional: boolean;
-  defaultValue: ASTExpr | null;
-  sourceloc: SourceLoc;
-};
+export type ASTParam =
+  | {
+      kind: "normal";
+      name: string;
+      datatype: ASTExpr;
+      optional: boolean;
+      defaultValue: ASTExpr | null;
+      sourceloc: SourceLoc;
+    }
+  | {
+      kind: "param-pack";
+      sourceloc: SourceLoc;
+    };
 
 export type ASTGlobalVariableDefinition = {
   variant: "GlobalVariableDefinition";
@@ -324,7 +326,7 @@ export type ASTIfStatement = {
       type: ASTExpr | null;
       expr: ASTExpr;
     } | null;
-    then: ASTScope;
+    thenScope: ASTScope;
   }[];
   else?: ASTScope;
   sourceloc: SourceLoc;
@@ -828,14 +830,14 @@ export function buildASTDatatype(
         generics: generics.map((g) => buildASTDatatype([g], sourceloc)),
         expr: parentType,
         member: name,
-        sourceloc,
+        sourceloc: sourceloc,
       };
     }
     return {
       variant: "SymbolValueExpr",
       generics: generics.map((g) => buildASTDatatype([g], sourceloc)),
-      name,
-      sourceloc,
+      name: name,
+      sourceloc: sourceloc,
     };
   };
   let t: ASTExpr | null = null;

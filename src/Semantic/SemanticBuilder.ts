@@ -93,11 +93,11 @@ export class SemanticBuilder {
       variant: Semantic.ENode.BinaryExpr,
       instanceIds: [],
       left: leftId,
-      operation,
+      operation: operation,
       right: rightId,
       type: resultType,
       isTemporary: true,
-      sourceloc,
+      sourceloc: sourceloc,
       flow: left.flow.withAll(right.flow),
       writes: left.writes.withAll(right.writes),
     });
@@ -119,9 +119,9 @@ export class SemanticBuilder {
   ) {
     return this.addBlockScope(this.sr, {
       variant: Semantic.ENode.BlockScope,
-      statements,
-      emittedExpr,
-      sourceloc,
+      statements: statements,
+      emittedExpr: emittedExpr,
+      sourceloc: sourceloc,
     });
   }
 
@@ -134,8 +134,8 @@ export class SemanticBuilder {
     return this.addExpr(this.sr, {
       variant: Semantic.ENode.BlockScopeExpr,
       block: blockScopeId,
-      flow,
-      writes,
+      flow: flow,
+      writes: writes,
       instanceIds: [],
       isTemporary: true,
       sourceloc: blockScope.sourceloc,
@@ -158,12 +158,12 @@ export class SemanticBuilder {
       functionSymbol: functionSymbolId,
       instanceIds: [],
       isTemporary: true,
-      sourceloc,
-      envType,
-      envValue,
+      sourceloc: sourceloc,
+      envType: envType,
+      envValue: envValue,
       type: makeCallableDatatypeAvailable(this.sr, {
         functionType: functionSymbol.type,
-        sourceloc,
+        sourceloc: sourceloc,
       }),
       flow: Semantic.FlowResult.fallthrough(),
       writes: Semantic.WriteResult.empty(),
@@ -190,7 +190,7 @@ export class SemanticBuilder {
     //   instanceIds.push(Semantic.makeInstanceId(this.sr));
     // }
 
-    const functionSymbol = this.sr.e.getSymbol(inFunction);
+    const functionSymbol = this.sr.symbolNodes.get(inFunction);
     assert(functionSymbol.variant === Semantic.ENode.FunctionSymbol);
     for (const i of instanceIds) {
       functionSymbol.createsInstanceIds.add(i);
@@ -279,12 +279,12 @@ export class SemanticBuilder {
 
     return this.addExpr(this.sr, {
       variant: Semantic.ENode.ExprCallExpr,
-      instanceIds,
+      instanceIds: instanceIds,
       calledExpr: exprId,
       arguments: callArguments,
       isTemporary: true,
       type: returnType,
-      sourceloc,
+      sourceloc: sourceloc,
       flow: resultFlow,
       writes: resultWrites,
     });
@@ -301,10 +301,10 @@ export class SemanticBuilder {
       variant: Semantic.ENode.UnaryExpr,
       instanceIds: [],
       expr: exprId,
-      operation,
+      operation: operation,
       type: resultType,
       isTemporary: true,
-      sourceloc,
+      sourceloc: sourceloc,
       flow: expr.flow,
       writes: expr.writes,
     });
@@ -333,9 +333,9 @@ export class SemanticBuilder {
     let regexData = this.sr.elaboratedRegexTable.get(id);
     if (!regexData) {
       regexData = {
-        id,
-        flags,
-        pattern,
+        id: id,
+        flags: flags,
+        pattern: pattern,
       };
       this.sr.elaboratedRegexTable.set(id, regexData);
     }
@@ -368,11 +368,11 @@ export class SemanticBuilder {
     let embeddedData = this.sr.elaboratedEmbeddedFileTable.get(id);
     if (!embeddedData) {
       embeddedData = {
-        filePath,
-        absolutePath,
-        isBinary,
-        id,
-        fileSize,
+        filePath: filePath,
+        absolutePath: absolutePath,
+        isBinary: isBinary,
+        id: id,
+        fileSize: fileSize,
       };
       this.sr.elaboratedEmbeddedFileTable.set(id, embeddedData);
     }
@@ -387,8 +387,8 @@ export class SemanticBuilder {
       return this.addExpr(this.sr, {
         variant: Semantic.ENode.LiteralExpr,
         instanceIds: [],
-        literal,
-        sourceloc,
+        literal: literal,
+        sourceloc: sourceloc,
         isTemporary: true,
         type: makeTypeUse(
           this.sr,
@@ -406,8 +406,8 @@ export class SemanticBuilder {
       return this.addExpr(this.sr, {
         variant: Semantic.ENode.LiteralExpr,
         instanceIds: [],
-        literal,
-        sourceloc,
+        literal: literal,
+        sourceloc: sourceloc,
         isTemporary: true,
         type: makePrimitiveAvailable(
           this.sr,
@@ -422,8 +422,8 @@ export class SemanticBuilder {
     return this.addExpr(this.sr, {
       variant: Semantic.ENode.LiteralExpr,
       instanceIds: [],
-      literal,
-      sourceloc,
+      literal: literal,
+      sourceloc: sourceloc,
       isTemporary: true,
       type: makePrimitiveAvailable(
         this.sr,
@@ -456,7 +456,7 @@ export class SemanticBuilder {
         {
           type: EPrimitive.int,
           unit: null,
-          value,
+          value: value,
         },
         sourceloc
       );
@@ -466,7 +466,7 @@ export class SemanticBuilder {
         {
           type: EPrimitive.real,
           unit: null,
-          value,
+          value: value,
         },
         sourceloc
       );
@@ -475,7 +475,7 @@ export class SemanticBuilder {
       return this.literalValue(
         {
           type: EPrimitive.bool,
-          value,
+          value: value,
         },
         sourceloc
       );
@@ -485,7 +485,7 @@ export class SemanticBuilder {
         {
           type: EPrimitive.str,
           prefix: null,
-          value,
+          value: value,
         },
         sourceloc
       );
@@ -505,7 +505,7 @@ export class SemanticBuilder {
         sourceloc
       )[1],
       isTemporary: false,
-      sourceloc,
+      sourceloc: sourceloc,
       flow: Semantic.FlowResult.fallthrough(),
       writes: Semantic.WriteResult.empty(),
     });
@@ -515,9 +515,9 @@ export class SemanticBuilder {
     return this.addExpr(this.sr, {
       variant: Semantic.ENode.DatatypeAsValueExpr,
       instanceIds: [],
-      type,
+      type: type,
       isTemporary: false,
-      sourceloc,
+      sourceloc: sourceloc,
       flow: Semantic.FlowResult.fallthrough(),
       writes: Semantic.WriteResult.empty(),
     });
@@ -529,10 +529,10 @@ export class SemanticBuilder {
     return this.addExpr(this.sr, {
       variant: Semantic.ENode.IntrinsicSymbol,
       instanceIds: [],
-      intrinsicType,
+      intrinsicType: intrinsicType,
       type: this.voidType(), // Use void as a placeholder type for intrinsic values
       isTemporary: false,
-      sourceloc,
+      sourceloc: sourceloc,
       flow: Semantic.FlowResult.fallthrough(),
       writes: Semantic.WriteResult.empty(),
     });
@@ -582,7 +582,7 @@ export class SemanticBuilder {
           sourceloc
         )[1],
         isTemporary: false,
-        sourceloc,
+        sourceloc: sourceloc,
         flow: Semantic.FlowResult.fallthrough(),
         writes: Semantic.WriteResult.empty(),
       });
@@ -598,7 +598,28 @@ export class SemanticBuilder {
         symbol: symbolId,
         type: symbol.type,
         isTemporary: false,
-        sourceloc,
+        sourceloc: sourceloc,
+        flow: Semantic.FlowResult.fallthrough(),
+        writes: Semantic.WriteResult.empty(),
+      });
+    }
+    if (symbol.variant === Semantic.ENode.TypeDefSymbol) {
+      return this.addExpr(this.sr, {
+        variant: Semantic.ENode.SymbolValueExpr,
+        instanceIds: Semantic.getSymbolDeps(
+          this.sr.e.currentContext.instanceDeps,
+          symbolId
+        ),
+        symbol: symbolId,
+        type: makeTypeUse(
+          this.sr,
+          symbol.datatype,
+          EDatatypeMutability.Default,
+          false,
+          sourceloc
+        )[1],
+        isTemporary: false,
+        sourceloc: sourceloc,
         flow: Semantic.FlowResult.fallthrough(),
         writes: Semantic.WriteResult.empty(),
       });
@@ -617,18 +638,18 @@ export class SemanticBuilder {
   ) {
     return this.addSymbol(this.sr, {
       variant: Semantic.ENode.VariableSymbol,
-      type,
+      type: type,
       export: false,
       extern: EExternLanguage.None,
-      comptime,
-      comptimeValue,
-      name,
+      comptime: comptime,
+      comptimeValue: comptimeValue,
+      name: name,
       memberOfStruct: null,
-      mutability,
+      mutability: mutability,
       requiresHoisting: false,
       variableContext: EVariableContext.Global,
-      parentSymbolId,
-      sourceloc,
+      parentSymbolId: parentSymbolId,
+      sourceloc: sourceloc,
       consumed: false,
       dependsOn: new Set(),
       concrete: true,
@@ -647,7 +668,7 @@ export class SemanticBuilder {
     }
     const symbol = this.addSymbol(this.sr, {
       variant: Semantic.ENode.TypeDefSymbol,
-      datatype,
+      datatype: datatype,
     });
     this.sr.elaboratedTypeDefSymbols.push(symbol[1]);
     return symbol;
@@ -676,7 +697,7 @@ export class SemanticBuilder {
     );
 
     // Elaborate the namespace, so it can be found in the cache immediately after
-    this.sr.e.namespace(fmtNsDef.typeDef);
+    this.sr.e.elaborateNamespace(fmtNsDef.typeDef);
 
     let elaboratedNsContext = null as Semantic.ElaborationContext | null;
     for (const cache of this.sr.elaboratedNamespaceSymbols) {
@@ -722,7 +743,7 @@ export class SemanticBuilder {
     const elaboratedMethod = this.sr.symbolNodes.get(elaboratedMethodId);
     assert(elaboratedMethod.variant === Semantic.ENode.FunctionSymbol);
 
-    const functype = this.sr.e.getTypeDef(elaboratedMethod.type);
+    const functype = this.sr.typeDefNodes.get(elaboratedMethod.type);
     assert(functype.variant === Semantic.ENode.FunctionDatatype);
     return this.sr.b.symbolValue(elaboratedMethodId, sourceloc);
   }
@@ -798,7 +819,7 @@ export class SemanticBuilder {
     const elaboratedMethod = this.sr.symbolNodes.get(elaboratedMethodId);
     assert(elaboratedMethod.variant === Semantic.ENode.FunctionSymbol);
 
-    const functype = this.sr.e.getTypeDef(elaboratedMethod.type);
+    const functype = this.sr.typeDefNodes.get(elaboratedMethod.type);
     assert(functype.variant === Semantic.ENode.FunctionDatatype);
     return this.sr.b.symbolValue(elaboratedMethodId, sourceloc);
   }
@@ -816,8 +837,8 @@ export class SemanticBuilder {
   cInject(value: string, _export: boolean, sourceloc: SourceLoc) {
     const [_, directiveId] = this.addSymbol(this.sr, {
       variant: Semantic.ENode.CInjectDirectiveSymbol,
-      value,
-      sourceloc,
+      value: value,
+      sourceloc: sourceloc,
     });
     this.sr.cInjections.push(directiveId);
     if (_export) {
@@ -986,8 +1007,8 @@ export class SemanticBuilder {
           this.sr.e.currentContext.constraints.deletePathAndChildren(path);
         }
 
-        const struct = this.sr.e.getTypeDef(
-          this.sr.e.getTypeUse(this.sr.e.getExpr(lhs.expr).type).type
+        const struct = this.sr.typeDefNodes.get(
+          this.sr.typeUseNodes.get(this.sr.exprNodes.get(lhs.expr).type).type
         );
         assert(struct.variant === Semantic.ENode.StructDatatype);
 
@@ -1120,8 +1141,8 @@ export class SemanticBuilder {
       ),
       target: targetId,
       type: target.type,
-      operation,
-      sourceloc,
+      operation: operation,
+      sourceloc: sourceloc,
       isTemporary: true,
       flow: target.flow.withAll(value.flow),
       writes: target.writes.withAll(value.writes).withAll(writes),
@@ -1209,9 +1230,11 @@ export class SemanticBuilder {
     temporary: boolean,
     sourceloc: SourceLoc
   ) {
-    const expr = this.sr.e.getExpr(exprId);
+    const expr = this.sr.exprNodes.get(exprId);
 
-    const typeDef = this.sr.e.getTypeDef(this.sr.e.getTypeUse(expr.type).type);
+    const typeDef = this.sr.typeDefNodes.get(
+      this.sr.typeUseNodes.get(expr.type).type
+    );
 
     const dependsOn = new Set<Semantic.InstanceId>();
     if (typeDef.variant === Semantic.ENode.StructDatatype) {
@@ -1257,7 +1280,7 @@ export class SemanticBuilder {
       expr: exprId,
       memberName: name,
       type: memberType,
-      sourceloc,
+      sourceloc: sourceloc,
       isTemporary: temporary,
       flow: expr.flow,
       writes: expr.writes,
@@ -1269,7 +1292,7 @@ export class SemanticBuilder {
     name: string,
     constraints: ConstraintSet,
     sourceloc: SourceLoc
-  ) {
+  ): [Semantic.Expression, Semantic.ExprId] {
     const expr = this.sr.exprNodes.get(exprId);
     const exprType = this.sr.typeDefNodes.get(
       this.sr.typeUseNodes.get(expr.type).type
@@ -1325,7 +1348,7 @@ export class SemanticBuilder {
           variant: Semantic.ENode.UnionToValueCastExpr,
           instanceIds: [],
           expr: resultExprId,
-          tag,
+          tag: tag,
           isTemporary: false,
           canBeUnwrappedForLHS: true,
           sourceloc: resultExpr.sourceloc,
@@ -1386,14 +1409,14 @@ export class SemanticBuilder {
     const e = this.addExpr<Semantic.ArrayLiteralExpr>(this.sr, {
       variant: Semantic.ENode.ArrayLiteralExpr,
       instanceIds: [Semantic.makeInstanceId(this.sr)],
-      elements,
+      elements: elements,
       type: arrayTypeId,
-      inFunction,
-      allocator,
-      sourceloc,
+      inFunction: inFunction,
+      allocator: allocator,
+      sourceloc: sourceloc,
       isTemporary: true,
-      flow,
-      writes,
+      flow: flow,
+      writes: writes,
     });
 
     if (allocator) {
@@ -1402,7 +1425,7 @@ export class SemanticBuilder {
 
     if (inFunction) {
       // Structs as struct default values are not inside functions
-      const functionSymbol = this.sr.e.getSymbol(inFunction);
+      const functionSymbol = this.sr.symbolNodes.get(inFunction);
       assert(functionSymbol.variant === Semantic.ENode.FunctionSymbol);
       e[0].instanceIds.forEach((i) => {
         functionSymbol.createsInstanceIds.add(i);
@@ -1431,11 +1454,11 @@ export class SemanticBuilder {
       {
         variant: Semantic.ENode.StructLiteralExpr,
         instanceIds: [Semantic.makeInstanceId(this.sr)],
-        assign,
+        assign: assign,
         type: structTypeId,
-        inFunction,
-        allocator,
-        sourceloc,
+        inFunction: inFunction,
+        allocator: allocator,
+        sourceloc: sourceloc,
         isTemporary: true,
         flow: Semantic.FlowResult.fallthrough(),
         writes: Semantic.WriteResult.empty(),
@@ -1448,7 +1471,7 @@ export class SemanticBuilder {
 
     if (inFunction) {
       // Structs as struct default values are not inside functions
-      const functionSymbol = this.sr.e.getSymbol(inFunction);
+      const functionSymbol = this.sr.symbolNodes.get(inFunction);
       assert(functionSymbol.variant === Semantic.ENode.FunctionSymbol);
       literal.instanceIds.forEach((i) =>
         functionSymbol.createsInstanceIds.add(i)
@@ -1465,7 +1488,7 @@ export class SemanticBuilder {
       });
       assert(member);
 
-      const value = this.sr.e.getExpr(a.value);
+      const value = this.sr.exprNodes.get(a.value);
       literal.flow.addAll(value.flow);
       literal.writes.addAll(value.writes);
 
@@ -1488,12 +1511,12 @@ export class SemanticBuilder {
   ) {
     return this.addType<Semantic.NamespaceDatatypeDef>(this.sr, {
       variant: Semantic.ENode.NamespaceDatatype,
-      name,
-      parentSymbolId,
+      name: name,
+      parentSymbolId: parentSymbolId,
       symbols: [],
       export: _export,
       concrete: true,
-      collectedNamespace,
+      collectedNamespace: collectedNamespace,
     });
   }
 
@@ -1523,8 +1546,8 @@ export class SemanticBuilder {
     const canonicalMemberSet = new Set<Semantic.TypeUseId>();
 
     const processMember = (mId: Semantic.TypeUseId) => {
-      const mUse = this.sr.e.getTypeUse(mId);
-      const mDef = this.sr.e.getTypeDef(mUse.type);
+      const mUse = this.sr.typeUseNodes.get(mId);
+      const mDef = this.sr.typeDefNodes.get(mUse.type);
 
       if (mDef.variant === Semantic.ENode.UntaggedUnionDatatype) {
         for (const i of mDef.members) {
@@ -1541,10 +1564,10 @@ export class SemanticBuilder {
 
     const canonicalMembers = [...canonicalMemberSet];
     canonicalMembers.sort((a, b) => {
-      const aUse = this.sr.e.getTypeUse(a);
-      const bUse = this.sr.e.getTypeUse(b);
-      const aDef = this.sr.e.getTypeDef(aUse.type);
-      const bDef = this.sr.e.getTypeDef(bUse.type);
+      const aUse = this.sr.typeUseNodes.get(a);
+      const bUse = this.sr.typeUseNodes.get(b);
+      const aDef = this.sr.typeDefNodes.get(aUse.type);
+      const bDef = this.sr.typeDefNodes.get(bUse.type);
 
       const getVariantRank = (typeDef: Semantic.TypeDef) => {
         switch (typeDef.variant) {
@@ -1678,8 +1701,8 @@ export class SemanticBuilder {
     // Create new tagged union and cache it
     const [_, unionTypeDefId] = this.addType(this.sr, {
       variant: Semantic.ENode.TaggedUnionDatatype,
-      members,
-      nodiscard,
+      members: members,
+      nodiscard: nodiscard,
       concrete: !members.some((m) => !isTypeConcrete(this.sr, m.type)),
     });
 

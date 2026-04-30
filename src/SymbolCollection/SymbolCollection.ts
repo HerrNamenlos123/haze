@@ -9,7 +9,6 @@ import {
   type ASTFunctionDefinition,
   type ASTGlobalVariableDefinition,
   type ASTModuleImport,
-  type ASTParam,
   type ASTRoot,
   type ASTScope,
   type ASTStructMemberDefinition,
@@ -42,6 +41,7 @@ import {
   BrandedArray,
   EMethodType,
   EPrimitive,
+  ETypeModifier,
   EVariableContext,
   type LiteralValue,
 } from "../shared/common";
@@ -54,54 +54,6 @@ import {
 import { makeTempId } from "../shared/store";
 
 const RESERVED_METHOD_NAMES = ["toString", "clone", "freezeClone"];
-
-type TypeModifier = "mut" | "const" | "inline";
-
-type ParamTypeInfo = {
-  expr: ASTExpr | null;
-  isParamPack: boolean;
-};
-
-const getParamTypeInfo = (param: ASTParam): ParamTypeInfo => {
-  const datatype = param.datatype as unknown as {
-    kind?: "normal" | "parampack";
-    type?: ASTExpr;
-    variant?: string;
-  };
-
-  if (datatype?.kind === "parampack") {
-    return { expr: null, isParamPack: true };
-  }
-
-  if (datatype?.kind === "normal" && datatype.type) {
-    return { expr: datatype.type, isParamPack: false };
-  }
-
-  if (datatype?.variant === "ParameterPack") {
-    return { expr: null, isParamPack: true };
-  }
-
-  return { expr: param.datatype as unknown as ASTExpr, isParamPack: false };
-};
-
-const collectParamTypeId = (
-  cc: CollectionContext,
-  param: ASTParam,
-  args: { currentParentScope: Collect.ScopeId },
-  exprOverride?: ASTExpr | null
-): Collect.ExprId => {
-  const { expr: paramExpr, isParamPack } = getParamTypeInfo(param);
-  const expr = exprOverride ?? paramExpr;
-
-  if (isParamPack || !expr) {
-    return Collect.makeExpr(cc, {
-      variant: Collect.ENode.ParameterPackDatatypeExpr,
-      sourceloc: param.sourceloc,
-    })[1];
-  }
-
-  return collectExpr(cc, expr, args);
-};
 
 export type CollectionContext = {
   config: ModuleConfig;
@@ -132,15 +84,12 @@ export function funcSymHasParameterPack(
 ) {
   const funcsym = cc.symbolNodes.get(id);
   assert(funcsym.variant === Collect.ENode.FunctionSymbol);
-  return funcsym.parameters.some((p) => {
-    const pp = cc.exprNodes.get(p.type);
-    return pp.variant === Collect.ENode.ParameterPackDatatypeExpr;
-  });
+  return funcsym.parameters.some((p) => p.kind === "param-pack");
 }
 
 export function makeCollectionContext(config: ModuleConfig): CollectionContext {
   const cc: CollectionContext = {
-    config,
+    config: config,
     moduleCompiler: null,
     moduleScopeId: -1 as Collect.ScopeId,
 
@@ -191,7 +140,7 @@ export namespace Collect {
     FunctionSymbol,
     VariableSymbol,
     TypeDefSymbol,
-    TypeDefAlias,
+    TypeAliasDef,
     StackArrayTypeDefinitionExpr,
     DynamicArrayTypeDefinitionExpr,
     UntaggedUnionTypeDefinitionExpr,
@@ -344,13 +293,19 @@ export namespace Collect {
   /// ===                          Symbols                        ===
   /// ===============================================================
 
-  export type ParameterValue = {
-    name: string;
-    type: Collect.ExprId;
-    optional: boolean;
-    defaultParameterValue: Collect.ExprId | null;
-    sourceloc: SourceLoc;
-  };
+  export type ParameterValue =
+    | {
+        kind: "normal";
+        name: string;
+        type: Collect.ExprId;
+        optional: boolean;
+        defaultParameterValue: Collect.ExprId | null;
+        sourceloc: SourceLoc;
+      }
+    | {
+        kind: "param-pack";
+        sourceloc: SourceLoc;
+      };
 
   export type FunctionSymbol = {
     variant: ENode.FunctionSymbol;
@@ -365,6 +320,7 @@ export namespace Collect {
     requires: FunctionRequiresBlock;
     returnType: Collect.ExprId | null;
     parameters: ParameterValue[];
+    hasParamPack: boolean;
     vararg: boolean;
     export: boolean;
     pub: boolean;
@@ -398,6 +354,7 @@ export namespace Collect {
     export: boolean;
     inScope: Collect.ScopeId;
     typeDef: Collect.TypeDefId;
+    sourceloc: SourceLoc;
   };
 
   export type FunctionOverloadGroupSymbol = {
@@ -430,8 +387,8 @@ export namespace Collect {
     | GenericTypeParameterSymbol
     | CInjectDirective;
 
-  export type TypeDefAlias = {
-    variant: ENode.TypeDefAlias;
+  export type TypeAliasDef = {
+    variant: ENode.TypeAliasDef;
     name: string;
     inScope: Collect.ScopeId;
     generics: Collect.SymbolId[];
@@ -501,7 +458,7 @@ export namespace Collect {
   };
 
   export type TypeDef =
-    | TypeDefAlias
+    | TypeAliasDef
     | StructTypeDef
     | NamespaceTypeDef
     | EnumTypeDef;
@@ -747,7 +704,7 @@ export namespace Collect {
 
   export type TypeModifierExpr = BaseExpr & {
     variant: ENode.TypeModifierExpr;
-    modifier: TypeModifier;
+    modifier: ETypeModifier;
     type: Collect.ExprId;
   };
 
@@ -1019,9 +976,9 @@ function makeOverloadGroupAvailable(
 
   const [g, gId] = Collect.makeSymbol(cc, {
     variant: Collect.ENode.FunctionOverloadGroupSymbol,
-    name,
+    name: name,
     overloads: new Set(),
-    overloadedOperator,
+    overloadedOperator: overloadedOperator,
     parentScope: parentScopeId,
   });
   cc.overloadGroups.add(gId);
@@ -1042,10 +999,10 @@ function makeBlockScope(
   const [_, scopeId] = Collect.makeScope(cc, {
     variant: Collect.ENode.BlockScope,
     owningSymbol: parent.owningSymbol,
-    parentScope,
+    parentScope: parentScope,
     statements: [],
-    sourceloc,
-    unsafe,
+    sourceloc: sourceloc,
+    unsafe: unsafe,
     emittedExpr: null,
     symbols: new Set(),
   });
@@ -1087,9 +1044,9 @@ function defineGenericTypeParameter(
   );
   const [_, id] = Collect.makeSymbol(cc, {
     variant: Collect.ENode.GenericTypeParameterSymbol,
-    name,
+    name: name,
     owningSymbol: functionScope.owningSymbol,
-    sourceloc,
+    sourceloc: sourceloc,
   });
   functionScope.symbols.add(id);
   return id;
@@ -1207,7 +1164,7 @@ function collectTypeDef(
             cc,
             {
               variant: Collect.ENode.NamespaceSharedInstance,
-              fullyQualifiedName,
+              fullyQualifiedName: fullyQualifiedName,
               namespaceScopes: new Set(),
             }
           );
@@ -1215,7 +1172,7 @@ function collectTypeDef(
 
         [existingNamespace, existingNamespaceId] = Collect.makeTypeDef(cc, {
           variant: Collect.ENode.NamespaceTypeDef,
-          fullyQualifiedName,
+          fullyQualifiedName: fullyQualifiedName,
           sharedInstance: sharedInstanceId,
           name: item.name,
           export: item.export,
@@ -1231,6 +1188,7 @@ function collectTypeDef(
           typeDef: existingNamespaceId,
           export: item.export,
           name: item.name,
+          sourceloc: item.sourceloc,
         })[1];
         const [_, namespaceScopeId] = Collect.makeScope(cc, {
           variant: Collect.ENode.NamespaceScope,
@@ -1325,7 +1283,7 @@ function collectTypeDef(
         {
           variant: Collect.ENode.StructTypeDef,
           name: item.name,
-          fullyQualifiedName,
+          fullyQualifiedName: fullyQualifiedName,
           generics: [],
           optional: new Set(
             item.members.filter((m) => m.optional).map((m) => m.name)
@@ -1352,6 +1310,7 @@ function collectTypeDef(
         name: item.name,
         export: item.export,
         typeDef: structId,
+        sourceloc: item.sourceloc,
       })[1];
       struct.collectedTypeDefSymbol = structSymbolId;
       const [lexicalScope, lexicalScopeId] =
@@ -1465,6 +1424,7 @@ function collectTypeDef(
         name: item.name,
         export: item.export,
         typeDef: enumTypeId,
+        sourceloc: item.sourceloc,
       })[1];
       const structScopeId = Collect.makeScope<Collect.TypeDefScope>(cc, {
         variant: Collect.ENode.TypeDefScope,
@@ -1532,6 +1492,22 @@ function collectTypeDef(
 //   })[1];
 // }
 
+function wrapASTTypeInNoneUnion(datatype: ASTExpr): ASTExpr {
+  return {
+    variant: "BinaryUnionTypeExpr",
+    types: [
+      datatype,
+      {
+        variant: "SymbolValueExpr",
+        name: "none",
+        generics: [],
+        sourceloc: datatype.sourceloc,
+      },
+    ],
+    sourceloc: datatype.sourceloc,
+  } satisfies ASTExpr;
+}
+
 function collectSymbol(
   cc: CollectionContext,
   item:
@@ -1578,35 +1554,28 @@ function collectSymbol(
       }
 
       const parameters = item.params.map((p) => {
-        const { expr: paramExpr } = getParamTypeInfo(p);
-
-        let datatype: ASTExpr | null = paramExpr;
-        if (datatype && p.optional) {
-          datatype = {
-            variant: "BinaryExpr",
-            a: datatype,
-            b: {
-              variant: "SymbolValueExpr",
-              name: "none",
-              generics: [],
-              sourceloc: p.sourceloc,
-            },
-            operation: EBinaryOperation.BitwiseOr,
+        if (p.kind === "param-pack") {
+          return {
+            kind: "param-pack",
             sourceloc: p.sourceloc,
-          } satisfies ASTBinaryExpr;
+          } satisfies Collect.ParameterValue;
+        } else {
+          let datatype = p.datatype;
+          if (p.optional) {
+            datatype = wrapASTTypeInNoneUnion(datatype);
+          }
+
+          return {
+            kind: "normal",
+            name: p.name,
+            type: collectExpr(cc, datatype, args),
+            optional: p.optional,
+            defaultParameterValue: p.defaultValue
+              ? collectExpr(cc, p.defaultValue, args)
+              : null,
+            sourceloc: p.sourceloc,
+          } satisfies Collect.ParameterValue;
         }
-
-        const type = collectParamTypeId(cc, p, args, datatype);
-
-        return {
-          name: p.name,
-          type,
-          optional: p.optional,
-          defaultParameterValue: p.defaultValue
-            ? collectExpr(cc, p.defaultValue, args)
-            : null,
-          sourceloc: p.sourceloc,
-        };
       });
       const [functionSymbol, functionSymbolId] =
         Collect.makeSymbol<Collect.FunctionSymbol>(cc, {
@@ -1618,7 +1587,8 @@ function collectSymbol(
           name: item.name,
           staticMethod: item.static,
           overloadGroup: overloadGroupId,
-          parameters,
+          parameters: parameters,
+          hasParamPack: parameters.some((p) => p.kind === "param-pack"),
           parentScope: args.currentParentScope,
           methodType: item.methodType,
           overloadedOperator: item.operatorOverloading?.operator,
@@ -1706,6 +1676,9 @@ function collectSymbol(
         }
 
         for (const p of parameters) {
+          if (p.kind === "param-pack") {
+            continue;
+          }
           const varsymId = defineVariableSymbol(
             cc,
             {
@@ -1912,8 +1885,8 @@ function collectGlobalDirective(
           symbols: new Set(),
         });
 
-      const [alias, aliasId] = Collect.makeTypeDef<Collect.TypeDefAlias>(cc, {
-        variant: Collect.ENode.TypeDefAlias,
+      const [alias, aliasId] = Collect.makeTypeDef<Collect.TypeAliasDef>(cc, {
+        variant: Collect.ENode.TypeAliasDef,
         inScope: args.currentParentScope,
         name: item.name,
         generics: [],
@@ -1929,6 +1902,7 @@ function collectGlobalDirective(
         name: item.name,
         export: item.export,
         typeDef: aliasId,
+        sourceloc: item.sourceloc,
       })[1];
       genericsScope.owningSymbol = symbolId;
       cc.scopeNodes.get(args.currentParentScope).symbols.add(symbolId);
@@ -1984,8 +1958,8 @@ function collectGlobalDirective(
         metadata.name,
         metadata.version
       );
-      const [alias, aliasId] = Collect.makeTypeDef<Collect.TypeDefAlias>(cc, {
-        variant: Collect.ENode.TypeDefAlias,
+      const [alias, aliasId] = Collect.makeTypeDef<Collect.TypeAliasDef>(cc, {
+        variant: Collect.ENode.TypeAliasDef,
         inScope: args.currentParentScope,
         target: collectExpr(
           cc,
@@ -2008,6 +1982,7 @@ function collectGlobalDirective(
         typeDef: aliasId,
         export: false,
         name: item.name,
+        sourceloc: item.sourceloc,
       })[1];
       const scope = cc.scopeNodes.get(args.currentParentScope);
       scope.symbols.add(symbolId);
@@ -2142,7 +2117,7 @@ function collectScope(
                     currentParentScope: conditionLetScopeId,
                   })
                 : null,
-              thenBlock: collectScope(cc, e.then, {
+              thenBlock: collectScope(cc, e.thenScope, {
                 currentParentScope: conditionLetScopeId,
               }),
             };
@@ -2247,7 +2222,7 @@ function collectScope(
 
       case "TypeAlias": {
         const [typeDef, typeDefId] = Collect.makeTypeDef(cc, {
-          variant: Collect.ENode.TypeDefAlias,
+          variant: Collect.ENode.TypeAliasDef,
           inScope: blockScopeId,
           name: astStatement.name,
           generics: [],
@@ -2263,6 +2238,7 @@ function collectScope(
           typeDef: typeDefId,
           export: astStatement.export,
           name: astStatement.name,
+          sourceloc: astStatement.sourceloc,
         })[1];
         (cc.scopeNodes.get(blockScopeId) as Collect.BlockScope).symbols.add(
           symbolId
@@ -2416,7 +2392,7 @@ const collectTaggedUnionDefinition = (
       tag: m.tag,
       type: collectExpr(cc, m.type, args),
     })),
-    nodiscard,
+    nodiscard: nodiscard,
     sourceloc: item.sourceloc,
   })[1];
 
@@ -2600,15 +2576,25 @@ function collectExpr(
         originalSourcecode: "",
         overloadGroup: overloadGroup[1],
         parameterSymbols: new Set(),
-        parameters: item.lambda.params.map((p) => ({
-          name: p.name,
-          optional: p.optional,
-          defaultParameterValue: p.defaultValue
-            ? collectExpr(cc, p.defaultValue, args)
-            : null,
-          sourceloc: p.sourceloc,
-          type: collectParamTypeId(cc, p, args),
-        })),
+        parameters: item.lambda.params.map((p) => {
+          if (p.kind === "param-pack") {
+            throw new CompilerError(
+              "Lambda functions cannot have parameter packs",
+              p.sourceloc
+            );
+          }
+          return {
+            kind: "normal",
+            name: p.name,
+            optional: p.optional,
+            defaultParameterValue: p.defaultValue
+              ? collectExpr(cc, p.defaultValue, args)
+              : null,
+            sourceloc: p.sourceloc,
+            type: collectExpr(cc, p.datatype, args),
+          };
+        }),
+        hasParamPack: false,
         parentScope: args.currentParentScope,
         pub: false,
         requires: {
@@ -2790,8 +2776,9 @@ function collectExpr(
         inScope: blockScopeId,
         name: "__T",
         export: false,
+        sourceloc: item.sourceloc,
         typeDef: Collect.makeTypeDef(cc, {
-          variant: Collect.ENode.TypeDefAlias,
+          variant: Collect.ENode.TypeAliasDef,
           generics: [],
           genericScope: blockScopeId,
           inScope: blockScopeId,
@@ -2947,9 +2934,10 @@ function collectExpr(
         variant: Collect.ENode.TypeDefSymbol,
         inScope: blockScopeId,
         name: "__T",
+        sourceloc: item.sourceloc,
         export: false,
         typeDef: Collect.makeTypeDef(cc, {
-          variant: Collect.ENode.TypeDefAlias,
+          variant: Collect.ENode.TypeAliasDef,
           generics: [],
           genericScope: blockScopeId,
           inScope: blockScopeId,
@@ -3210,9 +3198,10 @@ function collectExpr(
           variant: Collect.ENode.TypeDefSymbol,
           inScope: blockScopeId,
           name: "__T",
+          sourceloc: item.sourceloc,
           export: false,
           typeDef: Collect.makeTypeDef(cc, {
-            variant: Collect.ENode.TypeDefAlias,
+            variant: Collect.ENode.TypeAliasDef,
             generics: [],
             genericScope: blockScopeId,
             inScope: blockScopeId,
@@ -3263,7 +3252,7 @@ function collectExpr(
               sourceloc: item.sourceloc,
               targetType: reactiveInnerT,
             })[1],
-            operation,
+            operation: operation,
             right: valueId,
             sourceloc: item.sourceloc,
           })[1],
@@ -3399,7 +3388,7 @@ function collectExpr(
         type: collectExpr(cc, item.type, {
           currentParentScope: args.currentParentScope,
         }),
-        modifier: "const",
+        modifier: ETypeModifier.Const,
         sourceloc: item.sourceloc,
       })[1];
     }
@@ -3410,7 +3399,7 @@ function collectExpr(
         type: collectExpr(cc, item.type, {
           currentParentScope: args.currentParentScope,
         }),
-        modifier: "mut",
+        modifier: ETypeModifier.Mut,
         sourceloc: item.sourceloc,
       })[1];
     }
@@ -3421,7 +3410,7 @@ function collectExpr(
         type: collectExpr(cc, item.type, {
           currentParentScope: args.currentParentScope,
         }),
-        modifier: "inline",
+        modifier: ETypeModifier.Inline,
         sourceloc: item.sourceloc,
       })[1];
     }
@@ -3460,23 +3449,27 @@ function collectExpr(
 
     case "FunctionTypeExpr": {
       const parameters = item.params.map((p) => {
-        const { expr: paramExpr, isParamPack } = getParamTypeInfo(p);
+        if (p.kind === "param-pack") {
+          throw new CompilerError(
+            `Function datatypes cannot have parameter packs`,
+            item.sourceloc
+          );
+        }
 
-        const type = isParamPack
-          ? Collect.makeExpr(cc, {
-              variant: Collect.ENode.ParameterPackDatatypeExpr,
-              sourceloc: p.sourceloc,
-            })[1]
-          : paramExpr
-            ? collectExpr(cc, paramExpr, args)
-            : Collect.makeExpr(cc, {
-                variant: Collect.ENode.ParameterPackDatatypeExpr,
-                sourceloc: p.sourceloc,
-              })[1];
+        let datatype = p.datatype;
+        if (p.optional) {
+          datatype = wrapASTTypeInNoneUnion(datatype);
+        }
+        if (p.defaultValue) {
+          throw new CompilerError(
+            `Function datatypes cannot define default parameter values`,
+            item.sourceloc
+          );
+        }
 
         return {
           optional: p.optional,
-          type,
+          type: collectExpr(cc, datatype, args),
         };
       });
 
@@ -3496,24 +3489,24 @@ function collectExpr(
       if (item.kind === "callable") {
         return Collect.makeExpr(cc, {
           variant: Collect.ENode.CallableTypeDefinitionExpr,
-          parameters,
+          parameters: parameters,
           returnType: collectExpr(cc, item.returnType, args),
           vararg: item.ellipsis,
-          requires,
+          requires: requires,
+          mutability: item.mutability,
+          sourceloc: item.sourceloc,
+        })[1];
+      } else {
+        return Collect.makeExpr(cc, {
+          variant: Collect.ENode.FunctionTypeDefinitionExpr,
+          parameters: parameters,
+          returnType: collectExpr(cc, item.returnType, args),
+          vararg: item.ellipsis,
+          requires: requires,
           mutability: item.mutability,
           sourceloc: item.sourceloc,
         })[1];
       }
-
-      return Collect.makeExpr(cc, {
-        variant: Collect.ENode.FunctionTypeDefinitionExpr,
-        parameters,
-        returnType: collectExpr(cc, item.returnType, args),
-        vararg: item.ellipsis,
-        requires,
-        mutability: item.mutability,
-        sourceloc: item.sourceloc,
-      })[1];
     }
 
     // =================================================================================================================
@@ -3541,35 +3534,6 @@ function collectExpr(
       }
 
       return collectTaggedUnionDefinition(cc, item.type, args, true);
-    }
-
-    // =================================================================================================================
-    // =================================================================================================================
-    // =================================================================================================================
-
-    case "TypeLiteralExpr": {
-      return Collect.makeExpr(cc, {
-        variant: Collect.ENode.TypeLiteralExpr,
-        datatype: collectExpr(cc, item.datatype, {
-          currentParentScope: args.currentParentScope,
-        }),
-        sourceloc: item.sourceloc,
-      })[1];
-    }
-
-    // =================================================================================================================
-    // =================================================================================================================
-    // =================================================================================================================
-
-    case "TypeModifierExpr": {
-      return Collect.makeExpr(cc, {
-        variant: Collect.ENode.TypeModifierExpr,
-        type: collectExpr(cc, item.type, {
-          currentParentScope: args.currentParentScope,
-        }),
-        modifier: item.modifier,
-        sourceloc: item.sourceloc,
-      })[1];
     }
 
     // =================================================================================================================
@@ -3648,15 +3612,8 @@ function collectExpr(
     // =================================================================================================================
     // =================================================================================================================
 
-    case "ParameterPack": {
-      return Collect.makeExpr(cc, {
-        variant: Collect.ENode.ParameterPackDatatypeExpr,
-        sourceloc: item.sourceloc,
-      })[1];
-    }
-
     default:
-      assert(false, "All cases handled " + (item as any).variant);
+      assert(false, "All cases handled " + (item as ASTExpr).variant);
   }
 }
 
@@ -3713,8 +3670,8 @@ export function CollectFile(
     // Create file scope under the unit
     const [fileScope, fileScopeId] = Collect.makeScope<Collect.FileScope>(cc, {
       variant: Collect.ENode.FileScope,
-      filepath,
-      parentScope,
+      filepath: filepath,
+      parentScope: parentScope,
       symbols: new Set(),
     });
     parent.scopes.add(fileScopeId);
@@ -3800,10 +3757,6 @@ export function printCollectedDatatype(
 
     case Collect.ENode.StackArrayTypeDefinitionExpr: {
       return `[${type.length}]${printCollectedDatatype(cc, type.datatype)}`;
-    }
-
-    case Collect.ENode.ParameterPackDatatypeExpr: {
-      return "...";
     }
 
     case Collect.ENode.DynamicArrayTypeDefinitionExpr: {
@@ -4221,7 +4174,13 @@ export const printCollectedSymbol = (
       const ftype =
         "(" +
         symbol.parameters
-          .map((p) => `${p.name}: ${printCollectedDatatype(cc, p.type)}`)
+          .map((p) => {
+            if (p.kind === "param-pack") {
+              return "...";
+            } else {
+              return `${p.name}: ${printCollectedDatatype(cc, p.type)}`;
+            }
+          })
           .join(", ") +
         ") -> " +
         printCollectedDatatype(cc, symbol.returnType);
@@ -4247,7 +4206,7 @@ export const printCollectedSymbol = (
           break;
         }
 
-        case Collect.ENode.TypeDefAlias: {
+        case Collect.ENode.TypeAliasDef: {
           print(
             `type ${typedef.name} = ${printCollectedDatatype(cc, typedef.target)};`
           );

@@ -45,87 +45,88 @@ export namespace Semantic {
   export type InstanceId = Brand<number, "SemanticInstance">;
 
   export enum EIntrinsicType {
-    EmbedFileText = 0,
-    EmbedFileBinary = 1,
+    EmbedFileText,
+    EmbedFileBinary,
   }
 
   export enum ENode {
-    CInjectDirectiveSymbol = 0,
+    CInjectDirectiveSymbol,
     // Symbols
-    VariableSymbol = 1,
-    GlobalVariableDefinitionSymbol = 2,
-    FunctionSymbol = 3,
-    FunctionSignature = 4,
-    StructSignature = 5,
-    TypeDefSymbol = 6,
-    IntrinsicSymbol = 7,
+    VariableSymbol,
+    GlobalVariableDefinitionSymbol,
+    FunctionSymbol,
+    FunctionSignature,
+    StructSignature,
+    TypeDefSymbol,
+    IntrinsicSymbol,
     // Datatypes
-    FunctionDatatype = 8,
-    DeferredFunctionDatatype = 9,
-    BlockScope = 10,
-    EnumDatatype = 11,
-    LiteralDatatype = 12,
-    StructDatatype = 13,
-    CallableDatatype = 14,
-    ParameterPackDatatype = 15,
-    PrimitiveDatatype = 16,
-    GenericParameterDatatype = 17,
-    ReactiveDatatype = 18,
-    ShallowReactiveDatatype = 19,
-    ComputedDatatype = 20,
-    NamespaceDatatype = 21,
-    FixedArrayDatatype = 22,
-    DynamicArrayDatatype = 23,
-    SliceDatatype = 24,
-    UntaggedUnionDatatype = 25,
-    TaggedUnionDatatype = 26,
-    UnionTagRefDatatype = 27,
+    FunctionDatatype,
+    DeferredFunctionDatatype,
+    BlockScope,
+    EnumDatatype,
+    LiteralDatatype,
+    TypeAliasDatatype,
+    StructDatatype,
+    CallableDatatype,
+    ParameterPackDatatype,
+    PrimitiveDatatype,
+    GenericParameterDatatype,
+    ReactiveDatatype,
+    ShallowReactiveDatatype,
+    ComputedDatatype,
+    NamespaceDatatype,
+    FixedArrayDatatype,
+    DynamicArrayDatatype,
+    SliceDatatype,
+    UntaggedUnionDatatype,
+    TaggedUnionDatatype,
+    UnionTagRefDatatype,
     // Statements
-    InlineCStatement = 28,
-    WhileStatement = 29,
-    IfStatement = 30,
-    ForStatement = 31,
-    ForEachStatement = 32,
-    VariableStatement = 33,
-    ExprStatement = 34,
-    BlockScopeExpr = 35,
-    ReturnStatement = 36,
-    RaiseStatement = 37,
+    InlineCStatement,
+    WhileStatement,
+    IfStatement,
+    ForStatement,
+    ForEachStatement,
+    VariableStatement,
+    ExprStatement,
+    BlockScopeExpr,
+    ReturnStatement,
+    RaiseStatement,
     // Expressions
-    ParenthesisExpr = 38,
-    AttemptErrorPropagationExpr = 39,
-    BinaryExpr = 40,
-    LiteralExpr = 41,
-    UnaryExpr = 42,
-    TernaryExpr = 43,
-    ExprCallExpr = 44,
-    SymbolValueExpr = 45,
-    DatatypeAsValueExpr = 46,
-    UnionTagReferenceExpr = 47,
-    SizeofExpr = 48,
-    AlignofExpr = 49,
-    ExplicitCastExpr = 50,
-    AttemptExpr = 51,
-    ValueToUnionCastExpr = 52,
-    UnionToValueCastExpr = 53,
-    UnionToUnionCastExpr = 54,
-    UnionTagCheckExpr = 55,
-    MemberAccessExpr = 56,
-    CallableExpr = 57,
-    AddressOfExpr = 58,
-    DereferenceExpr = 59,
-    ExprAssignmentExpr = 60,
-    StructLiteralExpr = 61,
-    ArrayLiteralExpr = 62,
-    ArraySubscriptExpr = 63,
-    ArraySliceExpr = 64,
-    StringSubscriptExpr = 65,
-    StringConstructExpr = 66,
-    ReactiveWriteExpr = 67,
-    ReactiveReadExpr = 68,
-    ComputedReadExpr = 69,
+    ParenthesisExpr,
+    AttemptErrorPropagationExpr,
+    BinaryExpr,
+    LiteralExpr,
+    UnaryExpr,
+    TernaryExpr,
+    ExprCallExpr,
+    SymbolValueExpr,
+    DatatypeAsValueExpr,
+    UnionTagReferenceExpr,
+    SizeofExpr,
+    AlignofExpr,
+    ExplicitCastExpr,
+    AttemptExpr,
+    ValueToUnionCastExpr,
+    UnionToValueCastExpr,
+    UnionToUnionCastExpr,
+    UnionTagCheckExpr,
+    MemberAccessExpr,
+    CallableExpr,
+    AddressOfExpr,
+    DereferenceExpr,
+    ExprAssignmentExpr,
+    StructLiteralExpr,
+    ArrayLiteralExpr,
+    ArraySubscriptExpr,
+    ArraySliceExpr,
+    StringSubscriptExpr,
+    StringConstructExpr,
+    ReactiveWriteExpr,
+    ReactiveReadExpr,
+    ComputedReadExpr,
     // Dummy
-    Dummy = 70,
+    Dummy,
   }
 
   export type CInjectDirectiveSymbol = {
@@ -171,10 +172,16 @@ export namespace Semantic {
     name: string;
     extern: EExternLanguage;
     parentSymbolId: SymbolId | null;
-    parameters: {
-      name: string;
-      type: TypeUseId;
-    }[];
+    parameters: (
+      | {
+          kind: "normal";
+          name: string;
+          type: TypeUseId;
+        }
+      | {
+          kind: "param-pack";
+        }
+    )[];
     returnType: Semantic.TypeUseId | null;
   };
 
@@ -422,6 +429,14 @@ export namespace Semantic {
     concrete: boolean; // For consistency, always true
   };
 
+  export type TypeAliasDatatypeDef = {
+    variant: ENode.TypeAliasDatatype;
+    name: string;
+    parentSymbolId: SymbolId | null;
+    targetType: Semantic.TypeUseId;
+    concrete: boolean; // For consistency, always true
+  };
+
   export type TypeDef =
     | GenericParameterDatatypeDef
     | NamespaceDatatypeDef
@@ -441,7 +456,8 @@ export namespace Semantic {
     | TaggedUnionDatatypeDef
     | CallableDatatypeDef
     | PrimitiveDatatypeDef
-    | UnionTagRefDatatypeDef;
+    | UnionTagRefDatatypeDef
+    | TypeAliasDatatypeDef;
 
   export type TypeUse = {
     type: TypeDefId;
@@ -1110,7 +1126,7 @@ export namespace Semantic {
               return id;
             }
           } else if (
-            typedef.variant === Collect.ENode.TypeDefAlias &&
+            typedef.variant === Collect.ENode.TypeAliasDef &&
             typedef.name === name
           ) {
             return id;
@@ -1261,7 +1277,7 @@ export namespace Semantic {
 
       const symbolResult = tryLookupSymbol(sr, name, {
         startLookupInScope: scope,
-        sourceloc,
+        sourceloc: sourceloc,
       });
 
       if (!symbolResult) {
@@ -1548,7 +1564,7 @@ export namespace Semantic {
     constraints.addAll(b.constraints);
     return {
       substitute: new Map([...a.substitute, ...b.substitute]),
-      constraints,
+      constraints: constraints,
       currentScope: args.currentScope,
       genericsScope: args.genericsScope,
       instanceDeps: args.instanceDeps,
@@ -1589,8 +1605,8 @@ export namespace Semantic {
     const sr: Semantic.Context = {
       overloadedOperators: [],
 
-      moduleCompiler,
-      cc,
+      moduleCompiler: moduleCompiler,
+      cc: cc,
 
       e: undefined as any,
       b: undefined as any,

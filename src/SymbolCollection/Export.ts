@@ -21,7 +21,7 @@ export function ExportCollectedTypeDefAlias(
   nested: boolean
 ) {
   const typedef = sr.cc.typeDefNodes.get(typedefId);
-  assert(typedef.variant === Collect.ENode.TypeDefAlias);
+  assert(typedef.variant === Collect.ENode.TypeAliasDef);
   const generics = typedef.generics.map((g) => {
     const symbol = sr.cc.symbolNodes.get(g);
     assert(symbol.variant === Collect.ENode.GenericTypeParameterSymbol);
@@ -469,7 +469,7 @@ function getNamespacesFromTypeDefSymbol(
   current: string[] = []
 ) {
   const typedef = cc.typeDefNodes.get(typedefId);
-  assert(typedef.variant === Collect.ENode.TypeDefAlias);
+  assert(typedef.variant === Collect.ENode.TypeAliasDef);
   return getNamespacesFromScope(cc, typedef.inScope, [
     typedef.name,
     ...current,

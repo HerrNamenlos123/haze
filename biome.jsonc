@@ -15,6 +15,15 @@
         "noNestedTernary": "warn",
         "useEnumInitializers": "off",
         "noNonNullAssertion": "off",
+        "useConsistentObjectDefinitions": {
+          "level": "warn",
+          "options": {
+            "syntax": "explicit"
+          }
+        },
+        "noUnusedTemplateLiteral": "off",
+        "useConsistentArrowReturn": "off",
+        "noUselessElse": "off",
         "useFilenamingConvention": "off",
         "noEnum": "off",
         "noNamespace": "off",

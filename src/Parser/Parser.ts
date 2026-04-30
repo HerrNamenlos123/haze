@@ -118,7 +118,6 @@ import {
   type ForStatementContext,
   type FromImportStatementContext,
   type FunctionDefinitionContext,
-  type GenericLiteralTypeExprContext,
   type GlobalDeclarationContext,
   type GlobalDeclarationWithSourceContext,
   type GlobalVariableDefinitionContext,
@@ -208,7 +207,7 @@ export namespace Parser {
     ) {
       printErrorMessage(
         msg,
-        { filename: this.filename, start: { line, column } },
+        { filename: this.filename, start: { line: line, column: column } },
         "SyntaxError"
       );
     }
@@ -618,8 +617,8 @@ class ASTBuilder extends HazeParserListener {
 
     this.stack.push({
       type: EPrimitive.str,
-      prefix,
-      value,
+      prefix: prefix,
+      value: value,
     } satisfies LiteralValue);
   };
 
@@ -637,7 +636,7 @@ class ASTBuilder extends HazeParserListener {
     this.stack.push({
       type: EPrimitive.str,
       prefix: null,
-      value,
+      value: value,
     } satisfies LiteralValue);
   };
 
@@ -711,7 +710,7 @@ class ASTBuilder extends HazeParserListener {
     }
 
     return {
-      value,
+      value: value,
       type: EPrimitive.int,
       unit: literalUnit,
     };
@@ -768,22 +767,11 @@ class ASTBuilder extends HazeParserListener {
     }
 
     return {
-      value,
+      value: value,
       type: EPrimitive.real,
       unit: literalUnit,
     };
   }
-
-  exitGenericLiteralTypeExpr = (ctx: GenericLiteralTypeExprContext) => {
-    const start = this.getMark(ctx);
-    const produced = this.stack.splice(start);
-
-    if (produced.length !== 1) {
-      throw new InternalError("GenericLiteralTypeExpr stack mismatch");
-    }
-
-    this.stack.push(produced[0]);
-  };
 
   exitTypeExprPrimary = (ctx: TypeExprPrimaryContext) => {
     const start = this.getMark(ctx);
@@ -835,7 +823,7 @@ class ASTBuilder extends HazeParserListener {
 
         expr = {
           variant: "ExprComptimeMemberAccess",
-          expr,
+          expr: expr,
           memberExpr: produced[i++] as ASTExpr,
           sourceloc: this.loc(postfix),
         } satisfies ASTExprComptimeMemberAccess;
@@ -857,7 +845,7 @@ class ASTBuilder extends HazeParserListener {
 
         expr = {
           variant: "ExprMemberAccess",
-          expr,
+          expr: expr,
           member: segment.name,
           generics: segment.generics,
           sourceloc: this.loc(postfix),
@@ -978,8 +966,8 @@ class ASTBuilder extends HazeParserListener {
         kind: ctx.DOUBLEARROW() ? "callable" : "function",
         params: params.params,
         ellipsis: params.ellipsis,
-        returnType,
-        requires,
+        returnType: returnType,
+        requires: requires,
         mutability: EDatatypeMutability.Default,
         sourceloc: this.loc(ctx),
       } satisfies ASTFunctionTypeExpr);
@@ -1055,13 +1043,10 @@ class ASTBuilder extends HazeParserListener {
 
     let i = 0;
 
+    assert((p.typeExpr() || p.ellipsis()) && !(p.typeExpr() && p.ellipsis()));
+
     // datatype is required unless it's a parameter pack (ellipsis)
-    const datatype = p.typeExpr()
-      ? produced[i++]
-      : {
-          variant: "ParameterPack",
-          sourceloc: this.loc(p),
-        };
+    const datatype = p.typeExpr() ? produced[i++] : "param-pack";
 
     let defaultValue: ASTExpr | null = null;
     if (p.expr()) {
@@ -1072,13 +1057,21 @@ class ASTBuilder extends HazeParserListener {
       throw new InternalError("param stack mismatch");
     }
 
-    this.stack.push({
-      datatype,
-      name: p.id().getText(),
-      optional: Boolean(p.QUESTIONMARK()),
-      defaultValue,
-      sourceloc: this.loc(p),
-    } satisfies ASTParam);
+    if (datatype === "param-pack") {
+      this.stack.push({
+        kind: "param-pack",
+        sourceloc: this.loc(p),
+      } satisfies ASTParam);
+    } else {
+      this.stack.push({
+        kind: "normal",
+        datatype: datatype,
+        name: p.id().getText(),
+        optional: Boolean(p.QUESTIONMARK()),
+        defaultValue: defaultValue,
+        sourceloc: this.loc(p),
+      } satisfies ASTParam);
+    }
   };
 
   exitParams = (ctx: ParamsContext) => {
@@ -1105,7 +1098,7 @@ class ASTBuilder extends HazeParserListener {
 
     this.stack.push({
       variant: "ExprAsFuncBody",
-      expr,
+      expr: expr,
     } satisfies ASTExprAsFuncbody);
   };
 
@@ -1196,15 +1189,15 @@ class ASTBuilder extends HazeParserListener {
         name: p,
         sourceloc: this.loc(ctx),
       })),
-      requires,
+      requires: requires,
       static: false,
       methodType: EMethodType.None,
       name: names[0],
       methodRequiredMutability: null,
       operatorOverloading: undefined,
       ellipsis: params.ellipsis,
-      funcbody,
-      returnType,
+      funcbody: funcbody,
+      returnType: returnType,
       sourceloc: this.loc(ctx),
       originalSourcecode: this.getSource(ctx),
     } satisfies ASTFunctionDefinition);
@@ -1246,8 +1239,8 @@ class ASTBuilder extends HazeParserListener {
       params: params.params,
       ellipsis: params.ellipsis,
       scope: funcbody,
-      returnType,
-      requires,
+      returnType: returnType,
+      requires: requires,
       sourceloc: this.loc(ctx),
     } satisfies ASTLambda);
   };
@@ -1281,8 +1274,8 @@ class ASTBuilder extends HazeParserListener {
       mutability: this.mutability(ctx),
       name: ctx.id().getText(),
       sourceloc: this.loc(ctx),
-      datatype,
-      expr,
+      datatype: datatype,
+      expr: expr,
     } satisfies ASTGlobalVariableDefinition);
   };
 
@@ -1307,12 +1300,12 @@ class ASTBuilder extends HazeParserListener {
       {
         variant: "StructMember",
         name: ctx.id().getText(),
-        type,
+        type: type,
         mutability: ctx.variableMutabilitySpecifier()
           ? this.mutability(ctx)
           : EVariableMutability.Default,
         optional: Boolean(ctx.QUESTIONMARK()),
-        defaultValue,
+        defaultValue: defaultValue,
         sourceloc: this.loc(ctx),
       } satisfies ASTStructMemberDefinition,
     ]);
@@ -1433,19 +1426,19 @@ class ASTBuilder extends HazeParserListener {
       externLanguage: EExternLanguage.None,
       noemit: false,
       pub: false,
-      methodType,
-      methodRequiredMutability,
-      name,
+      methodType: methodType,
+      methodRequiredMutability: methodRequiredMutability,
+      name: name,
       static: Boolean(ctx._static_),
       generics: genericNames.map((n) => ({
         name: n,
         sourceloc: this.loc(ctx),
       })),
-      requires,
+      requires: requires,
       ellipsis: params.ellipsis,
-      operatorOverloading,
-      returnType,
-      funcbody,
+      operatorOverloading: operatorOverloading,
+      returnType: returnType,
+      funcbody: funcbody,
       sourceloc: this.loc(ctx),
       originalSourcecode: this.getSource(ctx),
     };
@@ -1471,7 +1464,7 @@ class ASTBuilder extends HazeParserListener {
     this.stack.push({
       variant: "EnumValue",
       name: ctx.id().getText(),
-      value,
+      value: value,
       sourceloc: this.loc(ctx),
     } satisfies ASTEnumValueDefinition);
   };
@@ -1498,7 +1491,7 @@ class ASTBuilder extends HazeParserListener {
       extern: this.exlang(ctx),
       name: ctx.id().getText(),
       noemit: Boolean(ctx._noemit),
-      values,
+      values: values,
       sourceloc: this.loc(ctx),
       originalSourcecode: this.getSource(ctx),
     } satisfies ASTEnumDefinition);
@@ -1571,15 +1564,15 @@ class ASTBuilder extends HazeParserListener {
       opaque: Boolean(ctx.OPAQUE()),
       plain: Boolean(ctx.PLAIN()),
       inlineByDefault: Boolean(ctx.INLINE()),
-      name,
+      name: name,
       noemit: Boolean(ctx._noemit),
       generics: generics.map((p) => ({
         name: p,
         sourceloc: this.loc(ctx),
       })),
       nestedStructs: declarations,
-      members,
-      methods,
+      members: members,
+      methods: methods,
       sourceloc: this.loc(ctx),
       originalSourcecode: this.getSource(ctx),
     } satisfies ASTStructDefinition);
@@ -1612,7 +1605,7 @@ class ASTBuilder extends HazeParserListener {
 
     this.stack.push({
       variant: "BlockScopeExpr",
-      scope,
+      scope: scope,
       sourceloc: this.loc(ctx),
     } satisfies ASTBlockScopeExpr);
   };
@@ -1674,9 +1667,9 @@ class ASTBuilder extends HazeParserListener {
 
     this.stack.push({
       variant: "AggregateLiteralExpr",
-      datatype,
-      elements,
-      allocator,
+      datatype: datatype,
+      elements: elements,
+      allocator: allocator,
       sourceloc: this.loc(ctx),
     } satisfies ASTAggregateLiteralExpr);
   };
@@ -1702,8 +1695,8 @@ class ASTBuilder extends HazeParserListener {
     this.stack.push({
       variant: "AggregateLiteralExpr",
       datatype: null,
-      elements,
-      allocator,
+      elements: elements,
+      allocator: allocator,
       sourceloc: this.loc(ctx),
     } satisfies ASTAggregateLiteralExpr);
   };
@@ -1753,7 +1746,7 @@ class ASTBuilder extends HazeParserListener {
       const seg = segments[i];
       expr = {
         variant: "ExprMemberAccess",
-        expr,
+        expr: expr,
         member: seg.name,
         generics: seg.generics,
         sourceloc: seg.sourceloc,
@@ -1895,14 +1888,14 @@ class ASTBuilder extends HazeParserListener {
       if (opText === "++" || opText === "--") {
         this.stack.push({
           variant: "PreIncrExpr",
-          expr,
+          expr: expr,
           operation: this.incrOpFromText(opText),
           sourceloc: this.loc(ctx),
         } satisfies ASTPreIncrExpr);
       } else {
         this.stack.push({
           variant: "UnaryExpr",
-          expr,
+          expr: expr,
           operation: this.unaryOpFromText(opText),
           sourceloc: this.loc(ctx),
         } satisfies ASTUnaryExpr);
@@ -1934,7 +1927,7 @@ class ASTBuilder extends HazeParserListener {
         const opText = postfix.getText();
         expr = {
           variant: "PostIncrExpr",
-          expr,
+          expr: expr,
           operation: this.incrOpFromText(opText),
           sourceloc: this.loc(postfix),
         } satisfies ASTPostIncrExpr;
@@ -1954,7 +1947,7 @@ class ASTBuilder extends HazeParserListener {
           variant: "ExprCallExpr",
           calledExpr: expr,
           arguments: args,
-          allocator,
+          allocator: allocator,
           sourceloc: this.loc(postfix),
         } satisfies ASTExprCallExpr;
         continue;
@@ -1971,8 +1964,8 @@ class ASTBuilder extends HazeParserListener {
 
         expr = {
           variant: "ExprComptimeMemberAccess",
-          expr,
-          memberExpr,
+          expr: expr,
+          memberExpr: memberExpr,
           sourceloc: this.loc(postfix),
         } satisfies ASTExprComptimeMemberAccess;
         continue;
@@ -1988,8 +1981,8 @@ class ASTBuilder extends HazeParserListener {
 
         expr = {
           variant: "ArraySubscriptExpr",
-          expr,
-          indices,
+          expr: expr,
+          indices: indices,
           sourceloc: this.loc(postfix),
         } satisfies ASTArraySubscriptExpr;
         continue;
@@ -2008,7 +2001,7 @@ class ASTBuilder extends HazeParserListener {
 
         expr = {
           variant: "ExprMemberAccess",
-          expr,
+          expr: expr,
           member: segment.name,
           generics: segment.generics,
           sourceloc: this.loc(postfix),
@@ -2026,14 +2019,14 @@ class ASTBuilder extends HazeParserListener {
         if (postfix.AS()) {
           expr = {
             variant: "ExplicitCastExpr",
-            expr,
+            expr: expr,
             castedTo: datatype,
             sourceloc: this.loc(postfix),
           } satisfies ASTExplicitCastExpr;
         } else {
           expr = {
             variant: "ExprIsTypeExpr",
-            expr,
+            expr: expr,
             comparisonType: datatype,
             sourceloc: this.loc(postfix),
           } satisfies ASTExprIsTypeExpr;
@@ -2045,7 +2038,7 @@ class ASTBuilder extends HazeParserListener {
       if (postfix.QUESTIONEXCL()) {
         expr = {
           variant: "ErrorPropagationExpr",
-          expr,
+          expr: expr,
           sourceloc: this.loc(postfix),
         } satisfies ASTErrorPropagationExpr;
         continue;
@@ -2263,8 +2256,8 @@ class ASTBuilder extends HazeParserListener {
 
     this.stack.push({
       variant: "ExprAssignmentExpr",
-      target,
-      value,
+      target: target,
+      value: value,
       operation: this.assignOpFromText(opText),
       sourceloc: this.loc(ctx),
     } satisfies ASTExprAssignmentExpr);
@@ -2282,7 +2275,7 @@ class ASTBuilder extends HazeParserListener {
 
     this.stack.push({
       variant: "InlineCStatement",
-      expr,
+      expr: expr,
       sourceloc: this.loc(ctx),
     } satisfies ASTInlineCStatement);
   };
@@ -2299,7 +2292,7 @@ class ASTBuilder extends HazeParserListener {
 
     this.stack.push({
       variant: "ExprStatement",
-      expr,
+      expr: expr,
       sourceloc: this.loc(ctx),
     } satisfies ASTExprStatement);
   };
@@ -2321,7 +2314,7 @@ class ASTBuilder extends HazeParserListener {
 
     this.stack.push({
       variant: "ReturnStatement",
-      expr,
+      expr: expr,
       sourceloc: this.loc(ctx),
     } satisfies ASTReturnStatement);
   };
@@ -2354,8 +2347,8 @@ class ASTBuilder extends HazeParserListener {
       comptime: Boolean(ctx._comptime),
       name: ctx.id().getText(),
       sourceloc: this.loc(ctx),
-      datatype,
-      expr,
+      datatype: datatype,
+      expr: expr,
       variableContext: EVariableContext.FunctionLocal,
     } satisfies ASTVariableDefinitionStatement);
   };
@@ -2387,8 +2380,8 @@ class ASTBuilder extends HazeParserListener {
       variant: "ForEachStatement",
       loopVariable: ctx.id()[0].getText(),
       indexVariable: ctx.id().length > 1 ? ctx.id()[1].getText() : null,
-      value,
-      body,
+      value: value,
+      body: body,
       sourceloc: this.loc(ctx),
       comptime: Boolean(ctx._comptime),
     } satisfies ASTForEachStatement);
@@ -2423,10 +2416,10 @@ class ASTBuilder extends HazeParserListener {
 
     this.stack.push({
       variant: "ForStatement",
-      initStatement,
-      loopCondition,
-      loopIncrement,
-      body,
+      initStatement: initStatement,
+      loopCondition: loopCondition,
+      loopIncrement: loopIncrement,
+      body: body,
       sourceloc: this.loc(ctx),
       comptime: Boolean(ctx._comptime),
     } satisfies ASTForStatement);
@@ -2444,7 +2437,7 @@ class ASTBuilder extends HazeParserListener {
 
     this.stack.push({
       type: "expr",
-      expr,
+      expr: expr,
     } satisfies IfStatementCondition);
   };
 
@@ -2475,9 +2468,9 @@ class ASTBuilder extends HazeParserListener {
     this.stack.push({
       type: "let",
       name: ctx.id().getText(),
-      datatype,
-      letExpr,
-      guardExpr,
+      datatype: datatype,
+      letExpr: letExpr,
+      guardExpr: guardExpr,
     } satisfies IfStatementCondition);
   };
 
@@ -2535,7 +2528,7 @@ class ASTBuilder extends HazeParserListener {
         type: ASTExpr | null;
         expr: ASTExpr;
       } | null;
-      then: ASTScope;
+      thenScope: ASTScope;
     }[] = [];
 
     for (let k = 0; k < ctx._elseIfCondition.length; k++) {
@@ -2544,7 +2537,7 @@ class ASTBuilder extends HazeParserListener {
 
       elseIfs.push({
         ...transformCondition(cond),
-        then,
+        thenScope: then,
       });
     }
 
@@ -2563,10 +2556,10 @@ class ASTBuilder extends HazeParserListener {
     this.stack.push({
       variant: "IfStatement",
       ...head,
-      thenScope,
+      thenScope: thenScope,
       sourceloc: this.loc(ctx),
-      elseIfs,
-      comptime,
+      elseIfs: elseIfs,
+      comptime: comptime,
       else: elseBlock,
     } satisfies ASTIfStatement);
   }
@@ -2593,8 +2586,8 @@ class ASTBuilder extends HazeParserListener {
     this.stack.push({
       variant: "WhileStatement",
       letCondition: null,
-      condition,
-      body,
+      condition: condition,
+      body: body,
       sourceloc: this.loc(ctx),
     } satisfies ASTWhileStatement);
   };
@@ -2634,11 +2627,11 @@ class ASTBuilder extends HazeParserListener {
       variant: "WhileStatement",
       letCondition: {
         name: ctx.id().getText(),
-        type,
+        type: type,
         expr: letExpr,
       },
-      condition,
-      body,
+      condition: condition,
+      body: body,
       sourceloc: this.loc(ctx),
     } satisfies ASTWhileStatement);
   };
@@ -2663,7 +2656,7 @@ class ASTBuilder extends HazeParserListener {
 
     this.stack.push({
       variant: "TypeAlias",
-      datatype,
+      datatype: datatype,
       export: Boolean(ctx._export_),
       extern: this.exlang(ctx),
       generics: generics.map((p) => ({
@@ -2699,7 +2692,7 @@ class ASTBuilder extends HazeParserListener {
 
     this.stack.push({
       key: ctx.id() ? ctx.id()!.getText() : null,
-      value,
+      value: value,
       sourceloc: this.loc(ctx),
     } satisfies ASTAggregateLiteralElement);
   };
@@ -2719,7 +2712,7 @@ class ASTBuilder extends HazeParserListener {
     if (ctx._path) {
       assert(ctx._path.text);
       result = {
-        alias,
+        alias: alias,
         mode: "path",
         name: this.trimAndUnescapeStringLiteral(
           ctx._path.text,
@@ -2732,7 +2725,7 @@ class ASTBuilder extends HazeParserListener {
     } else {
       assert(ctx._module_);
       result = {
-        alias,
+        alias: alias,
         mode: "module",
         name: ctx._module_.getText(),
         sourceloc: this.loc(ctx),
@@ -2767,7 +2760,7 @@ class ASTBuilder extends HazeParserListener {
     if (ctx._path) {
       assert(ctx._path.text);
       result = {
-        symbols,
+        symbols: symbols,
         mode: "path",
         name: this.trimAndUnescapeStringLiteral(
           ctx._path.text,
@@ -2780,7 +2773,7 @@ class ASTBuilder extends HazeParserListener {
     } else {
       assert(ctx._module_);
       result = {
-        symbols,
+        symbols: symbols,
         mode: "module",
         name: ctx._module_.getText(),
         sourceloc: this.loc(ctx),
@@ -2808,7 +2801,7 @@ class ASTBuilder extends HazeParserListener {
 
     this.stack.push({
       variant: "RaiseStatement",
-      expr,
+      expr: expr,
       sourceloc: this.loc(ctx),
     } satisfies ASTRaiseStatement);
   };
@@ -2845,7 +2838,7 @@ class ASTBuilder extends HazeParserListener {
 
     let current: ASTNamespaceDefinition = {
       variant: "NamespaceDefinition",
-      declarations,
+      declarations: declarations,
       export: Boolean(ctx._export_),
       name: names[0],
       sourceloc: this.loc(ctx),
@@ -2856,7 +2849,7 @@ class ASTBuilder extends HazeParserListener {
         variant: "NamespaceDefinition",
         declarations: [current],
         export: Boolean(ctx._export_),
-        name,
+        name: name,
         sourceloc: this.loc(ctx),
       };
     }
@@ -2925,7 +2918,7 @@ class ASTBuilder extends HazeParserListener {
 
     this.stack.push({
       type: EPrimitive.Regex,
-      pattern,
+      pattern: pattern,
       flags: flagSet,
       id: null,
     } satisfies LiteralValue);
@@ -3204,7 +3197,7 @@ class ASTBuilder extends HazeParserListener {
     return {
       variant: "FStringExpr",
       fragments: unescapedFragments,
-      allocator,
+      allocator: allocator,
       sourceloc: this.loc(ctx),
     };
   }
@@ -3311,13 +3304,13 @@ class ASTBuilder extends HazeParserListener {
 
     if (ints.length === 2 && float === null) {
       return {
-        filename,
+        filename: filename,
         start: { line: ints[0], column: ints[1] },
       };
     }
     if (ints.length === 3) {
       return {
-        filename,
+        filename: filename,
         start: { line: ints[0], column: ints[1] },
         end: { line: ints[0], column: ints[2] },
       };
@@ -3325,7 +3318,7 @@ class ASTBuilder extends HazeParserListener {
     if (ints.length === 2 && float !== null) {
       const end = float.split(".");
       return {
-        filename,
+        filename: filename,
         start: { line: ints[0], column: ints[1] },
         end: {
           line: Number.parseInt(end[0], 10),

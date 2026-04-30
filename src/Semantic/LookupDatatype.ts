@@ -19,7 +19,7 @@ function createLengthFieldSymbol(
     export: false,
     extern: EExternLanguage.None,
     mutability: EVariableMutability.Default,
-    sourceloc,
+    sourceloc: sourceloc,
     memberOfStruct: null,
     type: sr.b.usizeType(),
     consumed: false,
@@ -242,10 +242,10 @@ export function makeTypeUse(
     }
 
     const instance = sr.b.addTypeInstance(sr, {
-      mutability,
+      mutability: mutability,
       inline: shouldBeInline,
       type: typeId,
-      sourceloc,
+      sourceloc: sourceloc,
     });
     sr.typeInstanceCache.push(instance[1]);
     return instance;
@@ -262,7 +262,7 @@ export function makeTypeUse(
     mutability: EDatatypeMutability.Default,
     inline: false,
     type: typeId,
-    sourceloc,
+    sourceloc: sourceloc,
   });
   sr.typeInstanceCache.push(instance[1]);
   return instance;
@@ -289,8 +289,8 @@ export function makeStackArrayDatatypeAvailable(
   const lengthFieldId = createLengthFieldSymbol(sr, sourceloc);
   const [_, typeId] = sr.b.addType(sr, {
     variant: Semantic.ENode.FixedArrayDatatype,
-    datatype,
-    length,
+    datatype: datatype,
+    length: length,
     concrete: isTypeConcrete(sr, datatype),
     syntheticFields: [lengthFieldId],
   });
@@ -318,7 +318,7 @@ export function makeDynamicArrayDatatypeAvailable(
   const lengthFieldId = createLengthFieldSymbol(sr, sourceloc);
   const [_, typeId] = sr.b.addType(sr, {
     variant: Semantic.ENode.DynamicArrayDatatype,
-    datatype,
+    datatype: datatype,
     concrete: isTypeConcrete(sr, datatype),
     syntheticFields: [lengthFieldId],
   });

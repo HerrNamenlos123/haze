@@ -1171,7 +1171,7 @@ class CodeGenerator {
         const exprWriter = this.emitExpr(statement.condition);
         tempWriter.write(exprWriter.temp);
         outWriter.writeLine(`while (${exprWriter.out.get()}) {`).pushIndent();
-        const scope = this.emitScope(statement.then);
+        const scope = this.emitScope(statement.thenBlock);
         tempWriter.write(scope.temp);
         outWriter.write(scope.out);
         outWriter.popIndent().writeLine("}");
@@ -1193,7 +1193,7 @@ class CodeGenerator {
         const exprWriter = this.emitExpr(statement.condition);
         tempWriter.write(exprWriter.temp);
         outWriter.writeLine(`if (${exprWriter.out.get()}) {`).pushIndent();
-        const scope = this.emitScope(statement.then);
+        const scope = this.emitScope(statement.thenBlock);
         tempWriter.write(scope.temp);
         outWriter.write(scope.out);
         outWriter.popIndent().writeLine("}");
@@ -1203,7 +1203,7 @@ class CodeGenerator {
           outWriter
             .writeLine(`else if (${exprWriter.out.get()}) {`)
             .pushIndent();
-          const s = this.emitScope(elseif.then);
+          const s = this.emitScope(elseif.thenBlock);
           tempWriter.write(s.temp);
           outWriter.write(s.out);
           outWriter.popIndent().writeLine("}");

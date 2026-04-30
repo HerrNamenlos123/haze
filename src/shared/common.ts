@@ -98,6 +98,13 @@ export enum EVariableContext {
   Global = 4,
 }
 
+export enum ETypeModifier {
+  Const,
+  Mut,
+  Inline,
+  // Nodiscard,
+}
+
 export type LiteralValue =
   | {
       type: EPrimitive.bool;
@@ -217,19 +224,19 @@ export type CTValue =
  */
 export namespace CTValueHelpers {
   export function int(value: bigint, width?: CTIntegerWidth): CTValue {
-    return { kind: "int", value, width };
+    return { kind: "int", value: value, width: width };
   }
 
   export function float(value: number, width?: CTFloatWidth): CTValue {
-    return { kind: "float", value, width };
+    return { kind: "float", value: value, width: width };
   }
 
   export function string(value: string, prefix?: "b" | null): CTValue {
-    return { kind: "string", value, prefix };
+    return { kind: "string", value: value, prefix: prefix };
   }
 
   export function bool(value: boolean): CTValue {
-    return { kind: "bool", value };
+    return { kind: "bool", value: value };
   }
 
   export function null_(): CTValue {
@@ -241,25 +248,25 @@ export namespace CTValueHelpers {
   }
 
   export function type(typeDefId: Semantic.TypeDefId): CTValue {
-    return { kind: "type", typeDefId };
+    return { kind: "type", typeDefId: typeDefId };
   }
 
   export function struct(
     typeDefId: Semantic.TypeDefId,
     fields: CTValue[]
   ): CTValue {
-    return { kind: "struct", typeDefId, fields };
+    return { kind: "struct", typeDefId: typeDefId, fields: fields };
   }
 
   export function list(items: CTValue[]): CTValue {
-    return { kind: "list", items };
+    return { kind: "list", items: items };
   }
 
   export function enum_(
     enumType: Semantic.TypeDefId,
     valueName: string
   ): CTValue {
-    return { kind: "enum", enumType, valueName };
+    return { kind: "enum", enumType: enumType, valueName: valueName };
   }
 
   /**
