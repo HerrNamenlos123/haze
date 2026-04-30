@@ -615,8 +615,7 @@ export type ASTFunctionTypeExpr = {
 export type ASTBinaryUnionTypeExpr = {
   // int | real
   variant: "BinaryUnionTypeExpr";
-  left: ASTExpr;
-  right: ASTExpr;
+  types: ASTExpr[];
   sourceloc: SourceLoc;
 };
 
