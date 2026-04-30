@@ -68,7 +68,7 @@ cInjectDirective: (export=EXPORT)? INLINEC LB expr RB SEMI?;
 externLanguage: id;
 
 functionDefinition: (export=EXPORT)? (extern=EXTERN externLang=externLanguage? pub=PUB? noemit=NOEMIT?)? FN comptime=COMPTIME? id (LANGLE id (COMMA id)* RANGLE)? LB params RB (COLON typeExpr)? requiresBlock? (DOUBLEARROW)? (funcbody | SEMI?);
-lambda: LB params RB (COLON typeExpr)? requiresBlock? DOUBLEARROW funcbody;
+lambda: LB params RB (COLON typeExpr)? requiresBlock? (DOUBLEARROW | SINGLEARROW) funcbody;
 param: id QUESTIONMARK? COLON (typeExpr | ellipsis) (EQUALS expr)?;
 params: (param (COMMA param)* (COMMA ellipsis)? COMMA?)? | ellipsis;
 ellipsis: ELLIPSIS;
@@ -117,18 +117,18 @@ interpolatedStringExpression: LCURLY expr RCURLY;
 
 typeExprPrimary
     : nameExpr
-    | TYPE LANGLE typeExpr RANGLE
+    | literal // Literal types such as 5, true or "Foo"
     | LB typeExpr RB
     ;
 
+typeArgList
+    : typeExpr (COMMA typeExpr)*
+    ;
+
 typeExprPostfix
-    : LB argList? RB withAllocator?
-    | LBRACKET indexList RBRACKET
-    | DOT LBRACKET expr RBRACKET
+    // | LBRACKET typeExpr RBRACKET // Type Subscripting not supported yet
+    : DOT LBRACKET typeExpr RBRACKET
     | (DOT | QUESTIONDOT) nameSegment
-    | QUESTIONEXCL
-    | AS typeExpr
-    | IS typeExpr
     ;
 
 typeExprSimple
@@ -156,13 +156,12 @@ typeExpr
 
 genericLiteral
     : typeExpr              #GenericLiteralTypeExpr
-    | literal               #GenericLiteralConstant
     ;
 
 structContent
     : sourceLocationPrefixRule LCURLY structContent* RCURLY                                                 #StructContentWithSourceloc
     | variableMutabilitySpecifier? id QUESTIONMARK? COLON typeExpr (EQUALS expr)? SEMI?                     #StructMember
-    | static=STATIC? mutability=(MUT | CONST)? FN comptime=COMPTIME? name=(RAW_ID | TYPE | OPERATORASSIGN | OPERATORREBIND | OPERATORPLUS | OPERATORMINUS | OPERATORMUL | OPERATORDIV | OPERATORMOD | OPERATORSUBSCRIPT | OPERATORAS | OPERATOREQ | OPERATORNEQ | OPERATORLT | OPERATORGT | OPERATORLTE | OPERATORGTE) (LANGLE generic+=id (COMMA generic+=id)* RANGLE)? LB params RB (COLON typeExpr)? requiresBlock? (funcbody | SEMI?)    #StructMethod
+    | static=STATIC? mutability=(MUT | CONST)? FN comptime=COMPTIME? name=(RAW_ID | OPERATORASSIGN | OPERATORREBIND | OPERATORPLUS | OPERATORMINUS | OPERATORMUL | OPERATORDIV | OPERATORMOD | OPERATORSUBSCRIPT | OPERATORAS | OPERATOREQ | OPERATORNEQ | OPERATORLT | OPERATORGT | OPERATORLTE | OPERATORGTE) (LANGLE generic+=id (COMMA generic+=id)* RANGLE)? LB params RB (COLON typeExpr)? requiresBlock? (funcbody | SEMI?)    #StructMethod
     | structDefinition                                                                                      #NestedStructDefinition
     ;
 
@@ -196,7 +195,8 @@ nameExpr
 primaryExpr
     : LB expr RB
     | doScope
-    | TYPE LANGLE typeExpr RANGLE
+    | TYPE typeExpr
+    | TYPEOF LB expr RB
     | lambda
     | literal
     | interpolatedString
@@ -355,8 +355,6 @@ statement
     | WHILE LET id (COLON typeExpr)? EQUALS expr (SEMI expr)? rawScope              #WhileLetStatement
     ;
 
-// This is a hack-around so the word "type" can be used as variable names without creating a syntax error
 id
-    : TYPE
-    | RAW_ID
+    : RAW_ID
     ;

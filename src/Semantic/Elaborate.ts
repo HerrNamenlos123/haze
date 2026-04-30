@@ -2235,10 +2235,18 @@ export class SemanticElaborator {
     let [object, objectId] = this.expr(memberAccess.expr, inference);
 
     // Handle datatypes BEFORE reactive unwrapping
+    // TODO: Why? Can't remember
     if (object.variant === Semantic.ENode.DatatypeAsValueExpr) {
-      return this.elaborateDatatypeMemberAccess(this.sr, objectId, object.type, memberAccess, {
-        gonnaCallFunctionWithParameterValues: inference?.gonnaCallFunctionWithParameterValues,
-      });
+      const exprId = this.elaborateMemberFromExpr(
+        objectId,
+        memberAccess.memberName,
+        memberAccess.genericArgs,
+        memberAccess.sourceloc,
+        {
+          gonnaCallFunctionWithParameterValues: inference?.gonnaCallFunctionWithParameterValues,
+        },
+      );
+      return [this.sr.exprNodes.get(exprId), exprId];
     }
 
     // Any dot access to any reactive value should first unwrap the reactive value, always
@@ -5072,19 +5080,19 @@ export class SemanticElaborator {
       case Collect.ENode.MemberAccessExpr: {
         const [e, eId] = this.expr(type.expr, {});
         const result = this.elaborateMemberFromExpr(
-          type.expr,
+          eId,
           type.memberName,
           type.genericArgs,
           type.sourceloc,
           {},
         );
-        return;
+        assert(false);
       }
 
       case Collect.ENode.ExprCallExpr: {
         const e = this.sr.cc.exprNodes.get(type.calledExpr);
         console.log(e, type);
-        return;
+        assert(false);
       }
 
       // =================================================================================================================
@@ -6148,222 +6156,400 @@ export class SemanticElaborator {
   }
 
   elaborateMemberFromExpr(
-    exprId: Collect.ExprId,
+    exprId: Semantic.ExprId,
     name: string,
     generics: Collect.ExprId[],
     sourceloc: SourceLoc,
     inference: Semantic.Inference,
-  ) {
-    const expr = this.sr.cc.exprNodes.get(exprId);
+  ): Semantic.ExprId {
+    const expr = this.sr.exprNodes.get(exprId);
 
-    if (symbol.variant === Collect.ENode.TypeDefSymbol) {
-      const typedef = this.sr.cc.typeDefNodes.get(symbol.typeDef);
-      if (typedef.variant === Collect.ENode.EnumTypeDef && typedef.unscoped) {
-        const semanticTypedef = this.sr.typeDefNodes.get(this.enum(symbol.typeDef));
-        assert(semanticTypedef.variant === Semantic.ENode.EnumDatatype);
-        for (const e of semanticTypedef.values) {
-          if (e.name === name) {
-            return [this.sr.exprNodes.get(e.valueExpr), e.literalExpr] as const;
-          }
-        }
-      }
-    }
+    // TODO: Fix this, this is for unscoped enums
+    // if (symbol.variant === Collect.ENode.TypeDefSymbol) {
+    //   const typedef = this.sr.cc.typeDefNodes.get(symbol.typeDef);
+    //   if (typedef.variant === Collect.ENode.EnumTypeDef && typedef.unscoped) {
+    //     const semanticTypedef = this.sr.typeDefNodes.get(this.enum(symbol.typeDef));
+    //     assert(semanticTypedef.variant === Semantic.ENode.EnumDatatype);
+    //     for (const e of semanticTypedef.values) {
+    //       if (e.name === name) {
+    //         return [this.sr.exprNodes.get(e.valueExpr), e.literalExpr] as const;
+    //       }
+    //     }
+    //   }
+    // }
 
-    if (symbol.variant === Collect.ENode.TypeDefSymbol && symbol.name === name) {
-      const def = this.sr.cc.typeDefNodes.get(symbol.typeDef);
-      if (def.variant === Collect.ENode.StructTypeDef) {
-        const typedef = this.sr.cc.typeDefNodes.get(symbol.typeDef);
-        assert(typedef.variant === Collect.ENode.StructTypeDef);
-        // A struct nested in a struct
-        const instantiated = this.instantiateAndElaborateStructWithGenerics(
-          symbol.typeDef,
-          memberAccessExpr.genericArgs.map((g) => this.expressionAsGenericArg(g)),
-          memberAccessExpr.sourceloc,
-        );
-        return this.sr.b.datatypeDefAsValue(instantiated, memberAccessExpr.sourceloc);
-      } else if (def.variant === Collect.ENode.NamespaceTypeDef) {
-        const ns = this.namespace(symbol.typeDef);
-        return this.sr.b.datatypeDefAsValue(ns, memberAccessExpr.sourceloc);
-      } else if (def.variant === Collect.ENode.EnumTypeDef) {
-        const e = this.enum(symbol.typeDef);
-        return this.sr.b.datatypeDefAsValue(e, memberAccessExpr.sourceloc);
-      } else if (def.variant === Collect.ENode.TypeDefAlias) {
-        const e = this.elaborateTypeDefAlias(
-          def,
-          memberAccessExpr.genericArgs,
-          null,
-          null,
-          false,
-          memberAccessExpr.sourceloc,
-        );
-        return this.sr.b.datatypeUseAsValue(e, memberAccessExpr.sourceloc);
-      }
-    }
+    if (expr.variant === Semantic.ENode.DatatypeAsValueExpr) {
+      const typeUse = this.sr.typeUseNodes.get(expr.type);
+      const typeDef = this.sr.typeDefNodes.get(typeUse.type);
 
-    if (symbol.variant === Collect.ENode.FunctionOverloadGroupSymbol && symbol.name === name) {
-      // A method or a namespaced function
-
-      const chosenOverloadId = this.FunctionOverloadChoose(
-        symbolId,
-        inference?.gonnaCallFunctionWithParameterValues,
-        memberAccessExpr.sourceloc,
-      );
-
-      const funcsym = this.sr.cc.symbolNodes.get(chosenOverloadId);
-      assert(funcsym.variant === Collect.ENode.FunctionSymbol);
-
-      const paramPackTypes = this.prepareParameterPackTypes(
-        name,
-        funcsym.parameters,
-        inference?.gonnaCallFunctionWithParameterValues,
-        memberAccessExpr.sourceloc,
-      );
-
-      const functionSignatureId = this.elaborateFunctionSignature(chosenOverloadId);
-      const functionSignature = this.sr.symbolNodes.get(functionSignatureId);
-      assert(functionSignature.variant === Semantic.ENode.FunctionSignature);
-
-      // Try to infer generic arguments if none were provided
-      let genericArgs = memberAccessExpr.genericArgs.map((g) => this.expressionAsGenericArg(g));
-      if (genericArgs.length === 0 && funcsym.generics.length > 0) {
-        const inferredArgs = this.inferGenericArgumentsFromCallSite(
-          functionSignatureId,
-          chosenOverloadId,
-          inference,
-          memberAccessExpr.sourceloc,
-        );
-        if (inferredArgs !== null) {
-          genericArgs = inferredArgs;
-        }
+      if (typeDef.variant === Semantic.ENode.StructDatatype && typeDef.name === name) {
+        // typeDef
+        assert(false);
+        // const typedef = this.sr.cc.typeDefNodes.get(symbol.typeDef);
+        // assert(typedef.variant === Collect.ENode.StructTypeDef);
+        // // A struct nested in a struct
+        // const instantiated = this.instantiateAndElaborateStructWithGenerics(
+        //   symbol.typeDef,
+        //   memberAccessExpr.genericArgs.map((g) => this.expressionAsGenericArg(g)),
+        //   memberAccessExpr.sourceloc,
+        // );
+        // return this.sr.b.datatypeDefAsValue(instantiated, memberAccessExpr.sourceloc);
       }
 
-      const functionSymbolId = this.elaborateFunctionSymbolWithGenerics(
-        functionSignatureId,
-        genericArgs,
-        memberAccessExpr.sourceloc,
-        paramPackTypes,
-        null,
-      );
+      if (typeDef.variant === Semantic.ENode.EnumDatatype && typeDef.name === name) {
+        assert(false);
+      }
 
-      const functionSymbol = this.sr.symbolNodes.get(functionSymbolId);
-      assert(functionSymbol.variant === Semantic.ENode.FunctionSymbol);
-      return this.sr.b.symbolValue(functionSymbolId, memberAccessExpr.sourceloc);
+      if (typeDef.variant === Semantic.ENode.NamespaceDatatype && typeDef.name === name) {
+        assert(false);
+      }
+      assert(false);
     }
+
+    // DATATYPE LOOKUP
+
+    // const datatypeValueInstance = this.sr.typeUseNodes.get(typeUseId);
+    // const datatypeValue = this.sr.typeDefNodes.get(datatypeValueInstance.type);
+
+    // if (memberAccessExpr.memberName === "name") {
+    //   return this.sr.b.literal(
+    //     Semantic.serializeTypeUse(this.sr, typeUseId),
+    //     memberAccessExpr.sourceloc,
+    //   );
+    // }
+    // if (memberAccessExpr.memberName === "mangled") {
+    //   const name = Semantic.mangleFullTypeUse(this.sr, typeUseId);
+    //   return this.sr.b.literal(
+    //     name.wasMangled ? "_H" + name.name : name.name,
+    //     memberAccessExpr.sourceloc,
+    //   );
+    // }
+    // if (memberAccessExpr.memberName === "category") {
+    //   const typeCategoryEnumTypeId = this.ensureMetaTypeCategoryEnumType(
+    //     memberAccessExpr.sourceloc,
+    //   );
+    //   return this.sr.b.literalValue(
+    //     {
+    //       type: "enum",
+    //       enumType: typeCategoryEnumTypeId,
+    //       valueName: this.getDatatypeCategoryName(datatypeValue),
+    //     },
+    //     memberAccessExpr.sourceloc,
+    //   );
+    // }
+    // if (memberAccessExpr.memberName === "baseType") {
+    //   // For literal types (compile-time constants like datatype 5), unwrap to the base type
+    //   // For all other types, return the same type
+    //   const baseTypeUseId =
+    //     datatypeValue.variant === Semantic.ENode.LiteralDatatype ? datatypeValue.type : typeUseId;
+    //   return this.sr.b.datatypeUseAsValue(baseTypeUseId, memberAccessExpr.sourceloc);
+    // }
+
+    // if (datatypeValue.variant === Semantic.ENode.NamespaceDatatype) {
+    //   return this.elaborateMemberFromExpr(
+    //     datatypeAsValueExprId,
+    //     memberAccessExpr.memberName,
+    //     memberAccessExpr.genericArgs,
+    //     memberAccessExpr.sourceloc,
+    //     inference,
+    //   );
+    // } else if (datatypeValue.variant === Semantic.ENode.StructDatatype) {
+    //   if (memberAccessExpr.memberName === "fields") {
+    //     if (datatypeValue.reactiveClone) {
+    //       throw new CompilerError(
+    //         `Datatype ${Semantic.serializeTypeUse(this.sr, typeUseId)} does not support '.fields' reflection`,
+    //         memberAccessExpr.sourceloc,
+    //       );
+    //     }
+
+    //     const metaFieldType = this.ensureMetaFieldStructType(memberAccessExpr.sourceloc);
+    //     const reflectedFields: Semantic.ExprId[] = [];
+
+    //     for (const memberId of datatypeValue.members) {
+    //       const member = this.sr.symbolNodes.get(memberId);
+    //       assert(member.variant === Semantic.ENode.VariableSymbol);
+
+    //       const fieldNameExprId = this.sr.b.literal(member.name, memberAccessExpr.sourceloc)[1];
+    //       const fieldExprId = this.sr.b.structLiteral(
+    //         metaFieldType,
+    //         [{ name: "name", value: fieldNameExprId }],
+    //         this.inFunction,
+    //         null,
+    //         memberAccessExpr.sourceloc,
+    //       )[1];
+    //       reflectedFields.push(fieldExprId);
+    //     }
+
+    //     const reflectedType = makeStackArrayDatatypeAvailable(
+    //       this.sr,
+    //       metaFieldType,
+    //       BigInt(reflectedFields.length),
+    //       EDatatypeMutability.Const,
+    //       false,
+    //       memberAccessExpr.sourceloc,
+    //     );
+
+    //     return this.sr.b.arrayLiteral(
+    //       reflectedType,
+    //       reflectedFields,
+    //       this.inFunction,
+    //       null,
+    //       memberAccessExpr.sourceloc,
+    //     );
+    //   }
+
+    //   return this.elaborateMemberFromExpr(
+    //     datatypeAsValueExprId,
+    //     memberAccessExpr.memberName,
+    //     memberAccessExpr.genericArgs,
+    //     memberAccessExpr.sourceloc,
+    //     inference,
+    //   );
+    // } else if (datatypeValue.variant === Semantic.ENode.PrimitiveDatatype) {
+    //   return this.elaboratePrimitiveDatatypeMemberAccess(datatypeValue, memberAccessExpr);
+    // } else if (datatypeValue.variant === Semantic.ENode.TaggedUnionDatatype) {
+    //   if (!datatypeValue.members.find((m) => m.tag === memberAccessExpr.memberName)) {
+    //     throw new CompilerError(
+    //       `Type ${Semantic.serializeTypeUse(this.sr, typeUseId)} does not have a tag named '${
+    //         memberAccessExpr.memberName
+    //       }'`,
+    //       memberAccessExpr.sourceloc,
+    //     );
+    //   }
+
+    //   return this.sr.b.addExpr(this.sr, {
+    //     variant: Semantic.ENode.UnionTagReferenceExpr,
+    //     instanceIds: [],
+    //     isTemporary: true,
+    //     tag: memberAccessExpr.memberName,
+    //     unionType: datatypeValueInstance.type,
+    //     type: makeTypeUse(
+    //       this.sr,
+    //       this.sr.b.unionTagRefTypeDef(),
+    //       EDatatypeMutability.Default,
+    //       false,
+    //       memberAccessExpr.sourceloc,
+    //     )[1],
+    //     sourceloc: memberAccessExpr.sourceloc,
+    //     flow: Semantic.FlowResult.fallthrough(),
+    //     writes: Semantic.WriteResult.empty(),
+    //   });
+    // } else if (datatypeValue.variant === Semantic.ENode.EnumDatatype) {
+    //   if (memberAccessExpr.genericArgs.length !== 0) {
+    //     throw new CompilerError(`Enums do not take generic arguments`, memberAccessExpr.sourceloc);
+    //   }
+
+    //   for (const value of datatypeValue.values) {
+    //     if (value.name === memberAccessExpr.memberName) {
+    //       return [this.sr.exprNodes.get(value.literalExpr), value.literalExpr] as const;
+    //     }
+    //   }
+    // }
+
+    // throw new CompilerError(
+    //   `Datatype ${Semantic.serializeTypeUse(this.sr, typeUseId)} does not have a member named '${
+    //     memberAccessExpr.memberName
+    //   }'`,
+    //   memberAccessExpr.sourceloc,
+    // );
+
+    // if (symbol.variant === Collect.ENode.TypeDefSymbol && symbol.name === name) {
+    //   const def = this.sr.cc.typeDefNodes.get(symbol.typeDef);
+    //   if (def.variant === Collect.ENode.StructTypeDef) {
+    //   } else if (def.variant === Collect.ENode.NamespaceTypeDef) {
+    //     const ns = this.namespace(symbol.typeDef);
+    //     return this.sr.b.datatypeDefAsValue(ns, memberAccessExpr.sourceloc);
+    //   } else if (def.variant === Collect.ENode.EnumTypeDef) {
+    //     const e = this.enum(typeUse.type);
+    //     return this.sr.b.datatypeDefAsValue(e, memberAccessExpr.sourceloc);
+    //   } else if (def.variant === Collect.ENode.TypeDefAlias) {
+    //     const e = this.elaborateTypeDefAlias(
+    //       def,
+    //       memberAccessExpr.genericArgs,
+    //       null,
+    //       null,
+    //       false,
+    //       memberAccessExpr.sourceloc,
+    //     );
+    //     return this.sr.b.datatypeUseAsValue(e, memberAccessExpr.sourceloc);
+    //   }
+    // }
+
+    // if (expr.variant === Semantic.ENode.SymbolValueExpr) {
+    //   const symbol = this.sr.symbolNodes.get(expr.symbol);
+    //   assert(false);
+    //   if (symbol.variant === Semantic.ENode.FunctionOverloadGroupSymbol && symbol.name === name) {
+    //     // A method or a namespaced function
+
+    //     const chosenOverloadId = this.FunctionOverloadChoose(
+    //       symbolId,
+    //       inference?.gonnaCallFunctionWithParameterValues,
+    //       memberAccessExpr.sourceloc,
+    //     );
+
+    //     const funcsym = this.sr.cc.symbolNodes.get(chosenOverloadId);
+    //     assert(funcsym.variant === Collect.ENode.FunctionSymbol);
+
+    //     const paramPackTypes = this.prepareParameterPackTypes(
+    //       name,
+    //       funcsym.parameters,
+    //       inference?.gonnaCallFunctionWithParameterValues,
+    //       memberAccessExpr.sourceloc,
+    //     );
+
+    //     const functionSignatureId = this.elaborateFunctionSignature(chosenOverloadId);
+    //     const functionSignature = this.sr.symbolNodes.get(functionSignatureId);
+    //     assert(functionSignature.variant === Semantic.ENode.FunctionSignature);
+
+    //     // Try to infer generic arguments if none were provided
+    //     let genericArgs = memberAccessExpr.genericArgs.map((g) => this.expressionAsGenericArg(g));
+    //     if (genericArgs.length === 0 && funcsym.generics.length > 0) {
+    //       const inferredArgs = this.inferGenericArgumentsFromCallSite(
+    //         functionSignatureId,
+    //         chosenOverloadId,
+    //         inference,
+    //         memberAccessExpr.sourceloc,
+    //       );
+    //       if (inferredArgs !== null) {
+    //         genericArgs = inferredArgs;
+    //       }
+    //     }
+
+    //     const functionSymbolId = this.elaborateFunctionSymbolWithGenerics(
+    //       functionSignatureId,
+    //       genericArgs,
+    //       memberAccessExpr.sourceloc,
+    //       paramPackTypes,
+    //       null,
+    //     );
+
+    //     const functionSymbol = this.sr.symbolNodes.get(functionSymbolId);
+    //     assert(functionSymbol.variant === Semantic.ENode.FunctionSymbol);
+    //     return this.sr.b.symbolValue(functionSymbolId, memberAccessExpr.sourceloc);
+    //   }
+    // }
 
     return undefined;
   }
 
-  lookupAndElaborateNamespaceMemberAccess(
-    namespaceValueId: Semantic.ExprId,
-    name: string,
-    memberAccessExpr: Collect.MemberAccessExpr,
-    inference: Semantic.Inference,
-  ) {
-    const namespace = this.sr.exprNodes.get(namespaceValueId);
-    assert(namespace.variant === Semantic.ENode.DatatypeAsValueExpr);
-    const semanticNamespace = this.sr.typeDefNodes.get(
-      this.sr.typeUseNodes.get(namespace.type).type,
-    );
-    assert(semanticNamespace.variant === Semantic.ENode.NamespaceDatatype);
-    const collectedNamespace = this.sr.cc.typeDefNodes.get(semanticNamespace.collectedNamespace);
-    assert(collectedNamespace.variant === Collect.ENode.NamespaceTypeDef);
-    const collectedNSSharedInstance = this.sr.cc.nsSharedInstances.get(
-      collectedNamespace.sharedInstance,
-    );
-    assert(collectedNSSharedInstance.variant === Collect.ENode.NamespaceSharedInstance);
+  // lookupAndElaborateNamespaceMemberAccess(
+  //   namespaceValueId: Semantic.ExprId,
+  //   name: string,
+  //   memberAccessExpr: Collect.MemberAccessExpr,
+  //   inference: Semantic.Inference,
+  // ) {
+  //   const namespace = this.sr.exprNodes.get(namespaceValueId);
+  //   assert(namespace.variant === Semantic.ENode.DatatypeAsValueExpr);
+  //   const semanticNamespace = this.sr.typeDefNodes.get(
+  //     this.sr.typeUseNodes.get(namespace.type).type,
+  //   );
+  //   assert(semanticNamespace.variant === Semantic.ENode.NamespaceDatatype);
+  //   const collectedNamespace = this.sr.cc.typeDefNodes.get(semanticNamespace.collectedNamespace);
+  //   assert(collectedNamespace.variant === Collect.ENode.NamespaceTypeDef);
+  //   const collectedNSSharedInstance = this.sr.cc.nsSharedInstances.get(
+  //     collectedNamespace.sharedInstance,
+  //   );
+  //   assert(collectedNSSharedInstance.variant === Collect.ENode.NamespaceSharedInstance);
 
-    for (const scopeId of collectedNSSharedInstance.namespaceScopes) {
-      const scope = this.sr.cc.scopeNodes.get(scopeId);
-      assert(scope.variant === Collect.ENode.NamespaceScope);
-      for (const symbolId of scope.symbols) {
-        const s = this.elaborateMemberFromExpr(symbolId, name, memberAccessExpr, inference);
-        if (s) {
-          return s;
-        }
-      }
-    }
+  //   for (const scopeId of collectedNSSharedInstance.namespaceScopes) {
+  //     const scope = this.sr.cc.scopeNodes.get(scopeId);
+  //     assert(scope.variant === Collect.ENode.NamespaceScope);
+  //     for (const symbolId of scope.symbols) {
+  //       const s = this.elaborateMemberFromExpr(symbolId, name, memberAccessExpr, inference);
+  //       if (s) {
+  //         return s;
+  //       }
+  //     }
+  //   }
 
-    throw new CompilerError(
-      `Namespace '${collectedNamespace.name}' does not define any declarations named '${memberAccessExpr.memberName}'`,
-      memberAccessExpr.sourceloc,
-    );
-  }
+  //   throw new CompilerError(
+  //     `Namespace '${collectedNamespace.name}' does not define any declarations named '${memberAccessExpr.memberName}'`,
+  //     memberAccessExpr.sourceloc,
+  //   );
+  // }
 
-  lookupAndElaborateStaticStructAccess(
-    namespaceOrStructValueId: Semantic.ExprId,
-    name: string,
-    memberAccessExpr: Collect.MemberAccessExpr,
-    inference: Semantic.Inference,
-  ) {
-    const namespaceOrStructValue = this.sr.exprNodes.get(namespaceOrStructValueId);
-    assert(namespaceOrStructValue.variant === Semantic.ENode.DatatypeAsValueExpr);
-    const semanticStruct = this.sr.typeDefNodes.get(
-      this.sr.typeUseNodes.get(namespaceOrStructValue.type).type,
-    );
-    assert(semanticStruct.variant === Semantic.ENode.StructDatatype);
-    const collectedStruct = this.sr.cc.typeDefNodes.get(semanticStruct.originalCollectedDefinition);
-    assert(collectedStruct.variant === Collect.ENode.StructTypeDef);
-    const structScope = this.sr.cc.scopeNodes.get(collectedStruct.lexicalScope);
-    assert(structScope.variant === Collect.ENode.StructLexicalScope);
+  // lookupAndElaborateStaticStructAccess(
+  //   namespaceOrStructValueId: Semantic.ExprId,
+  //   name: string,
+  //   memberAccessExpr: Collect.MemberAccessExpr,
+  //   inference: Semantic.Inference,
+  // ) {
+  //   const namespaceOrStructValue = this.sr.exprNodes.get(namespaceOrStructValueId);
+  //   assert(namespaceOrStructValue.variant === Semantic.ENode.DatatypeAsValueExpr);
+  //   const semanticStruct = this.sr.typeDefNodes.get(
+  //     this.sr.typeUseNodes.get(namespaceOrStructValue.type).type,
+  //   );
+  //   assert(semanticStruct.variant === Semantic.ENode.StructDatatype);
+  //   const collectedStruct = this.sr.cc.typeDefNodes.get(semanticStruct.originalCollectedDefinition);
+  //   assert(collectedStruct.variant === Collect.ENode.StructTypeDef);
+  //   const structScope = this.sr.cc.scopeNodes.get(collectedStruct.lexicalScope);
+  //   assert(structScope.variant === Collect.ENode.StructLexicalScope);
 
-    const typedef = this.sr.typeUseNodes.get(namespaceOrStructValue.type).type;
+  //   const typedef = this.sr.typeUseNodes.get(namespaceOrStructValue.type).type;
 
-    let elaboratedStructCache = null as Semantic.StructDef | null;
-    for (const [_, cache] of this.sr.elaboratedStructDatatypes) {
-      for (const entry of cache) {
-        if (entry.result === typedef) {
-          elaboratedStructCache = entry;
-        }
-      }
-    }
-    assert(elaboratedStructCache);
+  //   let elaboratedStructCache = null as Semantic.StructDef | null;
+  //   for (const [_, cache] of this.sr.elaboratedStructDatatypes) {
+  //     for (const entry of cache) {
+  //       if (entry.result === typedef) {
+  //         elaboratedStructCache = entry;
+  //       }
+  //     }
+  //   }
+  //   assert(elaboratedStructCache);
 
-    for (const symbolId of structScope.symbols) {
-      const s = this.withContext(
-        {
-          context: Semantic.mergeSubstitutionContext(
-            elaboratedStructCache.substitutionContext,
-            this.currentContext,
-            {
-              currentScope: this.currentContext.currentScope,
-              genericsScope: this.currentContext.currentScope,
-              instanceDeps: {
-                instanceDependsOn: new Map(),
-                structMembersDependOn: new Map(),
-                symbolDependsOn: new Map(),
-              },
-            },
-          ),
-          inAttemptExpr: null,
-          inFunction: null,
-        },
-        () => this.elaborateMemberFromExpr(symbolId, name, memberAccessExpr, inference),
-      );
-      if (s) {
-        const symbol = this.sr.exprNodes.get(s[1]);
-        assert(symbol.variant === Semantic.ENode.SymbolValueExpr);
-        const sym = this.sr.symbolNodes.get(symbol.symbol);
+  //   for (const symbolId of structScope.symbols) {
+  //     const s = this.withContext(
+  //       {
+  //         context: Semantic.mergeSubstitutionContext(
+  //           elaboratedStructCache.substitutionContext,
+  //           this.currentContext,
+  //           {
+  //             currentScope: this.currentContext.currentScope,
+  //             genericsScope: this.currentContext.currentScope,
+  //             instanceDeps: {
+  //               instanceDependsOn: new Map(),
+  //               structMembersDependOn: new Map(),
+  //               symbolDependsOn: new Map(),
+  //             },
+  //           },
+  //         ),
+  //         inAttemptExpr: null,
+  //         inFunction: null,
+  //       },
+  //       () =>
+  //         this.elaborateMemberFromExpr(
+  //           symbolId,
+  //           name,
+  //           memberAccessExpr.genericArgs,
+  //           memberAccessExpr.sourceloc,
+  //           inference,
+  //         ),
+  //     );
+  //     if (s) {
+  //       const symbol = this.sr.exprNodes.get(s[1]);
+  //       assert(symbol.variant === Semantic.ENode.SymbolValueExpr);
+  //       const sym = this.sr.symbolNodes.get(symbol.symbol);
 
-        if (sym.variant === Semantic.ENode.FunctionSymbol) {
-          if (!sym.staticMethod) {
-            throw new CompilerError(
-              `Method ${Semantic.serializeFullSymbolName(
-                this.sr,
-                symbol.symbol,
-              )} is not static but is used in a static context`,
-              memberAccessExpr.sourceloc,
-            );
-          }
-        }
-        return s;
-      }
-    }
+  //       if (sym.variant === Semantic.ENode.FunctionSymbol) {
+  //         if (!sym.staticMethod) {
+  //           throw new CompilerError(
+  //             `Method ${Semantic.serializeFullSymbolName(
+  //               this.sr,
+  //               symbol.symbol,
+  //             )} is not static but is used in a static context`,
+  //             memberAccessExpr.sourceloc,
+  //           );
+  //         }
+  //       }
+  //       return s;
+  //     }
+  //   }
 
-    throw new CompilerError(
-      `Struct '${collectedStruct.name}' does not define any declarations named '${memberAccessExpr.memberName}'`,
-      memberAccessExpr.sourceloc,
-    );
-  }
+  //   throw new CompilerError(
+  //     `Struct '${collectedStruct.name}' does not define any declarations named '${memberAccessExpr.memberName}'`,
+  //     memberAccessExpr.sourceloc,
+  //   );
+  // }
 
   makeArrayLiteral(
     arrayTypeUseId: Semantic.TypeUseId,
@@ -6697,248 +6883,112 @@ export class SemanticElaborator {
     }
   }
 
-  elaborateDatatypeMemberAccess(
-    sr: Semantic.Context,
-    datatypeAsValueExprId: Semantic.ExprId,
-    typeUseId: Semantic.TypeUseId,
+  elaboratePrimitiveDatatypeMemberAccess(
+    datatypeValue: Semantic.PrimitiveDatatypeDef,
     memberAccessExpr: Collect.MemberAccessExpr,
-    inference: Semantic.Inference,
   ) {
-    const datatypeValueInstance = sr.typeUseNodes.get(typeUseId);
-    const datatypeValue = sr.typeDefNodes.get(datatypeValueInstance.type);
-
-    if (memberAccessExpr.memberName === "name") {
-      return this.sr.b.literal(
-        Semantic.serializeTypeUse(sr, typeUseId),
-        memberAccessExpr.sourceloc,
-      );
-    }
-    if (memberAccessExpr.memberName === "mangled") {
-      const name = Semantic.mangleFullTypeUse(sr, typeUseId);
-      return this.sr.b.literal(
-        name.wasMangled ? "_H" + name.name : name.name,
-        memberAccessExpr.sourceloc,
-      );
-    }
-    if (memberAccessExpr.memberName === "category") {
-      const typeCategoryEnumTypeId = this.ensureMetaTypeCategoryEnumType(
-        memberAccessExpr.sourceloc,
-      );
-      return this.sr.b.literalValue(
-        {
-          type: "enum",
-          enumType: typeCategoryEnumTypeId,
-          valueName: this.getDatatypeCategoryName(datatypeValue),
-        },
-        memberAccessExpr.sourceloc,
-      );
-    }
-    if (memberAccessExpr.memberName === "baseType") {
-      // For literal types (compile-time constants like datatype 5), unwrap to the base type
-      // For all other types, return the same type
-      const baseTypeUseId =
-        datatypeValue.variant === Semantic.ENode.LiteralDatatype ? datatypeValue.type : typeUseId;
-      return this.sr.b.datatypeUseAsValue(baseTypeUseId, memberAccessExpr.sourceloc);
-    }
-
-    if (datatypeValue.variant === Semantic.ENode.NamespaceDatatype) {
-      return this.lookupAndElaborateNamespaceMemberAccess(
-        datatypeAsValueExprId,
-        memberAccessExpr.memberName,
-        memberAccessExpr,
-        inference,
-      );
-    } else if (datatypeValue.variant === Semantic.ENode.StructDatatype) {
-      if (memberAccessExpr.memberName === "fields") {
-        if (datatypeValue.reactiveClone) {
-          throw new CompilerError(
-            `Datatype ${Semantic.serializeTypeUse(sr, typeUseId)} does not support '.fields' reflection`,
-            memberAccessExpr.sourceloc,
-          );
-        }
-
-        const metaFieldType = this.ensureMetaFieldStructType(memberAccessExpr.sourceloc);
-        const reflectedFields: Semantic.ExprId[] = [];
-
-        for (const memberId of datatypeValue.members) {
-          const member = this.sr.symbolNodes.get(memberId);
-          assert(member.variant === Semantic.ENode.VariableSymbol);
-
-          const fieldNameExprId = this.sr.b.literal(member.name, memberAccessExpr.sourceloc)[1];
-          const fieldExprId = this.sr.b.structLiteral(
-            metaFieldType,
-            [{ name: "name", value: fieldNameExprId }],
-            this.inFunction,
-            null,
-            memberAccessExpr.sourceloc,
-          )[1];
-          reflectedFields.push(fieldExprId);
-        }
-
-        const reflectedType = makeStackArrayDatatypeAvailable(
-          this.sr,
-          metaFieldType,
-          BigInt(reflectedFields.length),
-          EDatatypeMutability.Const,
-          false,
-          memberAccessExpr.sourceloc,
-        );
-
-        return this.sr.b.arrayLiteral(
-          reflectedType,
-          reflectedFields,
-          this.inFunction,
-          null,
+    if (
+      datatypeValue.primitive === EPrimitive.u8 ||
+      datatypeValue.primitive === EPrimitive.u16 ||
+      datatypeValue.primitive === EPrimitive.u32 ||
+      datatypeValue.primitive === EPrimitive.u64 ||
+      datatypeValue.primitive === EPrimitive.usize ||
+      datatypeValue.primitive === EPrimitive.i8 ||
+      datatypeValue.primitive === EPrimitive.i16 ||
+      datatypeValue.primitive === EPrimitive.i32 ||
+      datatypeValue.primitive === EPrimitive.i64 ||
+      datatypeValue.primitive === EPrimitive.int
+    ) {
+      if (memberAccessExpr.memberName === "max" || memberAccessExpr.memberName === "min") {
+        return this.sr.b.literalValue(
+          {
+            type: datatypeValue.primitive,
+            unit: null,
+            value: Conversion.getIntegerMinMax(datatypeValue.primitive)[
+              memberAccessExpr.memberName === "min" ? 0 : 1
+            ],
+          },
           memberAccessExpr.sourceloc,
         );
       }
+    }
 
-      return this.lookupAndElaborateStaticStructAccess(
-        datatypeAsValueExprId,
-        memberAccessExpr.memberName,
-        memberAccessExpr,
-        inference,
-      );
-    } else if (datatypeValue.variant === Semantic.ENode.PrimitiveDatatype) {
-      if (
-        datatypeValue.primitive === EPrimitive.u8 ||
-        datatypeValue.primitive === EPrimitive.u16 ||
-        datatypeValue.primitive === EPrimitive.u32 ||
-        datatypeValue.primitive === EPrimitive.u64 ||
-        datatypeValue.primitive === EPrimitive.usize ||
-        datatypeValue.primitive === EPrimitive.i8 ||
-        datatypeValue.primitive === EPrimitive.i16 ||
-        datatypeValue.primitive === EPrimitive.i32 ||
-        datatypeValue.primitive === EPrimitive.i64 ||
-        datatypeValue.primitive === EPrimitive.int
-      ) {
-        if (memberAccessExpr.memberName === "max" || memberAccessExpr.memberName === "min") {
-          return this.sr.b.literalValue(
-            {
-              type: datatypeValue.primitive,
-              unit: null,
-              value: Conversion.getIntegerMinMax(datatypeValue.primitive)[
-                memberAccessExpr.memberName === "min" ? 0 : 1
-              ],
-            },
-            memberAccessExpr.sourceloc,
-          );
-        }
-      }
+    if (datatypeValue.primitive === EPrimitive.str) {
+      if (memberAccessExpr.memberName === "fromByte") {
+        const funcname = `__hz_str_from_byte`;
 
-      if (datatypeValue.primitive === EPrimitive.str) {
-        if (memberAccessExpr.memberName === "fromByte") {
-          const funcname = `__hz_str_from_byte`;
-
-          let [func, funcId] = [null, null] as [
-            Semantic.FunctionSymbol | null,
-            Semantic.SymbolId | null,
-          ];
-          if (this.sr.syntheticFunctions.has(funcname)) {
-            funcId = this.sr.syntheticFunctions.get(funcname)!;
-            assert(funcId);
-            const sym = this.sr.symbolNodes.get(funcId);
-            assert(sym.variant === Semantic.ENode.FunctionSymbol);
-            func = sym;
-          } else {
-            const functionType = makeRawFunctionDatatypeAvailable(this.sr, {
-              parameters: [
-                {
-                  optional: false,
-                  type: this.sr.b.u8Type(),
-                },
-              ],
-              returnType: this.sr.b.strType(),
-              requires: {
-                final: true,
-                pure: false,
-                noreturn: false,
-                noreturnIf: null,
+        let [func, funcId] = [null, null] as [
+          Semantic.FunctionSymbol | null,
+          Semantic.SymbolId | null,
+        ];
+        if (this.sr.syntheticFunctions.has(funcname)) {
+          funcId = this.sr.syntheticFunctions.get(funcname)!;
+          assert(funcId);
+          const sym = this.sr.symbolNodes.get(funcId);
+          assert(sym.variant === Semantic.ENode.FunctionSymbol);
+          func = sym;
+        } else {
+          const functionType = makeRawFunctionDatatypeAvailable(this.sr, {
+            parameters: [
+              {
+                optional: false,
+                type: this.sr.b.u8Type(),
               },
-              sourceloc: memberAccessExpr.sourceloc,
-              vararg: false,
-            });
-
-            const code = `__c__("return HZSTD_STRING_FROM_BYTE(hzstd_make_heap_allocator(), value);");`;
-
-            [func, funcId] = this.sr.b.syntheticFunctionFromCode({
-              functionTypeId: functionType,
-              parameterNames: ["value"],
-              funcname: funcname,
-              bodySourceCode: code,
-              currentScope: this.currentContext.currentScope,
-              sourceloc: memberAccessExpr.sourceloc,
-              envType: null,
-            });
-            this.sr.syntheticFunctions.set(funcname, funcId);
-          }
-
-          assert(func && funcId);
-
-          return sr.b.addExpr(this.sr, {
-            variant: Semantic.ENode.SymbolValueExpr,
-            instanceIds: [],
-            symbol: funcId,
-            isTemporary: true,
+            ],
+            returnType: this.sr.b.strType(),
+            requires: {
+              final: true,
+              pure: false,
+              noreturn: false,
+              noreturnIf: null,
+            },
             sourceloc: memberAccessExpr.sourceloc,
-            type: makeTypeUse(
-              sr,
-              func.type,
-              EDatatypeMutability.Const,
-              false,
-              memberAccessExpr.sourceloc,
-            )[1],
-            flow: Semantic.FlowResult.fallthrough(),
-            writes: Semantic.WriteResult.empty(),
+            vararg: false,
           });
-        }
-      }
-    } else if (datatypeValue.variant === Semantic.ENode.TaggedUnionDatatype) {
-      if (!datatypeValue.members.find((m) => m.tag === memberAccessExpr.memberName)) {
-        throw new CompilerError(
-          `Type ${Semantic.serializeTypeUse(sr, typeUseId)} does not have a tag named '${
-            memberAccessExpr.memberName
-          }'`,
-          memberAccessExpr.sourceloc,
-        );
-      }
 
-      return this.sr.b.addExpr(this.sr, {
-        variant: Semantic.ENode.UnionTagReferenceExpr,
-        instanceIds: [],
-        isTemporary: true,
-        tag: memberAccessExpr.memberName,
-        unionType: datatypeValueInstance.type,
-        type: makeTypeUse(
-          this.sr,
-          this.sr.b.unionTagRefTypeDef(),
-          EDatatypeMutability.Default,
-          false,
-          memberAccessExpr.sourceloc,
-        )[1],
-        sourceloc: memberAccessExpr.sourceloc,
-        flow: Semantic.FlowResult.fallthrough(),
-        writes: Semantic.WriteResult.empty(),
-      });
-    } else if (datatypeValue.variant === Semantic.ENode.EnumDatatype) {
-      if (memberAccessExpr.genericArgs.length !== 0) {
-        throw new CompilerError(`Enums do not take generic arguments`, memberAccessExpr.sourceloc);
-      }
+          const code = `__c__("return HZSTD_STRING_FROM_BYTE(hzstd_make_heap_allocator(), value);");`;
 
-      for (const value of datatypeValue.values) {
-        if (value.name === memberAccessExpr.memberName) {
-          return [sr.exprNodes.get(value.literalExpr), value.literalExpr] as const;
+          [func, funcId] = this.sr.b.syntheticFunctionFromCode({
+            functionTypeId: functionType,
+            parameterNames: ["value"],
+            funcname: funcname,
+            bodySourceCode: code,
+            currentScope: this.currentContext.currentScope,
+            sourceloc: memberAccessExpr.sourceloc,
+            envType: null,
+          });
+          this.sr.syntheticFunctions.set(funcname, funcId);
         }
+
+        assert(func && funcId);
+
+        return this.sr.b.addExpr(this.sr, {
+          variant: Semantic.ENode.SymbolValueExpr,
+          instanceIds: [],
+          symbol: funcId,
+          isTemporary: true,
+          sourceloc: memberAccessExpr.sourceloc,
+          type: makeTypeUse(
+            this.sr,
+            func.type,
+            EDatatypeMutability.Const,
+            false,
+            memberAccessExpr.sourceloc,
+          )[1],
+          flow: Semantic.FlowResult.fallthrough(),
+          writes: Semantic.WriteResult.empty(),
+        });
       }
     }
-
-    throw new CompilerError(
-      `Datatype ${Semantic.serializeTypeUse(sr, typeUseId)} does not have a member named '${
-        memberAccessExpr.memberName
-      }'`,
-      memberAccessExpr.sourceloc,
-    );
   }
+
+  // elaborateDatatypeMemberAccess(
+  //   datatypeAsValueExprId: Semantic.ExprId,
+  //   typeUseId: Semantic.TypeUseId,
+  //   memberAccessExpr: Collect.MemberAccessExpr,
+  //   inference: Semantic.Inference,
+  // ) {
+  // }
 
   elaborateStatement(
     statementId: Collect.StatementId,

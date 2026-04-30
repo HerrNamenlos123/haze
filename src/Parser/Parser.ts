@@ -412,6 +412,16 @@ class ASTBuilder extends HazeParserListener {
     } satisfies ASTSymbolValueExpr;
   }
 
+  private makeTypeofCallExpr(expr: ASTExpr, sourceloc: SourceLoc): ASTExprCallExpr {
+    return {
+      variant: "ExprCallExpr",
+      calledExpr: this.makeSymbolExpr("typeof", sourceloc),
+      arguments: [expr],
+      allocator: null,
+      sourceloc,
+    } satisfies ASTExprCallExpr;
+  }
+
   getSource(ctx: ParserRuleContext) {
     if (!ctx.start || !ctx.stop) return "<no-source>";
     const interval = new Interval(ctx.start.start, ctx.stop.stop);
@@ -741,6 +751,15 @@ class ASTBuilder extends HazeParserListener {
       }
 
       this.stack.push(produced[0]);
+      return;
+    }
+
+    if ((ctx as any).TYPEOF?.()) {
+      if (produced.length !== 1) {
+        throw new InternalError("TypeExprPrimary typeof stack mismatch");
+      }
+
+      this.stack.push(this.makeTypeofCallExpr(produced[0] as ASTExpr, this.loc(ctx)));
       return;
     }
 
@@ -1744,6 +1763,15 @@ class ASTBuilder extends HazeParserListener {
         expr: produced[0] as ASTExpr,
         sourceloc: this.loc(ctx),
       } satisfies ASTParenthesisExpr);
+      return;
+    }
+
+    if ((ctx as any).TYPEOF?.()) {
+      if (produced.length !== 1) {
+        throw new InternalError("PrimaryExpr typeof stack mismatch");
+      }
+
+      this.stack.push(this.makeTypeofCallExpr(produced[0] as ASTExpr, this.loc(ctx)));
       return;
     }
 

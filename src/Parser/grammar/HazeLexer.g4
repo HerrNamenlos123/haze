@@ -62,6 +62,7 @@ TRUE: 'true';
 FALSE: 'false';
 TYPE: 'type';
 RETURN: 'return';
+TYPEOF: 'typeof';
 IF: 'if';
 ELSE: 'else';
 IN: 'in';
