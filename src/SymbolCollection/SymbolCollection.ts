@@ -9,27 +9,27 @@ import {
   type ASTFunctionDefinition,
   type ASTGlobalVariableDefinition,
   type ASTModuleImport,
+  type ASTParam,
   type ASTRoot,
   type ASTScope,
   type ASTStructMemberDefinition,
   type ASTSymbolDefinition,
   type ASTSymbolImport,
+  type ASTTaggedUnionTypeExpr,
   type ASTTypeAlias,
   type ASTTypeDef,
-  type ASTTypeExpr,
   type ASTVariableDefinitionStatement,
   AssignmentOperationToString,
   BinaryOperationToString,
   buildASTDatatype,
   EAssignmentOperation,
   EBinaryOperation,
-  type EDatatypeMutability,
+  EDatatypeMutability,
   EExternLanguage,
   EIncrOperation,
   type EOverloadedOperator,
   EUnaryOperation,
   EVariableMutability,
-  type TypeModifier,
   UnaryOperationToString,
 } from "../shared/AST";
 import {
@@ -54,6 +54,54 @@ import {
 import { makeTempId } from "../shared/store";
 
 const RESERVED_METHOD_NAMES = ["toString", "clone", "freezeClone"];
+
+type TypeModifier = "mut" | "const" | "inline";
+
+type ParamTypeInfo = {
+  expr: ASTExpr | null;
+  isParamPack: boolean;
+};
+
+const getParamTypeInfo = (param: ASTParam): ParamTypeInfo => {
+  const datatype = param.datatype as unknown as {
+    kind?: "normal" | "parampack";
+    type?: ASTExpr;
+    variant?: string;
+  };
+
+  if (datatype?.kind === "parampack") {
+    return { expr: null, isParamPack: true };
+  }
+
+  if (datatype?.kind === "normal" && datatype.type) {
+    return { expr: datatype.type, isParamPack: false };
+  }
+
+  if (datatype?.variant === "ParameterPack") {
+    return { expr: null, isParamPack: true };
+  }
+
+  return { expr: param.datatype as unknown as ASTExpr, isParamPack: false };
+};
+
+const collectParamTypeId = (
+  cc: CollectionContext,
+  param: ASTParam,
+  args: { currentParentScope: Collect.ScopeId },
+  exprOverride?: ASTExpr | null
+): Collect.ExprId => {
+  const { expr: paramExpr, isParamPack } = getParamTypeInfo(param);
+  const expr = exprOverride ?? paramExpr;
+
+  if (isParamPack || !expr) {
+    return Collect.makeExpr(cc, {
+      variant: Collect.ENode.ParameterPackDatatypeExpr,
+      sourceloc: param.sourceloc,
+    })[1];
+  }
+
+  return collectExpr(cc, expr, args);
+};
 
 export type CollectionContext = {
   config: ModuleConfig;
@@ -1537,8 +1585,10 @@ function collectSymbol(
       }
 
       const parameters = item.params.map((p) => {
-        let datatype: ASTTypeExpr = p.datatype;
-        if (p.optional) {
+        const { expr: paramExpr } = getParamTypeInfo(p);
+
+        let datatype: ASTExpr | null = paramExpr;
+        if (datatype && p.optional) {
           datatype = {
             variant: "BinaryExpr",
             a: datatype,
@@ -1552,9 +1602,12 @@ function collectSymbol(
             sourceloc: p.sourceloc,
           } satisfies ASTBinaryExpr;
         }
+
+        const type = collectParamTypeId(cc, p, args, datatype);
+
         return {
           name: p.name,
-          type: collectExpr(cc, datatype, args),
+          type,
           optional: p.optional,
           defaultParameterValue: p.defaultValue
             ? collectExpr(cc, p.defaultValue, args)
@@ -1713,7 +1766,7 @@ function collectSymbol(
     // =================================================================================================================
 
     case "StructMember": {
-      let datatype: ASTTypeExpr = item.type;
+      let datatype: ASTExpr = item.type;
       if (item.optional) {
         datatype = {
           variant: "BinaryExpr",
@@ -2358,6 +2411,22 @@ function collectScope(
   return blockScopeId;
 }
 
+const collectTaggedUnionDefinition = (
+  cc: CollectionContext,
+  item: ASTTaggedUnionTypeExpr,
+  args: { currentParentScope: Collect.ScopeId },
+  nodiscard: boolean
+): Collect.ExprId =>
+  Collect.makeExpr(cc, {
+    variant: Collect.ENode.TaggedUnionTypeDefinitionExpr,
+    members: item.members.map((m) => ({
+      tag: m.tag,
+      type: collectExpr(cc, m.type, args),
+    })),
+    nodiscard,
+    sourceloc: item.sourceloc,
+  })[1];
+
 function collectExpr(
   cc: CollectionContext,
   item: ASTExpr,
@@ -2471,6 +2540,15 @@ function collectExpr(
           if (g.variant === "LiteralExpr") {
             return collectExpr(cc, g, args);
           }
+
+          if (g.variant === "TypeValueExpr") {
+            return Collect.makeExpr(cc, {
+              variant: Collect.ENode.TypeLiteralExpr,
+              sourceloc: g.sourceloc,
+              datatype: collectExpr(cc, g.expr, args),
+            })[1];
+          }
+
           return Collect.makeExpr(cc, {
             variant: Collect.ENode.TypeLiteralExpr,
             sourceloc: item.sourceloc,
@@ -2536,7 +2614,7 @@ function collectExpr(
             ? collectExpr(cc, p.defaultValue, args)
             : null,
           sourceloc: p.sourceloc,
-          type: collectExpr(cc, p.datatype, args),
+          type: collectParamTypeId(cc, p, args),
         })),
         parentScope: args.currentParentScope,
         pub: false,
@@ -2999,6 +3077,15 @@ function collectExpr(
           if (g.variant === "LiteralExpr") {
             return collectExpr(cc, g, args);
           }
+
+          if (g.variant === "TypeValueExpr") {
+            return Collect.makeExpr(cc, {
+              variant: Collect.ENode.TypeLiteralExpr,
+              sourceloc: g.sourceloc,
+              datatype: collectExpr(cc, g.expr, args),
+            })[1];
+          }
+
           return Collect.makeExpr(cc, {
             variant: Collect.ENode.TypeLiteralExpr,
             sourceloc: item.sourceloc,
@@ -3276,6 +3363,192 @@ function collectExpr(
         }),
         sourceloc: item.sourceloc,
       })[1];
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
+    case "TypeValueExpr": {
+      return Collect.makeExpr(cc, {
+        variant: Collect.ENode.TypeLiteralExpr,
+        datatype: collectExpr(cc, item.expr, {
+          currentParentScope: args.currentParentScope,
+        }),
+        sourceloc: item.sourceloc,
+      })[1];
+    }
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
+    case "TypeOfExpr": {
+      return Collect.makeExpr(cc, {
+        variant: Collect.ENode.ExprCallExpr,
+        calledExpr: Collect.makeExpr(cc, {
+          variant: Collect.ENode.SymbolValueExpr,
+          name: "typeof",
+          genericArgs: [],
+          sourceloc: item.sourceloc,
+        })[1],
+        arguments: [collectExpr(cc, item.expr, args)],
+        sourceloc: item.sourceloc,
+      })[1];
+    }
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
+    case "ConstTypeExpr": {
+      return Collect.makeExpr(cc, {
+        variant: Collect.ENode.TypeModifierExpr,
+        type: collectExpr(cc, item.type, {
+          currentParentScope: args.currentParentScope,
+        }),
+        modifier: "const",
+        sourceloc: item.sourceloc,
+      })[1];
+    }
+
+    case "MutTypeExpr": {
+      return Collect.makeExpr(cc, {
+        variant: Collect.ENode.TypeModifierExpr,
+        type: collectExpr(cc, item.type, {
+          currentParentScope: args.currentParentScope,
+        }),
+        modifier: "mut",
+        sourceloc: item.sourceloc,
+      })[1];
+    }
+
+    case "InlineTypeExpr": {
+      return Collect.makeExpr(cc, {
+        variant: Collect.ENode.TypeModifierExpr,
+        type: collectExpr(cc, item.type, {
+          currentParentScope: args.currentParentScope,
+        }),
+        modifier: "inline",
+        sourceloc: item.sourceloc,
+      })[1];
+    }
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
+    case "DynamicArrayTypeExpr": {
+      return Collect.makeExpr(cc, {
+        variant: Collect.ENode.DynamicArrayTypeDefinitionExpr,
+        datatype: collectExpr(cc, item.type, {
+          currentParentScope: args.currentParentScope,
+        }),
+        mutability: EDatatypeMutability.Default,
+        sourceloc: item.sourceloc,
+      })[1];
+    }
+
+    case "StaticArrayTypeExpr": {
+      return Collect.makeExpr(cc, {
+        variant: Collect.ENode.StackArrayTypeDefinitionExpr,
+        datatype: collectExpr(cc, item.type, {
+          currentParentScope: args.currentParentScope,
+        }),
+        length: item.arraySize,
+        inline: false,
+        mutability: EDatatypeMutability.Default,
+        sourceloc: item.sourceloc,
+      })[1];
+    }
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
+    case "FunctionTypeExpr": {
+      const parameters = item.params.map((p) => {
+        const { expr: paramExpr, isParamPack } = getParamTypeInfo(p);
+
+        const type = isParamPack
+          ? Collect.makeExpr(cc, {
+              variant: Collect.ENode.ParameterPackDatatypeExpr,
+              sourceloc: p.sourceloc,
+            })[1]
+          : paramExpr
+            ? collectExpr(cc, paramExpr, args)
+            : Collect.makeExpr(cc, {
+                variant: Collect.ENode.ParameterPackDatatypeExpr,
+                sourceloc: p.sourceloc,
+              })[1];
+
+        return {
+          optional: p.optional,
+          type,
+        };
+      });
+
+      const requires = {
+        final: item.requires.final,
+        pure: item.requires.pure,
+        noreturn: item.requires.noreturn,
+        noreturnIf: item.requires.noreturnIf
+          ? {
+              expr: collectExpr(cc, item.requires.noreturnIf.expr, args),
+              argIndex: null,
+              operation: null,
+            }
+          : null,
+      } satisfies Collect.FunctionRequiresBlock;
+
+      if (item.kind === "callable") {
+        return Collect.makeExpr(cc, {
+          variant: Collect.ENode.CallableTypeDefinitionExpr,
+          parameters,
+          returnType: collectExpr(cc, item.returnType, args),
+          vararg: item.ellipsis,
+          requires,
+          mutability: item.mutability,
+          sourceloc: item.sourceloc,
+        })[1];
+      }
+
+      return Collect.makeExpr(cc, {
+        variant: Collect.ENode.FunctionTypeDefinitionExpr,
+        parameters,
+        returnType: collectExpr(cc, item.returnType, args),
+        vararg: item.ellipsis,
+        requires,
+        mutability: item.mutability,
+        sourceloc: item.sourceloc,
+      })[1];
+    }
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
+    case "BinaryUnionTypeExpr": {
+      return Collect.makeExpr(cc, {
+        variant: Collect.ENode.UntaggedUnionTypeDefinitionExpr,
+        members: item.types.map((t) => collectExpr(cc, t, args)),
+        sourceloc: item.sourceloc,
+      })[1];
+    }
+
+    case "TaggedUnionTypeExpr": {
+      return collectTaggedUnionDefinition(cc, item, args, false);
+    }
+
+    case "NodiscardTypeExpr": {
+      if (item.type.variant !== "TaggedUnionTypeExpr") {
+        throw new CompilerError(
+          "nodiscard can only be applied to tagged unions",
+          item.sourceloc
+        );
+      }
+
+      return collectTaggedUnionDefinition(cc, item.type, args, true);
+    }
 
     // =================================================================================================================
     // =================================================================================================================

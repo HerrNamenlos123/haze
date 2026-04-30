@@ -46,7 +46,7 @@ namespace json {
             attribute: str;
 
             fn to<T>() {
-                if comptime T == type<str> {
+                if comptime T is str {
                     let obj = ffi.hzstd_json_get_object_item(this.json.allocator, this.json.data, this.attribute);
                     if obj {
                         let value = ffi.hzstd_json_get_string_value(this.json.allocator, obj);
@@ -57,7 +57,7 @@ namespace json {
                     }
                     sys.panic("JSON object does not have attribute");
                 } 
-                else if comptime T == type<real> {
+                else if comptime T is real {
                     let obj = ffi.hzstd_json_get_object_item(this.json.allocator, this.json.data, this.attribute);
                     if obj {
                         let value = ffi.hzstd_json_get_number_value(this.json.allocator, obj);

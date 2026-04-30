@@ -119,6 +119,7 @@ typeExprPrimary
     : nameExpr
     | literal // Literal types such as 5, true or "Foo"
     | LB typeExpr RB
+    | TYPEOF LB expr RB
     ;
 
 typeArgList
@@ -155,7 +156,7 @@ typeExpr
     ;
 
 genericLiteral
-    : typeExpr              #GenericLiteralTypeExpr
+    : expr
     ;
 
 structContent
@@ -196,7 +197,6 @@ primaryExpr
     : LB expr RB
     | doScope
     | TYPE typeExpr
-    | TYPEOF LB expr RB
     | lambda
     | literal
     | interpolatedString

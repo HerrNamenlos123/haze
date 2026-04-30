@@ -12,7 +12,10 @@ import {
   type ASTArraySubscriptExpr,
   type ASTAttemptExpr,
   type ASTBinaryExpr,
+  type ASTBinaryUnionTypeExpr,
   type ASTBlockScopeExpr,
+  type ASTConstTypeExpr,
+  type ASTDynamicArrayTypeExpr,
   type ASTEnumDefinition,
   type ASTEnumValueDefinition,
   type ASTErrorPropagationExpr,
@@ -32,14 +35,18 @@ import {
   type ASTFunctionDefinition,
   type ASTFunctionOverloading,
   type ASTFunctionRequiresBlock,
+  type ASTFunctionTypeExpr,
   type ASTGlobalVariableDefinition,
   type ASTIfStatement,
   type ASTInlineCStatement,
+  type ASTInlineTypeExpr,
   type ASTLambda,
   type ASTLambdaExpr,
   type ASTLiteralExpr,
   type ASTModuleImport,
+  type ASTMutTypeExpr,
   type ASTNamespaceDefinition,
+  type ASTNodiscardTypeExpr,
   type ASTParam,
   type ASTParenthesisExpr,
   type ASTPostIncrExpr,
@@ -48,14 +55,17 @@ import {
   type ASTReturnStatement,
   type ASTScope,
   type ASTStatement,
+  type ASTStaticArrayTypeExpr,
   type ASTStructDefinition,
   type ASTStructMemberDefinition,
   type ASTSubscriptIndexExpr,
   type ASTSymbolImport,
   type ASTSymbolValueExpr,
+  type ASTTaggedUnionTypeExpr,
   type ASTTernaryExpr,
   type ASTTypeAlias,
-  type ASTTypeLiteralExpr,
+  type ASTTypeOfExpr,
+  type ASTTypeValueExpr,
   type ASTUnaryExpr,
   type ASTVariableDefinitionStatement,
   type ASTWhileStatement,
@@ -454,31 +464,6 @@ class ASTBuilder extends HazeParserListener {
       .filter((t): t is TerminalNode => Boolean(t));
     tokens.sort((a, b) => a.symbol.tokenIndex - b.symbol.tokenIndex);
     return tokens;
-  }
-
-  private makeSymbolExpr(
-    name: string,
-    sourceloc: SourceLoc
-  ): ASTSymbolValueExpr {
-    return {
-      variant: "SymbolValueExpr",
-      name,
-      generics: [],
-      sourceloc,
-    } satisfies ASTSymbolValueExpr;
-  }
-
-  private makeTypeofCallExpr(
-    expr: ASTExpr,
-    sourceloc: SourceLoc
-  ): ASTExprCallExpr {
-    return {
-      variant: "ExprCallExpr",
-      calledExpr: this.makeSymbolExpr("typeof", sourceloc),
-      arguments: [expr],
-      allocator: null,
-      sourceloc,
-    } satisfies ASTExprCallExpr;
   }
 
   getSource(ctx: ParserRuleContext) {
@@ -903,19 +888,42 @@ class ASTBuilder extends HazeParserListener {
       return;
     }
 
-    if (ctx.INLINE() || ctx.MUT() || ctx.CONST()) {
+    if (ctx.INLINE()) {
       if (produced.length !== 1) {
-        throw new InternalError("TypeExprModified modifier stack mismatch");
+        throw new InternalError("TypeExprModified inline stack mismatch");
       }
 
-      // biome-ignore lint/style/noNestedTernary: .
-      const modifier = ctx.INLINE() ? "inline" : ctx.MUT() ? "mut" : "const";
       this.stack.push({
-        variant: "TypeModifierExpr",
-        modifier,
+        variant: "InlineTypeExpr",
         type: produced[0] as ASTExpr,
         sourceloc: this.loc(ctx),
-      } satisfies ASTTypeModifierExpr);
+      } satisfies ASTInlineTypeExpr);
+      return;
+    }
+
+    if (ctx.MUT()) {
+      if (produced.length !== 1) {
+        throw new InternalError("TypeExprModified mut stack mismatch");
+      }
+
+      this.stack.push({
+        variant: "MutTypeExpr",
+        type: produced[0] as ASTExpr,
+        sourceloc: this.loc(ctx),
+      } satisfies ASTMutTypeExpr);
+      return;
+    }
+
+    if (ctx.CONST()) {
+      if (produced.length !== 1) {
+        throw new InternalError("TypeExprModified const stack mismatch");
+      }
+
+      this.stack.push({
+        variant: "ConstTypeExpr",
+        type: produced[0] as ASTExpr,
+        sourceloc: this.loc(ctx),
+      } satisfies ASTConstTypeExpr);
       return;
     }
 
@@ -932,19 +940,17 @@ class ASTBuilder extends HazeParserListener {
       const inner = produced[0] as ASTExpr;
       if (ctx._n) {
         this.stack.push({
-          variant: "TypeModifierExpr",
-          modifier: "static-array",
+          variant: "StaticArrayTypeExpr",
           type: inner,
-          staticArraySize: this.integerFromDecimalOrHex(ctx),
+          arraySize: this.integerFromDecimalOrHex(ctx),
           sourceloc: this.loc(ctx),
-        } satisfies ASTTypeModifierExpr);
+        } satisfies ASTStaticArrayTypeExpr);
       } else {
         this.stack.push({
-          variant: "TypeModifierExpr",
-          modifier: "dynamic-array",
+          variant: "DynamicArrayTypeExpr",
           type: inner,
           sourceloc: this.loc(ctx),
-        } satisfies ASTTypeModifierExpr);
+        } satisfies ASTDynamicArrayTypeExpr);
       }
 
       return;
@@ -961,22 +967,22 @@ class ASTBuilder extends HazeParserListener {
       const returnType = produced[i++] as ASTExpr;
       const requires = ctx.requiresBlock()
         ? (produced[i++] as ASTFunctionRequiresBlock)
-        : null;
+        : this.emptyRequires();
 
       if (i !== produced.length) {
         throw new InternalError("TypeExprModified function stack mismatch");
       }
 
       this.stack.push({
-        variant: "TypeModifierExpr",
-        modifier: ctx.DOUBLEARROW() ? "callable" : "function",
-        type: returnType,
-        parameterTypes: params.params.map((p) => p.datatype),
-        parameterOptional: params.params.map((p) => p.optional),
-        parameterEllipsis: params.ellipsis,
+        variant: "FunctionTypeExpr",
+        kind: ctx.DOUBLEARROW() ? "callable" : "function",
+        params: params.params,
+        ellipsis: params.ellipsis,
+        returnType,
         requires,
+        mutability: EDatatypeMutability.Default,
         sourceloc: this.loc(ctx),
-      } satisfies ASTTypeModifierExpr);
+      } satisfies ASTFunctionTypeExpr);
       return;
     }
 
@@ -991,18 +997,16 @@ class ASTBuilder extends HazeParserListener {
       throw new InternalError("TypeExprUnion missing members");
     }
 
-    let expr = produced[0];
-    for (let idx = 1; idx < produced.length; idx++) {
-      expr = {
-        variant: "BinaryExpr",
-        a: expr,
-        b: produced[idx],
-        operation: EBinaryOperation.BitwiseOr,
-        sourceloc: this.loc(ctx),
-      } satisfies ASTBinaryExpr;
+    if (produced.length === 1) {
+      this.stack.push(produced[0]);
+      return;
     }
 
-    this.stack.push(expr);
+    this.stack.push({
+      variant: "BinaryUnionTypeExpr",
+      types: produced,
+      sourceloc: this.loc(ctx),
+    } satisfies ASTBinaryUnionTypeExpr);
   };
 
   exitTypeExpr = (ctx: TypeExprContext) => {
@@ -1026,23 +1030,20 @@ class ASTBuilder extends HazeParserListener {
     }
 
     let unionExpr: ASTExpr = {
-      variant: "TypeModifierExpr",
-      modifier: "tagged-union",
-      type: members[0] as ASTExpr,
-      taggedUnionMembers: members.map((m, i) => ({
+      variant: "TaggedUnionTypeExpr",
+      members: members.map((m, i) => ({
         tag: tags[i].getText(),
         type: m,
       })),
       sourceloc: this.loc(ctx),
-    } satisfies ASTTypeModifierExpr;
+    } satisfies ASTTaggedUnionTypeExpr;
 
     if (ctx.NODISCARD()) {
       unionExpr = {
-        variant: "TypeModifierExpr",
-        modifier: "nodiscard",
+        variant: "NodiscardTypeExpr",
         type: unionExpr,
         sourceloc: this.loc(ctx),
-      } satisfies ASTTypeModifierExpr;
+      } satisfies ASTNodiscardTypeExpr;
     }
 
     this.stack.push(unionExpr);
@@ -1784,9 +1785,11 @@ class ASTBuilder extends HazeParserListener {
         throw new InternalError("PrimaryExpr typeof stack mismatch");
       }
 
-      this.stack.push(
-        this.makeTypeofCallExpr(produced[0] as ASTExpr, this.loc(ctx))
-      );
+      this.stack.push({
+        variant: "TypeOfExpr",
+        expr: produced[0] as ASTExpr,
+        sourceloc: this.loc(ctx),
+      } satisfies ASTTypeOfExpr);
       return;
     }
 
@@ -1805,10 +1808,10 @@ class ASTBuilder extends HazeParserListener {
       }
 
       this.stack.push({
-        variant: "TypeLiteralExpr",
-        datatype: produced[0] as ASTExpr,
+        variant: "TypeValueExpr",
+        expr: produced[0] as ASTExpr,
         sourceloc: this.loc(ctx),
-      } satisfies ASTTypeLiteralExpr);
+      } satisfies ASTTypeValueExpr);
       return;
     }
 

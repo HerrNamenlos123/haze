@@ -27,10 +27,10 @@ namespace embed {
     }
 
     export fn watchTextIf<TCond, TPath>(condition: TCond, path: TPath, options: fs.FileWatchOptions = {}): rx.Reactive<str> {
-        if comptime typeof(TCond) == typeof(true) {
+        if comptime type typeof(TCond) is true {
             return watchText(path, options);
         }
-        else if comptime typeof(TCond) == typeof(false) {
+        else if comptime type typeof(TCond) is false {
             return rx.reactive(text(path));
         }
         else {
@@ -54,10 +54,10 @@ namespace embed {
     }
 
     export fn watchBinaryIf<TCond, TPath>(condition: TCond, path: TPath, options: fs.FileWatchOptions = {}): rx.Reactive<str> {
-        if comptime typeof(TCond) == typeof(true) {
+        if comptime type typeof(TCond) is true {
             return watchBinary(path, options);
         }
-        else if comptime typeof(TCond) == typeof(false) {
+        else if comptime type typeof(TCond) is false {
             return rx.reactive(binary(path));
         }
         else {
