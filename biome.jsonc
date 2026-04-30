@@ -12,6 +12,8 @@
       },
       "style": {
         "useAtIndex": "off",
+        "noNestedTernary": "warn",
+        "useEnumInitializers": "off",
         "noNonNullAssertion": "off",
         "useFilenamingConvention": "off",
         "noEnum": "off",
